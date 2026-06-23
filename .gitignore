@@ -1,0 +1,32 @@
+# Build output
+build/
+
+# External libraries are tracked as git submodules (see .gitmodules)
+# lv_conf.h (custom LVGL config) lives beside libs/lvgl and is tracked
+
+# Downloaded fonts (TTF sources, root level only)
+/fonts/
+
+# Screenshots & debug logs
+*.bmp
+*.png
+screenshot*
+*.log
+
+# Ad-hoc test scripts at root (not tests/ directory)
+/test*.lua
+saves/
+
+# Python bytecode (convertisseur telmi2flam)
+__pycache__/
+*.pyc
+
+# Jeu casse-briques : sortie de build
+games/casse-briques/_out/
+
+# Editor / OS
+.vscode/
+*.swp
+*~
+Thumbs.db
+.DS_Store

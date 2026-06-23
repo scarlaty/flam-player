@@ -1,0 +1,36 @@
+require("test_helpers")
+print("--- test_btn ---")
+
+test("btn.new creates button", function()
+    local btn = lv.btn.new(window)
+    expect_true(btn ~= nil)
+    lv.obj.del(btn)
+end)
+
+test("btn is an lv_obj (can use obj functions)", function()
+    local btn = lv.btn.new(window)
+    lv.obj.set_size(btn, 120, 40)
+    test_tick(1)
+    expect_eq(lv.obj.get_width(btn), 120, "btn width")
+    lv.obj.del(btn)
+end)
+
+test("btn with label child", function()
+    local btn = lv.btn.new(window)
+    local lbl = lv.label.new(btn)
+    lv.label.set_text(lbl, "Click me")
+    lv.obj.center(lbl)
+    expect_eq(lv.obj.get_child_cnt(btn), 1, "btn child count")
+    lv.obj.del(btn)
+end)
+
+test("btn with event callback", function()
+    local btn = lv.btn.new(window)
+    local clicked = false
+    lv.obj.add_event_cb(btn, function(e)
+        clicked = true
+    end, lv.EVENT_CLICKED)
+    lv.event.send(btn, lv.EVENT_CLICKED)
+    expect_true(clicked, "callback should fire")
+    lv.obj.del(btn)
+end)
