@@ -1,0 +1,14 @@
+[submodule "libs/lvgl"]
+	path = libs/lvgl
+	url = https://github.com/lvgl/lvgl.git
+	branch = release/v8.3
+[submodule "libs/minimp3"]
+	path = libs/minimp3
+	url = https://github.com/lieff/minimp3.git
+[submodule "libs/lua"]
+	path = libs/lua
+	url = https://github.com/lua/lua.git
+[submodule "libs/SDL2"]
+	path = libs/SDL2
+	url = https://github.com/libsdl-org/SDL.git
+	branch = SDL2
