@@ -339,6 +339,7 @@ static void show_context_menu(lua_State *L)
 
     /* Parcourir les entrees */
     int len = (int)lua_rawlen(L, -1);
+    lv_obj_t *first_btn = NULL;
     for (int i = 1; i <= len; i++) {
         lua_rawgeti(L, -1, i);
         if (!lua_istable(L, -1)) { lua_pop(L, 1); continue; }
@@ -377,6 +378,8 @@ static void show_context_menu(lua_State *L)
             data->func_ref = func_ref;
             lv_obj_add_event_cb(btn, ctx_btn_event_cb, LV_EVENT_CLICKED, data);
         }
+
+        if (!first_btn) first_btn = btn;
     }
 
     /* Bouton fermer */
@@ -397,6 +400,13 @@ static void show_context_menu(lua_State *L)
     lv_obj_add_event_cb(close_btn, ctx_btn_event_cb, LV_EVENT_CLICKED, close_data);
 
     lua_pop(L, 1); /* pop entries table */
+
+    /* Forcer le focus sur le premier bouton du menu pour la navigation encodeur */
+    lv_obj_t *focus_target = first_btn ? first_btn : close_btn;
+    lv_group_t *def_grp = lv_group_get_default();
+    if (def_grp) {
+        lv_group_focus_obj(focus_target);
+    }
 }
 
 static void close_context_menu(void)

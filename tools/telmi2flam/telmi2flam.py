@@ -101,6 +101,43 @@ def png_to_thumb_lif(png_bytes):
 
 
 # ---------------------------------------------------------------------------
+# Helpers de conversion des structures nodes.json -> Lua
+# ---------------------------------------------------------------------------
+
+def _conv_trans(tr):
+    """Convertit une transition TELMI {action, index|indexItem} en dict Lua."""
+    out = {"action": tr.get("action")}
+    if "indexItem" in tr:
+        # index et indexItem sont mutuellement exclusifs (spec TELMI)
+        out["indexItem"] = tr["indexItem"]
+    else:
+        out["index"] = tr.get("index", 0)
+    return out
+
+
+def _conv_cond(c):
+    """Convertit une condition TELMI {comparator, item, number|compareItem} en dict Lua."""
+    out = {"cmp": c.get("comparator", 2), "item": c.get("item", 0)}
+    if "compareItem" in c:
+        out["itemB"] = c["compareItem"]
+    else:
+        out["num"] = c.get("number", 0)
+    return out
+
+
+def _conv_item(it):
+    """Convertit une operation inventaire TELMI {type, item, number|assignItem|playingTime}."""
+    out = {"type": it.get("type", 0), "item": it.get("item", 0)}
+    if it.get("playingTime"):
+        out["playingTime"] = True
+    elif "assignItem" in it:
+        out["assignItem"] = it["assignItem"]
+    else:
+        out["number"] = it.get("number", 0)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Convertisseur principal
 # ---------------------------------------------------------------------------
 def base_no_ext(name):
@@ -204,10 +241,10 @@ def convert(zip_path, out_path=None, keep_size=False, emit_plain=False, selector
             entry["audio"] = aud
         ok = st.get("ok")
         if ok:
-            entry["ok"] = {"action": ok.get("action"), "index": ok.get("index", 0)}
+            entry["ok"] = _conv_trans(ok)
         home = st.get("home")
         if home:
-            entry["home"] = {"action": home.get("action"), "index": home.get("index", 0)}
+            entry["home"] = _conv_trans(home)
         ctrl = st.get("control", {}) or {}
         entry["ctrl"] = {
             "ok": bool(ctrl.get("ok", True)),
@@ -216,10 +253,7 @@ def convert(zip_path, out_path=None, keep_size=False, emit_plain=False, selector
         }
         items = st.get("items")
         if items:
-            entry["items"] = [
-                {"type": it.get("type", 0), "item": it.get("item", 0),
-                 "number": it.get("number", 0)} for it in items
-            ]
+            entry["items"] = [_conv_item(it) for it in items]
         if st.get("inventoryReset"):
             entry["reset"] = True
         # Label texte du choix (carrousel) : notes.json text sinon notes.
@@ -237,10 +271,7 @@ def convert(zip_path, out_path=None, keep_size=False, emit_plain=False, selector
             item = {"stage": e.get("stage")}
             conds = e.get("conditions")
             if conds:
-                item["cond"] = [
-                    {"cmp": c.get("comparator", 2), "item": c.get("item", 0),
-                     "num": c.get("number", 0)} for c in conds
-                ]
+                item["cond"] = [_conv_cond(c) for c in conds]
             out_list.append(item)
         lua_actions[aid] = out_list
 

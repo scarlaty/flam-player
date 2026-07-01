@@ -12,6 +12,12 @@
 /* Création / reset                                                    */
 /* ================================================================== */
 
+int lua_lv_style_gc(lua_State *L) {
+    lv_style_t *s = lua_lv_check_style(L, 1);
+    lv_style_reset(s);
+    return 0;
+}
+
 static int l_style_new(lua_State *L) {
     lv_style_t *s = (lv_style_t *)lua_newuserdata(L, sizeof(lv_style_t));
     lv_style_init(s);

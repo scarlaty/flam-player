@@ -220,7 +220,7 @@ en `lv.*` direct marche au sim mais PAS sur device).
 
 ⚠️ Cette réplication fidèle de Cluedo **ne corrige pas** le bug de relance device (#10) —
 cf. `DEVICE_VS_SIM.md`.
-- Inventaire : `state.inv`, ops + conditions complètes, `inventoryReset`.
+- Inventaire : `state.inv`, ops complètes (`number`, `assignItem`, `playingTime`), conditions complètes (`num`, `itemB`), `indexItem` dans les transitions, `inventoryReset`.
 
 Données attendues (`nodes.lua`, généré par le convertisseur) :
 
@@ -346,4 +346,6 @@ nécessaires pour que l'histoire **charge sur le device**) :
 - Pas de gestion des succès/collections (spécifique aux histoires Lunii natives).
 - Rendu de l'inventaire à l'écran (compteur/jauge) : non encore implémenté dans le moteur
   (l'inventaire est géré en logique, pas affiché).
+- `playingTime` : approximatif — utilise `Global.audioDuration` (dernière valeur rapportée
+  par le callback audio), pas un chronomètre précis de la scène courante.
 ```
