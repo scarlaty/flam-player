@@ -125,8 +125,9 @@ lv_img_dsc_t *lif_decode_mem(const uint8_t *data, size_t data_size) {
 
     /* Buffer de sortie RGBA8888 */
     size_t buf_size = (size_t)total_pixels * 4;
+    fprintf(stderr, "[LIF] decode_mem: %ux%u, buf_size=%zu\n", w, h, buf_size); fflush(stderr);
     uint8_t *rgba = (uint8_t *)malloc(buf_size);
-    if (!rgba) { return NULL; }
+    if (!rgba) { fprintf(stderr, "[LIF] malloc FAILED rgba\n"); fflush(stderr); return NULL; }
     memset(rgba, 0, buf_size);
 
     /* Etat du decodeur */
@@ -281,8 +282,9 @@ lv_img_dsc_t *lif_decode_mem(const uint8_t *data, size_t data_size) {
 }
 
 lv_img_dsc_t *lif_decode_file(const char *path) {
+    fprintf(stderr, "[LIF] decode_file: %s\n", path ? path : "(null)"); fflush(stderr);
     FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
+    if (!f) { fprintf(stderr, "[LIF] fopen FAILED\n"); fflush(stderr); return NULL; }
 
     fseek(f, 0, SEEK_END);
     long file_size = ftell(f);
@@ -290,21 +292,25 @@ lv_img_dsc_t *lif_decode_file(const char *path) {
 
     if (file_size < LIF_HEADER_SIZE + LIF_END_SIZE) {
         fclose(f);
+        fprintf(stderr, "[LIF] too small\n"); fflush(stderr);
         return NULL;
     }
 
     uint8_t *data = (uint8_t *)malloc((size_t)file_size);
-    if (!data) { fclose(f); return NULL; }
+    if (!data) { fclose(f); fprintf(stderr, "[LIF] malloc FAILED file_buf\n"); fflush(stderr); return NULL; }
     fread(data, 1, (size_t)file_size, f);
     fclose(f);
+    fprintf(stderr, "[LIF] file loaded %ld bytes, decoding...\n", file_size); fflush(stderr);
 
     lv_img_dsc_t *dsc = lif_decode_mem(data, (size_t)file_size);
     free(data);
+    fprintf(stderr, "[LIF] decode_mem -> %s\n", dsc ? "OK" : "NULL"); fflush(stderr);
     return dsc;
 }
 
 void lif_free(lv_img_dsc_t *dsc) {
     if (!dsc) return;
+    fprintf(stderr, "[LIF] free dsc=%p data=%p\n", (void*)dsc, (void*)dsc->data); fflush(stderr);
     if (dsc->data) free((void *)dsc->data);
     free(dsc);
 }

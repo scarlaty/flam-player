@@ -283,7 +283,7 @@ static int l_ptr_eq(lua_State *L) {
 
 static void create_metatables(lua_State *L) {
     const char *names[] = {
-        LV_MT_OBJ, LV_MT_STYLE, LV_MT_ANIM,
+        LV_MT_OBJ, LV_MT_ANIM,
         LV_MT_GROUP, LV_MT_AREA, LV_MT_TIMER,
         NULL
     };
@@ -291,11 +291,19 @@ static void create_metatables(lua_State *L) {
        creates it with __gc for proper cleanup of decoded LIF images. */
     for (int i = 0; names[i]; i++) {
         luaL_newmetatable(L, names[i]);
-        /* Ajouter __eq pour permettre la comparaison par pointeur */
         lua_pushcfunction(L, l_ptr_eq);
         lua_setfield(L, -2, "__eq");
         lua_pop(L, 1);
     }
+    /* LV_MT_STYLE : __eq + __gc pour liberer les valeurs de style
+       allouees dans le pool LVGL (lv_mem, 256KB). Sans ce __gc, chaque
+       module qui cree des styles fuiterait de la memoire LVGL. */
+    luaL_newmetatable(L, LV_MT_STYLE);
+    lua_pushcfunction(L, l_ptr_eq);
+    lua_setfield(L, -2, "__eq");
+    lua_pushcfunction(L, lua_lv_style_gc);
+    lua_setfield(L, -2, "__gc");
+    lua_pop(L, 1);
 }
 
 /* ================================================================== */

@@ -74,7 +74,18 @@ local function applyStageItems(stage)
         for _, op in ipairs(stage.items) do
             local slot = state.inv and state.inv[(op.item or 0) + 1]
             if slot then
-                local v, n, t = slot.value, op.number or 0, op.type or 0
+                local n
+                if op.playingTime then
+                    -- Temps audio ecoule : Global.audioDuration tenu a jour par
+                    -- les callbacks du module audio-player via global.audioFeedback.
+                    n = math.floor(Global.audioDuration or 0)
+                elseif op.assignItem ~= nil then
+                    local src = state.inv and state.inv[op.assignItem + 1]
+                    n = src and src.value or 0
+                else
+                    n = op.number or 0
+                end
+                local v, t = slot.value, op.type or 0
                 if     t == 0 then v = v + n
                 elseif t == 1 then v = v - n
                 elseif t == 2 then v = n
@@ -92,7 +103,14 @@ end
 local function evalCond(c)
     local slot = state.inv and state.inv[(c.item or 0) + 1]
     local v = slot and slot.value or 0
-    local n, cmp = c.num or 0, c.cmp or 2
+    local n
+    if c.itemB ~= nil then
+        local slotB = state.inv and state.inv[c.itemB + 1]
+        n = slotB and slotB.value or 0
+    else
+        n = c.num or 0
+    end
+    local cmp = c.cmp or 2
     if     cmp == 0 then return v <  n
     elseif cmp == 1 then return v <= n
     elseif cmp == 2 then return v == n
@@ -193,12 +211,21 @@ function showChoice(list, actionId)
 end
 
 -- ---------------------------------------------------------------------------
--- Resolution d'une transition {action, index}
+-- Resolution d'une transition {action, index|indexItem}
 -- ---------------------------------------------------------------------------
 function followTransition(trans)
     if not trans then goto_library(); return end
     local list = N.actions[trans.action]
     if not list or #list == 0 then goto_library(); return end
+
+    -- indexItem : l'index du stage dans l'action est la valeur d'un item inventaire
+    if trans.indexItem ~= nil then
+        local slot = state.inv and state.inv[trans.indexItem + 1]
+        local idx = (slot and slot.value or 0) + 1  -- TELMI 0-based -> Lua 1-based
+        local e = list[idx] or list[#list]           -- clamp sur le dernier si hors borne
+        enterStage(e.stage)
+        return
+    end
 
     local hasCond = false
     for _, e in ipairs(list) do if e.cond then hasCond = true; break end end

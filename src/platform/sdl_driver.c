@@ -92,11 +92,7 @@ static void disp_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
     int32_t w = area->x2 - area->x1 + 1;
     int32_t h = area->y2 - area->y1 + 1;
 
-    /* Mettre à jour la zone de la texture SDL */
     SDL_Rect rect = {area->x1, area->y1, w, h};
-
-    /* LVGL en 32-bit : chaque pixel est un lv_color_t = uint32 ARGB/XRGB.
-       La texture SDL est aussi ARGB8888, on copie directement. */
     SDL_UpdateTexture(g_texture, &rect, color_p, w * sizeof(lv_color_t));
 
     lv_disp_flush_ready(drv);

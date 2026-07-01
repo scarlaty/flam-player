@@ -17,7 +17,7 @@
 
 /* Mémoire */
 #define LV_MEM_CUSTOM           0
-#define LV_MEM_SIZE             (256U * 1024U)
+#define LV_MEM_SIZE             (512U * 1024U)
 #define LV_MEM_ADR              0
 #define LV_MEM_BUF_MAX_NUM      16
 
@@ -54,6 +54,10 @@
 #define LV_USE_ASSERT_STYLE      0
 #define LV_USE_ASSERT_MEM_INTEGRITY  0
 #define LV_USE_ASSERT_OBJ        0
+/* Flush stderr+stdout then abort() so we get a clean crash instead of while(1) freeze.
+   _lv_assert_crash() is declared in lv_mem.h (included by lv_assert.h) to avoid
+   requiring stdio.h in every file that uses asserts. */
+#define LV_ASSERT_HANDLER _lv_assert_crash();
 
 /* Fonctionnalités */
 #define LV_USE_PERF_MONITOR      0

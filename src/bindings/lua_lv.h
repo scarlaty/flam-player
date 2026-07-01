@@ -139,6 +139,9 @@ void lua_lv_register_event(lua_State *L, int lv_idx);
 /* Point d'entrée : crée la table globale `lv` avec tout le contenu.   */
 int luaopen_lv(lua_State *L);
 
+/* Finalizer pour les styles (appelle lv_style_reset avant libération) */
+int lua_lv_style_gc(lua_State *L);
+
 /* Configurer le chemin de base pour lv.img_src.load() */
 void lua_lv_set_img_base_path(const char *path);
 
