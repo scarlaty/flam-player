@@ -30,3 +30,8 @@ games/casse-briques/_out/
 *~
 Thumbs.db
 .DS_Store
+
+# Packs Telmi (données de test volumineuses, non redistribuables)
+/tools/telmi2flam/*.zip
+/tools/telmi2flam/*.pk
+/tools/telmi2flam/*.plain/
