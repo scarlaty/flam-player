@@ -26,6 +26,8 @@ import lif
 import mp3map
 
 SCREEN_W, SCREEN_H = 320, 240
+HEADER_H = 28                # bandeau titre du player (src/main.c, global.header_height)
+VISUAL_W, VISUAL_H = SCREEN_W, SCREEN_H - HEADER_H   # zone d'affichage des scenes : 320x212
 THUMB_W, THUMB_H = 128, 96
 INV_W, INV_H = 128, 128      # icones d'inventaire
 MAX_DIM = 2047               # borne du decodeur LIF (lif_decoder.c, 11 bits lv_img_header_t)
@@ -202,6 +204,23 @@ def png_to_lif(png_bytes, target=None):
     return _encode(_avoid_transpose(_bound(im)))
 
 
+def png_to_scene_lif(png_bytes, w=VISUAL_W, h=VISUAL_H):
+    """Image de scene : ajustee sans deformation dans w x h (agrandie ou
+    reduite), centree sur un canevas transparent de exactement w x h.
+    Les images TELMI sont en 4:3 (640x480) alors que la zone sous le bandeau
+    fait 320x212 : un 320x240 etait coupe en bas de 28 px. Le canevas doit
+    faire la taille de la zone : un lv_img plus grand que sa source la repete."""
+    im = _open_rgba(png_bytes)
+    sw, sh = im.size
+    scale = min(w / sw, h / sh)
+    nw, nh = max(1, round(sw * scale)), max(1, round(sh * scale))
+    if (nw, nh) != (sw, sh):
+        im = im.resize((nw, nh), Image.LANCZOS)
+    canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    canvas.paste(im, ((w - nw) // 2, (h - nh) // 2))
+    return _encode(canvas)
+
+
 def png_to_fit_lif(png_bytes, maxw, maxh, align="center"):
     """Redimensionne en gardant le ratio pour tenir dans maxw x maxh."""
     im = _open_rgba(png_bytes)
@@ -320,14 +339,18 @@ def _conv_item(it, what):
     return out
 
 
-def _choice_label(note):
-    """Label court d'un choix : title, sinon text, sinon notes ; tronque."""
+def _choice_label(note, node_id=None):
+    """Label court d'un choix : title, sinon text, sinon notes ; tronque.
+    Un texte egal a l'id du noeud est ignore : c'est le titre par defaut de
+    l'editeur TELMI ("s0.m0": {"title": "s0.m0"}), pas un vrai label."""
     if not isinstance(note, dict):
         return ""
     for key in ("title", "text", "notes"):
         v = note.get(key)
         if isinstance(v, str) and v.strip():
             label = _flat(v)
+            if node_id is not None and label == _flat(str(node_id)):
+                continue
             if len(label) > LABEL_MAX:
                 label = label[:LABEL_MAX - 3].rstrip() + "..."
             return label
@@ -433,7 +456,6 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
         _warn("metadata.json sans uuid : UUID derive du contenu de nodes.json "
               "(change si l'histoire est modifiee)")
 
-    target = None if keep_size else (SCREEN_W, SCREEN_H)
 
     # Sorties accumulees : nom dans le .pk -> bytes
     out_files = {}
@@ -495,8 +517,10 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
                     lif_bytes = png_to_lif(data, None)
                 else:
                     lif_bytes = png_to_fit_lif(data, INV_W, INV_H)
+            elif keep_size:
+                lif_bytes = png_to_lif(data, None)
             else:
-                lif_bytes = png_to_lif(data, target)
+                lif_bytes = png_to_scene_lif(data)
         except Exception as e:
             _warn("image illisible %s (%s: %s) -> empty.lif" % (png_name, type(e).__name__, e))
             bad.append(png_name)
@@ -573,7 +597,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
         if st.get("inventoryReset"):
             entry["reset"] = True
         # Label court du choix (carrousel) : notes.json title, sinon text, sinon notes.
-        label = _choice_label(notes.get(sid))
+        label = _choice_label(notes.get(sid), sid)
         if label:
             entry["text"] = label
         lua_stages[sid] = entry
@@ -843,7 +867,7 @@ def main():
     ap.add_argument("--plain", action="store_true",
                     help="ecrire AUSSI le dossier .plain extrait a cote du .plain.pk (pour le simulateur)")
     ap.add_argument("--keep-size", action="store_true",
-                    help="garder la resolution native des images (pas de resize 320x240, "
+                    help="garder la resolution native des images (pas d'ajustement 320x212, "
                          "bornee a 2047 px)")
     ap.add_argument("--allow-missing", action="store_true",
                     help="convertir malgre des images/audios manquants (audio -> silent.mp3)")
