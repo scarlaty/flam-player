@@ -112,7 +112,7 @@ static int l_style_set_text_opa(lua_State *L) {
 
 static int l_style_set_text_font(lua_State *L) {
     lv_style_t *s = lua_lv_check_style(L, 1);
-    const lv_font_t *font = (const lv_font_t *)lua_touserdata(L, 2);
+    const lv_font_t *font = lua_lv_opt_font(L, 2);   /* nil : ignore */
     if (font) lv_style_set_text_font(s, font);
     return 0;
 }
@@ -338,7 +338,10 @@ static const luaL_Reg style_funcs[] = {
 /* ================================================================== */
 
 void lua_lv_register_style(lua_State *L, int lv_idx) {
+    /* set_* : lv_style_set_prop realloc les proprietes sans pouvoir
+       echouer proprement ; garde du tas LVGL avant l'appel (X1a) */
+    static const char *const unguarded[] = { "new", "reset", NULL };
     lua_newtable(L);
-    luaL_setfuncs(L, style_funcs, 0);
+    lua_lv_setfuncs_guarded(L, style_funcs, unguarded);
     lua_setfield(L, lv_idx, "style");
 }

@@ -53,11 +53,25 @@
 #define LV_USE_ASSERT_MALLOC     1
 #define LV_USE_ASSERT_STYLE      0
 #define LV_USE_ASSERT_MEM_INTEGRITY  0
+/* Verification des objets (validite + classe) : opt-in, tres couteux
+   (lv_obj_is_valid parcourt tout l'arbre a chaque appel : fuzz_lvgl passe
+   de <30 s a ~55 s). Activer avec -DFLAM_LV_ASSERT_OBJ=1 (CMAKE_C_FLAGS). */
+#if defined(FLAM_LV_ASSERT_OBJ) && FLAM_LV_ASSERT_OBJ && !defined(NDEBUG)
+#define LV_USE_ASSERT_OBJ        1
+#else
 #define LV_USE_ASSERT_OBJ        0
-/* Flush stderr+stdout then abort() so we get a clean crash instead of while(1) freeze.
-   _lv_assert_crash() is declared in lv_mem.h (included by lv_assert.h) to avoid
-   requiring stdio.h in every file that uses asserts. */
-#define LV_ASSERT_HANDLER _lv_assert_crash();
+#endif
+/* Handler du projet (src/firmware/fw_globals.c) : log fichier:ligne,
+   traceback Lua, etat du tas LVGL, puis abort() sans boite modale MSVC.
+   Prototype seul ici (lv_conf.h est inclus partout, pas d'include lourd). */
+#ifdef __cplusplus
+extern "C" {
+#endif
+void flam_assert_crash(const char *file, int line);
+#ifdef __cplusplus
+}
+#endif
+#define LV_ASSERT_HANDLER flam_assert_crash(__FILE__, __LINE__);
 
 /* Fonctionnalités */
 #define LV_USE_PERF_MONITOR      0

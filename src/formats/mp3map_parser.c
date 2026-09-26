@@ -18,15 +18,15 @@ int mp3map_parse(const char *path, mp3map_t *map) {
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
 
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    long size = -1;
+    if (fseek(f, 0, SEEK_END) == 0) size = ftell(f);
+    if (size < 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
 
     if (size < 12) { fclose(f); return -1; }
 
     /* Header */
     uint8_t hdr[12];
-    fread(hdr, 1, 12, f);
+    if (fread(hdr, 1, 12, f) != 12) { fclose(f); return -1; }
 
     map->total_units = (uint32_t)hdr[0] | ((uint32_t)hdr[1]<<8) |
                        ((uint32_t)hdr[2]<<16) | ((uint32_t)hdr[3]<<24);
@@ -52,7 +52,14 @@ int mp3map_parse(const char *path, mp3map_t *map) {
 
     for (int i = 0; i < map->num_entries; i++) {
         uint8_t buf[8];
-        fread(buf, 1, 8, f);
+        if (fread(buf, 1, 8, f) != 8) {
+            /* Fichier tronque pendant la lecture : table inutilisable */
+            free(map->entries);
+            map->entries = NULL;
+            map->num_entries = 0;
+            fclose(f);
+            return -1;
+        }
         map->entries[i].byte_offset = (uint32_t)buf[0] | ((uint32_t)buf[1]<<8) |
                                       ((uint32_t)buf[2]<<16) | ((uint32_t)buf[3]<<24);
         map->entries[i].unit_pos    = (uint32_t)buf[4] | ((uint32_t)buf[5]<<8) |

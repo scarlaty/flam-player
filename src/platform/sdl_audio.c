@@ -2,7 +2,10 @@
  * sdl_audio.c — Moteur audio : SDL2 + minimp3 + bindings Lua
  *
  * Architecture :
- *   - minimp3 decode le MP3 frame par frame en PCM S16 stereo
+ *   - minimp3 decode le MP3 frame par frame en PCM S16 (frequence et
+ *     nombre de canaux du fichier)
+ *   - un SDL_AudioStream convertit ce PCM au format du device
+ *     (AUDIO_FREQ Hz, stereo S16)
  *   - SDL_QueueAudio envoie le PCM a la carte son (pas de callback thread)
  *   - sdl_audio_pump() est appele dans la boucle principale pour decoder
  *     et alimenter SDL, et pour emettre les callbacks Lua
@@ -32,6 +35,7 @@
 #define AUDIO_SAMPLES    2048   /* taille du buffer SDL */
 #define PUMP_FRAMES      8     /* frames MP3 a decoder par appel pump */
 #define QUEUE_LOW_MARK   8192  /* octets : seuil pour decoder plus */
+#define FRAME_BYTES      (AUDIO_CHANNELS * (int)sizeof(int16_t))
 
 /* ================================================================== */
 /* Etat audio global                                                   */
@@ -54,6 +58,12 @@ typedef struct {
     int           sample_rate;
     int           channels;
 
+    /* Conversion vers le format du device (frequence / canaux du MP3
+       -> AUDIO_FREQ stereo). Recree si le format des frames change. */
+    SDL_AudioStream *stream;
+    int           stream_hz;
+    int           stream_ch;
+
     /* Seek table */
     mp3map_t      mp3map;
     int           has_mp3map;
@@ -62,7 +72,11 @@ typedef struct {
     audio_state_e state;
     float         duration_s;
 
-    /* Position en samples (pour calculer le temps) */
+    /* Fin du decodage atteinte : on attend que la file SDL soit vide
+       avant de passer en STOP et d'emettre "stop" (etat DRAINING). */
+    int           eof_draining;
+
+    /* Position en frames de sortie (AUDIO_FREQ Hz, pour calculer le temps) */
     uint64_t      samples_played;
     uint64_t      samples_queued;
 
@@ -85,6 +99,8 @@ typedef struct {
 static audio_ctx_t g_audio = {0};
 static char g_sounds_base_path[512] = "";
 
+static void audio_reset_state(void);
+
 /* ================================================================== */
 /* Init / Quit                                                         */
 /* ================================================================== */
@@ -98,6 +114,9 @@ int sdl_audio_init(void) {
     want.samples  = AUDIO_SAMPLES;
     want.callback = NULL;  /* mode queue */
 
+    /* allowed_changes = 0 : SDL garantit le format demande (il convertit
+       lui-meme si le materiel differe). La sortie est donc toujours
+       AUDIO_FREQ / stereo / S16, cible du SDL_AudioStream. */
     g_audio.dev_id = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (g_audio.dev_id == 0) {
         SDL_Log("SDL_OpenAudioDevice failed: %s", SDL_GetError());
@@ -115,12 +134,11 @@ int sdl_audio_init(void) {
 }
 
 void sdl_audio_quit(void) {
+    audio_reset_state();
     if (g_audio.dev_id) {
         SDL_CloseAudioDevice(g_audio.dev_id);
         g_audio.dev_id = 0;
     }
-    if (g_audio.mp3_data) { free(g_audio.mp3_data); g_audio.mp3_data = NULL; }
-    if (g_audio.mp3map.entries) { free(g_audio.mp3map.entries); g_audio.mp3map.entries = NULL; }
 }
 
 void sdl_audio_set_base_path(const char *path) {
@@ -136,36 +154,101 @@ void sdl_audio_set_base_path(const char *path) {
 /* Fonctions internes                                                  */
 /* ================================================================== */
 
-static void audio_unload(lua_State *L) {
-    SDL_ClearQueuedAudio(g_audio.dev_id);
+static void audio_stream_free(void) {
+    if (g_audio.stream) {
+        SDL_FreeAudioStream(g_audio.stream);
+        g_audio.stream = NULL;
+    }
+    g_audio.stream_hz = 0;
+    g_audio.stream_ch = 0;
+}
+
+/* Transfere le PCM converti disponible vers la file SDL */
+static void audio_stream_to_queue(void) {
+    if (!g_audio.stream) return;
+    int16_t buf[4096];
+    while (SDL_AudioStreamAvailable(g_audio.stream) > 0) {
+        int got = SDL_AudioStreamGet(g_audio.stream, buf, (int)sizeof(buf));
+        if (got <= 0) break;
+        SDL_QueueAudio(g_audio.dev_id, buf, (Uint32)got);
+        g_audio.samples_queued += (uint64_t)(got / FRAME_BYTES);
+    }
+}
+
+/* (Re)cree le convertisseur si le format source change. 0 si OK. */
+static int audio_stream_setup(int hz, int ch) {
+    if (g_audio.stream && g_audio.stream_hz == hz && g_audio.stream_ch == ch)
+        return 0;
+    if (g_audio.stream) {
+        /* Changement de format en cours de fichier : vider l'ancien */
+        SDL_AudioStreamFlush(g_audio.stream);
+        audio_stream_to_queue();
+        audio_stream_free();
+    }
+    g_audio.stream = SDL_NewAudioStream(AUDIO_S16SYS, (Uint8)ch, hz,
+                                        AUDIO_S16SYS, AUDIO_CHANNELS, AUDIO_FREQ);
+    if (!g_audio.stream) {
+        fprintf(stderr, "audio: SDL_NewAudioStream(%d Hz, %d ch) failed: %s\n",
+                hz, ch, SDL_GetError());
+        return -1;
+    }
+    g_audio.stream_hz = hz;
+    g_audio.stream_ch = ch;
+    return 0;
+}
+
+/* Libere la piste courante et remet l'etat a zero, sans toucher au
+   registre Lua (callback_ref n'est pas modifie). */
+static void audio_reset_state(void) {
+    if (g_audio.dev_id) SDL_ClearQueuedAudio(g_audio.dev_id);
+    audio_stream_free();
 
     if (g_audio.mp3_data) { free(g_audio.mp3_data); g_audio.mp3_data = NULL; }
     g_audio.mp3_size = 0;
     g_audio.mp3_pos = 0;
 
     if (g_audio.mp3map.entries) { free(g_audio.mp3map.entries); g_audio.mp3map.entries = NULL; }
+    memset(&g_audio.mp3map, 0, sizeof(g_audio.mp3map));
     g_audio.has_mp3map = 0;
 
-    if (g_audio.callback_ref != LUA_NOREF && L) {
-        luaL_unref(L, LUA_REGISTRYINDEX, g_audio.callback_ref);
-        g_audio.callback_ref = LUA_NOREF;
-    }
-
     g_audio.state = ASTATE_STOP;
+    g_audio.eof_draining = 0;
     g_audio.samples_played = 0;
     g_audio.samples_queued = 0;
     g_audio.duration_s = 0.0f;
     g_audio.last_cb_time = -1.0f;
     g_audio.pending_stop_cb = 0;  /* annuler tout "stop" differe non emis */
+    g_audio.pending_stop_time = 0.0f;
+}
+
+static void audio_unload(lua_State *L) {
+    if (g_audio.callback_ref != LUA_NOREF && L) {
+        luaL_unref(L, LUA_REGISTRYINDEX, g_audio.callback_ref);
+    }
+    g_audio.callback_ref = LUA_NOREF;
+    audio_reset_state();
 }
 
 static float audio_current_time(void) {
-    /* Temps = samples joues / sample_rate */
+    /* Temps = frames de sortie jouees / AUDIO_FREQ (le PCM queue est
+       deja converti a la frequence du device) */
     uint32_t queued_bytes = SDL_GetQueuedAudioSize(g_audio.dev_id);
-    uint32_t queued_samples = queued_bytes / (AUDIO_CHANNELS * sizeof(int16_t));
+    uint32_t queued_samples = queued_bytes / (uint32_t)FRAME_BYTES;
     uint64_t played = g_audio.samples_queued > queued_samples
                     ? g_audio.samples_queued - queued_samples : 0;
     return (float)played / (float)AUDIO_FREQ;
+}
+
+static void audio_emit(lua_State *L, const char *status, float t) {
+    if (g_audio.callback_ref == LUA_NOREF || !L) return;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, g_audio.callback_ref);
+    lua_pushstring(L, status);
+    lua_pushnumber(L, t);
+    if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
+        const char *err = lua_tostring(L, -1);
+        fprintf(stderr, "Audio %s callback error: %s\n", status, err ? err : "?");
+        lua_pop(L, 1);
+    }
 }
 
 /* ================================================================== */
@@ -173,45 +256,39 @@ static float audio_current_time(void) {
 /* ================================================================== */
 
 void sdl_audio_pump(lua_State *L) {
-    /* Emettre le callback "stop" differe (audio.stop() appele depuis Lua).
-       Fait ici, dans la boucle principale, pour que le module puisse etre
-       detruit/recharge sans danger (hors dispatch d'evenement LVGL). */
+    /* Emettre le callback "stop" differe (audio.stop() appele depuis Lua,
+       ou audio.load() en echec). Fait ici, dans la boucle principale, pour
+       que le module puisse etre detruit/recharge sans danger (hors
+       dispatch d'evenement LVGL). */
     if (g_audio.pending_stop_cb) {
         g_audio.pending_stop_cb = 0;
-        if (g_audio.callback_ref != LUA_NOREF && L) {
-            lua_rawgeti(L, LUA_REGISTRYINDEX, g_audio.callback_ref);
-            lua_pushstring(L, "stop");
-            lua_pushnumber(L, g_audio.pending_stop_time);
-            if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
-                const char *err = lua_tostring(L, -1);
-                fprintf(stderr, "Audio stop callback error: %s\n", err ? err : "?");
-                lua_pop(L, 1);
-            }
-        }
+        audio_emit(L, "stop", g_audio.pending_stop_time);
     }
 
     if (g_audio.state != ASTATE_PLAY) return;
     if (!g_audio.mp3_data) return;
 
-    /* Decoder si le buffer SDL est bas */
     uint32_t queued = SDL_GetQueuedAudioSize(g_audio.dev_id);
-    if (queued < QUEUE_LOW_MARK) {
+
+    if (g_audio.eof_draining) {
+        /* Tout est decode : "stop" seulement quand SDL a tout consomme */
+        if (queued == 0) {
+            g_audio.eof_draining = 0;
+            g_audio.state = ASTATE_STOP;
+            audio_emit(L, "stop", audio_current_time());
+            return;
+        }
+    } else if (queued < QUEUE_LOW_MARK) {
+        /* Decoder si le buffer SDL est bas */
         for (int i = 0; i < PUMP_FRAMES; i++) {
             if (g_audio.mp3_pos >= g_audio.mp3_size) {
-                /* Fin du fichier */
-                g_audio.state = ASTATE_STOP;
-
-                /* Emettre le callback "stop" */
-                if (g_audio.callback_ref != LUA_NOREF && L) {
-                    lua_rawgeti(L, LUA_REGISTRYINDEX, g_audio.callback_ref);
-                    lua_pushstring(L, "stop");
-                    lua_pushnumber(L, audio_current_time());
-                    if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
-                        const char *err = lua_tostring(L, -1);
-                        fprintf(stderr, "Audio stop callback error: %s\n", err ? err : "?");
-                        lua_pop(L, 1);
-                    }
+                /* Fin du fichier : vider le convertisseur puis attendre
+                   la fin de la lecture (DRAINING) */
+                if (g_audio.stream) {
+                    SDL_AudioStreamFlush(g_audio.stream);
+                    audio_stream_to_queue();
                 }
+                g_audio.eof_draining = 1;
                 break;
             }
 
@@ -230,22 +307,11 @@ void sdl_audio_pump(lua_State *L) {
                 continue;
             }
 
-            if (samples > 0) {
+            if (samples > 0 && info.hz > 0 && info.channels > 0 &&
+                audio_stream_setup(info.hz, info.channels) == 0) {
                 int bytes = samples * info.channels * (int)sizeof(int16_t);
-
-                /* Si mono, dupliquer en stereo */
-                if (info.channels == 1) {
-                    int16_t stereo[MINIMP3_MAX_SAMPLES_PER_FRAME * 2];
-                    for (int s = 0; s < samples; s++) {
-                        stereo[s*2]   = pcm[s];
-                        stereo[s*2+1] = pcm[s];
-                    }
-                    SDL_QueueAudio(g_audio.dev_id, stereo, (Uint32)(samples * 2 * sizeof(int16_t)));
-                    g_audio.samples_queued += (uint64_t)samples;
-                } else {
-                    SDL_QueueAudio(g_audio.dev_id, pcm, (Uint32)bytes);
-                    g_audio.samples_queued += (uint64_t)samples;
-                }
+                SDL_AudioStreamPut(g_audio.stream, pcm, bytes);
+                audio_stream_to_queue();
             }
         }
     }
@@ -257,14 +323,7 @@ void sdl_audio_pump(lua_State *L) {
         float cur_sec  = (float)(int)t;
         if (cur_sec > last_sec || g_audio.last_cb_time < 0.0f) {
             g_audio.last_cb_time = t;
-            lua_rawgeti(L, LUA_REGISTRYINDEX, g_audio.callback_ref);
-            lua_pushstring(L, "play");
-            lua_pushnumber(L, t);
-            if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
-                const char *err = lua_tostring(L, -1);
-                fprintf(stderr, "Audio play callback error: %s\n", err ? err : "?");
-                lua_pop(L, 1);
-            }
+            audio_emit(L, "play", t);
         }
     }
 }
@@ -273,7 +332,9 @@ void sdl_audio_pump(lua_State *L) {
 /* Bindings Lua : table `audio`                                        */
 /* ================================================================== */
 
-/* audio.load(track_id, path, callback) */
+/* audio.load(track_id, path, callback)
+   Retourne 0 si OK, -1 si echec. En cas d'echec, le callback recoit un
+   "stop" differe au prochain tick (contrat partage avec global.lua). */
 static int l_audio_load(lua_State *L) {
     /* track_id est ignore (le firmware n'en a qu'un seul) */
     (void)luaL_checkinteger(L, 1);
@@ -281,6 +342,13 @@ static int l_audio_load(lua_State *L) {
 
     /* Decharger l'audio precedent */
     audio_unload(L);
+
+    /* Stocker le callback (argument 3, optionnel) avant l'ouverture :
+       il doit recevoir "stop" meme si le chargement echoue */
+    if (lua_isfunction(L, 3)) {
+        lua_pushvalue(L, 3);
+        g_audio.callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
 
     /* Construire le chemin complet */
     char full_path[1024];
@@ -295,14 +363,28 @@ static int l_audio_load(lua_State *L) {
     FILE *f = fopen(full_path, "rb");
     if (!f) {
         fprintf(stderr, "audio.load: cannot open '%s'\n", full_path);
-        return 0;
+        goto fail;
     }
-    fseek(f, 0, SEEK_END);
-    g_audio.mp3_size = (size_t)ftell(f);
-    fseek(f, 0, SEEK_SET);
-    g_audio.mp3_data = (uint8_t *)malloc(g_audio.mp3_size);
-    fread(g_audio.mp3_data, 1, g_audio.mp3_size, f);
+    long fsize = -1;
+    if (fseek(f, 0, SEEK_END) == 0) fsize = ftell(f);
+    if (fsize <= 0 || fseek(f, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "audio.load: empty or unreadable '%s'\n", full_path);
+        fclose(f);
+        goto fail;
+    }
+    g_audio.mp3_data = (uint8_t *)malloc((size_t)fsize);
+    if (!g_audio.mp3_data) {
+        fprintf(stderr, "audio.load: out of memory (%ld bytes) for '%s'\n", fsize, full_path);
+        fclose(f);
+        goto fail;
+    }
+    if (fread(g_audio.mp3_data, 1, (size_t)fsize, f) != (size_t)fsize) {
+        fprintf(stderr, "audio.load: read error on '%s'\n", full_path);
+        fclose(f);
+        goto fail;
+    }
     fclose(f);
+    g_audio.mp3_size = (size_t)fsize;
 
     /* Initialiser le decodeur */
     mp3dec_init(&g_audio.decoder);
@@ -332,18 +414,23 @@ static int l_audio_load(lua_State *L) {
         g_audio.duration_s = 0.0f;
     }
 
-    /* Stocker le callback (argument 3, optionnel) */
-    if (lua_isfunction(L, 3)) {
-        lua_pushvalue(L, 3);
-        g_audio.callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    }
-
     g_audio.state = ASTATE_STOP;
     g_audio.samples_played = 0;
     g_audio.samples_queued = 0;
     g_audio.last_cb_time = -1.0f;
 
     lua_pushinteger(L, 0);  /* succes : retourner 0 (verifie par global.lua) */
+    return 1;
+
+fail:
+    if (g_audio.mp3_data) { free(g_audio.mp3_data); g_audio.mp3_data = NULL; }
+    g_audio.mp3_size = 0;
+    g_audio.mp3_pos = 0;
+    g_audio.state = ASTATE_STOP;
+    /* "stop" differe : la scene peut se terminer au lieu de rester figee */
+    g_audio.pending_stop_cb = 1;
+    g_audio.pending_stop_time = 0.0f;
+    lua_pushinteger(L, -1);
     return 1;
 }
 
@@ -368,7 +455,9 @@ static int l_audio_stop(lua_State *L) {
         g_audio.pending_stop_time = audio_current_time();
     }
     g_audio.state = ASTATE_STOP;
+    g_audio.eof_draining = 0;
     SDL_ClearQueuedAudio(g_audio.dev_id);
+    if (g_audio.stream) SDL_AudioStreamClear(g_audio.stream);
     /* Rembobiner */
     if (g_audio.mp3_data) {
         mp3dec_init(&g_audio.decoder);
@@ -379,14 +468,11 @@ static int l_audio_stop(lua_State *L) {
 }
 
 void sdl_audio_stop_all(void) {
-    g_audio.state = ASTATE_STOP;
-    if (g_audio.dev_id) SDL_ClearQueuedAudio(g_audio.dev_id);
-    if (g_audio.mp3_data) {
-        free(g_audio.mp3_data);
-        g_audio.mp3_data = NULL;
-        g_audio.mp3_size = 0;
-        g_audio.mp3_pos = 0;
-    }
+    /* Appele avant lua_close : le callback appartient a l'etat Lua qui va
+       etre ferme. On oublie la reference sans luaL_unref (sinon, apres
+       relance, l'unref viserait un slot du nouveau registre). */
+    g_audio.callback_ref = LUA_NOREF;
+    audio_reset_state();
 }
 
 /* audio.pause() */
@@ -399,37 +485,40 @@ static int l_audio_pause(lua_State *L) {
     return 0;
 }
 
-/* audio.seek(seconds) */
+/* audio.seek(seconds) : garde l'etat courant (lecture ou pause) */
 static int l_audio_seek(lua_State *L) {
     float seconds = (float)luaL_checknumber(L, 1);
     if (!g_audio.mp3_data) return 0;
 
-    SDL_ClearQueuedAudio(g_audio.dev_id);
+    /* Borner [0, duree] (NaN compris) : un negatif converti en uint64
+       est indefini */
+    if (!(seconds > 0.0f)) seconds = 0.0f;
+    if (g_audio.duration_s > 0.0f && seconds > g_audio.duration_s)
+        seconds = g_audio.duration_s;
 
-    if (g_audio.has_mp3map) {
+    if (g_audio.has_mp3map && g_audio.mp3map.num_entries > 0) {
         uint32_t byte_off = mp3map_seek(&g_audio.mp3map, seconds);
         if (byte_off < g_audio.mp3_size) {
             g_audio.mp3_pos = byte_off;
         }
-    } else {
+    } else if (g_audio.duration_s > 0.0f) {
         /* Sans mp3map : estimation lineaire */
-        if (g_audio.duration_s > 0.0f) {
-            float frac = seconds / g_audio.duration_s;
-            if (frac < 0.0f) frac = 0.0f;
-            if (frac > 1.0f) frac = 1.0f;
-            g_audio.mp3_pos = (size_t)((float)g_audio.mp3_size * frac);
-        }
+        float frac = seconds / g_audio.duration_s;
+        g_audio.mp3_pos = (size_t)((float)g_audio.mp3_size * frac);
+    } else {
+        /* Ni table ni duree : position inconnue, seek ignore */
+        return 0;
     }
 
+    SDL_ClearQueuedAudio(g_audio.dev_id);
+    if (g_audio.stream) SDL_AudioStreamClear(g_audio.stream);
     mp3dec_init(&g_audio.decoder);
-    g_audio.samples_queued = (uint64_t)(seconds * AUDIO_FREQ);
+    g_audio.samples_queued = (uint64_t)((double)seconds * AUDIO_FREQ);
     g_audio.last_cb_time = seconds;
+    g_audio.eof_draining = 0;
 
-    if (g_audio.state == ASTATE_PAUSE) {
-        SDL_PauseAudioDevice(g_audio.dev_id, 0);
-        g_audio.state = ASTATE_PLAY;
-    }
-
+    /* Pas de changement d'etat : un seek pendant la pause reste en pause
+       (audio.play() reprend a la nouvelle position) */
     return 0;
 }
 
@@ -461,6 +550,11 @@ static const luaL_Reg audio_funcs[] = {
 };
 
 void sdl_audio_register_lua(lua_State *L) {
+    /* Nouvel etat Lua : toute reference d'un etat precedent est caduque
+       (filet de securite si sdl_audio_stop_all n'a pas ete appele avant
+       lua_close) */
+    sdl_audio_stop_all();
+
     lua_newtable(L);
     luaL_setfuncs(L, audio_funcs, 0);
     lua_setglobal(L, "audio");

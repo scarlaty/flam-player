@@ -3,12 +3,14 @@
  *
  * Crée la table globale `lv` avec :
  *   - Sous-tables : obj, btn, label, img, slider, img_src, style,
- *     anim, anim_var, timer, group, event, color, area, font
+ *     anim, anim_var, timer, group, event, color, area, font,
+ *     mem (emulateur uniquement)
  *   - Constantes : EVENT_*, KEY_*, ALIGN_*, FLEX_*, STATE_*, OPA_*, etc.
  */
 
 #include "lua_lv.h"
 #include <stdlib.h>
+#include <string.h>
 
 /* ================================================================== */
 /* lv.color                                                            */
@@ -86,6 +88,98 @@ static const luaL_Reg area_funcs[] = {
     {"get_y2", l_area_get_y2},
     {NULL, NULL}
 };
+
+/* ================================================================== */
+/* lv.mem — API EMULATEUR UNIQUEMENT                                   */
+/* ================================================================== */
+/* ATTENTION : lv.mem n'existe PAS dans le firmware officiel FLAM. Reserve
+   aux tests de l'emulateur (tests/lua/fuzz_lvgl.lua) ; aucun script
+   d'histoire ni code genere par telmi2flam ne doit l'utiliser.
+   lv.mem.monitor() -> { total_size, free_size, free_biggest_size,
+   used_pct, frag_pct, max_used } (lecture seule, lv_mem_monitor). */
+static int l_mem_monitor(lua_State *L) {
+    lv_mem_monitor_t mon;
+    lv_memset_00(&mon, sizeof(mon));
+    lv_mem_monitor(&mon);
+    lua_createtable(L, 0, 6);
+    lua_pushinteger(L, mon.total_size);        lua_setfield(L, -2, "total_size");
+    lua_pushinteger(L, mon.free_size);         lua_setfield(L, -2, "free_size");
+    lua_pushinteger(L, mon.free_biggest_size); lua_setfield(L, -2, "free_biggest_size");
+    lua_pushinteger(L, mon.used_pct);          lua_setfield(L, -2, "used_pct");
+    lua_pushinteger(L, mon.frag_pct);          lua_setfield(L, -2, "frag_pct");
+    lua_pushinteger(L, mon.max_used);          lua_setfield(L, -2, "max_used");
+    return 1;
+}
+
+static const luaL_Reg mem_funcs[] = {
+    {"monitor", l_mem_monitor},
+    {NULL, NULL}
+};
+
+/* ================================================================== */
+/* Garde du tas LVGL (X1a, voir lua_lv.h)                              */
+/* ================================================================== */
+
+void lua_lv_mem_check(lua_State *L, size_t contig, size_t extra) {
+#if LV_MEM_CUSTOM == 0
+    lv_mem_monitor_t mon;
+    lv_mem_monitor(&mon);
+    /* Surcouts TLSF (en-tetes, alignement) couverts par la marge */
+    size_t need_contig = contig + LUA_LV_MEM_MARGIN;
+    size_t need_total  = contig + extra + LUA_LV_MEM_MARGIN;
+    if ((size_t)mon.free_biggest_size < need_contig || (size_t)mon.free_size < need_total)
+        luaL_error(L, "tas LVGL epuise (libre=%d, plus grand bloc=%d, requis=%d/%d)",
+                   (int)mon.free_size, (int)mon.free_biggest_size,
+                   (int)need_contig, (int)need_total);
+#else
+    (void)L; (void)contig; (void)extra;
+#endif
+}
+
+static uint32_t class_instance_size(const lv_obj_class_t *cls) {
+    while (cls && cls->instance_size == 0) cls = cls->base_class;
+    return cls ? cls->instance_size : (uint32_t)sizeof(lv_obj_t);
+}
+
+void lua_lv_mem_check_create(lua_State *L, lv_obj_t *parent,
+                             const lv_obj_class_t *cls) {
+    /* lv_obj_class_create_obj : lv_mem_alloc(instance), puis
+       lv_mem_realloc(children|screens, (n + 1) * sizeof(ptr)) sans test
+       NULL (lv_obj_class.c) : il faut un bloc contigu de cette taille. */
+    size_t cnt = 0;
+    size_t extra = class_instance_size(cls);
+    if (parent) {
+        if (parent->spec_attr) cnt = parent->spec_attr->child_cnt;
+        else extra += sizeof(_lv_obj_spec_attr_t);
+    } else {
+        lv_disp_t *disp = lv_disp_get_default();
+        if (disp) cnt = disp->screen_cnt;
+    }
+    lua_lv_mem_check(L, (cnt + 1) * sizeof(lv_obj_t *), extra);
+}
+
+/* Upvalue 1 : la fonction gardee (sans upvalue propre) */
+static int l_guarded(lua_State *L) {
+    lua_CFunction f = lua_tocfunction(L, lua_upvalueindex(1));
+    lua_lv_mem_check(L, 0, 0);
+    return f(L);
+}
+
+void lua_lv_setfuncs_guarded(lua_State *L, const luaL_Reg *funcs,
+                             const char *const *skip) {
+    for (; funcs->name; funcs++) {
+        int guarded = strncmp(funcs->name, "get_", 4) != 0;
+        for (const char *const *s = skip; guarded && s && *s; s++)
+            if (strcmp(funcs->name, *s) == 0) guarded = 0;
+        if (guarded) {
+            lua_pushcfunction(L, funcs->func);
+            lua_pushcclosure(L, l_guarded, 1);
+        } else {
+            lua_pushcfunction(L, funcs->func);
+        }
+        lua_setfield(L, -2, funcs->name);
+    }
+}
 
 /* ================================================================== */
 /* Constantes                                                          */
@@ -246,23 +340,37 @@ extern lv_font_t nunito_extrabold_14;
 extern lv_font_t nunito_extrabold_16;
 extern lv_font_t nunito_extrabold_20;
 
+static const struct { const char *name; const lv_font_t *font; } g_fonts[] = {
+    {"nunito_bold_12",      &nunito_bold_12},
+    {"nunito_bold_16",      &nunito_bold_16},
+    {"nunito_bold_20",      &nunito_bold_20},
+    {"nunito_extrabold_12", &nunito_extrabold_12},
+    {"nunito_extrabold_14", &nunito_extrabold_14},
+    {"nunito_extrabold_16", &nunito_extrabold_16},
+    {"nunito_extrabold_20", &nunito_extrabold_20},
+    {NULL, NULL}
+};
+
+/* Seuls les pointeurs de lv.font.* sont des polices : un autre light
+   userdata (path d'anim, cbd, evenement) serait lu comme lv_font_t et
+   LVGL appellerait ses "pointeurs de fonction" */
+const lv_font_t *lua_lv_opt_font(lua_State *L, int idx) {
+    if (lua_isnoneornil(L, idx)) return NULL;
+    if (lua_islightuserdata(L, idx)) {
+        const void *p = lua_touserdata(L, idx);
+        for (int i = 0; g_fonts[i].name; i++)
+            if (p == (const void *)g_fonts[i].font) return g_fonts[i].font;
+    }
+    luaL_argerror(L, idx, "lv.font attendu");
+    return NULL;
+}
+
 static void register_fonts(lua_State *L, int lv_idx) {
     lua_newtable(L);
 
-    struct { const char *name; const lv_font_t *font; } fonts[] = {
-        {"nunito_bold_12",      &nunito_bold_12},
-        {"nunito_bold_16",      &nunito_bold_16},
-        {"nunito_bold_20",      &nunito_bold_20},
-        {"nunito_extrabold_12", &nunito_extrabold_12},
-        {"nunito_extrabold_14", &nunito_extrabold_14},
-        {"nunito_extrabold_16", &nunito_extrabold_16},
-        {"nunito_extrabold_20", &nunito_extrabold_20},
-        {NULL, NULL}
-    };
-
-    for (int i = 0; fonts[i].name; i++) {
-        lua_pushlightuserdata(L, (void *)fonts[i].font);
-        lua_setfield(L, -2, fonts[i].name);
+    for (int i = 0; g_fonts[i].name; i++) {
+        lua_pushlightuserdata(L, (void *)g_fonts[i].font);
+        lua_setfield(L, -2, g_fonts[i].name);
     }
 
     lua_setfield(L, lv_idx, "font");
@@ -273,11 +381,12 @@ static void register_fonts(lua_State *L, int lv_idx) {
 /* ================================================================== */
 
 /* __eq pour les userdatas qui wrappent un pointeur :
-   deux userdatas sont egales si elles pointent vers le meme objet C. */
+   deux userdatas sont egales si elles pointent vers le meme objet C
+   (jamais pour un pointeur NULL : deux objets supprimes different). */
 static int l_ptr_eq(lua_State *L) {
     void **a = (void **)lua_touserdata(L, 1);
     void **b = (void **)lua_touserdata(L, 2);
-    lua_pushboolean(L, a && b && *a == *b);
+    lua_pushboolean(L, a && b && *a && *a == *b);
     return 1;
 }
 
@@ -327,7 +436,15 @@ static int l_pct(lua_State *L) {
     return 1;
 }
 
+void lua_lv_after_close(void) {
+    lua_lv_event_after_close();   /* timers et anims */
+    lua_lv_obj_after_close();     /* handlers d'objets */
+}
+
 int luaopen_lv(lua_State *L) {
+    /* Restes d'un etat precedent (voir lua_lv.h) */
+    lua_lv_after_close();
+
     create_metatables(L);
 
     lua_newtable(L);  /* la table `lv` */
@@ -351,6 +468,9 @@ int luaopen_lv(lua_State *L) {
     lua_lv_register_obj(L, lv_idx);     /* obj, btn, label, img, slider, img_src */
     lua_lv_register_style(L, lv_idx);   /* style */
     lua_lv_register_event(L, lv_idx);   /* event, group, anim, anim_var, timer */
+
+    /* lv.mem : API emulateur uniquement (absent du firmware officiel) */
+    set_subtable(L, lv_idx, "mem", mem_funcs);
 
     /* Publier comme globale */
     lua_setglobal(L, "lv");
