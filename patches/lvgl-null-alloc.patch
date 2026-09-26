@@ -1,0 +1,102 @@
+diff --git a/src/core/lv_event.c b/src/core/lv_event.c
+index 3e20151..26eff5a 100644
+--- a/src/core/lv_event.c
++++ b/src/core/lv_event.c
+@@ -159,11 +159,17 @@ struct _lv_event_dsc_t * lv_obj_add_event_cb(lv_obj_t * obj, lv_event_cb_t event
+ {
+     LV_ASSERT_OBJ(obj, MY_CLASS);
+     lv_obj_allocate_spec_attr(obj);
++    if(obj->spec_attr == NULL) return NULL;
+ 
++    /*Keep the old list (and count) if the bigger one can't be allocated*/
++    lv_event_dsc_t * dsc = lv_mem_realloc(obj->spec_attr->event_dsc,
++                                          (obj->spec_attr->event_dsc_cnt + 1) * sizeof(lv_event_dsc_t));
++    if(dsc == NULL) {
++        LV_LOG_WARN("Out of memory: can't add the event callback");
++        return NULL;
++    }
++    obj->spec_attr->event_dsc = dsc;
+     obj->spec_attr->event_dsc_cnt++;
+-    obj->spec_attr->event_dsc = lv_mem_realloc(obj->spec_attr->event_dsc,
+-                                               obj->spec_attr->event_dsc_cnt * sizeof(lv_event_dsc_t));
+-    LV_ASSERT_MALLOC(obj->spec_attr->event_dsc);
+ 
+     obj->spec_attr->event_dsc[obj->spec_attr->event_dsc_cnt - 1].cb = event_cb;
+     obj->spec_attr->event_dsc[obj->spec_attr->event_dsc_cnt - 1].filter = filter;
+diff --git a/src/core/lv_obj_class.c b/src/core/lv_obj_class.c
+index fe20448..6e6634e 100644
+--- a/src/core/lv_obj_class.c
++++ b/src/core/lv_obj_class.c
+@@ -60,16 +60,16 @@ lv_obj_t * lv_obj_class_create_obj(const lv_obj_class_t * class_p, lv_obj_t * pa
+             return NULL;
+         }
+ 
+-        if(disp->screens == NULL) {
+-            disp->screens = lv_mem_alloc(sizeof(lv_obj_t *));
+-            disp->screens[0] = obj;
+-            disp->screen_cnt = 1;
+-        }
+-        else {
+-            disp->screen_cnt++;
+-            disp->screens = lv_mem_realloc(disp->screens, sizeof(lv_obj_t *) * disp->screen_cnt);
+-            disp->screens[disp->screen_cnt - 1] = obj;
++        /*Grow the screen list first: on failure nothing has been modified yet*/
++        lv_obj_t ** screens = lv_mem_realloc(disp->screens, sizeof(lv_obj_t *) * (disp->screen_cnt + 1));
++        if(screens == NULL) {
++            LV_LOG_WARN("Out of memory: can't add the new screen to the display");
++            lv_mem_free(obj);
++            return NULL;
+         }
++        disp->screens = screens;
++        disp->screens[disp->screen_cnt] = obj;
++        disp->screen_cnt++;
+ 
+         /*Set coordinates to full screen size*/
+         obj->coords.x1 = 0;
+@@ -83,19 +83,25 @@ lv_obj_t * lv_obj_class_create_obj(const lv_obj_class_t * class_p, lv_obj_t * pa
+         LV_ASSERT_OBJ(parent, MY_CLASS);
+         if(parent->spec_attr == NULL) {
+             lv_obj_allocate_spec_attr(parent);
++            if(parent->spec_attr == NULL) {
++                LV_LOG_WARN("Out of memory: can't allocate the parent's special attributes");
++                lv_mem_free(obj);
++                return NULL;
++            }
+         }
+ 
+-        if(parent->spec_attr->children == NULL) {
+-            parent->spec_attr->children = lv_mem_alloc(sizeof(lv_obj_t *));
+-            parent->spec_attr->children[0] = obj;
+-            parent->spec_attr->child_cnt = 1;
+-        }
+-        else {
+-            parent->spec_attr->child_cnt++;
+-            parent->spec_attr->children = lv_mem_realloc(parent->spec_attr->children,
+-                                                         sizeof(lv_obj_t *) * parent->spec_attr->child_cnt);
+-            parent->spec_attr->children[parent->spec_attr->child_cnt - 1] = obj;
++        /*Grow the child list first: on failure nothing has been modified yet
++         *(`lv_mem_realloc` keeps the old block if it can't allocate the new one)*/
++        lv_obj_t ** children = lv_mem_realloc(parent->spec_attr->children,
++                                              sizeof(lv_obj_t *) * (parent->spec_attr->child_cnt + 1));
++        if(children == NULL) {
++            LV_LOG_WARN("Out of memory: can't add the new object to its parent");
++            lv_mem_free(obj);
++            return NULL;
+         }
++        parent->spec_attr->children = children;
++        parent->spec_attr->children[parent->spec_attr->child_cnt] = obj;
++        parent->spec_attr->child_cnt++;
+     }
+ 
+     return obj;
+@@ -103,6 +109,10 @@ lv_obj_t * lv_obj_class_create_obj(const lv_obj_class_t * class_p, lv_obj_t * pa
+ 
+ void lv_obj_class_init_obj(lv_obj_t * obj)
+ {
++    /*`lv_obj_class_create_obj` returns NULL when out of memory:
++     *the `lv_..._create` functions then return NULL too*/
++    if(obj == NULL) return;
++
+     lv_obj_mark_layout_as_dirty(obj);
+     lv_obj_enable_style_refresh(false);
+ 

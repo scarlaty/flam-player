@@ -1,38 +1,56 @@
 # AGENT.md — Flam Player
 
 Emulateur du dispositif FLAM (lecteur d'histoires interactives pour enfants, type Lunii).
-Reverse-engineering du firmware : LVGL 8.3 + Lua 5.4 + SDL2 sur desktop Windows.
+Reverse-engineering du firmware : LVGL 8.3 + Lua 5.4.8 + SDL2 sur desktop Windows.
 
 ## Compilation
 
-**Prerequis** : Visual Studio 2022 Community (MSVC x64), CMake + Ninja (fournis par VS).
+**Prerequis** : Visual Studio 2022 (ou +) avec les outils C++ x64
+(`Microsoft.VisualStudio.Component.VC.Tools.x86.x64`), CMake et Ninja (ceux de VS, du PATH,
+ou `pip install cmake ninja`). Submodules initialises : `git submodule update --init --recursive`.
 
-**Build rapide (depuis un terminal normal)** :
+**Build (script, recommande)** :
 ```bat
-do_build.bat
+do_build.bat            :: configure build\ si besoin + compile flam-player.exe
+do_build.bat tests      :: reconfigure avec -DBUILD_TESTS=ON + compile flam-test.exe
 ```
-Cela appelle `vcvars64.bat` puis `cmake --build .` dans `build/`.
+`do_build.bat` localise VS via `vswhere`, appelle `vcvarsall.bat x64`, cherche `cmake`/`ninja`
+(PATH, puis VS, puis Python/pip) et utilise des chemins relatifs a son emplacement.
+`manual_build.bat` n'est plus qu'un alias de `do_build.bat` (memes arguments).
 
-**Build depuis un shell bash/Claude Code** :
-```bash
-powershell.exe -Command "& { cmd /c '\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat\" x64 && cd /d C:\temp\flam-player\build && ninja' }"
+**Build manuel (cmd, ou depuis bash via `cmd /c`)** :
+```bat
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON
+cmake --build build
 ```
+Adapter le chemin de `vcvarsall.bat` a l'edition installee (Community, BuildTools...).
+Si `ninja` n'est pas dans le PATH, ajouter `-DCMAKE_MAKE_PROGRAM=<chemin\ninja.exe>`.
 `vcvarsall.bat` est obligatoire pour que MSVC trouve `stddef.h` et les headers Windows SDK.
 Sans cet appel, la compilation echoue avec `fatal error C1083: stddef.h: No such file or directory`.
+Un dossier de build autre que `build\` est possible (`-B <dossier>`) ; voir `FLAM_BUILD_DIR`
+pour les tests.
 
-**Generateur** : Ninja (pas MSBuild).
-**Compilateur** : `cl.exe` (MSVC 14.34, VS2022).
-**Build dir** : `build/` (deja configure, pas besoin de re-run cmake sauf si on ajoute des fichiers).
-**Re-configurer cmake** (si ajout de sources) :
-```bash
-powershell.exe -Command "& { cmd /c '\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat\" x64 && cd /d C:\temp\flam-player\build && cmake .. -G Ninja' }"
-```
+**Generateur** : Ninja (pas MSBuild). **Compilateur** : `cl.exe` (MSVC x64).
+Les sources de `libs/` sont collectees par `file(GLOB ...)` (re-configurer cmake si elles
+changent) ; celles de `src/` sont listees explicitement dans `CMakeLists.txt`.
 
-**Build des tests** :
+## Tests
+
 ```bat
-do_build_tests.bat
+do_build.bat tests      :: construit build\flam-test.exe
+test_run.bat            :: lance la suite puis les tests isoles
+test_run.bat strict     :: idem, mais un echec isole rend le code de sortie non nul
 ```
-Ou manuellement : `cmake .. -G Ninja -DBUILD_TESTS=ON && cmake --build . --target flam-test`
+- Dossier de build : `build\` par defaut, ou `%FLAM_BUILD_DIR%` s'il est defini
+  (ex. `set FLAM_BUILD_DIR=C:\tmp\mon-build` puis `test_run.bat`).
+- Suite : tous les `tests\lua\test_*.lua` (hors `test_helpers.lua`) dans un seul processus
+  `flam-test.exe --timeout 60`. Elle doit rester verte ; son code de sortie est celui du script.
+- Tests isoles : `regress_*.lua`, `poc_*.lua`, `fuzz_*.lua`, un processus par fichier
+  (`--timeout 30`), pour qu'un crash ou un blocage ne masque pas les autres. Recapitulatif
+  en fin de sortie ; codes : 1 = assertion/erreur Lua, 3 = timeout (watchdog), autre = crash.
+  Hors mode `strict`, leurs echecs n'affectent pas le code de sortie.
+- Usage direct : `flam-test.exe [--timeout sec] test1.lua [test2.lua ...]` (60 s par defaut).
 
 ## Execution
 
@@ -52,8 +70,8 @@ Ou manuellement : `cmake .. -G Ninja -DBUILD_TESTS=ON && cmake --build . --targe
 # Scanner un dossier specifique
 ./build/flam-player.exe --scan-dir "C:\chemin\vers\histoires"
 
-# Lancer les tests unitaires
-./build/flam-test.exe tests/lua/test_obj.lua tests/lua/test_style.lua ...
+# Lancer des tests unitaires (voir section Tests)
+./build/flam-test.exe --timeout 60 tests/lua/test_obj.lua tests/lua/test_style.lua ...
 ```
 
 **Timeout en CI/test** : utiliser `timeout 8 ./build/flam-player.exe ...` car le player ouvre une fenetre SDL et attend indefiniment.
@@ -81,14 +99,15 @@ src/
   fonts/
     nunito_*.c             — Polices LVGL compilees (Nunito Bold/ExtraBold 12-20px)
 libs/
-  lvgl/                   — LVGL 8.3.x (sources completes)
-  lua/src/                — Lua 5.4 (sources completes)
-  SDL2/                   — SDL2 (headers + .lib/.dll x64 pre-compiles)
-  minimp3/                — Decodeur MP3 header-only
-  lv_conf.h               — Configuration LVGL (320x240, 32-bit, 256KB heap)
+  lvgl/                   — LVGL 8.3 (submodule, fork scarlaty/lvgl, voir Dependances)
+  lua/                    — Lua 5.4.8 (submodule lua/lua, sources a la racine, pas de src/)
+  SDL2/                   — SDL2 (submodule, compile depuis les sources, SDL2.dll copiee au build)
+  minimp3/                — Decodeur MP3 header-only (submodule)
+  lv_conf.h               — Configuration LVGL (320x240, 32-bit, tas 512 Ko)
 tests/
-  test_main.c             — Harnais de test headless (260+ tests)
+  test_main.c             — Harnais de test headless (watchdog --timeout)
   lua/test_*.lua           — Tests unitaires Lua (obj, style, label, btn, event, etc.)
+  lua/regress_*.lua        — Tests de non-regression (un processus par fichier)
   lua/fuzz_lvgl.lua        — Fuzzer LVGL (buffer overflow, UAF, integer overflow, heap)
   lua/poc_*.lua            — PoCs de securite (use-after-free, memory leak, struct dump)
 stories/
@@ -151,28 +170,55 @@ Le script Lua a acces a :
 - Header bar : 28px en haut (titre de l'histoire)
 - Zone de contenu (`window`) : 320x212 pixels
 - Couleur : 32-bit ARGB
-- Heap LVGL : 256 KB (`LV_MEM_SIZE` dans `lv_conf.h`)
+- Heap LVGL : 512 Ko (`LV_MEM_SIZE (512U * 1024U)` dans `libs/lv_conf.h`, allocateur interne
+  `LV_MEM_CUSTOM 0`)
+
+**Attention compatibilite** : la taille du tas LVGL du vrai dispositif n'a pas ete mesuree, et
+l'etat Lua du simulateur n'a pas de plafond memoire. Le simulateur peut donc accepter une
+histoire qui manquerait de memoire sur le device.
+
+## Dependances (submodules)
+
+| Submodule | Source | Version |
+|-----------|--------|---------|
+| `libs/lua` | `lua/lua` | tag `v5.4.8` (commit `6e22fedb`), branche suivie `v5.4` dans `.gitmodules` |
+| `libs/lvgl` | fork `scarlaty/lvgl` | `release/v8.3` amont + 1 commit propre (voir ci-dessous) |
+| `libs/SDL2` | `libsdl-org/SDL` | branche `SDL2` |
+| `libs/minimp3` | `lieff/minimp3` | `master` |
+
+Le fork `scarlaty/lvgl` ne contient qu'un commit au-dessus de l'amont :
+`0c8d7dc6f fix(bar): guard against division by zero when range == 0`. Il modifie :
+- `src/widgets/lv_bar.c` (`draw_indic`) : indicateur non dessine quand `min == max` (evite la division par zero) ;
+- `src/misc/lv_mem.c/.h` : helper `_lv_assert_crash()` (flush stdout/stderr puis `abort()`),
+  aujourd'hui inutilise ; traces `[MEM FAIL]` sur stderr quand `lv_mem_buf_get` echoue ;
+- `src/core/lv_refr.c` : ajout d'un `#include <stdio.h>` (sans effet fonctionnel).
+
+Le `LV_ASSERT_HANDLER` de `libs/lv_conf.h` ne vient pas du fork : il appelle
+`flam_assert_crash(__FILE__, __LINE__)` (`src/firmware/fw_globals.c`), qui logue sur stderr
+fichier:ligne, la traceback Lua et l'etat du tas LVGL, puis fait `abort()` (au lieu de la
+boucle infinie par defaut de LVGL).
+
+Verifier la version de Lua : `git -C libs/lua describe --tags` doit afficher `v5.4.8`.
 
 ## Vulnerabilites connues (etude de securite)
 
-### Use-After-Free (CWE-416)
-`lv_obj_del()` libere la memoire C mais ne nullifie pas le userdata Lua.
-- Fichier cle : `src/bindings/lua_lv.h:94-97` — `lua_lv_check_obj()` retourne le pointeur meme apres free
-- Fichier cle : `src/bindings/lua_lv_obj.c:21-25` — `l_obj_del()` ne fait pas `*ud = NULL`
-- Exploitable : oui, lecture de RAM via dangling pointers (demontre dans les PoCs)
-- Limitation : `pcall` ne catch pas les SIGSEGV C — si le bloc est reutilise par un non-label, `lv_label_get_text` crash
-- Getters safe sur objets freed : `get_text`, `get_state`, `get_child_cnt`, `get_scroll_y`
-- Getters qui crashent : `get_width`, `get_height`, `get_x` (appellent `lv_obj_update_layout` qui traverse l'arbre parent)
+### Use-After-Free (CWE-416) — corrige
+Historique : `lv_obj_del()` liberait la memoire C sans invalider le userdata Lua.
+Desormais (`src/bindings/lua_lv_obj.c`, en-tete "Duree de vie des objets") le userdata est mis
+a `NULL` a la suppression (`LV_EVENT_DELETE`, enfants compris) et `lua_lv_check_obj()`
+(`src/bindings/lua_lv.h`) leve l'erreur Lua `bad argument #n (lv object deleted)`.
+`lv.obj.del` / `lv.obj.clean` sur un objet deja supprime sont des no-op.
+`tests/lua/poc_use_after_free.lua` verifie ce comportement.
 
 ### Integer Overflow dans lv_txt.c
-`libs/lvgl/src/misc/lv_txt.c:111` — overflow dans le calcul de hauteur de texte.
-Declenchable via des labels avec texte > 65KB.
+`libs/lvgl/src/misc/lv_txt.c` (`lv_txt_get_size`) : dans la version LVGL utilisee, le calcul
+de hauteur de texte est protege par un test d'overflow (`LV_LOG_WARN` puis retour).
 
 ## Notes techniques
 
 - L'allocateur LVGL (`lv_mem`) est LIFO best-fit : un bloc libere est reutilise par la prochaine allocation de meme taille
 - `lv_label_t` etend `lv_obj_t` avec un champ `char *text` — c'est un pointeur vers un buffer separe
-- Pour le heap spray UAF : creer des labels (pas des obj generiques) pour garantir que le bloc freed est reutilise par un autre label
+- (Historique, avant le correctif UAF) pour le heap spray : creer des labels (pas des obj generiques) pour que le bloc libere soit reutilise par un autre label
 - Les styles (`lv.style.new()`) ne sont pas des `lv_obj_t` — ils ont leur propre metatable et taille d'allocation
 - L'encodeur (molette FLAM) est emule via les fleches clavier haut/bas + Enter
 
@@ -180,8 +226,8 @@ Declenchable via des labels avec texte > 65KB.
 
 | Fichier | Usage |
 |---------|-------|
-| `do_build.bat` | Compile le player (vcvars64 + cmake --build) |
-| `do_build_tests.bat` | Compile les tests (-DBUILD_TESTS=ON) |
-| `build_run.bat` | Compile puis lance (vcvars64 + ninja) |
-| `run.bat` | Lance le player avec --scan-dir vers les histoires Lunii-Qt |
-| `test_run.bat` | Lance tous les tests unitaires Lua |
+| `do_build.bat` | Configure (si besoin) et compile le player dans `build\` |
+| `do_build.bat tests` | Compile les tests (`-DBUILD_TESTS=ON`, cible `flam-test`) |
+| `manual_build.bat` | Alias de `do_build.bat` (memes arguments) |
+| `run.bat [dossier]` | Lance `build\flam-player.exe` (`--scan-dir` si un dossier est donne), logs `build\stdout.log` / `build\stderr.log` |
+| `test_run.bat [strict]` | Suite `test_*.lua` + tests isoles `regress_`/`poc_`/`fuzz_` (voir Tests) |

@@ -81,7 +81,9 @@ function IntroCard()
         Global.load_module("title-card", "").display({
             title = meta.title or "",
             subtitle = meta.subtitle or "",
-            audio = N.title.audio,
+            -- Sans title.mp3 : silence. La title-card n'avance que sur le 'stop'
+            -- audio (back_callback) ; sans audio, l'ecran titre resterait fige.
+            audio = N.title.audio or "silent.mp3",
             img = N.title.image,
             cb = Start,
         })
@@ -128,12 +130,32 @@ end
 
 -- Reprise : recharge le branch sauve et rejoue le noeud courant (comme Cluedo).
 function LoadCurrentFunction()
-    Global.loadBranch(state.currentBranchName)
-    Global.current_branch[state.current_fun]()
+    Global.loadBranch(state.currentBranchName or "story")
+    -- story.resume rejoue le noeud sauve selon son type (scene / action) : pas de
+    -- current_branch[current_fun], qui renverrait le vrai champ story.clear pour
+    -- un noeud TELMI nomme "clear" (ecran noir) et confondrait scene et action
+    -- de meme id. rawget : jamais resolu par __index (noeuds).
+    local resume = rawget(Global.current_branch, "resume")
+    if type(resume) == "function" then
+        resume()
+        return
+    end
+    -- story.__index ne resout que les noeuds du graphe : un current_fun inconnu
+    -- (save d'une ancienne version du pack) repart du debut au lieu de planter.
+    local fn = state.current_fun and Global.current_branch[state.current_fun]
+    if fn == nil then
+        print("main.lua: noeud de reprise inconnu " .. tostring(state.current_fun) .. ", redemarrage")
+        fn = Global.current_branch["__start"]
+    end
+    fn()
 end
 
 -- Entree du menu contextuel M : reprend si l'histoire est commencee, sinon demarre.
 function LateralResume()
+    -- Coupe l'audio en cours (ex. narration de la title-card, dont clean() ne
+    -- stoppe pas l'audio) : sinon une requete non prioritaire (image-choice,
+    -- scene image sans audio) attendrait la fin du titre, qui jouerait par-dessus.
+    Global.requestAudioStop(true, true)
     if Global.progression.isStoryStarted() then
         LoadCurrentFunction()
     else
@@ -149,14 +171,13 @@ function setup()
     -- donc l'histoire est "multi-branches" du point de vue du moteur.
     Global.isMultiBranches = true
 
-    -- RISQUE DEVICE (issue #1) : le firmware Lunii FIGE l'ecran (noir, sans input)
-    -- au 2e lancement d'une histoire commencee dont le `.prog` vaut 0.
-    -- Or `.prog` = getProgressionValue() = floor(#chapitres / totalChapters * 100).
-    -- Avec le VRAI totalChapters (= nb de scenes, souvent > 100), les premieres scenes
-    -- donnent floor(<1%) = 0  =>  .prog = 0  =>  freeze a la relance.
-    -- Choix : garder le vrai totalChapters (jauge de progression fidele) et PLANCHER
-    -- le resultat a 1 des que l'histoire est commencee. Ainsi `.prog` ne tombe jamais
-    -- a 0 (device OK) sans fausser la progression affichee. Le wrapper est idempotent.
+    -- Jauge de progression : `.prog` = getProgressionValue()
+    -- = floor(#chapitres / totalChapters * 100). Avec le VRAI totalChapters (= nb de
+    -- scenes, souvent > 100), les premieres scenes donnent 0 %. On garde le vrai
+    -- totalChapters et on PLANCHE a 1 des que l'histoire est commencee (et plafonne
+    -- a 100). Cosmetique : un `.prog` a 0 n'est PAS la cause de l'ecran noir a la
+    -- relance (piste ecartee ; cause = sortie goto_library depuis une scene active,
+    -- Bug C, DEVICE_VS_SIM.md §10). Le wrapper est idempotent.
     local _getProgressionValue = Global.progression.getProgressionValue
     Global.progression.getProgressionValue = function(...)
         local v = _getProgressionValue(...)
@@ -172,9 +193,9 @@ function setup()
     IntroCard()
 
     -- Menu contextuel M (touche M / appui long sur device) : uniquement "Reprendre".
-    -- IMPORTANT (issue #1) : au 2e lancement SOFT d'une histoire convertie, l'ecran
-    -- reste NOIR (bug firmware). Le menu contextuel firmware reconstruit l'ecran au
-    -- niveau C : "Reprendre l'histoire" est la SEULE facon de revenir sans hard reboot.
+    -- Ajoute a l'origine comme contournement de l'ecran noir au 2e lancement ; la
+    -- cause (Bug C, DEVICE_VS_SIM.md §10) est corrigee, l'entree est gardee comme
+    -- amelioration alignee sur les histoires officielles.
     if context_menu ~= nil then
         context_menu.set_entries({
             { title = "Reprendre l'histoire", cb = LateralResume },
