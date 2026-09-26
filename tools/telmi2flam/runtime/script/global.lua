@@ -34,6 +34,9 @@ global.audioFeedbackCallback = nil
 global.audioDuration = nil
 global.audioCB = nil
 global.audioNextHavePriority = false
+-- true apres un audio.load en echec : le 'stop' a deja ete notifie cote Lua,
+-- un 'stop' differe emis ensuite par le C (simulateur) est ignore
+global.audioStopAlreadySent = false
 
 global.canShowPausePanel = true
 global.pauseContainerStyle = nil
@@ -250,6 +253,10 @@ function global.strip_chars(str)
 end
 
 function global.audioFeedback(state, second)
+    if (state == "stop" and global.audioStopAlreadySent) then
+        global.audioStopAlreadySent = false -- deja stoppe (audio.load en echec) : pas de double 'stop'
+        return
+    end
     global.audioState = state
     global.audioDuration = second
     if (global.audioFeedbackCallback ~= nil) then
@@ -277,6 +284,7 @@ function global.audioDelayerCallback()
         elseif (audio.get_status() == "stop") then
             print("Audio is stop, loading new audio")
             print("global.lua:261: audio: " .. global.audioDelayPath)
+            global.audioStopAlreadySent = false
             if (audio.load(0, global.audioDelayPath, global.audioFeedback) == 0) then
                 audio.play()
                 global.audioDelayPath = nil
@@ -285,6 +293,23 @@ function global.audioDelayerCallback()
                 if (global.audioCB ~= nil) then
                     global.audioFeedbackCallback = global.audioCB
                     global.audioCB = nil
+                end
+            else
+                -- Echec du chargement (nil sur device, -1 sur simulateur) : ne pas
+                -- reessayer toutes les 500 ms (la scene ne finirait jamais). On notifie
+                -- UNE fois 'stop' au callback demande pour que l'histoire avance.
+                -- Callback detache avant l'appel (il peut recharger un module et
+                -- demander un autre audio) ; le 'stop' eventuel du C sera ignore.
+                print("global.lua: error: audio.load failed -> " .. global.audioDelayPath)
+                local cb = global.audioCB
+                global.audioDelayPath = nil
+                global.audioCB = nil
+                global.audioFeedbackCallback = nil
+                global.audioStopAlreadySent = true
+                global.audioState = "stop"
+                global.audioDuration = 0
+                if (cb ~= nil) then
+                    cb("stop", 0)
                 end
             end
         end
@@ -368,11 +393,13 @@ end
 
 function global.removePauseImage()
     if (global.pauseContainer ~= nil) then
-        lv.obj.clean(global.pauseContainer)
-        lv.obj.remove_style_all(global.pauseContainer)
-        global.pauseContainerStyle = nil
-        if (global.pauseData ~= nil) then global.pauseData = nil end
+        -- supprimer le conteneur plein ecran (clean ne retirait que ses enfants :
+        -- l'overlay vide restait sur window). Refs Lua liberees APRES le del.
+        lv.obj.del(global.pauseContainer)
         global.pauseContainer = nil
+        global.pauseImage = nil
+        global.pauseContainerStyle = nil
+        global.pauseData = nil
         print("global.lua:303: info:  Audio pause -> removing pause image")
     end
 end

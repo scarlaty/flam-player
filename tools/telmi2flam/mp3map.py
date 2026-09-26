@@ -80,48 +80,99 @@ def _parse_frame_header(data, off):
     if layer == 3:  # Layer I
         frame_len = (12 * bitrate // samplerate + padding) * 4
     else:           # Layer II / III
-        coef = 144 if version == 3 else 72
-        if layer == 3:
-            coef = 12
+        # ISO 11172-3 / 13818-3 : Layer II = 1152 samples/frame dans toutes les
+        # versions -> coef 144. Layer III MPEG2/2.5 = 576 samples -> coef 72.
+        coef = 144 if (version == 3 or layer == 2) else 72
         frame_len = coef * bitrate // samplerate + padding
     if frame_len <= 0:
         return None
     return frame_len, _samples_per_frame(version, layer), samplerate
 
 
-def build(data):
+# Nombre de frames successeurs valides exiges pour accepter un sync (resync).
+_SYNC_CHAIN = 2
+
+
+def _chain_ok(data, pos, hdr, depth=_SYNC_CHAIN):
+    """Vrai si les `depth` frames suivants sont aussi des headers valides (ou si
+    on atteint la fin des donnees). Evite de prendre un faux sync (octets 0xFFEx
+    dans des donnees quelconques)."""
+    for _ in range(depth):
+        pos += hdr[0]
+        if pos >= len(data):
+            return True
+        hdr = _parse_frame_header(data, pos)
+        if hdr is None:
+            return False
+    return True
+
+
+def _resync(data, pos):
+    """Cherche le prochain header valide suivi de _SYNC_CHAIN headers valides.
+    Retourne (pos, hdr) ou (len(data), None)."""
+    n = len(data)
+    while pos < n:
+        pos = data.find(0xFF, pos)
+        if pos < 0:
+            return n, None
+        hdr = _parse_frame_header(data, pos)
+        if hdr is not None and _chain_ok(data, pos, hdr):
+            return pos, hdr
+        pos += 1
+    return n, None
+
+
+def build(data, info=None):
     """data : bytes du fichier MP3. Retourne (bytes_mp3map, duration_s, num_records).
 
     Suit le format du mp3map-tool de reference : 1 enregistrement par seconde,
-    unit_pos = index_frame * 2304 (= 1152 samples * 2), offsets absolus.
+    offsets absolus. unit_pos = position cumulee du frame en unites 88200 Hz,
+    soit samples * 88200 / samplerate par frame (= 2304 par frame a 44,1 kHz
+    MPEG1 Layer III : sortie identique au mp3map-tool de reference).
+
+    info : dict optionnel rempli avec "samplerates" (ensemble des frequences
+    rencontrees) et "frames" (nombre de frames). Leve ValueError si aucun frame
+    MPEG valide n'est trouve.
     """
     start = _skip_id3v2(data)
     frames = []           # (byte_offset, unit_pos_cumule)
-    total_samples = 0
-    pos = start
+    lens = []             # (byte_offset, frame_len) pour le controle de couverture
+    samplerates = set()
     n = len(data)
 
     # trouver le 1er frame valide (resync si necessaire)
-    while pos < n:
-        if _parse_frame_header(data, pos) is not None:
-            break
-        pos += 1
+    pos, hdr = _resync(data, start)
     first_frame = pos
+    if hdr is None:
+        raise ValueError("aucun frame MPEG audio valide")
 
+    # Cumul exact en fraction : units = samples * 88200 / sr (entier a 44,1 kHz)
+    units = 0.0
     while pos < n:
         hdr = _parse_frame_header(data, pos)
         if hdr is None:
-            pos += 1
-            continue
-        frame_len, samples, _sr = hdr
-        frames.append((pos, total_samples * 2))
-        total_samples += samples
+            pos, hdr = _resync(data, pos + 1)
+            if hdr is None:
+                break
+        frame_len, samples, sr = hdr
+        samplerates.add(sr)
+        frames.append((pos, int(round(units))))
+        lens.append((pos, frame_len))
+        units += samples * INTERNAL_RATE / sr
         pos += frame_len
 
     nf = len(frames)
-    # Correction de delai decodeur (gapless), empirique cf. mp3map-tool de reference.
+    # Donnees majoritairement non MPEG (ex. WAV/OGG renomme en .mp3) : refuser
+    covered = sum(min(fl, n - off) for off, fl in lens)
+    if covered * 2 < n - start:
+        raise ValueError("donnees non MPEG (%d frames couvrant %d%% du fichier)"
+                         % (nf, 100 * covered // max(1, n - start)))
+    # Duree moyenne d'un frame en units (2304 a 44,1 kHz MPEG1 L3)
+    fu = units / nf
+    # Correction de delai decodeur (gapless), empirique cf. mp3map-tool de reference :
+    # x * 1152 units a 44,1 kHz = x demi-frames, on garde la meme duree en frames.
     x = 34 if nf > 100 else 22
-    total_units = max(0, nf * 2 * 1152 - x * 1152)
+    total_units = max(0, int(round(units - x * fu / 2)))
     num_records = total_units // INTERNAL_RATE
 
     out = bytearray()
@@ -129,15 +180,19 @@ def build(data):
     out += first_frame.to_bytes(4, "little")
     out += (0).to_bytes(4, "little")
 
-    # 1 enregistrement par seconde : frame_index = ceil(k * 88200 / 2304)
+    # 1 enregistrement par seconde : 1er frame dont unit_pos >= k * 88200
+    fi = 0
     for k in range(1, num_records + 1):
-        fi = -(-(k * INTERNAL_RATE) // 2304)   # ceil division
-        if fi >= nf:
-            fi = nf - 1
-        byte_off = frames[fi][0]
+        target = k * INTERNAL_RATE
+        while fi < nf - 1 and frames[fi][1] < target:
+            fi += 1
+        byte_off, upos = frames[fi]
         out += byte_off.to_bytes(4, "little")
-        out += (fi * 2304).to_bytes(4, "little")
+        out += upos.to_bytes(4, "little")
 
+    if info is not None:
+        info["samplerates"] = samplerates
+        info["frames"] = nf
     return bytes(out), total_units / INTERNAL_RATE, num_records
 
 
