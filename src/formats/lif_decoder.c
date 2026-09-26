@@ -25,6 +25,18 @@
 #define LIF_HEADER_SIZE  13
 #define LIF_END_SIZE      8
 #define LIF_CHANNEL_RGBA  0xA2
+/* Dimension max : capacite des champs w/h (11 bits) de lv_img_header_t */
+#define LIF_MAX_DIM    2047u
+
+/* Traces de debug : actives seulement si FLAM_DEBUG est defini.
+   Les vraies erreurs (allocation, lecture, fichier absent) restent
+   toujours affichees (stderr n'est pas bufferise : pas de fflush). */
+#ifdef FLAM_DEBUG
+#define LIF_LOG(...)  fprintf(stderr, __VA_ARGS__)
+#else
+#define LIF_LOG(...)  ((void)0)
+#endif
+#define LIF_ERR(...)  fprintf(stderr, __VA_ARGS__)
 
 /* ================================================================== */
 /* Cache couleur 64 entrees                                            */
@@ -104,7 +116,12 @@ lv_img_dsc_t *lif_decode_mem(const uint8_t *data, size_t data_size) {
     uint32_t h = ((uint32_t)data[8]<<24) | ((uint32_t)data[9]<<16) |
                  ((uint32_t)data[10]<<8) |  (uint32_t)data[11];
 
-    if (w == 0 || h == 0 || w > 4096 || h > 4096) {
+    /* lv_img_header_t (LVGL 8.3) stocke w et h sur 11 bits : au-dela de
+       LIF_MAX_DIM, header.w/h seraient tronques (2048 -> 0, division par
+       zero chez l'appelant). */
+    if (w == 0 || h == 0 || w > LIF_MAX_DIM || h > LIF_MAX_DIM) {
+        LIF_ERR("[LIF] dimensions non supportees : %ux%u (max %u)\n",
+                (unsigned)w, (unsigned)h, (unsigned)LIF_MAX_DIM);
         return NULL;
     }
 
@@ -125,9 +142,9 @@ lv_img_dsc_t *lif_decode_mem(const uint8_t *data, size_t data_size) {
 
     /* Buffer de sortie RGBA8888 */
     size_t buf_size = (size_t)total_pixels * 4;
-    fprintf(stderr, "[LIF] decode_mem: %ux%u, buf_size=%zu\n", w, h, buf_size); fflush(stderr);
+    LIF_LOG("[LIF] decode_mem: %ux%u, buf_size=%zu\n", w, h, buf_size);
     uint8_t *rgba = (uint8_t *)malloc(buf_size);
-    if (!rgba) { fprintf(stderr, "[LIF] malloc FAILED rgba\n"); fflush(stderr); return NULL; }
+    if (!rgba) { LIF_ERR("[LIF] malloc echoue (rgba, %zu octets)\n", buf_size); return NULL; }
     memset(rgba, 0, buf_size);
 
     /* Etat du decodeur */
@@ -282,35 +299,49 @@ lv_img_dsc_t *lif_decode_mem(const uint8_t *data, size_t data_size) {
 }
 
 lv_img_dsc_t *lif_decode_file(const char *path) {
-    fprintf(stderr, "[LIF] decode_file: %s\n", path ? path : "(null)"); fflush(stderr);
+    if (!path) return NULL;
+    LIF_LOG("[LIF] decode_file: %s\n", path);
     FILE *f = fopen(path, "rb");
-    if (!f) { fprintf(stderr, "[LIF] fopen FAILED\n"); fflush(stderr); return NULL; }
+    if (!f) { LIF_ERR("[LIF] fichier introuvable : %s\n", path); return NULL; }
 
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    long file_size = -1;
+    if (fseek(f, 0, SEEK_END) == 0) file_size = ftell(f);
+    if (file_size < 0 || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        LIF_ERR("[LIF] taille illisible : %s\n", path);
+        return NULL;
+    }
 
     if (file_size < LIF_HEADER_SIZE + LIF_END_SIZE) {
         fclose(f);
-        fprintf(stderr, "[LIF] too small\n"); fflush(stderr);
+        LIF_ERR("[LIF] fichier trop petit (%ld octets) : %s\n", file_size, path);
         return NULL;
     }
 
     uint8_t *data = (uint8_t *)malloc((size_t)file_size);
-    if (!data) { fclose(f); fprintf(stderr, "[LIF] malloc FAILED file_buf\n"); fflush(stderr); return NULL; }
-    fread(data, 1, (size_t)file_size, f);
+    if (!data) {
+        fclose(f);
+        LIF_ERR("[LIF] malloc echoue (%ld octets) : %s\n", file_size, path);
+        return NULL;
+    }
+    size_t got = fread(data, 1, (size_t)file_size, f);
     fclose(f);
-    fprintf(stderr, "[LIF] file loaded %ld bytes, decoding...\n", file_size); fflush(stderr);
+    if (got != (size_t)file_size) {
+        free(data);
+        LIF_ERR("[LIF] lecture incomplete (%zu/%ld octets) : %s\n", got, file_size, path);
+        return NULL;
+    }
+    LIF_LOG("[LIF] file loaded %ld bytes, decoding...\n", file_size);
 
     lv_img_dsc_t *dsc = lif_decode_mem(data, (size_t)file_size);
     free(data);
-    fprintf(stderr, "[LIF] decode_mem -> %s\n", dsc ? "OK" : "NULL"); fflush(stderr);
+    LIF_LOG("[LIF] decode_mem -> %s\n", dsc ? "OK" : "NULL");
     return dsc;
 }
 
 void lif_free(lv_img_dsc_t *dsc) {
     if (!dsc) return;
-    fprintf(stderr, "[LIF] free dsc=%p data=%p\n", (void*)dsc, (void*)dsc->data); fflush(stderr);
+    LIF_LOG("[LIF] free dsc=%p data=%p\n", (void*)dsc, (void*)dsc->data);
     if (dsc->data) free((void *)dsc->data);
     free(dsc);
 }

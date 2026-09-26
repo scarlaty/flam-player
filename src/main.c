@@ -4,6 +4,11 @@
  * Etape 6 : Chargement d'histoire .plain
  * Usage : flam-player <chemin/vers/histoire.plain>
  *         flam-player <script.lua> [--img-dir ...] [--sounds-dir ...] [--save-dir ...]
+ * Options : --strict        require() limite a script/ (comme le device)
+ *           --watchdog <ms> delai max d'un script Lua sans rendre la main
+ *                           (defaut 10000, 0 = desactive)
+ *           --screenshot <chemin> fichier BMP des captures (touche S et
+ *                           capture auto), prioritaire sur FLAM_SCREENSHOT
  */
 
 #include "SDL.h"
@@ -25,8 +30,101 @@
 #include <shlobj.h>    /* SHBrowseForFolder */
 #endif
 
+#ifdef _MSC_VER
+/* Une fonction appelee sans prototype est une erreur, pas un warning */
+#pragma warning(error: 4013)
+#endif
+
+/* Prototypes (fonctions definies plus bas, utilisees avant) */
+static int is_story_dir(const char *path);
+static int load_story(const char *story_dir);
+#ifdef _WIN32
+static char *wide_to_acp_exact(const wchar_t *w);
+static char *path_acp_by_components(const wchar_t *w);
+#endif
+
 /* Etat global Lua */
 static lua_State *g_lua = NULL;
+
+/* Mode strict (--strict) : require() limite a script/, comme le device */
+static int g_strict = 0;
+
+/* Taille max d'un script Lua charge (main.lua ou module) */
+#define MAX_SCRIPT_SIZE (16L * 1024L * 1024L)
+
+/* ------------------------------------------------------------------ */
+/* Watchdog Lua : interrompt un script qui ne rend pas la main          */
+/* (boucle infinie) au lieu de figer le simulateur.                     */
+/* Le compteur est rearme a chaque tour de boucle principale.           */
+/* ------------------------------------------------------------------ */
+
+#define WATCHDOG_DEFAULT_MS  10000u
+#define WATCHDOG_HOOK_COUNT  100000
+
+static uint32_t g_watchdog_ms    = WATCHDOG_DEFAULT_MS;  /* 0 = desactive */
+static uint32_t g_watchdog_start = 0;
+
+static void watchdog_rearm(void)
+{
+    g_watchdog_start = SDL_GetTicks();
+}
+
+static void watchdog_hook(lua_State *L, lua_Debug *ar)
+{
+    (void)ar;
+    if (g_watchdog_ms == 0) return;
+    uint32_t elapsed = SDL_GetTicks() - g_watchdog_start;
+    if (elapsed > g_watchdog_ms) {
+        /* Rearmer pour ne pas tuer aussi le code qui gere l'erreur */
+        watchdog_rearm();
+        luaL_error(L, "watchdog: script Lua bloque depuis plus de %d ms "
+                      "(boucle infinie ?). Option --watchdog 0 pour desactiver.",
+                   (int)elapsed);
+    }
+}
+
+/* Gestionnaire d'erreur commun : ajoute la pile d'appels Lua au message */
+static int lua_traceback_msgh(lua_State *L)
+{
+    const char *msg = lua_tostring(L, 1);
+    if (!msg) {
+        if (luaL_callmeta(L, 1, "__tostring") && lua_type(L, -1) == LUA_TSTRING)
+            return 1;
+        msg = lua_pushfstring(L, "(objet d'erreur de type %s)", luaL_typename(L, 1));
+    }
+    luaL_traceback(L, L, msg, 1);
+    return 1;
+}
+
+/* lua_pcall avec traceback : la fonction et ses nargs arguments sont au sommet */
+static int pcall_traceback(lua_State *L, int nargs, int nresults)
+{
+    int base = lua_gettop(L) - nargs;  /* index de la fonction */
+    lua_pushcfunction(L, lua_traceback_msgh);
+    lua_insert(L, base);
+    int status = lua_pcall(L, nargs, nresults, base);
+    lua_remove(L, base);
+    return status;
+}
+
+/**
+ * Lit un fichier entier en memoire (malloc). Retourne NULL si erreur.
+ * Verifie ftell, malloc et le nombre d'octets lus.
+ */
+static char *read_whole_file(FILE *f, long *out_size)
+{
+    long fsize = -1;
+    if (fseek(f, 0, SEEK_END) == 0) fsize = ftell(f);
+    if (fsize < 0 || fsize > MAX_SCRIPT_SIZE || fseek(f, 0, SEEK_SET) != 0) return NULL;
+    char *buf = (char *)malloc(fsize > 0 ? (size_t)fsize : 1);
+    if (!buf) return NULL;
+    if (fread(buf, 1, (size_t)fsize, f) != (size_t)fsize) {
+        free(buf);
+        return NULL;
+    }
+    *out_size = fsize;
+    return buf;
+}
 
 /* Groupe de focus principal (= "document" dans le firmware) */
 static lv_group_t *g_focus_group = NULL;
@@ -50,6 +148,12 @@ static int init_lua(void)
 
     /* Bibliotheques standard Lua */
     luaL_openlibs(g_lua);
+
+    /* Watchdog anti boucle infinie */
+    watchdog_rearm();
+    if (g_watchdog_ms > 0) {
+        lua_sethook(g_lua, watchdog_hook, LUA_MASKCOUNT, WATCHDOG_HOOK_COUNT);
+    }
 
     /* Enregistrer les bindings lv.* */
     luaopen_lv(g_lua);
@@ -116,7 +220,8 @@ static int init_lua(void)
 
 /**
  * Custom Lua searcher qui charge les fichiers en strippant les trailing null bytes.
- * Cherche dans script/ et a la racine de l'histoire.
+ * Cherche dans script/ et a la racine de l'histoire (script/ seul en --strict).
+ * Seul le source texte est accepte (mode "t") : pas de bytecode precompile.
  */
 static char g_story_dir[1024] = "";
 
@@ -125,9 +230,22 @@ static int custom_lua_searcher(lua_State *L)
     const char *modname = luaL_checkstring(L, 1);
     char path[1024];
     const char *dirs[] = { "script", "." };
+    int ndirs = g_strict ? 1 : 2;
 
-    for (int d = 0; d < 2; d++) {
-        snprintf(path, sizeof(path), "%s/%s/%s.lua", g_story_dir, dirs[d], modname);
+    /* Pas de sortie du dossier de l'histoire : "..", chemin absolu,
+       lecteur "C:" ou octet nul dans le nom de module sont refuses */
+    size_t modlen = 0;
+    lua_tolstring(L, 1, &modlen);
+    if (modlen != strlen(modname) || modname[0] == '/' || modname[0] == '\\' ||
+        strchr(modname, ':') || strstr(modname, "..")) {
+        lua_pushfstring(L, "\n\tmodule '%s' refuse (chemin hors de l'histoire)",
+                        modname);
+        return 1;
+    }
+
+    for (int d = 0; d < ndirs; d++) {
+        int n = snprintf(path, sizeof(path), "%s/%s/%s.lua", g_story_dir, dirs[d], modname);
+        if (n < 0 || (size_t)n >= sizeof(path)) continue;  /* tronque : ignore */
         /* Normaliser les slashes */
         for (char *p = path; *p; p++) {
             if (*p == '\\') *p = '/';
@@ -136,17 +254,20 @@ static int custom_lua_searcher(lua_State *L)
         FILE *f = fopen(path, "rb");
         if (!f) continue;
 
-        fseek(f, 0, SEEK_END);
-        long fsize = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        char *buf = (char *)malloc((size_t)fsize);
-        fread(buf, 1, (size_t)fsize, f);
+        long fsize = 0;
+        char *buf = read_whole_file(f, &fsize);
         fclose(f);
+        if (!buf) {
+            return luaL_error(L, "impossible de lire le module '%s'", path);
+        }
 
         /* Strip trailing null bytes */
         while (fsize > 0 && buf[fsize - 1] == '\0') fsize--;
 
-        int err = luaL_loadbuffer(L, buf, (size_t)fsize, path);
+        /* "@chemin" : messages d'erreur et traceback avec le nom du fichier */
+        char chunkname[1100];
+        snprintf(chunkname, sizeof(chunkname), "@%s", path);
+        int err = luaL_loadbufferx(L, buf, (size_t)fsize, chunkname, "t");
         free(buf);
         if (err != LUA_OK) {
             return lua_error(L);
@@ -154,8 +275,13 @@ static int custom_lua_searcher(lua_State *L)
         return 1;  /* retourner la fonction chargee */
     }
 
-    lua_pushfstring(L, "\n\tno file '%s/script/%s.lua'\n\tno file '%s/%s.lua'",
-                    g_story_dir, modname, g_story_dir, modname);
+    if (g_strict) {
+        lua_pushfstring(L, "\n\tno file '%s/script/%s.lua' (--strict)",
+                        g_story_dir, modname);
+    } else {
+        lua_pushfstring(L, "\n\tno file '%s/script/%s.lua'\n\tno file '%s/%s.lua'",
+                        g_story_dir, modname, g_story_dir, modname);
+    }
     return 1;  /* retourner le message d'erreur */
 }
 
@@ -182,6 +308,16 @@ static void set_lua_package_path(const char *story_dir)
     lua_pushcfunction(g_lua, custom_lua_searcher);
     lua_rawseti(g_lua, -2, 2);
 
+    /* Mode strict : ne garder que preload + notre searcher (pas de
+       recherche via package.path/cpath depuis le dossier courant) */
+    if (g_strict) {
+        int n = (int)lua_rawlen(g_lua, -1);
+        for (int i = n; i >= 3; i--) {
+            lua_pushnil(g_lua);
+            lua_rawseti(g_lua, -2, i);
+        }
+    }
+
     lua_pop(g_lua, 2); /* pop searchers + package */
 }
 
@@ -196,17 +332,21 @@ static int load_script(const char *path)
         fprintf(stderr, "Erreur: impossible d'ouvrir '%s'\n", path);
         return -1;
     }
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = (char *)malloc((size_t)fsize);
-    fread(buf, 1, (size_t)fsize, f);
+    long fsize = 0;
+    char *buf = read_whole_file(f, &fsize);
     fclose(f);
+    if (!buf) {
+        fprintf(stderr, "Erreur: lecture impossible de '%s'\n", path);
+        return -1;
+    }
 
     /* Retirer les trailing null bytes */
     while (fsize > 0 && buf[fsize - 1] == '\0') fsize--;
 
-    int err = luaL_loadbuffer(g_lua, buf, (size_t)fsize, path);
+    /* Source texte uniquement : le bytecode precompile est refuse */
+    char chunkname[1100];
+    snprintf(chunkname, sizeof(chunkname), "@%s", path);
+    int err = luaL_loadbufferx(g_lua, buf, (size_t)fsize, chunkname, "t");
     free(buf);
     if (err != LUA_OK) {
         const char *errmsg = lua_tostring(g_lua, -1);
@@ -214,17 +354,24 @@ static int load_script(const char *path)
         lua_pop(g_lua, 1);
         return -1;
     }
-    if (lua_pcall(g_lua, 0, 0, 0) != LUA_OK) {
+    watchdog_rearm();
+    if (pcall_traceback(g_lua, 0, 0) != LUA_OK) {
         const char *errmsg = lua_tostring(g_lua, -1);
         fprintf(stderr, "Erreur Lua: %s\n", errmsg ? errmsg : "erreur inconnue");
         lua_pop(g_lua, 1);
         return -1;
     }
 
-    /* Appeler setup() si elle existe */
-    lua_getglobal(g_lua, "setup");
+    /* Appeler setup() si elle existe. Lecture brute (sans __index) : avec
+       un _G "strict" dont __index leve une erreur, lua_getglobal hors
+       pcall partait en PANIC puis abort si setup() n'etait pas definie. */
+    lua_pushglobaltable(g_lua);
+    lua_pushliteral(g_lua, "setup");
+    lua_rawget(g_lua, -2);
+    lua_remove(g_lua, -2);
     if (lua_isfunction(g_lua, -1)) {
-        if (lua_pcall(g_lua, 0, 0, 0) != LUA_OK) {
+        watchdog_rearm();
+        if (pcall_traceback(g_lua, 0, 0) != LUA_OK) {
             const char *err = lua_tostring(g_lua, -1);
             fprintf(stderr, "Erreur dans setup(): %s\n", err ? err : "erreur inconnue");
             lua_pop(g_lua, 1);
@@ -267,6 +414,13 @@ typedef struct {
     char title[256];
     lv_img_dsc_t *thumbnail;  /* decoded from img/thumbnail.lif, or NULL */
     int is_pk;                /* 1 if .plain.pk archive, 0 if directory */
+    /* .pk : dossier d'extraction .plain (ANSI). Vide si son nom n'est pas
+       representable en ANSI et que le dossier n'existe pas encore : il est
+       alors cree au clic depuis pk_wdir, puis designe par son nom court. */
+    char pk_dir[1024];
+#ifdef _WIN32
+    wchar_t pk_wdir[1024];
+#endif
 } story_entry_t;
 
 static story_entry_t g_stories[MAX_STORIES];
@@ -338,74 +492,168 @@ static void free_thumbnails(void)
     }
 }
 
-/* Add a story entry (directory or .pk archive) */
-static void add_story_entry(const char *search_dir, const char *filename, int is_pk)
+/* Add a story entry (directory or .pk archive).
+   pk_dirname : nom (ANSI) du dossier d'extraction d'un .pk, "" s'il n'existe
+   pas encore sous un nom ANSI, ou NULL pour le deduire en retirant ".pk".
+   Retourne l'entree ajoutee ou mise a jour, NULL si ignoree. */
+static story_entry_t *add_story_entry(const char *search_dir, const char *filename,
+                                      int is_pk, const char *pk_dirname)
 {
-    if (g_story_count >= MAX_STORIES) return;
+    if (g_story_count >= MAX_STORIES) return NULL;
 
     char full[1024];
     snprintf(full, sizeof(full), "%s/%s", search_dir, filename);
 
     if (is_pk) {
-        if (!pk_has_entry(full, "main.lua")) return;
+        if (!pk_has_entry(full, "main.lua")) return NULL;
     } else {
-        if (!is_story_dir(full)) return;
+        if (!is_story_dir(full)) return NULL;
     }
 
-    /* Skip .pk if we already have the extracted .plain version */
+    /* Skip .pk if we already have the extracted .plain version.
+       Si ce dossier .plain est le dossier d'extraction du .pk mais qu'il est
+       perime (ou incomplet), proposer le .pk a sa place : le clic
+       re-extraira l'archive au lieu de rejouer l'ancienne version. */
+    char dir[1024] = "";
     if (is_pk) {
-        for (int i = 0; i < g_story_count; i++) {
-            /* Compare titles to avoid duplicates */
-            char title[256] = "";
-            read_story_title(full, is_pk, title, sizeof(title));
-            if (title[0] && strcmp(g_stories[i].title, title) == 0) return;
+        if (pk_dirname) {
+            if (pk_dirname[0]) snprintf(dir, sizeof(dir), "%s/%s", search_dir, pk_dirname);
+        } else {
+            strncpy(dir, full, sizeof(dir) - 1);
+            dir[sizeof(dir) - 1] = '\0';
+            size_t dlen = strlen(dir);
+            if (dlen > 3) dir[dlen - 3] = '\0';   /* retirer ".pk" */
         }
+        for (int i = 0; dir[0] && i < g_story_count; i++) {
+            if (g_stories[i].is_pk || strcmp(g_stories[i].path, dir) != 0) continue;
+            if (pk_extract_is_current(full, dir)) return NULL;
+            story_entry_t *old_e = &g_stories[i];
+            if (old_e->thumbnail) lif_free(old_e->thumbnail);
+            strncpy(old_e->path, full, sizeof(old_e->path) - 1);
+            old_e->path[sizeof(old_e->path) - 1] = '\0';
+            strncpy(old_e->pk_dir, dir, sizeof(old_e->pk_dir) - 1);
+            old_e->pk_dir[sizeof(old_e->pk_dir) - 1] = '\0';
+#ifdef _WIN32
+            old_e->pk_wdir[0] = L'\0';
+#endif
+            old_e->title[0] = '\0';
+            old_e->is_pk = 1;
+            read_story_title(full, 1, old_e->title, sizeof(old_e->title));
+            old_e->thumbnail = load_thumbnail(full, 1);
+            return old_e;
+        }
+        /* Pas de deduplication par titre : deux archives distinctes peuvent
+           porter le meme titre (versions V1/V2, titre par defaut). Le seul
+           vrai doublon (.pk + son dossier d'extraction) est traite ci-dessus
+           par comparaison de chemins. */
     }
 
     story_entry_t *e = &g_stories[g_story_count];
     strncpy(e->path, full, sizeof(e->path) - 1);
+    e->path[sizeof(e->path) - 1] = '\0';
     e->title[0] = '\0';
     e->thumbnail = NULL;
     e->is_pk = is_pk;
     read_story_title(full, is_pk, e->title, sizeof(e->title));
     e->thumbnail = load_thumbnail(full, is_pk);
+    e->pk_dir[0] = '\0';
+    if (is_pk) {
+        strncpy(e->pk_dir, dir, sizeof(e->pk_dir) - 1);
+        e->pk_dir[sizeof(e->pk_dir) - 1] = '\0';
+    }
+#ifdef _WIN32
+    e->pk_wdir[0] = L'\0';
+#endif
     g_story_count++;
+    return e;
 }
 
-/* Scan a directory for .plain dirs and .plain.pk archives */
+#ifdef _WIN32
+/* Nom ANSI d'une entree de dossier : le nom long s'il est representable
+   dans la code page ANSI, sinon son nom court 8.3 (vide si les noms courts
+   sont desactives sur le volume). Retourne 1 si out est rempli. */
+static int entry_name_acp(const wchar_t *wfull, const wchar_t *wname,
+                          char *out, size_t out_sz)
+{
+    char *c = wide_to_acp_exact(wname);
+    if (!c) {
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW(wfull, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            FindClose(h);
+            if (fd.cAlternateFileName[0]) c = wide_to_acp_exact(fd.cAlternateFileName);
+        }
+    }
+    if (!c) return 0;
+    int ok = strlen(c) < out_sz;
+    if (ok) memcpy(out, c, strlen(c) + 1);
+    free(c);
+    return ok;
+}
+#endif
+
+/* Scan a directory for .plain dirs and .plain.pk archives.
+   Enumeration en UTF-16 (FindFirstFileW) : avec FindFirstFileA, un nom
+   contenant un caractere hors de la code page ANSI (polonais, grec...)
+   revenait avec des '?' et l'histoire etait ignoree sans message. */
 static void scan_for_stories(const char *search_dir)
 {
 #ifdef _WIN32
-    /* First scan for .plain directories */
-    {
-        char pattern[1024];
-        snprintf(pattern, sizeof(pattern), "%s\\*.plain", search_dir);
-        WIN32_FIND_DATAA fd;
-        HANDLE h = FindFirstFileA(pattern, &fd);
-        if (h != INVALID_HANDLE_VALUE) {
-            do {
-                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                    add_story_entry(search_dir, fd.cFileName, 0);
-                }
-            } while (FindNextFileA(h, &fd) && g_story_count < MAX_STORIES);
-            FindClose(h);
-        }
-    }
+    wchar_t wdir[1024];
+    if (MultiByteToWideChar(CP_ACP, 0, search_dir, -1, wdir, 1024) <= 0) return;
 
-    /* Then scan for .plain.pk archives (files, not directories) */
-    {
-        char pattern[1024];
-        snprintf(pattern, sizeof(pattern), "%s\\*.plain.pk", search_dir);
-        WIN32_FIND_DATAA fd;
-        HANDLE h = FindFirstFileA(pattern, &fd);
-        if (h != INVALID_HANDLE_VALUE) {
-            do {
-                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-                    add_story_entry(search_dir, fd.cFileName, 1);
+    for (int pass = 0; pass < 2; pass++) {
+        int is_pk = (pass == 1);   /* d'abord les dossiers .plain, puis les .plain.pk */
+        wchar_t pattern[1100];
+        if (swprintf(pattern, 1100, is_pk ? L"%ls\\*.plain.pk" : L"%ls\\*.plain", wdir) < 0) return;
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            int is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            if (is_dir == is_pk) continue;
+            wchar_t wfull[1400];
+            if (swprintf(wfull, 1400, L"%ls\\%ls", wdir, fd.cFileName) < 0) continue;
+            char name[MAX_PATH];
+            if (!entry_name_acp(wfull, fd.cFileName, name, sizeof(name))) {
+                fprintf(stderr, "Histoire ignoree : nom non representable en ANSI "
+                                "et sans nom court 8.3 (%ls)\n", wfull);
+                continue;
+            }
+            if (!is_pk) {
+                add_story_entry(search_dir, name, 0, NULL);
+                continue;
+            }
+            char *exact = wide_to_acp_exact(fd.cFileName);
+            if (exact) {
+                /* Nom representable : dossier d'extraction = nom sans ".pk" */
+                free(exact);
+                add_story_entry(search_dir, name, 1, NULL);
+                continue;
+            }
+            /* Nom court d'un .plain.pk : il ne finit plus par ".plain.pk",
+               le dossier d'extraction se deduit du nom long (UTF-16) */
+            wchar_t wext[1400];
+            size_t wl = wcslen(wfull);
+            if (wl <= 3 || wl >= 1400) continue;
+            memcpy(wext, wfull, (wl - 3) * sizeof(wchar_t));   /* retirer ".pk" */
+            wext[wl - 3] = L'\0';
+            char dname[MAX_PATH] = "";
+            DWORD attr = GetFileAttributesW(wext);
+            if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+                const wchar_t *wbase = wext + wcslen(wdir) + 1;
+                if (!entry_name_acp(wext, wbase, dname, sizeof(dname))) dname[0] = '\0';
+            }
+            story_entry_t *e = add_story_entry(search_dir, name, 1, dname);
+            if (e && !e->pk_dir[0]) {
+                if (wl - 3 < sizeof(e->pk_wdir) / sizeof(e->pk_wdir[0])) {
+                    memcpy(e->pk_wdir, wext, (wl - 2) * sizeof(wchar_t));
+                } else {
+                    e->pk_wdir[0] = L'\0';
                 }
-            } while (FindNextFileA(h, &fd) && g_story_count < MAX_STORIES);
-            FindClose(h);
-        }
+            }
+        } while (FindNextFileW(h, &fd) && g_story_count < MAX_STORIES);
+        FindClose(h);
     }
 #else
     (void)search_dir;
@@ -414,6 +662,20 @@ static void scan_for_stories(const char *search_dir)
 
 /* Temporary extraction directory for .pk stories */
 static char g_pk_extract_dir[1024] = "";
+
+/* Extrait un .plain.pk dans out_dir si le dossier est absent, perime
+   (.pk modifie depuis) ou issu d'une extraction interrompue.
+   Partage par la ligne de commande et le navigateur d'histoires. */
+static void extract_pk_if_needed(const char *pk_path, const char *out_dir)
+{
+    if (pk_extract_is_current(pk_path, out_dir)) return;
+    if (is_story_dir(out_dir)) {
+        fprintf(stderr, "%s perime ou incomplet : nouvelle extraction\n", out_dir);
+    }
+    fprintf(stderr, "Extracting %s ...\n", pk_path);
+    int n = pk_extract_if_stale(pk_path, out_dir);
+    fprintf(stderr, "Extracted %d files to %s\n", n, out_dir);
+}
 
 /* Callback when a story button is clicked */
 static void story_btn_clicked(lv_event_t *ev)
@@ -433,19 +695,41 @@ static void story_btn_clicked(lv_event_t *ev)
     /* If .pk archive, extract to temp directory first */
     if (g_stories[idx].is_pk) {
         /* Extract next to the .pk file in a .plain directory */
-        strncpy(g_pk_extract_dir, story_path, sizeof(g_pk_extract_dir) - 1);
-        /* Remove .pk extension to get .plain path */
-        size_t len = strlen(g_pk_extract_dir);
-        if (len > 3 && strcmp(g_pk_extract_dir + len - 3, ".pk") == 0) {
-            g_pk_extract_dir[len - 3] = '\0';
+        if (g_stories[idx].pk_dir[0]) {
+            strncpy(g_pk_extract_dir, g_stories[idx].pk_dir, sizeof(g_pk_extract_dir) - 1);
+            g_pk_extract_dir[sizeof(g_pk_extract_dir) - 1] = '\0';
+        }
+#ifdef _WIN32
+        else if (g_stories[idx].pk_wdir[0]) {
+            /* Nom long du dossier non representable en ANSI : le creer en
+               UTF-16 puis le designer par son nom court 8.3 */
+            const wchar_t *wext = g_stories[idx].pk_wdir;
+            char *acp = NULL;
+            if (CreateDirectoryW(wext, NULL) || GetLastError() == ERROR_ALREADY_EXISTS) {
+                acp = path_acp_by_components(wext);
+            }
+            if (!acp || strlen(acp) >= sizeof(g_pk_extract_dir)) {
+                fprintf(stderr, "Dossier d'extraction sans nom ANSI utilisable : %ls\n", wext);
+                free(acp);
+                show_error_screen("Erreur de chargement.\nVoir la console.");
+                return;
+            }
+            memcpy(g_pk_extract_dir, acp, strlen(acp) + 1);
+            free(acp);
+        }
+#endif
+        else {
+            strncpy(g_pk_extract_dir, story_path, sizeof(g_pk_extract_dir) - 1);
+            g_pk_extract_dir[sizeof(g_pk_extract_dir) - 1] = '\0';
+            /* Remove .pk extension to get .plain path */
+            size_t len = strlen(g_pk_extract_dir);
+            if (len > 3 && strcmp(g_pk_extract_dir + len - 3, ".pk") == 0) {
+                g_pk_extract_dir[len - 3] = '\0';
+            }
         }
 
-        /* Check if already extracted */
-        if (!is_story_dir(g_pk_extract_dir)) {
-            fprintf(stderr, "Extracting %s ...\n", story_path);
-            int n = pk_extract_all(story_path, g_pk_extract_dir);
-            fprintf(stderr, "Extracted %d files to %s\n", n, g_pk_extract_dir);
-        }
+        /* Extraire si absent, perime ou incomplet */
+        extract_pk_if_needed(story_path, g_pk_extract_dir);
         story_path = g_pk_extract_dir;
     }
 
@@ -462,17 +746,32 @@ static void create_story_browser(const char *scan_dir);
 
 #ifdef _WIN32
 /* Open native Windows folder picker dialog */
+/* Selection en UTF-16 puis conversion ANSI (noms courts 8.3 pour les
+   composants non representables) : SHGetPathFromIDListA rendait des '?'
+   pour un dossier au nom grec, polonais... */
 static int pick_folder(char *out, size_t out_sz)
 {
-    BROWSEINFOA bi = {0};
-    bi.lpszTitle = "Choisir le dossier contenant les histoires (.plain)";
+    BROWSEINFOW bi = {0};
+    bi.lpszTitle = L"Choisir le dossier contenant les histoires (.plain)";
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
 
-    LPITEMIDLIST pidl = SHBrowseForFolderA(&bi);
+    LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
     if (!pidl) return 0;
 
-    int ok = SHGetPathFromIDListA(pidl, out);
+    wchar_t wpath[MAX_PATH];
+    int ok = SHGetPathFromIDListW(pidl, wpath);
     CoTaskMemFree(pidl);
+    if (!ok) return 0;
+
+    char *s = wide_to_acp_exact(wpath);
+    if (!s) s = path_acp_by_components(wpath);
+    if (!s) {
+        fprintf(stderr, "Dossier sans chemin ANSI utilisable : %ls\n", wpath);
+        return 0;
+    }
+    ok = strlen(s) < out_sz;
+    if (ok) memcpy(out, s, strlen(s) + 1);
+    free(s);
     return ok;
 }
 #endif
@@ -535,8 +834,10 @@ static lv_obj_t *create_story_card(lv_obj_t *parent, story_entry_t *story)
     lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(btn, 10, LV_PART_MAIN);
 
-    /* Thumbnail (in a fixed-size container for proper centering) */
-    if (story->thumbnail) {
+    /* Thumbnail (in a fixed-size container for proper centering).
+       Une vignette de dimension nulle provoquerait une division par zero. */
+    if (story->thumbnail &&
+        story->thumbnail->header.w > 0 && story->thumbnail->header.h > 0) {
         lv_obj_t *img_cont = lv_obj_create(btn);
         lv_obj_remove_style_all(img_cont);
         lv_obj_set_size(img_cont, THUMB_W, THUMB_H);
@@ -582,6 +883,9 @@ static void create_story_browser(const char *scan_dir)
     if (g_header_title) {
         lv_label_set_text(g_header_title, "Flam Player");
     }
+    /* Titre de la fenetre aussi : sinon il garde "Flam Player - <titre>"
+       de la derniere histoire au retour a la bibliotheque. */
+    sdl_driver_set_title("Flam Player");
 
     /* Get content window (child 1 of screen, after header) */
     lv_obj_t *win = lv_obj_get_child(lv_scr_act(), 1);
@@ -720,8 +1024,110 @@ static int load_story(const char *story_dir)
     return load_script(path_buf);
 }
 
+#ifdef _WIN32
+/* Convertit une chaine large en code page ANSI (CP_ACP). Retourne une
+   chaine allouee, ou NULL si un caractere n'est pas representable. */
+static char *wide_to_acp_exact(const wchar_t *w)
+{
+    BOOL lossy = FALSE;
+    int n = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, w, -1,
+                                NULL, 0, NULL, &lossy);
+    if (n <= 0 || lossy) return NULL;
+    char *s = (char *)malloc((size_t)n);
+    if (!s) return NULL;
+    lossy = FALSE;
+    if (WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, w, -1,
+                            s, n, NULL, &lossy) <= 0 || lossy) {
+        free(s);
+        return NULL;
+    }
+    return s;
+}
+
+/* Reconstruit un chemin en ANSI composant par composant : un composant
+   representable est garde tel quel, sinon on prend son nom court 8.3
+   (cAlternateFileName ; GetShortPathNameW garde les noms deja courts
+   comme "Omega" en grec meme s'ils ne sont pas representables en ANSI).
+   Retourne une chaine allouee, ou NULL si impossible. */
+static char *path_acp_by_components(const wchar_t *w)
+{
+    char out[2048];
+    size_t olen = 0;
+    size_t wlen = wcslen(w);
+    wchar_t *pre = (wchar_t *)malloc((wlen + 1) * sizeof(wchar_t));
+    if (!pre) return NULL;
+    size_t start = 0;
+    while (1) {
+        size_t end = start;
+        while (w[end] && w[end] != L'\\' && w[end] != L'/') end++;
+        /* composant w[start..end) */
+        memcpy(pre, w, end * sizeof(wchar_t));
+        pre[end] = L'\0';
+        char *c = wide_to_acp_exact(pre + start);
+        if (!c) {
+            int wild = 0;
+            for (size_t k = start; k < end; k++) {
+                if (w[k] == L'*' || w[k] == L'?') wild = 1;
+            }
+            WIN32_FIND_DATAW fd;
+            HANDLE h = wild ? INVALID_HANDLE_VALUE : FindFirstFileW(pre, &fd);
+            if (h != INVALID_HANDLE_VALUE) {
+                FindClose(h);
+                if (fd.cAlternateFileName[0]) c = wide_to_acp_exact(fd.cAlternateFileName);
+            }
+        }
+        if (!c) { free(pre); return NULL; }
+        size_t cl = strlen(c);
+        if (olen + cl + 2 > sizeof(out)) { free(c); free(pre); return NULL; }
+        memcpy(out + olen, c, cl);
+        olen += cl;
+        free(c);
+        if (!w[end]) break;
+        out[olen++] = (char)w[end];   /* separateur '\' ou '/' */
+        start = end + 1;
+    }
+    free(pre);
+    out[olen] = '\0';
+    return _strdup(out);
+}
+
+/* SDL2main fournit argv en UTF-8 alors que tout le player (stat, fopen,
+   FindFirstFileA, luaL_loadfile) utilise les API ANSI : un chemin accentue
+   passe en argument etait introuvable. On reconvertit donc chaque argument
+   UTF-8 -> ANSI. Si un caractere n'existe pas dans la code page ANSI, les
+   composants concernes sont remplaces par leur nom court 8.3 (les autres,
+   dont le nom final d'un .plain.pk dont derive le dossier d'extraction,
+   sont gardes tels quels). */
+static void argv_utf8_to_acp(int argc, char *argv[])
+{
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        int ascii = 1;
+        for (const char *p = a; *p; p++) {
+            if ((unsigned char)*p >= 0x80) { ascii = 0; break; }
+        }
+        if (ascii) continue;
+
+        int wn = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, a, -1, NULL, 0);
+        if (wn <= 0) continue;   /* pas de l'UTF-8 valide : laisser tel quel */
+        wchar_t *w = (wchar_t *)malloc((size_t)wn * sizeof(wchar_t));
+        if (!w) continue;
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, a, -1, w, wn);
+
+        char *s = wide_to_acp_exact(w);
+        if (!s) s = path_acp_by_components(w);
+        free(w);
+        if (s) argv[i] = s;   /* jamais libere : vit jusqu'a la fin */
+    }
+}
+#endif
+
 int main(int argc, char *argv[])
 {
+#ifdef _WIN32
+    argv_utf8_to_acp(argc, argv);
+#endif
+
     /* Parser les arguments CLI en premier */
     const char *target_path = NULL;
     const char *img_dir = NULL;
@@ -738,10 +1144,20 @@ int main(int argc, char *argv[])
             save_dir = argv[++i];
         } else if (strcmp(argv[i], "--scan-dir") == 0 && i + 1 < argc) {
             scan_dir = argv[++i];
+        } else if (strcmp(argv[i], "--strict") == 0) {
+            g_strict = 1;
+        } else if (strcmp(argv[i], "--watchdog") == 0 && i + 1 < argc) {
+            long ms = strtol(argv[++i], NULL, 10);
+            g_watchdog_ms = ms > 0 ? (uint32_t)ms : 0;
+        } else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
+            sdl_driver_set_screenshot_path(argv[++i]);
         } else {
             target_path = argv[i];
         }
     }
+
+    /* --strict s'applique aussi aux bindings lv.* (img_src.load...) */
+    lua_lv_set_strict(g_strict);
 
     /* Detecter le mode : dossier .plain, archive .plain.pk, ou script Lua */
     int is_story = 0;
@@ -764,11 +1180,7 @@ int main(int argc, char *argv[])
         size_t elen = strlen(g_pk_extract_dir);
         if (elen > 3) g_pk_extract_dir[elen - 3] = '\0';
 
-        if (!is_story_dir(g_pk_extract_dir)) {
-            fprintf(stderr, "Extracting %s ...\n", target_path);
-            int n = pk_extract_all(target_path, g_pk_extract_dir);
-            fprintf(stderr, "Extracted %d files to %s\n", n, g_pk_extract_dir);
-        }
+        extract_pk_if_needed(target_path, g_pk_extract_dir);
         target_path = g_pk_extract_dir;
     }
 
@@ -830,6 +1242,7 @@ int main(int argc, char *argv[])
 
     /* Boucle principale */
     while (1) {
+        watchdog_rearm();
         if (sdl_driver_poll()) {
             break;
         }
