@@ -1,6 +1,7 @@
 # Flam Player
 
-Emulateur desktop du firmware Flam (Lunii v3) capable d'executer les histoires `.plain` extraites.
+Emulateur desktop du firmware Flam (Lunii v3) capable d'executer les histoires `.plain` extraites,
+et convertisseur d'histoires TELMI vers FLAM (`tools/telmi2flam`).
 
 ## Fonctionnalites
 
@@ -13,6 +14,17 @@ Emulateur desktop du firmware Flam (Lunii v3) capable d'executer les histoires `
 - Menu contextuel (touche M)
 - Audio MP3 avec seek et callbacks
 - Navigation encodeur fidele au firmware reel (LEFT/RIGHT/ENTER)
+- Mode `--strict` proche du device et watchdog contre les boucles Lua infinies
+
+## Contenu du depot
+
+| Dossier | Role |
+|---------|------|
+| `src/` | Emulateur (voir Architecture) |
+| `tools/telmi2flam/` | Convertisseur d'histoires TELMI (`.zip`) vers FLAM (`.plain.pk`) — voir [son README](tools/telmi2flam/README.md) |
+| `games/casse-briques/` | Jeu casse-briques en contenu Lua FLAM (avec verrou parental) |
+| `tests/` | Tests : suite Lua, moteur telmi2flam, audio reel, non-regression, bout en bout |
+| `patches/` | Correctifs pour le fork LVGL (non appliques automatiquement) — voir [patches/README.md](patches/README.md) |
 
 ## Architecture
 
@@ -41,14 +53,17 @@ src/
   fonts/
     nunito_*.c              Polices Nunito (Bold/ExtraBold, 12-20px)
 tests/
-  test_main.c               Runner de tests headless
+  test_main.c               Runner de tests headless (flam-test, flam-test-audio)
   test_headless_driver.c/h  Display driver sans fenetre
-  test_audio_stub.c/h       Stub audio pour les tests
+  test_audio_stub.c/h       Stub audio (flam-test ; flam-test-audio utilise le vrai sdl_audio.c)
   lua/
     test_helpers.lua         Framework de test (test/expect_eq/expect_true/expect_error)
     test_*.lua               Tests unitaires et d'integration (suite principale)
     regress_*.lua            Tests de non-regression (lances isolement)
     poc_*.lua, fuzz_*.lua    PoCs de securite et fuzzer (lances isolement)
+  engine/test_*.lua         Moteur et modules runtime de telmi2flam (avec mocks)
+  audio/                    Audio reel (pilote SDL dummy) : seek, pause, reouverture du lua_State
+  e2e/e2e_telmi.py          Bout en bout : paquet TELMI -> telmi2flam -> flam-player pilote
 ```
 
 ## Dependances externes
@@ -86,7 +101,7 @@ git submodule update --init --recursive
 
 ```bat
 do_build.bat            :: configure (si besoin) + compile flam-player.exe
-do_build.bat tests      :: compile la suite de tests (flam-test.exe)
+do_build.bat tests      :: compile flam-test.exe, flam-test-audio.exe et flam-player.exe
 ```
 
 `do_build.bat` localise Visual Studio (via `vswhere`), charge l'environnement compilateur
@@ -106,25 +121,33 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ```
 
-Ajouter `-DBUILD_TESTS=ON` pour construire aussi `flam-test.exe`, et
+Ajouter `-DBUILD_TESTS=ON` pour construire aussi `flam-test.exe` et `flam-test-audio.exe`, et
 `-DCMAKE_MAKE_PROGRAM=<chemin\ninja.exe>` si `ninja` n'est pas dans le PATH.
 
 ### Tests
 
 ```bat
-do_build.bat tests      :: compile flam-test.exe
-test_run.bat            :: suite test_*.lua, puis tests isoles regress_/poc_/fuzz_
-test_run.bat strict     :: idem, un echec isole rend aussi le code de sortie non nul
+do_build.bat tests      :: compile flam-test.exe, flam-test-audio.exe, flam-player.exe
+test_run.bat            :: lance les 6 etapes ci-dessous
+test_run.bat strict     :: idem, et un echec d'un test isole compte aussi
 ```
 
-- La suite `tests\lua\test_*.lua` tourne dans un seul processus et doit rester verte ; c'est
-  elle qui donne le code de sortie.
-- `regress_*.lua`, `poc_*.lua` et `fuzz_*.lua` tournent chacun dans leur propre processus
-  (timeout 30 s), pour qu'un crash ou un blocage n'arrete pas les autres ; un recapitulatif
-  s'affiche a la fin (1 = erreur Lua, 3 = timeout, autre = crash). Leurs echecs ne comptent
-  qu'en mode `strict`.
-- `FLAM_BUILD_DIR` permet de tester un autre dossier de build que `build\` :
-  `set FLAM_BUILD_DIR=C:\chemin\vers\build` puis `test_run.bat`.
+`test_run.bat` enchaine ces etapes puis affiche un recapitulatif (`RESULTAT : OK` si tout passe) :
+
+| Etape | Contenu |
+|-------|---------|
+| 1. Suite | `tests\lua\test_*.lua`, un seul processus (flam-test) |
+| 2. Moteur/runtime | `tests\engine\test_*.lua` : moteur et modules runtime de telmi2flam |
+| 3. Audio reel | `tests\audio\` avec flam-test-audio (vrai `sdl_audio.c`, pilote SDL dummy) |
+| 4. Tests isoles | `regress_*.lua`, `poc_*.lua`, `fuzz_*.lua`, un processus chacun (timeout 30 s ; 1 = erreur Lua, 3 = timeout, autre = crash) |
+| 5. Convertisseur | `tools\telmi2flam\tests` (python unittest) ; saute si python ou Pillow absent |
+| 6. Bout en bout | `tests\e2e\e2e_telmi.py` ; saute si python ou flam-player.exe absent |
+
+- Les echecs de l'etape 4 ne comptent qu'en mode `strict` ; en `strict`, un
+  `flam-test-audio.exe` absent est aussi un echec.
+- `FLAM_BUILD_DIR` : autre dossier de build que `build\`. `FLAM_PYTHON` : interpreteur python.
+  `FLAM_LUA` : Lua 5.4 autonome (verification de `nodes.lua` par les tests du convertisseur).
+- La capture d'ecran automatique du player est desactivee pendant les tests.
 
 ## Utilisation
 
@@ -144,9 +167,19 @@ flam-player.exe
 # Scan un dossier specifique
 flam-player.exe --scan-dir <chemin/vers/dossier>
 
-# Charger une histoire directement
+# Charger une histoire directement (dossier .plain ou archive .plain.pk)
 flam-player.exe <chemin/vers/histoire.plain>
 ```
+
+Options :
+
+| Option | Effet |
+|--------|-------|
+| `--scan-dir <dossier>` | Dossier scanne par le navigateur |
+| `--strict` | Plus proche du device : `require()` limite a `script/`, image `.lif` absente = erreur |
+| `--watchdog <ms>` | Interrompt un script Lua qui ne rend pas la main (defaut 10000, `0` = desactive) |
+| `--screenshot <chemin>` | Fichier BMP des captures (prioritaire sur `FLAM_SCREENSHOT`) |
+| `--img-dir`, `--sounds-dir`, `--save-dir` | Dossiers images, sons et sauvegardes (mode script `.lua` direct) |
 
 Le navigateur detecte les dossiers `.plain` et les archives `.plain.pk`, affiche les vignettes et titres, et offre un bouton "Choisir un dossier..." pour changer le repertoire de recherche. Les archives `.plain.pk` sont extraites automatiquement au premier lancement.
 
@@ -161,9 +194,9 @@ Le navigateur detecte les dossiers `.plain` et les archives `.plain.pk`, affiche
 | P | Pause / reprise de l'audio en cours |
 | S | Screenshot (sauvegarde `screenshot.bmp`) |
 
-Captures d'ecran : fichier BMP 320x240 fidele a l'ecran. Chemin par defaut
-`screenshot.bmp` dans le dossier du depot ; `--screenshot <chemin>` (prioritaire)
-ou la variable `FLAM_SCREENSHOT=<chemin>` le changent. Une capture automatique
+Captures d'ecran : fichier BMP 320x240 fidele a l'ecran. Chemin par defaut code en dur
+`C:/temp/flam-player/screenshot.bmp` ; `--screenshot <chemin>` (prioritaire) ou la
+variable `FLAM_SCREENSHOT=<chemin>` le changent. Une capture automatique
 est aussi prise 12 s apres le demarrage : `FLAM_SCREENSHOT_AUTO_MS=<ms>` change
 ce delai, `FLAM_SCREENSHOT_AUTO_MS=0` la desactive.
 
@@ -177,7 +210,20 @@ Les histoires `.plain` sont des dossiers (ou archives ZIP `.plain.pk`) contenant
 - `info.plain` — metadonnees (titre, auteur, description, age)
 - `uuid.bin` — identifiant unique (16 octets)
 
-Les fichiers `.plain.pk` sont des archives ZIP (store, sans compression) generees par des outils de sauvegarde Lunii.
+Les fichiers `.plain.pk` sont des archives ZIP (store, sans compression) generees par des outils de
+sauvegarde Lunii ou par `tools/telmi2flam`. L'extraction refuse les chemins dangereux (`..`,
+chemins absolus) et les tailles incoherentes.
+
+## Convertir une histoire TELMI
+
+```bat
+python tools\telmi2flam\telmi2flam.py "Mon histoire.zip" -o "Mon_histoire.plain.pk"
+python tools\telmi2flam\validate.py "Mon_histoire.plain.pk"
+```
+
+Prerequis : python 3 et Pillow. Seul le format TELMI (`nodes.json`) est pris en charge, pas le
+format STUdio (`story.json`). Options (`--plain`, `--selector`, `--keep-size`, `--allow-missing`...)
+et details : [tools/telmi2flam/README.md](tools/telmi2flam/README.md).
 
 ## Licence
 
