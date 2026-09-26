@@ -39,4 +39,12 @@ void sdl_audio_set_base_path(const char *path);
  */
 void sdl_audio_stop_all(void);
 
+/**
+ * Bascule lecture <-> pause du son courant (touche P de l'emulateur).
+ * Emet ensuite le callback Lua "pause" (puis chaque seconde en pause) ou
+ * "play" comme sur device, depuis sdl_audio_pump. Sans effet si aucun
+ * son n'est en lecture ou en pause.
+ */
+void sdl_audio_toggle_pause(void);
+
 #endif /* SDL_AUDIO_H */

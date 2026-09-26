@@ -158,7 +158,14 @@ Le navigateur detecte les dossiers `.plain` et les archives `.plain.pk`, affiche
 | Entree / Espace | Valider |
 | Echap | Retour / Revenir au navigateur |
 | M | Menu contextuel |
+| P | Pause / reprise de l'audio en cours |
 | S | Screenshot (sauvegarde `screenshot.bmp`) |
+
+Captures d'ecran : fichier BMP 320x240 fidele a l'ecran. Chemin par defaut
+`screenshot.bmp` dans le dossier du depot ; `--screenshot <chemin>` (prioritaire)
+ou la variable `FLAM_SCREENSHOT=<chemin>` le changent. Une capture automatique
+est aussi prise 12 s apres le demarrage : `FLAM_SCREENSHOT_AUTO_MS=<ms>` change
+ce delai, `FLAM_SCREENSHOT_AUTO_MS=0` la desactive.
 
 ## Format .plain / .plain.pk
 

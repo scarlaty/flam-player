@@ -36,6 +36,7 @@
 #define PUMP_FRAMES      8     /* frames MP3 a decoder par appel pump */
 #define QUEUE_LOW_MARK   8192  /* octets : seuil pour decoder plus */
 #define FRAME_BYTES      (AUDIO_CHANNELS * (int)sizeof(int16_t))
+#define MP3MAP_RATE      88200.0 /* unites de position du .mp3map par seconde */
 
 /* ================================================================== */
 /* Etat audio global                                                   */
@@ -90,6 +91,12 @@ typedef struct {
        module courant pendant le dispatch d'evenement. */
     int           pending_stop_cb;
     float         pending_stop_time;
+
+    /* Pause : comme sur device, "pause" est emis au passage en pause puis
+       chaque seconde tant que la pause dure (emission depuis
+       sdl_audio_pump, meme raison que le stop differe). */
+    int           pending_pause_cb;
+    Uint32        last_pause_cb_ms;
 
     /* SDL device */
     SDL_AudioDeviceID dev_id;
@@ -219,6 +226,7 @@ static void audio_reset_state(void) {
     g_audio.last_cb_time = -1.0f;
     g_audio.pending_stop_cb = 0;  /* annuler tout "stop" differe non emis */
     g_audio.pending_stop_time = 0.0f;
+    g_audio.pending_pause_cb = 0;
 }
 
 static void audio_unload(lua_State *L) {
@@ -265,6 +273,22 @@ void sdl_audio_pump(lua_State *L) {
         audio_emit(L, "stop", g_audio.pending_stop_time);
     }
 
+    /* "pause" au passage en pause puis chaque seconde (le runtime
+       global.lua / audio-player s'en sert pour l'overlay pause et le
+       mini-player). Annule si la lecture a repris avant ce tick
+       (sequence pause -> seek -> play du runtime). */
+    if (g_audio.state == ASTATE_PAUSE) {
+        Uint32 now = SDL_GetTicks();
+        if (g_audio.pending_pause_cb ||
+            (Uint32)(now - g_audio.last_pause_cb_ms) >= 1000u) {
+            g_audio.pending_pause_cb = 0;
+            g_audio.last_pause_cb_ms = now;
+            audio_emit(L, "pause", audio_current_time());
+        }
+        return;
+    }
+    g_audio.pending_pause_cb = 0;
+
     if (g_audio.state != ASTATE_PLAY) return;
     if (!g_audio.mp3_data) return;
 
@@ -294,6 +318,7 @@ void sdl_audio_pump(lua_State *L) {
 
             mp3dec_frame_info_t info;
             int16_t pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+            memset(&info, 0, sizeof(info));
             int samples = mp3dec_decode_frame(&g_audio.decoder,
                 g_audio.mp3_data + g_audio.mp3_pos,
                 (int)(g_audio.mp3_size - g_audio.mp3_pos),
@@ -305,6 +330,15 @@ void sdl_audio_pump(lua_State *L) {
                 /* Pas de frame valide : avancer d'un octet */
                 g_audio.mp3_pos++;
                 continue;
+            }
+
+            if (samples == 0 && info.hz > 0 && info.channels > 0) {
+                /* Trame valide mais non decodable (reservoir de bits absent
+                   juste apres un seek) : silence de la duree de la trame,
+                   pour que l'horloge reste alignee sur le fichier */
+                samples = info.layer == 1 ? 384
+                        : (info.layer == 3 && info.hz < 32000) ? 576 : 1152;
+                memset(pcm, 0, (size_t)samples * (size_t)info.channels * sizeof(int16_t));
             }
 
             if (samples > 0 && info.hz > 0 && info.channels > 0 &&
@@ -434,14 +468,33 @@ fail:
     return 1;
 }
 
+static void audio_do_play(void) {
+    if (!g_audio.mp3_data) return;
+    /* Reprise apres pause : "play" des le prochain tick (retire l'overlay
+       pause du runtime sans attendre la seconde suivante) */
+    if (g_audio.state == ASTATE_PAUSE) g_audio.last_cb_time = -1.0f;
+    g_audio.state = ASTATE_PLAY;
+    g_audio.pending_pause_cb = 0;
+    SDL_PauseAudioDevice(g_audio.dev_id, 0);
+}
+
+static void audio_do_pause(void) {
+    if (g_audio.state != ASTATE_PLAY) return;
+    g_audio.state = ASTATE_PAUSE;
+    g_audio.pending_pause_cb = 1;
+    SDL_PauseAudioDevice(g_audio.dev_id, 1);
+}
+
 /* audio.play() */
 static int l_audio_play(lua_State *L) {
     (void)L;
-    if (g_audio.mp3_data) {
-        g_audio.state = ASTATE_PLAY;
-        SDL_PauseAudioDevice(g_audio.dev_id, 0);
-    }
+    audio_do_play();
     return 0;
+}
+
+void sdl_audio_toggle_pause(void) {
+    if (g_audio.state == ASTATE_PLAY) audio_do_pause();
+    else if (g_audio.state == ASTATE_PAUSE) audio_do_play();
 }
 
 /* audio.stop() */
@@ -456,6 +509,7 @@ static int l_audio_stop(lua_State *L) {
     }
     g_audio.state = ASTATE_STOP;
     g_audio.eof_draining = 0;
+    g_audio.pending_pause_cb = 0;
     SDL_ClearQueuedAudio(g_audio.dev_id);
     if (g_audio.stream) SDL_AudioStreamClear(g_audio.stream);
     /* Rembobiner */
@@ -478,10 +532,7 @@ void sdl_audio_stop_all(void) {
 /* audio.pause() */
 static int l_audio_pause(lua_State *L) {
     (void)L;
-    if (g_audio.state == ASTATE_PLAY) {
-        g_audio.state = ASTATE_PAUSE;
-        SDL_PauseAudioDevice(g_audio.dev_id, 1);
-    }
+    audio_do_pause();
     return 0;
 }
 
@@ -496,11 +547,38 @@ static int l_audio_seek(lua_State *L) {
     if (g_audio.duration_s > 0.0f && seconds > g_audio.duration_s)
         seconds = g_audio.duration_s;
 
+    /* Position retenue (frames de sortie) : l'horloge rapportee au Lua
+       repart de la position reellement atteinte, pas de la cible */
+    uint64_t start_samples = (uint64_t)((double)seconds * AUDIO_FREQ);
+
     if (g_audio.has_mp3map && g_audio.mp3map.num_entries > 0) {
-        uint32_t byte_off = mp3map_seek(&g_audio.mp3map, seconds);
-        if (byte_off < g_audio.mp3_size) {
-            g_audio.mp3_pos = byte_off;
+        /* Point de depart de la table (entree <= cible, ou debut des
+           donnees id3_offset pour une cible avant entries[0]), puis
+           avance trame par trame jusqu'a la frontiere de trame la plus
+           proche de la cible (la table n'a qu'une entree par ~1 s) */
+        uint32_t byte_off, unit_pos;
+        if (mp3map_seek_floor(&g_audio.mp3map, seconds, &byte_off, &unit_pos) != 0 ||
+            byte_off >= g_audio.mp3_size) {
+            return 0;   /* table incoherente avec le fichier : seek ignore */
         }
+        double target = (double)seconds * MP3MAP_RATE;
+        double units = (double)unit_pos;
+        size_t pos = byte_off;
+        mp3dec_t probe;
+        mp3dec_init(&probe);
+        while (pos < g_audio.mp3_size) {
+            mp3dec_frame_info_t info;
+            /* pcm = NULL : lecture de l'en-tete seulement (pas de decodage) */
+            int n = mp3dec_decode_frame(&probe, g_audio.mp3_data + pos,
+                                        (int)(g_audio.mp3_size - pos), NULL, &info);
+            if (n <= 0 || info.frame_bytes <= 0 || info.hz <= 0) break;
+            double fu = (double)n * MP3MAP_RATE / (double)info.hz;
+            if (units + fu / 2.0 > target) break;
+            pos += (size_t)info.frame_bytes;
+            units += fu;
+        }
+        g_audio.mp3_pos = pos;
+        start_samples = (uint64_t)(units * AUDIO_FREQ / MP3MAP_RATE + 0.5);
     } else if (g_audio.duration_s > 0.0f) {
         /* Sans mp3map : estimation lineaire */
         float frac = seconds / g_audio.duration_s;
@@ -513,8 +591,8 @@ static int l_audio_seek(lua_State *L) {
     SDL_ClearQueuedAudio(g_audio.dev_id);
     if (g_audio.stream) SDL_AudioStreamClear(g_audio.stream);
     mp3dec_init(&g_audio.decoder);
-    g_audio.samples_queued = (uint64_t)((double)seconds * AUDIO_FREQ);
-    g_audio.last_cb_time = seconds;
+    g_audio.samples_queued = start_samples;
+    g_audio.last_cb_time = (float)start_samples / (float)AUDIO_FREQ;
     g_audio.eof_draining = 0;
 
     /* Pas de changement d'etat : un seek pendant la pause reste en pause
@@ -549,6 +627,14 @@ static const luaL_Reg audio_funcs[] = {
     {NULL, NULL}
 };
 
+#ifdef FLAM_TEST_REAL_AUDIO
+static int l_test_toggle_pause(lua_State *L) {
+    (void)L;
+    sdl_audio_toggle_pause();
+    return 0;
+}
+#endif
+
 void sdl_audio_register_lua(lua_State *L) {
     /* Nouvel etat Lua : toute reference d'un etat precedent est caduque
        (filet de securite si sdl_audio_stop_all n'a pas ete appele avant
@@ -558,4 +644,10 @@ void sdl_audio_register_lua(lua_State *L) {
     lua_newtable(L);
     luaL_setfuncs(L, audio_funcs, 0);
     lua_setglobal(L, "audio");
+
+#ifdef FLAM_TEST_REAL_AUDIO
+    /* flam-test-audio : expose la touche P (sdl_audio_toggle_pause) aux
+       tests tests/audio, hors table `audio` (absente du device) */
+    lua_register(L, "test_audio_toggle_pause", l_test_toggle_pause);
+#endif
 }
