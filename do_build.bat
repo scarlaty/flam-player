@@ -73,7 +73,7 @@ echo [OK] Build termine : %BUILD%\flam-player.exe
 endlocal
 exit /b 0
 
-REM --- 5b. Build des tests (flam-test) ---
+REM --- 5b. Build des tests (flam-test, flam-test-audio, flam-player pour l'e2e) ---
 :build_tests
 echo [INFO] Configuration des tests ^(BUILD_TESTS=ON^)...
 "%CMAKE%" -S "%SRC%" -B "%BUILD%" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON -DCMAKE_MAKE_PROGRAM="%NINJA%"
@@ -81,12 +81,12 @@ if errorlevel 1 (
     echo [ERREUR] Configuration cmake echouee.
     exit /b 1
 )
-"%CMAKE%" --build "%BUILD%" --target flam-test
+"%CMAKE%" --build "%BUILD%" --target flam-test flam-test-audio flam-player
 if errorlevel 1 (
     echo [ERREUR] Build des tests echoue.
     exit /b 1
 )
-echo [OK] Tests construits : %BUILD%\flam-test.exe
+echo [OK] Tests construits : %BUILD%\flam-test.exe, flam-test-audio.exe, flam-player.exe
 endlocal
 exit /b 0
 
