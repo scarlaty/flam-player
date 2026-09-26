@@ -537,6 +537,100 @@ class TestConversion(Base):
         data = self.assertValid(self.convert(std_files(nodes=n), name="b"))
         self.assertEqual(data["totalChapters"], 3)
 
+    # Maxicours B9 : branches exclusives (menu de niveaux) -> totalChapters =
+    # chapitres de la plus longue partie possible, pas la somme des branches
+    # (sinon la jauge "Reprendre" plafonne a 31-36 %).
+    def test_total_chapters_longest_run(self):
+        def scene(ok, autoplay=True, home=None, ctrl_home=False):
+            return {"image": "s0.png", "audio": "s0.mp3", "ok": ok, "home": home,
+                    "control": {"ok": True, "home": ctrl_home, "autoplay": autoplay}}
+        tr = lambda a: {"action": a, "index": 0}
+        n = base_nodes()
+        n["stages"]["s0"]["ok"] = tr("menu")
+        # options du menu (non autoplay, jamais chapitres) -> branche A ou B
+        n["stages"]["oA"] = scene(tr("a1"), autoplay=False)
+        n["stages"]["oB"] = scene(tr("b1"), autoplay=False)
+        n["actions"]["menu"] = [{"stage": "oA"}, {"stage": "oB"}]
+        # branche A : a1 -> a2 -> a3 -> retour a a1 (cycle), 3 chapitres
+        n["stages"]["a1"] = scene(tr("a2"))
+        n["stages"]["a2"] = scene(tr("a3"))
+        n["stages"]["a3"] = scene(tr("a1"))
+        # branche B : b1 -> b2 -> fin, 2 chapitres ; home vers la branche A ignore
+        # sans ctrl.home (story.lua homeOf)
+        n["stages"]["b1"] = scene(tr("b2"), home=tr("a1"))
+        n["stages"]["b2"] = scene(None)
+        for k in ("a1", "a2", "a3", "b1", "b2"):
+            n["actions"][k] = [{"stage": k}]
+        data = self.assertValid(self.convert(std_files(nodes=n)))
+        self.assertEqual(data["totalChapters"], 4)     # s0 + a1 a2 a3 (avant : 6)
+        # home actif (ctrl.home) de b1 vers la branche A : b1 puis A = 1 + 1 + 3
+        n["stages"]["b1"]["control"]["home"] = True
+        data = self.assertValid(self.convert(std_files(nodes=n), name="h"))
+        self.assertEqual(data["totalChapters"], 5)
+        # stage non atteignable depuis start : ne compte pas
+        n["stages"]["orphan"] = scene(None)
+        n["actions"]["orph"] = [{"stage": "orphan"}]
+        data = self.assertValid(self.convert(std_files(nodes=n), name="o"))
+        self.assertEqual(data["totalChapters"], 5)
+
+    # Maxicours B4 : polices du player limitees a U+0020-007E et U+00A0-00FF
+    # (src/fonts/*.c) -> translitteration du texte affiche a la conversion.
+    def test_font_safe_transliteration(self):
+        fs = T._font_safe
+        self.assertEqual(fs("L\u2019\u00e9t\u00e9 \u2018x\u2019"), "L'\u00e9t\u00e9 'x'")
+        self.assertEqual(fs("\u201cA\u201d \u201eB\u201f"), '"A" "B"')
+        self.assertEqual(fs("a\u2013b\u2014c"), "a-b-c")
+        self.assertEqual(fs("Fin\u2026"), "Fin...")
+        self.assertEqual(fs("\u0153uvre \u0152IL"), "oeuvre OEIL")
+        self.assertEqual(T._text("a\u202fb\u00a0c\u2009d"), "a b c d")
+        # accents Latin-1 gardes, y compris sous forme decomposee (NFD)
+        self.assertEqual(fs("\u00e9\u00e0\u00e7\u00ab\u00bb\u00c9"), "\u00e9\u00e0\u00e7\u00ab\u00bb\u00c9")
+        self.assertEqual(fs("e\u0301te\u0301"), "\u00e9t\u00e9")
+        # approche NFKD, sinon suppression (emoji, symbole) ou "?" (lettre)
+        self.assertEqual(fs("\u0151 \ufb01"), "o fi")
+        self.assertEqual(T._text("Renard \U0001F98A\ufe0f !"), "Renard !")
+        self.assertEqual(fs("\u4e2d"), "?")
+        rep = {}
+        fs("\u2019\U0001F98A\u00e9", rep)
+        self.assertEqual(rep, {"\u2019": "'", "\U0001F98A": ""})
+        # bout en bout : titre, sous-titre, labels et inventaire
+        meta = {"title": "L\u2019\u00e9t\u00e9 \u2013 \u00ab \u00c9pisode \u00bb \U0001F98A",
+                "category": "Cat\u00e9gorie\u202f: \u0153uvre", "uuid": "u"}
+        n = base_nodes()
+        n["stages"]["s1"] = {"image": "s0.png", "control": {}}
+        n["stages"]["s2"] = {"image": "s0.png", "control": {}}
+        n["actions"]["a0"] = [{"stage": "s0"}, {"stage": "s1"}, {"stage": "s2"}]
+        n["inventory"] = [{"name": "Cl\u00e9 \u2014 or", "initialNumber": 0, "maxNumber": 1}]
+        notes = {"s0": {"title": "\u201cLe ch\u00e2teau\u201d\u2026"},
+                 "s1": {"title": "\U0001F98A", "text": "Repli texte"},
+                 "s2": {"title": "\u2019" * 60}}
+        pk = self.convert(std_files(meta=meta, nodes=n) + [("notes.json", json.dumps(notes))])
+        data = self.assertValid(pk)
+        with zipfile.ZipFile(pk) as z:
+            info = z.read("info.plain").decode("utf-8")
+        self.assertEqual(info.split("\n"),
+                         ["L'\u00e9t\u00e9 - \u00ab \u00c9pisode \u00bb",
+                          "Cat\u00e9gorie : oeuvre", "000000",
+                          "L'\u00e9t\u00e9 - \u00ab \u00c9pisode \u00bb"])
+        self.assertEqual(data["meta"]["title"], "L'\u00e9t\u00e9 - \u00ab \u00c9pisode \u00bb")
+        st = data["stages"]
+        self.assertEqual(st["s0"]["text"], '"Le ch\u00e2teau"...')
+        self.assertEqual(st["s1"]["text"], "Repli texte")   # label vide apres suppression
+        self.assertLessEqual(len(st["s2"]["text"]), T.LABEL_MAX)
+        self.assertEqual(data["inventory"][0]["name"], "Cl\u00e9 - or")
+        texts = [info, data["meta"]["subtitle"], data["inventory"][0]["name"]]
+        texts += [s["text"] for s in st.values() if "text" in s]
+        for t in texts:
+            self.assertTrue(all(T._in_font(c) or c == "\n" for c in t), ascii(t))
+        # avertissement ASCII listant les caracteres remplaces
+        self.assertIn("hors police", self.stderr)
+        self.assertIn("U+2019", self.stderr)
+        self.assertIn("U+1F98A", self.stderr)
+        self.assertTrue(all(ord(c) < 128 for c in self.stderr), ascii(self.stderr))
+        # texte deja compatible : aucun avertissement
+        self.convert(std_files(meta={"title": "\u00c9t\u00e9", "uuid": "u"}), name="lat")
+        self.assertNotIn("hors police", self.stderr)
+
 
     # hunt3 : cle tRNS des PNG gris 1/2/4/16 bits et RGB 16 bits appliquee
     def test_png_trns_low_depth_and_16bit(self):
@@ -733,6 +827,33 @@ class TestValidate(Base):
             rc, out = self.run_validate(self.rewrite(pk, {k: None}))
             self.assertEqual(rc, 1, "%s\n%s" % (k, out))
             self.assertIn(k + " absente", out)
+
+    # Maxicours B11 : dossier .plain -> memes controles (et non "archive
+    # illisible : Permission denied")
+    def test_plain_dir(self):
+        plain = self.convert(std_files(), out=os.path.join(self.tmp, "d.plain"))
+        self.assertTrue(os.path.isdir(plain))
+        rc, out = self.run_validate(plain)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("illisible", out)
+        self.assertIn("STORED non applicable", out)
+        self.assertIn("nodes.lua charge", out)
+        self.assertIn("tous les stages sont atteignables", out)
+        # meme nombre de controles OK que le .pk, hors STORED (remplace par le
+        # constat "dossier .plain")
+        pk = self.convert(std_files(), name="same")
+        rc_pk, out_pk = self.run_validate(pk)
+        self.assertEqual(rc_pk, 0, out_pk)
+        self.assertEqual(out.count("[OK]"), out_pk.count("[OK]"))
+        # les erreurs sont detectees dans le dossier aussi
+        os.remove(os.path.join(plain, "script", "global.lua"))
+        with open(os.path.join(plain, "img", "s0.lif"), "wb") as f:
+            f.write(b"xxxx" + bytes(30))
+        rc, out = self.run_validate(plain)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("script/global.lua absente", out)
+        self.assertIn("LIF img/s0.lif", out)
+        self.assertNotIn("Traceback", out)
 
 if __name__ == "__main__":
     unittest.main()

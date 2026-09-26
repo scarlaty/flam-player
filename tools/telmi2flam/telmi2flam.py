@@ -287,6 +287,70 @@ def _flat(s):
     return " ".join(str(s).split())
 
 
+# Les polices du player (src/fonts/*.c, lv_font_conv -r 0x20-0x7F,0xA0-0xFF) ne
+# couvrent que l'ASCII imprimable et Latin-1 : tout autre caractere s'affiche en
+# rectangle vide. Remplacements typographiques usuels, le reste est approche
+# (decomposition NFKD sans diacritiques), supprime (emoji, symboles, invisibles)
+# ou remplace par "?".
+_FONT_MAP = {
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u2032": "'",
+    "\u2039": "<", "\u203a": ">",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2033": '"',
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-",
+    "\u2015": "-", "\u2212": "-", "\u2022": "-",
+    "\u2026": "...", "\u0153": "oe", "\u0152": "OE", "\u20ac": "EUR", "\u2122": "TM",
+}
+
+
+def _in_font(ch):
+    o = ord(ch)
+    return 0x20 <= o <= 0x7E or 0xA0 <= o <= 0xFF
+
+
+def _font_safe(s, replaced=None):
+    """Chaine affichable par les polices du player (ASCII + Latin-1). Les
+    accents Latin-1 (e accent aigu, a grave, c cedille...) sont gardes. Les
+    espaces Unicode (dont l'espace insecable fine U+202F) sont laisses tels
+    quels : _flat / _text les ramenent a un espace simple. replaced (dict)
+    recoit {caractere: remplacement} pour l'avertissement."""
+    s = unicodedata.normalize("NFC", str(s))
+    out = []
+    for ch in s:
+        if _in_font(ch) or ch.isspace():
+            out.append(ch)       # espaces : ramenes a " " par _flat
+            continue
+        rep = _FONT_MAP.get(ch)
+        if rep is None:
+            base = "".join(c for c in unicodedata.normalize("NFKD", ch)
+                           if not unicodedata.combining(c))
+            if base and all(_in_font(c) for c in base):
+                rep = base       # ex. "o" double aigu -> "o", ligature fi -> "fi"
+            elif unicodedata.category(ch)[0] in "LN":
+                rep = "?"        # lettre ou chiffre sans equivalent
+            else:
+                rep = ""         # emoji, symbole, controle, invisible : supprime
+        if replaced is not None:
+            replaced[ch] = rep
+        out.append(rep)
+    return "".join(out)
+
+
+def _text(s, replaced=None):
+    """Texte affiche (titre, sous-titre, label) : police-compatible et sur une ligne."""
+    return _flat(_font_safe(s, replaced))
+
+
+def _describe_replaced(replaced, limit=12):
+    """Liste ASCII des caracteres remplaces (sortie console sans risque d'encodage)."""
+    items = []
+    for ch in sorted(replaced):
+        rep = replaced[ch]
+        items.append("U+%04X %s -> %s" % (ord(ch), unicodedata.name(ch, "?"),
+                                          ascii(rep) if rep else "(supprime)"))
+    more = " ..." if len(items) > limit else ""
+    return ", ".join(items[:limit]) + more
+
+
 def check_asset_name(name, what):
     """Refuse les noms d'assets pouvant sortir du dossier (zip-slip)."""
     _expect(name, str, what, optional=False)
@@ -339,10 +403,11 @@ def _conv_item(it, what):
     return out
 
 
-def _choice_label(note, node_id=None):
+def _choice_label(note, node_id=None, replaced=None):
     """Label court d'un choix : title, sinon text, sinon notes ; tronque.
     Un texte egal a l'id du noeud est ignore : c'est le titre par defaut de
-    l'editeur TELMI ("s0.m0": {"title": "s0.m0"}), pas un vrai label."""
+    l'editeur TELMI ("s0.m0": {"title": "s0.m0"}), pas un vrai label.
+    Caracteres hors police remplaces (_font_safe) avant la troncature."""
     if not isinstance(note, dict):
         return ""
     for key in ("title", "text", "notes"):
@@ -351,10 +416,91 @@ def _choice_label(note, node_id=None):
             label = _flat(v)
             if node_id is not None and label == _flat(str(node_id)):
                 continue
+            label = _text(label, replaced)
+            if not label:
+                continue
             if len(label) > LABEL_MAX:
                 label = label[:LABEL_MAX - 3].rstrip() + "..."
             return label
     return ""
+
+
+def _max_chapters_per_run(stages, actions, start, chapters):
+    """Nombre maximal de chapitres (stages de `chapters`) visitables en une
+    seule partie, depuis les entrees de l'action de depart jusqu'a la fin
+    d'histoire (endStory remet la progression a zero).
+
+    Graphe : stage -> stages de l'action de son ok, et de son home si
+    ctrl.home (comme homeOf dans story.lua). Toutes les entrees d'une action
+    sont supposees possibles (conditions ignorees : borne haute). Dans une
+    composante fortement connexe, tous les stages sont visitables ; entre
+    composantes, on prend le chemin le plus lourd du graphe condense (DAG).
+    Resultat <= len(chapters) : la jauge reste dans [0, 100] et atteint 100 %
+    sur la branche la plus longue."""
+    def succ(sid):
+        st = stages[sid]
+        out = []
+        for key in ("ok", "home"):
+            tr = st.get(key)
+            if not tr or (key == "home" and not st["ctrl"]["home"]):
+                continue
+            for e in actions.get(tr["action"], ()):
+                if e["stage"] in stages:
+                    out.append(e["stage"])
+        return out
+
+    roots = [e["stage"] for e in actions.get(start["action"], ()) if e["stage"] in stages]
+    # Tarjan iteratif (pas de recursion : graphes de plusieurs milliers de stages)
+    index, low, comp = {}, {}, {}
+    stack, on_stack, comps = [], set(), []
+    counter = 0
+    for root in roots:
+        if root in index:
+            continue
+        work = [(root, iter(succ(root)))]
+        index[root] = low[root] = counter
+        counter += 1
+        stack.append(root)
+        on_stack.add(root)
+        while work:
+            v, it = work[-1]
+            w = next(it, None)
+            if w is not None:
+                if w not in index:
+                    index[w] = low[w] = counter
+                    counter += 1
+                    stack.append(w)
+                    on_stack.add(w)
+                    work.append((w, iter(succ(w))))
+                elif w in on_stack:
+                    low[v] = min(low[v], index[w])
+                continue
+            work.pop()
+            if work:
+                u = work[-1][0]
+                low[u] = min(low[u], low[v])
+            if low[v] == index[v]:
+                members = []
+                while True:
+                    w = stack.pop()
+                    on_stack.discard(w)
+                    comp[w] = len(comps)
+                    members.append(w)
+                    if w == v:
+                        break
+                comps.append(members)
+    # Tarjan emet les composantes en ordre topologique inverse : les
+    # successeurs d'une composante sont deja calcules.
+    best = []
+    for c, members in enumerate(comps):
+        weight = sum(1 for s in members if s in chapters)
+        nxt = 0
+        for s in members:
+            for w in succ(s):
+                if comp[w] != c:
+                    nxt = max(nxt, best[comp[w]])
+        best.append(weight + nxt)
+    return max((best[comp[r]] for r in roots), default=0)
 
 
 # ---------------------------------------------------------------------------
@@ -443,9 +589,12 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
         _warn("notes.json ignore (objet attendu, %s trouve)" % type(notes).__name__)
         notes = {}
 
-    title = _flat(metadata.get("title") or "") or "Histoire"
+    # Caracteres hors police (ASCII + Latin-1) remplaces : {car: remplacement}
+    font_replaced = {}
+    title = _text(metadata.get("title") or "", font_replaced) or "Histoire"
     subtitle_src = metadata.get("category") or ""
-    subtitle_src = _flat(subtitle_src) if isinstance(subtitle_src, (str, int, float)) else ""
+    subtitle_src = (_text(subtitle_src, font_replaced)
+                    if isinstance(subtitle_src, (str, int, float)) else "")
     uuid_str = metadata.get("uuid")
     if isinstance(uuid_str, str) and uuid_str.strip():
         uuid16 = hashlib.md5(uuid_str.encode("utf-8")).digest()  # 16 octets deterministes
@@ -597,7 +746,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
         if st.get("inventoryReset"):
             entry["reset"] = True
         # Label court du choix (carrousel) : notes.json title, sinon text, sinon notes.
-        label = _choice_label(notes.get(sid), sid)
+        label = _choice_label(notes.get(sid), sid, font_replaced)
         if label:
             entry["text"] = label
         lua_stages[sid] = entry
@@ -630,7 +779,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
                              is_inventory=True)
             name = it.get("name", "")
             lua_inventory.append({
-                "name": _flat(name) if isinstance(name, (str, int, float)) else "",
+                "name": _text(name, font_replaced) if isinstance(name, (str, int, float)) else "",
                 "init": _expect(it.get("initialNumber", 0), (int, float), what + ".initialNumber",
                                 optional=False),
                 "max": _expect(it.get("maxNumber", 0), (int, float), what + ".maxNumber",
@@ -677,6 +826,12 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
         if title_audio:
             lua_title["audio"] = title_audio
 
+    # --- Texte hors police : avertissement (titre, sous-titre, labels, inventaire) ---
+    if font_replaced:
+        _warn("%d caractere(s) hors police (ASCII + Latin-1) remplace(s) dans le "
+              "titre, le sous-titre ou les labels : %s"
+              % (len(font_replaced), _describe_replaced(font_replaced)))
+
     # --- Assets manquants : echec sauf --allow-missing ---
     if missing:
         msg = "%d asset(s) manquant(s) : %s" % (
@@ -703,6 +858,10 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
     # jamais atteindre 100 %. Regles d'enterAction/followTransition : action a
     # 1 entree, entree cible d'un indexItem, action avec conditions (le filtre
     # peut ramener a 1 entree : prudence), ou scene cible autoplay.
+    # Une partie ne visite pas forcement tout le graphe : branches exclusives
+    # (menu de niveaux, fins alternatives) et endStory remet la progression a
+    # zero. totalChapters = nombre maximal de chapitres visitables en une seule
+    # partie (_max_chapters_per_run), et non le total du paquet.
     item_actions = set()
     for e in lua_stages.values():
         for key in ("ok", "home"):
@@ -717,8 +876,8 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
             st = lua_stages.get(it["stage"])
             if st and (direct or st["ctrl"]["autoplay"]):
                 playable.add(it["stage"])
-    audio_stage_count = sum(1 for sid, e in lua_stages.items()
-                            if e.get("audio") and sid in playable)
+    chapters = set(sid for sid, e in lua_stages.items() if e.get("audio") and sid in playable)
+    audio_stage_count = _max_chapters_per_run(lua_stages, lua_actions, lua_start, chapters)
     data_table = {
         "meta": {"title": title, "subtitle": subtitle_src},
         "totalChapters": max(1, audio_stage_count),

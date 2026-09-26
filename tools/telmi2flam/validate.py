@@ -14,7 +14,10 @@ Verifie :
 Les donnees de nodes.lua sont lues par un petit parseur Python du sous-ensemble
 Lua genere par telmi2flam.py (aucune dependance requise).
 
-Usage : python validate.py <histoire.plain.pk>
+Usage : python validate.py <histoire.plain.pk | dossier .plain>
+
+Un dossier .plain extrait (telmi2flam.py --plain ou -o X.plain) subit les memes
+controles, sauf la methode STORED (propre a l'archive .pk).
 """
 import os
 import re
@@ -306,14 +309,46 @@ def check_mp3map(mm, mp3):
     return None
 
 
+class PlainDir:
+    """Dossier .plain extrait, vu comme une archive (infolist/read/close) :
+    noms relatifs en "/", comme dans le .pk."""
+
+    def __init__(self, root):
+        self.root = root
+        self.names = []
+        for dp, dns, fns in os.walk(root):
+            dns.sort()
+            rel = os.path.relpath(dp, root)
+            for fn in sorted(fns):
+                p = fn if rel == "." else os.path.join(rel, fn)
+                self.names.append(p.replace(os.sep, "/"))
+
+    def infolist(self):
+        return [zipfile.ZipInfo(n) for n in self.names]
+
+    def read(self, name):
+        with open(os.path.join(self.root, *name.split("/")), "rb") as f:
+            return f.read()
+
+    def close(self):
+        pass
+
+
 def main(pk_path):
     errs, warns, oks = [], [], []
 
-    try:
-        zf = zipfile.ZipFile(pk_path)
-    except (OSError, zipfile.BadZipFile) as e:
-        print("=== %s ===\n  [ERR]  archive illisible : %s" % (pk_path, e))
-        return 1
+    # Dossier .plain extrait (--plain, -o X.plain) : memes controles, sauf STORED
+    is_dir = os.path.isdir(pk_path)
+    if is_dir:
+        zf = PlainDir(pk_path)
+        oks.append("dossier .plain (%d fichiers) : controle STORED non applicable"
+                   % len(zf.names))
+    else:
+        try:
+            zf = zipfile.ZipFile(pk_path)
+        except (OSError, zipfile.BadZipFile) as e:
+            print("=== %s ===\n  [ERR]  archive illisible : %s" % (pk_path, e))
+            return 1
     infos = zf.infolist()
     names = set(i.filename for i in infos)
 
@@ -330,10 +365,11 @@ def main(pk_path):
             oks.append("entree %s" % r)
         else:
             errs.append("entree %s absente" % r)
-    nonstored = [i.filename for i in infos if i.compress_type != zipfile.ZIP_STORED]
+    nonstored = [] if is_dir else [i.filename for i in infos
+                                   if i.compress_type != zipfile.ZIP_STORED]
     if nonstored:
         errs.append("%d entrees non-stored (ex: %s)" % (len(nonstored), nonstored[0]))
-    else:
+    elif not is_dir:
         oks.append("toutes les entrees en STORED")
     uuid = read("uuid.bin")
     if uuid is not None:
@@ -560,6 +596,6 @@ def main(pk_path):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage : python validate.py <histoire.plain.pk>", file=sys.stderr)
+        print("Usage : python validate.py <histoire.plain.pk | dossier .plain>", file=sys.stderr)
         sys.exit(2)
     sys.exit(main(sys.argv[1]))
