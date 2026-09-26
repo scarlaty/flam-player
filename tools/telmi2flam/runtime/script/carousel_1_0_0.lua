@@ -26,13 +26,16 @@ carousel.arrowRData = nil
 carousel.keyEvent = nil
 carousel.inputProcessTimer = nil
 carousel.tick = 0
+carousel.rowDy = 0         -- decalage vertical des images (ROW_DY si label, 0 sinon)
+carousel.hasLabel = false
 
--- Geometrie (zoom LVGL : 256 = 1x). Images sources = 320x240.
-local ZOOM_CENTER = 160      -- ~200x150 (image principale)
-local ZOOM_SIDE   = 64       -- ~80x60
+-- Geometrie (zoom LVGL : 256 = 1x). Images sources = 320x212 (zone sous le bandeau).
+local ZOOM_CENTER = 160      -- ~200x132 (image principale)
+local ZOOM_SIDE   = 64       -- ~80x53
 local SIDE_OPA    = 90        -- opacite des voisins (0..255)
 local SIDE_DX     = 112       -- decalage horizontal des voisins
-local ROW_DY      = -14       -- centre vertical sur la zone sans texte (au-dessus du label)
+local ROW_DY      = -14       -- centre vertical sur la zone sans texte (au-dessus du label) ;
+                             -- 0 si aucun choix n'a de label (barre masquee)
 local ARROW_ON    = 255       -- fleche active
 local ARROW_DIM   = 60        -- fleche cote "mort" (2 choix : pas de wrap)
 local PH_W, PH_H  = 150, 112  -- carte de repli
@@ -148,7 +151,7 @@ local function showSide(imgObj, idx, dx)
     lv.img.set_src(imgObj, data)
     lv.img.set_zoom(imgObj, ZOOM_SIDE)
     lv.obj.set_style_img_opa(imgObj, SIDE_OPA, lv.STATE_DEFAULT)
-    lv.obj.align(imgObj, lv.ALIGN_CENTER, dx, ROW_DY)
+    lv.obj.align(imgObj, lv.ALIGN_CENTER, dx, carousel.rowDy)
 end
 
 local function hideSide(imgObj)
@@ -174,7 +177,7 @@ function carousel.refreshVisual()
         lv.img.set_src(carousel.imgC, data)
         lv.img.set_zoom(carousel.imgC, ZOOM_CENTER)
         lv.obj.set_style_img_opa(carousel.imgC, lv.OPA_COVER, lv.STATE_DEFAULT)
-        lv.obj.align(carousel.imgC, lv.ALIGN_CENTER, 0, ROW_DY)  -- re-align apres auto-size
+        lv.obj.align(carousel.imgC, lv.ALIGN_CENTER, 0, carousel.rowDy)  -- re-align apres auto-size
     else
         lv.obj.add_flag(carousel.imgC, lv.OBJ_FLAG_HIDDEN)
         lv.obj.clear_flag(carousel.placeholder, lv.OBJ_FLAG_HIDDEN)
@@ -276,7 +279,7 @@ end
 local function newVignette(parent, dx, dy)
     local img = lv.img.new(parent)
     lv.obj.remove_style_all(img)
-    -- FLOATING : les boites image (320x240) debordent du conteneur ; sans ce
+    -- FLOATING : les boites image (320x212) debordent du conteneur ; sans ce
     -- flag, le conteneur scrollable (garde pour ENTER) auto-scrolle vers un
     -- voisin qui deborde => tout l'ecran se decale (cf. bug pos2). FLOATING =
     -- objet ignore par scroll/layout, positionne uniquement par align.
@@ -313,6 +316,14 @@ function carousel.create(args)
         end
     end
 
+    -- Barre de label seulement si au moins un choix a un label (notes.json) :
+    -- sinon (cas frequent, texte deja dans l'image) images centrees, pas de barre vide.
+    carousel.hasLabel = false
+    for _, v in ipairs(carousel.answers) do
+        if type(v.label) == "string" and v.label ~= "" then carousel.hasLabel = true; break end
+    end
+    carousel.rowDy = carousel.hasLabel and ROW_DY or 0
+
     if (#carousel.answers == 0) then
         return args.exitCb()
     elseif #carousel.answers == 1 and lastCb ~= nil and args.skipIfLastChoice == true then
@@ -320,16 +331,16 @@ function carousel.create(args)
     end
 
     -- Vignettes (voisins derriere, centre devant) + carte de repli.
-    carousel.imgL = newVignette(carousel.parentContainer, -SIDE_DX, ROW_DY)
-    carousel.imgR = newVignette(carousel.parentContainer, SIDE_DX, ROW_DY)
-    carousel.imgC = newVignette(carousel.parentContainer, 0, ROW_DY)
+    carousel.imgL = newVignette(carousel.parentContainer, -SIDE_DX, carousel.rowDy)
+    carousel.imgR = newVignette(carousel.parentContainer, SIDE_DX, carousel.rowDy)
+    carousel.imgC = newVignette(carousel.parentContainer, 0, carousel.rowDy)
 
     carousel.placeholder = lv.obj.new(carousel.parentContainer)
     lv.obj.remove_style_all(carousel.placeholder)
     lv.obj.set_size(carousel.placeholder, PH_W, PH_H)
     lv.obj.add_style(carousel.placeholder, carousel.styles.placeholder, lv.STATE_DEFAULT)
     lv.obj.clear_flag(carousel.placeholder, lv.OBJ_FLAG_SCROLLABLE)
-    lv.obj.align(carousel.placeholder, lv.ALIGN_CENTER, 0, ROW_DY)
+    lv.obj.align(carousel.placeholder, lv.ALIGN_CENTER, 0, carousel.rowDy)
     lv.obj.add_flag(carousel.placeholder, lv.OBJ_FLAG_HIDDEN)
     carousel.placeholderNum = lv.label.new(carousel.placeholder)
     lv.obj.remove_style_all(carousel.placeholderNum)
@@ -344,7 +355,7 @@ function carousel.create(args)
     lv.obj.remove_style_all(carousel.arrowL)
     lv.img.set_src(carousel.arrowL, carousel.arrowLData)
     lv.obj.set_size(carousel.arrowL, aw, ah)
-    lv.obj.align(carousel.arrowL, lv.ALIGN_LEFT_MID, 6, ROW_DY)
+    lv.obj.align(carousel.arrowL, lv.ALIGN_LEFT_MID, 6, carousel.rowDy)
 
     local arw, arh
     carousel.arrowRData, arw, arh = Global.load_image(ARROW_R)
@@ -352,7 +363,7 @@ function carousel.create(args)
     lv.obj.remove_style_all(carousel.arrowR)
     lv.img.set_src(carousel.arrowR, carousel.arrowRData)
     lv.obj.set_size(carousel.arrowR, arw, arh)
-    lv.obj.align(carousel.arrowR, lv.ALIGN_RIGHT_MID, -6, ROW_DY)
+    lv.obj.align(carousel.arrowR, lv.ALIGN_RIGHT_MID, -6, carousel.rowDy)
 
     if (#carousel.answers < 2) then
         lv.obj.add_flag(carousel.arrowL, lv.OBJ_FLAG_HIDDEN)
@@ -369,6 +380,9 @@ function carousel.create(args)
     lv.obj.add_style(carousel.label, carousel.styles.label, lv.STATE_DEFAULT)
     lv.obj.set_style_text_align(carousel.label, lv.TEXT_ALIGN_CENTER, 0)
     lv.obj.align(carousel.label, lv.ALIGN_BOTTOM_MID, 0, -4)
+    if not carousel.hasLabel then
+        lv.obj.add_flag(carousel.label, lv.OBJ_FLAG_HIDDEN)
+    end
 
     lv.group.add_obj(document, carousel.parentContainer)
 

@@ -360,7 +360,29 @@ class TestConversion(Base):
         with zipfile.ZipFile(pk) as z:
             self.assertEqual(lif_dims(z.read("img/empty.lif")), (8, 8))
             self.assertEqual(z.read("sounds/silent.mp3")[:4], bytes([0xFF, 0xFB, 0x90, 0x00]))
-            self.assertEqual(lif_dims(z.read("img/" + st["s2"]["image"])), (320, 240))
+            self.assertEqual(lif_dims(z.read("img/" + st["s2"]["image"])), (T.VISUAL_W, T.VISUAL_H))
+
+    # Image de scene 4:3 : ajustee sans deformation dans la zone 320x212
+    # (sous le bandeau de 28 px), centree avec des bandes transparentes.
+    def test_scene_image_fits_visual_area(self):
+        import lif
+        self.assertEqual(T.png_to_scene_lif.__defaults__, (320, 212))
+        data = T.png_to_scene_lif(png(640, 480))
+        w, h = lif_dims(data)
+        self.assertEqual((w, h), (320, 212))
+        rgba = lif.decode(data)[0]
+        alpha = lambda x, y: rgba[(y * w + x) * 4 + 3]
+        # 640x480 -> 283x212 : bandes de 18 px (gauche) et 19 px (droite)
+        self.assertEqual(alpha(0, 106), 0)
+        self.assertEqual(alpha(17, 106), 0)
+        self.assertEqual(alpha(18, 106), 255)
+        self.assertEqual(alpha(300, 106), 255)
+        self.assertEqual(alpha(301, 106), 0)
+        self.assertEqual(alpha(160, 0), 255)
+        self.assertEqual(alpha(160, 211), 255)
+        # image plus petite que la zone : agrandie, pas repetee
+        w2, h2 = lif_dims(T.png_to_scene_lif(png(64, 48)))
+        self.assertEqual((w2, h2), (320, 212))
 
     # F49 / F50 : inventaire
     def test_inventory_icons(self):
@@ -375,7 +397,7 @@ class TestConversion(Base):
         self.assertNotEqual(inv0, data["stages"]["s0"]["image"])
         self.assertTrue(inv0.endswith("_inv.lif"))
         with zipfile.ZipFile(pk) as z:
-            self.assertEqual(lif_dims(z.read("img/" + data["stages"]["s0"]["image"])), (320, 240))
+            self.assertEqual(lif_dims(z.read("img/" + data["stages"]["s0"]["image"])), (T.VISUAL_W, T.VISUAL_H))
             w, h = lif_dims(z.read("img/" + inv0))
             self.assertLessEqual(max(w, h), 128)
             w, h = lif_dims(z.read("img/" + inv1))
@@ -406,8 +428,12 @@ class TestConversion(Base):
         n = base_nodes()
         n["stages"]["s1"] = {"image": "s0.png", "control": {}}
         n["stages"]["s2"] = {"image": "s0.png", "control": {}}
-        n["actions"]["a0"] = [{"stage": "s0"}, {"stage": "s1"}, {"stage": "s2"}]
+        n["stages"]["s0.m0"] = {"image": "s0.png", "control": {}}
+        n["actions"]["a0"] = [{"stage": "s0"}, {"stage": "s1"}, {"stage": "s2"},
+                              {"stage": "s0.m0"}]
         notes = {"s0": {"title": "Le chateau", "text": "Il etait une fois " * 20},
+                 # titre par defaut de l'editeur TELMI = id du noeud : pas un label
+                 "s0.m0": {"title": "s0.m0", "notes": ""},
                  "s1": {"text": "Un texte\nsur deux lignes " + "x" * 80},
                  "s2": {"notes": "note"}}
         data = self.assertValid(self.convert(std_files(nodes=n) +
@@ -417,6 +443,7 @@ class TestConversion(Base):
         self.assertLessEqual(len(st["s1"]["text"]), 40)
         self.assertNotIn("\n", st["s1"]["text"])
         self.assertEqual(st["s2"]["text"], "note")
+        self.assertNotIn("text", st["s0.m0"])
 
     # F53 : titre multi-lignes
     def test_title_newline(self):
