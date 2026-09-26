@@ -11,9 +11,18 @@
  *   Entrée/Espace  → LV_KEY_ENTER  (bouton centre / clic)
  *   Échap          → LV_KEY_ESC    (retour)
  *   M              → context menu  (bouton latéral)
+ *   P              → pause / reprise du son courant (sdl_audio_toggle_pause)
+ *   S              → capture d'ecran BMP 320x240
+ *
+ * Capture d'ecran : chemin par defaut SCREENSHOT_PATH, remplace par
+ * FLAM_SCREENSHOT=<chemin> ou l'option --screenshot <chemin> (prioritaire).
+ * Une capture automatique est faite 12 s apres le premier poll (outil de
+ * debug historique) ; FLAM_SCREENSHOT_AUTO_MS=<ms> change ce delai et
+ * FLAM_SCREENSHOT_AUTO_MS=0 la desactive.
  */
 
 #include "sdl_driver.h"
+#include "sdl_audio.h"
 #include "firmware/fw_globals.h"
 
 #include <stdio.h>
@@ -27,6 +36,12 @@ static SDL_Texture  *g_texture  = NULL;
 
 /* Framebuffer LVGL (un seul buffer plein écran) */
 static lv_color_t g_fb[FLAM_SCREEN_W * FLAM_SCREEN_H];
+
+/* Framebuffer d'ombre : image complete de l'ecran, mise a jour a chaque
+   flush. g_fb ne l'est pas : sans full_refresh, LVGL y rend chaque zone
+   invalidee de facon compacte depuis le debut du buffer (largeur de la
+   zone), donc g_fb ne ressemble a l'ecran qu'apres un rendu plein ecran. */
+static lv_color_t g_shadow_fb[FLAM_SCREEN_W * FLAM_SCREEN_H];
 
 /* Display & input driver LVGL */
 static lv_disp_draw_buf_t g_draw_buf;
@@ -77,10 +92,25 @@ static uint32_t sdl_to_lv_key(SDL_Keycode sym)
 }
 
 /* Screenshot auto */
-static int g_screenshot_counter = 0;
 static Uint32 g_start_ticks = 0;
 static int g_auto_screenshot_done = 0;
 #define SCREENSHOT_PATH "C:/temp/flam-player/screenshot.bmp"
+#define SCREENSHOT_AUTO_MS_DEFAULT 12000
+
+/* Chemin fixe par --screenshot (NULL : FLAM_SCREENSHOT, sinon defaut) */
+static const char *g_screenshot_path = NULL;
+
+void sdl_driver_set_screenshot_path(const char *path)
+{
+    g_screenshot_path = (path && *path) ? path : NULL;
+}
+
+static const char *screenshot_path(void)
+{
+    const char *p = g_screenshot_path;
+    if (!p) p = getenv("FLAM_SCREENSHOT");
+    return (p && *p) ? p : SCREENSHOT_PATH;
+}
 
 static void dump_obj_tree(lv_obj_t *obj, int depth) {
     for (int i = 0; i < depth; i++) fprintf(stderr, "  ");
@@ -103,14 +133,18 @@ static void save_screenshot(void) {
     dump_obj_tree(scr, 0);
     fprintf(stderr, "========================\n\n");
 
+    /* Image de l'ecran = framebuffer d'ombre (ARGB8888, LV_COLOR_DEPTH 32) */
+    const char *path = screenshot_path();
     SDL_Surface *surf = SDL_CreateRGBSurfaceFrom(
-        g_fb, FLAM_SCREEN_W, FLAM_SCREEN_H,
-        32, FLAM_SCREEN_W * 4,
+        g_shadow_fb, FLAM_SCREEN_W, FLAM_SCREEN_H,
+        32, FLAM_SCREEN_W * (int)sizeof(lv_color_t),
         0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
     if (surf) {
-        SDL_SaveBMP(surf, SCREENSHOT_PATH);
+        if (SDL_SaveBMP(surf, path) == 0)
+            fprintf(stderr, "[SCREENSHOT] Saved to %s\n", path);
+        else
+            fprintf(stderr, "[SCREENSHOT] Echec %s : %s\n", path, SDL_GetError());
         SDL_FreeSurface(surf);
-        fprintf(stderr, "[SCREENSHOT] Saved to %s\n", SCREENSHOT_PATH);
     }
 }
 
@@ -132,6 +166,19 @@ static void disp_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
 
     SDL_Rect rect = {area->x1, area->y1, w, h};
     SDL_UpdateTexture(g_texture, &rect, color_p, w * sizeof(lv_color_t));
+
+    /* Copie dans le framebuffer d'ombre (zone bornee a l'ecran) */
+    for (int32_t y = 0; y < h; y++) {
+        int32_t sy = area->y1 + y;
+        if (sy < 0 || sy >= FLAM_SCREEN_H) continue;
+        int32_t x0 = area->x1, x1 = area->x2, skip = 0;
+        if (x0 < 0) { skip = -x0; x0 = 0; }
+        if (x1 >= FLAM_SCREEN_W) x1 = FLAM_SCREEN_W - 1;
+        if (x1 < x0) continue;
+        memcpy(&g_shadow_fb[sy * FLAM_SCREEN_W + x0],
+               &color_p[y * w + skip],
+               (size_t)(x1 - x0 + 1) * sizeof(lv_color_t));
+    }
 
     lv_disp_flush_ready(drv);
 }
@@ -261,6 +308,7 @@ int sdl_driver_poll(void)
             case SDLK_ESCAPE: fw_trigger_back(); break;
             case SDLK_m:      fw_trigger_context_menu(); break;
             case SDLK_s:      save_screenshot(); break;
+            case SDLK_p:      sdl_audio_toggle_pause(); break;
             default:          break;
             }
             break;
@@ -277,10 +325,19 @@ int sdl_driver_poll(void)
     /* Laisser LVGL traiter les timers et le rendu */
     lv_timer_handler();
 
-    /* Screenshot automatique apres 12 secondes */
+    /* Screenshot automatique (outil de debug) apres 12 s par defaut,
+       FLAM_SCREENSHOT_AUTO_MS=<ms> pour changer le delai, 0 : desactive */
+    if (!g_start_ticks) g_start_ticks = SDL_GetTicks();
     if (!g_auto_screenshot_done) {
-        if (!g_start_ticks) g_start_ticks = SDL_GetTicks();
-        if (SDL_GetTicks() - g_start_ticks > 12000) {
+        static long auto_ms = -1; /* -1 : non lu */
+        if (auto_ms < 0) {
+            const char *v = getenv("FLAM_SCREENSHOT_AUTO_MS");
+            auto_ms = (v && *v) ? strtol(v, NULL, 10)
+                                : SCREENSHOT_AUTO_MS_DEFAULT;
+            if (auto_ms <= 0) { auto_ms = 0; g_auto_screenshot_done = 1; }
+        }
+        if (!g_auto_screenshot_done &&
+            SDL_GetTicks() - g_start_ticks > (Uint32)auto_ms) {
             save_screenshot();
             g_auto_screenshot_done = 1;
         }

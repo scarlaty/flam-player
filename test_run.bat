@@ -30,6 +30,9 @@ set "BUILD=%~dp0build"
 if defined FLAM_BUILD_DIR set "BUILD=%FLAM_BUILD_DIR%"
 set "STRICT=0"
 if /i "%~1"=="strict" set "STRICT=1"
+REM Pas de capture auto du player (sinon screenshot.bmp du depot est reecrit
+REM par les etapes qui durent plus de 12 s)
+if not defined FLAM_SCREENSHOT_AUTO_MS set "FLAM_SCREENSHOT_AUTO_MS=0"
 if not exist "%BUILD%\flam-test.exe" (
     echo [ERREUR] flam-test.exe introuvable dans "%BUILD%". Lance d'abord : do_build.bat tests
     exit /b 1

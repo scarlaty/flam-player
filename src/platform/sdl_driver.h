@@ -17,4 +17,9 @@ int sdl_driver_poll(void);
 /* Change le titre de la fenêtre SDL. */
 void sdl_driver_set_title(const char *title);
 
+/* Chemin du fichier BMP des captures (touche S et capture auto).
+   Prioritaire sur FLAM_SCREENSHOT ; NULL ou "" : retour au defaut.
+   La chaine doit rester valide (argv). */
+void sdl_driver_set_screenshot_path(const char *path);
+
 #endif /* SDL_DRIVER_H */

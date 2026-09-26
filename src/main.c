@@ -7,6 +7,8 @@
  * Options : --strict        require() limite a script/ (comme le device)
  *           --watchdog <ms> delai max d'un script Lua sans rendre la main
  *                           (defaut 10000, 0 = desactive)
+ *           --screenshot <chemin> fichier BMP des captures (touche S et
+ *                           capture auto), prioritaire sur FLAM_SCREENSHOT
  */
 
 #include "SDL.h"
@@ -1147,6 +1149,8 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[i], "--watchdog") == 0 && i + 1 < argc) {
             long ms = strtol(argv[++i], NULL, 10);
             g_watchdog_ms = ms > 0 ? (uint32_t)ms : 0;
+        } else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
+            sdl_driver_set_screenshot_path(argv[++i]);
         } else {
             target_path = argv[i];
         }
