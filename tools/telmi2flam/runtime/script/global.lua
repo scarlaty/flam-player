@@ -47,8 +47,29 @@ global.apDefaultCover = "player_cover.lif"
 global.apDefaultBGCover = "Player_BG.lif"
 global.apDefaultFGCover = "Player_FG.lif"
 
+-- B7 : une touche ENTER encore en attente dans le module courant (carrousel,
+-- image-choice : keyEvent traite par leur timer 100 ms) est traitee AVANT le
+-- retour (Home/ESC appelle back_callback tout de suite, sans passer par ce
+-- timer) : sinon le retour nettoie le module et l'ENTER est perdu (OK puis
+-- Home a < 100 ms => Home execute avant OK). Si l'ENTER a change d'ecran
+-- (back_callback reinstalle par le nouvel ecran), le retour s'applique a ce
+-- nouvel ecran (ordre des touches respecte) et renvoie true.
+function global.flushPendingKey()
+    local m = global.current_module
+    if (m == nil or m.flushPendingKey == nil) then
+        return false
+    end
+    local before = back_callback
+    if (m.flushPendingKey() and back_callback ~= before and back_callback ~= nil) then
+        back_callback()
+        return true
+    end
+    return false
+end
+
 function global.setBackBehavior(backBehavior, backBehaviorArgs)
     back_callback = function()
+        if (global.flushPendingKey()) then return end
         global.requestAudioStop(true, true)
         global.cleanCurrentModule()
 
@@ -62,6 +83,7 @@ end
 
 function global.setBackModule(backModule)
     back_callback = function()
+        if (global.flushPendingKey()) then return end
         global.requestAudioStop(true, true)
         global.cleanCurrentModule()
 
@@ -71,6 +93,7 @@ end
 
 function global.setBackToLibrary()
     back_callback = function()
+        if (global.flushPendingKey()) then return end
         goto_library()
     end
 end
@@ -316,7 +339,25 @@ function global.audioDelayerCallback()
     end
 end
 
+-- B6 : coupe tout de suite l'audio en cours. Son callback est detache avant
+-- (comme dans audioDelayerCallback) : le 'stop' de l'audio coupe ne doit pas
+-- relancer le module (ex. fin du title_audio du carrousel).
+function global.stopCurrentAudio()
+    global.audioFeedbackCallback = nil
+    if (audio.get_status() ~= "stop") then
+        audio.stop()
+    end
+end
+
+-- args.stopNow (avec args.priority) : changement de focus (carrousel,
+-- image-choice). L'audio de l'option quittee est coupe DES l'appui ; le delai
+-- (audioDelayValue, reinitialise a chaque appui) ne sert plus qu'a charger le
+-- nouvel audio. Sans cela, en navigation rapide (< 500 ms entre appuis), le
+-- timer etait repousse a chaque appui et l'option quittee continuait de jouer.
 function global.requestAudioPlay(args)
+    if (args.stopNow == true and args.priority == true) then
+        global.stopCurrentAudio()
+    end
     global.audioDelayPath = args.path
     global.registerAudioFeedbackCb(args.AFCb)
     global.audioNextHavePriority = args.priority

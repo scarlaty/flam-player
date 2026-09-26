@@ -169,10 +169,28 @@ function imageChoice.processKeyEvent()
             if (imageChoice.answers[imageChoice.answerIterator].priority ~= nil) then
                 priority = imageChoice.answers[imageChoice.answerIterator].priority
             end
-            Global.requestAudioPlay({ path = imageChoice.answers[imageChoice.answerIterator].audio, priority = priority })
+            -- stopNow : l'audio de l'option quittee est coupe des le changement
+            -- de focus, seul le chargement du nouvel audio reste differe (B6)
+            Global.requestAudioPlay({ path = imageChoice.answers[imageChoice.answerIterator].audio, priority = priority,
+                stopNow = true })
             imageChoice.keyEvent = nil
         end
     end
+end
+
+-- B7 : appele par Global.flushPendingKey avant un retour (Home/ESC) : un ENTER
+-- en attente (hors fenetre anti-rebond) est traite tout de suite au lieu d'etre
+-- perdu au nettoyage du module. Les autres touches en attente sont ignorees.
+-- Renvoie true si un ENTER est traite.
+function imageChoice.flushPendingKey()
+    if (imageChoice.keyEvent == nil or imageChoice.tick <= 1) then
+        return false
+    end
+    if (string.byte(imageChoice.keyEvent) ~= 10) then
+        return false
+    end
+    imageChoice.processKeyEvent()
+    return true
 end
 
 function imageChoice.keyPressed(e)

@@ -218,17 +218,19 @@ function carousel.refreshVisual()
     lv.label.set_text(carousel.label, (center and center.label) or " ")
 end
 
-function carousel.playFocus()
+-- stopNow : changement de focus => l'audio de l'option quittee est coupe tout
+-- de suite, seul le chargement du nouvel audio reste differe (B6).
+function carousel.playFocus(stopNow)
     local ans = carousel.answers[carousel.answerIterator]
     if ans == nil then return end
     local priority = true
     if ans.priority ~= nil then priority = ans.priority end
-    Global.requestAudioPlay({ path = ans.audio, priority = priority })
+    Global.requestAudioPlay({ path = ans.audio, priority = priority, stopNow = stopNow })
 end
 
 function carousel.refresh()
     carousel.refreshVisual()
-    carousel.playFocus()
+    carousel.playFocus(true)
 end
 
 function carousel.audioFeedback(state, second)
@@ -268,6 +270,21 @@ function carousel.processKeyEvent()
             carousel.keyEvent = nil
         end
     end
+end
+
+-- B7 : appele par Global.flushPendingKey avant un retour (Home/ESC) : un ENTER
+-- en attente (hors fenetre anti-rebond) est traite tout de suite au lieu d'etre
+-- perdu au nettoyage du module. Les autres touches en attente sont ignorees
+-- (le retour porte sur l'option affichee). Renvoie true si un ENTER est traite.
+function carousel.flushPendingKey()
+    if (carousel.keyEvent == nil or carousel.tick <= 1) then
+        return false
+    end
+    if (string.byte(carousel.keyEvent) ~= 10) then
+        return false
+    end
+    carousel.processKeyEvent()
+    return true
 end
 
 function carousel.keyPressed(e)
