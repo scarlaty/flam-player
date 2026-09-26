@@ -17,6 +17,7 @@
 #include "firmware/fw_globals.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* État global SDL */
@@ -34,9 +35,46 @@ static lv_indev_drv_t     g_indev_drv;
 static lv_disp_t         *g_disp    = NULL;
 lv_indev_t               *g_indev   = NULL;  /* non-static : accede depuis main.c */
 
-/* Touche LVGL en attente (file d'une seule touche) */
+/* File circulaire des evenements clavier (touche, etat) : un appui et un
+   relachement recus dans le meme poll ne sont plus fusionnes. LVGL en
+   consomme un par lecture (continue_reading tant qu'il en reste). */
+typedef struct {
+    uint32_t         key;
+    lv_indev_state_t state;
+} key_evt_t;
+
+#define KEY_QUEUE_LEN 32
+static key_evt_t g_key_queue[KEY_QUEUE_LEN];
+static int       g_key_head  = 0;   /* prochain a lire */
+static int       g_key_count = 0;
+
+/* Dernier etat transmis a LVGL (renvoye tant que la file est vide) */
 static uint32_t g_last_key   = 0;
 static lv_indev_state_t g_key_state = LV_INDEV_STATE_RELEASED;
+
+static void key_queue_push(uint32_t key, lv_indev_state_t state)
+{
+    if (g_key_count >= KEY_QUEUE_LEN) {
+        /* File pleine : ignorer (ne devrait pas arriver a 5 ms par poll) */
+        return;
+    }
+    int tail = (g_key_head + g_key_count) % KEY_QUEUE_LEN;
+    g_key_queue[tail].key   = key;
+    g_key_queue[tail].state = state;
+    g_key_count++;
+}
+
+/* Touche SDL -> touche LVGL (0 si non transmise a LVGL) */
+static uint32_t sdl_to_lv_key(SDL_Keycode sym)
+{
+    switch (sym) {
+    case SDLK_LEFT:   return LV_KEY_LEFT;
+    case SDLK_RIGHT:  return LV_KEY_RIGHT;
+    case SDLK_RETURN:
+    case SDLK_SPACE:  return LV_KEY_ENTER;
+    default:          return 0;
+    }
+}
 
 /* Screenshot auto */
 static int g_screenshot_counter = 0;
@@ -104,8 +142,15 @@ static void disp_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
 static void indev_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 {
     (void)drv;
+    if (g_key_count > 0) {
+        g_last_key  = g_key_queue[g_key_head].key;
+        g_key_state = g_key_queue[g_key_head].state;
+        g_key_head  = (g_key_head + 1) % KEY_QUEUE_LEN;
+        g_key_count--;
+    }
     data->key   = g_last_key;
     data->state = g_key_state;
+    data->continue_reading = (g_key_count > 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -204,23 +249,28 @@ int sdl_driver_poll(void)
                 return 1;
             break;
 
-        case SDL_KEYDOWN:
-            g_key_state = LV_INDEV_STATE_PRESSED;
+        case SDL_KEYDOWN: {
+            uint32_t k = sdl_to_lv_key(e.key.keysym.sym);
+            if (k) {
+                /* La repetition auto est geree par LVGL (appui long) */
+                if (!e.key.repeat) key_queue_push(k, LV_INDEV_STATE_PRESSED);
+                break;
+            }
+            if (e.key.repeat) break;
             switch (e.key.keysym.sym) {
-            case SDLK_LEFT:   g_last_key = LV_KEY_LEFT;  break;
-            case SDLK_RIGHT:  g_last_key = LV_KEY_RIGHT; break;
-            case SDLK_RETURN:
-            case SDLK_SPACE:  g_last_key = LV_KEY_ENTER; break;
-            case SDLK_ESCAPE: fw_trigger_back(); g_key_state = LV_INDEV_STATE_RELEASED; break;
-            case SDLK_m:      fw_trigger_context_menu(); g_key_state = LV_INDEV_STATE_RELEASED; break;
-            case SDLK_s:      save_screenshot(); g_key_state = LV_INDEV_STATE_RELEASED; break;
-            default:          g_key_state = LV_INDEV_STATE_RELEASED; break;
+            case SDLK_ESCAPE: fw_trigger_back(); break;
+            case SDLK_m:      fw_trigger_context_menu(); break;
+            case SDLK_s:      save_screenshot(); break;
+            default:          break;
             }
             break;
+        }
 
-        case SDL_KEYUP:
-            g_key_state = LV_INDEV_STATE_RELEASED;
+        case SDL_KEYUP: {
+            uint32_t k = sdl_to_lv_key(e.key.keysym.sym);
+            if (k) key_queue_push(k, LV_INDEV_STATE_RELEASED);
             break;
+        }
         }
     }
 
@@ -233,6 +283,22 @@ int sdl_driver_poll(void)
         if (SDL_GetTicks() - g_start_ticks > 12000) {
             save_screenshot();
             g_auto_screenshot_done = 1;
+        }
+    }
+
+    /* Tests (pilote SDL dummy, sans clavier) : FLAM_TEST_CTX_MENU_MS=<ms>
+       simule un appui sur M, une seule fois, <ms> apres le premier poll */
+    {
+        static int ctx_test_ms = -2; /* -2 : non lu, -1 : inactif/fait */
+        if (ctx_test_ms == -2) {
+            const char *v = getenv("FLAM_TEST_CTX_MENU_MS");
+            ctx_test_ms = (v && *v) ? atoi(v) : -1;
+            if (ctx_test_ms < 0) ctx_test_ms = -1;
+        }
+        if (ctx_test_ms >= 0 &&
+            SDL_GetTicks() - g_start_ticks >= (Uint32)ctx_test_ms) {
+            ctx_test_ms = -1;
+            fw_trigger_context_menu();
         }
     }
 

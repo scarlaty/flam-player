@@ -17,8 +17,9 @@ set(SDL2_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
 add_subdirectory(libs/SDL2)
 # Fournit les cibles SDL2::SDL2 (partagée) et SDL2::SDL2main + les includes
 
-# --- Lua 5.4 (compilé depuis les sources) ---
-# Le mirror officiel lua/lua place les sources à la racine du dépôt
+# --- Lua 5.4.8 (compilé depuis les sources, submodule libs/lua) ---
+# Submodule lua/lua épinglé sur le tag v5.4.8 (branche v5.4, cf. .gitmodules).
+# Le mirror officiel lua/lua place les sources à la racine du dépôt (pas de src/)
 file(GLOB LUA_SOURCES "libs/lua/*.c")
 # Retirer lua.c, luac.c et onelua.c (exécutables CLI / amalgame, pas la lib)
 list(FILTER LUA_SOURCES EXCLUDE REGEX "(lua|luac|onelua)\\.c$")
@@ -131,7 +132,7 @@ if(BUILD_TESTS)
         tests
         libs
         libs/lvgl
-        libs/lua/src
+        libs/lua
         libs/minimp3
         ${SDL2_DIR}/include
     )
@@ -155,4 +156,56 @@ if(BUILD_TESTS)
             "$<TARGET_FILE:SDL2::SDL2>"
             "$<TARGET_FILE_DIR:flam-test>"
     )
+
+    # flam-test-audio : meme runner avec le VRAI moteur audio (sdl_audio.c,
+    # minimp3) au lieu du stub. Pilote SDL "dummy" par defaut : pas de carte
+    # son requise. Tests : tests/audio/*.lua (cf. test_run.bat).
+    set(TEST_AUDIO_SOURCES ${TEST_SOURCES})
+    list(REMOVE_ITEM TEST_AUDIO_SOURCES tests/test_audio_stub.c)
+    list(APPEND TEST_AUDIO_SOURCES src/platform/sdl_audio.c)
+
+    add_executable(flam-test-audio ${TEST_AUDIO_SOURCES})
+
+    target_include_directories(flam-test-audio PRIVATE
+        src
+        tests
+        libs
+        libs/lvgl
+        libs/lua
+        libs/minimp3
+        ${SDL2_DIR}/include
+    )
+
+    target_link_libraries(flam-test-audio PRIVATE
+        SDL2::SDL2
+        lvgl
+        lua54
+    )
+
+    target_compile_definitions(flam-test-audio PRIVATE
+        _CRT_SECURE_NO_WARNINGS
+        FLAM_SCREEN_W=${FLAM_SCREEN_W}
+        FLAM_SCREEN_H=${FLAM_SCREEN_H}
+        FLAM_SCALE=1
+        FLAM_TEST_MODE
+        FLAM_TEST_REAL_AUDIO
+    )
+
+    add_custom_command(TARGET flam-test-audio POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:SDL2::SDL2>"
+            "$<TARGET_FILE_DIR:flam-test-audio>"
+    )
+endif()
+
+# Pile de 8 Mo (MSVC) : la recursion Lua -> C (pcall imbriques) debordait
+# la pile par defaut de 1 Mo en Debug (0xC00000FD).
+if(MSVC)
+    target_link_options(flam-player PRIVATE /STACK:8388608)
+    if(TARGET flam-test)
+        target_link_options(flam-test PRIVATE /STACK:8388608)
+    endif()
+    if(TARGET flam-test-audio)
+        target_link_options(flam-test-audio PRIVATE /STACK:8388608)
+    endif()
 endif()
