@@ -17,7 +17,7 @@ Emulateur desktop du firmware Flam (Lunii v3) capable d'executer les histoires `
 ## Architecture
 
 - [**LVGL 8.3**](https://github.com/lvgl/lvgl) — moteur de rendu UI (identique au firmware reel)
-- [**Lua 5.4**](https://www.lua.org/) — runtime des scripts d'histoires
+- [**Lua 5.4.8**](https://www.lua.org/) — runtime des scripts d'histoires
 - [**SDL2**](https://github.com/libsdl-org/SDL) — fenetre, evenements clavier, sortie audio
 - [**minimp3**](https://github.com/lieff/minimp3) — decodage MP3
 
@@ -46,7 +46,9 @@ tests/
   test_audio_stub.c/h       Stub audio pour les tests
   lua/
     test_helpers.lua         Framework de test (test/expect_eq/expect_true/expect_error)
-    test_*.lua               Tests unitaires et d'integration (~280 tests)
+    test_*.lua               Tests unitaires et d'integration (suite principale)
+    regress_*.lua            Tests de non-regression (lances isolement)
+    poc_*.lua, fuzz_*.lua    PoCs de securite et fuzzer (lances isolement)
 ```
 
 ## Dependances externes
@@ -57,11 +59,15 @@ compilees depuis les sources lors du build (aucun binaire a placer manuellement)
 | Bibliotheque | Version | Submodule | Lien |
 |-------------|---------|-----------|------|
 | SDL2 | branche `SDL2` (2.x) | `libs/SDL2` | [libsdl-org/SDL](https://github.com/libsdl-org/SDL) |
-| Lua | 5.4.8 | `libs/lua` | [lua/lua](https://github.com/lua/lua) |
-| LVGL | 8.3 (`release/v8.3`) | `libs/lvgl` | [lvgl/lvgl](https://github.com/lvgl/lvgl) |
+| Lua | 5.4.8 (tag `v5.4.8`, branche `v5.4`) | `libs/lua` | [lua/lua](https://github.com/lua/lua) |
+| LVGL | 8.3 (`release/v8.3` + 1 commit) | `libs/lvgl` | fork [scarlaty/lvgl](https://github.com/scarlaty/lvgl) de [lvgl/lvgl](https://github.com/lvgl/lvgl) |
 | minimp3 | `master` | `libs/minimp3` | [lieff/minimp3](https://github.com/lieff/minimp3) |
 
-`libs/lv_conf.h` (config LVGL personnalisee) est versionne directement dans le depot.
+`libs/lv_conf.h` (config LVGL personnalisee, tas LVGL de 512 Ko) est versionne directement
+dans le depot. Le fork LVGL ajoute un seul commit a `release/v8.3` : garde contre la division
+par zero de `lv_bar` quand `min == max`, et traces `[MEM FAIL]` (details dans `AGENT.md`).
+`LV_ASSERT_HANDLER` appelle `flam_assert_crash` (`src/firmware/fw_globals.c`), qui logue
+fichier:ligne, la traceback Lua et le tas LVGL, puis fait `abort()` au lieu de boucler.
 
 ## Compilation
 
@@ -87,20 +93,38 @@ do_build.bat tests      :: compile la suite de tests (flam-test.exe)
 x64 (`vcvarsall.bat`), trouve `cmake` et `ninja`, puis lance le build. Aucune configuration
 manuelle ; les chemins sont resolus automatiquement.
 
-### Windows — manuel (Developer Command Prompt for VS)
+`manual_build.bat` est un simple alias de `do_build.bat` (memes arguments).
 
-```bash
-mkdir build && cd build
-cmake .. -G Ninja
-ninja
+### Windows — manuel
+
+Charger d'abord l'environnement MSVC x64 (`vcvarsall.bat`, ou un *x64 Native Tools Command
+Prompt*), sinon `cl.exe` ne trouve pas `stddef.h` :
+
+```bat
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
 ```
+
+Ajouter `-DBUILD_TESTS=ON` pour construire aussi `flam-test.exe`, et
+`-DCMAKE_MAKE_PROGRAM=<chemin\ninja.exe>` si `ninja` n'est pas dans le PATH.
 
 ### Tests
 
 ```bat
 do_build.bat tests      :: compile flam-test.exe
-test_run.bat            :: execute tous les tests tests\lua\*.lua
+test_run.bat            :: suite test_*.lua, puis tests isoles regress_/poc_/fuzz_
+test_run.bat strict     :: idem, un echec isole rend aussi le code de sortie non nul
 ```
+
+- La suite `tests\lua\test_*.lua` tourne dans un seul processus et doit rester verte ; c'est
+  elle qui donne le code de sortie.
+- `regress_*.lua`, `poc_*.lua` et `fuzz_*.lua` tournent chacun dans leur propre processus
+  (timeout 30 s), pour qu'un crash ou un blocage n'arrete pas les autres ; un recapitulatif
+  s'affiche a la fin (1 = erreur Lua, 3 = timeout, autre = crash). Leurs echecs ne comptent
+  qu'en mode `strict`.
+- `FLAM_BUILD_DIR` permet de tester un autre dossier de build que `build\` :
+  `set FLAM_BUILD_DIR=C:\chemin\vers\build` puis `test_run.bat`.
 
 ## Utilisation
 
@@ -134,7 +158,14 @@ Le navigateur detecte les dossiers `.plain` et les archives `.plain.pk`, affiche
 | Entree / Espace | Valider |
 | Echap | Retour / Revenir au navigateur |
 | M | Menu contextuel |
+| P | Pause / reprise de l'audio en cours |
 | S | Screenshot (sauvegarde `screenshot.bmp`) |
+
+Captures d'ecran : fichier BMP 320x240 fidele a l'ecran. Chemin par defaut
+`screenshot.bmp` dans le dossier du depot ; `--screenshot <chemin>` (prioritaire)
+ou la variable `FLAM_SCREENSHOT=<chemin>` le changent. Une capture automatique
+est aussi prise 12 s apres le demarrage : `FLAM_SCREENSHOT_AUTO_MS=<ms>` change
+ce delai, `FLAM_SCREENSHOT_AUTO_MS=0` la desactive.
 
 ## Format .plain / .plain.pk
 

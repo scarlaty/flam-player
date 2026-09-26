@@ -1,0 +1,21 @@
+-- regress_hunt3_close_b.lua : voir regress_hunt3_close_a.lua
+require("test_helpers")
+
+test("lv_timer_handler apres un __gc de lua_close", function()
+    test_tick(10)
+    expect_true(true)
+end)
+
+test("objets et anims de l'etat precedent inoffensifs", function()
+    local o = lv.obj.new(window)
+    local a = lv.anim.new()
+    lv.anim.set_var(a, o)
+    lv.anim.set_values(a, 0, 10)
+    lv.anim.set_time(a, 20)
+    lv.anim.set_exec_cb(a, function() end)
+    lv.anim.start(a)
+    test_tick(10)
+    lv.obj.del(o)
+    test_tick(2)
+    expect_true(not pcall(lv.obj.get_width, o))
+end)

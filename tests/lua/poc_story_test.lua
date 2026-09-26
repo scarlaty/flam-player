@@ -1,4 +1,12 @@
--- Test : combien de spies sont safe a lire ?
+-- poc_story_test.lua — Espions supprimes lus depuis setup()  (F03, lot L2)
+-- Meme scenario que poc_residual_read, mais depuis setup() comme une
+-- histoire FLAM (le runner appelle setup() apres le chargement).
+-- TEST : lire un label supprime doit lever une erreur Lua propre.
+-- ATTENDU : ECHOUE (crash ou assertion) AVANT LE CORRECTIF L2.
+-- Lance seul (processus separe) par test_run.bat.
+
+require("test_helpers")
+print("--- poc_story_test ---")
 
 function setup()
     local box = lv.obj.new(window)
@@ -6,8 +14,7 @@ function setup()
     local btn = lv.btn.new(window)
     lv.obj.set_size(btn, 120, 35)
 
-    -- Varier le nombre d'espions vs labels pour trouver le ratio safe
-    -- Test : 5 espions, 10 labels
+    -- 5 espions supprimes
     local NUM = 5
     local spies = {}
     for i = 1, NUM do
@@ -19,7 +26,7 @@ function setup()
         lv.obj.del(spies[i])
     end
 
-    -- 10 labels (plus que les 5 espions)
+    -- 10 labels (plus que les 5 espions) reutilisent les blocs
     local labels = {}
     local texts = {
         "Le Petit Prince", "Chapitre I", "Saint-Exupery",
@@ -33,22 +40,15 @@ function setup()
         lv.obj.add_flag(labels[i], lv.OBJ_FLAG_HIDDEN)
     end
 
-    -- Lire spy[1] seulement (on sait que ca marche)
-    print("[DBG] Lecture spy[1] seulement...")
-    local ok, txt = pcall(lv.label.get_text, spies[1])
-    if ok then
-        print(string.format("[DBG]  spy[1] → \"%s\"", txt))
+    for _, i in ipairs({ 1, 3, 5 }) do
+        test("get_text sur espion supprime #" .. i, function()
+            expect_error(function() lv.label.get_text(spies[i]) end)
+        end)
     end
 
-    -- Essayons les autres un par un via des appels separes
-    -- pour voir le pattern
-    print("[DBG] Lecture spy[3]...")
-    ok, txt = pcall(lv.label.get_text, spies[3])
-    if ok then print(string.format("[DBG]  spy[3] → \"%s\"", txt)) end
-
-    print("[DBG] Lecture spy[5]...")
-    ok, txt = pcall(lv.label.get_text, spies[5])
-    if ok then print(string.format("[DBG]  spy[5] → \"%s\"", txt)) end
-
-    print("[DBG] OK")
+    test("labels de l'histoire intacts", function()
+        for i = 1, 10 do
+            expect_eq(lv.label.get_text(labels[i]), texts[i], "label #" .. i)
+        end
+    end)
 end

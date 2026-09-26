@@ -3,7 +3,16 @@
 -- Usage : charger ce script au demarrage de l'emulateur FLAM compile avec ASan
 -- Chaque categorie de test est isolee dans sa propre fonction.
 -- Les messages de log permettent de correler un crash ASan avec le scenario.
+--
+-- Sous flam-test : chaque categorie est un test() ; elle passe si elle se
+-- termine sans crash. Les erreurs Lua sont tolerees, SAUF dans la categorie
+-- Use-After-Free ou tout acces a un objet supprime DOIT lever une erreur
+-- Lua propre (sinon lecture/ecriture en memoire liberee).
+-- ATTENDU : ECHOUE (crash ou assertion) AVANT LES CORRECTIFS L2/L3.
+-- Lance seul (processus separe) par test_run.bat.
 -- ==========================================================================
+
+require("test_helpers")
 
 local LOG_PREFIX = "[FUZZ]"
 
@@ -19,6 +28,15 @@ local function try(description, fn)
     local ok, err = pcall(fn)
     if not ok then
         log("  !! Lua error: " .. tostring(err))
+    end
+end
+
+-- helper : acces a un objet supprime, doit lever une erreur Lua
+local uaf_ok = {}
+local function must_fail(description, fn)
+    if pcall(fn) then
+        uaf_ok[#uaf_ok + 1] = description
+        log("  !! acces accepte sur objet supprime : " .. description)
     end
 end
 
@@ -204,16 +222,17 @@ function test_use_after_free()
     -- 2b. Acces aux references apres suppression
     log("[2b] Acces aux anciennes references Lua apres del")
     for i = 1, NUM_CHILDREN do
-        try(string.format("Acces enfant #%d apres del parent", i), function()
+        must_fail(string.format("Acces enfant #%d apres del parent", i), function()
             lv.obj.get_width(children[i])
         end)
-        try(string.format("set_size enfant #%d apres del parent", i), function()
+        must_fail(string.format("set_size enfant #%d apres del parent", i), function()
             lv.obj.set_size(children[i], 100, 100)
         end)
-        try(string.format("add_style enfant #%d apres del parent", i), function()
+        must_fail(string.format("add_style enfant #%d apres del parent", i), function()
             lv.obj.add_style(children[i], styles[i], 0)
         end)
-        try(string.format("del enfant #%d (double free)", i), function()
+        -- double del : no-op ou erreur Lua, les deux sont surs
+        try(nil, function()
             lv.obj.del(children[i])
         end)
     end
@@ -246,7 +265,7 @@ function test_use_after_free()
         lv.obj.del(parent2)
     end)
     -- Re-tenter d'acceder
-    try("acces parent2 apres del", function()
+    must_fail("acces parent2 apres del", function()
         lv.obj.get_width(parent2)
     end)
 
@@ -259,7 +278,7 @@ function test_use_after_free()
     end
     lv.obj.clean(parent3)
     for i = 1, 20 do
-        try(string.format("acces enfant #%d apres clean(parent)", i), function()
+        must_fail(string.format("acces enfant #%d apres clean(parent)", i), function()
             lv.obj.set_size(kids3[i], 10, 10)
         end)
     end
@@ -285,6 +304,9 @@ function test_use_after_free()
     end)
 
     log("========== TEST 2 TERMINE ==========\n")
+    if #uaf_ok > 0 then
+        error(#uaf_ok .. " acces acceptes sur objets supprimes (1er : " .. uaf_ok[1] .. ")")
+    end
 end
 
 -- =========================================================================
@@ -530,13 +552,39 @@ end
 function test_heap_exhaustion()
     log("========== TEST 4 : Heap Exhaustion ==========")
 
-    -- 4a. Instanciation massive sans suppression
-    log("[4a] Creation de 2000 objets sans suppression")
+    -- 4a. Instanciation massive sans suppression, jusqu'a epuisement controle
+    -- LVGL ne teste pas tous ses retours d'allocation : quand le tableau
+    -- children du parent ne peut plus etre realloue (lv_obj_class.c:95,
+    -- lv_mem_realloc -> NULL puis children[n-1] = obj), il ecrit a NULL+8n
+    -- (crash 0xC0000005, ~1700 enfants sur le tas de 512 Ko). Un echec de
+    -- lv_mem_alloc ailleurs declenche LV_ASSERT_MALLOC (abort). On arrete
+    -- donc la creation quand le tas passe sous 10% libre, ou quand le plus
+    -- grand bloc libre ne permet plus de reallouer children sans risque.
+    log("[4a] Creation d'objets jusqu'a epuisement controle du tas (max 2000)")
+    expect_true(lv.mem and lv.mem.monitor, "lv.mem.monitor absent")
+    local mon0 = lv.mem.monitor()
+    log(string.format("  tas LVGL : total=%d libre=%d", mon0.total_size, mon0.free_size))
     local root = lv.obj.new()
     lv.obj.set_size(root, 10, 10)
     local mass_objects = {}
+    local stop_reason = "limite de 2000 objets"
+    local mon
 
     for i = 1, 2000 do
+        -- lv_mem_monitor parcourt tout le tas : a chaque iteration seulement
+        -- au-dela de 75% utilise (une iteration consomme < 1 Ko)
+        if i == 1 or i % 32 == 0 or mon.used_pct >= 75 then
+            mon = lv.mem.monitor()
+        end
+        -- realloc de children : nouveau bloc de 8*(n+1) octets alloue avant
+        -- liberation de l'ancien ; marge pour l'objet et ses enfants
+        local need = 2 * 8 * (i + 1) + 4096
+        if mon.free_size * 10 < mon.total_size or mon.free_biggest_size < need then
+            stop_reason = string.format(
+                "tas presque epuise apres %d objets (libre=%d, plus grand bloc=%d, utilise=%d%%)",
+                i - 1, mon.free_size, mon.free_biggest_size, mon.used_pct)
+            break
+        end
         local ok, obj = pcall(lv.obj.new, root)
         if not ok then
             log(string.format("  !! Echec creation objet #%d: %s", i, tostring(obj)))
@@ -567,11 +615,42 @@ function test_heap_exhaustion()
             log(string.format("  ... %d objets crees", i))
         end
     end
+    log("  " .. stop_reason)
+
+    -- Epuisement reel : le tas doit etre au moins a 85% utilise
+    mon = lv.mem.monitor()
+    expect_ge(mon.used_pct, 85, "tas LVGL pas epuise (test non significatif)")
+
+    -- Le player survit au tas presque plein : une petite allocation passe
+    -- ou echoue proprement, et le layout/rendu tourne (avec
+    -- -DFLAM_LV_ASSERT_OBJ=1, lv_obj_is_valid rend ce tick et le del de
+    -- root tres lents : > 30 s, timeout de test_run.bat)
+    try("petit objet sous tas presque plein", function()
+        local o = lv.obj.new(root)
+        if o then lv.obj.del(o) end
+    end)
+    test_tick(2)
 
     log("[4a] Tentative de suppression massive")
-    try("del root (2000+ objets)", function()
+    try(string.format("del root (%d objets)", #mass_objects), function()
         lv.obj.del(root)
     end)
+    mass_objects = nil
+    collectgarbage("collect")
+    collectgarbage("collect")
+    test_tick(2)
+
+    -- Le tas est rendu apres suppression (styles liberes par le GC)
+    mon = lv.mem.monitor()
+    log(string.format("  apres del : libre=%d (depart %d)", mon.free_size, mon0.free_size))
+    expect_ge(mon.free_size, mon0.free_size * 9 // 10, "tas non rendu apres del root")
+
+    -- Et le player est toujours fonctionnel
+    local probe = lv.obj.new()
+    expect_true(probe ~= nil, "creation impossible apres epuisement")
+    lv.obj.set_size(probe, 20, 20)
+    expect_eq(lv.obj.get_width(probe), 20, "objet inutilisable apres epuisement")
+    lv.obj.del(probe)
 
     -- 4b. Cycles creation/suppression rapides
     log("[4b] 500 cycles creation/suppression rapides")
@@ -684,25 +763,13 @@ local tests = {
     { "Heap Exhaustion",    test_heap_exhaustion },
 }
 
-local results = {}
 for _, t in ipairs(tests) do
     log(">>> Lancement : " .. t[1])
     local start = os.clock()
-    local ok, err = pcall(t[2])
-    local elapsed = os.clock() - start
-    if ok then
-        results[#results + 1] = string.format("  [OK]   %-25s (%.3fs)", t[1], elapsed)
-    else
-        results[#results + 1] = string.format("  [FAIL] %-25s (%.3fs) — %s", t[1], elapsed, tostring(err))
-    end
+    test(t[1], t[2])
+    log(string.format("    %s termine (%.3fs)", t[1], os.clock() - start))
 end
 
-log("================================================================")
-log(" RESUME DU FUZZING")
-log("================================================================")
-for _, r in ipairs(results) do
-    log(r)
-end
 log("================================================================")
 log(" FIN DU FUZZING")
 log("================================================================")

@@ -34,6 +34,9 @@ global.audioFeedbackCallback = nil
 global.audioDuration = nil
 global.audioCB = nil
 global.audioNextHavePriority = false
+-- true apres un audio.load en echec : le 'stop' a deja ete notifie cote Lua,
+-- un 'stop' differe emis ensuite par le C (simulateur) est ignore
+global.audioStopAlreadySent = false
 
 global.canShowPausePanel = true
 global.pauseContainerStyle = nil
@@ -44,8 +47,29 @@ global.apDefaultCover = "player_cover.lif"
 global.apDefaultBGCover = "Player_BG.lif"
 global.apDefaultFGCover = "Player_FG.lif"
 
+-- B7 : une touche ENTER encore en attente dans le module courant (carrousel,
+-- image-choice : keyEvent traite par leur timer 100 ms) est traitee AVANT le
+-- retour (Home/ESC appelle back_callback tout de suite, sans passer par ce
+-- timer) : sinon le retour nettoie le module et l'ENTER est perdu (OK puis
+-- Home a < 100 ms => Home execute avant OK). Si l'ENTER a change d'ecran
+-- (back_callback reinstalle par le nouvel ecran), le retour s'applique a ce
+-- nouvel ecran (ordre des touches respecte) et renvoie true.
+function global.flushPendingKey()
+    local m = global.current_module
+    if (m == nil or m.flushPendingKey == nil) then
+        return false
+    end
+    local before = back_callback
+    if (m.flushPendingKey() and back_callback ~= before and back_callback ~= nil) then
+        back_callback()
+        return true
+    end
+    return false
+end
+
 function global.setBackBehavior(backBehavior, backBehaviorArgs)
     back_callback = function()
+        if (global.flushPendingKey()) then return end
         global.requestAudioStop(true, true)
         global.cleanCurrentModule()
 
@@ -59,6 +83,7 @@ end
 
 function global.setBackModule(backModule)
     back_callback = function()
+        if (global.flushPendingKey()) then return end
         global.requestAudioStop(true, true)
         global.cleanCurrentModule()
 
@@ -68,6 +93,7 @@ end
 
 function global.setBackToLibrary()
     back_callback = function()
+        if (global.flushPendingKey()) then return end
         goto_library()
     end
 end
@@ -250,6 +276,10 @@ function global.strip_chars(str)
 end
 
 function global.audioFeedback(state, second)
+    if (state == "stop" and global.audioStopAlreadySent) then
+        global.audioStopAlreadySent = false -- deja stoppe (audio.load en echec) : pas de double 'stop'
+        return
+    end
     global.audioState = state
     global.audioDuration = second
     if (global.audioFeedbackCallback ~= nil) then
@@ -277,6 +307,7 @@ function global.audioDelayerCallback()
         elseif (audio.get_status() == "stop") then
             print("Audio is stop, loading new audio")
             print("global.lua:261: audio: " .. global.audioDelayPath)
+            global.audioStopAlreadySent = false
             if (audio.load(0, global.audioDelayPath, global.audioFeedback) == 0) then
                 audio.play()
                 global.audioDelayPath = nil
@@ -286,12 +317,47 @@ function global.audioDelayerCallback()
                     global.audioFeedbackCallback = global.audioCB
                     global.audioCB = nil
                 end
+            else
+                -- Echec du chargement (nil sur device, -1 sur simulateur) : ne pas
+                -- reessayer toutes les 500 ms (la scene ne finirait jamais). On notifie
+                -- UNE fois 'stop' au callback demande pour que l'histoire avance.
+                -- Callback detache avant l'appel (il peut recharger un module et
+                -- demander un autre audio) ; le 'stop' eventuel du C sera ignore.
+                print("global.lua: error: audio.load failed -> " .. global.audioDelayPath)
+                local cb = global.audioCB
+                global.audioDelayPath = nil
+                global.audioCB = nil
+                global.audioFeedbackCallback = nil
+                global.audioStopAlreadySent = true
+                global.audioState = "stop"
+                global.audioDuration = 0
+                if (cb ~= nil) then
+                    cb("stop", 0)
+                end
             end
         end
     end
 end
 
+-- B6 : coupe tout de suite l'audio en cours. Son callback est detache avant
+-- (comme dans audioDelayerCallback) : le 'stop' de l'audio coupe ne doit pas
+-- relancer le module (ex. fin du title_audio du carrousel).
+function global.stopCurrentAudio()
+    global.audioFeedbackCallback = nil
+    if (audio.get_status() ~= "stop") then
+        audio.stop()
+    end
+end
+
+-- args.stopNow (avec args.priority) : changement de focus (carrousel,
+-- image-choice). L'audio de l'option quittee est coupe DES l'appui ; le delai
+-- (audioDelayValue, reinitialise a chaque appui) ne sert plus qu'a charger le
+-- nouvel audio. Sans cela, en navigation rapide (< 500 ms entre appuis), le
+-- timer etait repousse a chaque appui et l'option quittee continuait de jouer.
 function global.requestAudioPlay(args)
+    if (args.stopNow == true and args.priority == true) then
+        global.stopCurrentAudio()
+    end
     global.audioDelayPath = args.path
     global.registerAudioFeedbackCb(args.AFCb)
     global.audioNextHavePriority = args.priority
@@ -368,11 +434,13 @@ end
 
 function global.removePauseImage()
     if (global.pauseContainer ~= nil) then
-        lv.obj.clean(global.pauseContainer)
-        lv.obj.remove_style_all(global.pauseContainer)
-        global.pauseContainerStyle = nil
-        if (global.pauseData ~= nil) then global.pauseData = nil end
+        -- supprimer le conteneur plein ecran (clean ne retirait que ses enfants :
+        -- l'overlay vide restait sur window). Refs Lua liberees APRES le del.
+        lv.obj.del(global.pauseContainer)
         global.pauseContainer = nil
+        global.pauseImage = nil
+        global.pauseContainerStyle = nil
+        global.pauseData = nil
         print("global.lua:303: info:  Audio pause -> removing pause image")
     end
 end
