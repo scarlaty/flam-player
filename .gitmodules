@@ -8,6 +8,7 @@
 [submodule "libs/lua"]
 	path = libs/lua
 	url = https://github.com/lua/lua.git
+	branch = v5.4
 [submodule "libs/SDL2"]
 	path = libs/SDL2
 	url = https://github.com/libsdl-org/SDL.git
