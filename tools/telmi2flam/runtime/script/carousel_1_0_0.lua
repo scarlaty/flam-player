@@ -19,6 +19,10 @@ carousel.counter = nil
 carousel.label = nil
 carousel.arrowL = nil
 carousel.arrowR = nil
+-- sources LIF des fleches : gardees ici tant que les objets image les affichent
+-- (lv.img.set_src ne retient pas la source, le __gc liberait les pixels)
+carousel.arrowLData = nil
+carousel.arrowRData = nil
 carousel.keyEvent = nil
 carousel.inputProcessTimer = nil
 carousel.tick = 0
@@ -92,6 +96,8 @@ function carousel.clean()
     carousel.label = nil
     carousel.arrowL = nil
     carousel.arrowR = nil
+    carousel.arrowLData = nil  -- apres lv.obj.clean : plus aucun objet ne les affiche
+    carousel.arrowRData = nil
     carousel.keyEvent = nil
     carousel.styles = {}
     carousel.events = {}
@@ -247,8 +253,12 @@ function carousel.processKeyEvent()
             carousel.answerIterator = navigate(carousel.answerIterator, delta, n)
         end
         if (b == 10) then
-            if (carousel.answers[carousel.answerIterator].cb ~= nil) then
-                carousel.answers[carousel.answerIterator].cb()
+            -- ENTER consomme AVANT le callback : sinon cb() est rappele a chaque
+            -- tick (100 ms) tant que le module suivant n'a pas supprime ce timer.
+            local cb = carousel.answers[carousel.answerIterator].cb
+            carousel.keyEvent = nil
+            if (cb ~= nil) then
+                cb()
             end
         else
             carousel.refresh()
@@ -328,17 +338,19 @@ function carousel.create(args)
     lv.obj.align(carousel.placeholderNum, lv.ALIGN_CENTER, 0, 0)
 
     -- Fleches (devant les vignettes). Masquees s'il n'y a qu'un choix.
-    local al, aw, ah = Global.load_image(ARROW_L)
+    local aw, ah
+    carousel.arrowLData, aw, ah = Global.load_image(ARROW_L)
     carousel.arrowL = lv.img.new(carousel.parentContainer)
     lv.obj.remove_style_all(carousel.arrowL)
-    lv.img.set_src(carousel.arrowL, al)
+    lv.img.set_src(carousel.arrowL, carousel.arrowLData)
     lv.obj.set_size(carousel.arrowL, aw, ah)
     lv.obj.align(carousel.arrowL, lv.ALIGN_LEFT_MID, 6, ROW_DY)
 
-    local ar, arw, arh = Global.load_image(ARROW_R)
+    local arw, arh
+    carousel.arrowRData, arw, arh = Global.load_image(ARROW_R)
     carousel.arrowR = lv.img.new(carousel.parentContainer)
     lv.obj.remove_style_all(carousel.arrowR)
-    lv.img.set_src(carousel.arrowR, ar)
+    lv.img.set_src(carousel.arrowR, carousel.arrowRData)
     lv.obj.set_size(carousel.arrowR, arw, arh)
     lv.obj.align(carousel.arrowR, lv.ALIGN_RIGHT_MID, -6, ROW_DY)
 

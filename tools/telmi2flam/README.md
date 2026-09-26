@@ -7,7 +7,9 @@ jouable dans le `flam-player` de ce dépôt.
 > 📄 **Spécification du format source** : [`TELMI_FORMAT.md`](TELMI_FORMAT.md)
 > (structure des fichiers, `metadata.json`, `nodes.json`, inventaire, conditions…).
 > À noter : TELMI **n'a pas de notion de chapitre** ; le convertisseur traite chaque
-> **scène avec audio** comme un chapitre (cf. `engine/story.lua`).
+> **scène avec audio** comme un chapitre (cf. `engine/story.lua`). Une option de choix
+> (carrousel) n'est jamais jouée comme scène : elle n'entre pas dans `totalChapters`
+> (sauf option autoplay ou action à conditions), la jauge « Reprendre » peut atteindre 100 %.
 
 > **État** : codec LIF ✅ · mp3map ✅ · moteur Lua ✅ · convertisseur ✅ · 1ʳᵉ lecture device ✅
 > · **relance device ⛔ (bug ouvert, cf. `DEVICE_VS_SIM.md` #10 — écran noir à la 2ᵉ ouverture,
@@ -102,10 +104,12 @@ header 12 o (little-endian) : total_units(u32), id3_offset(u32), reserved=0(u32)
 N enregistrements de 8 o    : byte_offset(u32, absolu), unit_pos(u32)
 ```
 
-Cadence interne 88200 = 2×44100. `unit_pos = frame_index × 2304` (= 1152 samples × 2).
-**1 enregistrement par seconde** : `frame_index = ceil(k × 88200 / 2304)`.
-`total_units = (2·N_frames − X)·1152` avec X≈34 (>100 frames) ou 22 (correction délai
-décodeur). `duration_s = total_units / 88200`.
+Cadence interne 88200 = 2×44100. `unit_pos` = position cumulée du frame, chaque frame
+valant `samples × 88200 / samplerate` unités (= 2304 à 44,1 kHz MPEG1 Layer III, donc
+`unit_pos = frame_index × 2304`).
+**1 enregistrement par seconde** : premier frame dont `unit_pos ≥ k × 88200`.
+`total_units = (N_frames − X/2) × unités_par_frame` avec X≈34 (>100 frames) ou 22
+(correction délai décodeur). `duration_s = total_units / 88200`.
 
 [Seph29/liff-viewer]: https://github.com/Seph29/liff-viewer
 [scarlaty/mp3map-tool]: https://github.com/scarlaty/mp3map-tool
@@ -140,18 +144,40 @@ Une **action** est une liste de stages candidats. À la résolution de `{action,
 
 | Cas | Comportement |
 |---|---|
-| 1 seul stage | lien déterministe : va directement à ce stage |
-| conditions présentes | 1er stage dont **toutes** les `conditions` passent |
-| N stages (sans conditions) | **choix molette** : `←/→` change l'option focalisée (image+audio), OK valide |
+| 1 seul stage visible | lien déterministe : va directement à ce stage |
+| conditions présentes | seuls les stages dont **toutes** les `conditions` passent restent candidats |
+| N stages visibles, cible `autoplay` | pas de molette (spec TELMI : `←/→` désactivés) : la cible est jouée directement |
+| N stages visibles, cible non `autoplay` | **choix molette** : `←/→` change l'option focalisée (image+audio), OK valide |
 
-`index` = option initialement sélectionnée. Vérifié sur les données : une action à
-**1 option** est toujours ciblée avec `index 0` (lien) ; une action **multi-options**
-est ciblée avec `index = -1` (24×, pas de présélection → option 0) ou `index = 0`
-(12×) — **dans les deux cas c'est un choix molette** (et non une branche aléatoire).
+`index` = stage ciblé / option initialement sélectionnée (0-based, dans la liste non
+filtrée ; hors borne ou masqué → 1re option visible). **`index = -1` = tirage aléatoire**
+(`math.random`) parmi les stages **visibles** : branche aléatoire si la cible tirée est
+`autoplay`, sinon simple présélection aléatoire du choix molette. Vérifié sur les données :
+une action à **1 option** est toujours ciblée avec `index 0` (lien) ; une action
+**multi-options** est ciblée avec `index = -1` (24×) ou `index = 0` (12×). `indexItem` :
+l'index est la valeur d'un item d'inventaire (stage joué directement).
 
 `items` : opérations sur l'inventaire (`type` : 0 `+=`, 1 `-=`, 2 `=`, 3 `*=`, 4 `/=`, 5 `%=`).
 `conditions` : `comparator` 0 `<`, 1 `<=`, 2 `==`, 3 `>`, 4 `>=`, 5 `!=`.
-`control.autoplay` : avance automatiquement à la fin de l'audio.
+
+`control` (émis dans `nodes.lua` sous `ctrl`, défauts du convertisseur si absent :
+`ok=true`, `home=false`, `autoplay=false`), respecté par `engine/story.lua` :
+
+| Scène | `autoplay=true` | `autoplay=false` |
+|---|---|---|
+| avec audio | transition `ok` à la fin de l'audio | reste sur l'image à la fin de l'audio, attend OK |
+| image sans audio | transition `ok` immédiate (nœud de passage) | image affichée, attend OK |
+| ni image ni audio | nœud de passage | nœud de passage (rien à afficher) |
+
+- `ctrl.ok` : OK (ENTER) exécute `ok`, **pendant** l'audio (skip) comme après ; `false` →
+  OK ignoré.
+- `ctrl.home` + `home` défini : le bouton **retour** exécute la transition `home` (dans un
+  choix : `home` de l'option focalisée). Sinon (ou si `home` ramène sur le nœud courant),
+  retour → menu Start de l'histoire, comme avant.
+- `wheel` / `pause` : absents du format TELMI (la molette découle de `autoplay`, la pause
+  reste gérée par le firmware).
+- `nodes.lua` antérieur sans `ctrl` : comportement historique (`autoplay`, OK = skip, pas
+  de home).
 
 ---
 
@@ -170,6 +196,7 @@ tools/telmi2flam/
 │   └── img/script/      # assets UI Lunii (flèches, play/pause, empty…)
 ├── telmi2flam.py        # CLI de conversion
 ├── validate.py          # validation hors-GUI d'un .plain.pk généré
+├── tests/               # tests unittest (paquets TELMI synthétiques)
 └── DEVICE_VS_SIM.md     # divergences device ↔ simulateur (dont le bug relance #10)
 ```
 
@@ -185,12 +212,21 @@ dégradé+alpha, aplat, blanc, transparent.
 
 ### `mp3map.py`
 
-- `build(data) -> (bytes, duration_s, num_records)` : parse les frames MP3
+- `build(data, info=None) -> (bytes, duration_s, num_records)` : parse les frames MP3
   (MPEG 1/2/2.5, Layers I/II/III, saut du tag ID3v2) et produit le `.mp3map`.
+  `info` (dict optionnel) reçoit `samplerates` et `frames`. Lève `ValueError` si le
+  fichier n'est pas du MPEG audio (aucun frame, ou frames couvrant < 50 % du fichier).
 - `build_file(path)` : variante fichier.
 
+Un sync n'est accepté en resynchronisation que si les 2 frames suivants sont aussi
+valides (évite les faux headers dans des données quelconques). Durée et positions sont
+cumulées frame par frame à la fréquence réelle : un MP3 48 kHz ou 32 kHz a une table
+juste (avant : +8,8 % / −27 %). Le convertisseur **avertit** hors 44,1 kHz (firmware
+calibré 44,1 kHz ; rééchantillonner reste conseillé).
+
 **Validé** : sortie **identique octet-pour-octet** au vrai `.mp3map` de l'histoire
-officielle *Cluedo* (`mine == real`).
+officielle *Cluedo* (`mine == real`) ; en 44,1 kHz la sortie est inchangée (test
+`test_44k_unchanged`).
 
 ### `engine/main.lua` (bootstrap) + `engine/story.lua` (branch)
 
@@ -250,6 +286,7 @@ return {
 
 ```bash
 python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
+                     [--allow-missing] [--selector carousel|image]
 ```
 
 - `-o` : chemin de sortie (défaut : `<Titre>.<UUID8>.plain.pk` dans le dossier courant).
@@ -257,16 +294,54 @@ python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
   - se termine par `.plain` → écrit **uniquement** le dossier extrait (pas de `.pk`).
 - `--plain` : écrit **aussi** le dossier `.plain` extrait à côté du `.plain.pk`
   (pratique pour le simulateur, qui charge un dossier `.plain` directement).
-- `--keep-size` : conserve la résolution native des images (sinon resize 320×240).
+- `--keep-size` : conserve la résolution native des images (sinon resize 320×240),
+  bornée à 2047 px (limite du décodeur LIF).
+- `--allow-missing` : convertit même si des images/audios référencés sont absents
+  (sinon **erreur**) ; un audio manquant est remplacé par `silent.mp3` (la scène garde
+  sa transition de fin d'audio), une image manquante est omise.
+- `--selector` : affichage des choix multiples (`carousel` par défaut, ou `image`).
+
+En cas de paquet invalide (zip illisible, JSON invalide/BOM mal formé, `NaN`, type
+inattendu, `metadata.json`/`nodes.json` absents, nom d'asset dangereux...), le CLI
+affiche `ERREUR : ...` et sort avec le code 1 (pas de traceback).
 
 Dépendance : `pip install Pillow`.
 
 Le CLI :
-1. lit `metadata.json` + `nodes.json` dans le zip ;
-2. transcode images (PNG→LIF) et audio (MP3 copié + `.mp3map` généré), avec cache anti-doublon ;
+1. lit `metadata.json` + `nodes.json` dans le zip
+   (racine = dossier le moins profond contenant `metadata.json` **et** `nodes.json`,
+   hors `__MACOSX/` et `._*` ; erreur si plusieurs histoires au même niveau) ;
+2. transcode images (PNG→LIF) et audio (MP3 copié + `.mp3map` généré), avec cache anti-doublon
+   (recherche des fichiers insensible à la casse et à la normalisation Unicode NFC/NFD
+   des zips macOS ; image illisible → message avec son nom
+   et repli sur `empty.lif`) ;
 3. génère `nodes.lua` (table de données) + embarque `engine/main.lua` ;
-4. écrit `info.plain` / `version` / `uuid.bin` (= MD5 de l'UUID TELMI) / `img/thumbnail.lif` ;
+4. écrit `info.plain` (titre/sous-titre aplatis sur une ligne) / `version` / `uuid.bin`
+   (= MD5 de l'UUID TELMI ; sans uuid, MD5 du contenu de `nodes.json` + avertissement) /
+   `img/thumbnail.lif` ;
 5. rezip en **ZIP stored**.
+
+**Noms des assets** : les noms de sortie sont canoniques (`[A-Za-z0-9_-]`, extension
+`.lif`/`.mp3`), uniques sans tenir compte de la casse et distincts des noms réservés
+(`empty.lif`, `title.lif`, `thumbnail.lif`, `silent.mp3`, `title.mp3`) : `s0.png` et
+`s0.jpg` donnent `s0.lif` et `s0_2.lif`. Un nom TELMI contenant `..`, `\`, `:`, NUL ou
+commençant par `/` est **refusé** (zip-slip), et l'écriture `--plain` vérifie que chaque
+fichier reste dans le dossier `.plain`.
+
+**Images** : scènes 320×240 ; icônes d'inventaire ≤ 128×128 (fichier distinct
+`<nom>_inv.lif` si l'image sert aussi à une scène) ; vignette 128×96 (une couverture
+portrait est centrée sur un canevas paysage) ; une image portrait de plus de 64 px est
+complétée en carré transparent pour ne pas déclencher l'heuristique de transposition du
+décodeur.
+La clé de transparence `tRNS` est appliquée pour toutes les profondeurs (gris 1/2/4/8/16
+bits, RGB 8/16 bits, palette) : un fond déclaré transparent reste transparent dans le `.lif`.
+
+**Runtime** : `runtime/script/` et `runtime/img/script/` doivent accompagner
+`telmi2flam.py`. S'ils sont absents ou incomplets (`global.lua`, `progressionManager.lua`,
+modules d'écran `audio-player_1_0_0`, `carousel_1_0_0`, `image-choice_1_0_0`,
+`list-choice_1_0_0`, `title-card`, leurs dépendances et icônes UI), la conversion échoue
+au lieu de produire un paquet qui planterait dès `setup()` ; `validate.py` signale aussi
+ces entrées manquantes.
 
 ### Exemple validé
 
@@ -277,14 +352,32 @@ toutes *Stored* (0 % compression). Conversion ≈ 12 s.
 ### Validation hors-GUI
 
 ```bash
-pip install lupa
 python validate.py <histoire.plain.pk>
 ```
 
-Vérifie : entrées requises + méthode *stored* + `uuid.bin` 16 o ; **syntaxe Lua**
-de `main.lua` et `nodes.lua` (compilation `lupa`, sans exécution) ; cohérence des
-références (`start`/`ok`/`home` → actions, actions → stages) ; présence de tous les
-assets image/audio + `.mp3map` ; **accessibilité** de tous les stages depuis `start`.
+Aucune dépendance obligatoire. Vérifie : entrées requises + méthode *stored* +
+`uuid.bin` 16 o + noms d'entrées sûrs + `info.plain` sur 4 lignes ; **syntaxe Lua**
+de `main.lua` et `script/*.lua` (compilation sans exécution, via `lupa` s'il est
+installé, sinon via un interpréteur Lua externe : variable `FLAM_LUA` ou
+`lua54`/`lua5.4`/`lua` dans le `PATH` ; sinon avertissement) ; lecture de `nodes.lua`
+par un parseur Python du sous-ensemble généré ; cohérence des références
+(`start`/`ok`/`home` → actions, actions → stages, index) ; **indices d'inventaire**
+(conditions, opérations, `indexItem`) ; présence de tous les assets image/audio +
+`.mp3map` ; **en-têtes LIF** (magic, dimensions ≤ 2047, canal, marqueur de fin) ;
+**tables `.mp3map`** (taille, offsets croissants pointant sur un header MPEG) ;
+**accessibilité** de tous les stages depuis `start`.
+
+### Tests du convertisseur
+
+```bash
+python -m unittest discover -s tools/telmi2flam/tests -v
+```
+
+Paquets TELMI synthétiques générés à la volée (zip-slip, image corrompue, audio
+manquant/casse, BOM, types inattendus, racine `__MACOSX`, mots réservés Lua, NaN,
+collisions de noms, inventaire, portrait, labels, titre multi-lignes, UUID, mp3map
+44,1/48/32/22,05/24 kHz). Définir `FLAM_LUA` (ex. `lua54.exe`) pour vérifier aussi le
+chargement de `nodes.lua` par un vrai Lua 5.4.
 
 Résultat sur l'exemple : **15 OK / 0 warning / 0 erreur**.
 
@@ -301,7 +394,8 @@ Résultat sur l'exemple : **15 OK / 0 warning / 0 erreur**.
 - **Images redimensionnées 320×240** (écran natif FLAM), mise à l'échelle finale à la fenêtre au runtime.
 - **Convertisseur en Python** (Pillow pour le décodage/redimensionnement PNG).
 - **mp3map généré** (fidèle au format officiel).
-- **UUID réutilisé** depuis `metadata.json` de TELMI.
+- **UUID réutilisé** depuis `metadata.json` de TELMI (à défaut : hash du contenu de
+  `nodes.json`, pour ne pas partager la sauvegarde entre deux histoires de même titre).
 - **Validation** dans le `flam-player` du dépôt.
 
 ---
@@ -333,19 +427,30 @@ nécessaires pour que l'histoire **charge sur le device**) :
 - **Reprise sur un choix** : un choix n'est pas un stage → on mémorise `state.current_choice`
   (= l'action) quand on l'affiche, et `setup()` y revient **directement** (sans rejouer la
   narration précédente). Sinon, quitter sur un choix = narration rejouée / écran noir.
-- **Stages sans audio** (ex. `backStage` TELMI) : `audio-player` ne déclencherait jamais
-  son `callback` → on enchaîne directement la transition `ok` (nœud de passage).
-- **Skip audio** (comme Telmi) : la copie embarquée d'`audio-player_1_0_0.lua` est
-  patchée (`audioPlayer.skip()`) pour qu'un **clic central** (ENTER `key=10` via
-  `EVENT_KEY`, ou `EVENT_CLICKED`) stoppe l'audio et passe à la scène suivante
-  (`exitCallback`), avec garde anti-double (`audioPlayer.skipping`).
+- **Stages sans audio** : `autoplay` (ex. `backStage` TELMI) ou sans image → on enchaîne
+  directement la transition `ok` (nœud de passage, garde anti-boucle `MAX_PASS`) ; image
+  non `autoplay` → affichée par `audio-player` sans audio, en attente de OK.
+- **OK / skip** (comme Telmi) : la copie embarquée d'`audio-player_1_0_0.lua` accepte
+  `args.okCallback` (OK = ENTER `key=10` via `EVENT_KEY`) et un `args.callback` optionnel
+  (fin d'audio ; `nil` = rester sur l'image, seek désactivé). L'ENTER est mémorisé puis
+  traité par un timer de 100 ms (`okTimer`, jamais dans l'événement : le callback recharge
+  un module), avec anti-rebond d'entrée (~200 ms) et garde anti double appel
+  (`audioPlayer.leave` / `audioPlayer.exited`) entre fin d'audio et OK.
 
 ## 8. Limites connues / TODO
 
-- `notes.json` (éditeur) ignoré — non nécessaire à la lecture.
+- `notes.json` (éditeur, optionnel) : sert uniquement au **label des choix** (carrousel) :
+  `title` de la scène, sinon `text`, sinon `notes`, aplati sur une ligne et tronqué à
+  40 caractères. Le reste est ignoré (non nécessaire à la lecture). Un `notes.json`
+  illisible (JSON invalide, non UTF-8, NaN) est ignoré avec un avertissement.
 - Pas de gestion des succès/collections (spécifique aux histoires Lunii natives).
 - Rendu de l'inventaire à l'écran (compteur/jauge) : non encore implémenté dans le moteur
   (l'inventaire est géré en logique, pas affiché).
 - `playingTime` : approximatif — utilise `Global.audioDuration` (dernière valeur rapportée
   par le callback audio), pas un chronomètre précis de la scène courante.
+- Choix molette : `ctrl.ok=false` d'une option n'est pas appliqué (OK valide toujours) ;
+  `indexItem` joue le stage désigné sans molette ; une reprise sur un choix repart de la
+  1re option (pas de nouveau tirage pour `index = -1`).
+- `home` : seule la boucle directe (retour vers le nœud courant) est détectée ; un cycle
+  `home` à plusieurs nœuds empêcherait de revenir au menu Start par le bouton retour.
 ```
