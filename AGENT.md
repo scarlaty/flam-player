@@ -154,6 +154,8 @@ tools/telmi2flam/
   runtime/                 — Modules runtime Lunii embarques (carrousel, audio-player...)
   tests/                   — Tests unittest du convertisseur
 games/casse-briques/        — Jeu casse-briques (contenu Lua FLAM)
+games/attrape-etoiles/      — Jeu Attrape-etoiles (fait avec le skill flam-homebrew)
+skills/flam-homebrew/       — Skill IA : fabriquer un homebrew .plain.pk (SKILL.md, build, check, runtime)
 patches/                    — Correctifs pour le fork LVGL (voir patches/README.md)
 stories/
   *.plain/                — Histoires (dossier avec info.plain + main.lua + img/ + sounds/)
