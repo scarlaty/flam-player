@@ -21,8 +21,9 @@ saves/
 __pycache__/
 *.pyc
 
-# Jeu casse-briques : sortie de build
-games/casse-briques/_out/
+# Jeux : sortie de build ; les PNG sources des jeux sont versionnes
+games/*/_out/
+!games/*/img/*.png
 
 # Editor / OS
 .vscode/
