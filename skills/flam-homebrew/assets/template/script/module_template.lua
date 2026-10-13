@@ -7,8 +7,13 @@
 -- clean() puis vide package.loaded : le module est recharge a neuf ensuite,
 -- donc l'etat vit dans des upvalues reinitialisees au chargement.
 --
--- Demo : un carre deplace a la molette (gauche/droite), ENTER change sa
--- couleur, une balle rebondit via un timer de 25 ms.
+-- Demo : un carre deplace a la molette (gauche/droite), le clic molette
+-- (ENTER) change sa couleur, une balle rebondit via un timer de 25 ms.
+--
+-- Entrees (verifie sur la Flam) : la molette est un ENCODEUR LVGL. Gauche /
+-- droite arrivent en EVENT_KEY (20 / 19) ; le clic molette n'arrive PAS en
+-- EVENT_KEY 10 mais en EVENT_CLICKED. On ecoute donc les deux, et un meme
+-- appui ne compte qu'une fois.
 -- ============================================================================
 
 local game = {}
@@ -26,12 +31,13 @@ game.styles = {}
 game.events = {}
 local container, player, ball, label, loopTimer
 local px, colorIdx, bx, by, vx, vy, hits
+local ticks, lastEnter = 0, -100
 
 -- ---------------------------------------------------------------------------
 function game.clean()
     if loopTimer ~= nil then lv.timer.del(loopTimer); loopTimer = nil end
     for obj, ev in pairs(game.events) do
-        lv.obj.remove_event_cb(obj, ev.key)
+        for _, cb in pairs(ev) do lv.obj.remove_event_cb(obj, cb) end
     end
     Global.requestAudioStop(true, true)
     lv.group.set_editing(document, false)
@@ -71,6 +77,7 @@ local function refresh()
 end
 
 local function tick()
+    ticks = ticks + 1
     local before = hits
     bx = bx + vx
     by = by + vy
@@ -84,10 +91,11 @@ local function tick()
     end
 end
 
-local function onKey(e)
-    local k = lv.event.get_key_value(e)
-    if k == nil then return end
-    local b = string.byte(k)
+local function action(b)
+    if b == KEY_ENTER then
+        if ticks - lastEnter < 4 then return end   -- un appui = une fois
+        lastEnter = ticks
+    end
     if b == KEY_LEFT then
         px = math.max(0, px - STEP)
     elseif b == KEY_RIGHT then
@@ -98,15 +106,26 @@ local function onKey(e)
     refresh()
 end
 
+local function onKey(e)                    -- molette gauche / droite
+    local k = lv.event.get_key_value(e)
+    if k == nil then return end
+    action(string.byte(k))
+end
+
+local function onClick(e)                  -- clic molette (ENTER)
+    action(KEY_ENTER)
+end
+
 -- ---------------------------------------------------------------------------
 function game.create(args)
     args = args or {}
     if loopTimer ~= nil then lv.timer.del(loopTimer); loopTimer = nil end
     px, colorIdx, hits = math.floor((W - SIZE) / 2), 1, 0
     bx, by, vx, vy = 40, 40, 3, 2
+    ticks, lastEnter = 0, -100
 
     lv.obj.clean(window)
-    lv.group.set_editing(document, true)   -- la molette envoie des EVENT_KEY
+    lv.group.set_editing(document, true)   -- molette -> EVENT_KEY, clic -> EVENT_CLICKED
     initStyles()
 
     container = lv.obj.new(window)
@@ -117,6 +136,7 @@ function game.create(args)
     lv.obj.clear_flag(container, lv.OBJ_FLAG_SCROLLABLE)
     game.events[container] = {}
     game.events[container].key = lv.obj.add_event_cb(container, onKey, lv.EVENT_KEY)
+    game.events[container].click = lv.obj.add_event_cb(container, onClick, lv.EVENT_CLICKED)
     lv.group.add_obj(document, container)
 
     player = lv.obj.new(container)
