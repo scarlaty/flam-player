@@ -42,12 +42,17 @@ au simulateur `--strict` (étape 6) sert de contrôle de syntaxe.
 
 ### 1. Cadrer le jeu pour la molette
 
-Trois entrées seulement : molette gauche (20), droite (19), validation (10, ENTER), plus
-le bouton retour géré par le framework. Pas de touche maintenue : un cran = un pas.
-Le device n'a pas de bouton central dédié : si la demande utilise ENTER (« ENTER pour
-rejouer »), garder ENTER **et** doubler l'action aux directions (ex. n'importe quel cran
-relance après 1 s), sans demander. Les actions vitales doivent rester faisables aux
-seules directions. Zone de jeu 320×212. Texte court, accents Latin-1 seulement.
+Trois entrées seulement : molette gauche (20), droite (19), **clic molette** (= ENTER,
+reçu en `EVENT_CLICKED`, pas en `EVENT_KEY` 10 : voir `lua-api.md` §4), plus le bouton
+retour géré par le framework. Pas de touche maintenue : un cran = un pas. Doubler les
+actions du clic aux directions quand c'est naturel (ex. un cran relance après 1 s).
+Zone de jeu 320×212. Texte court, accents Latin-1 seulement.
+
+**Son : une seule piste, pas de mixage**, et sur la Flam couper une piste en cours fige
+l'image (`lua-api.md` §8). Si la demande veut « musique + bruitages » pendant l'action,
+annoncer le compromis avant de coder : par défaut, bruitages seuls pendant la partie,
+musique aux écrans calmes (titre, fin).
+
 Si la demande ne tient pas dans ces contraintes, proposer une adaptation (tour par tour,
 pas discrets, choix gauche/droite) avant de coder.
 
@@ -71,9 +76,16 @@ complet. Les règles qui comptent le plus :
   rend que le module courant. Un code qui dessine en `lv.*` hors module marche au
   simulateur et donne un écran noir sur la Flam.
 - `main.lua` : aucun `require` hors de `setup()` ; `Global` global (pas `local`).
-- `create(args)` construit, `clean()` détruit tout (timers, callbacks, groupe, objets).
-- Entrées : conteneur ajouté à `document` + `lv.group.set_editing(document, true)` +
-  `lv.EVENT_KEY` ; `string.byte(lv.event.get_key_value(e))`.
+- `create(args)` construit, `clean()` détruit tout (timers, callbacks, groupe, objets),
+  sauf à la sortie vers la bibliothèque (voir « Retour » ci-dessous).
+- Entrées : conteneur ajouté à `document` + `lv.group.set_editing(document, true)` ;
+  `lv.EVENT_KEY` pour la molette (`string.byte(lv.event.get_key_value(e))`) **et**
+  `lv.EVENT_CLICKED` pour le clic, un appui compté une fois.
+- Audio : `audio.load` seulement quand `audio.get_status() == "stop"` (sinon gel) ;
+  aucun `stop`/`pause` pendant l'action (à-coup).
+- Retour : partie → écran d'accueil du jeu → bibliothèque. Pour sortir, couper le son
+  puis `goto_library()` **sans** rien nettoyer : la relance réaffiche l'état laissé.
+  Aucune écriture dans `state` (écran noir à la relance).
 - Boucle : `lv.timer.new(tick, 25, nil)` ; déplacer des objets créés une fois ;
   `lv.obj.clear_flag(container, lv.OBJ_FLAG_SCROLLABLE)` si des objets débordent.
 - Ordre de création = ordre d'affichage : créer le HUD (score, messages) en dernier.
@@ -146,10 +158,10 @@ Protocole à donner à l'utilisateur :
 
 1. le titre s'affiche lisiblement dans la bibliothèque ;
 2. le jeu se lance, l'écran n'est pas noir, la molette répond ;
-3. retour → bibliothèque ;
+3. le clic molette fait son action ; retour → accueil du jeu → bibliothèque ;
 4. relancer **deux fois de suite sans redémarrer la Flam** (un redémarrage masque le
-   bug d'écran noir à la relance) ;
-5. jouer une partie complète (fin, rejouer).
+   bug d'écran noir à la relance), depuis l'accueil puis depuis une partie ;
+5. jouer une partie complète (fin, rejouer) ; l'image ne se fige pas aux bruitages.
 
 Pour une nouvelle version du même jeu : supprimer l'ancienne de la Flam puis importer
 (même UUID refusé sinon).
@@ -167,8 +179,12 @@ Ne jamais présenter un homebrew comme « fonctionnel sur la Flam » sans test d
 | titre illisible après import | Flam fw 1.x importée en classique → import carrier |
 | import refusé « already loaded » | UUID déjà présent → supprimer l'ancienne version ou changer `uuid_seed` |
 | écran noir au lancement, OK au simulateur | UI hors module, `require` top-level, asset absent, fichier hors `script/` |
-| écran noir au 2ᵉ lancement seulement | sortie brutale vers la bibliothèque (pièges §10), timer non détruit |
+| écran noir au 2ᵉ lancement seulement | sortie qui vide l'écran avant `goto_library`, écriture dans `state` (pièges 10, 23, 24) |
+| relance : écran affiché, touches mortes | timer supprimé à la sortie (piège 24) |
+| le clic molette ne fait rien | clic attendu en `EVENT_KEY` 10 au lieu de `EVENT_CLICKED` (piège 19) |
+| image figée un instant à chaque bruitage | `audio.stop`/`pause` d'une piste en cours (piège 20) |
+| console gelée, redémarrage obligatoire | `audio.load` pendant une lecture (piège 21) ou `audio.seek` en lecture (piège 9) |
 | rectangles à la place de lettres | caractère hors ASCII/Latin-1 |
 | la molette ne fait rien | `set_editing(document, true)` ou `lv.group.add_obj` manquant |
 | image en mosaïque / tournée | objet plus grand que l'image / PNG portrait > 64 px |
-| gel pendant l'audio | `audio.seek` en lecture |
+
