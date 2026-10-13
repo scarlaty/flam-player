@@ -45,7 +45,9 @@ local container, loopTimer           -- état en upvalues (réinitialisé au rec
 
 function game.clean()                -- appelé par Global.cleanCurrentModule
     if loopTimer then lv.timer.del(loopTimer); loopTimer = nil end
-    for obj, ev in pairs(game.events) do lv.obj.remove_event_cb(obj, ev.key) end
+    for obj, ev in pairs(game.events) do
+        for _, cb in pairs(ev) do lv.obj.remove_event_cb(obj, cb) end
+    end
     Global.requestAudioStop(true, true)
     lv.group.set_editing(document, false)
     lv.group.remove_all_objs(document)
@@ -56,12 +58,16 @@ end
 
 function game.create(args)
     lv.obj.clean(window)
-    lv.group.set_editing(document, true)          -- molette -> EVENT_KEY
+    lv.group.set_editing(document, true)          -- molette -> EVENT_KEY, clic -> CLICKED
     -- styles, objets, timers...
     container = lv.obj.new(window)
     lv.obj.remove_style_all(container)
     lv.obj.set_size(container, Global.visual_width, Global.visual_height)
-    game.events[container] = { key = lv.obj.add_event_cb(container, onKey, lv.EVENT_KEY) }
+    lv.obj.clear_flag(container, lv.OBJ_FLAG_SCROLLABLE)   -- §4 : clic = CLICKED seul
+    game.events[container] = {                    -- voir §4 (clic = EVENT_CLICKED)
+        key   = lv.obj.add_event_cb(container, onKey, lv.EVENT_KEY),
+        click = lv.obj.add_event_cb(container, onClick, lv.EVENT_CLICKED),
+    }
     lv.group.add_obj(document, container)
 end
 
@@ -69,7 +75,8 @@ return game
 ```
 
 - `clean()` doit défaire **tout** : timers (`lv.timer.del`), callbacks, groupe, objets.
-  Un timer oublié continue d'appeler du code sur des objets détruits.
+  Un timer oublié continue d'appeler du code sur des objets détruits. Exception : la
+  sortie vers la bibliothèque ne doit **pas** appeler `clean()` (§10, relance).
 - Le module est rechargé à neuf après `clean()` (`package.loaded[...] = nil`) : ne pas
   stocker d'état à conserver dans le module ; utiliser `state` (§11) ou `args`.
 - `Global.visual_width` etc. peuvent être lus au top-level du **module** (il est chargé
@@ -77,29 +84,60 @@ return game
 
 ## 4. Entrées molette
 
+La molette est un **encodeur** LVGL (simulateur et Flam, vérifié sur device) :
+
+- gauche (20) et droite (19) arrivent en `lv.EVENT_KEY` ;
+- le **clic molette** (= ENTER) arrive en `lv.EVENT_CLICKED` (précédé de
+  PRESSED/RELEASED) sur l'objet focalisé. Sur un objet **non défilable et non éditable**
+  (le cas recommandé), il n'arrive **jamais** en `EVENT_KEY` 10 : un code qui n'attend
+  que `b == 10` ne voit pas le clic (constaté au simulateur, cohérent avec la Flam).
+  Sur un objet défilable, LVGL envoie les deux (d'où l'anti-doublon ci-dessous).
+
+Écouter les deux, et ne compter un appui qu'une fois :
+
 ```lua
+local ticks, lastEnter = 0, -100          -- ticks incrémenté dans tick()
+
+local function action(b)
+    if b == 10 then                       -- clic molette / ENTER
+        if ticks - lastEnter < 4 then return end   -- un appui = une fois
+        lastEnter = ticks
+        -- ...
+    elseif b == 19 then                   -- molette droite
+    elseif b == 20 then                   -- molette gauche
+    end
+end
+
 local function onKey(e)
     local k = lv.event.get_key_value(e)
     if k == nil then return end
-    local b = string.byte(k)
-    if b == 19 then      -- molette droite
-    elseif b == 20 then  -- molette gauche
-    elseif b == 10 then  -- ENTER / validation
-    end
+    action(string.byte(k))
 end
+local function onClick(e) action(10) end
+
+-- dans create() :
+game.events[container] = {
+    key   = lv.obj.add_event_cb(container, onKey, lv.EVENT_KEY),
+    click = lv.obj.add_event_cb(container, onClick, lv.EVENT_CLICKED),
+}
+-- dans clean() : for _, cb in pairs(ev) do lv.obj.remove_event_cb(obj, cb) end
 ```
 
-- Prérequis : objet ajouté au groupe `document` + `lv.group.set_editing(document, true)`.
-  Sans le mode édition, la molette déplace le focus au lieu d'envoyer des touches.
-- Le device n'a **pas de bouton central dédié**, et le geste physique qui produit ENTER
-  (10) sur la Flam n'est pas documenté (au simulateur : Entrée/Espace). Le
-  casse-briques utilise ENTER pour lancer la balle. Règle sûre : toute action faisable
-  par ENTER l'est aussi aux directions (ex. un cran relance après 1 s) ; les actions
-  vitales (code de verrou, menu) se font aux seules directions.
+- Prérequis : objet ajouté au groupe `document` + `lv.group.set_editing(document, true)`,
+  objet **non** défilable (`clear_flag(..., lv.OBJ_FLAG_SCROLLABLE)`). Sans le mode
+  édition, la molette déplace le focus au lieu d'envoyer des touches.
+- Le clic est pris en compte au **relâchement** (`CLICKED`) ; un appui long envoie
+  d'abord `LONG_PRESSED`, puis `CLICKED` au relâchement (action retardée).
+  `lv.EVENT_PRESSED` serait immédiat mais n'est pas dans la liste blanche (§12).
+- Doubler malgré tout les actions par les directions quand c'est naturel (« un cran
+  relance après 1 s ») : un enfant tourne plus volontiers qu'il ne clique.
 - Retour : bouton retour du device / Échap au simulateur → `back_callback` (posé par
   `Global.setBackToLibrary()` ou `Global.setBackBehavior(fn)`), pas un `EVENT_KEY`.
+  Voir §10 pour sortir vers la bibliothèque sans casser la relance.
 - Contrôles discrets (1 cran = 1 pas) : prévoir des pas assez grands (casse-briques :
   18 px par cran), pas de « touche maintenue ».
+- Test automatisé au simulateur (constaté) : `WScript.Shell.SendKeys` n'envoie pas
+  Entrée/Espace à la fenêtre SDL (seulement des NumLock) ; `keybd_event` (user32) marche.
 
 ## 5. Dessin (LVGL 8.3 via `lv.*`)
 
@@ -179,19 +217,45 @@ Global.requestAudioStop(true, true)                                 -- couper
 ```
 
 - Champs reconnus par le runtime embarqué : `path`, `AFCb`, `priority` (couper la
-  piste en cours pour celle-ci), `showPause` (`false` dans un jeu : pas d'overlay
+  piste en cours pour celle-ci : donc un `stop`, à éviter pendant l'action), `showPause` (`false` dans un jeu : pas d'overlay
   pause plein écran si l'audio est mis en pause).
-- Une seule piste à la fois (pas de mixage) ; `requestAudioPlay` charge après un délai
-  de 500 ms (`Global.audioDelayValue`) : adapté à une musique ou une narration, pas à
-  un bruitage synchrone.
+- `requestAudioPlay` charge après un délai de 500 ms (`Global.audioDelayValue`) :
+  adapté à une musique ou une narration, pas à un bruitage synchrone.
 - Fichier absent : avec ce runtime, le chargement est retenté toutes les 500 ms et
   `"stop"` n'arrive jamais → toujours vérifier que le `.mp3` existe (`flam_check.py`
   contrôle les littéraux `"*.mp3"`).
 - `AFCb(state, seconds)` reçoit `"play"` (chaque seconde), `"pause"`, `"stop"` (fin).
-- Ne jamais appeler `audio.seek` pendant la lecture (gèle le device) :
-  `audio.pause(); audio.seek(s); audio.play()`.
 - Chaque `.mp3` doit avoir son `.mp3map` (généré par `flam_build.py`).
 - Sans besoin d'audio : ne rien faire (le casse-briques n'a pas de son).
+
+### Règles mesurées sur la Flam (jeu Capi et paquet de test, 2026-10)
+
+Constats faits par l'utilisateur sur sa Flam ; le simulateur ne montre aucun de ces
+effets (stop, pause et load y sont instantanés).
+
+| Appel | Effet sur device |
+|---|---|
+| `audio.load` + `play` après la **fin naturelle** de la piste précédente | sans à-coup |
+| `audio.stop()` ou `audio.pause()` d'une piste **en cours** | l'image **se fige** un instant |
+| `audio.load` pendant qu'une piste joue (sans stop) | **gel total**, redémarrage de la Flam |
+| `audio.load(1, ...)` + `play` | pas un 2ᵉ canal : la musique s'arrête, le nouveau son joue (les scripts Lunii passent toujours `0`) |
+| `audio.seek` pendant la lecture | gel (piège 9) : `pause()` → `seek()` → `play()` |
+
+Conséquences :
+
+- **Une seule piste, pas de mixage.** Musique **et** bruitages instantanés pendant
+  l'action sont impossibles sans à-coup : chaque bruitage doit couper la musique.
+- **Jeu d'action** : pas de musique pendant la partie ; des bruitages courts qui
+  attendent la fin naturelle du précédent (ou sont oubliés s'ils attendent trop).
+  Musique seulement aux écrans calmes (titre, fin), où l'arrêt ne se voit pas : la
+  couper au **départ** de la partie (seul `stop` toléré, l'image change de toute façon).
+- Bruitages pilotés depuis la boucle du jeu (25 ms) : n'appeler `audio.load` **que si**
+  `audio.get_status() == "stop"`, jamais deux chargements rapprochés, et ne pas mélanger
+  avec `Global.requestAudioPlay` (son propre timer de 500 ms). Les callbacks passés à
+  `audio.load` portent un jeton : ignorer le `"stop"` d'une piste coupée volontairement.
+  Exemple complet : `games/capi-riviere/script/capi_1_0_0.lua` (`audioPump`).
+- Musique longue sans `seek` : la découper en segments (2 mesures) enchaînés sur
+  `"stop"` ; chaque enchaînement naturel est sans à-coup.
 
 ## 9. Texte et polices
 
@@ -220,12 +284,48 @@ Global.setBackBehavior(function() Global.load_module("menu", "1_0_0").create({})
 - Le plus simple et le plus éprouvé reste un module unique avec des phases internes
   (le casse-briques : phase `lock` puis `play`).
 
+### Sortie vers la bibliothèque et relance (vérifié sur device)
+
+À la relance depuis la bibliothèque, la Flam **ne réexécute pas `setup()`** : elle
+réaffiche l'écran et l'état Lua laissés à la sortie. Donc, au moment de
+`goto_library()` :
+
+- **ne pas** vider l'écran ni appeler `cleanCurrentModule` / `clean()` (relance = écran
+  noir) ; ne **pas** supprimer le timer de jeu (relance = écran affiché mais touches
+  mortes si un délai compte les ticks) ;
+- couper seulement le son ; le reste du module reste vivant, comme le casse-briques :
+
+```lua
+back_callback = function()             -- sur l'écran d'accueil du jeu seulement
+    -- arrêter sa propre machine à sons (demandes en attente, musique) ...
+    Global.requestAudioStop(true, true)
+    goto_library()
+end
+```
+
+- Depuis une partie en cours : retour → écran d'accueil du jeu
+  (`Global.setBackBehavior(fn)`, qui nettoie et recrée le module), puis seulement de là
+  → bibliothèque, comme les histoires officielles (sortir d'une scène active vers la
+  bibliothèque donnait l'écran noir : `tools/telmi2flam/DEVICE_VS_SIM.md` §10). Jamais
+  de `setBackBehavior(function() goto_library() end)`.
+- La musique coupée à la sortie ne reprend pas toute seule à la relance (aucun
+  événement ne signale le retour) : l'écran d'accueil reste muet jusqu'à la première
+  action.
+
 ## 11. Sauvegarde
 
-`state` est une table globale persistée par le firmware (par UUID). Y mettre seulement
-des nombres, chaînes, booléens et tables simples (ex. `state.best = 1200`). Le format
-de sauvegarde diffère entre simulateur et device : tester la relecture sur le device.
-Ne pas utiliser `Global.progression` (chapitres d'histoire) pour un jeu.
+`state` est une table globale persistée par le firmware (par UUID, fichiers
+`/usr/0/{uuid}.save` et `.prog`, voir `flam-device-inventory.md` à la racine du dépôt).
+
+- **Jeu : ne rien écrire dans `state`.** Sur device, un homebrew qui y écrivait
+  (`state.best = score`) donnait un écran noir à la relance, réparé seulement en
+  effaçant la progression dans les paramètres de la Flam. Le casse-briques n'écrit
+  rien. Garder un record pour la session dans une table qui survit au rechargement du
+  module, par ex. `Global.monJeuBest`.
+- Si une vraie sauvegarde est indispensable : nombres, chaînes, booléens, tables
+  simples, puis tester la relance x2 sans redémarrer sur device (le format diffère du
+  simulateur).
+- Ne pas utiliser `Global.progression` (chapitres d'histoire) pour un jeu.
 
 ## 12. API sûre (liste blanche)
 
@@ -262,6 +362,8 @@ Préférer cette liste ; tout appel hors liste est à tester sur le device.
   `lv.LABEL_LONG_WRAP`, `lv.LABEL_LONG_SCROLL_CIRCULAR`, `lv.TEXT_ALIGN_CENTER`,
   `lv.TEXT_ALIGN_LEFT`, `lv.RADIUS_CIRCLE`, `lv.FLEX_FLOW_ROW/COLUMN`,
   `lv.FLEX_ALIGN_CENTER/START`, `lv.ANIM_ON/OFF`, `lv.ANIM_REPEAT_INFINITE`
+- `audio.` load (1er argument `0`), play, stop, pause, get_status (utilisés par
+  `global.lua` ; règles d'emploi §8)
 - `Global.` load_module, load_image, setBackToLibrary, setBackBehavior,
   setBackModule, requestAudioPlay, requestAudioStop, cleanCurrentModule,
   visual_width, visual_height, screen_width, screen_height, header_height
