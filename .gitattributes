@@ -1,0 +1,5 @@
+# Appli flam-launcher : LF partout (Prettier, rustfmt), quelle que soit la config autocrlf.
+apps/flam-launcher/** text=auto eol=lf
+apps/flam-launcher/**/*.png binary
+apps/flam-launcher/**/*.ico binary
+apps/flam-launcher/**/*.icns binary

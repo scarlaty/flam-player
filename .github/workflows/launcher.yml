@@ -1,0 +1,82 @@
+name: launcher
+
+on:
+  pull_request:
+    paths:
+      - "apps/flam-launcher/**"
+      - ".github/workflows/launcher.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/flam-launcher/**"
+      - ".github/workflows/launcher.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/flam-launcher
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/flam-launcher/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/flam-launcher/src-tauri
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Prettier
+        run: npm run format:check
+
+      - name: TypeScript
+        run: npm run typecheck
+
+      - name: Tests front
+        run: npm test
+
+      - name: rustfmt
+        working-directory: apps/flam-launcher/src-tauri
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: apps/flam-launcher/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests Rust
+        working-directory: apps/flam-launcher/src-tauri
+        run: cargo test
+
+      - name: Build Tauri (sans installeur)
+        run: npm run tauri build -- --no-bundle
+
+      - name: Artefact (exécutable)
+        uses: actions/upload-artifact@v4
+        with:
+          name: flam-launcher-windows
+          path: apps/flam-launcher/src-tauri/target/release/*.exe
+          if-no-files-found: warn
+          retention-days: 3
