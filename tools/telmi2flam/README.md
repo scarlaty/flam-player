@@ -485,12 +485,12 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   `ECHEC_EXECUTION`. Code de sortie 1 s'il y a au moins un échec.
 - **Reprise** : une histoire déjà évaluée avec les mêmes sources du convertisseur (hash de
   `tools/telmi2flam` hors tests/`compat.py`/`explore.py`) n'est pas refaite, sauf `--force`.
-  Un échec de téléchargement est toujours retenté. `--jobs N` : traitement parallèle
+  Un échec de téléchargement est toujours retenté. Pour les archives locales, la taille et la date du zip font partie du critère (zip remplacé = refait) ; pour un catalogue, `updated_at` si présent. Avec `--only`/`--limit`, le rapport conserve les fiches précédentes non sélectionnées ; celles évaluées avec un autre convertisseur sont marquées `stale` (« périmé » dans `report.md`). `report.json` est réécrit (atomiquement) après chaque histoire. `--jobs N` : traitement parallèle
   (processus).
 - **Étape `run`** : appelle `explore(player_exe, story_path, timeout_s=120, seed=0,
   max_steps=200) -> dict` (clé `status` : `ok|lua_error|crash|timeout|stuck`) si on la
   passe à `run_campaign(..., explore=..., player_exe=...)`, ou, en CLI, si `--player` est
-  donné et que `explore.py` existe. Sinon l'étape vaut `skipped`.
+  donné et que `explore.py` existe. Sinon l'étape vaut `skipped`. Les clés `errors`, `scenes_visited`, `scenes_total`, `end_reached`, `duration_s` de la réponse sont reprises dans le rapport (section « Execution (couverture) » de `report.md`).
 
 ```bash
 python -m unittest discover -s tools/telmi2flam/tests -p "test_compat.py"   # sans réseau

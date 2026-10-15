@@ -348,5 +348,143 @@ class TestCampaign(CompatBase):
         self.assertEqual(compat.converter_hash(), compat.converter_hash())
 
 
+FULL = {"status": "ok", "errors": [], "scenes_visited": 3, "scenes_total": 4,
+        "end_reached": True, "duration_s": 1.5}
+
+
+class TestReview(CompatBase):
+    def setUp(self):
+        super().setUp()
+        self.entries = []
+        for n in ("a", "b", "c"):
+            p = self.mkzip(std_files(), n)
+            self.entries.append(self.entry(n, None, path=p, version="local",
+                                           fingerprint=compat._file_fingerprint(p)))
+
+    def report(self):
+        with open(os.path.join(self.cache, "compat", "report.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_selection_keeps_previous(self):
+        self.campaign(self.entries)
+        doc = self.campaign(self.entries[:1], force=True)
+        self.assertEqual([s["uuid"] for s in doc["stories"]], ["b", "c", "a"])
+        self.assertEqual([s["uuid"] for s in self.report()["stories"]], ["b", "c", "a"])
+        self.assertFalse(any(s["stale"] for s in doc["stories"]))
+        # autre convertisseur : les fiches non selectionnees sont marquees perimees
+        with mock.patch.object(compat, "converter_hash", lambda root=None: "nouveau"):
+            doc = self.campaign(self.entries[:1])
+        st = {s["uuid"]: s["stale"] for s in doc["stories"]}
+        self.assertEqual(st, {"a": False, "b": True, "c": True})
+        with open(os.path.join(self.cache, "compat", "report.md"), encoding="utf-8") as f:
+            self.assertIn("(perime)", f.read())
+
+    def test_run_details(self):
+        good = self.entries[:1]
+        doc = self.campaign(good, explore=lambda *a, **k: dict(FULL), player_exe="p")
+        r = doc["stories"][0]["steps"]["run"]
+        self.assertEqual((r["status"], r["scenes_visited"], r["scenes_total"],
+                          r["end_reached"], r["duration_s"]), ("ok", 3, 4, True, 1.5))
+        with open(os.path.join(self.cache, "compat", "report.md"), encoding="utf-8") as f:
+            md = f.read()
+        self.assertIn("3/4", md)
+        self.assertIn("oui", md)
+        bad = dict(FULL, status="lua_error", errors=["Erreur Lua: boum"], end_reached=False)
+        doc = self.campaign(good, explore=lambda *a, **k: dict(bad), force=True)
+        s = doc["stories"][0]
+        self.assertEqual(s["status"], "ECHEC_EXECUTION")
+        self.assertIn("Erreur Lua: boum", s["steps"]["run"]["messages"])
+        self.assertIs(s["steps"]["run"]["end_reached"], False)
+
+    def test_unexpected_exceptions(self):
+        import http.client
+        for url in (123, ["x"], "http://exemple/\x7f"):
+            rec = self.process(self.entry("e", url), FakeServer({}))
+            self.assertEqual(rec["status"], "ECHEC_TELECHARGEMENT", url)
+
+        def boom(url, headers, timeout):
+            raise http.client.IncompleteRead(b"ab")
+        rec = self.process(self.entry("e2", "u"), boom)
+        self.assertEqual(rec["status"], "ECHEC_TELECHARGEMENT")
+        # filet de securite : plantage imprevu pendant la conversion
+        with mock.patch.object(compat, "do_convert", side_effect=RuntimeError("zut")):
+            rec = self.process(self.entry("e3", None, path=self.entries[0]["path"]),
+                               FakeServer({}))
+        self.assertEqual(rec["status"], "ECHEC_CONVERSION")
+        self.assertIn("zut", rec["steps"]["convert"]["messages"][0])
+        # et la campagne (y compris en parallele) va au bout et ecrit le rapport
+        ents = [self.entry("n%d" % i, 42) for i in range(2)] + self.entries[:1]
+        doc = self.campaign(ents, jobs=2)
+        self.assertEqual(len(doc["stories"]), 3)
+        self.assertTrue(os.path.isfile(os.path.join(self.cache, "compat", "report.md")))
+
+    def test_incremental_report(self):
+        seen = []
+        real = compat.do_validate
+
+        def spy(pk):
+            try:
+                seen.append(len(self.report()["stories"]))
+            except OSError:
+                seen.append(0)
+            return real(pk)
+        with mock.patch.object(compat, "do_validate", spy):
+            self.campaign(self.entries)
+        self.assertEqual(seen, [0, 1, 2])           # report.json ecrit apres chaque histoire
+        self.assertFalse(os.path.exists(os.path.join(self.cache, "compat", "report.json.tmp")))
+
+    def test_local_zip_replaced(self):
+        calls = []
+        real = compat.do_convert
+
+        def counting(z, o):
+            calls.append(z)
+            return real(z, o)
+        ent = compat.scan_folder(os.path.dirname(self.entries[0]["path"]))
+        ent = [e for e in ent if e["uuid"] == "u1"][:1] or ent[:1]
+        with mock.patch.object(compat, "do_convert", counting):
+            self.campaign(ent)
+            self.campaign(ent)
+            self.assertEqual(len(calls), 1)
+            p = ent[0]["path"]
+            with open(p, "ab") as f:
+                f.write(b"\0")                       # zip modifie (taille differente)
+            ent2 = compat.scan_folder(os.path.dirname(p))
+            self.campaign([e for e in ent2 if e["path"] == p])
+            self.assertEqual(len(calls), 2)
+
+    def test_updated_at(self):
+        cat = os.path.join(self.tmp, "c.json")
+        with open(cat, "w") as f:
+            json.dump({"data": [{"uuid": "q", "updated_at": "2026-01-02"}, {"uuid": "r"}]}, f)
+        es = compat.load_catalog(cat)
+        self.assertEqual([e["fingerprint"] for e in es], ["2026-01-02", None])
+
+    def test_416_without_size_checks_zip(self):
+        arch = os.path.join(self.cache, "archives")
+        os.makedirs(arch)
+        part = os.path.join(arch, "a-1.zip.part")
+
+        def gone(url, headers, timeout):
+            raise urllib.error.HTTPError(url, 416, "range", {}, None)
+        with open(part, "wb") as f:
+            f.write(b"pas un zip du tout")
+        with self.assertRaises(compat.DownloadError):
+            compat.download(self.entry("a", "u"), arch, opener=gone, sleep=lambda s: None)
+        self.assertFalse(os.path.exists(part))
+        with open(part, "wb") as f:
+            f.write(self.zip_bytes(std_files()))
+        path, _ = compat.download(self.entry("a", "u"), arch, opener=gone)
+        self.assertTrue(zipfile.is_zipfile(path))
+
+    def test_cli_negative_limit_and_md_escape(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            compat.main(["--folder", self.tmp, "--limit", "-1"])
+        doc = {"generated": "t", "converter_hash": "h", "stories": [
+            {"title": "T", "uuid": "a|b", "version": "1", "status": "OK", "key": "k",
+             "steps": {}}]}
+        self.assertIn("a\\|b", compat.render_markdown(doc))
+
+
 if __name__ == "__main__":
     unittest.main()

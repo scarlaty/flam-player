@@ -21,6 +21,7 @@ import concurrent.futures
 import contextlib
 import fnmatch
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -105,6 +106,8 @@ def load_catalog(src, fetch=_fetch_bytes):
             "download": download,
             "size": size if isinstance(size, int) and not isinstance(size, bool) else None,
             "path": None,
+            "fingerprint": (str(_first(it, "updated_at", "updatedAt")) if _first(
+                it, "updated_at", "updatedAt") is not None else None),
         })
     return out
 
@@ -125,6 +128,15 @@ def _zip_identity(path):
     return None, None
 
 
+def _file_fingerprint(path):
+    """Taille + mtime : detecte un zip local remplace."""
+    try:
+        st = os.stat(path)
+        return "%d:%d" % (st.st_size, st.st_mtime_ns)
+    except OSError:
+        return None
+
+
 def scan_folder(folder):
     """Entrees pour les .zip d'un dossier (pas de telechargement)."""
     out = []
@@ -136,7 +148,8 @@ def scan_folder(folder):
         uuid, title = _zip_identity(path)
         out.append({"source": folder, "uuid": uuid or stem, "version": "local",
                     "title": title or stem, "license": None, "category": None,
-                    "download": None, "size": None, "path": path})
+                    "download": None, "size": None, "path": path,
+                    "fingerprint": _file_fingerprint(path)})
     return out
 
 
@@ -207,6 +220,8 @@ def download(entry, archives_dir, opener=_urlopen, retries=RETRIES, timeout=TIME
     url = entry.get("download")
     if not url:
         raise DownloadError("pas d'URL de telechargement dans le catalogue")
+    if not isinstance(url, str):
+        raise DownloadError("URL de telechargement invalide (%s)" % type(url).__name__)
     os.makedirs(archives_dir, exist_ok=True)
     final = os.path.join(archives_dir, story_key(entry["uuid"], entry["version"]) + ".zip")
     part = final + ".part"
@@ -238,7 +253,7 @@ def download(entry, archives_dir, opener=_urlopen, retries=RETRIES, timeout=TIME
             except urllib.error.HTTPError as e:
                 if e.code == 416 and offset:       # .part deja complet ?
                     exp = known_size()
-                    if exp is None or exp == offset:
+                    if (exp == offset) if exp is not None else zipfile.is_zipfile(part):
                         resp = None
                     else:
                         os.remove(part)
@@ -271,7 +286,8 @@ def download(entry, archives_dir, opener=_urlopen, retries=RETRIES, timeout=TIME
                 raise DownloadError("fichier vide")
             os.replace(part, final)
             return final, "telecharge (%d octets, tentative %d)" % (total, attempt)
-        except (OSError, DownloadError, ValueError) as e:   # URLError, timeout... sont des OSError
+        except (OSError, DownloadError, ValueError, TypeError,
+                http.client.HTTPException) as e:   # URLError, timeout... sont des OSError
             last = e
             if attempt < retries:
                 sleep(min(2 ** (attempt - 1), 5))
@@ -359,11 +375,22 @@ def do_run(pk_path, explore, player_exe, timeout_s, seed, max_steps):
     for k in ("message", "error", "detail"):
         if res.get(k):
             msgs.append(str(res[k]))
+    errors = res.get("errors")
+    if isinstance(errors, (list, tuple)):
+        msgs += [str(x) for x in errors]
     if status == "ok":
-        return _step("ok", msgs[1:], dt)
-    if status in RUN_FAIL:
-        return _step("fail", msgs, dt)
-    return _step("fail", msgs + ["statut explore inconnu"], dt)
+        st = _step("ok", msgs[1:], dt)
+    elif status in RUN_FAIL:
+        st = _step("fail", msgs, dt)
+    else:
+        st = _step("fail", msgs + ["statut explore inconnu"], dt)
+    for k in ("scenes_visited", "scenes_total", "end_reached"):
+        if k in res:
+            st[k] = res[k]
+    # duree mesuree par explore si fournie, sinon par la campagne
+    dur = res.get("duration_s")
+    st["duration_s"] = round(dur, 2) if isinstance(dur, (int, float)) else round(dt, 2)
+    return st
 
 
 def global_status(steps):
@@ -388,32 +415,47 @@ def process_story(entry, cache, opener=None, sleep=time.sleep):
     key = story_key(entry["uuid"], entry["version"])
     rec = {k: entry.get(k) for k in ("source", "uuid", "version", "title", "license", "category")}
     rec["key"] = key
+    rec["fingerprint"] = entry.get("fingerprint")
     steps = {}
     rec["steps"] = steps
     t0 = time.time()
-    if entry.get("path"):
-        zip_path = entry["path"]
-        steps["download"] = _step("skipped", ["archive locale"])
-    else:
-        try:
-            kw = {"sleep": sleep}
-            if opener:
-                kw["opener"] = opener
-            zip_path, msg = download(entry, archives, **kw)
-            steps["download"] = _step("ok", [msg], time.time() - t0)
-        except DownloadError as e:
-            steps["download"] = _step("fail", [str(e)], time.time() - t0)
+    # Filet de securite : aucune exception ne doit faire echouer toute la campagne
+    try:
+        if entry.get("path"):
+            zip_path = entry["path"]
+            steps["download"] = _step("skipped", ["archive locale"])
+        else:
+            try:
+                kw = {"sleep": sleep}
+                if opener:
+                    kw["opener"] = opener
+                zip_path, msg = download(entry, archives, **kw)
+                steps["download"] = _step("ok", [msg], time.time() - t0)
+            except Exception as e:
+                steps["download"] = _step("fail", ["%s: %s" % (type(e).__name__, e)]
+                                          if not isinstance(e, DownloadError) else [str(e)],
+                                          time.time() - t0)
+    except Exception as e:
+        steps["download"] = _step("fail", ["%s: %s" % (type(e).__name__, e)])
     if steps["download"]["status"] == "fail":
         for s in STEPS[1:]:
             steps[s] = _step("skipped", ["telechargement en echec"])
     else:
-        pk = os.path.join(converted, key + ".plain.pk")
-        steps["convert"] = do_convert(zip_path, pk)
-        if steps["convert"]["status"] == "fail":
-            steps["validate"] = _step("skipped", ["conversion en echec"])
-        else:
-            steps["validate"] = do_validate(pk)
-            rec["output"] = pk
+        try:
+            pk = os.path.join(converted, key + ".plain.pk")
+            steps["convert"] = do_convert(zip_path, pk)
+            if steps["convert"]["status"] == "fail":
+                steps["validate"] = _step("skipped", ["conversion en echec"])
+            else:
+                steps["validate"] = do_validate(pk)
+                rec["output"] = pk
+        except Exception as e:
+            msg = ["%s: %s" % (type(e).__name__, e)]
+            if "convert" not in steps:
+                steps["convert"] = _step("fail", msg)
+                steps["validate"] = _step("skipped", ["conversion en echec"])
+            else:
+                steps["validate"] = _step("fail", msg)
         steps["run"] = _step("skipped", ["pas encore execute"])
     rec["status"] = global_status(steps)
     return rec
@@ -428,28 +470,63 @@ def _worker(args):
 # Campagne
 # ---------------------------------------------------------------------------
 def _load_previous(report_path):
+    """(hash du convertisseur du rapport, [fiches]) ; fiches sans hash propre -> hash du rapport."""
     try:
         with open(report_path, encoding="utf-8") as f:
             doc = json.load(f)
-        return doc.get("converter_hash"), {s["key"]: s for s in doc.get("stories", [])}
-    except (OSError, ValueError, KeyError, TypeError):
-        return None, {}
+        stories = [dict(s, converter_hash=s.get("converter_hash") or doc.get("converter_hash"))
+                   for s in doc.get("stories", []) if isinstance(s, dict) and "key" in s]
+        return doc.get("converter_hash"), stories
+    except (OSError, ValueError, TypeError):
+        return None, []
+
+
+def _write_atomic(path, text):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
 
 
 def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None,
                  player_exe=None, run_timeout=120, seed=0, max_steps=200, log=print):
-    """Evalue chaque entree ; ecrit report.json / report.md ; retourne le document."""
+    """Evalue chaque entree ; ecrit report.json / report.md ; retourne le document.
+    Le rapport conserve les fiches precedentes hors selection (--only/--limit) : celles
+    evaluees avec un autre convertisseur sont marquees `stale` (perimees) dans le rapport.
+    report.json est reecrit (atomiquement) apres chaque histoire."""
     compat_dir = os.path.join(cache, "compat")
     os.makedirs(compat_dir, exist_ok=True)
     report_path = os.path.join(compat_dir, "report.json")
     chash = converter_hash()
-    prev_hash, prev = _load_previous(report_path)
+    prev_hash, prev_list = _load_previous(report_path)
+    prev = {s["key"]: s for s in prev_list}
+    keys = [story_key(e["uuid"], e["version"]) for e in entries]
+    selected = set(keys)
+
+    def build_doc(results):
+        stories = []
+        for s in prev_list:                      # fiches precedentes hors selection
+            if s["key"] not in selected:
+                stories.append(dict(s, stale=(s.get("converter_hash") != chash)))
+        for k in keys:                           # selection : resultat frais, sinon ancienne fiche
+            r = results.get(k) or prev.get(k)
+            if r is not None:
+                stories.append(dict(r, stale=(r.get("converter_hash") != chash)))
+        return {"generated": time.strftime("%Y-%m-%dT%H:%M:%S"), "converter_hash": chash,
+                "stories": stories}
+
+    def write(results, md=False):
+        doc = build_doc(results)
+        _write_atomic(report_path, json.dumps(doc, ensure_ascii=False, indent=2))
+        if md:
+            _write_atomic(os.path.join(compat_dir, "report.md"), render_markdown(doc))
+        return doc
 
     results, todo = {}, []
-    for e in entries:
-        k = story_key(e["uuid"], e["version"])
+    for e, k in zip(entries, keys):
         old = prev.get(k)
-        reusable = (old is not None and not force and prev_hash == chash
+        reusable = (old is not None and not force and old.get("converter_hash") == chash
+                    and old.get("fingerprint") == e.get("fingerprint")
                     and old.get("status") != "ECHEC_TELECHARGEMENT"
                     and not (explore is not None
                              and old.get("steps", {}).get("run", {}).get("status") == "skipped"
@@ -466,7 +543,9 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         if pk and rec["steps"]["validate"]["status"] in ("ok", "warn"):
             rec["steps"]["run"] = do_run(pk, explore, player_exe, run_timeout, seed, max_steps)
             rec["status"] = global_status(rec["steps"])
+        rec["converter_hash"] = chash
         results[rec["key"]] = rec
+        write(results)
         log("%s %s : %s" % ("+" if rec["status"].startswith("OK") else "!", rec["key"],
                             rec["status"]))
 
@@ -477,15 +556,7 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
     else:
         for e in todo:
             finish(process_story(e, cache))
-
-    stories = [results[story_key(e["uuid"], e["version"])] for e in entries]
-    doc = {"generated": time.strftime("%Y-%m-%dT%H:%M:%S"), "converter_hash": chash,
-           "stories": stories}
-    with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(doc, f, ensure_ascii=False, indent=2)
-    with open(os.path.join(compat_dir, "report.md"), "w", encoding="utf-8") as f:
-        f.write(render_markdown(doc))
-    return doc
+    return write(results, md=True)
 
 
 def _cause(rec):
@@ -517,7 +588,21 @@ def render_markdown(doc):
     for s in stories:
         cells = [s["steps"].get(k, {}).get("status", "-") for k in STEPS]
         L.append("| %s | %s | %s | %s | %s |" % (
-            _md(s["title"]), s["uuid"], s["version"], " | ".join(cells), s["status"]))
+            _md(s["title"]), _md(s["uuid"]), _md(s["version"]), " | ".join(cells),
+            s["status"] + (" (perime)" if s.get("stale") else "")))
+    runs = [s for s in stories if "scenes_visited" in s["steps"].get("run", {})]
+    if runs:
+        L += ["", "## Execution (couverture)", "",
+              "| Titre | Scenes visitees | Fin atteinte | Duree (s) | Statut |",
+              "|---|---|---|---|---|"]
+        for s in runs:
+            r = s["steps"]["run"]
+            tot = r.get("scenes_total")
+            end = r.get("end_reached")
+            L.append("| %s | %s/%s | %s | %s | %s |" % (
+                _md(s["title"]), r.get("scenes_visited"), tot if tot is not None else "?",
+                "oui" if end else ("non" if end is not None else "?"),
+                r.get("duration_s", "?"), r["status"]))
     groups = {}
     for s in stories:
         step, cause = _cause(s)
@@ -571,6 +656,8 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max-steps", type=int, default=200)
     args = ap.parse_args(argv)
+    if args.limit is not None and args.limit < 0:
+        ap.error("--limit doit etre positif ou nul")
     if not args.catalog and not args.folder:
         ap.error("au moins un --catalog ou --folder est requis")
     try:
