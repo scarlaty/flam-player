@@ -325,6 +325,7 @@ return {
 ```bash
 python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
                      [--allow-missing] [--selector carousel|image]
+                     [--progress-json] [--info]
 ```
 
 - `-o` : chemin de sortie (défaut : `<Titre>.<UUID8>.plain.pk` dans le dossier courant).
@@ -339,10 +340,128 @@ python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
   (sinon **erreur**) ; un audio manquant est remplacé par `silent.mp3` (la scène garde
   sa transition de fin d'audio), une image manquante est omise.
 - `--selector` : affichage des choix multiples (`carousel` par défaut, ou `image`).
+- `--progress-json` : sortie lisible par machine (voir « Sortie machine » ci-dessous).
+- `--info` : affiche les métadonnées de l'histoire en JSON, **sans convertir**.
 
 En cas de paquet invalide (zip illisible, JSON invalide/BOM mal formé, `NaN`, type
 inattendu, `metadata.json`/`nodes.json` absents, nom d'asset dangereux...), le CLI
-affiche `ERREUR : ...` et sort avec le code 1 (pas de traceback).
+affiche `ERREUR : ...` sur stderr et sort avec un code non nul stable (pas de
+traceback) : voir « Codes de sortie ».
+
+### Codes de sortie
+
+Stables : ils s'appliquent avec ou sans `--progress-json`.
+
+| Code | Signification | `code` de l'événement `error` |
+|-----:|---------------|-------------------------------|
+| 0 | succès (avertissements possibles) | — |
+| 2 | arguments invalides (aide/usage sur stderr) | `bad_arguments` |
+| 3 | archive d'entrée absente, illisible/corrompue, ou qui n'est pas une histoire Telmi (uniquement la lecture de l'archive d'entrée) | `archive_unreadable`, `not_telmi` |
+| 4 | contenu invalide (JSON invalide, type inattendu, nom d'asset dangereux, `nodes.lua` non sérialisable…) | `invalid_content` |
+| 5 | asset (image/audio) manquant sans `--allow-missing` | `missing_asset` |
+| 6 | erreur interne (dont lecture des fichiers du moteur/runtime embarqués) ou d'écriture de la sortie | `output_error`, `internal_error` |
+| 130 | annulation (Ctrl+C, SIGTERM, Ctrl+Break) | `cancelled` |
+
+(L'ancien code unique `1` n'existe plus.) Pour un appelant Python, `telmi2flam.convert()`
+lève `ConvError` (attributs `code` et `exit_code`) ou les exceptions de `zipfile` ; le
+comportement de `convert()` sans `progress` est inchangé (résumé sur stdout,
+avertissements `  ! ...` sur stderr, ce que lit `compat.py`).
+
+### Sortie machine (`--progress-json`)
+
+Avec `--progress-json`, **stdout ne contient que des événements JSON**, un objet par
+ligne (encodage ASCII, `\uXXXX` pour les caractères non ASCII, vidangé après chaque
+ligne). Tout le texte humain (résumé `OK -> ...`, `! avertissement`, `ERREUR : ...`)
+reste sur **stderr**. Le champ `event` identifie le type ; un lecteur doit ignorer les
+champs et événements inconnus (ajouts compatibles).
+
+```jsonl
+{"event":"start","total":4,"phases":["images","audio","scripts","zip"],"input":"histoire.zip"}
+{"event":"step","phase":"images","done":0,"total":12}
+{"event":"step","phase":"audio","done":0,"total":12}
+{"event":"warning","code":"audio_missing","message":"audio manquant: s7.mp3 -> silent.mp3"}
+{"event":"step","phase":"images","done":12,"total":12}
+{"event":"step","phase":"audio","done":12,"total":12}
+{"event":"step","phase":"scripts","done":0,"total":24}
+{"event":"step","phase":"scripts","done":24,"total":24}
+{"event":"step","phase":"zip","done":0,"total":61}
+{"event":"step","phase":"zip","done":61,"total":61}
+{"event":"done","output":"Titre.AB12CD34.plain.pk","size":1234567,"warnings":1}
+```
+
+| Événement | Champs | Notes |
+|-----------|--------|-------|
+| `start` | `total` (nombre de phases, ici 4), `phases` (liste ordonnée), `input` | **premier événement**, émis avant toute lecture (donc avant tout `warning`) |
+| `step` | `phase` (`images`, `audio`, `scripts`, `zip`), `done`, `total` | `done` croît de 0 à `total` |
+| `warning` | `code`, `message` | non bloquant ; même texte que la ligne `  ! ...` de stderr |
+| `done` | `output`, `size` (octets), `warnings` (nombre) | dernier événement en cas de succès |
+| `error` | `code`, `message`, `exit` (code de sortie) | dernier événement en cas d'échec ou d'annulation |
+
+Règles :
+- Un seul événement terminal : `done` (code 0) **ou** `error` (code ≠ 0).
+- `start` est toujours la première ligne, **sauf** pour `bad_arguments` (code 2) : les
+  arguments sont refusés avant le début de la conversion, la seule ligne est alors
+  l'événement `error`. Une archive absente/illisible (code 3) donne `start` puis `error`.
+  `--info` n'émet pas d'événement `start` (une seule ligne de métadonnées, cf. ci-dessous).
+- stdout fermé ou cassé par le parent (pipe fermé) : l'émission des événements cesse
+  silencieusement (sans exception ni trace) et **la conversion continue jusqu'au bout**
+  (messages humains sur stderr, code de sortie normal). Un parent qui veut arrêter
+  la conversion doit terminer le processus (cf. « Annulation »).
+- Phases : `images` et `audio` comptent les assets *distincts* référencés par les
+  scènes et l'inventaire (les événements des deux phases peuvent s'entrecroiser) ;
+  `scripts` = `nodes.lua`, moteur et bibliothèque embarquée ; `zip` = fichiers écrits
+  (doublé avec `--plain` ou `-o *.plain`, qui écrivent aussi/seulement le dossier).
+  Chaque phase émet `done:0` au début et `done:total` à la fin (même si `total` = 0) ;
+  les événements intermédiaires sont espacés d'au moins 0,1 s (jamais un par fichier).
+- `output` : chemin passé à `-o` (ou le nom par défaut) ; avec un dossier `.plain`,
+  `size` est la somme des fichiers.
+- Codes `warning` : `notes_ignored`, `uuid_derived`, `image_missing`, `image_unreadable`,
+  `audio_missing`, `audio_samplerate`, `mp3map_failed`, `cover_unreadable`,
+  `font_replaced`, `assets_missing_allowed`.
+- Codes `error` : ceux du tableau « Codes de sortie ». Avec `bad_arguments`, l'événement
+  est émis avant le message d'usage de stderr (seulement si `--progress-json` est présent).
+
+### Annulation
+
+Ctrl+C, SIGTERM (POSIX) et Ctrl+Break (Windows) interrompent proprement : les
+temporaires sont supprimés, un événement `error` (`cancelled`) est émis et le code de
+sortie est **130**. Testé sous Windows avec un vrai `CTRL_BREAK_EVENT` (processus lancé
+avec `CREATE_NEW_PROCESS_GROUP`, puis `send_signal(signal.CTRL_BREAK_EVENT)`).
+
+Garanties réelles :
+- **`.plain.pk`** : écrit dans `<sortie>.<pid>.part` puis publié par `os.replace`
+  (atomique). Annulé avant la publication, aucun fichier partiel n'existe et une sortie
+  précédente reste intacte.
+- **Dossier `.plain`** (`--plain`, ou `-o *.plain`) : écrit dans un dossier temporaire
+  `<dossier>.<pid>.part` complet, mais sa publication n'est **pas atomique** : si le
+  dossier existe déjà, les fichiers sont remplacés un par un (les autres fichiers du
+  dossier sont conservés) ; une annulation pendant cette courte phase peut laisser un
+  mélange d'anciens et de nouveaux fichiers. Avec `--plain`, le `.plain.pk` est publié
+  **avant** le dossier : une annulation pendant la publication du dossier laisse le
+  nouveau `.pk` et un dossier éventuellement mixte. Si le dossier n'existait pas, il
+  est publié d'un seul `os.replace` (atomique).
+- Un arrêt brutal (`TerminateProcess` sous Windows, `kill -9`) n'est pas interceptable
+  et peut laisser un `*.part` orphelin (jamais un `.plain.pk` partiel). Au démarrage
+  d'une conversion vers une sortie donnée, les `<sortie>.<pid>.part` orphelins de
+  **cette même sortie** sont supprimés si leur `pid` n'existe plus ; ceux d'un
+  processus vivant (conversion concurrente) sont conservés. Un `.part` d'un pid
+  réutilisé par un autre processus vivant n'est pas supprimé (choix prudent : on ne
+  se fie pas à l'âge du fichier).
+
+### Métadonnées (`--info`)
+
+`python telmi2flam.py --info histoire.zip` écrit **une ligne JSON** sur stdout et sort
+avec le code 0, sans rien convertir ni écrire (`-o` ignoré) :
+
+```json
+{"title":"Mon histoire","uuid":"abc-123","version":3,"age":6,"category":"Aventure","description":"...","cover":true}
+```
+
+`title`, `uuid`, `version`, `age`, `category`, `description` sont les valeurs brutes de
+`metadata.json` (texte ou nombre), ou `null` si absentes/non scalaires. `cover` est
+`true` si l'archive contient une image de couverture (`metadata.image`, `title.png` ou
+`cover.png`). Les erreurs suivent les mêmes codes de sortie ; avec `--progress-json`,
+un événement `error` est aussi émis sur stdout.
 
 Dépendance : `pip install "Pillow>=10.0"`. Versions testées : Pillow 10.0.0, 11.0.0 et 12.2.0
 (Python 3.12) ; la transparence `tRNS` des PNG est lue dans les octets du PNG, donc
