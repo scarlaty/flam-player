@@ -2,10 +2,13 @@
 
 mod app;
 mod error;
+pub mod folder;
+pub mod lif;
 pub mod settings;
 pub mod sources;
 pub mod storage;
 pub mod story;
+pub mod thumbnail;
 
 use tauri::Manager;
 
@@ -36,6 +39,7 @@ pub fn run() {
             sources::sources_update,
             sources::sources_remove,
             sources::sources_reorder,
+            folder::folder_scan,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application Tauri");

@@ -15,6 +15,7 @@ use serde::{Serialize, Serializer};
 /// | `ConfigVersion` | `config_version`| Fichier de config d'une version plus récente            |
 /// | `ConfigDir`     | `config_dir`    | Dossier de configuration introuvable                    |
 /// | `Serialization` | `serialization` | Échec de sérialisation JSON                             |
+/// | `FolderUnavailable` | `folder_unavailable` | Dossier d'une source locale absent ou inaccessible |
 ///
 /// Un fichier de configuration corrompu n'est pas une erreur : il est sauvegardé en
 /// `*.bak` et remplacé par les valeurs par défaut (avertissement tracé).
@@ -51,6 +52,10 @@ pub enum AppError {
     /// Échec de sérialisation JSON d'une configuration.
     #[error("erreur de sérialisation JSON : {0}")]
     Serialization(#[from] serde_json::Error),
+
+    /// Dossier d'une source locale absent ou inaccessible (disque débranché, dossier supprimé).
+    #[error("{0}")]
+    FolderUnavailable(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -65,6 +70,7 @@ impl AppError {
             AppError::ConfigVersion { .. } => "config_version",
             AppError::ConfigDir => "config_dir",
             AppError::Serialization(_) => "serialization",
+            AppError::FolderUnavailable(_) => "folder_unavailable",
         }
     }
 }
@@ -113,6 +119,10 @@ mod tests {
         assert_eq!(AppError::ConfigDir.kind(), "config_dir");
         let json_err = serde_json::from_str::<u8>("x").unwrap_err();
         assert_eq!(AppError::from(json_err).kind(), "serialization");
+        assert_eq!(
+            AppError::FolderUnavailable("x".into()).kind(),
+            "folder_unavailable"
+        );
     }
 
     #[test]

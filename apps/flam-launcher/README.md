@@ -46,16 +46,19 @@ apps/flam-launcher/
       storage.rs           Persistance JSON : écriture atomique, `*.bak`, migration de schéma
       settings.rs          `settings.json`, détection du player et de Python, commandes `settings_*`
       sources.rs           `sources.json`, source par défaut et implicite, commandes `sources_*`
+      story.rs             `StoryEntry` / `StoryKind` : type commun des histoires d'une source
+      folder.rs            Source dossier local (`.zip` Telmi, `.plain`, `.plain.pk`), commande `folder_scan`
+      lif.rs               Décodeur LIF (port de `src/formats/lif_decoder.c`)
+      thumbnail.rs         Vignettes : PNG, réduction, cache `thumbs/`, URL `data:`
 ```
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `sources`. Prévus (un module par responsabilité, créés avec leur issue) :
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `sources`, `story`, `folder`, `lif`, `thumbnail`. Prévus (un module par responsabilité, créés avec leur issue) :
 
 | Module    | Rôle                                                             |
 | --------- | ---------------------------------------------------------------- |
 | `catalog` | Lecture des catalogues JSON au format Telmi Store                |
-| `folder`  | Source dossier local (`.zip`, `.plain`, `.plain.pk`)             |
 | `install` | Pipeline téléchargement, conversion (`telmi2flam`), installation |
 | `player`  | Lancement et suivi de `flam-player`                              |
 | `compat`  | Statut de compatibilité d'une histoire                           |
@@ -79,6 +82,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `sources_remove`      | `id`                       | rien                        | `sources`  |
 | `sources_reorder`     | `ids: string[]`            | `Source[]` (liste complète) | `sources`  |
 | `config_ack_recovery` | `file?: string`            | rien                        | `storage`  |
+| `folder_scan`         | `source_id`, `recursive?`  | `FolderScan`                | `folder`   |
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).
@@ -91,6 +95,40 @@ Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`), `src/api/
 configuration en paramètre : elle est testée sur des dossiers temporaires ; les commandes
 ne sont que de fines enveloppes qui prennent un verrou (`ConfigState`) autour de chaque opération.
 
+### Source dossier local (`folder_scan`)
+
+`folder_scan(source_id, recursive?)` analyse une source de type `folder` (autre type :
+`validation` ; dossier absent : `folder_unavailable`) et renvoie
+`FolderScan { entries: StoryEntry[], warnings: { path, message }[] }`. Le parcours est non récursif
+par défaut (récursif : 8 niveaux, 5000 histoires au plus, liens symboliques ignorés) ; un fichier
+invalide est **ignoré et signalé** dans `warnings`, jamais une erreur. Le verrou de configuration
+n'est pas tenu pendant l'analyse (thread dédié).
+
+| Entrée            | `kind`       | Lu                                                                                                                                     |
+| ----------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `*.zip`           | `telmi_zip`  | `metadata.json` (UTF-8, BOM toléré) du dossier racine (`find_root` de `telmi2flam`), vignette `title.png` ou `cover.png` selon `image` |
+| dossier `*.plain` | `flam_plain` | 1re ligne d'`info.plain` (titre), `uuid.bin` (16 octets, uuid en hexadécimal), `img/thumbnail.lif`                                     |
+| `*.plain.pk`      | `flam_pk`    | idem, dans l'archive (zip « stored »)                                                                                                  |
+
+`StoryEntry` (`src-tauri/src/story.rs`, partagé avec la source catalogue ; miroir
+`src/api/story.ts`) : `source_id, uuid, version, title, description, age, category, author,
+voice, license, thumb_url, download_url, size, updated_at, kind`. Pour un dossier,
+`download_url` est le **chemin local absolu** de l'archive ou du dossier `.plain`, `size` est
+absente pour un `.plain`, `updated_at` est la date de modification (ISO 8601 UTC). Un
+`.plain` et son `.plain.pk` produisent deux entrées (même `uuid`, `kind` différent).
+
+Les archives sont non fiables : rien n'est extrait sur disque, `metadata.json` et `info.plain` sont
+limités à 1 Mio, les vignettes à 8 Mio (PNG décodé : 8192 px et 64 Mio au plus), les entrées aux noms
+dangereux (`..`, absolu, lecteur, `__MACOSX`, `._*`) sont écartées, 100 000 entrées au plus.
+
+**Vignettes** : décodées (PNG, ou LIF via `lif.rs`), réduites à 192 px, enregistrées en PNG dans
+`<cache>/thumbs/<clé>.png` (clé = chemin, taille et date du fichier) puis renvoyées en URL
+`data:image/png;base64,…` dans `thumb_url`, compatible avec la CSP (`img-src data:`). Les fichiers
+de `thumbs/` ne sont jamais purgés automatiquement (suite possible).
+
+**Suite possible, hors de cette issue** : surveillance du dossier (`notify`) pour rafraîchir
+la liste automatiquement ; pour l'instant l'interface rappelle `folder_scan`.
+
 ### Erreurs
 
 `AppError` (`src-tauri/src/error.rs`, `thiserror`) est sérialisée en objet stable
@@ -100,15 +138,16 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 (`kind: "unknown"` si la forme est inattendue). Convention : chaque module ajoute ses variantes
 à `AppError` avec un `kind` stable ; le front teste le `kind`, jamais le `message`.
 
-| `kind`           | Sens                                                                        |
-| ---------------- | --------------------------------------------------------------------------- |
-| `io`             | Erreur d'entrée/sortie                                                      |
-| `validation`     | Valeur refusée (URL, chemin, extension, nom, ordre) ou opération interdite  |
-| `not_found`      | Élément introuvable (identifiant de source inconnu)                         |
-| `config_version` | Fichier de configuration écrit par une version plus récente (laissé intact) |
-| `config_dir`     | Dossier de configuration introuvable                                        |
-| `serialization`  | Échec de sérialisation JSON                                                 |
-| `unknown`        | Côté front uniquement : erreur de forme inattendue                          |
+| `kind`               | Sens                                                                        |
+| -------------------- | --------------------------------------------------------------------------- |
+| `io`                 | Erreur d'entrée/sortie                                                      |
+| `validation`         | Valeur refusée (URL, chemin, extension, nom, ordre) ou opération interdite  |
+| `not_found`          | Élément introuvable (identifiant de source inconnu)                         |
+| `config_version`     | Fichier de configuration écrit par une version plus récente (laissé intact) |
+| `config_dir`         | Dossier de configuration introuvable                                        |
+| `serialization`      | Échec de sérialisation JSON                                                 |
+| `folder_unavailable` | Dossier d'une source locale absent ou inaccessible (disque débranché…)      |
+| `unknown`            | Côté front uniquement : erreur de forme inattendue                          |
 
 Un fichier de configuration **corrompu** n'est pas une erreur : il est renommé en
 `<fichier>.<AAAAMMJJ-HHMMSS>.bak`, un avertissement est tracé et les valeurs par défaut sont utilisées.
