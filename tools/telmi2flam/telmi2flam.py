@@ -16,9 +16,13 @@ import json
 import math
 import os
 import re
+import shutil
+import signal
 import sys
+import time
 import unicodedata
 import zipfile
+import zlib
 
 from PIL import Image, ImageChops
 
@@ -60,7 +64,35 @@ _LUA_CTRL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class ConvError(Exception):
-    """Erreur de conversion attendue (paquet TELMI invalide) : message sans traceback."""
+    """Erreur de conversion attendue (paquet TELMI invalide) : message sans traceback.
+
+    `code` (identifiant stable de l'evenement JSON "error") et `exit_code` (code de
+    sortie du CLI) sont documentes dans le README (section « Codes de sortie »)."""
+
+    def __init__(self, message, code="invalid_content", exit_code=4):
+        super().__init__(message)
+        self.code = code
+        self.exit_code = exit_code
+
+
+def ArchiveError(message, code="archive_unreadable"):
+    """Archive illisible ou qui n'est pas une histoire TELMI (code de sortie 3)."""
+    return ConvError(message, code, 3)
+
+
+def MissingAssetError(message):
+    """Image/audio reference mais absent de l'archive (code de sortie 5)."""
+    return ConvError(message, "missing_asset", 5)
+
+
+def OutputError(message):
+    """Ecriture de la sortie impossible (code de sortie 6)."""
+    return ConvError(message, "output_error", 6)
+
+
+# Codes de sortie du CLI (documentes dans le README)
+EXIT_OK, EXIT_USAGE, EXIT_ARCHIVE, EXIT_CONTENT, EXIT_ASSET, EXIT_INTERNAL = 0, 2, 3, 4, 5, 6
+EXIT_CANCELLED = 130   # Ctrl+C / terminaison (convention shell : 128 + SIGINT)
 
 
 def lua_repr(value, indent=0):
@@ -510,8 +542,79 @@ def base_no_ext(name):
     return os.path.splitext(os.path.basename(name))[0]
 
 
-def _warn(*args):
+n_warn = [0]   # avertissements emis par la conversion en cours
+_sink = None   # rappel recevant les evenements de progression (dict), ou None
+
+
+def _emit(event):
+    if _sink is not None:
+        _sink(event)
+
+
+def _warn(*args, code="warning"):
+    """Avertissement : ligne "  ! ..." sur stderr (contrat lu par compat.py) et
+    evenement JSON "warning" si la progression machine est activee."""
     print("  !", *args, file=sys.stderr)
+    _emit({"event": "warning", "code": code, "message": " ".join(str(a) for a in args)})
+
+
+PROGRESS_INTERVAL = 0.1   # secondes mini entre deux evenements "step" d'une meme phase
+PHASES = ("images", "audio", "scripts", "zip")
+
+
+class _Progress:
+    """Evenements "step" : un par phase au debut (done=0), un a la fin (done=total),
+    et les intermediaires espaces d'au moins PROGRESS_INTERVAL secondes."""
+
+    def __init__(self):
+        self.state = {}
+
+    def begin(self, phase, total):
+        self.state[phase] = [0, total, 0.0]
+        self._emit(phase)
+
+    def tick(self, phase):
+        st = self.state[phase]
+        st[0] += 1
+        now = time.monotonic()
+        if st[0] >= st[1] or now - st[2] >= PROGRESS_INTERVAL:
+            self._emit(phase)
+
+    def _emit(self, phase):
+        st = self.state[phase]
+        st[2] = time.monotonic()
+        _emit({"event": "step", "phase": phase, "done": st[0], "total": st[1]})
+
+
+def _count_ext(d, ext):
+    return sum(1 for f in os.listdir(d) if f.endswith(ext)) if os.path.isdir(d) else 0
+
+
+def _commit(tmp, final):
+    """Publie un temporaire (fichier ou dossier) vers sa destination finale."""
+    if os.path.isdir(tmp) and os.path.isdir(final):
+        # dossier existant : on remplace fichier par fichier (comportement historique,
+        # sans supprimer le reste du dossier)
+        for root, _dirs, files in os.walk(tmp):
+            rel = os.path.relpath(root, tmp)
+            dest_dir = final if rel == "." else os.path.join(final, rel)
+            os.makedirs(dest_dir, exist_ok=True)
+            for fn in files:
+                os.replace(os.path.join(root, fn), os.path.join(dest_dir, fn))
+        shutil.rmtree(tmp, ignore_errors=True)
+    else:
+        os.replace(tmp, final)
+
+
+def _discard(paths):
+    for p in paths:
+        try:
+            if os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
+            elif os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
 
 
 def _fold(name):
@@ -535,8 +638,8 @@ def find_root(names):
         if root + "nodes.json" in nameset:
             cands.append(root)
     if not cands:
-        raise ConvError("metadata.json + nodes.json introuvables dans l'archive "
-                        "(ce n'est pas une histoire TELMI ?)")
+        raise ArchiveError("metadata.json + nodes.json introuvables dans l'archive "
+                           "(ce n'est pas une histoire TELMI ?)", code="not_telmi")
     depth = min(r.count("/") for r in cands)
     best = sorted(r for r in cands if r.count("/") == depth)
     if len(best) > 1:
@@ -545,12 +648,50 @@ def find_root(names):
 
 
 def convert(zip_path, out_path=None, keep_size=False, emit_plain=False, selector="carousel",
-            allow_missing=False):
+            allow_missing=False, progress=None):
+    """Convertit une archive TELMI. `progress` (optionnel) : fonction appelee avec chaque
+    evenement de progression (dict : start, step, warning, done), cf. README."""
+    global _sink
+    previous = _sink
+    n_warn[0] = 0
+
+    def sink(event):
+        if event["event"] == "warning":
+            n_warn[0] += 1
+        if progress is not None:
+            progress(event)
+
+    _sink = sink if progress is not None else None
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            return _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing,
+                            zip_path)
+    finally:
+        _sink = previous
+
+
+def read_info(zip_path):
+    """Metadonnees de l'histoire (sans conversion) : dict stable, cf. README (--info)."""
     with zipfile.ZipFile(zip_path, "r") as zf:
-        return _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing)
+        names = zf.namelist()
+        root = find_root(names)
+        metadata = load_json(zf.read(root + "metadata.json"), "metadata.json")
+        _expect(metadata, dict, "metadata.json", optional=False)
+        folded = {_fold(n) for n in names}
+        cover = metadata.get("image") if isinstance(metadata.get("image"), str) else None
+        candidates = ([cover] if cover else []) + ["title.png", "cover.png"]
+        has_cover = any(_fold(root + c) in folded for c in candidates)
+
+    def scalar(key):
+        v = metadata.get(key)
+        return v if isinstance(v, (str, int, float)) and not isinstance(v, bool) else None
+
+    return {"title": scalar("title"), "uuid": scalar("uuid"), "version": scalar("version"),
+            "age": scalar("age"), "category": scalar("category"),
+            "description": scalar("description"), "cover": has_cover}
 
 
-def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
+def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, source=None):
     names = zf.namelist()
     nameset = set(names)
     # Index insensible a la casse (S0.PNG reference "s0.png" et inversement)
@@ -583,10 +724,11 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
         notes = load_json(notes_raw, "notes.json") if notes_raw else {}
     except ConvError as e:
         # optionnel (Telmi Sync) : un notes.json illisible ne bloque pas la conversion
-        _warn("notes.json ignore (%s)" % e)
+        _warn("notes.json ignore (%s)" % e, code="notes_ignored")
         notes = {}
     if not isinstance(notes, dict):
-        _warn("notes.json ignore (objet attendu, %s trouve)" % type(notes).__name__)
+        _warn("notes.json ignore (objet attendu, %s trouve)" % type(notes).__name__,
+              code="notes_ignored")
         notes = {}
 
     # Caracteres hors police (ASCII + Latin-1) remplaces : {car: remplacement}
@@ -603,7 +745,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
         # sauvegarde entre deux histoires de meme titre).
         uuid16 = hashlib.md5(b"telmi2flam:nodes.json:" + nodes_raw).digest()
         _warn("metadata.json sans uuid : UUID derive du contenu de nodes.json "
-              "(change si l'histoire est modifiee)")
+              "(change si l'histoire est modifiee)", code="uuid_derived")
 
 
     # Sorties accumulees : nom dans le .pk -> bytes
@@ -634,6 +776,22 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
     stages_src = _expect(nodes.get("stages", {}), dict, "nodes.json stages") or {}
     inv_src = _expect(nodes.get("inventory"), list, "nodes.json inventory") or []
     progress_total = len(stages_src) + len(inv_src)
+    # Evenements machine : totaux des phases images/audio (assets distincts references)
+    imgs_todo = set()
+    audios_todo = set()
+    for st in stages_src.values():
+        if isinstance(st, dict):
+            if isinstance(st.get("image"), str) and st["image"]:
+                imgs_todo.add((st["image"], False))
+            if isinstance(st.get("audio"), str) and st["audio"]:
+                audios_todo.add(st["audio"])
+    for it in inv_src:
+        if isinstance(it, dict) and isinstance(it.get("image"), str) and it["image"]:
+            imgs_todo.add((it["image"], True))
+    prog = _Progress()
+    _emit({"event": "start", "total": len(PHASES), "phases": list(PHASES), "input": source})
+    prog.begin("images", len(imgs_todo))
+    prog.begin("audio", len(audios_todo))
     progress = [0]
     show_progress = hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
 
@@ -654,7 +812,8 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
             return img_cache[key]
         entry = lookup("images/" + png_name)
         if entry is None:
-            _warn("image manquante:", png_name)
+            _warn("image manquante:", png_name, code="image_missing")
+            prog.tick("images")
             missing.append(("image", png_name))
             img_cache[key] = None
             return None
@@ -671,14 +830,17 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
             else:
                 lif_bytes = png_to_scene_lif(data)
         except Exception as e:
-            _warn("image illisible %s (%s: %s) -> empty.lif" % (png_name, type(e).__name__, e))
+            _warn("image illisible %s (%s: %s) -> empty.lif" % (png_name, type(e).__name__, e),
+                  code="image_unreadable")
             bad.append(png_name)
             img_cache[key] = "empty.lif"
+            prog.tick("images")
             return "empty.lif"
         lif_name = alloc("img/", base_no_ext(png_name) + ("_inv" if is_inventory else ""), ".lif")
         out_files["img/" + lif_name] = lif_bytes
         img_cache[key] = lif_name
         stats["img"] += 1
+        prog.tick("images")
         return lif_name
 
     def add_mp3map(pk_name, data, label):
@@ -690,9 +852,10 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
             other = sorted(sr for sr in info.get("samplerates", ()) if sr != 44100)
             if other:
                 _warn("%s : %s Hz (le firmware est calibre pour 44100 Hz ; "
-                      "reechantillonner conseille)" % (label, "/".join(map(str, other))))
+                      "reechantillonner conseille)" % (label, "/".join(map(str, other))),
+                      code="audio_samplerate")
         except Exception as e:
-            _warn("mp3map echoue pour", label, ":", e)
+            _warn("mp3map echoue pour", label, ":", e, code="mp3map_failed")
 
     def conv_audio(mp3_name, what):
         if not mp3_name:
@@ -704,9 +867,10 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
         if entry is None:
             # Repli sur silent.mp3 : la scene garde son audio (donc sa transition
             # sur fin d'audio) au lieu de devenir un noeud de passage.
-            _warn("audio manquant:", mp3_name, "-> silent.mp3")
+            _warn("audio manquant:", mp3_name, "-> silent.mp3", code="audio_missing")
             missing.append(("audio", mp3_name))
             audio_cache[mp3_name] = "silent.mp3"
+            prog.tick("audio")
             return "silent.mp3"
         data = zf.read(entry)
         out_name = alloc("sounds/", base_no_ext(mp3_name), ".mp3")
@@ -714,6 +878,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
         add_mp3map("sounds/" + out_name, data, mp3_name)
         audio_cache[mp3_name] = out_name
         stats["audio"] += 1
+        prog.tick("audio")
         return out_name
 
     # --- Stages ---
@@ -812,7 +977,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
             thumb_lif = png_to_thumb_lif(cover_bytes)
         except Exception as e:
             _warn("couverture illisible (%s: %s) : pas de titre illustre ni de vignette"
-                  % (type(e).__name__, e))
+                  % (type(e).__name__, e), code="cover_unreadable")
             bad.append(cover_name or "title.png")
         else:
             out_files["img/title.lif"] = title_lif
@@ -830,7 +995,8 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
     if font_replaced:
         _warn("%d caractere(s) hors police (ASCII + Latin-1) remplace(s) dans le "
               "titre, le sous-titre ou les labels : %s"
-              % (len(font_replaced), _describe_replaced(font_replaced)))
+              % (len(font_replaced), _describe_replaced(font_replaced)),
+              code="font_replaced")
 
     # --- Assets manquants : echec sauf --allow-missing ---
     if missing:
@@ -838,8 +1004,9 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
             len(missing), ", ".join("%s %s" % m for m in missing[:5])
             + (" ..." if len(missing) > 5 else ""))
         if not allow_missing:
-            raise ConvError(msg + " (utiliser --allow-missing pour convertir quand meme)")
-        _warn(msg + " (--allow-missing : images omises, audios remplaces par silent.mp3)")
+            raise MissingAssetError(msg + " (utiliser --allow-missing pour convertir quand meme)")
+        _warn(msg + " (--allow-missing : images omises, audios remplaces par silent.mp3)",
+              code="assets_missing_allowed")
 
     # --- startAction ---
     sa = _expect(nodes.get("startAction"), dict, "nodes.json startAction", optional=False)
@@ -895,13 +1062,17 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
     nodes_lua = "-- Genere par telmi2flam.py — ne pas editer a la main\nreturn " + body + "\n"
     # Dans script/ : c'est la convention des histoires officielles ; le firmware
     # reel ne resout require() que depuis script/ (le simulateur cherche aussi la racine).
+    prog.begin("scripts", 3 + _count_ext(RUNTIME_DIR, ".lua") + _count_ext(RUNTIME_IMG_DIR, ".lif"))
     out_files["script/nodes.lua"] = nodes_lua.encode("utf-8")
+    prog.tick("scripts")
 
     # --- main.lua (bootstrap) + script/story.lua (branch) ---
     with open(ENGINE_MAIN, "rb") as f:
         out_files["main.lua"] = f.read()
     with open(ENGINE_STORY, "rb") as f:
         out_files["script/story.lua"] = f.read()
+    prog.tick("scripts")
+    prog.tick("scripts")
 
     # --- bibliotheque standard Lunii (framework) : requise par le firmware reel ---
     # sans elle, main.lua echoue des setup() (module 'global' not found)
@@ -914,6 +1085,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
                 with open(os.path.join(RUNTIME_DIR, fn), "rb") as f:
                     out_files["script/" + fn] = f.read()
                 nlib += 1
+                prog.tick("scripts")
     stats["lib"] = nlib
 
     # --- assets UI Lunii (fleches, play/pause, etc.) requis par les modules ---
@@ -924,6 +1096,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
                 with open(os.path.join(RUNTIME_IMG_DIR, fn), "rb") as f:
                     out_files["img/script/" + fn] = f.read()
                 nui += 1
+                prog.tick("scripts")
     stats["ui"] = nui
 
     # --- cover par defaut audio-player : petite image transparente ---
@@ -974,52 +1147,109 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing):
             raise ConvError("nom de sortie refuse : %r" % name)
 
     written = []
+    # Ecriture dans des temporaires voisins de la destination puis os.replace : une
+    # annulation ou un echec ne laisse jamais de sortie partielle.
+    n_targets = (0 if dir_only else 1) + (1 if (emit_plain or dir_only) else 0)
+    prog.begin("zip", len(order) * n_targets)
+    tmps = []        # temporaires a supprimer en cas d'echec
+    commits = []     # (temporaire, destination finale)
+    try:
+        # --- Ecriture .plain.pk (ZIP stored, format device) ---
+        if not dir_only:
+            os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+            tmp_pk = "%s.%d.part" % (out_path, os.getpid())
+            tmps.append(tmp_pk)
+            with zipfile.ZipFile(tmp_pk, "w", zipfile.ZIP_STORED) as out:
+                for name in order:
+                    out.writestr(name, out_files[name])
+                    prog.tick("zip")
+            commits.append((tmp_pk, out_path))
+            written.append(out_path)
 
-    # --- Ecriture .plain.pk (ZIP stored, format device) ---
-    if not dir_only:
-        os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_STORED) as out:
+        # --- Ecriture du dossier .plain extrait (option --plain, ou -o *.plain) ---
+        #     Pratique pour le simulateur, qui charge un dossier .plain directement.
+        if emit_plain or dir_only:
+            if dir_only:
+                plain_dir = out_path
+            elif out_path.endswith(".plain.pk"):
+                plain_dir = out_path[:-3]            # ".plain.pk" -> ".plain"
+            else:
+                plain_dir = out_path + ".plain"
+            tmp_dir = "%s.%d.part" % (plain_dir, os.getpid())
+            tmps.append(tmp_dir)
+            os.makedirs(tmp_dir, exist_ok=True)
+            real_dir = os.path.realpath(tmp_dir)
             for name in order:
-                out.writestr(name, out_files[name])
-        written.append(out_path)
+                dest = os.path.join(tmp_dir, *name.split("/"))
+                if os.path.commonpath([real_dir, os.path.realpath(dest)]) != real_dir:
+                    raise ConvError("ecriture hors du dossier .plain refusee : %r" % name)
+                os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+                with open(dest, "wb") as fh:
+                    fh.write(out_files[name])
+                prog.tick("zip")
+            commits.append((tmp_dir, plain_dir))
+            written.append(plain_dir + os.sep)
 
-    # --- Ecriture du dossier .plain extrait (option --plain, ou -o *.plain) ---
-    #     Pratique pour le simulateur, qui charge un dossier .plain directement.
-    if emit_plain or dir_only:
-        if dir_only:
-            plain_dir = out_path
-        elif out_path.endswith(".plain.pk"):
-            plain_dir = out_path[:-3]            # ".plain.pk" -> ".plain"
-        else:
-            plain_dir = out_path + ".plain"
-        real_dir = os.path.realpath(plain_dir)
-        for name in order:
-            dest = os.path.join(plain_dir, *name.split("/"))
-            if os.path.commonpath([real_dir, os.path.realpath(dest)]) != real_dir:
-                raise ConvError("ecriture hors du dossier .plain refusee : %r" % name)
-            os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-            with open(dest, "wb") as fh:
-                fh.write(out_files[name])
-        written.append(plain_dir + os.sep)
+        for tmp, final in commits:
+            _commit(tmp, final)
+    except OSError as e:
+        _discard(tmps)
+        raise OutputError("ecriture de %s impossible : %s" % (out_path, e))
+    except BaseException:       # ConvError, annulation (KeyboardInterrupt)...
+        _discard(tmps)
+        raise
+    _discard(tmps)
 
-    # --- Resume ---
+    # --- Resume (sur stderr en mode --progress-json : stdout est reserve aux evenements) ---
+    say = (lambda *a: print(*a, file=sys.stderr)) if _sink is not None else print
     for w in written:
-        print("OK -> %s" % w)
-    print("  titre   : %s" % title)
-    print("  stages  : %d | actions : %d" % (len(lua_stages), len(lua_actions)))
-    print("  images  : %d | audio : %d | mp3map : %d"
-          % (stats["img"], stats["audio"], stats["mp3map"]))
-    print("  lib     : %d scripts framework | %d assets UI" % (stats.get("lib", 0), stats.get("ui", 0)))
-    print("  choix   : selecteur '%s'" % selector)
+        say("OK -> %s" % w)
+    say("  titre   : %s" % title)
+    say("  stages  : %d | actions : %d" % (len(lua_stages), len(lua_actions)))
+    say("  images  : %d | audio : %d | mp3map : %d"
+        % (stats["img"], stats["audio"], stats["mp3map"]))
+    say("  lib     : %d scripts framework | %d assets UI" % (stats.get("lib", 0), stats.get("ui", 0)))
+    say("  choix   : selecteur '%s'" % selector)
     if missing or bad:
-        print("  alertes : %d manquant(s) | %d illisible(s)" % (len(missing), len(bad)))
+        say("  alertes : %d manquant(s) | %d illisible(s)" % (len(missing), len(bad)))
     if not dir_only:
-        print("  taille  : %.1f Mo" % (os.path.getsize(out_path) / 1e6))
+        say("  taille  : %.1f Mo" % (os.path.getsize(out_path) / 1e6))
+    size = (sum(len(out_files[n]) for n in order) if dir_only else os.path.getsize(out_path))
+    _emit({"event": "done", "output": out_path, "size": size, "warnings": n_warn[0]})
     return out_path
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Convertit une histoire TELMI (.zip) en FLAM (.plain.pk)")
+class _Parser(argparse.ArgumentParser):
+    """Argument invalide : code 2 ; evenement JSON d'abord si --progress-json est present."""
+
+    def error(self, message):
+        if "--progress-json" in getattr(self, "argv", sys.argv[1:]):
+            _print_event({"event": "error", "code": "bad_arguments", "message": message,
+                          "exit": EXIT_USAGE})
+        super().error(message)
+
+
+def _print_event(event):
+    """Une ligne JSON ASCII par evenement, vidangee immediatement (lecture par un parent)."""
+    sys.stdout.write(json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def _install_cancel_handlers():
+    """SIGTERM / Ctrl+Break levent KeyboardInterrupt, comme Ctrl+C."""
+    def handler(signum, _frame):
+        raise KeyboardInterrupt()
+    for name in ("SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):    # hors thread principal
+                pass
+
+
+def main(argv=None):
+    ap = _Parser(description="Convertit une histoire TELMI (.zip) en FLAM (.plain.pk)")
     ap.add_argument("input", help="archive TELMI .zip")
     ap.add_argument("-o", "--output",
                     help="sortie : fichier .plain.pk (defaut) ou dossier .plain")
@@ -1033,20 +1263,42 @@ def main():
     ap.add_argument("--selector", choices=["carousel", "image"], default="carousel",
                     help="affichage des choix multiples : carousel (defaut, 3 vignettes + "
                          "label) ou image (image-choice plein ecran d'origine)")
-    args = ap.parse_args()
+    ap.add_argument("--progress-json", action="store_true",
+                    help="evenements de progression en JSON (une ligne par evenement) sur "
+                         "stdout ; les messages humains restent sur stderr")
+    ap.add_argument("--info", action="store_true",
+                    help="afficher les metadonnees de l'histoire en JSON, sans convertir")
+    ap.argv = list(sys.argv[1:] if argv is None else argv)
+    args = ap.parse_args(argv)
+    _install_cancel_handlers()
+    machine = args.progress_json
+
+    def fail(code, message, exit_code, human=None):
+        if machine:
+            _print_event({"event": "error", "code": code, "message": message, "exit": exit_code})
+        print(human if human is not None else "ERREUR : %s" % message, file=sys.stderr)
+        return exit_code
+
     try:
-        convert(args.input, args.output, args.keep_size, args.plain, args.selector,
-                args.allow_missing)
+        if args.info:
+            print(json.dumps(read_info(args.input), ensure_ascii=True, separators=(",", ":")))
+        else:
+            convert(args.input, args.output, args.keep_size, args.plain, args.selector,
+                    args.allow_missing, progress=_print_event if machine else None)
+        return EXIT_OK
     except ConvError as e:
-        print("ERREUR : %s" % e, file=sys.stderr)
-        sys.exit(1)
-    except (zipfile.BadZipFile, OSError) as e:
-        print("ERREUR : %s : %s" % (args.input, e), file=sys.stderr)
-        sys.exit(1)
+        return fail(e.code, str(e), e.exit_code)
+    except KeyboardInterrupt:
+        return fail("cancelled", "conversion annulee", EXIT_CANCELLED,
+                    "Annule : aucune sortie partielle conservee.")
+    except (zipfile.BadZipFile, zlib.error, NotImplementedError, EOFError, OSError) as e:
+        # archive absente/illisible/corrompue (les erreurs d'ecriture sont deja des OutputError)
+        return fail("archive_unreadable", "%s : %s" % (args.input, e), EXIT_ARCHIVE)
     except Exception as e:  # paquet imprevu : message court plutot qu'un traceback
-        print("ERREUR inattendue (%s) : %s" % (type(e).__name__, e), file=sys.stderr)
-        sys.exit(1)
+        msg = "%s: %s" % (type(e).__name__, e)
+        return fail("internal_error", msg, EXIT_INTERNAL,
+                    "ERREUR inattendue (%s) : %s" % (type(e).__name__, e))
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
