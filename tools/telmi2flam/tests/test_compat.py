@@ -5,6 +5,7 @@ import io
 import json
 import os
 import sys
+import time
 import unittest
 import urllib.error
 import zipfile
@@ -484,6 +485,387 @@ class TestReview(CompatBase):
             {"title": "T", "uuid": "a|b", "version": "1", "status": "OK", "key": "k",
              "steps": {}}]}
         self.assertIn("a\\|b", compat.render_markdown(doc))
+
+
+class TestRunInterpretation(CompatBase):
+    """Etape run : interpretation des resultats d'explore() (faux explore)."""
+
+    def res(self, **kw):
+        base = {"status": "ok", "done_reason": "complete", "errors": [], "scenes_visited": 10,
+                "scenes_total": 10, "coverage": 1.0, "end_reached": True, "duration_s": 2.0,
+                "seed": 0, "steps": 40, "ends": 2, "dead_end_backs": 0,
+                "dead_end_scenes": [], "scenes": ["s%d" % i for i in range(10)]}
+        base.update(kw)
+        return base
+
+    def go(self, res, **kw):
+        return compat.do_run("x.pk", lambda *a, **k: dict(res), "p", 60, 0, 100, **kw)
+
+    def test_cases(self):
+        cases = [
+            (dict(), "ok"),
+            (dict(status="timeout", done_reason="timeout", scenes_visited=50,
+                  scenes_total=200), "warn"),
+            (dict(status="timeout", done_reason="timeout", scenes_visited=3,
+                  scenes_total=200), "warn"),
+            (dict(status="timeout", done_reason="timeout", scenes_visited=2), "fail"),
+            (dict(status="timeout", done_reason="timeout", scenes_visited=1), "fail"),
+            (dict(status="timeout", done_reason="timeout", scenes_visited=0), "fail"),
+            (dict(done_reason="max_steps", scenes_visited=5, scenes_total=10), "warn"),
+            (dict(done_reason="max_steps", scenes_visited=10, scenes_total=10), "ok"),
+            (dict(status="stuck", done_reason="stuck"), "fail"),
+            (dict(status="lua_error", done_reason="error", errors=["Erreur Lua: boum"]), "fail"),
+            (dict(status="crash", done_reason="exit"), "fail"),
+            (dict(status="bizarre"), "fail"),
+            (dict(status="timeout", done_reason="timeout", scenes_visited=50,
+                  errors=["Erreur Lua: x"]), "fail"),
+        ]
+        for kw, want in cases:
+            with self.subTest(kw=kw):
+                self.assertEqual(self.go(self.res(**kw))["status"], want)
+
+    def test_partial_message_and_global_status(self):
+        r = self.go(self.res(status="timeout", done_reason="timeout", scenes_visited=50,
+                              scenes_total=200))
+        self.assertIn("exploration partielle 50/200 scènes", r["messages"])
+        rec = {"steps": {"download": {"status": "ok"}, "convert": {"status": "ok"},
+                         "validate": {"status": "ok"}, "run": r}}
+        self.assertEqual(compat.global_status(rec["steps"]), "OK_AVERTISSEMENTS")
+        rec["steps"]["run"] = self.go(self.res(status="stuck", done_reason="stuck"))
+        self.assertEqual(compat.global_status(rec["steps"]), "ECHEC_EXECUTION")
+
+    def test_copied_fields(self):
+        r = self.go(self.res(dead_end_backs=2, dead_end_scenes=["n1 why=x"]))
+        for k, v in (("done_reason", "complete"), ("steps", 40), ("ends", 2), ("seed", 0),
+                     ("seeds", [0]), ("dead_end_backs", 2), ("scenes_visited", 10),
+                     ("scenes_total", 10), ("coverage", 1.0), ("end_reached", True),
+                     ("duration_s", 2.0), ("dead_end_scenes", ["n1 why=x"])):
+            self.assertEqual(r[k], v, k)
+
+    def test_benign_errors(self):
+        errs = ["Erreur Lua: boum", "warning: SDL audio dummy error"]
+        r = self.go(self.res(status="lua_error", done_reason="error", errors=errs),
+                     benign=(r"sdl audio",))
+        self.assertEqual(r["status"], "fail")           # une erreur reste non benigne
+        self.assertEqual([g["signature"] for g in r["error_signatures"]],
+                         ["Erreur Lua: boum"])
+        r = self.go(self.res(status="lua_error", done_reason="error", errors=errs[1:]),
+                     benign=(r"sdl audio",))
+        self.assertEqual(r["status"], "warn")            # tout est benin : interrompu mais pas fail
+        self.assertTrue(any("interrompue sur erreur bénigne" in m for m in r["messages"]))
+        self.assertEqual(r["benign_ignored"], 1)
+        self.assertNotIn("error_signatures", r)
+        self.assertEqual(self.go(self.res(errors=errs[1:]), benign=(r"SDL AUDIO",))["status"],
+                         "ok")                           # ok + benin : rien a signaler
+        self.assertEqual(compat.BENIGN_ERRORS, ())       # liste fournie vide au depart
+
+    def test_error_signature(self):
+        a = r"C:\Users\x\Temp\flam_explore_ab12\s\script\story.lua:123: attempt to index nil"
+        b = "/tmp/flam_explore_zz/s/script/story.lua:7: attempt to index nil"
+        self.assertEqual(compat.error_signature(a), compat.error_signature(b))
+        self.assertNotIn("123", compat.error_signature(a))
+        self.assertNotEqual(compat.error_signature("boum 0x1f"), compat.error_signature("pouf"))
+        g = compat.group_errors([a, b, "autre"])
+        self.assertEqual([x["count"] for x in g], [2, 1])
+
+    def test_seeds_merge(self):
+        calls = []
+
+        def explore(player, story, timeout_s=0, seed=0, max_steps=0):
+            calls.append(seed)
+            return self.res(seed=seed, scenes=["a", "b"] if seed == 5 else ["b", "c", "d"],
+                            scenes_visited=2 if seed == 5 else 3, scenes_total=6,
+                            coverage=0, steps=10, ends=1, dead_end_backs=1,
+                            dead_end_scenes=["n%d" % seed], end_reached=seed == 6,
+                            done_reason="max_steps", duration_s=1.0)
+        r = compat.do_run("x.pk", explore, "p", 60, 5, 100, seeds=3)
+        self.assertEqual(calls, [5, 6, 7])
+        self.assertEqual((r["seeds"], r["scenes_visited"], r["coverage"]), ([5, 6, 7], 4, 0.667))
+        self.assertEqual((r["steps"], r["ends"], r["dead_end_backs"], r["duration_s"]),
+                         (30, 3, 3, 3.0))
+        self.assertEqual(r["dead_end_scenes"], ["n5", "n6", "n7"])
+        self.assertTrue(r["end_reached"])
+        self.assertNotIn("seed", r)
+        self.assertEqual(len(r["runs"]), 3)
+        self.assertEqual(r["status"], "warn")            # max_steps partiel
+        self.assertEqual(r["params"], {"timeout_s": 60, "max_steps": 100, "seed": 5, "seeds": 3})
+
+    def test_seeds_stop_at_first_failure_and_exception(self):
+        calls = []
+
+        def explore(player, story, timeout_s=0, seed=0, max_steps=0):
+            calls.append(seed)
+            return self.res(status="stuck", done_reason="stuck") if seed == 1 else self.res()
+        r = compat.do_run("x.pk", explore, "p", 60, 0, 100, seeds=4)
+        self.assertEqual((calls, r["status"]), ([0, 1], "fail"))
+        self.assertTrue(r["messages"][0].startswith("[graine 1]"))
+
+        def boom(*a, **k):
+            raise RuntimeError("boum")
+        r = compat.do_run("x.pk", boom, "p", 60, 0, 100, seeds=2)
+        self.assertEqual(r["status"], "fail")
+        self.assertIn("boum", r["messages"][0])
+
+    def test_status_json_and_report(self):
+        good = self.mkzip(std_files(), "good")
+        e = self.entry("good", None, path=good, version="local")
+        self.campaign([e], explore=lambda *a, **k: self.res(
+            status="timeout", done_reason="timeout", scenes_visited=5, scenes_total=9,
+            scenes=["s%d" % i for i in range(5)], errors=[], dead_end_backs=2), player_exe="p", seeds=2)
+        with open(os.path.join(self.cache, "compat", "status.json"), encoding="utf-8") as f:
+            doc = json.load(f)
+        self.assertEqual((doc["schema_version"], set(doc)), (1, {
+            "schema_version", "generated", "converter_hash", "stories"}))
+        st = doc["stories"]
+        self.assertEqual(list(st), ["good"])
+        self.assertEqual(set(st["good"]), {"version", "title", "status", "summary", "coverage",
+                                           "run", "stale"})
+        self.assertEqual(st["good"]["status"], "OK_AVERTISSEMENTS")
+        self.assertEqual(st["good"]["run"], "warn")
+        self.assertIn("exploration partielle", st["good"]["summary"])
+        self.assertEqual(st["good"]["coverage"]["scenes_visited"], 5)   # union des scenes
+        with open(os.path.join(self.cache, "compat", "report.md"), encoding="utf-8") as f:
+            md = f.read()
+        for needle in ("timeout", "5/9", "Impasses", "Graine(s)", "Couverture"):
+            self.assertIn(needle, md)
+
+    def test_status_json_failures_and_skipped(self):
+        good = self.mkzip(std_files(), "good")
+        bad = os.path.join(self.tmp, "bad.zip")
+        with open(bad, "wb") as f:
+            f.write(b"junk")
+        ents = [self.entry("good", None, path=good, version="local"),
+                self.entry("bad", None, path=bad, version="local")]
+        self.campaign(ents)
+        with open(os.path.join(self.cache, "compat", "status.json"), encoding="utf-8") as f:
+            st = json.load(f)["stories"]
+        self.assertEqual((st["good"]["status"], st["good"]["run"], st["good"]["coverage"]),
+                         ("OK", "skipped", None))
+        self.assertEqual(st["bad"]["status"], "ECHEC_CONVERSION")
+        self.assertIn("Conversion en échec", st["bad"]["summary"])
+
+    def test_rerun_when_settings_change(self):
+        good = self.mkzip(std_files(), "good")
+        e = self.entry("good", None, path=good, version="local",
+                       fingerprint=compat._file_fingerprint(good))
+        calls = []
+
+        def explore(*a, **k):
+            calls.append(k["max_steps"])
+            return self.res()
+        self.campaign([e], explore=explore, player_exe="p", max_steps=100)
+        self.campaign([e], explore=explore, player_exe="p", max_steps=100)
+        self.assertEqual(calls, [100])
+        self.campaign([e], explore=explore, player_exe="p", max_steps=200)
+        self.assertEqual(calls, [100, 200])
+
+    def test_zip_size_limit(self):
+        big = self.mkzip(std_files(), "big")
+        with self.assertRaises(ValueError):
+            compat.check_zip_size(big, max_bytes=10)
+        with self.assertRaises(ValueError):
+            compat.check_zip_size(big, max_entries=1)
+        compat.check_zip_size(big)
+        e = self.entry("big", None, path=big, version="local")
+        with mock.patch.object(compat, "MAX_UNZIPPED", 10):
+            rec = compat.process_story(e, self.cache, max_unzipped=10)
+        self.assertEqual(rec["status"], "ECHEC_CONVERSION")
+        self.assertIn("trop volumineuse", rec["steps"]["convert"]["messages"][0])
+
+    def test_cli_options(self):
+        cat = os.path.join(self.tmp, "cat.json")
+        with open(cat, "w") as f:
+            json.dump({"data": []}, f)
+        seen = {}
+
+        def fake(entries, cache, jobs, force, explore, player, timeout, seed, steps, **kw):
+            seen.update(explore=explore, player=player, timeout=timeout, steps=steps, **kw)
+            return {"stories": []}
+        with mock.patch.object(compat, "run_campaign", fake), \
+                mock.patch.object(compat, "_find_player", lambda p=None: "pl.exe"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            compat.main(["--catalog", cat, "--seeds", "3", "--benign-error", "foo"])
+        self.assertIsNotNone(seen["explore"])            # run actif par defaut
+        self.assertEqual((seen["player"], seen["seeds"], seen["benign"]), ("pl.exe", 3, ("foo",)))
+        self.assertGreaterEqual(seen["timeout"], 300)
+        self.assertGreaterEqual(seen["steps"], 1000)
+        with mock.patch.object(compat, "run_campaign", fake), \
+                mock.patch.object(compat, "_find_player", lambda p=None: None), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            compat.main(["--catalog", cat])
+            self.assertIsNone(seen["explore"])           # player absent : run desactive
+            self.assertEqual(compat.main(["--catalog", cat, "--run"]), 2)
+        with mock.patch.object(compat, "run_campaign", fake), \
+                mock.patch.object(compat, "_find_player", lambda p=None: "pl.exe"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            compat.main(["--catalog", cat, "--no-run"])
+        self.assertIsNone(seen["explore"])
+
+
+class TestReviewFixes(CompatBase):
+    def res(self, **kw):
+        base = {"status": "ok", "done_reason": "complete", "errors": [], "scenes_visited": 4,
+                "scenes_total": 4, "end_reached": True, "duration_s": 1.0, "steps": 9,
+                "ends": 1, "dead_end_backs": 0, "scenes": ["a", "b", "c", "d"]}
+        base.update(kw)
+        return base
+
+    def entry_for(self, name):
+        p = self.mkzip(std_files(), name)
+        return self.entry(name, None, path=p, version="local",
+                          fingerprint=compat._file_fingerprint(p))
+
+    def report(self):
+        with open(os.path.join(self.cache, "compat", "report.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_raw_kept_bounded_and_reinterpreted_without_player(self):
+        e = self.entry_for("a")
+        errs = ["Erreur Lua: %d " % i + "x" * 500 for i in range(300)]
+        calls = []
+
+        def explore(*a, **k):
+            calls.append(1)
+            return self.res(status="lua_error", done_reason="error", errors=list(errs))
+        doc = self.campaign([e], explore=explore, player_exe="p")
+        run = doc["stories"][0]["steps"]["run"]
+        raw = run["raw"][0]
+        self.assertEqual(len(raw["errors"]), 200)
+        self.assertTrue(all(len(x) <= 200 for x in raw["errors"]))
+        self.assertTrue(raw["errors"][-1].startswith("Erreur Lua: 299"))   # la fin est conservee
+        self.assertEqual((raw["status"], raw["done_reason"]), ("lua_error", "error"))
+        self.assertEqual(doc["stories"][0]["status"], "ECHEC_EXECUTION")
+        # tout devient benin : reinterpretation automatique, player non relance
+        doc = self.campaign([e], explore=explore, player_exe="p", benign=(".",))
+        self.assertEqual(len(calls), 1)
+        s = doc["stories"][0]
+        self.assertEqual(s["steps"]["run"]["status"], "warn")
+        self.assertEqual(s["status"], "OK_AVERTISSEMENTS")
+        self.assertEqual(s["steps"]["run"]["benign_ignored"], 200)
+        # sans changement de liste : rien n'est recalcule ; reinterpret=True force
+        with mock.patch.object(compat, "reinterpret_run", wraps=compat.reinterpret_run) as m:
+            self.campaign([e], explore=explore, player_exe="p", benign=(".",))
+            self.assertEqual(m.call_count, 0)
+            self.campaign([e], explore=explore, player_exe="p", benign=(".",), reinterpret=True)
+            self.assertEqual(m.call_count, 1)
+        # sans player du tout (explore None) la reinterpretation reste possible
+        doc = self.campaign([e], benign=())
+        self.assertEqual(doc["stories"][0]["steps"]["run"]["status"], "fail")
+        self.assertEqual(len(calls), 1)
+
+    def test_invalidation_seed_and_legacy(self):
+        e = self.entry_for("a")
+        calls = []
+
+        def explore(*a, **k):
+            calls.append(k["seed"])
+            return self.res()
+        self.campaign([e], explore=explore, player_exe="p", seed=0)
+        self.campaign([e], explore=explore, player_exe="p", seed=0)
+        self.assertEqual(calls, [0])
+        self.campaign([e], explore=explore, player_exe="p", seed=3)       # graine de depart
+        self.assertEqual(calls, [0, 3])
+        # fiche anterieure : run fait mais sans params -> refaite
+        rp = os.path.join(self.cache, "compat", "report.json")
+        doc = self.report()
+        del doc["stories"][0]["steps"]["run"]["params"]
+        with open(rp, "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        self.campaign([e], explore=explore, player_exe="p", seed=3)
+        self.assertEqual(calls, [0, 3, 3])
+        # sans explore, la fiche existante est simplement reutilisee
+        self.campaign([e], explore=None)
+        self.assertEqual(calls, [0, 3, 3])
+
+    def test_parallel_run_jobs(self):
+        import threading
+        ents = [self.entry_for(n) for n in ("a", "b", "c", "d")]
+        lock, state = threading.Lock(), {"now": 0, "max": 0}
+
+        def explore(*a, **k):
+            with lock:
+                state["now"] += 1
+                state["max"] = max(state["max"], state["now"])
+            time.sleep(1.5)
+            with lock:
+                state["now"] -= 1
+            return self.res()
+        doc = self.campaign(ents, explore=explore, player_exe="p", run_jobs=2)
+        self.assertEqual(state["max"], 2)
+        self.assertEqual([s["status"] for s in doc["stories"]], ["OK"] * 4)
+        self.assertEqual(sorted(s["uuid"] for s in self.report()["stories"]), list("abcd"))
+        state["max"] = 0
+        self.campaign(ents, explore=explore, player_exe="p", force=True)   # defaut : 1 a la fois
+        self.assertEqual(state["max"], 1)
+
+    def test_benign_mixed_and_anchored(self):
+        r = compat.interpret_run(self.res(status="lua_error", done_reason="error",
+                                          errors=["SDL: warning benin", "attempt to index nil"]),
+                                 (r"^SDL: warning benin$",))
+        self.assertEqual(r[0], "fail")
+        self.assertIn("attempt to index nil", r[1])
+        r = compat.interpret_run(self.res(status="lua_error", done_reason="error",
+                                          errors=["SDL: warning benin"]),
+                                 (r"^SDL: warning benin$",))
+        self.assertEqual(r[0], "warn")
+        # un motif trop large masque une vraie erreur : c'est pourquoi les motifs sont ancres
+        r = compat.interpret_run(self.res(status="lua_error", done_reason="error",
+                                          errors=["Erreur Lua: attempt to index nil"]),
+                                 ("erreur",))
+        self.assertEqual(r[0], "warn")
+
+    def test_status_duplicates_by_version(self):
+        def story(version, evaluated):
+            return {"uuid": "u", "version": version, "title": "T", "status": "OK",
+                    "evaluated": evaluated, "key": "k" + version, "steps": {}}
+        doc = {"generated": "g", "converter_hash": "h", "stories": [
+            story("2", "2026-01-02"), story("10", "2026-01-01"), story("9", "2026-01-03")]}
+        self.assertEqual(compat.build_status(doc)["stories"]["u"]["version"], "10")
+        doc["stories"] = [story("local", "2026-01-01"), story("beta", "2026-02-01"),
+                          story("1.2", "2026-03-01"), story("1.10", "2026-01-01")]
+        self.assertEqual(compat.build_status(doc)["stories"]["u"]["version"], "1.10")
+        doc["stories"] = [story("local", "2026-02-01"), story("beta", "2026-01-01")]
+        self.assertEqual(compat.build_status(doc)["stories"]["u"]["version"], "local")
+
+    def test_player_env_isolated(self):
+        import explore as ex
+        with open(ex.__file__, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn('env["FLAM_SCREENSHOT_AUTO_MS"] = "0"', src)
+        self.assertIn('os.path.join(cwd, "screenshot.bmp")', src)
+
+
+try:
+    import explore as _explore
+    PLAYER = _explore.find_player()
+except Exception:
+    PLAYER = None
+
+
+@unittest.skipIf(PLAYER is None, "flam-player introuvable (FLAM_BUILD_DIR ou build/)")
+class TestRunReal(CompatBase):
+    def test_real_exploration(self):
+        good = self.mkzip(std_files(), "good")
+        e = self.entry("good", None, path=good, version="local")
+        doc = self.campaign([e], explore=_explore.explore, player_exe=PLAYER,
+                            run_timeout=90, max_steps=100, seeds=2)
+        run = doc["stories"][0]["steps"]["run"]
+        self.assertIn(run["status"], ("ok", "warn"), run["messages"])
+        self.assertEqual(run["seeds"], [0, 1])
+        for k in ("done_reason", "steps", "ends", "dead_end_backs", "scenes_visited",
+                  "scenes_total", "coverage"):
+            self.assertIn(k, run)
+        self.assertGreaterEqual(run["scenes_visited"], 1)
+
+    def test_two_players_simultaneously(self):
+        ents = []
+        for n in ("p1", "p2"):
+            p = self.mkzip(std_files(), n)
+            ents.append(self.entry(n, None, path=p, version="local"))
+        doc = self.campaign(ents, explore=_explore.explore, player_exe=PLAYER,
+                            run_timeout=90, max_steps=60, run_jobs=2)
+        for s in doc["stories"]:
+            self.assertIn(s["steps"]["run"]["status"], ("ok", "warn"), s["steps"]["run"])
 
 
 if __name__ == "__main__":

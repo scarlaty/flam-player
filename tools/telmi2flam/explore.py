@@ -32,7 +32,8 @@ Resultat de explore() (dict) :
                   lua_error si une erreur Lua a ete vue avant, sinon crash)
   errors          lignes d'erreur (stderr : Erreur Lua, callback error, assert,
                   traceback... ; stdout : attempt to / stack traceback)
-  scenes_visited  nb de stages distincts reellement atteints ; scenes_total :
+  scenes_visited  nb de stages distincts reellement atteints ; scenes (leurs
+                  identifiants, pour fusionner plusieurs parcours) ; scenes_total :
                   nb de stages de nodes.lua (None si illisible) ; coverage
   end_reached     au moins une fin d'histoire jouee
   duration_s      duree de l'execution du player
@@ -86,6 +87,11 @@ def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
     # le pilote video dummy n'a pas de rendu accelere : forcer le rendu
     # logiciel (sinon SDL_CreateRenderer(ACCELERATED) echoue)
     env.setdefault("SDL_RENDER_DRIVER", "software")
+    # pas de ressource partagee entre players simultanes : captures d'ecran dans le dossier
+    # de travail (la capture auto par defaut ecrit dans un chemin global), sauvegardes
+    # relatives au cwd, aucun port
+    env["FLAM_SCREENSHOT_AUTO_MS"] = "0"
+    env["FLAM_SCREENSHOT"] = os.path.join(cwd, "screenshot.bmp")
     out_p, err_p = os.path.join(cwd, "stdout.log"), os.path.join(cwd, "stderr.log")
     with open(out_p, "wb") as fo, open(err_p, "wb") as fe:
         t0 = time.time()
@@ -542,9 +548,10 @@ def _result(code, out, err, dt, total, watch, seed, workdir):
     res = {
         "status": status,
         "done_reason": done_reason,
-        "errors": errors[:50],
+        "errors": errors if len(errors) <= 200 else errors[:100] + errors[-100:],
         "scenes_visited": len(scenes),
         "scenes_total": total,
+        "scenes": sorted(scenes),
         "coverage": round(len(scenes) / total, 3) if total else None,
         "end_reached": bool(ends),
         "duration_s": round(dt, 1),
