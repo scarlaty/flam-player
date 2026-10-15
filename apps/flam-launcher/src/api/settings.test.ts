@@ -18,6 +18,8 @@ const view: SettingsView = {
     python_path: "C:\\Python\\python.exe",
     cache_dir: "C:\\cache",
   },
+  issues: [{ field: "player_path", kind: "not_found", message: "disparu" }],
+  recovery: null,
 };
 
 it("getSettings appelle settings_get", async () => {

@@ -1,4 +1,5 @@
 import { invokeCommand } from "./error";
+import type { Recovery } from "./recovery";
 
 /** Identifiant de la source implicite « Mes histoires » (non modifiable, toujours première). */
 export const LIBRARY_SOURCE_ID = "library";
@@ -14,9 +15,17 @@ export type SourceInput =
   | { type: "catalog"; name: string; url: string }
   | { type: "folder"; name: string; path: string };
 
-/** `sources_list` : « Mes histoires » en tête, puis les sources dans l'ordre choisi. */
-export function listSources(): Promise<Source[]> {
-  return invokeCommand<Source[]>("sources_list");
+/** Réponse de `sources_list`. */
+export interface SourcesView {
+  /** « Mes histoires » en tête, puis les sources dans l'ordre choisi. */
+  sources: Source[];
+  /** Présent tant que la restauration de `sources.json` n'est pas acquittée (`ackRecovery`). */
+  recovery: Recovery | null;
+}
+
+/** `sources_list` : sources ordonnées et restauration éventuelle à signaler. */
+export function listSources(): Promise<SourcesView> {
+  return invokeCommand<SourcesView>("sources_list");
 }
 
 /** `sources_add` : ajoute une source en fin de liste. */

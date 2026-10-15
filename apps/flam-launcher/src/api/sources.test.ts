@@ -30,8 +30,12 @@ function mockBackend(result: unknown) {
 }
 
 it("listSources appelle sources_list", async () => {
-  const calls = mockBackend([library, catalog]);
-  await expect(listSources()).resolves.toEqual([library, catalog]);
+  const view = {
+    sources: [library, catalog],
+    recovery: { file: "sources.json", backup: "sources.json.20261015-101010.bak" },
+  };
+  const calls = mockBackend(view);
+  await expect(listSources()).resolves.toEqual(view);
   expect(calls).toEqual([{ cmd: "sources_list", args: {} }]);
 });
 
