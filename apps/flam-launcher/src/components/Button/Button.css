@@ -1,0 +1,62 @@
+.fl-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 2.5rem;
+  padding: 0 var(--space-4);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  font: inherit;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--easing),
+    border-color var(--duration-fast) var(--easing);
+}
+
+.fl-button--sm {
+  min-height: 2rem;
+  padding: 0 var(--space-3);
+  font-size: var(--font-size-sm);
+}
+
+.fl-button--primary {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+.fl-button--primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.fl-button--secondary {
+  background: var(--color-surface);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.fl-button--secondary:hover:not(:disabled),
+.fl-button--ghost:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+}
+
+.fl-button--ghost {
+  background: transparent;
+  color: var(--color-text);
+}
+
+.fl-button--danger {
+  background: var(--color-danger);
+  color: var(--color-on-danger);
+}
+
+.fl-button--danger:hover:not(:disabled) {
+  background: var(--color-danger-hover);
+}
+
+.fl-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
