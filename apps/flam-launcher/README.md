@@ -68,19 +68,25 @@ enregistrées dans `generate_handler!` de `lib.rs`) : pas de fichier `commands.r
 Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enregistrées dans
 `generate_handler!` (`lib.rs`). Chacune a un wrapper typé dans `src/api/`.
 
-| Commande          | Arguments                  | Retour                      | Module     |
-| ----------------- | -------------------------- | --------------------------- | ---------- |
-| `app_info`        |                            | `{ name, version }`         | `app`      |
-| `settings_get`    |                            | `SettingsView`              | `settings` |
-| `settings_set`    | `settings: Settings`       | `SettingsView`              | `settings` |
-| `sources_list`    |                            | `Source[]`                  | `sources`  |
-| `sources_add`     | `input: SourceInput`       | `Source`                    | `sources`  |
-| `sources_update`  | `id`, `input: SourceInput` | `Source`                    | `sources`  |
-| `sources_remove`  | `id`                       | rien                        | `sources`  |
-| `sources_reorder` | `ids: string[]`            | `Source[]` (liste complète) | `sources`  |
+| Commande              | Arguments                  | Retour                      | Module     |
+| --------------------- | -------------------------- | --------------------------- | ---------- |
+| `app_info`            |                            | `{ name, version }`         | `app`      |
+| `settings_get`        |                            | `SettingsView`              | `settings` |
+| `settings_set`        | `settings: Settings`       | `SettingsView`              | `settings` |
+| `sources_list`        |                            | `SourcesView`               | `sources`  |
+| `sources_add`         | `input: SourceInput`       | `Source`                    | `sources`  |
+| `sources_update`      | `id`, `input: SourceInput` | `Source`                    | `sources`  |
+| `sources_remove`      | `id`                       | rien                        | `sources`  |
+| `sources_reorder`     | `ids: string[]`            | `Source[]` (liste complète) | `sources`  |
+| `config_ack_recovery` | `file?: string`            | rien                        | `storage`  |
 
-Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`) et `src/api/sources.ts`
-(`listSources`, `addSource`, `updateSource`, `removeSource`, `reorderSources`). La logique
+`sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
+renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).
+`settings_set` **remplace l'objet complet** (pas de fusion partielle).
+
+Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`), `src/api/sources.ts`
+(`listSources`, `addSource`, `updateSource`, `removeSource`, `reorderSources`) et
+`src/api/recovery.ts` (`ackRecovery`). La logique
 (`SettingsStore`, `SourcesStore`, détection) ne dépend pas de Tauri et reçoit son dossier de
 configuration en paramètre : elle est testée sur des dossiers temporaires ; les commandes
 ne sont que de fines enveloppes qui prennent un verrou (`ConfigState`) autour de chaque opération.
@@ -97,7 +103,7 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 | `kind`           | Sens                                                                        |
 | ---------------- | --------------------------------------------------------------------------- |
 | `io`             | Erreur d'entrée/sortie                                                      |
-| `validation`     | Valeur refusée (URL, chemin, nom, ordre) ou opération interdite             |
+| `validation`     | Valeur refusée (URL, chemin, extension, nom, ordre) ou opération interdite  |
 | `not_found`      | Élément introuvable (identifiant de source inconnu)                         |
 | `config_version` | Fichier de configuration écrit par une version plus récente (laissé intact) |
 | `config_dir`     | Dossier de configuration introuvable                                        |
@@ -106,6 +112,9 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 
 Un fichier de configuration **corrompu** n'est pas une erreur : il est renommé en
 `<fichier>.<AAAAMMJJ-HHMMSS>.bak`, un avertissement est tracé et les valeurs par défaut sont utilisées.
+Cette restauration est mémorisée dans `recovery.json` et renvoyée dans le champ `recovery`
+(`{ file, backup }`) de `settings_get` / `sources_list` **jusqu'à** `config_ack_recovery`
+(même après un redémarrage) : l'interface avertit l'utilisateur puis acquitte.
 
 ### Événements
 
@@ -136,13 +145,35 @@ Un chemin à `null` signifie « automatique » ; `settings_get` renvoie aussi le
 
 - `player_path` : `flam-player.exe` à côté de l'exécutable de l'appli, sinon (build de
   développement) `build/flam-player.exe` dans un dossier ancêtre (racine du dépôt) ;
-- `python_path` : `python.exe` trouvé dans le `PATH` (aucun script n'est exécuté ; les alias
-  vides du Microsoft Store sont ignorés) ;
+- `python_path` : `python.exe`, `python3.exe` puis `py.exe` (lanceur Windows) trouvés dans le
+  `PATH` (aucun processus ni script n'est exécuté ; les entrées relatives du `PATH` sont ignorées) ;
 - `cache_dir` : `%LOCALAPPDATA%/flam-launcher/cache`.
 
-`settings_set` normalise (espaces, chaîne vide = automatique) puis valide : les chemins du player
-et de Python doivent être des fichiers absolus existants, le cache un chemin absolu qui n'est pas
-un fichier, l'URL du catalogue une URL http(s).
+**Alias du Microsoft Store** : un fichier vide dans `WindowsApps` est ignoré (savoir s'il désigne
+un Python réellement installé exigerait de le lancer). Si c'est tout ce qui est trouvé,
+`issues` contient `{ field: "python_path", kind: "store_alias" }` : l'interface invite à choisir
+le chemin de `python.exe`.
+
+`settings_set` normalise (espaces, chaîne vide = automatique) puis valide :
+
+- `player_path` et `python_path` : chemin **absolu**, **local** (UNC `\\serveur\…`, `\\?\UNC\…`
+  et lecteurs réseau refusés), extension `.exe` (insensible à la casse), fichier existant ;
+- `cache_dir` : chemin absolu qui n'est pas un fichier, ni racine de disque, ni dossier
+  utilisateur, ni dossier Windows. L'application ne supprime **jamais** que les sous-dossiers
+  qu'elle a elle-même créés dans le cache, jamais le dossier configuré lui-même ;
+- `default_catalog_url` : URL http(s) avec hôte, 2048 caractères max, sans identifiants
+  (`user:pass@`).
+
+Le fichier existant est relu avant d'écrire : version de schéma future refusée sans toucher au
+fichier, fichier corrompu sauvegardé en `*.bak`.
+
+**Revalidation à la lecture** : à chaque `settings_get`, une valeur configurée devenue invalide
+ou disparue est écartée au profit de la détection automatique dans `resolved`, et signalée dans
+`issues` (`[{ field, kind, message }]`, `kind` = `invalid_path`, `not_found` ou `store_alias`).
+La valeur enregistrée dans `settings` n'est pas modifiée. `resolved.*` n'est **pas une
+garantie** : le fichier peut disparaître ensuite, le lancement (#16) revérifie juste avant
+d'exécuter. Accesseurs Rust pour les issues suivantes : `SourcesStore::get(id)` et
+`SettingsStore::resolved_cache_dir` (dossier créé si absent).
 
 #### `sources.json`
 
@@ -156,7 +187,7 @@ un fichier, l'URL du catalogue une URL http(s).
       "name": "Telmi Store",
       "url": "https://…/telmi-interactive.json"
     },
-    { "type": "folder", "id": "3f2c…", "name": "Mon dossier", "path": "C:\Histoires" }
+    { "type": "folder", "id": "3f2c…", "name": "Mon dossier", "path": "C:\\Histoires" }
   ]
 }
 ```
@@ -166,13 +197,17 @@ un fichier, l'URL du catalogue une URL http(s).
 - « Mes histoires » (`type: "library"`, id `library`) est **implicite** : jamais écrite dans le
   fichier, toujours renvoyée en premier par `sources_list`, ni modifiable, ni supprimable, ni
   réordonnable.
-- Validation : nom non vide (100 caractères max), URL http(s) avec hôte, dossier absolu existant,
+- Un fichier édité à la main avec des identifiants en double est dédoublonné au chargement
+  (premier conservé, avertissement tracé).
+- Validation : nom non vide sans caractère de contrôle (100 caractères max), URL http(s) avec
+  hôte, 2048 caractères max, sans identifiants, dossier absolu existant,
   type immuable à la mise à jour ; `sources_reorder` exige une permutation exacte des identifiants
   enregistrés.
 
 #### Écriture, corruption, migration
 
-- Écritures atomiques : fichier temporaire voisin puis renommage.
+- Écritures atomiques : fichier temporaire voisin (nom unique : pid + compteur) puis renommage,
+  avec quelques nouvelles tentatives si l'accès est refusé (antivirus).
 - `schema_version` absent = version 0. Les migrations s'appliquent version par version
   (`MigrationStep` dans `storage.rs`) ; un fichier de version **supérieure** à celle de
   l'application est refusé (`config_version`) sans être modifié.
