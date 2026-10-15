@@ -441,7 +441,9 @@ avec le code 0, sans rien convertir ni écrire (`-o` ignoré) :
 `cover.png`). Les erreurs suivent les mêmes codes de sortie ; avec `--progress-json`,
 un événement `error` est aussi émis sur stdout.
 
-Dépendance : `pip install Pillow`.
+Dépendance : `pip install "Pillow>=10.0"`. Versions testées : Pillow 10.0.0, 11.0.0 et 12.2.0
+(Python 3.12) ; la transparence `tRNS` des PNG est lue dans les octets du PNG, donc
+indépendante des changements de décodage de Pillow entre versions.
 
 Le CLI :
 1. lit `metadata.json` + `nodes.json` dans le zip

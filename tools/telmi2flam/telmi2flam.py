@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import signal
+import struct
 import sys
 import time
 import unicodedata
@@ -145,6 +146,28 @@ def _png_ihdr(png_bytes):
     return None, None
 
 
+def _png_trns_key(png_bytes):
+    """Cle tRNS brute lue dans les octets du PNG : int (gris) ou tuple de 3
+    entiers (RGB), None si absente ou pas de cle (palette/alpha). Independante
+    de Pillow, qui change selon les versions la valeur de info["transparency"]
+    (brute avant 12, mise a l'echelle 8 bits pour le gris 1 bit avec Pillow 12)."""
+    pos = 8
+    while pos + 8 <= len(png_bytes):
+        n = struct.unpack(">I", png_bytes[pos:pos + 4])[0]
+        kind = png_bytes[pos + 4:pos + 8]
+        body = png_bytes[pos + 8:pos + 8 + n]
+        if kind == b"tRNS":
+            if n == 2:
+                return struct.unpack(">H", body)[0]
+            if n == 6:
+                return struct.unpack(">HHH", body)
+            return None
+        if kind in (b"IDAT", b"IEND"):
+            return None
+        pos += 12 + n
+    return None
+
+
 def _trns_mask(im, png_bytes):
     """Masque alpha (mode L) d'une cle tRNS que Pillow n'applique pas : gris
     1/2/4 bits (pixels remis en 8 bits mais cle brute), gris 16 bits et RGB
@@ -154,6 +177,9 @@ def _trns_mask(im, png_bytes):
     if trns is None:
         return None
     bd, ct = _png_ihdr(png_bytes)
+    raw = _png_trns_key(png_bytes)
+    if raw is not None:
+        trns = raw
     if ct == 0 and isinstance(trns, int) and bd in (1, 2, 4):
         k = trns * 255 // ((1 << bd) - 1)
         return im.convert("L").point(lambda v: 0 if v == k else 255)

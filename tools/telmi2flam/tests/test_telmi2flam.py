@@ -680,6 +680,24 @@ class TestConversion(Base):
         c = ((h // 2) * w + w // 2) * 4
         self.assertEqual(rgba[c + 3], 255)                    # centre : opaque
 
+    # #26 : la cle tRNS est lue dans les octets du PNG, pas dans info["transparency"]
+    # (brute avant Pillow 12, mise a l'echelle 8 bits pour le gris 1 bit ensuite)
+    def test_png_trns_key_raw_and_info_independent(self):
+        import struct
+        self.assertEqual(T._png_trns_key(raw_png(4, 4, 1, 0, [[1] * 4] * 4, struct.pack(">H", 1))), 1)
+        self.assertEqual(T._png_trns_key(raw_png(4, 4, 16, 2, [[(1, 2, 3)] * 4] * 4,
+                                                 struct.pack(">HHH", 1, 2, 3))), (1, 2, 3))
+        self.assertIsNone(T._png_trns_key(raw_png(4, 4, 1, 0, [[1] * 4] * 4, None)))
+        self.assertIsNone(T._png_trns_key(b"pas un png"))
+        # info["transparency"] fausse (valeur brute ou mise a l'echelle) : meme resultat
+        data = raw_png(4, 4, 1, 0, [[1, 0, 1, 0]] * 4, struct.pack(">H", 1))
+        for fake in (1, 255):
+            im = Image.open(io.BytesIO(data))
+            im.load()
+            im.info["transparency"] = fake
+            mask = T._trns_mask(im, data)
+            self.assertEqual([mask.getpixel((x, 0)) for x in range(4)], [0, 255, 0, 255], fake)
+
     # hunt3 : runtime Lunii absent ou incomplet -> ConvError (pas de paquet muet)
     def test_runtime_missing(self):
         self.assertEqual(tuple(T.RUNTIME_SCRIPTS), tuple(validate.RUNTIME_SCRIPTS))
