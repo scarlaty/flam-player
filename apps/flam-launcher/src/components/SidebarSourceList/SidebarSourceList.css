@@ -83,19 +83,41 @@
   color: var(--tone-danger-fg);
 }
 
-/* Actions atténuées au repos, pleinement visibles au survol, au focus ou si sélectionnée. */
+/*
+ * Actions superposées à droite de la ligne : invisibles au repos (sans réserver de place,
+ * pour laisser le libellé entier), visibles au survol ou dès qu'une action a le focus.
+ * Elles restent dans l'ordre de tabulation.
+ */
+.fl-source {
+  position: relative;
+}
+
+.fl-source:focus-within {
+  background: var(--color-surface-hover);
+}
+
+.fl-source--selected:focus-within {
+  background: var(--color-primary-soft);
+}
+
 .fl-source__actions {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
   display: flex;
-  flex: none;
-  padding-inline-end: var(--space-1);
+  align-items: center;
+  padding-inline: var(--space-1);
+  border-radius: var(--radius-md);
+  background: inherit;
   opacity: 0;
+  pointer-events: none;
   transition: opacity var(--duration-fast) var(--easing);
 }
 
 .fl-source:hover .fl-source__actions,
-.fl-source:focus-within .fl-source__actions,
-.fl-source--selected .fl-source__actions {
+.fl-source__actions:focus-within {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .fl-sources__add {

@@ -108,23 +108,58 @@ Dans jsdom (tests Vitest), la règle est désactivée car les styles n'y sont pa
 Dans [`src/components/`](../src/components/), un dossier par composant
 (`Composant.tsx`, `Composant.css`, `Composant.test.tsx`), exportés par `index.ts`.
 
-| Composant           | Rôle                                                          | Accessibilité                                                                    |
-| ------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `AppShell`          | Barre latérale, en-tête (`h1` + actions), contenu, panneau    | Repères `nav`/`banner`/`main`/`complementary`, lien d'évitement                  |
-| `SidebarSourceList` | Sources groupées (bibliothèque, catalogues, dossiers)         | `aria-current="page"`, flèches ↑/↓, Début/Fin ; compteur et état lus en clair    |
-| `StoryCard`         | Vignette carrée, titre, âge, badges, actions rapides          | Titre = bouton dont la zone couvre la carte ; vignette décorative (`alt=""`)     |
-| `Badge`             | État court (5 tons)                                           | Texte obligatoire, icône décorative                                              |
-| `Button`            | `primary`, `secondary`, `ghost`, `danger` ; tailles `md`/`sm` | `type="button"` par défaut                                                       |
-| `IconButton`        | Bouton icône seule                                            | `label` obligatoire → `aria-label` + infobulle                                   |
-| `ProgressBar`       | Déterminée (0-100) ou indéterminée                            | `role="progressbar"`, `aria-valuenow` absent si indéterminée                     |
-| `TaskPanel`         | Téléchargements, conversions, installations                   | Région nommée, Annuler/Retirer nommés d'après l'histoire                         |
-| `Dialog`            | Modale avec actions en pied                                   | `aria-modal`, nom et description, focus piégé, Échap, focus rendu à la fermeture |
-| `EmptyState`        | Liste vide avec action proposée                               | Niveau de titre réglable                                                         |
-| `Toast`             | Notifications (`ToastProvider` + `useToast()`)                | Zone `aria-live="polite"`, erreurs en `role="alert"`, bouton Fermer              |
+- **`AppShell`** : barre latérale, en-tête (`h1` + actions), contenu, panneau facultatif.
+  Repères `nav`, `banner`, `main`, `complementary`. Le lien « Aller au contenu » focalise
+  `main` par script (`preventDefault` + `focus()`) : le hash reste libre pour le routage
+  (`#/demo` et routes futures).
+- **`SidebarSourceList`** : sources dans **l'ordre fourni par l'appelant** (l'application
+  met « Mes histoires » en tête). Chaque source est un bouton (`aria-current="page"` si
+  sélectionnée) dont le nom annonce libellé, type, puis nombre d'histoires ou état.
+  `status` : `ok`, `offline` (nuage barré, « Hors ligne ») ou `error` (alerte, « Erreur »),
+  avec infobulle. `renderActions(source)` ajoute des actions par source (renommer,
+  supprimer, réordonner…), superposées à droite de la ligne : masquées au repos (le
+  libellé garde toute la largeur), visibles au survol ou dès qu'une action a le focus. Le libellé tronqué est donné en entier en infobulle. Clavier : Tab
+  parcourt les sources et leurs actions ; ↑/↓, Début et Fin sautent directement d'une
+  source à l'autre.
+- **`StoryCard`** : vignette carrée (repli sur une illustration générique si l'image est
+  absente ou ne charge pas), titre, âge, badges (clé `id` stable), progression facultative
+  (`progress` en % ou `"indeterminate"`, `progressText`), actions rapides. Le titre est un
+  bouton dont la zone couvre la carte ; la vignette est décorative (`alt=""`).
+- **`Badge`** : état court en 5 tons ; texte obligatoire, icône décorative.
+- **`Button`** : `primary`, `secondary`, `ghost`, `danger` ; tailles `md`/`sm` ;
+  `type="button"` par défaut ; `ref` transmise au bouton natif.
+- **`IconButton`** : icône seule ; `label` obligatoire (vérifié par TypeScript) → nom
+  accessible et infobulle.
+- **`ProgressBar`** : `role="progressbar"`, valeur bornée à 0-100 et arrondie ;
+  indéterminée sans `aria-valuenow`.
+- **`TaskPanel`** : téléchargements, conversions, installations. États `queued`,
+  `running`, `done`, `error`, `cancelled` ; `phase` (étape affichée après le type) et
+  `detail`. Actions nommées d'après l'histoire : Annuler (tâche active), Réessayer
+  (`onRetry`, tâche en échec ou annulée), Retirer (tâche finie). Une région `role="status"`
+  (polie) annonce chaque changement d'état, avec le détail en cas d'échec ; la progression
+  n'est pas annoncée. L'icône d'installation (paquet) se distingue de la coche « Terminée ».
+- **`Dialog`** : modale rendue dans `body`, `role` `dialog` ou `alertdialog`,
+  `aria-modal`, nom = titre, `aria-describedby` seulement si `description` est fournie.
+  Focus initial : `initialFocus` (ex. « Annuler » d'une confirmation), sinon premier élément
+  actif du contenu, puis des actions. Tab bouclé dans le panneau ; Échap écouté sur tout le
+  document tant que le dialogue est ouvert ; clic sur le fond ferme ; défilement de la page
+  bloqué ; focus rendu au déclencheur à la fermeture.
+- **`EmptyState`** : liste vide avec action proposée ; niveau de titre réglable.
+- **`Toast`** (`ToastProvider` + `useToast()`) : infos et succès dans une région
+  `aria-live="polite"`, disparition après 5 s par défaut, minuterie en pause au survol et au
+  focus ; erreurs dans une région `aria-live="assertive"` séparée, affichées jusqu'à
+  fermeture. Les notifications n'ont pas de rôle propre, pour éviter les doubles annonces.
+
+### Contraste élevé (Windows)
+
+Sous `forced-colors: active`, les fonds et ombres disparaissent : boutons, badges, cartes,
+tâches, notifications et dialogues reçoivent un contour `CanvasText`, le focus et la
+sélection utilisent `Highlight`, la barre de progression garde contour et remplissage
+visibles (`src/styles.css`).
 
 Les icônes ([`Icon.tsx`](../src/components/Icon.tsx)) sont des SVG originaux en ligne
 (grille 24, trait 2 px, extrémités arrondies), toujours `aria-hidden`. Pas de bibliothèque
-d'icônes : une quinzaine de pictogrammes suffit et évite une dépendance.
+d'icônes : une vingtaine de pictogrammes suffit et évite une dépendance.
 
 L'icône d'application ([`src-tauri/icons/app-icon.svg`](../src-tauri/icons/app-icon.svg),
 reprise par `AppLogo`) est une flamme crème sur un carré brique. Régénération :
@@ -147,8 +182,9 @@ reprise par `AppLogo`) est une flamme crème sur un carré brique. Régénérati
 Tous les textes affichés sont dans [`src/i18n/fr.ts`](../src/i18n/fr.ts) (objet `fr`,
 exposé par `t` dans `src/i18n/index.ts`). Les pluriels et textes paramétrés sont des
 fonctions (`t.sources.count(n)`, `t.story.age(3, 6)`). Une autre langue fournira un objet
-du type `Messages`. Les textes de la page de démonstration sont à part
-(`src/i18n/demo.fr.ts`) pour ne pas être embarqués dans l'application publiée.
+du type `Messages`. Les textes de la page de démonstration, lien d'accès compris, sont à
+part (`src/i18n/demo.fr.ts`) et ne sont importés que derrière `import.meta.env.DEV` : ils
+ne sont pas embarqués dans l'application publiée.
 
 ## Page de démonstration
 
@@ -157,10 +193,11 @@ sous l'écran d'accueil avec `npm run tauri dev`). La page est chargée à la de
 `import.meta.env.DEV` : le build de production ne contient ni la page ni ses données.
 Elle présente tous les composants avec des données fictives et un sélecteur de thème.
 
-| Clair                                                             | Sombre                                                 |
-| ----------------------------------------------------------------- | ------------------------------------------------------ |
-| ![Thème clair](screenshots/demo-clair.png)                        | ![Thème sombre](screenshots/demo-sombre.png)           |
-| ![Dialogue et notifications](screenshots/demo-clair-dialogue.png) | ![Fenêtre étroite](screenshots/demo-sombre-etroit.png) |
+| Clair                                                             | Sombre                                                            |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------- |
+| ![Thème clair](screenshots/demo-clair.png)                        | ![Thème sombre](screenshots/demo-sombre.png)                      |
+| ![Dialogue et notifications](screenshots/demo-clair-dialogue.png) | ![Fenêtre étroite](screenshots/demo-sombre-etroit.png)            |
+| ![Contraste élevé](screenshots/demo-contraste-eleve.png)          | ![Confirmation (alertdialog)](screenshots/demo-sombre-alerte.png) |
 
 ## Vérifications
 
@@ -168,4 +205,6 @@ Elle présente tous les composants avec des données fictives et un sélecteur d
   chaque composant, sur la page de démonstration et sur la page avec dialogue et
   notifications ouverts.
 - Contrastes et CSP vérifiés dans Edge (Playwright) : build de développement servi avec la
-  CSP exacte de `tauri.conf.json`, aucune violation de CSP ni erreur de console.
+  CSP exacte de `tauri.conf.json`, aucune violation de CSP ni erreur de console ; axe sans
+  violation sur la page, le dialogue avec notifications et la confirmation `alertdialog`,
+  en clair et en sombre. Rendu contrôlé aussi en `forced-colors: active`.

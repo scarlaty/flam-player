@@ -62,6 +62,11 @@ a {
 
   .fl-progress__fill {
     background: Highlight;
+    forced-color-adjust: none;
+  }
+
+  .fl-source__actions {
+    background: Canvas;
   }
 }
 

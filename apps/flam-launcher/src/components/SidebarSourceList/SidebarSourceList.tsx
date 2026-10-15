@@ -33,9 +33,9 @@ export interface SidebarSourceListProps {
   /** Titre de la liste (« Sources » par défaut). */
   title?: string;
   /**
-   * Actions propres à une source (renommer, supprimer, réordonner…), placées à droite
-   * de la source. Elles sont atténuées tant que la ligne n'est ni survolée, ni
-   * sélectionnée, ni focalisée.
+   * Actions propres à une source (renommer, supprimer, réordonner…), superposées à
+   * droite de la ligne : masquées au repos, visibles au survol ou quand l'une d'elles a
+   * le focus (elles restent dans l'ordre de tabulation).
    */
   renderActions?: (source: SidebarSource) => ReactNode;
   /** Affiche le bouton « Ajouter une source ». */
