@@ -192,8 +192,13 @@ En développement seulement : `npm run dev` puis <http://localhost:1420/#/demo> 
 sous l'écran d'accueil avec `npm run tauri dev`). La page est chargée à la demande derrière
 `import.meta.env.DEV` : le build de production ne contient ni la page ni ses données.
 Elle présente tous les composants avec des données fictives et un sélecteur de thème.
-Les captures ne sont pas versionnées (le dépôt ignore les `*.png`) : la page de
-démonstration sert de référence visuelle.
+Captures dans Edge, servie avec la CSP de `tauri.conf.json` (dossier
+[`screenshots/`](screenshots/), exception dans le `.gitignore` racine) :
+
+| Clair                                                             | Sombre                                                 |
+| ----------------------------------------------------------------- | ------------------------------------------------------ |
+| ![Thème clair](screenshots/demo-clair.png)                        | ![Thème sombre](screenshots/demo-sombre.png)           |
+| ![Dialogue et notifications](screenshots/demo-clair-dialogue.png) | ![Fenêtre étroite](screenshots/demo-sombre-etroit.png) |
 
 ## Vérifications
 
