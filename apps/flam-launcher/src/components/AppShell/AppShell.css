@@ -49,6 +49,7 @@
 
 .fl-shell__header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-4);
   min-height: var(--header-height);
@@ -57,7 +58,7 @@
 }
 
 .fl-shell__title {
-  flex: 1;
+  flex: 1 1 12rem;
   margin: 0;
   font-size: var(--font-size-xl);
   font-weight: var(--font-weight-bold);

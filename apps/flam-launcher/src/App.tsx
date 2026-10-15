@@ -29,7 +29,7 @@ export function App() {
   return (
     <main className="app">
       <Welcome />
-      {DemoPage && <a href={DEMO_HASH}>{t.demo.link}</a>}
+      {DemoPage && <a href={DEMO_HASH}>{t.app.demoLink}</a>}
     </main>
   );
 }

@@ -15,6 +15,7 @@ import {
   type Task,
 } from "../../components";
 import { t } from "../../i18n";
+import { demoFr } from "../../i18n/demo.fr";
 import { applyTheme, THEME_PREFERENCES, type ThemePreference } from "../../theme/theme";
 import { demoSources, demoStories, demoTasks } from "./demoData";
 import "./DemoPage.css";
@@ -69,7 +70,7 @@ function DemoContent() {
 
   return (
     <AppShell
-      title={t.demo.title}
+      title={demoFr.title}
       sidebar={
         <SidebarSourceList
           sources={demoSources}
@@ -81,16 +82,16 @@ function DemoContent() {
       headerActions={
         <>
           <ThemeSwitcher />
-          <IconButton icon="refresh" label={t.demo.refresh} />
-          <IconButton icon="sliders" label={t.demo.settings} />
+          <IconButton icon="refresh" label={demoFr.refresh} />
+          <IconButton icon="sliders" label={demoFr.settings} />
         </>
       }
       aside={<TaskPanel tasks={tasks} onCancel={removeTask} onDismiss={removeTask} />}
     >
-      <p className="demo-notice">{t.demo.notice}</p>
+      <p className="demo-notice">{demoFr.notice}</p>
 
       <section className="demo-section" aria-labelledby="demo-stories">
-        <h2 id="demo-stories">{t.demo.stories}</h2>
+        <h2 id="demo-stories">{demoFr.stories}</h2>
         <ul className="demo-grid">
           {demoStories.map((story) => (
             <li key={story.id}>
@@ -107,7 +108,7 @@ function DemoContent() {
                     icon="play"
                     variant="primary"
                     size="sm"
-                    label={`${t.demo.play} : ${story.title}`}
+                    label={`${demoFr.play} : ${story.title}`}
                   />
                 }
               />
@@ -117,31 +118,31 @@ function DemoContent() {
       </section>
 
       <section className="demo-section" aria-labelledby="demo-buttons">
-        <h2 id="demo-buttons">{t.demo.buttons}</h2>
+        <h2 id="demo-buttons">{demoFr.buttons}</h2>
         <div className="demo-row">
           <Button variant="primary" icon="download">
-            {t.demo.install}
+            {demoFr.install}
           </Button>
-          <Button icon="play">{t.demo.play}</Button>
+          <Button icon="play">{demoFr.play}</Button>
           <Button variant="ghost" icon="refresh">
-            {t.demo.refresh}
+            {demoFr.refresh}
           </Button>
           <Button variant="danger" icon="trash">
-            {t.demo.delete}
+            {demoFr.delete}
           </Button>
           <Button variant="primary" disabled>
-            {t.demo.install}
+            {demoFr.install}
           </Button>
           <Button size="sm" icon="plus">
             {t.sources.add}
           </Button>
-          <IconButton icon="sliders" variant="secondary" label={t.demo.settings} />
-          <IconButton icon="play" variant="primary" label={t.demo.play} />
+          <IconButton icon="sliders" variant="secondary" label={demoFr.settings} />
+          <IconButton icon="play" variant="primary" label={demoFr.play} />
         </div>
       </section>
 
       <section className="demo-section" aria-labelledby="demo-badges">
-        <h2 id="demo-badges">{t.demo.badges}</h2>
+        <h2 id="demo-badges">{demoFr.badges}</h2>
         <div className="demo-row">
           <Badge>{t.status.available}</Badge>
           <Badge tone="info">{t.status.compatible}</Badge>
@@ -156,22 +157,22 @@ function DemoContent() {
       </section>
 
       <section className="demo-section" aria-labelledby="demo-progress">
-        <h2 id="demo-progress">{t.demo.progress}</h2>
+        <h2 id="demo-progress">{demoFr.progress}</h2>
         <div className="demo-stack">
-          <ProgressBar value={35} label={t.demo.progressDownload} showValue />
+          <ProgressBar value={35} label={demoFr.progressDownload} showValue />
           <ProgressBar value={100} tone="success" label={t.tasks.state.done} showValue />
-          <ProgressBar label={t.demo.progressWaiting} />
+          <ProgressBar label={demoFr.progressWaiting} />
         </div>
       </section>
 
       <section className="demo-section" aria-labelledby="demo-empty">
-        <h2 id="demo-empty">{t.demo.empty}</h2>
+        <h2 id="demo-empty">{demoFr.empty}</h2>
         <div className="demo-panel">
           <EmptyState
             icon="folder"
             headingLevel={3}
-            title={t.demo.emptyTitle}
-            description={t.demo.emptyBody}
+            title={demoFr.emptyTitle}
+            description={demoFr.emptyBody}
             action={
               <Button variant="primary" icon="plus" onClick={() => setDialogOpen(true)}>
                 {t.sources.add}
@@ -182,20 +183,20 @@ function DemoContent() {
       </section>
 
       <section className="demo-section" aria-labelledby="demo-dialogs">
-        <h2 id="demo-dialogs">{t.demo.dialogs}</h2>
+        <h2 id="demo-dialogs">{demoFr.dialogs}</h2>
         <div className="demo-row">
-          <Button onClick={() => setDialogOpen(true)}>{t.demo.openDialog}</Button>
+          <Button onClick={() => setDialogOpen(true)}>{demoFr.openDialog}</Button>
           <Button
-            onClick={() => toast.show({ message: t.demo.toastDone, tone: "success" })}
+            onClick={() => toast.show({ message: demoFr.toastDone, tone: "success" })}
           >
-            {t.demo.showToast}
+            {demoFr.showToast}
           </Button>
           <Button
             onClick={() =>
-              toast.show({ message: t.demo.toastError, tone: "danger", duration: 0 })
+              toast.show({ message: demoFr.toastError, tone: "danger", duration: 0 })
             }
           >
-            {t.demo.showErrorToast}
+            {demoFr.showErrorToast}
           </Button>
         </div>
       </section>
@@ -203,7 +204,7 @@ function DemoContent() {
       <Dialog
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
-        title={t.demo.dialogTitle}
+        title={demoFr.dialogTitle}
         footer={
           <>
             <Button variant="ghost" onClick={() => setDialogOpen(false)}>
@@ -214,15 +215,15 @@ function DemoContent() {
               icon="download"
               onClick={() => {
                 setDialogOpen(false);
-                toast.show({ message: t.demo.toastDone, tone: "success" });
+                toast.show({ message: demoFr.toastDone, tone: "success" });
               }}
             >
-              {t.demo.install}
+              {demoFr.install}
             </Button>
           </>
         }
       >
-        <p>{t.demo.dialogBody}</p>
+        <p>{demoFr.dialogBody}</p>
       </Dialog>
     </AppShell>
   );
