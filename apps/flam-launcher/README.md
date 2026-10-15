@@ -130,45 +130,79 @@ Cette restauration est mémorisée dans `recovery.json` et renvoyée dans le cha
 
 Un catalogue est un JSON au format Telmi Store : `{ banner, data: [ { uuid, version?, title,
 description, age, category, author, voice, license, thumbs: { small, medium }, download,
-updated_at, … } ] }`. Il est normalisé en `StoryEntry` (module partagé `story.rs`, aussi utilisé par
-la source dossier local) :
-`source_id, uuid, version?, title, description?, age?, category?, author?, voice?, license?,
-thumb_url?, download_url, size?, updated_at?, kind (telmi_zip | flam_plain | flam_pk)`.
+updated_at, … } ] }`. Il est normalisé en `StoryEntry` (module partagé `story.rs` / `src/api/story.ts`,
+aussi utilisé par la source dossier local) :
+`source_id, entry_id, uuid, version?, title, description?, age?, category?, author?, voice?,
+license?, thumb_url?, download_url, size?, updated_at?, kind (telmi_zip | flam_plain | flam_pk)`.
 
+- **Identifiants** : `entry_id` est unique et stable dans une source ; c'est la clé de grille de
+  l'interface et la clé de cache des vignettes côté front. Catalogue : `"<source_id>:<uuid>"`.
+  `story::validate_story_id` (`^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`, sans `..`, sans point final,
+  hors noms réservés Windows `CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`) valide tout
+  identifiant destiné à devenir un nom de fichier ; une entrée dont l'`uuid` ne passe pas est
+  ignorée avec un avertissement.
+- **`thumb_url`** n'est **pas** une URL affichable : la CSP bloque les images distantes. C'est une
+  référence que le front résout avec `getCatalogThumbnail` (voir « Vignettes »).
+- **`download_url`** est une URL absolue http **ou https**, telle que publiée par le catalogue :
+  accepter ou refuser le http clair est à décider dans #15 (pipeline d'installation).
+- **`size`** est toujours absente pour le Telmi Store (le format ne la fournit pas) : #15 doit
+  s'appuyer sur le `Content-Length` du téléchargement.
 - **Lecture tolérante** : champs inconnus ignorés ; champ absent ou de mauvais type = valeur par
-  défaut (`null` pour les champs optionnels, y compris les textes vides ; titre vide si absent) ; entrée sans `uuid` ou sans lien `download` http(s) valide ignorée
-  avec un avertissement (`warnings`, 50 maximum puis résumé) ; `uuid` en double ignoré (premier
-  conservé). URL relatives résolues par rapport à l'URL du catalogue ; vignette `medium` sinon
-  `small`. Une racine qui est directement une liste, ou un BOM UTF-8, sont acceptés. Sans liste
-  d'histoires : erreur `catalog_invalid`.
+  défaut (`null` pour les champs optionnels, y compris les textes vides ; titre vide si absent) ;
+  entrée sans `uuid` valide ou sans lien `download` http(s) valide ignorée avec un avertissement
+  (`warnings`, 50 maximum puis résumé) ; `uuid` en double ignoré (premier conservé, détection en
+  temps constant). Au-delà de 10 000 entrées, les suivantes sont ignorées (avertissement). URL
+  relatives résolues par rapport à l'URL du catalogue ; vignette `small` (grille) sinon `medium`.
+  Une racine qui est directement une liste, ou un BOM UTF-8, sont acceptés. Sans liste
+  d'histoires : erreur `catalog_invalid`. La lecture se fait hors du fil asynchrone
+  (`spawn_blocking`).
 - **Réseau** : `reqwest` avec rustls (pas d'OpenSSL), délai de connexion 10 s, délai total 30 s,
-  corps limité à 16 Mio, `User-Agent` `flam-launcher/<version> (+https://github.com/scarlaty/flam-player)`.
-  Requête conditionnelle `If-None-Match` / `If-Modified-Since` quand un cache valide existe.
+  corps limité à 16 Mio (contrôlé sur `Content-Length` puis sur le flux reçu),
+  `User-Agent` `flam-launcher/<version> (+https://github.com/scarlaty/flam-player)`.
+  Redirections : 5 sauts au plus, jamais de https vers http. Requête conditionnelle
+  `If-None-Match` / `If-Modified-Since` quand un cache de confiance existe.
+- **Risque SSRF** : le launcher fait des GET « à l'aveugle » vers des adresses publiées par le
+  catalogue (catalogue, vignettes, plus tard téléchargements). Un catalogue hostile peut donc
+  faire joindre une adresse locale ou privée ; la réponse n'est jamais exposée telle quelle
+  (JSON analysé, images reconnues par leurs premiers octets), mais la requête part. Le front ne
+  peut demander que des vignettes présentes dans le catalogue en cache. N'ajouter que des
+  catalogues de confiance.
 - **Cache hors ligne** sous `<cache>/catalogs/<source_id>/` : `catalog.json` (dernier catalogue
-  valide, tel que reçu), `meta.json` (`url`, `etag`, `last_modified`, `fetched_at`),
-  `thumbs/<sha256 de l'URL>.img`. Un cache dont l'URL diffère de celle de la source est ignoré.
-  L'identifiant de source doit être un nom de dossier sûr (`[A-Za-z0-9_-]`, 64 max).
+  valide, tel que reçu), `meta.json` (`url`, `etag`, `last_modified`, `sha256`, `fetched_at`),
+  `thumbs/<sha256 de l'URL>.img`. L'identifiant de source doit être un nom de dossier sûr
+  (`[A-Za-z0-9_-]`, 64 max).
+  - Un cache dont l'URL diffère de celle de la source est ignoré.
+  - `meta.json` contient le SHA-256 de `catalog.json` : s'il ne correspond pas au chargement
+    (écriture interrompue, fichier modifié), le catalogue reste lisible mais l'ETag est ignoré
+    (téléchargement complet).
+  - Un seul `catalog_refresh` à la fois par source (verrou par source) ; les suivants attendent.
+  - Un catalogue **valide mais sans aucune entrée exploitable** (`data: []`) ne remplace pas un
+    cache non vide : le cache est conservé et `status.error` (`catalog_invalid`) l'indique.
 - **`catalog_refresh`** renvoie `CatalogView { source_id, entries, warnings, status }` avec
   `status { offline, updated_at, error }` :
 
-  | Réponse du serveur           | Résultat                                                                                |
-  | ---------------------------- | --------------------------------------------------------------------------------------- |
-  | 200 valide                   | nouveau cache, `offline: false`                                                         |
-  | 304                          | cache conservé, `updated_at` = maintenant                                               |
-  | échec réseau, délai, 4xx/5xx | cache servi, `offline: true`, `error.kind = "network"` (ou erreur `network` sans cache) |
-  | 200 mais catalogue invalide  | cache servi, `offline: false`, `error.kind = "catalog_invalid"` (ou erreur sans cache)  |
+  | Réponse du serveur                        | Résultat                                                                                |
+  | ----------------------------------------- | --------------------------------------------------------------------------------------- |
+  | 200 valide                                | nouveau cache, `offline: false`                                                         |
+  | 304                                       | cache conservé, `updated_at` = maintenant                                               |
+  | échec réseau, délai, redirection, 4xx/5xx | cache servi, `offline: true`, `error.kind = "network"` (ou erreur `network` sans cache) |
+  | 200 mais catalogue invalide               | cache servi, `offline: false`, `error.kind = "catalog_invalid"` (ou erreur sans cache)  |
+  | 200 valide mais vide, cache non vide      | cache conservé, `offline: false`, `error.kind = "catalog_invalid"`                      |
 
   `status.updated_at` (secondes Unix) alimente l'indicateur « hors ligne / dernière mise à jour ».
 
 - **`catalog_entries`** lit uniquement le cache (aucun réseau) : à appeler d'abord pour afficher
   immédiatement, puis `catalog_refresh`.
 - **Vignettes** : `catalog_thumbnail(source_id, thumb_url)` télécharge la vignette à la première
-  demande (2 Mio max, PNG / JPEG / GIF / WebP reconnus à leurs premiers octets, SVG refusé) puis la
-  lit sur le disque, et la renvoie en URL `data:` utilisable dans `<img src>`. `thumb_url` doit
-  appartenir à une entrée du catalogue en cache (le front ne peut pas faire télécharger une URL
-  arbitraire). Le protocole d'asset de Tauri n'est **pas** activé : le dossier de cache est
-  configurable, un scope d'asset statique serait faux ou trop large, et la CSP (`img-src … data:`)
-  reste inchangée.
+  demande (2 Mio max, PNG / JPEG / GIF / WebP reconnus à leurs premiers octets, SVG refusé, 6
+  téléchargements simultanés au plus) puis la lit sur le disque, et la renvoie en URL `data:`
+  utilisable dans `<img src>`. `thumb_url` doit appartenir à une entrée du catalogue en cache :
+  l'ensemble des `thumb_url` connues est gardé en mémoire par source (remplacé à chaque
+  rafraîchissement), le catalogue n'est donc pas relu à chaque vignette. Le protocole d'asset de
+  Tauri n'est **pas** activé : le dossier de cache est configurable, un scope d'asset statique
+  serait faux ou trop large, et la CSP (`img-src … data:`) reste inchangée.
+- **Limite connue** : `thumbs/` et `catalogs/<id>/` ne sont pas nettoyés à la suppression d'une
+  source, et les vignettes en cache ne sont jamais revalidées (voir l'issue de suite).
 
 ### Événements
 
