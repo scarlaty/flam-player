@@ -46,15 +46,16 @@ apps/flam-launcher/
       storage.rs           Persistance JSON : écriture atomique, `*.bak`, migration de schéma
       settings.rs          `settings.json`, détection du player et de Python, commandes `settings_*`
       sources.rs           `sources.json`, source par défaut et implicite, commandes `sources_*`
+      story.rs             `StoryEntry` / `StoryKind` : type commun des histoires de toutes les sources
+      catalog.rs           Source catalogue : téléchargement, lecture tolérante, cache, vignettes
 ```
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `sources`. Prévus (un module par responsabilité, créés avec leur issue) :
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `sources`, `story`, `catalog`. Prévus (un module par responsabilité, créés avec leur issue) :
 
 | Module    | Rôle                                                             |
 | --------- | ---------------------------------------------------------------- |
-| `catalog` | Lecture des catalogues JSON au format Telmi Store                |
 | `folder`  | Source dossier local (`.zip`, `.plain`, `.plain.pk`)             |
 | `install` | Pipeline téléchargement, conversion (`telmi2flam`), installation |
 | `player`  | Lancement et suivi de `flam-player`                              |
@@ -79,6 +80,9 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `sources_remove`      | `id`                       | rien                        | `sources`  |
 | `sources_reorder`     | `ids: string[]`            | `Source[]` (liste complète) | `sources`  |
 | `config_ack_recovery` | `file?: string`            | rien                        | `storage`  |
+| `catalog_refresh`     | `source_id`                | `CatalogView`               | `catalog`  |
+| `catalog_entries`     | `source_id`                | `CatalogView`               | `catalog`  |
+| `catalog_thumbnail`   | `source_id`, `thumb_url`   | URL `data:` (string)        | `catalog`  |
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).
@@ -86,7 +90,8 @@ renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Donn�
 
 Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`), `src/api/sources.ts`
 (`listSources`, `addSource`, `updateSource`, `removeSource`, `reorderSources`) et
-`src/api/recovery.ts` (`ackRecovery`). La logique
+`src/api/recovery.ts` (`ackRecovery`) et `src/api/catalog.ts` (`refreshCatalog`,
+`getCatalogEntries`, `getCatalogThumbnail`, types `StoryEntry`, `CatalogView`). La logique
 (`SettingsStore`, `SourcesStore`, détection) ne dépend pas de Tauri et reçoit son dossier de
 configuration en paramètre : elle est testée sur des dossiers temporaires ; les commandes
 ne sont que de fines enveloppes qui prennent un verrou (`ConfigState`) autour de chaque opération.
@@ -100,21 +105,67 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 (`kind: "unknown"` si la forme est inattendue). Convention : chaque module ajoute ses variantes
 à `AppError` avec un `kind` stable ; le front teste le `kind`, jamais le `message`.
 
-| `kind`           | Sens                                                                        |
-| ---------------- | --------------------------------------------------------------------------- |
-| `io`             | Erreur d'entrée/sortie                                                      |
-| `validation`     | Valeur refusée (URL, chemin, extension, nom, ordre) ou opération interdite  |
-| `not_found`      | Élément introuvable (identifiant de source inconnu)                         |
-| `config_version` | Fichier de configuration écrit par une version plus récente (laissé intact) |
-| `config_dir`     | Dossier de configuration introuvable                                        |
-| `serialization`  | Échec de sérialisation JSON                                                 |
-| `unknown`        | Côté front uniquement : erreur de forme inattendue                          |
+| `kind`            | Sens                                                                                                |
+| ----------------- | --------------------------------------------------------------------------------------------------- |
+| `io`              | Erreur d'entrée/sortie                                                                              |
+| `validation`      | Valeur refusée (URL, chemin, extension, nom, ordre) ou opération interdite                          |
+| `not_found`       | Élément introuvable (identifiant de source inconnu)                                                 |
+| `config_version`  | Fichier de configuration écrit par une version plus récente (laissé intact)                         |
+| `config_dir`      | Dossier de configuration introuvable                                                                |
+| `serialization`   | Échec de sérialisation JSON                                                                         |
+| `network`         | Réseau indisponible, délai dépassé, réponse HTTP en échec, réponse trop grosse                      |
+| `catalog_invalid` | Catalogue (ou vignette) reçu inexploitable : JSON invalide, pas de liste `data`, image non reconnue |
+| `unknown`         | Côté front uniquement : erreur de forme inattendue                                                  |
 
 Un fichier de configuration **corrompu** n'est pas une erreur : il est renommé en
 `<fichier>.<AAAAMMJJ-HHMMSS>.bak`, un avertissement est tracé et les valeurs par défaut sont utilisées.
 Cette restauration est mémorisée dans `recovery.json` et renvoyée dans le champ `recovery`
 (`{ file, backup }`) de `settings_get` / `sources_list` **jusqu'à** `config_ack_recovery`
 (même après un redémarrage) : l'interface avertit l'utilisateur puis acquitte.
+
+### Source catalogue (`catalog`)
+
+Un catalogue est un JSON au format Telmi Store : `{ banner, data: [ { uuid, version?, title,
+description, age, category, author, voice, license, thumbs: { small, medium }, download,
+updated_at, … } ] }`. Il est normalisé en `StoryEntry` (module partagé `story.rs`, aussi utilisé par
+la source dossier local) :
+`source_id, uuid, kind (telmi_zip | flam_plain | flam_pk), version?, title, description, age?,
+category, author, voice, license, thumb_url?, download_url, size?, updated_at`.
+
+- **Lecture tolérante** : champs inconnus ignorés ; champ absent ou de mauvais type = valeur par
+  défaut (texte vide, `null`) ; entrée sans `uuid` ou sans lien `download` http(s) valide ignorée
+  avec un avertissement (`warnings`, 50 maximum puis résumé) ; `uuid` en double ignoré (premier
+  conservé). URL relatives résolues par rapport à l'URL du catalogue ; vignette `medium` sinon
+  `small`. Une racine qui est directement une liste, ou un BOM UTF-8, sont acceptés. Sans liste
+  d'histoires : erreur `catalog_invalid`.
+- **Réseau** : `reqwest` avec rustls (pas d'OpenSSL), délai de connexion 10 s, délai total 30 s,
+  corps limité à 16 Mio, `User-Agent` `flam-launcher/<version> (+https://github.com/scarlaty/flam-player)`.
+  Requête conditionnelle `If-None-Match` / `If-Modified-Since` quand un cache valide existe.
+- **Cache hors ligne** sous `<cache>/catalogs/<source_id>/` : `catalog.json` (dernier catalogue
+  valide, tel que reçu), `meta.json` (`url`, `etag`, `last_modified`, `fetched_at`),
+  `thumbs/<sha256 de l'URL>.img`. Un cache dont l'URL diffère de celle de la source est ignoré.
+  L'identifiant de source doit être un nom de dossier sûr (`[A-Za-z0-9_-]`, 64 max).
+- **`catalog_refresh`** renvoie `CatalogView { source_id, entries, warnings, status }` avec
+  `status { offline, updated_at, error }` :
+
+  | Réponse du serveur           | Résultat                                                                                |
+  | ---------------------------- | --------------------------------------------------------------------------------------- |
+  | 200 valide                   | nouveau cache, `offline: false`                                                         |
+  | 304                          | cache conservé, `updated_at` = maintenant                                               |
+  | échec réseau, délai, 4xx/5xx | cache servi, `offline: true`, `error.kind = "network"` (ou erreur `network` sans cache) |
+  | 200 mais catalogue invalide  | cache servi, `offline: false`, `error.kind = "catalog_invalid"` (ou erreur sans cache)  |
+
+  `status.updated_at` (secondes Unix) alimente l'indicateur « hors ligne / dernière mise à jour ».
+
+- **`catalog_entries`** lit uniquement le cache (aucun réseau) : à appeler d'abord pour afficher
+  immédiatement, puis `catalog_refresh`.
+- **Vignettes** : `catalog_thumbnail(source_id, thumb_url)` télécharge la vignette à la première
+  demande (2 Mio max, PNG / JPEG / GIF / WebP reconnus à leurs premiers octets, SVG refusé) puis la
+  lit sur le disque, et la renvoie en URL `data:` utilisable dans `<img src>`. `thumb_url` doit
+  appartenir à une entrée du catalogue en cache (le front ne peut pas faire télécharger une URL
+  arbitraire). Le protocole d'asset de Tauri n'est **pas** activé : le dossier de cache est
+  configurable, un scope d'asset statique serait faux ou trop large, et la CSP (`img-src … data:`)
+  reste inchangée.
 
 ### Événements
 
@@ -125,7 +176,7 @@ la progression d'installation est le premier cas prévu.
 ### Données
 
 - Configuration : `%APPDATA%/flam-launcher` (`settings.json`, `sources.json`), détaillée ci-dessous.
-- Cache (téléchargements, histoires converties) : dossier configurable, par défaut sous les
+- Cache (catalogues, vignettes, téléchargements, histoires converties) : dossier configurable, par défaut sous les
   données locales de l'application. Jamais dans le dépôt.
 
 #### `settings.json`
