@@ -345,7 +345,9 @@ En cas de paquet invalide (zip illisible, JSON invalide/BOM mal formé, `NaN`, t
 inattendu, `metadata.json`/`nodes.json` absents, nom d'asset dangereux...), le CLI
 affiche `ERREUR : ...` et sort avec le code 1 (pas de traceback).
 
-Dépendance : `pip install Pillow`.
+Dépendance : `pip install "Pillow>=10.0"`. Versions testées : Pillow 10.0.0, 11.0.0 et 12.2.0
+(Python 3.12) ; la transparence `tRNS` des PNG est lue dans les octets du PNG, donc
+indépendante des changements de décodage de Pillow entre versions.
 
 Le CLI :
 1. lit `metadata.json` + `nodes.json` dans le zip
@@ -514,6 +516,42 @@ Tests : `tests/test_explore.py` (parcours complet, `max_steps`, erreur Lua injec
 boucle infinie, zip-slip), sautés si `flam-player` est introuvable.
 
 ---
+
+### Campagne de compatibilité
+
+`compat.py` mesure quelles histoires Telmi `telmi2flam` sait convertir : téléchargement,
+conversion, validation, exécution optionnelle, rapport. Tout est écrit sous `.cache/`
+(ignoré par Git) : aucune archive ni histoire convertie n'est versionnée.
+
+```bash
+python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...]
+                                  [--folder <dossier de .zip>] [--cache .cache/telmi]
+                                  [--only <uuid|motif|titre>] [--limit N] [--jobs N] [--force]
+                                  [--player flam-player.exe] [--run-timeout 120] [--seed 0] [--max-steps 200]
+```
+
+- **Sources** : `--catalog` (format Telmi Store : `data[]` avec `uuid`, `version`, `title`,
+  `download`, lecture tolérante aux champs manquants) et `--folder` (les `.zip` du dossier,
+  non téléchargés). `--only` : uuid, motif `*?` ou sous-chaîne du titre ; `--limit` tronque.
+- **Fichiers** : `archives/<uuid>-<version>.zip` (reprise d'un `.part` par `Range`, taille
+  vérifiée, 3 tentatives, timeout), `converted/<uuid>-<version>.plain.pk`,
+  `compat/report.json` et `compat/report.md` (tableau + échecs regroupés par cause).
+- **Étapes** : `download`, `convert` (exceptions et avertissements `_warn` capturés),
+  `validate` (`validate.py`), `run` ; statut par étape `ok|warn|fail|skipped`, statut global
+  `OK`, `OK_AVERTISSEMENTS`, `ECHEC_TELECHARGEMENT`, `ECHEC_CONVERSION`, `ECHEC_VALIDATION`,
+  `ECHEC_EXECUTION`. Code de sortie 1 s'il y a au moins un échec.
+- **Reprise** : une histoire déjà évaluée avec les mêmes sources du convertisseur (hash de
+  `tools/telmi2flam` hors tests/`compat.py`/`explore.py`) n'est pas refaite, sauf `--force`.
+  Un échec de téléchargement est toujours retenté. Pour les archives locales, la taille et la date du zip font partie du critère (zip remplacé = refait) ; pour un catalogue, `updated_at` si présent. Avec `--only`/`--limit`, le rapport conserve les fiches précédentes non sélectionnées ; celles évaluées avec un autre convertisseur sont marquées `stale` (« périmé » dans `report.md`). `report.json` est réécrit (atomiquement) après chaque histoire. `--jobs N` : traitement parallèle
+  (processus).
+- **Étape `run`** : appelle `explore(player_exe, story_path, timeout_s=120, seed=0,
+  max_steps=200) -> dict` (clé `status` : `ok|lua_error|crash|timeout|stuck`) si on la
+  passe à `run_campaign(..., explore=..., player_exe=...)`, ou, en CLI, si `--player` est
+  donné et que `explore.py` existe. Sinon l'étape vaut `skipped`. Les clés `errors`, `scenes_visited`, `scenes_total`, `end_reached`, `duration_s` de la réponse sont reprises dans le rapport (section « Execution (couverture) » de `report.md`).
+
+```bash
+python -m unittest discover -s tools/telmi2flam/tests -p "test_compat.py"   # sans réseau
+```
 
 ## 6. Décisions de conception
 

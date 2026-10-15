@@ -36,3 +36,13 @@ Thumbs.db
 /tools/telmi2flam/*.zip
 /tools/telmi2flam/*.pk
 /tools/telmi2flam/*.plain/
+
+# Caches locaux (archives Telmi, histoires converties, rapports de compatibilite)
+.cache/
+
+# Surcouche flam-launcher (Tauri) : dépendances et sorties de build ; icônes versionnées
+apps/flam-launcher/node_modules/
+apps/flam-launcher/dist/
+apps/flam-launcher/src-tauri/target/
+apps/flam-launcher/src-tauri/gen/
+!apps/flam-launcher/src-tauri/icons/*.png

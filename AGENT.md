@@ -301,6 +301,14 @@ de hauteur de texte est protege par un test d'overflow (`LV_LOG_WARN` puis retou
 - Les styles (`lv.style.new()`) ne sont pas des `lv_obj_t` — ils ont leur propre metatable et taille d'allocation
 - L'encodeur (molette FLAM) est emule via les fleches clavier gauche/droite + Entree/Espace
 
+## Surcouche flam-launcher
+
+`apps/flam-launcher/` : application de bureau Tauri 2 (Rust + React/TypeScript strict), licence MIT,
+independante du code C/Lua de l'emulateur. Architecture et commandes : `apps/flam-launcher/README.md`.
+Qualite avant PR : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` (dans `src-tauri/`),
+`npm run lint`, `npm run typecheck`, `npm test` (voir `CONTRIBUTING.md` §5). Ne jamais copier de code
+ni de style de TelmiSync (GPL-3.0), et ne jamais versionner d'archive Telmi ni d'histoire convertie.
+
 ## Fichiers batch utiles
 
 | Fichier | Usage |
