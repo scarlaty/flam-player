@@ -674,6 +674,7 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
                                   [--only <uuid|motif|titre>] [--limit N] [--jobs N] [--force]
                                   [--run | --no-run] [--player flam-player.exe]
                                   [--run-timeout 600] [--max-steps 1000] [--seed 0] [--seeds 1]
+                                  [--run-jobs 1] [--reinterpret]
                                   [--benign-error REGEX] [--max-unzipped-mb 2048]
 ```
 
@@ -689,8 +690,8 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   `ECHEC_EXECUTION`. Code de sortie 1 s'il y a au moins un échec.
 - **Reprise** : une histoire déjà évaluée avec les mêmes sources du convertisseur (hash de
   `tools/telmi2flam` hors tests/`compat.py`/`explore.py`) n'est pas refaite, sauf `--force`.
-  Un échec de téléchargement est toujours retenté. Pour les archives locales, la taille et la date du zip font partie du critère (zip remplacé = refait) ; pour un catalogue, `updated_at` si présent. Avec `--only`/`--limit`, le rapport conserve les fiches précédentes non sélectionnées ; celles évaluées avec un autre convertisseur sont marquées `stale` (« périmé » dans `report.md`). `report.json` est réécrit (atomiquement) après chaque histoire. `--jobs N` : traitement parallèle
-  (processus).
+  Un échec de téléchargement est toujours retenté. Pour les archives locales, la taille et la date du zip font partie du critère (zip remplacé = refait) ; pour un catalogue, `updated_at` si présent. Avec `--only`/`--limit`, le rapport conserve les fiches précédentes non sélectionnées ; celles évaluées avec un autre convertisseur sont marquées `stale` (« périmé » dans `report.md`). `report.json` est réécrit (atomiquement) après chaque histoire. `--jobs N` : téléchargement, conversion et validation en parallèle
+  (processus) ; **il ne parallélise pas l'exploration** : voir `--run-jobs`.
 - **Étape `run`** (exploration sans fenêtre, `explore.py`) : **activée par défaut si
   `flam-player` est trouvé** (`--player`, sinon `$FLAM_BUILD_DIR`, sinon `build/`) ;
   `--no-run` la désactive, `--run` explicite sans player = erreur (code 2). Sans player
@@ -699,8 +700,12 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   **couverture est fusionnée** (union des scènes visitées de chaque parcours, `explore()`
   fournit la liste `scenes`) et le statut est le **pire** des parcours. Défauts : 600 s et
   1000 actions (~0,6 s par écran ; un avertissement s'affiche si le délai est trop court
-  pour les actions). Une `run` déjà faite avec d'autres réglages (délai, actions, nombre de
-  parcours) est refaite sans `--force`.
+  pour les actions). `--run-jobs N` (défaut 1) lance N explorations simultanées : un player
+  sans fenêtre par histoire (pilotes SDL `dummy`, rendu logiciel), chacun dans son dossier
+  temporaire. Rien n'est partagé : captures d'écran redirigées vers ce dossier
+  (`FLAM_SCREENSHOT`) et capture automatique désactivée (`FLAM_SCREENSHOT_AUTO_MS=0`),
+  sauvegardes relatives au dossier de travail, aucun port. Chaque player consomme un cœur :
+  garder N ≤ cœurs/2, sinon le rythme (~0,6 s/écran) baisse et les `timeout` augmentent.
   Via l'API : `run_campaign(..., explore=explore, player_exe=exe, seeds=N, benign=(...))`
   avec `explore(player_exe, story, timeout_s=, seed=, max_steps=) -> dict`.
 - **Interprétation de `explore()`** (par parcours) :
@@ -728,8 +733,19 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   la casse, **vide au départ**) et `--benign-error REGEX` (répétable) listent les lignes
   d'erreur connues comme inoffensives (faux positifs du filtre large d'`explore.ERR_RE`).
   Elles sont ignorées dans le jugement et les signatures. Si `explore()` s'est arrêté en
-  `lua_error` uniquement à cause de lignes bénignes, le résultat est `warn` (exploration
-  interrompue) et non `fail`. À alimenter au fil du triage de #7.
+  `lua_error` uniquement à cause de lignes bénignes, le résultat reste signalé : `warn`
+  « interrompue sur erreur bénigne » (jamais un succès). Un mélange bénin + réel reste `fail`.
+  **Les motifs doivent être précis et ancrés** (`^SDL: warning .*$`, pas `erreur` ni
+  `warning`) : un motif large masque de vraies erreurs Lua. La fiche garde le nombre
+  d'erreurs ignorées (`benign_ignored`). À alimenter au fil du triage de #7.
+- **Réinterprétation sans rejouer** : la fiche conserve le résultat brut borné de chaque
+  parcours (`steps.run.raw` : statut, `done_reason`, compteurs, scènes, erreurs **non
+  filtrées**, les 100 premières et les 100 dernières, 200 caractères chacune). Quand la
+  liste bénigne change (`steps.run.benign` ≠ liste courante) ou avec `--reinterpret`, la
+  campagne recalcule l'étape `run` et le statut global depuis ce brut, **sans relancer le
+  player** (même avec `--no-run`).
+- **Invalidation** : `steps.run.params` = `{timeout_s, max_steps, seed, seeds}` ; une `run`
+  faite avec d'autres réglages, ou sans `params` (fiche antérieure), est refaite.
 - **Limite d'extraction** (archives de source externe) : une archive dont le total
   décompressé dépasse `--max-unzipped-mb` (défaut 2048) ou qui compte plus de 20000 entrées
   est refusée à l'étape `convert` (« archive trop volumineuse »).
@@ -737,25 +753,34 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
 #### `status.json` (lu par la surcouche)
 
 `.cache/telmi/compat/status.json` (dans `<cache>/compat/`), réécrit atomiquement avec
-`report.json` après chaque histoire. Format **stable** : un objet indexé par uuid, sans
-enveloppe ; de nouvelles clés optionnelles pourront être ajoutées, jamais renommées.
+`report.json` après chaque histoire. Format **stable et versionné** (enveloppe) ; de
+nouvelles clés optionnelles pourront être ajoutées, jamais renommées (sinon
+`schema_version` change).
 
 ```json
 {
-  "<uuid>": {
-    "version": "3",
-    "title": "Titre",
-    "status": "OK_AVERTISSEMENTS",
-    "summary": "Jouable, exploration partielle (120/300 scènes)",
-    "coverage": {"scenes_visited": 120, "scenes_total": 300, "ratio": 0.4, "end_reached": false},
-    "run": "warn",
-    "stale": false
+  "schema_version": 1,
+  "generated": "2026-10-15T12:00:00",
+  "converter_hash": "0123456789abcdef",
+  "stories": {
+    "<uuid>": {
+      "version": "3",
+      "title": "Titre",
+      "status": "OK_AVERTISSEMENTS",
+      "summary": "Jouable, exploration partielle (120/300 scènes)",
+      "coverage": {"scenes_visited": 120, "scenes_total": 300, "ratio": 0.4, "end_reached": false},
+      "run": "warn",
+      "stale": false
+    }
   }
 }
 ```
 
 | clé | sens |
 |---|---|
+| `schema_version` | version du format (1) |
+| `generated`, `converter_hash` | date d'écriture ; hash du convertisseur courant |
+| `stories` | objet indexé par uuid ; clés ci-dessous |
 | `version` | version de l'histoire évaluée (`local` pour un `.zip` de dossier) |
 | `status` | `OK`, `OK_AVERTISSEMENTS`, `ECHEC_TELECHARGEMENT`, `ECHEC_CONVERSION`, `ECHEC_VALIDATION`, `ECHEC_EXECUTION` |
 | `summary` | phrase d'une ligne, affichable telle quelle |
@@ -763,7 +788,13 @@ enveloppe ; de nouvelles clés optionnelles pourront être ajoutées, jamais ren
 | `run` | statut de l'étape run : `ok`, `warn`, `fail`, `skipped` |
 | `stale` | fiche évaluée avec un autre convertisseur que le courant (résultat périmé) |
 
-Plusieurs versions d'un même uuid : la dernière fiche non périmée l'emporte.
+**Doublons d'uuid** (plusieurs versions évaluées) : la version la plus récente l'emporte
+quand les deux se comparent (`1.2.3`, `4`, `v2`… comparées numériquement, donc `10` > `9`) ;
+sinon (`local`, texte libre, versions égales), la fiche **évaluée en dernier** (`evaluated`
+dans `report.json`) l'emporte.
+
+**La surcouche (#20) doit lire `schema_version` et refuser (ou signaler) une valeur
+qu'elle ne connaît pas** ; tout changement incompatible incrémentera ce numéro.
 
 ```bash
 python -m unittest discover -s tools/telmi2flam/tests -p "test_compat.py"   # sans réseau

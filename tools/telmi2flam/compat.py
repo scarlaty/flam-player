@@ -7,7 +7,8 @@ Usage :
     python compat.py --catalog <url-ou-fichier.json> [--folder <dossier>] [--cache .cache/telmi]
                      [--only <uuid|motif>] [--limit N] [--jobs N] [--force]
                      [--run|--no-run] [--player flam-player.exe] [--run-timeout S]
-                     [--max-steps N] [--seed N] [--seeds N] [--benign-error REGEX]
+                     [--max-steps N] [--seed N] [--seeds N] [--run-jobs N]
+                     [--reinterpret] [--benign-error REGEX]
 
 Sorties (sous --cache) :
     archives/<uuid>-<version>.zip          archives telechargees
@@ -29,6 +30,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -442,8 +444,11 @@ def interpret_run(res, benign=BENIGN_ERRORS):
     visited, total = res.get("scenes_visited"), res.get("scenes_total")
     partial = "exploration partielle %s/%s scènes" % (
         visited if visited is not None else "?", total if total is not None else "?")
+    if status == "explore_exception":
+        return "fail", msgs or ["explore a plante"]
     if status == "lua_error" and errors and not real:
-        return "warn", ["explore: lua_error (%d erreur(s) bénigne(s) ignorée(s))" % ignored,
+        return "warn", ["explore: lua_error — interrompue sur erreur bénigne "
+                        "(%d erreur(s) ignorée(s))" % ignored,
                         "exploration interrompue : " + partial] + msgs
     if status in RUN_FAIL:
         return "fail", ["explore: %s%s" % (status, "/" + done if done else "")] + msgs + real
@@ -467,29 +472,48 @@ def interpret_run(res, benign=BENIGN_ERRORS):
 _RANK = {"ok": 0, "warn": 1, "fail": 2}
 
 
-def do_run(pk_path, explore, player_exe, timeout_s, seed, max_steps, seeds=1,
-           benign=BENIGN_ERRORS):
-    """Etape run : `seeds` parcours (graines seed, seed+1...), couverture fusionnee ;
-    s'arrete au premier parcours en echec. Le statut est le pire des parcours. La fiche
-    recopie done_reason, steps, ends, seed(s), dead_end_backs, la couverture et les
-    erreurs groupees par signature."""
-    if explore is None:
-        return _step("skipped", ["pas de fonction explore() fournie"])
-    seed_list = [seed + i for i in range(max(1, int(seeds)))]
-    t0 = time.time()
-    runs = []                  # (resultat explore, statut, messages, graine)
-    for sd in seed_list:
-        try:
-            res = explore(player_exe, pk_path, timeout_s=timeout_s, seed=sd, max_steps=max_steps)
-        except Exception as e:
-            runs.append(({}, "fail", ["explore a plante : %s: %s" % (type(e).__name__, e)], sd))
-            break
-        res = res if isinstance(res, dict) else {}
-        st, msgs = interpret_run(res, benign)
-        runs.append((res, st, msgs, sd))
-        if st == "fail":
-            break
-    dt = time.time() - t0
+RAW_ERR_HEAD = 100          # erreurs conservees dans la fiche : les N premieres...
+RAW_ERR_TAIL = 100          # ... et les N dernieres
+RAW_ERR_LEN = 200           # caracteres par erreur
+_RAW_SCALARS = ("status", "done_reason", "scenes_visited", "scenes_total", "coverage",
+                "end_reached", "duration_s", "steps", "ends", "back_ends", "dead_end_backs",
+                "choices_explored", "exit_code")
+
+
+def bound_errors(errors):
+    """Premieres et dernieres erreurs, tronquees : la vraie erreur ne se perd pas derriere
+    des lignes benignes, et la fiche reste de taille raisonnable."""
+    errs = [str(x)[:RAW_ERR_LEN] for x in errors]
+    if len(errs) > RAW_ERR_HEAD + RAW_ERR_TAIL:
+        errs = errs[:RAW_ERR_HEAD] + errs[-RAW_ERR_TAIL:]
+    return errs
+
+
+def bound_raw(res, seed):
+    """Resultat brut d'explore() borne, conserve dans la fiche pour pouvoir le
+    reinterpreter (liste benigne modifiee) sans relancer le player."""
+    raw = {k: res[k] for k in _RAW_SCALARS
+           if k in res and (res[k] is None or isinstance(res[k], (str, int, float, bool)))}
+    for k in ("message", "error", "detail"):
+        if res.get(k):
+            raw[k] = str(res[k])[:RAW_ERR_LEN]
+    if isinstance(res.get("errors"), (list, tuple)):
+        raw["errors"] = bound_errors(res["errors"])
+    if isinstance(res.get("scenes"), list):
+        raw["scenes"] = [str(x)[:100] for x in res["scenes"][:5000]]
+    if isinstance(res.get("dead_end_scenes"), list):
+        raw["dead_end_scenes"] = [str(x)[:RAW_ERR_LEN] for x in res["dead_end_scenes"][:200]]
+    raw["seed"] = seed
+    return raw
+
+
+def build_run_step(raws, params, benign, seconds):
+    """Etape run a partir des resultats bruts bornes (un par parcours) : interpretation,
+    fusion de la couverture, regroupement des erreurs. Sert aussi a reinterpreter."""
+    runs = []                  # (resultat brut, statut, messages, graine)
+    for raw in raws:
+        st, msgs = interpret_run(raw, benign)
+        runs.append((raw, st, msgs, raw.get("seed")))
     pick = runs[0]
     for r in runs:
         if _RANK[r[1]] > _RANK[pick[1]]:
@@ -497,8 +521,7 @@ def do_run(pk_path, explore, player_exe, timeout_s, seed, max_steps, seeds=1,
     status, messages = pick[1], list(pick[2])
     if len(runs) > 1 and status != "ok":
         messages = ["[graine %s] %s" % (pick[3], m) for m in messages]
-    st = _step(status, messages, dt)
-
+    st = _step(status, messages, seconds)
     results = [r[0] for r in runs]
     st["seeds"] = [r[3] for r in runs]
     if len(runs) == 1:
@@ -538,13 +561,56 @@ def do_run(pk_path, explore, player_exe, timeout_s, seed, max_steps, seeds=1,
                        "steps": r[0].get("steps")} for r in runs]
     errs = [str(x) for r in results if isinstance(r.get("errors"), (list, tuple))
             for x in r["errors"]]
-    errs, _ = _filter_benign(errs, benign)
-    if errs:
-        st["error_signatures"] = group_errors(errs)
+    kept, ignored = _filter_benign(errs, benign)
+    if kept:
+        st["error_signatures"] = group_errors(kept)
+    st["benign_ignored"] = ignored
+    st["benign"] = list(benign)
     durs = [r["duration_s"] for r in results if isinstance(r.get("duration_s"), (int, float))]
-    st["duration_s"] = round(sum(durs), 2) if durs else round(dt, 2)
-    st["params"] = {"timeout_s": timeout_s, "max_steps": max_steps, "seeds": len(seed_list)}
+    st["duration_s"] = round(sum(durs), 2) if durs else round(seconds, 2)
+    st["params"] = params
+    st["raw"] = results
     return st
+
+
+def run_params(timeout_s, seed, max_steps, seeds):
+    return {"timeout_s": timeout_s, "max_steps": max_steps, "seed": seed,
+            "seeds": max(1, int(seeds))}
+
+
+def do_run(pk_path, explore, player_exe, timeout_s, seed, max_steps, seeds=1,
+           benign=BENIGN_ERRORS):
+    """Etape run : `seeds` parcours (graines seed, seed+1...), couverture fusionnee ;
+    s'arrete au premier parcours en echec. Le statut est le pire des parcours. La fiche
+    recopie done_reason, steps, ends, seed(s), dead_end_backs, la couverture, les
+    erreurs groupees par signature, et le resultat brut borne (`raw`, voir
+    reinterpret_run)."""
+    if explore is None:
+        return _step("skipped", ["pas de fonction explore() fournie"])
+    params = run_params(timeout_s, seed, max_steps, seeds)
+    t0 = time.time()
+    raws = []
+    for sd in range(seed, seed + params["seeds"]):
+        try:
+            res = explore(player_exe, pk_path, timeout_s=timeout_s, seed=sd, max_steps=max_steps)
+        except Exception as e:
+            raws.append({"status": "explore_exception", "seed": sd, "message":
+                         ("explore a plante : %s: %s" % (type(e).__name__, e))[:RAW_ERR_LEN]})
+            break
+        raw = bound_raw(res if isinstance(res, dict) else {}, sd)
+        raws.append(raw)
+        if interpret_run(raw, benign)[0] == "fail":
+            break
+    return build_run_step(raws, params, benign, time.time() - t0)
+
+
+def reinterpret_run(run, benign):
+    """Recalcule l'etape run a partir de son resultat brut conserve, sans relancer le
+    player. Retourne None si la fiche n'a pas de brut (etape non executee, ancienne fiche)."""
+    raws = run.get("raw") if isinstance(run, dict) else None
+    if not raws or run.get("status") == "skipped":
+        return None
+    return build_run_step(raws, run.get("params"), benign, run.get("seconds", 0.0))
 
 
 def global_status(steps):
@@ -649,12 +715,15 @@ def _write_atomic(path, text):
 def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None,
                  player_exe=None, run_timeout=DEFAULT_RUN_TIMEOUT, seed=0,
                  max_steps=DEFAULT_MAX_STEPS, log=print, seeds=1, benign=BENIGN_ERRORS,
-                 max_unzipped=MAX_UNZIPPED):
+                 max_unzipped=MAX_UNZIPPED, run_jobs=1, reinterpret=False):
     """Evalue chaque entree ; ecrit report.json / report.md ; retourne le document.
     Le rapport conserve les fiches precedentes hors selection (--only/--limit) : celles
     evaluees avec un autre convertisseur sont marquees `stale` (perimees) dans le rapport.
     report.json et status.json sont reecrits (atomiquement) apres chaque histoire.
-    `seeds` : nombre de parcours par histoire (graines seed, seed+1...)."""
+    `seeds` : nombre de parcours par histoire (graines seed, seed+1...).
+    `run_jobs` : explorations simultanees (threads, un player sans fenetre chacun).
+    `reinterpret` : recalcule l'etape run des fiches reutilisees depuis leur resultat brut
+    (fait aussi automatiquement quand la liste benigne a change), sans relancer le player."""
     compat_dir = os.path.join(cache, "compat")
     os.makedirs(compat_dir, exist_ok=True)
     report_path = os.path.join(compat_dir, "report.json")
@@ -685,7 +754,8 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
             _write_atomic(os.path.join(compat_dir, "report.md"), render_markdown(doc))
         return doc
 
-    params = {"timeout_s": run_timeout, "max_steps": max_steps, "seeds": max(1, int(seeds))}
+    params = run_params(run_timeout, seed, max_steps, seeds)
+    benign = list(benign)
     results, todo = {}, []
     for e, k in zip(entries, keys):
         old = prev.get(k)
@@ -696,35 +766,62 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
                              and old.get("steps", {}).get("run", {}).get("status") == "skipped"
                              and old.get("steps", {}).get("validate", {}).get("status")
                              in ("ok", "warn"))
-                    # run deja fait avec d'autres reglages (delai, actions, parcours)
+                    # run deja fait avec d'autres reglages (ou sans `params` : fiche
+                    # anterieure) : a refaire
                     and not (explore is not None
-                             and old.get("steps", {}).get("run", {}).get("params")
-                             not in (None, params)))
+                             and old.get("steps", {}).get("run", {}).get("status") != "skipped"
+                             and old.get("steps", {}).get("run", {}).get("params") != params))
         if reusable:
+            run = old.get("steps", {}).get("run", {})
+            if run.get("raw") and (reinterpret or run.get("benign") != benign):
+                new = reinterpret_run(run, benign)
+                if new is not None:
+                    old = dict(old, steps=dict(old["steps"], run=new))
+                    old["status"] = global_status(old["steps"])
+                    log("~ %s : run reinterprete (%s)" % (k, old["status"]))
             results[k] = old
             log("= %s : deja evalue (%s)" % (k, old["status"]))
         else:
             todo.append(e)
 
-    def finish(rec):
-        pk = rec.get("output")
-        if pk and rec["steps"]["validate"]["status"] in ("ok", "warn"):
-            rec["steps"]["run"] = do_run(pk, explore, player_exe, run_timeout, seed,
-                                         max_steps, seeds, benign)
-            rec["status"] = global_status(rec["steps"])
-        rec["converter_hash"] = chash
-        results[rec["key"]] = rec
-        write(results)
-        log("%s %s : %s" % ("+" if rec["status"].startswith("OK") else "!", rec["key"],
-                            rec["status"]))
+    lock = threading.Lock()
 
-    if jobs > 1 and len(todo) > 1:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as ex:
-            for rec in ex.map(_worker, [(e, cache, max_unzipped) for e in todo]):
-                finish(rec)
-    else:
-        for e in todo:
-            finish(process_story(e, cache, max_unzipped=max_unzipped))
+    def finalize(rec):
+        rec["converter_hash"] = chash
+        rec["evaluated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        with lock:
+            results[rec["key"]] = rec
+            write(results)
+            log("%s %s : %s" % ("+" if rec["status"].startswith("OK") else "!", rec["key"],
+                                rec["status"]))
+
+    def run_step(rec):
+        rec["steps"]["run"] = do_run(rec["output"], explore, player_exe, run_timeout, seed,
+                                     max_steps, seeds, benign)
+        rec["status"] = global_status(rec["steps"])
+        finalize(rec)
+
+    futures = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, run_jobs)) as pool:
+        def finish(rec):
+            if rec.get("output") and rec["steps"]["validate"]["status"] in ("ok", "warn"):
+                if run_jobs > 1:
+                    futures.append(pool.submit(run_step, rec))
+                else:
+                    run_step(rec)
+            else:
+                finalize(rec)
+
+        if jobs > 1 and len(todo) > 1:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as ex:
+                for rec in ex.map(_worker, [(e, cache, max_unzipped) for e in todo]):
+                    finish(rec)
+        else:
+            for e in todo:
+                finish(process_story(e, cache, max_unzipped=max_unzipped))
+        for f in futures:
+            f.result()
+    write(results)
     return write(results, md=True)
 
 
@@ -771,16 +868,36 @@ def _summary(rec):
     return "Avertissements"
 
 
+STATUS_SCHEMA_VERSION = 1
+
+
+def _version_key(v):
+    """Tuple d'entiers pour une version « 1.2.3 » / « 4 » / « v2 », sinon None."""
+    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)", str(v).strip())
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def _newer(a, b):
+    """True si la fiche `a` doit remplacer `b` (meme uuid) : version la plus recente si les
+    deux se comparent (numeriquement), sinon la derniere evaluee (`evaluated`)."""
+    ka, kb = _version_key(a["version"]), _version_key(b["version"])
+    if ka is not None and kb is not None and ka != kb:
+        return ka > kb
+    return (a.get("evaluated") or "") >= (b.get("evaluated") or "")
+
+
 def build_status(doc):
-    """Contenu de status.json (voir README) : {uuid: {version, status, summary, coverage...}}.
-    Plusieurs versions d'un meme uuid : la derniere fiche non perimee l'emporte."""
-    out = {}
+    """Contenu de status.json (voir README) : enveloppe versionnee
+    {schema_version, generated, converter_hash, stories: {uuid: {...}}}."""
+    chosen = {}
     for s in doc["stories"]:
-        prior = out.get(s["uuid"])
-        if prior is not None and s.get("stale") and not prior["stale"]:
-            continue
+        prior = chosen.get(s["uuid"])
+        if prior is None or _newer(s, prior):
+            chosen[s["uuid"]] = s
+    stories = {}
+    for uuid, s in chosen.items():
         run = s["steps"].get("run", {})
-        out[s["uuid"]] = {
+        stories[uuid] = {
             "version": s["version"],
             "title": s["title"],
             "status": s["status"],
@@ -789,7 +906,8 @@ def build_status(doc):
             "run": run.get("status", "skipped"),
             "stale": bool(s.get("stale")),
         }
-    return out
+    return {"schema_version": STATUS_SCHEMA_VERSION, "generated": doc["generated"],
+            "converter_hash": doc["converter_hash"], "stories": stories}
 
 
 def _cause(rec):
@@ -924,6 +1042,12 @@ def main(argv=None):
                          "couverture fusionnee (defaut %(default)s)")
     ap.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS,
                     help="actions maximales par parcours (defaut %(default)s)")
+    ap.add_argument("--run-jobs", type=int, default=1,
+                    help="explorations simultanees, un player sans fenetre chacun "
+                         "(defaut %(default)s ; --jobs ne concerne que telechargement/conversion)")
+    ap.add_argument("--reinterpret", action="store_true",
+                    help="recalcule l'etape run des fiches existantes depuis leur resultat "
+                         "brut conserve, sans relancer le player")
     ap.add_argument("--benign-error", action="append", default=[], metavar="REGEX",
                     help="message d'erreur benin a ignorer (regex, insensible a la casse), "
                          "repetable ; s'ajoute a compat.BENIGN_ERRORS")
@@ -932,6 +1056,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.limit is not None and args.limit < 0:
         ap.error("--limit doit etre positif ou nul")
+    if args.run_jobs < 1:
+        ap.error("--run-jobs doit etre au moins 1")
     if args.seeds < 1:
         ap.error("--seeds doit etre au moins 1")
     if args.run_timeout < 1 or args.max_steps < 1 or args.max_unzipped_mb < 1:
@@ -967,7 +1093,8 @@ def main(argv=None):
     doc = run_campaign(entries, args.cache, max(1, args.jobs), args.force, explore,
                        player, args.run_timeout, args.seed, args.max_steps,
                        seeds=args.seeds, benign=tuple(BENIGN_ERRORS) + tuple(args.benign_error),
-                       max_unzipped=args.max_unzipped_mb << 20)
+                       max_unzipped=args.max_unzipped_mb << 20, run_jobs=args.run_jobs,
+                       reinterpret=args.reinterpret)
     bad = sum(1 for s in doc["stories"] if s["status"].startswith("ECHEC"))
     print("%d histoire(s), %d echec(s) -> %s" % (
         len(doc["stories"]), bad, os.path.join(args.cache, "compat", "report.md")))

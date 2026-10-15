@@ -87,6 +87,11 @@ def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
     # le pilote video dummy n'a pas de rendu accelere : forcer le rendu
     # logiciel (sinon SDL_CreateRenderer(ACCELERATED) echoue)
     env.setdefault("SDL_RENDER_DRIVER", "software")
+    # pas de ressource partagee entre players simultanes : captures d'ecran dans le dossier
+    # de travail (la capture auto par defaut ecrit dans un chemin global), sauvegardes
+    # relatives au cwd, aucun port
+    env["FLAM_SCREENSHOT_AUTO_MS"] = "0"
+    env["FLAM_SCREENSHOT"] = os.path.join(cwd, "screenshot.bmp")
     out_p, err_p = os.path.join(cwd, "stdout.log"), os.path.join(cwd, "stderr.log")
     with open(out_p, "wb") as fo, open(err_p, "wb") as fe:
         t0 = time.time()
@@ -543,7 +548,7 @@ def _result(code, out, err, dt, total, watch, seed, workdir):
     res = {
         "status": status,
         "done_reason": done_reason,
-        "errors": errors[:50],
+        "errors": errors if len(errors) <= 200 else errors[:100] + errors[-100:],
         "scenes_visited": len(scenes),
         "scenes_total": total,
         "scenes": sorted(scenes),
