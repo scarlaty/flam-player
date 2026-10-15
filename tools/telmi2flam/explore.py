@@ -32,7 +32,8 @@ Resultat de explore() (dict) :
                   de nodes.lua (None si illisible)
   end_reached     au moins une fin d'histoire
   duration_s      duree de l'execution du player
-  + steps, ends, end_reasons, choices_explored, back_tests, menu_tests,
+  + steps, ends, back_ends (fins causees par un test de retour, non
+    comptees), end_reasons, choices_explored, back_tests, menu_tests,
     done_reason, exit_code, workdir (si keep).
 Code de sortie du CLI : 0 statut ok, 1 sinon, 77 flam-player introuvable.
 """
@@ -178,7 +179,7 @@ do
         local done, steps, noProg, ends = false, 0, 0, 0
         local seen, nSeen = {}, 0
         local optCount, pending = {}, 0
-        local audioScenes, backTests, testedFun = 0, 0, nil
+        local backTests, nextTest = 0, BACK_EVERY
 
         local function progress() noProg = 0 end
         local function finish(why)
@@ -205,7 +206,11 @@ do
         end
         -- Fin d'histoire : endStory() remet la progression a zero (moteur
         -- actuel) ; les anciens moteurs sortaient par goto_library()
+        -- Une fin declenchee par un test de retour (transition home) n'est pas
+        -- une fin d'histoire jouee : tracee "via=back", non comptee.
+        local inBack = false
         local function ended(via)
+            if inBack then emit("end via=back"); return end
             ends = ends + 1
             progress()
             emit("end via=" .. via)
@@ -263,14 +268,17 @@ do
                 elseif c == best then cands[#cands + 1] = k end
             end
             local k = cands[math.random(#cands)]
-            return { k = k, n = n, key = keys[k], stage = vis[k] and vis[k].stage, aid = aid }
+            return { k = k, n = n, keys = keys, vis = vis, aid = aid, nav = 0 }
         end
 
         local cur, age, acted, plan = -1, 0, 0, nil
         local function key(m, code) lv.event.send(m.parentContainer, lv.EVENT_KEY, code) end
         local function back(why)
             step("back " .. why)
-            back_callback()
+            inBack = true
+            local ok, e = pcall(back_callback)
+            inBack = false
+            if not ok then error(e, 0) end
         end
 
         local function onList(m)
@@ -303,37 +311,43 @@ do
                 if age %% 20 == 0 then step("key ENTER (relance)"); key(m, 10) end
                 return
             end
-            if m.answerIterator ~= plan.k then
-                step("key NEXT")
-                key(m, 19)
-                return
+            local it = m.answerIterator
+            if type(it) == "number" and it ~= plan.k then
+                if plan.nav < 2 * n + 4 then
+                    plan.nav = plan.nav + 1
+                    -- 2 options : navigation bornee (pas de bouclage)
+                    if plan.k > it then step("key NEXT"); key(m, 19)
+                    else step("key PREV"); key(m, 20) end
+                    return
+                end
+                plan.k = it                 -- navigation sans effet : option affichee
             end
             plan.sent = true
-            if optCount[plan.key] == 0 then pending = pending - 1; progress() end
-            optCount[plan.key] = optCount[plan.key] + 1
-            emit("choice action=" .. tostring(plan.aid) .. " option=" .. plan.k .. "/" .. plan.n
-                 .. " key=" .. plan.key)
-            if plan.stage then visit(plan.stage) end
+            local k = plan.k
+            local okey = plan.keys[k]
+            if optCount[okey] == 0 then pending = pending - 1; progress() end
+            optCount[okey] = optCount[okey] + 1
+            emit("choice action=" .. tostring(plan.aid) .. " option=" .. k .. "/" .. plan.n
+                 .. " key=" .. okey)
+            if plan.vis[k] then visit(plan.vis[k].stage) end
             step("key ENTER (option " .. plan.k .. "/" .. plan.n .. ")")
             key(m, 10)
         end
 
         local function onAudio(m)
-            -- nouvelle scene audio (pas le retour sur la scene d'un test)
-            if acted == 0 and BACK_EVERY > 0 and state.current_fun ~= testedFun then
-                audioScenes = audioScenes + 1
-                if audioScenes %% BACK_EVERY == 0 then
-                    acted = 1
-                    testedFun = state.current_fun
-                    backTests = backTests + 1
-                    if backTests %% 2 == 0 and ctxEntries and ctxEntries[1] and ctxEntries[1].cb then
-                        step("menu M : " .. tostring(ctxEntries[1].title))
-                        ctxEntries[1].cb()
-                    else
-                        back("(test)")
-                    end
-                    return
+            -- toutes les BACK_EVERY scenes NOUVELLES : un retour qui termine
+            -- l'histoire (home) ne fait pas reboucler les tests sur le prefixe connu
+            if acted == 0 and BACK_EVERY > 0 and nSeen >= nextTest then
+                nextTest = nSeen + BACK_EVERY
+                acted = 1
+                backTests = backTests + 1
+                if backTests %% 2 == 0 and ctxEntries and ctxEntries[1] and ctxEntries[1].cb then
+                    step("menu M : " .. tostring(ctxEntries[1].title))
+                    ctxEntries[1].cb()
+                else
+                    back("(test)")
                 end
+                return
             end
             if m.okCallback ~= nil then
                 if acted == 0 or age %% 20 == 0 then
@@ -349,7 +363,7 @@ do
                         step("seek fin de piste")
                         audio.pause(); audio.seek(math.floor(d - 1)); audio.play()
                     end
-                elseif age >= 40 and age %% 40 == 0 then
+                elseif age >= 15 and age %% 15 == 0 then   -- ~1,5 s apres : fin simulee
                     step("fin de piste simulee")
                     m.audioFeedback("stop", audio.duration() or 1)
                 end
@@ -372,8 +386,8 @@ do
             if done then return end
             local m, name = Global.current_module, Global.current_module_name or "?"
             if gen ~= cur then
+                emit("module=" .. name .. " prev_ticks=" .. age)
                 cur, age, acted, plan = gen, 0, 0, nil
-                emit("module=" .. name)
                 return
             end
             age = age + 1
@@ -466,7 +480,7 @@ def _result(code, out, err, dt, total, watch, workdir):
     scenes = {t[len("scene="):] for t in tagged if t.startswith("scene=")}
     choices = {t.rsplit(" key=", 1)[-1] for t in tagged if t.startswith("choice action=")}
     steps = [t for t in tagged if t.startswith("step=")]
-    ends = [t for t in tagged if t.startswith("end via=")]
+    ends = [t for t in tagged if t.startswith("end via=") and t != "end via=back"]
     reasons = []
     for l in out.splitlines():
         m = END_RE.search(l)
@@ -501,6 +515,7 @@ def _result(code, out, err, dt, total, watch, workdir):
         "duration_s": round(dt, 1),
         "steps": len(steps),
         "ends": len(ends),
+        "back_ends": tagged.count("end via=back"),
         "end_reasons": reasons,
         "choices_explored": len(choices),
         "back_tests": sum(1 for s in steps if " back (test)" in s),

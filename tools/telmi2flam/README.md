@@ -212,6 +212,7 @@ tools/telmi2flam/
 │   └── img/script/      # assets UI Lunii (flèches, play/pause, empty…)
 ├── telmi2flam.py        # CLI de conversion
 ├── validate.py          # validation hors-GUI d'un .plain.pk généré
+├── explore.py           # exploration automatique sans fenêtre dans flam-player
 ├── tests/               # tests unittest (paquets TELMI synthétiques)
 └── DEVICE_VS_SIM.md     # divergences device ↔ simulateur (dont le bug relance #10)
 ```
@@ -457,6 +458,60 @@ le `nodes.json` source.
 de bout en bout `tests/e2e/e2e_telmi.py` : conversion d'un paquet TELMI synthétique puis
 lancement du vrai `flam-player`. Manuellement : `flam-player [--strict] <dossier .plain | .plain.pk>` (`--strict` : `require()`
 limité à `script/`, comme le device).
+
+### Exploration automatique sans fenêtre (`explore.py`)
+
+```bash
+python explore.py <histoire.plain | histoire.plain.pk> [--player <flam-player.exe ou dossier>]
+                  [--timeout 120] [--seed 0] [--max-steps 200] [--back-every 8]
+                  [--stuck 30] [--strict] [--json] [--keep]
+```
+
+Joue une **vraie** histoire convertie dans `flam-player` sans fenêtre ni carte son
+(pilotes SDL `dummy`, rendu logiciel). Le player est cherché dans `--player`, sinon
+`$FLAM_BUILD_DIR`, sinon `build/` à la racine du dépôt. L'histoire n'est jamais modifiée :
+copie de travail du `.plain` (ou extraction du `.plain.pk`) dans un dossier temporaire,
+dont `main.lua` est suivi d'un **pilote Lua** (timer LVGL de 100 ms) qui agit comme un
+utilisateur, via les vrais modules du runtime :
+
+- menu Start : clic sur **Démarrer** / **Reprendre** ; après une fin, redémarre tant
+  qu'il reste des options de choix jamais essayées ;
+- choix (carrousel, image-choice) : option **la moins essayée** (parcours en largeur des
+  options non visitées), égalités tirées au sort selon `--seed` ; navigation par touches
+  suivant/précédent puis OK ;
+- scène audio : OK si la scène l'accepte (`ctrl.ok`), sinon saut en fin de piste
+  (pause → seek → play) puis, si besoin, fin de piste simulée (callback `stop`) ;
+  scène sans OK ni fin d'audio : retour ;
+- toutes les `--back-every` scènes **nouvelles**, en alternance : `back_callback()` (puis
+  « Reprendre ») ou l'entrée du menu contextuel M (« Reprendre l'histoire », appelée
+  directement : le simulateur n'expose pas d'ouverture du menu au Lua). Une fin
+  provoquée par ce retour (transition `home`) est comptée à part (`back_ends`).
+
+Le pilote trace sur stdout des lignes `[EXPLORE] …` (`scene=<id>`, `choice …`,
+`end via=…`, `step=<n> …`, `done reason=…`) analysées pendant l'exécution, avec stderr.
+Arrêt : toutes les options rencontrées essayées après une fin (`complete`, puis
+`goto_library` depuis le menu Start pour vérifier la fermeture), `--max-steps` actions,
+aucune scène / option / fin nouvelle pendant 40 + (scènes vues) actions (`stuck`),
+retour bibliothèque par l'histoire (anciens moteurs), erreur, crash, `--stuck` s sans
+aucune trace, ou `--timeout`.
+
+`explore(player_exe, story_path, timeout_s=120, seed=0, max_steps=200, …) -> dict` :
+
+| clé | sens |
+|---|---|
+| `status` | `ok`, `lua_error` (erreur sur stderr : `Erreur Lua`, `callback error`, assert, traceback… ; ou `attempt to` / `stack traceback` sur stdout), `crash` (player arrêté seul), `timeout`, `stuck` |
+| `errors` | lignes d'erreur filtrées |
+| `scenes_visited` / `scenes_total` | stages distincts atteints / stages de `nodes.lua` |
+| `end_reached` | au moins une fin d'histoire jouée |
+| `duration_s` | durée d'exécution du player |
+| autres | `steps`, `ends`, `back_ends`, `end_reasons` (raisons affichées par `endStory`), `choices_explored`, `back_tests`, `menu_tests`, `done_reason` (`complete`, `max_steps`, `stuck`, `library`), `exit_code`, `workdir` (`--keep`) |
+
+Code de sortie du CLI : 0 si `ok`, 1 sinon, 77 si `flam-player` est introuvable. Compter
+environ 0,5 à 0,7 s par écran : sur une grande histoire, `--timeout 120` donne souvent
+`timeout` avec une exploration partielle (voir `scenes_visited`). `run_player` (lancement
+sans fenêtre) et les motifs d'erreur sont partagés avec `tests/e2e/e2e_telmi.py`.
+Tests : `tests/test_explore.py` (parcours complet, `max_steps`, erreur Lua injectée,
+boucle infinie, zip-slip), sautés si `flam-player` est introuvable.
 
 ---
 
