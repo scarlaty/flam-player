@@ -26,15 +26,20 @@ step=, done) ; ce module les analyse pendant l'execution.
 
 Resultat de explore() (dict) :
   status          ok | lua_error | crash | timeout | stuck
+  done_reason     cause de l'arret, toujours presente : complete, max_steps,
+                  library (status ok) ; stuck, no_trace, no_start (stuck) ;
+                  timeout ; error (lua_error) ; exit (player sorti seul :
+                  lua_error si une erreur Lua a ete vue avant, sinon crash)
   errors          lignes d'erreur (stderr : Erreur Lua, callback error, assert,
                   traceback... ; stdout : attempt to / stack traceback)
-  scenes_visited  nb de stages distincts atteints ; scenes_total : nb de stages
-                  de nodes.lua (None si illisible)
-  end_reached     au moins une fin d'histoire
+  scenes_visited  nb de stages distincts reellement atteints ; scenes_total :
+                  nb de stages de nodes.lua (None si illisible) ; coverage
+  end_reached     au moins une fin d'histoire jouee
   duration_s      duree de l'execution du player
-  + steps, ends, back_ends (fins causees par un test de retour, non
-    comptees), end_reasons, choices_explored, back_tests, menu_tests,
-    done_reason, exit_code, workdir (si keep).
+  seed, steps, ends, back_ends (fins causees par un test de retour, non
+  comptees), end_reasons, choices_explored, back_tests, menu_tests,
+  dead_end_backs / dead_end_scenes (retours de secours sur un ecran sans
+  action possible), exit_code, workdir (si keep).
 Code de sortie du CLI : 0 statut ok, 1 sinon, 77 flam-player introuvable.
 """
 import argparse
@@ -62,6 +67,9 @@ ERR_RE = re.compile(r"Erreur|error|ERROR|ASSERT|traceback|attempt to|boucle infi
                     r"cannot open|CRASH|unprotected", re.IGNORECASE)
 # Erreurs Lua affichees sur stdout par les modules (print d'un pcall)
 LUA_OUT_RE = re.compile(r"attempt to|stack traceback")
+# Erreur Lua identifiee (distingue lua_error de crash quand le player sort)
+LUA_ERR_RE = re.compile(r"Erreur Lua|Erreur dans setup|callback error|attempt to|"
+                        r"stack traceback|watchdog")
 END_RE = re.compile(r"fin d'histoire : (.*)$")
 TAG = "[EXPLORE] "
 
@@ -70,7 +78,8 @@ def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
     """Lance flam-player sans fenetre ; until() -> True arrete l'attente (le
     player tourne encore `grace` s, pour detecter un crash). stdout/stderr vont
     dans cwd/stdout.log et cwd/stderr.log. Retourne (code de sortie, ou None si
-    le player a ete arrete, stdout, stderr, duree)."""
+    le player a ete arrete, stdout, stderr, duree). Le player est toujours
+    arrete en sortie, meme sur exception (until(), Ctrl+C) : pas d'orphelin."""
     env = dict(os.environ)
     env.setdefault("SDL_VIDEODRIVER", "dummy")
     env.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -82,18 +91,20 @@ def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
         t0 = time.time()
         p = subprocess.Popen([exe] + args, cwd=cwd, stdout=fo, stderr=fe, env=env)
         code = None
-        while time.time() - t0 < timeout:
-            code = p.poll()
-            if code is not None:
-                break
-            if until is not None and until():
-                time.sleep(grace)   # laisser la suite se faire (retour bibliotheque, crash ?)
+        try:
+            while time.time() - t0 < timeout:
                 code = p.poll()
-                break
-            time.sleep(0.2)
-        if code is None:
-            p.kill()
-            p.wait()
+                if code is not None:
+                    break
+                if until is not None and until():
+                    time.sleep(grace)   # laisser la suite se faire (retour bibliotheque, crash ?)
+                    code = p.poll()
+                    break
+                time.sleep(0.2)
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
         dt = time.time() - t0
     with open(out_p, "rb") as f:
         out = f.read().decode("utf-8", "replace")
@@ -116,10 +127,6 @@ def find_player(player=None):
         if os.path.isfile(c):
             return os.path.abspath(c)
     return None
-
-
-def lua_str(s):
-    return '"' + s.replace("\\", "/").replace('"', '\\"') + '"'
 
 
 def prepare(story_path, workdir):
@@ -196,10 +203,26 @@ do
             if not seen[id] then seen[id] = true; nSeen = nSeen + 1; progress() end
             emit("scene=" .. tostring(id))
         end
+        -- Option validee (ENTER envoye) : comptee (option essayee, scene de
+        -- l'option visitee) seulement quand la transition a vraiment lieu, au
+        -- noeud suivant (setProgression) ou a la fin d'histoire ; un ENTER
+        -- avale ou un retour l'annule.
+        local pendingOpt = nil
+        local function confirmOpt()
+            local o = pendingOpt
+            if o == nil then return end
+            pendingOpt = nil
+            if optCount[o.key] == 0 then pending = pending - 1; progress() end
+            optCount[o.key] = optCount[o.key] + 1
+            emit("choice action=" .. tostring(o.aid) .. " option=" .. o.k .. "/" .. o.n
+                 .. " key=" .. o.key)
+            if o.stage then visit(o.stage) end
+        end
 
         -- Scenes : toute entree dans un noeud passe par setProgression
         local _setProg = P.setProgression
         P.setProgression = function(d)
+            confirmOpt()
             local cf = type(d) == "table" and d.currentFunction
             if type(cf) == "string" and N.stages and N.stages[cf] then visit(cf) end
             return _setProg(d)
@@ -211,6 +234,7 @@ do
         local inBack = false
         local function ended(via)
             if inBack then emit("end via=back"); return end
+            confirmOpt()
             ends = ends + 1
             progress()
             emit("end via=" .. via)
@@ -273,8 +297,14 @@ do
 
         local cur, age, acted, plan = -1, 0, 0, nil
         local function key(m, code) lv.event.send(m.parentContainer, lv.EVENT_KEY, code) end
-        local function back(why)
+        -- deadEnd : sortie de secours (ecran sans action possible), tracee
+        -- "deadend" avec le noeud courant pour reperer les impasses
+        local function back(why, deadEnd)
             step("back " .. why)
+            if deadEnd then
+                emit("deadend at=" .. tostring(state.current_fun) .. " why=" .. why)
+            end
+            pendingOpt = nil
             inBack = true
             local ok, e = pcall(back_callback)
             inBack = false
@@ -324,13 +354,9 @@ do
             end
             plan.sent = true
             local k = plan.k
-            local okey = plan.keys[k]
-            if optCount[okey] == 0 then pending = pending - 1; progress() end
-            optCount[okey] = optCount[okey] + 1
-            emit("choice action=" .. tostring(plan.aid) .. " option=" .. k .. "/" .. plan.n
-                 .. " key=" .. okey)
-            if plan.vis[k] then visit(plan.vis[k].stage) end
-            step("key ENTER (option " .. plan.k .. "/" .. plan.n .. ")")
+            pendingOpt = { key = plan.keys[k], aid = plan.aid, k = k, n = plan.n,
+                           stage = plan.vis[k] and plan.vis[k].stage }
+            step("key ENTER (option " .. k .. "/" .. plan.n .. ")")
             key(m, 10)
         end
 
@@ -368,7 +394,7 @@ do
                     m.audioFeedback("stop", audio.duration() or 1)
                 end
             elseif age >= 10 and age %% 30 == 10 then
-                back("(scene sans OK ni fin d'audio)")
+                back("(scene sans OK ni fin d'audio)", true)
             end
         end
 
@@ -378,7 +404,7 @@ do
                 step("saut du titre")
                 m.on_encoder_clicked()
             elseif age >= 50 and age %% 50 == 0 then
-                back("(titre)")
+                back("(titre)", true)
             end
         end
 
@@ -399,7 +425,7 @@ do
                 onChoice(m)
             elseif name:find("audio-player", 1, true) == 1 then onAudio(m)
             elseif name == "title-card" then onTitle(m)
-            elseif age %% 50 == 0 then back("(ecran " .. name .. ")") end
+            elseif age %% 50 == 0 then back("(ecran " .. name .. ")", true) end
         end, 100, nil)
         emit("start seed=" .. SEED .. " max_steps=" .. MAX_STEPS)
     end
@@ -469,13 +495,13 @@ def explore(player_exe, story_path, timeout_s=120, seed=0, max_steps=200,
         args = (["--strict"] if strict else []) + [plain]
         code, out, err, dt = run_player(player_exe, args, work, timeout_s, until=watch)
         watch()   # dernieres lignes
-        return _result(code, out, err, dt, total, watch, work if keep else None)
+        return _result(code, out, err, dt, total, watch, int(seed), work if keep else None)
     finally:
         if not keep:
             shutil.rmtree(work, ignore_errors=True)
 
 
-def _result(code, out, err, dt, total, watch, workdir):
+def _result(code, out, err, dt, total, watch, seed, workdir):
     tagged = [l.rstrip("\r")[len(TAG):] for l in out.splitlines() if l.startswith(TAG)]
     scenes = {t[len("scene="):] for t in tagged if t.startswith("scene=")}
     choices = {t.rsplit(" key=", 1)[-1] for t in tagged if t.startswith("choice action=")}
@@ -490,29 +516,39 @@ def _result(code, out, err, dt, total, watch, workdir):
     errors += [l.rstrip("\r") for l in out.splitlines()
                if not l.startswith(TAG) and LUA_OUT_RE.search(l)]
     started = any(t.startswith("start ") for t in tagged)
+    dead = [t[len("deadend at="):] for t in tagged if t.startswith("deadend at=")]
+    lua_seen = any(LUA_ERR_RE.search(e) for e in errors)
 
+    # status + done_reason (pourquoi l'exploration s'est arretee), par priorite
     if code is not None:
-        status = "crash"
+        # sortie du player : erreur Lua vue avant => lua_error, sinon crash
+        status = "lua_error" if lua_seen else "crash"
+        done_reason = "exit"
         errors.append("flam-player arrete seul (code %s)" % code)
     elif errors:
-        status = "lua_error"
+        status, done_reason = "lua_error", "error"
     elif not started:
-        status = "stuck"
+        status, done_reason = "stuck", "no_start"
         errors.append("pilote jamais demarre (setup() non atteint ?)")
-    elif watch.done_reason == "stuck" or (watch.quiet and not watch.done_reason
-                                          and not watch.library):
-        status = "stuck"
-    elif watch.done_reason or watch.library:
-        status = "ok"
+    elif watch.done_reason:
+        status = "stuck" if watch.done_reason == "stuck" else "ok"
+        done_reason = watch.done_reason
+    elif watch.library:
+        status, done_reason = "ok", "library"
+    elif watch.quiet:
+        status, done_reason = "stuck", "no_trace"
     else:
-        status = "timeout"
+        status, done_reason = "timeout", "timeout"
     res = {
         "status": status,
+        "done_reason": done_reason,
         "errors": errors[:50],
         "scenes_visited": len(scenes),
         "scenes_total": total,
+        "coverage": round(len(scenes) / total, 3) if total else None,
         "end_reached": bool(ends),
         "duration_s": round(dt, 1),
+        "seed": seed,
         "steps": len(steps),
         "ends": len(ends),
         "back_ends": tagged.count("end via=back"),
@@ -520,7 +556,8 @@ def _result(code, out, err, dt, total, watch, workdir):
         "choices_explored": len(choices),
         "back_tests": sum(1 for s in steps if " back (test)" in s),
         "menu_tests": sum(1 for s in steps if " menu M : " in s),
-        "done_reason": watch.done_reason or ("library" if watch.library else None),
+        "dead_end_backs": len(dead),
+        "dead_end_scenes": sorted(set(dead)),
         "exit_code": code,
     }
     if workdir:
@@ -561,7 +598,13 @@ def main(argv=None):
               % (res["scenes_visited"], res["scenes_total"] if res["scenes_total"] is not None else "?",
                  res["choices_explored"], res["ends"], "; ".join(res["end_reasons"]) or "-",
                  res["back_tests"], res["menu_tests"]))
-        print("  arret : %s" % (res["done_reason"] or "-"))
+        print("  arret : %s, couverture %s, seed %d" % (
+            res["done_reason"],
+            "?" if res["coverage"] is None else "%d %%" % round(100 * res["coverage"]),
+            res["seed"]))
+        if res["dead_end_backs"]:
+            print("  impasses (retour de secours) : %d (%s)" % (
+                res["dead_end_backs"], "; ".join(res["dead_end_scenes"])))
         for e in res["errors"]:
             print("  ! " + e)
         if res.get("workdir"):
