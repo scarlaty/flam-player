@@ -460,6 +460,42 @@ limité à `script/`, comme le device).
 
 ---
 
+### Campagne de compatibilité
+
+`compat.py` mesure quelles histoires Telmi `telmi2flam` sait convertir : téléchargement,
+conversion, validation, exécution optionnelle, rapport. Tout est écrit sous `.cache/`
+(ignoré par Git) : aucune archive ni histoire convertie n'est versionnée.
+
+```bash
+python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...]
+                                  [--folder <dossier de .zip>] [--cache .cache/telmi]
+                                  [--only <uuid|motif|titre>] [--limit N] [--jobs N] [--force]
+                                  [--player flam-player.exe] [--run-timeout 120] [--seed 0] [--max-steps 200]
+```
+
+- **Sources** : `--catalog` (format Telmi Store : `data[]` avec `uuid`, `version`, `title`,
+  `download`, lecture tolérante aux champs manquants) et `--folder` (les `.zip` du dossier,
+  non téléchargés). `--only` : uuid, motif `*?` ou sous-chaîne du titre ; `--limit` tronque.
+- **Fichiers** : `archives/<uuid>-<version>.zip` (reprise d'un `.part` par `Range`, taille
+  vérifiée, 3 tentatives, timeout), `converted/<uuid>-<version>.plain.pk`,
+  `compat/report.json` et `compat/report.md` (tableau + échecs regroupés par cause).
+- **Étapes** : `download`, `convert` (exceptions et avertissements `_warn` capturés),
+  `validate` (`validate.py`), `run` ; statut par étape `ok|warn|fail|skipped`, statut global
+  `OK`, `OK_AVERTISSEMENTS`, `ECHEC_TELECHARGEMENT`, `ECHEC_CONVERSION`, `ECHEC_VALIDATION`,
+  `ECHEC_EXECUTION`. Code de sortie 1 s'il y a au moins un échec.
+- **Reprise** : une histoire déjà évaluée avec les mêmes sources du convertisseur (hash de
+  `tools/telmi2flam` hors tests/`compat.py`/`explore.py`) n'est pas refaite, sauf `--force`.
+  Un échec de téléchargement est toujours retenté. `--jobs N` : traitement parallèle
+  (processus).
+- **Étape `run`** : appelle `explore(player_exe, story_path, timeout_s=120, seed=0,
+  max_steps=200) -> dict` (clé `status` : `ok|lua_error|crash|timeout|stuck`) si on la
+  passe à `run_campaign(..., explore=..., player_exe=...)`, ou, en CLI, si `--player` est
+  donné et que `explore.py` existe. Sinon l'étape vaut `skipped`.
+
+```bash
+python -m unittest discover -s tools/telmi2flam/tests -p "test_compat.py"   # sans réseau
+```
+
 ## 6. Décisions de conception
 
 - **Support complet** d'emblée (inventaire, conditions, jauges, aléatoire), pas seulement linéaire.
