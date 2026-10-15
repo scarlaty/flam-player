@@ -344,7 +344,9 @@ En cas de paquet invalide (zip illisible, JSON invalide/BOM mal formé, `NaN`, t
 inattendu, `metadata.json`/`nodes.json` absents, nom d'asset dangereux...), le CLI
 affiche `ERREUR : ...` et sort avec le code 1 (pas de traceback).
 
-Dépendance : `pip install Pillow`.
+Dépendance : `pip install "Pillow>=10.0"`. Versions testées : Pillow 10.0.0, 11.0.0 et 12.2.0
+(Python 3.12) ; la transparence `tRNS` des PNG est lue dans les octets du PNG, donc
+indépendante des changements de décodage de Pillow entre versions.
 
 Le CLI :
 1. lit `metadata.json` + `nodes.json` dans le zip
