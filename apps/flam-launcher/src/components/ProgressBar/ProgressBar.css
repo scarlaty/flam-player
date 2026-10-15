@@ -1,0 +1,65 @@
+.fl-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.fl-progress__track {
+  position: relative;
+  flex: 1;
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--tone-neutral-bg);
+  /* Contour pour garder un contraste 3:1 de la piste vide sur toutes les surfaces. */
+  box-shadow: inset 0 0 0 1px var(--color-border-strong);
+}
+
+.fl-progress__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-primary);
+  transition: inline-size var(--duration-normal) var(--easing);
+}
+
+.fl-progress--success .fl-progress__fill {
+  background: var(--tone-success-fg);
+}
+
+.fl-progress--danger .fl-progress__fill {
+  background: var(--color-danger);
+}
+
+.fl-progress__track--indeterminate .fl-progress__fill {
+  position: absolute;
+  inset-block: 0;
+  inline-size: 35%;
+  animation: fl-progress-slide 1.4s var(--easing) infinite;
+}
+
+.fl-progress__value {
+  min-inline-size: 3.25em;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
+@keyframes fl-progress-slide {
+  from {
+    inset-inline-start: -35%;
+  }
+
+  to {
+    inset-inline-start: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fl-progress__track--indeterminate .fl-progress__fill {
+    inset-inline-start: 0;
+    inline-size: 100%;
+    animation: none;
+    opacity: 0.5;
+  }
+}
