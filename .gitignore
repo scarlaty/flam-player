@@ -36,3 +36,6 @@ Thumbs.db
 /tools/telmi2flam/*.zip
 /tools/telmi2flam/*.pk
 /tools/telmi2flam/*.plain/
+
+# Caches locaux (archives Telmi, histoires converties, rapports de compatibilite)
+.cache/
