@@ -1,5 +1,7 @@
 # Flam Player
 
+[![launcher](https://github.com/scarlaty/flam-player/actions/workflows/launcher.yml/badge.svg)](https://github.com/scarlaty/flam-player/actions/workflows/launcher.yml) [![telmi2flam](https://github.com/scarlaty/flam-player/actions/workflows/telmi2flam.yml/badge.svg)](https://github.com/scarlaty/flam-player/actions/workflows/telmi2flam.yml)
+
 Emulateur desktop du firmware Flam (Lunii v3) capable d'executer les histoires `.plain` extraites,
 et convertisseur d'histoires TELMI vers FLAM (`tools/telmi2flam`).
 
