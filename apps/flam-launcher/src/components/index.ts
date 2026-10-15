@@ -17,6 +17,7 @@ export {
   type SidebarSource,
   type SidebarSourceListProps,
   type SourceKind,
+  type SourceStatus,
 } from "./SidebarSourceList/SidebarSourceList";
 export { StoryCard, type StoryBadge, type StoryCardProps } from "./StoryCard/StoryCard";
 export {

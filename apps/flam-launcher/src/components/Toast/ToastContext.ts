@@ -5,7 +5,10 @@ export type ToastTone = "info" | "success" | "danger";
 export interface ToastOptions {
   message: string;
   tone?: ToastTone;
-  /** Durée d'affichage en millisecondes ; 0 = jusqu'à fermeture manuelle. */
+  /**
+   * Durée d'affichage en millisecondes ; 0 = jusqu'à fermeture manuelle.
+   * Ignorée pour `danger` : une erreur reste affichée jusqu'à fermeture.
+   */
   duration?: number;
 }
 

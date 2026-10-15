@@ -1,6 +1,6 @@
 import { lazy, Suspense, useSyncExternalStore } from "react";
 import { Welcome } from "./features/welcome/Welcome";
-import { t } from "./i18n";
+import { demoFr } from "./i18n/demo.fr";
 
 /** Adresse de la page de démonstration des composants (développement uniquement). */
 export const DEMO_HASH = "#/demo";
@@ -29,7 +29,7 @@ export function App() {
   return (
     <main className="app">
       <Welcome />
-      {DemoPage && <a href={DEMO_HASH}>{t.app.demoLink}</a>}
+      {import.meta.env.DEV && <a href={DEMO_HASH}>{demoFr.link}</a>}
     </main>
   );
 }

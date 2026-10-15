@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes } from "react";
+import type { ComponentPropsWithRef } from "react";
 import { cx } from "../cx";
 import { Icon, type IconName } from "../Icon";
 import "./Button.css";
@@ -6,7 +6,7 @@ import "./Button.css";
 export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 export type ButtonSize = "md" | "sm";
 
-export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+export interface ButtonProps extends ComponentPropsWithRef<"button"> {
   variant?: ButtonVariant;
   size?: ButtonSize;
   /** Icône affichée avant le libellé. */

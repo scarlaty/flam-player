@@ -1,4 +1,10 @@
-import { useRef, type KeyboardEvent } from "react";
+import {
+  useId,
+  useRef,
+  type KeyboardEvent,
+  type ReactNode,
+  type SyntheticEvent,
+} from "react";
 import { t } from "../../i18n";
 import { Button } from "../Button/Button";
 import { cx } from "../cx";
@@ -7,20 +13,31 @@ import "./SidebarSourceList.css";
 
 export type SourceKind = "library" | "catalog" | "folder";
 
+/** `offline` : source injoignable pour l'instant ; `error` : source illisible ou invalide. */
+export type SourceStatus = "ok" | "offline" | "error";
+
 export interface SidebarSource {
   id: string;
   label: string;
   kind: SourceKind;
-  /** Nombre d'histoires, si connu. */
+  /** Nombre d'histoires, si connu (affiché seulement quand la source est disponible). */
   count?: number;
-  /** Source injoignable (catalogue hors ligne, dossier absent…). */
-  unavailable?: boolean;
+  status?: SourceStatus;
 }
 
 export interface SidebarSourceListProps {
+  /** Sources, affichées dans l'ordre fourni. */
   sources: SidebarSource[];
   selectedId?: string;
   onSelect: (id: string) => void;
+  /** Titre de la liste (« Sources » par défaut). */
+  title?: string;
+  /**
+   * Actions propres à une source (renommer, supprimer, réordonner…), placées à droite
+   * de la source. Elles sont atténuées tant que la ligne n'est ni survolée, ni
+   * sélectionnée, ni focalisée.
+   */
+  renderActions?: (source: SidebarSource) => ReactNode;
   /** Affiche le bouton « Ajouter une source ». */
   onAdd?: () => void;
 }
@@ -31,23 +48,42 @@ const KIND_ICONS: Record<SourceKind, IconName> = {
   folder: "folder",
 };
 
-const KIND_ORDER: SourceKind[] = ["library", "catalog", "folder"];
+const STATUS_ICONS: Record<Exclude<SourceStatus, "ok">, IconName> = {
+  offline: "offline",
+  error: "alert",
+};
+
+const NAV_KEYS = ["ArrowDown", "ArrowUp", "Home", "End"];
+
+/** Pose l'infobulle du libellé complet seulement s'il est tronqué. */
+function syncTitle(event: SyntheticEvent<HTMLButtonElement>, label: string) {
+  const button = event.currentTarget;
+  const text = button.querySelector<HTMLElement>(".fl-source__label");
+  if (text && text.scrollWidth > text.clientWidth) {
+    button.title = label;
+  } else {
+    button.removeAttribute("title");
+  }
+}
 
 /**
- * Liste des sources, regroupées par type. Tab entre dans la liste, les flèches
- * haut/bas (et Début/Fin) déplacent le focus d'une source à l'autre.
+ * Liste des sources dans l'ordre fourni par l'appelant. Chaque source est un bouton :
+ * Tab passe de l'une à l'autre (et à leurs actions) ; les flèches haut/bas, Début et
+ * Fin déplacent directement le focus entre les sources.
  */
 export function SidebarSourceList({
   sources,
   selectedId,
   onSelect,
+  title = t.sources.title,
+  renderActions,
   onAdd,
 }: SidebarSourceListProps) {
-  const listRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const titleId = useId();
 
-  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
-    if (!keys.includes(event.key) || !listRef.current) return;
+  function handleKeyDown(event: KeyboardEvent<HTMLUListElement>) {
+    if (!NAV_KEYS.includes(event.key) || !listRef.current) return;
     const items = Array.from(
       listRef.current.querySelectorAll<HTMLButtonElement>(".fl-source__button"),
     );
@@ -66,67 +102,65 @@ export function SidebarSourceList({
     items[next]?.focus();
   }
 
-  const groups = KIND_ORDER.map((kind) => ({
-    kind,
-    items: sources.filter((source) => source.kind === kind),
-  })).filter((group) => group.items.length > 0);
-
   return (
-    <div className="fl-sources" ref={listRef} onKeyDown={handleKeyDown}>
-      {groups.map((group) => (
-        <section
-          key={group.kind}
-          className="fl-sources__group"
-          aria-labelledby={`fl-sources-${group.kind}`}
-        >
-          <h2 id={`fl-sources-${group.kind}`} className="fl-sources__heading">
-            {t.sources.kind[group.kind]}
-          </h2>
-          <ul className="fl-sources__list">
-            {group.items.map((source) => {
-              const selected = source.id === selectedId;
-              return (
-                <li key={source.id}>
-                  <button
-                    type="button"
-                    className={cx(
-                      "fl-source__button",
-                      selected && "fl-source__button--selected",
-                    )}
-                    aria-current={selected ? "page" : undefined}
-                    onClick={() => onSelect(source.id)}
+    <section className="fl-sources" aria-labelledby={titleId}>
+      <h2 id={titleId} className="fl-sources__heading">
+        {title}
+      </h2>
+      <ul className="fl-sources__list" ref={listRef} onKeyDown={handleKeyDown}>
+        {sources.map((source) => {
+          const selected = source.id === selectedId;
+          const status = source.status ?? "ok";
+          const actions = renderActions?.(source);
+          return (
+            <li
+              key={source.id}
+              className={cx("fl-source", selected && "fl-source--selected")}
+            >
+              <button
+                type="button"
+                className="fl-source__button"
+                aria-current={selected ? "page" : undefined}
+                onClick={() => onSelect(source.id)}
+                onMouseEnter={(event) => syncTitle(event, source.label)}
+                onFocus={(event) => syncTitle(event, source.label)}
+              >
+                <Icon name={KIND_ICONS[source.kind]} />
+                <span className="fl-source__label">{source.label}</span>
+                <span className="fl-visually-hidden">
+                  , {t.sources.kind[source.kind]}
+                </span>
+                {status !== "ok" ? (
+                  <span
+                    className={`fl-source__meta fl-source__meta--${status}`}
+                    title={t.sources.status[status]}
                   >
-                    <Icon name={KIND_ICONS[source.kind]} />
-                    <span className="fl-source__label">{source.label}</span>
-                    {source.unavailable ? (
-                      <span className="fl-source__meta fl-source__meta--warning">
-                        <Icon name="alert" size={16} />
-                        <span className="fl-visually-hidden">
-                          , {t.sources.unavailable}
-                        </span>
+                    <Icon name={STATUS_ICONS[status]} size={16} />
+                    <span className="fl-visually-hidden">
+                      , {t.sources.status[status]}
+                    </span>
+                  </span>
+                ) : (
+                  source.count !== undefined && (
+                    <span className="fl-source__meta">
+                      <span aria-hidden="true">{source.count}</span>
+                      <span className="fl-visually-hidden">
+                        , {t.sources.count(source.count)}
                       </span>
-                    ) : (
-                      source.count !== undefined && (
-                        <span className="fl-source__meta">
-                          <span aria-hidden="true">{source.count}</span>
-                          <span className="fl-visually-hidden">
-                            , {t.sources.count(source.count)}
-                          </span>
-                        </span>
-                      )
-                    )}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      ))}
+                    </span>
+                  )
+                )}
+              </button>
+              {actions && <div className="fl-source__actions">{actions}</div>}
+            </li>
+          );
+        })}
+      </ul>
       {onAdd && (
         <Button variant="ghost" icon="plus" className="fl-sources__add" onClick={onAdd}>
           {t.sources.add}
         </Button>
       )}
-    </div>
+    </section>
   );
 }

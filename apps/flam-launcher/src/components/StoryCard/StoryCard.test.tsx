@@ -20,11 +20,15 @@ it("affiche les badges, l'âge minimal et l'état sélectionné", () => {
       ageMin={5}
       selected
       onOpen={() => {}}
-      badges={[{ label: "Nouveau", tone: "warning" }, { label: "Compatible" }]}
+      badges={[
+        { id: "a", label: "Compatible", tone: "warning" },
+        { id: "b", label: "Compatible" },
+      ]}
     />,
   );
 
   expect(screen.getByText("Dès 5 ans")).toBeInTheDocument();
+  // Deux badges de même libellé : les clés stables évitent toute collision.
   expect(screen.getAllByRole("listitem")).toHaveLength(2);
   expect(screen.getByRole("button", { name: "Le grand voyage de Mila" })).toHaveAttribute(
     "aria-current",
@@ -37,7 +41,32 @@ it("utilise la vignette fournie comme image décorative", () => {
 
   expect(container.querySelector("img")).toHaveAttribute("alt", "");
   expect(container.querySelector(".fl-story-card__placeholder")).toBeNull();
-  expect(screen.getByRole("heading", { name: "Avec vignette" })).toBeInTheDocument();
+});
+
+it("se replie sur l'illustration si la vignette ne charge pas", () => {
+  const { container } = render(<StoryCard title="Image cassée" coverUrl="data:x" />);
+
+  fireEvent.error(container.querySelector("img")!);
+  expect(container.querySelector("img")).toBeNull();
+  expect(container.querySelector(".fl-story-card__placeholder")).not.toBeNull();
+});
+
+it("affiche la progression d'une opération en cours", () => {
+  const { rerender } = render(
+    <StoryCard title="Mila" progress={40} progressText="Téléchargement…" />,
+  );
+
+  expect(screen.getByRole("progressbar", { name: "Progression : Mila" })).toHaveAttribute(
+    "aria-valuenow",
+    "40",
+  );
+  expect(screen.getByText("Téléchargement…")).toBeInTheDocument();
+
+  rerender(<StoryCard title="Mila" progress="indeterminate" />);
+  expect(screen.getByRole("progressbar")).not.toHaveAttribute("aria-valuenow");
+
+  rerender(<StoryCard title="Mila" />);
+  expect(screen.queryByRole("progressbar")).toBeNull();
 });
 
 it("choisit une couleur d'illustration stable pour un titre", () => {
@@ -50,7 +79,8 @@ it("n'a aucune violation axe", async () => {
       title="Bonne nuit, petit ours"
       ageMin={2}
       onOpen={() => {}}
-      badges={[{ label: "Installée", tone: "success", icon: "check" }]}
+      progress={10}
+      badges={[{ id: "installed", label: "Installée", tone: "success", icon: "check" }]}
       actions={<IconButton icon="play" label="Jouer : Bonne nuit, petit ours" />}
     />,
   );

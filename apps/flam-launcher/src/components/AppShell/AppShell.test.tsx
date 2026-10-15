@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { expectNoAxeViolations } from "../../test/axe";
 import { AppShell } from "./AppShell";
@@ -29,12 +29,17 @@ it("structure la page en zones repérables", () => {
   expect(screen.getByRole("complementary")).toHaveTextContent("Tâches");
 });
 
-it("propose un lien d'évitement vers le contenu", () => {
+it("focalise le contenu via le lien d'évitement sans toucher au hash", () => {
+  window.location.hash = "#/demo";
   renderShell(false);
 
   const skip = screen.getByRole("link", { name: "Aller au contenu" });
-  expect(skip).toHaveAttribute("href", `#${screen.getByRole("main").id}`);
+  const notPrevented = fireEvent.click(skip);
+  expect(notPrevented).toBe(false);
+  expect(screen.getByRole("main")).toHaveFocus();
+  expect(window.location.hash).toBe("#/demo");
   expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+  window.location.hash = "";
 });
 
 it("n'a aucune violation axe", async () => {

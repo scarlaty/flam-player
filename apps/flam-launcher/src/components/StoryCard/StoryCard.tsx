@@ -1,11 +1,14 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { t } from "../../i18n";
 import { Badge, type BadgeTone } from "../Badge/Badge";
 import { cx } from "../cx";
 import { Icon, type IconName } from "../Icon";
+import { ProgressBar } from "../ProgressBar/ProgressBar";
 import "./StoryCard.css";
 
 export interface StoryBadge {
+  /** Identifiant stable du badge (ex. « installed »), utilisé comme clé. */
+  id: string;
   label: string;
   tone?: BadgeTone;
   icon?: IconName;
@@ -13,7 +16,7 @@ export interface StoryBadge {
 
 export interface StoryCardProps {
   title: string;
-  /** Adresse de la vignette ; absente = illustration générique. */
+  /** Adresse de la vignette ; absente ou illisible = illustration générique. */
   coverUrl?: string;
   ageMin?: number;
   ageMax?: number;
@@ -22,6 +25,13 @@ export interface StoryCardProps {
   selected?: boolean;
   /** Ouvre la fiche de l'histoire (clic ou Entrée sur le titre). */
   onOpen?: () => void;
+  /**
+   * Opération en cours sur l'histoire : pourcentage 0-100, ou `"indeterminate"`.
+   * Affiche une barre de progression sous les badges.
+   */
+  progress?: number | "indeterminate";
+  /** Texte visible sous la barre (ex. « Conversion… »). */
+  progressText?: string;
   /** Actions rapides (ex. bouton Jouer), placées au-dessus de la zone cliquable. */
   actions?: ReactNode;
 }
@@ -45,13 +55,24 @@ export function StoryCard({
   badges = [],
   selected = false,
   onOpen,
+  progress,
+  progressText,
   actions,
 }: StoryCardProps) {
+  // Adresse dont le chargement a échoué : on affiche alors l'illustration générique.
+  const [failedUrl, setFailedUrl] = useState<string>();
+  const showCover = coverUrl !== undefined && coverUrl !== failedUrl;
+
   return (
     <article className={cx("fl-story-card", selected && "fl-story-card--selected")}>
       <div className="fl-story-card__cover">
-        {coverUrl ? (
-          <img src={coverUrl} alt="" loading="lazy" />
+        {showCover ? (
+          <img
+            src={coverUrl}
+            alt=""
+            loading="lazy"
+            onError={() => setFailedUrl(coverUrl)}
+          />
         ) : (
           <div
             className={`fl-story-card__placeholder fl-story-card__placeholder--${placeholderTone(title)}`}
@@ -81,13 +102,24 @@ export function StoryCard({
         {badges.length > 0 && (
           <ul className="fl-story-card__badges">
             {badges.map((badge) => (
-              <li key={badge.label}>
+              <li key={badge.id}>
                 <Badge tone={badge.tone} icon={badge.icon}>
                   {badge.label}
                 </Badge>
               </li>
             ))}
           </ul>
+        )}
+        {progress !== undefined && (
+          <div className="fl-story-card__progress">
+            <ProgressBar
+              value={progress === "indeterminate" ? undefined : progress}
+              label={t.story.progress(title)}
+            />
+            {progressText && (
+              <p className="fl-story-card__progress-text">{progressText}</p>
+            )}
+          </div>
         )}
       </div>
       {actions && <div className="fl-story-card__actions">{actions}</div>}

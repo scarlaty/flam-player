@@ -26,36 +26,70 @@ function renderWith(options: ToastOptions) {
   fireEvent.click(screen.getByRole("button", { name: "Notifier" }));
 }
 
-it("affiche la notification dans une zone annoncée poliment", () => {
+const liveRegion = (text: string) => screen.getByText(text).closest("[aria-live]");
+const advance = (ms: number) => act(() => vi.advanceTimersByTime(ms));
+
+it("annonce les infos dans une région polie, sans rôle supplémentaire", () => {
   renderWith({ message: "Histoire prête.", tone: "success" });
 
-  const region = screen.getByRole("region", { name: "Notifications" });
-  expect(region).toHaveAttribute("aria-live", "polite");
-  expect(region).toHaveTextContent("Histoire prête.");
+  expect(screen.getByRole("region", { name: "Notifications" })).toBeInTheDocument();
+  expect(liveRegion("Histoire prête.")).toHaveAttribute("aria-live", "polite");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
 });
 
-it("annonce les erreurs comme alertes", () => {
+it("annonce les erreurs dans une région assertive séparée", () => {
   renderWith({ message: "Catalogue illisible.", tone: "danger" });
-  expect(screen.getByRole("alert")).toHaveTextContent("Catalogue illisible.");
+  expect(liveRegion("Catalogue illisible.")).toHaveAttribute("aria-live", "assertive");
 });
 
 it("disparaît après la durée par défaut", () => {
   vi.useFakeTimers();
   renderWith({ message: "Éphémère" });
 
+  advance(DEFAULT_TOAST_DURATION - 1);
   expect(screen.getByText("Éphémère")).toBeInTheDocument();
-  act(() => vi.advanceTimersByTime(DEFAULT_TOAST_DURATION));
+  advance(1);
   expect(screen.queryByText("Éphémère")).not.toBeInTheDocument();
 });
 
-it("reste affichée avec une durée nulle jusqu'à fermeture", () => {
+it("garde les erreurs jusqu'à fermeture, quelle que soit la durée demandée", () => {
   vi.useFakeTimers();
-  renderWith({ message: "Persistante", duration: 0 });
+  renderWith({ message: "Erreur durable", tone: "danger", duration: 1000 });
 
-  act(() => vi.advanceTimersByTime(DEFAULT_TOAST_DURATION * 4));
-  expect(screen.getByText("Persistante")).toBeInTheDocument();
+  advance(DEFAULT_TOAST_DURATION * 4);
+  expect(screen.getByText("Erreur durable")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Fermer" }));
-  expect(screen.queryByText("Persistante")).not.toBeInTheDocument();
+  expect(screen.queryByText("Erreur durable")).not.toBeInTheDocument();
+});
+
+it("met la minuterie en pause au survol", () => {
+  vi.useFakeTimers();
+  renderWith({ message: "Survolée", duration: 1000 });
+  const toast = screen.getByText("Survolée").closest(".fl-toast")!;
+
+  advance(600);
+  fireEvent.mouseEnter(toast);
+  advance(5000);
+  expect(screen.getByText("Survolée")).toBeInTheDocument();
+  fireEvent.mouseLeave(toast);
+  advance(399);
+  expect(screen.getByText("Survolée")).toBeInTheDocument();
+  advance(1);
+  expect(screen.queryByText("Survolée")).not.toBeInTheDocument();
+});
+
+it("met la minuterie en pause tant que le focus est dans la notification", () => {
+  vi.useFakeTimers();
+  renderWith({ message: "Focalisée", duration: 1000 });
+  const close = screen.getByRole("button", { name: "Fermer" });
+
+  act(() => close.focus());
+  advance(5000);
+  expect(screen.getByText("Focalisée")).toBeInTheDocument();
+  act(() => close.blur());
+  advance(1000);
+  expect(screen.queryByText("Focalisée")).not.toBeInTheDocument();
 });
 
 it("refuse useToast hors d'un ToastProvider", () => {
@@ -65,5 +99,6 @@ it("refuse useToast hors d'un ToastProvider", () => {
 
 it("n'a aucune violation axe", async () => {
   renderWith({ message: "Histoire prête.", tone: "info" });
+  fireEvent.click(screen.getByRole("button", { name: "Notifier" }));
   await expectNoAxeViolations(document.body, PAGE_LEVEL_RULES);
 });

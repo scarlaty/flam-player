@@ -31,6 +31,40 @@ a {
   color: var(--color-primary);
 }
 
+/*
+ * Contraste élevé de Windows (forced-colors) : les fonds et ombres disparaissent,
+ * on garde des contours et un focus aux couleurs système.
+ */
+@media (forced-colors: active) {
+  :focus-visible,
+  .fl-story-card:has(.fl-story-card__open:focus-visible) {
+    outline-color: Highlight;
+  }
+
+  .fl-button,
+  .fl-icon-button,
+  .fl-badge,
+  .fl-story-card,
+  .fl-task,
+  .fl-toast,
+  .fl-dialog {
+    border: 1px solid CanvasText;
+  }
+
+  .fl-story-card--selected,
+  .fl-source--selected {
+    outline: 3px solid Highlight;
+  }
+
+  .fl-progress__track {
+    border: 1px solid CanvasText;
+  }
+
+  .fl-progress__fill {
+    background: Highlight;
+  }
+}
+
 .fl-visually-hidden {
   position: absolute;
   width: 1px;

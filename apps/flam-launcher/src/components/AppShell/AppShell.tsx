@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useRef, type MouseEvent, type ReactNode } from "react";
 import { t } from "../../i18n";
 import { AppLogo } from "../AppLogo";
 import "./AppShell.css";
@@ -25,9 +25,17 @@ export function AppShell({
   aside,
   children,
 }: AppShellProps) {
+  const mainRef = useRef<HTMLElement>(null);
+
+  // Focalise le contenu sans modifier le hash : il sert au routage (#/demo…).
+  function skipToMain(event: MouseEvent<HTMLAnchorElement>) {
+    event.preventDefault();
+    mainRef.current?.focus();
+  }
+
   return (
     <div className="fl-shell">
-      <a className="fl-shell__skip" href={`#${MAIN_ID}`}>
+      <a className="fl-shell__skip" href={`#${MAIN_ID}`} onClick={skipToMain}>
         {t.app.skipToContent}
       </a>
       <nav className="fl-shell__sidebar" aria-label={t.app.sourcesNav}>
@@ -42,7 +50,7 @@ export function AppShell({
           <h1 className="fl-shell__title">{title}</h1>
           {headerActions && <div className="fl-shell__actions">{headerActions}</div>}
         </header>
-        <main id={MAIN_ID} className="fl-shell__main" tabIndex={-1}>
+        <main ref={mainRef} id={MAIN_ID} className="fl-shell__main" tabIndex={-1}>
           {children}
         </main>
       </div>

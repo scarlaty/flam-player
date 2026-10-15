@@ -74,6 +74,15 @@
   font-size: var(--font-size-xs);
 }
 
+.fl-task__actions {
+  display: flex;
+  flex: none;
+}
+
+.fl-task--cancelled .fl-task__name {
+  color: var(--color-text-muted);
+}
+
 .fl-task__foot {
   display: flex;
   flex-wrap: wrap;

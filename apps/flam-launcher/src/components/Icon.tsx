@@ -22,6 +22,21 @@ const paths = {
   folder: (
     <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
   ),
+  offline: (
+    <>
+      <path d="M7 18a4.5 4.5 0 0 1-.6-9A6 6 0 0 1 18 9.5a4 4 0 0 1-.5 8.5z" />
+      <path d="m4 4 16 16" />
+    </>
+  ),
+  install: (
+    <>
+      <path d="m4 8 8-4 8 4v8l-8 4-8-4z" />
+      <path d="m4 8 8 4 8-4M12 12v8" />
+    </>
+  ),
+  pencil: <path d="M5 19h3.5L19 8.5 15.5 5 5 15.5zM13.5 7l3.5 3.5" />,
+  arrowUp: <path d="M12 19V5m-5.5 5.5L12 5l5.5 5.5" />,
+  arrowDown: <path d="M12 5v14m-5.5-5.5L12 19l5.5-5.5" />,
   plus: <path d="M12 5v14M5 12h14" />,
   close: <path d="m6 6 12 12M18 6 6 18" />,
   download: <path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 19h14" />,

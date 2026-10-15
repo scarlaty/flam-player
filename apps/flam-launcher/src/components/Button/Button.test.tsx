@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { createRef } from "react";
 import { expect, it, vi } from "vitest";
 import { expectComponentAccessible } from "../../test/axe";
-import { IconButton } from "../IconButton/IconButton";
 import { Button } from "./Button";
 
 it("rend un bouton de type button avec sa variante", () => {
@@ -31,12 +31,10 @@ it("n'appelle pas onClick quand il est désactivé", () => {
   expect(onClick).not.toHaveBeenCalled();
 });
 
-it("donne à IconButton un libellé accessible et une infobulle", () => {
-  render(<IconButton icon="refresh" label="Actualiser" />);
-
-  const button = screen.getByRole("button", { name: "Actualiser" });
-  expect(button).toHaveAttribute("title", "Actualiser");
-  expect(button.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+it("transmet la ref au bouton natif", () => {
+  const ref = createRef<HTMLButtonElement>();
+  render(<Button ref={ref}>Annuler</Button>);
+  expect(ref.current).toBe(screen.getByRole("button", { name: "Annuler" }));
 });
 
 it("n'a aucune violation axe", async () => {
@@ -45,7 +43,7 @@ it("n'a aucune violation axe", async () => {
       <Button variant="danger" icon="trash">
         Supprimer
       </Button>
-      <IconButton icon="sliders" variant="secondary" label="Paramètres" />
+      <Button variant="ghost">Annuler</Button>
     </div>,
   );
   await expectComponentAccessible(container);

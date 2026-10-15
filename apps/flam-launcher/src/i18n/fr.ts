@@ -7,7 +7,6 @@ export const fr = {
     name: "Flam Launcher",
     skipToContent: "Aller au contenu",
     sourcesNav: "Sources d'histoires",
-    demoLink: "Démonstration des composants (développement)",
   },
   welcome: {
     title: "Bienvenue",
@@ -24,13 +23,18 @@ export const fr = {
       catalog: "Catalogue",
       folder: "Dossier local",
     },
+    title: "Sources",
     add: "Ajouter une source",
     count: (n: number) => (n <= 1 ? `${n} histoire` : `${n} histoires`),
-    unavailable: "Indisponible",
+    status: {
+      offline: "Hors ligne",
+      error: "Erreur",
+    },
   },
   story: {
     age: (min: number, max?: number) =>
       max === undefined ? `Dès ${min} ans` : `${min}-${max} ans`,
+    progress: (title: string) => `Progression : ${title}`,
   },
   status: {
     installed: "Installée",
@@ -53,10 +57,15 @@ export const fr = {
       running: "En cours",
       done: "Terminée",
       error: "Échec",
+      cancelled: "Annulée",
     },
     cancel: (title: string) => `Annuler : ${title}`,
+    retry: (title: string) => `Réessayer : ${title}`,
     dismiss: (title: string) => `Retirer : ${title}`,
     progress: (title: string) => `Progression : ${title}`,
+    /** Annonce d'un changement d'état, lue par les lecteurs d'écran. */
+    announce: (title: string, kind: string, state: string, detail?: string) =>
+      `${kind} « ${title} » : ${state}${detail ? `. ${detail}` : ""}`,
   },
   toast: {
     region: "Notifications",

@@ -5,10 +5,15 @@ import { t } from "../../i18n";
 
 export const demoSources: SidebarSource[] = [
   { id: "library", label: "Mes histoires", kind: "library", count: 12 },
-  { id: "store", label: "Catalogue communautaire", kind: "catalog", count: 248 },
-  { id: "mirror", label: "Catalogue hors ligne", kind: "catalog", unavailable: true },
+  {
+    id: "store",
+    label: "Catalogue communautaire des histoires",
+    kind: "catalog",
+    count: 248,
+  },
+  { id: "mirror", label: "Catalogue de l'école", kind: "catalog", status: "offline" },
   { id: "downloads", label: "Téléchargements", kind: "folder", count: 3 },
-  { id: "usb", label: "Clé USB", kind: "folder", count: 0 },
+  { id: "usb", label: "Clé USB", kind: "folder", status: "error" },
 ];
 
 /** Vignette d'exemple en data: URI (autorisé par la CSP `img-src`). */
@@ -23,6 +28,17 @@ const demoCover =
       "</svg>",
   );
 
+/** Image illisible : la carte doit se replier sur l'illustration générique. */
+const brokenCover = "data:image/png;base64,AAAA";
+
+const installed: StoryBadge = {
+  id: "installed",
+  label: t.status.installed,
+  tone: "success",
+  icon: "check",
+};
+const available: StoryBadge = { id: "available", label: t.status.available };
+
 export interface DemoStory {
   id: string;
   title: string;
@@ -30,6 +46,7 @@ export interface DemoStory {
   ageMin: number;
   ageMax?: number;
   badges: StoryBadge[];
+  progress?: number | "indeterminate";
 }
 
 export const demoStories: DemoStory[] = [
@@ -39,46 +56,48 @@ export const demoStories: DemoStory[] = [
     coverUrl: demoCover,
     ageMin: 3,
     ageMax: 6,
-    badges: [
-      { label: t.status.installed, tone: "success", icon: "check" },
-      { label: t.status.compatible, tone: "info" },
-    ],
+    badges: [installed, { id: "compat", label: t.status.compatible, tone: "info" }],
   },
   {
     id: "nuage",
     title: "Pipo le petit nuage",
     ageMin: 2,
     ageMax: 4,
-    badges: [{ label: t.status.available }],
+    badges: [available],
+    progress: "indeterminate",
   },
   {
     id: "mila",
     title: "Le grand voyage de Mila",
     ageMin: 5,
     badges: [
-      { label: t.status.new, tone: "warning", icon: "sparkle" },
-      { label: t.status.partial, tone: "warning" },
+      { id: "new", label: t.status.new, tone: "warning", icon: "sparkle" },
+      { id: "compat", label: t.status.partial, tone: "warning" },
     ],
+    progress: 62,
   },
   {
     id: "ours",
     title: "Bonne nuit, petit ours",
+    coverUrl: brokenCover,
     ageMin: 2,
     ageMax: 5,
-    badges: [{ label: t.status.installed, tone: "success", icon: "check" }],
+    badges: [installed],
   },
   {
     id: "phare",
     title: "Les secrets du phare",
     ageMin: 6,
     ageMax: 8,
-    badges: [{ label: t.status.incompatible, tone: "danger", icon: "alert" }],
+    badges: [
+      { id: "compat", label: t.status.incompatible, tone: "danger", icon: "alert" },
+    ],
   },
   {
     id: "toc",
     title: "Toc toc, qui est là ?",
     ageMin: 3,
-    badges: [{ label: t.status.available }],
+    badges: [available],
   },
 ];
 
@@ -91,7 +110,13 @@ export const demoTasks: Task[] = [
     progress: 62,
     detail: "18 Mo sur 29 Mo",
   },
-  { id: "t2", title: "Pipo le petit nuage", kind: "convert", state: "running" },
+  {
+    id: "t2",
+    title: "Pipo le petit nuage",
+    kind: "convert",
+    state: "running",
+    phase: "Conversion des sons",
+  },
   { id: "t3", title: "Toc toc, qui est là ?", kind: "install", state: "queued" },
   { id: "t4", title: "Bonne nuit, petit ours", kind: "install", state: "done" },
   {
@@ -99,6 +124,8 @@ export const demoTasks: Task[] = [
     title: "Les secrets du phare",
     kind: "convert",
     state: "error",
+    phase: "Lecture de l'archive",
     detail: "Format d'archive non reconnu.",
   },
+  { id: "t6", title: "La forêt des lucioles", kind: "download", state: "cancelled" },
 ];

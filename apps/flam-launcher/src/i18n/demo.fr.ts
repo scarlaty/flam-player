@@ -4,6 +4,7 @@
  */
 export const demoFr = {
   title: "Démonstration des composants",
+  link: "Démonstration des composants (développement)",
   notice:
     "Page réservée au développement : elle n'existe pas dans l'application publiée.",
   buttons: "Boutons",
@@ -15,9 +16,18 @@ export const demoFr = {
   openDialog: "Ouvrir un dialogue",
   showToast: "Afficher une notification",
   showErrorToast: "Notification d'erreur",
+  openAlertDialog: "Confirmer une suppression",
   dialogTitle: "Installer l'histoire ?",
-  dialogBody:
-    "L'histoire sera téléchargée, convertie puis ajoutée à la bibliothèque. Vous pourrez suivre l'avancement dans le panneau des tâches.",
+  dialogDescription:
+    "L'histoire sera téléchargée, convertie puis ajoutée à la bibliothèque.",
+  dialogBody: "Vous pourrez suivre l'avancement dans le panneau des tâches.",
+  alertTitle: "Supprimer la source ?",
+  alertDescription:
+    "La source disparaîtra de la liste. Les histoires déjà installées sont conservées.",
+  rename: (label: string) => `Renommer : ${label}`,
+  moveUp: (label: string) => `Monter : ${label}`,
+  deleteSource: (label: string) => `Supprimer : ${label}`,
+  converting: "Conversion…",
   install: "Installer",
   play: "Jouer",
   refresh: "Actualiser",

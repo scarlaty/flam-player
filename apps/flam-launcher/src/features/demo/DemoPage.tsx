@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AppShell,
   Badge,
@@ -12,7 +12,9 @@ import {
   TaskPanel,
   ToastProvider,
   useToast,
+  type SidebarSource,
   type Task,
+  type TaskState,
 } from "../../components";
 import { t } from "../../i18n";
 import { demoFr } from "../../i18n/demo.fr";
@@ -60,23 +62,55 @@ function ThemeSwitcher() {
 
 function DemoContent() {
   const toast = useToast();
+  const [sources, setSources] = useState<SidebarSource[]>(demoSources);
   const [sourceId, setSourceId] = useState("library");
   const [storyId, setStoryId] = useState("lucioles");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [toDelete, setToDelete] = useState<SidebarSource | null>(null);
   const [tasks, setTasks] = useState<Task[]>(demoTasks);
+  const cancelDeleteRef = useRef<HTMLButtonElement>(null);
 
+  const setTaskState = (id: string, state: TaskState) =>
+    setTasks((list) => list.map((task) => (task.id === id ? { ...task, state } : task)));
   const removeTask = (id: string) =>
     setTasks((list) => list.filter((task) => task.id !== id));
+  const moveUp = (id: string) =>
+    setSources((list) => {
+      const index = list.findIndex((source) => source.id === id);
+      if (index <= 0) return list;
+      const next = [...list];
+      [next[index - 1], next[index]] = [next[index]!, next[index - 1]!];
+      return next;
+    });
 
   return (
     <AppShell
       title={demoFr.title}
       sidebar={
         <SidebarSourceList
-          sources={demoSources}
+          sources={sources}
           selectedId={sourceId}
           onSelect={setSourceId}
           onAdd={() => setDialogOpen(true)}
+          renderActions={(source) =>
+            source.kind === "library" ? null : (
+              <>
+                <IconButton
+                  icon="arrowUp"
+                  size="sm"
+                  label={demoFr.moveUp(source.label)}
+                  onClick={() => moveUp(source.id)}
+                />
+                <IconButton icon="pencil" size="sm" label={demoFr.rename(source.label)} />
+                <IconButton
+                  icon="trash"
+                  size="sm"
+                  label={demoFr.deleteSource(source.label)}
+                  onClick={() => setToDelete(source)}
+                />
+              </>
+            )
+          }
         />
       }
       headerActions={
@@ -86,7 +120,14 @@ function DemoContent() {
           <IconButton icon="sliders" label={demoFr.settings} />
         </>
       }
-      aside={<TaskPanel tasks={tasks} onCancel={removeTask} onDismiss={removeTask} />}
+      aside={
+        <TaskPanel
+          tasks={tasks}
+          onCancel={(id) => setTaskState(id, "cancelled")}
+          onRetry={(id) => setTaskState(id, "queued")}
+          onDismiss={removeTask}
+        />
+      }
     >
       <p className="demo-notice">{demoFr.notice}</p>
 
@@ -101,6 +142,10 @@ function DemoContent() {
                 ageMin={story.ageMin}
                 ageMax={story.ageMax}
                 badges={story.badges}
+                progress={story.progress}
+                progressText={
+                  story.progress === "indeterminate" ? demoFr.converting : undefined
+                }
                 selected={story.id === storyId}
                 onOpen={() => setStoryId(story.id)}
                 actions={
@@ -192,11 +237,18 @@ function DemoContent() {
             {demoFr.showToast}
           </Button>
           <Button
-            onClick={() =>
-              toast.show({ message: demoFr.toastError, tone: "danger", duration: 0 })
-            }
+            onClick={() => toast.show({ message: demoFr.toastError, tone: "danger" })}
           >
             {demoFr.showErrorToast}
+          </Button>
+          <Button
+            variant="danger"
+            icon="trash"
+            onClick={() =>
+              setToDelete(sources.find((source) => source.kind !== "library") ?? null)
+            }
+          >
+            {demoFr.openAlertDialog}
           </Button>
         </div>
       </section>
@@ -205,6 +257,7 @@ function DemoContent() {
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
         title={demoFr.dialogTitle}
+        description={demoFr.dialogDescription}
         footer={
           <>
             <Button variant="ghost" onClick={() => setDialogOpen(false)}>
@@ -225,6 +278,39 @@ function DemoContent() {
       >
         <p>{demoFr.dialogBody}</p>
       </Dialog>
+
+      <Dialog
+        role="alertdialog"
+        open={toDelete !== null}
+        onClose={() => setToDelete(null)}
+        title={demoFr.alertTitle}
+        description={demoFr.alertDescription}
+        initialFocus={cancelDeleteRef}
+        footer={
+          <>
+            <Button
+              ref={cancelDeleteRef}
+              variant="ghost"
+              onClick={() => setToDelete(null)}
+            >
+              {t.common.cancel}
+            </Button>
+            <Button
+              variant="danger"
+              icon="trash"
+              onClick={() => {
+                const target = toDelete;
+                setToDelete(null);
+                if (target) {
+                  setSources((list) => list.filter((source) => source.id !== target.id));
+                }
+              }}
+            >
+              {demoFr.delete}
+            </Button>
+          </>
+        }
+      />
     </AppShell>
   );
 }

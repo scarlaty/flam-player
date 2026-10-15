@@ -1,10 +1,10 @@
-import type { ButtonHTMLAttributes } from "react";
+import type { ComponentPropsWithRef } from "react";
 import { cx } from "../cx";
 import { Icon, type IconName } from "../Icon";
 import "./IconButton.css";
 
 export interface IconButtonProps extends Omit<
-  ButtonHTMLAttributes<HTMLButtonElement>,
+  ComponentPropsWithRef<"button">,
   "children" | "aria-label"
 > {
   icon: IconName;

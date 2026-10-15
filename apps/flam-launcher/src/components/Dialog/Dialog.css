@@ -40,6 +40,10 @@
   line-height: var(--line-height-tight);
 }
 
+.fl-dialog__description {
+  margin: 0;
+}
+
 .fl-dialog__body > :first-child {
   margin-top: 0;
 }

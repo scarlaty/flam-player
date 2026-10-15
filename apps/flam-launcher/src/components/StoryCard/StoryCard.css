@@ -117,6 +117,19 @@
   list-style: none;
 }
 
+.fl-story-card__progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+
+.fl-story-card__progress-text {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
 .fl-story-card__actions {
   position: absolute;
   z-index: 1;
