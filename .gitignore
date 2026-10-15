@@ -37,5 +37,5 @@ Thumbs.db
 /tools/telmi2flam/*.pk
 /tools/telmi2flam/*.plain/
 
-# Campagne de compatibilite telmi2flam (archives, conversions, rapports)
+# Caches locaux (archives Telmi, histoires converties, rapports de compatibilite)
 .cache/
