@@ -1,0 +1,62 @@
+.fl-dialog__backdrop {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+  background: var(--color-backdrop);
+  animation: fl-dialog-fade var(--duration-normal) var(--easing);
+}
+
+.fl-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: min(32rem, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+  color: var(--color-text);
+}
+
+.fl-dialog:focus {
+  outline: none;
+}
+
+.fl-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.fl-dialog__title {
+  flex: 1;
+  margin: 0;
+  font-size: var(--font-size-lg);
+  line-height: var(--line-height-tight);
+}
+
+.fl-dialog__body > :first-child {
+  margin-top: 0;
+}
+
+.fl-dialog__body > :last-child {
+  margin-bottom: 0;
+}
+
+.fl-dialog__footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+@keyframes fl-dialog-fade {
+  from {
+    opacity: 0;
+  }
+}

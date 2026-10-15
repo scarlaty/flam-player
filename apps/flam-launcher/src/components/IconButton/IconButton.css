@@ -1,0 +1,43 @@
+.fl-icon-button {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--easing);
+}
+
+.fl-icon-button--sm {
+  width: 2rem;
+  height: 2rem;
+}
+
+.fl-icon-button--secondary {
+  background: var(--color-surface);
+  border-color: var(--color-border-strong);
+}
+
+.fl-icon-button--primary {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+.fl-icon-button--ghost:hover:not(:disabled),
+.fl-icon-button--secondary:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+}
+
+.fl-icon-button--primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.fl-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}

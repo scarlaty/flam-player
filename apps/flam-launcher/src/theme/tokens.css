@@ -1,0 +1,109 @@
+/*
+ * Jetons du design system (voir docs/DESIGN.md).
+ * Chaque couleur est déclarée une seule fois avec light-dark(clair, sombre) :
+ * le thème suit `color-scheme`, piloté par l'attribut data-theme de <html>
+ * (absent = préférence du système).
+ */
+:root {
+  color-scheme: light dark;
+
+  /* Surfaces */
+  --color-bg: light-dark(#fbf7f2, #1c1714);
+  --color-surface: light-dark(#ffffff, #27201b);
+  --color-surface-sunken: light-dark(#f4ede4, #15110e);
+  --color-surface-hover: light-dark(#efe5d8, #342b24);
+  --color-backdrop: light-dark(rgb(42 33 27 / 45%), rgb(0 0 0 / 60%));
+
+  /* Bordures */
+  --color-border: light-dark(#e3d8ca, #3d332b);
+  --color-border-strong: light-dark(#8f7c6a, #8a7a6c);
+
+  /* Texte */
+  --color-text: light-dark(#2a211b, #f5eee7);
+  --color-text-muted: light-dark(#66574b, #c2b4a7);
+
+  /* Action principale : brique chaleureuse */
+  --color-primary: light-dark(#b5441b, #f0a07a);
+  --color-primary-hover: light-dark(#983612, #f6b797);
+  --color-on-primary: light-dark(#ffffff, #2a1206);
+  --color-primary-soft: light-dark(#fbe3d6, #4a2a1c);
+  --color-on-primary-soft: light-dark(#8a2f0f, #ffd3bd);
+
+  /* Danger */
+  --color-danger: light-dark(#b3261e, #f08a80);
+  --color-danger-hover: light-dark(#931d17, #f5a59d);
+  --color-on-danger: light-dark(#ffffff, #2a0a06);
+
+  /* Tons des badges (fond / texte) */
+  --tone-neutral-bg: light-dark(#efe8df, #3a3028);
+  --tone-neutral-fg: light-dark(#4d4036, #eaded2);
+  --tone-info-bg: light-dark(#dcecf7, #183447);
+  --tone-info-fg: light-dark(#18527a, #a9d6f5);
+  --tone-success-bg: light-dark(#dcefdc, #1b3a20);
+  --tone-success-fg: light-dark(#23602c, #a8dcae);
+  --tone-warning-bg: light-dark(#fbecc8, #42320d);
+  --tone-warning-fg: light-dark(#6f4a00, #f3d389);
+  --tone-danger-bg: light-dark(#fadcd8, #4a1d18);
+  --tone-danger-fg: light-dark(#9c2318, #ffb4a9);
+
+  /* Focus : bleu distinct de la couleur d'action pour rester visible partout */
+  --color-focus: light-dark(#1f5fc4, #8fb8ff);
+  --focus-ring: 0 0 0 3px var(--color-focus);
+
+  /* Typographie */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.25rem;
+  --font-size-xl: 1.625rem;
+  --font-weight-regular: 400;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --line-height: 1.5;
+  --line-height-tight: 1.25;
+
+  /* Espacements (échelle de 4 px) */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  /* Formes */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+  --shadow-sm: 0 1px 2px light-dark(rgb(42 33 27 / 10%), rgb(0 0 0 / 40%));
+  --shadow-md: 0 4px 14px light-dark(rgb(42 33 27 / 12%), rgb(0 0 0 / 45%));
+  --shadow-lg: 0 12px 32px light-dark(rgb(42 33 27 / 18%), rgb(0 0 0 / 55%));
+
+  /* Mise en page */
+  --sidebar-width: 15rem;
+  --taskpanel-width: 18rem;
+  --header-height: 3.5rem;
+  --card-min-width: 10.5rem;
+
+  /* Mouvement */
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --easing: cubic-bezier(0.2, 0, 0, 1);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+  }
+}

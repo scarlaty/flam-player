@@ -1,0 +1,36 @@
+.fl-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0.125rem var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.fl-badge--neutral {
+  background: var(--tone-neutral-bg);
+  color: var(--tone-neutral-fg);
+}
+
+.fl-badge--info {
+  background: var(--tone-info-bg);
+  color: var(--tone-info-fg);
+}
+
+.fl-badge--success {
+  background: var(--tone-success-bg);
+  color: var(--tone-success-fg);
+}
+
+.fl-badge--warning {
+  background: var(--tone-warning-bg);
+  color: var(--tone-warning-fg);
+}
+
+.fl-badge--danger {
+  background: var(--tone-danger-bg);
+  color: var(--tone-danger-fg);
+}

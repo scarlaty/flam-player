@@ -1,14 +1,49 @@
-:root {
-  font-family: system-ui, "Segoe UI", sans-serif;
-  color-scheme: light dark;
+@import "./theme/tokens.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
 }
 
 body {
   margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Focus visible sur tout élément actif, au clavier uniquement. */
+:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+a {
+  color: var(--color-primary);
+}
+
+.fl-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .app {
   display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
   min-height: 100vh;
   align-items: center;
   justify-content: center;

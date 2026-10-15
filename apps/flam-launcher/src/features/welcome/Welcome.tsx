@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getAppInfo, type AppInfo } from "../../api/appInfo";
+import { t } from "../../i18n";
 
 export function Welcome() {
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -21,15 +22,9 @@ export function Welcome() {
 
   return (
     <section>
-      <h1>Bienvenue</h1>
-      {info && (
-        <p>
-          {info.name} — version {info.version}
-        </p>
-      )}
-      {failed && (
-        <p role="alert">Impossible de lire les informations de l'application.</p>
-      )}
+      <h1>{t.welcome.title}</h1>
+      {info && <p>{t.welcome.version(info.name, info.version)}</p>}
+      {failed && <p role="alert">{t.welcome.error}</p>}
     </section>
   );
 }

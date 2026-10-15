@@ -1,0 +1,109 @@
+.fl-shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) auto;
+  height: 100vh;
+  background: var(--color-bg);
+}
+
+.fl-shell__skip {
+  position: absolute;
+  z-index: 100;
+  inset-block-start: var(--space-2);
+  inset-inline-start: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-weight: var(--font-weight-semibold);
+  transform: translateY(-200%);
+}
+
+.fl-shell__skip:focus {
+  transform: none;
+}
+
+.fl-shell__sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-3);
+  border-inline-end: 1px solid var(--color-border);
+  background: var(--color-surface-sunken);
+}
+
+.fl-shell__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+}
+
+.fl-shell__content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.fl-shell__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: var(--header-height);
+  padding: var(--space-3) var(--space-5);
+  border-block-end: 1px solid var(--color-border);
+}
+
+.fl-shell__title {
+  flex: 1;
+  margin: 0;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.fl-shell__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.fl-shell__main {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-5);
+}
+
+.fl-shell__main:focus {
+  outline: none;
+}
+
+.fl-shell__aside {
+  width: var(--taskpanel-width);
+  overflow-y: auto;
+  border-inline-start: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+/* Fenêtre étroite (largeur minimale 640 px) : la barre latérale se resserre et le
+   panneau de tâches passe sous le contenu. */
+@media (width < 900px) {
+  .fl-shell {
+    grid-template-columns: 12rem minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .fl-shell__sidebar {
+    grid-row: 1 / span 2;
+  }
+
+  .fl-shell__aside {
+    grid-column: 2;
+    width: auto;
+    max-height: 40vh;
+    border-inline-start: 0;
+    border-block-start: 1px solid var(--color-border);
+  }
+}
