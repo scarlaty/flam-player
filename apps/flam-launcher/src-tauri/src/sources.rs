@@ -1,0 +1,646 @@
+//! Registre des sources d'histoires : `sources.json` (catalogues et dossiers locaux),
+//! source par défaut « Telmi Store » et source implicite « Mes histoires ».
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use tauri::State;
+
+use crate::storage::{self, ConfigState, MigrationStep};
+use crate::{AppError, AppResult};
+
+/// Version courante du schéma de `sources.json`.
+pub const SCHEMA_VERSION: u32 = 1;
+const FILE_NAME: &str = "sources.json";
+
+/// URL du catalogue Telmi Store (source par défaut).
+pub const TELMI_STORE_URL: &str = "https://gist.githubusercontent.com/DantSu/49ed776755f3a01c995e78e3fd1cb79f/raw/telmi-interactive.json";
+/// Identifiant stable de la source Telmi Store créée par défaut.
+pub const TELMI_STORE_ID: &str = "telmi-store";
+/// Identifiant de la source implicite « Mes histoires » (jamais écrite dans `sources.json`).
+pub const LIBRARY_ID: &str = "library";
+const LIBRARY_NAME: &str = "Mes histoires";
+const MAX_NAME_LEN: usize = 100;
+
+/// Une source d'histoires (miroir de `Source` dans `src/api/sources.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Source {
+    /// Bibliothèque des histoires installées : implicite, première, non modifiable.
+    Library { id: String, name: String },
+    /// Catalogue JSON au format Telmi Store.
+    Catalog {
+        id: String,
+        name: String,
+        url: String,
+    },
+    /// Dossier local d'archives (`.zip`, `.plain`, `.plain.pk`).
+    Folder {
+        id: String,
+        name: String,
+        path: String,
+    },
+}
+
+impl Source {
+    pub fn id(&self) -> &str {
+        match self {
+            Source::Library { id, .. } | Source::Catalog { id, .. } | Source::Folder { id, .. } => {
+                id
+            }
+        }
+    }
+
+    fn library() -> Self {
+        Source::Library {
+            id: LIBRARY_ID.into(),
+            name: LIBRARY_NAME.into(),
+        }
+    }
+
+    fn telmi_store() -> Self {
+        Source::Catalog {
+            id: TELMI_STORE_ID.into(),
+            name: "Telmi Store".into(),
+            url: TELMI_STORE_URL.into(),
+        }
+    }
+}
+
+/// Données d'une source à créer ou à mettre à jour (sans identifiant).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SourceInput {
+    Catalog { name: String, url: String },
+    Folder { name: String, path: String },
+}
+
+/// Contenu de `sources.json`.
+#[derive(Debug, Serialize, Deserialize)]
+struct SourcesFile {
+    schema_version: u32,
+    sources: Vec<Source>,
+}
+
+impl Default for SourcesFile {
+    fn default() -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            sources: vec![Source::telmi_store()],
+        }
+    }
+}
+
+/// Migrations de schéma de `sources.json` (aucune pour l'instant : v0 -> v1 ajoute
+/// seulement `schema_version`).
+fn migrate(_from: u32, _object: &mut serde_json::Map<String, serde_json::Value>) {}
+const MIGRATE: MigrationStep = migrate;
+
+/// Valide une URL de catalogue (http/https avec hôte) et la renvoie normalisée.
+pub fn validate_catalog_url(raw: &str) -> AppResult<String> {
+    let raw = raw.trim();
+    let url = url::Url::parse(raw)
+        .map_err(|err| AppError::Validation(format!("URL invalide « {raw} » : {err}")))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(AppError::Validation(format!(
+            "l'URL « {raw} » doit commencer par http:// ou https://"
+        )));
+    }
+    Ok(url.into())
+}
+
+fn validate_name(raw: &str) -> AppResult<String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(AppError::Validation("le nom ne peut pas être vide".into()));
+    }
+    if name.chars().count() > MAX_NAME_LEN {
+        return Err(AppError::Validation(format!(
+            "le nom ne peut pas dépasser {MAX_NAME_LEN} caractères"
+        )));
+    }
+    Ok(name.to_string())
+}
+
+fn validate_folder(raw: &str) -> AppResult<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(AppError::Validation(
+            "le chemin du dossier ne peut pas être vide".into(),
+        ));
+    }
+    let path = Path::new(raw);
+    if !path.is_absolute() {
+        return Err(AppError::Validation(format!(
+            "le chemin « {raw} » doit être absolu"
+        )));
+    }
+    if !path.is_dir() {
+        return Err(AppError::Validation(format!(
+            "« {raw} » n'est pas un dossier existant"
+        )));
+    }
+    Ok(raw.to_string())
+}
+
+/// Valide une entrée et construit la source correspondante avec l'identifiant donné.
+fn build(id: String, input: SourceInput) -> AppResult<Source> {
+    Ok(match input {
+        SourceInput::Catalog { name, url } => Source::Catalog {
+            id,
+            name: validate_name(&name)?,
+            url: validate_catalog_url(&url)?,
+        },
+        SourceInput::Folder { name, path } => Source::Folder {
+            id,
+            name: validate_name(&name)?,
+            path: validate_folder(&path)?,
+        },
+    })
+}
+
+/// Accès à `sources.json` dans un dossier de configuration (injecté pour les tests).
+pub struct SourcesStore {
+    path: PathBuf,
+}
+
+impl SourcesStore {
+    pub fn new(config_dir: &Path) -> Self {
+        Self {
+            path: config_dir.join(FILE_NAME),
+        }
+    }
+
+    /// Charge le fichier. Absent ou corrompu : valeurs par défaut (Telmi Store), écrites sur disque.
+    fn load(&self) -> AppResult<SourcesFile> {
+        let loaded = storage::load_versioned::<SourcesFile>(&self.path, SCHEMA_VERSION, MIGRATE)?;
+        let mut file = match loaded {
+            Some(file) => file,
+            None => {
+                let file = SourcesFile::default();
+                storage::write_json(&self.path, &file)?;
+                return Ok(file);
+            }
+        };
+        // La source implicite n'est jamais stockée.
+        file.sources
+            .retain(|source| !matches!(source, Source::Library { .. }));
+        Ok(file)
+    }
+
+    fn save(&self, file: &SourcesFile) -> AppResult<()> {
+        storage::write_json(&self.path, file)
+    }
+
+    /// Liste ordonnée : « Mes histoires » d'abord, puis les sources enregistrées.
+    pub fn list(&self) -> AppResult<Vec<Source>> {
+        let mut sources = vec![Source::library()];
+        sources.extend(self.load()?.sources);
+        Ok(sources)
+    }
+
+    /// Ajoute une source en fin de liste.
+    pub fn add(&self, input: SourceInput) -> AppResult<Source> {
+        let mut file = self.load()?;
+        let source = build(uuid::Uuid::new_v4().to_string(), input)?;
+        file.sources.push(source.clone());
+        self.save(&file)?;
+        Ok(source)
+    }
+
+    /// Met à jour une source existante (le type ne peut pas changer).
+    pub fn update(&self, id: &str, input: SourceInput) -> AppResult<Source> {
+        reject_library(id, "modifiée")?;
+        let mut file = self.load()?;
+        let slot = file
+            .sources
+            .iter_mut()
+            .find(|source| source.id() == id)
+            .ok_or_else(|| not_found(id))?;
+        let updated = build(id.to_string(), input)?;
+        if std::mem::discriminant(slot) != std::mem::discriminant(&updated) {
+            return Err(AppError::Validation(
+                "le type d'une source ne peut pas être modifié".into(),
+            ));
+        }
+        *slot = updated.clone();
+        self.save(&file)?;
+        Ok(updated)
+    }
+
+    /// Supprime une source (sauf « Mes histoires »).
+    pub fn remove(&self, id: &str) -> AppResult<()> {
+        reject_library(id, "supprimée")?;
+        let mut file = self.load()?;
+        let before = file.sources.len();
+        file.sources.retain(|source| source.id() != id);
+        if file.sources.len() == before {
+            return Err(not_found(id));
+        }
+        self.save(&file)
+    }
+
+    /// Réordonne les sources enregistrées : `ids` doit être une permutation exacte de leurs
+    /// identifiants (sans « Mes histoires », toujours en tête).
+    pub fn reorder(&self, ids: &[String]) -> AppResult<Vec<Source>> {
+        if ids.iter().any(|id| id == LIBRARY_ID) {
+            return Err(AppError::Validation(
+                "« Mes histoires » est toujours en première position".into(),
+            ));
+        }
+        let mut file = self.load()?;
+        let mut remaining = std::mem::take(&mut file.sources);
+        let mut ordered = Vec::with_capacity(remaining.len());
+        for id in ids {
+            let index = remaining
+                .iter()
+                .position(|source| source.id() == id)
+                .ok_or_else(|| {
+                    AppError::Validation(format!("identifiant inconnu ou en double : {id}"))
+                })?;
+            ordered.push(remaining.remove(index));
+        }
+        if !remaining.is_empty() {
+            return Err(AppError::Validation(
+                "la liste doit contenir toutes les sources".into(),
+            ));
+        }
+        file.sources = ordered;
+        self.save(&file)?;
+        self.list()
+    }
+}
+
+fn reject_library(id: &str, action: &str) -> AppResult<()> {
+    if id == LIBRARY_ID {
+        return Err(AppError::Validation(format!(
+            "« {LIBRARY_NAME} » ne peut pas être {action}"
+        )));
+    }
+    Ok(())
+}
+
+fn not_found(id: &str) -> AppError {
+    AppError::NotFound(format!("source introuvable : {id}"))
+}
+
+/// Liste les sources (« Mes histoires » en tête).
+#[tauri::command]
+pub async fn sources_list(state: State<'_, ConfigState>) -> AppResult<Vec<Source>> {
+    let _guard = state.guard();
+    SourcesStore::new(&state.dir).list()
+}
+
+/// Ajoute une source de type catalogue ou dossier.
+#[tauri::command]
+pub async fn sources_add(state: State<'_, ConfigState>, input: SourceInput) -> AppResult<Source> {
+    let _guard = state.guard();
+    SourcesStore::new(&state.dir).add(input)
+}
+
+/// Met à jour le nom et l'URL/le chemin d'une source.
+#[tauri::command]
+pub async fn sources_update(
+    state: State<'_, ConfigState>,
+    id: String,
+    input: SourceInput,
+) -> AppResult<Source> {
+    let _guard = state.guard();
+    SourcesStore::new(&state.dir).update(&id, input)
+}
+
+/// Supprime une source.
+#[tauri::command]
+pub async fn sources_remove(state: State<'_, ConfigState>, id: String) -> AppResult<()> {
+    let _guard = state.guard();
+    SourcesStore::new(&state.dir).remove(&id)
+}
+
+/// Réordonne les sources enregistrées et renvoie la liste complète.
+#[tauri::command]
+pub async fn sources_reorder(
+    state: State<'_, ConfigState>,
+    ids: Vec<String>,
+) -> AppResult<Vec<Source>> {
+    let _guard = state.guard();
+    SourcesStore::new(&state.dir).reorder(&ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn store() -> (tempfile::TempDir, SourcesStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SourcesStore::new(dir.path());
+        (dir, store)
+    }
+
+    fn catalog(name: &str, url: &str) -> SourceInput {
+        SourceInput::Catalog {
+            name: name.into(),
+            url: url.into(),
+        }
+    }
+
+    fn ids(sources: &[Source]) -> Vec<String> {
+        sources.iter().map(|s| s.id().to_string()).collect()
+    }
+
+    #[test]
+    fn creation_par_defaut_avec_library_et_telmi_store() {
+        let (dir, store) = store();
+        let list = store.list().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0], Source::library());
+        assert_eq!(list[1], Source::telmi_store());
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join("sources.json")).unwrap())
+                .unwrap();
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["sources"].as_array().unwrap().len(), 1);
+        assert_eq!(json["sources"][0]["type"], "catalog");
+        assert_eq!(json["sources"][0]["url"], TELMI_STORE_URL);
+    }
+
+    #[test]
+    fn fichier_corrompu_sauvegarde_puis_valeurs_par_defaut() {
+        let (dir, store) = store();
+        fs::write(dir.path().join("sources.json"), "}{ pas du json").unwrap();
+        let list = store.list().unwrap();
+        assert_eq!(ids(&list), [LIBRARY_ID, TELMI_STORE_ID]);
+        let baks: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("sources.json.") && n.ends_with(".bak"))
+            .collect();
+        assert_eq!(baks.len(), 1);
+        // Le fichier par défaut a été réécrit.
+        assert!(dir.path().join("sources.json").exists());
+    }
+
+    #[test]
+    fn telmi_store_supprime_ne_revient_pas() {
+        let (_dir, store) = store();
+        store.remove(TELMI_STORE_ID).unwrap();
+        assert_eq!(ids(&store.list().unwrap()), [LIBRARY_ID]);
+    }
+
+    #[test]
+    fn la_migration_depuis_un_fichier_sans_version_conserve_les_sources() {
+        let (dir, store) = store();
+        fs::write(
+            dir.path().join("sources.json"),
+            r#"{"sources":[{"type":"catalog","id":"a","name":"A","url":"https://exemple.org/c.json"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(ids(&store.list().unwrap()), [LIBRARY_ID, "a"]);
+    }
+
+    #[test]
+    fn library_stockee_dans_le_fichier_est_ignoree() {
+        let (dir, store) = store();
+        fs::write(
+            dir.path().join("sources.json"),
+            r#"{"schema_version":1,"sources":[{"type":"library","id":"x","name":"X"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(ids(&store.list().unwrap()), [LIBRARY_ID]);
+    }
+
+    #[test]
+    fn version_de_schema_future_est_refusee() {
+        let (dir, store) = store();
+        fs::write(
+            dir.path().join("sources.json"),
+            r#"{"schema_version":99,"sources":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(store.list().unwrap_err().kind(), "config_version");
+    }
+
+    #[test]
+    fn ajout_catalogue_normalise_et_persiste() {
+        let (_dir, store) = store();
+        let added = store
+            .add(catalog("  Mon catalogue ", " https://exemple.org/c.json "))
+            .unwrap();
+        match &added {
+            Source::Catalog { name, url, .. } => {
+                assert_eq!(name, "Mon catalogue");
+                assert_eq!(url, "https://exemple.org/c.json");
+            }
+            other => panic!("type inattendu : {other:?}"),
+        }
+        let list = store.list().unwrap();
+        assert_eq!(list.last().unwrap(), &added);
+    }
+
+    #[test]
+    fn ajout_dossier_existant() {
+        let (_dir, store) = store();
+        let target = tempfile::tempdir().unwrap();
+        let path = target.path().to_str().unwrap().to_string();
+        let added = store
+            .add(SourceInput::Folder {
+                name: "Dossier".into(),
+                path: path.clone(),
+            })
+            .unwrap();
+        assert!(matches!(added, Source::Folder { path: p, .. } if p == path));
+    }
+
+    #[test]
+    fn validation_des_urls() {
+        let (_dir, store) = store();
+        for bad in [
+            "",
+            "pas une url",
+            "ftp://exemple.org/c.json",
+            "file:///C:/c.json",
+            "https://",
+        ] {
+            let err = store.add(catalog("X", bad)).unwrap_err();
+            assert_eq!(err.kind(), "validation", "{bad}");
+        }
+    }
+
+    #[test]
+    fn validation_des_noms() {
+        let (_dir, store) = store();
+        let url = "https://exemple.org/c.json";
+        assert_eq!(
+            store.add(catalog("   ", url)).unwrap_err().kind(),
+            "validation"
+        );
+        let long = "x".repeat(101);
+        assert_eq!(
+            store.add(catalog(&long, url)).unwrap_err().kind(),
+            "validation"
+        );
+        assert!(store.add(catalog(&"é".repeat(100), url)).is_ok());
+    }
+
+    #[test]
+    fn validation_des_chemins() {
+        let (dir, store) = store();
+        let file = dir.path().join("fichier.txt");
+        fs::write(&file, "x").unwrap();
+        let missing = dir.path().join("absent");
+        for bad in [
+            "".to_string(),
+            "relatif/dossier".to_string(),
+            file.to_str().unwrap().to_string(),
+            missing.to_str().unwrap().to_string(),
+        ] {
+            let err = store
+                .add(SourceInput::Folder {
+                    name: "D".into(),
+                    path: bad.clone(),
+                })
+                .unwrap_err();
+            assert_eq!(err.kind(), "validation", "{bad}");
+        }
+        // Rien n'a été ajouté.
+        assert_eq!(store.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn mise_a_jour() {
+        let (_dir, store) = store();
+        let updated = store
+            .update(
+                TELMI_STORE_ID,
+                catalog("Renommé", "https://exemple.org/autre.json"),
+            )
+            .unwrap();
+        assert_eq!(
+            updated,
+            Source::Catalog {
+                id: TELMI_STORE_ID.into(),
+                name: "Renommé".into(),
+                url: "https://exemple.org/autre.json".into()
+            }
+        );
+        assert_eq!(store.list().unwrap()[1], updated);
+    }
+
+    #[test]
+    fn mise_a_jour_erreurs() {
+        let (dir, store) = store();
+        let url = "https://exemple.org/c.json";
+        assert_eq!(
+            store
+                .update("inconnu", catalog("X", url))
+                .unwrap_err()
+                .kind(),
+            "not_found"
+        );
+        assert_eq!(
+            store
+                .update(LIBRARY_ID, catalog("X", url))
+                .unwrap_err()
+                .kind(),
+            "validation"
+        );
+        // Changement de type interdit.
+        let err = store
+            .update(
+                TELMI_STORE_ID,
+                SourceInput::Folder {
+                    name: "D".into(),
+                    path: dir.path().to_str().unwrap().into(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.kind(), "validation");
+        // Entrée invalide : source inchangée.
+        assert!(store.update(TELMI_STORE_ID, catalog("", url)).is_err());
+        assert_eq!(store.list().unwrap()[1], Source::telmi_store());
+    }
+
+    #[test]
+    fn suppression() {
+        let (_dir, store) = store();
+        let added = store
+            .add(catalog("A", "https://exemple.org/a.json"))
+            .unwrap();
+        store.remove(added.id()).unwrap();
+        assert_eq!(ids(&store.list().unwrap()), [LIBRARY_ID, TELMI_STORE_ID]);
+        assert_eq!(store.remove(added.id()).unwrap_err().kind(), "not_found");
+    }
+
+    #[test]
+    fn mes_histoires_n_est_pas_supprimable() {
+        let (_dir, store) = store();
+        assert_eq!(store.remove(LIBRARY_ID).unwrap_err().kind(), "validation");
+        assert_eq!(store.list().unwrap()[0], Source::library());
+    }
+
+    #[test]
+    fn reordonnancement() {
+        let (_dir, store) = store();
+        let a = store
+            .add(catalog("A", "https://exemple.org/a.json"))
+            .unwrap();
+        let b = store
+            .add(catalog("B", "https://exemple.org/b.json"))
+            .unwrap();
+        let reordered = store
+            .reorder(&[b.id().into(), TELMI_STORE_ID.into(), a.id().into()])
+            .unwrap();
+        let expected = [LIBRARY_ID, b.id(), TELMI_STORE_ID, a.id()];
+        assert_eq!(ids(&reordered), expected);
+        // L'ordre est persisté.
+        assert_eq!(ids(&store.list().unwrap()), expected);
+    }
+
+    #[test]
+    fn reordonnancement_invalide() {
+        let (_dir, store) = store();
+        let a = store
+            .add(catalog("A", "https://exemple.org/a.json"))
+            .unwrap();
+        let before = store.list().unwrap();
+        let cases: Vec<Vec<String>> = vec![
+            vec![],
+            vec![TELMI_STORE_ID.into()],
+            vec![TELMI_STORE_ID.into(), TELMI_STORE_ID.into()],
+            vec![TELMI_STORE_ID.into(), "inconnu".into()],
+            vec![LIBRARY_ID.into(), TELMI_STORE_ID.into(), a.id().into()],
+        ];
+        for ids in cases {
+            let err = store.reorder(&ids).unwrap_err();
+            assert_eq!(err.kind(), "validation", "{ids:?}");
+        }
+        assert_eq!(store.list().unwrap(), before);
+    }
+
+    #[test]
+    fn les_identifiants_sont_uniques() {
+        let (_dir, store) = store();
+        let url = "https://exemple.org/a.json";
+        let a = store.add(catalog("A", url)).unwrap();
+        let b = store.add(catalog("A", url)).unwrap();
+        assert_ne!(a.id(), b.id());
+    }
+
+    #[test]
+    fn serialisation_json_des_sources() {
+        let json = serde_json::to_value(Source::library()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"type":"library","id":"library","name":"Mes histoires"})
+        );
+        let input: SourceInput =
+            serde_json::from_str(r#"{"type":"folder","name":"D","path":"C:\\x"}"#).unwrap();
+        assert_eq!(
+            input,
+            SourceInput::Folder {
+                name: "D".into(),
+                path: "C:\\x".into()
+            }
+        );
+    }
+}

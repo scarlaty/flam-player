@@ -2,6 +2,11 @@
 
 mod app;
 mod error;
+mod settings;
+mod sources;
+mod storage;
+
+use tauri::Manager;
 
 pub use error::{AppError, AppResult};
 
@@ -16,7 +21,20 @@ pub fn run() {
     tracing::info!("démarrage de flam-launcher {}", env!("CARGO_PKG_VERSION"));
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![app::app_info])
+        .setup(|app| {
+            app.manage(storage::ConfigState::new(storage::config_dir()?));
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            app::app_info,
+            settings::settings_get,
+            settings::settings_set,
+            sources::sources_list,
+            sources::sources_add,
+            sources::sources_update,
+            sources::sources_remove,
+            sources::sources_reorder,
+        ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application Tauri");
 }
