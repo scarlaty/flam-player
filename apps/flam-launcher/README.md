@@ -42,22 +42,23 @@ apps/flam-launcher/
     src/
       lib.rs               Initialisation (traces, builder Tauri)
       app.rs               Commandes générales (`app_info`)
-      error.rs             `AppError` (thiserror), sérialisée en texte vers le front
+      error.rs             `AppError` (thiserror), sérialisée en `{ kind, message }`
+      storage.rs           Persistance JSON : écriture atomique, `*.bak`, migration de schéma
+      settings.rs          `settings.json`, détection du player et de Python, commandes `settings_*`
+      sources.rs           `sources.json`, source par défaut et implicite, commandes `sources_*`
 ```
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`. Prévus (un module par responsabilité, créés avec leur issue) :
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `sources`. Prévus (un module par responsabilité, créés avec leur issue) :
 
-| Module     | Rôle                                                             |
-| ---------- | ---------------------------------------------------------------- |
-| `sources`  | Registre des sources d'histoires (catalogues, dossiers)          |
-| `catalog`  | Lecture des catalogues JSON au format Telmi Store                |
-| `folder`   | Source dossier local (`.zip`, `.plain`, `.plain.pk`)             |
-| `install`  | Pipeline téléchargement, conversion (`telmi2flam`), installation |
-| `player`   | Lancement et suivi de `flam-player`                              |
-| `settings` | Lecture/écriture de la configuration                             |
-| `compat`   | Statut de compatibilité d'une histoire                           |
+| Module    | Rôle                                                             |
+| --------- | ---------------------------------------------------------------- |
+| `catalog` | Lecture des catalogues JSON au format Telmi Store                |
+| `folder`  | Source dossier local (`.zip`, `.plain`, `.plain.pk`)             |
+| `install` | Pipeline téléchargement, conversion (`telmi2flam`), installation |
+| `player`  | Lancement et suivi de `flam-player`                              |
+| `compat`  | Statut de compatibilité d'une histoire                           |
 
 ### Commandes Tauri
 
@@ -67,11 +68,28 @@ enregistrées dans `generate_handler!` de `lib.rs`) : pas de fichier `commands.r
 Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enregistrées dans
 `generate_handler!` (`lib.rs`). Chacune a un wrapper typé dans `src/api/`.
 
-| Commande   | Retour              | État     |
-| ---------- | ------------------- | -------- |
-| `app_info` | `{ name, version }` | présente |
+| Commande              | Arguments                  | Retour                      | Module     |
+| --------------------- | -------------------------- | --------------------------- | ---------- |
+| `app_info`            |                            | `{ name, version }`         | `app`      |
+| `settings_get`        |                            | `SettingsView`              | `settings` |
+| `settings_set`        | `settings: Settings`       | `SettingsView`              | `settings` |
+| `sources_list`        |                            | `SourcesView`               | `sources`  |
+| `sources_add`         | `input: SourceInput`       | `Source`                    | `sources`  |
+| `sources_update`      | `id`, `input: SourceInput` | `Source`                    | `sources`  |
+| `sources_remove`      | `id`                       | rien                        | `sources`  |
+| `sources_reorder`     | `ids: string[]`            | `Source[]` (liste complète) | `sources`  |
+| `config_ack_recovery` | `file?: string`            | rien                        | `storage`  |
 
-Les commandes des modules prévus seront ajoutées avec leurs issues.
+`sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
+renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).
+`settings_set` **remplace l'objet complet** (pas de fusion partielle).
+
+Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`), `src/api/sources.ts`
+(`listSources`, `addSource`, `updateSource`, `removeSource`, `reorderSources`) et
+`src/api/recovery.ts` (`ackRecovery`). La logique
+(`SettingsStore`, `SourcesStore`, détection) ne dépend pas de Tauri et reçoit son dossier de
+configuration en paramètre : elle est testée sur des dossiers temporaires ; les commandes
+ne sont que de fines enveloppes qui prennent un verrou (`ConfigState`) autour de chaque opération.
 
 ### Erreurs
 
@@ -82,6 +100,22 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 (`kind: "unknown"` si la forme est inattendue). Convention : chaque module ajoute ses variantes
 à `AppError` avec un `kind` stable ; le front teste le `kind`, jamais le `message`.
 
+| `kind`           | Sens                                                                        |
+| ---------------- | --------------------------------------------------------------------------- |
+| `io`             | Erreur d'entrée/sortie                                                      |
+| `validation`     | Valeur refusée (URL, chemin, extension, nom, ordre) ou opération interdite  |
+| `not_found`      | Élément introuvable (identifiant de source inconnu)                         |
+| `config_version` | Fichier de configuration écrit par une version plus récente (laissé intact) |
+| `config_dir`     | Dossier de configuration introuvable                                        |
+| `serialization`  | Échec de sérialisation JSON                                                 |
+| `unknown`        | Côté front uniquement : erreur de forme inattendue                          |
+
+Un fichier de configuration **corrompu** n'est pas une erreur : il est renommé en
+`<fichier>.<AAAAMMJJ-HHMMSS>.bak`, un avertissement est tracé et les valeurs par défaut sont utilisées.
+Cette restauration est mémorisée dans `recovery.json` et renvoyée dans le champ `recovery`
+(`{ file, backup }`) de `settings_get` / `sources_list` **jusqu'à** `config_ack_recovery`
+(même après un redémarrage) : l'interface avertit l'utilisateur puis acquitte.
+
 ### Événements
 
 Convention : événements émis par le backend, nommés `domaine://action` (ex. `install://progress`),
@@ -90,9 +124,93 @@ la progression d'installation est le premier cas prévu.
 
 ### Données
 
-- Configuration : `%APPDATA%/flam-launcher` (sources, paramètres).
+- Configuration : `%APPDATA%/flam-launcher` (`settings.json`, `sources.json`), détaillée ci-dessous.
 - Cache (téléchargements, histoires converties) : dossier configurable, par défaut sous les
   données locales de l'application. Jamais dans le dépôt.
+
+#### `settings.json`
+
+```json
+{
+  "schema_version": 1,
+  "player_path": null,
+  "python_path": null,
+  "cache_dir": null,
+  "default_catalog_url": "https://gist.githubusercontent.com/DantSu/49ed776755f3a01c995e78e3fd1cb79f/raw/telmi-interactive.json"
+}
+```
+
+Un chemin à `null` signifie « automatique » ; `settings_get` renvoie aussi les valeurs effectives
+(`resolved`) :
+
+- `player_path` : `flam-player.exe` à côté de l'exécutable de l'appli, sinon (build de
+  développement) `build/flam-player.exe` dans un dossier ancêtre (racine du dépôt) ;
+- `python_path` : `python.exe`, `python3.exe` puis `py.exe` (lanceur Windows) trouvés dans le
+  `PATH` (aucun processus ni script n'est exécuté ; les entrées relatives du `PATH` sont ignorées) ;
+- `cache_dir` : `%LOCALAPPDATA%/flam-launcher/cache`.
+
+**Alias du Microsoft Store** : un fichier vide dans `WindowsApps` est ignoré (savoir s'il désigne
+un Python réellement installé exigerait de le lancer). Si c'est tout ce qui est trouvé,
+`issues` contient `{ field: "python_path", kind: "store_alias" }` : l'interface invite à choisir
+le chemin de `python.exe`.
+
+`settings_set` normalise (espaces, chaîne vide = automatique) puis valide :
+
+- `player_path` et `python_path` : chemin **absolu**, **local** (UNC `\\serveur\…`, `\\?\UNC\…`
+  et lecteurs réseau refusés), extension `.exe` (insensible à la casse), fichier existant ;
+- `cache_dir` : chemin absolu qui n'est pas un fichier, ni racine de disque, ni dossier
+  utilisateur, ni dossier Windows. L'application ne supprime **jamais** que les sous-dossiers
+  qu'elle a elle-même créés dans le cache, jamais le dossier configuré lui-même ;
+- `default_catalog_url` : URL http(s) avec hôte, 2048 caractères max, sans identifiants
+  (`user:pass@`).
+
+Le fichier existant est relu avant d'écrire : version de schéma future refusée sans toucher au
+fichier, fichier corrompu sauvegardé en `*.bak`.
+
+**Revalidation à la lecture** : à chaque `settings_get`, une valeur configurée devenue invalide
+ou disparue est écartée au profit de la détection automatique dans `resolved`, et signalée dans
+`issues` (`[{ field, kind, message }]`, `kind` = `invalid_path`, `not_found` ou `store_alias`).
+La valeur enregistrée dans `settings` n'est pas modifiée. `resolved.*` n'est **pas une
+garantie** : le fichier peut disparaître ensuite, le lancement (#16) revérifie juste avant
+d'exécuter. Accesseurs Rust pour les issues suivantes : `SourcesStore::get(id)` et
+`SettingsStore::resolved_cache_dir` (dossier créé si absent).
+
+#### `sources.json`
+
+```json
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "type": "catalog",
+      "id": "telmi-store",
+      "name": "Telmi Store",
+      "url": "https://…/telmi-interactive.json"
+    },
+    { "type": "folder", "id": "3f2c…", "name": "Mon dossier", "path": "C:\\Histoires" }
+  ]
+}
+```
+
+- Liste ordonnée ; les identifiants sont des UUID v4 (« Telmi Store » : `telmi-store`).
+- « Telmi Store » est créée avec le fichier ; une fois supprimée, elle ne revient pas.
+- « Mes histoires » (`type: "library"`, id `library`) est **implicite** : jamais écrite dans le
+  fichier, toujours renvoyée en premier par `sources_list`, ni modifiable, ni supprimable, ni
+  réordonnable.
+- Un fichier édité à la main avec des identifiants en double est dédoublonné au chargement
+  (premier conservé, avertissement tracé).
+- Validation : nom non vide sans caractère de contrôle (100 caractères max), URL http(s) avec
+  hôte, 2048 caractères max, sans identifiants, dossier absolu existant,
+  type immuable à la mise à jour ; `sources_reorder` exige une permutation exacte des identifiants
+  enregistrés.
+
+#### Écriture, corruption, migration
+
+- Écritures atomiques : fichier temporaire voisin (nom unique : pid + compteur) puis renommage,
+  avec quelques nouvelles tentatives si l'accès est refusé (antivirus).
+- `schema_version` absent = version 0. Les migrations s'appliquent version par version
+  (`MigrationStep` dans `storage.rs`) ; un fichier de version **supérieure** à celle de
+  l'application est refusé (`config_version`) sans être modifié.
 
 ### Conventions front
 
