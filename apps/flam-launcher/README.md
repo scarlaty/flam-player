@@ -129,11 +129,11 @@ Un catalogue est un JSON au format Telmi Store : `{ banner, data: [ { uuid, vers
 description, age, category, author, voice, license, thumbs: { small, medium }, download,
 updated_at, … } ] }`. Il est normalisé en `StoryEntry` (module partagé `story.rs`, aussi utilisé par
 la source dossier local) :
-`source_id, uuid, kind (telmi_zip | flam_plain | flam_pk), version?, title, description, age?,
-category, author, voice, license, thumb_url?, download_url, size?, updated_at`.
+`source_id, uuid, version?, title, description?, age?, category?, author?, voice?, license?,
+thumb_url?, download_url, size?, updated_at?, kind (telmi_zip | flam_plain | flam_pk)`.
 
 - **Lecture tolérante** : champs inconnus ignorés ; champ absent ou de mauvais type = valeur par
-  défaut (texte vide, `null`) ; entrée sans `uuid` ou sans lien `download` http(s) valide ignorée
+  défaut (`null` pour les champs optionnels, y compris les textes vides ; titre vide si absent) ; entrée sans `uuid` ou sans lien `download` http(s) valide ignorée
   avec un avertissement (`warnings`, 50 maximum puis résumé) ; `uuid` en double ignoré (premier
   conservé). URL relatives résolues par rapport à l'URL du catalogue ; vignette `medium` sinon
   `small`. Une racine qui est directement une liste, ou un BOM UTF-8, sont acceptés. Sans liste

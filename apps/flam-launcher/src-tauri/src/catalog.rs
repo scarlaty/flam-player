@@ -86,6 +86,11 @@ fn text(value: &Value, key: &str) -> String {
     }
 }
 
+/// Texte optionnel : absent, de mauvais type ou vide = `None`.
+fn opt_text(value: &Value, key: &str) -> Option<String> {
+    Some(text(value, key)).filter(|s| !s.is_empty())
+}
+
 fn unsigned(value: &Value, key: &str) -> Option<u64> {
     match value.get(key)? {
         Value::Number(n) => n.as_u64(),
@@ -125,16 +130,16 @@ fn parse_entry(source_id: &str, base: &Url, item: &Value) -> Result<StoryEntry, 
         kind: StoryKind::TelmiZip,
         version: unsigned(item, "version").and_then(|v| u32::try_from(v).ok()),
         title: text(item, "title"),
-        description: text(item, "description"),
+        description: opt_text(item, "description"),
         age: unsigned(item, "age").and_then(|v| u32::try_from(v).ok()),
-        category: text(item, "category"),
-        author: text(item, "author"),
-        voice: text(item, "voice"),
-        license: text(item, "license"),
+        category: opt_text(item, "category"),
+        author: opt_text(item, "author"),
+        voice: opt_text(item, "voice"),
+        license: opt_text(item, "license"),
         thumb_url,
         download_url,
         size: unsigned(item, "size"),
-        updated_at: text(item, "updated_at"),
+        updated_at: opt_text(item, "updated_at"),
     })
 }
 
@@ -655,11 +660,11 @@ mod tests {
         assert_eq!(a.kind, StoryKind::TelmiZip);
         assert_eq!(a.version, Some(3));
         assert_eq!(a.title, "Le Pré enchanté");
-        assert!(a.description.contains("Œil"));
+        assert!(a.description.as_deref().unwrap().contains("Œil"));
         assert_eq!(a.age, Some(5));
-        assert_eq!(a.license, "CC BY");
+        assert_eq!(a.license.as_deref(), Some("CC BY"));
         assert_eq!(a.size, None);
-        assert_eq!(a.updated_at, "2025-02-02T10:00:00Z");
+        assert_eq!(a.updated_at.as_deref(), Some("2025-02-02T10:00:00Z"));
         // URL relatives résolues par rapport au catalogue ; vignette « medium » préférée.
         assert_eq!(a.download_url, "https://cat.example.test/zip/a.zip");
         assert_eq!(
@@ -668,7 +673,7 @@ mod tests {
         );
         let b = &parsed.entries[1];
         assert_eq!(b.version, None);
-        assert_eq!(b.description, "");
+        assert_eq!(b.description, None);
         assert_eq!(
             b.thumb_url.as_deref(),
             Some("https://img.example.test/b.png")

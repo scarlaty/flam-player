@@ -1,30 +1,7 @@
 import { invokeCommand } from "./error";
+import type { StoryEntry } from "./story";
 
-/** Nature de l'archive d'une histoire (miroir de `StoryKind` dans `src-tauri/src/story.rs`). */
-export type StoryKind = "telmi_zip" | "flam_plain" | "flam_pk";
-
-/** Histoire proposée par une source (miroir de `StoryEntry` dans `src-tauri/src/story.rs`). */
-export interface StoryEntry {
-  source_id: string;
-  uuid: string;
-  kind: StoryKind;
-  version: number | null;
-  title: string;
-  description: string;
-  age: number | null;
-  category: string;
-  author: string;
-  voice: string;
-  license: string;
-  /** URL absolue de la vignette ; à passer à `getCatalogThumbnail`. */
-  thumb_url: string | null;
-  /** URL http(s) pour un catalogue, chemin de fichier pour un dossier local. */
-  download_url: string;
-  /** Taille en octets, si la source la fournit (jamais pour le Telmi Store). */
-  size: number | null;
-  /** Date de mise à jour fournie par la source (ISO 8601 en général). */
-  updated_at: string;
-}
+export type { StoryEntry, StoryKind } from "./story";
 
 /** Problème du dernier rafraîchissement (`kind` : `network` ou `catalog_invalid`). */
 export interface CatalogProblem {

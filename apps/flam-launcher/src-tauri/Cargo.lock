@@ -839,7 +839,7 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 name = "flam-launcher"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "dirs 6.0.0",
  "reqwest 0.12.28",
  "serde",
