@@ -1,0 +1,146 @@
+.fl-story-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+  transition:
+    box-shadow var(--duration-normal) var(--easing),
+    transform var(--duration-normal) var(--easing);
+}
+
+.fl-story-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.fl-story-card--selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary);
+}
+
+/* Le focus du bouton titre est montré sur toute la carte. */
+.fl-story-card:has(.fl-story-card__open:focus-visible) {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.fl-story-card__cover {
+  aspect-ratio: 1;
+  background: var(--color-surface-sunken);
+}
+
+.fl-story-card__cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.fl-story-card__placeholder {
+  display: grid;
+  place-items: center;
+  height: 100%;
+}
+
+.fl-story-card__placeholder--info {
+  background: var(--tone-info-bg);
+  color: var(--tone-info-fg);
+}
+
+.fl-story-card__placeholder--success {
+  background: var(--tone-success-bg);
+  color: var(--tone-success-fg);
+}
+
+.fl-story-card__placeholder--warning {
+  background: var(--tone-warning-bg);
+  color: var(--tone-warning-fg);
+}
+
+.fl-story-card__placeholder--primary {
+  background: var(--color-primary-soft);
+  color: var(--color-on-primary-soft);
+}
+
+.fl-story-card__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+}
+
+.fl-story-card__title {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+}
+
+.fl-story-card__open {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.fl-story-card__open:focus-visible {
+  outline: none;
+}
+
+/* Zone cliquable étendue à toute la carte. */
+.fl-story-card__open::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+.fl-story-card__age {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.fl-story-card__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fl-story-card__progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+
+.fl-story-card__progress-text {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.fl-story-card__actions {
+  position: absolute;
+  z-index: 1;
+  inset-block-start: var(--space-2);
+  inset-inline-end: var(--space-2);
+  display: flex;
+  gap: var(--space-1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fl-story-card:hover {
+    transform: none;
+  }
+}
