@@ -102,7 +102,7 @@ export function SidebarSourceList({
                       <span className="fl-source__meta fl-source__meta--warning">
                         <Icon name="alert" size={16} />
                         <span className="fl-visually-hidden">
-                          {t.sources.unavailable}
+                          , {t.sources.unavailable}
                         </span>
                       </span>
                     ) : (
@@ -110,7 +110,7 @@ export function SidebarSourceList({
                         <span className="fl-source__meta">
                           <span aria-hidden="true">{source.count}</span>
                           <span className="fl-visually-hidden">
-                            {t.sources.count(source.count)}
+                            , {t.sources.count(source.count)}
                           </span>
                         </span>
                       )
