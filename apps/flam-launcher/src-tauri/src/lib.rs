@@ -5,6 +5,7 @@ mod error;
 pub mod settings;
 pub mod sources;
 pub mod storage;
+pub mod story;
 
 use tauri::Manager;
 
