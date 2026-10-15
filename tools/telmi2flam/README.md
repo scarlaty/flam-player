@@ -325,6 +325,7 @@ return {
 ```bash
 python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
                      [--allow-missing] [--selector carousel|image]
+                     [--progress-json] [--info]
 ```
 
 - `-o` : chemin de sortie (défaut : `<Titre>.<UUID8>.plain.pk` dans le dossier courant).
@@ -339,10 +340,106 @@ python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
   (sinon **erreur**) ; un audio manquant est remplacé par `silent.mp3` (la scène garde
   sa transition de fin d'audio), une image manquante est omise.
 - `--selector` : affichage des choix multiples (`carousel` par défaut, ou `image`).
+- `--progress-json` : sortie lisible par machine (voir « Sortie machine » ci-dessous).
+- `--info` : affiche les métadonnées de l'histoire en JSON, **sans convertir**.
 
 En cas de paquet invalide (zip illisible, JSON invalide/BOM mal formé, `NaN`, type
 inattendu, `metadata.json`/`nodes.json` absents, nom d'asset dangereux...), le CLI
-affiche `ERREUR : ...` et sort avec le code 1 (pas de traceback).
+affiche `ERREUR : ...` sur stderr et sort avec un code non nul stable (pas de
+traceback) : voir « Codes de sortie ».
+
+### Codes de sortie
+
+Stables : ils s'appliquent avec ou sans `--progress-json`.
+
+| Code | Signification | `code` de l'événement `error` |
+|-----:|---------------|-------------------------------|
+| 0 | succès (avertissements possibles) | — |
+| 2 | arguments invalides (aide/usage sur stderr) | `bad_arguments` |
+| 3 | archive absente, illisible/corrompue, ou qui n'est pas une histoire Telmi | `archive_unreadable`, `not_telmi` |
+| 4 | contenu invalide (JSON invalide, type inattendu, nom d'asset dangereux, `nodes.lua` non sérialisable…) | `invalid_content` |
+| 5 | asset (image/audio) manquant sans `--allow-missing` | `missing_asset` |
+| 6 | erreur interne ou d'écriture de la sortie | `output_error`, `internal_error` |
+| 130 | annulation (Ctrl+C, SIGTERM, Ctrl+Break) | `cancelled` |
+
+(L'ancien code unique `1` n'existe plus.) Pour un appelant Python, `telmi2flam.convert()`
+lève `ConvError` (attributs `code` et `exit_code`) ou les exceptions de `zipfile` ; le
+comportement de `convert()` sans `progress` est inchangé (résumé sur stdout,
+avertissements `  ! ...` sur stderr, ce que lit `compat.py`).
+
+### Sortie machine (`--progress-json`)
+
+Avec `--progress-json`, **stdout ne contient que des événements JSON**, un objet par
+ligne (encodage ASCII, `\uXXXX` pour les caractères non ASCII, vidangé après chaque
+ligne). Tout le texte humain (résumé `OK -> ...`, `! avertissement`, `ERREUR : ...`)
+reste sur **stderr**. Le champ `event` identifie le type ; un lecteur doit ignorer les
+champs et événements inconnus (ajouts compatibles).
+
+```jsonl
+{"event":"start","total":4,"phases":["images","audio","scripts","zip"],"input":"histoire.zip"}
+{"event":"step","phase":"images","done":0,"total":12}
+{"event":"step","phase":"audio","done":0,"total":12}
+{"event":"warning","code":"audio_missing","message":"audio manquant: s7.mp3 -> silent.mp3"}
+{"event":"step","phase":"images","done":12,"total":12}
+{"event":"step","phase":"audio","done":12,"total":12}
+{"event":"step","phase":"scripts","done":0,"total":24}
+{"event":"step","phase":"scripts","done":24,"total":24}
+{"event":"step","phase":"zip","done":0,"total":61}
+{"event":"step","phase":"zip","done":61,"total":61}
+{"event":"done","output":"Titre.AB12CD34.plain.pk","size":1234567,"warnings":1}
+```
+
+| Événement | Champs | Notes |
+|-----------|--------|-------|
+| `start` | `total` (nombre de phases, ici 4), `phases` (liste ordonnée), `input` | premier événement |
+| `step` | `phase` (`images`, `audio`, `scripts`, `zip`), `done`, `total` | `done` croît de 0 à `total` |
+| `warning` | `code`, `message` | non bloquant ; même texte que la ligne `  ! ...` de stderr |
+| `done` | `output`, `size` (octets), `warnings` (nombre) | dernier événement en cas de succès |
+| `error` | `code`, `message`, `exit` (code de sortie) | dernier événement en cas d'échec ou d'annulation |
+
+Règles :
+- Un seul événement terminal : `done` (code 0) **ou** `error` (code ≠ 0).
+- Phases : `images` et `audio` comptent les assets *distincts* référencés par les
+  scènes et l'inventaire (les événements des deux phases peuvent s'entrecroiser) ;
+  `scripts` = `nodes.lua`, moteur et bibliothèque embarquée ; `zip` = fichiers écrits
+  (doublé avec `--plain` ou `-o *.plain`, qui écrivent aussi/seulement le dossier).
+  Chaque phase émet `done:0` au début et `done:total` à la fin (même si `total` = 0) ;
+  les événements intermédiaires sont espacés d'au moins 0,1 s (jamais un par fichier).
+- `output` : chemin passé à `-o` (ou le nom par défaut) ; avec un dossier `.plain`,
+  `size` est la somme des fichiers.
+- Codes `warning` : `notes_ignored`, `uuid_derived`, `image_missing`, `image_unreadable`,
+  `audio_missing`, `audio_samplerate`, `mp3map_failed`, `cover_unreadable`,
+  `font_replaced`, `assets_missing_allowed`.
+- Codes `error` : ceux du tableau « Codes de sortie ». Avec `bad_arguments`, l'événement
+  est émis avant le message d'usage de stderr (seulement si `--progress-json` est présent).
+
+### Annulation
+
+Ctrl+C, SIGTERM (POSIX) et Ctrl+Break (Windows) interrompent proprement : le
+temporaire est supprimé, **aucun fichier de sortie partiel** n'est laissé, une sortie
+précédente éventuelle reste intacte, un événement `error` (`cancelled`) est émis et le
+code de sortie est **130**. La sortie est écrite dans `<sortie>.<pid>.part` (ou
+`<dossier>.<pid>.part`), puis publiée par `os.replace`. Pour un dossier `.plain` déjà
+existant, les fichiers sont remplacés un par un (les autres fichiers du dossier sont
+conservés). Limite : un arrêt brutal (`TerminateProcess` sous Windows, `kill -9`) ne
+peut pas être intercepté et peut laisser un `*.part` orphelin, jamais un `.plain.pk`
+partiel ; pour une terminaison douce sous Windows, envoyer Ctrl+Break
+(`CREATE_NEW_PROCESS_GROUP` + `GenerateConsoleCtrlEvent`).
+
+### Métadonnées (`--info`)
+
+`python telmi2flam.py --info histoire.zip` écrit **une ligne JSON** sur stdout et sort
+avec le code 0, sans rien convertir ni écrire (`-o` ignoré) :
+
+```json
+{"title":"Mon histoire","uuid":"abc-123","version":3,"age":6,"category":"Aventure","description":"...","cover":true}
+```
+
+`title`, `uuid`, `version`, `age`, `category`, `description` sont les valeurs brutes de
+`metadata.json` (texte ou nombre), ou `null` si absentes/non scalaires. `cover` est
+`true` si l'archive contient une image de couverture (`metadata.image`, `title.png` ou
+`cover.png`). Les erreurs suivent les mêmes codes de sortie ; avec `--progress-json`,
+un événement `error` est aussi émis sur stdout.
 
 Dépendance : `pip install Pillow`.
 
