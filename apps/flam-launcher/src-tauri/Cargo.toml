@@ -23,6 +23,10 @@ url = "=2.5.8"
 serde_json = "=1.0.154"
 dirs = "=6.0.0"
 uuid = { version = "=1.28.0", features = ["v4"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", features = ["rt", "time"] }
+base64 = "0.22"
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }
@@ -30,6 +34,7 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }
 [dev-dependencies]
 tempfile = "=3.27.0"
 tokio = { version = "1", features = ["rt", "macros"] }
+wiremock = "0.6"
 
 [profile.release]
 opt-level = "s"
