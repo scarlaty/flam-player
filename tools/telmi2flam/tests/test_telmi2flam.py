@@ -277,7 +277,7 @@ class TestConversion(Base):
         r = subprocess.run([sys.executable, os.path.join(TOOL, "telmi2flam.py"), bad,
                             "-o", os.path.join(self.tmp, "x.plain.pk")],
                            capture_output=True, text=True)
-        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.returncode, 3)
         self.assertIn("ERREUR", r.stderr)
         self.assertNotIn("Traceback", r.stderr)
 
