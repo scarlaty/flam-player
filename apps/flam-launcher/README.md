@@ -202,7 +202,7 @@ license?, thumb_url?, download_url, size?, updated_at?, kind (telmi_zip | flam_p
   Tauri n'est **pas** activé : le dossier de cache est configurable, un scope d'asset statique
   serait faux ou trop large, et la CSP (`img-src … data:`) reste inchangée.
 - **Limite connue** : `thumbs/` et `catalogs/<id>/` ne sont pas nettoyés à la suppression d'une
-  source, et les vignettes en cache ne sont jamais revalidées (voir l'issue de suite).
+  source, et les vignettes en cache ne sont jamais revalidées (suite : #38).
 
 ### Événements
 
