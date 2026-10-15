@@ -22,6 +22,7 @@ et convertisseur d'histoires TELMI vers FLAM (`tools/telmi2flam`).
 |---------|------|
 | `src/` | Emulateur (voir Architecture) |
 | `tools/telmi2flam/` | Convertisseur d'histoires TELMI (`.zip`) vers FLAM (`.plain.pk`) — voir [son README](tools/telmi2flam/README.md) |
+| `apps/flam-launcher/` | Surcouche de bureau (Tauri 2 : Rust + React/TypeScript, licence MIT) pour parcourir, convertir et lancer des histoires — voir [son README](apps/flam-launcher/README.md) |
 | `games/casse-briques/` | Jeu casse-briques en contenu Lua FLAM (avec verrou parental) |
 | `tests/` | Tests : suite Lua, moteur telmi2flam, audio reel, non-regression, bout en bout |
 | `patches/` | Correctifs pour le fork LVGL (non appliques automatiquement) — voir [patches/README.md](patches/README.md) |
@@ -226,5 +227,7 @@ format STUdio (`story.json`). Options (`--plain`, `--selector`, `--keep-size`, `
 et details : [tools/telmi2flam/README.md](tools/telmi2flam/README.md).
 
 ## Licence
+
+Exception : `apps/flam-launcher/` (surcouche de bureau) est distribue sous licence MIT, voir [`apps/flam-launcher/LICENSE`](apps/flam-launcher/LICENSE).
 
 Ce projet est a usage personnel et educatif.
