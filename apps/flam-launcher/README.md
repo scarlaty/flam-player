@@ -83,6 +83,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `sources_reorder`     | `ids: string[]`            | `Source[]` (liste complète) | `sources`  |
 | `config_ack_recovery` | `file?: string`            | rien                        | `storage`  |
 | `folder_scan`         | `source_id`, `recursive?`  | `FolderScan`                | `folder`   |
+| `folder_thumbnail`    | `source_id`, `entry_id`    | URL `data:` (chaîne)        | `folder`   |
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).
@@ -95,14 +96,14 @@ Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`), `src/api/
 configuration en paramètre : elle est testée sur des dossiers temporaires ; les commandes
 ne sont que de fines enveloppes qui prennent un verrou (`ConfigState`) autour de chaque opération.
 
-### Source dossier local (`folder_scan`)
+### Source dossier local (`folder_scan`, `folder_thumbnail`)
 
 `folder_scan(source_id, recursive?)` analyse une source de type `folder` (autre type :
 `validation` ; dossier absent : `folder_unavailable`) et renvoie
-`FolderScan { entries: StoryEntry[], warnings: { path, message }[] }`. Le parcours est non récursif
-par défaut (récursif : 8 niveaux, 5000 histoires au plus, liens symboliques ignorés) ; un fichier
-invalide est **ignoré et signalé** dans `warnings`, jamais une erreur. Le verrou de configuration
-n'est pas tenu pendant l'analyse (thread dédié).
+`FolderScan { entries: (StoryEntry + entry_id)[], warnings: { path, message }[] }`. Le parcours est
+non récursif par défaut (récursif : 8 niveaux, 5000 histoires au plus, liens symboliques et
+jonctions ignorés) ; un fichier invalide est **ignoré et signalé** dans `warnings`, jamais une
+erreur. Le verrou de configuration n'est pas tenu pendant l'analyse (thread dédié).
 
 | Entrée            | `kind`       | Lu                                                                                                                                     |
 | ----------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
@@ -114,21 +115,36 @@ n'est pas tenu pendant l'analyse (thread dédié).
 `src/api/story.ts`) : `source_id, uuid, version, title, description, age, category, author,
 voice, license, thumb_url, download_url, size, updated_at, kind`. Pour un dossier,
 `download_url` est le **chemin local absolu** de l'archive ou du dossier `.plain`, `size` est
-absente pour un `.plain`, `updated_at` est la date de modification (ISO 8601 UTC) ; les textes
-absents (`description`, `category`, `author`, `voice`, `license`, `updated_at`) valent la chaîne vide. Un
-`.plain` et son `.plain.pk` produisent deux entrées (même `uuid`, `kind` différent).
+absente pour un `.plain`, `updated_at` est la date de modification (ISO 8601 UTC) ; les champs
+inconnus valent `null`.
 
-Les archives sont non fiables : rien n'est extrait sur disque, `metadata.json` et `info.plain` sont
-limités à 1 Mio, les vignettes à 8 Mio (PNG décodé : 8192 px et 64 Mio au plus), les entrées aux noms
-dangereux (`..`, absolu, lecteur, `__MACOSX`, `._*`) sont écartées, 100 000 entrées au plus.
+**Doublons** : un `.plain` et un `.plain.pk` de même `uuid` donnent **deux entrées** (`kind`
+différent). Chaque entrée porte un `entry_id` (hash du chemin, stable d'un scan à l'autre, unique
+dans la source) à utiliser comme clé d'affichage et pour `folder_thumbnail`.
 
-**Vignettes** : décodées (PNG, ou LIF via `lif.rs`), réduites à 192 px, enregistrées en PNG dans
-`<cache>/thumbs/<clé>.png` (clé = chemin, taille et date du fichier) puis renvoyées en URL
-`data:image/png;base64,…` dans `thumb_url`, compatible avec la CSP (`img-src data:`). Les fichiers
-de `thumbs/` ne sont jamais purgés automatiquement (suite possible).
+**Identifiants non fiables** : l'`uuid` d'un zip Telmi (et `version` si c'est une chaîne) doit
+respecter `^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`, sans `..` ni nom réservé Windows (`CON`, `PRN`,
+`AUX`, `NUL`, `COM1-9`, `LPT1-9`) ; sinon l'histoire est ignorée avec un avertissement.
 
-**Suite possible, hors de cette issue** : surveillance du dossier (`notify`) pour rafraîchir
-la liste automatiquement ; pour l'instant l'interface rappelle `folder_scan`.
+**Archives non fiables** : rien n'est extrait sur disque ; `metadata.json` et `info.plain` sont
+limités à 1 Mio, les vignettes à 8 Mio (lecture bornée même si la taille déclarée est fausse ; PNG
+décodé : 8192 px et 64 Mio au plus) ; les entrées aux noms dangereux (`..`, absolu, lecteur,
+`__MACOSX`, `._*`) sont écartées ; les `\` des noms de zip sont lus comme des `/` ; 100 000 entrées
+au plus par archive.
+
+**Vignettes à la demande** : `folder_scan` ne renvoie aucune image (5000 entrées feraient des
+centaines de Mio d'IPC). `thumb_url` est une **référence opaque** (égale à `entry_id`) ou `null`
+sans vignette : ce n'est pas une URL affichable. `folder_thumbnail(source_id, entry_id)` renvoie
+l'URL `data:image/png;base64,…` d'une seule histoire (compatible CSP `img-src data:`), uniquement
+pour une entrée du **dernier scan** de cette source (sinon `not_found`, jamais un chemin libre).
+L'image (PNG ou LIF via `lif.rs`) est réduite à 160 px et gardée dans `<cache>/thumbs/<clé>.png`
+(clé = chemin, taille et date de l'archive, plus taille et date de `img/thumbnail.lif` pour un
+`.plain`) ; le cache est consulté **avant** d'ouvrir l'archive.
+
+**Cache de métadonnées** : en mémoire, par archive (chemin, taille, date de modification), pour ne
+pas rouvrir chaque zip à chaque scan ; les dossiers `.plain` sont relus à chaque scan.
+
+**Suite** : surveillance du dossier (`notify`) et purge de `thumbs/` : issue #37.
 
 ### Erreurs
 

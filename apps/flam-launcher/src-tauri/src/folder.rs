@@ -3,12 +3,20 @@
 //!
 //! Les archives sont non fiables : rien n'est extrait sur disque (seules les vignettes
 //! réduites vont dans `<cache>/thumbs/`), les lectures sont bornées, les noms d'entrées
-//! dangereux ignorés et les liens symboliques jamais suivis. Un fichier invalide ne fait pas
-//! échouer l'analyse : il est ignoré et signalé dans `warnings`.
+//! dangereux ignorés et les liens symboliques (et jonctions) jamais suivis. Un fichier invalide
+//! ne fait pas échouer l'analyse : il est ignoré et signalé dans `warnings`.
+//!
+//! **Vignettes à la demande** : `folder_scan` ne renvoie jamais d'image (jusqu'à 5000 entrées :
+//! des centaines de Mio d'IPC). `thumb_url` est une référence opaque (l'`entry_id`) ou `null` ;
+//! `folder_thumbnail(source_id, entry_id)` renvoie l'URL `data:` d'une seule histoire, et
+//! uniquement pour une entrée du dernier scan de cette source (jamais un chemin libre).
 
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -21,7 +29,7 @@ use crate::settings::{Environment, SettingsStore};
 use crate::sources::{Source, SourcesStore};
 use crate::storage::ConfigState;
 use crate::story::{StoryEntry, StoryKind};
-use crate::thumbnail::{self, ThumbCache, ThumbError};
+use crate::thumbnail::{self, RgbaImage, ThumbCache, ThumbError};
 use crate::{lif, AppError, AppResult};
 
 /// `metadata.json` / `info.plain` : 1 Mio au plus.
@@ -37,6 +45,8 @@ const MAX_DEPTH: usize = 8;
 const MAX_STORIES: usize = 5_000;
 const MAX_TITLE_CHARS: usize = 200;
 const MAX_FIELD_CHARS: usize = 2_000;
+/// Côté maximal des vignettes servies.
+const THUMB_DIM: u32 = 160;
 
 /// Fichier ou archive ignoré lors de l'analyse (miroir de `ScanWarning` dans `src/api/folder.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -47,11 +57,71 @@ pub struct ScanWarning {
     pub message: String,
 }
 
+/// Une histoire du dossier, avec son identifiant d'entrée.
+///
+/// `entry_id` est stable (hash du chemin) et unique dans la source : un `.plain` et un
+/// `.plain.pk` de même `uuid` donnent **deux entrées** d'`entry_id` différents.
+/// `thumb_url` vaut `entry_id` quand une vignette existe (référence opaque pour
+/// `folder_thumbnail`), `null` sinon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FolderEntry {
+    pub entry_id: String,
+    #[serde(flatten)]
+    pub story: StoryEntry,
+}
+
+impl Deref for FolderEntry {
+    type Target = StoryEntry;
+    fn deref(&self) -> &StoryEntry {
+        &self.story
+    }
+}
+
 /// Résultat de `folder_scan` (miroir de `FolderScan` dans `src/api/folder.ts`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct FolderScan {
-    pub entries: Vec<StoryEntry>,
+    pub entries: Vec<FolderEntry>,
     pub warnings: Vec<ScanWarning>,
+}
+
+// ---------------------------------------------------------------------------
+// Identifiants
+// ---------------------------------------------------------------------------
+
+/// Identifiant d'histoire acceptable (`^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`, sans `..`, sans nom
+/// réservé Windows).
+fn valid_story_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphanumeric()
+        || id.len() > 64
+        || !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        || id.contains("..")
+    {
+        return false;
+    }
+    let stem = id.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|p| {
+            stem.strip_prefix(p)
+                .is_some_and(|n| n.len() == 1 && matches!(n.as_bytes()[0], b'1'..=b'9'))
+        });
+    !reserved
+}
+
+impl From<ThumbError> for AppError {
+    fn from(e: ThumbError) -> Self {
+        AppError::Validation(format!("vignette illisible : {e}"))
+    }
+}
+
+fn entry_id_of(path: &Path) -> String {
+    format!(
+        "{:016x}",
+        thumbnail::fnv1a(&[path.to_string_lossy().as_bytes()])
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +132,8 @@ pub struct FolderScan {
 trait FlamFiles {
     /// Lit un fichier (au plus `limit` octets) ; `Ok(None)` s'il n'existe pas.
     fn read(&mut self, name: &str, limit: u64) -> Result<Option<Vec<u8>>, String>;
+    /// Taille et date de modification (ns) d'un fichier, `None` s'il n'existe pas.
+    fn stat(&mut self, name: &str) -> Option<(u64, u128)>;
 }
 
 fn read_limited(reader: impl Read, limit: u64, what: &str) -> Result<Vec<u8>, String> {
@@ -74,6 +146,11 @@ fn read_limited(reader: impl Read, limit: u64, what: &str) -> Result<Vec<u8>, St
         return Err(format!("{what} trop volumineux"));
     }
     Ok(buf)
+}
+
+fn nanos(time: Option<SystemTime>) -> u128 {
+    time.and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos())
 }
 
 struct DirFiles<'a>(&'a Path);
@@ -95,43 +172,69 @@ impl FlamFiles for DirFiles<'_> {
         let file = File::open(&path).map_err(|e| format!("{name} illisible : {e}"))?;
         read_limited(file, limit, name).map(Some)
     }
+
+    fn stat(&mut self, name: &str) -> Option<(u64, u128)> {
+        let meta = std::fs::symlink_metadata(self.0.join(name)).ok()?;
+        meta.is_file()
+            .then(|| (meta.len(), nanos(meta.modified().ok())))
+    }
 }
 
-/// Lecture d'une entrée d'archive par son nom exact.
-fn read_zip_entry(
-    zip: &mut ZipArchive<File>,
-    name: &str,
-    limit: u64,
-) -> Result<Option<Vec<u8>>, String> {
-    let entry = match zip.by_name(name) {
-        Ok(entry) => entry,
-        Err(ZipError::FileNotFound) => return Ok(None),
-        Err(e) => return Err(format!("{name} illisible dans l'archive : {e}")),
-    };
-    if entry.is_dir() {
-        return Ok(None);
-    }
-    if entry.size() > limit {
-        return Err(format!("{name} trop volumineux"));
-    }
-    read_limited(entry, limit, name).map(Some)
+/// Archive zip avec table des noms normalisés (`\` -> `/`, comme `telmi2flam.py`) vers
+/// les noms d'origine.
+struct Zip {
+    archive: ZipArchive<File>,
+    names: HashMap<String, String>,
 }
 
-struct ZipFiles(ZipArchive<File>);
+impl Zip {
+    fn open(path: &Path) -> Result<Self, String> {
+        let file = File::open(path).map_err(|e| format!("ouverture impossible : {e}"))?;
+        let archive = ZipArchive::new(file).map_err(|e| format!("archive zip invalide : {e}"))?;
+        if archive.len() > MAX_ZIP_ENTRIES {
+            return Err("archive zip avec trop d'entrées".into());
+        }
+        let names = archive
+            .file_names()
+            .map(|n| (n.replace('\\', "/"), n.to_string()))
+            .collect();
+        Ok(Self { archive, names })
+    }
 
-impl FlamFiles for ZipFiles {
+    fn contains(&self, name: &str) -> bool {
+        self.names.contains_key(name)
+    }
+
+    fn normalized_names(&self) -> Vec<String> {
+        self.names.keys().cloned().collect()
+    }
+}
+
+impl FlamFiles for Zip {
     fn read(&mut self, name: &str, limit: u64) -> Result<Option<Vec<u8>>, String> {
-        read_zip_entry(&mut self.0, name, limit)
+        let Some(original) = self.names.get(name) else {
+            return Ok(None);
+        };
+        let entry = match self.archive.by_name(original) {
+            Ok(entry) => entry,
+            Err(ZipError::FileNotFound) => return Ok(None),
+            Err(e) => return Err(format!("{name} illisible dans l'archive : {e}")),
+        };
+        if entry.is_dir() {
+            return Ok(None);
+        }
+        if entry.size() > limit {
+            return Err(format!("{name} trop volumineux"));
+        }
+        // Borné même si la taille déclarée est mensongère.
+        read_limited(entry, limit, name).map(Some)
     }
-}
 
-fn open_zip(path: &Path) -> Result<ZipArchive<File>, String> {
-    let file = File::open(path).map_err(|e| format!("ouverture impossible : {e}"))?;
-    let zip = ZipArchive::new(file).map_err(|e| format!("archive zip invalide : {e}"))?;
-    if zip.len() > MAX_ZIP_ENTRIES {
-        return Err("archive zip avec trop d'entrées".into());
+    fn stat(&mut self, name: &str) -> Option<(u64, u128)> {
+        let original = self.names.get(name)?;
+        let entry = self.archive.by_name(original).ok()?;
+        (!entry.is_dir()).then(|| (entry.size(), 0))
     }
-    Ok(zip)
 }
 
 // ---------------------------------------------------------------------------
@@ -198,10 +301,10 @@ fn iso8601(time: SystemTime) -> Option<String> {
 // Histoire Telmi (.zip)
 // ---------------------------------------------------------------------------
 
-/// Nom d'entrée sans élément dangereux (absolu, `..`, lettre de lecteur, `__MACOSX`, `._*`).
+/// Nom d'entrée (déjà normalisé en `/`) sans élément dangereux : absolu, `..`, lecteur,
+/// `__MACOSX`, `._*`.
 fn is_safe_entry_name(name: &str) -> bool {
     !name.starts_with('/')
-        && !name.contains('\\')
         && !name.contains(':')
         && name
             .split('/')
@@ -210,9 +313,9 @@ fn is_safe_entry_name(name: &str) -> bool {
 
 /// Dossier racine de l'histoire dans l'archive : celui qui contient `metadata.json` et
 /// `nodes.json` (miroir de `find_root` de `telmi2flam.py`). Le moins profond gagne ;
-/// plusieurs candidats au même niveau est une erreur.
+/// plusieurs candidats au même niveau est une erreur. `names` est normalisé en `/`.
 fn find_root(names: &[String]) -> Result<String, String> {
-    let set: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
+    let set: HashSet<&str> = names.iter().map(String::as_str).collect();
     let mut candidates: Vec<&str> = names
         .iter()
         .filter(|n| is_safe_entry_name(n))
@@ -237,102 +340,97 @@ fn find_root(names: &[String]) -> Result<String, String> {
     Ok(candidates[0].to_string())
 }
 
-struct FileInfo {
-    size: u64,
-    updated_at: Option<String>,
-    /// Clé de cache des vignettes : change quand le fichier change.
-    cache_key: u64,
-}
-
-fn file_info(path: &Path, meta: &std::fs::Metadata) -> FileInfo {
-    let modified = meta.modified().ok();
-    let secs = modified
-        .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_nanos());
-    FileInfo {
-        size: meta.len(),
-        updated_at: modified.and_then(iso8601),
-        cache_key: thumbnail::fnv1a(&[
-            path.to_string_lossy().as_bytes(),
-            &meta.len().to_le_bytes(),
-            &secs.to_le_bytes(),
-        ]),
+/// Nom de la vignette Telmi à lire : `title.png` ou `cover.png` selon `image`, l'autre en
+/// secours. Jamais un nom venant de l'archive.
+fn telmi_image_names(meta: &Value) -> [&'static str; 2] {
+    if json_text(meta, "image", 20).as_deref() == Some("cover.png") {
+        ["cover.png", "title.png"]
+    } else {
+        ["title.png", "cover.png"]
     }
 }
 
-/// Résultat d'analyse d'une archive : l'histoire et les avertissements non bloquants.
-type Parsed = (StoryEntry, Vec<String>);
-
-fn telmi_entry(
-    source_id: &str,
-    path: &Path,
-    info: &FileInfo,
-    cache: &ThumbCache,
-) -> Result<Parsed, String> {
-    let mut zip = open_zip(path)?;
-    let names: Vec<String> = zip.file_names().map(str::to_string).collect();
-    let root = find_root(&names)?;
-
-    let raw = read_zip_entry(&mut zip, &format!("{root}metadata.json"), MAX_TEXT_BYTES)?
+fn read_telmi_metadata(zip: &mut Zip, root: &str) -> Result<Value, String> {
+    let raw = zip
+        .read(&format!("{root}metadata.json"), MAX_TEXT_BYTES)?
         .ok_or("metadata.json introuvable")?;
     let meta: Value = serde_json::from_str(&utf8_text(&raw, "metadata.json")?)
         .map_err(|e| format!("metadata.json invalide : {e}"))?;
     if !meta.is_object() {
         return Err("metadata.json invalide : objet attendu".into());
     }
+    Ok(meta)
+}
+
+/// Histoire analysée, sans l'identifiant d'entrée (déduit du chemin).
+#[derive(Debug, Clone)]
+struct Parsed {
+    story: StoryEntry,
+    has_thumb: bool,
+    warnings: Vec<String>,
+}
+
+fn telmi_entry(source_id: &str, path: &Path, info: &FileInfo) -> Result<Parsed, String> {
+    let mut zip = Zip::open(path)?;
+    let root = find_root(&zip.normalized_names())?;
+    let meta = read_telmi_metadata(&mut zip, &root)?;
     let title =
         json_text(&meta, "title", MAX_TITLE_CHARS).ok_or("titre absent de metadata.json")?;
     let uuid = json_text(&meta, "uuid", 100).ok_or("uuid absent de metadata.json")?;
-
-    // Seuls `title.png` et `cover.png` sont lus, jamais un nom venant de l'archive.
-    let preferred = if json_text(&meta, "image", 20).as_deref() == Some("cover.png") {
-        ["cover.png", "title.png"]
-    } else {
-        ["title.png", "cover.png"]
-    };
-    let mut warnings = Vec::new();
-    let mut thumb_url = None;
-    for name in preferred {
-        match read_zip_entry(&mut zip, &format!("{root}{name}"), MAX_IMAGE_BYTES) {
-            Ok(Some(bytes)) => {
-                let key = thumbnail::fnv1a(&[&info.cache_key.to_le_bytes(), name.as_bytes()]);
-                match cache.get_or_make::<ThumbError>(key, || thumbnail::decode_png(&bytes)) {
-                    Ok(uri) => thumb_url = Some(uri),
-                    Err(e) => warnings.push(format!("vignette {name} ignorée : {e}")),
-                }
-                break;
-            }
-            Ok(None) => {}
-            Err(e) => {
-                warnings.push(format!("vignette ignorée : {e}"));
-                break;
-            }
+    if !valid_story_id(&uuid) {
+        return Err("uuid de metadata.json refusé (caractères ou nom non autorisés)".into());
+    }
+    if let Some(Value::String(version)) = meta.get("version") {
+        if !valid_story_id(version.trim()) {
+            return Err("version de metadata.json refusée".into());
         }
     }
+    let has_thumb = telmi_image_names(&meta)
+        .iter()
+        .any(|name| zip.contains(&format!("{root}{name}")));
 
-    let entry = StoryEntry {
+    let story = StoryEntry {
         source_id: source_id.to_string(),
         uuid,
         version: json_u32(&meta, "version"),
         title,
-        description: json_text(&meta, "description", MAX_FIELD_CHARS).unwrap_or_default(),
+        description: json_text(&meta, "description", MAX_FIELD_CHARS),
         age: json_u32(&meta, "age"),
-        category: json_text(&meta, "category", MAX_FIELD_CHARS).unwrap_or_default(),
-        author: json_text(&meta, "author", MAX_FIELD_CHARS).unwrap_or_default(),
-        voice: json_text(&meta, "voice", MAX_FIELD_CHARS).unwrap_or_default(),
-        license: json_text(&meta, "license", MAX_FIELD_CHARS).unwrap_or_default(),
-        thumb_url,
+        category: json_text(&meta, "category", MAX_FIELD_CHARS),
+        author: json_text(&meta, "author", MAX_FIELD_CHARS),
+        voice: json_text(&meta, "voice", MAX_FIELD_CHARS),
+        license: json_text(&meta, "license", MAX_FIELD_CHARS),
+        thumb_url: None,
         download_url: path.to_string_lossy().into_owned(),
         size: Some(info.size),
-        updated_at: info.updated_at.clone().unwrap_or_default(),
+        updated_at: info.updated_at.clone(),
         kind: StoryKind::TelmiZip,
     };
-    Ok((entry, warnings))
+    Ok(Parsed {
+        story,
+        has_thumb,
+        warnings: Vec::new(),
+    })
+}
+
+/// Image source de la vignette d'une archive Telmi (PNG décodé).
+fn telmi_thumb_image(path: &Path) -> Result<RgbaImage, String> {
+    let mut zip = Zip::open(path)?;
+    let root = find_root(&zip.normalized_names())?;
+    let meta = read_telmi_metadata(&mut zip, &root)?;
+    for name in telmi_image_names(&meta) {
+        if let Some(bytes) = zip.read(&format!("{root}{name}"), MAX_IMAGE_BYTES)? {
+            return thumbnail::decode_png(&bytes).map_err(|e| format!("vignette {name} : {e}"));
+        }
+    }
+    Err("aucune vignette dans l'archive".into())
 }
 
 // ---------------------------------------------------------------------------
 // Histoire FLAM (.plain, .plain.pk)
 // ---------------------------------------------------------------------------
+
+const LIF_NAME: &str = "img/thumbnail.lif";
 
 fn flam_entry(
     source_id: &str,
@@ -340,7 +438,6 @@ fn flam_entry(
     kind: StoryKind,
     info: &FileInfo,
     files: &mut dyn FlamFiles,
-    cache: &ThumbCache,
 ) -> Result<Parsed, String> {
     let raw = files
         .read("info.plain", MAX_TEXT_BYTES)?
@@ -357,39 +454,56 @@ fn flam_entry(
         return Err("uuid.bin doit faire 16 octets".into());
     }
     let uuid: String = uuid_bin.iter().map(|b| format!("{b:02x}")).collect();
+    let has_thumb = files.stat(LIF_NAME).is_some();
 
-    let mut warnings = Vec::new();
-    let mut thumb_url = None;
-    match files.read("img/thumbnail.lif", MAX_IMAGE_BYTES) {
-        Ok(Some(bytes)) => {
-            let key = thumbnail::fnv1a(&[&info.cache_key.to_le_bytes(), b"thumbnail.lif"]);
-            match cache.get_or_make::<ThumbError>(key, || Ok(lif::decode(&bytes)?)) {
-                Ok(uri) => thumb_url = Some(uri),
-                Err(e) => warnings.push(format!("vignette img/thumbnail.lif ignorée : {e}")),
-            }
-        }
-        Ok(None) => {}
-        Err(e) => warnings.push(format!("vignette ignorée : {e}")),
-    }
-
-    let entry = StoryEntry {
+    let story = StoryEntry {
         source_id: source_id.to_string(),
         uuid,
         version: None,
         title,
-        description: String::new(),
+        description: None,
         age: None,
-        category: String::new(),
-        author: String::new(),
-        voice: String::new(),
-        license: String::new(),
-        thumb_url,
+        category: None,
+        author: None,
+        voice: None,
+        license: None,
+        thumb_url: None,
         download_url: path.to_string_lossy().into_owned(),
         size: (kind == StoryKind::FlamPk).then_some(info.size),
-        updated_at: info.updated_at.clone().unwrap_or_default(),
+        updated_at: info.updated_at.clone(),
         kind,
     };
-    Ok((entry, warnings))
+    Ok(Parsed {
+        story,
+        has_thumb,
+        warnings: Vec::new(),
+    })
+}
+
+fn lif_thumb_image(files: &mut dyn FlamFiles) -> Result<RgbaImage, String> {
+    let bytes = files
+        .read(LIF_NAME, MAX_IMAGE_BYTES)?
+        .ok_or("aucune vignette img/thumbnail.lif")?;
+    lif::decode(&bytes).map_err(|e| format!("vignette {LIF_NAME} : {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Informations de fichier
+// ---------------------------------------------------------------------------
+
+struct FileInfo {
+    size: u64,
+    mtime: u128,
+    updated_at: Option<String>,
+}
+
+fn file_info(meta: &std::fs::Metadata) -> FileInfo {
+    let modified = meta.modified().ok();
+    FileInfo {
+        size: meta.len(),
+        mtime: nanos(modified),
+        updated_at: modified.and_then(iso8601),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +544,7 @@ fn collect(
     let mut children: Vec<_> = read.filter_map(Result::ok).collect();
     children.sort_by_key(|c| c.file_name().to_string_lossy().to_lowercase());
     for child in children {
-        // `file_type` ne suit pas les liens symboliques : ils sont ignorés.
+        // `file_type` ne suit pas les liens symboliques ni les jonctions : ignorés.
         let Ok(file_type) = child.file_type() else {
             continue;
         };
@@ -454,13 +568,60 @@ fn collect(
     }
 }
 
-/// Analyse `root` (non récursif par défaut) et renvoie les histoires et les avertissements.
-pub fn scan_folder(
+/// Métadonnées déjà lues d'une archive (clé : chemin, taille, date de modification), pour ne
+/// pas rouvrir chaque zip à chaque analyse. Les dossiers `.plain` ne sont pas mis en cache
+/// (la date d'un dossier ne change pas quand un fichier interne change).
+#[derive(Default)]
+pub struct MetaCache(HashMap<PathBuf, (u64, u128, Result<Parsed, String>)>);
+
+/// Où retrouver la vignette d'une entrée du dernier scan.
+#[derive(Debug, Clone)]
+struct ThumbRef {
+    path: PathBuf,
+    kind: StoryKind,
+}
+
+type ThumbRefs = HashMap<String, ThumbRef>;
+
+fn parse_one(
+    source_id: &str,
+    path: &Path,
+    kind: StoryKind,
+    cache: &mut MetaCache,
+) -> Result<Parsed, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("illisible : {e}"))?;
+    let info = file_info(&meta);
+    let cacheable = kind != StoryKind::FlamPlain;
+    if cacheable {
+        if let Some((size, mtime, parsed)) = cache.0.get(path) {
+            if *size == info.size && *mtime == info.mtime {
+                return parsed.clone();
+            }
+        }
+    }
+    let parsed = match kind {
+        StoryKind::TelmiZip => telmi_entry(source_id, path, &info),
+        StoryKind::FlamPlain => flam_entry(source_id, path, kind, &info, &mut DirFiles(path)),
+        StoryKind::FlamPk => {
+            Zip::open(path).and_then(|mut zip| flam_entry(source_id, path, kind, &info, &mut zip))
+        }
+    };
+    if cacheable {
+        cache
+            .0
+            .insert(path.to_path_buf(), (info.size, info.mtime, parsed.clone()));
+    }
+    parsed
+}
+
+/// Analyse `root` (non récursif par défaut) : histoires, avertissements et références de
+/// vignettes (entry_id -> archive).
+fn scan_folder(
     source_id: &str,
     root: &Path,
     recursive: bool,
-    cache_dir: &Path,
-) -> AppResult<FolderScan> {
+    cache: &mut MetaCache,
+) -> AppResult<(FolderScan, ThumbRefs)> {
     match std::fs::metadata(root) {
         Ok(meta) if meta.is_dir() => {}
         _ => {
@@ -470,33 +631,38 @@ pub fn scan_folder(
             )))
         }
     }
-    let cache = ThumbCache::new(cache_dir);
     let mut scan = FolderScan::default();
+    let mut refs = ThumbRefs::new();
     let mut found = Vec::new();
     collect(root, 0, recursive, &mut found, &mut scan.warnings);
 
-    for (path, kind) in found {
+    // Les archives disparues ne restent pas en cache.
+    let present: HashSet<&PathBuf> = found.iter().map(|(p, _)| p).collect();
+    cache
+        .0
+        .retain(|p, _| !p.starts_with(root) || present.contains(p));
+
+    for (path, kind) in &found {
         let shown = path.to_string_lossy().into_owned();
-        let parsed = std::fs::metadata(&path)
-            .map_err(|e| format!("illisible : {e}"))
-            .and_then(|meta| {
-                let info = file_info(&path, &meta);
-                match kind {
-                    StoryKind::TelmiZip => telmi_entry(source_id, &path, &info, &cache),
-                    StoryKind::FlamPlain => {
-                        flam_entry(source_id, &path, kind, &info, &mut DirFiles(&path), &cache)
-                    }
-                    StoryKind::FlamPk => {
-                        let mut files = ZipFiles(open_zip(&path)?);
-                        flam_entry(source_id, &path, kind, &info, &mut files, &cache)
-                    }
+        match parse_one(source_id, path, *kind, cache) {
+            Ok(mut parsed) => {
+                let entry_id = entry_id_of(path);
+                if parsed.has_thumb {
+                    parsed.story.thumb_url = Some(entry_id.clone());
+                    refs.insert(
+                        entry_id.clone(),
+                        ThumbRef {
+                            path: path.clone(),
+                            kind: *kind,
+                        },
+                    );
                 }
-            });
-        match parsed {
-            Ok((entry, notes)) => {
-                scan.entries.push(entry);
+                scan.entries.push(FolderEntry {
+                    entry_id,
+                    story: parsed.story,
+                });
                 scan.warnings
-                    .extend(notes.into_iter().map(|message| ScanWarning {
+                    .extend(parsed.warnings.into_iter().map(|message| ScanWarning {
                         path: shown.clone(),
                         message,
                     }));
@@ -510,12 +676,96 @@ pub fn scan_folder(
             }
         }
     }
-    Ok(scan)
+    Ok((scan, refs))
+}
+
+/// Vignette d'une histoire : URL `data:`, depuis le cache si possible (clé : chemin, taille,
+/// date de l'archive et, pour un `.plain`, taille et date de `img/thumbnail.lif`), sinon
+/// décodée puis mise en cache. Le cache est consulté avant d'ouvrir l'archive.
+fn make_thumbnail(thumb: &ThumbRef, cache_dir: &Path) -> AppResult<String> {
+    let invalid = |m: String| AppError::Validation(format!("vignette illisible : {m}"));
+    let meta = std::fs::metadata(&thumb.path).map_err(|e| invalid(e.to_string()))?;
+    let info = file_info(&meta);
+    let lif_stat = if thumb.kind == StoryKind::FlamPlain {
+        DirFiles(&thumb.path)
+            .stat(LIF_NAME)
+            .ok_or_else(|| invalid("aucune vignette".into()))?
+    } else {
+        (0, 0)
+    };
+    let key = thumbnail::fnv1a(&[
+        thumb.path.to_string_lossy().as_bytes(),
+        &info.size.to_le_bytes(),
+        &info.mtime.to_le_bytes(),
+        &lif_stat.0.to_le_bytes(),
+        &lif_stat.1.to_le_bytes(),
+        &THUMB_DIM.to_le_bytes(),
+    ]);
+    ThumbCache::new(cache_dir).get_or_make::<AppError>(key, THUMB_DIM, || {
+        match thumb.kind {
+            StoryKind::TelmiZip => telmi_thumb_image(&thumb.path),
+            StoryKind::FlamPk => {
+                Zip::open(&thumb.path).and_then(|mut zip| lif_thumb_image(&mut zip))
+            }
+            StoryKind::FlamPlain => lif_thumb_image(&mut DirFiles(&thumb.path)),
+        }
+        .map_err(invalid)
+    })
 }
 
 // ---------------------------------------------------------------------------
-// Commande Tauri
+// État partagé et commandes Tauri
 // ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct Inner {
+    meta: MetaCache,
+    /// Références de vignettes du dernier scan de chaque source.
+    thumbs: HashMap<String, ThumbRefs>,
+}
+
+/// Mémoire du dernier scan de chaque source et cache de métadonnées (en mémoire).
+#[derive(Clone, Default)]
+pub struct FolderState(Arc<Mutex<Inner>>);
+
+impl FolderState {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Analyse un dossier et mémorise les entrées pour `thumbnail`.
+    pub fn scan(&self, source_id: &str, root: &Path, recursive: bool) -> AppResult<FolderScan> {
+        // Le cache est sorti du verrou pendant l'analyse (longue) : les vignettes restent servies.
+        let mut meta = std::mem::take(&mut self.lock().meta);
+        let result = scan_folder(source_id, root, recursive, &mut meta);
+        let mut inner = self.lock();
+        inner.meta = meta;
+        let (scan, refs) = result?;
+        inner.thumbs.insert(source_id.to_string(), refs);
+        Ok(scan)
+    }
+
+    /// URL `data:` de la vignette d'une entrée du dernier scan de `source_id`.
+    pub fn thumbnail(
+        &self,
+        cache_dir: &Path,
+        source_id: &str,
+        entry_id: &str,
+    ) -> AppResult<String> {
+        let thumb = self
+            .lock()
+            .thumbs
+            .get(source_id)
+            .and_then(|refs| refs.get(entry_id))
+            .cloned()
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "histoire inconnue dans le dernier scan : {entry_id}"
+                ))
+            })?;
+        make_thumbnail(&thumb, cache_dir)
+    }
+}
 
 /// Chemin du dossier de la source et dossier de cache effectif.
 fn resolve_folder(
@@ -541,22 +791,43 @@ fn resolve_folder(
 }
 
 /// Analyse la source dossier `source_id` ; `recursive` parcourt aussi les sous-dossiers.
+/// Aucune image n'est renvoyée : voir `folder_thumbnail`.
 #[tauri::command]
 pub async fn folder_scan(
-    state: State<'_, ConfigState>,
+    config: State<'_, ConfigState>,
+    folder: State<'_, FolderState>,
     source_id: String,
     recursive: Option<bool>,
 ) -> AppResult<FolderScan> {
-    let (path, cache_dir) = {
-        let _guard = state.guard();
-        resolve_folder(&state.dir, &Environment::current(), &source_id)?
+    let (path, _cache_dir) = {
+        let _guard = config.guard();
+        resolve_folder(&config.dir, &Environment::current(), &source_id)?
     };
-    // Verrou relâché : l'analyse peut être longue et ne touche pas à la configuration.
+    let state = folder.inner().clone();
+    // Verrou de configuration relâché : l'analyse peut être longue.
     tauri::async_runtime::spawn_blocking(move || {
-        scan_folder(&source_id, &path, recursive.unwrap_or(false), &cache_dir)
+        state.scan(&source_id, &path, recursive.unwrap_or(false))
     })
     .await
     .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?
+}
+
+/// Vignette (URL `data:image/png;base64,…`) d'une histoire du dernier scan de la source.
+#[tauri::command]
+pub async fn folder_thumbnail(
+    config: State<'_, ConfigState>,
+    folder: State<'_, FolderState>,
+    source_id: String,
+    entry_id: String,
+) -> AppResult<String> {
+    let cache_dir = {
+        let _guard = config.guard();
+        SettingsStore::new(&config.dir).resolved_cache_dir(&Environment::current())?
+    };
+    let state = folder.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.thumbnail(&cache_dir, &source_id, &entry_id))
+        .await
+        .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?
 }
 
 #[cfg(test)]
@@ -640,10 +911,29 @@ mod tests {
         write_zip(path, CompressionMethod::Stored, &refs);
     }
 
-    fn scan(root: &Path, recursive: bool) -> (FolderScan, tempfile::TempDir) {
-        let cache = tempfile::tempdir().unwrap();
-        let scan = scan_folder("src", root, recursive, cache.path()).unwrap();
-        (scan, cache)
+    struct Ctx {
+        state: FolderState,
+        cache: tempfile::TempDir,
+    }
+
+    impl Ctx {
+        fn thumb(&self, entry: &FolderEntry) -> AppResult<String> {
+            self.state
+                .thumbnail(self.cache.path(), "src", &entry.entry_id)
+        }
+    }
+
+    fn scan(root: &Path, recursive: bool) -> (FolderScan, Ctx) {
+        let ctx = Ctx {
+            state: FolderState::default(),
+            cache: tempfile::tempdir().unwrap(),
+        };
+        let scan = ctx.state.scan("src", root, recursive).unwrap();
+        (scan, ctx)
+    }
+
+    fn thumb_files(ctx: &Ctx) -> usize {
+        std::fs::read_dir(ctx.cache.path().join("thumbs")).map_or(0, |d| d.count())
     }
 
     #[test]
@@ -653,7 +943,7 @@ mod tests {
         meta.extend_from_slice(META.as_bytes());
         write_telmi(&dir.path().join("histoire.zip"), "Mon histoire/", &meta);
 
-        let (scan, cache) = scan(dir.path(), false);
+        let (scan, ctx) = scan(dir.path(), false);
         assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
         let e = &scan.entries[0];
         assert_eq!(e.source_id, "src");
@@ -661,20 +951,17 @@ mod tests {
         assert_eq!(e.title, "Le Petit Chaperon rouge");
         assert_eq!(e.version, Some(3));
         assert_eq!(e.age, Some(5));
-        assert_eq!(e.category, "Conte");
-        assert_eq!(e.description, "Une histoire");
+        assert_eq!(e.category.as_deref(), Some("Conte"));
+        assert_eq!(e.description.as_deref(), Some("Une histoire"));
         assert_eq!(e.kind, StoryKind::TelmiZip);
         assert!(e.download_url.ends_with("histoire.zip"));
         assert!(e.size.unwrap() > 0);
-        assert!(e.updated_at.ends_with('Z'));
-        let uri = e.thumb_url.as_deref().unwrap();
-        assert!(uri.starts_with("data:image/png;base64,"));
-        assert_eq!(
-            std::fs::read_dir(cache.path().join("thumbs"))
-                .unwrap()
-                .count(),
-            1
-        );
+        assert!(e.updated_at.as_deref().unwrap().ends_with('Z'));
+        // `thumb_url` est une référence opaque : aucune image dans le scan.
+        assert_eq!(e.thumb_url.as_deref(), Some(e.entry_id.as_str()));
+        assert_eq!(thumb_files(&ctx), 0);
+        assert!(ctx.thumb(e).unwrap().starts_with("data:image/png;base64,"));
+        assert_eq!(thumb_files(&ctx), 1);
     }
 
     #[test]
@@ -794,10 +1081,13 @@ mod tests {
                 ("cover.png", b"pas un png"),
             ],
         );
-        let (scan, _cache) = scan(dir.path(), false);
+        let (scan, ctx) = scan(dir.path(), false);
         assert_eq!(scan.entries.len(), 1);
-        assert!(scan.entries[0].thumb_url.is_none());
-        assert_eq!(scan.warnings.len(), 1);
+        assert!(scan.warnings.is_empty());
+        assert_eq!(
+            ctx.thumb(&scan.entries[0]).unwrap_err().kind(),
+            "validation"
+        );
     }
 
     #[test]
@@ -808,7 +1098,7 @@ mod tests {
             "Ça va être « génial »",
         );
         write_plain_pk(&dir.path().join("histoire.1A2B3C4D.plain.pk"), "Titre pk");
-        let (scan, _cache) = scan(dir.path(), false);
+        let (scan, ctx) = scan(dir.path(), false);
         assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
         assert_eq!(scan.entries.len(), 2);
         let plain = scan
@@ -827,7 +1117,7 @@ mod tests {
         assert_eq!(pk.title, "Titre pk");
         assert!(pk.size.unwrap() > 0);
         for e in [plain, pk] {
-            let uri = e.thumb_url.as_deref().unwrap();
+            let uri = ctx.thumb(e).unwrap();
             let b64 = uri.strip_prefix("data:image/png;base64,").unwrap();
             let png =
                 base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).unwrap();
@@ -870,10 +1160,13 @@ mod tests {
             b"pas un lif du tout, vraiment",
         )
         .unwrap();
-        let (scan, _cache) = scan(dir.path(), false);
+        let (scan, ctx) = scan(dir.path(), false);
         assert_eq!(scan.entries.len(), 1);
-        assert!(scan.entries[0].thumb_url.is_none());
-        assert_eq!(scan.warnings.len(), 1);
+        assert!(scan.warnings.is_empty());
+        assert_eq!(
+            ctx.thumb(&scan.entries[0]).unwrap_err().kind(),
+            "validation"
+        );
     }
 
     #[test]
@@ -892,12 +1185,14 @@ mod tests {
     #[test]
     fn dossier_absent_ou_fichier_donne_folder_unavailable() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = tempfile::tempdir().unwrap();
-        let err = scan_folder("s", &dir.path().join("absent"), false, cache.path()).unwrap_err();
+        let state = FolderState::default();
+        let err = state
+            .scan("s", &dir.path().join("absent"), false)
+            .unwrap_err();
         assert_eq!(err.kind(), "folder_unavailable");
         let file = dir.path().join("f.txt");
         std::fs::write(&file, "x").unwrap();
-        let err = scan_folder("s", &file, false, cache.path()).unwrap_err();
+        let err = state.scan("s", &file, false).unwrap_err();
         assert_eq!(err.kind(), "folder_unavailable");
     }
 
@@ -905,16 +1200,13 @@ mod tests {
     fn le_cache_de_vignettes_est_reutilise() {
         let dir = tempfile::tempdir().unwrap();
         write_telmi(&dir.path().join("a.zip"), "", META.as_bytes());
-        let cache = tempfile::tempdir().unwrap();
-        let first = scan_folder("s", dir.path(), false, cache.path()).unwrap();
-        let second = scan_folder("s", dir.path(), false, cache.path()).unwrap();
+        let (first, ctx) = scan(dir.path(), false);
+        let uri = ctx.thumb(&first.entries[0]).unwrap();
+        assert_eq!(ctx.thumb(&first.entries[0]).unwrap(), uri);
+        assert_eq!(thumb_files(&ctx), 1);
+        // Deuxième analyse (métadonnées en cache) : mêmes entrées.
+        let second = ctx.state.scan("src", dir.path(), false).unwrap();
         assert_eq!(first.entries, second.entries);
-        assert_eq!(
-            std::fs::read_dir(cache.path().join("thumbs"))
-                .unwrap()
-                .count(),
-            1
-        );
     }
 
     #[test]
@@ -979,5 +1271,233 @@ mod tests {
                 .kind(),
             "not_found"
         );
+    }
+
+    #[test]
+    fn uuid_et_version_dangereux_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let long = "a".repeat(65);
+        let bad = [
+            "../x", "a\\b", "CON", "com1.txt", "NUL", "-a", "a b", "a..b", "", &long,
+        ];
+        for (i, uuid) in bad.iter().enumerate() {
+            let meta = serde_json::json!({"title": "T", "uuid": uuid}).to_string();
+            write_telmi(&dir.path().join(format!("u{i}.zip")), "", meta.as_bytes());
+        }
+        let meta = r#"{"title":"T","uuid":"ok","version":"../v"}"#;
+        write_telmi(&dir.path().join("v.zip"), "", meta.as_bytes());
+        let (scan, _ctx) = scan(dir.path(), false);
+        assert!(scan.entries.is_empty(), "{:?}", scan.entries);
+        assert_eq!(scan.warnings.len(), bad.len() + 1);
+        assert!(valid_story_id(&"a".repeat(64)));
+        assert!(valid_story_id("ffffff-199f066d199"));
+    }
+
+    #[test]
+    fn version_chaine_numerique_acceptee() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = r#"{"title":"T","uuid":"ok","version":"2"}"#;
+        write_telmi(&dir.path().join("a.zip"), "", meta.as_bytes());
+        let (scan, _ctx) = scan(dir.path(), false);
+        assert_eq!(scan.entries[0].version, Some(2));
+    }
+
+    #[test]
+    fn noms_de_zip_avec_antislashs_normalises() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = png_bytes([1, 2, 3, 255]);
+        write_zip(
+            &dir.path().join("a.zip"),
+            CompressionMethod::Deflated,
+            &[
+                ("Hist\\metadata.json", META.as_bytes()),
+                ("Hist\\nodes.json", b"{}"),
+                ("Hist\\cover.png", &png),
+            ],
+        );
+        let (scan, ctx) = scan(dir.path(), false);
+        assert_eq!(scan.entries.len(), 1, "{:?}", scan.warnings);
+        assert!(ctx.thumb(&scan.entries[0]).is_ok());
+    }
+
+    #[test]
+    fn plain_et_pk_de_meme_uuid_ont_deux_entry_id_stables() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plain_dir(&dir.path().join("x.plain"), "Titre");
+        write_plain_pk(&dir.path().join("x.plain.pk"), "Titre");
+        let (first, ctx) = scan(dir.path(), false);
+        assert_eq!(first.entries.len(), 2);
+        assert_eq!(first.entries[0].uuid, first.entries[1].uuid);
+        assert_ne!(first.entries[0].entry_id, first.entries[1].entry_id);
+        let second = ctx.state.scan("src", dir.path(), false).unwrap();
+        assert_eq!(first.entries, second.entries);
+    }
+
+    #[test]
+    fn folder_thumbnail_refuse_les_entrees_inconnues() {
+        let dir = tempfile::tempdir().unwrap();
+        write_telmi(&dir.path().join("a.zip"), "", META.as_bytes());
+        let (scan, ctx) = scan(dir.path(), false);
+        let id = scan.entries[0].entry_id.clone();
+        let path = scan.entries[0].download_url.clone();
+        for (source, entry) in [
+            ("src", "deadbeef"),
+            ("autre", id.as_str()),
+            ("src", path.as_str()),
+        ] {
+            let err = ctx
+                .state
+                .thumbnail(ctx.cache.path(), source, entry)
+                .unwrap_err();
+            assert_eq!(err.kind(), "not_found");
+        }
+    }
+
+    #[test]
+    fn rescan_detecte_un_fichier_modifie() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.zip");
+        write_telmi(&path, "", br#"{"title":"Avant","uuid":"u"}"#);
+        let (first, ctx) = scan(dir.path(), false);
+        assert_eq!(first.entries[0].title, "Avant");
+        write_telmi(
+            &path,
+            "",
+            r#"{"title":"Après modification","uuid":"u"}"#.as_bytes(),
+        );
+        let second = ctx.state.scan("src", dir.path(), false).unwrap();
+        assert_eq!(second.entries[0].title, "Après modification");
+        std::fs::remove_file(&path).unwrap();
+        let third = ctx.state.scan("src", dir.path(), false).unwrap();
+        assert!(third.entries.is_empty());
+    }
+
+    #[test]
+    fn la_cle_de_cache_d_un_plain_suit_thumbnail_lif() {
+        let dir = tempfile::tempdir().unwrap();
+        let story = dir.path().join("a.plain");
+        write_plain_dir(&story, "Titre");
+        let (scan, ctx) = scan(dir.path(), false);
+        let before = ctx.thumb(&scan.entries[0]).unwrap();
+        let mut lif = b"liff".to_vec();
+        lif.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 1, 0xA2, 0xFF, 0x00, 0x07, 255, 0]);
+        lif.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]);
+        std::fs::write(story.join("img/thumbnail.lif"), lif).unwrap();
+        let after = ctx.thumb(&scan.entries[0]).unwrap();
+        assert_ne!(before, after);
+        assert_eq!(thumb_files(&ctx), 2);
+    }
+
+    #[test]
+    fn png_surdimensionne_refuse_a_la_demande() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut png = Vec::new();
+        let mut enc = png::Encoder::new(&mut png, 9000, 1);
+        enc.set_color(png::ColorType::Grayscale);
+        enc.set_depth(png::BitDepth::One);
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&vec![0u8; 9000usize.div_ceil(8)])
+            .unwrap();
+        write_zip(
+            &dir.path().join("a.zip"),
+            CompressionMethod::Deflated,
+            &[
+                ("metadata.json", META.as_bytes()),
+                ("nodes.json", b"{}"),
+                ("cover.png", &png),
+            ],
+        );
+        let (scan, ctx) = scan(dir.path(), false);
+        assert_eq!(scan.entries.len(), 1);
+        assert!(ctx.thumb(&scan.entries[0]).is_err());
+    }
+
+    /// Remplace la taille décompressée déclarée (répertoire central) de `name`.
+    fn lie_about_size(path: &Path, name: &str, fake: u32) {
+        let mut data = std::fs::read(path).unwrap();
+        let mut at = 0;
+        while let Some(pos) = data[at..].windows(4).position(|w| w == [0x50, 0x4b, 1, 2]) {
+            let start = at + pos;
+            let name_len = u16::from_le_bytes([data[start + 28], data[start + 29]]) as usize;
+            if &data[start + 46..start + 46 + name_len] == name.as_bytes() {
+                data[start + 24..start + 28].copy_from_slice(&fake.to_le_bytes());
+            }
+            at = start + 4;
+        }
+        std::fs::write(path, data).unwrap();
+    }
+
+    #[test]
+    fn taille_declaree_mensongere_ne_contourne_pas_la_limite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bombe.zip");
+        let big = vec![b' '; 2 * 1024 * 1024];
+        write_zip(
+            &path,
+            CompressionMethod::Deflated,
+            &[("metadata.json", &big), ("nodes.json", b"{}")],
+        );
+        lie_about_size(&path, "metadata.json", 100);
+        let (scan, _ctx) = scan(dir.path(), false);
+        assert!(scan.entries.is_empty());
+        assert_eq!(scan.warnings.len(), 1);
+    }
+
+    #[test]
+    fn liens_symboliques_ignores() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = tempfile::tempdir().unwrap();
+        write_telmi(&real.path().join("cible.zip"), "", META.as_bytes());
+        write_plain_dir(&real.path().join("cible.plain"), "Titre");
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(
+            real.path().join("cible.zip"),
+            dir.path().join("lien.zip"),
+        )
+        .and(std::os::windows::fs::symlink_dir(
+            real.path().join("cible.plain"),
+            dir.path().join("lien.plain"),
+        ))
+        .and(std::os::windows::fs::symlink_dir(
+            real.path(),
+            dir.path().join("sous-dossier"),
+        ));
+        #[cfg(unix)]
+        let linked =
+            std::os::unix::fs::symlink(real.path().join("cible.zip"), dir.path().join("lien.zip"))
+                .and(std::os::unix::fs::symlink(
+                    real.path().join("cible.plain"),
+                    dir.path().join("lien.plain"),
+                ))
+                .and(std::os::unix::fs::symlink(
+                    real.path(),
+                    dir.path().join("sous-dossier"),
+                ));
+        if linked.is_err() {
+            return; // création de liens non autorisée sur cette machine
+        }
+        let (scan, _ctx) = scan(dir.path(), true);
+        assert!(scan.entries.is_empty(), "{:?}", scan.entries);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn jonctions_ignorees() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = tempfile::tempdir().unwrap();
+        write_telmi(&real.path().join("a.zip"), "", META.as_bytes());
+        let junction = dir.path().join("jonction");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(real.path())
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !made {
+            return;
+        }
+        let (scan, _ctx) = scan(dir.path(), true);
+        assert!(scan.entries.is_empty(), "{:?}", scan.entries);
     }
 }

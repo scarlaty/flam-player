@@ -1,23 +1,24 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, expect, it } from "vitest";
-import { scanFolder, type FolderScan } from "./folder";
+import { folderThumbnail, scanFolder, type FolderScan } from "./folder";
 
 afterEach(() => clearMocks());
 
 const scan: FolderScan = {
   entries: [
     {
+      entry_id: "00ff00ff00ff00ff",
       source_id: "s",
       uuid: "u",
       version: null,
       title: "Histoire",
-      description: "",
+      description: null,
       age: null,
-      category: "",
-      author: "",
-      voice: "",
-      license: "",
-      thumb_url: null,
+      category: null,
+      author: null,
+      voice: null,
+      license: null,
+      thumb_url: "00ff00ff00ff00ff",
       download_url: "C:\\Histoires\\a.zip",
       size: 12,
       updated_at: "2026-10-15T08:00:00Z",
@@ -49,4 +50,16 @@ it("scanFolder normalise les erreurs du backend", async () => {
     kind: "folder_unavailable",
     message: "dossier introuvable",
   });
+});
+
+it("folderThumbnail appelle folder_thumbnail", async () => {
+  const calls: { cmd: string; args: unknown }[] = [];
+  mockIPC((cmd, args) => {
+    calls.push({ cmd, args });
+    return "data:image/png;base64,AAAA";
+  });
+  await expect(folderThumbnail("s", "e1")).resolves.toBe("data:image/png;base64,AAAA");
+  expect(calls).toEqual([
+    { cmd: "folder_thumbnail", args: { sourceId: "s", entryId: "e1" } },
+  ]);
 });

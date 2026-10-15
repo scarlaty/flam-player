@@ -27,6 +27,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(storage::ConfigState::new(storage::config_dir()?));
+            app.manage(folder::FolderState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

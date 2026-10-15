@@ -303,6 +303,23 @@ mod tests {
         assert_ne!(at(0, 0), at(0, 1));
     }
 
+    #[test]
+    fn opcode_tronque_et_dimensions_extremes() {
+        // Opcode 0xFF coupé après un octet : pas de panique, pixels laissés à zéro.
+        let img = decode(&lif(2, 1, &[0xFF, 0x1F])).unwrap();
+        assert_eq!(img.rgba, vec![0; 8]);
+        // Vert étendu sans second octet.
+        assert!(decode(&lif(2, 1, &[0x80])).is_ok());
+        // Dimensions maximales : alloue sans lire hors limites.
+        let big = decode(&lif(2047, 2047, &[0xFE, 0, 0])).unwrap();
+        assert_eq!(big.rgba.len(), 2047 * 2047 * 4);
+        // Dimensions démesurées dans l'en-tête.
+        assert_eq!(
+            decode(&lif(u32::MAX, u32::MAX, &[0xFE, 0, 0])).unwrap_err(),
+            LifError::BadDimensions
+        );
+    }
+
     /// Fichier produit par `tools/telmi2flam/lif.py` (encode) pour une image 8x4 ;
     /// l'image attendue est celle du décodeur Python de référence (`lif.decode`).
     #[test]

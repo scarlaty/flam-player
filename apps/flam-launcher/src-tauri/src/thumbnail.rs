@@ -9,8 +9,6 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine;
 
-/// Côté maximal d'une vignette servie au front.
-pub const MAX_THUMB_DIM: u32 = 192;
 /// Dimension maximale acceptée pour un PNG source (archive non fiable).
 const MAX_SOURCE_DIM: u32 = 8192;
 /// Mémoire maximale allouée au décodage d'un PNG.
@@ -198,6 +196,7 @@ impl ThumbCache {
     pub fn get_or_make<E>(
         &self,
         key: u64,
+        max_dim: u32,
         make: impl FnOnce() -> Result<RgbaImage, E>,
     ) -> Result<String, E>
     where
@@ -209,7 +208,7 @@ impl ThumbCache {
                 return Ok(data_uri(&bytes));
             }
         }
-        let png = encode_png(&fit(make()?, MAX_THUMB_DIM))?;
+        let png = encode_png(&fit(make()?, max_dim))?;
         if let Err(e) = self.store(&path, &png) {
             tracing::warn!("cache de vignettes inscriptible impossible : {e}");
         }
@@ -324,7 +323,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = ThumbCache::new(dir.path());
         let first = cache
-            .get_or_make::<ThumbError>(7, || Ok(solid(4, 4, [1, 2, 3, 255])))
+            .get_or_make::<ThumbError>(7, 192, || Ok(solid(4, 4, [1, 2, 3, 255])))
             .unwrap();
         assert!(first.starts_with("data:image/png;base64,"));
         assert!(dir
@@ -334,7 +333,7 @@ mod tests {
             .exists());
         // Deuxième appel : la fabrique ne doit pas être utilisée.
         let second = cache
-            .get_or_make::<ThumbError>(7, || panic!("cache ignoré"))
+            .get_or_make::<ThumbError>(7, 192, || panic!("cache ignoré"))
             .unwrap();
         assert_eq!(first, second);
     }
@@ -346,7 +345,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("thumbs")).unwrap();
         std::fs::write(dir.path().join("thumbs/0000000000000001.png"), b"abc").unwrap();
         let uri = cache
-            .get_or_make::<ThumbError>(1, || Ok(solid(1, 1, [0, 0, 0, 255])))
+            .get_or_make::<ThumbError>(1, 192, || Ok(solid(1, 1, [0, 0, 0, 255])))
             .unwrap();
         assert!(uri.starts_with("data:image/png"));
     }
