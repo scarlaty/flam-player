@@ -25,7 +25,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(storage::ConfigState::new(storage::config_dir()?));
-            app.manage(catalog::CatalogHttp::new()?);
+            app.manage(catalog::CatalogService::new()?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
