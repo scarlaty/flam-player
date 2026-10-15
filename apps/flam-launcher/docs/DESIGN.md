@@ -157,6 +157,11 @@ sous l'écran d'accueil avec `npm run tauri dev`). La page est chargée à la de
 `import.meta.env.DEV` : le build de production ne contient ni la page ni ses données.
 Elle présente tous les composants avec des données fictives et un sélecteur de thème.
 
+| Clair                                                             | Sombre                                                 |
+| ----------------------------------------------------------------- | ------------------------------------------------------ |
+| ![Thème clair](screenshots/demo-clair.png)                        | ![Thème sombre](screenshots/demo-sombre.png)           |
+| ![Dialogue et notifications](screenshots/demo-clair-dialogue.png) | ![Fenêtre étroite](screenshots/demo-sombre-etroit.png) |
+
 ## Vérifications
 
 - Tests Vitest de chaque composant, avec axe-core (`src/test/axe.ts`) : aucune violation sur
