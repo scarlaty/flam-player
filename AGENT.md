@@ -106,6 +106,9 @@ M = menu contextuel, P = pause/reprise audio, S = capture d'ecran.
 
 **Timeout en CI/test** : utiliser `timeout 8 ./build/flam-player.exe ...` car le player ouvre une fenetre SDL et attend indefiniment.
 Sans fenetre : `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy` (voir `tests/e2e/e2e_telmi.py`).
+Pour jouer automatiquement une vraie histoire convertie sans fenetre :
+`python tools/telmi2flam/explore.py <histoire.plain | .plain.pk> --player build` (statut
+ok / lua_error / crash / timeout / stuck, scenes visitees ; doc : `tools/telmi2flam/README.md`).
 
 ## Architecture
 
@@ -150,9 +153,10 @@ tests/
 tools/telmi2flam/
   telmi2flam.py            — Convertisseur TELMI -> .plain.pk (python 3 + Pillow)
   validate.py              — Verification d'un .plain.pk ou d'un dossier .plain
+  explore.py               — Exploration automatique d'une histoire dans flam-player sans fenetre
   engine/                  — Moteur d'histoire Lua embarque (story.lua, main.lua)
   runtime/                 — Modules runtime Lunii embarques (carrousel, audio-player...)
-  tests/                   — Tests unittest du convertisseur
+  tests/                   — Tests unittest du convertisseur et de l'explorateur
 games/casse-briques/        — Jeu casse-briques (contenu Lua FLAM)
 games/attrape-etoiles/      — Jeu Attrape-etoiles (fait avec le skill flam-homebrew)
 skills/flam-homebrew/       — Skill IA : fabriquer un homebrew .plain.pk (SKILL.md, build, check, runtime)

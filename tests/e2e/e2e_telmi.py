@@ -25,10 +25,8 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
-import time
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -47,9 +45,9 @@ except ImportError as e:  # Pillow absent
     print("[SKIP] e2e : import impossible (%s)" % e)
     sys.exit(SKIP)
 
-# Motifs d'erreur sur stderr (messages de main.c, fw_globals.c, bindings)
-ERR_RE = re.compile(r"Erreur|error|ERROR|ASSERT|traceback|attempt to|boucle infinie|"
-                    r"cannot open|CRASH|unprotected", re.IGNORECASE)
+# Lancement sans fenetre et motifs d'erreur sur stderr : partages avec
+# l'explorateur (tools/telmi2flam/explore.py)
+from explore import ERR_RE, run_player  # noqa: E402
 
 
 def story_files():
@@ -170,40 +168,6 @@ end
 
 def lua_str(s):
     return '"' + s.replace("\\", "/").replace('"', '\\"') + '"'
-
-
-def run_player(exe, args, cwd, timeout, until=None):
-    """Lance flam-player ; until() -> True arrete l'attente. Retourne
-    (code ou None si tue, stdout, stderr, duree)."""
-    env = dict(os.environ)
-    env.setdefault("SDL_VIDEODRIVER", "dummy")
-    env.setdefault("SDL_AUDIODRIVER", "dummy")
-    # le pilote video dummy n'a pas de rendu accelere : forcer le rendu
-    # logiciel (sinon SDL_CreateRenderer(ACCELERATED) echoue)
-    env.setdefault("SDL_RENDER_DRIVER", "software")
-    out_p, err_p = os.path.join(cwd, "stdout.log"), os.path.join(cwd, "stderr.log")
-    with open(out_p, "wb") as fo, open(err_p, "wb") as fe:
-        t0 = time.time()
-        p = subprocess.Popen([exe] + args, cwd=cwd, stdout=fo, stderr=fe, env=env)
-        code = None
-        while time.time() - t0 < timeout:
-            code = p.poll()
-            if code is not None:
-                break
-            if until is not None and until():
-                time.sleep(2.0)   # laisser le retour bibliotheque se faire (crash ?)
-                code = p.poll()
-                break
-            time.sleep(0.2)
-        if code is None:
-            p.kill()
-            p.wait()
-        dt = time.time() - t0
-    with open(out_p, "rb") as f:
-        out = f.read().decode("utf-8", "replace")
-    with open(err_p, "rb") as f:
-        err = f.read().decode("utf-8", "replace")
-    return code, out, err, dt
 
 
 def main():
