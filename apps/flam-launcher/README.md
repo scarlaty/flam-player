@@ -42,22 +42,23 @@ apps/flam-launcher/
     src/
       lib.rs               Initialisation (traces, builder Tauri)
       app.rs               Commandes générales (`app_info`)
-      error.rs             `AppError` (thiserror), sérialisée en texte vers le front
+      error.rs             `AppError` (thiserror), sérialisée en `{ kind, message }`
+      storage.rs           Persistance JSON : écriture atomique, `*.bak`, migration de schéma
+      settings.rs          `settings.json`, détection du player et de Python, commandes `settings_*`
+      sources.rs           `sources.json`, source par défaut et implicite, commandes `sources_*`
 ```
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`. Prévus (un module par responsabilité, créés avec leur issue) :
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `sources`. Prévus (un module par responsabilité, créés avec leur issue) :
 
-| Module     | Rôle                                                             |
-| ---------- | ---------------------------------------------------------------- |
-| `sources`  | Registre des sources d'histoires (catalogues, dossiers)          |
-| `catalog`  | Lecture des catalogues JSON au format Telmi Store                |
-| `folder`   | Source dossier local (`.zip`, `.plain`, `.plain.pk`)             |
-| `install`  | Pipeline téléchargement, conversion (`telmi2flam`), installation |
-| `player`   | Lancement et suivi de `flam-player`                              |
-| `settings` | Lecture/écriture de la configuration                             |
-| `compat`   | Statut de compatibilité d'une histoire                           |
+| Module    | Rôle                                                             |
+| --------- | ---------------------------------------------------------------- |
+| `catalog` | Lecture des catalogues JSON au format Telmi Store                |
+| `folder`  | Source dossier local (`.zip`, `.plain`, `.plain.pk`)             |
+| `install` | Pipeline téléchargement, conversion (`telmi2flam`), installation |
+| `player`  | Lancement et suivi de `flam-player`                              |
+| `compat`  | Statut de compatibilité d'une histoire                           |
 
 ### Commandes Tauri
 
@@ -67,11 +68,22 @@ enregistrées dans `generate_handler!` de `lib.rs`) : pas de fichier `commands.r
 Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enregistrées dans
 `generate_handler!` (`lib.rs`). Chacune a un wrapper typé dans `src/api/`.
 
-| Commande   | Retour              | État     |
-| ---------- | ------------------- | -------- |
-| `app_info` | `{ name, version }` | présente |
+| Commande          | Arguments                  | Retour                      | Module     |
+| ----------------- | -------------------------- | --------------------------- | ---------- |
+| `app_info`        |                            | `{ name, version }`         | `app`      |
+| `settings_get`    |                            | `SettingsView`              | `settings` |
+| `settings_set`    | `settings: Settings`       | `SettingsView`              | `settings` |
+| `sources_list`    |                            | `Source[]`                  | `sources`  |
+| `sources_add`     | `input: SourceInput`       | `Source`                    | `sources`  |
+| `sources_update`  | `id`, `input: SourceInput` | `Source`                    | `sources`  |
+| `sources_remove`  | `id`                       | rien                        | `sources`  |
+| `sources_reorder` | `ids: string[]`            | `Source[]` (liste complète) | `sources`  |
 
-Les commandes des modules prévus seront ajoutées avec leurs issues.
+Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`) et `src/api/sources.ts`
+(`listSources`, `addSource`, `updateSource`, `removeSource`, `reorderSources`). La logique
+(`SettingsStore`, `SourcesStore`, détection) ne dépend pas de Tauri et reçoit son dossier de
+configuration en paramètre : elle est testée sur des dossiers temporaires ; les commandes
+ne sont que de fines enveloppes qui prennent un verrou (`ConfigState`) autour de chaque opération.
 
 ### Erreurs
 
@@ -82,6 +94,19 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 (`kind: "unknown"` si la forme est inattendue). Convention : chaque module ajoute ses variantes
 à `AppError` avec un `kind` stable ; le front teste le `kind`, jamais le `message`.
 
+| `kind`           | Sens                                                                        |
+| ---------------- | --------------------------------------------------------------------------- |
+| `io`             | Erreur d'entrée/sortie                                                      |
+| `validation`     | Valeur refusée (URL, chemin, nom, ordre) ou opération interdite             |
+| `not_found`      | Élément introuvable (identifiant de source inconnu)                         |
+| `config_version` | Fichier de configuration écrit par une version plus récente (laissé intact) |
+| `config_dir`     | Dossier de configuration introuvable                                        |
+| `serialization`  | Échec de sérialisation JSON                                                 |
+| `unknown`        | Côté front uniquement : erreur de forme inattendue                          |
+
+Un fichier de configuration **corrompu** n'est pas une erreur : il est renommé en
+`<fichier>.<AAAAMMJJ-HHMMSS>.bak`, un avertissement est tracé et les valeurs par défaut sont utilisées.
+
 ### Événements
 
 Convention : événements émis par le backend, nommés `domaine://action` (ex. `install://progress`),
@@ -90,9 +115,67 @@ la progression d'installation est le premier cas prévu.
 
 ### Données
 
-- Configuration : `%APPDATA%/flam-launcher` (sources, paramètres).
+- Configuration : `%APPDATA%/flam-launcher` (`settings.json`, `sources.json`), détaillée ci-dessous.
 - Cache (téléchargements, histoires converties) : dossier configurable, par défaut sous les
   données locales de l'application. Jamais dans le dépôt.
+
+#### `settings.json`
+
+```json
+{
+  "schema_version": 1,
+  "player_path": null,
+  "python_path": null,
+  "cache_dir": null,
+  "default_catalog_url": "https://gist.githubusercontent.com/DantSu/49ed776755f3a01c995e78e3fd1cb79f/raw/telmi-interactive.json"
+}
+```
+
+Un chemin à `null` signifie « automatique » ; `settings_get` renvoie aussi les valeurs effectives
+(`resolved`) :
+
+- `player_path` : `flam-player.exe` à côté de l'exécutable de l'appli, sinon (build de
+  développement) `build/flam-player.exe` dans un dossier ancêtre (racine du dépôt) ;
+- `python_path` : `python.exe` trouvé dans le `PATH` (aucun script n'est exécuté ; les alias
+  vides du Microsoft Store sont ignorés) ;
+- `cache_dir` : `%LOCALAPPDATA%/flam-launcher/cache`.
+
+`settings_set` normalise (espaces, chaîne vide = automatique) puis valide : les chemins du player
+et de Python doivent être des fichiers absolus existants, le cache un chemin absolu qui n'est pas
+un fichier, l'URL du catalogue une URL http(s).
+
+#### `sources.json`
+
+```json
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "type": "catalog",
+      "id": "telmi-store",
+      "name": "Telmi Store",
+      "url": "https://…/telmi-interactive.json"
+    },
+    { "type": "folder", "id": "3f2c…", "name": "Mon dossier", "path": "C:\Histoires" }
+  ]
+}
+```
+
+- Liste ordonnée ; les identifiants sont des UUID v4 (« Telmi Store » : `telmi-store`).
+- « Telmi Store » est créée avec le fichier ; une fois supprimée, elle ne revient pas.
+- « Mes histoires » (`type: "library"`, id `library`) est **implicite** : jamais écrite dans le
+  fichier, toujours renvoyée en premier par `sources_list`, ni modifiable, ni supprimable, ni
+  réordonnable.
+- Validation : nom non vide (100 caractères max), URL http(s) avec hôte, dossier absolu existant,
+  type immuable à la mise à jour ; `sources_reorder` exige une permutation exacte des identifiants
+  enregistrés.
+
+#### Écriture, corruption, migration
+
+- Écritures atomiques : fichier temporaire voisin puis renommage.
+- `schema_version` absent = version 0. Les migrations s'appliquent version par version
+  (`MigrationStep` dans `storage.rs`) ; un fichier de version **supérieure** à celle de
+  l'application est refusé (`config_version`) sans être modifié.
 
 ### Conventions front
 
