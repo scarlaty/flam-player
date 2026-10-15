@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "./error";
 
 /** Informations sur l'application (miroir de `AppInfo` côté Rust). */
 export interface AppInfo {
@@ -8,5 +8,5 @@ export interface AppInfo {
 
 /** Appelle la commande Tauri `app_info`. */
 export function getAppInfo(): Promise<AppInfo> {
-  return invoke<AppInfo>("app_info");
+  return invokeCommand<AppInfo>("app_info");
 }

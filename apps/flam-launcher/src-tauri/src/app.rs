@@ -1,4 +1,4 @@
-//! Commandes Tauri exposées au front (`invoke`).
+//! Commandes générales de l'application (informations, version).
 
 use serde::Serialize;
 

@@ -41,13 +41,13 @@ apps/flam-launcher/
   src-tauri/
     src/
       lib.rs               Initialisation (traces, builder Tauri)
-      commands.rs          Commandes Tauri
+      app.rs               Commandes générales (`app_info`)
       error.rs             `AppError` (thiserror), sérialisée en texte vers le front
 ```
 
 ### Modules Rust
 
-Présents : `commands`, `error`. Prévus (un module par responsabilité, créés avec leur issue) :
+Présents : `app` (commandes générales), `error`. Prévus (un module par responsabilité, créés avec leur issue) :
 
 | Module     | Rôle                                                             |
 | ---------- | ---------------------------------------------------------------- |
@@ -61,6 +61,9 @@ Présents : `commands`, `error`. Prévus (un module par responsabilité, créés
 
 ### Commandes Tauri
 
+Chaque module Rust porte ses propres commandes (`#[tauri::command]` dans le module concerné,
+enregistrées dans `generate_handler!` de `lib.rs`) : pas de fichier `commands.rs` fourre-tout.
+
 Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enregistrées dans
 `generate_handler!` (`lib.rs`). Chacune a un wrapper typé dans `src/api/`.
 
@@ -69,6 +72,15 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `app_info` | `{ name, version }` | présente |
 
 Les commandes des modules prévus seront ajoutées avec leurs issues.
+
+### Erreurs
+
+`AppError` (`src-tauri/src/error.rs`, `thiserror`) est sérialisée en objet stable
+`{ "kind": "<code_stable>", "message": "<texte lisible en français>" }` (ex. `kind: "io"`).
+Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; le helper
+`invokeCommand<T>(cmd, args?)` appelle `invoke` et normalise toute erreur en `AppError`
+(`kind: "unknown"` si la forme est inattendue). Convention : chaque module ajoute ses variantes
+à `AppError` avec un `kind` stable ; le front teste le `kind`, jamais le `message`.
 
 ### Événements
 
@@ -89,3 +101,20 @@ la progression d'installation est le premier cas prévu.
 - Un dossier par fonctionnalité dans `src/features/`, composants partagés dans `src/components/`.
 - Tests à côté du code (`*.test.ts(x)`), API Tauri simulée avec `@tauri-apps/api/mocks`.
 - TypeScript strict, formatage Prettier, ESLint sans avertissement.
+
+## Outillage
+
+- TypeScript est épinglé à 6.0.3 : `typescript-eslint` n'accepte pas encore TypeScript >= 6.1.
+  À relever quand le plugin le permettra.
+- Le premier `npm run tauri build` télécharge WiX (MSI) et NSIS (installeur) depuis GitHub ;
+  les builds suivants les réutilisent. Cibles de bundle : `nsis` et `msi`.
+- Contrôles : `npm run lint` (sans avertissement), `npm run format:check`, `npm run typecheck`,
+  `npm test`, puis dans `src-tauri/` `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
+
+## Sécurité
+
+- CSP stricte définie dans `src-tauri/tauri.conf.json` : scripts, objets, frames et formulaires
+  verrouillés. `style-src` garde `'unsafe-inline'` : Tauri et React injectent des styles en ligne
+  (attributs `style`), qu'une CSP à nonce ne couvre pas ; aucun script en ligne n'est autorisé.
+- La capability `core:default` (`src-tauri/capabilities/default.json`) est volontairement large
+  pour le squelette : elle sera restreinte permission par permission au fil des issues.

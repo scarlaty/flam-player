@@ -1,6 +1,6 @@
 //! Backend Rust de flam-launcher. Voir `apps/flam-launcher/README.md` pour l'architecture.
 
-mod commands;
+mod app;
 mod error;
 
 pub use error::{AppError, AppResult};
@@ -16,7 +16,7 @@ pub fn run() {
     tracing::info!("démarrage de flam-launcher {}", env!("CARGO_PKG_VERSION"));
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![commands::app_info])
+        .invoke_handler(tauri::generate_handler![app::app_info])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application Tauri");
 }

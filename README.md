@@ -228,6 +228,6 @@ et details : [tools/telmi2flam/README.md](tools/telmi2flam/README.md).
 
 ## Licence
 
-Exception : `apps/flam-launcher/` (surcouche de bureau) est distribue sous licence MIT, voir [`apps/flam-launcher/LICENSE`](apps/flam-launcher/LICENSE).
-
 Ce projet est a usage personnel et educatif.
+
+Exception : `apps/flam-launcher/` (surcouche de bureau) est distribue sous licence MIT, voir [`apps/flam-launcher/LICENSE`](apps/flam-launcher/LICENSE).
