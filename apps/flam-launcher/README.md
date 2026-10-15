@@ -114,7 +114,8 @@ n'est pas tenu pendant l'analyse (thread dédié).
 `src/api/story.ts`) : `source_id, uuid, version, title, description, age, category, author,
 voice, license, thumb_url, download_url, size, updated_at, kind`. Pour un dossier,
 `download_url` est le **chemin local absolu** de l'archive ou du dossier `.plain`, `size` est
-absente pour un `.plain`, `updated_at` est la date de modification (ISO 8601 UTC). Un
+absente pour un `.plain`, `updated_at` est la date de modification (ISO 8601 UTC) ; les textes
+absents (`description`, `category`, `author`, `voice`, `license`, `updated_at`) valent la chaîne vide. Un
 `.plain` et son `.plain.pk` produisent deux entrées (même `uuid`, `kind` différent).
 
 Les archives sont non fiables : rien n'est extrait sur disque, `metadata.json` et `info.plain` sont

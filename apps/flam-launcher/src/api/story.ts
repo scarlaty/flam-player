@@ -10,18 +10,18 @@ export interface StoryEntry {
   uuid: string;
   version: number | null;
   title: string;
-  description: string | null;
+  description: string;
   age: number | null;
-  category: string | null;
-  author: string | null;
-  voice: string | null;
-  license: string | null;
+  category: string;
+  author: string;
+  voice: string;
+  license: string;
   /** URL affichable telle quelle (`data:image/png;base64,…` pour un dossier local). */
   thumb_url: string | null;
   /** URL pour un catalogue, chemin local absolu pour un dossier. */
   download_url: string;
   size: number | null;
-  /** Date ISO 8601 UTC. */
-  updated_at: string | null;
+  /** Date de mise à jour (ISO 8601 UTC pour un dossier), chaîne vide si inconnue. */
+  updated_at: string;
   kind: StoryKind;
 }

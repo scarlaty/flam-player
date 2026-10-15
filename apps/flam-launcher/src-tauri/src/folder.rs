@@ -315,16 +315,16 @@ fn telmi_entry(
         uuid,
         version: json_u32(&meta, "version"),
         title,
-        description: json_text(&meta, "description", MAX_FIELD_CHARS),
+        description: json_text(&meta, "description", MAX_FIELD_CHARS).unwrap_or_default(),
         age: json_u32(&meta, "age"),
-        category: json_text(&meta, "category", MAX_FIELD_CHARS),
-        author: json_text(&meta, "author", MAX_FIELD_CHARS),
-        voice: json_text(&meta, "voice", MAX_FIELD_CHARS),
-        license: json_text(&meta, "license", MAX_FIELD_CHARS),
+        category: json_text(&meta, "category", MAX_FIELD_CHARS).unwrap_or_default(),
+        author: json_text(&meta, "author", MAX_FIELD_CHARS).unwrap_or_default(),
+        voice: json_text(&meta, "voice", MAX_FIELD_CHARS).unwrap_or_default(),
+        license: json_text(&meta, "license", MAX_FIELD_CHARS).unwrap_or_default(),
         thumb_url,
         download_url: path.to_string_lossy().into_owned(),
         size: Some(info.size),
-        updated_at: info.updated_at.clone(),
+        updated_at: info.updated_at.clone().unwrap_or_default(),
         kind: StoryKind::TelmiZip,
     };
     Ok((entry, warnings))
@@ -377,16 +377,16 @@ fn flam_entry(
         uuid,
         version: None,
         title,
-        description: None,
+        description: String::new(),
         age: None,
-        category: None,
-        author: None,
-        voice: None,
-        license: None,
+        category: String::new(),
+        author: String::new(),
+        voice: String::new(),
+        license: String::new(),
         thumb_url,
         download_url: path.to_string_lossy().into_owned(),
         size: (kind == StoryKind::FlamPk).then_some(info.size),
-        updated_at: info.updated_at.clone(),
+        updated_at: info.updated_at.clone().unwrap_or_default(),
         kind,
     };
     Ok((entry, warnings))
@@ -661,11 +661,12 @@ mod tests {
         assert_eq!(e.title, "Le Petit Chaperon rouge");
         assert_eq!(e.version, Some(3));
         assert_eq!(e.age, Some(5));
-        assert_eq!(e.category.as_deref(), Some("Conte"));
+        assert_eq!(e.category, "Conte");
+        assert_eq!(e.description, "Une histoire");
         assert_eq!(e.kind, StoryKind::TelmiZip);
         assert!(e.download_url.ends_with("histoire.zip"));
         assert!(e.size.unwrap() > 0);
-        assert!(e.updated_at.as_deref().unwrap().ends_with('Z'));
+        assert!(e.updated_at.ends_with('Z'));
         let uri = e.thumb_url.as_deref().unwrap();
         assert!(uri.starts_with("data:image/png;base64,"));
         assert_eq!(
