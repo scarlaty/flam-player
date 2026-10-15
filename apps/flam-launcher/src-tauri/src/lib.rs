@@ -2,9 +2,9 @@
 
 mod app;
 mod error;
-mod settings;
-mod sources;
-mod storage;
+pub mod settings;
+pub mod sources;
+pub mod storage;
 
 use tauri::Manager;
 
@@ -27,6 +27,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app::app_info,
+            storage::config_ack_recovery,
             settings::settings_get,
             settings::settings_set,
             sources::sources_list,

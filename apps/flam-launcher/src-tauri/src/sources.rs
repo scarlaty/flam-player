@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::storage::{self, ConfigState, MigrationStep};
+use crate::storage::{self, ConfigState, MigrationStep, Recovery};
 use crate::{AppError, AppResult};
 
 /// Version courante du schéma de `sources.json`.
@@ -21,6 +21,7 @@ pub const TELMI_STORE_ID: &str = "telmi-store";
 pub const LIBRARY_ID: &str = "library";
 const LIBRARY_NAME: &str = "Mes histoires";
 const MAX_NAME_LEN: usize = 100;
+const MAX_URL_LEN: usize = 2048;
 
 /// Une source d'histoires (miroir de `Source` dans `src/api/sources.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +76,15 @@ pub enum SourceInput {
     Folder { name: String, path: String },
 }
 
+/// Réponse de `sources_list` (miroir de `SourcesView` dans `src/api/sources.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourcesView {
+    pub sources: Vec<Source>,
+    /// Présent tant que l'utilisateur n'a pas acquitté (`config_ack_recovery`) la
+    /// restauration de `sources.json` aux valeurs par défaut.
+    pub recovery: Option<Recovery>,
+}
+
 /// Contenu de `sources.json`.
 #[derive(Debug, Serialize, Deserialize)]
 struct SourcesFile {
@@ -99,12 +109,22 @@ const MIGRATE: MigrationStep = migrate;
 /// Valide une URL de catalogue (http/https avec hôte) et la renvoie normalisée.
 pub fn validate_catalog_url(raw: &str) -> AppResult<String> {
     let raw = raw.trim();
+    if raw.len() > MAX_URL_LEN {
+        return Err(AppError::Validation(format!(
+            "l'URL ne peut pas dépasser {MAX_URL_LEN} caractères"
+        )));
+    }
     let url = url::Url::parse(raw)
         .map_err(|err| AppError::Validation(format!("URL invalide « {raw} » : {err}")))?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
         return Err(AppError::Validation(format!(
             "l'URL « {raw} » doit commencer par http:// ou https://"
         )));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(AppError::Validation(
+            "l'URL ne doit pas contenir d'identifiants (utilisateur:mot de passe@)".into(),
+        ));
     }
     Ok(url.into())
 }
@@ -113,6 +133,11 @@ fn validate_name(raw: &str) -> AppResult<String> {
     let name = raw.trim();
     if name.is_empty() {
         return Err(AppError::Validation("le nom ne peut pas être vide".into()));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(AppError::Validation(
+            "le nom ne peut pas contenir de caractères de contrôle".into(),
+        ));
     }
     if name.chars().count() > MAX_NAME_LEN {
         return Err(AppError::Validation(format!(
@@ -161,35 +186,56 @@ fn build(id: String, input: SourceInput) -> AppResult<Source> {
 
 /// Accès à `sources.json` dans un dossier de configuration (injecté pour les tests).
 pub struct SourcesStore {
-    path: PathBuf,
+    dir: PathBuf,
 }
 
 impl SourcesStore {
     pub fn new(config_dir: &Path) -> Self {
         Self {
-            path: config_dir.join(FILE_NAME),
+            dir: config_dir.to_path_buf(),
         }
     }
 
-    /// Charge le fichier. Absent ou corrompu : valeurs par défaut (Telmi Store), écrites sur disque.
+    /// Charge le fichier. Absent ou corrompu : valeurs par défaut (Telmi Store), écrites sur
+    /// disque (corruption : sauvegarde `*.bak` et restauration mémorisée). Les entrées
+    /// « Mes histoires » et les identifiants en double (fichier édité à la main) sont écartés.
     fn load(&self) -> AppResult<SourcesFile> {
-        let loaded = storage::load_versioned::<SourcesFile>(&self.path, SCHEMA_VERSION, MIGRATE)?;
-        let mut file = match loaded {
-            Some(file) => file,
-            None => {
-                let file = SourcesFile::default();
-                storage::write_json(&self.path, &file)?;
-                return Ok(file);
+        let mut file: SourcesFile =
+            storage::load_or_default(&self.dir, FILE_NAME, SCHEMA_VERSION, MIGRATE)?;
+        let mut seen = std::collections::HashSet::new();
+        file.sources.retain(|source| {
+            if matches!(source, Source::Library { .. }) {
+                return false;
             }
-        };
-        // La source implicite n'est jamais stockée.
-        file.sources
-            .retain(|source| !matches!(source, Source::Library { .. }));
+            let fresh = seen.insert(source.id().to_string());
+            if !fresh {
+                tracing::warn!(
+                    "sources.json : identifiant en double ignoré : {}",
+                    source.id()
+                );
+            }
+            fresh
+        });
         Ok(file)
     }
 
     fn save(&self, file: &SourcesFile) -> AppResult<()> {
-        storage::write_json(&self.path, file)
+        storage::write_json(&self.dir.join(FILE_NAME), file)
+    }
+
+    /// Liste et restauration éventuelle à signaler à l'utilisateur.
+    pub fn view(&self) -> AppResult<SourcesView> {
+        let sources = self.list()?;
+        let recovery = storage::pending_recovery(&self.dir, FILE_NAME);
+        Ok(SourcesView { sources, recovery })
+    }
+
+    /// Renvoie une source par identifiant (« Mes histoires » comprise).
+    pub fn get(&self, id: &str) -> AppResult<Source> {
+        self.list()?
+            .into_iter()
+            .find(|source| source.id() == id)
+            .ok_or_else(|| not_found(id))
     }
 
     /// Liste ordonnée : « Mes histoires » d'abord, puis les sources enregistrées.
@@ -284,11 +330,11 @@ fn not_found(id: &str) -> AppError {
     AppError::NotFound(format!("source introuvable : {id}"))
 }
 
-/// Liste les sources (« Mes histoires » en tête).
+/// Liste les sources (« Mes histoires » en tête) et signale une éventuelle restauration.
 #[tauri::command]
-pub async fn sources_list(state: State<'_, ConfigState>) -> AppResult<Vec<Source>> {
+pub async fn sources_list(state: State<'_, ConfigState>) -> AppResult<SourcesView> {
     let _guard = state.guard();
-    SourcesStore::new(&state.dir).list()
+    SourcesStore::new(&state.dir).view()
 }
 
 /// Ajoute une source de type catalogue ou dossier.
@@ -378,6 +424,68 @@ mod tests {
         assert_eq!(baks.len(), 1);
         // Le fichier par défaut a été réécrit.
         assert!(dir.path().join("sources.json").exists());
+    }
+
+    #[test]
+    fn la_restauration_est_signalee_jusqu_a_l_acquittement() {
+        let (dir, store) = store();
+        assert_eq!(store.view().unwrap().recovery, None);
+        fs::write(dir.path().join("sources.json"), "corrompu").unwrap();
+        let recovery = store.view().unwrap().recovery.unwrap();
+        assert_eq!(recovery.file, "sources.json");
+        assert!(dir.path().join(&recovery.backup).exists());
+        assert_eq!(store.view().unwrap().recovery, Some(recovery));
+        storage::ack_recovery(dir.path(), Some("sources.json")).unwrap();
+        assert_eq!(store.view().unwrap().recovery, None);
+    }
+
+    #[test]
+    fn identifiants_en_double_dedoublonnes() {
+        let (dir, store) = store();
+        fs::write(
+            dir.path().join("sources.json"),
+            r#"{"schema_version":1,"sources":[
+                {"type":"catalog","id":"a","name":"A1","url":"https://exemple.org/1.json"},
+                {"type":"catalog","id":"a","name":"A2","url":"https://exemple.org/2.json"},
+                {"type":"catalog","id":"b","name":"B","url":"https://exemple.org/3.json"}]}"#,
+        )
+        .unwrap();
+        let list = store.list().unwrap();
+        assert_eq!(ids(&list), [LIBRARY_ID, "a", "b"]);
+        assert!(matches!(&list[1], Source::Catalog { name, .. } if name == "A1"));
+    }
+
+    #[test]
+    fn get_renvoie_une_source_ou_not_found() {
+        let (_dir, store) = store();
+        assert_eq!(store.get(LIBRARY_ID).unwrap(), Source::library());
+        assert_eq!(store.get(TELMI_STORE_ID).unwrap(), Source::telmi_store());
+        assert_eq!(store.get("inconnu").unwrap_err().kind(), "not_found");
+    }
+
+    #[test]
+    fn url_trop_longue_ou_avec_identifiants_refusee() {
+        let (_dir, store) = store();
+        let long = format!("https://exemple.org/{}", "a".repeat(2048));
+        for bad in [
+            long.as_str(),
+            "https://user:pass@exemple.org/c.json",
+            "https://user@exemple.org/c.json",
+        ] {
+            let err = store.add(catalog("X", bad)).unwrap_err();
+            assert_eq!(err.kind(), "validation", "{bad}");
+        }
+    }
+
+    #[test]
+    fn nom_avec_caracteres_de_controle_refuse() {
+        let (_dir, store) = store();
+        for bad in ["a\nb", "a\u{0}b", "a\tb", "\u{7f}x"] {
+            let err = store
+                .add(catalog(bad, "https://exemple.org/c.json"))
+                .unwrap_err();
+            assert_eq!(err.kind(), "validation", "{bad:?}");
+        }
     }
 
     #[test]
