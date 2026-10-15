@@ -32,7 +32,8 @@ Resultat de explore() (dict) :
                   lua_error si une erreur Lua a ete vue avant, sinon crash)
   errors          lignes d'erreur (stderr : Erreur Lua, callback error, assert,
                   traceback... ; stdout : attempt to / stack traceback)
-  scenes_visited  nb de stages distincts reellement atteints ; scenes_total :
+  scenes_visited  nb de stages distincts reellement atteints ; scenes (leurs
+                  identifiants, pour fusionner plusieurs parcours) ; scenes_total :
                   nb de stages de nodes.lua (None si illisible) ; coverage
   end_reached     au moins une fin d'histoire jouee
   duration_s      duree de l'execution du player
@@ -545,6 +546,7 @@ def _result(code, out, err, dt, total, watch, seed, workdir):
         "errors": errors[:50],
         "scenes_visited": len(scenes),
         "scenes_total": total,
+        "scenes": sorted(scenes),
         "coverage": round(len(scenes) / total, 3) if total else None,
         "end_reached": bool(ends),
         "duration_s": round(dt, 1),

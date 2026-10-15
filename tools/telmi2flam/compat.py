@@ -6,12 +6,14 @@ validation, (execution optionnelle) et rapport pour un lot d'histoires Telmi.
 Usage :
     python compat.py --catalog <url-ou-fichier.json> [--folder <dossier>] [--cache .cache/telmi]
                      [--only <uuid|motif>] [--limit N] [--jobs N] [--force]
-                     [--player flam-player.exe]
+                     [--run|--no-run] [--player flam-player.exe] [--run-timeout S]
+                     [--max-steps N] [--seed N] [--seeds N] [--benign-error REGEX]
 
 Sorties (sous --cache) :
     archives/<uuid>-<version>.zip          archives telechargees
     converted/<uuid>-<version>.plain.pk    histoires converties
     compat/report.json, compat/report.md   rapport
+    compat/status.json                     statut par uuid (lu par la surcouche)
 
 Voir README.md (section « Campagne de compatibilite »).
 """
@@ -44,8 +46,21 @@ CHUNK = 1 << 20
 STEPS = ("download", "convert", "validate", "run")
 GLOBAL_STATUSES = ("OK", "OK_AVERTISSEMENTS", "ECHEC_CONVERSION", "ECHEC_VALIDATION",
                    "ECHEC_EXECUTION", "ECHEC_TELECHARGEMENT")
-# Statuts de explore() consideres comme un echec d'execution
-RUN_FAIL = ("lua_error", "crash", "timeout", "stuck")
+# Statuts de explore() toujours consideres comme un echec d'execution (`timeout` et
+# `max_steps` sans erreur sont des explorations partielles : voir interpret_run)
+RUN_FAIL = ("lua_error", "crash", "stuck")
+# Reglages par defaut de l'etape run (~0,6 s par ecran : 1000 actions ~ 10 min)
+DEFAULT_RUN_TIMEOUT = 600
+DEFAULT_MAX_STEPS = 1000
+# Un timeout n'est un avertissement que si l'histoire a vraiment progresse
+MIN_SCENES_PARTIAL = 3
+# Limites d'extraction (zip-bomb) pour les archives venant d'une source externe
+MAX_UNZIPPED = 2 << 30          # 2 Gio decompresses
+MAX_ZIP_ENTRIES = 20000
+# Messages stderr benins connus : expressions regulieres (insensibles a la casse),
+# alimentees au fil du triage (issue #7). Une erreur d'explore() qui correspond a
+# l'une d'elles est ignoree. Extensible par --benign-error (repetable).
+BENIGN_ERRORS = ()
 
 
 class DownloadError(Exception):
@@ -320,6 +335,23 @@ def _step(status, messages=None, seconds=0.0):
     return {"status": status, "messages": list(messages or []), "seconds": round(seconds, 2)}
 
 
+def check_zip_size(path, max_bytes=MAX_UNZIPPED, max_entries=MAX_ZIP_ENTRIES):
+    """Leve ValueError si l'archive annonce trop d'entrees ou trop de donnees
+    decompressees (protection zip-bomb) ; les zips invalides sont laisses a la conversion."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            infos = zf.infolist()
+    except (zipfile.BadZipFile, OSError):
+        return
+    total = sum(i.file_size for i in infos)
+    if len(infos) > max_entries:
+        raise ValueError("archive trop volumineuse : %d entrees (max %d)"
+                         % (len(infos), max_entries))
+    if total > max_bytes:
+        raise ValueError("archive trop volumineuse : %d Mio decompresses (max %d Mio)"
+                         % (total >> 20, max_bytes >> 20))
+
+
 def do_convert(zip_path, out_path):
     """Convertit en capturant avertissements et exceptions."""
     import telmi2flam
@@ -359,37 +391,159 @@ def do_validate(pk_path):
     return _step("warn" if warns else "ok", warns, dt)
 
 
-def do_run(pk_path, explore, player_exe, timeout_s, seed, max_steps):
+_SIG_RULES = (
+    (re.compile(r"[A-Za-z]:[\\/][^\s:\"'<>|]*"), "<chemin>"),            # chemins Windows
+    (re.compile(r"(?<![\w.])/(?:[\w.@~+-]+/)+[\w.@~+-]*"), "<chemin>"),  # chemins Unix
+    (re.compile(r"0x[0-9a-fA-F]+"), "0xN"),
+    (re.compile(r"\d+"), "N"),
+)
+
+
+def error_signature(msg):
+    """Message d'erreur normalise (sans chemins, adresses, numeros de ligne) pour
+    regrouper les memes erreurs d'une histoire a l'autre."""
+    sig = str(msg).strip()
+    for rx, rep in _SIG_RULES:
+        sig = rx.sub(rep, sig)
+    return re.sub(r"\s+", " ", sig)[:160]
+
+
+def group_errors(errors):
+    """[{signature, count, example}] par signature normalisee, ordre d'apparition."""
+    groups = {}
+    for e in errors:
+        sig = error_signature(e)
+        g = groups.setdefault(sig, {"signature": sig, "count": 0, "example": str(e)[:300]})
+        g["count"] += 1
+    return list(groups.values())
+
+
+def _filter_benign(errors, benign):
+    """(erreurs conservees, nombre d'erreurs ignorees)."""
+    pats = [re.compile(p, re.IGNORECASE) for p in benign]
+    keep = [e for e in errors if not any(p.search(str(e)) for p in pats)]
+    return keep, len(errors) - len(keep)
+
+
+def interpret_run(res, benign=BENIGN_ERRORS):
+    """Interprete UN resultat d'explore() : (statut ok|warn|fail, [messages]).
+    - stuck, lua_error, crash, statut inconnu : fail ;
+    - timeout sans erreur : warn (exploration partielle) si plus de 2 scenes visitees,
+      sinon fail (ecran noir, blocage au demarrage) ;
+    - ok / max_steps sans erreur : warn si la couverture est partielle, sinon ok ;
+    - lua_error dont toutes les erreurs sont benignes (liste d'exclusions) : erreurs
+      ignorees, mais l'exploration qu'elles ont interrompue reste un avertissement."""
+    status = res.get("status")
+    done = res.get("done_reason")
+    raw = res.get("errors")
+    errors = [str(x) for x in raw] if isinstance(raw, (list, tuple)) else []
+    msgs = [str(res[k]) for k in ("message", "error", "detail") if res.get(k)]
+    real, ignored = _filter_benign(errors, benign)
+    visited, total = res.get("scenes_visited"), res.get("scenes_total")
+    partial = "exploration partielle %s/%s scènes" % (
+        visited if visited is not None else "?", total if total is not None else "?")
+    if status == "lua_error" and errors and not real:
+        return "warn", ["explore: lua_error (%d erreur(s) bénigne(s) ignorée(s))" % ignored,
+                        "exploration interrompue : " + partial] + msgs
+    if status in RUN_FAIL:
+        return "fail", ["explore: %s%s" % (status, "/" + done if done else "")] + msgs + real
+    if status not in ("ok", "timeout"):
+        return "fail", ["explore: %s" % status, "statut explore inconnu"] + msgs + real
+    if real:           # statut ok/timeout mais erreurs non benignes dans les traces
+        return "fail", ["explore: %s avec erreurs" % status] + msgs + real
+    notes = ["%d message(s) bénin(s) ignoré(s)" % ignored] if ignored else []
+    if status == "timeout":
+        if isinstance(visited, int) and visited >= MIN_SCENES_PARTIAL:
+            return "warn", ["explore: timeout", partial] + notes + msgs
+        return "fail", ["explore: timeout",
+                        "aucune progression (%s scène(s) visitée(s)) : écran noir ou "
+                        "blocage au démarrage ?" % visited] + notes + msgs
+    if done == "max_steps" and not (isinstance(visited, int) and isinstance(total, int)
+                                    and total and visited >= total):
+        return "warn", ["explore: max_steps", partial] + notes + msgs
+    return "ok", notes + msgs
+
+
+_RANK = {"ok": 0, "warn": 1, "fail": 2}
+
+
+def do_run(pk_path, explore, player_exe, timeout_s, seed, max_steps, seeds=1,
+           benign=BENIGN_ERRORS):
+    """Etape run : `seeds` parcours (graines seed, seed+1...), couverture fusionnee ;
+    s'arrete au premier parcours en echec. Le statut est le pire des parcours. La fiche
+    recopie done_reason, steps, ends, seed(s), dead_end_backs, la couverture et les
+    erreurs groupees par signature."""
     if explore is None:
         return _step("skipped", ["pas de fonction explore() fournie"])
+    seed_list = [seed + i for i in range(max(1, int(seeds)))]
     t0 = time.time()
-    try:
-        res = explore(player_exe, pk_path, timeout_s=timeout_s, seed=seed, max_steps=max_steps)
-    except Exception as e:
-        return _step("fail", ["explore a plante : %s: %s" % (type(e).__name__, e)],
-                     time.time() - t0)
+    runs = []                  # (resultat explore, statut, messages, graine)
+    for sd in seed_list:
+        try:
+            res = explore(player_exe, pk_path, timeout_s=timeout_s, seed=sd, max_steps=max_steps)
+        except Exception as e:
+            runs.append(({}, "fail", ["explore a plante : %s: %s" % (type(e).__name__, e)], sd))
+            break
+        res = res if isinstance(res, dict) else {}
+        st, msgs = interpret_run(res, benign)
+        runs.append((res, st, msgs, sd))
+        if st == "fail":
+            break
     dt = time.time() - t0
-    res = res if isinstance(res, dict) else {}
-    status = res.get("status")
-    msgs = ["explore: %s" % status]
-    for k in ("message", "error", "detail"):
-        if res.get(k):
-            msgs.append(str(res[k]))
-    errors = res.get("errors")
-    if isinstance(errors, (list, tuple)):
-        msgs += [str(x) for x in errors]
-    if status == "ok":
-        st = _step("ok", msgs[1:], dt)
-    elif status in RUN_FAIL:
-        st = _step("fail", msgs, dt)
+    pick = runs[0]
+    for r in runs:
+        if _RANK[r[1]] > _RANK[pick[1]]:
+            pick = r
+    status, messages = pick[1], list(pick[2])
+    if len(runs) > 1 and status != "ok":
+        messages = ["[graine %s] %s" % (pick[3], m) for m in messages]
+    st = _step(status, messages, dt)
+
+    results = [r[0] for r in runs]
+    st["seeds"] = [r[3] for r in runs]
+    if len(runs) == 1:
+        st["seed"] = runs[0][3]
+    # couverture fusionnee : union des scenes si fournies, sinon le meilleur parcours
+    sets = [set(r["scenes"]) for r in results if isinstance(r.get("scenes"), list)]
+    counts = [r["scenes_visited"] for r in results if isinstance(r.get("scenes_visited"), int)]
+    if sets and len(sets) == len(results):
+        visited = len(set().union(*sets))
+    elif counts:
+        visited = max(counts)
     else:
-        st = _step("fail", msgs + ["statut explore inconnu"], dt)
-    for k in ("scenes_visited", "scenes_total", "end_reached"):
-        if k in res:
-            st[k] = res[k]
-    # duree mesuree par explore si fournie, sinon par la campagne
-    dur = res.get("duration_s")
-    st["duration_s"] = round(dur, 2) if isinstance(dur, (int, float)) else round(dt, 2)
+        visited = None
+    totals = [r["scenes_total"] for r in results if isinstance(r.get("scenes_total"), int)]
+    total = max(totals) if totals else None
+    if visited is not None:
+        st["scenes_visited"] = visited
+    if total is not None or any("scenes_total" in r for r in results):
+        st["scenes_total"] = total
+    if visited is not None and total:
+        st["coverage"] = round(min(1.0, visited / total), 3)
+    if any("end_reached" in r for r in results):
+        st["end_reached"] = any(bool(r.get("end_reached")) for r in results)
+    for k in ("steps", "ends", "dead_end_backs"):
+        vals = [r[k] for r in results if isinstance(r.get(k), int)]
+        if vals:
+            st[k] = sum(vals)
+    dead = sorted({d for r in results for d in (r.get("dead_end_scenes") or [])})
+    if dead:
+        st["dead_end_scenes"] = dead
+    if pick[0].get("done_reason"):
+        st["done_reason"] = pick[0]["done_reason"]
+    if len(runs) > 1:
+        st["runs"] = [{"seed": r[3], "status": r[0].get("status"),
+                       "done_reason": r[0].get("done_reason"), "result": r[1],
+                       "scenes_visited": r[0].get("scenes_visited"),
+                       "steps": r[0].get("steps")} for r in runs]
+    errs = [str(x) for r in results if isinstance(r.get("errors"), (list, tuple))
+            for x in r["errors"]]
+    errs, _ = _filter_benign(errs, benign)
+    if errs:
+        st["error_signatures"] = group_errors(errs)
+    durs = [r["duration_s"] for r in results if isinstance(r.get("duration_s"), (int, float))]
+    st["duration_s"] = round(sum(durs), 2) if durs else round(dt, 2)
+    st["params"] = {"timeout_s": timeout_s, "max_steps": max_steps, "seeds": len(seed_list)}
     return st
 
 
@@ -408,7 +562,7 @@ def global_status(steps):
     return "OK"
 
 
-def process_story(entry, cache, opener=None, sleep=time.sleep):
+def process_story(entry, cache, opener=None, sleep=time.sleep, max_unzipped=MAX_UNZIPPED):
     """Telechargement + conversion + validation (sans execution). Retourne la fiche."""
     archives = os.path.join(cache, "archives")
     converted = os.path.join(cache, "converted")
@@ -443,7 +597,11 @@ def process_story(entry, cache, opener=None, sleep=time.sleep):
     else:
         try:
             pk = os.path.join(converted, key + ".plain.pk")
-            steps["convert"] = do_convert(zip_path, pk)
+            try:
+                check_zip_size(zip_path, max_unzipped)
+                steps["convert"] = do_convert(zip_path, pk)
+            except ValueError as e:
+                steps["convert"] = _step("fail", [str(e)])
             if steps["convert"]["status"] == "fail":
                 steps["validate"] = _step("skipped", ["conversion en echec"])
             else:
@@ -462,8 +620,8 @@ def process_story(entry, cache, opener=None, sleep=time.sleep):
 
 
 def _worker(args):
-    entry, cache = args
-    return process_story(entry, cache)
+    entry, cache, max_unzipped = args
+    return process_story(entry, cache, max_unzipped=max_unzipped)
 
 
 # ---------------------------------------------------------------------------
@@ -489,11 +647,14 @@ def _write_atomic(path, text):
 
 
 def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None,
-                 player_exe=None, run_timeout=120, seed=0, max_steps=200, log=print):
+                 player_exe=None, run_timeout=DEFAULT_RUN_TIMEOUT, seed=0,
+                 max_steps=DEFAULT_MAX_STEPS, log=print, seeds=1, benign=BENIGN_ERRORS,
+                 max_unzipped=MAX_UNZIPPED):
     """Evalue chaque entree ; ecrit report.json / report.md ; retourne le document.
     Le rapport conserve les fiches precedentes hors selection (--only/--limit) : celles
     evaluees avec un autre convertisseur sont marquees `stale` (perimees) dans le rapport.
-    report.json est reecrit (atomiquement) apres chaque histoire."""
+    report.json et status.json sont reecrits (atomiquement) apres chaque histoire.
+    `seeds` : nombre de parcours par histoire (graines seed, seed+1...)."""
     compat_dir = os.path.join(cache, "compat")
     os.makedirs(compat_dir, exist_ok=True)
     report_path = os.path.join(compat_dir, "report.json")
@@ -518,10 +679,13 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
     def write(results, md=False):
         doc = build_doc(results)
         _write_atomic(report_path, json.dumps(doc, ensure_ascii=False, indent=2))
+        _write_atomic(os.path.join(compat_dir, STATUS_FILE),
+                      json.dumps(build_status(doc), ensure_ascii=False, indent=2))
         if md:
             _write_atomic(os.path.join(compat_dir, "report.md"), render_markdown(doc))
         return doc
 
+    params = {"timeout_s": run_timeout, "max_steps": max_steps, "seeds": max(1, int(seeds))}
     results, todo = {}, []
     for e, k in zip(entries, keys):
         old = prev.get(k)
@@ -531,7 +695,11 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
                     and not (explore is not None
                              and old.get("steps", {}).get("run", {}).get("status") == "skipped"
                              and old.get("steps", {}).get("validate", {}).get("status")
-                             in ("ok", "warn")))
+                             in ("ok", "warn"))
+                    # run deja fait avec d'autres reglages (delai, actions, parcours)
+                    and not (explore is not None
+                             and old.get("steps", {}).get("run", {}).get("params")
+                             not in (None, params)))
         if reusable:
             results[k] = old
             log("= %s : deja evalue (%s)" % (k, old["status"]))
@@ -541,7 +709,8 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
     def finish(rec):
         pk = rec.get("output")
         if pk and rec["steps"]["validate"]["status"] in ("ok", "warn"):
-            rec["steps"]["run"] = do_run(pk, explore, player_exe, run_timeout, seed, max_steps)
+            rec["steps"]["run"] = do_run(pk, explore, player_exe, run_timeout, seed,
+                                         max_steps, seeds, benign)
             rec["status"] = global_status(rec["steps"])
         rec["converter_hash"] = chash
         results[rec["key"]] = rec
@@ -551,12 +720,76 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
 
     if jobs > 1 and len(todo) > 1:
         with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as ex:
-            for rec in ex.map(_worker, [(e, cache) for e in todo]):
+            for rec in ex.map(_worker, [(e, cache, max_unzipped) for e in todo]):
                 finish(rec)
     else:
         for e in todo:
-            finish(process_story(e, cache))
+            finish(process_story(e, cache, max_unzipped=max_unzipped))
     return write(results, md=True)
+
+
+STATUS_FILE = "status.json"
+
+
+def _coverage(run):
+    """Bloc `coverage` de status.json, ou None si l'etape run n'a rien mesure."""
+    if "scenes_visited" not in run:
+        return None
+    vis, tot = run.get("scenes_visited"), run.get("scenes_total")
+    ratio = run.get("coverage")
+    if ratio is None and isinstance(vis, int) and tot:
+        ratio = round(vis / tot, 3)
+    return {"scenes_visited": vis, "scenes_total": tot, "ratio": ratio,
+            "end_reached": run.get("end_reached")}
+
+
+def _summary(rec):
+    """Resume d'une ligne, lisible dans l'interface."""
+    st, steps = rec["status"], rec["steps"]
+    run = steps.get("run", {})
+    if st.startswith("ECHEC"):
+        step = {"ECHEC_TELECHARGEMENT": "download", "ECHEC_CONVERSION": "convert",
+                "ECHEC_VALIDATION": "validate", "ECHEC_EXECUTION": "run"}[st]
+        msgs = steps.get(step, {}).get("messages") or []
+        label = {"download": "Téléchargement", "convert": "Conversion",
+                 "validate": "Validation", "run": "Exécution"}[step]
+        return ("%s en échec : %s" % (label, "; ".join(msgs[:2]) if msgs else "?"))[:200]
+    cov = _coverage(run)
+    where = (" (%s/%s scènes)" % (cov["scenes_visited"], cov["scenes_total"]
+                                  if cov["scenes_total"] is not None else "?")) if cov else ""
+    if st == "OK":
+        if run.get("status") == "skipped":
+            return "Converti et validé ; exécution non testée"
+        return "Compatible%s" % where
+    for step in STEPS:                       # OK_AVERTISSEMENTS
+        s = steps.get(step, {})
+        if s.get("status") == "warn":
+            if step == "run":
+                return "Jouable, exploration partielle%s" % where
+            msgs = s.get("messages") or []
+            return ("Avertissements (%s) : %s" % (step, msgs[0] if msgs else "?"))[:200]
+    return "Avertissements"
+
+
+def build_status(doc):
+    """Contenu de status.json (voir README) : {uuid: {version, status, summary, coverage...}}.
+    Plusieurs versions d'un meme uuid : la derniere fiche non perimee l'emporte."""
+    out = {}
+    for s in doc["stories"]:
+        prior = out.get(s["uuid"])
+        if prior is not None and s.get("stale") and not prior["stale"]:
+            continue
+        run = s["steps"].get("run", {})
+        out[s["uuid"]] = {
+            "version": s["version"],
+            "title": s["title"],
+            "status": s["status"],
+            "summary": _summary(s),
+            "coverage": _coverage(run),
+            "run": run.get("status", "skipped"),
+            "stale": bool(s.get("stale")),
+        }
+    return out
 
 
 def _cause(rec):
@@ -590,19 +823,37 @@ def render_markdown(doc):
         L.append("| %s | %s | %s | %s | %s |" % (
             _md(s["title"]), _md(s["uuid"]), _md(s["version"]), " | ".join(cells),
             s["status"] + (" (perime)" if s.get("stale") else "")))
-    runs = [s for s in stories if "scenes_visited" in s["steps"].get("run", {})]
+    runs = [s for s in stories if s["steps"].get("run", {}).get("status") not in (None, "skipped")]
     if runs:
         L += ["", "## Execution (couverture)", "",
-              "| Titre | Scenes visitees | Fin atteinte | Duree (s) | Statut |",
-              "|---|---|---|---|---|"]
+              "| Titre | Scenes visitees | Couverture | Fin atteinte | Fins | Actions | "
+              "Arret | Impasses (retours) | Graine(s) | Duree (s) | Resultat |",
+              "|---|---|---|---|---|---|---|---|---|---|---|"]
         for s in runs:
             r = s["steps"]["run"]
             tot = r.get("scenes_total")
             end = r.get("end_reached")
-            L.append("| %s | %s/%s | %s | %s | %s |" % (
-                _md(s["title"]), r.get("scenes_visited"), tot if tot is not None else "?",
+            cov = r.get("coverage")
+            L.append("| %s | %s/%s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                _md(s["title"]), r.get("scenes_visited", "?"), tot if tot is not None else "?",
+                "%d %%" % round(100 * cov) if isinstance(cov, (int, float)) else "?",
                 "oui" if end else ("non" if end is not None else "?"),
+                r.get("ends", "?"), r.get("steps", "?"), _md(r.get("done_reason", "?")),
+                r.get("dead_end_backs", "?"),
+                _md(",".join(str(x) for x in r.get("seeds", []))) or "?",
                 r.get("duration_s", "?"), r["status"]))
+        sigs = {}
+        for s in runs:
+            for g in s["steps"]["run"].get("error_signatures", []):
+                e = sigs.setdefault(g["signature"], {"count": 0, "stories": []})
+                e["count"] += g["count"]
+                e["stories"].append(s["title"])
+        if sigs:
+            L += ["", "## Erreurs d'execution par signature", ""]
+            for sig, e in sorted(sigs.items(), key=lambda kv: (-kv[1]["count"], kv[0])):
+                L.append("- `%s` : %d occurrence(s), %d histoire(s) (%s)" % (
+                    _md(sig).replace("`", "'"), e["count"], len(set(e["stories"])),
+                    _md(", ".join(sorted(set(e["stories"]))[:5]))))
     groups = {}
     for s in stories:
         step, cause = _cause(s)
@@ -639,6 +890,15 @@ def _load_explore():
         return None
 
 
+def _find_player(player=None):
+    """Chemin de flam-player (--player, $FLAM_BUILD_DIR, <depot>/build) ou None."""
+    try:
+        import explore
+        return explore.find_player(player)
+    except Exception:
+        return None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Campagne de compatibilite telmi2flam")
     ap.add_argument("--catalog", action="append", default=[],
@@ -651,13 +911,36 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, help="nombre maximal d'histoires")
     ap.add_argument("--jobs", type=int, default=1, help="traitements paralleles (defaut 1)")
     ap.add_argument("--force", action="store_true", help="refaire meme si deja evalue")
-    ap.add_argument("--player", help="flam-player(.exe) pour l'etape run (si explore.py existe)")
-    ap.add_argument("--run-timeout", type=int, default=120)
-    ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--max-steps", type=int, default=200)
+    ap.add_argument("--run", action=argparse.BooleanOptionalAction, default=None,
+                    help="etape run (exploration sans fenetre) ; active par defaut si le "
+                         "player est trouve, --no-run pour la desactiver")
+    ap.add_argument("--player", help="flam-player(.exe) ou son dossier (defaut : "
+                                     "$FLAM_BUILD_DIR, sinon <depot>/build)")
+    ap.add_argument("--run-timeout", type=int, default=DEFAULT_RUN_TIMEOUT,
+                    help="delai de l'exploration par parcours, en s (defaut %(default)s)")
+    ap.add_argument("--seed", type=int, default=0, help="graine du premier parcours")
+    ap.add_argument("--seeds", type=int, default=1,
+                    help="nombre de parcours par histoire (graines seed, seed+1...), "
+                         "couverture fusionnee (defaut %(default)s)")
+    ap.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS,
+                    help="actions maximales par parcours (defaut %(default)s)")
+    ap.add_argument("--benign-error", action="append", default=[], metavar="REGEX",
+                    help="message d'erreur benin a ignorer (regex, insensible a la casse), "
+                         "repetable ; s'ajoute a compat.BENIGN_ERRORS")
+    ap.add_argument("--max-unzipped-mb", type=int, default=MAX_UNZIPPED >> 20,
+                    help="taille decompressee maximale d'une archive, en Mio (defaut %(default)s)")
     args = ap.parse_args(argv)
     if args.limit is not None and args.limit < 0:
         ap.error("--limit doit etre positif ou nul")
+    if args.seeds < 1:
+        ap.error("--seeds doit etre au moins 1")
+    if args.run_timeout < 1 or args.max_steps < 1 or args.max_unzipped_mb < 1:
+        ap.error("--run-timeout, --max-steps et --max-unzipped-mb doivent etre positifs")
+    for rx in args.benign_error:
+        try:
+            re.compile(rx)
+        except re.error as e:
+            ap.error("--benign-error %r invalide : %s" % (rx, e))
     if not args.catalog and not args.folder:
         ap.error("au moins un --catalog ou --folder est requis")
     try:
@@ -665,9 +948,26 @@ def main(argv=None):
     except (OSError, ValueError) as e:
         print("ERREUR : %s" % e, file=sys.stderr)
         return 2
-    explore = _load_explore() if args.player else None
+    explore, player = None, None
+    if args.run is not False:
+        explore = _load_explore()
+        player = _find_player(args.player)
+        if explore is None or player is None:
+            why = ("explore.py inutilisable" if explore is None else
+                   "flam-player introuvable (--player, FLAM_BUILD_DIR ou build/)")
+            if args.run:
+                print("ERREUR : --run demande mais %s" % why, file=sys.stderr)
+                return 2
+            print("etape run desactivee : %s" % why, file=sys.stderr)
+            explore = None
+    if explore is not None and args.run_timeout < args.max_steps * 0.6:
+        print("note : --run-timeout %d s est court pour %d actions (~0,6 s par ecran) ; "
+              "les grandes histoires finiront en timeout (exploration partielle)"
+              % (args.run_timeout, args.max_steps), file=sys.stderr)
     doc = run_campaign(entries, args.cache, max(1, args.jobs), args.force, explore,
-                       args.player, args.run_timeout, args.seed, args.max_steps)
+                       player, args.run_timeout, args.seed, args.max_steps,
+                       seeds=args.seeds, benign=tuple(BENIGN_ERRORS) + tuple(args.benign_error),
+                       max_unzipped=args.max_unzipped_mb << 20)
     bad = sum(1 for s in doc["stories"] if s["status"].startswith("ECHEC"))
     print("%d histoire(s), %d echec(s) -> %s" % (
         len(doc["stories"]), bad, os.path.join(args.cache, "compat", "report.md")))

@@ -623,6 +623,7 @@ aucune trace, ou `--timeout`.
 | `status` | `ok` ; `lua_error` (erreur sur stderr : `Erreur Lua`, `callback error`, assert, traceback… ; ou `attempt to` / `stack traceback` sur stdout) ; `crash` (player sorti seul **sans** erreur Lua identifiée avant) ; `timeout` ; `stuck` |
 | `done_reason` | cause de l'arrêt, toujours présente : `complete` (toutes les options rencontrées essayées après une fin), `max_steps`, `library` (l'histoire est revenue à la bibliothèque, anciens moteurs) → `ok` ; `stuck` (pilote : plus rien de nouveau), `no_trace` (`--stuck` s sans trace), `no_start` (pilote jamais lancé) → `stuck` ; `timeout` ; `error` (arrêt sur erreur) ; `exit` (player sorti seul : `lua_error` si une erreur Lua a été vue avant, avec `exit_code`, sinon `crash`) |
 | `errors` | lignes d'erreur filtrées |
+| `scenes` | identifiants des stages visités (sert à fusionner la couverture de plusieurs parcours) |
 | `scenes_visited` / `scenes_total` / `coverage` | stages distincts **réellement atteints** (l'option d'un choix ne compte qu'une fois la transition faite) / stages de `nodes.lua` (y compris inaccessibles) / rapport des deux |
 | `end_reached` | au moins une fin d'histoire jouée |
 | `duration_s`, `seed`, `steps` | durée d'exécution du player, graine, nombre d'actions du pilote |
@@ -664,14 +665,16 @@ trace vs `timeout` en progression, pas de processus orphelin si `until()` lève)
 ### Campagne de compatibilité
 
 `compat.py` mesure quelles histoires Telmi `telmi2flam` sait convertir : téléchargement,
-conversion, validation, exécution optionnelle, rapport. Tout est écrit sous `.cache/`
+conversion, validation, exécution, rapport. Tout est écrit sous `.cache/`
 (ignoré par Git) : aucune archive ni histoire convertie n'est versionnée.
 
 ```bash
 python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...]
                                   [--folder <dossier de .zip>] [--cache .cache/telmi]
                                   [--only <uuid|motif|titre>] [--limit N] [--jobs N] [--force]
-                                  [--player flam-player.exe] [--run-timeout 120] [--seed 0] [--max-steps 200]
+                                  [--run | --no-run] [--player flam-player.exe]
+                                  [--run-timeout 600] [--max-steps 1000] [--seed 0] [--seeds 1]
+                                  [--benign-error REGEX] [--max-unzipped-mb 2048]
 ```
 
 - **Sources** : `--catalog` (format Telmi Store : `data[]` avec `uuid`, `version`, `title`,
@@ -688,10 +691,79 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   `tools/telmi2flam` hors tests/`compat.py`/`explore.py`) n'est pas refaite, sauf `--force`.
   Un échec de téléchargement est toujours retenté. Pour les archives locales, la taille et la date du zip font partie du critère (zip remplacé = refait) ; pour un catalogue, `updated_at` si présent. Avec `--only`/`--limit`, le rapport conserve les fiches précédentes non sélectionnées ; celles évaluées avec un autre convertisseur sont marquées `stale` (« périmé » dans `report.md`). `report.json` est réécrit (atomiquement) après chaque histoire. `--jobs N` : traitement parallèle
   (processus).
-- **Étape `run`** : appelle `explore(player_exe, story_path, timeout_s=120, seed=0,
-  max_steps=200) -> dict` (clé `status` : `ok|lua_error|crash|timeout|stuck`) si on la
-  passe à `run_campaign(..., explore=..., player_exe=...)`, ou, en CLI, si `--player` est
-  donné et que `explore.py` existe. Sinon l'étape vaut `skipped`. Les clés `errors`, `scenes_visited`, `scenes_total`, `end_reached`, `duration_s` de la réponse sont reprises dans le rapport (section « Execution (couverture) » de `report.md`).
+- **Étape `run`** (exploration sans fenêtre, `explore.py`) : **activée par défaut si
+  `flam-player` est trouvé** (`--player`, sinon `$FLAM_BUILD_DIR`, sinon `build/`) ;
+  `--no-run` la désactive, `--run` explicite sans player = erreur (code 2). Sans player
+  l'étape vaut `skipped`. Par histoire, `--seeds N` parcours (graines `seed`, `seed+1`…, au
+  plus `--run-timeout` s et `--max-steps` actions chacun, arrêt au premier échec) ; la
+  **couverture est fusionnée** (union des scènes visitées de chaque parcours, `explore()`
+  fournit la liste `scenes`) et le statut est le **pire** des parcours. Défauts : 600 s et
+  1000 actions (~0,6 s par écran ; un avertissement s'affiche si le délai est trop court
+  pour les actions). Une `run` déjà faite avec d'autres réglages (délai, actions, nombre de
+  parcours) est refaite sans `--force`.
+  Via l'API : `run_campaign(..., explore=explore, player_exe=exe, seeds=N, benign=(...))`
+  avec `explore(player_exe, story, timeout_s=, seed=, max_steps=) -> dict`.
+- **Interprétation de `explore()`** (par parcours) :
+
+  | résultat | étape `run` |
+  |---|---|
+  | `ok` / `complete` ou `library` | `ok` |
+  | `ok` / `max_steps` (couverture < 100 %) | `warn` : « exploration partielle X/Y scènes » |
+  | `timeout`, sans erreur, **plus de 2 scènes** visitées | `warn` : « exploration partielle X/Y scènes » |
+  | `timeout` avec 2 scènes ou moins (écran noir, blocage au démarrage) | `fail` |
+  | `stuck`, `lua_error`, `crash`, statut inconnu, erreurs non bénignes | `fail` |
+
+  `warn` donne le statut global `OK_AVERTISSEMENTS` ; `fail` donne `ECHEC_EXECUTION`.
+- **Fiche** (`report.json`, `steps.run`) : `status`, `messages`, `done_reason`, `steps`
+  (actions, sommées), `ends`, `seed` (parcours unique) / `seeds`, `dead_end_backs` et
+  `dead_end_scenes`, `scenes_visited`, `scenes_total`, `coverage` (fusionnée),
+  `end_reached`, `duration_s`, `runs` (détail par parcours si plusieurs), `params`
+  (réglages utilisés), `error_signatures`. `report.md` en affiche la couverture, la fin,
+  les fins, les actions, la cause d'arrêt, les impasses, les graines et la durée.
+- **Erreurs d'exécution groupées** : chaque message d'erreur est normalisé (chemins, adresses
+  `0x…` et nombres, donc numéros de ligne, remplacés) en une *signature* ; `error_signatures`
+  = `[{signature, count, example}]` par histoire, et `report.md` (« Erreurs d'execution par
+  signature ») regroupe les mêmes signatures entre histoires.
+- **Messages bénins** : `compat.BENIGN_ERRORS` (tuple d'expressions régulières, insensibles à
+  la casse, **vide au départ**) et `--benign-error REGEX` (répétable) listent les lignes
+  d'erreur connues comme inoffensives (faux positifs du filtre large d'`explore.ERR_RE`).
+  Elles sont ignorées dans le jugement et les signatures. Si `explore()` s'est arrêté en
+  `lua_error` uniquement à cause de lignes bénignes, le résultat est `warn` (exploration
+  interrompue) et non `fail`. À alimenter au fil du triage de #7.
+- **Limite d'extraction** (archives de source externe) : une archive dont le total
+  décompressé dépasse `--max-unzipped-mb` (défaut 2048) ou qui compte plus de 20000 entrées
+  est refusée à l'étape `convert` (« archive trop volumineuse »).
+
+#### `status.json` (lu par la surcouche)
+
+`.cache/telmi/compat/status.json` (dans `<cache>/compat/`), réécrit atomiquement avec
+`report.json` après chaque histoire. Format **stable** : un objet indexé par uuid, sans
+enveloppe ; de nouvelles clés optionnelles pourront être ajoutées, jamais renommées.
+
+```json
+{
+  "<uuid>": {
+    "version": "3",
+    "title": "Titre",
+    "status": "OK_AVERTISSEMENTS",
+    "summary": "Jouable, exploration partielle (120/300 scènes)",
+    "coverage": {"scenes_visited": 120, "scenes_total": 300, "ratio": 0.4, "end_reached": false},
+    "run": "warn",
+    "stale": false
+  }
+}
+```
+
+| clé | sens |
+|---|---|
+| `version` | version de l'histoire évaluée (`local` pour un `.zip` de dossier) |
+| `status` | `OK`, `OK_AVERTISSEMENTS`, `ECHEC_TELECHARGEMENT`, `ECHEC_CONVERSION`, `ECHEC_VALIDATION`, `ECHEC_EXECUTION` |
+| `summary` | phrase d'une ligne, affichable telle quelle |
+| `coverage` | `null` si l'exploration n'a rien mesuré (`run` ignoré ou échec avant) ; sinon scènes visitées / totales (`scenes_total` et `ratio` peuvent être `null`), `end_reached` booléen |
+| `run` | statut de l'étape run : `ok`, `warn`, `fail`, `skipped` |
+| `stale` | fiche évaluée avec un autre convertisseur que le courant (résultat périmé) |
+
+Plusieurs versions d'un même uuid : la dernière fiche non périmée l'emporte.
 
 ```bash
 python -m unittest discover -s tools/telmi2flam/tests -p "test_compat.py"   # sans réseau
