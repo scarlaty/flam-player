@@ -218,12 +218,18 @@ class TestCliProgress(CliBase):
 
 class TestExitCodes(CliBase):
     def err_event(self, r):
+        """Dernier evenement = error ; start le precede (sauf bad_arguments)."""
         evs = parse_lines(r.stdout)
-        self.assertEqual(len(evs), 1, r.stdout)
-        self.assertEqual(evs[0]["event"], "error")
-        self.assertEqual(evs[0]["exit"], r.returncode)
-        self.assertTrue(evs[0]["message"])
-        return evs[0]
+        ev = evs[-1]
+        self.assertEqual(ev["event"], "error")
+        self.assertEqual(ev["exit"], r.returncode)
+        self.assertTrue(ev["message"])
+        if ev["code"] == "bad_arguments":
+            self.assertEqual(len(evs), 1)
+        else:
+            self.assertEqual(evs[0]["event"], "start")
+            self.assertEqual([e["event"] for e in evs].count("error"), 1)
+        return ev
 
     def test_0_ok(self):
         r = self.cli(self.mkzip(std_files()), "-o", os.path.join(self.tmp, "o.plain.pk"))
@@ -438,7 +444,8 @@ class TestCancel(CliBase):
                     "real = T._print_event\n"
                     "def slow(e):\n    real(e)\n"
                     "    if e.get('phase') == 'zip' and e['done'] >= 1:\n"
-                    "        time.sleep(30)\n"
+                    "        for _ in range(600):\n"
+                    "            time.sleep(0.05)\n"
                     "T._print_event = slow\n"
                     "sys.exit(T.main([%r, '-o', %r, '--progress-json']))\n"
                     % (TOOL, self.mkzip(std_files()), out))
@@ -514,6 +521,168 @@ class TestInfo(CliBase):
                      "--progress-json")
         self.assertEqual(r.returncode, 4)
         self.assertEqual(parse_lines(r.stdout)[-1]["code"], "invalid_content")
+
+
+class TestRobustness(CliBase):
+    def slow_child(self, out, trigger_phase="zip"):
+        """Script enfant : T.main avec une longue pause apres le 1er `step` de la phase
+        `trigger_phase` (laisse le temps au test d'agir)."""
+        script = os.path.join(self.tmp, "run.py")
+        with open(script, "w") as f:
+            f.write("import sys, time\n"
+                    "sys.path.insert(0, %r)\n"
+                    "import telmi2flam as T\n"
+                    "T.PROGRESS_INTERVAL = 0\n"
+                    "real = T._print_event\n"
+                    "def slow(e):\n"
+                    "    real(e)\n"
+                    "    if e.get('phase') == %r and e.get('done', 0) >= 1:\n"
+                    "        for _ in range(600):\n"
+                    "            time.sleep(0.05)\n"
+                    "T._print_event = slow\n"
+                    "sys.exit(T.main([%r, '-o', %r, '--progress-json']))\n"
+                    % (TOOL, trigger_phase, self.mkzip(std_files()), out))
+        return script
+
+    def test_first_line_is_start_even_with_early_warnings(self):
+        # pas d'uuid + notes.json invalide : deux avertissements avant la 1re phase
+        files = std_files(meta={"title": "T"}) + [("notes.json", "[]")]
+        r = self.cli(self.mkzip(files), "-o", os.path.join(self.tmp, "o.plain.pk"),
+                     "--progress-json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        evs = parse_lines(r.stdout)
+        self.assertEqual(evs[0]["event"], "start")
+        warn_idx = [i for i, e in enumerate(evs) if e["event"] == "warning"]
+        self.assertEqual(len(warn_idx), 2)
+        self.assertGreater(min(warn_idx), 0)
+
+    def test_first_event_is_start_by_function(self):
+        files = std_files(meta={"title": "T"}) + [("notes.json", "[]")]
+        evs = []
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            T.convert(self.mkzip(files), os.path.join(self.tmp, "o.plain.pk"),
+                      progress=evs.append)
+        self.assertEqual(evs[0]["event"], "start")
+
+    def test_start_precedes_error_on_unreadable_archive(self):
+        r = self.cli(os.path.join(self.tmp, "absent.zip"), "--progress-json")
+        self.assertEqual([e["event"] for e in parse_lines(r.stdout)], ["start", "error"])
+        self.assertEqual(r.returncode, 3)
+
+    def test_stdout_closed_by_parent_conversion_continues(self):
+        out = os.path.join(self.tmp, "o.plain.pk")
+        script = os.path.join(self.tmp, "run2.py")
+        with open(script, "w") as f:
+            f.write("import sys, time\n"
+                    "sys.path.insert(0, %r)\n"
+                    "import telmi2flam as T\n"
+                    "real = T._print_event\n"
+                    "def slow(e):\n"
+                    "    real(e)\n"
+                    "    time.sleep(0.5 if e['event'] == 'start' else 0)\n"
+                    "T._print_event = slow\n"
+                    "sys.exit(T.main([%r, '-o', %r, '--progress-json']))\n"
+                    % (TOOL, self.mkzip(std_files()), out))
+        p = subprocess.Popen([sys.executable, script], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+        p.stdout.readline()          # "start"
+        p.stdout.close()             # le parent ne lit plus
+        err = p.stderr.read()
+        self.assertEqual(p.wait(timeout=120), 0, err)
+        self.assertNotIn("Traceback", err)
+        self.assertTrue(os.path.isfile(out))
+
+    def test_print_event_tolerates_broken_stdout(self):
+        class Broken:
+            def write(self, _):
+                raise BrokenPipeError()
+
+            def flush(self):
+                raise OSError(22, "Invalid argument")
+        saved = sys.stdout
+        sys.stdout = Broken()
+        try:
+            T._stdout_dead[0] = False
+            T._print_event({"event": "start"})      # ne leve pas
+            self.assertTrue(T._stdout_dead[0])
+            T._print_event({"event": "done"})       # ignore
+        finally:
+            devnull = sys.stdout
+            sys.stdout = saved
+            T._stdout_dead[0] = False
+            if devnull is not saved and hasattr(devnull, "close"):
+                devnull.close()
+
+    def test_embedded_runtime_read_error_is_internal(self):
+        saved = T.ENGINE_MAIN
+        T.ENGINE_MAIN = os.path.join(self.tmp, "absent_main.lua")
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = T.main([self.mkzip(std_files()), "-o", os.path.join(self.tmp, "o.plain.pk"),
+                             "--progress-json"])
+        finally:
+            T.ENGINE_MAIN = saved
+        self.assertEqual(rc, 6)
+        ev = parse_lines(out.getvalue())[-1]
+        self.assertEqual((ev["event"], ev["code"], ev["exit"]), ("error", "internal_error", 6))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_orphan_part_files_are_removed(self):
+        out = os.path.join(self.tmp, "o.plain.pk")
+        dead = out + ".99999999.part"
+        other = os.path.join(self.tmp, "autre.plain.pk.99999999.part")
+        weird = out + ".abc.part"
+        for pth in (dead, other, weird):
+            with open(pth, "w") as f:
+                f.write("x")
+        r = self.cli(self.mkzip(std_files()), "-o", out)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(dead))
+        self.assertTrue(os.path.exists(other))     # autre sortie : intacte
+        self.assertTrue(os.path.exists(weird))     # nom non reconnu : intacte
+
+    def test_pid_alive(self):
+        self.assertTrue(T._pid_alive(os.getpid()))
+        self.assertFalse(T._pid_alive(99999999))
+        p = subprocess.Popen([sys.executable, "-c", "pass"])
+        p.wait()
+        self.assertFalse(T._pid_alive(p.pid))
+
+    def test_live_concurrent_part_is_kept(self):
+        out = os.path.join(self.tmp, "o.plain.pk")
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            live = "%s.%d.part" % (out, child.pid)
+            with open(live, "w") as f:
+                f.write("x")
+            r = self.cli(self.mkzip(std_files()), "-o", out)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(os.path.exists(live))
+        finally:
+            child.kill()
+            child.wait()
+
+    @unittest.skipUnless(os.name == "nt", "Ctrl+Break : Windows uniquement")
+    def test_real_ctrl_break_windows(self):
+        out = os.path.join(self.tmp, "o.plain.pk")
+        with open(out, "wb") as f:
+            f.write(b"ancienne sortie")
+        script = self.slow_child(out, "zip")
+        p = subprocess.Popen([sys.executable, script], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True,
+                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        for line in p.stdout:
+            e = json.loads(line)
+            if e.get("phase") == "zip" and e["done"] >= 1:
+                break
+        p.send_signal(signal.CTRL_BREAK_EVENT)
+        rest = p.stdout.read()
+        self.assertEqual(p.wait(timeout=30), 130)
+        self.assertEqual(parse_lines(rest)[-1]["code"], "cancelled")
+        self.assertEqual(self.leftovers(), [])
+        with open(out, "rb") as f:
+            self.assertEqual(f.read(), b"ancienne sortie")
 
 
 if __name__ == "__main__":

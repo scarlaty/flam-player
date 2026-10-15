@@ -632,6 +632,46 @@ def _commit(tmp, final):
         os.replace(tmp, final)
 
 
+def _pid_alive(pid):
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x1000, False, pid)    # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return k32.GetLastError() == 5          # acces refuse : le processus existe
+        try:
+            code = ctypes.c_ulong()
+            return bool(k32.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259
+        finally:
+            k32.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _clean_orphans(final):
+    """Supprime les `<final>.<pid>.part` laisses par une conversion tuee brutalement vers
+    la meme sortie, si leur pid n'existe plus (une conversion concurrente vivante est
+    donc epargnee)."""
+    d = os.path.dirname(os.path.abspath(final))
+    prefix = os.path.basename(final) + "."
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for n in names:
+        if n.startswith(prefix) and n.endswith(".part"):
+            pid = n[len(prefix):-len(".part")]
+            if pid.isdigit() and not _pid_alive(int(pid)):
+                _discard([os.path.join(d, n)])
+
+
 def _discard(paths):
     for p in paths:
         try:
@@ -689,7 +729,14 @@ def convert(zip_path, out_path=None, keep_size=False, emit_plain=False, selector
 
     _sink = sink if progress is not None else None
     try:
-        with zipfile.ZipFile(zip_path, "r") as zf:
+        # premier evenement, avant toute ouverture/lecture (donc avant tout avertissement)
+        _emit({"event": "start", "total": len(PHASES), "phases": list(PHASES),
+               "input": zip_path})
+        try:
+            zf = zipfile.ZipFile(zip_path, "r")
+        except OSError as e:           # archive absente/inaccessible (BadZipFile: inchange)
+            raise ArchiveError("%s : %s" % (zip_path, e))
+        with zf:
             return _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing,
                             zip_path)
     finally:
@@ -698,7 +745,11 @@ def convert(zip_path, out_path=None, keep_size=False, emit_plain=False, selector
 
 def read_info(zip_path):
     """Metadonnees de l'histoire (sans conversion) : dict stable, cf. README (--info)."""
-    with zipfile.ZipFile(zip_path, "r") as zf:
+    try:
+        zf = zipfile.ZipFile(zip_path, "r")
+    except OSError as e:
+        raise ArchiveError("%s : %s" % (zip_path, e))
+    with zf:
         names = zf.namelist()
         root = find_root(names)
         metadata = load_json(zf.read(root + "metadata.json"), "metadata.json")
@@ -815,7 +866,6 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
         if isinstance(it, dict) and isinstance(it.get("image"), str) and it["image"]:
             imgs_todo.add((it["image"], True))
     prog = _Progress()
-    _emit({"event": "start", "total": len(PHASES), "phases": list(PHASES), "input": source})
     prog.begin("images", len(imgs_todo))
     prog.begin("audio", len(audios_todo))
     progress = [0]
@@ -1178,6 +1228,10 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
     n_targets = (0 if dir_only else 1) + (1 if (emit_plain or dir_only) else 0)
     prog.begin("zip", len(order) * n_targets)
     tmps = []        # temporaires a supprimer en cas d'echec
+    _clean_orphans(out_path)
+    if emit_plain or dir_only:
+        _clean_orphans(out_path if dir_only else
+                       (out_path[:-3] if out_path.endswith(".plain.pk") else out_path + ".plain"))
     commits = []     # (temporaire, destination finale)
     try:
         # --- Ecriture .plain.pk (ZIP stored, format device) ---
@@ -1255,10 +1309,24 @@ class _Parser(argparse.ArgumentParser):
         super().error(message)
 
 
+_stdout_dead = [False]
+
+
 def _print_event(event):
-    """Une ligne JSON ASCII par evenement, vidangee immediatement (lecture par un parent)."""
-    sys.stdout.write(json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    """Une ligne JSON ASCII par evenement, vidangee immediatement (lecture par un parent).
+    Si stdout est ferme/casse (parent parti), on cesse d'emettre sans erreur : la
+    conversion continue, silencieusement cote JSON (messages humains sur stderr)."""
+    if _stdout_dead[0]:
+        return
+    try:
+        sys.stdout.write(json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+    except (OSError, ValueError):      # BrokenPipeError, EINVAL (Windows), fichier ferme
+        _stdout_dead[0] = True
+        try:
+            sys.stdout = open(os.devnull, "w")   # evite une erreur au flush final
+        except OSError:
+            pass
 
 
 def _install_cancel_handlers():
@@ -1317,8 +1385,8 @@ def main(argv=None):
     except KeyboardInterrupt:
         return fail("cancelled", "conversion annulee", EXIT_CANCELLED,
                     "Annule : aucune sortie partielle conservee.")
-    except (zipfile.BadZipFile, zlib.error, NotImplementedError, EOFError, OSError) as e:
-        # archive absente/illisible/corrompue (les erreurs d'ecriture sont deja des OutputError)
+    except (zipfile.BadZipFile, zlib.error, NotImplementedError, EOFError) as e:
+        # archive corrompue (l'ouverture d'une archive absente est deja une ConvError code 3)
         return fail("archive_unreadable", "%s : %s" % (args.input, e), EXIT_ARCHIVE)
     except Exception as e:  # paquet imprevu : message court plutot qu'un traceback
         msg = "%s: %s" % (type(e).__name__, e)

@@ -356,10 +356,10 @@ Stables : ils s'appliquent avec ou sans `--progress-json`.
 |-----:|---------------|-------------------------------|
 | 0 | succès (avertissements possibles) | — |
 | 2 | arguments invalides (aide/usage sur stderr) | `bad_arguments` |
-| 3 | archive absente, illisible/corrompue, ou qui n'est pas une histoire Telmi | `archive_unreadable`, `not_telmi` |
+| 3 | archive d'entrée absente, illisible/corrompue, ou qui n'est pas une histoire Telmi (uniquement la lecture de l'archive d'entrée) | `archive_unreadable`, `not_telmi` |
 | 4 | contenu invalide (JSON invalide, type inattendu, nom d'asset dangereux, `nodes.lua` non sérialisable…) | `invalid_content` |
 | 5 | asset (image/audio) manquant sans `--allow-missing` | `missing_asset` |
-| 6 | erreur interne ou d'écriture de la sortie | `output_error`, `internal_error` |
+| 6 | erreur interne (dont lecture des fichiers du moteur/runtime embarqués) ou d'écriture de la sortie | `output_error`, `internal_error` |
 | 130 | annulation (Ctrl+C, SIGTERM, Ctrl+Break) | `cancelled` |
 
 (L'ancien code unique `1` n'existe plus.) Pour un appelant Python, `telmi2flam.convert()`
@@ -391,7 +391,7 @@ champs et événements inconnus (ajouts compatibles).
 
 | Événement | Champs | Notes |
 |-----------|--------|-------|
-| `start` | `total` (nombre de phases, ici 4), `phases` (liste ordonnée), `input` | premier événement |
+| `start` | `total` (nombre de phases, ici 4), `phases` (liste ordonnée), `input` | **premier événement**, émis avant toute lecture (donc avant tout `warning`) |
 | `step` | `phase` (`images`, `audio`, `scripts`, `zip`), `done`, `total` | `done` croît de 0 à `total` |
 | `warning` | `code`, `message` | non bloquant ; même texte que la ligne `  ! ...` de stderr |
 | `done` | `output`, `size` (octets), `warnings` (nombre) | dernier événement en cas de succès |
@@ -399,6 +399,14 @@ champs et événements inconnus (ajouts compatibles).
 
 Règles :
 - Un seul événement terminal : `done` (code 0) **ou** `error` (code ≠ 0).
+- `start` est toujours la première ligne, **sauf** pour `bad_arguments` (code 2) : les
+  arguments sont refusés avant le début de la conversion, la seule ligne est alors
+  l'événement `error`. Une archive absente/illisible (code 3) donne `start` puis `error`.
+  `--info` n'émet pas d'événement `start` (une seule ligne de métadonnées, cf. ci-dessous).
+- stdout fermé ou cassé par le parent (pipe fermé) : l'émission des événements cesse
+  silencieusement (sans exception ni trace) et **la conversion continue jusqu'au bout**
+  (messages humains sur stderr, code de sortie normal). Un parent qui veut arrêter
+  la conversion doit terminer le processus (cf. « Annulation »).
 - Phases : `images` et `audio` comptent les assets *distincts* référencés par les
   scènes et l'inventaire (les événements des deux phases peuvent s'entrecroiser) ;
   `scripts` = `nodes.lua`, moteur et bibliothèque embarquée ; `zip` = fichiers écrits
@@ -415,16 +423,30 @@ Règles :
 
 ### Annulation
 
-Ctrl+C, SIGTERM (POSIX) et Ctrl+Break (Windows) interrompent proprement : le
-temporaire est supprimé, **aucun fichier de sortie partiel** n'est laissé, une sortie
-précédente éventuelle reste intacte, un événement `error` (`cancelled`) est émis et le
-code de sortie est **130**. La sortie est écrite dans `<sortie>.<pid>.part` (ou
-`<dossier>.<pid>.part`), puis publiée par `os.replace`. Pour un dossier `.plain` déjà
-existant, les fichiers sont remplacés un par un (les autres fichiers du dossier sont
-conservés). Limite : un arrêt brutal (`TerminateProcess` sous Windows, `kill -9`) ne
-peut pas être intercepté et peut laisser un `*.part` orphelin, jamais un `.plain.pk`
-partiel ; pour une terminaison douce sous Windows, envoyer Ctrl+Break
-(`CREATE_NEW_PROCESS_GROUP` + `GenerateConsoleCtrlEvent`).
+Ctrl+C, SIGTERM (POSIX) et Ctrl+Break (Windows) interrompent proprement : les
+temporaires sont supprimés, un événement `error` (`cancelled`) est émis et le code de
+sortie est **130**. Testé sous Windows avec un vrai `CTRL_BREAK_EVENT` (processus lancé
+avec `CREATE_NEW_PROCESS_GROUP`, puis `send_signal(signal.CTRL_BREAK_EVENT)`).
+
+Garanties réelles :
+- **`.plain.pk`** : écrit dans `<sortie>.<pid>.part` puis publié par `os.replace`
+  (atomique). Annulé avant la publication, aucun fichier partiel n'existe et une sortie
+  précédente reste intacte.
+- **Dossier `.plain`** (`--plain`, ou `-o *.plain`) : écrit dans un dossier temporaire
+  `<dossier>.<pid>.part` complet, mais sa publication n'est **pas atomique** : si le
+  dossier existe déjà, les fichiers sont remplacés un par un (les autres fichiers du
+  dossier sont conservés) ; une annulation pendant cette courte phase peut laisser un
+  mélange d'anciens et de nouveaux fichiers. Avec `--plain`, le `.plain.pk` est publié
+  **avant** le dossier : une annulation pendant la publication du dossier laisse le
+  nouveau `.pk` et un dossier éventuellement mixte. Si le dossier n'existait pas, il
+  est publié d'un seul `os.replace` (atomique).
+- Un arrêt brutal (`TerminateProcess` sous Windows, `kill -9`) n'est pas interceptable
+  et peut laisser un `*.part` orphelin (jamais un `.plain.pk` partiel). Au démarrage
+  d'une conversion vers une sortie donnée, les `<sortie>.<pid>.part` orphelins de
+  **cette même sortie** sont supprimés si leur `pid` n'existe plus ; ceux d'un
+  processus vivant (conversion concurrente) sont conservés. Un `.part` d'un pid
+  réutilisé par un autre processus vivant n'est pas supprimé (choix prudent : on ne
+  se fie pas à l'âge du fichier).
 
 ### Métadonnées (`--info`)
 
