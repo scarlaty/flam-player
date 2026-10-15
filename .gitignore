@@ -46,3 +46,6 @@ apps/flam-launcher/dist/
 apps/flam-launcher/src-tauri/target/
 apps/flam-launcher/src-tauri/gen/
 !apps/flam-launcher/src-tauri/icons/*.png
+# Captures du design system (docs/DESIGN.md) : le dossier échappe aussi à `screenshot*`
+!apps/flam-launcher/docs/screenshots/
+!apps/flam-launcher/docs/screenshots/*.png

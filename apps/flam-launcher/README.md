@@ -36,8 +36,11 @@ Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo t
 apps/flam-launcher/
   src/                     Front React/TypeScript
     api/                   Couche typée au-dessus de `invoke` / événements Tauri
-    features/<domaine>/    Écrans et logique par fonctionnalité (aujourd'hui : welcome)
-    components/            Composants partagés sans logique métier (_prévu_)
+    features/<domaine>/    Écrans et logique par fonctionnalité (welcome, demo en dev)
+    components/            Composants partagés sans logique métier (design system)
+    theme/                 Jetons CSS (clair/sombre) et choix du thème
+    i18n/                  Textes de l'interface (français)
+  docs/DESIGN.md           Design system : principes, palette, composants
   src-tauri/
     src/
       lib.rs               Initialisation (traces, builder Tauri)
@@ -267,7 +270,10 @@ d'exécuter. Accesseurs Rust pour les issues suivantes : `SourcesStore::get(id)`
 
 - Tout appel au backend passe par `src/api/` (fonctions typées, miroir des structures Rust) ;
   les composants n'appellent jamais `invoke` directement.
-- Un dossier par fonctionnalité dans `src/features/`, composants partagés dans `src/components/`.
+- Un dossier par fonctionnalité dans `src/features/`, composants partagés dans `src/components/`
+  (voir [docs/DESIGN.md](docs/DESIGN.md) ; démonstration en dev sur `http://localhost:1420/#/demo`).
+- Aucun texte en dur dans les composants : tout passe par `src/i18n/`.
+- Accessibilité vérifiée dans les tests avec axe-core (`src/test/axe.ts`).
 - Tests à côté du code (`*.test.ts(x)`), API Tauri simulée avec `@tauri-apps/api/mocks`.
 - TypeScript strict, formatage Prettier, ESLint sans avertissement.
 

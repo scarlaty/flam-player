@@ -1,0 +1,82 @@
+/**
+ * Textes de l'interface en français. Tout texte affiché passe par ce fichier pour
+ * préparer une future traduction : une autre langue fournira un objet du même type.
+ */
+export const fr = {
+  app: {
+    name: "Flam Launcher",
+    skipToContent: "Aller au contenu",
+    sourcesNav: "Sources d'histoires",
+  },
+  welcome: {
+    title: "Bienvenue",
+    version: (name: string, version: string) => `${name} — version ${version}`,
+    error: "Impossible de lire les informations de l'application.",
+  },
+  common: {
+    close: "Fermer",
+    cancel: "Annuler",
+  },
+  sources: {
+    kind: {
+      library: "Bibliothèque",
+      catalog: "Catalogue",
+      folder: "Dossier local",
+    },
+    title: "Sources",
+    add: "Ajouter une source",
+    count: (n: number) => (n <= 1 ? `${n} histoire` : `${n} histoires`),
+    status: {
+      offline: "Hors ligne",
+      error: "Erreur",
+    },
+  },
+  story: {
+    age: (min: number, max?: number) =>
+      max === undefined ? `Dès ${min} ans` : `${min}-${max} ans`,
+    progress: (title: string) => `Progression : ${title}`,
+  },
+  status: {
+    installed: "Installée",
+    available: "Disponible",
+    compatible: "Compatible",
+    partial: "Compatibilité partielle",
+    incompatible: "Incompatible",
+    new: "Nouveau",
+  },
+  tasks: {
+    title: "Tâches en cours",
+    empty: "Aucune tâche en cours.",
+    kind: {
+      download: "Téléchargement",
+      convert: "Conversion",
+      install: "Installation",
+    },
+    state: {
+      queued: "En attente",
+      running: "En cours",
+      done: "Terminée",
+      error: "Échec",
+      cancelled: "Annulée",
+    },
+    cancel: (title: string) => `Annuler : ${title}`,
+    retry: (title: string) => `Réessayer : ${title}`,
+    dismiss: (title: string) => `Retirer : ${title}`,
+    progress: (title: string) => `Progression : ${title}`,
+    /** Annonce d'un changement d'état, lue par les lecteurs d'écran. */
+    announce: (title: string, kind: string, state: string, detail?: string) =>
+      `${kind} « ${title} » : ${state}${detail ? `. ${detail}` : ""}`,
+  },
+  toast: {
+    region: "Notifications",
+  },
+  theme: {
+    label: "Thème",
+    system: "Système",
+    light: "Clair",
+    dark: "Sombre",
+  },
+};
+
+/** Forme commune à toutes les langues. */
+export type Messages = typeof fr;
