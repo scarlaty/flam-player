@@ -32,5 +32,10 @@ export interface StoryEntry {
   size: number | null;
   /** Date ISO 8601 UTC. */
   updated_at: string | null;
+  /**
+   * Nombre de téléchargements publié par un catalogue (`download_count`), `null` si inconnu
+   * (dossier, bibliothèque, catalogue sans la donnée). Sert au tri par popularité.
+   */
+  download_count: number | null;
   kind: StoryKind;
 }

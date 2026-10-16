@@ -575,6 +575,7 @@ mod tests {
             download_url: "https://exemple.org/x.zip".into(),
             size: None,
             updated_at: None,
+            download_count: None,
             kind: crate::story::StoryKind::TelmiZip,
         }
     }

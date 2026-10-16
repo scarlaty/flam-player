@@ -371,6 +371,7 @@ fn telmi_entry(source_id: &str, path: &Path, info: &FileInfo) -> Result<Parsed, 
         download_url: path.to_string_lossy().into_owned(),
         size: Some(info.size),
         updated_at: info.updated_at.clone(),
+        download_count: None,
         kind: StoryKind::TelmiZip,
     };
     Ok(Parsed {
@@ -439,6 +440,7 @@ fn flam_entry(
         download_url: path.to_string_lossy().into_owned(),
         size: (kind == StoryKind::FlamPk).then_some(info.size),
         updated_at: info.updated_at.clone(),
+        download_count: None,
         kind,
     };
     Ok(Parsed {
