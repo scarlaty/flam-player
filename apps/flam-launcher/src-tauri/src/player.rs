@@ -540,11 +540,22 @@ fn move_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 /// `<from>.moved`** (écrit avant le premier effacement, retiré après le dernier) : si
 /// l'effacement s'arrête en route, la source partielle restante est reconnue comme un reste
 /// ([`finish_moved`]) et ne peut plus être lue comme des sauvegardes (#91). Erreur renvoyée si
-/// l'effacement échoue ; la copie complète reste à destination.
+/// l'effacement de la source échoue ; la copie complète reste à destination. Seul l'effacement
+/// final du marqueur en échec n'est pas une erreur (journalisé, repris par [`finish_moved`]).
 fn copy_then_remove(
     from: &Path,
     to: &Path,
     remove_source: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    copy_then_remove_with(from, to, remove_source, remove_tree)
+}
+
+/// [`copy_then_remove`] avec l'effacement du marqueur injecté (tests de panne).
+fn copy_then_remove_with(
+    from: &Path,
+    to: &Path,
+    remove_source: impl FnOnce(&Path) -> std::io::Result<()>,
+    remove_marker: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let mut name = to.file_name().unwrap_or_default().to_os_string();
     name.push(".part");
@@ -561,7 +572,15 @@ fn copy_then_remove(
     let marker = moved_marker(from);
     std::fs::write(&marker, b"")?;
     remove_source(from)?;
-    remove_tree(&marker)
+    // Tout est complet (copie publiée, source effacée) : un marqueur resté n'est qu'un reste,
+    // effacé par le prochain [`finish_moved`] (#100). Pas d'erreur.
+    if let Err(err) = remove_marker(&marker) {
+        tracing::warn!(
+            "marqueur {} non effacé ({err}) : repris au prochain lancement",
+            marker.display()
+        );
+    }
+    Ok(())
 }
 
 /// Marqueur d'une source dont la copie complète est publiée : `<from>.moved` (voisin, hors de
@@ -574,20 +593,41 @@ fn moved_marker(from: &Path) -> PathBuf {
 
 /// Finit un déplacement interrompu pendant l'effacement de sa source : si `<dir>.moved` existe,
 /// `dir` (complet, partiel, vide ou absent) n'est qu'un reste dont la copie complète est déjà
-/// publiée ; il est effacé, puis le marqueur. Échec : erreur, et rien n'est lu de `dir`.
+/// publiée ; il est effacé, puis le marqueur. Échec : erreur nommant `dir` et la marche à suivre
+/// (une ligne), et rien n'est lu de `dir`.
 fn finish_moved(dir: &Path) -> std::io::Result<()> {
+    finish_moved_with(dir, remove_tree)
+}
+
+/// [`finish_moved`] avec l'effacement injecté (tests de panne).
+fn finish_moved_with(
+    dir: &Path,
+    remove: impl Fn(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let marker = moved_marker(dir);
-    match std::fs::symlink_metadata(&marker) {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err),
-        Ok(_) => {}
-    }
-    remove_tree(dir)?;
-    tracing::warn!(
-        "reste d'une mise de côté interrompue effacé : {} (copie complète déjà publiée)",
-        dir.display()
-    );
-    remove_tree(&marker)
+    let finish = || {
+        match std::fs::symlink_metadata(&marker) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err),
+            Ok(_) => {}
+        }
+        remove(dir)?;
+        tracing::warn!(
+            "reste d'une mise de côté interrompue effacé : {} (copie complète déjà publiée)",
+            dir.display()
+        );
+        remove(&marker)
+    };
+    finish().map_err(|err| {
+        std::io::Error::new(
+            err.kind(),
+            format!(
+                "reste d'une mise de côté interrompue non effacé ({}) : {err} ; fermer ce qui \
+                 utilise le dossier, puis réessayer",
+                dir.display()
+            ),
+        )
+    })
 }
 
 /// Remplace `rejected` (ancienne génération, supprimée ici) par `fresh` (complet) : renommage.
@@ -1693,6 +1733,178 @@ mod tests {
             std::fs::read(ws.saved.join("Histoire.plain/state")).unwrap(),
             b"nouvelle"
         );
+    }
+
+    /// #100 : l'effacement final du marqueur échoue alors que tout est complet (copie publiée,
+    /// source effacée) : pas d'erreur ; le lancement suivant efface le marqueur resté et restaure
+    /// la progression précédente.
+    #[test]
+    fn l_effacement_du_marqueur_en_echec_n_est_pas_une_erreur_et_se_reprend() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        write_files(&ws.saved, &["precedente"]);
+        let src = copy.parent().unwrap().join(SAVES_DIR);
+        write_files(&src, &["a", "b", "c"]);
+        let why = limit_error("trop gros".into());
+        let moved = |f: &Path, t: &Path| {
+            copy_then_remove_with(f, t, remove_tree, |_: &Path| {
+                Err(std::io::Error::other("marqueur verrouillé"))
+            })
+        };
+        let note = ws
+            .set_aside_with(&src, &why, "nouvelles sauvegardes", moved, promote_rejected)
+            .unwrap();
+        assert!(note.contains(".rejected"), "{note}");
+        assert_files(&ws.sibling(".rejected"), &["a", "b", "c"]);
+        assert!(!src.exists() && moved_marker(&src).is_file());
+        let copy = ws.stage(&pk).unwrap();
+        assert!(!moved_marker(&src).exists());
+        assert_files(&copy.parent().unwrap().join(SAVES_DIR), &["precedente"]);
+        assert_files(&ws.sibling(".rejected"), &["a", "b", "c"]);
+        assert_files(&ws.saved, &["precedente"]);
+    }
+
+    /// #100 : un reste impossible à effacer (fichier verrouillé durablement) est signalé sur une
+    /// ligne, chemin et consigne compris ; rien n'est effacé ni lu, et un nouvel essai le finit.
+    #[test]
+    fn un_reste_impossible_a_effacer_est_signale_et_reessaye() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join(SAVES_DIR);
+        write_files(&src, &["a"]);
+        let marker = moved_marker(&src);
+        std::fs::write(&marker, b"").unwrap();
+        let err = finish_moved_with(&src, |_: &Path| {
+            Err(std::io::Error::other("fichier verrouillé"))
+        })
+        .unwrap_err();
+        let text = err.to_string();
+        assert_eq!(
+            text,
+            format!(
+                "reste d'une mise de côté interrompue non effacé ({}) : fichier verrouillé ; \
+                 fermer ce qui utilise le dossier, puis réessayer",
+                src.display()
+            )
+        );
+        assert!(!text.contains('\n') && !text.contains("  "), "{text}");
+        assert_files(&src, &["a"]);
+        assert!(marker.is_file());
+        // Reste effacé, mais marqueur verrouillé : erreur, marqueur conservé.
+        let err = finish_moved_with(&src, |p: &Path| {
+            if p == marker {
+                Err(std::io::Error::other("marqueur verrouillé"))
+            } else {
+                remove_tree(p)
+            }
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("puis réessayer"));
+        assert!(!src.exists() && marker.is_file());
+        finish_moved(&src).unwrap();
+        assert!(!src.exists() && !marker.exists());
+    }
+
+    /// #100 : l'écriture du marqueur échoue (copie déjà publiée en `.rejected.new`) : erreur,
+    /// source intacte et jamais effacée ; la reprise promeut `.rejected.new`.
+    #[test]
+    fn l_ecriture_du_marqueur_en_echec_laisse_la_source_intacte() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        let src = copy.parent().unwrap().join(SAVES_DIR);
+        write_files(&src, &["a", "b", "c"]);
+        // Un dossier non vide à la place du marqueur : son écriture échoue.
+        std::fs::create_dir_all(moved_marker(&src).join("bloque")).unwrap();
+        let why = limit_error("trop gros".into());
+        let moved = |f: &Path, t: &Path| {
+            copy_then_remove(f, t, |_: &Path| -> std::io::Result<()> {
+                panic!("source effacée sans marqueur")
+            })
+        };
+        assert!(ws
+            .set_aside_with(&src, &why, "nouvelles sauvegardes", moved, promote_rejected)
+            .is_err());
+        assert_files(&src, &["a", "b", "c"]);
+        assert_files(&ws.sibling(".rejected.new"), &["a", "b", "c"]);
+        std::fs::remove_dir_all(moved_marker(&src)).unwrap();
+        ws.recover_rejected().unwrap();
+        assert_files(&ws.sibling(".rejected"), &["a", "b", "c"]);
+        assert_files(&src, &["a", "b", "c"]);
+    }
+
+    /// #100 : marqueur `<copie>/saves.moved` resté seul (arrêt après l'effacement de la source) :
+    /// effacé au rapatriement, sans toucher à la progression conservée.
+    #[test]
+    fn un_marqueur_saves_moved_seul_est_efface_sans_toucher_la_progression() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        write_files(&ws.saved, &["precedente"]);
+        let src = copy.parent().unwrap().join(SAVES_DIR);
+        std::fs::write(moved_marker(&src), b"").unwrap();
+        assert!(ws.persist_saves().unwrap().is_none());
+        assert!(!moved_marker(&src).exists() && !src.exists());
+        assert_files(&ws.saved, &["precedente"]);
+        let copy = ws.stage(&pk).unwrap();
+        play_and_save(&copy, b"nouvelle");
+        assert!(ws.persist_saves().unwrap().is_none());
+        assert_eq!(
+            std::fs::read(ws.saved.join("Histoire.plain/state")).unwrap(),
+            b"nouvelle"
+        );
+    }
+
+    /// #100 : désinstallation avec un reste marqué. `purge(true)` efface tout, marqueurs compris ;
+    /// `purge(false)` efface le reste sans le rapatrier et conserve la progression.
+    #[test]
+    fn purge_avec_un_reste_marque() {
+        for purge_saves in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let pk = dir.path().join("Histoire.plain.pk");
+            std::fs::write(&pk, b"PK").unwrap();
+            let ws = workspace(dir.path(), "library:u1");
+            let copy = ws.stage(&pk).unwrap();
+            write_files(&ws.saved, &["precedente"]);
+            let src = copy.parent().unwrap().join(SAVES_DIR);
+            write_files(&src, &["c"]);
+            std::fs::write(moved_marker(&src), b"").unwrap();
+            write_files(&ws.sibling(".rejected.new"), &["a", "b", "c"]);
+            ws.purge(purge_saves).unwrap();
+            assert!(!ws.work.exists(), "{purge_saves}");
+            if purge_saves {
+                let left: Vec<_> = std::fs::read_dir(ws.saved.parent().unwrap())
+                    .unwrap()
+                    .map(|e| e.unwrap().file_name())
+                    .collect();
+                assert!(left.is_empty(), "{left:?}");
+            } else {
+                assert_files(&ws.saved, &["precedente"]);
+                assert_files(&ws.sibling(".rejected"), &["a", "b", "c"]);
+            }
+        }
+        // Reste de `<config>/saves/<empreinte>` (mise de côté au lancement interrompue).
+        for purge_saves in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let ws = workspace(dir.path(), "library:u1");
+            write_files(&ws.saved, &["c"]);
+            std::fs::write(moved_marker(&ws.saved), b"").unwrap();
+            write_files(&ws.sibling(".rejected.new"), &["a", "b", "c"]);
+            ws.purge(purge_saves).unwrap();
+            assert!(!ws.saved.exists() && !moved_marker(&ws.saved).exists());
+            if purge_saves {
+                assert!(!ws.sibling(".rejected").exists());
+                assert!(!ws.sibling(".rejected.new").exists());
+            } else {
+                assert_files(&ws.sibling(".rejected"), &["a", "b", "c"]);
+            }
+        }
     }
 
     #[test]
