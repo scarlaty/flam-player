@@ -1,5 +1,5 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 // Port fixe : Tauri (devUrl) s'y connecte en mode développement.
 export default defineConfig({
@@ -11,5 +11,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
     css: false,
+    // Les tests de scripts/ utilisent node:test (npm run test:scripts).
+    exclude: [...configDefaults.exclude, "scripts/**"],
   },
 });

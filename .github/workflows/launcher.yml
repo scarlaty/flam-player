@@ -67,6 +67,9 @@ jobs:
       - name: Tests front
         run: npm test
 
+      - name: Tests des scripts
+        run: npm run test:scripts
+
       - name: rustfmt
         working-directory: apps/flam-launcher/src-tauri
         run: cargo fmt --check
@@ -103,6 +106,8 @@ jobs:
               'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt') {
             if (-not (Test-Path (Join-Path $dest $f))) { throw "fichier absent de l'installation : $f" }
           }
+          # Seuil de 1000 octets : une génération qui a échoué ou vidé le fichier laisserait quelques
+          # lignes d'en-tête ; le fichier réel (centaines de paquets) fait plusieurs centaines de Ko.
           if ((Get-Item (Join-Path $dest 'THIRD-PARTY-NOTICES.txt')).Length -lt 1000) { throw 'THIRD-PARTY-NOTICES.txt installé : moins de 1000 octets' }
           "FLAM_E2E_INSTALL_DIR=$dest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
