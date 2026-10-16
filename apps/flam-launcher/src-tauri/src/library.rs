@@ -64,6 +64,8 @@ const LOCK_FILE: &str = ".lock";
 const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 /// Pas d'interrogation du verrou pendant l'attente.
 const LOCK_POLL: Duration = Duration::from_millis(50);
+/// Essais d'une lecture de l'index sans verrou (erreur d'E/S passagère, voir `load_unlocked`).
+const UNLOCKED_READ_ATTEMPTS: u32 = 3;
 /// Version du schéma de `library.json`.
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -291,11 +293,10 @@ impl Library {
     /// Comme `lock_file(true)`, mais avec une attente maximale `wait` : sert aux appelants qui
     /// tiennent déjà le créneau du player et ne doivent pas le bloquer longtemps.
     fn lock_within(&self, wait: Duration) -> AppResult<File> {
-        self.lock_core(Some(wait))?.ok_or_else(|| {
-            AppError::Io(std::io::Error::other(
-                "verrou de la bibliothèque non obtenu",
-            ))
-        })
+        // Attente bornée : `lock_core` renvoie le verrou ou l'erreur d'expiration, jamais `None`.
+        Ok(self
+            .lock_core(Some(wait))?
+            .expect("attente bornée : verrou ou erreur, jamais None"))
     }
 
     fn lock_core(&self, wait: Option<Duration>) -> AppResult<Option<File>> {
@@ -322,7 +323,8 @@ impl Library {
                         return Err(AppError::Io(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
                             format!(
-                                "bibliothèque utilisée par une autre instance de l'application \n                                 (verrou {LOCK_FILE} non obtenu en {shown}), réessayer"
+                                "bibliothèque utilisée par une autre instance de l'application \
+                                 (verrou {LOCK_FILE} non obtenu en {shown}), réessayer"
                             ),
                         )));
                     }
@@ -338,10 +340,29 @@ impl Library {
     fn load_reconciled(&self) -> AppResult<Vec<LibraryEntry>> {
         match self.lock_file(false) {
             Ok(Some(_guard)) => self.reconcile(),
-            Ok(None) => self.load(),
+            Ok(None) => self.load_unlocked(),
             Err(err) => {
                 warn_once!("verrou de la bibliothèque indisponible, lecture seule : {err}");
-                self.load()
+                self.load_unlocked()
+            }
+        }
+    }
+
+    /// Lecture de l'index sans le verrou : l'instance qui le tient peut être en train de mettre
+    /// de côté un index corrompu (renommage concurrent de `library.json`), d'où une erreur
+    /// d'E/S passagère (fichier disparu entre lecture et renommage, accès refusé pendant le
+    /// renommage). Elle est réessayée au plus [`UNLOCKED_READ_ATTEMPTS`] fois, à
+    /// [`LOCK_POLL`] d'intervalle ; une erreur persistante est renvoyée telle quelle.
+    fn load_unlocked(&self) -> AppResult<Vec<LibraryEntry>> {
+        let mut attempt = 1;
+        loop {
+            match self.load() {
+                Err(AppError::Io(err)) if attempt < UNLOCKED_READ_ATTEMPTS => {
+                    tracing::debug!("lecture de l'index sans verrou, nouvel essai : {err}");
+                    attempt += 1;
+                    std::thread::sleep(LOCK_POLL);
+                }
+                other => return other,
             }
         }
     }
@@ -444,7 +465,11 @@ impl Library {
                         marked == file || entry_uuid == Some(uuid) || named_uuid == Some(uuid);
                     if concerned {
                         return Err(AppError::Validation(format!(
-                            "installation de {file} refusée : le marqueur .staging/{marked}{PENDING_SUFFIX} \n                             ne peut pas être jugé (index de la bibliothèque perdu, sauvegardé en \n                             library.json.*.bak). Vérifier library/{marked}, puis supprimer ce marqueur \n                             (et .staging/{marked}{BACKUP_SUFFIX} s'il existe) ou restaurer l'index depuis la \n                             sauvegarde, et réessayer"
+                            "installation de {file} refusée : le marqueur .staging/{marked}{PENDING_SUFFIX} \
+                             ne peut pas être jugé (index de la bibliothèque perdu, sauvegardé en \
+                             library.json.*.bak). Vérifier library/{marked}, puis supprimer ce marqueur \
+                             (et .staging/{marked}{BACKUP_SUFFIX} s'il existe) ou restaurer l'index depuis la \
+                             sauvegarde, et réessayer"
                         )));
                     }
                     unjudged.push(item.path());
@@ -498,11 +523,7 @@ impl Library {
                     ),
                 ))
             })?;
-            tracing::warn!(
-                "marqueur {} non jugeable (index perdu) : neutralisé en {} ; son fichier n'est \n                 pas touché, à vérifier puis à supprimer à la main",
-                path.display(),
-                target.display()
-            );
+            tracing::warn!("{}", neutralized_warning(path, &target));
         }
         Ok(())
     }
@@ -510,8 +531,9 @@ impl Library {
     /// Précontrôle **avant le téléchargement** : si l'index est perdu et qu'un marqueur non
     /// jugeable concerne `uuid` ou son fichier, l'installation serait refusée en fin de course
     /// ([`Library::install`]) ; on le dit tout de suite, avec le même message, sans rien
-    /// neutraliser ni installer (au plus, comme `list`, la mise de côté d'un index corrompu). Sans effet si une autre instance tient le verrou (le contrôle de
-    /// l'installation reste la référence).
+    /// neutraliser ni installer (au plus, comme `list`, la mise de côté d'un index corrompu).
+    /// Sans effet si une autre instance tient le verrou (le contrôle de l'installation reste la
+    /// référence).
     pub fn precheck_install(&self, uuid: &str, version: Option<u32>) -> AppResult<()> {
         let file = file_name_for(uuid, version)?;
         let Some(_lock) = self.lock_file(false)? else {
@@ -614,6 +636,21 @@ impl Library {
         // Une restauration restée en échec (marqueur ou `.bak` survivant à la réconciliation)
         // ne doit pas être écrasée : on refuse sans rien toucher.
         if pending.exists() || backup.exists() {
+            // `.bak` d'une publication dont le marqueur a été neutralisé : la réconciliation ne
+            // le traitera jamais, il faut le dire (et nommer les deux fichiers à traiter).
+            let unjudged = format!("{file}{PENDING_SUFFIX}{UNJUDGED_SUFFIX}");
+            let neutralized = std::fs::read_dir(&staging).is_ok_and(|d| {
+                d.flatten()
+                    .any(|e| e.file_name().to_string_lossy().starts_with(&unjudged))
+            });
+            if !pending.exists() && neutralized {
+                return Err(AppError::Validation(format!(
+                    "installation de {file} refusée : la sauvegarde .staging/{file}{BACKUP_SUFFIX} \
+                     appartient à une publication non jugeable (marqueur neutralisé \
+                     .staging/{unjudged}). Vérifier library/{file}, puis supprimer \
+                     .staging/{file}{BACKUP_SUFFIX} et .staging/{unjudged}, et réessayer"
+                )));
+            }
             return Err(AppError::Validation(format!(
                 "restauration ou nettoyage précédent non terminé pour {file} (marqueur ou sauvegarde \
                  restés dans .staging), réessayer plus tard"
@@ -831,6 +868,16 @@ fn restore_publication(target: &Path, backup: &Path, pending: &Path, had_previou
         warn_once!("marqueur {} non effacé : {err}", pending.display());
     }
     true
+}
+
+/// Avertissement d'un marqueur neutralisé ([`Library::neutralize`]).
+fn neutralized_warning(marker: &Path, target: &Path) -> String {
+    format!(
+        "marqueur {} non jugeable (index perdu) : neutralisé en {} ; son fichier n'est \
+         pas touché, à vérifier puis à supprimer à la main",
+        marker.display(),
+        target.display()
+    )
 }
 
 /// Supprime un fichier ; absent n'est pas une erreur.
@@ -1549,9 +1596,70 @@ pub(crate) mod tests {
             .unwrap_err();
         let text = err.to_string();
         assert_eq!(err.kind(), "validation");
-        assert!(text.contains("autre-2.plain.pk"), "{text}");
-        assert!(text.contains(".staging/autre-1.plain.pk.pending"), "{text}");
+        assert_eq!(
+            text,
+            "installation de autre-2.plain.pk refusée : le marqueur \
+             .staging/autre-1.plain.pk.pending ne peut pas être jugé (index de la bibliothèque \
+             perdu, sauvegardé en library.json.*.bak). Vérifier library/autre-1.plain.pk, puis \
+             supprimer ce marqueur (et .staging/autre-1.plain.pk.bak s'il existe) ou restaurer \
+             l'index depuis la sauvegarde, et réessayer"
+        );
+        assert_single_line(&text);
         assert!(c.exists(), "rien n'est consommé");
+    }
+
+    /// Message destiné à l'utilisateur : une seule ligne, sans espaces doublés (#91).
+    fn assert_single_line(text: &str) {
+        assert!(!text.contains('\n') && !text.contains("  "), "{text:?}");
+    }
+
+    #[test]
+    fn l_avertissement_de_neutralisation_tient_sur_une_ligne() {
+        let text = neutralized_warning(Path::new("m.pending"), Path::new("m.pending.unjudged"));
+        assert_eq!(
+            text,
+            "marqueur m.pending non jugeable (index perdu) : neutralisé en m.pending.unjudged ; \
+             son fichier n'est pas touché, à vérifier puis à supprimer à la main"
+        );
+        assert_single_line(&text);
+    }
+
+    /// #91 : un `.bak` resté avec un marqueur neutralisé n'est jamais traité par la
+    /// réconciliation ; le refus nomme les deux fichiers, sans parler de restauration en cours.
+    #[test]
+    fn un_bak_reste_avec_un_marqueur_neutralise_est_nomme_dans_le_refus() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        lib.list().unwrap();
+        let staging = lib.staging_dir().unwrap();
+        std::fs::write(staging.join("abc-1.plain.pk.pending.unjudged"), b"m").unwrap();
+        std::fs::write(staging.join("abc-1.plain.pk.bak"), b"ancien").unwrap();
+        let a = staged(&lib, "a.plain.pk", b"x");
+        let err = lib
+            .install(&a, &story("abc", Some(1)), None, 1)
+            .unwrap_err();
+        assert_eq!(err.kind(), "validation");
+        let text = err.to_string();
+        assert_eq!(
+            text,
+            "installation de abc-1.plain.pk refusée : la sauvegarde .staging/abc-1.plain.pk.bak \
+             appartient à une publication non jugeable (marqueur neutralisé \
+             .staging/abc-1.plain.pk.pending.unjudged). Vérifier library/abc-1.plain.pk, puis \
+             supprimer .staging/abc-1.plain.pk.bak et .staging/abc-1.plain.pk.pending.unjudged, \
+             et réessayer"
+        );
+        assert_single_line(&text);
+        assert!(a.exists(), "rien n'est consommé");
+        assert_eq!(
+            std::fs::read(staging.join("abc-1.plain.pk.bak")).unwrap(),
+            b"ancien"
+        );
+        // Sans marqueur neutralisé, le message générique reste celui d'une restauration.
+        std::fs::remove_file(staging.join("abc-1.plain.pk.pending.unjudged")).unwrap();
+        let err = lib
+            .install(&a, &story("abc", Some(1)), None, 1)
+            .unwrap_err();
+        assert!(err.to_string().contains("non terminé"), "{err}");
     }
 
     /// Priorité de #82 : un marqueur non jugeable d'une autre histoire, laissé tel quel pendant la
@@ -1773,6 +1881,41 @@ pub(crate) mod tests {
         lib.install(&b, &story("abc", Some(1)), None, 3).unwrap();
     }
 
+    /// #91 : `list` sans verrou (une autre instance le tient) réessaie une erreur d'E/S passagère
+    /// à la lecture de l'index, et renvoie une erreur persistante après des essais bornés.
+    #[test]
+    fn list_sans_verrou_reessaie_une_erreur_passagere_puis_abandonne() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"x");
+        lib.install(&a, &story("abc", Some(1)), None, 1).unwrap();
+        let index = dir.path().join("library").join(INDEX_FILE);
+        let saved = std::fs::read(&index).unwrap();
+        let other = Library::new(dir.path());
+        let _held = other.lock_file(true).unwrap().expect("verrou");
+        // Lire un dossier à la place de l'index : erreur d'E/S (ni absent, ni corrompu).
+        std::fs::remove_file(&index).unwrap();
+        std::fs::create_dir(&index).unwrap();
+        let started = Instant::now();
+        assert_eq!(lib.list().unwrap_err().kind(), "io");
+        assert!(started.elapsed() >= LOCK_POLL * (UNLOCKED_READ_ATTEMPTS - 1));
+        // Passagère : l'index revient pendant les essais.
+        // Fichier complet préparé à côté, puis renommé en place : jamais d'index tronqué lu.
+        let ready = dir.path().join("library").join("index.pret");
+        std::fs::write(&ready, saved).unwrap();
+        let restore = {
+            let index = index.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(10));
+                std::fs::remove_dir(&index).unwrap();
+                std::fs::rename(&ready, &index).unwrap();
+            })
+        };
+        let list = lib.list().unwrap();
+        restore.join().unwrap();
+        assert_eq!(list.len(), 1);
+    }
+
     #[test]
     fn verrou_occupe_erreur_claire_apres_le_delai() {
         let dir = tempfile::tempdir().unwrap();
@@ -1787,10 +1930,12 @@ pub(crate) mod tests {
                 .install(&a, &story("abc", Some(1)), None, 1)
                 .unwrap_err();
             assert_eq!(err.kind(), "io");
-            assert!(
-                err.to_string().contains("utilisée par une autre instance"),
-                "{err}"
+            assert_eq!(
+                err.to_string(),
+                "erreur d'entrée/sortie : bibliothèque utilisée par une autre instance de \
+                 l'application (verrou .lock non obtenu en 150 ms), réessayer"
             );
+            assert_single_line(&err.to_string());
             assert!(started.elapsed() >= Duration::from_millis(100));
             assert_eq!(lib.remove("abc").unwrap_err().kind(), "io");
             assert!(a.exists(), "rien n'a été consommé");
