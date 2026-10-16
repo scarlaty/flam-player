@@ -22,6 +22,15 @@ use tauri::Manager;
 
 pub use error::{AppError, AppResult};
 
+/// Ramène la fenêtre principale au premier plan (restaurée si réduite).
+fn focus_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 /// Point d'entrée : initialise les traces puis lance l'application Tauri.
 pub fn run() {
     tracing_subscriber::fmt()
@@ -33,6 +42,13 @@ pub fn run() {
     tracing::info!("démarrage de flam-launcher {}", env!("CARGO_PKG_VERSION"));
 
     tauri::Builder::default()
+        // Instance unique : doit être le premier plugin enregistré. Un second lancement se
+        // termine aussitôt et ramène la fenêtre de la première instance au premier plan, de
+        // sorte que deux launchers ne se disputent jamais le cache, `<config>/saves/` ni la
+        // file d'installation.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            focus_main_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config_dir = storage::config_dir()?;
@@ -137,5 +153,15 @@ mod tests {
             }
         }
         assert!(count >= 10, "commandes détectées : {count}");
+    }
+
+    /// Instance unique : le plugin doit être enregistré en premier (consigne du plugin), avant
+    /// tout autre, sinon un second launcher démarrerait avant la détection.
+    #[test]
+    fn l_instance_unique_est_le_premier_plugin() {
+        let lib = include_str!("lib.rs");
+        let builder = lib.split("tauri::Builder::default()").nth(1).unwrap();
+        let first = builder.find(".plugin(").unwrap();
+        assert!(builder[first..].starts_with(".plugin(tauri_plugin_single_instance::init("));
     }
 }

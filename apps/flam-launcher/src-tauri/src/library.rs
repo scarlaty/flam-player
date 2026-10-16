@@ -11,6 +11,13 @@
 //! **revalidés** ici ([`validate_story_id`]) avant de construire un chemin, et le chemin final
 //! doit rester directement sous `library/`.
 //!
+//! **Désinstallation** : [`Library::remove`] ne touche qu'au fichier et à l'index ; la commande
+//! `library_remove` purge ensuite la copie de travail `<cache>/play/<empreinte>/` du player, et
+//! la progression de l'enfant (`<config>/saves/<empreinte>/`) seulement sur demande
+//! (`purge_saves`, faux par défaut). Mettre une histoire à jour (nouvelle version du même
+//! `uuid`) ne supprime aucune progression ; voir `player::Workspace` pour ce que le player en
+//! relit.
+//!
 //! La logique ([`Library`]) ne dépend pas de Tauri ; les commandes `library_*` passent par le
 //! service d'installation, qui sérialise les écritures avec le pipeline.
 
@@ -20,8 +27,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::catalog::{blocking, CatalogService};
 use crate::install::InstallService;
-use crate::storage::{self, Loaded};
+use crate::player::{purge_library_story, PlayerService, SAVES_ROOT};
+use crate::settings::{Environment, SettingsStore};
+use crate::storage::{self, ConfigState, Loaded};
 use crate::story::{validate_story_id, StoryEntry};
 use crate::{AppError, AppResult};
 
@@ -273,6 +283,15 @@ impl Library {
         Ok((path, entry.title))
     }
 
+    /// Vérifie que `uuid` est dans l'index (`not_found` sinon), sans toucher au fichier.
+    pub fn playable_entry(&self, uuid: &str) -> AppResult<()> {
+        self.load()?
+            .iter()
+            .any(|e| e.uuid == uuid)
+            .then_some(())
+            .ok_or_else(|| AppError::NotFound(format!("histoire non installée : {uuid}")))
+    }
+
     /// Publie `staged` (un `.plain.pk` complet) comme installation de `source`.
     ///
     /// Ordre sûr en cas d'arrêt ou d'échec : l'éventuel fichier de même nom est d'abord mis de
@@ -444,10 +463,46 @@ pub async fn library_list(service: State<'_, InstallService>) -> AppResult<Vec<L
     service.library_list().await
 }
 
-/// Désinstalle l'histoire `uuid` (fichier et entrée d'index).
+/// Désinstalle l'histoire `uuid` : fichier, entrée d'index et copie de travail
+/// `<cache>/play/<empreinte>/`.
+///
+/// La progression de l'enfant (`<config>/saves/<empreinte>/`) est **conservée par défaut** :
+/// elle n'est supprimée que si `purge_saves` est vrai (choix explicite de l'utilisateur ; absent
+/// ou faux : conservée, et retrouvée si l'histoire est réinstallée). Refusé avec `player_busy`
+/// si le player lit cette histoire.
 #[tauri::command]
-pub async fn library_remove(service: State<'_, InstallService>, uuid: String) -> AppResult<()> {
-    service.library_remove(uuid).await
+pub async fn library_remove(
+    service: State<'_, InstallService>,
+    config: State<'_, ConfigState>,
+    catalog: State<'_, CatalogService>,
+    player: State<'_, PlayerService>,
+    uuid: String,
+    purge_saves: Option<bool>,
+) -> AppResult<()> {
+    let purge_saves = purge_saves.unwrap_or(false);
+    let cache_root = {
+        let _guard = config.guard();
+        SettingsStore::new(&config.dir).resolved_cache_dir(&Environment::current())?
+    };
+    let saves_root = config.dir.join(SAVES_ROOT);
+    // Même portillon que le lancement : pas de purge pendant une copie de travail.
+    let _gate = catalog.cache_gate().read_owned().await;
+    let players = player.inner().clone();
+    // Tout sous le créneau du player (refus `player_busy` si le player lit cette histoire, et
+    // aucun lancement ne peut s'intercaler) : vérification de l'installation, purge, puis retrait.
+    // La purge précède le retrait : un échec laisse l'histoire installée (à retenter) au lieu
+    // d'une progression impossible à purger. Les purges sont idempotentes.
+    let installs = service.inner().clone();
+    blocking(move || {
+        players.while_not_playing(&uuid, || {
+            installs.library_remove_with(&uuid, || {
+                purge_library_story(&cache_root, &saves_root, &uuid, purge_saves)
+            })
+        })
+    })
+    .await???;
+    drop(_gate);
+    Ok(())
 }
 
 #[cfg(test)]
