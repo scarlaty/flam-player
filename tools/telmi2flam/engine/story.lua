@@ -387,16 +387,18 @@ function followTransition(trans)
         return
     end
 
-    -- indexItem : l'index du stage dans l'action est la valeur d'un item inventaire
+    -- indexItem : spec TELMI, equivalent a `index` dont la valeur est celle
+    -- d'un item d'inventaire (0-based, bornee a la liste ; jamais -1 = tirage).
+    -- Memes regles que index (enterAction) : filtre des conditions, cible
+    -- autoplay jouee directement, sinon choix preselectionne sur cette option.
+    local index = trans.index
     if trans.indexItem ~= nil then
         local slot = state.inv and state.inv[trans.indexItem + 1]
-        local idx = (slot and slot.value or 0) + 1  -- TELMI 0-based -> Lua 1-based
-        local e = list[idx] or list[#list]           -- clamp sur le dernier si hors borne
-        enterStage(e.stage)
-        return
+        local v = math.floor(tonumber(slot and slot.value) or 0)
+        index = math.max(0, math.min(v, #list - 1))
     end
 
-    enterAction(trans.action, trans.index)
+    enterAction(trans.action, index)
 end
 
 -- Entree dans une action : seules les entrees dont les conditions passent sont

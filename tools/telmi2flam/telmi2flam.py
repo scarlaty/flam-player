@@ -1098,23 +1098,17 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
     # chapitre : une option choisie dans le carrousel (showChoice) suit
     # directement son ok sans passer par enterStage. On ne compte donc que les
     # scenes avec audio pouvant etre jouees comme scene, sinon la jauge ne peut
-    # jamais atteindre 100 %. Regles d'enterAction/followTransition : action a
-    # 1 entree, entree cible d'un indexItem, action avec conditions (le filtre
-    # peut ramener a 1 entree : prudence), ou scene cible autoplay.
+    # jamais atteindre 100 %. Regles d'enterAction (followTransition y passe
+    # aussi pour indexItem, traite comme index) : action a 1 entree, action
+    # avec conditions (le filtre peut ramener a 1 entree : prudence), ou scene
+    # cible autoplay.
     # Une partie ne visite pas forcement tout le graphe : branches exclusives
     # (menu de niveaux, fins alternatives) et endStory remet la progression a
     # zero. totalChapters = nombre maximal de chapitres visitables en une seule
     # partie (_max_chapters_per_run), et non le total du paquet.
-    item_actions = set()
-    for e in lua_stages.values():
-        for key in ("ok", "home"):
-            tr = e.get(key)
-            if tr and "indexItem" in tr:
-                item_actions.add(tr["action"])
     playable = set()
-    for aid, lst in lua_actions.items():
-        direct = (len(lst) <= 1 or aid in item_actions
-                  or any(it.get("cond") for it in lst))
+    for lst in lua_actions.values():
+        direct = len(lst) <= 1 or any(it.get("cond") for it in lst)
         for it in lst:
             st = lua_stages.get(it["stage"])
             if st and (direct or st["ctrl"]["autoplay"]):
