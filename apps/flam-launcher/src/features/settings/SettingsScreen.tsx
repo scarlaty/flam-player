@@ -226,6 +226,7 @@ export function SettingsScreen() {
     <div className="fl-settings">
       <section className="fl-settings__section" aria-labelledby="settings-paths">
         <h2 id="settings-paths">{text.paths}</h2>
+        <p>{text.pythonNote}</p>
         {issues.length > 0 && (
           <Banner tone="warning" title={text.issuesTitle}>
             {issues.map((issue) => (

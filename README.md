@@ -18,13 +18,22 @@ et convertisseur d'histoires TELMI vers FLAM (`tools/telmi2flam`).
 - Navigation encodeur fidele au firmware reel (LEFT/RIGHT/ENTER)
 - Mode `--strict` proche du device et watchdog contre les boucles Lua infinies
 
+## Installer la surcouche (Windows)
+
+Pour utiliser flam-player sans compiler : l'installateur `Flam Launcher_<version>_x64-setup.exe`
+(artefact de la CI) installe, **pour l'utilisateur courant et sans droits d'administrateur**, la
+surcouche, `flam-player.exe` et le convertisseur TELMI vers FLAM (Python inclus). Il n'est pas
+signe : SmartScreen affiche un avertissement (« Informations complementaires » puis « Executer
+quand meme »). Utilisation, sources, depannage et construction de l'installateur :
+[apps/flam-launcher/README.md](apps/flam-launcher/README.md).
+
 ## Contenu du depot
 
 | Dossier | Role |
 |---------|------|
 | `src/` | Emulateur (voir Architecture) |
 | `tools/telmi2flam/` | Convertisseur d'histoires TELMI (`.zip`) vers FLAM (`.plain.pk`) — voir [son README](tools/telmi2flam/README.md) |
-| `apps/flam-launcher/` | Surcouche de bureau (Tauri 2 : Rust + React/TypeScript, licence MIT) pour parcourir, convertir et lancer des histoires — voir [son README](apps/flam-launcher/README.md) |
+| `apps/flam-launcher/` | Surcouche de bureau (Tauri 2 : Rust + React/TypeScript, licence MIT) pour parcourir, convertir et lancer des histoires — voir [son README](apps/flam-launcher/README.md) ; installateur Windows (NSIS, non signe) avec player et convertisseur embarques |
 | `games/casse-briques/` | Jeu casse-briques en contenu Lua FLAM (avec verrou parental) |
 | `tests/` | Tests : suite Lua, moteur telmi2flam, audio reel, non-regression, bout en bout |
 | `patches/` | Correctifs pour le fork LVGL (non appliques automatiquement) — voir [patches/README.md](patches/README.md) |
@@ -233,3 +242,8 @@ et details : [tools/telmi2flam/README.md](tools/telmi2flam/README.md).
 Ce projet est a usage personnel et educatif.
 
 Exception : `apps/flam-launcher/` (surcouche de bureau) est distribue sous licence MIT, voir [`apps/flam-launcher/LICENSE`](apps/flam-launcher/LICENSE).
+
+L'installateur Windows de flam-launcher redistribue flam-player, le convertisseur telmi2flam (avec
+un Python embarque et Pillow) et le runtime Lunii avec l'accord du mainteneur ; les licences de
+chaque composant tiers (SDL2, Lua, LVGL, minimp3, Python, Pillow, redistribuables Microsoft) sont
+dans [`apps/flam-launcher/LICENSES.md`](apps/flam-launcher/LICENSES.md).
