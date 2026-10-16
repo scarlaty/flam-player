@@ -12,3 +12,14 @@ name = "telmi2flam"
 [[bin]]
 name = "telmi2flam"
 path = "src/main.rs"
+
+[dependencies]
+# Lecture ZIP faite à la main (src/zipread.rs, équivalence avec zipfile) : seulement le
+# décompresseur deflate en Rust pur (miniz_oxide) et le CRC-32.
+crc32fast = "=1.5.2"
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+unicode-normalization = "=0.1.25"
+
+[dev-dependencies]
+# Lecture de tests/vectors/archive/expected.json (vecteurs produits par Python).
+serde_json = "=1.0.154"

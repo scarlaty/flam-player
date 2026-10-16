@@ -1,0 +1,2661 @@
+[
+ {
+  "id": "story_stored",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "story_deflate",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "story_nested",
+  "open": "ok",
+  "namelist": [
+   "__MACOSX/Histoire/._metadata.json",
+   "Histoire/sous/metadata.json",
+   "Histoire/sous/nodes.json",
+   "Histoire/metadata.json",
+   "Histoire/nodes.json",
+   "Histoire/cover.png",
+   "Histoire/images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "__MACOSX/Histoire/._metadata.json",
+    "hex": "0005"
+   },
+   {
+    "name": "Histoire/sous/metadata.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "Histoire/sous/nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "Histoire/metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "Histoire/nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "Histoire/cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "Histoire/images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "HISTOIRE/COVER.PNG",
+    "Histoire/cover.png"
+   ],
+   [
+    "HISTOIRE/IMAGES/S0.PNG",
+    "Histoire/images/s0.png"
+   ],
+   [
+    "HISTOIRE/METADATA.JSON",
+    "Histoire/metadata.json"
+   ],
+   [
+    "HISTOIRE/NODES.JSON",
+    "Histoire/nodes.json"
+   ],
+   [
+    "HISTOIRE/SOUS/METADATA.JSON",
+    "Histoire/sous/metadata.json"
+   ],
+   [
+    "HISTOIRE/SOUS/NODES.JSON",
+    "Histoire/sous/nodes.json"
+   ],
+   [
+    "Histoire/cover.png",
+    "Histoire/cover.png"
+   ],
+   [
+    "Histoire/images/s0.png",
+    "Histoire/images/s0.png"
+   ],
+   [
+    "Histoire/metadata.json",
+    "Histoire/metadata.json"
+   ],
+   [
+    "Histoire/nodes.json",
+    "Histoire/nodes.json"
+   ],
+   [
+    "Histoire/sous/metadata.json",
+    "Histoire/sous/metadata.json"
+   ],
+   [
+    "Histoire/sous/nodes.json",
+    "Histoire/sous/nodes.json"
+   ],
+   [
+    "__MACOSX/HISTOIRE/._METADATA.JSON",
+    "__MACOSX/Histoire/._metadata.json"
+   ],
+   [
+    "__MACOSX/Histoire/._metadata.json",
+    "__MACOSX/Histoire/._metadata.json"
+   ],
+   [
+    "absent.png",
+    null
+   ]
+  ],
+  "root": "Histoire/",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "duplicates",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png",
+   "metadata.json",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a202242227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "7365636f6e64"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root_error": [
+   "invalid_content",
+   4
+  ],
+  "info_exit_python": 4,
+  "info_exit": 4,
+  "info_stdout": ""
+ },
+ {
+  "id": "duplicates_image",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png",
+   "images/s0.png",
+   "IMAGES/S0.PNG"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "7365636f6e64"
+   },
+   {
+    "name": "IMAGES/S0.PNG",
+    "hex": "7570706572"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "IMAGES/S0.PNG"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "names_nfd",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png",
+   "images/E\u0301te\u0301.png",
+   "images/e\u0301te\u0301.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   },
+   {
+    "name": "images/E\u0301te\u0301.png",
+    "hex": "6e6664"
+   },
+   {
+    "name": "images/e\u0301te\u0301.png",
+    "hex": "6e666432"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/E\u0301TE\u0301.PNG",
+    "images/E\u0301te\u0301.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/E\u0301te\u0301.png",
+    "images/E\u0301te\u0301.png"
+   ],
+   [
+    "images/e\u0301te\u0301.png",
+    "images/e\u0301te\u0301.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "images/\u00c9t\u00e9.png",
+    "images/E\u0301te\u0301.png"
+   ],
+   [
+    "images/\u00e9t\u00e9.png",
+    "images/E\u0301te\u0301.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "names_cp437",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png",
+   "images/for\u00eat.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   },
+   {
+    "name": "images/for\u00eat.png",
+    "hex": "6370343337"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/FOR\u00caT.PNG",
+    "images/for\u00eat.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/for\u00eat.png",
+    "images/for\u00eat.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "names_utf8_flag",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png",
+   "images/\u00e9t\u00e9 \u6f22\ud83d\ude00.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   },
+   {
+    "name": "images/\u00e9t\u00e9 \u6f22\ud83d\ude00.png",
+    "hex": "75"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "IMAGES/\u00c9T\u00c9 \u6f22\ud83d\ude00.PNG",
+    "images/\u00e9t\u00e9 \u6f22\ud83d\ude00.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "images/\u00e9t\u00e9 \u6f22\ud83d\ude00.png",
+    "images/\u00e9t\u00e9 \u6f22\ud83d\ude00.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "unicode_path_extra",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png",
+   "\u00e9t\u00e9.txt",
+   "bad.txt"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   },
+   {
+    "name": "\u00e9t\u00e9.txt",
+    "hex": "78"
+   },
+   {
+    "name": "bad.txt",
+    "hex": "79"
+   }
+  ],
+  "lookup": [
+   [
+    "BAD.TXT",
+    "bad.txt"
+   ],
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "bad.txt",
+    "bad.txt"
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ],
+   [
+    "\u00c9T\u00c9.TXT",
+    "\u00e9t\u00e9.txt"
+   ],
+   [
+    "\u00e9t\u00e9.txt",
+    "\u00e9t\u00e9.txt"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "names_backslash_nul",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png",
+   "dir/file.txt",
+   "a"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   },
+   {
+    "name": "dir/file.txt",
+    "hex": "6273"
+   },
+   {
+    "name": "a",
+    "hex": "6e756c"
+   }
+  ],
+  "lookup": [
+   [
+    "A",
+    "a"
+   ],
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "DIR/FILE.TXT",
+    "dir/file.txt"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "a",
+    "a"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "dir/file.txt",
+    "dir/file.txt"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "crc_corrupt_image",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "error": "corrupt"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "crc_corrupt_metadata",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "error": "corrupt"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 3,
+  "info_exit": 3,
+  "info_stdout": ""
+ },
+ {
+  "id": "truncated",
+  "open": "corrupt",
+  "info_exit_python": 3,
+  "info_exit": 3,
+  "info_stdout": ""
+ },
+ {
+  "id": "truncated_cd",
+  "open": "corrupt",
+  "info_exit_python": 3,
+  "info_exit": 3,
+  "info_stdout": ""
+ },
+ {
+  "id": "not_a_zip",
+  "open": "corrupt",
+  "info_exit_python": 3,
+  "info_exit": 3,
+  "info_stdout": ""
+ },
+ {
+  "id": "empty",
+  "open": "corrupt",
+  "info_exit_python": 3,
+  "info_exit": 3,
+  "info_stdout": ""
+ },
+ {
+  "id": "encrypted_image",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "error": "encrypted"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "encrypted_metadata",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "error": "encrypted"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 6,
+  "info_exit": 3,
+  "info_stdout": ""
+ },
+ {
+  "id": "unknown_method_metadata",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "error": "corrupt"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 3,
+  "info_exit": 3,
+  "info_stdout": ""
+ },
+ {
+  "id": "unknown_method_image",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "error": "corrupt"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "bzip2_image",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "error": "unsupported"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "lzma_metadata",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "error": "unsupported"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 7,
+  "info_stdout": ""
+ },
+ {
+  "id": "comment_and_prefix",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "overlapped",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "error": "corrupt"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 3,
+  "info_exit": 3,
+  "info_stdout": ""
+ },
+ {
+  "id": "utf8_flag_invalid_name",
+  "open": "python_fails_too",
+  "info_exit_python": 6,
+  "info_exit": 3,
+  "info_stdout": ""
+ },
+ {
+  "id": "local_name_differs",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "error": "corrupt"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "extract_version_64",
+  "open": "corrupt",
+  "info_exit_python": 3,
+  "info_exit": 3,
+  "info_stdout": ""
+ },
+ {
+  "id": "corrupt_extra_field",
+  "open": "corrupt",
+  "info_exit_python": 3,
+  "info_exit": 3,
+  "info_stdout": ""
+ },
+ {
+  "id": "deflate_corrupt_image",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "error": "corrupt"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
+  "id": "root_none",
+  "open": "ok",
+  "namelist": [
+   "readme.txt",
+   "Metadata.json",
+   "nodes.json"
+  ],
+  "reads": [
+   {
+    "name": "readme.txt",
+    "hex": "7269656e"
+   },
+   {
+    "name": "Metadata.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   }
+  ],
+  "lookup": [
+   [
+    "METADATA.JSON",
+    "Metadata.json"
+   ],
+   [
+    "Metadata.json",
+    "Metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "README.TXT",
+    "readme.txt"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ],
+   [
+    "readme.txt",
+    "readme.txt"
+   ]
+  ],
+  "root_error": [
+   "not_telmi",
+   3
+  ],
+  "info_exit_python": 3,
+  "info_exit": 3,
+  "info_stdout": ""
+ },
+ {
+  "id": "root_ambiguous",
+  "open": "ok",
+  "namelist": [
+   "b/metadata.json",
+   "b/nodes.json",
+   "b/cover.png",
+   "b/images/s0.png",
+   "a/metadata.json",
+   "a/nodes.json",
+   "a/cover.png",
+   "a/images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "b/metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "b/nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "b/cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "b/images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   },
+   {
+    "name": "a/metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "a/nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "a/cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "a/images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "A/COVER.PNG",
+    "a/cover.png"
+   ],
+   [
+    "A/IMAGES/S0.PNG",
+    "a/images/s0.png"
+   ],
+   [
+    "A/METADATA.JSON",
+    "a/metadata.json"
+   ],
+   [
+    "A/NODES.JSON",
+    "a/nodes.json"
+   ],
+   [
+    "B/COVER.PNG",
+    "b/cover.png"
+   ],
+   [
+    "B/IMAGES/S0.PNG",
+    "b/images/s0.png"
+   ],
+   [
+    "B/METADATA.JSON",
+    "b/metadata.json"
+   ],
+   [
+    "B/NODES.JSON",
+    "b/nodes.json"
+   ],
+   [
+    "a/cover.png",
+    "a/cover.png"
+   ],
+   [
+    "a/images/s0.png",
+    "a/images/s0.png"
+   ],
+   [
+    "a/metadata.json",
+    "a/metadata.json"
+   ],
+   [
+    "a/nodes.json",
+    "a/nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "b/cover.png",
+    "b/cover.png"
+   ],
+   [
+    "b/images/s0.png",
+    "b/images/s0.png"
+   ],
+   [
+    "b/metadata.json",
+    "b/metadata.json"
+   ],
+   [
+    "b/nodes.json",
+    "b/nodes.json"
+   ]
+  ],
+  "root_error": [
+   "invalid_content",
+   4
+  ],
+  "info_exit_python": 4,
+  "info_exit": 4,
+  "info_stdout": ""
+ },
+ {
+  "id": "meta_types",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20747275652c202275756964223a205b315d2c202276657273696f6e223a20316531362c2022616765223a20302e312c202263617465676f7279223a202d302c20226465736372697074696f6e223a207b2261223a20317d2c2022696d616765223a20352c20227469746c6532223a2031652d377d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":null,\"uuid\":null,\"version\":1e+16,\"age\":0.1,\"category\":0,\"description\":null,\"cover\":true}\n"
+ },
+ {
+  "id": "meta_numbers",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a2031383434363734343037333730393535313631352c202275756964223a202d393232333337323033363835343737353830382c202276657273696f6e223a203145322c2022616765223a202d302e302c202263617465676f7279223a203132333435363738392e3132352c20226465736372697074696f6e223a2035652d3332342c2022696d616765223a2022227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":18446744073709551615,\"uuid\":-9223372036854775808,\"version\":100.0,\"age\":-0.0,\"category\":123456789.125,\"description\":5e-324,\"cover\":true}\n"
+ },
+ {
+  "id": "meta_dup_keys_bom",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "efbbbf7b227469746c65223a202241222c2022696d616765223a2022616273656e742e706e67222c20227469746c65223a202242227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"B\",\"uuid\":null,\"version\":null,\"age\":null,\"category\":null,\"description\":null,\"cover\":true}\n"
+ },
+ {
+  "id": "meta_invalid_json",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b626164206a736f6e"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 4,
+  "info_exit": 4,
+  "info_stdout": ""
+ },
+ {
+  "id": "meta_list",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "5b5d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 4,
+  "info_exit": 4,
+  "info_stdout": ""
+ },
+ {
+  "id": "meta_nan",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a204e614e7d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 4,
+  "info_exit": 4,
+  "info_stdout": ""
+ },
+ {
+  "id": "meta_not_utf8",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a2022e9227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 4,
+  "info_exit": 4,
+  "info_stdout": ""
+ },
+ {
+  "id": "meta_big_int",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b22616765223a203132333435363738393031323334353637383930313233343536373839307d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 4,
+  "info_stdout": ""
+ },
+ {
+  "id": "meta_lone_surrogate",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20225c7564383030227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "hex": "696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67696d67"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 4,
+  "info_stdout": ""
+ },
+ {
+  "id": "cover_title_png",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "TITLE.PNG"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a202254227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "TITLE.PNG",
+    "hex": "74"
+   }
+  ],
+  "lookup": [
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "TITLE.PNG",
+    "TITLE.PNG"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"T\",\"uuid\":null,\"version\":null,\"age\":null,\"category\":null,\"description\":null,\"cover\":true}\n"
+ },
+ {
+  "id": "cover_none",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a202254222c2022696d616765223a2022782e706e67227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   }
+  ],
+  "lookup": [
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"T\",\"uuid\":null,\"version\":null,\"age\":null,\"category\":null,\"description\":null,\"cover\":false}\n"
+ }
+]
