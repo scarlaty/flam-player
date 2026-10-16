@@ -296,6 +296,70 @@ export const fr = {
     announce: (title: string, kind: string, state: string, detail?: string) =>
       `${kind} « ${title} » : ${state}${detail ? `. ${detail}` : ""}`,
   },
+  stories: {
+    detail: {
+      cover: (title: string) => `Vignette de « ${title} »`,
+      noDescription: "Aucune description.",
+      facts: {
+        age: "Âge",
+        category: "Catégorie",
+        author: "Auteur",
+        voice: "Voix",
+        license: "Licence",
+        size: "Taille",
+        source: "Source",
+        state: "État",
+        compat: "Compatibilité",
+      },
+      unknown: "Non précisé",
+    },
+    actions: {
+      downloadAndPlay: "Télécharger et jouer",
+      download: "Télécharger",
+      installAndPlay: "Installer et jouer",
+      install: "Installer",
+      play: "Jouer",
+      playFromFolder: "Jouer depuis le dossier",
+      update: "Mettre à jour",
+      remove: "Supprimer",
+      cancel: "Annuler",
+      /** Libellé accessible des actions rapides d'une carte. */
+      forStory: (action: string, title: string) => `${action} « ${title} »`,
+    },
+    progress: {
+      queued: "En attente",
+      downloading: "Téléchargement",
+      downloadingSize: (received: string, total: string) =>
+        `Téléchargement : ${received} sur ${total}`,
+      converting: "Conversion",
+      installing: "Installation",
+      phase: {
+        images: "images",
+        audio: "audio",
+        scripts: "scripts",
+        zip: "archive",
+      } as Record<string, string>,
+      convertingPhase: (phase: string) => `Conversion : ${phase}`,
+    },
+    playing: "En cours de lecture dans flam-player",
+    playerBusy:
+      "Une histoire est déjà en cours de lecture : fermez flam-player pour jouer.",
+    removeDialog: {
+      title: (title: string) => `Supprimer « ${title} » ?`,
+      description:
+        "L'histoire est retirée de « Mes histoires » et son fichier converti est supprimé. Vous pourrez la réinstaller depuis sa source.",
+      confirm: "Supprimer",
+    },
+    toast: {
+      installed: (title: string) => `« ${title} » est installée`,
+      installedWarnings: (title: string, count: number) =>
+        `« ${title} » est installée (${count <= 1 ? `${count} avertissement` : `${count} avertissements`} à la conversion)`,
+      removed: (title: string) => `« ${title} » a été supprimée`,
+      finished: (title: string) => `Lecture de « ${title} » terminée`,
+      playerFailed: (title: string, detail: string) =>
+        `flam-player s'est arrêté sur une erreur pendant « ${title} ».${detail ? ` ${detail}` : ""}`,
+    },
+  },
   toast: {
     region: "Notifications",
   },

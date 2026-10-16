@@ -101,6 +101,8 @@ beforeEach(() => {
         return scans[payload.sourceId];
       case "folder_thumbnail":
         return IMAGE;
+      case "library_list":
+        return [];
       default:
         throw { kind: "unknown", message: cmd };
     }
