@@ -12,7 +12,11 @@ function fetchThumbnail(source: Source, entry: StoryEntry): Promise<string> | nu
     return ref.startsWith("data:image/") ? Promise.resolve(ref) : null;
   if (source.type === "catalog") return getCatalogThumbnail(source.id, ref);
   if (source.type === "folder") return folderThumbnail(source.id, entry.entry_id);
-  return null;
+  // Histoire installée : la vignette se demande à la source d'origine (catalogue si l'archive
+  // venait du web, sinon dossier local), qui peut avoir disparu : pas de vignette alors.
+  return /^https?:\/\//i.test(entry.download_url)
+    ? getCatalogThumbnail(entry.source_id, ref)
+    : folderThumbnail(entry.source_id, entry.entry_id);
 }
 
 /**
