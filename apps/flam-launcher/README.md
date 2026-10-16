@@ -334,7 +334,7 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    marqueur est effacé (échec : retour à l'état précédent). Au chargement, seules les
    publications **qui ont un marqueur** sont défaites ; un `.plain.pk` non indexé sans marqueur
    n'est jamais supprimé. Le marqueur n'est effacé que si la restauration a réussi ; sinon
-   marqueur et `.bak` sont conservés (avertissement) et la réconciliation suivante réessaie ; tant qu'ils subsistent, une nouvelle installation du même fichier est refusée (erreur de validation), sans rien toucher.
+   marqueur et `.bak` sont conservés (avertissement) et la réconciliation suivante réessaie (publication terminée : le `.bak` est supprimé avant le marqueur, qui reste si la suppression échoue ; marqueur illisible avec un `.bak` : rien n'est supprimé) ; tant qu'ils subsistent, une nouvelle installation du même fichier est refusée (erreur de validation), sans rien toucher.
    Publication et réconciliation tiennent un verrou inter-processus
    (`library/.lock`) ; si une autre instance le tient, ou si le verrou ne peut pas être ouvert,
    la liste lit simplement l'index sans réconcilier (l'installation et la suppression, elles,

@@ -214,20 +214,27 @@ impl Library {
             let Ok(target) = self.checked(file) else {
                 continue;
             };
+            let backup = item.path().with_file_name(format!("{file}{BACKUP_SUFFIX}"));
             let Some(marker) = std::fs::read(item.path())
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<PendingMarker>(&bytes).ok())
             else {
-                let _ = remove_if_exists(&item.path());
+                if backup.exists() {
+                    // Le `.bak` est peut-être la seule copie de l'ancienne version.
+                    tracing::warn!(
+                        "marqueur {} illisible : marqueur et sauvegarde conservés",
+                        item.path().display()
+                    );
+                } else {
+                    let _ = remove_if_exists(&item.path());
+                }
                 continue;
             };
-            let backup = item.path().with_file_name(format!("{file}{BACKUP_SUFFIX}"));
             let committed = stories
                 .iter()
                 .any(|e| e.file == file && e.installed_at == marker.installed_at);
             if committed {
-                let _ = remove_if_exists(&backup);
-                let _ = remove_if_exists(&item.path());
+                finish_publication(&backup, &item.path());
             } else if restore_publication(&target, &backup, &item.path(), marker.had_previous) {
                 let _ = remove_if_exists(&item.path());
             }
@@ -336,8 +343,7 @@ impl Library {
             return Err(err);
         }
         // L'index est à jour : le reste est du nettoyage.
-        let _ = remove_if_exists(&pending);
-        let _ = remove_if_exists(&backup);
+        finish_publication(&backup, &pending);
         for old in old_files {
             if let Ok(path) = self.checked(&old) {
                 let _ = remove_if_exists(&path);
@@ -387,6 +393,22 @@ fn restore_publication(target: &Path, backup: &Path, pending: &Path, had_previou
         tracing::warn!("marqueur {} non effacé : {err}", pending.display());
     }
     true
+}
+
+/// Nettoyage d'une publication terminée : supprime le `.bak` **puis** le marqueur, et n'efface
+/// le marqueur que si le `.bak` est parti. Sinon le marqueur reste et la réconciliation suivante
+/// retente (un `.bak` sans marqueur ne serait jamais revu et bloquerait le fichier).
+fn finish_publication(backup: &Path, pending: &Path) {
+    if let Err(err) = remove_if_exists(backup) {
+        tracing::warn!(
+            "sauvegarde {} non supprimée, marqueur conservé : {err}",
+            backup.display()
+        );
+        return;
+    }
+    if let Err(err) = remove_if_exists(pending) {
+        tracing::warn!("marqueur {} non effacé : {err}", pending.display());
+    }
 }
 
 /// Supprime un fichier ; absent n'est pas une erreur.
@@ -662,6 +684,59 @@ pub(crate) mod tests {
         assert_eq!(lib.list().unwrap().len(), 1);
         assert_eq!(std::fs::read(&target).unwrap(), b"ancien");
         assert!(!pending.exists() && !backup.exists());
+    }
+
+    #[test]
+    fn nettoyage_bloque_garde_le_marqueur_puis_reconciliation_nettoie() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"ancien");
+        lib.install(&a, &story("abc", Some(2)), None, 1).unwrap();
+        let root = dir.path().join("library");
+        let backup = root.join(".staging/abc-2.plain.pk.bak");
+        let pending = root.join(".staging/abc-2.plain.pk.pending");
+        // Index écrit pour de bon, puis le `.bak` devient un dossier non vide (non supprimable).
+        let block = |stories: Vec<LibraryEntry>| -> AppResult<()> {
+            lib.save(stories)?;
+            std::fs::remove_file(&backup)?;
+            std::fs::create_dir(&backup)?;
+            std::fs::write(backup.join("x"), b"x")?;
+            Ok(())
+        };
+        let b = staged(&lib, "b.plain.pk", b"nouveau!");
+        lib.install_with(&b, &story("abc", Some(2)), None, 2, &block)
+            .unwrap();
+        assert!(pending.exists() && backup.exists(), "marqueur conservé");
+        assert_eq!(lib.list().unwrap().len(), 1);
+        assert!(pending.exists(), "obstacle toujours là");
+        std::fs::remove_dir_all(&backup).unwrap();
+        assert_eq!(lib.list().unwrap().len(), 1);
+        assert!(!pending.exists() && !backup.exists());
+        assert_eq!(
+            std::fs::read(root.join("abc-2.plain.pk")).unwrap(),
+            b"nouveau!"
+        );
+        let c = staged(&lib, "c.plain.pk", b"encore");
+        lib.install(&c, &story("abc", Some(2)), None, 3).unwrap();
+    }
+
+    #[test]
+    fn marqueur_illisible_avec_sauvegarde_ne_supprime_rien() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let root = dir.path().join("library");
+        lib.list().unwrap();
+        lib.staging_dir().unwrap();
+        let backup = root.join(".staging/abc-2.plain.pk.bak");
+        let pending = root.join(".staging/abc-2.plain.pk.pending");
+        std::fs::write(&pending, b"{pas du json").unwrap();
+        std::fs::write(&backup, b"ancien").unwrap();
+        lib.list().unwrap();
+        assert!(pending.exists() && backup.is_file());
+        // Sans `.bak`, un marqueur illisible n'a plus d'intérêt : il est nettoyé.
+        std::fs::remove_file(&backup).unwrap();
+        lib.list().unwrap();
+        assert!(!pending.exists());
     }
 
     #[test]
