@@ -23,6 +23,12 @@ export interface PlayerExited {
   duration_ms: number;
   /** Dernières lignes de la sortie d'erreur du player (vide si rien). */
   stderr: string;
+  /**
+   * Raison pour laquelle la progression de l'enfant n'a pas pu être conservée telle quelle
+   * (sauvegardes au-delà des limites, mises de côté ; rapatriement en échec), `null` sinon.
+   * À afficher : sans cela, la progression est perdue sans que personne le sache.
+   */
+  saves_error: string | null;
 }
 
 export const PLAYER_STARTED_EVENT = "player://started";
@@ -48,7 +54,10 @@ export function launchFolderStory(
   return invokeCommand<PlayerSession>("player_launch_folder", { sourceId, entryId });
 }
 
-/** `player_status` : player en cours d'exécution, ou `null`. */
+/**
+ * `player_status` : player en cours d'exécution, ou `null` (aussi pendant la préparation d'un
+ * lancement ou un vidage du cache : le démarrage est annoncé par `player://started`).
+ */
 export function getPlayerStatus(): Promise<PlayerSession | null> {
   return invokeCommand<PlayerSession | null>("player_status");
 }

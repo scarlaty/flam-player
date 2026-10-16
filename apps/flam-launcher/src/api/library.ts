@@ -24,9 +24,14 @@ export function listLibrary(): Promise<LibraryEntry[]> {
   return invokeCommand<LibraryEntry[]>("library_list");
 }
 
-/** `library_remove` : désinstalle l'histoire `uuid` (`not_found` si absente). */
-export function removeFromLibrary(uuid: string): Promise<void> {
-  return invokeCommand<void>("library_remove", { uuid });
+/**
+ * `library_remove` : désinstalle l'histoire `uuid` (`not_found` si absente ; `player_busy` si le
+ * player la lit). La progression de l'enfant est **conservée par défaut** (retrouvée si
+ * l'histoire est réinstallée) ; `purgeSaves = true` l'efface aussi : à ne proposer que sur
+ * choix explicite de l'utilisateur.
+ */
+export function removeFromLibrary(uuid: string, purgeSaves = false): Promise<void> {
+  return invokeCommand<void>("library_remove", { uuid, purgeSaves });
 }
 
 /**

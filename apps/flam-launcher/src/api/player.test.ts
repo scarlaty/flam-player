@@ -72,6 +72,7 @@ it("les écouteurs reçoivent les charges des événements player://", async () 
     success: false,
     duration_ms: 120,
     stderr: "Erreur de chargement",
+    saves_error: "nouvelles sauvegardes refusées : mises de côté",
   };
   await emit("player://started", session);
   await emit("player://exited", done);
