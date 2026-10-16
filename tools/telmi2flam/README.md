@@ -194,6 +194,14 @@ option (les autres options restent accessibles par `←/→`).
 - `ctrl.home` + `home` défini : le bouton **retour** exécute la transition `home` (dans un
   choix : `home` de l'option focalisée). Sinon (ou si `home` ramène sur le nœud courant),
   retour → menu Start de l'histoire, comme avant.
+- **Sortie par retour vers une action vide** (convention Telmi Sync `home → backAction →
+  backStage → backChildAction`, `backChildAction = []` = « quitter l'histoire ») : si la
+  chaîne de nœuds de passage lancée par `home` aboutit à une action **vide**, le moteur
+  revient au menu Start **sans effacer la progression** (le menu propose « Reprendre »,
+  position restaurée sur la scène/le choix quitté, `backStage` n'est jamais sauvé comme
+  nœud courant). Une action vide atteinte par `ok` (ou `start`) reste une **fin
+  d'histoire** (`endStory` : progression remise à zéro). `validate.py` n'avertit plus
+  pour une action vide atteinte par cette chaîne `home` ; il l'avertit ailleurs.
 - `wheel` / `pause` : absents du format TELMI (la molette découle de `autoplay`, la pause
   reste gérée par le firmware).
 - `nodes.lua` antérieur sans `ctrl` : comportement historique (`autoplay`, OK = skip, pas
@@ -331,6 +339,7 @@ return {
 python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
                      [--allow-missing] [--selector carousel|image]
                      [--progress-json] [--info]
+python telmi2flam.py --version
 ```
 
 - `-o` : chemin de sortie (défaut : `<Titre>.<UUID8>.plain.pk` dans le dossier courant).
@@ -347,6 +356,11 @@ python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
 - `--selector` : affichage des choix multiples (`carousel` par défaut, ou `image`).
 - `--progress-json` : sortie lisible par machine (voir « Sortie machine » ci-dessous).
 - `--info` : affiche les métadonnées de l'histoire en JSON, **sans convertir**.
+- `--version` : affiche une seule ligne sur stdout, `telmi2flam <version>` (ex.
+  `telmi2flam 1.0.0`), et sort avec le code 0, sans archive et sans autre effet de bord
+  (Pillow n'est pas chargé quand `--version` est seul). La version est la constante
+  `__version__` de `telmi2flam.py` ; la surcouche l'enregistre dans `library.json`. Le
+  numéro est le dernier mot de la ligne.
 
 En cas de paquet invalide (zip illisible, JSON invalide/BOM mal formé, `NaN`, type
 inattendu, `metadata.json`/`nodes.json` absents, nom d'asset dangereux...), le CLI
@@ -381,7 +395,7 @@ reste sur **stderr**. Le champ `event` identifie le type ; un lecteur doit ignor
 champs et événements inconnus (ajouts compatibles).
 
 ```jsonl
-{"event":"start","total":4,"phases":["images","audio","scripts","zip"],"input":"histoire.zip"}
+{"event":"start","total":4,"phases":["images","audio","scripts","zip"],"input":"histoire.zip","version":"1.0.0"}
 {"event":"step","phase":"images","done":0,"total":12}
 {"event":"step","phase":"audio","done":0,"total":12}
 {"event":"warning","code":"audio_missing","message":"audio manquant: s7.mp3 -> silent.mp3"}
@@ -396,7 +410,7 @@ champs et événements inconnus (ajouts compatibles).
 
 | Événement | Champs | Notes |
 |-----------|--------|-------|
-| `start` | `total` (nombre de phases, ici 4), `phases` (liste ordonnée), `input` | **premier événement**, émis avant toute lecture (donc avant tout `warning`) |
+| `start` | `total` (nombre de phases, ici 4), `phases` (liste ordonnée), `input`, `version` (version du convertisseur, cf. `--version`) | **premier événement**, émis avant toute lecture (donc avant tout `warning`) |
 | `step` | `phase` (`images`, `audio`, `scripts`, `zip`), `done`, `total` | `done` croît de 0 à `total` |
 | `warning` | `code`, `message` | non bloquant ; même texte que la ligne `  ! ...` de stderr |
 | `done` | `output`, `size` (octets), `warnings` (nombre) | dernier événement en cas de succès |
@@ -574,8 +588,21 @@ aussi le chargement de `nodes.lua` par un vrai Lua 5.4.
 
 Résultat de `validate.py` sur *Maxicours Anglais - CP / CE1 / CE2* (199 stages, 110
 actions) : **35 OK / 4 warnings / 0 erreur**, en `.plain.pk` comme en dossier `.plain`.
-Les 4 warnings sont des actions vides (`backChildAction`) présentes telles quelles dans
-le `nodes.json` source.
+Les 4 warnings d'alors étaient des actions vides (`backChildAction`) présentes telles quelles
+dans le `nodes.json` source. Depuis #44 (convention de sortie par retour, voir §3), une telle
+action n'est plus signalée si elle n'est atteinte que par la chaîne `home` : le chiffre
+« 4 warnings » est périmé (archive Maxicours absente du cache, non remesuré).
+
+### Distribution avec flam-launcher (Python embarqué)
+
+Pour l'installateur Windows, `apps/flam-launcher/scripts/build-converter.ps1` assemble
+`apps/flam-launcher/build/telmi2flam/` : `telmi2flam.py`, `lif.py`, `mp3map.py`, `engine/`,
+`runtime/`, plus un Python embarquable officiel (python.org) et Pillow (PyPI), allégés (sans
+sqlite3, ssl, `_avif`, `_imagingft`, `_imagingcms`, inutiles ici). Seule dépendance à
+l'exécution : Pillow ; `lupa` ne sert qu'à `validate.py`, qui n'est pas embarqué. Les
+composants redistribués et leurs licences sont listés dans le `LICENSES.md` produit avec
+l'artefact. Détails (construction, vérification, ressource Tauri) :
+`apps/flam-launcher/README.md`, section « Convertisseur embarqué ».
 
 ### Test dans flam-player (GUI)
 

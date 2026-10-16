@@ -1,6 +1,7 @@
 import { getCatalogEntries, refreshCatalog, type CatalogView } from "../../api/catalog";
 import type { AppError } from "../../api/error";
 import { scanFolder } from "../../api/folder";
+import { listLibrary } from "../../api/library";
 import type { Source } from "../../api/sources";
 import type { StoryEntry } from "../../api/story";
 import type { SourceStatus } from "../../components";
@@ -39,7 +40,7 @@ function fromCatalog(view: CatalogView): SourceData {
 /**
  * Charge le contenu d'une source. Un catalogue est lu dans le cache, puis téléchargé s'il ne l'a
  * jamais été ou si `refresh` est demandé ; un dossier est toujours réanalysé. « Mes histoires »
- * n'a pas encore de contenu : la liste des histoires installées arrive avec l'installation.
+ * liste les histoires installées.
  */
 export async function loadSourceData(
   source: Source,
@@ -61,7 +62,8 @@ export async function loadSourceData(
       };
     }
     case "library":
-      return EMPTY;
+      // Chaque histoire installée garde l'entrée de sa source d'origine (métadonnées, lien).
+      return { ...EMPTY, entries: (await listLibrary()).map((item) => item.source) };
   }
 }
 

@@ -65,6 +65,7 @@ export interface SourceViewProps extends StoryHooks {
  * états de chargement, d'erreur, hors ligne et de liste vide, rafraîchissement manuel.
  */
 export function SourceView({ source, ...hooks }: SourceViewProps) {
+  const { renderDetail, reloadKey, reopenEntry, onReopened } = hooks;
   const toast = useToast();
   const { report } = useLibrary();
   const [data, setData] = useState<SourceData | null>(null);
@@ -75,6 +76,7 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
     key: "",
     count: PAGE_SIZE,
   });
+  const [openId, setOpenId] = useState<string | null>(null);
   const latest = useRef(0);
   const gridRef = useRef<HTMLUListElement>(null);
   const focusFrom = useRef<number | null>(null);
@@ -115,7 +117,7 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sourceId, sourceType, report, toast],
+    [sourceId, sourceType, report, toast, sourceType === "library" ? reloadKey : 0],
   );
 
   useEffect(() => {
@@ -129,6 +131,46 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
   }, [load]);
 
   const entries = data?.entries;
+  const openEntry =
+    openId === null ? undefined : entries?.find((e) => e.entry_id === openId);
+  // Avec une fiche détaillée, un clic sur le titre d'une carte l'ouvre.
+  const tileHooks: StoryHooks = renderDetail
+    ? {
+        ...hooks,
+        onOpenStory: (entry) => setOpenId(entry.entry_id),
+        selectedEntryId: openEntry?.entry_id,
+      }
+    : hooks;
+  // Fiche à rouvrir (fin d'une lecture lancée depuis elle, éventuellement depuis un autre écran).
+  useEffect(() => {
+    if (!reopenEntry || reopenEntry.sourceId !== sourceId) return;
+    if (!entries) {
+      // Source en erreur : on abandonne, la fiche ne doit pas surgir à une visite ultérieure.
+      if (loadError) onReopened?.();
+      return;
+    }
+    // Aucune fiche ni dialogue ouvert : sinon on ne vole pas le focus, on abandonne.
+    const free = openId === null && !document.querySelector('[aria-modal="true"]');
+    if (free && entries.some((entry) => entry.entry_id === reopenEntry.entryId)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setOpenId(reopenEntry.entryId);
+    }
+    onReopened?.();
+  }, [reopenEntry, sourceId, entries, loadError, openId, onReopened]);
+  // À la fermeture de la fiche, le focus revient à la carte d'origine. Le dialogue le rend déjà
+  // à l'élément qui l'avait ouverte ; sans lui (fiche rouverte automatiquement), on le pose ici.
+  const lastOpenId = useRef<string | null>(null);
+  useEffect(() => {
+    const id = lastOpenId.current;
+    lastOpenId.current = openId;
+    if (openId !== null || id === null) return;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    const item = Array.from(gridRef.current?.children ?? []).find(
+      (child) => child.getAttribute("data-entry-id") === id,
+    );
+    item?.querySelector<HTMLElement>("button, a[href], [tabindex]")?.focus();
+  }, [openId]);
   const ages = useMemo(() => availableAges(entries ?? []), [entries]);
   const categories = useMemo(() => availableCategories(entries ?? []), [entries]);
   const visible = useMemo(() => applyFilters(entries ?? [], filters), [entries, filters]);
@@ -271,7 +313,12 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
             aria-label={t.library.gridLabel(source.name)}
           >
             {page.map((entry) => (
-              <StoryTile key={entry.entry_id} source={source} entry={entry} {...hooks} />
+              <StoryTile
+                key={entry.entry_id}
+                source={source}
+                entry={entry}
+                {...tileHooks}
+              />
             ))}
           </ul>
           {visible.length > page.length && (
@@ -288,6 +335,12 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
           )}
         </>
       )}
+      {openEntry &&
+        renderDetail?.({
+          source,
+          entry: openEntry,
+          onClose: () => setOpenId(null),
+        })}
     </section>
   );
 }

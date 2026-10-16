@@ -117,6 +117,12 @@
   list-style: none;
 }
 
+.fl-story-card__badge-detail {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
 .fl-story-card__progress {
   display: flex;
   flex-direction: column;

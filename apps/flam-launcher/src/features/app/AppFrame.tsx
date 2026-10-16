@@ -5,10 +5,12 @@ import { AppShell } from "../../components";
 import { t } from "../../i18n";
 import type { Route } from "../../router";
 import { applyTheme } from "../../theme/theme";
-import { LibraryScreen } from "../library/LibraryScreen";
+import { CompatNotice } from "../compat/CompatNotice";
 import { LibrarySidebar } from "../library/LibrarySidebar";
 import { RecoveryBanners } from "../recovery/RecoveryBanners";
 import { useRecovery } from "../recovery/RecoveryContext";
+import { StoriesLibrary } from "../stories/StoriesLibrary";
+import { StoriesTaskPanel } from "../stories/StoriesTaskPanel";
 import { SettingsScreen } from "../settings/SettingsScreen";
 import { SourcesScreen } from "../sources/SourcesScreen";
 import { Welcome } from "../welcome/Welcome";
@@ -47,6 +49,7 @@ export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
     <AppShell
       navLabel={t.nav.label}
       title={TITLES[route]}
+      aside={<StoriesTaskPanel />}
       sidebar={
         <>
           <AppNav current={route} />
@@ -57,7 +60,12 @@ export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
       <RecoveryBanners />
       {route === "sources" && <SourcesScreen />}
       {route === "settings" && <SettingsScreen />}
-      {route === "library" && <LibraryScreen />}
+      {route === "library" && (
+        <>
+          <CompatNotice />
+          <StoriesLibrary />
+        </>
+      )}
       {route === "home" && <Welcome />}
     </AppShell>
   );

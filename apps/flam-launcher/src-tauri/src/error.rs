@@ -18,6 +18,13 @@ use serde::{Serialize, Serializer};
 /// | `FolderUnavailable` | `folder_unavailable` | Dossier d'une source locale absent ou inaccessible |
 /// | `Network`       | `network`       | Réseau indisponible, délai dépassé ou réponse HTTP en échec |
 /// | `CatalogInvalid`| `catalog_invalid`| Catalogue reçu inexploitable (JSON invalide, structure inconnue) |
+/// | `Cancelled`     | `cancelled`     | Tâche d'installation annulée                            |
+/// | `DownloadInvalid` | `download_invalid` | Téléchargement incomplet, trop gros ou contenu inattendu |
+/// | `ConverterUnavailable` | `converter_unavailable` | Python ou `telmi2flam.py` introuvable |
+/// | `Conversion`    | `conversion`    | Échec de `telmi2flam` (code du convertisseur dans le message) |
+/// | `PlayerUnavailable` | `player_unavailable` | `flam-player.exe` introuvable ou impossible à lancer |
+/// | `PlayerBusy`    | `player_busy`   | Un player est déjà en cours d'exécution                 |
+/// | `StoryFileMissing` | `story_file_missing` | Le fichier de l'histoire à lancer a disparu      |
 ///
 /// Un fichier de configuration corrompu n'est pas une erreur : il est sauvegardé en
 /// `*.bak` et remplacé par les valeurs par défaut (avertissement tracé).
@@ -66,6 +73,36 @@ pub enum AppError {
     /// Dossier d'une source locale absent ou inaccessible (disque débranché, dossier supprimé).
     #[error("{0}")]
     FolderUnavailable(String),
+
+    /// Tâche d'installation annulée (par l'utilisateur, ou convertisseur interrompu).
+    #[error("installation annulée")]
+    Cancelled,
+
+    /// Téléchargement inexploitable : taille reçue différente de la taille annoncée, fichier
+    /// trop gros, contenu qui n'est pas une archive attendue.
+    #[error("{0}")]
+    DownloadInvalid(String),
+
+    /// Python ou le convertisseur `telmi2flam.py` est introuvable.
+    #[error("{0}")]
+    ConverterUnavailable(String),
+
+    /// Échec de la conversion par `telmi2flam` : `code` est le code stable de l'événement
+    /// `error` du convertisseur (`missing_asset`, `invalid_content`…) ou `exit_<n>`.
+    #[error("conversion impossible ({code}) : {message}")]
+    Conversion { code: String, message: String },
+
+    /// `flam-player.exe` introuvable (ni configuré ni détecté) ou impossible à lancer.
+    #[error("{0}")]
+    PlayerUnavailable(String),
+
+    /// Un seul player à la fois : un autre est déjà en cours d'exécution.
+    #[error("{0}")]
+    PlayerBusy(String),
+
+    /// Le fichier (`.plain.pk` ou dossier `.plain`) de l'histoire à lancer n'existe plus.
+    #[error("{0}")]
+    StoryFileMissing(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -83,6 +120,27 @@ impl AppError {
             AppError::Network(_) => "network",
             AppError::CatalogInvalid(_) => "catalog_invalid",
             AppError::FolderUnavailable(_) => "folder_unavailable",
+            AppError::Cancelled => "cancelled",
+            AppError::DownloadInvalid(_) => "download_invalid",
+            AppError::ConverterUnavailable(_) => "converter_unavailable",
+            AppError::Conversion { .. } => "conversion",
+            AppError::PlayerUnavailable(_) => "player_unavailable",
+            AppError::PlayerBusy(_) => "player_busy",
+            AppError::StoryFileMissing(_) => "story_file_missing",
+        }
+    }
+
+    /// Ajoute `note` au message d'une erreur de lancement, sans changer son `kind`. Seules les
+    /// variantes à message libre sont complétées ; les autres sont renvoyées telles quelles.
+    pub fn with_note(self, note: &str) -> Self {
+        let extend = |message: String| format!("{message} Information sur la progression : {note}");
+        match self {
+            AppError::Validation(m) => AppError::Validation(extend(m)),
+            AppError::NotFound(m) => AppError::NotFound(extend(m)),
+            AppError::PlayerUnavailable(m) => AppError::PlayerUnavailable(extend(m)),
+            AppError::PlayerBusy(m) => AppError::PlayerBusy(extend(m)),
+            AppError::StoryFileMissing(m) => AppError::StoryFileMissing(extend(m)),
+            other => other,
         }
     }
 }
@@ -140,6 +198,45 @@ mod tests {
             AppError::FolderUnavailable("x".into()).kind(),
             "folder_unavailable"
         );
+        assert_eq!(AppError::Cancelled.kind(), "cancelled");
+        assert_eq!(
+            AppError::DownloadInvalid("x".into()).kind(),
+            "download_invalid"
+        );
+        assert_eq!(
+            AppError::ConverterUnavailable("x".into()).kind(),
+            "converter_unavailable"
+        );
+        assert_eq!(
+            AppError::PlayerUnavailable("x".into()).kind(),
+            "player_unavailable"
+        );
+        assert_eq!(AppError::PlayerBusy("x".into()).kind(), "player_busy");
+        assert_eq!(
+            AppError::StoryFileMissing("x".into()).kind(),
+            "story_file_missing"
+        );
+        let conversion = AppError::Conversion {
+            code: "missing_asset".into(),
+            message: "m".into(),
+        };
+        assert_eq!(conversion.kind(), "conversion");
+        assert_eq!(
+            conversion.to_string(),
+            "conversion impossible (missing_asset) : m"
+        );
+    }
+
+    #[test]
+    fn with_note_complete_le_message_sans_changer_le_kind() {
+        let err = AppError::StoryFileMissing("fichier absent.".into()).with_note("mises de côté");
+        assert_eq!(err.kind(), "story_file_missing");
+        assert_eq!(
+            err.to_string(),
+            "fichier absent. Information sur la progression : mises de côté"
+        );
+        let cancelled = AppError::Cancelled.with_note("x");
+        assert_eq!(cancelled.to_string(), "installation annulée");
     }
 
     #[test]

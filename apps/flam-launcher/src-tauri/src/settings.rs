@@ -64,7 +64,16 @@ pub struct Settings {
     /// Thème de l'interface. Absent des fichiers écrits avant son ajout : `System`
     /// (`#[serde(default)]`, aucune migration de schéma nécessaire).
     pub theme: Theme,
+    /// Téléchargements simultanés du pipeline d'installation (1 à
+    /// [`MAX_DOWNLOADS_LIMIT`]). Absent des fichiers écrits avant son ajout :
+    /// [`DEFAULT_MAX_DOWNLOADS`] (`#[serde(default)]`, sans migration de schéma).
+    pub max_downloads: u32,
 }
+
+/// Téléchargements simultanés par défaut.
+pub const DEFAULT_MAX_DOWNLOADS: u32 = 2;
+/// Téléchargements simultanés au plus.
+pub const MAX_DOWNLOADS_LIMIT: u32 = 4;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -75,6 +84,7 @@ impl Default for Settings {
             cache_dir: None,
             default_catalog_url: TELMI_STORE_URL.into(),
             theme: Theme::default(),
+            max_downloads: DEFAULT_MAX_DOWNLOADS,
         }
     }
 }
@@ -84,7 +94,8 @@ impl Default for Settings {
 pub struct ResolvedSettings {
     /// `None` si le player n'a été ni configuré (valide) ni trouvé.
     pub player_path: Option<String>,
-    /// `None` si Python n'a été ni configuré (valide) ni trouvé dans le PATH.
+    /// Python embarqué s'il est présent ([`detect_bundled_python`]), sinon Python configuré
+    /// (valide), sinon trouvé dans le PATH ; `None` si aucun.
     pub python_path: Option<String>,
     pub cache_dir: String,
 }
@@ -264,6 +275,21 @@ pub fn detect_player(env: &Environment) -> Option<PathBuf> {
     None
 }
 
+/// Dossier du convertisseur embarqué, à côté de l'exécutable (ressource Tauri `telmi2flam/`
+/// produite par `scripts/build-converter.ps1`, #71).
+pub const BUNDLED_CONVERTER_DIR: &str = "telmi2flam";
+
+/// Python embarqué avec le convertisseur : `<exe>/telmi2flam/python/python.exe`. Retenu
+/// seulement si le script embarqué `<exe>/telmi2flam/telmi2flam.py` l'accompagne : la
+/// détection du convertisseur (`install::detect_converter`) prend alors ce même script, et
+/// l'interpréteur embarqué (chemins d'import fixés par son `._pth`) n'est jamais associé à
+/// un autre script.
+pub fn detect_bundled_python(env: &Environment) -> Option<PathBuf> {
+    let dir = env.exe_dir.as_deref()?.join(BUNDLED_CONVERTER_DIR);
+    let python = dir.join("python").join("python.exe");
+    (is_nonempty_file(&python) && dir.join("telmi2flam.py").is_file()).then_some(python)
+}
+
 /// Résultat de la recherche de Python.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PythonDetection {
@@ -358,7 +384,9 @@ pub fn resolve(settings: &Settings, env: &Environment) -> (ResolvedSettings, Vec
         }
     });
 
-    let python = match configured_python {
+    // Python embarqué (application installée) prioritaire, puis Python configuré, puis PATH.
+    let bundled_python = detect_bundled_python(env).map(as_string);
+    let python = match bundled_python.or(configured_python) {
         Some(path) => Some(path),
         None => {
             let detection = detect_python(env);
@@ -415,6 +443,12 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
     if let Some(dir) = &cache_dir {
         check_cache_dir(dir, protected).map_err(to_validation)?;
     }
+    if !(1..=MAX_DOWNLOADS_LIMIT).contains(&settings.max_downloads) {
+        return Err(AppError::Validation(format!(
+            "téléchargements simultanés : {} hors de l'intervalle 1 à {MAX_DOWNLOADS_LIMIT}",
+            settings.max_downloads
+        )));
+    }
     Ok(Settings {
         schema_version: SCHEMA_VERSION,
         player_path,
@@ -422,6 +456,7 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
         cache_dir,
         default_catalog_url: validate_catalog_url(&settings.default_catalog_url)?,
         theme: settings.theme,
+        max_downloads: settings.max_downloads,
     })
 }
 
@@ -688,6 +723,27 @@ mod tests {
     }
 
     #[test]
+    fn telechargements_simultanes_bornes_et_par_defaut() {
+        let old: Settings = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
+        assert_eq!(old.max_downloads, DEFAULT_MAX_DOWNLOADS);
+        for (n, ok) in [
+            (0, false),
+            (1, true),
+            (MAX_DOWNLOADS_LIMIT, true),
+            (9, false),
+        ] {
+            let result = validate_with(
+                Settings {
+                    max_downloads: n,
+                    ..Settings::default()
+                },
+                &[],
+            );
+            assert_eq!(result.is_ok(), ok, "{n}");
+        }
+    }
+
+    #[test]
     fn mise_a_jour_valide_est_persistee_et_normalisee() {
         let dir = tempfile::tempdir().unwrap();
         let player = dir.path().join("p/FLAM-Player.EXE");
@@ -701,6 +757,7 @@ mod tests {
                 default_catalog_url: " https://exemple.org/c.json ".into(),
                 schema_version: 0,
                 theme: Theme::Dark,
+                max_downloads: 3,
             })
             .unwrap();
         assert_eq!(saved.schema_version, SCHEMA_VERSION);
@@ -961,6 +1018,63 @@ mod tests {
             resolved.python_path,
             Some(real.join(python_name()).display().to_string())
         );
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn python_embarque_exige_le_script_embarque() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = env_in(dir.path());
+        let bundled = dir.path().join("app").join(BUNDLED_CONVERTER_DIR);
+        let python = bundled.join("python").join("python.exe");
+        assert_eq!(detect_bundled_python(&env), None);
+        // Interpréteur seul : ignoré (il ne serait associé à aucun script embarqué).
+        touch(&python);
+        assert_eq!(detect_bundled_python(&env), None);
+        touch(&bundled.join("telmi2flam.py"));
+        assert_eq!(detect_bundled_python(&env), Some(python.clone()));
+        // Fichier vide : pas un interpréteur.
+        fs::write(&python, "").unwrap();
+        assert_eq!(detect_bundled_python(&env), None);
+        let mut env = env;
+        env.exe_dir = None;
+        assert_eq!(detect_bundled_python(&env), None);
+    }
+
+    #[test]
+    fn python_embarque_prioritaire_sans_avertissement() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path());
+        // Seul un alias du Store dans le PATH, et un Python configuré valide.
+        let apps = dir.path().join("Microsoft").join("WindowsApps");
+        fs::create_dir_all(&apps).unwrap();
+        fs::write(apps.join(python_name()), "").unwrap();
+        env.path_var = path_of(&[&apps]);
+        let configured = dir.path().join("autre").join("python.exe");
+        touch(&configured);
+        let settings = Settings {
+            python_path: Some(configured.display().to_string()),
+            ..Settings::default()
+        };
+        let (resolved, _) = resolve(&settings, &env);
+        assert_eq!(resolved.python_path, Some(configured.display().to_string()));
+
+        let bundled = dir.path().join("app").join(BUNDLED_CONVERTER_DIR);
+        touch(&bundled.join("python").join("python.exe"));
+        touch(&bundled.join("telmi2flam.py"));
+        let expected = Some(
+            bundled
+                .join("python")
+                .join("python.exe")
+                .display()
+                .to_string(),
+        );
+        let (resolved, issues) = resolve(&settings, &env);
+        assert_eq!(resolved.python_path, expected);
+        assert!(issues.is_empty());
+        // Sans Python configuré : pas d'avertissement « alias du Store » non plus.
+        let (resolved, issues) = resolve(&Settings::default(), &env);
+        assert_eq!(resolved.python_path, expected);
         assert!(issues.is_empty());
     }
 

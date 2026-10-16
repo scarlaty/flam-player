@@ -117,6 +117,12 @@ export const fr = {
       cleared: (size: string) => `Cache vidé : ${size} libérés`,
     },
     appearance: "Apparence",
+    playback: {
+      title: "Lecture",
+      minimize: "Réduire la fenêtre pendant la lecture",
+      minimizeHint:
+        "La fenêtre du launcher est réduite au lancement de flam-player, puis rétablie à la fin.",
+    },
     themeFailed: "Le thème n'a pas pu être enregistré.",
     about: {
       title: "À propos",
@@ -203,6 +209,44 @@ export const fr = {
       untested: "Non testée",
     },
   },
+  compat: {
+    level: {
+      compatible: "Compatible",
+      warnings: "Avertissements",
+      incompatible: "Incompatible",
+      untested: "Non testée",
+    },
+    /** Raison affichée quand la fiche n'en fournit pas. */
+    defaultReason: {
+      compatible: "Aucun problème constaté lors des essais.",
+      warnings: "Jouable, mais des limites ont été constatées lors des essais.",
+      incompatible: "Cette histoire a échoué lors des essais de compatibilité.",
+      untested: "Pas encore évaluée.",
+    },
+    /** Raison propre à chaque statut d'échec connu de la campagne. */
+    failureReason: {
+      ECHEC_TELECHARGEMENT: "Le téléchargement a échoué lors des essais.",
+      ECHEC_CONVERSION: "La conversion a échoué lors des essais.",
+      ECHEC_VALIDATION: "L'histoire convertie n'est pas valide.",
+      ECHEC_EXECUTION: "L'histoire s'arrête ou se bloque lors de son exécution.",
+    } as Record<string, string>,
+    stale: "Résultat périmé : évalué avec une autre version du convertisseur.",
+    issue: {
+      title: "Rapport de compatibilité indisponible",
+      unreadable:
+        "Le fichier de statuts est illisible : les histoires apparaissent non testées.",
+      tooLarge: "Le fichier de statuts est trop volumineux : il n'est pas lu.",
+      unsupportedVersion: (found: number | null, supported: number) =>
+        `Le fichier de statuts utilise un format ${found === null ? "inconnu" : `n° ${found}`} (pris en charge : n° ${supported}) : mettez à jour l'application.`,
+    },
+    install: {
+      title: (story: string) => `Installer « ${story} » malgré tout ?`,
+      description: "Cette histoire est signalée comme incompatible.",
+      body: "Elle risque de ne pas se convertir ou de ne pas fonctionner correctement dans le player. Vous pouvez l'installer quand même.",
+      confirm: "Installer quand même",
+      cancel: "Annuler",
+    },
+  },
   common: {
     close: "Fermer",
     cancel: "Annuler",
@@ -257,6 +301,76 @@ export const fr = {
     /** Annonce d'un changement d'état, lue par les lecteurs d'écran. */
     announce: (title: string, kind: string, state: string, detail?: string) =>
       `${kind} « ${title} » : ${state}${detail ? `. ${detail}` : ""}`,
+  },
+  stories: {
+    detail: {
+      cover: (title: string) => `Vignette de « ${title} »`,
+      noDescription: "Aucune description.",
+      facts: {
+        age: "Âge",
+        category: "Catégorie",
+        author: "Auteur",
+        voice: "Voix",
+        license: "Licence",
+        size: "Taille",
+        source: "Source",
+      },
+      badges: "Statut de l'histoire",
+      unknown: "Non précisé",
+    },
+    actions: {
+      downloadAndPlay: "Télécharger et jouer",
+      download: "Télécharger",
+      installAndPlay: "Installer et jouer",
+      install: "Installer",
+      play: "Jouer",
+      playFromFolder: "Jouer depuis le dossier",
+      update: "Mettre à jour",
+      remove: "Supprimer",
+      cancel: "Annuler",
+      /** Libellé accessible des actions rapides d'une carte. */
+      forStory: (action: string, title: string) => `${action} « ${title} »`,
+    },
+    progress: {
+      queued: "En attente",
+      downloading: "Téléchargement",
+      downloadingSize: (received: string, total: string) =>
+        `Téléchargement : ${received} sur ${total}`,
+      converting: "Conversion",
+      installing: "Installation",
+      phase: {
+        images: "images",
+        audio: "audio",
+        scripts: "scripts",
+        zip: "archive",
+      } as Record<string, string>,
+      convertingPhase: (phase: string) => `Conversion : ${phase}`,
+    },
+    playing: "En cours de lecture dans flam-player",
+    playerBusy:
+      "Une histoire est déjà en cours de lecture : fermez flam-player pour jouer.",
+    removeDialog: {
+      title: (title: string) => `Supprimer « ${title} » ?`,
+      description:
+        "L'histoire est retirée de « Mes histoires » et son fichier converti est supprimé. Vous pourrez la réinstaller depuis sa source.",
+      confirm: "Supprimer",
+      purgeSaves: "Supprimer aussi la progression",
+      purgeSavesHint:
+        "Efface les sauvegardes de l'enfant. Cette action est irréversible. Décochée, la progression est conservée et retrouvée si l'histoire est réinstallée.",
+    },
+    toast: {
+      entryGone: (title: string) =>
+        `« ${title} » n'est plus proposée par sa source (catalogue ou dossier modifié). Rafraîchissez la source, puis relancez l'installation depuis la fiche.`,
+      savesLost: (title: string, detail: string) =>
+        `La progression de « ${title} » n'a pas pu être conservée telle quelle : ${detail}`,
+      installed: (title: string) => `« ${title} » est installée`,
+      installedWarnings: (title: string, count: number) =>
+        `« ${title} » est installée (${count <= 1 ? `${count} avertissement` : `${count} avertissements`} à la conversion)`,
+      removed: (title: string) => `« ${title} » a été supprimée`,
+      finished: (title: string) => `Lecture de « ${title} » terminée`,
+      playerFailed: (title: string, detail: string) =>
+        `flam-player s'est arrêté sur une erreur pendant « ${title} ».${detail ? ` ${detail}` : ""}`,
+    },
   },
   toast: {
     region: "Notifications",
