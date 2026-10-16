@@ -151,7 +151,7 @@ function DemoContent() {
                 actions={
                   <IconButton
                     icon="play"
-                    variant="primary"
+                    variant="accent"
                     size="sm"
                     label={`${demoFr.play} : ${story.title}`}
                   />
@@ -168,7 +168,9 @@ function DemoContent() {
           <Button variant="primary" icon="download">
             {demoFr.install}
           </Button>
-          <Button icon="play">{demoFr.play}</Button>
+          <Button variant="accent" icon="play">
+            {demoFr.play}
+          </Button>
           <Button variant="ghost" icon="refresh">
             {demoFr.refresh}
           </Button>
@@ -182,7 +184,7 @@ function DemoContent() {
             {t.sources.add}
           </Button>
           <IconButton icon="sliders" variant="secondary" label={demoFr.settings} />
-          <IconButton icon="play" variant="primary" label={demoFr.play} />
+          <IconButton icon="play" variant="accent" label={demoFr.play} />
         </div>
       </section>
 
@@ -194,6 +196,7 @@ function DemoContent() {
           <Badge tone="success" icon="check">
             {t.status.installed}
           </Badge>
+          <Badge tone="secondary">{t.status.new}</Badge>
           <Badge tone="warning">{t.status.partial}</Badge>
           <Badge tone="danger" icon="alert">
             {t.status.incompatible}

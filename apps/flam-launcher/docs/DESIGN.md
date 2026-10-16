@@ -15,7 +15,8 @@ les composants ont été dessinés pour ce projet.
 
 ## Principes
 
-1. **Chaleureux et sobre** : fond crème, accent brique, coins arrondis, peu d'ornements.
+1. **Aux couleurs de la Flam** : vert d'eau du boîtier, jaune de la molette, orange du logo,
+   coins arrondis, peu d'ornements.
    L'attention va aux vignettes des histoires.
 2. **Lisible** : texte de base en 16 px, contrastes AA vérifiés, libellés explicites en
    français (« Installer », « Jouer »), pas d'icône seule sans libellé accessible.
@@ -64,30 +65,89 @@ Clair et sombre, avec choix **Système / Clair / Sombre**.
 
 ### Palette
 
-| Jeton                     | Clair     | Sombre    | Usage                                            |
-| ------------------------- | --------- | --------- | ------------------------------------------------ |
-| `--color-bg`              | `#fbf7f2` | `#1c1714` | Fond de l'application                            |
-| `--color-surface`         | `#ffffff` | `#27201b` | Cartes, dialogues, panneau                       |
-| `--color-surface-sunken`  | `#f4ede4` | `#15110e` | Barre latérale                                   |
-| `--color-surface-hover`   | `#efe5d8` | `#342b24` | Survol                                           |
-| `--color-border`          | `#e3d8ca` | `#3d332b` | Séparateurs (décoratifs)                         |
-| `--color-border-strong`   | `#8f7c6a` | `#8a7a6c` | Contours de contrôles (≥ 3:1)                    |
-| `--color-text`            | `#2a211b` | `#f5eee7` | Texte                                            |
-| `--color-text-muted`      | `#66574b` | `#c2b4a7` | Texte secondaire                                 |
-| `--color-primary`         | `#b5441b` | `#f0a07a` | Action principale (brique)                       |
-| `--color-on-primary`      | `#ffffff` | `#2a1206` | Texte sur l'action principale                    |
-| `--color-primary-soft`    | `#fbe3d6` | `#4a2a1c` | Sélection, pastilles d'icônes                    |
-| `--color-danger`          | `#b3261e` | `#f08a80` | Action destructrice                              |
-| `--color-focus`           | `#1f5fc4` | `#8fb8ff` | Anneau de focus                                  |
-| `--tone-{ton}-bg` / `-fg` | —         | —         | Badges : neutral, info, success, warning, danger |
+Reprise des couleurs de la Flam (relevées sur une photo du produit, puis ajustées pour les
+contrastes). Trois rôles :
 
-Les couleurs du sombre sont éclaircies (et non inversées) pour garder la même chaleur.
+- **Primaire, vert d'eau** (boîtier) : barre latérale, boutons principaux, sélection, liens.
+- **Accent, jaune** (molette, boutons, cordon) : bouton « Jouer » (`Button` et `IconButton`
+  `variant="accent"`) et mises en avant. Le texte posé dessus est **foncé** ; un contour
+  (`--color-accent-border`) garde le bouton identifiable (3:1) sur les surfaces.
+- **Secondaire, orange brique** (logo FLAM) : badges (ton `secondary`, ex. « Nouveau »),
+  avancement (`ProgressBar`, badge « En cours »), logo.
+
+Le thème **sombre** s'inspire de l'écran de la Flam : fond vert très foncé, texte clair
+verdâtre, vert d'eau éclairci, jaune et orange en accents. Le **danger** est un rouge
+framboise (teinte 340°), volontairement à l'écart de l'orange (11°) ; il est toujours
+accompagné d'un texte ou d'une icône.
+
+| Jeton                       | Clair     | Sombre    | Usage                                                       |
+| --------------------------- | --------- | --------- | ----------------------------------------------------------- |
+| `--color-bg`                | `#f6fbfa` | `#0b1f1e` | Fond de l'application                                       |
+| `--color-surface`           | `#ffffff` | `#122e2c` | Cartes, dialogues, panneau                                  |
+| `--color-surface-sunken`    | `#e2f1ef` | `#071615` | Barre latérale                                              |
+| `--color-surface-hover`     | `#cfe7e4` | `#1c423f` | Survol                                                      |
+| `--color-border`            | `#cfe3e0` | `#25504c` | Séparateurs (décoratifs)                                    |
+| `--color-border-strong`     | `#5b827e` | `#5e938e` | Contours de contrôles (≥ 3:1)                               |
+| `--color-text`              | `#12302f` | `#e6f4f2` | Texte                                                       |
+| `--color-text-muted`        | `#41605d` | `#a6c8c4` | Texte secondaire                                            |
+| `--color-primary`           | `#17706b` | `#4cc2b9` | Primaire : actions, liens, sélection                        |
+| `--color-primary-hover`     | `#115b57` | `#6fd3cb` | Survol de l'action principale                               |
+| `--color-on-primary`        | `#ffffff` | `#04201e` | Texte sur le primaire                                       |
+| `--color-primary-soft`      | `#c9e8e4` | `#17504f` | Sélection, pastilles d'icônes                               |
+| `--color-on-primary-soft`   | `#0d4743` | `#c9efea` | Texte sur `primary-soft`                                    |
+| `--color-accent`            | `#f4b731` | `#f4b731` | Accent : « Jouer », mises en avant                          |
+| `--color-accent-hover`      | `#ffc94d` | `#ffc94d` | Survol de l'accent                                          |
+| `--color-on-accent`         | `#2b2000` | `#241a00` | Texte foncé sur le jaune                                    |
+| `--color-accent-border`     | `#8a6300` | `#f4b731` | Contour du bouton accent (≥ 3:1)                            |
+| `--color-secondary`         | `#b84a31` | `#e8785f` | Secondaire : avancement, marque                             |
+| `--color-secondary-hover`   | `#9c3b25` | `#f19480` | Survol du secondaire                                        |
+| `--color-on-secondary`      | `#ffffff` | `#2a0d06` | Texte sur le secondaire                                     |
+| `--color-secondary-soft`    | `#fbe0d8` | `#4a2218` | Fond doux du secondaire                                     |
+| `--color-on-secondary-soft` | `#8a2f1a` | `#ffc4b3` | Texte sur `secondary-soft`                                  |
+| `--color-danger`            | `#b00f45` | `#ff8cb4` | Action destructrice                                         |
+| `--color-danger-hover`      | `#8e0b38` | `#ffadc9` | Survol du danger                                            |
+| `--color-on-danger`         | `#ffffff` | `#3a0613` | Texte sur le danger                                         |
+| `--color-focus`             | `#1f5fc4` | `#8fb8ff` | Anneau de focus (bleu, hors palette)                        |
+| `--brand-orange`            | `#c8553d` | `#c8553d` | Logo, fond (identique dans les thèmes)                      |
+| `--brand-cream`             | `#fff3e0` | `#fff3e0` | Logo, flamme                                                |
+| `--brand-yellow`            | `#f4b731` | `#f4b731` | Logo, cœur de la flamme                                     |
+| `--tone-{ton}-bg` / `-fg`   | —         | —         | Badges : neutral, info, success, warning, danger, secondary |
+
+Les couleurs du sombre sont éclaircies (et non inversées) pour garder la même chaleur. Le
+jaune est le même dans les deux thèmes : le texte foncé posé dessus reste lisible partout.
 
 ### Contrastes
 
-Vérifiés par axe-core (règle `color-contrast`, WCAG AA) dans Edge, sur la page de
-démonstration, dans les deux thèmes, dialogue et notifications ouverts : **0 violation**.
-Dans jsdom (tests Vitest), la règle est désactivée car les styles n'y sont pas calculés.
+Rapports mesurés (luminance relative WCAG 2.x, script hors dépôt) sur les couples réellement
+utilisés. Seuils : 4,5:1 pour le texte, 3:1 pour les composants et le focus. Les valeurs entre
+parenthèses sont celles au survol.
+
+| Couple                                                    | Clair                 | Sombre                 | Seuil |
+| --------------------------------------------------------- | --------------------- | ---------------------- | ----- |
+| `text` sur `bg` / `surface` / `sunken`                    | 13,5 / 14,1 / 12,1    | 15,1 / 12,8 / 16,4     | 4,5   |
+| `text-muted` sur `bg` / `surface` / `sunken` / `hover`    | 6,6 / 6,9 / 5,9 / 5,3 | 9,5 / 8,0 / 10,3 / 6,2 | 4,5   |
+| `on-primary` sur `primary`                                | 5,9 (7,9)             | 7,9 (9,6)              | 4,5   |
+| `primary` (liens) sur `bg` / `surface` / `sunken`         | 5,6 / 5,9 / 5,1       | 7,9 / 6,7 / 8,6        | 4,5   |
+| `on-primary-soft` sur `primary-soft`                      | 8,1                   | 7,4                    | 4,5   |
+| `on-accent` sur `accent`                                  | 8,9 (10,5)            | 9,5 (11,2)             | 4,5   |
+| `accent-border` sur `bg` / `surface` / `sunken`           | 5,2 / 5,4 / 4,7       | 9,5 / 8,0 / 10,3       | 3     |
+| `on-secondary` sur `secondary`                            | 5,2 (6,9)             | 6,3 (8,0)              | 4,5   |
+| `secondary` sur `bg` / `surface` / `sunken`               | 5,0 / 5,2 / 4,5       | 5,9 / 5,0 / 6,4        | 3     |
+| `secondary` sur la piste de progression                   | 4,4                   | 3,9                    | 3     |
+| `on-secondary-soft` sur `secondary-soft`                  | 6,7                   | 9,0                    | 4,5   |
+| `on-danger` sur `danger`                                  | 7,0 (9,3)             | 8,0 (9,9)              | 4,5   |
+| `danger` sur `bg` / `surface` / `sunken`                  | 6,7 / 7,0 / 6,0       | 7,9 / 6,7 / 8,5        | 4,5   |
+| `border-strong` sur `bg` / `surface` / `sunken` / `hover` | 4,1 / 4,3 / 3,7 / 3,3 | 4,9 / 4,2 / 5,3 / 3,2  | 3     |
+| `focus` sur `bg` / `surface` / `sunken`                   | 5,8 / 6,0 / 5,2       | 8,5 / 7,2 / 9,2        | 3     |
+| Badges : `-fg` sur `-bg` (6 tons)                         | 6,3 à 7,5             | 8,1 à 9,1              | 4,5   |
+
+Le contour de focus est tracé avec un décalage de 2 px : il se détache du fond de la page, non
+du bouton qu'il entoure.
+
+Contrôle automatique : axe-core (règle `color-contrast`, WCAG AA) dans Edge, sur la page de
+démonstration (dialogue et notifications ouverts compris), l'écran des sources et celui des
+paramètres, dans les deux thèmes : **0 violation**. Dans jsdom (tests Vitest), la règle est
+désactivée car les styles n'y sont pas calculés.
 
 ## Typographie
 
@@ -101,7 +161,7 @@ Dans jsdom (tests Vitest), la règle est désactivée car les styles n'y sont pa
 
 - Échelle de 4 px : `--space-1` (4) à `--space-7` (48).
 - Rayons : 6 (`sm`), 10 (`md`), 16 px (`lg`, cartes et dialogues), pilule pour boutons et badges.
-- Trois ombres (`sm`, `md`, `lg`) teintées de brun en clair, noires en sombre.
+- Trois ombres (`sm`, `md`, `lg`) teintées de vert foncé en clair, noires en sombre.
 
 ## Composants
 
@@ -125,15 +185,15 @@ Dans [`src/components/`](../src/components/), un dossier par composant
   absente ou ne charge pas), titre, âge, badges (clé `id` stable), progression facultative
   (`progress` en % ou `"indeterminate"`, `progressText`), actions rapides. Le titre est un
   bouton dont la zone couvre la carte ; la vignette est décorative (`alt=""`).
-- **`Badge`** : état court en 5 tons ; texte obligatoire, icône décorative.
+- **`Badge`** : état court en 6 tons (dont `secondary`, orange) ; texte obligatoire, icône décorative.
 - **`TextField`** : champ texte avec libellé, aide et erreur reliés par `aria-describedby` ; l'erreur est annoncée poliment.
 - **`RadioGroup`** : boutons radio natifs dans un `fieldset` (ex. choix du thème).
 - **`Banner`** : message en bandeau (info, succès, avertissement, erreur) avec icône, titre et action facultative.
-- **`Button`** : `primary`, `secondary`, `ghost`, `danger` ; tailles `md`/`sm` ;
+- **`Button`** : `primary`, `accent` (jaune, « Jouer »), `secondary`, `ghost`, `danger` ; tailles `md`/`sm` ;
   `type="button"` par défaut ; `ref` transmise au bouton natif.
-- **`IconButton`** : icône seule ; `label` obligatoire (vérifié par TypeScript) → nom
+- **`IconButton`** : variantes `ghost`, `secondary`, `primary`, `accent` ; icône seule ; `label` obligatoire (vérifié par TypeScript) → nom
   accessible et infobulle.
-- **`ProgressBar`** : `role="progressbar"`, valeur bornée à 0-100 et arrondie ;
+- **`ProgressBar`** : remplissage orange (secondaire) ; `role="progressbar"`, valeur bornée à 0-100 et arrondie ;
   indéterminée sans `aria-valuenow`.
 - **`TaskPanel`** : téléchargements, conversions, installations. États `queued`,
   `running`, `done`, `error`, `cancelled` ; `phase` (étape affichée après le type) et
@@ -165,7 +225,9 @@ Les icônes ([`Icon.tsx`](../src/components/Icon.tsx)) sont des SVG originaux en
 d'icônes : une vingtaine de pictogrammes suffit et évite une dépendance.
 
 L'icône d'application ([`src-tauri/icons/app-icon.svg`](../src-tauri/icons/app-icon.svg),
-reprise par `AppLogo`) est une flamme crème sur un carré brique. Régénération :
+reprise par `AppLogo`) est une flamme crème sur un carré brique ; `AppLogo` reprend le dessin avec les jetons de
+marque (`--brand-*`, orange `#c8553d`). Le fichier de l'icône garde pour l'instant l'ancienne
+teinte : à régénérer avec la nouvelle (suivi à part). Régénération :
 `npm run tauri icon src-tauri/icons/app-icon.svg`, en ne gardant que les fichiers listés dans
 `tauri.conf.json` (et `icon.png`).
 
@@ -195,8 +257,9 @@ En développement seulement : `npm run dev` puis <http://localhost:1420/#/demo> 
 sous l'écran d'accueil avec `npm run tauri dev`). La page est chargée à la demande derrière
 `import.meta.env.DEV` : le build de production ne contient ni la page ni ses données.
 Elle présente tous les composants avec des données fictives et un sélecteur de thème.
-Captures dans Edge, servie avec la CSP de `tauri.conf.json` (dossier
-[`screenshots/`](screenshots/), exception dans le `.gitignore` racine) :
+Captures dans Edge (Playwright), servie avec la CSP de `tauri.conf.json`, backend simulé par
+un `window.__TAURI_INTERNALS__.invoke` injecté (script temporaire non versionné, données
+fictives) ; dossier [`screenshots/`](screenshots/), exception dans le `.gitignore` racine :
 
 | Clair                                                             | Sombre                                                 |
 | ----------------------------------------------------------------- | ------------------------------------------------------ |
