@@ -18,6 +18,8 @@ export function StoriesLibrary() {
       reloadKey={stories.installedRevision}
       resolveState={(entry) => storyStateOf(stories, entry)}
       renderActions={(entry) => <StoryActions entry={entry} />}
+      reopenEntry={stories.reopen ?? undefined}
+      onReopened={stories.consumeReopen}
       renderDetail={(props) => <StoryDetail {...props} />}
     />
   );

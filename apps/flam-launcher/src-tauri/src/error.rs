@@ -129,6 +129,20 @@ impl AppError {
             AppError::StoryFileMissing(_) => "story_file_missing",
         }
     }
+
+    /// Ajoute `note` au message d'une erreur de lancement, sans changer son `kind`. Seules les
+    /// variantes à message libre sont complétées ; les autres sont renvoyées telles quelles.
+    pub fn with_note(self, note: &str) -> Self {
+        let extend = |message: String| format!("{message} Information sur la progression : {note}");
+        match self {
+            AppError::Validation(m) => AppError::Validation(extend(m)),
+            AppError::NotFound(m) => AppError::NotFound(extend(m)),
+            AppError::PlayerUnavailable(m) => AppError::PlayerUnavailable(extend(m)),
+            AppError::PlayerBusy(m) => AppError::PlayerBusy(extend(m)),
+            AppError::StoryFileMissing(m) => AppError::StoryFileMissing(extend(m)),
+            other => other,
+        }
+    }
 }
 
 impl Serialize for AppError {
@@ -211,6 +225,18 @@ mod tests {
             conversion.to_string(),
             "conversion impossible (missing_asset) : m"
         );
+    }
+
+    #[test]
+    fn with_note_complete_le_message_sans_changer_le_kind() {
+        let err = AppError::StoryFileMissing("fichier absent.".into()).with_note("mises de côté");
+        assert_eq!(err.kind(), "story_file_missing");
+        assert_eq!(
+            err.to_string(),
+            "fichier absent. Information sur la progression : mises de côté"
+        );
+        let cancelled = AppError::Cancelled.with_note("x");
+        assert_eq!(cancelled.to_string(), "installation annulée");
     }
 
     #[test]
