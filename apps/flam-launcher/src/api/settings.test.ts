@@ -10,6 +10,7 @@ const settings: Settings = {
   python_path: "C:\\Python\\python.exe",
   cache_dir: null,
   default_catalog_url: "https://exemple.org/c.json",
+  theme: "dark",
 };
 const view: SettingsView = {
   settings,

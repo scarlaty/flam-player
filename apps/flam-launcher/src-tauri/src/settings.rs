@@ -31,6 +31,21 @@ pub const ISSUE_NOT_FOUND: &str = "not_found";
 /// `kind` d'un [`SettingsIssue`] : seul un alias Microsoft Store a été trouvé pour Python.
 pub const ISSUE_STORE_ALIAS: &str = "store_alias";
 
+/// Thème de l'interface (miroir de `ThemePreference` dans `src/theme/theme.ts`).
+///
+/// Une valeur inconnue (fichier édité à la main ou écrit par une autre version) retombe sur
+/// `System` au lieu de faire rejeter tout le fichier.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    Light,
+    Dark,
+    /// Suit la préférence du système (doit rester la dernière variante pour `serde(other)`).
+    #[default]
+    #[serde(other)]
+    System,
+}
+
 /// Paramètres enregistrés (miroir de `Settings` dans `src/api/settings.ts`).
 ///
 /// Un chemin à `None` signifie « détection automatique » (voir [`resolve`]).
@@ -46,6 +61,9 @@ pub struct Settings {
     pub cache_dir: Option<String>,
     /// URL du catalogue proposé par défaut.
     pub default_catalog_url: String,
+    /// Thème de l'interface. Absent des fichiers écrits avant son ajout : `System`
+    /// (`#[serde(default)]`, aucune migration de schéma nécessaire).
+    pub theme: Theme,
 }
 
 impl Default for Settings {
@@ -56,6 +74,7 @@ impl Default for Settings {
             python_path: None,
             cache_dir: None,
             default_catalog_url: TELMI_STORE_URL.into(),
+            theme: Theme::default(),
         }
     }
 }
@@ -402,6 +421,7 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
         python_path,
         cache_dir,
         default_catalog_url: validate_catalog_url(&settings.default_catalog_url)?,
+        theme: settings.theme,
     })
 }
 
@@ -554,6 +574,45 @@ mod tests {
     }
 
     #[test]
+    fn fichier_sans_theme_prend_le_theme_systeme() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("settings.json"),
+            r#"{"schema_version":1,"player_path":null}"#,
+        )
+        .unwrap();
+        let settings = SettingsStore::new(dir.path()).load().unwrap();
+        assert_eq!(settings.theme, Theme::System);
+    }
+
+    #[test]
+    fn theme_est_persiste_et_une_valeur_inconnue_retombe_sur_systeme() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path());
+        for theme in [Theme::Light, Theme::Dark, Theme::System] {
+            let saved = store
+                .update(Settings {
+                    theme,
+                    ..Settings::default()
+                })
+                .unwrap();
+            assert_eq!(saved.theme, theme);
+            assert_eq!(store.load().unwrap().theme, theme);
+        }
+        let json = fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert!(json.contains(r#""theme": "system""#), "{json}");
+
+        fs::write(
+            dir.path().join("settings.json"),
+            r#"{"schema_version":1,"theme":"violet"}"#,
+        )
+        .unwrap();
+        let settings = store.load().unwrap();
+        assert_eq!(settings.theme, Theme::System);
+        assert_eq!(baks(dir.path()), 0, "le fichier n'est pas jugé corrompu");
+    }
+
+    #[test]
     fn fichier_sans_version_est_migre() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
@@ -641,6 +700,7 @@ mod tests {
                 cache_dir: Some(dir.path().join("cache").display().to_string()),
                 default_catalog_url: " https://exemple.org/c.json ".into(),
                 schema_version: 0,
+                theme: Theme::Dark,
             })
             .unwrap();
         assert_eq!(saved.schema_version, SCHEMA_VERSION);

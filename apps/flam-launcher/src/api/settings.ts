@@ -1,4 +1,5 @@
 import { invokeCommand } from "./error";
+import type { ThemePreference } from "../theme/theme";
 import type { Recovery } from "./recovery";
 
 /** Paramètres enregistrés (miroir de `Settings` dans `src-tauri/src/settings.rs`). */
@@ -12,6 +13,8 @@ export interface Settings {
   cache_dir: string | null;
   /** URL du catalogue proposé par défaut. */
   default_catalog_url: string;
+  /** Thème de l'interface (`system` : suit le système). */
+  theme: ThemePreference;
 }
 
 /**
