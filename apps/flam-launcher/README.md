@@ -76,18 +76,19 @@ Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2, Node 2
 
 Depuis `apps/flam-launcher/` :
 
-| Commande                             | Effet                                                                       |
-| ------------------------------------ | --------------------------------------------------------------------------- |
-| `npm install`                        | Installe les dépendances front et la CLI Tauri                              |
-| `npm run tauri dev`                  | Lance l'application en développement                                        |
-| `npm run dev` / `npm run build`      | Front seul (Vite) / build du front                                          |
-| `npm run lint` / `npm run typecheck` | ESLint / TypeScript strict                                                  |
-| `npm test`                           | Vitest + Testing Library (API Tauri simulée)                                |
-| `npm run tauri build`                | Exécutable seul avec installeurs MSI et NSIS (sans player ni convertisseur) |
-| `npm run build:converter`            | Construit le convertisseur embarqué (réseau)                                |
-| `npm run build:player`               | Compile `flam-player.exe` (Release) et rassemble `SDL2.dll` et les licences |
-| `npm run build:installer`            | Enchaîne les deux scripts puis produit l'installateur NSIS complet          |
-| `npm run test:e2e`                   | Test de bout en bout (voir « Test de bout en bout »)                        |
+| Commande                             | Effet                                                                        |
+| ------------------------------------ | ---------------------------------------------------------------------------- |
+| `npm install`                        | Installe les dépendances front et la CLI Tauri                               |
+| `npm run tauri dev`                  | Lance l'application en développement                                         |
+| `npm run dev` / `npm run build`      | Front seul (Vite) / build du front                                           |
+| `npm run lint` / `npm run typecheck` | ESLint / TypeScript strict                                                   |
+| `npm test`                           | Vitest + Testing Library (API Tauri simulée)                                 |
+| `npm run tauri build`                | Exécutable seul avec installeurs MSI et NSIS (sans player ni convertisseur)  |
+| `npm run build:notices`              | Génère `build/THIRD-PARTY-NOTICES.txt` (licences Rust et npm, installé)      |
+| `npm run build:converter`            | Construit le convertisseur embarqué (réseau)                                 |
+| `npm run build:player`               | Compile `flam-player.exe` (Release) et rassemble `SDL2.dll` et les licences  |
+| `npm run build:installer`            | Enchaîne notices, converter, player puis produit l'installateur NSIS complet |
+| `npm run test:e2e`                   | Test de bout en bout (voir « Test de bout en bout »)                         |
 
 Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
 
@@ -161,7 +162,7 @@ absents), sous-modules initialisés (`git submodule update --init --recursive`),
 Pillow, NSIS).
 
 ```
-npm run build:installer      # = build:converter + build:player + tauri build --config …
+npm run build:installer      # = build:notices + build:converter + build:player + tauri build --config …
 ```
 
 **Runtime Visual C++** : `flam-player.exe` importe `VCRUNTIME140.dll`, absente d'un Windows
@@ -200,8 +201,11 @@ télécharge l'archive et la convertit avec le vrai `telmi2flam.py` (Python emba
 la liste, `PlayerService` lance le vrai `flam-player.exe` (`SDL_VIDEODRIVER=dummy`,
 `SDL_AUDIODRIVER=dummy`, `SDL_RENDER_DRIVER=software`), puis le player est fermé et
 l'événement `exited` est reçu. Le player ne se termine pas seul : sa fin est obtenue par
-`taskkill` (garde RAII qui le ferme aussi si le test échoue), pas par une sortie volontaire ; le
-test vérifie qu'il charge l'histoire et reste actif avant cela. L'archive est synthétique (images unies, MP3 muets), générée par
+`taskkill /F` (garde RAII qui le ferme aussi si le test échoue). Une sortie volontaire n'est pas
+simple à obtenir : avec `SDL_VIDEODRIVER=dummy` il n'y a aucune fenêtre à qui envoyer `WM_CLOSE`
+(`taskkill` sans `/F`), et le player n'a ni commande de sortie ni entrée console ; en ajouter une
+toucherait le code du player pour les besoins d'un test (suivi laissé ouvert). Le test vérifie
+qu'il charge l'histoire et reste actif avant cela. L'archive est synthétique (images unies, MP3 muets), générée par
 le test : aucun contenu sous licence. Choix : tester le backend Rust plutôt que piloter
 l'interface par WebDriver, qui exigerait `tauri-driver` et `msedgedriver` appariés à la version
 de WebView2 (fragile, lent) alors que la logique à risque est dans le backend ; l'interface a

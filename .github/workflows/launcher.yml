@@ -33,22 +33,22 @@ jobs:
         shell: bash
         working-directory: apps/flam-launcher
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # SDL2, Lua, LVGL et minimp3 : sources de flam-player.exe (e2e et installateur).
           submodules: recursive
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: apps/flam-launcher/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/flam-launcher/src-tauri
 
@@ -85,6 +85,9 @@ jobs:
       - name: flam-player.exe et SDL2.dll (CMake, Release)
         run: npm run build:player
 
+      - name: Licences tierces (Rust et npm)
+        run: npm run build:notices
+
       - name: Installateur NSIS (par utilisateur, non signé)
         run: npm run tauri build -- --config src-tauri/tauri.bundle.conf.json
 
@@ -97,10 +100,47 @@ jobs:
           $p = Start-Process -FilePath $setup.FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "installateur : code $($p.ExitCode)" }
           foreach ($f in 'flam-launcher.exe', 'flam-player.exe', 'SDL2.dll', 'LICENSES.md', 'uninstall.exe',
-              'vcruntime140.dll', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt') {
+              'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt') {
             if (-not (Test-Path (Join-Path $dest $f))) { throw "fichier absent de l'installation : $f" }
           }
           "FLAM_E2E_INSTALL_DIR=$dest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Mise à jour par-dessus l'installation existante
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $dest = $env:FLAM_E2E_INSTALL_DIR
+          function Get-Tree($dir) {
+            Get-ChildItem $dir -Recurse -File | Where-Object { $_.Name -ne 'uninstall.exe' } |
+              ForEach-Object { '{0} {1}' -f $_.FullName.Substring($dir.Length), (Get-FileHash $_.FullName -Algorithm SHA256).Hash } |
+              Sort-Object
+          }
+          $before = Get-Tree $dest
+          if (-not $before) { throw 'installation vide' }
+          # Données utilisateur (hors dossier d'installation) : doivent survivre à la mise à jour.
+          $keep = @(
+            (Join-Path $env:APPDATA 'flam-launcher/settings.json'),
+            (Join-Path $env:LOCALAPPDATA 'flam-launcher/cache/marqueur.txt')
+          )
+          foreach ($k in $keep) {
+            New-Item -ItemType Directory -Force (Split-Path $k) | Out-Null
+            Set-Content -LiteralPath $k -Value "donnees-utilisateur-$k"
+          }
+          # Une installation abîmée (fichier modifié, fichier supprimé) doit être réparée.
+          Set-Content -LiteralPath (Join-Path $dest 'LICENSES.md') -Value 'corrompu'
+          Remove-Item -LiteralPath (Join-Path $dest 'SDL2.dll')
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "mise à jour : code $($p.ExitCode)" }
+          $after = Get-Tree $dest
+          $diff = Compare-Object $before $after
+          if ($diff) { throw "installation différente après mise à jour : $($diff | Out-String)" }
+          if (-not (Test-Path (Join-Path $dest 'uninstall.exe'))) { throw 'uninstall.exe absent après mise à jour' }
+          foreach ($k in $keep) {
+            if (-not (Test-Path -LiteralPath $k) -or (Get-Content -LiteralPath $k -Raw).Trim() -ne "donnees-utilisateur-$k") {
+              throw "donnée utilisateur perdue ou modifiée : $k"
+            }
+            Remove-Item -LiteralPath $k
+          }
 
       - name: Imports des binaires installés (runtime VC++ livré)
         shell: pwsh
@@ -123,7 +163,7 @@ jobs:
           if ($left) { throw "fichiers restants : $($left.FullName -join ', ')" }
 
       - name: Artefact (installateur NSIS)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: flam-launcher-windows
           path: apps/flam-launcher/src-tauri/target/release/bundle/nsis/*-setup.exe
