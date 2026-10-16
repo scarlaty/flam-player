@@ -565,6 +565,22 @@ impl Workspace {
         lock(&self.notes).push(text);
     }
 
+    fn take_notes(&self) -> Vec<String> {
+        std::mem::take(&mut *lock(&self.notes))
+    }
+
+    /// Erreur d'un lancement qui a échoué après [`stage`](Self::stage) (spawn en échec, fichier
+    /// disparu) : les informations recueillies sur la progression (sauvegardes mises de côté)
+    /// n'iront pas à `player://exited` ; elles sont ajoutées au message de l'erreur.
+    fn launch_failure(&self, err: AppError) -> AppError {
+        let notes = self.take_notes();
+        if notes.is_empty() {
+            err
+        } else {
+            err.with_note(&notes.join(" ; "))
+        }
+    }
+
     /// Met de côté un `saves/` hors limites : `<saved>.rejected`, **une seule génération** (la
     /// précédente est remplacée). Le dossier est déplacé (renommage) ; si le renommage échoue
     /// (autre volume, verrou), il est copié (sans plafond) puis la source n'est supprimée
@@ -692,7 +708,7 @@ impl Workspace {
     /// recueillies (sauvegardes mises de côté au lancement ou ici), renvoyées pour
     /// `PlayerExited::saves_error`.
     pub fn persist_saves_logged(&self) -> Option<String> {
-        let mut notes: Vec<String> = std::mem::take(&mut *lock(&self.notes));
+        let mut notes = self.take_notes();
         match self.persist_saves() {
             Ok(note) => notes.extend(note),
             Err(err) => {
@@ -789,23 +805,25 @@ pub async fn player_launch(
         let (path, title) = Library::new(&cache_root).playable(&uuid)?;
         check_source(&path, StoryKind::FlamPk)?;
         let ws = Workspace::new(&cache_root.join(PLAY_DIR), &saves_root, &library_key(&uuid));
-        let (staging, saving) = (ws.clone(), ws);
+        let (staging, saving, failed) = (ws.clone(), ws.clone(), ws);
         let library = Library::new(&cache_root);
-        service.launch(
-            &exe,
-            || {
-                // Relu sous le créneau : une désinstallation qui vient de passer (elle tient le
-                // même créneau) fait échouer le lancement (`not_found`) au lieu de lancer un
-                // fichier supprimé ou de recréer une copie de travail.
-                let (current, _) = library.playable(&uuid)?;
-                check_source(&current, StoryKind::FlamPk)?;
-                staging.stage(&current)
-            },
-            move || saving.persist_saves_logged(),
-            "library",
-            &uuid,
-            &title,
-        )
+        service
+            .launch(
+                &exe,
+                || {
+                    // Relu sous le créneau : une désinstallation qui vient de passer (elle tient le
+                    // même créneau) fait échouer le lancement (`not_found`) au lieu de lancer un
+                    // fichier supprimé ou de recréer une copie de travail.
+                    let (current, _) = library.playable(&uuid)?;
+                    check_source(&current, StoryKind::FlamPk)?;
+                    staging.stage(&current)
+                },
+                move || saving.persist_saves_logged(),
+                "library",
+                &uuid,
+                &title,
+            )
+            .map_err(|err| failed.launch_failure(err))
     })
     .await?
 }
@@ -834,15 +852,17 @@ pub async fn player_launch_folder(
         let path = folder_target(&entry, &root)?;
         let key = format!("folder:{source_id}:{entry_id}");
         let ws = Workspace::new(&cache_root.join(PLAY_DIR), &saves_root, &key);
-        let (staging, saving) = (ws.clone(), ws);
-        service.launch(
-            &exe,
-            || staging.stage(&path),
-            move || saving.persist_saves_logged(),
-            "folder",
-            &entry_id,
-            &entry.title,
-        )
+        let (staging, saving, failed) = (ws.clone(), ws.clone(), ws);
+        service
+            .launch(
+                &exe,
+                || staging.stage(&path),
+                move || saving.persist_saves_logged(),
+                "folder",
+                &entry_id,
+                &entry.title,
+            )
+            .map_err(|err| failed.launch_failure(err))
     })
     .await?
 }
@@ -1230,6 +1250,50 @@ mod tests {
         ws.persist_saves().unwrap().unwrap();
         assert!(ws.sibling(".rejected").join("n0").is_file());
         assert!(!ws.sibling(".rejected").join("0").exists());
+    }
+
+    #[test]
+    fn un_lancement_en_echec_apres_stage_renvoie_les_notes_dans_l_erreur() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        play_and_save(&copy, b"niveau 2");
+        // Partie terminée avec trop de sauvegardes, non rapatriées : le lancement suivant les
+        // met de côté (note) avant de copier l'histoire.
+        let saves = copy.parent().unwrap().join("saves");
+        for i in 0..=SAVES_MAX_FILES {
+            std::fs::write(saves.join(format!("{i}")), b"").unwrap();
+        }
+
+        // Lancement réel qui échoue après `stage` : le fichier de l'histoire disparaît.
+        let c = ctx();
+        let (staging, failed) = (ws.clone(), ws);
+        let err = c
+            .service
+            .launch(
+                &c.fake,
+                || {
+                    let copy = staging.stage(&pk)?;
+                    std::fs::remove_file(&copy)?;
+                    Ok(copy)
+                },
+                || None,
+                "library",
+                "u1",
+                "Mon histoire",
+            )
+            .map_err(|err| failed.launch_failure(err))
+            .unwrap_err();
+        assert_eq!(err.kind(), "story_file_missing");
+        assert!(
+            err.to_string().contains("nouvelles sauvegardes refusées"),
+            "{err}"
+        );
+        // Les notes sont consommées : une seconde erreur n'est pas complétée.
+        let again = failed.launch_failure(AppError::StoryFileMissing("absent.".into()));
+        assert_eq!(again.to_string(), "absent.");
     }
 
     #[test]
