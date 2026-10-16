@@ -23,5 +23,7 @@ l'installateur et renvoie vers leurs textes de licence complets, présents dans 
 
 Les dépendances de l'application elle-même (bibliothèques Rust compilées dans
 `flam-launcher.exe`, paquets npm compilés dans l'interface) sont sous licences permissives
-(MIT, Apache-2.0, ISC, BSD, MPL-2.0 pour certaines) ; leur liste exhaustive se génère depuis
-`Cargo.lock` et `package-lock.json` (non embarquée dans l'installateur).
+(MIT, Apache-2.0, ISC, BSD, MPL-2.0 pour certaines). Leurs licences et textes de licence sont
+dans `THIRD-PARTY-NOTICES.txt`, installé à la racine de l'application ; ce fichier est généré à
+chaque build par `npm run build:notices` (`scripts/build-notices.mjs`, depuis `cargo metadata` et
+`package-lock.json`).
