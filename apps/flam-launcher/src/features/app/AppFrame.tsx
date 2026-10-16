@@ -6,11 +6,11 @@ import { t } from "../../i18n";
 import type { Route } from "../../router";
 import { applyTheme } from "../../theme/theme";
 import { CompatNotice } from "../compat/CompatNotice";
-import { useCompat } from "../compat/CompatContext";
-import { LibraryScreen } from "../library/LibraryScreen";
 import { LibrarySidebar } from "../library/LibrarySidebar";
 import { RecoveryBanners } from "../recovery/RecoveryBanners";
 import { useRecovery } from "../recovery/RecoveryContext";
+import { StoriesLibrary } from "../stories/StoriesLibrary";
+import { StoriesTaskPanel } from "../stories/StoriesTaskPanel";
 import { SettingsScreen } from "../settings/SettingsScreen";
 import { SourcesScreen } from "../sources/SourcesScreen";
 import { Welcome } from "../welcome/Welcome";
@@ -45,11 +45,11 @@ function useStartupConfig() {
 /** Mise en page commune des écrans : navigation, titre, bandeaux de restauration. */
 export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
   useStartupConfig();
-  const { compatFor } = useCompat();
   return (
     <AppShell
       navLabel={t.nav.label}
       title={TITLES[route]}
+      aside={<StoriesTaskPanel />}
       sidebar={
         <>
           <AppNav current={route} />
@@ -63,7 +63,7 @@ export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
       {route === "library" && (
         <>
           <CompatNotice />
-          <LibraryScreen compatFor={compatFor} />
+          <StoriesLibrary />
         </>
       )}
       {route === "home" && <Welcome />}

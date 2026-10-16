@@ -87,7 +87,7 @@ apps/flam-launcher/
     api/                   Couche typée au-dessus de `invoke` / événements Tauri
     router.ts              Routage par hash (`#/`, `#/sources`, `#/settings`, `#/library[/<id>]`, `#/demo` en dev)
     features/<domaine>/    Écrans et logique par fonctionnalité (app, welcome, sources, settings,
-                           recovery, demo en dev)
+                           library, compat, stories, recovery, demo en dev)
     components/            Composants partagés sans logique métier (design system)
     theme/                 Jetons CSS (clair/sombre) et choix du thème
     i18n/                  Textes de l'interface (français)
@@ -633,7 +633,8 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   jamais été (`catalog_entries` puis `catalog_refresh`) ; un dossier est réanalysé
   (`folder_scan`, éléments ignorés détaillés dans un bandeau). Chargement, erreur (bouton
   Réessayer), hors ligne, liste vide et « aucun résultat » ont chacun leur état. « Mes histoires »
-  est vide tant que l'installation (#15) ne fournit pas la liste des histoires installées.
+  liste les histoires installées (`library_list`) ; chaque carte garde les métadonnées de sa
+  source d'origine.
   État affiché par carte : _à télécharger_ (catalogue), _à convertir_ (`.zip` Telmi local),
   _à installer_ (`.plain`, `.plain.pk`), puis _installée_, _mise à jour disponible_,
   _en cours_, _incompatible_, _non testée_, fournis par les points d'accroche ci-dessous.
@@ -642,8 +643,9 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   ![Dossier local avec élément ignoré](docs/screenshots/bibliotheque-dossier-clair.png)
   ![Catalogue hors ligne](docs/screenshots/bibliotheque-hors-ligne-clair.png)
 
-  **Points d'accroche** (`StoryHooks`, props de `LibraryScreen` / `SourceView`) pour les issues
-  voisines : `resolveState(entry)` (installée, mise à jour, incompatible…), `progressFor(entry)`
+  **Points d'accroche** (`StoryHooks`, props de `LibraryScreen` / `SourceView`) :
+  `renderDetail` (fiche ouverte au clic sur un titre ; remplace `onOpenStory` /
+  `selectedEntryId`), `reloadKey` (relit « Mes histoires »), `resolveState(entry)` (installée, mise à jour, incompatible…), `progressFor(entry)`
   (barre de progression, état « En cours »), `renderActions(entry)` (Télécharger, Jouer),
   `compatFor(entry)` (badge de compatibilité), `onOpenStory(entry)` (fiche détaillée), `selectedEntryId`. Les données de l'écran
 
@@ -660,9 +662,33 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   fiche périmée (`stale`), sinon le pire niveau l'emporte. Chaque carte affiche un badge supplémentaire ;
   la raison (`summary`, sinon une phrase par statut) est visible pour les avertissements et incompatibilités.
   `IncompatibleInstallDialog` (avertissement non bloquant avant installation d'une histoire incompatible)
-  et `compatBadge` / `describeCompat` sont prêts pour l'écran d'installation et la fiche.
+  est affiché par `StoriesProvider` ; `compatBadge` / `describeCompat` alimentent les cartes et la fiche.
   (`loadSourceData`) et l'état des sources (`LibraryProvider`) sont testés avec l'API simulée.
 
+- **Fiche, installation et lecture** (`src/features/stories/`) : un clic sur le titre d'une carte
+  ouvre la **fiche** (`StoryDetail`, dialogue) : grande vignette, titre, description, âge,
+  catégorie, auteur, voix, licence, taille, source, état, badge de compatibilité avec sa raison et
+  actions selon l'état : _Télécharger et jouer_ / _Télécharger_ (catalogue ; _Installer…_ pour un
+  dossier), _Jouer_, _Mettre à jour_ (le catalogue propose une autre version que celle
+  installée), _Supprimer_ (avec confirmation), _Annuler_ (tâche active) ; un `.plain` /
+  `.plain.pk` d'un dossier peut aussi être joué sans installation (_Jouer depuis le dossier_,
+  `player_launch_folder`). Les cartes portent une action rapide (_Jouer_, _Télécharger_) et la barre
+  de progression de leur tâche. Un seul modal à la fois : la fiche s'efface le temps d'une
+  confirmation (suppression, installation d'une histoire incompatible).
+  `StoriesProvider` (sous `CompatProvider`) tient les tâches (`install_list` + événements
+  `install://progress|done|error`), la bibliothèque installée, le player en cours
+  (`player_status`, `player://started|exited`) et les actions. « Télécharger et jouer » lance
+  l'histoire (`player_launch`) à la fin de l'installation ; l'annulation ou le retrait de la tâche
+  retire ce lancement, un échec le garde pour _Réessayer_. Un seul player à la fois : _Jouer_ est
+  désactivé tant qu'il tourne. À la fin de la lecture, une notification donne l'issue (dernières
+  lignes de stderr si le player s'est arrêté en erreur) et la fiche reste ouverte, prête à rejouer.
+  Le **panneau des tâches** (`StoriesTaskPanel`, zone `aside`) montre téléchargement (octets,
+  %), conversion par phase (images, audio, scripts, archive), installation, et pour les échecs
+  le message du backend avec _Réessayer_ (relance `install_start` avec la même entrée) ; les
+  tâches terminées se retirent du panneau. L'installation recharge le rapport de compatibilité
+  (la conversion y enregistre son résultat). Tests : `stories.test.tsx` (installer → progression →
+  jouer, annulation, erreur de conversion, avertissement d'incompatibilité, mise à jour,
+  suppression, player occupé).
 - **Sources** : ajout d'un catalogue (nom + URL, validation en direct, erreurs du backend
   affichées), d'un dossier (sélecteur natif), renommage, réordonnancement (glisser-déposer ou
   boutons Monter/Descendre au clavier, annoncé aux lecteurs d'écran) et suppression avec

@@ -65,6 +65,7 @@ export interface SourceViewProps extends StoryHooks {
  * états de chargement, d'erreur, hors ligne et de liste vide, rafraîchissement manuel.
  */
 export function SourceView({ source, ...hooks }: SourceViewProps) {
+  const { renderDetail, reloadKey } = hooks;
   const toast = useToast();
   const { report } = useLibrary();
   const [data, setData] = useState<SourceData | null>(null);
@@ -75,6 +76,7 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
     key: "",
     count: PAGE_SIZE,
   });
+  const [openId, setOpenId] = useState<string | null>(null);
   const latest = useRef(0);
   const gridRef = useRef<HTMLUListElement>(null);
   const focusFrom = useRef<number | null>(null);
@@ -115,7 +117,7 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sourceId, sourceType, report, toast],
+    [sourceId, sourceType, report, toast, sourceType === "library" ? reloadKey : 0],
   );
 
   useEffect(() => {
@@ -129,6 +131,16 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
   }, [load]);
 
   const entries = data?.entries;
+  const openEntry =
+    openId === null ? undefined : entries?.find((e) => e.entry_id === openId);
+  // Avec une fiche détaillée, un clic sur le titre d'une carte l'ouvre.
+  const tileHooks: StoryHooks = renderDetail
+    ? {
+        ...hooks,
+        onOpenStory: (entry) => setOpenId(entry.entry_id),
+        selectedEntryId: openEntry?.entry_id,
+      }
+    : hooks;
   const ages = useMemo(() => availableAges(entries ?? []), [entries]);
   const categories = useMemo(() => availableCategories(entries ?? []), [entries]);
   const visible = useMemo(() => applyFilters(entries ?? [], filters), [entries, filters]);
@@ -271,7 +283,12 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
             aria-label={t.library.gridLabel(source.name)}
           >
             {page.map((entry) => (
-              <StoryTile key={entry.entry_id} source={source} entry={entry} {...hooks} />
+              <StoryTile
+                key={entry.entry_id}
+                source={source}
+                entry={entry}
+                {...tileHooks}
+              />
             ))}
           </ul>
           {visible.length > page.length && (
@@ -288,6 +305,8 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
           )}
         </>
       )}
+      {openEntry &&
+        renderDetail?.({ source, entry: openEntry, onClose: () => setOpenId(null) })}
     </section>
   );
 }

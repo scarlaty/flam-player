@@ -58,6 +58,17 @@ export interface StoryHooks {
   onOpenStory?: (entry: StoryEntry) => void;
   /** Histoire sélectionnée (fiche ouverte). */
   selectedEntryId?: string;
+  /**
+   * Fiche détaillée : si fournie, un clic sur le titre d'une carte l'ouvre (la vue gère alors
+   * `onOpenStory` et `selectedEntryId`) ; `onClose` la referme.
+   */
+  renderDetail?: (props: {
+    source: Source;
+    entry: StoryEntry;
+    onClose: () => void;
+  }) => ReactNode;
+  /** Change quand le contenu de « Mes histoires » doit être relu (installation, suppression). */
+  reloadKey?: number;
 }
 
 /** État par défaut, déduit de la nature de la source et de l'archive. */
