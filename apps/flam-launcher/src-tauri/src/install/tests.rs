@@ -1342,3 +1342,96 @@ fn memoire_d_archive_bornee_et_revalidee() {
     std::fs::write(&meta, vec![b' '; 5000]).unwrap();
     assert!(read_archive_meta(&meta).is_none());
 }
+
+/// Installe `uuid` directement dans la bibliothèque du contexte.
+fn install_directly(ctx: &Ctx, uuid: &str, bytes: &[u8]) {
+    let library = Library::new(&ctx.cache());
+    let staged = library
+        .staging_dir()
+        .unwrap()
+        .join(format!("{uuid}.plain.pk"));
+    std::fs::write(&staged, bytes).unwrap();
+    library
+        .install(&staged, &story(uuid, Some(1)), None, 1)
+        .unwrap();
+}
+
+#[test]
+fn library_remove_with_purge_puis_retire_et_inconnu_est_not_found_avant_purge() {
+    let ctx = Ctx::new(None);
+    install_directly(&ctx, "abc", b"PK");
+    let purged = std::sync::atomic::AtomicBool::new(false);
+    // Inconnu : `not_found` avant toute purge.
+    let err = ctx
+        .service
+        .library_remove_with("inconnu", || {
+            purged.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(err.kind(), "not_found");
+    assert!(
+        !purged.load(Ordering::SeqCst),
+        "aucune purge pour un inconnu"
+    );
+    // Purge en échec : l'histoire reste installée (à retenter).
+    let err = ctx
+        .service
+        .library_remove_with("abc", || {
+            Err(AppError::Validation("purge impossible".into()))
+        })
+        .unwrap_err();
+    assert_eq!(err.kind(), "validation");
+    assert!(ctx.cache().join("library/abc-1.plain.pk").is_file());
+    // Réussite : la purge a lieu, puis le fichier et l'entrée disparaissent.
+    ctx.service
+        .library_remove_with("abc", || {
+            purged.store(true, Ordering::SeqCst);
+            assert!(ctx.cache().join("library/abc-1.plain.pk").is_file());
+            Ok(())
+        })
+        .unwrap();
+    assert!(purged.load(Ordering::SeqCst));
+    assert!(!ctx.cache().join("library/abc-1.plain.pk").exists());
+    assert!(Library::new(&ctx.cache()).list().unwrap().is_empty());
+}
+
+#[test]
+fn library_remove_with_renvoie_vite_une_erreur_si_une_autre_instance_tient_le_verrou() {
+    let ctx = Ctx::new(None);
+    install_directly(&ctx, "abc", b"PK");
+    let other = Library::new(&ctx.cache());
+    let _held = other.lock_file(true).unwrap().expect("verrou");
+    let purged = std::sync::atomic::AtomicBool::new(false);
+    let started = Instant::now();
+    let err = ctx
+        .service
+        .library_remove_within("abc", Duration::from_millis(100), || {
+            purged.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(err.kind(), "io");
+    assert!(
+        err.to_string().contains("utilisée par une autre instance"),
+        "{err}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(!purged.load(Ordering::SeqCst), "rien n'est purgé");
+    assert!(ctx.cache().join("library/abc-1.plain.pk").is_file());
+}
+
+#[tokio::test]
+async fn library_list_ne_se_fige_pas_quand_une_autre_instance_tient_le_verrou() {
+    let ctx = Ctx::new(None);
+    install_directly(&ctx, "abc", b"PK");
+    let other = Library::new(&ctx.cache());
+    let _held = other.lock_file(true).unwrap().expect("verrou");
+    let started = Instant::now();
+    let list = ctx.service.library_list().await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "lecture sans attendre le verrou"
+    );
+}
