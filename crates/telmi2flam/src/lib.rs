@@ -3,6 +3,11 @@
 //! Squelette du port Rust de `tools/telmi2flam` (voir `tools/telmi2flam/PORT-RUST.md`) : les
 //! modules de conversion arrivent dans les PR suivantes.
 
+pub mod json;
+pub mod lua;
+pub mod text;
+mod text_tables;
+
 /// Version de la crate, affichée par `telmi2flam --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
