@@ -8,6 +8,7 @@ export {
   type ButtonSize,
   type ButtonVariant,
 } from "./Button/Button";
+export { CheckboxField, type CheckboxFieldProps } from "./CheckboxField/CheckboxField";
 export { Dialog, type DialogProps } from "./Dialog/Dialog";
 export { EmptyState, type EmptyStateProps } from "./EmptyState/EmptyState";
 export { Icon, type IconName, type IconProps } from "./Icon";

@@ -11,6 +11,8 @@ export interface InstallOptions {
   thenPlay?: boolean;
   /** Tâche inactive à retirer du panneau une fois la nouvelle tâche acceptée (« Réessayer »). */
   replaces?: string;
+  /** Source de la fiche d'où l'action est lancée : on y revient à la fin de la lecture. */
+  fromSourceId?: string;
 }
 
 export interface StoriesApi {
@@ -38,11 +40,20 @@ export interface StoriesApi {
    */
   install: (entry: StoryEntry, options?: InstallOptions) => void;
   /** Lance une histoire installée. */
-  play: (entry: StoryEntry) => void;
+  play: (entry: StoryEntry, fromSourceId?: string) => void;
   /** Lance directement un `.plain` / `.plain.pk` d'une source dossier, sans installation. */
-  playFromFolder: (entry: StoryEntry) => void;
-  /** Désinstalle l'histoire ; renvoie vrai si elle a été supprimée. */
-  remove: (uuid: string, title: string) => Promise<boolean>;
+  playFromFolder: (entry: StoryEntry, fromSourceId?: string) => void;
+  /**
+   * Désinstalle l'histoire ; renvoie vrai si elle a été supprimée. `purgeSaves` efface aussi la
+   * progression de l'enfant (conservée par défaut).
+   */
+  remove: (uuid: string, title: string, purgeSaves?: boolean) => Promise<boolean>;
+  /**
+   * Fiche à rouvrir (fin d'une lecture lancée depuis cette fiche), ou `null`. La vue de la
+   * source concernée l'ouvre puis appelle `consumeReopen`.
+   */
+  reopen: { sourceId: string; entryId: string } | null;
+  consumeReopen: () => void;
   cancel: (taskId: string) => void;
   retry: (taskId: string) => void;
   dismiss: (taskId: string) => void;

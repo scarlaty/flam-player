@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toAppError } from "../../api/error";
+import { minimizeWindow, restoreWindow } from "../../api/window";
+import { libraryHash } from "../../router";
+import { getMinimizeDuringPlay } from "../settings/preferences";
 import {
   cancelInstall,
   listInstalls,
@@ -31,6 +34,7 @@ import {
   IncompatibleInstallDialog,
   needsInstallWarning,
 } from "../compat/IncompatibleInstallDialog";
+import { EarlyEvents } from "./earlyEvents";
 import { StoriesContext, type InstallOptions, type StoriesApi } from "./StoriesContext";
 import {
   isActiveState,
@@ -65,6 +69,15 @@ function useListener<T>(
   }, [subscribe]);
 }
 
+/** Fiche d'une histoire : source qui la porte et identifiant de l'entrée. */
+export interface FicheTarget {
+  sourceId: string;
+  entryId: string;
+}
+
+/** Délai avant le retrait automatique d'une installation réussie du panneau des tâches. */
+export const DONE_TASK_TTL_MS = 8000;
+
 interface PendingInstall {
   entry: StoryEntry;
   options: InstallOptions;
@@ -85,16 +98,22 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
   const [session, setSession] = useState<PlayerSession | null>(null);
   const [pending, setPending] = useState<PendingInstall | null>(null);
+  // Fiche à rouvrir à la fin de la lecture (voir `returnTo`).
+  const [reopen, setReopen] = useState<FicheTarget | null>(null);
+  // Fiche d'où une lecture a été demandée, par identifiant de session (`uuid` d'une histoire
+  // installée, `entry_id` d'un fichier de dossier) : on y revient à la fin de la lecture,
+  // même si l'utilisateur a changé d'écran entre-temps.
+  const returnTo = useRef(new Map<string, FicheTarget>());
+  // La fenêtre est réduite par cette lecture : elle est rétablie à sa fin. Les opérations sont
+  // chaînées pour que le rétablissement ne passe jamais avant une réduction encore en cours.
+  const minimized = useRef(false);
+  const windowOps = useRef<Promise<unknown>>(Promise.resolve());
   // `uuid` des histoires à lancer à la fin de leur installation ; conservé après un échec pour
   // que « Réessayer » reprenne « Télécharger et jouer ».
   const playAfter = useRef(new Set<string>());
   // Événements reçus pour une tâche pas encore connue (avant le retour de `install_start`) :
   // appliqués dès que la tâche est ajoutée à la liste.
-  const early = useRef(new Map<string, Partial<InstallTask>>());
-  const withEarly = useCallback((task: InstallTask): InstallTask => {
-    const patch = early.current.get(task.id);
-    return patch ? { ...task, ...patch } : task;
-  }, []);
+  const early = useRef(new EarlyEvents());
   const tasksRef = useRef(tasks);
   useEffect(() => {
     tasksRef.current = tasks;
@@ -112,22 +131,23 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
 
   const refreshTasks = useCallback(async () => {
     try {
-      const list = await listInstalls();
+      // Événements mémorisés appliqués (et purgés) ici, hors de la fonction de mise à jour.
+      const list = (await listInstalls()).map((task) => early.current.take(task));
       setTasks((current) => {
         // Les événements font foi pour les tâches déjà connues : le cliché du backend ne
         // ramène jamais une tâche à un état antérieur.
         const known = new Map(current.map((task) => [task.id, task]));
-        return list.map((task) => known.get(task.id) ?? withEarly(task));
+        return list.map((task) => known.get(task.id) ?? task);
       });
     } catch {
       // La liste des tâches est un confort : les événements suffisent à suivre l'avancement.
     }
-  }, [withEarly]);
+  }, []);
 
   useEffect(() => {
     // Chargement initial depuis le backend.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshTasks();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshInstalled();
     getPlayerStatus()
       // Un `player://started` déjà reçu l'emporte sur ce cliché.
@@ -149,13 +169,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
       );
       // Événement reçu avant le retour de `install_start`, ou tâche reprise au démarrage.
       if (!tasksRef.current.some((task) => task.id === taskId)) {
-        const previous = early.current.get(taskId);
-        const stale =
-          previous?.state !== undefined &&
-          !isActiveState(previous.state) &&
-          patch.state !== undefined &&
-          isActiveState(patch.state);
-        if (!stale) early.current.set(taskId, { ...previous, ...patch });
+        early.current.record(taskId, patch);
         void refreshTasks();
       }
     },
@@ -163,12 +177,13 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   );
 
   const launch = useCallback(
-    async (start: () => Promise<PlayerSession>) => {
+    async (start: () => Promise<PlayerSession>, key?: string) => {
       try {
         // La session vient de `player://started` : la réponse peut arriver après
         // `player://exited` et ne doit pas ressusciter un player déjà terminé.
         await start();
       } catch (caught) {
+        if (key !== undefined) returnTo.current.delete(key);
         toast.show({ message: toAppError(caught).message, tone: "danger" });
       }
     },
@@ -208,7 +223,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           tone: "success",
         });
         if (playAfter.current.delete(uuid)) {
-          void launch(() => launchPlayer(uuid));
+          void launch(() => launchPlayer(uuid), uuid);
         }
       },
       [patchTask, compatReload, refreshInstalled, toast, launch],
@@ -225,18 +240,43 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
       [patchTask, compatReload],
     ),
   );
-  useListener(onPlayerStarted, setSession);
+  useListener(
+    onPlayerStarted,
+    useCallback((started: PlayerSession) => {
+      setSession(started);
+      if (getMinimizeDuringPlay()) {
+        minimized.current = true;
+        windowOps.current = windowOps.current.then(minimizeWindow);
+      }
+    }, []),
+  );
   useListener(
     onPlayerExited,
     useCallback(
       (event) => {
         setSession(null);
         const title = event.session.title;
+        if (minimized.current) {
+          minimized.current = false;
+          windowOps.current = windowOps.current.then(restoreWindow);
+        }
+        const target = returnTo.current.get(event.session.uuid);
+        if (target) {
+          returnTo.current.delete(event.session.uuid);
+          setReopen(target);
+          window.location.hash = libraryHash(target.sourceId);
+        }
         if (event.success) {
           toast.show({ message: t.stories.toast.finished(title) });
         } else {
           toast.show({
             message: t.stories.toast.playerFailed(title, event.stderr.trim()),
+            tone: "danger",
+          });
+        }
+        if (event.saves_error) {
+          toast.show({
+            message: t.stories.toast.savesLost(title, event.saves_error),
             tone: "danger",
           });
         }
@@ -247,8 +287,18 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
 
   const start = useCallback(
     async (entry: StoryEntry, options: InstallOptions) => {
-      if (options.thenPlay) playAfter.current.add(entry.uuid);
-      else playAfter.current.delete(entry.uuid);
+      if (options.thenPlay) {
+        playAfter.current.add(entry.uuid);
+        if (options.fromSourceId !== undefined) {
+          returnTo.current.set(entry.uuid, {
+            sourceId: options.fromSourceId,
+            entryId: entry.entry_id,
+          });
+        }
+      } else {
+        playAfter.current.delete(entry.uuid);
+        returnTo.current.delete(entry.uuid);
+      }
       try {
         const task = await startInstall(entry.source_id, entry.entry_id);
         // La nouvelle tâche remplace les tâches inactives (échec, annulation) de la même histoire.
@@ -262,10 +312,9 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           .map((other) => other.id);
         if (options.replaces) stale.push(options.replaces);
         // Une tâche déjà connue (événement arrivé avant ce retour) garde son état le plus récent.
+        const added = early.current.take(task);
         setTasks((current) =>
-          current.some((other) => other.id === task.id)
-            ? current
-            : [withEarly(task), ...current],
+          current.some((other) => other.id === task.id) ? current : [added, ...current],
         );
         setDismissed((all) => {
           const next = new Set(all);
@@ -274,11 +323,21 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           return next;
         });
       } catch (caught) {
-        playAfter.current.delete(entry.uuid);
-        toast.show({ message: toAppError(caught).message, tone: "danger" });
+        const error = toAppError(caught);
+        // Relance d'une tâche dont l'entrée a disparu du catalogue ou du dernier scan : la
+        // tâche en échec reste affichée, « Réessayer » pourra servir après un rafraîchissement.
+        const gone = error.kind === "not_found";
+        if (!options.replaces) {
+          playAfter.current.delete(entry.uuid);
+          returnTo.current.delete(entry.uuid);
+        }
+        toast.show({
+          message: gone ? t.stories.toast.entryGone(entry.title) : error.message,
+          tone: "danger",
+        });
       }
     },
-    [toast, withEarly],
+    [toast],
   );
 
   const compatFor = compat.compatFor;
@@ -296,7 +355,10 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   const cancel = useCallback(
     (taskId: string) => {
       const task = tasksRef.current.find((other) => other.id === taskId);
-      if (task) playAfter.current.delete(task.entry.uuid);
+      if (task) {
+        playAfter.current.delete(task.entry.uuid);
+        returnTo.current.delete(task.entry.uuid);
+      }
       cancelInstall(taskId).catch((caught: unknown) =>
         toast.show({ message: toAppError(caught).message, tone: "danger" }),
       );
@@ -306,8 +368,35 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
 
   const dismiss = useCallback((taskId: string) => {
     const task = tasksRef.current.find((other) => other.id === taskId);
-    if (task && !isActiveState(task.state)) playAfter.current.delete(task.entry.uuid);
+    if (task && !isActiveState(task.state)) {
+      playAfter.current.delete(task.entry.uuid);
+      returnTo.current.delete(task.entry.uuid);
+    }
     setDismissed((all) => new Set(all).add(taskId));
+  }, []);
+
+  // Une installation réussie n'a plus rien à proposer : sa ligne se retire d'elle-même.
+  // Les échecs et annulations restent (message, « Réessayer »).
+  const dismissTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  useEffect(() => {
+    const timers = dismissTimers.current;
+    for (const task of tasks) {
+      if (task.state !== "done" || timers.has(task.id)) continue;
+      timers.set(
+        task.id,
+        setTimeout(() => {
+          timers.delete(task.id);
+          setDismissed((all) => new Set(all).add(task.id));
+        }, DONE_TASK_TTL_MS),
+      );
+    }
+  }, [tasks]);
+  useEffect(() => {
+    const timers = dismissTimers.current;
+    return () => {
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
+    };
   }, []);
 
   const retry = useCallback(
@@ -325,9 +414,9 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   );
 
   const remove = useCallback(
-    async (uuid: string, title: string) => {
+    async (uuid: string, title: string, purgeSaves = false) => {
       try {
-        await removeFromLibrary(uuid);
+        await removeFromLibrary(uuid, purgeSaves);
       } catch (caught) {
         toast.show({ message: toAppError(caught).message, tone: "danger" });
         return false;
@@ -364,9 +453,29 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
       installedFor,
       updateAvailable: (entry) => hasUpdate(installedFor(entry), entry),
       install,
-      play: (entry) => void launch(() => launchPlayer(entry.uuid)),
-      playFromFolder: (entry) =>
-        void launch(() => launchFolderStory(entry.source_id, entry.entry_id)),
+      play: (entry, fromSourceId) => {
+        if (fromSourceId !== undefined) {
+          returnTo.current.set(entry.uuid, {
+            sourceId: fromSourceId,
+            entryId: entry.entry_id,
+          });
+        }
+        void launch(() => launchPlayer(entry.uuid), entry.uuid);
+      },
+      playFromFolder: (entry, fromSourceId) => {
+        if (fromSourceId !== undefined) {
+          returnTo.current.set(entry.entry_id, {
+            sourceId: fromSourceId,
+            entryId: entry.entry_id,
+          });
+        }
+        void launch(
+          () => launchFolderStory(entry.source_id, entry.entry_id),
+          entry.entry_id,
+        );
+      },
+      reopen,
+      consumeReopen: () => setReopen(null),
       remove,
       cancel,
       retry,
@@ -380,6 +489,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     installed,
     installedRevision,
     session,
+    reopen,
     install,
     launch,
     remove,

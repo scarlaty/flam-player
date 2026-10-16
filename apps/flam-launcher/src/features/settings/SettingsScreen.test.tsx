@@ -6,6 +6,7 @@ import type { SettingsView } from "../../api/settings";
 import { ToastProvider } from "../../components";
 import { expectNoAxeViolations } from "../../test/axe";
 import { RecoveryProvider } from "../recovery/RecoveryProvider";
+import { getMinimizeDuringPlay, setMinimizeDuringPlay } from "./preferences";
 import { SettingsScreen } from "./SettingsScreen";
 
 const pickExecutable = vi.hoisted(() => vi.fn());
@@ -353,4 +354,29 @@ it("n'a aucune violation axe, y compris avec la confirmation ouverte", async () 
   fireEvent.click(screen.getByRole("button", { name: "Vider le cache" }));
   await screen.findByRole("alertdialog");
   await expectNoAxeViolations(document.body, rules);
+});
+
+it("réduire la fenêtre pendant la lecture : décoché par défaut, mémorisé localement", async () => {
+  window.localStorage.clear();
+  await renderScreen();
+  const box = screen.getByRole("checkbox", {
+    name: "Réduire la fenêtre pendant la lecture",
+  });
+  expect(box).not.toBeChecked();
+  fireEvent.click(box);
+  expect(box).toBeChecked();
+  expect(getMinimizeDuringPlay()).toBe(true);
+  fireEvent.click(box);
+  expect(getMinimizeDuringPlay()).toBe(false);
+  // Aucune écriture dans settings.json : c'est une préférence propre au poste.
+  expect(callsOf("settings_set")).toHaveLength(0);
+});
+
+it("relit la préférence enregistrée", async () => {
+  setMinimizeDuringPlay(true);
+  await renderScreen();
+  expect(
+    screen.getByRole("checkbox", { name: "Réduire la fenêtre pendant la lecture" }),
+  ).toBeChecked();
+  window.localStorage.clear();
 });
