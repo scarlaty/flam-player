@@ -158,7 +158,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
             <p className="fl-detail__description">
               {entry.description || t.stories.detail.noDescription}
             </p>
-            <ul className="fl-detail__badges" aria-label={t.stories.detail.facts.state}>
+            <ul className="fl-detail__badges" aria-label={t.stories.detail.badges}>
               <li>
                 <Badge tone={tone} icon={STATE_APPEARANCE[state].icon}>
                   {t.library.state[state]}
@@ -205,7 +205,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   label={t.story.progress(entry.title)}
                   showValue
                 />
-                {progress.text && <p>{progress.text}</p>}
+                <p aria-live="polite">{progress.text}</p>
               </div>
             )}
             {failed?.error && (

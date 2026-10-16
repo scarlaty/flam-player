@@ -9,6 +9,8 @@ import type { StoryProgress, StoryState } from "../library/storyState";
 export interface InstallOptions {
   /** Lance l'histoire dès que l'installation est terminée (« Télécharger et jouer »). */
   thenPlay?: boolean;
+  /** Tâche inactive à retirer du panneau une fois la nouvelle tâche acceptée (« Réessayer »). */
+  replaces?: string;
 }
 
 export interface StoriesApi {

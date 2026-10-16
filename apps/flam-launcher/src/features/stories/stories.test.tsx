@@ -102,6 +102,9 @@ let report: CompatReport;
 let started: InstallTask[];
 let status: PlayerSession | null;
 let failures: Record<string, { kind: string; message: string }>;
+// Retient la réponse d'une commande pour tester l'ordre des événements.
+let installGate: Promise<void> | null;
+let launchGate: Promise<void> | null;
 let calls: { cmd: string; args: Record<string, any> }[];
 
 const callsOf = (cmd: string) => calls.filter((c) => c.cmd === cmd);
@@ -122,6 +125,8 @@ beforeEach(() => {
   status = null;
   failures = {};
   calls = [];
+  installGate = null;
+  launchGate = null;
   window.location.hash = "#/library/store";
   mockIPC(
     (cmd, args) => {
@@ -162,7 +167,7 @@ beforeEach(() => {
             id: `t${started.length + 1}`,
           });
           started.push(created);
-          return created;
+          return installGate ? installGate.then(() => created) : created;
         }
         case "install_cancel":
           return null;
@@ -170,7 +175,7 @@ beforeEach(() => {
           return status;
         case "player_launch":
         case "player_launch_folder":
-          return session();
+          return launchGate ? launchGate.then(() => session()) : session();
         default:
           throw { kind: "unknown", message: cmd };
       }
@@ -217,9 +222,19 @@ async function renderApp() {
     </ToastProvider>,
   );
   await screen.findByRole("heading", { level: 3, name: ours().title });
-  // Laisse les écouteurs d'événements s'abonner.
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 20));
+  // Attend l'abonnement effectif aux événements : une progression d'une tâche inconnue
+  // déclenche une relecture de `install_list`, signe que l'écouteur est en place.
+  const before = callsOf("install_list").length;
+  await waitFor(async () => {
+    await emit("install://progress", {
+      task_id: "sonde",
+      state: "queued",
+      percent: null,
+      received: null,
+      total: null,
+      phase: null,
+    });
+    expect(callsOf("install_list").length).toBeGreaterThan(before);
   });
   return view;
 }
@@ -509,6 +524,7 @@ it("désactive Jouer et Supprimer pendant la lecture de cette histoire", async (
   await renderApp();
   fireEvent.click(screen.getByRole("button", { name: "Jouer « Les trois ours »" }));
   await waitFor(() => expect(callsOf("player_launch")).toHaveLength(1));
+  await send("player://started", session());
   const dialog = await openFiche();
   expect(within(dialog).getByRole("button", { name: "Jouer" })).toBeDisabled();
   expect(within(dialog).getByRole("button", { name: "Supprimer" })).toBeDisabled();
@@ -634,4 +650,107 @@ it("ignore une progression tardive reçue après l'annulation", async () => {
   });
   expect(await within(panel()).findByText("Annulée")).toBeInTheDocument();
   expect(within(dialog).getByRole("button", { name: "Télécharger" })).toBeEnabled();
+});
+
+it("`player://exited` reçu avant la réponse de player_launch ne bloque pas Jouer", async () => {
+  installed = [installedEntry(ours())];
+  window.location.hash = "#/library/library";
+  let release = () => {};
+  launchGate = new Promise((resolve) => (release = resolve));
+  await renderApp();
+  fireEvent.click(screen.getByRole("button", { name: "Jouer « Les trois ours »" }));
+  await waitFor(() => expect(callsOf("player_launch")).toHaveLength(1));
+  await send("player://started", session());
+  await send("player://exited", {
+    session: session(),
+    code: 0,
+    success: true,
+    duration_ms: 10,
+    stderr: "",
+  });
+  await act(async () => release());
+  await screen.findByText("Lecture de « Les trois ours » terminée");
+  expect(screen.getByRole("button", { name: "Jouer « Les trois ours »" })).toBeEnabled();
+});
+
+it("un événement done reçu avant le retour de install_start est conservé", async () => {
+  await renderApp();
+  let release = () => {};
+  installGate = new Promise((resolve) => (release = resolve));
+  fireEvent.click(screen.getByRole("button", { name: "Télécharger « Les trois ours »" }));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  installed = [installedEntry(ours())];
+  await send("install://done", { task_id: "t1", entry: installed[0], warnings: 0 });
+  await act(async () => release());
+  expect(await within(panel()).findByText("Terminée")).toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: "Jouer « Les trois ours »" }),
+  ).toBeVisible();
+});
+
+it("relancer par Télécharger après un échec retire la tâche en échec", async () => {
+  await renderApp();
+  let dialog = await openFiche();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Télécharger" }));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  await send("install://error", {
+    task_id: "t1",
+    state: "failed",
+    error: { kind: "network", message: "Réseau coupé.", code: null },
+  });
+  expect(await within(dialog).findByRole("alert")).toBeVisible();
+  dialog = screen.getByRole("dialog", { name: "Les trois ours" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Télécharger" }));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(2));
+  await waitFor(() => expect(within(panel()).queryByText("Échec")).toBeNull());
+  expect(within(dialog).queryByRole("alert")).toBeNull();
+});
+
+it("Réessayer garde la tâche en échec si on renonce à une histoire incompatible", async () => {
+  await renderApp();
+  const dialog = await openFiche();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Télécharger et jouer" }));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  await send("install://error", {
+    task_id: "t1",
+    state: "failed",
+    error: { kind: "conversion", message: "Image manquante.", code: "missing_asset" },
+  });
+  await within(panel()).findByText("Échec");
+  report = {
+    issue: null,
+    entries: [fiche({ uuid: "ours", level: "incompatible", reason: "Image manquante" })],
+  };
+  // La conversion en échec recharge le rapport : l'histoire devient incompatible.
+  await send("install://error", {
+    task_id: "t1",
+    state: "failed",
+    error: { kind: "conversion", message: "Image manquante.", code: "missing_asset" },
+  });
+  await waitFor(() => expect(callsOf("compat_statuses").length).toBeGreaterThan(1));
+  fireEvent.click(
+    within(panel()).getByRole("button", { name: "Réessayer : Les trois ours" }),
+  );
+  const alert = await screen.findByRole("alertdialog");
+  fireEvent.click(within(alert).getByRole("button", { name: "Annuler" }));
+  expect(callsOf("install_start")).toHaveLength(1);
+  expect(within(panel()).getByText("Échec")).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toBeInTheDocument();
+});
+
+it("rend le focus à la carte à la fermeture de la fiche, même après une confirmation", async () => {
+  installed = [installedEntry(ours())];
+  window.location.hash = "#/library/library";
+  await renderApp();
+  const card = screen.getByRole("button", { name: "Les trois ours" });
+  card.focus();
+  fireEvent.click(card);
+  const dialog = await screen.findByRole("dialog", { name: "Les trois ours" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Supprimer" }));
+  const confirm = await screen.findByRole("alertdialog");
+  fireEvent.click(within(confirm).getByRole("button", { name: "Annuler" }));
+  await screen.findByRole("dialog", { name: "Les trois ours" });
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(card).toHaveFocus();
 });

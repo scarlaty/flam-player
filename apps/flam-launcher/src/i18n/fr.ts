@@ -308,9 +308,8 @@ export const fr = {
         license: "Licence",
         size: "Taille",
         source: "Source",
-        state: "État",
-        compat: "Compatibilité",
       },
+      badges: "Statut de l'histoire",
       unknown: "Non précisé",
     },
     actions: {
