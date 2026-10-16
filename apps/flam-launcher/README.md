@@ -318,8 +318,16 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
 - **Fin** : `player://exited` porte le code, la durée et les 20 dernières lignes de stderr
   (8 Kio) ; `success = false` (code non nul ou processus tué) : afficher `stderr`, c'est la
   raison d'un échec au démarrage (« Erreur de chargement… »).
-- **Effet de bord du player** : pour un `.plain.pk`, il extrait l'archive à côté
-  (`<nom>.plain/`, donc dans `library/` ou dans le dossier de la source).
+- **Copie de travail** : le player extrait un `.plain.pk` et écrit ses sauvegardes (`saves/<nom>`)
+  à côté de l'histoire. Il n'est donc **jamais lancé sur l'original** (dossier de l'utilisateur
+  ni `library/`) : l'histoire est copiée dans `<cache>/play/<empreinte de la clé>/<nom>`
+  (`stage`, sous le portillon du cache en lecture), puis lancée. Ce dossier est nettoyé avant
+  chaque lancement **sauf `saves/`** (progression conservée ; « Vider le cache » l'efface).
+  La source doit être, sans suivre de lien, un fichier ordinaire (`.plain.pk`) ou un dossier
+  (`.plain`) conforme au `kind` de l'entrée. Un `.plain` est copié lui aussi (le player y écrit
+  `saves/` à côté).
+- **Robustesse** : le créneau est tenu par une garde libérée même en cas de panique ou d'échec de
+  thread ; la fin du player ne dépend pas de la fermeture de stderr (attente bornée à 500 ms).
 - Tests : l'exemple `src-tauri/examples/fake_player.rs` (scénario lu dans le fichier d'histoire)
   sert de faux player ; `cargo test` le construit. Wrappers : `src/api/player.ts`
   (`launchPlayer`, `launchFolderStory`, `getPlayerStatus`, `onPlayerStarted`, `onPlayerExited`).
@@ -455,7 +463,7 @@ d'exécuter. Accesseurs Rust pour les issues suivantes : `SourcesStore::get(id)`
 supprime et renvoie les octets libérés. Le dossier de cache pouvant être choisi par
 l'utilisateur, ces deux commandes ne comptent et ne suppriment **que** les sous-dossiers créés
 par l'application, listés dans `APP_CACHE_SUBDIRS` (`cache.rs`) : `archives`, `catalogs`,
-`library`, `thumbs`. Le reste du dossier et le dossier lui-même ne sont jamais touchés ; les
+`library`, `play`, `thumbs`. Le reste du dossier et le dossier lui-même ne sont jamais touchés ; les
 liens symboliques et jonctions ne sont ni suivis ni supprimés. **Tout module qui crée un nouveau
 sous-dossier de cache doit l'ajouter à cette liste.** L'interface demande une confirmation
 (boîte `alertdialog`, focus sur « Annuler ») qui rappelle les dossiers concernés et la taille
