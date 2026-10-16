@@ -5,7 +5,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Source } from "../../api/sources";
 import { ToastProvider } from "../../components";
 import { expectNoAxeViolations } from "../../test/axe";
-import { SLOW_TEST_MS } from "../../test/timeouts";
+import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
+
+tolerateLoadInAsyncUtils();
 import { RecoveryProvider } from "../recovery/RecoveryProvider";
 import { folderDisplayName, moveItem, SourcesScreen } from "./SourcesScreen";
 
@@ -284,17 +286,19 @@ it(
         </ToastProvider>,
       );
       // Sans `findBy` : on observe l'affichage de la liste au plus tôt, avant tout vidage des effets.
-      const down = await new Promise<HTMLElement>((resolve) => {
-        const observer = new MutationObserver(() => {
-          const button = screen.queryByRole("button", {
-            name: "Descendre « Telmi Store »",
+      const find = () =>
+        screen.queryByRole("button", { name: "Descendre « Telmi Store »" });
+      const down =
+        find() ??
+        (await new Promise<HTMLElement>((resolve) => {
+          const observer = new MutationObserver(() => {
+            const button = find();
+            if (!button) return;
+            observer.disconnect();
+            resolve(button);
           });
-          if (!button) return;
-          observer.disconnect();
-          resolve(button);
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
-      });
+          observer.observe(document.body, { childList: true, subtree: true });
+        }));
       down.focus();
       fireEvent.click(down);
 

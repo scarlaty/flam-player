@@ -8,12 +8,12 @@ import { afterAll, beforeAll, it } from "vitest";
  */
 export const SLOW_TEST_MS = 15_000;
 
-/** Délai des `findBy…` et `waitFor` d'un fichier de tests lents (défaut de Testing Library : 1 s). */
-export const ASYNC_UTIL_MS = 10_000;
+/** Délai des `findBy…` et `waitFor` d'un fichier de tests lents (défaut de Testing Library : 1 s). Reste sous le `testTimeout` de 5 s pour qu'un échec réel garde le message de Testing Library.. */
+export const ASYNC_UTIL_MS = 4_000;
 
 /** Relève `asyncUtilTimeout` le temps d'un fichier de tests, puis le rétablit. */
 export function tolerateLoadInAsyncUtils(): void {
-  let previous = getConfig().asyncUtilTimeout;
+  let previous = 0;
   beforeAll(() => {
     previous = getConfig().asyncUtilTimeout;
     configure({ asyncUtilTimeout: ASYNC_UTIL_MS });
