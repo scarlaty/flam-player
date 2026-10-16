@@ -1022,6 +1022,7 @@ pub(crate) mod tests {
             download_url: "https://h.example.test/a.zip".into(),
             size: None,
             updated_at: None,
+            download_count: None,
             kind: StoryKind::TelmiZip,
         }
     }

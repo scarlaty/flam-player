@@ -1,6 +1,6 @@
 import type { StoryEntry } from "../../api/story";
 
-export type SortKey = "title" | "recent";
+export type SortKey = "title" | "recent" | "popular";
 
 export interface LibraryFilters {
   query: string;
@@ -35,6 +35,11 @@ export function availableAges(entries: readonly StoryEntry[]): number[] {
   return [...ages].sort((a, b) => a - b);
 }
 
+/** Vrai si au moins une entrée connaît son nombre de téléchargements (tri « Popularité »). */
+export function hasPopularity(entries: readonly StoryEntry[]): boolean {
+  return entries.some((entry) => entry.download_count != null);
+}
+
 /** Catégories présentes dans les entrées, triées alphabétiquement. */
 export function availableCategories(entries: readonly StoryEntry[]): string[] {
   const categories = new Set<string>();
@@ -67,6 +72,18 @@ function timeOf(entry: StoryEntry): number {
 const byTitle = (a: StoryEntry, b: StoryEntry) =>
   a.title.localeCompare(b.title, "fr", { sensitivity: "base", numeric: true });
 
+/** Plus téléchargées d'abord ; sans valeur à la fin ; départage par titre. */
+const byPopularity = (a: StoryEntry, b: StoryEntry) => {
+  const countA = a.download_count ?? null;
+  const countB = b.download_count ?? null;
+  if (countA === null || countB === null) {
+    if (countA !== null) return -1;
+    if (countB !== null) return 1;
+    return byTitle(a, b);
+  }
+  return countB - countA || byTitle(a, b);
+};
+
 /**
  * Recherche, filtres puis tri. La recherche ignore casse et accents et exige tous les mots.
  * Une histoire sans âge connu reste visible quand un âge est choisi.
@@ -82,9 +99,11 @@ export function applyFilters(
       (filters.age === null || entry.age === null || entry.age <= filters.age) &&
       (filters.category === null || entry.category?.trim() === filters.category),
   );
-  return kept.sort(
+  const compare =
     filters.sort === "recent"
-      ? (a, b) => timeOf(b) - timeOf(a) || byTitle(a, b)
-      : byTitle,
-  );
+      ? (a: StoryEntry, b: StoryEntry) => timeOf(b) - timeOf(a) || byTitle(a, b)
+      : filters.sort === "popular"
+        ? byPopularity
+        : byTitle;
+  return kept.sort(compare);
 }
