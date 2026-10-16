@@ -363,12 +363,22 @@ class TestExplore(unittest.TestCase):
         """#42 forme 2 : la seule sortie du sous-menu est la home de ses options ;
         le pilote l'emprunte (sans test de retour) et atteint la fin h."""
         pk = self.convert(home_submenu_nodes(), "SousMenuHome")
-        res = explore.explore(PLAYER, pk[:-3], timeout_s=120, back_every=0, max_steps=300)
-        self.assertEqual(res["status"], "ok", self.explain(res))
-        self.assertEqual(res["done_reason"], "complete", self.explain(res))
-        self.assertGreaterEqual(res["home_escapes"], 1, self.explain(res))
-        self.assertTrue(res["end_reached"], self.explain(res))
-        self.assertEqual(res["scenes_visited"], res["scenes_total"], self.explain(res))
+        res = explore.explore(PLAYER, pk[:-3], timeout_s=120, back_every=0, max_steps=300,
+                              keep=True)
+        try:
+            self.assertEqual(res["status"], "ok", self.explain(res))
+            self.assertEqual(res["done_reason"], "complete", self.explain(res))
+            self.assertGreaterEqual(res["home_escapes"], 1, self.explain(res))
+            self.assertTrue(res["end_reached"], self.explain(res))
+            self.assertEqual(res["scenes_visited"], res["scenes_total"], self.explain(res))
+            with open(os.path.join(res["workdir"], "stdout.log"), encoding="utf-8",
+                      errors="replace") as f:
+                log = f.read()
+            # 280877a : pas de sortie par home avant la 3e entree du sous-menu `am`
+            before = log.split("escape at=a:am")[0]
+            self.assertGreaterEqual(before.count("choice? action=am"), 3, log)
+        finally:
+            shutil.rmtree(res["workdir"], ignore_errors=True)
 
     def test_hub_a_etat(self):
         """#42 forme 3 : l'option gardee du hub apparait quand les deux objets valent 1 ;

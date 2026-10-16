@@ -636,10 +636,9 @@ utilisateur, via les vrais modules du runtime :
   `--seed` ; navigation par touches suivant/précédent puis OK ;
 - **sortie de boucle par `home`** (#42) : un nœud (scène ou choix) entré 3 fois sans rien de
   nouveau est quitté par sa transition `home` (règles de `homeOf` de `story.lua`), comme
-  le ferait un enfant ; dès 2 entrées pour un choix dont toutes les options sont essayées
-  alors qu'il reste à reprendre ailleurs (option jamais essayée, transition `ok` non
-  suivie) ; quand il ne reste rien ailleurs, seulement vers une scène jamais atteinte. Au
-  plus 3 sorties par nœud entre deux progrès ; tracées `escape at=<nœud>` ;
+  le ferait un enfant ; la sortie vers un nœud à reprendre ailleurs (option jamais essayée,
+  transition `ok` non suivie) est préférée à toute autre home ; quand il ne reste rien
+  ailleurs, seulement vers une scène jamais atteinte. Au plus 3 sorties par nœud entre deux progrès ; tracées `escape at=<nœud>` ;
 - scène audio : OK si la scène l'accepte (`ctrl.ok`), sinon saut en fin de piste
   (pause → seek → play) puis, si besoin, fin de piste simulée (callback `stop`) ;
   scène sans OK ni fin d'audio : retour ;
@@ -776,6 +775,8 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   | `ok` / `exhausted` sinon (aucune fin jouée, couverture < 100 %) | `warn` : « plus rien de nouveau, sans erreur », couverture, « aucune fin jouée » |
   | `loop` sans erreur, plus de 2 scènes visitées (ou toutes) ; `stuck` / `stuck` d'avant #42 (résultats bruts conservés) idem | `warn` : « boucle sans nouveauté, sans erreur », couverture |
   | `loop` avec 2 scènes ou moins | `fail` |
+  | `loop` ou `stuck` / `stuck` d'avant #42 avec `dead_end_backs > 0` (retours de secours sur un écran sans action : l'histoire s'est figée) | `fail` : « boucle avec blocage » ou « ancien résultat stuck, non reclassé » ; jamais « boucle sans erreur ». Conservateur : une impasse isolée suivie d'une vraie boucle est aussi classée `fail` |
+  | Risque de masquage | `loop` / `exhausted` classés `warn` : un blocage réel sans retour de secours (écran qui avance sans rien déclencher) ressemble à une boucle ; la couverture et `home_escapes` du rapport permettent de le repérer |
   | `stuck` (`unresponsive`, `no_trace`, `no_start`), `lua_error`, `crash`, statut inconnu, erreurs non bénignes | `fail` |
 
   `warn` donne le statut global `OK_AVERTISSEMENTS` ; `fail` donne `ECHEC_EXECUTION`.

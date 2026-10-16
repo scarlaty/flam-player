@@ -551,6 +551,14 @@ class TestRunInterpretation(CompatBase):
                                errors=["Erreur Lua: boum"])[0], "fail")
         self.assertEqual(judge(done_reason="unresponsive")[0], "fail")
         self.assertEqual(judge(done_reason="no_start")[0], "fail")
+        # retours de secours : l'histoire s'est figee, pas une boucle (revue #75)
+        st, msgs = judge(dead_end_backs=2)                    # ancien stuck/stuck
+        self.assertEqual(st, "fail")
+        self.assertTrue(any("ancien résultat stuck, non reclassé" in m for m in msgs), msgs)
+        self.assertFalse(any("boucle sans erreur" in m for m in msgs), msgs)
+        st, msgs = judge(status="loop", done_reason="loop", dead_end_backs=1)
+        self.assertEqual(st, "fail")
+        self.assertEqual(judge(dead_end_backs=0)[0], "warn")
         st, msgs = judge(status="ok", done_reason="exhausted", scenes_visited=42,
                          end_reached=False)
         self.assertEqual(st, "warn")

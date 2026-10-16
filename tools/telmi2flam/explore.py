@@ -540,7 +540,7 @@ do
                 local vis = visibleOf(state.current_fun)
                 local it = type(m.answerIterator) == "number" and m.answerIterator or 1
                 local fs = #vis == n and vis[it] and vis[it].stage
-                local up = fs and loopSeen["a:" .. aid] >= 2 and wantUp()
+                local up = fs and wantUp()
                 local can = fs and (up and hasHome(fs, state.current_fun)
                                     or homeNew(fs, state.current_fun))
                 local gap = 3

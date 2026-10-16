@@ -437,7 +437,8 @@ def interpret_run(res, benign=BENIGN_ERRORS):
     - lua_error, crash, statut inconnu : fail ; stuck (unresponsive : ecran qui ne
       repond plus, no_trace, no_start) : fail ;
     - boucle sans erreur (loop, ou stuck/stuck d'avant #42) : warn si plus de 2 scenes
-      visitees (ou toutes), sinon fail ;
+      visitees (ou toutes), sinon fail ; fail aussi si des retours de secours
+      (dead_end_backs > 0) montrent que l'histoire s'est figee ;
     - timeout sans erreur : warn (exploration partielle) si plus de 2 scenes visitees,
       sinon fail (ecran noir, blocage au demarrage) ;
     - ok / max_steps sans erreur : warn si la couverture est partielle, sinon ok ;
@@ -469,6 +470,14 @@ def interpret_run(res, benign=BENIGN_ERRORS):
         if real:
             return "fail", [head + " avec erreurs"] + msgs + real
         notes = ["%d message(s) bénin(s) ignoré(s)" % ignored] if ignored else []
+        stuck_backs = res.get("dead_end_backs")
+        if isinstance(stuck_backs, int) and stuck_backs > 0:
+            # retours de secours sur un écran sans action : l'histoire s'est figée, ce
+            # n'est pas une boucle jouable (un ancien `stuck` n'est pas reclassé)
+            why = ("ancien résultat stuck, non reclassé" if status == "stuck"
+                   else "boucle avec blocage")
+            return "fail", [head, "%s : %d retour(s) de secours sur un écran sans action"
+                            % (why, stuck_backs)] + notes + msgs
         if progressed or full:
             return "warn", [head + " — boucle sans nouveauté, sans erreur",
                             ("couverture %s/%s scènes" % (visited, total)) if full else partial,
