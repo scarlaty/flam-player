@@ -1,11 +1,27 @@
 .fl-logo__bg {
-  fill: var(--brand-orange);
+  fill: var(--brand-teal-dark);
+}
+
+.fl-logo__body {
+  fill: var(--brand-teal);
+}
+
+.fl-logo__screen {
+  fill: var(--brand-screen);
 }
 
 .fl-logo__flame {
+  fill: var(--brand-flame);
+}
+
+.fl-logo__wheel {
+  fill: var(--brand-yellow);
+}
+
+.fl-logo__hub {
   fill: var(--brand-cream);
 }
 
-.fl-logo__core {
-  fill: var(--brand-yellow);
+.fl-logo__key {
+  fill: var(--brand-orange);
 }

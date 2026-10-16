@@ -1,7 +1,8 @@
 import "./AppLogo.css";
 
 /**
- * Logo de l'application : une petite flamme sur un carré orange brique arrondi.
+ * Logo de l'application : un petit lecteur d'histoires (boîtier vert d'eau, écran avec une
+ * flamme, molette jaune, touches orange) sur un carré vert arrondi.
  * Même dessin que l'icône de l'application (`src-tauri/icons/app-icon.svg`).
  */
 export function AppLogo({ size = 32 }: { size?: number }) {
@@ -14,14 +15,16 @@ export function AppLogo({ size = 32 }: { size?: number }) {
       focusable="false"
     >
       <rect width="64" height="64" rx="16" className="fl-logo__bg" />
+      <rect x="17" y="7" width="30" height="50" rx="6" className="fl-logo__body" />
+      <rect x="21" y="11" width="22" height="16" rx="2.5" className="fl-logo__screen" />
       <path
-        d="M32 9c5 10 15 16 15 30a15 15 0 0 1-30 0c0-8 4-12 7-18 1 6 4 9 7 9-2-7-2-14 1-21z"
+        d="M32 14c2 3 4.5 4.5 4.5 8a4.5 4.5 0 0 1-9 0c0-2 1-3 2-4.5.4 1.5 1 2 1.5 2-.5-2-.5-3.5 1-5.5z"
         className="fl-logo__flame"
       />
-      <path
-        d="M32 33c3 4 7 6 7 11a7 7 0 0 1-14 0c0-5 4-7 7-11z"
-        className="fl-logo__core"
-      />
+      <circle cx="28.5" cy="43" r="8.5" className="fl-logo__wheel" />
+      <circle cx="28.5" cy="43" r="3.5" className="fl-logo__hub" />
+      <circle cx="41" cy="36.5" r="3.2" className="fl-logo__key" />
+      <circle cx="41" cy="47.5" r="3.2" className="fl-logo__key" />
     </svg>
   );
 }
