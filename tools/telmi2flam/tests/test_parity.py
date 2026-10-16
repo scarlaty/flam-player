@@ -116,15 +116,34 @@ class TestAllowedDeviations(unittest.TestCase):
                                              [parity.TAG_JSON_LIMIT])["verdict"], "diff")
 
     def test_delegation_counted_apart(self):
-        r = parity.compare_runs(run_dict(), error_run(7, "unsupported_format"))
+        r = parity.compare_runs(run_dict(), error_run(7, "unsupported_format"),
+                                [parity.TAG_DELEGATED])
         self.assertEqual(r["verdict"], "delegated")
+        # sur un cas non etiquete, deleguer est un ecart (un candidat qui delegue tout)
+        self.assertEqual(parity.compare_runs(run_dict(), error_run(7, "unsupported_format"))
+                         ["verdict"], "diff")
         report = parity.build_report([dict(r, id="img_x"), dict(parity.compare_runs(
             run_dict(), run_dict()), id="ok")], "corpus")
         self.assertEqual(report["delegations"], ["img_x"])
         self.assertEqual(report["summary"]["delegated"], 1)
         self.assertEqual(parity.exit_code(report), 0)
         # le code 7 sans le bon code d'erreur n'est pas une delegation
-        self.assertEqual(parity.compare_runs(run_dict(), error_run(7, "autre"))["verdict"], "diff")
+        self.assertEqual(parity.compare_runs(run_dict(), error_run(7, "autre"),
+                                             [parity.TAG_DELEGATED])["verdict"], "diff")
+
+    def test_error_message_text_is_not_compared(self):
+        # §4.1 : le code, pas le texte (--info en erreur : seul le code de sortie compte)
+        a = parity.run_to_dict(3, [{"event": "error", "code": "archive_unreadable",
+                                    "message": "texte Python"}], 3, None, None)
+        b = parity.run_to_dict(3, [{"event": "error", "code": "archive_unreadable",
+                                    "message": "texte Rust"}], 3, None, None)
+        self.assertEqual(parity.compare_runs(a, b)["verdict"], "identical")
+
+    def test_harness_error_is_a_diff_and_empty_run_fails(self):
+        r = parity.run_converter(["commande-inexistante-xyz"], "a.zip", tempfile.mkdtemp())
+        self.assertEqual(r[0]["error_code"], "harness_error")
+        self.assertEqual(parity.compare_runs(run_dict(), r[0])["verdict"], "diff")
+        self.assertEqual(parity.exit_code(parity.build_report([], "corpus")), 1)
 
 
 class TestEntries(unittest.TestCase):
@@ -273,8 +292,9 @@ class TestPythonAgainstPython(unittest.TestCase):
     # un cas par famille (nominal, image, noms, MP3, erreurs, delegation) ; le corpus
     # complet est compare par la CI de parite (#134), trop long pour ce test unitaire
     SAMPLE = ("ok_basic", "img_mode_PT", "names_cp437", "mp3_id3_prefix", "missing_audio",
-              "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry")
-    STUB_SAMPLE = ("ok_basic", "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry")
+              "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry", "img_jpeg_delegated")
+    STUB_SAMPLE = ("ok_basic", "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry",
+                   "img_jpeg_delegated")
 
     @classmethod
     def setUpClass(cls):
@@ -330,10 +350,13 @@ class TestPythonAgainstPython(unittest.TestCase):
 
     def test_fake_candidate_delegation(self):
         v = self.verdicts(self.candidate(7, "unsupported_format"))
-        self.assertTrue(all(r["verdict"] == "delegated" for r in v.values()))
+        self.assertEqual(v["img_jpeg_delegated"]["verdict"], "delegated")
+        # un candidat qui delegue tout : seul le cas etiquete est admis
+        self.assertEqual({k for k, r in v.items() if r["verdict"] == "diff"},
+                         set(self.STUB_SAMPLE) - {"img_jpeg_delegated"})
         report = parity.build_report(list(v.values()), "corpus")
-        self.assertEqual(report["summary"]["delegated"], len(self.STUB_SAMPLE))
-        self.assertEqual(parity.exit_code(report), 0)
+        self.assertEqual(report["delegations"], ["img_jpeg_delegated"])
+        self.assertEqual(parity.exit_code(report), 1)
 
     def test_cli_exit_code_on_deviation(self):
         cmd = "%s %s 6 internal_error" % (sys.executable.replace("\\", "/"),

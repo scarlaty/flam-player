@@ -48,6 +48,7 @@ ORACLE_SCRIPT = os.path.join(HERE, "telmi2flam.py")
 # Etiquettes de cas (voir tests/parity/make_corpus.py)
 TAG_JSON_LIMIT = "json_limit"
 TAG_ENCRYPTED = "encrypted_entry"
+TAG_DELEGATED = "delegated"
 
 DELEGATION_CODE = "unsupported_format"
 DELEGATION_EXIT = 7
@@ -115,11 +116,18 @@ def run_to_dict(exit_code, events, info_exit, info_stdout, entries):
         "status": "ok" if exit_code == 0 else "error",
         "exit": exit_code,
         "error_code": err.get("code") if err else None,
-        "warnings": sorted(e.get("code") for e in events if e.get("event") == "warning"),
+        "warnings": sorted(e.get("code") or "" for e in events if e.get("event") == "warning"),
         "info_exit": info_exit,
         "info": info_stdout,
         "entries": entries,
     }
+
+
+def harness_error(exc):
+    """Execution impossible (commande absente, delai depasse) : un ecart sur ce cas, sans
+    interrompre le run ni le rapport."""
+    return run_to_dict(None, [{"event": "error", "code": "harness_error"}], None,
+                       "%s: %s" % (type(exc).__name__, exc), None)
 
 
 def run_converter(cmd, archive, work_dir, args=(), timeout=300):
@@ -127,19 +135,28 @@ def run_converter(cmd, archive, work_dir, args=(), timeout=300):
     Retourne la forme normalisee (voir run_to_dict) et le chemin de la sortie (ou None)."""
     os.makedirs(work_dir, exist_ok=True)
     out = os.path.join(work_dir, "out.plain.pk")
-    r = subprocess.run(list(cmd) + [archive, "-o", out, "--progress-json"] + list(args),
-                       capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=timeout)
+    try:
+        r = subprocess.run(list(cmd) + [archive, "-o", out, "--progress-json"] + list(args),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return harness_error(e), None
     events = parse_events(r.stdout)
     entries = None
     produced = None
     if r.returncode == 0 and os.path.exists(out):
         entries = entries_from_pk(out)
         produced = out
-    ri = subprocess.run(list(cmd) + [archive, "--info", "--progress-json"],
-                        capture_output=True, text=True, encoding="utf-8", errors="replace",
-                        timeout=timeout)
-    return run_to_dict(r.returncode, events, ri.returncode, ri.stdout.strip(), entries), produced
+    try:
+        ri = subprocess.run(list(cmd) + [archive, "--info"],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return harness_error(e), None
+    # --info sans --progress-json : en cas d'erreur, seul le code de sortie compte (le texte
+    # du message differe entre moteurs, §4.1) ; la ligne JSON n'est comparee qu'en succes.
+    info = ri.stdout.strip() if ri.returncode == 0 else None
+    return run_to_dict(r.returncode, events, ri.returncode, info, entries), produced
 
 
 # ---------------------------------------------------------------------------
@@ -178,9 +195,11 @@ ALLOWED_DEVIATIONS = (
 )
 
 
-def is_delegation(candidate):
-    """Delegation D4 : comptee a part, jamais un ecart."""
-    return _pair(candidate) == (DELEGATION_EXIT, DELEGATION_CODE)
+def is_delegation(candidate, tags=()):
+    """Delegation D4 : comptee a part, jamais un ecart. Admise seulement sur les cas
+    etiquetes `delegated` (image non PNG, entree bzip2/LZMA) : un candidat qui delegue
+    autre chose est en ecart."""
+    return TAG_DELEGATED in tags and _pair(candidate) == (DELEGATION_EXIT, DELEGATION_CODE)
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +228,7 @@ def compare_entries(a, b):
 def compare_runs(oracle, candidate, tags=()):
     """Compare deux resultats normalises. Retourne
     {"verdict": identical|allowed|delegated|diff, "rule": id|None, "diffs": [...]}."""
-    if is_delegation(candidate):
+    if is_delegation(candidate, tags):
         return {"verdict": "delegated", "rule": None, "diffs": []}
     for rule in ALLOWED_DEVIATIONS:
         if rule.tag in tags and rule.matches(oracle, candidate):
@@ -291,7 +310,8 @@ def write_report(path, report):
 
 
 def exit_code(report):
-    return 1 if report["summary"]["diff"] else 0
+    # un run vide (index vide) ne prouve rien : echec
+    return 1 if report["summary"]["diff"] or not report["summary"]["total"] else 0
 
 
 # ---------------------------------------------------------------------------
