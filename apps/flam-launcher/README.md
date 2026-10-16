@@ -925,8 +925,9 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   demande quand la carte approche de l'écran, 60 cartes puis « Afficher plus »), une
   recherche (titre, auteur, catégorie, description ; sans accents ni casse), les filtres âge
   (histoires recommandées dès cet âge ou avant ; sans âge connu : toujours visibles) et
-  catégorie, le tri (titre, plus récentes ; pas de tri par popularité : `StoryEntry` n'a pas ce
-  champ) et « Actualiser ». Un catalogue est lu dans le cache, puis téléchargé s'il ne l'a
+  catégorie, le tri (titre, plus récentes, popularité : `download_count` décroissant, entrées sans
+  valeur à la fin, départage par titre ; l'option n'apparaît que si au moins une entrée de la
+  source publie `download_count`, donc pas pour un dossier ni « Mes histoires ») et « Actualiser ». Un catalogue est lu dans le cache, puis téléchargé s'il ne l'a
   jamais été (`catalog_entries` puis `catalog_refresh`) ; un dossier est réanalysé
   (`folder_scan`, éléments ignorés détaillés dans un bandeau). Chargement, erreur (bouton
   Réessayer), hors ligne, liste vide et « aucun résultat » ont chacun leur état. « Mes histoires »

@@ -173,6 +173,7 @@ export const fr = {
     sortOptions: {
       title: "Titre (A-Z)",
       recent: "Plus récentes",
+      popular: "Popularité",
     },
     resultCount: (shown: number, total: number) =>
       shown === total ? storyCount(total) : `${storyCount(shown)} sur ${total}`,
