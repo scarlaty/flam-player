@@ -363,8 +363,10 @@ impl CatalogService {
                 return fail(cached, network_error(&err), true);
             }
         };
-        // 304 sans copie locale exploitable : nouvelle requête, sans en-têtes conditionnels.
-        if response.status() == StatusCode::NOT_MODIFIED && cached.is_none() {
+        // 304 sans copie locale de confiance (aucun en-tête conditionnel envoyé) : nouvelle requête, sans en-têtes conditionnels.
+        if response.status() == StatusCode::NOT_MODIFIED
+            && !cached.as_ref().is_some_and(|c| c.trusted)
+        {
             response = match self.client.get(url).send().await {
                 Ok(response) => response,
                 Err(err) => {
