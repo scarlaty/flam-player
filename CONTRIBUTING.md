@@ -34,10 +34,20 @@ ci-dessous évitent que deux contributeurs fassent le même travail.
    - commenter : `🔒 Réservé par <nom> — branche <type>/<numéro>-<slug>` ;
    - créer la branche depuis `origin/main` et **la pousser immédiatement** (commit vide
      accepté : `git commit --allow-empty -m "chore: réserve #<numéro>"`).
-4. Relire les commentaires de l'issue : si un autre 🔒 **antérieur** existe, abandonner
-   la réservation (§4) et prendre une autre tâche.
+4. Relire les commentaires de l'issue : si un autre 🔒 **antérieur** existe, c'est lui qui
+   gagne. Supprimer la branche qu'on vient de pousser (`git push origin --delete <branche>`),
+   **ne pas** retirer le label `en-cours` (il appartient au gagnant), ne poster ni 🔓 ni
+   commentaire, et prendre une autre tâche.
 
 Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§4.1).
+
+**Exceptions** :
+- correction de documentation triviale (faute, lien, une phrase) : une PR autonome sans
+  issue ni réservation suffit, sur une branche `docs/<slug>` ;
+- **`main` cassé** (CI rouge sur `main`) : le correctif est prioritaire sur tout le reste.
+  Le mainteneur peut l'ouvrir sans réservation, sur une branche `fix/<slug>`, en expliquant
+  la cause dans la PR. Il est fusionné dès que sa propre CI est verte, sans attendre les
+  autres PR.
 
 ## 3. Pendant le travail
 
@@ -74,7 +84,9 @@ Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§
 - **Verrou périmé** : l'issue porte `en-cours`, mais on ne voit **depuis 24 h** ni commit
   poussé sur sa branche, ni commentaire sur l'issue ou la PR. Commenter alors
   `🔁 Reprise — verrou de <nom> inactif depuis <date>`, garder le label `en-cours` et
-  continuer sur la même branche (et la même PR si elle existe).
+  continuer sur la même branche (et la même PR si elle existe). Ce 🔁 remplace le 🔒
+  d'origine. Si plusieurs 🔁 sont postés, seul le **plus ancien** compte, et les autres
+  abandonnent comme au §2.4.
 - **Avant d'écrire du code**, relire dans l'ordre :
   1. le dernier `📍 Point d'étape` ou `🔓 Libéré` de l'issue ;
   2. les commentaires de la PR, en particulier `Revue du mainteneur` (§6) ;
@@ -82,7 +94,7 @@ Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§
 
 ## 5. Qualité attendue avant PR
 
-- `test_run.bat` (player, moteur, convertisseur) au vert pour toute modification hors
+- `test_run.bat` (player, moteur, convertisseur) au vert pour toute modification de code hors
   `apps/flam-launcher/`.
 - `tools/telmi2flam` : `python -m unittest discover -s tools/telmi2flam/tests` au vert ;
   toute correction de compatibilité est accompagnée d'un test de non-régression.
@@ -101,6 +113,9 @@ Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§
     puis tableau « arrêt ou échec à chaque étape → état laissé → reprise » ;
   - un **test d'injection de panne** qui simule un arrêt ou un échec à chaque étape et
     vérifie les invariants ;
+  - exception : un diff qui ne change ni l'écriture ni la suppression de données
+    (renommage, commentaire, journalisation) en est dispensé, à condition de le justifier
+    dans la PR ;
   - label `modele:opus` sur l'issue (voir §1).
 
 ## 6. Revue et fusion
