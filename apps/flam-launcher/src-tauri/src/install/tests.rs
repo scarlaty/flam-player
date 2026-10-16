@@ -806,3 +806,74 @@ fn erreur_de_tache_serialisee() {
         "converting"
     );
 }
+
+/// Installation réelle (ignorée par défaut) : archive Telmi locale servie en HTTP, conversion
+/// par le vrai `tools/telmi2flam/telmi2flam.py`, puis une seconde installation annulée en
+/// pleine conversion. `FLAM_TELMI_ZIP=<archive.zip> cargo test installation_reelle -- --ignored`
+#[tokio::test]
+#[ignore = "nécessite FLAM_TELMI_ZIP (archive Telmi hors dépôt) et Pillow"]
+async fn installation_reelle() {
+    let zip = PathBuf::from(std::env::var("FLAM_TELMI_ZIP").expect("FLAM_TELMI_ZIP"));
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .map(|d| d.join("tools/telmi2flam/telmi2flam.py"))
+        .find(|p| p.is_file())
+        .expect("telmi2flam.py");
+    let dir = tempfile::tempdir().unwrap();
+    let cache_root = dir.path().join("cache");
+    let events = Arc::new(Recorder::default());
+    let gate = Arc::new(RwLock::new(()));
+    let python = python();
+    let service = InstallService::new(InstallOptions {
+        client: download::build_client().unwrap(),
+        resolver: Arc::new(move || {
+            Ok(Toolchain {
+                cache_root: cache_root.clone(),
+                python: python.clone(),
+                converter: Some(script.clone()),
+                max_downloads: 2,
+            })
+        }),
+        events: events.clone(),
+        queue_path: dir.path().join("config").join(QUEUE_FILE),
+        gate: gate.clone(),
+        grace: GRACE,
+    });
+    let ctx = Ctx {
+        dir,
+        events,
+        service,
+        gate,
+    };
+    let server = serve(std::fs::read(&zip).unwrap()).await;
+    let url = format!("{}/a.zip", server.uri());
+
+    let started = Instant::now();
+    let task = ctx.service.start(remote(&url, "reel")).unwrap();
+    let done = ctx.finished(&task.id).await;
+    assert_eq!(done.state, TaskState::Done, "{done:?}");
+    let entry = &ctx.service.library_list().await.unwrap()[0];
+    let installed = ctx.cache().join("library").join(&entry.file);
+    pack::check_plain_pk(&installed).unwrap();
+    eprintln!(
+        "installé : {} ({} octets, {}) en {:?}, états {:?}",
+        entry.file,
+        entry.size,
+        entry.converter.as_deref().unwrap_or("-"),
+        started.elapsed(),
+        ctx.events.states(&task.id)
+    );
+
+    let task = ctx.service.start(remote(&url, "annule")).unwrap();
+    ctx.wait(&task.id, |t| t.state == TaskState::Converting)
+        .await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let asked = Instant::now();
+    ctx.service.cancel(&task.id).unwrap();
+    let cancelled = ctx.finished(&task.id).await;
+    eprintln!("annulation en {:?}", asked.elapsed());
+    assert_eq!(cancelled.state, TaskState::Cancelled);
+    assert!(asked.elapsed() < GRACE, "arrêt par Ctrl+Break, pas forcé");
+    assert!(ctx.staging_is_empty());
+    assert_eq!(ctx.service.library_list().await.unwrap().len(), 1);
+}

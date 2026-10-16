@@ -57,17 +57,19 @@ apps/flam-launcher/
       folder.rs            Source dossier local (`.zip` Telmi, `.plain`, `.plain.pk`), commandes `folder_*`
       lif.rs               Décodeur LIF (port de `src/formats/lif_decoder.c`)
       thumbnail.rs         Vignettes : PNG, réduction, cache `thumbs/`, URL `data:`
+      install/             Pipeline d'installation : file, téléchargement, conversion (`mod.rs`,
+                           `download.rs`, `convert.rs`, `pack.rs`), commandes `install_*`
+      library.rs           Bibliothèque `<cache>/library/` et `library.json`, commandes `library_*`
 ```
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`. Prévus (un module par responsabilité, créés avec leur issue) :
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`. Prévus (un module par responsabilité, créés avec leur issue) :
 
-| Module    | Rôle                                                             |
-| --------- | ---------------------------------------------------------------- |
-| `install` | Pipeline téléchargement, conversion (`telmi2flam`), installation |
-| `player`  | Lancement et suivi de `flam-player`                              |
-| `compat`  | Statut de compatibilité d'une histoire                           |
+| Module   | Rôle                                   |
+| -------- | -------------------------------------- |
+| `player` | Lancement et suivi de `flam-player`    |
+| `compat` | Statut de compatibilité d'une histoire |
 
 ### Commandes Tauri
 
@@ -95,6 +97,11 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `catalog_thumbnail`   | `source_id`, `thumb_url`   | URL `data:` (string)        | `catalog`  |
 | `folder_scan`         | `source_id`, `recursive?`  | `FolderScan`                | `folder`   |
 | `folder_thumbnail`    | `source_id`, `entry_id`    | URL `data:` (chaîne)        | `folder`   |
+| `install_start`       | `source_id`, `entry_id`    | `InstallTask`               | `install`  |
+| `install_cancel`      | `task_id`                  | rien                        | `install`  |
+| `install_list`        |                            | `InstallTask[]`             | `install`  |
+| `library_list`        |                            | `LibraryEntry[]`            | `library`  |
+| `library_remove`      | `uuid`                     | rien                        | `library`  |
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).
@@ -105,7 +112,9 @@ Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`), `src/api/
 `src/api/recovery.ts` (`ackRecovery`) et `src/api/catalog.ts` (`refreshCatalog`,
 `getCatalogEntries`, `getCatalogThumbnail`, types `StoryEntry`, `CatalogView`). La logique
 `src/api/cache.ts` (`getCacheUsage`, `clearCache`) et `src/api/dialog.ts` (`pickFolder`,
-`pickExecutable` : sélecteurs natifs du plugin `tauri-plugin-dialog`). La logique
+`pickExecutable` : sélecteurs natifs du plugin `tauri-plugin-dialog`), `src/api/install.ts`
+(`startInstall`, `cancelInstall`, `listInstalls`, `onInstallProgress`, `onInstallDone`,
+`onInstallError`) et `src/api/library.ts` (`listLibrary`, `removeFromLibrary`, `hasUpdate`). La logique
 (`SettingsStore`, `SourcesStore`, détection) ne dépend pas de Tauri et reçoit son dossier de
 configuration en paramètre : elle est testée sur des dossiers temporaires ; les commandes
 ne sont que de fines enveloppes qui prennent un verrou (`ConfigState`) autour de chaque opération.
@@ -173,18 +182,22 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 (`kind: "unknown"` si la forme est inattendue). Convention : chaque module ajoute ses variantes
 à `AppError` avec un `kind` stable ; le front teste le `kind`, jamais le `message`.
 
-| `kind`               | Sens                                                                                                |
-| -------------------- | --------------------------------------------------------------------------------------------------- |
-| `io`                 | Erreur d'entrée/sortie                                                                              |
-| `validation`         | Valeur refusée (URL, chemin, extension, nom, ordre) ou opération interdite                          |
-| `not_found`          | Élément introuvable (identifiant de source inconnu)                                                 |
-| `config_version`     | Fichier de configuration écrit par une version plus récente (laissé intact)                         |
-| `config_dir`         | Dossier de configuration introuvable                                                                |
-| `serialization`      | Échec de sérialisation JSON                                                                         |
-| `network`            | Réseau indisponible, délai dépassé, réponse HTTP en échec, réponse trop grosse                      |
-| `catalog_invalid`    | Catalogue (ou vignette) reçu inexploitable : JSON invalide, pas de liste `data`, image non reconnue |
-| `folder_unavailable` | Dossier d'une source locale absent ou inaccessible (disque débranché…)                              |
-| `unknown`            | Côté front uniquement : erreur de forme inattendue                                                  |
+| `kind`                  | Sens                                                                                                |
+| ----------------------- | --------------------------------------------------------------------------------------------------- |
+| `io`                    | Erreur d'entrée/sortie                                                                              |
+| `validation`            | Valeur refusée (URL, chemin, extension, nom, ordre) ou opération interdite                          |
+| `not_found`             | Élément introuvable (identifiant de source inconnu)                                                 |
+| `config_version`        | Fichier de configuration écrit par une version plus récente (laissé intact)                         |
+| `config_dir`            | Dossier de configuration introuvable                                                                |
+| `serialization`         | Échec de sérialisation JSON                                                                         |
+| `network`               | Réseau indisponible, délai dépassé, réponse HTTP en échec, réponse trop grosse                      |
+| `catalog_invalid`       | Catalogue (ou vignette) reçu inexploitable : JSON invalide, pas de liste `data`, image non reconnue |
+| `folder_unavailable`    | Dossier d'une source locale absent ou inaccessible (disque débranché…)                              |
+| `cancelled`             | Tâche d'installation annulée                                                                        |
+| `download_invalid`      | Téléchargement incomplet, trop gros (4 Gio), ou qui n'est pas l'archive attendue                    |
+| `converter_unavailable` | Python ou `telmi2flam.py` introuvable                                                               |
+| `conversion`            | Échec de `telmi2flam` ; le code du convertisseur (`missing_asset`…) est dans `TaskError.code`       |
+| `unknown`               | Côté front uniquement : erreur de forme inattendue                                                  |
 
 Un fichier de configuration **corrompu** n'est pas une erreur : il est renommé en
 `<fichier>.<AAAAMMJJ-HHMMSS>.bak`, un avertissement est tracé et les valeurs par défaut sont utilisées.
@@ -209,8 +222,10 @@ license?, thumb_url?, download_url, size?, updated_at?, kind (telmi_zip | flam_p
   ignorée avec un avertissement.
 - **`thumb_url`** n'est **pas** une URL affichable : la CSP bloque les images distantes. C'est une
   référence que le front résout avec `getCatalogThumbnail` (voir « Vignettes »).
-- **`download_url`** est une URL absolue http **ou https**, telle que publiée par le catalogue :
-  accepter ou refuser le http clair est à décider dans #15 (pipeline d'installation).
+- **`download_url`** est une URL absolue http **ou https**, telle que publiée par le catalogue.
+  Le pipeline d'installation (#15) accepte le http clair : l'archive est de toute façon traitée
+  comme non fiable (lectures bornées, conversion par `telmi2flam`), et les redirections de https
+  vers http restent refusées.
 - **`size`** est toujours absente pour le Telmi Store (le format ne la fournit pas) : #15 doit
   s'appuyer sur le `Content-Length` du téléchargement.
 - **Lecture tolérante** : champs inconnus ignorés ; champ absent ou de mauvais type = valeur par
@@ -273,8 +288,62 @@ license?, thumb_url?, download_url, size?, updated_at?, kind (telmi_zip | flam_p
 ### Événements
 
 Convention : événements émis par le backend, nommés `domaine://action` (ex. `install://progress`),
-avec une charge utile sérialisable typée côté `src/api/`. Aucun événement pour l'instant ;
-la progression d'installation est le premier cas prévu.
+avec une charge utile sérialisable typée côté `src/api/`.
+
+| Événement            | Charge                                                                                                                     |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `install://progress` | `{ task_id, state, percent, received, total, phase }` (au plus toutes les 200 ms par tâche, plus chaque changement d'état) |
+| `install://done`     | `{ task_id, entry: LibraryEntry, warnings }`                                                                               |
+| `install://error`    | `{ task_id, state: "failed" \| "cancelled", error: TaskError }`                                                            |
+
+### Pipeline d'installation (`install`, `library`)
+
+`install_start(source_id, entry_id)` crée une tâche pour une entrée **retrouvée par le backend**
+(catalogue : cache, sans réseau ; dossier : dernier `folder_scan`, sinon `not_found`) : le front ne
+transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est renvoyée telle quelle.
+`InstallTask { id, entry, state, percent, error, created_at }`, `state` parmi `queued`,
+`downloading`, `converting`, `installing`, `done`, `failed`, `cancelled` ;
+`TaskError { kind, message, code }` (`code` : code `telmi2flam` pour `kind = "conversion"`).
+
+1. **Téléchargement** (lien http(s) seulement) vers `<cache>/archives/<uuid>-<version>.<zip|plain.pk>`
+   via `<…>.part` : flux, progression, taille vérifiée sur `Content-Length` / `Content-Range`
+   (4 Gio au plus), contenu zip vérifié, reprise par `Range` + `If-Range` (ETag fort ou
+   `Last-Modified`, mémorisé dans la file) ; un `416` ou une réponse `200` repart de zéro. Délai
+   de connexion 15 s, 60 s au plus sans données, pas de délai total. Annulation : `.part` supprimé.
+2. **Conversion** (zip Telmi) : `python telmi2flam.py <archive> -o <cache>/library/.staging/<tâche>.plain.pk
+--progress-json`, processus sans console (`CREATE_NO_WINDOW` + `CREATE_NEW_PROCESS_GROUP`),
+   `PYTHONIOENCODING=utf-8`. stdout est lu ligne par ligne (ligne non JSON ou événement inconnu
+   ignoré) ; stderr, décodé en tolérant les erreurs, ne sert qu'au message de repli (fin du
+   flux) si aucun événement `error` n'est reçu (`code` = `exit_<n>`).
+   **Annulation** : `CTRL_BREAK_EVENT` (le convertisseur nettoie et sort avec 130), envoyé par un
+   court assistant Python sans fenêtre qui s'attache à la console cachée du convertisseur (une
+   application graphique n'a pas de console, et `GenerateConsoleCtrlEvent` ne vise que la
+   sienne) ; arrêt forcé après 5 s de grâce ; puis suppression de `<sortie>.<pid>.part`.
+   Un `.plain.pk` est vérifié (`info.plain`, `uuid.bin`, `main.lua`) et copié ; un dossier `.plain`
+   est empaqueté en zip « stored » (liens et jonctions ignorés).
+3. **Installation** : `uuid` et `version` **revalidés** (`story::validate_story_id`), renommage
+   vers `<cache>/library/<uuid>-<version>.plain.pk` (version inconnue : `0`), chemin vérifié sous
+   `library/`, index `library.json` mis à jour, archive téléchargée supprimée.
+
+- **Concurrence** : `max_downloads` téléchargements simultanés (`settings.json`, 1 à 4, 2 par
+  défaut, relu à chaque tâche), **une** conversion à la fois.
+- **Cache** : chaque tâche tient le portillon du cache (`CatalogService::cache_gate`) en lecture :
+  « Vider le cache » attend la fin des tâches en cours et bloque les nouvelles.
+- **File persistée** : `<config>/install_queue.json` (`schema_version`, tâches non terminées avec
+  leur validateur HTTP). Au démarrage, les tâches sont relancées et les téléchargements reprennent.
+  Les tâches terminées ne sont gardées qu'en mémoire (100 au plus).
+- **Convertisseur** : `<exe>/telmi2flam/telmi2flam.py` (application installée, empaquetage : #21),
+  sinon en développement `tools/telmi2flam/telmi2flam.py` d'un dossier ancêtre. Python : `resolved.python_path`.
+- **Bibliothèque** : `library.json` = `{ schema_version, stories: LibraryEntry[] }` avec
+  `LibraryEntry { uuid, version, title, file, size, installed_at, converter, source: StoryEntry }`.
+  `converter` est l'empreinte `sha256:<12 hex>` de `telmi2flam.py` (pas d'option `--version` :
+  #60). **Une installation par `uuid`** : la dernière installée remplace la précédente (autre
+  version, ou `.plain` / `.plain.pk` de même `uuid` d'un dossier source). Un index corrompu est
+  sauvegardé en `*.bak` et repart vide. `library_list` ignore les entrées dont le fichier a
+  disparu.
+- **Mises à jour** : `hasUpdate(installed, entry)` (front) et `LibraryEntry::is_outdated_by`
+  (Rust) : même `uuid`, versions connues et différentes.
+- **Test réel** (hors CI) : `FLAM_TELMI_ZIP=<archive.zip> cargo test installation_reelle -- --ignored --nocapture`.
 
 ### Données
 
@@ -291,9 +360,13 @@ la progression d'installation est le premier cas prévu.
   "python_path": null,
   "cache_dir": null,
   "default_catalog_url": "https://gist.githubusercontent.com/DantSu/49ed776755f3a01c995e78e3fd1cb79f/raw/telmi-interactive.json",
-  "theme": "system"
+  "theme": "system",
+  "max_downloads": 2
 }
 ```
+
+`max_downloads` (1 à 4, 2 par défaut) borne les téléchargements simultanés du pipeline
+d'installation ; absent d'un fichier ancien, il prend sa valeur par défaut (`#[serde(default)]`).
 
 `theme` (`system`, `light` ou `dark`) est le thème de l'interface. Le champ est lu avec
 `#[serde(default)]` : un fichier écrit avant son ajout prend `system`, sans migration de schéma
@@ -436,5 +509,5 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   d'avertissement (nom de la sauvegarde `.bak`) reste affiché sur tous les écrans jusqu'à
   « J'ai compris » (`config_ack_recovery`).
 
-Le réglage des téléchargements simultanés n'existe pas encore dans `settings.json` : il sera
-ajouté avec le pipeline d'installation (#15).
+Le réglage des téléchargements simultanés (`max_downloads`) existe dans `settings.json` mais
+n'a pas encore de champ dans l'écran Paramètres.
