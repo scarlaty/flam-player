@@ -8,7 +8,11 @@
 //!   (`PYTHONIOENCODING=utf-8` est aussi demandé) et gardé seulement comme repli (fin du flux).
 //! - Arrêt forcé : le convertisseur est rattaché à un Job Object Windows
 //!   (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) ; l'arrêt forcé termine le job, donc aussi ses
-//!   sous-processus.
+//!   sous-processus. Pour qu'aucun sous-processus ne puisse échapper au job, le convertisseur
+//!   est lancé **suspendu** (`CREATE_SUSPENDED`), rattaché au job, puis seulement son thread
+//!   principal est repris : il n'exécute aucune instruction avant d'être dans le job. Si le job ne
+//!   peut pas être créé (avertissement), la conversion continue sans lui : l'arrêt forcé se limite
+//!   alors au processus direct.
 //! - Annulation : `CTRL_BREAK_EVENT` (le convertisseur nettoie ses temporaires et sort avec
 //!   130), puis arrêt forcé après un délai de grâce, puis suppression de `<sortie>.<pid>.part`.
 //!
@@ -39,6 +43,8 @@ const STDERR_TAIL: usize = 4096;
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
 
 /// Assistant d'envoi de `CTRL_BREAK_EVENT` (voir l'en-tête du module). Code de sortie 0 si
 /// l'événement a été émis.
@@ -119,79 +125,150 @@ async fn read_tail<R: AsyncRead + Unpin>(mut reader: R, cap: usize) -> String {
     String::from_utf8_lossy(&tail[start..]).into_owned()
 }
 
-/// Job Object Windows : fermer la dernière poignée (ou le terminer) tue tout le job.
+/// Job Object Windows et reprise du convertisseur lancé suspendu.
 #[cfg(windows)]
-struct Job(windows_sys::Win32::Foundation::HANDLE);
+mod job {
+    use tokio::process::Child;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 
-// SAFETY : une poignée de Job Object peut être utilisée depuis n'importe quel thread.
-#[cfg(windows)]
-unsafe impl Send for Job {}
-#[cfg(windows)]
-unsafe impl Sync for Job {}
+    /// Job Object : fermer la dernière poignée (ou le terminer) tue tout le job.
+    pub struct Job(HANDLE);
 
-#[cfg(windows)]
-impl Job {
-    /// Crée un job `KILL_ON_JOB_CLOSE` et y rattache `child`. `None` si l'une des étapes échoue
-    /// (l'arrêt se limite alors au processus direct).
-    fn attach(child: &Child) -> Option<Self> {
-        use windows_sys::Win32::System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        };
-        let process = child.raw_handle()?;
-        // SAFETY : appels Win32 sur des poignées valides ; la structure est initialisée à zéro.
-        unsafe {
-            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if handle.is_null() {
-                return None;
+    // SAFETY : une poignée de Job Object peut être utilisée depuis n'importe quel thread.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        /// Crée un job `KILL_ON_JOB_CLOSE` et y rattache `child`. `None` si l'une des étapes
+        /// échoue (l'arrêt se limite alors au processus direct).
+        pub fn attach(child: &Child) -> Option<Self> {
+            let process = child.raw_handle()?;
+            // SAFETY : appels Win32 sur des poignées valides ; la structure est initialisée à zéro.
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return None;
+                }
+                let job = Job(handle);
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let ok = SetInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformation,
+                    std::ptr::addr_of!(info).cast(),
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if ok == 0 || AssignProcessToJobObject(handle, process as _) == 0 {
+                    return None;
+                }
+                Some(job)
             }
-            let job = Job(handle);
-            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            let ok = SetInformationJobObject(
-                handle,
-                JobObjectExtendedLimitInformation,
-                std::ptr::addr_of!(info).cast(),
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            );
-            if ok == 0 || AssignProcessToJobObject(handle, process as _) == 0 {
-                return None;
+        }
+
+        pub fn terminate(&self) {
+            // SAFETY : poignée de job valide tant que `self` existe.
+            unsafe {
+                TerminateJobObject(self.0, 1);
             }
-            Some(job)
+        }
+
+        /// Poignée brute (tests : `IsProcessInJob`).
+        #[cfg(test)]
+        pub fn raw(&self) -> HANDLE {
+            self.0
         }
     }
 
-    fn terminate(&self) {
-        // SAFETY : poignée de job valide tant que `self` existe.
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY : poignée possédée, fermée une seule fois.
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    /// Reprend le thread principal d'un processus lancé avec `CREATE_SUSPENDED` (le seul thread
+    /// du processus à ce stade). `tokio` ne donne pas la poignée du thread : on le retrouve par
+    /// un instantané des threads du système, filtré sur le pid.
+    pub fn resume(child: &Child) -> std::io::Result<()> {
+        let pid = child
+            .id()
+            .ok_or_else(|| std::io::Error::other("processus déjà terminé"))?;
+        // SAFETY : instantané et poignées de thread fermés avant le retour ; `THREADENTRY32`
+        // est initialisée à zéro avec `dwSize` renseigné, comme l'exige l'API.
         unsafe {
-            windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1);
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut entry: THREADENTRY32 = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+            let mut resumed = false;
+            let mut failure = None;
+            let mut more = Thread32First(snapshot, &mut entry) != 0;
+            while more {
+                if entry.th32OwnerProcessID == pid {
+                    let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                    if thread.is_null() {
+                        failure = Some(std::io::Error::last_os_error());
+                    } else {
+                        if ResumeThread(thread) == u32::MAX {
+                            failure = Some(std::io::Error::last_os_error());
+                        } else {
+                            resumed = true;
+                        }
+                        CloseHandle(thread);
+                    }
+                }
+                more = Thread32Next(snapshot, &mut entry) != 0;
+            }
+            CloseHandle(snapshot);
+            match (resumed, failure) {
+                (true, _) => Ok(()),
+                (false, Some(err)) => Err(err),
+                (false, None) => Err(std::io::Error::other("thread principal introuvable")),
+            }
         }
     }
 }
 
-#[cfg(windows)]
-impl Drop for Job {
-    fn drop(&mut self) {
-        // SAFETY : poignée possédée, fermée une seule fois.
-        unsafe {
-            windows_sys::Win32::Foundation::CloseHandle(self.0);
+/// Hors Windows : pas de Job Object ni de lancement suspendu. `Job` est inhabité (aucun code
+/// mort : `attach` ne renvoie jamais de valeur, `terminate` n'est donc jamais appelée).
+#[cfg(not(windows))]
+mod job {
+    use tokio::process::Child;
+
+    pub enum Job {}
+
+    impl Job {
+        pub fn attach(_child: &Child) -> Option<Self> {
+            None
+        }
+
+        pub fn terminate(&self) {
+            match *self {}
         }
     }
-}
 
-#[cfg(not(windows))]
-struct Job;
-
-#[cfg(not(windows))]
-impl Job {
-    fn attach(_child: &Child) -> Option<Self> {
-        None
+    pub fn resume(_child: &Child) -> std::io::Result<()> {
+        Ok(())
     }
-    fn terminate(&self) {}
 }
 
-/// Interpréteur durci, lancé depuis `cwd` (un dossier de l'application) :
+use job::Job;
+
+/// Interpréteur durci, lancé depuis `cwd` (un dossier de l'application), **suspendu** sous
+/// Windows : l'appelant le rattache au job puis le reprend ([`job::resume`]) :
 /// - `-E` : variables `PYTHON*` ignorées (`PYTHONPATH`, `PYTHONSTARTUP`…) ;
 /// - `-s` : pas de `site-packages` utilisateur ;
 /// - `-B` : aucun `__pycache__` écrit (le dossier d'une application installée doit rester
@@ -209,7 +286,7 @@ fn command(python: &Path, cwd: &Path) -> Command {
         .stdin(Stdio::null())
         .kill_on_drop(true);
     #[cfg(windows)]
-    cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_SUSPENDED);
     cmd
 }
 
@@ -317,7 +394,21 @@ pub async fn convert(
         })?;
     let stdout = child.stdout.take().expect("stdout redirigé");
     let stderr = child.stderr.take().expect("stderr redirigé");
+    // Lancé suspendu : rattaché au job avant d'exécuter la moindre instruction. Sans job (échec de
+    // l'attache), il est tout de même repris ; si la reprise échoue, il est tué (`kill_on_drop`).
     let job = Job::attach(&child);
+    if job.is_none() {
+        tracing::warn!(
+            "Job Object indisponible : l'arrêt forcé se limitera au convertisseur direct"
+        );
+    }
+    if let Err(err) = job::resume(&child) {
+        let _ = child.start_kill();
+        return Err(AppError::ConverterUnavailable(format!(
+            "impossible de reprendre Python ({}) : {err}",
+            req.python.display()
+        )));
+    }
     let stderr_task = tokio::spawn(read_tail(stderr, STDERR_TAIL));
 
     let mut reader = BufReader::new(stdout);
@@ -557,5 +648,38 @@ b"
             let restes: Vec<_> = std::fs::read_dir(out.path()).unwrap().collect();
             assert!(restes.is_empty(), "fichiers résiduels : {restes:?}");
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod job_tests {
+    use super::*;
+    use std::os::windows::process::CommandExt as _;
+
+    /// Rattaché pendant la suspension, repris ensuite : le processus est dans le job avant sa
+    /// première instruction, et s'exécute normalement une fois repris.
+    #[tokio::test]
+    async fn lance_suspendu_rattache_au_job_puis_repris() {
+        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+        let mut std_cmd = std::process::Command::new("cmd");
+        std_cmd
+            .args(["/C", "exit 3"])
+            .creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
+        let mut child = Command::from(std_cmd).kill_on_drop(true).spawn().unwrap();
+        let job = Job::attach(&child).expect("job");
+        let mut in_job = 0;
+        // SAFETY : poignées valides (processus et job) tant que `child` et `job` existent.
+        let ok =
+            unsafe { IsProcessInJob(child.raw_handle().unwrap() as _, job.raw(), &mut in_job) };
+        assert!(ok != 0 && in_job != 0, "dans le job avant la reprise");
+        // Suspendu : il n'a pas pu sortir.
+        let early = tokio::time::timeout(Duration::from_millis(300), child.wait()).await;
+        assert!(early.is_err(), "suspendu : ne s'exécute pas");
+        job::resume(&child).unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(20), child.wait())
+            .await
+            .expect("repris : il se termine")
+            .unwrap();
+        assert_eq!(status.code(), Some(3));
     }
 }
