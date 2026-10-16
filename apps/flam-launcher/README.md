@@ -7,10 +7,68 @@ interface React + TypeScript (strict). Licence **MIT** (voir [LICENSE](LICENSE))
 L'ergonomie s'inspire de TelmiSync, **sans reprendre de code ni de style** (TelmiSync est
 en GPL-3.0). Suivi : issue « Suivi : surcouche flam-launcher ».
 
-Ce document décrit l'architecture visée. Les éléments marqués _prévu_ n'existent pas encore
+Ce document décrit l'installation, l'utilisation, le dépannage puis l'architecture visée. Les éléments marqués _prévu_ n'existent pas encore
 et arrivent avec les issues du jalon M3.
 
-## Prérequis
+## Installation (Windows)
+
+1. Télécharger l'installateur `Flam Launcher_<version>_x64-setup.exe` (artefact de la CI ou
+   version publiée).
+2. Le lancer : l'installation se fait **pour l'utilisateur courant**, sans droits
+   d'administrateur (dossier par défaut `%LOCALAPPDATA%\Flam Launcher`).
+3. **SmartScreen** : l'installateur n'est **pas signé**. Windows affiche « Windows a protégé
+   votre ordinateur » : cliquer sur « Informations complémentaires » puis « Exécuter quand
+   même ». Ce message disparaîtra si l'éditeur est un jour signé.
+4. Lancer « Flam Launcher » depuis le menu Démarrer. WebView2 est requis (présent sur Windows
+   11 et sur Windows 10 à jour).
+
+L'installation contient tout : `flam-launcher.exe`, `flam-player.exe` et `SDL2.dll` (le
+player), le convertisseur `telmi2flam/` avec son Python embarqué (aucun Python à installer) et
+le runtime Lunii, ainsi que `LICENSES.md` et `licenses/`. Désinstaller : « Applications
+installées » de Windows, ou `uninstall.exe` du dossier d'installation. Les données vivent hors
+de ce dossier et survivent à une mise à jour ou une désinstallation : sources, paramètres et
+sauvegardes de progression sous `%APPDATA%`, cache (catalogues, téléchargements et histoires
+installées de « Mes histoires ») sous `%LOCALAPPDATA%` (« Paramètres » → « Cache » indique son
+emplacement).
+
+**Désinstallation et données** : la désinstallation retire le dossier d'installation seulement.
+Les données (`%APPDATA%lam-launcher` : sources, paramètres, sauvegardes ; et
+`%LOCALAPPDATA%lam-launcher` : cache et histoires installées) sont **conservées**, y compris si
+l'on coche « supprimer les données de l'application » du désinstallateur, qui ne les connaît pas :
+pour tout effacer, supprimer ces deux dossiers à la main.
+
+## Ajouter des sources
+
+Écran **Sources** (« Ajouter une source », puis « Ajouter un catalogue » ou « Ajouter un dossier ») :
+
+- **Catalogue** : l'adresse (`https://…`) d'un catalogue au format Telmi Store (un JSON
+  `{ "data": [ { uuid, title, download, … } ] }`). Les archives `.zip` Telmi qu'il liste sont
+  téléchargées puis converties à l'installation. Le catalogue est gardé en cache : il reste
+  consultable hors ligne.
+- **Dossier local** : un dossier contenant des archives Telmi `.zip` (converties à
+  l'installation) ou des histoires déjà converties `.plain` / `.plain.pk` (copiées telles
+  quelles). Le dossier n'est jamais modifié.
+
+Dans la bibliothèque d'une source, « Installer » télécharge et convertit (progression et
+annulation possibles), puis « Jouer » lance l'histoire dans `flam-player` ; la fermeture du
+player ramène à la surcouche. Les histoires installées sont sous « Mes histoires ».
+
+## Dépannage
+
+| Symptôme                               | Piste                                                                                                                                                                                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows « a protégé votre ordinateur » | Installateur non signé : « Informations complémentaires » → « Exécuter quand même »                                                                                                                                             |
+| La fenêtre reste blanche au démarrage  | Installer ou réparer WebView2 (Microsoft Edge WebView2 Runtime)                                                                                                                                                                 |
+| « flam-player est introuvable »        | Réinstaller ; sinon indiquer `flam-player.exe` dans « Paramètres ». Un antivirus peut avoir mis le fichier en quarantaine                                                                                                       |
+| « Python introuvable »                 | Ne devrait pas arriver avec l'installateur (Python embarqué). Dans une installation partielle ou un build de développement, indiquer `python.exe` dans « Paramètres ». Avec le convertisseur embarqué, ce chemin est **ignoré** |
+| Une conversion échoue                  | Le message cite le code de `telmi2flam` ; l'histoire peut être incompatible (badge sur la fiche)                                                                                                                                |
+| Catalogue « hors ligne »               | Réseau ou serveur indisponible : le cache est affiché. « Actualiser » réessaie                                                                                                                                                  |
+| Disque plein                           | « Paramètres » → « Cache » → « Vider le cache » : supprime aussi les histoires installées (à réinstaller depuis leur source) ; la progression sauvegardée et les sources sont conservées                                        |
+| Paramètres ou sources réinitialisés    | Un fichier de configuration corrompu a été sauvegardé en `*.bak` et remplacé ; un bandeau l'indique                                                                                                                             |
+
+## Développement
+
+### Prérequis
 
 Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2, Node 24+ et npm.
 
@@ -18,16 +76,18 @@ Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2, Node 2
 
 Depuis `apps/flam-launcher/` :
 
-| Commande                             | Effet                                          |
-| ------------------------------------ | ---------------------------------------------- |
-| `npm install`                        | Installe les dépendances front et la CLI Tauri |
-| `npm run tauri dev`                  | Lance l'application en développement           |
-| `npm run dev` / `npm run build`      | Front seul (Vite) / build du front             |
-| `npm run lint` / `npm run typecheck` | ESLint / TypeScript strict                     |
-| `npm test`                           | Vitest + Testing Library (API Tauri simulée)   |
-| `npm run tauri build`                | Exécutable et installeurs (MSI, NSIS)          |
-| `npm run tauri build -- --no-bundle` | Exécutable seul, sans installeur               |
-| `npm run build:converter`            | Construit le convertisseur embarqué (réseau)   |
+| Commande                             | Effet                                                                       |
+| ------------------------------------ | --------------------------------------------------------------------------- |
+| `npm install`                        | Installe les dépendances front et la CLI Tauri                              |
+| `npm run tauri dev`                  | Lance l'application en développement                                        |
+| `npm run dev` / `npm run build`      | Front seul (Vite) / build du front                                          |
+| `npm run lint` / `npm run typecheck` | ESLint / TypeScript strict                                                  |
+| `npm test`                           | Vitest + Testing Library (API Tauri simulée)                                |
+| `npm run tauri build`                | Exécutable seul avec installeurs MSI et NSIS (sans player ni convertisseur) |
+| `npm run build:converter`            | Construit le convertisseur embarqué (réseau)                                |
+| `npm run build:player`               | Compile `flam-player.exe` (Release) et rassemble `SDL2.dll` et les licences |
+| `npm run build:installer`            | Enchaîne les deux scripts puis produit l'installateur NSIS complet          |
+| `npm run test:e2e`                   | Test de bout en bout (voir « Test de bout en bout »)                        |
 
 Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
 
@@ -37,7 +97,7 @@ L'application installée ne suppose aucun Python sur la machine : le convertisse
 un Python embarquable officiel (3.14.8, signé PSF) et Pillow 12.3.0, sous `<exe>/telmi2flam/`
 (`python/python.exe`, `telmi2flam.py`, `lif.py`, `mp3map.py`, `engine/`, `runtime/`,
 `LICENSES.md`, `BUILD.txt`). `convert.rs` et l'annulation Ctrl+Break sont inchangés : ils lancent
-`python -E -s -u -X utf8 telmi2flam.py`. Environ 20 Mo sur disque, 9 Mo compressés dans
+`python -E -s -B -u -X utf8 telmi2flam.py`. Environ 20 Mo sur disque, 9 Mo compressés dans
 l'installeur.
 
 1. **Construire l'artefact** (réseau, PowerShell seul, sans Python sur la machine de build) :
@@ -45,14 +105,18 @@ l'installeur.
    **vérifie leur SHA-256** (publié par python.org / PyPI), allège le paquet, écrit
    `build/telmi2flam/` (ignoré par Git) puis le contrôle sans Python dans le `PATH`.
 2. **L'embarquer** : `src-tauri/tauri.bundle.conf.json` déclare la ressource
-   `../build/telmi2flam/` vers `telmi2flam/`. Il est passé explicitement, car l'ajouter à
-   `tauri.conf.json` ferait échouer tout build sans l'artefact :
+   `../build/telmi2flam/` vers `telmi2flam/` (voir « Installateur Windows » plus bas pour le
+   reste). Il est passé explicitement, car l'ajouter à `tauri.conf.json` ferait échouer tout
+   build sans les artefacts :
 
    ```
    npm run build:converter
-   npm run tauri build -- --config src-tauri/tauri.bundle.conf.json                 # installeurs
+   npm run tauri build -- --config src-tauri/tauri.bundle.conf.json                 # installateur NSIS
    npm run tauri build -- --no-bundle --config src-tauri/tauri.bundle.conf.json     # exe seul
    ```
+
+   Le convertisseur est toujours lancé avec `-B` (aucun `__pycache__` écrit dans le dossier
+   d'installation : le désinstallateur ne les connaîtrait pas).
 
    Même avec `--no-bundle`, Tauri copie `telmi2flam/` à côté de l'exe dans
    `src-tauri/target/release/` (vérifié : copie identique à l'artefact). Sans `--config`, le
@@ -74,10 +138,102 @@ l'installeur.
    contenu sous licence. Pillow embarqué n'a pas FreeType : avec le Python embarqué, retirer
    `font_size=48` de ce script.
 
-**Licences redistribuées** : Python (PSF-2.0 et composants) et Pillow (MIT-CMU et bibliothèques
-intégrées) ; leurs textes sont dans l'artefact et `LICENSES.md` les référence. Les licences de
-`runtime/` et du dépôt (« usage personnel et éducatif ») restent à confirmer avant
-redistribution (#21).
+**Python configuré ignoré** : quand le convertisseur embarqué est présent, son Python est
+toujours utilisé ; le chemin de Python des paramètres ne sert que de repli (build de
+développement, installation partielle). L'écran Paramètres l'indique.
+
+**Licences redistribuées** : `telmi2flam/LICENSES.md` (produit par `build-converter.ps1`) liste
+Python (PSF-2.0, libffi, libtommath…), `python.cat`, `vcruntime140*.dll` (redistribuables
+Microsoft), Pillow (renvoi vers `licenses/LICENSE` de la roue, qui regroupe les bibliothèques
+intégrées), le runtime Lunii et les scripts du dépôt. `LICENSES.md` à la racine de
+l'installation couvre le reste (flam-launcher MIT, flam-player, SDL2 zlib, Lua MIT, LVGL MIT,
+minimp3 CC0, polices Nunito et Montserrat OFL) ; les textes sont copiés des sous-modules dans
+`licenses/` par `build-player.ps1`. Le mainteneur confirme avoir les droits de redistribution du
+runtime Lunii et du dépôt (« usage personnel et éducatif »).
+
+## Installateur Windows
+
+Installateur **NSIS**, par utilisateur (`installMode: currentUser`, sans droits
+d'administrateur), **non signé** (SmartScreen avertit). Prérequis de build : Rust, Node 24+,
+Visual Studio **2022** avec les outils C++ x64 (le build Rust doit se faire depuis
+« x64 Native Tools » ou après `vcvars64.bat`), CMake et Ninja (`pip install cmake ninja` si
+absents), sous-modules initialisés (`git submodule update --init --recursive`), réseau (Python,
+Pillow, NSIS).
+
+```
+npm run build:installer      # = build:converter + build:player + tauri build --config …
+```
+
+**Runtime Visual C++** : `flam-player.exe` importe `VCRUNTIME140.dll`, absente d'un Windows
+propre. Choix : livrer `vcruntime140.dll` (fichier redistribuable de Visual Studio, copié depuis
+son dossier `VC\Redist` par `build-player.ps1`) à côté du player plutôt que passer en runtime
+statique, qui changerait les options de compilation de tout le player, de SDL2, de Lua et de LVGL
+sans changer le résultat pour l'utilisateur. Le launcher (Rust) et `SDL2.dll` n'importent que
+des DLL Windows (UCRT, Windows 10 et plus). `scripts/check-imports.ps1 <dossier>` (étape de la CI,
+sur l'installation) liste les imports des trois binaires avec `dumpbin /dependents` et échoue si
+une DLL du runtime VC++ est importée sans être à côté du binaire, ou si une autre DLL est
+introuvable.
+
+soit, en détail :
+
+1. `npm run build:converter` : `build/telmi2flam/` (voir plus haut) ;
+2. `npm run build:player` : compile `flam-player.exe` en Release (`<dépôt>/build/release`,
+   `do_build.bat` et son Debug ne sont pas touchés) et dépose `flam-player.exe`, `SDL2.dll` et
+   `licenses/` dans `build/player/` ;
+3. `npm run tauri build -- --config src-tauri/tauri.bundle.conf.json` : produit
+   `src-tauri/target/release/bundle/nsis/Flam Launcher_<version>_x64-setup.exe` (environ 11 Mo)
+   et dépose les mêmes ressources à côté de `flam-launcher.exe`.
+
+`tauri.bundle.conf.json` (fusionné avec `tauri.conf.json`) restreint les cibles à `nsis` et
+déclare les ressources : `telmi2flam/` (Python, Pillow, scripts, `runtime/`), `flam-player.exe` et
+`SDL2.dll` **à côté de l'exécutable** (c'est là que `settings::detect_player` les cherche),
+`vcruntime140.dll`, `licenses/` et `LICENSES.md`. Le launcher lance le player avec pour dossier courant celui de
+`flam-player.exe` : `SDL2.dll` est ainsi trouvée. Installation sans interaction :
+`"Flam Launcher_<version>_x64-setup.exe" /S /D=<dossier>` (`/D=` en dernier, sans guillemets) ;
+désinstallation : `<dossier>\uninstall.exe /S _?=<dossier>`.
+
+### Test de bout en bout
+
+`src-tauri/tests/e2e.rs` pilote les **services réels** du backend, sans WebView :
+`CatalogService` lit un catalogue servi par un serveur HTTP local factice, `InstallService`
+télécharge l'archive et la convertit avec le vrai `telmi2flam.py` (Python embarqué), `Library`
+la liste, `PlayerService` lance le vrai `flam-player.exe` (`SDL_VIDEODRIVER=dummy`,
+`SDL_AUDIODRIVER=dummy`, `SDL_RENDER_DRIVER=software`), puis le player est fermé et
+l'événement `exited` est reçu. Le player ne se termine pas seul : sa fin est obtenue par
+`taskkill` (garde RAII qui le ferme aussi si le test échoue), pas par une sortie volontaire ; le
+test vérifie qu'il charge l'histoire et reste actif avant cela. L'archive est synthétique (images unies, MP3 muets), générée par
+le test : aucun contenu sous licence. Choix : tester le backend Rust plutôt que piloter
+l'interface par WebDriver, qui exigerait `tauri-driver` et `msedgedriver` appariés à la version
+de WebView2 (fragile, lent) alors que la logique à risque est dans le backend ; l'interface a
+ses tests Vitest et la liaison front/backend repose sur des types miroirs.
+
+```
+npm run build:installer
+npm run test:e2e             # sur src-tauri/target/release ; ou FLAM_E2E_INSTALL_DIR=<installation>
+```
+
+Sans `FLAM_E2E_REQUIRE=1` et sans `flam-player.exe`, `cargo test` **saute** ce test : il passe au
+vert sans rien vérifier, et le message n'apparaît qu'avec `-- --nocapture` ; `npm run test:e2e` et
+la CI posent `FLAM_E2E_REQUIRE=1` (le test échoue alors si un prérequis manque) ;
+variables : `FLAM_E2E_INSTALL_DIR`, ou `FLAM_E2E_PLAYER` + `FLAM_E2E_CONVERTER_DIR`. La CI
+(`.github/workflows/launcher.yml`) compile le player, construit l'installateur, l'installe en
+silence, y exécute ce test puis le désinstalle en vérifiant qu'il ne reste aucun fichier.
+
+### À vérifier sur une session Windows propre
+
+Non couvert par la CI ni par le poste de développement (où Python, Visual Studio et WebView2
+sont déjà présents) : à cocher par le mainteneur avant publication.
+
+- [ ] L'installateur s'exécute sans droits d'administrateur ; SmartScreen propose
+      « Exécuter quand même ».
+- [ ] Aucun Python ni Visual Studio sur la machine : une histoire Telmi s'installe
+      (convertisseur embarqué) et se joue dans `flam-player`.
+- [ ] Windows 10 et Windows 11 ; WebView2 absent : comportement et message.
+- [ ] Raccourci du menu Démarrer, icône, entrée dans « Applications installées ».
+- [ ] Fenêtre du player (carte graphique réelle, audio réel) : image et son.
+- [ ] Mise à jour par-dessus une version installée ; désinstallation (données utilisateur
+      conservées, dossier d'installation vide).
+- [ ] Antivirus : pas de quarantaine de `flam-player.exe` ni de `python.exe`.
 
 ## Architecture
 
@@ -371,6 +527,9 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   du cache en lecture), vidée avant chaque lancement, puis lancée. Clé : `library:<uuid>` ou
   `folder:<source>:<entrée>`. La source doit être, sans suivre de lien, un fichier ordinaire
   (`.plain.pk`) ou un dossier (`.plain`) conforme au `kind` de l'entrée.
+  Le refus d'une **jonction** est testé en CI ; celui d'un **lien symbolique** ne l'est pas (test
+  `#[ignore]` : sa création demande le mode développeur ou l'élévation) : à lancer à la main avec
+  `cargo test check_source_refuse_les_liens_symboliques -- --ignored`.
 - **Sauvegardes hors cache** : la progression vit dans `<config>/saves/<empreinte>/` (données
   de l'application, **jamais effacées par « Vider le cache »**). Avant le lancement elle est
   recopiée vers `<copie>/saves/` ; à la fin du player, succès ou échec (avant la libération du
@@ -385,8 +544,15 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   `<config>/saves/<empreinte>.rejected` (**une seule génération** : un nouveau rejet remplace
   le précédent, remplacé seulement une fois le nouveau contenu en sécurité dans
   `<empreinte>.rejected.new` ; si le renommage échoue (autre volume), copie sans aucune limite
-  (profondeur comprise) puis suppression de la source seulement après réussite : jamais de
-  suppression sans copie), la version précédente est
+  (profondeur comprise ; parcours de copie itératif, sans récursion) puis suppression de la
+  source seulement après réussite : jamais de suppression sans copie ; la copie se fait dans
+  `<empreinte>.rejected.new.part` (partiel si l'on s'arrête en route), puis un renommage atomique
+  en `.rejected.new`, toujours complet, avant la suppression de la source ; le repli par copie **ignore** les liens de la source, qui
+  disparaissent avec elle, sans toucher à leur cible). Si le remplacement de `.rejected` échoue
+  **après** ce déplacement, ce n'est **pas une erreur** : la progression est intacte dans
+  `.rejected.new`, la note le dit à l'utilisateur (`saves_error`) et l'état est réparé au
+  lancement ou rapatriement suivant (`.rejected.new` promu en `.rejected`, `.rejected.new.part` partiel
+  supprimé). La version précédente est
   conservée, un avertissement est tracé et le message est renvoyé dans
   `player://exited.saves_error` (`string | null` côté TS) : l'interface doit l'afficher. Même
   traitement d'une sauvegarde conservée devenue trop grosse au moment de la restaurer (le
@@ -394,7 +560,11 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   Au-delà de 16 niveaux, c'est une erreur explicite (« arborescence trop profonde »), plus
   jamais une copie tronquée en silence. Les autres échecs (disque plein, fichier verrouillé)
   restent des erreurs : au rapatriement de fin de partie ils sont aussi dans `saves_error`, au
-  lancement ils refusent le lancement sans rien supprimer.
+  lancement ils refusent le lancement sans rien supprimer. Quand le lancement échoue **après**
+  la préparation de la copie de travail (`story_file_missing`, `player_unavailable` au spawn),
+  les mises de côté déjà faites n'iront à aucun `player://exited` : leur texte est ajouté au
+  message de l'erreur de la commande (« … Information sur la progression : … », `kind`
+  inchangé) pour que l'interface l'affiche (`AppError::with_note`).
 - **Compromis sur un plantage du player** : le rapatriement a lieu aussi quand le player
   échoue ; un `saves/` partiel (écriture interrompue) remplace donc la version précédente, qui
   n'est pas gardée au-delà de l'échange (`.old` supprimé après succès). Choix assumé : sans lui,
@@ -408,11 +578,15 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   les deux.
 - **Désinstallation et mise à jour** : `library_remove(uuid, purge_saves?)` supprime la copie de
   travail `<cache>/play/<empreinte>/` ; la progression (`<config>/saves/<empreinte>/` et ses
-  `.tmp`, `.old`, `.rejected`) n'est supprimée que si `purge_saves` est vrai (défaut : faux,
+  `.tmp`, `.old`, `.rejected`, `.rejected.new`, `.rejected.new.part`) n'est supprimée que
+  si `purge_saves` est vrai (défaut : faux,
   une progression d'enfant ne se perd jamais par défaut ; réinstaller l'histoire la retrouve).
   Refusé avec `player_busy` si le player lit cette histoire. Tout se passe sous le créneau du player (un lancement ne peut pas s'intercaler ; un lancement
-  qui attendait relit l'index sous le créneau et reçoit `not_found`) : vérification de
-  l'installation (`not_found` avant toute suppression), puis purge, puis retrait. La purge est
+  qui attendait relit l'index sous le créneau et reçoit `not_found`) : verrou de la
+  bibliothèque (attente de **2 s au plus** : si une autre instance le tient, erreur `io`
+  « bibliothèque utilisée par une autre instance… réessayer » sans rien purger, pour ne pas
+  retarder `player_launch` ni la sortie du player), vérification de l'installation (`not_found`
+  avant toute suppression), puis purge, puis retrait, le tout sous ce verrou. La purge est
   faite **avant** le retrait de la bibliothèque : un échec laisse
   l'histoire installée (désinstallation à retenter). Les `.rejected` ne sont libérés qu'avec
   `purge_saves` (une génération par histoire au plus). Aucun composant n'affiche encore
@@ -460,7 +634,7 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    de connexion 15 s, 60 s au plus sans données, pas de délai total. Annulation : `.part` supprimé.
 2. **Conversion** (zip Telmi) : `python telmi2flam.py <archive> -o <cache>/library/.staging/<tâche>.plain.pk
 --progress-json`, processus sans console (`CREATE_NO_WINDOW` + `CREATE_NEW_PROCESS_GROUP`),
-   interpréteur durci (`-E -s -u -X utf8`, lancé depuis `library/.staging/` ; `-I` retirerait
+   interpréteur durci (`-E -s -B -u -X utf8`, lancé depuis `library/.staging/` ; `-I` retirerait
    le dossier du script de `sys.path`, d'où `telmi2flam` importe ses modules). stdout est lu ligne par ligne (ligne non JSON ou événement inconnu
    ignoré) ; stderr, décodé en tolérant les erreurs, ne sert qu'au message de repli (fin du
    flux, lu par morceaux dans un tampon borné à 4 Kio) si aucun événement `error` n'est reçu
@@ -468,7 +642,8 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    à un Job Object Windows (`KILL_ON_JOB_CLOSE`), puis son thread principal est repris : aucun
    sous-processus ne peut échapper au job, et l'arrêt forcé les termine tous. Si le job ne peut pas
    être créé (avertissement tracé), la conversion continue sans lui : l'arrêt forcé se limite alors
-   au processus direct.
+   au processus direct. La création du job et la reprise (appels Win32 bloquants) s'exécutent
+   hors du runtime (`spawn_blocking`).
    **Annulation** : `CTRL_BREAK_EVENT` (le convertisseur nettoie et sort avec 130), envoyé par un
    court assistant Python isolé (`-I`) sans fenêtre qui s'attache à la console cachée du convertisseur (une
    application graphique n'a pas de console, et `GenerateConsoleCtrlEvent` ne vise que la
@@ -504,12 +679,27 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    « installation de `<fichier>` refusée : le marqueur `.staging/<x>.pending` ne peut pas être
    jugé (index perdu, sauvegardé en `library.json.*.bak`). Vérifier `library/<x>`, puis
    supprimer ce marqueur (et `.staging/<x>.bak` s'il existe) ou restaurer l'index depuis la
-   sauvegarde, et réessayer ». Ceux des autres histoires sont laissés intacts (avertissement).
+   sauvegarde, et réessayer ». Ce refus est **précontrôlé avant le téléchargement** (au début de la
+   tâche) quand l'index est perdu. Les marqueurs non jugeables des **autres** histoires ne
+   bloquent pas l'installation, mais ils sont **neutralisés** au moment où l'index est réécrit :
+   `.staging/<x>.pending` devient `.staging/<x>.pending.unjudged` (avertissement tracé). Sans
+   cela, la réconciliation suivante les jugerait inachevés et supprimerait leur fichier (ou
+   restaurerait son `.bak`). La réconciliation ne lit pas les `*.pending.unjudged` et ne touche
+   jamais à leur fichier ni à leur `.bak` : à traiter à la main (vérifier `library/<x>`, puis
+   supprimer le `.pending.unjudged` **et** `.staging/<x>.bak` s'il existe : tant que ce `.bak`
+   subsiste, réinstaller le même fichier est refusé « restauration ou nettoyage précédent non
+   terminé »).
+   **Fuite ponctuelle** : un marqueur écrit par une version antérieure de l'application ne
+   liste pas les anciennes versions du même `uuid` (`old_files`) ; s'il est terminé après la
+   mise à jour de l'application, ces anciens `.plain.pk` restent dans `library/`, non indexés et
+   sans marqueur, donc jamais supprimés (choix sûr) : à supprimer à la main, une seule fois.
    Aucun `.plain.pk` réintégré n'est perdu. L'attente du verrou de la bibliothèque est unique
    (30 s) : au-delà, erreur « bibliothèque utilisée par une autre instance… réessayer » et le
    fichier préparé est supprimé.
    Publication et réconciliation tiennent un verrou inter-processus
-   (`library/.lock`, aussi entre threads) ; `install` et `remove` l'attendent au plus 30 s
+   (`library/.lock`, aussi entre threads, sans autre verrou devant lui) ; `library_list` ne fait
+   que l'essayer, donc ne se fige jamais derrière une installation ou une autre instance ;
+   `install` et `remove` l'attendent au plus 30 s (2 s pour `library_remove`, voir plus haut)
    (erreur `io` explicite « bibliothèque occupée… réessayer plus tard » au-delà) ; si une autre instance le tient, ou si le verrou ne peut pas être ouvert,
    la liste lit simplement l'index sans réconcilier (l'installation et la suppression, elles,
    échouent). Les avertissements répétés à chaque `list` (verrou indisponible, restauration ou
@@ -680,7 +870,8 @@ travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
 - TypeScript est épinglé à 6.0.3 : `typescript-eslint` n'accepte pas encore TypeScript >= 6.1.
   À relever quand le plugin le permettra.
 - Le premier `npm run tauri build` télécharge WiX (MSI) et NSIS (installeur) depuis GitHub ;
-  les builds suivants les réutilisent. Cibles de bundle : `nsis` et `msi`.
+  les builds suivants les réutilisent. Cibles de bundle : `nsis` et `msi` (`tauri.conf.json`),
+  `nsis` seul avec `tauri.bundle.conf.json` (installateur livré).
 - Contrôles : `npm run lint` (sans avertissement), `npm run format:check`, `npm run typecheck`,
   `npm test`, puis dans `src-tauri/` `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
 
@@ -690,7 +881,10 @@ travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
   verrouillés. `style-src` garde `'unsafe-inline'` : Tauri et React injectent des styles en ligne
   (attributs `style`), qu'une CSP à nonce ne couvre pas ; aucun script en ligne n'est autorisé.
 - La capability `core:default` (`src-tauri/capabilities/default.json`) est volontairement large
-  pour le squelette : elle sera restreinte permission par permission au fil des issues.
+  pour le squelette : elle sera restreinte permission par permission au fil des issues. Y
+  s'ajoutent `core:window:allow-minimize`, `allow-unminimize` et `allow-set-focus` (réduire la
+  fenêtre pendant la lecture, option _Réduire la fenêtre pendant la lecture_), appelées depuis
+  `src/api/window.ts` par l'API de fenêtre de Tauri, sans code Rust.
 - Plugin `tauri-plugin-dialog` (sélecteurs natifs de dossier et de fichier `.exe`) avec la seule
   permission **`dialog:allow-open`** : ni `dialog:default` (messages, confirmations, sauvegarde)
   ni accès au système de fichiers depuis le front. Le chemin choisi n'est qu'une proposition :
@@ -761,11 +955,28 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   l'histoire (`player_launch`) à la fin de l'installation ; l'annulation ou le retrait de la tâche
   retire ce lancement, un échec le garde pour _Réessayer_. Un seul player à la fois : _Jouer_ est
   désactivé tant qu'il tourne. À la fin de la lecture, une notification donne l'issue (dernières
-  lignes de stderr si le player s'est arrêté en erreur) et la fiche reste ouverte, prête à rejouer.
+  lignes de stderr si le player s'est arrêté en erreur) et, si `saves_error` n'est pas vide, une
+  seconde notification (erreur, à fermer à la main) dit que la progression n'a pas pu être
+  conservée telle quelle. Quand la lecture a été demandée **depuis la fiche** (_Jouer_,
+  _Jouer depuis le dossier_, _Télécharger et jouer_), l'application revient à la fin sur cette
+  fiche (`#/library/<source>`, fiche rouverte) même si l'utilisateur a changé d'écran ou de
+  source entre-temps ; une lecture lancée depuis la carte ne rouvre rien. Le retour est abandonné (sans erreur) si une fiche ou un dialogue est déjà ouvert à ce moment, si la source est en erreur ou supprimée, ou si l'histoire n'y est plus ; un lancement refusé n'efface que sa propre demande. Si l'option
+  _Réduire la fenêtre pendant la lecture_ (Paramètres > Lecture, désactivée par défaut) est
+  cochée, la fenêtre est réduite à `player://started` et rétablie, avec le focus, à
+  `player://exited` ; c'est une préférence du poste, gardée dans le stockage local de la
+  fenêtre (`localStorage`, pas dans `settings.json`), et un échec de réduction n'empêche jamais
+  la lecture. À la fermeture de la fiche (bouton, Échap, après une confirmation) le focus revient
+  à la carte d'origine (ou, pour une fiche rouverte automatiquement, à la carte de l'histoire).
+  _Supprimer_ demande une confirmation avec la case _Supprimer aussi la progression_
+  (décochée à chaque ouverture) : décochée, `library_remove(uuid)` conserve les sauvegardes de
+  l'enfant ; cochée, `library_remove(uuid, true)` les efface aussi.
   Le **panneau des tâches** (`StoriesTaskPanel`, zone `aside`) montre téléchargement (octets,
   %), conversion par phase (images, audio, scripts, archive), installation, et pour les échecs
-  le message du backend avec _Réessayer_ (relance `install_start` avec la même entrée) ; les
-  tâches terminées se retirent du panneau. L'installation recharge le rapport de compatibilité
+  le message du backend avec _Réessayer_ (relance `install_start` avec la même entrée ; si
+  l'entrée n'est plus dans le cache du catalogue ou le dernier scan, `not_found` devient un
+  message qui invite à rafraîchir la source, et la tâche en échec reste affichée) ; une
+  installation réussie se retire d'elle-même du panneau après 8 s (`DONE_TASK_TTL_MS`), les
+  échecs et annulations restent jusqu'à _Retirer_ ou _Réessayer_. L'installation recharge le rapport de compatibilité
   (la conversion y enregistre son résultat). Tests : `stories.test.tsx` (installer → progression →
   jouer, annulation, erreur de conversion, avertissement d'incompatibilité, mise à jour,
   suppression, player occupé).
@@ -776,7 +987,8 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   ![Sources, thème clair](docs/screenshots/sources-clair.png)
   ![Sources, thème sombre](docs/screenshots/sources-sombre.png)
 - **Paramètres** : chemins du player, de Python et du cache (sélecteur `.exe`, valeurs utilisées,
-  problèmes signalés), taille du cache et vidage, thème Système/Clair/Sombre, à propos.
+  problèmes signalés), taille du cache et vidage, thème Système/Clair/Sombre, lecture (réduire
+  la fenêtre pendant la lecture), à propos.
   ![Paramètres, thème clair](docs/screenshots/settings-clair.png)
   ![Paramètres, thème sombre](docs/screenshots/settings-sombre.png)
 - **Restauration** : si un fichier de configuration corrompu a été remplacé, un bandeau

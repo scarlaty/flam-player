@@ -1,0 +1,24 @@
+.fl-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-height: 2.5rem;
+}
+
+.fl-check input {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0.625rem 0 0;
+  accent-color: var(--color-primary);
+}
+
+.fl-check label {
+  cursor: pointer;
+}
+
+.fl-check__hint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}

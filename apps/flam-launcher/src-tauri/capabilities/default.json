@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Permissions de la fenêtre principale",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-minimize",
+    "core:window:allow-unminimize",
+    "core:window:allow-set-focus",
+    "dialog:allow-open"
+  ]
 }

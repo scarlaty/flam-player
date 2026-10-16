@@ -59,6 +59,9 @@ const QUEUE_SCHEMA: u32 = 1;
 const MAX_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Délai laissé au convertisseur après Ctrl+Break avant l'arrêt forcé.
 pub const GRACE: Duration = Duration::from_secs(5);
+/// Attente maximale du verrou de la bibliothèque pour une désinstallation, qui tient le créneau
+/// du player : brève, pour renvoyer vite l'erreur « utilisée par une autre instance ».
+const REMOVE_LOCK_WAIT: Duration = Duration::from_secs(2);
 /// Intervalle minimal entre deux événements de progression d'une tâche.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
 /// Tâches terminées gardées en mémoire (les plus anciennes sont oubliées).
@@ -403,8 +406,6 @@ struct Inner {
     tasks: Mutex<Vec<Slot>>,
     downloads: Arc<Limiter>,
     conversions: Semaphore,
-    /// Sérialise les écritures de la bibliothèque (pipeline et `library_remove`).
-    library_lock: Mutex<()>,
     /// Numéro de la dernière capture de la file demandée (attribué sous le verrou `tasks`).
     queue_requested: AtomicU64,
     /// Numéro de la dernière capture écrite ; sérialise aussi les écritures du fichier.
@@ -422,7 +423,6 @@ impl InstallService {
             tasks: Mutex::default(),
             downloads: Arc::new(Limiter::new(settings::DEFAULT_MAX_DOWNLOADS as usize)),
             conversions: Semaphore::new(1),
-            library_lock: Mutex::default(),
             queue_requested: AtomicU64::new(0),
             queue_written: Mutex::new(0),
         }))
@@ -551,41 +551,42 @@ impl InstallService {
     /// Histoires installées.
     pub async fn library_list(&self) -> AppResult<Vec<LibraryEntry>> {
         let tc = (self.0.opts.resolver)()?;
-        let inner = self.0.clone();
-        blocking(move || {
-            let _held = lock(&inner.library_lock);
-            Library::new(&tc.cache_root).list()
-        })
-        .await?
+        blocking(move || Library::new(&tc.cache_root).list()).await?
     }
 
     /// Désinstalle l'histoire `uuid`.
     pub async fn library_remove(&self, uuid: String) -> AppResult<()> {
         let tc = (self.0.opts.resolver)()?;
-        let inner = self.0.clone();
-        let _gate = inner.opts.gate.clone().read_owned().await;
-        blocking(move || {
-            let _held = lock(&inner.library_lock);
-            Library::new(&tc.cache_root).remove(&uuid)
-        })
-        .await?
+        let _gate = self.0.opts.gate.clone().read_owned().await;
+        blocking(move || Library::new(&tc.cache_root).remove(&uuid)).await?
     }
 
     /// Désinstalle l'histoire `uuid` (appel **bloquant**, à faire sous le créneau du player et le
     /// portillon du cache) : vérifie qu'elle est installée (`not_found` sinon, avant toute
     /// suppression), exécute `before` (purge de la copie de travail et de la progression), puis
-    /// retire fichier et entrée d'index, le tout sous le verrou de la bibliothèque.
+    /// retire fichier et entrée d'index ([`Library::remove_with`]), le tout sous le verrou de la
+    /// bibliothèque.
+    ///
+    /// Le créneau étant tenu, l'attente du verrou inter-processus est **brève**
+    /// ([`REMOVE_LOCK_WAIT`]) : si une autre instance le tient, l'erreur « bibliothèque utilisée
+    /// par une autre instance » revient vite, sans rien purger, au lieu de retarder
+    /// `player_launch` et la sortie du player pendant 30 s.
     pub fn library_remove_with(
         &self,
         uuid: &str,
         before: impl FnOnce() -> AppResult<()>,
     ) -> AppResult<()> {
+        self.library_remove_within(uuid, REMOVE_LOCK_WAIT, before)
+    }
+
+    fn library_remove_within(
+        &self,
+        uuid: &str,
+        wait: Duration,
+        before: impl FnOnce() -> AppResult<()>,
+    ) -> AppResult<()> {
         let tc = (self.0.opts.resolver)()?;
-        let _held = lock(&self.0.library_lock);
-        let library = Library::new(&tc.cache_root);
-        library.playable_entry(uuid)?;
-        before()?;
-        library.remove(uuid)
+        Library::new(&tc.cache_root).remove_with(uuid, wait, before)
     }
 
     /// Construit le contenu de la file (sous le verrou `tasks`, sans aucune E/S) et lui attribue
@@ -768,7 +769,14 @@ impl InstallService {
         let library = Library::new(&tc.cache_root);
         let staging = {
             let library = Library::new(&tc.cache_root);
-            blocking(move || library.staging_dir()).await??
+            let (uuid, version) = (entry.uuid.clone(), entry.version);
+            // Précontrôle avant tout téléchargement : un marqueur non jugeable de cette histoire
+            // (index perdu) refuserait l'installation en fin de course.
+            blocking(move || {
+                library.precheck_install(&uuid, version)?;
+                library.staging_dir()
+            })
+            .await??
         };
         let staged = child_of(&staging, &format!("{id}.plain.pk"))?;
         let result = self
@@ -786,10 +794,8 @@ impl InstallService {
             return Err(AppError::Cancelled);
         }
         self.emit_state(id, TaskState::Installing, None);
-        let inner = self.0.clone();
         let source = entry.clone();
         let installed = blocking(move || {
-            let _held = lock(&inner.library_lock);
             let result = library.install(&staged, &source, converter, now_secs());
             if result.is_err() {
                 let _ = remove_if_exists(&staged);

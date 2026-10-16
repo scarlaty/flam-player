@@ -363,6 +363,11 @@ fn tail_text(bytes: &[u8]) -> String {
 
 /// Vérifie, sans suivre de lien, que la source est du type attendu : fichier ordinaire pour un
 /// `.plain.pk`, dossier pour un `.plain`. Un lien symbolique ou une jonction est refusé.
+///
+/// Vérification en CI : la **jonction** l'est (`check_source_refuse_une_jonction_vers_un_dossier`,
+/// sans privilège) ; le **lien symbolique** ne l'est pas (test `#[ignore]`, la création d'un lien
+/// symbolique demande le mode développeur ou l'élévation) : à lancer à la main avec
+/// `cargo test check_source_refuse_les_liens_symboliques -- --ignored`.
 fn check_source(path: &Path, kind: StoryKind) -> AppResult<()> {
     let meta = std::fs::symlink_metadata(path).map_err(|_| {
         AppError::StoryFileMissing(format!(
@@ -479,25 +484,33 @@ impl Budget {
     }
 }
 
-/// Copie `from` dans `to` sans suivre aucun lien (ils sont ignorés), dans la limite de `budget`.
+/// Copie `from` dans `to` dans la limite de `budget`, **sans aucun lien suivi** : liens
+/// symboliques, jonctions et autres types d'entrée sont **ignorés** (ni copiés, ni erreur).
+/// Le parcours est **itératif** (pile explicite sur le tas) : une arborescence très profonde ne
+/// peut pas faire déborder la pile d'un thread bloquant, même sans limite de profondeur
+/// ([`Budget::unbounded`]).
 fn copy_tree(from: &Path, to: &Path, depth: usize, budget: &mut Budget) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let (src, dst) = (entry.path(), to.join(entry.file_name()));
-        let file_type = entry.file_type()?;
-        if depth >= budget.max_depth && (file_type.is_dir() || file_type.is_file()) {
-            // Jamais de troncature silencieuse : une copie incomplète passerait pour complète.
-            return Err(limit_error(format!(
-                "arborescence trop profonde (plus de {COPY_MAX_DEPTH} niveaux)"
-            )));
+    let mut pending = vec![(from.to_path_buf(), to.to_path_buf(), depth)];
+    while let Some((from, to, depth)) = pending.pop() {
+        std::fs::create_dir_all(&to)?;
+        for entry in std::fs::read_dir(&from)? {
+            let entry = entry?;
+            let (src, dst) = (entry.path(), to.join(entry.file_name()));
+            let file_type = entry.file_type()?;
+            if depth >= budget.max_depth && (file_type.is_dir() || file_type.is_file()) {
+                // Jamais de troncature silencieuse : une copie incomplète passerait pour complète.
+                return Err(limit_error(format!(
+                    "arborescence trop profonde (plus de {} niveaux)",
+                    budget.max_depth
+                )));
+            }
+            if file_type.is_dir() {
+                pending.push((src, dst, depth + 1));
+            } else if file_type.is_file() {
+                budget.take(entry.metadata()?.len())?;
+                std::fs::copy(&src, &dst)?;
+            } // liens et autres : ignorés
         }
-        if file_type.is_dir() {
-            copy_tree(&src, &dst, depth + 1, budget)?;
-        } else if file_type.is_file() {
-            budget.take(entry.metadata()?.len())?;
-            std::fs::copy(&src, &dst)?;
-        } // liens et autres : ignorés
     }
     Ok(())
 }
@@ -505,18 +518,40 @@ fn copy_tree(from: &Path, to: &Path, depth: usize, budget: &mut Budget) -> std::
 /// Déplace `from` vers `to` : renommage, sinon (autre volume, verrou) copie sans aucune limite
 /// puis suppression de la source **seulement après réussite de la copie**. En cas d'échec, la
 /// source est intacte et la copie partielle supprimée.
+///
+/// **Liens** : le repli par copie les **ignore** (ils ne sont pas copiés), puis la suppression de
+/// la source les retire eux-mêmes, sans toucher à leur cible. Un lien (symbolique ou jonction)
+/// présent dans le dossier déplacé est donc perdu avec le repli, alors qu'un renommage le
+/// conserverait : sans conséquence pour des sauvegardes, qui n'en contiennent pas.
 fn move_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     match std::fs::rename(from, to) {
         Ok(()) => Ok(()),
         Err(err) => {
             tracing::warn!("renommage impossible ({err}) : copie");
-            if let Err(copy_err) = copy_tree(from, to, 0, &mut Budget::unbounded()) {
-                let _ = remove_tree(to);
+            // Copie dans `<to>.part` (partiel si l'on s'arrête en route), puis renommage atomique :
+            // `to` n'existe que complet. La source n'est supprimée qu'ensuite ; si cette
+            // suppression échoue, la copie complète reste à destination (erreur renvoyée).
+            let mut name = to.file_name().unwrap_or_default().to_os_string();
+            name.push(".part");
+            let part = to.with_file_name(name);
+            remove_tree(&part)?;
+            if let Err(copy_err) = copy_tree(from, &part, 0, &mut Budget::unbounded()) {
+                let _ = remove_tree(&part);
                 return Err(copy_err);
+            }
+            if let Err(rename_err) = std::fs::rename(&part, to) {
+                let _ = remove_tree(&part);
+                return Err(rename_err);
             }
             remove_tree(from)
         }
     }
+}
+
+/// Remplace `rejected` (ancienne génération, supprimée ici) par `fresh` (complet) : renommage.
+fn promote_rejected(fresh: &Path, rejected: &Path) -> std::io::Result<()> {
+    remove_tree(rejected)?;
+    std::fs::rename(fresh, rejected)
 }
 
 /// Vrai si `path` est un vrai dossier (pas un lien).
@@ -565,27 +600,92 @@ impl Workspace {
         lock(&self.notes).push(text);
     }
 
+    fn take_notes(&self) -> Vec<String> {
+        std::mem::take(&mut *lock(&self.notes))
+    }
+
+    /// Erreur d'un lancement qui a échoué après [`stage`](Self::stage) (spawn en échec, fichier
+    /// disparu) : les informations recueillies sur la progression (sauvegardes mises de côté)
+    /// n'iront pas à `player://exited` ; elles sont ajoutées au message de l'erreur.
+    fn launch_failure(&self, err: AppError) -> AppError {
+        let notes = self.take_notes();
+        if notes.is_empty() {
+            err
+        } else {
+            err.with_note(&notes.join(" ; "))
+        }
+    }
+
     /// Met de côté un `saves/` hors limites : `<saved>.rejected`, **une seule génération** (la
     /// précédente est remplacée). Le dossier est déplacé (renommage) ; si le renommage échoue
     /// (autre volume, verrou), il est copié (sans plafond) puis la source n'est supprimée
-    /// qu'après réussite de la copie : **jamais de suppression sans copie**. En cas d'échec,
-    /// erreur d'E/S et la source reste intacte. Renvoie le message destiné à l'utilisateur.
+    /// qu'après réussite de la copie : **jamais de suppression sans copie**.
+    ///
+    /// Étapes : déplacement vers `.rejected.new` (renommage ; ou copie dans
+    /// `.rejected.new.part`, partiel si le processus s'arrête en route, puis renommage atomique :
+    /// `.rejected.new` est toujours **complet**), puis remplacement de `.rejected` par
+    /// `.rejected.new`.
+    /// - Échec **avant** la fin du déplacement : erreur d'E/S, la source reste intacte, l'ancien
+    ///   `.rejected` aussi.
+    /// - Échec **après** (la source a déjà quitté sa place, ses données sont dans
+    ///   `.rejected.new`) : **pas d'erreur**, une note l'indique à l'utilisateur ; la réparation
+    ///   se fait au prochain lancement ou rapatriement ([`recover_rejected`](Self::recover_rejected)).
+    ///
+    /// Renvoie le message destiné à l'utilisateur.
     fn set_aside(&self, dir: &Path, why: &std::io::Error, what: &str) -> AppResult<String> {
+        self.set_aside_with(dir, why, what, promote_rejected)
+    }
+
+    /// [`set_aside`](Self::set_aside) avec l'étape de remplacement injectée (tests d'échec après
+    /// déplacement).
+    fn set_aside_with(
+        &self,
+        dir: &Path,
+        why: &std::io::Error,
+        what: &str,
+        promote: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    ) -> AppResult<String> {
         let rejected = self.sibling(".rejected");
         let fresh = self.sibling(".rejected.new");
         if let Some(parent) = rejected.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // Le nouveau contenu est d'abord mis en sécurité à côté ; l'ancien `.rejected` n'est
-        // supprimé qu'ensuite (un échec avant ce point le laisse intact).
-        remove_tree(&fresh)?;
+        // Un `.rejected.new` resté d'un échec précédent est d'abord réparé : il ne doit jamais
+        // être écrasé par une nouvelle mise de côté.
+        self.recover_rejected()?;
+        // Après ce déplacement, `.rejected.new` est complet (renommage, ou copie terminée puis
+        // renommée) : c'est un point de non-retour, sans suppression possible de ce dossier.
         move_dir(dir, &fresh)?;
-        remove_tree(&rejected)?;
-        std::fs::rename(&fresh, &rejected)?;
-        let outcome = format!("mises de côté dans {}", rejected.display());
-        let note = format!("{what} refusées ({why}) : {outcome}");
+        let note = match promote(&fresh, &rejected) {
+            Ok(()) => format!(
+                "{what} refusées ({why}) : mises de côté dans {}",
+                rejected.display()
+            ),
+            Err(err) => format!(
+                "{what} refusées ({why}) : mises de côté dans {} (le dossier {} n'a pas pu être \n                 remplacé : {err} ; repris au prochain lancement)",
+                fresh.display(),
+                rejected.display()
+            ),
+        };
         tracing::warn!("sauvegardes du player : {note}");
         Ok(note)
+    }
+
+    /// Répare une mise de côté interrompue : un `.rejected.new` (toujours complet) est promu en
+    /// `.rejected`, l'ancienne génération étant remplacée ; un `.rejected.new.part` (copie partielle)
+    /// est supprimé, sa source n'ayant jamais été retirée avant la fin de la copie.
+    fn recover_rejected(&self) -> AppResult<()> {
+        let (rejected, fresh) = (self.sibling(".rejected"), self.sibling(".rejected.new"));
+        remove_tree(&self.sibling(".rejected.new.part"))?;
+        if is_real_dir(&fresh) {
+            promote_rejected(&fresh, &rejected)?;
+            tracing::warn!(
+                "sauvegardes mises de côté réparées : {} promu en {}",
+                fresh.display(),
+                rejected.display()
+            );
+        }
+        Ok(())
     }
 
     /// Prépare la copie de travail de `source` (déjà vérifiée par [`check_source`]) : rapatrie
@@ -648,6 +748,11 @@ impl Workspace {
     /// player ; un `saves/` partiel (écriture interrompue par le plantage) remplace donc la
     /// version précédente, qui n'est pas gardée au-delà de l'échange.
     pub fn persist_saves(&self) -> AppResult<Option<String>> {
+        // Mise de côté interrompue (lancement ou rapatriement précédent) : réparée sans bloquer ;
+        // la prochaine mise de côté la répare de toute façon, ou échoue proprement.
+        if let Err(err) = self.recover_rejected() {
+            tracing::warn!("réparation de .rejected impossible : {err}");
+        }
         // Reprise après un arrêt entre les deux renommages d'un rapatriement précédent.
         let old = self.sibling(".old");
         if !self.saved.exists() && is_real_dir(&old) {
@@ -692,7 +797,7 @@ impl Workspace {
     /// recueillies (sauvegardes mises de côté au lancement ou ici), renvoyées pour
     /// `PlayerExited::saves_error`.
     pub fn persist_saves_logged(&self) -> Option<String> {
-        let mut notes: Vec<String> = std::mem::take(&mut *lock(&self.notes));
+        let mut notes = self.take_notes();
         match self.persist_saves() {
             Ok(note) => notes.extend(note),
             Err(err) => {
@@ -713,7 +818,14 @@ impl Workspace {
         }
         remove_tree(&self.work)?;
         if purge_saves {
-            for suffix in ["", ".tmp", ".old", ".rejected", ".rejected.new"] {
+            for suffix in [
+                "",
+                ".tmp",
+                ".old",
+                ".rejected",
+                ".rejected.new",
+                ".rejected.new.part",
+            ] {
                 remove_tree(&self.sibling(suffix))?;
             }
         }
@@ -789,23 +901,25 @@ pub async fn player_launch(
         let (path, title) = Library::new(&cache_root).playable(&uuid)?;
         check_source(&path, StoryKind::FlamPk)?;
         let ws = Workspace::new(&cache_root.join(PLAY_DIR), &saves_root, &library_key(&uuid));
-        let (staging, saving) = (ws.clone(), ws);
+        let (staging, saving, failed) = (ws.clone(), ws.clone(), ws);
         let library = Library::new(&cache_root);
-        service.launch(
-            &exe,
-            || {
-                // Relu sous le créneau : une désinstallation qui vient de passer (elle tient le
-                // même créneau) fait échouer le lancement (`not_found`) au lieu de lancer un
-                // fichier supprimé ou de recréer une copie de travail.
-                let (current, _) = library.playable(&uuid)?;
-                check_source(&current, StoryKind::FlamPk)?;
-                staging.stage(&current)
-            },
-            move || saving.persist_saves_logged(),
-            "library",
-            &uuid,
-            &title,
-        )
+        service
+            .launch(
+                &exe,
+                || {
+                    // Relu sous le créneau : une désinstallation qui vient de passer (elle tient le
+                    // même créneau) fait échouer le lancement (`not_found`) au lieu de lancer un
+                    // fichier supprimé ou de recréer une copie de travail.
+                    let (current, _) = library.playable(&uuid)?;
+                    check_source(&current, StoryKind::FlamPk)?;
+                    staging.stage(&current)
+                },
+                move || saving.persist_saves_logged(),
+                "library",
+                &uuid,
+                &title,
+            )
+            .map_err(|err| failed.launch_failure(err))
     })
     .await?
 }
@@ -834,15 +948,17 @@ pub async fn player_launch_folder(
         let path = folder_target(&entry, &root)?;
         let key = format!("folder:{source_id}:{entry_id}");
         let ws = Workspace::new(&cache_root.join(PLAY_DIR), &saves_root, &key);
-        let (staging, saving) = (ws.clone(), ws);
-        service.launch(
-            &exe,
-            || staging.stage(&path),
-            move || saving.persist_saves_logged(),
-            "folder",
-            &entry_id,
-            &entry.title,
-        )
+        let (staging, saving, failed) = (ws.clone(), ws.clone(), ws);
+        service
+            .launch(
+                &exe,
+                || staging.stage(&path),
+                move || saving.persist_saves_logged(),
+                "folder",
+                &entry_id,
+                &entry.title,
+            )
+            .map_err(|err| failed.launch_failure(err))
     })
     .await?
 }
@@ -1233,6 +1349,50 @@ mod tests {
     }
 
     #[test]
+    fn un_lancement_en_echec_apres_stage_renvoie_les_notes_dans_l_erreur() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        play_and_save(&copy, b"niveau 2");
+        // Partie terminée avec trop de sauvegardes, non rapatriées : le lancement suivant les
+        // met de côté (note) avant de copier l'histoire.
+        let saves = copy.parent().unwrap().join("saves");
+        for i in 0..=SAVES_MAX_FILES {
+            std::fs::write(saves.join(format!("{i}")), b"").unwrap();
+        }
+
+        // Lancement réel qui échoue après `stage` : le fichier de l'histoire disparaît.
+        let c = ctx();
+        let (staging, failed) = (ws.clone(), ws);
+        let err = c
+            .service
+            .launch(
+                &c.fake,
+                || {
+                    let copy = staging.stage(&pk)?;
+                    std::fs::remove_file(&copy)?;
+                    Ok(copy)
+                },
+                || None,
+                "library",
+                "u1",
+                "Mon histoire",
+            )
+            .map_err(|err| failed.launch_failure(err))
+            .unwrap_err();
+        assert_eq!(err.kind(), "story_file_missing");
+        assert!(
+            err.to_string().contains("nouvelles sauvegardes refusées"),
+            "{err}"
+        );
+        // Les notes sont consommées : une seconde erreur n'est pas complétée.
+        let again = failed.launch_failure(AppError::StoryFileMissing("absent.".into()));
+        assert_eq!(again.to_string(), "absent.");
+    }
+
+    #[test]
     fn un_saves_trop_profond_est_une_erreur_explicite_pas_une_troncature() {
         let dir = tempfile::tempdir().unwrap();
         let pk = dir.path().join("Histoire.plain.pk");
@@ -1298,12 +1458,100 @@ mod tests {
         let copy = ws.stage(&pk).unwrap();
         std::fs::create_dir_all(ws.sibling(".rejected")).unwrap();
         std::fs::write(ws.sibling(".rejected").join("ancien"), b"x").unwrap();
-        // La destination intermédiaire ne peut pas être créée : un fichier la remplace et un
-        // dossier non vidable (le saves/ source n'existe pas) fait échouer le déplacement.
+        // Ici l'échec survient **avant** que le nouveau contenu soit en sécurité : la source à
+        // mettre de côté n'existe pas, donc le déplacement vers `.rejected.new` échoue. Rien ne
+        // doit alors toucher à l'ancien `.rejected` (il n'est remplacé qu'une fois le nouveau
+        // contenu complet dans `.rejected.new`, voir `set_aside_apres_deplacement_*`).
         let missing = copy.parent().unwrap().join("saves-absent");
         let why = limit_error("x".into());
         assert!(ws.set_aside(&missing, &why, "test").is_err());
         assert!(ws.sibling(".rejected").join("ancien").is_file());
+        assert!(!ws.sibling(".rejected.new").exists());
+    }
+
+    #[test]
+    fn set_aside_apres_deplacement_renvoie_une_note_puis_se_repare() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        let saves = copy.parent().unwrap().join("saves");
+        std::fs::create_dir_all(&saves).unwrap();
+        std::fs::write(saves.join("0"), b"progression").unwrap();
+        std::fs::create_dir_all(ws.sibling(".rejected")).unwrap();
+        std::fs::write(ws.sibling(".rejected").join("ancien"), b"x").unwrap();
+        // Le remplacement de `.rejected` échoue APRÈS le déplacement : pas d'erreur, une note, et
+        // la progression est intacte dans `.rejected.new`.
+        let why = limit_error("trop gros".into());
+        let note = ws
+            .set_aside_with(&saves, &why, "nouvelles sauvegardes", |_, _| {
+                Err(std::io::Error::other("verrou"))
+            })
+            .expect("une note, pas une erreur");
+        assert!(
+            note.contains(".rejected.new") && note.contains("verrou"),
+            "{note}"
+        );
+        assert!(!saves.exists(), "la source a bien été déplacée");
+        assert_eq!(
+            std::fs::read(ws.sibling(".rejected.new").join("0")).unwrap(),
+            b"progression"
+        );
+        assert!(ws.sibling(".rejected").join("ancien").is_file());
+        // Au rapatriement ou lancement suivant : `.rejected.new` est promu, l'ancien remplacé.
+        assert!(ws.persist_saves().unwrap().is_none());
+        assert_eq!(
+            std::fs::read(ws.sibling(".rejected").join("0")).unwrap(),
+            b"progression"
+        );
+        assert!(!ws.sibling(".rejected").join("ancien").exists());
+        assert!(!ws.sibling(".rejected.new").exists());
+    }
+
+    #[test]
+    fn un_rejected_new_sans_rejected_est_promu_au_lancement_et_un_part_partiel_supprime() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        std::fs::create_dir_all(ws.sibling(".rejected.new")).unwrap();
+        std::fs::write(ws.sibling(".rejected.new").join("0"), b"gardee").unwrap();
+        std::fs::create_dir_all(ws.sibling(".rejected.new.part")).unwrap();
+        std::fs::write(ws.sibling(".rejected.new.part").join("partiel"), b"?").unwrap();
+        ws.stage(&pk).unwrap();
+        assert_eq!(
+            std::fs::read(ws.sibling(".rejected").join("0")).unwrap(),
+            b"gardee"
+        );
+        assert!(!ws.sibling(".rejected.new").exists());
+        assert!(!ws.sibling(".rejected.new.part").exists());
+    }
+
+    #[test]
+    fn la_copie_sans_limite_ne_deborde_pas_la_pile_sur_une_arborescence_tres_profonde() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("profond");
+        let mut deep = from.clone();
+        for _ in 0..1500 {
+            deep.push("n");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("state"), b"fond").unwrap();
+        let to = dir.path().join("copie");
+        // Pile minuscule : une récursion par niveau y déborderait largement.
+        let copied = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || copy_tree(&from, &to, 0, &mut Budget::unbounded()).map(|()| to))
+            .unwrap()
+            .join()
+            .expect("pas de débordement de pile")
+            .unwrap();
+        let mut leaf = copied;
+        for _ in 0..1500 {
+            leaf.push("n");
+        }
+        assert_eq!(std::fs::read(leaf.join("state")).unwrap(), b"fond");
     }
 
     #[test]
@@ -1755,6 +2003,39 @@ exit 0
         assert_eq!(wrong.kind(), "validation");
         let absent = check_source(&dir.path().join("x"), StoryKind::FlamPk).unwrap_err();
         assert_eq!(absent.kind(), "story_file_missing");
+    }
+
+    /// Compense, en CI, le test de lien symbolique ci-dessous (ignoré : il demande un privilège) :
+    /// une jonction (`mklink /J`, sans privilège) vers un vrai dossier est refusée de même.
+    #[test]
+    fn check_source_refuse_une_jonction_vers_un_dossier() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("vrai.plain");
+        std::fs::create_dir(&target).unwrap();
+        let link = dir.path().join("lien.plain");
+        link_dir(&link, &target);
+        let err = check_source(&link, StoryKind::FlamPlain).unwrap_err();
+        assert_eq!(err.kind(), "validation");
+        assert!(check_source(&target, StoryKind::FlamPlain).is_ok());
+    }
+
+    #[test]
+    fn la_copie_ignore_les_liens_de_la_source_sans_les_suivre() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("dehors");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("secret"), b"x").unwrap();
+        let from = dir.path().join("saves");
+        std::fs::create_dir_all(from.join("d")).unwrap();
+        std::fs::write(from.join("d/f"), b"ok").unwrap();
+        link_dir(&from.join("lien"), &outside);
+        let to = dir.path().join("copie");
+        copy_tree(&from, &to, 0, &mut Budget::unbounded()).unwrap();
+        assert_eq!(std::fs::read(to.join("d/f")).unwrap(), b"ok");
+        assert!(!to.join("lien").exists(), "lien ignoré, pas copié");
+        // Le repli de `move_dir` supprime ensuite la source, lien compris, sans toucher la cible.
+        remove_tree(&from).unwrap();
+        assert!(outside.join("secret").is_file());
     }
 
     #[test]

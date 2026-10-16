@@ -100,6 +100,8 @@ export const fr = {
     issuesTitle: "Points à vérifier",
     player: "Chemin de flam-player",
     python: "Chemin de Python",
+    pythonNote:
+      "Le convertisseur livré avec l'application embarque son propre Python : le chemin de Python ci-dessous n'est utilisé que si ce convertisseur est absent (par exemple en développement).",
     cacheDir: "Dossier de cache",
     pickPlayer: "Choisir flam-player.exe",
     pickPython: "Choisir python.exe",
@@ -117,6 +119,12 @@ export const fr = {
       cleared: (size: string) => `Cache vidé : ${size} libérés`,
     },
     appearance: "Apparence",
+    playback: {
+      title: "Lecture",
+      minimize: "Réduire la fenêtre pendant la lecture",
+      minimizeHint:
+        "La fenêtre du launcher est réduite au lancement de flam-player, puis rétablie à la fin.",
+    },
     themeFailed: "Le thème n'a pas pu être enregistré.",
     about: {
       title: "À propos",
@@ -348,8 +356,15 @@ export const fr = {
       description:
         "L'histoire est retirée de « Mes histoires » et son fichier converti est supprimé. Vous pourrez la réinstaller depuis sa source.",
       confirm: "Supprimer",
+      purgeSaves: "Supprimer aussi la progression",
+      purgeSavesHint:
+        "Efface les sauvegardes de l'enfant. Cette action est irréversible. Décochée, la progression est conservée et retrouvée si l'histoire est réinstallée.",
     },
     toast: {
+      entryGone: (title: string) =>
+        `« ${title} » n'est plus proposée par sa source (catalogue ou dossier modifié). Rafraîchissez la source, puis relancez l'installation depuis la fiche.`,
+      savesLost: (title: string, detail: string) =>
+        `La progression de « ${title} » n'a pas pu être conservée telle quelle : ${detail}`,
       installed: (title: string) => `« ${title} » est installée`,
       installedWarnings: (title: string, count: number) =>
         `« ${title} » est installée (${count <= 1 ? `${count} avertissement` : `${count} avertissements`} à la conversion)`,
