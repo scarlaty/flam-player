@@ -15,6 +15,7 @@ use serde::{Serialize, Serializer};
 /// | `ConfigVersion` | `config_version`| Fichier de config d'une version plus récente            |
 /// | `ConfigDir`     | `config_dir`    | Dossier de configuration introuvable                    |
 /// | `Serialization` | `serialization` | Échec de sérialisation JSON                             |
+/// | `FolderUnavailable` | `folder_unavailable` | Dossier d'une source locale absent ou inaccessible |
 /// | `Network`       | `network`       | Réseau indisponible, délai dépassé ou réponse HTTP en échec |
 /// | `CatalogInvalid`| `catalog_invalid`| Catalogue reçu inexploitable (JSON invalide, structure inconnue) |
 ///
@@ -61,6 +62,10 @@ pub enum AppError {
     /// Catalogue reçu mais inexploitable : JSON invalide ou structure sans liste `data`.
     #[error("{0}")]
     CatalogInvalid(String),
+
+    /// Dossier d'une source locale absent ou inaccessible (disque débranché, dossier supprimé).
+    #[error("{0}")]
+    FolderUnavailable(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -77,6 +82,7 @@ impl AppError {
             AppError::Serialization(_) => "serialization",
             AppError::Network(_) => "network",
             AppError::CatalogInvalid(_) => "catalog_invalid",
+            AppError::FolderUnavailable(_) => "folder_unavailable",
         }
     }
 }
@@ -129,6 +135,10 @@ mod tests {
         assert_eq!(
             AppError::CatalogInvalid("x".into()).kind(),
             "catalog_invalid"
+        );
+        assert_eq!(
+            AppError::FolderUnavailable("x".into()).kind(),
+            "folder_unavailable"
         );
     }
 

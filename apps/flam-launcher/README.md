@@ -54,15 +54,17 @@ apps/flam-launcher/
       sources.rs           `sources.json`, source par défaut et implicite, commandes `sources_*`
       story.rs             `StoryEntry` / `StoryKind` : type commun des histoires de toutes les sources
       catalog.rs           Source catalogue : téléchargement, lecture tolérante, cache, vignettes
+      folder.rs            Source dossier local (`.zip` Telmi, `.plain`, `.plain.pk`), commandes `folder_*`
+      lif.rs               Décodeur LIF (port de `src/formats/lif_decoder.c`)
+      thumbnail.rs         Vignettes : PNG, réduction, cache `thumbs/`, URL `data:`
 ```
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`. Prévus (un module par responsabilité, créés avec leur issue) :
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`. Prévus (un module par responsabilité, créés avec leur issue) :
 
 | Module    | Rôle                                                             |
 | --------- | ---------------------------------------------------------------- |
-| `folder`  | Source dossier local (`.zip`, `.plain`, `.plain.pk`)             |
 | `install` | Pipeline téléchargement, conversion (`telmi2flam`), installation |
 | `player`  | Lancement et suivi de `flam-player`                              |
 | `compat`  | Statut de compatibilité d'une histoire                           |
@@ -91,6 +93,8 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `catalog_refresh`     | `source_id`                | `CatalogView`               | `catalog`  |
 | `catalog_entries`     | `source_id`                | `CatalogView`               | `catalog`  |
 | `catalog_thumbnail`   | `source_id`, `thumb_url`   | URL `data:` (string)        | `catalog`  |
+| `folder_scan`         | `source_id`, `recursive?`  | `FolderScan`                | `folder`   |
+| `folder_thumbnail`    | `source_id`, `entry_id`    | URL `data:` (chaîne)        | `folder`   |
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).
@@ -106,6 +110,60 @@ Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`), `src/api/
 configuration en paramètre : elle est testée sur des dossiers temporaires ; les commandes
 ne sont que de fines enveloppes qui prennent un verrou (`ConfigState`) autour de chaque opération.
 
+### Source dossier local (`folder_scan`, `folder_thumbnail`)
+
+`folder_scan(source_id, recursive?)` analyse une source de type `folder` (autre type :
+`validation` ; dossier absent : `folder_unavailable`) et renvoie
+`FolderScan { entries: StoryEntry[], warnings: { path, message }[] }`. Le parcours est
+non récursif par défaut (récursif : 8 niveaux, 5000 histoires au plus, liens symboliques et
+jonctions ignorés) ; un fichier invalide est **ignoré et signalé** dans `warnings`, jamais une
+erreur. Le verrou de configuration n'est pas tenu pendant l'analyse (thread dédié).
+
+| Entrée            | `kind`       | Lu                                                                                                                                     |
+| ----------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `*.zip`           | `telmi_zip`  | `metadata.json` (UTF-8, BOM toléré) du dossier racine (`find_root` de `telmi2flam`), vignette `title.png` ou `cover.png` selon `image` |
+| dossier `*.plain` | `flam_plain` | 1re ligne d'`info.plain` (titre), `uuid.bin` (16 octets, uuid en hexadécimal), `img/thumbnail.lif`                                     |
+| `*.plain.pk`      | `flam_pk`    | idem, dans l'archive (zip « stored »)                                                                                                  |
+
+`StoryEntry` (`src-tauri/src/story.rs`, partagé avec la source catalogue ; miroir
+`src/api/story.ts`) : `source_id, uuid, version, title, description, age, category, author,
+voice, license, thumb_url, download_url, size, updated_at, kind`. Pour un dossier,
+`download_url` est le **chemin local absolu** de l'archive ou du dossier `.plain`, `size` est
+absente pour un `.plain`, `updated_at` est la date de modification (ISO 8601 UTC) ; les champs
+inconnus valent `null`.
+
+**Doublons** : un `.plain` et un `.plain.pk` de même `uuid` donnent **deux entrées** (`kind`
+différent). Chaque entrée porte un `entry_id` (stable d'un scan à l'autre, unique
+dans la source) à utiliser comme clé d'affichage et pour `folder_thumbnail`. Format
+`"<source_id>:<hash>"`, comme le catalogue (`"<source_id>:<uuid>"`) ; le hash est un FNV-1a 64 bits du
+chemin relatif au dossier de la source (séparateurs `/`).
+
+**Identifiants non fiables** : l'`uuid` d'un zip Telmi (et `version` si c'est une chaîne) doit
+respecter `^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`, sans `..` ni nom réservé Windows (`CON`, `PRN`,
+`AUX`, `NUL`, `COM1-9`, `LPT1-9`) ; sinon l'histoire est ignorée avec un avertissement.
+
+**Archives non fiables** : rien n'est extrait sur disque ; `metadata.json` et `info.plain` sont
+limités à 1 Mio, les vignettes à 8 Mio (lecture bornée même si la taille déclarée est fausse ; PNG
+décodé : 8192 px et 64 Mio au plus) ; les entrées aux noms dangereux (`..`, absolu, lecteur,
+`__MACOSX`, `._*`) sont écartées ; les `\` des noms de zip sont lus comme des `/` ; 100 000 entrées
+au plus par archive.
+
+**Vignettes à la demande** : `folder_scan` ne renvoie aucune image (5000 entrées feraient des
+centaines de Mio d'IPC). `thumb_url` est une **référence à résoudre par `folder_thumbnail`** (égale à
+`entry_id`) ou `null` sans vignette : ce n'est pas une URL affichable. `folder_thumbnail(source_id, entry_id)` renvoie
+l'URL `data:image/png;base64,…` d'une seule histoire (compatible CSP `img-src data:`), uniquement
+pour une entrée du **dernier scan** de cette source (sinon `not_found`, jamais un chemin libre).
+L'image (PNG ou LIF via `lif.rs`) est réduite à 160 px et gardée dans `<cache>/thumbs/<clé>.png`
+(clé = chemin, taille et date de l'archive, plus taille et date de `img/thumbnail.lif` pour un
+`.plain`) ; le cache est consulté **avant** d'ouvrir l'archive.
+
+**Cache de métadonnées** : en mémoire, par archive (chemin, taille, date de modification), pour ne
+pas rouvrir chaque zip à chaque scan ; les dossiers `.plain` sont relus à chaque scan.
+
+`thumbs/` est enregistré dans `APP_CACHE_SUBDIRS` (`cache.rs`) : « Vider le cache » le nettoie.
+
+**Suite** : surveillance du dossier (`notify`) et purge de `thumbs/` : issue #37.
+
 ### Erreurs
 
 `AppError` (`src-tauri/src/error.rs`, `thiserror`) est sérialisée en objet stable
@@ -115,17 +173,18 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 (`kind: "unknown"` si la forme est inattendue). Convention : chaque module ajoute ses variantes
 à `AppError` avec un `kind` stable ; le front teste le `kind`, jamais le `message`.
 
-| `kind`            | Sens                                                                                                |
-| ----------------- | --------------------------------------------------------------------------------------------------- |
-| `io`              | Erreur d'entrée/sortie                                                                              |
-| `validation`      | Valeur refusée (URL, chemin, extension, nom, ordre) ou opération interdite                          |
-| `not_found`       | Élément introuvable (identifiant de source inconnu)                                                 |
-| `config_version`  | Fichier de configuration écrit par une version plus récente (laissé intact)                         |
-| `config_dir`      | Dossier de configuration introuvable                                                                |
-| `serialization`   | Échec de sérialisation JSON                                                                         |
-| `network`         | Réseau indisponible, délai dépassé, réponse HTTP en échec, réponse trop grosse                      |
-| `catalog_invalid` | Catalogue (ou vignette) reçu inexploitable : JSON invalide, pas de liste `data`, image non reconnue |
-| `unknown`         | Côté front uniquement : erreur de forme inattendue                                                  |
+| `kind`               | Sens                                                                                                |
+| -------------------- | --------------------------------------------------------------------------------------------------- |
+| `io`                 | Erreur d'entrée/sortie                                                                              |
+| `validation`         | Valeur refusée (URL, chemin, extension, nom, ordre) ou opération interdite                          |
+| `not_found`          | Élément introuvable (identifiant de source inconnu)                                                 |
+| `config_version`     | Fichier de configuration écrit par une version plus récente (laissé intact)                         |
+| `config_dir`         | Dossier de configuration introuvable                                                                |
+| `serialization`      | Échec de sérialisation JSON                                                                         |
+| `network`            | Réseau indisponible, délai dépassé, réponse HTTP en échec, réponse trop grosse                      |
+| `catalog_invalid`    | Catalogue (ou vignette) reçu inexploitable : JSON invalide, pas de liste `data`, image non reconnue |
+| `folder_unavailable` | Dossier d'une source locale absent ou inaccessible (disque débranché…)                              |
+| `unknown`            | Côté front uniquement : erreur de forme inattendue                                                  |
 
 Un fichier de configuration **corrompu** n'est pas une erreur : il est renommé en
 `<fichier>.<AAAAMMJJ-HHMMSS>.bak`, un avertissement est tracé et les valeurs par défaut sont utilisées.

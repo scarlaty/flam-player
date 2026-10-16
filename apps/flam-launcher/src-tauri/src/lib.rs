@@ -4,10 +4,13 @@ mod app;
 pub mod cache;
 pub mod catalog;
 mod error;
+pub mod folder;
+pub mod lif;
 pub mod settings;
 pub mod sources;
 pub mod storage;
 pub mod story;
+pub mod thumbnail;
 
 use tauri::Manager;
 
@@ -27,6 +30,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app.manage(storage::ConfigState::new(storage::config_dir()?));
+            app.manage(folder::FolderState::default());
             app.manage(catalog::CatalogService::new()?);
             Ok(())
         })
@@ -45,7 +49,48 @@ pub fn run() {
             sources::sources_update,
             sources::sources_remove,
             sources::sources_reorder,
+            folder::folder_scan,
+            folder::folder_thumbnail,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application Tauri");
+}
+
+#[cfg(test)]
+mod tests {
+    /// Toute commande `#[tauri::command]` d'un module doit être enregistrée dans
+    /// `generate_handler!` : sinon l'appel du front échoue à l'exécution (« command not found »).
+    #[test]
+    fn toutes_les_commandes_sont_enregistrees() {
+        let lib = include_str!("lib.rs");
+        let modules = [
+            ("app", include_str!("app.rs")),
+            ("catalog", include_str!("catalog.rs")),
+            ("folder", include_str!("folder.rs")),
+            ("settings", include_str!("settings.rs")),
+            ("sources", include_str!("sources.rs")),
+            ("storage", include_str!("storage.rs")),
+        ];
+        let mut count = 0;
+        for (module, source) in modules {
+            let mut lines = source.lines();
+            while let Some(line) = lines.next() {
+                if line.trim() != "#[tauri::command]" {
+                    continue;
+                }
+                let signature = lines.next().unwrap_or_default();
+                let name = signature
+                    .split("fn ")
+                    .nth(1)
+                    .and_then(|rest| rest.split('(').next())
+                    .unwrap_or_default();
+                assert!(
+                    lib.contains(&format!("{module}::{name},")),
+                    "commande {module}::{name} non enregistrée dans generate_handler!"
+                );
+                count += 1;
+            }
+        }
+        assert!(count >= 10, "commandes détectées : {count}");
+    }
 }
