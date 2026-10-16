@@ -17,11 +17,21 @@ export interface LibraryEntry {
   converter: string | null;
   /** Entrée d'origine (source, lien, métadonnées). */
   source: StoryEntry;
+  /** Vignette conservée sous `<cache>/library/thumbs/` (nom de fichier), `null` sans vignette. */
+  thumb?: string | null;
 }
 
 /** `library_list` : histoires installées, triées par titre. */
 export function listLibrary(): Promise<LibraryEntry[]> {
   return invokeCommand<LibraryEntry[]>("library_list");
+}
+
+/**
+ * `library_thumbnail` : URL `data:` de la vignette conservée à l'installation (`not_found` si
+ * l'histoire n'en a pas : installation antérieure, vignette illisible ou disparue).
+ */
+export function libraryThumbnail(uuid: string): Promise<string> {
+  return invokeCommand<string>("library_thumbnail", { uuid });
 }
 
 /**
