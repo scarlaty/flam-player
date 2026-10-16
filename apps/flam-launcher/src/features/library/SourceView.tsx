@@ -39,6 +39,22 @@ function formatDate(seconds: number | null): string | null {
 }
 
 const ALL = "";
+/** Délai avant d'annoncer le nombre de résultats, pour ne pas lire chaque frappe. */
+export const COUNT_ANNOUNCE_DELAY_MS = 400;
+
+/**
+ * Texte annoncé : la première valeur non vide l'est aussitôt, les suivantes seulement
+ * après `delay` ms sans changement.
+ */
+function useDebouncedAnnouncement(value: string, delay: number): string {
+  const [announced, setAnnounced] = useState(value);
+  if (announced === "" && value !== "") setAnnounced(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setAnnounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return announced;
+}
 
 export interface SourceViewProps extends StoryHooks {
   source: Source;
@@ -60,9 +76,19 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
     count: PAGE_SIZE,
   });
   const latest = useRef(0);
+  const gridRef = useRef<HTMLUListElement>(null);
+  const focusFrom = useRef<number | null>(null);
+  // Le chargement ne dépend que de l'identité de la source, pas de l'objet entier
+  // (qui change de référence quand la liste des sources est rechargée).
+  const sourceRef = useRef(source);
+  useEffect(() => {
+    sourceRef.current = source;
+  });
+  const { id: sourceId, type: sourceType } = source;
 
   const load = useCallback(
     async (refresh: boolean) => {
+      const source = sourceRef.current;
       const request = ++latest.current;
       setLoading(true);
       setLoadError(null);
@@ -88,7 +114,8 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
         if (request === latest.current) setLoading(false);
       }
     },
-    [source, report, toast],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sourceId, sourceType, report, toast],
   );
 
   useEffect(() => {
@@ -109,6 +136,18 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
   const filterKey = JSON.stringify(filters);
   const limit = shown.key === filterKey ? shown.count : PAGE_SIZE;
   const page = visible.slice(0, limit);
+
+  const countText = entries ? t.library.resultCount(visible.length, entries.length) : "";
+  const announced = useDebouncedAnnouncement(countText, COUNT_ANNOUNCE_DELAY_MS);
+
+  useEffect(() => {
+    // Après « Afficher plus », le focus passe à la première nouvelle carte.
+    const from = focusFrom.current;
+    if (from === null) return;
+    focusFrom.current = null;
+    const item = gridRef.current?.children[from];
+    item?.querySelector<HTMLElement>("button, a[href], [tabindex]")?.focus();
+  }, [page.length]);
 
   function update(patch: Partial<LibraryFilters>) {
     setFilters((current) => ({ ...current, ...patch }));
@@ -201,7 +240,7 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
             />
           </form>
           <p role="status" className="fl-library__count">
-            {t.library.resultCount(visible.length, data.entries.length)}
+            {announced}
           </p>
         </>
       )}
@@ -226,7 +265,11 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
 
       {page.length > 0 && (
         <>
-          <ul className="fl-library__grid" aria-label={t.library.gridLabel(source.name)}>
+          <ul
+            ref={gridRef}
+            className="fl-library__grid"
+            aria-label={t.library.gridLabel(source.name)}
+          >
             {page.map((entry) => (
               <StoryTile key={entry.entry_id} source={source} entry={entry} {...hooks} />
             ))}
@@ -234,7 +277,10 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
           {visible.length > page.length && (
             <div className="fl-library__more">
               <Button
-                onClick={() => setShown({ key: filterKey, count: limit + PAGE_SIZE })}
+                onClick={() => {
+                  focusFrom.current = page.length;
+                  setShown({ key: filterKey, count: limit + PAGE_SIZE });
+                }}
               >
                 {t.library.showMore(visible.length - page.length)}
               </Button>
