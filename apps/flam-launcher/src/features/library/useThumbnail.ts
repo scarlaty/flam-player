@@ -4,6 +4,7 @@ import { folderThumbnail } from "../../api/folder";
 import { libraryThumbnail } from "../../api/library";
 import type { Source } from "../../api/sources";
 import type { StoryEntry } from "../../api/story";
+import type { ListedEntry } from "./sourceData";
 
 /** Demande la vignette d'une histoire à la commande de sa source (URL `data:`). */
 function fetchThumbnail(source: Source, entry: StoryEntry): Promise<string> | null {
@@ -39,7 +40,7 @@ function fetchFromSource(source: Source, entry: StoryEntry): Promise<string> | n
  */
 export function useThumbnail(
   source: Source,
-  entry: StoryEntry,
+  entry: ListedEntry,
 ): {
   url: string | undefined;
   observe: (node: HTMLElement | null) => (() => void) | void;
