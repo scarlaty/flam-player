@@ -28,6 +28,7 @@ pub mod download;
 pub mod pack;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -222,8 +223,8 @@ pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
     })
 }
 
-/// Version du convertisseur : empreinte `sha256:<12 hex>` du script (`telmi2flam` n'a pas
-/// d'option `--version`).
+/// Repli pour la version du convertisseur : empreinte `sha256:<12 hex>` du script, utilisée
+/// seulement si l'événement `start` ne porte pas de champ `version`.
 pub fn converter_fingerprint(script: &Path) -> AppResult<String> {
     let bytes = std::fs::read(script)?;
     let digest = Sha256::digest(&bytes);
@@ -353,6 +354,12 @@ struct QueuedTask {
     validator: Validator,
 }
 
+/// Contenu de la file à écrire, avec son numéro d'ordre.
+struct QueueSnapshot {
+    seq: u64,
+    bytes: Vec<u8>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct QueueFile {
     schema_version: u32,
@@ -397,6 +404,10 @@ struct Inner {
     conversions: Semaphore,
     /// Sérialise les écritures de la bibliothèque (pipeline et `library_remove`).
     library_lock: Mutex<()>,
+    /// Numéro de la dernière capture de la file demandée (attribué sous le verrou `tasks`).
+    queue_requested: AtomicU64,
+    /// Numéro de la dernière capture écrite ; sérialise aussi les écritures du fichier.
+    queue_written: Mutex<u64>,
 }
 
 /// Service d'installation (état Tauri).
@@ -411,6 +422,8 @@ impl InstallService {
             downloads: Arc::new(Limiter::new(settings::DEFAULT_MAX_DOWNLOADS as usize)),
             conversions: Semaphore::new(1),
             library_lock: Mutex::default(),
+            queue_requested: AtomicU64::new(0),
+            queue_written: Mutex::new(0),
         }))
     }
 
@@ -446,7 +459,7 @@ impl InstallService {
                 ),
             }
         }
-        let ids: Vec<String> = {
+        let (ids, snap): (Vec<String>, QueueSnapshot) = {
             let mut tasks = lock(&self.0.tasks);
             for (q, entry) in accepted {
                 if tasks.iter().any(|s| s.task.id == q.id) {
@@ -473,9 +486,10 @@ impl InstallService {
                     validator,
                 });
             }
-            self.persist(&tasks);
-            tasks.iter().map(|s| s.task.id.clone()).collect()
+            let snap = self.snapshot(&tasks);
+            (tasks.iter().map(|s| s.task.id.clone()).collect(), snap)
         };
+        self.write_queue(snap).await;
         for id in ids {
             self.spawn(id);
         }
@@ -485,7 +499,7 @@ impl InstallService {
     /// même `uuid` est renvoyée telle quelle au lieu d'en créer une seconde.
     pub fn start(&self, entry: StoryEntry) -> AppResult<InstallTask> {
         validate_entry(&entry)?;
-        let task = {
+        let (task, snap) = {
             let mut tasks = lock(&self.0.tasks);
             if let Some(slot) = tasks
                 .iter()
@@ -506,9 +520,10 @@ impl InstallService {
                 cancel: watch::channel(false).0,
                 validator: Validator::default(),
             });
-            self.persist(&tasks);
-            task
+            let snap = self.snapshot(&tasks);
+            (task, snap)
         };
+        self.write_queue_detached(snap);
         self.emit_state(&task.id, TaskState::Queued, None);
         self.spawn(task.id.clone());
         Ok(task)
@@ -555,7 +570,9 @@ impl InstallService {
         .await?
     }
 
-    fn persist(&self, tasks: &[Slot]) {
+    /// Construit le contenu de la file (sous le verrou `tasks`, sans aucune E/S) et lui attribue
+    /// un numéro d'ordre. L'écriture se fait ensuite hors du verrou ([`Self::write_queue`]).
+    fn snapshot(&self, tasks: &[Slot]) -> QueueSnapshot {
         let file = QueueFile {
             schema_version: QUEUE_SCHEMA,
             tasks: tasks
@@ -569,8 +586,46 @@ impl InstallService {
                 })
                 .collect(),
         };
-        if let Err(err) = storage::write_json(&self.0.opts.queue_path, &file) {
-            tracing::warn!("file d'installation non enregistrée : {err}");
+        let mut bytes = serde_json::to_vec_pretty(&file).unwrap_or_default();
+        bytes.push(b'\n');
+        QueueSnapshot {
+            seq: self.0.queue_requested.fetch_add(1, Ordering::SeqCst) + 1,
+            bytes,
+        }
+    }
+
+    /// Écriture bloquante d'une capture : ignorée si une capture plus récente est déjà écrite.
+    fn write_queue_blocking(inner: &Inner, snap: &QueueSnapshot) {
+        let mut written = lock(&inner.queue_written);
+        if snap.seq <= *written {
+            return;
+        }
+        match storage::write_atomic(&inner.opts.queue_path, &snap.bytes) {
+            Ok(()) => *written = snap.seq,
+            Err(err) => tracing::warn!("file d'installation non enregistrée : {err}"),
+        }
+    }
+
+    /// Écrit la file sans attendre (hors verrou, sur un thread bloquant).
+    fn write_queue_detached(&self, snap: QueueSnapshot) {
+        let inner = self.0.clone();
+        tauri::async_runtime::spawn_blocking(move || Self::write_queue_blocking(&inner, &snap));
+    }
+
+    /// Écrit la file et attend la fin de l'écriture.
+    async fn write_queue(&self, snap: QueueSnapshot) {
+        let inner = self.0.clone();
+        let _ = blocking(move || Self::write_queue_blocking(&inner, &snap)).await;
+    }
+
+    /// Attend que toutes les captures demandées soient écrites (tests).
+    #[cfg(test)]
+    async fn flush_queue(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while *lock(&self.0.queue_written) < self.0.queue_requested.load(Ordering::SeqCst)
+            && Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
 
@@ -602,11 +657,14 @@ impl InstallService {
     }
 
     fn save_validator(&self, id: &str, validator: &Validator) {
-        let mut tasks = lock(&self.0.tasks);
-        if let Some(slot) = tasks.iter_mut().find(|s| s.task.id == id) {
-            slot.validator = validator.clone();
-        }
-        self.persist(&tasks);
+        let snap = {
+            let mut tasks = lock(&self.0.tasks);
+            if let Some(slot) = tasks.iter_mut().find(|s| s.task.id == id) {
+                slot.validator = validator.clone();
+            }
+            self.snapshot(&tasks)
+        };
+        self.write_queue_detached(snap);
     }
 
     async fn run(self, id: String) {
@@ -632,21 +690,24 @@ impl InstallService {
             ),
             Err(err) => (TaskState::Failed, Some(TaskError::from(err))),
         };
-        {
+        let snap = {
             let mut tasks = lock(&self.0.tasks);
             if let Some(slot) = tasks.iter_mut().find(|s| s.task.id == id) {
                 slot.task.state = state;
                 slot.task.error = error.clone();
                 slot.task.percent = (state == TaskState::Done).then_some(100.0);
             }
-            self.persist(&tasks);
+            let snap = self.snapshot(&tasks);
             let finished = tasks.iter().filter(|s| !s.task.state.is_active()).count();
             if finished > MAX_FINISHED {
                 if let Some(pos) = tasks.iter().position(|s| !s.task.state.is_active()) {
                     tasks.remove(pos);
                 }
             }
-        }
+            snap
+        };
+        // Fichier de file à jour avant d'annoncer la fin (écriture hors verrou).
+        self.write_queue(snap).await;
         match result {
             Ok((entry, warnings)) => self.0.opts.events.done(&InstallDone {
                 task_id: id,
@@ -685,7 +746,10 @@ impl InstallService {
             _ = cancelled(cancel) => return Err(AppError::Cancelled),
         };
         let library = Library::new(&tc.cache_root);
-        let staging = library.staging_dir()?;
+        let staging = {
+            let library = Library::new(&tc.cache_root);
+            blocking(move || library.staging_dir()).await??
+        };
         let staged = child_of(&staging, &format!("{id}.plain.pk"))?;
         let result = self
             .produce(id, entry, &tc, &staged, cancel, validator)
@@ -693,12 +757,12 @@ impl InstallService {
         let (downloaded, converter, warnings) = match result {
             Ok(produced) => produced,
             Err(err) => {
-                let _ = remove_if_exists(&staged);
+                discard(staged.clone()).await;
                 return Err(err);
             }
         };
         if *cancel.borrow() {
-            let _ = remove_if_exists(&staged);
+            discard(staged.clone()).await;
             return Err(AppError::Cancelled);
         }
         self.emit_state(id, TaskState::Installing, None);
@@ -714,7 +778,7 @@ impl InstallService {
         })
         .await??;
         if let Some(archive) = downloaded {
-            let _ = remove_if_exists(&archive);
+            let _ = blocking(move || remove_archive(&archive)).await;
         }
         Ok((installed, warnings))
     }
@@ -745,8 +809,8 @@ impl InstallService {
                 // Annulée (en attente du créneau de conversion comme pendant la conversion) :
                 // l'archive téléchargée est abandonnée avec la tâche.
                 if matches!(err, AppError::Cancelled) {
-                    if let Some(archive) = &downloaded {
-                        let _ = remove_if_exists(archive);
+                    if let Some(archive) = downloaded {
+                        let _ = blocking(move || remove_archive(&archive)).await;
                     }
                 }
                 Err(err)
@@ -783,10 +847,6 @@ impl InstallService {
                         source.display()
                     )));
                 }
-                let fingerprint = {
-                    let script = script.clone();
-                    blocking(move || converter_fingerprint(&script)).await??
-                };
                 let _slot = tokio::select! {
                     s = self.0.conversions.acquire() => s.map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?,
                     _ = cancelled(cancel) => return Err(AppError::Cancelled),
@@ -819,7 +879,14 @@ impl InstallService {
                     &mut on_step,
                 )
                 .await;
-                Ok((Some(fingerprint), converted?.warnings))
+                let converted = converted?;
+                // Version annoncée par l'événement `start` ; empreinte du script en repli
+                // (convertisseur plus ancien, sans champ `version`).
+                let converter = match converted.version {
+                    Some(version) => version,
+                    None => blocking(move || converter_fingerprint(&script)).await??,
+                };
+                Ok((Some(converter), converted.warnings))
             }
             StoryKind::FlamPk => {
                 self.emit_state(id, TaskState::Installing, None);
@@ -848,7 +915,7 @@ impl InstallService {
         entry: &StoryEntry,
         tc: &Toolchain,
         cancel: &mut watch::Receiver<bool>,
-        mut validator: Validator,
+        validator: Validator,
     ) -> AppResult<PathBuf> {
         let ext = match entry.kind {
             StoryKind::TelmiZip => "zip",
@@ -860,15 +927,21 @@ impl InstallService {
             }
         };
         let dir = tc.cache_root.join(ARCHIVES_DIR);
-        std::fs::create_dir_all(&dir)?;
         // `uuid` revalidé par `validate_entry` : nom de fichier sûr.
         let dest = child_of(
             &dir,
             &format!("{}-{}.{ext}", entry.uuid, entry.version.unwrap_or(0)),
         )?;
-        if dest.is_file() {
-            return check_archive(dest).await;
-        }
+        let prepared = {
+            let (dest, url) = (dest.clone(), entry.download_url.clone());
+            blocking(move || prepare_archive(&dir, &dest, &url)).await??
+        };
+        // Validateur de la tâche, sinon celui mémorisé avec le `.part` d'un même lien.
+        let mut validator = match prepared {
+            Prepared::Reuse => return check_archive(dest).await,
+            Prepared::Download(known) if validator == Validator::default() => known,
+            Prepared::Download(_) => validator,
+        };
         let _slot = tokio::select! {
             s = self.0.downloads.acquire() => s,
             _ = cancelled(cancel) => return Err(AppError::Cancelled),
@@ -905,15 +978,17 @@ impl InstallService {
             &mut on_progress,
         )
         .await;
-        match result {
-            Ok(()) => {}
-            Err(err) => {
-                if matches!(err, AppError::Cancelled) {
-                    let _ = remove_if_exists(&download::part_path(&dest));
-                }
-                return Err(err);
-            }
+        if matches!(result, Err(AppError::Cancelled)) {
+            discard(download::part_path(&dest)).await;
         }
+        // Mémorise le lien et le validateur à côté de l'archive (ou du `.part` conservé après
+        // une coupure) : une relance reprend le téléchargement, et l'archive n'est réutilisée
+        // que pour le même lien.
+        {
+            let (dest, url, validator) = (dest.clone(), entry.download_url.clone(), validator);
+            blocking(move || write_archive_meta(&dest, &url, &validator)).await?;
+        }
+        result?;
         check_archive(dest).await
     }
 }
@@ -936,12 +1011,93 @@ async fn check_archive(dest: PathBuf) -> AppResult<PathBuf> {
     match valid {
         Ok(()) => Ok(dest),
         Err(reason) => {
-            let _ = remove_if_exists(&dest);
+            let _ = blocking(move || remove_archive(&dest)).await;
             Err(AppError::DownloadInvalid(format!(
                 "archive téléchargée incomplète ou invalide : {reason}"
             )))
         }
     }
+}
+
+/// Mémoire d'une archive du cache, à côté d'elle (`<archive>.meta.json`).
+#[derive(Debug, Serialize, Deserialize)]
+struct ArchiveMeta {
+    url: String,
+    #[serde(default)]
+    validator: Validator,
+    /// Taille de l'archive complète (absente tant que le téléchargement n'est pas terminé).
+    size: Option<u64>,
+}
+
+fn meta_path(dest: &Path) -> PathBuf {
+    let mut name = dest.file_name().unwrap_or_default().to_os_string();
+    name.push(".meta.json");
+    dest.with_file_name(name)
+}
+
+enum Prepared {
+    /// Archive complète déjà présente et issue du même lien : à réutiliser.
+    Reuse,
+    /// À télécharger ; validateur connu pour reprendre un `.part` du même lien.
+    Download(Validator),
+}
+
+/// Décide de la réutilisation d'une archive ou d'un `.part` (E/S bloquantes). Une archive sans
+/// mémoire, d'un autre lien ou d'une autre taille est supprimée ; un `.part` d'un autre lien
+/// aussi.
+fn prepare_archive(dir: &Path, dest: &Path, url: &str) -> AppResult<Prepared> {
+    std::fs::create_dir_all(dir)?;
+    let meta_file = meta_path(dest);
+    let meta: Option<ArchiveMeta> = std::fs::read(&meta_file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let same = meta.as_ref().is_some_and(|m| m.url == url);
+    if dest.is_file() {
+        let size = std::fs::metadata(dest)?.len();
+        if same && meta.as_ref().and_then(|m| m.size) == Some(size) {
+            return Ok(Prepared::Reuse);
+        }
+        remove_if_exists(dest)?;
+    }
+    match meta {
+        Some(m) if same => Ok(Prepared::Download(m.validator)),
+        _ => {
+            remove_if_exists(&download::part_path(dest))?;
+            remove_if_exists(&meta_file)?;
+            Ok(Prepared::Download(Validator::default()))
+        }
+    }
+}
+
+/// Écrit la mémoire de l'archive (ou la supprime s'il ne reste ni archive ni `.part`).
+fn write_archive_meta(dest: &Path, url: &str, validator: &Validator) {
+    let size = std::fs::metadata(dest).ok().map(|m| m.len());
+    let has_part = std::fs::metadata(download::part_path(dest)).is_ok();
+    let file = meta_path(dest);
+    if size.is_none() && !has_part {
+        let _ = remove_if_exists(&file);
+        return;
+    }
+    let meta = ArchiveMeta {
+        url: url.to_string(),
+        validator: validator.clone(),
+        size,
+    };
+    if let Err(err) = storage::write_json(&file, &meta) {
+        tracing::warn!("mémoire de l'archive non enregistrée : {err}");
+    }
+}
+
+/// Supprime l'archive téléchargée, son `.part` et sa mémoire.
+fn remove_archive(dest: &Path) {
+    let _ = remove_if_exists(dest);
+    let _ = remove_if_exists(&download::part_path(dest));
+    let _ = remove_if_exists(&meta_path(dest));
+}
+
+/// Supprime un fichier hors du runtime (erreurs ignorées).
+async fn discard(path: PathBuf) {
+    let _ = tokio::fs::remove_file(path).await;
 }
 
 // ---------------------------------------------------------------------------------------

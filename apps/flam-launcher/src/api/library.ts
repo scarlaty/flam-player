@@ -13,7 +13,7 @@ export interface LibraryEntry {
   size: number;
   /** Date d'installation (secondes Unix). */
   installed_at: number;
-  /** Version de `telmi2flam` utilisée (`sha256:<12 hex>`), `null` sans conversion. */
+  /** Version de `telmi2flam` utilisée (champ `version` de l'événement `start`, repli `sha256:<12 hex>`), `null` sans conversion. */
   converter: string | null;
   /** Entrée d'origine (source, lien, métadonnées). */
   source: StoryEntry;

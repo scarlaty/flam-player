@@ -345,8 +345,8 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
   sinon en développement `tools/telmi2flam/telmi2flam.py` d'un dossier ancêtre. Python : `resolved.python_path`.
 - **Bibliothèque** : `library.json` = `{ schema_version, stories: LibraryEntry[] }` avec
   `LibraryEntry { uuid, version, title, file, size, installed_at, converter, source: StoryEntry }`.
-  `converter` est l'empreinte `sha256:<12 hex>` de `telmi2flam.py` (pas d'option `--version` :
-  #60). **Une installation par `uuid`** : la dernière installée remplace la précédente (autre
+  `converter` est la version de `telmi2flam` lue dans le champ `version` de l'événement `start`
+  (#60), avec en repli l'empreinte `sha256:<12 hex>` de `telmi2flam.py`. **Une installation par `uuid`** : la dernière installée remplace la précédente (autre
   version, ou `.plain` / `.plain.pk` de même `uuid` d'un dossier source). Un index corrompu est
   sauvegardé en `*.bak` et repart vide. `library_list` ignore les entrées dont le fichier a
   disparu.

@@ -30,6 +30,8 @@ pub const LIBRARY_DIR: &str = "library";
 pub const INDEX_FILE: &str = "library.json";
 /// Dossier de préparation (sous `library/`, même volume : publication par renommage).
 pub const STAGING_DIR: &str = ".staging";
+/// Suffixe de la sauvegarde d'un fichier remplacé pendant une installation.
+const BACKUP_SUFFIX: &str = ".bak";
 /// Version du schéma de `library.json`.
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -47,7 +49,8 @@ pub struct LibraryEntry {
     pub size: u64,
     /// Date d'installation (secondes Unix).
     pub installed_at: u64,
-    /// Version de `telmi2flam` utilisée (`sha256:<12 hex>` du script), `None` sans conversion.
+    /// Version de `telmi2flam` utilisée (champ `version` de l'événement `start`, sinon repli
+    /// `sha256:<12 hex>` du script), `None` sans conversion.
     pub converter: Option<String>,
     /// Entrée d'origine telle que proposée par la source (source, lien, métadonnées).
     pub source: StoryEntry,
@@ -127,6 +130,7 @@ impl Library {
 
     /// Lit l'index. Absent : vide. Corrompu : sauvegardé en `*.bak`, vide (avertissement).
     /// Version future : erreur, fichier intact.
+    #[cfg(test)]
     fn load(&self) -> AppResult<Vec<LibraryEntry>> {
         let path = self.root.join(INDEX_FILE);
         let loaded = storage::load_versioned::<IndexFile>(&path, SCHEMA_VERSION, |_, _| {})?;
@@ -146,11 +150,61 @@ impl Library {
         )
     }
 
+    /// Lit l'index puis le réconcilie avec les fichiers de `library/` (reprise après un arrêt
+    /// entre le renommage du fichier et l'écriture de l'index, voir [`Library::install`]) :
+    /// - une sauvegarde `.staging/<fichier>.bak` est restaurée si l'index décrit l'ancien
+    ///   fichier (absent, ou d'une autre taille), sinon supprimée ;
+    /// - un `.plain.pk` publié mais absent de l'index est supprimé.
+    ///
+    /// Rien n'est supprimé si l'index n'a pas pu être lu tel quel (absent ou restauré).
+    fn load_reconciled(&self) -> AppResult<Vec<LibraryEntry>> {
+        let path = self.root.join(INDEX_FILE);
+        let loaded = storage::load_versioned::<IndexFile>(&path, SCHEMA_VERSION, |_, _| {})?;
+        let Loaded::Found(index) = loaded else {
+            return Ok(Vec::new());
+        };
+        let stories = index.stories;
+        if let Ok(read) = std::fs::read_dir(self.root.join(STAGING_DIR)) {
+            for item in read.flatten() {
+                let name = item.file_name().to_string_lossy().into_owned();
+                let Some(file) = name.strip_suffix(BACKUP_SUFFIX) else {
+                    continue;
+                };
+                let Ok(target) = self.checked(file) else {
+                    continue;
+                };
+                let indexed = stories.iter().find(|e| e.file == file);
+                let current = std::fs::metadata(&target).ok().map(|m| m.len());
+                match indexed {
+                    Some(entry) if current != Some(entry.size) => {
+                        let _ = remove_if_exists(&target);
+                        let _ = std::fs::rename(item.path(), &target);
+                    }
+                    _ => {
+                        let _ = remove_if_exists(&item.path());
+                    }
+                }
+            }
+        }
+        if let Ok(read) = std::fs::read_dir(&self.root) {
+            for item in read.flatten() {
+                let name = item.file_name().to_string_lossy().into_owned();
+                if name.ends_with(".plain.pk")
+                    && item.file_type().is_ok_and(|t| t.is_file())
+                    && !stories.iter().any(|e| e.file == name)
+                {
+                    let _ = remove_if_exists(&item.path());
+                }
+            }
+        }
+        Ok(stories)
+    }
+
     /// Histoires installées dont le fichier existe encore (une entrée dont le fichier a
     /// disparu est ignorée), triées par titre.
     pub fn list(&self) -> AppResult<Vec<LibraryEntry>> {
         let mut stories: Vec<LibraryEntry> = self
-            .load()?
+            .load_reconciled()?
             .into_iter()
             .filter(|e| self.checked(&e.file).is_ok_and(|p| p.is_file()))
             .collect();
@@ -158,9 +212,13 @@ impl Library {
         Ok(stories)
     }
 
-    /// Publie `staged` (un `.plain.pk` complet) comme installation de `source` : renommage
-    /// atomique vers `<uuid>-<version>.plain.pk`, mise à jour de l'index, suppression de
-    /// l'ancienne installation du même `uuid` si son fichier diffère.
+    /// Publie `staged` (un `.plain.pk` complet) comme installation de `source`.
+    ///
+    /// Ordre sûr en cas d'arrêt ou d'échec : l'éventuel fichier de même nom est d'abord mis de
+    /// côté (`.staging/<fichier>.bak`), le nouveau est renommé en place, l'index est écrit, puis
+    /// la sauvegarde et les fichiers des anciennes versions du même `uuid` sont supprimés. Un
+    /// échec avant la fin remet l'état précédent ; un arrêt brutal est réconcilié au chargement
+    /// suivant ([`Library::load_reconciled`]).
     pub fn install(
         &self,
         staged: &Path,
@@ -168,11 +226,41 @@ impl Library {
         converter: Option<String>,
         now: u64,
     ) -> AppResult<LibraryEntry> {
+        self.install_with(staged, source, converter, now, &|stories| {
+            self.save(stories)
+        })
+    }
+
+    fn install_with(
+        &self,
+        staged: &Path,
+        source: &StoryEntry,
+        converter: Option<String>,
+        now: u64,
+        save: &dyn Fn(Vec<LibraryEntry>) -> AppResult<()>,
+    ) -> AppResult<LibraryEntry> {
         let target = self.final_path(&source.uuid, source.version)?;
         let file = file_name_for(&source.uuid, source.version)?;
-        let mut stories = self.load()?;
-        std::fs::rename(staged, &target)?;
-        let size = std::fs::metadata(&target)?.len();
+        let mut stories = self.load_reconciled()?;
+        let backup = self.staging_dir()?.join(format!("{file}{BACKUP_SUFFIX}"));
+        let had_previous = target.is_file();
+        if had_previous {
+            std::fs::rename(&target, &backup)?;
+        }
+        let restore = || {
+            let _ = remove_if_exists(&target);
+            if had_previous {
+                let _ = std::fs::rename(&backup, &target);
+            }
+        };
+        let size = match std::fs::rename(staged, &target).and_then(|()| std::fs::metadata(&target))
+        {
+            Ok(meta) => meta.len(),
+            Err(err) => {
+                restore();
+                return Err(err.into());
+            }
+        };
         let entry = LibraryEntry {
             uuid: source.uuid.clone(),
             version: source.version,
@@ -183,22 +271,30 @@ impl Library {
             converter,
             source: source.clone(),
         };
-        for old in stories.iter().filter(|e| e.uuid == entry.uuid) {
-            if old.file != file {
-                if let Ok(path) = self.checked(&old.file) {
-                    remove_if_exists(&path)?;
-                }
-            }
-        }
+        let old_files: Vec<String> = stories
+            .iter()
+            .filter(|e| e.uuid == entry.uuid && e.file != file)
+            .map(|e| e.file.clone())
+            .collect();
         stories.retain(|e| e.uuid != entry.uuid && e.file != file);
         stories.push(entry.clone());
-        self.save(stories)?;
+        if let Err(err) = save(stories) {
+            restore();
+            return Err(err);
+        }
+        // L'index est à jour : le reste est du nettoyage (réconcilié au chargement suivant).
+        let _ = remove_if_exists(&backup);
+        for old in old_files {
+            if let Ok(path) = self.checked(&old) {
+                let _ = remove_if_exists(&path);
+            }
+        }
         Ok(entry)
     }
 
     /// Désinstalle l'histoire `uuid` (fichier et entrée d'index). Inconnue : `not_found`.
     pub fn remove(&self, uuid: &str) -> AppResult<()> {
-        let mut stories = self.load()?;
+        let mut stories = self.load_reconciled()?;
         let Some(pos) = stories.iter().position(|e| e.uuid == uuid) else {
             return Err(AppError::NotFound(format!(
                 "histoire non installée : {uuid}"
@@ -351,6 +447,59 @@ pub(crate) mod tests {
             })
             .count();
         assert_eq!(backups, 1);
+    }
+
+    #[test]
+    fn echec_d_ecriture_de_l_index_restaure_l_etat_precedent() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"ancien");
+        lib.install(&a, &story("abc", Some(2)), None, 1).unwrap();
+        let fail = |_: Vec<LibraryEntry>| Err(AppError::Io(std::io::Error::other("disque plein")));
+        let b = staged(&lib, "b.plain.pk", b"nouveau!");
+        let err = lib
+            .install_with(&b, &story("abc", Some(2)), None, 2, &fail)
+            .unwrap_err();
+        assert_eq!(err.kind(), "io");
+        let path = dir.path().join("library/abc-2.plain.pk");
+        assert_eq!(std::fs::read(&path).unwrap(), b"ancien");
+        let list = lib.list().unwrap();
+        assert_eq!((list.len(), list[0].size), (1, 6));
+        // Nouvelle histoire : rien ne reste publié.
+        let c = staged(&lib, "c.plain.pk", b"x");
+        lib.install_with(&c, &story("neuf", Some(1)), None, 3, &fail)
+            .unwrap_err();
+        assert!(!dir.path().join("library/neuf-1.plain.pk").exists());
+    }
+
+    #[test]
+    fn index_reconcilie_apres_un_arret_entre_renommage_et_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"ancien");
+        lib.install(&a, &story("abc", Some(2)), None, 1).unwrap();
+        let root = dir.path().join("library");
+        // Arrêt simulé : l'ancien fichier est en sauvegarde, le nouveau est publié, l'index
+        // décrit encore l'ancien ; un autre fichier publié n'a jamais été indexé.
+        std::fs::rename(
+            root.join("abc-2.plain.pk"),
+            root.join(".staging/abc-2.plain.pk.bak"),
+        )
+        .unwrap();
+        std::fs::write(root.join("abc-2.plain.pk"), b"nouveau, pas indexe").unwrap();
+        std::fs::write(root.join("orphelin-1.plain.pk"), b"x").unwrap();
+        let list = lib.list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(
+            std::fs::read(root.join("abc-2.plain.pk")).unwrap(),
+            b"ancien"
+        );
+        assert!(!root.join("orphelin-1.plain.pk").exists());
+        assert!(!root.join(".staging/abc-2.plain.pk.bak").exists());
+        // Un index illisible ne fait rien supprimer.
+        std::fs::write(root.join(INDEX_FILE), b"{pas du json").unwrap();
+        assert!(lib.list().unwrap().is_empty());
+        assert!(root.join("abc-2.plain.pk").exists());
     }
 
     #[test]
