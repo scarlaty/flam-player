@@ -185,7 +185,7 @@ it("recherche sans tenir compte des accents et des majuscules", async () => {
     target: { value: "ZELIE" },
   });
   expect(cardTitles()).toEqual(["Zélie et le robot"]);
-  expect(screen.getByText("1 histoire sur 2")).toBeInTheDocument();
+  expect(await screen.findByText("1 histoire sur 2")).toBeInTheDocument();
 
   fireEvent.change(screen.getByRole("searchbox", { name: "Rechercher une histoire" }), {
     target: { value: "introuvable" },
@@ -227,12 +227,37 @@ it("pagine les grandes sources", async () => {
   );
   catalogs.store = catalogView("store", many);
   goTo("#/library/store");
-  renderLibrary();
+  renderLibrary({ onOpenStory: () => undefined });
   await screen.findByText("Histoire 000");
   expect(cardTitles()).toHaveLength(PAGE_SIZE);
   fireEvent.click(screen.getByRole("button", { name: "Afficher plus (5 restantes)" }));
   expect(cardTitles()).toHaveLength(PAGE_SIZE + 5);
   expect(screen.queryByRole("button", { name: /Afficher plus/ })).toBeNull();
+  // Le bouton a disparu : le focus passe à la première nouvelle carte.
+  const first = screen.getByText(`Histoire ${String(PAGE_SIZE).padStart(3, "0")}`);
+  expect(first.closest("li")).toContainElement(document.activeElement as HTMLElement);
+});
+
+it("n'annonce le nombre de résultats qu'après la frappe", async () => {
+  goTo("#/library/store");
+  renderLibrary();
+  await screen.findByText("Les trois ours");
+  expect(screen.getByRole("status")).toHaveTextContent("2 histoires");
+  fireEvent.change(screen.getByRole("searchbox", { name: "Rechercher une histoire" }), {
+    target: { value: "zel" },
+  });
+  expect(screen.getByRole("status")).toHaveTextContent("2 histoires");
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("1 histoire"));
+});
+
+it("ignore les vignettes qui ne sont pas des images data:", async () => {
+  catalogs.store = catalogView("store", [
+    storyA({ thumb_url: "data:text/html;base64,AAAA" }),
+  ]);
+  goTo("#/library/store");
+  const { container } = renderLibrary();
+  await screen.findByText("Les trois ours");
+  expect(container.querySelector("img")).toBeNull();
 });
 
 it("signale un catalogue hors ligne et l'indique dans la barre latérale", async () => {
