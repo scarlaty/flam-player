@@ -81,7 +81,8 @@ fn first_time(flag: &AtomicBool) -> bool {
     flag.swap(false, Ordering::Relaxed)
 }
 
-/// `tracing::warn!` la première fois depuis cet appel, `debug!` ensuite : `list` réconcilie à
+/// `tracing::warn!` la première fois depuis ce site d'appel (une fois par processus), `debug!`
+/// ensuite : `list` réconcilie à
 /// chaque appel, et une cause persistante (verrou indisponible, restauration bloquée) ne doit pas
 /// inonder le journal.
 macro_rules! warn_once {
@@ -200,15 +201,28 @@ impl Library {
         Ok(self.load_state()?.0)
     }
 
-    /// Comme [`Library::load`], avec un booléen vrai si l'index était corrompu (et a été mis de
-    /// côté : la liste vide ne dit alors rien de ce qui est publié).
+    /// Comme [`Library::load`], avec un booléen vrai si l'index ne fait pas foi : corrompu (mis de
+    /// côté à cet appel) ou absent après avoir été mis de côté ; la liste vide ne dit alors rien
+    /// de ce qui est publié.
     fn load_state(&self) -> AppResult<(Vec<LibraryEntry>, bool)> {
         let path = self.root.join(INDEX_FILE);
         let loaded = storage::load_versioned::<IndexFile>(&path, SCHEMA_VERSION, |_, _| {})?;
         Ok(match loaded {
             Loaded::Found(index) => (index.stories, false),
-            Loaded::Missing => (Vec::new(), false),
+            // Index absent mais un index corrompu a été mis de côté : l'absence vient de cette
+            // mise de côté, elle ne prouve pas que rien n'est publié.
+            Loaded::Missing => (Vec::new(), self.index_quarantined()),
             Loaded::Recovered { .. } => (Vec::new(), true),
+        })
+    }
+
+    /// Vrai si un `library.json.*.bak` (index corrompu mis de côté) existe dans `library/`.
+    fn index_quarantined(&self) -> bool {
+        std::fs::read_dir(&self.root).is_ok_and(|d| {
+            d.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name.starts_with("library.json.") && name.ends_with(".bak")
+            })
         })
     }
 
@@ -274,9 +288,10 @@ impl Library {
     /// la nouvelle entrée (même `installed_at`) : le fichier publié est retiré et la sauvegarde
     /// `.bak` restaurée ; sinon la publication était terminée et seuls les résidus partent.
     ///
-    /// Index **corrompu** (mis de côté, vu vide) : on ne sait rien de ce qui est publié, donc rien
-    /// n'est défait ni nettoyé ; marqueurs et `.bak` restent. (L'appel suivant voit un index
-    /// absent : cas limite documenté dans le README.)
+    /// Index **corrompu** (mis de côté, vu vide), ou absent alors qu'un `library.json.*.bak`
+    /// existe : on ne sait rien de ce qui est publié, donc rien n'est défait ni nettoyé ;
+    /// marqueurs et `.bak` restent (supprimer le `library.json.*.bak` après réparation les
+    /// libère).
     fn reconcile(&self) -> AppResult<Vec<LibraryEntry>> {
         let (stories, recovered) = self.load_state()?;
         if recovered {
@@ -301,7 +316,7 @@ impl Library {
             else {
                 if backup.exists() {
                     // Le `.bak` est peut-être la seule copie de l'ancienne version.
-                    tracing::warn!(
+                    warn_once!(
                         "marqueur {} illisible : marqueur et sauvegarde conservés",
                         item.path().display()
                     );
@@ -389,7 +404,8 @@ impl Library {
         // ne doit pas être écrasée : on refuse sans rien toucher.
         if pending.exists() || backup.exists() {
             return Err(AppError::Validation(format!(
-                "restauration précédente non terminée pour {file}, réessayer plus tard"
+                "restauration ou nettoyage précédent non terminé pour {file} (marqueur ou sauvegarde \
+                 restés dans .staging), réessayer plus tard"
             )));
         }
         let had_previous = target.is_file();
@@ -1073,6 +1089,13 @@ pub(crate) mod tests {
             pending.exists() && backup.is_file(),
             "rien défait ni nettoyé"
         );
+        // L'index est maintenant absent (mis de côté) : toujours rien de défait.
+        assert!(lib.list().unwrap().is_empty());
+        assert_eq!(
+            std::fs::read(root.join("abc-2.plain.pk")).unwrap(),
+            b"nouveau"
+        );
+        assert!(pending.exists() && backup.is_file(), "second appel : idem");
     }
 
     #[test]

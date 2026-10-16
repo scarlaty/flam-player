@@ -10,7 +10,9 @@
 //!   (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) ; l'arrêt forcé termine le job, donc aussi ses
 //!   sous-processus. Pour qu'aucun sous-processus ne puisse échapper au job, le convertisseur
 //!   est lancé **suspendu** (`CREATE_SUSPENDED`), rattaché au job, puis seulement son thread
-//!   principal est repris : il n'exécute aucune instruction avant d'être dans le job.
+//!   principal est repris : il n'exécute aucune instruction avant d'être dans le job. Si le job ne
+//!   peut pas être créé (avertissement), la conversion continue sans lui : l'arrêt forcé se limite
+//!   alors au processus direct.
 //! - Annulation : `CTRL_BREAK_EVENT` (le convertisseur nettoie ses temporaires et sort avec
 //!   130), puis arrêt forcé après un délai de grâce, puis suppression de `<sortie>.<pid>.part`.
 //!
@@ -393,6 +395,11 @@ pub async fn convert(
     // Lancé suspendu : rattaché au job avant d'exécuter la moindre instruction. Sans job (échec de
     // l'attache), il est tout de même repris ; si la reprise échoue, il est tué (`kill_on_drop`).
     let job = Job::attach(&child);
+    if job.is_none() {
+        tracing::warn!(
+            "Job Object indisponible : l'arrêt forcé se limitera au convertisseur direct"
+        );
+    }
     if let Err(err) = job::resume(&child) {
         let _ = child.start_kill();
         return Err(AppError::ConverterUnavailable(format!(
