@@ -52,6 +52,9 @@ export function SettingsScreen() {
   // Derniers paramètres confirmés par le backend et numéro du dernier changement de thème.
   const confirmedRef = useRef<SettingsView | null>(null);
   const themeRequestRef = useRef(0);
+  // Numéro de la requête dont la réponse est dans `confirmedRef`, et requêtes en vol.
+  const confirmedRequestRef = useRef(0);
+  const themeInFlightRef = useRef(0);
 
   const refreshUsage = useCallback(async () => {
     try {
@@ -149,6 +152,19 @@ export function SettingsScreen() {
     if (!view || !confirmed) return;
     const request = ++themeRequestRef.current;
     const isLatest = () => request === themeRequestRef.current;
+    const showConfirmedTheme = () => {
+      const settled = confirmedRef.current ?? confirmed;
+      setView((current) =>
+        current
+          ? {
+              ...current,
+              settings: { ...current.settings, theme: settled.settings.theme },
+            }
+          : current,
+      );
+      applyTheme(settled.settings.theme);
+    };
+    themeInFlightRef.current += 1;
     setThemeError(false);
     setView((current) =>
       current ? { ...current, settings: { ...current.settings, theme } } : current,
@@ -156,23 +172,22 @@ export function SettingsScreen() {
     applyTheme(theme);
     try {
       const next = await setSettings({ ...confirmed.settings, theme });
-      confirmedRef.current = next;
-      // Une réponse plus ancienne ne doit pas écraser un choix plus récent.
+      // Une réponse plus ancienne n'écrase pas un état confirmé par une requête plus récente.
+      if (request > confirmedRequestRef.current) {
+        confirmedRef.current = next;
+        confirmedRequestRef.current = request;
+      }
       if (isLatest()) setView(next);
     } catch {
-      if (!isLatest()) return;
-      // Retour au dernier état réellement enregistré, pas à celui capturé à l'appel.
-      const restored = confirmedRef.current ?? confirmed;
-      setView((current) =>
-        current
-          ? {
-              ...current,
-              settings: { ...current.settings, theme: restored.settings.theme },
-            }
-          : current,
-      );
-      applyTheme(restored.settings.theme);
-      setThemeError(true);
+      if (isLatest()) {
+        // Retour au dernier état réellement enregistré, pas à celui capturé à l'appel.
+        showConfirmedTheme();
+        setThemeError(true);
+      }
+    } finally {
+      themeInFlightRef.current -= 1;
+      // Plus rien en vol : l'affichage doit refléter exactement le thème enregistré.
+      if (themeInFlightRef.current === 0) showConfirmedTheme();
     }
   }
 

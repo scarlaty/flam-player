@@ -14,8 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tauri::State;
 
-use crate::catalog::CatalogService;
-use crate::error::AppError;
+use crate::catalog::{blocking, CatalogService};
 use crate::settings::{resolve, Environment, SettingsStore};
 use crate::storage::ConfigState;
 use crate::AppResult;
@@ -120,13 +119,6 @@ fn effective_dir(state: &ConfigState) -> AppResult<PathBuf> {
     let settings = SettingsStore::new(&state.dir).load()?;
     let (resolved, _) = resolve(&settings, &Environment::current());
     Ok(PathBuf::from(resolved.cache_dir))
-}
-
-/// Exécute un travail bloquant (parcours de fichiers) hors du runtime asynchrone.
-async fn blocking<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> AppResult<T> {
-    tauri::async_runtime::spawn_blocking(job)
-        .await
-        .map_err(|err| AppError::Io(std::io::Error::other(err.to_string())))
 }
 
 /// Dossier de cache effectif et espace occupé par les données de l'application.

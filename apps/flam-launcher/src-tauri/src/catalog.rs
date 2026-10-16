@@ -96,7 +96,9 @@ pub fn build_client(connect: Duration, total: Duration) -> reqwest::Result<reqwe
 }
 
 /// Exécute un travail bloquant (fichiers, JSON) hors du runtime asynchrone.
-async fn blocking<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> AppResult<T> {
+pub(crate) async fn blocking<T: Send + 'static>(
+    job: impl FnOnce() -> T + Send + 'static,
+) -> AppResult<T> {
     tokio::task::spawn_blocking(job)
         .await
         .map_err(|err| AppError::Io(std::io::Error::other(err.to_string())))

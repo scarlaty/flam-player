@@ -251,6 +251,23 @@ it("deux échecs rapprochés restaurent le dernier thème enregistré", async ()
   expect(document.documentElement.dataset.theme).toBeUndefined();
 });
 
+it("une réponse ancienne réussie après l'échec de la dernière resynchronise l'affichage", async () => {
+  await renderScreen();
+  pendingSets = [];
+  fireEvent.click(screen.getByRole("radio", { name: "Clair" }));
+  fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+
+  pendingSets?.[1]?.reject();
+  await screen.findByRole("alert");
+  expect(screen.getByRole("radio", { name: "Système" })).toBeChecked();
+
+  pendingSets?.[0]?.resolve();
+  await waitFor(() => expect(screen.getByRole("radio", { name: "Clair" })).toBeChecked());
+  expect(document.documentElement.dataset.theme).toBe("light");
+  expect(view.settings.theme).toBe("light");
+});
+
 it("un échec ancien n'annule pas un choix plus récent enregistré", async () => {
   await renderScreen();
   pendingSets = [];
