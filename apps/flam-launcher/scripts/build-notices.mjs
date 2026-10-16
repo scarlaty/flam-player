@@ -68,6 +68,10 @@ function npmPackages() {
     if (path === "" || entry.dev || entry.devOptional) continue;
     const dir = join(launcherDir, path);
     if (!existsSync(join(dir, "package.json"))) {
+      if (entry.optional) {
+        console.log(`paquet npm optionnel absent (autre plateforme), ignoré : ${path}`);
+        continue;
+      }
       throw new Error(`paquet npm absent (lancer npm ci) : ${path}`);
     }
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
