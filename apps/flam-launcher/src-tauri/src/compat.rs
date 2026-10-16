@@ -688,7 +688,10 @@ mod tests {
     }
 
     fn converted(warnings: u32) -> AppResult<Converted> {
-        Ok(Converted { warnings })
+        Ok(Converted {
+            warnings,
+            version: None,
+        })
     }
 
     fn failed(code: &str) -> AppResult<Converted> {

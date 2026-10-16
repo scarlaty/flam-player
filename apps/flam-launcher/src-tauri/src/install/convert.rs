@@ -6,6 +6,9 @@
 //!   événement inconnu) est ignorée. Les messages affichés viennent de ces événements.
 //! - stderr : page de code locale sous Windows, donc décodé en tolérant les erreurs
 //!   (`PYTHONIOENCODING=utf-8` est aussi demandé) et gardé seulement comme repli (fin du flux).
+//! - Arrêt forcé : le convertisseur est rattaché à un Job Object Windows
+//!   (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) ; l'arrêt forcé termine le job, donc aussi ses
+//!   sous-processus.
 //! - Annulation : `CTRL_BREAK_EVENT` (le convertisseur nettoie ses temporaires et sort avec
 //!   130), puis arrêt forcé après un délai de grâce, puis suppression de `<sortie>.<pid>.part`.
 //!
@@ -20,7 +23,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
 
@@ -85,6 +88,107 @@ impl Step {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Converted {
     pub warnings: u32,
+    /// Version annoncée par l'événement `start` (champ `version`), si présente et valide.
+    pub version: Option<String>,
+}
+
+/// Version lue dans l'événement `start` : texte court, sans caractère de contrôle.
+fn clean_version(raw: &str) -> Option<String> {
+    let v = raw.trim();
+    (!v.is_empty() && v.chars().count() <= 64 && !v.chars().any(char::is_control))
+        .then(|| v.to_string())
+}
+
+/// Lit `reader` jusqu'à la fin par morceaux et ne garde que les `cap` derniers octets
+/// (mémoire bornée quelle que soit la quantité écrite sur stderr).
+async fn read_tail<R: AsyncRead + Unpin>(mut reader: R, cap: usize) -> String {
+    let mut tail: Vec<u8> = Vec::with_capacity(cap.min(8192) * 2);
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                tail.extend_from_slice(&chunk[..n]);
+                if tail.len() > cap * 2 {
+                    tail.drain(..tail.len() - cap);
+                }
+            }
+        }
+    }
+    let start = tail.len().saturating_sub(cap);
+    String::from_utf8_lossy(&tail[start..]).into_owned()
+}
+
+/// Job Object Windows : fermer la dernière poignée (ou le terminer) tue tout le job.
+#[cfg(windows)]
+struct Job(windows_sys::Win32::Foundation::HANDLE);
+
+// SAFETY : une poignée de Job Object peut être utilisée depuis n'importe quel thread.
+#[cfg(windows)]
+unsafe impl Send for Job {}
+#[cfg(windows)]
+unsafe impl Sync for Job {}
+
+#[cfg(windows)]
+impl Job {
+    /// Crée un job `KILL_ON_JOB_CLOSE` et y rattache `child`. `None` si l'une des étapes échoue
+    /// (l'arrêt se limite alors au processus direct).
+    fn attach(child: &Child) -> Option<Self> {
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        let process = child.raw_handle()?;
+        // SAFETY : appels Win32 sur des poignées valides ; la structure est initialisée à zéro.
+        unsafe {
+            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if handle.is_null() {
+                return None;
+            }
+            let job = Job(handle);
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                std::ptr::addr_of!(info).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if ok == 0 || AssignProcessToJobObject(handle, process as _) == 0 {
+                return None;
+            }
+            Some(job)
+        }
+    }
+
+    fn terminate(&self) {
+        // SAFETY : poignée de job valide tant que `self` existe.
+        unsafe {
+            windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Job {
+    fn drop(&mut self) {
+        // SAFETY : poignée possédée, fermée une seule fois.
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+struct Job;
+
+#[cfg(not(windows))]
+impl Job {
+    fn attach(_child: &Child) -> Option<Self> {
+        None
+    }
+    fn terminate(&self) {}
 }
 
 /// Interpréteur durci, lancé depuis `cwd` (un dossier de l'application) :
@@ -148,7 +252,7 @@ fn part_of(output: &Path, pid: u32) -> PathBuf {
 
 /// Arrête le convertisseur : demande polie, délai de grâce, arrêt forcé, puis nettoyage du
 /// temporaire `<sortie>.<pid>.part` (et d'une sortie éventuellement publiée entre-temps).
-async fn stop(child: &mut Child, req: &Conversion<'_>) {
+async fn stop(child: &mut Child, job: Option<&Job>, req: &Conversion<'_>) {
     if let Some(pid) = child.id() {
         let polite = request_stop(req.python, pid).await;
         let exited = polite
@@ -157,6 +261,10 @@ async fn stop(child: &mut Child, req: &Conversion<'_>) {
                 .is_ok_and(|r| r.is_ok());
         if !exited {
             tracing::warn!("convertisseur {pid} arrêté de force");
+            if let Some(job) = job {
+                // Tue aussi les sous-processus éventuels du convertisseur.
+                job.terminate();
+            }
             let _ = child.kill().await;
         }
         remove_any(&part_of(req.output, pid));
@@ -206,16 +314,13 @@ pub async fn convert(
             ))
         })?;
     let stdout = child.stdout.take().expect("stdout redirigé");
-    let mut stderr = child.stderr.take().expect("stderr redirigé");
-    let stderr_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        let _ = stderr.read_to_end(&mut bytes).await;
-        let start = bytes.len().saturating_sub(STDERR_TAIL);
-        String::from_utf8_lossy(&bytes[start..]).into_owned()
-    });
+    let stderr = child.stderr.take().expect("stderr redirigé");
+    let job = Job::attach(&child);
+    let stderr_task = tokio::spawn(read_tail(stderr, STDERR_TAIL));
 
     let mut reader = BufReader::new(stdout);
     let mut phases: Vec<String> = Vec::new();
+    let mut version: Option<String> = None;
     let mut done: Option<Converted> = None;
     let mut reported: Option<Reported> = None;
     let mut line = Vec::new();
@@ -225,7 +330,7 @@ pub async fn convert(
         let read = tokio::select! {
             r = limited.read_until(b'\n', &mut line) => r,
             _ = cancelled(cancel) => {
-                stop(&mut child, req).await;
+                stop(&mut child, job.as_ref(), req).await;
                 stderr_task.abort();
                 return Err(AppError::Cancelled);
             }
@@ -240,6 +345,7 @@ pub async fn convert(
         let text = |key: &str| event.get(key).and_then(Value::as_str).map(str::to_string);
         match event.get("event").and_then(Value::as_str) {
             Some("start") => {
+                version = text("version").and_then(|v| clean_version(&v));
                 phases = event
                     .get("phases")
                     .and_then(Value::as_array)
@@ -266,6 +372,7 @@ pub async fn convert(
                 let warnings = event.get("warnings").and_then(Value::as_u64).unwrap_or(0);
                 done = Some(Converted {
                     warnings: u32::try_from(warnings).unwrap_or(u32::MAX),
+                    version: version.clone(),
                 });
             }
             Some("error") => {
@@ -280,7 +387,7 @@ pub async fn convert(
     let status = tokio::select! {
         s = child.wait() => s?,
         _ = cancelled(cancel) => {
-            stop(&mut child, req).await;
+            stop(&mut child, job.as_ref(), req).await;
             stderr_task.abort();
             return Err(AppError::Cancelled);
         }
@@ -333,6 +440,36 @@ mod tests {
         assert_eq!(step(0, 0, 10).percent(), 0.0);
         assert_eq!(step(1, 5, 10).percent(), 37.5);
         assert_eq!(step(3, 0, 0).percent(), 100.0);
+    }
+
+    #[tokio::test]
+    async fn stderr_borne_garde_la_fin() {
+        let mut data = vec![b'a'; 3 * 1024 * 1024];
+        data.extend_from_slice(
+            b"
+dernier message",
+        );
+        let tail = read_tail(std::io::Cursor::new(data), STDERR_TAIL).await;
+        assert!(tail.len() <= STDERR_TAIL);
+        assert!(tail.ends_with("dernier message"));
+        assert_eq!(
+            read_tail(std::io::Cursor::new(b"court".to_vec()), 4096).await,
+            "court"
+        );
+    }
+
+    #[test]
+    fn version_du_convertisseur_nettoyee() {
+        assert_eq!(clean_version(" 1.0.0 ").as_deref(), Some("1.0.0"));
+        assert_eq!(clean_version(""), None);
+        assert_eq!(
+            clean_version(
+                "a
+b"
+            ),
+            None
+        );
+        assert_eq!(clean_version(&"x".repeat(65)), None);
     }
 
     #[test]
