@@ -628,9 +628,17 @@ utilisateur, via les vrais modules du runtime :
 
 - menu Start : clic sur **Démarrer** / **Reprendre** ; après une fin, redémarre tant
   qu'il reste des options de choix jamais essayées ;
-- choix (carrousel, image-choice) : option **la moins essayée** (parcours en largeur des
-  options non visitées), égalités tirées au sort selon `--seed` ; navigation par touches
-  suivant/précédent puis OK ;
+- choix (carrousel, image-choice) : option **jamais essayée** d'abord, puis la moins
+  essayée **dans l'état d'inventaire courant** (valeurs des objets lus par une condition ou
+  un `indexItem` : un hub à état est réessayé après chaque changement d'inventaire), puis
+  la plus proche de nouveau dans le graphe (transitions `ok` vers une scène jamais atteinte
+  ou une option jamais essayée), puis la moins essayée ; égalités tirées au sort selon
+  `--seed` ; navigation par touches suivant/précédent puis OK ;
+- **sortie de boucle par `home`** (#42) : un nœud (scène ou choix) entré 3 fois sans rien de
+  nouveau est quitté par sa transition `home` (règles de `homeOf` de `story.lua`), comme
+  le ferait un enfant ; la sortie vers un nœud à reprendre ailleurs (option jamais essayée,
+  transition `ok` non suivie) est préférée à toute autre home ; quand il ne reste rien
+  ailleurs, seulement vers une scène jamais atteinte. Au plus 3 sorties par nœud entre deux progrès ; tracées `escape at=<nœud>` ;
 - scène audio : OK si la scène l'accepte (`ctrl.ok`), sinon saut en fin de piste
   (pause → seek → play) puis, si besoin, fin de piste simulée (callback `stop`) ;
   scène sans OK ni fin d'audio : retour ;
@@ -644,10 +652,15 @@ Le pilote trace sur stdout des lignes `[EXPLORE] …` (`scene=<id>`, `choice …
 Arrêt : toutes les options rencontrées essayées **et** aucune transition `ok` connue
 encore à suivre après une fin (`complete`, puis `goto_library` depuis le menu Start pour
 vérifier la fermeture ; une scène visitée dont la scène suivante, sans condition, n'a jamais
-été atteinte — chemin coupé par un test de retour — fait redémarrer l'histoire), `--max-steps` actions,
-aucune scène / option / fin nouvelle pendant 40 + (scènes vues) actions (`stuck` ; les touches
-←/→ de navigation dans un carrousel ne comptent pas, et le pilote prend le sens le plus court
-à partir de 3 options),
+été atteinte — chemin coupé par un test de retour — fait redémarrer l'histoire),
+**boucle épuisée** (`exhausted` : cycle confirmé, plus d'option à essayer, ni transition
+`ok`, ni `home` vers une scène jamais atteinte, ni entrée conditionnelle d'une scène
+visitée vers une scène jamais atteinte, ni option jamais essayée dans l'état d'inventaire
+courant depuis 10 actions — cas des histoires cycliques sans fin), `--max-steps` actions,
+aucune scène / option / fin nouvelle pendant 40 + (scènes vues) actions (`loop` si
+l'histoire avançait encore — au moins 2 nœuds distincts entrés depuis le dernier progrès —,
+sinon `unresponsive` : écran qui ne répond plus ; les touches ←/→ de navigation dans un
+carrousel ne comptent pas, et le pilote prend le sens le plus court à partir de 3 options),
 retour bibliothèque par l'histoire (anciens moteurs), erreur, crash, `--stuck` s sans
 aucune trace, ou `--timeout`.
 
@@ -655,8 +668,8 @@ aucune trace, ou `--timeout`.
 
 | clé | sens |
 |---|---|
-| `status` | `ok` ; `lua_error` (erreur sur stderr : `Erreur Lua`, `callback error`, assert, traceback… ; ou `attempt to` / `stack traceback` sur stdout) ; `crash` (player sorti seul **sans** erreur Lua identifiée avant) ; `timeout` ; `stuck` |
-| `done_reason` | cause de l'arrêt, toujours présente : `complete` (toutes les options rencontrées essayées et toutes les transitions `ok` connues suivies, après une fin), `max_steps`, `library` (l'histoire est revenue à la bibliothèque, anciens moteurs) → `ok` ; `stuck` (pilote : plus rien de nouveau), `no_trace` (`--stuck` s sans trace), `no_start` (pilote jamais lancé) → `stuck` ; `timeout` ; `error` (arrêt sur erreur) ; `exit` (player sorti seul : `lua_error` si une erreur Lua a été vue avant, avec `exit_code`, sinon `crash`) |
+| `status` | `ok` ; `lua_error` (erreur sur stderr : `Erreur Lua`, `callback error`, assert, traceback… ; ou `attempt to` / `stack traceback` sur stdout) ; `crash` (player sorti seul **sans** erreur Lua identifiée avant) ; `timeout` ; `loop` ; `stuck` |
+| `done_reason` | cause de l'arrêt, toujours présente : `complete` (toutes les options rencontrées essayées et toutes les transitions `ok` connues suivies, après une fin), `exhausted` (boucle sans erreur où plus rien n'est à essayer, voir ci-dessus), `max_steps`, `library` (l'histoire est revenue à la bibliothèque, anciens moteurs) → `ok` ; `loop` (plus rien de nouveau, l'histoire tourne encore, sans erreur) → `loop` ; `unresponsive` (écran qui ne répond plus), `no_trace` (`--stuck` s sans trace), `no_start` (pilote jamais lancé) → `stuck` (avant #42, `stuck` confondait boucle et écran figé) ; `timeout` ; `error` (arrêt sur erreur) ; `exit` (player sorti seul : `lua_error` si une erreur Lua a été vue avant, avec `exit_code`, sinon `crash`) |
 | `errors` | lignes d'erreur filtrées |
 | `scenes` | identifiants des stages visités (sert à fusionner la couverture de plusieurs parcours) |
 | `scenes_visited` / `scenes_total` / `coverage` | stages distincts **réellement atteints** (l'option d'un choix ne compte qu'une fois la transition faite) / stages de `nodes.lua` (y compris inaccessibles) / rapport des deux |
@@ -664,6 +677,7 @@ aucune trace, ou `--timeout`.
 | `duration_s`, `seed`, `steps` | durée d'exécution du player, graine, nombre d'actions du pilote |
 | `ends`, `back_ends`, `end_reasons` | fins jouées ; fins provoquées par un test de retour (transition `home`, non comptées) ; raisons affichées par `endStory` |
 | `dead_end_backs`, `dead_end_scenes` | **impasses** : retours de secours sur un écran où le pilote ne peut rien faire (scène sans OK ni fin d'audio, titre figé, écran inconnu), et nœuds concernés (`<nœud> why=<raison>`) |
+| `home_escapes` | sorties de boucle par la transition `home` |
 | autres | `choices_explored`, `back_tests`, `menu_tests`, `exit_code`, `workdir` (`--keep`) |
 
 Sémantique à retenir :
@@ -673,8 +687,13 @@ Sémantique à retenir :
   défaut ; lire `coverage`, `ends` et `dead_end_backs` pour juger.
 - **`ok` / `max_steps`** : le budget d'actions est épuisé sans erreur ; la couverture est
   dans `coverage` (souvent < 1).
-- **`stuck`** : plus de progrès (graphe qui boucle sans fin, écran qui ne réagit plus) ou
-  plus aucune trace (`no_trace`) ; à distinguer de `timeout`, où le pilote progressait.
+- **`exhausted` / `loop`** : l'histoire boucle **sans erreur** (histoire cyclique sans fin,
+  sous-menu, hub à état) ; `exhausted` = tout ce que le pilote sait atteindre a été essayé,
+  `loop` = il restait des pistes mais aucune nouveauté pendant le seuil. Lire `coverage`
+  et `end_reached`.
+- **`stuck`** : vrai blocage, écran qui ne réagit plus (`unresponsive`, retours de secours
+  sans que l'histoire n'avance) ou plus aucune trace (`no_trace`) ; à distinguer de
+  `timeout`, où le pilote progressait.
 - **Menu M** : le Lua ne peut pas ouvrir le menu contextuel du simulateur (touche M gérée en
   C) ; le pilote appelle directement le callback de son entrée « Reprendre l'histoire ». La
   construction et l'affichage du menu ne sont donc pas testés.
@@ -691,7 +710,8 @@ Code de sortie du CLI : 0 si `ok`, 1 sinon, 77 si `flam-player` est introuvable.
 `run_player` (lancement sans fenêtre, player toujours arrêté en sortie, même sur
 exception) et les motifs d'erreur sont partagés avec `tests/e2e/e2e_telmi.py`.
 Tests : `tests/test_explore.py` (parcours complet, `max_steps`, erreur Lua injectée, erreur
-Lua puis sortie, boucle infinie → `stuck`, zip-slip, sautés si `flam-player` est
+Lua puis sortie, boucle infinie → `exhausted`, histoire cyclique, sous-menu quitté par
+`home`, hub à état, écran figé → `stuck`/`unresponsive`, zip-slip, sautés si `flam-player` est
 introuvable ; avec un faux player Python : `crash`, `lua_error` avant sortie, `stuck` sans
 trace vs `timeout` en progression, pas de processus orphelin si `until()` lève).
 
@@ -751,7 +771,13 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   | `ok` / `max_steps` (couverture < 100 %) | `warn` : « exploration partielle X/Y scènes » |
   | `timeout`, sans erreur, **plus de 2 scènes** visitées | `warn` : « exploration partielle X/Y scènes » |
   | `timeout` avec 2 scènes ou moins (écran noir, blocage au démarrage) | `fail` |
-  | `stuck`, `lua_error`, `crash`, statut inconnu, erreurs non bénignes | `fail` |
+  | `ok` / `exhausted`, toutes les scènes vues **et** une fin jouée | `ok` |
+  | `ok` / `exhausted` sinon (aucune fin jouée, couverture < 100 %) | `warn` : « plus rien de nouveau, sans erreur », couverture, « aucune fin jouée » |
+  | `loop` sans erreur, plus de 2 scènes visitées (ou toutes) ; `stuck` / `stuck` d'avant #42 (résultats bruts conservés) idem | `warn` : « boucle sans nouveauté, sans erreur », couverture |
+  | `loop` avec 2 scènes ou moins | `fail` |
+  | `loop` ou `stuck` / `stuck` d'avant #42 avec `dead_end_backs > 0` (retours de secours sur un écran sans action : l'histoire s'est figée) | `fail` : « boucle avec blocage » ou « ancien résultat stuck, non reclassé » ; jamais « boucle sans erreur ». Conservateur : une impasse isolée suivie d'une vraie boucle est aussi classée `fail` |
+  | Risque de masquage | `loop` / `exhausted` classés `warn` : un blocage réel sans retour de secours (écran qui avance sans rien déclencher) ressemble à une boucle ; la couverture et `home_escapes` du rapport permettent de le repérer |
+  | `stuck` (`unresponsive`, `no_trace`, `no_start`), `lua_error`, `crash`, statut inconnu, erreurs non bénignes | `fail` |
 
   `warn` donne le statut global `OK_AVERTISSEMENTS` ; `fail` donne `ECHEC_EXECUTION`.
 - **Fiche** (`report.json`, `steps.run`) : `status`, `messages`, `done_reason`, `steps`
@@ -805,6 +831,7 @@ nouvelles clés optionnelles pourront être ajoutées, jamais renommées (sinon
       "summary": "Jouable, exploration partielle (120/300 scènes)",
       "coverage": {"scenes_visited": 120, "scenes_total": 300, "ratio": 0.4, "end_reached": false},
       "run": "warn",
+      "run_reason": "timeout",
       "stale": false
     }
   }
@@ -821,6 +848,7 @@ nouvelles clés optionnelles pourront être ajoutées, jamais renommées (sinon
 | `summary` | phrase d'une ligne, affichable telle quelle |
 | `coverage` | `null` si l'exploration n'a rien mesuré (`run` ignoré ou échec avant) ; sinon scènes visitées / totales (`scenes_total` et `ratio` peuvent être `null`), `end_reached` booléen |
 | `run` | statut de l'étape run : `ok`, `warn`, `fail`, `skipped` |
+| `run_reason` | (optionnelle, ajoutée par #42 sans changer `schema_version`) raison d'arrêt de l'exploration retenue (`done_reason` : `complete`, `exhausted`, `loop`, `max_steps`, `timeout`, `unresponsive`…), `null` si l'étape n'a pas tourné ; le résumé d'une boucle sans erreur est « Jouable, boucle sans erreur (X/Y scènes) » |
 | `stale` | fiche évaluée avec un autre convertisseur que le courant (résultat périmé) |
 
 **Doublons d'uuid** (plusieurs versions évaluées) : la version la plus récente l'emporte
