@@ -108,9 +108,13 @@ accompagné d'un texte ou d'une icône.
 | `--color-danger-hover`      | `#8e0b38` | `#ffadc9` | Survol du danger                                            |
 | `--color-on-danger`         | `#ffffff` | `#3a0613` | Texte sur le danger                                         |
 | `--color-focus`             | `#1f5fc4` | `#8fb8ff` | Anneau de focus (bleu, hors palette)                        |
-| `--brand-orange`            | `#c8553d` | `#c8553d` | Logo, fond (identique dans les thèmes)                      |
-| `--brand-cream`             | `#fff3e0` | `#fff3e0` | Logo, flamme                                                |
-| `--brand-yellow`            | `#f4b731` | `#f4b731` | Logo, cœur de la flamme                                     |
+| `--brand-orange`            | `#c8553d` | `#c8553d` | Logo, touches (identique dans les thèmes)                   |
+| `--brand-cream`             | `#fff3e0` | `#fff3e0` | Logo, moyeu de la molette                                   |
+| `--brand-yellow`            | `#f4b731` | `#f4b731` | Logo, molette                                               |
+| `--brand-teal-dark`         | `#17706b` | `#17706b` | Logo, fond                                                  |
+| `--brand-teal`              | `#7fd6cc` | `#7fd6cc` | Logo, boîtier                                               |
+| `--brand-screen`            | `#0d3f3b` | `#0d3f3b` | Logo, écran                                                 |
+| `--brand-flame`             | `#e0664a` | `#e0664a` | Logo, flamme de l'écran                                     |
 | `--tone-{ton}-bg` / `-fg`   | —         | —         | Badges : neutral, info, success, warning, danger, secondary |
 
 Les couleurs du sombre sont éclaircies (et non inversées) pour garder la même chaleur. Le
@@ -187,6 +191,7 @@ Dans [`src/components/`](../src/components/), un dossier par composant
   bouton dont la zone couvre la carte ; la vignette est décorative (`alt=""`).
 - **`Badge`** : état court en 6 tons (dont `secondary`, orange) ; texte obligatoire, icône décorative.
 - **`TextField`** : champ texte avec libellé, aide et erreur reliés par `aria-describedby` ; l'erreur est annoncée poliment.
+- **`SelectField`** : liste déroulante native avec libellé visible (filtres et tri de la bibliothèque).
 - **`RadioGroup`** : boutons radio natifs dans un `fieldset` (ex. choix du thème).
 - **`Banner`** : message en bandeau (info, succès, avertissement, erreur) avec icône, titre et action facultative.
 - **`Button`** : `primary`, `accent` (jaune, « Jouer »), `secondary`, `ghost`, `danger` ; tailles `md`/`sm` ;
@@ -225,11 +230,11 @@ Les icônes ([`Icon.tsx`](../src/components/Icon.tsx)) sont des SVG originaux en
 d'icônes : une vingtaine de pictogrammes suffit et évite une dépendance.
 
 L'icône d'application ([`src-tauri/icons/app-icon.svg`](../src-tauri/icons/app-icon.svg),
-reprise par `AppLogo`) est une flamme crème sur un carré brique ; `AppLogo` reprend le dessin avec les jetons de
-marque (`--brand-*`, orange `#c8553d`). Le fichier de l'icône garde pour l'instant l'ancienne
-teinte : à régénérer avec la nouvelle (suivi à part). Régénération :
+reprise par `AppLogo`) est un pictogramme original du lecteur : boîtier vert d'eau, écran
+sombre avec une flamme orange, molette jaune, deux touches orange, sur un carré vert profond
+arrondi. `AppLogo` reprend le dessin avec les jetons `--brand-*`. Régénération :
 `npm run tauri icon src-tauri/icons/app-icon.svg`, en ne gardant que les fichiers listés dans
-`tauri.conf.json` (et `icon.png`).
+`tauri.conf.json` (et `icon.png`). Le logo officiel « FLAM » (marque déposée) n'est pas utilisé.
 
 ### Choix techniques
 

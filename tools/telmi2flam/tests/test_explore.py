@@ -88,6 +88,32 @@ def carousel_nodes(n):
     }
 
 
+def index_item_nodes(opt_ctrl=OPT):
+    """Cas du manoir (#43) : start -> s0 -> p (passage, ok = {a1, indexItem 0})
+    -> a1 = {o1, o2, o3} ; o1/o3 remettent l'objet a 0 et reviennent a p, seule
+    o2 mene a la fin s1. Sans choix propose, boucle infinie p -> o1 -> p."""
+    reset = [{"type": 2, "item": 0, "number": 0}]
+    nodes = {
+        "startAction": {"action": "a0", "index": 0},
+        "inventory": [{"name": "n", "initialNumber": 0, "maxNumber": 5}],
+        "stages": {
+            "s0": stage("x.mp3", "ap"),
+            "p": {"image": None, "audio": None, "ok": {"action": "a1", "indexItem": 0},
+                  "home": None, "control": CTL},
+            "o1": dict(stage("x.mp3", "ap", opt_ctrl), items=reset),
+            "o2": stage("x.mp3", "a2", opt_ctrl),
+            "o3": dict(stage("x.mp3", "ap", opt_ctrl), items=reset),
+            "s1": stage("x.mp3", None),
+        },
+        "actions": {
+            "a0": [{"stage": "s0"}], "ap": [{"stage": "p"}],
+            "a1": [{"stage": "o1"}, {"stage": "o2"}, {"stage": "o3"}],
+            "a2": [{"stage": "s1"}],
+        },
+    }
+    return nodes
+
+
 @unittest.skipIf(PLAYER is None, "flam-player introuvable (FLAM_BUILD_DIR ou build/)")
 class TestExplore(unittest.TestCase):
     def setUp(self):
@@ -196,6 +222,25 @@ class TestExplore(unittest.TestCase):
         self.assertEqual(res["status"], "lua_error", self.explain(res))
         self.assertEqual(res["exit_code"], 3, self.explain(res))
         self.assertEqual(res["done_reason"], "exit")
+
+    def test_index_item_choice(self):
+        # #43 : indexItem vers des options non autoplay -> choix preselectionne,
+        # la 2e option (seule fin) est atteignable : plus de boucle infinie
+        pk = self.convert(index_item_nodes(), "IndexItem")
+        res = explore.explore(PLAYER, pk[:-3], timeout_s=90, back_every=0)
+        self.assertEqual(res["status"], "ok", self.explain(res))
+        self.assertTrue(res["end_reached"], self.explain(res))
+        self.assertEqual(res["choices_explored"], 3, self.explain(res))
+        self.assertEqual(res["scenes_visited"], res["scenes_total"], self.explain(res))
+
+    def test_index_item_autoplay_direct(self):
+        # cibles autoplay : la scene designee (o1, objet a 0) est jouee
+        # directement (spec TELMI) ; ici elle reboucle sans fin
+        pk = self.convert(index_item_nodes(CTL), "IndexItemAuto")
+        res = explore.explore(PLAYER, pk[:-3], timeout_s=60, back_every=0)
+        self.assertEqual(res["status"], "stuck", self.explain(res))
+        self.assertEqual(res["choices_explored"], 0, self.explain(res))
+        self.assertFalse(res["end_reached"])
 
     def test_infinite_loop(self):
         pk = self.convert(loop_nodes(), "Boucle")
