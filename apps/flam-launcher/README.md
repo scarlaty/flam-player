@@ -266,6 +266,7 @@ apps/flam-launcher/
       folder.rs            Source dossier local (`.zip` Telmi, `.plain`, `.plain.pk`), commandes `folder_*`
       lif.rs               Décodeur LIF (port de `src/formats/lif_decoder.c`)
       thumbnail.rs         Vignettes : PNG, réduction, cache `thumbs/`, URL `data:`
+      watch.rs             Surveillance optionnelle d'un dossier local (`notify`), `folder_watch`
       install/             Pipeline d'installation : file, téléchargement, conversion (`mod.rs`,
                            `download.rs`, `convert.rs`, `pack.rs`), commandes `install_*`
       library.rs           Bibliothèque `<cache>/library/` et `library.json`, commandes `library_*`
@@ -303,6 +304,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `catalog_thumbnail`    | `source_id`, `thumb_url`   | URL `data:` (string)                    | `catalog`       |
 | `folder_scan`          | `source_id`, `recursive?`  | `FolderScan`                            | `folder`        |
 | `folder_thumbnail`     | `source_id`, `entry_id`    | URL `data:` (chaîne)                    | `folder`        |
+| `folder_watch`         | `source_id`, `enabled`     | rien                                    | `watch`         |
 | `install_start`        | `source_id`, `entry_id`    | `InstallTask`                           | `install`       |
 | `install_cancel`       | `task_id`                  | rien                                    | `install`       |
 | `install_list`         |                            | `InstallTask[]`                         | `install`       |
@@ -366,6 +368,17 @@ limités à 1 Mio, les vignettes à 8 Mio (lecture bornée même si la taille d�
 décodé : 8192 px et 64 Mio au plus) ; les entrées aux noms dangereux (`..`, absolu, lecteur,
 `__MACOSX`, `._*`) sont écartées ; les `\` des noms de zip sont lus comme des `/` ; 100 000 entrées
 au plus par archive.
+
+**Surveillance du dossier (`folder_watch`, événement `folder://changed`)** : `folder_watch(source_id,
+enabled)` démarre ou arrête la surveillance (crate `notify`, non récursive comme le scan par défaut)
+du dossier d'une source ; dossier absent : `folder_unavailable`. Une rafale de changements (ajout,
+suppression, renommage, modification) produit **un seul** événement `folder://changed`
+`{ source_id }`, 400 ms après le dernier changement (3 s au plus après le premier, même si le
+dossier ne se calme jamais). L'événement ne porte aucune histoire : le front relance `folder_scan`
+(`onFolderChanged` / `watchFolder` dans `src/api/folder.ts`). Les accès en lecture et les
+changements dans le dossier de cache sont ignorés. La surveillance est un confort : si elle ne
+démarre pas, la liste reste utilisable avec le bouton _Rafraîchir_. L'écran d'une source dossier
+l'active à l'ouverture et l'arrête en la quittant.
 
 **Vignettes à la demande** : `folder_scan` ne renvoie aucune image (5000 entrées feraient des
 centaines de Mio d'IPC). `thumb_url` est une **référence à résoudre par `folder_thumbnail`** (égale à
