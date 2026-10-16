@@ -720,7 +720,8 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    échouer l'installation : préparation ou écriture en échec → `thumb: null`. Après chaque
    écriture réussie de l'index (installation avec un index qui faisait foi, désinstallation),
    les fichiers de `thumbs/` que l'index ne référence pas sont supprimés (publication défaite,
-   ancienne version, histoire désinstallée, temporaires) ; index perdu : rien n'est supprimé.
+   ancienne version, histoire désinstallée, temporaires) ; index perdu, ou mis de côté
+   (`library.json.*.bak` présent, restaurable à la main) : rien n'est supprimé (#97).
    « Vider le cache » supprime `library/`, donc histoires et vignettes ensemble ; vider les seules
    vignettes de catalogue ne touche pas celles de la bibliothèque. Le front (« Mes histoires » et la
    fiche) demande `library_thumbnail(uuid)`, puis la source d'origine (installation antérieure),
