@@ -528,24 +528,66 @@ fn move_dir(from: &Path, to: &Path) -> std::io::Result<()> {
         Ok(()) => Ok(()),
         Err(err) => {
             tracing::warn!("renommage impossible ({err}) : copie");
-            // Copie dans `<to>.part` (partiel si l'on s'arrête en route), puis renommage atomique :
-            // `to` n'existe que complet. La source n'est supprimée qu'ensuite ; si cette
-            // suppression échoue, la copie complète reste à destination (erreur renvoyée).
-            let mut name = to.file_name().unwrap_or_default().to_os_string();
-            name.push(".part");
-            let part = to.with_file_name(name);
-            remove_tree(&part)?;
-            if let Err(copy_err) = copy_tree(from, &part, 0, &mut Budget::unbounded()) {
-                let _ = remove_tree(&part);
-                return Err(copy_err);
-            }
-            if let Err(rename_err) = std::fs::rename(&part, to) {
-                let _ = remove_tree(&part);
-                return Err(rename_err);
-            }
-            remove_tree(from)
+            copy_then_remove(from, to, remove_tree)
         }
     }
+}
+
+/// Repli de [`move_dir`], avec l'effacement de la source injecté (tests de panne).
+///
+/// Copie dans `<to>.part` (partiel si l'on s'arrête en route), puis renommage atomique : `to`
+/// n'existe que complet. La source n'est effacée qu'ensuite, **sous le marqueur voisin
+/// `<from>.moved`** (écrit avant le premier effacement, retiré après le dernier) : si
+/// l'effacement s'arrête en route, la source partielle restante est reconnue comme un reste
+/// ([`finish_moved`]) et ne peut plus être lue comme des sauvegardes (#91). Erreur renvoyée si
+/// l'effacement échoue ; la copie complète reste à destination.
+fn copy_then_remove(
+    from: &Path,
+    to: &Path,
+    remove_source: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let mut name = to.file_name().unwrap_or_default().to_os_string();
+    name.push(".part");
+    let part = to.with_file_name(name);
+    remove_tree(&part)?;
+    if let Err(copy_err) = copy_tree(from, &part, 0, &mut Budget::unbounded()) {
+        let _ = remove_tree(&part);
+        return Err(copy_err);
+    }
+    if let Err(rename_err) = std::fs::rename(&part, to) {
+        let _ = remove_tree(&part);
+        return Err(rename_err);
+    }
+    let marker = moved_marker(from);
+    std::fs::write(&marker, b"")?;
+    remove_source(from)?;
+    remove_tree(&marker)
+}
+
+/// Marqueur d'une source dont la copie complète est publiée : `<from>.moved` (voisin, hors de
+/// `from`, pour que l'ordre d'effacement de `from` ne puisse pas le retirer avant la fin).
+fn moved_marker(from: &Path) -> PathBuf {
+    let mut name = from.file_name().unwrap_or_default().to_os_string();
+    name.push(".moved");
+    from.with_file_name(name)
+}
+
+/// Finit un déplacement interrompu pendant l'effacement de sa source : si `<dir>.moved` existe,
+/// `dir` (complet, partiel, vide ou absent) n'est qu'un reste dont la copie complète est déjà
+/// publiée ; il est effacé, puis le marqueur. Échec : erreur, et rien n'est lu de `dir`.
+fn finish_moved(dir: &Path) -> std::io::Result<()> {
+    let marker = moved_marker(dir);
+    match std::fs::symlink_metadata(&marker) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+        Ok(_) => {}
+    }
+    remove_tree(dir)?;
+    tracing::warn!(
+        "reste d'une mise de côté interrompue effacé : {} (copie complète déjà publiée)",
+        dir.display()
+    );
+    remove_tree(&marker)
 }
 
 /// Remplace `rejected` (ancienne génération, supprimée ici) par `fresh` (complet) : renommage.
@@ -630,19 +672,23 @@ impl Workspace {
     /// - Échec **après** (la source a déjà quitté sa place, ses données sont dans
     ///   `.rejected.new`) : **pas d'erreur**, une note l'indique à l'utilisateur ; la réparation
     ///   se fait au prochain lancement ou rapatriement ([`recover_rejected`](Self::recover_rejected)).
+    /// - Échec **pendant l'effacement de la source** (repli par copie) : erreur ; la source
+    ///   partielle est marquée `<source>.moved` et seulement effacée ensuite ([`finish_moved`],
+    ///   au début de [`persist_saves`](Self::persist_saves)), jamais rapatriée ni remise de côté.
     ///
     /// Renvoie le message destiné à l'utilisateur.
     fn set_aside(&self, dir: &Path, why: &std::io::Error, what: &str) -> AppResult<String> {
-        self.set_aside_with(dir, why, what, promote_rejected)
+        self.set_aside_with(dir, why, what, move_dir, promote_rejected)
     }
 
-    /// [`set_aside`](Self::set_aside) avec l'étape de remplacement injectée (tests d'échec après
-    /// déplacement).
+    /// [`set_aside`](Self::set_aside) avec le déplacement et l'étape de remplacement injectés
+    /// (tests de panne).
     fn set_aside_with(
         &self,
         dir: &Path,
         why: &std::io::Error,
         what: &str,
+        move_to: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
         promote: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
     ) -> AppResult<String> {
         let rejected = self.sibling(".rejected");
@@ -655,14 +701,15 @@ impl Workspace {
         self.recover_rejected()?;
         // Après ce déplacement, `.rejected.new` est complet (renommage, ou copie terminée puis
         // renommée) : c'est un point de non-retour, sans suppression possible de ce dossier.
-        move_dir(dir, &fresh)?;
+        move_to(dir, &fresh)?;
         let note = match promote(&fresh, &rejected) {
             Ok(()) => format!(
                 "{what} refusées ({why}) : mises de côté dans {}",
                 rejected.display()
             ),
             Err(err) => format!(
-                "{what} refusées ({why}) : mises de côté dans {} (le dossier {} n'a pas pu être \n                 remplacé : {err} ; repris au prochain lancement)",
+                "{what} refusées ({why}) : mises de côté dans {} (le dossier {} n'a pas pu être \
+                 remplacé : {err} ; repris au prochain lancement)",
                 fresh.display(),
                 rejected.display()
             ),
@@ -748,6 +795,10 @@ impl Workspace {
     /// player ; un `saves/` partiel (écriture interrompue par le plantage) remplace donc la
     /// version précédente, qui n'est pas gardée au-delà de l'échange.
     pub fn persist_saves(&self) -> AppResult<Option<String>> {
+        // Reste d'une mise de côté interrompue pendant l'effacement de sa source (#91) : effacé
+        // avant toute lecture ; échec : erreur, rien n'est lu (ni rapatrié, ni restauré).
+        finish_moved(&self.saved)?;
+        finish_moved(&self.work.join(SAVES_DIR))?;
         // Mise de côté interrompue (lancement ou rapatriement précédent) : réparée sans bloquer ;
         // la prochaine mise de côté la répare de toute façon, ou échoue proprement.
         if let Err(err) = self.recover_rejected() {
@@ -825,6 +876,7 @@ impl Workspace {
                 ".rejected",
                 ".rejected.new",
                 ".rejected.new.part",
+                ".moved",
             ] {
                 remove_tree(&self.sibling(suffix))?;
             }
@@ -1485,14 +1537,21 @@ mod tests {
         // la progression est intacte dans `.rejected.new`.
         let why = limit_error("trop gros".into());
         let note = ws
-            .set_aside_with(&saves, &why, "nouvelles sauvegardes", |_, _| {
+            .set_aside_with(&saves, &why, "nouvelles sauvegardes", move_dir, |_, _| {
                 Err(std::io::Error::other("verrou"))
             })
             .expect("une note, pas une erreur");
-        assert!(
-            note.contains(".rejected.new") && note.contains("verrou"),
-            "{note}"
+        // #91 : texte exact, une seule ligne, sans espaces doublés.
+        assert_eq!(
+            note,
+            format!(
+                "nouvelles sauvegardes refusées (trop gros) : mises de côté dans {} (le dossier {} \
+                 n'a pas pu être remplacé : verrou ; repris au prochain lancement)",
+                ws.sibling(".rejected.new").display(),
+                ws.sibling(".rejected").display()
+            )
         );
+        assert!(!note.contains('\n') && !note.contains("  "), "{note:?}");
         assert!(!saves.exists(), "la source a bien été déplacée");
         assert_eq!(
             std::fs::read(ws.sibling(".rejected.new").join("0")).unwrap(),
@@ -1507,6 +1566,129 @@ mod tests {
         );
         assert!(!ws.sibling(".rejected").join("ancien").exists());
         assert!(!ws.sibling(".rejected.new").exists());
+    }
+
+    /// Effacement de source injecté : efface `removed` fichiers de la source, puis échoue
+    /// (panne à mi-chemin de `remove_tree`, #91).
+    fn half_remove(removed: usize) -> impl FnOnce(&Path) -> std::io::Result<()> {
+        move |from: &Path| {
+            let mut names: Vec<_> = std::fs::read_dir(from)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            names.sort();
+            for path in names.into_iter().take(removed) {
+                std::fs::remove_file(path).unwrap();
+            }
+            Err(std::io::Error::other("panne pendant l'effacement"))
+        }
+    }
+
+    fn write_files(dir: &Path, names: &[&str]) {
+        std::fs::create_dir_all(dir).unwrap();
+        for name in names {
+            std::fs::write(dir.join(name), name.as_bytes()).unwrap();
+        }
+    }
+
+    fn assert_files(dir: &Path, names: &[&str]) {
+        let mut found: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        assert_eq!(found, names, "{}", dir.display());
+        for name in names {
+            assert_eq!(std::fs::read(dir.join(name)).unwrap(), name.as_bytes());
+        }
+    }
+
+    /// #91, double panne au rapatriement : la copie complète est publiée en `.rejected.new`, puis
+    /// l'effacement de `<copie>/saves` échoue à mi-chemin (après 0, 1 ou tous les fichiers). La
+    /// source restante ne doit être ni rapatriée (elle tiendrait désormais dans les limites et
+    /// écraserait la progression précédente) ni remise de côté (elle remplacerait la copie
+    /// complète).
+    #[test]
+    fn double_panne_au_rapatriement_la_source_partielle_n_ecrase_rien() {
+        for removed in [0, 1, 3] {
+            let dir = tempfile::tempdir().unwrap();
+            let pk = dir.path().join("Histoire.plain.pk");
+            std::fs::write(&pk, b"PK").unwrap();
+            let ws = workspace(dir.path(), "library:u1");
+            let copy = ws.stage(&pk).unwrap();
+            write_files(&ws.saved, &["precedente"]);
+            let src = copy.parent().unwrap().join(SAVES_DIR);
+            write_files(&src, &["a", "b", "c"]);
+            let why = limit_error("trop gros".into());
+            let moved = |f: &Path, t: &Path| copy_then_remove(f, t, half_remove(removed));
+            assert!(ws
+                .set_aside_with(&src, &why, "nouvelles sauvegardes", moved, promote_rejected)
+                .is_err());
+            assert_files(&ws.sibling(".rejected.new"), &["a", "b", "c"]);
+            assert!(moved_marker(&src).is_file(), "reste marqué ({removed})");
+            // Reprise (rapatriement, ou lancement qui commence par lui) : reste effacé, copie
+            // complète promue, progression précédente intacte.
+            assert!(ws.persist_saves().unwrap().is_none());
+            assert_files(&ws.sibling(".rejected"), &["a", "b", "c"]);
+            assert!(!ws.sibling(".rejected.new").exists());
+            assert!(!src.exists() && !moved_marker(&src).exists());
+            assert_files(&ws.saved, &["precedente"]);
+            // Lancement suivant : rien ne change, la progression précédente est restaurée.
+            let copy = ws.stage(&pk).unwrap();
+            assert_files(&copy.parent().unwrap().join(SAVES_DIR), &["precedente"]);
+            assert_files(&ws.sibling(".rejected"), &["a", "b", "c"]);
+        }
+    }
+
+    /// #91, double panne au lancement : la mise de côté des sauvegardes conservées
+    /// (`<config>/saves/<empreinte>`) échoue pendant l'effacement de la source. Le lancement
+    /// suivant ne restaure pas la source partielle.
+    #[test]
+    fn double_panne_au_lancement_la_source_partielle_n_est_pas_restauree() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        write_files(&ws.saved, &["a", "b", "c"]);
+        let why = limit_error("trop gros".into());
+        let moved = |f: &Path, t: &Path| copy_then_remove(f, t, half_remove(1));
+        assert!(ws
+            .set_aside_with(
+                &ws.saved,
+                &why,
+                "sauvegardes conservées",
+                moved,
+                promote_rejected
+            )
+            .is_err());
+        assert!(ws.saved.exists() && moved_marker(&ws.saved).is_file());
+        let copy = ws.stage(&pk).unwrap();
+        assert!(
+            !copy.parent().unwrap().join(SAVES_DIR).exists(),
+            "partie sans progression, la source partielle n'est pas restaurée"
+        );
+        assert!(!ws.saved.exists() && !moved_marker(&ws.saved).exists());
+        assert_files(&ws.sibling(".rejected"), &["a", "b", "c"]);
+    }
+
+    /// Arrêt après l'effacement complet de la source, avant celui du marqueur : le marqueur seul
+    /// est effacé, sans effet sur une progression écrite ensuite.
+    #[test]
+    fn un_marqueur_seul_est_efface_sans_rien_toucher_d_autre() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        std::fs::create_dir_all(ws.saved.parent().unwrap()).unwrap();
+        std::fs::write(moved_marker(&ws.saved), b"").unwrap();
+        let copy = ws.stage(&pk).unwrap();
+        assert!(!moved_marker(&ws.saved).exists());
+        play_and_save(&copy, b"nouvelle");
+        assert!(ws.persist_saves().unwrap().is_none());
+        assert_eq!(
+            std::fs::read(ws.saved.join("Histoire.plain/state")).unwrap(),
+            b"nouvelle"
+        );
     }
 
     #[test]
