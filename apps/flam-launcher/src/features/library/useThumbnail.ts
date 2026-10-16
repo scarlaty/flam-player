@@ -62,7 +62,10 @@ export function useThumbnail(
     return () => observer.disconnect();
   }, []);
 
-  const key = `${source.id}\u0000${entry.entry_id}\u0000${entry.thumb_url ?? ""}`;
+  // « Mes histoires » : la vignette conservée change à chaque réinstallation (nom unique par
+  // installation) ; elle entre dans la clé pour que l'image se rafraîchisse sans remontage.
+  const kept = source.type === "library" ? (entry.library_thumb ?? "") : "";
+  const key = `${source.id}\u0000${entry.entry_id}\u0000${entry.thumb_url ?? ""}\u0000${kept}`;
   useEffect(() => {
     if (!visible) return;
     const request = fetchThumbnail(source, entry);
