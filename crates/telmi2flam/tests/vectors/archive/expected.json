@@ -1446,6 +1446,76 @@
   "info_stdout": ""
  },
  {
+  "id": "zstd_image",
+  "open": "ok",
+  "namelist": [
+   "metadata.json",
+   "nodes.json",
+   "cover.png",
+   "images/s0.png"
+  ],
+  "reads": [
+   {
+    "name": "metadata.json",
+    "hex": "7b227469746c65223a20224c65206368c3a274656175222c202275756964223a2022752d31222c202276657273696f6e223a20322c2022616765223a20332e352c202263617465676f7279223a2022436f6e7465222c20226465736372697074696f6e223a2022496c20c3a9746169745c6e5c22756e655c2220666f697320f09f9880205c5c205c7530303031222c2022696d616765223a2022436f7665722e504e47227d"
+   },
+   {
+    "name": "nodes.json",
+    "hex": "7b7d"
+   },
+   {
+    "name": "cover.png",
+    "hex": "89504e472066616b65"
+   },
+   {
+    "name": "images/s0.png",
+    "error": "unsupported"
+   }
+  ],
+  "lookup": [
+   [
+    "COVER.PNG",
+    "cover.png"
+   ],
+   [
+    "IMAGES/S0.PNG",
+    "images/s0.png"
+   ],
+   [
+    "METADATA.JSON",
+    "metadata.json"
+   ],
+   [
+    "NODES.JSON",
+    "nodes.json"
+   ],
+   [
+    "absent.png",
+    null
+   ],
+   [
+    "cover.png",
+    "cover.png"
+   ],
+   [
+    "images/s0.png",
+    "images/s0.png"
+   ],
+   [
+    "metadata.json",
+    "metadata.json"
+   ],
+   [
+    "nodes.json",
+    "nodes.json"
+   ]
+  ],
+  "root": "",
+  "info_exit_python": 0,
+  "info_exit": 0,
+  "info_stdout": "{\"title\":\"Le ch\\u00e2teau\",\"uuid\":\"u-1\",\"version\":2,\"age\":3.5,\"category\":\"Conte\",\"description\":\"Il \\u00e9tait\\n\\\"une\\\" fois \\ud83d\\ude00 \\\\ \\u0001\",\"cover\":true}\n"
+ },
+ {
   "id": "comment_and_prefix",
   "open": "ok",
   "namelist": [

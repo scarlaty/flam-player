@@ -1,5 +1,5 @@
 //! Parité de la lecture d'archive avec `zipfile` et `telmi2flam.py` : vecteurs produits par
-//! `tests/vectors/make_archive_vectors.py` (Python 3.12 sous Windows).
+//! `tests/vectors/make_archive_vectors.py` (Python 3.14.8 sous Windows, version de l'oracle).
 
 use std::fs;
 use std::path::{Path, PathBuf};

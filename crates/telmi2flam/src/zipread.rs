@@ -1,4 +1,4 @@
-//! Lecteur ZIP qui reproduit `zipfile` de Python 3.12 (`ZipFile(path, "r")`, `namelist()`,
+//! Lecteur ZIP qui reproduit `zipfile` de Python 3.14.8 (`ZipFile(path, "r")`, `namelist()`,
 //! `getinfo()`, `read()`), y compris ses refus et ses tolérances. Les archives Telmi ne sont pas
 //! fiables : aucune entrée n'est extraite sur disque, rien n'est indexé au-delà de ce que
 //! `zipfile` lit, et aucune borne n'est ajoutée à celles de Python (décision D5).
@@ -6,7 +6,8 @@
 //! Pourquoi pas la crate `zip` : elle décode les noms UTF-8 invalides avec pertes (Python
 //! échoue), cherche la fin du répertoire central autrement, ajoute ses propres contrôles
 //! (AES, champs supplémentaires) et ne garde qu'une entrée par nom. Ici, chaque étape suit le
-//! code de `Lib/zipfile/__init__.py` (Python 3.12.13), cité en commentaire.
+//! code de `Lib/zipfile/__init__.py` de Python 3.14.8 (version de l'oracle, épinglée dans
+//! `build-converter.ps1`), cité en commentaire.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -30,9 +31,11 @@ const ZIP_STORED: u16 = 0;
 const ZIP_DEFLATED: u16 = 8;
 const ZIP_BZIP2: u16 = 12;
 const ZIP_LZMA: u16 = 14;
+/// Zstandard : lu par Python 3.14 (`compression.zstd`), délégué par le Rust (D4).
+const ZIP_ZSTANDARD: u16 = 93;
 
-/// `ZipExtFile.MAX_N` (`1 << 31 - 1`, soit `1 << 30` en Python) : taille d'un tour de lecture.
-const MAX_N: usize = 1 << 30;
+/// `ZipExtFile.MAX_N` (`(1 << 31) - 1` depuis Python 3.14 ; `1 << 30` en 3.12) : taille d'un tour.
+const MAX_N: usize = (1 << 31) - 1;
 /// `ZipExtFile.MIN_READ_SIZE`.
 const MIN_READ_SIZE: usize = 4096;
 
@@ -46,7 +49,7 @@ pub enum ZipError {
     /// Nom non décodable (`UnicodeDecodeError`) ou position négative (`OSError`) : Python
     /// échoue en `internal_error` (code 6) ; le Rust rend code 3, comme pour le chiffrement.
     PythonFailsToo(String),
-    /// bzip2 ou LZMA : Python les lit, le Rust délègue (décision D4, code 7).
+    /// bzip2, LZMA ou Zstandard : Python les lit, le Rust délègue (décision D4, code 7).
     Unsupported(String),
 }
 
@@ -524,9 +527,9 @@ impl<R: Read + Seek> ZipReader<R> {
         }
         match zinfo.compress_type {
             ZIP_STORED | ZIP_DEFLATED => {}
-            ZIP_BZIP2 | ZIP_LZMA => {
+            ZIP_BZIP2 | ZIP_LZMA | ZIP_ZSTANDARD => {
                 return Err(ZipError::Unsupported(format!(
-                    "{:?} : compression {} (bzip2/LZMA) déléguée à Python",
+                    "{:?} : compression {} (bzip2/LZMA/Zstandard) déléguée à Python",
                     zinfo.filename, zinfo.compress_type
                 )));
             }

@@ -2,12 +2,13 @@
 """Vecteurs de parite pour la lecture d'archive du port Rust (#124).
 
 Produit de petites archives synthetiques (aucun contenu sous licence) dans `archive/` et
-`archive/expected.json` : pour chaque archive, ce que `zipfile` (Python 3.12) et
+`archive/expected.json` : pour chaque archive, ce que `zipfile` (Python 3.14.8, l'oracle) et
 `telmi2flam.py` en font (ouverture, `namelist()`, lecture de chaque nom, recherche repliee,
 `find_root`, sortie de `--info`). Le test Rust `tests/archive_parity.rs` compare son
 implementation a ces resultats.
 
-A lancer sous Windows (comme le launcher) avec Pillow 12.3.0, depuis la racine du depot :
+A lancer sous Windows (comme le launcher) avec Python 3.14.8 et Pillow 12.3.0 (versions de
+build-converter.ps1), depuis la racine du depot :
     python crates/telmi2flam/tests/vectors/make_archive_vectors.py
 """
 
@@ -165,6 +166,7 @@ def cases():
     c["unknown_method_image"] = set_method(data, "images/s0.png", 97)
     c["bzip2_image"] = build(story(), compress={"images/s0.png": zipfile.ZIP_BZIP2})
     c["lzma_metadata"] = build(story(), compress={"metadata.json": zipfile.ZIP_LZMA})
+    c["zstd_image"] = build(story(), compress={"images/s0.png": zipfile.ZIP_ZSTANDARD})
     c["comment_and_prefix"] = b"MZ prefixe autoextractible " * 4 + build(story(), comment=b"PK\x05 commentaire")
     c["overlapped"] = set_central_u32(data, "metadata.json", 20, 5000)
     invalid = b"images/" + bytes([0xFF]) + b".png"
@@ -254,7 +256,7 @@ def describe(cid, data):
                 except Exception as e:  # noqa: BLE001
                     reads.append({"name": n, "error": classify(e)})
                     continue
-                if info.compress_type in (zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA):
+                if info.compress_type in (zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA, zipfile.ZIP_ZSTANDARD):
                     reads.append({"name": n, "error": "unsupported"})
                 else:
                     reads.append({"name": n, "hex": content.hex()})
@@ -283,6 +285,8 @@ def describe(cid, data):
 
 
 def main():
+    if sys.version_info[:3] != (3, 14, 8):
+        sys.exit("vecteurs a produire avec Python 3.14.8 (oracle de build-converter.ps1)")
     if os.name != "nt":
         sys.exit("vecteurs a produire sous Windows (noms avec \\ : _sanitize_filename)")
     os.makedirs(OUT, exist_ok=True)
