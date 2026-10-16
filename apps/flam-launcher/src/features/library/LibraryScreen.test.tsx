@@ -14,6 +14,9 @@ import { LibraryScreen } from "./LibraryScreen";
 import { LibrarySidebar } from "./LibrarySidebar";
 import { PAGE_SIZE } from "./SourceView";
 import type { StoryHooks } from "./storyState";
+import { slowIt, tolerateLoadInAsyncUtils } from "../../test/timeouts";
+
+tolerateLoadInAsyncUtils();
 
 const library: Source = { type: "library", id: "library", name: "Mes histoires" };
 const store: Source = {
@@ -144,22 +147,25 @@ function renderLibrary(hooks: StoryHooks = {}) {
 const cardTitles = () =>
   screen.queryAllByRole("heading", { level: 3 }).map((h) => h.textContent);
 
-it("affiche la grille d'un catalogue avec le nombre d'histoires et l'état par défaut", async () => {
-  goTo("#/library/store");
-  renderLibrary();
+slowIt(
+  "affiche la grille d'un catalogue avec le nombre d'histoires et l'état par défaut",
+  async () => {
+    goTo("#/library/store");
+    renderLibrary();
 
-  expect(
-    await screen.findByRole("heading", { level: 2, name: "Catalogue test" }),
-  ).toBeInTheDocument();
-  await screen.findByText("Les trois ours");
-  expect(cardTitles()).toEqual(["Les trois ours", "Zélie et le robot"]);
-  expect(screen.getByText("2 histoires")).toBeInTheDocument();
-  expect(screen.getAllByText("À télécharger")).toHaveLength(2);
-  expect(screen.getByText("Dès 3 ans")).toBeInTheDocument();
-  // Le cache est lu sans réseau : pas de rafraîchissement automatique.
-  expect(calls.some((c) => c.cmd === "catalog_refresh")).toBe(false);
-  await expectNoAxeViolations(document.body, PAGE_LEVEL_RULES);
-});
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "Catalogue test" }),
+    ).toBeInTheDocument();
+    await screen.findByText("Les trois ours");
+    expect(cardTitles()).toEqual(["Les trois ours", "Zélie et le robot"]);
+    expect(screen.getByText("2 histoires")).toBeInTheDocument();
+    expect(screen.getAllByText("À télécharger")).toHaveLength(2);
+    expect(screen.getByText("Dès 3 ans")).toBeInTheDocument();
+    // Le cache est lu sans réseau : pas de rafraîchissement automatique.
+    expect(calls.some((c) => c.cmd === "catalog_refresh")).toBe(false);
+    await expectNoAxeViolations(document.body, PAGE_LEVEL_RULES);
+  },
+);
 
 it("charge les vignettes par la commande de la source", async () => {
   goTo("#/library/store");
@@ -183,7 +189,7 @@ it("télécharge un catalogue jamais récupéré", async () => {
   expect(calls.some((c) => c.cmd === "catalog_refresh")).toBe(true);
 });
 
-it("recherche sans tenir compte des accents et des majuscules", async () => {
+slowIt("recherche sans tenir compte des accents et des majuscules", async () => {
   goTo("#/library/store");
   renderLibrary();
   await screen.findByText("Les trois ours");
@@ -228,7 +234,7 @@ it("filtre par âge et par catégorie, et trie", async () => {
   expect(cardTitles()).toEqual(["Zélie et le robot", "Les trois ours"]);
 });
 
-it("pagine les grandes sources", async () => {
+slowIt("pagine les grandes sources", async () => {
   const many = Array.from({ length: PAGE_SIZE + 5 }, (_, i) =>
     storyA({ entry_id: `store:${i}`, title: `Histoire ${String(i).padStart(3, "0")}` }),
   );
@@ -270,23 +276,26 @@ it("ignore les vignettes qui ne sont pas des images data:", async () => {
   expect(container.querySelector("img")).toBeNull();
 });
 
-it("signale un catalogue hors ligne et l'indique dans la barre latérale", async () => {
-  catalogs.store = catalogView("store", [storyA()], { offline: true });
-  goTo("#/library/store");
-  renderLibrary();
-  expect(await screen.findByText("Hors ligne", { selector: "p" })).toBeInTheDocument();
-  expect(
-    screen.getByText(/dernière vérification, le 15 novembre 2023/),
-  ).toBeInTheDocument();
-  expect(cardTitles()).toEqual(["Les trois ours"]);
-  const side = within(screen.getByRole("navigation", { name: "Sources" }));
-  await waitFor(() =>
+slowIt(
+  "signale un catalogue hors ligne et l'indique dans la barre latérale",
+  async () => {
+    catalogs.store = catalogView("store", [storyA()], { offline: true });
+    goTo("#/library/store");
+    renderLibrary();
+    expect(await screen.findByText("Hors ligne", { selector: "p" })).toBeInTheDocument();
     expect(
-      side.getByRole("button", { name: /Catalogue test.*Hors ligne/ }),
-    ).toBeInTheDocument(),
-  );
-  await expectNoAxeViolations(document.body, PAGE_LEVEL_RULES);
-});
+      screen.getByText(/dernière vérification, le 15 novembre 2023/),
+    ).toBeInTheDocument();
+    expect(cardTitles()).toEqual(["Les trois ours"]);
+    const side = within(screen.getByRole("navigation", { name: "Sources" }));
+    await waitFor(() =>
+      expect(
+        side.getByRole("button", { name: /Catalogue test.*Hors ligne/ }),
+      ).toBeInTheDocument(),
+    );
+    await expectNoAxeViolations(document.body, PAGE_LEVEL_RULES);
+  },
+);
 
 it("signale l'échec du dernier rafraîchissement avec les données en cache", async () => {
   catalogs.store = catalogView("store", [storyA()], {
@@ -348,37 +357,40 @@ it("garde les données et signale l'échec d'une actualisation", async () => {
   expect(cardTitles()).toEqual(["Les trois ours", "Zélie et le robot"]);
 });
 
-it("affiche un dossier local, ses états par défaut et ses éléments ignorés", async () => {
-  scans.dossier = {
-    entries: [
-      makeEntry({
-        source_id: "dossier",
-        entry_id: "dossier:1",
-        title: "Archive Telmi",
-        kind: "telmi_zip",
-        thumb_url: "dossier:1",
-      }),
-      makeEntry({
-        source_id: "dossier",
-        entry_id: "dossier:2",
-        title: "Histoire Flam",
-        kind: "flam_plain",
-      }),
-    ],
-    warnings: [{ path: "casse.zip", message: "archive illisible" }],
-  };
-  goTo("#/library/dossier");
-  const { container } = renderLibrary();
-  expect(await screen.findByText("Archive Telmi")).toBeInTheDocument();
-  expect(screen.getByText("À convertir")).toBeInTheDocument();
-  expect(screen.getByText("À installer")).toBeInTheDocument();
-  expect(screen.getByText("1 élément ignoré")).toBeInTheDocument();
-  expect(screen.getByText("casse.zip : archive illisible")).toBeInTheDocument();
-  await waitFor(() => expect(container.querySelectorAll("img")).toHaveLength(1));
-  const call = calls.find((c) => c.cmd === "folder_thumbnail");
-  expect(call?.args).toEqual({ sourceId: "dossier", entryId: "dossier:1" });
-  await expectNoAxeViolations(document.body, PAGE_LEVEL_RULES);
-});
+slowIt(
+  "affiche un dossier local, ses états par défaut et ses éléments ignorés",
+  async () => {
+    scans.dossier = {
+      entries: [
+        makeEntry({
+          source_id: "dossier",
+          entry_id: "dossier:1",
+          title: "Archive Telmi",
+          kind: "telmi_zip",
+          thumb_url: "dossier:1",
+        }),
+        makeEntry({
+          source_id: "dossier",
+          entry_id: "dossier:2",
+          title: "Histoire Flam",
+          kind: "flam_plain",
+        }),
+      ],
+      warnings: [{ path: "casse.zip", message: "archive illisible" }],
+    };
+    goTo("#/library/dossier");
+    const { container } = renderLibrary();
+    expect(await screen.findByText("Archive Telmi")).toBeInTheDocument();
+    expect(screen.getByText("À convertir")).toBeInTheDocument();
+    expect(screen.getByText("À installer")).toBeInTheDocument();
+    expect(screen.getByText("1 élément ignoré")).toBeInTheDocument();
+    expect(screen.getByText("casse.zip : archive illisible")).toBeInTheDocument();
+    await waitFor(() => expect(container.querySelectorAll("img")).toHaveLength(1));
+    const call = calls.find((c) => c.cmd === "folder_thumbnail");
+    expect(call?.args).toEqual({ sourceId: "dossier", entryId: "dossier:1" });
+    await expectNoAxeViolations(document.body, PAGE_LEVEL_RULES);
+  },
+);
 
 it("signale un dossier introuvable", async () => {
   failures.folder_scan = { kind: "folder_unavailable", message: "Disque débranché" };
@@ -391,7 +403,7 @@ it("signale un dossier introuvable", async () => {
   );
 });
 
-it("gère les listes vides de chaque type de source", async () => {
+slowIt("gère les listes vides de chaque type de source", async () => {
   catalogs.store = catalogView("store", []);
   goTo("#/library/store");
   renderLibrary();
@@ -449,7 +461,7 @@ it("signale l'échec du chargement des sources", async () => {
   ).toBeInTheDocument();
 });
 
-it("laisse les fonctionnalités voisines décorer les cartes", async () => {
+slowIt("laisse les fonctionnalités voisines décorer les cartes", async () => {
   const opened: string[] = [];
   goTo("#/library/store");
   renderLibrary({

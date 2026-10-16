@@ -405,11 +405,17 @@ impl Library {
     /// renommage). Elle est réessayée au plus [`UNLOCKED_READ_ATTEMPTS`] fois, à
     /// [`LOCK_POLL`] d'intervalle ; une erreur persistante est renvoyée telle quelle.
     fn load_unlocked(&self) -> AppResult<Vec<LibraryEntry>> {
+        self.load_unlocked_with(|_| {})
+    }
+
+    /// [`Library::load_unlocked`] avec un crochet appelé après chaque essai en échec (tests).
+    fn load_unlocked_with(&self, mut failed: impl FnMut(u32)) -> AppResult<Vec<LibraryEntry>> {
         let mut attempt = 1;
         loop {
             match self.load() {
                 Err(AppError::Io(err)) if attempt < UNLOCKED_READ_ATTEMPTS => {
                     tracing::debug!("lecture de l'index sans verrou, nouvel essai : {err}");
+                    failed(attempt);
                     attempt += 1;
                     std::thread::sleep(LOCK_POLL);
                 }
@@ -689,12 +695,15 @@ impl Library {
         if pending.exists() || backup.exists() {
             // `.bak` d'une publication dont le marqueur a été neutralisé : la réconciliation ne
             // le traitera jamais, il faut le dire (et nommer les deux fichiers à traiter).
-            let unjudged = format!("{file}{PENDING_SUFFIX}{UNJUDGED_SUFFIX}");
-            let neutralized = std::fs::read_dir(&staging).is_ok_and(|d| {
+            // Nom réellement trouvé : `neutralize` peut avoir ajouté un suffixe numéroté.
+            let prefix = format!("{file}{PENDING_SUFFIX}{UNJUDGED_SUFFIX}");
+            let neutralized = std::fs::read_dir(&staging).ok().and_then(|d| {
                 d.flatten()
-                    .any(|e| e.file_name().to_string_lossy().starts_with(&unjudged))
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.starts_with(&prefix))
+                    .min()
             });
-            if !pending.exists() && neutralized {
+            if let (false, Some(unjudged)) = (pending.exists(), neutralized) {
                 return Err(AppError::Validation(format!(
                     "installation de {file} refusée : la sauvegarde .staging/{file}{BACKUP_SUFFIX} \
                      appartient à une publication non jugeable (marqueur neutralisé \
@@ -1709,8 +1718,23 @@ pub(crate) mod tests {
             std::fs::read(staging.join("abc-1.plain.pk.bak")).unwrap(),
             b"ancien"
         );
+        // #100 : nom numéroté par `neutralize` (`.unjudged` déjà pris) : c'est lui qui est nommé.
+        std::fs::rename(
+            staging.join("abc-1.plain.pk.pending.unjudged"),
+            staging.join("abc-1.plain.pk.pending.unjudged.2"),
+        )
+        .unwrap();
+        let text = lib
+            .install(&a, &story("abc", Some(1)), None, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            text.contains("neutralisé .staging/abc-1.plain.pk.pending.unjudged.2)")
+                && text.contains("et .staging/abc-1.plain.pk.pending.unjudged.2, et réessayer"),
+            "{text}"
+        );
         // Sans marqueur neutralisé, le message générique reste celui d'une restauration.
-        std::fs::remove_file(staging.join("abc-1.plain.pk.pending.unjudged")).unwrap();
+        std::fs::remove_file(staging.join("abc-1.plain.pk.pending.unjudged.2")).unwrap();
         let err = lib
             .install(&a, &story("abc", Some(1)), None, 1)
             .unwrap_err();
@@ -1999,20 +2023,16 @@ pub(crate) mod tests {
         let started = Instant::now();
         assert_eq!(lib.list().unwrap_err().kind(), "io");
         assert!(started.elapsed() >= LOCK_POLL * (UNLOCKED_READ_ATTEMPTS - 1));
-        // Passagère : l'index revient pendant les essais.
-        // Fichier complet préparé à côté, puis renommé en place : jamais d'index tronqué lu.
-        let ready = dir.path().join("library").join("index.pret");
-        std::fs::write(&ready, saved).unwrap();
-        let restore = {
-            let index = index.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(10));
+        // Passagère : l'index revient après le premier essai en échec (crochet, sans course).
+        let mut failures = Vec::new();
+        let list = lib
+            .load_unlocked_with(|attempt| {
+                failures.push(attempt);
                 std::fs::remove_dir(&index).unwrap();
-                std::fs::rename(&ready, &index).unwrap();
+                std::fs::write(&index, &saved).unwrap();
             })
-        };
-        let list = lib.list().unwrap();
-        restore.join().unwrap();
+            .unwrap();
+        assert_eq!(failures, [1], "un seul essai en échec, puis réussite");
         assert_eq!(list.len(), 1);
     }
 
