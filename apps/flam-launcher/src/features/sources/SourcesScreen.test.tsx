@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- arguments IPC simulés, forme libre */
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
