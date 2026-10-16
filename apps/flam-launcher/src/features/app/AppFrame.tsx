@@ -5,6 +5,8 @@ import { AppShell } from "../../components";
 import { t } from "../../i18n";
 import type { Route } from "../../router";
 import { applyTheme } from "../../theme/theme";
+import { LibraryScreen } from "../library/LibraryScreen";
+import { LibrarySidebar } from "../library/LibrarySidebar";
 import { RecoveryBanners } from "../recovery/RecoveryBanners";
 import { useRecovery } from "../recovery/RecoveryContext";
 import { SettingsScreen } from "../settings/SettingsScreen";
@@ -16,6 +18,7 @@ const TITLES: Record<Exclude<Route, "demo">, string> = {
   home: t.welcome.title,
   sources: t.nav.sources,
   settings: t.nav.settings,
+  library: t.nav.library,
 };
 
 /**
@@ -44,11 +47,17 @@ export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
     <AppShell
       navLabel={t.nav.label}
       title={TITLES[route]}
-      sidebar={<AppNav current={route} />}
+      sidebar={
+        <>
+          <AppNav current={route} />
+          <LibrarySidebar />
+        </>
+      }
     >
       <RecoveryBanners />
       {route === "sources" && <SourcesScreen />}
       {route === "settings" && <SettingsScreen />}
+      {route === "library" && <LibraryScreen />}
       {route === "home" && <Welcome />}
     </AppShell>
   );
