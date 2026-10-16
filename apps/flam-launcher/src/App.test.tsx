@@ -32,7 +32,7 @@ function mockBackend() {
           recovery: null,
         };
       case "cache_usage":
-        return { path: "C:\\cache", bytes: 0 };
+        return { path: "C:\\cache", bytes: 0, subdirs: [] };
       default:
         throw { kind: "unknown", message: cmd };
     }
