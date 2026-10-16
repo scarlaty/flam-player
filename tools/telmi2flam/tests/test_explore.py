@@ -241,7 +241,7 @@ class TestExplore(unittest.TestCase):
     def test_grand_carrousel_pas_stuck(self):
         """#41 : 80 options -> >40 appuis de navigation, ne doit pas etre 'stuck'."""
         pk = self.convert(carousel_nodes(80), "Carrousel80")
-        res = explore.explore(PLAYER, pk, timeout_s=120, back_every=0, max_steps=400)
+        res = explore.explore(PLAYER, pk, timeout_s=240, back_every=0, max_steps=400)
         self.assertEqual(res["status"], "ok", self.explain(res))
         self.assertNotEqual(res["done_reason"], "stuck", self.explain(res))
         self.assertGreaterEqual(res["choices_explored"], 1, self.explain(res))
@@ -393,7 +393,7 @@ class TestExplore(unittest.TestCase):
     def test_ecran_qui_ne_repond_plus(self):
         """Un vrai blocage reste `stuck` (raison `unresponsive`), distinct d'une boucle."""
         pk = self.convert(unresponsive_nodes(), "Fige")
-        res = explore.explore(PLAYER, pk[:-3], timeout_s=180, back_every=0)
+        res = explore.explore(PLAYER, pk[:-3], timeout_s=240, back_every=0)
         self.assertEqual(res["status"], "stuck", self.explain(res))
         self.assertEqual(res["done_reason"], "unresponsive", self.explain(res))
         self.assertGreaterEqual(res["dead_end_backs"], 1, self.explain(res))

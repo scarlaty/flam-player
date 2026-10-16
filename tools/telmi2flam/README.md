@@ -655,8 +655,13 @@ vérifier la fermeture ; une scène visitée dont la scène suivante, sans condi
 été atteinte — chemin coupé par un test de retour — fait redémarrer l'histoire),
 **boucle épuisée** (`exhausted` : cycle confirmé, plus d'option à essayer, ni transition
 `ok`, ni `home` vers une scène jamais atteinte, ni entrée conditionnelle d'une scène
-visitée vers une scène jamais atteinte, ni option jamais essayée dans l'état d'inventaire
-courant depuis 10 actions — cas des histoires cycliques sans fin), `--max-steps` actions,
+visitée (`ok` ou `home`, y compris les entrées conditionnelles de `home`) vers une scène
+jamais atteinte, ni option jamais essayée dans l'état d'inventaire courant depuis 10
+actions — cas des histoires cycliques sans fin), **conditions non satisfaites**
+(`conditions` : après une fin, des scènes restent atteignables seulement derrière une
+condition ou un `indexItem` ; l'histoire est redémarrée — le choix préfère les options
+jamais essayées dans l'état d'inventaire courant — et, après 3 redémarrages sans aucune
+scène ni option nouvelle, l'exploration s'arrête sur `conditions` au lieu de `complete`), `--max-steps` actions,
 aucune scène / option / fin nouvelle pendant 40 + (scènes vues) actions (`loop` si
 l'histoire avançait encore — au moins 2 nœuds distincts entrés depuis le dernier progrès —,
 sinon `unresponsive` : écran qui ne répond plus ; les touches ←/→ de navigation dans un
@@ -669,7 +674,7 @@ aucune trace, ou `--timeout`.
 | clé | sens |
 |---|---|
 | `status` | `ok` ; `lua_error` (erreur sur stderr : `Erreur Lua`, `callback error`, assert, traceback… ; ou `attempt to` / `stack traceback` sur stdout) ; `crash` (player sorti seul **sans** erreur Lua identifiée avant) ; `timeout` ; `loop` ; `stuck` |
-| `done_reason` | cause de l'arrêt, toujours présente : `complete` (toutes les options rencontrées essayées et toutes les transitions `ok` connues suivies, après une fin), `exhausted` (boucle sans erreur où plus rien n'est à essayer, voir ci-dessus), `max_steps`, `library` (l'histoire est revenue à la bibliothèque, anciens moteurs) → `ok` ; `loop` (plus rien de nouveau, l'histoire tourne encore, sans erreur) → `loop` ; `unresponsive` (écran qui ne répond plus), `no_trace` (`--stuck` s sans trace), `no_start` (pilote jamais lancé) → `stuck` (avant #42, `stuck` confondait boucle et écran figé) ; `timeout` ; `error` (arrêt sur erreur) ; `exit` (player sorti seul : `lua_error` si une erreur Lua a été vue avant, avec `exit_code`, sinon `crash`) |
+| `done_reason` | cause de l'arrêt, toujours présente : `complete` (toutes les options rencontrées essayées et toutes les transitions `ok` connues suivies, après une fin), `exhausted` (boucle sans erreur où plus rien n'est à essayer, voir ci-dessus), `conditions` (des scènes restent derrière une condition jamais satisfaite : `status` `ok`, code de sortie 0, couverture partielle ; `compat.py` la classe en avertissement, `report.md` / `status.json` portent `done_reason: conditions`), `max_steps`, `library` (l'histoire est revenue à la bibliothèque, anciens moteurs) → `ok` ; `loop` (plus rien de nouveau, l'histoire tourne encore, sans erreur) → `loop` ; `unresponsive` (écran qui ne répond plus), `no_trace` (`--stuck` s sans trace), `no_start` (pilote jamais lancé) → `stuck` (avant #42, `stuck` confondait boucle et écran figé) ; `timeout` ; `error` (arrêt sur erreur) ; `exit` (player sorti seul : `lua_error` si une erreur Lua a été vue avant, avec `exit_code`, sinon `crash`) |
 | `errors` | lignes d'erreur filtrées |
 | `scenes` | identifiants des stages visités (sert à fusionner la couverture de plusieurs parcours) |
 | `scenes_visited` / `scenes_total` / `coverage` | stages distincts **réellement atteints** (l'option d'un choix ne compte qu'une fois la transition faite) / stages de `nodes.lua` (y compris inaccessibles) / rapport des deux |
