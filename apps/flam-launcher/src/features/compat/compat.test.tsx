@@ -16,6 +16,9 @@ import {
   IncompatibleInstallDialog,
   needsInstallWarning,
 } from "./IncompatibleInstallDialog";
+import { slowIt, tolerateLoadInAsyncUtils } from "../../test/timeouts";
+
+tolerateLoadInAsyncUtils();
 
 const folder: Source = { type: "folder", id: "d", name: "Contes", path: "C:\\Contes" };
 
@@ -88,7 +91,7 @@ function renderScreen() {
   );
 }
 
-it("affiche un badge de compatibilité par carte, avec la raison utile", async () => {
+slowIt("affiche un badge de compatibilité par carte, avec la raison utile", async () => {
   report = {
     issue: null,
     entries: [
@@ -145,7 +148,7 @@ it("describeCompat : raison de la fiche, sinon du statut d'échec, sinon du nive
   ).toMatch(/limites/);
 });
 
-it("avertit avant d'installer une histoire incompatible, sans bloquer", async () => {
+slowIt("avertit avant d'installer une histoire incompatible, sans bloquer", async () => {
   const info = describeCompat(
     fiche({ uuid: "a", level: "incompatible", reason: "Image manquante" }),
   );
