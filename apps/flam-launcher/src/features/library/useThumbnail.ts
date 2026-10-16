@@ -8,7 +8,8 @@ import type { StoryEntry } from "../../api/story";
 function fetchThumbnail(source: Source, entry: StoryEntry): Promise<string> | null {
   const ref = entry.thumb_url;
   if (!ref) return null;
-  if (ref.startsWith("data:")) return Promise.resolve(ref);
+  if (ref.startsWith("data:"))
+    return ref.startsWith("data:image/") ? Promise.resolve(ref) : null;
   if (source.type === "catalog") return getCatalogThumbnail(source.id, ref);
   if (source.type === "folder") return folderThumbnail(source.id, entry.entry_id);
   return null;
@@ -52,7 +53,7 @@ export function useThumbnail(
     let active = true;
     request
       .then((url) => {
-        if (active) setLoaded({ key, url });
+        if (active && url.startsWith("data:image/")) setLoaded({ key, url });
       })
       .catch(() => undefined);
     return () => {
