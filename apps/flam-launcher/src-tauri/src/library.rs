@@ -2098,4 +2098,43 @@ pub(crate) mod tests {
         assert!(!installed.is_outdated_by(&story("abc", None)));
         assert!(!installed.is_outdated_by(&story("autre", Some(3))));
     }
+
+    /// Vignette orpheline posée à la main dans `library/thumbs/` : le balayage la supprime, elle
+    /// sert donc de témoin (présente = `sweep` n'a pas tourné).
+    fn orphan_thumb(lib: &Library, name: &str) -> PathBuf {
+        let dir = lib.root().join(library_thumb::THUMBS_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, b"png").unwrap();
+        path
+    }
+
+    fn install_story(lib: &Library, uuid: &str, now: u64) {
+        let s = staged(lib, &format!("{uuid}.plain.pk"), b"PK1234");
+        lib.install(&s, &story(uuid, Some(1)), None, now).unwrap();
+    }
+
+    #[test]
+    fn index_mis_de_cote_install_et_remove_ne_balaient_pas() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        lib.list().unwrap();
+        // Témoin : sans `.bak`, l'installation réconcilie et supprime l'orpheline.
+        let control = orphan_thumb(&lib, "control.png");
+        install_story(&lib, "abc", 1);
+        assert!(!control.exists(), "témoin : le balayage doit tourner");
+
+        // Avec un `.bak` d'index mis de côté : ni install ni remove ne balaient.
+        std::fs::write(lib.root().join("library.json.x.bak"), b"{}").unwrap();
+        let orphan = orphan_thumb(&lib, "orphan.png");
+        install_story(&lib, "def", 2);
+        assert!(orphan.exists(), "install a balayé malgré le .bak");
+        lib.remove("def").unwrap();
+        assert!(orphan.exists(), "remove a balayé malgré le .bak");
+
+        // Le `.bak` parti, la réconciliation reprend.
+        std::fs::remove_file(lib.root().join("library.json.x.bak")).unwrap();
+        lib.remove("abc").unwrap();
+        assert!(!orphan.exists());
+    }
 }
