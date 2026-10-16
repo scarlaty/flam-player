@@ -7,6 +7,9 @@ on:
       - "tools/telmi2flam/**"
       - "src/**"
       - "CMakeLists.txt"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
       - ".github/workflows/launcher.yml"
   push:
     branches: [main]
@@ -15,6 +18,9 @@ on:
       - "tools/telmi2flam/**"
       - "src/**"
       - "CMakeLists.txt"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
       - ".github/workflows/launcher.yml"
 
 permissions:
@@ -50,7 +56,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: apps/flam-launcher/src-tauri
+          # Workspace Cargo à la racine : un seul `target/` partagé avec crates/telmi2flam.
+          workspaces: ". -> target"
 
       - name: Installer les dépendances
         run: npm ci
@@ -97,7 +104,7 @@ jobs:
       - name: Installer sans interaction, vérifier les fichiers
         shell: pwsh
         run: |
-          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $setup = Get-ChildItem "$env:GITHUB_WORKSPACE/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
           if (-not $setup) { throw 'installateur NSIS introuvable' }
           $dest = Join-Path $env:RUNNER_TEMP 'flam-launcher-install'
           $p = Start-Process -FilePath $setup.FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
@@ -114,7 +121,7 @@ jobs:
       - name: Mise à jour par-dessus l'installation existante
         shell: pwsh
         run: |
-          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $setup = Get-ChildItem "$env:GITHUB_WORKSPACE/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
           $dest = $env:FLAM_E2E_INSTALL_DIR
           function Get-Tree($dir) {
             Get-ChildItem $dir -Recurse -File | Where-Object { $_.Name -ne 'uninstall.exe' } |
@@ -172,6 +179,6 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: flam-launcher-windows
-          path: apps/flam-launcher/src-tauri/target/release/bundle/nsis/*-setup.exe
+          path: target/release/bundle/nsis/*-setup.exe
           if-no-files-found: warn
           retention-days: 3

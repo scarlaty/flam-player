@@ -39,10 +39,3 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem", "Wi
 tempfile = "=3.27.0"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util"] }
 wiremock = "0.6"
-
-[profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
