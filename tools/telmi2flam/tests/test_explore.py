@@ -72,6 +72,22 @@ def loop_nodes():
     }
 
 
+def carousel_nodes(n):
+    """start -> s0 (autoplay, ok -> action de n options, index -1, comme les quiz) ->
+    carrousel de n options non autoplay qui finissent toutes (ok = null)."""
+    stages = {"s0": stage("x.mp3", "ac")}
+    stages["s0"]["ok"]["index"] = -1
+    opts = []
+    for i in range(n):
+        stages["o%d" % i] = stage("x.mp3", None, OPT)
+        opts.append({"stage": "o%d" % i})
+    return {
+        "startAction": {"action": "a0", "index": 0},
+        "stages": stages,
+        "actions": {"a0": [{"stage": "s0"}], "ac": opts},
+    }
+
+
 @unittest.skipIf(PLAYER is None, "flam-player introuvable (FLAM_BUILD_DIR ou build/)")
 class TestExplore(unittest.TestCase):
     def setUp(self):
@@ -111,6 +127,30 @@ class TestExplore(unittest.TestCase):
         self.assertIsNone(res["exit_code"])
         self.assertEqual(res["coverage"], 1)
         self.assertEqual(res["dead_end_backs"], 0)
+
+    def test_grand_carrousel_pas_stuck(self):
+        """#41 : 80 options -> >40 appuis de navigation, ne doit pas etre 'stuck'."""
+        pk = self.convert(carousel_nodes(80), "Carrousel80")
+        res = explore.explore(PLAYER, pk, timeout_s=120, back_every=0, max_steps=400)
+        self.assertEqual(res["status"], "ok", self.explain(res))
+        self.assertNotEqual(res["done_reason"], "stuck", self.explain(res))
+        self.assertGreaterEqual(res["choices_explored"], 1, self.explain(res))
+
+    def test_carrousel_sens_le_plus_court(self):
+        """#41 : n = 3, toutes les options essayees -> un seul appui par option,
+        dont un PREV quand l'option visee (3) est depuis l'option 1 (seed 3 : 1 -> 3)."""
+        pk = self.convert(carousel_nodes(3), "Carrousel3")
+        res = explore.explore(PLAYER, pk, timeout_s=90, back_every=0, seed=3, keep=True)
+        try:
+            self.assertEqual(res["status"], "ok", self.explain(res))
+            self.assertEqual(res["choices_explored"], 3, self.explain(res))
+            with open(os.path.join(res["workdir"], "stdout.log"), encoding="utf-8",
+                      errors="replace") as f:
+                log = f.read()
+            self.assertEqual(log.count("key PREV"), 1, log)
+            self.assertEqual(log.count("key NEXT"), 0, log)
+        finally:
+            shutil.rmtree(res["workdir"], ignore_errors=True)
 
     def test_max_steps(self):
         pk = self.convert(branching_nodes(), "Steps")

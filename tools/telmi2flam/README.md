@@ -612,7 +612,9 @@ Le pilote trace sur stdout des lignes `[EXPLORE] …` (`scene=<id>`, `choice …
 `end via=…`, `step=<n> …`, `done reason=…`) analysées pendant l'exécution, avec stderr.
 Arrêt : toutes les options rencontrées essayées après une fin (`complete`, puis
 `goto_library` depuis le menu Start pour vérifier la fermeture), `--max-steps` actions,
-aucune scène / option / fin nouvelle pendant 40 + (scènes vues) actions (`stuck`),
+aucune scène / option / fin nouvelle pendant 40 + (scènes vues) actions (`stuck` ; les touches
+←/→ de navigation dans un carrousel ne comptent pas, et le pilote prend le sens le plus court
+à partir de 3 options),
 retour bibliothèque par l'histoire (anciens moteurs), erreur, crash, `--stuck` s sans
 aucune trace, ou `--timeout`.
 
