@@ -148,6 +148,21 @@ impl PlayerService {
         lock(&self.current).clone()
     }
 
+    /// Exécute `action` si aucun player n'est en cours, en tenant le créneau pendant toute la
+    /// durée : aucun lancement ne peut démarrer en même temps. Sinon `player_busy`.
+    pub fn while_idle<T>(&self, action: impl FnOnce() -> T) -> AppResult<T> {
+        let slot = lock(&self.current);
+        if let Some(running) = slot.as_ref() {
+            return Err(AppError::PlayerBusy(format!(
+                "flam-player est en cours d'exécution (« {} ») : fermez-le avant de continuer",
+                running.title
+            )));
+        }
+        let result = action();
+        drop(slot);
+        Ok(result)
+    }
+
     /// Lance `exe` sur le fichier que renvoie `prepare` pour l'histoire `uuid`.
     ///
     /// `prepare` (copie de travail, voir [`stage`]) n'est appelée qu'une fois le player trouvé
@@ -410,13 +425,17 @@ impl Workspace {
         self.saved.with_file_name(name)
     }
 
-    /// Prépare la copie de travail de `source` (déjà vérifiée par [`check_source`]) : vide le
+    /// Prépare la copie de travail de `source` (déjà vérifiée par [`check_source`]) : rapatrie
+    /// d'abord un `saves/` resté dans la copie (échec : erreur, rien n'est supprimé), vide le
     /// dossier de travail, y copie l'histoire, y restaure `saves/`, et renvoie le chemin à lancer.
     pub fn stage(&self, source: &Path) -> AppResult<PathBuf> {
         let name = source.file_name().ok_or_else(|| {
             AppError::Validation(format!("nom d'histoire invalide : {}", source.display()))
         })?;
         std::fs::create_dir_all(&self.work)?;
+        // Partie précédente non rapatriée (launcher fermé ou tué, `persist_saves` en échec) :
+        // la progression est mise à l'abri avant de vider. En cas d'échec, rien n'est détruit.
+        self.persist_saves()?;
         for entry in std::fs::read_dir(&self.work)? {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
@@ -895,6 +914,66 @@ mod tests {
         assert_ne!(other.parent(), copy.parent());
         // La source n'a reçu aucun fichier.
         assert_eq!(std::fs::read_dir(&src).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn stage_apres_un_player_non_termine_conserve_la_progression() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+
+        let copy = ws.stage(&pk).unwrap();
+        play_and_save(&copy, b"niveau 2");
+        ws.persist_saves().unwrap();
+        // Nouvelle partie, puis launcher tué : `persist_saves` n'est jamais appelé.
+        play_and_save(&copy, b"niveau 5");
+
+        let copy = ws.stage(&pk).unwrap();
+        let restored = copy.parent().unwrap().join("saves/Histoire.plain/state");
+        assert_eq!(std::fs::read(restored).unwrap(), b"niveau 5");
+        let saved = dir.path().join("config/saves");
+        let kept = std::fs::read_dir(&saved).unwrap().next().unwrap().unwrap();
+        assert_eq!(
+            std::fs::read(kept.path().join("Histoire.plain/state")).unwrap(),
+            b"niveau 5"
+        );
+    }
+
+    #[test]
+    fn stage_ne_detruit_rien_si_le_rapatriement_echoue() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        let saves = copy.parent().unwrap().join("saves");
+        std::fs::create_dir_all(&saves).unwrap();
+        for i in 0..=SAVES_MAX_FILES {
+            std::fs::write(saves.join(format!("{i}")), b"").unwrap();
+        }
+        assert!(ws.stage(&pk).is_err());
+        assert!(saves.join("0").is_file(), "la copie de travail est intacte");
+        assert!(copy.is_file());
+    }
+
+    #[test]
+    fn while_idle_est_refuse_pendant_une_partie_et_execute_sinon() {
+        let c = ctx();
+        let story = c.story(
+            "long.plain.pk",
+            "sleep 1500
+exit 0
+",
+        );
+        assert_eq!(c.service.while_idle(|| 7).unwrap(), 7);
+        c.launch(&story).unwrap();
+        let mut ran = false;
+        let err = c.service.while_idle(|| ran = true).unwrap_err();
+        assert_eq!(err.kind(), "player_busy");
+        assert!(!ran, "l'action n'est pas exécutée pendant une partie");
+        c.wait_exit();
+        assert_eq!(c.service.while_idle(|| 1).unwrap(), 1);
     }
 
     #[test]

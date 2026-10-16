@@ -331,6 +331,10 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   64 Mio ; au-delà, la sauvegarde n'est pas conservée (erreur tracée). Le nom du sous-dossier
   suit le fichier lancé : une nouvelle version d'une histoire de la bibliothèque
   (`<uuid>-<version>.plain.pk`) repart donc d'une progression vierge.
+- **Partie non rapatriée** : si le launcher a été fermé ou tué pendant la partie, ou si le
+  rapatriement a échoué, `<copie>/saves/` existe encore au lancement suivant. `stage` le
+  rapatrie (même fonction, idempotente) **avant** de vider la copie de travail ; en cas
+  d'échec, le lancement est refusé (erreur explicite) et rien n'est supprimé.
 - **Robustesse** : le créneau est tenu par une garde libérée même en cas de panique ou d'échec de
   thread ; la fin du player ne dépend pas de la fermeture de stderr (attente bornée à 500 ms).
 - Tests : l'exemple `src-tauri/examples/fake_player.rs` (scénario lu dans le fichier d'histoire)
@@ -472,7 +476,9 @@ par l'application, listés dans `APP_CACHE_SUBDIRS` (`cache.rs`) : `archives`, `
 liens symboliques et jonctions ne sont ni suivis ni supprimés. `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
 sous-dossier de cache doit l'ajouter à cette liste.** L'interface demande une confirmation
 (boîte `alertdialog`, focus sur « Annuler ») qui rappelle les dossiers concernés et la taille
-libérée.
+libérée. `cache_clear` est refusé avec `player_busy` tant qu'un player tourne (sa copie de
+travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
+(`PlayerService::while_idle`), aucun lancement ne peut démarrer entre-temps.
 
 #### `sources.json`
 
