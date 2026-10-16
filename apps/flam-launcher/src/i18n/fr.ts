@@ -1,3 +1,5 @@
+const storyCount = (n: number) => (n <= 1 ? `${n} histoire` : `${n} histoires`);
+
 /**
  * Textes de l'interface en français. Tout texte affiché passe par ce fichier pour
  * préparer une future traduction : une autre langue fournira un objet du même type.
@@ -13,6 +15,7 @@ export const fr = {
     home: "Accueil",
     sources: "Sources",
     settings: "Paramètres",
+    library: "Bibliothèque",
   },
   errors: {
     title: (kind: string) =>
@@ -21,6 +24,9 @@ export const fr = {
         not_found: "Élément introuvable",
         io: "Erreur d'accès aux fichiers",
         config_version: "Configuration trop récente",
+        network: "Réseau indisponible",
+        catalog_invalid: "Catalogue illisible",
+        folder_unavailable: "Dossier introuvable",
       })[kind] ?? "Une erreur est survenue",
     loadFailed: "Impossible de charger les données.",
     retry: "Réessayer",
@@ -125,6 +131,78 @@ export const fr = {
     version: (name: string, version: string) => `${name} — version ${version}`,
     error: "Impossible de lire les informations de l'application.",
   },
+  library: {
+    sourceNotFound: {
+      title: "Source introuvable",
+      description: "Cette source n'existe plus. Choisissez-en une dans la liste.",
+      action: "Aller à la première source",
+    },
+    refresh: "Actualiser",
+    refreshing: "Actualisation…",
+    loading: "Chargement des histoires…",
+    loadFailed: "Impossible de charger les histoires de cette source.",
+    refreshed: (name: string) => `« ${name} » est à jour`,
+    refreshedOffline: (name: string) =>
+      `« ${name} » est injoignable : les données enregistrées sont affichées.`,
+    offlineTitle: "Hors ligne",
+    offlineBody: (when: string | null) =>
+      when
+        ? `Le catalogue est injoignable. Les histoires affichées viennent de la dernière vérification, le ${when}.`
+        : "Le catalogue est injoignable. Les histoires affichées viennent des données enregistrées.",
+    problemTitle: "Le dernier rafraîchissement a échoué",
+    warningsTitle: (n: number) =>
+      n <= 1 ? `${n} élément ignoré` : `${n} éléments ignorés`,
+    warningsHint: "Ces éléments sont illisibles ou invalides.",
+    filtersLabel: "Recherche et filtres",
+    search: "Rechercher une histoire",
+    searchPlaceholder: "Titre, auteur, catégorie…",
+    age: "Âge de l'enfant",
+    allAges: "Tous les âges",
+    ageOption: (age: number) => `${age} ans`,
+    category: "Catégorie",
+    allCategories: "Toutes les catégories",
+    sort: "Trier par",
+    sortOptions: {
+      title: "Titre (A-Z)",
+      recent: "Plus récentes",
+    },
+    resultCount: (shown: number, total: number) =>
+      shown === total ? storyCount(total) : `${storyCount(shown)} sur ${total}`,
+    gridLabel: (name: string) => `Histoires de ${name}`,
+    showMore: (remaining: number) => `Afficher plus (${remaining} restantes)`,
+    resetFilters: "Réinitialiser les filtres",
+    empty: {
+      library: {
+        title: "Aucune histoire installée",
+        description:
+          "Les histoires installées apparaîtront ici. Parcourez un catalogue ou un dossier pour en ajouter.",
+        action: "Gérer les sources",
+      },
+      catalog: {
+        title: "Ce catalogue est vide",
+        description: "Il ne propose aucune histoire pour le moment.",
+      },
+      folder: {
+        title: "Aucune histoire dans ce dossier",
+        description:
+          "Ajoutez des archives .zip, des dossiers .plain ou des fichiers .plain.pk dans le dossier.",
+      },
+      noResults: {
+        title: "Aucun résultat",
+        description: "Aucune histoire ne correspond à la recherche et aux filtres.",
+      },
+    },
+    state: {
+      to_download: "À télécharger",
+      to_convert: "À convertir",
+      to_install: "À installer",
+      installed: "Installée",
+      update_available: "Mise à jour disponible",
+      in_progress: "En cours",
+      incompatible: "Incompatible",
+      untested: "Non testée",
+    },
+  },
   common: {
     close: "Fermer",
     cancel: "Annuler",
@@ -138,7 +216,7 @@ export const fr = {
     },
     title: "Sources",
     add: "Ajouter une source",
-    count: (n: number) => (n <= 1 ? `${n} histoire` : `${n} histoires`),
+    count: storyCount,
     status: {
       offline: "Hors ligne",
       error: "Erreur",
