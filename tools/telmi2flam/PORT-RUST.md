@@ -22,7 +22,7 @@ de bascule et le découpage en PR. Elle ne contient aucun code.
 | `telmi2flam.py` : images | `_open_rgba` (modes PNG, `tRNS`, 16 bits), `png_to_lif`, `png_to_scene_lif`, `png_to_fit_lif`, `png_to_thumb_lif`, `_avoid_transpose`, `_bound` | Le point le plus délicat : voir §4.2. |
 | `telmi2flam.py` : audio | copie des MP3 **telle quelle**, `silent.mp3` constant, avertissement `audio_samplerate` | **Aucun décodage ni ré-encodage MP3**. Il n'y a donc ni décodeur ni rééchantillonneur à embarquer. |
 | `telmi2flam.py` : sortie | ordre canonique des entrées, `.plain.pk` (ZIP *stored*), `--plain` / `-o *.plain`, `<sortie>.<pid>.part`, `_commit`, `_clean_orphans` | Voir les invariants §3. |
-| `telmi2flam.py` : protocole | options CLI, `--progress-json` (événements `start` avec `version`, `step` avec `phase`/`done`/`total` espacés de 0,1 s, `warning`, `done`, `error` avec `exit`), lignes `  ! …` sur stderr, codes de sortie 0/2/3/4/5/6/130 | Contrats lus par `convert.rs` (événements) et par `compat.py` (lignes `  !` de stderr), à garder tels quels. |
+| `telmi2flam.py` : protocole | options CLI, `--progress-json` (événements `start` avec `version`, `step` avec `phase`/`done`/`total` espacés de 0,1 s, `warning`, `done`, `error` avec `exit`), lignes `  ! …` sur stderr, codes de sortie 0/2/3/4/5/6/130, plus 7 (`unsupported_format`) pour le Rust | Contrats lus par `convert.rs` (événements) et par `compat.py` (lignes `  !` de stderr), à garder tels quels. |
 | `lif.py` | `encode`, `quantize_rgba` | `decode` existe déjà côté launcher (`src-tauri/src/lif.rs`) : à déplacer dans la crate pour les tests aller-retour. |
 | `mp3map.py` | `build` (table de seek `.mp3map`) | Analyse d'octets non fiables : bornes strictes. |
 
@@ -119,8 +119,8 @@ figurer, même avec `OR`.
 | JSON | `serde_json` (déjà), fonction `preserve_order` | MIT OR Apache-2.0 | Fait entrer `indexmap` (Apache-2.0 OR MIT). |
 | Flottants façon Python | `ryu` (ou formatage maison) | Apache-2.0 OR BSL-1.0 | Les deux termes sont autorisés. |
 | Rééchantillonnage | **port de l'algorithme de Pillow** (pas de crate) | Pillow : MIT-CMU (HPND) | Ce n'est pas une dépendance Cargo : `ALLOWED_LICENSES` ne change pas. En-tête de licence et mention dans les notices (D3, §4.2). |
-| Autres formats d'image (JPEG…) | `zune-jpeg` ou `jpeg-decoder` si nécessaire | MIT OR Apache-2.0 (OR Zlib) | Seulement si la campagne en trouve (décision D4). |
-| Méthodes ZIP bzip2/LZMA | fonctions `zip` | `bzip2-sys` : licence bzip2, **non autorisée** | Python les lit. Ne les activer que si la campagne en trouve ; sinon, divergence documentée (`archive_unreadable`). |
+| Autres formats d'image (JPEG…) | `zune-jpeg` ou `jpeg-decoder` si nécessaire | MIT OR Apache-2.0 (OR Zlib) | D4 : délégation à Python (`unsupported_format`, code 7) pendant la transition. Le support devient obligatoire avant #138 pour chaque format que la campagne trouve. |
+| Méthodes ZIP bzip2/LZMA | fonctions `zip` (`lzma-rs` MIT ; `bzip2-sys` : licence bzip2, **non autorisée**, un décodeur bzip2 en Rust pur serait à trouver) | — | Même règle (D4) : délégation, puis support obligatoire avant #138 si la campagne en trouve. |
 
 Pas de `image` (crate complète) : trop de dépendances, et ses conversions (16 → 8 bits par
 arrondi `/257`, Lanczos propre) ne donnent pas le résultat de Pillow.
@@ -145,36 +145,46 @@ Invariants (repris de Python, à tester côté Rust) :
 4. **Sortie déterministe** : mêmes octets d'entrée et mêmes options donnent la même liste
    ordonnée d'entrées, avec les mêmes contenus. L'horodatage des entrées ZIP est fixé (voir
    §4.1).
-5. **Mémoire bornée** (décision D5, chiffres en §7) : nombre de pixels par image, taille
-   décompressée par entrée et totale, et limite mémoire du Job Object côté launcher. Le seuil
-   de Pillow (179 Mpx) ne protège pas : en RGBA, avec la copie prémultipliée et la sortie, il
-   dépasse 1,5 Go. Les MP3 sont écrits en flux dans le `.part` au lieu d'être tous gardés en
-   mémoire. Python n'a pas de bornes.
-6. **Annulation propre** : après une annulation, il ne reste ni `.part` ni sortie, et le code
+5. **Aucune archive acceptée par Python n'est refusée** (décision D5) : les bornes sont
+   exactement celles que Python applique réellement. Pour les images, c'est la protection
+   anti-bombe de Pillow : au-delà de `2 × MAX_IMAGE_PIXELS` (≈ 179 Mpx), l'image est illisible
+   (avertissement `image_unreadable`, `empty.lif`), comme aujourd'hui. Il n'y a aucune borne
+   sur la taille décompressée des entrées ZIP (Python n'en a pas), ni de limite mémoire du Job
+   Object plus stricte que l'existant. Le Rust réduit sa consommation sans refuser : MP3 écrits
+   en flux dans le `.part` au lieu d'être tous gardés en mémoire, copies d'images libérées au
+   plus tôt.
+6. **Délégation des cas non gérés** (décision D4) : face à une image dans un autre format que PNG
+   ou à une entrée ZIP en bzip2/LZMA, le Rust ne convertit pas. Il nettoie son `.part`, émet
+   l'événement `error` avec le code `unsupported_format` et sort avec le **code 7**, distinct de
+   `internal_error`. Tant que le repli Python existe, le launcher rejoue alors la conversion
+   en Python.
+7. **Annulation propre** : après une annulation, il ne reste ni `.part` ni sortie, et le code
    de sortie est 130.
 
 | Panne | Étape | État laissé | Comportement attendu / reprise |
 | --- | --- | --- | --- |
 | Archive absente ou illisible | ouverture | rien | `archive_unreadable`, code 3 |
 | Archive corrompue (CRC, en-tête, troncature) | lecture d'une entrée | rien | `archive_unreadable`, code 3. Le CRC doit être vérifié : lire chaque entrée jusqu'au bout. |
-| Entrée chiffrée, méthode inconnue (deflate64, bzip2/LZMA non activés) | lecture | rien | `archive_unreadable`, code 3 (Python : 3 pour une méthode inconnue, mais `internal_error` 6 pour une entrée chiffrée ; divergence volontaire, documentée) |
+| Entrée chiffrée, méthode que Python ne lit pas non plus (deflate64…) | lecture | rien | `archive_unreadable`, code 3 (Python : 3 pour une méthode inconnue, mais `internal_error` 6 pour une entrée chiffrée ; divergence volontaire, car Python échoue aussi) |
+| Entrée bzip2/LZMA (lue par Python, pas par le Rust) | lecture | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6) |
+| Image dans un autre format que PNG (JPEG, GIF…) | image | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6), et non `image_unreadable` : Pillow la lirait |
 | Noms dupliqués dans l'archive | indexation | rien | même entrée retenue que Python (`ZipFile.getinfo` : la **dernière**). `zip` 4.6.1 retient aussi la dernière (`IndexMap::insert`), mais ne liste le nom qu'une fois : `find_root` et l'index replié (`setdefault`, premier nom rencontré) doivent reproduire `namelist()`. Test dédié. |
 | Pas une histoire Telmi | `find_root` | rien | `not_telmi`, code 3 |
 | JSON invalide / types inattendus | `load_json`, `_expect` | rien | `invalid_content`, code 4 ; `notes.json` illisible : avertissement `notes_ignored` |
 | JSON limites : flottant hors plage (`1e400`), entier hors 64 bits, imbrication profonde, surrogate isolé | `load_json` | rien | **Divergences assumées** (listées dans `parity.py`). Python accepte `1e400` (→ `inf`) et les grands entiers ; il lève `RecursionError` au-delà de la pile (code 6) ; il accepte `"\ud800"` puis échoue à l'encodage UTF-8 (code 6). Rust : `invalid_content`, code 4, dans tous ces cas. Valeurs proches (`NaN`, `Infinity`, clés dupliquées) : comportement de Python reproduit. |
 | Asset manquant | graphe | rien | `missing_asset`, code 5 ; avec `--allow-missing` : `empty.lif` / `silent.mp3` et avertissement |
-| Image illisible, trop grande, format non géré | image | rien | avertissement `image_unreadable`, `empty.lif` (pas d'échec) |
+| Image illisible (aussi pour Pillow), ou au-delà de `2 × MAX_IMAGE_PIXELS` | image | rien | avertissement `image_unreadable`, `empty.lif` (pas d'échec) |
 | MP3 sans trame valide | mp3map | rien | avertissement `mp3map_failed`, MP3 copié sans `.mp3map` |
 | Disque plein, droits refusés, chemin trop long | écriture du `.part` | `.part` supprimé | `output_error`, code 6, pas de sortie |
 | Échec du renommage final | commit | `.part` supprimé, ancienne sortie intacte | `output_error`, code 6 |
 | Annulation (stdin fermé, Ctrl+C, `CTRL_BREAK`) | n'importe laquelle | `.part` supprimé | code 130, événement `error` `cancelled` |
 | Arrêt brutal (job terminé, coupure de courant) | n'importe laquelle | `<sortie>.<pid>.part` orphelin | supprimé à la conversion suivante vers la même sortie (`_clean_orphans` : seulement si le PID n'est plus vivant, via `OpenProcess`/`GetExitCodeProcess`). Un PID réutilisé empêche ce nettoyage : c'est une limite connue. Le launcher jette aussi son `staging`. |
 | Panique Rust | n'importe laquelle | rien | Avec `panic = "abort"`, aucun `Drop` ne s'exécute après le crochet. Le **crochet de panique** fait donc lui-même le nettoyage : il supprime les temporaires notés dans un registre global, émet l'événement `error` `internal_error`, puis appelle `process::exit(6)`. Test d'intégration dédié. |
-| Mémoire épuisée | image, lecture | `.part` possible | refus en amont grâce aux bornes D5 ; sinon, processus tué par le système ou par la limite du Job Object. Le launcher signale l'échec, le nettoyage se fait à la reprise. |
+| Mémoire épuisée | image, lecture | `.part` possible | comme Python : pas de refus en amont (D5). Le système tue le processus, le launcher signale l'échec (plantage, donc repli Python pendant la transition) et le nettoyage se fait à la reprise. |
 | Chemin long (> 260 caractères) | toutes | — | chemins `\\?\` ou manifeste `longPathAware`, testés |
 | Chemins non ASCII (entrée, sortie, profil Windows) | toutes | — | API larges de Windows (`std::fs`, pas de conversion ANSI). Tests avec `é`, idéogrammes et emoji dans les chemins. |
 | Noms d'assets non ASCII dans l'archive | lecture, sortie | — | `_fold` NFC + minuscules. Noms de sortie identiques à Python, avec le drapeau UTF-8 (bit 11) posé seulement si le nom n'est pas ASCII, comme `zipfile`. |
-| Bombe de décompression (entrée ZIP énorme) | lecture | rien | refus au-delà de la borne D5 (`archive_unreadable` ou code dédié) |
+| Bombe de décompression (entrée ZIP énorme) | lecture | rien | comme Python : pas de borne propre (D5). Les tailles calculées sont vérifiées (`checked_*`), et un manque de mémoire est traité comme ci-dessus. |
 
 ## 4. Stratégie de parité
 
@@ -190,8 +200,9 @@ Invariants (repris de Python, à tester côté Rust) :
   `--info` identique (`ensure_ascii`, séparateurs compacts).
 - Outil : `tools/telmi2flam/parity.py` compare deux `.plain.pk` ou deux dossiers de sortie et
   écrit un rapport JSON. Il passe aussi `validate.py` sur la sortie Rust.
-- **Écarts admis**, listés une fois pour toutes dans `parity.py` : refus au-delà des bornes D5,
-  entrée chiffrée (code 3 en Rust, 6 en Python), méthodes ZIP non activées (D4), et les cas JSON
+- **Écarts admis**, listés une fois pour toutes dans `parity.py` : délégation
+  `unsupported_format` (code 7, D4 : comptée à part, voir §4.3), entrée chiffrée (code 3 en
+  Rust, 6 en Python), et les cas JSON
   du tableau §3 tranchés comme « divergence assumée ». Tout autre écart fait échouer la
   comparaison.
 
@@ -217,7 +228,7 @@ d'opérations, en code scalaire uniquement. On vise la **parité octet à octet 
 
 - Licence : Pillow est sous MIT-CMU (HPND, permissive). Un port de code n'est pas une
   dépendance Cargo : `ALLOWED_LICENSES` ne change pas. Il faut un en-tête de licence HPND dans
-  le module porté et une mention dans `THIRD-PARTY-NOTICES`. Le mainteneur valide l'aspect
+  le module porté et une mention dans `THIRD-PARTY-NOTICES`. Le mainteneur a validé l'aspect
   juridique du portage (décision D3).
 - Option écartée : `fast_image_resize`. Ce crate choisit son code SIMD selon le processeur
   (AVX2, SSE4.1, scalaire), donc ses résultats changent d'une machine à l'autre. Cela casse
@@ -250,7 +261,10 @@ sont identiques à l'octet près dès la PR 6.
 3. **Campagne (locale)** : les archives réelles de `.cache/telmi/` (ignoré par Git, jamais
    commité). `compat.py --engine rust`, ou un script dédié, convertit chaque archive avec les
    deux moteurs et écrit `.cache/parity/report.json`. **Seuil de bascule** : aucun écart hors
-   de la liste §4.1, ni sur les statuts ni sur les entrées (images comprises). Les machines de
+   de la liste §4.1, ni sur les statuts ni sur les entrées (images comprises). Le rapport
+   **compte les délégations** `unsupported_format` par format d'image et par méthode ZIP (D4).
+   Chaque format présent doit être pris en charge par le Rust, avec la même parité, **avant le
+   retrait de Python** (#138). Les machines de
    mesure sont chargées : prévoir des lots et une reprise (PR 15).
 4. **Oracle épinglé** : la CI installe aujourd'hui `Pillow>=10.0` sur Python 3.12. Elle doit
    épingler Pillow 12.3.0 et la version de Python de `build-converter.ps1` dans
@@ -268,17 +282,21 @@ sont identiques à l'octet près dès la PR 6.
    gère **les deux moteurs** : fermeture de stdin pour Rust, `CTRL_BREAK_HELPER` pour Python
    (conservé jusqu'à la PR 18). Les tests de `convert.rs` et d'`install/tests.rs` sont dédoublés.
 4. **Bascule** (PR 17) : défaut `rust`. Pendant une version publiée, le launcher **repasse
-   automatiquement sur Python** dans deux cas seulement, et l'indique dans le résultat de
+   automatiquement sur Python** dans trois cas seulement, et l'indique dans le résultat de
    compatibilité (#20) :
+   - l'événement `error` porte `code == "unsupported_format"` (code 7, délégation D4). Ce repli
+     est **attendu**, et il est compté à part ;
    - l'événement `error` porte `code == "internal_error"`. Le code de sortie ne suffit pas :
      `output_error` (disque plein, droits) vaut aussi 6, et rejouer en Python échouerait de la
      même façon, en doublant le délai ;
-   - le binaire **plante** : code de sortie hors de {0, 2, 3, 4, 5, 6, 130}, ou aucun
+   - le binaire **plante** : code de sortie hors de {0, 2, 3, 4, 5, 6, 7, 130}, ou aucun
      événement `start`.
 
    Les erreurs de contenu (codes 3/4/5) et `output_error` ne sont **jamais** rejouées en Python,
    pour ne pas masquer une divergence.
-5. **Suppression** (PR 18 à 20) :
+5. **Suppression** (PR 18 à 20). Condition préalable : tous les formats délégués que la
+   campagne (#135) a comptés sont pris en charge par le Rust, puisque sans Python une
+   délégation devient un échec.
    - retrait de Python, Pillow et des scripts de l'installateur (`build-converter.ps1`,
      ressource `telmi2flam/`, contrôles de `launcher.yml`, notices), de `CTRL_BREAK_HELPER` et
      du repli ;
@@ -289,7 +307,7 @@ sont identiques à l'octet près dès la PR 6.
 
 **Version du convertisseur** (décision D6) : la bibliothèque et l'outil `compat` enregistrent
 la version annoncée (`start.version`, `converter` dans `library.json` et les résultats de
-compatibilité). Proposition : le Rust annonce `2.0.0` (nouvelle implémentation). Même avec
+compatibilité). Le Rust annonce `2.0.0` (nouvelle implémentation, décision validée). Même avec
 une parité octet à octet, ce changement fait passer tous les résultats de compatibilité
 enregistrés avec `1.0.0` au statut « obtenus avec une version antérieure ». C'est voulu : le
 programme qui produit les paquets a changé.
@@ -310,9 +328,9 @@ sortie, pipeline d'installation, corrections issues de la campagne.
 | 1 | #121 | Squelette de la crate `crates/telmi2flam` (lib + bin vides), workspace racine (D1) avec `[profile.release]` déplacé, CI de la crate, coûts du workspace (§2.1), `.gitattributes` | — | sonnet | telmi2flam, ci | 1 j |
 | 2 | #122 | Codecs : `lif` (encode, quantize, decode déplacé depuis le launcher) et `mp3map`, avec de petits vecteurs de test produits par Python et commités | 1 | opus | telmi2flam | 1 j |
 | 3 | #123 | Outillage de parité Python : `make_corpus.py` (corpus et matrice de rééchantillonnage), `parity.py` (écarts admis), Pillow et Python épinglés dans la CI | — | sonnet | telmi2flam, ci | 1 j |
-| 4 | #124 | Lecture de l'archive : index (`_fold`, cp437, doublons), `find_root`, `check_asset_name`, bornes D5, erreurs `archive_unreadable` / `not_telmi`, `read_info` et sortie `--info` | 1 | opus | telmi2flam | 1 j |
+| 4 | #124 | Lecture de l'archive : index (`_fold`, cp437, doublons), `find_root`, `check_asset_name`, aucune borne au-delà de Python (D5), bzip2/LZMA délégués (code 7), erreurs `archive_unreadable` / `not_telmi`, `read_info` et sortie `--info` | 1 | opus | telmi2flam | 1 j |
 | 5 | #125 | JSON et texte : `load_json` (cas du tableau §3), `_expect`, `_flat` (espaces au sens de Python), `_font_safe`, `_choice_label`, `lua_repr` (flottants façon Python) | 1 | opus | telmi2flam | 1 j |
-| 6 | #126 | Décodage d'image avec la sémantique de Pillow : modes PNG, `tRNS`, 16 bits, palettes, garde de taille, annulation testée par ligne ; formats additionnels selon D4 | 2 | opus | telmi2flam | 1,5 j |
+| 6 | #126 | Décodage d'image avec la sémantique de Pillow : modes PNG, `tRNS`, 16 bits, palettes, garde anti-bombe de Pillow, annulation testée par ligne ; autres formats délégués (`unsupported_format`, code 7) | 2 | opus | telmi2flam | 1,5 j |
 | 7 | #127 | Port du rééchantillonnage de Pillow (`Resample.c`, `Reduce.c`, `thumbnail`, `RGBa`) et fonctions `png_to_*_lif`, `_avoid_transpose`, `_bound` ; 100 % sur la matrice | 6 | opus | telmi2flam | 2,5 j |
 | 8 | #128 | Graphe vers Lua : stages, actions, conditions, inventaire, `_max_chapters_per_run`, sélecteur, génération de `script/nodes.lua` et `main.lua` | 4, 5 | opus | telmi2flam | 1,5 j |
 | 9 | #129 | Assets : allocation des noms, cache d'images, couverture, titre et vignette, `silent.mp3`, `info.plain`, `uuid.bin`, moteur et runtime inclus (manifeste unique), avertissements | 7, 8 | opus | telmi2flam | 1,5 j |
@@ -321,10 +339,10 @@ sortie, pipeline d'installation, corrections issues de la campagne.
 | 12 | #132 | Annulation et panique : jeton d'annulation, `--cancel-on-stdin-eof`, signaux console, crochet de panique qui nettoie le `.part` et sort avec 6 | 11 | opus | telmi2flam | 1 j |
 | 13 | #133 | CLI complète : options (`-o`, `--plain`, `--keep-size`, `--allow-missing`, `--selector`, `--info`, `--version`), messages humains sur stderr, code 2 | 12 | sonnet | telmi2flam | 0,5 j |
 | 14 | #134 | CI de parité : corpus et matrice, oracle Python contre Rust, `validate.py` sur la sortie Rust | 3, 13 | sonnet | telmi2flam, ci | 0,5 j |
-| 15 | #135 | Campagne de parité sur `.cache/telmi/` (`compat.py --engine rust`, rapport, lots avec reprise, comptage D4) et corrections des écarts | 14 | opus | telmi2flam | 1 j + mesures |
-| 16 | #136 | Launcher : construire et livrer `telmi2flam.exe`, réglage `converter_engine` (défaut `python`), `convert.rs` pour les deux moteurs, limite mémoire du Job Object | 13 | opus | launcher-rust, ci | 1,5 j |
-| 17 | #137 | Bascule : défaut `rust`, repli Python sur `internal_error` ou plantage seulement, trace dans le résultat de compatibilité, version selon D6 | 15, 16 | opus | launcher-rust | 1 j |
-| 18 | #138 | Retrait de Python de l'installateur et du backend : `build-converter.ps1`, ressources, `launcher.yml`, notices, `CTRL_BREAK_HELPER`, repli | 17, puis une version publiée | opus | launcher-rust, ci | 1 j |
+| 15 | #135 | Campagne de parité sur `.cache/telmi/` (`compat.py --engine rust`, rapport, lots avec reprise, comptage des délégations par format) et corrections des écarts ; liste des formats à prendre en charge avant #138 | 14 | opus | telmi2flam | 1 j + mesures |
+| 16 | #136 | Launcher : construire et livrer `telmi2flam.exe`, réglage `converter_engine` (défaut `python`), `convert.rs` pour les deux moteurs, Job Object sans limite mémoire supplémentaire | 13 | opus | launcher-rust, ci | 1,5 j |
+| 17 | #137 | Bascule : défaut `rust`, repli Python sur `unsupported_format`, `internal_error` ou plantage seulement, trace dans le résultat de compatibilité, version selon D6 | 15, 16 | opus | launcher-rust | 1 j |
+| 18 | #138 | Retrait de Python de l'installateur et du backend : `build-converter.ps1`, ressources, `launcher.yml`, notices, `CTRL_BREAK_HELPER`, repli | 15 (formats délégués pris en charge), 17, puis une version publiée | opus | launcher-rust, ci | 1 j |
 | 19 | #139 | Retrait du réglage `python_path` : backend (ancien champ lu puis ignoré), écran Paramètres, tests | 18 | sonnet | launcher-rust, launcher-ui | 0,5 j |
 | 20 | #140 | Outils de campagne sur le binaire Rust (`compat.py`, `explore.py`), suppression de `telmi2flam.py`, `lif.py`, `mp3map.py` et de leurs tests (cas repris par le corpus) | 18 | sonnet | telmi2flam | 1 j |
 
@@ -341,22 +359,29 @@ Ordre conseillé :
 
 Total : environ 23 jours de développement, hors temps de campagne.
 
-## 7. Décisions attendues du mainteneur
+## 7. Décisions
 
-- **D1** : workspace Cargo à la racine (recommandé) ou crate isolée avec son propre
-  `Cargo.lock`.
-- **D2** : intégration en processus enfant (recommandé : `panic = "abort"`, entrées non
-  fiables) ou appel de la bibliothèque dans le processus du launcher.
-- **D3** : accord sur le port des algorithmes de Pillow (licence HPND, en-tête et mention dans
-  les notices). Sans ce port, pas de parité octet à octet des images.
-- **D4** : formats d'image autres que PNG (JPEG, GIF…) et méthodes ZIP autres que deflate.
-  Pillow ouvre tout ; le Rust ne prendra que ce que la campagne rencontre.
-- **D5** : bornes mémoire. Proposition : 64 Mpx par image (au lieu des 179 Mpx de Pillow),
-  256 Mio par entrée décompressée, 2 Gio au total, et une limite mémoire de 2 Gio sur le Job
-  Object (`JOB_OBJECT_LIMIT_PROCESS_MEMORY`). Python n'a pas de bornes : une archive qu'il
-  accepte peut être refusée.
-- **D6** : version annoncée par le convertisseur Rust (`2.0.0` proposé) et effet voulu sur les
-  résultats de compatibilité déjà enregistrés.
+Décisions du mainteneur du **2026-10-16** :
+
+- **D1, validée** : workspace Cargo à la racine (§2.1).
+- **D2, validée** : convertisseur lancé en processus séparé (§2.2).
+- **D3, validée** : port du code de Pillow sous licence HPND, avec en-tête de licence dans le
+  module porté et mention dans `THIRD-PARTY-NOTICES` (§4.2).
+- **D4 et D5, tranchées** : **le Rust ne refuse aucune archive que Python accepte.**
+  - Bornes alignées sur celles que Python applique réellement : protection anti-bombe de
+    Pillow (`2 × MAX_IMAGE_PIXELS`, image illisible et non archive refusée) et rien de plus
+    que ce que fait déjà `telmi2flam.py`. Pas de borne de taille décompressée, pas de limite
+    mémoire du Job Object plus stricte que l'existant.
+  - Formats d'image autres que PNG et entrées ZIP bzip2/LZMA : tant que le repli Python
+    existe, le Rust **délègue à Python** (`unsupported_format`, code 7, distinct de
+    `internal_error` ; invariant 6).
+  - La campagne de parité (#135) compte ces délégations par format. La prise en charge de
+    **chaque format présent** est une condition préalable du retrait de Python (#138).
+- **D6, validée** : le Rust annonce `2.0.0`. Les résultats de compatibilité enregistrés avec
+  `1.0.0` passent au statut « obtenus avec une version antérieure ».
+
+Points encore ouverts :
+
 - **Durée de la double livraison** : proposition, une version publiée avec le repli Python
   avant la PR 18.
 - **Signature** du binaire `telmi2flam.exe` (SmartScreen, antivirus).
