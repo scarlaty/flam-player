@@ -1342,22 +1342,3 @@ fn memoire_d_archive_bornee_et_revalidee() {
     std::fs::write(&meta, vec![b' '; 5000]).unwrap();
     assert!(read_archive_meta(&meta).is_none());
 }
-
-#[test]
-fn verrou_occupe_le_fichier_prepare_est_conserve() {
-    let dir = tempfile::tempdir().unwrap();
-    let lib = Library::new(dir.path()).with_lock_timeout(Duration::from_millis(60));
-    let other = Library::new(dir.path());
-    let staged = lib.staging_dir().unwrap().join("t.plain.pk");
-    std::fs::write(&staged, b"converti").unwrap();
-    let source = story("abc", Some(1));
-    let held = other.lock_file(true).unwrap().expect("verrou");
-    let result = install_keeping_on_timeout(&lib, &staged, &source, None, 1);
-    assert!(is_lock_timeout(&result), "{result:?}");
-    // L'appelant ne supprime pas le fichier sur expiration du verrou.
-    assert!(staged.is_file());
-    drop(held);
-    install_keeping_on_timeout(&lib, &staged, &source, None, 1).unwrap();
-    assert!(!staged.exists());
-    assert_eq!(lib.list().unwrap().len(), 1);
-}

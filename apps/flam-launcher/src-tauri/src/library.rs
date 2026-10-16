@@ -178,13 +178,6 @@ impl Library {
         }
     }
 
-    /// Délai d'attente du verrou réglé (tests).
-    #[cfg(test)]
-    pub(crate) fn with_lock_timeout(mut self, timeout: Duration) -> Self {
-        self.lock_timeout = timeout;
-        self
-    }
-
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -260,7 +253,7 @@ impl Library {
     /// Verrou entre processus (`library/.lock`), pris pendant publication et réconciliation.
     /// `wait` : attendre le verrou (`try_lock` en boucle, au plus `lock_timeout`, puis erreur
     /// explicite) ; sinon `Ok(None)` s'il est tenu par une autre instance.
-    pub(crate) fn lock_file(&self, wait: bool) -> AppResult<Option<File>> {
+    fn lock_file(&self, wait: bool) -> AppResult<Option<File>> {
         std::fs::create_dir_all(&self.root)?;
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -277,8 +270,8 @@ impl Library {
                         return Err(AppError::Io(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
                             format!(
-                                "bibliothèque occupée par une autre instance de l'application \
-                                 (verrou {LOCK_FILE} non obtenu en {} s), réessayer plus tard",
+                                "bibliothèque utilisée par une autre instance de l'application \
+                                 (verrou {LOCK_FILE} non obtenu en {} s), réessayer",
                                 self.lock_timeout.as_secs()
                             ),
                         )));
@@ -364,42 +357,71 @@ impl Library {
 
     /// Index perdu (voir [`Library::reconcile_state`]) : les publications à marqueur ne peuvent
     /// pas être jugées. Celles dont le marqueur porte l'entrée et dont le fichier publié est
-    /// présent à la taille attendue sont **réintégrées** (terminées) ; s'il en reste une autre
-    /// (marqueur illisible, ancien format, fichier absent ou de taille différente), renvoie une
-    /// erreur : écrire un index sans elle la ferait défaire plus tard, et un `.plain.pk` ne doit
-    /// jamais être perdu. Renvoie les publications à réintégrer (marqueur, `.bak`, chemin du
-    /// marqueur).
-    fn adopt_unjudged(&self) -> AppResult<Vec<(PendingMarker, PathBuf, PathBuf)>> {
+    /// présent à la taille attendue sont **réintégrées** (terminées), triées par `installed_at`
+    /// (la plus récente d'un même `uuid` l'emporte). Un marqueur non jugeable (illisible, ancien
+    /// format, fichier absent ou de taille différente) qui concerne `file` ou `uuid` fait **refuser**
+    /// l'installation (rien n'est touché) ; ceux des autres histoires sont laissés intacts
+    /// (avertissement) et n'empêchent pas l'installation. Renvoie les publications à réintégrer
+    /// (marqueur, `.bak`, chemin du marqueur).
+    fn adopt_unjudged(
+        &self,
+        file: &str,
+        uuid: &str,
+    ) -> AppResult<Vec<(PendingMarker, PathBuf, PathBuf)>> {
         let mut adopted = Vec::new();
         let Ok(read) = std::fs::read_dir(self.root.join(STAGING_DIR)) else {
             return Ok(adopted);
         };
         for item in read.flatten() {
             let name = item.file_name().to_string_lossy().into_owned();
-            let Some(file) = name.strip_suffix(PENDING_SUFFIX) else {
+            let Some(marked) = name.strip_suffix(PENDING_SUFFIX) else {
                 continue;
             };
             let marker = std::fs::read(item.path())
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<PendingMarker>(&bytes).ok());
+            let entry_uuid = marker
+                .as_ref()
+                .and_then(|m| m.entry.as_ref())
+                .map(|e| e.uuid.clone());
             let kept = marker.and_then(|m| {
-                let target = self.checked(file).ok()?;
+                let target = self.checked(marked).ok()?;
                 let entry = m.entry.as_ref()?;
-                let ok = entry.file == file
+                let ok = entry.file == marked
                     && std::fs::metadata(target)
                         .is_ok_and(|t| t.is_file() && t.len() == entry.size);
                 ok.then_some(m)
             });
             let Some(marker) = kept else {
-                return Err(AppError::Validation(format!(
-                    "index de la bibliothèque perdu (sauvegardé en library.json.*.bak) et publication \
-                     de {file} non résolue : installation refusée pour ne perdre aucune histoire ; \
-                     restaurer l'index depuis cette sauvegarde"
-                )));
+                // `<uuid>-<version>.plain.pk` : l'uuid se déduit du nom si le marqueur est muet.
+                let named_uuid = marked
+                    .strip_suffix(".plain.pk")
+                    .and_then(|stem| stem.rsplit_once('-'))
+                    .map(|(u, _)| u.to_string());
+                let concerned = marked == file
+                    || entry_uuid.as_deref() == Some(uuid)
+                    || named_uuid.as_deref() == Some(uuid);
+                if concerned {
+                    return Err(AppError::Validation(format!(
+                        "installation de {file} refusée : le marqueur .staging/{marked}{PENDING_SUFFIX} \
+                         ne peut pas être jugé (index de la bibliothèque perdu, sauvegardé en \
+                         library.json.*.bak). Vérifier library/{marked}, puis supprimer ce marqueur \
+                         (et .staging/{marked}{BACKUP_SUFFIX} s'il existe) ou restaurer l'index depuis la \
+                         sauvegarde, et réessayer"
+                    )));
+                }
+                warn_once!(
+                    "marqueur {} non jugeable (index perdu) : laissé intact",
+                    item.path().display()
+                );
+                continue;
             };
-            let backup = item.path().with_file_name(format!("{file}{BACKUP_SUFFIX}"));
+            let backup = item
+                .path()
+                .with_file_name(format!("{marked}{BACKUP_SUFFIX}"));
             adopted.push((marker, backup, item.path()));
         }
+        adopted.sort_by_key(|(m, _, _)| m.installed_at);
         Ok(adopted)
     }
 
@@ -487,10 +509,25 @@ impl Library {
         }
         // Index perdu : réintègre les publications terminées (ou refuse) avant de le réécrire.
         let adopted = if untrusted {
-            self.adopt_unjudged()?
+            self.adopt_unjudged(&file, &source.uuid)?
         } else {
             Vec::new()
         };
+        // Réintégration (de la plus ancienne à la plus récente) ; les fichiers évincés d'un même
+        // `uuid` rejoignent `old_files`.
+        let mut evicted: Vec<String> = Vec::new();
+        for (previous, _, _) in &adopted {
+            if let Some(kept) = &previous.entry {
+                evicted.extend(
+                    stories
+                        .iter()
+                        .filter(|e| e.uuid == kept.uuid && e.file != kept.file)
+                        .map(|e| e.file.clone()),
+                );
+                stories.retain(|e| e.uuid != kept.uuid && e.file != kept.file);
+                stories.push(kept.clone());
+            }
+        }
         let had_previous = target.is_file();
         let staged_size = std::fs::metadata(staged)?.len();
         let entry = LibraryEntry {
@@ -503,11 +540,16 @@ impl Library {
             converter,
             source: source.clone(),
         };
-        let old_files: Vec<String> = stories
+        let mut old_files: Vec<String> = stories
             .iter()
             .filter(|e| e.uuid == source.uuid && e.file != file)
             .map(|e| e.file.clone())
             .collect();
+        for gone in evicted {
+            if gone != file && !old_files.contains(&gone) {
+                old_files.push(gone);
+            }
+        }
         let marker = PendingMarker {
             installed_at: now,
             had_previous,
@@ -529,12 +571,6 @@ impl Library {
         if let Err(err) = std::fs::rename(staged, &target) {
             restore();
             return Err(err.into());
-        }
-        for (previous, _, _) in &adopted {
-            if let Some(kept) = &previous.entry {
-                stories.retain(|e| e.uuid != kept.uuid && e.file != kept.file);
-                stories.push(kept.clone());
-            }
         }
         stories.retain(|e| e.uuid != entry.uuid && e.file != file);
         stories.push(entry.clone());
@@ -1269,6 +1305,96 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn index_perdu_marqueur_d_un_autre_uuid_n_empeche_pas_l_installation() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let root = dir.path().join("library");
+        lib.list().unwrap();
+        lib.staging_dir().unwrap();
+        // Marqueur non jugeable (sans entrée) d'une autre histoire : laissé intact.
+        marker(&root, "autre-1.plain.pk", 2, false);
+        std::fs::write(root.join("autre-1.plain.pk"), b"autre").unwrap();
+        std::fs::write(root.join(INDEX_FILE), b"{pas du json").unwrap();
+        assert!(lib.list().unwrap().is_empty());
+        let b = staged(&lib, "b.plain.pk", b"nouveau");
+        lib.install(&b, &story("xyz", Some(1)), None, 3).unwrap();
+        assert!(root.join(".staging/autre-1.plain.pk.pending").exists());
+        assert!(root.join("autre-1.plain.pk").is_file());
+        // Même uuid (autre version) : refus, message nommant le fichier et le marqueur.
+        let c = staged(&lib, "c.plain.pk", b"v2");
+        std::fs::remove_file(root.join(INDEX_FILE)).unwrap();
+        std::fs::write(root.join(INDEX_FILE), b"{pas du json").unwrap();
+        assert!(lib.list().unwrap().is_empty());
+        let err = lib
+            .install(&c, &story("autre", Some(2)), None, 4)
+            .unwrap_err();
+        let text = err.to_string();
+        assert_eq!(err.kind(), "validation");
+        assert!(text.contains("autre-2.plain.pk"), "{text}");
+        assert!(text.contains(".staging/autre-1.plain.pk.pending"), "{text}");
+        assert!(c.exists(), "rien n'est consommé");
+    }
+
+    #[test]
+    fn reintegration_triee_par_date_et_fichiers_evinces_supprimes() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let root = dir.path().join("library");
+        lib.list().unwrap();
+        lib.staging_dir().unwrap();
+        // Deux publications terminées du même uuid, marqueurs seuls (index perdu).
+        let published = |version: u32, at: u64, bytes: &[u8]| {
+            let file = format!("abc-{version}.plain.pk");
+            std::fs::write(root.join(&file), bytes).unwrap();
+            let s = story("abc", Some(version));
+            let entry = LibraryEntry {
+                uuid: s.uuid.clone(),
+                version: s.version,
+                title: s.title.clone(),
+                file: file.clone(),
+                size: bytes.len() as u64,
+                installed_at: at,
+                converter: None,
+                source: s,
+            };
+            storage::write_json(
+                &root.join(format!(".staging/{file}.pending")),
+                &PendingMarker {
+                    installed_at: at,
+                    had_previous: false,
+                    size: Some(entry.size),
+                    old_files: Vec::new(),
+                    entry: Some(entry),
+                },
+            )
+            .unwrap();
+        };
+        published(1, 10, b"v1");
+        published(2, 20, b"v2!");
+        std::fs::write(root.join(INDEX_FILE), b"{pas du json").unwrap();
+        assert!(lib.list().unwrap().is_empty());
+        // Une autre histoire est installée : la plus récente (v2) gagne, v1 est évincée et supprimée.
+        let b = staged(&lib, "b.plain.pk", b"autre");
+        lib.install(&b, &story("xyz", Some(1)), None, 30).unwrap();
+        let list = lib.list().unwrap();
+        let abc: Vec<_> = list.iter().filter(|e| e.uuid == "abc").collect();
+        assert_eq!(abc.len(), 1);
+        assert_eq!(abc[0].version, Some(2));
+        assert!(root.join("abc-2.plain.pk").is_file());
+        assert!(!root.join("abc-1.plain.pk").exists(), "évincée supprimée");
+        // Réinstaller le même uuid évince à son tour le fichier réintégré.
+        std::fs::write(root.join(INDEX_FILE), b"{pas du json").unwrap();
+        lib.list().unwrap();
+        published(2, 20, b"v2!");
+        std::fs::write(root.join(INDEX_FILE), b"{pas du json").unwrap();
+        lib.list().unwrap();
+        let c = staged(&lib, "c.plain.pk", b"v3");
+        lib.install(&c, &story("abc", Some(3)), None, 40).unwrap();
+        assert!(root.join("abc-3.plain.pk").is_file());
+        assert!(!root.join("abc-2.plain.pk").exists());
+    }
+
+    #[test]
     fn index_perdu_publication_non_resolue_refuse_l_installation() {
         let dir = tempfile::tempdir().unwrap();
         let lib = Library::new(dir.path());
@@ -1282,7 +1408,7 @@ pub(crate) mod tests {
         assert!(lib.list().unwrap().is_empty());
         let b = staged(&lib, "b.plain.pk", b"autre");
         let err = lib
-            .install(&b, &story("xyz", Some(1)), None, 3)
+            .install(&b, &story("abc", Some(1)), None, 3)
             .unwrap_err();
         assert_eq!(err.kind(), "validation");
         assert!(b.exists(), "rien n'est consommé");
@@ -1294,7 +1420,7 @@ pub(crate) mod tests {
         assert!(root.join(".staging/abc-2.plain.pk.pending").exists());
         // Sans publication en attente, l'installation reste possible après une corruption.
         std::fs::remove_file(root.join(".staging/abc-2.plain.pk.pending")).unwrap();
-        lib.install(&b, &story("xyz", Some(1)), None, 3).unwrap();
+        lib.install(&b, &story("abc", Some(1)), None, 3).unwrap();
     }
 
     #[test]
@@ -1311,7 +1437,10 @@ pub(crate) mod tests {
                 .install(&a, &story("abc", Some(1)), None, 1)
                 .unwrap_err();
             assert_eq!(err.kind(), "io");
-            assert!(err.to_string().contains("réessayer"), "{err}");
+            assert!(
+                err.to_string().contains("utilisée par une autre instance"),
+                "{err}"
+            );
             assert!(started.elapsed() >= Duration::from_millis(100));
             assert_eq!(lib.remove("abc").unwrap_err().kind(), "io");
             assert!(a.exists(), "rien n'a été consommé");

@@ -497,11 +497,17 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    (mis de côté) ne défait ni ne nettoie rien, et tant qu'un `library.json.*.bak` existe, un index
    absent est traité de même. Le marqueur porte l'entrée d'index de la publication : avant de
    réécrire l'index, `install` **réintègre** les publications terminées (fichier présent à la
-   taille attendue) et **refuse** (erreur de validation, rien n'est touché) s'il reste une
-   publication à marqueur qu'il ne sait pas juger (ancien format, fichier absent) : aucun
-   `.plain.pk` n'est perdu ; restaurer alors l'index depuis `library.json.*.bak`. Si le verrou de
-   la bibliothèque reste occupé (3 attentes de 30 s), le `.plain.pk` préparé est conservé dans
-   `library/.staging` (vidé avec le cache) au lieu d'être supprimé.
+   taille attendue), de la plus ancienne à la plus récente (la plus récente d'un même `uuid`
+   l'emporte, les fichiers évincés sont supprimés avec les anciennes versions). Un marqueur
+   **non jugeable** (ancien format, illisible, fichier absent ou de taille différente) qui
+   concerne le fichier ou l'`uuid` installé fait refuser l'installation, sans rien toucher :
+   « installation de `<fichier>` refusée : le marqueur `.staging/<x>.pending` ne peut pas être
+   jugé (index perdu, sauvegardé en `library.json.*.bak`). Vérifier `library/<x>`, puis
+   supprimer ce marqueur (et `.staging/<x>.bak` s'il existe) ou restaurer l'index depuis la
+   sauvegarde, et réessayer ». Ceux des autres histoires sont laissés intacts (avertissement).
+   Aucun `.plain.pk` réintégré n'est perdu. L'attente du verrou de la bibliothèque est unique
+   (30 s) : au-delà, erreur « bibliothèque utilisée par une autre instance… réessayer » et le
+   fichier préparé est supprimé.
    Publication et réconciliation tiennent un verrou inter-processus
    (`library/.lock`, aussi entre threads) ; `install` et `remove` l'attendent au plus 30 s
    (erreur `io` explicite « bibliothèque occupée… réessayer plus tard » au-delà) ; si une autre instance le tient, ou si le verrou ne peut pas être ouvert,
