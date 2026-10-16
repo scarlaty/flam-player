@@ -16,6 +16,7 @@ pub mod sources;
 pub mod storage;
 pub mod story;
 pub mod thumbnail;
+pub mod watch;
 
 use std::sync::Arc;
 
@@ -64,6 +65,7 @@ pub fn run() {
             });
             app.manage(storage::ConfigState::new(config_dir));
             app.manage(folder::FolderState::default());
+            app.manage(watch::WatchState::default());
             app.manage(catalog);
             app.manage(install.clone());
             app.manage(player::PlayerService::new(Arc::new(
@@ -101,6 +103,7 @@ pub fn run() {
             sources::sources_reorder,
             folder::folder_scan,
             folder::folder_thumbnail,
+            watch::folder_watch,
             install::install_start,
             install::install_cancel,
             install::install_list,
@@ -133,6 +136,7 @@ mod tests {
             ("settings", include_str!("settings.rs")),
             ("sources", include_str!("sources.rs")),
             ("storage", include_str!("storage.rs")),
+            ("watch", include_str!("watch.rs")),
         ];
         let mut count = 0;
         for (module, source) in modules {
