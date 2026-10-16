@@ -123,5 +123,4 @@ if (problems.length > 0) {
 }
 mkdirSync(dirname(outFile), { recursive: true });
 writeFileSync(outFile, lines.join("\n").replace(/\r\n/g, "\n"), "utf8");
-process.stdout.write(`${outFile} : ${packages.length} paquets
-`);
+process.stdout.write(`${outFile} : ${packages.length} paquets\n`);
