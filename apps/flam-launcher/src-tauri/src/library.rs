@@ -281,6 +281,13 @@ impl Library {
         let staging = self.staging_dir()?;
         let backup = staging.join(format!("{file}{BACKUP_SUFFIX}"));
         let pending = staging.join(format!("{file}{PENDING_SUFFIX}"));
+        // Une restauration restée en échec (marqueur ou `.bak` survivant à la réconciliation)
+        // ne doit pas être écrasée : on refuse sans rien toucher.
+        if pending.exists() || backup.exists() {
+            return Err(AppError::Validation(format!(
+                "restauration précédente non terminée pour {file}, réessayer plus tard"
+            )));
+        }
         let had_previous = target.is_file();
         // Journal d'intention : écrit avant tout renommage, effacé une fois l'index écrit.
         storage::write_json(
@@ -638,6 +645,15 @@ pub(crate) mod tests {
         lib.install_with(&b, &story("abc", Some(2)), None, 2, &blocked)
             .unwrap_err();
         assert!(pending.exists() && backup.is_file(), "journal conservé");
+        // Une nouvelle installation du même fichier est refusée, sans rien toucher.
+        let c = staged(&lib, "c.plain.pk", b"autre");
+        let err = lib
+            .install(&c, &story("abc", Some(2)), None, 3)
+            .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "{err}");
+        assert!(pending.exists() && backup.is_file(), "journal intact");
+        assert_eq!(std::fs::read(&backup).unwrap(), b"ancien");
+        assert!(c.exists(), "archive préparée non consommée");
         // La réconciliation retente tant que la cible est bloquée (entrée masquée : pas un fichier).
         assert!(lib.list().unwrap().is_empty());
         assert!(pending.exists() && backup.is_file());
