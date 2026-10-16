@@ -200,9 +200,12 @@ do
             emit("done reason=" .. why .. " steps=" .. steps .. " visited=" .. nSeen
                  .. " ends=" .. ends .. " pending=" .. pending)
         end
-        local function step(what)
+        -- nav = true : touche de navigation (PREV/NEXT) dans un choix, non
+        -- comptee dans noProg (seul le nombre de touches borne la navigation,
+        -- cf. plan.nav) : un grand carrousel ne doit pas declencher "stuck".
+        local function step(what, nav)
             steps = steps + 1
-            noProg = noProg + 1
+            if not nav then noProg = noProg + 1 end
             emit("step=" .. steps .. " " .. what)
         end
         local function visit(id)
@@ -340,7 +343,8 @@ do
             if n == 0 or m.parentContainer == nil then return end
             if plan == nil then
                 plan = choose(state.current_fun, n)
-                emit("choice? action=" .. tostring(plan.aid) .. " options=" .. n)
+                emit("choice? action=" .. tostring(plan.aid) .. " options=" .. n
+                     .. " it=" .. tostring(m.answerIterator) .. " k=" .. plan.k)
             end
             if age %% 2 ~= 0 then return end
             if plan.sent then
@@ -351,9 +355,16 @@ do
             if type(it) == "number" and it ~= plan.k then
                 if plan.nav < 2 * n + 4 then
                     plan.nav = plan.nav + 1
-                    -- 2 options : navigation bornee (pas de bouclage)
-                    if plan.k > it then step("key NEXT"); key(m, 19)
-                    else step("key PREV"); key(m, 20) end
+                    local fwd
+                    if n >= 3 then
+                        -- carrousel circulaire : sens le plus court
+                        fwd = ((plan.k - it) %% n) <= n - ((plan.k - it) %% n)
+                    else
+                        -- 2 options : navigation bornee (pas de bouclage)
+                        fwd = plan.k > it
+                    end
+                    if fwd then step("key NEXT", true); key(m, 19)
+                    else step("key PREV", true); key(m, 20) end
                     return
                 end
                 plan.k = it                 -- navigation sans effet : option affichee
