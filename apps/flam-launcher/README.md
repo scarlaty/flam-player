@@ -36,7 +36,9 @@ Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo t
 apps/flam-launcher/
   src/                     Front React/TypeScript
     api/                   Couche typée au-dessus de `invoke` / événements Tauri
-    features/<domaine>/    Écrans et logique par fonctionnalité (welcome, demo en dev)
+    router.ts              Routage par hash (`#/`, `#/sources`, `#/settings`, `#/demo` en dev)
+    features/<domaine>/    Écrans et logique par fonctionnalité (app, welcome, sources, settings,
+                           recovery, demo en dev)
     components/            Composants partagés sans logique métier (design system)
     theme/                 Jetons CSS (clair/sombre) et choix du thème
     i18n/                  Textes de l'interface (français)
@@ -48,6 +50,7 @@ apps/flam-launcher/
       error.rs             `AppError` (thiserror), sérialisée en `{ kind, message }`
       storage.rs           Persistance JSON : écriture atomique, `*.bak`, migration de schéma
       settings.rs          `settings.json`, détection du player et de Python, commandes `settings_*`
+      cache.rs             Taille du cache et vidage (sous-dossiers de l'application seulement)
       sources.rs           `sources.json`, source par défaut et implicite, commandes `sources_*`
       story.rs             `StoryEntry` / `StoryKind` : type commun des histoires de toutes les sources
       catalog.rs           Source catalogue : téléchargement, lecture tolérante, cache, vignettes
@@ -58,7 +61,7 @@ apps/flam-launcher/
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`. Prévus (un module par responsabilité, créés avec leur issue) :
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`. Prévus (un module par responsabilité, créés avec leur issue) :
 
 | Module    | Rôle                                                             |
 | --------- | ---------------------------------------------------------------- |
@@ -85,6 +88,8 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `sources_remove`      | `id`                       | rien                        | `sources`  |
 | `sources_reorder`     | `ids: string[]`            | `Source[]` (liste complète) | `sources`  |
 | `config_ack_recovery` | `file?: string`            | rien                        | `storage`  |
+| `cache_usage`         |                            | `{ path, bytes }`           | `cache`    |
+| `cache_clear`         |                            | `{ freed_bytes }`           | `cache`    |
 | `catalog_refresh`     | `source_id`                | `CatalogView`               | `catalog`  |
 | `catalog_entries`     | `source_id`                | `CatalogView`               | `catalog`  |
 | `catalog_thumbnail`   | `source_id`, `thumb_url`   | URL `data:` (string)        | `catalog`  |
@@ -99,6 +104,8 @@ Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`), `src/api/
 (`listSources`, `addSource`, `updateSource`, `removeSource`, `reorderSources`) et
 `src/api/recovery.ts` (`ackRecovery`) et `src/api/catalog.ts` (`refreshCatalog`,
 `getCatalogEntries`, `getCatalogThumbnail`, types `StoryEntry`, `CatalogView`). La logique
+`src/api/cache.ts` (`getCacheUsage`, `clearCache`) et `src/api/dialog.ts` (`pickFolder`,
+`pickExecutable` : sélecteurs natifs du plugin `tauri-plugin-dialog`). La logique
 (`SettingsStore`, `SourcesStore`, détection) ne dépend pas de Tauri et reçoit son dossier de
 configuration en paramètre : elle est testée sur des dossiers temporaires ; les commandes
 ne sont que de fines enveloppes qui prennent un verrou (`ConfigState`) autour de chaque opération.
@@ -152,6 +159,8 @@ L'image (PNG ou LIF via `lif.rs`) est réduite à 160 px et gardée dans `<cache
 
 **Cache de métadonnées** : en mémoire, par archive (chemin, taille, date de modification), pour ne
 pas rouvrir chaque zip à chaque scan ; les dossiers `.plain` sont relus à chaque scan.
+
+`thumbs/` est enregistré dans `APP_CACHE_SUBDIRS` (`cache.rs`) : « Vider le cache » le nettoie.
 
 **Suite** : surveillance du dossier (`notify`) et purge de `thumbs/` : issue #37.
 
@@ -281,9 +290,15 @@ la progression d'installation est le premier cas prévu.
   "player_path": null,
   "python_path": null,
   "cache_dir": null,
-  "default_catalog_url": "https://gist.githubusercontent.com/DantSu/49ed776755f3a01c995e78e3fd1cb79f/raw/telmi-interactive.json"
+  "default_catalog_url": "https://gist.githubusercontent.com/DantSu/49ed776755f3a01c995e78e3fd1cb79f/raw/telmi-interactive.json",
+  "theme": "system"
 }
 ```
+
+`theme` (`system`, `light` ou `dark`) est le thème de l'interface. Le champ est lu avec
+`#[serde(default)]` : un fichier écrit avant son ajout prend `system`, sans migration de schéma
+(`schema_version` reste 1) ; une valeur inconnue retombe aussi sur `system` au lieu de faire
+rejeter le fichier. Au démarrage, l'interface applique le thème enregistré.
 
 Un chemin à `null` signifie « automatique » ; `settings_get` renvoie aussi les valeurs effectives
 (`resolved`) :
@@ -305,7 +320,8 @@ le chemin de `python.exe`.
   et lecteurs réseau refusés), extension `.exe` (insensible à la casse), fichier existant ;
 - `cache_dir` : chemin absolu qui n'est pas un fichier, ni racine de disque, ni dossier
   utilisateur, ni dossier Windows. L'application ne supprime **jamais** que les sous-dossiers
-  qu'elle a elle-même créés dans le cache, jamais le dossier configuré lui-même ;
+  qu'elle a elle-même créés dans le cache, jamais le dossier configuré lui-même (voir
+  « Cache » ci-dessous) ;
 - `default_catalog_url` : URL http(s) avec hôte, 2048 caractères max, sans identifiants
   (`user:pass@`).
 
@@ -319,6 +335,18 @@ La valeur enregistrée dans `settings` n'est pas modifiée. `resolved.*` n'est *
 garantie** : le fichier peut disparaître ensuite, le lancement (#16) revérifie juste avant
 d'exécuter. Accesseurs Rust pour les issues suivantes : `SourcesStore::get(id)` et
 `SettingsStore::resolved_cache_dir` (dossier créé si absent).
+
+#### Cache
+
+`cache_usage` renvoie le dossier de cache effectif et les octets occupés ; `cache_clear`
+supprime et renvoie les octets libérés. Le dossier de cache pouvant être choisi par
+l'utilisateur, ces deux commandes ne comptent et ne suppriment **que** les sous-dossiers créés
+par l'application, listés dans `APP_CACHE_SUBDIRS` (`cache.rs`) : `archives`, `catalogs`,
+`library`, `thumbs`. Le reste du dossier et le dossier lui-même ne sont jamais touchés ; les
+liens symboliques et jonctions ne sont ni suivis ni supprimés. **Tout module qui crée un nouveau
+sous-dossier de cache doit l'ajouter à cette liste.** L'interface demande une confirmation
+(boîte `alertdialog`, focus sur « Annuler ») qui rappelle les dossiers concernés et la taille
+libérée.
 
 #### `sources.json`
 
@@ -384,3 +412,29 @@ d'exécuter. Accesseurs Rust pour les issues suivantes : `SourcesStore::get(id)`
   (attributs `style`), qu'une CSP à nonce ne couvre pas ; aucun script en ligne n'est autorisé.
 - La capability `core:default` (`src-tauri/capabilities/default.json`) est volontairement large
   pour le squelette : elle sera restreinte permission par permission au fil des issues.
+- Plugin `tauri-plugin-dialog` (sélecteurs natifs de dossier et de fichier `.exe`) avec la seule
+  permission **`dialog:allow-open`** : ni `dialog:default` (messages, confirmations, sauvegarde)
+  ni accès au système de fichiers depuis le front. Le chemin choisi n'est qu'une proposition :
+  il est revalidé par le backend (`sources_add`, `settings_set`).
+
+## Écrans
+
+Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/sources`,
+`#/settings`. Captures dans `docs/screenshots/` :
+
+- **Sources** : ajout d'un catalogue (nom + URL, validation en direct, erreurs du backend
+  affichées), d'un dossier (sélecteur natif), renommage, réordonnancement (glisser-déposer ou
+  boutons Monter/Descendre au clavier, annoncé aux lecteurs d'écran) et suppression avec
+  confirmation. « Mes histoires » reste en tête, intouchable.
+  ![Sources, thème clair](docs/screenshots/sources-clair.png)
+  ![Sources, thème sombre](docs/screenshots/sources-sombre.png)
+- **Paramètres** : chemins du player, de Python et du cache (sélecteur `.exe`, valeurs utilisées,
+  problèmes signalés), taille du cache et vidage, thème Système/Clair/Sombre, à propos.
+  ![Paramètres, thème clair](docs/screenshots/settings-clair.png)
+  ![Paramètres, thème sombre](docs/screenshots/settings-sombre.png)
+- **Restauration** : si un fichier de configuration corrompu a été remplacé, un bandeau
+  d'avertissement (nom de la sauvegarde `.bak`) reste affiché sur tous les écrans jusqu'à
+  « J'ai compris » (`config_ack_recovery`).
+
+Le réglage des téléchargements simultanés n'existe pas encore dans `settings.json` : il sera
+ajouté avec le pipeline d'installation (#15).

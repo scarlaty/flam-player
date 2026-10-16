@@ -1,6 +1,7 @@
 //! Backend Rust de flam-launcher. Voir `apps/flam-launcher/README.md` pour l'architecture.
 
 mod app;
+pub mod cache;
 pub mod catalog;
 mod error;
 pub mod folder;
@@ -26,6 +27,7 @@ pub fn run() {
     tracing::info!("démarrage de flam-launcher {}", env!("CARGO_PKG_VERSION"));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app.manage(storage::ConfigState::new(storage::config_dir()?));
             app.manage(folder::FolderState::default());
@@ -37,6 +39,8 @@ pub fn run() {
             catalog::catalog_refresh,
             catalog::catalog_entries,
             catalog::catalog_thumbnail,
+            cache::cache_usage,
+            cache::cache_clear,
             storage::config_ack_recovery,
             settings::settings_get,
             settings::settings_set,
