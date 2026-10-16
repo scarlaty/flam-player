@@ -6,9 +6,16 @@ import type { Source } from "../../api/sources";
 import type { StoryEntry } from "../../api/story";
 import type { SourceStatus } from "../../components";
 
+/**
+ * Entrée affichée : celle de la source, plus, pour « Mes histoires », la vignette conservée par
+ * la bibliothèque (`LibraryEntry.thumb`, unique par installation). Elle sert à la clé de cache
+ * des vignettes (`useThumbnail`) : une réinstallation rafraîchit l'image sans remonter la carte.
+ */
+export type ListedEntry = StoryEntry & { library_thumb?: string | null };
+
 /** Contenu d'une source prêt à afficher. */
 export interface SourceData {
-  entries: StoryEntry[];
+  entries: ListedEntry[];
   /** Éléments ignorés à la lecture (un par ligne, déjà lisibles). */
   warnings: string[];
   /** Catalogue injoignable : les entrées viennent du cache. */
