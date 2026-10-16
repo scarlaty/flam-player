@@ -119,6 +119,9 @@ pub struct CatalogService {
     known_thumbs: Mutex<HashMap<String, KnownThumbs>>,
     /// Limite les téléchargements de vignettes simultanés.
     thumb_slots: Semaphore,
+    /// Portillon d'écriture dans le cache : les rafraîchissements le prennent en lecture (ils
+    /// restent parallèles entre sources), le vidage du cache en écriture.
+    cache_gate: tokio::sync::RwLock<()>,
 }
 
 impl CatalogService {
@@ -136,7 +139,14 @@ impl CatalogService {
             refresh_locks: Mutex::default(),
             known_thumbs: Mutex::default(),
             thumb_slots: Semaphore::new(thumb_concurrency),
+            cache_gate: tokio::sync::RwLock::new(()),
         }
+    }
+
+    /// Attend la fin des rafraîchissements en cours et empêche d'en démarrer (ou d'en écrire
+    /// le résultat) tant que le garde renvoyé est conservé. Sert au vidage du cache.
+    pub async fn pause_refreshes(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
+        self.cache_gate.write().await
     }
 
     fn source_lock(&self, source_id: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -204,6 +214,7 @@ impl CatalogService {
         now: u64,
     ) -> AppResult<CatalogView> {
         let dir = source_dir(cache_root, source_id)?;
+        let _gate = self.cache_gate.read().await;
         let source_lock = self.source_lock(source_id);
         let _held = source_lock.lock().await;
         let view = self.refresh_locked(&dir, source_id, url, now).await?;

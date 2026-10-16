@@ -49,6 +49,9 @@ export function SettingsScreen() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [themeError, setThemeError] = useState(false);
   const cancelClearRef = useRef<HTMLButtonElement>(null);
+  // Derniers paramètres confirmés par le backend et numéro du dernier changement de thème.
+  const confirmedRef = useRef<SettingsView | null>(null);
+  const themeRequestRef = useRef(0);
 
   const refreshUsage = useCallback(async () => {
     try {
@@ -61,6 +64,7 @@ export function SettingsScreen() {
 
   const applyView = useCallback(
     (next: SettingsView) => {
+      confirmedRef.current = next;
       setView(next);
       setValues({
         player_path: next.settings.player_path ?? "",
@@ -141,17 +145,33 @@ export function SettingsScreen() {
   }
 
   async function changeTheme(theme: ThemePreference) {
-    if (!view) return;
-    const previous = view.settings.theme;
+    const confirmed = confirmedRef.current;
+    if (!view || !confirmed) return;
+    const request = ++themeRequestRef.current;
+    const isLatest = () => request === themeRequestRef.current;
     setThemeError(false);
-    setView({ ...view, settings: { ...view.settings, theme } });
+    setView((current) =>
+      current ? { ...current, settings: { ...current.settings, theme } } : current,
+    );
     applyTheme(theme);
     try {
-      const next = await setSettings({ ...view.settings, theme });
-      setView(next);
+      const next = await setSettings({ ...confirmed.settings, theme });
+      confirmedRef.current = next;
+      // Une réponse plus ancienne ne doit pas écraser un choix plus récent.
+      if (isLatest()) setView(next);
     } catch {
-      setView(view);
-      applyTheme(previous);
+      if (!isLatest()) return;
+      // Retour au dernier état réellement enregistré, pas à celui capturé à l'appel.
+      const restored = confirmedRef.current ?? confirmed;
+      setView((current) =>
+        current
+          ? {
+              ...current,
+              settings: { ...current.settings, theme: restored.settings.theme },
+            }
+          : current,
+      );
+      applyTheme(restored.settings.theme);
       setThemeError(true);
     }
   }
@@ -280,7 +300,7 @@ export function SettingsScreen() {
         description={
           usage
             ? text.cache.confirmDescription(
-                text.cache.subdirs,
+                usage.subdirs.join(", "),
                 usage.path,
                 formatBytes(usage.bytes),
               )
