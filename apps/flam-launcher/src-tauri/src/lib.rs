@@ -3,6 +3,7 @@
 mod app;
 pub mod cache;
 pub mod catalog;
+pub mod compat;
 mod error;
 pub mod folder;
 pub mod install;
@@ -68,6 +69,7 @@ pub fn run() {
             catalog::catalog_thumbnail,
             cache::cache_usage,
             cache::cache_clear,
+            compat::compat_statuses,
             storage::config_ack_recovery,
             settings::settings_get,
             settings::settings_set,
@@ -98,6 +100,7 @@ mod tests {
         let modules = [
             ("app", include_str!("app.rs")),
             ("catalog", include_str!("catalog.rs")),
+            ("compat", include_str!("compat.rs")),
             ("folder", include_str!("folder.rs")),
             ("install", include_str!("install/mod.rs")),
             ("library", include_str!("library.rs")),
