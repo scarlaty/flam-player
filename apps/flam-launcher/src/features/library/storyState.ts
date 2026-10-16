@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { StoryEntry } from "../../api/story";
 import type { Source } from "../../api/sources";
 import type { BadgeTone, IconName } from "../../components";
+import type { CompatInfo } from "../compat/compatInfo";
 
 /**
  * État d'une histoire dans la bibliothèque. Les trois premiers découlent de la source ;
@@ -46,6 +47,11 @@ export interface StoryHooks {
   resolveState?: (entry: StoryEntry) => StoryState | undefined;
   /** Opération en cours : affiche une barre de progression et l'état « En cours ». */
   progressFor?: (entry: StoryEntry) => StoryProgress | undefined;
+  /**
+   * Statut de compatibilité de l'histoire : badge supplémentaire (compatible, avertissements,
+   * incompatible, non testée) avec sa raison. `undefined` : rien à afficher (chargement).
+   */
+  compatFor?: (entry: StoryEntry) => CompatInfo | undefined;
   /** Actions rapides d'une carte (ex. Télécharger, Jouer). */
   renderActions?: (entry: StoryEntry) => ReactNode;
   /** Ouvre la fiche de l'histoire (clic sur le titre). */

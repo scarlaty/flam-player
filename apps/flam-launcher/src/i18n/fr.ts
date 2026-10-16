@@ -203,6 +203,44 @@ export const fr = {
       untested: "Non testée",
     },
   },
+  compat: {
+    level: {
+      compatible: "Compatible",
+      warnings: "Avertissements",
+      incompatible: "Incompatible",
+      untested: "Non testée",
+    },
+    /** Raison affichée quand la fiche n'en fournit pas. */
+    defaultReason: {
+      compatible: "Aucun problème constaté lors des essais.",
+      warnings: "Jouable, mais des limites ont été constatées lors des essais.",
+      incompatible: "Cette histoire a échoué lors des essais de compatibilité.",
+      untested: "Pas encore évaluée.",
+    },
+    /** Raison propre à chaque statut d'échec connu de la campagne. */
+    failureReason: {
+      ECHEC_TELECHARGEMENT: "Le téléchargement a échoué lors des essais.",
+      ECHEC_CONVERSION: "La conversion a échoué lors des essais.",
+      ECHEC_VALIDATION: "L'histoire convertie n'est pas valide.",
+      ECHEC_EXECUTION: "L'histoire s'arrête ou se bloque lors de son exécution.",
+    } as Record<string, string>,
+    stale: "Résultat périmé : évalué avec une autre version du convertisseur.",
+    issue: {
+      title: "Rapport de compatibilité indisponible",
+      unreadable:
+        "Le fichier de statuts est illisible : les histoires apparaissent non testées.",
+      tooLarge: "Le fichier de statuts est trop volumineux : il n'est pas lu.",
+      unsupportedVersion: (found: number | null, supported: number) =>
+        `Le fichier de statuts utilise un format ${found === null ? "inconnu" : `n° ${found}`} (pris en charge : n° ${supported}) : mettez à jour l'application.`,
+    },
+    install: {
+      title: (story: string) => `Installer « ${story} » malgré tout ?`,
+      description: "Cette histoire est signalée comme incompatible.",
+      body: "Elle risque de ne pas se convertir ou de ne pas fonctionner correctement dans le player. Vous pouvez l'installer quand même.",
+      confirm: "Installer quand même",
+      cancel: "Annuler",
+    },
+  },
   common: {
     close: "Fermer",
     cancel: "Annuler",

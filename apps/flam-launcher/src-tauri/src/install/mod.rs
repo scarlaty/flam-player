@@ -37,6 +37,7 @@ use tauri::State;
 use tokio::sync::{watch, Notify, RwLock, Semaphore};
 
 use crate::catalog::{blocking, CatalogService};
+use crate::compat;
 use crate::folder::FolderState;
 use crate::library::{remove_if_exists, Library, LibraryEntry};
 use crate::settings::{self, Environment, SettingsStore};
@@ -819,6 +820,14 @@ impl InstallService {
                     &mut on_step,
                 )
                 .await;
+                // Résultat réel de la conversion, pour le statut de compatibilité (#20).
+                if let Some(outcome) =
+                    compat::outcome_of(entry, &fingerprint, &converted, now_secs())
+                {
+                    let (root, uuid) = (tc.cache_root.clone(), entry.uuid.clone());
+                    // Échec d'enregistrement ignoré : il ne doit pas gêner l'installation.
+                    let _ = blocking(move || compat::store_outcome(&root, &uuid, outcome)).await;
+                }
                 Ok((Some(fingerprint), converted?.warnings))
             }
             StoryKind::FlamPk => {
