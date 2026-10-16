@@ -58,6 +58,10 @@ const MAX_ENTRIES: usize = 10_000;
 const MAX_WARNINGS: usize = 50;
 /// Téléchargements de vignettes simultanés.
 const THUMB_CONCURRENCY: usize = 6;
+/// Âge au-delà duquel une vignette en cache est revalidée auprès du serveur.
+const THUMB_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+/// Délai avant de retenter la revalidation d'une vignette qui vient d'échouer.
+const THUMB_RETRY_SECS: u64 = 600;
 const CACHE_FILE: &str = "catalog.json";
 const META_FILE: &str = "meta.json";
 
@@ -124,6 +128,11 @@ pub struct CatalogService {
     known_thumbs: Mutex<HashMap<String, KnownThumbs>>,
     /// Limite les téléchargements de vignettes simultanés.
     thumb_slots: Semaphore,
+    /// Âge maximal d'une vignette en cache avant revalidation.
+    thumb_ttl: Duration,
+    /// Dernier échec de revalidation par vignette (secondes Unix) : évite de retenter à chaque
+    /// affichage quand le serveur est injoignable.
+    thumb_failures: Mutex<HashMap<PathBuf, u64>>,
     /// Portillon d'écriture dans le cache : les rafraîchissements le prennent en lecture (ils
     /// restent parallèles entre sources), le vidage du cache en écriture. Partagé avec le
     /// pipeline d'installation (`install`), qui le tient en lecture pendant chaque tâche.
@@ -145,8 +154,24 @@ impl CatalogService {
             refresh_locks: Mutex::default(),
             known_thumbs: Mutex::default(),
             thumb_slots: Semaphore::new(thumb_concurrency),
+            thumb_ttl: THUMB_TTL,
+            thumb_failures: Mutex::default(),
             cache_gate: Arc::default(),
         }
+    }
+
+    /// Supprime le cache disque (`<cache>/catalogs/<source_id>/`) et l'état en mémoire d'une
+    /// source : suppression de la source ou changement de son URL. Attend un rafraîchissement
+    /// en cours de cette source. Ne touche qu'à ce sous-dossier (identifiant validé), sans
+    /// suivre de lien ; absent : rien à faire.
+    pub async fn purge_source(&self, cache_root: &Path, source_id: &str) -> AppResult<()> {
+        let dir = source_dir(cache_root, source_id)?;
+        let _gate = self.cache_gate.read().await;
+        let source_lock = self.source_lock(source_id);
+        let _held = source_lock.lock().await;
+        lock(&self.known_thumbs).remove(source_id);
+        blocking(move || remove_source_dir(&dir)).await??;
+        Ok(())
     }
 
     /// Attend la fin des rafraîchissements en cours et empêche d'en démarrer (ou d'en écrire
@@ -230,7 +255,16 @@ impl CatalogService {
         let source_lock = self.source_lock(source_id);
         let _held = source_lock.lock().await;
         let view = self.refresh_locked(&dir, source_id, url, now).await?;
-        self.set_known_thumbs(source_id, url, &view.entries);
+        let known = self.set_known_thumbs(source_id, url, &view.entries);
+        // Le catalogue vient d'être confirmé : les vignettes qu'il n'utilise plus sont inutiles.
+        if !view.status.offline && view.status.error.is_none() {
+            let _ = blocking(move || {
+                if let Err(err) = prune_thumbs(&dir, &known) {
+                    tracing::warn!("nettoyage des vignettes impossible : {err}");
+                }
+            })
+            .await;
+        }
         Ok(view)
     }
 
@@ -368,8 +402,29 @@ impl CatalogService {
         }
 
         let path = thumb_path(&dir, thumb_url);
-        if let Some(url) = read_thumb(&path).await {
-            return Ok(url);
+        let meta_path = thumb_meta_path(&dir, thumb_url);
+        let ttl = self.thumb_ttl.as_secs();
+        let load = || async {
+            let image = read_thumb(&path).await;
+            let meta = read_thumb_meta(&meta_path).await;
+            let fresh = image.is_some()
+                && meta.as_ref().is_some_and(|m| {
+                    let now = now_secs();
+                    m.fetched_at <= now && now - m.fetched_at < ttl
+                });
+            (image, meta, fresh)
+        };
+        let (image, _, fresh) = load().await;
+        if let (Some(url), true) = (&image, fresh) {
+            return Ok(url.clone());
+        }
+
+        // Copie périmée et revalidation récemment en échec : on la sert sans retenter.
+        if let Some(url) = &image {
+            let failed = lock(&self.thumb_failures).get(&path).copied();
+            if failed.is_some_and(|at| now_secs().saturating_sub(at) < THUMB_RETRY_SECS) {
+                return Ok(url.clone());
+            }
         }
 
         let _slot = self
@@ -378,40 +433,164 @@ impl CatalogService {
             .await
             .map_err(|_| AppError::Network("téléchargements interrompus".into()))?;
         // Une autre demande a pu la télécharger pendant l'attente.
-        if let Some(url) = read_thumb(&path).await {
-            return Ok(url);
+        let (image, meta, fresh) = load().await;
+        if let (Some(url), true) = (&image, fresh) {
+            return Ok(url.clone());
         }
-        let response = self
-            .client
-            .get(thumb_url)
-            .send()
-            .await
-            .map_err(|err| network_error(&err))?;
-        if !response.status().is_success() {
-            return Err(AppError::Network(format!(
-                "vignette inaccessible : réponse HTTP {}",
-                response.status()
-            )));
+        // Absente, périmée ou sans suivi : requête (conditionnelle si on a une copie) ; en cas
+        // d'échec, la copie locale reste servie plutôt que rien.
+        let stale = image;
+        let mut request = self.client.get(thumb_url);
+        if stale.is_some() {
+            if let Some(etag) = meta.as_ref().and_then(|m| m.etag.as_ref()) {
+                request = request.header(IF_NONE_MATCH, etag);
+            }
+            if let Some(date) = meta.as_ref().and_then(|m| m.last_modified.as_ref()) {
+                request = request.header(IF_MODIFIED_SINCE, date);
+            }
         }
-        let body = read_body(response, MAX_THUMB_BYTES).await?;
-        let url = data_url(&body).ok_or_else(|| {
-            AppError::CatalogInvalid(
-                "la vignette n'est pas une image PNG, JPEG, GIF ou WebP".into(),
-            )
-        })?;
-        let written = blocking(move || storage::write_atomic(&path, &body)).await?;
-        if let Err(err) = written {
-            tracing::warn!("écriture de la vignette impossible : {err}");
+        let fetched = async {
+            let response = request.send().await.map_err(|err| network_error(&err))?;
+            let status = response.status();
+            if status == StatusCode::NOT_MODIFIED && stale.is_some() {
+                return Ok((None, meta.clone().unwrap_or_default()));
+            }
+            if !status.is_success() {
+                return Err(AppError::Network(format!(
+                    "vignette inaccessible : réponse HTTP {status}"
+                )));
+            }
+            let new_meta = ThumbMeta {
+                etag: header_text(&response, ETAG),
+                last_modified: header_text(&response, LAST_MODIFIED),
+                fetched_at: 0,
+            };
+            let body = read_body(response, MAX_THUMB_BYTES).await?;
+            let url = data_url(&body).ok_or_else(|| {
+                AppError::CatalogInvalid(
+                    "la vignette n'est pas une image PNG, JPEG, GIF ou WebP".into(),
+                )
+            })?;
+            Ok((Some((body, url)), new_meta))
         }
-        Ok(url)
+        .await;
+        match fetched {
+            Ok((downloaded, mut new_meta)) => {
+                new_meta.fetched_at = now_secs();
+                let served = match &downloaded {
+                    Some((_, url)) => url.clone(),
+                    None => stale.unwrap_or_default(),
+                };
+                let body = downloaded.map(|(body, _)| body);
+                lock(&self.thumb_failures).remove(&path);
+                self.store_thumb(path, meta_path, body, new_meta).await;
+                Ok(served)
+            }
+            Err(err) => match stale {
+                Some(url) => {
+                    tracing::warn!("revalidation de la vignette impossible : {err}");
+                    lock(&self.thumb_failures).insert(path, now_secs());
+                    Ok(url)
+                }
+                None => Err(err),
+            },
+        }
     }
+
+    /// Écrit une vignette (si `body`) et son suivi, sous le portillon d'écriture du cache : un
+    /// vidage du cache en cours attend la fin de l'écriture.
+    async fn store_thumb(
+        &self,
+        path: PathBuf,
+        meta_path: PathBuf,
+        body: Option<Vec<u8>>,
+        meta: ThumbMeta,
+    ) {
+        let _gate = self.cache_gate.read().await;
+        let written = blocking(move || {
+            if let Some(body) = body {
+                storage::write_atomic(&path, &body)?;
+            }
+            storage::write_json(&meta_path, &meta)
+        })
+        .await;
+        match written {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::warn!("écriture de la vignette impossible : {err}"),
+            Err(err) => tracing::warn!("écriture de la vignette impossible : {err}"),
+        }
+    }
+}
+
+/// Suivi d'une vignette en cache (`<hash>.meta.json`) pour sa revalidation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct ThumbMeta {
+    etag: Option<String>,
+    last_modified: Option<String>,
+    /// Dernier téléchargement ou dernière revalidation (secondes Unix).
+    fetched_at: u64,
+}
+
+fn thumb_stem(thumb_url: &str) -> String {
+    hex(&Sha256::digest(thumb_url.as_bytes()))[..32].to_string()
 }
 
 /// Fichier de la vignette `thumb_url` dans le dossier de cache `dir` d'une source.
 fn thumb_path(dir: &Path, thumb_url: &str) -> PathBuf {
-    let hash = Sha256::digest(thumb_url.as_bytes());
     dir.join("thumbs")
-        .join(format!("{}.img", &hex(&hash)[..32]))
+        .join(format!("{}.img", thumb_stem(thumb_url)))
+}
+
+fn thumb_meta_path(dir: &Path, thumb_url: &str) -> PathBuf {
+    dir.join("thumbs")
+        .join(format!("{}.meta.json", thumb_stem(thumb_url)))
+}
+
+async fn read_thumb_meta(path: &Path) -> Option<ThumbMeta> {
+    let path = path.to_path_buf();
+    blocking(move || serde_json::from_slice(&std::fs::read(path).ok()?).ok())
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Supprime de `thumbs/` les vignettes (et leur suivi) qui ne correspondent à aucune
+/// `thumb_url` de `known`. Seuls les fichiers `*.img` et `*.meta.json` sont concernés.
+fn prune_thumbs(dir: &Path, known: &HashSet<String>) -> std::io::Result<()> {
+    let thumbs = dir.join("thumbs");
+    match std::fs::symlink_metadata(&thumbs) {
+        Ok(meta) if meta.is_dir() => {}
+        _ => return Ok(()),
+    }
+    let keep: HashSet<String> = known.iter().map(|u| thumb_stem(u)).collect();
+    for entry in std::fs::read_dir(&thumbs)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !(name.ends_with(".img") || name.ends_with(".meta.json")) {
+            continue;
+        }
+        let stem = name.split('.').next().unwrap_or_default();
+        if !keep.contains(stem) {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+/// Supprime le dossier de cache d'une source (`dir` = `<cache>/catalogs/<id>`) sans suivre de
+/// lien. Refusé si `catalogs/` est lui-même un lien.
+fn remove_source_dir(dir: &Path) -> std::io::Result<()> {
+    if let Some(parent) = dir.parent() {
+        if std::fs::symlink_metadata(parent).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(std::io::Error::other(
+                "« catalogs » est un lien : suppression refusée",
+            ));
+        }
+    }
+    crate::player::remove_tree(dir)
 }
 
 /// Vignette `thumb_url` de la source `source_id` déjà téléchargée dans le cache, sans réseau
@@ -842,6 +1021,26 @@ fn resolve_catalog(
 fn resolve_from_state(state: &ConfigState, source_id: &str) -> AppResult<(String, PathBuf)> {
     let _guard = state.guard();
     resolve_catalog(&state.dir, &Environment::current(), source_id)
+}
+
+/// Purge le cache d'une source catalogue supprimée ou dont l'URL a changé. La source est déjà
+/// modifiée : un échec est journalisé (le cache orphelin reste, il n'est jamais relu).
+pub(crate) async fn purge_catalog_cache(
+    config: &ConfigState,
+    service: &CatalogService,
+    source_id: &str,
+) {
+    let root = {
+        let _guard = config.guard();
+        SettingsStore::new(&config.dir).resolved_cache_dir(&Environment::current())
+    };
+    let purged = match root {
+        Ok(root) => service.purge_source(&root, source_id).await,
+        Err(err) => Err(err),
+    };
+    if let Err(err) = purged {
+        tracing::warn!("purge du cache du catalogue {source_id} impossible : {err}");
+    }
 }
 
 /// Télécharge le catalogue de la source (cache et requête conditionnelle comprises). Sans
@@ -1377,11 +1576,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first, second);
+        // Une image et son suivi de revalidation.
         assert_eq!(
             std::fs::read_dir(cache.path().join("catalogs/src/thumbs"))
                 .unwrap()
                 .count(),
-            1
+            2
         );
     }
 
@@ -1817,6 +2017,239 @@ mod tests {
             start.elapsed() >= Duration::from_millis(580),
             "{:?}",
             start.elapsed()
+        );
+    }
+
+    // --- Nettoyage du cache (#38) -------------------------------------------------------
+
+    #[tokio::test]
+    async fn purge_ne_supprime_que_le_dossier_de_la_source() {
+        let server = MockServer::start().await;
+        let doc = thumb_catalog(&server, &["a"], Duration::ZERO).await;
+        serve(&server, catalog_response(&doc), None).await;
+        let cache = tempfile::tempdir().unwrap();
+        let url = url_of(&server);
+        let service = svc();
+        let view = service.refresh(cache.path(), "src", &url, 1).await.unwrap();
+        service
+            .refresh(cache.path(), "autre", &url, 1)
+            .await
+            .unwrap();
+        let thumb = view.entries[0].thumb_url.clone().unwrap();
+        service
+            .thumbnail(cache.path(), "src", &url, &thumb)
+            .await
+            .unwrap();
+        std::fs::create_dir_all(cache.path().join("documents")).unwrap();
+        std::fs::write(cache.path().join("documents/important.txt"), "x").unwrap();
+        std::fs::write(cache.path().join("catalogs/notes.txt"), "x").unwrap();
+
+        service.purge_source(cache.path(), "src").await.unwrap();
+
+        assert!(!cache.path().join("catalogs/src").exists());
+        assert!(cache.path().join("catalogs/autre/catalog.json").is_file());
+        assert!(cache.path().join("catalogs/notes.txt").is_file());
+        assert!(cache.path().join("documents/important.txt").is_file());
+        // État en mémoire purgé : plus de cache, donc plus de vignette connue.
+        let entries = service.entries(cache.path(), "src", &url).await.unwrap();
+        assert!(entries.entries.is_empty());
+        let err = service
+            .thumbnail(cache.path(), "src", &url, &thumb)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "not_found");
+        // Source déjà absente : sans effet.
+        service.purge_source(cache.path(), "src").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn purge_refuse_un_identifiant_non_sur_et_ne_supprime_rien() {
+        let cache = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(cache.path().join("catalogs/src")).unwrap();
+        for bad in ["", "..", ".", "a/b", "a\\b", "../catalogs", "src/.."] {
+            let err = svc().purge_source(cache.path(), bad).await.unwrap_err();
+            assert_eq!(err.kind(), "validation", "{bad}");
+        }
+        assert!(cache.path().join("catalogs/src").is_dir());
+    }
+
+    #[tokio::test]
+    async fn une_vignette_obsolete_est_supprimee_au_rafraichissement() {
+        let server = MockServer::start().await;
+        let doc = thumb_catalog(&server, &["a", "b"], Duration::ZERO).await;
+        serve(&server, catalog_response(&doc), Some(1)).await;
+        let cache = tempfile::tempdir().unwrap();
+        let url = url_of(&server);
+        let service = svc();
+        let view = service.refresh(cache.path(), "src", &url, 1).await.unwrap();
+        for entry in &view.entries {
+            service
+                .thumbnail(cache.path(), "src", &url, entry.thumb_url.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+        let thumbs = cache.path().join("catalogs/src/thumbs");
+        std::fs::write(thumbs.join("notes.txt"), "x").unwrap();
+        let count = |ext: &str| {
+            std::fs::read_dir(&thumbs)
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(ext)
+                })
+                .count()
+        };
+        assert_eq!((count(".img"), count(".meta.json")), (2, 2));
+
+        let doc2 = json!({ "data": [doc["data"][0].clone()] });
+        serve(&server, catalog_response(&doc2), None).await;
+        service.refresh(cache.path(), "src", &url, 2).await.unwrap();
+
+        assert_eq!((count(".img"), count(".meta.json")), (1, 1));
+        let kept = view.entries[0].thumb_url.as_ref().unwrap();
+        assert!(thumb_path(&cache.path().join("catalogs/src"), kept).is_file());
+        assert!(thumbs.join("notes.txt").is_file());
+    }
+
+    #[tokio::test]
+    async fn une_vignette_perimee_est_revalidee_par_etag() {
+        let server = MockServer::start().await;
+        let doc = json!({ "data": [{
+            "uuid": "u", "download": "/u.zip", "thumbs": { "small": "/t/u.png" }
+        }]});
+        serve(&server, catalog_response(&doc), None).await;
+        Mock::given(method("GET"))
+            .and(path("/t/u.png"))
+            .and(header("if-none-match", "\"t1\""))
+            .respond_with(ResponseTemplate::new(304))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/t/u.png"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"t1\"")
+                    .set_body_raw(PNG, "image/png"),
+            )
+            .mount(&server)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+        let url = url_of(&server);
+        let mut service = svc();
+        service.thumb_ttl = Duration::ZERO;
+        let view = service.refresh(cache.path(), "src", &url, 1).await.unwrap();
+        let thumb = view.entries[0].thumb_url.clone().unwrap();
+
+        let first = service
+            .thumbnail(cache.path(), "src", &url, &thumb)
+            .await
+            .unwrap();
+        let second = service
+            .thumbnail(cache.path(), "src", &url, &thumb)
+            .await
+            .unwrap();
+        assert_eq!(first, second);
+        let requests = server.received_requests().await.unwrap();
+        let thumb_requests: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/t/u.png")
+            .collect();
+        assert_eq!(thumb_requests.len(), 2);
+        assert!(!thumb_requests[0].headers.contains_key("if-none-match"));
+        assert!(thumb_requests[1].headers.contains_key("if-none-match"));
+    }
+
+    #[tokio::test]
+    async fn une_vignette_modifiee_est_remplacee_et_la_copie_perimee_sert_hors_ligne() {
+        let server = MockServer::start().await;
+        let doc = json!({ "data": [{
+            "uuid": "u", "download": "/u.zip", "thumbs": { "small": "/t/u.png" }
+        }]});
+        serve(&server, catalog_response(&doc), None).await;
+        Mock::given(method("GET"))
+            .and(path("/t/u.png"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(PNG, "image/png"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+        let url = url_of(&server);
+        let mut service = svc();
+        service.thumb_ttl = Duration::ZERO;
+        let view = service.refresh(cache.path(), "src", &url, 1).await.unwrap();
+        let thumb = view.entries[0].thumb_url.clone().unwrap();
+        let first = service
+            .thumbnail(cache.path(), "src", &url, &thumb)
+            .await
+            .unwrap();
+
+        let new_png: &[u8] = b"\x89PNG\r\n\x1a\nNEW!";
+        Mock::given(method("GET"))
+            .and(path("/t/u.png"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(new_png, "image/png"))
+            .mount(&server)
+            .await;
+        let second = service
+            .thumbnail(cache.path(), "src", &url, &thumb)
+            .await
+            .unwrap();
+        assert_ne!(first, second);
+
+        // Serveur injoignable : la copie locale (périmée) reste servie.
+        drop(server);
+        let third = service
+            .thumbnail(cache.path(), "src", &url, &thumb)
+            .await
+            .unwrap();
+        assert_eq!(second, third);
+    }
+
+    #[tokio::test]
+    async fn un_echec_de_revalidation_n_est_pas_retente_a_chaque_affichage() {
+        let server = MockServer::start().await;
+        let doc = json!({ "data": [{
+            "uuid": "u", "download": "/u.zip", "thumbs": { "small": "/t/u.png" }
+        }]});
+        serve(&server, catalog_response(&doc), None).await;
+        Mock::given(method("GET"))
+            .and(path("/t/u.png"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(PNG, "image/png"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/t/u.png"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+        let url = url_of(&server);
+        let mut service = svc();
+        service.thumb_ttl = Duration::ZERO;
+        let view = service.refresh(cache.path(), "src", &url, 1).await.unwrap();
+        let thumb = view.entries[0].thumb_url.clone().unwrap();
+        let first = service
+            .thumbnail(cache.path(), "src", &url, &thumb)
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            let again = service
+                .thumbnail(cache.path(), "src", &url, &thumb)
+                .await
+                .unwrap();
+            assert_eq!(first, again);
+        }
+        let requests = server.received_requests().await.unwrap();
+        // Téléchargement initial + une seule tentative de revalidation (en échec).
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.url.path() == "/t/u.png")
+                .count(),
+            2
         );
     }
 }
