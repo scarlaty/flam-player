@@ -113,7 +113,7 @@ jobs:
         run: |
           $prev = Join-Path $env:RUNNER_TEMP 'flam-installateur-prev'
           New-Item -ItemType Directory -Force $prev | Out-Null
-          $setups = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe)
+          $setups = @(Get-ChildItem "$env:GITHUB_WORKSPACE/target/release/bundle/nsis/*-setup.exe")
           if ($setups.Count -ne 1 -or $setups[0].Name -notlike '*_0.0.1_*') { throw "installateur N-1 attendu (0.0.1), trouvé : $($setups.Name -join ', ')" }
           Move-Item $setups[0].FullName (Join-Path $prev 'setup-prev.exe')
           "FLAM_PREV_SETUP=$(Join-Path $prev 'setup-prev.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
