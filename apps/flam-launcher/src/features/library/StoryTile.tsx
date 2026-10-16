@@ -3,6 +3,7 @@ import type { Source } from "../../api/sources";
 import type { StoryEntry } from "../../api/story";
 import { StoryCard, type StoryBadge } from "../../components";
 import { t } from "../../i18n";
+import { compatBadge } from "../compat/compatInfo";
 import {
   defaultStoryState,
   STATE_APPEARANCE,
@@ -25,6 +26,7 @@ export const StoryTile = memo(function StoryTile({
   source,
   entry,
   resolveState,
+  compatFor,
   progressFor,
   renderActions,
   onOpenStory,
@@ -32,6 +34,7 @@ export const StoryTile = memo(function StoryTile({
 }: StoryTileProps) {
   const { url, observe } = useThumbnail(source, entry);
   const progress = progressFor?.(entry);
+  const compat = compatFor?.(entry);
   const state: StoryState = progress
     ? "in_progress"
     : (resolveState?.(entry) ?? defaultStoryState(source, entry));
@@ -42,7 +45,7 @@ export const StoryTile = memo(function StoryTile({
         title={entry.title}
         coverUrl={url}
         ageMin={entry.age ?? undefined}
-        badges={[badgeFor(state)]}
+        badges={compat ? [badgeFor(state), compatBadge(compat)] : [badgeFor(state)]}
         selected={selectedEntryId === entry.entry_id}
         onOpen={onOpenStory ? () => onOpenStory(entry) : undefined}
         progress={progress?.value}

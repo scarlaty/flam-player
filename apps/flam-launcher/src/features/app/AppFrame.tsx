@@ -5,6 +5,8 @@ import { AppShell } from "../../components";
 import { t } from "../../i18n";
 import type { Route } from "../../router";
 import { applyTheme } from "../../theme/theme";
+import { CompatNotice } from "../compat/CompatNotice";
+import { useCompat } from "../compat/CompatContext";
 import { LibraryScreen } from "../library/LibraryScreen";
 import { LibrarySidebar } from "../library/LibrarySidebar";
 import { RecoveryBanners } from "../recovery/RecoveryBanners";
@@ -43,6 +45,7 @@ function useStartupConfig() {
 /** Mise en page commune des écrans : navigation, titre, bandeaux de restauration. */
 export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
   useStartupConfig();
+  const { compatFor } = useCompat();
   return (
     <AppShell
       navLabel={t.nav.label}
@@ -57,7 +60,12 @@ export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
       <RecoveryBanners />
       {route === "sources" && <SourcesScreen />}
       {route === "settings" && <SettingsScreen />}
-      {route === "library" && <LibraryScreen />}
+      {route === "library" && (
+        <>
+          <CompatNotice />
+          <LibraryScreen compatFor={compatFor} />
+        </>
+      )}
       {route === "home" && <Welcome />}
     </AppShell>
   );
