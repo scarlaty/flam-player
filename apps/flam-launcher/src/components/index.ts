@@ -19,6 +19,11 @@ export {
   type RadioOption,
 } from "./RadioGroup/RadioGroup";
 export {
+  SelectField,
+  type SelectFieldProps,
+  type SelectOption,
+} from "./SelectField/SelectField";
+export {
   SidebarSourceList,
   type SidebarSource,
   type SidebarSourceListProps,

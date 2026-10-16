@@ -36,7 +36,7 @@ Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo t
 apps/flam-launcher/
   src/                     Front React/TypeScript
     api/                   Couche typée au-dessus de `invoke` / événements Tauri
-    router.ts              Routage par hash (`#/`, `#/sources`, `#/settings`, `#/demo` en dev)
+    router.ts              Routage par hash (`#/`, `#/sources`, `#/settings`, `#/library[/<id>]`, `#/demo` en dev)
     features/<domaine>/    Écrans et logique par fonctionnalité (app, welcome, sources, settings,
                            recovery, demo en dev)
     components/            Composants partagés sans logique métier (design system)
@@ -420,7 +420,34 @@ libérée.
 ## Écrans
 
 Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/sources`,
-`#/settings`. Captures dans `docs/screenshots/` :
+`#/settings`, `#/library` (première source) et `#/library/<id de source>`. Captures dans
+`docs/screenshots/` :
+
+- **Bibliothèque** (`src/features/library/`) : la barre latérale liste « Mes histoires » puis
+  les sources dans l'ordre de `sources.json`, avec nombre d'histoires et indicateur hors ligne
+  / erreur. La vue d'une source affiche une grille de `StoryCard` (vignettes chargées à la
+  demande quand la carte approche de l'écran, 60 cartes puis « Afficher plus »), une
+  recherche (titre, auteur, catégorie, description ; sans accents ni casse), les filtres âge
+  (histoires recommandées dès cet âge ou avant ; sans âge connu : toujours visibles) et
+  catégorie, le tri (titre, plus récentes ; pas de tri par popularité : `StoryEntry` n'a pas ce
+  champ) et « Actualiser ». Un catalogue est lu dans le cache, puis téléchargé s'il ne l'a
+  jamais été (`catalog_entries` puis `catalog_refresh`) ; un dossier est réanalysé
+  (`folder_scan`, éléments ignorés détaillés dans un bandeau). Chargement, erreur (bouton
+  Réessayer), hors ligne, liste vide et « aucun résultat » ont chacun leur état. « Mes histoires »
+  est vide tant que l'installation (#15) ne fournit pas la liste des histoires installées.
+  État affiché par carte : _à télécharger_ (catalogue), _à convertir_ (`.zip` Telmi local),
+  _à installer_ (`.plain`, `.plain.pk`), puis _installée_, _mise à jour disponible_,
+  _en cours_, _incompatible_, _non testée_, fournis par les points d'accroche ci-dessous.
+  ![Bibliothèque, thème clair](docs/screenshots/bibliotheque-clair.png)
+  ![Bibliothèque, thème sombre](docs/screenshots/bibliotheque-sombre.png)
+  ![Dossier local avec élément ignoré](docs/screenshots/bibliotheque-dossier-clair.png)
+  ![Catalogue hors ligne](docs/screenshots/bibliotheque-hors-ligne-clair.png)
+
+  **Points d'accroche** (`StoryHooks`, props de `LibraryScreen` / `SourceView`) pour les issues
+  voisines : `resolveState(entry)` (installée, mise à jour, incompatible…), `progressFor(entry)`
+  (barre de progression, état « En cours »), `renderActions(entry)` (Télécharger, Jouer),
+  `onOpenStory(entry)` (fiche détaillée), `selectedEntryId`. Les données de l'écran
+  (`loadSourceData`) et l'état des sources (`LibraryProvider`) sont testés avec l'API simulée.
 
 - **Sources** : ajout d'un catalogue (nom + URL, validation en direct, erreurs du backend
   affichées), d'un dossier (sélecteur natif), renommage, réordonnancement (glisser-déposer ou
