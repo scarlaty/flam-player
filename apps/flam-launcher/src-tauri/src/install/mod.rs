@@ -790,8 +790,9 @@ impl InstallService {
         let source = entry.clone();
         let installed = blocking(move || {
             let _held = lock(&inner.library_lock);
-            let result = library.install(&staged, &source, converter, now_secs());
-            if result.is_err() {
+            let result =
+                install_keeping_on_timeout(&library, &staged, &source, converter, now_secs());
+            if result.is_err() && !is_lock_timeout(&result) {
                 let _ = remove_if_exists(&staged);
             }
             result
@@ -1255,6 +1256,35 @@ pub async fn install_cancel(service: State<'_, InstallService>, task_id: String)
 #[tauri::command]
 pub async fn install_list(service: State<'_, InstallService>) -> AppResult<Vec<InstallTask>> {
     Ok(service.list())
+}
+
+/// Tentatives d'installation quand la bibliothèque reste occupée (chacune attend déjà le verrou).
+const INSTALL_ATTEMPTS: usize = 3;
+
+/// Vrai si `result` est l'expiration de l'attente du verrou de la bibliothèque.
+fn is_lock_timeout<T>(result: &AppResult<T>) -> bool {
+    matches!(result, Err(AppError::Io(err)) if err.kind() == std::io::ErrorKind::TimedOut)
+}
+
+/// `Library::install`, réessayée si l'attente du verrou expire (autre instance occupée). Au dernier
+/// échec le fichier préparé n'est pas touché : l'appelant le **conserve** (un `.plain.pk` converti,
+/// parfois après un long téléchargement, n'est pas jeté pour un verrou occupé ; il reste dans
+/// `library/.staging`, vidé avec le cache).
+fn install_keeping_on_timeout(
+    library: &Library,
+    staged: &Path,
+    source: &StoryEntry,
+    converter: Option<String>,
+    now: u64,
+) -> AppResult<LibraryEntry> {
+    let mut result = library.install(staged, source, converter.clone(), now);
+    for _ in 1..INSTALL_ATTEMPTS {
+        if !is_lock_timeout(&result) {
+            break;
+        }
+        result = library.install(staged, source, converter.clone(), now);
+    }
+    result
 }
 
 #[cfg(test)]

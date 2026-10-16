@@ -495,8 +495,13 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    les **anciennes versions du même `uuid`** : leur suppression se fait avant celle du marqueur, qui
    reste (avertissement) si l'une échoue, donc rien ne fuit après un arrêt. Un index **corrompu**
    (mis de côté) ne défait ni ne nettoie rien, et tant qu'un `library.json.*.bak` existe, un index
-   absent est traité de même : marqueurs et `.bak` restent (supprimer ce `.bak` après réparation
-   les libère).
+   absent est traité de même. Le marqueur porte l'entrée d'index de la publication : avant de
+   réécrire l'index, `install` **réintègre** les publications terminées (fichier présent à la
+   taille attendue) et **refuse** (erreur de validation, rien n'est touché) s'il reste une
+   publication à marqueur qu'il ne sait pas juger (ancien format, fichier absent) : aucun
+   `.plain.pk` n'est perdu ; restaurer alors l'index depuis `library.json.*.bak`. Si le verrou de
+   la bibliothèque reste occupé (3 attentes de 30 s), le `.plain.pk` préparé est conservé dans
+   `library/.staging` (vidé avec le cache) au lieu d'être supprimé.
    Publication et réconciliation tiennent un verrou inter-processus
    (`library/.lock`, aussi entre threads) ; `install` et `remove` l'attendent au plus 30 s
    (erreur `io` explicite « bibliothèque occupée… réessayer plus tard » au-delà) ; si une autre instance le tient, ou si le verrou ne peut pas être ouvert,
