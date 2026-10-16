@@ -1808,12 +1808,15 @@ pub(crate) mod tests {
         assert_eq!(lib.list().unwrap_err().kind(), "io");
         assert!(started.elapsed() >= LOCK_POLL * (UNLOCKED_READ_ATTEMPTS - 1));
         // Passagère : l'index revient pendant les essais.
+        // Fichier complet préparé à côté, puis renommé en place : jamais d'index tronqué lu.
+        let ready = dir.path().join("library").join("index.pret");
+        std::fs::write(&ready, saved).unwrap();
         let restore = {
             let index = index.clone();
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::sleep(Duration::from_millis(10));
                 std::fs::remove_dir(&index).unwrap();
-                std::fs::write(&index, saved).unwrap();
+                std::fs::rename(&ready, &index).unwrap();
             })
         };
         let list = lib.list().unwrap();

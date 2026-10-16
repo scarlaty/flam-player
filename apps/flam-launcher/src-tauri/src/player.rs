@@ -1572,6 +1572,10 @@ mod tests {
     /// (panne à mi-chemin de `remove_tree`, #91).
     fn half_remove(removed: usize) -> impl FnOnce(&Path) -> std::io::Result<()> {
         move |from: &Path| {
+            assert!(
+                moved_marker(from).is_file(),
+                "marqueur écrit avant l'effacement"
+            );
             let mut names: Vec<_> = std::fs::read_dir(from)
                 .unwrap()
                 .map(|e| e.unwrap().path())
