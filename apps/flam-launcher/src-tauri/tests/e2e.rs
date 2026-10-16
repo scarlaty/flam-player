@@ -405,7 +405,10 @@ async fn catalogue_installation_lancement_retour() {
             main_lua.display()
         );
     }
-    assert!(player.status().is_some(), "créneau du player libéré trop tôt");
+    assert!(
+        player.status().is_some(),
+        "créneau du player libéré trop tôt"
+    );
 
     // 5. Retour : le player est fermé, la surcouche reçoit `exited` et libère le créneau.
     let kill = std::process::Command::new("taskkill")

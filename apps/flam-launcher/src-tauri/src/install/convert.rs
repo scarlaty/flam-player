@@ -194,6 +194,8 @@ impl Job {
 /// Interpréteur durci, lancé depuis `cwd` (un dossier de l'application) :
 /// - `-E` : variables `PYTHON*` ignorées (`PYTHONPATH`, `PYTHONSTARTUP`…) ;
 /// - `-s` : pas de `site-packages` utilisateur ;
+/// - `-B` : aucun `__pycache__` écrit (le dossier d'une application installée doit rester
+///   intact : le désinstallateur ne connaît pas ces fichiers) ;
 /// - `-u` et `-X utf8` : flux non tamponnés et UTF-8 (remplacent `PYTHONUNBUFFERED` et
 ///   `PYTHONIOENCODING`, ignorés avec `-E`).
 ///
@@ -202,7 +204,7 @@ impl Job {
 /// courant, lui, n'est pas dans `sys.path` quand on lance un script.
 fn command(python: &Path, cwd: &Path) -> Command {
     let mut cmd = Command::new(python);
-    cmd.args(["-E", "-s", "-u", "-X", "utf8"])
+    cmd.args(["-E", "-s", "-B", "-u", "-X", "utf8"])
         .current_dir(cwd)
         .stdin(Stdio::null())
         .kill_on_drop(true);

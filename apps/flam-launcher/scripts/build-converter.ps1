@@ -1,4 +1,4 @@
-﻿﻿<#
+﻿<#
 .SYNOPSIS
   Construit le convertisseur telmi2flam autonome (Python embarqué officiel + Pillow + scripts)
   livré avec l'installateur Windows de flam-launcher (issue #71).
@@ -222,13 +222,13 @@ commit $commit
 # --- Contrôles ----------------------------------------------------------------------------
 # Lancement tel que la surcouche le fait (convert.rs), sans Python dans le PATH.
 $script = Join-Path $OutDir 'telmi2flam.py'
-Invoke-Embedded @('-E', '-s', '-u', '-X', 'utf8', $script, '--version')
+Invoke-Embedded @('-E', '-s', '-B', '-u', '-X', 'utf8', $script, '--version')
 # Modules utilisés par la conversion (dont `lif`/`mp3map` via le `._pth`, et `hashlib.md5`
 # sans OpenSSL).
-Invoke-Embedded @('-E', '-s', '-X', 'utf8', '-c',
+Invoke-Embedded @('-E', '-s', '-B', '-X', 'utf8', '-c',
   'import hashlib, unicodedata, zipfile, zlib, lif, mp3map; from PIL import Image, ImageChops, PngImagePlugin; hashlib.md5(bytes())')
 # Assistant Ctrl+Break de convert.rs : `-I` et ctypes.
-Invoke-Embedded @('-I', '-c', 'import ctypes, sys; ctypes.windll.kernel32')
+Invoke-Embedded @('-I', '-B', '-c', 'import ctypes, sys; ctypes.windll.kernel32')
 
 $bytes = (Get-ChildItem -LiteralPath $OutDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
 Write-Host ("convertisseur prêt : {0} ({1:N1} Mo)" -f $OutDir, ($bytes / 1MB))

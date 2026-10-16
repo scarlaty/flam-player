@@ -4,11 +4,17 @@ on:
   pull_request:
     paths:
       - "apps/flam-launcher/**"
+      - "tools/telmi2flam/**"
+      - "src/**"
+      - "CMakeLists.txt"
       - ".github/workflows/launcher.yml"
   push:
     branches: [main]
     paths:
       - "apps/flam-launcher/**"
+      - "tools/telmi2flam/**"
+      - "src/**"
+      - "CMakeLists.txt"
       - ".github/workflows/launcher.yml"
 
 permissions:
@@ -28,6 +34,9 @@ jobs:
         working-directory: apps/flam-launcher
     steps:
       - uses: actions/checkout@v4
+        with:
+          # SDL2, Lua, LVGL et minimp3 : sources de flam-player.exe (e2e et installateur).
+          submodules: recursive
 
       - uses: actions/setup-node@v4
         with:
@@ -73,20 +82,44 @@ jobs:
       - name: Convertisseur embarqué (Python + Pillow, SHA-256 vérifiés)
         run: npm run build:converter
 
-      - name: Build Tauri (sans installeur, avec le convertisseur)
-        run: npm run tauri build -- --no-bundle --config src-tauri/tauri.bundle.conf.json
+      - name: flam-player.exe et SDL2.dll (CMake, Release)
+        run: npm run build:player
 
-      - name: Vérifier la ressource telmi2flam à côté de l'exécutable
+      - name: Installateur NSIS (par utilisateur, non signé)
+        run: npm run tauri build -- --config src-tauri/tauri.bundle.conf.json
+
+      - name: Installer sans interaction, vérifier les fichiers
+        shell: pwsh
         run: |
-          test -f src-tauri/target/release/telmi2flam/python/python.exe
-          test -f src-tauri/target/release/telmi2flam/telmi2flam.py
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $dest = Join-Path $env:RUNNER_TEMP 'flam-launcher-install'
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installateur : code $($p.ExitCode)" }
+          foreach ($f in 'flam-launcher.exe', 'flam-player.exe', 'SDL2.dll', 'LICENSES.md', 'uninstall.exe',
+              'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt') {
+            if (-not (Test-Path (Join-Path $dest $f))) { throw "fichier absent de l'installation : $f" }
+          }
+          "FLAM_E2E_INSTALL_DIR=$dest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Artefact (exécutable)
+      - name: Test de bout en bout sur l'application installée
+        working-directory: apps/flam-launcher/src-tauri
+        env:
+          FLAM_E2E_REQUIRE: "1"
+        run: cargo test --test e2e -- --nocapture
+
+      - name: Désinstaller, vérifier qu'il ne reste rien
+        shell: pwsh
+        run: |
+          $dest = $env:FLAM_E2E_INSTALL_DIR
+          $p = Start-Process -FilePath (Join-Path $dest 'uninstall.exe') -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "désinstallateur : code $($p.ExitCode)" }
+          $left = Get-ChildItem $dest -Recurse -File | Where-Object Name -ne 'uninstall.exe'
+          if ($left) { throw "fichiers restants : $($left.FullName -join ', ')" }
+
+      - name: Artefact (installateur NSIS)
         uses: actions/upload-artifact@v4
         with:
           name: flam-launcher-windows
-          path: |
-            apps/flam-launcher/src-tauri/target/release/*.exe
-            apps/flam-launcher/src-tauri/target/release/telmi2flam/
+          path: apps/flam-launcher/src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: warn
           retention-days: 3
