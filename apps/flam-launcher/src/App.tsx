@@ -1,35 +1,36 @@
-import { lazy, Suspense, useSyncExternalStore } from "react";
-import { Welcome } from "./features/welcome/Welcome";
-import { demoFr } from "./i18n/demo.fr";
+import { lazy, Suspense } from "react";
+import { ToastProvider } from "./components";
+import { AppFrame } from "./features/app/AppFrame";
+import { RecoveryProvider } from "./features/recovery/RecoveryProvider";
+import { DEMO_HASH, useRoute } from "./router";
 
-/** Adresse de la page de démonstration des composants (développement uniquement). */
-export const DEMO_HASH = "#/demo";
+export { DEMO_HASH };
 
 // `import.meta.env.DEV` vaut false au build : Vite retire alors la page et son import.
 const DemoPage = import.meta.env.DEV
   ? lazy(() => import("./features/demo/DemoPage").then((m) => ({ default: m.DemoPage })))
   : null;
 
-function subscribeHash(callback: () => void) {
-  window.addEventListener("hashchange", callback);
-  return () => window.removeEventListener("hashchange", callback);
-}
-
 export function App() {
-  const hash = useSyncExternalStore(subscribeHash, () => window.location.hash);
+  const route = useRoute();
 
-  if (DemoPage && hash === DEMO_HASH) {
+  if (route === "demo") {
+    if (!DemoPage) return <AppRoutes route="home" />;
     return (
       <Suspense fallback={null}>
         <DemoPage />
       </Suspense>
     );
   }
+  return <AppRoutes route={route} />;
+}
 
+function AppRoutes({ route }: { route: "home" | "sources" | "settings" }) {
   return (
-    <main className="app">
-      <Welcome />
-      {import.meta.env.DEV && <a href={DEMO_HASH}>{demoFr.link}</a>}
-    </main>
+    <ToastProvider>
+      <RecoveryProvider>
+        <AppFrame route={route} />
+      </RecoveryProvider>
+    </ToastProvider>
   );
 }
