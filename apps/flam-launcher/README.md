@@ -307,16 +307,18 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
 
 1. **Téléchargement** (lien http(s) seulement) vers `<cache>/archives/<uuid>-<version>.<zip|plain.pk>`
    via `<…>.part` : flux, progression, taille vérifiée sur `Content-Length` / `Content-Range`
-   (4 Gio au plus), contenu zip vérifié, reprise par `Range` + `If-Range` (ETag fort ou
+   (4 Gio au plus), archive zip vérifiée en entier (répertoire central lisible : sans
+   `Content-Length`, une coupure ne passe pas pour un succès), reprise par `Range` + `If-Range` (ETag fort ou
    `Last-Modified`, mémorisé dans la file) ; un `416` ou une réponse `200` repart de zéro. Délai
    de connexion 15 s, 60 s au plus sans données, pas de délai total. Annulation : `.part` supprimé.
 2. **Conversion** (zip Telmi) : `python telmi2flam.py <archive> -o <cache>/library/.staging/<tâche>.plain.pk
 --progress-json`, processus sans console (`CREATE_NO_WINDOW` + `CREATE_NEW_PROCESS_GROUP`),
-   `PYTHONIOENCODING=utf-8`. stdout est lu ligne par ligne (ligne non JSON ou événement inconnu
+   interpréteur durci (`-E -s -u -X utf8`, lancé depuis `library/.staging/` ; `-I` retirerait
+   le dossier du script de `sys.path`, d'où `telmi2flam` importe ses modules). stdout est lu ligne par ligne (ligne non JSON ou événement inconnu
    ignoré) ; stderr, décodé en tolérant les erreurs, ne sert qu'au message de repli (fin du
    flux) si aucun événement `error` n'est reçu (`code` = `exit_<n>`).
    **Annulation** : `CTRL_BREAK_EVENT` (le convertisseur nettoie et sort avec 130), envoyé par un
-   court assistant Python sans fenêtre qui s'attache à la console cachée du convertisseur (une
+   court assistant Python isolé (`-I`) sans fenêtre qui s'attache à la console cachée du convertisseur (une
    application graphique n'a pas de console, et `GenerateConsoleCtrlEvent` ne vise que la
    sienne) ; arrêt forcé après 5 s de grâce ; puis suppression de `<sortie>.<pid>.part`.
    Un `.plain.pk` est vérifié (`info.plain`, `uuid.bin`, `main.lua`) et copié ; un dossier `.plain`
@@ -330,7 +332,14 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
 - **Cache** : chaque tâche tient le portillon du cache (`CatalogService::cache_gate`) en lecture :
   « Vider le cache » attend la fin des tâches en cours et bloque les nouvelles.
 - **File persistée** : `<config>/install_queue.json` (`schema_version`, tâches non terminées avec
-  leur validateur HTTP). Au démarrage, les tâches sont relancées et les téléchargements reprennent.
+  leur validateur HTTP). Au démarrage, le fichier est relu comme une donnée non fiable : une tâche
+  dont l'identifiant n'est pas un UUID canonique est ignorée, et l'entrée est **ré-résolue depuis
+  sa source** (`source_id`, `entry_id` : cache du catalogue, ou analyse récursive du dossier)
+  au lieu d'être reprise du fichier ; introuvable, la tâche est abandonnée (journal). Les
+  téléchargements reprennent si le lien et la version n'ont pas changé. Tout chemin dérivé
+  (`.staging/<tâche>.plain.pk`, `archives/<uuid>-<version>.<ext>`) est vérifié directement sous
+  son dossier. Une tâche annulée (y compris en attente du créneau de conversion) supprime son
+  archive téléchargée.
   Les tâches terminées ne sont gardées qu'en mémoire (100 au plus).
 - **Convertisseur** : `<exe>/telmi2flam/telmi2flam.py` (application installée, empaquetage : #21),
   sinon en développement `tools/telmi2flam/telmi2flam.py` d'un dossier ancêtre. Python : `resolved.python_path`.
@@ -343,6 +352,8 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
   disparu.
 - **Mises à jour** : `hasUpdate(installed, entry)` (front) et `LibraryEntry::is_outdated_by`
   (Rust) : même `uuid`, versions connues et différentes.
+- **Suivis de revue** (stderr borné, Job Object, reprise après erreur réseau, réconciliation de
+  l'index…) : #62.
 - **Test réel** (hors CI) : `FLAM_TELMI_ZIP=<archive.zip> cargo test installation_reelle -- --ignored --nocapture`.
 
 ### Données
