@@ -10,7 +10,10 @@ epingle). Ce qui est compare, par archive :
   - le MULTIENSEMBLE des codes d'avertissement (pas le texte) ;
   - la sortie brute de `--info` (JSON, ensure_ascii, separateurs compacts) ;
   - la LISTE ORDONNEE des entrees du `.plain.pk` : nom, methode, drapeau UTF-8 (bit 11)
-    et contenu octet a octet. Pas les octets du conteneur (horodatage, voir §4.1).
+    et contenu octet a octet. Pas les octets du conteneur (horodatage, voir §4.1) ;
+  - avec `--plain`, les fichiers du dossier `.plain` (chemin, contenu) ;
+  - ce qui reste dans le dossier de sortie : aucun `.part` (meme apres un echec), et pas
+    de sortie finale quand la conversion echoue.
 
 Les ecarts admis forment une liste fermee (`ALLOWED_DEVIATIONS`, §4.1) ; tout autre
 ecart fait echouer la comparaison (code de sortie 1). Les delegations
@@ -24,13 +27,19 @@ ecart fait echouer la comparaison (code de sortie 1). Les delegations
 tests/parity/make_corpus.py. Sans `--candidate`, le candidat est l'oracle : Python
 contre Python, zero ecart attendu. CMD est une ligne de commande (separee comme un
 shell, chemins avec des /), suivie de `archive.zip -o sortie --progress-json ...`.
+
+`validate.py` ne s'applique qu'a la sortie du CANDIDAT : la sortie de l'oracle n'y passe
+pas (elle sert de reference, un paquet que `validate.py` refuserait serait un ecart de
+l'oracle a traiter a part, pas un ecart de parite).
 """
 import argparse
 import contextlib
+import importlib.util
 import hashlib
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -109,7 +118,17 @@ def parse_events(stdout):
     return events
 
 
-def run_to_dict(exit_code, events, info_exit, info_stdout, entries):
+_PART_RE = re.compile(r"\.\d+\.part$")
+
+
+def work_files(work_dir):
+    """Contenu du dossier de sortie apres l'execution, pid des `.part` neutralise (il
+    differe d'un moteur a l'autre). Trie."""
+    return sorted(_PART_RE.sub(".<pid>.part", n) for n in os.listdir(work_dir))
+
+
+def run_to_dict(exit_code, events, info_exit, info_stdout, entries, plain_entries=None,
+                files=None):
     """Forme normalisee d'une execution (serialisable en JSON)."""
     err = next((e for e in events if e.get("event") == "error"), None)
     return {
@@ -120,6 +139,8 @@ def run_to_dict(exit_code, events, info_exit, info_stdout, entries):
         "info_exit": info_exit,
         "info": info_stdout,
         "entries": entries,
+        "plain_entries": plain_entries,
+        "files": files,
     }
 
 
@@ -143,10 +164,15 @@ def run_converter(cmd, archive, work_dir, args=(), timeout=300):
         return harness_error(e), None
     events = parse_events(r.stdout)
     entries = None
+    plain_entries = None
     produced = None
     if r.returncode == 0 and os.path.exists(out):
         entries = entries_from_pk(out)
         produced = out
+        plain_dir = out[:-len(".pk")]            # ".plain.pk" -> ".plain"
+        if os.path.isdir(plain_dir):
+            plain_entries = entries_from_dir(plain_dir)
+    files = work_files(work_dir)
     try:
         ri = subprocess.run(list(cmd) + [archive, "--info"],
                             capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -156,7 +182,8 @@ def run_converter(cmd, archive, work_dir, args=(), timeout=300):
     # --info sans --progress-json : en cas d'erreur, seul le code de sortie compte (le texte
     # du message differe entre moteurs, §4.1) ; la ligne JSON n'est comparee qu'en succes.
     info = ri.stdout.strip() if ri.returncode == 0 else None
-    return run_to_dict(r.returncode, events, ri.returncode, info, entries), produced
+    return (run_to_dict(r.returncode, events, ri.returncode, info, entries, plain_entries, files),
+            produced)
 
 
 # ---------------------------------------------------------------------------
@@ -225,9 +252,29 @@ def compare_entries(a, b):
     return diffs
 
 
+def stray_files(run):
+    """Fichiers qui ne devraient pas exister dans le dossier de sortie : un `.part` (meme
+    apres un echec), une sortie finale quand la conversion echoue. Verifie sur le candidat
+    pour TOUS les verdicts, y compris les ecarts admis et les delegations."""
+    names = run.get("files")
+    if names is None:
+        return []
+    diffs = []
+    parts = [n for n in names if n.endswith(".part")]
+    if parts:
+        diffs.append({"kind": "part", "oracle": None, "candidate": parts})
+    if run["exit"] != 0 and any(n.startswith("out.plain") and not n.endswith(".part")
+                                for n in names):
+        diffs.append({"kind": "output_on_failure", "oracle": None, "candidate": names})
+    return diffs
+
+
 def compare_runs(oracle, candidate, tags=()):
     """Compare deux resultats normalises. Retourne
     {"verdict": identical|allowed|delegated|diff, "rule": id|None, "diffs": [...]}."""
+    stray = stray_files(candidate)
+    if stray:
+        return {"verdict": "diff", "rule": None, "diffs": stray}
     if is_delegation(candidate, tags):
         return {"verdict": "delegated", "rule": None, "diffs": []}
     for rule in ALLOWED_DEVIATIONS:
@@ -238,6 +285,11 @@ def compare_runs(oracle, candidate, tags=()):
         if oracle[key] != candidate[key]:
             diffs.append({"kind": key, "oracle": oracle[key], "candidate": candidate[key]})
     diffs += compare_entries(oracle["entries"], candidate["entries"])
+    diffs += [dict(d, kind="plain_" + d["kind"])
+              for d in compare_entries(oracle.get("plain_entries"), candidate.get("plain_entries"))]
+    if oracle.get("files") != candidate.get("files"):
+        diffs.append({"kind": "files", "oracle": oracle.get("files"),
+                      "candidate": candidate.get("files")})
     if "validation" in candidate and candidate["validation"] not in (None, 0):
         diffs.append({"kind": "validate", "oracle": None, "candidate": candidate["validation"]})
     return {"verdict": "diff" if diffs else "identical", "rule": None, "diffs": diffs}
@@ -350,16 +402,21 @@ def run_corpus(corpus_dir, oracle, candidate, validate=True, keep_work=None, pro
     return results
 
 
+def load_make_corpus():
+    """Charge tests/parity/make_corpus.py par son chemin (il tire Pillow et les generateurs
+    des tests : seul le mode `matrix` en a besoin, `corpus` n'importe rien de tout cela)."""
+    path = os.path.join(HERE, "tests", "parity", "make_corpus.py")
+    spec = importlib.util.spec_from_file_location("make_corpus", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["make_corpus"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def run_matrix(matrix_dir, candidate_lif_dir=None):
     """Compare les `.lif` de la matrice : oracle Python contre `candidate_lif_dir`
     (sans dossier : Python rendu une seconde fois, controle de determinisme)."""
-    sys.path.insert(0, os.path.join(HERE, "tests", "parity"))
-    sys.path.insert(0, HERE)
-    try:
-        import make_corpus
-    finally:
-        sys.path.remove(HERE)
-        sys.path.remove(os.path.join(HERE, "tests", "parity"))
+    make_corpus = load_make_corpus()
     tmp = tempfile.mkdtemp(prefix="t2f_matrix_")
     try:
         oracle_dir = os.path.join(tmp, "oracle")

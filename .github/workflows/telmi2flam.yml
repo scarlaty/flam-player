@@ -34,7 +34,7 @@ jobs:
           python-version: "3.14.8"
 
       - name: Installer les dépendances
-        run: pip install "Pillow==12.3.0" lupa
+        run: pip install "Pillow==12.3.0" "lupa==2.8"
 
       # Les tests qui exigent flam-player.exe se sautent seuls (le player C
       # n'est pas compilé dans ce workflow).
