@@ -333,8 +333,12 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    même nom passe en `.staging/*.bak`, le nouveau est renommé, l'index est écrit, puis le
    marqueur est effacé (échec : retour à l'état précédent). Au chargement, seules les
    publications **qui ont un marqueur** sont défaites ; un `.plain.pk` non indexé sans marqueur
-   n'est jamais supprimé. Publication et réconciliation tiennent un verrou inter-processus
-   (`library/.lock`) ; si une autre instance le tient, rien n'est réconcilié.
+   n'est jamais supprimé. Le marqueur n'est effacé que si la restauration a réussi ; sinon
+   marqueur et `.bak` sont conservés (avertissement) et la réconciliation suivante réessaie.
+   Publication et réconciliation tiennent un verrou inter-processus
+   (`library/.lock`) ; si une autre instance le tient, ou si le verrou ne peut pas être ouvert,
+   la liste lit simplement l'index sans réconcilier (l'installation et la suppression, elles,
+   échouent).
 
 - **Concurrence** : `max_downloads` téléchargements simultanés (`settings.json`, 1 à 4, 2 par
   défaut, relu à chaque tâche), **une** conversion à la fois.

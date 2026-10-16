@@ -186,9 +186,13 @@ impl Library {
     /// Lit l'index et, si le verrou inter-processus est obtenu, défait les publications
     /// interrompues. Si une autre instance tient le verrou, rien n'est réconcilié.
     fn load_reconciled(&self) -> AppResult<Vec<LibraryEntry>> {
-        match self.lock_file(false)? {
-            Some(_guard) => self.reconcile(),
-            None => self.load(),
+        match self.lock_file(false) {
+            Ok(Some(_guard)) => self.reconcile(),
+            Ok(None) => self.load(),
+            Err(err) => {
+                tracing::warn!("verrou de la bibliothèque indisponible, lecture seule : {err}");
+                self.load()
+            }
         }
     }
 
@@ -223,13 +227,10 @@ impl Library {
                 .any(|e| e.file == file && e.installed_at == marker.installed_at);
             if committed {
                 let _ = remove_if_exists(&backup);
-            } else if backup.is_file() {
-                let _ = remove_if_exists(&target);
-                let _ = std::fs::rename(&backup, &target);
-            } else if !marker.had_previous {
-                let _ = remove_if_exists(&target);
+                let _ = remove_if_exists(&item.path());
+            } else if restore_publication(&target, &backup, &item.path(), marker.had_previous) {
+                let _ = remove_if_exists(&item.path());
             }
-            let _ = remove_if_exists(&item.path());
         }
         Ok(stories)
     }
@@ -296,11 +297,7 @@ impl Library {
             }
         }
         let restore = || {
-            let _ = remove_if_exists(&target);
-            if had_previous {
-                let _ = std::fs::rename(&backup, &target);
-            }
-            let _ = remove_if_exists(&pending);
+            restore_publication(&target, &backup, &pending, had_previous);
         };
         let size = match std::fs::rename(staged, &target).and_then(|()| std::fs::metadata(&target))
         {
@@ -357,6 +354,32 @@ impl Library {
         }
         self.save(stories)
     }
+}
+
+/// Défait une publication : remet la sauvegarde `.bak` en place (le `rename` remplace la cible,
+/// qui n'est donc jamais supprimée avant), ou retire le fichier publié s'il n'y avait pas
+/// d'ancienne version. Le marqueur `pending` n'est effacé **que si la restauration a réussi** ;
+/// sinon marqueur et `.bak` restent pour la réconciliation suivante. Renvoie `true` si réussie.
+fn restore_publication(target: &Path, backup: &Path, pending: &Path, had_previous: bool) -> bool {
+    let restored = if backup.is_file() {
+        std::fs::rename(backup, target)
+    } else if had_previous {
+        // Sauvegarde absente : rien à restaurer (déjà remise en place).
+        Ok(())
+    } else {
+        remove_if_exists(target)
+    };
+    if let Err(err) = restored {
+        tracing::warn!(
+            "restauration de {} impossible, marqueur et sauvegarde conservés : {err}",
+            target.display()
+        );
+        return false;
+    }
+    if let Err(err) = remove_if_exists(pending) {
+        tracing::warn!("marqueur {} non effacé : {err}", pending.display());
+    }
+    true
 }
 
 /// Supprime un fichier ; absent n'est pas une erreur.
@@ -592,6 +615,72 @@ pub(crate) mod tests {
         std::fs::write(root.join(INDEX_FILE), b"{pas du json").unwrap();
         assert!(lib.list().unwrap().is_empty());
         assert!(root.join("abc-2.plain.pk").exists());
+    }
+
+    #[test]
+    fn restauration_en_echec_garde_marqueur_et_sauvegarde() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"ancien");
+        lib.install(&a, &story("abc", Some(2)), None, 1).unwrap();
+        let root = dir.path().join("library");
+        let target = root.join("abc-2.plain.pk");
+        let backup = root.join(".staging/abc-2.plain.pk.bak");
+        let pending = root.join(".staging/abc-2.plain.pk.pending");
+        // La cible devient un dossier non vide : le rename de la sauvegarde échoue.
+        let blocked = |_: Vec<LibraryEntry>| -> AppResult<()> {
+            std::fs::remove_file(&target)?;
+            std::fs::create_dir(&target)?;
+            std::fs::write(target.join("x"), b"x")?;
+            Err(AppError::Io(std::io::Error::other("disque plein")))
+        };
+        let b = staged(&lib, "b.plain.pk", b"nouveau!");
+        lib.install_with(&b, &story("abc", Some(2)), None, 2, &blocked)
+            .unwrap_err();
+        assert!(pending.exists() && backup.is_file(), "journal conservé");
+        // La réconciliation retente tant que la cible est bloquée (entrée masquée : pas un fichier).
+        assert!(lib.list().unwrap().is_empty());
+        assert!(pending.exists() && backup.is_file());
+        // Cible libérée : la réconciliation suivante restaure l'ancienne version.
+        std::fs::remove_dir_all(&target).unwrap();
+        assert_eq!(lib.list().unwrap().len(), 1);
+        assert_eq!(std::fs::read(&target).unwrap(), b"ancien");
+        assert!(!pending.exists() && !backup.exists());
+    }
+
+    #[test]
+    fn restauration_sans_ancienne_version_en_echec_garde_le_marqueur() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let root = dir.path().join("library");
+        lib.list().unwrap();
+        lib.staging_dir().unwrap();
+        let target = root.join("neuf-1.plain.pk");
+        marker(&root, "neuf-1.plain.pk", 3, false);
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("x"), b"x").unwrap();
+        lib.list().unwrap();
+        assert!(root.join(".staging/neuf-1.plain.pk.pending").exists());
+        std::fs::remove_dir_all(&target).unwrap();
+        std::fs::write(&target, b"x").unwrap();
+        lib.list().unwrap();
+        assert!(!target.exists());
+        assert!(!root.join(".staging/neuf-1.plain.pk.pending").exists());
+    }
+
+    #[test]
+    fn lecture_sans_verrou_disponible_retombe_sur_l_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"x");
+        lib.install(&a, &story("abc", Some(1)), None, 1).unwrap();
+        // `.lock` devient un dossier : l'ouverture du verrou échoue.
+        let lock = dir.path().join("library").join(LOCK_FILE);
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::create_dir(&lock).unwrap();
+        assert!(lib.lock_file(false).is_err());
+        assert_eq!(lib.list().unwrap().len(), 1);
+        assert!(lib.install(&a, &story("abc", Some(1)), None, 2).is_err());
     }
 
     #[test]
