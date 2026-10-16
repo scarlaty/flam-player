@@ -17,7 +17,9 @@ ci-dessous évitent que deux contributeurs fassent le même travail.
 - **Labels** :
   - `zone:*` : partie du code touchée (`zone:telmi2flam`, `zone:player`,
     `zone:launcher-rust`, `zone:launcher-ui`, `zone:ci`).
-  - `modele:sonnet` / `modele:opus` : niveau de complexité (tâche courante / complexe).
+  - `modele:sonnet` / `modele:opus` : niveau de complexité (tâche courante / complexe), et
+    modèle utilisé par l'auteur. Une issue qui touche aux données de l'utilisateur (voir §5)
+    porte `modele:opus` ; la revue peut se faire avec un modèle sonnet.
   - `en-cours` : l'issue est **réservée** (voir §2).
   - `bloque` : l'issue attend une autre issue (citée dans « Dépend de »).
   - `plus-tard` : hors périmètre actuel.
@@ -88,17 +90,18 @@ Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§
   `npm run lint`, `npm run typecheck`, `npm test`.
 - Pas de code mort, pas de `TODO` sans issue associée, documentation à jour
   (`README.md`, `AGENT.md`, README du module touché).
-- **PR courtes** : un seul thème, environ cinq points au plus. Une issue plus large est
-  découpée en plusieurs PR.
+- **PR courtes** : un seul thème, au plus cinq changements fonctionnels (hors tests et
+  documentation). Au-delà, l'issue est découpée en plusieurs PR successives.
 - **Revue préalable par l'auteur** : avant d'ouvrir la PR, l'auteur fait relire son diff
   par un relecteur indépendant et corrige ce qui est bloquant ou majeur.
 - **Code qui touche aux données de l'utilisateur** (bibliothèque, sauvegardes, journal
-  d'installation : `library.rs`, `player.rs`, `install/`) :
+  d'installation : `apps/flam-launcher/src-tauri/src/library.rs`, `.../src/player.rs`,
+  `.../src/install/` ; le moteur et le player C de `zone:player` ne sont pas concernés) :
   - avant le code, une courte **note de conception** dans l'issue ou la PR : invariants,
     puis tableau « arrêt ou échec à chaque étape → état laissé → reprise » ;
   - un **test d'injection de panne** qui simule un arrêt ou un échec à chaque étape et
     vérifie les invariants ;
-  - modèle `modele:opus` pour l'auteur (les revues peuvent rester `modele:sonnet`).
+  - label `modele:opus` sur l'issue (voir §1).
 
 ## 6. Revue et fusion
 
@@ -108,7 +111,8 @@ en **squash** dans `main` par le mainteneur. La branche est supprimée après fu
 - Les corrections demandées sont publiées **sur la PR**, dans un commentaire
   `Revue du mainteneur`. Celui qui reprend la PR les traite, pousse, puis répond sur la PR
   point par point.
-- Les remarques non bloquantes deviennent des issues de suivi, liées dans la PR.
+- Les constats **MINEUR** et **NIT** deviennent des issues de suivi, liées dans la PR
+  (voir le seuil ci-dessous).
 - **Seuil de fusion** : seuls les constats **BLOQUANT** et **MAJEUR** (perte ou
   corruption de données, blocage durable de l'utilisateur, interblocage, faille) sont
   corrigés dans la PR. **MINEUR** et **NIT** vont toujours dans une issue de suivi.
@@ -117,6 +121,8 @@ en **squash** dans `main` par le mainteneur. La branche est supprimée après fu
   l'auteur applique telle quelle.
 - **Deux tours au plus** : au troisième, le mainteneur tranche. Il impose la solution, ou
   il fusionne et ouvre une issue de suivi pour le reste.
-- **Main à jour avant fusion** : la CI doit avoir tourné sur une branche qui contient le
-  `main` courant (`git merge origin/main`, sans rebase), pour éviter que deux PR vertes
-  séparément ne cassent `main` une fois fusionnées.
+- **Main à jour avant fusion** : juste avant de fusionner, le mainteneur vérifie que la tête
+  de la PR contient le `main` courant (`git merge-base --is-ancestor origin/main <tête>`).
+  Sinon, `main` est fusionné dans la branche (`git merge origin/main`, sans rebase) et on
+  attend la CI verte sur ce nouveau commit. Deux PR vertes séparément peuvent casser `main`
+  une fois fusionnées.
