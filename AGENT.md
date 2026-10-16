@@ -309,6 +309,18 @@ Qualite avant PR : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo te
 `npm run lint`, `npm run typecheck`, `npm test` (voir `CONTRIBUTING.md` §5). Ne jamais copier de code
 ni de style de TelmiSync (GPL-3.0), et ne jamais versionner d'archive Telmi ni d'histoire convertie.
 
+Installateur Windows (NSIS, par utilisateur, non signe) : `npm run build:installer` (dans
+`apps/flam-launcher/`, depuis un environnement VS 2022 x64) = `build:converter` (Python + Pillow +
+telmi2flam dans `build/telmi2flam/`) + `build:player` (`flam-player.exe` Release et `SDL2.dll` dans
+`build/player/`, compiles dans `build/release/` : ne pas confondre avec le `build/` Debug de
+`do_build.bat`) + `tauri build --config src-tauri/tauri.bundle.conf.json`. Test de bout en bout du
+backend reel (catalogue HTTP factice -> installation -> player en pilotes SDL `dummy` -> retour) :
+`src-tauri/tests/e2e.rs`, lance par `npm run test:e2e` et par la CI (qui construit le player, installe
+l'installateur en silence, teste puis desinstalle). Pilotes SDL sans fenetre : ajouter
+`SDL_RENDER_DRIVER=software` (le player demande un rendu accelere). Le convertisseur est lance avec
+`-B` : ne jamais ecrire dans le dossier d'installation. Tout nouveau composant redistribue doit etre
+ajoute a `apps/flam-launcher/LICENSES.md` (et a `telmi2flam/LICENSES.md` pour le convertisseur).
+
 ## Fichiers batch utiles
 
 | Fichier | Usage |

@@ -7,10 +7,68 @@ interface React + TypeScript (strict). Licence **MIT** (voir [LICENSE](LICENSE))
 L'ergonomie s'inspire de TelmiSync, **sans reprendre de code ni de style** (TelmiSync est
 en GPL-3.0). Suivi : issue « Suivi : surcouche flam-launcher ».
 
-Ce document décrit l'architecture visée. Les éléments marqués _prévu_ n'existent pas encore
+Ce document décrit l'installation, l'utilisation, le dépannage puis l'architecture visée. Les éléments marqués _prévu_ n'existent pas encore
 et arrivent avec les issues du jalon M3.
 
-## Prérequis
+## Installation (Windows)
+
+1. Télécharger l'installateur `Flam Launcher_<version>_x64-setup.exe` (artefact de la CI ou
+   version publiée).
+2. Le lancer : l'installation se fait **pour l'utilisateur courant**, sans droits
+   d'administrateur (dossier par défaut `%LOCALAPPDATA%\Flam Launcher`).
+3. **SmartScreen** : l'installateur n'est **pas signé**. Windows affiche « Windows a protégé
+   votre ordinateur » : cliquer sur « Informations complémentaires » puis « Exécuter quand
+   même ». Ce message disparaîtra si l'éditeur est un jour signé.
+4. Lancer « Flam Launcher » depuis le menu Démarrer. WebView2 est requis (présent sur Windows
+   11 et sur Windows 10 à jour).
+
+L'installation contient tout : `flam-launcher.exe`, `flam-player.exe` et `SDL2.dll` (le
+player), le convertisseur `telmi2flam/` avec son Python embarqué (aucun Python à installer) et
+le runtime Lunii, ainsi que `LICENSES.md` et `licenses/`. Désinstaller : « Applications
+installées » de Windows, ou `uninstall.exe` du dossier d'installation. Les données vivent hors
+de ce dossier et survivent à une mise à jour ou une désinstallation : sources, paramètres et
+sauvegardes de progression sous `%APPDATA%`, cache (catalogues, téléchargements et histoires
+installées de « Mes histoires ») sous `%LOCALAPPDATA%` (« Paramètres » → « Cache » indique son
+emplacement).
+
+**Désinstallation et données** : la désinstallation retire le dossier d'installation seulement.
+Les données (`%APPDATA%lam-launcher` : sources, paramètres, sauvegardes ; et
+`%LOCALAPPDATA%lam-launcher` : cache et histoires installées) sont **conservées**, y compris si
+l'on coche « supprimer les données de l'application » du désinstallateur, qui ne les connaît pas :
+pour tout effacer, supprimer ces deux dossiers à la main.
+
+## Ajouter des sources
+
+Écran **Sources** (« Ajouter une source », puis « Ajouter un catalogue » ou « Ajouter un dossier ») :
+
+- **Catalogue** : l'adresse (`https://…`) d'un catalogue au format Telmi Store (un JSON
+  `{ "data": [ { uuid, title, download, … } ] }`). Les archives `.zip` Telmi qu'il liste sont
+  téléchargées puis converties à l'installation. Le catalogue est gardé en cache : il reste
+  consultable hors ligne.
+- **Dossier local** : un dossier contenant des archives Telmi `.zip` (converties à
+  l'installation) ou des histoires déjà converties `.plain` / `.plain.pk` (copiées telles
+  quelles). Le dossier n'est jamais modifié.
+
+Dans la bibliothèque d'une source, « Installer » télécharge et convertit (progression et
+annulation possibles), puis « Jouer » lance l'histoire dans `flam-player` ; la fermeture du
+player ramène à la surcouche. Les histoires installées sont sous « Mes histoires ».
+
+## Dépannage
+
+| Symptôme                               | Piste                                                                                                                                                                                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows « a protégé votre ordinateur » | Installateur non signé : « Informations complémentaires » → « Exécuter quand même »                                                                                                                                             |
+| La fenêtre reste blanche au démarrage  | Installer ou réparer WebView2 (Microsoft Edge WebView2 Runtime)                                                                                                                                                                 |
+| « flam-player est introuvable »        | Réinstaller ; sinon indiquer `flam-player.exe` dans « Paramètres ». Un antivirus peut avoir mis le fichier en quarantaine                                                                                                       |
+| « Python introuvable »                 | Ne devrait pas arriver avec l'installateur (Python embarqué). Dans une installation partielle ou un build de développement, indiquer `python.exe` dans « Paramètres ». Avec le convertisseur embarqué, ce chemin est **ignoré** |
+| Une conversion échoue                  | Le message cite le code de `telmi2flam` ; l'histoire peut être incompatible (badge sur la fiche)                                                                                                                                |
+| Catalogue « hors ligne »               | Réseau ou serveur indisponible : le cache est affiché. « Actualiser » réessaie                                                                                                                                                  |
+| Disque plein                           | « Paramètres » → « Cache » → « Vider le cache » : supprime aussi les histoires installées (à réinstaller depuis leur source) ; la progression sauvegardée et les sources sont conservées                                        |
+| Paramètres ou sources réinitialisés    | Un fichier de configuration corrompu a été sauvegardé en `*.bak` et remplacé ; un bandeau l'indique                                                                                                                             |
+
+## Développement
+
+### Prérequis
 
 Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2, Node 24+ et npm.
 
@@ -18,16 +76,18 @@ Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2, Node 2
 
 Depuis `apps/flam-launcher/` :
 
-| Commande                             | Effet                                          |
-| ------------------------------------ | ---------------------------------------------- |
-| `npm install`                        | Installe les dépendances front et la CLI Tauri |
-| `npm run tauri dev`                  | Lance l'application en développement           |
-| `npm run dev` / `npm run build`      | Front seul (Vite) / build du front             |
-| `npm run lint` / `npm run typecheck` | ESLint / TypeScript strict                     |
-| `npm test`                           | Vitest + Testing Library (API Tauri simulée)   |
-| `npm run tauri build`                | Exécutable et installeurs (MSI, NSIS)          |
-| `npm run tauri build -- --no-bundle` | Exécutable seul, sans installeur               |
-| `npm run build:converter`            | Construit le convertisseur embarqué (réseau)   |
+| Commande                             | Effet                                                                       |
+| ------------------------------------ | --------------------------------------------------------------------------- |
+| `npm install`                        | Installe les dépendances front et la CLI Tauri                              |
+| `npm run tauri dev`                  | Lance l'application en développement                                        |
+| `npm run dev` / `npm run build`      | Front seul (Vite) / build du front                                          |
+| `npm run lint` / `npm run typecheck` | ESLint / TypeScript strict                                                  |
+| `npm test`                           | Vitest + Testing Library (API Tauri simulée)                                |
+| `npm run tauri build`                | Exécutable seul avec installeurs MSI et NSIS (sans player ni convertisseur) |
+| `npm run build:converter`            | Construit le convertisseur embarqué (réseau)                                |
+| `npm run build:player`               | Compile `flam-player.exe` (Release) et rassemble `SDL2.dll` et les licences |
+| `npm run build:installer`            | Enchaîne les deux scripts puis produit l'installateur NSIS complet          |
+| `npm run test:e2e`                   | Test de bout en bout (voir « Test de bout en bout »)                        |
 
 Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
 
@@ -37,7 +97,7 @@ L'application installée ne suppose aucun Python sur la machine : le convertisse
 un Python embarquable officiel (3.14.8, signé PSF) et Pillow 12.3.0, sous `<exe>/telmi2flam/`
 (`python/python.exe`, `telmi2flam.py`, `lif.py`, `mp3map.py`, `engine/`, `runtime/`,
 `LICENSES.md`, `BUILD.txt`). `convert.rs` et l'annulation Ctrl+Break sont inchangés : ils lancent
-`python -E -s -u -X utf8 telmi2flam.py`. Environ 20 Mo sur disque, 9 Mo compressés dans
+`python -E -s -B -u -X utf8 telmi2flam.py`. Environ 20 Mo sur disque, 9 Mo compressés dans
 l'installeur.
 
 1. **Construire l'artefact** (réseau, PowerShell seul, sans Python sur la machine de build) :
@@ -45,14 +105,18 @@ l'installeur.
    **vérifie leur SHA-256** (publié par python.org / PyPI), allège le paquet, écrit
    `build/telmi2flam/` (ignoré par Git) puis le contrôle sans Python dans le `PATH`.
 2. **L'embarquer** : `src-tauri/tauri.bundle.conf.json` déclare la ressource
-   `../build/telmi2flam/` vers `telmi2flam/`. Il est passé explicitement, car l'ajouter à
-   `tauri.conf.json` ferait échouer tout build sans l'artefact :
+   `../build/telmi2flam/` vers `telmi2flam/` (voir « Installateur Windows » plus bas pour le
+   reste). Il est passé explicitement, car l'ajouter à `tauri.conf.json` ferait échouer tout
+   build sans les artefacts :
 
    ```
    npm run build:converter
-   npm run tauri build -- --config src-tauri/tauri.bundle.conf.json                 # installeurs
+   npm run tauri build -- --config src-tauri/tauri.bundle.conf.json                 # installateur NSIS
    npm run tauri build -- --no-bundle --config src-tauri/tauri.bundle.conf.json     # exe seul
    ```
+
+   Le convertisseur est toujours lancé avec `-B` (aucun `__pycache__` écrit dans le dossier
+   d'installation : le désinstallateur ne les connaîtrait pas).
 
    Même avec `--no-bundle`, Tauri copie `telmi2flam/` à côté de l'exe dans
    `src-tauri/target/release/` (vérifié : copie identique à l'artefact). Sans `--config`, le
@@ -74,10 +138,102 @@ l'installeur.
    contenu sous licence. Pillow embarqué n'a pas FreeType : avec le Python embarqué, retirer
    `font_size=48` de ce script.
 
-**Licences redistribuées** : Python (PSF-2.0 et composants) et Pillow (MIT-CMU et bibliothèques
-intégrées) ; leurs textes sont dans l'artefact et `LICENSES.md` les référence. Les licences de
-`runtime/` et du dépôt (« usage personnel et éducatif ») restent à confirmer avant
-redistribution (#21).
+**Python configuré ignoré** : quand le convertisseur embarqué est présent, son Python est
+toujours utilisé ; le chemin de Python des paramètres ne sert que de repli (build de
+développement, installation partielle). L'écran Paramètres l'indique.
+
+**Licences redistribuées** : `telmi2flam/LICENSES.md` (produit par `build-converter.ps1`) liste
+Python (PSF-2.0, libffi, libtommath…), `python.cat`, `vcruntime140*.dll` (redistribuables
+Microsoft), Pillow (renvoi vers `licenses/LICENSE` de la roue, qui regroupe les bibliothèques
+intégrées), le runtime Lunii et les scripts du dépôt. `LICENSES.md` à la racine de
+l'installation couvre le reste (flam-launcher MIT, flam-player, SDL2 zlib, Lua MIT, LVGL MIT,
+minimp3 CC0, polices Nunito et Montserrat OFL) ; les textes sont copiés des sous-modules dans
+`licenses/` par `build-player.ps1`. Le mainteneur confirme avoir les droits de redistribution du
+runtime Lunii et du dépôt (« usage personnel et éducatif »).
+
+## Installateur Windows
+
+Installateur **NSIS**, par utilisateur (`installMode: currentUser`, sans droits
+d'administrateur), **non signé** (SmartScreen avertit). Prérequis de build : Rust, Node 24+,
+Visual Studio **2022** avec les outils C++ x64 (le build Rust doit se faire depuis
+« x64 Native Tools » ou après `vcvars64.bat`), CMake et Ninja (`pip install cmake ninja` si
+absents), sous-modules initialisés (`git submodule update --init --recursive`), réseau (Python,
+Pillow, NSIS).
+
+```
+npm run build:installer      # = build:converter + build:player + tauri build --config …
+```
+
+**Runtime Visual C++** : `flam-player.exe` importe `VCRUNTIME140.dll`, absente d'un Windows
+propre. Choix : livrer `vcruntime140.dll` (fichier redistribuable de Visual Studio, copié depuis
+son dossier `VC\Redist` par `build-player.ps1`) à côté du player plutôt que passer en runtime
+statique, qui changerait les options de compilation de tout le player, de SDL2, de Lua et de LVGL
+sans changer le résultat pour l'utilisateur. Le launcher (Rust) et `SDL2.dll` n'importent que
+des DLL Windows (UCRT, Windows 10 et plus). `scripts/check-imports.ps1 <dossier>` (étape de la CI,
+sur l'installation) liste les imports des trois binaires avec `dumpbin /dependents` et échoue si
+une DLL du runtime VC++ est importée sans être à côté du binaire, ou si une autre DLL est
+introuvable.
+
+soit, en détail :
+
+1. `npm run build:converter` : `build/telmi2flam/` (voir plus haut) ;
+2. `npm run build:player` : compile `flam-player.exe` en Release (`<dépôt>/build/release`,
+   `do_build.bat` et son Debug ne sont pas touchés) et dépose `flam-player.exe`, `SDL2.dll` et
+   `licenses/` dans `build/player/` ;
+3. `npm run tauri build -- --config src-tauri/tauri.bundle.conf.json` : produit
+   `src-tauri/target/release/bundle/nsis/Flam Launcher_<version>_x64-setup.exe` (environ 11 Mo)
+   et dépose les mêmes ressources à côté de `flam-launcher.exe`.
+
+`tauri.bundle.conf.json` (fusionné avec `tauri.conf.json`) restreint les cibles à `nsis` et
+déclare les ressources : `telmi2flam/` (Python, Pillow, scripts, `runtime/`), `flam-player.exe` et
+`SDL2.dll` **à côté de l'exécutable** (c'est là que `settings::detect_player` les cherche),
+`vcruntime140.dll`, `licenses/` et `LICENSES.md`. Le launcher lance le player avec pour dossier courant celui de
+`flam-player.exe` : `SDL2.dll` est ainsi trouvée. Installation sans interaction :
+`"Flam Launcher_<version>_x64-setup.exe" /S /D=<dossier>` (`/D=` en dernier, sans guillemets) ;
+désinstallation : `<dossier>\uninstall.exe /S _?=<dossier>`.
+
+### Test de bout en bout
+
+`src-tauri/tests/e2e.rs` pilote les **services réels** du backend, sans WebView :
+`CatalogService` lit un catalogue servi par un serveur HTTP local factice, `InstallService`
+télécharge l'archive et la convertit avec le vrai `telmi2flam.py` (Python embarqué), `Library`
+la liste, `PlayerService` lance le vrai `flam-player.exe` (`SDL_VIDEODRIVER=dummy`,
+`SDL_AUDIODRIVER=dummy`, `SDL_RENDER_DRIVER=software`), puis le player est fermé et
+l'événement `exited` est reçu. Le player ne se termine pas seul : sa fin est obtenue par
+`taskkill` (garde RAII qui le ferme aussi si le test échoue), pas par une sortie volontaire ; le
+test vérifie qu'il charge l'histoire et reste actif avant cela. L'archive est synthétique (images unies, MP3 muets), générée par
+le test : aucun contenu sous licence. Choix : tester le backend Rust plutôt que piloter
+l'interface par WebDriver, qui exigerait `tauri-driver` et `msedgedriver` appariés à la version
+de WebView2 (fragile, lent) alors que la logique à risque est dans le backend ; l'interface a
+ses tests Vitest et la liaison front/backend repose sur des types miroirs.
+
+```
+npm run build:installer
+npm run test:e2e             # sur src-tauri/target/release ; ou FLAM_E2E_INSTALL_DIR=<installation>
+```
+
+Sans `FLAM_E2E_REQUIRE=1` et sans `flam-player.exe`, `cargo test` **saute** ce test : il passe au
+vert sans rien vérifier, et le message n'apparaît qu'avec `-- --nocapture` ; `npm run test:e2e` et
+la CI posent `FLAM_E2E_REQUIRE=1` (le test échoue alors si un prérequis manque) ;
+variables : `FLAM_E2E_INSTALL_DIR`, ou `FLAM_E2E_PLAYER` + `FLAM_E2E_CONVERTER_DIR`. La CI
+(`.github/workflows/launcher.yml`) compile le player, construit l'installateur, l'installe en
+silence, y exécute ce test puis le désinstalle en vérifiant qu'il ne reste aucun fichier.
+
+### À vérifier sur une session Windows propre
+
+Non couvert par la CI ni par le poste de développement (où Python, Visual Studio et WebView2
+sont déjà présents) : à cocher par le mainteneur avant publication.
+
+- [ ] L'installateur s'exécute sans droits d'administrateur ; SmartScreen propose
+      « Exécuter quand même ».
+- [ ] Aucun Python ni Visual Studio sur la machine : une histoire Telmi s'installe
+      (convertisseur embarqué) et se joue dans `flam-player`.
+- [ ] Windows 10 et Windows 11 ; WebView2 absent : comportement et message.
+- [ ] Raccourci du menu Démarrer, icône, entrée dans « Applications installées ».
+- [ ] Fenêtre du player (carte graphique réelle, audio réel) : image et son.
+- [ ] Mise à jour par-dessus une version installée ; désinstallation (données utilisateur
+      conservées, dossier d'installation vide).
+- [ ] Antivirus : pas de quarantaine de `flam-player.exe` ni de `python.exe`.
 
 ## Architecture
 
@@ -478,7 +634,7 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    de connexion 15 s, 60 s au plus sans données, pas de délai total. Annulation : `.part` supprimé.
 2. **Conversion** (zip Telmi) : `python telmi2flam.py <archive> -o <cache>/library/.staging/<tâche>.plain.pk
 --progress-json`, processus sans console (`CREATE_NO_WINDOW` + `CREATE_NEW_PROCESS_GROUP`),
-   interpréteur durci (`-E -s -u -X utf8`, lancé depuis `library/.staging/` ; `-I` retirerait
+   interpréteur durci (`-E -s -B -u -X utf8`, lancé depuis `library/.staging/` ; `-I` retirerait
    le dossier du script de `sys.path`, d'où `telmi2flam` importe ses modules). stdout est lu ligne par ligne (ligne non JSON ou événement inconnu
    ignoré) ; stderr, décodé en tolérant les erreurs, ne sert qu'au message de repli (fin du
    flux, lu par morceaux dans un tampon borné à 4 Kio) si aucun événement `error` n'est reçu
@@ -714,7 +870,8 @@ travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
 - TypeScript est épinglé à 6.0.3 : `typescript-eslint` n'accepte pas encore TypeScript >= 6.1.
   À relever quand le plugin le permettra.
 - Le premier `npm run tauri build` télécharge WiX (MSI) et NSIS (installeur) depuis GitHub ;
-  les builds suivants les réutilisent. Cibles de bundle : `nsis` et `msi`.
+  les builds suivants les réutilisent. Cibles de bundle : `nsis` et `msi` (`tauri.conf.json`),
+  `nsis` seul avec `tauri.bundle.conf.json` (installateur livré).
 - Contrôles : `npm run lint` (sans avertissement), `npm run format:check`, `npm run typecheck`,
   `npm test`, puis dans `src-tauri/` `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
 
