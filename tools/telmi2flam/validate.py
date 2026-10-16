@@ -476,6 +476,7 @@ def main(pk_path):
         # ("quitter l'histoire"), geree par story.lua (menu Start, progression
         # conservee) : pas d'avertissement. Vide ailleurs : fin ambigue, signalee.
         home_chain = set()
+        chain_passage = set()
         todo = []
         for st in stages.values():
             hm = st.get("home")
@@ -491,7 +492,14 @@ def main(pk_path):
                 ctrl = nxt.get("ctrl") or {}
                 if (not nxt.get("audio") and (ctrl.get("autoplay") or not nxt.get("image"))
                         and nxt.get("ok")):
+                    chain_passage.add(e.get("stage"))
                     todo.append(nxt["ok"].get("action"))
+        # Actions atteintes aussi par start ou par l'ok d'une scene hors chaine :
+        # leur vide est une vraie fin d'histoire (reset), donc toujours signalee.
+        ok_reached = {(data.get("start") or {}).get("action")}
+        for sid, st in stages.items():
+            if sid not in chain_passage and st.get("ok"):
+                ok_reached.add(st["ok"].get("action"))
 
         def check_trans(label, tr):
             if not tr:
@@ -500,7 +508,7 @@ def main(pk_path):
             if a not in actions:
                 errs.append("%s -> action inconnue '%s'" % (label, a))
                 return
-            if not actions[a] and a not in home_chain:
+            if not actions[a] and not (a in home_chain and a not in ok_reached):
                 warns.append("%s -> action '%s' vide" % (label, a))
             idx = tr.get("index")
             # -1 : tirage aleatoire (spec TELMI, gere par story.lua)

@@ -582,8 +582,10 @@ aussi le chargement de `nodes.lua` par un vrai Lua 5.4.
 
 Résultat de `validate.py` sur *Maxicours Anglais - CP / CE1 / CE2* (199 stages, 110
 actions) : **35 OK / 4 warnings / 0 erreur**, en `.plain.pk` comme en dossier `.plain`.
-Les 4 warnings étaient des actions vides (`backChildAction`) présentes telles quelles dans
-le `nodes.json` source (convention de sortie par retour, plus signalée depuis #44, voir §3).
+Les 4 warnings d'alors étaient des actions vides (`backChildAction`) présentes telles quelles
+dans le `nodes.json` source. Depuis #44 (convention de sortie par retour, voir §3), une telle
+action n'est plus signalée si elle n'est atteinte que par la chaîne `home` : le chiffre
+« 4 warnings » est périmé (archive Maxicours absente du cache, non remesuré).
 
 ### Test dans flam-player (GUI)
 

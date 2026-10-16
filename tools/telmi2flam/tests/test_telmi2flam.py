@@ -874,6 +874,13 @@ class TestValidate(Base):
         self.assertIn("stage s0.ok -> action 'finVide' vide", out)
         self.assertNotIn("backStage.ok -> action 'backChildAction' vide", out)
 
+    def test_shared_empty_action_still_warns(self):
+        # meme action vide atteinte par la chaine home ET par l'ok d'une scene reelle
+        n = self.back_nodes()
+        n["stages"]["s0"]["ok"] = {"action": "backChildAction", "index": 0}
+        rc, out = self.run_validate(self.convert(std_files(nodes=n)))
+        self.assertIn("stage s0.ok -> action 'backChildAction' vide", out)
+
     # hunt1 : index -1 (tirage aleatoire, spec TELMI) n'est pas "hors de l'action"
     def test_random_index_accepted(self):
         n = base_nodes()
