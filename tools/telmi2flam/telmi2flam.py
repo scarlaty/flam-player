@@ -5,9 +5,21 @@ telmi2flam.py — Convertisseur d'histoires TELMI (.zip) -> FLAM (.plain.pk).
 Usage :
     python telmi2flam.py <histoire-telmi.zip> [-o sortie.plain.pk] [--plain]
                          [--keep-size] [--allow-missing] [--selector carousel|image]
+    python telmi2flam.py --version      # "telmi2flam <version>", code 0
 
 Voir README.md pour les details des formats.
 """
+
+import sys
+
+# Version du convertisseur (unique source). A incrementer quand la sortie change ; lue par
+# le launcher (--version ou champ "version" de l'evenement start) pour la bibliotheque.
+__version__ = "1.0.0"
+
+# Chemin rapide : --version seul, sans charger Pillow ni les modules du convertisseur.
+if __name__ == "__main__" and sys.argv[1:] == ["--version"]:
+    sys.stdout.write("telmi2flam %s\n" % __version__)
+    raise SystemExit(0)
 
 import argparse
 import hashlib
@@ -19,7 +31,6 @@ import re
 import shutil
 import signal
 import struct
-import sys
 import time
 import unicodedata
 import zipfile
@@ -731,7 +742,7 @@ def convert(zip_path, out_path=None, keep_size=False, emit_plain=False, selector
     try:
         # premier evenement, avant toute ouverture/lecture (donc avant tout avertissement)
         _emit({"event": "start", "total": len(PHASES), "phases": list(PHASES),
-               "input": zip_path})
+               "input": zip_path, "version": __version__})
         try:
             zf = zipfile.ZipFile(zip_path, "r")
         except OSError as e:           # archive absente/inaccessible (BadZipFile: inchange)
@@ -1338,6 +1349,9 @@ def _install_cancel_handlers():
 
 def main(argv=None):
     ap = _Parser(description="Convertit une histoire TELMI (.zip) en FLAM (.plain.pk)")
+    ap.add_argument("--version", action="version",
+                    version="telmi2flam %s" % __version__,
+                    help="afficher la version du convertisseur et quitter")
     ap.add_argument("input", help="archive TELMI .zip")
     ap.add_argument("-o", "--output",
                     help="sortie : fichier .plain.pk (defaut) ou dossier .plain")

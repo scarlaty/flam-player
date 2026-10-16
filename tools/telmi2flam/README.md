@@ -339,6 +339,7 @@ return {
 python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
                      [--allow-missing] [--selector carousel|image]
                      [--progress-json] [--info]
+python telmi2flam.py --version
 ```
 
 - `-o` : chemin de sortie (défaut : `<Titre>.<UUID8>.plain.pk` dans le dossier courant).
@@ -355,6 +356,11 @@ python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
 - `--selector` : affichage des choix multiples (`carousel` par défaut, ou `image`).
 - `--progress-json` : sortie lisible par machine (voir « Sortie machine » ci-dessous).
 - `--info` : affiche les métadonnées de l'histoire en JSON, **sans convertir**.
+- `--version` : affiche une seule ligne sur stdout, `telmi2flam <version>` (ex.
+  `telmi2flam 1.0.0`), et sort avec le code 0, sans archive et sans autre effet de bord
+  (Pillow n'est pas chargé quand `--version` est seul). La version est la constante
+  `__version__` de `telmi2flam.py` ; la surcouche l'enregistre dans `library.json`. Le
+  numéro est le dernier mot de la ligne.
 
 En cas de paquet invalide (zip illisible, JSON invalide/BOM mal formé, `NaN`, type
 inattendu, `metadata.json`/`nodes.json` absents, nom d'asset dangereux...), le CLI
@@ -389,7 +395,7 @@ reste sur **stderr**. Le champ `event` identifie le type ; un lecteur doit ignor
 champs et événements inconnus (ajouts compatibles).
 
 ```jsonl
-{"event":"start","total":4,"phases":["images","audio","scripts","zip"],"input":"histoire.zip"}
+{"event":"start","total":4,"phases":["images","audio","scripts","zip"],"input":"histoire.zip","version":"1.0.0"}
 {"event":"step","phase":"images","done":0,"total":12}
 {"event":"step","phase":"audio","done":0,"total":12}
 {"event":"warning","code":"audio_missing","message":"audio manquant: s7.mp3 -> silent.mp3"}
@@ -404,7 +410,7 @@ champs et événements inconnus (ajouts compatibles).
 
 | Événement | Champs | Notes |
 |-----------|--------|-------|
-| `start` | `total` (nombre de phases, ici 4), `phases` (liste ordonnée), `input` | **premier événement**, émis avant toute lecture (donc avant tout `warning`) |
+| `start` | `total` (nombre de phases, ici 4), `phases` (liste ordonnée), `input`, `version` (version du convertisseur, cf. `--version`) | **premier événement**, émis avant toute lecture (donc avant tout `warning`) |
 | `step` | `phase` (`images`, `audio`, `scripts`, `zip`), `done`, `total` | `done` croît de 0 à `total` |
 | `warning` | `code`, `message` | non bloquant ; même texte que la ligne `  ! ...` de stderr |
 | `done` | `output`, `size` (octets), `warnings` (nombre) | dernier événement en cas de succès |

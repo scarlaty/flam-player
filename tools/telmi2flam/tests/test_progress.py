@@ -159,6 +159,28 @@ class TestEvents(CliBase):
         self.assertIsNone(T._sink)
 
 
+class TestCliVersion(CliBase):
+    def test_version_line_and_exit_zero(self):
+        r = self.cli("--version")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "telmi2flam %s\n" % T.__version__)
+        self.assertEqual(r.stderr, "")
+        self.assertRegex(T.__version__, r"^\d+\.\d+\.\d+$")
+
+    def test_version_fast_path_skips_heavy_imports(self):
+        # PIL rendu inimportable : --version seul doit quand meme repondre
+        code = ("import sys, runpy; sys.modules['PIL'] = None; sys.argv = ['telmi2flam.py', "
+                "'--version']; runpy.run_path(%r, run_name='__main__')" % CLI)
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "telmi2flam %s\n" % T.__version__)
+
+    def test_version_in_start_event(self):
+        r = self.cli(self.mkzip(std_files()), "-o", os.path.join(self.tmp, "o.plain.pk"),
+                     "--progress-json")
+        self.assertEqual(parse_lines(r.stdout)[0]["version"], T.__version__)
+
+
 class TestCliProgress(CliBase):
     def test_stdout_is_only_json_lines(self):
         out = os.path.join(self.tmp, "o.plain.pk")
