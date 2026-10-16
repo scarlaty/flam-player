@@ -1,6 +1,7 @@
 //! Backend Rust de flam-launcher. Voir `apps/flam-launcher/README.md` pour l'architecture.
 
 mod app;
+pub mod catalog;
 mod error;
 pub mod folder;
 pub mod lif;
@@ -28,10 +29,14 @@ pub fn run() {
         .setup(|app| {
             app.manage(storage::ConfigState::new(storage::config_dir()?));
             app.manage(folder::FolderState::default());
+            app.manage(catalog::CatalogService::new()?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             app::app_info,
+            catalog::catalog_refresh,
+            catalog::catalog_entries,
+            catalog::catalog_thumbnail,
             storage::config_ack_recovery,
             settings::settings_get,
             settings::settings_set,

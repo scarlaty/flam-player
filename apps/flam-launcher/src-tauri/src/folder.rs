@@ -7,14 +7,14 @@
 //! ne fait pas échouer l'analyse : il est ignoré et signalé dans `warnings`.
 //!
 //! **Vignettes à la demande** : `folder_scan` ne renvoie jamais d'image (jusqu'à 5000 entrées :
-//! des centaines de Mio d'IPC). `thumb_url` est une référence opaque (l'`entry_id`) ou `null` ;
+//! des centaines de Mio d'IPC). `thumb_url` est une référence (l'`entry_id`) à résoudre par
+//! `folder_thumbnail`, ou `null` ;
 //! `folder_thumbnail(source_id, entry_id)` renvoie l'URL `data:` d'une seule histoire, et
 //! uniquement pour une entrée du dernier scan de cette source (jamais un chemin libre).
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,7 +28,7 @@ use zip::ZipArchive;
 use crate::settings::{Environment, SettingsStore};
 use crate::sources::{Source, SourcesStore};
 use crate::storage::ConfigState;
-use crate::story::{StoryEntry, StoryKind};
+use crate::story::{validate_story_id, StoryEntry, StoryKind};
 use crate::thumbnail::{self, RgbaImage, ThumbCache, ThumbError};
 use crate::{lif, AppError, AppResult};
 
@@ -57,30 +57,10 @@ pub struct ScanWarning {
     pub message: String,
 }
 
-/// Une histoire du dossier, avec son identifiant d'entrée.
-///
-/// `entry_id` est stable (hash du chemin) et unique dans la source : un `.plain` et un
-/// `.plain.pk` de même `uuid` donnent **deux entrées** d'`entry_id` différents.
-/// `thumb_url` vaut `entry_id` quand une vignette existe (référence opaque pour
-/// `folder_thumbnail`), `null` sinon.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct FolderEntry {
-    pub entry_id: String,
-    #[serde(flatten)]
-    pub story: StoryEntry,
-}
-
-impl Deref for FolderEntry {
-    type Target = StoryEntry;
-    fn deref(&self) -> &StoryEntry {
-        &self.story
-    }
-}
-
 /// Résultat de `folder_scan` (miroir de `FolderScan` dans `src/api/folder.ts`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct FolderScan {
-    pub entries: Vec<FolderEntry>,
+    pub entries: Vec<StoryEntry>,
     pub warnings: Vec<ScanWarning>,
 }
 
@@ -88,39 +68,25 @@ pub struct FolderScan {
 // Identifiants
 // ---------------------------------------------------------------------------
 
-/// Identifiant d'histoire acceptable (`^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`, sans `..`, sans nom
-/// réservé Windows).
-fn valid_story_id(id: &str) -> bool {
-    let mut chars = id.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !first.is_ascii_alphanumeric()
-        || id.len() > 64
-        || !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        || id.contains("..")
-    {
-        return false;
-    }
-    let stem = id.split('.').next().unwrap_or("").to_ascii_uppercase();
-    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ["COM", "LPT"].iter().any(|p| {
-            stem.strip_prefix(p)
-                .is_some_and(|n| n.len() == 1 && matches!(n.as_bytes()[0], b'1'..=b'9'))
-        });
-    !reserved
-}
-
 impl From<ThumbError> for AppError {
     fn from(e: ThumbError) -> Self {
         AppError::Validation(format!("vignette illisible : {e}"))
     }
 }
 
-fn entry_id_of(path: &Path) -> String {
+/// Identifiant d'entrée `"<source_id>:<hash>"` : hash FNV-1a 64 bits du chemin relatif au
+/// dossier de la source (séparateurs normalisés en `/`), stable d'un scan à l'autre et unique
+/// dans la source. Un `.plain` et un `.plain.pk` de même `uuid` ont donc des identifiants
+/// différents.
+fn entry_id_of(source_id: &str, root: &Path, path: &Path) -> String {
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
     format!(
-        "{:016x}",
-        thumbnail::fnv1a(&[path.to_string_lossy().as_bytes()])
+        "{source_id}:{:016x}",
+        thumbnail::fnv1a(&[relative.as_bytes()])
     )
 }
 
@@ -377,11 +343,11 @@ fn telmi_entry(source_id: &str, path: &Path, info: &FileInfo) -> Result<Parsed, 
     let title =
         json_text(&meta, "title", MAX_TITLE_CHARS).ok_or("titre absent de metadata.json")?;
     let uuid = json_text(&meta, "uuid", 100).ok_or("uuid absent de metadata.json")?;
-    if !valid_story_id(&uuid) {
+    if !validate_story_id(&uuid) {
         return Err("uuid de metadata.json refusé (caractères ou nom non autorisés)".into());
     }
     if let Some(Value::String(version)) = meta.get("version") {
-        if !valid_story_id(version.trim()) {
+        if !validate_story_id(version.trim()) {
             return Err("version de metadata.json refusée".into());
         }
     }
@@ -390,6 +356,7 @@ fn telmi_entry(source_id: &str, path: &Path, info: &FileInfo) -> Result<Parsed, 
         .any(|name| zip.contains(&format!("{root}{name}")));
 
     let story = StoryEntry {
+        entry_id: String::new(),
         source_id: source_id.to_string(),
         uuid,
         version: json_u32(&meta, "version"),
@@ -457,6 +424,7 @@ fn flam_entry(
     let has_thumb = files.stat(LIF_NAME).is_some();
 
     let story = StoryEntry {
+        entry_id: String::new(),
         source_id: source_id.to_string(),
         uuid,
         version: None,
@@ -646,21 +614,21 @@ fn scan_folder(
         let shown = path.to_string_lossy().into_owned();
         match parse_one(source_id, path, *kind, cache) {
             Ok(mut parsed) => {
-                let entry_id = entry_id_of(path);
+                // Le cache de métadonnées est partagé entre sources : identité fixée ici.
+                let entry_id = entry_id_of(source_id, root, path);
+                parsed.story.source_id = source_id.to_string();
+                parsed.story.entry_id = entry_id.clone();
                 if parsed.has_thumb {
                     parsed.story.thumb_url = Some(entry_id.clone());
                     refs.insert(
-                        entry_id.clone(),
+                        entry_id,
                         ThumbRef {
                             path: path.clone(),
                             kind: *kind,
                         },
                     );
                 }
-                scan.entries.push(FolderEntry {
-                    entry_id,
-                    story: parsed.story,
-                });
+                scan.entries.push(parsed.story);
                 scan.warnings
                     .extend(parsed.warnings.into_iter().map(|message| ScanWarning {
                         path: shown.clone(),
@@ -917,7 +885,7 @@ mod tests {
     }
 
     impl Ctx {
-        fn thumb(&self, entry: &FolderEntry) -> AppResult<String> {
+        fn thumb(&self, entry: &StoryEntry) -> AppResult<String> {
             self.state
                 .thumbnail(self.cache.path(), "src", &entry.entry_id)
         }
@@ -959,6 +927,7 @@ mod tests {
         assert!(e.updated_at.as_deref().unwrap().ends_with('Z'));
         // `thumb_url` est une référence opaque : aucune image dans le scan.
         assert_eq!(e.thumb_url.as_deref(), Some(e.entry_id.as_str()));
+        assert!(e.entry_id.starts_with("src:"));
         assert_eq!(thumb_files(&ctx), 0);
         assert!(ctx.thumb(e).unwrap().starts_with("data:image/png;base64,"));
         assert_eq!(thumb_files(&ctx), 1);
@@ -1289,8 +1258,8 @@ mod tests {
         let (scan, _ctx) = scan(dir.path(), false);
         assert!(scan.entries.is_empty(), "{:?}", scan.entries);
         assert_eq!(scan.warnings.len(), bad.len() + 1);
-        assert!(valid_story_id(&"a".repeat(64)));
-        assert!(valid_story_id("ffffff-199f066d199"));
+        assert!(validate_story_id(&"a".repeat(64)));
+        assert!(validate_story_id("ffffff-199f066d199"));
     }
 
     #[test]

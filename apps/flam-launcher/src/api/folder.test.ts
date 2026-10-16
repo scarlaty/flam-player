@@ -7,7 +7,7 @@ afterEach(() => clearMocks());
 const scan: FolderScan = {
   entries: [
     {
-      entry_id: "00ff00ff00ff00ff",
+      entry_id: "s:00ff00ff00ff00ff",
       source_id: "s",
       uuid: "u",
       version: null,
@@ -18,7 +18,7 @@ const scan: FolderScan = {
       author: null,
       voice: null,
       license: null,
-      thumb_url: "00ff00ff00ff00ff",
+      thumb_url: "s:00ff00ff00ff00ff",
       download_url: "C:\\Histoires\\a.zip",
       size: 12,
       updated_at: "2026-10-15T08:00:00Z",
