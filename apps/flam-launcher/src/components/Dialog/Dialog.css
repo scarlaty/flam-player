@@ -23,6 +23,10 @@
   color: var(--color-text);
 }
 
+.fl-dialog--wide {
+  width: min(46rem, 100%);
+}
+
 .fl-dialog:focus {
   outline: none;
 }
