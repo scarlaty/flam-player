@@ -6,6 +6,8 @@ import "./AppShell.css";
 export interface AppShellProps {
   /** Contenu de la barre latérale (en général `SidebarSourceList`). */
   sidebar: ReactNode;
+  /** Libellé de la navigation latérale (« Sources d'histoires » par défaut). */
+  navLabel?: string;
   /** Titre de la vue courante, affiché dans l'en-tête (niveau h1). */
   title: ReactNode;
   /** Actions de l'en-tête (recherche, boutons…). */
@@ -20,6 +22,7 @@ const MAIN_ID = "fl-main";
 /** Mise en page principale : barre latérale, en-tête, contenu et panneau facultatif. */
 export function AppShell({
   sidebar,
+  navLabel = t.app.sourcesNav,
   title,
   headerActions,
   aside,
@@ -38,7 +41,7 @@ export function AppShell({
       <a className="fl-shell__skip" href={`#${MAIN_ID}`} onClick={skipToMain}>
         {t.app.skipToContent}
       </a>
-      <nav className="fl-shell__sidebar" aria-label={t.app.sourcesNav}>
+      <nav className="fl-shell__sidebar" aria-label={navLabel}>
         <div className="fl-shell__brand">
           <AppLogo size={32} />
           <span>{t.app.name}</span>
