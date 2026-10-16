@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toAppError, type AppError } from "../../api/error";
 import { pickFolder } from "../../api/dialog";
 import {
@@ -70,8 +70,10 @@ export function SourcesScreen() {
     void load();
   }, [load]);
 
-  // Redonne le focus au bouton de déplacement après un réordonnancement au clavier.
-  useEffect(() => {
+  // Redonne le focus au bouton de déplacement après un réordonnancement au clavier. Effet de
+  // layout : un effet passif de l'affichage précédent, encore en attente, pourrait sinon
+  // consommer `pendingFocus` avec l'ancienne liste avant le rendu du déplacement.
+  useLayoutEffect(() => {
     const pending = pendingFocus.current;
     if (!pending || !listRef.current) return;
     pendingFocus.current = null;
