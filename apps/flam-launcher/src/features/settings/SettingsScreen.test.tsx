@@ -124,6 +124,7 @@ it("affiche les valeurs utilisées, les problèmes et la section À propos", asy
   expect(screen.getByText("Utilisé : C:\\app\\flam-player.exe")).toBeInTheDocument();
   expect(screen.getAllByText(/Aucun fichier trouvé/)).toHaveLength(1);
   expect(screen.getByText("alias du Store ignoré")).toBeInTheDocument();
+  expect(screen.getByText(/embarque son propre Python/)).toBeInTheDocument();
   expect(await screen.findByText("flam-launcher — version 0.1.0")).toBeInTheDocument();
   expect(screen.getByText("Licence MIT.")).toBeInTheDocument();
   expect(screen.getByText(/Telmi Store et de TelmiSync/)).toBeInTheDocument();
