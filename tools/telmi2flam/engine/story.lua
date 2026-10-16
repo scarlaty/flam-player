@@ -21,7 +21,7 @@ local story = {}
 local BRANCH = "story"
 
 -- forward declarations (les fonctions se referencent mutuellement)
-local enterStage, showChoice, followTransition, enterAction, play, endStory
+local enterStage, showChoice, followTransition, enterAction, play, endStory, leaveStory
 
 -- Compteur anti-boucle des noeuds sans audio. LOCAL au module (et non un champ
 -- story._pass) : un champ absent de `story` serait resolu par __index, qui
@@ -37,9 +37,17 @@ local passCount = 0
 local passSeen = {}
 local MAX_PASS = 1000
 local MAX_REPEAT = 30
+-- Noeud quitte par le bouton retour (transition home) : { id, kind, index }.
+-- Pose par les callbacks de retour, effacee des qu'une scene ou un choix est
+-- affiche (resetPass). Tant qu'elle est posee, la chaine de noeuds de passage
+-- est une "sortie par Home" : une action vide en bout de chaine (convention
+-- TELMI backAction -> backStage -> backChildAction vide = quitter l'histoire)
+-- ramene au menu Start SANS effacer la progression.
+local homeOrigin = nil
 local function resetPass()
     passCount = 0
     passSeen = {}
+    homeOrigin = nil
 end
 local function passKey(id)
     local k = tostring(id)
@@ -212,6 +220,19 @@ function endStory(reason)
     back_callback()
 end
 
+-- Sortie par Home vers une action vide (backChildAction) : retour au menu Start
+-- avec la progression de la derniere scene jouee (menu "Reprendre"). La chaine
+-- de passage (backStage) a deplace la position sauvee : on la restaure sur le
+-- noeud quitte. Contrairement a endStory, rien n'est remis a zero.
+function leaveStory(origin)
+    print("story.lua: sortie par Home (action vide) : retour au menu Start")
+    resetPass()
+    Global.progression.setProgression({ currentFunction = origin.id, branch = BRANCH })
+    setKind(origin.kind, origin.index)
+    Global.progression.restoreBackBehavior()
+    back_callback()
+end
+
 -- ---------------------------------------------------------------------------
 -- Rendu d'un stage (scene image + audio)
 -- ---------------------------------------------------------------------------
@@ -274,6 +295,7 @@ function enterStage(id, isResume)
             if state.visited_funs and state.visited_funs[id] then
                 state.visited_funs[id].seekposition = nil
             end
+            homeOrigin = { id = id, kind = "s" }
             followTransition(home)
         end)
     end
@@ -354,6 +376,7 @@ function showChoice(list, actionId, sel, selIndex)
             local h = homes[focused]
             if h then
                 resetPass()
+                homeOrigin = { id = actionId, kind = "a", index = selIndex }
                 followTransition(h)
             elseif Global.progression.backButtonBehavior then
                 Global.progression.backButtonBehavior()   -- menu Start
@@ -382,6 +405,10 @@ end
 function followTransition(trans)
     if not trans then endStory(); return end   -- ok=null : fin d'histoire
     local list = N.actions[trans.action]
+    if list and #list == 0 and homeOrigin then
+        leaveStory(homeOrigin)   -- backChildAction vide atteinte par Home
+        return
+    end
     if not list or #list == 0 then
         endStory("action inconnue ou vide " .. tostring(trans.action))
         return
