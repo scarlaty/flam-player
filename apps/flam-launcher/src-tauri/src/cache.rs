@@ -15,14 +15,21 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::catalog::{blocking, CatalogService};
+use crate::player::PlayerService;
 use crate::settings::{resolve, Environment, SettingsStore};
 use crate::storage::ConfigState;
 use crate::AppResult;
 
 /// Sous-dossiers du cache créés par l'application (et eux seuls) : archives téléchargées, catalogues mis en cache,
-/// histoires converties, vignettes.
-pub const APP_CACHE_SUBDIRS: &[&str] =
-    &["archives", "catalogs", "compat-local", "library", "thumbs"];
+/// histoires converties, copies de travail des histoires lancées (`play`), vignettes.
+pub const APP_CACHE_SUBDIRS: &[&str] = &[
+    "archives",
+    "catalogs",
+    "compat-local",
+    "library",
+    "play",
+    "thumbs",
+];
 
 /// Réponse de `cache_usage` (miroir de `CacheUsage` dans `src/api/cache.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -140,17 +147,21 @@ pub async fn cache_usage(state: State<'_, ConfigState>) -> AppResult<CacheUsage>
 
 /// Vide le cache : supprime uniquement les sous-dossiers créés par l'application. Attend
 /// les rafraîchissements de catalogue en cours et bloque les nouveaux pendant le vidage.
+/// Refusé (`player_busy`) tant qu'un player tourne : sa copie de travail est dans `play/`. Le
+/// créneau du player est tenu pendant le vidage, aucun lancement ne peut démarrer entre-temps.
 #[tauri::command]
 pub async fn cache_clear(
     state: State<'_, ConfigState>,
     catalog: State<'_, CatalogService>,
+    player: State<'_, PlayerService>,
 ) -> AppResult<CacheCleared> {
     let _pause = catalog.pause_refreshes().await;
     let root = {
         let _guard = state.guard();
         effective_dir(&state)?
     };
-    let freed_bytes = blocking(move || clear_of(&root)).await??;
+    let player = player.inner().clone();
+    let freed_bytes = blocking(move || player.while_idle(|| clear_of(&root))).await???;
     Ok(CacheCleared { freed_bytes })
 }
 
@@ -252,7 +263,14 @@ mod tests {
     fn les_sous_dossiers_exposes_sont_ceux_de_l_application() {
         assert_eq!(
             APP_CACHE_SUBDIRS,
-            ["archives", "catalogs", "compat-local", "library", "thumbs"]
+            [
+                "archives",
+                "catalogs",
+                "compat-local",
+                "library",
+                "play",
+                "thumbs"
+            ]
         );
     }
 

@@ -9,6 +9,7 @@ pub mod folder;
 pub mod install;
 pub mod library;
 pub mod lif;
+pub mod player;
 pub mod settings;
 pub mod sources;
 pub mod storage;
@@ -48,6 +49,9 @@ pub fn run() {
             app.manage(folder::FolderState::default());
             app.manage(catalog);
             app.manage(install.clone());
+            app.manage(player::PlayerService::new(Arc::new(
+                player::TauriPlayerEvents(app.handle().clone()),
+            )));
             // Reprise de la file persistée : chaque entrée est ré-résolue depuis sa source.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -85,6 +89,9 @@ pub fn run() {
             install::install_list,
             library::library_list,
             library::library_remove,
+            player::player_launch,
+            player::player_launch_folder,
+            player::player_status,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application Tauri");
@@ -104,6 +111,7 @@ mod tests {
             ("folder", include_str!("folder.rs")),
             ("install", include_str!("install/mod.rs")),
             ("library", include_str!("library.rs")),
+            ("player", include_str!("player.rs")),
             ("settings", include_str!("settings.rs")),
             ("sources", include_str!("sources.rs")),
             ("storage", include_str!("storage.rs")),
