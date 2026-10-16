@@ -33,10 +33,4 @@ export interface StoryEntry {
   /** Date ISO 8601 UTC. */
   updated_at: string | null;
   kind: StoryKind;
-  /**
-   * Front uniquement, « Mes histoires » : vignette conservée par la bibliothèque
-   * (`LibraryEntry.thumb`, unique par installation). Sert à la clé de cache des vignettes :
-   * une réinstallation rafraîchit l'image sans remonter la carte.
-   */
-  library_thumb?: string | null;
 }
