@@ -450,17 +450,20 @@ impl Workspace {
         } else {
             std::fs::copy(source, &dest)?;
         }
-        // Reprise après un arrêt entre les deux renommages de `persist_saves`.
-        let old = self.sibling(".old");
-        if !self.saved.exists() && is_real_dir(&old) {
-            std::fs::rename(&old, &self.saved)?;
-        }
         if is_real_dir(&self.saved) {
+            // Restauration dans un dossier temporaire, renommé seulement en cas de succès : un
+            // `saves/` partiel ne doit jamais pouvoir être pris pour une partie à rapatrier.
             let mut budget = Budget {
                 files: SAVES_MAX_FILES,
                 bytes: SAVES_MAX_BYTES,
             };
-            copy_tree(&self.saved, &self.work.join(SAVES_DIR), 0, &mut budget)?;
+            let tmp = self.work.join(format!("{SAVES_DIR}.tmp"));
+            let restored = copy_tree(&self.saved, &tmp, 0, &mut budget)
+                .and_then(|()| std::fs::rename(&tmp, self.work.join(SAVES_DIR)));
+            if let Err(err) = restored {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(err.into());
+            }
         }
         Ok(dest)
     }
@@ -469,6 +472,11 @@ impl Workspace {
     /// voisin, puis échange par renommage (l'ancien est conservé jusqu'au succès). Sans
     /// sauvegarde dans la copie, ne fait rien. Sauvegardes trop volumineuses : refusées.
     pub fn persist_saves(&self) -> AppResult<()> {
+        // Reprise après un arrêt entre les deux renommages d'un rapatriement précédent.
+        let old = self.sibling(".old");
+        if !self.saved.exists() && is_real_dir(&old) {
+            std::fs::rename(&old, &self.saved)?;
+        }
         let src = self.work.join(SAVES_DIR);
         if !is_real_dir(&src) {
             return Ok(());
@@ -960,20 +968,76 @@ mod tests {
     #[test]
     fn while_idle_est_refuse_pendant_une_partie_et_execute_sinon() {
         let c = ctx();
+        // Le player dort assez longtemps ; il est tué à la fin du test.
         let story = c.story(
             "long.plain.pk",
-            "sleep 1500
+            "sleep 30000
 exit 0
 ",
         );
         assert_eq!(c.service.while_idle(|| 7).unwrap(), 7);
-        c.launch(&story).unwrap();
+        let session = c.launch(&story).unwrap();
+        c.started.recv_timeout(Duration::from_secs(10)).unwrap();
         let mut ran = false;
         let err = c.service.while_idle(|| ran = true).unwrap_err();
         assert_eq!(err.kind(), "player_busy");
         assert!(!ran, "l'action n'est pas exécutée pendant une partie");
+        let kill = Command::new("taskkill")
+            .args(["/PID", &session.pid.to_string(), "/F"])
+            .output()
+            .unwrap();
+        assert!(kill.status.success());
         c.wait_exit();
         assert_eq!(c.service.while_idle(|| 1).unwrap(), 1);
+    }
+
+    #[test]
+    fn une_restauration_partielle_ne_laisse_pas_de_saves_a_rapatrier() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let saved = ws.saved.clone();
+        std::fs::create_dir_all(&saved).unwrap();
+        // Sauvegarde au-delà de la limite : la restauration échoue en cours de route.
+        for i in 0..=SAVES_MAX_FILES {
+            std::fs::write(saved.join(format!("{i}")), b"bonne").unwrap();
+        }
+        assert!(ws.stage(&pk).is_err());
+        assert!(!ws.work.join("saves").exists());
+        assert!(!ws.work.join("saves.tmp").exists());
+        // Le lancement suivant ne rapatrie rien et ne touche pas la bonne sauvegarde.
+        assert!(ws.stage(&pk).is_err());
+        assert_eq!(
+            std::fs::read_dir(&saved).unwrap().count(),
+            SAVES_MAX_FILES + 1
+        );
+        assert_eq!(std::fs::read(saved.join("0")).unwrap(), b"bonne");
+        assert!(!ws.sibling(".old").exists());
+    }
+
+    #[test]
+    fn la_reprise_de_old_se_fait_avant_le_nettoyage_de_persist_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        play_and_save(&copy, b"niveau 7");
+        ws.persist_saves().unwrap();
+        // Arrêt entre les deux renommages : la sauvegarde n'est plus que dans `.old`.
+        std::fs::rename(&ws.saved, ws.sibling(".old")).unwrap();
+        ws.persist_saves().unwrap();
+        assert!(!ws.sibling(".old").exists());
+        assert_eq!(
+            std::fs::read(ws.saved.join("Histoire.plain/state")).unwrap(),
+            b"niveau 7"
+        );
+        // Sans copie de travail à rapatrier, la reprise a aussi lieu.
+        std::fs::remove_dir_all(&ws.work).unwrap();
+        std::fs::rename(&ws.saved, ws.sibling(".old")).unwrap();
+        ws.persist_saves().unwrap();
+        assert!(ws.saved.join("Histoire.plain/state").is_file());
     }
 
     #[test]
