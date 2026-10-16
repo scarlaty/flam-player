@@ -425,6 +425,43 @@ audioEnd()
 check("conditions: cle>=3 -> s1 (seule visible)", state.current_fun == "s1")
 audioEnd()
 check("indexItem: sel=3 -> c3", state.current_fun == "c3", state.current_fun)
+-- indexItem = index dont la valeur vient de l'inventaire (issue #43) : cibles
+-- non autoplay -> choix preselectionne (et non la scene jouee sans molette).
+-- p : noeud de passage (cas du manoir) ; seule o2 mene a une fin, o1/o3
+-- reviennent au passage (sans choix, boucle infinie).
+local function nItem(val, ctrlOpt, cond2)
+  return { inventory = { { name = "n", init = val } }, start = { action = "a0" }, totalChapters = 4,
+    stages = { p = stage({ ok = { action = "m", indexItem = 0 } }),
+               o1 = stage({ audio = "o1.mp3", ok = { action = "a0" }, ctrl = ctrlOpt }),
+               o2 = stage({ audio = "o2.mp3", ok = { action = "af" }, ctrl = ctrlOpt }),
+               o3 = stage({ audio = "o3.mp3", ok = { action = "a0" }, ctrl = ctrlOpt }),
+               fin = stage({ audio = "fin.mp3" }) },
+    actions = { a0 = { { stage = "p" } }, af = { { stage = "fin" } },
+                m = { { stage = "o1" }, { stage = "o2", cond = cond2 }, { stage = "o3" } } } }
+end
+boot(nItem(0, MANUAL)); menuPick()
+check("indexItem non-autoplay: choix a 3 options", lastModule.name == "carousel" and #lastModule.args.choices == 3
+      and state.current_fun == "m", lastModule.name)
+check("indexItem non-autoplay: preselection 1re option", lastModule.args.index == 1 and lastModule.mod.answerIterator == 1
+      and state.choice_index == 0)
+lastModule.args.choices[2].cb()
+check("indexItem non-autoplay: 2e option atteignable -> fin", state.current_fun == "fin", state.current_fun)
+boot(nItem(1, MANUAL)); menuPick()
+check("indexItem non-autoplay: valeur 1 -> preselection 2", lastModule.name == "carousel" and lastModule.args.index == 2
+      and lastModule.mod.answerIterator == 2 and state.choice_index == 1)
+boot(nItem(1, MANUAL), true); menuPick()
+check("indexItem reprise sur le choix -> meme preselection", lastModule.name == "carousel" and lastModule.args.index == 2)
+boot(nItem(9, MANUAL)); menuPick()
+check("indexItem hors borne -> derniere option", lastModule.name == "carousel" and lastModule.args.index == 3)
+boot(nItem(-2, MANUAL)); menuPick()
+check("indexItem negatif -> 1re option, pas de tirage", lastModule.name == "carousel" and lastModule.args.index == 1
+      and #randomArgs == 0)
+boot(nItem(1, MANUAL, { { cmp = 3, item = 0, num = 5 } })); menuPick()   -- o2 masquee (n > 5 faux)
+check("indexItem: conditions filtrees comme index", lastModule.name == "carousel" and #lastModule.args.choices == 2
+      and lastModule.args.index == 1)
+boot(nItem(1, AUTO)); menuPick()
+check("indexItem cible autoplay -> scene jouee directement", state.current_fun == "o2" and curAudio() == "o2.mp3",
+      state.current_fun)
 local nCond = { inventory = { { name = "x", init = 0 } }, start = { action = "a0" }, totalChapters = 3,
   stages = { s0 = stage({ audio = "s0.mp3", ok = { action = "m" } }),
              o1 = stage({ audio = "o1.mp3", ctrl = MANUAL }), o2 = stage({ audio = "o2.mp3", ctrl = MANUAL }), o3 = stage({ audio = "o3.mp3", ctrl = MANUAL }) },
