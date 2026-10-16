@@ -38,6 +38,7 @@ use tauri::State;
 
 use crate::catalog::{blocking, CatalogService};
 use crate::install::InstallService;
+use crate::library_thumb::{self, Prepared};
 use crate::player::{purge_library_story, PlayerService, SAVES_ROOT};
 use crate::settings::{Environment, SettingsStore};
 use crate::storage::{self, ConfigState, Loaded};
@@ -87,6 +88,10 @@ pub struct LibraryEntry {
     pub converter: Option<String>,
     /// Entrée d'origine telle que proposée par la source (source, lien, métadonnées).
     pub source: StoryEntry,
+    /// Vignette conservée sous `library/thumbs/` (nom de fichier, voir `library_thumb`), `None`
+    /// sans vignette ou pour une installation antérieure à #80.
+    #[serde(default)]
+    pub thumb: Option<String>,
 }
 
 impl LibraryEntry {
@@ -594,7 +599,20 @@ impl Library {
         converter: Option<String>,
         now: u64,
     ) -> AppResult<LibraryEntry> {
-        self.install_with(staged, source, converter, now, &|stories| {
+        self.install_thumbed(staged, source, converter, now, None)
+    }
+
+    /// [`Library::install`] avec la vignette `thumb` (préparée par `library_thumb::prepare`),
+    /// écrite sous le verrou avant l'index ; son échec n'empêche jamais l'installation.
+    pub fn install_thumbed(
+        &self,
+        staged: &Path,
+        source: &StoryEntry,
+        converter: Option<String>,
+        now: u64,
+        thumb: Option<&Prepared>,
+    ) -> AppResult<LibraryEntry> {
+        self.install_with(staged, source, converter, now, thumb, &|stories| {
             self.save(stories)
         })
     }
@@ -605,6 +623,7 @@ impl Library {
         source: &StoryEntry,
         converter: Option<String>,
         now: u64,
+        thumb: Option<&Prepared>,
         save: &dyn Fn(Vec<LibraryEntry>) -> AppResult<()>,
     ) -> AppResult<LibraryEntry> {
         let target = self.final_path(&source.uuid, source.version)?;
@@ -663,6 +682,9 @@ impl Library {
         }
         let had_previous = target.is_file();
         let staged_size = std::fs::metadata(staged)?.len();
+        // Vignette (#80) : après les refus, avant l'index. Un échec donne `None` ; une publication
+        // défaite plus bas la laisse orpheline, supprimée par `library_thumb::sweep`.
+        let thumb = thumb.and_then(|t| library_thumb::store(&self.root, &file, now, t));
         let entry = LibraryEntry {
             uuid: source.uuid.clone(),
             version: source.version,
@@ -672,6 +694,7 @@ impl Library {
             installed_at: now,
             converter,
             source: source.clone(),
+            thumb,
         };
         let mut old_files: Vec<String> = stories
             .iter()
@@ -717,6 +740,11 @@ impl Library {
         }
         // L'index est à jour : le reste est du nettoyage.
         self.finish_publication(&stories, &marker, &backup, &pending);
+        // Index perdu avant cette installation : des marqueurs neutralisés peuvent référencer des
+        // vignettes, on ne réconcilie pas.
+        if !untrusted {
+            library_thumb::sweep(&self.root, &stories);
+        }
         for (previous, previous_backup, previous_pending) in &adopted {
             self.finish_publication(&stories, previous, previous_backup, previous_pending);
         }
@@ -797,7 +825,20 @@ impl Library {
         if let Ok(path) = self.checked(&entry.file) {
             remove_if_exists(&path)?;
         }
-        self.save(stories)
+        self.save(stories.clone())?;
+        library_thumb::sweep(&self.root, &stories);
+        Ok(())
+    }
+
+    /// URL `data:` de la vignette conservée de l'histoire installée `uuid` (`not_found` si elle
+    /// n'est pas installée ou n'a pas de vignette).
+    pub fn thumbnail(&self, uuid: &str) -> AppResult<String> {
+        let entry = self
+            .load()?
+            .into_iter()
+            .find(|e| e.uuid == uuid)
+            .ok_or_else(|| AppError::NotFound(format!("histoire non installée : {uuid}")))?;
+        library_thumb::data_url(&self.root, &entry)
     }
 }
 
@@ -1046,7 +1087,7 @@ pub(crate) mod tests {
         let fail = |_: Vec<LibraryEntry>| Err(AppError::Io(std::io::Error::other("disque plein")));
         let b = staged(&lib, "b.plain.pk", b"nouveau!");
         let err = lib
-            .install_with(&b, &story("abc", Some(2)), None, 2, &fail)
+            .install_with(&b, &story("abc", Some(2)), None, 2, None, &fail)
             .unwrap_err();
         assert_eq!(err.kind(), "io");
         let path = dir.path().join("library/abc-2.plain.pk");
@@ -1055,9 +1096,48 @@ pub(crate) mod tests {
         assert_eq!((list.len(), list[0].size), (1, 6));
         // Nouvelle histoire : rien ne reste publié.
         let c = staged(&lib, "c.plain.pk", b"x");
-        lib.install_with(&c, &story("neuf", Some(1)), None, 3, &fail)
+        lib.install_with(&c, &story("neuf", Some(1)), None, 3, None, &fail)
             .unwrap_err();
         assert!(!dir.path().join("library/neuf-1.plain.pk").exists());
+    }
+
+    /// Injection de panne (#80) : l'index échoue après l'écriture de la vignette. L'entrée
+    /// précédente garde la sienne ; la nouvelle reste orpheline jusqu'à la réconciliation
+    /// suivante. Index perdu : aucune vignette supprimée.
+    #[test]
+    fn vignette_orpheline_apres_echec_de_l_index_puis_reconciliee() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let thumbs = dir.path().join("library").join(library_thumb::THUMBS_DIR);
+        let png = crate::thumbnail::encode_png(&crate::thumbnail::RgbaImage {
+            width: 1,
+            height: 1,
+            rgba: vec![1, 2, 3, 255],
+        })
+        .unwrap();
+        let thumb = Prepared::from_bytes(png).unwrap();
+        let a = staged(&lib, "a.plain.pk", b"ancien");
+        let first = lib
+            .install_thumbed(&a, &story("abc", Some(2)), None, 1, Some(&thumb))
+            .unwrap();
+        let fail = |_: Vec<LibraryEntry>| Err(AppError::Io(std::io::Error::other("disque plein")));
+        let b = staged(&lib, "b.plain.pk", b"nouveau!");
+        lib.install_with(&b, &story("abc", Some(2)), None, 2, Some(&thumb), &fail)
+            .unwrap_err();
+        assert!(thumbs.join("abc-2.2.png").is_file(), "orpheline");
+        assert_eq!(lib.list().unwrap()[0].thumb, first.thumb);
+        assert!(lib.thumbnail("abc").is_ok());
+
+        // Index perdu : l'installation suivante ne réconcilie pas les vignettes.
+        std::fs::write(dir.path().join("library").join(INDEX_FILE), b"{corrompu").unwrap();
+        let c = staged(&lib, "c.plain.pk", b"x");
+        lib.install(&c, &story("neuf", Some(1)), None, 3).unwrap();
+        assert!(thumbs.join("abc-2.1.png").is_file());
+        assert!(thumbs.join("abc-2.2.png").is_file());
+
+        // Index de nouveau fiable : la désinstallation emporte orphelines et vignettes retirées.
+        lib.remove("neuf").unwrap();
+        assert_eq!(std::fs::read_dir(&thumbs).unwrap().count(), 0);
     }
 
     fn marker(root: &Path, file: &str, installed_at: u64, had_previous: bool) {
@@ -1152,7 +1232,7 @@ pub(crate) mod tests {
             Err(AppError::Io(std::io::Error::other("disque plein")))
         };
         let b = staged(&lib, "b.plain.pk", b"nouveau!");
-        lib.install_with(&b, &story("abc", Some(2)), None, 2, &blocked)
+        lib.install_with(&b, &story("abc", Some(2)), None, 2, None, &blocked)
             .unwrap_err();
         assert!(pending.exists() && backup.is_file(), "journal conservé");
         // Une nouvelle installation du même fichier est refusée, sans rien toucher.
@@ -1192,7 +1272,7 @@ pub(crate) mod tests {
             Ok(())
         };
         let b = staged(&lib, "b.plain.pk", b"nouveau!");
-        lib.install_with(&b, &story("abc", Some(2)), None, 2, &block)
+        lib.install_with(&b, &story("abc", Some(2)), None, 2, None, &block)
             .unwrap();
         assert!(pending.exists() && backup.exists(), "marqueur conservé");
         assert_eq!(lib.list().unwrap().len(), 1);
@@ -1350,7 +1430,7 @@ pub(crate) mod tests {
             Ok(())
         };
         let b = staged(&lib, "b.plain.pk", b"v2!");
-        lib.install_with(&b, &story("abc", Some(2)), None, 2, &block)
+        lib.install_with(&b, &story("abc", Some(2)), None, 2, None, &block)
             .unwrap();
         let marker: PendingMarker =
             serde_json::from_slice(&std::fs::read(&pending).unwrap()).unwrap();
@@ -1722,6 +1802,7 @@ pub(crate) mod tests {
                 installed_at: at,
                 converter: None,
                 source: s,
+                thumb: None,
             };
             storage::write_json(
                 &root.join(format!(".staging/{file}.pending")),

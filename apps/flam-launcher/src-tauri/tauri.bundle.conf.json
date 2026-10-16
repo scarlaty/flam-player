@@ -8,12 +8,13 @@
       "../build/player/SDL2.dll": "SDL2.dll",
       "../build/player/vcruntime140.dll": "vcruntime140.dll",
       "../build/player/licenses/": "licenses/",
-      "../LICENSES.md": "LICENSES.md"
+      "../LICENSES.md": "LICENSES.md",
+      "../build/THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt"
     },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["French"]
+        "languages": ["French", "English"]
       }
     }
   }

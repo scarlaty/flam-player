@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toAppError, type AppError } from "../../api/error";
 import type { Source } from "../../api/sources";
 import {
@@ -182,7 +189,7 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
   const countText = entries ? t.library.resultCount(visible.length, entries.length) : "";
   const announced = useDebouncedAnnouncement(countText, COUNT_ANNOUNCE_DELAY_MS);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     // Après « Afficher plus », le focus passe à la première nouvelle carte.
     const from = focusFrom.current;
     if (from === null) return;

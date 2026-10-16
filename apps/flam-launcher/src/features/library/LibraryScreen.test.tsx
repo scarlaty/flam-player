@@ -30,6 +30,7 @@ const folder: Source = {
 };
 
 const IMAGE = "data:image/png;base64,AAAA";
+const KEPT_IMAGE = "data:image/jpeg;base64,BBBB";
 
 let sources: Source[];
 let catalogs: Record<string, CatalogView>;
@@ -37,6 +38,7 @@ let refreshed: Record<string, CatalogView>;
 let scans: Record<string, FolderScan>;
 let failures: Record<string, { kind: string; message: string }>;
 let calls: { cmd: string; args: Record<string, any> }[];
+let installed: Record<string, any>[];
 
 function catalogView(
   sourceId: string,
@@ -79,6 +81,7 @@ beforeEach(() => {
   scans = { dossier: { entries: [], warnings: [] } };
   failures = {};
   calls = [];
+  installed = [];
   window.location.hash = "";
   mockIPC((cmd, args) => {
     const payload = (args ?? {}) as Record<string, any>;
@@ -102,7 +105,9 @@ beforeEach(() => {
       case "folder_thumbnail":
         return IMAGE;
       case "library_list":
-        return [];
+        return installed;
+      case "library_thumbnail":
+        return KEPT_IMAGE;
       default:
         throw { kind: "unknown", message: cmd };
     }
@@ -526,4 +531,63 @@ it("ne demande la vignette qu'une fois la carte proche de l'écran", async () =>
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+/** Histoire installée depuis le catalogue `store` (#80). */
+function installStoryA() {
+  const source = storyA();
+  installed = [
+    {
+      uuid: source.uuid,
+      version: source.version,
+      title: source.title,
+      file: `${source.uuid}-1.plain.pk`,
+      size: 1,
+      installed_at: 1,
+      converter: null,
+      source,
+      thumb: "a-1.1.jpg",
+    },
+  ];
+  return source;
+}
+
+it("« Mes histoires » affiche la vignette conservée par la bibliothèque", async () => {
+  const source = installStoryA();
+  goTo("#/library");
+  const { container } = renderLibrary();
+  await screen.findByText("Les trois ours");
+  await waitFor(() =>
+    expect(container.querySelector("img")).toHaveAttribute("src", KEPT_IMAGE),
+  );
+  expect(calls.find((c) => c.cmd === "library_thumbnail")?.args).toEqual({
+    uuid: source.uuid,
+  });
+  expect(calls.some((c) => c.cmd === "catalog_thumbnail")).toBe(false);
+});
+
+it("sans vignette conservée, retombe sur la source d'origine", async () => {
+  installStoryA();
+  failures = { library_thumbnail: { kind: "not_found", message: "pas de vignette" } };
+  goTo("#/library");
+  const { container } = renderLibrary();
+  await screen.findByText("Les trois ours");
+  await waitFor(() =>
+    expect(container.querySelector("img")).toHaveAttribute("src", IMAGE),
+  );
+});
+
+it("sans aucune vignette, garde l'illustration par défaut", async () => {
+  installStoryA();
+  failures = {
+    library_thumbnail: { kind: "not_found", message: "pas de vignette" },
+    catalog_thumbnail: { kind: "network", message: "hors ligne" },
+  };
+  goTo("#/library");
+  const { container } = renderLibrary();
+  await screen.findByText("Les trois ours");
+  await waitFor(() =>
+    expect(calls.some((c) => c.cmd === "catalog_thumbnail")).toBe(true),
+  );
+  expect(container.querySelector("img")).toBeNull();
 });
