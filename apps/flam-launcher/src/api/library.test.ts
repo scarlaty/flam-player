@@ -1,6 +1,12 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, expect, it } from "vitest";
-import { hasUpdate, listLibrary, removeFromLibrary, type LibraryEntry } from "./library";
+import {
+  hasUpdate,
+  libraryThumbnail,
+  listLibrary,
+  removeFromLibrary,
+  type LibraryEntry,
+} from "./library";
 import type { StoryEntry } from "./story";
 
 afterEach(() => clearMocks());
@@ -58,4 +64,14 @@ it("hasUpdate compare les versions connues d'un même uuid", () => {
   expect(hasUpdate(installed, { ...story, version: null })).toBe(false);
   expect(hasUpdate(installed, { ...story, uuid: "autre" })).toBe(false);
   expect(hasUpdate(undefined, story)).toBe(false);
+});
+
+it("libraryThumbnail appelle library_thumbnail avec l'uuid", async () => {
+  let received: unknown;
+  mockIPC((cmd, args) => {
+    received = { cmd, args };
+    return "data:image/png;base64,AA";
+  });
+  await expect(libraryThumbnail("abc")).resolves.toBe("data:image/png;base64,AA");
+  expect(received).toEqual({ cmd: "library_thumbnail", args: { uuid: "abc" } });
 });

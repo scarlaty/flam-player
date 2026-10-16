@@ -41,6 +41,7 @@ use crate::catalog::{blocking, CatalogService};
 use crate::compat;
 use crate::folder::FolderState;
 use crate::library::{remove_if_exists, Library, LibraryEntry};
+use crate::library_thumb;
 use crate::settings::{self, Environment, SettingsStore};
 use crate::sources::{Source, SourcesStore};
 use crate::storage::{self, ConfigState, Loaded};
@@ -554,6 +555,12 @@ impl InstallService {
         blocking(move || Library::new(&tc.cache_root).list()).await?
     }
 
+    /// URL `data:` de la vignette conservée de l'histoire installée `uuid`.
+    pub async fn library_thumbnail(&self, uuid: String) -> AppResult<String> {
+        let tc = (self.0.opts.resolver)()?;
+        blocking(move || Library::new(&tc.cache_root).thumbnail(&uuid)).await?
+    }
+
     /// Désinstalle l'histoire `uuid`.
     pub async fn library_remove(&self, uuid: String) -> AppResult<()> {
         let tc = (self.0.opts.resolver)()?;
@@ -795,8 +802,12 @@ impl InstallService {
         }
         self.emit_state(id, TaskState::Installing, None);
         let source = entry.clone();
+        let cache_root = tc.cache_root.clone();
         let installed = blocking(move || {
-            let result = library.install(&staged, &source, converter, now_secs());
+            // Vignette conservée (#80) : préparée hors verrou, jamais bloquante.
+            let thumb = library_thumb::prepare(&cache_root, &source, &staged);
+            let result =
+                library.install_thumbed(&staged, &source, converter, now_secs(), thumb.as_ref());
             if result.is_err() {
                 let _ = remove_if_exists(&staged);
             }
