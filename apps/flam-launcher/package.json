@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build:converter": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-converter.ps1",
+    "build:player": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-player.ps1",
     "tauri": "tauri"
   },
   "dependencies": {
