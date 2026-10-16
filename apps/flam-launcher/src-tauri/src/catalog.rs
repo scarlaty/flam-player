@@ -130,9 +130,10 @@ pub struct CatalogService {
     thumb_slots: Semaphore,
     /// Âge maximal d'une vignette en cache avant revalidation.
     thumb_ttl: Duration,
-    /// Dernier échec de revalidation par vignette (secondes Unix) : évite de retenter à chaque
-    /// affichage quand le serveur est injoignable.
-    thumb_failures: Mutex<HashMap<PathBuf, u64>>,
+    /// Dernier échec réseau par source (secondes Unix) : tant qu'il date de moins de
+    /// `THUMB_RETRY_SECS`, les vignettes périmées sont servies depuis le disque sans réseau
+    /// (évite qu'un serveur injoignable fasse attendre chaque vignette).
+    net_failures: Mutex<HashMap<String, u64>>,
     /// Portillon d'écriture dans le cache : les rafraîchissements le prennent en lecture (ils
     /// restent parallèles entre sources), le vidage du cache en écriture. Partagé avec le
     /// pipeline d'installation (`install`), qui le tient en lecture pendant chaque tâche.
@@ -155,7 +156,7 @@ impl CatalogService {
             known_thumbs: Mutex::default(),
             thumb_slots: Semaphore::new(thumb_concurrency),
             thumb_ttl: THUMB_TTL,
-            thumb_failures: Mutex::default(),
+            net_failures: Mutex::default(),
             cache_gate: Arc::default(),
         }
     }
@@ -170,6 +171,7 @@ impl CatalogService {
         let source_lock = self.source_lock(source_id);
         let _held = source_lock.lock().await;
         lock(&self.known_thumbs).remove(source_id);
+        lock(&self.net_failures).remove(source_id);
         blocking(move || remove_source_dir(&dir)).await??;
         Ok(())
     }
@@ -184,6 +186,16 @@ impl CatalogService {
     /// le cache (le vidage le prend en écriture).
     pub fn cache_gate(&self) -> Arc<tokio::sync::RwLock<()>> {
         self.cache_gate.clone()
+    }
+
+    fn note_failure(&self, source_id: &str) {
+        lock(&self.net_failures).insert(source_id.to_string(), now_secs());
+    }
+
+    fn recently_failed(&self, source_id: &str) -> bool {
+        lock(&self.net_failures)
+            .get(source_id)
+            .is_some_and(|at| now_secs().saturating_sub(*at) < THUMB_RETRY_SECS)
     }
 
     fn source_lock(&self, source_id: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -298,9 +310,17 @@ impl CatalogService {
 
         let response = match request.send().await {
             Ok(response) => response,
-            Err(err) => return fail(cached, network_error(&err), true),
+            Err(err) => {
+                self.note_failure(source_id);
+                return fail(cached, network_error(&err), true);
+            }
         };
         let status = response.status();
+        if status.is_server_error() {
+            self.note_failure(source_id);
+        } else {
+            lock(&self.net_failures).remove(source_id);
+        }
 
         if status == StatusCode::NOT_MODIFIED {
             if let Some(mut c) = cached {
@@ -419,14 +439,6 @@ impl CatalogService {
             return Ok(url.clone());
         }
 
-        // Copie périmée et revalidation récemment en échec : on la sert sans retenter.
-        if let Some(url) = &image {
-            let failed = lock(&self.thumb_failures).get(&path).copied();
-            if failed.is_some_and(|at| now_secs().saturating_sub(at) < THUMB_RETRY_SECS) {
-                return Ok(url.clone());
-            }
-        }
-
         let _slot = self
             .thumb_slots
             .acquire()
@@ -436,6 +448,13 @@ impl CatalogService {
         let (image, meta, fresh) = load().await;
         if let (Some(url), true) = (&image, fresh) {
             return Ok(url.clone());
+        }
+        // Copie périmée et serveur récemment injoignable : on la sert sans réseau. Lu après
+        // l'attente du créneau, pour que les vignettes en file profitent de l'échec d'une autre.
+        if let Some(url) = &image {
+            if self.recently_failed(source_id) {
+                return Ok(url.clone());
+            }
         }
         // Absente, périmée ou sans suivi : requête (conditionnelle si on a une copie) ; en cas
         // d'échec, la copie locale reste servie plutôt que rien.
@@ -449,11 +468,18 @@ impl CatalogService {
                 request = request.header(IF_MODIFIED_SINCE, date);
             }
         }
+        let unreachable = std::sync::atomic::AtomicBool::new(false);
         let fetched = async {
-            let response = request.send().await.map_err(|err| network_error(&err))?;
+            let response = request.send().await.map_err(|err| {
+                unreachable.store(true, std::sync::atomic::Ordering::Relaxed);
+                network_error(&err)
+            })?;
             let status = response.status();
             if status == StatusCode::NOT_MODIFIED && stale.is_some() {
                 return Ok((None, meta.clone().unwrap_or_default()));
+            }
+            if status.is_server_error() {
+                unreachable.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             if !status.is_success() {
                 return Err(AppError::Network(format!(
@@ -482,14 +508,16 @@ impl CatalogService {
                     None => stale.unwrap_or_default(),
                 };
                 let body = downloaded.map(|(body, _)| body);
-                lock(&self.thumb_failures).remove(&path);
+                lock(&self.net_failures).remove(source_id);
                 self.store_thumb(path, meta_path, body, new_meta).await;
                 Ok(served)
             }
             Err(err) => match stale {
                 Some(url) => {
                     tracing::warn!("revalidation de la vignette impossible : {err}");
-                    lock(&self.thumb_failures).insert(path, now_secs());
+                    if unreachable.load(std::sync::atomic::Ordering::Relaxed) {
+                        self.note_failure(source_id);
+                    }
                     Ok(url)
                 }
                 None => Err(err),
@@ -2251,5 +2279,65 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn serveur_en_erreur_une_seule_tentative_pour_toutes_les_vignettes_perimees() {
+        let server = MockServer::start().await;
+        let names: Vec<String> = (0..12).map(|i| format!("n{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let doc = thumb_catalog(&server, &refs, Duration::ZERO).await;
+        serve(&server, catalog_response(&doc), None).await;
+        let cache = tempfile::tempdir().unwrap();
+        let url = url_of(&server);
+        // Un seul créneau : les 12 demandes périmées attendent le créneau l'une derrière
+        // l'autre ; la première échoue (503), les suivantes lisent l'échec une fois le créneau
+        // obtenu et sont servies depuis le disque sans requête. Une tentative au total.
+        let mut service = CatalogService::with_limits(client(), 1);
+        service.thumb_ttl = Duration::ZERO;
+        let service = Arc::new(service);
+        let view = service.refresh(cache.path(), "src", &url, 1).await.unwrap();
+        let urls: Vec<String> = view
+            .entries
+            .iter()
+            .map(|e| e.thumb_url.clone().unwrap())
+            .collect();
+        let mut first = Vec::new();
+        for u in &urls {
+            first.push(
+                service
+                    .thumbnail(cache.path(), "src", &url, u)
+                    .await
+                    .unwrap(),
+            );
+        }
+        lock(&service.net_failures).clear();
+
+        server.reset().await;
+        serve(&server, catalog_response(&doc), None).await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path_regex(r"^/t/"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let mut tasks = tokio::task::JoinSet::new();
+        for (i, u) in urls.iter().cloned().enumerate() {
+            let (service, root, url) = (service.clone(), cache.path().to_path_buf(), url.clone());
+            tasks.spawn(
+                async move { (i, service.thumbnail(&root, "src", &url, &u).await.unwrap()) },
+            );
+        }
+        let mut results = vec![String::new(); urls.len()];
+        while let Some(done) = tasks.join_next().await {
+            let (i, data) = done.unwrap();
+            results[i] = data;
+        }
+        assert_eq!(results, first);
+        let requests = server.received_requests().await.unwrap();
+        let thumb_requests = requests
+            .iter()
+            .filter(|r| r.url.path().starts_with("/t/"))
+            .count();
+        assert_eq!(thumb_requests, 1);
     }
 }

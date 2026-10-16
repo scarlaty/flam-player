@@ -504,7 +504,7 @@ license?, thumb_url?, download_url, size?, updated_at?, kind (telmi_zip | flam_p
 - **Revalidation des vignettes** : chaque `thumbs/<hash>.img` a un suivi `<hash>.meta.json`
   (`etag`, `last_modified`, `fetched_at`). Au-delà de 7 jours, la vignette est redemandée avec
   `If-None-Match` / `If-Modified-Since` (304 : copie conservée) ; en cas d'échec, la copie locale
-  reste servie (sans retenter pendant 10 minutes). Une vignette sans suivi (cache antérieur) est redemandée une fois. Une URL
+  reste servie ; après un échec réseau (connexion, délai, 5xx) la source n'est pas recontactée pendant 10 minutes (copies locales servies sans réseau). Une vignette sans suivi (cache antérieur) est redemandée une fois. Une URL
   de vignette modifiée a un autre nom de fichier, donc est téléchargée à nouveau. À chaque
   rafraîchissement réussi (ni hors ligne ni en erreur), les vignettes qui ne correspondent plus
   à aucune entrée sont supprimées. L'écriture d'une vignette prend le portillon du cache en
