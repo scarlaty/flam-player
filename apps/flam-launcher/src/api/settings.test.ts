@@ -11,6 +11,7 @@ const settings: Settings = {
   cache_dir: null,
   default_catalog_url: "https://exemple.org/c.json",
   theme: "dark",
+  max_downloads: 2,
 };
 const view: SettingsView = {
   settings,
