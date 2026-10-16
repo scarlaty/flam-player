@@ -22,7 +22,8 @@ export function getCacheUsage(): Promise<CacheUsage> {
 
 /**
  * `cache_clear` : supprime uniquement les sous-dossiers créés par l'application (jamais le
- * reste du dossier configuré). À appeler après confirmation de l'utilisateur.
+ * reste du dossier configuré). À appeler après confirmation de l'utilisateur. Refusé avec
+ * `player_busy` tant qu'un player tourne.
  */
 export function clearCache(): Promise<CacheCleared> {
   return invokeCommand<CacheCleared>("cache_clear");
