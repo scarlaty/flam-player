@@ -444,6 +444,8 @@ def interpret_run(res, benign=BENIGN_ERRORS):
     - ok / max_steps sans erreur : warn si la couverture est partielle, sinon ok ;
     - ok / exhausted (plus rien de nouveau, sans erreur) : warn si aucune fin jouee ou
       couverture partielle, sinon ok ;
+    - ok / conditions (#76 : des scènes restent derrière une condition non satisfaite) :
+      toujours warn ;
     - lua_error dont toutes les erreurs sont benignes (liste d'exclusions) : erreurs
       ignorees, mais l'exploration qu'elles ont interrompue reste un avertissement."""
     status = res.get("status")

@@ -377,7 +377,7 @@ do
         local F = newFrontier(N, seen, shown)
         local hasHome, frontier, homeNew = F.hasHome, F.frontier, F.homeNew
         local condFrontier, homeFrontier = F.condFrontier, F.homeFrontier
-        local nOptKeys = 0       -- options distinctes decouvertes (mesure de nouveaute)
+        local nOptKeys = 0       -- options et (option, etat d'inventaire) distincts vus (nouveaute)
         local function finish(why)
             done = true
             emit("done reason=" .. why .. " steps=" .. steps .. " visited=" .. nSeen
@@ -411,6 +411,7 @@ do
             pendingOpt = nil
             if optCount[o.key] == 0 then pending = pending - 1; progress() end
             optCount[o.key] = optCount[o.key] + 1
+            if stateCount[o.skey] == nil then nOptKeys = nOptKeys + 1 end
             stateCount[o.skey] = (stateCount[o.skey] or 0) + 1
             emit("choice action=" .. tostring(o.aid) .. " option=" .. o.k .. "/" .. o.n
                  .. " key=" .. o.key)
@@ -569,7 +570,8 @@ do
             if btn == nil then return end
             local label = m.answers and m.answers[btn] and m.answers[btn].label or "?"
             if label == "Demarrer l'histoire" and ends > 0 then
-                local verdict = F.restartVerdict(pending, nSeen + nOptKeys)
+                -- une decision par presentation du menu (pas a chaque relance du clic)
+                local verdict = acted == 0 and F.restartVerdict(pending, nSeen + nOptKeys)
                 if verdict then
                     finish(verdict)
                     goto_library()          -- retour bibliotheque (lua_close)
@@ -783,7 +785,7 @@ def explore(player_exe, story_path, timeout_s=120, seed=0, max_steps=200,
         plain = prepare(story_path, work)
         total = count_stages(plain)
         with open(os.path.join(plain, "main.lua"), "a", encoding="utf-8", newline="\n") as f:
-            f.write(DRIVER % {"frontier": FRONTIER_LUA.replace("%", "%%"), "seed": int(seed), "max_steps": int(max_steps),
+            f.write(DRIVER % {"frontier": FRONTIER_LUA, "seed": int(seed), "max_steps": int(max_steps),
                                  "back_every": max(0, int(back_every))})
         watch = _Watcher(work, stuck_s)
         args = (["--strict"] if strict else []) + [plain]

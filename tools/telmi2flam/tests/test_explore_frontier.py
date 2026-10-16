@@ -199,7 +199,7 @@ class TestFrontier(unittest.TestCase):
         self.assertIn("%(frontier)s", explore.DRIVER)
         self.assertIn("newFrontier", explore.FRONTIER_LUA)
         # pilote complet rendu : syntaxe Lua valide
-        src = explore.DRIVER % {"frontier": explore.FRONTIER_LUA.replace("%", "%%"),
+        src = explore.DRIVER % {"frontier": explore.FRONTIER_LUA,
                                 "seed": 0, "max_steps": 10, "back_every": 8}
         ok = LuaRuntime().eval("function(s) return load(s) ~= nil end")(src)
         self.assertTrue(ok)
