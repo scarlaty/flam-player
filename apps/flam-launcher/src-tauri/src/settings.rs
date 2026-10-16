@@ -64,7 +64,16 @@ pub struct Settings {
     /// Thème de l'interface. Absent des fichiers écrits avant son ajout : `System`
     /// (`#[serde(default)]`, aucune migration de schéma nécessaire).
     pub theme: Theme,
+    /// Téléchargements simultanés du pipeline d'installation (1 à
+    /// [`MAX_DOWNLOADS_LIMIT`]). Absent des fichiers écrits avant son ajout :
+    /// [`DEFAULT_MAX_DOWNLOADS`] (`#[serde(default)]`, sans migration de schéma).
+    pub max_downloads: u32,
 }
+
+/// Téléchargements simultanés par défaut.
+pub const DEFAULT_MAX_DOWNLOADS: u32 = 2;
+/// Téléchargements simultanés au plus.
+pub const MAX_DOWNLOADS_LIMIT: u32 = 4;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -75,6 +84,7 @@ impl Default for Settings {
             cache_dir: None,
             default_catalog_url: TELMI_STORE_URL.into(),
             theme: Theme::default(),
+            max_downloads: DEFAULT_MAX_DOWNLOADS,
         }
     }
 }
@@ -415,6 +425,12 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
     if let Some(dir) = &cache_dir {
         check_cache_dir(dir, protected).map_err(to_validation)?;
     }
+    if !(1..=MAX_DOWNLOADS_LIMIT).contains(&settings.max_downloads) {
+        return Err(AppError::Validation(format!(
+            "téléchargements simultanés : {} hors de l'intervalle 1 à {MAX_DOWNLOADS_LIMIT}",
+            settings.max_downloads
+        )));
+    }
     Ok(Settings {
         schema_version: SCHEMA_VERSION,
         player_path,
@@ -422,6 +438,7 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
         cache_dir,
         default_catalog_url: validate_catalog_url(&settings.default_catalog_url)?,
         theme: settings.theme,
+        max_downloads: settings.max_downloads,
     })
 }
 
@@ -688,6 +705,27 @@ mod tests {
     }
 
     #[test]
+    fn telechargements_simultanes_bornes_et_par_defaut() {
+        let old: Settings = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
+        assert_eq!(old.max_downloads, DEFAULT_MAX_DOWNLOADS);
+        for (n, ok) in [
+            (0, false),
+            (1, true),
+            (MAX_DOWNLOADS_LIMIT, true),
+            (9, false),
+        ] {
+            let result = validate_with(
+                Settings {
+                    max_downloads: n,
+                    ..Settings::default()
+                },
+                &[],
+            );
+            assert_eq!(result.is_ok(), ok, "{n}");
+        }
+    }
+
+    #[test]
     fn mise_a_jour_valide_est_persistee_et_normalisee() {
         let dir = tempfile::tempdir().unwrap();
         let player = dir.path().join("p/FLAM-Player.EXE");
@@ -701,6 +739,7 @@ mod tests {
                 default_catalog_url: " https://exemple.org/c.json ".into(),
                 schema_version: 0,
                 theme: Theme::Dark,
+                max_downloads: 3,
             })
             .unwrap();
         assert_eq!(saved.schema_version, SCHEMA_VERSION);
