@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { ToastProvider } from "./components";
 import { AppFrame } from "./features/app/AppFrame";
+import { CompatProvider } from "./features/compat/CompatProvider";
 import { LibraryProvider } from "./features/library/LibraryProvider";
 import { RecoveryProvider } from "./features/recovery/RecoveryProvider";
 import { DEMO_HASH, useRoute } from "./router";
@@ -31,7 +32,9 @@ function AppRoutes({ route }: { route: "home" | "sources" | "settings" | "librar
     <ToastProvider>
       <RecoveryProvider>
         <LibraryProvider>
-          <AppFrame route={route} />
+          <CompatProvider>
+            <AppFrame route={route} />
+          </CompatProvider>
         </LibraryProvider>
       </RecoveryProvider>
     </ToastProvider>

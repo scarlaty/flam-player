@@ -60,15 +60,12 @@ apps/flam-launcher/
       install/             Pipeline d'installation : file, téléchargement, conversion (`mod.rs`,
                            `download.rs`, `convert.rs`, `pack.rs`), commandes `install_*`
       library.rs           Bibliothèque `<cache>/library/` et `library.json`, commandes `library_*`
+      compat.rs            Statut de compatibilité (`status.json` de la campagne + conversions locales), commande `compat_statuses`
 ```
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `player`. Prévus (un module par responsabilité, créés avec leur issue) :
-
-| Module   | Rôle                                   |
-| -------- | -------------------------------------- |
-| `compat` | Statut de compatibilité d'une histoire |
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `compat`, `player`.
 
 ### Commandes Tauri
 
@@ -470,7 +467,7 @@ d'exécuter. Accesseurs Rust pour les issues suivantes : `SourcesStore::get(id)`
 `cache_usage` renvoie le dossier de cache effectif et les octets occupés ; `cache_clear`
 supprime et renvoie les octets libérés. Le dossier de cache pouvant être choisi par
 l'utilisateur, ces deux commandes ne comptent et ne suppriment **que** les sous-dossiers créés
-par l'application, listés dans `APP_CACHE_SUBDIRS` (`cache.rs`) : `archives`, `catalogs`,
+par l'application, listés dans `APP_CACHE_SUBDIRS` (`cache.rs`) : `archives`, `catalogs`, `compat-local`,
 `library`, `play`, `thumbs`. Le reste du dossier et le dossier lui-même ne sont jamais touchés ; les
 liens symboliques et jonctions ne sont ni suivis ni supprimés. `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
 sous-dossier de cache doit l'ajouter à cette liste.** L'interface demande une confirmation
@@ -575,7 +572,22 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   **Points d'accroche** (`StoryHooks`, props de `LibraryScreen` / `SourceView`) pour les issues
   voisines : `resolveState(entry)` (installée, mise à jour, incompatible…), `progressFor(entry)`
   (barre de progression, état « En cours »), `renderActions(entry)` (Télécharger, Jouer),
-  `onOpenStory(entry)` (fiche détaillée), `selectedEntryId`. Les données de l'écran
+  `compatFor(entry)` (badge de compatibilité), `onOpenStory(entry)` (fiche détaillée), `selectedEntryId`. Les données de l'écran
+
+  **Compatibilité** (`compat.rs`, `src/features/compat/`) : commande `compat_statuses` (sans argument, aucun
+  chemin ne vient du front) qui renvoie `{ entries, issue }`. Sources fusionnées :
+  le `status.json` de la campagne `tools/telmi2flam` (lu en lecture seule ; `schema_version` doit valoir 1,
+  sinon `issue = unsupported_version` et tout est « non testée » ; fichier absent : aucun problème ;
+  corrompu : `unreadable` ; plus de 8 Mio : `too_large`) et `<cache>/compat-local/launcher_results.json` (dossier vidé avec le cache ; `<cache>/compat/` ne l'est jamais), où chaque
+  conversion faite par la surcouche enregistre son résultat réel (succès, avertissements, ou échec avec le code
+  du convertisseur). Chemin du `status.json` : variable `FLAM_COMPAT_STATUS_FILE` (absolu), sinon en
+  développement `<dépôt>/.cache/telmi/compat/status.json`, sinon `<cache>/compat/status.json`.
+  Niveaux : `OK` compatible ; `OK_AVERTISSEMENTS` avertissements ; chaque `ECHEC_*` connu (`TELECHARGEMENT`, `CONVERSION`, `VALIDATION`, `EXECUTION`)
+  incompatible ; autre statut (y compris un `ECHEC_*` inconnu), fiche absente ou illisible : non testée. Une conversion locale remplace une
+  fiche périmée (`stale`), sinon le pire niveau l'emporte. Chaque carte affiche un badge supplémentaire ;
+  la raison (`summary`, sinon une phrase par statut) est visible pour les avertissements et incompatibilités.
+  `IncompatibleInstallDialog` (avertissement non bloquant avant installation d'une histoire incompatible)
+  et `compatBadge` / `describeCompat` sont prêts pour l'écran d'installation et la fiche.
   (`loadSourceData`) et l'état des sources (`LibraryProvider`) sont testés avec l'API simulée.
 
 - **Sources** : ajout d'un catalogue (nom + URL, validation en direct, erreurs du backend
