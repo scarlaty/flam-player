@@ -14,6 +14,7 @@
 //! La logique ([`Library`]) ne dépend pas de Tauri ; les commandes `library_*` passent par le
 //! service d'installation, qui sérialise les écritures avec le pipeline.
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,12 @@ pub const LIBRARY_DIR: &str = "library";
 pub const INDEX_FILE: &str = "library.json";
 /// Dossier de préparation (sous `library/`, même volume : publication par renommage).
 pub const STAGING_DIR: &str = ".staging";
+/// Suffixe de la sauvegarde d'un fichier remplacé pendant une installation.
+const BACKUP_SUFFIX: &str = ".bak";
+/// Suffixe du marqueur d'intention d'une publication en cours.
+const PENDING_SUFFIX: &str = ".pending";
+/// Verrou inter-processus de la bibliothèque, dans `library/`.
+const LOCK_FILE: &str = ".lock";
 /// Version du schéma de `library.json`.
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -47,7 +54,8 @@ pub struct LibraryEntry {
     pub size: u64,
     /// Date d'installation (secondes Unix).
     pub installed_at: u64,
-    /// Version de `telmi2flam` utilisée (`sha256:<12 hex>` du script), `None` sans conversion.
+    /// Version de `telmi2flam` utilisée (champ `version` de l'événement `start`, sinon repli
+    /// `sha256:<12 hex>` du script), `None` sans conversion.
     pub converter: Option<String>,
     /// Entrée d'origine telle que proposée par la source (source, lien, métadonnées).
     pub source: StoryEntry,
@@ -60,6 +68,15 @@ impl LibraryEntry {
         candidate.uuid == self.uuid
             && matches!((self.version, candidate.version), (Some(a), Some(b)) if a != b)
     }
+}
+
+/// Marqueur d'intention d'une publication (`.staging/<fichier>.pending`).
+#[derive(Debug, Serialize, Deserialize)]
+struct PendingMarker {
+    /// Date d'installation de la nouvelle entrée (la retrouve dans l'index si validée).
+    installed_at: u64,
+    /// Un fichier de même nom existait (il est alors en `.bak` dès le premier renommage).
+    had_previous: bool,
 }
 
 /// Contenu de `library.json`.
@@ -146,11 +163,90 @@ impl Library {
         )
     }
 
+    /// Verrou entre processus (`library/.lock`), pris pendant publication et réconciliation.
+    /// `wait` : attendre le verrou ; sinon `Ok(None)` s'il est tenu par une autre instance.
+    fn lock_file(&self, wait: bool) -> AppResult<Option<File>> {
+        std::fs::create_dir_all(&self.root)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(LOCK_FILE))?;
+        if wait {
+            file.lock()?;
+            return Ok(Some(file));
+        }
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(err)) => Err(err.into()),
+        }
+    }
+
+    /// Lit l'index et, si le verrou inter-processus est obtenu, défait les publications
+    /// interrompues. Si une autre instance tient le verrou, rien n'est réconcilié.
+    fn load_reconciled(&self) -> AppResult<Vec<LibraryEntry>> {
+        match self.lock_file(false) {
+            Ok(Some(_guard)) => self.reconcile(),
+            Ok(None) => self.load(),
+            Err(err) => {
+                tracing::warn!("verrou de la bibliothèque indisponible, lecture seule : {err}");
+                self.load()
+            }
+        }
+    }
+
+    /// Réconciliation (verrou tenu par l'appelant). **Seules** les publications qui ont un
+    /// marqueur d'intention `.staging/<fichier>.pending` sont défaites : un `.plain.pk` non
+    /// indexé sans marqueur n'est jamais supprimé. Pour un marqueur dont l'index ne contient pas
+    /// la nouvelle entrée (même `installed_at`) : le fichier publié est retiré et la sauvegarde
+    /// `.bak` restaurée ; sinon la publication était terminée et seuls les résidus partent.
+    fn reconcile(&self) -> AppResult<Vec<LibraryEntry>> {
+        let stories = self.load()?;
+        let Ok(read) = std::fs::read_dir(self.root.join(STAGING_DIR)) else {
+            return Ok(stories);
+        };
+        for item in read.flatten() {
+            let name = item.file_name().to_string_lossy().into_owned();
+            let Some(file) = name.strip_suffix(PENDING_SUFFIX) else {
+                continue;
+            };
+            let Ok(target) = self.checked(file) else {
+                continue;
+            };
+            let backup = item.path().with_file_name(format!("{file}{BACKUP_SUFFIX}"));
+            let Some(marker) = std::fs::read(item.path())
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<PendingMarker>(&bytes).ok())
+            else {
+                if backup.exists() {
+                    // Le `.bak` est peut-être la seule copie de l'ancienne version.
+                    tracing::warn!(
+                        "marqueur {} illisible : marqueur et sauvegarde conservés",
+                        item.path().display()
+                    );
+                } else {
+                    let _ = remove_if_exists(&item.path());
+                }
+                continue;
+            };
+            let committed = stories
+                .iter()
+                .any(|e| e.file == file && e.installed_at == marker.installed_at);
+            if committed {
+                finish_publication(&backup, &item.path());
+            } else if restore_publication(&target, &backup, &item.path(), marker.had_previous) {
+                let _ = remove_if_exists(&item.path());
+            }
+        }
+        Ok(stories)
+    }
+
     /// Histoires installées dont le fichier existe encore (une entrée dont le fichier a
     /// disparu est ignorée), triées par titre.
     pub fn list(&self) -> AppResult<Vec<LibraryEntry>> {
         let mut stories: Vec<LibraryEntry> = self
-            .load()?
+            .load_reconciled()?
             .into_iter()
             .filter(|e| self.checked(&e.file).is_ok_and(|p| p.is_file()))
             .collect();
@@ -177,9 +273,13 @@ impl Library {
         Ok((path, entry.title))
     }
 
-    /// Publie `staged` (un `.plain.pk` complet) comme installation de `source` : renommage
-    /// atomique vers `<uuid>-<version>.plain.pk`, mise à jour de l'index, suppression de
-    /// l'ancienne installation du même `uuid` si son fichier diffère.
+    /// Publie `staged` (un `.plain.pk` complet) comme installation de `source`.
+    ///
+    /// Ordre sûr en cas d'arrêt ou d'échec : l'éventuel fichier de même nom est d'abord mis de
+    /// côté (`.staging/<fichier>.bak`), le nouveau est renommé en place, l'index est écrit, puis
+    /// la sauvegarde et les fichiers des anciennes versions du même `uuid` sont supprimés. Un
+    /// échec avant la fin remet l'état précédent ; un arrêt brutal est réconcilié au chargement
+    /// suivant ([`Library::load_reconciled`]).
     pub fn install(
         &self,
         staged: &Path,
@@ -187,11 +287,59 @@ impl Library {
         converter: Option<String>,
         now: u64,
     ) -> AppResult<LibraryEntry> {
+        self.install_with(staged, source, converter, now, &|stories| {
+            self.save(stories)
+        })
+    }
+
+    fn install_with(
+        &self,
+        staged: &Path,
+        source: &StoryEntry,
+        converter: Option<String>,
+        now: u64,
+        save: &dyn Fn(Vec<LibraryEntry>) -> AppResult<()>,
+    ) -> AppResult<LibraryEntry> {
         let target = self.final_path(&source.uuid, source.version)?;
         let file = file_name_for(&source.uuid, source.version)?;
-        let mut stories = self.load()?;
-        std::fs::rename(staged, &target)?;
-        let size = std::fs::metadata(&target)?.len();
+        let _lock = self.lock_file(true)?;
+        let mut stories = self.reconcile()?;
+        let staging = self.staging_dir()?;
+        let backup = staging.join(format!("{file}{BACKUP_SUFFIX}"));
+        let pending = staging.join(format!("{file}{PENDING_SUFFIX}"));
+        // Une restauration restée en échec (marqueur ou `.bak` survivant à la réconciliation)
+        // ne doit pas être écrasée : on refuse sans rien toucher.
+        if pending.exists() || backup.exists() {
+            return Err(AppError::Validation(format!(
+                "restauration précédente non terminée pour {file}, réessayer plus tard"
+            )));
+        }
+        let had_previous = target.is_file();
+        // Journal d'intention : écrit avant tout renommage, effacé une fois l'index écrit.
+        storage::write_json(
+            &pending,
+            &PendingMarker {
+                installed_at: now,
+                had_previous,
+            },
+        )?;
+        if had_previous {
+            if let Err(err) = std::fs::rename(&target, &backup) {
+                let _ = remove_if_exists(&pending);
+                return Err(err.into());
+            }
+        }
+        let restore = || {
+            restore_publication(&target, &backup, &pending, had_previous);
+        };
+        let size = match std::fs::rename(staged, &target).and_then(|()| std::fs::metadata(&target))
+        {
+            Ok(meta) => meta.len(),
+            Err(err) => {
+                restore();
+                return Err(err.into());
+            }
+        };
         let entry = LibraryEntry {
             uuid: source.uuid.clone(),
             version: source.version,
@@ -202,22 +350,31 @@ impl Library {
             converter,
             source: source.clone(),
         };
-        for old in stories.iter().filter(|e| e.uuid == entry.uuid) {
-            if old.file != file {
-                if let Ok(path) = self.checked(&old.file) {
-                    remove_if_exists(&path)?;
-                }
-            }
-        }
+        let old_files: Vec<String> = stories
+            .iter()
+            .filter(|e| e.uuid == entry.uuid && e.file != file)
+            .map(|e| e.file.clone())
+            .collect();
         stories.retain(|e| e.uuid != entry.uuid && e.file != file);
         stories.push(entry.clone());
-        self.save(stories)?;
+        if let Err(err) = save(stories) {
+            restore();
+            return Err(err);
+        }
+        // L'index est à jour : le reste est du nettoyage.
+        finish_publication(&backup, &pending);
+        for old in old_files {
+            if let Ok(path) = self.checked(&old) {
+                let _ = remove_if_exists(&path);
+            }
+        }
         Ok(entry)
     }
 
     /// Désinstalle l'histoire `uuid` (fichier et entrée d'index). Inconnue : `not_found`.
     pub fn remove(&self, uuid: &str) -> AppResult<()> {
-        let mut stories = self.load()?;
+        let _lock = self.lock_file(true)?;
+        let mut stories = self.reconcile()?;
         let Some(pos) = stories.iter().position(|e| e.uuid == uuid) else {
             return Err(AppError::NotFound(format!(
                 "histoire non installée : {uuid}"
@@ -228,6 +385,48 @@ impl Library {
             remove_if_exists(&path)?;
         }
         self.save(stories)
+    }
+}
+
+/// Défait une publication : remet la sauvegarde `.bak` en place (le `rename` remplace la cible,
+/// qui n'est donc jamais supprimée avant), ou retire le fichier publié s'il n'y avait pas
+/// d'ancienne version. Le marqueur `pending` n'est effacé **que si la restauration a réussi** ;
+/// sinon marqueur et `.bak` restent pour la réconciliation suivante. Renvoie `true` si réussie.
+fn restore_publication(target: &Path, backup: &Path, pending: &Path, had_previous: bool) -> bool {
+    let restored = if backup.is_file() {
+        std::fs::rename(backup, target)
+    } else if had_previous {
+        // Sauvegarde absente : rien à restaurer (déjà remise en place).
+        Ok(())
+    } else {
+        remove_if_exists(target)
+    };
+    if let Err(err) = restored {
+        tracing::warn!(
+            "restauration de {} impossible, marqueur et sauvegarde conservés : {err}",
+            target.display()
+        );
+        return false;
+    }
+    if let Err(err) = remove_if_exists(pending) {
+        tracing::warn!("marqueur {} non effacé : {err}", pending.display());
+    }
+    true
+}
+
+/// Nettoyage d'une publication terminée : supprime le `.bak` **puis** le marqueur, et n'efface
+/// le marqueur que si le `.bak` est parti. Sinon le marqueur reste et la réconciliation suivante
+/// retente (un `.bak` sans marqueur ne serait jamais revu et bloquerait le fichier).
+fn finish_publication(backup: &Path, pending: &Path) {
+    if let Err(err) = remove_if_exists(backup) {
+        tracing::warn!(
+            "sauvegarde {} non supprimée, marqueur conservé : {err}",
+            backup.display()
+        );
+        return;
+    }
+    if let Err(err) = remove_if_exists(pending) {
+        tracing::warn!("marqueur {} non effacé : {err}", pending.display());
     }
 }
 
@@ -393,6 +592,248 @@ pub(crate) mod tests {
             })
             .count();
         assert_eq!(backups, 1);
+    }
+
+    #[test]
+    fn echec_d_ecriture_de_l_index_restaure_l_etat_precedent() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"ancien");
+        lib.install(&a, &story("abc", Some(2)), None, 1).unwrap();
+        let fail = |_: Vec<LibraryEntry>| Err(AppError::Io(std::io::Error::other("disque plein")));
+        let b = staged(&lib, "b.plain.pk", b"nouveau!");
+        let err = lib
+            .install_with(&b, &story("abc", Some(2)), None, 2, &fail)
+            .unwrap_err();
+        assert_eq!(err.kind(), "io");
+        let path = dir.path().join("library/abc-2.plain.pk");
+        assert_eq!(std::fs::read(&path).unwrap(), b"ancien");
+        let list = lib.list().unwrap();
+        assert_eq!((list.len(), list[0].size), (1, 6));
+        // Nouvelle histoire : rien ne reste publié.
+        let c = staged(&lib, "c.plain.pk", b"x");
+        lib.install_with(&c, &story("neuf", Some(1)), None, 3, &fail)
+            .unwrap_err();
+        assert!(!dir.path().join("library/neuf-1.plain.pk").exists());
+    }
+
+    fn marker(root: &Path, file: &str, installed_at: u64, had_previous: bool) {
+        storage::write_json(
+            &root.join(format!(".staging/{file}.pending")),
+            &PendingMarker {
+                installed_at,
+                had_previous,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fichier_non_indexe_prexistant_conserve() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"x");
+        lib.install(&a, &story("abc", Some(1)), None, 1).unwrap();
+        let root = dir.path().join("library");
+        std::fs::write(root.join("perso.plain.pk"), b"a moi").unwrap();
+        assert_eq!(lib.list().unwrap().len(), 1);
+        assert_eq!(
+            std::fs::read(root.join("perso.plain.pk")).unwrap(),
+            b"a moi"
+        );
+        // Index valide et vide : rien n'est supprimé non plus.
+        lib.remove("abc").unwrap();
+        assert!(lib.list().unwrap().is_empty());
+        assert!(root.join("perso.plain.pk").exists());
+    }
+
+    #[test]
+    fn publication_interrompue_defaite_grace_au_marqueur() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"ancien");
+        lib.install(&a, &story("abc", Some(2)), None, 1).unwrap();
+        let root = dir.path().join("library");
+        // Arrêt simulé : ancien en sauvegarde, nouveau publié, index inchangé, marqueur présent.
+        marker(&root, "abc-2.plain.pk", 2, true);
+        std::fs::rename(
+            root.join("abc-2.plain.pk"),
+            root.join(".staging/abc-2.plain.pk.bak"),
+        )
+        .unwrap();
+        std::fs::write(root.join("abc-2.plain.pk"), b"nouveau, pas indexe").unwrap();
+        assert_eq!(lib.list().unwrap().len(), 1);
+        assert_eq!(
+            std::fs::read(root.join("abc-2.plain.pk")).unwrap(),
+            b"ancien"
+        );
+        assert!(!root.join(".staging/abc-2.plain.pk.bak").exists());
+        assert!(!root.join(".staging/abc-2.plain.pk.pending").exists());
+        // Nouvelle histoire interrompue : le fichier publié est retiré.
+        marker(&root, "neuf-1.plain.pk", 3, false);
+        std::fs::write(root.join("neuf-1.plain.pk"), b"x").unwrap();
+        lib.list().unwrap();
+        assert!(!root.join("neuf-1.plain.pk").exists());
+        // Publication terminée (index à jour) mais marqueur resté : le fichier est conservé.
+        marker(&root, "abc-2.plain.pk", 1, true);
+        lib.list().unwrap();
+        assert_eq!(
+            std::fs::read(root.join("abc-2.plain.pk")).unwrap(),
+            b"ancien"
+        );
+        assert!(!root.join(".staging/abc-2.plain.pk.pending").exists());
+        // Un index illisible ne fait rien supprimer.
+        std::fs::write(root.join(INDEX_FILE), b"{pas du json").unwrap();
+        assert!(lib.list().unwrap().is_empty());
+        assert!(root.join("abc-2.plain.pk").exists());
+    }
+
+    #[test]
+    fn restauration_en_echec_garde_marqueur_et_sauvegarde() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"ancien");
+        lib.install(&a, &story("abc", Some(2)), None, 1).unwrap();
+        let root = dir.path().join("library");
+        let target = root.join("abc-2.plain.pk");
+        let backup = root.join(".staging/abc-2.plain.pk.bak");
+        let pending = root.join(".staging/abc-2.plain.pk.pending");
+        // La cible devient un dossier non vide : le rename de la sauvegarde échoue.
+        let blocked = |_: Vec<LibraryEntry>| -> AppResult<()> {
+            std::fs::remove_file(&target)?;
+            std::fs::create_dir(&target)?;
+            std::fs::write(target.join("x"), b"x")?;
+            Err(AppError::Io(std::io::Error::other("disque plein")))
+        };
+        let b = staged(&lib, "b.plain.pk", b"nouveau!");
+        lib.install_with(&b, &story("abc", Some(2)), None, 2, &blocked)
+            .unwrap_err();
+        assert!(pending.exists() && backup.is_file(), "journal conservé");
+        // Une nouvelle installation du même fichier est refusée, sans rien toucher.
+        let c = staged(&lib, "c.plain.pk", b"autre");
+        let err = lib
+            .install(&c, &story("abc", Some(2)), None, 3)
+            .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "{err}");
+        assert!(pending.exists() && backup.is_file(), "journal intact");
+        assert_eq!(std::fs::read(&backup).unwrap(), b"ancien");
+        assert!(c.exists(), "archive préparée non consommée");
+        // La réconciliation retente tant que la cible est bloquée (entrée masquée : pas un fichier).
+        assert!(lib.list().unwrap().is_empty());
+        assert!(pending.exists() && backup.is_file());
+        // Cible libérée : la réconciliation suivante restaure l'ancienne version.
+        std::fs::remove_dir_all(&target).unwrap();
+        assert_eq!(lib.list().unwrap().len(), 1);
+        assert_eq!(std::fs::read(&target).unwrap(), b"ancien");
+        assert!(!pending.exists() && !backup.exists());
+    }
+
+    #[test]
+    fn nettoyage_bloque_garde_le_marqueur_puis_reconciliation_nettoie() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"ancien");
+        lib.install(&a, &story("abc", Some(2)), None, 1).unwrap();
+        let root = dir.path().join("library");
+        let backup = root.join(".staging/abc-2.plain.pk.bak");
+        let pending = root.join(".staging/abc-2.plain.pk.pending");
+        // Index écrit pour de bon, puis le `.bak` devient un dossier non vide (non supprimable).
+        let block = |stories: Vec<LibraryEntry>| -> AppResult<()> {
+            lib.save(stories)?;
+            std::fs::remove_file(&backup)?;
+            std::fs::create_dir(&backup)?;
+            std::fs::write(backup.join("x"), b"x")?;
+            Ok(())
+        };
+        let b = staged(&lib, "b.plain.pk", b"nouveau!");
+        lib.install_with(&b, &story("abc", Some(2)), None, 2, &block)
+            .unwrap();
+        assert!(pending.exists() && backup.exists(), "marqueur conservé");
+        assert_eq!(lib.list().unwrap().len(), 1);
+        assert!(pending.exists(), "obstacle toujours là");
+        std::fs::remove_dir_all(&backup).unwrap();
+        assert_eq!(lib.list().unwrap().len(), 1);
+        assert!(!pending.exists() && !backup.exists());
+        assert_eq!(
+            std::fs::read(root.join("abc-2.plain.pk")).unwrap(),
+            b"nouveau!"
+        );
+        let c = staged(&lib, "c.plain.pk", b"encore");
+        lib.install(&c, &story("abc", Some(2)), None, 3).unwrap();
+    }
+
+    #[test]
+    fn marqueur_illisible_avec_sauvegarde_ne_supprime_rien() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let root = dir.path().join("library");
+        lib.list().unwrap();
+        lib.staging_dir().unwrap();
+        let backup = root.join(".staging/abc-2.plain.pk.bak");
+        let pending = root.join(".staging/abc-2.plain.pk.pending");
+        std::fs::write(&pending, b"{pas du json").unwrap();
+        std::fs::write(&backup, b"ancien").unwrap();
+        lib.list().unwrap();
+        assert!(pending.exists() && backup.is_file());
+        // Sans `.bak`, un marqueur illisible n'a plus d'intérêt : il est nettoyé.
+        std::fs::remove_file(&backup).unwrap();
+        lib.list().unwrap();
+        assert!(!pending.exists());
+    }
+
+    #[test]
+    fn restauration_sans_ancienne_version_en_echec_garde_le_marqueur() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let root = dir.path().join("library");
+        lib.list().unwrap();
+        lib.staging_dir().unwrap();
+        let target = root.join("neuf-1.plain.pk");
+        marker(&root, "neuf-1.plain.pk", 3, false);
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("x"), b"x").unwrap();
+        lib.list().unwrap();
+        assert!(root.join(".staging/neuf-1.plain.pk.pending").exists());
+        std::fs::remove_dir_all(&target).unwrap();
+        std::fs::write(&target, b"x").unwrap();
+        lib.list().unwrap();
+        assert!(!target.exists());
+        assert!(!root.join(".staging/neuf-1.plain.pk.pending").exists());
+    }
+
+    #[test]
+    fn lecture_sans_verrou_disponible_retombe_sur_l_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"x");
+        lib.install(&a, &story("abc", Some(1)), None, 1).unwrap();
+        // `.lock` devient un dossier : l'ouverture du verrou échoue.
+        let lock = dir.path().join("library").join(LOCK_FILE);
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::create_dir(&lock).unwrap();
+        assert!(lib.lock_file(false).is_err());
+        assert_eq!(lib.list().unwrap().len(), 1);
+        assert!(lib.install(&a, &story("abc", Some(1)), None, 2).is_err());
+    }
+
+    #[test]
+    fn une_autre_instance_ne_reconcilie_pas_pendant_une_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = Library::new(dir.path());
+        let second = Library::new(dir.path());
+        let a = staged(&first, "a.plain.pk", b"x");
+        first.install(&a, &story("abc", Some(1)), None, 1).unwrap();
+        let root = dir.path().join("library");
+        marker(&root, "neuf-1.plain.pk", 9, false);
+        std::fs::write(root.join("neuf-1.plain.pk"), b"en cours").unwrap();
+        {
+            let _held = first.lock_file(true).unwrap().expect("verrou");
+            assert!(second.lock_file(false).unwrap().is_none());
+            assert_eq!(second.list().unwrap().len(), 1);
+            assert!(root.join("neuf-1.plain.pk").exists(), "non réconcilié");
+        }
+        second.list().unwrap();
+        assert!(!root.join("neuf-1.plain.pk").exists());
     }
 
     #[test]

@@ -24,19 +24,24 @@ part = "%s.%d.part" % (out, os.getpid())
 if mode == "noise":
     print("ceci n'est pas du JSON", flush=True)
     sys.stderr.buffer.write("caf\xe9 en cp1252\n".encode("cp1252")); sys.stderr.flush()
-ev(event="start", total=4, phases=["images", "audio", "scripts", "zip"], input=src)
+extra = {"version": "9.9.9-test"} if mode == "versioned" else {}
+if mode == "tree":
+    import subprocess
+    g = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    open(out + ".gpid", "w").write(str(g.pid))
+ev(event="start", total=4, phases=["images", "audio", "scripts", "zip"], input=src, **extra)
 if mode == "fail":
     ev(event="error", code="missing_asset", message="image manquante : s1.png", exit=5)
     sys.exit(5)
 if mode == "crash":
     sys.stderr.write("Traceback: boum\n"); sys.exit(6)
-if mode in ("slow", "stubborn"):
+if mode in ("slow", "stubborn", "tree"):
     open(part, "wb").write(b"partiel")
     def stop(*a):
         os.remove(part)
         ev(event="error", code="cancelled", message="annule", exit=130)
         sys.exit(130)
-    signal.signal(getattr(signal, "SIGBREAK", signal.SIGTERM), signal.SIG_IGN if mode == "stubborn" else stop)
+    signal.signal(getattr(signal, "SIGBREAK", signal.SIGTERM), signal.SIG_IGN if mode in ("stubborn", "tree") else stop)
     ev(event="step", phase="images", done=0, total=10)
     for _ in range(600):
         time.sleep(0.05)
@@ -164,7 +169,20 @@ impl Ctx {
     }
 
     async fn finished(&self, id: &str) -> InstallTask {
-        self.wait(id, |t| !t.state.is_active()).await
+        let task = self.wait(id, |t| !t.state.is_active()).await;
+        self.service.flush_queue().await;
+        // L'événement final suit l'écriture de la file : on l'attend aussi.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline
+            && !self.events.all().iter().any(|e| match e {
+                Recorded::Done(d) => d.task_id == id,
+                Recorded::Failed(f) => f.task_id == id,
+                Recorded::Progress(_) => false,
+            })
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        task
     }
 
     fn queue(&self) -> Vec<QueuedTask> {
@@ -562,6 +580,7 @@ async fn annulation_pendant_le_telechargement() {
     })
     .await;
     // La file persistée garde le validateur pour une reprise.
+    ctx.service.flush_queue().await;
     assert_eq!(ctx.queue()[0].validator.etag.as_deref(), Some("\"e\""));
     ctx.service.cancel(&task.id).unwrap();
     let cancelled = ctx.finished(&task.id).await;
@@ -1035,4 +1054,276 @@ async fn sans_content_length_une_archive_tronquee_est_refusee() {
     let error = ctx.finished(&task.id).await.error.unwrap();
     assert_eq!(error.kind, "download_invalid", "{error:?}");
     assert!(!ctx.cache().join("archives/abc-2.zip").exists());
+}
+
+// --- Suivis de revue (#62) ---------------------------------------------------------------------
+
+/// `.plain.pk` valide dont le titre (donc le contenu) dépend de `title`.
+fn plain_pk(title: &str) -> Vec<u8> {
+    let tmp = tempfile::tempdir().unwrap();
+    let plain = tmp.path().join("h.plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(plain.join("info.plain"), format!("{title}\n")).unwrap();
+    std::fs::write(plain.join("uuid.bin"), [1u8; 16]).unwrap();
+    std::fs::write(plain.join("main.lua"), "-- x").unwrap();
+    let out = tmp.path().join("h.plain.pk");
+    pack::pack_plain_dir(&plain, &out).unwrap();
+    std::fs::read(out).unwrap()
+}
+
+fn pk_entry(url: &str) -> StoryEntry {
+    let mut entry = remote(url, "abc");
+    entry.kind = StoryKind::FlamPk;
+    entry
+}
+
+#[tokio::test]
+async fn version_du_convertisseur_lue_dans_l_evenement_start() {
+    let Some(py) = python() else { return };
+    let ctx = Ctx::new(Some(py));
+    let server = serve(zip_bytes("versioned")).await;
+    let task = ctx
+        .service
+        .start(remote(&format!("{}/a.zip", server.uri()), "abc"))
+        .unwrap();
+    assert_eq!(ctx.finished(&task.id).await.state, TaskState::Done);
+    let library = ctx.service.library_list().await.unwrap();
+    assert_eq!(library[0].converter.as_deref(), Some("9.9.9-test"));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn arret_force_termine_aussi_les_sous_processus() {
+    let Some(py) = python() else { return };
+    let ctx = Ctx::with_dir(
+        tempfile::tempdir().unwrap(),
+        Some(py),
+        Duration::from_millis(500),
+    );
+    let server = serve(zip_bytes("tree")).await;
+    let task = ctx
+        .service
+        .start(remote(&format!("{}/a.zip", server.uri()), "abc"))
+        .unwrap();
+    ctx.wait(&task.id, |t| t.state == TaskState::Converting)
+        .await;
+    let gpid_file = ctx
+        .cache()
+        .join("library/.staging")
+        .join(format!("{}.plain.pk.gpid", task.id));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while std::fs::read_to_string(&gpid_file)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        assert!(Instant::now() < deadline, "pas de sous-processus");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let pid = std::fs::read_to_string(&gpid_file).unwrap();
+    let alive = |pid: &str| {
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).contains(pid)
+    };
+    assert!(alive(&pid), "le sous-processus tourne avant l'annulation");
+    ctx.service.cancel(&task.id).unwrap();
+    assert_eq!(ctx.finished(&task.id).await.state, TaskState::Cancelled);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while alive(&pid) {
+        assert!(Instant::now() < deadline, "sous-processus {pid} vivant");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn relance_apres_coupure_reprend_le_part() {
+    let ctx = Ctx::new(None);
+    let pk = plain_pk("Titre");
+    let half = pk.len() / 2;
+    let ranges = Arc::new(Mutex::new(Vec::new()));
+    let seen = ranges.clone();
+    let body = pk.clone();
+    let (url, _) = raw_server(Arc::new(move |range, if_range| {
+        lock(&seen).push((range.clone(), if_range));
+        match range {
+            None => RawReply {
+                head: format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"e\"\r\nConnection: close\r\n\r\n",
+                    body.len()
+                ),
+                body: body[..half].to_vec(),
+                stall: false,
+            },
+            Some(_) => RawReply {
+                head: format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {half}-{}/{}\r\nETag: \"e\"\r\n\r\n",
+                    body.len() - half,
+                    body.len() - 1,
+                    body.len()
+                ),
+                body: body[half..].to_vec(),
+                stall: false,
+            },
+        }
+    }))
+    .await;
+    let first = ctx.service.start(pk_entry(&url)).unwrap();
+    let failed = ctx.finished(&first.id).await;
+    assert_eq!(failed.state, TaskState::Failed, "{failed:?}");
+    assert!(ctx.cache().join("archives/abc-2.plain.pk.part").is_file());
+    // Une nouvelle demande (nouvelle tâche, sans validateur) reprend le `.part`.
+    let second = ctx.service.start(pk_entry(&url)).unwrap();
+    assert_ne!(second.id, first.id);
+    let done = ctx.finished(&second.id).await;
+    assert_eq!(done.state, TaskState::Done, "{done:?}");
+    assert_eq!(
+        lock(&ranges).last().cloned(),
+        Some((Some(format!("bytes={half}-")), Some("\"e\"".into())))
+    );
+    let library = ctx.service.library_list().await.unwrap();
+    assert_eq!(
+        std::fs::read(ctx.cache().join("library").join(&library[0].file)).unwrap(),
+        pk
+    );
+}
+
+/// Dépose `bytes` comme archive déjà téléchargée, mémorisée pour le lien `url`.
+fn preplace_archive(ctx: &Ctx, bytes: &[u8], url: &str) {
+    let dir = ctx.cache().join("archives");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join("abc-2.plain.pk");
+    std::fs::write(&dest, bytes).unwrap();
+    storage::write_json(
+        &meta_path(&dest),
+        &ArchiveMeta {
+            url: url.to_string(),
+            validator: Validator::default(),
+            size: Some(bytes.len() as u64),
+        },
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn archive_d_un_autre_lien_non_reutilisee() {
+    let ctx = Ctx::new(None);
+    let fresh = plain_pk("Nouveau");
+    let body = fresh.clone();
+    let (url, count) = raw_server(Arc::new(move |_, _| RawReply {
+        head: format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()),
+        body: body.clone(),
+        stall: false,
+    }))
+    .await;
+    preplace_archive(&ctx, &plain_pk("Ancien"), "https://autre.example.test/x.pk");
+    let task = ctx.service.start(pk_entry(&url)).unwrap();
+    assert_eq!(ctx.finished(&task.id).await.state, TaskState::Done);
+    assert_eq!(count.load(Ordering::SeqCst), 1, "archive retéléchargée");
+    let library = ctx.service.library_list().await.unwrap();
+    let installed = std::fs::read(ctx.cache().join("library").join(&library[0].file)).unwrap();
+    assert_eq!(installed, fresh);
+}
+
+#[tokio::test]
+async fn archive_du_meme_lien_reutilisee_sinon_refusee() {
+    let ctx = Ctx::new(None);
+    let (url, count) = raw_server(Arc::new(|_, _| RawReply {
+        head: "HTTP/1.1 500 Oops\r\nContent-Length: 0\r\n\r\n".into(),
+        body: Vec::new(),
+        stall: false,
+    }))
+    .await;
+    let kept = plain_pk("Conservee");
+    preplace_archive(&ctx, &kept, &url);
+    let task = ctx.service.start(pk_entry(&url)).unwrap();
+    assert_eq!(ctx.finished(&task.id).await.state, TaskState::Done);
+    assert_eq!(count.load(Ordering::SeqCst), 0, "aucune requête");
+    let library = ctx.service.library_list().await.unwrap();
+    assert_eq!(
+        std::fs::read(ctx.cache().join("library").join(&library[0].file)).unwrap(),
+        kept
+    );
+    // Sans mémoire du lien, ou avec une taille différente : jamais réutilisée (donc
+    // retéléchargée, ce que le serveur de test refuse).
+    for forget_meta in [true, false] {
+        let dest = ctx.cache().join("archives/abc-2.plain.pk");
+        preplace_archive(&ctx, &kept, &url);
+        if forget_meta {
+            std::fs::remove_file(meta_path(&dest)).unwrap();
+        } else {
+            std::fs::write(&dest, [&kept[..], b"+"].concat()).unwrap();
+        }
+        let task = ctx.service.start(pk_entry(&url)).unwrap();
+        let failed = ctx.finished(&task.id).await;
+        assert_eq!(failed.state, TaskState::Failed, "{failed:?}");
+        assert_eq!(failed.error.unwrap().kind, "network");
+    }
+}
+
+#[tokio::test]
+async fn ecriture_de_file_ignore_une_capture_perimee() {
+    let ctx = Ctx::new(None);
+    let newer = QueueSnapshot {
+        seq: 2,
+        bytes: b"deux".to_vec(),
+    };
+    let older = QueueSnapshot {
+        seq: 1,
+        bytes: b"un".to_vec(),
+    };
+    InstallService::write_queue_blocking(&ctx.service.0, &newer);
+    InstallService::write_queue_blocking(&ctx.service.0, &older);
+    assert_eq!(
+        std::fs::read(ctx.dir.path().join("config").join(QUEUE_FILE)).unwrap(),
+        b"deux"
+    );
+}
+
+#[tokio::test]
+async fn capture_recente_en_echec_n_autorise_pas_une_plus_ancienne() {
+    let ctx = Ctx::new(None);
+    let path = ctx.dir.path().join("config").join(QUEUE_FILE);
+    std::fs::create_dir_all(&path).unwrap();
+    let newer = QueueSnapshot {
+        seq: 2,
+        bytes: b"deux".to_vec(),
+    };
+    InstallService::write_queue_blocking(&ctx.service.0, &newer);
+    std::fs::remove_dir_all(&path).unwrap();
+    let older = QueueSnapshot {
+        seq: 1,
+        bytes: b"un".to_vec(),
+    };
+    InstallService::write_queue_blocking(&ctx.service.0, &older);
+    assert!(!path.exists(), "la capture ancienne ne doit pas s'écrire");
+}
+
+#[test]
+fn memoire_d_archive_bornee_et_revalidee() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("abc-2.plain.pk");
+    let meta = meta_path(&dest);
+    let write = |etag: &str| {
+        let json = serde_json::json!({
+            "url": "https://h.example.test/a.zip",
+            "validator": { "etag": etag, "last_modified": null },
+            "size": 3
+        });
+        std::fs::write(&meta, json.to_string()).unwrap();
+    };
+    write("\"ok\"");
+    let read = read_archive_meta(&meta).unwrap();
+    assert_eq!(read.validator.etag.as_deref(), Some("\"ok\""));
+    // ETag invalide : validateur vide, lien conservé.
+    for bad in ["a\r\nb", "é", &"x".repeat(300)] {
+        write(bad);
+        let read = read_archive_meta(&meta).unwrap();
+        assert_eq!(read.validator, Validator::default(), "{bad:?}");
+        assert_eq!(read.url, "https://h.example.test/a.zip");
+    }
+    // Fichier trop gros : ignoré.
+    std::fs::write(&meta, vec![b' '; 5000]).unwrap();
+    assert!(read_archive_meta(&meta).is_none());
 }
