@@ -485,6 +485,38 @@ mod tests {
         assert_eq!(c.wait_exit().code, Some(3));
     }
 
+    /// Vérification manuelle avec le vrai player (fenêtre SDL) :
+    /// `FLAM_PLAYER_EXE=... FLAM_STORY=...\x.plain.pk cargo test real_player -- --ignored`.
+    /// Le player est tué (`taskkill`) après 3 s ; copier l'histoire dans un dossier jetable
+    /// (le player extrait l'archive à côté d'elle).
+    #[test]
+    #[ignore = "lance le vrai flam-player"]
+    fn real_player() {
+        let exe = PathBuf::from(std::env::var("FLAM_PLAYER_EXE").unwrap());
+        let story = PathBuf::from(std::env::var("FLAM_STORY").unwrap());
+        let c = ctx();
+        let session = c
+            .service
+            .launch(&exe, &story, "library", "real", "Réel")
+            .unwrap();
+        std::thread::sleep(Duration::from_secs(3));
+        assert_eq!(
+            c.service.status(),
+            Some(session.clone()),
+            "le player tourne"
+        );
+        let kill = Command::new("taskkill")
+            .args(["/PID", &session.pid.to_string(), "/F"])
+            .output()
+            .unwrap();
+        assert!(kill.status.success());
+        let done = c.wait_exit();
+        println!("{done:?}");
+        assert!(!done.success);
+        assert!(done.duration_ms >= 2500);
+        assert_eq!(c.service.status(), None);
+    }
+
     fn entry(kind: StoryKind, url: &str) -> StoryEntry {
         StoryEntry {
             source_id: "s".into(),
