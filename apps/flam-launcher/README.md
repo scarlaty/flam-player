@@ -146,7 +146,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `install_cancel`       | `task_id`                  | rien                        | `install`  |
 | `install_list`         |                            | `InstallTask[]`             | `install`  |
 | `library_list`         |                            | `LibraryEntry[]`            | `library`  |
-| `library_remove`       | `uuid`                     | rien                        | `library`  |
+| `library_remove`       | `uuid`, `purge_saves?`     | rien                        | `library`  |
 | `player_launch`        | `uuid`                     | `PlayerSession`             | `player`   |
 | `player_launch_folder` | `source_id`, `entry_id`    | `PlayerSession`             | `player`   |
 | `player_status`        |                            | `PlayerSession \| null`     | `player`   |
@@ -341,13 +341,13 @@ license?, thumb_url?, download_url, size?, updated_at?, kind (telmi_zip | flam_p
 Convention : événements émis par le backend, nommés `domaine://action` (ex. `install://progress`),
 avec une charge utile sérialisable typée côté `src/api/`.
 
-| Événement            | Charge                                                                                                                     |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `install://progress` | `{ task_id, state, percent, received, total, phase }` (au plus toutes les 200 ms par tâche, plus chaque changement d'état) |
-| `install://done`     | `{ task_id, entry: LibraryEntry, warnings }`                                                                               |
-| `install://error`    | `{ task_id, state: "failed" \| "cancelled", error: TaskError }`                                                            |
-| `player://started`   | `PlayerSession { origin, uuid, title, pid, started_at }`                                                                   |
-| `player://exited`    | `{ session, code, success, duration_ms, stderr }` (`code` nul : processus tué)                                             |
+| Événement            | Charge                                                                                                                                                          |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `install://progress` | `{ task_id, state, percent, received, total, phase }` (au plus toutes les 200 ms par tâche, plus chaque changement d'état)                                      |
+| `install://done`     | `{ task_id, entry: LibraryEntry, warnings }`                                                                                                                    |
+| `install://error`    | `{ task_id, state: "failed" \| "cancelled", error: TaskError }`                                                                                                 |
+| `player://started`   | `PlayerSession { origin, uuid, title, pid, started_at }`                                                                                                        |
+| `player://exited`    | `{ session, code, success, duration_ms, stderr, saves_error }` (`code` nul : processus tué ; `saves_error` : progression non conservée telle quelle, sinon nul) |
 
 ### Lancement du player (`player`)
 
@@ -377,9 +377,56 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   créneau), `<copie>/saves/` est rapatrié (copie vers un dossier `.tmp` voisin puis échange par
   renommage, l'ancienne version étant gardée en `.old` jusqu'au succès et reprise au lancement
   suivant si l'application s'arrête entre les deux). Liens ignorés, au plus 5000 fichiers et
-  64 Mio ; au-delà, la sauvegarde n'est pas conservée (erreur tracée). Le nom du sous-dossier
+  64 Mio, 16 niveaux ; au-delà, voir « Limites des sauvegardes ». Le nom du sous-dossier
   suit le fichier lancé : une nouvelle version d'une histoire de la bibliothèque
   (`<uuid>-<version>.plain.pk`) repart donc d'une progression vierge.
+- **Limites des sauvegardes** : au-delà des limites (5000 fichiers, 64 Mio, 16 niveaux), la
+  progression n'est plus un motif de blocage. Le `saves/` trop gros est mis de côté en
+  `<config>/saves/<empreinte>.rejected` (**une seule génération** : un nouveau rejet remplace
+  le précédent, remplacé seulement une fois le nouveau contenu en sécurité dans
+  `<empreinte>.rejected.new` ; si le renommage échoue (autre volume), copie sans aucune limite
+  (profondeur comprise) puis suppression de la source seulement après réussite : jamais de
+  suppression sans copie), la version précédente est
+  conservée, un avertissement est tracé et le message est renvoyé dans
+  `player://exited.saves_error` (`string | null` côté TS) : l'interface doit l'afficher. Même
+  traitement d'une sauvegarde conservée devenue trop grosse au moment de la restaurer (le
+  lancement a lieu sans progression, l'information est portée par la fin de cette partie).
+  Au-delà de 16 niveaux, c'est une erreur explicite (« arborescence trop profonde »), plus
+  jamais une copie tronquée en silence. Les autres échecs (disque plein, fichier verrouillé)
+  restent des erreurs : au rapatriement de fin de partie ils sont aussi dans `saves_error`, au
+  lancement ils refusent le lancement sans rien supprimer.
+- **Compromis sur un plantage du player** : le rapatriement a lieu aussi quand le player
+  échoue ; un `saves/` partiel (écriture interrompue) remplace donc la version précédente, qui
+  n'est pas gardée au-delà de l'échange (`.old` supprimé après succès). Choix assumé : sans lui,
+  une partie jouée longtemps avant un plantage serait perdue. Si cela pose problème, garder
+  `.old` jusqu'au rapatriement suivant est une évolution simple.
+- **Progression supprimée à la main** : effacer `<config>/saves/<empreinte>` à la main ne remet
+  pas la progression à zéro tant que `<cache>/play/<empreinte>/saves` existe : elle est
+  rapatriée depuis la copie de travail au lancement suivant (et ainsi « revient »). Pour une
+  vraie remise à zéro, supprimer aussi la copie de travail (« Vider le cache » le fait) ou
+  désinstaller avec `purge_saves`. Si l'interface ajoute une remise à zéro, elle devra purger
+  les deux.
+- **Désinstallation et mise à jour** : `library_remove(uuid, purge_saves?)` supprime la copie de
+  travail `<cache>/play/<empreinte>/` ; la progression (`<config>/saves/<empreinte>/` et ses
+  `.tmp`, `.old`, `.rejected`) n'est supprimée que si `purge_saves` est vrai (défaut : faux,
+  une progression d'enfant ne se perd jamais par défaut ; réinstaller l'histoire la retrouve).
+  Refusé avec `player_busy` si le player lit cette histoire. Tout se passe sous le créneau du player (un lancement ne peut pas s'intercaler ; un lancement
+  qui attendait relit l'index sous le créneau et reçoit `not_found`) : vérification de
+  l'installation (`not_found` avant toute suppression), puis purge, puis retrait. La purge est
+  faite **avant** le retrait de la bibliothèque : un échec laisse
+  l'histoire installée (désinstallation à retenter). Les `.rejected` ne sont libérés qu'avec
+  `purge_saves` (une génération par histoire au plus). Aucun composant n'affiche encore
+  `saves_error` ni n'appelle `purge_saves` (suite : #18). Mettre à jour une histoire
+  (nouvelle version du même `uuid`) ne supprime rien : la progression de l'ancienne version
+  reste dans `saves/<empreinte>/<uuid>-<ancienne version>.plain.pk/…` (le player relit
+  `saves/<nom du fichier lancé>`, voir ci-dessus : la nouvelle version repart de zéro) et n'est
+  libérée qu'à la désinstallation avec `purge_saves`. Sans UI pour l'instant (suite : #18).
+- **Statut sans blocage** : `player_status` (commande `async`) utilise `try_lock` : le créneau
+  est tenu pendant la préparation d'un lancement, un vidage du cache (`while_idle`) et une
+  désinstallation (`while_not_playing`, possible pendant qu'un player lit une autre histoire), et
+  ne doit pas bloquer un worker tokio. Créneau tenu : réponse `null` **même si un player
+  tourne** (pas une preuve d'absence) ; fiez-vous à `player://started` / `player://exited`. La
+  règle du player unique reste garantie par `launch` (`player_busy`).
 - **Partie non rapatriée** : si le launcher a été fermé ou tué pendant la partie, ou si le
   rapatriement a échoué, `<copie>/saves/` existe encore au lancement suivant. `stage` le
   rapatrie (même fonction, idempotente) **avant** de vider la copie de travail ; en cas
@@ -389,6 +436,11 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
 - Tests : l'exemple `src-tauri/examples/fake_player.rs` (scénario lu dans le fichier d'histoire)
   sert de faux player ; `cargo test` le construit. Wrappers : `src/api/player.ts`
   (`launchPlayer`, `launchFolderStory`, `getPlayerStatus`, `onPlayerStarted`, `onPlayerExited`).
+- **Instance unique du launcher** : plugin officiel `tauri-plugin-single-instance` (2.4.5,
+  MIT ou Apache-2.0, enregistré en premier dans `lib.rs`). Un second lancement se termine
+  aussitôt et ramène la fenêtre de la première instance au premier plan (restaurée, focus).
+  Deux launchers ne se disputent donc ni le cache, ni `<config>/saves/`, ni la file
+  d'installation.
 - Non fait : réduire la fenêtre de la surcouche pendant la lecture (option facultative).
 
 ### Pipeline d'installation (`install`, `library`)
