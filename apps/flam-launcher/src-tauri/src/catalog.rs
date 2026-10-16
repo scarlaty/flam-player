@@ -535,6 +535,7 @@ fn parse_entry(source_id: &str, base: &Url, item: &Value) -> Result<StoryEntry, 
         download_url,
         size: unsigned(item, "size"),
         updated_at: opt_text(item, "updated_at"),
+        download_count: unsigned(item, "download_count"),
     })
 }
 
@@ -935,6 +936,28 @@ mod tests {
     }
 
     #[test]
+    fn download_count_est_lu_de_facon_tolerante() {
+        let entry = |count: Option<Value>| {
+            let mut item = json!({
+                "uuid": "c-1",
+                "title": "T",
+                "download": "https://dl.example.test/c.zip"
+            });
+            if let Some(count) = count {
+                item["download_count"] = count;
+            }
+            parse(&json!({ "data": [item] })).unwrap().entries[0].download_count
+        };
+        assert_eq!(entry(None), None);
+        assert_eq!(entry(Some(json!(null))), None);
+        assert_eq!(entry(Some(json!(42))), Some(42));
+        assert_eq!(entry(Some(json!(" 7 "))), Some(7));
+        assert_eq!(entry(Some(json!("beaucoup"))), None);
+        assert_eq!(entry(Some(json!(-3))), None);
+        assert_eq!(entry(Some(json!(1.5))), None);
+    }
+
+    #[test]
     fn lecture_nominale_normalise_les_entrees() {
         let parsed = parse(&sample()).unwrap();
         assert!(parsed.warnings.is_empty());
@@ -949,6 +972,7 @@ mod tests {
         assert_eq!(a.license.as_deref(), Some("CC BY"));
         assert_eq!(a.size, None);
         assert_eq!(a.updated_at.as_deref(), Some("2025-02-02T10:00:00Z"));
+        assert_eq!(a.download_count, Some(12));
         // URL relatives résolues par rapport au catalogue ; vignette « small » préférée.
         assert_eq!(a.download_url, "https://cat.example.test/zip/a.zip");
         assert_eq!(

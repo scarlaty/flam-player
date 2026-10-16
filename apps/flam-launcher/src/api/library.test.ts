@@ -27,6 +27,7 @@ const story: StoryEntry = {
   download_url: "https://exemple.org/abc.zip",
   size: null,
   updated_at: null,
+  download_count: null,
   kind: "telmi_zip",
 };
 

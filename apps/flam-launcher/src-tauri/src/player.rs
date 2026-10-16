@@ -2578,6 +2578,7 @@ exit 0
             download_url: url.to_string(),
             size: None,
             updated_at: None,
+            download_count: None,
             kind,
         }
     }
