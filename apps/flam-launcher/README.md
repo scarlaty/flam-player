@@ -334,7 +334,8 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
 - **Limites des sauvegardes** : au-delà des limites (5000 fichiers, 64 Mio, 16 niveaux), la
   progression n'est plus un motif de blocage. Le `saves/` trop gros est mis de côté en
   `<config>/saves/<empreinte>.rejected` (**une seule génération** : un nouveau rejet remplace
-  le précédent ; si le déplacement est impossible, il est supprimé), la version précédente est
+  le précédent ; si le renommage échoue (autre volume), copie puis suppression de la source
+  seulement après réussite : jamais de suppression sans copie), la version précédente est
   conservée, un avertissement est tracé et le message est renvoyé dans
   `player://exited.saves_error` (`string | null` côté TS) : l'interface doit l'afficher. Même
   traitement d'une sauvegarde conservée devenue trop grosse au moment de la restaurer (le
@@ -358,7 +359,10 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   travail `<cache>/play/<empreinte>/` ; la progression (`<config>/saves/<empreinte>/` et ses
   `.tmp`, `.old`, `.rejected`) n'est supprimée que si `purge_saves` est vrai (défaut : faux,
   une progression d'enfant ne se perd jamais par défaut ; réinstaller l'histoire la retrouve).
-  Refusé avec `player_busy` si le player lit cette histoire. Mettre à jour une histoire
+  Refusé avec `player_busy` si le player lit cette histoire. La purge est faite **avant** le retrait de la bibliothèque : un échec laisse
+  l'histoire installée (désinstallation à retenter). Les `.rejected` ne sont libérés qu'avec
+  `purge_saves` (une génération par histoire au plus). Aucun composant n'affiche encore
+  `saves_error` ni n'appelle `purge_saves` (suite : #18). Mettre à jour une histoire
   (nouvelle version du même `uuid`) ne supprime rien : la progression de l'ancienne version
   reste dans `saves/<empreinte>/<uuid>-<ancienne version>.plain.pk/…` (le player relit
   `saves/<nom du fichier lancé>`, voir ci-dessus : la nouvelle version repart de zéro) et n'est

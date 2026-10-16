@@ -272,9 +272,6 @@ pub async fn library_remove(
     purge_saves: Option<bool>,
 ) -> AppResult<()> {
     let purge_saves = purge_saves.unwrap_or(false);
-    // Refus avant toute suppression si le player lit cette histoire.
-    player.while_not_playing(&uuid, || ())?;
-    service.library_remove(uuid.clone()).await?;
     let cache_root = {
         let _guard = config.guard();
         SettingsStore::new(&config.dir).resolved_cache_dir(&Environment::current())?
@@ -282,14 +279,19 @@ pub async fn library_remove(
     let saves_root = config.dir.join(SAVES_ROOT);
     // Même portillon que le lancement : pas de purge pendant une copie de travail.
     let _gate = catalog.cache_gate().read_owned().await;
-    let service = player.inner().clone();
+    let players = player.inner().clone();
+    // Purge d'abord, sous le créneau (refus `player_busy` si le player lit cette histoire) : un
+    // échec laisse l'histoire installée, la désinstallation peut être retentée ; l'inverse
+    // laisserait une progression impossible à purger. Les purges sont idempotentes.
+    let target = uuid.clone();
     blocking(move || {
-        service.while_not_playing(&uuid, || {
-            purge_library_story(&cache_root, &saves_root, &uuid, purge_saves)
+        players.while_not_playing(&target, || {
+            purge_library_story(&cache_root, &saves_root, &target, purge_saves)
         })
     })
     .await???;
-    Ok(())
+    drop(_gate);
+    service.library_remove(uuid).await
 }
 
 #[cfg(test)]

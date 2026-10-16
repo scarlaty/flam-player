@@ -389,11 +389,23 @@ const SAVES_MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// Erreur de dépassement d'une limite de copie (profondeur, nombre de fichiers, taille) :
 /// distincte d'un échec d'E/S, elle met les sauvegardes de côté au lieu de bloquer le lancement.
 fn limit_error(message: String) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+    std::io::Error::new(std::io::ErrorKind::InvalidData, LimitError(message))
 }
 
+/// Type dédié : une autre erreur `InvalidData` du système n'est pas prise pour une limite.
+#[derive(Debug)]
+struct LimitError(String);
+
+impl std::fmt::Display for LimitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for LimitError {}
+
 fn is_limit(err: &std::io::Error) -> bool {
-    err.kind() == std::io::ErrorKind::InvalidData
+    err.get_ref().is_some_and(|inner| inner.is::<LimitError>())
 }
 
 /// Supprime `path` (fichier, dossier, lien) sans jamais suivre un lien : un lien de dossier
@@ -511,9 +523,10 @@ impl Workspace {
     }
 
     /// Met de côté un `saves/` hors limites : `<saved>.rejected`, **une seule génération** (la
-    /// précédente est remplacée). Le dossier est déplacé (renommage) ; si le déplacement est
-    /// impossible, il est supprimé : le lancement ne doit pas rester bloqué. Renvoie le
-    /// message destiné à l'utilisateur.
+    /// précédente est remplacée). Le dossier est déplacé (renommage) ; si le renommage échoue
+    /// (autre volume, verrou), il est copié (sans plafond) puis la source n'est supprimée
+    /// qu'après réussite de la copie : **jamais de suppression sans copie**. En cas d'échec,
+    /// erreur d'E/S et la source reste intacte. Renvoie le message destiné à l'utilisateur.
     fn set_aside(&self, dir: &Path, why: &std::io::Error, what: &str) -> AppResult<String> {
         let rejected = self.sibling(".rejected");
         remove_tree(&rejected)?;
@@ -523,9 +536,13 @@ impl Workspace {
         let outcome = match std::fs::rename(dir, &rejected) {
             Ok(()) => format!("mises de côté dans {}", rejected.display()),
             Err(err) => {
-                tracing::warn!("mise de côté impossible ({err}) : suppression");
+                tracing::warn!("renommage impossible ({err}) : copie");
+                if let Err(copy_err) = copy_tree(dir, &rejected, 0, &mut Budget::unlimited()) {
+                    let _ = remove_tree(&rejected);
+                    return Err(copy_err.into());
+                }
                 remove_tree(dir)?;
-                "supprimées (mise de côté impossible)".to_string()
+                format!("mises de côté (copie) dans {}", rejected.display())
             }
         };
         let note = format!("{what} refusées ({why}) : {outcome}");
@@ -1203,6 +1220,13 @@ mod tests {
         std::fs::write(nested.join("f"), b"x").unwrap();
         let err = copy_tree(&dir.path().join("a"), &target, 0, &mut budget).unwrap_err();
         assert!(is_limit(&err));
+    }
+
+    #[test]
+    fn seule_une_erreur_de_limite_est_une_limite() {
+        let other = std::io::Error::new(std::io::ErrorKind::InvalidData, "autre");
+        assert!(!is_limit(&other));
+        assert!(is_limit(&limit_error("x".into())));
     }
 
     #[test]
