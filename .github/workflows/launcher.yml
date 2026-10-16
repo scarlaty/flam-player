@@ -140,7 +140,8 @@ jobs:
         run: |
           $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           $dest = $env:FLAM_E2E_INSTALL_DIR
-          $expected = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $expected = (Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          if (-not $expected) { throw 'version absente de tauri.conf.json' }
           if ($expected -eq '0.0.1') { throw 'la version N doit différer de la version N-1 (0.0.1)' }
           function Get-InstalledVersion {
             # Version écrite par l'installateur NSIS (par utilisateur) dans la clé de désinstallation.
@@ -175,7 +176,7 @@ jobs:
           $v = Get-InstalledVersion
           if ($v -ne '0.0.1') { throw "version installée après N-1 : $v (0.0.1 attendue)" }
           $ev = Get-ExeVersion
-          if ($ev -notlike '0.0.1*') { throw "flam-launcher.exe de N-1 : version $ev (0.0.1 attendue)" }
+          if ($ev -ne '0.0.1' -and $ev -ne '0.0.1.0') { throw "flam-launcher.exe de N-1 : version $ev (0.0.1 attendue)" }
 
           # 2. Données utilisateur (hors dossier d'installation), de contenu connu et distinct.
           $keep = [ordered]@{
@@ -199,7 +200,7 @@ jobs:
           $v = Get-InstalledVersion
           if ($v -ne $expected) { throw "version installée après mise à jour : $v ($expected attendue)" }
           $ev = Get-ExeVersion
-          if ($ev -notlike "$expected*") { throw "flam-launcher.exe après mise à jour : version $ev ($expected attendue)" }
+          if ($ev -ne $expected -and $ev -ne "$expected.0") { throw "flam-launcher.exe après mise à jour : version $ev ($expected attendue)" }
           foreach ($k in $keep.Keys) {
             if (-not (Test-Path -LiteralPath $k)) { throw "donnée utilisateur perdue : $k" }
             if ([IO.File]::ReadAllText($k) -ne $keep[$k]) { throw "donnée utilisateur modifiée : $k" }
