@@ -30,6 +30,11 @@
   color: var(--tone-warning-fg);
 }
 
+.fl-badge--secondary {
+  background: var(--tone-secondary-bg);
+  color: var(--tone-secondary-fg);
+}
+
 .fl-badge--danger {
   background: var(--tone-danger-bg);
   color: var(--tone-danger-fg);

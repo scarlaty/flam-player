@@ -18,8 +18,13 @@
 .fl-progress__fill {
   height: 100%;
   border-radius: inherit;
-  background: var(--color-primary);
+  background: var(--color-secondary);
   transition: inline-size var(--duration-normal) var(--easing);
+}
+
+/* Avancement en cours : orange (couleur secondaire). */
+.fl-progress--primary .fl-progress__fill {
+  background: var(--color-secondary);
 }
 
 .fl-progress--success .fl-progress__fill {

@@ -41,7 +41,7 @@ const KIND_ICONS: Record<TaskKind, IconName> = {
 
 const STATE_TONES: Record<TaskState, BadgeTone> = {
   queued: "neutral",
-  running: "info",
+  running: "secondary",
   done: "success",
   error: "danger",
   cancelled: "neutral",

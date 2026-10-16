@@ -31,6 +31,16 @@
   background: var(--color-primary-hover);
 }
 
+.fl-button--accent {
+  border-color: var(--color-accent-border);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.fl-button--accent:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
 .fl-button--secondary {
   background: var(--color-surface);
   border-color: var(--color-border-strong);

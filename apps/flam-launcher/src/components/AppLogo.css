@@ -1,0 +1,11 @@
+.fl-logo__bg {
+  fill: var(--brand-orange);
+}
+
+.fl-logo__flame {
+  fill: var(--brand-cream);
+}
+
+.fl-logo__core {
+  fill: var(--brand-yellow);
+}

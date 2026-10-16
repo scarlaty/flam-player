@@ -71,7 +71,7 @@ export const demoStories: DemoStory[] = [
     title: "Le grand voyage de Mila",
     ageMin: 5,
     badges: [
-      { id: "new", label: t.status.new, tone: "warning", icon: "sparkle" },
+      { id: "new", label: t.status.new, tone: "secondary", icon: "sparkle" },
       { id: "compat", label: t.status.partial, tone: "warning" },
     ],
     progress: 62,
