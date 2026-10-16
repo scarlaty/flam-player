@@ -527,6 +527,9 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   du cache en lecture), vidée avant chaque lancement, puis lancée. Clé : `library:<uuid>` ou
   `folder:<source>:<entrée>`. La source doit être, sans suivre de lien, un fichier ordinaire
   (`.plain.pk`) ou un dossier (`.plain`) conforme au `kind` de l'entrée.
+  Le refus d'une **jonction** est testé en CI ; celui d'un **lien symbolique** ne l'est pas (test
+  `#[ignore]` : sa création demande le mode développeur ou l'élévation) : à lancer à la main avec
+  `cargo test check_source_refuse_les_liens_symboliques -- --ignored`.
 - **Sauvegardes hors cache** : la progression vit dans `<config>/saves/<empreinte>/` (données
   de l'application, **jamais effacées par « Vider le cache »**). Avant le lancement elle est
   recopiée vers `<copie>/saves/` ; à la fin du player, succès ou échec (avant la libération du
@@ -541,8 +544,15 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   `<config>/saves/<empreinte>.rejected` (**une seule génération** : un nouveau rejet remplace
   le précédent, remplacé seulement une fois le nouveau contenu en sécurité dans
   `<empreinte>.rejected.new` ; si le renommage échoue (autre volume), copie sans aucune limite
-  (profondeur comprise) puis suppression de la source seulement après réussite : jamais de
-  suppression sans copie), la version précédente est
+  (profondeur comprise ; parcours de copie itératif, sans récursion) puis suppression de la
+  source seulement après réussite : jamais de suppression sans copie ; la copie se fait dans
+  `<empreinte>.rejected.new.part` (partiel si l'on s'arrête en route), puis un renommage atomique
+  en `.rejected.new`, toujours complet, avant la suppression de la source ; le repli par copie **ignore** les liens de la source, qui
+  disparaissent avec elle, sans toucher à leur cible). Si le remplacement de `.rejected` échoue
+  **après** ce déplacement, ce n'est **pas une erreur** : la progression est intacte dans
+  `.rejected.new`, la note le dit à l'utilisateur (`saves_error`) et l'état est réparé au
+  lancement ou rapatriement suivant (`.rejected.new` promu en `.rejected`, `.rejected.new.part` partiel
+  supprimé). La version précédente est
   conservée, un avertissement est tracé et le message est renvoyé dans
   `player://exited.saves_error` (`string | null` côté TS) : l'interface doit l'afficher. Même
   traitement d'une sauvegarde conservée devenue trop grosse au moment de la restaurer (le
@@ -568,11 +578,15 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   les deux.
 - **Désinstallation et mise à jour** : `library_remove(uuid, purge_saves?)` supprime la copie de
   travail `<cache>/play/<empreinte>/` ; la progression (`<config>/saves/<empreinte>/` et ses
-  `.tmp`, `.old`, `.rejected`) n'est supprimée que si `purge_saves` est vrai (défaut : faux,
+  `.tmp`, `.old`, `.rejected`, `.rejected.new`, `.rejected.new.part`) n'est supprimée que
+  si `purge_saves` est vrai (défaut : faux,
   une progression d'enfant ne se perd jamais par défaut ; réinstaller l'histoire la retrouve).
   Refusé avec `player_busy` si le player lit cette histoire. Tout se passe sous le créneau du player (un lancement ne peut pas s'intercaler ; un lancement
-  qui attendait relit l'index sous le créneau et reçoit `not_found`) : vérification de
-  l'installation (`not_found` avant toute suppression), puis purge, puis retrait. La purge est
+  qui attendait relit l'index sous le créneau et reçoit `not_found`) : verrou de la
+  bibliothèque (attente de **2 s au plus** : si une autre instance le tient, erreur `io`
+  « bibliothèque utilisée par une autre instance… réessayer » sans rien purger, pour ne pas
+  retarder `player_launch` ni la sortie du player), vérification de l'installation (`not_found`
+  avant toute suppression), puis purge, puis retrait, le tout sous ce verrou. La purge est
   faite **avant** le retrait de la bibliothèque : un échec laisse
   l'histoire installée (désinstallation à retenter). Les `.rejected` ne sont libérés qu'avec
   `purge_saves` (une génération par histoire au plus). Aucun composant n'affiche encore
@@ -628,7 +642,8 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    à un Job Object Windows (`KILL_ON_JOB_CLOSE`), puis son thread principal est repris : aucun
    sous-processus ne peut échapper au job, et l'arrêt forcé les termine tous. Si le job ne peut pas
    être créé (avertissement tracé), la conversion continue sans lui : l'arrêt forcé se limite alors
-   au processus direct.
+   au processus direct. La création du job et la reprise (appels Win32 bloquants) s'exécutent
+   hors du runtime (`spawn_blocking`).
    **Annulation** : `CTRL_BREAK_EVENT` (le convertisseur nettoie et sort avec 130), envoyé par un
    court assistant Python isolé (`-I`) sans fenêtre qui s'attache à la console cachée du convertisseur (une
    application graphique n'a pas de console, et `GenerateConsoleCtrlEvent` ne vise que la
@@ -664,12 +679,27 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    « installation de `<fichier>` refusée : le marqueur `.staging/<x>.pending` ne peut pas être
    jugé (index perdu, sauvegardé en `library.json.*.bak`). Vérifier `library/<x>`, puis
    supprimer ce marqueur (et `.staging/<x>.bak` s'il existe) ou restaurer l'index depuis la
-   sauvegarde, et réessayer ». Ceux des autres histoires sont laissés intacts (avertissement).
+   sauvegarde, et réessayer ». Ce refus est **précontrôlé avant le téléchargement** (au début de la
+   tâche) quand l'index est perdu. Les marqueurs non jugeables des **autres** histoires ne
+   bloquent pas l'installation, mais ils sont **neutralisés** au moment où l'index est réécrit :
+   `.staging/<x>.pending` devient `.staging/<x>.pending.unjudged` (avertissement tracé). Sans
+   cela, la réconciliation suivante les jugerait inachevés et supprimerait leur fichier (ou
+   restaurerait son `.bak`). La réconciliation ne lit pas les `*.pending.unjudged` et ne touche
+   jamais à leur fichier ni à leur `.bak` : à traiter à la main (vérifier `library/<x>`, puis
+   supprimer le `.pending.unjudged` **et** `.staging/<x>.bak` s'il existe : tant que ce `.bak`
+   subsiste, réinstaller le même fichier est refusé « restauration ou nettoyage précédent non
+   terminé »).
+   **Fuite ponctuelle** : un marqueur écrit par une version antérieure de l'application ne
+   liste pas les anciennes versions du même `uuid` (`old_files`) ; s'il est terminé après la
+   mise à jour de l'application, ces anciens `.plain.pk` restent dans `library/`, non indexés et
+   sans marqueur, donc jamais supprimés (choix sûr) : à supprimer à la main, une seule fois.
    Aucun `.plain.pk` réintégré n'est perdu. L'attente du verrou de la bibliothèque est unique
    (30 s) : au-delà, erreur « bibliothèque utilisée par une autre instance… réessayer » et le
    fichier préparé est supprimé.
    Publication et réconciliation tiennent un verrou inter-processus
-   (`library/.lock`, aussi entre threads) ; `install` et `remove` l'attendent au plus 30 s
+   (`library/.lock`, aussi entre threads, sans autre verrou devant lui) ; `library_list` ne fait
+   que l'essayer, donc ne se fige jamais derrière une installation ou une autre instance ;
+   `install` et `remove` l'attendent au plus 30 s (2 s pour `library_remove`, voir plus haut)
    (erreur `io` explicite « bibliothèque occupée… réessayer plus tard » au-delà) ; si une autre instance le tient, ou si le verrou ne peut pas être ouvert,
    la liste lit simplement l'index sans réconcilier (l'installation et la suppression, elles,
    échouent). Les avertissements répétés à chaque `list` (verrou indisponible, restauration ou

@@ -396,13 +396,27 @@ pub async fn convert(
     let stderr = child.stderr.take().expect("stderr redirigé");
     // Lancé suspendu : rattaché au job avant d'exécuter la moindre instruction. Sans job (échec de
     // l'attache), il est tout de même repris ; si la reprise échoue, il est tué (`kill_on_drop`).
-    let job = Job::attach(&child);
+    // Création du job et reprise (instantané des threads du système) sont des appels Win32
+    // bloquants : ils s'exécutent hors du runtime (`spawn_blocking`), le `Child` y est déplacé
+    // puis rendu. Si la tâche est abandonnée en route, le `Child` est détruit et tué avec elle.
+    let attached = tokio::task::spawn_blocking(move || {
+        let job = Job::attach(&child);
+        let resumed = job::resume(&child);
+        (child, job, resumed)
+    })
+    .await;
+    let (mut child, job, resumed) = attached.map_err(|e| {
+        AppError::ConverterUnavailable(format!(
+            "impossible de préparer Python ({}) : {e}",
+            req.python.display()
+        ))
+    })?;
     if job.is_none() {
         tracing::warn!(
             "Job Object indisponible : l'arrêt forcé se limitera au convertisseur direct"
         );
     }
-    if let Err(err) = job::resume(&child) {
+    if let Err(err) = resumed {
         let _ = child.start_kill();
         return Err(AppError::ConverterUnavailable(format!(
             "impossible de reprendre Python ({}) : {err}",
