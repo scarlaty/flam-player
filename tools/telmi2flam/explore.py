@@ -544,12 +544,6 @@ do
                 local can = fs and (up and hasHome(fs, state.current_fun)
                                     or homeNew(fs, state.current_fun))
                 local gap = 3
-                if up and #vis == n then
-                    gap = 2                 -- choix epuise : remonter vers les options restantes
-                    for _, e in ipairs(vis) do
-                        if (optCount[aid .. "#s:" .. tostring(e.stage)] or 0) == 0 then gap = 3; break end
-                    end
-                end
                 if can and escape("a:" .. aid, gap) then
                     plan = { escaped = true }
                     return
