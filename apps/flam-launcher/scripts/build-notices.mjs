@@ -126,8 +126,8 @@ for (const p of packages) {
   for (const t of texts) lines.push(`--- ${t.name} ---`, t.text, "");
 }
 const refused = packages
-  .filter((p) => p.license && !isAllowedLicense(p.license))
-  .map((p) => `${p.ecosystem} ${p.name}@${p.version} : ${p.license}`);
+  .filter((p) => !isAllowedLicense(p.license))
+  .map((p) => `${p.ecosystem} ${p.name}@${p.version} : ${p.license || "non déclarée"}`);
 if (refused.length > 0) {
   throw new Error(
     `licence hors liste d'autorisation (scripts/notices-lib.mjs) :\n${refused.join("\n")}`,
