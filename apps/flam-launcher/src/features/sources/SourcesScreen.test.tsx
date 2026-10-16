@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Source } from "../../api/sources";
 import { ToastProvider } from "../../components";
 import { expectNoAxeViolations } from "../../test/axe";
+import { SLOW_TEST_MS } from "../../test/timeouts";
 import { RecoveryProvider } from "../recovery/RecoveryProvider";
 import { folderDisplayName, moveItem, SourcesScreen } from "./SourcesScreen";
 
@@ -262,6 +263,51 @@ it("réordonne au clavier avec les boutons et garde le focus", async () => {
   await waitFor(() => expect(callsOf("sources_reorder")).toHaveLength(2));
   expect(callsOf("sources_reorder")[1]?.args).toEqual({ ids: ["telmi-store", "f1"] });
 });
+
+// Course corrigée par #84/#92 : le focus est rendu par un effet de layout. Avec un effet passif
+// (`useEffect`), l'effet encore en attente du rendu précédent (ici, la liste qui vient de
+// s'afficher) s'exécutait au début du rendu du déplacement et consommait `pendingFocus` avec
+// l'ancienne liste : « Descendre » (alors actif) gardait le focus, puis devenait désactivé et le
+// focus tombait sur <body>. On clique donc dans la même tâche que l'affichage de la liste.
+it(
+  "garde le focus du déplacement même si un effet passif est encore en attente",
+  async () => {
+    const REPEATS = 15;
+    for (let i = 0; i < REPEATS; i += 1) {
+      sources = [library, store, folder];
+      calls = [];
+      const view = render(
+        <ToastProvider>
+          <RecoveryProvider>
+            <SourcesScreen />
+          </RecoveryProvider>
+        </ToastProvider>,
+      );
+      // Sans `findBy` : on observe l'affichage de la liste au plus tôt, avant tout vidage des effets.
+      const down = await new Promise<HTMLElement>((resolve) => {
+        const observer = new MutationObserver(() => {
+          const button = screen.queryByRole("button", {
+            name: "Descendre « Telmi Store »",
+          });
+          if (!button) return;
+          observer.disconnect();
+          resolve(button);
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+      });
+      down.focus();
+      fireEvent.click(down);
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Monter « Telmi Store »" }),
+        ).toHaveFocus(),
+      );
+      view.unmount();
+    }
+  },
+  SLOW_TEST_MS,
+);
 
 it("réordonne par glisser-déposer", async () => {
   await renderScreen();
