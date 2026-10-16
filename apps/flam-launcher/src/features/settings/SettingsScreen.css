@@ -1,0 +1,22 @@
+.fl-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: 48rem;
+}
+
+.fl-settings__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fl-settings__section h2 {
+  margin: 0;
+  font-size: var(--font-size-lg);
+}
+
+.fl-settings__section p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

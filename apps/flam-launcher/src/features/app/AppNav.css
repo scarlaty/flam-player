@@ -1,0 +1,29 @@
+.fl-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fl-nav__link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 2.5rem;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.fl-nav__link:hover {
+  background: var(--color-surface-hover);
+}
+
+.fl-nav__link[aria-current="page"] {
+  background: var(--color-primary-soft);
+  color: var(--color-on-primary-soft);
+  font-weight: var(--font-weight-semibold);
+}
