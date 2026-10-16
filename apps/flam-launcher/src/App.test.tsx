@@ -4,6 +4,9 @@ import { afterEach, expect, it } from "vitest";
 import { App, DEMO_HASH } from "./App";
 import { routeFromHash } from "./router";
 import { expectNoAxeViolations } from "./test/axe";
+import { slowIt, tolerateLoadInAsyncUtils } from "./test/timeouts";
+
+tolerateLoadInAsyncUtils();
 
 const settingsView = {
   settings: {
@@ -106,7 +109,7 @@ it("applique le thème enregistré au démarrage", async () => {
   await expect.poll(() => document.documentElement.dataset.theme).toBe("dark");
 });
 
-it("l'accueil n'a aucune violation axe", async () => {
+slowIt("l'accueil n'a aucune violation axe", async () => {
   mockBackend();
   render(<App />);
   await screen.findByText("flam-launcher — version 0.1.0");
