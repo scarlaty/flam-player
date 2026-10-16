@@ -27,6 +27,7 @@ import {
   availableCategories,
   DEFAULT_FILTERS,
   filtersAreDefault,
+  hasPopularity,
   type LibraryFilters,
   type SortKey,
 } from "./filters";
@@ -180,7 +181,13 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
   }, [openId]);
   const ages = useMemo(() => availableAges(entries ?? []), [entries]);
   const categories = useMemo(() => availableCategories(entries ?? []), [entries]);
-  const visible = useMemo(() => applyFilters(entries ?? [], filters), [entries, filters]);
+  const popularity = useMemo(() => hasPopularity(entries ?? []), [entries]);
+  // « Popularité » n'existe que si la source fournit la donnée : sinon retour au tri par titre.
+  const sort = filters.sort === "popular" && !popularity ? "title" : filters.sort;
+  const visible = useMemo(
+    () => applyFilters(entries ?? [], { ...filters, sort }),
+    [entries, filters, sort],
+  );
 
   const filterKey = JSON.stringify(filters);
   const limit = shown.key === filterKey ? shown.count : PAGE_SIZE;
@@ -280,11 +287,14 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
             />
             <SelectField
               label={t.library.sort}
-              value={filters.sort}
+              value={sort}
               onChange={(event) => update({ sort: event.target.value as SortKey })}
               options={[
                 { value: "title", label: t.library.sortOptions.title },
                 { value: "recent", label: t.library.sortOptions.recent },
+                ...(popularity
+                  ? [{ value: "popular", label: t.library.sortOptions.popular }]
+                  : []),
               ]}
             />
           </form>

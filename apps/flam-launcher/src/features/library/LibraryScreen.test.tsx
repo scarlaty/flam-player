@@ -234,6 +234,33 @@ it("filtre par âge et par catégorie, et trie", async () => {
   expect(cardTitles()).toEqual(["Zélie et le robot", "Les trois ours"]);
 });
 
+it("propose le tri Popularité seulement si la source publie download_count", async () => {
+  goTo("#/library/store");
+  const first = renderLibrary();
+  await screen.findByText("Les trois ours");
+  expect(
+    within(screen.getByLabelText("Trier par"))
+      .getAllByRole("option")
+      .map((o) => o.textContent),
+  ).toEqual(["Titre (A-Z)", "Plus récentes"]);
+  first.unmount();
+
+  catalogs.store = catalogView("store", [
+    storyA({ download_count: 3 }),
+    storyB({ download_count: 40 }),
+  ]);
+  renderLibrary();
+  await screen.findByText("Les trois ours");
+  const sort = screen.getByLabelText("Trier par");
+  expect(
+    within(sort)
+      .getAllByRole("option")
+      .map((o) => o.textContent),
+  ).toEqual(["Titre (A-Z)", "Plus récentes", "Popularité"]);
+  fireEvent.change(sort, { target: { value: "popular" } });
+  expect(cardTitles()).toEqual(["Zélie et le robot", "Les trois ours"]);
+});
+
 slowIt("pagine les grandes sources", async () => {
   const many = Array.from({ length: PAGE_SIZE + 5 }, (_, i) =>
     storyA({ entry_id: `store:${i}`, title: `Histoire ${String(i).padStart(3, "0")}` }),

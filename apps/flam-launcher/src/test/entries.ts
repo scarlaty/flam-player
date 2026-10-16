@@ -17,6 +17,7 @@ export function makeEntry(over: Partial<StoryEntry> & { title: string }): StoryE
     download_url: "https://exemple.org/x.zip",
     size: null,
     updated_at: null,
+    download_count: null,
     kind: "telmi_zip",
     ...over,
   };
