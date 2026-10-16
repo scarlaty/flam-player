@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::catalog::{purge_catalog_cache, CatalogService};
 use crate::storage::{self, ConfigState, MigrationStep, Recovery};
 use crate::{AppError, AppResult};
 
@@ -348,18 +349,45 @@ pub async fn sources_add(state: State<'_, ConfigState>, input: SourceInput) -> A
 #[tauri::command]
 pub async fn sources_update(
     state: State<'_, ConfigState>,
+    catalog: State<'_, CatalogService>,
     id: String,
     input: SourceInput,
 ) -> AppResult<Source> {
-    let _guard = state.guard();
-    SourcesStore::new(&state.dir).update(&id, input)
+    let (previous, updated) = {
+        let _guard = state.guard();
+        let store = SourcesStore::new(&state.dir);
+        let previous = store.get(&id).ok();
+        (previous, store.update(&id, input)?)
+    };
+    if previous.is_some_and(|old| catalog_url_changed(&old, &updated)) {
+        purge_catalog_cache(&state, &catalog, &id).await;
+    }
+    Ok(updated)
 }
 
 /// Supprime une source.
 #[tauri::command]
-pub async fn sources_remove(state: State<'_, ConfigState>, id: String) -> AppResult<()> {
-    let _guard = state.guard();
-    SourcesStore::new(&state.dir).remove(&id)
+pub async fn sources_remove(
+    state: State<'_, ConfigState>,
+    catalog: State<'_, CatalogService>,
+    id: String,
+) -> AppResult<()> {
+    let removed = {
+        let _guard = state.guard();
+        let store = SourcesStore::new(&state.dir);
+        let previous = store.get(&id).ok();
+        store.remove(&id)?;
+        previous
+    };
+    if matches!(removed, Some(Source::Catalog { .. })) {
+        purge_catalog_cache(&state, &catalog, &id).await;
+    }
+    Ok(())
+}
+
+/// L'URL d'une source catalogue a changé : son cache n'est plus utilisable.
+fn catalog_url_changed(old: &Source, new: &Source) -> bool {
+    matches!((old, new), (Source::Catalog { url: a, .. }, Source::Catalog { url: b, .. }) if a != b)
 }
 
 /// Réordonne les sources enregistrées et renvoie la liste complète.
@@ -388,6 +416,34 @@ mod tests {
             name: name.into(),
             url: url.into(),
         }
+    }
+
+    #[test]
+    fn changement_d_url_detecte_pour_un_catalogue_seulement() {
+        let (_dir, store) = store();
+        let old = store
+            .add(catalog("Un", "https://a.example.test/c.json"))
+            .unwrap();
+        let same = store
+            .update(
+                old.id(),
+                catalog("Renommé", "https://a.example.test/c.json"),
+            )
+            .unwrap();
+        assert!(!catalog_url_changed(&old, &same));
+        let moved = store
+            .update(
+                old.id(),
+                catalog("Renommé", "https://b.example.test/c.json"),
+            )
+            .unwrap();
+        assert!(catalog_url_changed(&same, &moved));
+        let folder = Source::Folder {
+            id: "f".into(),
+            name: "d".into(),
+            path: "x".into(),
+        };
+        assert!(!catalog_url_changed(&folder, &moved));
     }
 
     fn ids(sources: &[Source]) -> Vec<String> {
