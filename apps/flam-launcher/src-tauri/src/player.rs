@@ -23,13 +23,20 @@
 //! rapatriée à la fin du player (même en cas d'échec). Le player est lancé avec son propre
 //! dossier comme dossier courant. Les sources (fichier ordinaire pour un `.plain.pk`, dossier
 //! pour un `.plain`, jamais un lien) sont vérifiées avant la copie.
+//!
+//! **Cas limites de la progression** (détail dans le README) : des sauvegardes hors limites sont
+//! mises de côté en `.rejected` (une génération) sans bloquer les lancements, et signalées par
+//! `PlayerExited::saves_error` ; un plantage du player laisse un `saves/` éventuellement partiel
+//! qui remplace la version précédente ; une progression effacée à la main dans
+//! `<config>/saves/` revient depuis `play/<empreinte>/saves` tant que la copie de travail existe ;
+//! la désinstallation purge `play/<empreinte>/` et, sur demande seulement, la progression.
 
 use std::io::Read;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -86,6 +93,11 @@ pub struct PlayerExited {
     pub duration_ms: u64,
     /// Fin de la sortie d'erreur du player (vide si rien).
     pub stderr: String,
+    /// Raison pour laquelle la progression de l'enfant n'a pas pu être conservée telle quelle
+    /// (sauvegardes au-delà des limites, mises de côté en `.rejected` ; rapatriement en échec),
+    /// `None` si tout s'est bien passé. L'interface doit l'afficher : sans cela, l'enfant perd
+    /// sa progression sans le savoir.
+    pub saves_error: Option<String>,
 }
 
 /// Destination des événements (Tauri en production, enregistreur en test).
@@ -144,8 +156,22 @@ impl PlayerService {
     }
 
     /// Player en cours d'exécution, s'il y en a un.
+    ///
+    /// **Ne bloque jamais** : le créneau est aussi tenu pendant la préparation d'un lancement
+    /// (copie de travail), pendant [`while_idle`](Self::while_idle) (vidage du cache, parfois
+    /// long) et pendant [`while_not_playing`](Self::while_not_playing) (désinstallation, qui
+    /// peut avoir lieu pendant qu'un player lit une **autre** histoire), et cette méthode est
+    /// appelée depuis une commande `async` (un worker tokio ne doit pas attendre). Si le créneau
+    /// est tenu, la réponse est `None` **même si un player tourne** : ce n'est pas une preuve
+    /// d'absence. L'interface se fie à `player://started` / `player://exited` ; ce statut ne sert
+    /// qu'à restaurer l'état après un rechargement, et la règle du player unique reste garantie
+    /// par `launch` (`player_busy`), pas par ce statut.
     pub fn status(&self) -> Option<PlayerSession> {
-        lock(&self.current).clone()
+        match self.current.try_lock() {
+            Ok(slot) => slot.clone(),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().clone(),
+            Err(TryLockError::WouldBlock) => None,
+        }
     }
 
     /// Exécute `action` si aucun player n'est en cours, en tenant le créneau pendant toute la
@@ -163,21 +189,40 @@ impl PlayerService {
         Ok(result)
     }
 
+    /// Exécute `action` sauf si le player est en train de lire l'histoire de bibliothèque
+    /// `uuid` (`player_busy`) ; le créneau est tenu pendant l'action. Sert à la désinstallation :
+    /// on ne supprime pas la copie de travail sous un player en cours.
+    pub fn while_not_playing<T>(&self, uuid: &str, action: impl FnOnce() -> T) -> AppResult<T> {
+        let slot = lock(&self.current);
+        if let Some(running) = slot.as_ref() {
+            if running.origin == "library" && running.uuid == uuid {
+                return Err(AppError::PlayerBusy(format!(
+                    "« {} » est en cours de lecture : fermez flam-player avant de la désinstaller",
+                    running.title
+                )));
+            }
+        }
+        let result = action();
+        drop(slot);
+        Ok(result)
+    }
+
     /// Lance `exe` sur le fichier que renvoie `prepare` pour l'histoire `uuid`.
     ///
     /// `prepare` (copie de travail, voir [`stage`]) n'est appelée qu'une fois le player trouvé
     /// et le créneau libre, **sous le verrou du créneau** : elle ne peut pas nettoyer le dossier
     /// d'un player en cours. Appel bloquant (copie de fichiers) : à exécuter hors du runtime.
     ///
-    /// `finish` (rapatriement des sauvegardes, voir [`Workspace::persist_saves`]) s'exécute dans
-    /// le thread d'attente dès la fin du player, **avant** la libération du créneau : un nouveau
-    /// lancement ne peut pas nettoyer la copie de travail pendant ce temps. Elle s'exécute aussi
-    /// quand le player a échoué.
+    /// `finish` (rapatriement des sauvegardes, voir [`Workspace::persist_saves_logged`])
+    /// s'exécute dans le thread d'attente dès la fin du player, **avant** la libération du
+    /// créneau : un nouveau lancement ne peut pas nettoyer la copie de travail pendant ce temps.
+    /// Elle s'exécute aussi quand le player a échoué. Son résultat est le `saves_error` de
+    /// `player://exited`.
     pub fn launch(
         &self,
         exe: &Path,
         prepare: impl FnOnce() -> AppResult<PathBuf>,
-        finish: impl FnOnce() + Send + 'static,
+        finish: impl FnOnce() -> Option<String> + Send + 'static,
         origin: &'static str,
         uuid: &str,
         title: &str,
@@ -256,17 +301,21 @@ impl PlayerService {
                 Ok(status) => (status.code(), status.success(), tail_text(&lock(&kept))),
                 Err(err) => (None, false, format!("attente du player impossible : {err}")),
             };
+            let duration_ms = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
+            tracing::info!("flam-player terminé : code {code:?}");
+            let saves_error =
+                std::panic::catch_unwind(AssertUnwindSafe(finish)).unwrap_or_else(|_| {
+                    tracing::error!("le rapatriement des sauvegardes a paniqué");
+                    Some("le rapatriement des sauvegardes a échoué (erreur interne)".to_string())
+                });
             let event = PlayerExited {
                 session: waiting,
                 code,
                 success,
-                duration_ms: u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX),
+                duration_ms,
                 stderr,
+                saves_error,
             };
-            tracing::info!("flam-player terminé : code {:?}", event.code);
-            if std::panic::catch_unwind(AssertUnwindSafe(finish)).is_err() {
-                tracing::error!("le rapatriement des sauvegardes a paniqué");
-            }
             // Créneau libéré avant l'événement : le front peut relancer dès qu'il le reçoit.
             drop(guard);
             service.events.exited(&event);
@@ -341,25 +390,87 @@ const COPY_MAX_DEPTH: usize = 16;
 const SAVES_MAX_FILES: usize = 5000;
 const SAVES_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Erreur de dépassement d'une limite de copie (profondeur, nombre de fichiers, taille) :
+/// distincte d'un échec d'E/S, elle met les sauvegardes de côté au lieu de bloquer le lancement.
+fn limit_error(message: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, LimitError(message))
+}
+
+/// Type dédié : une autre erreur `InvalidData` du système n'est pas prise pour une limite.
+#[derive(Debug)]
+struct LimitError(String);
+
+impl std::fmt::Display for LimitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for LimitError {}
+
+fn is_limit(err: &std::io::Error) -> bool {
+    err.get_ref().is_some_and(|inner| inner.is::<LimitError>())
+}
+
+/// Supprime `path` (fichier, dossier, lien) sans jamais suivre un lien : un lien de dossier
+/// (Windows : lien symbolique ou jonction, que `remove_file` refuse) est retiré lui-même, sans
+/// toucher à sa cible. Absent : rien à faire.
+fn remove_tree(path: &Path) -> std::io::Result<()> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let file_type = meta.file_type();
+    if file_type.is_symlink() {
+        std::fs::remove_file(path).or_else(|_| std::fs::remove_dir(path))
+    } else if file_type.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
 /// Plafond d'une copie d'arborescence.
 struct Budget {
     files: usize,
     bytes: u64,
+    max_depth: usize,
 }
 
 impl Budget {
+    /// Copie d'une histoire : ni nombre ni taille plafonnés, profondeur bornée.
     fn unlimited() -> Budget {
         Budget {
             files: usize::MAX,
             bytes: u64::MAX,
+            max_depth: COPY_MAX_DEPTH,
+        }
+    }
+
+    /// Déplacement par copie d'un dossier déjà refusé (mise de côté) : aucune limite, y compris
+    /// la profondeur (la longueur des chemins du système la borne).
+    fn unbounded() -> Budget {
+        Budget {
+            files: usize::MAX,
+            bytes: u64::MAX,
+            max_depth: usize::MAX,
+        }
+    }
+
+    /// Sauvegardes de l'enfant : nombre, taille et profondeur plafonnés.
+    fn saves() -> Budget {
+        Budget {
+            files: SAVES_MAX_FILES,
+            bytes: SAVES_MAX_BYTES,
+            max_depth: COPY_MAX_DEPTH,
         }
     }
 
     fn take(&mut self, len: u64) -> std::io::Result<()> {
         if self.files == 0 || self.bytes < len {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "arborescence trop volumineuse",
+            return Err(limit_error(
+                "arborescence trop volumineuse (nombre de fichiers ou taille)".to_string(),
             ));
         }
         self.files -= 1;
@@ -371,13 +482,16 @@ impl Budget {
 /// Copie `from` dans `to` sans suivre aucun lien (ils sont ignorés), dans la limite de `budget`.
 fn copy_tree(from: &Path, to: &Path, depth: usize, budget: &mut Budget) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
-    if depth >= COPY_MAX_DEPTH {
-        return Ok(());
-    }
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let (src, dst) = (entry.path(), to.join(entry.file_name()));
         let file_type = entry.file_type()?;
+        if depth >= budget.max_depth && (file_type.is_dir() || file_type.is_file()) {
+            // Jamais de troncature silencieuse : une copie incomplète passerait pour complète.
+            return Err(limit_error(format!(
+                "arborescence trop profonde (plus de {COPY_MAX_DEPTH} niveaux)"
+            )));
+        }
         if file_type.is_dir() {
             copy_tree(&src, &dst, depth + 1, budget)?;
         } else if file_type.is_file() {
@@ -386,6 +500,23 @@ fn copy_tree(from: &Path, to: &Path, depth: usize, budget: &mut Budget) -> std::
         } // liens et autres : ignorés
     }
     Ok(())
+}
+
+/// Déplace `from` vers `to` : renommage, sinon (autre volume, verrou) copie sans aucune limite
+/// puis suppression de la source **seulement après réussite de la copie**. En cas d'échec, la
+/// source est intacte et la copie partielle supprimée.
+fn move_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            tracing::warn!("renommage impossible ({err}) : copie");
+            if let Err(copy_err) = copy_tree(from, to, 0, &mut Budget::unbounded()) {
+                let _ = remove_tree(to);
+                return Err(copy_err);
+            }
+            remove_tree(from)
+        }
+    }
 }
 
 /// Vrai si `path` est un vrai dossier (pas un lien).
@@ -407,6 +538,10 @@ fn is_real_dir(path: &Path) -> bool {
 pub struct Workspace {
     work: PathBuf,
     saved: PathBuf,
+    /// Informations sur la progression (sauvegardes mises de côté, etc.), partagées entre les
+    /// clones : recueillies par [`persist_saves_logged`](Self::persist_saves_logged) pour le
+    /// `saves_error` de `player://exited`.
+    notes: Arc<Mutex<Vec<String>>>,
 }
 
 impl Workspace {
@@ -416,6 +551,7 @@ impl Workspace {
         Self {
             work: play_root.join(&hash),
             saved: saves_root.join(hash),
+            notes: Arc::default(),
         }
     }
 
@@ -425,9 +561,41 @@ impl Workspace {
         self.saved.with_file_name(name)
     }
 
+    fn note(&self, text: String) {
+        lock(&self.notes).push(text);
+    }
+
+    /// Met de côté un `saves/` hors limites : `<saved>.rejected`, **une seule génération** (la
+    /// précédente est remplacée). Le dossier est déplacé (renommage) ; si le renommage échoue
+    /// (autre volume, verrou), il est copié (sans plafond) puis la source n'est supprimée
+    /// qu'après réussite de la copie : **jamais de suppression sans copie**. En cas d'échec,
+    /// erreur d'E/S et la source reste intacte. Renvoie le message destiné à l'utilisateur.
+    fn set_aside(&self, dir: &Path, why: &std::io::Error, what: &str) -> AppResult<String> {
+        let rejected = self.sibling(".rejected");
+        let fresh = self.sibling(".rejected.new");
+        if let Some(parent) = rejected.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // Le nouveau contenu est d'abord mis en sécurité à côté ; l'ancien `.rejected` n'est
+        // supprimé qu'ensuite (un échec avant ce point le laisse intact).
+        remove_tree(&fresh)?;
+        move_dir(dir, &fresh)?;
+        remove_tree(&rejected)?;
+        std::fs::rename(&fresh, &rejected)?;
+        let outcome = format!("mises de côté dans {}", rejected.display());
+        let note = format!("{what} refusées ({why}) : {outcome}");
+        tracing::warn!("sauvegardes du player : {note}");
+        Ok(note)
+    }
+
     /// Prépare la copie de travail de `source` (déjà vérifiée par [`check_source`]) : rapatrie
-    /// d'abord un `saves/` resté dans la copie (échec : erreur, rien n'est supprimé), vide le
-    /// dossier de travail, y copie l'histoire, y restaure `saves/`, et renvoie le chemin à lancer.
+    /// d'abord un `saves/` resté dans la copie (échec d'E/S : erreur, rien n'est supprimé), vide
+    /// le dossier de travail, y copie l'histoire, y restaure `saves/`, et renvoie le chemin à
+    /// lancer.
+    ///
+    /// Des sauvegardes hors limites (nombre, taille, profondeur) ne bloquent **pas** le
+    /// lancement : elles sont mises de côté en `.rejected` ([`set_aside`](Self::set_aside)) et
+    /// l'information est transmise à `player://exited` (`saves_error`).
     pub fn stage(&self, source: &Path) -> AppResult<PathBuf> {
         let name = source.file_name().ok_or_else(|| {
             AppError::Validation(format!("nom d'histoire invalide : {}", source.display()))
@@ -435,14 +603,11 @@ impl Workspace {
         std::fs::create_dir_all(&self.work)?;
         // Partie précédente non rapatriée (launcher fermé ou tué, `persist_saves` en échec) :
         // la progression est mise à l'abri avant de vider. En cas d'échec, rien n'est détruit.
-        self.persist_saves()?;
+        if let Some(note) = self.persist_saves()? {
+            self.note(note);
+        }
         for entry in std::fs::read_dir(&self.work)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                std::fs::remove_dir_all(entry.path())?;
-            } else {
-                std::fs::remove_file(entry.path())?;
-            }
+            remove_tree(&entry?.path())?;
         }
         let dest = self.work.join(name);
         if is_real_dir(source) {
@@ -453,16 +618,19 @@ impl Workspace {
         if is_real_dir(&self.saved) {
             // Restauration dans un dossier temporaire, renommé seulement en cas de succès : un
             // `saves/` partiel ne doit jamais pouvoir être pris pour une partie à rapatrier.
-            let mut budget = Budget {
-                files: SAVES_MAX_FILES,
-                bytes: SAVES_MAX_BYTES,
-            };
+            let mut budget = Budget::saves();
             let tmp = self.work.join(format!("{SAVES_DIR}.tmp"));
             let restored = copy_tree(&self.saved, &tmp, 0, &mut budget)
                 .and_then(|()| std::fs::rename(&tmp, self.work.join(SAVES_DIR)));
             if let Err(err) = restored {
                 let _ = std::fs::remove_dir_all(&tmp);
-                return Err(err.into());
+                if !is_limit(&err) {
+                    return Err(err.into());
+                }
+                // Sauvegarde conservée trop grosse (limites changées, dossier modifié à la main) :
+                // mise de côté, partie sans progression, sans bloquer le lancement.
+                let note = self.set_aside(&self.saved, &err, "sauvegardes conservées")?;
+                self.note(note);
             }
         }
         Ok(dest)
@@ -470,8 +638,16 @@ impl Workspace {
 
     /// Rapatrie `<copie>/saves/` vers le dossier de données : copie dans un dossier temporaire
     /// voisin, puis échange par renommage (l'ancien est conservé jusqu'au succès). Sans
-    /// sauvegarde dans la copie, ne fait rien. Sauvegardes trop volumineuses : refusées.
-    pub fn persist_saves(&self) -> AppResult<()> {
+    /// sauvegarde dans la copie, ne fait rien (`Ok(None)`).
+    ///
+    /// Sauvegardes hors limites : la **version précédente est conservée**, le nouveau `saves/`
+    /// est mis de côté en `.rejected` et le message est renvoyé (`Ok(Some(..))`). Les autres
+    /// échecs (E/S) sont des erreurs, la copie de travail restant intacte.
+    ///
+    /// **Compromis (player qui plante)** : le rapatriement a lieu aussi après un échec du
+    /// player ; un `saves/` partiel (écriture interrompue par le plantage) remplace donc la
+    /// version précédente, qui n'est pas gardée au-delà de l'échange.
+    pub fn persist_saves(&self) -> AppResult<Option<String>> {
         // Reprise après un arrêt entre les deux renommages d'un rapatriement précédent.
         let old = self.sibling(".old");
         if !self.saved.exists() && is_real_dir(&old) {
@@ -479,7 +655,7 @@ impl Workspace {
         }
         let src = self.work.join(SAVES_DIR);
         if !is_real_dir(&src) {
-            return Ok(());
+            return Ok(None);
         }
         let (tmp, old) = (self.sibling(".tmp"), self.sibling(".old"));
         for leftover in [&tmp, &old] {
@@ -487,12 +663,13 @@ impl Workspace {
                 std::fs::remove_dir_all(leftover)?;
             }
         }
-        let mut budget = Budget {
-            files: SAVES_MAX_FILES,
-            bytes: SAVES_MAX_BYTES,
-        };
+        let mut budget = Budget::saves();
         if let Err(err) = copy_tree(&src, &tmp, 0, &mut budget) {
             let _ = std::fs::remove_dir_all(&tmp);
+            if is_limit(&err) {
+                let note = self.set_aside(&src, &err, "nouvelles sauvegardes")?;
+                return Ok(Some(note));
+            }
             return Err(err.into());
         }
         let had_previous = is_real_dir(&self.saved);
@@ -508,15 +685,56 @@ impl Workspace {
         if had_previous {
             let _ = std::fs::remove_dir_all(&old);
         }
-        Ok(())
+        Ok(None)
     }
 
-    /// [`persist_saves`](Self::persist_saves), l'erreur étant tracée (appelée à la fin du player).
-    pub fn persist_saves_logged(&self) {
-        if let Err(err) = self.persist_saves() {
-            tracing::error!("sauvegardes du player non conservées : {err}");
+    /// Rapatriement de fin de partie : les erreurs sont tracées et, avec les informations
+    /// recueillies (sauvegardes mises de côté au lancement ou ici), renvoyées pour
+    /// `PlayerExited::saves_error`.
+    pub fn persist_saves_logged(&self) -> Option<String> {
+        let mut notes: Vec<String> = std::mem::take(&mut *lock(&self.notes));
+        match self.persist_saves() {
+            Ok(note) => notes.extend(note),
+            Err(err) => {
+                tracing::error!("sauvegardes du player non conservées : {err}");
+                notes.push(format!("sauvegardes du player non conservées : {err}"));
+            }
         }
+        (!notes.is_empty()).then(|| notes.join(" ; "))
     }
+
+    /// Désinstallation de l'histoire : supprime la copie de travail et, si `purge_saves`, la
+    /// progression de l'enfant (`<config>/saves/<empreinte>` et ses `.tmp`, `.old`,
+    /// `.rejected`). **Sans `purge_saves`, la progression est conservée** (rapatriée d'abord si
+    /// la copie de travail en porte une non conservée : en cas d'échec, rien n'est supprimé).
+    pub fn purge(&self, purge_saves: bool) -> AppResult<()> {
+        if !purge_saves {
+            self.persist_saves()?;
+        }
+        remove_tree(&self.work)?;
+        if purge_saves {
+            for suffix in ["", ".tmp", ".old", ".rejected", ".rejected.new"] {
+                remove_tree(&self.sibling(suffix))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Désinstallation de l'histoire de bibliothèque `uuid` : purge sa copie de travail
+/// `<cache>/play/<empreinte>/` et, si `purge_saves`, sa progression (voir [`Workspace::purge`]).
+pub fn purge_library_story(
+    cache_root: &Path,
+    saves_root: &Path,
+    uuid: &str,
+    purge_saves: bool,
+) -> AppResult<()> {
+    Workspace::new(&cache_root.join(PLAY_DIR), saves_root, &library_key(uuid)).purge(purge_saves)
+}
+
+/// Clé de la copie de travail et des sauvegardes d'une histoire de bibliothèque.
+fn library_key(uuid: &str) -> String {
+    format!("library:{uuid}")
 }
 
 /// Chemin du player depuis les paramètres enregistrés (configuré valide, sinon détecté).
@@ -570,15 +788,19 @@ pub async fn player_launch(
     blocking(move || {
         let (path, title) = Library::new(&cache_root).playable(&uuid)?;
         check_source(&path, StoryKind::FlamPk)?;
-        let ws = Workspace::new(
-            &cache_root.join(PLAY_DIR),
-            &saves_root,
-            &format!("library:{uuid}"),
-        );
+        let ws = Workspace::new(&cache_root.join(PLAY_DIR), &saves_root, &library_key(&uuid));
         let (staging, saving) = (ws.clone(), ws);
+        let library = Library::new(&cache_root);
         service.launch(
             &exe,
-            || staging.stage(&path),
+            || {
+                // Relu sous le créneau : une désinstallation qui vient de passer (elle tient le
+                // même créneau) fait échouer le lancement (`not_found`) au lieu de lancer un
+                // fichier supprimé ou de recréer une copie de travail.
+                let (current, _) = library.playable(&uuid)?;
+                check_source(&current, StoryKind::FlamPk)?;
+                staging.stage(&current)
+            },
             move || saving.persist_saves_logged(),
             "library",
             &uuid,
@@ -710,7 +932,7 @@ mod tests {
             self.service.launch(
                 &self.fake,
                 || Ok(target.to_path_buf()),
-                || {},
+                || None,
                 "library",
                 "u1",
                 "Mon histoire",
@@ -739,6 +961,7 @@ mod tests {
         assert_eq!(done.code, Some(0));
         assert!(done.success);
         assert_eq!(done.stderr, "");
+        assert_eq!(done.saves_error, None);
         assert_eq!(c.service.status(), None);
     }
 
@@ -783,7 +1006,7 @@ mod tests {
             .launch(
                 &c.dir.path().join("nope.exe"),
                 || Ok(story),
-                || {},
+                || None,
                 "library",
                 "u",
                 "t",
@@ -799,7 +1022,7 @@ mod tests {
         let not_exe = c.story("faux.exe", "pas un exécutable");
         let err = c
             .service
-            .launch(&not_exe, || Ok(story), || {}, "library", "u", "t")
+            .launch(&not_exe, || Ok(story), || None, "library", "u", "t")
             .unwrap_err();
         assert_eq!(err.kind(), "player_unavailable");
         assert_eq!(c.service.status(), None);
@@ -949,20 +1172,409 @@ mod tests {
     }
 
     #[test]
-    fn stage_ne_detruit_rien_si_le_rapatriement_echoue() {
+    fn stage_ne_detruit_rien_si_le_rapatriement_echoue_pour_une_raison_d_e_s() {
         let dir = tempfile::tempdir().unwrap();
         let pk = dir.path().join("Histoire.plain.pk");
         std::fs::write(&pk, b"PK").unwrap();
         let ws = workspace(dir.path(), "library:u1");
         let copy = ws.stage(&pk).unwrap();
+        play_and_save(&copy, b"niveau 2");
+        // `<config>/saves` est un fichier : le rapatriement échoue (E/S, pas une limite).
+        std::fs::create_dir_all(dir.path().join("config")).unwrap();
+        std::fs::write(dir.path().join("config/saves"), b"x").unwrap();
+        assert!(ws.stage(&pk).is_err());
+        let kept = copy.parent().unwrap().join("saves/Histoire.plain/state");
+        assert_eq!(std::fs::read(kept).unwrap(), b"niveau 2");
+        assert!(copy.is_file());
+    }
+
+    #[test]
+    fn des_saves_hors_limites_ne_bloquent_pas_le_lancement_et_sont_mis_de_cote() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        play_and_save(&copy, b"niveau 2");
+        assert_eq!(ws.persist_saves().unwrap(), None);
+
+        // Partie suivante : sauvegardes au-delà des limites.
         let saves = copy.parent().unwrap().join("saves");
-        std::fs::create_dir_all(&saves).unwrap();
         for i in 0..=SAVES_MAX_FILES {
             std::fs::write(saves.join(format!("{i}")), b"").unwrap();
         }
-        assert!(ws.stage(&pk).is_err());
-        assert!(saves.join("0").is_file(), "la copie de travail est intacte");
+        let note = ws.persist_saves().unwrap().expect("information renvoyée");
+        assert!(note.contains("refusées"), "{note}");
+        // La version précédente est conservée, le nouveau saves/ est mis de côté.
+        assert_eq!(
+            std::fs::read(ws.saved.join("Histoire.plain/state")).unwrap(),
+            b"niveau 2"
+        );
+        assert!(ws.sibling(".rejected").join("0").is_file());
+        assert!(
+            !saves.exists(),
+            "plus de saves/ à rapatrier (pas de boucle)"
+        );
+        assert_eq!(ws.persist_saves().unwrap(), None);
+
+        // Le lancement suivant n'est pas bloqué et restaure la version précédente.
+        let copy = ws.stage(&pk).unwrap();
+        let restored = copy.parent().unwrap().join("saves/Histoire.plain/state");
+        assert_eq!(std::fs::read(restored).unwrap(), b"niveau 2");
+
+        // Une seule génération : un second rejet remplace le premier.
+        let saves = copy.parent().unwrap().join("saves");
+        for i in 0..=SAVES_MAX_FILES {
+            std::fs::write(saves.join(format!("n{i}")), b"").unwrap();
+        }
+        ws.persist_saves().unwrap().unwrap();
+        assert!(ws.sibling(".rejected").join("n0").is_file());
+        assert!(!ws.sibling(".rejected").join("0").exists());
+    }
+
+    #[test]
+    fn un_saves_trop_profond_est_une_erreur_explicite_pas_une_troncature() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        let mut deep = copy.parent().unwrap().join("saves");
+        for _ in 0..=COPY_MAX_DEPTH {
+            deep.push("n");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("state"), b"profond").unwrap();
+        let note = ws.persist_saves().unwrap().expect("refus explicite");
+        assert!(note.contains("trop profonde"), "{note}");
+        assert!(!ws.saved.exists(), "rien de tronqué n'est conservé");
+        // copy_tree : erreur de limite, jamais Ok tronqué.
+        let target = dir.path().join("copie");
+        let mut budget = Budget::unlimited();
+        std::fs::create_dir_all(dir.path().join("a")).unwrap();
+        let mut nested = dir.path().join("a");
+        for _ in 0..=COPY_MAX_DEPTH {
+            nested.push("d");
+        }
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("f"), b"x").unwrap();
+        let err = copy_tree(&dir.path().join("a"), &target, 0, &mut budget).unwrap_err();
+        assert!(is_limit(&err));
+    }
+
+    #[test]
+    fn le_repli_par_copie_deplace_meme_un_arbre_trop_profond() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("saves");
+        let mut deep = from.clone();
+        for _ in 0..(COPY_MAX_DEPTH + 4) {
+            deep.push("n");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("state"), b"profond").unwrap();
+        // Le repli de `move_dir` (sans renommage) copie sans aucune limite, puis supprime.
+        let to = dir.path().join("rejected");
+        copy_tree(&from, &to, 0, &mut Budget::unbounded()).unwrap();
+        assert_eq!(
+            std::fs::read(to.join("n/".repeat(COPY_MAX_DEPTH + 4)).join("state")).unwrap(),
+            b"profond"
+        );
+        // Avec la limite de profondeur, la même copie est refusée.
+        let err = copy_tree(&from, &dir.path().join("x"), 0, &mut Budget::saves()).unwrap_err();
+        assert!(is_limit(&err));
+        // Déplacement complet : source disparue, destination complète.
+        let moved = dir.path().join("moved");
+        move_dir(&from, &moved).unwrap();
+        assert!(!from.exists());
+        assert!(moved.exists());
+    }
+
+    #[test]
+    fn l_ancien_rejected_survit_si_la_mise_de_cote_echoue() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        std::fs::create_dir_all(ws.sibling(".rejected")).unwrap();
+        std::fs::write(ws.sibling(".rejected").join("ancien"), b"x").unwrap();
+        // La destination intermédiaire ne peut pas être créée : un fichier la remplace et un
+        // dossier non vidable (le saves/ source n'existe pas) fait échouer le déplacement.
+        let missing = copy.parent().unwrap().join("saves-absent");
+        let why = limit_error("x".into());
+        assert!(ws.set_aside(&missing, &why, "test").is_err());
+        assert!(ws.sibling(".rejected").join("ancien").is_file());
+    }
+
+    #[test]
+    fn un_lancement_pendant_une_desinstallation_est_refuse_sans_lancer() {
+        use crate::library::{tests::story, Library};
+        let c = ctx();
+        let cache = c.dir.path().join("cache");
+        let saves = c.dir.path().join("config/saves");
+        let lib = Library::new(&cache);
+        let staged = lib.staging_dir().unwrap().join("t.plain.pk");
+        std::fs::write(&staged, b"PK").unwrap();
+        lib.install(&staged, &story("u1", Some(1)), None, 0)
+            .unwrap();
+
+        let (entered_tx, entered) = channel::<()>();
+        let (release, released) = channel::<()>();
+        let remover = {
+            let (service, cache, saves) = (c.service.clone(), cache.clone(), saves.clone());
+            std::thread::spawn(move || {
+                // Même séquence que `library_remove` : tout sous le créneau.
+                service
+                    .while_not_playing("u1", || {
+                        entered_tx.send(()).unwrap();
+                        released.recv().unwrap();
+                        purge_library_story(&cache, &saves, "u1", true).unwrap();
+                        Library::new(&cache).remove("u1").unwrap();
+                    })
+                    .unwrap();
+            })
+        };
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Lancement pendant le retrait : il attend le créneau, puis ne trouve plus l'histoire.
+        let launcher = {
+            let (service, fake, cache, saves) = (
+                c.service.clone(),
+                c.fake.clone(),
+                cache.clone(),
+                saves.clone(),
+            );
+            std::thread::spawn(move || {
+                let lib = Library::new(&cache);
+                let ws = Workspace::new(&cache.join(PLAY_DIR), &saves, &library_key("u1"));
+                service.launch(
+                    &fake,
+                    || {
+                        let (path, _) = lib.playable("u1")?;
+                        ws.stage(&path)
+                    },
+                    || None,
+                    "library",
+                    "u1",
+                    "t",
+                )
+            })
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!launcher.is_finished(), "le lancement attend le créneau");
+        release.send(()).unwrap();
+        remover.join().unwrap();
+        let err = launcher.join().unwrap().unwrap_err();
+        assert_eq!(err.kind(), "not_found");
+        assert!(c.started.try_recv().is_err(), "aucun player lancé");
+        assert!(!cache.join(PLAY_DIR).exists(), "rien recréé dans play/");
+        assert!(!saves.exists(), "la progression purgée ne revient pas");
+    }
+
+    #[test]
+    fn seule_une_erreur_de_limite_est_une_limite() {
+        let other = std::io::Error::new(std::io::ErrorKind::InvalidData, "autre");
+        assert!(!is_limit(&other));
+        assert!(is_limit(&limit_error("x".into())));
+    }
+
+    #[test]
+    fn les_notes_de_lancement_remontent_dans_saves_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        std::fs::create_dir_all(&ws.saved).unwrap();
+        for i in 0..=SAVES_MAX_FILES {
+            std::fs::write(ws.saved.join(format!("{i}")), b"x").unwrap();
+        }
+        // Sauvegarde conservée hors limites : le lancement n'est pas bloqué.
+        let copy = ws.stage(&pk).unwrap();
         assert!(copy.is_file());
+        assert!(!copy.parent().unwrap().join("saves").exists());
+        assert!(!ws.saved.exists());
+        assert!(ws.sibling(".rejected").join("0").is_file());
+        let info = ws
+            .persist_saves_logged()
+            .expect("information pour l'interface");
+        assert!(info.contains("sauvegardes conservées refusées"), "{info}");
+        // Les notes ne sont renvoyées qu'une fois.
+        assert_eq!(ws.persist_saves_logged(), None);
+    }
+
+    #[test]
+    fn un_echec_de_rapatriement_remonte_dans_saves_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        play_and_save(&copy, b"x");
+        std::fs::create_dir_all(dir.path().join("config")).unwrap();
+        std::fs::write(dir.path().join("config/saves"), b"x").unwrap();
+        let info = ws.persist_saves_logged().expect("échec signalé");
+        assert!(info.contains("non conservées"), "{info}");
+    }
+
+    #[test]
+    fn purge_supprime_la_copie_de_travail_et_garde_la_progression_par_defaut() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let (cache, config) = (dir.path().join("cache"), dir.path().join("config/saves"));
+        let ws = Workspace::new(&cache.join(PLAY_DIR), &config, &library_key("u1"));
+        let copy = ws.stage(&pk).unwrap();
+        // Partie non rapatriée : la purge sans `purge_saves` la met d'abord à l'abri.
+        play_and_save(&copy, b"niveau 9");
+
+        purge_library_story(&cache, &config, "u1", false).unwrap();
+        assert!(!ws.work.exists(), "copie de travail supprimée");
+        assert_eq!(
+            std::fs::read(ws.saved.join("Histoire.plain/state")).unwrap(),
+            b"niveau 9"
+        );
+        // Une autre histoire n'est pas touchée.
+        let other = Workspace::new(&cache.join(PLAY_DIR), &config, &library_key("u2"));
+        other.stage(&pk).unwrap();
+        purge_library_story(&cache, &config, "u1", false).unwrap();
+        assert!(other.work.is_dir());
+        // Idempotent sur une histoire jamais lancée.
+        purge_library_story(&cache, &config, "jamais", true).unwrap();
+    }
+
+    #[test]
+    fn purge_saves_efface_aussi_la_progression_et_ses_reliquats() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let (cache, config) = (dir.path().join("cache"), dir.path().join("config/saves"));
+        let ws = Workspace::new(&cache.join(PLAY_DIR), &config, &library_key("u1"));
+        let copy = ws.stage(&pk).unwrap();
+        play_and_save(&copy, b"niveau 9");
+        ws.persist_saves().unwrap();
+        for suffix in [".tmp", ".old", ".rejected"] {
+            std::fs::create_dir_all(ws.sibling(suffix)).unwrap();
+        }
+        let autre = Workspace::new(&cache.join(PLAY_DIR), &config, &library_key("u2"));
+        autre.stage(&pk).unwrap();
+        play_and_save(&autre.work.join("Histoire.plain.pk"), b"autre");
+        autre.persist_saves().unwrap();
+
+        purge_library_story(&cache, &config, "u1", true).unwrap();
+        assert!(!ws.work.exists());
+        for suffix in ["", ".tmp", ".old", ".rejected"] {
+            assert!(!ws.sibling(suffix).exists(), "{suffix:?}");
+        }
+        assert!(
+            autre.saved.is_dir(),
+            "la progression d'une autre histoire reste"
+        );
+    }
+
+    #[test]
+    fn purge_echoue_sans_rien_supprimer_si_la_progression_ne_peut_etre_mise_a_l_abri() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let (cache, config) = (dir.path().join("cache"), dir.path().join("config/saves"));
+        let ws = Workspace::new(&cache.join(PLAY_DIR), &config, &library_key("u1"));
+        let copy = ws.stage(&pk).unwrap();
+        play_and_save(&copy, b"x");
+        std::fs::create_dir_all(dir.path().join("config")).unwrap();
+        std::fs::write(dir.path().join("config/saves"), b"fichier").unwrap();
+        assert!(purge_library_story(&cache, &config, "u1", false).is_err());
+        assert!(ws.work.join("saves").is_dir());
+    }
+
+    /// Lien de dossier sans privilège : jonction (`mklink /J`) sous Windows, lien symbolique
+    /// ailleurs.
+    fn link_dir(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            let out = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                // `mklink` prend `/` pour une option : chemins en `\` uniquement.
+                .arg(link.to_string_lossy().replace('/', "\\"))
+                .arg(target.to_string_lossy().replace('/', "\\"))
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "mklink /J : {out:?}");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[test]
+    fn remove_tree_retire_un_lien_de_dossier_sans_toucher_sa_cible() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("cible");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("precieux"), b"x").unwrap();
+        let link = dir.path().join("lien");
+        link_dir(&link, &target);
+        remove_tree(&link).unwrap();
+        assert!(!link.exists());
+        assert!(target.join("precieux").is_file(), "la cible est intacte");
+        remove_tree(&dir.path().join("absent")).unwrap();
+    }
+
+    #[test]
+    fn stage_vide_un_lien_de_dossier_de_la_copie_de_travail() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let outside = dir.path().join("dehors");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("precieux"), b"x").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        ws.stage(&pk).unwrap();
+        let link = ws.work.join("lien");
+        link_dir(&link, &outside);
+        ws.stage(&pk).unwrap();
+        assert!(!link.exists());
+        assert!(outside.join("precieux").is_file());
+    }
+
+    #[test]
+    fn status_ne_bloque_pas_pendant_un_vidage_long() {
+        let c = ctx();
+        let (entered_tx, entered) = channel::<()>();
+        let (release, released) = channel::<()>();
+        let service = c.service.clone();
+        let busy = std::thread::spawn(move || {
+            service
+                .while_idle(|| {
+                    entered_tx.send(()).unwrap();
+                    released.recv().unwrap();
+                })
+                .unwrap();
+        });
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let began = Instant::now();
+        // Le créneau est tenu par le vidage : pas de player en cours, et on ne l'attend pas.
+        assert_eq!(c.service.status(), None);
+        assert!(began.elapsed() < Duration::from_millis(500));
+        release.send(()).unwrap();
+        busy.join().unwrap();
+    }
+
+    #[test]
+    fn while_not_playing_refuse_seulement_l_histoire_en_cours() {
+        let c = ctx();
+        let story = c.story("long.plain.pk", "sleep 30000\nexit 0\n");
+        let session = c.launch(&story).unwrap(); // uuid « u1 », origine bibliothèque
+        c.started.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            c.service.while_not_playing("u1", || ()).unwrap_err().kind(),
+            "player_busy"
+        );
+        assert_eq!(c.service.while_not_playing("autre", || 5).unwrap(), 5);
+        let kill = Command::new("taskkill")
+            .args(["/PID", &session.pid.to_string(), "/F"])
+            .output()
+            .unwrap();
+        assert!(kill.status.success());
+        c.wait_exit();
+        assert!(c.service.while_not_playing("u1", || ()).is_ok());
     }
 
     #[test]
@@ -992,7 +1604,7 @@ exit 0
     }
 
     #[test]
-    fn une_restauration_partielle_ne_laisse_pas_de_saves_a_rapatrier() {
+    fn une_restauration_hors_limites_met_la_sauvegarde_de_cote_sans_bloquer() {
         let dir = tempfile::tempdir().unwrap();
         let pk = dir.path().join("Histoire.plain.pk");
         std::fs::write(&pk, b"PK").unwrap();
@@ -1003,17 +1615,19 @@ exit 0
         for i in 0..=SAVES_MAX_FILES {
             std::fs::write(saved.join(format!("{i}")), b"bonne").unwrap();
         }
-        assert!(ws.stage(&pk).is_err());
+        let copy = ws.stage(&pk).unwrap();
+        assert!(copy.is_file(), "lancement possible");
+        // Pas de `saves/` partiel à rapatrier, rien de laissé en route.
         assert!(!ws.work.join("saves").exists());
         assert!(!ws.work.join("saves.tmp").exists());
-        // Le lancement suivant ne rapatrie rien et ne touche pas la bonne sauvegarde.
-        assert!(ws.stage(&pk).is_err());
-        assert_eq!(
-            std::fs::read_dir(&saved).unwrap().count(),
-            SAVES_MAX_FILES + 1
-        );
-        assert_eq!(std::fs::read(saved.join("0")).unwrap(), b"bonne");
+        // La sauvegarde est mise de côté (une génération), pas détruite.
+        assert!(!saved.exists());
+        let rejected = ws.sibling(".rejected");
+        assert_eq!(std::fs::read(rejected.join("0")).unwrap(), b"bonne");
         assert!(!ws.sibling(".old").exists());
+        // Le lancement suivant n'a plus rien à restaurer ni à mettre de côté.
+        ws.stage(&pk).unwrap();
+        assert!(rejected.join("0").is_file());
     }
 
     #[test]
@@ -1078,26 +1692,15 @@ exit 0
     }
 
     #[test]
-    fn sans_sauvegarde_rien_n_est_cree_et_les_saves_trop_gros_sont_refuses() {
+    fn sans_sauvegarde_rien_n_est_cree() {
         let dir = tempfile::tempdir().unwrap();
         let pk = dir.path().join("Histoire.plain.pk");
         std::fs::write(&pk, b"PK").unwrap();
         let ws = workspace(dir.path(), "k");
-        ws.persist_saves().unwrap(); // pas encore de copie de travail
-        let copy = ws.stage(&pk).unwrap();
-        ws.persist_saves().unwrap(); // pas de saves/ écrit par le player
+        assert_eq!(ws.persist_saves().unwrap(), None); // pas encore de copie de travail
+        ws.stage(&pk).unwrap();
+        assert_eq!(ws.persist_saves().unwrap(), None); // pas de saves/ écrit par le player
         assert!(!dir.path().join("config").exists());
-
-        let saves = copy.parent().unwrap().join("saves");
-        std::fs::create_dir_all(&saves).unwrap();
-        for i in 0..=SAVES_MAX_FILES {
-            std::fs::write(saves.join(format!("{i}")), b"").unwrap();
-        }
-        assert!(ws.persist_saves().is_err());
-        let left: Vec<_> = std::fs::read_dir(dir.path().join("config/saves"))
-            .unwrap()
-            .collect();
-        assert!(left.is_empty(), "le dossier temporaire est nettoyé");
     }
 
     #[test]
@@ -1112,6 +1715,7 @@ exit 0
                 || Ok(story),
                 move || {
                     let _ = lock(&tx).send(());
+                    Some("sauvegardes écartées".to_string())
                 },
                 "library",
                 "u",
@@ -1121,6 +1725,7 @@ exit 0
         let done = c.wait_exit();
         assert_eq!(done.code, Some(9));
         assert!(rx.try_recv().is_ok(), "finish exécuté avant l'événement");
+        assert_eq!(done.saves_error.as_deref(), Some("sauvegardes écartées"));
     }
 
     #[test]
@@ -1153,18 +1758,16 @@ exit 0
     }
 
     #[test]
+    #[ignore = "demande le privilège de création de liens symboliques (mode développeur Windows)"]
     fn check_source_refuse_les_liens_symboliques() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("vrai.plain.pk");
         std::fs::write(&target, b"x").unwrap();
         let link = dir.path().join("lien.plain.pk");
         #[cfg(windows)]
-        let made = std::os::windows::fs::symlink_file(&target, &link);
+        std::os::windows::fs::symlink_file(&target, &link).unwrap();
         #[cfg(unix)]
-        let made = std::os::unix::fs::symlink(&target, &link);
-        if made.is_err() {
-            return; // création de lien non autorisée sur ce poste (Windows sans privilège)
-        }
+        std::os::unix::fs::symlink(&target, &link).unwrap();
         let err = check_source(&link, StoryKind::FlamPk).unwrap_err();
         assert_eq!(err.kind(), "validation");
     }
@@ -1191,7 +1794,7 @@ exit 0
                     )
                     .stage(&story)
                 },
-                || {},
+                || None,
                 "library",
                 "real",
                 "Réel",

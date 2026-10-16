@@ -571,6 +571,23 @@ impl InstallService {
         .await?
     }
 
+    /// Désinstalle l'histoire `uuid` (appel **bloquant**, à faire sous le créneau du player et le
+    /// portillon du cache) : vérifie qu'elle est installée (`not_found` sinon, avant toute
+    /// suppression), exécute `before` (purge de la copie de travail et de la progression), puis
+    /// retire fichier et entrée d'index, le tout sous le verrou de la bibliothèque.
+    pub fn library_remove_with(
+        &self,
+        uuid: &str,
+        before: impl FnOnce() -> AppResult<()>,
+    ) -> AppResult<()> {
+        let tc = (self.0.opts.resolver)()?;
+        let _held = lock(&self.0.library_lock);
+        let library = Library::new(&tc.cache_root);
+        library.playable_entry(uuid)?;
+        before()?;
+        library.remove(uuid)
+    }
+
     /// Construit le contenu de la file (sous le verrou `tasks`, sans aucune E/S) et lui attribue
     /// un numéro d'ordre. L'écriture se fait ensuite hors du verrou ([`Self::write_queue`]).
     fn snapshot(&self, tasks: &[Slot]) -> QueueSnapshot {
