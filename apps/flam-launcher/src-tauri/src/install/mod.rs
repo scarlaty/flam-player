@@ -600,9 +600,11 @@ impl InstallService {
         if snap.seq <= *written {
             return;
         }
-        match storage::write_atomic(&inner.opts.queue_path, &snap.bytes) {
-            Ok(()) => *written = snap.seq,
-            Err(err) => tracing::warn!("file d'installation non enregistrée : {err}"),
+        // Même en cas d'échec, la capture est « consommée » : une capture plus ancienne ne doit
+        // jamais s'écrire après elle.
+        *written = snap.seq;
+        if let Err(err) = storage::write_atomic(&inner.opts.queue_path, &snap.bytes) {
+            tracing::warn!("file d'installation non enregistrée : {err}");
         }
     }
 
@@ -951,7 +953,7 @@ impl InstallService {
         let mut last: Option<Instant> = None;
         let mut on_progress = |received: u64, total: Option<u64>| {
             let end = total == Some(received);
-            if end || last.map_or(true, |t| t.elapsed() >= PROGRESS_INTERVAL) {
+            if end || last.is_none_or(|t| t.elapsed() >= PROGRESS_INTERVAL) {
                 last = Some(Instant::now());
                 self.emit(InstallProgress {
                     task_id: id.to_string(),
@@ -1043,6 +1045,35 @@ enum Prepared {
     Download(Validator),
 }
 
+/// Taille maximale d'une mémoire d'archive lue, et d'une valeur de validateur.
+const MAX_META_BYTES: u64 = 4096;
+const MAX_VALIDATOR_LEN: usize = 256;
+
+/// Lit la mémoire d'une archive : lecture bornée, validateur revalidé (ASCII visible, longueur
+/// bornée, sinon validateur vide pour ne pas faire échouer chaque relance).
+fn read_archive_meta(path: &Path) -> Option<ArchiveMeta> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_META_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_META_BYTES {
+        return None;
+    }
+    let mut meta: ArchiveMeta = serde_json::from_slice(&bytes).ok()?;
+    let valid = |v: &Option<String>| {
+        v.as_deref().is_none_or(|v| {
+            v.len() <= MAX_VALIDATOR_LEN && v.bytes().all(|b| (0x20..=0x7e).contains(&b))
+        })
+    };
+    if !valid(&meta.validator.etag) || !valid(&meta.validator.last_modified) {
+        meta.validator = Validator::default();
+    }
+    Some(meta)
+}
+
 /// Décide de la réutilisation d'une archive ou d'un `.part` (E/S bloquantes). Une archive sans
 /// mémoire, d'un autre lien ou d'une autre taille est supprimée ; un `.part` d'un autre lien
 /// aussi.
@@ -1054,9 +1085,7 @@ fn prepare_archive(
 ) -> AppResult<Prepared> {
     std::fs::create_dir_all(dir)?;
     let meta_file = meta_path(dest);
-    let meta: Option<ArchiveMeta> = std::fs::read(&meta_file)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let meta = read_archive_meta(&meta_file);
     let same = meta.as_ref().is_some_and(|m| m.url == url);
     if dest.is_file() {
         let size = std::fs::metadata(dest)?.len();

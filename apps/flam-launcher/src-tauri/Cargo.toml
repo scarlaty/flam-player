@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Surcouche de bureau pour flam-player"
 license = "MIT"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.89"
 
 [lib]
 name = "flam_launcher_lib"

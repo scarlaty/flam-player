@@ -1268,3 +1268,50 @@ async fn ecriture_de_file_ignore_une_capture_perimee() {
         b"deux"
     );
 }
+
+#[tokio::test]
+async fn capture_recente_en_echec_n_autorise_pas_une_plus_ancienne() {
+    let ctx = Ctx::new(None);
+    let path = ctx.dir.path().join("config").join(QUEUE_FILE);
+    std::fs::create_dir_all(&path).unwrap();
+    let newer = QueueSnapshot {
+        seq: 2,
+        bytes: b"deux".to_vec(),
+    };
+    InstallService::write_queue_blocking(&ctx.service.0, &newer);
+    std::fs::remove_dir_all(&path).unwrap();
+    let older = QueueSnapshot {
+        seq: 1,
+        bytes: b"un".to_vec(),
+    };
+    InstallService::write_queue_blocking(&ctx.service.0, &older);
+    assert!(!path.exists(), "la capture ancienne ne doit pas s'écrire");
+}
+
+#[test]
+fn memoire_d_archive_bornee_et_revalidee() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("abc-2.plain.pk");
+    let meta = meta_path(&dest);
+    let write = |etag: &str| {
+        let json = serde_json::json!({
+            "url": "https://h.example.test/a.zip",
+            "validator": { "etag": etag, "last_modified": null },
+            "size": 3
+        });
+        std::fs::write(&meta, json.to_string()).unwrap();
+    };
+    write("\"ok\"");
+    let read = read_archive_meta(&meta).unwrap();
+    assert_eq!(read.validator.etag.as_deref(), Some("\"ok\""));
+    // ETag invalide : validateur vide, lien conservé.
+    for bad in ["a\r\nb", "é", &"x".repeat(300)] {
+        write(bad);
+        let read = read_archive_meta(&meta).unwrap();
+        assert_eq!(read.validator, Validator::default(), "{bad:?}");
+        assert_eq!(read.url, "https://h.example.test/a.zip");
+    }
+    // Fichier trop gros : ignoré.
+    std::fs::write(&meta, vec![b' '; 5000]).unwrap();
+    assert!(read_archive_meta(&meta).is_none());
+}

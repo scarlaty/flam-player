@@ -329,10 +329,12 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    cumulée bornée à 4 Gio.
 3. **Installation** : `uuid` et `version` **revalidés** (`story::validate_story_id`), renommage
    vers `<cache>/library/<uuid>-<version>.plain.pk` (version inconnue : `0`), chemin vérifié sous
-   `library/`, index `library.json` mis à jour, archive téléchargée supprimée. Ordre sûr : l'ancien fichier de
-   même nom passe en `.staging/*.bak`, le nouveau est renommé, l'index est écrit (échec :
-   retour à l'état précédent) ; au chargement, `library/` est réconciliée avec l'index (sauvegarde
-   restaurée, `.plain.pk` non indexé supprimé, rien si l'index est illisible).
+   `library/`, index `library.json` mis à jour, archive téléchargée supprimée. Ordre sûr : un marqueur d'intention `.staging/<fichier>.pending` est écrit, l'ancien fichier de
+   même nom passe en `.staging/*.bak`, le nouveau est renommé, l'index est écrit, puis le
+   marqueur est effacé (échec : retour à l'état précédent). Au chargement, seules les
+   publications **qui ont un marqueur** sont défaites ; un `.plain.pk` non indexé sans marqueur
+   n'est jamais supprimé. Publication et réconciliation tiennent un verrou inter-processus
+   (`library/.lock`) ; si une autre instance le tient, rien n'est réconcilié.
 
 - **Concurrence** : `max_downloads` téléchargements simultanés (`settings.json`, 1 à 4, 2 par
   défaut, relu à chaque tâche), **une** conversion à la fois.
@@ -348,7 +350,7 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
   son dossier. Une tâche annulée (y compris en attente du créneau de conversion) supprime son
   archive téléchargée.
   Les tâches terminées ne sont gardées qu'en mémoire (100 au plus). Le lien et le validateur
-  d'une archive sont mémorisés dans `archives/<archive>.meta.json` : une nouvelle demande après
+  d'une archive sont mémorisés dans `archives/<archive>.meta.json` (4 Kio au plus, validateur revalidé) : une nouvelle demande après
   une coupure reprend le `.part`, et une archive complète n'est réutilisée que si son lien et
   sa taille correspondent (sinon elle est retéléchargée). L'écriture de `install_queue.json` se
   fait hors des verrous, sur un thread bloquant, avec des écritures ordonnées.
