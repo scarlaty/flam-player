@@ -593,24 +593,34 @@ fn moved_marker(from: &Path) -> PathBuf {
 
 /// Finit un déplacement interrompu pendant l'effacement de sa source : si `<dir>.moved` existe,
 /// `dir` (complet, partiel, vide ou absent) n'est qu'un reste dont la copie complète est déjà
-/// publiée ; il est effacé, puis le marqueur. Échec : erreur nommant `dir` et la marche à suivre
-/// (une ligne), et rien n'est lu de `dir`.
+/// publiée ; il est effacé, puis le marqueur. Échec : erreur d'une ligne nommant le chemin en
+/// cause (le marqueur illisible, ou `dir` non effacé avec la marche à suivre), et rien n'est lu
+/// de `dir`.
 fn finish_moved(dir: &Path) -> std::io::Result<()> {
-    finish_moved_with(dir, remove_tree)
+    finish_moved_with(dir, |p: &Path| std::fs::symlink_metadata(p), remove_tree)
 }
 
-/// [`finish_moved`] avec l'effacement injecté (tests de panne).
+/// [`finish_moved`] avec la lecture du marqueur et l'effacement injectés (tests de panne).
 fn finish_moved_with(
     dir: &Path,
+    probe: impl Fn(&Path) -> std::io::Result<std::fs::Metadata>,
     remove: impl Fn(&Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let marker = moved_marker(dir);
-    let finish = || {
-        match std::fs::symlink_metadata(&marker) {
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(err) => return Err(err),
-            Ok(_) => {}
+    match probe(&marker) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(std::io::Error::new(
+                err.kind(),
+                format!(
+                    "impossible de lire le marqueur {} : {err}",
+                    marker.display()
+                ),
+            ))
         }
+        Ok(_) => {}
+    }
+    let finish = || {
         remove(dir)?;
         tracing::warn!(
             "reste d'une mise de côté interrompue effacé : {} (copie complète déjà publiée)",
@@ -1776,9 +1786,11 @@ mod tests {
         write_files(&src, &["a"]);
         let marker = moved_marker(&src);
         std::fs::write(&marker, b"").unwrap();
-        let err = finish_moved_with(&src, |_: &Path| {
-            Err(std::io::Error::other("fichier verrouillé"))
-        })
+        let err = finish_moved_with(
+            &src,
+            |p: &Path| std::fs::symlink_metadata(p),
+            |_: &Path| Err(std::io::Error::other("fichier verrouillé")),
+        )
         .unwrap_err();
         let text = err.to_string();
         assert_eq!(
@@ -1793,18 +1805,62 @@ mod tests {
         assert_files(&src, &["a"]);
         assert!(marker.is_file());
         // Reste effacé, mais marqueur verrouillé : erreur, marqueur conservé.
-        let err = finish_moved_with(&src, |p: &Path| {
-            if p == marker {
-                Err(std::io::Error::other("marqueur verrouillé"))
-            } else {
-                remove_tree(p)
-            }
-        })
+        let err = finish_moved_with(
+            &src,
+            |p: &Path| std::fs::symlink_metadata(p),
+            |p: &Path| {
+                if p == marker {
+                    Err(std::io::Error::other("marqueur verrouillé"))
+                } else {
+                    remove_tree(p)
+                }
+            },
+        )
         .unwrap_err();
         assert!(err.to_string().contains("puis réessayer"));
         assert!(!src.exists() && marker.is_file());
         finish_moved(&src).unwrap();
         assert!(!src.exists() && !marker.exists());
+    }
+
+    /// #110 : le marqueur illisible (autre que absent) n'est pas présenté comme un reste non
+    /// effacé : message exact, une ligne, chemin du marqueur compris ; rien n'est effacé ni lu.
+    #[test]
+    fn un_marqueur_illisible_est_signale_tel_quel_sans_rien_effacer() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join(SAVES_DIR);
+        write_files(&src, &["a"]);
+        let marker = moved_marker(&src);
+        std::fs::write(&marker, b"").unwrap();
+        let err = finish_moved_with(
+            &src,
+            |_: &Path| Err(std::io::Error::other("accès refusé")),
+            |_: &Path| -> std::io::Result<()> { panic!("effacement sans lecture du marqueur") },
+        )
+        .unwrap_err();
+        let text = err.to_string();
+        assert_eq!(
+            text,
+            format!(
+                "impossible de lire le marqueur {} : accès refusé",
+                marker.display()
+            )
+        );
+        assert!(
+            !text.contains('\n') && !text.contains("non effacé"),
+            "{text}"
+        );
+        assert_files(&src, &["a"]);
+        assert!(marker.is_file());
+        // Marqueur absent : rien à faire, le dossier est une vraie donnée.
+        std::fs::remove_file(&marker).unwrap();
+        finish_moved_with(
+            &src,
+            |p: &Path| std::fs::symlink_metadata(p),
+            |_: &Path| panic!("effacement sans marqueur"),
+        )
+        .unwrap();
+        assert_files(&src, &["a"]);
     }
 
     /// #100 : l'écriture du marqueur échoue (copie déjà publiée en `.rejected.new`) : erreur,
@@ -1838,27 +1894,35 @@ mod tests {
     }
 
     /// #100 : marqueur `<copie>/saves.moved` resté seul (arrêt après l'effacement de la source) :
-    /// effacé au rapatriement, sans toucher à la progression conservée.
+    /// effacé au rapatriement, sans toucher à la progression conservée. #110 : avec un reste
+    /// encore présent sous le marqueur, l'effacement précède toute lecture : le reste n'est
+    /// jamais rapatrié.
     #[test]
     fn un_marqueur_saves_moved_seul_est_efface_sans_toucher_la_progression() {
-        let dir = tempfile::tempdir().unwrap();
-        let pk = dir.path().join("Histoire.plain.pk");
-        std::fs::write(&pk, b"PK").unwrap();
-        let ws = workspace(dir.path(), "library:u1");
-        let copy = ws.stage(&pk).unwrap();
-        write_files(&ws.saved, &["precedente"]);
-        let src = copy.parent().unwrap().join(SAVES_DIR);
-        std::fs::write(moved_marker(&src), b"").unwrap();
-        assert!(ws.persist_saves().unwrap().is_none());
-        assert!(!moved_marker(&src).exists() && !src.exists());
-        assert_files(&ws.saved, &["precedente"]);
-        let copy = ws.stage(&pk).unwrap();
-        play_and_save(&copy, b"nouvelle");
-        assert!(ws.persist_saves().unwrap().is_none());
-        assert_eq!(
-            std::fs::read(ws.saved.join("Histoire.plain/state")).unwrap(),
-            b"nouvelle"
-        );
+        for remnant in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let pk = dir.path().join("Histoire.plain.pk");
+            std::fs::write(&pk, b"PK").unwrap();
+            let ws = workspace(dir.path(), "library:u1");
+            let copy = ws.stage(&pk).unwrap();
+            write_files(&ws.saved, &["precedente"]);
+            let src = copy.parent().unwrap().join(SAVES_DIR);
+            if remnant {
+                play_and_save(&copy, b"reste");
+            }
+            std::fs::write(moved_marker(&src), b"").unwrap();
+            assert!(ws.persist_saves().unwrap().is_none(), "{remnant}");
+            assert!(!moved_marker(&src).exists() && !src.exists(), "{remnant}");
+            assert_files(&ws.saved, &["precedente"]);
+            assert!(!ws.sibling(".rejected").exists(), "{remnant}");
+            let copy = ws.stage(&pk).unwrap();
+            play_and_save(&copy, b"nouvelle");
+            assert!(ws.persist_saves().unwrap().is_none());
+            assert_eq!(
+                std::fs::read(ws.saved.join("Histoire.plain/state")).unwrap(),
+                b"nouvelle"
+            );
+        }
     }
 
     /// #100 : désinstallation avec un reste marqué. `purge(true)` efface tout, marqueurs compris ;
