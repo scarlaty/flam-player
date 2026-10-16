@@ -15,6 +15,8 @@ use serde::{Serialize, Serializer};
 /// | `ConfigVersion` | `config_version`| Fichier de config d'une version plus récente            |
 /// | `ConfigDir`     | `config_dir`    | Dossier de configuration introuvable                    |
 /// | `Serialization` | `serialization` | Échec de sérialisation JSON                             |
+/// | `Network`       | `network`       | Réseau indisponible, délai dépassé ou réponse HTTP en échec |
+/// | `CatalogInvalid`| `catalog_invalid`| Catalogue reçu inexploitable (JSON invalide, structure inconnue) |
 ///
 /// Un fichier de configuration corrompu n'est pas une erreur : il est sauvegardé en
 /// `*.bak` et remplacé par les valeurs par défaut (avertissement tracé).
@@ -51,6 +53,14 @@ pub enum AppError {
     /// Échec de sérialisation JSON d'une configuration.
     #[error("erreur de sérialisation JSON : {0}")]
     Serialization(#[from] serde_json::Error),
+
+    /// Réseau indisponible, délai dépassé ou réponse HTTP en échec (4xx, 5xx).
+    #[error("{0}")]
+    Network(String),
+
+    /// Catalogue reçu mais inexploitable : JSON invalide ou structure sans liste `data`.
+    #[error("{0}")]
+    CatalogInvalid(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -65,6 +75,8 @@ impl AppError {
             AppError::ConfigVersion { .. } => "config_version",
             AppError::ConfigDir => "config_dir",
             AppError::Serialization(_) => "serialization",
+            AppError::Network(_) => "network",
+            AppError::CatalogInvalid(_) => "catalog_invalid",
         }
     }
 }
@@ -113,6 +125,11 @@ mod tests {
         assert_eq!(AppError::ConfigDir.kind(), "config_dir");
         let json_err = serde_json::from_str::<u8>("x").unwrap_err();
         assert_eq!(AppError::from(json_err).kind(), "serialization");
+        assert_eq!(AppError::Network("x".into()).kind(), "network");
+        assert_eq!(
+            AppError::CatalogInvalid("x".into()).kind(),
+            "catalog_invalid"
+        );
     }
 
     #[test]
