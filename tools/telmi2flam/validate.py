@@ -470,6 +470,29 @@ def main(pk_path):
             if not isinstance(v, int) or isinstance(v, bool) or not (0 <= v < ninv):
                 bad_inv.append("%s = %r (inventaire de %d items)" % (label, v, ninv))
 
+        # Actions atteintes par le bouton retour (transition home, puis noeuds de
+        # passage sans audio enchaines par ok) : une action VIDE en bout de chaine
+        # est la convention Telmi Sync backAction -> backStage -> backChildAction
+        # ("quitter l'histoire"), geree par story.lua (menu Start, progression
+        # conservee) : pas d'avertissement. Vide ailleurs : fin ambigue, signalee.
+        home_chain = set()
+        todo = []
+        for st in stages.values():
+            hm = st.get("home")
+            if hm and (st.get("ctrl") or {}).get("home"):
+                todo.append(hm.get("action"))
+        while todo:
+            a = todo.pop()
+            if a in home_chain or a not in actions:
+                continue
+            home_chain.add(a)
+            for e in actions[a]:
+                nxt = stages.get(e.get("stage")) or {}
+                ctrl = nxt.get("ctrl") or {}
+                if (not nxt.get("audio") and (ctrl.get("autoplay") or not nxt.get("image"))
+                        and nxt.get("ok")):
+                    todo.append(nxt["ok"].get("action"))
+
         def check_trans(label, tr):
             if not tr:
                 return
@@ -477,7 +500,7 @@ def main(pk_path):
             if a not in actions:
                 errs.append("%s -> action inconnue '%s'" % (label, a))
                 return
-            if not actions[a]:
+            if not actions[a] and a not in home_chain:
                 warns.append("%s -> action '%s' vide" % (label, a))
             idx = tr.get("index")
             # -1 : tirage aleatoire (spec TELMI, gere par story.lua)

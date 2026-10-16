@@ -847,6 +847,33 @@ class TestValidate(Base):
             self.assertEqual(rc, 1, out)
             self.assertIn("main.lua : ERREUR syntaxe", out)
 
+    # #44 : home -> backAction -> backStage -> backChildAction vide = convention
+    # Telmi Sync "quitter l'histoire" : pas d'avertissement ; une action vide
+    # atteinte par ok reste signalee.
+    def back_nodes(self, ok_to_empty=False):
+        n = base_nodes()
+        n["stages"]["s0"]["control"] = {"ok": True, "home": True, "autoplay": True}
+        n["stages"]["s0"]["home"] = {"action": "backAction", "index": 0}
+        n["stages"]["backStage"] = {"image": None, "audio": None,
+                                    "ok": {"action": "backChildAction", "index": 0},
+                                    "home": None, "control": {"ok": True, "home": False, "autoplay": True}}
+        n["actions"]["backAction"] = [{"stage": "backStage"}]
+        n["actions"]["backChildAction"] = []
+        if ok_to_empty:
+            n["stages"]["s0"]["ok"] = {"action": "finVide", "index": 0}
+            n["actions"]["finVide"] = []
+        return n
+
+    def test_back_child_action_empty_no_warning(self):
+        rc, out = self.run_validate(self.convert(std_files(nodes=self.back_nodes())))
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("vide", out)
+
+    def test_empty_action_via_ok_still_warns(self):
+        rc, out = self.run_validate(self.convert(std_files(nodes=self.back_nodes(True))))
+        self.assertIn("stage s0.ok -> action 'finVide' vide", out)
+        self.assertNotIn("backStage.ok -> action 'backChildAction' vide", out)
+
     # hunt1 : index -1 (tirage aleatoire, spec TELMI) n'est pas "hors de l'action"
     def test_random_index_accepted(self):
         n = base_nodes()

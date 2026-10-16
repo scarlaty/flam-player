@@ -194,6 +194,14 @@ option (les autres options restent accessibles par `←/→`).
 - `ctrl.home` + `home` défini : le bouton **retour** exécute la transition `home` (dans un
   choix : `home` de l'option focalisée). Sinon (ou si `home` ramène sur le nœud courant),
   retour → menu Start de l'histoire, comme avant.
+- **Sortie par retour vers une action vide** (convention Telmi Sync `home → backAction →
+  backStage → backChildAction`, `backChildAction = []` = « quitter l'histoire ») : si la
+  chaîne de nœuds de passage lancée par `home` aboutit à une action **vide**, le moteur
+  revient au menu Start **sans effacer la progression** (le menu propose « Reprendre »,
+  position restaurée sur la scène/le choix quitté, `backStage` n'est jamais sauvé comme
+  nœud courant). Une action vide atteinte par `ok` (ou `start`) reste une **fin
+  d'histoire** (`endStory` : progression remise à zéro). `validate.py` n'avertit plus
+  pour une action vide atteinte par cette chaîne `home` ; il l'avertit ailleurs.
 - `wheel` / `pause` : absents du format TELMI (la molette découle de `autoplay`, la pause
   reste gérée par le firmware).
 - `nodes.lua` antérieur sans `ctrl` : comportement historique (`autoplay`, OK = skip, pas
@@ -574,8 +582,8 @@ aussi le chargement de `nodes.lua` par un vrai Lua 5.4.
 
 Résultat de `validate.py` sur *Maxicours Anglais - CP / CE1 / CE2* (199 stages, 110
 actions) : **35 OK / 4 warnings / 0 erreur**, en `.plain.pk` comme en dossier `.plain`.
-Les 4 warnings sont des actions vides (`backChildAction`) présentes telles quelles dans
-le `nodes.json` source.
+Les 4 warnings étaient des actions vides (`backChildAction`) présentes telles quelles dans
+le `nodes.json` source (convention de sortie par retour, plus signalée depuis #44, voir §3).
 
 ### Test dans flam-player (GUI)
 

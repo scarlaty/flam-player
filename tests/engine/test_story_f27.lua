@@ -487,6 +487,34 @@ audioEnd()
 check("legacy: image sans audio = passage", state.current_fun == "s2")
 
 -- ---------------------------------------------------------------------------
+-- 11b. Home -> backStage -> backChildAction vide (#44) : quitter l'histoire sans
+--      effacer la progression ; une action vide atteinte par OK reste une fin
+-- ---------------------------------------------------------------------------
+local HOME = { ok = true, home = true, autoplay = true }
+local function nBack(emptyViaOk)
+  return { start = { action = "a0" }, totalChapters = 2,
+    stages = { s0 = stage({ audio = "s0.mp3", ok = { action = emptyViaOk and "backChildAction" or "a1" },
+                            home = { action = "backAction", index = 0 }, ctrl = HOME }),
+               s1 = stage({ audio = "s1.mp3" }),
+               backStage = { ok = { action = "backChildAction", index = 0 }, ctrl = AUTO } },
+    actions = { a0 = { { stage = "s0" } }, a1 = { { stage = "s1" } }, backAction = { { stage = "backStage" } },
+                backChildAction = {} } }
+end
+boot(nBack(false)); menuPick(); audioStart()
+back_callback()
+check("backChildAction: retour -> menu Start 'Reprendre'", lastModule.name == "list-choice" and menuLabel() == "Reprendre l'histoire", menuLabel())
+check("backChildAction: progression conservee sur s0 (pas backStage)", state.current_fun == "s0" and state.current_kind == "s", state.current_fun)
+check("backChildAction: chapitres conserves", #(store.chaps or {}) == 1)
+check("backChildAction: reprise rejoue s0", (function() menuPick(); return state.current_fun == "s0" and Global.audioDelayPath == "s0.mp3" end)())
+-- contre-test : action vide atteinte par OK = fin d'histoire, progression remise a zero
+boot(nBack(true)); menuPick(); audioEnd()
+check("action vide par OK: fin d'histoire", lastModule.name == "list-choice" and menuLabel() == "Demarrer l'histoire"
+      and state.current_fun == nil and #(store.chaps or {}) == 0, menuLabel())
+-- meme graphe (ok vide aussi) : le retour reste une sortie sans remise a zero
+boot(nBack(true)); menuPick(); back_callback()
+check("backChildAction: retour sans reset meme si OK mene aussi au vide", menuLabel() == "Reprendre l'histoire" and state.current_fun == "s0")
+
+-- ---------------------------------------------------------------------------
 -- 12. Nettoyage audio-player
 -- ---------------------------------------------------------------------------
 boot(nMan); menuPick()
