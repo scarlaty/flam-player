@@ -9,7 +9,6 @@ pub mod folder;
 pub mod install;
 pub mod library;
 pub mod library_thumb;
-pub mod lif;
 pub mod player;
 pub mod settings;
 pub mod sources;

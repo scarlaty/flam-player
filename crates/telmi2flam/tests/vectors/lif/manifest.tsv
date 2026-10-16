@@ -1,0 +1,9 @@
+# nom	largeur	hauteur (genere par gen_vectors.py)
+zero	0	0
+un_pixel	1	1
+vide_8x8	8	8
+degrade	16	8
+bruit	13	7
+plages	381	1
+pas	12	10
+haute	3	80
