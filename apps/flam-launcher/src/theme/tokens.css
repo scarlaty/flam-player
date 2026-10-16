@@ -52,6 +52,10 @@
   --brand-orange: #c8553d;
   --brand-cream: #fff3e0;
   --brand-yellow: #f4b731;
+  --brand-teal-dark: #17706b;
+  --brand-teal: #7fd6cc;
+  --brand-screen: #0d3f3b;
+  --brand-flame: #e0664a;
 
   /* Tons des badges (fond / texte) */
   --tone-neutral-bg: light-dark(#e6efee, #20403d);
