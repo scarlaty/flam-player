@@ -17,7 +17,8 @@ utilisateur :
     (pause/seek/play) puis, au besoin, fin de piste simulee ;
   - toutes les `back_every` nouvelles scenes audio, en alternance :
     back_callback() puis "Reprendre", ou l'entree du menu contextuel (M).
-Arret : toutes les options rencontrees essayees apres une fin (`complete`,
+Arret : toutes les options rencontrees essayees et aucune transition ok connue
+non suivie (scene suivante jamais atteinte) apres une fin (`complete`,
 puis goto_library depuis le menu Start), `max_steps` actions, pas de nouvelle
 scene / option / fin pendant 40 + nb de scenes vues actions (`stuck`), sortie
 vers la bibliotheque (anciens moteurs), erreur, crash ou delai.
@@ -195,10 +196,35 @@ do
         local backTests, nextTest = 0, BACK_EVERY
 
         local function progress() noProg = 0 end
+        local shown = {}     -- actions de choix deja affichees (cle = id d'action)
+        -- Transitions ok connues mais jamais suivies : pour chaque scene visitee,
+        -- l'une des entrees sans condition de son action pas encore atteinte (sauf si
+        -- c'est un choix deja affiche : suivi par `pending`). Un test de
+        -- retour peut couper un chemin lineaire : sans ce compte, `complete` serait
+        -- declare alors que la suite du chemin n'a pas ete jouee (#45). Les
+        -- transitions indexItem / conditionnelles dependent de l'etat : ignorees.
+        local function frontier()
+            local n = 0
+            for id in pairs(seen) do
+                local st = N.stages and N.stages[id]
+                local tr = st and st.ok
+                local list = tr and tr.indexItem == nil and N.actions and N.actions[tr.action]
+                -- choix deja affiche : ses options sont suivies par `pending`
+                if list and not (#list > 1 and shown[tr.action]) then
+                    for _, e in ipairs(list) do
+                        if not e.cond and N.stages[e.stage] and not seen[e.stage] then
+                            n = n + 1
+                            break
+                        end
+                    end
+                end
+            end
+            return n
+        end
         local function finish(why)
             done = true
             emit("done reason=" .. why .. " steps=" .. steps .. " visited=" .. nSeen
-                 .. " ends=" .. ends .. " pending=" .. pending)
+                 .. " ends=" .. ends .. " pending=" .. pending .. " frontier=" .. frontier())
         end
         -- nav = true : touche de navigation (PREV/NEXT) dans un choix, non
         -- comptee dans noProg (seul le nombre de touches borne la navigation,
@@ -289,6 +315,7 @@ do
         end
         -- Option la moins essayee ; egalites tirees au sort (seed)
         local function choose(aid, n)
+            shown[aid] = true
             local vis = visibleOf(aid)
             if #vis ~= n then vis = {} end   -- moteur different : cle par position
             local keys, best, cands = {}, nil, {}
@@ -326,7 +353,7 @@ do
             if btn == nil then return end
             local label = m.answers and m.answers[btn] and m.answers[btn].label or "?"
             if label == "Demarrer l'histoire" and ends > 0 then
-                if pending == 0 then
+                if pending == 0 and frontier() == 0 then
                     finish("complete")
                     goto_library()          -- retour bibliotheque (lua_close)
                     return
