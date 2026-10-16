@@ -8,6 +8,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { t } from "../../i18n";
+import { cx } from "../cx";
 import { IconButton } from "../IconButton/IconButton";
 import "./Dialog.css";
 
@@ -23,6 +24,8 @@ export interface DialogProps {
   description?: string;
   /** `alertdialog` pour une confirmation qui demande une réponse (ex. suppression). */
   role?: "dialog" | "alertdialog";
+  /** Panneau plus large (fiche détaillée). */
+  wide?: boolean;
   /** Élément à focaliser à l'ouverture (ex. le bouton « Annuler »). */
   initialFocus?: RefObject<HTMLElement | null>;
   children?: ReactNode;
@@ -47,6 +50,7 @@ export function Dialog({
   title,
   description,
   role = "dialog",
+  wide = false,
   initialFocus,
   children,
   footer,
@@ -120,7 +124,7 @@ export function Dialog({
     >
       <div
         ref={panelRef}
-        className="fl-dialog"
+        className={cx("fl-dialog", wide && "fl-dialog--wide")}
         role={role}
         aria-modal="true"
         aria-labelledby={titleId}

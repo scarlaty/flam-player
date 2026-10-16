@@ -141,3 +141,8 @@ it("n'a aucune violation axe une fois ouvert", async () => {
   open();
   await expectNoAxeViolations(document.body, PAGE_LEVEL_RULES);
 });
+
+it("`wide` élargit le panneau (fiche détaillée)", () => {
+  render(<Dialog wide open onClose={() => {}} title="Fiche" />);
+  expect(screen.getByRole("dialog")).toHaveClass("fl-dialog", "fl-dialog--wide");
+});

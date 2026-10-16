@@ -87,7 +87,7 @@ apps/flam-launcher/
     api/                   Couche typée au-dessus de `invoke` / événements Tauri
     router.ts              Routage par hash (`#/`, `#/sources`, `#/settings`, `#/library[/<id>]`, `#/demo` en dev)
     features/<domaine>/    Écrans et logique par fonctionnalité (app, welcome, sources, settings,
-                           recovery, demo en dev)
+                           library, compat, stories, recovery, demo en dev)
     components/            Composants partagés sans logique métier (design system)
     theme/                 Jetons CSS (clair/sombre) et choix du thème
     i18n/                  Textes de l'interface (français)
@@ -146,7 +146,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `install_cancel`       | `task_id`                  | rien                        | `install`  |
 | `install_list`         |                            | `InstallTask[]`             | `install`  |
 | `library_list`         |                            | `LibraryEntry[]`            | `library`  |
-| `library_remove`       | `uuid`                     | rien                        | `library`  |
+| `library_remove`       | `uuid`, `purge_saves?`     | rien                        | `library`  |
 | `player_launch`        | `uuid`                     | `PlayerSession`             | `player`   |
 | `player_launch_folder` | `source_id`, `entry_id`    | `PlayerSession`             | `player`   |
 | `player_status`        |                            | `PlayerSession \| null`     | `player`   |
@@ -341,13 +341,13 @@ license?, thumb_url?, download_url, size?, updated_at?, kind (telmi_zip | flam_p
 Convention : événements émis par le backend, nommés `domaine://action` (ex. `install://progress`),
 avec une charge utile sérialisable typée côté `src/api/`.
 
-| Événement            | Charge                                                                                                                     |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `install://progress` | `{ task_id, state, percent, received, total, phase }` (au plus toutes les 200 ms par tâche, plus chaque changement d'état) |
-| `install://done`     | `{ task_id, entry: LibraryEntry, warnings }`                                                                               |
-| `install://error`    | `{ task_id, state: "failed" \| "cancelled", error: TaskError }`                                                            |
-| `player://started`   | `PlayerSession { origin, uuid, title, pid, started_at }`                                                                   |
-| `player://exited`    | `{ session, code, success, duration_ms, stderr }` (`code` nul : processus tué)                                             |
+| Événement            | Charge                                                                                                                                                          |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `install://progress` | `{ task_id, state, percent, received, total, phase }` (au plus toutes les 200 ms par tâche, plus chaque changement d'état)                                      |
+| `install://done`     | `{ task_id, entry: LibraryEntry, warnings }`                                                                                                                    |
+| `install://error`    | `{ task_id, state: "failed" \| "cancelled", error: TaskError }`                                                                                                 |
+| `player://started`   | `PlayerSession { origin, uuid, title, pid, started_at }`                                                                                                        |
+| `player://exited`    | `{ session, code, success, duration_ms, stderr, saves_error }` (`code` nul : processus tué ; `saves_error` : progression non conservée telle quelle, sinon nul) |
 
 ### Lancement du player (`player`)
 
@@ -377,9 +377,56 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   créneau), `<copie>/saves/` est rapatrié (copie vers un dossier `.tmp` voisin puis échange par
   renommage, l'ancienne version étant gardée en `.old` jusqu'au succès et reprise au lancement
   suivant si l'application s'arrête entre les deux). Liens ignorés, au plus 5000 fichiers et
-  64 Mio ; au-delà, la sauvegarde n'est pas conservée (erreur tracée). Le nom du sous-dossier
+  64 Mio, 16 niveaux ; au-delà, voir « Limites des sauvegardes ». Le nom du sous-dossier
   suit le fichier lancé : une nouvelle version d'une histoire de la bibliothèque
   (`<uuid>-<version>.plain.pk`) repart donc d'une progression vierge.
+- **Limites des sauvegardes** : au-delà des limites (5000 fichiers, 64 Mio, 16 niveaux), la
+  progression n'est plus un motif de blocage. Le `saves/` trop gros est mis de côté en
+  `<config>/saves/<empreinte>.rejected` (**une seule génération** : un nouveau rejet remplace
+  le précédent, remplacé seulement une fois le nouveau contenu en sécurité dans
+  `<empreinte>.rejected.new` ; si le renommage échoue (autre volume), copie sans aucune limite
+  (profondeur comprise) puis suppression de la source seulement après réussite : jamais de
+  suppression sans copie), la version précédente est
+  conservée, un avertissement est tracé et le message est renvoyé dans
+  `player://exited.saves_error` (`string | null` côté TS) : l'interface doit l'afficher. Même
+  traitement d'une sauvegarde conservée devenue trop grosse au moment de la restaurer (le
+  lancement a lieu sans progression, l'information est portée par la fin de cette partie).
+  Au-delà de 16 niveaux, c'est une erreur explicite (« arborescence trop profonde »), plus
+  jamais une copie tronquée en silence. Les autres échecs (disque plein, fichier verrouillé)
+  restent des erreurs : au rapatriement de fin de partie ils sont aussi dans `saves_error`, au
+  lancement ils refusent le lancement sans rien supprimer.
+- **Compromis sur un plantage du player** : le rapatriement a lieu aussi quand le player
+  échoue ; un `saves/` partiel (écriture interrompue) remplace donc la version précédente, qui
+  n'est pas gardée au-delà de l'échange (`.old` supprimé après succès). Choix assumé : sans lui,
+  une partie jouée longtemps avant un plantage serait perdue. Si cela pose problème, garder
+  `.old` jusqu'au rapatriement suivant est une évolution simple.
+- **Progression supprimée à la main** : effacer `<config>/saves/<empreinte>` à la main ne remet
+  pas la progression à zéro tant que `<cache>/play/<empreinte>/saves` existe : elle est
+  rapatriée depuis la copie de travail au lancement suivant (et ainsi « revient »). Pour une
+  vraie remise à zéro, supprimer aussi la copie de travail (« Vider le cache » le fait) ou
+  désinstaller avec `purge_saves`. Si l'interface ajoute une remise à zéro, elle devra purger
+  les deux.
+- **Désinstallation et mise à jour** : `library_remove(uuid, purge_saves?)` supprime la copie de
+  travail `<cache>/play/<empreinte>/` ; la progression (`<config>/saves/<empreinte>/` et ses
+  `.tmp`, `.old`, `.rejected`) n'est supprimée que si `purge_saves` est vrai (défaut : faux,
+  une progression d'enfant ne se perd jamais par défaut ; réinstaller l'histoire la retrouve).
+  Refusé avec `player_busy` si le player lit cette histoire. Tout se passe sous le créneau du player (un lancement ne peut pas s'intercaler ; un lancement
+  qui attendait relit l'index sous le créneau et reçoit `not_found`) : vérification de
+  l'installation (`not_found` avant toute suppression), puis purge, puis retrait. La purge est
+  faite **avant** le retrait de la bibliothèque : un échec laisse
+  l'histoire installée (désinstallation à retenter). Les `.rejected` ne sont libérés qu'avec
+  `purge_saves` (une génération par histoire au plus). Aucun composant n'affiche encore
+  `saves_error` ni n'appelle `purge_saves` (suite : #18). Mettre à jour une histoire
+  (nouvelle version du même `uuid`) ne supprime rien : la progression de l'ancienne version
+  reste dans `saves/<empreinte>/<uuid>-<ancienne version>.plain.pk/…` (le player relit
+  `saves/<nom du fichier lancé>`, voir ci-dessus : la nouvelle version repart de zéro) et n'est
+  libérée qu'à la désinstallation avec `purge_saves`. Sans UI pour l'instant (suite : #18).
+- **Statut sans blocage** : `player_status` (commande `async`) utilise `try_lock` : le créneau
+  est tenu pendant la préparation d'un lancement, un vidage du cache (`while_idle`) et une
+  désinstallation (`while_not_playing`, possible pendant qu'un player lit une autre histoire), et
+  ne doit pas bloquer un worker tokio. Créneau tenu : réponse `null` **même si un player
+  tourne** (pas une preuve d'absence) ; fiez-vous à `player://started` / `player://exited`. La
+  règle du player unique reste garantie par `launch` (`player_busy`).
 - **Partie non rapatriée** : si le launcher a été fermé ou tué pendant la partie, ou si le
   rapatriement a échoué, `<copie>/saves/` existe encore au lancement suivant. `stage` le
   rapatrie (même fonction, idempotente) **avant** de vider la copie de travail ; en cas
@@ -389,6 +436,11 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
 - Tests : l'exemple `src-tauri/examples/fake_player.rs` (scénario lu dans le fichier d'histoire)
   sert de faux player ; `cargo test` le construit. Wrappers : `src/api/player.ts`
   (`launchPlayer`, `launchFolderStory`, `getPlayerStatus`, `onPlayerStarted`, `onPlayerExited`).
+- **Instance unique du launcher** : plugin officiel `tauri-plugin-single-instance` (2.4.5,
+  MIT ou Apache-2.0, enregistré en premier dans `lib.rs`). Un second lancement se termine
+  aussitôt et ramène la fenêtre de la première instance au premier plan (restaurée, focus).
+  Deux launchers ne se disputent donc ni le cache, ni `<config>/saves/`, ni la file
+  d'installation.
 - Non fait : réduire la fenêtre de la surcouche pendant la lecture (option facultative).
 
 ### Pipeline d'installation (`install`, `library`)
@@ -650,7 +702,8 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   jamais été (`catalog_entries` puis `catalog_refresh`) ; un dossier est réanalysé
   (`folder_scan`, éléments ignorés détaillés dans un bandeau). Chargement, erreur (bouton
   Réessayer), hors ligne, liste vide et « aucun résultat » ont chacun leur état. « Mes histoires »
-  est vide tant que l'installation (#15) ne fournit pas la liste des histoires installées.
+  liste les histoires installées (`library_list`) ; chaque carte garde les métadonnées de sa
+  source d'origine.
   État affiché par carte : _à télécharger_ (catalogue), _à convertir_ (`.zip` Telmi local),
   _à installer_ (`.plain`, `.plain.pk`), puis _installée_, _mise à jour disponible_,
   _en cours_, _incompatible_, _non testée_, fournis par les points d'accroche ci-dessous.
@@ -659,8 +712,9 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   ![Dossier local avec élément ignoré](docs/screenshots/bibliotheque-dossier-clair.png)
   ![Catalogue hors ligne](docs/screenshots/bibliotheque-hors-ligne-clair.png)
 
-  **Points d'accroche** (`StoryHooks`, props de `LibraryScreen` / `SourceView`) pour les issues
-  voisines : `resolveState(entry)` (installée, mise à jour, incompatible…), `progressFor(entry)`
+  **Points d'accroche** (`StoryHooks`, props de `LibraryScreen` / `SourceView`) :
+  `renderDetail` (fiche ouverte au clic sur un titre ; remplace `onOpenStory` /
+  `selectedEntryId`), `reloadKey` (relit « Mes histoires »), `resolveState(entry)` (installée, mise à jour, incompatible…), `progressFor(entry)`
   (barre de progression, état « En cours »), `renderActions(entry)` (Télécharger, Jouer),
   `compatFor(entry)` (badge de compatibilité), `onOpenStory(entry)` (fiche détaillée), `selectedEntryId`. Les données de l'écran
 
@@ -677,9 +731,33 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   fiche périmée (`stale`), sinon le pire niveau l'emporte. Chaque carte affiche un badge supplémentaire ;
   la raison (`summary`, sinon une phrase par statut) est visible pour les avertissements et incompatibilités.
   `IncompatibleInstallDialog` (avertissement non bloquant avant installation d'une histoire incompatible)
-  et `compatBadge` / `describeCompat` sont prêts pour l'écran d'installation et la fiche.
+  est affiché par `StoriesProvider` ; `compatBadge` / `describeCompat` alimentent les cartes et la fiche.
   (`loadSourceData`) et l'état des sources (`LibraryProvider`) sont testés avec l'API simulée.
 
+- **Fiche, installation et lecture** (`src/features/stories/`) : un clic sur le titre d'une carte
+  ouvre la **fiche** (`StoryDetail`, dialogue) : grande vignette, titre, description, âge,
+  catégorie, auteur, voix, licence, taille, source, état, badge de compatibilité avec sa raison et
+  actions selon l'état : _Télécharger et jouer_ / _Télécharger_ (catalogue ; _Installer…_ pour un
+  dossier), _Jouer_, _Mettre à jour_ (le catalogue propose une autre version que celle
+  installée), _Supprimer_ (avec confirmation), _Annuler_ (tâche active) ; un `.plain` /
+  `.plain.pk` d'un dossier peut aussi être joué sans installation (_Jouer depuis le dossier_,
+  `player_launch_folder`). Les cartes portent une action rapide (_Jouer_, _Télécharger_) et la barre
+  de progression de leur tâche. Un seul modal à la fois : la fiche s'efface le temps d'une
+  confirmation (suppression, installation d'une histoire incompatible).
+  `StoriesProvider` (sous `CompatProvider`) tient les tâches (`install_list` + événements
+  `install://progress|done|error`), la bibliothèque installée, le player en cours
+  (`player_status`, `player://started|exited`) et les actions. « Télécharger et jouer » lance
+  l'histoire (`player_launch`) à la fin de l'installation ; l'annulation ou le retrait de la tâche
+  retire ce lancement, un échec le garde pour _Réessayer_. Un seul player à la fois : _Jouer_ est
+  désactivé tant qu'il tourne. À la fin de la lecture, une notification donne l'issue (dernières
+  lignes de stderr si le player s'est arrêté en erreur) et la fiche reste ouverte, prête à rejouer.
+  Le **panneau des tâches** (`StoriesTaskPanel`, zone `aside`) montre téléchargement (octets,
+  %), conversion par phase (images, audio, scripts, archive), installation, et pour les échecs
+  le message du backend avec _Réessayer_ (relance `install_start` avec la même entrée) ; les
+  tâches terminées se retirent du panneau. L'installation recharge le rapport de compatibilité
+  (la conversion y enregistre son résultat). Tests : `stories.test.tsx` (installer → progression →
+  jouer, annulation, erreur de conversion, avertissement d'incompatibilité, mise à jour,
+  suppression, player occupé).
 - **Sources** : ajout d'un catalogue (nom + URL, validation en direct, erreurs du backend
   affichées), d'un dossier (sélecteur natif), renommage, réordonnancement (glisser-déposer ou
   boutons Monter/Descendre au clavier, annoncé aux lecteurs d'écran) et suppression avec
