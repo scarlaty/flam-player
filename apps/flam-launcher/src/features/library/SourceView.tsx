@@ -117,7 +117,7 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sourceId, sourceType, report, toast, reloadKey],
+    [sourceId, sourceType, report, toast, sourceType === "library" ? reloadKey : 0],
   );
 
   useEffect(() => {

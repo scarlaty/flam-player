@@ -613,3 +613,25 @@ it("joue directement un fichier d'une source dossier, sans installation", async 
     entryId: "dossier:conte",
   });
 });
+
+it("ignore une progression tardive reçue après l'annulation", async () => {
+  await renderApp();
+  const dialog = await openFiche();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Télécharger" }));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  await send("install://error", {
+    task_id: "t1",
+    state: "cancelled",
+    error: { kind: "cancelled", message: "Installation annulée.", code: null },
+  });
+  await send("install://progress", {
+    task_id: "t1",
+    state: "downloading",
+    percent: 90,
+    received: null,
+    total: null,
+    phase: null,
+  });
+  expect(await within(panel()).findByText("Annulée")).toBeInTheDocument();
+  expect(within(dialog).getByRole("button", { name: "Télécharger" })).toBeEnabled();
+});

@@ -107,12 +107,10 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     try {
       const list = await listInstalls();
       setTasks((current) => {
-        // Une tâche terminée par un événement n'est pas ramenée à un état antérieur.
+        // Les événements font foi pour les tâches déjà connues : le cliché du backend ne
+        // ramène jamais une tâche à un état antérieur.
         const known = new Map(current.map((task) => [task.id, task]));
-        return list.map((task) => {
-          const previous = known.get(task.id);
-          return previous && !isActiveState(previous.state) ? previous : task;
-        });
+        return list.map((task) => known.get(task.id) ?? task);
       });
     } catch {
       // La liste des tâches est un confort : les événements suffisent à suivre l'avancement.
@@ -125,14 +123,22 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     void refreshTasks();
     void refreshInstalled();
     getPlayerStatus()
-      .then(setSession)
+      // Un `player://started` déjà reçu l'emporte sur ce cliché.
+      .then((status) => setSession((current) => current ?? status))
       .catch(() => undefined);
   }, [refreshTasks, refreshInstalled]);
 
   const patchTask = useCallback(
     (taskId: string, patch: Partial<InstallTask>) => {
       setTasks((current) =>
-        current.map((task) => (task.id === taskId ? { ...task, ...patch } : task)),
+        current.map((task) => {
+          if (task.id !== taskId) return task;
+          // Un événement de progression tardif ne rouvre pas une tâche terminée.
+          if (!isActiveState(task.state) && patch.state && isActiveState(patch.state)) {
+            return task;
+          }
+          return { ...task, ...patch };
+        }),
       );
       // Événement reçu avant le retour de `install_start`, ou tâche reprise au démarrage.
       if (!tasksRef.current.some((task) => task.id === taskId)) void refreshTasks();
@@ -224,9 +230,13 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   const start = useCallback(
     async (entry: StoryEntry, options: InstallOptions) => {
       if (options.thenPlay) playAfter.current.add(entry.uuid);
+      else playAfter.current.delete(entry.uuid);
       try {
         const task = await startInstall(entry.source_id, entry.entry_id);
-        setTasks((current) => [task, ...current.filter((other) => other.id !== task.id)]);
+        // Une tâche déjà connue (événement arrivé avant ce retour) garde son état le plus récent.
+        setTasks((current) =>
+          current.some((other) => other.id === task.id) ? current : [task, ...current],
+        );
         setDismissed((all) => {
           if (!all.has(task.id)) return all;
           const next = new Set(all);
@@ -275,9 +285,9 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
       const task = tasksRef.current.find((other) => other.id === taskId);
       if (!task) return;
       setDismissed((all) => new Set(all).add(taskId));
-      void start(task.entry, { thenPlay: playAfter.current.has(task.entry.uuid) });
+      install(task.entry, { thenPlay: playAfter.current.has(task.entry.uuid) });
     },
-    [start],
+    [install],
   );
 
   const remove = useCallback(
