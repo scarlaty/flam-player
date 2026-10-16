@@ -11,24 +11,31 @@ main.lua est suivi d'un pilote Lua generique (timer LVGL) qui joue comme un
 utilisateur :
   - menu Start : "Demarrer" / "Reprendre" ; apres une fin, redemarre tant qu'il
     reste des options de choix jamais essayees ;
-  - choix (carrousel / image-choice) : option la moins essayee (parcours en
-    largeur des options non visitees), egalites tirees au sort selon `seed` ;
+  - choix (carrousel / image-choice) : option jamais essayee, puis la moins
+    essayee dans l'etat d'inventaire courant, puis la plus proche de nouveau
+    dans le graphe, puis la moins essayee ; egalites tirees au sort selon `seed` ;
   - scene audio : OK (ENTER) si la scene l'accepte, sinon saut en fin de piste
     (pause/seek/play) puis, au besoin, fin de piste simulee ;
   - toutes les `back_every` nouvelles scenes audio, en alternance :
-    back_callback() puis "Reprendre", ou l'entree du menu contextuel (M).
+    back_callback() puis "Reprendre", ou l'entree du menu contextuel (M) ;
+  - noeud repasse en boucle sans nouveaute : sortie par sa transition home (#42).
 Arret : toutes les options rencontrees essayees et aucune transition ok connue
 non suivie (scene suivante jamais atteinte) apres une fin (`complete`,
-puis goto_library depuis le menu Start), `max_steps` actions, pas de nouvelle
-scene / option / fin pendant 40 + nb de scenes vues actions (`stuck`), sortie
-vers la bibliotheque (anciens moteurs), erreur, crash ou delai.
+puis goto_library depuis le menu Start), boucle ou plus rien n'est a essayer
+(`exhausted`), `max_steps` actions, pas de nouvelle scene / option / fin pendant
+40 + nb de scenes vues actions (`loop` si l'histoire avance encore, sinon
+`unresponsive`), sortie vers la bibliotheque (anciens moteurs), erreur, crash
+ou delai.
 Le pilote trace sur stdout des lignes `[EXPLORE] ...` (scene=, choice, end,
 step=, done) ; ce module les analyse pendant l'execution.
 
 Resultat de explore() (dict) :
-  status          ok | lua_error | crash | timeout | stuck
-  done_reason     cause de l'arret, toujours presente : complete, max_steps,
-                  library (status ok) ; stuck, no_trace, no_start (stuck) ;
+  status          ok | lua_error | crash | timeout | loop | stuck
+  done_reason     cause de l'arret, toujours presente : complete, exhausted (boucle
+                  sans erreur ou plus rien n'est a essayer), max_steps, library
+                  (status ok) ; loop (plus rien de nouveau, l'histoire tourne encore :
+                  status loop) ; unresponsive (ecran qui ne repond plus), no_trace,
+                  no_start (stuck) ;
                   timeout ; error (lua_error) ; exit (player sorti seul :
                   lua_error si une erreur Lua a ete vue avant, sinon crash)
   errors          lignes d'erreur (stderr : Erreur Lua, callback error, assert,
@@ -41,7 +48,8 @@ Resultat de explore() (dict) :
   seed, steps, ends, back_ends (fins causees par un test de retour, non
   comptees), end_reasons, choices_explored, back_tests, menu_tests,
   dead_end_backs / dead_end_scenes (retours de secours sur un ecran sans
-  action possible), exit_code, workdir (si keep).
+  action possible), home_escapes (sorties de boucle par home), exit_code,
+  workdir (si keep).
 Code de sortie du CLI : 0 statut ok, 1 sinon, 77 flam-player introuvable.
 """
 import argparse
