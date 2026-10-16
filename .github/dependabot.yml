@@ -1,0 +1,7 @@
+# Fait avancer les SHA épinglés des actions GitHub (pas de dependabot npm/cargo).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

@@ -749,9 +749,9 @@ impl Library {
         }
         // L'index est à jour : le reste est du nettoyage.
         self.finish_publication(&stories, &marker, &backup, &pending);
-        // Index perdu avant cette installation : des marqueurs neutralisés peuvent référencer des
-        // vignettes, on ne réconcilie pas.
-        if !untrusted {
+        // Index perdu avant cette installation, ou mis de côté et restaurable à la main (#97) :
+        // ses vignettes doivent survivre, on ne réconcilie pas.
+        if !untrusted && !self.index_quarantined() {
             library_thumb::sweep(&self.root, &stories);
         }
         for (previous, previous_backup, previous_pending) in &adopted {
@@ -835,7 +835,9 @@ impl Library {
             remove_if_exists(&path)?;
         }
         self.save(stories.clone())?;
-        library_thumb::sweep(&self.root, &stories);
+        if !self.index_quarantined() {
+            library_thumb::sweep(&self.root, &stories);
+        }
         Ok(())
     }
 
@@ -1144,7 +1146,16 @@ pub(crate) mod tests {
         assert!(thumbs.join("abc-2.1.png").is_file());
         assert!(thumbs.join("abc-2.2.png").is_file());
 
-        // Index de nouveau fiable : la désinstallation emporte orphelines et vignettes retirées.
+        // Index de nouveau fiable et index mis de côté supprimé (#97) : la désinstallation
+        // emporte orphelines et vignettes retirées.
+        for e in std::fs::read_dir(dir.path().join("library"))
+            .unwrap()
+            .flatten()
+        {
+            if e.file_name().to_string_lossy().ends_with(".bak") {
+                std::fs::remove_file(e.path()).unwrap();
+            }
+        }
         lib.remove("neuf").unwrap();
         assert_eq!(std::fs::read_dir(&thumbs).unwrap().count(), 0);
     }

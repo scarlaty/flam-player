@@ -62,8 +62,15 @@ export async function loadSourceData(
       };
     }
     case "library":
-      // Chaque histoire installée garde l'entrée de sa source d'origine (métadonnées, lien).
-      return { ...EMPTY, entries: (await listLibrary()).map((item) => item.source) };
+      // Chaque histoire installée garde l'entrée de sa source d'origine (métadonnées, lien),
+      // complétée de la vignette conservée (clé de cache, voir `useThumbnail`).
+      return {
+        ...EMPTY,
+        entries: (await listLibrary()).map((item) => ({
+          ...item.source,
+          library_thumb: item.thumb ?? null,
+        })),
+      };
   }
 }
 
