@@ -367,10 +367,7 @@ impl CatalogService {
             ));
         }
 
-        let hash = Sha256::digest(thumb_url.as_bytes());
-        let path = dir
-            .join("thumbs")
-            .join(format!("{}.img", &hex(&hash)[..32]));
+        let path = thumb_path(&dir, thumb_url);
         if let Some(url) = read_thumb(&path).await {
             return Ok(url);
         }
@@ -408,6 +405,26 @@ impl CatalogService {
         }
         Ok(url)
     }
+}
+
+/// Fichier de la vignette `thumb_url` dans le dossier de cache `dir` d'une source.
+fn thumb_path(dir: &Path, thumb_url: &str) -> PathBuf {
+    let hash = Sha256::digest(thumb_url.as_bytes());
+    dir.join("thumbs")
+        .join(format!("{}.img", &hex(&hash)[..32]))
+}
+
+/// Vignette `thumb_url` de la source `source_id` déjà téléchargée dans le cache, sans réseau
+/// (bibliothèque, #80). `None` si l'identifiant est invalide.
+pub(crate) fn cached_thumb_path(
+    cache_root: &Path,
+    source_id: &str,
+    thumb_url: &str,
+) -> Option<PathBuf> {
+    Some(thumb_path(
+        &source_dir(cache_root, source_id).ok()?,
+        thumb_url,
+    ))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -774,7 +791,7 @@ fn header_text(response: &reqwest::Response, name: reqwest::header::HeaderName) 
 
 /// Type MIME d'une image reconnue à ses premiers octets (PNG, JPEG, GIF, WebP). Le SVG est
 /// volontairement refusé (contenu actif).
-fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")
     } else if bytes.starts_with(b"\xFF\xD8\xFF") {

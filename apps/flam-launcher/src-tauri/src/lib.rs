@@ -8,6 +8,7 @@ mod error;
 pub mod folder;
 pub mod install;
 pub mod library;
+pub mod library_thumb;
 pub mod lif;
 pub mod player;
 pub mod settings;
@@ -105,6 +106,7 @@ pub fn run() {
             install::install_list,
             library::library_list,
             library::library_remove,
+            library_thumb::library_thumbnail,
             player::player_launch,
             player::player_launch_folder,
             player::player_status,
