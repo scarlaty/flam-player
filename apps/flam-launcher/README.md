@@ -64,11 +64,10 @@ apps/flam-launcher/
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`. Prévus (un module par responsabilité, créés avec leur issue) :
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `player`. Prévus (un module par responsabilité, créés avec leur issue) :
 
 | Module   | Rôle                                   |
 | -------- | -------------------------------------- |
-| `player` | Lancement et suivi de `flam-player`    |
 | `compat` | Statut de compatibilité d'une histoire |
 
 ### Commandes Tauri
@@ -79,29 +78,32 @@ enregistrées dans `generate_handler!` de `lib.rs`) : pas de fichier `commands.r
 Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enregistrées dans
 `generate_handler!` (`lib.rs`). Chacune a un wrapper typé dans `src/api/`.
 
-| Commande              | Arguments                  | Retour                      | Module     |
-| --------------------- | -------------------------- | --------------------------- | ---------- |
-| `app_info`            |                            | `{ name, version }`         | `app`      |
-| `settings_get`        |                            | `SettingsView`              | `settings` |
-| `settings_set`        | `settings: Settings`       | `SettingsView`              | `settings` |
-| `sources_list`        |                            | `SourcesView`               | `sources`  |
-| `sources_add`         | `input: SourceInput`       | `Source`                    | `sources`  |
-| `sources_update`      | `id`, `input: SourceInput` | `Source`                    | `sources`  |
-| `sources_remove`      | `id`                       | rien                        | `sources`  |
-| `sources_reorder`     | `ids: string[]`            | `Source[]` (liste complète) | `sources`  |
-| `config_ack_recovery` | `file?: string`            | rien                        | `storage`  |
-| `cache_usage`         |                            | `{ path, bytes }`           | `cache`    |
-| `cache_clear`         |                            | `{ freed_bytes }`           | `cache`    |
-| `catalog_refresh`     | `source_id`                | `CatalogView`               | `catalog`  |
-| `catalog_entries`     | `source_id`                | `CatalogView`               | `catalog`  |
-| `catalog_thumbnail`   | `source_id`, `thumb_url`   | URL `data:` (string)        | `catalog`  |
-| `folder_scan`         | `source_id`, `recursive?`  | `FolderScan`                | `folder`   |
-| `folder_thumbnail`    | `source_id`, `entry_id`    | URL `data:` (chaîne)        | `folder`   |
-| `install_start`       | `source_id`, `entry_id`    | `InstallTask`               | `install`  |
-| `install_cancel`      | `task_id`                  | rien                        | `install`  |
-| `install_list`        |                            | `InstallTask[]`             | `install`  |
-| `library_list`        |                            | `LibraryEntry[]`            | `library`  |
-| `library_remove`      | `uuid`                     | rien                        | `library`  |
+| Commande               | Arguments                  | Retour                      | Module     |
+| ---------------------- | -------------------------- | --------------------------- | ---------- |
+| `app_info`             |                            | `{ name, version }`         | `app`      |
+| `settings_get`         |                            | `SettingsView`              | `settings` |
+| `settings_set`         | `settings: Settings`       | `SettingsView`              | `settings` |
+| `sources_list`         |                            | `SourcesView`               | `sources`  |
+| `sources_add`          | `input: SourceInput`       | `Source`                    | `sources`  |
+| `sources_update`       | `id`, `input: SourceInput` | `Source`                    | `sources`  |
+| `sources_remove`       | `id`                       | rien                        | `sources`  |
+| `sources_reorder`      | `ids: string[]`            | `Source[]` (liste complète) | `sources`  |
+| `config_ack_recovery`  | `file?: string`            | rien                        | `storage`  |
+| `cache_usage`          |                            | `{ path, bytes }`           | `cache`    |
+| `cache_clear`          |                            | `{ freed_bytes }`           | `cache`    |
+| `catalog_refresh`      | `source_id`                | `CatalogView`               | `catalog`  |
+| `catalog_entries`      | `source_id`                | `CatalogView`               | `catalog`  |
+| `catalog_thumbnail`    | `source_id`, `thumb_url`   | URL `data:` (string)        | `catalog`  |
+| `folder_scan`          | `source_id`, `recursive?`  | `FolderScan`                | `folder`   |
+| `folder_thumbnail`     | `source_id`, `entry_id`    | URL `data:` (chaîne)        | `folder`   |
+| `install_start`        | `source_id`, `entry_id`    | `InstallTask`               | `install`  |
+| `install_cancel`       | `task_id`                  | rien                        | `install`  |
+| `install_list`         |                            | `InstallTask[]`             | `install`  |
+| `library_list`         |                            | `LibraryEntry[]`            | `library`  |
+| `library_remove`       | `uuid`                     | rien                        | `library`  |
+| `player_launch`        | `uuid`                     | `PlayerSession`             | `player`   |
+| `player_launch_folder` | `source_id`, `entry_id`    | `PlayerSession`             | `player`   |
+| `player_status`        |                            | `PlayerSession \| null`     | `player`   |
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).
@@ -197,6 +199,9 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 | `download_invalid`      | Téléchargement incomplet, trop gros (4 Gio), ou qui n'est pas l'archive attendue                    |
 | `converter_unavailable` | Python ou `telmi2flam.py` introuvable                                                               |
 | `conversion`            | Échec de `telmi2flam` ; le code du convertisseur (`missing_asset`…) est dans `TaskError.code`       |
+| `player_unavailable`    | `flam-player.exe` introuvable (ni configuré ni détecté) ou impossible à lancer                      |
+| `player_busy`           | Un player tourne déjà (un seul à la fois)                                                           |
+| `story_file_missing`    | Le fichier de l'histoire à lancer a disparu                                                         |
 | `unknown`               | Côté front uniquement : erreur de forme inattendue                                                  |
 
 Un fichier de configuration **corrompu** n'est pas une erreur : il est renommé en
@@ -295,6 +300,30 @@ avec une charge utile sérialisable typée côté `src/api/`.
 | `install://progress` | `{ task_id, state, percent, received, total, phase }` (au plus toutes les 200 ms par tâche, plus chaque changement d'état) |
 | `install://done`     | `{ task_id, entry: LibraryEntry, warnings }`                                                                               |
 | `install://error`    | `{ task_id, state: "failed" \| "cancelled", error: TaskError }`                                                            |
+| `player://started`   | `PlayerSession { origin, uuid, title, pid, started_at }`                                                                   |
+| `player://exited`    | `{ session, code, success, duration_ms, stderr }` (`code` nul : processus tué)                                             |
+
+### Lancement du player (`player`)
+
+`player_launch(uuid)` lance une histoire de la bibliothèque, `player_launch_folder(source_id,
+entry_id)` une histoire `.plain` / `.plain.pk` du dernier scan d'une source dossier (sans
+installation ; un zip Telmi est refusé). **Le front ne fournit jamais de chemin** : le fichier est
+relu de `library.json` ou du scan, le player vient de `settings::resolve` (configuré valide, sinon
+détecté) et est revérifié juste avant l'exécution. Commande : `flam-player.exe "<fichier>"` sans
+shell, un seul argument en tableau, dossier courant = dossier du player.
+
+- **Un seul player à la fois** : un second lancement est refusé (`player_busy`) ; le créneau est
+  libéré avant `player://exited`, on peut relancer dès réception. `player_status` restitue l'état
+  après un rechargement de l'interface.
+- **Fin** : `player://exited` porte le code, la durée et les 20 dernières lignes de stderr
+  (8 Kio) ; `success = false` (code non nul ou processus tué) : afficher `stderr`, c'est la
+  raison d'un échec au démarrage (« Erreur de chargement… »).
+- **Effet de bord du player** : pour un `.plain.pk`, il extrait l'archive à côté
+  (`<nom>.plain/`, donc dans `library/` ou dans le dossier de la source).
+- Tests : l'exemple `src-tauri/examples/fake_player.rs` (scénario lu dans le fichier d'histoire)
+  sert de faux player ; `cargo test` le construit. Wrappers : `src/api/player.ts`
+  (`launchPlayer`, `launchFolderStory`, `getPlayerStatus`, `onPlayerStarted`, `onPlayerExited`).
+- Non fait : réduire la fenêtre de la surcouche pendant la lecture (option facultative).
 
 ### Pipeline d'installation (`install`, `library`)
 
