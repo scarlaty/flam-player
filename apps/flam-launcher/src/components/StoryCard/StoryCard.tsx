@@ -12,6 +12,8 @@ export interface StoryBadge {
   label: string;
   tone?: BadgeTone;
   icon?: IconName;
+  /** Précision visible sous le badge (ex. la raison d'une incompatibilité). */
+  detail?: string;
 }
 
 export interface StoryCardProps {
@@ -106,6 +108,9 @@ export function StoryCard({
                 <Badge tone={badge.tone} icon={badge.icon}>
                   {badge.label}
                 </Badge>
+                {badge.detail && (
+                  <p className="fl-story-card__badge-detail">{badge.detail}</p>
+                )}
               </li>
             ))}
           </ul>
