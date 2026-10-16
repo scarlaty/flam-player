@@ -478,11 +478,15 @@ fn file_info(meta: &std::fs::Metadata) -> FileInfo {
 // Parcours du dossier
 // ---------------------------------------------------------------------------
 
-/// Classe un nom de fichier ou de dossier (insensible à la casse).
-fn classify(name: &str, is_dir: bool) -> Option<StoryKind> {
+/// Classe une entrée du dossier (insensible à la casse). Seuls les dossiers `.plain` et les
+/// fichiers ordinaires `.zip` / `.plain.pk` sont retenus (jamais un FIFO ou un périphérique,
+/// dont l'ouverture pourrait bloquer).
+fn classify(name: &str, file_type: &std::fs::FileType) -> Option<StoryKind> {
     let lower = name.to_lowercase();
-    if is_dir {
+    if file_type.is_dir() {
         lower.ends_with(".plain").then_some(StoryKind::FlamPlain)
+    } else if !file_type.is_file() {
+        None
     } else if lower.ends_with(".plain.pk") {
         Some(StoryKind::FlamPk)
     } else if lower.ends_with(".zip") {
@@ -528,7 +532,7 @@ fn collect(
             });
             return;
         }
-        if let Some(kind) = classify(&name, file_type.is_dir()) {
+        if let Some(kind) = classify(&name, &file_type) {
             found.push((path, kind));
         } else if file_type.is_dir() && recursive && depth < MAX_DEPTH {
             collect(&path, depth + 1, recursive, found, warnings);
@@ -539,7 +543,7 @@ fn collect(
 /// Métadonnées déjà lues d'une archive (clé : chemin, taille, date de modification), pour ne
 /// pas rouvrir chaque zip à chaque analyse. Les dossiers `.plain` ne sont pas mis en cache
 /// (la date d'un dossier ne change pas quand un fichier interne change).
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MetaCache(HashMap<PathBuf, (u64, u128, Result<Parsed, String>)>);
 
 /// Où retrouver la vignette d'une entrée du dernier scan.
@@ -703,11 +707,16 @@ impl FolderState {
 
     /// Analyse un dossier et mémorise les entrées pour `thumbnail`.
     pub fn scan(&self, source_id: &str, root: &Path, recursive: bool) -> AppResult<FolderScan> {
-        // Le cache est sorti du verrou pendant l'analyse (longue) : les vignettes restent servies.
-        let mut meta = std::mem::take(&mut self.lock().meta);
+        // Copie de travail du cache : l'analyse (longue) ne tient pas le verrou et plusieurs
+        // scans simultanés se partagent le cache fusionné à la fin.
+        let mut meta = self.lock().meta.clone();
         let result = scan_folder(source_id, root, recursive, &mut meta);
         let mut inner = self.lock();
-        inner.meta = meta;
+        inner
+            .meta
+            .0
+            .retain(|p, _| !p.starts_with(root) || meta.0.contains_key(p));
+        inner.meta.0.extend(meta.0);
         let (scan, refs) = result?;
         inner.thumbs.insert(source_id.to_string(), refs);
         Ok(scan)
@@ -1240,6 +1249,27 @@ mod tests {
                 .kind(),
             "not_found"
         );
+    }
+
+    #[test]
+    fn classify_n_accepte_que_les_fichiers_ordinaires_et_les_dossiers_plain() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("x.zip");
+        std::fs::write(&file, "x").unwrap();
+        let sub = dir.path().join("y.plain");
+        std::fs::create_dir(&sub).unwrap();
+        let file_type = |p: &Path| std::fs::metadata(p).unwrap().file_type();
+        assert_eq!(
+            classify("x.ZIP", &file_type(&file)),
+            Some(StoryKind::TelmiZip)
+        );
+        assert_eq!(
+            classify("y.plain", &file_type(&sub)),
+            Some(StoryKind::FlamPlain)
+        );
+        // Un dossier nommé x.zip ou un fichier nommé y.plain ne sont pas des histoires.
+        assert_eq!(classify("x.zip", &file_type(&sub)), None);
+        assert_eq!(classify("y.plain", &file_type(&file)), None);
     }
 
     #[test]
