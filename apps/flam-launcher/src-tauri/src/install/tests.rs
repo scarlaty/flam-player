@@ -43,6 +43,9 @@ if mode in ("slow", "stubborn", "tree"):
         sys.exit(130)
     signal.signal(getattr(signal, "SIGBREAK", signal.SIGTERM), signal.SIG_IGN if mode in ("stubborn", "tree") else stop)
     ev(event="step", phase="images", done=0, total=10)
+    # Poignée de main : gestionnaire de signal installé et `.part` écrit (dans le cache, hors de
+    # `.staging`), le test peut annuler.
+    open(os.path.join(os.path.dirname(out), "..", "..", "ready-%d" % os.getpid()), "wb").close()
     for _ in range(600):
         time.sleep(0.05)
     sys.exit(0)
@@ -366,13 +369,25 @@ async fn annulation_pendant_la_conversion(mode: &str, grace: Duration) {
         .unwrap();
     ctx.wait(&task.id, |t| t.state == TaskState::Converting)
         .await;
-    // Le faux convertisseur crée son `.part` avant d'émettre sa première étape.
-    let staging = ctx.cache().join("library/.staging");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while std::fs::read_dir(&staging).unwrap().count() == 0 {
-        assert!(Instant::now() < deadline, "pas de .part");
-        tokio::time::sleep(Duration::from_millis(20)).await;
+    // Le faux convertisseur signale qu'il est prêt (`.part` écrit, signal armé) : on attend cet
+    // événement plutôt qu'une durée.
+    let cache = ctx.cache();
+    let ready = || {
+        std::fs::read_dir(&cache).is_ok_and(|d| {
+            d.flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with("ready-"))
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !ready() {
+        assert!(Instant::now() < deadline, "convertisseur jamais prêt");
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
+    let staging = cache.join("library/.staging");
+    assert!(
+        std::fs::read_dir(&staging).unwrap().count() > 0,
+        "le .part existe avant le signal de disponibilité"
+    );
     let started = Instant::now();
     ctx.service.cancel(&task.id).unwrap();
     let cancelled = ctx.finished(&task.id).await;
