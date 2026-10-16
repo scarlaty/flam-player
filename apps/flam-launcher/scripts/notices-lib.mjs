@@ -16,7 +16,8 @@ export const ALLOWED_LICENSES = new Set([
   "CC0-1.0",
   "0BSD",
   "BSL-1.0",
-  // À valider par le mainteneur (rencontrées dans les dépendances Rust, hors liste initiale) :
+  // Permissives, validées par le mainteneur le 2026-10-16 (dépendances Rust : Unlicense OR MIT,
+  // CC0-1.0 OR MIT-0 OR Apache-2.0, webpki-roots) :
   "Unlicense",
   "MIT-0",
   "CDLA-Permissive-2.0",
