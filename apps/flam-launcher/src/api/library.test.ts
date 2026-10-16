@@ -43,9 +43,12 @@ it("listLibrary et removeFromLibrary appellent leurs commandes", async () => {
   });
   await expect(listLibrary()).resolves.toEqual([installed]);
   await removeFromLibrary("abc");
+  await removeFromLibrary("abc", true);
   expect(calls).toEqual([
     { cmd: "library_list", args: {} },
-    { cmd: "library_remove", args: { uuid: "abc" } },
+    // Par défaut la progression de l'enfant est conservée.
+    { cmd: "library_remove", args: { uuid: "abc", purgeSaves: false } },
+    { cmd: "library_remove", args: { uuid: "abc", purgeSaves: true } },
   ]);
 });
 
