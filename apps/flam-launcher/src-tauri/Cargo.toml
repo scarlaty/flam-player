@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Surcouche de bureau pour flam-player"
 license = "MIT"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.89"
 
 [lib]
 name = "flam_launcher_lib"
@@ -32,7 +32,7 @@ sha2 = "0.10"
 tauri-plugin-dialog = "=2.8.3"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

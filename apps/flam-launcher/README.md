@@ -411,16 +411,29 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    interpréteur durci (`-E -s -u -X utf8`, lancé depuis `library/.staging/` ; `-I` retirerait
    le dossier du script de `sys.path`, d'où `telmi2flam` importe ses modules). stdout est lu ligne par ligne (ligne non JSON ou événement inconnu
    ignoré) ; stderr, décodé en tolérant les erreurs, ne sert qu'au message de repli (fin du
-   flux) si aucun événement `error` n'est reçu (`code` = `exit_<n>`).
+   flux, lu par morceaux dans un tampon borné à 4 Kio) si aucun événement `error` n'est reçu
+   (`code` = `exit_<n>`). Le convertisseur est rattaché à un Job Object Windows
+   (`KILL_ON_JOB_CLOSE`) : l'arrêt forcé termine aussi ses sous-processus.
    **Annulation** : `CTRL_BREAK_EVENT` (le convertisseur nettoie et sort avec 130), envoyé par un
    court assistant Python isolé (`-I`) sans fenêtre qui s'attache à la console cachée du convertisseur (une
    application graphique n'a pas de console, et `GenerateConsoleCtrlEvent` ne vise que la
    sienne) ; arrêt forcé après 5 s de grâce ; puis suppression de `<sortie>.<pid>.part`.
    Un `.plain.pk` est vérifié (`info.plain`, `uuid.bin`, `main.lua`) et copié ; un dossier `.plain`
-   est empaqueté en zip « stored » (liens et jonctions ignorés).
+   est empaqueté en zip « stored » : racine, fichiers requis ou entrées qui sont des liens
+   symboliques ou jonctions sont **refusés** (fichiers ouverts sans suivre les liens), taille
+   cumulée bornée à 4 Gio.
 3. **Installation** : `uuid` et `version` **revalidés** (`story::validate_story_id`), renommage
    vers `<cache>/library/<uuid>-<version>.plain.pk` (version inconnue : `0`), chemin vérifié sous
-   `library/`, index `library.json` mis à jour, archive téléchargée supprimée.
+   `library/`, index `library.json` mis à jour, archive téléchargée supprimée. Ordre sûr : un marqueur d'intention `.staging/<fichier>.pending` est écrit, l'ancien fichier de
+   même nom passe en `.staging/*.bak`, le nouveau est renommé, l'index est écrit, puis le
+   marqueur est effacé (échec : retour à l'état précédent). Au chargement, seules les
+   publications **qui ont un marqueur** sont défaites ; un `.plain.pk` non indexé sans marqueur
+   n'est jamais supprimé. Le marqueur n'est effacé que si la restauration a réussi ; sinon
+   marqueur et `.bak` sont conservés (avertissement) et la réconciliation suivante réessaie (publication terminée : le `.bak` est supprimé avant le marqueur, qui reste si la suppression échoue ; marqueur illisible avec un `.bak` : rien n'est supprimé) ; tant qu'ils subsistent, une nouvelle installation du même fichier est refusée (erreur de validation), sans rien toucher.
+   Publication et réconciliation tiennent un verrou inter-processus
+   (`library/.lock`) ; si une autre instance le tient, ou si le verrou ne peut pas être ouvert,
+   la liste lit simplement l'index sans réconcilier (l'installation et la suppression, elles,
+   échouent).
 
 - **Concurrence** : `max_downloads` téléchargements simultanés (`settings.json`, 1 à 4, 2 par
   défaut, relu à chaque tâche), **une** conversion à la fois.
@@ -435,13 +448,17 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
   (`.staging/<tâche>.plain.pk`, `archives/<uuid>-<version>.<ext>`) est vérifié directement sous
   son dossier. Une tâche annulée (y compris en attente du créneau de conversion) supprime son
   archive téléchargée.
-  Les tâches terminées ne sont gardées qu'en mémoire (100 au plus).
+  Les tâches terminées ne sont gardées qu'en mémoire (100 au plus). Le lien et le validateur
+  d'une archive sont mémorisés dans `archives/<archive>.meta.json` (4 Kio au plus, validateur revalidé) : une nouvelle demande après
+  une coupure reprend le `.part`, et une archive complète n'est réutilisée que si son lien et
+  sa taille correspondent (sinon elle est retéléchargée). L'écriture de `install_queue.json` se
+  fait hors des verrous, sur un thread bloquant, avec des écritures ordonnées.
 - **Convertisseur** : `<exe>/telmi2flam/telmi2flam.py` (application installée ; construit par `npm run build:converter`, voir « Convertisseur embarqué »),
   sinon en développement `tools/telmi2flam/telmi2flam.py` d'un dossier ancêtre. Python : `resolved.python_path`.
 - **Bibliothèque** : `library.json` = `{ schema_version, stories: LibraryEntry[] }` avec
   `LibraryEntry { uuid, version, title, file, size, installed_at, converter, source: StoryEntry }`.
-  `converter` est l'empreinte `sha256:<12 hex>` de `telmi2flam.py` (pas d'option `--version` :
-  #60). **Une installation par `uuid`** : la dernière installée remplace la précédente (autre
+  `converter` est la version de `telmi2flam` lue dans le champ `version` de l'événement `start`
+  (#60), avec en repli l'empreinte `sha256:<12 hex>` de `telmi2flam.py`. **Une installation par `uuid`** : la dernière installée remplace la précédente (autre
   version, ou `.plain` / `.plain.pk` de même `uuid` d'un dossier source). Un index corrompu est
   sauvegardé en `*.bak` et repart vide. `library_list` ignore les entrées dont le fichier a
   disparu.
