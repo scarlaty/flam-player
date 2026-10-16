@@ -27,6 +27,7 @@ import random
 import struct
 import sys
 import zipfile
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TESTS = os.path.dirname(HERE)
@@ -186,6 +187,9 @@ def corpus_cases():
     # --- conversions nominales et options
     add("ok_basic", lambda: zip_bytes(S()))
     add("ok_keep_size", lambda: zip_bytes(S()), ["--keep-size"])
+    add("ok_plain", lambda: zip_bytes(S()), ["--plain"])
+    add("ok_plain_choices", lambda: zip_bytes(
+        S(nodes=two_node_choices()) + [("notes.json", json.dumps(CHOICE_NOTES))]), ["--plain"])
     add("ok_keep_size_big", lambda: zip_bytes(
         [(n, png(2300, 100) if n == "images/s0.png" else d) for n, d in S()]), ["--keep-size"])
     add("ok_no_uuid", lambda: zip_bytes(S(meta={"title": "Sans uuid"})))
@@ -344,6 +348,11 @@ def corpus_cases():
         n["stages"]["s0"]["image"] = "absent.png"
         return zip_bytes(S(nodes=n))
     add("missing_image", missing_both)
+    # echec avec --plain : ni `.part`, ni `.plain.pk`, ni dossier `.plain` apres l'echec
+    add("missing_audio_plain", missing_audio, ["--plain"])
+    add("zip_crc_corrupt_plain", _crc_corrupt, ["--plain"])
+    add("json_invalid_plain", lambda: zip_bytes(with_json(S(), "nodes.json", "{bad json")),
+        ["--plain"])
     add("missing_image_allowed", missing_both, ["--allow-missing"])
 
     # --- archives corrompues ou particulieres
@@ -394,11 +403,18 @@ def write_corpus(out_dir):
 # ---------------------------------------------------------------------------
 # Matrice de reechantillonnage
 # ---------------------------------------------------------------------------
-MODES = ("L", "LA", "P", "PT", "RGB", "RGBA", "1", "I16")
+# RGB16 / RGBA16 : PNG 16 bits par canal. LT / RGBT / RGBT16 : tRNS de couleur cle (gris,
+# RGB 8 bits, RGB 16 bits), distinct de PT (palette avec tRNS par entree).
+MODES = ("L", "LA", "P", "PT", "RGB", "RGBA", "1", "I16", "RGB16", "RGBA16", "LT", "RGBT",
+         "RGBT16")
+ALPHA_MODES = ("RGBA", "LA", "PT", "RGBA16")
 SIZES = (1, 3, 97, 641, 2049)
 QUICK_SIZES = (1, 3, 97)
 CONTENTS = ("gradient", "noise", "alpha")
-NOISE_MAX = 641          # au-dela, le bruit (incompressible) rendrait les PNG enormes
+NOISE_MAX = 641          # au-dela, le bruit (incompressible) rendrait les PNG enormes...
+# ...sauf pour la plus grande taille, en carre et sur ces deux modes seulement (16 Mo
+# pour du RGBA) : la source qui declenche la borne 2047 avec un contenu non compressible.
+NOISE_BIG_MODES = ("RGBA", "L")
 # operations reelles du convertisseur : nom -> description
 OPS = ("scene", "thumb", "inventory", "title", "bound")
 
@@ -432,9 +448,10 @@ def _rgba_content(content, w, h, rng):
 def matrix_png(mode, w, h, content, seed=SEED):
     """PNG d'une cellule de la matrice ; None si la combinaison n'a pas de sens
     (alpha partiel sur un mode sans canal alpha)."""
-    if content == "alpha" and mode not in ("RGBA", "LA", "PT"):
+    if content == "alpha" and mode not in ALPHA_MODES:
         return None
-    if content == "noise" and max(w, h) > NOISE_MAX:
+    if content == "noise" and max(w, h) > NOISE_MAX and not (
+            w == h == max(SIZES) and mode in NOISE_BIG_MODES):
         return None
     rng = random.Random("%s/%s/%d/%d/%s" % (seed, mode, w, h, content))
     base = _rgba_content(content, w, h, rng)
@@ -450,9 +467,68 @@ def matrix_png(mode, w, h, content, seed=SEED):
         q.save(b, "PNG", transparency=q.info["transparency"])
     elif mode == "I16":
         _gray16(base).save(b, "PNG")
+    elif mode in ("RGB16", "RGBA16"):
+        return _png16(base, mode == "RGBA16")
+    elif mode == "LT":
+        g = base.convert("L")
+        return _png_trns(g, 8, 0, g.getpixel((w // 2, h // 2)).to_bytes(2, "big"))
+    elif mode in ("RGBT", "RGBT16"):
+        rgb = base.convert("RGB")
+        key = rgb.getpixel((w // 2, h // 2))
+        if mode == "RGBT":
+            return _png_trns(rgb, 8, 2, struct.pack(">HHH", *key))
+        # 16 bits : la cle est celle du pixel central apres elargissement (_wide16)
+        return _png_trns(rgb, 16, 2, struct.pack(">HHH", *(_wide16(v) for v in key)))
     else:
         raise ValueError(mode)
     return b.getvalue()
+
+
+def _wide16(v):
+    """Echantillon 8 bits -> 16 bits : octet haut v, octet bas derive (pas v * 257, pour
+    que le bit de poids faible compte)."""
+    return (v << 8) | _LOW[v]
+
+
+_LOW = bytes((v * 7 + 3) % 256 for v in range(256))
+
+
+def _chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+
+def _png_trns(im, depth, color_type, trns):
+    """PNG ecrit a la main (filtre 0) : gris 8 bits (type 0), RGB 8 ou 16 bits (type 2),
+    avec le chunk tRNS donne. `im` : image Pillow L ou RGB, rendue sans perte."""
+    w, h = im.size
+    data = im.tobytes()
+    if depth == 16:
+        data = _widen(data)
+    return _png_raw(w, h, depth, color_type, data, trns)
+
+
+def _widen(data):
+    """Octets 8 bits -> echantillons 16 bits gros-boutistes (voir _wide16)."""
+    wide = bytearray(2 * len(data))
+    wide[0::2] = data
+    wide[1::2] = data.translate(_LOW)
+    return bytes(wide)
+
+
+def _png16(im, with_alpha):
+    """PNG RGB / RGBA 16 bits par canal : octet haut = le canal 8 bits, octet bas derive."""
+    im = im if with_alpha else im.convert("RGB")
+    return _png_raw(im.size[0], im.size[1], 16, 6 if with_alpha else 2, _widen(im.tobytes()),
+                    None)
+
+
+def _png_raw(w, h, depth, color_type, data, trns):
+    stride = len(data) // h
+    raw = b"".join(b"\x00" + data[y * stride:(y + 1) * stride] for y in range(h))
+    ihdr = struct.pack(">IIBBBBB", w, h, depth, color_type, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr)
+            + (_chunk(b"tRNS", trns) if trns is not None else b"")
+            + _chunk(b"IDAT", zlib.compress(raw, 6)) + _chunk(b"IEND", b""))
 
 
 def matrix_cells(sizes=SIZES):
