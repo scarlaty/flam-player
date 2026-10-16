@@ -22,6 +22,9 @@ use serde::{Serialize, Serializer};
 /// | `DownloadInvalid` | `download_invalid` | Téléchargement incomplet, trop gros ou contenu inattendu |
 /// | `ConverterUnavailable` | `converter_unavailable` | Python ou `telmi2flam.py` introuvable |
 /// | `Conversion`    | `conversion`    | Échec de `telmi2flam` (code du convertisseur dans le message) |
+/// | `PlayerUnavailable` | `player_unavailable` | `flam-player.exe` introuvable ou impossible à lancer |
+/// | `PlayerBusy`    | `player_busy`   | Un player est déjà en cours d'exécution                 |
+/// | `StoryFileMissing` | `story_file_missing` | Le fichier de l'histoire à lancer a disparu      |
 ///
 /// Un fichier de configuration corrompu n'est pas une erreur : il est sauvegardé en
 /// `*.bak` et remplacé par les valeurs par défaut (avertissement tracé).
@@ -88,6 +91,18 @@ pub enum AppError {
     /// `error` du convertisseur (`missing_asset`, `invalid_content`…) ou `exit_<n>`.
     #[error("conversion impossible ({code}) : {message}")]
     Conversion { code: String, message: String },
+
+    /// `flam-player.exe` introuvable (ni configuré ni détecté) ou impossible à lancer.
+    #[error("{0}")]
+    PlayerUnavailable(String),
+
+    /// Un seul player à la fois : un autre est déjà en cours d'exécution.
+    #[error("{0}")]
+    PlayerBusy(String),
+
+    /// Le fichier (`.plain.pk` ou dossier `.plain`) de l'histoire à lancer n'existe plus.
+    #[error("{0}")]
+    StoryFileMissing(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -109,6 +124,9 @@ impl AppError {
             AppError::DownloadInvalid(_) => "download_invalid",
             AppError::ConverterUnavailable(_) => "converter_unavailable",
             AppError::Conversion { .. } => "conversion",
+            AppError::PlayerUnavailable(_) => "player_unavailable",
+            AppError::PlayerBusy(_) => "player_busy",
+            AppError::StoryFileMissing(_) => "story_file_missing",
         }
     }
 }
@@ -174,6 +192,15 @@ mod tests {
         assert_eq!(
             AppError::ConverterUnavailable("x".into()).kind(),
             "converter_unavailable"
+        );
+        assert_eq!(
+            AppError::PlayerUnavailable("x".into()).kind(),
+            "player_unavailable"
+        );
+        assert_eq!(AppError::PlayerBusy("x".into()).kind(), "player_busy");
+        assert_eq!(
+            AppError::StoryFileMissing("x".into()).kind(),
+            "story_file_missing"
         );
         let conversion = AppError::Conversion {
             code: "missing_asset".into(),
