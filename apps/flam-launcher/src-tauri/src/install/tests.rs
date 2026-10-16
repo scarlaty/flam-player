@@ -273,7 +273,7 @@ async fn telechargement_conversion_et_installation() {
     assert!(ctx.staging_is_empty());
     assert!(ctx.queue().is_empty(), "file vidée après succès");
     let recorded =
-        std::fs::read_to_string(ctx.cache().join("compat/launcher_results.json")).unwrap();
+        std::fs::read_to_string(ctx.cache().join("compat-local/launcher_results.json")).unwrap();
     assert!(
         recorded.contains("\"abc\"") && recorded.contains("\"ok\": true"),
         "{recorded}"
@@ -316,7 +316,7 @@ async fn echec_de_conversion_type() {
     assert!(ctx.staging_is_empty());
     assert!(ctx.queue().is_empty());
     let recorded =
-        std::fs::read_to_string(ctx.cache().join("compat/launcher_results.json")).unwrap();
+        std::fs::read_to_string(ctx.cache().join("compat-local/launcher_results.json")).unwrap();
     assert!(
         recorded.contains("\"ok\": false") && recorded.contains("missing_asset"),
         "{recorded}"

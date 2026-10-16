@@ -821,13 +821,13 @@ impl InstallService {
                 )
                 .await;
                 // Résultat réel de la conversion, pour le statut de compatibilité (#20).
-                compat::record_conversion(
-                    &tc.cache_root,
-                    entry,
-                    &fingerprint,
-                    &converted,
-                    now_secs(),
-                );
+                if let Some(outcome) =
+                    compat::outcome_of(entry, &fingerprint, &converted, now_secs())
+                {
+                    let (root, uuid) = (tc.cache_root.clone(), entry.uuid.clone());
+                    // Échec d'enregistrement ignoré : il ne doit pas gêner l'installation.
+                    let _ = blocking(move || compat::store_outcome(&root, &uuid, outcome)).await;
+                }
                 Ok((Some(fingerprint), converted?.warnings))
             }
             StoryKind::FlamPk => {

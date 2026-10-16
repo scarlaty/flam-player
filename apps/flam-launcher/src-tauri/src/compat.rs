@@ -49,6 +49,10 @@ use crate::{AppError, AppResult};
 
 /// Sous-dossier du cache (listé dans `cache::APP_CACHE_SUBDIRS`).
 pub const COMPAT_DIR: &str = "compat";
+/// Sous-dossier du cache propre à l'application (listé dans `cache::APP_CACHE_SUBDIRS`) :
+/// il ne contient que `launcher_results.json`. `compat/` (où peut se trouver un `status.json`
+/// posé par l'utilisateur) n'est jamais vidé.
+pub const RESULTS_DIR: &str = "compat-local";
 /// Fichier de la campagne, produit par `telmi2flam`.
 pub const STATUS_FILE: &str = "status.json";
 /// Résultats des conversions faites par la surcouche, dans `compat/`.
@@ -65,6 +69,7 @@ pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_STORIES: usize = 20_000;
 const MAX_TEXT_CHARS: usize = 300;
 const MAX_VERSION_CHARS: usize = 64;
+const MAX_WARNINGS: u32 = 1_000_000;
 
 /// Niveau de compatibilité (miroir de `CompatLevel` dans `src/api/compat.ts`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -147,7 +152,9 @@ fn level_of(status: &str) -> CompatLevel {
     match status {
         "OK" => CompatLevel::Compatible,
         "OK_AVERTISSEMENTS" => CompatLevel::Warnings,
-        s if s.starts_with("ECHEC") => CompatLevel::Incompatible,
+        "ECHEC_TELECHARGEMENT" | "ECHEC_CONVERSION" | "ECHEC_VALIDATION" | "ECHEC_EXECUTION" => {
+            CompatLevel::Incompatible
+        }
         _ => CompatLevel::Untested,
     }
 }
@@ -246,6 +253,19 @@ pub struct LocalResult {
     pub at: u64,
 }
 
+impl LocalResult {
+    /// Le fichier est non fiable : textes nettoyés et tronqués, compteur borné.
+    fn sanitized(self) -> Self {
+        Self {
+            code: self.code.and_then(|c| clean_text(&c, 64)),
+            message: self.message.and_then(|m| clean_text(&m, MAX_TEXT_CHARS)),
+            converter: self.converter.and_then(|c| clean_text(&c, 64)),
+            warnings: self.warnings.min(MAX_WARNINGS),
+            ..self
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ResultsFile {
     schema_version: u32,
@@ -254,7 +274,7 @@ struct ResultsFile {
 }
 
 fn results_path(cache_root: &Path) -> PathBuf {
-    cache_root.join(COMPAT_DIR).join(RESULTS_FILE)
+    cache_root.join(RESULTS_DIR).join(RESULTS_FILE)
 }
 
 /// Résultats enregistrés ; absents, illisibles, trop gros ou d'une version inconnue : vide.
@@ -279,6 +299,7 @@ fn load_results(cache_root: &Path) -> (BTreeMap<String, LocalResult>, bool) {
                 .into_iter()
                 .filter(|(uuid, _)| validate_story_id(uuid))
                 .take(MAX_STORIES)
+                .map(|(uuid, result)| (uuid, result.sanitized()))
                 .collect();
             (stories, false)
         }
@@ -335,10 +356,14 @@ pub fn record_conversion(
     result: &AppResult<Converted>,
     now: u64,
 ) {
-    let Some(outcome) = outcome_of(entry, converter, result, now) else {
-        return;
-    };
-    if !validate_story_id(&entry.uuid) {
+    if let Some(outcome) = outcome_of(entry, converter, result, now) {
+        store_outcome(cache_root, &entry.uuid, outcome);
+    }
+}
+
+/// Écrit `outcome` dans `launcher_results.json` (bloquant : fichiers).
+pub fn store_outcome(cache_root: &Path, uuid: &str, outcome: LocalResult) {
+    if !validate_story_id(uuid) {
         return;
     }
     let (mut stories, future) = load_results(cache_root);
@@ -346,7 +371,7 @@ pub fn record_conversion(
         tracing::warn!("résultats de conversion d'une version plus récente : non modifiés");
         return;
     }
-    stories.insert(entry.uuid.clone(), outcome);
+    stories.insert(uuid.to_string(), outcome);
     while stories.len() > MAX_STORIES {
         let oldest = stories
             .iter()
@@ -644,7 +669,7 @@ mod tests {
         assert_eq!(by("echec").level, CompatLevel::Incompatible);
         assert_eq!(by("echec").reason.as_deref(), Some("Image manquante"));
         assert_eq!(by("echec").code.as_deref(), Some("ECHEC_VALIDATION"));
-        assert_eq!(by("echec-futur").level, CompatLevel::Incompatible);
+        assert_eq!(by("echec-futur").level, CompatLevel::Untested);
         assert_eq!(by("inconnu").level, CompatLevel::Untested);
         assert_eq!(by("sans-statut").level, CompatLevel::Untested);
         assert!(by("perime").stale);
@@ -745,7 +770,7 @@ mod tests {
     #[test]
     fn resultats_corrompus_ou_futurs() {
         let dir = tempfile::tempdir().unwrap();
-        let compat = dir.path().join(COMPAT_DIR);
+        let compat = dir.path().join(RESULTS_DIR);
         let path = write(&compat, RESULTS_FILE, b"{nope");
         assert!(load_results(dir.path()).0.is_empty());
         // Un enregistrement repart d'un fichier propre.
@@ -756,6 +781,27 @@ mod tests {
         fs::write(&path, future).unwrap();
         record_conversion(dir.path(), &entry("a", None), "x", &converted(0), 2);
         assert_eq!(fs::read(&path).unwrap(), future);
+    }
+
+    #[test]
+    fn les_resultats_relus_sont_nettoyes_et_bornes() {
+        let dir = tempfile::tempdir().unwrap();
+        let huge = format!("a\u{7}\nb{}", "é".repeat(5000));
+        let doc = json!({"schema_version": 1, "stories": {"a": {
+            "version": 1, "ok": false, "code": huge, "message": huge,
+            "warnings": 4000000000u64, "converter": huge, "at": 1}}});
+        write(
+            &dir.path().join(RESULTS_DIR),
+            RESULTS_FILE,
+            doc.to_string().as_bytes(),
+        );
+        let (stories, _) = load_results(dir.path());
+        let r = &stories["a"];
+        assert!(r.message.as_ref().unwrap().starts_with("a b"));
+        assert_eq!(r.message.as_ref().unwrap().chars().count(), MAX_TEXT_CHARS);
+        assert_eq!(r.code.as_ref().unwrap().chars().count(), 64);
+        assert_eq!(r.converter.as_ref().unwrap().chars().count(), 64);
+        assert_eq!(r.warnings, MAX_WARNINGS);
     }
 
     #[test]

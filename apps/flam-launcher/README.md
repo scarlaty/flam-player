@@ -536,12 +536,12 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   chemin ne vient du front) qui renvoie `{ entries, issue }`. Sources fusionnées :
   le `status.json` de la campagne `tools/telmi2flam` (lu en lecture seule ; `schema_version` doit valoir 1,
   sinon `issue = unsupported_version` et tout est « non testée » ; fichier absent : aucun problème ;
-  corrompu : `unreadable` ; plus de 8 Mio : `too_large`) et `<cache>/compat/launcher_results.json`, où chaque
+  corrompu : `unreadable` ; plus de 8 Mio : `too_large`) et `<cache>/compat-local/launcher_results.json` (dossier vidé avec le cache ; `<cache>/compat/` ne l'est jamais), où chaque
   conversion faite par la surcouche enregistre son résultat réel (succès, avertissements, ou échec avec le code
   du convertisseur). Chemin du `status.json` : variable `FLAM_COMPAT_STATUS_FILE` (absolu), sinon en
   développement `<dépôt>/.cache/telmi/compat/status.json`, sinon `<cache>/compat/status.json`.
-  Niveaux : `OK` compatible ; `OK_AVERTISSEMENTS` avertissements ; tout `ECHEC_*` (même inconnu)
-  incompatible ; autre statut, fiche absente ou illisible : non testée. Une conversion locale remplace une
+  Niveaux : `OK` compatible ; `OK_AVERTISSEMENTS` avertissements ; chaque `ECHEC_*` connu (`TELECHARGEMENT`, `CONVERSION`, `VALIDATION`, `EXECUTION`)
+  incompatible ; autre statut (y compris un `ECHEC_*` inconnu), fiche absente ou illisible : non testée. Une conversion locale remplace une
   fiche périmée (`stale`), sinon le pire niveau l'emporte. Chaque carte affiche un badge supplémentaire ;
   la raison (`summary`, sinon une phrase par statut) est visible pour les avertissements et incompatibilités.
   `IncompatibleInstallDialog` (avertissement non bloquant avant installation d'une histoire incompatible)
