@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isAllowedLicense, optionalMissingIsExpected } from "./notices-lib.mjs";
 
 const launcherDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const tauriDir = join(launcherDir, "src-tauri");
@@ -68,8 +69,10 @@ function npmPackages() {
     if (path === "" || entry.dev || entry.devOptional) continue;
     const dir = join(launcherDir, path);
     if (!existsSync(join(dir, "package.json"))) {
-      if (entry.optional) {
-        console.log(`paquet npm optionnel absent (autre plateforme), ignoré : ${path}`);
+      if (optionalMissingIsExpected(entry, process.platform, process.arch)) {
+        console.log(
+          `paquet npm optionnel absent (os/cpu exclut cette plateforme), ignoré : ${path}`,
+        );
         continue;
       }
       throw new Error(`paquet npm absent (lancer npm ci) : ${path}`);
@@ -121,6 +124,14 @@ for (const p of packages) {
   if (texts.length === 0)
     lines.push("(aucun fichier de licence dans les sources du paquet)", "");
   for (const t of texts) lines.push(`--- ${t.name} ---`, t.text, "");
+}
+const refused = packages
+  .filter((p) => !isAllowedLicense(p.license))
+  .map((p) => `${p.ecosystem} ${p.name}@${p.version} : ${p.license || "non déclarée"}`);
+if (refused.length > 0) {
+  throw new Error(
+    `licence hors liste d'autorisation (scripts/notices-lib.mjs) :\n${refused.join("\n")}`,
+  );
 }
 if (problems.length > 0) {
   throw new Error(`licence introuvable pour : ${problems.join(", ")}`);
