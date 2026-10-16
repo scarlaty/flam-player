@@ -445,20 +445,30 @@ mod tests {
     #[tokio::test]
     async fn stderr_borne_garde_la_fin() {
         let mut data = vec![b'a'; 3 * 1024 * 1024];
-        data.extend_from_slice(b"
-dernier message");
+        data.extend_from_slice(
+            b"
+dernier message",
+        );
         let tail = read_tail(std::io::Cursor::new(data), STDERR_TAIL).await;
         assert!(tail.len() <= STDERR_TAIL);
         assert!(tail.ends_with("dernier message"));
-        assert_eq!(read_tail(std::io::Cursor::new(b"court".to_vec()), 4096).await, "court");
+        assert_eq!(
+            read_tail(std::io::Cursor::new(b"court".to_vec()), 4096).await,
+            "court"
+        );
     }
 
     #[test]
     fn version_du_convertisseur_nettoyee() {
         assert_eq!(clean_version(" 1.0.0 ").as_deref(), Some("1.0.0"));
         assert_eq!(clean_version(""), None);
-        assert_eq!(clean_version("a
-b"), None);
+        assert_eq!(
+            clean_version(
+                "a
+b"
+            ),
+            None
+        );
         assert_eq!(clean_version(&"x".repeat(65)), None);
     }
 

@@ -934,7 +934,8 @@ impl InstallService {
         )?;
         let prepared = {
             let (dest, url) = (dest.clone(), entry.download_url.clone());
-            blocking(move || prepare_archive(&dir, &dest, &url)).await??
+            let known = validator != Validator::default();
+            blocking(move || prepare_archive(&dir, &dest, &url, known)).await??
         };
         // Validateur de la tâche, sinon celui mémorisé avec le `.part` d'un même lien.
         let mut validator = match prepared {
@@ -1045,7 +1046,12 @@ enum Prepared {
 /// Décide de la réutilisation d'une archive ou d'un `.part` (E/S bloquantes). Une archive sans
 /// mémoire, d'un autre lien ou d'une autre taille est supprimée ; un `.part` d'un autre lien
 /// aussi.
-fn prepare_archive(dir: &Path, dest: &Path, url: &str) -> AppResult<Prepared> {
+fn prepare_archive(
+    dir: &Path,
+    dest: &Path,
+    url: &str,
+    task_has_validator: bool,
+) -> AppResult<Prepared> {
     std::fs::create_dir_all(dir)?;
     let meta_file = meta_path(dest);
     let meta: Option<ArchiveMeta> = std::fs::read(&meta_file)
@@ -1062,7 +1068,10 @@ fn prepare_archive(dir: &Path, dest: &Path, url: &str) -> AppResult<Prepared> {
     match meta {
         Some(m) if same => Ok(Prepared::Download(m.validator)),
         _ => {
-            remove_if_exists(&download::part_path(dest))?;
+            // Le validateur de la tâche (file persistée) vaut pour ce lien : son `.part` reste.
+            if !task_has_validator {
+                remove_if_exists(&download::part_path(dest))?;
+            }
             remove_if_exists(&meta_file)?;
             Ok(Prepared::Download(Validator::default()))
         }
