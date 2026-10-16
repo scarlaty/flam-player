@@ -146,6 +146,56 @@ class TestAllowedDeviations(unittest.TestCase):
         self.assertEqual(parity.exit_code(parity.build_report([], "corpus")), 1)
 
 
+class TestLeftovers(unittest.TestCase):
+    """--plain et absence de `.part` (#149)."""
+
+    def test_part_file_is_a_deviation_even_on_failure(self):
+        ok = run_dict(files=["out.plain.pk"])
+        stray = run_dict(files=["out.plain.pk", "out.plain.pk.<pid>.part"])
+        r = parity.compare_runs(ok, stray)
+        self.assertEqual(r["verdict"], "diff")
+        self.assertIn("part", {d["kind"] for d in r["diffs"]})
+        # un .part laisse meme sur un cas admis ou delegue : ecart
+        r = parity.compare_runs(error_run(6, "internal_error"),
+                                dict(error_run(3, "archive_unreadable"),
+                                     files=["out.plain.pk.<pid>.part"]),
+                                [parity.TAG_ENCRYPTED])
+        self.assertEqual(r["verdict"], "diff")
+        r = parity.compare_runs(run_dict(), dict(error_run(7, "unsupported_format"),
+                                                 files=["out.plain.<pid>.part"]),
+                                [parity.TAG_DELEGATED])
+        self.assertEqual(r["verdict"], "diff")
+
+    def test_output_left_after_failure(self):
+        c = dict(error_run(4, "invalid_content"), files=["out.plain.pk"])
+        r = parity.compare_runs(dict(error_run(4, "invalid_content"), files=[]), c)
+        self.assertEqual({d["kind"] for d in r["diffs"]}, {"output_on_failure"})
+        c = dict(error_run(4, "invalid_content"), files=["out.plain"])
+        self.assertEqual(parity.compare_runs(error_run(4, "invalid_content"), c)["verdict"], "diff")
+        clean = dict(error_run(4, "invalid_content"), files=[])
+        self.assertEqual(parity.compare_runs(clean, clean)["verdict"], "identical")
+
+    def test_plain_dir_is_compared(self):
+        def entry(sha):
+            return [{"name": "x", "method": None, "utf8": None, "size": 1, "sha256": sha}]
+        a, b = run_dict(plain_entries=entry("1")), run_dict(plain_entries=entry("2"))
+        r = parity.compare_runs(a, b)
+        self.assertEqual(r["verdict"], "diff")
+        self.assertEqual({d["kind"] for d in r["diffs"]}, {"plain_entry"})
+        self.assertEqual(parity.compare_runs(a, run_dict())["verdict"], "diff")
+        self.assertEqual(parity.compare_runs(a, a)["verdict"], "identical")
+
+    def test_part_name_pid_is_neutralised(self):
+        d = tempfile.mkdtemp(prefix="t2f_wf_")
+        try:
+            for n in ("out.plain.pk", "out.plain.pk.4242.part", "out.plain.17.part"):
+                open(os.path.join(d, n), "w").close()
+            self.assertEqual(parity.work_files(d), ["out.plain.<pid>.part",
+                                                    "out.plain.pk", "out.plain.pk.<pid>.part"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestEntries(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="t2f_par_")
@@ -240,6 +290,10 @@ class TestCorpusGenerator(unittest.TestCase):
         cases = make_corpus.corpus_cases()
         ids = [c.id for c in cases]
         self.assertEqual(len(ids), len(set(ids)))
+        # cas --plain (nominal et en echec) presents
+        by_id = {c.id: c for c in cases}
+        for cid in ("ok_plain", "missing_audio_plain", "zip_crc_corrupt_plain"):
+            self.assertIn("--plain", by_id[cid].args, cid)
         known = {make_corpus.TAG_JSON_LIMIT, make_corpus.TAG_ENCRYPTED, make_corpus.TAG_DELEGATED}
         self.assertTrue({t for c in cases for t in c.tags} <= known)
         # les etiquettes lues par parity.py sont celles du generateur
@@ -273,7 +327,29 @@ class TestCorpusGenerator(unittest.TestCase):
         self.assertEqual(a, make_corpus.matrix_png("RGBA", 97, 97, "noise"))
         self.assertNotEqual(a, make_corpus.matrix_png("RGBA", 97, 97, "gradient"))
         self.assertIsNone(make_corpus.matrix_png("RGB", 97, 97, "alpha"))
-        self.assertIsNone(make_corpus.matrix_png("RGBA", 2049, 2049, "noise"))
+        # bruit a 2049 : carre et seulement RGBA / L (sinon les PNG seraient enormes)
+        self.assertIsNone(make_corpus.matrix_png("RGB", 2049, 2049, "noise"))
+        self.assertIsNone(make_corpus.matrix_png("RGBA", 2049, 1537, "noise"))
+        self.assertIsNone(make_corpus.matrix_png("RGBA", 1025, 1025, "noise"))
+        names = {os.path.basename(e) for e in ids}
+        self.assertIn("RGBA_2049x2049_noise.png", names)
+        self.assertIn("L_2049x2049_noise.png", names)
+
+    def test_matrix_new_png_kinds(self):
+        """RGB16 / RGBA16 / tRNS de couleur cle : le PNG a bien la structure annoncee."""
+        import io
+        import struct
+        from PIL import Image
+        want = {"RGB16": (16, 2, False), "RGBA16": (16, 6, False), "LT": (8, 0, True),
+                "RGBT": (8, 2, True), "RGBT16": (16, 2, True)}
+        for mode, (depth, ctype, trns) in want.items():
+            data = make_corpus.matrix_png(mode, 7, 5, "gradient")
+            ihdr = struct.unpack(">IIBBBBB", data[16:29])
+            self.assertEqual((ihdr[2], ihdr[3]), (depth, ctype), mode)
+            self.assertEqual(b"tRNS" in data, trns, mode)
+            Image.open(io.BytesIO(data)).load()
+        self.assertIsNone(make_corpus.matrix_png("RGBT", 7, 5, "alpha"))
+        self.assertIsNotNone(make_corpus.matrix_png("RGBA16", 7, 5, "alpha"))
 
 
 # Faux candidat : repond comme un convertisseur qui echoue toujours avec le code donne.
@@ -291,7 +367,7 @@ class TestPythonAgainstPython(unittest.TestCase):
 
     # un cas par famille (nominal, image, noms, MP3, erreurs, delegation) ; le corpus
     # complet est compare par la CI de parite (#134), trop long pour ce test unitaire
-    SAMPLE = ("ok_basic", "img_mode_PT", "names_cp437", "mp3_id3_prefix", "missing_audio",
+    SAMPLE = ("ok_basic", "ok_plain", "missing_audio_plain", "img_mode_PT", "names_cp437", "mp3_id3_prefix", "missing_audio",
               "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry", "img_jpeg_delegated")
     STUB_SAMPLE = ("ok_basic", "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry",
                    "img_jpeg_delegated")
@@ -316,6 +392,21 @@ class TestPythonAgainstPython(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_plain_run_has_directory_and_failure_leaves_nothing(self):
+        by_id = {e["id"]: e for e in self.entries}
+        for cid, ok in (("ok_plain", True), ("missing_audio_plain", False)):
+            work = os.path.join(self.tmp, "w_" + cid)
+            run, produced = parity.run_converter(
+                parity.default_oracle(), os.path.join(self.tmp, by_id[cid]["archive"]), work,
+                by_id[cid]["args"])
+            if ok:
+                self.assertIn("info.plain", [e["name"] for e in run["plain_entries"]])
+                self.assertEqual(run["files"], ["out.plain", "out.plain.pk"])
+            else:
+                self.assertEqual(run["status"], "error")
+                self.assertIsNone(produced)
+                self.assertEqual(run["files"], [])
 
     def test_zero_deviation(self):
         self.assertEqual(len(self.entries), len(self.SAMPLE))
@@ -402,9 +493,18 @@ class TestPinnedOracle(unittest.TestCase):
         yml = self.read(".github", "workflows", "telmi2flam.yml")
         py = re.search(r"\$PythonVersion = '([^']+)'", ps1).group(1)
         pillow = re.search(r"\$PillowVersion = '([^']+)'", ps1).group(1)
-        self.assertIn('python-version: "%s"' % py, yml)
-        self.assertIn('pip install "Pillow==%s"' % pillow, yml)
-        self.assertNotIn("Pillow>=", yml)
+        # versions lues dans le yml (un assertIn sur le texte brut se contenterait d'un
+        # commentaire ou d'une autre ligne)
+        ci_py = re.findall(r'^\s*python-version:\s*"([^"]+)"\s*$', yml, re.M)
+        self.assertEqual(ci_py, [py])
+        installs = re.findall(r"^\s*run:\s*pip install (.+)$", yml, re.M)
+        self.assertEqual(len(installs), 1)
+        pins = dict(re.findall(r'"?([A-Za-z]+)==([^"\s]+)"?', installs[0]))
+        self.assertEqual(pins.get("Pillow"), pillow)
+        # lupa : version exacte (le Lua de l'oracle ne doit pas deriver sans qu'on le voie)
+        self.assertRegex(pins.get("lupa", ""), r"^\d+(\.\d+)+$")
+        self.assertEqual(sorted(pins), ["Pillow", "lupa"])
+        self.assertNotRegex(installs[0], r"[<>~!]=?")
 
 
 if __name__ == "__main__":

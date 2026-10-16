@@ -199,7 +199,10 @@ Invariants (repris de Python, à tester côté Rust) :
   **multiensemble des codes d'avertissement** identique (pas le texte), et sortie JSON de
   `--info` identique (`ensure_ascii`, séparateurs compacts).
 - Outil : `tools/telmi2flam/parity.py` compare deux `.plain.pk` ou deux dossiers de sortie et
-  écrit un rapport JSON. Il passe aussi `validate.py` sur la sortie Rust.
+  écrit un rapport JSON. Il passe aussi `validate.py` sur la sortie Rust (celle de l'oracle
+  n'y passe pas : elle sert de référence). Avec `--plain`, il compare aussi les fichiers du
+  dossier `.plain`, et il exige qu'aucun `.part` ne reste après un échec ni qu'une sortie
+  finale subsiste.
 - **Écarts admis**, listés une fois pour toutes dans `parity.py` : délégation
   `unsupported_format` (code 7, D4 : comptée à part, voir §4.3), entrée chiffrée (code 3 en
   Rust, 6 en Python), et les cas JSON
@@ -268,7 +271,8 @@ sont identiques à l'octet près dès la PR 6.
    mesure sont chargées : prévoir des lots et une reprise (PR 15).
 4. **Oracle épinglé** : la CI installe aujourd'hui `Pillow>=10.0` sur Python 3.12. Elle doit
    épingler Pillow 12.3.0 et la version de Python de `build-converter.ps1` dans
-   `telmi2flam.yml` (PR 3). Les tables Unicode de `unicodedata` et d'`unicode-normalization`
+   `telmi2flam.yml` (PR 3), avec `lupa` à une version exacte (2.8, celle de la CI) : le Lua de
+   l'oracle ne doit pas changer sans qu'on le voie. Les tables Unicode de `unicodedata` et d'`unicode-normalization`
    doivent aussi correspondre (versions notées dans la PR 5).
 
 ## 5. Plan de bascule
