@@ -48,3 +48,14 @@ it("n'a aucune violation axe", async () => {
   );
   await expectComponentAccessible(container);
 });
+
+it("applique la variante accent (jaune) au bouton Jouer", async () => {
+  const { container } = render(
+    <Button variant="accent" icon="play">
+      Jouer
+    </Button>,
+  );
+
+  expect(screen.getByRole("button", { name: "Jouer" })).toHaveClass("fl-button--accent");
+  await expectComponentAccessible(container);
+});

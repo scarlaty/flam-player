@@ -7,44 +7,65 @@
 :root {
   color-scheme: light dark;
 
-  /* Surfaces */
-  --color-bg: light-dark(#fbf7f2, #1c1714);
-  --color-surface: light-dark(#ffffff, #27201b);
-  --color-surface-sunken: light-dark(#f4ede4, #15110e);
-  --color-surface-hover: light-dark(#efe5d8, #342b24);
-  --color-backdrop: light-dark(rgb(42 33 27 / 45%), rgb(0 0 0 / 60%));
+  /* Surfaces : blanc verdâtre en clair, vert très foncé (écran de la Flam) en sombre */
+  --color-bg: light-dark(#f6fbfa, #0b1f1e);
+  --color-surface: light-dark(#ffffff, #122e2c);
+  --color-surface-sunken: light-dark(#e2f1ef, #071615);
+  --color-surface-hover: light-dark(#cfe7e4, #1c423f);
+  --color-backdrop: light-dark(rgb(18 48 47 / 45%), rgb(0 0 0 / 60%));
 
   /* Bordures */
-  --color-border: light-dark(#e3d8ca, #3d332b);
-  --color-border-strong: light-dark(#8f7c6a, #8a7a6c);
+  --color-border: light-dark(#cfe3e0, #25504c);
+  --color-border-strong: light-dark(#5b827e, #5e938e);
 
   /* Texte */
-  --color-text: light-dark(#2a211b, #f5eee7);
-  --color-text-muted: light-dark(#66574b, #c2b4a7);
+  --color-text: light-dark(#12302f, #e6f4f2);
+  --color-text-muted: light-dark(#41605d, #a6c8c4);
 
-  /* Action principale : brique chaleureuse */
-  --color-primary: light-dark(#b5441b, #f0a07a);
-  --color-primary-hover: light-dark(#983612, #f6b797);
-  --color-on-primary: light-dark(#ffffff, #2a1206);
-  --color-primary-soft: light-dark(#fbe3d6, #4a2a1c);
-  --color-on-primary-soft: light-dark(#8a2f0f, #ffd3bd);
+  /* Primaire : vert d'eau du boîtier (barre latérale, actions, sélection, liens) */
+  --color-primary: light-dark(#17706b, #4cc2b9);
+  --color-primary-hover: light-dark(#115b57, #6fd3cb);
+  --color-on-primary: light-dark(#ffffff, #04201e);
+  --color-primary-soft: light-dark(#c9e8e4, #17504f);
+  --color-on-primary-soft: light-dark(#0d4743, #c9efea);
 
-  /* Danger */
-  --color-danger: light-dark(#b3261e, #f08a80);
-  --color-danger-hover: light-dark(#931d17, #f5a59d);
-  --color-on-danger: light-dark(#ffffff, #2a0a06);
+  /* Accent : jaune de la molette et des boutons (« Jouer », mises en avant).
+     Le texte posé dessus est foncé ; le contour garantit 3:1 sur les surfaces. */
+  --color-accent: #f4b731;
+  --color-accent-hover: #ffc94d;
+  --color-on-accent: light-dark(#2b2000, #241a00);
+  --color-accent-border: light-dark(#8a6300, #f4b731);
+
+  /* Secondaire : orange brique du logo (badges, avancement) */
+  --color-secondary: light-dark(#b84a31, #e8785f);
+  --color-secondary-hover: light-dark(#9c3b25, #f19480);
+  --color-on-secondary: light-dark(#ffffff, #2a0d06);
+  --color-secondary-soft: light-dark(#fbe0d8, #4a2218);
+  --color-on-secondary-soft: light-dark(#8a2f1a, #ffc4b3);
+
+  /* Danger : rouge framboise (teinte 340°), à l'écart de l'orange (11°) */
+  --color-danger: light-dark(#b00f45, #ff8cb4);
+  --color-danger-hover: light-dark(#8e0b38, #ffadc9);
+  --color-on-danger: light-dark(#ffffff, #3a0613);
+
+  /* Couleurs de marque (logo), identiques dans les deux thèmes */
+  --brand-orange: #c8553d;
+  --brand-cream: #fff3e0;
+  --brand-yellow: #f4b731;
 
   /* Tons des badges (fond / texte) */
-  --tone-neutral-bg: light-dark(#efe8df, #3a3028);
-  --tone-neutral-fg: light-dark(#4d4036, #eaded2);
-  --tone-info-bg: light-dark(#dcecf7, #183447);
-  --tone-info-fg: light-dark(#18527a, #a9d6f5);
+  --tone-neutral-bg: light-dark(#e6efee, #20403d);
+  --tone-neutral-fg: light-dark(#34504d, #d5ebe8);
+  --tone-info-bg: light-dark(#dcebf8, #183447);
+  --tone-info-fg: light-dark(#17507a, #a9d6f5);
   --tone-success-bg: light-dark(#dcefdc, #1b3a20);
   --tone-success-fg: light-dark(#23602c, #a8dcae);
   --tone-warning-bg: light-dark(#fbecc8, #42320d);
   --tone-warning-fg: light-dark(#6f4a00, #f3d389);
-  --tone-danger-bg: light-dark(#fadcd8, #4a1d18);
-  --tone-danger-fg: light-dark(#9c2318, #ffb4a9);
+  --tone-danger-bg: light-dark(#fbdce6, #4a1527);
+  --tone-danger-fg: light-dark(#9a0f3c, #ffb3c8);
+  --tone-secondary-bg: light-dark(#fbe0d8, #4a2218);
+  --tone-secondary-fg: light-dark(#8a2f1a, #ffc4b3);
 
   /* Focus : bleu distinct de la couleur d'action pour rester visible partout */
   --color-focus: light-dark(#1f5fc4, #8fb8ff);
@@ -77,9 +98,9 @@
   --radius-md: 10px;
   --radius-lg: 16px;
   --radius-pill: 999px;
-  --shadow-sm: 0 1px 2px light-dark(rgb(42 33 27 / 10%), rgb(0 0 0 / 40%));
-  --shadow-md: 0 4px 14px light-dark(rgb(42 33 27 / 12%), rgb(0 0 0 / 45%));
-  --shadow-lg: 0 12px 32px light-dark(rgb(42 33 27 / 18%), rgb(0 0 0 / 55%));
+  --shadow-sm: 0 1px 2px light-dark(rgb(18 48 47 / 10%), rgb(0 0 0 / 40%));
+  --shadow-md: 0 4px 14px light-dark(rgb(18 48 47 / 12%), rgb(0 0 0 / 45%));
+  --shadow-lg: 0 12px 32px light-dark(rgb(18 48 47 / 18%), rgb(0 0 0 / 55%));
 
   /* Mise en page */
   --sidebar-width: 15rem;

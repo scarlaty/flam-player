@@ -3,7 +3,8 @@ import { cx } from "../cx";
 import { Icon, type IconName } from "../Icon";
 import "./Badge.css";
 
-export type BadgeTone = "neutral" | "info" | "success" | "warning" | "danger";
+export type BadgeTone =
+  "neutral" | "info" | "success" | "warning" | "danger" | "secondary";
 
 export interface BadgeProps {
   tone?: BadgeTone;
