@@ -177,9 +177,23 @@ impl Ctx {
     }
 }
 
+/// Archive zip « stored » réelle dont le faux convertisseur lit le mode (`mode=<x>;`).
 fn zip_bytes(mode: &str) -> Vec<u8> {
-    format!("PK\x03\x04 mode={mode};").into_bytes()
+    zip_padded(mode, 0)
 }
+
+fn zip_padded(mode: &str, pad: usize) -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("mode.txt", options).unwrap();
+    zip.write_all(format!("mode={mode};").as_bytes()).unwrap();
+    zip.start_file("pad.bin", options).unwrap();
+    zip.write_all(&vec![b'z'; pad]).unwrap();
+    zip.finish().unwrap().into_inner()
+}
+
+const TASK_ID: &str = "0b8f3c1e-4a5d-4e6f-9a7b-8c9d0e1f2a3b";
 
 fn remote(url: &str, uuid: &str) -> StoryEntry {
     let mut entry = story(uuid, Some(2));
@@ -382,10 +396,22 @@ async fn une_seule_conversion_a_la_fois() {
         .filter(|t| t.state == TaskState::Converting)
         .count();
     assert_eq!(converting, 1);
-    ctx.service.cancel(&a.id).unwrap();
-    ctx.service.cancel(&b.id).unwrap();
-    ctx.finished(&a.id).await;
-    ctx.finished(&b.id).await;
+    // La tâche en attente du créneau de conversion : annulée, son archive est supprimée.
+    let (waiting, running) = if ctx.task(&a.id).state == TaskState::Converting {
+        (&b, &a)
+    } else {
+        (&a, &b)
+    };
+    let archive = ctx
+        .cache()
+        .join("archives")
+        .join(format!("{}-2.zip", waiting.entry.uuid));
+    assert!(archive.is_file(), "archive téléchargée en attente");
+    ctx.service.cancel(&waiting.id).unwrap();
+    assert_eq!(ctx.finished(&waiting.id).await.state, TaskState::Cancelled);
+    assert!(!archive.exists(), "archive supprimée à l'annulation");
+    ctx.service.cancel(&running.id).unwrap();
+    ctx.finished(&running.id).await;
 }
 
 #[tokio::test]
@@ -550,11 +576,7 @@ async fn connexion_coupee_taille_incomplete() {
 #[tokio::test]
 async fn reprise_apres_redemarrage() {
     let Some(py) = python() else { return };
-    let full = {
-        let mut bytes = zip_bytes("ok");
-        bytes.extend(std::iter::repeat(b'z').take(3000));
-        bytes
-    };
+    let full = zip_padded("ok", 3000);
     let dir = tempfile::tempdir().unwrap();
     // État laissé par une session interrompue : file persistée et `.part` de 1000 octets.
     let archives = dir.path().join("cache/archives");
@@ -598,7 +620,7 @@ async fn reprise_apres_redemarrage() {
     let queued = QueueFile {
         schema_version: QUEUE_SCHEMA,
         tasks: vec![QueuedTask {
-            id: "t1".into(),
+            id: TASK_ID.into(),
             entry: remote(&url, "abc"),
             created_at: 1,
             validator: Validator {
@@ -610,8 +632,14 @@ async fn reprise_apres_redemarrage() {
     storage::write_json(&dir.path().join("config").join(QUEUE_FILE), &queued).unwrap();
 
     let ctx = Ctx::with_dir(dir, Some(py), Duration::from_secs(5));
-    ctx.service.restore();
-    let done = ctx.finished("t1").await;
+    let fresh = remote(&url, "abc");
+    ctx.service
+        .restore(|_, _| {
+            let fresh = fresh.clone();
+            async move { Ok(fresh) }
+        })
+        .await;
+    let done = ctx.finished(TASK_ID).await;
     assert_eq!(done.state, TaskState::Done, "{done:?}");
     assert_eq!(
         lock(&ranges).first().cloned(),
@@ -876,4 +904,123 @@ async fn installation_reelle() {
     assert!(asked.elapsed() < GRACE, "arrêt par Ctrl+Break, pas forcé");
     assert!(ctx.staging_is_empty());
     assert_eq!(ctx.service.library_list().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn reprise_ignore_les_identifiants_malveillants_et_re_resout_les_entrees() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = dir.path().join("dehors.plain.pk");
+    std::fs::write(&outside, b"precieux").unwrap();
+    let evil = remote("https://evil.example.test/x.zip", "abc");
+    let mut gone = remote("https://h.example.test/g.zip", "gone");
+    gone.entry_id = "src:gone".into();
+    let tasks = [
+        "../../dehors",
+        r"C:\Windows\x",
+        "/etc/x",
+        "T1",
+        "0B8F3C1E-4A5D-4E6F-9A7B-8C9D0E1F2A3B",
+    ]
+    .iter()
+    .map(|id| QueuedTask {
+        id: (*id).into(),
+        entry: evil.clone(),
+        created_at: 1,
+        validator: Validator::default(),
+    })
+    .chain([
+        QueuedTask {
+            id: "11111111-2222-4333-8444-555555555555".into(),
+            entry: gone,
+            created_at: 1,
+            validator: Validator::default(),
+        },
+        QueuedTask {
+            id: TASK_ID.into(),
+            entry: evil.clone(),
+            created_at: 1,
+            validator: Validator {
+                etag: Some("\"e\"".into()),
+                last_modified: None,
+            },
+        },
+    ])
+    .collect();
+    storage::write_json(
+        &dir.path().join("config").join(QUEUE_FILE),
+        &QueueFile {
+            schema_version: QUEUE_SCHEMA,
+            tasks,
+        },
+    )
+    .unwrap();
+    let server = serve(zip_bytes("ok")).await;
+    let fresh = remote(&format!("{}/a.zip", server.uri()), "abc");
+    let ctx = Ctx::with_dir(dir, None, GRACE);
+    let looked_up = Arc::new(Mutex::new(Vec::new()));
+    let seen = looked_up.clone();
+    ctx.service
+        .restore(|source_id, entry_id| {
+            lock(&seen).push(entry_id.clone());
+            let fresh = fresh.clone();
+            async move {
+                match entry_id.as_str() {
+                    "src:abc" => Ok(fresh),
+                    _ => Err(AppError::NotFound(format!("{source_id}:{entry_id}"))),
+                }
+            }
+        })
+        .await;
+    // Seuls les identifiants canoniques sont considérés ; l'entrée disparue est abandonnée.
+    assert_eq!(*lock(&looked_up), ["src:gone", "src:abc"]);
+    let list = ctx.service.list();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].id, TASK_ID);
+    // L'entrée vient de la source, pas du fichier : le lien persisté n'est jamais utilisé.
+    assert_eq!(list[0].entry.download_url, fresh.download_url);
+    let task = ctx.finished(TASK_ID).await;
+    assert_eq!(task.error.unwrap().kind, "converter_unavailable");
+    assert!(outside.is_file());
+    assert!(ctx.queue().is_empty());
+}
+
+#[test]
+fn identifiants_et_chemins_derives() {
+    assert!(is_task_id(TASK_ID));
+    assert!(is_task_id(&uuid::Uuid::new_v4().to_string()));
+    for bad in [
+        "",
+        "t1",
+        "../x",
+        "0B8F3C1E-4A5D-4E6F-9A7B-8C9D0E1F2A3B",
+        "0b8f3c1e4a5d4e6f9a7b8c9d0e1f2a3b",
+    ] {
+        assert!(!is_task_id(bad), "{bad}");
+    }
+    let dir = Path::new("/c/library/.staging");
+    assert!(child_of(dir, "a.plain.pk").is_ok());
+    for bad in ["../a.plain.pk", "x/a", r"x\a", "/abs", "C:a", "..", ""] {
+        assert_eq!(
+            child_of(dir, bad).unwrap_err().kind(),
+            "validation",
+            "{bad}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sans_content_length_une_archive_tronquee_est_refusee() {
+    let ctx = Ctx::new(None);
+    let mut truncated = zip_padded("ok", 2000);
+    truncated.truncate(1500);
+    let (url, _) = raw_server(Arc::new(move |_, _| RawReply {
+        head: "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".into(),
+        body: truncated.clone(),
+        stall: false,
+    }))
+    .await;
+    let task = ctx.service.start(remote(&url, "abc")).unwrap();
+    let error = ctx.finished(&task.id).await.error.unwrap();
+    assert_eq!(error.kind, "download_invalid", "{error:?}");
+    assert!(!ctx.cache().join("archives/abc-2.zip").exists());
 }

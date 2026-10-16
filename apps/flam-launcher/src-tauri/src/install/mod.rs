@@ -241,6 +241,27 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Identifiant de tâche : UUID v4 sous sa forme canonique (minuscules, avec tirets). Il sert
+/// de nom de fichier dans `library/.staging/`, donc il est revérifié à la relecture de la file.
+fn is_task_id(id: &str) -> bool {
+    uuid::Uuid::parse_str(id).is_ok_and(|u| u.hyphenated().to_string() == id)
+}
+
+/// `dir/name`, refusé si le résultat ne reste pas **directement** sous `dir`.
+fn child_of(dir: &Path, name: &str) -> AppResult<PathBuf> {
+    let path = dir.join(name);
+    let direct = path.parent() == Some(dir)
+        && path.file_name().and_then(|n| n.to_str()) == Some(name)
+        && !name.contains(['/', '\\', ':']);
+    if !direct {
+        return Err(AppError::Validation(format!(
+            "chemin refusé hors de {} : {name:?}",
+            dir.display()
+        )));
+    }
+    Ok(path)
+}
+
 fn is_remote(url: &str) -> bool {
     url.starts_with("https://") || url.starts_with("http://")
 }
@@ -394,25 +415,62 @@ impl InstallService {
     }
 
     /// Relance les tâches de la file persistée (au démarrage).
-    pub fn restore(&self) {
-        let queued = load_queue(&self.0.opts.queue_path);
+    ///
+    /// Le fichier est relu comme une donnée non fiable : une tâche dont l'identifiant n'est
+    /// pas un UUID canonique est ignorée, et l'entrée n'est **pas** reprise du fichier : elle
+    /// est ré-résolue par `lookup(source_id, entry_id)` (cache du catalogue, scan du dossier).
+    /// Une entrée introuvable ou invalide abandonne la tâche (journal, pas de reprise).
+    pub async fn restore<F, Fut>(&self, lookup: F)
+    where
+        F: Fn(String, String) -> Fut,
+        Fut: std::future::Future<Output = AppResult<StoryEntry>>,
+    {
+        let mut accepted = Vec::new();
+        for q in load_queue(&self.0.opts.queue_path) {
+            if !is_task_id(&q.id) {
+                tracing::warn!(
+                    "tâche d'installation ignorée : identifiant invalide {:?}",
+                    q.id
+                );
+                continue;
+            }
+            let fresh = lookup(q.entry.source_id.clone(), q.entry.entry_id.clone())
+                .await
+                .and_then(|entry| validate_entry(&entry).map(|()| entry));
+            match fresh {
+                Ok(entry) => accepted.push((q, entry)),
+                Err(err) => tracing::warn!(
+                    "tâche d'installation {} abandonnée ({}) : {err}",
+                    q.id,
+                    q.entry.entry_id
+                ),
+            }
+        }
         let ids: Vec<String> = {
             let mut tasks = lock(&self.0.tasks);
-            for q in queued {
-                if tasks.iter().any(|s| s.task.id == q.id) || validate_entry(&q.entry).is_err() {
+            for (q, entry) in accepted {
+                if tasks.iter().any(|s| s.task.id == q.id) {
                     continue;
                 }
+                // Le validateur ne vaut que pour la même archive (même lien, même version).
+                let validator = if entry.download_url == q.entry.download_url
+                    && entry.version == q.entry.version
+                {
+                    q.validator
+                } else {
+                    Validator::default()
+                };
                 tasks.push(Slot {
                     task: InstallTask {
                         id: q.id,
-                        entry: q.entry,
+                        entry,
                         state: TaskState::Queued,
                         percent: None,
                         error: None,
                         created_at: q.created_at,
                     },
                     cancel: watch::channel(false).0,
-                    validator: q.validator,
+                    validator,
                 });
             }
             self.persist(&tasks);
@@ -615,6 +673,11 @@ impl InstallService {
         cancel: &mut watch::Receiver<bool>,
         validator: Validator,
     ) -> AppResult<(LibraryEntry, u32)> {
+        if !is_task_id(id) {
+            return Err(AppError::Validation(format!(
+                "identifiant de tâche invalide : {id:?}"
+            )));
+        }
         let tc = (self.0.opts.resolver)()?;
         self.0.downloads.set_limit(tc.max_downloads);
         let _gate = tokio::select! {
@@ -623,7 +686,7 @@ impl InstallService {
         };
         let library = Library::new(&tc.cache_root);
         let staging = library.staging_dir()?;
-        let staged = staging.join(format!("{id}.plain.pk"));
+        let staged = child_of(&staging, &format!("{id}.plain.pk"))?;
         let result = self
             .produce(id, entry, &tc, &staged, cancel, validator)
             .await;
@@ -675,6 +738,34 @@ impl InstallService {
         let source = downloaded
             .clone()
             .unwrap_or_else(|| PathBuf::from(&entry.download_url));
+        let result = self.transform(id, entry, tc, &source, staged, cancel).await;
+        match result {
+            Ok((converter, warnings)) => Ok((downloaded, converter, warnings)),
+            Err(err) => {
+                // Annulée (en attente du créneau de conversion comme pendant la conversion) :
+                // l'archive téléchargée est abandonnée avec la tâche.
+                if matches!(err, AppError::Cancelled) {
+                    if let Some(archive) = &downloaded {
+                        let _ = remove_if_exists(archive);
+                    }
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Convertit, vérifie ou empaquette `source` vers `staged`. Renvoie la version du
+    /// convertisseur et ses avertissements.
+    async fn transform(
+        &self,
+        id: &str,
+        entry: &StoryEntry,
+        tc: &Toolchain,
+        source: &Path,
+        staged: &Path,
+        cancel: &mut watch::Receiver<bool>,
+    ) -> AppResult<(Option<String>, u32)> {
+        let source = source.to_path_buf();
         match entry.kind {
             StoryKind::TelmiZip => {
                 let python = tc.python.clone().ok_or_else(|| {
@@ -728,17 +819,7 @@ impl InstallService {
                     &mut on_step,
                 )
                 .await;
-                match converted {
-                    Ok(c) => Ok((downloaded, Some(fingerprint), c.warnings)),
-                    Err(err) => {
-                        if matches!(err, AppError::Cancelled) {
-                            if let Some(archive) = &downloaded {
-                                let _ = remove_if_exists(archive);
-                            }
-                        }
-                        Err(err)
-                    }
-                }
+                Ok((Some(fingerprint), converted?.warnings))
             }
             StoryKind::FlamPk => {
                 self.emit_state(id, TaskState::Installing, None);
@@ -749,13 +830,13 @@ impl InstallService {
                     Ok::<_, AppError>(())
                 })
                 .await??;
-                Ok((downloaded, None, 0))
+                Ok((None, 0))
             }
             StoryKind::FlamPlain => {
                 self.emit_state(id, TaskState::Installing, None);
                 let (from, to) = (source.clone(), staged.to_path_buf());
                 blocking(move || pack::pack_plain_dir(&from, &to)).await??;
-                Ok((None, None, 0))
+                Ok((None, 0))
             }
         }
     }
@@ -781,13 +862,12 @@ impl InstallService {
         let dir = tc.cache_root.join(ARCHIVES_DIR);
         std::fs::create_dir_all(&dir)?;
         // `uuid` revalidé par `validate_entry` : nom de fichier sûr.
-        let dest = dir.join(format!(
-            "{}-{}.{ext}",
-            entry.uuid,
-            entry.version.unwrap_or(0)
-        ));
+        let dest = child_of(
+            &dir,
+            &format!("{}-{}.{ext}", entry.uuid, entry.version.unwrap_or(0)),
+        )?;
         if dest.is_file() {
-            return Ok(dest);
+            return check_archive(dest).await;
         }
         let _slot = tokio::select! {
             s = self.0.downloads.acquire() => s,
@@ -834,22 +914,33 @@ impl InstallService {
                 return Err(err);
             }
         }
-        let check = dest.clone();
-        let is_zip = blocking(move || {
-            use std::io::Read;
-            let mut magic = [0u8; 4];
-            std::fs::File::open(&check)
-                .and_then(|mut f| f.read_exact(&mut magic))
-                .is_ok_and(|()| &magic == b"PK\x03\x04")
-        })
-        .await?;
-        if !is_zip {
+        check_archive(dest).await
+    }
+}
+
+/// Vérifie qu'une archive téléchargée est un zip **complet** (répertoire central lisible) :
+/// sans `Content-Length`, une connexion coupée ne se distingue pas d'une fin normale. Une
+/// archive invalide est supprimée.
+async fn check_archive(dest: PathBuf) -> AppResult<PathBuf> {
+    let check = dest.clone();
+    let valid = blocking(move || {
+        std::fs::File::open(&check)
+            .map_err(|e| e.to_string())
+            .and_then(|f| {
+                zip::ZipArchive::new(std::io::BufReader::new(f))
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            })
+    })
+    .await?;
+    match valid {
+        Ok(()) => Ok(dest),
+        Err(reason) => {
             let _ = remove_if_exists(&dest);
-            return Err(AppError::DownloadInvalid(
-                "le fichier téléchargé n'est pas une archive zip".into(),
-            ));
+            Err(AppError::DownloadInvalid(format!(
+                "archive téléchargée incomplète ou invalide : {reason}"
+            )))
         }
-        Ok(dest)
     }
 }
 
@@ -858,13 +949,15 @@ impl InstallService {
 // ---------------------------------------------------------------------------------------
 
 /// Retrouve l'entrée `entry_id` de la source `source_id` : cache du catalogue (sans réseau)
-/// ou dernier scan du dossier.
+/// ou dernier scan du dossier. Avec `rescan`, un dossier pas encore analysé dans cette session
+/// (reprise au démarrage) est analysé, sous-dossiers compris.
 async fn resolve_entry(
     config: &ConfigState,
     catalog: &CatalogService,
     folder: &FolderState,
     source_id: &str,
     entry_id: &str,
+    rescan: bool,
 ) -> AppResult<StoryEntry> {
     let (source, cache_root) = {
         let _guard = config.guard();
@@ -883,11 +976,40 @@ async fn resolve_entry(
             .ok_or_else(|| {
                 AppError::NotFound(format!("histoire inconnue dans le catalogue : {entry_id}"))
             }),
-        Source::Folder { .. } => folder.entry(source_id, entry_id),
+        Source::Folder { .. } => match folder.entry(source_id, entry_id) {
+            Err(_) if rescan => {
+                let (root, _) = {
+                    let _guard = config.guard();
+                    crate::folder::resolve_folder(&config.dir, &Environment::current(), source_id)?
+                };
+                let (state, sid) = (folder.clone(), source_id.to_string());
+                blocking(move || state.scan(&sid, &root, true)).await??;
+                folder.entry(source_id, entry_id)
+            }
+            found => found,
+        },
         Source::Library { .. } => Err(AppError::Validation(
             "cette histoire est déjà dans la bibliothèque".into(),
         )),
     }
+}
+
+/// Ré-résolution d'une entrée de la file persistée au démarrage (voir [`InstallService::restore`]).
+pub async fn resolve_for_restore(
+    app: &tauri::AppHandle,
+    source_id: &str,
+    entry_id: &str,
+) -> AppResult<StoryEntry> {
+    use tauri::Manager;
+    resolve_entry(
+        &app.state::<ConfigState>(),
+        &app.state::<CatalogService>(),
+        &app.state::<FolderState>(),
+        source_id,
+        entry_id,
+        true,
+    )
+    .await
 }
 
 /// Lance l'installation d'une histoire d'une source (catalogue ou dossier).
@@ -900,7 +1022,7 @@ pub async fn install_start(
     source_id: String,
     entry_id: String,
 ) -> AppResult<InstallTask> {
-    let entry = resolve_entry(&config, &catalog, &folder, &source_id, &entry_id).await?;
+    let entry = resolve_entry(&config, &catalog, &folder, &source_id, &entry_id, false).await?;
     service.start(entry)
 }
 

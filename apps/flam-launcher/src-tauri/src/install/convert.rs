@@ -87,10 +87,19 @@ pub struct Converted {
     pub warnings: u32,
 }
 
-fn command(python: &Path) -> Command {
+/// Interpréteur durci, lancé depuis `cwd` (un dossier de l'application) :
+/// - `-E` : variables `PYTHON*` ignorées (`PYTHONPATH`, `PYTHONSTARTUP`…) ;
+/// - `-s` : pas de `site-packages` utilisateur ;
+/// - `-u` et `-X utf8` : flux non tamponnés et UTF-8 (remplacent `PYTHONUNBUFFERED` et
+///   `PYTHONIOENCODING`, ignorés avec `-E`).
+///
+/// `-I` (isolement complet) n'est pas utilisable pour `telmi2flam.py` : il retire aussi le
+/// dossier du script de `sys.path`, d'où viennent ses modules (`lif`, `mp3map`). Le dossier
+/// courant, lui, n'est pas dans `sys.path` quand on lance un script.
+fn command(python: &Path, cwd: &Path) -> Command {
     let mut cmd = Command::new(python);
-    cmd.env("PYTHONIOENCODING", "utf-8")
-        .env("PYTHONUNBUFFERED", "1")
+    cmd.args(["-E", "-s", "-u", "-X", "utf8"])
+        .current_dir(cwd)
         .stdin(Stdio::null())
         .kill_on_drop(true);
     #[cfg(windows)]
@@ -101,10 +110,13 @@ fn command(python: &Path) -> Command {
 /// Demande au convertisseur de s'arrêter proprement (Ctrl+Break sous Windows, SIGTERM
 /// ailleurs). Renvoie faux si l'envoi a échoué.
 async fn request_stop(python: &Path, pid: u32) -> bool {
+    // `-I` : avec `-c`, le dossier courant serait en tête de `sys.path` ; l'isolement complet
+    // évite d'importer un module déposé là (l'assistant n'importe que `ctypes` et `sys`).
     #[cfg(windows)]
     let mut cmd = {
         let mut cmd = Command::new(python);
-        cmd.arg("-c")
+        cmd.arg("-I")
+            .arg("-c")
             .arg(CTRL_BREAK_HELPER)
             .arg(pid.to_string())
             .creation_flags(CREATE_NO_WINDOW);
@@ -152,8 +164,11 @@ async fn stop(child: &mut Child, req: &Conversion<'_>) {
     remove_any(req.output);
 }
 
+/// Supprime un **fichier** (jamais un dossier) laissé par le convertisseur.
 fn remove_any(path: &Path) {
-    let _ = std::fs::remove_file(path).or_else(|_| std::fs::remove_dir_all(path));
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Erreur rapportée par l'événement `error` du convertisseur.
@@ -171,7 +186,11 @@ pub async fn convert(
     if *cancel.borrow() {
         return Err(AppError::Cancelled);
     }
-    let mut child = command(req.python)
+    let cwd = req
+        .output
+        .parent()
+        .ok_or_else(|| AppError::Validation("sortie sans dossier parent".into()))?;
+    let mut child = command(req.python, cwd)
         .arg(req.script)
         .arg(req.input)
         .arg("-o")

@@ -43,11 +43,22 @@ pub fn run() {
                 gate: catalog.cache_gate(),
                 grace: install::GRACE,
             });
-            install.restore();
             app.manage(storage::ConfigState::new(config_dir));
             app.manage(folder::FolderState::default());
             app.manage(catalog);
-            app.manage(install);
+            app.manage(install.clone());
+            // Reprise de la file persistée : chaque entrée est ré-résolue depuis sa source.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                install
+                    .restore(|source_id, entry_id| {
+                        let handle = handle.clone();
+                        async move {
+                            install::resolve_for_restore(&handle, &source_id, &entry_id).await
+                        }
+                    })
+                    .await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
