@@ -21,6 +21,7 @@ function makeView(overrides: Partial<SettingsView> = {}): SettingsView {
       cache_dir: null,
       default_catalog_url: "https://exemple.org/c.json",
       theme: "system",
+      max_downloads: 2,
     },
     resolved: {
       player_path: "C:\\app\\flam-player.exe",
@@ -174,6 +175,7 @@ it("enregistre l'objet complet avec les chemins choisis (sélecteurs natifs)", a
     cache_dir: "D:\\MonCache",
     default_catalog_url: "https://exemple.org/c.json",
     theme: "system",
+    max_downloads: 2,
   });
 });
 

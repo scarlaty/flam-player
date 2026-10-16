@@ -15,6 +15,8 @@ export interface Settings {
   default_catalog_url: string;
   /** Thème de l'interface (`system` : suit le système). */
   theme: ThemePreference;
+  /** Téléchargements simultanés du pipeline d'installation (1 à 4, 2 par défaut). */
+  max_downloads: number;
 }
 
 /**
