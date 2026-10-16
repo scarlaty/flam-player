@@ -537,6 +537,29 @@ class TestConversion(Base):
         data = self.assertValid(self.convert(std_files(nodes=n), name="b"))
         self.assertEqual(data["totalChapters"], 3)
 
+    # #43 : indexItem = index (choix preselectionne si cibles non autoplay) :
+    # ses cibles non autoplay sont des options, pas des chapitres.
+    def test_total_chapters_index_item_targets(self):
+        n = base_nodes()
+        n["inventory"] = [{"name": "n", "initialNumber": 0, "maxNumber": 5}]
+        opt = {"image": "s0.png", "audio": "s0.mp3", "ok": {"action": "a3", "index": 0},
+               "control": {"ok": True, "home": False, "autoplay": False}}
+        n["stages"]["s0"]["ok"] = {"action": "a1", "indexItem": 0}
+        n["stages"]["s1"] = dict(opt)
+        n["stages"]["s2"] = dict(opt)
+        n["stages"]["s3"] = {"image": "s0.png", "audio": "s0.mp3", "ok": None,
+                             "control": {"ok": True, "home": False, "autoplay": True}}
+        n["actions"]["a1"] = [{"stage": "s1"}, {"stage": "s2"}]
+        n["actions"]["a3"] = [{"stage": "s3"}]
+        data = self.assertValid(self.convert(std_files(nodes=n)))
+        self.assertEqual(data["stages"]["s0"]["ok"], {"action": "a1", "indexItem": 0})
+        self.assertEqual(data["totalChapters"], 2)   # s0 + s3 (avant : 3)
+        # cibles autoplay : jouees directement -> chapitres
+        for k in ("s1", "s2"):
+            n["stages"][k]["control"] = {"ok": True, "home": False, "autoplay": True}
+        data = self.assertValid(self.convert(std_files(nodes=n), name="b"))
+        self.assertEqual(data["totalChapters"], 3)
+
     # Maxicours B9 : branches exclusives (menu de niveaux) -> totalChapters =
     # chapitres de la plus longue partie possible, pas la somme des branches
     # (sinon la jauge "Reprendre" plafonne a 31-36 %).
