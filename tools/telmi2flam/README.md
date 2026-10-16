@@ -164,14 +164,18 @@ Une **action** est une liste de stages candidats. À la résolution de `{action,
 | conditions présentes | seuls les stages dont **toutes** les `conditions` passent restent candidats |
 | N stages visibles, cible `autoplay` | pas de molette (spec TELMI : `←/→` désactivés) : la cible est jouée directement |
 | N stages visibles, cible non `autoplay` | **choix molette** : `←/→` change l'option focalisée (image+audio), OK valide |
+| `indexItem` au lieu d'`index` | idem ci-dessus, la cible étant l'option n° (valeur de l'item) |
 
 `index` = stage ciblé / option initialement sélectionnée (0-based, dans la liste non
 filtrée ; hors borne ou masqué → 1re option visible). **`index = -1` = tirage aléatoire**
 (`math.random`) parmi les stages **visibles** : branche aléatoire si la cible tirée est
 `autoplay`, sinon simple présélection aléatoire du choix molette. Vérifié sur les données :
 une action à **1 option** est toujours ciblée avec `index 0` (lien) ; une action
-**multi-options** est ciblée avec `index = -1` (24×) ou `index = 0` (12×). `indexItem` :
-l'index est la valeur d'un item d'inventaire (stage joué directement).
+**multi-options** est ciblée avec `index = -1` (24×) ou `index = 0` (12×). **`indexItem`**
+(exclusif avec `index`) : `index` = valeur de l'item d'inventaire désigné (0-based, bornée
+à `[0, nb de stages − 1]`, jamais de tirage), puis **mêmes règles** que `index` : filtre des
+conditions, cible `autoplay` jouée directement, sinon choix molette présélectionné sur cette
+option (les autres options restent accessibles par `←/→`).
 
 `items` : opérations sur l'inventaire (`type` : 0 `+=`, 1 `-=`, 2 `=`, 3 `*=`, 4 `/=`, 5 `%=`).
 `conditions` : `comparator` 0 `<`, 1 `<=`, 2 `==`, 3 `>`, 4 `>=`, 5 `!=`.
@@ -278,8 +282,8 @@ en `lv.*` direct marche au sim mais PAS sur device).
   nœud de passage → `setProgression{ currentFunction=id, branch }` et `followTransition(ok)`
   (garde anti-boucle) ; sinon `audio-player.create{ audio_path, image_background_path,
   callback (autoplay), okCallback (ctrl.ok) }` et, si `ctrl.home`, `setBackBehavior(home)`.
-- `followTransition(tr)` : `indexItem` → stage désigné par l'inventaire ; sinon
-  `enterAction(action, index)` : filtre par conditions, 0 entrée → fin, 1 → scène,
+- `followTransition(tr)` : `indexItem` → `index` = valeur de l'item (0-based, bornée) ;
+  puis `enterAction(action, index)` : filtre par conditions, 0 entrée → fin, 1 → scène,
   `index = -1` → tirage, cible `autoplay` → scène directe, sinon `showChoice`.
 - `showChoice(list, actionId, sel, selIndex)` : `setProgression{ currentFunction=actionId,
   branch }` (pas un chapitre), puis module `carousel` (défaut) ou `image-choice`
@@ -878,8 +882,8 @@ nécessaires pour que l'histoire **charge sur le device**) :
   compteur `valeur/max` ou jauge selon `display`), pas pendant les scènes.
 - `playingTime` : approximatif — utilise `Global.audioDuration` (dernière valeur rapportée
   par le callback audio), pas un chronomètre précis de la scène courante.
-- Choix molette : `ctrl.ok=false` d'une option n'est pas appliqué (OK valide toujours) ;
-  `indexItem` joue le stage désigné sans molette. Une reprise sur un choix revient à
+- Choix molette : `ctrl.ok=false` d'une option n'est pas appliqué (OK valide toujours).
+  Une reprise sur un choix (`index` ou `indexItem`) revient à
   l'option **présélectionnée à l'affichage** (`choice_index`), pas à celle qui avait le
   focus au moment de quitter ; pas de nouveau tirage pour `index = -1`.
 - Jauge « Reprendre » : un seul `totalChapters` pour tout le paquet (chemin le plus long,
