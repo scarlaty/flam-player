@@ -319,13 +319,21 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   (8 Kio) ; `success = false` (code non nul ou processus tué) : afficher `stderr`, c'est la
   raison d'un échec au démarrage (« Erreur de chargement… »).
 - **Copie de travail** : le player extrait un `.plain.pk` et écrit ses sauvegardes (`saves/<nom>`)
-  à côté de l'histoire. Il n'est donc **jamais lancé sur l'original** (dossier de l'utilisateur
-  ni `library/`) : l'histoire est copiée dans `<cache>/play/<empreinte de la clé>/<nom>`
-  (`stage`, sous le portillon du cache en lecture), puis lancée. Ce dossier est nettoyé avant
-  chaque lancement **sauf `saves/`** (progression conservée ; « Vider le cache » l'efface).
-  La source doit être, sans suivre de lien, un fichier ordinaire (`.plain.pk`) ou un dossier
-  (`.plain`) conforme au `kind` de l'entrée. Un `.plain` est copié lui aussi (le player y écrit
-  `saves/` à côté).
+  à côté de l'histoire (le code C n'offre aucune option pour le changer en mode histoire). Il
+  n'est donc **jamais lancé sur l'original** (dossier de l'utilisateur ni `library/`) : l'histoire
+  est copiée dans `<cache>/play/<empreinte de la clé>/<nom>` (`Workspace::stage`, sous le portillon
+  du cache en lecture), vidée avant chaque lancement, puis lancée. Clé : `library:<uuid>` ou
+  `folder:<source>:<entrée>`. La source doit être, sans suivre de lien, un fichier ordinaire
+  (`.plain.pk`) ou un dossier (`.plain`) conforme au `kind` de l'entrée.
+- **Sauvegardes hors cache** : la progression vit dans `<config>/saves/<empreinte>/` (données
+  de l'application, **jamais effacées par « Vider le cache »**). Avant le lancement elle est
+  recopiée vers `<copie>/saves/` ; à la fin du player, succès ou échec (avant la libération du
+  créneau), `<copie>/saves/` est rapatrié (copie vers un dossier `.tmp` voisin puis échange par
+  renommage, l'ancienne version étant gardée en `.old` jusqu'au succès et reprise au lancement
+  suivant si l'application s'arrête entre les deux). Liens ignorés, au plus 5000 fichiers et
+  64 Mio ; au-delà, la sauvegarde n'est pas conservée (erreur tracée). Le nom du sous-dossier
+  suit le fichier lancé : une nouvelle version d'une histoire de la bibliothèque
+  (`<uuid>-<version>.plain.pk`) repart donc d'une progression vierge.
 - **Robustesse** : le créneau est tenu par une garde libérée même en cas de panique ou d'échec de
   thread ; la fin du player ne dépend pas de la fermeture de stderr (attente bornée à 500 ms).
 - Tests : l'exemple `src-tauri/examples/fake_player.rs` (scénario lu dans le fichier d'histoire)
@@ -464,7 +472,7 @@ supprime et renvoie les octets libérés. Le dossier de cache pouvant être choi
 l'utilisateur, ces deux commandes ne comptent et ne suppriment **que** les sous-dossiers créés
 par l'application, listés dans `APP_CACHE_SUBDIRS` (`cache.rs`) : `archives`, `catalogs`,
 `library`, `play`, `thumbs`. Le reste du dossier et le dossier lui-même ne sont jamais touchés ; les
-liens symboliques et jonctions ne sont ni suivis ni supprimés. **Tout module qui crée un nouveau
+liens symboliques et jonctions ne sont ni suivis ni supprimés. `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
 sous-dossier de cache doit l'ajouter à cette liste.** L'interface demande une confirmation
 (boîte `alertdialog`, focus sur « Annuler ») qui rappelle les dossiers concernés et la taille
 libérée.
