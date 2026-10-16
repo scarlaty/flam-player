@@ -694,6 +694,8 @@ struct Inner {
     meta: MetaCache,
     /// Références de vignettes du dernier scan de chaque source.
     thumbs: HashMap<String, ThumbRefs>,
+    /// Entrées du dernier scan de chaque source, par `entry_id` (installation, #15).
+    entries: HashMap<String, HashMap<String, StoryEntry>>,
 }
 
 /// Mémoire du dernier scan de chaque source et cache de métadonnées (en mémoire).
@@ -719,7 +721,27 @@ impl FolderState {
         inner.meta.0.extend(meta.0);
         let (scan, refs) = result?;
         inner.thumbs.insert(source_id.to_string(), refs);
+        let entries = scan
+            .entries
+            .iter()
+            .map(|e| (e.entry_id.clone(), e.clone()))
+            .collect();
+        inner.entries.insert(source_id.to_string(), entries);
         Ok(scan)
+    }
+
+    /// Entrée `entry_id` du dernier scan de `source_id` (jamais un chemin libre venu du front).
+    pub fn entry(&self, source_id: &str, entry_id: &str) -> AppResult<StoryEntry> {
+        self.lock()
+            .entries
+            .get(source_id)
+            .and_then(|entries| entries.get(entry_id))
+            .cloned()
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "histoire inconnue dans le dernier scan : {entry_id}"
+                ))
+            })
     }
 
     /// URL `data:` de la vignette d'une entrée du dernier scan de `source_id`.
@@ -745,7 +767,7 @@ impl FolderState {
 }
 
 /// Chemin du dossier de la source et dossier de cache effectif.
-fn resolve_folder(
+pub(crate) fn resolve_folder(
     config_dir: &Path,
     env: &Environment,
     source_id: &str,
@@ -1349,6 +1371,22 @@ mod tests {
                 .thumbnail(ctx.cache.path(), source, entry)
                 .unwrap_err();
             assert_eq!(err.kind(), "not_found");
+        }
+    }
+
+    #[test]
+    fn entry_ne_renvoie_que_les_entrees_du_dernier_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        write_telmi(&dir.path().join("a.zip"), "", META.as_bytes());
+        let (scan, ctx) = scan(dir.path(), false);
+        let id = scan.entries[0].entry_id.clone();
+        assert_eq!(ctx.state.entry("src", &id).unwrap(), scan.entries[0]);
+        let path = scan.entries[0].download_url.clone();
+        for (source, entry) in [("src", "x"), ("autre", id.as_str()), ("src", &path)] {
+            assert_eq!(
+                ctx.state.entry(source, entry).unwrap_err().kind(),
+                "not_found"
+            );
         }
     }
 

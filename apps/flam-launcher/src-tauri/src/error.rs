@@ -18,6 +18,10 @@ use serde::{Serialize, Serializer};
 /// | `FolderUnavailable` | `folder_unavailable` | Dossier d'une source locale absent ou inaccessible |
 /// | `Network`       | `network`       | Réseau indisponible, délai dépassé ou réponse HTTP en échec |
 /// | `CatalogInvalid`| `catalog_invalid`| Catalogue reçu inexploitable (JSON invalide, structure inconnue) |
+/// | `Cancelled`     | `cancelled`     | Tâche d'installation annulée                            |
+/// | `DownloadInvalid` | `download_invalid` | Téléchargement incomplet, trop gros ou contenu inattendu |
+/// | `ConverterUnavailable` | `converter_unavailable` | Python ou `telmi2flam.py` introuvable |
+/// | `Conversion`    | `conversion`    | Échec de `telmi2flam` (code du convertisseur dans le message) |
 ///
 /// Un fichier de configuration corrompu n'est pas une erreur : il est sauvegardé en
 /// `*.bak` et remplacé par les valeurs par défaut (avertissement tracé).
@@ -66,6 +70,24 @@ pub enum AppError {
     /// Dossier d'une source locale absent ou inaccessible (disque débranché, dossier supprimé).
     #[error("{0}")]
     FolderUnavailable(String),
+
+    /// Tâche d'installation annulée (par l'utilisateur, ou convertisseur interrompu).
+    #[error("installation annulée")]
+    Cancelled,
+
+    /// Téléchargement inexploitable : taille reçue différente de la taille annoncée, fichier
+    /// trop gros, contenu qui n'est pas une archive attendue.
+    #[error("{0}")]
+    DownloadInvalid(String),
+
+    /// Python ou le convertisseur `telmi2flam.py` est introuvable.
+    #[error("{0}")]
+    ConverterUnavailable(String),
+
+    /// Échec de la conversion par `telmi2flam` : `code` est le code stable de l'événement
+    /// `error` du convertisseur (`missing_asset`, `invalid_content`…) ou `exit_<n>`.
+    #[error("conversion impossible ({code}) : {message}")]
+    Conversion { code: String, message: String },
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -83,6 +105,10 @@ impl AppError {
             AppError::Network(_) => "network",
             AppError::CatalogInvalid(_) => "catalog_invalid",
             AppError::FolderUnavailable(_) => "folder_unavailable",
+            AppError::Cancelled => "cancelled",
+            AppError::DownloadInvalid(_) => "download_invalid",
+            AppError::ConverterUnavailable(_) => "converter_unavailable",
+            AppError::Conversion { .. } => "conversion",
         }
     }
 }
@@ -139,6 +165,24 @@ mod tests {
         assert_eq!(
             AppError::FolderUnavailable("x".into()).kind(),
             "folder_unavailable"
+        );
+        assert_eq!(AppError::Cancelled.kind(), "cancelled");
+        assert_eq!(
+            AppError::DownloadInvalid("x".into()).kind(),
+            "download_invalid"
+        );
+        assert_eq!(
+            AppError::ConverterUnavailable("x".into()).kind(),
+            "converter_unavailable"
+        );
+        let conversion = AppError::Conversion {
+            code: "missing_asset".into(),
+            message: "m".into(),
+        };
+        assert_eq!(conversion.kind(), "conversion");
+        assert_eq!(
+            conversion.to_string(),
+            "conversion impossible (missing_asset) : m"
         );
     }
 

@@ -5,12 +5,16 @@ pub mod cache;
 pub mod catalog;
 mod error;
 pub mod folder;
+pub mod install;
+pub mod library;
 pub mod lif;
 pub mod settings;
 pub mod sources;
 pub mod storage;
 pub mod story;
 pub mod thumbnail;
+
+use std::sync::Arc;
 
 use tauri::Manager;
 
@@ -29,9 +33,32 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            app.manage(storage::ConfigState::new(storage::config_dir()?));
+            let config_dir = storage::config_dir()?;
+            let catalog = catalog::CatalogService::new()?;
+            let install = install::InstallService::new(install::InstallOptions {
+                client: install::download::build_client()?,
+                resolver: install::settings_resolver(config_dir.clone()),
+                events: Arc::new(install::TauriEvents(app.handle().clone())),
+                queue_path: config_dir.join(install::QUEUE_FILE),
+                gate: catalog.cache_gate(),
+                grace: install::GRACE,
+            });
+            app.manage(storage::ConfigState::new(config_dir));
             app.manage(folder::FolderState::default());
-            app.manage(catalog::CatalogService::new()?);
+            app.manage(catalog);
+            app.manage(install.clone());
+            // Reprise de la file persistée : chaque entrée est ré-résolue depuis sa source.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                install
+                    .restore(|source_id, entry_id| {
+                        let handle = handle.clone();
+                        async move {
+                            install::resolve_for_restore(&handle, &source_id, &entry_id).await
+                        }
+                    })
+                    .await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -51,6 +78,11 @@ pub fn run() {
             sources::sources_reorder,
             folder::folder_scan,
             folder::folder_thumbnail,
+            install::install_start,
+            install::install_cancel,
+            install::install_list,
+            library::library_list,
+            library::library_remove,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application Tauri");
@@ -67,6 +99,8 @@ mod tests {
             ("app", include_str!("app.rs")),
             ("catalog", include_str!("catalog.rs")),
             ("folder", include_str!("folder.rs")),
+            ("install", include_str!("install/mod.rs")),
+            ("library", include_str!("library.rs")),
             ("settings", include_str!("settings.rs")),
             ("sources", include_str!("sources.rs")),
             ("storage", include_str!("storage.rs")),

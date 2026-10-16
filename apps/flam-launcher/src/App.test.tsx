@@ -13,6 +13,7 @@ const settingsView = {
     cache_dir: null,
     default_catalog_url: "https://exemple.org/c.json",
     theme: "dark",
+    max_downloads: 2,
   },
   resolved: { player_path: null, python_path: null, cache_dir: "C:\\cache" },
   issues: [],

@@ -72,7 +72,7 @@ fn redirect_check(previous: &[Url], next: &Url) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn redirect_policy(attempt: Attempt<'_>) -> reqwest::redirect::Action {
+pub(crate) fn redirect_policy(attempt: Attempt<'_>) -> reqwest::redirect::Action {
     match redirect_check(attempt.previous(), attempt.url()) {
         Ok(()) => attempt.follow(),
         Err(reason) => attempt.error(reason),
@@ -87,13 +87,16 @@ pub fn build_client(connect: Duration, total: Duration) -> reqwest::Result<reqwe
         .connect_timeout(connect)
         .timeout(total)
         .redirect(Policy::custom(redirect_policy))
-        .user_agent(concat!(
-            "flam-launcher/",
-            env!("CARGO_PKG_VERSION"),
-            " (+https://github.com/scarlaty/flam-player)"
-        ))
+        .user_agent(USER_AGENT)
         .build()
 }
+
+/// `User-Agent` de toutes les requêtes de l'application.
+pub(crate) const USER_AGENT: &str = concat!(
+    "flam-launcher/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/scarlaty/flam-player)"
+);
 
 /// Exécute un travail bloquant (fichiers, JSON) hors du runtime asynchrone.
 pub(crate) async fn blocking<T: Send + 'static>(
@@ -122,8 +125,9 @@ pub struct CatalogService {
     /// Limite les téléchargements de vignettes simultanés.
     thumb_slots: Semaphore,
     /// Portillon d'écriture dans le cache : les rafraîchissements le prennent en lecture (ils
-    /// restent parallèles entre sources), le vidage du cache en écriture.
-    cache_gate: tokio::sync::RwLock<()>,
+    /// restent parallèles entre sources), le vidage du cache en écriture. Partagé avec le
+    /// pipeline d'installation (`install`), qui le tient en lecture pendant chaque tâche.
+    cache_gate: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl CatalogService {
@@ -141,7 +145,7 @@ impl CatalogService {
             refresh_locks: Mutex::default(),
             known_thumbs: Mutex::default(),
             thumb_slots: Semaphore::new(thumb_concurrency),
-            cache_gate: tokio::sync::RwLock::new(()),
+            cache_gate: Arc::default(),
         }
     }
 
@@ -149,6 +153,12 @@ impl CatalogService {
     /// le résultat) tant que le garde renvoyé est conservé. Sert au vidage du cache.
     pub async fn pause_refreshes(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
         self.cache_gate.write().await
+    }
+
+    /// Portillon d'écriture dans le cache, à prendre en lecture par tout module qui écrit dans
+    /// le cache (le vidage le prend en écriture).
+    pub fn cache_gate(&self) -> Arc<tokio::sync::RwLock<()>> {
+        self.cache_gate.clone()
     }
 
     fn source_lock(&self, source_id: &str) -> Arc<tokio::sync::Mutex<()>> {
