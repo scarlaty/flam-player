@@ -31,6 +31,12 @@ sauvegardes de progression sous `%APPDATA%`, cache (catalogues, téléchargement
 installées de « Mes histoires ») sous `%LOCALAPPDATA%` (« Paramètres » → « Cache » indique son
 emplacement).
 
+**Désinstallation et données** : la désinstallation retire le dossier d'installation seulement.
+Les données (`%APPDATA%lam-launcher` : sources, paramètres, sauvegardes ; et
+`%LOCALAPPDATA%lam-launcher` : cache et histoires installées) sont **conservées**, y compris si
+l'on coche « supprimer les données de l'application » du désinstallateur, qui ne les connaît pas :
+pour tout effacer, supprimer ces deux dossiers à la main.
+
 ## Ajouter des sources
 
 Écran **Sources** (« Ajouter une source », puis « Ajouter un catalogue » ou « Ajouter un dossier ») :
@@ -158,6 +164,16 @@ Pillow, NSIS).
 npm run build:installer      # = build:converter + build:player + tauri build --config …
 ```
 
+**Runtime Visual C++** : `flam-player.exe` importe `VCRUNTIME140.dll`, absente d'un Windows
+propre. Choix : livrer `vcruntime140.dll` (fichier redistribuable de Visual Studio, copié depuis
+son dossier `VC\Redist` par `build-player.ps1`) à côté du player plutôt que passer en runtime
+statique, qui changerait les options de compilation de tout le player, de SDL2, de Lua et de LVGL
+sans changer le résultat pour l'utilisateur. Le launcher (Rust) et `SDL2.dll` n'importent que
+des DLL Windows (UCRT, Windows 10 et plus). `scripts/check-imports.ps1 <dossier>` (étape de la CI,
+sur l'installation) liste les imports des trois binaires avec `dumpbin /dependents` et échoue si
+une DLL du runtime VC++ est importée sans être à côté du binaire, ou si une autre DLL est
+introuvable.
+
 soit, en détail :
 
 1. `npm run build:converter` : `build/telmi2flam/` (voir plus haut) ;
@@ -171,7 +187,7 @@ soit, en détail :
 `tauri.bundle.conf.json` (fusionné avec `tauri.conf.json`) restreint les cibles à `nsis` et
 déclare les ressources : `telmi2flam/` (Python, Pillow, scripts, `runtime/`), `flam-player.exe` et
 `SDL2.dll` **à côté de l'exécutable** (c'est là que `settings::detect_player` les cherche),
-`licenses/` et `LICENSES.md`. Le launcher lance le player avec pour dossier courant celui de
+`vcruntime140.dll`, `licenses/` et `LICENSES.md`. Le launcher lance le player avec pour dossier courant celui de
 `flam-player.exe` : `SDL2.dll` est ainsi trouvée. Installation sans interaction :
 `"Flam Launcher_<version>_x64-setup.exe" /S /D=<dossier>` (`/D=` en dernier, sans guillemets) ;
 désinstallation : `<dossier>\uninstall.exe /S _?=<dossier>`.
@@ -183,7 +199,9 @@ désinstallation : `<dossier>\uninstall.exe /S _?=<dossier>`.
 télécharge l'archive et la convertit avec le vrai `telmi2flam.py` (Python embarqué), `Library`
 la liste, `PlayerService` lance le vrai `flam-player.exe` (`SDL_VIDEODRIVER=dummy`,
 `SDL_AUDIODRIVER=dummy`, `SDL_RENDER_DRIVER=software`), puis le player est fermé et
-l'événement `exited` est reçu. L'archive est synthétique (images unies, MP3 muets), générée par
+l'événement `exited` est reçu. Le player ne se termine pas seul : sa fin est obtenue par
+`taskkill` (garde RAII qui le ferme aussi si le test échoue), pas par une sortie volontaire ; le
+test vérifie qu'il charge l'histoire et reste actif avant cela. L'archive est synthétique (images unies, MP3 muets), générée par
 le test : aucun contenu sous licence. Choix : tester le backend Rust plutôt que piloter
 l'interface par WebDriver, qui exigerait `tauri-driver` et `msedgedriver` appariés à la version
 de WebView2 (fragile, lent) alors que la logique à risque est dans le backend ; l'interface a
@@ -194,7 +212,9 @@ npm run build:installer
 npm run test:e2e             # sur src-tauri/target/release ; ou FLAM_E2E_INSTALL_DIR=<installation>
 ```
 
-Sans `FLAM_E2E_REQUIRE=1` et sans `flam-player.exe`, `cargo test` saute ce test (message) ;
+Sans `FLAM_E2E_REQUIRE=1` et sans `flam-player.exe`, `cargo test` **saute** ce test : il passe au
+vert sans rien vérifier, et le message n'apparaît qu'avec `-- --nocapture` ; `npm run test:e2e` et
+la CI posent `FLAM_E2E_REQUIRE=1` (le test échoue alors si un prérequis manque) ;
 variables : `FLAM_E2E_INSTALL_DIR`, ou `FLAM_E2E_PLAYER` + `FLAM_E2E_CONVERTER_DIR`. La CI
 (`.github/workflows/launcher.yml`) compile le player, construit l'installateur, l'installe en
 silence, y exécute ce test puis le désinstalle en vérifiant qu'il ne reste aucun fichier.

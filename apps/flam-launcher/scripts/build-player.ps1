@@ -8,7 +8,9 @@
 
     player/
       flam-player.exe, SDL2.dll        build CMake Release (Ninja) de la racine du dépôt
-      licenses/                        textes de licence de SDL2, Lua, LVGL, minimp3, flam-launcher
+      vcruntime140.dll                 runtime Visual C++ redistribuable, à côté du player
+      licenses/                        textes de licence de SDL2, Lua, LVGL, minimp3, flam-launcher,
+                                       polices Nunito et Montserrat (OFL)
 
   Compilation dans <racine du dépôt>/build/release (ignoré par Git), sans toucher au dossier
   build/ de développement (Debug) de do_build.bat. Prérequis : sous-modules initialisés
@@ -113,12 +115,27 @@ New-Item -ItemType Directory -Force -Path $licDir | Out-Null
 Copy-Item -LiteralPath (Join-Path $BuildDir 'flam-player.exe') -Destination $OutDir
 Copy-Item -LiteralPath (Join-Path $BuildDir 'SDL2.dll') -Destination $OutDir
 
+# Runtime Visual C++ : flam-player.exe importe VCRUNTIME140.dll. Un Windows propre n'a pas le
+# redistribuable : la DLL (fichier redistribuable de Visual Studio, voir REDIST.TXT de VS) est
+# livrée à côté du player. `scripts/check-imports.ps1` contrôle les imports des binaires
+# installés. Le launcher (Rust, UCRT) et SDL2 n'importent aucune DLL du runtime VC++.
+$redist = Get-ChildItem -Path (Join-Path $vs 'VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\vcruntime140.dll') -ErrorAction SilentlyContinue |
+  Where-Object { $_.FullName -notmatch '\\(onecore|debug_nonredist)\\' } |
+  Sort-Object FullName | Select-Object -Last 1
+if (-not $redist) { throw "vcruntime140.dll introuvable dans le dossier Redist de $vs" }
+Copy-Item -LiteralPath $redist.FullName -Destination $OutDir
+Write-Host "runtime VC++ : $($redist.FullName)"
+
 # Textes de licence repris des sous-modules (jamais recopiés à la main).
 $utf8 = New-Object Text.UTF8Encoding $false
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'libs\SDL2\LICENSE.txt') -Destination (Join-Path $licDir 'SDL2-LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'libs\lvgl\LICENCE.txt') -Destination (Join-Path $licDir 'LVGL-LICENCE.txt')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'libs\minimp3\LICENSE') -Destination (Join-Path $licDir 'minimp3-LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $LauncherDir 'LICENSE') -Destination (Join-Path $licDir 'flam-launcher-LICENSE.txt')
+# Polices (SIL OFL 1.1), textes et copyright tirés des dépôts amont : voir third-party/.
+foreach ($ofl in 'OFL-Nunito.txt', 'OFL-Montserrat.txt') {
+  Copy-Item -LiteralPath (Join-Path $LauncherDir "third-party\$ofl") -Destination $licDir
+}
 # Lua n'a pas de fichier de licence dans son dépôt : le texte est en fin de lua.h.
 $luaHeader = [IO.File]::ReadAllText((Join-Path $RepoRoot 'libs\lua\lua.h'))
 $luaBlock = [regex]::Match($luaHeader, '(?s)/\*{10,}\r?\n\* Copyright \(C\) 1994-\d{4} Lua\.org.*?\*{10,}/')

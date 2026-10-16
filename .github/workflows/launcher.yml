@@ -97,10 +97,14 @@ jobs:
           $p = Start-Process -FilePath $setup.FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "installateur : code $($p.ExitCode)" }
           foreach ($f in 'flam-launcher.exe', 'flam-player.exe', 'SDL2.dll', 'LICENSES.md', 'uninstall.exe',
-              'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt') {
+              'vcruntime140.dll', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt') {
             if (-not (Test-Path (Join-Path $dest $f))) { throw "fichier absent de l'installation : $f" }
           }
           "FLAM_E2E_INSTALL_DIR=$dest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Imports des binaires installés (runtime VC++ livré)
+        shell: pwsh
+        run: ./scripts/check-imports.ps1 -InstallDir $env:FLAM_E2E_INSTALL_DIR
 
       - name: Test de bout en bout sur l'application installée
         working-directory: apps/flam-launcher/src-tauri

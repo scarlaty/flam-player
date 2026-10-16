@@ -6,6 +6,7 @@
       "../build/telmi2flam/": "telmi2flam/",
       "../build/player/flam-player.exe": "flam-player.exe",
       "../build/player/SDL2.dll": "SDL2.dll",
+      "../build/player/vcruntime140.dll": "vcruntime140.dll",
       "../build/player/licenses/": "licenses/",
       "../LICENSES.md": "LICENSES.md"
     },
