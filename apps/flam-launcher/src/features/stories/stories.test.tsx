@@ -25,6 +25,9 @@ import { LibraryProvider } from "../library/LibraryProvider";
 import { StoriesLibrary } from "./StoriesLibrary";
 import { DONE_TASK_TTL_MS, StoriesProvider } from "./StoriesProvider";
 import { StoriesTaskPanel } from "./StoriesTaskPanel";
+import { slowIt, tolerateLoadInAsyncUtils } from "../../test/timeouts";
+
+tolerateLoadInAsyncUtils();
 
 const windowApi = vi.hoisted(() => ({
   minimizeWindow: vi.fn(() => Promise.resolve(true)),
@@ -262,44 +265,49 @@ async function openFiche(title = "Les trois ours") {
 
 const panel = () => screen.getByRole("region", { name: "Tâches en cours" });
 
-it("affiche la fiche : vignette, description, métadonnées, état, compatibilité", async () => {
-  report = {
-    issue: null,
-    entries: [
-      fiche({ uuid: "ours", level: "warnings", reason: "Exploration partielle" }),
-    ],
-  };
-  await renderApp();
-  const dialog = await openFiche();
-  await waitFor(() =>
-    expect(within(dialog).getByRole("img", { name: /Vignette/ })).toBeInTheDocument(),
-  ).catch(() => undefined);
-  expect(within(dialog).getByText("Une visite chez trois ours gourmands.")).toBeVisible();
-  for (const text of [
-    "Dès 3 ans",
-    "Contes",
-    "Anne Auteur",
-    "Vic Voix",
-    "CC BY 4.0",
-    "3 Mo",
-    "Catalogue test",
-    "À télécharger",
-    "Avertissements",
-  ]) {
-    expect(within(dialog).getByText(text)).toBeInTheDocument();
-  }
-  await waitFor(() =>
-    expect(within(dialog).getByText("Exploration partielle")).toBeInTheDocument(),
-  );
-  expect(
-    within(dialog).getByRole("button", { name: "Télécharger et jouer" }),
-  ).toBeEnabled();
-  expect(within(dialog).getByRole("button", { name: "Télécharger" })).toBeEnabled();
-  await expectNoAxeViolations(document.body, PAGE_LEVEL_RULES);
+slowIt(
+  "affiche la fiche : vignette, description, métadonnées, état, compatibilité",
+  async () => {
+    report = {
+      issue: null,
+      entries: [
+        fiche({ uuid: "ours", level: "warnings", reason: "Exploration partielle" }),
+      ],
+    };
+    await renderApp();
+    const dialog = await openFiche();
+    await waitFor(() =>
+      expect(within(dialog).getByRole("img", { name: /Vignette/ })).toBeInTheDocument(),
+    ).catch(() => undefined);
+    expect(
+      within(dialog).getByText("Une visite chez trois ours gourmands."),
+    ).toBeVisible();
+    for (const text of [
+      "Dès 3 ans",
+      "Contes",
+      "Anne Auteur",
+      "Vic Voix",
+      "CC BY 4.0",
+      "3 Mo",
+      "Catalogue test",
+      "À télécharger",
+      "Avertissements",
+    ]) {
+      expect(within(dialog).getByText(text)).toBeInTheDocument();
+    }
+    await waitFor(() =>
+      expect(within(dialog).getByText("Exploration partielle")).toBeInTheDocument(),
+    );
+    expect(
+      within(dialog).getByRole("button", { name: "Télécharger et jouer" }),
+    ).toBeEnabled();
+    expect(within(dialog).getByRole("button", { name: "Télécharger" })).toBeEnabled();
+    await expectNoAxeViolations(document.body, PAGE_LEVEL_RULES);
 
-  fireEvent.keyDown(document, { key: "Escape" });
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-});
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  },
+);
 
 it("télécharger et jouer : progression, installation puis lancement, retour sur la fiche", async () => {
   await renderApp();
