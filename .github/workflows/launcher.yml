@@ -70,13 +70,23 @@ jobs:
         working-directory: apps/flam-launcher/src-tauri
         run: cargo test
 
-      - name: Build Tauri (sans installeur)
-        run: npm run tauri build -- --no-bundle
+      - name: Convertisseur embarqué (Python + Pillow, SHA-256 vérifiés)
+        run: npm run build:converter
+
+      - name: Build Tauri (sans installeur, avec le convertisseur)
+        run: npm run tauri build -- --no-bundle --config src-tauri/tauri.bundle.conf.json
+
+      - name: Vérifier la ressource telmi2flam à côté de l'exécutable
+        run: |
+          test -f src-tauri/target/release/telmi2flam/python/python.exe
+          test -f src-tauri/target/release/telmi2flam/telmi2flam.py
 
       - name: Artefact (exécutable)
         uses: actions/upload-artifact@v4
         with:
           name: flam-launcher-windows
-          path: apps/flam-launcher/src-tauri/target/release/*.exe
+          path: |
+            apps/flam-launcher/src-tauri/target/release/*.exe
+            apps/flam-launcher/src-tauri/target/release/telmi2flam/
           if-no-files-found: warn
           retention-days: 3
