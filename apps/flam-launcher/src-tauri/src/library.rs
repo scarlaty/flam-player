@@ -26,7 +26,7 @@
 //! tient le créneau du player, n'attend le verrou que brièvement ([`Library::remove_with`]).
 //!
 //! La logique ([`Library`]) ne dépend pas de Tauri ; les commandes `library_*` passent par le
-//! service d'installation, qui sérialise les écritures avec le pipeline.
+//! service d'installation, qui passe par le verrou inter-processus décrit ci-dessus.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -317,7 +317,7 @@ impl Library {
                         return Err(AppError::Io(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
                             format!(
-                                "bibliothèque utilisée par une autre instance de l'application                                  (verrou {LOCK_FILE} non obtenu en {shown}), réessayer"
+                                "bibliothèque utilisée par une autre instance de l'application \n                                 (verrou {LOCK_FILE} non obtenu en {shown}), réessayer"
                             ),
                         )));
                     }
@@ -439,7 +439,7 @@ impl Library {
                         marked == file || entry_uuid == Some(uuid) || named_uuid == Some(uuid);
                     if concerned {
                         return Err(AppError::Validation(format!(
-                            "installation de {file} refusée : le marqueur .staging/{marked}{PENDING_SUFFIX}                              ne peut pas être jugé (index de la bibliothèque perdu, sauvegardé en                              library.json.*.bak). Vérifier library/{marked}, puis supprimer ce marqueur                              (et .staging/{marked}{BACKUP_SUFFIX} s'il existe) ou restaurer l'index depuis la                              sauvegarde, et réessayer"
+                            "installation de {file} refusée : le marqueur .staging/{marked}{PENDING_SUFFIX} \n                             ne peut pas être jugé (index de la bibliothèque perdu, sauvegardé en \n                             library.json.*.bak). Vérifier library/{marked}, puis supprimer ce marqueur \n                             (et .staging/{marked}{BACKUP_SUFFIX} s'il existe) ou restaurer l'index depuis la \n                             sauvegarde, et réessayer"
                         )));
                     }
                     unjudged.push(item.path());
@@ -494,7 +494,7 @@ impl Library {
                 ))
             })?;
             tracing::warn!(
-                "marqueur {} non jugeable (index perdu) : neutralisé en {} ; son fichier n'est                  pas touché, à vérifier puis à supprimer à la main",
+                "marqueur {} non jugeable (index perdu) : neutralisé en {} ; son fichier n'est \n                 pas touché, à vérifier puis à supprimer à la main",
                 path.display(),
                 target.display()
             );
@@ -505,7 +505,7 @@ impl Library {
     /// Précontrôle **avant le téléchargement** : si l'index est perdu et qu'un marqueur non
     /// jugeable concerne `uuid` ou son fichier, l'installation serait refusée en fin de course
     /// ([`Library::install`]) ; on le dit tout de suite, avec le même message, sans rien
-    /// modifier. Sans effet si une autre instance tient le verrou (le contrôle de
+    /// neutraliser ni installer (au plus, comme `list`, la mise de côté d'un index corrompu). Sans effet si une autre instance tient le verrou (le contrôle de
     /// l'installation reste la référence).
     pub fn precheck_install(&self, uuid: &str, version: Option<u32>) -> AppResult<()> {
         let file = file_name_for(uuid, version)?;
@@ -1560,7 +1560,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let lib = Library::new(dir.path());
         let root = dir.path().join("library");
-        let entry = terminee_puis_index_perdu(&lib, &root);
+        terminee_puis_index_perdu(&lib, &root);
         // Le fichier publié a changé depuis (taille différente) : la publication ne se juge plus.
         std::fs::write(root.join("abc-2.plain.pk"), b"modifie a la main, plus long").unwrap();
         // Autre histoire : installation acceptée, marqueur neutralisé, fichier conservé.
@@ -1590,7 +1590,7 @@ pub(crate) mod tests {
             .install(&c, &story("abc", Some(3)), None, 4)
             .unwrap_err();
         assert_eq!(err.kind(), "validation");
-        assert!(entry.file == "abc-2.plain.pk" && c.exists());
+        assert!(c.exists(), "rien n'est consommé");
     }
 
     #[test]

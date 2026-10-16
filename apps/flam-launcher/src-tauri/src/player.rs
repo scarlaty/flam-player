@@ -528,9 +528,20 @@ fn move_dir(from: &Path, to: &Path) -> std::io::Result<()> {
         Ok(()) => Ok(()),
         Err(err) => {
             tracing::warn!("renommage impossible ({err}) : copie");
-            if let Err(copy_err) = copy_tree(from, to, 0, &mut Budget::unbounded()) {
-                let _ = remove_tree(to);
+            // Copie dans `<to>.part` (partiel si l'on s'arrête en route), puis renommage atomique :
+            // `to` n'existe que complet. La source n'est supprimée qu'ensuite ; si cette
+            // suppression échoue, la copie complète reste à destination (erreur renvoyée).
+            let mut name = to.file_name().unwrap_or_default().to_os_string();
+            name.push(".part");
+            let part = to.with_file_name(name);
+            remove_tree(&part)?;
+            if let Err(copy_err) = copy_tree(from, &part, 0, &mut Budget::unbounded()) {
+                let _ = remove_tree(&part);
                 return Err(copy_err);
+            }
+            if let Err(rename_err) = std::fs::rename(&part, to) {
+                let _ = remove_tree(&part);
+                return Err(rename_err);
             }
             remove_tree(from)
         }
@@ -610,9 +621,10 @@ impl Workspace {
     /// (autre volume, verrou), il est copié (sans plafond) puis la source n'est supprimée
     /// qu'après réussite de la copie : **jamais de suppression sans copie**.
     ///
-    /// Étapes : déplacement vers `.rejected.wip` (peut rester partiel si le processus s'arrête
-    /// pendant une copie), renommage en `.rejected.new` (atomique : ce dossier-là est toujours
-    /// **complet**), puis remplacement de `.rejected` par `.rejected.new`.
+    /// Étapes : déplacement vers `.rejected.new` (renommage ; ou copie dans
+    /// `.rejected.new.part`, partiel si le processus s'arrête en route, puis renommage atomique :
+    /// `.rejected.new` est toujours **complet**), puis remplacement de `.rejected` par
+    /// `.rejected.new`.
     /// - Échec **avant** la fin du déplacement : erreur d'E/S, la source reste intacte, l'ancien
     ///   `.rejected` aussi.
     /// - Échec **après** (la source a déjà quitté sa place, ses données sont dans
@@ -635,23 +647,22 @@ impl Workspace {
     ) -> AppResult<String> {
         let rejected = self.sibling(".rejected");
         let fresh = self.sibling(".rejected.new");
-        let wip = self.sibling(".rejected.wip");
         if let Some(parent) = rejected.parent() {
             std::fs::create_dir_all(parent)?;
         }
         // Un `.rejected.new` resté d'un échec précédent est d'abord réparé : il ne doit jamais
         // être écrasé par une nouvelle mise de côté.
         self.recover_rejected()?;
-        move_dir(dir, &wip)?;
-        // Point de non-retour : `dir` n'existe plus. `.rejected.new` est complet.
-        std::fs::rename(&wip, &fresh)?;
+        // Après ce déplacement, `.rejected.new` est complet (renommage, ou copie terminée puis
+        // renommée) : c'est un point de non-retour, sans suppression possible de ce dossier.
+        move_dir(dir, &fresh)?;
         let note = match promote(&fresh, &rejected) {
             Ok(()) => format!(
                 "{what} refusées ({why}) : mises de côté dans {}",
                 rejected.display()
             ),
             Err(err) => format!(
-                "{what} refusées ({why}) : mises de côté dans {} (le dossier {} n'a pas pu être                  remplacé : {err} ; repris au prochain lancement)",
+                "{what} refusées ({why}) : mises de côté dans {} (le dossier {} n'a pas pu être \n                 remplacé : {err} ; repris au prochain lancement)",
                 fresh.display(),
                 rejected.display()
             ),
@@ -661,11 +672,11 @@ impl Workspace {
     }
 
     /// Répare une mise de côté interrompue : un `.rejected.new` (toujours complet) est promu en
-    /// `.rejected`, l'ancienne génération étant remplacée ; un `.rejected.wip` (copie partielle)
+    /// `.rejected`, l'ancienne génération étant remplacée ; un `.rejected.new.part` (copie partielle)
     /// est supprimé, sa source n'ayant jamais été retirée avant la fin de la copie.
     fn recover_rejected(&self) -> AppResult<()> {
         let (rejected, fresh) = (self.sibling(".rejected"), self.sibling(".rejected.new"));
-        remove_tree(&self.sibling(".rejected.wip"))?;
+        remove_tree(&self.sibling(".rejected.new.part"))?;
         if is_real_dir(&fresh) {
             promote_rejected(&fresh, &rejected)?;
             tracing::warn!(
@@ -813,7 +824,7 @@ impl Workspace {
                 ".old",
                 ".rejected",
                 ".rejected.new",
-                ".rejected.wip",
+                ".rejected.new.part",
             ] {
                 remove_tree(&self.sibling(suffix))?;
             }
@@ -1448,7 +1459,7 @@ mod tests {
         std::fs::create_dir_all(ws.sibling(".rejected")).unwrap();
         std::fs::write(ws.sibling(".rejected").join("ancien"), b"x").unwrap();
         // Ici l'échec survient **avant** que le nouveau contenu soit en sécurité : la source à
-        // mettre de côté n'existe pas, donc le déplacement vers `.rejected.wip` échoue. Rien ne
+        // mettre de côté n'existe pas, donc le déplacement vers `.rejected.new` échoue. Rien ne
         // doit alors toucher à l'ancien `.rejected` (il n'est remplacé qu'une fois le nouveau
         // contenu complet dans `.rejected.new`, voir `set_aside_apres_deplacement_*`).
         let missing = copy.parent().unwrap().join("saves-absent");
@@ -1499,22 +1510,22 @@ mod tests {
     }
 
     #[test]
-    fn un_rejected_new_sans_rejected_est_promu_au_lancement_et_un_wip_partiel_supprime() {
+    fn un_rejected_new_sans_rejected_est_promu_au_lancement_et_un_part_partiel_supprime() {
         let dir = tempfile::tempdir().unwrap();
         let pk = dir.path().join("Histoire.plain.pk");
         std::fs::write(&pk, b"PK").unwrap();
         let ws = workspace(dir.path(), "library:u1");
         std::fs::create_dir_all(ws.sibling(".rejected.new")).unwrap();
         std::fs::write(ws.sibling(".rejected.new").join("0"), b"gardee").unwrap();
-        std::fs::create_dir_all(ws.sibling(".rejected.wip")).unwrap();
-        std::fs::write(ws.sibling(".rejected.wip").join("partiel"), b"?").unwrap();
+        std::fs::create_dir_all(ws.sibling(".rejected.new.part")).unwrap();
+        std::fs::write(ws.sibling(".rejected.new.part").join("partiel"), b"?").unwrap();
         ws.stage(&pk).unwrap();
         assert_eq!(
             std::fs::read(ws.sibling(".rejected").join("0")).unwrap(),
             b"gardee"
         );
         assert!(!ws.sibling(".rejected.new").exists());
-        assert!(!ws.sibling(".rejected.wip").exists());
+        assert!(!ws.sibling(".rejected.new.part").exists());
     }
 
     #[test]
@@ -1522,7 +1533,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let from = dir.path().join("profond");
         let mut deep = from.clone();
-        for _ in 0..400 {
+        for _ in 0..1500 {
             deep.push("n");
         }
         std::fs::create_dir_all(&deep).unwrap();
@@ -1530,14 +1541,14 @@ mod tests {
         let to = dir.path().join("copie");
         // Pile minuscule : une récursion par niveau y déborderait largement.
         let copied = std::thread::Builder::new()
-            .stack_size(32 * 1024)
+            .stack_size(256 * 1024)
             .spawn(move || copy_tree(&from, &to, 0, &mut Budget::unbounded()).map(|()| to))
             .unwrap()
             .join()
             .expect("pas de débordement de pile")
             .unwrap();
         let mut leaf = copied;
-        for _ in 0..400 {
+        for _ in 0..1500 {
             leaf.push("n");
         }
         assert_eq!(std::fs::read(leaf.join("state")).unwrap(), b"fond");

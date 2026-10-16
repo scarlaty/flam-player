@@ -388,14 +388,14 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   `<config>/saves/<empreinte>.rejected` (**une seule génération** : un nouveau rejet remplace
   le précédent, remplacé seulement une fois le nouveau contenu en sécurité dans
   `<empreinte>.rejected.new` ; si le renommage échoue (autre volume), copie sans aucune limite
-  (profondeur comprise ; parcours itératif, pas de débordement de pile) puis suppression de la
-  source seulement après réussite : jamais de suppression sans copie ; le déplacement passe par
-  `<empreinte>.rejected.wip`, qui peut rester partiel, puis un renommage atomique en
-  `.rejected.new`, toujours complet ; le repli par copie **ignore** les liens de la source, qui
+  (profondeur comprise ; parcours de copie itératif, sans récursion) puis suppression de la
+  source seulement après réussite : jamais de suppression sans copie ; la copie se fait dans
+  `<empreinte>.rejected.new.part` (partiel si l'on s'arrête en route), puis un renommage atomique
+  en `.rejected.new`, toujours complet, avant la suppression de la source ; le repli par copie **ignore** les liens de la source, qui
   disparaissent avec elle, sans toucher à leur cible). Si le remplacement de `.rejected` échoue
   **après** ce déplacement, ce n'est **pas une erreur** : la progression est intacte dans
   `.rejected.new`, la note le dit à l'utilisateur (`saves_error`) et l'état est réparé au
-  lancement ou rapatriement suivant (`.rejected.new` promu en `.rejected`, `.rejected.wip` partiel
+  lancement ou rapatriement suivant (`.rejected.new` promu en `.rejected`, `.rejected.new.part` partiel
   supprimé). La version précédente est
   conservée, un avertissement est tracé et le message est renvoyé dans
   `player://exited.saves_error` (`string | null` côté TS) : l'interface doit l'afficher. Même
@@ -422,7 +422,8 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   les deux.
 - **Désinstallation et mise à jour** : `library_remove(uuid, purge_saves?)` supprime la copie de
   travail `<cache>/play/<empreinte>/` ; la progression (`<config>/saves/<empreinte>/` et ses
-  `.tmp`, `.old`, `.rejected`, `.rejected.new`, `.rejected.wip`) n'est supprimée que si `purge_saves` est vrai (défaut : faux,
+  `.tmp`, `.old`, `.rejected`, `.rejected.new`, `.rejected.new.part`) n'est supprimée que
+  si `purge_saves` est vrai (défaut : faux,
   une progression d'enfant ne se perd jamais par défaut ; réinstaller l'histoire la retrouve).
   Refusé avec `player_busy` si le player lit cette histoire. Tout se passe sous le créneau du player (un lancement ne peut pas s'intercaler ; un lancement
   qui attendait relit l'index sous le créneau et reçoit `not_found`) : verrou de la
@@ -529,7 +530,9 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    cela, la réconciliation suivante les jugerait inachevés et supprimerait leur fichier (ou
    restaurerait son `.bak`). La réconciliation ne lit pas les `*.pending.unjudged` et ne touche
    jamais à leur fichier ni à leur `.bak` : à traiter à la main (vérifier `library/<x>`, puis
-   supprimer le `.pending.unjudged`).
+   supprimer le `.pending.unjudged` **et** `.staging/<x>.bak` s'il existe : tant que ce `.bak`
+   subsiste, réinstaller le même fichier est refusé « restauration ou nettoyage précédent non
+   terminé »).
    **Fuite ponctuelle** : un marqueur écrit par une version antérieure de l'application ne
    liste pas les anciennes versions du même `uuid` (`old_files`) ; s'il est terminé après la
    mise à jour de l'application, ces anciens `.plain.pk` restent dans `library/`, non indexés et
