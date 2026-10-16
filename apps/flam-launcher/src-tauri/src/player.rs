@@ -158,10 +158,14 @@ impl PlayerService {
     /// Player en cours d'exécution, s'il y en a un.
     ///
     /// **Ne bloque jamais** : le créneau est aussi tenu pendant la préparation d'un lancement
-    /// (copie de travail) et pendant [`while_idle`](Self::while_idle) (vidage du cache, parfois
-    /// long), et cette méthode est appelée depuis une commande `async` (un worker tokio ne doit
-    /// pas attendre). Si le créneau est tenu, aucun player n'est encore (ou plus) en cours :
-    /// `None`, et l'interface apprend le démarrage par `player://started`.
+    /// (copie de travail), pendant [`while_idle`](Self::while_idle) (vidage du cache, parfois
+    /// long) et pendant [`while_not_playing`](Self::while_not_playing) (désinstallation, qui
+    /// peut avoir lieu pendant qu'un player lit une **autre** histoire), et cette méthode est
+    /// appelée depuis une commande `async` (un worker tokio ne doit pas attendre). Si le créneau
+    /// est tenu, la réponse est `None` **même si un player tourne** : ce n'est pas une preuve
+    /// d'absence. L'interface se fie à `player://started` / `player://exited` ; ce statut ne sert
+    /// qu'à restaurer l'état après un rechargement, et la règle du player unique reste garantie
+    /// par `launch` (`player_busy`), pas par ce statut.
     pub fn status(&self) -> Option<PlayerSession> {
         match self.current.try_lock() {
             Ok(slot) => slot.clone(),
@@ -431,13 +435,35 @@ fn remove_tree(path: &Path) -> std::io::Result<()> {
 struct Budget {
     files: usize,
     bytes: u64,
+    max_depth: usize,
 }
 
 impl Budget {
+    /// Copie d'une histoire : ni nombre ni taille plafonnés, profondeur bornée.
     fn unlimited() -> Budget {
         Budget {
             files: usize::MAX,
             bytes: u64::MAX,
+            max_depth: COPY_MAX_DEPTH,
+        }
+    }
+
+    /// Déplacement par copie d'un dossier déjà refusé (mise de côté) : aucune limite, y compris
+    /// la profondeur (la longueur des chemins du système la borne).
+    fn unbounded() -> Budget {
+        Budget {
+            files: usize::MAX,
+            bytes: u64::MAX,
+            max_depth: usize::MAX,
+        }
+    }
+
+    /// Sauvegardes de l'enfant : nombre, taille et profondeur plafonnés.
+    fn saves() -> Budget {
+        Budget {
+            files: SAVES_MAX_FILES,
+            bytes: SAVES_MAX_BYTES,
+            max_depth: COPY_MAX_DEPTH,
         }
     }
 
@@ -460,7 +486,7 @@ fn copy_tree(from: &Path, to: &Path, depth: usize, budget: &mut Budget) -> std::
         let entry = entry?;
         let (src, dst) = (entry.path(), to.join(entry.file_name()));
         let file_type = entry.file_type()?;
-        if depth >= COPY_MAX_DEPTH && (file_type.is_dir() || file_type.is_file()) {
+        if depth >= budget.max_depth && (file_type.is_dir() || file_type.is_file()) {
             // Jamais de troncature silencieuse : une copie incomplète passerait pour complète.
             return Err(limit_error(format!(
                 "arborescence trop profonde (plus de {COPY_MAX_DEPTH} niveaux)"
@@ -474,6 +500,23 @@ fn copy_tree(from: &Path, to: &Path, depth: usize, budget: &mut Budget) -> std::
         } // liens et autres : ignorés
     }
     Ok(())
+}
+
+/// Déplace `from` vers `to` : renommage, sinon (autre volume, verrou) copie sans aucune limite
+/// puis suppression de la source **seulement après réussite de la copie**. En cas d'échec, la
+/// source est intacte et la copie partielle supprimée.
+fn move_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            tracing::warn!("renommage impossible ({err}) : copie");
+            if let Err(copy_err) = copy_tree(from, to, 0, &mut Budget::unbounded()) {
+                let _ = remove_tree(to);
+                return Err(copy_err);
+            }
+            remove_tree(from)
+        }
+    }
 }
 
 /// Vrai si `path` est un vrai dossier (pas un lien).
@@ -529,22 +572,17 @@ impl Workspace {
     /// erreur d'E/S et la source reste intacte. Renvoie le message destiné à l'utilisateur.
     fn set_aside(&self, dir: &Path, why: &std::io::Error, what: &str) -> AppResult<String> {
         let rejected = self.sibling(".rejected");
-        remove_tree(&rejected)?;
+        let fresh = self.sibling(".rejected.new");
         if let Some(parent) = rejected.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let outcome = match std::fs::rename(dir, &rejected) {
-            Ok(()) => format!("mises de côté dans {}", rejected.display()),
-            Err(err) => {
-                tracing::warn!("renommage impossible ({err}) : copie");
-                if let Err(copy_err) = copy_tree(dir, &rejected, 0, &mut Budget::unlimited()) {
-                    let _ = remove_tree(&rejected);
-                    return Err(copy_err.into());
-                }
-                remove_tree(dir)?;
-                format!("mises de côté (copie) dans {}", rejected.display())
-            }
-        };
+        // Le nouveau contenu est d'abord mis en sécurité à côté ; l'ancien `.rejected` n'est
+        // supprimé qu'ensuite (un échec avant ce point le laisse intact).
+        remove_tree(&fresh)?;
+        move_dir(dir, &fresh)?;
+        remove_tree(&rejected)?;
+        std::fs::rename(&fresh, &rejected)?;
+        let outcome = format!("mises de côté dans {}", rejected.display());
         let note = format!("{what} refusées ({why}) : {outcome}");
         tracing::warn!("sauvegardes du player : {note}");
         Ok(note)
@@ -580,10 +618,7 @@ impl Workspace {
         if is_real_dir(&self.saved) {
             // Restauration dans un dossier temporaire, renommé seulement en cas de succès : un
             // `saves/` partiel ne doit jamais pouvoir être pris pour une partie à rapatrier.
-            let mut budget = Budget {
-                files: SAVES_MAX_FILES,
-                bytes: SAVES_MAX_BYTES,
-            };
+            let mut budget = Budget::saves();
             let tmp = self.work.join(format!("{SAVES_DIR}.tmp"));
             let restored = copy_tree(&self.saved, &tmp, 0, &mut budget)
                 .and_then(|()| std::fs::rename(&tmp, self.work.join(SAVES_DIR)));
@@ -628,10 +663,7 @@ impl Workspace {
                 std::fs::remove_dir_all(leftover)?;
             }
         }
-        let mut budget = Budget {
-            files: SAVES_MAX_FILES,
-            bytes: SAVES_MAX_BYTES,
-        };
+        let mut budget = Budget::saves();
         if let Err(err) = copy_tree(&src, &tmp, 0, &mut budget) {
             let _ = std::fs::remove_dir_all(&tmp);
             if is_limit(&err) {
@@ -681,7 +713,7 @@ impl Workspace {
         }
         remove_tree(&self.work)?;
         if purge_saves {
-            for suffix in ["", ".tmp", ".old", ".rejected"] {
+            for suffix in ["", ".tmp", ".old", ".rejected", ".rejected.new"] {
                 remove_tree(&self.sibling(suffix))?;
             }
         }
@@ -758,9 +790,17 @@ pub async fn player_launch(
         check_source(&path, StoryKind::FlamPk)?;
         let ws = Workspace::new(&cache_root.join(PLAY_DIR), &saves_root, &library_key(&uuid));
         let (staging, saving) = (ws.clone(), ws);
+        let library = Library::new(&cache_root);
         service.launch(
             &exe,
-            || staging.stage(&path),
+            || {
+                // Relu sous le créneau : une désinstallation qui vient de passer (elle tient le
+                // même créneau) fait échouer le lancement (`not_found`) au lieu de lancer un
+                // fichier supprimé ou de recréer une copie de travail.
+                let (current, _) = library.playable(&uuid)?;
+                check_source(&current, StoryKind::FlamPk)?;
+                staging.stage(&current)
+            },
             move || saving.persist_saves_logged(),
             "library",
             &uuid,
@@ -1223,6 +1263,114 @@ mod tests {
     }
 
     #[test]
+    fn le_repli_par_copie_deplace_meme_un_arbre_trop_profond() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("saves");
+        let mut deep = from.clone();
+        for _ in 0..(COPY_MAX_DEPTH + 4) {
+            deep.push("n");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("state"), b"profond").unwrap();
+        // Le repli de `move_dir` (sans renommage) copie sans aucune limite, puis supprime.
+        let to = dir.path().join("rejected");
+        copy_tree(&from, &to, 0, &mut Budget::unbounded()).unwrap();
+        assert_eq!(
+            std::fs::read(to.join("n/".repeat(COPY_MAX_DEPTH + 4)).join("state")).unwrap(),
+            b"profond"
+        );
+        // Avec la limite de profondeur, la même copie est refusée.
+        let err = copy_tree(&from, &dir.path().join("x"), 0, &mut Budget::saves()).unwrap_err();
+        assert!(is_limit(&err));
+        // Déplacement complet : source disparue, destination complète.
+        let moved = dir.path().join("moved");
+        move_dir(&from, &moved).unwrap();
+        assert!(!from.exists());
+        assert!(moved.exists());
+    }
+
+    #[test]
+    fn l_ancien_rejected_survit_si_la_mise_de_cote_echoue() {
+        let dir = tempfile::tempdir().unwrap();
+        let pk = dir.path().join("Histoire.plain.pk");
+        std::fs::write(&pk, b"PK").unwrap();
+        let ws = workspace(dir.path(), "library:u1");
+        let copy = ws.stage(&pk).unwrap();
+        std::fs::create_dir_all(ws.sibling(".rejected")).unwrap();
+        std::fs::write(ws.sibling(".rejected").join("ancien"), b"x").unwrap();
+        // La destination intermédiaire ne peut pas être créée : un fichier la remplace et un
+        // dossier non vidable (le saves/ source n'existe pas) fait échouer le déplacement.
+        let missing = copy.parent().unwrap().join("saves-absent");
+        let why = limit_error("x".into());
+        assert!(ws.set_aside(&missing, &why, "test").is_err());
+        assert!(ws.sibling(".rejected").join("ancien").is_file());
+    }
+
+    #[test]
+    fn un_lancement_pendant_une_desinstallation_est_refuse_sans_lancer() {
+        use crate::library::{tests::story, Library};
+        let c = ctx();
+        let cache = c.dir.path().join("cache");
+        let saves = c.dir.path().join("config/saves");
+        let lib = Library::new(&cache);
+        let staged = lib.staging_dir().unwrap().join("t.plain.pk");
+        std::fs::write(&staged, b"PK").unwrap();
+        lib.install(&staged, &story("u1", Some(1)), None, 0)
+            .unwrap();
+
+        let (entered_tx, entered) = channel::<()>();
+        let (release, released) = channel::<()>();
+        let remover = {
+            let (service, cache, saves) = (c.service.clone(), cache.clone(), saves.clone());
+            std::thread::spawn(move || {
+                // Même séquence que `library_remove` : tout sous le créneau.
+                service
+                    .while_not_playing("u1", || {
+                        entered_tx.send(()).unwrap();
+                        released.recv().unwrap();
+                        purge_library_story(&cache, &saves, "u1", true).unwrap();
+                        Library::new(&cache).remove("u1").unwrap();
+                    })
+                    .unwrap();
+            })
+        };
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Lancement pendant le retrait : il attend le créneau, puis ne trouve plus l'histoire.
+        let launcher = {
+            let (service, fake, cache, saves) = (
+                c.service.clone(),
+                c.fake.clone(),
+                cache.clone(),
+                saves.clone(),
+            );
+            std::thread::spawn(move || {
+                let lib = Library::new(&cache);
+                let ws = Workspace::new(&cache.join(PLAY_DIR), &saves, &library_key("u1"));
+                service.launch(
+                    &fake,
+                    || {
+                        let (path, _) = lib.playable("u1")?;
+                        ws.stage(&path)
+                    },
+                    || None,
+                    "library",
+                    "u1",
+                    "t",
+                )
+            })
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!launcher.is_finished(), "le lancement attend le créneau");
+        release.send(()).unwrap();
+        remover.join().unwrap();
+        let err = launcher.join().unwrap().unwrap_err();
+        assert_eq!(err.kind(), "not_found");
+        assert!(c.started.try_recv().is_err(), "aucun player lancé");
+        assert!(!cache.join(PLAY_DIR).exists(), "rien recréé dans play/");
+        assert!(!saves.exists(), "la progression purgée ne revient pas");
+    }
+
+    #[test]
     fn seule_une_erreur_de_limite_est_une_limite() {
         let other = std::io::Error::new(std::io::ErrorKind::InvalidData, "autre");
         assert!(!is_limit(&other));
@@ -1337,6 +1485,24 @@ mod tests {
         assert!(ws.work.join("saves").is_dir());
     }
 
+    /// Lien de dossier sans privilège : jonction (`mklink /J`) sous Windows, lien symbolique
+    /// ailleurs.
+    fn link_dir(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            let out = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                // `mklink` prend `/` pour une option : chemins en `\` uniquement.
+                .arg(link.to_string_lossy().replace('/', "\\"))
+                .arg(target.to_string_lossy().replace('/', "\\"))
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "mklink /J : {out:?}");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
     #[test]
     fn remove_tree_retire_un_lien_de_dossier_sans_toucher_sa_cible() {
         let dir = tempfile::tempdir().unwrap();
@@ -1344,13 +1510,7 @@ mod tests {
         std::fs::create_dir(&target).unwrap();
         std::fs::write(target.join("precieux"), b"x").unwrap();
         let link = dir.path().join("lien");
-        #[cfg(windows)]
-        let made = std::os::windows::fs::symlink_dir(&target, &link);
-        #[cfg(unix)]
-        let made = std::os::unix::fs::symlink(&target, &link);
-        if made.is_err() {
-            return; // création de lien non autorisée sur ce poste (Windows sans privilège)
-        }
+        link_dir(&link, &target);
         remove_tree(&link).unwrap();
         assert!(!link.exists());
         assert!(target.join("precieux").is_file(), "la cible est intacte");
@@ -1368,13 +1528,7 @@ mod tests {
         let ws = workspace(dir.path(), "library:u1");
         ws.stage(&pk).unwrap();
         let link = ws.work.join("lien");
-        #[cfg(windows)]
-        let made = std::os::windows::fs::symlink_dir(&outside, &link);
-        #[cfg(unix)]
-        let made = std::os::unix::fs::symlink(&outside, &link);
-        if made.is_err() {
-            return; // création de lien non autorisée sur ce poste (Windows sans privilège)
-        }
+        link_dir(&link, &outside);
         ws.stage(&pk).unwrap();
         assert!(!link.exists());
         assert!(outside.join("precieux").is_file());
@@ -1604,18 +1758,16 @@ exit 0
     }
 
     #[test]
+    #[ignore = "demande le privilège de création de liens symboliques (mode développeur Windows)"]
     fn check_source_refuse_les_liens_symboliques() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("vrai.plain.pk");
         std::fs::write(&target, b"x").unwrap();
         let link = dir.path().join("lien.plain.pk");
         #[cfg(windows)]
-        let made = std::os::windows::fs::symlink_file(&target, &link);
+        std::os::windows::fs::symlink_file(&target, &link).unwrap();
         #[cfg(unix)]
-        let made = std::os::unix::fs::symlink(&target, &link);
-        if made.is_err() {
-            return; // création de lien non autorisée sur ce poste (Windows sans privilège)
-        }
+        std::os::unix::fs::symlink(&target, &link).unwrap();
         let err = check_source(&link, StoryKind::FlamPk).unwrap_err();
         assert_eq!(err.kind(), "validation");
     }

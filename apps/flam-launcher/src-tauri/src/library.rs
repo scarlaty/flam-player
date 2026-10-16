@@ -283,6 +283,15 @@ impl Library {
         Ok((path, entry.title))
     }
 
+    /// Vérifie que `uuid` est dans l'index (`not_found` sinon), sans toucher au fichier.
+    pub fn playable_entry(&self, uuid: &str) -> AppResult<()> {
+        self.load()?
+            .iter()
+            .any(|e| e.uuid == uuid)
+            .then_some(())
+            .ok_or_else(|| AppError::NotFound(format!("histoire non installée : {uuid}")))
+    }
+
     /// Publie `staged` (un `.plain.pk` complet) comme installation de `source`.
     ///
     /// Ordre sûr en cas d'arrêt ou d'échec : l'éventuel fichier de même nom est d'abord mis de
@@ -479,18 +488,21 @@ pub async fn library_remove(
     // Même portillon que le lancement : pas de purge pendant une copie de travail.
     let _gate = catalog.cache_gate().read_owned().await;
     let players = player.inner().clone();
-    // Purge d'abord, sous le créneau (refus `player_busy` si le player lit cette histoire) : un
-    // échec laisse l'histoire installée, la désinstallation peut être retentée ; l'inverse
-    // laisserait une progression impossible à purger. Les purges sont idempotentes.
-    let target = uuid.clone();
+    // Tout sous le créneau du player (refus `player_busy` si le player lit cette histoire, et
+    // aucun lancement ne peut s'intercaler) : vérification de l'installation, purge, puis retrait.
+    // La purge précède le retrait : un échec laisse l'histoire installée (à retenter) au lieu
+    // d'une progression impossible à purger. Les purges sont idempotentes.
+    let installs = service.inner().clone();
     blocking(move || {
-        players.while_not_playing(&target, || {
-            purge_library_story(&cache_root, &saves_root, &target, purge_saves)
+        players.while_not_playing(&uuid, || {
+            installs.library_remove_with(&uuid, || {
+                purge_library_story(&cache_root, &saves_root, &uuid, purge_saves)
+            })
         })
     })
     .await???;
     drop(_gate);
-    service.library_remove(uuid).await
+    Ok(())
 }
 
 #[cfg(test)]

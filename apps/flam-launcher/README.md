@@ -383,8 +383,10 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
 - **Limites des sauvegardes** : au-delà des limites (5000 fichiers, 64 Mio, 16 niveaux), la
   progression n'est plus un motif de blocage. Le `saves/` trop gros est mis de côté en
   `<config>/saves/<empreinte>.rejected` (**une seule génération** : un nouveau rejet remplace
-  le précédent ; si le renommage échoue (autre volume), copie puis suppression de la source
-  seulement après réussite : jamais de suppression sans copie), la version précédente est
+  le précédent, remplacé seulement une fois le nouveau contenu en sécurité dans
+  `<empreinte>.rejected.new` ; si le renommage échoue (autre volume), copie sans aucune limite
+  (profondeur comprise) puis suppression de la source seulement après réussite : jamais de
+  suppression sans copie), la version précédente est
   conservée, un avertissement est tracé et le message est renvoyé dans
   `player://exited.saves_error` (`string | null` côté TS) : l'interface doit l'afficher. Même
   traitement d'une sauvegarde conservée devenue trop grosse au moment de la restaurer (le
@@ -408,7 +410,10 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   travail `<cache>/play/<empreinte>/` ; la progression (`<config>/saves/<empreinte>/` et ses
   `.tmp`, `.old`, `.rejected`) n'est supprimée que si `purge_saves` est vrai (défaut : faux,
   une progression d'enfant ne se perd jamais par défaut ; réinstaller l'histoire la retrouve).
-  Refusé avec `player_busy` si le player lit cette histoire. La purge est faite **avant** le retrait de la bibliothèque : un échec laisse
+  Refusé avec `player_busy` si le player lit cette histoire. Tout se passe sous le créneau du player (un lancement ne peut pas s'intercaler ; un lancement
+  qui attendait relit l'index sous le créneau et reçoit `not_found`) : vérification de
+  l'installation (`not_found` avant toute suppression), puis purge, puis retrait. La purge est
+  faite **avant** le retrait de la bibliothèque : un échec laisse
   l'histoire installée (désinstallation à retenter). Les `.rejected` ne sont libérés qu'avec
   `purge_saves` (une génération par histoire au plus). Aucun composant n'affiche encore
   `saves_error` ni n'appelle `purge_saves` (suite : #18). Mettre à jour une histoire
@@ -417,9 +422,11 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   `saves/<nom du fichier lancé>`, voir ci-dessus : la nouvelle version repart de zéro) et n'est
   libérée qu'à la désinstallation avec `purge_saves`. Sans UI pour l'instant (suite : #18).
 - **Statut sans blocage** : `player_status` (commande `async`) utilise `try_lock` : le créneau
-  est tenu pendant la préparation d'un lancement et pendant un vidage du cache
-  (`while_idle`), et ne doit pas bloquer un worker tokio. Créneau tenu : pas de player en
-  cours (`null`), son démarrage arrive par `player://started`.
+  est tenu pendant la préparation d'un lancement, un vidage du cache (`while_idle`) et une
+  désinstallation (`while_not_playing`, possible pendant qu'un player lit une autre histoire), et
+  ne doit pas bloquer un worker tokio. Créneau tenu : réponse `null` **même si un player
+  tourne** (pas une preuve d'absence) ; fiez-vous à `player://started` / `player://exited`. La
+  règle du player unique reste garantie par `launch` (`player_busy`).
 - **Partie non rapatriée** : si le launcher a été fermé ou tué pendant la partie, ou si le
   rapatriement a échoué, `<copie>/saves/` existe encore au lancement suivant. `stage` le
   rapatrie (même fonction, idempotente) **avant** de vider la copie de travail ; en cas
