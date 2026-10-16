@@ -479,4 +479,81 @@ b"
             PathBuf::from("/l/.staging/t.plain.pk.42.part")
         );
     }
+
+    /// Vérification réelle avec le convertisseur embarqué (issue #71). Ignorée par défaut : elle
+    /// exige l'artefact de `npm run build:converter` et une archive de test.
+    /// `FLAM_TEST_CONVERTER_DIR` = dossier `telmi2flam/` (avec `python/python.exe`) et
+    /// `FLAM_TEST_ARCHIVE` = histoire `.zip`. Pour prouver l'autonomie, lancer le binaire de test
+    /// avec un `PATH` réduit à `C:\Windows\System32` (voir le README du launcher).
+    #[cfg(windows)]
+    mod embarque {
+        use super::*;
+        use std::sync::{Arc, Mutex};
+
+        fn environnement() -> Option<(PathBuf, PathBuf)> {
+            let dir = PathBuf::from(std::env::var_os("FLAM_TEST_CONVERTER_DIR")?);
+            let archive = PathBuf::from(std::env::var_os("FLAM_TEST_ARCHIVE")?);
+            Some((dir, archive))
+        }
+
+        #[tokio::test]
+        #[ignore = "exige FLAM_TEST_CONVERTER_DIR et FLAM_TEST_ARCHIVE"]
+        async fn conversion_avec_python_embarque() {
+            let (dir, archive) = environnement().expect("variables d'environnement manquantes");
+            let out = tempfile::tempdir().unwrap();
+            let output = out.path().join("histoire.plain.pk");
+            let python = dir.join("python").join("python.exe");
+            let script = dir.join("telmi2flam.py");
+            let (_tx, mut rx) = watch::channel(false);
+            let mut steps = 0usize;
+            let converted = convert(
+                &Conversion {
+                    python: &python,
+                    script: &script,
+                    input: &archive,
+                    output: &output,
+                    grace: Duration::from_secs(5),
+                },
+                &mut rx,
+                &mut |_| steps += 1,
+            )
+            .await
+            .expect("conversion");
+            assert!(steps > 0, "aucune progression reçue");
+            assert!(output.metadata().unwrap().len() > 0);
+            println!(
+                "conversion ok : {} avertissement(s), {steps} étapes",
+                converted.warnings
+            );
+        }
+
+        #[tokio::test]
+        #[ignore = "exige FLAM_TEST_CONVERTER_DIR et FLAM_TEST_ARCHIVE"]
+        async fn annulation_avec_python_embarque() {
+            let (dir, archive) = environnement().expect("variables d'environnement manquantes");
+            let out = tempfile::tempdir().unwrap();
+            let output = out.path().join("histoire.plain.pk");
+            let python = dir.join("python").join("python.exe");
+            let script = dir.join("telmi2flam.py");
+            let (tx, mut rx) = watch::channel(false);
+            let tx = Arc::new(Mutex::new(tx));
+            let result = convert(
+                &Conversion {
+                    python: &python,
+                    script: &script,
+                    input: &archive,
+                    output: &output,
+                    grace: Duration::from_secs(10),
+                },
+                &mut rx,
+                &mut |_| {
+                    let _ = tx.lock().unwrap().send(true);
+                },
+            )
+            .await;
+            assert!(matches!(result, Err(AppError::Cancelled)), "{result:?}");
+            let restes: Vec<_> = std::fs::read_dir(out.path()).unwrap().collect();
+            assert!(restes.is_empty(), "fichiers résiduels : {restes:?}");
+        }
+    }
 }
