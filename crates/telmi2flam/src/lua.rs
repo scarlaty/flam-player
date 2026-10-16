@@ -227,6 +227,11 @@ fn increment(digits: &str, decpt: i32) -> (String, i32) {
 /// (arrondi au pair), Rust arrondit au-dessus (ex. 580289400337833.25 : Python « .2 »).
 fn shortest_digits(a: f64) -> (String, i32) {
     let (digits, decpt) = sci_digits(&format!("{a:e}"));
+    // Un milieu exact n'existe que pour un plus court de 16 chiffres ou plus (l'écart relatif
+    // entre deux f64 voisins dépasse 1e-16) : inutile de payer le développement exact avant.
+    if digits.len() < 15 {
+        return (digits, decpt);
+    }
     // Développement décimal exact de `a` (au plus 767 chiffres significatifs).
     let (exact, exact_decpt) = sci_digits(&format!("{a:.800e}"));
     if exact.len() == digits.len() + 1 && exact.ends_with('5') {
