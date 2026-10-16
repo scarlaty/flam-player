@@ -48,9 +48,14 @@ CHUNK = 1 << 20
 STEPS = ("download", "convert", "validate", "run")
 GLOBAL_STATUSES = ("OK", "OK_AVERTISSEMENTS", "ECHEC_CONVERSION", "ECHEC_VALIDATION",
                    "ECHEC_EXECUTION", "ECHEC_TELECHARGEMENT")
-# Statuts de explore() toujours consideres comme un echec d'execution (`timeout` et
-# `max_steps` sans erreur sont des explorations partielles : voir interpret_run)
-RUN_FAIL = ("lua_error", "crash", "stuck")
+# Statuts de explore() toujours consideres comme un echec d'execution (`timeout`,
+# `max_steps`, `loop` / `exhausted` sans erreur sont des explorations partielles ; `stuck`
+# depend de sa raison : voir interpret_run)
+RUN_FAIL = ("lua_error", "crash")
+# Raisons d'arret d'une boucle SANS erreur (#42) : l'histoire tourne encore mais le
+# pilote n'y trouve plus rien de nouveau. `stuck` = raison d'avant #42 (resultats bruts
+# conserves), qui confondait boucle et ecran fige.
+LOOP_REASONS = ("loop", "stuck")
 # Reglages par defaut de l'etape run (~0,6 s par ecran : 1000 actions ~ 10 min)
 DEFAULT_RUN_TIMEOUT = 600
 DEFAULT_MAX_STEPS = 1000
@@ -429,10 +434,15 @@ def _filter_benign(errors, benign):
 
 def interpret_run(res, benign=BENIGN_ERRORS):
     """Interprete UN resultat d'explore() : (statut ok|warn|fail, [messages]).
-    - stuck, lua_error, crash, statut inconnu : fail ;
+    - lua_error, crash, statut inconnu : fail ; stuck (unresponsive : ecran qui ne
+      repond plus, no_trace, no_start) : fail ;
+    - boucle sans erreur (loop, ou stuck/stuck d'avant #42) : warn si plus de 2 scenes
+      visitees (ou toutes), sinon fail ;
     - timeout sans erreur : warn (exploration partielle) si plus de 2 scenes visitees,
       sinon fail (ecran noir, blocage au demarrage) ;
     - ok / max_steps sans erreur : warn si la couverture est partielle, sinon ok ;
+    - ok / exhausted (plus rien de nouveau, sans erreur) : warn si aucune fin jouee ou
+      couverture partielle, sinon ok ;
     - lua_error dont toutes les erreurs sont benignes (liste d'exclusions) : erreurs
       ignorees, mais l'exploration qu'elles ont interrompue reste un avertissement."""
     status = res.get("status")
@@ -450,8 +460,21 @@ def interpret_run(res, benign=BENIGN_ERRORS):
         return "warn", ["explore: lua_error — interrompue sur erreur bénigne "
                         "(%d erreur(s) ignorée(s))" % ignored,
                         "exploration interrompue : " + partial] + msgs
-    if status in RUN_FAIL:
+    full = isinstance(visited, int) and isinstance(total, int) and total and visited >= total
+    progressed = isinstance(visited, int) and visited >= MIN_SCENES_PARTIAL
+    if status in RUN_FAIL or (status == "stuck" and done not in LOOP_REASONS):
         return "fail", ["explore: %s%s" % (status, "/" + done if done else "")] + msgs + real
+    if status in ("loop", "stuck"):        # boucle : l'histoire tourne, rien de nouveau
+        head = "explore: %s/%s" % (status, done or "?")
+        if real:
+            return "fail", [head + " avec erreurs"] + msgs + real
+        notes = ["%d message(s) bénin(s) ignoré(s)" % ignored] if ignored else []
+        if progressed or full:
+            return "warn", [head + " — boucle sans nouveauté, sans erreur",
+                            ("couverture %s/%s scènes" % (visited, total)) if full else partial,
+                            ] + notes + msgs
+        return "fail", [head, "boucle sans progression (%s scène(s) visitée(s))" % visited
+                        ] + notes + msgs
     if status not in ("ok", "timeout"):
         return "fail", ["explore: %s" % status, "statut explore inconnu"] + msgs + real
     if real:           # statut ok/timeout mais erreurs non benignes dans les traces
@@ -463,9 +486,14 @@ def interpret_run(res, benign=BENIGN_ERRORS):
         return "fail", ["explore: timeout",
                         "aucune progression (%s scène(s) visitée(s)) : écran noir ou "
                         "blocage au démarrage ?" % visited] + notes + msgs
-    if done == "max_steps" and not (isinstance(visited, int) and isinstance(total, int)
-                                    and total and visited >= total):
+    if done == "max_steps" and not full:
         return "warn", ["explore: max_steps", partial] + notes + msgs
+    if done == "exhausted" and not (full and res.get("end_reached")):
+        return "warn", (["explore: exhausted — plus rien de nouveau, sans erreur",
+                         partial if not full else "couverture %s/%s scènes" % (visited, total)]
+                        + ([] if res.get("end_reached")
+                           else ["aucune fin jouée (histoire cyclique ?)"])
+                        + notes + msgs)
     return "ok", notes + msgs
 
 
@@ -477,7 +505,7 @@ RAW_ERR_TAIL = 100          # ... et les N dernieres
 RAW_ERR_LEN = 200           # caracteres par erreur
 _RAW_SCALARS = ("status", "done_reason", "scenes_visited", "scenes_total", "coverage",
                 "end_reached", "duration_s", "steps", "ends", "back_ends", "dead_end_backs",
-                "choices_explored", "exit_code")
+                "choices_explored", "home_escapes", "exit_code")
 
 
 def bound_errors(errors):
@@ -862,6 +890,8 @@ def _summary(rec):
         s = steps.get(step, {})
         if s.get("status") == "warn":
             if step == "run":
+                if s.get("done_reason") in ("loop", "exhausted", "stuck"):
+                    return "Jouable, boucle sans erreur%s" % where
                 return "Jouable, exploration partielle%s" % where
             msgs = s.get("messages") or []
             return ("Avertissements (%s) : %s" % (step, msgs[0] if msgs else "?"))[:200]
@@ -904,6 +934,7 @@ def build_status(doc):
             "summary": _summary(s),
             "coverage": _coverage(run),
             "run": run.get("status", "skipped"),
+            "run_reason": run.get("done_reason"),
             "stale": bool(s.get("stale")),
         }
     return {"schema_version": STATUS_SCHEMA_VERSION, "generated": doc["generated"],

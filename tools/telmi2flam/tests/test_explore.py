@@ -103,6 +103,75 @@ def carousel_nodes(n):
     }
 
 
+def cyclic_nodes():
+    """#42, histoire cyclique : start -> s0 -> menu {t1, t2} ; chaque conte (k1, k2)
+    ramene a startAction. Aucune fin (pas de ok = null), aucune home."""
+    return {
+        "startAction": {"action": "a0", "index": 0},
+        "stages": {
+            "s0": stage("x.mp3", "am"),
+            "t1": stage("x.mp3", "a1", OPT), "k1": stage("x.mp3", "a0"),
+            "t2": stage("x.mp3", "a2", OPT), "k2": stage("x.mp3", "a0"),
+        },
+        "actions": {"a0": [{"stage": "s0"}], "am": [{"stage": "t1"}, {"stage": "t2"}],
+                    "a1": [{"stage": "k1"}], "a2": [{"stage": "k2"}]},
+    }
+
+
+def home_submenu_nodes():
+    """#42, sous-menu dont la sortie est la transition home (Louveteaux) : start -> s0
+    -> s2 -> sous-menu {c1, c2} ; chaque conte (k1, k2) revient au sous-menu. La home
+    des options c1/c2 mene a h (fin), atteignable uniquement par home."""
+    home = {"ok": True, "home": True, "autoplay": False}
+    stages = {
+        "s0": stage("x.mp3", "a1"), "s2": stage("x.mp3", "am"),
+        "c1": stage("x.mp3", "a2", home), "k1": stage("x.mp3", "am"),
+        "c2": stage("x.mp3", "a3", home), "k2": stage("x.mp3", "am"),
+        "h": stage("x.mp3", None),
+    }
+    for c in ("c1", "c2"):
+        stages[c]["home"] = {"action": "ah", "index": 0}
+    return {
+        "startAction": {"action": "a0", "index": 0},
+        "stages": stages,
+        "actions": {"a0": [{"stage": "s0"}], "a1": [{"stage": "s2"}],
+                    "am": [{"stage": "c1"}, {"stage": "c2"}],
+                    "a2": [{"stage": "k1"}], "a3": [{"stage": "k2"}], "ah": [{"stage": "h"}]},
+    }
+
+
+def state_hub_nodes():
+    """#42, hub a etat sans fin : start -> s0 -> hub {o1, o2, o3} ; o1 pose l'objet 0,
+    o2 l'objet 1 (et reviennent au hub) ; o3, visible seulement si les deux valent 1,
+    mene a la scene gardee g qui revient au hub. Aucune fin."""
+    both = [{"comparator": 2, "item": 0, "number": 1}, {"comparator": 2, "item": 1, "number": 1}]
+    return {
+        "startAction": {"action": "a0", "index": 0},
+        "inventory": [{"name": "a", "initialNumber": 0, "maxNumber": 1},
+                      {"name": "b", "initialNumber": 0, "maxNumber": 1}],
+        "stages": {
+            "s0": stage("x.mp3", "ah"),
+            "o1": dict(stage("x.mp3", "ah", OPT), items=[{"type": 2, "item": 0, "number": 1}]),
+            "o2": dict(stage("x.mp3", "ah", OPT), items=[{"type": 2, "item": 1, "number": 1}]),
+            "o3": stage("x.mp3", "ag", OPT),
+            "g": stage("x.mp3", "ah"),
+        },
+        "actions": {"a0": [{"stage": "s0"}],
+                    "ah": [{"stage": "o1"}, {"stage": "o2"}, {"stage": "o3", "conditions": both}],
+                    "ag": [{"stage": "g"}]},
+    }
+
+
+def unresponsive_nodes():
+    """Scene sans OK, sans autoplay ni home : l'ecran ne repond plus (vrai blocage)."""
+    dead = {"ok": False, "home": False, "autoplay": False}
+    return {
+        "startAction": {"action": "a0", "index": 0},
+        "stages": {"s0": stage("x.mp3", "a1", dead), "s1": stage("x.mp3", None)},
+        "actions": {"a0": [{"stage": "s0"}], "a1": [{"stage": "s1"}]},
+    }
+
+
 def index_item_nodes(opt_ctrl=OPT):
     """Cas du manoir (#43) : start -> s0 -> p (passage, ok = {a1, indexItem 0})
     -> a1 = {o1, o2, o3} ; o1/o3 remettent l'objet a 0 et reviennent a p, seule
@@ -260,20 +329,64 @@ class TestExplore(unittest.TestCase):
 
     def test_index_item_autoplay_direct(self):
         # cibles autoplay : la scene designee (o1, objet a 0) est jouee
-        # directement (spec TELMI) ; ici elle reboucle sans fin
+        # directement (spec TELMI) ; ici elle reboucle sans fin : boucle sans
+        # erreur, plus rien a essayer (#42)
         pk = self.convert(index_item_nodes(CTL), "IndexItemAuto")
         res = explore.explore(PLAYER, pk[:-3], timeout_s=60, back_every=0)
-        self.assertEqual(res["status"], "stuck", self.explain(res))
+        self.assertEqual(res["status"], "ok", self.explain(res))
+        self.assertEqual(res["done_reason"], "exhausted", self.explain(res))
         self.assertEqual(res["choices_explored"], 0, self.explain(res))
         self.assertFalse(res["end_reached"])
 
     def test_infinite_loop(self):
+        # #42 : boucle sans fin ni erreur -> epuisee (et non `stuck`)
         pk = self.convert(loop_nodes(), "Boucle")
         res = explore.explore(PLAYER, pk[:-3], timeout_s=60, back_every=0)
-        self.assertEqual(res["status"], "stuck", self.explain(res))
-        self.assertEqual(res["done_reason"], "stuck")
+        self.assertEqual(res["status"], "ok", self.explain(res))
+        self.assertEqual(res["done_reason"], "exhausted", self.explain(res))
         self.assertFalse(res["end_reached"])
         self.assertEqual(res["scenes_visited"], 2)
+
+    def test_histoire_cyclique_epuisee(self):
+        """#42 forme 1 : chaque conte ramene au depart, aucune fin -> `exhausted`
+        (toutes les options essayees, toutes les scenes vues), pas `stuck`."""
+        pk = self.convert(cyclic_nodes(), "Cyclique")
+        res = explore.explore(PLAYER, pk[:-3], timeout_s=90, back_every=0)
+        self.assertEqual(res["status"], "ok", self.explain(res))
+        self.assertEqual(res["done_reason"], "exhausted", self.explain(res))
+        self.assertEqual(res["choices_explored"], 2, self.explain(res))
+        self.assertEqual(res["scenes_visited"], res["scenes_total"], self.explain(res))
+        self.assertFalse(res["end_reached"])
+        self.assertEqual(res["errors"], [])
+
+    def test_sous_menu_sorti_par_home(self):
+        """#42 forme 2 : la seule sortie du sous-menu est la home de ses options ;
+        le pilote l'emprunte (sans test de retour) et atteint la fin h."""
+        pk = self.convert(home_submenu_nodes(), "SousMenuHome")
+        res = explore.explore(PLAYER, pk[:-3], timeout_s=120, back_every=0, max_steps=300)
+        self.assertEqual(res["status"], "ok", self.explain(res))
+        self.assertEqual(res["done_reason"], "complete", self.explain(res))
+        self.assertGreaterEqual(res["home_escapes"], 1, self.explain(res))
+        self.assertTrue(res["end_reached"], self.explain(res))
+        self.assertEqual(res["scenes_visited"], res["scenes_total"], self.explain(res))
+
+    def test_hub_a_etat(self):
+        """#42 forme 3 : l'option gardee du hub apparait quand les deux objets valent 1 ;
+        la scene gardee est atteinte, puis l'exploration s'arrete en `exhausted`."""
+        pk = self.convert(state_hub_nodes(), "HubEtat")
+        res = explore.explore(PLAYER, pk[:-3], timeout_s=120, back_every=0, max_steps=300)
+        self.assertEqual(res["status"], "ok", self.explain(res))
+        self.assertEqual(res["done_reason"], "exhausted", self.explain(res))
+        self.assertIn("g", res["scenes"], self.explain(res))
+        self.assertEqual(res["scenes_visited"], res["scenes_total"], self.explain(res))
+
+    def test_ecran_qui_ne_repond_plus(self):
+        """Un vrai blocage reste `stuck` (raison `unresponsive`), distinct d'une boucle."""
+        pk = self.convert(unresponsive_nodes(), "Fige")
+        res = explore.explore(PLAYER, pk[:-3], timeout_s=180, back_every=0)
+        self.assertEqual(res["status"], "stuck", self.explain(res))
+        self.assertEqual(res["done_reason"], "unresponsive", self.explain(res))
+        self.assertGreaterEqual(res["dead_end_backs"], 1, self.explain(res))
 
 
 def fake_story(tmp, main_py):

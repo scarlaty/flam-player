@@ -513,7 +513,13 @@ class TestRunInterpretation(CompatBase):
             (dict(status="timeout", done_reason="timeout", scenes_visited=0), "fail"),
             (dict(done_reason="max_steps", scenes_visited=5, scenes_total=10), "warn"),
             (dict(done_reason="max_steps", scenes_visited=10, scenes_total=10), "ok"),
-            (dict(status="stuck", done_reason="stuck"), "fail"),
+            (dict(status="stuck", done_reason="unresponsive"), "fail"),
+            (dict(status="stuck", done_reason="no_trace"), "fail"),
+            (dict(status="loop", done_reason="loop", scenes_visited=5, scenes_total=20,
+                  end_reached=False), "warn"),
+            (dict(done_reason="exhausted", scenes_visited=14, scenes_total=14,
+                  end_reached=False), "warn"),
+            (dict(done_reason="exhausted", scenes_visited=10, scenes_total=10), "ok"),
             (dict(status="lua_error", done_reason="error", errors=["Erreur Lua: boum"]), "fail"),
             (dict(status="crash", done_reason="exit"), "fail"),
             (dict(status="bizarre"), "fail"),
@@ -524,6 +530,48 @@ class TestRunInterpretation(CompatBase):
             with self.subTest(kw=kw):
                 self.assertEqual(self.go(self.res(**kw))["status"], want)
 
+    def test_boucle_sans_erreur_42(self):
+        """#42 : une boucle sans erreur Lua ni crash n'est plus un echec d'execution ;
+        `stuck`/`stuck` (resultats d'avant #42) est relu comme une boucle."""
+        def judge(**kw):
+            base = {"status": "stuck", "done_reason": "stuck", "scenes_visited": 40,
+                    "scenes_total": 42, "errors": []}
+            base.update(kw)
+            return compat.interpret_run(base)
+        st, msgs = judge()
+        self.assertEqual(st, "warn")
+        self.assertIn("exploration partielle 40/42 scènes", msgs)
+        self.assertTrue(any("boucle sans nouveauté" in m for m in msgs), msgs)
+        self.assertEqual(judge(scenes_visited=1)[0], "fail")
+        self.assertEqual(judge(errors=["Erreur Lua: boum"])[0], "fail")
+        self.assertEqual(judge(status="loop", done_reason="loop")[0], "warn")
+        self.assertEqual(judge(status="loop", done_reason="loop", scenes_visited=2,
+                               scenes_total=2)[0], "warn")      # boucle complete
+        self.assertEqual(judge(status="loop", done_reason="loop",
+                               errors=["Erreur Lua: boum"])[0], "fail")
+        self.assertEqual(judge(done_reason="unresponsive")[0], "fail")
+        self.assertEqual(judge(done_reason="no_start")[0], "fail")
+        st, msgs = judge(status="ok", done_reason="exhausted", scenes_visited=42,
+                         end_reached=False)
+        self.assertEqual(st, "warn")
+        self.assertIn("aucune fin jouée (histoire cyclique ?)", msgs)
+        # fiche et status.json : avertissement, raison et couverture
+        r = self.go(self.res(status="loop", done_reason="loop", scenes_visited=8,
+                              scenes_total=10, end_reached=False, home_escapes=3,
+                              scenes=["s%d" % i for i in range(8)]))
+        self.assertEqual((r["status"], r["done_reason"], r["raw"][0]["home_escapes"]),
+                         ("warn", "loop", 3))
+        rec = {"uuid": "u", "version": "1", "title": "t", "status": "OK_AVERTISSEMENTS",
+               "steps": {"download": {"status": "ok"}, "convert": {"status": "ok"},
+                         "validate": {"status": "ok"}, "run": r}}
+        self.assertEqual(compat.global_status(rec["steps"]), "OK_AVERTISSEMENTS")
+        doc = compat.build_status({"generated": "g", "converter_hash": "h", "stories": [rec]})
+        self.assertEqual(doc["schema_version"], 1)
+        story = doc["stories"]["u"]
+        self.assertEqual((story["run"], story["run_reason"]), ("warn", "loop"))
+        self.assertEqual(story["summary"], "Jouable, boucle sans erreur (8/10 scènes)")
+        self.assertEqual(story["coverage"]["scenes_visited"], 8)
+
     def test_partial_message_and_global_status(self):
         r = self.go(self.res(status="timeout", done_reason="timeout", scenes_visited=50,
                               scenes_total=200))
@@ -531,7 +579,7 @@ class TestRunInterpretation(CompatBase):
         rec = {"steps": {"download": {"status": "ok"}, "convert": {"status": "ok"},
                          "validate": {"status": "ok"}, "run": r}}
         self.assertEqual(compat.global_status(rec["steps"]), "OK_AVERTISSEMENTS")
-        rec["steps"]["run"] = self.go(self.res(status="stuck", done_reason="stuck"))
+        rec["steps"]["run"] = self.go(self.res(status="stuck", done_reason="unresponsive"))
         self.assertEqual(compat.global_status(rec["steps"]), "ECHEC_EXECUTION")
 
     def test_copied_fields(self):
@@ -595,7 +643,7 @@ class TestRunInterpretation(CompatBase):
 
         def explore(player, story, timeout_s=0, seed=0, max_steps=0):
             calls.append(seed)
-            return self.res(status="stuck", done_reason="stuck") if seed == 1 else self.res()
+            return self.res(status="stuck", done_reason="unresponsive") if seed == 1 else self.res()
         r = compat.do_run("x.pk", explore, "p", 60, 0, 100, seeds=4)
         self.assertEqual((calls, r["status"]), ([0, 1], "fail"))
         self.assertTrue(r["messages"][0].startswith("[graine 1]"))
@@ -619,7 +667,8 @@ class TestRunInterpretation(CompatBase):
         st = doc["stories"]
         self.assertEqual(list(st), ["good"])
         self.assertEqual(set(st["good"]), {"version", "title", "status", "summary", "coverage",
-                                           "run", "stale"})
+                                           "run", "run_reason", "stale"})
+        self.assertEqual(st["good"]["run_reason"], "timeout")
         self.assertEqual(st["good"]["status"], "OK_AVERTISSEMENTS")
         self.assertEqual(st["good"]["run"], "warn")
         self.assertIn("exploration partielle", st["good"]["summary"])

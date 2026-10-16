@@ -302,6 +302,21 @@ do
             end
             return false
         end
+        -- Reste-t-il a reprendre ailleurs (option jamais essayee, transition ok
+        -- jamais suivie) ? Alors un cycle se quitte par toute home (remonter).
+        local function wantUp() return pending > 0 or frontier() > 0 end
+        -- Scenes visitees dont l'action ok a une entree conditionnelle vers une scene
+        -- jamais atteinte : un autre etat d'inventaire peut y mener (hubs a etat),
+        -- rien n'est donc epuise (le pilote continue jusqu'au seuil de boucle)
+        local function condFrontier()
+            for id in pairs(seen) do
+                local tr = N.stages[id] and N.stages[id].ok
+                for _, e in ipairs((tr and N.actions and N.actions[tr.action]) or {}) do
+                    if e.cond and N.stages[e.stage] and not seen[e.stage] then return true end
+                end
+            end
+            return false
+        end
         -- Scenes visitees dont la home mene a du nouveau : rien n'est epuise tant
         -- qu'il en reste (le pilote les tente quand il y repasse en boucle)
         local function homeFrontier()
@@ -400,28 +415,63 @@ do
             end
             return out
         end
-        -- Option la moins essayee dans l'etat d'inventaire courant, puis la moins
-        -- essayee tout court (une option jamais essayee l'est aussi dans cet etat) ;
-        -- egalites tirees au sort (seed)
+        -- Distance (transitions ok, graphe statique) d'une scene a du nouveau : une
+        -- scene jamais atteinte ou une option affichee jamais essayee. nil si rien
+        -- a moins de MAXD transitions. Guide le choix dans un hub deja essaye vers
+        -- la branche qui mene a du nouveau, au lieu d'un tirage au sort (#42).
+        local MAXD = 60
+        local function newDist(sid)
+            if sid == nil or not seen[sid] then return 0 end
+            local dist, q, h = { [sid] = 0 }, { sid }, 1
+            while h <= #q do
+                local s = q[h]; h = h + 1
+                local d = dist[s]
+                if d >= MAXD then break end
+                local tr = N.stages[s] and N.stages[s].ok
+                local list = tr and N.actions and N.actions[tr.action]
+                for _, e in ipairs(list or {}) do
+                    local t = e.stage
+                    if N.stages[t] then
+                        if not seen[t] or (#list > 1 and optCount[tostring(tr.action)
+                                .. "#s:" .. tostring(t)] == 0) then
+                            return d + 1
+                        end
+                        if dist[t] == nil then dist[t] = d + 1; q[#q + 1] = t end
+                    end
+                end
+            end
+            return nil
+        end
+        -- Ordre des options : jamais essayee, puis la moins essayee dans l'etat
+        -- d'inventaire courant, puis la plus proche de nouveau (newDist : departage
+        -- les options d'un hub deja essayees sans figer le pilote sur une branche
+        -- dont la nouveaute est gardee par une condition), puis la moins essayee
+        -- tout court ; egalites tirees au sort (seed)
         local function choose(aid, n)
             shown[aid] = true
             local vis = visibleOf(aid)
             if #vis ~= n then vis = {} end   -- moteur different : cle par position
             local sig = invSig()
-            local keys, skeys, best, bestS, cands = {}, {}, nil, nil, {}
+            local keys, skeys, best, cands = {}, {}, nil, {}
             for k = 1, n do
                 local st = vis[k] and vis[k].stage
                 keys[k] = tostring(aid) .. "#" .. (st and ("s:" .. tostring(st)) or tostring(k))
                 skeys[k] = keys[k] .. "@" .. sig
                 if optCount[keys[k]] == nil then optCount[keys[k]] = 0; pending = pending + 1 end
                 local c, sc = optCount[keys[k]], stateCount[skeys[k]] or 0
-                if best == nil or sc < bestS or (sc == bestS and c < best) then
-                    best, bestS, cands = c, sc, { k }
-                elseif sc == bestS and c == best then cands[#cands + 1] = k end
+                local r = { c == 0 and 0 or 1, sc, (st and newDist(st)) or MAXD + 1, c }
+                local cmp = 0
+                if best then
+                    for i = 1, 4 do
+                        if r[i] ~= best[i] then cmp = r[i] < best[i] and -1 or 1; break end
+                    end
+                end
+                if best == nil or cmp < 0 then best, cands = r, { k }
+                elseif cmp == 0 then cands[#cands + 1] = k end
             end
             local k = cands[math.random(#cands)]
             -- option deja essayee mais jamais dans cet etat : nouveaute possible
-            if bestS == 0 and best > 0 then lastFresh = steps end
+            if best[2] == 0 and best[4] > 0 then lastFresh = steps end
             return { k = k, n = n, keys = keys, skeys = skeys, vis = vis, aid = aid, nav = 0 }
         end
 
@@ -478,14 +528,15 @@ do
                 local aid = tostring(state.current_fun)
                 entered("a:" .. aid)
                 -- cycle : sortie par la home de l'option focalisee, si elle en a une
-                -- (plus aucune option a essayer : seulement vers une scene nouvelle)
+                -- (rien a reprendre ailleurs : seulement vers une scene nouvelle)
                 local vis = visibleOf(state.current_fun)
                 local it = type(m.answerIterator) == "number" and m.answerIterator or 1
                 local fs = #vis == n and vis[it] and vis[it].stage
-                local can = fs and (pending > 0 and hasHome(fs, state.current_fun)
+                local up = fs and loopSeen["a:" .. aid] >= 2 and wantUp()
+                local can = fs and (up and hasHome(fs, state.current_fun)
                                     or homeNew(fs, state.current_fun))
                 local gap = 3
-                if pending > 0 and #vis == n then
+                if up and #vis == n then
                     gap = 2                 -- choix epuise : remonter vers les options restantes
                     for _, e in ipairs(vis) do
                         if (optCount[aid .. "#s:" .. tostring(e.stage)] or 0) == 0 then gap = 3; break end
@@ -547,7 +598,8 @@ do
             end
             if acted == 0 then
                 local sid = state.current_fun
-                local can = pending > 0 and hasHome(sid, nil) or homeNew(sid, nil)
+                local up = (loopSeen[tostring(sid)] or 0) >= 3 and wantUp()
+                local can = up and hasHome(sid, nil) or homeNew(sid, nil)
                 if can and escape(tostring(sid), 3) then acted = 1; return end
             end
             if m.okCallback ~= nil then
@@ -594,10 +646,11 @@ do
             age = age + 1
             if m == nil or age < 3 then return end
             if steps >= MAX_STEPS then finish("max_steps"); return end
-            -- cycle confirme, plus rien a essayer (options, transitions ok, homes du
-            -- cycle, options jamais essayees dans l'etat d'inventaire) : epuise
+            -- cycle confirme, plus rien a essayer (options, transitions ok, homes vers
+            -- du nouveau, entrees conditionnelles vers du nouveau, options jamais
+            -- essayees dans l'etat d'inventaire) : epuise
             if noProg > 10 and pending == 0 and maxLoop >= 3 and steps - lastFresh > 10
-                    and frontier() == 0 and homeFrontier() == 0 then
+                    and frontier() == 0 and homeFrontier() == 0 and not condFrontier() then
                 finish("exhausted"); return
             end
             -- sans progres : boucle si l'histoire avance encore (>= 2 noeuds
