@@ -1,0 +1,53 @@
+.fl-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--tone-info-bg);
+  color: var(--tone-info-fg);
+}
+
+.fl-banner--success {
+  background: var(--tone-success-bg);
+  color: var(--tone-success-fg);
+}
+
+.fl-banner--warning {
+  background: var(--tone-warning-bg);
+  color: var(--tone-warning-fg);
+}
+
+.fl-banner--danger {
+  background: var(--tone-danger-bg);
+  color: var(--tone-danger-fg);
+}
+
+.fl-banner__icon {
+  display: flex;
+  flex: none;
+}
+
+.fl-banner__body {
+  flex: 1 1 16rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fl-banner__title {
+  margin: 0;
+  font-weight: var(--font-weight-bold);
+}
+
+.fl-banner__text {
+  font-size: var(--font-size-sm);
+}
+
+.fl-banner__text > p {
+  margin: 0;
+}
+
+.fl-banner__action {
+  flex: none;
+}

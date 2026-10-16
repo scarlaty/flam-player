@@ -126,6 +126,9 @@ Dans [`src/components/`](../src/components/), un dossier par composant
   (`progress` en % ou `"indeterminate"`, `progressText`), actions rapides. Le titre est un
   bouton dont la zone couvre la carte ; la vignette est décorative (`alt=""`).
 - **`Badge`** : état court en 5 tons ; texte obligatoire, icône décorative.
+- **`TextField`** : champ texte avec libellé, aide et erreur reliés par `aria-describedby` ; l'erreur est annoncée poliment.
+- **`RadioGroup`** : boutons radio natifs dans un `fieldset` (ex. choix du thème).
+- **`Banner`** : message en bandeau (info, succès, avertissement, erreur) avec icône, titre et action facultative.
 - **`Button`** : `primary`, `secondary`, `ghost`, `danger` ; tailles `md`/`sm` ;
   `type="button"` par défaut ; `ref` transmise au bouton natif.
 - **`IconButton`** : icône seule ; `label` obligatoire (vérifié par TypeScript) → nom
