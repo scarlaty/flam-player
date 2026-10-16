@@ -269,12 +269,13 @@ apps/flam-launcher/
       install/             Pipeline d'installation : file, téléchargement, conversion (`mod.rs`,
                            `download.rs`, `convert.rs`, `pack.rs`), commandes `install_*`
       library.rs           Bibliothèque `<cache>/library/` et `library.json`, commandes `library_*`
+      library_thumb.rs     Vignettes des histoires installées (`library/thumbs/`), `library_thumbnail`
       compat.rs            Statut de compatibilité (`status.json` de la campagne + conversions locales), commande `compat_statuses`
 ```
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `compat`, `player`.
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`.
 
 ### Commandes Tauri
 
@@ -284,32 +285,33 @@ enregistrées dans `generate_handler!` de `lib.rs`) : pas de fichier `commands.r
 Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enregistrées dans
 `generate_handler!` (`lib.rs`). Chacune a un wrapper typé dans `src/api/`.
 
-| Commande               | Arguments                  | Retour                      | Module     |
-| ---------------------- | -------------------------- | --------------------------- | ---------- |
-| `app_info`             |                            | `{ name, version }`         | `app`      |
-| `settings_get`         |                            | `SettingsView`              | `settings` |
-| `settings_set`         | `settings: Settings`       | `SettingsView`              | `settings` |
-| `sources_list`         |                            | `SourcesView`               | `sources`  |
-| `sources_add`          | `input: SourceInput`       | `Source`                    | `sources`  |
-| `sources_update`       | `id`, `input: SourceInput` | `Source`                    | `sources`  |
-| `sources_remove`       | `id`                       | rien                        | `sources`  |
-| `sources_reorder`      | `ids: string[]`            | `Source[]` (liste complète) | `sources`  |
-| `config_ack_recovery`  | `file?: string`            | rien                        | `storage`  |
-| `cache_usage`          |                            | `{ path, bytes }`           | `cache`    |
-| `cache_clear`          |                            | `{ freed_bytes }`           | `cache`    |
-| `catalog_refresh`      | `source_id`                | `CatalogView`               | `catalog`  |
-| `catalog_entries`      | `source_id`                | `CatalogView`               | `catalog`  |
-| `catalog_thumbnail`    | `source_id`, `thumb_url`   | URL `data:` (string)        | `catalog`  |
-| `folder_scan`          | `source_id`, `recursive?`  | `FolderScan`                | `folder`   |
-| `folder_thumbnail`     | `source_id`, `entry_id`    | URL `data:` (chaîne)        | `folder`   |
-| `install_start`        | `source_id`, `entry_id`    | `InstallTask`               | `install`  |
-| `install_cancel`       | `task_id`                  | rien                        | `install`  |
-| `install_list`         |                            | `InstallTask[]`             | `install`  |
-| `library_list`         |                            | `LibraryEntry[]`            | `library`  |
-| `library_remove`       | `uuid`, `purge_saves?`     | rien                        | `library`  |
-| `player_launch`        | `uuid`                     | `PlayerSession`             | `player`   |
-| `player_launch_folder` | `source_id`, `entry_id`    | `PlayerSession`             | `player`   |
-| `player_status`        |                            | `PlayerSession \| null`     | `player`   |
+| Commande               | Arguments                  | Retour                                  | Module          |
+| ---------------------- | -------------------------- | --------------------------------------- | --------------- |
+| `app_info`             |                            | `{ name, version }`                     | `app`           |
+| `settings_get`         |                            | `SettingsView`                          | `settings`      |
+| `settings_set`         | `settings: Settings`       | `SettingsView`                          | `settings`      |
+| `sources_list`         |                            | `SourcesView`                           | `sources`       |
+| `sources_add`          | `input: SourceInput`       | `Source`                                | `sources`       |
+| `sources_update`       | `id`, `input: SourceInput` | `Source`                                | `sources`       |
+| `sources_remove`       | `id`                       | rien                                    | `sources`       |
+| `sources_reorder`      | `ids: string[]`            | `Source[]` (liste complète)             | `sources`       |
+| `config_ack_recovery`  | `file?: string`            | rien                                    | `storage`       |
+| `cache_usage`          |                            | `{ path, bytes }`                       | `cache`         |
+| `cache_clear`          |                            | `{ freed_bytes }`                       | `cache`         |
+| `catalog_refresh`      | `source_id`                | `CatalogView`                           | `catalog`       |
+| `catalog_entries`      | `source_id`                | `CatalogView`                           | `catalog`       |
+| `catalog_thumbnail`    | `source_id`, `thumb_url`   | URL `data:` (string)                    | `catalog`       |
+| `folder_scan`          | `source_id`, `recursive?`  | `FolderScan`                            | `folder`        |
+| `folder_thumbnail`     | `source_id`, `entry_id`    | URL `data:` (chaîne)                    | `folder`        |
+| `install_start`        | `source_id`, `entry_id`    | `InstallTask`                           | `install`       |
+| `install_cancel`       | `task_id`                  | rien                                    | `install`       |
+| `install_list`         |                            | `InstallTask[]`                         | `install`       |
+| `library_list`         |                            | `LibraryEntry[]`                        | `library`       |
+| `library_remove`       | `uuid`, `purge_saves?`     | rien                                    | `library`       |
+| `library_thumbnail`    | `uuid`                     | URL `data:` (`not_found` sans vignette) | `library_thumb` |
+| `player_launch`        | `uuid`                     | `PlayerSession`                         | `player`        |
+| `player_launch_folder` | `source_id`, `entry_id`    | `PlayerSession`                         | `player`        |
+| `player_status`        |                            | `PlayerSession \| null`                 | `player`        |
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).
@@ -708,6 +710,21 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    la liste lit simplement l'index sans réconcilier (l'installation et la suppression, elles,
    échouent). Les avertissements répétés à chaque `list` (verrou indisponible, restauration ou
    nettoyage bloqué) ne sont émis qu'une fois par site d'appel et par processus, puis en `debug`.
+4. **Vignette** (#80, `library_thumb`) : préparée avant la publication, sans réseau — vignette
+   déjà téléchargée dans le cache du catalogue d'origine (`catalogs/<id>/thumbs/`), sinon
+   `img/thumbnail.lif` du `.plain.pk` produit, réencodée en PNG ≤ 192 px ; image reconnue à sa
+   signature (PNG, JPEG, GIF, WebP), **256 Kio au plus**. Écrite sous le verrou, après les refus
+   et avant l'index, dans `library/thumbs/<uuid>-<version>.<installed_at>.<ext>` (nom unique par
+   publication : la vignette d'une installation précédente n'est jamais écrasée), référencée par
+   `LibraryEntry.thumb` (absent des index antérieurs : `null`). Une vignette ne fait **jamais**
+   échouer l'installation : préparation ou écriture en échec → `thumb: null`. Après chaque
+   écriture réussie de l'index (installation avec un index qui faisait foi, désinstallation),
+   les fichiers de `thumbs/` que l'index ne référence pas sont supprimés (publication défaite,
+   ancienne version, histoire désinstallée, temporaires) ; index perdu : rien n'est supprimé.
+   « Vider le cache » supprime `library/`, donc histoires et vignettes ensemble ; vider les seules
+   vignettes de catalogue ne touche pas celles de la bibliothèque. Le front (« Mes histoires » et la
+   fiche) demande `library_thumbnail(uuid)`, puis la source d'origine (installation antérieure),
+   puis affiche l'illustration par défaut.
 
 - **Concurrence** : `max_downloads` téléchargements simultanés (`settings.json`, 1 à 4, 2 par
   défaut, relu à chaque tâche), **une** conversion à la fois.
