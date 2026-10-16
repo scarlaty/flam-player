@@ -122,6 +122,46 @@ macro_rules! warn_once {
     }};
 }
 
+/// Cherche un `library.json.*.bak` (index corrompu mis de côté) parmi les noms de `library/`.
+/// `Ok(true)` dès qu'il est trouvé ; sinon erreur si la lecture du dossier ou d'une entrée a
+/// échoué (recherche incomplète), `Ok(false)` autrement.
+fn has_quarantined_index(
+    names: std::io::Result<impl Iterator<Item = std::io::Result<std::ffi::OsString>>>,
+) -> std::io::Result<bool> {
+    let mut incomplete = None;
+    for name in names? {
+        match name {
+            Ok(name) => {
+                let name = name.to_string_lossy();
+                if name.starts_with("library.json.") && name.ends_with(".bak") {
+                    return Ok(true);
+                }
+            }
+            Err(err) => incomplete = Some(err),
+        }
+    }
+    incomplete.map_or(Ok(false), Err)
+}
+
+/// Résultat strict d'une recherche d'index mis de côté : vrai si trouvé ou si la recherche a
+/// échoué. Avertit une fois par processus : tant qu'un index reste mis de côté, le balayage est
+/// suspendu et les vignettes orphelines s'accumulent sous `library/thumbs/`.
+fn quarantined_or_unknown(scan: std::io::Result<bool>) -> bool {
+    match scan {
+        Ok(false) => false,
+        Ok(true) => {
+            warn_once!(
+                "index de la bibliothèque mis de côté (library/library.json.*.bak) : vignettes orphelines conservées tant qu'il reste (le restaurer ou le supprimer)"
+            );
+            true
+        }
+        Err(err) => {
+            warn_once!("library/ illisible ({err}) : vignettes orphelines non balayées");
+            true
+        }
+    }
+}
+
 /// Marqueur d'intention d'une publication (`.staging/<fichier>.pending`).
 #[derive(Debug, Serialize, Deserialize)]
 struct PendingMarker {
@@ -264,13 +304,24 @@ impl Library {
     }
 
     /// Vrai si un `library.json.*.bak` (index corrompu mis de côté) existe dans `library/`.
+    /// Permissive : `library/` illisible compte comme « aucun index mis de côté ».
     fn index_quarantined(&self) -> bool {
-        std::fs::read_dir(&self.root).is_ok_and(|d| {
-            d.flatten().any(|e| {
-                let name = e.file_name().to_string_lossy().into_owned();
-                name.starts_with("library.json.") && name.ends_with(".bak")
-            })
-        })
+        self.scan_quarantine().unwrap_or(false)
+    }
+
+    /// Variante stricte de [`Library::index_quarantined`], pour les gardes du balayage des
+    /// vignettes (#108) : `library/` illisible compte comme un index mis de côté, on ne balaie
+    /// pas sans savoir.
+    fn index_quarantined_strict(&self) -> bool {
+        quarantined_or_unknown(self.scan_quarantine())
+    }
+
+    /// Lit `library/` : `Ok(true)` si un `library.json.*.bak` y est trouvé, erreur si la lecture
+    /// échoue sans l'avoir trouvé.
+    fn scan_quarantine(&self) -> std::io::Result<bool> {
+        has_quarantined_index(
+            std::fs::read_dir(&self.root).map(|d| d.map(|e| e.map(|e| e.file_name()))),
+        )
     }
 
     fn save(&self, stories: Vec<LibraryEntry>) -> AppResult<()> {
@@ -750,8 +801,12 @@ impl Library {
         // L'index est à jour : le reste est du nettoyage.
         self.finish_publication(&stories, &marker, &backup, &pending);
         // Index perdu avant cette installation, ou mis de côté et restaurable à la main (#97) :
-        // ses vignettes doivent survivre, on ne réconcilie pas.
-        if !untrusted && !self.index_quarantined() {
+        // ses vignettes doivent survivre, on ne réconcilie pas. `untrusted` n'est pas redondant
+        // avec la garde stricte : il fige l'état lu au début de l'installation, alors qu'un
+        // `.bak` supprimé à la main entre-temps (hors verrou) laisserait balayer un index qui ne
+        // contient que les publications réintégrées.
+        let quarantined = self.index_quarantined_strict();
+        if !untrusted && !quarantined {
             library_thumb::sweep(&self.root, &stories);
         }
         for (previous, previous_backup, previous_pending) in &adopted {
@@ -835,7 +890,7 @@ impl Library {
             remove_if_exists(&path)?;
         }
         self.save(stories.clone())?;
-        if !self.index_quarantined() {
+        if !self.index_quarantined_strict() {
             library_thumb::sweep(&self.root, &stories);
         }
         Ok(())
@@ -967,6 +1022,7 @@ pub(crate) mod tests {
             download_url: "https://h.example.test/a.zip".into(),
             size: None,
             updated_at: None,
+            download_count: None,
             kind: StoryKind::TelmiZip,
         }
     }
@@ -1760,6 +1816,51 @@ pub(crate) mod tests {
         assert!(staging
             .join("autre-1.plain.pk.pending.unjudged.2")
             .is_file());
+    }
+
+    #[test]
+    fn garde_stricte_du_balayage_si_library_illisible() {
+        use std::io::{Error, Result};
+        type Names = Result<std::vec::IntoIter<Result<std::ffi::OsString>>>;
+        let names = |v: Vec<Result<&str>>| -> Names {
+            Ok(v.into_iter()
+                .map(|n| n.map(std::ffi::OsString::from))
+                .collect::<Vec<_>>()
+                .into_iter())
+        };
+        // `read_dir(library/)` en échec : permissive « non », stricte « oui ».
+        let failed = || {
+            let read: Names = Err(Error::other("refusé"));
+            has_quarantined_index(read)
+        };
+        assert!(!failed().unwrap_or(false));
+        assert!(quarantined_or_unknown(failed()));
+        // Entrée illisible : recherche incomplète, sauf si le `.bak` est trouvé.
+        let partial = names(vec![Ok("abc-1.plain.pk"), Err(Error::other("entrée"))]);
+        assert!(quarantined_or_unknown(has_quarantined_index(partial)));
+        let found = names(vec![
+            Err(Error::other("entrée")),
+            Ok("library.json.20261016.bak"),
+        ]);
+        assert!(has_quarantined_index(found).unwrap());
+        // Lecture complète sans `.bak` : le balayage est permis.
+        let clean = names(vec![
+            Ok("library.json"),
+            Ok("thumbs"),
+            Ok("library.json.tmp"),
+        ]);
+        assert!(!quarantined_or_unknown(has_quarantined_index(clean)));
+        // Dossier réel : stricte et permissive d'accord quand `library/` est lisible.
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        lib.list().unwrap();
+        assert!(!lib.index_quarantined_strict());
+        std::fs::write(lib.root().join("library.json.x.bak"), b"{}").unwrap();
+        assert!(lib.index_quarantined_strict() && lib.index_quarantined());
+        // `library/` absent (illisible) : la stricte refuse le balayage.
+        let lib = Library::new(&dir.path().join("absent"));
+        assert!(!lib.index_quarantined());
+        assert!(lib.index_quarantined_strict());
     }
 
     #[test]

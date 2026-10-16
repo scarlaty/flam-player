@@ -22,6 +22,7 @@ const scan: FolderScan = {
       download_url: "C:\\Histoires\\a.zip",
       size: 12,
       updated_at: "2026-10-15T08:00:00Z",
+      download_count: null,
       kind: "telmi_zip",
     },
   ],

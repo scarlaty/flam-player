@@ -75,6 +75,10 @@ pub struct StoryEntry {
     pub size: Option<u64>,
     /// Date de dernière modification (ISO 8601 UTC), si connue.
     pub updated_at: Option<String>,
+    /// Nombre de téléchargements publié par le catalogue (`download_count`), si connu. Sert au
+    /// tri par popularité ; absent pour un dossier ou la bibliothèque.
+    #[serde(default)]
+    pub download_count: Option<u64>,
     pub kind: StoryKind,
 }
 

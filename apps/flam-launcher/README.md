@@ -735,7 +735,8 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    écriture réussie de l'index (installation avec un index qui faisait foi, désinstallation),
    les fichiers de `thumbs/` que l'index ne référence pas sont supprimés (publication défaite,
    ancienne version, histoire désinstallée, temporaires) ; index perdu, ou mis de côté
-   (`library.json.*.bak` présent, restaurable à la main) : rien n'est supprimé (#97).
+   (`library.json.*.bak` présent, restaurable à la main) : rien n'est supprimé (#97), et un
+   avertissement unique par processus le signale ; `library/` illisible : rien non plus (#108).
    « Vider le cache » supprime `library/`, donc histoires et vignettes ensemble ; vider les seules
    vignettes de catalogue ne touche pas celles de la bibliothèque. Le front (« Mes histoires » et la
    fiche) demande `library_thumbnail(uuid)`, puis la source d'origine (installation antérieure),
@@ -938,8 +939,9 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   demande quand la carte approche de l'écran, 60 cartes puis « Afficher plus »), une
   recherche (titre, auteur, catégorie, description ; sans accents ni casse), les filtres âge
   (histoires recommandées dès cet âge ou avant ; sans âge connu : toujours visibles) et
-  catégorie, le tri (titre, plus récentes ; pas de tri par popularité : `StoryEntry` n'a pas ce
-  champ) et « Actualiser ». Un catalogue est lu dans le cache, puis téléchargé s'il ne l'a
+  catégorie, le tri (titre, plus récentes, popularité : `download_count` décroissant, entrées sans
+  valeur à la fin, départage par titre ; l'option n'apparaît que si au moins une entrée de la
+  source publie `download_count`, donc pas pour un dossier ni « Mes histoires ») et « Actualiser ». Un catalogue est lu dans le cache, puis téléchargé s'il ne l'a
   jamais été (`catalog_entries` puis `catalog_refresh`) ; un dossier est réanalysé
   (`folder_scan`, éléments ignorés détaillés dans un bandeau). Chargement, erreur (bouton
   Réessayer), hors ligne, liste vide et « aucun résultat » ont chacun leur état. « Mes histoires »
