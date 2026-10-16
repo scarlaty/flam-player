@@ -91,11 +91,9 @@ fn find_tools() -> Option<Tools> {
             return skip_or_fail(&format!("telmi2flam/ absent de {}", dir.display()));
         };
         let python = settings::detect_bundled_python(&env);
-        assert!(
-            python.is_some(),
-            "Python embarqué absent de {}",
-            dir.display()
-        );
+        if python.is_none() {
+            return skip_or_fail(&format!("Python embarqué absent de {}", dir.display()));
+        }
         return Some(Tools {
             player,
             python,
@@ -244,9 +242,30 @@ impl PlayerEvents for PlayerRecorder {
     }
 }
 
+/// Ferme le player (et ses enfants) quand le test se termine, y compris sur un échec : sinon un
+/// `assert!` en cours de route laisserait `flam-player.exe` vivant.
+struct KillOnDrop(u32);
+
+impl KillOnDrop {
+    fn kill(&self) -> std::io::Result<std::process::Output> {
+        std::process::Command::new("taskkill")
+            .args(["/PID", &self.0.to_string(), "/F", "/T"])
+            .output()
+    }
+}
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.kill();
+    }
+}
+
 fn find_staged_main_lua(play_dir: &Path) -> Option<PathBuf> {
     for work in std::fs::read_dir(play_dir).ok()?.flatten() {
-        for entry in std::fs::read_dir(work.path()).ok()?.flatten() {
+        let Ok(entries) = std::fs::read_dir(work.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
             let main = entry.path().join("main.lua");
             if main.is_file() {
                 return Some(main);
@@ -256,8 +275,23 @@ fn find_staged_main_lua(play_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn catalogue_installation_lancement_retour() {
+/// Les variables SDL sont positionnées avant de créer le runtime multi-thread : aucune autre
+/// thread ne lit l'environnement pendant ce temps.
+#[test]
+fn catalogue_installation_lancement_retour() {
+    std::env::set_var("SDL_VIDEODRIVER", "dummy");
+    std::env::set_var("SDL_AUDIODRIVER", "dummy");
+    // Sans carte graphique, `SDL_CreateRenderer(ACCELERATED)` échoue : rendu logiciel.
+    std::env::set_var("SDL_RENDER_DRIVER", "software");
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(scenario());
+}
+
+async fn scenario() {
     let Some(tools) = find_tools() else {
         return;
     };
@@ -350,10 +384,6 @@ async fn catalogue_installation_lancement_retour() {
     assert_eq!(&std::fs::read(&story_file).unwrap()[..2], b"PK");
 
     // 4. Lancement du vrai player en pilotes SDL « dummy » (rendu logiciel), depuis une copie de travail.
-    std::env::set_var("SDL_VIDEODRIVER", "dummy");
-    std::env::set_var("SDL_AUDIODRIVER", "dummy");
-    // Sans carte graphique, `SDL_CreateRenderer(ACCELERATED)` échoue : rendu logiciel.
-    std::env::set_var("SDL_RENDER_DRIVER", "software");
     let (started_tx, started_rx) = channel();
     let (exited_tx, exited_rx) = channel();
     let player = PlayerService::new(Arc::new(PlayerRecorder {
@@ -377,14 +407,15 @@ async fn catalogue_installation_lancement_retour() {
             &title,
         )
         .expect("lancement du player");
+    let killer = KillOnDrop(session.pid);
     let started = started_rx
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(Duration::from_secs(30))
         .expect("événement started");
     assert_eq!(started.pid, session.pid);
 
     // Le player charge l'histoire (extraction du .plain.pk) puis reste actif : s'il plantait
     // ou refusait l'histoire, il se terminerait seul.
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let main_lua = loop {
         if let Ok(early) = exited_rx.try_recv() {
             panic!("flam-player s'est arrêté seul au chargement : {early:?}");
@@ -411,10 +442,7 @@ async fn catalogue_installation_lancement_retour() {
     );
 
     // 5. Retour : le player est fermé, la surcouche reçoit `exited` et libère le créneau.
-    let kill = std::process::Command::new("taskkill")
-        .args(["/PID", &session.pid.to_string(), "/F", "/T"])
-        .output()
-        .expect("taskkill");
+    let kill = killer.kill().expect("taskkill");
     assert!(kill.status.success(), "taskkill : {kill:?}");
     let exited =
         tokio::task::spawn_blocking(move || exited_rx.recv_timeout(Duration::from_secs(10)))

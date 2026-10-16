@@ -61,6 +61,9 @@ $vsArgs = @('-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.
 $vs = (& $vswhere @vsArgs -version '[17.0,18.0)' | Select-Object -First 1)
 if (-not $vs) { $vs = (& $vswhere @vsArgs -latest | Select-Object -First 1) }
 if (-not $vs) { throw 'aucun Visual Studio avec les outils C++ x64 (composant VC.Tools.x86.x64)' }
+if ($vs -notmatch '2022') {
+  Write-Warning "Visual Studio 2022 introuvable : $vs utilisé (bibliothèques C éventuellement absentes)"
+}
 Write-Host "Visual Studio : $vs"
 
 # Environnement du compilateur x64 (équivalent de vcvars64.bat) importé dans ce processus.

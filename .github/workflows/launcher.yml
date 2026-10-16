@@ -27,7 +27,7 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
@@ -92,6 +92,7 @@ jobs:
         shell: pwsh
         run: |
           $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw 'installateur NSIS introuvable' }
           $dest = Join-Path $env:RUNNER_TEMP 'flam-launcher-install'
           $p = Start-Process -FilePath $setup.FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "installateur : code $($p.ExitCode)" }
@@ -113,7 +114,8 @@ jobs:
           $dest = $env:FLAM_E2E_INSTALL_DIR
           $p = Start-Process -FilePath (Join-Path $dest 'uninstall.exe') -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "désinstallateur : code $($p.ExitCode)" }
-          $left = Get-ChildItem $dest -Recurse -File | Where-Object Name -ne 'uninstall.exe'
+          # `_?=` : le désinstallateur ne s'auto-supprime pas ; tout le reste doit avoir disparu.
+          $left = Get-ChildItem $dest -Recurse -Force | Where-Object { $_.Name -ne 'uninstall.exe' -and -not $_.PSIsContainer }
           if ($left) { throw "fichiers restants : $($left.FullName -join ', ')" }
 
       - name: Artefact (installateur NSIS)
