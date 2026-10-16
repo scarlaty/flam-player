@@ -10,6 +10,7 @@ apps/flam-launcher/**/*.icns binary
 crates/** text=auto eol=lf
 
 # telmi2flam (PR 1 du port Rust) : `include_bytes!` embarque les octets de la copie de travail,
-# donc les scripts du moteur restent en LF et le runtime n'est jamais converti (PORT-RUST.md §2.1).
+# donc les scripts du moteur restent en LF et les scripts du runtime sont en LF et les .lif binaires (PORT-RUST.md §2.1).
 tools/telmi2flam/engine/** eol=lf
-tools/telmi2flam/runtime/** -text
+tools/telmi2flam/runtime/**/*.lua text eol=lf
+tools/telmi2flam/runtime/**/*.lif binary
