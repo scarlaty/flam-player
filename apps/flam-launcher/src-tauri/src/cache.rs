@@ -17,9 +17,9 @@ use crate::settings::{resolve, Environment, SettingsStore};
 use crate::storage::ConfigState;
 use crate::AppResult;
 
-/// Sous-dossiers du cache créés par l'application (et eux seuls) : archives téléchargées,
+/// Sous-dossiers du cache créés par l'application (et eux seuls) : archives téléchargées, catalogues mis en cache,
 /// histoires converties, vignettes.
-pub const APP_CACHE_SUBDIRS: &[&str] = &["archives", "library", "thumbs"];
+pub const APP_CACHE_SUBDIRS: &[&str] = &["archives", "catalogs", "library", "thumbs"];
 
 /// Réponse de `cache_usage` (miroir de `CacheUsage` dans `src/api/cache.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -137,9 +137,10 @@ mod tests {
         write(&dir.path().join("archives/a.zip"), 100);
         write(&dir.path().join("library/histoire/x/y.bin"), 50);
         write(&dir.path().join("thumbs/t.png"), 7);
+        write(&dir.path().join("catalogs/src/catalog.json"), 3);
         write(&dir.path().join("documents/important.txt"), 1000);
         write(&dir.path().join("racine.txt"), 500);
-        assert_eq!(usage_of(dir.path()).unwrap(), 157);
+        assert_eq!(usage_of(dir.path()).unwrap(), 160);
     }
 
     #[test]

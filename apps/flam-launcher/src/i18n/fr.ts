@@ -109,7 +109,7 @@ export const fr = {
       confirmDescription: (dirs: string, path: string, size: string) =>
         `Seuls les dossiers créés par Flam Launcher (${dirs}) seront supprimés dans « ${path} ». Le reste de ce dossier n'est pas touché. Espace libéré : ${size}.`,
       cleared: (size: string) => `Cache vidé : ${size} libérés`,
-      subdirs: "archives, library, thumbs",
+      subdirs: "archives, catalogs, library, thumbs",
     },
     appearance: "Apparence",
     themeFailed: "Le thème n'a pas pu être enregistré.",

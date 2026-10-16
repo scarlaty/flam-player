@@ -221,7 +221,7 @@ it("vide le cache seulement après confirmation (focus sur Annuler)", async () =
   const dialog = await screen.findByRole("alertdialog", { name: "Vider le cache ?" });
   expect(within(dialog).getByRole("button", { name: "Annuler" })).toHaveFocus();
   expect(dialog).toHaveAccessibleDescription(
-    /archives, library, thumbs.*C:\\cache.*2 Ko/,
+    /archives, catalogs, library, thumbs.*C:\\cache.*2 Ko/,
   );
 
   fireEvent.click(within(dialog).getByRole("button", { name: "Annuler" }));
