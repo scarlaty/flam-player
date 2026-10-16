@@ -233,9 +233,12 @@ it("pagine les grandes sources", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Afficher plus (5 restantes)" }));
   expect(cardTitles()).toHaveLength(PAGE_SIZE + 5);
   expect(screen.queryByRole("button", { name: /Afficher plus/ })).toBeNull();
-  // Le bouton a disparu : le focus passe à la première nouvelle carte.
+  // Le bouton a disparu : le focus passe à la première nouvelle carte. Il est posé dans un
+  // `useEffect` (passif) : on l'attend au lieu de supposer qu'il est déjà posé au retour du clic.
   const first = screen.getByText(`Histoire ${String(PAGE_SIZE).padStart(3, "0")}`);
-  expect(first.closest("li")).toContainElement(document.activeElement as HTMLElement);
+  await waitFor(() => {
+    expect(first.closest("li")).toContainElement(document.activeElement as HTMLElement);
+  });
 });
 
 it("n'annonce le nombre de résultats qu'après la frappe", async () => {

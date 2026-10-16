@@ -412,8 +412,9 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    le dossier du script de `sys.path`, d'où `telmi2flam` importe ses modules). stdout est lu ligne par ligne (ligne non JSON ou événement inconnu
    ignoré) ; stderr, décodé en tolérant les erreurs, ne sert qu'au message de repli (fin du
    flux, lu par morceaux dans un tampon borné à 4 Kio) si aucun événement `error` n'est reçu
-   (`code` = `exit_<n>`). Le convertisseur est rattaché à un Job Object Windows
-   (`KILL_ON_JOB_CLOSE`) : l'arrêt forcé termine aussi ses sous-processus.
+   (`code` = `exit_<n>`). Le convertisseur est lancé **suspendu** (`CREATE_SUSPENDED`), rattaché
+   à un Job Object Windows (`KILL_ON_JOB_CLOSE`), puis son thread principal est repris : aucun
+   sous-processus ne peut échapper au job, et l'arrêt forcé les termine tous.
    **Annulation** : `CTRL_BREAK_EVENT` (le convertisseur nettoie et sort avec 130), envoyé par un
    court assistant Python isolé (`-I`) sans fenêtre qui s'attache à la console cachée du convertisseur (une
    application graphique n'a pas de console, et `GenerateConsoleCtrlEvent` ne vise que la
@@ -421,19 +422,32 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    Un `.plain.pk` est vérifié (`info.plain`, `uuid.bin`, `main.lua`) et copié ; un dossier `.plain`
    est empaqueté en zip « stored » : racine, fichiers requis ou entrées qui sont des liens
    symboliques ou jonctions sont **refusés** (fichiers ouverts sans suivre les liens), taille
-   cumulée bornée à 4 Gio.
+   cumulée bornée à 4 Gio. Les fichiers **OneDrive « à la demande »** (non téléchargés) sont des
+   points de réanalyse : ils sont refusés de même, sans téléchargement silencieux ; copier le
+   dossier hors du dossier synchronisé, ou le rendre disponible hors connexion, puis réanalyser.
 3. **Installation** : `uuid` et `version` **revalidés** (`story::validate_story_id`), renommage
    vers `<cache>/library/<uuid>-<version>.plain.pk` (version inconnue : `0`), chemin vérifié sous
    `library/`, index `library.json` mis à jour, archive téléchargée supprimée. Ordre sûr : un marqueur d'intention `.staging/<fichier>.pending` est écrit, l'ancien fichier de
-   même nom passe en `.staging/*.bak`, le nouveau est renommé, l'index est écrit, puis le
+   même nom passe en `.staging/*.bak` (**unique par fichier** : une installation est refusée tant
+   qu'un `.bak` ou un marqueur du même fichier subsiste, un `.bak` n'est donc jamais écrasé ; il
+   n'est jamais jugé à sa taille, seul le marqueur fait foi), le nouveau est renommé, l'index est écrit, puis le
    marqueur est effacé (échec : retour à l'état précédent). Au chargement, seules les
    publications **qui ont un marqueur** sont défaites ; un `.plain.pk` non indexé sans marqueur
    n'est jamais supprimé. Le marqueur n'est effacé que si la restauration a réussi ; sinon
    marqueur et `.bak` sont conservés (avertissement) et la réconciliation suivante réessaie (publication terminée : le `.bak` est supprimé avant le marqueur, qui reste si la suppression échoue ; marqueur illisible avec un `.bak` : rien n'est supprimé) ; tant qu'ils subsistent, une nouvelle installation du même fichier est refusée (erreur de validation), sans rien toucher.
+   Le marqueur identifie la publication par `installed_at` **et la taille attendue** du fichier
+   publié (deux publications du même fichier dans la même seconde restent distinguées), et liste
+   les **anciennes versions du même `uuid`** : leur suppression se fait avant celle du marqueur, qui
+   reste (avertissement) si l'une échoue, donc rien ne fuit après un arrêt. Un index **corrompu**
+   (mis de côté, vu vide) ne défait ni ne nettoie rien ; au lancement suivant l'index est absent et
+   une publication non journalisée dans un index perdu serait alors jugée interrompue (cas limite
+   accepté : l'index corrompu reste sauvegardé en `library.json.*.bak`).
    Publication et réconciliation tiennent un verrou inter-processus
-   (`library/.lock`) ; si une autre instance le tient, ou si le verrou ne peut pas être ouvert,
+   (`library/.lock`, aussi entre threads) ; `install` et `remove` l'attendent au plus 30 s
+   (erreur `io` explicite « bibliothèque occupée… réessayer plus tard » au-delà) ; si une autre instance le tient, ou si le verrou ne peut pas être ouvert,
    la liste lit simplement l'index sans réconcilier (l'installation et la suppression, elles,
-   échouent).
+   échouent). Les avertissements répétés à chaque `list` (verrou indisponible, restauration ou
+   nettoyage bloqué) ne sont émis qu'une fois par cause, puis en `debug`.
 
 - **Concurrence** : `max_downloads` téléchargements simultanés (`settings.json`, 1 à 4, 2 par
   défaut, relu à chaque tâche), **une** conversion à la fois.
