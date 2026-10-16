@@ -5,6 +5,7 @@ import {
   Badge,
   Banner,
   Button,
+  CheckboxField,
   Dialog,
   Icon,
   ProgressBar,
@@ -45,6 +46,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const { compatFor } = useCompat();
   const { url } = useThumbnail(source, entry);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [purgeSaves, setPurgeSaves] = useState(false);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const [failedUrl, setFailedUrl] = useState<string>();
 
@@ -66,7 +68,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const tone: BadgeTone = STATE_APPEARANCE[state].tone;
 
   async function confirmedRemove() {
-    const removed = await stories.remove(entry.uuid, entry.title);
+    const removed = await stories.remove(entry.uuid, entry.title, purgeSaves);
     setConfirmRemove(false);
     if (removed && source.type === "library") onClose();
   }
@@ -91,7 +93,10 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   variant="danger"
                   icon="trash"
                   disabled={playingThis}
-                  onClick={() => setConfirmRemove(true)}
+                  onClick={() => {
+                    setPurgeSaves(false);
+                    setConfirmRemove(true);
+                  }}
                 >
                   {text.remove}
                 </Button>
@@ -104,7 +109,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   variant="accent"
                   icon="play"
                   disabled={playing}
-                  onClick={() => stories.play(entry)}
+                  onClick={() => stories.play(entry, source.id)}
                 >
                   {text.play}
                 </Button>
@@ -116,7 +121,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   <Button
                     icon="play"
                     disabled={playing}
-                    onClick={() => stories.playFromFolder(entry)}
+                    onClick={() => stories.playFromFolder(entry, source.id)}
                   >
                     {text.playFromFolder}
                   </Button>
@@ -128,7 +133,9 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   variant="accent"
                   icon="play"
                   disabled={playing}
-                  onClick={() => stories.install(entry, { thenPlay: true })}
+                  onClick={() =>
+                    stories.install(entry, { thenPlay: true, fromSourceId: source.id })
+                  }
                 >
                   {fromCatalog ? text.downloadAndPlay : text.installAndPlay}
                 </Button>
@@ -243,7 +250,14 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
             </Button>
           </>
         }
-      />
+      >
+        <CheckboxField
+          label={t.stories.removeDialog.purgeSaves}
+          hint={t.stories.removeDialog.purgeSavesHint}
+          checked={purgeSaves}
+          onChange={(event) => setPurgeSaves(event.target.checked)}
+        />
+      </Dialog>
     </>
   );
 }

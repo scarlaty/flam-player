@@ -12,6 +12,7 @@ import {
 import {
   Banner,
   Button,
+  CheckboxField,
   Dialog,
   RadioGroup,
   TextField,
@@ -20,6 +21,7 @@ import {
 import { t } from "../../i18n";
 import { applyTheme, THEME_PREFERENCES, type ThemePreference } from "../../theme/theme";
 import { ErrorBanner } from "../ErrorBanner";
+import { getMinimizeDuringPlay, setMinimizeDuringPlay } from "./preferences";
 import { useRecovery } from "../recovery/RecoveryContext";
 import { formatBytes, validateOptionalPath } from "../validation";
 import "./SettingsScreen.css";
@@ -48,6 +50,7 @@ export function SettingsScreen() {
   const [confirmClear, setConfirmClear] = useState(false);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [themeError, setThemeError] = useState(false);
+  const [minimizeDuringPlay, setMinimize] = useState(getMinimizeDuringPlay);
   const cancelClearRef = useRef<HTMLButtonElement>(null);
   // Derniers paramètres confirmés par le backend et numéro du dernier changement de thème.
   const confirmedRef = useRef<SettingsView | null>(null);
@@ -298,6 +301,19 @@ export function SettingsScreen() {
           value={view.settings.theme}
           options={THEME_PREFERENCES.map((value) => ({ value, label: t.theme[value] }))}
           onChange={(theme) => void changeTheme(theme)}
+        />
+      </section>
+
+      <section className="fl-settings__section" aria-labelledby="settings-playback">
+        <h2 id="settings-playback">{text.playback.title}</h2>
+        <CheckboxField
+          label={text.playback.minimize}
+          hint={text.playback.minimizeHint}
+          checked={minimizeDuringPlay}
+          onChange={(event) => {
+            setMinimize(event.target.checked);
+            setMinimizeDuringPlay(event.target.checked);
+          }}
         />
       </section>
 

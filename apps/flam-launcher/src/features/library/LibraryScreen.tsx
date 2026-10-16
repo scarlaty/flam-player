@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Button, EmptyState } from "../../components";
 import { t } from "../../i18n";
 import { libraryHash, useSourceId } from "../../router";
@@ -14,6 +15,15 @@ import type { StoryHooks } from "./storyState";
 export function LibraryScreen(hooks: StoryHooks) {
   const { sources, error, reload } = useLibrary();
   const requested = useSourceId();
+  const { reopenEntry, onReopened } = hooks;
+  // Source supprimée entre-temps : il n'y a plus de fiche à rouvrir.
+  const reopenLost =
+    reopenEntry !== undefined &&
+    sources !== null &&
+    !sources.some((candidate) => candidate.id === reopenEntry.sourceId);
+  useEffect(() => {
+    if (reopenLost) onReopened?.();
+  }, [reopenLost, onReopened]);
 
   if (error && !sources) {
     return (

@@ -67,6 +67,9 @@ export interface StoryHooks {
     entry: StoryEntry;
     onClose: () => void;
   }) => ReactNode;
+  /** Fiche à rouvrir : la vue de la source `sourceId` ouvre celle de `entryId`, puis `onReopened`. */
+  reopenEntry?: { sourceId: string; entryId: string };
+  onReopened?: () => void;
   /** Change quand le contenu de « Mes histoires » doit être relu (installation, suppression). */
   reloadKey?: number;
 }
