@@ -272,6 +272,12 @@ async fn telechargement_conversion_et_installation() {
     assert!(!ctx.cache().join("archives/abc-2.zip").exists());
     assert!(ctx.staging_is_empty());
     assert!(ctx.queue().is_empty(), "file vidée après succès");
+    let recorded =
+        std::fs::read_to_string(ctx.cache().join("compat/launcher_results.json")).unwrap();
+    assert!(
+        recorded.contains("\"abc\"") && recorded.contains("\"ok\": true"),
+        "{recorded}"
+    );
 
     ctx.service.library_remove("abc".into()).await.unwrap();
     assert!(ctx.service.library_list().await.unwrap().is_empty());
@@ -309,6 +315,12 @@ async fn echec_de_conversion_type() {
     ));
     assert!(ctx.staging_is_empty());
     assert!(ctx.queue().is_empty());
+    let recorded =
+        std::fs::read_to_string(ctx.cache().join("compat/launcher_results.json")).unwrap();
+    assert!(
+        recorded.contains("\"ok\": false") && recorded.contains("missing_asset"),
+        "{recorded}"
+    );
 }
 
 #[tokio::test]

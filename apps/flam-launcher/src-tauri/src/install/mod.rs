@@ -37,6 +37,7 @@ use tauri::State;
 use tokio::sync::{watch, Notify, RwLock, Semaphore};
 
 use crate::catalog::{blocking, CatalogService};
+use crate::compat;
 use crate::folder::FolderState;
 use crate::library::{remove_if_exists, Library, LibraryEntry};
 use crate::settings::{self, Environment, SettingsStore};
@@ -819,6 +820,14 @@ impl InstallService {
                     &mut on_step,
                 )
                 .await;
+                // Résultat réel de la conversion, pour le statut de compatibilité (#20).
+                compat::record_conversion(
+                    &tc.cache_root,
+                    entry,
+                    &fingerprint,
+                    &converted,
+                    now_secs(),
+                );
                 Ok((Some(fingerprint), converted?.warnings))
             }
             StoryKind::FlamPk => {
