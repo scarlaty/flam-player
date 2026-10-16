@@ -21,7 +21,8 @@ use crate::AppResult;
 
 /// Sous-dossiers du cache créés par l'application (et eux seuls) : archives téléchargées, catalogues mis en cache,
 /// histoires converties, vignettes.
-pub const APP_CACHE_SUBDIRS: &[&str] = &["archives", "catalogs", "library", "thumbs"];
+pub const APP_CACHE_SUBDIRS: &[&str] =
+    &["archives", "catalogs", "compat-local", "library", "thumbs"];
 
 /// Réponse de `cache_usage` (miroir de `CacheUsage` dans `src/api/cache.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -251,7 +252,7 @@ mod tests {
     fn les_sous_dossiers_exposes_sont_ceux_de_l_application() {
         assert_eq!(
             APP_CACHE_SUBDIRS,
-            ["archives", "catalogs", "library", "thumbs"]
+            ["archives", "catalogs", "compat-local", "library", "thumbs"]
         );
     }
 
