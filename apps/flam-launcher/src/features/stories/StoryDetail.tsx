@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type { Source } from "../../api/sources";
-import type { StoryEntry } from "../../api/story";
+import type { ListedEntry } from "../library/sourceData";
 import {
   Badge,
   Banner,
@@ -23,7 +23,7 @@ import "./StoryDetail.css";
 
 export interface StoryDetailProps {
   source: Source;
-  entry: StoryEntry;
+  entry: ListedEntry;
   onClose: () => void;
 }
 
