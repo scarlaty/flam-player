@@ -512,7 +512,7 @@ it("« Mes histoires » liste les histoires installées : jouer et supprimer", a
   expect(screen.queryByRole("dialog", { name: "Les trois ours" })).toBeNull();
   fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
   await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
-  expect(callsOf("library_remove")[0]?.args).toEqual({ uuid: "ours" });
+  expect(callsOf("library_remove")[0]?.args).toEqual({ uuid: "ours", purgeSaves: false });
   expect(await screen.findByText("« Les trois ours » a été supprimée")).toBeVisible();
   expect(await screen.findByText("Aucune histoire installée")).toBeVisible();
   expect(screen.queryByRole("dialog")).toBeNull();
