@@ -49,6 +49,12 @@ export function SettingsScreen() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [themeError, setThemeError] = useState(false);
   const cancelClearRef = useRef<HTMLButtonElement>(null);
+  // Derniers paramètres confirmés par le backend et numéro du dernier changement de thème.
+  const confirmedRef = useRef<SettingsView | null>(null);
+  const themeRequestRef = useRef(0);
+  // Numéro de la requête dont la réponse est dans `confirmedRef`, et requêtes en vol.
+  const confirmedRequestRef = useRef(0);
+  const themeInFlightRef = useRef(0);
 
   const refreshUsage = useCallback(async () => {
     try {
@@ -61,6 +67,7 @@ export function SettingsScreen() {
 
   const applyView = useCallback(
     (next: SettingsView) => {
+      confirmedRef.current = next;
       setView(next);
       setValues({
         player_path: next.settings.player_path ?? "",
@@ -141,18 +148,46 @@ export function SettingsScreen() {
   }
 
   async function changeTheme(theme: ThemePreference) {
-    if (!view) return;
-    const previous = view.settings.theme;
+    const confirmed = confirmedRef.current;
+    if (!view || !confirmed) return;
+    const request = ++themeRequestRef.current;
+    const isLatest = () => request === themeRequestRef.current;
+    const showConfirmedTheme = () => {
+      const settled = confirmedRef.current ?? confirmed;
+      setView((current) =>
+        current
+          ? {
+              ...current,
+              settings: { ...current.settings, theme: settled.settings.theme },
+            }
+          : current,
+      );
+      applyTheme(settled.settings.theme);
+    };
+    themeInFlightRef.current += 1;
     setThemeError(false);
-    setView({ ...view, settings: { ...view.settings, theme } });
+    setView((current) =>
+      current ? { ...current, settings: { ...current.settings, theme } } : current,
+    );
     applyTheme(theme);
     try {
-      const next = await setSettings({ ...view.settings, theme });
-      setView(next);
+      const next = await setSettings({ ...confirmed.settings, theme });
+      // Une réponse plus ancienne n'écrase pas un état confirmé par une requête plus récente.
+      if (request > confirmedRequestRef.current) {
+        confirmedRef.current = next;
+        confirmedRequestRef.current = request;
+      }
+      if (isLatest()) setView(next);
     } catch {
-      setView(view);
-      applyTheme(previous);
-      setThemeError(true);
+      if (isLatest()) {
+        // Retour au dernier état réellement enregistré, pas à celui capturé à l'appel.
+        showConfirmedTheme();
+        setThemeError(true);
+      }
+    } finally {
+      themeInFlightRef.current -= 1;
+      // Plus rien en vol : l'affichage doit refléter exactement le thème enregistré.
+      if (themeInFlightRef.current === 0) showConfirmedTheme();
     }
   }
 
@@ -280,7 +315,7 @@ export function SettingsScreen() {
         description={
           usage
             ? text.cache.confirmDescription(
-                text.cache.subdirs,
+                usage.subdirs.join(", "),
                 usage.path,
                 formatBytes(usage.bytes),
               )

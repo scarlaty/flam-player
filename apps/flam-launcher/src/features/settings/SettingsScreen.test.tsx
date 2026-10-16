@@ -37,12 +37,15 @@ let view: SettingsView;
 let usageBytes: number;
 let calls: { cmd: string; args: Record<string, any> }[];
 let failures: Record<string, { kind: string; message: string }>;
+// Réponses différées de `settings_set` (résolues/rejetées par le test, dans l'ordre des appels).
+let pendingSets: { resolve: () => void; reject: () => void }[] | null;
 
 beforeEach(() => {
   view = makeView();
   usageBytes = 2048;
   calls = [];
   failures = {};
+  pendingSets = null;
   pickExecutable.mockReset();
   pickFolder.mockReset();
   mockIPC((cmd, args) => {
@@ -54,12 +57,28 @@ beforeEach(() => {
       case "settings_get":
         return view;
       case "settings_set":
+        if (pendingSets) {
+          const settings = payload.settings;
+          return new Promise((resolve, reject) => {
+            pendingSets?.push({
+              resolve: () => {
+                view = { ...view, settings };
+                resolve(view);
+              },
+              reject: () => reject({ kind: "io", message: "disque plein" }),
+            });
+          });
+        }
         view = { ...view, settings: payload.settings };
         return view;
       case "app_info":
         return { name: "flam-launcher", version: "0.1.0" };
       case "cache_usage":
-        return { path: "C:\\cache", bytes: usageBytes };
+        return {
+          path: "C:\\cache",
+          bytes: usageBytes,
+          subdirs: ["archives", "catalogs", "library", "thumbs"],
+        };
       case "cache_clear": {
         const freed = usageBytes;
         usageBytes = 0;
@@ -212,6 +231,58 @@ it("rétablit le thème précédent si l'enregistrement échoue", async () => {
   );
   expect(screen.getByRole("radio", { name: "Système" })).toBeChecked();
   expect(document.documentElement.dataset.theme).toBeUndefined();
+});
+
+it("deux échecs rapprochés restaurent le dernier thème enregistré", async () => {
+  await renderScreen();
+  pendingSets = [];
+  fireEvent.click(screen.getByRole("radio", { name: "Clair" }));
+  fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+  expect(document.documentElement.dataset.theme).toBe("dark");
+
+  // Le second échoue d'abord, puis le premier : le thème revient à celui enregistré.
+  pendingSets?.[1]?.reject();
+  await screen.findByRole("alert");
+  pendingSets?.[0]?.reject();
+  await waitFor(() =>
+    expect(screen.getByRole("radio", { name: "Système" })).toBeChecked(),
+  );
+  expect(document.documentElement.dataset.theme).toBeUndefined();
+});
+
+it("une réponse ancienne réussie après l'échec de la dernière resynchronise l'affichage", async () => {
+  await renderScreen();
+  pendingSets = [];
+  fireEvent.click(screen.getByRole("radio", { name: "Clair" }));
+  fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+
+  pendingSets?.[1]?.reject();
+  await screen.findByRole("alert");
+  expect(screen.getByRole("radio", { name: "Système" })).toBeChecked();
+
+  pendingSets?.[0]?.resolve();
+  await waitFor(() => expect(screen.getByRole("radio", { name: "Clair" })).toBeChecked());
+  expect(document.documentElement.dataset.theme).toBe("light");
+  expect(view.settings.theme).toBe("light");
+});
+
+it("un échec ancien n'annule pas un choix plus récent enregistré", async () => {
+  await renderScreen();
+  pendingSets = [];
+  fireEvent.click(screen.getByRole("radio", { name: "Clair" }));
+  fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+
+  pendingSets?.[1]?.resolve();
+  await waitFor(() => expect(view.settings.theme).toBe("dark"));
+  pendingSets?.[0]?.reject();
+  await waitFor(() =>
+    expect(screen.getByRole("radio", { name: "Sombre" })).toBeChecked(),
+  );
+  expect(document.documentElement.dataset.theme).toBe("dark");
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
 it("vide le cache seulement après confirmation (focus sur Annuler)", async () => {

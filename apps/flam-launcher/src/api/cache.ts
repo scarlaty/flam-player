@@ -6,6 +6,8 @@ export interface CacheUsage {
   path: string;
   /** Octets occupés par les sous-dossiers créés par l'application. */
   bytes: number;
+  /** Sous-dossiers que l'application compte et supprime. */
+  subdirs: string[];
 }
 
 /** Réponse de `cache_clear` (miroir de `CacheCleared`). */
