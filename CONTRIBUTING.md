@@ -88,6 +88,17 @@ Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§
   `npm run lint`, `npm run typecheck`, `npm test`.
 - Pas de code mort, pas de `TODO` sans issue associée, documentation à jour
   (`README.md`, `AGENT.md`, README du module touché).
+- **PR courtes** : un seul thème, environ cinq points au plus. Une issue plus large est
+  découpée en plusieurs PR.
+- **Revue préalable par l'auteur** : avant d'ouvrir la PR, l'auteur fait relire son diff
+  par un relecteur indépendant et corrige ce qui est bloquant ou majeur.
+- **Code qui touche aux données de l'utilisateur** (bibliothèque, sauvegardes, journal
+  d'installation : `library.rs`, `player.rs`, `install/`) :
+  - avant le code, une courte **note de conception** dans l'issue ou la PR : invariants,
+    puis tableau « arrêt ou échec à chaque étape → état laissé → reprise » ;
+  - un **test d'injection de panne** qui simule un arrêt ou un échec à chaque étape et
+    vérifie les invariants ;
+  - modèle `modele:opus` pour l'auteur (les revues peuvent rester `modele:sonnet`).
 
 ## 6. Revue et fusion
 
@@ -98,3 +109,14 @@ en **squash** dans `main` par le mainteneur. La branche est supprimée après fu
   `Revue du mainteneur`. Celui qui reprend la PR les traite, pousse, puis répond sur la PR
   point par point.
 - Les remarques non bloquantes deviennent des issues de suivi, liées dans la PR.
+- **Seuil de fusion** : seuls les constats **BLOQUANT** et **MAJEUR** (perte ou
+  corruption de données, blocage durable de l'utilisateur, interblocage, faille) sont
+  corrigés dans la PR. **MINEUR** et **NIT** vont toujours dans une issue de suivi.
+- **Revue complète, correctifs prescrits** : la première revue cherche en une fois tous
+  les constats bloquants ou majeurs, et propose pour chacun une correction précise que
+  l'auteur applique telle quelle.
+- **Deux tours au plus** : au troisième, le mainteneur tranche. Il impose la solution, ou
+  il fusionne et ouvre une issue de suivi pour le reste.
+- **Main à jour avant fusion** : la CI doit avoir tourné sur une branche qui contient le
+  `main` courant (`git merge origin/main`, sans rebase), pour éviter que deux PR vertes
+  séparément ne cassent `main` une fois fusionnées.
