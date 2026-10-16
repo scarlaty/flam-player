@@ -176,14 +176,28 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     [refreshTasks],
   );
 
+  // Pose (ou, sans `target`, retire) le retour à la fiche de la clé `key` pour un lancement et
+  // renvoie de quoi défaire cet appel seul : un lancement refusé (`player_busy`) ne doit pas
+  // effacer le retour de la lecture en cours.
+  const claimReturn = useCallback((key: string, target: FicheTarget | undefined) => {
+    const previous = returnTo.current.get(key);
+    if (target) returnTo.current.set(key, target);
+    else returnTo.current.delete(key);
+    return () => {
+      if (returnTo.current.get(key) !== target) return;
+      if (previous) returnTo.current.set(key, previous);
+      else returnTo.current.delete(key);
+    };
+  }, []);
+
   const launch = useCallback(
-    async (start: () => Promise<PlayerSession>, key?: string) => {
+    async (start: () => Promise<PlayerSession>, rollback?: () => void) => {
       try {
         // La session vient de `player://started` : la réponse peut arriver après
         // `player://exited` et ne doit pas ressusciter un player déjà terminé.
         await start();
       } catch (caught) {
-        if (key !== undefined) returnTo.current.delete(key);
+        rollback?.();
         toast.show({ message: toAppError(caught).message, tone: "danger" });
       }
     },
@@ -223,7 +237,10 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           tone: "success",
         });
         if (playAfter.current.delete(uuid)) {
-          void launch(() => launchPlayer(uuid), uuid);
+          void launch(
+            () => launchPlayer(uuid),
+            () => returnTo.current.delete(uuid),
+          );
         }
       },
       [patchTask, compatReload, refreshInstalled, toast, launch],
@@ -261,8 +278,10 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           windowOps.current = windowOps.current.then(restoreWindow);
         }
         const target = returnTo.current.get(event.session.uuid);
-        if (target) {
-          returnTo.current.delete(event.session.uuid);
+        returnTo.current.delete(event.session.uuid);
+        // Une fiche ou un dialogue déjà ouvert (autre histoire, confirmation…) n'est pas
+        // remplacé : l'utilisateur est en train de s'en servir.
+        if (target && !document.querySelector('[aria-modal="true"]')) {
           setReopen(target);
           window.location.hash = libraryHash(target.sourceId);
         }
@@ -368,7 +387,9 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
 
   const dismiss = useCallback((taskId: string) => {
     const task = tasksRef.current.find((other) => other.id === taskId);
-    if (task && !isActiveState(task.state)) {
+    // Retirer à la main une ligne terminée ne retire pas le lancement ni le retour à la fiche
+    // d'une lecture en cours ; seul l'abandon d'un échec ou d'une annulation les retire.
+    if (task && (task.state === "failed" || task.state === "cancelled")) {
       playAfter.current.delete(task.entry.uuid);
       returnTo.current.delete(task.entry.uuid);
     }
@@ -393,9 +414,17 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   }, [tasks]);
   useEffect(() => {
     const timers = dismissTimers.current;
+    const ops = windowOps;
+    const reduced = minimized;
     return () => {
       for (const timer of timers.values()) clearTimeout(timer);
       timers.clear();
+      // Filet de sécurité : la fenêtre réduite pour une lecture ne reste pas réduite si le
+      // provider disparaît avant la fin du player.
+      if (reduced.current) {
+        reduced.current = false;
+        ops.current = ops.current.then(restoreWindow);
+      }
     };
   }, []);
 
@@ -454,24 +483,20 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
       updateAvailable: (entry) => hasUpdate(installedFor(entry), entry),
       install,
       play: (entry, fromSourceId) => {
-        if (fromSourceId !== undefined) {
-          returnTo.current.set(entry.uuid, {
-            sourceId: fromSourceId,
-            entryId: entry.entry_id,
-          });
-        }
-        void launch(() => launchPlayer(entry.uuid), entry.uuid);
+        const target =
+          fromSourceId === undefined
+            ? undefined
+            : { sourceId: fromSourceId, entryId: entry.entry_id };
+        void launch(() => launchPlayer(entry.uuid), claimReturn(entry.uuid, target));
       },
       playFromFolder: (entry, fromSourceId) => {
-        if (fromSourceId !== undefined) {
-          returnTo.current.set(entry.entry_id, {
-            sourceId: fromSourceId,
-            entryId: entry.entry_id,
-          });
-        }
+        const target =
+          fromSourceId === undefined
+            ? undefined
+            : { sourceId: fromSourceId, entryId: entry.entry_id };
         void launch(
           () => launchFolderStory(entry.source_id, entry.entry_id),
-          entry.entry_id,
+          claimReturn(entry.entry_id, target),
         );
       },
       reopen,
@@ -492,6 +517,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     reopen,
     install,
     launch,
+    claimReturn,
     remove,
     cancel,
     retry,

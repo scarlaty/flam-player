@@ -1003,3 +1003,196 @@ it("ne touche pas à la fenêtre par défaut", async () => {
   expect(windowApi.minimizeWindow).not.toHaveBeenCalled();
   expect(windowApi.restoreWindow).not.toHaveBeenCalled();
 });
+
+// Lance une lecture depuis la fiche de « Mes histoires », puis change de source pendant
+// qu'elle tourne (la fiche disparaît avec la vue).
+async function playFromLibraryFiche() {
+  installed = [installedEntry(ours())];
+  window.location.hash = "#/library/library";
+  const view = await renderApp();
+  const dialog = await openFiche();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Jouer" }));
+  await waitFor(() => expect(callsOf("player_launch")).toHaveLength(1));
+  await send("player://started", session());
+  await act(async () => {
+    window.location.hash = "#/library/store";
+  });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  return view;
+}
+
+it("retirer à la main la ligne terminée ne perd pas le retour à la fiche", async () => {
+  await renderApp();
+  const dialog = await openFiche();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Télécharger et jouer" }));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  installed = [installedEntry(ours())];
+  await send("install://done", { task_id: "t1", entry: installed[0], warnings: 0 });
+  await waitFor(() => expect(callsOf("player_launch")).toHaveLength(1));
+  fireEvent.click(
+    within(panel()).getByRole("button", { name: "Retirer : Les trois ours" }),
+  );
+  await send("player://started", session());
+  await act(async () => {
+    window.location.hash = "#/library/library";
+  });
+  await send("player://exited", exited());
+  await screen.findByRole("dialog", { name: "Les trois ours" });
+  expect(window.location.hash).toBe("#/library/store");
+});
+
+it("une lecture lancée depuis une carte efface un ancien retour à la fiche", async () => {
+  installed = [installedEntry(ours())];
+  window.location.hash = "#/library/library";
+  await renderApp();
+  // Lecture demandée depuis la fiche, jamais démarrée (aucun `started`)...
+  const dialog = await openFiche();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Jouer" }));
+  await waitFor(() => expect(callsOf("player_launch")).toHaveLength(1));
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  // ... puis relancée depuis la carte : à la fin, la fiche ne se rouvre pas.
+  fireEvent.click(screen.getByRole("button", { name: "Jouer « Les trois ours »" }));
+  await waitFor(() => expect(callsOf("player_launch")).toHaveLength(2));
+  await send("player://started", session());
+  await send("player://exited", exited());
+  await screen.findByText("Lecture de « Les trois ours » terminée");
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("un lancement refusé (player_busy) ne perd pas le retour de la lecture en cours", async () => {
+  installed = [installedEntry(ours())];
+  window.location.hash = "#/library/library";
+  await renderApp();
+  const dialog = await openFiche();
+  const play = within(dialog).getByRole("button", { name: "Jouer" });
+  fireEvent.click(play);
+  await waitFor(() => expect(callsOf("player_launch")).toHaveLength(1));
+  // Second clic avant `player://started` : le backend refuse.
+  failures.player_launch = { kind: "player_busy", message: "Un player tourne déjà." };
+  fireEvent.click(play);
+  await screen.findByText("Un player tourne déjà.");
+  delete failures.player_launch;
+  await send("player://started", session());
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await act(async () => {
+    window.location.hash = "#/library/store";
+  });
+  await send("player://exited", exited());
+  await screen.findByRole("dialog", { name: "Les trois ours" });
+  expect(window.location.hash).toBe("#/library/library");
+});
+
+it("abandonne la fiche à rouvrir si la source est en erreur", async () => {
+  await playFromLibraryFiche();
+  failures.library_list = { kind: "io", message: "disque illisible" };
+  await send("player://exited", exited());
+  await waitFor(() => expect(window.location.hash).toBe("#/library/library"));
+  await waitFor(() => expect(callsOf("library_list").length).toBeGreaterThan(1));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  // Plus tard, la source est de nouveau lisible : rien ne surgit à la visite suivante.
+  delete failures.library_list;
+  await act(async () => {
+    window.location.hash = "#/library/store";
+  });
+  await act(async () => {
+    window.location.hash = "#/library/library";
+  });
+  await screen.findByRole("button", { name: "Les trois ours" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("histoire désinstallée pendant la lecture : aucune fiche, rien en attente", async () => {
+  await playFromLibraryFiche();
+  installed = [];
+  await send("player://exited", exited());
+  await screen.findByText("Aucune histoire installée");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  installed = [installedEntry(ours())];
+  await act(async () => {
+    window.location.hash = "#/library/store";
+  });
+  await act(async () => {
+    window.location.hash = "#/library/library";
+  });
+  await screen.findByRole("button", { name: "Les trois ours" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("ne remplace pas une fiche déjà ouverte à la fin de la lecture", async () => {
+  await playFromLibraryFiche();
+  const other = await openFiche();
+  expect(window.location.hash).toBe("#/library/store");
+  await send("player://exited", exited());
+  await screen.findByText("Lecture de « Les trois ours » terminée");
+  expect(window.location.hash).toBe("#/library/store");
+  expect(screen.getByRole("dialog", { name: "Les trois ours" })).toBe(other);
+  // La demande a été abandonnée : revenir à la bibliothèque n'ouvre rien.
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await act(async () => {
+    window.location.hash = "#/library/library";
+  });
+  await screen.findByRole("button", { name: "Les trois ours" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("deux lectures successives depuis la fiche rouvrent chacune la fiche", async () => {
+  await playFromLibraryFiche();
+  await send("player://exited", exited());
+  let dialog = await screen.findByRole("dialog", { name: "Les trois ours" });
+  await waitFor(() =>
+    expect(within(dialog).getByRole("button", { name: "Jouer" })).toBeEnabled(),
+  );
+  fireEvent.click(within(dialog).getByRole("button", { name: "Jouer" }));
+  await waitFor(() => expect(callsOf("player_launch")).toHaveLength(2));
+  await send("player://started", session());
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await act(async () => {
+    window.location.hash = "#/library/store";
+  });
+  await send("player://exited", exited());
+  dialog = await screen.findByRole("dialog", { name: "Les trois ours" });
+  expect(window.location.hash).toBe("#/library/library");
+  // La demande est consommée : une fin de lecture sans retour ne rouvre rien.
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await send("player://started", session());
+  await send("player://exited", exited());
+  await screen.findAllByText("Lecture de « Les trois ours » terminée");
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("rétablit la fenêtre réduite si le provider disparaît pendant la lecture", async () => {
+  window.localStorage.setItem("flam-launcher.minimizeDuringPlay", "1");
+  const view = await renderApp();
+  await send("player://started", session());
+  await waitFor(() => expect(windowApi.minimizeWindow).toHaveBeenCalledTimes(1));
+  view.unmount();
+  await waitFor(() => expect(windowApi.restoreWindow).toHaveBeenCalledTimes(1));
+});
+
+it("démonter le provider annule les minuteries de retrait en attente", async () => {
+  const view = await renderApp();
+  const dialog = await openFiche();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Télécharger" }));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  installed = [installedEntry(ours())];
+  await send("install://done", { task_id: "t1", entry: installed[0], warnings: 0 });
+  expect(vi.getTimerCount()).toBeGreaterThan(0);
+  view.unmount();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("la case de purge prévient que l'action est irréversible", async () => {
+  installed = [installedEntry(ours())];
+  window.location.hash = "#/library/library";
+  await renderApp();
+  const dialog = await openFiche();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Supprimer" }));
+  const confirm = await screen.findByRole("alertdialog");
+  expect(within(confirm).getByText(/Cette action est irréversible/)).toBeVisible();
+});

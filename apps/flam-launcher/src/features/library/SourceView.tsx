@@ -143,13 +143,20 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
     : hooks;
   // Fiche à rouvrir (fin d'une lecture lancée depuis elle, éventuellement depuis un autre écran).
   useEffect(() => {
-    if (!reopenEntry || reopenEntry.sourceId !== sourceId || !entries) return;
-    if (entries.some((entry) => entry.entry_id === reopenEntry.entryId)) {
+    if (!reopenEntry || reopenEntry.sourceId !== sourceId) return;
+    if (!entries) {
+      // Source en erreur : on abandonne, la fiche ne doit pas surgir à une visite ultérieure.
+      if (loadError) onReopened?.();
+      return;
+    }
+    // Aucune fiche ni dialogue ouvert : sinon on ne vole pas le focus, on abandonne.
+    const free = openId === null && !document.querySelector('[aria-modal="true"]');
+    if (free && entries.some((entry) => entry.entry_id === reopenEntry.entryId)) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setOpenId(reopenEntry.entryId);
     }
     onReopened?.();
-  }, [reopenEntry, sourceId, entries, onReopened]);
+  }, [reopenEntry, sourceId, entries, loadError, openId, onReopened]);
   // À la fermeture de la fiche, le focus revient à la carte d'origine. Le dialogue le rend déjà
   // à l'élément qui l'avait ouverte ; sans lui (fiche rouverte automatiquement), on le pose ici.
   const lastOpenId = useRef<string | null>(null);

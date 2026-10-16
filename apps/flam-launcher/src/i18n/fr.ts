@@ -356,7 +356,7 @@ export const fr = {
       confirm: "Supprimer",
       purgeSaves: "Supprimer aussi la progression",
       purgeSavesHint:
-        "Efface les sauvegardes de l'enfant. Décochée, la progression est conservée et retrouvée si l'histoire est réinstallée.",
+        "Efface les sauvegardes de l'enfant. Cette action est irréversible. Décochée, la progression est conservée et retrouvée si l'histoire est réinstallée.",
     },
     toast: {
       entryGone: (title: string) =>

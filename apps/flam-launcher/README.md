@@ -745,7 +745,7 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   conservée telle quelle. Quand la lecture a été demandée **depuis la fiche** (_Jouer_,
   _Jouer depuis le dossier_, _Télécharger et jouer_), l'application revient à la fin sur cette
   fiche (`#/library/<source>`, fiche rouverte) même si l'utilisateur a changé d'écran ou de
-  source entre-temps ; une lecture lancée depuis la carte ne rouvre rien. Si l'option
+  source entre-temps ; une lecture lancée depuis la carte ne rouvre rien. Le retour est abandonné (sans erreur) si une fiche ou un dialogue est déjà ouvert à ce moment, si la source est en erreur ou supprimée, ou si l'histoire n'y est plus ; un lancement refusé n'efface que sa propre demande. Si l'option
   _Réduire la fenêtre pendant la lecture_ (Paramètres > Lecture, désactivée par défaut) est
   cochée, la fenêtre est réduite à `player://started` et rétablie, avec le focus, à
   `player://exited` ; c'est une préférence du poste, gardée dans le stockage local de la
