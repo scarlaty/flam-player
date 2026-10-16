@@ -25,7 +25,7 @@
 
   Allègement : modules inutiles au convertisseur retirés (sqlite3, SSL/OpenSSL, hashlib
   OpenSSL : `hashlib.md5` retombe sur l'implémentation intégrée à python3XX.dll ; AVIF,
-  FreeType et LittleCMS de Pillow). Chaque fichier retiré doit exister : changer de version
+  FreeType, LittleCMS et le module Tk de Pillow). Chaque fichier retiré doit exister : changer de version
   oblige à relire la liste.
 
 .PARAMETER OutDir
@@ -70,7 +70,8 @@ $TrimPython = @(
 $TrimPillow = @(
   "_avif.cp$PythonTag-win_amd64.pyd",
   "_imagingft.cp$PythonTag-win_amd64.pyd",
-  "_imagingcms.cp$PythonTag-win_amd64.pyd"
+  "_imagingcms.cp$PythonTag-win_amd64.pyd",
+  "_imagingtk.cp$PythonTag-win_amd64.pyd"
 )
 
 # Fichiers de tools/telmi2flam nécessaires à la conversion.
@@ -89,7 +90,13 @@ $PythonDir = Join-Path $OutDir 'python'
 $SitePackages = Join-Path $PythonDir 'Lib\site-packages'
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+# TLS 1.2, plus TLS 1.3 quand le .NET de la machine le connaît (absent de PowerShell 5.1 sur
+# les Windows anciens : `Tls13` n'existe alors pas dans l'énumération).
+$tls = [Net.SecurityProtocolType]::Tls12
+if ([Enum]::GetNames([Net.SecurityProtocolType]) -contains 'Tls13') {
+  $tls = $tls -bor [Net.SecurityProtocolType]::Tls13
+}
+[Net.ServicePointManager]::SecurityProtocol = $tls
 
 function Get-Sha256([string]$Path) {
   (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
@@ -105,13 +112,17 @@ function Get-Pinned([string]$Url, [string]$Sha256) {
   }
   Write-Host "téléchargement : $Url"
   $part = "$path.part"
-  Invoke-WebRequest -Uri $Url -OutFile $part -UseBasicParsing
-  $actual = Get-Sha256 $part
-  if ($actual -ne $Sha256) {
-    Remove-Item -LiteralPath $part -Force
-    throw "empreinte inattendue pour $name : $actual (attendu $Sha256)"
+  try {
+    Invoke-WebRequest -Uri $Url -OutFile $part -UseBasicParsing
+    $actual = Get-Sha256 $part
+    if ($actual -ne $Sha256) {
+      throw "empreinte inattendue pour $name : $actual (attendu $Sha256)"
+    }
+    Move-Item -LiteralPath $part -Destination $path -Force
+  } finally {
+    # Échec réseau, empreinte inattendue ou interruption : aucun `.part` ne reste dans le cache.
+    if (Test-Path -LiteralPath $part) { Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue }
   }
-  Move-Item -LiteralPath $part -Destination $path -Force
   return $path
 }
 
@@ -173,14 +184,25 @@ $pillowLicenseRel = $pillowLicense.FullName.Substring($OutDir.Length + 1).Replac
 $licenses = @"
 # Composants redistribués avec le convertisseur telmi2flam
 
+Ce dossier (``telmi2flam/``) est livré avec l'installateur de flam-launcher. Les textes de
+licence complets des composants tiers sont dans les fichiers cités ci-dessous (le texte du
+fichier fait foi, pas ce tableau). Le fichier ``LICENSES.md`` à la racine de l'installation
+couvre le reste de l'application (flam-launcher, flam-player, SDL2, Lua, LVGL, minimp3).
+
 | Composant | Version | Licence | Texte |
 | --- | --- | --- | --- |
-| telmi2flam (scripts, moteur Lua ``engine/``) | dépôt flam-player | voir le dépôt | |
-| Runtime ``runtime/`` (bibliothèque Lua et icônes) | dépôt flam-player | voir le dépôt | |
-| Python (python.org, paquet embarquable) | $PythonVersion | PSF-2.0 (et composants : libffi MIT, zlib, bzip2, xz, zstd, expat, mpdecimal…) | ``python/LICENSE.txt`` |
-| Pillow (PyPI) | $PillowVersion | MIT-CMU (et bibliothèques intégrées : libjpeg-turbo, libpng, zlib, libtiff, libwebp, openjpeg…) | ``$pillowLicenseRel`` |
+| telmi2flam (``telmi2flam.py``, ``lif.py``, ``mp3map.py``, moteur Lua ``engine/``) | dépôt flam-player | usage personnel et éducatif (voir le dépôt) ; redistribué avec l'accord du mainteneur | ``README.md`` du dépôt |
+| Runtime Lunii ``runtime/`` (bibliothèque Lua ``script/``, icônes LIF ``img/``) | dépôt flam-player | propriété de leurs auteurs (Lunii) ; le mainteneur du dépôt confirme avoir les droits de redistribution | |
+| Python (python.org, paquet embarquable) | $PythonVersion | PSF-2.0 | ``python/LICENSE.txt`` |
+| libffi (``python/libffi-8.dll``) | livré avec Python | MIT | ``python/LICENSE.txt`` |
+| libtommath (``python/libtommath.dll``) | livré avec Python | domaine public (Unlicense) | |
+| bzip2, expat, mpdecimal, xz/liblzma, zstd, zlib (compilés dans les modules ``*.pyd`` et ``python3XX.dll``) | livrés avec Python | licences permissives (BSD, MIT, zlib, domaine public) | ``python/LICENSE.txt`` |
+| ``python.cat`` | livré avec Python | catalogue de signature (Python Software Foundation) livré tel quel avec le paquet officiel | |
+| ``vcruntime140.dll``, ``vcruntime140_1.dll`` | livrés avec Python | Microsoft Visual C++ Redistributable : fichiers redistribuables selon les conditions de licence de Microsoft | |
+| Pillow (PyPI) | $PillowVersion | MIT-CMU (HPND) | ``$pillowLicenseRel`` |
+| Bibliothèques intégrées à la roue de Pillow (libjpeg-turbo, libpng, zlib, libtiff, libwebp, brotli, harfbuzz, FreeType, LittleCMS…) | livrées avec Pillow | licences de chaque bibliothèque | ``$pillowLicenseRel`` (ce fichier regroupe tous les textes de la roue, y compris de bibliothèques retirées ci-dessous) |
 
-Fichiers retirés du paquet officiel : $($TrimPython -join ', '), PIL/$($TrimPillow -join ', PIL/').
+Fichiers retirés du paquet officiel (inutiles à la conversion) : $($TrimPython -join ', '), PIL/$($TrimPillow -join ', PIL/').
 "@
 [IO.File]::WriteAllText((Join-Path $OutDir 'LICENSES.md'), $licenses, (New-Object Text.UTF8Encoding $false))
 
@@ -200,13 +222,13 @@ commit $commit
 # --- Contrôles ----------------------------------------------------------------------------
 # Lancement tel que la surcouche le fait (convert.rs), sans Python dans le PATH.
 $script = Join-Path $OutDir 'telmi2flam.py'
-Invoke-Embedded @('-E', '-s', '-u', '-X', 'utf8', $script, '--version')
+Invoke-Embedded @('-E', '-s', '-B', '-u', '-X', 'utf8', $script, '--version')
 # Modules utilisés par la conversion (dont `lif`/`mp3map` via le `._pth`, et `hashlib.md5`
 # sans OpenSSL).
-Invoke-Embedded @('-E', '-s', '-X', 'utf8', '-c',
+Invoke-Embedded @('-E', '-s', '-B', '-X', 'utf8', '-c',
   'import hashlib, unicodedata, zipfile, zlib, lif, mp3map; from PIL import Image, ImageChops, PngImagePlugin; hashlib.md5(bytes())')
 # Assistant Ctrl+Break de convert.rs : `-I` et ctypes.
-Invoke-Embedded @('-I', '-c', 'import ctypes, sys; ctypes.windll.kernel32')
+Invoke-Embedded @('-I', '-B', '-c', 'import ctypes, sys; ctypes.windll.kernel32')
 
 $bytes = (Get-ChildItem -LiteralPath $OutDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
 Write-Host ("convertisseur prêt : {0} ({1:N1} Mo)" -f $OutDir, ($bytes / 1MB))
