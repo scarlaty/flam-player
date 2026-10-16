@@ -40,7 +40,7 @@ export const StoryTile = memo(function StoryTile({
     : (resolveState?.(entry) ?? defaultStoryState(source, entry));
 
   return (
-    <li ref={observe} className="fl-library__item">
+    <li ref={observe} className="fl-library__item" data-entry-id={entry.entry_id}>
       <StoryCard
         title={entry.title}
         coverUrl={url}

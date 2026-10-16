@@ -11,24 +11,31 @@ main.lua est suivi d'un pilote Lua generique (timer LVGL) qui joue comme un
 utilisateur :
   - menu Start : "Demarrer" / "Reprendre" ; apres une fin, redemarre tant qu'il
     reste des options de choix jamais essayees ;
-  - choix (carrousel / image-choice) : option la moins essayee (parcours en
-    largeur des options non visitees), egalites tirees au sort selon `seed` ;
+  - choix (carrousel / image-choice) : option jamais essayee, puis la moins
+    essayee dans l'etat d'inventaire courant, puis la plus proche de nouveau
+    dans le graphe, puis la moins essayee ; egalites tirees au sort selon `seed` ;
   - scene audio : OK (ENTER) si la scene l'accepte, sinon saut en fin de piste
     (pause/seek/play) puis, au besoin, fin de piste simulee ;
   - toutes les `back_every` nouvelles scenes audio, en alternance :
-    back_callback() puis "Reprendre", ou l'entree du menu contextuel (M).
+    back_callback() puis "Reprendre", ou l'entree du menu contextuel (M) ;
+  - noeud repasse en boucle sans nouveaute : sortie par sa transition home (#42).
 Arret : toutes les options rencontrees essayees et aucune transition ok connue
 non suivie (scene suivante jamais atteinte) apres une fin (`complete`,
-puis goto_library depuis le menu Start), `max_steps` actions, pas de nouvelle
-scene / option / fin pendant 40 + nb de scenes vues actions (`stuck`), sortie
-vers la bibliotheque (anciens moteurs), erreur, crash ou delai.
+puis goto_library depuis le menu Start), boucle ou plus rien n'est a essayer
+(`exhausted`), `max_steps` actions, pas de nouvelle scene / option / fin pendant
+40 + nb de scenes vues actions (`loop` si l'histoire avance encore, sinon
+`unresponsive`), sortie vers la bibliotheque (anciens moteurs), erreur, crash
+ou delai.
 Le pilote trace sur stdout des lignes `[EXPLORE] ...` (scene=, choice, end,
 step=, done) ; ce module les analyse pendant l'execution.
 
 Resultat de explore() (dict) :
-  status          ok | lua_error | crash | timeout | stuck
-  done_reason     cause de l'arret, toujours presente : complete, max_steps,
-                  library (status ok) ; stuck, no_trace, no_start (stuck) ;
+  status          ok | lua_error | crash | timeout | loop | stuck
+  done_reason     cause de l'arret, toujours presente : complete, exhausted (boucle
+                  sans erreur ou plus rien n'est a essayer), max_steps, library
+                  (status ok) ; loop (plus rien de nouveau, l'histoire tourne encore :
+                  status loop) ; unresponsive (ecran qui ne repond plus), no_trace,
+                  no_start (stuck) ;
                   timeout ; error (lua_error) ; exit (player sorti seul :
                   lua_error si une erreur Lua a ete vue avant, sinon crash)
   errors          lignes d'erreur (stderr : Erreur Lua, callback error, assert,
@@ -41,7 +48,8 @@ Resultat de explore() (dict) :
   seed, steps, ends, back_ends (fins causees par un test de retour, non
   comptees), end_reasons, choices_explored, back_tests, menu_tests,
   dead_end_backs / dead_end_scenes (retours de secours sur un ecran sans
-  action possible), exit_code, workdir (si keep).
+  action possible), home_escapes (sorties de boucle par home), exit_code,
+  workdir (si keep).
 Code de sortie du CLI : 0 statut ok, 1 sinon, 77 flam-player introuvable.
 """
 import argparse
@@ -74,6 +82,9 @@ LUA_ERR_RE = re.compile(r"Erreur Lua|Erreur dans setup|callback error|attempt to
                         r"stack traceback|watchdog")
 END_RE = re.compile(r"fin d'histoire : (.*)$")
 TAG = "[EXPLORE] "
+# Statut d'une raison d'arret du pilote (les autres : ok). `stuck` : raison des
+# traces d'avant #42 (boucle et ecran fige confondus).
+DONE_STATUS = {"loop": "loop", "unresponsive": "stuck", "stuck": "stuck"}
 
 
 def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
@@ -195,7 +206,71 @@ do
         local optCount, pending = {}, 0
         local backTests, nextTest = 0, BACK_EVERY
 
-        local function progress() noProg = 0 end
+        -- Boucles (#42) : noeuds (scenes, "a:<action>" pour un choix) entres depuis
+        -- le dernier progres. Un noeud entre 3 fois sans rien de nouveau = cycle :
+        -- le pilote tente alors la transition home de ce noeud, seule sortie des
+        -- sous-menus et des histoires cycliques ; des 2 entrees pour un choix dont
+        -- toutes les options sont essayees alors qu'il reste des options jamais
+        -- essayees ailleurs (remonter vers elles). Au plus 3 sorties par noeud entre
+        -- deux progres (escN), espacees (escAt). nLoop = noeuds distincts : une
+        -- boucle fait bouger l'histoire (>= 2), une scene qui ne repond plus non
+        -- (arret "unresponsive" au lieu de "loop").
+        local loopSeen, nLoop, maxLoop, escN, escAt = {}, 0, 0, {}, {}
+        local lastFresh = 0      -- dernier choix d'une option jamais essayee dans cet etat
+        local function resetLoop() loopSeen, nLoop, maxLoop, escN, escAt = {}, 0, 0, {}, {} end
+        local function progress() noProg = 0; resetLoop() end
+        local function entered(id)
+            local n = (loopSeen[id] or 0) + 1
+            loopSeen[id] = n
+            if n == 1 then nLoop = nLoop + 1 end
+            if n > maxLoop then maxLoop = n end
+        end
+        -- Transition home utilisable (memes regles que homeOf de story.lua :
+        -- ctrl.home, home definie, ne ramenant pas sur le noeud courant)
+        local function hasHome(sid, aid)
+            local st = N.stages and N.stages[sid]
+            if not (st and st.home and st.ctrl and st.ctrl.home) then return false end
+            local a = st.home.action
+            if a == aid then return false end
+            local list = N.actions and N.actions[a]
+            if not list then return false end
+            for _, e in ipairs(list) do
+                if e.stage == sid then return false end
+            end
+            return true
+        end
+        -- Etat d'inventaire significatif : valeurs des objets lus par une condition
+        -- ou un indexItem. Une option deja essayee peut mener ailleurs dans un autre
+        -- etat (hubs a etat) : le choix prefere les options jamais essayees dans
+        -- l'etat courant. Chaine vide si l'histoire n'a pas de condition.
+        local sigItems = {}
+        do
+            local set = {}
+            local function add(i)
+                if type(i) == "number" and not set[i] then set[i] = true; sigItems[#sigItems + 1] = i end
+            end
+            for _, list in pairs(N.actions or {}) do
+                for _, e in ipairs(list) do
+                    for _, c in ipairs(e.cond or {}) do add(c.item or 0); add(c.itemB) end
+                end
+            end
+            for _, st in pairs(N.stages or {}) do
+                if st.ok then add(st.ok.indexItem) end
+                if st.home then add(st.home.indexItem) end
+            end
+            table.sort(sigItems)
+        end
+        local function invSig()
+            if #sigItems == 0 or not state.inv then return "" end
+            local t = {}
+            for i, it in ipairs(sigItems) do
+                local s = state.inv[it + 1]
+                t[i] = tostring(s and s.value or 0)
+            end
+            return table.concat(t, ",")
+        end
+        local stateCount = {}    -- essais par (option, etat d'inventaire)
+        local escapes = 0
         local shown = {}     -- actions de choix deja affichees (cle = id d'action)
         -- Transitions ok connues mais jamais suivies : pour chaque scene visitee,
         -- l'une des entrees sans condition de son action pas encore atteinte (sauf si
@@ -224,7 +299,40 @@ do
         local function finish(why)
             done = true
             emit("done reason=" .. why .. " steps=" .. steps .. " visited=" .. nSeen
-                 .. " ends=" .. ends .. " pending=" .. pending .. " frontier=" .. frontier())
+                 .. " ends=" .. ends .. " pending=" .. pending .. " frontier=" .. frontier()
+                 .. " escapes=" .. escapes)
+        end
+        -- Home d'une scene menant a une scene jamais atteinte (entree sans condition)
+        local function homeNew(sid, aid)
+            if not hasHome(sid, aid) then return false end
+            for _, e in ipairs(N.actions[N.stages[sid].home.action]) do
+                if not e.cond and N.stages[e.stage] and not seen[e.stage] then return true end
+            end
+            return false
+        end
+        -- Reste-t-il a reprendre ailleurs (option jamais essayee, transition ok
+        -- jamais suivie) ? Alors un cycle se quitte par toute home (remonter).
+        local function wantUp() return pending > 0 or frontier() > 0 end
+        -- Scenes visitees dont l'action ok a une entree conditionnelle vers une scene
+        -- jamais atteinte : un autre etat d'inventaire peut y mener (hubs a etat),
+        -- rien n'est donc epuise (le pilote continue jusqu'au seuil de boucle)
+        local function condFrontier()
+            for id in pairs(seen) do
+                local tr = N.stages[id] and N.stages[id].ok
+                for _, e in ipairs((tr and N.actions and N.actions[tr.action]) or {}) do
+                    if e.cond and N.stages[e.stage] and not seen[e.stage] then return true end
+                end
+            end
+            return false
+        end
+        -- Scenes visitees dont la home mene a du nouveau : rien n'est epuise tant
+        -- qu'il en reste (le pilote les tente quand il y repasse en boucle)
+        local function homeFrontier()
+            local n = 0
+            for id in pairs(seen) do
+                if homeNew(id, nil) then n = n + 1 end
+            end
+            return n
         end
         -- nav = true : touche de navigation (PREV/NEXT) dans un choix, non
         -- comptee dans noProg (seul le nombre de touches borne la navigation,
@@ -236,6 +344,7 @@ do
         end
         local function visit(id)
             if not seen[id] then seen[id] = true; nSeen = nSeen + 1; progress() end
+            entered(tostring(id))
             emit("scene=" .. tostring(id))
         end
         -- Option validee (ENTER envoye) : comptee (option essayee, scene de
@@ -249,6 +358,7 @@ do
             pendingOpt = nil
             if optCount[o.key] == 0 then pending = pending - 1; progress() end
             optCount[o.key] = optCount[o.key] + 1
+            stateCount[o.skey] = (stateCount[o.skey] or 0) + 1
             emit("choice action=" .. tostring(o.aid) .. " option=" .. o.k .. "/" .. o.n
                  .. " key=" .. o.key)
             if o.stage then visit(o.stage) end
@@ -313,22 +423,64 @@ do
             end
             return out
         end
-        -- Option la moins essayee ; egalites tirees au sort (seed)
+        -- Distance (transitions ok, graphe statique) d'une scene a du nouveau : une
+        -- scene jamais atteinte ou une option affichee jamais essayee. nil si rien
+        -- a moins de MAXD transitions. Guide le choix dans un hub deja essaye vers
+        -- la branche qui mene a du nouveau, au lieu d'un tirage au sort (#42).
+        local MAXD = 60
+        local function newDist(sid)
+            if sid == nil or not seen[sid] then return 0 end
+            local dist, q, h = { [sid] = 0 }, { sid }, 1
+            while h <= #q do
+                local s = q[h]; h = h + 1
+                local d = dist[s]
+                if d >= MAXD then break end
+                local tr = N.stages[s] and N.stages[s].ok
+                local list = tr and N.actions and N.actions[tr.action]
+                for _, e in ipairs(list or {}) do
+                    local t = e.stage
+                    if N.stages[t] then
+                        if not seen[t] or (#list > 1 and optCount[tostring(tr.action)
+                                .. "#s:" .. tostring(t)] == 0) then
+                            return d + 1
+                        end
+                        if dist[t] == nil then dist[t] = d + 1; q[#q + 1] = t end
+                    end
+                end
+            end
+            return nil
+        end
+        -- Ordre des options : jamais essayee, puis la moins essayee dans l'etat
+        -- d'inventaire courant, puis la plus proche de nouveau (newDist : departage
+        -- les options d'un hub deja essayees sans figer le pilote sur une branche
+        -- dont la nouveaute est gardee par une condition), puis la moins essayee
+        -- tout court ; egalites tirees au sort (seed)
         local function choose(aid, n)
             shown[aid] = true
             local vis = visibleOf(aid)
             if #vis ~= n then vis = {} end   -- moteur different : cle par position
-            local keys, best, cands = {}, nil, {}
+            local sig = invSig()
+            local keys, skeys, best, cands = {}, {}, nil, {}
             for k = 1, n do
                 local st = vis[k] and vis[k].stage
                 keys[k] = tostring(aid) .. "#" .. (st and ("s:" .. tostring(st)) or tostring(k))
+                skeys[k] = keys[k] .. "@" .. sig
                 if optCount[keys[k]] == nil then optCount[keys[k]] = 0; pending = pending + 1 end
-                local c = optCount[keys[k]]
-                if best == nil or c < best then best, cands = c, { k }
-                elseif c == best then cands[#cands + 1] = k end
+                local c, sc = optCount[keys[k]], stateCount[skeys[k]] or 0
+                local r = { c == 0 and 0 or 1, sc, (st and newDist(st)) or MAXD + 1, c }
+                local cmp = 0
+                if best then
+                    for i = 1, 4 do
+                        if r[i] ~= best[i] then cmp = r[i] < best[i] and -1 or 1; break end
+                    end
+                end
+                if best == nil or cmp < 0 then best, cands = r, { k }
+                elseif cmp == 0 then cands[#cands + 1] = k end
             end
             local k = cands[math.random(#cands)]
-            return { k = k, n = n, keys = keys, vis = vis, aid = aid, nav = 0 }
+            -- option deja essayee mais jamais dans cet etat : nouveaute possible
+            if best[2] == 0 and best[4] > 0 then lastFresh = steps end
+            return { k = k, n = n, keys = keys, skeys = skeys, vis = vis, aid = aid, nav = 0 }
         end
 
         local cur, age, acted, plan = -1, 0, 0, nil
@@ -346,6 +498,17 @@ do
             inBack = false
             if not ok then error(e, 0) end
         end
+        -- Sortie d'un cycle par la transition home du noeud courant (#42)
+        -- gap : entrees du noeud requises depuis le dernier progres / la derniere sortie
+        local function escape(id, gap)
+            local n = loopSeen[id] or 0
+            if n - (escAt[id] or 0) < gap or (escN[id] or 0) >= 3 then return false end
+            escAt[id], escN[id] = n, (escN[id] or 0) + 1
+            escapes = escapes + 1
+            emit("escape at=" .. id)
+            back("(home, boucle)")
+            return true
+        end
 
         local function onList(m)
             if acted > 0 and age %% 30 ~= 0 then return end
@@ -359,6 +522,7 @@ do
                     return
                 end
                 noProg = 0                  -- redemarrage voulu : prefixe deja connu
+                resetLoop()
             end
             acted = acted + 1
             step("click " .. label)
@@ -369,11 +533,26 @@ do
             local n = m.answers and #m.answers or 0
             if n == 0 or m.parentContainer == nil then return end
             if plan == nil then
+                local aid = tostring(state.current_fun)
+                entered("a:" .. aid)
+                -- cycle : sortie par la home de l'option focalisee, si elle en a une
+                -- (rien a reprendre ailleurs : seulement vers une scene nouvelle)
+                local vis = visibleOf(state.current_fun)
+                local it = type(m.answerIterator) == "number" and m.answerIterator or 1
+                local fs = #vis == n and vis[it] and vis[it].stage
+                local up = fs and wantUp()
+                local can = fs and (up and hasHome(fs, state.current_fun)
+                                    or homeNew(fs, state.current_fun))
+                local gap = 3
+                if can and escape("a:" .. aid, gap) then
+                    plan = { escaped = true }
+                    return
+                end
                 plan = choose(state.current_fun, n)
                 emit("choice? action=" .. tostring(plan.aid) .. " options=" .. n
                      .. " it=" .. tostring(m.answerIterator) .. " k=" .. plan.k)
             end
-            if age %% 2 ~= 0 then return end
+            if plan.escaped or age %% 2 ~= 0 then return end
             if plan.sent then
                 if age %% 20 == 0 then step("key ENTER (relance)"); key(m, 10) end
                 return
@@ -398,7 +577,7 @@ do
             end
             plan.sent = true
             local k = plan.k
-            pendingOpt = { key = plan.keys[k], aid = plan.aid, k = k, n = plan.n,
+            pendingOpt = { key = plan.keys[k], skey = plan.skeys[k], aid = plan.aid, k = k, n = plan.n,
                            stage = plan.vis[k] and plan.vis[k].stage }
             step("key ENTER (option " .. k .. "/" .. plan.n .. ")")
             key(m, 10)
@@ -418,6 +597,12 @@ do
                     back("(test)")
                 end
                 return
+            end
+            if acted == 0 then
+                local sid = state.current_fun
+                local up = (loopSeen[tostring(sid)] or 0) >= 3 and wantUp()
+                local can = up and hasHome(sid, nil) or homeNew(sid, nil)
+                if can and escape(tostring(sid), 3) then acted = 1; return end
             end
             if m.okCallback ~= nil then
                 if acted == 0 or age %% 20 == 0 then
@@ -463,7 +648,18 @@ do
             age = age + 1
             if m == nil or age < 3 then return end
             if steps >= MAX_STEPS then finish("max_steps"); return end
-            if noProg > 40 + nSeen then finish("stuck"); return end
+            -- cycle confirme, plus rien a essayer (options, transitions ok, homes vers
+            -- du nouveau, entrees conditionnelles vers du nouveau, options jamais
+            -- essayees dans l'etat d'inventaire) : epuise
+            if noProg > 10 and pending == 0 and maxLoop >= 3 and steps - lastFresh > 10
+                    and frontier() == 0 and homeFrontier() == 0 and not condFrontier() then
+                finish("exhausted"); return
+            end
+            -- sans progres : boucle si l'histoire avance encore (>= 2 noeuds
+            -- distincts depuis le dernier progres), sinon ecran qui ne repond plus
+            if noProg > 40 + nSeen then
+                finish(nLoop >= 2 and "loop" or "unresponsive"); return
+            end
             if name:find("list-choice", 1, true) == 1 then onList(m)
             elseif name:find("carousel", 1, true) == 1 or name:find("image-choice", 1, true) == 1 then
                 onChoice(m)
@@ -575,8 +771,8 @@ def _result(code, out, err, dt, total, watch, seed, workdir):
         status, done_reason = "stuck", "no_start"
         errors.append("pilote jamais demarre (setup() non atteint ?)")
     elif watch.done_reason:
-        status = "stuck" if watch.done_reason == "stuck" else "ok"
         done_reason = watch.done_reason
+        status = DONE_STATUS.get(done_reason, "ok")
     elif watch.library:
         status, done_reason = "ok", "library"
     elif watch.quiet:
@@ -603,6 +799,7 @@ def _result(code, out, err, dt, total, watch, seed, workdir):
         "menu_tests": sum(1 for s in steps if " menu M : " in s),
         "dead_end_backs": len(dead),
         "dead_end_scenes": sorted(set(dead)),
+        "home_escapes": sum(1 for t in tagged if t.startswith("escape at=")),
         "exit_code": code,
     }
     if workdir:
