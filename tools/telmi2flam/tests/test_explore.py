@@ -72,6 +72,21 @@ def loop_nodes():
     }
 
 
+def home_cut_nodes(n=12):
+    """#45 : chemin lineaire de n scenes autoplay (ctrl.home) ; home -> fin distincte h0.
+    Un test de retour a la 8e scene part vers h0 (fin jouee) : le reste du chemin doit
+    quand meme etre repris avant `complete`."""
+    ctrl = {"ok": False, "home": True, "autoplay": True}
+    stages = {"h0": stage("x.mp3", None)}
+    actions = {"a0": [{"stage": "s0"}], "ah": [{"stage": "h0"}]}
+    for i in range(n):
+        stages["s%d" % i] = stage("x.mp3", "a%d" % (i + 1) if i < n - 1 else None, ctrl)
+        stages["s%d" % i]["home"] = {"action": "ah", "index": 0}
+        if i < n - 1:
+            actions["a%d" % (i + 1)] = [{"stage": "s%d" % (i + 1)}]
+    return {"startAction": {"action": "a0", "index": 0}, "stages": stages, "actions": actions}
+
+
 def carousel_nodes(n):
     """start -> s0 (autoplay, ok -> action de n options, index -1, comme les quiz) ->
     carrousel de n options non autoplay qui finissent toutes (ok = null)."""
@@ -161,6 +176,16 @@ class TestExplore(unittest.TestCase):
         self.assertEqual(res["status"], "ok", self.explain(res))
         self.assertNotEqual(res["done_reason"], "stuck", self.explain(res))
         self.assertGreaterEqual(res["choices_explored"], 1, self.explain(res))
+
+    def test_chemin_coupe_par_test_retour_repris(self):
+        """#45 : `complete` ne doit pas etre declare tant qu'une transition ok connue
+        (scene suivante d'une scene visitee) n'a pas ete suivie."""
+        pk = self.convert(home_cut_nodes(12), "HomeCut")
+        res = explore.explore(PLAYER, pk, timeout_s=120, back_every=8, max_steps=400)
+        self.assertEqual(res["status"], "ok", self.explain(res))
+        self.assertEqual(res["done_reason"], "complete", self.explain(res))
+        self.assertGreaterEqual(res["back_tests"] + res["menu_tests"], 1, self.explain(res))
+        self.assertEqual(res["scenes_visited"], res["scenes_total"], self.explain(res))
 
     def test_carrousel_sens_le_plus_court(self):
         """#41 : n = 3, toutes les options essayees -> un seul appui par option,
