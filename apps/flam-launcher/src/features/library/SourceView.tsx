@@ -189,7 +189,7 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
     [entries, filters, sort],
   );
 
-  const filterKey = JSON.stringify(filters);
+  const filterKey = JSON.stringify({ ...filters, sort });
   const limit = shown.key === filterKey ? shown.count : PAGE_SIZE;
   const page = visible.slice(0, limit);
 
