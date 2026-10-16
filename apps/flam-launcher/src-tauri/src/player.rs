@@ -420,7 +420,7 @@ fn is_limit(err: &std::io::Error) -> bool {
 /// Supprime `path` (fichier, dossier, lien) sans jamais suivre un lien : un lien de dossier
 /// (Windows : lien symbolique ou jonction, que `remove_file` refuse) est retiré lui-même, sans
 /// toucher à sa cible. Absent : rien à faire.
-fn remove_tree(path: &Path) -> std::io::Result<()> {
+pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
