@@ -4,7 +4,8 @@ use std::path::Path;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // args_os : un chemin non Unicode ne doit pas faire paniquer le binaire.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
         [flag] if flag == "--version" => {
             println!("telmi2flam {}", telmi2flam::VERSION);

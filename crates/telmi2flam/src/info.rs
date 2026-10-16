@@ -6,6 +6,7 @@
 //! `PORT-RUST.md` : flottant hors plage, entier hors 64 bits, imbrication de plus de
 //! `MAX_DEPTH` niveaux et surrogate isolé donnent `invalid_content` (code 4).
 
+use std::collections::HashMap;
 use std::io::{Read, Seek};
 use std::path::Path;
 
@@ -235,6 +236,7 @@ impl Parser<'_> {
         }
         self.pos += 1;
         let mut fields: Vec<(String, Value)> = Vec::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
         self.ws();
         if self.eat(b"}") {
             return Ok(Value::Object(fields));
@@ -252,9 +254,14 @@ impl Parser<'_> {
             self.ws();
             let v = self.value(depth)?;
             // dict Python : la dernière valeur gagne, à la position de la première clé.
-            match fields.iter_mut().find(|(k, _)| *k == key) {
-                Some(slot) => slot.1 = v,
-                None => fields.push((key, v)),
+            // Index des positions : insertion en O(1), comme un dict (pas de O(n²) sur un
+            // objet hostile à millions de clés).
+            match index.get(&key) {
+                Some(&i) => fields[i].1 = v,
+                None => {
+                    index.insert(key.clone(), fields.len());
+                    fields.push((key, v));
+                }
             }
             self.ws();
             if self.eat(b"}") {
@@ -551,6 +558,19 @@ mod tests {
         .is_ok());
         let deep = format!("{}{}", "[".repeat(MAX_DEPTH + 1), "]".repeat(MAX_DEPTH + 1));
         assert_eq!(load(&deep).unwrap_err().code, "invalid_content");
+        // Objet hostile à 300 000 clés distinctes (et une en double) : temps linéaire.
+        let mut big = String::from("{");
+        for i in 0..300_000 {
+            big.push_str(&format!("\"k{i}\":{i},"));
+        }
+        big.push_str("\"k0\":\"fin\"}");
+        let start = std::time::Instant::now();
+        let Value::Object(fields) = load(&big).unwrap() else {
+            panic!("objet attendu")
+        };
+        assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
+        assert_eq!(fields.len(), 300_000);
+        assert_eq!(fields[0], ("k0".into(), Value::Str("fin".into())));
         // Limites des entiers sur 64 bits.
         assert!(load("18446744073709551615").is_ok());
         assert!(load("-9223372036854775808").is_ok());
