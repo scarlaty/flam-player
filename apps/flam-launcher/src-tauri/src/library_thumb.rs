@@ -11,9 +11,10 @@
 //! - **Écriture** ([`store`], sous le verrou `library/.lock`, après les refus de l'installation
 //!   et avant l'index) : nom unique par publication (`<uuid>-<version>.<installed_at>.<ext>`),
 //!   écriture atomique ; la vignette d'une installation précédente n'est jamais écrasée.
-//! - **Réconciliation** ([`sweep`], sous le verrou, index faisant foi) : tout fichier de
-//!   `thumbs/` que l'index ne référence pas est supprimé (vignette d'une publication défaite,
-//!   d'une ancienne version, d'une histoire désinstallée, temporaires).
+//! - **Réconciliation** ([`sweep`], sous le verrou, index faisant foi et aucun index mis de côté
+//!   `library.json.*.bak`, qui reste restaurable à la main : #97) : tout fichier de `thumbs/` que
+//!   l'index ne référence pas est supprimé (vignette d'une publication défaite, d'une ancienne
+//!   version, d'une histoire désinstallée, temporaires).
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -135,12 +136,15 @@ fn thumb_name(file: &str, now: u64, ext: &str) -> String {
     format!("{stem}.{now}.{ext}")
 }
 
-/// Chemin d'une vignette : nom simple, directement sous `library/thumbs/`, sinon `None`.
+/// Chemin d'une vignette : nom simple, directement sous `library/thumbs/`, sinon `None`. `/` et
+/// `\` sont refusés sur la chaîne elle-même, quelle que soit la plateforme (un index écrit sous
+/// Windows peut être relu ailleurs).
 fn checked(library_root: &Path, name: &str) -> Option<PathBuf> {
     let dir = library_root.join(THUMBS_DIR);
     let path = dir.join(name);
     let simple = !name.is_empty()
         && !name.starts_with('.')
+        && !name.contains(['/', '\\'])
         && path.parent() == Some(dir.as_path())
         && path.file_name().and_then(|n| n.to_str()) == Some(name);
     simple.then_some(path)
@@ -148,6 +152,10 @@ fn checked(library_root: &Path, name: &str) -> Option<PathBuf> {
 
 /// Écrit la vignette de la publication `file` (verrou de la bibliothèque tenu). Renvoie le nom à
 /// mettre dans `LibraryEntry::thumb`, ou `None` (avertissement) si l'écriture échoue.
+///
+/// Toute erreur de l'installation **après** cet appel (neutralisation des marqueurs non
+/// jugeables, marqueur, renommages, index) laisse la vignette écrite orpheline : aucune entrée ne
+/// la référence, la réconciliation suivante ([`sweep`]) la supprime.
 pub fn store(library_root: &Path, file: &str, now: u64, prepared: &Prepared) -> Option<String> {
     store_with(library_root, file, now, prepared, &|path, bytes| {
         storage::write_atomic(path, bytes)
@@ -174,7 +182,13 @@ pub(crate) fn store_with(
 }
 
 /// Supprime de `library/thumbs/` tout fichier que `stories` ne référence pas (verrou tenu,
-/// index faisant foi). Échecs : avertissement, retenté à la réconciliation suivante.
+/// index faisant foi, aucun index mis de côté). Échecs : avertissement, retenté à la
+/// réconciliation suivante.
+///
+/// Une réinstallation sans vignette exploitable (préparation ou écriture en échec) remplace
+/// l'entrée par une entrée `thumb: None` : la vignette de l'installation précédente n'est plus
+/// référencée et part ici ; l'histoire retombe sur la vignette de sa source d'origine, puis sur
+/// l'illustration par défaut.
 pub fn sweep(library_root: &Path, stories: &[LibraryEntry]) {
     let Ok(read) = std::fs::read_dir(library_root.join(THUMBS_DIR)) else {
         return;
@@ -409,8 +423,68 @@ mod tests {
     fn noms_hors_du_dossier_refuses() {
         let root = Path::new("lib");
         assert!(checked(root, "a.png").is_some());
-        for bad in ["", ".cache", "../a.png", "a/b.png", "a\\b.png"] {
+        // `\` est refusé sur toutes les plateformes, pas seulement là où il sépare les chemins.
+        for bad in [
+            "", ".cache", "../a.png", "a/b.png", "/a.png", "a\\b.png", "a\\", "\\a.png",
+        ] {
             assert!(checked(root, bad).is_none(), "{bad:?}");
         }
+    }
+
+    /// Injection de panne (#97) : index corrompu mis de côté (`library.json.*.bak`). Les
+    /// installations et désinstallations qui suivent, sur un nouvel index valide, ne réconcilient
+    /// pas : une fois le `.bak` réparé et remis en place à la main, les vignettes qu'il référence
+    /// existent. Le `.bak` parti, la réconciliation reprend.
+    #[test]
+    fn index_mis_de_cote_restaure_garde_ses_vignettes() {
+        use crate::library::INDEX_FILE;
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let library = dir.path().join("library");
+        let s = staged_pk(&lib, "a.plain.pk", Some(&lif()));
+        let old_thumb = install(&lib, dir.path(), &story("abc", Some(1)), &s, 1)
+            .thumb
+            .unwrap();
+
+        // Index corrompu (fin abîmée) : mis de côté à l'installation suivante, qui ne réconcilie
+        // pas.
+        let index = library.join(INDEX_FILE);
+        let good = std::fs::read(&index).unwrap();
+        let mut damaged = good.clone();
+        damaged.extend_from_slice(b"\0\0abime");
+        std::fs::write(&index, &damaged).unwrap();
+        let s = staged_pk(&lib, "b.plain.pk", Some(&lif()));
+        install(&lib, dir.path(), &story("def", Some(1)), &s, 2);
+        let bak = std::fs::read_dir(&library)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                let name = p.file_name().unwrap().to_string_lossy();
+                name.starts_with("library.json.") && name.ends_with(".bak")
+            })
+            .expect("index mis de côté");
+
+        // Nouvel index valide, `.bak` toujours là : ni l'installation ni la désinstallation ne
+        // suppriment la vignette de l'ancien index.
+        let s = staged_pk(&lib, "c.plain.pk", Some(&lif()));
+        install(&lib, dir.path(), &story("ghi", Some(1)), &s, 3);
+        lib.remove("def").unwrap();
+        assert!(thumbs(dir.path()).contains(&old_thumb));
+
+        // Restauration manuelle : le `.bak` réparé remplace l'index, l'entrée retrouve sa vignette.
+        assert_eq!(std::fs::read(&bak).unwrap(), damaged);
+        std::fs::write(&bak, &good).unwrap();
+        std::fs::rename(&bak, &index).unwrap();
+        assert!(lib
+            .thumbnail("abc")
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+
+        // Plus d'index mis de côté : la réconciliation reprend (orphelines de `def` et `ghi`
+        // supprimées), la vignette référencée par l'index restauré reste.
+        let s = staged_pk(&lib, "d.plain.pk", Some(&lif()));
+        let new = install(&lib, dir.path(), &story("jkl", Some(1)), &s, 4);
+        assert_eq!(thumbs(dir.path()), [old_thumb, new.thumb.unwrap()]);
     }
 }
