@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   type KeyboardEvent,
   type ReactNode,
@@ -59,8 +60,10 @@ export function Dialog({
   const descriptionId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // Focus initial et restitution du focus.
-  useEffect(() => {
+  // Focus initial et restitution du focus. `useLayoutEffect` : le focus est posé pendant le
+  // commit, avant que le dialogue soit observable (`findBy…`) ; un effet passif le poserait
+  // un tick plus tard.
+  useLayoutEffect(() => {
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
     const panel = panelRef.current;
