@@ -182,8 +182,8 @@ pub(crate) fn store_with(
 }
 
 /// Supprime de `library/thumbs/` tout fichier que `stories` ne référence pas (verrou tenu,
-/// index faisant foi, aucun index mis de côté). Échecs : avertissement, retenté à la
-/// réconciliation suivante.
+/// index faisant foi, aucun index mis de côté, `library/` lisible). Échecs : avertissement,
+/// retenté à la réconciliation suivante.
 ///
 /// Une réinstallation sans vignette exploitable (préparation ou écriture en échec) remplace
 /// l'entrée par une entrée `thumb: None` : la vignette de l'installation précédente n'est plus
