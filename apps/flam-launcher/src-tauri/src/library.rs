@@ -254,6 +254,25 @@ impl Library {
         Ok(stories)
     }
 
+    /// Chemin et titre de l'histoire installée `uuid`, relus de l'index et revérifiés (fichier
+    /// directement sous `library/`, existant). `not_found` si elle n'est pas installée,
+    /// `story_file_missing` si son fichier a disparu.
+    pub fn playable(&self, uuid: &str) -> AppResult<(PathBuf, String)> {
+        let entry = self
+            .load()?
+            .into_iter()
+            .find(|e| e.uuid == uuid)
+            .ok_or_else(|| AppError::NotFound(format!("histoire non installée : {uuid}")))?;
+        let path = self.checked(&entry.file)?;
+        if !path.is_file() {
+            return Err(AppError::StoryFileMissing(format!(
+                "le fichier de « {} » a disparu de la bibliothèque",
+                entry.title
+            )));
+        }
+        Ok((path, entry.title))
+    }
+
     /// Publie `staged` (un `.plain.pk` complet) comme installation de `source`.
     ///
     /// Ordre sûr en cas d'arrêt ou d'échec : l'éventuel fichier de même nom est d'abord mis de
@@ -482,6 +501,29 @@ pub(crate) mod tests {
         assert!(lib.list().unwrap().is_empty());
         assert!(!dir.path().join("library/abc-3.plain.pk").exists());
         assert_eq!(lib.remove("abc").unwrap_err().kind(), "not_found");
+    }
+
+    #[test]
+    fn playable_donne_chemin_et_titre_de_l_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        assert_eq!(lib.playable("abc").unwrap_err().kind(), "not_found");
+        let s = staged(&lib, "t.plain.pk", b"PK1234");
+        lib.install(&s, &story("abc", Some(3)), None, 7).unwrap();
+        let (path, title) = lib.playable("abc").unwrap();
+        assert_eq!(path, dir.path().join("library/abc-3.plain.pk"));
+        assert_eq!(title, "Histoire abc");
+        // Un uuid piégé n'est jamais traduit en chemin : il n'est pas dans l'index.
+        assert_eq!(
+            lib.playable("..\\..\\evil").unwrap_err().kind(),
+            "not_found"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            lib.playable("abc").unwrap_err().kind(),
+            "story_file_missing"
+        );
     }
 
     #[test]
