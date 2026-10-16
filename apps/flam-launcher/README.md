@@ -269,8 +269,7 @@ apps/flam-launcher/
       story.rs             `StoryEntry` / `StoryKind` : type commun des histoires de toutes les sources
       catalog.rs           Source catalogue : téléchargement, lecture tolérante, cache, vignettes
       folder.rs            Source dossier local (`.zip` Telmi, `.plain`, `.plain.pk`), commandes `folder_*`
-      lif.rs               Décodeur LIF (port de `src/formats/lif_decoder.c`)
-      thumbnail.rs         Vignettes : PNG, réduction, cache `thumbs/`, URL `data:`
+      thumbnail.rs         Vignettes : PNG, LIF (décodeur de `crates/telmi2flam`), réduction, cache `thumbs/`, URL `data:`
       install/             Pipeline d'installation : file, téléchargement, conversion (`mod.rs`,
                            `download.rs`, `convert.rs`, `pack.rs`), commandes `install_*`
       library.rs           Bibliothèque `<cache>/library/` et `library.json`, commandes `library_*`
@@ -377,7 +376,7 @@ centaines de Mio d'IPC). `thumb_url` est une **référence à résoudre par `fol
 `entry_id`) ou `null` sans vignette : ce n'est pas une URL affichable. `folder_thumbnail(source_id, entry_id)` renvoie
 l'URL `data:image/png;base64,…` d'une seule histoire (compatible CSP `img-src data:`), uniquement
 pour une entrée du **dernier scan** de cette source (sinon `not_found`, jamais un chemin libre).
-L'image (PNG ou LIF via `lif.rs`) est réduite à 160 px et gardée dans `<cache>/thumbs/<clé>.png`
+L'image (PNG, ou LIF via `telmi2flam::lif`) est réduite à 160 px et gardée dans `<cache>/thumbs/<clé>.png`
 (clé = chemin, taille et date de l'archive, plus taille et date de `img/thumbnail.lif` pour un
 `.plain`) ; le cache est consulté **avant** d'ouvrir l'archive.
 

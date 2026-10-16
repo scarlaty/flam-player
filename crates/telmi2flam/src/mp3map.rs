@@ -201,7 +201,7 @@ fn le32(out: &mut Vec<u8>, v: u64) -> Result<(), Mp3MapError> {
 
 /// `int(round(x))` de Python pour un flottant fini positif (arrondi au pair).
 fn round_units(x: f64) -> u64 {
-    // Conversion saturante : `x` est positif et bien en deçà de 2^64 (au plus ~530 unités par
+    // Conversion saturante : `x` est positif et bien en deçà de 2^64 (au plus ~88 unités par
     // octet d'entrée).
     x.round_ties_even() as u64
 }
