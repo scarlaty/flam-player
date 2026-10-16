@@ -35,7 +35,7 @@ pub fn check_plain_pk(path: &Path) -> AppResult<()> {
 
 fn refused(what: &Path) -> AppError {
     AppError::Validation(format!(
-        "lien symbolique ou jonction refusé dans le dossier .plain : {}",
+        "lien symbolique, jonction ou fichier OneDrive « à la demande » refusé dans le dossier .plain : {}",
         what.display()
     ))
 }
@@ -45,6 +45,15 @@ fn too_big() -> AppError {
 }
 
 /// Vrai si `meta` décrit un lien symbolique ou un point de réanalyse (jonction…).
+///
+/// **Refus volontaire des fichiers OneDrive « à la demande »** : sous Windows, un fichier non
+/// téléchargé d'un dossier synchronisé (OneDrive, « Files On-Demand ») est un *point de réanalyse*
+/// (attribut `FILE_ATTRIBUTE_REPARSE_POINT`, balise « cloud »), indiscernable ici d'une jonction
+/// par l'attribut seul. On refuse sans distinguer plutôt que de déclencher un téléchargement
+/// silencieux (volumineux, réseau, hors du contrôle de l'application) ou de suivre un lien. Pour
+/// installer un tel dossier `.plain` : le copier hors du dossier synchronisé avant de le
+/// réanalyser (« Toujours conserver sur cet appareil » n'est pas garanti de retirer le point de
+/// réanalyse : non vérifié sur appareil).
 fn is_link(meta: &std::fs::Metadata) -> bool {
     if meta.file_type().is_symlink() {
         return true;
