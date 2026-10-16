@@ -22,9 +22,9 @@ use crate::{AppError, AppResult};
 const APP_DIR: &str = "flam-launcher";
 /// Fichier mémorisant les restaurations non encore vues par l'utilisateur.
 const RECOVERY_FILE: &str = "recovery.json";
-/// Tentatives de renommage en cas d'accès refusé (antivirus, indexeur) et délai entre elles.
-const RENAME_ATTEMPTS: u32 = 5;
-const RENAME_DELAY: Duration = Duration::from_millis(30);
+/// Attentes successives (ms) entre deux tentatives de renommage : croissantes, budget total
+/// de 1 s. Après la dernière attente, une ultime tentative est faite, puis l'erreur est rendue.
+const RETRY_DELAYS_MS: [u64; 7] = [10, 20, 40, 80, 160, 320, 370];
 
 /// Dossier de configuration (`%APPDATA%/flam-launcher` sous Windows).
 pub fn config_dir() -> AppResult<PathBuf> {
@@ -72,20 +72,42 @@ pub struct Recovery {
     pub backup: String,
 }
 
-/// Renomme avec quelques nouvelles tentatives si l'accès est refusé (antivirus, indexeur).
-fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
-    let mut attempt = 1;
+/// Erreur de verrou transitoire sous Windows : accès refusé (5), violation de partage (32)
+/// ou de verrouillage (33), typiquement un antivirus ou l'indexeur qui tient le fichier.
+fn is_transient(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::PermissionDenied || matches!(err.raw_os_error(), Some(5 | 32 | 33))
+}
+
+/// Exécute `op` ; sur une erreur transitoire, réessaie après chacune des attentes de
+/// `RETRY_DELAYS_MS` (via `sleep`, injectable pour les tests). Toute autre erreur est rendue
+/// immédiatement ; un verrou persistant donne une erreur claire de même nature.
+fn retry_transient<T>(
+    mut op: impl FnMut() -> io::Result<T>,
+    mut sleep: impl FnMut(Duration),
+) -> io::Result<T> {
+    let mut delays = RETRY_DELAYS_MS.iter();
     loop {
-        match fs::rename(from, to) {
-            Err(err)
-                if err.kind() == io::ErrorKind::PermissionDenied && attempt < RENAME_ATTEMPTS =>
-            {
-                attempt += 1;
-                thread::sleep(RENAME_DELAY);
-            }
+        match op() {
+            Err(err) if is_transient(&err) => match delays.next() {
+                Some(ms) => sleep(Duration::from_millis(*ms)),
+                None => {
+                    return Err(io::Error::new(
+                        err.kind(),
+                        format!(
+                            "fichier verrouillé après {} tentatives sur environ 1 s : {err}",
+                            RETRY_DELAYS_MS.len() + 1
+                        ),
+                    ));
+                }
+            },
             other => return other,
         }
     }
+}
+
+/// Renomme en patientant si le fichier est brièvement verrouillé (antivirus, indexeur).
+fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
+    retry_transient(|| fs::rename(from, to), thread::sleep)
 }
 
 /// Écrit `contents` dans `path` de façon atomique : fichier temporaire voisin (nom unique
@@ -411,6 +433,96 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
         assert!(serde_json::from_str::<Value>(&content).is_ok());
         assert_eq!(file_names(dir.path()), ["f.json"]);
+    }
+
+    #[test]
+    fn reessai_reussit_apres_des_echecs_transitoires() {
+        let mut calls = 0;
+        let mut slept = Vec::new();
+        let result = retry_transient(
+            || {
+                calls += 1;
+                if calls <= 3 {
+                    Err(io::Error::from_raw_os_error(32))
+                } else {
+                    Ok(calls)
+                }
+            },
+            |d| slept.push(d),
+        );
+        assert_eq!(result.unwrap(), 4);
+        assert_eq!(
+            slept,
+            [10, 20, 40].map(Duration::from_millis),
+            "attente croissante"
+        );
+    }
+
+    #[test]
+    fn reessai_reconnait_les_codes_windows_et_l_acces_refuse() {
+        for err in [
+            io::Error::from_raw_os_error(5),
+            io::Error::from_raw_os_error(32),
+            io::Error::from_raw_os_error(33),
+            io::Error::from(io::ErrorKind::PermissionDenied),
+        ] {
+            assert!(is_transient(&err), "{err:?}");
+        }
+        assert!(!is_transient(&io::Error::from(io::ErrorKind::NotFound)));
+    }
+
+    #[test]
+    fn erreur_non_transitoire_echoue_tout_de_suite() {
+        let mut calls = 0;
+        let mut slept = 0;
+        let result: io::Result<()> = retry_transient(
+            || {
+                calls += 1;
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            },
+            |_| slept += 1,
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!((calls, slept), (1, 0));
+    }
+
+    #[test]
+    fn verrou_persistant_abandonne_apres_le_budget() {
+        let mut calls = 0;
+        let mut total = Duration::ZERO;
+        let result: io::Result<()> = retry_transient(
+            || {
+                calls += 1;
+                Err(io::Error::from_raw_os_error(5))
+            },
+            |d| total += d,
+        );
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("verrouillé"), "{err}");
+        assert_eq!(calls, RETRY_DELAYS_MS.len() + 1);
+        assert_eq!(total, Duration::from_millis(1_000));
+    }
+
+    #[test]
+    fn renommage_reussit_apres_un_verrou_simule() {
+        // Le renommage échoue deux fois puis réussit, sans dépendre de l'OS.
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("a.tmp"), dir.path().join("a.json"));
+        fs::write(&from, "x").unwrap();
+        let mut locked = 2;
+        retry_transient(
+            || {
+                if locked > 0 {
+                    locked -= 1;
+                    Err(io::Error::from(io::ErrorKind::PermissionDenied))
+                } else {
+                    fs::rename(&from, &to)
+                }
+            },
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "x");
     }
 
     #[test]
