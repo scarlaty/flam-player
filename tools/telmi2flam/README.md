@@ -610,8 +610,10 @@ utilisateur, via les vrais modules du runtime :
 
 Le pilote trace sur stdout des lignes `[EXPLORE] …` (`scene=<id>`, `choice …`,
 `end via=…`, `step=<n> …`, `done reason=…`) analysées pendant l'exécution, avec stderr.
-Arrêt : toutes les options rencontrées essayées après une fin (`complete`, puis
-`goto_library` depuis le menu Start pour vérifier la fermeture), `--max-steps` actions,
+Arrêt : toutes les options rencontrées essayées **et** aucune transition `ok` connue
+encore à suivre après une fin (`complete`, puis `goto_library` depuis le menu Start pour
+vérifier la fermeture ; une scène visitée dont la scène suivante, sans condition, n'a jamais
+été atteinte — chemin coupé par un test de retour — fait redémarrer l'histoire), `--max-steps` actions,
 aucune scène / option / fin nouvelle pendant 40 + (scènes vues) actions (`stuck` ; les touches
 ←/→ de navigation dans un carrousel ne comptent pas, et le pilote prend le sens le plus court
 à partir de 3 options),
@@ -623,7 +625,7 @@ aucune trace, ou `--timeout`.
 | clé | sens |
 |---|---|
 | `status` | `ok` ; `lua_error` (erreur sur stderr : `Erreur Lua`, `callback error`, assert, traceback… ; ou `attempt to` / `stack traceback` sur stdout) ; `crash` (player sorti seul **sans** erreur Lua identifiée avant) ; `timeout` ; `stuck` |
-| `done_reason` | cause de l'arrêt, toujours présente : `complete` (toutes les options rencontrées essayées après une fin), `max_steps`, `library` (l'histoire est revenue à la bibliothèque, anciens moteurs) → `ok` ; `stuck` (pilote : plus rien de nouveau), `no_trace` (`--stuck` s sans trace), `no_start` (pilote jamais lancé) → `stuck` ; `timeout` ; `error` (arrêt sur erreur) ; `exit` (player sorti seul : `lua_error` si une erreur Lua a été vue avant, avec `exit_code`, sinon `crash`) |
+| `done_reason` | cause de l'arrêt, toujours présente : `complete` (toutes les options rencontrées essayées et toutes les transitions `ok` connues suivies, après une fin), `max_steps`, `library` (l'histoire est revenue à la bibliothèque, anciens moteurs) → `ok` ; `stuck` (pilote : plus rien de nouveau), `no_trace` (`--stuck` s sans trace), `no_start` (pilote jamais lancé) → `stuck` ; `timeout` ; `error` (arrêt sur erreur) ; `exit` (player sorti seul : `lua_error` si une erreur Lua a été vue avant, avec `exit_code`, sinon `crash`) |
 | `errors` | lignes d'erreur filtrées |
 | `scenes` | identifiants des stages visités (sert à fusionner la couverture de plusieurs parcours) |
 | `scenes_visited` / `scenes_total` / `coverage` | stages distincts **réellement atteints** (l'option d'un choix ne compte qu'une fois la transition faite) / stages de `nodes.lua` (y compris inaccessibles) / rapport des deux |

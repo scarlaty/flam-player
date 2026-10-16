@@ -17,7 +17,8 @@ utilisateur :
     (pause/seek/play) puis, au besoin, fin de piste simulee ;
   - toutes les `back_every` nouvelles scenes audio, en alternance :
     back_callback() puis "Reprendre", ou l'entree du menu contextuel (M).
-Arret : toutes les options rencontrees essayees apres une fin (`complete`,
+Arret : toutes les options rencontrees essayees et aucune transition ok connue
+non suivie (scene suivante jamais atteinte) apres une fin (`complete`,
 puis goto_library depuis le menu Start), `max_steps` actions, pas de nouvelle
 scene / option / fin pendant 40 + nb de scenes vues actions (`stuck`), sortie
 vers la bibliotheque (anciens moteurs), erreur, crash ou delai.
@@ -197,8 +198,8 @@ do
         local function progress() noProg = 0 end
         local shown = {}     -- actions de choix deja affichees (cle = id d'action)
         -- Transitions ok connues mais jamais suivies : pour chaque scene visitee,
-        -- sa scene suivante (action a une seule entree sans condition) pas encore
-        -- atteinte, ou son choix (plusieurs entrees) jamais affiche. Un test de
+        -- l'une des entrees sans condition de son action pas encore atteinte (sauf si
+        -- c'est un choix deja affiche : suivi par `pending`). Un test de
         -- retour peut couper un chemin lineaire : sans ce compte, `complete` serait
         -- declare alors que la suite du chemin n'a pas ete jouee (#45). Les
         -- transitions indexItem / conditionnelles dependent de l'etat : ignorees.
@@ -208,11 +209,14 @@ do
                 local st = N.stages and N.stages[id]
                 local tr = st and st.ok
                 local list = tr and tr.indexItem == nil and N.actions and N.actions[tr.action]
-                if list and #list == 1 then
-                    local e = list[1]
-                    if not e.cond and N.stages[e.stage] and not seen[e.stage] then n = n + 1 end
-                elseif list and #list > 1 and not shown[tr.action] then
-                    n = n + 1
+                -- choix deja affiche : ses options sont suivies par `pending`
+                if list and not (#list > 1 and shown[tr.action]) then
+                    for _, e in ipairs(list) do
+                        if not e.cond and N.stages[e.stage] and not seen[e.stage] then
+                            n = n + 1
+                            break
+                        end
+                    end
                 end
             end
             return n
