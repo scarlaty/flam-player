@@ -381,7 +381,7 @@ pas rouvrir chaque zip à chaque scan ; les dossiers `.plain` sont relus à chaq
 
 `thumbs/` est enregistré dans `APP_CACHE_SUBDIRS` (`cache.rs`) : « Vider le cache » le nettoie.
 
-**Suite** : surveillance du dossier (`notify`) et purge de `thumbs/` : issue #37.
+**Purge de `thumbs/`** : au démarrage, en arrière-plan et sans jamais bloquer ni échouer le lancement, `thumbnail::purge_thumbs` supprime les vignettes de plus de 30 jours (clé périmée : archive modifiée ou disparue), les restes d'écriture `*.tmp-<pid>` de plus d'une heure, puis les plus anciennes vignettes tant que le total dépasse 128 Mio. Seuls les fichiers réguliers nommés exactement comme ceux de `ThumbCache` (`<16 chiffres hexadécimaux minuscules>.png` ou `.tmp-<pid>`) sont touchés : `thumbs/` lien ou jonction refusé (jamais parcouru), liens, sous-dossiers et fichiers étrangers ignorés. Une suppression refusée (fichier ouvert, droits) est journalisée et la purge continue ; le fichier est réessayé au démarrage suivant.
 
 ### Erreurs
 

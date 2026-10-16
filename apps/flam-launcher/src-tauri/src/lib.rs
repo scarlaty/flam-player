@@ -32,6 +32,35 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Purge `<cache>/thumbs/` selon la politique par défaut. Un échec n'est jamais bloquant : il est
+/// seulement journalisé.
+fn purge_stale_thumbs(app: &tauri::AppHandle) {
+    let state = app.state::<storage::ConfigState>();
+    let cache = {
+        let _guard = state.guard();
+        settings::SettingsStore::new(&state.dir)
+            .resolved_cache_dir(&settings::Environment::current())
+    };
+    let result = cache.map_err(|e| e.to_string()).and_then(|cache| {
+        thumbnail::purge_thumbs(
+            &cache,
+            &thumbnail::PurgePolicy::default(),
+            std::time::SystemTime::now(),
+        )
+        .map_err(|e| e.to_string())
+    });
+    match result {
+        Ok(report) if report.removed > 0 || report.failed > 0 => tracing::info!(
+            "purge des vignettes : {} supprimée(s), {} octets libérés, {} échec(s)",
+            report.removed,
+            report.freed_bytes,
+            report.failed
+        ),
+        Ok(_) => {}
+        Err(err) => tracing::warn!("purge des vignettes impossible : {err}"),
+    }
+}
+
 /// Point d'entrée : initialise les traces puis lance l'application Tauri.
 pub fn run() {
     tracing_subscriber::fmt()
@@ -69,6 +98,9 @@ pub fn run() {
             app.manage(player::PlayerService::new(Arc::new(
                 player::TauriPlayerEvents(app.handle().clone()),
             )));
+            // Purge des vignettes périmées de `<cache>/thumbs/` (#37), hors du démarrage.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || purge_stale_thumbs(&handle));
             // Reprise de la file persistée : chaque entrée est ré-résolue depuis sa source.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
