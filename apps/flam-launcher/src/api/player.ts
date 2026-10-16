@@ -38,6 +38,9 @@ export const PLAYER_EXITED_EVENT = "player://exited";
  * `player_launch` : lance l'histoire installée `uuid` dans flam-player. Erreurs : `not_found`
  * (non installée), `story_file_missing`, `player_unavailable` (player introuvable ou non
  * exécutable), `player_busy` (un player tourne déjà : un seul à la fois).
+ * Si le lancement échoue après la préparation (`story_file_missing`, `player_unavailable`), le
+ * message peut se terminer par « Information sur la progression : … » (sauvegardes mises de
+ * côté) : à afficher tel quel.
  */
 export function launchPlayer(uuid: string): Promise<PlayerSession> {
   return invokeCommand<PlayerSession>("player_launch", { uuid });

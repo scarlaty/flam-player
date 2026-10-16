@@ -404,7 +404,11 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   Au-delà de 16 niveaux, c'est une erreur explicite (« arborescence trop profonde »), plus
   jamais une copie tronquée en silence. Les autres échecs (disque plein, fichier verrouillé)
   restent des erreurs : au rapatriement de fin de partie ils sont aussi dans `saves_error`, au
-  lancement ils refusent le lancement sans rien supprimer.
+  lancement ils refusent le lancement sans rien supprimer. Quand le lancement échoue **après**
+  la préparation de la copie de travail (`story_file_missing`, `player_unavailable` au spawn),
+  les mises de côté déjà faites n'iront à aucun `player://exited` : leur texte est ajouté au
+  message de l'erreur de la commande (« … Information sur la progression : … », `kind`
+  inchangé) pour que l'interface l'affiche (`AppError::with_note`).
 - **Compromis sur un plantage du player** : le rapatriement a lieu aussi quand le player
   échoue ; un `saves/` partiel (écriture interrompue) remplace donc la version précédente, qui
   n'est pas gardée au-delà de l'échange (`.old` supprimé après succès). Choix assumé : sans lui,
@@ -717,7 +721,10 @@ travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
   verrouillés. `style-src` garde `'unsafe-inline'` : Tauri et React injectent des styles en ligne
   (attributs `style`), qu'une CSP à nonce ne couvre pas ; aucun script en ligne n'est autorisé.
 - La capability `core:default` (`src-tauri/capabilities/default.json`) est volontairement large
-  pour le squelette : elle sera restreinte permission par permission au fil des issues.
+  pour le squelette : elle sera restreinte permission par permission au fil des issues. Y
+  s'ajoutent `core:window:allow-minimize`, `allow-unminimize` et `allow-set-focus` (réduire la
+  fenêtre pendant la lecture, option _Réduire la fenêtre pendant la lecture_), appelées depuis
+  `src/api/window.ts` par l'API de fenêtre de Tauri, sans code Rust.
 - Plugin `tauri-plugin-dialog` (sélecteurs natifs de dossier et de fichier `.exe`) avec la seule
   permission **`dialog:allow-open`** : ni `dialog:default` (messages, confirmations, sauvegarde)
   ni accès au système de fichiers depuis le front. Le chemin choisi n'est qu'une proposition :
@@ -788,11 +795,28 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   l'histoire (`player_launch`) à la fin de l'installation ; l'annulation ou le retrait de la tâche
   retire ce lancement, un échec le garde pour _Réessayer_. Un seul player à la fois : _Jouer_ est
   désactivé tant qu'il tourne. À la fin de la lecture, une notification donne l'issue (dernières
-  lignes de stderr si le player s'est arrêté en erreur) et la fiche reste ouverte, prête à rejouer.
+  lignes de stderr si le player s'est arrêté en erreur) et, si `saves_error` n'est pas vide, une
+  seconde notification (erreur, à fermer à la main) dit que la progression n'a pas pu être
+  conservée telle quelle. Quand la lecture a été demandée **depuis la fiche** (_Jouer_,
+  _Jouer depuis le dossier_, _Télécharger et jouer_), l'application revient à la fin sur cette
+  fiche (`#/library/<source>`, fiche rouverte) même si l'utilisateur a changé d'écran ou de
+  source entre-temps ; une lecture lancée depuis la carte ne rouvre rien. Le retour est abandonné (sans erreur) si une fiche ou un dialogue est déjà ouvert à ce moment, si la source est en erreur ou supprimée, ou si l'histoire n'y est plus ; un lancement refusé n'efface que sa propre demande. Si l'option
+  _Réduire la fenêtre pendant la lecture_ (Paramètres > Lecture, désactivée par défaut) est
+  cochée, la fenêtre est réduite à `player://started` et rétablie, avec le focus, à
+  `player://exited` ; c'est une préférence du poste, gardée dans le stockage local de la
+  fenêtre (`localStorage`, pas dans `settings.json`), et un échec de réduction n'empêche jamais
+  la lecture. À la fermeture de la fiche (bouton, Échap, après une confirmation) le focus revient
+  à la carte d'origine (ou, pour une fiche rouverte automatiquement, à la carte de l'histoire).
+  _Supprimer_ demande une confirmation avec la case _Supprimer aussi la progression_
+  (décochée à chaque ouverture) : décochée, `library_remove(uuid)` conserve les sauvegardes de
+  l'enfant ; cochée, `library_remove(uuid, true)` les efface aussi.
   Le **panneau des tâches** (`StoriesTaskPanel`, zone `aside`) montre téléchargement (octets,
   %), conversion par phase (images, audio, scripts, archive), installation, et pour les échecs
-  le message du backend avec _Réessayer_ (relance `install_start` avec la même entrée) ; les
-  tâches terminées se retirent du panneau. L'installation recharge le rapport de compatibilité
+  le message du backend avec _Réessayer_ (relance `install_start` avec la même entrée ; si
+  l'entrée n'est plus dans le cache du catalogue ou le dernier scan, `not_found` devient un
+  message qui invite à rafraîchir la source, et la tâche en échec reste affichée) ; une
+  installation réussie se retire d'elle-même du panneau après 8 s (`DONE_TASK_TTL_MS`), les
+  échecs et annulations restent jusqu'à _Retirer_ ou _Réessayer_. L'installation recharge le rapport de compatibilité
   (la conversion y enregistre son résultat). Tests : `stories.test.tsx` (installer → progression →
   jouer, annulation, erreur de conversion, avertissement d'incompatibilité, mise à jour,
   suppression, player occupé).
@@ -803,7 +827,8 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   ![Sources, thème clair](docs/screenshots/sources-clair.png)
   ![Sources, thème sombre](docs/screenshots/sources-sombre.png)
 - **Paramètres** : chemins du player, de Python et du cache (sélecteur `.exe`, valeurs utilisées,
-  problèmes signalés), taille du cache et vidage, thème Système/Clair/Sombre, à propos.
+  problèmes signalés), taille du cache et vidage, thème Système/Clair/Sombre, lecture (réduire
+  la fenêtre pendant la lecture), à propos.
   ![Paramètres, thème clair](docs/screenshots/settings-clair.png)
   ![Paramètres, thème sombre](docs/screenshots/settings-sombre.png)
 - **Restauration** : si un fichier de configuration corrompu a été remplacé, un bandeau
