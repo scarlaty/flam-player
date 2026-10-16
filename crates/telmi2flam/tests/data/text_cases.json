@@ -1,6 +1,6 @@
 {
  "generator": "crates/telmi2flam/tests/data/gen_text_cases.py",
- "python": "3.14.7",
+ "python": "3.14.8",
  "unidata_version": "16.0.0",
  "label_max": 40,
  "py_whitespace": [

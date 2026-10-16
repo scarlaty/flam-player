@@ -1,5 +1,5 @@
 //! Tables Unicode de Python, générées par `tests/data/gen_text_cases.py` : ne pas
-//! modifier à la main. Python 3.14.7, Unicode 16.0.0.
+//! modifier à la main. Python 3.14.8, Unicode 16.0.0.
 
 /// Version Unicode de `unicodedata` du Python qui a produit ces tables.
 pub const UNIDATA_VERSION: &str = "16.0.0";
