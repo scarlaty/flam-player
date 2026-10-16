@@ -27,8 +27,57 @@ Depuis `apps/flam-launcher/` :
 | `npm test`                           | Vitest + Testing Library (API Tauri simulée)   |
 | `npm run tauri build`                | Exécutable et installeurs (MSI, NSIS)          |
 | `npm run tauri build -- --no-bundle` | Exécutable seul, sans installeur               |
+| `npm run build:converter`            | Construit le convertisseur embarqué (réseau)   |
 
 Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
+
+## Convertisseur embarqué
+
+L'application installée ne suppose aucun Python sur la machine : le convertisseur est livré avec
+un Python embarquable officiel (3.14.8, signé PSF) et Pillow 12.3.0, sous `<exe>/telmi2flam/`
+(`python/python.exe`, `telmi2flam.py`, `lif.py`, `mp3map.py`, `engine/`, `runtime/`,
+`LICENSES.md`, `BUILD.txt`). `convert.rs` et l'annulation Ctrl+Break sont inchangés : ils lancent
+`python -E -s -u -X utf8 telmi2flam.py`. Environ 20 Mo sur disque, 9 Mo compressés dans
+l'installeur.
+
+1. **Construire l'artefact** (réseau, PowerShell seul, sans Python sur la machine de build) :
+   `npm run build:converter`. Le script télécharge Python et Pillow à des versions épinglées,
+   **vérifie leur SHA-256** (publié par python.org / PyPI), allège le paquet, écrit
+   `build/telmi2flam/` (ignoré par Git) puis le contrôle sans Python dans le `PATH`.
+2. **L'embarquer** : `src-tauri/tauri.bundle.conf.json` déclare la ressource
+   `../build/telmi2flam/` vers `telmi2flam/`. Il est passé explicitement, car l'ajouter à
+   `tauri.conf.json` ferait échouer tout build sans l'artefact :
+
+   ```
+   npm run build:converter
+   npm run tauri build -- --config src-tauri/tauri.bundle.conf.json                 # installeurs
+   npm run tauri build -- --no-bundle --config src-tauri/tauri.bundle.conf.json     # exe seul
+   ```
+
+   Même avec `--no-bundle`, Tauri copie `telmi2flam/` à côté de l'exe dans
+   `src-tauri/target/release/` (vérifié : copie identique à l'artefact). Sans `--config`, le
+   build reste valable mais sans convertisseur (le launcher cherche alors Python dans le `PATH`).
+
+3. **Vérifier en réel** (Python absent du `PATH`) : deux tests Rust ignorés par défaut
+   (`install::convert::tests::embarque`) pilotent le convertisseur embarqué, conversion puis
+   annulation :
+
+   ```powershell
+   # depuis src-tauri/ ; `cargo test --lib --no-run` affiche le binaire de test
+   $env:FLAM_TEST_CONVERTER_DIR = "<...>\target\release\telmi2flam"
+   $env:FLAM_TEST_ARCHIVE = "<histoire de test>.zip"   # synthétique, hors dépôt
+   $env:PATH = "C:\Windows\System32"
+   & <binaire-de-test>.exe --ignored --nocapture embarque
+   ```
+
+   L'archive de test se génère avec `make_story.py` (issue #46) ; ne jamais committer de
+   contenu sous licence. Pillow embarqué n'a pas FreeType : avec le Python embarqué, retirer
+   `font_size=48` de ce script.
+
+**Licences redistribuées** : Python (PSF-2.0 et composants) et Pillow (MIT-CMU et bibliothèques
+intégrées) ; leurs textes sont dans l'artefact et `LICENSES.md` les référence. Les licences de
+`runtime/` et du dépôt (« usage personnel et éducatif ») restent à confirmer avant
+redistribution (#21).
 
 ## Architecture
 
@@ -362,16 +411,29 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
    interpréteur durci (`-E -s -u -X utf8`, lancé depuis `library/.staging/` ; `-I` retirerait
    le dossier du script de `sys.path`, d'où `telmi2flam` importe ses modules). stdout est lu ligne par ligne (ligne non JSON ou événement inconnu
    ignoré) ; stderr, décodé en tolérant les erreurs, ne sert qu'au message de repli (fin du
-   flux) si aucun événement `error` n'est reçu (`code` = `exit_<n>`).
+   flux, lu par morceaux dans un tampon borné à 4 Kio) si aucun événement `error` n'est reçu
+   (`code` = `exit_<n>`). Le convertisseur est rattaché à un Job Object Windows
+   (`KILL_ON_JOB_CLOSE`) : l'arrêt forcé termine aussi ses sous-processus.
    **Annulation** : `CTRL_BREAK_EVENT` (le convertisseur nettoie et sort avec 130), envoyé par un
    court assistant Python isolé (`-I`) sans fenêtre qui s'attache à la console cachée du convertisseur (une
    application graphique n'a pas de console, et `GenerateConsoleCtrlEvent` ne vise que la
    sienne) ; arrêt forcé après 5 s de grâce ; puis suppression de `<sortie>.<pid>.part`.
    Un `.plain.pk` est vérifié (`info.plain`, `uuid.bin`, `main.lua`) et copié ; un dossier `.plain`
-   est empaqueté en zip « stored » (liens et jonctions ignorés).
+   est empaqueté en zip « stored » : racine, fichiers requis ou entrées qui sont des liens
+   symboliques ou jonctions sont **refusés** (fichiers ouverts sans suivre les liens), taille
+   cumulée bornée à 4 Gio.
 3. **Installation** : `uuid` et `version` **revalidés** (`story::validate_story_id`), renommage
    vers `<cache>/library/<uuid>-<version>.plain.pk` (version inconnue : `0`), chemin vérifié sous
-   `library/`, index `library.json` mis à jour, archive téléchargée supprimée.
+   `library/`, index `library.json` mis à jour, archive téléchargée supprimée. Ordre sûr : un marqueur d'intention `.staging/<fichier>.pending` est écrit, l'ancien fichier de
+   même nom passe en `.staging/*.bak`, le nouveau est renommé, l'index est écrit, puis le
+   marqueur est effacé (échec : retour à l'état précédent). Au chargement, seules les
+   publications **qui ont un marqueur** sont défaites ; un `.plain.pk` non indexé sans marqueur
+   n'est jamais supprimé. Le marqueur n'est effacé que si la restauration a réussi ; sinon
+   marqueur et `.bak` sont conservés (avertissement) et la réconciliation suivante réessaie (publication terminée : le `.bak` est supprimé avant le marqueur, qui reste si la suppression échoue ; marqueur illisible avec un `.bak` : rien n'est supprimé) ; tant qu'ils subsistent, une nouvelle installation du même fichier est refusée (erreur de validation), sans rien toucher.
+   Publication et réconciliation tiennent un verrou inter-processus
+   (`library/.lock`) ; si une autre instance le tient, ou si le verrou ne peut pas être ouvert,
+   la liste lit simplement l'index sans réconcilier (l'installation et la suppression, elles,
+   échouent).
 
 - **Concurrence** : `max_downloads` téléchargements simultanés (`settings.json`, 1 à 4, 2 par
   défaut, relu à chaque tâche), **une** conversion à la fois.
@@ -386,13 +448,17 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
   (`.staging/<tâche>.plain.pk`, `archives/<uuid>-<version>.<ext>`) est vérifié directement sous
   son dossier. Une tâche annulée (y compris en attente du créneau de conversion) supprime son
   archive téléchargée.
-  Les tâches terminées ne sont gardées qu'en mémoire (100 au plus).
-- **Convertisseur** : `<exe>/telmi2flam/telmi2flam.py` (application installée, empaquetage : #21),
+  Les tâches terminées ne sont gardées qu'en mémoire (100 au plus). Le lien et le validateur
+  d'une archive sont mémorisés dans `archives/<archive>.meta.json` (4 Kio au plus, validateur revalidé) : une nouvelle demande après
+  une coupure reprend le `.part`, et une archive complète n'est réutilisée que si son lien et
+  sa taille correspondent (sinon elle est retéléchargée). L'écriture de `install_queue.json` se
+  fait hors des verrous, sur un thread bloquant, avec des écritures ordonnées.
+- **Convertisseur** : `<exe>/telmi2flam/telmi2flam.py` (application installée ; construit par `npm run build:converter`, voir « Convertisseur embarqué »),
   sinon en développement `tools/telmi2flam/telmi2flam.py` d'un dossier ancêtre. Python : `resolved.python_path`.
 - **Bibliothèque** : `library.json` = `{ schema_version, stories: LibraryEntry[] }` avec
   `LibraryEntry { uuid, version, title, file, size, installed_at, converter, source: StoryEntry }`.
-  `converter` est l'empreinte `sha256:<12 hex>` de `telmi2flam.py` (pas d'option `--version` :
-  #60). **Une installation par `uuid`** : la dernière installée remplace la précédente (autre
+  `converter` est la version de `telmi2flam` lue dans le champ `version` de l'événement `start`
+  (#60), avec en repli l'empreinte `sha256:<12 hex>` de `telmi2flam.py`. **Une installation par `uuid`** : la dernière installée remplace la précédente (autre
   version, ou `.plain` / `.plain.pk` de même `uuid` d'un dossier source). Un index corrompu est
   sauvegardé en `*.bak` et repart vide. `library_list` ignore les entrées dont le fichier a
   disparu.
@@ -435,7 +501,8 @@ Un chemin à `null` signifie « automatique » ; `settings_get` renvoie aussi le
 
 - `player_path` : `flam-player.exe` à côté de l'exécutable de l'appli, sinon (build de
   développement) `build/flam-player.exe` dans un dossier ancêtre (racine du dépôt) ;
-- `python_path` : `python.exe`, `python3.exe` puis `py.exe` (lanceur Windows) trouvés dans le
+- `python_path` : d'abord le Python embarqué `<exe>/telmi2flam/python/python.exe` (présent seulement si
+  `<exe>/telmi2flam/telmi2flam.py` l'est aussi), sinon `python.exe`, `python3.exe` puis `py.exe` (lanceur Windows) trouvés dans le
   `PATH` (aucun processus ni script n'est exécuté ; les entrées relatives du `PATH` sont ignorées) ;
 - `cache_dir` : `%LOCALAPPDATA%/flam-launcher/cache`.
 

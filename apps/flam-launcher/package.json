@@ -15,6 +15,7 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "build:converter": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-converter.ps1",
     "tauri": "tauri"
   },
   "dependencies": {
