@@ -27,8 +27,57 @@ Depuis `apps/flam-launcher/` :
 | `npm test`                           | Vitest + Testing Library (API Tauri simulée)   |
 | `npm run tauri build`                | Exécutable et installeurs (MSI, NSIS)          |
 | `npm run tauri build -- --no-bundle` | Exécutable seul, sans installeur               |
+| `npm run build:converter`            | Construit le convertisseur embarqué (réseau)   |
 
 Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
+
+## Convertisseur embarqué
+
+L'application installée ne suppose aucun Python sur la machine : le convertisseur est livré avec
+un Python embarquable officiel (3.14.8, signé PSF) et Pillow 12.3.0, sous `<exe>/telmi2flam/`
+(`python/python.exe`, `telmi2flam.py`, `lif.py`, `mp3map.py`, `engine/`, `runtime/`,
+`LICENSES.md`, `BUILD.txt`). `convert.rs` et l'annulation Ctrl+Break sont inchangés : ils lancent
+`python -E -s -u -X utf8 telmi2flam.py`. Environ 20 Mo sur disque, 9 Mo compressés dans
+l'installeur.
+
+1. **Construire l'artefact** (réseau, PowerShell seul, sans Python sur la machine de build) :
+   `npm run build:converter`. Le script télécharge Python et Pillow à des versions épinglées,
+   **vérifie leur SHA-256** (publié par python.org / PyPI), allège le paquet, écrit
+   `build/telmi2flam/` (ignoré par Git) puis le contrôle sans Python dans le `PATH`.
+2. **L'embarquer** : `src-tauri/tauri.bundle.conf.json` déclare la ressource
+   `../build/telmi2flam/` vers `telmi2flam/`. Il est passé explicitement, car l'ajouter à
+   `tauri.conf.json` ferait échouer tout build sans l'artefact :
+
+   ```
+   npm run build:converter
+   npm run tauri build -- --config src-tauri/tauri.bundle.conf.json                 # installeurs
+   npm run tauri build -- --no-bundle --config src-tauri/tauri.bundle.conf.json     # exe seul
+   ```
+
+   Même avec `--no-bundle`, Tauri copie `telmi2flam/` à côté de l'exe dans
+   `src-tauri/target/release/` (vérifié : copie identique à l'artefact). Sans `--config`, le
+   build reste valable mais sans convertisseur (le launcher cherche alors Python dans le `PATH`).
+
+3. **Vérifier en réel** (Python absent du `PATH`) : deux tests Rust ignorés par défaut
+   (`install::convert::tests::embarque`) pilotent le convertisseur embarqué, conversion puis
+   annulation :
+
+   ```powershell
+   # depuis src-tauri/ ; `cargo test --lib --no-run` affiche le binaire de test
+   $env:FLAM_TEST_CONVERTER_DIR = "<...>\target\release\telmi2flam"
+   $env:FLAM_TEST_ARCHIVE = "<histoire de test>.zip"   # synthétique, hors dépôt
+   $env:PATH = "C:\Windows\System32"
+   & <binaire-de-test>.exe --ignored --nocapture embarque
+   ```
+
+   L'archive de test se génère avec `make_story.py` (issue #46) ; ne jamais committer de
+   contenu sous licence. Pillow embarqué n'a pas FreeType : avec le Python embarqué, retirer
+   `font_size=48` de ce script.
+
+**Licences redistribuées** : Python (PSF-2.0 et composants) et Pillow (MIT-CMU et bibliothèques
+intégrées) ; leurs textes sont dans l'artefact et `LICENSES.md` les référence. Les licences de
+`runtime/` et du dépôt (« usage personnel et éducatif ») restent à confirmer avant
+redistribution (#21).
 
 ## Architecture
 
@@ -387,7 +436,7 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
   son dossier. Une tâche annulée (y compris en attente du créneau de conversion) supprime son
   archive téléchargée.
   Les tâches terminées ne sont gardées qu'en mémoire (100 au plus).
-- **Convertisseur** : `<exe>/telmi2flam/telmi2flam.py` (application installée, empaquetage : #21),
+- **Convertisseur** : `<exe>/telmi2flam/telmi2flam.py` (application installée ; construit par `npm run build:converter`, voir « Convertisseur embarqué »),
   sinon en développement `tools/telmi2flam/telmi2flam.py` d'un dossier ancêtre. Python : `resolved.python_path`.
 - **Bibliothèque** : `library.json` = `{ schema_version, stories: LibraryEntry[] }` avec
   `LibraryEntry { uuid, version, title, file, size, installed_at, converter, source: StoryEntry }`.
@@ -435,7 +484,8 @@ Un chemin à `null` signifie « automatique » ; `settings_get` renvoie aussi le
 
 - `player_path` : `flam-player.exe` à côté de l'exécutable de l'appli, sinon (build de
   développement) `build/flam-player.exe` dans un dossier ancêtre (racine du dépôt) ;
-- `python_path` : `python.exe`, `python3.exe` puis `py.exe` (lanceur Windows) trouvés dans le
+- `python_path` : d'abord le Python embarqué `<exe>/telmi2flam/python/python.exe` (présent seulement si
+  `<exe>/telmi2flam/telmi2flam.py` l'est aussi), sinon `python.exe`, `python3.exe` puis `py.exe` (lanceur Windows) trouvés dans le
   `PATH` (aucun processus ni script n'est exécuté ; les entrées relatives du `PATH` sont ignorées) ;
 - `cache_dir` : `%LOCALAPPDATA%/flam-launcher/cache`.
 

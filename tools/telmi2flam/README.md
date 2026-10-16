@@ -593,6 +593,17 @@ dans le `nodes.json` source. Depuis #44 (convention de sortie par retour, voir �
 action n'est plus signalée si elle n'est atteinte que par la chaîne `home` : le chiffre
 « 4 warnings » est périmé (archive Maxicours absente du cache, non remesuré).
 
+### Distribution avec flam-launcher (Python embarqué)
+
+Pour l'installateur Windows, `apps/flam-launcher/scripts/build-converter.ps1` assemble
+`apps/flam-launcher/build/telmi2flam/` : `telmi2flam.py`, `lif.py`, `mp3map.py`, `engine/`,
+`runtime/`, plus un Python embarquable officiel (python.org) et Pillow (PyPI), allégés (sans
+sqlite3, ssl, `_avif`, `_imagingft`, `_imagingcms`, inutiles ici). Seule dépendance à
+l'exécution : Pillow ; `lupa` ne sert qu'à `validate.py`, qui n'est pas embarqué. Les
+composants redistribués et leurs licences sont listés dans le `LICENSES.md` produit avec
+l'artefact. Détails (construction, vérification, ressource Tauri) :
+`apps/flam-launcher/README.md`, section « Convertisseur embarqué ».
+
 ### Test dans flam-player (GUI)
 
 `test_run.bat` (racine du dépôt) enchaîne les tests unitaires du convertisseur puis un test
