@@ -5,3 +5,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Une seule PR par semaine pour toutes les actions.
+    groups:
+      actions:
+        patterns: ["*"]
+    ignore:
+      # Épinglée sur la tête d'une branche (stable), pas sur un tag : Dependabot
+      # ne sait pas la mettre à jour proprement.
+      - dependency-name: "dtolnay/rust-toolchain"
