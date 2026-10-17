@@ -365,9 +365,17 @@ d'index (`recover`), ni création de dossier. La seule écriture est la copie pe
 (idempotente). Le titre d'une histoire est chiffré dans `str/<uuid>/info` : il n'est connu que
 si l'histoire figure dans la bibliothèque du launcher, sinon l'écran affiche l'UUID court.
 Le numéro de série et le firmware ne sont pas affichés : `parse_mdf` ne lit encore aucun champ
-(format de `.mdf` non spécifié, #224). L'écran « Ma Flam » (`#/device`, `src/features/device/`)
-scrute `device_status` toutes les 2 s tant qu'il est ouvert et laisse des emplacements
-(`toolbar`, `storyActions`) pour l'envoi (#230) et le retrait (#231).
+(format de `.mdf` non spécifié, #224). L'écran « Ma Flam » (`#/device`, `src/features/device/`) est
+alimenté par `DeviceProvider` : scrutation de `device_status` (2 s sur l'écran, 6 s ailleurs,
+arrêtée pendant la lecture incrustée), `device_recover_transfers` une fois par branchement avant
+la lecture des histoires, file d'envoi séquentielle (`device_send_story`, progression par
+`device://transfer-progress`, annulation par `device_cancel_transfer`), retrait confirmé
+(`device_remove_story`) et éjection (`device_eject`). Le bouton « Envoyer sur la Flam » (cartes,
+fiche, « Ma Flam ») reste focalisable quand il est refusé et affiche sa raison (Flam non
+détectée, déjà présente, espace insuffisant, firmware non pris en charge, déjà en file) ;
+l'avertissement « fonction expérimentale, non officielle » est mémorisé dans le stockage local
+(`preferences.ts`). Le firmware n'étant pas exposé par `device_status`, « non pris en charge »
+n'est connu qu'après un refus du backend.
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).

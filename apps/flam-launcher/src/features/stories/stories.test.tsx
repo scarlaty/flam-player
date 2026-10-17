@@ -21,6 +21,7 @@ import { ToastProvider } from "../../components";
 import { PAGE_LEVEL_RULES, expectNoAxeViolations } from "../../test/axe";
 import { makeEntry } from "../../test/entries";
 import { CompatProvider } from "../compat/CompatProvider";
+import { DeviceProvider } from "../device/DeviceProvider";
 import { LibraryProvider } from "../library/LibraryProvider";
 import { StoriesLibrary } from "./StoriesLibrary";
 import { DONE_TASK_TTL_MS, StoriesProvider } from "./StoriesProvider";
@@ -225,12 +226,14 @@ async function renderApp() {
       <LibraryProvider>
         <CompatProvider>
           <StoriesProvider>
-            <main>
-              <StoriesLibrary />
-            </main>
-            <aside>
-              <StoriesTaskPanel />
-            </aside>
+            <DeviceProvider>
+              <main>
+                <StoriesLibrary />
+              </main>
+              <aside>
+                <StoriesTaskPanel />
+              </aside>
+            </DeviceProvider>
           </StoriesProvider>
         </CompatProvider>
       </LibraryProvider>
@@ -631,9 +634,11 @@ it("joue directement un fichier d'une source dossier, sans installation", async 
       <LibraryProvider>
         <CompatProvider>
           <StoriesProvider>
-            <main>
-              <StoriesLibrary />
-            </main>
+            <DeviceProvider>
+              <main>
+                <StoriesLibrary />
+              </main>
+            </DeviceProvider>
           </StoriesProvider>
         </CompatProvider>
       </LibraryProvider>
