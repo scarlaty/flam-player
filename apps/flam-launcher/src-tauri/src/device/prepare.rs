@@ -116,7 +116,7 @@ impl Sink for RealSink {
         std::fs::create_dir_all(path)
     }
     fn create(&self, path: &Path) -> io::Result<Box<dyn Write + '_>> {
-        Ok(Box::new(io::BufWriter::new(File::create_new(path)?)))
+        Ok(Box::new(File::create_new(path)?))
     }
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         std::fs::rename(from, to)
@@ -236,7 +236,7 @@ fn plan_entry(relative: &str) -> Result<Option<(String, Action)>, PrepareError> 
     } else {
         (relative.to_string(), Action::Copy)
     };
-    if target.is_empty() || target.ends_with('/') || target == KEY_FILE {
+    if target.is_empty() || target.ends_with('/') || target.eq_ignore_ascii_case(KEY_FILE) {
         return Err(invalid(format!("nom d'entrée refusé : {relative:?}")));
     }
     Ok(Some((target, action)))
@@ -324,10 +324,29 @@ pub(crate) fn prepare_with(
         let stories = work_dir.join(STORIES_DIR);
         sink.create_dir_all(&stories)?;
         let dir = stories.join(&uuid);
-        if dir.exists() {
-            sink.remove_dir_all(&dir)?;
+        // Une préparation précédente est écartée par renommage (jamais supprimée en place) :
+        // le dossier final reste complet, et elle est remise en place si le renommage échoue.
+        let previous = if dir.exists() {
+            let old = work_dir.join(new_staging_name(&format!("ancien-{uuid}")));
+            sink.rename(&dir, &old)?;
+            Some(old)
+        } else {
+            None
+        };
+        if let Err(e) = sink.rename(&staging, &dir) {
+            if let Some(old) = &previous {
+                if let Err(back) = sink.rename(old, &dir) {
+                    tracing::warn!(ancien = %old.display(), "restauration impossible : {back}");
+                }
+            }
+            return Err(e.into());
         }
-        sink.rename(&staging, &dir)?;
+        if let Some(old) = previous {
+            if let Err(e) = sink.remove_dir_all(&old) {
+                // Laissé à `cleanup_stale` (préfixe de chantier).
+                tracing::warn!(ancien = %old.display(), "suppression différée : {e}");
+            }
+        }
         Ok::<_, PrepareError>((dir, total))
     })();
     let (dir, total_bytes) = match result {
@@ -676,6 +695,8 @@ mod tests {
             "img/fin.",
             ".plain",
             "key",
+            "Key",
+            "KEY.plain",
         ] {
             let mut entries = base_entries();
             entries.push((bad, b"x".to_vec()));
@@ -869,14 +890,23 @@ mod tests {
                 let result =
                     prepare_with(&sink, &pk, &test_keys(), &work, &Limits::default(), &cancel);
                 let final_dir = work.join("str").join(UUID_STR);
+                // Les 4 dernières opérations (dossier `str`, mise à l'écart de l'ancienne
+                // préparation, renommage final, suppression de l'ancienne) suivent le dernier
+                // contrôle d'annulation ; seule la dernière peut échouer sans faire échouer
+                // la préparation.
+                let tail = fail_at + 4 >= total_ops;
+                let last = fail_at + 1 == total_ops;
                 match result {
-                    Err(PrepareError::Io(_)) if mode == Fault::Error => {}
-                    Err(PrepareError::Cancelled) if mode == Fault::Cancel => {}
-                    // Annulation demandée après le dernier contrôle : résultat complet.
-                    Ok(_) if mode == Fault::Cancel => {}
+                    Err(PrepareError::Io(_)) if mode == Fault::Error && !last => {}
+                    Ok(_) if mode == Fault::Error && last => {
+                        // Ancienne préparation laissée sous un nom de chantier.
+                        assert_eq!(cleanup_stale(&work).unwrap(), 1, "étape {fail_at}");
+                    }
+                    Err(PrepareError::Cancelled) if mode == Fault::Cancel && !tail => {}
+                    Ok(_) if mode == Fault::Cancel && tail => {}
                     other => panic!("{fail_at} : résultat inattendu {other:?}"),
                 }
-                // Invariant : pas de chantier, dossier final absent ou complet.
+                // Invariant : pas de chantier.
                 for e in std::fs::read_dir(&work).unwrap() {
                     let name = e.unwrap().file_name();
                     assert!(
@@ -884,9 +914,8 @@ mod tests {
                         "chantier laissé (étape {fail_at})"
                     );
                 }
-                if final_dir.exists() {
-                    assert_eq!(list_files(&final_dir), previous, "étape {fail_at}");
-                }
+                // Une préparation (l'ancienne ou la nouvelle, de même contenu) reste en place.
+                assert_eq!(list_files(&final_dir), previous, "étape {fail_at}");
             }
         }
     }
