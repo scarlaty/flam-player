@@ -1016,24 +1016,93 @@ class TestAlwaysAFiche(CompatBase):
         self.assertEqual(s["status"], "ECHEC_CONVERSION")
         self.assertIn("disque plein", s["steps"]["convert"]["messages"][0])
 
+    def prov(self, name="report.provisional.json"):
+        with open(os.path.join(self.cache, "compat", name), encoding="utf-8") as f:
+            return json.load(f)
+
     def test_dead_process_leaves_a_provisional_record(self):
-        """Processus tue pendant l'exploration : report.json garde une fiche d'echec."""
+        """Processus tue pendant l'exploration : une fiche provisoire d'echec est ecrite a
+        part (#178), puis reconciliee a la relance."""
         def explore(player, story, timeout_s=120, seed=0, max_steps=200):
             raise Killed()
         with self.assertRaises(Killed):
             self.campaign(self.good(), explore=explore, player_exe="p.exe")
-        with open(os.path.join(self.cache, "compat", "report.json"), encoding="utf-8") as f:
-            stories = json.load(f)["stories"]
+        stories = self.prov()["stories"]
         self.assertEqual(len(stories), 1)
         self.assertEqual(stories[0]["status"], "ECHEC_EXECUTION")
         self.assertEqual(stories[0]["steps"]["run"]["done_reason"], "crash")
         self.assertIn("interrompu", stories[0]["steps"]["run"]["messages"][-1])
-        st = self.status_json()["good"]
+        st = self.prov("status.provisional.json")["stories"]["good"]
         self.assertEqual((st["status"], st["run_reason"]), ("ECHEC_EXECUTION", "crash"))
         # sans --force, la fiche provisoire n'est pas reprise comme resultat : on refait
         doc = self.campaign(self.good(), explore=lambda *a, **k: {"status": "ok"},
                             player_exe="p.exe")
         self.assertEqual(doc["stories"][0]["steps"]["run"]["status"], "ok")
+        self.assertFalse(os.path.exists(os.path.join(self.cache, "compat",
+                                                     "report.provisional.json")))
+
+    def test_provisional_never_replaces_the_good_record(self):
+        doc = self.campaign(self.good(), explore=lambda *a, **k: {"status": "ok"},
+                            player_exe="p.exe")
+        self.assertEqual(doc["stories"][0]["steps"]["run"]["status"], "ok")
+
+        def explore(player, story, timeout_s=120, seed=0, max_steps=200):
+            raise Killed()
+        with self.assertRaises(Killed):
+            self.campaign(self.good(), explore=explore, player_exe="p.exe", force=True)
+        with open(os.path.join(self.cache, "compat", "report.json"), encoding="utf-8") as f:
+            kept = json.load(f)["stories"]
+        self.assertEqual(kept[0]["steps"]["run"]["status"], "ok")
+        self.assertNotEqual(kept[0]["status"], "ECHEC_EXECUTION")
+        self.assertNotEqual(self.status_json()["good"]["status"], "ECHEC_EXECUTION")
+        self.assertEqual(self.prov()["stories"][0]["status"], "ECHEC_EXECUTION")
+        # reconciliation : l'ancienne bonne fiche reste, le provisoire disparait
+        doc = self.campaign(self.good(), explore=lambda *a, **k: {"status": "ok"},
+                            player_exe="p.exe")
+        self.assertEqual(len(doc["stories"]), 1)
+        self.assertFalse(os.path.exists(os.path.join(self.cache, "compat",
+                                                     "status.provisional.json")))
+
+    def test_killed_before_exploration_leaves_a_provisional_record(self):
+        """Tue pendant la conversion, ou histoire encore en file d'attente (#178)."""
+        ents = [self.entry(n, None, path=self.mkzip(std_files(), n), version="local")
+                for n in ("a", "b")]
+
+        def boom(entry, cache, **kw):
+            raise Killed()
+        with mock.patch.object(compat, "process_story", boom):
+            with self.assertRaises(Killed):
+                self.campaign(ents)
+        stories = {s["uuid"]: s for s in self.prov()["stories"]}
+        self.assertEqual(set(stories), {"a", "b"})
+        for s in stories.values():
+            self.assertEqual(s["status"], "ECHEC_CONVERSION")
+            self.assertTrue(s["transient"])
+            self.assertIn("interrompu", s["steps"]["convert"]["messages"][0])
+        # relance : histoires refaites (la fiche provisoire n'est jamais reprise)
+        doc = self.campaign(ents)
+        self.assertEqual({s["status"] for s in doc["stories"]}, {"OK"})
+
+    def test_failed_record_download_step(self):
+        local = self.entry("l", None, path="x.zip", version="1")
+        self.assertEqual(compat.failed_record(local, OSError("x"))["steps"]["download"]["messages"],
+                         ["archive locale"])
+        remote = self.entry("r", "http://x/r.zip")
+        self.assertEqual(compat.failed_record(remote, OSError("x"), self.cache)
+                         ["steps"]["download"]["status"], "skipped")
+        arch = os.path.join(self.cache, "archives")
+        os.makedirs(arch)
+        with open(os.path.join(arch, compat.story_key("r", "1") + ".zip"), "wb") as f:
+            f.write(b"PK")
+        self.assertEqual(compat.failed_record(remote, OSError("x"), self.cache)
+                         ["steps"]["download"]["status"], "ok")
+
+    def test_exit_code_message_only_for_crash(self):
+        run = {"done_reason": "exit", "exit_code": 1, "errors": ["boum"]}
+        _, msgs = compat.interpret_run(dict(run, status="lua_error"))
+        self.assertFalse(any("flam-player" in m for m in msgs), msgs)
+        _, msgs = compat.interpret_run(dict(run, status="crash", exit_code=-1))
+        self.assertTrue(any("flam-player" in m for m in msgs), msgs)
 
     def test_provisional_not_reused_without_run(self):
         def explore(player, story, timeout_s=120, seed=0, max_steps=200):
