@@ -22,3 +22,5 @@ crates/telmi2flam/tests/vectors/**/*.mp3 binary
 
 # Texte officiel de la GPL v3 : octets exacts, LF.
 /LICENSE text eol=lf
+tools/ffmpeg/*.sh text eol=lf
+tools/ffmpeg/pins.env text eol=lf
