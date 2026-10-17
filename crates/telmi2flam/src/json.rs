@@ -32,7 +32,9 @@ pub const MAX_DEPTH: usize = 512;
 /// Objet JSON dans l'ordre d'insertion, comme `dict` de Python.
 pub type Object = IndexMap<String, Value>;
 
-/// Valeur JSON décodée, avec la distinction entier / flottant de Python.
+/// Valeur JSON décodée, avec la distinction entier / flottant de Python. Destruction
+/// itérative (voir `impl Drop`) ; `Clone`, `PartialEq` et `Debug` restent récursifs : ne pas
+/// cloner, comparer ni formater une valeur d'entrée profonde hors du fil de 8 Mo.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,

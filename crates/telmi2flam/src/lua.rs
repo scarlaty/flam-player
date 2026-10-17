@@ -189,7 +189,8 @@ enum Task<'a> {
 /// Écrit `value` comme la récursion de Python, mais sans récursion : ce qu'il reste à écrire
 /// est une pile de tâches sur le tas, si bien que la pile d'appels ne dépend pas de
 /// l'imbrication (#189). Les tâches d'un conteneur sont empilées à l'envers pour sortir dans
-/// l'ordre.
+/// l'ordre ; coût transitoire : deux à cinq tâches de 24 octets par élément du conteneur
+/// ouvert, négligeable pour une histoire TELMI.
 fn write_repr(out: &mut String, value: &Lua, indent: usize) -> Result<(), LuaError> {
     let mut tasks = vec![Task::Repr(value, indent)];
     while let Some(task) = tasks.pop() {
@@ -232,27 +233,18 @@ fn write_repr(out: &mut String, value: &Lua, indent: usize) -> Result<(), LuaErr
             Lua::List(items) if items.is_empty() => out.push_str("{}"),
             Lua::Table(items) if items.is_empty() => out.push_str("{}"),
             Lua::List(items) => {
-                out.push_str(
-                    "{
-",
-                );
+                out.push_str("{\n");
                 close(&mut tasks, indent);
                 for (i, item) in items.iter().enumerate().rev() {
                     tasks.push(Task::Repr(item, indent + 1));
                     tasks.push(Task::Pad(indent + 1));
                     if i > 0 {
-                        tasks.push(Task::Text(
-                            ",
-",
-                        ));
+                        tasks.push(Task::Text(",\n"));
                     }
                 }
             }
             Lua::Table(items) => {
-                out.push_str(
-                    "{
-",
-                );
+                out.push_str("{\n");
                 close(&mut tasks, indent);
                 for (i, (k, v)) in items.iter().enumerate().rev() {
                     tasks.push(Task::Repr(v, indent + 1));
@@ -260,10 +252,7 @@ fn write_repr(out: &mut String, value: &Lua, indent: usize) -> Result<(), LuaErr
                     tasks.push(Task::Key(k));
                     tasks.push(Task::Pad(indent + 1));
                     if i > 0 {
-                        tasks.push(Task::Text(
-                            ",
-",
-                        ));
+                        tasks.push(Task::Text(",\n"));
                     }
                 }
             }
@@ -276,10 +265,7 @@ fn write_repr(out: &mut String, value: &Lua, indent: usize) -> Result<(), LuaErr
 fn close(tasks: &mut Vec<Task<'_>>, indent: usize) {
     tasks.push(Task::Text("}"));
     tasks.push(Task::Pad(indent));
-    tasks.push(Task::Text(
-        "
-",
-    ));
+    tasks.push(Task::Text("\n"));
 }
 
 fn push_pad(out: &mut String, indent: usize) {
@@ -453,6 +439,20 @@ mod tests {
             });
             assert_eq!(lines, 2 * MAX_DEPTH + 1, "{label}");
         }
+    }
+
+    /// Clé conteneur profonde : la destruction itérative empile aussi les clés de `Table`.
+    #[test]
+    fn destruction_d_une_cle_profonde_dans_une_pile_de_256_kio() {
+        use crate::json::tests::on_small_stack;
+        let depth = crate::json::MAX_DEPTH;
+        on_small_stack(move || {
+            let mut key = Lua::Int(1);
+            for _ in 0..depth {
+                key = Lua::Table(vec![(key, Lua::List(vec![Lua::Nil]))]);
+            }
+            drop(Lua::Table(vec![(key, Lua::Bool(true))]));
+        });
     }
 
     /// Le parcours itératif écrit les mêmes octets que la récursion de Python : clés
