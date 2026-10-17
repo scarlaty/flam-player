@@ -26,3 +26,12 @@ export async function pickExecutable(title?: string): Promise<string | null> {
     throw toAppError(error);
   }
 }
+
+/** Sélecteur natif d'un fichier quelconque. Renvoie `null` si l'utilisateur annule. */
+export async function pickFile(title?: string): Promise<string | null> {
+  try {
+    return await open({ directory: false, multiple: false, title });
+  } catch (error) {
+    throw toAppError(error);
+  }
+}
