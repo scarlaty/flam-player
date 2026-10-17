@@ -705,7 +705,7 @@ aucune trace, ou `--timeout`.
 | `ends`, `back_ends`, `end_reasons` | fins jouées ; fins provoquées par un test de retour (transition `home`, non comptées) ; raisons affichées par `endStory` |
 | `dead_end_backs`, `dead_end_scenes` | **impasses** : retours de secours sur un écran où le pilote ne peut rien faire (scène sans OK ni fin d'audio, titre figé, écran inconnu), et nœuds concernés (`<nœud> why=<raison>`) |
 | `home_escapes` | sorties de boucle par la transition `home` |
-| `cond_frontier`, `blocked` | à l'arrêt : nombre de scènes visitées dont une transition dépendant de l'état (entrée conditionnelle, `indexItem`) mène à une scène jamais atteinte ; au plus 100 d'entre elles, `<scène>><cible>` (suffixe `@home` pour la transition `home`) : ce que `conditions` n'a pas pu atteindre. `null` / `[]` sans trace `done` |
+| `cond_frontier`, `blocked` | à l'arrêt : nombre de scènes visitées dont une transition dépendant de l'état (entrée conditionnelle, `indexItem`) mène à une scène jamais atteinte (une scène compte une fois, avec sa première cible) ; au plus 100 d'entre elles, `<scène>><cible>` (suffixe `@home` pour la transition `home`) : ce que `conditions` n'a pas pu atteindre. `null` / `[]` sans trace `done` |
 | autres | `choices_explored`, `back_tests`, `menu_tests`, `exit_code`, `workdir` (`--keep`) |
 
 Sémantique à retenir :

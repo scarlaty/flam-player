@@ -599,6 +599,8 @@ class TestRunInterpretation(CompatBase):
         r0 = self.go(self.res(done_reason="conditions", scenes_visited=26, scenes_total=177))
         self.assertFalse(any("bloquées" in m for m in r0["messages"]))
         self.assertNotIn("blocked", r0)
+        r1 = self.go(self.res(done_reason="exhausted", blocked=["a>b"]))
+        self.assertNotIn("blocked", r1)                  # hors arret `conditions`
         rec = {"uuid": "u", "version": "1", "title": "Doudou", "status": "OK_AVERTISSEMENTS",
                "steps": {"download": {"status": "ok"}, "convert": {"status": "ok"},
                          "validate": {"status": "ok"}, "run": r}}

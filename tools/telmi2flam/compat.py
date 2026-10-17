@@ -609,7 +609,8 @@ def build_run_step(raws, params, benign, seconds):
     # scenes bloquees : union des parcours, hors cibles atteintes par un autre parcours
     reached = set().union(*sets) if sets and len(sets) == len(results) else set()
     blocked = sorted({b for r in results for b in (r.get("blocked") or [])
-                      if b.split(">", 1)[-1].split("@", 1)[0] not in reached})
+                      if r.get("done_reason") == "conditions"
+                      and b.split(">", 1)[-1].split("@", 1)[0] not in reached})
     if blocked:
         st["blocked"] = blocked
     if pick[0].get("done_reason"):
