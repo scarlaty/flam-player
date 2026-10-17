@@ -91,7 +91,8 @@ class TestCompareRuns(unittest.TestCase):
 class TestAllowedDeviations(unittest.TestCase):
     def test_list_is_closed(self):
         self.assertEqual(sorted(r.id for r in parity.ALLOWED_DEVIATIONS),
-                         ["encrypted_entry", "json_limit"])
+                         ["encrypted_entry", "invalid_utf8_name", "json_limit",
+                          "negative_offset"])
 
     def test_encrypted_entry(self):
         o, c = error_run(6, "internal_error"), error_run(3, "archive_unreadable")
@@ -102,6 +103,27 @@ class TestAllowedDeviations(unittest.TestCase):
         self.assertEqual(parity.compare_runs(o, c, [parity.TAG_JSON_LIMIT])["verdict"], "diff")
         self.assertEqual(parity.compare_runs(error_run(4, "invalid_content"), c,
                                              [parity.TAG_ENCRYPTED])["verdict"], "diff")
+
+    def test_zip_reader_deviations(self):
+        o, c = error_run(6, "internal_error"), error_run(3, "archive_unreadable")
+        others = [parity.TAG_ENCRYPTED, parity.TAG_JSON_LIMIT, parity.TAG_BAD_UTF8_NAME,
+                  parity.TAG_NEGATIVE_OFFSET, parity.TAG_DELEGATED]
+        for tag, rule in ((parity.TAG_BAD_UTF8_NAME, "invalid_utf8_name"),
+                          (parity.TAG_NEGATIVE_OFFSET, "negative_offset")):
+            r = parity.compare_runs(o, c, [tag])
+            self.assertEqual((r["verdict"], r["rule"]), ("allowed", rule))
+            # sans l'etiquette du cas, ou avec celle d'une autre regle : ecart
+            self.assertEqual(parity.compare_runs(o, c)["verdict"], "diff")
+            # l'etiquette d'un autre cas n'active pas cette regle
+            for other in others:
+                if other != tag:
+                    self.assertNotEqual(parity.compare_runs(o, c, [other])["rule"], rule)
+            # autre couple de codes : ecart
+            for oo, cc in ((error_run(4, "invalid_content"), c),
+                           (o, error_run(4, "invalid_content")),
+                           (o, error_run(7, "unsupported_format")),
+                           (error_run(7, "unsupported_format"), c)):
+                self.assertEqual(parity.compare_runs(oo, cc, [tag])["verdict"], "diff")
 
     def test_json_limit(self):
         c = error_run(4, "invalid_content")
@@ -294,11 +316,14 @@ class TestCorpusGenerator(unittest.TestCase):
         by_id = {c.id: c for c in cases}
         for cid in ("ok_plain", "missing_audio_plain", "zip_crc_corrupt_plain"):
             self.assertIn("--plain", by_id[cid].args, cid)
-        known = {make_corpus.TAG_JSON_LIMIT, make_corpus.TAG_ENCRYPTED, make_corpus.TAG_DELEGATED}
+        known = {make_corpus.TAG_JSON_LIMIT, make_corpus.TAG_ENCRYPTED, make_corpus.TAG_DELEGATED,
+                 make_corpus.TAG_BAD_UTF8_NAME, make_corpus.TAG_NEGATIVE_OFFSET}
         self.assertTrue({t for c in cases for t in c.tags} <= known)
         # les etiquettes lues par parity.py sont celles du generateur
         self.assertEqual(parity.TAG_JSON_LIMIT, make_corpus.TAG_JSON_LIMIT)
         self.assertEqual(parity.TAG_ENCRYPTED, make_corpus.TAG_ENCRYPTED)
+        self.assertEqual(parity.TAG_BAD_UTF8_NAME, make_corpus.TAG_BAD_UTF8_NAME)
+        self.assertEqual(parity.TAG_NEGATIVE_OFFSET, make_corpus.TAG_NEGATIVE_OFFSET)
 
     def test_corpus_is_deterministic(self):
         d1, d2 = os.path.join(self.tmp, "1"), os.path.join(self.tmp, "2")
@@ -368,9 +393,10 @@ class TestPythonAgainstPython(unittest.TestCase):
     # un cas par famille (nominal, image, noms, MP3, erreurs, delegation) ; le corpus
     # complet est compare par la CI de parite (#134), trop long pour ce test unitaire
     SAMPLE = ("ok_basic", "ok_plain", "missing_audio_plain", "img_mode_PT", "names_cp437", "mp3_id3_prefix", "missing_audio",
-              "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry", "img_jpeg_delegated")
+              "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry", "img_jpeg_delegated",
+              "zip_invalid_utf8_name", "zip_negative_header_offset")
     STUB_SAMPLE = ("ok_basic", "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry",
-                   "img_jpeg_delegated")
+                   "img_jpeg_delegated", "zip_invalid_utf8_name", "zip_negative_header_offset")
 
     @classmethod
     def setUpClass(cls):
@@ -436,6 +462,10 @@ class TestPythonAgainstPython(unittest.TestCase):
         v = self.verdicts(self.candidate(3, "archive_unreadable"))
         self.assertEqual(v["zip_encrypted_entry"]["verdict"], "allowed")
         self.assertEqual(v["zip_encrypted_entry"]["rule"], "encrypted_entry")
+        # chaque regle ne couvre que son cas etiquete : les deux nouveaux cas, meme couple de
+        # codes, sont admis par leur propre regle et par aucune autre
+        self.assertEqual(v["zip_invalid_utf8_name"]["rule"], "invalid_utf8_name")
+        self.assertEqual(v["zip_negative_header_offset"]["rule"], "negative_offset")
         self.assertEqual(v["json_deep_nesting"]["verdict"], "diff")
         self.assertEqual(v["zip_crc_corrupt"]["verdict"], "diff")
 
