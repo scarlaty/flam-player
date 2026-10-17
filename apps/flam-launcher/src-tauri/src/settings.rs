@@ -291,7 +291,7 @@ pub fn detect_bundled_python(env: &Environment) -> Option<PathBuf> {
 }
 
 /// Dossier de ffmpeg embarqué, à côté de l'exécutable (ressource Tauri `ffmpeg/` produite par
-/// `scripts/build-ffmpeg.ps1`, #209) : `ffmpeg.exe`, ses DLL, `LICENSE` et `BUILD.txt`.
+/// `scripts/build-ffmpeg.ps1`, #209) : `ffmpeg.exe`, `ffprobe.exe` (statiques), les licences et `BUILD.txt`.
 pub const BUNDLED_FFMPEG_DIR: &str = "ffmpeg";
 
 /// Nom de l'exécutable ffmpeg.

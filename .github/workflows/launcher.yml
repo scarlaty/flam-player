@@ -50,14 +50,13 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ffmpeg-out
-          key: ffmpeg-win64-${{ hashFiles('tools/ffmpeg/**') }}
+          key: ffmpeg-win64-${{ runner.os }}-${{ hashFiles('tools/ffmpeg/**') }}
 
       - name: Construire ffmpeg (sources épinglées, SHA-256 vérifiés)
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           mkdir ffmpeg-out
-          sudo env INSTALL_DEPS=1 bash tools/ffmpeg/build.sh "$PWD/ffmpeg-out"
-          sudo chown -R "$USER" ffmpeg-out
+          INSTALL_DEPS=1 bash tools/ffmpeg/build.sh "$PWD/ffmpeg-out"
 
       - name: Artefact ffmpeg
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -135,7 +134,7 @@ jobs:
           name: ffmpeg-win64
           path: ffmpeg-artifact
 
-      - name: ffmpeg LGPL embarqué (contrôles : sans GPL, libmp3lame, transcodages MP3)
+      - name: ffmpeg LGPL embarqué (contrôles, sans GPL, libmp3lame, transcodages MP3)
         run: npm run build:ffmpeg -- -ArtifactDir "$(cygpath -w "$GITHUB_WORKSPACE/ffmpeg-artifact")"
 
       - name: flam-player.exe et SDL2.dll (CMake, Release)
@@ -180,7 +179,7 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "installateur : code $($p.ExitCode)" }
           foreach ($f in 'flam-launcher.exe', 'flam-player.exe', 'SDL2.dll', 'LICENSES.md', 'uninstall.exe',
               'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt',
-              'ffmpeg/ffmpeg.exe', 'ffmpeg/ffprobe.exe', 'ffmpeg/LICENSE', 'ffmpeg/LICENSE-LAME', 'ffmpeg/BUILD.txt') {
+              'ffmpeg/ffmpeg.exe', 'ffmpeg/ffprobe.exe', 'ffmpeg/LICENSE', 'ffmpeg/LICENSE-LAME', 'ffmpeg/LICENSE-MINGW-RUNTIME', 'ffmpeg/BUILD.txt') {
             if (-not (Test-Path (Join-Path $dest $f))) { throw "fichier absent de l'installation : $f" }
           }
           # ffmpeg installé : ni GPL ni nonfree, libmp3lame présent (le script de build l'a déjà contrôlé,

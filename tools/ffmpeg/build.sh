@@ -14,15 +14,19 @@ out="$(mkdir -p "${1:?dossier de sortie}" && cd "$1" && pwd)"
 
 if [ "${INSTALL_DEPS:-0}" = 1 ]; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq --no-install-recommends \
+  sudo=""
+  [ "$(id -u)" -eq 0 ] || sudo=sudo
+  $sudo apt-get update -qq
+  $sudo apt-get install -y -qq --no-install-recommends \
     gcc libc6-dev gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 make nasm pkg-config curl xz-utils ca-certificates >/dev/null
 fi
 
 host=x86_64-w64-mingw32
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-prefix="$work/prefix"
+# Préfixe fixe : le chemin se retrouve dans `-buildconf`, il ne doit pas varier d'un build à l'autre.
+prefix=/tmp/ffbuild-prefix
+rm -rf "$prefix"
 mkdir -p "$prefix"
 
 fetch() { # url sha256 fichier
@@ -62,7 +66,7 @@ conf=(
   --extra-cflags="-I$prefix/include" --extra-ldflags="-L$prefix/lib -static -static-libgcc"
 )
 cd "$work/ffmpeg-$FFMPEG_VERSION"
-PKG_CONFIG_PATH="$prefix/lib/pkgconfig" ./configure "${conf[@]}"
+PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" ./configure "${conf[@]}"
 make -j"$(nproc)" ffmpeg.exe ffprobe.exe >"$work/ffmpeg.log" 2>&1 || { tail -40 "$work/ffmpeg.log" >&2; exit 1; }
 
 rm -f "$out"/*.exe "$out"/LICENSE*
@@ -72,5 +76,7 @@ cp COPYING.LGPLv2.1 "$out/LICENSE"
 cp "$work/lame-$LAME_VERSION/COPYING" "$out/LICENSE-LAME"
 # Avis propre à LAME (le fichier LICENSE de LAME précise les conditions de la LGPL).
 cp "$work/lame-$LAME_VERSION/LICENSE" "$out/LICENSE-LAME-NOTICE" 2>/dev/null || true
+# Runtime MinGW-w64 (CRT, winpthreads, libgcc) lié statiquement : mentions de ses licences.
+cat /usr/share/doc/mingw-w64-common/copyright /usr/share/doc/gcc-mingw-w64-base/copyright >"$out/LICENSE-MINGW-RUNTIME"
 printf '%s\n' "${conf[@]}" >"$out/configure-args.txt"
 echo "ffmpeg minimal construit : $out"

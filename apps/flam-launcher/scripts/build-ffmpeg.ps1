@@ -9,7 +9,8 @@
     ffmpeg/
       ffmpeg.exe, ffprobe.exe     exécutables statiques (aucune DLL), lancés comme processus externes
       LICENSE                     LGPL-2.1 de FFmpeg
-      LICENSE-LAME                LGPL-2.1 de LAME (encodeur MP3 libmp3lame), + LICENSE-LAME-NOTICE
+      LICENSE-LAME                licence de LAME (LGPL, GNU Library GPL v2 ; encodeur MP3 libmp3lame), + LICENSE-LAME-NOTICE
+      LICENSE-MINGW-RUNTIME       mentions du runtime MinGW-w64 lié statiquement
       BUILD.txt                   versions, sources exactes, empreintes, configuration (-buildconf)
 
   Le binaire est construit par nous (tools/ffmpeg/build.sh : cross-compilation MinGW-w64 sous
@@ -66,7 +67,7 @@ foreach ($key in 'FFMPEG_VERSION', 'FFMPEG_URL', 'FFMPEG_SHA256', 'FFMPEG_SOURCE
 }
 
 $WantedDecoders = @('aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le')
-$Shipped = @('ffmpeg.exe', 'ffprobe.exe', 'LICENSE', 'LICENSE-LAME')
+$Shipped = @('ffmpeg.exe', 'ffprobe.exe', 'LICENSE', 'LICENSE-LAME', 'LICENSE-MINGW-RUNTIME')
 
 # Lance un exécutable (sans shell), PATH réduit au dossier système, et renvoie stdout + stderr
 # (ffmpeg écrit ses bannières sur stderr). Échoue si le code de sortie n'est pas 0.
@@ -178,13 +179,12 @@ try {
     $configureArgs = (Get-Content -LiteralPath (Join-Path $ArtifactDir 'configure-args.txt')) -join "`n"
     $buildTxt = @"
 FFmpeg $($pins['FFMPEG_VERSION']) minimal, audio seulement (Windows x64, statique, LGPL-2.1-or-later)
-avec LAME $($pins['LAME_VERSION']) (libmp3lame, LGPL-2.1)
+avec LAME $($pins['LAME_VERSION']) (libmp3lame, LGPL : GNU Library GPL v2)
 
 Ce dossier est livré avec Flam Launcher. FFmpeg est lancé comme programme externe : il n'est
 lié ni au launcher ni à flam-player. Ce build n'utilise ni --enable-gpl ni --enable-nonfree.
-Textes de licence : LICENSE (FFmpeg) et LICENSE-LAME (LAME), dans ce dossier. Le runtime
-MinGW-w64 (libgcc, winpthreads, runtime C : licences permissives ou exception de runtime GCC)
-est lié statiquement dans les exécutables.
+Textes de licence : LICENSE (FFmpeg), LICENSE-LAME (LAME) et LICENSE-MINGW-RUNTIME (runtime
+MinGW-w64 : libgcc, winpthreads, runtime C, liés statiquement), dans ce dossier.
 
 Sources exactes (offre de sources LGPL)
   FFmpeg $($pins['FFMPEG_VERSION']) : $($pins['FFMPEG_URL'])
@@ -195,7 +195,8 @@ Sources exactes (offre de sources LGPL)
     tools/ffmpeg/pins.env dans https://github.com/scarlaty/flam-player, commit $commit.
   Les exécutables étant statiques, la liaison avec une version modifiée de FFmpeg ou de LAME se
   refait en modifiant ces sources puis en relançant tools/ffmpeg/build.sh. Les mainteneurs de
-  Flam Launcher fournissent aussi ces sources sur demande (https://github.com/scarlaty/flam-player/issues).
+  Flam Launcher fournissent aussi ces sources sur demande, au prix de la distribution et pendant
+  au moins trois ans (https://github.com/scarlaty/flam-player/issues).
 
 Configuration (ffmpeg -buildconf)
 $buildconf
