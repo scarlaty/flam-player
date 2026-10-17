@@ -9,6 +9,14 @@ rust-version = "1.89"
 [lib]
 name = "telmi2flam"
 
+[dependencies]
+# Décompression des IDAT et CRC des chunks PNG (même épinglage que la lecture de l'archive, #124).
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+
+[dev-dependencies]
+# Empreintes SHA-256 des vecteurs de parité PNG (déjà dans le Cargo.lock du launcher).
+sha2 = { version = "=0.10.9", default-features = false }
+
 [[bin]]
 name = "telmi2flam"
 path = "src/main.rs"

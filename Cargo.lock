@@ -4079,6 +4079,10 @@ dependencies = [
 [[package]]
 name = "telmi2flam"
 version = "0.1.0"
+dependencies = [
+ "flate2",
+ "sha2",
+]
 
 [[package]]
 name = "tempfile"
