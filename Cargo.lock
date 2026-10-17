@@ -4158,7 +4158,10 @@ dependencies = [
 name = "telmi2flam"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
+ "flate2",
  "indexmap 2.14.2",
+ "serde_json",
  "unicode-normalization",
 ]
 
