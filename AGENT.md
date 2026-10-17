@@ -112,7 +112,9 @@ Options du player :
   `dummy`). Sans l'option, stdin n'est jamais lu. Test : `tests/e2e/e2e_embed.py`.
 
 Touches : gauche/droite = molette, Entree/Espace = OK, Echap = retour (`back_callback`),
-M = menu contextuel, P = pause/reprise audio, S = capture d'ecran.
+M = menu contextuel, P = pause/reprise audio, S = capture d'ecran. F6 (mode `--parent-hwnd`
+seulement, Windows) = rend le clavier a la fenetre hote : `SetFocus` sur la fenetre racine du
+parent et trace `[EMBED] focus-host` sur stderr (le launcher la relaie, #237).
 
 **Timeout en CI/test** : utiliser `timeout 8 ./build/flam-player.exe ...` car le player ouvre une fenetre SDL et attend indefiniment.
 Sans fenetre : `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy` (voir `tests/e2e/e2e_telmi.py`).
