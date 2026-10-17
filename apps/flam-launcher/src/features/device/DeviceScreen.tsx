@@ -12,6 +12,7 @@ import { ErrorBanner } from "../ErrorBanner";
 import { formatBytes } from "../validation";
 import { useDevice } from "./DeviceContext";
 import { EjectButton } from "./EjectButton";
+import { ForgetCarrierKeysButton } from "./ForgetCarrierKeysButton";
 import { RemoveStoryButton } from "./RemoveStoryButton";
 import "./DeviceScreen.css";
 
@@ -106,6 +107,7 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
           )}
           <div className="fl-device-screen__toolbar">
             <EjectButton />
+            <ForgetCarrierKeysButton />
           </div>
           <DeviceStoriesList key={`${device.root}|${device.volume_label}`} />
           {libraryPanel}

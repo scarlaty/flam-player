@@ -501,6 +501,39 @@ export const fr = {
       noDevice: "La Flam n'est plus détectée : rien n'a été envoyé.",
       firmware:
         "Le firmware de cette Flam n'est pas pris en charge : l'envoi est impossible.",
+      readback:
+        "Histoire copiée, mais son titre relu sur la Flam ne se déchiffre pas avec les clés choisies : elle risque d'être illisible. Retirez-la et choisissez une autre histoire officielle.",
+    },
+    carrier: {
+      title: "Flam en firmware 1.x : mode carrier",
+      warningTitle: "Avertissement",
+      understood: "J'ai compris",
+      continue: "Continuer",
+      accepting: "Enregistrement…",
+      acceptedAt: (date: string) => `Avertissement accepté le ${date}.`,
+      loading: "Lecture de la Flam…",
+      loadFailed: (message: string) => `Impossible de lire la Flam : ${message}`,
+      sourceLegend: "Clés à utiliser",
+      stored: "Clés conservées sur ce PC pour cette Flam",
+      fromStory: (title: string) => `Histoire officielle « ${title} »`,
+      hiddenHint: "Histoire masquée",
+      fromFile: "Choisir un fichier…",
+      fromFileHint:
+        "Fichier bt d'une copie de dossier d'histoire officielle (avec key à côté), ou archive zip qui les contient.",
+      pickTitle: "Fichier bt ou archive zip",
+      pick: "Parcourir…",
+      picked: (path: string) => `Fichier choisi : ${path}`,
+      noCandidate:
+        "Aucune histoire officielle de cette Flam ne porte les clés nécessaires : choisissez un fichier.",
+      remember: "Conserver ces clés sur ce PC",
+      rememberHint:
+        "Chiffrées pour votre compte Windows et liées à cette Flam. « Oublier les clés » les supprime.",
+      confirm: "Vérifier et envoyer",
+      forget: "Oublier les clés",
+      forgetting: "Suppression…",
+      forgotten: "Clés de cette Flam oubliées sur ce PC.",
+      nothingToForget: "Aucune clé conservée pour cette Flam.",
+      forgetFailed: (message: string) => `Impossible d'oublier les clés : ${message}`,
     },
     recovery: {
       done: "Un transfert interrompu a été repris : la Flam est de nouveau dans un état cohérent.",
