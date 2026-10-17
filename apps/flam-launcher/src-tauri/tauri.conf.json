@@ -26,8 +26,8 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
-    "license": "MIT",
-    "licenseFile": "../LICENSE",
+    "license": "GPL-3.0-or-later",
+    "licenseFile": "../../../LICENSE",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
