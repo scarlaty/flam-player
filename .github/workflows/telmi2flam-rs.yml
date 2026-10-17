@@ -9,6 +9,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/telmi2flam-rs.yml"
+      # La table de parité Unicode est liée à $PythonVersion (test table_produite_par_le_python...).
+      - "apps/flam-launcher/scripts/build-converter.ps1"
   push:
     branches: [main]
     paths:
@@ -16,6 +18,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/telmi2flam-rs.yml"
+      # La table de parité Unicode est liée à $PythonVersion (test table_produite_par_le_python...).
+      - "apps/flam-launcher/scripts/build-converter.ps1"
 
 permissions:
   contents: read
