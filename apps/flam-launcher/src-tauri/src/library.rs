@@ -240,6 +240,10 @@ pub struct Library {
     root: PathBuf,
     /// Attente maximale du verrou (réglable par les tests).
     lock_timeout: Duration,
+    /// Tests : force l'échec de la lecture de `library/` par la détection d'index mis de côté
+    /// (le cas réel, `library/` illisible, n'est pas reproductible sous Windows).
+    #[cfg(test)]
+    scan_fails: AtomicBool,
 }
 
 impl Library {
@@ -248,6 +252,8 @@ impl Library {
         Self {
             root: cache_root.join(LIBRARY_DIR),
             lock_timeout: LOCK_TIMEOUT,
+            #[cfg(test)]
+            scan_fails: AtomicBool::new(false),
         }
     }
 
@@ -319,6 +325,10 @@ impl Library {
     /// Lit `library/` : `Ok(true)` si un `library.json.*.bak` y est trouvé, erreur si la lecture
     /// échoue sans l'avoir trouvé.
     fn scan_quarantine(&self) -> std::io::Result<bool> {
+        #[cfg(test)]
+        if self.scan_fails.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("lecture de library/ refusée (test)"));
+        }
         has_quarantined_index(
             std::fs::read_dir(&self.root).map(|d| d.map(|e| e.map(|e| e.file_name()))),
         )
@@ -1004,6 +1014,9 @@ pub async fn library_remove(
 pub(crate) mod tests {
     use super::*;
     use crate::story::StoryKind;
+
+    /// Index corrompu mis de côté (`library.json.*.bak`), dans les tests de garde du balayage.
+    const BAK: &str = "library.json.x.bak";
 
     pub(crate) fn story(uuid: &str, version: Option<u32>) -> StoryEntry {
         StoryEntry {
@@ -1855,7 +1868,7 @@ pub(crate) mod tests {
         let lib = Library::new(dir.path());
         lib.list().unwrap();
         assert!(!lib.index_quarantined_strict());
-        std::fs::write(lib.root().join("library.json.x.bak"), b"{}").unwrap();
+        std::fs::write(lib.root().join(BAK), b"{}").unwrap();
         assert!(lib.index_quarantined_strict() && lib.index_quarantined());
         // `library/` absent (illisible) : la stricte refuse le balayage.
         let lib = Library::new(&dir.path().join("absent"));
@@ -2125,7 +2138,7 @@ pub(crate) mod tests {
         assert!(!control.exists(), "témoin : le balayage doit tourner");
 
         // Avec un `.bak` d'index mis de côté : ni install ni remove ne balaient.
-        std::fs::write(lib.root().join("library.json.x.bak"), b"{}").unwrap();
+        std::fs::write(lib.root().join(BAK), b"{}").unwrap();
         let orphan = orphan_thumb(&lib, "orphan.png");
         install_story(&lib, "def", 2);
         assert!(orphan.exists(), "install a balayé malgré le .bak");
@@ -2133,7 +2146,34 @@ pub(crate) mod tests {
         assert!(orphan.exists(), "remove a balayé malgré le .bak");
 
         // Le `.bak` parti, la réconciliation reprend.
-        std::fs::remove_file(lib.root().join("library.json.x.bak")).unwrap();
+        std::fs::remove_file(lib.root().join(BAK)).unwrap();
+        lib.remove("abc").unwrap();
+        assert!(!orphan.exists());
+    }
+
+    #[test]
+    fn library_illisible_install_et_remove_ne_balaient_pas() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        lib.list().unwrap();
+        install_story(&lib, "abc", 1);
+        // Lecture de `library/` en échec, sans `.bak` : la garde permissive dirait « rien mis
+        // de côté », seule la stricte (« on ne balaie pas sans savoir ») protège les vignettes.
+        lib.scan_fails.store(true, Ordering::SeqCst);
+        assert!(!lib.index_quarantined());
+        let orphan = orphan_thumb(&lib, "orphan.png");
+        install_story(&lib, "def", 2);
+        assert!(
+            orphan.exists(),
+            "install a balayé sans pouvoir lire library/"
+        );
+        lib.remove("def").unwrap();
+        assert!(
+            orphan.exists(),
+            "remove a balayé sans pouvoir lire library/"
+        );
+        // Lecture rétablie : la réconciliation reprend.
+        lib.scan_fails.store(false, Ordering::SeqCst);
         lib.remove("abc").unwrap();
         assert!(!orphan.exists());
     }

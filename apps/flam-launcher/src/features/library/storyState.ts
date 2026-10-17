@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { StoryEntry } from "../../api/story";
+import type { ListedEntry } from "./sourceData";
 import type { Source } from "../../api/sources";
 import type { BadgeTone, IconName } from "../../components";
 import type { CompatInfo } from "../compat/compatInfo";
@@ -64,7 +65,7 @@ export interface StoryHooks {
    */
   renderDetail?: (props: {
     source: Source;
-    entry: StoryEntry;
+    entry: ListedEntry;
     onClose: () => void;
   }) => ReactNode;
   /** Fiche à rouvrir : la vue de la source `sourceId` ouvre celle de `entryId`, puis `onReopened`. */
