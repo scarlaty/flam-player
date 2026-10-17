@@ -1,0 +1,57 @@
+name: telmi2flam-rs
+
+# Crate Rust `crates/telmi2flam` (port de tools/telmi2flam, voir tools/telmi2flam/PORT-RUST.md).
+# Le workspace Cargo contient aussi le launcher : on ne construit ici que `-p telmi2flam`.
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/telmi2flam-rs.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/telmi2flam-rs.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  crate:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # tête de la branche stable au 2026-10-16 (pas un tag)
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target"
+
+      - name: rustfmt
+        run: cargo fmt -p telmi2flam --check
+
+      - name: Clippy
+        run: cargo clippy -p telmi2flam --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test -p telmi2flam --locked
+
+      - name: Binaire (release) répond à --version
+        run: |
+          cargo build -p telmi2flam --bin telmi2flam --release --locked
+          ./target/release/telmi2flam.exe --version

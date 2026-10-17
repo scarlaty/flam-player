@@ -113,7 +113,7 @@ fn from_plain_pk(path: &Path) -> Result<Prepared, String> {
     if lif.len() as u64 > MAX_LIF_BYTES {
         return Err(format!("{LIF_NAME} trop volumineux"));
     }
-    let image = crate::lif::decode(&lif).map_err(|e| format!("{LIF_NAME} : {e}"))?;
+    let image = telmi2flam::lif::decode(&lif).map_err(|e| format!("{LIF_NAME} : {e}"))?;
     let png =
         thumbnail::encode_png(&thumbnail::fit(image, THUMB_DIM)).map_err(|e| e.to_string())?;
     Prepared::from_bytes(png).ok_or_else(|| "vignette réencodée trop volumineuse".into())

@@ -3,3 +3,19 @@ apps/flam-launcher/** text=auto eol=lf
 apps/flam-launcher/**/*.png binary
 apps/flam-launcher/**/*.ico binary
 apps/flam-launcher/**/*.icns binary
+
+# Workspace Cargo et crates : LF partout (rustfmt), quelle que soit la config autocrlf.
+/Cargo.toml text eol=lf
+/Cargo.lock text eol=lf
+crates/** text=auto eol=lf
+
+# telmi2flam (PR 1 du port Rust) : `include_bytes!` embarque les octets de la copie de travail,
+# donc les scripts du moteur restent en LF et les scripts du runtime sont en LF et les .lif binaires (PORT-RUST.md §2.1).
+tools/telmi2flam/engine/** eol=lf
+tools/telmi2flam/runtime/**/*.lua text eol=lf
+tools/telmi2flam/runtime/**/*.lif binary
+
+# Vecteurs de parité des codecs (crates/telmi2flam/tests/vectors) : octets exacts, jamais convertis.
+crates/telmi2flam/tests/vectors/**/*.rgba binary
+crates/telmi2flam/tests/vectors/**/*.lif binary
+crates/telmi2flam/tests/vectors/**/*.mp3 binary

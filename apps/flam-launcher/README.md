@@ -72,6 +72,11 @@ player ramène à la surcouche. Les histoires installées sont sous « Mes histo
 
 Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2, Node 24+ et npm.
 
+Le launcher est membre d'un **workspace Cargo** dont le `Cargo.toml` est à la racine du dépôt (avec
+`crates/telmi2flam`) : `Cargo.lock` et `target/` sont à la racine, pas dans `src-tauri/`. Les commandes
+`cargo` se lancent toujours depuis `src-tauri/` (ou avec `-p flam-launcher`) ; le profil `release` est
+défini dans le `Cargo.toml` racine.
+
 ## Commandes
 
 Depuis `apps/flam-launcher/` :
@@ -120,7 +125,7 @@ l'installeur.
    d'installation : le désinstallateur ne les connaîtrait pas).
 
    Même avec `--no-bundle`, Tauri copie `telmi2flam/` à côté de l'exe dans
-   `src-tauri/target/release/` (vérifié : copie identique à l'artefact). Sans `--config`, le
+   `target/release/` à la racine du dépôt (workspace Cargo ; vérifié : copie identique à l'artefact). Sans `--config`, le
    build reste valable mais sans convertisseur (le launcher cherche alors Python dans le `PATH`).
 
 3. **Vérifier en réel** (Python absent du `PATH`) : deux tests Rust ignorés par défaut
@@ -182,7 +187,7 @@ soit, en détail :
    `do_build.bat` et son Debug ne sont pas touchés) et dépose `flam-player.exe`, `SDL2.dll` et
    `licenses/` dans `build/player/` ;
 3. `npm run tauri build -- --config src-tauri/tauri.bundle.conf.json` : produit
-   `src-tauri/target/release/bundle/nsis/Flam Launcher_<version>_x64-setup.exe` (environ 11 Mo)
+   `target/release/bundle/nsis/Flam Launcher_<version>_x64-setup.exe` (environ 11 Mo)
    et dépose les mêmes ressources à côté de `flam-launcher.exe`.
 
 `tauri.bundle.conf.json` (fusionné avec `tauri.conf.json`) restreint les cibles à `nsis` et
@@ -213,7 +218,7 @@ ses tests Vitest et la liaison front/backend repose sur des types miroirs.
 
 ```
 npm run build:installer
-npm run test:e2e             # sur src-tauri/target/release ; ou FLAM_E2E_INSTALL_DIR=<installation>
+npm run test:e2e             # sur target/release (racine du dépôt) ; ou FLAM_E2E_INSTALL_DIR=<installation>
 ```
 
 Sans `FLAM_E2E_REQUIRE=1` et sans `flam-player.exe`, `cargo test` **saute** ce test : il passe au
@@ -264,8 +269,7 @@ apps/flam-launcher/
       story.rs             `StoryEntry` / `StoryKind` : type commun des histoires de toutes les sources
       catalog.rs           Source catalogue : téléchargement, lecture tolérante, cache, vignettes
       folder.rs            Source dossier local (`.zip` Telmi, `.plain`, `.plain.pk`), commandes `folder_*`
-      lif.rs               Décodeur LIF (port de `src/formats/lif_decoder.c`)
-      thumbnail.rs         Vignettes : PNG, réduction, cache `thumbs/`, URL `data:`
+      thumbnail.rs         Vignettes : PNG, LIF (décodeur de `crates/telmi2flam`), réduction, cache `thumbs/`, URL `data:`
       watch.rs             Surveillance optionnelle d'un dossier local (`notify`), `folder_watch`
       install/             Pipeline d'installation : file, téléchargement, conversion (`mod.rs`,
                            `download.rs`, `convert.rs`, `pack.rs`), commandes `install_*`
@@ -385,7 +389,7 @@ centaines de Mio d'IPC). `thumb_url` est une **référence à résoudre par `fol
 `entry_id`) ou `null` sans vignette : ce n'est pas une URL affichable. `folder_thumbnail(source_id, entry_id)` renvoie
 l'URL `data:image/png;base64,…` d'une seule histoire (compatible CSP `img-src data:`), uniquement
 pour une entrée du **dernier scan** de cette source (sinon `not_found`, jamais un chemin libre).
-L'image (PNG ou LIF via `lif.rs`) est réduite à 160 px et gardée dans `<cache>/thumbs/<clé>.png`
+L'image (PNG, ou LIF via `telmi2flam::lif`) est réduite à 160 px et gardée dans `<cache>/thumbs/<clé>.png`
 (clé = chemin, taille et date de l'archive, plus taille et date de `img/thumbnail.lif` pour un
 `.plain`) ; le cache est consulté **avant** d'ouvrir l'archive.
 
