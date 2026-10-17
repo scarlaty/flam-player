@@ -129,7 +129,7 @@ export const fr = {
     about: {
       title: "À propos",
       version: (name: string, version: string) => `${name} — version ${version}`,
-      license: "Licence MIT.",
+      license: "Licence GPL v3.",
     },
   },
   welcome: {
