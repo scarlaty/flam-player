@@ -52,6 +52,7 @@ function detected(): DeviceStatus {
       warnings: [],
       mdf_problem: null,
       backup_failed: false,
+      firmware: "2.4.2",
     },
   };
 }
@@ -87,6 +88,12 @@ let sends: Map<string, Deferred>;
 let ejectOutcome: EjectOutcome | { kind: string; message: string };
 let removeFailure: { kind: string; message: string } | null;
 let recoverFailure: { kind: string; message: string } | null;
+let carrierConsent: { text_version: number; accepted_at: string } | null;
+let storedKeys: boolean;
+
+const WARNING =
+  "Fonction expérimentale, non officielle. Pour installer une histoire sur une Flam en firmware 1.x, flam-launcher réutilise les clés d'une histoire officielle déjà présente sur cette Flam et achetée sur votre compte. Aucune clé n'est fournie par flam-launcher, aucune histoire officielle n'est copiée ni exportée. Si cette histoire officielle est retirée de la Flam ou de votre compte, les histoires installées ainsi peuvent devenir illisibles. Usage strictement personnel, à vos risques ; fonction ni approuvée ni prise en charge par Lunii.";
+const OFFICIAL = "99999999-9999-4999-8999-999999999999";
 
 const names = () => calls.map((c) => c.cmd);
 const count = (cmd: string) => calls.filter((c) => c.cmd === cmd).length;
@@ -100,6 +107,8 @@ beforeEach(() => {
   ejectOutcome = { status: "ejected", message: "Vous pouvez débrancher la Flam." };
   removeFailure = null;
   recoverFailure = null;
+  carrierConsent = null;
+  storedKeys = false;
   mockIPC(
     (cmd, payload) => {
       const args = (payload ?? {}) as Record<string, unknown>;
@@ -137,6 +146,27 @@ beforeEach(() => {
           return ejectOutcome;
         case "library_thumbnail":
           return "data:image/png;base64,AAAA";
+        case "device_carrier_state":
+          return {
+            warning_text: WARNING,
+            warning_version: 1,
+            consent: carrierConsent,
+            firmware: "1.15.14",
+            carrier_needed: true,
+            stored_keys: storedKeys,
+            // Comme le backend : rien n'est lu avant le consentement.
+            candidates: carrierConsent
+              ? [{ uuid: OFFICIAL, title: "Histoire officielle", hidden: false }]
+              : [],
+          };
+        case "device_carrier_accept":
+          if (args.understood !== true) throw { kind: "validation", message: "case" };
+          carrierConsent = { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" };
+          return carrierConsent;
+        case "device_carrier_forget":
+          return storedKeys ? 1 : 0;
+        case "plugin:dialog|open":
+          return "D:\\sauvegarde\\bt";
         default:
           throw { kind: "unknown", message: cmd };
       }
@@ -623,4 +653,145 @@ it("signale une reprise échouée sans bloquer l'écran", async () => {
     await screen.findByText(/La reprise d'un éventuel transfert interrompu a échoué/),
   ).toBeInTheDocument();
   await ready();
+});
+
+function detectedV1(): DeviceStatus {
+  const value = detected();
+  value.device!.firmware = "1.15.14";
+  return value;
+}
+
+it("Flam 1.x : aucun envoi sans consentement ni choix des clés", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  const dialog = await screen.findByRole("alertdialog", {
+    name: "Flam en firmware 1.x : mode carrier",
+  });
+  // Texte affiché tel quel ; « Continuer » bloqué tant que la case n'est pas cochée.
+  expect(await within(dialog).findByText(WARNING)).toBeInTheDocument();
+  const next = within(dialog).getByRole("button", { name: "Continuer" });
+  expect(next).toBeDisabled();
+  fireEvent.click(next);
+  expect(count("device_carrier_accept")).toBe(0);
+  // Annuler : rien n'est envoyé.
+  fireEvent.click(within(dialog).getByRole("button", { name: "Annuler" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(count("device_send_story")).toBe(0);
+  expect(count("device_carrier_accept")).toBe(0);
+
+  // Consentement puis choix de l'histoire officielle.
+  fireEvent.click(sendButton("Capi"));
+  const again = await screen.findByRole("alertdialog");
+  fireEvent.click(await within(again).findByRole("checkbox", { name: "J'ai compris" }));
+  fireEvent.click(within(again).getByRole("button", { name: "Continuer" }));
+  await waitFor(() => expect(count("device_carrier_accept")).toBe(1));
+  expect(calls.find((c) => c.cmd === "device_carrier_accept")?.args).toEqual({
+    textVersion: 1,
+    understood: true,
+  });
+  const official = await within(again).findByRole("radio", {
+    name: "Histoire officielle « Histoire officielle »",
+  });
+  expect(official).toBeChecked();
+  expect(count("device_send_story")).toBe(0);
+  await expectNoAxeViolations(again);
+  fireEvent.click(within(again).getByRole("button", { name: "Vérifier et envoyer" }));
+  await waitFor(() => expect(count("device_send_story")).toBe(1));
+  expect(calls.find((c) => c.cmd === "device_send_story")?.args).toEqual({
+    root: "E:\\",
+    uuid: A,
+    carrier: { kind: "device", uuid: OFFICIAL },
+    remember: true,
+  });
+  await resolveSend(A, { id: A, carrier_readback: true });
+
+  // Envoi suivant : clés conservées, sans redemander.
+  fireEvent.click(sendButton("Les trois ours"));
+  await waitFor(() => expect(count("device_send_story")).toBe(2));
+  expect(calls.filter((c) => c.cmd === "device_send_story")[1]?.args).toEqual({
+    root: "E:\\",
+    uuid: B,
+    carrier: { kind: "stored" },
+    remember: false,
+  });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+});
+
+it("Flam 1.x : clés choisies dans un fichier, sans conservation", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  carrierConsent = { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" };
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  const dialog = await screen.findByRole("alertdialog");
+  fireEvent.click(
+    await within(dialog).findByRole("radio", { name: /Choisir un fichier/ }),
+  );
+  const confirm = within(dialog).getByRole("button", { name: "Vérifier et envoyer" });
+  expect(confirm).toBeDisabled();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Parcourir…" }));
+  expect(await within(dialog).findByText(/Fichier choisi/)).toBeInTheDocument();
+  fireEvent.click(
+    within(dialog).getByRole("checkbox", { name: "Conserver ces clés sur ce PC" }),
+  );
+  fireEvent.click(confirm);
+  await waitFor(() => expect(count("device_send_story")).toBe(1));
+  expect(calls.find((c) => c.cmd === "device_send_story")?.args).toMatchObject({
+    carrier: { kind: "file", path: "D:\\sauvegarde\\bt" },
+    remember: false,
+  });
+  // Couple refusé par le backend : l'échec est affiché et le choix sera redemandé.
+  await waitFor(() => expect(sends.has(A)).toBe(true));
+  await act(async () => {
+    sends.get(A)?.reject({ kind: "validation", message: "couple invalide" });
+  });
+  expect(await screen.findAllByText(/couple invalide/)).not.toHaveLength(0);
+  fireEvent.click(sendButton("Les trois ours"));
+  expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+});
+
+it("Flam 1.x : relecture d'info illisible signalée", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  carrierConsent = { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" };
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  const dialog = await screen.findByRole("alertdialog");
+  await within(dialog).findByRole("radio", { name: /Histoire officielle/ });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Vérifier et envoyer" }));
+  await resolveSend(A, { id: A, carrier_readback: false });
+  expect(await screen.findAllByText(/risque d'être illisible/)).not.toHaveLength(0);
+});
+
+it("Flam 1.x : « Oublier les clés »", async () => {
+  status = detectedV1();
+  storedKeys = true;
+  render(<Harness />);
+  await ready();
+  fireEvent.click(screen.getByRole("button", { name: "Oublier les clés" }));
+  expect(
+    await screen.findByText("Clés de cette Flam oubliées sur ce PC."),
+  ).toBeInTheDocument();
+  expect(calls.find((c) => c.cmd === "device_carrier_forget")?.args).toEqual({
+    root: "E:\\",
+  });
+});
+
+it("Flam 2.x : ni dialogue carrier ni bouton « Oublier les clés »", async () => {
+  acknowledgeWarning();
+  render(<Harness />);
+  await ready();
+  expect(screen.queryByRole("button", { name: "Oublier les clés" })).toBeNull();
+  fireEvent.click(sendButton("Capi"));
+  await waitFor(() => expect(count("device_send_story")).toBe(1));
+  expect(calls.find((c) => c.cmd === "device_send_story")?.args).toEqual({
+    root: "E:\\",
+    uuid: A,
+  });
+  expect(count("device_carrier_state")).toBe(0);
 });

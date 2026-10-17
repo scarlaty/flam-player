@@ -30,6 +30,13 @@ export interface DeviceSummary {
   mdf_problem: MdfProblem | null;
   /** La sauvegarde personnelle de `.mdf` a échoué. */
   backup_failed: boolean;
+  /** Version du firmware lue dans `.mdf` (`1.15.14`, `2.4.2`…), `null` si illisible. */
+  firmware: string | null;
+}
+
+/** Le firmware exige le mode carrier (1.x). */
+export function needsCarrier(device: DeviceSummary | null): boolean {
+  return device?.firmware?.split(".")[0] === "1";
 }
 
 /** Réponse de `device_status` (miroir de `DeviceStatus`). */
@@ -106,6 +113,43 @@ export interface TransferReport {
   replaced: boolean;
   index_updated: boolean;
   cache_removed: boolean;
+  /** Mode carrier : `info` relu sur la Flam se déchiffre avec le couple (`null` hors carrier). */
+  carrier_readback: boolean | null;
+}
+
+/** Consentement à l'avertissement du mode carrier (miroir de `CarrierConsent`). */
+export interface CarrierConsent {
+  text_version: number;
+  /** Date UTC ISO 8601. */
+  accepted_at: string;
+}
+
+/** Histoire officielle utilisable comme carrier (miroir de `CarrierCandidate`, sans clé). */
+export interface CarrierCandidate {
+  uuid: string;
+  title: string;
+  hidden: boolean;
+}
+
+/** État du mode carrier pour une Flam (miroir de `CarrierState`, sans clé). */
+export interface CarrierState {
+  warning_text: string;
+  warning_version: number;
+  consent: CarrierConsent | null;
+  firmware: string | null;
+  carrier_needed: boolean;
+  stored_keys: boolean;
+  candidates: CarrierCandidate[];
+}
+
+/** Source du couple (miroir de `CarrierChoice`). */
+export type CarrierChoice =
+  { kind: "stored" } | { kind: "device"; uuid: string } | { kind: "file"; path: string };
+
+/** Demande carrier jointe à un envoi : source et conservation sur ce PC. */
+export interface CarrierSend {
+  choice: CarrierChoice;
+  remember: boolean;
 }
 
 /** Bilan d'une reprise au branchement (miroir de `TransferRecovery`). */
@@ -136,8 +180,41 @@ export const TRANSFER_PROGRESS_EVENT = "device://transfer-progress";
  * `root` (`validation` si déjà présente, espace insuffisant, firmware non pris en charge ou
  * Flam occupée ; `cancelled` si annulé).
  */
-export function sendStoryToDevice(root: string, uuid: string): Promise<TransferReport> {
-  return invokeCommand<TransferReport>("device_send_story", { root, uuid });
+export function sendStoryToDevice(
+  root: string,
+  uuid: string,
+  carrier?: CarrierSend,
+): Promise<TransferReport> {
+  return invokeCommand<TransferReport>(
+    "device_send_story",
+    carrier
+      ? { root, uuid, carrier: carrier.choice, remember: carrier.remember }
+      : { root, uuid },
+  );
+}
+
+/**
+ * `device_carrier_state` : avertissement, consentement, firmware, clés conservées et histoires
+ * officielles utilisables (listées seulement après consentement). Aucune clé.
+ */
+export function getCarrierState(root: string): Promise<CarrierState> {
+  return invokeCommand<CarrierState>("device_carrier_state", { root });
+}
+
+/** `device_carrier_accept` : enregistre le consentement (case « J'ai compris » cochée). */
+export function acceptCarrierWarning(
+  textVersion: number,
+  understood: boolean,
+): Promise<CarrierConsent> {
+  return invokeCommand<CarrierConsent>("device_carrier_accept", {
+    textVersion,
+    understood,
+  });
+}
+
+/** `device_carrier_forget` : oublie les clés conservées pour la Flam de `root`. */
+export function forgetCarrierKeys(root: string): Promise<number> {
+  return invokeCommand<number>("device_carrier_forget", { root });
 }
 
 /** `device_cancel_transfer` : demande l'annulation du transfert en cours (faux : aucun). */

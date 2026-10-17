@@ -243,7 +243,7 @@ fn json_u32(object: &Value, key: &str) -> Option<u32> {
 }
 
 /// Date UTC ISO 8601 (`2026-10-15T08:30:00Z`) à partir d'un instant.
-fn iso8601(time: SystemTime) -> Option<String> {
+pub(crate) fn iso8601(time: SystemTime) -> Option<String> {
     let secs = i64::try_from(time.duration_since(UNIX_EPOCH).ok()?.as_secs()).ok()?;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Jour civil depuis le nombre de jours écoulés depuis 1970-01-01 (algorithme de H. Hinnant).

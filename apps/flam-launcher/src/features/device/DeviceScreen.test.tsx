@@ -38,6 +38,7 @@ function detected(
       warnings: [],
       mdf_problem: null,
       backup_failed: false,
+      firmware: "2.4.2",
       ...overrides,
     },
   };
@@ -193,6 +194,7 @@ it("affiche les avertissements de la Flam et des index", async () => {
     warnings: [{ kind: "missing_str_dir" }, { kind: "unexpected_mdf_size", size: 130 }],
     mdf_problem: { kind: "truncated", size: 10, expected_min: 126 },
     backup_failed: true,
+    firmware: "2.4.2",
   });
   status.device_count = 2;
   stories = report([story(A)], {

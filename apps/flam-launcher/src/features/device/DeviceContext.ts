@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 import type {
+  CarrierSend,
   DeviceStatus,
   DeviceStories,
   DeviceSummary,
@@ -18,6 +19,8 @@ export interface QueueItem {
   state: QueueState;
   /** Message d'erreur (état `failed`). */
   error?: string;
+  /** Flam 1.x : clés carrier choisies pour cet envoi. */
+  carrier?: CarrierSend;
 }
 
 export interface SendRequest {
@@ -66,8 +69,10 @@ export interface DeviceApi {
   busy: boolean;
   /** Demande l'envoi ; l'avertissement « expérimentale » est affiché au premier envoi. */
   requestSend: (request: SendRequest) => void;
-  /** L'avertissement « expérimentale » est affiché (un seul modal à la fois). */
+  /** L'avertissement « expérimentale » ou le choix des clés carrier est affiché. */
   confirmingSend: boolean;
+  /** Flam 1.x : oublie les clés carrier conservées pour la Flam branchée (nombre supprimé). */
+  forgetCarrier: () => Promise<number>;
   /** Annule l'envoi en cours et vide la file d'attente. */
   cancelQueue: () => void;
   removeFromQueue: (uuid: string) => void;

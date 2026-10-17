@@ -343,6 +343,7 @@ fn chemin_nominal_de_bout_en_bout() {
             replaced: false,
             index_updated: true,
             cache_removed: true,
+            carrier_readback: None,
         }
     );
 
@@ -699,22 +700,22 @@ fn cles_lues_dans_mdf() {
     ));
 }
 
-#[test]
-fn envoi_depuis_un_plain_pk() {
+const PK_INFO: &[u8] = b"Titre\nSous-titre\n000000\nTitre\n";
+const PK_MAIN: &[u8] = b"function setup() end";
+
+/// `.plain.pk` de l'histoire `NEW` dans `dir`.
+fn plain_pk(dir: &Path) -> PathBuf {
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipWriter};
 
-    let tmp = tempfile::tempdir().unwrap();
-    let root = device(tmp.path(), false);
-    write(&root.join(MDF_FILE), &mdf("2.4.2"));
-    let pk = tmp.path().join("histoire.plain.pk");
+    let pk = dir.join("histoire.plain.pk");
     let mut zip = ZipWriter::new(File::create(&pk).unwrap());
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
     let uuid_bytes = uuid::Uuid::parse_str(NEW).unwrap().into_bytes();
     for (name, data) in [
         ("uuid.bin", &uuid_bytes[..]),
-        ("info.plain", b"Titre\nSous-titre\n000000\nTitre\n"),
-        ("main.lua", b"function setup() end"),
+        ("info.plain", PK_INFO),
+        ("main.lua", PK_MAIN),
         ("version", b"1"),
         ("sounds/a.mp3", &[9u8; 3000]),
     ] {
@@ -722,6 +723,15 @@ fn envoi_depuis_un_plain_pk() {
         zip.write_all(data).unwrap();
     }
     zip.finish().unwrap();
+    pk
+}
+
+#[test]
+fn envoi_depuis_un_plain_pk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    write(&root.join(MDF_FILE), &mdf("2.4.2"));
+    let pk = plain_pk(tmp.path());
 
     let work = tmp.path().join("cache").join(WORK_SUBDIR);
     let report = send_from_library_with(
@@ -730,10 +740,12 @@ fn envoi_depuis_un_plain_pk() {
         &pk,
         &work,
         false,
+        None,
         &AtomicBool::new(false),
         &mut |_| {},
     )
     .unwrap();
+    assert_eq!(report.carrier_readback, None);
     assert_eq!(report.id, NEW);
     let installed = files_of(&root.join("str").join(NEW));
     let names: Vec<&str> = installed.keys().map(String::as_str).collect();
@@ -746,24 +758,317 @@ fn envoi_depuis_un_plain_pk() {
     // Préparation supprimée.
     assert!(!work.join("str").join(NEW).exists());
 
-    // Firmware non pris en charge : rien n'est préparé ni écrit.
-    write(&root.join(MDF_FILE), &mdf("1.2.0"));
-    let before = snapshot(&root);
-    let err = send_from_library_with(
-        &FaultyFs::new(),
-        &root,
-        &pk,
-        &work,
-        true,
-        &AtomicBool::new(false),
-        &mut |_| {},
-    )
-    .unwrap_err();
-    assert!(
-        matches!(err, TransferError::UnsupportedFirmware(_)),
-        "{err:?}"
-    );
-    assert_eq!(snapshot(&root), before);
+    // Firmware non pris en charge (3.x), ou 1.x sans demande carrier : rien n'est préparé ni
+    // écrit.
+    for (version, carrier_needed) in [("3.0.0", false), ("1.2.0", true)] {
+        write(&root.join(MDF_FILE), &mdf(version));
+        let before = snapshot(&root);
+        let err = send_from_library_with(
+            &FaultyFs::new(),
+            &root,
+            &pk,
+            &work,
+            true,
+            None,
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        if carrier_needed {
+            assert!(
+                matches!(err, TransferError::Carrier(CarrierError::CarrierRequired)),
+                "{err:?}"
+            );
+        } else {
+            assert!(
+                matches!(err, TransferError::UnsupportedFirmware(_)),
+                "{err:?}"
+            );
+        }
+        assert_eq!(snapshot(&root), before);
+        assert!(!work.join("str").join(NEW).exists());
+    }
+}
+
+// --- Mode carrier (firmware 1.x, #234) ---------------------------------------------------------
+
+mod carrier_flow {
+    use super::*;
+    use crate::device::carrier::tests::{
+        assert_no_leak, capture_logs, encrypted_info, fake_store, foreign_bt, official_story,
+        test_bt, test_key_file, FakeProtector, INFO_PLAIN, OFFICIAL,
+    };
+    use crate::device::carrier::{CarrierConsent, WARNING_VERSION};
+    use crate::device::crypto::decrypt_blocks;
+
+    fn consent() -> CarrierConsent {
+        CarrierConsent {
+            text_version: WARNING_VERSION,
+            accepted_at: "2026-10-17T10:00:00Z".into(),
+        }
+    }
+
+    /// Faux appareil 1.x : `.mdf` 1.15.14, une histoire officielle (`OFFICIAL`, avec `bt`)
+    /// listée, cache du firmware.
+    fn device_v1(base: &Path) -> PathBuf {
+        let root = base.join("flam");
+        write(&root.join(MDF_FILE), &mdf("1.15.14"));
+        official_story(&root, "str", OFFICIAL, true);
+        write(&root.join(LIBRARY_CACHE), b"cache");
+        write(&root.join("etc/library/list"), &serialize(&[id(OFFICIAL)]));
+        write(&root.join("etc/library/list.hidden"), b"");
+        root
+    }
+
+    struct Env {
+        _tmp: tempfile::TempDir,
+        root: PathBuf,
+        pk: PathBuf,
+        work: PathBuf,
+        store: CarrierStore,
+        keys_dir: PathBuf,
+    }
+
+    fn env() -> Env {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = device_v1(tmp.path());
+        let pk = plain_pk(tmp.path());
+        let work = tmp.path().join("cache").join(WORK_SUBDIR);
+        let keys_dir = tmp.path().join("cles");
+        let store = fake_store(&keys_dir);
+        Env {
+            _tmp: tmp,
+            root,
+            pk,
+            work,
+            store,
+            keys_dir,
+        }
+    }
+
+    fn send_carrier(
+        fs: &dyn DeviceFs,
+        e: &Env,
+        consent: Option<&CarrierConsent>,
+        choice: CarrierChoice,
+        remember: bool,
+    ) -> Result<TransferReport, TransferError> {
+        let request = CarrierRequest {
+            consent,
+            choice,
+            remember,
+            store: &e.store,
+        };
+        send_from_library_with(
+            fs,
+            &e.root,
+            &e.pk,
+            &e.work,
+            false,
+            Some(&request),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+    }
+
+    fn device_choice() -> CarrierChoice {
+        CarrierChoice::Device {
+            uuid: OFFICIAL.into(),
+        }
+    }
+
+    fn decrypt_with_bt(data: &[u8]) -> Vec<u8> {
+        let bt = test_bt();
+        let mut out = data.to_vec();
+        decrypt_blocks(
+            &bt[..16].try_into().unwrap(),
+            &bt[16..].try_into().unwrap(),
+            &mut out,
+        )
+        .unwrap();
+        out
+    }
+
+    #[test]
+    fn envoi_carrier_de_bout_en_bout() {
+        let e = env();
+        let c = consent();
+        let logs = capture_logs(|| {
+            let report =
+                send_carrier(&FaultyFs::new(), &e, Some(&c), device_choice(), true).unwrap();
+            assert_eq!(report.carrier_readback, Some(true));
+            assert_no_leak(&serde_json::to_string(&report).unwrap(), "rapport");
+            assert_no_leak(&format!("{report:?}"), "rapport");
+        });
+        assert_no_leak(&logs, "journaux");
+        let installed = files_of(&e.root.join("str").join(NEW));
+        assert_eq!(
+            installed["key"],
+            test_key_file().to_vec(),
+            "key de l'officielle"
+        );
+        assert!(!installed.contains_key("bt"), "bt jamais copié");
+        assert!(decrypt_with_bt(&installed["info"]).starts_with(PK_INFO));
+        assert!(decrypt_with_bt(&installed["main.lsf"]).starts_with(PK_MAIN));
+        assert_eq!(installed["sounds/a.mp3"], vec![9u8; 3000]);
+        assert_eq!(listed(&e.root), vec![id(OFFICIAL), id(NEW)]);
+        // Histoire officielle intacte.
+        let official = files_of(&e.root.join("str").join(OFFICIAL));
+        assert_eq!(official["bt"], test_bt().to_vec());
+        assert_eq!(official["info"], encrypted_info(&test_bt(), INFO_PLAIN));
+        // Couple conservé, relisible ; puis réutilisé depuis la conservation.
+        let id_flam = crate::device::carrier::DeviceId::from_mdf(&mdf("1.15.14")).unwrap();
+        assert!(e.store.has(&id_flam));
+        std::fs::remove_dir_all(e.root.join("str").join(NEW)).unwrap();
+        write(
+            &e.root.join("etc/library/list"),
+            &serialize(&[id(OFFICIAL)]),
+        );
+        let again =
+            send_carrier(&FaultyFs::new(), &e, Some(&c), CarrierChoice::Stored, false).unwrap();
+        assert_eq!(again.carrier_readback, Some(true));
+        // Aucune clé dans le dossier de conservation en clair (protecteur de test : XOR).
+        for entry in std::fs::read_dir(&e.keys_dir).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert_no_leak(&name, "nom de fichier");
+        }
+    }
+
+    #[test]
+    fn aucune_copie_sans_consentement() {
+        let e = env();
+        let before = snapshot(&e.root);
+        let old = CarrierConsent {
+            text_version: WARNING_VERSION + 1,
+            ..consent()
+        };
+        for given in [None, Some(&old)] {
+            for choice in [device_choice(), CarrierChoice::Stored] {
+                let err = send_carrier(&FaultyFs::new(), &e, given, choice, true).unwrap_err();
+                assert!(
+                    matches!(err, TransferError::Carrier(CarrierError::ConsentRequired)),
+                    "{err:?}"
+                );
+                assert_no_leak(&err.to_string(), "erreur");
+            }
+        }
+        assert_eq!(snapshot(&e.root), before, "Flam inchangée");
+        assert!(!e.work.join("str").exists(), "rien de préparé");
+        assert!(!e.keys_dir.exists(), "rien de conservé");
+    }
+
+    #[test]
+    fn couple_invalide_refuse_avant_copie() {
+        let e = env();
+        let before = snapshot(&e.root);
+        // Couple d'un autre compte fourni par fichier.
+        let other = e._tmp.path().join("autre-compte");
+        write(&other.join("bt"), &foreign_bt());
+        write(&other.join("key"), &test_key_file());
+        // `key` d'un autre compte avec le bon bt.
+        let other_key = e._tmp.path().join("autre-key");
+        write(&other_key.join("bt"), &test_bt());
+        write(&other_key.join("key"), &[0x33u8; 32]);
+        let c = consent();
+        let logs = capture_logs(|| {
+            for dir in [&other, &other_key] {
+                let choice = CarrierChoice::File {
+                    path: dir.join("bt").display().to_string(),
+                };
+                let err = send_carrier(&FaultyFs::new(), &e, Some(&c), choice, true).unwrap_err();
+                assert!(
+                    matches!(err, TransferError::Carrier(CarrierError::Mismatch)),
+                    "{err:?}"
+                );
+                let shown = crate::AppError::from(err);
+                assert_eq!(shown.kind(), "validation");
+                assert_no_leak(&format!("{shown} {shown:?}"), "erreur");
+            }
+            // Aucune clé conservée : demande échouée.
+            let err = send_carrier(&FaultyFs::new(), &e, Some(&c), CarrierChoice::Stored, false)
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                TransferError::Carrier(CarrierError::NoStoredKeys)
+            ));
+        });
+        assert_no_leak(&logs, "journaux");
+        assert_eq!(snapshot(&e.root), before, "rien écrit sur la Flam");
+        assert!(!e.work.join("str").exists(), "rien de préparé");
+        assert!(!e.keys_dir.exists(), "couple invalide jamais conservé");
+    }
+
+    #[test]
+    fn panne_de_conservation_n_empeche_pas_l_envoi() {
+        let mut e = env();
+        e.store = CarrierStore::new(e.keys_dir.clone(), Box::new(FakeProtector { fail: true }));
+        let c = consent();
+        let report = send_carrier(&FaultyFs::new(), &e, Some(&c), device_choice(), true).unwrap();
+        assert_eq!(report.carrier_readback, Some(true));
+        assert!(!e.keys_dir.exists());
+    }
+
+    #[test]
+    fn relecture_d_info_illisible_signalee() {
+        let e = env();
+        let c = consent();
+        // Une altération pendant la copie est déjà refusée par la vérification d'empreinte :
+        // la relecture est éprouvée sur un `info` altéré après l'installation.
+        let report = send_carrier(&FaultyFs::new(), &e, Some(&c), device_choice(), false).unwrap();
+        assert_eq!(report.carrier_readback, Some(true));
+        let info = e.root.join("str").join(NEW).join("info");
+        std::fs::write(&info, [0u8; 32]).unwrap();
+        let keys = crate::device::carrier::read_device_carrier(&e.root, OFFICIAL).unwrap();
+        assert!(!crate::device::carrier::readback(&e.root, &id(NEW), &keys));
+    }
+
+    /// Coupure à chaque opération d'écriture d'un envoi carrier, puis redémarrage : la Flam
+    /// reste cohérente (aucun index vers du vide, histoire absente ou complète avec le `key`
+    /// officiel), l'histoire officielle est intacte.
+    #[test]
+    fn coupure_a_chaque_etape_carrier() {
+        let c = consent();
+        let mut crash_at = 0;
+        loop {
+            let e = env();
+            let official_before = files_of(&e.root.join("str").join(OFFICIAL));
+            let result = send_carrier(
+                &FaultyFs::crash_at(crash_at),
+                &e,
+                Some(&c),
+                device_choice(),
+                false,
+            );
+            restart(&e.root);
+            assert!(
+                !e.root.join(TRANSFER_DIR).exists(),
+                "résidu (étape {crash_at})"
+            );
+            let entries = listed(&e.root);
+            assert!(
+                index::missing_stories(&e.root, &entries).is_empty(),
+                "index vers du vide (étape {crash_at})"
+            );
+            assert_eq!(
+                files_of(&e.root.join("str").join(OFFICIAL)),
+                official_before,
+                "officielle modifiée (étape {crash_at})"
+            );
+            let target = e.root.join("str").join(NEW);
+            if target.exists() {
+                let installed = files_of(&target);
+                assert_eq!(installed.len(), 5, "incomplet (étape {crash_at})");
+                assert_eq!(installed["key"], test_key_file().to_vec());
+            }
+            if result.is_ok() {
+                assert!(entries.contains(&id(NEW)));
+                break;
+            }
+            crash_at += 1;
+            assert!(crash_at < 500, "l'envoi n'aboutit jamais");
+        }
+        assert!(crash_at > 5, "pannes injectées : {crash_at}");
+    }
 }
 
 #[test]

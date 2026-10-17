@@ -1,6 +1,7 @@
 import { invokeCommand } from "./error";
 import type { ThemePreference } from "../theme/theme";
 import type { Recovery } from "./recovery";
+import type { CarrierConsent } from "./device";
 
 /** Paramètres enregistrés (miroir de `Settings` dans `src-tauri/src/settings.rs`). */
 export interface Settings {
@@ -17,6 +18,11 @@ export interface Settings {
   theme: ThemePreference;
   /** Téléchargements simultanés du pipeline d'installation (1 à 4, 2 par défaut). */
   max_downloads: number;
+  /**
+   * Consentement au mode carrier (Flam 1.x). Lecture seule : écrit par
+   * `device_carrier_accept`, ignoré par `settings_set`.
+   */
+  carrier_consent?: CarrierConsent | null;
 }
 
 /**

@@ -1,0 +1,225 @@
+import { useEffect, useRef, useState } from "react";
+import {
+  acceptCarrierWarning,
+  getCarrierState,
+  type CarrierChoice,
+  type CarrierSend,
+  type CarrierState,
+} from "../../api/device";
+import { pickFile } from "../../api/dialog";
+import { toAppError } from "../../api/error";
+import {
+  Banner,
+  Button,
+  CheckboxField,
+  Dialog,
+  RadioGroup,
+  type RadioOption,
+} from "../../components";
+import { t } from "../../i18n";
+
+const text = t.deviceTransfer.carrier;
+
+export interface CarrierDialogProps {
+  /** Racine de la Flam (firmware 1.x). */
+  root: string;
+  onCancel: () => void;
+  /** Source choisie, après consentement. Le backend revérifie tout avant la copie. */
+  onConfirm: (carrier: CarrierSend) => void;
+}
+
+type Load =
+  | { phase: "loading" }
+  | { phase: "error"; message: string }
+  | { phase: "ready"; state: CarrierState };
+
+const STORED = "stored";
+const FILE = "file";
+const DEVICE_PREFIX = "device:";
+
+function defaultSource(state: CarrierState): string {
+  if (state.stored_keys) return STORED;
+  const first = state.candidates[0];
+  return first ? `${DEVICE_PREFIX}${first.uuid}` : FILE;
+}
+
+function choiceOf(source: string, file: string | null): CarrierChoice | null {
+  if (source === STORED) return { kind: "stored" };
+  if (source.startsWith(DEVICE_PREFIX))
+    return { kind: "device", uuid: source.slice(DEVICE_PREFIX.length) };
+  return file ? { kind: "file", path: file } : null;
+}
+
+function formatDate(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString("fr-FR");
+}
+
+/**
+ * Mode carrier (Flam en firmware 1.x) : avertissement à accepter (case « J'ai compris »
+ * obligatoire) à la première utilisation, puis choix des clés (histoire officielle de la Flam,
+ * clés conservées ou fichier). Monté à chaque ouverture.
+ */
+export function CarrierDialog({ root, onCancel, onConfirm }: CarrierDialogProps) {
+  const [load, setLoad] = useState<Load>({ phase: "loading" });
+  const [reload, setReload] = useState(0);
+  const [understood, setUnderstood] = useState(false);
+  const [accepting, setAccepting] = useState(false);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
+  const [source, setSource] = useState<string | null>(null);
+  const [file, setFile] = useState<string | null>(null);
+  const [remember, setRemember] = useState(true);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    getCarrierState(root)
+      .then((state) => {
+        if (active) setLoad({ phase: "ready", state });
+      })
+      .catch((caught) => {
+        if (active) setLoad({ phase: "error", message: toAppError(caught).message });
+      });
+    return () => {
+      active = false;
+    };
+  }, [root, reload]);
+
+  const state = load.phase === "ready" ? load.state : null;
+  const consented = state?.consent ?? null;
+
+  async function accept() {
+    if (!state || !understood || accepting) return;
+    setAccepting(true);
+    setAcceptError(null);
+    try {
+      await acceptCarrierWarning(state.warning_version, true);
+      setLoad({ phase: "loading" });
+      setReload((n) => n + 1);
+    } catch (caught) {
+      setAcceptError(toAppError(caught).message);
+    } finally {
+      setAccepting(false);
+    }
+  }
+
+  async function browse() {
+    try {
+      const picked = await pickFile(text.pickTitle);
+      if (picked) setFile(picked);
+    } catch (caught) {
+      setAcceptError(toAppError(caught).message);
+    }
+  }
+
+  const current = state ? (source ?? defaultSource(state)) : FILE;
+  const choice = choiceOf(current, file);
+  const options: RadioOption<string>[] = state
+    ? [
+        ...(state.stored_keys ? [{ value: STORED, label: text.stored }] : []),
+        ...state.candidates.map((candidate) => ({
+          value: `${DEVICE_PREFIX}${candidate.uuid}`,
+          label: text.fromStory(candidate.title),
+          hint: candidate.hidden ? text.hiddenHint : undefined,
+        })),
+        { value: FILE, label: text.fromFile, hint: text.fromFileHint },
+      ]
+    : [];
+
+  const footer =
+    state && !consented ? (
+      <>
+        <Button ref={cancelButton} onClick={onCancel}>
+          {t.common.cancel}
+        </Button>
+        <Button
+          variant="primary"
+          disabled={!understood || accepting}
+          onClick={() => void accept()}
+        >
+          {accepting ? text.accepting : text.continue}
+        </Button>
+      </>
+    ) : (
+      <>
+        <Button ref={cancelButton} onClick={onCancel}>
+          {t.common.cancel}
+        </Button>
+        {state && (
+          <Button
+            variant="primary"
+            icon="install"
+            disabled={choice === null}
+            onClick={() => {
+              if (choice)
+                onConfirm({ choice, remember: choice.kind !== "stored" && remember });
+            }}
+          >
+            {text.confirm}
+          </Button>
+        )}
+      </>
+    );
+
+  return (
+    <Dialog
+      open
+      onClose={onCancel}
+      role="alertdialog"
+      title={text.title}
+      initialFocus={cancelButton}
+      footer={footer}
+    >
+      {load.phase === "loading" && <p role="status">{text.loading}</p>}
+      {load.phase === "error" && (
+        <Banner tone="danger" role="alert">
+          {text.loadFailed(load.message)}
+        </Banner>
+      )}
+      {acceptError && (
+        <Banner tone="danger" role="alert">
+          {acceptError}
+        </Banner>
+      )}
+      {state && !consented && (
+        <>
+          <h3>{text.warningTitle}</h3>
+          <Banner tone="warning">{state.warning_text}</Banner>
+          <CheckboxField
+            label={text.understood}
+            checked={understood}
+            onChange={(event) => setUnderstood(event.target.checked)}
+          />
+        </>
+      )}
+      {state && consented && (
+        <>
+          <p>{text.acceptedAt(formatDate(consented.accepted_at))}</p>
+          {state.candidates.length === 0 && !state.stored_keys && (
+            <Banner tone="info">{text.noCandidate}</Banner>
+          )}
+          <RadioGroup
+            legend={text.sourceLegend}
+            options={options}
+            value={current}
+            onChange={setSource}
+          />
+          {current === FILE && (
+            <p>
+              <Button onClick={() => void browse()}>{text.pick}</Button>{" "}
+              {file && <span>{text.picked(file)}</span>}
+            </p>
+          )}
+          {current !== STORED && (
+            <CheckboxField
+              label={text.remember}
+              hint={text.rememberHint}
+              checked={remember}
+              onChange={(event) => setRemember(event.target.checked)}
+            />
+          )}
+        </>
+      )}
+    </Dialog>
+  );
+}
