@@ -294,7 +294,7 @@ fn lien_a_la_place_du_dossier_n_est_pas_suivi() {
     #[cfg(unix)]
     let made = std::os::unix::fs::symlink(outside.path(), &link);
     if made.is_err() {
-        // Liens symboliques interdits sans le mode développeur : rien à vérifier.
+        eprintln!("liens symboliques interdits (mode développeur) : test sans objet");
         return;
     }
     let report = remove(&device, B).unwrap();
@@ -305,12 +305,68 @@ fn lien_a_la_place_du_dossier_n_est_pas_suivi() {
 #[test]
 fn corbeille_videe_au_debut_d_une_operation() {
     let device = Device::new();
-    let leftover = device.root().join(TRASH_DIR).join(format!("{A}-reste"));
+    let trash = device.root().join(TRASH_DIR);
+    let leftover = trash.join(format!("{A}-{}", "0123456789abcdef0123456789abcdef"));
     fs::create_dir_all(leftover.join("rf")).unwrap();
     fs::write(leftover.join("rf/x"), b"x").unwrap();
     assert_eq!(purge_trash(device.root()).unwrap(), 1);
-    assert!(!device.root().join(TRASH_DIR).exists());
+    assert!(!trash.exists());
     assert_eq!(purge_trash(device.root()).unwrap(), 0);
+}
+
+#[test]
+fn entree_inconnue_de_la_corbeille_conservee() {
+    let device = Device::new();
+    let trash = device.root().join(TRASH_DIR);
+    fs::create_dir_all(trash.join("photos")).unwrap();
+    fs::write(trash.join(format!("{A}-reste")), b"x").unwrap();
+    assert_eq!(purge_trash(device.root()).unwrap(), 0);
+    assert!(trash.join("photos").is_dir());
+    assert!(trash.join(format!("{A}-reste")).is_file());
+}
+
+#[test]
+fn corbeille_inutilisable_rien_n_est_modifie() {
+    let device = Device::new();
+    fs::write(device.root().join(TRASH_DIR), b"fichier").unwrap();
+    let err = remove(&device, B).unwrap_err();
+    assert!(matches!(err, RemoveError::TrashUnavailable(_)), "{err}");
+    assert_eq!(device.index(IndexKind::Visible), [A, B, C]);
+    assert!(device.has_story(STORIES_DIR, B));
+    assert!(device.root().join(LIBRARY_CACHE).exists());
+}
+
+#[test]
+fn list_absent_orphelin_refuse() {
+    let device = Device::new();
+    fs::remove_file(device.root().join(LIBRARY_DIR).join("list")).unwrap();
+    assert!(matches!(
+        find_orphans(device.root()).unwrap_err(),
+        RemoveError::IndexNeedsUser
+    ));
+    let err = remove(&device, B).unwrap_err();
+    assert!(matches!(err, RemoveError::IndexNeedsUser), "{err}");
+    assert!(device.has_story(STORIES_DIR, B));
+}
+
+#[test]
+fn racine_relative_refusee() {
+    let err = remove_story(Path::new("."), &DeviceLock::new(), B, true).unwrap_err();
+    assert!(matches!(err, RemoveError::NotADevice));
+}
+
+#[test]
+fn histoire_dans_les_deux_index_et_les_deux_dossiers() {
+    let device = Device::new();
+    device.put_index("list.hidden", &[H, B]);
+    device.story(HIDDEN_STORIES_DIR, B);
+    let report = remove(&device, B).unwrap();
+    assert_eq!(report.folders_removed, 2);
+    assert_eq!(device.index(IndexKind::Visible), [A, C]);
+    assert_eq!(device.index(IndexKind::Hidden), [H]);
+    assert!(!device.root().join(STORIES_DIR).join(B).exists());
+    assert!(!device.root().join(HIDDEN_STORIES_DIR).join(B).exists());
+    device.assert_others_intact(B);
 }
 
 /// Coupure après chaque étape, puis reprise (nouvelle connexion) : l'index reste valide et

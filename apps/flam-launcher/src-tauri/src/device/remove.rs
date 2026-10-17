@@ -16,8 +16,9 @@
 //! Supprimer récursivement un dossier sur FAT prend du temps et peut être interrompu : il
 //! resterait un dossier d'histoire à moitié vide dans `str/`. Le dossier est donc d'abord
 //! renommé dans la corbeille de l'appareil ([`TRASH_DIR`], à la racine, hors de `str/` que le
-//! firmware énumère), sous un nom unique, puis supprimé. Un renommage dans le même volume est
-//! une seule mise à jour d'entrées de répertoire : après une coupure, le dossier est soit
+//! firmware énumère), sous un nom unique, puis supprimé. Un renommage dans le même volume ne
+//! copie aucune donnée : après une coupure (au pire une incohérence FAT que `chkdsk` répare,
+//! sans effet sur les index), le dossier est soit
 //! encore entier dans `str/` (orphelin signalé par [`find_orphans`], jamais supprimé sans
 //! confirmation), soit dans la corbeille, vidée par [`purge_trash`] à la prochaine opération.
 //!
@@ -96,6 +97,8 @@ pub enum RemoveError {
     Index(#[from] IndexError),
     #[error("histoire retirée de l'index, mais son dossier n'a pas pu être supprimé ({0}) : il apparaîtra comme dossier orphelin")]
     FolderLeft(#[source] io::Error),
+    #[error("corbeille de la Flam inutilisable ({0}) : aucune suppression")]
+    TrashUnavailable(String),
     #[error("{0}")]
     Io(#[from] io::Error),
 }
@@ -110,9 +113,10 @@ impl From<RemoveError> for AppError {
             | RemoveError::Busy(_)
             | RemoveError::IndexNeedsUser
             | RemoveError::StillIndexed(_) => AppError::Validation(err.to_string()),
-            RemoveError::Index(_) | RemoveError::FolderLeft(_) | RemoveError::Io(_) => {
-                AppError::Io(io::Error::other(err.to_string()))
-            }
+            RemoveError::Index(_)
+            | RemoveError::FolderLeft(_)
+            | RemoveError::TrashUnavailable(_)
+            | RemoveError::Io(_) => AppError::Io(io::Error::other(err.to_string())),
         }
     }
 }
@@ -125,9 +129,12 @@ enum Step {
     Purged,
 }
 
-/// Racine d'un appareil : `.mdf` présent (fichier, pas un lien). Garde-fou contre une racine
-/// arbitraire transmise par l'interface.
+/// Racine d'un appareil : chemin absolu, `.mdf` présent (fichier, pas un lien). Garde-fou
+/// contre une racine arbitraire transmise par l'interface.
 fn check_device(root: &Path) -> Result<(), RemoveError> {
+    if !root.is_absolute() {
+        return Err(RemoveError::NotADevice);
+    }
     match fs::symlink_metadata(root.join(MDF_FILE)) {
         Ok(meta) if meta.is_file() => Ok(()),
         _ => Err(RemoveError::NotADevice),
@@ -168,9 +175,20 @@ fn read_indexes(root: &Path) -> Result<[IndexRead; 2], RemoveError> {
     Ok(reads)
 }
 
-/// Vide la corbeille de l'appareil (restes d'un retrait interrompu). Rend le nombre d'entrées
-/// supprimées ; continue après une entrée verrouillée et rend la première erreur à la fin.
-/// Ne suit aucun lien : une corbeille qui n'est pas un vrai dossier est laissée telle quelle.
+/// Nom d'une entrée de corbeille créée par [`remove_story`] : `<uuid>-<32 hexadécimaux>`.
+fn is_trash_name(name: &str) -> bool {
+    name.len() == 36 + 1 + 32
+        && name.is_char_boundary(36)
+        && StoryId::parse(&name[..36]).is_some()
+        && name.as_bytes()[36] == b'-'
+        && name.as_bytes()[37..].iter().all(u8::is_ascii_hexdigit)
+}
+
+/// Vide la corbeille de l'appareil (restes d'un retrait interrompu). Seules les entrées
+/// nommées par [`remove_story`] sont supprimées ; les autres sont laissées. Rend le nombre
+/// d'entrées supprimées ; continue après une entrée verrouillée et rend la première erreur à
+/// la fin. Ne suit aucun lien : une corbeille qui n'est pas un vrai dossier est laissée telle
+/// quelle. À appeler sous [`DeviceLock`].
 pub fn purge_trash(root: &Path) -> io::Result<usize> {
     let trash = root.join(TRASH_DIR);
     if !is_real_dir(&trash)? {
@@ -180,15 +198,20 @@ pub fn purge_trash(root: &Path) -> io::Result<usize> {
     let mut first_error = None;
     for entry in fs::read_dir(&trash)? {
         let result = entry.and_then(|entry| {
+            if !entry.file_name().to_str().is_some_and(is_trash_name) {
+                return Ok(false);
+            }
             let path = entry.path();
             if is_real_dir(&path)? {
-                fs::remove_dir_all(&path)
+                fs::remove_dir_all(&path)?;
             } else {
-                fs::remove_file(&path)
+                fs::remove_file(&path)?;
             }
+            Ok(true)
         });
         match result {
-            Ok(()) => removed += 1,
+            Ok(true) => removed += 1,
+            Ok(false) => {}
             Err(err) => {
                 tracing::warn!("corbeille de la Flam : suppression impossible : {err}");
                 first_error.get_or_insert(err);
@@ -205,8 +228,13 @@ pub fn purge_trash(root: &Path) -> io::Result<usize> {
 
 /// Dossiers d'histoire (nom au format UUID) présents dans `str/` ou `str.hidden/` mais
 /// absents des deux index. Signalés à l'utilisateur, jamais supprimés sans confirmation.
+/// Refuse si `list` est absent : toutes les histoires paraîtraient orphelines. Peut lancer
+/// une reprise de l'index : à appeler sous [`DeviceLock`].
 pub fn find_orphans(root: &Path) -> Result<Vec<Orphan>, RemoveError> {
     let reads = read_indexes(root)?;
+    if reads[0].state != IndexState::Valid {
+        return Err(RemoveError::IndexNeedsUser);
+    }
     let indexed = |id: &StoryId| reads.iter().any(|read| read.entries.contains(id));
     let mut orphans = Vec::new();
     for (dir, hidden) in [(STORIES_DIR, false), (HIDDEN_STORIES_DIR, true)] {
@@ -281,6 +309,20 @@ fn remove_with(
     if indexed.is_empty() && folders.is_empty() {
         return Err(RemoveError::NotFound(id));
     }
+    // Orphelin : seulement si `list` est lisible (absent, toute histoire paraîtrait orpheline).
+    if indexed.is_empty() && reads[0].state != IndexState::Valid {
+        return Err(RemoveError::IndexNeedsUser);
+    }
+    // Corbeille prête avant de toucher à l'index : un échec ici ne modifie rien.
+    let trash = root.join(TRASH_DIR);
+    if !folders.is_empty() {
+        let ready = fs::create_dir_all(&trash).and_then(|()| is_real_dir(&trash));
+        match ready {
+            Ok(true) => {}
+            Ok(false) => return Err(RemoveError::TrashUnavailable("pas un dossier".into())),
+            Err(err) => return Err(RemoveError::TrashUnavailable(err.to_string())),
+        }
+    }
 
     // 1. Index : l'UUID est retiré de chaque index qui le contient.
     for (kind, read) in IndexKind::ALL.into_iter().zip(&reads) {
@@ -307,7 +349,6 @@ fn remove_with(
     }
 
     // 3. Dossiers déplacés dans la corbeille (renommage dans le même volume).
-    let trash = root.join(TRASH_DIR);
     let mut moved = Vec::new();
     for folder in &folders {
         fs::create_dir_all(&trash).map_err(RemoveError::FolderLeft)?;
