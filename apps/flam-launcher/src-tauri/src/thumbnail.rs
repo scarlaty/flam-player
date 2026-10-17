@@ -15,13 +15,8 @@ const MAX_SOURCE_DIM: u32 = 8192;
 /// Mémoire maximale allouée au décodage d'un PNG.
 const MAX_DECODE_BYTES: usize = 64 * 1024 * 1024;
 
-/// Image RGBA8888 par lignes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RgbaImage {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-}
+/// Image RGBA8888 par lignes, partagée avec le décodeur LIF de la crate `telmi2flam`.
+pub use telmi2flam::lif::RgbaImage;
 
 /// Échec de traitement d'une vignette.
 #[derive(Debug, thiserror::Error)]
@@ -33,7 +28,7 @@ pub enum ThumbError {
     #[error("encodage PNG impossible : {0}")]
     Encode(String),
     #[error("image LIF invalide : {0}")]
-    Lif(#[from] crate::lif::LifError),
+    Lif(#[from] telmi2flam::lif::LifError),
 }
 
 /// Décode un PNG (tout type de couleur et de profondeur) en RGBA8888.

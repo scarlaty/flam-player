@@ -49,7 +49,7 @@ STEPS = ("download", "convert", "validate", "run")
 GLOBAL_STATUSES = ("OK", "OK_AVERTISSEMENTS", "ECHEC_CONVERSION", "ECHEC_VALIDATION",
                    "ECHEC_EXECUTION", "ECHEC_TELECHARGEMENT")
 # Statuts de explore() toujours consideres comme un echec d'execution (`timeout`,
-# `max_steps`, `loop` / `exhausted` sans erreur sont des explorations partielles ; `stuck`
+# `max_steps`, `loop` / `exhausted` / `conditions` sans erreur sont des explorations partielles ; `stuck`
 # depend de sa raison : voir interpret_run)
 RUN_FAIL = ("lua_error", "crash")
 # Raisons d'arret d'une boucle SANS erreur (#42) : l'histoire tourne encore mais le
@@ -475,6 +475,8 @@ def interpret_run(res, benign=BENIGN_ERRORS):
     - ok / max_steps sans erreur : warn si la couverture est partielle, sinon ok ;
     - ok / exhausted (plus rien de nouveau, sans erreur) : warn si aucune fin jouee ou
       couverture partielle, sinon ok ;
+    - ok / conditions (#76 : des scènes restent derrière une condition non satisfaite) :
+      toujours warn ;
     - lua_error dont toutes les erreurs sont benignes (liste d'exclusions) : erreurs
       ignorees, mais l'exploration qu'elles ont interrompue reste un avertissement."""
     status = res.get("status")
@@ -535,6 +537,12 @@ def interpret_run(res, benign=BENIGN_ERRORS):
                          partial if not full else "couverture %s/%s scènes" % (visited, total)]
                         + ([] if res.get("end_reached")
                            else ["aucune fin jouée (histoire cyclique ?)"])
+                        + notes + msgs)
+    if done == "conditions":
+        # #76 : des scenes restent derriere une condition / un indexItem que le pilote
+        # n'a pas su satisfaire (reprises sans nouveaute) : couverture partielle
+        return "warn", (["explore: conditions — scènes derrière une condition non satisfaite",
+                         partial if not full else "couverture %s/%s scènes" % (visited, total)]
                         + notes + msgs)
     return "ok", notes + msgs
 

@@ -520,6 +520,8 @@ class TestRunInterpretation(CompatBase):
             (dict(done_reason="exhausted", scenes_visited=14, scenes_total=14,
                   end_reached=False), "warn"),
             (dict(done_reason="exhausted", scenes_visited=10, scenes_total=10), "ok"),
+            (dict(done_reason="conditions", scenes_visited=26, scenes_total=177,
+                  end_reached=True), "warn"),
             (dict(status="lua_error", done_reason="error", errors=["Erreur Lua: boum"]), "fail"),
             (dict(status="crash", done_reason="exit"), "fail"),
             (dict(status="bizarre"), "fail"),

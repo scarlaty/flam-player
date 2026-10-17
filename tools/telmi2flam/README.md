@@ -676,8 +676,13 @@ vérifier la fermeture ; une scène visitée dont la scène suivante, sans condi
 été atteinte — chemin coupé par un test de retour — fait redémarrer l'histoire),
 **boucle épuisée** (`exhausted` : cycle confirmé, plus d'option à essayer, ni transition
 `ok`, ni `home` vers une scène jamais atteinte, ni entrée conditionnelle d'une scène
-visitée vers une scène jamais atteinte, ni option jamais essayée dans l'état d'inventaire
-courant depuis 10 actions — cas des histoires cycliques sans fin), `--max-steps` actions,
+visitée (`ok` ou `home`, y compris les entrées conditionnelles de `home`) vers une scène
+jamais atteinte, ni option jamais essayée dans l'état d'inventaire courant depuis 10
+actions — cas des histoires cycliques sans fin), **conditions non satisfaites**
+(`conditions` : après une fin, des scènes restent atteignables seulement derrière une
+condition ou un `indexItem` ; l'histoire est redémarrée — le choix préfère les options
+jamais essayées dans l'état d'inventaire courant — et, après 3 redémarrages sans aucune
+scène ni option nouvelle, l'exploration s'arrête sur `conditions` au lieu de `complete`), `--max-steps` actions,
 aucune scène / option / fin nouvelle pendant 40 + (scènes vues) actions (`loop` si
 l'histoire avançait encore — au moins 2 nœuds distincts entrés depuis le dernier progrès —,
 sinon `unresponsive` : écran qui ne répond plus ; les touches ←/→ de navigation dans un
@@ -690,7 +695,7 @@ aucune trace, ou `--timeout`.
 | clé | sens |
 |---|---|
 | `status` | `ok` ; `lua_error` (erreur sur stderr : `Erreur Lua`, `callback error`, assert, traceback… ; ou `attempt to` / `stack traceback` sur stdout) ; `crash` (player sorti seul **sans** erreur Lua identifiée avant) ; `timeout` ; `loop` ; `stuck` |
-| `done_reason` | cause de l'arrêt, toujours présente : `complete` (toutes les options rencontrées essayées et toutes les transitions `ok` connues suivies, après une fin), `exhausted` (boucle sans erreur où plus rien n'est à essayer, voir ci-dessus), `max_steps`, `library` (l'histoire est revenue à la bibliothèque, anciens moteurs) → `ok` ; `loop` (plus rien de nouveau, l'histoire tourne encore, sans erreur) → `loop` ; `unresponsive` (écran qui ne répond plus), `no_trace` (`--stuck` s sans trace), `no_start` (pilote jamais lancé) → `stuck` (avant #42, `stuck` confondait boucle et écran figé) ; `timeout` ; `error` (arrêt sur erreur) ; `exit` (player sorti seul : `lua_error` si une erreur Lua a été vue avant, avec `exit_code`, sinon `crash`) |
+| `done_reason` | cause de l'arrêt, toujours présente : `complete` (toutes les options rencontrées essayées et toutes les transitions `ok` connues suivies, après une fin), `exhausted` (boucle sans erreur où plus rien n'est à essayer, voir ci-dessus), `conditions` (des scènes restent derrière une condition jamais satisfaite : `status` `ok`, code de sortie 0, couverture partielle ; `compat.py` la classe en avertissement, `report.md` / `status.json` portent `done_reason: conditions`), `max_steps`, `library` (l'histoire est revenue à la bibliothèque, anciens moteurs) → `ok` ; `loop` (plus rien de nouveau, l'histoire tourne encore, sans erreur) → `loop` ; `unresponsive` (écran qui ne répond plus), `no_trace` (`--stuck` s sans trace), `no_start` (pilote jamais lancé) → `stuck` (avant #42, `stuck` confondait boucle et écran figé) ; `timeout` ; `error` (arrêt sur erreur) ; `exit` (player sorti seul : `lua_error` si une erreur Lua a été vue avant, avec `exit_code`, sinon `crash`) |
 | `errors` | lignes d'erreur filtrées |
 | `scenes` | identifiants des stages visités (sert à fusionner la couverture de plusieurs parcours) |
 | `scenes_visited` / `scenes_total` / `coverage` | stages distincts **réellement atteints** (l'option d'un choix ne compte qu'une fois la transition faite) / stages de `nodes.lua` (y compris inaccessibles) / rapport des deux |
@@ -727,7 +732,8 @@ défaut (`--timeout 120`, `--max-steps 200`) en considérant `timeout` comme « 
 dans la partie explorée ». Une exécution à la fois (CPU) ; garder `--seed` fixe pour
 comparer deux versions du convertisseur.
 
-Code de sortie du CLI : 0 si `ok`, 1 sinon, 77 si `flam-player` est introuvable.
+Codes de sortie du CLI : voir « Codes de sortie de `compat.py` et `explore.py` » (77 si
+`flam-player` est introuvable).
 `run_player` (lancement sans fenêtre, player toujours arrêté en sortie, même sur
 exception) et les motifs d'erreur sont partagés avec `tests/e2e/e2e_telmi.py`.
 Tests : `tests/test_explore.py` (parcours complet, `max_steps`, erreur Lua injectée, erreur
@@ -763,7 +769,7 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
 - **Étapes** : `download`, `convert` (exceptions et avertissements `_warn` capturés),
   `validate` (`validate.py`), `run` ; statut par étape `ok|warn|fail|skipped`, statut global
   `OK`, `OK_AVERTISSEMENTS`, `ECHEC_TELECHARGEMENT`, `ECHEC_CONVERSION`, `ECHEC_VALIDATION`,
-  `ECHEC_EXECUTION`. Code de sortie 1 s'il y a au moins un échec.
+  `ECHEC_EXECUTION`. Codes de sortie : voir « Codes de sortie de `compat.py` et `explore.py` ».
 - **Reprise** : une histoire déjà évaluée avec les mêmes sources du convertisseur (hash de
   `tools/telmi2flam` hors tests/`compat.py`/`explore.py`) n'est pas refaite, sauf `--force`.
   Un échec de téléchargement est toujours retenté. Pour les archives locales, la taille et la date du zip font partie du critère (zip remplacé = refait) ; pour un catalogue, `updated_at` si présent. Avec `--only`/`--limit`, le rapport conserve les fiches précédentes non sélectionnées ; celles évaluées avec un autre convertisseur sont marquées `stale` (« périmé » dans `report.md`). `report.json` est réécrit (atomiquement) après chaque histoire. `--jobs N` : téléchargement, conversion et validation en parallèle
@@ -839,6 +845,49 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
 - **Limite d'extraction** (archives de source externe) : une archive dont le total
   décompressé dépasse `--max-unzipped-mb` (défaut 2048) ou qui compte plus de 20000 entrées
   est refusée à l'étape `convert` (« archive trop volumineuse »).
+
+#### Certificats TLS d'entreprise (proxy)
+
+Derrière un proxy TLS d'entreprise, `compat.py --catalog` peut échouer avec
+`CERTIFICATE_VERIFY_FAILED` : le Python utilisé ne connaît pas le certificat racine du proxy.
+`compat.py` n'a pas d'option de certificat. Le contournement utilisé pour la campagne #87 :
+installer `truststore` dans le venv, puis le charger au démarrage de Python avec un
+`sitecustomize.py` placé hors du dépôt, dans un dossier passé par `PYTHONPATH`. La vérification
+TLS reste active (magasin de certificats du système, qui contient le certificat du proxy),
+rien n'est modifié globalement et seul le processus lancé est concerné.
+
+```python
+# <dossier>/sitecustomize.py
+import truststore
+truststore.inject_into_ssl()
+```
+
+```bash
+PYTHONPATH=<dossier> python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json>
+```
+
+#### Codes de sortie de `compat.py` et `explore.py`
+
+`explore.py <histoire>` (un parcours) :
+
+| `done_reason` → `status` | Code |
+|---|---:|
+| `complete`, `conditions`, `exhausted`, `max_steps`, `library` → `ok` | 0 |
+| `loop` → `loop` ; `unresponsive`, `no_start`, `no_trace` → `stuck` ; `timeout` ; `error` → `lua_error` ; `exit` → `lua_error` ou `crash` | 1 |
+| histoire illisible (archive absente ou corrompue) ; `flam-player` introuvable | 1 ; 77 |
+| arguments invalides | 2 (argparse) |
+
+Un code 0 ne signifie pas « histoire jouée jusqu'au bout » : `exhausted`, `conditions` et `complete` sortent
+avec 0 même si aucune fin n'a été jouée ou si la couverture est partielle. Pour juger, lire
+`done_reason`, `ends` et `coverage` (sortie `--json`).
+
+`compat.py` (campagne) :
+
+| Code | Condition |
+|---:|---|
+| 0 | aucune histoire en `ECHEC_*` : `OK` ou `OK_AVERTISSEMENTS` (dont `warn` : `exhausted`, boucle sans erreur, exploration partielle, erreur bénigne), ou exécution désactivée (`--no-run`, player absent sans `--run`) |
+| 1 | au moins une histoire en `ECHEC_TELECHARGEMENT`, `ECHEC_CONVERSION`, `ECHEC_VALIDATION` ou `ECHEC_EXECUTION` |
+| 2 | arguments invalides (aucun `--catalog` ni `--folder`), catalogue illisible, ou `--run` sans `explore.py` ou sans player |
 
 #### `status.json` (lu par la surcouche)
 
