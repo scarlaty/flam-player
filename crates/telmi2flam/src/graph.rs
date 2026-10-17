@@ -65,7 +65,8 @@ pub fn load_notes(raw: Option<&[u8]>) -> (Object, Option<Warning>) {
         .map(|r| load_json(r, "notes.json"))
     {
         None => (Object::new(), None),
-        Some(Ok(Value::Object(map))) => (map, None),
+        // `Value` implémente `Drop` (#189) : l'objet sort par `into_object`, pas par motif.
+        Some(Ok(v)) if v.kind() == Kind::Object => (v.into_object().unwrap_or_default(), None),
         Some(Ok(other)) => (
             Object::new(),
             ignored(format!(
