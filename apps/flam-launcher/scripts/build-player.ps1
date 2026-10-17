@@ -131,7 +131,7 @@ $utf8 = New-Object Text.UTF8Encoding $false
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'libs\SDL2\LICENSE.txt') -Destination (Join-Path $licDir 'SDL2-LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'libs\lvgl\LICENCE.txt') -Destination (Join-Path $licDir 'LVGL-LICENCE.txt')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'libs\minimp3\LICENSE') -Destination (Join-Path $licDir 'minimp3-LICENSE.txt')
-Copy-Item -LiteralPath (Join-Path $LauncherDir 'LICENSE') -Destination (Join-Path $licDir 'flam-launcher-LICENSE.txt')
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'LICENSE') -Destination (Join-Path $licDir 'flam-launcher-LICENSE.txt')
 # Polices (SIL OFL 1.1), textes et copyright tirés des dépôts amont : voir third-party/.
 foreach ($ofl in 'OFL-Nunito.txt', 'OFL-Montserrat.txt') {
   Copy-Item -LiteralPath (Join-Path $LauncherDir "third-party\$ofl") -Destination $licDir
