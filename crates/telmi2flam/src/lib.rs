@@ -1,7 +1,10 @@
 //! Convertisseur d'histoires Telmi vers le format flam.
 //!
-//! Squelette du port Rust de `tools/telmi2flam` (voir `tools/telmi2flam/PORT-RUST.md`) : les
-//! modules de conversion arrivent dans les PR suivantes.
+//! Port Rust de `tools/telmi2flam` (voir `tools/telmi2flam/PORT-RUST.md`), en cours : codecs
+//! [`lif`] et [`mp3map`] ; les autres modules de conversion arrivent dans les PR suivantes.
+
+pub mod lif;
+pub mod mp3map;
 
 /// Version de la crate, affichée par `telmi2flam --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
