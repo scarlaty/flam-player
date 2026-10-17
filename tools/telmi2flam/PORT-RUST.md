@@ -23,7 +23,7 @@ de bascule et le découpage en PR. Elle ne contient aucun code.
 | `telmi2flam.py` : audio | copie des MP3 **telle quelle**, `silent.mp3` constant, avertissement `audio_samplerate` | **Aucun décodage ni ré-encodage MP3**. Il n'y a donc ni décodeur ni rééchantillonneur à embarquer. |
 | `telmi2flam.py` : sortie | ordre canonique des entrées, `.plain.pk` (ZIP *stored*), `--plain` / `-o *.plain`, `<sortie>.<pid>.part`, `_commit`, `_clean_orphans` | Voir les invariants §3. |
 | `telmi2flam.py` : protocole | options CLI, `--progress-json` (événements `start` avec `version`, `step` avec `phase`/`done`/`total` espacés de 0,1 s, `warning`, `done`, `error` avec `exit`), lignes `  ! …` sur stderr, codes de sortie 0/2/3/4/5/6/130, plus 7 (`unsupported_format`) pour le Rust | Contrats lus par `convert.rs` (événements) et par `compat.py` (lignes `  !` de stderr), à garder tels quels. |
-| `lif.py` | `encode`, `quantize_rgba` | `decode` existe déjà côté launcher (`src-tauri/src/lif.rs`) : à déplacer dans la crate pour les tests aller-retour. |
+| `lif.py` | `encode`, `quantize_rgba` | `decode` a été déplacé du launcher (`src-tauri/src/lif.rs`) dans la crate (`crates/telmi2flam/src/lif.rs`) : tests aller-retour dans la crate, le launcher l'utilise comme dépendance. |
 | `mp3map.py` | `build` (table de seek `.mp3map`) | Analyse d'octets non fiables : bornes strictes. |
 
 ### Ce qui reste en Python (outils du dépôt, jamais livrés)

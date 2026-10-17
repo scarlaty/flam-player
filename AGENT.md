@@ -309,6 +309,12 @@ Qualite avant PR : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo te
 `npm run lint`, `npm run typecheck`, `npm test` (voir `CONTRIBUTING.md` §5). Ne jamais copier de code
 ni de style de TelmiSync (GPL-3.0), et ne jamais versionner d'archive Telmi ni d'histoire convertie.
 
+Workspace Cargo a la racine (`Cargo.toml`) : membres `apps/flam-launcher/src-tauri` et
+`crates/telmi2flam` (port Rust du convertisseur), sorties dans `target/` a la racine. Tests de la
+crate : `cargo test -p telmi2flam`. Apres un ancien checkout, `tools/telmi2flam/engine/` peut etre en
+CRLF : `git add --renormalize tools/telmi2flam/engine/`. L'ancien `apps/flam-launcher/src-tauri/target/`
+est ignore mais inutile : le supprimer.
+
 Installateur Windows (NSIS, par utilisateur, non signe) : `npm run build:installer` (dans
 `apps/flam-launcher/`, depuis un environnement VS 2022 x64) = `build:converter` (Python + Pillow +
 telmi2flam dans `build/telmi2flam/`) + `build:player` (`flam-player.exe` Release et `SDL2.dll` dans

@@ -897,7 +897,7 @@ mod tests {
         let player = dir.path().join("build").join(PLAYER_EXE);
         touch(&player);
         let mut env = env_in(dir.path());
-        env.exe_dir = Some(dir.path().join("apps/flam-launcher/src-tauri/target/debug"));
+        env.exe_dir = Some(dir.path().join("target/debug"));
         assert_eq!(detect_player(&env), None, "désactivé hors développement");
         env.search_repo_build = true;
         assert_eq!(detect_player(&env), Some(player));
