@@ -150,11 +150,10 @@ développement, installation partielle). L'écran Paramètres l'indique.
 **Licences redistribuées** : `telmi2flam/LICENSES.md` (produit par `build-converter.ps1`) liste
 Python (PSF-2.0, libffi, libtommath…), `python.cat`, `vcruntime140*.dll` (redistribuables
 Microsoft), Pillow (renvoi vers `licenses/LICENSE` de la roue, qui regroupe les bibliothèques
-intégrées), le runtime Lunii et les scripts du dépôt. `LICENSES.md` à la racine de
+intégrées), le runtime et les scripts du dépôt (GPL v3). `LICENSES.md` à la racine de
 l'installation couvre le reste (flam-launcher et flam-player GPL v3, SDL2 zlib, Lua MIT, LVGL MIT,
 minimp3 CC0, polices Nunito et Montserrat OFL) ; les textes sont copiés des sous-modules dans
-`licenses/` par `build-player.ps1`. Le mainteneur confirme avoir les droits de redistribution du
-runtime Lunii.
+`licenses/` par `build-player.ps1`.
 
 ## Installateur Windows
 
