@@ -1,6 +1,6 @@
 import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { App, DEMO_HASH } from "./App";
 import { routeFromHash } from "./router";
@@ -69,6 +69,8 @@ function goTo(hash: string) {
 }
 
 afterEach(() => {
+  // Démonte avant d'effacer les simulations : les désabonnements appellent l'API d'événements.
+  cleanup();
   clearMocks();
   vi.unstubAllGlobals();
   window.location.hash = "";
