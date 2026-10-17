@@ -24,7 +24,7 @@ assembler sans le script.
 | `version` | `1` (octet ASCII, sans retour ligne). Le device accepte aussi `2`. |
 | `uuid.bin` | 16 octets bruts = `md5(uuid_seed)`. Identifie l'histoire sur le device (dossier `str/<UUID>/`, sauvegardes). |
 | `main.lua` | Bootstrap : définit `function setup()` (appelée par le firmware). |
-| `script/*.lua` | Framework runtime Lunii + modules du jeu. `require("x")` ne cherche que `script/x.lua`. **À plat** : pas de sous-dossier. |
+| `script/*.lua` | Runtime Lua du projet + modules du jeu. `require("x")` ne cherche que `script/x.lua`. **À plat** : pas de sous-dossier. |
 | `img/script/*.lif` | Icônes UI du framework (pause, flèches…). Réservé au runtime. |
 | `img/empty.lif` | Image transparente utilisée par défaut par plusieurs modules. |
 | `img/thumbnail.lif` | Vignette de la bibliothèque (128×96), optionnelle. |

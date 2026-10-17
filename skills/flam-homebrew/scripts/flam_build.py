@@ -12,7 +12,7 @@ Projet (cree par new_project.py) :
     img/**         .png (converti en .lif) ou .lif ; img/thumbnail.png = vignette
     sounds/*.mp3   audio (+ .mp3map genere)
 
-Le paquet recoit en plus le framework runtime Lunii (assets/runtime : script/*.lua,
+Le paquet recoit en plus le runtime Lua du projet (assets/runtime : script/*.lua,
 img/script/*.lif), img/empty.lif, sounds/silent.mp3(+map) et les metadonnees
 (info.plain, version, uuid.bin). Archive ZIP STORED, ordre : info.plain, version,
 main.lua, script du module, puis le reste trie, uuid.bin en dernier.
@@ -197,7 +197,7 @@ def build(project):
         files[name] = data
         origin[name] = src
 
-    # --- runtime (framework Lunii) ---
+    # --- runtime (Lua du projet) ---
     for p, rel in _walk(RUNTIME_SCRIPT):
         if rel.endswith(".lua") and "/" not in rel:
             add("script/" + rel, _read(p), "runtime")

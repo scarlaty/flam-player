@@ -9,7 +9,7 @@ ne prouve rien. Chaque point ci-dessous a coûté un aller-retour sur le device.
 | 1 ✅ | `require` ne cherche que `script/<nom>.lua` (le simulateur cherche aussi la racine) | histoire qui ne charge pas | tous les `.lua` hors `main.lua` dans `script/`, à plat |
 | 2 ✅ | `require` au top-level de `main.lua` | ne charge pas | tout `require` dans `setup()` |
 | 3 ✅ | UI dessinée hors module `Global.load_module` | écran noir, touches ignorées | jeu = module `create/clean` |
-| 4 ✅ | framework Lunii absent (`global.lua`, `button*`, `progressionManager`, `v-scroll`, `v-container`…) | `module 'global' not found` | `flam_build.py` embarque tout `assets/runtime` |
+| 4 ✅ | runtime du projet absent (`global.lua`, `button*`, `progressionManager`, `v-scroll`, `v-container`…) | `module 'global' not found` | `flam_build.py` embarque tout `assets/runtime` |
 | 5 ✅ | asset UI ou image absente (`img/script/*.lif`, `Global.load_image` sur un fichier manquant) ; le simulateur renvoie `nil` sans erreur | plantage ou gel | `flam_check.py` vérifie les littéraux ; `--strict` au simulateur |
 | 6 ✅ | entrée `list-choice` sans `audio` (chaîne) | menu vide puis crash | `audio = "silent.mp3"` |
 | 7 🔶 | 1er pixel LIF sans alpha explicite | image opaque affichée noire | encoder avec `lif.py` (1er pixel en opcode 0xFF) |
@@ -22,12 +22,12 @@ ne prouve rien. Chaque point ci-dessous a coûté un aller-retour sur le device.
 | 14 | `lv.img` plus grand que sa source | image répétée en mosaïque | taille de l'objet = taille de l'image |
 | 15 | timer non détruit dans `clean()` | erreurs sur objets supprimés, gel | `lv.timer.del` dans `clean()` (mais pas à la sortie vers la bibliothèque : piège 24) |
 | 16 | ZIP compressé / data descriptor / doublon de casse | refus du simulateur ; écart avec les paquets éprouvés ; fichiers écrasés sur la FAT | `flam_build.py` (STORED, noms vérifiés) |
-| 18 | runtime Lunii différent de celui éprouvé | comportements non testés sur device | garder `assets/runtime` tel quel (octets du casse-briques validé sur device) |
+| 18 | runtime différent de celui éprouvé | comportements non testés sur device | garder `assets/runtime` tel quel (version validée sur device avec le casse-briques) |
 | 17 | UUID déjà présent sur la Flam | import refusé (« already loaded ») | `uuid_seed` unique ; supprimer l'ancienne version avant réimport |
 | 19 ✅ | clic molette attendu en `EVENT_KEY` 10 (la molette est un encodeur : sur un objet non défilable, le clic arrive seulement en `EVENT_CLICKED`) | clic sans effet (simulateur et device) | écouter `EVENT_KEY` **et** `EVENT_CLICKED`, un appui compté une fois (`lua-api.md` §4) |
 | 20 ✅ | `audio.stop()` / `audio.pause()` d'une piste en cours | image figée un instant à chaque bruitage qui coupe la musique (invisible au simulateur) | pas de musique pendant l'action ; bruitages qui attendent la fin naturelle (`lua-api.md` §8) |
 | 21 ✅ | `audio.load` pendant qu'une piste joue, sans stop | **gel total**, redémarrage obligatoire | `audio.load` seulement si `audio.get_status() == "stop"` |
-| 22 ✅ | `audio.load(1, ...)` pris pour un 2ᵉ canal | la musique s'arrête, le nouveau son joue : pas de mixage | une seule piste ; premier argument `0` comme les scripts Lunii |
+| 22 ✅ | `audio.load(1, ...)` pris pour un 2ᵉ canal | la musique s'arrête, le nouveau son joue : pas de mixage | une seule piste ; premier argument `0` comme dans les scripts du runtime |
 | 23 ✅ | écriture dans `state` (ex. record) | écran noir à la relance, réparé en effaçant la progression | aucune écriture dans `state` pour un jeu (`lua-api.md` §11) |
 | 24 ✅ | sortie vers la bibliothèque qui vide l'écran (`clean`, `cleanCurrentModule`) ou supprime le timer | relance = écran noir, ou écran affiché mais touches mortes | à la relance la Flam réaffiche l'état laissé : couper seulement le son, puis `goto_library()` (« Relance » ci-dessous) |
 
