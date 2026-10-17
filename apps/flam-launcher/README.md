@@ -166,6 +166,13 @@ Visual Studio **2022** avec les outils C++ x64 (le build Rust doit se faire depu
 absents), sous-modules initialisés (`git submodule update --init --recursive`), réseau (Python,
 Pillow, NSIS).
 
+**Mise à jour** : avant la copie, le hook NSIS `src-tauri/windows/installer-hooks.nsh`
+(`NSIS_HOOK_PREINSTALL`) lance le désinstallateur de la version précédente (`/S /UPDATE`, sur
+place). Il ne supprime que les fichiers que cette version avait installés : un fichier retiré
+entre deux versions disparaît (#180), un fichier étranger du dossier d'installation est
+conservé, aucun `RMDir /r` aveugle. Raccourcis et données utilisateur sont conservés. Si le
+désinstallateur échoue, la mise à jour continue par-dessus (comportement précédent).
+
 ```
 npm run build:installer      # = build:notices + build:converter + build:player + tauri build --config …
 ```
