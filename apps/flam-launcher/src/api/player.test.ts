@@ -8,6 +8,8 @@ import {
   launchPlayer,
   onPlayerExited,
   onPlayerStarted,
+  setPlayerEmbedLayout,
+  stopPlayer,
   type PlayerExited,
   type PlayerSession,
 } from "./player";
@@ -20,6 +22,7 @@ const session: PlayerSession = {
   title: "Mon histoire",
   pid: 42,
   started_at: 1,
+  embedded: false,
 };
 
 it("launchPlayer n'envoie que l'identifiant de bibliothèque", async () => {
@@ -41,6 +44,23 @@ it("launchFolderStory désigne l'entrée par source et identifiant", async () =>
   await launchFolderStory("src", "src:abc");
   expect(calls).toEqual([
     { cmd: "player_launch_folder", args: { sourceId: "src", entryId: "src:abc" } },
+  ]);
+});
+
+it("stopPlayer et setPlayerEmbedLayout appellent leurs commandes", async () => {
+  const calls: { cmd: string; args: unknown }[] = [];
+  mockIPC((cmd, args) => {
+    calls.push({ cmd, args });
+    return cmd === "player_stop" ? true : null;
+  });
+  await expect(stopPlayer()).resolves.toBe(true);
+  const rect = { x: 1, y: 2, width: 320, height: 240 };
+  await setPlayerEmbedLayout(rect);
+  await setPlayerEmbedLayout(null);
+  expect(calls).toEqual([
+    { cmd: "player_stop", args: {} },
+    { cmd: "player_embed_layout", args: { rect } },
+    { cmd: "player_embed_layout", args: { rect: null } },
   ]);
 });
 
