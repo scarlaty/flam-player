@@ -281,6 +281,11 @@ pub fn backup_mdf(dir: &Path, device: &DetectedDevice) -> std::io::Result<Option
     Ok(Some(target))
 }
 
+/// Espace libre du volume de `root`, en octets (`None` : indisponible, ou hors Windows).
+pub(crate) fn free_space(root: &Path) -> Option<u64> {
+    sys::disk_space(root).map(|space| space.free)
+}
+
 /// Détecte la Flam branchée (lecture seule : aucune sauvegarde, aucune écriture).
 #[tauri::command]
 pub async fn device_detect() -> AppResult<DetectionReport> {
