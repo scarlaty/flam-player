@@ -321,7 +321,6 @@ export function SettingsScreen() {
         <h2 id="settings-about">{text.about.title}</h2>
         {info && <p>{text.about.version(info.name, info.version)}</p>}
         <p>{text.about.license}</p>
-        <p>{text.about.credits}</p>
       </section>
 
       <Dialog

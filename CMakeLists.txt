@@ -49,6 +49,7 @@ target_compile_definitions(lvgl PRIVATE _CRT_SECURE_NO_WARNINGS)
 set(APP_SOURCES
     src/main.c
     src/platform/sdl_driver.c
+    src/platform/control.c
     src/bindings/lua_lv.c
     src/bindings/lua_lv_obj.c
     src/bindings/lua_lv_style.c
