@@ -379,7 +379,7 @@ export const fr = {
   playerScreen: {
     label: "Lecture",
     zone: (title: string) => `Lecteur : ${title}`,
-    hint: "Cliquez dans le lecteur ou utilisez « Clavier au lecteur ». Flèches, Entrée, Échap.",
+    hint: "Cliquez dans le lecteur ou utilisez « Clavier au lecteur ». Flèches, Entrée, Échap. F6 rend le clavier au launcher.",
     focus: "Clavier au lecteur",
     stop: "Arrêter",
     stopping: "Arrêt en cours…",
