@@ -582,6 +582,50 @@ class TestRunInterpretation(CompatBase):
         self.assertEqual(story["summary"], "Jouable, boucle sans erreur (8/10 scènes)")
         self.assertEqual(story["coverage"]["scenes_visited"], 8)
 
+    def test_conditions_142(self):
+        """#142 : `conditions` = avertissement, scenes bloquees dans le message, la fiche,
+        status.json, report.md ; resume de la fiche."""
+        blocked = ["s%d>g%d" % (i, i) for i in range(7)] + ["m>h@home"]
+        r = self.go(self.res(done_reason="conditions", scenes_visited=26, scenes_total=177,
+                              end_reached=True, cond_frontier=8, blocked=blocked,
+                              scenes=["s%d" % i for i in range(26)]))
+        self.assertEqual(r["status"], "warn")
+        self.assertIn("exploration partielle 26/177 scènes", r["messages"])
+        self.assertTrue(any(m.startswith("bloquées (scène>cible) : s0>g0; s1>g1") and
+                            m.endswith("(+3)") for m in r["messages"]), r["messages"])
+        self.assertEqual(r["raw"][0]["cond_frontier"], 8)
+        self.assertEqual(r["blocked"], sorted(blocked))
+        # sans scenes bloquees : message sans ligne « bloquées »
+        r0 = self.go(self.res(done_reason="conditions", scenes_visited=26, scenes_total=177))
+        self.assertFalse(any("bloquées" in m for m in r0["messages"]))
+        self.assertNotIn("blocked", r0)
+        rec = {"uuid": "u", "version": "1", "title": "Doudou", "status": "OK_AVERTISSEMENTS",
+               "steps": {"download": {"status": "ok"}, "convert": {"status": "ok"},
+                         "validate": {"status": "ok"}, "run": r}}
+        self.assertEqual(compat._summary(rec), "Jouable, exploration partielle (26/177 scènes)")
+        story = compat.build_status({"generated": "g", "converter_hash": "h",
+                                     "stories": [rec]})["stories"]["u"]
+        self.assertEqual((story["run"], story["run_reason"]), ("warn", "conditions"))
+        self.assertEqual(story["blocked"], sorted(blocked))
+        rec0 = dict(rec, steps=dict(rec["steps"], run=r0))
+        story0 = compat.build_status({"generated": "g", "converter_hash": "h",
+                                      "stories": [rec0]})["stories"]["u"]
+        self.assertNotIn("blocked", story0)
+        md = compat.render_markdown({"generated": "g", "converter_hash": "h", "stories": [rec]})
+        self.assertIn("| conditions |", md)
+        self.assertIn("## Scenes derriere une condition", md)
+        self.assertIn("- Doudou : m>h@home; s0>g0", md)
+
+    def test_conditions_blocked_fusion_graines(self):
+        """Cible atteinte par une autre graine : plus bloquee dans la fiche fusionnee."""
+        runs = [self.res(done_reason="conditions", scenes_visited=2, scenes_total=3,
+                         scenes=["a", "b"], blocked=["b>g", "a>h"], seed=0),
+                self.res(done_reason="conditions", scenes_visited=2, scenes_total=3,
+                         scenes=["a", "g"], blocked=["b>g"], seed=1)]
+        it = iter(runs)
+        r = compat.do_run("x.pk", lambda *a, **k: dict(next(it)), "p", 60, 0, 100, seeds=2)
+        self.assertEqual(r["blocked"], ["a>h"])
+
     def test_partial_message_and_global_status(self):
         r = self.go(self.res(status="timeout", done_reason="timeout", scenes_visited=50,
                               scenes_total=200))
