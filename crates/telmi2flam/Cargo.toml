@@ -6,9 +6,6 @@ license = "MIT"
 edition = "2021"
 rust-version = "1.89"
 
-[lib]
-name = "telmi2flam"
-
 [[bin]]
 name = "telmi2flam"
 path = "src/main.rs"

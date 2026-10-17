@@ -100,6 +100,12 @@ Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§
   toute correction de compatibilité est accompagnée d'un test de non-régression.
 - `apps/flam-launcher` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`,
   `npm run lint`, `npm run typecheck`, `npm test`.
+- `crates/telmi2flam` (port Rust du convertisseur, workspace Cargo à la racine) :
+  `cargo test -p telmi2flam`, `cargo fmt --check` et `cargo clippy -p telmi2flam -- -D warnings`.
+  Une modification de `crates/**` déclenche aussi la CI du launcher, qui partage le workspace (et en dépendra avec #122).
+- Copie de travail extraite avant l'ajout de `.gitattributes` : `tools/telmi2flam/engine/` peut
+  garder des fins de ligne CRLF. `git add --renormalize tools/telmi2flam/engine/` les remet en LF
+  (`include_bytes!` embarque les octets de la copie de travail).
 - Pas de code mort, pas de `TODO` sans issue associée, documentation à jour
   (`README.md`, `AGENT.md`, README du module touché).
 - **PR courtes** : un seul thème, au plus cinq changements fonctionnels (hors tests et
