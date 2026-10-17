@@ -1,6 +1,7 @@
 import type { StoryEntry } from "../../api/story";
 import { Button } from "../../components";
 import { t } from "../../i18n";
+import { SendToDeviceButton } from "../device/SendToDeviceButton";
 import { isRemote, useStories } from "./StoriesContext";
 
 /**
@@ -11,18 +12,26 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
   const stories = useStories();
   const text = t.stories.actions;
   if (stories.activeTaskFor(entry)) return null;
-  if (stories.installedFor(entry)) {
+  const installed = stories.installedFor(entry);
+  if (installed) {
     return (
-      <Button
-        size="sm"
-        variant="accent"
-        icon="play"
-        disabled={stories.session !== null}
-        aria-label={text.forStory(text.play, entry.title)}
-        onClick={() => stories.play(entry)}
-      >
-        {text.play}
-      </Button>
+      <>
+        <Button
+          size="sm"
+          variant="accent"
+          icon="play"
+          disabled={stories.session !== null}
+          aria-label={text.forStory(text.play, entry.title)}
+          onClick={() => stories.play(entry)}
+        >
+          {text.play}
+        </Button>
+        <SendToDeviceButton
+          uuid={installed.uuid}
+          title={entry.title}
+          size={installed.size}
+        />
+      </>
     );
   }
   const label = isRemote(entry) ? text.download : text.install;
