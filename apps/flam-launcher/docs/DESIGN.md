@@ -42,6 +42,36 @@ parfois **à côté de l'enfant** (choisir une histoire, appuyer sur Jouer).
 - Sous 900 px de large (la fenêtre descend à 640 px), la barre latérale passe à 12 rem et le
   panneau de tâches se place sous le contenu (40 % de la hauteur au plus).
 
+### Écran Lecture
+
+Affiché à la place de toute l'application tant qu'un player incrusté tourne
+(`src/features/player/PlayerScreen.tsx`, comportement : README, section « Lecture
+incrustée ») :
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│ Titre de l'histoire (h1)      [Clavier au lecteur] [Arrêter]   │
+│ (alerte d'erreur éventuelle, role="alert")                     │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│   Zone d'accueil (fond --brand-screen, région « Lecteur : … ») │
+│   la fenêtre native du player s'y superpose, image 4:3         │
+│                                                                │
+│        Aide : clic ou « Clavier au lecteur », F6 pour revenir  │
+└────────────────────────────────────────────────────────────────┘
+```
+
+- **Fenêtre native au-dessus de la page** : rien de ce qui est dessiné dans la zone n'est
+  visible. Les erreurs vont donc dans l'en-tête (`role="alert"`, couleur `--color-danger`,
+  contour `CanvasText` en contraste élevé), jamais dans une notification ni un dialogue.
+- **Clavier** : au montage le focus est sur le titre (`tabIndex={-1}`, anneau
+  `--color-focus`). « Clavier au lecteur » donne le clavier à la fenêtre native ; **F6** dans
+  le player le rend au launcher, sur ce même bouton. Dans la fenêtre native, Tab ne sort pas.
+- **Zone** : `flex: 1`, bordure `CanvasText` en contraste élevé ; sa position et sa taille
+  sont transmises au backend (`player_embed_layout`, un appel à la fois, dans l'ordre).
+- Les boutons sont ceux de `Button` (`secondary` / `danger`) ; l'écran n'a pas de composant
+  propre.
+
 ## Thèmes
 
 Clair et sombre, avec choix **Système / Clair / Sombre**.

@@ -563,14 +563,15 @@ license?, thumb_url?, download_url, size?, updated_at?, kind (telmi_zip | flam_p
 Convention : événements émis par le backend, nommés `domaine://action` (ex. `install://progress`),
 avec une charge utile sérialisable typée côté `src/api/`.
 
-| Événement            | Charge                                                                                                                                                          |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `install://progress` | `{ task_id, state, percent, received, total, phase }` (au plus toutes les 200 ms par tâche, plus chaque changement d'état)                                      |
-| `install://done`     | `{ task_id, entry: LibraryEntry, warnings }`                                                                                                                    |
-| `install://error`    | `{ task_id, state: "failed" \| "cancelled", error: TaskError }`                                                                                                 |
-| `player://started`   | `PlayerSession { origin, uuid, title, pid, started_at }`                                                                                                        |
-| `player://exited`    | `{ session, code, success, duration_ms, stderr, saves_error }` (`code` nul : processus tué ; `saves_error` : progression non conservée telle quelle, sinon nul) |
-| `player://updated`   | `PlayerSession` (le player s'est replié en fenêtre séparée : `embedded` faux)                                                                                   |
+| Événement             | Charge                                                                                                                                                          |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `install://progress`  | `{ task_id, state, percent, received, total, phase }` (au plus toutes les 200 ms par tâche, plus chaque changement d'état)                                      |
+| `install://done`      | `{ task_id, entry: LibraryEntry, warnings }`                                                                                                                    |
+| `install://error`     | `{ task_id, state: "failed" \| "cancelled", error: TaskError }`                                                                                                 |
+| `player://started`    | `PlayerSession { origin, uuid, title, pid, started_at }`                                                                                                        |
+| `player://exited`     | `{ session, code, success, duration_ms, stderr, saves_error }` (`code` nul : processus tué ; `saves_error` : progression non conservée telle quelle, sinon nul) |
+| `player://updated`    | `PlayerSession` (le player s'est replié en fenêtre séparée : `embedded` faux)                                                                                   |
+| `player://focus-host` | aucune (F6 dans le player incrusté : le clavier revient au launcher)                                                                                            |
 
 ### Lancement du player (`player`)
 
@@ -610,10 +611,16 @@ seul argument** (dernier), dossier courant = dossier du player.
   à la fin, le focus revient au contenu principal. Les erreurs d'arrêt s'affichent en alerte
   dans l'en-tête, hors de la zone (une notification pourrait passer sous la fenêtre native).
   `player_stop` qui renvoie faux (aucun player : fin manquée) ferme l'écran ; sans fin de
-  partie 10 s après « Arrêter », le bouton redevient disponible avec une alerte. **Limite connue** : une fois
-  le clavier donné au player, aucune touche ne le rend au launcher (Tab reste dans la fenêtre
-  native, Échap est le retour du player) ; il faut un clic hors de la zone. Une touche de
-  retour côté player est un suivi (#201).
+  partie 10 s après « Arrêter », le bouton redevient disponible avec une alerte.
+  **Retour du clavier (F6)** : Tab reste dans la fenêtre native du player et Échap est le
+  retour du player ; la touche **F6**, active dans le player incrusté seulement, rend le
+  clavier au launcher. Le player donne le focus à la fenêtre racine du launcher et écrit la
+  trace `[EMBED] focus-host` sur stderr ; le lecteur de stderr la relaie par l'événement
+  `player://focus-host` (sans charge), le backend donne alors le focus système à la WebView et
+  l'écran Lecture place le focus sur « Clavier au lecteur ». Pas de piège clavier : F6 ressort,
+  « Clavier au lecteur » rentre. L'aide sous la zone le rappelle. Un ancien `flam-player.exe`
+  sans F6 oblige à cliquer hors de la zone. Les placements `player_embed_layout` sont envoyés
+  l'un après l'autre (le dernier rectangle l'emporte).
 - **Arrêt (`player_stop`, bouton « Arrêter »)** : le player est lancé avec `--stdin-control` et
   son entrée standard est un tube gardé par le service pendant la session. `player_stop` y écrit
   `quit` : le player sauvegarde et sort avec le code 0 (`player://exited`, `success`). S'il tourne
