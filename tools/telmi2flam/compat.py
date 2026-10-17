@@ -777,6 +777,7 @@ def failed_record(entry, exc):
         "validate": _step("skipped", ["conversion en échec"]),
         "run": _step("skipped", ["conversion en échec"])}
     rec["status"] = global_status(rec["steps"])
+    rec["transient"] = True          # echec imprevu : refait a la relance, sans --force
     return rec
 
 
@@ -857,6 +858,10 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         reusable = (old is not None and not force and old.get("converter_hash") == chash
                     and old.get("fingerprint") == e.get("fingerprint")
                     and old.get("status") != "ECHEC_TELECHARGEMENT"
+                    # fiche provisoire (exploration interrompue) ou echec transitoire
+                    # (exception imprevue) : jamais reprise, quels que soient les reglages
+                    and not old.get("transient")
+                    and not old.get("steps", {}).get("run", {}).get("provisional")
                     and not (explore is not None
                              and old.get("steps", {}).get("run", {}).get("status") == "skipped"
                              and old.get("steps", {}).get("validate", {}).get("status")
@@ -896,15 +901,16 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         # Sans `params`, elle n'est jamais reutilisee comme resultat valide.
         interrupted = dict(failed_run_step(
             None, "exécution non terminée : processus de compat interrompu avant la fin "
-                  "de l'exploration (tué de l'extérieur ?)", seed=seed), params=None)
+                  "de l'exploration (tué de l'extérieur ?)", seed=seed), params=None, provisional=True)
         prov = dict(rec, steps=dict(rec["steps"], run=interrupted), status="ECHEC_EXECUTION",
                     converter_hash=chash, evaluated=time.strftime("%Y-%m-%dT%H:%M:%S"))
-        try:
-            with lock:
-                results[rec["key"]] = prov
-                write(results)
-        except OSError:
-            pass
+        if explore is not None:
+            try:
+                with lock:
+                    results[rec["key"]] = prov
+                    write(results)
+            except OSError as e:
+                log("! fiche provisoire non écrite pour %s : %s" % (rec["key"], e))
         t0 = time.time()
         try:
             run = do_run(rec["output"], explore, player_exe, run_timeout, seed,

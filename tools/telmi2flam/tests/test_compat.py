@@ -987,6 +987,30 @@ class TestAlwaysAFiche(CompatBase):
                             player_exe="p.exe")
         self.assertEqual(doc["stories"][0]["steps"]["run"]["status"], "ok")
 
+    def test_provisional_not_reused_without_run(self):
+        def explore(player, story, timeout_s=120, seed=0, max_steps=200):
+            raise Killed()
+        with self.assertRaises(Killed):
+            self.campaign(self.good(), explore=explore, player_exe="p.exe")
+        doc = self.campaign(self.good())                       # --no-run
+        self.assertEqual(doc["stories"][0]["steps"]["run"]["status"], "skipped")
+        self.assertEqual(doc["stories"][0]["status"], "OK")
+
+    def test_transient_failure_is_retried(self):
+        calls = []
+        real = compat.process_story
+
+        def flaky(entry, cache, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("disque plein")
+            return real(entry, cache, **kw)
+        with mock.patch.object(compat, "process_story", flaky):
+            self.assertEqual(self.campaign(self.good())["stories"][0]["status"],
+                             "ECHEC_CONVERSION")
+            self.assertEqual(self.campaign(self.good())["stories"][0]["status"], "OK")
+        self.assertEqual(len(calls), 2)
+
     def test_parallel_run_jobs_exception(self):
         ents = []
         for n in ("a", "b"):
@@ -1004,7 +1028,7 @@ class TestAlwaysAFiche(CompatBase):
 
 try:
     import explore as _explore
-    PLAYER =_explore.find_player()
+    PLAYER = _explore.find_player()
 except Exception:
     PLAYER = None
 
