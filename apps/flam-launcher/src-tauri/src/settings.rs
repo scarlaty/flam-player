@@ -12,6 +12,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::device::carrier::CarrierConsent;
 use crate::sources::{validate_catalog_url, TELMI_STORE_URL};
 use crate::storage::{self, ConfigState, MigrationStep, Recovery};
 use crate::{AppError, AppResult};
@@ -68,6 +69,10 @@ pub struct Settings {
     /// [`MAX_DOWNLOADS_LIMIT`]). Absent des fichiers écrits avant son ajout :
     /// [`DEFAULT_MAX_DOWNLOADS`] (`#[serde(default)]`, sans migration de schéma).
     pub max_downloads: u32,
+    /// Consentement à l'avertissement du mode carrier (Flam 1.x, #234), avec sa date. Écrit
+    /// seulement par `device_carrier_accept` : la valeur reçue par `settings_set` est ignorée
+    /// (l'enregistrée est conservée). Absent des anciens fichiers : `None`.
+    pub carrier_consent: Option<CarrierConsent>,
 }
 
 /// Téléchargements simultanés par défaut.
@@ -85,6 +90,7 @@ impl Default for Settings {
             default_catalog_url: TELMI_STORE_URL.into(),
             theme: Theme::default(),
             max_downloads: DEFAULT_MAX_DOWNLOADS,
+            carrier_consent: None,
         }
     }
 }
@@ -494,6 +500,7 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
         default_catalog_url: validate_catalog_url(&settings.default_catalog_url)?,
         theme: settings.theme,
         max_downloads: settings.max_downloads,
+        carrier_consent: settings.carrier_consent,
     })
 }
 
@@ -519,11 +526,22 @@ impl SettingsStore {
     /// en automatique). Le fichier existant est d'abord relu par le même chemin que `load` :
     /// version future -> refus sans le toucher ; fichier corrompu -> sauvegardé en `*.bak`.
     /// Renvoie les paramètres normalisés.
+    ///
+    /// Le consentement du mode carrier n'est pas modifiable ici : la valeur enregistrée est
+    /// conservée quelle que soit celle reçue (voir [`Self::record_carrier_consent`]).
     pub fn update(&self, settings: Settings) -> AppResult<Settings> {
-        self.load()?;
-        let settings = validate(settings)?;
+        let stored = self.load()?;
+        let mut settings = validate(settings)?;
+        settings.carrier_consent = stored.carrier_consent;
         storage::write_json(&self.dir.join(FILE_NAME), &settings)?;
         Ok(settings)
+    }
+
+    /// Enregistre (ou retire, `None`) le consentement du mode carrier, sans toucher au reste.
+    pub fn record_carrier_consent(&self, consent: Option<CarrierConsent>) -> AppResult<()> {
+        let mut settings = self.load()?;
+        settings.carrier_consent = consent;
+        storage::write_json(&self.dir.join(FILE_NAME), &settings)
     }
 
     /// Paramètres, valeurs effectives, problèmes et restauration à signaler.
@@ -801,6 +819,7 @@ mod tests {
                 schema_version: 0,
                 theme: Theme::Dark,
                 max_downloads: 3,
+                carrier_consent: None,
             })
             .unwrap();
         assert_eq!(saved.schema_version, SCHEMA_VERSION);

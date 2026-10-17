@@ -2,11 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   cancelDeviceTransfer,
   ejectDevice,
+  forgetCarrierKeys,
   listDeviceStories,
+  needsCarrier,
   onTransferProgress,
   recoverDeviceTransfers,
   removeDeviceStory,
   sendStoryToDevice,
+  type CarrierSend,
+  type DeviceSummary,
 } from "../../api/device";
 import { toAppError } from "../../api/error";
 import { Banner, Button, Dialog } from "../../components";
@@ -21,6 +25,7 @@ import {
   type StoriesState,
   type TransferProgressView,
 } from "./DeviceContext";
+import { CarrierDialog } from "./CarrierDialog";
 import { useDeviceStatus } from "./useDeviceStatus";
 
 const text = t.deviceTransfer;
@@ -29,7 +34,8 @@ const text = t.deviceTransfer;
 const CANCEL_RETRY_MS = 200;
 const CANCEL_RETRIES = 15;
 
-const FIRMWARE_ERROR = /firmware/i;
+/** Refus du backend pour un firmware non pris en charge (3.x et suivants, `.mdf` illisible). */
+const FIRMWARE_ERROR = /firmware de la Flam non pris en charge/i;
 
 export interface DeviceProviderProps {
   children: ReactNode;
@@ -57,9 +63,11 @@ export function DeviceProvider({
 
   const rootRef = useRef<string | null>(null);
   const deviceKeyRef = useRef<string | null>(null);
+  const deviceRef = useRef<DeviceSummary | null>(null);
   useEffect(() => {
     rootRef.current = root;
     deviceKeyRef.current = deviceKey;
+    deviceRef.current = device;
   });
 
   // Reprise : une fois par branchement (changement de volume ou retour après une absence).
@@ -160,6 +168,12 @@ export function DeviceProvider({
   const running = useRef(false);
   const sendingUuid = useRef<string | null>(null);
   const [pendingAck, setPendingAck] = useState<SendRequest | null>(null);
+  // Mode carrier (Flam 1.x) : demande en attente du choix des clés, et choix retenu pour la
+  // Flam branchée pendant cette session.
+  const [pendingCarrier, setPendingCarrier] = useState<SendRequest | null>(null);
+  const carrierSession = useRef<{ key: string | null; carrier: CarrierSend } | null>(
+    null,
+  );
   const cancelButton = useRef<HTMLButtonElement>(null);
 
   const updateQueue = useCallback((change: (items: QueueItem[]) => QueueItem[]) => {
@@ -212,12 +226,20 @@ export function DeviceProvider({
         hasOutcome && previous ? `${previous}. ${started}` : started,
       );
       try {
-        await sendStoryToDevice(rootNow, next.uuid);
-        setItemState(next.uuid, "done");
-        setAnnouncement(text.panel.announce.done(next.title));
+        const sent = await sendStoryToDevice(rootNow, next.uuid, next.carrier);
+        if (sent.carrier_readback === false) {
+          carrierSession.current = null;
+          setItemState(next.uuid, "failed", text.errors.readback);
+          setAnnouncement(text.panel.announce.failed(next.title, text.errors.readback));
+        } else {
+          setItemState(next.uuid, "done");
+          setAnnouncement(text.panel.announce.done(next.title));
+        }
         setReload((n) => n + 1);
       } catch (caught) {
         const failure = toAppError(caught);
+        // Clés refusées ou introuvables : elles seront redemandées au prochain envoi.
+        if (next.carrier && failure.kind !== "cancelled") carrierSession.current = null;
         if (failure.kind === "cancelled") {
           setItemState(next.uuid, "cancelled");
           setAnnouncement(text.panel.announce.cancelled);
@@ -249,7 +271,7 @@ export function DeviceProvider({
   }, [setItemState, updateQueue]);
 
   const enqueue = useCallback(
-    (request: SendRequest) => {
+    (request: SendRequest & { carrier?: CarrierSend }) => {
       const active = queueRef.current.some(
         (item) =>
           item.uuid === request.uuid &&
@@ -269,12 +291,29 @@ export function DeviceProvider({
     [pump, updateQueue],
   );
 
-  const requestSend = useCallback(
+  /** Flam 1.x : les clés carrier sont choisies (et l'avertissement accepté) avant l'envoi. */
+  const proceed = useCallback(
     (request: SendRequest) => {
-      if (getFlamSendWarningAck()) enqueue(request);
-      else setPendingAck(request);
+      if (!needsCarrier(deviceRef.current)) {
+        enqueue(request);
+        return;
+      }
+      const session = carrierSession.current;
+      if (session && session.key === deviceKeyRef.current) {
+        enqueue({ ...request, carrier: session.carrier });
+      } else {
+        setPendingCarrier(request);
+      }
     },
     [enqueue],
+  );
+
+  const requestSend = useCallback(
+    (request: SendRequest) => {
+      if (getFlamSendWarningAck()) proceed(request);
+      else setPendingAck(request);
+    },
+    [proceed],
   );
 
   function confirmAck() {
@@ -282,8 +321,29 @@ export function DeviceProvider({
     setFlamSendWarningAck();
     const request = pendingAck;
     setPendingAck(null);
-    enqueue(request);
+    proceed(request);
   }
+
+  function confirmCarrier(carrier: CarrierSend) {
+    if (!pendingCarrier) return;
+    const request = pendingCarrier;
+    setPendingCarrier(null);
+    // Clés conservées : les envois suivants les relisent ; sinon le même choix est réutilisé.
+    carrierSession.current = {
+      key: deviceKeyRef.current,
+      carrier: carrier.remember
+        ? { choice: { kind: "stored" }, remember: false }
+        : carrier,
+    };
+    enqueue({ ...request, carrier });
+  }
+
+  const forgetCarrier = useCallback(async () => {
+    const rootNow = rootRef.current;
+    if (!rootNow) return 0;
+    carrierSession.current = null;
+    return forgetCarrierKeys(rootNow);
+  }, []);
 
   const cancelQueue = useCallback(() => {
     updateQueue((items) =>
@@ -399,7 +459,8 @@ export function DeviceProvider({
       cancelling,
       busy,
       requestSend,
-      confirmingSend: pendingAck !== null,
+      confirmingSend: pendingAck !== null || pendingCarrier !== null,
+      forgetCarrier,
       cancelQueue,
       removeFromQueue,
       dismissQueue,
@@ -426,6 +487,8 @@ export function DeviceProvider({
       busy,
       requestSend,
       pendingAck,
+      pendingCarrier,
+      forgetCarrier,
       cancelQueue,
       removeFromQueue,
       dismissQueue,
@@ -460,6 +523,13 @@ export function DeviceProvider({
       >
         <Banner tone="warning">{text.experimental.body}</Banner>
       </Dialog>
+      {pendingCarrier && root && (
+        <CarrierDialog
+          root={root}
+          onCancel={() => setPendingCarrier(null)}
+          onConfirm={confirmCarrier}
+        />
+      )}
     </DeviceContext.Provider>
   );
 }

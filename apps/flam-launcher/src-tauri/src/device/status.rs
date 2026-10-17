@@ -48,6 +48,9 @@ pub struct DeviceSummary {
     pub mdf_problem: Option<MdfError>,
     /// La sauvegarde personnelle de `.mdf` a échoué (dossier de données inaccessible).
     pub backup_failed: bool,
+    /// Version du firmware lue dans `.mdf` (`1.15.14`, `2.4.2`…), `None` si illisible. Une
+    /// Flam en 1.x n'accepte que le mode carrier (#234).
+    pub firmware: Option<String>,
 }
 
 /// État de l'appareil (réponse de `device_status`).
@@ -137,6 +140,10 @@ fn summarize(device: &DetectedDevice, backup_failed: bool) -> DeviceSummary {
             .clone()
             .filter(|e| !matches!(e, MdfError::FormatUnspecified)),
         backup_failed,
+        firmware: device
+            .mdf_bytes
+            .as_deref()
+            .and_then(super::transfer::firmware_from_mdf),
     }
 }
 
@@ -523,6 +530,7 @@ mod tests {
             [
                 "backup_failed",
                 "file_system",
+                "firmware",
                 "mdf_problem",
                 "root",
                 "space",

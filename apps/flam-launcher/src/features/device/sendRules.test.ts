@@ -17,6 +17,7 @@ const device: DeviceSummary = {
   warnings: [],
   mdf_problem: null,
   backup_failed: false,
+  firmware: "2.4.2",
 };
 
 const stories: DeviceStories = {

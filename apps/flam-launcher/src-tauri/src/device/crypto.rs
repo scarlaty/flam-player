@@ -1,4 +1,5 @@
-//! Chiffrement des histoires pour la Flam (firmware 2.x, #228), logique pure sans Tauri.
+//! Chiffrement des histoires pour la Flam (firmware 2.x, #228 ; firmware 1.x par « carrier »,
+//! #234), logique pure sans Tauri.
 //!
 //! Format attendu par la Flam (observé, à confirmer sur appareil par #236) :
 //!
@@ -31,17 +32,20 @@
 //!
 //! # Firmwares
 //!
-//! La version est le champ « main » (nombre avant le premier point). Seul le firmware 2.x est
-//! accepté. Le 1.x range à `0x4E` 32 octets d'une autre nature (ni clé ni IV) : il relève de
-//! #234. Les firmwares 3.x et suivants n'ont jamais été observés : ils sont refusés
-//! explicitement plutôt que de produire un fichier `key` douteux (à confirmer sur appareil,
-//! #236).
+//! La version est le champ « main » (nombre avant le premier point). Le firmware 2.x lit ses
+//! clés dans `.mdf` ([`DeviceKeys::new`]). Le 1.x range à `0x4E` 32 octets d'une autre nature
+//! (ni clé ni IV) : il n'accepte que les clés « carrier » d'une histoire officielle du même
+//! compte ([`DeviceKeys::with_carrier`], module [`super::carrier`], #234). Les firmwares 3.x et
+//! suivants n'ont jamais été observés : ils sont refusés explicitement plutôt que de produire
+//! un fichier `key` douteux (à confirmer sur appareil, #236).
 //!
 //! Les clés ne sont jamais journalisées : `Debug` les masque, et elles sont effacées de la
 //! mémoire à la destruction (`zeroize`, y compris la clé étendue d'AES).
 
 use aes::cipher::{block_padding::NoPadding, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use zeroize::Zeroizing;
+
+use super::carrier::CarrierKeys;
 
 /// Taille d'un bloc AES, en octets.
 pub const BLOCK_SIZE: usize = 16;
@@ -73,10 +77,11 @@ pub enum CryptoError {
     /// La longueur des données n'est pas un multiple de [`BLOCK_SIZE`].
     #[error("longueur {0} non multiple de 16 octets")]
     UnalignedLength(usize),
-    /// Version de firmware non prise en charge : 1.x (#234), 3.x et suivants (jamais observés).
+    /// Version de firmware non prise en charge : 3.x et suivants (jamais observés), ou famille
+    /// inattendue pour la source des clés (1.x sans clés carrier, 2.x avec).
     #[error(
-        "firmware de la Flam non pris en charge : « {0} » (seul le 2.x l'est ; \
-         3.x et suivants non vérifiés)"
+        "firmware de la Flam non pris en charge : « {0} » (2.x, ou 1.x avec les clés d'une \
+         histoire officielle ; 3.x et suivants non vérifiés)"
     )]
     UnsupportedFirmware(String),
     /// Numéro de série de longueur inattendue.
@@ -131,12 +136,31 @@ pub fn encrypt_zero_padded(key: &[u8; 16], iv: &[u8; 16], plain: &[u8]) -> Vec<u
     out
 }
 
-/// Version de firmware prise en charge, déduite du champ « main » de `.mdf` (`2.4.2`…).
-fn check_firmware(firmware_main: &str) -> Result<(), CryptoError> {
-    // Majeur en chiffres ASCII seulement : ni signe, ni espace, ni zéro initial.
+/// Famille de firmware reconnue d'après le champ « main » de `.mdf`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirmwareFamily {
+    /// 1.x : clés « carrier » obligatoires (#234).
+    V1,
+    /// 2.x : clés lues dans `.mdf`.
+    V2,
+}
+
+/// Famille du firmware `firmware_main` (`2.4.2`, `1.15.14`…), `None` hors 1.x et 2.x (3.x et
+/// suivants, texte illisible). Majeur en chiffres ASCII seulement : ni signe, ni espace, ni
+/// zéro initial.
+pub fn firmware_family(firmware_main: &str) -> Option<FirmwareFamily> {
     match firmware_main.split('.').next() {
-        Some("2") => Ok(()),
-        _ => Err(CryptoError::UnsupportedFirmware(firmware_main.to_string())),
+        Some("1") => Some(FirmwareFamily::V1),
+        Some("2") => Some(FirmwareFamily::V2),
+        _ => None,
+    }
+}
+
+fn check_firmware(firmware_main: &str, expected: FirmwareFamily) -> Result<(), CryptoError> {
+    if firmware_family(firmware_main) == Some(expected) {
+        Ok(())
+    } else {
+        Err(CryptoError::UnsupportedFirmware(firmware_main.to_string()))
     }
 }
 
@@ -177,14 +201,15 @@ pub fn parse_serial_field(field: &[u8]) -> Result<[u8; SERIAL_LEN], CryptoError>
     Ok(serial)
 }
 
-/// Clés d'une Flam en firmware 2.x, telles que lues dans son fichier `.mdf` (disposition dans
-/// la documentation du module).
+/// Clés de chiffrement des histoires d'une Flam : en firmware 2.x, lues dans son fichier `.mdf`
+/// (disposition dans la documentation du module) ; en firmware 1.x, clés « carrier » d'une
+/// histoire officielle du même compte.
 ///
 /// Interface minimale remplie par la détection (#225, #241) : version « main », numéro de
 /// série décodé par [`parse_serial_field`] (7 octets), clé à [`MDF_KEY_OFFSET`] et IV à
 /// [`MDF_IV_OFFSET`].
 pub struct DeviceKeys {
-    serial: [u8; SERIAL_LEN],
+    key_file: Zeroizing<[u8; KEY_FILE_LEN]>,
     story_key: Zeroizing<[u8; 16]>,
     story_iv: Zeroizing<[u8; 16]>,
 }
@@ -203,14 +228,30 @@ impl DeviceKeys {
     ) -> Result<Self, CryptoError> {
         let story_key = Zeroizing::new(story_key);
         let story_iv = Zeroizing::new(story_iv);
-        check_firmware(firmware_main)?;
+        check_firmware(firmware_main, FirmwareFamily::V2)?;
         let serial: [u8; SERIAL_LEN] = serial
             .try_into()
             .map_err(|_| CryptoError::InvalidSerial(serial.len()))?;
         Ok(Self {
-            serial,
+            key_file: key_file_from_serial(&serial),
             story_key,
             story_iv,
+        })
+    }
+
+    /// Clés d'une Flam en firmware 1.x : celles d'une histoire officielle du même compte
+    /// (« carrier », #234), vérifiées au préalable par
+    /// [`super::carrier::check_against_device`]. Le fichier `key` produit est celui de
+    /// l'histoire officielle.
+    ///
+    /// Erreur [`CryptoError::UnsupportedFirmware`] hors firmware 1.x : en 2.x, les clés de
+    /// `.mdf` restent la seule source.
+    pub fn with_carrier(firmware_main: &str, carrier: &CarrierKeys) -> Result<Self, CryptoError> {
+        check_firmware(firmware_main, FirmwareFamily::V1)?;
+        Ok(Self {
+            key_file: Zeroizing::new(*carrier.key_file()),
+            story_key: Zeroizing::new(*carrier.story_key()),
+            story_iv: Zeroizing::new(*carrier.story_iv()),
         })
     }
 
@@ -219,22 +260,28 @@ impl DeviceKeys {
         encrypt_zero_padded(&self.story_key, &self.story_iv, plain)
     }
 
-    /// Contenu du fichier `key` d'une histoire (32 octets = 14 + 10 + 8) : le numéro de série
-    /// en hexadécimal ASCII **minuscule** (14 caractères, quelle que soit la casse dans
-    /// `.mdf`), 10 octets nuls, puis les 8 premiers caractères de ce même hexadécimal.
+    /// Contenu du fichier `key` d'une histoire (32 octets). Firmware 2.x : déduit du numéro de
+    /// série ([`key_file_from_serial`]) ; firmware 1.x : celui de l'histoire officielle.
     pub fn key_file(&self) -> Zeroizing<[u8; KEY_FILE_LEN]> {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut hex = Zeroizing::new([0u8; 2 * SERIAL_LEN]);
-        for (i, b) in self.serial.iter().enumerate() {
-            hex[2 * i] = HEX[usize::from(b >> 4)];
-            hex[2 * i + 1] = HEX[usize::from(b & 0x0f)];
-        }
-        let mut out = Zeroizing::new([0u8; KEY_FILE_LEN]);
-        out[..hex.len()].copy_from_slice(&hex[..]);
-        let tail = hex.len() + KEY_FILE_GAP;
-        out[tail..].copy_from_slice(&hex[..KEY_FILE_TAIL]);
-        out
+        self.key_file.clone()
     }
+}
+
+/// Fichier `key` d'une histoire en firmware 2.x (32 octets = 14 + 10 + 8) : le numéro de série
+/// en hexadécimal ASCII **minuscule** (14 caractères, quelle que soit la casse dans `.mdf`),
+/// 10 octets nuls, puis les 8 premiers caractères de ce même hexadécimal.
+pub fn key_file_from_serial(serial: &[u8; SERIAL_LEN]) -> Zeroizing<[u8; KEY_FILE_LEN]> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = Zeroizing::new([0u8; 2 * SERIAL_LEN]);
+    for (i, b) in serial.iter().enumerate() {
+        hex[2 * i] = HEX[usize::from(b >> 4)];
+        hex[2 * i + 1] = HEX[usize::from(b & 0x0f)];
+    }
+    let mut out = Zeroizing::new([0u8; KEY_FILE_LEN]);
+    out[..hex.len()].copy_from_slice(&hex[..]);
+    let tail = hex.len() + KEY_FILE_GAP;
+    out[tail..].copy_from_slice(&hex[..KEY_FILE_TAIL]);
+    out
 }
 
 impl std::fmt::Debug for DeviceKeys {
