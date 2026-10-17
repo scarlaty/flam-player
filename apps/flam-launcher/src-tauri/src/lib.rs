@@ -12,6 +12,7 @@ pub mod install;
 pub mod library;
 pub mod library_thumb;
 pub mod player;
+pub mod podcast;
 pub mod settings;
 pub mod sources;
 pub mod storage;

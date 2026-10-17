@@ -28,6 +28,8 @@ png = "=0.18.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
 base64 = "=0.23.1"
+# Lecture XML des flux podcast (#210) : pas de DTD ni d'entités externes.
+quick-xml = "=0.42.0"
 sha2 = "0.10"
 # AES-128-CBC pour le format de la Flam (#228).
 aes = { version = "=0.8.4", features = ["zeroize"] }
