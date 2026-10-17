@@ -99,6 +99,12 @@ JSON_CASES = [
     (b'{"": 0, "k": [true, false, null, -1.25e3, "s"]}', None),
     (b'"' + b'a' * 1000 + b'"', None),
     (b'1' * 30, LIMIT),
+    (b'"\\ud83d\\ude00x\\ud83d"', LIMIT), (b'[1e308, -1e308, 0.1e1]', None),
+    (b'-1e-400', None), (b'12345678901234567890.5', None),
+    (b'{"a": 1, "a": 2, "b": 3, "a": 4}', None), (b'[-]', None),
+    (b'[{"a": [{"b": []}]}]\n', None),(b'{"k": "\\u0000\\u001f"}', None),
+    (b'[1 2]', None), (b'{"a":}', None), (b'["a" "b"]', None),
+    (b'[[[1], 2], {"a": [3.5]}, "x"]', None), (b'[0.1, 0.10, 1e1, 1E-1]', None),
 ]
 
 
@@ -213,6 +219,53 @@ def text_cases():
     return out
 
 
+# Séquences de caractères : le même générateur xorshift64* tourne en Python et en Rust, seules
+# les empreintes sont commitées (sorties de _font_safe, _text et _flat par séquence).
+SEQ_SEED = 0x9E3779B97F4A7C15
+SEQ_COUNT = 4000
+SEQ_BLOCK = 500
+SEQ_MAX_LEN = 10
+M64 = 0xFFFFFFFFFFFFFFFF
+
+
+def seq_pool():
+    chars = set("".join(FONT_CASES + FLAT_CASES) + "aAzZ09 ,.-_'\"\\\n")
+    return sorted(ord(c) for c in chars)
+
+
+def xorshift(seed):
+    x = seed
+    while True:
+        x ^= x >> 12
+        x ^= (x << 25) & M64
+        x ^= x >> 27
+        yield (x * 0x2545F4914F6CDD1D) & M64
+
+
+def sequences():
+    """Générateur déterministe de chaînes (même algorithme que text_parity.rs)."""
+    pool = seq_pool()
+    rnd = xorshift(SEQ_SEED)
+    for _ in range(SEQ_COUNT):
+        n = 1 + next(rnd) % SEQ_MAX_LEN
+        yield "".join(chr(pool[next(rnd) % len(pool)]) for _ in range(n))
+
+
+def sequence_digests():
+    digests, buf = [], bytearray()
+    for i, s in enumerate(sequences(), 1):
+        rep = {}
+        buf += t._font_safe(s, rep).encode("utf-8") + b"\xff"
+        for ch, r in sorted(rep.items()):
+            buf += ch.encode("utf-8") + b"\x00" + r.encode("utf-8") + b"\x01"
+        buf += (b"\xff" + t._text(s).encode("utf-8") + b"\xff" + t._flat(s).encode("utf-8")
+                + b"\xfe")
+        if i % SEQ_BLOCK == 0:
+            digests.append("%016x" % fnv1a(buf))
+            buf = bytearray()
+    return digests
+
+
 def exhaustive():
     digests = []
     for start in range(0, 0x110000, BLOCK):
@@ -232,10 +285,31 @@ def lua_cases():
             "\x85\xe9\U0001F600 ", "\t", "\\n", [], {}, [1, [2, []]],
             {"a": 1, "end": 2, "global": 3, "_x": 4, "1a": 5, "a b": 6, "\xe9": 7, "a\n": 8,
              "": 9, "A_1": 10, "goto": [1, {"k": None}], "nil": {}},
-            {1: "x", 2.5: "y"}, [{"x": [1.5, "s"]}, []]]
+            {1: "x", 2.5: "y"}, [{"x": [1.5, "s"]}, []],
+            {True: 1, False: 2, None: 3, -1: 4, 1.5: 5, "x": 6, "": 7, "and": 8},
+            "  ﻿\U0010ffff", [[[[[[[[[[1.5]]]]]]]]]], {"a": {"b": {"c": []}}},
+            [1e308, -1e-308, 2.0 ** 63, -2.0 ** 63], [0.5, 0.25, 1e-7, 123456789.123456789]]
     out = [{"value": tag(v), "indent": 0, "output": t.lua_repr(v)} for v in vals]
     out.append({"value": tag({"a": [1, {"b": 2}]}), "indent": 2,
                 "output": t.lua_repr({"a": [1, {"b": 2}]}, 2)})
+    for indent in (1, 3):
+        v = {"a": [1, {"b": [None, "x"]}], "end": {"k": []}}
+        out.append({"value": tag(v), "indent": indent, "output": t.lua_repr(v, indent)})
+    return out
+
+
+def lua_error_cases():
+    """Valeurs que lua_repr refuse (ValueError) : message identique attendu."""
+    vals = [float("inf"), float("-inf"), float("nan"), [1, [float("nan")]],
+            {"k": {"j": float("inf")}}, {float("inf"): 1}, [{"a": 1}, {"b": float("-inf")}]]
+    out = []
+    for v in vals:
+        try:
+            t.lua_repr(v)
+        except ValueError as e:
+            out.append({"value": tag(v), "message": str(e)})
+        else:
+            raise AssertionError(v)
     return out
 
 
@@ -306,6 +380,10 @@ def main():
         "text": text_cases(),
         "font_safe_exhaustive": {"block": BLOCK, "fnv1a64": exhaustive()},
         "lua_repr": lua_cases(),
+        "lua_errors": lua_error_cases(),
+        "font_safe_sequences": {"seed": str(SEQ_SEED), "count": SEQ_COUNT,
+                                "block": SEQ_BLOCK, "max_len": SEQ_MAX_LEN,
+                                "pool": seq_pool(), "fnv1a64": sequence_digests()},
         "float_repr": float_cases(),
     }
     with open(JSON_OUT, "w", encoding="ascii", newline="\n") as f:

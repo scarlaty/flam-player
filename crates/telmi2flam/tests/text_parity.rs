@@ -318,3 +318,80 @@ fn json_vers_lua() {
         "{\n  a = {\n    1,\n    2.5,\n    \"x\"\n  },\n  [\"end\"] = nil\n}"
     );
 }
+
+/// Même xorshift64* que `xorshift` de `gen_text_cases.py`.
+fn xorshift(seed: u64) -> impl FnMut() -> u64 {
+    let mut x = seed;
+    move || {
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+}
+
+/// Séquences de caractères tirées d'un lot de caractères délicats : `font_safe` (sortie et
+/// remplacements), `text` et `flat` comparés à Python par empreinte FNV-1a de blocs de séquences.
+#[test]
+fn sequences_de_caracteres_comme_python() {
+    let t = table();
+    let sq = field(&t, "font_safe_sequences");
+    let seed: u64 = str_of(field(sq, "seed")).parse().unwrap();
+    let (count, block, max_len) = (
+        int_of(field(sq, "count")) as usize,
+        int_of(field(sq, "block")) as usize,
+        int_of(field(sq, "max_len")) as u64,
+    );
+    let pool: Vec<char> = list(field(sq, "pool"))
+        .iter()
+        .map(|v| char::from_u32(int_of(v) as u32).unwrap())
+        .collect();
+    let expected = list(field(sq, "fnv1a64"));
+    assert_eq!(expected.len() * block, count);
+    let mut next = xorshift(seed);
+    let mut h = 0xCBF2_9CE4_8422_2325u64;
+    let mut diffs = Vec::new();
+    for i in 1..=count {
+        let n = 1 + next() % max_len;
+        let s: String = (0..n)
+            .map(|_| pool[(next() % pool.len() as u64) as usize])
+            .collect();
+        let mut rep = Replaced::new();
+        fnv1a(&mut h, font_safe(&s, Some(&mut rep)).as_bytes());
+        fnv1a(&mut h, b"\xff");
+        for (c, r) in &rep {
+            fnv1a(&mut h, c.to_string().as_bytes());
+            fnv1a(&mut h, b"\x00");
+            fnv1a(&mut h, r.as_bytes());
+            fnv1a(&mut h, b"\x01");
+        }
+        fnv1a(&mut h, b"\xff");
+        fnv1a(&mut h, text(&s, None).as_bytes());
+        fnv1a(&mut h, b"\xff");
+        fnv1a(&mut h, flat(&s).as_bytes());
+        fnv1a(&mut h, b"\xfe");
+        if i % block == 0 {
+            let want = str_of(&expected[i / block - 1]);
+            if format!("{h:016x}") != want {
+                diffs.push(format!("séquences {}..{}", i - block, i - 1));
+            }
+            h = 0xCBF2_9CE4_8422_2325;
+        }
+    }
+    assert!(diffs.is_empty(), "blocs différents de Python : {diffs:?}");
+}
+
+#[test]
+fn lua_refus_comme_python() {
+    let t = table();
+    let cases = list(field(&t, "lua_errors"));
+    assert!(cases.len() >= 5);
+    for case in cases {
+        let v = untag_lua(field(case, "value"));
+        assert_eq!(
+            lua_repr(&v, 0).unwrap_err().to_string(),
+            str_of(field(case, "message")),
+            "{v:?}"
+        );
+    }
+}
