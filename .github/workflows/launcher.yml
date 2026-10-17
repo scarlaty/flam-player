@@ -205,9 +205,9 @@ jobs:
           # 3. Installer N par-dessus.
           Invoke-Setup $setup.FullName 'mise à jour vers N'
           # Fichier présent dans N-1, absent de N : l'installateur doit le supprimer. Sinon c'est un défaut
-          # connu (issue ouverte) : avertissement, puis nettoyage pour que la suite du test reste utile.
+          # connu (#180) : avertissement, puis nettoyage pour que la suite du test reste utile.
           if (Test-Path -LiteralPath $obsolete) {
-            Write-Host '::warning::NSIS n''a pas supprime un fichier present dans N-1 et absent de N (voir l''issue de suivi)'
+            Write-Host '::warning::NSIS n''a pas supprime un fichier present dans N-1 et absent de N (voir #180)'
             Remove-Item -LiteralPath $obsolete
           }
           $after = Get-InstallTree $dest
