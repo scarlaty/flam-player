@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::folder::resolve_folder;
 use crate::settings::Environment;
@@ -136,7 +136,6 @@ impl WatchState {
 #[tauri::command]
 pub async fn folder_watch(
     app: AppHandle,
-    config: State<'_, ConfigState>,
     watch: State<'_, WatchState>,
     source_id: String,
     enabled: bool,
@@ -145,28 +144,36 @@ pub async fn folder_watch(
         watch.stop(&source_id);
         return Ok(());
     }
-    let (path, cache) = {
-        let _guard = config.guard();
-        resolve_folder(&config.dir, &Environment::current(), &source_id)?
-    };
-    if !std::fs::metadata(&path).is_ok_and(|m| m.is_dir()) {
-        return Err(AppError::FolderUnavailable(format!(
-            "dossier introuvable ou inaccessible : {}",
-            path.display()
-        )));
-    }
-    let id = source_id.clone();
-    let watcher = DirWatcher::start(&path, Some(cache), DEBOUNCE, MAX_WAIT, move || {
-        let _ = app.emit(
-            EVENT_CHANGED,
-            FolderChanged {
-                source_id: id.clone(),
-            },
-        );
+    // Lecture de la configuration, vérification du dossier et démarrage de l'observateur sont
+    // des E/S bloquantes : hors du moteur asynchrone.
+    let watch = watch.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let config = app.state::<ConfigState>();
+        let (path, cache) = {
+            let _guard = config.guard();
+            resolve_folder(&config.dir, &Environment::current(), &source_id)?
+        };
+        if !std::fs::metadata(&path).is_ok_and(|m| m.is_dir()) {
+            return Err(AppError::FolderUnavailable(format!(
+                "dossier introuvable ou inaccessible : {}",
+                path.display()
+            )));
+        }
+        let (id, handle) = (source_id.clone(), app.clone());
+        let watcher = DirWatcher::start(&path, Some(cache), DEBOUNCE, MAX_WAIT, move || {
+            let _ = handle.emit(
+                EVENT_CHANGED,
+                FolderChanged {
+                    source_id: id.clone(),
+                },
+            );
+        })
+        .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
+        watch.set(&source_id, watcher);
+        Ok(())
     })
-    .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
-    watch.set(&source_id, watcher);
-    Ok(())
+    .await
+    .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?
 }
 
 #[cfg(test)]
