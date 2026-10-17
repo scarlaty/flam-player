@@ -1,5 +1,7 @@
 name: launcher
 
+# `crates/**` et `Cargo.*` déclenchent ce job (~10 min) à dessein : le launcher dépend de la crate
+# `crates/telmi2flam` (#122), donc une modification de la crate peut casser son build ou ses tests.
 on:
   pull_request:
     paths:
@@ -99,14 +101,17 @@ jobs:
         run: npm run build:notices
 
       # Version N-1 pour le test de mise à jour : mêmes sources, seule la version change (surcharge de
-      # tauri.conf.json). Seul le crate de l'application est recompilé (les dépendances restent en
-      # cache), puis le paquet NSIS est refait. Elle est construite AVANT la version N pour que
-      # `target/release` contienne N à la fin.
+      # tauri.conf.json), plus une ressource factice absente de N pour provoquer le cas « fichier de
+      # N-1 absent de N ». La surcharge et la ressource sont écrites dans RUNNER_TEMP (jamais dans
+      # l'arbre : un build en échec ne laisse rien derrière lui). Seul le crate de l'application est
+      # recompilé (les dépendances restent en cache), puis le paquet NSIS est refait. Elle est
+      # construite AVANT la version N pour que `target/release` contienne N à la fin.
       - name: Installateur NSIS N-1 (version 0.0.1, test de mise à jour)
         run: |
-          printf '{"version":"0.0.1"}' > src-tauri/tauri.prev.conf.json
-          npm run tauri build -- --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.prev.conf.json
-          rm src-tauri/tauri.prev.conf.json
+          tmp="$(cygpath -m "$RUNNER_TEMP")"
+          printf 'ressource presente seulement dans N-1\n' > "$tmp/obsolete-n1.txt"
+          printf '{"version":"0.0.1","bundle":{"resources":{"%s/obsolete-n1.txt":"obsolete-n1.txt"}}}' "$tmp" > "$tmp/tauri.prev.conf.json"
+          npm run tauri build -- --config src-tauri/tauri.bundle.conf.json --config "$tmp/tauri.prev.conf.json"
 
       - name: Mettre l'installateur N-1 de côté
         shell: pwsh
@@ -138,9 +143,8 @@ jobs:
           if ((Get-Item (Join-Path $dest 'THIRD-PARTY-NOTICES.txt')).Length -lt 1000) { throw 'THIRD-PARTY-NOTICES.txt installé : moins de 1000 octets' }
           "FLAM_E2E_INSTALL_DIR=$dest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # Référence pour le test de mise à jour : arborescence (chemins + SHA-256) d'une installation propre de N.
-          Get-ChildItem $dest -Recurse -File | Where-Object { $_.Name -ne 'uninstall.exe' } |
-            ForEach-Object { '{0} {1}' -f $_.FullName.Substring($dest.Length), (Get-FileHash $_.FullName -Algorithm SHA256).Hash } |
-            Sort-Object | Set-Content (Join-Path $env:RUNNER_TEMP 'arbre-installation-N.txt')
+          . ./scripts/Get-InstallTree.ps1
+          Get-InstallTree $dest | Set-Content (Join-Path $env:RUNNER_TEMP 'arbre-installation-N.txt')
 
       - name: Mise à jour N-1 vers N par-dessus l'installation existante
         shell: pwsh
@@ -158,12 +162,9 @@ jobs:
             $keys[0].DisplayVersion
           }
           function Get-ExeVersion { (Get-Item (Join-Path $dest 'flam-launcher.exe')).VersionInfo.ProductVersion }
-          function Get-Tree($dir) {
-            Get-ChildItem $dir -Recurse -File | Where-Object { $_.Name -ne 'uninstall.exe' } |
-              ForEach-Object { '{0} {1}' -f $_.FullName.Substring($dir.Length), (Get-FileHash $_.FullName -Algorithm SHA256).Hash } |
-              Sort-Object
-          }
-          function Run-Setup($exe, $label) {
+          . ./scripts/Get-InstallTree.ps1
+          function Invoke-Setup($exe, $label) {
+            # NSIS exige `/D=` en dernier et SANS guillemets, même si le chemin contient des espaces.
             $p = Start-Process -FilePath $exe -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
             if ($p.ExitCode -ne 0) { throw "$label : code $($p.ExitCode)" }
           }
@@ -176,11 +177,13 @@ jobs:
           Remove-Item -LiteralPath $dest -Recurse -Force
 
           # 1. Installer N-1 et le vérifier.
-          Run-Setup $env:FLAM_PREV_SETUP 'installation N-1'
-          $prevTree = Get-Tree $dest
+          Invoke-Setup $env:FLAM_PREV_SETUP 'installation N-1'
+          $prevTree = Get-InstallTree $dest
           if (-not $prevTree) { throw 'installation N-1 vide' }
           if (-not (Compare-Object $prevTree $ref)) { throw 'N-1 identique à N : la montée de version ne teste rien' }
           $v = Get-InstalledVersion
+          $obsolete = Join-Path $dest 'obsolete-n1.txt'
+          if (-not (Test-Path -LiteralPath $obsolete)) { throw 'ressource factice absente de l''installation N-1 : le cas fichier supprimé n''est pas provoqué' }
           if ($v -ne '0.0.1') { throw "version installée après N-1 : $v (0.0.1 attendue)" }
           $ev = Get-ExeVersion
           if ($ev -ne '0.0.1' -and $ev -ne '0.0.1.0') { throw "flam-launcher.exe de N-1 : version $ev (0.0.1 attendue)" }
@@ -199,8 +202,14 @@ jobs:
           Remove-Item -LiteralPath (Join-Path $dest 'SDL2.dll')
 
           # 3. Installer N par-dessus.
-          Run-Setup $setup.FullName 'mise à jour vers N'
-          $after = Get-Tree $dest
+          Invoke-Setup $setup.FullName 'mise à jour vers N'
+          # Fichier présent dans N-1, absent de N : l'installateur doit le supprimer. Sinon c'est un défaut
+          # connu (issue ouverte) : avertissement, puis nettoyage pour que la suite du test reste utile.
+          if (Test-Path -LiteralPath $obsolete) {
+            Write-Host '::warning::NSIS n''a pas supprime un fichier present dans N-1 et absent de N (voir l''issue de suivi)'
+            Remove-Item -LiteralPath $obsolete
+          }
+          $after = Get-InstallTree $dest
           $diff = Compare-Object $ref $after
           if ($diff) { throw "installation différente d'une installation propre de N : $($diff | Out-String)" }
           if (-not (Test-Path (Join-Path $dest 'uninstall.exe'))) { throw 'uninstall.exe absent après mise à jour' }
