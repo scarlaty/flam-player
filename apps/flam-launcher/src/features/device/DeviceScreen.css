@@ -1,0 +1,137 @@
+.fl-device-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 48rem;
+}
+
+.fl-device-screen__intro {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.fl-device-screen__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.fl-device-card,
+.fl-device-stories {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fl-device-card {
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.fl-device-card__title {
+  margin: 0;
+  font-size: var(--font-size-lg);
+}
+
+.fl-device-card__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin: 0;
+}
+
+.fl-device-card__facts dt {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.fl-device-card__facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.fl-device-card__space {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.fl-device-card__space-text {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.fl-device-card__warnings {
+  margin: 0;
+  padding-inline-start: var(--space-4);
+}
+
+.fl-device-stories__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.fl-device-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fl-device-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.fl-device-row__thumb {
+  display: inline-block;
+  flex: none;
+  inline-size: 3rem;
+  block-size: 3rem;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--color-border);
+}
+
+.fl-device-row__thumb img {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+}
+
+.fl-device-row__text {
+  display: flex;
+  flex: 1 1 12rem;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.fl-device-row__name {
+  font-weight: var(--font-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.fl-device-row__detail {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.fl-device-row__actions {
+  display: flex;
+  gap: var(--space-1);
+}
