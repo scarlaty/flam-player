@@ -130,6 +130,7 @@ pub fn run() {
             cache::cache_clear,
             device::detect::device_detect,
             device::remove::device_remove_story,
+            device::eject::device_eject,
             compat::compat_statuses,
             storage::config_ack_recovery,
             settings::settings_get,
