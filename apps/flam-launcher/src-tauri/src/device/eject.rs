@@ -301,10 +301,19 @@ mod sys {
         Ok((number.DeviceType, number.DeviceNumber))
     }
 
+    /// Chemin du volume. Refuse le lecteur système (garde-fou : la racine vient de
+    /// l'interface).
     fn volume_path(root: &Path) -> Result<String, String> {
-        drive_letter(root)
-            .map(|letter| format!(r"\\.\{letter}:"))
-            .ok_or_else(|| format!("{} n'est pas la racine d'un lecteur", root.display()))
+        let letter = drive_letter(root)
+            .ok_or_else(|| format!("{} n'est pas la racine d'un lecteur", root.display()))?;
+        let system = std::env::var("SystemDrive")
+            .ok()
+            .and_then(|drive| drive_letter(Path::new(&drive)))
+            .unwrap_or('C');
+        if letter == system {
+            return Err(format!("{letter}: est le lecteur système"));
+        }
+        Ok(format!(r"\\.\{letter}:"))
     }
 
     fn is_in_use(err: &io::Error) -> bool {

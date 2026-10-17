@@ -225,3 +225,18 @@ fn ejection_reelle() {
     let outcome = eject(Path::new(&root), &DeviceLock::new(), &CurrentSystem).unwrap();
     println!("{outcome:?}");
 }
+
+/// Lecteur système : repli sans aucun appel au volume (pas de verrouillage ni de démontage).
+#[cfg(windows)]
+#[test]
+fn systeme_reel_refuse_le_lecteur_systeme() {
+    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+    let root = format!("{drive}\\");
+    let outcome = CurrentSystem.prepare(Path::new(&root)).unwrap_err();
+    assert!(
+        matches!(&outcome, PrepareError::Failed(reason) if reason.contains("lecteur système")),
+        "{outcome:?}"
+    );
+    let reason = CurrentSystem.request_eject(Path::new(&root)).unwrap_err();
+    assert!(reason.contains("lecteur système"), "{reason}");
+}
