@@ -242,6 +242,15 @@ function indexNotices(report: DeviceStories): Notice[] {
 function DeviceStoriesList() {
   const { stories: state, reloadStories, busy } = useDevice();
   const wrapperRef = useRef<HTMLDivElement>(null);
+  // Après un retrait, la ligne (donc le bouton) disparaît à la relecture : le focus passe à la
+  // liste dès que la nouvelle liste est affichée.
+  const focusAfterReload = useRef(false);
+  useEffect(() => {
+    if (focusAfterReload.current && state.phase === "ready") {
+      focusAfterReload.current = false;
+      wrapperRef.current?.focus();
+    }
+  }, [state]);
 
   function refresh() {
     // Le bouton cliqué disparaît pendant le chargement : le focus passe à un élément stable.
@@ -296,7 +305,9 @@ function DeviceStoriesList() {
                   <RemoveStoryButton
                     story={story}
                     busy={busy}
-                    onRemoved={() => wrapperRef.current?.focus()}
+                    onRemoved={() => {
+                      focusAfterReload.current = true;
+                    }}
                   />
                 }
               />

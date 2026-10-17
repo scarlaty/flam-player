@@ -73,7 +73,12 @@ export interface DeviceApi {
   removeFromQueue: (uuid: string) => void;
   /** Ferme la liste terminée de la file. */
   dismissQueue: () => void;
-  removeFromDevice: (uuid: string) => Promise<{ cleanupPending: boolean }>;
+  /** Identité de la Flam détectée (volume et libellé), `null` sans Flam. */
+  deviceKey: string | null;
+  removeFromDevice: (
+    uuid: string,
+    expectedKey: string | null,
+  ) => Promise<{ cleanupPending: boolean }>;
   eject: () => Promise<void>;
   ejecting: boolean;
   ejectNote: EjectNote | null;

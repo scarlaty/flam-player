@@ -91,6 +91,13 @@ export function DeviceProvider({
     if (startedKey.current === deviceKey) return;
     const key = deviceKey;
     startedKey.current = key;
+    if (running.current) {
+      // Un envoi tient le verrou de la Flam (simple absence transitoire) : rien à reprendre.
+      void Promise.resolve().then(() => {
+        if (startedKey.current === key) setRecoveredKey(key);
+      });
+      return;
+    }
     recoverDeviceTransfers(root)
       .then((report) => {
         if (
@@ -291,6 +298,7 @@ export function DeviceProvider({
         try {
           if (await cancelDeviceTransfer()) return;
         } catch {
+          setCancelling(false);
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, CANCEL_RETRY_MS));
@@ -338,13 +346,17 @@ export function DeviceProvider({
   }, []);
 
   // --- Retrait et éjection -----------------------------------------------------------------
-  const removeFromDevice = useCallback(async (uuid: string) => {
-    const rootNow = rootRef.current;
-    if (!rootNow) throw { kind: "not_found", message: text.errors.noDevice };
-    const report = await removeDeviceStory(rootNow, uuid, true);
-    setReload((n) => n + 1);
-    return { cleanupPending: report.cleanup_pending };
-  }, []);
+  const removeFromDevice = useCallback(
+    async (uuid: string, expectedKey: string | null) => {
+      const rootNow = rootRef.current;
+      if (!rootNow || deviceKeyRef.current !== expectedKey)
+        throw { kind: "not_found", message: text.errors.noDevice };
+      const report = await removeDeviceStory(rootNow, uuid, true);
+      setReload((n) => n + 1);
+      return { cleanupPending: report.cleanup_pending };
+    },
+    [],
+  );
 
   const [ejecting, setEjecting] = useState(false);
   const eject = useCallback(async () => {
@@ -376,6 +388,7 @@ export function DeviceProvider({
       error,
       retry,
       device,
+      deviceKey,
       recovered,
       recoveryNote,
       stories,
@@ -401,12 +414,12 @@ export function DeviceProvider({
       error,
       retry,
       device,
+      deviceKey,
       recovered,
       recoveryNote,
       stories,
       reloadStories,
       firmwareKey,
-      deviceKey,
       queue,
       progress,
       cancelling,

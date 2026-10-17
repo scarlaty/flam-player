@@ -18,7 +18,8 @@ export interface RemoveStoryButtonProps {
 
 /** « Retirer » une histoire de la Flam, après confirmation. */
 export function RemoveStoryButton({ story, busy, onRemoved }: RemoveStoryButtonProps) {
-  const { removeFromDevice } = useDevice();
+  const { removeFromDevice, deviceKey } = useDevice();
+  const keyAtOpen = useRef<string | null>(null);
   const toast = useToast();
   const [confirming, setConfirming] = useState(false);
   const [working, setWorking] = useState(false);
@@ -29,7 +30,7 @@ export function RemoveStoryButton({ story, busy, onRemoved }: RemoveStoryButtonP
   async function confirmRemove() {
     setWorking(true);
     try {
-      const { cleanupPending } = await removeFromDevice(story.uuid);
+      const { cleanupPending } = await removeFromDevice(story.uuid, keyAtOpen.current);
       setConfirming(false);
       toast.show({
         message: text.done(name) + (cleanupPending ? text.cleanupPending : ""),
@@ -56,7 +57,9 @@ export function RemoveStoryButton({ story, busy, onRemoved }: RemoveStoryButtonP
           aria-describedby={busy ? hintId : undefined}
           aria-label={`${text.button} « ${name} »`}
           onClick={() => {
-            if (!busy) setConfirming(true);
+            if (busy) return;
+            keyAtOpen.current = deviceKey;
+            setConfirming(true);
           }}
         >
           {text.button}

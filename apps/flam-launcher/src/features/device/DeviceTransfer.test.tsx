@@ -503,7 +503,9 @@ it("retire une histoire de la Flam après confirmation", async () => {
   expect(await screen.findByText("« Déjà là » retirée de la Flam.")).toBeInTheDocument();
   await screen.findByRole("heading", { name: "Histoires sur la Flam (0)" });
   // La liste est relue, le focus ne reste pas sur un élément disparu.
-  await waitFor(() => expect(document.body).not.toHaveFocus());
+  await waitFor(() =>
+    expect(document.querySelector(".fl-device-stories-wrap")).toHaveFocus(),
+  );
   await waitFor(() =>
     expect(sendButton("Déjà là")).toHaveAttribute("aria-disabled", "false"),
   );
