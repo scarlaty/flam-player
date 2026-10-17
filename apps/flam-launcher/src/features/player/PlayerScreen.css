@@ -69,4 +69,8 @@
   .fl-player-screen__zone {
     border: 1px solid CanvasText;
   }
+
+  .fl-player-screen__error {
+    border: 1px solid CanvasText;
+  }
 }

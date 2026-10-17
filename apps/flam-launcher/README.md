@@ -609,7 +609,10 @@ seul argument** (dernier), dossier courant = dossier du player.
   à la fin, le focus revient au contenu principal. Les erreurs d'arrêt s'affichent en alerte
   dans l'en-tête, hors de la zone (une notification pourrait passer sous la fenêtre native).
   `player_stop` qui renvoie faux (aucun player : fin manquée) ferme l'écran ; sans fin de
-  partie 10 s après « Arrêter », le bouton redevient disponible avec une alerte.
+  partie 10 s après « Arrêter », le bouton redevient disponible avec une alerte. **Limite connue** : une fois
+  le clavier donné au player, aucune touche ne le rend au launcher (Tab reste dans la fenêtre
+  native, Échap est le retour du player) ; il faut un clic hors de la zone. Une touche de
+  retour côté player est un suivi (#201).
 - **Arrêt (`player_stop`, bouton « Arrêter »)** : le player est lancé avec `--stdin-control` et
   son entrée standard est un tube gardé par le service pendant la session. `player_stop` y écrit
   `quit` : le player sauvegarde et sort avec le code 0 (`player://exited`, `success`). S'il tourne

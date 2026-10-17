@@ -17,6 +17,12 @@ import "./PlayerScreen.css";
  */
 export const STOP_TIMEOUT_MS = 10_000;
 
+/**
+ * Attente de `player://exited` quand `player_stop` répond qu'aucun player ne tourne : la fin
+ * (rapatriement des sauvegardes) peut être en cours. Sans événement, l'écran se ferme.
+ */
+export const GONE_GRACE_MS = 3_000;
+
 function sameRect(a: EmbedRect | null, b: EmbedRect): boolean {
   return (
     a !== null &&
@@ -82,7 +88,15 @@ export function PlayerScreen({
   const heading = useRef<HTMLHeadingElement>(null);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [gone, setGone] = useState(false);
   useEmbedZone(zone);
+
+  // Aucun player côté backend : sans fin de partie dans le délai, l'écran se ferme.
+  useEffect(() => {
+    if (!gone) return;
+    const timer = window.setTimeout(onGone, GONE_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [gone, onGone]);
 
   // Focus au montage : l'élément qui a lancé la lecture vient d'être démonté.
   useEffect(() => {
@@ -104,8 +118,8 @@ export function PlayerScreen({
     setError(null);
     stopPlayer()
       .then((running) => {
-        // Aucun player côté backend : la fin a été manquée, l'écran se ferme.
-        if (!running) onGone();
+        // Aucun player côté backend : fin en cours ou manquée.
+        if (!running) setGone(true);
       })
       .catch((caught: unknown) => {
         setStopping(false);

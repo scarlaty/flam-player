@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { PlayerSession } from "../../api/player";
 import { ToastProvider } from "../../components";
 import { expectNoAxeViolations } from "../../test/axe";
-import { PlayerScreen, STOP_TIMEOUT_MS } from "./PlayerScreen";
+import { GONE_GRACE_MS, PlayerScreen, STOP_TIMEOUT_MS } from "./PlayerScreen";
 
 const session: PlayerSession = {
   origin: "library",
@@ -84,12 +84,17 @@ it("« Clavier au lecteur » donne le clavier au player incrusté", async () => 
   );
 });
 
-it("aucun player côté backend : l'écran se ferme (pas de blocage)", async () => {
+it("aucun player côté backend : l'écran se ferme après un court délai (pas de blocage)", async () => {
   stopResult = false;
   renderScreen();
   fireEvent.click(screen.getByRole("button", { name: "Arrêter" }));
-  await waitFor(() => expect(onGone).toHaveBeenCalledTimes(1));
-});
+  await waitFor(() => expect(calls.some((c) => c.cmd === "player_stop")).toBe(true));
+  // Délai de grâce : player://exited peut encore arriver.
+  expect(onGone).not.toHaveBeenCalled();
+  await waitFor(() => expect(onGone).toHaveBeenCalledTimes(1), {
+    timeout: GONE_GRACE_MS + 2000,
+  });
+}, 10_000);
 
 it("sans fin de partie après le délai, Arrêter redevient disponible avec une alerte", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

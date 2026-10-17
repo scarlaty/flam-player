@@ -61,7 +61,7 @@ export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
     wasEmbedded.current = embedded;
   }, [embedded]);
   if (session && embedded)
-    return <PlayerScreen session={session} onGone={forgetSession} />;
+    return <PlayerScreen session={session} onGone={() => forgetSession(session.pid)} />;
   return (
     <AppShell
       navLabel={t.nav.label}

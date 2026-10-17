@@ -478,7 +478,8 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
       installed,
       installedRevision,
       session,
-      forgetSession: () => setSession(null),
+      forgetSession: (pid) =>
+        setSession((current) => (current && current.pid === pid ? null : current)),
       panelTasks: visible.map((task) => toPanelTask(task, details[task.id])),
       activeTaskFor: activeFor,
       failedTaskFor: (entry) =>

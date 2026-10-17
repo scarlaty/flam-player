@@ -516,6 +516,17 @@ impl PlayerService {
         if std::panic::catch_unwind(AssertUnwindSafe(|| self.events.started(&session))).is_err() {
             tracing::error!("le gestionnaire de player://started a paniqué");
         }
+        // Repli survenu avant l'annonce du démarrage : `player://updated` a été émis alors que
+        // l'interface ne connaissait pas encore la session. Il est réémis (doublon sans effet).
+        if session.embedded {
+            let replied = lock(&self.current)
+                .as_ref()
+                .filter(|s| s.pid == session.pid && !s.embedded)
+                .cloned();
+            if let Some(replied) = replied {
+                self.events.updated(&replied);
+            }
+        }
         let _ = hand_over.send(child);
         Ok(session)
     }
@@ -1365,6 +1376,7 @@ mod tests {
     struct Recorder {
         started: Mutex<Sender<PlayerSession>>,
         exited: Mutex<Sender<PlayerExited>>,
+        updated: Mutex<Vec<PlayerSession>>,
         panic_on_started: bool,
     }
 
@@ -1376,9 +1388,13 @@ mod tests {
         fn exited(&self, event: &PlayerExited) {
             let _ = lock(&self.exited).send(event.clone());
         }
+        fn updated(&self, session: &PlayerSession) {
+            lock(&self.updated).push(session.clone());
+        }
     }
 
     struct Ctx {
+        recorder: Arc<Recorder>,
         service: PlayerService,
         started: Receiver<PlayerSession>,
         exited: Receiver<PlayerExited>,
@@ -1410,12 +1426,15 @@ mod tests {
     fn ctx_with(panic_on_started: bool) -> Ctx {
         let (started_tx, started) = channel();
         let (exited_tx, exited) = channel();
-        let service = PlayerService::new(Arc::new(Recorder {
+        let recorder = Arc::new(Recorder {
             started: Mutex::new(started_tx),
             exited: Mutex::new(exited_tx),
+            updated: Mutex::default(),
             panic_on_started,
-        }));
+        });
+        let service = PlayerService::new(recorder.clone());
         Ctx {
+            recorder,
             service,
             started,
             exited,
@@ -1613,6 +1632,13 @@ mod tests {
         }
         assert_eq!(c.service.status().map(|s| s.embedded), Some(false));
         assert_eq!(*lock(&embed.calls), ["create", "destroy 42"]);
+        // Annoncé à l'interface (une ou deux fois selon l'ordre avec `player://started`).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while lock(&c.recorder.updated).is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let updated = lock(&c.recorder.updated).clone();
+        assert!(!updated.is_empty() && updated.iter().all(|s| !s.embedded));
         // Plus de fenêtre d'accueil : placement et fin de partie ne la touchent plus.
         c.service.embed_layout(None);
         assert!(c.service.stop());

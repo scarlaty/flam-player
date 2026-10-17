@@ -24,9 +24,10 @@ export interface StoriesApi {
   session: PlayerSession | null;
   /**
    * Oublie la session : le backend a confirmé qu'aucun player ne tourne (fin de partie
-   * manquée), l'écran Lecture ne doit pas rester affiché.
+   * manquée), l'écran Lecture ne doit pas rester affiché. Sans effet si la session courante
+   * n'est plus celle du processus `pid`.
    */
-  forgetSession: () => void;
+  forgetSession: (pid: number) => void;
   /** Tâches affichées dans le panneau (actives, terminées, en échec ou annulées). */
   panelTasks: Task[];
   /** Tâche active (en attente ou en cours) pour cette histoire. */

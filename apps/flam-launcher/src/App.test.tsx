@@ -154,6 +154,8 @@ it("un player replié en fenêtre séparée fait quitter l'écran Lecture", asyn
     await screen.findByRole("heading", { level: 1, name: "Bienvenue" }),
   ).toBeInTheDocument();
   expect(screen.getByRole("navigation", { name: "Navigation" })).toBeInTheDocument();
+  // Le focus revient au contenu principal.
+  expect(document.getElementById("fl-main")).toHaveFocus();
 });
 
 it("un player incrusté remplace l'application par l'écran Lecture jusqu'à sa fin", async () => {
