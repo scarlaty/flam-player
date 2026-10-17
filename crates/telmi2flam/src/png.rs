@@ -154,12 +154,17 @@ impl<'a> Cursor<'a> {
 
 /// Décompresseur zlib dans un tampon sans retour circulaire : comme zlib (et non comme le mode
 /// circulaire de miniz), une distance qui remonte avant le début des données est une erreur.
+///
+/// Le tampon grandit avec ce que miniz produit réellement (croissance géométrique plafonnée à
+/// `max`) : une taille annoncée par l'IHDR n'engage aucune mémoire sans données derrière.
 struct Inflater {
     state: Box<DecompressorOxide>,
     out: Vec<u8>,
     /// Octets produits dans `out`.
     pos: usize,
     done: bool,
+    /// Taille maximale de `out`.
+    max: usize,
 }
 
 /// Résultat d'un appel à [`Inflater::run`].
@@ -171,84 +176,106 @@ enum Step {
     Broken,
 }
 
+/// Taille de départ du tampon de sortie.
+const INFLATE_START: usize = 1024;
+
 impl Inflater {
-    fn new(capacity: usize) -> Result<Self> {
-        Ok(Inflater {
+    fn new(max: usize) -> Self {
+        Inflater {
             state: Box::default(),
-            out: alloc(capacity)?,
+            out: Vec::new(),
             pos: 0,
             done: false,
-        })
+            max,
+        }
+    }
+
+    /// Réutilise le décompresseur pour un nouveau flux (textes : un seul état pour tous les
+    /// chunks). Les anciens octets du tampon ne sont pas lisibles : miniz refuse toute distance
+    /// qui remonte avant la position de départ.
+    fn reset(&mut self) {
+        self.state.init();
+        self.pos = 0;
+        self.done = false;
+    }
+
+    /// Agrandit `out` (au moins d'un octet, au plus jusqu'à `limit`).
+    fn grow(&mut self, limit: usize) -> Result<()> {
+        let want = (self.out.len() * 2).max(INFLATE_START).min(limit);
+        if self.out.try_reserve_exact(want - self.out.len()).is_err() {
+            return unreadable("mémoire insuffisante");
+        }
+        self.out.resize(want, 0);
+        Ok(())
     }
 
     /// Décompresse `input` sans dépasser `limit` octets produits au total.
-    fn run(&mut self, input: &[u8], limit: usize) -> Step {
-        if self.done {
-            return Step::Consumed(0);
-        }
+    fn run(&mut self, input: &[u8], limit: usize) -> Result<Step> {
+        let limit = limit.min(self.max);
         let flags = TINFL_FLAG_PARSE_ZLIB_HEADER
             | TINFL_FLAG_HAS_MORE_INPUT
             | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
-        let limit = limit.min(self.out.len());
-        let (status, used, written) = decompress(
-            &mut self.state,
-            input,
-            &mut self.out[..limit],
-            self.pos,
-            flags,
-        );
-        self.pos += written;
-        match status {
-            TINFLStatus::Done => self.done = true,
-            TINFLStatus::NeedsMoreInput | TINFLStatus::HasMoreOutput => {}
-            _ => return Step::Broken,
+        let mut consumed = 0;
+        while !self.done {
+            if self.out.len() <= self.pos && self.out.len() < limit {
+                self.grow(limit)?;
+            }
+            let end = limit.min(self.out.len());
+            let (status, used, written) = decompress(
+                &mut self.state,
+                &input[consumed..],
+                &mut self.out[..end],
+                self.pos,
+                flags,
+            );
+            consumed += used;
+            self.pos += written;
+            match status {
+                TINFLStatus::Done => self.done = true,
+                TINFLStatus::NeedsMoreInput => break,
+                TINFLStatus::HasMoreOutput if self.out.len() < limit => self.grow(limit)?,
+                TINFLStatus::HasMoreOutput => break,
+                _ => return Ok(Step::Broken),
+            }
         }
-        Step::Consumed(used)
+        Ok(Step::Consumed(consumed))
     }
 
     /// Ce que zlib fait encore de `input` une fois la sortie pleine : il traite la fin de bloc
-    /// et vérifie l'Adler-32, mais s'arrête au premier octet à produire. `Ok(true)` : il reste
-    /// un octet à produire.
-    fn probe(&mut self, input: &[u8]) -> std::result::Result<bool, ()> {
+    /// et vérifie l'Adler-32, mais s'arrête au premier octet à produire. `Ok(Some(true))` : il
+    /// reste un octet à produire ; `Ok(None)` : flux invalide.
+    fn probe(&mut self, input: &[u8]) -> Result<Option<bool>> {
         let before = self.pos;
-        let step = self.run(input, before + 1);
+        let step = self.run(input, before + 1)?;
         if self.pos > before {
             // zlib s'arrête sur cet octet : ce que miniz lit ensuite (Adler-32…) ne compte pas
-            return Ok(true);
+            return Ok(Some(true));
         }
-        match step {
-            Step::Broken => Err(()),
-            Step::Consumed(_) => Ok(false),
-        }
+        Ok(match step {
+            Step::Broken => None,
+            Step::Consumed(_) => Some(false),
+        })
     }
 }
 
-/// Résultat de `_safe_zlib_decompress`.
-enum Inflated {
-    Data(Vec<u8>),
-    /// `zlib.error` : ignoré par les gestionnaires de Pillow.
-    ZlibError,
-}
-
 /// `_safe_zlib_decompress` : au plus `MAX_TEXT_CHUNK` octets (`ValueError` au-delà). Un flux
-/// tronqué n'est pas une erreur.
-fn safe_zlib_decompress(input: &[u8]) -> Result<Inflated> {
-    let mut z = Inflater::new(MAX_TEXT_CHUNK + 1)?;
-    let used = match z.run(input, MAX_TEXT_CHUNK) {
-        Step::Broken => return Ok(Inflated::ZlibError),
+/// tronqué n'est pas une erreur. Rend le nombre d'octets décompressés (dans `z.out`), `None`
+/// pour un `zlib.error` (ignoré par les gestionnaires de Pillow).
+fn safe_zlib_decompress(z: &mut Inflater, input: &[u8]) -> Result<Option<usize>> {
+    z.reset();
+    let used = match z.run(input, MAX_TEXT_CHUNK)? {
+        Step::Broken => return Ok(None),
         Step::Consumed(n) => n,
     };
     if z.pos == MAX_TEXT_CHUNK && !z.done {
         // sortie pleine : `unconsumed_tail` non vide si zlib a encore un octet à produire
-        match z.probe(&input[used..]) {
-            Ok(true) => return unreadable("texte compressé trop grand"),
-            Err(()) => return Ok(Inflated::ZlibError),
-            Ok(false) => {}
+        match z.probe(&input[used..])? {
+            Some(true) => return unreadable("texte compressé trop grand"),
+            None => return Ok(None),
+            Some(false) => {}
         }
     }
-    let n = z.pos.min(MAX_TEXT_CHUNK);
-    z.out.truncate(n);
-    Ok(Inflated::Data(z.out))
+    Ok(Some(z.pos.min(MAX_TEXT_CHUNK)))
 }
 
 /// Clé de transparence retenue par Pillow et `_trns_mask`.
@@ -273,6 +300,8 @@ struct Header {
     palette: Option<Vec<u8>>,
     trns: Option<Trns>,
     text_memory: usize,
+    /// Décompresseur des chunks de texte, réutilisé d'un chunk à l'autre.
+    text: Inflater,
 }
 
 impl Header {
@@ -304,10 +333,8 @@ impl Header {
                 if v.first().copied().unwrap_or(0) != 0 {
                     return unreadable("méthode zTXt inconnue");
                 }
-                let n = match safe_zlib_decompress(v.get(1..).unwrap_or(&[]))? {
-                    Inflated::Data(d) => d.len(),
-                    Inflated::ZlibError => 0,
-                };
+                let n = safe_zlib_decompress(&mut self.text, v.get(1..).unwrap_or(&[]))?;
+                let n = n.unwrap_or(0);
                 if !k.is_empty() {
                     self.add_text(n)?;
                 }
@@ -318,7 +345,7 @@ impl Header {
                 let at = s.iter().position(|&c| c == 0).map_or(0, |i| i + 1);
                 match s.get(at) {
                     None => unreadable("iCCP sans méthode"),
-                    Some(0) => safe_zlib_decompress(&s[at + 1..]).map(|_| ()),
+                    Some(0) => safe_zlib_decompress(&mut self.text, &s[at + 1..]).map(|_| ()),
                     Some(_) => unreadable("méthode iCCP inconnue"),
                 }
             }
@@ -344,12 +371,12 @@ impl Header {
             if method != 0 {
                 return Ok(());
             }
-            match safe_zlib_decompress(v)? {
-                Inflated::Data(d) => {
-                    owned = d;
+            match safe_zlib_decompress(&mut self.text, v)? {
+                Some(n) => {
+                    owned = self.text.out[..n].to_vec();
                     &owned[..]
                 }
-                Inflated::ZlibError => return Ok(()),
+                None => return Ok(()),
             }
         } else {
             v
@@ -383,7 +410,7 @@ fn crc_ok(kind: &[u8; 4], data: &[u8], stored: &[u8]) -> bool {
 
 /// `PngImageFile._open` : chunks jusqu'au premier IDAT. Rend l'en-tête et la longueur de ce
 /// premier IDAT (le curseur est sur ses données).
-fn read_header(cur: &mut Cursor) -> Result<(Header, usize)> {
+fn read_header(cur: &mut Cursor, cancelled: &dyn Fn() -> bool) -> Result<(Header, usize)> {
     let mut h = Header {
         width: 0,
         height: 0,
@@ -394,10 +421,14 @@ fn read_header(cur: &mut Cursor) -> Result<(Header, usize)> {
         palette: None,
         trns: None,
         text_memory: 0,
+        text: Inflater::new(MAX_TEXT_CHUNK + 1),
     };
     let mut first = true;
     let mut idat = None;
     loop {
+        if cancelled() {
+            return Err(PngError::Cancelled);
+        }
         let Some((kind, len)) = cur.chunk_header() else {
             return unreadable("en-tête de chunk invalide");
         };
@@ -585,7 +616,7 @@ impl<'a> IdatStream<'a> {
             if self.used >= self.block.len() {
                 self.next_block()?;
             }
-            match self.z.run(&self.block[self.used..], self.total) {
+            match self.z.run(&self.block[self.used..], self.total)? {
                 Step::Broken => return unreadable("flux zlib corrompu"),
                 Step::Consumed(k) => self.used += k,
             }
@@ -595,17 +626,20 @@ impl<'a> IdatStream<'a> {
 
     /// Fin de l'image : zlib a encore vu le reste du bloc courant (fin de flux, Adler-32).
     fn finish(&mut self) -> Result<()> {
-        match self.z.probe(&self.block[self.used..]) {
-            Err(()) => unreadable("flux zlib corrompu"),
-            Ok(_) => Ok(()),
+        match self.z.probe(&self.block[self.used..])? {
+            None => unreadable("flux zlib corrompu"),
+            Some(_) => Ok(()),
         }
     }
 
     /// `PngImageFile.load_end` : chunks après l'image, sans CRC ; seules les exceptions des
     /// gestionnaires comptent.
-    fn load_end(mut self, h: &mut Header) -> Result<()> {
+    fn load_end(mut self, h: &mut Header, cancelled: &dyn Fn() -> bool) -> Result<()> {
         self.cur.read(self.remaining);
         loop {
+            if cancelled() {
+                return Err(PngError::Cancelled);
+            }
             self.cur.read(4);
             let Some((kind, len)) = self.cur.chunk_header() else {
                 return Ok(());
@@ -650,6 +684,25 @@ fn alloc(n: usize) -> Result<Vec<u8>> {
     }
     v.resize(n, 0);
     Ok(v)
+}
+
+/// Tampon de `n` zéros par `alloc_zeroed` (calloc) : pages remises à zéro par le système à
+/// la première écriture, et échec d'allocation rendu en `Unreadable` (`MemoryError` de Python).
+fn alloc_zeroed(n: usize) -> Result<Vec<u8>> {
+    let Ok(layout) = std::alloc::Layout::array::<u8>(n) else {
+        return unreadable("taille");
+    };
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    // SAFETY: `layout` est non nul ; la mémoire rendue (n octets à zéro, alignement 1) vient
+    // de l'allocateur global avec ce même layout, comme l'exige `Vec::from_raw_parts`.
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        return unreadable("mémoire insuffisante");
+    }
+    // SAFETY: voir ci-dessus ; capacité et longueur valent n, tous les octets sont initialisés.
+    Ok(unsafe { Vec::from_raw_parts(ptr, n, n) })
 }
 
 fn unfilter(filter: u8, row: &mut [u8], prev: Option<&[u8]>, bpp: usize) -> Result<()> {
@@ -785,14 +838,14 @@ impl Converter {
 
 /// Décode un PNG en RGBA comme `_open_rgba(png_bytes)` avec Pillow 12.3.0.
 ///
-/// `cancelled` est consulté avant chaque ligne décodée : [`PngError::Cancelled`] dès qu'il
-/// rend `true`.
+/// `cancelled` est consulté avant chaque chunk (avant et après l'image) et avant chaque ligne
+/// décodée : [`PngError::Cancelled`] dès qu'il rend `true`.
 pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     if data.len() < SIGNATURE.len() || &data[..8] != SIGNATURE {
         return Err(PngError::Unsupported("pas un PNG"));
     }
     let mut cur = Cursor { data, pos: 8 };
-    let (mut h, first_idat) = read_header(&mut cur)?;
+    let (mut h, first_idat) = read_header(&mut cur, cancelled)?;
     let mode = h.mode.unwrap_or(Mode::Bit);
     let conv = Converter {
         mode,
@@ -809,7 +862,6 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
         .checked_mul(ht as usize)
         .and_then(|n| n.checked_mul(4))
         .map_or_else(|| unreadable("taille"), Ok)?;
-    let mut out = alloc(size)?;
     let bits = u64::from(channels(h.color)) * u64::from(h.depth);
     let bpp = ((bits / 8) as usize).max(1);
     let passes: &[(u32, u32, u32, u32)] = if h.interlace { &ADAM7 } else { &[(0, 0, 1, 1)] };
@@ -836,19 +888,28 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
             total
                 .checked_add(1)
                 .map_or_else(|| unreadable("taille"), Ok)?,
-        )?,
+        ),
         total,
     };
+    // tampons alloués seulement quand une ligne brute est disponible : une taille annoncée
+    // sans données derrière n'engage pas de mémoire
+    let mut out = Vec::new();
     let mut at = 0usize;
     for ((x0, y0, dx, dy), pw, ph, row) in layout {
         // lignes défiltrées hors du tampon de miniz, qui sert d'historique aux références
-        let mut line = alloc(row)?;
-        let mut prev = alloc(row)?;
+        let (mut line, mut prev) = (Vec::new(), Vec::new());
         for r in 0..ph {
             if cancelled() {
                 return Err(PngError::Cancelled);
             }
             stream.ensure(at + 1 + row)?;
+            if out.is_empty() {
+                out = alloc_zeroed(size)?;
+            }
+            if r == 0 {
+                line = alloc(row)?;
+                prev = alloc(row)?;
+            }
             line.copy_from_slice(&stream.z.out[at + 1..at + 1 + row]);
             // ligne précédente de la même passe (zéros pour la première)
             unfilter(
@@ -868,7 +929,7 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
         }
     }
     stream.finish()?;
-    stream.load_end(&mut h)?;
+    stream.load_end(&mut h, cancelled)?;
     Ok(Rgba {
         width: w,
         height: ht,
@@ -930,16 +991,17 @@ mod tests {
             false
         };
         decode_rgba(&png, &count).unwrap();
-        assert_eq!(calls.get(), 10);
+        // IHDR et IDAT (avant l'image), 10 lignes, IEND (après)
+        assert_eq!(calls.get(), 2 + 10 + 1);
 
         // annulation au milieu : arrêt à la 4e ligne, sans lire la suite
         let calls = Cell::new(0);
         let stop = || {
             calls.set(calls.get() + 1);
-            calls.get() > 3
+            calls.get() > 2 + 3
         };
         assert_eq!(decode_rgba(&png, &stop), Err(PngError::Cancelled));
-        assert_eq!(calls.get(), 4);
+        assert_eq!(calls.get(), 2 + 4);
     }
 
     #[test]
@@ -960,16 +1022,16 @@ mod tests {
             pos: 8,
         };
         assert_eq!(
-            read_header(&mut cur).err(),
+            read_header(&mut cur, &never).err(),
             Some(PngError::Unreadable("bombe de décompression"))
         );
         // à la limite : accepté (Pillow avertit seulement)
         let png = header(limit as u32, 1);
         let mut cur = Cursor { data: &png, pos: 8 };
-        assert!(read_header(&mut cur).is_ok());
+        assert!(read_header(&mut cur, &never).is_ok());
         let png = header(u32::MAX, u32::MAX);
         let mut cur = Cursor { data: &png, pos: 8 };
-        assert!(read_header(&mut cur).is_err());
+        assert!(read_header(&mut cur, &never).is_err());
     }
 
     #[test]

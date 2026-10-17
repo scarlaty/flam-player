@@ -268,7 +268,9 @@ def cases():
     pal_png("pal_trns_simple_300", 8, 256, trns=b"\xff" * 280 + b"\x00", idx_max=255, w=32)
     pal_png("pal_trns_vide", 8, 16, trns=b"", idx_max=15)
     pal_png("pal_770", 8, None, plte_raw=bytes(i % 256 for i in range(770)), idx_max=255, w=32)
-    pal_png("pal_771", 8, None, plte_raw=bytes(i % 256 for i in range(771)), idx_max=255, w=32)
+    for n in (1, 2, 4):
+        pal_png("pal_plte_%d" % n, 8, None, plte_raw=bytes(range(10, 10 + n)), idx_max=3)
+    pal_png("pal_771",8, None, plte_raw=bytes(i % 256 for i in range(771)), idx_max=255, w=32)
     pal_png("pal_trns_256", 8, 256, trns=bytes(i % 7 for i in range(256)), idx_max=255, w=32)
     pal_png("pal_trns_257", 8, 256, trns=bytes(i % 7 for i in range(257)), idx_max=255, w=32)
     pal_png("pal_trns_simple_nl", 8, 16, trns=b"\xff\x00\n", idx_max=15)
