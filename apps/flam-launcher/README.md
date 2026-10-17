@@ -23,7 +23,7 @@ et arrivent avec les issues du jalon M3.
 
 L'installation contient tout : `flam-launcher.exe`, `flam-player.exe` et `SDL2.dll` (le
 player), le convertisseur `telmi2flam/` avec son Python embarqué (aucun Python à installer) et
-le runtime Lunii, ainsi que `LICENSES.md` et `licenses/`. Désinstaller : « Applications
+le runtime Lua du projet, ainsi que `LICENSES.md` et `licenses/`. Désinstaller : « Applications
 installées » de Windows, ou `uninstall.exe` du dossier d'installation. Les données vivent hors
 de ce dossier et survivent à une mise à jour ou une désinstallation : sources, paramètres et
 sauvegardes de progression sous `%APPDATA%`, cache (catalogues, téléchargements et histoires
@@ -156,11 +156,10 @@ développement, installation partielle). L'écran Paramètres l'indique.
 **Licences redistribuées** : `telmi2flam/LICENSES.md` (produit par `build-converter.ps1`) liste
 Python (PSF-2.0, libffi, libtommath…), `python.cat`, `vcruntime140*.dll` (redistribuables
 Microsoft), Pillow (renvoi vers `licenses/LICENSE` de la roue, qui regroupe les bibliothèques
-intégrées), le runtime Lunii et les scripts du dépôt. `LICENSES.md` à la racine de
+intégrées), le runtime et les scripts du dépôt (GPL v3). `LICENSES.md` à la racine de
 l'installation couvre le reste (flam-launcher et flam-player GPL v3, SDL2 zlib, Lua MIT, LVGL MIT,
 minimp3 CC0, polices Nunito et Montserrat OFL) ; les textes sont copiés des sous-modules dans
-`licenses/` par `build-player.ps1`. Le mainteneur confirme avoir les droits de redistribution du
-runtime Lunii.
+`licenses/` par `build-player.ps1`.
 
 ## Installateur Windows
 
@@ -312,7 +311,7 @@ apps/flam-launcher/
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`.
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`, `device` (détection de la Flam branchée en USB, #225 ; `device::detect`).
 
 ### Commandes Tauri
 
