@@ -10,7 +10,15 @@
 //! positions par des additions saturées, et la seule allocation proportionnelle à l'entrée
 //! (liste des trames) est bornée par la taille du fichier (une trame fait au moins 24 octets).
 //! La sortie est bornée par l'en-tête : `total_units` tient sur 32 bits, donc au plus
-//! `u32::MAX / 88200` entrées. Sortie identique à `mp3map.build` à l'octet près, y compris les
+//! `u32::MAX / 88200` entrées.
+//!
+//! Coût mémoire : la liste des trames occupe 16 octets par trame (position et unités cumulées)
+//! et une trame fait au moins 24 octets, soit au plus ~0,67 fois la taille du MP3 (comme la
+//! liste de tuples du Python, mais en plus compact). Le plafond est donc la taille de l'entrée,
+//! que l'appelant borne ; pas de parcours en flux, la table de seek a besoin de la liste
+//! complète pour interpoler les entrées par seconde.
+//!
+//! Sortie identique à `mp3map.build` à l'octet près, y compris les
 //! erreurs (même message que l'exception Python).
 
 use std::collections::BTreeSet;
