@@ -534,3 +534,74 @@ fn balises_inconnues_et_casse() {
     ));
     assert_eq!(parse(&xml).unwrap().title, "Vrai");
 }
+
+#[test]
+fn script_en_majuscules_et_nombreux_restent_rapides() {
+    assert_eq!(strip_html("a<SCRIPT>x</Script>b<STYLE>y</STYLE>c"), "abc");
+    let many = "<script>x</script>".repeat(20_000);
+    let start = std::time::Instant::now();
+    assert_eq!(strip_html(&format!("{many}fin")), "fin");
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+}
+
+/// Flux de ~15 Mio dont le canal porte `body` dans une description CDATA : l'analyse doit
+/// rester rapide (bornes de texte et d'entrée HTML).
+fn hostile_description(body: &str) -> (PodcastFeed, std::time::Duration) {
+    let reps = 15 * 1024 * 1024 / body.len();
+    let xml = wrap(&format!(
+        "<description><![CDATA[{}]]></description>{}",
+        body.repeat(reps),
+        item("a", "")
+    ));
+    let start = std::time::Instant::now();
+    let feed = parse(&xml).unwrap();
+    (feed, start.elapsed())
+}
+
+#[test]
+fn cdata_geant_d_esperluettes_reste_rapide() {
+    let (feed, took) = hostile_description("&");
+    assert!(feed.description.is_some());
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+}
+
+#[test]
+fn cdata_geant_de_balises_script_reste_rapide() {
+    let (feed, took) = hostile_description("<script></script>");
+    assert!(feed.description.as_deref().unwrap_or("").len() <= 1);
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+}
+
+#[test]
+fn titre_geant_reste_rapide_et_borne() {
+    let huge = "mot ".repeat(3 * 1024 * 1024);
+    let xml = wrap(&format!(
+        "<title><![CDATA[{huge}]]></title>{}",
+        item("a", "")
+    ));
+    let start = std::time::Instant::now();
+    let feed = parse(&xml).unwrap();
+    assert_eq!(feed.title.chars().count(), MAX_TITLE_CHARS);
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn script_autofermant_ne_masque_pas_la_suite() {
+    assert_eq!(strip_html("a<script src=\"x\"/>b"), "ab");
+}
+
+#[test]
+fn date_iso_avec_espace_avant_le_fuseau() {
+    assert_eq!(
+        parse_pub_date("2008-06-03 11:05:30 +0200").as_deref(),
+        Some("2008-06-03T09:05:30Z")
+    );
+}
+
+#[test]
+fn doctype_en_minuscules_ou_apres_le_contenu_refuse() {
+    let late = "<rss><channel><title>x</title></channel><!DOCTYPE rss></rss>";
+    assert_eq!(parse(late), Err(RssError::DtdRefused));
+    let lower = r#"<!doctype rss [<!entity a "b">]><rss><channel/></rss>"#;
+    assert_eq!(parse(lower), Err(RssError::DtdRefused));
+}

@@ -197,15 +197,21 @@ fn decode_html_entities(s: &str) -> String {
     while let Some(pos) = rest.find('&') {
         out.push_str(&rest[..pos]);
         let after = &rest[pos + 1..];
-        let decoded = after.find(';').filter(|end| *end <= 10).and_then(|end| {
-            let body = &after[..end];
-            let ch = if body.starts_with('#') {
-                numeric_ref(body)
-            } else {
-                html_named_entity(body)
-            };
-            ch.map(|c| (c, end))
-        });
+        let decoded = after
+            .as_bytes()
+            .iter()
+            .take(11)
+            .position(|&b| b == b';')
+            .filter(|end| *end <= 10)
+            .and_then(|end| {
+                let body = &after[..end];
+                let ch = if body.starts_with('#') {
+                    numeric_ref(body)
+                } else {
+                    html_named_entity(body)
+                };
+                ch.map(|c| (c, end))
+            });
         match decoded {
             Some((c, end)) => {
                 out.push(c);
@@ -255,10 +261,14 @@ pub fn strip_html(input: &str) -> String {
             .take_while(|c| c.is_ascii_alphanumeric())
             .collect::<String>()
             .to_ascii_lowercase();
-        if !closing && (name == "script" || name == "style") {
+        if !closing && !tag.ends_with('/') && (name == "script" || name == "style") {
             let close = format!("</{name}");
-            let lower = rest.to_ascii_lowercase();
-            rest = match lower.find(&close) {
+            // Recherche insensible à la casse, sans copier le reste du texte.
+            let found = rest
+                .as_bytes()
+                .windows(close.len())
+                .position(|w| w.eq_ignore_ascii_case(close.as_bytes()));
+            rest = match found {
                 Some(i) => rest[i..].find('>').map_or("", |e| &rest[i + e + 1..]),
                 None => "",
             };
@@ -313,8 +323,21 @@ fn normalize_block_text(s: &str) -> String {
     out
 }
 
+/// Plus longue entrée confiée à `strip_html` (octets) : borne le coût du nettoyage.
+const MAX_HTML_INPUT_BYTES: usize = 64 * 1024;
+
+/// Plus long préfixe de `s` d'au plus `max` octets, coupé sur une frontière de caractère.
+fn floor_bytes(s: &str, max: usize) -> &str {
+    let mut end = max.min(s.len());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn description_text(raw: &str) -> Option<String> {
-    non_empty(truncate_chars(&strip_html(raw), MAX_DESCRIPTION_CHARS))
+    let html = strip_html(floor_bytes(raw, MAX_HTML_INPUT_BYTES));
+    non_empty(truncate_chars(&html, MAX_DESCRIPTION_CHARS))
 }
 
 /// URL http(s) valide et de longueur raisonnable, sinon `None`.
@@ -509,11 +532,11 @@ fn parse_iso_date(raw: &str) -> Option<String> {
                 Some(i) => (&t[..i], &t[i..]),
                 None => (t, ""),
             };
-            let (h, mi, s) = parse_clock(clock)?;
+            let (h, mi, s) = parse_clock(clock.trim())?;
             let offset = if zone.eq_ignore_ascii_case("z") {
                 0
             } else {
-                zone_offset(zone)
+                zone_offset(zone.trim())
             };
             (h, mi, s, offset)
         }
@@ -670,8 +693,8 @@ impl State {
     }
 
     fn push_text(&mut self, s: &str) {
-        if let Some(text) = self.texts.last_mut().filter(|t| t.len() < MAX_TEXT_BYTES) {
-            text.push_str(s);
+        if let Some(text) = self.texts.last_mut() {
+            text.push_str(floor_bytes(s, MAX_TEXT_BYTES.saturating_sub(text.len())));
         }
     }
 
