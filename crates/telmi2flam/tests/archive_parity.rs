@@ -189,7 +189,7 @@ fn exercise(id: &str, v: Vec<u8>) {
 }
 
 /// Variantes ciblées : à chaque signature `PK`, chaque mot de 16 et 32 bits des 46 octets
-/// suivants (en-têtes local, central, fin de répertoire, ZIP64) mis à 0, à tout-à-1, +1 et -1.
+/// suivants (en-têtes local, central, fin de répertoire ; champs ZIP64 de 8 octets non couverts) mis à 0, à tout-à-1, +1 et -1.
 fn targeted_mutations(data: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let sigs: Vec<usize> = (0..data.len().saturating_sub(3))
