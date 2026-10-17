@@ -721,7 +721,7 @@ class TestConversion(Base):
             mask = T._trns_mask(im, data)
             self.assertEqual([mask.getpixel((x, 0)) for x in range(4)], [0, 255, 0, 255], fake)
 
-    # hunt3 : runtime Lunii absent ou incomplet -> ConvError (pas de paquet muet)
+    # hunt3 : runtime du projet absent ou incomplet -> ConvError (pas de paquet muet)
     def test_runtime_missing(self):
         self.assertEqual(tuple(T.RUNTIME_SCRIPTS), tuple(validate.RUNTIME_SCRIPTS))
         self.assertEqual(tuple(T.RUNTIME_UI_LIF), tuple(validate.RUNTIME_UI_LIF))
