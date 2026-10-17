@@ -80,7 +80,7 @@ def lif_images():
     add("haute", 3, 80, [v for y in range(80) for x in range(3)
                          for v in (y * 3, x * 80, 255 - y * 3, 255)])
     # Premier pixel d'alpha 0 puis plage (RLE) : l'état initial du décodeur est alpha 255,
-    # le premier pixel doit donc écrire l'alpha (0xFF), la plage le répète.
+    # le premier pixel utilise donc l'opcode 0xFF (alpha explicite 0), la plage le répète.
     add("alpha0_plage", 12, 1, [v for p in [(0, 0, 0, 0)] * 9 + [(0, 0, 0, 255)] * 3 for v in p])
     # Image 70 x 80 dont la couleur ne dépend que de i % 80 (= y si le tampon est lu par
     # colonnes) : lue par lignes elle est très incohérente, le décodeur (heuristique du

@@ -14,7 +14,8 @@
 //!
 //! Coût mémoire : la liste des trames occupe 16 octets par trame (position et unités cumulées)
 //! et une trame fait au moins 24 octets, soit au plus ~0,67 fois la taille du MP3 (comme la
-//! liste de tuples du Python, mais en plus compact). Le plafond est donc la taille de l'entrée,
+//! liste de tuples du Python, mais en plus compact), hors pic transitoire de réallocation du
+//! `Vec` (jusqu'à ~1,3 fois). Le plafond est donc proportionnel à la taille de l'entrée,
 //! que l'appelant borne ; pas de parcours en flux, la table de seek a besoin de la liste
 //! complète pour interpoler les entrées par seconde.
 //!

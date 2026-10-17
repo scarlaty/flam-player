@@ -1,9 +1,8 @@
 // Génère build/THIRD-PARTY-NOTICES.txt : licences des dépendances tierces embarquées dans
 // l'application (crates Rust liées dans flam-launcher.exe, paquets npm compilés dans l'interface).
 //
-// Sources : `cargo metadata` (graphe de dépendances normales pour Windows, hors dev, build et
-// membres du workspace) et
-// package-lock.json (entrées non `dev`). Les textes de licence (LICENSE*, COPYING*, NOTICE*) sont
+// Sources : `cargo metadata` (dépendances normales pour Windows, hors dev, build et
+// membres du workspace) et package-lock.json (entrées non `dev`). Les textes de licence (LICENSE*, COPYING*, NOTICE*) sont
 // repris tels quels depuis les sources de chaque paquet ; aucun outil à installer (Node et cargo
 // suffisent). Échec si un paquet n'a ni licence déclarée ni texte de licence.
 import { execFileSync } from "node:child_process";
