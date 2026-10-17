@@ -8,7 +8,9 @@ Cas :
      creee, flam-player est lance avec --parent-hwnd <hwnd> --stdin-control ;
      on verifie que sa fenetre devient un enfant du parent appartenant au
      processus du player, qu'elle remplit la zone cliente et en suit le
-     redimensionnement, puis la ligne "quit" sur stdin l'arrete avec le code 0 ;
+     redimensionnement ; F6 (envoye a la fenetre du player) rend le focus a la
+     fenetre parente et trace "[EMBED] focus-host" (piege clavier, #237) ; la
+     ligne "quit" sur stdin l'arrete avec le code 0 ;
   2. parent detruit : la destruction de la fenetre parente arrete le player
      proprement (code 0) ;
   3. repli + fin de stdin (sans fenetre, pilote SDL dummy) : un HWND invalide
@@ -77,6 +79,31 @@ if IS_WIN:
     PM_REMOVE = 1
     SWP_NOMOVE = 0x0002
     SWP_NOZORDER = 0x0004
+    WM_KEYDOWN = 0x0100
+    WM_KEYUP = 0x0101
+    VK_F6 = 0x75
+
+    class GUITHREADINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
+                    ("hwndActive", wintypes.HWND), ("hwndFocus", wintypes.HWND),
+                    ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                    ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND),
+                    ("rcCaret", wintypes.RECT)]
+
+    user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(GUITHREADINFO)]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+                                    wintypes.LPARAM]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
+
+def focus_window():
+    """Fenetre qui a le focus clavier dans la file d'entree de ce thread (parent
+    et enfant partagent la meme file : l'enfant est incruste)."""
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(GUITHREADINFO)
+    user32.GetGUIThreadInfo(kernel32.GetCurrentThreadId(), ctypes.byref(info))
+    return info.hwndFocus
 
 
 def pump(seconds, until=None):
@@ -186,6 +213,17 @@ def case_embed(exe, script):
         check(pump(5, lambda: client_size(child) == want),
               "l'enfant suit le redimensionnement %s (enfant : %s)"
               % (want, client_size(child)), p)
+        # Le player a pris le clavier a l'incrustation ; F6 le rend a la fenetre hote.
+        check(pump(5, lambda: focus_window() == child),
+              "le player incruste a le focus clavier", p)
+        user32.PostMessageW(child, WM_KEYDOWN, VK_F6, 0x00400001)
+        user32.PostMessageW(child, WM_KEYUP, VK_F6, 0xC0400001)
+        check(pump(5, lambda: p.has("[EMBED] focus-host")),
+              "F6 : trace [EMBED] focus-host", p)
+        check(pump(5, lambda: focus_window() == parent),
+              "F6 : le focus est a la fenetre parente (enfant %s, focus %s)"
+              % (child, focus_window()), p)
+        check(not p.exited(), "le player tourne toujours apres F6", p)
         p.proc.stdin.write(b"quit\n")
         p.proc.stdin.flush()
         check(pump(10, p.exited), "arret apres 'quit' sur stdin", p)
