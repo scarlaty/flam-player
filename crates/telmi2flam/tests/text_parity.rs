@@ -164,12 +164,13 @@ fn load_json_comme_python() {
         } else if let Some(n) = py.get("ok_nested_lists") {
             let mut v = got.unwrap();
             let mut depth = 0;
-            while let Value::List(mut items) = v {
+            // `Value` implémente `Drop` : on descend par emprunt mutable.
+            while let Value::List(items) = &mut v {
                 depth += 1;
-                v = match items.pop() {
-                    Some(x) => x,
+                match items.pop() {
+                    Some(x) => v = x,
                     None => break,
-                };
+                }
             }
             assert_eq!(depth, int_of(n), "{label}");
         } else {
