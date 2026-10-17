@@ -9,13 +9,13 @@ pub mod folder;
 pub mod install;
 pub mod library;
 pub mod library_thumb;
-pub mod lif;
 pub mod player;
 pub mod settings;
 pub mod sources;
 pub mod storage;
 pub mod story;
 pub mod thumbnail;
+pub mod watch;
 
 use std::sync::Arc;
 
@@ -29,6 +29,35 @@ fn focus_main_window(app: &tauri::AppHandle) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+    }
+}
+
+/// Purge `<cache>/thumbs/` selon la politique par défaut. Un échec n'est jamais bloquant : il est
+/// seulement journalisé.
+fn purge_stale_thumbs(app: &tauri::AppHandle) {
+    let state = app.state::<storage::ConfigState>();
+    let cache = {
+        let _guard = state.guard();
+        settings::SettingsStore::new(&state.dir)
+            .resolved_cache_dir(&settings::Environment::current())
+    };
+    let result = cache.map_err(|e| e.to_string()).and_then(|cache| {
+        thumbnail::purge_thumbs(
+            &cache,
+            &thumbnail::PurgePolicy::default(),
+            std::time::SystemTime::now(),
+        )
+        .map_err(|e| e.to_string())
+    });
+    match result {
+        Ok(report) if report.removed > 0 || report.failed > 0 => tracing::info!(
+            "purge des vignettes : {} supprimée(s), {} octets libérés, {} échec(s)",
+            report.removed,
+            report.freed_bytes,
+            report.failed
+        ),
+        Ok(_) => {}
+        Err(err) => tracing::warn!("purge des vignettes impossible : {err}"),
     }
 }
 
@@ -64,11 +93,15 @@ pub fn run() {
             });
             app.manage(storage::ConfigState::new(config_dir));
             app.manage(folder::FolderState::default());
+            app.manage(watch::WatchState::default());
             app.manage(catalog);
             app.manage(install.clone());
             app.manage(player::PlayerService::new(Arc::new(
                 player::TauriPlayerEvents(app.handle().clone()),
             )));
+            // Purge des vignettes périmées de `<cache>/thumbs/` (#37), hors du démarrage.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || purge_stale_thumbs(&handle));
             // Reprise de la file persistée : chaque entrée est ré-résolue depuis sa source.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -101,6 +134,7 @@ pub fn run() {
             sources::sources_reorder,
             folder::folder_scan,
             folder::folder_thumbnail,
+            watch::folder_watch,
             install::install_start,
             install::install_cancel,
             install::install_list,
@@ -133,6 +167,7 @@ mod tests {
             ("settings", include_str!("settings.rs")),
             ("sources", include_str!("sources.rs")),
             ("storage", include_str!("storage.rs")),
+            ("watch", include_str!("watch.rs")),
         ];
         let mut count = 0;
         for (module, source) in modules {

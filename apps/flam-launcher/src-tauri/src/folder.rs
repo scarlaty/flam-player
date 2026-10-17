@@ -30,7 +30,8 @@ use crate::sources::{Source, SourcesStore};
 use crate::storage::ConfigState;
 use crate::story::{validate_story_id, StoryEntry, StoryKind};
 use crate::thumbnail::{self, RgbaImage, ThumbCache, ThumbError};
-use crate::{lif, AppError, AppResult};
+use crate::{AppError, AppResult};
+use telmi2flam::lif;
 
 /// `metadata.json` / `info.plain` : 1 Mio au plus.
 const MAX_TEXT_BYTES: u64 = 1024 * 1024;
