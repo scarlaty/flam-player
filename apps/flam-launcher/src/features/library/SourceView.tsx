@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { toAppError, type AppError } from "../../api/error";
+import { onFolderChanged, watchFolder } from "../../api/folder";
 import type { Source } from "../../api/sources";
 import {
   Badge,
@@ -137,6 +138,28 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
       counter.current++;
     };
   }, [load]);
+
+  // Dossier local : la liste se rafraîchit quand son contenu change. La surveillance est un
+  // confort : si elle ne démarre pas, le rafraîchissement manuel reste disponible.
+  useEffect(() => {
+    if (sourceType !== "folder") return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    onFolderChanged((event) => {
+      if (event.source_id === sourceId) void load(false);
+    })
+      .then((off) => {
+        if (disposed) off();
+        else unlisten = off;
+      })
+      .catch(() => undefined);
+    watchFolder(sourceId, true).catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+      watchFolder(sourceId, false).catch(() => undefined);
+    };
+  }, [sourceId, sourceType, load]);
 
   const entries = data?.entries;
   const openEntry =

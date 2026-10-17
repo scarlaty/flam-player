@@ -269,8 +269,8 @@ apps/flam-launcher/
       story.rs             `StoryEntry` / `StoryKind` : type commun des histoires de toutes les sources
       catalog.rs           Source catalogue : téléchargement, lecture tolérante, cache, vignettes
       folder.rs            Source dossier local (`.zip` Telmi, `.plain`, `.plain.pk`), commandes `folder_*`
-      lif.rs               Décodeur LIF (port de `src/formats/lif_decoder.c`)
-      thumbnail.rs         Vignettes : PNG, réduction, cache `thumbs/`, URL `data:`
+      thumbnail.rs         Vignettes : PNG, LIF (décodeur de `crates/telmi2flam`), réduction, cache `thumbs/`, URL `data:`
+      watch.rs             Surveillance optionnelle d'un dossier local (`notify`), `folder_watch`
       install/             Pipeline d'installation : file, téléchargement, conversion (`mod.rs`,
                            `download.rs`, `convert.rs`, `pack.rs`), commandes `install_*`
       library.rs           Bibliothèque `<cache>/library/` et `library.json`, commandes `library_*`
@@ -308,6 +308,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `catalog_thumbnail`    | `source_id`, `thumb_url`   | URL `data:` (string)                    | `catalog`       |
 | `folder_scan`          | `source_id`, `recursive?`  | `FolderScan`                            | `folder`        |
 | `folder_thumbnail`     | `source_id`, `entry_id`    | URL `data:` (chaîne)                    | `folder`        |
+| `folder_watch`         | `source_id`, `enabled`     | rien                                    | `watch`         |
 | `install_start`        | `source_id`, `entry_id`    | `InstallTask`                           | `install`       |
 | `install_cancel`       | `task_id`                  | rien                                    | `install`       |
 | `install_list`         |                            | `InstallTask[]`                         | `install`       |
@@ -372,12 +373,23 @@ décodé : 8192 px et 64 Mio au plus) ; les entrées aux noms dangereux (`..`, a
 `__MACOSX`, `._*`) sont écartées ; les `\` des noms de zip sont lus comme des `/` ; 100 000 entrées
 au plus par archive.
 
+**Surveillance du dossier (`folder_watch`, événement `folder://changed`)** : `folder_watch(source_id,
+enabled)` démarre ou arrête la surveillance (crate `notify`, non récursive comme le scan par défaut)
+du dossier d'une source ; dossier absent : `folder_unavailable`. Une rafale de changements (ajout,
+suppression, renommage, modification) produit **un seul** événement `folder://changed`
+`{ source_id }`, 400 ms après le dernier changement (3 s au plus après le premier, même si le
+dossier ne se calme jamais). L'événement ne porte aucune histoire : le front relance `folder_scan`
+(`onFolderChanged` / `watchFolder` dans `src/api/folder.ts`). Les accès en lecture et les
+changements dans le dossier de cache sont ignorés. La surveillance est un confort : si elle ne
+démarre pas, la liste reste utilisable avec le bouton _Rafraîchir_. L'écran d'une source dossier
+l'active à l'ouverture et l'arrête en la quittant.
+
 **Vignettes à la demande** : `folder_scan` ne renvoie aucune image (5000 entrées feraient des
 centaines de Mio d'IPC). `thumb_url` est une **référence à résoudre par `folder_thumbnail`** (égale à
 `entry_id`) ou `null` sans vignette : ce n'est pas une URL affichable. `folder_thumbnail(source_id, entry_id)` renvoie
 l'URL `data:image/png;base64,…` d'une seule histoire (compatible CSP `img-src data:`), uniquement
 pour une entrée du **dernier scan** de cette source (sinon `not_found`, jamais un chemin libre).
-L'image (PNG ou LIF via `lif.rs`) est réduite à 160 px et gardée dans `<cache>/thumbs/<clé>.png`
+L'image (PNG, ou LIF via `telmi2flam::lif`) est réduite à 160 px et gardée dans `<cache>/thumbs/<clé>.png`
 (clé = chemin, taille et date de l'archive, plus taille et date de `img/thumbnail.lif` pour un
 `.plain`) ; le cache est consulté **avant** d'ouvrir l'archive.
 
@@ -386,7 +398,7 @@ pas rouvrir chaque zip à chaque scan ; les dossiers `.plain` sont relus à chaq
 
 `thumbs/` est enregistré dans `APP_CACHE_SUBDIRS` (`cache.rs`) : « Vider le cache » le nettoie.
 
-**Suite** : surveillance du dossier (`notify`) et purge de `thumbs/` : issue #37.
+**Purge de `thumbs/`** : au démarrage, en arrière-plan et sans jamais bloquer ni échouer le lancement, `thumbnail::purge_thumbs` supprime les vignettes de plus de 30 jours (clé périmée : archive modifiée ou disparue), les restes d'écriture `*.tmp-<pid>` de plus d'une heure, puis les plus anciennes vignettes tant que le total dépasse 128 Mio. Seuls les fichiers réguliers nommés exactement comme ceux de `ThumbCache` (`<16 chiffres hexadécimaux minuscules>.png` ou `.tmp-<pid>`) sont touchés : `thumbs/` lien ou jonction refusé (jamais parcouru), liens, sous-dossiers et fichiers étrangers ignorés. Une suppression refusée (fichier ouvert, droits) est journalisée et la purge continue ; le fichier est réessayé au démarrage suivant.
 
 ### Erreurs
 
@@ -500,8 +512,22 @@ license?, thumb_url?, download_url, size?, updated_at?, kind (telmi_zip | flam_p
   rafraîchissement), le catalogue n'est donc pas relu à chaque vignette. Le protocole d'asset de
   Tauri n'est **pas** activé : le dossier de cache est configurable, un scope d'asset statique
   serait faux ou trop large, et la CSP (`img-src … data:`) reste inchangée.
-- **Limite connue** : `thumbs/` et `catalogs/<id>/` ne sont pas nettoyés à la suppression d'une
-  source, et les vignettes en cache ne sont jamais revalidées (suite : #38).
+- **Nettoyage du cache** : `sources_remove` d'une source catalogue, et `sources_update` qui
+  change son URL, suppriment `<cache>/catalogs/<source_id>/` et l'état en mémoire de la source
+  (`CatalogService::purge_source`). Seul ce sous-dossier est supprimé : identifiant validé
+  (`[A-Za-z0-9_-]`, 64 caractères au plus), jamais le dossier de cache ni `catalogs/`, aucun
+  lien suivi. Un échec de purge est journalisé (la source est déjà modifiée ; le cache
+  orphelin n'est jamais relu).
+- **Revalidation des vignettes** : chaque `thumbs/<hash>.img` a un suivi `<hash>.meta.json`
+  (`etag`, `last_modified`, `fetched_at`). Au-delà de 7 jours, la vignette est redemandée avec
+  `If-None-Match` / `If-Modified-Since` (304 : copie conservée) ; en cas d'échec, la copie locale
+  reste servie ; après un échec réseau (connexion, délai, 5xx) la source n'est pas recontactée pendant 10 minutes (copies locales servies sans réseau). Une vignette sans suivi (cache antérieur) est redemandée une fois. Une URL
+  de vignette modifiée a un autre nom de fichier, donc est téléchargée à nouveau. À chaque
+  rafraîchissement réussi (ni hors ligne ni en erreur), les vignettes qui ne correspondent plus
+  à aucune entrée sont supprimées. L'écriture d'une vignette prend le portillon du cache en
+  lecture : un vidage du cache (`cache_clear`) l'attend.
+- **Limite connue** : une vignette téléchargée pendant qu'un rafraîchissement remplace le
+  catalogue peut rester jusqu'au rafraîchissement suivant.
 
 ### Événements
 
