@@ -51,6 +51,7 @@ fn tagged(v: &Value) -> Value {
     match v {
         Value::Null | Value::Bool(_) | Value::Str(_) => v.clone(),
         Value::Int(i) => one("i", Value::Str(i.to_string())),
+        Value::UInt(u) => one("i", Value::Str(u.to_string())),
         Value::Float(f) => one("f", Value::Str(f.to_bits().to_string())),
         Value::List(items) => one("l", Value::List(items.iter().map(tagged).collect())),
         Value::Object(map) => one(

@@ -10,8 +10,8 @@
 //!
 //! Divergences assumées (`PORT-RUST.md` §3, écart `json_limit` de `parity.py`), où Python
 //! accepte le document ou échoue plus loin avec une erreur interne (code 6) : flottant hors
-//! plage (`1e400`), entier hors de `i64`, imbrication au-delà de [`MAX_DEPTH`], surrogate
-//! isolé (`"\ud800"`). Le Rust rend alors [`ContentError`] (`invalid_content`, code 4).
+//! plage (`1e400`), entier hors de `i64::MIN..=u64::MAX`, imbrication au-delà de [`MAX_DEPTH`],
+//! surrogate isolé (`"\ud800"`). Le Rust rend alors [`ContentError`] (`invalid_content`, code 4).
 //!
 //! L'analyseur est écrit à la main (pas de `serde_json`) : la fonction `preserve_order` de
 //! `serde_json`, nécessaire à l'ordre de `dict`, s'unifierait dans tout le workspace et
@@ -35,6 +35,10 @@ pub enum Value {
     Null,
     Bool(bool),
     Int(i64),
+    /// Entier de `i64::MAX + 1` à `u64::MAX` (aussi un `int` pour Python). Variante à part
+    /// pour garder `Value` compacte : la pile de l'analyse récursive en dépend (voir
+    /// `profondeur_maximale_tient_dans_une_pile_de_1_mo`).
+    UInt(u64),
     Float(f64),
     Str(String),
     List(Vec<Value>),
@@ -75,7 +79,7 @@ impl Value {
         match self {
             Value::Null => Kind::Null,
             Value::Bool(_) => Kind::Bool,
-            Value::Int(_) => Kind::Int,
+            Value::Int(_) | Value::UInt(_) => Kind::Int,
             Value::Float(_) => Kind::Float,
             Value::Str(_) => Kind::Str,
             Value::List(_) => Kind::List,
@@ -434,6 +438,7 @@ impl Parser<'_> {
         } else {
             text.parse::<i64>()
                 .map(Value::Int)
+                .or_else(|_| text.parse::<u64>().map(Value::UInt))
                 .map_err(|_| Fail::Limit("entier hors 64 bits", start))
         }
     }
@@ -453,6 +458,15 @@ mod tests {
         let Value::Object(map) = v else { panic!() };
         let pairs: Vec<_> = map.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
         assert_eq!(pairs, [("a", Value::Int(3)), ("b", Value::Int(2))]);
+    }
+
+    #[test]
+    fn entiers_dans_la_plage_64_bits_signee_ou_non() {
+        assert_eq!(load("-0").unwrap(), Value::Int(0));
+        assert_eq!(load("18446744073709551615").unwrap(), Value::UInt(u64::MAX));
+        assert_eq!(load("-9223372036854775808").unwrap(), Value::Int(i64::MIN));
+        assert!(load("18446744073709551616").is_err());
+        assert!(load("-9223372036854775809").is_err());
     }
 
     #[test]

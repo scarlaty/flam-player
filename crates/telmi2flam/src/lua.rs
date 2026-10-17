@@ -16,7 +16,7 @@ pub const LUA_KEYWORDS: [&str; 23] = [
 pub enum Lua {
     Nil,
     Bool(bool),
-    Int(i64),
+    Int(i128),
     Float(f64),
     Str(String),
     /// Liste Python : table Lua séquentielle.
@@ -31,7 +31,8 @@ impl Lua {
         match v {
             Value::Null => Lua::Nil,
             Value::Bool(b) => Lua::Bool(*b),
-            Value::Int(i) => Lua::Int(*i),
+            Value::Int(i) => Lua::Int(i128::from(*i)),
+            Value::UInt(u) => Lua::Int(i128::from(*u)),
             Value::Float(f) => Lua::Float(*f),
             Value::Str(s) => Lua::Str(s.clone()),
             Value::List(items) => Lua::List(items.iter().map(Lua::from_json).collect()),
