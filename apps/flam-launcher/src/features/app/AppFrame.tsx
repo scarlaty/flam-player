@@ -6,6 +6,9 @@ import { t } from "../../i18n";
 import type { Route } from "../../router";
 import { applyTheme } from "../../theme/theme";
 import { CompatNotice } from "../compat/CompatNotice";
+import { DeviceScreen } from "../device/DeviceScreen";
+import { TransferPanel } from "../device/TransferPanel";
+import { DeviceLibrarySend } from "../stories/DeviceLibrarySend";
 import { LibrarySidebar } from "../library/LibrarySidebar";
 import { PlayerScreen } from "../player/PlayerScreen";
 import { RecoveryBanners } from "../recovery/RecoveryBanners";
@@ -23,6 +26,7 @@ const TITLES: Record<Exclude<Route, "demo">, string> = {
   sources: t.nav.sources,
   settings: t.nav.settings,
   library: t.nav.library,
+  device: t.nav.device,
 };
 
 /**
@@ -66,7 +70,12 @@ export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
     <AppShell
       navLabel={t.nav.label}
       title={TITLES[route]}
-      aside={<StoriesTaskPanel />}
+      aside={
+        <>
+          <StoriesTaskPanel />
+          <TransferPanel />
+        </>
+      }
       sidebar={
         <>
           <AppNav current={route} />
@@ -77,6 +86,7 @@ export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
       <RecoveryBanners />
       {route === "sources" && <SourcesScreen />}
       {route === "settings" && <SettingsScreen />}
+      {route === "device" && <DeviceScreen libraryPanel={<DeviceLibrarySend />} />}
       {route === "library" && (
         <>
           <CompatNotice />
