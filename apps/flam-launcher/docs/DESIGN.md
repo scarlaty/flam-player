@@ -4,15 +4,6 @@ Interface de bureau pour choisir, installer et lancer des histoires audio pour e
 (2-8 ans). Elle est utilisée par les **parents** (installation, sources, paramètres) et
 parfois **à côté de l'enfant** (choisir une histoire, appuyer sur Jouer).
 
-## Inspiration et originalité
-
-L'organisation de l'écran reprend la **disposition générale** de TelmiSync : une barre de
-sources à gauche, une grille de cartes avec vignettes, une fiche par histoire et un panneau
-des tâches en cours. Ce sont des conventions courantes pour ce type d'application.
-TelmiSync est sous GPL-3.0 et flam-launcher sous MIT : **aucun code, style, CSS, icône,
-couleur ni ressource n'a été repris**. Les couleurs, icônes, l'icône d'application et
-les composants ont été dessinés pour ce projet.
-
 ## Principes
 
 1. **Aux couleurs de la Flam** : vert d'eau du boîtier, jaune de la molette, orange du logo,

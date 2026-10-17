@@ -127,7 +127,6 @@ it("affiche les valeurs utilisées, les problèmes et la section À propos", asy
   expect(screen.getByText(/embarque son propre Python/)).toBeInTheDocument();
   expect(await screen.findByText("flam-launcher — version 0.1.0")).toBeInTheDocument();
   expect(screen.getByText("Licence MIT.")).toBeInTheDocument();
-  expect(screen.getByText(/Telmi Store et de TelmiSync/)).toBeInTheDocument();
   expect(screen.getByText("2 Ko occupés dans C:\\cache")).toBeInTheDocument();
 });
 

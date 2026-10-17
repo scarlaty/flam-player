@@ -63,6 +63,7 @@ const ours = (over: Partial<StoryEntry> = {}) =>
     voice: "Vic Voix",
     license: "CC BY 4.0",
     size: 3 * 1024 * 1024,
+    thumb_url: "ours.png",
     ...over,
   });
 
@@ -276,9 +277,13 @@ slowIt(
     };
     await renderApp();
     const dialog = await openFiche();
+    // La carte n'est jamais « vue » (observateur factice) : la fiche demande l'image d'elle-même.
     await waitFor(() =>
-      expect(within(dialog).getByRole("img", { name: /Vignette/ })).toBeInTheDocument(),
-    ).catch(() => undefined);
+      expect(within(dialog).getByRole("img", { name: /Vignette/ })).toHaveAttribute(
+        "src",
+        "data:image/png;base64,AAAA",
+      ),
+    );
     expect(
       within(dialog).getByText("Une visite chez trois ours gourmands."),
     ).toBeVisible();

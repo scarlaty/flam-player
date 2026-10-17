@@ -44,7 +44,7 @@ function Fact({ label, value }: { label: string; value: string | null | undefine
 export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const stories = useStories();
   const { compatFor } = useCompat();
-  const { url } = useThumbnail(source, entry);
+  const { url } = useThumbnail(source, entry, { eager: true });
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [purgeSaves, setPurgeSaves] = useState(false);
   const cancelRef = useRef<HTMLButtonElement>(null);
