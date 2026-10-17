@@ -57,6 +57,8 @@ ORACLE_SCRIPT = os.path.join(HERE, "telmi2flam.py")
 # Etiquettes de cas (voir tests/parity/make_corpus.py)
 TAG_JSON_LIMIT = "json_limit"
 TAG_ENCRYPTED = "encrypted_entry"
+TAG_BAD_UTF8_NAME = "invalid_utf8_name"
+TAG_NEGATIVE_OFFSET = "negative_offset"
 TAG_DELEGATED = "delegated"
 
 DELEGATION_CODE = "unsupported_format"
@@ -210,6 +212,18 @@ ALLOWED_DEVIATIONS = (
         "encrypted_entry", "§4.1 / §3",
         "entree chiffree : le Rust rend archive_unreadable (code 3), Python internal_error (6)",
         TAG_ENCRYPTED,
+        lambda o, c: _pair(o) == (6, "internal_error") and _pair(c) == (3, "archive_unreadable")),
+    Deviation(
+        "invalid_utf8_name", "§4.1 / §3",
+        "nom d'entree UTF-8 invalide avec le bit 11 : le Rust rend archive_unreadable "
+        "(code 3), Python internal_error (6, UnicodeDecodeError)",
+        TAG_BAD_UTF8_NAME,
+        lambda o, c: _pair(o) == (6, "internal_error") and _pair(c) == (3, "archive_unreadable")),
+    Deviation(
+        "negative_offset", "§4.1 / §3",
+        "position d'en-tete local negative : le Rust rend archive_unreadable (code 3), "
+        "Python internal_error (6, OSError)",
+        TAG_NEGATIVE_OFFSET,
         lambda o, c: _pair(o) == (6, "internal_error") and _pair(c) == (3, "archive_unreadable")),
     Deviation(
         "json_limit", "§4.1 / §3",
