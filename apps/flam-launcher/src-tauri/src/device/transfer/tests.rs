@@ -810,3 +810,41 @@ fn la_relecture_reelle_rend_le_contenu_exact() {
         assert_eq!(read, data, "{len} octets");
     }
 }
+
+#[test]
+fn coupures_repetees_pendant_la_reprise() {
+    let tmp = tempfile::tempdir().unwrap();
+    // État : mise à jour coupée entre la mise de côté et le renommage final.
+    let setup = |base: &Path| {
+        let root = device(base, true);
+        let t = root.join(TRANSFER_DIR);
+        std::fs::create_dir_all(&t).unwrap();
+        std::fs::rename(root.join("str").join(NEW), t.join(format!("{NEW}.old"))).unwrap();
+        write(
+            &t.join(format!("{NEW}.in")).join("sounds/a.mp3"),
+            &[1u8; 10],
+        );
+        write(&t.join(format!("{NEW}.in")).join("info"), b"partiel");
+        root
+    };
+    let old = files_of(&device(&tmp.path().join("ref"), true).join("str").join(NEW));
+    let counter = FaultyFs::new();
+    recover_with(&counter, &setup(&tmp.path().join("compte"))).unwrap();
+    let total_ops = counter.ops.get();
+    for crash_at in 0..total_ops {
+        let root = setup(&tmp.path().join(format!("r{crash_at}")));
+        // Première reprise coupée, deuxième coupée plus tôt encore, puis reprise saine.
+        let _ = recover_with(&FaultyFs::crash_at(crash_at), &root);
+        let _ = recover_with(&FaultyFs::crash_at(crash_at / 2), &root);
+        let lock = crate::device::lock::DeviceLock::new();
+        let guard = lock.try_begin(Operation::Transfer).unwrap();
+        recover_device(&guard, &root).unwrap();
+        assert!(!root.join(TRANSFER_DIR).exists(), "étape {crash_at}");
+        assert_eq!(
+            files_of(&root.join("str").join(NEW)),
+            old,
+            "étape {crash_at}"
+        );
+        assert!(index::missing_stories(&root, &listed(&root)).is_empty());
+    }
+}

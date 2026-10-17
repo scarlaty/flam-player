@@ -595,7 +595,13 @@ pub(crate) fn send_with(
         Ok(())
     })();
     if let Err(err) = promoted {
-        discard(fs, root, &incoming);
+        // Un renommage interrompu peut laisser deux noms du même dossier : dans le doute, le
+        // dossier temporaire est laissé à la reprise plutôt que supprimé.
+        let aliased = target.try_exists().unwrap_or(true)
+            && fs.same_directory(&incoming, &target).unwrap_or(true);
+        if !aliased {
+            discard(fs, root, &incoming);
+        }
         return Err(err.into());
     }
 
@@ -973,6 +979,14 @@ pub async fn device_send_story(
         let (plain_pk, _) = Library::new(&cache_root).playable(&uuid)?;
         let cancel = Arc::new(AtomicBool::new(false));
         *current_cancel() = Some(cancel.clone());
+        // Drapeau retiré à la sortie, y compris sur panique.
+        struct ClearCancel;
+        impl Drop for ClearCancel {
+            fn drop(&mut self) {
+                *current_cancel() = None;
+            }
+        }
+        let _clear = ClearCancel;
         let mut emit = |progress: Progress| {
             use tauri::Emitter;
             let _ = app.emit(
@@ -992,11 +1006,36 @@ pub async fn device_send_story(
             &cancel,
             &mut emit,
         );
-        *current_cancel() = None;
         Ok(result?)
     })
     .await??;
     Ok(report)
+}
+
+/// Reprend sur la Flam de racine `root` les transferts puis les écritures d'index
+/// interrompus (voir le tableau du module). À appeler à chaque détection de l'appareil, avant
+/// de lire son contenu ; refusé (`Busy`) pendant une autre opération.
+pub fn recover_device(guard: &OpGuard<'_>, root: &Path) -> Result<TransferRecovery, TransferError> {
+    if !root.join(MDF_FILE).is_file() {
+        return Err(TransferError::DeviceNotFound);
+    }
+    let report = recover(guard, root)?;
+    for kind in IndexKind::ALL {
+        index::recover(root, kind)?;
+    }
+    Ok(report)
+}
+
+/// Reprise au branchement : transferts et index interrompus ([`recover_device`]).
+#[tauri::command]
+pub async fn device_recover_transfers(root: String) -> AppResult<TransferRecovery> {
+    blocking(move || -> AppResult<TransferRecovery> {
+        let guard = DEVICE_LOCK
+            .try_begin(Operation::Transfer)
+            .map_err(TransferError::from)?;
+        Ok(recover_device(&guard, Path::new(&root))?)
+    })
+    .await?
 }
 
 /// Demande l'annulation du transfert en cours. Rend faux s'il n'y en a pas. Sans effet une fois
