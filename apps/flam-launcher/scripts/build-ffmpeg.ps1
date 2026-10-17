@@ -1,44 +1,42 @@
 ﻿<#
 .SYNOPSIS
-  Prépare le ffmpeg LGPL livré avec l'installateur Windows de flam-launcher (issue #209,
-  épopée podcasts #207) : artefact épinglé, empreinte SHA-256 vérifiée, licence et offre de sources.
+  Prépare le ffmpeg LGPL minimal (audio seulement) livré avec l'installateur Windows de
+  flam-launcher (issue #209, épopée podcasts #207) : sources épinglées, licences, offre de sources.
 
 .DESCRIPTION
   Produit <OutDir> (par défaut apps/flam-launcher/build/ffmpeg, ignoré par Git) :
 
     ffmpeg/
-      ffmpeg.exe, ffprobe.exe                       programmes lancés comme processus externes
-      avcodec-*.dll, avformat-*.dll, avutil-*.dll,  bibliothèques dynamiques du build « shared »
-      avfilter-*.dll, avdevice-*.dll, swresample-*.dll, swscale-*.dll
-      LICENSE                                       texte LGPL-3.0 fourni avec le build
-      BUILD.txt                                     version, sources, empreinte, configuration
+      ffmpeg.exe, ffprobe.exe     exécutables statiques (aucune DLL), lancés comme processus externes
+      LICENSE                     LGPL-2.1 de FFmpeg
+      LICENSE-LAME                LGPL-2.1 de LAME (encodeur MP3 libmp3lame), + LICENSE-LAME-NOTICE
+      BUILD.txt                   versions, sources exactes, empreintes, configuration (-buildconf)
 
-  Source : build « win64-lgpl-shared » de BtbN/FFmpeg-Builds, release datée (jamais `latest`).
-  Il est compilé sans `--enable-gpl` ni `--enable-nonfree` (avec `--enable-version3` : le
-  résultat est sous LGPL-3.0-or-later, compatible avec la GPL-3.0-or-later du projet), embarque
-  libmp3lame (LAME, LGPL) et décode AAC, MP3, Opus, Vorbis, FLAC, WAV. La variante « shared »
-  garde les bibliothèques FFmpeg en DLL à côté des exécutables (relien possible, exigence LGPL)
-  et pèse la moitié de la variante statique. Retirés : ffplay.exe, include/, lib/, doc/, presets/.
+  Le binaire est construit par nous (tools/ffmpeg/build.sh : cross-compilation MinGW-w64 sous
+  Linux) depuis les tarballs FFmpeg et LAME épinglés dans tools/ffmpeg/pins.env (SHA-256
+  vérifiés). Configuration : `--disable-everything --disable-autodetect --disable-network`, ni
+  `--enable-gpl` ni `--enable-nonfree`, `--enable-libmp3lame` ; seuls les décodeurs, démuxeurs,
+  filtres et le protocole `file` utiles à la conversion de podcasts sont activés.
 
-  Le launcher n'est jamais lié à ffmpeg : il le lance comme programme externe (#214).
-
-  Reproductible : empreinte SHA-256 épinglée (celle publiée par GitHub pour l'artefact),
-  vérifiée avant toute extraction. Aucun outil à installer : PowerShell 5.1 ou 7 suffit.
+  Où trouver le binaire :
+    -ArtifactDir <dossier>   sortie de tools/ffmpeg/build.sh déjà construite (la CI la produit
+                             dans un job Linux, puis la télécharge ici) ;
+    sans paramètre           construit avec Docker (image ubuntu:24.04) si `docker` est disponible,
+                             sinon échoue en expliquant quoi faire.
 
   Contrôles (le script échoue sinon) : la configuration n'a ni `--enable-gpl` ni
-  `--enable-nonfree`, `-L` annonce la LGPL, `-encoders` contient libmp3lame, les décodeurs
-  attendus sont présents, et un WAV synthétique (`-f lavfi -i sine`) est transcodé en MP3
-  44,1 kHz relu par ffprobe.
+  `--enable-nonfree`, `-L` annonce la LGPL, `libmp3lame` est dans `-encoders`, les décodeurs
+  attendus sont présents, aucun protocole réseau, et deux transcodages vérifiés par ffprobe :
+  WAV synthétique (`-f lavfi -i sine`) vers MP3 44,1 kHz, puis MP3 mono 22 050 Hz vers MP3 44 100 Hz.
 
-  Changer de version : choisir une release de BtbN/FFmpeg-Builds (les releases du dernier jour
-  de chaque mois sont conservées durablement, les autres sont supprimées au bout de quelques
-  semaines), mettre à jour les constantes ci-dessous et la ligne ffmpeg de LICENSES.md.
+  Relien LGPL : le binaire étant statique, la liaison est refaite en reconstruisant avec
+  tools/ffmpeg/build.sh (sources et script cités dans BUILD.txt).
 
 .PARAMETER OutDir
   Dossier produit (supprimé puis recréé).
 
-.PARAMETER DownloadDir
-  Cache des téléchargements (réutilisé si l'empreinte correspond).
+.PARAMETER ArtifactDir
+  Sortie de build.sh (ffmpeg.exe, ffprobe.exe, LICENSE, LICENSE-LAME, configure-args.txt).
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-ffmpeg.ps1
@@ -46,76 +44,29 @@
 [CmdletBinding()]
 param(
   [string]$OutDir,
-  [string]$DownloadDir
+  [string]$ArtifactDir
 )
 
 Set-StrictMode -Version 3
 $ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
 
-# --- Version épinglée ---------------------------------------------------------------------
-# https://github.com/BtbN/FFmpeg-Builds/releases (release datée, fin de mois : conservée).
-$ReleaseTag = 'autobuild-2026-09-30-13-08'
-$ZipName = 'ffmpeg-n8.1.3-9-g29e619e767-win64-lgpl-shared-8.1.zip'
-$ZipUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/$ReleaseTag/$ZipName"
-$ZipSha256 = '3e47bda1607740550141e37c0e49d1e5182b34699f15adfd137ee266d346811a'
-$FfmpegVersion = 'n8.1.3-9-g29e619e767'
-# Sources correspondantes (offre de sources LGPL) : tag FFmpeg n8.1.3 + 9 commits de la branche
-# release/8.1, commit exact 29e619e767cde9045a75c29bc9a8278ae7b3a98b ; scripts de build (versions
-# et sources de chaque bibliothèque tierce) au commit 6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b.
-$SourceUrl = 'https://github.com/FFmpeg/FFmpeg/tree/29e619e767cde9045a75c29bc9a8278ae7b3a98b'
-$SourceBaseTagUrl = 'https://github.com/FFmpeg/FFmpeg/tree/n8.1.3'
-$BuildRepoUrl = 'https://github.com/BtbN/FFmpeg-Builds/tree/6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b'
-$ReleaseUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/tag/$ReleaseTag"
-
-# Contenu conservé de bin/ (ffplay.exe et le reste de l'archive sont écartés).
-$Keep = @(
-  'ffmpeg.exe', 'ffprobe.exe',
-  'avcodec-62.dll', 'avdevice-62.dll', 'avfilter-11.dll', 'avformat-62.dll',
-  'avutil-60.dll', 'swresample-6.dll', 'swscale-9.dll'
-)
-$WantedDecoders = @('aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le')
-
-# --- Chemins ------------------------------------------------------------------------------
+# --- Chemins et versions épinglées --------------------------------------------------------
 $LauncherDir = Split-Path -Parent $PSScriptRoot
+$RepoRoot = Split-Path -Parent (Split-Path -Parent $LauncherDir)
+$FfmpegToolsDir = Join-Path $RepoRoot 'tools\ffmpeg'
 if (-not $OutDir) { $OutDir = Join-Path $LauncherDir 'build\ffmpeg' }
-if (-not $DownloadDir) { $DownloadDir = Join-Path $LauncherDir 'build\downloads' }
 $OutDir = [IO.Path]::GetFullPath($OutDir)
-$DownloadDir = [IO.Path]::GetFullPath($DownloadDir)
-$Staging = $OutDir + '.extract'
 
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$tls = [Net.SecurityProtocolType]::Tls12
-if ([Enum]::GetNames([Net.SecurityProtocolType]) -contains 'Tls13') {
-  $tls = $tls -bor [Net.SecurityProtocolType]::Tls13
+$pins = @{}
+foreach ($line in Get-Content -LiteralPath (Join-Path $FfmpegToolsDir 'pins.env')) {
+  if ($line -match '^([A-Z0-9_]+)=(.+)$') { $pins[$Matches[1]] = $Matches[2] }
 }
-[Net.ServicePointManager]::SecurityProtocol = $tls
-
-function Get-Sha256([string]$Path) {
-  (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+foreach ($key in 'FFMPEG_VERSION', 'FFMPEG_URL', 'FFMPEG_SHA256', 'FFMPEG_SOURCE_PAGE', 'LAME_VERSION', 'LAME_URL', 'LAME_SHA256', 'LAME_SOURCE_PAGE') {
+  if (-not $pins.ContainsKey($key)) { throw "tools/ffmpeg/pins.env : $key manquant" }
 }
 
-function Get-Pinned([string]$Url, [string]$Sha256) {
-  $name = [IO.Path]::GetFileName(([Uri]$Url).AbsolutePath)
-  $path = Join-Path $DownloadDir $name
-  if ((Test-Path -LiteralPath $path) -and (Get-Sha256 $path) -eq $Sha256) {
-    Write-Host "cache : $name"
-    return $path
-  }
-  Write-Host "téléchargement : $Url"
-  $part = "$path.part"
-  try {
-    Invoke-WebRequest -Uri $Url -OutFile $part -UseBasicParsing
-    $actual = Get-Sha256 $part
-    if ($actual -ne $Sha256) {
-      throw "empreinte inattendue pour $name : $actual (attendu $Sha256)"
-    }
-    Move-Item -LiteralPath $part -Destination $path -Force
-  } finally {
-    if (Test-Path -LiteralPath $part) { Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue }
-  }
-  return $path
-}
+$WantedDecoders = @('aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le')
+$Shipped = @('ffmpeg.exe', 'ffprobe.exe', 'LICENSE', 'LICENSE-LAME')
 
 # Lance un exécutable (sans shell), PATH réduit au dossier système, et renvoie stdout + stderr
 # (ffmpeg écrit ses bannières sur stderr). Échoue si le code de sortie n'est pas 0.
@@ -135,107 +86,132 @@ function Invoke-Tool([string]$Exe, [string[]]$Arguments) {
   return $text
 }
 
-# --- Construction -------------------------------------------------------------------------
-New-Item -ItemType Directory -Force -Path $DownloadDir | Out-Null
-$zip = Get-Pinned $ZipUrl $ZipSha256
-
-foreach ($dir in $OutDir, $Staging) {
-  if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
+function Get-Stream([string]$Ffprobe, [string]$File) {
+  Invoke-Tool $Ffprobe @('-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name,sample_rate,channels',
+    '-of', 'default=noprint_wrappers=1', $File)
 }
-try {
-  [IO.Compression.ZipFile]::ExtractToDirectory($zip, $Staging)
-  $root = @(Get-ChildItem -LiteralPath $Staging -Directory)
-  if ($root.Count -ne 1) { throw "archive inattendue : un seul dossier racine attendu dans $ZipName" }
-  $bin = Join-Path $root[0].FullName 'bin'
-  New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-  foreach ($name in $Keep) {
-    $src = Join-Path $bin $name
-    if (-not (Test-Path -LiteralPath $src)) { throw "fichier attendu absent de l'archive : $name (liste à revoir pour cette version)" }
-    Copy-Item -LiteralPath $src -Destination $OutDir
+
+# --- Binaire : artefact fourni, sinon construction par Docker -----------------------------
+$builtHere = $null
+if (-not $ArtifactDir) {
+  if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    throw 'aucun binaire fourni : passer -ArtifactDir <sortie de tools/ffmpeg/build.sh> (produite par la CI, job « ffmpeg »), ou installer Docker pour le construire ici'
   }
-  $license = Join-Path $root[0].FullName 'LICENSE.txt'
-  if (-not (Test-Path -LiteralPath $license)) { throw 'LICENSE.txt absent de l''archive' }
-  Copy-Item -LiteralPath $license -Destination (Join-Path $OutDir 'LICENSE')
-} finally {
-  if (Test-Path -LiteralPath $Staging) { Remove-Item -LiteralPath $Staging -Recurse -Force -ErrorAction SilentlyContinue }
+  $builtHere = Join-Path ([IO.Path]::GetTempPath()) ('flam-ffmpeg-build-' + [Guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $builtHere | Out-Null
+  Write-Host 'construction de ffmpeg avec Docker (ubuntu:24.04)...'
+  $env:MSYS_NO_PATHCONV = '1'
+  & docker run --rm -e INSTALL_DEPS=1 -v "${RepoRoot}:/src:ro" -v "${builtHere}:/out" ubuntu:24.04 bash /src/tools/ffmpeg/build.sh /out
+  if ($LASTEXITCODE -ne 0) { throw "échec de la construction Docker (code $LASTEXITCODE)" }
+  $ArtifactDir = $builtHere
 }
-if (-not (Select-String -LiteralPath (Join-Path $OutDir 'LICENSE') -Pattern 'GNU LESSER GENERAL PUBLIC LICENSE' -Quiet)) {
-  throw 'ffmpeg/LICENSE : texte LGPL attendu'
-}
+$ArtifactDir = [IO.Path]::GetFullPath($ArtifactDir)
 
 try {
-# --- Contrôles ----------------------------------------------------------------------------
-$ffmpeg = Join-Path $OutDir 'ffmpeg.exe'
-$ffprobe = Join-Path $OutDir 'ffprobe.exe'
+  if (Test-Path -LiteralPath $OutDir) { Remove-Item -LiteralPath $OutDir -Recurse -Force }
+  New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+  try {
+    foreach ($name in $Shipped + @('configure-args.txt')) {
+      if (-not (Test-Path -LiteralPath (Join-Path $ArtifactDir $name))) { throw "fichier attendu absent de l'artefact : $name" }
+    }
+    foreach ($name in $Shipped) { Copy-Item -LiteralPath (Join-Path $ArtifactDir $name) -Destination $OutDir }
+    $notice = Join-Path $ArtifactDir 'LICENSE-LAME-NOTICE'
+    if (Test-Path -LiteralPath $notice) { Copy-Item -LiteralPath $notice -Destination $OutDir }
 
-$version = Invoke-Tool $ffmpeg @('-hide_banner', '-version')
-if ($version -notmatch [regex]::Escape($FfmpegVersion)) { throw "version inattendue (attendu $FfmpegVersion) :`n$version" }
-$buildconf = (Invoke-Tool $ffmpeg @('-hide_banner', '-buildconf')).Trim()
-foreach ($text in $version, $buildconf) {
-  if ($text -match '--enable-(gpl|nonfree)(\s|$)') { throw 'configuration GPL ou nonfree : refusée' }
-}
-if ($buildconf -notmatch '--enable-libmp3lame') { throw 'configuration sans --enable-libmp3lame' }
-$licenseText = Invoke-Tool $ffmpeg @('-hide_banner', '-L')
-if ($licenseText -notmatch 'GNU Lesser General Public License') { throw "ffmpeg -L n'annonce pas la LGPL :`n$licenseText" }
+    foreach ($file in 'LICENSE', 'LICENSE-LAME') {
+      if (-not (Select-String -LiteralPath (Join-Path $OutDir $file) -Pattern 'GNU (LESSER|LIBRARY) GENERAL PUBLIC LICENSE' -Quiet)) { throw "$file : texte LGPL attendu" }
+    }
 
-$encoders = Invoke-Tool $ffmpeg @('-hide_banner', '-encoders')
-if ($encoders -notmatch '\blibmp3lame\b') { throw 'encodeur libmp3lame absent' }
-$decoders = Invoke-Tool $ffmpeg @('-hide_banner', '-decoders')
-foreach ($d in $WantedDecoders) {
-  if ($decoders -notmatch "(?m)^\s*[A-Z.]{6}\s+$([regex]::Escape($d))\s") { throw "décodeur absent : $d" }
-}
+    # --- Contrôles ------------------------------------------------------------------------
+    $ffmpeg = Join-Path $OutDir 'ffmpeg.exe'
+    $ffprobe = Join-Path $OutDir 'ffprobe.exe'
 
-# Bout en bout : WAV synthétique (22,05 kHz mono, généré par ffmpeg) -> MP3 44,1 kHz.
-$work = Join-Path ([IO.Path]::GetTempPath()) ("flam-ffmpeg-" + [Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $work | Out-Null
-try {
-  $wav = Join-Path $work 'sine.wav'
-  $mp3 = Join-Path $work 'sine.mp3'
-  Invoke-Tool $ffmpeg @('-hide_banner', '-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1:sample_rate=22050',
-    '-ac', '1', '-c:a', 'pcm_s16le', $wav) | Out-Null
-  Invoke-Tool $ffmpeg @('-hide_banner', '-nostdin', '-v', 'error', '-i', $wav, '-ar', '44100', '-c:a', 'libmp3lame', '-b:a', '64k', $mp3) | Out-Null
-  $probe = Invoke-Tool $ffprobe @('-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name,sample_rate',
-    '-of', 'default=noprint_wrappers=1', $mp3)
-  if ($probe -notmatch 'codec_name=mp3' -or $probe -notmatch 'sample_rate=44100') { throw "MP3 inattendu :`n$probe" }
-} finally {
-  Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
-}
+    $version = Invoke-Tool $ffmpeg @('-hide_banner', '-version')
+    if ($version -notmatch ('ffmpeg version ' + [regex]::Escape($pins['FFMPEG_VERSION']))) { throw "version inattendue (attendu $($pins['FFMPEG_VERSION'])) :`n$version" }
+    $buildconf = (Invoke-Tool $ffmpeg @('-hide_banner', '-buildconf')).Trim()
+    foreach ($text in $version, $buildconf) {
+      if ($text -match '--enable-(gpl|nonfree)(\s|$)') { throw 'configuration GPL ou nonfree : refusée' }
+    }
+    if ($buildconf -notmatch '--enable-libmp3lame') { throw 'configuration sans --enable-libmp3lame' }
+    if ($buildconf -notmatch '--disable-network') { throw 'configuration sans --disable-network' }
+    $licenseText = Invoke-Tool $ffmpeg @('-hide_banner', '-L')
+    if ($licenseText -notmatch 'GNU\s+Lesser\s+General\s+Public\s+License') { throw "ffmpeg -L n'annonce pas la LGPL :`n$licenseText" }
 
-} catch {
-  # Un dossier non validé ne doit jamais être embarqué ni retenu par la détection de développement.
-  Remove-Item -LiteralPath $OutDir -Recurse -Force -ErrorAction SilentlyContinue
-  throw
-}
+    $encoders = Invoke-Tool $ffmpeg @('-hide_banner', '-encoders')
+    if ($encoders -notmatch '\blibmp3lame\b') { throw 'encodeur libmp3lame absent' }
+    $decoders = Invoke-Tool $ffmpeg @('-hide_banner', '-decoders')
+    foreach ($d in $WantedDecoders) {
+      if ($decoders -notmatch "(?m)^\s*[A-Z.]{6}\s+$([regex]::Escape($d))\s") { throw "décodeur absent : $d" }
+    }
+    $protocols = Invoke-Tool $ffmpeg @('-hide_banner', '-protocols')
+    if ($protocols -match '\b(http|https|tcp|udp|ftp|rtmp|tls)\b') { throw "protocole réseau présent :`n$protocols" }
 
-# --- BUILD.txt ----------------------------------------------------------------------------
-$buildTxt = @"
-FFmpeg $FfmpegVersion (build Windows x64 « lgpl-shared », LGPL-3.0-or-later)
+    # Bout en bout : WAV synthétique -> MP3 44,1 kHz ; MP3 mono 22 050 Hz -> MP3 44 100 Hz.
+    $work = Join-Path ([IO.Path]::GetTempPath()) ('flam-ffmpeg-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $work | Out-Null
+    try {
+      $wav = Join-Path $work 'sine.wav'
+      $mp3 = Join-Path $work 'sine.mp3'
+      $mono = Join-Path $work 'mono-22050.mp3'
+      $up = Join-Path $work 'mono-44100.mp3'
+      $common = @('-hide_banner', '-nostdin', '-v', 'error')
+      Invoke-Tool $ffmpeg ($common + @('-f', 'lavfi', '-i', 'sine=frequency=440:duration=1:sample_rate=22050', '-ac', '1', '-c:a', 'pcm_s16le', $wav)) | Out-Null
+      Invoke-Tool $ffmpeg ($common + @('-i', $wav, '-ar', '44100', '-c:a', 'libmp3lame', '-b:a', '64k', $mp3)) | Out-Null
+      $probe = Get-Stream $ffprobe $mp3
+      if ($probe -notmatch 'codec_name=mp3' -or $probe -notmatch 'sample_rate=44100') { throw "MP3 inattendu :`n$probe" }
+      Invoke-Tool $ffmpeg ($common + @('-i', $wav, '-ar', '22050', '-ac', '1', '-c:a', 'libmp3lame', '-b:a', '32k', $mono)) | Out-Null
+      $probe = Get-Stream $ffprobe $mono
+      if ($probe -notmatch 'sample_rate=22050' -or $probe -notmatch 'channels=1') { throw "MP3 mono 22 050 Hz inattendu :`n$probe" }
+      Invoke-Tool $ffmpeg ($common + @('-i', $mono, '-vn', '-ar', '44100', '-c:a', 'libmp3lame', '-b:a', '64k', $up)) | Out-Null
+      $probe = Get-Stream $ffprobe $up
+      if ($probe -notmatch 'codec_name=mp3' -or $probe -notmatch 'sample_rate=44100') { throw "MP3 44 100 Hz inattendu :`n$probe" }
+    } finally {
+      Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # --- BUILD.txt ------------------------------------------------------------------------
+    $commit = 'inconnu'
+    try {
+      $rev = & git -C $RepoRoot rev-parse HEAD 2>$null
+      if ($LASTEXITCODE -eq 0 -and $rev) { $commit = $rev.Trim() }
+    } catch { }
+    $configureArgs = (Get-Content -LiteralPath (Join-Path $ArtifactDir 'configure-args.txt')) -join "`n"
+    $buildTxt = @"
+FFmpeg $($pins['FFMPEG_VERSION']) minimal, audio seulement (Windows x64, statique, LGPL-2.1-or-later)
+avec LAME $($pins['LAME_VERSION']) (libmp3lame, LGPL-2.1)
 
 Ce dossier est livré avec Flam Launcher. FFmpeg est lancé comme programme externe : il n'est
 lié ni au launcher ni à flam-player. Ce build n'utilise ni --enable-gpl ni --enable-nonfree.
-Texte de licence : LICENSE (dans ce dossier). Ses bibliothèques (DLL) sont fournies à côté des
-exécutables : elles peuvent être remplacées par des versions modifiées compatibles.
+Textes de licence : LICENSE (FFmpeg) et LICENSE-LAME (LAME), dans ce dossier. Le runtime
+MinGW-w64 (libgcc, winpthreads, runtime C : licences permissives ou exception de runtime GCC)
+est lié statiquement dans les exécutables.
 
-Origine du binaire
-  release : $ReleaseUrl
-  archive : $ZipUrl
-  sha256  : $ZipSha256
-
-Sources correspondantes (offre de sources)
-  FFmpeg  : $SourceUrl
-            (tag $SourceBaseTagUrl, puis 9 commits de la branche release/8.1)
-  build   : $BuildRepoUrl
-            (scripts qui téléchargent, configurent et compilent FFmpeg et chaque bibliothèque
-            tierce, aux versions exactes de ce build)
-  Les sources complètes correspondant à ce binaire peuvent aussi être demandées aux mainteneurs
-  de Flam Launcher (https://github.com/scarlaty/flam-player/issues) ; elles sont fournies sur demande.
-
-Encodage MP3 : LAME (libmp3lame, LGPL), compilé dans avcodec.
+Sources exactes (offre de sources LGPL)
+  FFmpeg $($pins['FFMPEG_VERSION']) : $($pins['FFMPEG_URL'])
+    sha256 $($pins['FFMPEG_SHA256'])  (tag : $($pins['FFMPEG_SOURCE_PAGE']))
+  LAME $($pins['LAME_VERSION']) : $($pins['LAME_URL'])
+    sha256 $($pins['LAME_SHA256'])  ($($pins['LAME_SOURCE_PAGE']))
+  Script de construction (cross-compilation MinGW-w64) : tools/ffmpeg/build.sh et
+    tools/ffmpeg/pins.env dans https://github.com/scarlaty/flam-player, commit $commit.
+  Les exécutables étant statiques, la liaison avec une version modifiée de FFmpeg ou de LAME se
+  refait en modifiant ces sources puis en relançant tools/ffmpeg/build.sh. Les mainteneurs de
+  Flam Launcher fournissent aussi ces sources sur demande (https://github.com/scarlaty/flam-player/issues).
 
 Configuration (ffmpeg -buildconf)
 $buildconf
+
+Arguments de configure (tools/ffmpeg/build.sh)
+$configureArgs
 "@
-[IO.File]::WriteAllText((Join-Path $OutDir 'BUILD.txt'), $buildTxt.Replace("`r`n", "`n"), (New-Object Text.UTF8Encoding $false))
+    [IO.File]::WriteAllText((Join-Path $OutDir 'BUILD.txt'), $buildTxt.Replace("`r`n", "`n"), (New-Object Text.UTF8Encoding $false))
+  } catch {
+    # Un dossier non validé ne doit jamais être embarqué ni retenu par la détection de développement.
+    Remove-Item -LiteralPath $OutDir -Recurse -Force -ErrorAction SilentlyContinue
+    throw
+  }
+} finally {
+  if ($builtHere -and (Test-Path -LiteralPath $builtHere)) { Remove-Item -LiteralPath $builtHere -Recurse -Force -ErrorAction SilentlyContinue }
+}
 
 $bytes = (Get-ChildItem -LiteralPath $OutDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
 Write-Host ("ffmpeg prêt : {0} ({1:N1} Mo)" -f $OutDir, ($bytes / 1MB))
