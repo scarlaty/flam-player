@@ -123,7 +123,7 @@ export const fr = {
       title: "Lecture",
       minimize: "Réduire la fenêtre pendant la lecture",
       minimizeHint:
-        "La fenêtre du launcher est réduite au lancement de flam-player, puis rétablie à la fin.",
+        "Quand flam-player s'ouvre dans une fenêtre séparée, la fenêtre du launcher est réduite à son lancement, puis rétablie à la fin.",
     },
     themeFailed: "Le thème n'a pas pu être enregistré.",
     about: {
@@ -375,6 +375,16 @@ export const fr = {
   },
   toast: {
     region: "Notifications",
+  },
+  playerScreen: {
+    label: "Lecture",
+    zone: (title: string) => `Lecteur : ${title}`,
+    hint: "Cliquez dans le lecteur ou utilisez « Clavier au lecteur ». Flèches, Entrée, Échap.",
+    focus: "Clavier au lecteur",
+    stop: "Arrêter",
+    stopping: "Arrêt en cours…",
+    stopFailed: "flam-player n'a pas pu être arrêté.",
+    stopTimeout: "flam-player ne répond pas. Réessayez « Arrêter ».",
   },
   theme: {
     label: "Thème",
