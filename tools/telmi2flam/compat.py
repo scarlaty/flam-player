@@ -497,7 +497,9 @@ def interpret_run(res, benign=BENIGN_ERRORS):
     full = isinstance(visited, int) and isinstance(total, int) and total and visited >= total
     progressed = isinstance(visited, int) and visited >= MIN_SCENES_PARTIAL
     if status in RUN_FAIL or (status == "stuck" and done not in LOOP_REASONS):
-        why = describe_exit_code(res.get("exit_code")) if status in RUN_FAIL else None
+        # code de sortie traduit pour un crash seulement : un lua_error ordinaire n'a pas
+        # de code de sortie anormal a expliquer (#178)
+        why = describe_exit_code(res.get("exit_code")) if status == "crash" else None
         return "fail", (["explore: %s%s" % (status, "/" + done if done else "")]
                         + (["flam-player : " + why] if why else []) + msgs + real)
     if status in ("loop", "stuck"):        # boucle : l'histoire tourne, rien de nouveau
@@ -790,13 +792,25 @@ def process_story(entry, cache, opener=None, sleep=time.sleep, max_unzipped=MAX_
     return rec
 
 
-def failed_record(entry, exc):
-    """Fiche d'echec pour une histoire dont le traitement a leve une exception imprevue."""
+def _archive_path(entry, cache):
+    return os.path.join(cache, "archives", story_key(entry["uuid"], entry["version"]) + ".zip")
+
+
+def failed_record(entry, exc, cache=None):
+    """Fiche d'echec pour une histoire dont le traitement a leve une exception imprevue.
+    L'etape download reflete ce qui a eu lieu : archive locale, ou archive deja telechargee
+    dans `cache` (le fichier final n'existe qu'une fois le telechargement termine)."""
+    if entry.get("path"):
+        dl = _step("skipped", ["archive locale"])
+    elif cache and os.path.isfile(_archive_path(entry, cache)):
+        dl = _step("ok", ["archive telechargee avant l'interruption du traitement"])
+    else:
+        dl = _step("skipped", ["traitement interrompu"])
     rec = {k: entry.get(k) for k in ("source", "uuid", "version", "title", "license", "category")}
     rec["key"] = story_key(entry["uuid"], entry["version"])
     rec["fingerprint"] = entry.get("fingerprint")
     rec["steps"] = {
-        "download": _step("skipped", ["traitement interrompu"]),
+        "download": dl,
         "convert": _step("fail", ["traitement interrompu : %s: %s" % (type(exc).__name__, exc)]),
         "validate": _step("skipped", ["conversion en échec"]),
         "run": _step("skipped", ["conversion en échec"])}
@@ -832,6 +846,62 @@ def _write_atomic(path, text):
     os.replace(tmp, path)
 
 
+PROVISIONAL_REPORT = "report.provisional.json"
+PROVISIONAL_STATUS = "status.provisional.json"
+
+
+def _queued_record(entry, chash):
+    """Fiche provisoire d'une histoire pas encore terminee (file d'attente, telechargement,
+    conversion) : echec de conversion `transient`, jamais reprise comme resultat valide."""
+    rec = failed_record(entry, RuntimeError("processus de compat interrompu avant la fin "
+                                            "de la conversion (tué de l'extérieur ?)"))
+    rec["steps"]["download"] = _step("skipped", ["traitement non terminé"])
+    rec["provisional"] = True
+    rec["converter_hash"] = chash
+    rec["evaluated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    return rec
+
+
+def _write_provisional(compat_dir, provisional, chash):
+    """Ecrit (ou supprime, s'il n'y en a plus) report.provisional.json et
+    status.provisional.json : les fiches des histoires en cours, a part de report.json /
+    status.json pour ne jamais masquer une ancienne bonne fiche."""
+    rp = os.path.join(compat_dir, PROVISIONAL_REPORT)
+    sp = os.path.join(compat_dir, PROVISIONAL_STATUS)
+    if not provisional:
+        for p in (rp, sp):
+            try:
+                os.remove(p)
+            except OSError:         # absent, ou tenu par un antivirus : sans gravite
+                pass
+        return
+    doc = {"generated": time.strftime("%Y-%m-%dT%H:%M:%S"), "converter_hash": chash,
+           "stories": list(provisional.values())}
+    _write_atomic(rp, json.dumps(doc, ensure_ascii=False, indent=2))
+    _write_atomic(sp, json.dumps(build_status(doc), ensure_ascii=False, indent=2))
+
+
+def _reconcile_provisional(compat_dir, prev_list, log):
+    """Reprise apres un arret brutal : les fiches provisoires laissees par la campagne
+    precedente rejoignent `prev_list` seulement pour une histoire qui n'avait AUCUNE fiche
+    (une ancienne fiche valide n'est jamais remplacee). Les fichiers provisoires ne sont
+    supprimes que par la premiere ecriture de report.json (qui les a absorbees)."""
+    rp = os.path.join(compat_dir, PROVISIONAL_REPORT)
+    try:
+        with open(rp, encoding="utf-8") as f:
+            stories = json.load(f).get("stories", [])
+    except (OSError, ValueError, AttributeError):
+        stories = []
+    have = {s["key"] for s in prev_list}
+    merged = list(prev_list)
+    for s in stories:
+        if isinstance(s, dict) and s.get("key") and s["key"] not in have:
+            merged.append(s)
+            have.add(s["key"])
+            log("~ %s : fiche provisoire d'une campagne interrompue conservée" % s["key"])
+    return merged
+
+
 def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None,
                  player_exe=None, run_timeout=DEFAULT_RUN_TIMEOUT, seed=0,
                  max_steps=DEFAULT_MAX_STEPS, log=print, seeds=1, benign=BENIGN_ERRORS,
@@ -849,6 +919,7 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
     report_path = os.path.join(compat_dir, "report.json")
     chash = converter_hash()
     prev_hash, prev_list = _load_previous(report_path)
+    prev_list = _reconcile_provisional(compat_dir, prev_list, log)
     prev = {s["key"]: s for s in prev_list}
     keys = [story_key(e["uuid"], e["version"]) for e in entries]
     selected = set(keys)
@@ -865,11 +936,15 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         return {"generated": time.strftime("%Y-%m-%dT%H:%M:%S"), "converter_hash": chash,
                 "stories": stories}
 
+    provisional = {}                             # fiches provisoires des histoires en cours
+
     def write(results, md=False):
         doc = build_doc(results)
         _write_atomic(report_path, json.dumps(doc, ensure_ascii=False, indent=2))
         _write_atomic(os.path.join(compat_dir, STATUS_FILE),
                       json.dumps(build_status(doc), ensure_ascii=False, indent=2))
+        # provisoire APRES report.json : un arret entre les deux ne perd aucune fiche
+        _write_provisional(compat_dir, provisional, chash)
         if md:
             _write_atomic(os.path.join(compat_dir, "report.md"), render_markdown(doc))
         return doc
@@ -914,6 +989,7 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         rec["converter_hash"] = chash
         rec["evaluated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         with lock:
+            provisional.pop(rec["key"], None)
             results[rec["key"]] = rec
             write(results)
             log("%s %s : %s" % ("+" if rec["status"].startswith("OK") else "!", rec["key"],
@@ -931,7 +1007,7 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         if explore is not None:
             try:
                 with lock:
-                    results[rec["key"]] = prov
+                    provisional[rec["key"]] = prov
                     write(results)
             except OSError as e:
                 log("! fiche provisoire non écrite pour %s : %s" % (rec["key"], e))
@@ -945,6 +1021,17 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         rec["steps"]["run"] = run
         rec["status"] = global_status(rec["steps"])
         finalize(rec)
+
+    # Fiche provisoire des histoires a traiter (conversion, file d'attente) : un processus
+    # tue avant l'exploration laisse une trace, sans toucher aux fiches de report.json.
+    for e in todo:
+        provisional[story_key(e["uuid"], e["version"])] = _queued_record(e, chash)
+    if todo:
+        try:
+            with lock:
+                write(results)
+        except OSError as e:
+            log("! fiches provisoires non écrites : %s" % e)
 
     futures = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, run_jobs)) as pool:
@@ -964,14 +1051,14 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
                     try:
                         rec = fut.result()
                     except Exception as exc:    # processus de conversion mort, etc.
-                        rec = failed_record(e, exc)
+                        rec = failed_record(e, exc, cache)
                     finish(rec)
         else:
             for e in todo:
                 try:
                     rec = process_story(e, cache, max_unzipped=max_unzipped)
                 except Exception as exc:        # filet : jamais d'histoire sans fiche
-                    rec = failed_record(e, exc)
+                    rec = failed_record(e, exc, cache)
                 finish(rec)
         for f in futures:
             f.result()
