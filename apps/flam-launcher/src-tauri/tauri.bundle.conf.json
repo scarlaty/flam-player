@@ -4,6 +4,7 @@
     "targets": ["nsis"],
     "resources": {
       "../build/telmi2flam/": "telmi2flam/",
+      "../build/ffmpeg/": "ffmpeg/",
       "../build/player/flam-player.exe": "flam-player.exe",
       "../build/player/SDL2.dll": "SDL2.dll",
       "../build/player/vcruntime140.dll": "vcruntime140.dll",
