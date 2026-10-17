@@ -89,7 +89,7 @@ fn is_transient(err: &io::Error) -> bool {
 /// Exécute `op` ; sur une erreur transitoire, réessaie après chacune des attentes de
 /// `RETRY_DELAYS_MS` (via `sleep`, injectable pour les tests). Toute autre erreur est rendue
 /// immédiatement ; un verrou persistant donne une erreur claire de même nature.
-fn retry_transient<T>(
+pub(crate) fn retry_transient<T>(
     mut op: impl FnMut() -> io::Result<T>,
     mut sleep: impl FnMut(Duration),
 ) -> io::Result<T> {
