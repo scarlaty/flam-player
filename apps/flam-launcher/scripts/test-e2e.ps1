@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Utilise FLAM_E2E_INSTALL_DIR s'il est défini (par exemple le dossier d'une installation),
-  sinon src-tauri/target/release, où `tauri build --config src-tauri/tauri.bundle.conf.json`
+  sinon target/release à la racine du dépôt (workspace Cargo), où `tauri build --config src-tauri/tauri.bundle.conf.json`
   dépose flam-player.exe et telmi2flam/ à côté de l'exécutable. Préalable :
   `npm run build:converter`, `npm run build:player`, puis ce build Tauri (voir le README).
   Le test échoue (au lieu de se sauter) si un prérequis manque.
@@ -17,7 +17,7 @@ $ErrorActionPreference = 'Stop'
 
 $LauncherDir = Split-Path -Parent $PSScriptRoot
 if (-not $env:FLAM_E2E_INSTALL_DIR) {
-  $env:FLAM_E2E_INSTALL_DIR = Join-Path $LauncherDir 'src-tauri\target\release'
+  $env:FLAM_E2E_INSTALL_DIR = Join-Path (Split-Path -Parent (Split-Path -Parent $LauncherDir)) 'target\release'
 }
 $env:FLAM_E2E_REQUIRE = '1'
 Write-Host "application testée : $env:FLAM_E2E_INSTALL_DIR"

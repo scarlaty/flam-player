@@ -6,12 +6,14 @@ on:
       - "tools/telmi2flam/**"
       - "tests/e2e/**"
       - ".github/workflows/telmi2flam.yml"
+      - ".gitattributes"
   push:
     branches: [main]
     paths:
       - "tools/telmi2flam/**"
       - "tests/e2e/**"
       - ".github/workflows/telmi2flam.yml"
+      - ".gitattributes"
 
 permissions:
   contents: read
