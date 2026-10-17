@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 64 64">
-  <!-- Icône originale de flam-launcher (MIT) : pictogramme d'un petit lecteur d'histoires
+  <!-- Icône originale de flam-launcher (GPL v3) : pictogramme d'un petit lecteur d'histoires
        (boîtier vert d'eau, écran sombre avec une flamme, molette jaune, touches orange).
        Couleurs = jetons brand-* de src/theme/tokens.css.
        Régénérer les PNG/ICO avec : npm run tauri icon src-tauri/icons/app-icon.svg -->
