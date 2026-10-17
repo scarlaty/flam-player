@@ -30,6 +30,7 @@
 //!
 //! `list` n'est jamais supprimé ni tronqué avant l'étape 3, où le remplaçant est complet.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -257,33 +258,36 @@ enum Step {
     CacheRemoved,
 }
 
-/// Lit les octets d'un fichier, `None` s'il est absent. Au-delà de [`MAX_INDEX_BYTES`] :
-/// erreur `InvalidData`.
+/// Lit les octets d'un fichier, `None` s'il est absent, en réessayant si le fichier est
+/// brièvement verrouillé. Lit au plus `MAX_INDEX_BYTES + 1` octets : un fichier plus gros est
+/// jugé illisible par [`parse`].
 fn read_raw(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err),
+    let read = || -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        fs::File::open(path)?
+            .take(MAX_INDEX_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
     };
-    let mut bytes = Vec::new();
-    file.take(MAX_INDEX_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_INDEX_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("plus de {MAX_INDEX_BYTES} octets"),
-        ));
+    match retry_transient(read, std::thread::sleep) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
     }
-    Ok(Some(bytes))
 }
 
 /// Analyse tolérante du contenu d'un index.
 pub fn parse(bytes: &[u8]) -> IndexRead {
+    if bytes.len() as u64 > MAX_INDEX_BYTES {
+        return IndexRead::unreadable(format!("plus de {MAX_INDEX_BYTES} octets"));
+    }
     if bytes.contains(&0) {
         return IndexRead::unreadable("octet nul dans le fichier".into());
     }
     let text = String::from_utf8_lossy(bytes);
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let mut entries: Vec<StoryId> = Vec::new();
+    let mut seen = HashSet::new();
     let mut issues = Vec::new();
     let mut non_blank = false;
     for (i, raw) in text.split('\n').enumerate() {
@@ -293,10 +297,13 @@ pub fn parse(bytes: &[u8]) -> IndexRead {
         }
         non_blank = true;
         match StoryId::parse(line) {
-            Some(id) if entries.contains(&id) => {
+            Some(id) if seen.contains(&id) => {
                 issues.push(LineIssue::Duplicate { line: i + 1, id });
             }
-            Some(id) => entries.push(id),
+            Some(id) => {
+                seen.insert(id.clone());
+                entries.push(id);
+            }
             None => issues.push(LineIssue::Invalid {
                 line: i + 1,
                 text: line.chars().take(ISSUE_TEXT_MAX).collect(),
@@ -318,11 +325,12 @@ pub fn parse(bytes: &[u8]) -> IndexRead {
     }
 }
 
-/// Lit un fichier d'index : `(octets bruts, analyse)`. Ne rend jamais d'erreur : une erreur de
-/// lecture donne [`IndexState::Unreadable`].
-fn load(path: &Path) -> (Option<Vec<u8>>, IndexRead) {
-    match read_raw(path) {
-        Ok(None) => (
+/// Lit un fichier d'index : `(octets bruts, analyse)`. Une erreur d'entrée/sortie (fichier
+/// verrouillé, clé défaillante) est rendue telle quelle : elle ne dit rien du contenu et ne
+/// doit jamais faire remplacer le fichier.
+fn load(path: &Path) -> Result<(Option<Vec<u8>>, IndexRead), IndexError> {
+    Ok(match read_raw(path).map_err(io_err(path))? {
+        None => (
             None,
             IndexRead {
                 state: IndexState::Absent,
@@ -330,27 +338,28 @@ fn load(path: &Path) -> (Option<Vec<u8>>, IndexRead) {
                 issues: Vec::new(),
             },
         ),
-        Ok(Some(bytes)) => {
+        Some(bytes) => {
             let read = parse(&bytes);
             (Some(bytes), read)
         }
-        Err(err) => (None, IndexRead::unreadable(err.to_string())),
-    }
+    })
 }
 
-/// Lecture tolérante d'un index de l'appareil. Ne lance pas de reprise : appeler [`recover`]
-/// d'abord pour voir l'état après une écriture interrompue.
+/// Lecture tolérante d'un index de l'appareil. Une erreur de lecture donne
+/// [`IndexState::Unreadable`]. Ne lance pas de reprise : appeler [`recover`] d'abord pour voir
+/// l'état après une écriture interrompue.
 pub fn read_index(root: &Path, kind: IndexKind) -> IndexRead {
-    load(&Paths::new(root, kind).list).1
+    load(&Paths::new(root, kind).list)
+        .map(|(_, read)| read)
+        .unwrap_or_else(|err| IndexRead::unreadable(err.to_string()))
 }
 
 /// Contenu normalisé : UUID distincts, dans l'ordre, chacun suivi de `\n`.
 pub fn serialize(entries: &[StoryId]) -> Vec<u8> {
-    let mut seen: Vec<&StoryId> = Vec::with_capacity(entries.len());
+    let mut seen = HashSet::with_capacity(entries.len());
     let mut out = Vec::with_capacity(entries.len() * 37);
     for id in entries {
-        if !seen.contains(&id) {
-            seen.push(id);
+        if seen.insert(id) {
             out.extend_from_slice(id.as_str().as_bytes());
             out.push(b'\n');
         }
@@ -418,10 +427,14 @@ fn remove_cache(path: &Path) -> Result<(), IndexError> {
     remove_if_exists(path).map_err(IndexError::CacheNotRemoved)
 }
 
-/// Renomme `from` en `to` en remplaçant `to`. Sous Windows, `MoveFileExW` avec écriture
-/// directe : l'opération est sur le disque au retour de l'appel.
+/// Renomme `from` en `to` en remplaçant `to`, puis synchronise `to` (FlushFileBuffers : son
+/// entrée de répertoire est écrite). `MOVEFILE_WRITE_THROUGH` ne garantit rien de plus pour
+/// un renommage sur le même volume. Une coupure avant la synchronisation peut perdre le
+/// renommage : la reprise reconnaît chaque état laissé (voir [`recover`]).
 fn replace_file(from: &Path, to: &Path) -> Result<(), IndexError> {
-    retry_transient(|| replace_once(from, to), std::thread::sleep).map_err(io_err(to))
+    retry_transient(|| replace_once(from, to), std::thread::sleep).map_err(io_err(to))?;
+    let sync = || fs::OpenOptions::new().write(true).open(to)?.sync_all();
+    retry_transient(sync, std::thread::sleep).map_err(io_err(to))
 }
 
 #[cfg(windows)]
@@ -460,13 +473,17 @@ fn replace_once(from: &Path, to: &Path) -> io::Result<()> {
 /// | non   | non   | quelconque             | `Clean`                                     |
 /// | oui   | non   | quelconque             | `new` supprimé : `RolledBack`               |
 /// | oui   | oui   | exploitable, = `new`   | `new`, cache, `bak` supprimés : `RolledForward` |
-/// | oui   | oui   | exploitable, ≠ `new`   | `bak` puis `new` supprimés : `RolledBack`   |
-/// | oui   | oui   | absent ou illisible    | `new` promu si valide, sinon `bak` restauré |
-/// | non   | oui   | exploitable            | cache puis `bak` supprimés : `RolledForward` |
-/// | non   | oui   | absent ou illisible    | `bak` restauré : `RestoredFromBackup`        |
+/// | oui   | oui   | exploitable, commence par `bak` | `bak` puis `new` supprimés : `RolledBack` |
+/// | oui   | oui   | autre (absent, illisible, vide…) | `new` promu si valide, sinon `bak` restauré |
+/// | non   | oui   | valide                 | cache puis `bak` supprimés : `RolledForward` |
+/// | non   | oui   | absent, abîmé, illisible | `bak` restauré : `RestoredFromBackup`      |
 ///
-/// Sans candidat exploitable : `NeedsUser`, rien n'est touché. Un `list.restore` résiduel
-/// (restauration interrompue) n'est jamais une source : il est supprimé d'abord.
+/// « Commence par `bak` » : `list` est l'index d'origine et `bak` en est une copie, peut-être
+/// partielle (coupure pendant l'étape 2). Sans `new`, un `list` abîmé n'est pas celui que nous
+/// avons écrit (toujours valide) : `bak` est restauré. Sans candidat exploitable : `NeedsUser`,
+/// rien n'est touché. Une erreur d'entrée/sortie à la lecture interrompt la reprise sans rien
+/// toucher. Un `list.restore` résiduel (restauration interrompue) n'est jamais une source : il
+/// est supprimé d'abord.
 pub fn recover(root: &Path, kind: IndexKind) -> Result<Recovery, IndexError> {
     let p = Paths::new(root, kind);
     let new_present = exists(&p.new)?;
@@ -482,9 +499,10 @@ pub fn recover(root: &Path, kind: IndexKind) -> Result<Recovery, IndexError> {
         remove(&p.new)?;
         return Ok(Recovery::RolledBack);
     }
-    let (list_raw, list_read) = load(&p.list);
+    let (list_raw, list_read) = load(&p.list)?;
     if new_present {
-        let (new_raw, new_read) = load(&p.new);
+        let (new_raw, new_read) = load(&p.new)?;
+        let (bak_raw, _) = load(&p.bak)?;
         if list_read.usable() {
             if list_raw.is_some() && list_raw == new_raw {
                 // Remplacement fait, mais l'entrée `new` est restée.
@@ -493,10 +511,13 @@ pub fn recover(root: &Path, kind: IndexKind) -> Result<Recovery, IndexError> {
                 remove(&p.bak)?;
                 return Ok(Recovery::RolledForward);
             }
-            // Remplacement jamais fait : `list` est l'index d'origine, intact.
-            remove(&p.bak)?;
-            remove(&p.new)?;
-            return Ok(Recovery::RolledBack);
+            let list = list_raw.as_deref().unwrap_or_default();
+            if bak_raw.as_deref().is_some_and(|bak| list.starts_with(bak)) {
+                // Remplacement jamais fait : `list` est l'index d'origine, intact.
+                remove(&p.bak)?;
+                remove(&p.new)?;
+                return Ok(Recovery::RolledBack);
+            }
         }
         if new_read.state == IndexState::Valid {
             // `bak` présent : l'étape 1 était terminée, `new` est complet (un fichier vide
@@ -508,7 +529,7 @@ pub fn recover(root: &Path, kind: IndexKind) -> Result<Recovery, IndexError> {
         }
         return restore_from_backup(&p, true);
     }
-    if list_read.usable() {
+    if list_read.state == IndexState::Valid {
         // Étapes 3 et 4 faites : finir la transaction.
         remove_cache(&p.cache)?;
         remove(&p.bak)?;
@@ -519,7 +540,7 @@ pub fn recover(root: &Path, kind: IndexKind) -> Result<Recovery, IndexError> {
 
 /// Restaure `list` depuis `bak` via `list.restore`, puis termine la transaction.
 fn restore_from_backup(p: &Paths, new_present: bool) -> Result<Recovery, IndexError> {
-    let (bak_raw, bak_read) = load(&p.bak);
+    let (bak_raw, bak_read) = load(&p.bak)?;
     // Un `bak` vide (index absent ou vide avant l'écriture) est valide.
     let Some(bak_raw) = bak_raw.filter(|_| bak_read.usable()) else {
         return Ok(Recovery::NeedsUser);
@@ -542,6 +563,9 @@ fn exists(path: &Path) -> Result<bool, IndexError> {
 /// écriture interrompue. Sans [`Consent::Overwrite`], refuse de réécrire un index absent
 /// (sauf `list.hidden`), abîmé ou illisible. En cas d'échec, une reprise est tentée aussitôt :
 /// l'index reste l'ancien ou devient le nouveau, jamais vide ni tronqué.
+///
+/// Les appelants sérialisent leurs appels à `write_index` et [`recover`] pour un même
+/// appareil : il n'y a de verrou ni entre processus ni entre fils d'exécution.
 pub fn write_index(
     root: &Path,
     kind: IndexKind,
@@ -588,7 +612,7 @@ fn write_with(
         }
     }
 
-    let (list_raw, list_read) = load(&p.list);
+    let (list_raw, list_read) = load(&p.list)?;
     let allowed = match list_read.state {
         IndexState::Valid => true,
         IndexState::Absent => kind == IndexKind::Hidden,
@@ -614,8 +638,14 @@ fn write_with(
     // 3. Remplacement.
     replace_file(&p.new, &p.list)?;
     hook(Step::Replaced).map_err(cut)?;
-    // 4. Vérification.
-    verify(&p.list, &bytes)?;
+    // 4. Vérification. Contenu relu différent : l'ancien index est restauré depuis `bak`
+    // (vérifié à l'étape 2) ; la reprise générique garderait un `list` valide mais faux.
+    if let Err(err) = verify(&p.list, &bytes) {
+        if matches!(err, IndexError::Verify(_)) {
+            restore_from_backup(&p, false)?;
+        }
+        return Err(err);
+    }
     hook(Step::Verified).map_err(cut)?;
     // 5. Cache du firmware, seulement après une écriture réussie.
     remove_cache(&p.cache)?;

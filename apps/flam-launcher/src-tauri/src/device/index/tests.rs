@@ -593,6 +593,80 @@ fn reprise_sans_candidat_ne_touche_a_rien() {
     dev.assert_no_work_files("list");
 }
 
+#[test]
+fn reprise_erreur_de_lecture_ne_touche_a_rien() {
+    // `list` illisible par erreur d'entrée/sortie (un dossier) : ce n'est pas un contenu
+    // abîmé, la sauvegarde ne doit pas l'écraser.
+    let dev = state(&[("list.bak", &lines(&[A]))]);
+    fs::create_dir(dev.path("list")).unwrap();
+    let err = recover(dev.root(), IndexKind::Visible).unwrap_err();
+    assert!(matches!(err, IndexError::Io { .. }), "{err}");
+    assert!(dev.path("list").is_dir());
+    assert_eq!(dev.get("list.bak").unwrap(), lines(&[A]), "bak intact");
+    assert!(dev.cache_present());
+}
+
+#[test]
+fn reprise_list_abime_sans_new_restaure_depuis_bak() {
+    // Sans `new`, un `list` abîmé (tronqué au milieu d'une ligne) n'est pas celui que nous
+    // avons écrit : la sauvegarde est restaurée.
+    let written = lines(&[A, B, C]);
+    let dev = state(&[
+        ("list", &written[..written.len() - 5]),
+        ("list.bak", &lines(&[A, B])),
+    ]);
+    assert_eq!(
+        recover(dev.root(), IndexKind::Visible).unwrap(),
+        Recovery::RestoredFromBackup
+    );
+    assert_eq!(dev.get("list").unwrap(), lines(&[A, B]));
+    dev.assert_no_work_files("list");
+}
+
+#[test]
+fn reprise_list_vide_avec_new_et_bak_promeut_new() {
+    // Un `list` de 0 octet ne peut pas coexister avec `new` et un `bak` non vide : entrée
+    // FAT créée sans ses données. `new` est complet (marqueur présent) : il est promu.
+    let dev = state(&[
+        ("list", b""),
+        ("list.new", &lines(&[A, B, C])),
+        ("list.bak", &lines(&[A, B])),
+    ]);
+    assert_eq!(
+        recover(dev.root(), IndexKind::Visible).unwrap(),
+        Recovery::RolledForward
+    );
+    assert_eq!(dev.get("list").unwrap(), lines(&[A, B, C]));
+    dev.assert_no_work_files("list");
+}
+
+#[test]
+fn verification_echouee_restaure_l_ancien_index() {
+    let dev = Device::new(Some(&lines(&[A, B])));
+    let list = dev.path("list");
+    let err = write_with(
+        dev.root(),
+        IndexKind::Visible,
+        &ids(&[A, B, C]),
+        Consent::IfValid,
+        &mut |step| {
+            if step == Step::Replaced {
+                // Écriture relue tronquée pile à une fin de ligne : valide mais fausse.
+                fs::write(&list, lines(&[A])).unwrap();
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(err, IndexError::Verify(_)), "{err}");
+    assert_eq!(dev.get("list").unwrap(), lines(&[A, B]), "ancien index");
+    dev.assert_no_work_files("list");
+    assert_eq!(
+        recover(dev.root(), IndexKind::Visible).unwrap(),
+        Recovery::Clean
+    );
+}
+
 // ---------------------------------------------------------------- dossiers d'histoires
 
 #[test]
