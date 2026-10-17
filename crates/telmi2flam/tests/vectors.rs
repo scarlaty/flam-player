@@ -48,10 +48,13 @@ fn digest(out: &[u8]) -> String {
 fn lif_identique_a_python() {
     let d = dir("lif");
     let manifest = rows(&d.join("manifest.tsv"));
-    assert!(manifest.len() >= 8);
+    assert!(manifest.len() >= 10);
+    let mut transposed_seen = 0;
     for row in manifest {
-        let [name, w, h] = row.as_slice() else {
-            panic!("ligne invalide : {row:?}")
+        let (name, w, h, transposed) = match row.as_slice() {
+            [name, w, h] => (name, w, h, false),
+            [name, w, h, flag] if flag == "transposee" => (name, w, h, true),
+            _ => panic!("ligne invalide : {row:?}"),
         };
         let (w, h): (u32, u32) = (w.parse().unwrap(), h.parse().unwrap());
         let rgba = read(&d.join(format!("{name}.rgba")));
@@ -66,12 +69,20 @@ fn lif_identique_a_python() {
         );
 
         // Aller-retour : le décodeur restitue l'image quantifiée, sauf image vide (refusée)
-        // et images hautes que l'heuristique du décodeur C peut transposer.
-        let tall = w.max(h) > 64 && h > w;
-        if w > 0 && h > 0 && !tall {
+        // et image marquée `transposee` (voir ci-dessous).
+        if w > 0 && h > 0 {
             let img = lif::decode(&expected).unwrap();
             assert_eq!((img.width, img.height), (w, h), "decode {name}");
-            assert_eq!(img.rgba, quantized, "decode {name}");
+            if transposed {
+                // Heuristique du décodeur C : stockée en colonnes, l'image est transposée.
+                // Python `lif.decode` ne transpose pas : la référence est `.t.rgba`.
+                let want = read(&d.join(format!("{name}.t.rgba")));
+                assert_eq!(img.rgba, want, "decode transposé {name}");
+                assert_ne!(img.rgba, quantized, "la transposition doit changer {name}");
+                transposed_seen += 1;
+            } else {
+                assert_eq!(img.rgba, quantized, "decode {name}");
+            }
         }
 
         // Décodage de chaque préfixe et de chaque octet altéré : jamais de panique.
@@ -85,6 +96,10 @@ fn lif_identique_a_python() {
             damaged[i] ^= 0xA5;
         }
     }
+    assert_eq!(
+        transposed_seen, 1,
+        "un vecteur doit déclencher la transposition"
+    );
 }
 
 /// Compare `mp3map::build(data)` aux colonnes de résultat de Python.

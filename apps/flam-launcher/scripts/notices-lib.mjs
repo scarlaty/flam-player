@@ -83,3 +83,12 @@ export function optionalMissingIsExpected(entry, platform, arch) {
     (platformExcluded(entry.os, platform) || platformExcluded(entry.cpu, arch)),
   );
 }
+
+// Paquets Rust à lister dans les notices : les ids atteints par le graphe de dépendances,
+// sans la racine ni les membres du workspace (`workspace_members` de `cargo metadata`).
+// Les membres (`flam-launcher`, `telmi2flam`) sont le code du dépôt, pas des composants tiers :
+// ils n'ont ni fichier de licence ni URL de dépôt à reprendre.
+export function thirdPartyRustIds(reached, root, workspaceMembers) {
+  const members = new Set(workspaceMembers ?? []);
+  return new Set([...reached].filter((id) => id !== root && !members.has(id)));
+}
