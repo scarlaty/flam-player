@@ -129,6 +129,8 @@ pub fn run() {
             cache::cache_usage,
             cache::cache_clear,
             device::detect::device_detect,
+            device::transfer::device_send_story,
+            device::transfer::device_cancel_transfer,
             compat::compat_statuses,
             storage::config_ack_recovery,
             settings::settings_get,

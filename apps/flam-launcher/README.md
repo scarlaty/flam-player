@@ -314,7 +314,7 @@ apps/flam-launcher/
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; chiffrement et préparation #228, `device::crypto`, `device::prepare`).
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; transfert sûr #229, `device::transfer`, commandes `device_send_story` et `device_cancel_transfer`, événement `device://transfer-progress` ; verrou des opérations, `device::lock`).
 
 ### Commandes Tauri
 
