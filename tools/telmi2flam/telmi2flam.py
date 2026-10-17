@@ -254,7 +254,7 @@ def _encode(im):
 
 
 def _require_runtime(d, names, what):
-    """Le runtime Lunii (runtime/script, runtime/img/script) doit accompagner
+    """Le runtime du projet (runtime/script, runtime/img/script) doit accompagner
     le convertisseur : sinon le paquet genere ne peut pas demarrer."""
     if not os.path.isdir(d):
         raise ConvError("%s introuvables : dossier %s absent (le runtime doit "
@@ -1155,7 +1155,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
     prog.tick("scripts")
     prog.tick("scripts")
 
-    # --- bibliotheque standard Lunii (framework) : requise par le firmware reel ---
+    # --- runtime Lua du projet (modules Global, button...) : requis par le firmware reel ---
     # sans elle, main.lua echoue des setup() (module 'global' not found)
     nlib = 0
     _require_runtime(RUNTIME_DIR, RUNTIME_SCRIPTS, "scripts framework")
@@ -1169,7 +1169,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
                 prog.tick("scripts")
     stats["lib"] = nlib
 
-    # --- assets UI Lunii (fleches, play/pause, etc.) requis par les modules ---
+    # --- icones UI du runtime (fleches, play/pause, etc.) requis par les modules ---
     nui = 0
     if os.path.isdir(RUNTIME_IMG_DIR):
         for fn in sorted(os.listdir(RUNTIME_IMG_DIR)):
