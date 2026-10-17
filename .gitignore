@@ -26,6 +26,8 @@ games/*/_out/
 !games/*/img/*.png
 # Vecteurs de parite du decodage PNG (telmi2flam-rs), generes par gen_png_vectors.py
 !crates/telmi2flam/tests/vectors/png/*.png
+# ... et du redimensionnement (gen_resample_vectors.py)
+!crates/telmi2flam/tests/vectors/resample/*.png
 
 # Editor / OS
 .vscode/
