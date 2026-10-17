@@ -171,7 +171,8 @@ Invariants (repris de Python, à tester côté Rust) :
 | Noms dupliqués dans l'archive | indexation | rien | même entrée retenue que Python (`ZipFile.getinfo` : la **dernière**). `zip` 4.6.1 retient aussi la dernière (`IndexMap::insert`), mais ne liste le nom qu'une fois : `find_root` et l'index replié (`setdefault`, premier nom rencontré) doivent reproduire `namelist()`. Test dédié. |
 | Pas une histoire Telmi | `find_root` | rien | `not_telmi`, code 3 |
 | JSON invalide / types inattendus | `load_json`, `_expect` | rien | `invalid_content`, code 4 ; `notes.json` illisible : avertissement `notes_ignored` |
-| JSON limites : flottant hors plage (`1e400`), entier hors 64 bits (`i64::MIN..=u64::MAX` accepté : `Value::Int` ou `Value::UInt`), imbrication profonde, surrogate isolé | `load_json` | rien | **Divergences assumées** (listées dans `parity.py`). Python accepte `1e400` (→ `inf`) et les grands entiers ; il lève `RecursionError` au-delà de la pile (code 6) ; il accepte `"\ud800"` puis échoue à l'encodage UTF-8 (code 6). Rust : `invalid_content`, code 4, dans tous ces cas. Valeurs proches (`NaN`, `Infinity`, clés dupliquées) : comportement de Python reproduit. |
+| JSON limites : flottant hors plage (`1e400`), entier hors 64 bits (`i64::MIN..=u64::MAX` accepté : `Value::Int` ou `Value::UInt`), imbrication profonde, surrogate isolé | `load_json` | rien | **Divergences assumées** (listées dans `parity.py`). Python accepte `1e400` (→ `inf`) et les grands entiers ; il lève `RecursionError` au-delà de la pile (code 6) ; il accepte `"\ud800"` puis échoue à l'encodage UTF-8 (code 6). Rust : `invalid_content`, code 4, dans tous ces cas. Valeurs proches (`NaN`, `Infinity`, clés dupliquées) : comportement de Python reproduit. Profondeur : le Rust refuse au-delà de 512 niveaux, Python lève `RecursionError` vers 985 niveaux (limite de récursion 1000 moins la pile déjà utilisée) : un document de 513 à environ 985 niveaux est accepté par Python et refusé par le Rust (code 4). Écart voulu, pile bornée sans récursion profonde. |
+| `--info` : fin de ligne | sortie | rien | Le Rust écrit `\n` partout ; Python, en mode texte, écrit `\r\n` sous Windows. Écart assumé : `parity.py` et les tests comparent après `strip()`, et les consommateurs lisent ligne à ligne. Un tube fermé (EPIPE) n'est pas une erreur : l'échec d'écriture est ignoré (pas de panique). |
 | Asset manquant | graphe | rien | `missing_asset`, code 5 ; avec `--allow-missing` : `empty.lif` / `silent.mp3` et avertissement |
 | Image illisible (aussi pour Pillow), ou au-delà de `2 × MAX_IMAGE_PIXELS` | image | rien | avertissement `image_unreadable`, `empty.lif` (pas d'échec) |
 | MP3 sans trame valide | mp3map | rien | avertissement `mp3map_failed`, MP3 copié sans `.mp3map` |
@@ -221,17 +222,18 @@ La sortie LIF dépend du redimensionnement de **Pillow 12.3.0** (version épingl
 `build-converter.ps1`) :
 
 - `resize(…, LANCZOS)` sur du RGBA suit cet ordre : `convert("RGBa")` (prémultiplication par
-  **tables entières**, `MULDIV255`), éventuellement `reduce`, puis passage horizontal et passage
+  **tables entières**, `MULDIV255`), puis passage horizontal et passage
   vertical de `Resample.c` en **virgule fixe** (coefficients entiers 32 bits,
   `PRECISION_BITS = 32 - 8 - 2 = 22`, arrondi `1 << 21`, écrêtage à 0..255), puis
   `convert("RGBA")` (dé-prémultiplication entière) ;
 - `thumbnail()` calcule la taille cible avec ses propres règles d'arrondi (rapport conservé au
-  plus près) et utilise `reducing_gap=2.0` : une réduction entière par moyenne de boîte
-  (`Reduce.c`) précède le Lanczos ;
+  plus près). Son `reducing_gap=2.0` reste sans effet sur du RGBA : `resize` ne le transmet pas
+  à l'appel récursif sur l'image `RGBa`, donc `Reduce.c` n'intervient jamais (constaté au port,
+  #127) ;
 - `_open_rgba` a ses règles : 16 bits → 8 bits par `v/256`, clés `tRNS` en gris 1/2/4/16 bits
   et en RGB 16 bits, palettes.
 
-**Choix retenu : porter ces algorithmes de Pillow en Rust** (`Resample.c`, `Reduce.c`, calcul
+**Choix retenu : porter ces algorithmes de Pillow en Rust** (`Resample.c`, calcul
 de taille de `thumbnail`, conversions `RGBa`), avec les **mêmes constantes** et le même ordre
 d'opérations, en code scalaire uniquement. On vise la **parité octet à octet des `.lif`**.
 
