@@ -858,7 +858,7 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   « exécution non terminée »). Une histoire terminée sort des fichiers provisoires, qui sont
   supprimés en fin de campagne. Si `compat.py` est tué en cours de route (code -1), ils
   restent ; à la relance, ils sont réconciliés : une fiche provisoire rejoint `report.json`
-  seulement pour une histoire sans aucune fiche, puis les fichiers sont supprimés. Elles ne
+  seulement pour une histoire sans aucune fiche ; les fichiers sont supprimés dès que `report.json` les a absorbées. Elles ne
   sont jamais reprises comme résultat valide (l'histoire est refaite, même sans `--force`).
 - **Pas de player orphelin** (#178) : `explore.run_player` rattache le player à un Job Object
   Windows `KILL_ON_JOB_CLOSE` (ctypes) : si `compat.py` / `explore.py` est tué brutalement,

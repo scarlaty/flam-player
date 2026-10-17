@@ -157,27 +157,41 @@ def _close_job(job):
         ctypes.WinDLL("kernel32").CloseHandle(wintypes.HANDLE(job))
 
 
-def _pdeathsig():
-    """POSIX (Linux) : prctl(PR_SET_PDEATHSIG, SIGKILL) dans le fils, avant exec : le noyau
-    tue le player si le parent meurt. Sans effet ailleurs (macOS, BSD : documente)."""
+def _load_prctl():
+    """POSIX Linux : fonction prctl de libc, resolue cote parent (pas d'import ni de
+    chargement dans le fils forke, sur par rapport aux threads), ou None."""
+    if not sys.platform.startswith("linux"):
+        return None
     try:
         import ctypes
-        import signal
-        libc = ctypes.CDLL(None, use_errno=True)
-        libc.prctl(1, int(signal.SIGKILL), 0, 0, 0)     # PR_SET_PDEATHSIG = 1
+        return ctypes.CDLL(None, use_errno=True).prctl
     except (OSError, AttributeError, ImportError):
-        pass
+        return None
+
+
+_PRCTL = _load_prctl()
+
+
+def _pdeathsig():
+    """Dans le fils, avant exec : prctl(PR_SET_PDEATHSIG = 1, SIGKILL = 9) : le noyau tue
+    le player si le parent meurt. N'appelle que la fonction deja resolue."""
+    _PRCTL(1, 9, 0, 0, 0)
 
 
 def _spawn(cmd, **kw):
     """Popen + garde-fou contre l'orphelin : retourne (processus, garde). Windows : Job
     Object `KILL_ON_JOB_CLOSE` ; POSIX : nouveau groupe de processus (arret du groupe entier)
-    et, sous Linux, PR_SET_PDEATHSIG. Limite POSIX : hors Linux, un SIGKILL du parent laisse
-    le player vivant (aucun equivalent portable)."""
+    et, sous Linux, PR_SET_PDEATHSIG (lie au thread qui lance le player). Limite POSIX :
+    hors Linux, un SIGKILL du parent laisse le player vivant (aucun equivalent portable)."""
     if os.name == "nt":
         p = subprocess.Popen(cmd, **kw)
-        return p, _job_for(p)
-    pre = _pdeathsig if sys.platform.startswith("linux") else None
+        try:
+            return p, _job_for(p)           # `p._handle` : handle Windows du processus
+        except BaseException:
+            p.kill()
+            p.wait()
+            raise
+    pre = _pdeathsig if _PRCTL is not None else None
     return subprocess.Popen(cmd, start_new_session=True, preexec_fn=pre, **kw), None
 
 

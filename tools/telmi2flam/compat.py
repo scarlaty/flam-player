@@ -872,7 +872,7 @@ def _write_provisional(compat_dir, provisional, chash):
         for p in (rp, sp):
             try:
                 os.remove(p)
-            except FileNotFoundError:
+            except OSError:         # absent, ou tenu par un antivirus : sans gravite
                 pass
         return
     doc = {"generated": time.strftime("%Y-%m-%dT%H:%M:%S"), "converter_hash": chash,
@@ -884,7 +884,8 @@ def _write_provisional(compat_dir, provisional, chash):
 def _reconcile_provisional(compat_dir, prev_list, log):
     """Reprise apres un arret brutal : les fiches provisoires laissees par la campagne
     precedente rejoignent `prev_list` seulement pour une histoire qui n'avait AUCUNE fiche
-    (une ancienne fiche valide n'est jamais remplacee). Supprime les fichiers provisoires."""
+    (une ancienne fiche valide n'est jamais remplacee). Les fichiers provisoires ne sont
+    supprimes que par la premiere ecriture de report.json (qui les a absorbees)."""
     rp = os.path.join(compat_dir, PROVISIONAL_REPORT)
     try:
         with open(rp, encoding="utf-8") as f:
@@ -898,11 +899,6 @@ def _reconcile_provisional(compat_dir, prev_list, log):
             merged.append(s)
             have.add(s["key"])
             log("~ %s : fiche provisoire d'une campagne interrompue conservée" % s["key"])
-    for p in (rp, os.path.join(compat_dir, PROVISIONAL_STATUS)):
-        try:
-            os.remove(p)
-        except OSError:
-            pass
     return merged
 
 
@@ -944,10 +940,11 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
 
     def write(results, md=False):
         doc = build_doc(results)
-        _write_provisional(compat_dir, provisional, chash)
         _write_atomic(report_path, json.dumps(doc, ensure_ascii=False, indent=2))
         _write_atomic(os.path.join(compat_dir, STATUS_FILE),
                       json.dumps(build_status(doc), ensure_ascii=False, indent=2))
+        # provisoire APRES report.json : un arret entre les deux ne perd aucune fiche
+        _write_provisional(compat_dir, provisional, chash)
         if md:
             _write_atomic(os.path.join(compat_dir, "report.md"), render_markdown(doc))
         return doc
