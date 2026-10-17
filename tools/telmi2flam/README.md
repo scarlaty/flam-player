@@ -676,8 +676,14 @@ vérifier la fermeture ; une scène visitée dont la scène suivante, sans condi
 été atteinte — chemin coupé par un test de retour — fait redémarrer l'histoire),
 **boucle épuisée** (`exhausted` : cycle confirmé, plus d'option à essayer, ni transition
 `ok`, ni `home` vers une scène jamais atteinte, ni entrée conditionnelle d'une scène
-visitée vers une scène jamais atteinte, ni option jamais essayée dans l'état d'inventaire
-courant depuis 10 actions — cas des histoires cycliques sans fin), `--max-steps` actions,
+visitée (`ok` ou `home`, y compris les entrées conditionnelles de `home`) vers une scène
+jamais atteinte, ni option jamais essayée dans l'état d'inventaire courant depuis 10
+actions ; sans fin jouée, les entrées conditionnelles de `home` et les `indexItem` ne
+comptent pas — cas des histoires cycliques sans fin), **conditions non satisfaites**
+(`conditions` : après une fin, des scènes restent atteignables seulement derrière une
+condition ou un `indexItem` ; l'histoire est redémarrée — le choix préfère les options
+jamais essayées dans l'état d'inventaire courant — et, après 3 redémarrages sans aucune
+scène ni option nouvelle, l'exploration s'arrête sur `conditions` au lieu de `complete`), `--max-steps` actions,
 aucune scène / option / fin nouvelle pendant 40 + (scènes vues) actions (`loop` si
 l'histoire avançait encore — au moins 2 nœuds distincts entrés depuis le dernier progrès —,
 sinon `unresponsive` : écran qui ne répond plus ; les touches ←/→ de navigation dans un
@@ -690,7 +696,7 @@ aucune trace, ou `--timeout`.
 | clé | sens |
 |---|---|
 | `status` | `ok` ; `lua_error` (erreur sur stderr : `Erreur Lua`, `callback error`, assert, traceback… ; ou `attempt to` / `stack traceback` sur stdout) ; `crash` (player sorti seul **sans** erreur Lua identifiée avant) ; `timeout` ; `loop` ; `stuck` |
-| `done_reason` | cause de l'arrêt, toujours présente : `complete` (toutes les options rencontrées essayées et toutes les transitions `ok` connues suivies, après une fin), `exhausted` (boucle sans erreur où plus rien n'est à essayer, voir ci-dessus), `max_steps`, `library` (l'histoire est revenue à la bibliothèque, anciens moteurs) → `ok` ; `loop` (plus rien de nouveau, l'histoire tourne encore, sans erreur) → `loop` ; `unresponsive` (écran qui ne répond plus), `no_trace` (`--stuck` s sans trace), `no_start` (pilote jamais lancé) → `stuck` (avant #42, `stuck` confondait boucle et écran figé) ; `timeout` ; `error` (arrêt sur erreur) ; `exit` (player sorti seul : `lua_error` si une erreur Lua a été vue avant, avec `exit_code`, sinon `crash`) |
+| `done_reason` | cause de l'arrêt, toujours présente : `complete` (toutes les options rencontrées essayées et toutes les transitions `ok` connues suivies, après une fin), `exhausted` (boucle sans erreur où plus rien n'est à essayer, voir ci-dessus), `conditions` (des scènes restent derrière une condition ou un `indexItem` que l'exploration n'a pas satisfait, voir ci-dessous), `max_steps`, `library` (l'histoire est revenue à la bibliothèque, anciens moteurs) → `ok` ; `loop` (plus rien de nouveau, l'histoire tourne encore, sans erreur) → `loop` ; `unresponsive` (écran qui ne répond plus), `no_trace` (`--stuck` s sans trace), `no_start` (pilote jamais lancé) → `stuck` (avant #42, `stuck` confondait boucle et écran figé) ; `timeout` ; `error` (arrêt sur erreur) ; `exit` (player sorti seul : `lua_error` si une erreur Lua a été vue avant, avec `exit_code`, sinon `crash`) |
 | `errors` | lignes d'erreur filtrées |
 | `scenes` | identifiants des stages visités (sert à fusionner la couverture de plusieurs parcours) |
 | `scenes_visited` / `scenes_total` / `coverage` | stages distincts **réellement atteints** (l'option d'un choix ne compte qu'une fois la transition faite) / stages de `nodes.lua` (y compris inaccessibles) / rapport des deux |
@@ -699,6 +705,7 @@ aucune trace, ou `--timeout`.
 | `ends`, `back_ends`, `end_reasons` | fins jouées ; fins provoquées par un test de retour (transition `home`, non comptées) ; raisons affichées par `endStory` |
 | `dead_end_backs`, `dead_end_scenes` | **impasses** : retours de secours sur un écran où le pilote ne peut rien faire (scène sans OK ni fin d'audio, titre figé, écran inconnu), et nœuds concernés (`<nœud> why=<raison>`) |
 | `home_escapes` | sorties de boucle par la transition `home` |
+| `cond_frontier`, `blocked` | à l'arrêt : nombre de scènes visitées dont une transition dépendant de l'état (entrée conditionnelle, `indexItem`) mène à une scène jamais atteinte (une scène compte une fois, avec sa première cible) ; au plus 100 d'entre elles, `<scène>><cible>` (suffixe `@home` pour la transition `home`) : ce que `conditions` n'a pas pu atteindre. `null` / `[]` sans trace `done` |
 | autres | `choices_explored`, `back_tests`, `menu_tests`, `exit_code`, `workdir` (`--keep`) |
 
 Sémantique à retenir :
@@ -710,8 +717,23 @@ Sémantique à retenir :
   dans `coverage` (souvent < 1).
 - **`exhausted` / `loop`** : l'histoire boucle **sans erreur** (histoire cyclique sans fin,
   sous-menu, hub à état) ; `exhausted` = tout ce que le pilote sait atteindre a été essayé,
-  `loop` = il restait des pistes mais aucune nouveauté pendant le seuil. Lire `coverage`
-  et `end_reached`.
+  `loop` = il restait des pistes mais aucune nouveauté pendant le seuil. Tant qu'**aucune
+  fin** n'a été jouée (histoire cyclique), les entrées conditionnelles de `home` et les
+  transitions `indexItem` ne retardent pas `exhausted` (seules les entrées conditionnelles
+  de la transition `ok` comptent) ; après une fin, elles comptent. Lire `coverage` et
+  `end_reached`.
+- **`conditions`** : `status` `ok`, code de sortie 0, couverture partielle. Une fin a été
+  jouée mais des scènes ne sont atteignables que derrière une condition d'inventaire ou
+  un `indexItem` jamais satisfait par le pilote. `blocked` / `cond_frontier` disent
+  lesquelles ; `compat.py` la classe en `warn`, `report.md` et `status.json` portent
+  `done_reason: conditions` et la liste des scènes bloquées.
+- **Coût des redémarrages** : chaque reprise après une fin rejoue un parcours (jusqu'à 3
+  reprises sans nouveauté avant `conditions`, mais sans plafond tant que des scènes ou
+  des options nouvelles apparaissent) : une histoire proche de `--max-steps` / `--timeout`
+  peut finir en `max_steps` / `timeout` là où elle finissait en `complete`. La nouveauté
+  est mesurée par (option, état d'inventaire) : si des compteurs évoluent à chaque rejeu,
+  elle n'est pas bornée (le plafond de 3 ne s'applique jamais) et seuls `--max-steps` /
+  `--timeout` arrêtent l'exploration. Limitation documentée, non bornée par le pilote.
 - **`stuck`** : vrai blocage, écran qui ne réagit plus (`unresponsive`, retours de secours
   sans que l'histoire n'avance) ou plus aucune trace (`no_trace`) ; à distinguer de
   `timeout`, où le pilote progressait.
@@ -727,7 +749,8 @@ défaut (`--timeout 120`, `--max-steps 200`) en considérant `timeout` comme « 
 dans la partie explorée ». Une exécution à la fois (CPU) ; garder `--seed` fixe pour
 comparer deux versions du convertisseur.
 
-Code de sortie du CLI : 0 si `ok`, 1 sinon, 77 si `flam-player` est introuvable.
+Codes de sortie du CLI : voir « Codes de sortie de `compat.py` et `explore.py` » (77 si
+`flam-player` est introuvable).
 `run_player` (lancement sans fenêtre, player toujours arrêté en sortie, même sur
 exception) et les motifs d'erreur sont partagés avec `tests/e2e/e2e_telmi.py`.
 Tests : `tests/test_explore.py` (parcours complet, `max_steps`, erreur Lua injectée, erreur
@@ -763,7 +786,7 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
 - **Étapes** : `download`, `convert` (exceptions et avertissements `_warn` capturés),
   `validate` (`validate.py`), `run` ; statut par étape `ok|warn|fail|skipped`, statut global
   `OK`, `OK_AVERTISSEMENTS`, `ECHEC_TELECHARGEMENT`, `ECHEC_CONVERSION`, `ECHEC_VALIDATION`,
-  `ECHEC_EXECUTION`. Code de sortie 1 s'il y a au moins un échec.
+  `ECHEC_EXECUTION`. Codes de sortie : voir « Codes de sortie de `compat.py` et `explore.py` ».
 - **Reprise** : une histoire déjà évaluée avec les mêmes sources du convertisseur (hash de
   `tools/telmi2flam` hors tests/`compat.py`/`explore.py`) n'est pas refaite, sauf `--force`.
   Un échec de téléchargement est toujours retenté. Pour les archives locales, la taille et la date du zip font partie du critère (zip remplacé = refait) ; pour un catalogue, `updated_at` si présent. Avec `--only`/`--limit`, le rapport conserve les fiches précédentes non sélectionnées ; celles évaluées avec un autre convertisseur sont marquées `stale` (« périmé » dans `report.md`). `report.json` est réécrit (atomiquement) après chaque histoire. `--jobs N` : téléchargement, conversion et validation en parallèle
@@ -794,6 +817,7 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   | `timeout` avec 2 scènes ou moins (écran noir, blocage au démarrage) | `fail` |
   | `ok` / `exhausted`, toutes les scènes vues **et** une fin jouée | `ok` |
   | `ok` / `exhausted` sinon (aucune fin jouée, couverture < 100 %) | `warn` : « plus rien de nouveau, sans erreur », couverture, « aucune fin jouée » |
+  | `ok` / `conditions` (des scènes restent derrière une condition ou un `indexItem` non satisfait) | `warn` : « conditions — scènes derrière une condition non satisfaite », couverture partielle, scènes bloquées (`scène>cible`) |
   | `loop` sans erreur, plus de 2 scènes visitées (ou toutes) ; `stuck` / `stuck` d'avant #42 (résultats bruts conservés) idem | `warn` : « boucle sans nouveauté, sans erreur », couverture |
   | `loop` avec 2 scènes ou moins | `fail` |
   | `loop` ou `stuck` / `stuck` d'avant #42 avec `dead_end_backs > 0` (retours de secours sur un écran sans action : l'histoire s'est figée) | `fail` : « boucle avec blocage » ou « ancien résultat stuck, non reclassé » ; jamais « boucle sans erreur ». Conservateur : une impasse isolée suivie d'une vraie boucle est aussi classée `fail` |
@@ -803,10 +827,12 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   `warn` donne le statut global `OK_AVERTISSEMENTS` ; `fail` donne `ECHEC_EXECUTION`.
 - **Fiche** (`report.json`, `steps.run`) : `status`, `messages`, `done_reason`, `steps`
   (actions, sommées), `ends`, `seed` (parcours unique) / `seeds`, `dead_end_backs` et
-  `dead_end_scenes`, `scenes_visited`, `scenes_total`, `coverage` (fusionnée),
+  `dead_end_scenes`, `blocked` (scènes bloquées, arrêt `conditions`), `scenes_visited`,
+  `scenes_total`, `coverage` (fusionnée),
   `end_reached`, `duration_s`, `runs` (détail par parcours si plusieurs), `params`
   (réglages utilisés), `error_signatures`. `report.md` en affiche la couverture, la fin,
-  les fins, les actions, la cause d'arrêt, les impasses, les graines et la durée.
+  les fins, les actions, la cause d'arrêt, les impasses, les graines et la durée, et une
+  section des scènes bloquées pour les arrêts `conditions`.
 - **Erreurs d'exécution groupées** : chaque message d'erreur est normalisé (chemins, adresses
   `0x…` et nombres, donc numéros de ligne, remplacés) en une *signature* ; `error_signatures`
   = `[{signature, count, example}]` par histoire, et `report.md` (« Erreurs d'execution par
@@ -820,6 +846,14 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   **Les motifs doivent être précis et ancrés** (`^SDL: warning .*$`, pas `erreur` ni
   `warning`) : un motif large masque de vraies erreurs Lua. La fiche garde le nombre
   d'erreurs ignorées (`benign_ignored`). À alimenter au fil du triage de #7.
+- **Une histoire a toujours une fiche** (#166) : une exception autour de l'exploration
+  (`explore` ou l'étape run) donne `ECHEC_EXECUTION` avec `run_reason` `crash` ; un code de
+  sortie anormal du player est traduit dans les messages (`-1` : processus tué de
+  l'extérieur, `0xC0000005` : violation d'accès...). Avant chaque exploration, une fiche
+  provisoire `ECHEC_EXECUTION` (`run_reason` `crash`, « exécution non terminée ») est écrite
+  dans `report.json` / `status.json` : si `compat.py` est tué en cours de route (code -1), elle
+  reste en place ; elle n'est jamais reprise comme résultat valide (l'exploration est refaite
+  à la relance, même sans `--force`).
 - **Réinterprétation sans rejouer** : la fiche conserve le résultat brut borné de chaque
   parcours (`steps.run.raw` : statut, `done_reason`, compteurs, scènes, erreurs **non
   filtrées**, les 100 premières et les 100 dernières, 200 caractères chacune). Quand la
@@ -831,6 +865,49 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
 - **Limite d'extraction** (archives de source externe) : une archive dont le total
   décompressé dépasse `--max-unzipped-mb` (défaut 2048) ou qui compte plus de 20000 entrées
   est refusée à l'étape `convert` (« archive trop volumineuse »).
+
+#### Certificats TLS d'entreprise (proxy)
+
+Derrière un proxy TLS d'entreprise, `compat.py --catalog` peut échouer avec
+`CERTIFICATE_VERIFY_FAILED` : le Python utilisé ne connaît pas le certificat racine du proxy.
+`compat.py` n'a pas d'option de certificat. Le contournement utilisé pour la campagne #87 :
+installer `truststore` dans le venv, puis le charger au démarrage de Python avec un
+`sitecustomize.py` placé hors du dépôt, dans un dossier passé par `PYTHONPATH`. La vérification
+TLS reste active (magasin de certificats du système, qui contient le certificat du proxy),
+rien n'est modifié globalement et seul le processus lancé est concerné.
+
+```python
+# <dossier>/sitecustomize.py
+import truststore
+truststore.inject_into_ssl()
+```
+
+```bash
+PYTHONPATH=<dossier> python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json>
+```
+
+#### Codes de sortie de `compat.py` et `explore.py`
+
+`explore.py <histoire>` (un parcours) :
+
+| `done_reason` → `status` | Code |
+|---|---:|
+| `complete`, `conditions`, `exhausted`, `max_steps`, `library` → `ok` | 0 |
+| `loop` → `loop` ; `unresponsive`, `no_start`, `no_trace` → `stuck` ; `timeout` ; `error` → `lua_error` ; `exit` → `lua_error` ou `crash` | 1 |
+| histoire illisible (archive absente ou corrompue) ; `flam-player` introuvable | 1 ; 77 |
+| arguments invalides | 2 (argparse) |
+
+Un code 0 ne signifie pas « histoire jouée jusqu'au bout » : `exhausted`, `conditions` et `complete` sortent
+avec 0 même si aucune fin n'a été jouée ou si la couverture est partielle. Pour juger, lire
+`done_reason`, `ends` et `coverage` (sortie `--json`).
+
+`compat.py` (campagne) :
+
+| Code | Condition |
+|---:|---|
+| 0 | aucune histoire en `ECHEC_*` : `OK` ou `OK_AVERTISSEMENTS` (dont `warn` : `exhausted`, boucle sans erreur, exploration partielle, erreur bénigne), ou exécution désactivée (`--no-run`, player absent sans `--run`) |
+| 1 | au moins une histoire en `ECHEC_TELECHARGEMENT`, `ECHEC_CONVERSION`, `ECHEC_VALIDATION` ou `ECHEC_EXECUTION` |
+| 2 | arguments invalides (aucun `--catalog` ni `--folder`), catalogue illisible, ou `--run` sans `explore.py` ou sans player |
 
 #### `status.json` (lu par la surcouche)
 
@@ -869,7 +946,8 @@ nouvelles clés optionnelles pourront être ajoutées, jamais renommées (sinon
 | `summary` | phrase d'une ligne, affichable telle quelle |
 | `coverage` | `null` si l'exploration n'a rien mesuré (`run` ignoré ou échec avant) ; sinon scènes visitées / totales (`scenes_total` et `ratio` peuvent être `null`), `end_reached` booléen |
 | `run` | statut de l'étape run : `ok`, `warn`, `fail`, `skipped` |
-| `run_reason` | (optionnelle, ajoutée par #42 sans changer `schema_version`) raison d'arrêt de l'exploration retenue (`done_reason` : `complete`, `exhausted`, `loop`, `max_steps`, `timeout`, `unresponsive`…), `null` si l'étape n'a pas tourné ; le résumé d'une boucle sans erreur est « Jouable, boucle sans erreur (X/Y scènes) » |
+| `run_reason` | (optionnelle, ajoutée par #42 sans changer `schema_version`) raison d'arrêt de l'exploration retenue (`done_reason` : `complete`, `exhausted`, `conditions`, `loop`, `max_steps`, `timeout`, `unresponsive`…), `null` si l'étape n'a pas tourné ; le résumé d'une boucle sans erreur est « Jouable, boucle sans erreur (X/Y scènes) » |
+| `blocked` | (optionnelle, absente si vide) pour un arrêt `conditions` : au plus 50 scènes bloquées, `<scène>><cible>` (suffixe `@home` pour la transition `home`) |
 | `stale` | fiche évaluée avec un autre convertisseur que le courant (résultat périmé) |
 
 **Doublons d'uuid** (plusieurs versions évaluées) : la version la plus récente l'emporte

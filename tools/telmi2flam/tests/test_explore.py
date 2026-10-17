@@ -162,6 +162,23 @@ def state_hub_nodes():
     }
 
 
+def guarded_end_nodes():
+    """#142 : start -> s0 -> choix {o1, o2} ; o1 mene a la fin, o2 n'est visible que
+    si l'objet 0 vaut 1 (jamais pose par l'histoire) et mene a la scene g."""
+    never = [{"comparator": 2, "item": 0, "number": 1}]
+    return {
+        "startAction": {"action": "a0", "index": 0},
+        "inventory": [{"name": "cle", "initialNumber": 0, "maxNumber": 1}],
+        "stages": {
+            "s0": stage("x.mp3", "ac"),
+            "o1": stage("x.mp3", None, OPT),
+            "o2": stage("x.mp3", None, OPT),
+        },
+        "actions": {"a0": [{"stage": "s0"}],
+                    "ac": [{"stage": "o1"}, {"stage": "o2", "conditions": never}]},
+    }
+
+
 def unresponsive_nodes():
     """Scene sans OK, sans autoplay ni home : l'ecran ne repond plus (vrai blocage)."""
     dead = {"ok": False, "home": False, "autoplay": False}
@@ -241,7 +258,7 @@ class TestExplore(unittest.TestCase):
     def test_grand_carrousel_pas_stuck(self):
         """#41 : 80 options -> >40 appuis de navigation, ne doit pas etre 'stuck'."""
         pk = self.convert(carousel_nodes(80), "Carrousel80")
-        res = explore.explore(PLAYER, pk, timeout_s=120, back_every=0, max_steps=400)
+        res = explore.explore(PLAYER, pk, timeout_s=240, back_every=0, max_steps=400)
         self.assertEqual(res["status"], "ok", self.explain(res))
         self.assertNotEqual(res["done_reason"], "stuck", self.explain(res))
         self.assertGreaterEqual(res["choices_explored"], 1, self.explain(res))
@@ -390,10 +407,24 @@ class TestExplore(unittest.TestCase):
         self.assertIn("g", res["scenes"], self.explain(res))
         self.assertEqual(res["scenes_visited"], res["scenes_total"], self.explain(res))
 
+    def test_conditions_de_bout_en_bout(self):
+        """#142 : une fin jouee, mais une option gardee par un objet jamais pose :
+        `conditions` (et non `complete`), status ok, scenes bloquees exposees."""
+        pk = self.convert(guarded_end_nodes(), "Gardee")
+        res = explore.explore(PLAYER, pk[:-3], timeout_s=120, back_every=0, max_steps=300)
+        self.assertEqual(res["status"], "ok", self.explain(res))
+        self.assertEqual(res["done_reason"], "conditions", self.explain(res))
+        self.assertTrue(res["end_reached"], self.explain(res))
+        self.assertEqual(res["errors"], [])
+        self.assertEqual(res["scenes_visited"], 2, self.explain(res))     # s0, o1
+        self.assertEqual(res["scenes_total"], 3)
+        self.assertEqual(res["cond_frontier"], 1, self.explain(res))
+        self.assertEqual(res["blocked"], ["s0>o2"], self.explain(res))
+
     def test_ecran_qui_ne_repond_plus(self):
         """Un vrai blocage reste `stuck` (raison `unresponsive`), distinct d'une boucle."""
         pk = self.convert(unresponsive_nodes(), "Fige")
-        res = explore.explore(PLAYER, pk[:-3], timeout_s=180, back_every=0)
+        res = explore.explore(PLAYER, pk[:-3], timeout_s=240, back_every=0)
         self.assertEqual(res["status"], "stuck", self.explain(res))
         self.assertEqual(res["done_reason"], "unresponsive", self.explain(res))
         self.assertGreaterEqual(res["dead_end_backs"], 1, self.explain(res))

@@ -49,7 +49,7 @@ STEPS = ("download", "convert", "validate", "run")
 GLOBAL_STATUSES = ("OK", "OK_AVERTISSEMENTS", "ECHEC_CONVERSION", "ECHEC_VALIDATION",
                    "ECHEC_EXECUTION", "ECHEC_TELECHARGEMENT")
 # Statuts de explore() toujours consideres comme un echec d'execution (`timeout`,
-# `max_steps`, `loop` / `exhausted` sans erreur sont des explorations partielles ; `stuck`
+# `max_steps`, `loop` / `exhausted` / `conditions` sans erreur sont des explorations partielles ; `stuck`
 # depend de sa raison : voir interpret_run)
 RUN_FAIL = ("lua_error", "crash")
 # Raisons d'arret d'une boucle SANS erreur (#42) : l'histoire tourne encore mais le
@@ -342,6 +342,37 @@ def _step(status, messages=None, seconds=0.0):
     return {"status": status, "messages": list(messages or []), "seconds": round(seconds, 2)}
 
 
+# Codes NTSTATUS usuels d'un processus Windows mort sur exception (code de sortie 0xC...)
+_NT_CODES = {0xC0000005: "violation d'accès", 0xC00000FD: "dépassement de pile",
+             0xC0000374: "corruption de tas", 0xC0000409: "arrêt sur erreur de sécurité",
+             0xC000013A: "interruption par Ctrl+C", 0xC0000142: "échec d'initialisation d'une DLL",
+             0xC0000135: "DLL introuvable", 0xC0000094: "division entière par zéro"}
+
+
+def describe_exit_code(code):
+    """Libelle d'un code de sortie de processus anormal (negatif ou NTSTATUS), ou None si
+    le code est nul ou n'est pas un entier. -1 (0xFFFFFFFF) : le processus a ete tue de
+    l'exterieur (Stop-Process, TerminateProcess) ou a quitte avec -1 ; sous POSIX, un code
+    negatif -N est le signal N."""
+    if isinstance(code, bool) or not isinstance(code, int) or code == 0:
+        return None
+    hexa = "0x%08X" % (code & 0xFFFFFFFF)
+    if code == -1:
+        return "code -1 (%s) : processus tué de l'extérieur ou sorti avec -1" % hexa
+    nt = _NT_CODES.get(code & 0xFFFFFFFF)
+    if nt:
+        return "code %d (%s) : %s" % (code, hexa, nt)
+    if -64 <= code < 0 and os.name != "nt":
+        try:
+            import signal
+            return "signal %d (%s)" % (-code, signal.Signals(-code).name)
+        except (ValueError, ImportError):
+            return "signal %d" % -code
+    if code < 0 or (code & 0xFFFFFFFF) >= 0xC0000000:
+        return "code %d (%s) : arrêt anormal" % (code, hexa)
+    return "code de sortie %d" % code
+
+
 def check_zip_size(path, max_bytes=MAX_UNZIPPED, max_entries=MAX_ZIP_ENTRIES):
     """Leve ValueError si l'archive annonce trop d'entrees ou trop de donnees
     decompressees (protection zip-bomb) ; les zips invalides sont laisses a la conversion."""
@@ -444,6 +475,8 @@ def interpret_run(res, benign=BENIGN_ERRORS):
     - ok / max_steps sans erreur : warn si la couverture est partielle, sinon ok ;
     - ok / exhausted (plus rien de nouveau, sans erreur) : warn si aucune fin jouee ou
       couverture partielle, sinon ok ;
+    - ok / conditions (#76 : des scènes restent derrière une condition non satisfaite) :
+      toujours warn ;
     - lua_error dont toutes les erreurs sont benignes (liste d'exclusions) : erreurs
       ignorees, mais l'exploration qu'elles ont interrompue reste un avertissement."""
     status = res.get("status")
@@ -464,7 +497,9 @@ def interpret_run(res, benign=BENIGN_ERRORS):
     full = isinstance(visited, int) and isinstance(total, int) and total and visited >= total
     progressed = isinstance(visited, int) and visited >= MIN_SCENES_PARTIAL
     if status in RUN_FAIL or (status == "stuck" and done not in LOOP_REASONS):
-        return "fail", ["explore: %s%s" % (status, "/" + done if done else "")] + msgs + real
+        why = describe_exit_code(res.get("exit_code")) if status in RUN_FAIL else None
+        return "fail", (["explore: %s%s" % (status, "/" + done if done else "")]
+                        + (["flam-player : " + why] if why else []) + msgs + real)
     if status in ("loop", "stuck"):        # boucle : l'histoire tourne, rien de nouveau
         head = "explore: %s/%s" % (status, done or "?")
         if real:
@@ -503,6 +538,16 @@ def interpret_run(res, benign=BENIGN_ERRORS):
                         + ([] if res.get("end_reached")
                            else ["aucune fin jouée (histoire cyclique ?)"])
                         + notes + msgs)
+    if done == "conditions":
+        # #76 : des scenes restent derriere une condition / un indexItem que le pilote
+        # n'a pas su satisfaire (reprises sans nouveaute) : couverture partielle
+        blocked = [str(b) for b in (res.get("blocked") or [])]
+        shown = "; ".join(blocked[:BLOCKED_SHOWN]) + (
+            " (+%d)" % (len(blocked) - BLOCKED_SHOWN) if len(blocked) > BLOCKED_SHOWN else "")
+        return "warn", (["explore: conditions — scènes derrière une condition non satisfaite",
+                         partial]
+                        + (["bloquées (scène>cible) : " + shown] if blocked else [])
+                        + notes + msgs)
     return "ok", notes + msgs
 
 
@@ -512,9 +557,12 @@ _RANK = {"ok": 0, "warn": 1, "fail": 2}
 RAW_ERR_HEAD = 100          # erreurs conservees dans la fiche : les N premieres...
 RAW_ERR_TAIL = 100          # ... et les N dernieres
 RAW_ERR_LEN = 200           # caracteres par erreur
+BLOCKED_KEPT = 100          # scenes bloquees (done_reason conditions) gardees dans la fiche
+BLOCKED_SHOWN = 5           # ... et citees dans le message de l'etape run
+BLOCKED_STATUS = 50         # ... et exposees dans status.json
 _RAW_SCALARS = ("status", "done_reason", "scenes_visited", "scenes_total", "coverage",
                 "end_reached", "duration_s", "steps", "ends", "back_ends", "dead_end_backs",
-                "choices_explored", "home_escapes", "exit_code")
+                "choices_explored", "home_escapes", "exit_code", "cond_frontier")
 
 
 def bound_errors(errors):
@@ -540,6 +588,8 @@ def bound_raw(res, seed):
         raw["scenes"] = [str(x)[:100] for x in res["scenes"][:5000]]
     if isinstance(res.get("dead_end_scenes"), list):
         raw["dead_end_scenes"] = [str(x)[:RAW_ERR_LEN] for x in res["dead_end_scenes"][:200]]
+    if isinstance(res.get("blocked"), list):
+        raw["blocked"] = [str(x)[:RAW_ERR_LEN] for x in res["blocked"][:BLOCKED_KEPT]]
     raw["seed"] = seed
     return raw
 
@@ -589,6 +639,13 @@ def build_run_step(raws, params, benign, seconds):
     dead = sorted({d for r in results for d in (r.get("dead_end_scenes") or [])})
     if dead:
         st["dead_end_scenes"] = dead
+    # scenes bloquees : union des parcours, hors cibles atteintes par un autre parcours
+    reached = set().union(*sets) if sets and len(sets) == len(results) else set()
+    blocked = sorted({b for r in results for b in (r.get("blocked") or [])
+                      if r.get("done_reason") == "conditions"
+                      and b.split(">", 1)[-1].split("@", 1)[0] not in reached})
+    if blocked:
+        st["blocked"] = blocked
     if pick[0].get("done_reason"):
         st["done_reason"] = pick[0]["done_reason"]
     if len(runs) > 1:
@@ -630,15 +687,26 @@ def do_run(pk_path, explore, player_exe, timeout_s, seed, max_steps, seeds=1,
     for sd in range(seed, seed + params["seeds"]):
         try:
             res = explore(player_exe, pk_path, timeout_s=timeout_s, seed=sd, max_steps=max_steps)
-        except Exception as e:
-            raws.append({"status": "explore_exception", "seed": sd, "message":
-                         ("explore a plante : %s: %s" % (type(e).__name__, e))[:RAW_ERR_LEN]})
+        except (Exception, SystemExit) as e:        # jamais d'histoire sans fiche (#166)
+            raws.append(_crash_raw(sd, "explore a plante : %s: %s" % (type(e).__name__, e)))
             break
         raw = bound_raw(res if isinstance(res, dict) else {}, sd)
         raws.append(raw)
         if interpret_run(raw, benign)[0] == "fail":
             break
     return build_run_step(raws, params, benign, time.time() - t0)
+
+
+def _crash_raw(seed, message):
+    """Resultat brut d'un parcours dont le pilote ou le player n'a rien rendu d'exploitable."""
+    return {"status": "explore_exception", "done_reason": "crash", "seed": seed,
+            "message": message[:RAW_ERR_LEN]}
+
+
+def failed_run_step(params, message, seconds=0.0, seed=0):
+    """Etape run en echec explicite (`run_reason` crash) : exception inattendue autour de
+    l'exploration, ou fiche provisoire d'une exploration interrompue."""
+    return build_run_step([_crash_raw(seed, message)], params, BENIGN_ERRORS, seconds)
 
 
 def reinterpret_run(run, benign):
@@ -722,6 +790,21 @@ def process_story(entry, cache, opener=None, sleep=time.sleep, max_unzipped=MAX_
     return rec
 
 
+def failed_record(entry, exc):
+    """Fiche d'echec pour une histoire dont le traitement a leve une exception imprevue."""
+    rec = {k: entry.get(k) for k in ("source", "uuid", "version", "title", "license", "category")}
+    rec["key"] = story_key(entry["uuid"], entry["version"])
+    rec["fingerprint"] = entry.get("fingerprint")
+    rec["steps"] = {
+        "download": _step("skipped", ["traitement interrompu"]),
+        "convert": _step("fail", ["traitement interrompu : %s: %s" % (type(exc).__name__, exc)]),
+        "validate": _step("skipped", ["conversion en échec"]),
+        "run": _step("skipped", ["conversion en échec"])}
+    rec["status"] = global_status(rec["steps"])
+    rec["transient"] = True          # echec imprevu : refait a la relance, sans --force
+    return rec
+
+
 def _worker(args):
     entry, cache, max_unzipped = args
     return process_story(entry, cache, max_unzipped=max_unzipped)
@@ -799,6 +882,10 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         reusable = (old is not None and not force and old.get("converter_hash") == chash
                     and old.get("fingerprint") == e.get("fingerprint")
                     and old.get("status") != "ECHEC_TELECHARGEMENT"
+                    # fiche provisoire (exploration interrompue) ou echec transitoire
+                    # (exception imprevue) : jamais reprise, quels que soient les reglages
+                    and not old.get("transient")
+                    and not old.get("steps", {}).get("run", {}).get("provisional")
                     and not (explore is not None
                              and old.get("steps", {}).get("run", {}).get("status") == "skipped"
                              and old.get("steps", {}).get("validate", {}).get("status")
@@ -833,8 +920,29 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
                                 rec["status"]))
 
     def run_step(rec):
-        rec["steps"]["run"] = do_run(rec["output"], explore, player_exe, run_timeout, seed,
-                                     max_steps, seeds, benign)
+        # Fiche provisoire ECHEC_EXECUTION ecrite AVANT l'exploration : si le processus est
+        # tue de l'exterieur (code -1 de la campagne #87), l'histoire garde une fiche.
+        # Sans `params`, elle n'est jamais reutilisee comme resultat valide.
+        interrupted = dict(failed_run_step(
+            None, "exécution non terminée : processus de compat interrompu avant la fin "
+                  "de l'exploration (tué de l'extérieur ?)", seed=seed), params=None, provisional=True)
+        prov = dict(rec, steps=dict(rec["steps"], run=interrupted), status="ECHEC_EXECUTION",
+                    converter_hash=chash, evaluated=time.strftime("%Y-%m-%dT%H:%M:%S"))
+        if explore is not None:
+            try:
+                with lock:
+                    results[rec["key"]] = prov
+                    write(results)
+            except OSError as e:
+                log("! fiche provisoire non écrite pour %s : %s" % (rec["key"], e))
+        t0 = time.time()
+        try:
+            run = do_run(rec["output"], explore, player_exe, run_timeout, seed,
+                         max_steps, seeds, benign)
+        except Exception as e:                  # filet : l'histoire garde une fiche d'echec
+            run = failed_run_step(params, "étape run : %s: %s" % (type(e).__name__, e),
+                                  time.time() - t0, seed)
+        rec["steps"]["run"] = run
         rec["status"] = global_status(rec["steps"])
         finalize(rec)
 
@@ -851,11 +959,20 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
 
         if jobs > 1 and len(todo) > 1:
             with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as ex:
-                for rec in ex.map(_worker, [(e, cache, max_unzipped) for e in todo]):
+                futs = [ex.submit(_worker, (e, cache, max_unzipped)) for e in todo]
+                for e, fut in zip(todo, futs):
+                    try:
+                        rec = fut.result()
+                    except Exception as exc:    # processus de conversion mort, etc.
+                        rec = failed_record(e, exc)
                     finish(rec)
         else:
             for e in todo:
-                finish(process_story(e, cache, max_unzipped=max_unzipped))
+                try:
+                    rec = process_story(e, cache, max_unzipped=max_unzipped)
+                except Exception as exc:        # filet : jamais d'histoire sans fiche
+                    rec = failed_record(e, exc)
+                finish(rec)
         for f in futures:
             f.result()
     write(results)
@@ -946,6 +1063,8 @@ def build_status(doc):
             "run_reason": run.get("done_reason"),
             "stale": bool(s.get("stale")),
         }
+        if run.get("blocked"):
+            stories[uuid]["blocked"] = list(run["blocked"][:BLOCKED_STATUS])
     return {"schema_version": STATUS_SCHEMA_VERSION, "generated": doc["generated"],
             "converter_hash": doc["converter_hash"], "stories": stories}
 
@@ -1000,6 +1119,14 @@ def render_markdown(doc):
                 r.get("dead_end_backs", "?"),
                 _md(",".join(str(x) for x in r.get("seeds", []))) or "?",
                 r.get("duration_s", "?"), r["status"]))
+        cond = [s for s in runs if s["steps"]["run"].get("blocked")]
+        if cond:
+            L += ["", "## Scenes derriere une condition (arret `conditions`)", ""]
+            for s in cond:
+                b = s["steps"]["run"]["blocked"]
+                L.append("- %s : %s%s" % (
+                    _md(s["title"]), _md("; ".join(b[:BLOCKED_SHOWN * 2])).replace("`", "'"),
+                    " (+%d)" % (len(b) - BLOCKED_SHOWN * 2) if len(b) > BLOCKED_SHOWN * 2 else ""))
         sigs = {}
         for s in runs:
             for g in s["steps"]["run"].get("error_signatures", []):
