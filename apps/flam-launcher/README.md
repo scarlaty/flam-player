@@ -307,11 +307,15 @@ apps/flam-launcher/
       library.rs           Bibliothèque `<cache>/library/` et `library.json`, commandes `library_*`
       library_thumb.rs     Vignettes des histoires installées (`library/thumbs/`), `library_thumbnail`
       compat.rs            Statut de compatibilité (`status.json` de la campagne + conversions locales), commande `compat_statuses`
+      device/              Flam branchée en USB : `detect.rs` (détection, `.mdf`), `crypto.rs` (AES-128-CBC,
+                           clés d'appareil, fichier `key`),
+                           `prepare.rs` (dossier `str/<uuid>/` préparé hors appareil depuis un `.plain.pk`)
+      podcast/rss.rs       Lecture d'un flux RSS 2.0 + iTunes (logique pure, DOCTYPE refusé, bornes), `parse_feed` (#210)
 ```
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`, `device` (détection de la Flam branchée en USB, #225 ; `device::detect`).
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status` ; transfert sûr #229, `device::transfer`, commandes `device_send_story`, `device_cancel_transfer` et `device_recover_transfers` (reprise au branchement), événement `device://transfer-progress` ; retrait #231, `device::remove` ; éjection #232, `device::eject` ; verrou des opérations, `device::lock`), `podcast` (`rss`).
 
 ### Commandes Tauri
 
@@ -321,37 +325,57 @@ enregistrées dans `generate_handler!` de `lib.rs`) : pas de fichier `commands.r
 Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enregistrées dans
 `generate_handler!` (`lib.rs`). Chacune a un wrapper typé dans `src/api/`.
 
-| Commande               | Arguments                  | Retour                                  | Module          |
-| ---------------------- | -------------------------- | --------------------------------------- | --------------- |
-| `app_info`             |                            | `{ name, version }`                     | `app`           |
-| `settings_get`         |                            | `SettingsView`                          | `settings`      |
-| `settings_set`         | `settings: Settings`       | `SettingsView`                          | `settings`      |
-| `sources_list`         |                            | `SourcesView`                           | `sources`       |
-| `sources_add`          | `input: SourceInput`       | `Source`                                | `sources`       |
-| `sources_update`       | `id`, `input: SourceInput` | `Source`                                | `sources`       |
-| `sources_remove`       | `id`                       | rien                                    | `sources`       |
-| `sources_reorder`      | `ids: string[]`            | `Source[]` (liste complète)             | `sources`       |
-| `config_ack_recovery`  | `file?: string`            | rien                                    | `storage`       |
-| `cache_usage`          |                            | `{ path, bytes }`                       | `cache`         |
-| `cache_clear`          |                            | `{ freed_bytes }`                       | `cache`         |
-| `catalog_refresh`      | `source_id`                | `CatalogView`                           | `catalog`       |
-| `catalog_entries`      | `source_id`                | `CatalogView`                           | `catalog`       |
-| `catalog_thumbnail`    | `source_id`, `thumb_url`   | URL `data:` (string)                    | `catalog`       |
-| `folder_scan`          | `source_id`, `recursive?`  | `FolderScan`                            | `folder`        |
-| `folder_thumbnail`     | `source_id`, `entry_id`    | URL `data:` (chaîne)                    | `folder`        |
-| `folder_watch`         | `source_id`, `enabled`     | rien                                    | `watch`         |
-| `install_start`        | `source_id`, `entry_id`    | `InstallTask`                           | `install`       |
-| `install_cancel`       | `task_id`                  | rien                                    | `install`       |
-| `install_list`         |                            | `InstallTask[]`                         | `install`       |
-| `library_list`         |                            | `LibraryEntry[]`                        | `library`       |
-| `library_remove`       | `uuid`, `purge_saves?`     | rien                                    | `library`       |
-| `library_thumbnail`    | `uuid`                     | URL `data:` (`not_found` sans vignette) | `library_thumb` |
-| `player_launch`        | `uuid`                     | `PlayerSession`                         | `player`        |
-| `player_launch_folder` | `source_id`, `entry_id`    | `PlayerSession`                         | `player`        |
-| `player_status`        |                            | `PlayerSession \| null`                 | `player`        |
-| `player_stop`          |                            | `bool` (faux : aucun player)            | `player`        |
-| `player_embed_layout`  | `rect \| null` (px CSS)    | rien                                    | `player`        |
-| `player_embed_focus`   |                            | rien                                    | `player`        |
+| Commande               | Arguments                  | Retour                                         | Module           |
+| ---------------------- | -------------------------- | ---------------------------------------------- | ---------------- |
+| `app_info`             |                            | `{ name, version }`                            | `app`            |
+| `settings_get`         |                            | `SettingsView`                                 | `settings`       |
+| `settings_set`         | `settings: Settings`       | `SettingsView`                                 | `settings`       |
+| `sources_list`         |                            | `SourcesView`                                  | `sources`        |
+| `sources_add`          | `input: SourceInput`       | `Source`                                       | `sources`        |
+| `sources_update`       | `id`, `input: SourceInput` | `Source`                                       | `sources`        |
+| `sources_remove`       | `id`                       | rien                                           | `sources`        |
+| `sources_reorder`      | `ids: string[]`            | `Source[]` (liste complète)                    | `sources`        |
+| `config_ack_recovery`  | `file?: string`            | rien                                           | `storage`        |
+| `cache_usage`          |                            | `{ path, bytes }`                              | `cache`          |
+| `cache_clear`          |                            | `{ freed_bytes }`                              | `cache`          |
+| `catalog_refresh`      | `source_id`                | `CatalogView`                                  | `catalog`        |
+| `catalog_entries`      | `source_id`                | `CatalogView`                                  | `catalog`        |
+| `catalog_thumbnail`    | `source_id`, `thumb_url`   | URL `data:` (string)                           | `catalog`        |
+| `folder_scan`          | `source_id`, `recursive?`  | `FolderScan`                                   | `folder`         |
+| `folder_thumbnail`     | `source_id`, `entry_id`    | URL `data:` (chaîne)                           | `folder`         |
+| `folder_watch`         | `source_id`, `enabled`     | rien                                           | `watch`          |
+| `install_start`        | `source_id`, `entry_id`    | `InstallTask`                                  | `install`        |
+| `install_cancel`       | `task_id`                  | rien                                           | `install`        |
+| `install_list`         |                            | `InstallTask[]`                                | `install`        |
+| `library_list`         |                            | `LibraryEntry[]`                               | `library`        |
+| `library_remove`       | `uuid`, `purge_saves?`     | rien                                           | `library`        |
+| `library_thumbnail`    | `uuid`                     | URL `data:` (`not_found` sans vignette)        | `library_thumb`  |
+| `player_launch`        | `uuid`                     | `PlayerSession`                                | `player`         |
+| `player_launch_folder` | `source_id`, `entry_id`    | `PlayerSession`                                | `player`         |
+| `player_status`        |                            | `PlayerSession \| null`                        | `player`         |
+| `player_stop`          |                            | `bool` (faux : aucun player)                   | `player`         |
+| `player_embed_layout`  | `rect \| null` (px CSS)    | rien                                           | `player`         |
+| `player_embed_focus`   |                            | rien                                           | `player`         |
+| `device_status`        |                            | `DeviceStatus`                                 | `device::status` |
+| `device_list_stories`  |                            | `DeviceStories \| null` (`null` : aucune Flam) | `device::status` |
+
+`device_status` et `device_list_stories` sont **en lecture seule** sur la Flam : ni reprise
+d'index (`recover`), ni création de dossier. La seule écriture est la copie personnelle de
+`.mdf` (`backup_mdf`) dans le dossier de données du launcher, faite par `device_status`
+(idempotente). Le titre d'une histoire est chiffré dans `str/<uuid>/info` : il n'est connu que
+si l'histoire figure dans la bibliothèque du launcher, sinon l'écran affiche l'UUID court.
+Le numéro de série et le firmware ne sont pas affichés : `parse_mdf` ne lit encore aucun champ
+(format de `.mdf` non spécifié, #224). L'écran « Ma Flam » (`#/device`, `src/features/device/`) est
+alimenté par `DeviceProvider` : scrutation de `device_status` (2 s sur l'écran, 6 s ailleurs,
+arrêtée pendant la lecture incrustée), `device_recover_transfers` une fois par branchement avant
+la lecture des histoires, file d'envoi séquentielle (`device_send_story`, progression par
+`device://transfer-progress`, annulation par `device_cancel_transfer`), retrait confirmé
+(`device_remove_story`) et éjection (`device_eject`). Le bouton « Envoyer sur la Flam » (cartes,
+fiche, « Ma Flam ») reste focalisable quand il est refusé et affiche sa raison (Flam non
+détectée, déjà présente, espace insuffisant, firmware non pris en charge, déjà en file) ;
+l'avertissement « fonction expérimentale, non officielle » est mémorisé dans le stockage local
+(`preferences.ts`). Le firmware n'étant pas exposé par `device_status`, « non pris en charge »
+n'est connu qu'après un refus du backend.
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).

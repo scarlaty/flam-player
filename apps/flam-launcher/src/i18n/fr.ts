@@ -16,6 +16,7 @@ export const fr = {
     sources: "Sources",
     settings: "Paramètres",
     library: "Bibliothèque",
+    device: "Ma Flam",
   },
   errors: {
     title: (kind: string) =>
@@ -371,6 +372,163 @@ export const fr = {
       finished: (title: string) => `Lecture de « ${title} » terminée`,
       playerFailed: (title: string, detail: string) =>
         `flam-player s'est arrêté sur une erreur pendant « ${title} ».${detail ? ` ${detail}` : ""}`,
+    },
+  },
+  deviceScreen: {
+    intro:
+      "Les histoires installées sur votre Flam. Vous pouvez en envoyer depuis « Mes histoires » ou en retirer ; la Flam n'est modifiée que sur votre demande.",
+    searching: "Recherche de la Flam…",
+    notDetected: {
+      title: "Aucune Flam détectée",
+      description: "Activez le mode connexion USB sur la Flam",
+      retry: "Réessayer",
+    },
+    announce: {
+      detected: "Flam détectée",
+      lost: "Flam débranchée ou mode connexion USB désactivé",
+      stories: (count: number) => `${storyCount(count)} sur la Flam`,
+    },
+    detected: {
+      title: "Flam détectée",
+      volume: "Volume",
+      fileSystem: "Système de fichiers",
+      unnamedVolume: "(sans nom)",
+      several: (count: number) =>
+        `${count} Flam sont branchées. Seule la première est affichée ; débranchez les autres.`,
+    },
+    space: {
+      label: "Espace utilisé sur la Flam",
+      summary: (free: string, total: string) => `${free} libres sur ${total}`,
+      unavailable: "Espace disque indisponible",
+    },
+    warnings: {
+      title: "À noter",
+      missingStr: "Le dossier des histoires (str) est introuvable sur la Flam.",
+      missingLibrary: "Le dossier de l'index (etc/library) est introuvable sur la Flam.",
+      unexpectedMdf: (size: number) =>
+        `Le fichier .mdf de la Flam a une taille inattendue (${size} octets).`,
+      mdfTruncated: "Le fichier .mdf de la Flam est tronqué ou vide.",
+      mdfTooLarge: "Le fichier .mdf de la Flam est démesuré : il n'a pas été lu.",
+      backupFailed:
+        "La copie de sauvegarde du fichier .mdf n'a pas pu être enregistrée sur cet ordinateur.",
+    },
+    stories: {
+      title: (count: number) => `Histoires sur la Flam (${count})`,
+      listLabel: "Histoires installées sur la Flam",
+      loading: "Lecture des histoires…",
+      refresh: "Actualiser la liste",
+      untitled: (shortId: string) => `Histoire ${shortId}`,
+      idDetail: (shortId: string) => `Identifiant ${shortId}`,
+      hidden: "Masquée",
+      unlisted: "Non listée",
+      missing: "Dossier manquant",
+      emptyTitle: "Aucune histoire sur la Flam",
+      emptyDescription: "Les histoires envoyées depuis le launcher apparaîtront ici.",
+      loadFailed: "Impossible de lire les histoires de la Flam.",
+      noAnswer: "La Flam n'a pas répondu : vérifiez la connexion USB.",
+    },
+    index: {
+      visibleAbsent: "La Flam n'a pas d'index d'histoires (etc/library/list).",
+      visibleDamaged:
+        "L'index des histoires de la Flam contient des lignes invalides ou en double : elles sont ignorées.",
+      visibleUnreadable:
+        "L'index des histoires de la Flam est illisible. Les dossiers trouvés sont affichés comme non listés.",
+      hiddenDamaged:
+        "L'index des histoires masquées contient des lignes invalides ou en double : elles sont ignorées.",
+      hiddenUnreadable: "L'index des histoires masquées est illisible.",
+      truncated: (limit: number) =>
+        `La liste est tronquée : seules les ${limit} premières histoires sont affichées.`,
+      strUnreadable:
+        "Le dossier des histoires (str) est illisible : seules les histoires de l'index sont affichées.",
+    },
+  },
+  deviceTransfer: {
+    send: "Envoyer sur la Flam",
+    forStory: (action: string, title: string) => `${action} « ${title} »`,
+    reasons: {
+      noDevice: "Flam non détectée",
+      present: "Déjà sur la Flam",
+      noSpace: "Espace insuffisant sur la Flam",
+      firmware: "Firmware de la Flam non pris en charge",
+      queued: "Dans la file d'envoi",
+      checking: "Lecture de la Flam…",
+    },
+    experimental: {
+      title: "Fonction expérimentale, non officielle",
+      description:
+        "L'envoi d'histoires sur la Flam n'est ni prévu ni garanti par son fabricant.",
+      body: "Le launcher écrit directement sur la mémoire de la Flam. Il vérifie chaque copie avant de l'installer et ne touche à rien en cas d'échec, mais gardez une copie de vos histoires. Ne débranchez pas la Flam pendant un envoi.",
+      confirm: "J'ai compris, envoyer",
+    },
+    panel: {
+      title: "Envoi sur la Flam",
+      overall: (done: number, total: number) => `Histoire ${done} sur ${total}`,
+      overallLabel: "Progression de l'envoi",
+      current: (title: string) => `En cours : ${title}`,
+      currentLabel: (title: string) => `Progression de « ${title} »`,
+      phase: { copy: "Copie sur la Flam", verify: "Vérification de la copie" },
+      estimate: (minutes: number) =>
+        minutes <= 1
+          ? "Environ 1 minute restante"
+          : `Environ ${minutes} minutes restantes`,
+      cancel: "Annuler l'envoi",
+      cancelling: "Annulation en cours…",
+      removeFromQueue: (title: string) => `Retirer « ${title} » de la file`,
+      dismiss: "Fermer la liste",
+      listLabel: "File d'envoi",
+      state: {
+        waiting: "En attente",
+        sending: "Envoi en cours",
+        done: "Envoyée",
+        failed: "Échec",
+        cancelled: "Annulée",
+      },
+      announce: {
+        started: (title: string) => `Envoi de « ${title} » commencé`,
+        done: (title: string) => `« ${title} » envoyée sur la Flam`,
+        failed: (title: string, message: string) =>
+          `Échec de l'envoi de « ${title} » : ${message}`,
+        cancelled: "Envoi annulé",
+        finished: "Envoi terminé",
+      },
+    },
+    finished: {
+      title: "Envoi terminé",
+      restart:
+        "Redémarrez la Flam pour qu'elle reconstruise sa bibliothèque : les nouvelles histoires apparaîtront ensuite.",
+    },
+    errors: {
+      noDevice: "La Flam n'est plus détectée : rien n'a été envoyé.",
+      firmware:
+        "Le firmware de cette Flam n'est pas pris en charge : l'envoi est impossible.",
+    },
+    recovery: {
+      done: "Un transfert interrompu a été repris : la Flam est de nouveau dans un état cohérent.",
+      failed: (message: string) =>
+        `La reprise d'un éventuel transfert interrompu a échoué : ${message}`,
+    },
+    fromLibrary: {
+      title: "Envoyer depuis « Mes histoires »",
+      listLabel: "Histoires de « Mes histoires » à envoyer",
+      empty: "Aucune histoire n'est installée dans « Mes histoires ».",
+      loadFailed: "Impossible de lire « Mes histoires ».",
+    },
+    remove: {
+      button: "Retirer",
+      title: (title: string) => `Retirer « ${title} » de la Flam ?`,
+      description:
+        "L'histoire sera supprimée de la Flam. Elle reste dans « Mes histoires » si elle y figure.",
+      confirm: "Retirer de la Flam",
+      done: (title: string) => `« ${title} » retirée de la Flam.`,
+      cleanupPending: " L'espace sera libéré à la prochaine opération.",
+      failed: (message: string) => `Impossible de retirer l'histoire : ${message}`,
+      busy: "Retrait indisponible pendant un envoi.",
+    },
+    eject: {
+      button: "Éjecter la Flam",
+      working: "Éjection en cours…",
+      busy: "Éjection indisponible pendant un envoi.",
+      failed: (message: string) => `Impossible d'éjecter la Flam : ${message}`,
     },
   },
   toast: {

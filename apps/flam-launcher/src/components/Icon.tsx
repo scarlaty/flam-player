@@ -49,6 +49,12 @@ const paths = {
       <path d="M19 4v4h-4" />
     </>
   ),
+  device: (
+    <>
+      <rect x="5" y="4" width="14" height="16" rx="3" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
   sliders: (
     <>
       <path d="M4 7h9m4 0h3M4 17h3m4 0h9" />
