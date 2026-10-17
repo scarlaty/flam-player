@@ -2,11 +2,12 @@
 //!
 //! Port Rust de `tools/telmi2flam` (voir `tools/telmi2flam/PORT-RUST.md`), en cours : codecs
 //! [`lif`] et [`mp3map`], lecture de l'archive ([`archive`], [`info`]), JSON ([`json`]), texte
-//! ([`text`]) et sérialisation Lua ([`lua`]) ; les autres modules de conversion arrivent dans les
-//! PR suivantes.
+//! ([`text`]), sérialisation Lua ([`lua`]) et graphe `nodes.json` vers Lua ([`graph`]) ; les
+//! autres modules de conversion arrivent dans les PR suivantes.
 
 pub mod archive;
 pub mod error;
+pub mod graph;
 pub mod info;
 pub mod json;
 pub mod lif;

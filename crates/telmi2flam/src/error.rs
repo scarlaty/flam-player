@@ -48,3 +48,10 @@ impl fmt::Display for ConvError {
 }
 
 impl std::error::Error for ConvError {}
+
+/// `_expect` et `load_json` de Python lèvent `ConvError` (`invalid_content`, code 4).
+impl From<crate::json::ContentError> for ConvError {
+    fn from(e: crate::json::ContentError) -> Self {
+        ConvError::invalid_content(e.message)
+    }
+}
