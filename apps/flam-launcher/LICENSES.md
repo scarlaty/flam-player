@@ -27,3 +27,7 @@ Les dépendances de l'application elle-même (bibliothèques Rust compilées dan
 dans `THIRD-PARTY-NOTICES.txt`, installé à la racine de l'application ; ce fichier est généré à
 chaque build par `npm run build:notices` (`scripts/build-notices.mjs`, depuis `cargo metadata` et
 `package-lock.json`).
+
+Du code adapté de Lunii.QT (Copyright (c) o-daneel, GPL v3 à l'origine) est intégré à
+`flam-launcher.exe` sous licence MIT, avec l'accord de son auteur ; périmètre et mentions à
+conserver : `docs/licences/lunii-qt.md` du dépôt.
