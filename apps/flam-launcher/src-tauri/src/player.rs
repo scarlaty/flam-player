@@ -1541,7 +1541,9 @@ mod tests {
     fn executable_invalide_est_une_erreur_typee() {
         let c = ctx();
         let story = c.story("a.plain.pk", "exit 0\n");
-        let not_exe = c.story("faux.exe", "pas un exécutable");
+        // Fichier vide : CreateProcess échoue sans boîte « Application 16 bits »
+        // (un fichier texte nommé .exe est lancé comme programme DOS).
+        let not_exe = c.story("faux.exe", "");
         let err = c
             .service
             .launch(&not_exe, || Ok(story), || None, "library", "u", "t")
@@ -1724,7 +1726,9 @@ mod tests {
         let embed = Arc::new(FakeEmbed::default());
         let c = ctx_embed(embed.clone());
         let story = c.story("a.plain.pk", "exit 0\n");
-        let not_exe = c.story("faux.exe", "pas un exécutable");
+        // Fichier vide : CreateProcess échoue sans boîte « Application 16 bits »
+        // (un fichier texte nommé .exe est lancé comme programme DOS).
+        let not_exe = c.story("faux.exe", "");
         let err = c
             .service
             .launch(&not_exe, || Ok(story), || None, "library", "u", "t")
