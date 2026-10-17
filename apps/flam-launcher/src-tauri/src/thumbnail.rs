@@ -6,6 +6,7 @@
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use base64::Engine;
 
@@ -226,6 +227,150 @@ impl ThumbCache {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Purge du cache `<cache>/thumbs/` (#37)
+// ---------------------------------------------------------------------------
+
+/// Limites de la purge de `<cache>/thumbs/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PurgePolicy {
+    /// Une vignette plus ancienne est supprimée (clé périmée : archive modifiée ou disparue).
+    pub max_age: Duration,
+    /// Taille totale maximale des vignettes conservées ; les plus anciennes partent d'abord.
+    pub max_bytes: u64,
+    /// Un fichier temporaire d'écriture plus ancien est un reste d'arrêt brutal.
+    pub stale_tmp: Duration,
+}
+
+impl Default for PurgePolicy {
+    fn default() -> Self {
+        Self {
+            max_age: Duration::from_secs(30 * 24 * 3600),
+            max_bytes: 128 * 1024 * 1024,
+            stale_tmp: Duration::from_secs(3600),
+        }
+    }
+}
+
+/// Bilan d'une purge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PurgeReport {
+    pub removed: usize,
+    pub freed_bytes: u64,
+    /// Suppressions refusées par le système (fichier ouvert, droits) : conservés, réessayés
+    /// à la prochaine purge.
+    pub failed: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OwnFile {
+    Thumb,
+    Temp,
+}
+
+/// Reconnaît **exactement** les noms que `ThumbCache` écrit : `<16 chiffres hexadécimaux
+/// minuscules>.png` (vignette) ou `<…>.tmp-<pid>` (écriture en cours). Tout autre nom, même
+/// dans `thumbs/`, n'appartient pas à l'application et n'est jamais supprimé.
+fn own_file(name: &str) -> Option<OwnFile> {
+    let (stem, ext) = name.split_once('.')?;
+    if stem.len() != 16 || !stem.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return None;
+    }
+    if ext == "png" {
+        return Some(OwnFile::Thumb);
+    }
+    let pid = ext.strip_prefix("tmp-")?;
+    (!pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())).then_some(OwnFile::Temp)
+}
+
+/// Purge `<cache_dir>/thumbs/` : supprime les restes d'écriture périmés, les vignettes plus
+/// anciennes que `policy.max_age`, puis les plus anciennes restantes tant que le total dépasse
+/// `policy.max_bytes`.
+///
+/// Garde-fous : `thumbs/` doit être un vrai dossier (un lien ou une jonction est refusé, sa
+/// cible n'est jamais parcourue) ; seuls les fichiers réguliers dont le nom est exactement celui
+/// d'un fichier de [`ThumbCache`] sont touchés (ni lien, ni sous-dossier, ni fichier d'un autre
+/// programme) ; une suppression en échec est comptée puis ignorée, la purge continue.
+/// `remove` fait la suppression (injectable pour les tests de panne).
+pub fn purge_thumbs_with(
+    cache_dir: &Path,
+    policy: &PurgePolicy,
+    now: SystemTime,
+    remove: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<PurgeReport> {
+    let dir = cache_dir.join("thumbs");
+    match std::fs::symlink_metadata(&dir) {
+        Ok(meta) if meta.is_dir() => {}
+        _ => return Ok(PurgeReport::default()),
+    }
+    let age_of = |modified: SystemTime| now.duration_since(modified).unwrap_or_default();
+    let mut report = PurgeReport::default();
+    let mut try_remove = |path: &Path, len: u64, report: &mut PurgeReport| {
+        match remove(path) {
+            Ok(()) => {
+                report.removed += 1;
+                report.freed_bytes += len;
+                true
+            }
+            // Disparu entre-temps : rien à libérer, rien à réessayer.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Err(err) => {
+                tracing::warn!("purge des vignettes : {} : {err}", path.display());
+                report.failed += 1;
+                false
+            }
+        }
+    };
+    let mut kept: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let Ok(entry) = entry else { continue };
+        let Some(kind) = entry.file_name().to_str().and_then(own_file) else {
+            continue;
+        };
+        // `symlink_metadata` : un lien nommé comme une vignette n'est jamais touché.
+        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let limit = match kind {
+            OwnFile::Thumb => policy.max_age,
+            OwnFile::Temp => policy.stale_tmp,
+        };
+        if age_of(modified) > limit {
+            try_remove(&entry.path(), meta.len(), &mut report);
+        } else if kind == OwnFile::Thumb {
+            kept.push((modified, meta.len(), entry.path()));
+        }
+    }
+    let mut total: u64 = kept.iter().map(|(_, len, _)| len).sum();
+    kept.sort_by_key(|(modified, _, path)| (*modified, path.clone()));
+    for (_, len, path) in kept {
+        if total <= policy.max_bytes {
+            break;
+        }
+        if try_remove(&path, len, &mut report) {
+            total -= len;
+        }
+    }
+    Ok(report)
+}
+
+/// [`purge_thumbs_with`] avec la suppression réelle d'un fichier.
+pub fn purge_thumbs(
+    cache_dir: &Path,
+    policy: &PurgePolicy,
+    now: SystemTime,
+) -> std::io::Result<PurgeReport> {
+    purge_thumbs_with(cache_dir, policy, now, &mut |path| {
+        std::fs::remove_file(path)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +492,259 @@ mod tests {
             .get_or_make::<ThumbError>(1, 192, || Ok(solid(1, 1, [0, 0, 0, 255])))
             .unwrap();
         assert!(uri.starts_with("data:image/png"));
+    }
+
+    // --- Purge de `<cache>/thumbs/` (#37) ---
+
+    const DAY: Duration = Duration::from_secs(24 * 3600);
+
+    fn put(dir: &Path, name: &str, len: usize, age: Duration, now: SystemTime) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(name);
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(len as u64).unwrap();
+        file.set_modified(now - age).unwrap();
+        path
+    }
+
+    fn policy(max_bytes: u64) -> PurgePolicy {
+        PurgePolicy {
+            max_age: 30 * DAY,
+            max_bytes,
+            stale_tmp: Duration::from_secs(3600),
+        }
+    }
+
+    /// Lien de dossier sans privilège : jonction (`mklink /J`) sous Windows, lien symbolique
+    /// ailleurs.
+    fn link_dir(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link.to_string_lossy().replace('/', "\\"))
+                .arg(target.to_string_lossy().replace('/', "\\"))
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "mklink /J : {out:?}");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[test]
+    fn noms_reconnus_comme_fichiers_de_l_application() {
+        assert!(own_file("00000000000000ab.png") == Some(OwnFile::Thumb));
+        assert!(own_file("00000000000000ab.tmp-1234") == Some(OwnFile::Temp));
+        for name in [
+            "00000000000000AB.png",
+            "00000000000000ab.PNG",
+            "00000000000000ab.png.bak",
+            "00000000000000a.png",
+            "00000000000000abc.png",
+            "00000000000000ab.tmp-",
+            "00000000000000ab.tmp-12x",
+            "notes.txt",
+            ".png",
+            "",
+        ] {
+            assert!(own_file(name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn purge_par_age_temporaires_et_taille() {
+        let cache = tempfile::tempdir().unwrap();
+        let dir = cache.path().join("thumbs");
+        let now = SystemTime::now();
+        let old = put(&dir, "0000000000000001.png", 10, 31 * DAY, now);
+        let recent_a = put(&dir, "0000000000000002.png", 10, 3 * DAY, now);
+        let recent_b = put(&dir, "0000000000000003.png", 10, 2 * DAY, now);
+        let recent_c = put(&dir, "0000000000000004.png", 10, DAY, now);
+        let stale_tmp = put(
+            &dir,
+            "0000000000000005.tmp-99",
+            5,
+            Duration::from_secs(7200),
+            now,
+        );
+        let live_tmp = put(
+            &dir,
+            "0000000000000006.tmp-99",
+            5,
+            Duration::from_secs(60),
+            now,
+        );
+
+        // Sans limite de taille : seuls l'ancien et le temporaire périmé partent.
+        let report = purge_thumbs(cache.path(), &policy(1000), now).unwrap();
+        assert_eq!(
+            report,
+            PurgeReport {
+                removed: 2,
+                freed_bytes: 15,
+                failed: 0
+            }
+        );
+        assert!(!old.exists() && !stale_tmp.exists());
+        assert!(live_tmp.exists() && recent_a.exists());
+
+        // Plafond de 20 octets pour 30 : la plus ancienne des récentes part.
+        let report = purge_thumbs(cache.path(), &policy(20), now).unwrap();
+        assert_eq!(report.removed, 1);
+        assert!(!recent_a.exists());
+        assert!(recent_b.exists() && recent_c.exists() && live_tmp.exists());
+    }
+
+    #[test]
+    fn dossier_absent_ou_fichier_ne_fait_rien() {
+        let cache = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        assert_eq!(
+            purge_thumbs(cache.path(), &policy(0), now).unwrap(),
+            PurgeReport::default()
+        );
+        std::fs::write(cache.path().join("thumbs"), b"fichier").unwrap();
+        assert_eq!(
+            purge_thumbs(cache.path(), &policy(0), now).unwrap(),
+            PurgeReport::default()
+        );
+        assert!(cache.path().join("thumbs").is_file());
+    }
+
+    #[test]
+    fn ne_supprime_jamais_un_fichier_qui_n_est_pas_de_l_application() {
+        let cache = tempfile::tempdir().unwrap();
+        let dir = cache.path().join("thumbs");
+        let now = SystemTime::now();
+        let ancient = 400 * DAY;
+        let foreign: Vec<PathBuf> = [
+            "notes.txt",
+            "00000000000000AB.png",
+            "00000000000000ab.png.bak",
+            "00000000000000ab.PNG",
+            "0000000000000007.meta.json",
+        ]
+        .iter()
+        .map(|n| put(&dir, n, 50, ancient, now))
+        .collect();
+        // Un sous-dossier nommé comme une vignette, avec un fichier ancien dedans.
+        let sub = dir.join("0000000000000008.png");
+        std::fs::create_dir_all(&sub).unwrap();
+        let inner = put(&sub, "0000000000000009.png", 5, ancient, now);
+        // Fichier voisin de `thumbs/`, hors de celui-ci.
+        let sibling = put(cache.path(), "0000000000000001.png", 5, ancient, now);
+        let own = put(&dir, "000000000000000a.png", 50, ancient, now);
+
+        let report = purge_thumbs(cache.path(), &policy(0), now).unwrap();
+        assert_eq!(report.removed, 1);
+        assert!(!own.exists());
+        for path in foreign.iter().chain([&inner, &sibling]) {
+            assert!(path.exists(), "{} supprimé", path.display());
+        }
+    }
+
+    #[test]
+    fn un_thumbs_lien_ou_jonction_n_est_ni_suivi_ni_supprime() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = root.path().join("ailleurs");
+        let now = SystemTime::now();
+        let precious = put(&outside, "0000000000000001.png", 50, 400 * DAY, now);
+        let cache = root.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        link_dir(&cache.join("thumbs"), &outside);
+
+        let report = purge_thumbs(&cache, &policy(0), now).unwrap();
+        assert_eq!(report, PurgeReport::default());
+        assert!(precious.exists());
+        assert!(std::fs::symlink_metadata(cache.join("thumbs")).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn un_lien_nomme_comme_une_vignette_n_est_pas_touche() {
+        let root = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let target = put(root.path(), "cible", 50, 400 * DAY, now);
+        let dir = root.path().join("thumbs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let link = dir.join("0000000000000001.png");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let report = purge_thumbs(root.path(), &policy(0), now).unwrap();
+        assert_eq!(report.removed, 0);
+        assert!(target.exists() && std::fs::symlink_metadata(&link).is_ok());
+    }
+
+    #[test]
+    fn une_suppression_en_echec_n_arrete_pas_la_purge() {
+        let cache = tempfile::tempdir().unwrap();
+        let dir = cache.path().join("thumbs");
+        let now = SystemTime::now();
+        let a = put(&dir, "0000000000000001.png", 10, 40 * DAY, now);
+        let b = put(&dir, "0000000000000002.png", 10, 41 * DAY, now);
+        let c = put(&dir, "0000000000000003.png", 10, 42 * DAY, now);
+        let stranger = put(&dir, "notes.txt", 10, 400 * DAY, now);
+
+        let mut attempted = Vec::new();
+        let report = purge_thumbs_with(cache.path(), &policy(1000), now, &mut |path| {
+            attempted.push(path.to_path_buf());
+            if path == b {
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            std::fs::remove_file(path)
+        })
+        .unwrap();
+        assert_eq!(
+            report,
+            PurgeReport {
+                removed: 2,
+                freed_bytes: 20,
+                failed: 1
+            }
+        );
+        assert!(!a.exists() && !c.exists());
+        assert!(b.exists() && stranger.exists());
+        // Rien n'a été tenté hors des fichiers de l'application.
+        assert!(attempted.iter().all(|p| p.parent() == Some(dir.as_path())));
+        assert!(!attempted.contains(&stranger));
+
+        // Le fichier resté est réessayé (et supprimé) à la purge suivante.
+        let report = purge_thumbs(cache.path(), &policy(1000), now).unwrap();
+        assert_eq!(report.removed, 1);
+        assert!(!b.exists() && stranger.exists());
+    }
+
+    #[test]
+    fn un_echec_de_suppression_ne_compte_pas_dans_la_taille_liberee() {
+        let cache = tempfile::tempdir().unwrap();
+        let dir = cache.path().join("thumbs");
+        let now = SystemTime::now();
+        // Deux récentes de 10 octets, plafond 10 : la plus ancienne devrait partir ; en échec,
+        // la suivante part à sa place pour tenir le plafond.
+        let older = put(&dir, "0000000000000001.png", 10, 2 * DAY, now);
+        let newer = put(&dir, "0000000000000002.png", 10, DAY, now);
+        let report = purge_thumbs_with(cache.path(), &policy(10), now, &mut |path| {
+            if path == older {
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            std::fs::remove_file(path)
+        })
+        .unwrap();
+        assert_eq!(report.failed, 1);
+        assert!(older.exists());
+        assert!(!newer.exists());
+    }
+
+    #[test]
+    fn un_fichier_disparu_pendant_la_purge_n_est_pas_un_echec() {
+        let cache = tempfile::tempdir().unwrap();
+        let dir = cache.path().join("thumbs");
+        let now = SystemTime::now();
+        put(&dir, "0000000000000001.png", 10, 40 * DAY, now);
+        let report = purge_thumbs_with(cache.path(), &policy(1000), now, &mut |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
+        .unwrap();
+        assert_eq!(report, PurgeReport::default());
     }
 }

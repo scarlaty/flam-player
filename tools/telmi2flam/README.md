@@ -593,6 +593,27 @@ dans le `nodes.json` source. Depuis #44 (convention de sortie par retour, voir �
 action n'est plus signalée si elle n'est atteinte que par la chaîne `home` : le chiffre
 « 4 warnings » est périmé (archive Maxicours absente du cache, non remesuré).
 
+### Outillage de parité (port Rust, #22)
+
+Pour comparer un convertisseur candidat (le port Rust, note de conception de #22, §4) à ce
+convertisseur, qui sert d'oracle (Pillow 12.3.0 et Python épinglés dans
+`.github/workflows/telmi2flam.yml`, identiques à `build-converter.ps1`) :
+
+```bash
+python tools/telmi2flam/tests/parity/make_corpus.py "$TMP/parite"            # rien n'est commité
+python tools/telmi2flam/parity.py corpus "$TMP/parite" --report "$TMP/rapport.json"
+python tools/telmi2flam/parity.py matrix "$TMP/parite"                       # .lif octet à octet
+python tools/telmi2flam/parity.py compare A.plain.pk B.plain.pk              # deux sorties
+```
+
+`make_corpus.py` génère le corpus synthétique (cas des tests) et la matrice de
+rééchantillonnage (modes PNG × tailles impaires ou premières × cibles réelles).
+`parity.py` compare statut, code de sortie, code d'erreur, multiensemble des codes
+d'avertissement, `--info` et la liste ordonnée des entrées (nom, méthode, drapeau UTF-8,
+contenu). Les écarts admis sont une liste fermée (`ALLOWED_DEVIATIONS`) ; les délégations
+`unsupported_format` (code 7) sont comptées à part. Sans `--candidate`, c'est Python contre
+Python : zéro écart. Code de sortie 1 au moindre écart, 0 sinon.
+
 ### Distribution avec flam-launcher (Python embarqué)
 
 Pour l'installateur Windows, `apps/flam-launcher/scripts/build-converter.ps1` assemble
