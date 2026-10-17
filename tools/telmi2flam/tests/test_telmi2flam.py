@@ -743,6 +743,18 @@ class TestConversion(Base):
         finally:
             T.RUNTIME_DIR, T.RUNTIME_IMG_DIR = saved
 
+    # #129 : le manifeste unique liste exactement ce que _convert copie dans le paquet
+    def test_runtime_manifest_matches_dirs(self):
+        with open(T.RUNTIME_MANIFEST, encoding="utf-8") as f:
+            listed = [ln.strip().lstrip("!") for ln in f
+                      if ln.strip() and not ln.startswith("#")]
+        on_disk = (["script/" + n for n in sorted(os.listdir(T.RUNTIME_DIR)) if n.endswith(".lua")]
+                   + ["img/script/" + n for n in sorted(os.listdir(T.RUNTIME_IMG_DIR))
+                      if n.endswith(".lif")])
+        self.assertEqual(listed, on_disk)
+        self.assertIn("global.lua", T.RUNTIME_SCRIPTS)
+        self.assertIn("audio-player-pause.lif", T.RUNTIME_UI_LIF)
+
 class TestMp3map(unittest.TestCase):
     def ref_44k(self, data):
         """Formule historique (mp3map-tool de reference) pour du 44,1 kHz MPEG1 L3."""

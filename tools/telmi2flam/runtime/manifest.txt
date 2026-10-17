@@ -1,0 +1,65 @@
+# Runtime Lunii copie dans chaque paquet par telmi2flam (manifeste unique, PORT-RUST.md §2.1).
+# Lu par telmi2flam.py et validate.py, et embarque dans le binaire Rust (crates/telmi2flam/build.rs).
+# Une ligne par fichier, chemin relatif a runtime/ et identique au nom dans le paquet ;
+# "!" en tete : indispensable au demarrage (main.lua -> require("global"), modules d'ecran
+# du moteur et icones UI qu'ils chargent). Doit lister exactement les .lua de runtime/script
+# et les .lif de runtime/img/script (tests Python et Rust).
+!script/audio-player_1_0_0.lua
+!script/button-theme-default.lua
+!script/button-theme-interactive.lua
+!script/button-theme.lua
+!script/button.lua
+!script/carousel_1_0_0.lua
+script/chapterView.lua
+script/collection.lua
+script/composer.lua
+script/detail.lua
+script/dialog-interactive.lua
+script/dialog.lua
+script/dialog_1_0_0.lua
+script/dice-roll.lua
+script/full-screen-image.lua
+!script/global.lua
+script/h-container.lua
+script/horizontal-notification.lua
+script/image-Button.lua
+!script/image-choice_1_0_0.lua
+script/image-panoramic.lua
+script/image-stress.lua
+script/list-choice-circular.lua
+!script/list-choice_1_0_0.lua
+script/list-quiz.lua
+script/minimal.lua
+script/modal-info_0_9_0.lua
+script/notification.lua
+!script/progressionManager.lua
+script/thread.lua
+!script/title-card.lua
+script/title-screen.lua
+!script/v-container.lua
+!script/v-scroll.lua
+!img/script/arrow-left-18x18-ui-000.lif
+img/script/arrow-left-18x18-ui-1000.lif
+!img/script/arrow-right-18x18-ui-000.lif
+img/script/arrow-right-18x18-ui-1000.lif
+!img/script/arrow-right-ui-000.lif
+!img/script/audio-player-pause.lif
+img/script/audio-player-play.lif
+img/script/bubble.lif
+img/script/check.lif
+img/script/checkDisabled.lif
+img/script/corner.lif
+img/script/cornerDisabled.lif
+img/script/cross.lif
+img/script/empty.lif
+img/script/flam_icon.lif
+img/script/lock.lif
+img/script/mask-154x213.lif
+img/script/mask.lif
+img/script/pause-18x18-brand-primary-900.lif
+img/script/picto_empty.lif
+img/script/play-18x18-ui-000.lif
+img/script/play-18x18-ui-1000.lif
+img/script/player_icon.lif
+img/script/uncheck.lif
+img/script/uncheckDisabled.lif

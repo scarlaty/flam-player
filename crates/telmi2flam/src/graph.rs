@@ -91,7 +91,7 @@ fn py_type_name(kind: Kind) -> &'static str {
 }
 
 /// Vérité d'une valeur JSON au sens de Python (`if v:`).
-fn truthy(v: Option<&Value>) -> bool {
+pub(crate) fn truthy(v: Option<&Value>) -> bool {
     match v {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,

@@ -36,13 +36,24 @@ except ImportError:   # lupa optionnel
 LIF_MAGIC = b"liff"
 LIF_END = b"\x00\x00\x00\x00\x00\x00\x00\x01"
 LIF_MAX_DIM = 2047  # 11 bits de lv_img_header_t (LVGL 8.3), cf. lif_decoder.c
-# Runtime Lunii indispensable au demarrage (meme liste que telmi2flam.py)
-RUNTIME_SCRIPTS = ("global.lua", "progressionManager.lua", "button.lua", "button-theme.lua",
-                   "button-theme-default.lua", "button-theme-interactive.lua", "v-scroll.lua",
-                   "v-container.lua", "audio-player_1_0_0.lua", "carousel_1_0_0.lua",
-                   "image-choice_1_0_0.lua", "list-choice_1_0_0.lua", "title-card.lua")
-RUNTIME_UI_LIF = ("audio-player-pause.lif", "arrow-left-18x18-ui-000.lif",
-                  "arrow-right-18x18-ui-000.lif", "arrow-right-ui-000.lif")
+# Runtime Lunii indispensable au demarrage : lignes "!" du manifeste unique
+# runtime/manifest.txt (lu aussi par telmi2flam.py, embarque par le port Rust).
+RUNTIME_MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime", "manifest.txt")
+
+
+def _runtime_required(manifest=RUNTIME_MANIFEST):
+    scripts, icons = [], []
+    with open(manifest, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("!script/"):
+                scripts.append(line[len("!script/"):])
+            elif line.startswith("!img/script/"):
+                icons.append(line[len("!img/script/"):])
+    return tuple(scripts), tuple(icons)
+
+
+RUNTIME_SCRIPTS, RUNTIME_UI_LIF = _runtime_required()
 
 
 def lua_to_py(v):
