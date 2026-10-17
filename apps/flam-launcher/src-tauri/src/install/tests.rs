@@ -1126,23 +1126,45 @@ async fn arret_force_termine_aussi_les_sous_processus() {
         .cache()
         .join("library/.staging")
         .join(format!("{}.plain.pk.gpid", task.id));
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while std::fs::read_to_string(&gpid_file)
-        .unwrap_or_default()
-        .is_empty()
-    {
-        assert!(Instant::now() < deadline, "pas de sous-processus");
+    // Le sous-processus n'existe qu'après le démarrage de deux interpréteurs Python (le
+    // convertisseur, puis son enfant) : sous forte charge (CI Windows, antivirus) cela dépasse
+    // largement 10 s. On attend donc le PID, valide et vivant, avec la même borne que `wait`
+    // (30 s), et on reporte l'état de la tâche pour diagnostiquer un éventuel échec.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let pid = loop {
+        let read = std::fs::read_to_string(&gpid_file).unwrap_or_default();
+        if let Ok(pid) = read.trim().parse::<u32>() {
+            break pid.to_string();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "pas de sous-processus : {:?}",
+            ctx.task(&task.id)
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    let pid = std::fs::read_to_string(&gpid_file).unwrap();
+    };
     let alive = |pid: &str| {
+        // CSV : le PID est la 2e colonne ; une simple recherche de sous-chaîne confondrait
+        // `123` avec `12 345 Ko` (colonne mémoire).
         let out = std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
             .output()
             .unwrap();
-        String::from_utf8_lossy(&out.stdout).contains(pid)
+        String::from_utf8_lossy(&out.stdout).lines().any(|l| {
+            l.split(',')
+                .nth(1)
+                .is_some_and(|c| c.trim_matches('"') == pid)
+        })
     };
-    assert!(alive(&pid), "le sous-processus tourne avant l'annulation");
+    // Le PID peut avoir été lu avant que `tasklist` ne voie le processus : attente bornée.
+    let up = Instant::now() + Duration::from_secs(10);
+    while !alive(&pid) {
+        assert!(
+            Instant::now() < up,
+            "le sous-processus {pid} tourne avant l'annulation"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     ctx.service.cancel(&task.id).unwrap();
     assert_eq!(ctx.finished(&task.id).await.state, TaskState::Cancelled);
     let deadline = Instant::now() + Duration::from_secs(10);

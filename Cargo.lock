@@ -4161,7 +4161,9 @@ dependencies = [
  "crc32fast",
  "flate2",
  "indexmap 2.14.2",
+ "miniz_oxide 0.9.1",
  "serde_json",
+ "sha2",
  "unicode-normalization",
 ]
 

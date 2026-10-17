@@ -96,6 +96,7 @@ fn truthy(v: Option<&Value>) -> bool {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
         Some(Value::Int(i)) => *i != 0,
+        Some(Value::UInt(u)) => *u != 0,
         Some(Value::Float(f)) => *f != 0.0,
         Some(Value::Str(s)) => !s.is_empty(),
         Some(Value::List(l)) => !l.is_empty(),
@@ -147,9 +148,10 @@ fn expect_str(v: Option<&Value>, what: &str) -> Result<String, ConvError> {
     }
 }
 
-fn expect_int(v: &Value, what: &str) -> Result<i64, ConvError> {
+fn expect_int(v: &Value, what: &str) -> Result<i128, ConvError> {
     match expect(Some(v), &[Kind::Int], what, false)? {
-        Some(Value::Int(i)) => Ok(*i),
+        Some(Value::Int(i)) => Ok(i128::from(*i)),
+        Some(Value::UInt(u)) => Ok(i128::from(*u)),
         _ => Err(ConvError::invalid_content(format!(
             "{what} : entier attendu"
         ))),
@@ -158,7 +160,8 @@ fn expect_int(v: &Value, what: &str) -> Result<i64, ConvError> {
 
 fn expect_number(v: &Value, what: &str) -> Result<Number, ConvError> {
     match expect(Some(v), &[Kind::Int, Kind::Float], what, false)? {
-        Some(Value::Int(i)) => Ok(Number::Int(*i)),
+        Some(Value::Int(i)) => Ok(Number::Int(i128::from(*i))),
+        Some(Value::UInt(u)) => Ok(Number::Int(i128::from(*u))),
         Some(Value::Float(f)) => Ok(Number::Float(*f)),
         _ => Err(ConvError::invalid_content(format!(
             "{what} : entier/nombre attendu"
@@ -169,7 +172,7 @@ fn expect_number(v: &Value, what: &str) -> Result<Number, ConvError> {
 /// Nombre TELMI (`int` ou `float` de Python).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Number {
-    Int(i64),
+    Int(i128),
     Float(f64),
 }
 
@@ -185,8 +188,8 @@ impl Number {
 /// Cible d'une transition : `index`, ou `indexItem` (exclusifs, spec TELMI).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
-    Index(i64),
-    IndexItem(i64),
+    Index(i128),
+    IndexItem(i128),
 }
 
 /// Transition `{action, index|indexItem}` (`_conv_trans`).
@@ -234,15 +237,15 @@ pub struct Ctrl {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ItemValue {
     PlayingTime,
-    AssignItem(i64),
+    AssignItem(i128),
     Number(Number),
 }
 
 /// Opération d'inventaire `{type, item, number|assignItem|playingTime}` (`_conv_item`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ItemOp {
-    pub kind: i64,
-    pub item: i64,
+    pub kind: i128,
+    pub item: i128,
     pub value: ItemValue,
 }
 
@@ -335,15 +338,15 @@ impl Stage {
 /// Second membre d'une condition : un autre objet d'inventaire ou un nombre.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CondValue {
-    ItemB(i64),
+    ItemB(i128),
     Num(Number),
 }
 
 /// Condition `{comparator, item, number|compareItem}` (`_conv_cond`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cond {
-    pub cmp: i64,
-    pub item: i64,
+    pub cmp: i128,
+    pub item: i128,
     pub value: CondValue,
 }
 
@@ -392,7 +395,7 @@ pub struct InventoryItem {
     pub name: String,
     pub init: Number,
     pub max: Number,
-    pub display: i64,
+    pub display: i128,
     pub image: Option<String>,
 }
 
@@ -543,7 +546,7 @@ pub fn convert_graph(
             })?;
             let name = match it.get("name") {
                 Some(Value::Str(s)) => text(s, Some(replaced)),
-                Some(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_))) => {
+                Some(v @ (Value::Int(_) | Value::UInt(_) | Value::Float(_) | Value::Bool(_))) => {
                     text(&py_str_scalar(v), Some(replaced))
                 }
                 _ => String::new(),
@@ -571,6 +574,7 @@ fn py_str_scalar(v: &Value) -> String {
         Value::Bool(true) => "True".to_owned(),
         Value::Bool(false) => "False".to_owned(),
         Value::Int(i) => i.to_string(),
+        Value::UInt(u) => u.to_string(),
         Value::Float(f) => py_float_repr(*f),
         _ => String::new(),
     }
@@ -580,7 +584,7 @@ fn py_str_scalar(v: &Value) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Start {
     pub action: String,
-    pub index: i64,
+    pub index: i128,
 }
 
 impl Start {
@@ -819,10 +823,10 @@ pub fn nodes_lua(header: &Header<'_>, graph: &Graph, start: &Start) -> Result<Ve
                 ("subtitle", Lua::Str(header.subtitle.to_owned())),
             ]),
         ),
-        // `usize` vers `i64` : au plus le nombre de stages, donc sans perte.
+        // `usize` vers `i128` : au plus le nombre de stages, donc sans perte.
         (
             "totalChapters",
-            Lua::Int(i64::try_from(total).unwrap_or(i64::MAX)),
+            Lua::Int(i128::try_from(total).unwrap_or(i128::MAX)),
         ),
         (
             "start",
@@ -1044,7 +1048,7 @@ mod tests {
         );
         let entries = vec![entry("fantome"), entry("s0"), entry("s0")];
         g.actions.insert("a0".into(), entries);
-        g.stages[0].ok.as_mut().unwrap().target = Target::IndexItem(i64::MAX);
+        g.stages[0].ok.as_mut().unwrap().target = Target::IndexItem(i128::from(u64::MAX));
         // s0 est cible d'une action à plusieurs entrées, mais autoplay : chapitre.
         assert_eq!(max_chapters_per_run(&g, &start("a0")), 1);
         assert_eq!(max_chapters_per_run(&g, &start("inconnue")), 0);

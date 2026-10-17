@@ -132,7 +132,10 @@ def graph_cases():
                            [{"assignItem": None}], [{"number": 1.5, "type": 2, "item": 1}],
                            [{"number": True}], [{"type": "x"}], [{"item": 1.0}], ["x"],
                            [{"playingTime": "", "number": -0.0}], [{"number": 1e300}],
-                           [{"number": 12345678901234567}, {"assignItem": -4, "playingTime": []}]]):
+                           [{"number": 12345678901234567}, {"assignItem": -4, "playingTime": []}],
+                           # entiers au-dela de i64 (json::Value::UInt) : int de Python
+                           [{"type": 2 ** 64 - 1, "item": 2 ** 63, "assignItem": 2 ** 63 + 5},
+                            {"number": 2 ** 64 - 1}, {"number": -2 ** 63}, {"playingTime": 2 ** 63}]]):
         add("g_items_%d" % i, lambda v=v: zipc(variant(setp(s0 + ("items",), v))))
     for i, v in enumerate([True, 1, 0, "", "x", [], None, 0.5]):
         add("g_reset_%d" % i, lambda v=v: zipc(variant(setp(s0 + ("inventoryReset",), v))))
@@ -154,7 +157,11 @@ def graph_cases():
                            [{"stage": "s0", "conditions": [{"comparator": 1.0}]}],
                            [{"stage": "s0", "conditions": [{"number": "1"}]}],
                            [{"stage": "s0", "conditions": [5]}],
-                           [{"stage": "absent"}, {"stage": "s0"}]]):
+                           [{"stage": "absent"}, {"stage": "s0"}],
+                           [{"stage": "s0", "conditions": [{"compareItem": 2 ** 64 - 1,
+                                                            "item": 2 ** 63},
+                                                           {"number": 2 ** 64 - 1,
+                                                            "comparator": 2 ** 63}]}]]):
         add("g_action_%d" % i, lambda v=v: zipc(variant(setp(a0, v))))
     for i, v in enumerate([None, [], {}, "x", {"a0": None}]):
         add("g_actions_%d" % i, lambda v=v: zipc(variant(setp(("actions",), v))))
@@ -162,7 +169,8 @@ def graph_cases():
         add("g_stages_%d" % i, lambda v=v: zipc(variant(setp(("stages",), v))))
     for i, v in enumerate([None, {}, [], {"action": "a0"}, {"action": "a0", "index": None},
                            {"action": 1}, {"action": "zz", "index": 4}, {"index": 0},
-                           {"action": "a0", "index": True}, {"action": "a0", "index": -3}]):
+                           {"action": "a0", "index": True}, {"action": "a0", "index": -3},
+                           {"action": "a0", "index": 2 ** 64 - 1}]):
         add("g_start_%d" % i, lambda v=v: zipc(variant(setp(("startAction",), v))))
     add("g_start_absent", lambda: zipc(variant(lambda n: n.pop("startAction"))))
     # startAction invalide ET asset manquant : missing_asset passe avant (ordre de Python)
@@ -179,7 +187,8 @@ def graph_cases():
                            [dict(inv, maxNumber="x")], [dict(inv, display=1.0)],
                            [dict(inv, initialNumber=None)], [dict(inv, image="")],
                            [dict(inv, image=None)], [dict(inv, image="absent.png")],
-                           [dict(inv, image="../x.png")], [inv, dict(inv, image="s0.png")]]):
+                           [dict(inv, image="../x.png")], [inv, dict(inv, image="s0.png")],
+                           [dict(inv, name=2 ** 64 - 1, maxNumber=2 ** 63, display=2 ** 64 - 2)]]):
         add("g_inventory_%d" % i, lambda v=v: zipc(variant(setp(("inventory",), v))))
     add("g_inventory_missing_allowed", lambda: zipc(variant(setp(
         ("inventory",), [dict(inv, image="absent.png")]))), ["--allow-missing"])
