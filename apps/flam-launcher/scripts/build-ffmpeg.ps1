@@ -78,7 +78,6 @@ $WantedDecoders = @('aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le')
 
 # --- Chemins ------------------------------------------------------------------------------
 $LauncherDir = Split-Path -Parent $PSScriptRoot
-$RepoRoot = Split-Path -Parent (Split-Path -Parent $LauncherDir)
 if (-not $OutDir) { $OutDir = Join-Path $LauncherDir 'build\ffmpeg' }
 if (-not $DownloadDir) { $DownloadDir = Join-Path $LauncherDir 'build\downloads' }
 $OutDir = [IO.Path]::GetFullPath($OutDir)
@@ -164,6 +163,7 @@ if (-not (Select-String -LiteralPath (Join-Path $OutDir 'LICENSE') -Pattern 'GNU
   throw 'ffmpeg/LICENSE : texte LGPL attendu'
 }
 
+try {
 # --- Contrôles ----------------------------------------------------------------------------
 $ffmpeg = Join-Path $OutDir 'ffmpeg.exe'
 $ffprobe = Join-Path $OutDir 'ffprobe.exe'
@@ -199,6 +199,12 @@ try {
   if ($probe -notmatch 'codec_name=mp3' -or $probe -notmatch 'sample_rate=44100') { throw "MP3 inattendu :`n$probe" }
 } finally {
   Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+} catch {
+  # Un dossier non validé ne doit jamais être embarqué ni retenu par la détection de développement.
+  Remove-Item -LiteralPath $OutDir -Recurse -Force -ErrorAction SilentlyContinue
+  throw
 }
 
 # --- BUILD.txt ----------------------------------------------------------------------------

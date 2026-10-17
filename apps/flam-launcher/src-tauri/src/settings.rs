@@ -312,10 +312,17 @@ pub fn ffmpeg_path(env: &Environment) -> Option<PathBuf> {
         return Some(beside);
     }
     if env.search_repo_build {
-        return exe_dir
-            .ancestors()
-            .map(|dir| dir.join("build").join(BUNDLED_FFMPEG_DIR).join(FFMPEG_EXE))
-            .find(|candidate| is_nonempty_file(candidate));
+        // `build-ffmpeg.ps1` écrit dans `apps/flam-launcher/build/ffmpeg` ; `build/ffmpeg` à la
+        // racine d'un ancêtre est aussi accepté.
+        return exe_dir.ancestors().find_map(|dir| {
+            [
+                dir.join("apps").join("flam-launcher").join("build"),
+                dir.join("build"),
+            ]
+            .into_iter()
+            .map(|base| base.join(BUNDLED_FFMPEG_DIR).join(FFMPEG_EXE))
+            .find(|candidate| is_nonempty_file(candidate))
+        });
     }
     None
 }
@@ -1121,6 +1128,23 @@ mod tests {
             .join(FFMPEG_EXE);
         touch(&beside);
         assert_eq!(ffmpeg_path(&env), Some(beside));
+    }
+
+    #[test]
+    fn ffmpeg_de_developpement_disposition_du_depot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path());
+        env.exe_dir = Some(dir.path().join("target").join("debug"));
+        env.search_repo_build = true;
+        let dev = dir
+            .path()
+            .join("apps")
+            .join("flam-launcher")
+            .join("build")
+            .join(BUNDLED_FFMPEG_DIR)
+            .join(FFMPEG_EXE);
+        touch(&dev);
+        assert_eq!(ffmpeg_path(&env), Some(dev));
     }
 
     #[test]

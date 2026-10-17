@@ -145,7 +145,6 @@ jobs:
           }
           # ffmpeg installé : ni GPL ni nonfree, libmp3lame présent (le script de build l'a déjà contrôlé,
           # ici on vérifie ce que l'installateur a réellement déposé, DLL comprises).
-          $ErrorActionPreference = 'Continue'
           $ff = Join-Path $dest 'ffmpeg/ffmpeg.exe'
           $conf = (& $ff -hide_banner -buildconf 2>&1 | Out-String)
           if ($LASTEXITCODE -ne 0 -or $conf -match '--enable-(gpl|nonfree)(\s|$)' -or $conf -notmatch '--enable-libmp3lame') { throw "ffmpeg installé : configuration refusée`n$conf" }
