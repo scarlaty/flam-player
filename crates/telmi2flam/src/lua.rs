@@ -326,7 +326,7 @@ mod tests {
                 .unwrap();
             let lines = handle
                 .join()
-                .unwrap_or_else(|_| panic!("débordement de pile ({label})"));
+                .unwrap_or_else(|_| panic!("panique du fil ({label})")); // un débordement de pile aborte le processus de test
             assert_eq!(lines, 2 * depth + 1, "{label}");
         }
     }
