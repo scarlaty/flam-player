@@ -692,12 +692,43 @@ fn cles_lues_dans_mdf() {
         keys_from_mdf(&no_version),
         Err(TransferError::KeyUnavailable(_))
     ));
+    let mut garbage = mdf("2.4.2");
+    garbage[2..50].fill(b'x');
+    assert!(matches!(
+        keys_from_mdf(&garbage),
+        Err(TransferError::KeyUnavailable(_))
+    ));
     let mut bad_serial = mdf("2.4.2");
     bad_serial[MDF_SERIAL_OFFSET] = b'z';
     assert!(matches!(
         keys_from_mdf(&bad_serial),
         Err(TransferError::KeyUnavailable(_))
     ));
+}
+
+/// Disposition observée sur une Flam 1.x (#269) : en-tête `01 00`, puis la version nue sans
+/// « main: », complétée d'octets nuls.
+fn mdf_bare(version: &str) -> Vec<u8> {
+    let mut m = mdf("2.4.2");
+    m[0] = 1;
+    let mut text = format!("{version}-2d356995").into_bytes();
+    text.resize(48, 0);
+    m[2..50].copy_from_slice(&text);
+    m
+}
+
+#[test]
+fn version_nue_lue_dans_mdf() {
+    assert_eq!(
+        firmware_from_mdf(&mdf_bare("1.15.14")).as_deref(),
+        Some("1.15.14")
+    );
+    assert!(matches!(
+        keys_from_mdf(&mdf_bare("1.15.14")),
+        Err(TransferError::UnsupportedFirmware(v)) if v == "1.15.14"
+    ));
+    let keys = keys_from_mdf(&mdf_bare("2.4.2")).unwrap();
+    assert_eq!(&keys.key_file()[..], &test_keys().key_file()[..]);
 }
 
 const PK_INFO: &[u8] = b"Titre\nSous-titre\n000000\nTitre\n";
