@@ -17,7 +17,11 @@
 ; Tout echec est non bloquant : on retombe sur le comportement precedent (copie par-dessus).
 
 !macro NSIS_HOOK_PREINSTALL
-  ${If} ${FileExists} "$INSTDIR\uninstall.exe"
+  ; Garde : on n'execute uninstall.exe que si le dossier choisi est l'emplacement enregistre de CE
+  ; produit (sinon un dossier contenant l'uninstall.exe d'un autre produit le desinstallerait).
+  ReadRegStr $R8 SHCTX "${MANUPRODUCTKEY}" ""
+  ${If} $R8 == "$INSTDIR"
+  ${AndIf} ${FileExists} "$INSTDIR\uninstall.exe"
     DetailPrint "Nettoyage de la version precedente"
     ClearErrors
     ExecWait '"$INSTDIR\uninstall.exe" /S /UPDATE _?=$INSTDIR' $R9

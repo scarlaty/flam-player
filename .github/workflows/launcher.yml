@@ -205,12 +205,15 @@ jobs:
           # Fichier étranger à l'application dans le dossier d'installation (dossier partagé) : jamais supprimé.
           $foreign = Join-Path $dest 'fichier-utilisateur.txt'
           Set-Content -LiteralPath $foreign -Value 'a conserver'
+          $foreign2 = Join-Path $dest 'licenses/fichier-utilisateur.txt'
+          Set-Content -LiteralPath $foreign2 -Value 'a conserver'
           # 3. Installer N par-dessus.
           Invoke-Setup $setup.FullName 'mise à jour vers N'
           # Fichier présent dans N-1, absent de N : l'installateur doit le supprimer (hook NSIS, #180).
           if (Test-Path -LiteralPath $obsolete) { throw 'NSIS n''a pas supprimé un fichier présent dans N-1 et absent de N (#180)' }
           if (-not (Test-Path -LiteralPath $foreign)) { throw 'fichier étranger supprimé par la mise à jour (nettoyage trop large)' }
-          Remove-Item -LiteralPath $foreign
+          if (-not (Test-Path -LiteralPath $foreign2)) { throw 'fichier étranger de licenses/ supprimé par la mise à jour' }
+          Remove-Item -LiteralPath $foreign, $foreign2
           $after = Get-InstallTree $dest
           $diff = Compare-Object $ref $after
           if ($diff) { throw "installation différente d'une installation propre de N : $($diff | Out-String)" }
