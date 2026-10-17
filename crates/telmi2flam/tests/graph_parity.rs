@@ -289,6 +289,7 @@ fn replay(case: &Value) -> Result<(), String> {
     // sous-titre, hors de ce module) ; avec un en-tête ASCII, seul le graphe peut l'avoir levé.
     if replaced.is_empty()
         && warnings.contains(&"font_replaced")
+        && header.is_some()
         && title.is_ascii()
         && subtitle.is_ascii()
     {
@@ -356,6 +357,9 @@ fn graphe_identique_a_python() {
         failures.len(),
         failures.join("\n\n")
     );
+    // Les cas d'écart assumé et les noms refusés sont bien dans la table.
+    assert!(cases.iter().any(|c| c.get("divergence").is_some()));
+    assert!(cases.iter().any(|c| str_of(field(c, "id")).starts_with("g_bad_name_")));
     // Les deux familles sont couvertes (conversions réussies et erreurs du graphe).
     assert!(ok >= 150 && err >= 50, "{ok} réussites, {err} erreurs");
 }
