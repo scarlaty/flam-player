@@ -517,6 +517,16 @@ pub(crate) fn send_with(
     // 1. Reprises et vérifications : rien n'est écrit tant qu'elles ne sont pas passées
     // (hormis la fin d'opérations interrompues).
     recover_with(fs, root)?;
+    // Un résidu laissé par la reprise (deux noms du même dossier) ne doit jamais être réutilisé
+    // ni supprimé par le nettoyage d'un échec : il partage peut-être les fichiers de l'histoire.
+    for leftover in [incoming_dir(root, &id), previous_dir(root, &id)] {
+        if leftover.try_exists()? {
+            return Err(TransferError::Io(io::Error::other(format!(
+                "{} n'a pas pu être nettoyé (vérifiez la Flam avec chkdsk) : rien n'a été écrit",
+                leftover.display()
+            ))));
+        }
+    }
     for kind in IndexKind::ALL {
         if index::recover(root, kind)? == Recovery::NeedsUser {
             return Err(TransferError::IndexNeedsUser);

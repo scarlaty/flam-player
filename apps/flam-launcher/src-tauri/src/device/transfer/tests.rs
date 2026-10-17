@@ -629,6 +629,12 @@ fn reprise_des_etats_partiels() {
     assert_eq!(report.left_alone, 2);
     assert!(t.join(format!("{NEW}.old")).exists());
     assert!(t.join(format!("{NEW}.in")).exists());
+    // Un transfert refuse alors de démarrer, sans rien supprimer.
+    let before = snapshot(&root);
+    let p = prepared(tmp.path(), 11);
+    let err = send(&fs, &root, &p, true).unwrap_err();
+    assert!(matches!(err, TransferError::Io(_)), "{err:?}");
+    assert_eq!(snapshot(&root), before);
 
     // La sonde réelle distingue deux dossiers différents.
     let real = FaultyFs::new().real();
