@@ -20,6 +20,7 @@ Chaque affirmation porte un statut :
 
 Sources citées :
 
+- **choix de conception** : décision prise par le code d'une PR, sans mesure.
 - **[inv]** : `flam-device-inventory.md`, scan du volume d'une Flam le 2026-06-14, par listage de
   l'arborescence et des tailles. La version de firmware de cet appareil n'y est **pas consignée**.
 - **[rapport]** : analyse interne du 2026-10-17 (non versionnée), faite sur documentation et sur
@@ -40,10 +41,10 @@ mainteneur n'a pas rempli la colonne « Mesure » du § 10.
 |---|---|---|
 | Mode connexion USB | supposé [rapport] | La Flam n'expose ses fichiers que si l'utilisateur active le « mode connexion USB » dans ses réglages ; sinon elle ne fait que charger. Sans ce mode, aucun volume n'apparaît : message d'aide « Activez le mode connexion USB sur la Flam » ([#241]). |
 | Volume | supposé [rapport] | Stockage de masse en **FAT** (FAT32 attendu). Sous Windows, [#241] retient les lecteurs amovibles et les lecteurs fixes dont le système de fichiers contient « FAT » (un disque USB peut se déclarer fixe) ; le disque système NTFS n'est jamais sondé. |
-| Marqueur | supposé | Fichier `.mdf` à la racine du volume. D'autres appareils de la même famille utilisent un fichier de nom différent (`.md`) : `.mdf` distingue la Flam. Aucun VID/PID USB n'est interrogé : VID et PID sont lus **dans** `.mdf`. |
+| Marqueur | supposé | Fichier `.mdf` à la racine du volume. Sa présence suffit à reconnaître une Flam. Aucun VID/PID USB n'est interrogé : VID et PID sont lus **dans** `.mdf`. |
 | Taille de `.mdf` | mesuré [inv] | 126 octets (appareil de l'inventaire, firmware non consigné). [#241] traite moins de 126 octets comme tronqué et plus de 126 comme un avertissement ; lecture bornée à 64 Kio. |
 | Dossiers attendus | mesuré [inv] | `str/` et `etc/library/` ; leur absence n'est qu'un avertissement dans [#241]. |
-| Sauvegarde de `.mdf` | décision [#241] | Copie personnelle dans le dossier de données du launcher (`device-backups`), nommée d'après le volume et les 16 premiers caractères hexadécimaux du SHA-256. Jamais dans le dépôt. |
+| Sauvegarde de `.mdf` | choix de conception [#241] | Copie personnelle dans le dossier de données du launcher (`device-backups`), nommée d'après le volume et les 16 premiers caractères hexadécimaux du SHA-256. Jamais dans le dépôt. |
 
 ## 3. Le fichier `.mdf`
 
@@ -138,8 +139,9 @@ Mesurée par [inv] (2026-06-14) sauf mention contraire :
 Écriture par le launcher ([#246]) : UUID normalisés en minuscules, sans doublon (première
 occurrence gardée), ordre conservé, LF final. À la lecture : BOM, CRLF, espaces, lignes vides et
 majuscules sont tolérés ; lignes invalides et doublons sont ignorés et signalés ; un fichier de
-plus de 1 Mio, contenant un octet nul ou sans aucun UUID est jugé illisible et n'est jamais
-réécrit sans l'accord explicite de l'utilisateur.
+plus de 1 Mio, contenant un octet nul ou sans aucun UUID est jugé illisible. Un index illisible, abîmé (lignes invalides ou doublons) ou absent
+n'est jamais réécrit sans l'accord explicite de l'utilisateur (seul un `list.hidden` absent est
+réécrit sans accord).
 
 Comportement du firmware face à un index absent, tronqué ou contenant un UUID sans dossier :
 **à vérifier** (T4).
@@ -150,7 +152,7 @@ Comportement du firmware face à un index absent, tronqué ou contenant un UUID 
 
 | Chemin | Chiffré ? | Statut | Note |
 |---|---|---|---|
-| `info` | **oui** | présence mesurée [inv] | titre et sous-titre ; en clair : 4 lignes (titre, sous-titre, `000000`, titre) |
+| `info` | **oui** | présence mesurée [inv] | titre et sous-titre ; en clair, 4 lignes (titre, sous-titre, `000000`, titre) : **supposé** (jeu de test de #247) |
 | `main.lsf` | **oui** | présence mesurée [inv] | script principal |
 | `script/*.lsf` | **oui** | présence mesurée [inv] | modules du jeu |
 | `key` | non (32 octets) | présence mesurée [inv] ; taille supposée [#247] | autorisation de l'histoire, voir § 6.2 |
@@ -213,7 +215,7 @@ L'ordre protège contre un débranchement : FAT n'a pas de journal.
    interruption, `recover` rétablit un état sain au branchement suivant.
 
 Un débranchement avant l'étape 5 laisse au pire un dossier non listé (orphelin) ; jamais un
-index qui pointe vers du vide. Une histoire partielle n'est donc jamais visible.
+index qui pointe vers du vide. Une histoire partielle n'est donc pas visible, sous réserve de T3 et T4 (si le firmware énumère `str/`, un dossier temporaire placé dans `str/` pourrait apparaître).
 
 ### 8.2 Retrait (conception de #231)
 
@@ -227,7 +229,10 @@ Masquer une histoire avant une synchronisation avec l'application officielle, qu
 supprimer les histoires qu'elle ne connaît pas (supposé [rapport], T7) : déplacer
 `str/<uuid>/` vers `str.hidden/<uuid>/`, retirer l'UUID de `list` et l'ajouter à `list.hidden`.
 Ordre proposé pour qu'aucun état intermédiaire ne perde l'histoire : ajouter à `list.hidden`,
-déplacer le dossier, puis retirer de `list` (`str.hidden/` créé au besoin, T6). Le déplacement
+déplacer le dossier, puis retirer de `list` (`str.hidden/` créé au besoin, T6). **Risque** : un
+débranchement entre le déplacement et le retrait de `list` laisse `list` pointer vers un dossier
+absent de `str/` (contraire au principe du § 8.1) ; le comportement du firmware est inconnu (T4)
+et la reprise (`recover`, [#246]) ne traite aujourd'hui que chaque index séparément. Le déplacement
 est un renommage FAT entre deux dossiers du même volume.
 
 ### 8.4 Ordre et fin de session
