@@ -4,8 +4,8 @@
 //! (décodage [`crate::png`], redimensionnement [`crate::resample`], encodeur [`crate::lif`]).
 //!
 //! Erreurs : celles du décodage ([`PngError`]) ; un manque de mémoire pendant le
-//! redimensionnement est [`PngError::Unreadable`] (avertissement `image_unreadable`, comme le
-//! `MemoryError` attrapé par Python). Le jeton d'annulation est consulté à chaque ligne décodée
+//! redimensionnement est [`PngError::Unreadable`], comme le `MemoryError` attrapé par Python
+//! (avertissement `image_unreadable`, ou `cover_unreadable` pour la couverture). Le jeton d'annulation est consulté à chaque ligne décodée
 //! ou redimensionnée.
 
 use crate::lif;

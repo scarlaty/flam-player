@@ -3,7 +3,7 @@
 L'oracle est `png_to_lif`, `png_to_scene_lif`, `png_to_fit_lif` et `png_to_thumb_lif` de
 `tools/telmi2flam/telmi2flam.py`, exécutés avec **Python 3.14.8 et Pillow 12.3.0** exactement
 (versions de `apps/flam-launcher/scripts/build-converter.ps1`) : le script refuse de tourner
-avec une autre version. Déterministe : relancer le script ne doit rien changer (`git status`
+avec une autre version. Déterministe (à versions épinglées, zlib compris) : relancer le script ne doit rien changer (`git status`
 propre).
 
     python -I crates/telmi2flam/tests/vectors/resample/gen_resample_vectors.py
@@ -101,8 +101,10 @@ def cases():
         # cibles exactes et voisines (vignette, inventaire, titre, scène)
         (128, 96), (129, 96), (128, 97), (127, 95), (128, 128), (89, 120), (90, 121),
         (320, 212), (321, 212), (320, 213), (160, 106),
+        # scène : hauteur arrondie pile sur .5 (round() de Python, au pair)
+        (640, 3), (640, 5), (640, 7),
         # rapports extrêmes, et plus de 100 fois plus haut que large (deux passes de resize)
-        (1, 101), (1, 250), (2, 201), (2, 300), (3, 299), (300, 2), (250, 1), (401, 3),
+        (1, 100), (1, 101), (1, 250), (2, 201), (2, 300), (3, 299), (300, 2), (250, 1), (401, 3),
         (1, 2049), (2049, 1), (3, 2049), (2049, 2), (2, 2048), (2048, 2), (1, 2047),
         # portraits autour du seuil de _avoid_transpose (h > 64)
         (64, 65), (10, 64), (65, 66), (40, 200),

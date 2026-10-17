@@ -18,6 +18,8 @@
 //!
 //! Le flottant (`f64`, `sin` de la bibliothèque C) ne sert qu'aux coefficients, dans le même
 //! ordre d'opérations que le C ; les pixels sont calculés en entiers 32 bits, sans SIMD.
+//! L'égalité à l'octet est établie contre Pillow sur Windows x86-64 (wheel MSVC, `sin` de
+//! l'UCRT, pas de contraction FMA), la plateforme du convertisseur et de la CI.
 //!
 //! ---
 //!
@@ -189,7 +191,13 @@ struct Coeffs {
 }
 
 /// `precompute_coeffs` suivi de `normalize_coeffs_8bpc`. `in0` et `in1` sont des `float` en C.
-fn precompute_coeffs(in_size: usize, in0: f32, in1: f32, out_size: usize) -> Result<Coeffs> {
+fn precompute_coeffs(
+    in_size: usize,
+    in0: f32,
+    in1: f32,
+    out_size: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Coeffs> {
     // filterscale = scale = (double)(in1 - in0) / outSize : soustraction en float
     let scale = f64::from(in1 - in0) / out_size as f64;
     let filterscale = if scale < 1.0 { 1.0 } else { scale };
@@ -208,6 +216,8 @@ fn precompute_coeffs(in_size: usize, in0: f32, in1: f32, out_size: usize) -> Res
     let mut k = alloc(ksize, 0f64)?;
     let inv_filterscale = 1.0 / filterscale;
     for xx in 0..out_size {
+        // jusqu'à ~2,7e8 poids (et deux `sin` chacun) pour un rapport extrême : annulable
+        check(cancelled)?;
         let center = f64::from(in0) + (xx as f64 + 0.5) * scale;
         let mut ww = 0.0;
         // (int)(…) : troncature vers zéro, puis bornes
@@ -334,7 +344,7 @@ fn resample_inner(
     let need_horizontal = xsize != src.w || bx[0] != 0.0 || bx[2] != xsize as f32;
     let need_vertical = ysize != src.h || bx[1] != 0.0 || bx[3] != ysize as f32;
 
-    let mut vert = precompute_coeffs(src.h, bx[1], bx[3], ysize)?;
+    let mut vert = precompute_coeffs(src.h, bx[1], bx[3], ysize, cancelled)?;
     // premières et dernière lignes sources utilisées
     let ybox_first = vert.bounds[0].0;
     let (ymin_last, ymax_last) = vert.bounds[ysize - 1];
@@ -342,7 +352,7 @@ fn resample_inner(
 
     let mut temp = None;
     if need_horizontal {
-        let horiz = precompute_coeffs(src.w, bx[0], bx[2], xsize)?;
+        let horiz = precompute_coeffs(src.w, bx[0], bx[2], xsize, cancelled)?;
         for b in &mut vert.bounds {
             // C : `bounds_vert[i * 2] -= ybox_first` ; une ligne antérieure à la première
             // n'existe pas (les débuts de fenêtre croissent avec la ligne de sortie)
@@ -373,9 +383,8 @@ fn resample_inner(
 }
 
 fn copy(src: &Plane) -> Result<Plane> {
-    let mut px = alloc(0, 0u8)?;
-    px.try_reserve_exact(src.px.len()).map_err(|_| NO_MEMORY)?;
-    px.extend_from_slice(&src.px);
+    let mut px = alloc(src.px.len(), 0u8)?;
+    px.copy_from_slice(&src.px);
     Ok(Plane {
         w: src.w,
         h: src.h,
@@ -595,11 +604,11 @@ mod tests {
         // out × ksize × 8 ≈ 48 × in : refus de Pillow dès qu'un côté réduit dépasse ~44,7 M px
         let n = 45_000_000usize;
         assert!(matches!(
-            precompute_coeffs(n, 0.0, n as f32, 120),
+            precompute_coeffs(n, 0.0, n as f32, 120, &never),
             Err(PngError::Unreadable(_))
         ));
         let n = 100_000usize;
-        assert!(precompute_coeffs(n, 0.0, n as f32, 1).is_ok());
+        assert!(precompute_coeffs(n, 0.0, n as f32, 1, &never).is_ok());
     }
 
     #[test]
