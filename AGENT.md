@@ -100,6 +100,16 @@ Options du player :
   `C:/temp/flam-player/screenshot.bmp` code en dur). Capture auto 12 s apres le demarrage :
   `FLAM_SCREENSHOT_AUTO_MS=<ms>`, `0` = desactivee.
 - `--img-dir`, `--sounds-dir`, `--save-dir` : dossiers en mode script `.lua` direct.
+- `--parent-hwnd <n>` (Windows) : fenetre incrustee (fenetre enfant `WS_CHILD`) dans le HWND
+  `<n>` (decimal ou `0x...`) d'une application hote (flam-launcher, #201). Le player remplit
+  la zone cliente du parent et en suit la taille, prend le clavier a l'incrustation et a
+  chaque clic, et s'arrete proprement si le parent disparait. Sensibilite DPI par moniteur v2
+  dans ce mode seulement. Echec (HWND invalide, pilote video sans HWND, `SetParent` refuse) :
+  trace `[EMBED] repli : ...` et fenetre separee habituelle ; succes : `[EMBED] ok`. Ignore
+  hors Windows.
+- `--stdin-control` : un thread lit stdin ; la ligne `quit` ou la fin de stdin arretent le
+  player comme une fermeture de fenetre (etat sauvegarde, code 0), meme sans fenetre (pilote
+  `dummy`). Sans l'option, stdin n'est jamais lu. Test : `tests/e2e/e2e_embed.py`.
 
 Touches : gauche/droite = molette, Entree/Espace = OK, Echap = retour (`back_callback`),
 M = menu contextuel, P = pause/reprise audio, S = capture d'ecran.
