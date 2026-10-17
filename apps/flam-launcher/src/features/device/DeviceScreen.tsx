@@ -1,40 +1,37 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { libraryThumbnail } from "../../api/library";
 import {
-  listDeviceStories,
   type DeviceStories,
   type DeviceStory,
   type DeviceSummary,
   type IndexHealth,
 } from "../../api/device";
-import { toAppError, type AppError } from "../../api/error";
 import { Badge, Banner, Button, EmptyState, ProgressBar } from "../../components";
 import { t } from "../../i18n";
 import { ErrorBanner } from "../ErrorBanner";
 import { formatBytes } from "../validation";
-import { useDeviceStatus } from "./useDeviceStatus";
+import { useDevice } from "./DeviceContext";
+import { EjectButton } from "./EjectButton";
+import { RemoveStoryButton } from "./RemoveStoryButton";
 import "./DeviceScreen.css";
 
 const text = t.deviceScreen;
 
 export interface DeviceScreenProps {
-  /** Emplacement des actions globales (envoi d'une histoire, #230). */
-  toolbar?: ReactNode;
-  /** Emplacement des actions d'une histoire (retrait, #231). */
-  storyActions?: (story: DeviceStory) => ReactNode;
+  /** Section affichée sous la liste des histoires de la Flam (envoi depuis « Mes histoires »). */
+  libraryPanel?: ReactNode;
 }
 
-/** Écran « Ma Flam » : état de la Flam branchée en USB et histoires installées (lecture seule). */
-export function DeviceScreen({ toolbar, storyActions }: DeviceScreenProps) {
-  const { status, error, retry } = useDeviceStatus();
-  const device = status?.detected ? status.device : null;
-  // Une nouvelle Flam (ou la même rebranchée) recharge la liste.
-  const deviceKey = device ? `${device.root}\u0000${device.volume_label}` : null;
+/** Écran « Ma Flam » : état de la Flam branchée en USB, ses histoires, envoi, retrait et éjection. */
+export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
+  const { status, error, retry, device, stories, recoveryNote, ejectNote } = useDevice();
+  const count =
+    device && stories.phase === "ready" ? stories.report.stories.length : null;
 
   // Annonces : l'état de la Flam puis le nombre d'histoires, dites ensemble pour que la
   // seconde ne couvre pas la première.
   const [stateNote, setStateNote] = useState("");
-  const [countNote, setCountNote] = useState("");
+  const countNote = count === null ? "" : text.announce.stories(count);
   const announcement = [stateNote, countNote].filter(Boolean).join(". ");
   const wasDetected = useRef<boolean | null>(null);
   const retried = useRef(false);
@@ -49,7 +46,6 @@ export function DeviceScreen({ toolbar, storyActions }: DeviceScreenProps) {
     wasDetected.current = detected;
     if (before === detected || (before === null && !detected)) return;
     setStateNote(detected ? text.announce.detected : text.announce.lost);
-    setCountNote("");
     if (detected && retried.current) headingRef.current?.focus();
   }, [known, detected]);
 
@@ -69,6 +65,14 @@ export function DeviceScreen({ toolbar, storyActions }: DeviceScreenProps) {
       <p role="status" className="fl-visually-hidden">
         {announcement}
       </p>
+      {ejectNote && (
+        <Banner
+          tone={ejectNote.tone}
+          role={ejectNote.tone === "danger" ? "alert" : "status"}
+        >
+          {ejectNote.message}
+        </Banner>
+      )}
       {error && (
         <ErrorBanner
           error={error}
@@ -95,12 +99,16 @@ export function DeviceScreen({ toolbar, storyActions }: DeviceScreenProps) {
             count={status.device_count}
             headingRef={headingRef}
           />
-          {toolbar && <div className="fl-device-screen__toolbar">{toolbar}</div>}
-          <DeviceStoriesList
-            key={deviceKey}
-            storyActions={storyActions}
-            onCount={(count) => setCountNote(text.announce.stories(count))}
-          />
+          {recoveryNote && (
+            <Banner tone={recoveryNote.tone} role="status">
+              {recoveryNote.message}
+            </Banner>
+          )}
+          <div className="fl-device-screen__toolbar">
+            <EjectButton />
+          </div>
+          <DeviceStoriesList key={`${device.root}|${device.volume_label}`} />
+          {libraryPanel}
         </>
       )}
     </div>
@@ -230,56 +238,15 @@ function indexNotices(report: DeviceStories): Notice[] {
   return notices;
 }
 
-type StoriesState =
-  | { phase: "loading" }
-  | { phase: "error"; error: AppError }
-  | { phase: "ready"; report: DeviceStories };
-
-/** Liste des histoires de la Flam, chargée à l'affichage puis à la demande. */
-function DeviceStoriesList({
-  storyActions,
-  onCount,
-}: {
-  storyActions?: (story: DeviceStory) => ReactNode;
-  onCount: (count: number) => void;
-}) {
-  const [state, setState] = useState<StoriesState>({ phase: "loading" });
-  const [reload, setReload] = useState(0);
+/** Liste des histoires de la Flam (lues par le `DeviceProvider`), avec retrait par histoire. */
+function DeviceStoriesList() {
+  const { stories: state, reloadStories, busy } = useDevice();
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const onCountRef = useRef(onCount);
-  useEffect(() => {
-    onCountRef.current = onCount;
-  });
-
-  useEffect(() => {
-    let active = true;
-    listDeviceStories()
-      .then((report) => {
-        if (!active) return;
-        if (!report) {
-          // La Flam a disparu entre la détection et la lecture : jamais d'attente sans issue.
-          setState({
-            phase: "error",
-            error: { kind: "not_found", message: text.stories.noAnswer },
-          });
-          return;
-        }
-        setState({ phase: "ready", report });
-        onCountRef.current(report.stories.length);
-      })
-      .catch((caught) => {
-        if (active) setState({ phase: "error", error: toAppError(caught) });
-      });
-    return () => {
-      active = false;
-    };
-  }, [reload]);
 
   function refresh() {
     // Le bouton cliqué disparaît pendant le chargement : le focus passe à un élément stable.
     wrapperRef.current?.focus();
-    setState({ phase: "loading" });
-    setReload((n) => n + 1);
+    reloadStories();
   }
 
   const renderStories = () => {
@@ -325,7 +292,13 @@ function DeviceStoriesList({
               <DeviceStoryRow
                 key={story.uuid}
                 story={story}
-                actions={storyActions?.(story)}
+                actions={
+                  <RemoveStoryButton
+                    story={story}
+                    busy={busy}
+                    onRemoved={() => wrapperRef.current?.focus()}
+                  />
+                }
               />
             ))}
           </ul>

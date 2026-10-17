@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { ToastProvider } from "./components";
 import { AppFrame } from "./features/app/AppFrame";
+import { DeviceBoundary } from "./features/device/DeviceBoundary";
 import { CompatProvider } from "./features/compat/CompatProvider";
 import { LibraryProvider } from "./features/library/LibraryProvider";
 import { RecoveryProvider } from "./features/recovery/RecoveryProvider";
@@ -35,7 +36,9 @@ function AppRoutes({ route }: { route: Exclude<Route, "demo"> }) {
         <LibraryProvider>
           <CompatProvider>
             <StoriesProvider>
-              <AppFrame route={route} />
+              <DeviceBoundary>
+                <AppFrame route={route} />
+              </DeviceBoundary>
             </StoriesProvider>
           </CompatProvider>
         </LibraryProvider>

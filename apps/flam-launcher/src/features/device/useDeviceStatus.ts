@@ -29,18 +29,29 @@ function fetchStatus(): Promise<DeviceStatus> {
 }
 
 /**
+ * (`enabled` faux : pas de scrutation, l'état reste celui d'avant ; `intervalMs` : délai entre
+ * deux appels, `POLL_INTERVAL_MS` par défaut.)
+ *
  * Scrute l'état de la Flam toutes les `POLL_INTERVAL_MS` tant que le composant est monté : la
  * scrutation s'arrête au démontage (changement d'écran, lecture incrustée). Le délai court
  * depuis la fin de l'appel précédent ; un appel en vol n'est jamais doublé, même entre deux
  * montages : « Réessayer » et le retour au premier plan demandent un tour immédiat, exécuté dès
  * la fin de l'appel en cours. La fenêtre masquée ne scrute pas.
  */
-export function useDeviceStatus(): DeviceStatusState {
+export function useDeviceStatus(
+  options: { enabled?: boolean; intervalMs?: number } = {},
+): DeviceStatusState {
+  const { enabled = true, intervalMs = POLL_INTERVAL_MS } = options;
+  const interval = useRef(intervalMs);
+  useEffect(() => {
+    interval.current = intervalMs;
+  });
   const [status, setStatus] = useState<DeviceStatus | null>(null);
   const [error, setError] = useState<AppError | null>(null);
   const pollNow = useRef<() => void>(() => undefined);
 
   useEffect(() => {
+    if (!enabled) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let inFlight = false;
@@ -71,7 +82,7 @@ export function useDeviceStatus(): DeviceStatusState {
         void poll();
         return;
       }
-      timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
+      timer = setTimeout(() => void poll(), interval.current);
     };
     pollNow.current = () => void poll();
     // Au retour au premier plan, la scrutation reprend aussitôt.
@@ -85,7 +96,7 @@ export function useDeviceStatus(): DeviceStatusState {
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, []);
+  }, [enabled]);
 
   const retry = useCallback(() => pollNow.current(), []);
   return { status, error, retry };
