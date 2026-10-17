@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- arguments IPC simulés, forme libre */
+import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -36,14 +37,17 @@ beforeEach(() => {
     disconnect() {}
   }
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
-  mockIPC((cmd, args) => {
-    calls.push({ cmd, args: (args ?? {}) as Record<string, any> });
-    if (cmd === "player_stop") {
-      if (stopFails) throw { kind: "io", message: "refusé" };
-      return stopResult;
-    }
-    return null;
-  });
+  mockIPC(
+    (cmd, args) => {
+      calls.push({ cmd, args: (args ?? {}) as Record<string, any> });
+      if (cmd === "player_stop") {
+        if (stopFails) throw { kind: "io", message: "refusé" };
+        return stopResult;
+      }
+      return null;
+    },
+    { shouldMockEvents: true },
+  );
 });
 
 afterEach(() => {
@@ -130,7 +134,24 @@ it("envoie la zone au montage, à chaque changement, et la cache au démontage",
   await new Promise((resolve) => requestAnimationFrame(resolve));
   expect(layouts()).toHaveLength(count);
   view.unmount();
-  expect(layouts().at(-1)?.args).toEqual({ rect: null });
+  await waitFor(() => expect(layouts().at(-1)?.args).toEqual({ rect: null }));
+});
+
+it("player://focus-host (F6 dans le player) replace le focus sur « Clavier au lecteur »", async () => {
+  renderScreen();
+  const button = screen.getByRole("button", { name: "Clavier au lecteur" });
+  // Le focus est ailleurs (le titre, ou la fenêtre native).
+  expect(button).not.toHaveFocus();
+  // L'abonnement est asynchrone : on réémet jusqu'à l'effet.
+  await waitFor(async () => {
+    await emit("player://focus-host");
+    expect(button).toHaveFocus();
+  });
+});
+
+it("l'aide de l'écran mentionne F6", () => {
+  renderScreen();
+  expect(screen.getByText(/F6 rend le clavier au launcher/)).toBeInTheDocument();
 });
 
 it("Arrêter appelle player_stop et se désactive", async () => {
@@ -148,4 +169,29 @@ it("un arrêt refusé réactive le bouton et l'erreur s'affiche en alerte hors d
     /flam-player n'a pas pu être arrêté\. refusé/,
   );
   expect(screen.getByRole("button", { name: "Arrêter" })).toBeEnabled();
+});
+
+it("les placements sont envoyés l'un après l'autre, dans l'ordre", async () => {
+  const { setPlayerEmbedLayout } = await import("../../api/player");
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  mockIPC(
+    async (cmd, args) => {
+      calls.push({ cmd, args: (args ?? {}) as Record<string, any> });
+      if (cmd === "player_embed_layout" && layouts().length === 1) await gate;
+      return null;
+    },
+    { shouldMockEvents: true },
+  );
+  const first = setPlayerEmbedLayout({ x: 1, y: 1, width: 1, height: 1 });
+  const second = setPlayerEmbedLayout(null);
+  await waitFor(() => expect(layouts()).toHaveLength(1));
+  // Le second attend la réponse du premier.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect(layouts()).toHaveLength(1);
+  release();
+  await Promise.all([first, second]);
+  expect(layouts().map((c) => c.args.rect === null)).toEqual([false, true]);
 });

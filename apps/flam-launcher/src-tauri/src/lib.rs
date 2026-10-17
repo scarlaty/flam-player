@@ -128,6 +128,7 @@ pub fn run() {
             catalog::catalog_thumbnail,
             cache::cache_usage,
             cache::cache_clear,
+            device::detect::device_detect,
             compat::compat_statuses,
             storage::config_ack_recovery,
             settings::settings_get,

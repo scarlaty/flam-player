@@ -33,6 +33,14 @@ pub fn config_dir() -> AppResult<PathBuf> {
         .ok_or(AppError::ConfigDir)
 }
 
+/// Dossier de données personnelles de l'application (sauvegardes de l'appareil…), à ne jamais
+/// confondre avec le cache : l'utilisateur peut vider celui-ci à tout moment.
+pub fn data_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(APP_DIR)
+}
+
 /// Dossier de cache par défaut (sous les données locales de l'application).
 pub fn default_cache_dir() -> PathBuf {
     dirs::data_local_dir()

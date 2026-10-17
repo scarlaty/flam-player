@@ -349,6 +349,19 @@ static SDL_Window *embed_create_window(void)
             (unsigned long long)g_parent_req, g_embed_w, g_embed_h);
     return w;
 }
+
+/* F6 en mode incruste : rend le clavier a la fenetre hote (piege clavier : Tab ne
+   sort pas d'une fenetre native). Le focus va a la fenetre racine de l'hote ; la trace
+   "[EMBED] focus-host" previent l'application hote, qui place le focus sur son propre
+   controle (la WebView2 du launcher ne le reprend pas toujours d'elle-meme). */
+static void embed_release_focus(void)
+{
+    if (!g_embed_child || !IsWindow(g_embed_parent)) return;
+    HWND root = GetAncestor(g_embed_parent, GA_ROOT);
+    SetFocus(root ? root : g_embed_parent);
+    fprintf(stderr, "[EMBED] focus-host\n");
+    fflush(stderr);
+}
 #endif /* _WIN32 */
 
 /* ------------------------------------------------------------------ */
@@ -485,6 +498,9 @@ int sdl_driver_poll(void)
             case SDLK_m:      fw_trigger_context_menu(); break;
             case SDLK_s:      save_screenshot(); break;
             case SDLK_p:      sdl_audio_toggle_pause(); break;
+#ifdef _WIN32
+            case SDLK_F6:     embed_release_focus(); break;
+#endif
             default:          break;
             }
             break;
