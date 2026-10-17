@@ -1,7 +1,8 @@
 name: launcher
 
-# `crates/**` et `Cargo.*` déclenchent ce job (~10 min) à dessein : le launcher dépend de la crate
-# `crates/telmi2flam` (#122), donc une modification de la crate peut casser son build ou ses tests.
+# `crates/**` et `Cargo.*` déclenchent ce job (~10 min) à dessein : le launcher partage le workspace
+# Cargo (Cargo.lock, `target/`) avec `crates/telmi2flam` et en dépendra avec #122 ; une modification
+# de la crate peut donc casser son build ou ses tests.
 on:
   pull_request:
     paths:

@@ -102,7 +102,7 @@ Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§
   `npm run lint`, `npm run typecheck`, `npm test`.
 - `crates/telmi2flam` (port Rust du convertisseur, workspace Cargo à la racine) :
   `cargo test -p telmi2flam`, `cargo fmt --check` et `cargo clippy -p telmi2flam -- -D warnings`.
-  Une modification de `crates/**` déclenche aussi la CI du launcher, qui en dépend.
+  Une modification de `crates/**` déclenche aussi la CI du launcher, qui partage le workspace (et en dépendra avec #122).
 - Copie de travail extraite avant l'ajout de `.gitattributes` : `tools/telmi2flam/engine/` peut
   garder des fins de ligne CRLF. `git add --renormalize tools/telmi2flam/engine/` les remet en LF
   (`include_bytes!` embarque les octets de la copie de travail).
