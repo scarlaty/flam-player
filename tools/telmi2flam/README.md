@@ -826,6 +826,14 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   **Les motifs doivent être précis et ancrés** (`^SDL: warning .*$`, pas `erreur` ni
   `warning`) : un motif large masque de vraies erreurs Lua. La fiche garde le nombre
   d'erreurs ignorées (`benign_ignored`). À alimenter au fil du triage de #7.
+- **Une histoire a toujours une fiche** (#166) : une exception autour de l'exploration
+  (`explore` ou l'étape run) donne `ECHEC_EXECUTION` avec `run_reason` `crash` ; un code de
+  sortie anormal du player est traduit dans les messages (`-1` : processus tué de
+  l'extérieur, `0xC0000005` : violation d'accès...). Avant chaque exploration, une fiche
+  provisoire `ECHEC_EXECUTION` (`run_reason` `crash`, « exécution non terminée ») est écrite
+  dans `report.json` / `status.json` : si `compat.py` est tué en cours de route (code -1), elle
+  reste en place ; elle n'est jamais reprise comme résultat valide (l'exploration est refaite
+  à la relance, même sans `--force`).
 - **Réinterprétation sans rejouer** : la fiche conserve le résultat brut borné de chaque
   parcours (`steps.run.raw` : statut, `done_reason`, compteurs, scènes, erreurs **non
   filtrées**, les 100 premières et les 100 dernières, 200 caractères chacune). Quand la
