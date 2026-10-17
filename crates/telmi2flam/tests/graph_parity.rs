@@ -359,7 +359,9 @@ fn graphe_identique_a_python() {
     );
     // Les cas d'écart assumé et les noms refusés sont bien dans la table.
     assert!(cases.iter().any(|c| c.get("divergence").is_some()));
-    assert!(cases.iter().any(|c| str_of(field(c, "id")).starts_with("g_bad_name_")));
+    assert!(cases
+        .iter()
+        .any(|c| str_of(field(c, "id")).starts_with("g_bad_name_")));
     // Les deux familles sont couvertes (conversions réussies et erreurs du graphe).
     assert!(ok >= 150 && err >= 50, "{ok} réussites, {err} erreurs");
 }
