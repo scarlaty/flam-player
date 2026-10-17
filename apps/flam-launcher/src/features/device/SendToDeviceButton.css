@@ -1,0 +1,16 @@
+.fl-send {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.fl-send__button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.fl-send__reason {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}

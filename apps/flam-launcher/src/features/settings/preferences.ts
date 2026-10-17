@@ -21,3 +21,22 @@ export function setMinimizeDuringPlay(value: boolean): void {
     // Préférence non conservée : sans conséquence sur la lecture.
   }
 }
+
+const FLAM_SEND_ACK_KEY = "flam-launcher.flamSendWarningAck";
+
+/** L'avertissement « fonction expérimentale, non officielle » de l'envoi a déjà été accepté. */
+export function getFlamSendWarningAck(): boolean {
+  try {
+    return window.localStorage.getItem(FLAM_SEND_ACK_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setFlamSendWarningAck(): void {
+  try {
+    window.localStorage.setItem(FLAM_SEND_ACK_KEY, "1");
+  } catch {
+    // Non mémorisé : l'avertissement sera simplement redemandé.
+  }
+}
