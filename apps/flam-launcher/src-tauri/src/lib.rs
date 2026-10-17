@@ -4,6 +4,7 @@ mod app;
 pub mod cache;
 pub mod catalog;
 pub mod compat;
+pub mod device;
 pub mod embed;
 mod error;
 pub mod folder;
@@ -128,6 +129,10 @@ pub fn run() {
             catalog::catalog_thumbnail,
             cache::cache_usage,
             cache::cache_clear,
+            device::detect::device_detect,
+            device::remove::device_remove_story,
+            device::status::device_status,
+            device::status::device_list_stories,
             compat::compat_statuses,
             storage::config_ack_recovery,
             settings::settings_get,
@@ -168,6 +173,8 @@ mod tests {
             ("app", include_str!("app.rs")),
             ("catalog", include_str!("catalog.rs")),
             ("compat", include_str!("compat.rs")),
+            ("device::remove", include_str!("device/remove.rs")),
+            ("device::status", include_str!("device/status.rs")),
             ("folder", include_str!("folder.rs")),
             ("install", include_str!("install/mod.rs")),
             ("library", include_str!("library.rs")),

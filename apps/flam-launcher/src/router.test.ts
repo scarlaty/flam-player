@@ -16,3 +16,8 @@ it("encode et décode l'identifiant de source", () => {
   expect(sourceIdFromHash("#/library/%E0%A4%A")).toBeNull();
   expect(sourceIdFromHash("#/sources")).toBeNull();
 });
+
+it("route l'écran Ma Flam", () => {
+  expect(routeFromHash("#/device")).toBe("device");
+  expect(routeFromHash("#/devices")).toBe("home");
+});
