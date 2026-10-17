@@ -118,6 +118,20 @@ def cyclic_nodes():
     }
 
 
+def cyclic_cond_home_nodes():
+    """#142, histoire cyclique (aucune fin) dont la scene de depart a une home : une de ses
+    entrees est gardee par un objet jamais pose (scene `g`, inatteignable). Mode strict de
+    condFrontier : cette home conditionnelle ne doit pas empecher `exhausted`."""
+    never = [{"comparator": 2, "item": 0, "number": 1}]
+    nodes = cyclic_nodes()
+    nodes["inventory"] = [{"name": "cle", "initialNumber": 0, "maxNumber": 1}]
+    nodes["stages"]["s0"] = stage("x.mp3", "am", {"ok": True, "home": True, "autoplay": True})
+    nodes["stages"]["s0"]["home"] = {"action": "ah", "index": 0}
+    nodes["stages"]["g"] = stage("x.mp3", "a0")
+    nodes["actions"]["ah"] = [{"stage": "k1"}, {"stage": "g", "conditions": never}]
+    return nodes
+
+
 def home_submenu_nodes():
     """#42, sous-menu dont la sortie est la transition home (Louveteaux) : start -> s0
     -> s2 -> sous-menu {c1, c2} ; chaque conte (k1, k2) revient au sous-menu. La home
@@ -376,6 +390,18 @@ class TestExplore(unittest.TestCase):
         self.assertFalse(res["end_reached"])
         self.assertEqual(res["errors"], [])
 
+    def test_cyclique_home_conditionnelle(self):
+        """#142 : sans fin jouee, une home conditionnelle jamais satisfaite ne bloque pas
+        `exhausted` (et ne donne ni `loop` ni `conditions`) ; la scene gardee reste non visitee."""
+        pk = self.convert(cyclic_cond_home_nodes(), "CycliqueHomeCond")
+        res = explore.explore(PLAYER, pk[:-3], timeout_s=120, back_every=0, max_steps=300)
+        self.assertEqual(res["status"], "ok", self.explain(res))
+        self.assertEqual(res["done_reason"], "exhausted", self.explain(res))
+        self.assertFalse(res["end_reached"], self.explain(res))
+        self.assertEqual(res["errors"], [])
+        self.assertNotIn("g", res["scenes"], self.explain(res))
+        self.assertEqual(res["scenes_visited"], res["scenes_total"] - 1, self.explain(res))
+
     def test_sous_menu_sorti_par_home(self):
         """#42 forme 2 : la seule sortie du sous-menu est la home de ses options ;
         le pilote l'emprunte (sans test de retour) et atteint la fin h."""
@@ -509,6 +535,48 @@ class TestRunPlayer(unittest.TestCase):
             size = os.path.getsize(beat)
             time.sleep(0.5)
             self.assertEqual(os.path.getsize(beat), size, "processus enfant encore vivant")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+@unittest.skipUnless(os.name == "nt" or sys.platform.startswith("linux"),
+                     "pas de garde-fou contre l'orphelin hors Windows/Linux (documente)")
+class TestParentKilled(unittest.TestCase):
+    """#178 : un arret brutal du processus Python ne laisse pas le player orphelin."""
+
+    def test_player_dies_with_parent(self):
+        import subprocess
+        tmp = tempfile.mkdtemp(prefix="t2f_orphan_")
+        try:
+            beat = os.path.join(tmp, "beat.txt")
+            child = os.path.join(tmp, "child.py")
+            with open(child, "w", encoding="utf-8") as f:
+                f.write("import time\n"
+                        "for i in range(1200):\n"
+                        "    open(%r, 'a').write('.')\n"
+                        "    time.sleep(0.05)\n" % beat)
+            parent = os.path.join(tmp, "parent.py")
+            with open(parent, "w", encoding="utf-8") as f:
+                f.write("import sys\nsys.path.insert(0, %r)\nimport explore\n"
+                        "explore.run_player(sys.executable, [%r], %r, 60)\n"
+                        % (os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           child, tmp))
+            p = subprocess.Popen([sys.executable, parent])
+            try:
+                t0 = time.time()
+                while not os.path.exists(beat) and time.time() - t0 < 20:
+                    time.sleep(0.1)
+                self.assertTrue(os.path.exists(beat), "player jamais demarre")
+                p.kill()                      # arret brutal : aucun finally ne s'execute
+                p.wait()
+                time.sleep(1.0)
+                size = os.path.getsize(beat)
+                time.sleep(1.0)
+                self.assertEqual(os.path.getsize(beat), size, "player orphelin encore vivant")
+            finally:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
