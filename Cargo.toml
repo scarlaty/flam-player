@@ -1,0 +1,19 @@
+# Workspace Cargo du dépôt (décision D1 de tools/telmi2flam/PORT-RUST.md) : un seul Cargo.lock,
+# un seul `target/` et un seul inventaire de licences pour le launcher et la crate telmi2flam.
+[workspace]
+resolver = "2"
+members = ["apps/flam-launcher/src-tauri", "crates/telmi2flam"]
+
+# Seul le Cargo.toml racine fixe les profils : ce profil release est celui du launcher, et le
+# binaire telmi2flam en hérite (sauf `opt-level`, voir plus bas).
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Vitesse du rééchantillonnage d'images (Lanczos) : la crate est optimisée pour la vitesse, pas
+# pour la taille.
+[profile.release.package.telmi2flam]
+opt-level = 3
