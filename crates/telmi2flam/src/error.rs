@@ -48,3 +48,9 @@ impl fmt::Display for ConvError {
 }
 
 impl std::error::Error for ConvError {}
+
+impl From<crate::json::ContentError> for ConvError {
+    fn from(e: crate::json::ContentError) -> Self {
+        ConvError::invalid_content(e.message)
+    }
+}
