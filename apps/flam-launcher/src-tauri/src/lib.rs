@@ -4,6 +4,7 @@ mod app;
 pub mod cache;
 pub mod catalog;
 pub mod compat;
+pub mod device;
 pub mod embed;
 mod error;
 pub mod folder;
