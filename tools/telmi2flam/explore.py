@@ -25,7 +25,8 @@ puis goto_library depuis le menu Start) ; une transition ok / home conditionnell
 indexItem vers une scene jamais vue (#76) fait redemarrer l'histoire (le choix prefere
 les options jamais essayees dans l'etat d'inventaire courant), au plus 3 fois sans
 aucune nouveaute, puis `conditions` (et non `complete`), boucle ou plus rien n'est a essayer
-(`exhausted`), `max_steps` actions, pas de nouvelle scene / option / fin pendant
+(`exhausted` ; sans fin jouee, home conditionnelle et indexItem ne comptent pas, #142),
+`max_steps` actions, pas de nouvelle scene / option / fin pendant
 40 + nb de scenes vues actions (`loop` si l'histoire avance encore, sinon
 `unresponsive`), sortie vers la bibliotheque (anciens moteurs), erreur, crash
 ou delai.
@@ -55,7 +56,10 @@ Resultat de explore() (dict) :
   comptees), end_reasons, choices_explored, back_tests, menu_tests,
   dead_end_backs / dead_end_scenes (retours de secours sur un ecran sans
   action possible), home_escapes (sorties de boucle par home), exit_code,
-  workdir (si keep).
+  cond_frontier (scenes visitees dont une transition dependant de l'etat mene a une
+  scene jamais atteinte, a l'arret ; None sans trace `done`), blocked (au plus 100 :
+  "<scene>><cible>", suffixe "@home" pour une transition home ; ce que `conditions`
+  n'a pas pu atteindre, #142), workdir (si keep).
 Code de sortie du CLI : 0 statut ok, 1 sinon, 77 flam-player introuvable.
 """
 import argparse
@@ -92,13 +96,124 @@ TAG = "[EXPLORE] "
 # traces d'avant #42 (boucle et ecran fige confondus).
 DONE_STATUS = {"loop": "loop", "unresponsive": "stuck", "stuck": "stuck"}
 
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    class _BasicLimits(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_uint64) for n in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class _ExtendedLimits(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _BasicLimits), ("IoInfo", _IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    _JOB_KILL_ON_CLOSE = 0x2000          # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    _JOB_EXTENDED_LIMITS = 9             # JobObjectExtendedLimitInformation
+
+
+def _job_for(p):
+    """Windows : rattache le processus `p` a un Job Object `KILL_ON_JOB_CLOSE` et retourne
+    son handle (a garder ouvert). Quand le processus Python meurt, meme brutalement
+    (TerminateProcess, Stop-Process), Windows ferme le handle et tue le player et ses
+    descendants : pas d'orphelin (#178). None si le job n'a pas pu etre cree (le player
+    tourne alors sans garde-fou ; il reste arrete en sortie normale)."""
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.restype = wintypes.HANDLE
+    k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                            wintypes.DWORD]
+    k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    job = k32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    info = _ExtendedLimits()
+    info.BasicLimitInformation.LimitFlags = _JOB_KILL_ON_CLOSE
+    if not (k32.SetInformationJobObject(job, _JOB_EXTENDED_LIMITS, ctypes.byref(info),
+                                        ctypes.sizeof(info))
+            and k32.AssignProcessToJobObject(job, int(p._handle))):
+        k32.CloseHandle(job)
+        return None
+    return job
+
+
+def _close_job(job):
+    if job:
+        ctypes.WinDLL("kernel32").CloseHandle(wintypes.HANDLE(job))
+
+
+def _load_prctl():
+    """POSIX Linux : fonction prctl de libc, resolue cote parent (pas d'import ni de
+    chargement dans le fils forke, sur par rapport aux threads), ou None."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        import ctypes
+        return ctypes.CDLL(None, use_errno=True).prctl
+    except (OSError, AttributeError, ImportError):
+        return None
+
+
+_PRCTL = _load_prctl()
+
+
+def _pdeathsig():
+    """Dans le fils, avant exec : prctl(PR_SET_PDEATHSIG = 1, SIGKILL = 9) : le noyau tue
+    le player si le parent meurt. N'appelle que la fonction deja resolue."""
+    _PRCTL(1, 9, 0, 0, 0)
+
+
+def _spawn(cmd, **kw):
+    """Popen + garde-fou contre l'orphelin : retourne (processus, garde). Windows : Job
+    Object `KILL_ON_JOB_CLOSE` ; POSIX : nouveau groupe de processus (arret du groupe entier)
+    et, sous Linux, PR_SET_PDEATHSIG (lie au thread qui lance le player). Limite POSIX :
+    hors Linux, un SIGKILL du parent laisse le player vivant (aucun equivalent portable)."""
+    if os.name == "nt":
+        p = subprocess.Popen(cmd, **kw)
+        try:
+            return p, _job_for(p)           # `p._handle` : handle Windows du processus
+        except BaseException:
+            p.kill()
+            p.wait()
+            raise
+    pre = _pdeathsig if _PRCTL is not None else None
+    return subprocess.Popen(cmd, start_new_session=True, preexec_fn=pre, **kw), None
+
+
+def _kill(p):
+    """Arrete le player (et, sous POSIX, tout son groupe de processus)."""
+    if os.name != "nt":
+        try:
+            import signal
+            os.killpg(p.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+    p.kill()
+    p.wait()
+
 
 def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
     """Lance flam-player sans fenetre ; until() -> True arrete l'attente (le
     player tourne encore `grace` s, pour detecter un crash). stdout/stderr vont
     dans cwd/stdout.log et cwd/stderr.log. Retourne (code de sortie, ou None si
     le player a ete arrete, stdout, stderr, duree). Le player est toujours
-    arrete en sortie, meme sur exception (until(), Ctrl+C) : pas d'orphelin."""
+    arrete en sortie, meme sur exception (until(), Ctrl+C) ; et meme si le processus Python
+    est tue brutalement : Job Object (Windows) / PDEATHSIG (Linux), voir _spawn (#178)."""
     env = dict(os.environ)
     env.setdefault("SDL_VIDEODRIVER", "dummy")
     env.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -113,7 +228,7 @@ def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
     out_p, err_p = os.path.join(cwd, "stdout.log"), os.path.join(cwd, "stderr.log")
     with open(out_p, "wb") as fo, open(err_p, "wb") as fe:
         t0 = time.time()
-        p = subprocess.Popen([exe] + args, cwd=cwd, stdout=fo, stderr=fe, env=env)
+        p, guard = _spawn([exe] + args, cwd=cwd, stdout=fo, stderr=fe, env=env)
         code = None
         try:
             while time.time() - t0 < timeout:
@@ -126,9 +241,12 @@ def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
                     break
                 time.sleep(0.2)
         finally:
-            if p.poll() is None:
-                p.kill()
-                p.wait()
+            try:
+                if p.poll() is None:
+                    _kill(p)
+            finally:
+                if os.name == "nt":
+                    _close_job(guard)       # tue aussi les descendants restants
         dt = time.time() - t0
     with open(out_p, "rb") as f:
         out = f.read().decode("utf-8", "replace")
@@ -246,27 +364,44 @@ local function newFrontier(N, seen, shown)
     -- conditionnelle vers une scene jamais atteinte, ou transition indexItem (l'objet
     -- designe l'entree) dont une entree n'a jamais ete atteinte. Un autre etat
     -- d'inventaire peut y mener (hubs a etat, #76) ; les entrees de home comptent
-    -- aussi (#87), si la home est utilisable.
-    local function stateful(tr, list)
+    -- aussi (#87), si la home est utilisable. Mode `strict` (histoire sans fin
+    -- jouee, #142) : seules les entrees conditionnelles de la transition ok comptent
+    -- (comportement d'avant #76 pour une histoire cyclique : exhausted et non loop).
+    local function stateful(tr, list, strict)
         for _, e in ipairs(list or {}) do
-            if unseen(e) and (e.cond or tr.indexItem ~= nil) then return true end
+            if unseen(e) and (e.cond or (not strict and tr.indexItem ~= nil)) then return e end
         end
-        return false
+        return nil
     end
-    -- Nombre de scenes visitees dont une transition ok ou home dependant de l'etat
-    -- mene a une scene jamais atteinte
-    function F.condFrontier()
-        local n = 0
+    -- Scenes visitees dont une transition ok ou home dependant de l'etat mene a une
+    -- scene jamais atteinte : liste de { src = scene, dst = cible, home = bool }
+    local function condEntries(strict)
+        local out = {}
         for id in pairs(seen) do
             local st = N.stages and N.stages[id]
             local tr = st and st.ok
-            local hit = tr and stateful(tr, N.actions and N.actions[tr.action])
-            if not hit and st and st.home and F.hasHome(id, nil) then
-                hit = stateful(st.home, N.actions[st.home.action])
+            local e = tr and stateful(tr, N.actions and N.actions[tr.action], strict)
+            local viaHome = false
+            if not e and not strict and st and st.home and F.hasHome(id, nil) then
+                e = stateful(st.home, N.actions[st.home.action], false)
+                viaHome = e ~= nil
             end
-            if hit then n = n + 1 end
+            if e then out[#out + 1] = { src = tostring(id), dst = tostring(e.stage), home = viaHome } end
         end
-        return n
+        return out
+    end
+    function F.condFrontier(strict) return #condEntries(strict) end
+    -- Scenes bloquees (visitees, derriere une condition / un indexItem) et leur
+    -- cible : "<scene>><cible>" ("@home" ajoute si c'est la transition home),
+    -- tries ; au plus `max` (defaut 100)
+    function F.condBlocked(max)
+        local t = {}
+        for _, e in ipairs(condEntries(false)) do
+            t[#t + 1] = e.src .. ">" .. e.dst .. (e.home and "@home" or "")
+        end
+        table.sort(t)
+        for i = (max or 100) + 1, #t do t[i] = nil end
+        return t
     end
     -- Decision au menu Start apres une fin : reprendre (nil), `complete`, ou
     -- `conditions` (#76). Reprise tant qu'une option / transition ok sans condition
@@ -382,7 +517,8 @@ do
             done = true
             emit("done reason=" .. why .. " steps=" .. steps .. " visited=" .. nSeen
                  .. " ends=" .. ends .. " pending=" .. pending .. " frontier=" .. frontier()
-                 .. " cond=" .. condFrontier() .. " escapes=" .. escapes)
+                 .. " cond=" .. condFrontier() .. " escapes=" .. escapes
+                 .. " blocked=" .. table.concat(F.condBlocked(), ","))
         end
         -- Reste-t-il a reprendre ailleurs (option jamais essayee, transition ok
         -- jamais suivie) ? Alors un cycle se quitte par toute home (remonter).
@@ -706,9 +842,10 @@ do
             if steps >= MAX_STEPS then finish("max_steps"); return end
             -- cycle confirme, plus rien a essayer (options, transitions ok, homes vers
             -- du nouveau, entrees conditionnelles vers du nouveau, options jamais
-            -- essayees dans l'etat d'inventaire) : epuise
+            -- essayees dans l'etat d'inventaire) : epuise. Sans fin jouee (histoire
+            -- cyclique), home conditionnelle et indexItem ne comptent pas (#142)
             if noProg > 10 and pending == 0 and maxLoop >= 3 and steps - lastFresh > 10
-                    and frontier() == 0 and homeFrontier() == 0 and condFrontier() == 0 then
+                    and frontier() == 0 and homeFrontier() == 0 and condFrontier(ends == 0) == 0 then
                 finish("exhausted"); return
             end
             -- sans progres : boucle si l'histoire avance encore (>= 2 noeuds
@@ -740,6 +877,7 @@ class _Watcher(object):
         self.stuck_s = stuck_s
         self.t_last = time.time()
         self.done_reason = None
+        self.done_line = ""
         self.library = False
         self.error = False
         self.quiet = False
@@ -761,7 +899,8 @@ class _Watcher(object):
             if line.startswith(TAG):
                 self.t_last = time.time()
                 if line.startswith(TAG + "done reason="):
-                    self.done_reason = line[len(TAG + "done reason="):].split()[0]
+                    self.done_line = line[len(TAG + "done reason="):]
+                    self.done_reason = self.done_line.split()[0]
             elif LUA_OUT_RE.search(line):
                 self.error = True
         for line in self._lines(self.err_p):
@@ -811,6 +950,13 @@ def _result(code, out, err, dt, total, watch, seed, workdir):
     errors = [l.rstrip("\r") for l in err.splitlines() if ERR_RE.search(l)]
     errors += [l.rstrip("\r") for l in out.splitlines()
                if not l.startswith(TAG) and LUA_OUT_RE.search(l)]
+    cond_n, blocked = None, []
+    mc = re.search(r" cond=(\d+)", watch.done_line)
+    if mc:
+        cond_n = int(mc.group(1))
+    mb = re.search(r" blocked=(.*)$", watch.done_line)
+    if mb and mb.group(1):
+        blocked = mb.group(1).split(",")
     started = any(t.startswith("start ") for t in tagged)
     dead = [t[len("deadend at="):] for t in tagged if t.startswith("deadend at=")]
     lua_seen = any(LUA_ERR_RE.search(e) for e in errors)
@@ -856,6 +1002,8 @@ def _result(code, out, err, dt, total, watch, seed, workdir):
         "dead_end_backs": len(dead),
         "dead_end_scenes": sorted(set(dead)),
         "home_escapes": sum(1 for t in tagged if t.startswith("escape at=")),
+        "cond_frontier": cond_n,
+        "blocked": blocked,
         "exit_code": code,
     }
     if workdir:

@@ -4,6 +4,7 @@ import {
   isAllowedLicense,
   optionalMissingIsExpected,
   platformExcluded,
+  thirdPartyRustIds,
 } from "./notices-lib.mjs";
 
 test("platformExcluded : liste blanche", () => {
@@ -57,4 +58,16 @@ test("licences refusées", () => {
     "voir LICENSE.txt",
   ])
     assert.equal(isAllowedLicense(l), false, String(l));
+});
+
+test("membres du workspace exclus des paquets Rust tiers", () => {
+  const reached = new Set(["launcher", "telmi2flam", "serde", "zip"]);
+  const ids = thirdPartyRustIds(reached, "launcher", ["launcher", "telmi2flam"]);
+  assert.deepEqual([...ids].sort(), ["serde", "zip"]);
+  // Sans liste de membres : seule la racine est retirée.
+  assert.deepEqual([...thirdPartyRustIds(reached, "launcher", undefined)].sort(), [
+    "serde",
+    "telmi2flam",
+    "zip",
+  ]);
 });

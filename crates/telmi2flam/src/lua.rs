@@ -16,7 +16,7 @@ pub const LUA_KEYWORDS: [&str; 23] = [
 pub enum Lua {
     Nil,
     Bool(bool),
-    Int(i64),
+    Int(i128),
     Float(f64),
     Str(String),
     /// Liste Python : table Lua séquentielle.
@@ -31,7 +31,8 @@ impl Lua {
         match v {
             Value::Null => Lua::Nil,
             Value::Bool(b) => Lua::Bool(*b),
-            Value::Int(i) => Lua::Int(*i),
+            Value::Int(i) => Lua::Int(i128::from(*i)),
+            Value::UInt(u) => Lua::Int(i128::from(*u)),
             Value::Float(f) => Lua::Float(*f),
             Value::Str(s) => Lua::Str(s.clone()),
             Value::List(items) => Lua::List(items.iter().map(Lua::from_json).collect()),
@@ -292,5 +293,42 @@ mod tests {
             lua_repr(&t, 0).unwrap(),
             "{\n  [\"end\"] = 1,\n  ok_1 = \"a\\\"\\\\\\n\\001\"\n}"
         );
+    }
+
+    /// Imbrications de la profondeur maximale acceptée par `load_json`
+    /// ([`crate::json::MAX_DEPTH`]) : conversion, sérialisation et destruction récursives
+    /// doivent tenir dans une pile de 1 Mo (celle du fil principal sous Windows) même en debug.
+    /// Les valeurs sont construites à la main : l'analyseur JSON a son propre test de pile.
+    #[test]
+    fn profondeur_maximale_dans_une_pile_de_1_mo() {
+        use crate::json::{Object, Value};
+        let depth = crate::json::MAX_DEPTH;
+        for label in ["listes", "objets"] {
+            let handle = std::thread::Builder::new()
+                .stack_size(1 << 20)
+                .spawn(move || {
+                    let mut json = Value::Int(1);
+                    for _ in 0..depth {
+                        json = if label == "listes" {
+                            Value::List(vec![json])
+                        } else {
+                            let mut o = Object::new();
+                            o.insert("a".to_owned(), json);
+                            Value::Object(o)
+                        };
+                    }
+                    let lua = Lua::from_json(&json);
+                    drop(json);
+                    let out = lua_repr(&lua, 0).unwrap();
+                    drop(lua);
+                    // Une ligne par ouverture, une par fermeture, une pour la feuille.
+                    out.lines().count()
+                })
+                .unwrap();
+            let lines = handle
+                .join()
+                .unwrap_or_else(|_| panic!("panique du fil ({label})")); // un débordement de pile aborte le processus de test
+            assert_eq!(lines, 2 * depth + 1, "{label}");
+        }
     }
 }

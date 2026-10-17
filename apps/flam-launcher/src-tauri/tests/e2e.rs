@@ -12,7 +12,7 @@
 //! L'archive est synthétique (aucun contenu sous licence : images unies, MP3 muets).
 //!
 //! Outils cherchés, dans l'ordre :
-//! - `FLAM_E2E_INSTALL_DIR` : dossier d'une application installée (ou `target/release` après
+//! - `FLAM_E2E_INSTALL_DIR` : dossier d'une application installée (ou `target/release`, à la racine du workspace Cargo, après
 //!   `tauri build` avec `tauri.bundle.conf.json`) : `flam-player.exe`, `telmi2flam/` et le
 //!   Python embarqué sont détectés comme le fait l'application (`settings::detect_*`) ;
 //! - `FLAM_E2E_PLAYER` (chemin de `flam-player.exe`) et `FLAM_E2E_CONVERTER_DIR` (dossier

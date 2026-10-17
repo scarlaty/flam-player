@@ -582,6 +582,52 @@ class TestRunInterpretation(CompatBase):
         self.assertEqual(story["summary"], "Jouable, boucle sans erreur (8/10 scènes)")
         self.assertEqual(story["coverage"]["scenes_visited"], 8)
 
+    def test_conditions_142(self):
+        """#142 : `conditions` = avertissement, scenes bloquees dans le message, la fiche,
+        status.json, report.md ; resume de la fiche."""
+        blocked = ["s%d>g%d" % (i, i) for i in range(7)] + ["m>h@home"]
+        r = self.go(self.res(done_reason="conditions", scenes_visited=26, scenes_total=177,
+                              end_reached=True, cond_frontier=8, blocked=blocked,
+                              scenes=["s%d" % i for i in range(26)]))
+        self.assertEqual(r["status"], "warn")
+        self.assertIn("exploration partielle 26/177 scènes", r["messages"])
+        self.assertTrue(any(m.startswith("bloquées (scène>cible) : s0>g0; s1>g1") and
+                            m.endswith("(+3)") for m in r["messages"]), r["messages"])
+        self.assertEqual(r["raw"][0]["cond_frontier"], 8)
+        self.assertEqual(r["blocked"], sorted(blocked))
+        # sans scenes bloquees : message sans ligne « bloquées »
+        r0 = self.go(self.res(done_reason="conditions", scenes_visited=26, scenes_total=177))
+        self.assertFalse(any("bloquées" in m for m in r0["messages"]))
+        self.assertNotIn("blocked", r0)
+        r1 = self.go(self.res(done_reason="exhausted", blocked=["a>b"]))
+        self.assertNotIn("blocked", r1)                  # hors arret `conditions`
+        rec = {"uuid": "u", "version": "1", "title": "Doudou", "status": "OK_AVERTISSEMENTS",
+               "steps": {"download": {"status": "ok"}, "convert": {"status": "ok"},
+                         "validate": {"status": "ok"}, "run": r}}
+        self.assertEqual(compat._summary(rec), "Jouable, exploration partielle (26/177 scènes)")
+        story = compat.build_status({"generated": "g", "converter_hash": "h",
+                                     "stories": [rec]})["stories"]["u"]
+        self.assertEqual((story["run"], story["run_reason"]), ("warn", "conditions"))
+        self.assertEqual(story["blocked"], sorted(blocked))
+        rec0 = dict(rec, steps=dict(rec["steps"], run=r0))
+        story0 = compat.build_status({"generated": "g", "converter_hash": "h",
+                                      "stories": [rec0]})["stories"]["u"]
+        self.assertNotIn("blocked", story0)
+        md = compat.render_markdown({"generated": "g", "converter_hash": "h", "stories": [rec]})
+        self.assertIn("| conditions |", md)
+        self.assertIn("## Scenes derriere une condition", md)
+        self.assertIn("- Doudou : m>h@home; s0>g0", md)
+
+    def test_conditions_blocked_fusion_graines(self):
+        """Cible atteinte par une autre graine : plus bloquee dans la fiche fusionnee."""
+        runs = [self.res(done_reason="conditions", scenes_visited=2, scenes_total=3,
+                         scenes=["a", "b"], blocked=["b>g", "a>h"], seed=0),
+                self.res(done_reason="conditions", scenes_visited=2, scenes_total=3,
+                         scenes=["a", "g"], blocked=["b>g"], seed=1)]
+        it = iter(runs)
+        r = compat.do_run("x.pk", lambda *a, **k: dict(next(it)), "p", 60, 0, 100, seeds=2)
+        self.assertEqual(r["blocked"], ["a>h"])
+
     def test_partial_message_and_global_status(self):
         r = self.go(self.res(status="timeout", done_reason="timeout", scenes_visited=50,
                               scenes_total=200))
@@ -892,6 +938,209 @@ class TestReviewFixes(CompatBase):
             src = f.read()
         self.assertIn('env["FLAM_SCREENSHOT_AUTO_MS"] = "0"', src)
         self.assertIn('os.path.join(cwd, "screenshot.bmp")', src)
+
+
+class Killed(BaseException):
+    """Simule une mort brutale du processus : n'est pas capturee par `except Exception`."""
+
+
+class TestAlwaysAFiche(CompatBase):
+    """#166 : une histoire produit TOUJOURS une fiche, meme si l'exploration meurt."""
+
+    def good(self):
+        return [self.entry("good", None, path=self.mkzip(std_files(), "good"), version="local")]
+
+    def status_json(self):
+        with open(os.path.join(self.cache, "compat", "status.json"), encoding="utf-8") as f:
+            return json.load(f)["stories"]
+
+    def test_describe_exit_code(self):
+        d = compat.describe_exit_code
+        self.assertIsNone(d(0))
+        self.assertIsNone(d(None))
+        self.assertIn("tué de l'extérieur", d(-1))
+        self.assertIn("0xFFFFFFFF", d(-1))
+        self.assertIn("violation d'accès", d(-1073741819))
+        self.assertIn("0xC0000005", d(-1073741819))
+        self.assertIn("0xC0000005", d(0xC0000005))
+        self.assertIn("arrêt anormal", d(-1073740000))
+        self.assertEqual(d(3), "code de sortie 3")
+
+    def test_player_exit_code_translated(self):
+        def explore(player, story, timeout_s=120, seed=0, max_steps=200):
+            return {"status": "crash", "done_reason": "exit", "exit_code": -1073741819,
+                    "errors": ["flam-player arrete seul (code -1073741819)"]}
+        doc = self.campaign(self.good(), explore=explore, player_exe="p.exe")
+        s = doc["stories"][0]
+        run = s["steps"]["run"]
+        self.assertEqual(s["status"], "ECHEC_EXECUTION")
+        self.assertEqual(run["done_reason"], "exit")
+        self.assertTrue(any("violation d'accès" in m for m in run["messages"]), run["messages"])
+        self.assertEqual(run["raw"][0]["exit_code"], -1073741819)
+
+    def test_player_killed_minus_one(self):
+        def explore(player, story, timeout_s=120, seed=0, max_steps=200):
+            return {"status": "crash", "done_reason": "exit", "exit_code": -1}
+        run = self.campaign(self.good(), explore=explore, player_exe="p.exe"
+                            )["stories"][0]["steps"]["run"]
+        self.assertTrue(any("code -1" in m for m in run["messages"]), run["messages"])
+
+    def test_explore_exception_is_crash(self):
+        for exc in (RuntimeError("boum"), SystemExit(3), MemoryError()):
+            def explore(player, story, timeout_s=120, seed=0, max_steps=200, exc=exc):
+                raise exc
+            doc = self.campaign(self.good(), explore=explore, force=True)
+            s = doc["stories"][0]
+            self.assertEqual(s["status"], "ECHEC_EXECUTION")
+            self.assertEqual(s["steps"]["run"]["status"], "fail")
+            self.assertEqual(s["steps"]["run"]["done_reason"], "crash")
+            self.assertEqual(self.status_json()["good"]["run_reason"], "crash")
+
+    def test_exception_around_run_is_caught(self):
+        def boom(*a, **k):
+            raise ValueError("fiche cassée")
+        with mock.patch.object(compat, "do_run", boom):
+            doc = self.campaign(self.good(), explore=lambda *a, **k: {}, player_exe="p")
+        s = doc["stories"][0]
+        self.assertEqual(s["status"], "ECHEC_EXECUTION")
+        self.assertEqual(s["steps"]["run"]["done_reason"], "crash")
+        self.assertIn("ValueError", s["steps"]["run"]["messages"][0])
+        self.assertEqual(self.status_json()["good"]["status"], "ECHEC_EXECUTION")
+
+    def test_process_story_exception_gives_a_record(self):
+        def boom(*a, **k):
+            raise OSError("disque plein")
+        with mock.patch.object(compat, "process_story", boom):
+            doc = self.campaign(self.good())
+        s = doc["stories"][0]
+        self.assertEqual(s["status"], "ECHEC_CONVERSION")
+        self.assertIn("disque plein", s["steps"]["convert"]["messages"][0])
+
+    def prov(self, name="report.provisional.json"):
+        with open(os.path.join(self.cache, "compat", name), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_dead_process_leaves_a_provisional_record(self):
+        """Processus tue pendant l'exploration : une fiche provisoire d'echec est ecrite a
+        part (#178), puis reconciliee a la relance."""
+        def explore(player, story, timeout_s=120, seed=0, max_steps=200):
+            raise Killed()
+        with self.assertRaises(Killed):
+            self.campaign(self.good(), explore=explore, player_exe="p.exe")
+        stories = self.prov()["stories"]
+        self.assertEqual(len(stories), 1)
+        self.assertEqual(stories[0]["status"], "ECHEC_EXECUTION")
+        self.assertEqual(stories[0]["steps"]["run"]["done_reason"], "crash")
+        self.assertIn("interrompu", stories[0]["steps"]["run"]["messages"][-1])
+        st = self.prov("status.provisional.json")["stories"]["good"]
+        self.assertEqual((st["status"], st["run_reason"]), ("ECHEC_EXECUTION", "crash"))
+        # sans --force, la fiche provisoire n'est pas reprise comme resultat : on refait
+        doc = self.campaign(self.good(), explore=lambda *a, **k: {"status": "ok"},
+                            player_exe="p.exe")
+        self.assertEqual(doc["stories"][0]["steps"]["run"]["status"], "ok")
+        self.assertFalse(os.path.exists(os.path.join(self.cache, "compat",
+                                                     "report.provisional.json")))
+
+    def test_provisional_never_replaces_the_good_record(self):
+        doc = self.campaign(self.good(), explore=lambda *a, **k: {"status": "ok"},
+                            player_exe="p.exe")
+        self.assertEqual(doc["stories"][0]["steps"]["run"]["status"], "ok")
+
+        def explore(player, story, timeout_s=120, seed=0, max_steps=200):
+            raise Killed()
+        with self.assertRaises(Killed):
+            self.campaign(self.good(), explore=explore, player_exe="p.exe", force=True)
+        with open(os.path.join(self.cache, "compat", "report.json"), encoding="utf-8") as f:
+            kept = json.load(f)["stories"]
+        self.assertEqual(kept[0]["steps"]["run"]["status"], "ok")
+        self.assertNotEqual(kept[0]["status"], "ECHEC_EXECUTION")
+        self.assertNotEqual(self.status_json()["good"]["status"], "ECHEC_EXECUTION")
+        self.assertEqual(self.prov()["stories"][0]["status"], "ECHEC_EXECUTION")
+        # reconciliation : l'ancienne bonne fiche reste, le provisoire disparait
+        doc = self.campaign(self.good(), explore=lambda *a, **k: {"status": "ok"},
+                            player_exe="p.exe")
+        self.assertEqual(len(doc["stories"]), 1)
+        self.assertFalse(os.path.exists(os.path.join(self.cache, "compat",
+                                                     "status.provisional.json")))
+
+    def test_killed_before_exploration_leaves_a_provisional_record(self):
+        """Tue pendant la conversion, ou histoire encore en file d'attente (#178)."""
+        ents = [self.entry(n, None, path=self.mkzip(std_files(), n), version="local")
+                for n in ("a", "b")]
+
+        def boom(entry, cache, **kw):
+            raise Killed()
+        with mock.patch.object(compat, "process_story", boom):
+            with self.assertRaises(Killed):
+                self.campaign(ents)
+        stories = {s["uuid"]: s for s in self.prov()["stories"]}
+        self.assertEqual(set(stories), {"a", "b"})
+        for s in stories.values():
+            self.assertEqual(s["status"], "ECHEC_CONVERSION")
+            self.assertTrue(s["transient"])
+            self.assertIn("interrompu", s["steps"]["convert"]["messages"][0])
+        # relance : histoires refaites (la fiche provisoire n'est jamais reprise)
+        doc = self.campaign(ents)
+        self.assertEqual({s["status"] for s in doc["stories"]}, {"OK"})
+
+    def test_failed_record_download_step(self):
+        local = self.entry("l", None, path="x.zip", version="1")
+        self.assertEqual(compat.failed_record(local, OSError("x"))["steps"]["download"]["messages"],
+                         ["archive locale"])
+        remote = self.entry("r", "http://x/r.zip")
+        self.assertEqual(compat.failed_record(remote, OSError("x"), self.cache)
+                         ["steps"]["download"]["status"], "skipped")
+        arch = os.path.join(self.cache, "archives")
+        os.makedirs(arch)
+        with open(os.path.join(arch, compat.story_key("r", "1") + ".zip"), "wb") as f:
+            f.write(b"PK")
+        self.assertEqual(compat.failed_record(remote, OSError("x"), self.cache)
+                         ["steps"]["download"]["status"], "ok")
+
+    def test_exit_code_message_only_for_crash(self):
+        run = {"done_reason": "exit", "exit_code": 1, "errors": ["boum"]}
+        _, msgs = compat.interpret_run(dict(run, status="lua_error"))
+        self.assertFalse(any("flam-player" in m for m in msgs), msgs)
+        _, msgs = compat.interpret_run(dict(run, status="crash", exit_code=-1))
+        self.assertTrue(any("flam-player" in m for m in msgs), msgs)
+
+    def test_provisional_not_reused_without_run(self):
+        def explore(player, story, timeout_s=120, seed=0, max_steps=200):
+            raise Killed()
+        with self.assertRaises(Killed):
+            self.campaign(self.good(), explore=explore, player_exe="p.exe")
+        doc = self.campaign(self.good())                       # --no-run
+        self.assertEqual(doc["stories"][0]["steps"]["run"]["status"], "skipped")
+        self.assertEqual(doc["stories"][0]["status"], "OK")
+
+    def test_transient_failure_is_retried(self):
+        calls = []
+        real = compat.process_story
+
+        def flaky(entry, cache, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("disque plein")
+            return real(entry, cache, **kw)
+        with mock.patch.object(compat, "process_story", flaky):
+            self.assertEqual(self.campaign(self.good())["stories"][0]["status"],
+                             "ECHEC_CONVERSION")
+            self.assertEqual(self.campaign(self.good())["stories"][0]["status"], "OK")
+        self.assertEqual(len(calls), 2)
+
+    def test_parallel_run_jobs_exception(self):
+        ents = []
+        for n in ("a", "b"):
+            ents.append(self.entry(n, None, path=self.mkzip(std_files(), n), version="local"))
+
+        def explore(player, story, timeout_s=120, seed=0, max_steps=200):
+            if "a-local" in story:
+                raise RuntimeError("boum")
+            return {"status": "ok"}
+        doc = self.campaign(ents, explore=explore, player_exe="p", run_jobs=2)
+        st = {s["uuid"]: s["status"] for s in doc["stories"]}
+        self.assertEqual(st["a"], "ECHEC_EXECUTION")
+        self.assertIn(st["b"], ("OK", "OK_AVERTISSEMENTS"))
 
 
 try:
