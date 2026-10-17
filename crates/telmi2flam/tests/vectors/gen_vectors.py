@@ -7,8 +7,10 @@ Déterministe : relancer le script ne doit rien changer (`git status` propre).
     python crates/telmi2flam/tests/vectors/gen_vectors.py
 
 Fichiers produits :
-- `lif/manifest.tsv` (`nom  largeur  hauteur`), et pour chaque image `<nom>.rgba` (entrée
-  RGBA8888), `<nom>.lif` (`lif.encode`) et `<nom>.q.rgba` (`lif.quantize_rgba`) ;
+- `lif/manifest.tsv` (`nom  largeur  hauteur  [transposee]`), et pour chaque image `<nom>.rgba`
+  (entrée RGBA8888), `<nom>.lif` (`lif.encode`) et `<nom>.q.rgba` (`lif.quantize_rgba`) ; pour
+  l'image marquée `transposee`, `<nom>.t.rgba` est la sortie attendue du décodeur Rust (le
+  décodeur C transpose les images hautes stockées en colonnes, pas `lif.decode`) ;
 - `mp3map/manifest.tsv` : `nom  entrée  résultat`, où l'entrée est `file` (`<nom>.mp3`) ou
   `repeat:<trame hex>:<nombre>` (trop gros pour être commité), et le résultat
   `ok  <sortie>  <entrées>  <durée : bits du flottant en hex>  <trames>  <fréquences>` ou
@@ -77,7 +79,26 @@ def lif_images():
     # Image haute (3 x 80) : encodée normalement ; le décodeur peut la transposer.
     add("haute", 3, 80, [v for y in range(80) for x in range(3)
                          for v in (y * 3, x * 80, 255 - y * 3, 255)])
+    # Premier pixel d'alpha 0 puis plage (RLE) : l'état initial du décodeur est alpha 255,
+    # le premier pixel utilise donc l'opcode 0xFF (alpha explicite 0), la plage le répète.
+    add("alpha0_plage", 12, 1, [v for p in [(0, 0, 0, 0)] * 9 + [(0, 0, 0, 255)] * 3 for v in p])
+    # Image 70 x 80 dont la couleur ne dépend que de i % 80 (= y si le tampon est lu par
+    # colonnes) : lue par lignes elle est très incohérente, le décodeur (heuristique du
+    # décodeur C) la transpose. Python `lif.decode` ne transpose pas : voir `gen_lif`.
+    add("colonnes", 70, 80, [v for i in range(70 * 80)
+                             for v in ((i % 80) * 3 % 256, (i % 80) * 7 % 256, 0, 255)])
     return imgs
+
+
+def transpose(rgba, w, h):
+    """Réinterprète un tampon stocké en colonnes en tampon par lignes (même rôle que
+    `transpose` de lif.rs, réécrit ici indépendamment)."""
+    out = bytearray(len(rgba))
+    for y in range(h):
+        for x in range(w):
+            o, s = (y * w + x) * 4, (x * h + y) * 4
+            out[o:o + 4] = rgba[s:s + 4]
+    return bytes(out)
 
 
 def gen_lif(out_dir):
@@ -91,7 +112,12 @@ def gen_lif(out_dir):
         write(os.path.join(out_dir, name + ".rgba"), px)
         write(os.path.join(out_dir, name + ".lif"), enc)
         write(os.path.join(out_dir, name + ".q.rgba"), q)
-        manifest.append("%s\t%d\t%d" % (name, w, h))
+        if name == "colonnes":
+            # Sortie attendue de lif::decode (Rust) : l'image quantifiée transposée.
+            write(os.path.join(out_dir, name + ".t.rgba"), transpose(q, w, h))
+            manifest.append("%s\t%d\t%d\ttransposee" % (name, w, h))
+        else:
+            manifest.append("%s\t%d\t%d" % (name, w, h))
     write_lines(os.path.join(out_dir, "manifest.tsv"), manifest)
 
 

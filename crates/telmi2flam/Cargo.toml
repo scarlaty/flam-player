@@ -6,17 +6,27 @@ license = "MIT"
 edition = "2021"
 rust-version = "1.89"
 
-[lib]
-name = "telmi2flam"
-
 [[bin]]
 name = "telmi2flam"
 path = "src/main.rs"
 
 [dependencies]
+# Lecture ZIP faite à la main (src/zipread.rs, équivalence avec zipfile) : seulement le
+# décompresseur deflate en Rust pur (miniz_oxide) et le CRC-32 (aussi pour les chunks PNG).
+crc32fast = "=1.5.2"
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 # Dictionnaire JSON dans l'ordre d'insertion, comme `dict` de Python (clés dupliquées : la
 # dernière valeur gagne, à la position de la première).
 indexmap = { version = "=2.14.2", default-features = false, features = ["std"] }
+# Décodage PNG : inflate dans un tampon non circulaire (distances vérifiées comme zlib). Version
+# déjà dans le Cargo.lock (dépendance de flate2).
+miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
 # NFC / NFKD et classe combinatoire de `unicodedata`. Version épinglée : 0.1.24 porte
 # Unicode 16.0.0, celui du Python 3.14 de l'installateur (0.1.25 passe à Unicode 17.0.0).
 unicode-normalization = "=0.1.24"
+
+[dev-dependencies]
+# Lecture de tests/vectors/archive/expected.json (vecteurs produits par Python).
+serde_json = "=1.0.154"
+# Empreintes SHA-256 des vecteurs de parité PNG (déjà dans le Cargo.lock du launcher).
+sha2 = { version = "=0.10.9", default-features = false }

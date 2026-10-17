@@ -23,7 +23,7 @@ de bascule et le découpage en PR. Elle ne contient aucun code.
 | `telmi2flam.py` : audio | copie des MP3 **telle quelle**, `silent.mp3` constant, avertissement `audio_samplerate` | **Aucun décodage ni ré-encodage MP3**. Il n'y a donc ni décodeur ni rééchantillonneur à embarquer. |
 | `telmi2flam.py` : sortie | ordre canonique des entrées, `.plain.pk` (ZIP *stored*), `--plain` / `-o *.plain`, `<sortie>.<pid>.part`, `_commit`, `_clean_orphans` | Voir les invariants §3. |
 | `telmi2flam.py` : protocole | options CLI, `--progress-json` (événements `start` avec `version`, `step` avec `phase`/`done`/`total` espacés de 0,1 s, `warning`, `done`, `error` avec `exit`), lignes `  ! …` sur stderr, codes de sortie 0/2/3/4/5/6/130, plus 7 (`unsupported_format`) pour le Rust | Contrats lus par `convert.rs` (événements) et par `compat.py` (lignes `  !` de stderr), à garder tels quels. |
-| `lif.py` | `encode`, `quantize_rgba` | `decode` existe déjà côté launcher (`src-tauri/src/lif.rs`) : à déplacer dans la crate pour les tests aller-retour. |
+| `lif.py` | `encode`, `quantize_rgba` | `decode` a été déplacé du launcher (`src-tauri/src/lif.rs`) dans la crate (`crates/telmi2flam/src/lif.rs`) : tests aller-retour dans la crate, le launcher l'utilise comme dépendance. |
 | `mp3map.py` | `build` (table de seek `.mp3map`) | Analyse d'octets non fiables : bornes strictes. |
 
 ### Ce qui reste en Python (outils du dépôt, jamais livrés)
@@ -206,8 +206,14 @@ Invariants (repris de Python, à tester côté Rust) :
 - **Écarts admis**, listés une fois pour toutes dans `parity.py` : délégation
   `unsupported_format` (code 7, D4 : comptée à part, voir §4.3), entrée chiffrée (code 3 en
   Rust, 6 en Python), et les cas JSON
-  du tableau §3 tranchés comme « divergence assumée ». Tout autre écart fait échouer la
-  comparaison.
+  du tableau §3 tranchés comme « divergence assumée ». Deux autres écarts du lecteur ZIP
+  suivent le même raisonnement que l'entrée chiffrée : le Rust classe l'archive illisible
+  (`archive_unreadable`, code 3) là où Python échoue en `internal_error` (code 6) sur une
+  exception non rattrapée. Ce sont le **nom d'entrée UTF-8 invalide avec le bit 11**
+  (`UnicodeDecodeError`, règle `invalid_utf8_name`) et la **position d'en-tête locale
+  négative** (`OSError`, règle `negative_offset`). Chaque règle est limitée à une étiquette
+  de cas du corpus et au couple de codes exact (Python 6 / Rust 3). Tout autre écart fait
+  échouer la comparaison.
 
 ### 4.2 Images : le point dur
 
