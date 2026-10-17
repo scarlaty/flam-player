@@ -40,10 +40,11 @@ Thumbs.db
 # Caches locaux (archives Telmi, histoires converties, rapports de compatibilite)
 .cache/
 
+# Workspace Cargo (launcher + crates/) : sorties de build à la racine
 # Surcouche flam-launcher (Tauri) : dépendances et sorties de build ; icônes versionnées
 apps/flam-launcher/node_modules/
 apps/flam-launcher/dist/
-apps/flam-launcher/src-tauri/target/
+/target/
 apps/flam-launcher/src-tauri/gen/
 !apps/flam-launcher/src-tauri/icons/*.png
 # Captures du design system (docs/DESIGN.md) : le dossier échappe aussi à `screenshot*`
