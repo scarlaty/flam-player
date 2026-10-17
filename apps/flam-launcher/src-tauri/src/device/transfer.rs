@@ -221,9 +221,9 @@ fn hidden_note(hidden: &bool) -> &'static str {
 impl From<TransferError> for AppError {
     fn from(err: TransferError) -> Self {
         match err {
-            TransferError::Cancelled | TransferError::Prepare(PrepareError::Cancelled) => {
-                AppError::Cancelled
-            }
+            TransferError::Cancelled
+            | TransferError::Prepare(PrepareError::Cancelled)
+            | TransferError::Carrier(CarrierError::Cancelled) => AppError::Cancelled,
             TransferError::DeviceNotFound
             | TransferError::InvalidId
             | TransferError::NotEnoughSpace { .. }
@@ -238,6 +238,7 @@ impl From<TransferError> for AppError {
                 | CarrierError::NoStoredKeys
                 | CarrierError::InvalidSource(_)
                 | CarrierError::Mismatch
+                | CarrierError::EnteredMismatch
                 | CarrierError::Store(_),
             ) => AppError::Validation(err.to_string()),
             TransferError::Carrier(CarrierError::Io(_))
@@ -921,6 +922,7 @@ pub fn read_mdf(root: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>, TransferErro
 fn device_keys(
     root: &Path,
     carrier: Option<&CarrierRequest<'_>>,
+    cancel: &AtomicBool,
 ) -> Result<(DeviceKeys, Option<CarrierKeys>), TransferError> {
     let mdf = read_mdf(root)?;
     let firmware = firmware_from_mdf(&mdf);
@@ -930,7 +932,10 @@ fn device_keys(
     }
     let firmware = firmware.unwrap_or_default();
     let request = carrier.ok_or(CarrierError::CarrierRequired)?;
-    let carrier_keys = carrier::resolve(root, &mdf, request)?;
+    let carrier_keys = carrier::resolve(root, &mdf, request, cancel).map_err(|e| match e {
+        CarrierError::Cancelled => TransferError::Cancelled,
+        other => TransferError::Carrier(other),
+    })?;
     let keys = DeviceKeys::with_carrier(&firmware, &carrier_keys).map_err(|e| match e {
         CryptoError::UnsupportedFirmware(v) => TransferError::UnsupportedFirmware(v),
         other => TransferError::KeyUnavailable(other.to_string()),
@@ -980,7 +985,7 @@ pub(crate) fn send_from_library_with(
     if !root.join(MDF_FILE).is_file() {
         return Err(TransferError::DeviceNotFound);
     }
-    let (keys, carrier_keys) = device_keys(root, carrier)?;
+    let (keys, carrier_keys) = device_keys(root, carrier, cancel)?;
     if let Err(err) = prepare::cleanup_stale(work_dir) {
         tracing::warn!("préparations abandonnées non supprimées : {err}");
     }

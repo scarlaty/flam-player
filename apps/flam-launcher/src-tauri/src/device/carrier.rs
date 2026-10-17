@@ -6,8 +6,10 @@
 //! (32 octets : clé AES-128 puis IV). Ce module :
 //!
 //! - liste les histoires officielles de la Flam qui portent ce matériel ([`list_candidates`]) ;
-//! - lit le couple depuis une histoire de la Flam ([`read_device_carrier`]) ou depuis un fichier
-//!   choisi par l'utilisateur ([`read_file_carrier`] : `bt` avec `key` à côté, ou archive zip) ;
+//! - lit le couple depuis une histoire de la Flam ([`read_device_carrier`]), depuis un fichier
+//!   choisi par l'utilisateur ([`read_file_carrier`] : `bt` avec `key` à côté, ou archive zip),
+//!   ou depuis un `bt` saisi en hexadécimal ([`find_by_bt`] : le `key` est celui de l'histoire
+//!   de la Flam dont `info` se déchiffre avec ce `bt`, #271) ;
 //! - vérifie que le couple correspond à la Flam **avant toute copie** ([`check_against_device`]) ;
 //! - conserve le couple sur le PC, chiffré par DPAPI (portée utilisateur), lié à la Flam
 //!   ([`CarrierStore`]) ;
@@ -25,6 +27,7 @@
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -66,6 +69,8 @@ const MAX_INFO: u64 = 4096;
 const MAX_ARCHIVE: u64 = 64 * 1024 * 1024;
 /// Nombre maximal de dossiers d'histoires examinés.
 const MAX_SCANNED: usize = 5000;
+/// Longueur maximale acceptée d'une clé saisie (espaces compris).
+const MAX_ENTERED_CHARS: usize = 1024;
 /// Longueur maximale d'un titre affiché.
 const MAX_TITLE_CHARS: usize = 80;
 /// Sous-dossier du dossier de données où le couple est conservé (chiffré par DPAPI).
@@ -90,6 +95,12 @@ pub enum CarrierError {
     InvalidSource(String),
     #[error("ces clés ne correspondent à aucune histoire officielle présente sur cette Flam (couple invalide ou d'un autre compte) : rien n'a été écrit")]
     Mismatch,
+    #[error(
+        "cette clé ne correspond à aucune histoire officielle de cette Flam : rien n'a été écrit"
+    )]
+    EnteredMismatch,
+    #[error("transfert annulé : la Flam est inchangée")]
+    Cancelled,
     #[error("clés conservées : {0}")]
     Store(String),
     #[error("{0}")]
@@ -144,13 +155,80 @@ impl CarrierKeys {
 
     /// Clair de `info` (titre…) déchiffré avec ce couple, s'il est lisible.
     fn decrypt_info(&self, data: &[u8]) -> Option<String> {
-        let len = data.len().min(MAX_INFO as usize) / BLOCK_SIZE * BLOCK_SIZE;
-        if len == 0 {
-            return None;
+        info_text(&self.story_key, &self.story_iv, data)
+    }
+
+    /// Même `bt`, avec le fichier `key` d'une autre histoire de la Flam.
+    fn with_key_file(&self, key_file: &[u8]) -> Result<Self, CarrierError> {
+        let mut bt = Zeroizing::new([0u8; BT_LEN]);
+        bt[..16].copy_from_slice(&self.story_key[..]);
+        bt[16..].copy_from_slice(&self.story_iv[..]);
+        Self::from_parts(&bt[..], key_file)
+    }
+}
+
+/// Clair de `info` déchiffré avec la clé et l'IV d'un `bt`, s'il est lisible.
+fn info_text(key: &[u8; 16], iv: &[u8; 16], data: &[u8]) -> Option<String> {
+    let len = data.len().min(MAX_INFO as usize) / BLOCK_SIZE * BLOCK_SIZE;
+    if len == 0 {
+        return None;
+    }
+    let mut plain = Zeroizing::new(data[..len].to_vec());
+    decrypt_blocks(key, iv, &mut plain).ok()?;
+    readable_text(&plain)
+}
+
+/// `bt` saisi par l'utilisateur : 64 caractères hexadécimaux, espaces et majuscules tolérés.
+/// Le texte est effacé de la mémoire à la destruction et masqué par `Debug` ; il n'apparaît
+/// dans aucun message d'erreur.
+#[derive(Clone, PartialEq, Eq)]
+pub struct EnteredBt(Zeroizing<String>);
+
+impl EnteredBt {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(Zeroizing::new(text.into()))
+    }
+
+    /// Octets du `bt` saisi. Refus (sans reprendre le texte saisi) : caractère non
+    /// hexadécimal, ou nombre de chiffres différent de 64.
+    pub fn parse(&self) -> Result<Zeroizing<[u8; BT_LEN]>, CarrierError> {
+        let bad = |m: String| CarrierError::InvalidSource(format!("clé saisie : {m}"));
+        if self.0.len() > MAX_ENTERED_CHARS {
+            return Err(bad("texte trop long".into()));
         }
-        let mut plain = Zeroizing::new(data[..len].to_vec());
-        decrypt_blocks(&self.story_key, &self.story_iv, &mut plain).ok()?;
-        readable_text(&plain)
+        let mut bt = Zeroizing::new([0u8; BT_LEN]);
+        let mut digits = 0usize;
+        for c in self.0.chars().filter(|c| !c.is_whitespace()) {
+            let Some(value) = c.to_digit(16) else {
+                return Err(bad(
+                    "seuls les chiffres 0 à 9 et les lettres a à f sont acceptés".into(),
+                ));
+            };
+            if let Some(byte) = bt.get_mut(digits / 2) {
+                // `value` < 16 : la conversion est exacte.
+                *byte = (*byte << 4) | value as u8;
+            }
+            digits += 1;
+        }
+        if digits != BT_LEN * 2 {
+            return Err(bad(format!(
+                "{digits} caractères hexadécimaux ({} attendus)",
+                BT_LEN * 2
+            )));
+        }
+        Ok(bt)
+    }
+}
+
+impl std::fmt::Debug for EnteredBt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EnteredBt { <masqué> }")
+    }
+}
+
+impl<'de> Deserialize<'de> for EnteredBt {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d).map(Self::new)
     }
 }
 
@@ -259,42 +337,73 @@ pub struct CarrierCandidate {
     pub title: String,
     /// Histoire masquée (`str.hidden/`).
     pub hidden: bool,
+    /// Histoire sans `bt` : son `info` se déchiffre avec le `bt` conservé pour cette Flam.
+    pub with_stored: bool,
 }
 
-/// Histoires de la Flam qui portent un couple (`bt` et `key`) dont `bt` déchiffre leur propre
-/// `info` en texte lisible. Lecture seule. Les clés ne quittent pas cette fonction.
-pub fn list_candidates(root: &Path) -> Vec<CarrierCandidate> {
+/// Couple d'un dossier d'histoire sans `bt` : le `bt` conservé pour cette Flam, s'il déchiffre
+/// son `info`, avec le `key` du dossier. Rend aussi le clair de `info`.
+fn stored_carrier_for_dir(dir: &Path, stored: &CarrierKeys) -> Option<(CarrierKeys, String)> {
+    let info = read_info(dir).ok()??;
+    let text = stored.decrypt_info(&info)?;
+    let key = read_small(&dir.join(KEY_FILE), MAX_SMALL_FILE).ok()??;
+    Some((stored.with_key_file(&key).ok()?, text))
+}
+
+/// Histoires de la Flam utilisables comme carrier : celles qui portent un couple (`bt` et
+/// `key`) dont `bt` déchiffre leur propre `info` en texte lisible, et, avec `stored` (couple
+/// conservé pour cette Flam), celles sans `bt` dont `info` se déchiffre avec le `bt` conservé.
+/// Lecture seule. Les clés ne quittent pas cette fonction.
+pub fn list_candidates(root: &Path, stored: Option<&CarrierKeys>) -> Vec<CarrierCandidate> {
     let mut out = Vec::new();
     for (id, dir, hidden) in story_dirs(root) {
-        let Ok(Some(keys)) = carrier_in_dir(&dir) else {
-            continue;
+        let found = match carrier_in_dir(&dir) {
+            Ok(Some(keys)) => read_info(&dir)
+                .ok()
+                .flatten()
+                .and_then(|info| keys.decrypt_info(&info))
+                .map(|text| (text, false)),
+            Ok(None) => stored
+                .and_then(|stored| stored_carrier_for_dir(&dir, stored))
+                .map(|(_, text)| (text, true)),
+            Err(_) => None,
         };
-        let Ok(Some(info)) = read_info(&dir) else {
-            continue;
-        };
-        if let Some(text) = keys.decrypt_info(&info) {
+        if let Some((text, with_stored)) = found {
             out.push(CarrierCandidate {
                 uuid: id.to_string(),
                 title: title_of(&text),
                 hidden,
+                with_stored,
             });
         }
     }
     out
 }
 
-/// Couple de l'histoire `uuid` de la Flam (`str/` ou `str.hidden/`).
-pub fn read_device_carrier(root: &Path, uuid: &str) -> Result<CarrierKeys, CarrierError> {
+/// Couple de l'histoire `uuid` de la Flam (`str/` ou `str.hidden/`) : ses fichiers `bt` et
+/// `key`, ou, sans `bt`, le `bt` conservé (`stored`, appelé seulement dans ce cas) s'il
+/// déchiffre son `info`, avec son `key`.
+pub fn read_device_carrier(
+    root: &Path,
+    uuid: &str,
+    stored: impl FnOnce() -> Option<CarrierKeys>,
+) -> Result<CarrierKeys, CarrierError> {
     let id = StoryId::parse(uuid)
         .ok_or_else(|| CarrierError::InvalidSource("identifiant d'histoire invalide".into()))?;
     for sub in [STORIES_DIR, HIDDEN_STORIES_DIR] {
         let dir = root.join(sub).join(id.as_str());
         if dir.is_dir() {
-            return carrier_in_dir(&dir)?.ok_or_else(|| {
-                CarrierError::InvalidSource(format!(
-                    "l'histoire {id} n'a pas de fichiers {BT_FILE} et {KEY_FILE} utilisables"
-                ))
-            });
+            if let Some(keys) = carrier_in_dir(&dir)? {
+                return Ok(keys);
+            }
+            return stored()
+                .and_then(|stored| stored_carrier_for_dir(&dir, &stored))
+                .map(|(keys, _)| keys)
+                .ok_or_else(|| {
+                    CarrierError::InvalidSource(format!(
+                        "l'histoire {id} n'a pas de fichiers {BT_FILE} et {KEY_FILE} utilisables"
+                    ))
+                });
         }
     }
     Err(CarrierError::InvalidSource(format!(
@@ -362,11 +471,57 @@ fn read_zip_carrier(path: &Path) -> Result<CarrierKeys, CarrierError> {
     CarrierKeys::from_parts(&bt, &key)
 }
 
+fn check_cancel(cancel: &AtomicBool) -> Result<(), CarrierError> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(CarrierError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+/// Couple d'un `bt` saisi : parcourt les histoires de la Flam (`str/` puis `str.hidden/`,
+/// bornées) et retient la première dont `info` se déchiffre avec ce `bt` en texte lisible ;
+/// son fichier `key` complète le couple. Aucune : [`CarrierError::EnteredMismatch`].
+/// Lecture seule ; l'annulation est vérifiée à chaque histoire.
+pub fn find_by_bt(
+    root: &Path,
+    bt: &[u8; BT_LEN],
+    cancel: &AtomicBool,
+) -> Result<CarrierKeys, CarrierError> {
+    let mut story_key = Zeroizing::new([0u8; 16]);
+    let mut story_iv = Zeroizing::new([0u8; 16]);
+    story_key.copy_from_slice(&bt[..16]);
+    story_iv.copy_from_slice(&bt[16..]);
+    for (_, dir, _) in story_dirs(root) {
+        check_cancel(cancel)?;
+        let Ok(Some(info)) = read_info(&dir) else {
+            continue;
+        };
+        if info_text(&story_key, &story_iv, &info).is_none() {
+            continue;
+        }
+        let Ok(Some(key)) = read_small(&dir.join(KEY_FILE), MAX_SMALL_FILE) else {
+            continue;
+        };
+        if let Ok(keys) = CarrierKeys::from_parts(&bt[..], &key) {
+            return Ok(keys);
+        }
+    }
+    check_cancel(cancel)?;
+    Err(CarrierError::EnteredMismatch)
+}
+
 /// Vérifie, **avant toute copie**, que le couple correspond à la Flam : une histoire de la Flam
 /// a le même fichier `key` et son `info` se déchiffre avec ce couple en texte lisible. Rend
-/// l'histoire trouvée ; sinon [`CarrierError::Mismatch`]. Lecture seule.
-pub fn check_against_device(root: &Path, keys: &CarrierKeys) -> Result<StoryId, CarrierError> {
+/// l'histoire trouvée ; sinon [`CarrierError::Mismatch`]. Lecture seule ; l'annulation est
+/// vérifiée à chaque histoire.
+pub fn check_against_device(
+    root: &Path,
+    keys: &CarrierKeys,
+    cancel: &AtomicBool,
+) -> Result<StoryId, CarrierError> {
     for (id, dir, _) in story_dirs(root) {
+        check_cancel(cancel)?;
         let Ok(Some(key)) = read_small(&dir.join(KEY_FILE), MAX_SMALL_FILE) else {
             continue;
         };
@@ -687,6 +842,8 @@ pub enum CarrierChoice {
     Device { uuid: String },
     /// Fichier choisi par l'utilisateur.
     File { path: String },
+    /// `bt` saisi en hexadécimal ; le `key` est celui de l'histoire de la Flam qu'il déchiffre.
+    Entered { bt: EnteredBt },
 }
 
 /// Demande d'envoi en mode carrier.
@@ -701,10 +858,12 @@ pub struct CarrierRequest<'a> {
 
 /// Résout et vérifie le couple d'une demande, sans rien écrire sur la Flam : consentement,
 /// lecture de la source, contrôle de cohérence avec la Flam, puis conservation si demandée.
+/// `cancel` interrompt le parcours des histoires ([`CarrierError::Cancelled`]).
 pub fn resolve(
     root: &Path,
     mdf: &[u8],
     request: &CarrierRequest<'_>,
+    cancel: &AtomicBool,
 ) -> Result<CarrierKeys, CarrierError> {
     if !consent_is_current(request.consent) {
         return Err(CarrierError::ConsentRequired);
@@ -715,10 +874,16 @@ pub fn resolve(
             Some(id) => request.store.load(id)?.ok_or(CarrierError::NoStoredKeys)?,
             None => return Err(CarrierError::NoStoredKeys),
         },
-        CarrierChoice::Device { uuid } => read_device_carrier(root, uuid)?,
+        CarrierChoice::Device { uuid } => read_device_carrier(root, uuid, || {
+            id.as_ref()
+                .and_then(|id| request.store.load(id).ok().flatten())
+        })?,
         CarrierChoice::File { path } => read_file_carrier(Path::new(path))?,
+        // Le couple vient d'une histoire de la Flam dont `info` se déchiffre avec ce `bt`.
+        CarrierChoice::Entered { bt } => find_by_bt(root, &*bt.parse()?, cancel)?,
     };
-    check_against_device(root, &keys)?;
+    // Revérifié pour toutes les sources, y compris la saisie (même parcours, borné).
+    check_against_device(root, &keys, cancel)?;
     if request.remember && request.choice != CarrierChoice::Stored {
         match &id {
             Some(id) => {
@@ -769,9 +934,18 @@ pub fn carrier_state(
     let mdf = read_mdf(root)?;
     let firmware = firmware_from_mdf(&mdf);
     let carrier_needed = firmware.as_deref().and_then(firmware_family) == Some(FirmwareFamily::V1);
-    let stored_keys = DeviceId::from_mdf(&mdf).is_some_and(|id| store.has(&id));
+    let device_id = DeviceId::from_mdf(&mdf);
+    let stored_keys = device_id.as_ref().is_some_and(|id| store.has(id));
     let candidates = if carrier_needed && consent.is_some() {
-        list_candidates(root)
+        // Couple conservé : propose aussi les histoires sans `bt` que son `bt` déchiffre.
+        let stored = match device_id.as_ref().filter(|_| stored_keys) {
+            Some(id) => store.load(id).unwrap_or_else(|err| {
+                tracing::warn!("clés carrier conservées illisibles : {err}");
+                None
+            }),
+            None => None,
+        };
+        list_candidates(root, stored.as_ref())
     } else {
         Vec::new()
     };

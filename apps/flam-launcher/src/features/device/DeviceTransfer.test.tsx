@@ -90,6 +90,12 @@ let removeFailure: { kind: string; message: string } | null;
 let recoverFailure: { kind: string; message: string } | null;
 let carrierConsent: { text_version: number; accepted_at: string } | null;
 let storedKeys: boolean;
+let carrierCandidates: {
+  uuid: string;
+  title: string;
+  hidden: boolean;
+  with_stored: boolean;
+}[];
 
 const WARNING =
   "Fonction expérimentale, non officielle. Pour installer une histoire sur une Flam en firmware 1.x, flam-launcher réutilise les clés d'une histoire officielle déjà présente sur cette Flam et achetée sur votre compte. Aucune clé n'est fournie par flam-launcher, aucune histoire officielle n'est copiée ni exportée. Si cette histoire officielle est retirée de la Flam ou de votre compte, les histoires installées ainsi peuvent devenir illisibles. Usage strictement personnel, à vos risques ; fonction ni approuvée ni prise en charge par Lunii.";
@@ -109,6 +115,9 @@ beforeEach(() => {
   recoverFailure = null;
   carrierConsent = null;
   storedKeys = false;
+  carrierCandidates = [
+    { uuid: OFFICIAL, title: "Histoire officielle", hidden: false, with_stored: false },
+  ];
   mockIPC(
     (cmd, payload) => {
       const args = (payload ?? {}) as Record<string, unknown>;
@@ -155,9 +164,7 @@ beforeEach(() => {
             carrier_needed: true,
             stored_keys: storedKeys,
             // Comme le backend : rien n'est lu avant le consentement.
-            candidates: carrierConsent
-              ? [{ uuid: OFFICIAL, title: "Histoire officielle", hidden: false }]
-              : [],
+            candidates: carrierConsent ? carrierCandidates : [],
           };
         case "device_carrier_accept":
           if (args.understood !== true) throw { kind: "validation", message: "case" };
@@ -752,6 +759,96 @@ it("Flam 1.x : clés choisies dans un fichier, sans conservation", async () => {
   expect(await screen.findAllByText(/couple invalide/)).not.toHaveLength(0);
   fireEvent.click(sendButton("Les trois ours"));
   expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+});
+
+it("Flam 1.x sans bt : clé saisie, aucun envoi tant qu'elle est invalide", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  carrierConsent = { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" };
+  carrierCandidates = [];
+  const bt = "0123456789ABCDEF".repeat(4);
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  const dialog = await screen.findByRole("alertdialog");
+  expect(
+    await within(dialog).findByText(
+      "Aucune histoire de cette Flam ne contient de fichier bt : saisissez la clé ou choisissez un fichier.",
+    ),
+  ).toBeInTheDocument();
+  // Saisie proposée d'office ; champ masqué.
+  expect(
+    within(dialog).getByRole("radio", { name: /Saisir la clé \(bt\)/ }),
+  ).toBeChecked();
+  const field = within(dialog).getByLabelText("Clé bt");
+  expect(field).toHaveAttribute("type", "password");
+  const confirm = within(dialog).getByRole("button", { name: "Vérifier et envoyer" });
+  expect(confirm).toBeDisabled();
+  // Caractère non hexadécimal, longueur incorrecte : refusés.
+  fireEvent.change(field, { target: { value: `${bt.slice(0, 63)}g` } });
+  expect(within(dialog).getByText(/Seuls les chiffres 0 à 9/)).toBeInTheDocument();
+  expect(confirm).toBeDisabled();
+  fireEvent.change(field, { target: { value: bt.slice(0, 60) } });
+  expect(
+    within(dialog).getByText("60 caractères hexadécimaux sur 64 attendus."),
+  ).toBeInTheDocument();
+  expect(confirm).toBeDisabled();
+  fireEvent.change(field, { target: { value: `${bt}0` } });
+  expect(confirm).toBeDisabled();
+  fireEvent.click(confirm);
+  expect(count("device_send_story")).toBe(0);
+  // « Afficher la clé ».
+  fireEvent.click(within(dialog).getByRole("checkbox", { name: "Afficher la clé" }));
+  expect(field).toHaveAttribute("type", "text");
+  // Espaces et majuscules tolérés : envoyée compacte, en minuscules.
+  fireEvent.change(field, {
+    target: { value: ` ${bt.slice(0, 32)} \n ${bt.slice(32)} ` },
+  });
+  expect(confirm).toBeEnabled();
+  await expectNoAxeViolations(dialog);
+  fireEvent.click(
+    within(dialog).getByRole("checkbox", { name: "Conserver ces clés sur ce PC" }),
+  );
+  fireEvent.click(confirm);
+  await waitFor(() => expect(count("device_send_story")).toBe(1));
+  expect(calls.find((c) => c.cmd === "device_send_story")?.args).toEqual({
+    root: "E:\\",
+    uuid: A,
+    carrier: { kind: "entered", bt: bt.toLowerCase() },
+    remember: false,
+  });
+  await resolveSend(A, { id: A, carrier_readback: true });
+  // Clé saisie non conservée : redemandée à l'envoi suivant.
+  fireEvent.click(sendButton("Les trois ours"));
+  const again = await screen.findByRole("alertdialog");
+  expect(within(again).getByLabelText("Clé bt")).toHaveValue("");
+  expect(count("device_send_story")).toBe(1);
+});
+
+it("Flam 1.x : histoires sans bt proposées avec la clé conservée", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  carrierConsent = { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" };
+  storedKeys = true;
+  carrierCandidates = [
+    { uuid: OFFICIAL, title: "Sans bt", hidden: true, with_stored: true },
+  ];
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  const dialog = await screen.findByRole("alertdialog");
+  expect(
+    await within(dialog).findByText("Histoire masquée · Avec la clé conservée sur ce PC"),
+  ).toBeInTheDocument();
+  expect(within(dialog).queryByText(/ne contient de fichier bt/)).toBeNull();
+  fireEvent.click(
+    within(dialog).getByRole("radio", { name: /Histoire officielle « Sans bt »/ }),
+  );
+  fireEvent.click(within(dialog).getByRole("button", { name: "Vérifier et envoyer" }));
+  await waitFor(() => expect(count("device_send_story")).toBe(1));
+  expect(calls.find((c) => c.cmd === "device_send_story")?.args).toMatchObject({
+    carrier: { kind: "device", uuid: OFFICIAL },
+  });
 });
 
 it("Flam 1.x : relecture d'info illisible signalée", async () => {

@@ -795,10 +795,10 @@ fn envoi_depuis_un_plain_pk() {
 mod carrier_flow {
     use super::*;
     use crate::device::carrier::tests::{
-        assert_no_leak, capture_logs, encrypted_info, fake_store, foreign_bt, official_story,
-        test_bt, test_key_file, FakeProtector, INFO_PLAIN, OFFICIAL,
+        assert_no_leak, capture_logs, encrypted_info, fake_store, foreign_bt, hex_of,
+        official_story, test_bt, test_key_file, FakeProtector, INFO_PLAIN, OFFICIAL,
     };
-    use crate::device::carrier::{CarrierConsent, WARNING_VERSION};
+    use crate::device::carrier::{CarrierConsent, EnteredBt, WARNING_VERSION};
     use crate::device::crypto::decrypt_blocks;
 
     fn consent() -> CarrierConsent {
@@ -1018,7 +1018,7 @@ mod carrier_flow {
         assert_eq!(report.carrier_readback, Some(true));
         let info = e.root.join("str").join(NEW).join("info");
         std::fs::write(&info, [0u8; 32]).unwrap();
-        let keys = crate::device::carrier::read_device_carrier(&e.root, OFFICIAL).unwrap();
+        let keys = crate::device::carrier::read_device_carrier(&e.root, OFFICIAL, || None).unwrap();
         assert!(!crate::device::carrier::readback(&e.root, &id(NEW), &keys));
     }
 
@@ -1068,6 +1068,103 @@ mod carrier_flow {
             assert!(crash_at < 500, "l'envoi n'aboutit jamais");
         }
         assert!(crash_at > 5, "pannes injectées : {crash_at}");
+    }
+
+    // --- Saisie du bt (#271) ------------------------------------------------------------------
+
+    /// Flam 1.x telle qu'observée : l'histoire officielle n'a pas de `bt`.
+    fn env_without_bt() -> Env {
+        let e = env();
+        std::fs::remove_file(e.root.join("str").join(OFFICIAL).join("bt")).unwrap();
+        e
+    }
+
+    fn entered(bt: &[u8]) -> CarrierChoice {
+        CarrierChoice::Entered {
+            bt: EnteredBt::new(hex_of(bt)),
+        }
+    }
+
+    #[test]
+    fn envoi_avec_bt_saisi() {
+        let e = env_without_bt();
+        let c = consent();
+        let logs = capture_logs(|| {
+            let report =
+                send_carrier(&FaultyFs::new(), &e, Some(&c), entered(&test_bt()), true).unwrap();
+            assert_eq!(report.carrier_readback, Some(true));
+            assert_no_leak(&serde_json::to_string(&report).unwrap(), "rapport");
+        });
+        assert_no_leak(&logs, "journaux");
+        let installed = files_of(&e.root.join("str").join(NEW));
+        assert_eq!(installed["key"], test_key_file().to_vec());
+        assert!(!installed.contains_key("bt"), "bt jamais copié");
+        assert!(decrypt_with_bt(&installed["info"]).starts_with(PK_INFO));
+        // Couple conservé : réutilisable sans nouvelle saisie.
+        let id_flam = crate::device::carrier::DeviceId::from_mdf(&mdf("1.15.14")).unwrap();
+        assert!(e.store.has(&id_flam));
+        for entry in std::fs::read_dir(&e.keys_dir).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert_no_leak(&name, "nom de fichier");
+        }
+    }
+
+    #[test]
+    fn bt_saisi_refuse_ou_annule_rien_n_est_ecrit() {
+        let e = env_without_bt();
+        let before = snapshot(&e.root);
+        let c = consent();
+        let unknown: [u8; 32] = std::array::from_fn(|i| 0x99 ^ i as u8);
+        let mut short = hex_of(&test_bt());
+        short.truncate(63);
+        let logs = capture_logs(|| {
+            for (choice, expected) in [
+                (entered(&unknown), "validation"),
+                (entered(&foreign_bt()), "validation"),
+                (
+                    CarrierChoice::Entered {
+                        bt: EnteredBt::new(short.clone()),
+                    },
+                    "validation",
+                ),
+            ] {
+                let err = send_carrier(&FaultyFs::new(), &e, Some(&c), choice, true).unwrap_err();
+                let shown = crate::AppError::from(err);
+                assert_eq!(shown.kind(), expected);
+                assert_no_leak(&format!("{shown} {shown:?}"), "erreur");
+            }
+            // Sans consentement.
+            let err =
+                send_carrier(&FaultyFs::new(), &e, None, entered(&test_bt()), true).unwrap_err();
+            assert!(matches!(
+                err,
+                TransferError::Carrier(CarrierError::ConsentRequired)
+            ));
+            // Annulation pendant la recherche de l'histoire.
+            let request = CarrierRequest {
+                consent: Some(&c),
+                choice: entered(&test_bt()),
+                remember: true,
+                store: &e.store,
+            };
+            let err = send_from_library_with(
+                &FaultyFs::new(),
+                &e.root,
+                &e.pk,
+                &e.work,
+                false,
+                Some(&request),
+                &AtomicBool::new(true),
+                &mut |_| {},
+            )
+            .unwrap_err();
+            assert!(matches!(err, TransferError::Cancelled), "{err:?}");
+            assert_eq!(crate::AppError::from(err).kind(), "cancelled");
+        });
+        assert_no_leak(&logs, "journaux");
+        assert_eq!(snapshot(&e.root), before, "rien écrit sur la Flam");
+        assert!(!e.work.join("str").exists(), "rien de préparé");
+        assert!(!e.keys_dir.exists(), "rien conservé sur le PC");
     }
 }
 

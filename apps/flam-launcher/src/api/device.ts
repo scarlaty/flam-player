@@ -129,6 +129,8 @@ export interface CarrierCandidate {
   uuid: string;
   title: string;
   hidden: boolean;
+  /** Histoire sans `bt` : son titre se déchiffre avec la clé conservée pour cette Flam. */
+  with_stored: boolean;
 }
 
 /** État du mode carrier pour une Flam (miroir de `CarrierState`, sans clé). */
@@ -144,7 +146,25 @@ export interface CarrierState {
 
 /** Source du couple (miroir de `CarrierChoice`). */
 export type CarrierChoice =
-  { kind: "stored" } | { kind: "device"; uuid: string } | { kind: "file"; path: string };
+  | { kind: "stored" }
+  | { kind: "device"; uuid: string }
+  | { kind: "file"; path: string }
+  /** `bt` saisi : 64 caractères hexadécimaux (revérifié par le backend). */
+  | { kind: "entered"; bt: string };
+
+/** Nombre de chiffres hexadécimaux d'un `bt` (32 octets). */
+export const BT_HEX_DIGITS = 64;
+
+/**
+ * `bt` saisi, sans espaces, s'il compte exactement 64 chiffres hexadécimaux (majuscules
+ * tolérées) ; sinon `null`.
+ */
+export function normalizeBtHex(text: string): string | null {
+  const compact = text.replace(/\s+/g, "");
+  return compact.length === BT_HEX_DIGITS && /^[0-9a-fA-F]+$/.test(compact)
+    ? compact.toLowerCase()
+    : null;
+}
 
 /** Demande carrier jointe à un envoi : source et conservation sur ce PC. */
 export interface CarrierSend {

@@ -1,6 +1,6 @@
 # Mode « carrier » : Flam en firmware 1.x
 
-Issue : #234, épopée : #222. Code : `apps/flam-launcher/src-tauri/src/device/carrier.rs`
+Issues : #234, #271 (saisie du `bt`), épopée : #222. Code : `apps/flam-launcher/src-tauri/src/device/carrier.rs`
 (clés, cohérence, conservation), `device/transfer.rs` (envoi), `src/features/device/`
 (interface). Ce document ne contient **aucune clé**.
 
@@ -32,10 +32,26 @@ ni ailleurs (hors conservation chiffrée, § 4).
 Au choix de l'utilisateur, **après** consentement :
 
 1. une histoire officielle de la Flam qui porte `bt` et `key` et dont `bt` déchiffre son propre
-   `info` en texte lisible (liste avec titres) ;
+   `info` en texte lisible (liste avec titres). Avec un couple conservé pour cette Flam (§ 4),
+   la liste montre aussi les histoires **sans** `bt` dont `info` se déchiffre avec le `bt`
+   conservé : le couple est alors ce `bt` et le `key` de l'histoire choisie ;
 2. un fichier : le `bt` d'une copie de dossier d'histoire (avec `key` dans le même dossier), ou
    une archive zip contenant exactement un `bt` et le `key` du même dossier ;
-3. le couple conservé pour cette Flam (§ 4).
+3. le couple conservé pour cette Flam (§ 4) ;
+4. la **saisie** du `bt` (#271) : 64 caractères hexadécimaux (espaces et majuscules tolérés),
+   dans un champ masqué (case « Afficher la clé »). Le front n'active l'envoi qu'avec une saisie
+   valide ; le backend la revalide (`EnteredBt`, effacée de la mémoire, `Debug` masqué, jamais
+   reprise dans un message d'erreur). Il parcourt ensuite les histoires de la Flam (`str/` puis
+   `str.hidden/`, au plus 5000, annulation vérifiée à chaque histoire) et retient la première
+   dont `info` se déchiffre avec ce `bt` ; son `key` complète le couple. Aucune : refus « cette
+   clé ne correspond à aucune histoire officielle de cette Flam », rien n'est écrit ni sur la
+   Flam ni sur le PC. Une clé saisie sans « Conserver ces clés » n'est pas gardée par
+   l'interface : elle est redemandée à l'envoi suivant.
+
+Sur la Flam 1.x du mainteneur, **aucun** dossier d'histoire ne contient de `bt` (seulement
+`info`, `key`, `main.lsf`, `version`) : la liste est vide à la première utilisation et le
+dialogue l'indique (« Aucune histoire de cette Flam ne contient de fichier bt : saisissez la clé
+ou choisissez un fichier. ») ; la saisie est alors proposée d'office.
 
 **Cohérence, avant toute copie** : une histoire de la Flam (`str/` ou `str.hidden/`) doit avoir
 le même `key` et un `info` que le couple déchiffre en texte lisible (UTF-8 strict, au moins
@@ -78,6 +94,8 @@ recherchent leurs octets dans toutes ces sorties.
 ## 6. À valider sur la Flam du mainteneur (#236)
 
 - C1 : `bt` et `key` présents dans les histoires officielles en 1.x ; tailles réelles.
+  Observé : `key` de 32 octets, `info` de 32 à 144 octets, **pas de `bt`** (d'où la saisie,
+  #271).
 - C2 : une histoire chiffrée avec `bt` et munie du `key` officiel est lue (titre lisible,
   lancement) après redémarrage.
 - C3 : position du numéro de série dans `.mdf` en 1.x (identifiant de conservation stable).
