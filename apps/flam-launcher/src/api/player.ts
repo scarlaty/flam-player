@@ -47,6 +47,7 @@ export interface PlayerExited {
 export const PLAYER_STARTED_EVENT = "player://started";
 export const PLAYER_EXITED_EVENT = "player://exited";
 export const PLAYER_UPDATED_EVENT = "player://updated";
+export const PLAYER_FOCUS_HOST_EVENT = "player://focus-host";
 
 /**
  * `player_launch` : lance l'histoire installée `uuid` dans flam-player. Erreurs : `not_found`
@@ -93,8 +94,16 @@ export function stopPlayer(): Promise<boolean> {
  * (`null`). Sans effet si aucun player incrusté ne tourne.
  */
 export function setPlayerEmbedLayout(rect: EmbedRect | null): Promise<void> {
-  return invokeCommand<void>("player_embed_layout", { rect });
+  // Un appel n'est envoyé qu'une fois le précédent terminé : les commandes asynchrones ne sont
+  // pas garanties de s'exécuter dans l'ordre d'envoi, et le dernier rectangle doit l'emporter.
+  const result = layoutQueue.then(() =>
+    invokeCommand<void>("player_embed_layout", { rect }),
+  );
+  layoutQueue = result.catch(() => undefined);
+  return result;
 }
+
+let layoutQueue: Promise<unknown> = Promise.resolve();
 
 /**
  * `player_embed_focus` : donne le clavier au player incrusté (accès sans souris). Sans effet si
@@ -112,6 +121,14 @@ export function onPlayerUpdated(
   handler: (event: PlayerSession) => void,
 ): Promise<UnlistenFn> {
   return listen<PlayerSession>(PLAYER_UPDATED_EVENT, (e) => handler(e.payload));
+}
+
+/**
+ * Écoute `player://focus-host` : le player incrusté a rendu le clavier au launcher (touche F6
+ * dans le player). L'écran Lecture replace alors le focus sur « Clavier au lecteur ».
+ */
+export function onPlayerFocusHost(handler: () => void): Promise<UnlistenFn> {
+  return listen(PLAYER_FOCUS_HOST_EVENT, () => handler());
 }
 
 /** Écoute `player://started`. Renvoie la fonction de désabonnement. */

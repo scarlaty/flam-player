@@ -61,8 +61,13 @@ pub const EVENT_EXITED: &str = "player://exited";
 /// Événement émis quand la session change en cours de partie (charge : [`PlayerSession`]) :
 /// le player n'a pas pu s'incruster et s'est ouvert dans sa fenêtre (`embedded` devient faux).
 pub const EVENT_UPDATED: &str = "player://updated";
+/// Événement émis quand le player incrusté rend le clavier au launcher (touche F6 du player) :
+/// l'interface replace le focus sur « Clavier au lecteur ». Sans charge.
+pub const EVENT_FOCUS_HOST: &str = "player://focus-host";
 /// Trace du player quand l'incrustation échoue et qu'il ouvre sa fenêtre séparée.
 const EMBED_FALLBACK_MARKER: &[u8] = b"[EMBED] repli";
+/// Trace du player incrusté quand F6 lui fait rendre le clavier à la fenêtre hôte.
+const EMBED_FOCUS_HOST_MARKER: &[u8] = b"[EMBED] focus-host";
 
 /// Taille maximale de la sortie d'erreur conservée, et nombre de lignes renvoyées.
 const STDERR_KEEP_BYTES: usize = 8 * 1024;
@@ -120,6 +125,8 @@ pub trait PlayerEvents: Send + Sync {
     fn exited(&self, event: &PlayerExited);
     /// La session a changé en cours de partie (repli du player en fenêtre séparée).
     fn updated(&self, _session: &PlayerSession) {}
+    /// Le player incrusté rend le clavier au launcher (F6).
+    fn focus_host(&self) {}
 }
 
 /// Émission des événements Tauri.
@@ -137,6 +144,16 @@ impl PlayerEvents for TauriPlayerEvents {
     fn updated(&self, session: &PlayerSession) {
         use tauri::Emitter;
         let _ = self.0.emit(EVENT_UPDATED, session);
+    }
+    fn focus_host(&self) {
+        use tauri::{Emitter, Manager};
+        // Focus du système sur la WebView (le player vient de le rendre à la fenêtre racine,
+        // qui ne le transmet pas toujours à la WebView2), puis l'interface choisit le contrôle.
+        if let Some(window) = self.0.get_webview_window("main") {
+            let webview: &tauri::Webview = window.as_ref();
+            let _ = webview.set_focus();
+        }
+        let _ = self.0.emit(EVENT_FOCUS_HOST, ());
     }
 }
 
@@ -224,6 +241,18 @@ impl PlayerService {
         let control = lock(&self.control);
         if let Some(hwnd) = control.as_ref().and_then(|c| c.host) {
             self.embed.focus(hwnd);
+        }
+    }
+
+    /// Le player incrusté de la session `generation` a rendu le clavier à la fenêtre hôte
+    /// (trace [`EMBED_FOCUS_HOST_MARKER`]) : `player://focus-host` l'annonce à l'interface. Une
+    /// trace d'une session périmée ou sans fenêtre d'accueil est ignorée.
+    fn embed_focus_host(&self, generation: u64) {
+        let current = lock(&self.control)
+            .as_ref()
+            .is_some_and(|c| c.generation == generation && c.host.is_some());
+        if current {
+            self.events.focus_host();
         }
     }
 
@@ -458,9 +487,14 @@ impl PlayerService {
                         .spawn(move || service.embed_fallback(generation, pid));
                 }) as Box<dyn FnOnce() + Send>
             });
+            // Retour du clavier au launcher (F6 dans le player incrusté).
+            let on_focus_host: Option<Box<dyn Fn() + Send>> = host.map(|_| {
+                let service = self.clone();
+                Box::new(move || service.embed_focus_host(generation)) as Box<dyn Fn() + Send>
+            });
             // Échec de création du thread : pas de stderr, sans autre conséquence.
             let _ = std::thread::Builder::new().spawn(move || {
-                read_into(stream, &kept, on_fallback);
+                read_into(stream, &kept, on_fallback, on_focus_host);
                 drop(done_tx);
             });
         }
@@ -586,33 +620,42 @@ fn terminate(pid: u32) {
 
 /// Lit le flux jusqu'à sa fin dans `kept`, borné à [`STDERR_KEEP_BYTES`] octets (les derniers).
 /// `on_fallback` est appelé (une fois) dès que [`EMBED_FALLBACK_MARKER`] apparaît dans le flux,
-/// même coupé entre deux lectures.
+/// `on_focus_host` à chaque [`EMBED_FOCUS_HOST_MARKER`] ; les repères sont trouvés même coupés
+/// entre deux lectures.
 fn read_into(
     mut stream: impl Read,
     kept: &Mutex<Vec<u8>>,
     mut on_fallback: Option<Box<dyn FnOnce() + Send>>,
+    on_focus_host: Option<Box<dyn Fn() + Send>>,
 ) {
+    let find =
+        |haystack: &[u8], needle: &[u8]| haystack.windows(needle.len()).position(|w| w == needle);
+    let keep = EMBED_FALLBACK_MARKER
+        .len()
+        .max(EMBED_FOCUS_HOST_MARKER.len())
+        - 1;
     let mut chunk = [0u8; 2048];
     let mut seen: Vec<u8> = Vec::new();
     while let Ok(n) = stream.read(&mut chunk) {
         if n == 0 {
             break;
         }
-        if on_fallback.is_some() {
+        if on_fallback.is_some() || on_focus_host.is_some() {
             seen.extend_from_slice(&chunk[..n]);
-            if seen
-                .windows(EMBED_FALLBACK_MARKER.len())
-                .any(|w| w == EMBED_FALLBACK_MARKER)
-            {
+            // Repli d'abord : la purge des repères de focus ne doit pas le couper.
+            if on_fallback.is_some() && find(&seen, EMBED_FALLBACK_MARKER).is_some() {
                 if let Some(notify) = on_fallback.take() {
                     notify();
                 }
-                seen = Vec::new();
-            } else {
-                let keep = EMBED_FALLBACK_MARKER.len() - 1;
-                if seen.len() > keep {
-                    seen.drain(..seen.len() - keep);
+            }
+            if let Some(notify) = &on_focus_host {
+                while let Some(pos) = find(&seen, EMBED_FOCUS_HOST_MARKER) {
+                    notify();
+                    seen.drain(..pos + EMBED_FOCUS_HOST_MARKER.len());
                 }
+            }
+            if seen.len() > keep {
+                seen.drain(..seen.len() - keep);
             }
         }
         let mut kept = lock(kept);
@@ -1377,6 +1420,7 @@ mod tests {
         started: Mutex<Sender<PlayerSession>>,
         exited: Mutex<Sender<PlayerExited>>,
         updated: Mutex<Vec<PlayerSession>>,
+        focus_host: AtomicU64,
         panic_on_started: bool,
     }
 
@@ -1390,6 +1434,9 @@ mod tests {
         }
         fn updated(&self, session: &PlayerSession) {
             lock(&self.updated).push(session.clone());
+        }
+        fn focus_host(&self) {
+            self.focus_host.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -1430,6 +1477,7 @@ mod tests {
             started: Mutex::new(started_tx),
             exited: Mutex::new(exited_tx),
             updated: Mutex::default(),
+            focus_host: AtomicU64::new(0),
             panic_on_started,
         });
         let service = PlayerService::new(recorder.clone());
@@ -1658,9 +1706,76 @@ mod tests {
             Some(Box::new(move || {
                 count.fetch_add(1, Ordering::SeqCst);
             })),
+            None,
         );
         assert_eq!(seen.load(Ordering::SeqCst), 1);
         assert!(lock(&kept).ends_with(b"[EMBED] repli"));
+    }
+
+    #[test]
+    fn les_reperes_de_focus_sont_comptes_meme_coupes_et_a_chaque_fois() {
+        let seen = Arc::new(AtomicU64::new(0));
+        let count = seen.clone();
+        let kept = Mutex::new(Vec::new());
+        let stream = (&b"[EMBED] ok\n[EMBED] foc"[..])
+            .chain(&b"us-host\n[EMBED] focus-host\n[EMBED] focus-host"[..]);
+        read_into(
+            stream,
+            &kept,
+            None,
+            Some(Box::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            })),
+        );
+        assert_eq!(seen.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn un_repli_et_un_focus_dans_le_meme_flux_sont_tous_deux_signales() {
+        let fallback = Arc::new(AtomicU64::new(0));
+        let focus = Arc::new(AtomicU64::new(0));
+        let (f, g) = (fallback.clone(), focus.clone());
+        let kept = Mutex::new(Vec::new());
+        let stream = &b"[EMBED] repli : x\n[EMBED] focus-host\n"[..];
+        read_into(
+            stream,
+            &kept,
+            Some(Box::new(move || {
+                f.fetch_add(1, Ordering::SeqCst);
+            })),
+            Some(Box::new(move || {
+                g.fetch_add(1, Ordering::SeqCst);
+            })),
+        );
+        assert_eq!(fallback.load(Ordering::SeqCst), 1);
+        assert_eq!(focus.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn f6_du_player_incruste_annonce_le_retour_du_clavier_au_launcher() {
+        let embed = Arc::new(FakeEmbed::default());
+        let c = ctx_embed(embed);
+        let story = c.story("h.plain.pk", "stderr [EMBED] focus-host\nwait_quit\n");
+        c.launch(&story).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while c.recorder.focus_host.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(c.recorder.focus_host.load(Ordering::SeqCst), 1);
+        assert!(c.service.stop());
+        c.wait_exit();
+    }
+
+    #[test]
+    fn sans_incrustation_la_trace_de_focus_est_ignoree() {
+        let c = ctx();
+        let story = c.story(
+            "i.plain.pk",
+            "stderr [EMBED] focus-host\nsleep 300\nexit 0\n",
+        );
+        c.launch(&story).unwrap();
+        c.wait_exit();
+        assert_eq!(c.recorder.focus_host.load(Ordering::SeqCst), 0);
     }
 
     fn ctx_embed(embed: Arc<FakeEmbed>) -> Ctx {
