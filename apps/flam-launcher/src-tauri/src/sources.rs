@@ -8,6 +8,7 @@ use tauri::State;
 
 use crate::catalog::{purge_catalog_cache, CatalogService};
 use crate::storage::{self, ConfigState, MigrationStep, Recovery};
+use crate::watch::WatchState;
 use crate::{AppError, AppResult};
 
 /// Version courante du schéma de `sources.json`.
@@ -350,6 +351,7 @@ pub async fn sources_add(state: State<'_, ConfigState>, input: SourceInput) -> A
 pub async fn sources_update(
     state: State<'_, ConfigState>,
     catalog: State<'_, CatalogService>,
+    watch: State<'_, WatchState>,
     id: String,
     input: SourceInput,
 ) -> AppResult<Source> {
@@ -359,6 +361,14 @@ pub async fn sources_update(
         let previous = store.get(&id).ok();
         (previous, store.update(&id, input)?)
     };
+    // Le dossier surveillé n'est plus celui de la source : le front relancera la surveillance
+    // sur le nouveau chemin quand il rouvrira la source.
+    if previous
+        .as_ref()
+        .is_some_and(|old| folder_path_changed(old, &updated))
+    {
+        watch.stop(&id);
+    }
     if previous.is_some_and(|old| catalog_url_changed(&old, &updated)) {
         purge_catalog_cache(&state, &catalog, &id).await;
     }
@@ -370,6 +380,7 @@ pub async fn sources_update(
 pub async fn sources_remove(
     state: State<'_, ConfigState>,
     catalog: State<'_, CatalogService>,
+    watch: State<'_, WatchState>,
     id: String,
 ) -> AppResult<()> {
     let removed = {
@@ -379,10 +390,17 @@ pub async fn sources_remove(
         store.remove(&id)?;
         previous
     };
+    // Sans effet si la source n'était pas un dossier surveillé.
+    watch.stop(&id);
     if matches!(removed, Some(Source::Catalog { .. })) {
         purge_catalog_cache(&state, &catalog, &id).await;
     }
     Ok(())
+}
+
+/// Le chemin d'une source dossier a changé : sa surveillance ne porte plus sur le bon dossier.
+fn folder_path_changed(old: &Source, new: &Source) -> bool {
+    matches!((old, new), (Source::Folder { path: a, .. }, Source::Folder { path: b, .. }) if a != b)
 }
 
 /// L'URL d'une source catalogue a changé : son cache n'est plus utilisable.
@@ -416,6 +434,24 @@ mod tests {
             name: name.into(),
             url: url.into(),
         }
+    }
+
+    #[test]
+    fn changement_de_chemin_detecte_pour_un_dossier_seulement() {
+        let folder = |path: &str| Source::Folder {
+            id: "f".into(),
+            name: "d".into(),
+            path: path.into(),
+        };
+        assert!(!folder_path_changed(&folder("/a"), &folder("/a")));
+        assert!(folder_path_changed(&folder("/a"), &folder("/b")));
+        let catalog = Source::Catalog {
+            id: "c".into(),
+            name: "c".into(),
+            url: "https://a.example.test/c.json".into(),
+        };
+        assert!(!folder_path_changed(&catalog, &folder("/b")));
+        assert!(!folder_path_changed(&folder("/a"), &catalog));
     }
 
     #[test]

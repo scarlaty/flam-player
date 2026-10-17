@@ -731,6 +731,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(report.failed, 1);
+        assert_eq!(report.removed, 1);
+        assert_eq!(
+            report.freed_bytes, 10,
+            "seule la suppression réussie compte"
+        );
         assert!(older.exists());
         assert!(!newer.exists());
     }
