@@ -502,10 +502,16 @@ impl SettingsStore {
         })
     }
 
+    /// Dossier de cache effectif, **sans** le créer (lecture seule, pour les traitements qui n'ont
+    /// rien à faire si le cache n'existe pas encore, comme la purge des vignettes au démarrage).
+    pub fn cache_dir(&self, env: &Environment) -> AppResult<PathBuf> {
+        let (resolved, _) = resolve(&self.load()?, env);
+        Ok(PathBuf::from(resolved.cache_dir))
+    }
+
     /// Dossier de cache effectif, créé s'il n'existe pas.
     pub fn resolved_cache_dir(&self, env: &Environment) -> AppResult<PathBuf> {
-        let (resolved, _) = resolve(&self.load()?, env);
-        let dir = PathBuf::from(resolved.cache_dir);
+        let dir = self.cache_dir(env)?;
         std::fs::create_dir_all(&dir)?;
         Ok(dir)
     }
@@ -1176,6 +1182,18 @@ mod tests {
             view.settings.player_path,
             Some(player.display().to_string())
         );
+    }
+
+    #[test]
+    fn cache_dir_ne_cree_pas_le_dossier() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = env_in(dir.path());
+        let store = SettingsStore::new(dir.path());
+        let cache = store.cache_dir(&env).unwrap();
+        assert_eq!(cache, dir.path().join("cache-defaut"));
+        assert!(!cache.exists());
+        assert_eq!(store.resolved_cache_dir(&env).unwrap(), cache);
+        assert!(cache.is_dir());
     }
 
     #[test]

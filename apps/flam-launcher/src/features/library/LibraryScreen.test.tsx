@@ -443,6 +443,11 @@ it("rafraîchit un dossier surveillé à chaque folder://changed, et l'arrête e
   goTo("#/library/dossier");
   renderLibrary();
   expect(await screen.findByText("Avant")).toBeInTheDocument();
+  // La surveillance démarre avant le scan initial : aucun changement n'échappe entre les deux.
+  const firstWatch = calls.findIndex((c) => c.cmd === "folder_watch");
+  const firstScan = calls.findIndex((c) => c.cmd === "folder_scan");
+  expect(firstWatch).toBeGreaterThanOrEqual(0);
+  expect(firstWatch).toBeLessThan(firstScan);
   await waitFor(() =>
     expect(calls.filter((c) => c.cmd === "folder_watch").map((c) => c.args)).toEqual([
       { sourceId: "dossier", enabled: true },
