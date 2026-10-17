@@ -176,6 +176,51 @@ class TestFrontier(unittest.TestCase):
         F, _ = self.build(self.home_nodes(), ["m", "z", "g"])
         self.assertEqual(F.condFrontier(), 0)
 
+    # --- #142 : sans fin jouee, home conditionnelle et indexItem ne bloquent pas exhausted
+
+    def test_strict_ignore_home_conditionnelle(self):
+        F, _ = self.build(self.home_nodes(), ["m", "z"])
+        self.assertEqual(F.condFrontier(), 1)
+        self.assertEqual(F.condFrontier(True), 0)
+
+    def test_strict_ignore_index_item(self):
+        nodes = {
+            "stages": {"s0": st(ok="a0", ok_index=3), "x": st(), "y": st()},
+            "actions": {"a0": [{"stage": "x"}, {"stage": "y"}]},
+        }
+        F, _ = self.build(nodes, ["s0", "x"])
+        self.assertEqual(F.condFrontier(), 1)
+        self.assertEqual(F.condFrontier(True), 0)
+
+    def test_strict_garde_entree_ok_conditionnelle(self):
+        F, _ = self.build(self.doudou(), ["s0", "hub", "fin"])
+        self.assertEqual(F.condFrontier(True), 1)      # comportement d'avant #76 (hub a etat)
+
+    def test_pilote_strict_sans_fin(self):
+        self.assertIn("condFrontier(ends == 0)", explore.DRIVER)
+
+    # --- #142 : scenes bloquees exposees -------------------------------------
+
+    def test_cond_blocked(self):
+        F, _ = self.build(self.doudou(), ["s0", "hub", "fin"])
+        self.assertEqual(list(F.condBlocked().values()), ["hub>secret"])
+        F, _ = self.build(self.home_nodes(), ["m", "z"])
+        self.assertEqual(list(F.condBlocked().values()), ["m>g@home"])
+        F, _ = self.build(self.doudou(), ["s0", "hub", "fin", "secret", "suite"])
+        self.assertEqual(list(F.condBlocked().values()), [])
+
+    def test_cond_blocked_borne_et_trie(self):
+        stages = {"hub": st(ok="a")}
+        actions = {"a": []}
+        for i in range(5):
+            stages["h%d" % i] = st(ok="a%d" % i)
+            stages["t%d" % i] = st()
+            actions["a%d" % i] = [{"stage": "t%d" % i, "cond": GUARD}]
+        F, _ = self.build({"stages": stages, "actions": actions},
+                          ["h%d" % i for i in (3, 1, 4, 0, 2)])
+        self.assertEqual(list(F.condBlocked().values()), ["h%d>t%d" % (i, i) for i in range(5)])
+        self.assertEqual(len(list(F.condBlocked(2).values())), 2)
+
     # --- non-regression : frontiere #45 et choix affiches --------------------
 
     def test_chemin_lineaire_coupe(self):
@@ -198,6 +243,7 @@ class TestFrontier(unittest.TestCase):
         self.assertIn("F.restartVerdict", explore.DRIVER)
         self.assertIn("%(frontier)s", explore.DRIVER)
         self.assertIn("newFrontier", explore.FRONTIER_LUA)
+        self.assertNotIn("%", explore.FRONTIER_LUA)   # le gabarit DRIVER % {...} le corromprait
         # pilote complet rendu : syntaxe Lua valide
         src = explore.DRIVER % {"frontier": explore.FRONTIER_LUA,
                                 "seed": 0, "max_steps": 10, "back_every": 8}
