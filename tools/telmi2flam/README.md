@@ -864,12 +864,12 @@ PYTHONPATH=<dossier> python tools/telmi2flam/compat.py --catalog <url-ou-fichier
 
 | `done_reason` → `status` | Code |
 |---|---:|
-| `complete`, `exhausted`, `max_steps`, `library` → `ok` | 0 |
+| `complete`, `conditions`, `exhausted`, `max_steps`, `library` → `ok` | 0 |
 | `loop` → `loop` ; `unresponsive`, `no_start`, `no_trace` → `stuck` ; `timeout` ; `error` → `lua_error` ; `exit` → `lua_error` ou `crash` | 1 |
 | histoire illisible (archive absente ou corrompue) ; `flam-player` introuvable | 1 ; 77 |
 | arguments invalides | 2 (argparse) |
 
-Un code 0 ne signifie pas « histoire jouée jusqu'au bout » : `exhausted` et `complete` sortent
+Un code 0 ne signifie pas « histoire jouée jusqu'au bout » : `exhausted`, `conditions` et `complete` sortent
 avec 0 même si aucune fin n'a été jouée ou si la couverture est partielle. Pour juger, lire
 `done_reason`, `ends` et `coverage` (sortie `--json`).
 
