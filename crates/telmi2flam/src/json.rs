@@ -23,21 +23,25 @@ use std::fmt;
 use indexmap::IndexMap;
 
 /// Profondeur maximale d'imbrication (listes et objets) acceptée. Les histoires TELMI ne
-/// dépassent pas quelques niveaux ; la borne protège la pile de l'analyse récursive.
+/// dépassent pas quelques niveaux. L'analyse et la destruction sont itératives (#189) ; les
+/// `derive` (`Clone`, `PartialEq`, `Debug`) restent récursifs et demandent plus d'1 Mo de pile
+/// en debug à cette profondeur : la borne les garde sous les 8 Mo du fil de travail du
+/// binaire (voir la documentation de la crate).
 pub const MAX_DEPTH: usize = 512;
 
 /// Objet JSON dans l'ordre d'insertion, comme `dict` de Python.
 pub type Object = IndexMap<String, Value>;
 
-/// Valeur JSON décodée, avec la distinction entier / flottant de Python.
+/// Valeur JSON décodée, avec la distinction entier / flottant de Python. Destruction
+/// itérative (voir `impl Drop`) ; `Clone`, `PartialEq` et `Debug` restent récursifs : ne pas
+/// cloner, comparer ni formater une valeur d'entrée profonde hors du fil de 8 Mo.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
     Bool(bool),
     Int(i64),
     /// Entier de `i64::MAX + 1` à `u64::MAX` (aussi un `int` pour Python). Variante à part
-    /// pour garder `Value` compacte : la pile de l'analyse récursive en dépend (voir
-    /// `profondeur_maximale_tient_dans_une_pile_de_1_mo`).
+    /// pour garder `Value` compacte (pas d'`i128`).
     UInt(u64),
     Float(f64),
     Str(String),
@@ -87,11 +91,74 @@ impl Value {
         }
     }
 
+    /// Objet contenu, ou `None` pour les autres types. `Value` implémente `Drop` : un motif
+    /// `Value::Object(map)` ne peut pas déplacer `map` hors d'une valeur possédée.
+    pub fn into_object(mut self) -> Option<Object> {
+        match &mut self {
+            Value::Object(map) => Some(std::mem::take(map)),
+            _ => None,
+        }
+    }
+
+    /// Liste contenue, ou `None` pour les autres types (voir [`Value::into_object`]).
+    pub fn into_list(mut self) -> Option<Vec<Value>> {
+        match &mut self {
+            Value::List(items) => Some(std::mem::take(items)),
+            _ => None,
+        }
+    }
+
+    /// Chaîne contenue, ou `None` pour les autres types (voir [`Value::into_object`]).
+    pub fn into_string(mut self) -> Option<String> {
+        match &mut self {
+            Value::Str(s) => Some(std::mem::take(s)),
+            _ => None,
+        }
+    }
+
+    fn is_container(&self) -> bool {
+        matches!(self, Value::List(_) | Value::Object(_))
+    }
+
+    /// Déplace les enfants d'un conteneur dans `out`, le laissant vide.
+    fn move_children(&mut self, out: &mut Vec<Value>) {
+        match self {
+            Value::List(items) => out.append(items),
+            Value::Object(map) => out.extend(map.drain(..).map(|(_, v)| v)),
+            _ => {}
+        }
+    }
+
     /// `v.get(key)` de Python pour un objet ; `None` pour les autres types.
     pub fn get(&self, key: &str) -> Option<&Value> {
         match self {
             Value::Object(map) => map.get(key),
             _ => None,
+        }
+    }
+}
+
+/// Destruction sans récursion (#189) : la colle de destruction générée descend d'un appel par
+/// niveau (et de plusieurs trames pour un objet), ce qui déborde une pile de 256 Kio en debug
+/// à [`MAX_DEPTH`] niveaux. Les enfants sont déplacés sur une pile du tas, si bien que chaque
+/// valeur détruite n'a plus que des feuilles ou des conteneurs vides. Contrepartie : on ne
+/// peut plus déplacer un champ hors d'une `Value` par motif ; utiliser [`Value::into_object`],
+/// [`Value::into_list`] ou [`Value::into_string`].
+impl Drop for Value {
+    fn drop(&mut self) {
+        let nested = match self {
+            Value::List(items) => items.iter().any(Value::is_container),
+            Value::Object(map) => map.values().any(Value::is_container),
+            _ => false,
+        };
+        if !nested {
+            return; // la colle générée ne descend que d'un niveau
+        }
+        let mut stack = Vec::new();
+        self.move_children(&mut stack);
+        while let Some(mut v) = stack.pop() {
+            v.move_children(&mut stack);
+            // `v` est détruite ici, sans enfant conteneur : pas de descente.
         }
     }
 }
@@ -130,7 +197,6 @@ pub fn load_json(raw: &[u8], what: &str) -> Result<Value, ContentError> {
         src: text,
         bytes: text.as_bytes(),
         pos: 0,
-        depth: 0,
     };
     parser.document().map_err(|fail| {
         ContentError::new(match fail {
@@ -175,11 +241,16 @@ enum Fail {
     Limit(&'static str, usize),
 }
 
+/// Conteneur ouvert pendant l'analyse : éléments déjà lus (et clé en attente de sa valeur).
+enum Frame {
+    List(Vec<Value>),
+    Object(Object, String),
+}
+
 struct Parser<'a> {
     src: &'a str,
     bytes: &'a [u8],
     pos: usize,
-    depth: usize,
 }
 
 impl Parser<'_> {
@@ -224,11 +295,89 @@ impl Parser<'_> {
         }
     }
 
+    /// Valeur JSON, sans récursion : les conteneurs ouverts sont empilés sur le tas
+    /// (`stack`), si bien que la pile d'appels ne dépend pas de l'imbrication (#189). Même
+    /// grammaire, mêmes erreurs et mêmes positions que la descente récursive qu'elle remplace.
     fn value(&mut self) -> Result<Value, Fail> {
+        let mut stack: Vec<Frame> = Vec::new();
+        'value: loop {
+            // Début d'une valeur à `self.pos` : un scalaire, un conteneur vide, ou l'ouverture
+            // d'un conteneur dont on analyse aussitôt le premier élément.
+            let mut done = match self.peek() {
+                Some(open @ (b'{' | b'[')) => {
+                    // La profondeur est le nombre de conteneurs englobants, vide ou non.
+                    if stack.len() >= MAX_DEPTH {
+                        return Err(Fail::Limit("imbrication trop profonde", self.pos));
+                    }
+                    self.pos += 1;
+                    self.ws();
+                    if open == b'[' {
+                        if self.peek() == Some(b']') {
+                            self.pos += 1;
+                            Value::List(Vec::new())
+                        } else {
+                            stack.push(Frame::List(Vec::new()));
+                            continue 'value;
+                        }
+                    } else if self.peek() == Some(b'}') {
+                        self.pos += 1;
+                        Value::Object(Object::new())
+                    } else {
+                        let key = self.key()?;
+                        stack.push(Frame::Object(Object::new(), key));
+                        continue 'value;
+                    }
+                }
+                _ => self.scalar()?,
+            };
+            // Range la valeur terminée dans son conteneur, puis ferme les conteneurs complets
+            // jusqu'à trouver un élément suivant (retour en tête) ou vider la pile. Le conteneur
+            // est retiré de la pile et remis s'il attend un élément (capacité conservée).
+            loop {
+                let Some(mut frame) = stack.pop() else {
+                    return Ok(done);
+                };
+                match &mut frame {
+                    Frame::List(items) => items.push(done),
+                    // `IndexMap::insert` sur une clé existante remplace la valeur sans la
+                    // déplacer : c'est `dict(pairs)` de Python.
+                    Frame::Object(map, key) => {
+                        map.insert(std::mem::take(key), done);
+                    }
+                }
+                self.ws();
+                let more = match (&mut frame, self.peek()) {
+                    (_, Some(b',')) => {
+                        self.pos += 1;
+                        self.ws();
+                        if let Frame::Object(_, key) = &mut frame {
+                            *key = self.key()?;
+                        }
+                        true
+                    }
+                    (Frame::List(_), Some(b']')) | (Frame::Object(..), Some(b'}')) => {
+                        self.pos += 1;
+                        false
+                    }
+                    (Frame::List(_), _) => return self.syntax("',' ou ']' attendu"),
+                    (Frame::Object(..), _) => return self.syntax("',' ou '}' attendu"),
+                };
+                if more {
+                    stack.push(frame);
+                    continue 'value;
+                }
+                done = match frame {
+                    Frame::List(items) => Value::List(items),
+                    Frame::Object(map, _) => Value::Object(map),
+                };
+            }
+        }
+    }
+
+    /// Valeur non conteneur.
+    fn scalar(&mut self) -> Result<Value, Fail> {
         match self.peek() {
             Some(b'"') => Ok(Value::Str(self.string()?)),
-            Some(b'{') => self.nested(Self::object),
-            Some(b'[') => self.nested(Self::array),
             Some(b'n') if self.literal("null") => Ok(Value::Null),
             Some(b't') if self.literal("true") => Ok(Value::Bool(true)),
             Some(b'f') if self.literal("false") => Ok(Value::Bool(false)),
@@ -240,77 +389,19 @@ impl Parser<'_> {
         }
     }
 
-    fn nested(&mut self, parse: fn(&mut Self) -> Result<Value, Fail>) -> Result<Value, Fail> {
-        if self.depth >= MAX_DEPTH {
-            return Err(Fail::Limit("imbrication trop profonde", self.pos));
+    /// Clé d'objet et son `:`, espaces suivants compris.
+    fn key(&mut self) -> Result<String, Fail> {
+        if self.peek() != Some(b'"') {
+            return self.syntax("nom de propriete entre guillemets attendu");
         }
-        self.depth += 1;
-        let v = parse(self);
-        self.depth -= 1;
-        v
-    }
-
-    fn object(&mut self) -> Result<Value, Fail> {
-        self.pos += 1; // '{'
-        let mut map = Object::new();
+        let key = self.string()?;
         self.ws();
-        if self.peek() == Some(b'}') {
-            self.pos += 1;
-            return Ok(Value::Object(map));
+        if self.peek() != Some(b':') {
+            return self.syntax("':' attendu");
         }
-        loop {
-            if self.peek() != Some(b'"') {
-                return self.syntax("nom de propriete entre guillemets attendu");
-            }
-            let key = self.string()?;
-            self.ws();
-            if self.peek() != Some(b':') {
-                return self.syntax("':' attendu");
-            }
-            self.pos += 1;
-            self.ws();
-            let v = self.value()?;
-            // `IndexMap::insert` sur une clé existante remplace la valeur sans la déplacer :
-            // c'est `dict(pairs)` de Python.
-            map.insert(key, v);
-            self.ws();
-            match self.peek() {
-                Some(b',') => {
-                    self.pos += 1;
-                    self.ws();
-                }
-                Some(b'}') => {
-                    self.pos += 1;
-                    return Ok(Value::Object(map));
-                }
-                _ => return self.syntax("',' ou '}' attendu"),
-            }
-        }
-    }
-
-    fn array(&mut self) -> Result<Value, Fail> {
-        self.pos += 1; // '['
-        let mut items = Vec::new();
+        self.pos += 1;
         self.ws();
-        if self.peek() == Some(b']') {
-            self.pos += 1;
-            return Ok(Value::List(items));
-        }
-        loop {
-            items.push(self.value()?);
-            self.ws();
-            match self.peek() {
-                Some(b',') => {
-                    self.pos += 1;
-                    self.ws();
-                }
-                Some(b']') => {
-                    self.pos += 1;
-                    return Ok(Value::List(items));
-                }
-                _ => return self.syntax("',' ou ']' attendu"),
-            }
-        }
+        Ok(key)
     }
 
     fn hex4(&mut self) -> Result<u32, Fail> {
@@ -445,7 +536,7 @@ impl Parser<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn load(s: &str) -> Result<Value, ContentError> {
@@ -455,7 +546,7 @@ mod tests {
     #[test]
     fn cles_dupliquees_derniere_valeur_a_la_premiere_position() {
         let v = load(r#"{"a": 1, "b": 2, "a": 3}"#).unwrap();
-        let Value::Object(map) = v else { panic!() };
+        let Some(map) = v.into_object() else { panic!() };
         let pairs: Vec<_> = map.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
         assert_eq!(pairs, [("a", Value::Int(3)), ("b", Value::Int(2))]);
     }
@@ -480,15 +571,117 @@ mod tests {
         assert!(load(&"{\"a\":".repeat(100_000)).is_err());
     }
 
+    /// Exécute `f` sur un fil de 256 Kio (quart de la pile du fil principal sous Windows).
+    /// Un débordement de pile aborte tout le processus de test : l'échec est franc.
+    pub(crate) fn on_small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(256 << 10)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    /// Documents imbriqués de `depth` niveaux : objets, listes, et alternance des deux.
+    pub(crate) fn nested_docs(depth: usize) -> [(&'static str, String); 3] {
+        let half = depth / 2;
+        [
+            ("objets", "{\"a\":".repeat(depth) + "1" + &"}".repeat(depth)),
+            ("listes", "[".repeat(depth) + "1" + &"]".repeat(depth)),
+            (
+                "mélange",
+                "[{\"k\":".repeat(half) + "1" + &"}]".repeat(half),
+            ),
+        ]
+    }
+
     #[test]
-    fn profondeur_maximale_tient_dans_une_pile_de_1_mo() {
-        // Pile du fil principal sous Windows : 1 Mo. Analyse et libération en mode debug.
-        let doc = "[{\"k\":".repeat(MAX_DEPTH / 2) + "1" + &"}]".repeat(MAX_DEPTH / 2);
-        let h = std::thread::Builder::new()
-            .stack_size(1 << 20)
-            .spawn(move || load(&doc).is_ok())
-            .unwrap();
-        assert!(h.join().unwrap());
+    fn profondeur_maximale_dans_une_pile_de_256_kio() {
+        for (label, doc) in nested_docs(MAX_DEPTH) {
+            let ok = on_small_stack(move || load(&doc).is_ok());
+            assert!(ok, "{label}");
+        }
+    }
+
+    #[test]
+    fn au_dela_de_la_profondeur_maximale_invalid_content() {
+        for (label, doc) in nested_docs(MAX_DEPTH + 2) {
+            let e = on_small_stack(move || load(&doc)).unwrap_err();
+            assert!(
+                e.message.contains("imbrication trop profonde"),
+                "{label} : {}",
+                e.message
+            );
+        }
+        // 513 niveaux exactement ; la position est celle de l'ouvrant refusé.
+        let e = load(&"[".repeat(MAX_DEPTH + 1)).unwrap_err();
+        assert_eq!(
+            e.message,
+            format!("t.json : JSON non pris en charge (imbrication trop profonde : position {MAX_DEPTH})")
+        );
+        let doc = "{\"a\":".repeat(MAX_DEPTH + 1) + "1" + &"}".repeat(MAX_DEPTH + 1);
+        let e = load(&doc).unwrap_err();
+        assert_eq!(
+            e.message,
+            format!(
+                "t.json : JSON non pris en charge (imbrication trop profonde : position {})",
+                5 * MAX_DEPTH
+            )
+        );
+    }
+
+    #[test]
+    fn erreurs_et_positions_de_l_analyse_iterative() {
+        for (doc, msg) in [
+            ("[1 2]", "',' ou ']' attendu : position 3"),
+            ("{\"a\":1 \"b\":2}", "',' ou '}' attendu : position 7"),
+            ("{\"a\" 1}", "':' attendu : position 5"),
+            (
+                "{\"a\":1,}",
+                "nom de propriete entre guillemets attendu : position 7",
+            ),
+            (
+                "{ 1}",
+                "nom de propriete entre guillemets attendu : position 2",
+            ),
+            ("[1,]", "valeur attendue : position 3"),
+            ("[[1], [2] ", "',' ou ']' attendu : position 10"),
+            ("{\"a\": [1, {\"b\": }]}", "valeur attendue : position 16"),
+            ("[] []", "donnees en trop : position 3"),
+            ("[", "valeur attendue : position 1"),
+            (
+                "{",
+                "nom de propriete entre guillemets attendu : position 1",
+            ),
+        ] {
+            let e = load(doc).unwrap_err();
+            assert_eq!(
+                e.message,
+                format!("t.json : JSON invalide ({msg})"),
+                "{doc}"
+            );
+        }
+        let v = load(r#" { "a" : [ 1 , { } , [ ] , { "b" : null } ] , "c" : "d" } "#).unwrap();
+        let mut inner = Object::new();
+        inner.insert("b".to_owned(), Value::Null);
+        let mut want = Object::new();
+        want.insert(
+            "a".to_owned(),
+            Value::List(vec![
+                Value::Int(1),
+                Value::Object(Object::new()),
+                Value::List(Vec::new()),
+                Value::Object(inner),
+            ]),
+        );
+        want.insert("c".to_owned(), Value::Str("d".to_owned()));
+        assert_eq!(v, Value::Object(want));
+        let v = load(r#"{"a":1,"x":0,"a":{"b":2}}"#).unwrap();
+        let Value::Object(map) = &v else { panic!() };
+        assert_eq!(map.keys().collect::<Vec<_>>(), ["a", "x"]);
+        assert_eq!(v.get("a").and_then(|a| a.get("b")), Some(&Value::Int(2)));
+        let e = load("[1, NaN]").unwrap_err();
+        assert_eq!(e.message, "valeur JSON non supportee : NaN");
     }
 
     #[test]
