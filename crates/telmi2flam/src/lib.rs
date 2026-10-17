@@ -1,15 +1,20 @@
 //! Convertisseur d'histoires Telmi vers le format flam.
 //!
 //! Port Rust de `tools/telmi2flam` (voir `tools/telmi2flam/PORT-RUST.md`), en cours : codecs
-//! [`lif`] et [`mp3map`], JSON ([`json`]), texte ([`text`]) et sérialisation Lua ([`lua`]) ;
-//! les autres modules de conversion arrivent dans les PR suivantes.
+//! [`lif`] et [`mp3map`], lecture de l'archive ([`archive`], [`info`]), JSON ([`json`]), texte
+//! ([`text`]) et sérialisation Lua ([`lua`]) ; les autres modules de conversion arrivent dans les
+//! PR suivantes.
 
+pub mod archive;
+pub mod error;
+pub mod info;
 pub mod json;
 pub mod lif;
 pub mod lua;
 pub mod mp3map;
 pub mod text;
 mod text_tables;
+mod zipread;
 
 /// Version de la crate, affichée par `telmi2flam --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
