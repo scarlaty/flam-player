@@ -7,7 +7,9 @@
 //!
 //! 1. taille des octets reçus ([`MAX_INPUT_BYTES`]) ;
 //! 2. dimensions lues dans l'en-tête, **avant** tout décodage ([`MAX_DECODED_DIM`]) ;
-//! 3. mémoire du décodeur bornée par `image::Limits` ([`MAX_DECODE_ALLOC`]).
+//! 3. mémoire de l'image décodée bornée ([`MAX_DECODE_ALLOC`]), vérifiée sur la taille que
+//!    le décodeur annonce avant d'allouer (`image::Limits` est aussi posée, mais `image`
+//!    ne l'applique pas dans `from_decoder`).
 //!
 //! Le format est reconnu à son contenu (jamais à l'extension ni au `Content-Type`).
 //!
@@ -29,9 +31,12 @@ use image::{ImageDecoder, ImageFormat, ImageReader, Limits, RgbImage};
 pub const MAX_INPUT_BYTES: usize = 20 * 1024 * 1024;
 /// Largeur et hauteur maximales d'une image à décoder, lues dans l'en-tête.
 pub const MAX_DECODED_DIM: u32 = 8_000;
-/// Mémoire maximale que le décodeur peut allouer (256 Mio : une image 8 000 × 8 000 en
+/// Taille maximale de l'image décodée (256 Mio : une image 8 000 × 8 000 en
 /// RGBA 8 bits occupe 244 Mio).
 pub const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
+
+/// Nombre d'octets de fin de fichier où chercher le marqueur de fin d'un JPEG.
+const JPEG_EOI_WINDOW: usize = 1024;
 
 /// Fond sous les pixels transparents : blanc (les pochettes à fond transparent sont des
 /// logos pensés pour un fond clair).
@@ -72,6 +77,8 @@ pub enum ArtworkError {
     UnsupportedFormat,
     #[error("dimensions de l'image refusées : {0} × {1}")]
     Dimensions(u32, u32),
+    #[error("image trop gourmande en mémoire au décodage : {0} octets")]
+    Memory(u64),
     #[error("image illisible : {0}")]
     Decode(String),
     #[error("encodage PNG impossible : {0}")]
@@ -116,10 +123,12 @@ impl Artwork {
             return Err(ArtworkError::UnsupportedFormat);
         }
 
-        // Le décodeur JPEG pardonne un fichier coupé (il complète en gris) : un JPEG sans
-        // marqueur de fin d'image (FF D9, jamais présent tel quel dans les données
-        // compressées) est un téléchargement tronqué, refusé comme les autres formats.
-        if format == ImageFormat::Jpeg && !bytes.windows(2).any(|w| w == [0xff, 0xd9]) {
+        // Le décodeur JPEG pardonne un fichier coupé (il complète en gris) : un JPEG dont les
+        // derniers octets ne contiennent pas le marqueur de fin d'image (FF D9, jamais présent
+        // tel quel dans les données compressées) est un téléchargement tronqué. La recherche
+        // se limite à la fin du fichier : une miniature EXIF en contient aussi un, au début.
+        let tail = &bytes[bytes.len().saturating_sub(JPEG_EOI_WINDOW)..];
+        if format == ImageFormat::Jpeg && !tail.windows(2).any(|w| w == [0xff, 0xd9]) {
             return Err(ArtworkError::Decode("JPEG tronqué".into()));
         }
 
@@ -130,6 +139,12 @@ impl Artwork {
         let (w, h) = decoder.dimensions();
         if w == 0 || h == 0 || w > MAX_DECODED_DIM || h > MAX_DECODED_DIM {
             return Err(ArtworkError::Dimensions(w, h));
+        }
+        // `from_decoder` n'applique pas `max_alloc` : le budget mémoire est vérifié ici, sur la
+        // taille décodée (dimensions × canaux × profondeur) annoncée par le décodeur.
+        let needed = decoder.total_bytes();
+        if needed > MAX_DECODE_ALLOC {
+            return Err(ArtworkError::Memory(needed));
         }
         let mut limits = Limits::default();
         limits.max_image_width = Some(MAX_DECODED_DIM);
@@ -593,11 +608,18 @@ mod tests {
     #[test]
     fn memoire_du_decodeur_bornee() {
         // 8 000 × 8 000 en RGBA 16 bits : 488 Mio décodés, au-dessus de MAX_DECODE_ALLOC. Les
-        // dimensions sont admises, c'est la limite mémoire qui doit refuser.
+        // dimensions sont admises, seul le budget mémoire peut refuser, avant tout décodage.
         let out = png_header_only_with(MAX_DECODED_DIM, MAX_DECODED_DIM, png::BitDepth::Sixteen);
         assert!(matches!(
             Artwork::convert(&out, ArtworkKind::Cover),
-            Err(ArtworkError::Decode(_))
+            Err(ArtworkError::Memory(_))
+        ));
+        // 8 000 × 8 000 en RGBA 8 bits (244 Mio) reste dans le budget : l'échec vient des
+        // données absentes.
+        let ok = png_header_only(MAX_DECODED_DIM, MAX_DECODED_DIM);
+        assert!(!matches!(
+            Artwork::convert(&ok, ArtworkKind::Cover),
+            Err(ArtworkError::Memory(_))
         ));
     }
 
