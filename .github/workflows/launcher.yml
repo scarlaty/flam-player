@@ -8,6 +8,7 @@ on:
     paths:
       - "apps/flam-launcher/**"
       - "tools/telmi2flam/**"
+      - "tools/ffmpeg/**"
       - "src/**"
       - "CMakeLists.txt"
       - "Cargo.toml"
@@ -19,6 +20,7 @@ on:
     paths:
       - "apps/flam-launcher/**"
       - "tools/telmi2flam/**"
+      - "tools/ffmpeg/**"
       - "src/**"
       - "CMakeLists.txt"
       - "Cargo.toml"
@@ -34,7 +36,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ffmpeg minimal (audio, LGPL) construit depuis des sources épinglées par cross-compilation
+  # MinGW-w64 sous Linux (tools/ffmpeg/build.sh, #209). Le résultat est mis en cache d'après le
+  # contenu de tools/ffmpeg/ puis transmis au job Windows.
+  ffmpeg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Cache de ffmpeg construit
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-win64-${{ runner.os }}-${{ hashFiles('tools/ffmpeg/**') }}
+
+      - name: Construire ffmpeg (sources épinglées, SHA-256 vérifiés)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir ffmpeg-out
+          INSTALL_DEPS=1 bash tools/ffmpeg/build.sh "$PWD/ffmpeg-out"
+
+      - name: Artefact ffmpeg
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ffmpeg-win64
+          path: ffmpeg-out
+          if-no-files-found: error
+          retention-days: 3
+
   windows:
+    needs: ffmpeg
     runs-on: windows-latest
     timeout-minutes: 75
     defaults:
@@ -95,6 +128,15 @@ jobs:
       - name: Convertisseur embarqué (Python + Pillow, SHA-256 vérifiés)
         run: npm run build:converter
 
+      - name: Télécharger ffmpeg (construit par le job ffmpeg)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ffmpeg-win64
+          path: ffmpeg-artifact
+
+      - name: ffmpeg LGPL embarqué (contrôles, sans GPL, libmp3lame, transcodages MP3)
+        run: npm run build:ffmpeg -- -ArtifactDir "$(cygpath -w "$GITHUB_WORKSPACE/ffmpeg-artifact")"
+
       - name: flam-player.exe et SDL2.dll (CMake, Release)
         run: npm run build:player
 
@@ -136,9 +178,16 @@ jobs:
           $p = Start-Process -FilePath $setup.FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "installateur : code $($p.ExitCode)" }
           foreach ($f in 'flam-launcher.exe', 'flam-player.exe', 'SDL2.dll', 'LICENSES.md', 'uninstall.exe',
-              'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt') {
+              'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt',
+              'ffmpeg/ffmpeg.exe', 'ffmpeg/ffprobe.exe', 'ffmpeg/LICENSE', 'ffmpeg/LICENSE-LAME', 'ffmpeg/LICENSE-MINGW-RUNTIME', 'ffmpeg/BUILD.txt') {
             if (-not (Test-Path (Join-Path $dest $f))) { throw "fichier absent de l'installation : $f" }
           }
+          # ffmpeg installé : ni GPL ni nonfree, libmp3lame présent (le script de build l'a déjà contrôlé,
+          # ici on vérifie ce que l'installateur a réellement déposé).
+          $ff = Join-Path $dest 'ffmpeg/ffmpeg.exe'
+          $conf = (& $ff -hide_banner -buildconf 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $conf -match '--enable-(gpl|nonfree)(\s|$)' -or $conf -notmatch '--enable-libmp3lame') { throw "ffmpeg installé : configuration refusée`n$conf" }
+          if ((& $ff -hide_banner -encoders 2>&1 | Out-String) -notmatch 'libmp3lame') { throw 'ffmpeg installé : libmp3lame absent' }
           # Seuil de 1000 octets : une génération qui a échoué ou vidé le fichier laisserait quelques
           # lignes d'en-tête ; le fichier réel (centaines de paquets) fait plusieurs centaines de Ko.
           if ((Get-Item (Join-Path $dest 'THIRD-PARTY-NOTICES.txt')).Length -lt 1000) { throw 'THIRD-PARTY-NOTICES.txt installé : moins de 1000 octets' }
