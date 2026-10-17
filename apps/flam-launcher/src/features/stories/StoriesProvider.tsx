@@ -261,7 +261,8 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     onPlayerStarted,
     useCallback((started: PlayerSession) => {
       setSession(started);
-      if (getMinimizeDuringPlay()) {
+      // Player incrusté : la fenêtre du launcher le contient, elle n'est jamais réduite.
+      if (!started.embedded && getMinimizeDuringPlay()) {
         minimized.current = true;
         windowOps.current = windowOps.current.then(minimizeWindow);
       }

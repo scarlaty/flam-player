@@ -11,6 +11,19 @@ export interface PlayerSession {
   pid: number;
   /** Démarrage (secondes Unix). */
   started_at: number;
+  /**
+   * Vrai si le player est incrusté dans la fenêtre du launcher (écran Lecture) ; faux s'il
+   * s'ouvre dans sa propre fenêtre (hors Windows, incrustation impossible ou désactivée).
+   */
+  embedded: boolean;
+}
+
+/** Zone d'accueil du player incrusté, en px CSS relatifs à la page (`getBoundingClientRect`). */
+export interface EmbedRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /** Charge de `player://exited` (miroir de `PlayerExited`). */
@@ -63,6 +76,23 @@ export function launchFolderStory(
  */
 export function getPlayerStatus(): Promise<PlayerSession | null> {
   return invokeCommand<PlayerSession | null>("player_status");
+}
+
+/**
+ * `player_stop` : demande au player de s'arrêter proprement (il sauvegarde puis se termine ;
+ * arrêt forcé après 5 s). La fin est annoncée par `player://exited`. Renvoie faux si aucun
+ * player ne tourne.
+ */
+export function stopPlayer(): Promise<boolean> {
+  return invokeCommand<boolean>("player_stop");
+}
+
+/**
+ * `player_embed_layout` : place la fenêtre du player incrusté sur `rect` (px CSS), ou la cache
+ * (`null`). Sans effet si aucun player incrusté ne tourne.
+ */
+export function setPlayerEmbedLayout(rect: EmbedRect | null): Promise<void> {
+  return invokeCommand<void>("player_embed_layout", { rect });
 }
 
 /** Écoute `player://started`. Renvoie la fonction de désabonnement. */

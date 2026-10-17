@@ -344,6 +344,8 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `player_launch`        | `uuid`                     | `PlayerSession`                         | `player`        |
 | `player_launch_folder` | `source_id`, `entry_id`    | `PlayerSession`                         | `player`        |
 | `player_status`        |                            | `PlayerSession \| null`                 | `player`        |
+| `player_stop`          |                            | `bool` (faux : aucun player)            | `player`        |
+| `player_embed_layout`  | `rect \| null` (px CSS)    | rien                                    | `player`        |
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).
@@ -574,8 +576,39 @@ avec une charge utile sérialisable typée côté `src/api/`.
 entry_id)` une histoire `.plain` / `.plain.pk` du dernier scan d'une source dossier (sans
 installation ; un zip Telmi est refusé). **Le front ne fournit jamais de chemin** : le fichier est
 relu de `library.json` ou du scan, le player vient de `settings::resolve` (configuré valide, sinon
-détecté) et est revérifié juste avant l'exécution. Commande : `flam-player.exe "<fichier>"` sans
-shell, un seul argument en tableau, dossier courant = dossier du player.
+détecté) et est revérifié juste avant l'exécution. Commande :
+`flam-player.exe --stdin-control [--parent-hwnd <n>] "<fichier>"` sans shell, le chemin en **un
+seul argument** (dernier), dossier courant = dossier du player.
+
+- **Incrustation (#201, Windows)** : le player s'affiche dans l'écran **Lecture** du launcher.
+  Avant le lancement, `embed::TauriEmbed` crée dans la fenêtre `main` une fenêtre enfant native
+  (`STATIC`, `WS_CHILD | WS_CLIPSIBLINGS`, cachée) dont le HWND est passé par `--parent-hwnd` ; le
+  player remplit sa zone cliente et suit sa taille. Toutes les opérations Win32 ont lieu sur le
+  thread principal (`run_on_main_thread`) ; la fenêtre d'accueil est détruite à la fin du player.
+  `PlayerSession.embedded` dit si le lancement est incrusté.
+- **Placement** : l'écran Lecture (`src/features/player/PlayerScreen.tsx`) mesure sa zone
+  (`getBoundingClientRect`, `ResizeObserver`, redimensionnement de la fenêtre) et appelle
+  `player_embed_layout(rect)` (px CSS) ; le backend convertit en px physiques avec le DPI de la
+  fenêtre (`GetDpiForWindow`, `embed::to_physical`) puis `SetWindowPos`. `null` cache la fenêtre
+  d'accueil (démontage de l'écran). Sans effet si aucun player incrusté ne tourne.
+- **Écran modal** : tant qu'un player incrusté tourne, l'écran Lecture remplace toute
+  l'application (pas de navigation : la fenêtre native resterait au-dessus des autres écrans, des
+  dialogues et des notifications). La fenêtre n'est jamais réduite pour un player incrusté
+  (le paramètre « Réduire la fenêtre pendant la lecture » ne vaut que pour la fenêtre séparée).
+- **Repli** : hors Windows, si la fenêtre d'accueil ne peut pas être créée, ou avec
+  `FLAM_LAUNCHER_NO_EMBED=1`, le player est lancé sans `--parent-hwnd`, dans sa propre fenêtre,
+  comme avant. Si c'est le player qui ne parvient pas à s'incruster, il trace `[EMBED] repli : …`
+  sur stderr et ouvre sa fenêtre séparée ; le launcher affiche quand même l'écran Lecture (zone
+  vide), dont « Arrêter » reste utilisable.
+- **Arrêt (`player_stop`, bouton « Arrêter »)** : le player est lancé avec `--stdin-control` et
+  son entrée standard est un tube gardé par le service pendant la session. `player_stop` y écrit
+  `quit` : le player sauvegarde et sort avec le code 0 (`player://exited`, `success`). S'il tourne
+  encore 5 s plus tard (même session), il est arrêté de force (`TerminateProcess`, code 1) ; le
+  pid ne peut pas avoir été réutilisé, le processus étant détenu (non attendu) par le thread
+  d'attente, et la vérification se fait sous le verrou que ce thread prend à la fin. Si le
+  launcher s'arrête, le tube se ferme : le player (fin de stdin) s'arrête proprement lui aussi.
+  Un ancien `flam-player.exe` qui ne connaît pas ces options les prend pour des chemins et
+  retient le dernier argument, l'histoire : il reste lançable (sans arrêt par stdin).
 
 - **Un seul player à la fois** : un second lancement est refusé (`player_busy`) ; le créneau est
   libéré avant `player://exited`, on peut relancer dès réception. `player_status` restitue l'état
@@ -678,7 +711,6 @@ shell, un seul argument en tableau, dossier courant = dossier du player.
   aussitôt et ramène la fenêtre de la première instance au premier plan (restaurée, focus).
   Deux launchers ne se disputent donc ni le cache, ni `<config>/saves/`, ni la file
   d'installation.
-- Non fait : réduire la fenêtre de la surcouche pendant la lecture (option facultative).
 
 ### Pipeline d'installation (`install`, `library`)
 
