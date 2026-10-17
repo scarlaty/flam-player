@@ -9,3 +9,4 @@ pub mod crypto;
 pub mod detect;
 pub mod index;
 pub mod prepare;
+pub mod status;
