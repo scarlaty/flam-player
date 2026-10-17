@@ -231,17 +231,23 @@ jobs:
           # 4. Mise à jour pendant que l'application N-1 tourne (#186) : le mode silencieux ne doit ni
           # bloquer sur une boîte de dialogue invisible (CheckIfAppIsRunning de Tauri, désinstallateur de
           # N-1), ni laisser N-1 en cours d'exécution. Délai borné : au-delà, l'installateur (lancé par
-          # ce script, donc seul tué ici) est arrêté et l'étape échoue.
+          # ce script, tout comme N-1) est arrêté et l'étape échoue.
           $u = Start-Process -FilePath (Join-Path $dest 'uninstall.exe') -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
           if ($u.ExitCode -ne 0) { throw "désinstallation avant le scénario application ouverte : code $($u.ExitCode)" }
           Remove-Item -LiteralPath $dest -Recurse -Force
           Invoke-Setup $env:FLAM_PREV_SETUP 'installation N-1 (application ouverte)'
           $app = Start-Process -FilePath (Join-Path $dest 'flam-launcher.exe') -PassThru
-          Start-Sleep -Seconds 8
+          # Attendre la fenêtre (démarrage à froid de WebView2), au plus 60 s, puis une courte marge.
+          $t0 = Get-Date
+          while (-not $app.HasExited -and $app.MainWindowHandle -eq [IntPtr]::Zero -and ((Get-Date) - $t0).TotalSeconds -lt 60) {
+            Start-Sleep -Milliseconds 500
+            $app.Refresh()
+          }
+          Start-Sleep -Seconds 3
           if ($app.HasExited) { throw "flam-launcher.exe N-1 s'est arrêté avant la mise à jour (code $($app.ExitCode)) : le scénario n'est pas provoqué" }
           $s = Start-Process -FilePath $setup.FullName -ArgumentList @('/S', "/D=$dest") -PassThru
           if (-not $s.WaitForExit(180000)) {
-            $s.Kill($true)
+            if (-not $s.HasExited) { $s.Kill($true) }
             if (-not $app.HasExited) { $app.Kill($true) }
             throw 'mise à jour avec application ouverte : pas de fin au bout de 180 s (boîte bloquante ?)'
           }
