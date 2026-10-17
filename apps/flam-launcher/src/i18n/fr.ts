@@ -130,8 +130,6 @@ export const fr = {
       title: "À propos",
       version: (name: string, version: string) => `${name} — version ${version}`,
       license: "Licence MIT.",
-      credits:
-        "Inspiré de l'ergonomie de Telmi Store et de TelmiSync. Aucun code ni ressource de ces projets n'a été repris.",
     },
   },
   welcome: {

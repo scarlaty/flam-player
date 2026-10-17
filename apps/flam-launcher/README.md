@@ -4,8 +4,7 @@ Surcouche de bureau (Windows d'abord) pour parcourir des sources d'histoires, le
 avec `telmi2flam` et les lancer dans `flam-player`. Application Tauri 2 : backend Rust,
 interface React + TypeScript (strict). Licence **MIT** (voir [LICENSE](LICENSE)).
 
-L'ergonomie s'inspire de TelmiSync, **sans reprendre de code ni de style** (TelmiSync est
-en GPL-3.0). Suivi : issue « Suivi : surcouche flam-launcher ».
+Suivi : issue « Suivi : surcouche flam-launcher ».
 
 Ce document décrit l'installation, l'utilisation, le dépannage puis l'architecture visée. Les éléments marqués _prévu_ n'existent pas encore
 et arrivent avec les issues du jalon M3.

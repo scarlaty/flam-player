@@ -296,8 +296,23 @@ impl CatalogService {
         url: &str,
         now: u64,
     ) -> AppResult<CatalogView> {
+        self.refresh_since(self.generation(source_id), cache_root, source_id, url, now)
+            .await
+    }
+
+    /// Comme [`CatalogService::refresh`], pour un appelant qui a lu la génération de la source
+    /// (`generation`) **avant** de résoudre `url` : un `sources_update` ou `sources_remove`
+    /// intervenu entre les deux (donc une `url` périmée) fait abandonner le rafraîchissement
+    /// au lieu d'écrire un cache à l'ancienne URL.
+    async fn refresh_since(
+        &self,
+        generation: u64,
+        cache_root: &Path,
+        source_id: &str,
+        url: &str,
+        now: u64,
+    ) -> AppResult<CatalogView> {
         let dir = source_dir(cache_root, source_id)?;
-        let generation = self.generation(source_id);
         let _gate = self.cache_gate.read().await;
         let source_lock = self.source_lock(source_id);
         let _held = source_lock.lock().await;
@@ -1166,9 +1181,11 @@ pub async fn catalog_refresh(
     service: State<'_, CatalogService>,
     source_id: String,
 ) -> AppResult<CatalogView> {
+    // Génération lue avant la résolution de l'URL : voir `refresh_since`.
+    let generation = service.generation(&source_id);
     let (url, cache_root) = resolve_from_state(&config, &source_id)?;
     service
-        .refresh(&cache_root, &source_id, &url, now_secs())
+        .refresh_since(generation, &cache_root, &source_id, &url, now_secs())
         .await
 }
 
@@ -2525,14 +2542,20 @@ mod tests {
         let url = url_of(&server);
         let service = Arc::new(svc());
 
-        // Le verrou de la source est tenu (rafraîchissement ou purge en cours).
+        // Le verrou de la source est tenu (rafraîchissement ou purge en cours). La génération est
+        // lue avant le lancement : le résultat ne dépend pas du moment où la tâche atteint le
+        // verrou, aucune temporisation n'est nécessaire.
         let source_lock = service.source_lock("src");
         let held = source_lock.lock().await;
+        let generation = service.generation("src");
         let task = {
             let (service, root, url) = (service.clone(), cache.path().to_path_buf(), url.clone());
-            tokio::spawn(async move { service.refresh(&root, "src", &url, 1).await })
+            tokio::spawn(async move {
+                service
+                    .refresh_since(generation, &root, "src", &url, 1)
+                    .await
+            })
         };
-        tokio::time::sleep(Duration::from_millis(100)).await;
         // La purge (celle de `purge_source`) a eu lieu entre-temps.
         *lock(&service.source_gen).entry("src".into()).or_default() += 1;
         drop(held);
@@ -2541,6 +2564,33 @@ mod tests {
         assert_eq!(err.kind(), "not_found");
         assert!(!cache.path().join("catalogs/src").exists());
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn generation_lue_avant_la_purge_abandonne_le_refresh_sans_ecrire() {
+        let server = MockServer::start().await;
+        serve(&server, catalog_response(&sample()), None).await;
+        let cache = tempfile::tempdir().unwrap();
+        let url = url_of(&server);
+        let service = svc();
+        // `catalog_refresh` lit la génération, puis résout l'URL : une mise à jour de la source
+        // (purge) entre les deux rend l'URL résolue périmée.
+        let generation = service.generation("src");
+        service.purge_source(cache.path(), "src").await.unwrap();
+        let err = service
+            .refresh_since(generation, cache.path(), "src", &url, 1)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "not_found");
+        assert!(!cache.path().join("catalogs/src").exists());
+        assert!(server.received_requests().await.unwrap().is_empty());
+        // Avec la génération courante, le rafraîchissement aboutit.
+        let current = service.generation("src");
+        service
+            .refresh_since(current, cache.path(), "src", &url, 2)
+            .await
+            .unwrap();
+        assert!(cache.path().join("catalogs/src/catalog.json").is_file());
     }
 
     #[tokio::test]
@@ -2575,7 +2625,21 @@ mod tests {
             let (service, root, url) = (service.clone(), cache.path().to_path_buf(), url.clone());
             tokio::spawn(async move { service.thumbnail(&root, "src", &url, &thumb).await })
         };
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // La requête de la vignette est arrivée au serveur (qui la retient 400 ms) : elle est en vol.
+        let in_flight = async {
+            while !server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.url.path() == "/t/a.png")
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), in_flight)
+            .await
+            .expect("la vignette n'a jamais été demandée");
         service.purge_source(cache.path(), "src").await.unwrap();
 
         // L'image est servie à l'appelant, mais rien n'est réécrit sur le disque.
