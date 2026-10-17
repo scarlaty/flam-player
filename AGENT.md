@@ -112,7 +112,9 @@ Options du player :
   `dummy`). Sans l'option, stdin n'est jamais lu. Test : `tests/e2e/e2e_embed.py`.
 
 Touches : gauche/droite = molette, Entree/Espace = OK, Echap = retour (`back_callback`),
-M = menu contextuel, P = pause/reprise audio, S = capture d'ecran.
+M = menu contextuel, P = pause/reprise audio, S = capture d'ecran. F6 (mode `--parent-hwnd`
+seulement, Windows) = rend le clavier a la fenetre hote : `SetFocus` sur la fenetre racine du
+parent et trace `[EMBED] focus-host` sur stderr (le launcher la relaie, #237).
 
 **Timeout en CI/test** : utiliser `timeout 8 ./build/flam-player.exe ...` car le player ouvre une fenetre SDL et attend indefiniment.
 Sans fenetre : `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy` (voir `tests/e2e/e2e_telmi.py`).
@@ -313,11 +315,11 @@ de hauteur de texte est protege par un test d'overflow (`LV_LOG_WARN` puis retou
 
 ## Surcouche flam-launcher
 
-`apps/flam-launcher/` : application de bureau Tauri 2 (Rust + React/TypeScript strict), licence MIT,
+`apps/flam-launcher/` : application de bureau Tauri 2 (Rust + React/TypeScript strict), licence GPL v3,
 independante du code C/Lua de l'emulateur. Architecture et commandes : `apps/flam-launcher/README.md`.
 Qualite avant PR : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` (dans `src-tauri/`),
-`npm run lint`, `npm run typecheck`, `npm test` (voir `CONTRIBUTING.md` §5). Ne jamais copier de code
-ni de style de TelmiSync (GPL-3.0), et ne jamais versionner d'archive Telmi ni d'histoire convertie.
+`npm run lint`, `npm run typecheck`, `npm test` (voir `CONTRIBUTING.md` §5). On peut s'inspirer de TelmiSync (GPL-3.0) et lire son code pour comprendre, mais
+jamais le recopier tel quel ; ne jamais versionner d'archive Telmi ni d'histoire convertie.
 
 Workspace Cargo a la racine (`Cargo.toml`) : membres `apps/flam-launcher/src-tauri` et
 `crates/telmi2flam` (port Rust du convertisseur), sorties dans `target/` a la racine. Tests de la

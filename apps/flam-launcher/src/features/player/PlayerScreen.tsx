@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { toAppError } from "../../api/error";
 import {
   focusEmbeddedPlayer,
+  onPlayerFocusHost,
   setPlayerEmbedLayout,
   stopPlayer,
   type EmbedRect,
@@ -86,6 +87,7 @@ export function PlayerScreen({
 }) {
   const zone = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  const focusButton = useRef<HTMLButtonElement>(null);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
@@ -101,6 +103,28 @@ export function PlayerScreen({
   // Focus au montage : l'élément qui a lancé la lecture vient d'être démonté.
   useEffect(() => {
     heading.current?.focus();
+  }, []);
+
+  // F6 dans le player : le clavier revient au launcher, sur « Clavier au lecteur » (qui le
+  // redonne au player). Le désabonnement tient compte d'un démontage avant l'abonnement.
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    onPlayerFocusHost(() => focusButton.current?.focus())
+      .then((off) => {
+        if (active) unlisten = off;
+        else off();
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      try {
+        // Rejet possible si les ponts Tauri sont déjà retirés : rien à désabonner alors.
+        (unlisten?.() as unknown as Promise<void> | undefined)?.catch?.(() => undefined);
+      } catch {
+        // Idem, en erreur synchrone.
+      }
+    };
   }, []);
 
   // Filet : sans fin de partie après le délai, « Arrêter » redevient disponible.
@@ -135,6 +159,7 @@ export function PlayerScreen({
         </h1>
         <div className="fl-player-screen__actions">
           <Button
+            ref={focusButton}
             variant="secondary"
             icon="play"
             onClick={() => {
