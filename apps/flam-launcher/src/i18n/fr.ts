@@ -425,6 +425,7 @@ export const fr = {
       emptyTitle: "Aucune histoire sur la Flam",
       emptyDescription: "Les histoires envoyées depuis le launcher apparaîtront ici.",
       loadFailed: "Impossible de lire les histoires de la Flam.",
+      noAnswer: "La Flam n'a pas répondu : vérifiez la connexion USB.",
     },
     index: {
       visibleAbsent: "La Flam n'a pas d'index d'histoires (etc/library/list).",

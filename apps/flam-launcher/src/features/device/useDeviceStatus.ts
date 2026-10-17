@@ -49,6 +49,15 @@ export function useDeviceStatus(): DeviceStatusState {
     };
   }, [run]);
 
+  // Au retour au premier plan, la scrutation reprend aussitôt au lieu d'attendre le prochain tour.
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden) setRun((n) => n + 1);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
   const retry = useCallback(() => setRun((n) => n + 1), []);
   return { status, error, retry };
 }

@@ -16,6 +16,10 @@
   gap: var(--space-2);
 }
 
+.fl-device-stories-wrap:focus {
+  outline: none;
+}
+
 .fl-device-card,
 .fl-device-stories {
   display: flex;

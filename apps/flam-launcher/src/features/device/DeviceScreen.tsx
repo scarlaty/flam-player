@@ -234,6 +234,7 @@ function DeviceStoriesList({
 }) {
   const [state, setState] = useState<StoriesState>({ phase: "loading" });
   const [reload, setReload] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const onCountRef = useRef(onCount);
   useEffect(() => {
     onCountRef.current = onCount;
@@ -243,8 +244,15 @@ function DeviceStoriesList({
     let active = true;
     listDeviceStories()
       .then((report) => {
-        // `null` : la Flam a disparu entre deux appels ; la scrutation le constatera.
-        if (!active || !report) return;
+        if (!active) return;
+        if (!report) {
+          // La Flam a disparu entre la détection et la lecture : jamais d'attente sans issue.
+          setState({
+            phase: "error",
+            error: { kind: "not_found", message: text.stories.noAnswer },
+          });
+          return;
+        }
         setState({ phase: "ready", report });
         onCountRef.current(report.stories.length);
       })
@@ -257,58 +265,68 @@ function DeviceStoriesList({
   }, [reload]);
 
   function refresh() {
+    // Le bouton cliqué disparaît pendant le chargement : le focus passe à un élément stable.
+    wrapperRef.current?.focus();
     setState({ phase: "loading" });
     setReload((n) => n + 1);
   }
 
-  if (state.phase === "error") {
-    return (
-      <ErrorBanner
-        error={{
-          ...state.error,
-          message: `${text.stories.loadFailed} ${state.error.message}`,
-        }}
-        action={<Button onClick={refresh}>{t.errors.retry}</Button>}
-      />
-    );
-  }
-  if (state.phase === "loading") return <p>{text.stories.loading}</p>;
-
-  const { report } = state;
-  return (
-    <section className="fl-device-stories" aria-labelledby="fl-device-stories-title">
-      <div className="fl-device-stories__head">
-        <h2 id="fl-device-stories-title" className="fl-device-card__title">
-          {text.stories.title(report.stories.length)}
-        </h2>
-        <Button variant="secondary" size="sm" icon="refresh" onClick={refresh}>
-          {text.stories.refresh}
-        </Button>
-      </div>
-      {indexNotices(report).map(({ tone, message }) => (
-        <Banner key={message} tone={tone} role="status">
-          {message}
-        </Banner>
-      ))}
-      {report.stories.length === 0 ? (
-        <EmptyState
-          icon="book"
-          headingLevel={3}
-          title={text.stories.emptyTitle}
-          description={text.stories.emptyDescription}
+  const renderStories = () => {
+    if (state.phase === "error") {
+      return (
+        <ErrorBanner
+          error={{
+            ...state.error,
+            message: `${text.stories.loadFailed} ${state.error.message}`,
+          }}
+          action={<Button onClick={refresh}>{t.errors.retry}</Button>}
         />
-      ) : (
-        <ul className="fl-device-rows" aria-label={text.stories.listLabel}>
-          {report.stories.map((story) => (
-            <DeviceStoryRow
-              key={story.uuid}
-              story={story}
-              actions={storyActions?.(story)}
-            />
-          ))}
-        </ul>
-      )}
-    </section>
+      );
+    }
+    if (state.phase === "loading") return <p>{text.stories.loading}</p>;
+
+    const { report } = state;
+    return (
+      <section className="fl-device-stories" aria-labelledby="fl-device-stories-title">
+        <div className="fl-device-stories__head">
+          <h2 id="fl-device-stories-title" className="fl-device-card__title">
+            {text.stories.title(report.stories.length)}
+          </h2>
+          <Button variant="secondary" size="sm" icon="refresh" onClick={refresh}>
+            {text.stories.refresh}
+          </Button>
+        </div>
+        {indexNotices(report).map(({ tone, message }) => (
+          <Banner key={message} tone={tone} role="status">
+            {message}
+          </Banner>
+        ))}
+        {report.stories.length === 0 ? (
+          <EmptyState
+            icon="book"
+            headingLevel={3}
+            title={text.stories.emptyTitle}
+            description={text.stories.emptyDescription}
+          />
+        ) : (
+          <ul className="fl-device-rows" aria-label={text.stories.listLabel}>
+            {report.stories.map((story) => (
+              <DeviceStoryRow
+                key={story.uuid}
+                story={story}
+                actions={storyActions?.(story)}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
+    );
+  };
+
+  return (
+    <div ref={wrapperRef} tabIndex={-1} className="fl-device-stories-wrap">
+      {renderStories()}
+    </div>
   );
 }
 

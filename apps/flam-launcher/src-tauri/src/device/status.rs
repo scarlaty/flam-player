@@ -464,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn la_serialisation_n_expose_ni_chemin_de_fichier_ni_octets_de_mdf() {
+    fn la_serialisation_n_expose_que_les_champs_prevus() {
         let dev = installed_device();
         let backups = tempfile::tempdir().unwrap();
         let json = serde_json::to_string(&status(
@@ -472,8 +472,26 @@ mod tests {
             backups.path(),
         ))
         .unwrap();
-        assert!(!json.contains("sha256"));
-        assert!(!json.contains("mdf_bytes"));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let mut keys: Vec<_> = value["device"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "backup_failed",
+                "file_system",
+                "mdf_problem",
+                "root",
+                "space",
+                "volume_label",
+                "warnings"
+            ]
+        );
     }
 
     /// Critère d'acceptation : après état et liste, l'arborescence et les octets de la Flam

@@ -255,6 +255,46 @@ it("rend le focus au titre quand « Réessayer » trouve la Flam", async () => {
   expect(screen.getByRole("status")).toHaveTextContent(/Flam détectée|histoire/);
 });
 
+it("garde le focus dans la liste quand on actualise ou réessaie", async () => {
+  status = detected();
+  render(<DeviceScreen />);
+  const refresh = await screen.findByRole("button", { name: "Actualiser la liste" });
+  refresh.focus();
+  fireEvent.click(refresh);
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (0)" });
+  expect(document.body).not.toHaveFocus();
+  expect(document.activeElement?.className).toBe("fl-device-stories-wrap");
+});
+
+it("sort de l'attente quand la Flam disparaît entre la détection et la lecture", async () => {
+  status = detected();
+  stories = null;
+  render(<DeviceScreen />);
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("La Flam n'a pas répondu");
+  stories = report([story(A)]);
+  fireEvent.click(within(alert).getByRole("button", { name: "Réessayer" }));
+  expect(
+    await screen.findByRole("heading", { name: "Histoires sur la Flam (1)" }),
+  ).toBeInTheDocument();
+});
+
+it("ne scrute pas fenêtre masquée et reprend au retour", async () => {
+  const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+  render(<DeviceScreen />);
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 50));
+  });
+  expect(count("device_status")).toBe(0);
+  hidden.mockReturnValue(false);
+  await act(async () => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await screen.findByRole("heading", { name: "Aucune Flam détectée" });
+  expect(count("device_status")).toBe(1);
+  hidden.mockRestore();
+});
+
 it("prévoit les emplacements des actions d'envoi et de retrait", async () => {
   status = detected();
   stories = report([story(A, { title: "Capi" })]);
