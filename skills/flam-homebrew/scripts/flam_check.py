@@ -8,7 +8,7 @@ Controles (ERR = bloque le device a coup sur ou presque, WARN = a verifier) :
   archive   ZIP STORED, sans data descriptor, noms surs, pas de doublon de casse,
             ordre info.plain / version / main.lua en tete, uuid.bin en dernier
   meta      info.plain 4 lignes (titre/sous-titre/000000/titre), version, uuid 16 o
-  runtime   framework Lunii present (global.lua & co, img/script/*.lif, img/empty.lif)
+  runtime   runtime du projet present (global.lua & co, img/script/*.lif, img/empty.lif)
   lua       syntaxe (lupa, ou lua/luac du PATH, ou FLAM_LUA), pas de require au
             top-level de main.lua, setup() defini, Global non local, modules
             Global.load_module(...) et require(...) resolus dans script/,

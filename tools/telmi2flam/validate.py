@@ -36,7 +36,7 @@ except ImportError:   # lupa optionnel
 LIF_MAGIC = b"liff"
 LIF_END = b"\x00\x00\x00\x00\x00\x00\x00\x01"
 LIF_MAX_DIM = 2047  # 11 bits de lv_img_header_t (LVGL 8.3), cf. lif_decoder.c
-# Runtime Lunii indispensable au demarrage (meme liste que telmi2flam.py)
+# Runtime du projet indispensable au demarrage (meme liste que telmi2flam.py)
 RUNTIME_SCRIPTS = ("global.lua", "progressionManager.lua", "button.lua", "button-theme.lua",
                    "button-theme-default.lua", "button-theme-interactive.lua", "v-scroll.lua",
                    "v-container.lua", "audio-player_1_0_0.lua", "carousel_1_0_0.lua",

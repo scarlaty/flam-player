@@ -242,6 +242,6 @@ et details : [tools/telmi2flam/README.md](tools/telmi2flam/README.md).
 Ce projet (emulateur flam-player, convertisseur telmi2flam, flam-launcher, jeux et skills) est distribue sous licence GNU GPL v3 ou ulterieure (`GPL-3.0-or-later`), voir [`LICENSE`](LICENSE). Les composants tiers gardent chacun leur licence (voir ci-dessous).
 
 L'installateur Windows de flam-launcher redistribue flam-player, le convertisseur telmi2flam (avec
-un Python embarque et Pillow) et le runtime Lunii avec l'accord du mainteneur ; les licences de
+un Python embarque et Pillow) et son runtime Lua (GPL v3, comme le reste du dépôt) ; les licences de
 chaque composant tiers (SDL2, Lua, LVGL, minimp3, Python, Pillow, redistribuables Microsoft) sont
 dans [`apps/flam-launcher/LICENSES.md`](apps/flam-launcher/LICENSES.md).

@@ -66,8 +66,8 @@ sounds/*.mp3map     # table de seek associée (optionnelle)
 ### API runtime exposée au Lua (firmware)
 
 Le firmware fournit **uniquement** ces globales (cf. `src/firmware/`, `src/bindings/`,
-`src/platform/sdl_audio.c`) — il **ne fournit pas** la bibliothèque UI Lunii
-(`Global`, `button`, etc.) : celle-ci est embarquée dans chaque histoire Lunii.
+`src/platform/sdl_audio.c`) — il **ne fournit pas** les modules UI
+(`Global`, `button`, etc.) : ceux-ci sont fournis par le runtime Lua du projet (`runtime/`), embarqué dans chaque paquet.
 Notre moteur n'en dépend donc pas.
 
 - `window` — conteneur LVGL de contenu (320×212 dans le sim : écran 320×240 − barre 28px)
@@ -220,8 +220,8 @@ tools/telmi2flam/
 │   ├── main.lua         # bootstrap (setup → title-card → menu Démarrer/Reprendre)
 │   └── story.lua        # BRANCH (logique de scènes ; rejoue nodes.lua via les modules Global)
 ├── runtime/
-│   ├── script/          # bibliothèque standard Lunii (global.lua + deps + modules)
-│   └── img/script/      # assets UI Lunii (flèches, play/pause, empty…)
+│   ├── script/          # runtime Lua du projet (global.lua + deps + modules)
+│   └── img/script/      # icônes UI du runtime (flèches, play/pause, empty…)
 ├── telmi2flam.py        # CLI de conversion
 ├── validate.py          # validation hors-GUI d'un .plain.pk généré
 ├── explore.py           # exploration automatique sans fenêtre dans flam-player
@@ -259,7 +259,7 @@ officielle *Cluedo* (`mine == real`) ; en 44,1 kHz la sortie est inchangée (tes
 
 ### `engine/main.lua` (bootstrap) + `engine/story.lua` (branch)
 
-Architecture **identique aux histoires Lunii officielles** (Cluedo) : tout passe par les
+Architecture attendue par le firmware de la Flam : tout passe par les
 modules `Global` (le device rend/gère les entrées via `Global.current_module` ; un moteur
 en `lv.*` direct marche au sim mais PAS sur device).
 
@@ -496,7 +496,7 @@ Le CLI :
    et repli sur `empty.lif`) ;
 3. génère `script/nodes.lua` (table de données, dont `totalChapters`, voir plus bas) +
    embarque `engine/main.lua` (→ `main.lua`), `engine/story.lua` (→ `script/story.lua`)
-   et le runtime Lunii (`runtime/` → `script/`, `img/script/`) ;
+   et le runtime du projet (`runtime/` → `script/`, `img/script/`) ;
 4. écrit `info.plain` (titre/sous-titre aplatis sur une ligne) / `version` / `uuid.bin`
    (= MD5 de l'UUID TELMI ; sans uuid, MD5 du contenu de `nodes.json` + avertissement) /
    `img/thumbnail.lif` ;
@@ -519,7 +519,7 @@ qu'une même partie peut visiter avant la fin d'histoire. C'est une borne haute 
 conditions peuvent fermer des chemins) : la jauge reste dans [0, 100] et atteint 100 %
 sur la branche la plus longue. Une scène non atteignable ne compte pas.
 Pourquoi pas une jauge par branche : `totalChapters` est une valeur unique passée à
-`progression.create` (bibliothèque Lunii embarquée). Une jauge par composante demanderait
+`progression.create` (runtime du projet embarqué). Une jauge par composante demanderait
 de modifier le moteur et le `progressionManager`, sans garantie de compatibilité avec le
 firmware officiel.
 
@@ -999,7 +999,7 @@ nécessaires pour que l'histoire **charge sur le device**) :
   échoue → `setup()` jamais défini → l'histoire ne charge pas. ⇒ tous les `require`
   (dont `require("nodes")`) sont faits **dans `setup()`**.
 - **`require()` résolu uniquement depuis `script/`** ⇒ `nodes.lua` est en `script/nodes.lua`.
-- **Bibliothèque Lunii embarquée** (`global.lua`, `progressionManager.lua` + deps, modules
+- **Runtime du projet embarqué** (`global.lua`, `progressionManager.lua` + deps, modules
   `audio-player`, `carousel`, `image-choice`, `list-choice`, `title-card`) dans `script/`.
 - **`title-card` avance via `back_callback()`** (fin d'audio) : `progression.create{
   backBehavior = Start }` règle ce callback sur le menu Start avant `IntroCard()`.
