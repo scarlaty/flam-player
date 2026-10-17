@@ -19,7 +19,7 @@ use unicode_normalization::char::canonical_combining_class;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::json::Value;
-use crate::text_tables::{LETTER_OR_NUMBER, PY_WHITESPACE};
+use crate::text_tables::{LETTER_OR_NUMBER, NON_PRINTABLE, PY_WHITESPACE};
 
 pub use crate::text_tables::UNIDATA_VERSION;
 
@@ -164,8 +164,27 @@ pub fn choice_label(
     String::new()
 }
 
-/// `ascii(s)` de Python : représentation entre apostrophes, non-ASCII échappé.
-pub fn py_ascii(s: &str) -> String {
+/// `str.isprintable()` pour un caractère (table `NON_PRINTABLE` : catégories Cc, Cf, Cs, Co,
+/// Cn, Zl, Zp et Zs sauf l'espace).
+pub fn is_py_printable(c: char) -> bool {
+    let cp = c as u32;
+    NON_PRINTABLE
+        .binary_search_by(|&(lo, hi)| {
+            if hi < cp {
+                std::cmp::Ordering::Less
+            } else if lo > cp {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_err()
+}
+
+/// Cœur commun de `repr(str)` et `ascii(str)` : choix des guillemets (apostrophes, sauf si
+/// le texte en contient sans contenir de guillemets doubles), échappements `\\`, `\t`, `\n`,
+/// `\r`, puis `\xNN`, `\uNNNN` ou `\UNNNNNNNN` pour ce que `keep` ne laisse pas tel quel.
+fn py_quote(s: &str, keep: impl Fn(char) -> bool) -> String {
     let quote = if s.contains('\'') && !s.contains('"') {
         '"'
     } else {
@@ -184,8 +203,7 @@ pub fn py_ascii(s: &str) -> String {
                 out.push('\\');
                 out.push(c);
             }
-            _ if cp < 0x20 || cp == 0x7f => out.push_str(&format!("\\x{cp:02x}")),
-            _ if cp < 0x80 => out.push(c),
+            _ if keep(c) => out.push(c),
             _ if cp <= 0xff => out.push_str(&format!("\\x{cp:02x}")),
             _ if cp <= 0xffff => out.push_str(&format!("\\u{cp:04x}")),
             _ => out.push_str(&format!("\\U{cp:08x}")),
@@ -193,6 +211,16 @@ pub fn py_ascii(s: &str) -> String {
     }
     out.push(quote);
     out
+}
+
+/// `ascii(s)` de Python : représentation entre apostrophes, non-ASCII échappé.
+pub fn py_ascii(s: &str) -> String {
+    py_quote(s, |c| (' '..='~').contains(&c))
+}
+
+/// `repr(s)` de Python pour une `str` (le `%r` des messages de `telmi2flam.py`).
+pub fn py_repr(s: &str) -> String {
+    py_quote(s, is_py_printable)
 }
 
 /// Liste ASCII des caractères remplacés (`_describe_replaced`), sans le nom Unicode
