@@ -23,7 +23,7 @@ et arrivent avec les issues du jalon M3.
 
 L'installation contient tout : `flam-launcher.exe`, `flam-player.exe` et `SDL2.dll` (le
 player), le convertisseur `telmi2flam/` avec son Python embarqué (aucun Python à installer) et
-le runtime Lunii, ainsi que `LICENSES.md` et `licenses/`. Désinstaller : « Applications
+le runtime Lua du projet, ainsi que `LICENSES.md` et `licenses/`. Désinstaller : « Applications
 installées » de Windows, ou `uninstall.exe` du dossier d'installation. Les données vivent hors
 de ce dossier et survivent à une mise à jour ou une désinstallation : sources, paramètres et
 sauvegardes de progression sous `%APPDATA%`, cache (catalogues, téléchargements et histoires
@@ -80,19 +80,19 @@ défini dans le `Cargo.toml` racine.
 
 Depuis `apps/flam-launcher/` :
 
-| Commande                             | Effet                                                                        |
-| ------------------------------------ | ---------------------------------------------------------------------------- |
-| `npm install`                        | Installe les dépendances front et la CLI Tauri                               |
-| `npm run tauri dev`                  | Lance l'application en développement                                         |
-| `npm run dev` / `npm run build`      | Front seul (Vite) / build du front                                           |
-| `npm run lint` / `npm run typecheck` | ESLint / TypeScript strict                                                   |
-| `npm test`                           | Vitest + Testing Library (API Tauri simulée)                                 |
-| `npm run tauri build`                | Exécutable seul avec installeurs MSI et NSIS (sans player ni convertisseur)  |
-| `npm run build:notices`              | Génère `build/THIRD-PARTY-NOTICES.txt` (licences Rust et npm, installé)      |
-| `npm run build:converter`            | Construit le convertisseur embarqué (réseau)                                 |
-| `npm run build:player`               | Compile `flam-player.exe` (Release) et rassemble `SDL2.dll` et les licences  |
-| `npm run build:installer`            | Enchaîne notices, converter, player puis produit l'installateur NSIS complet |
-| `npm run test:e2e`                   | Test de bout en bout (voir « Test de bout en bout »)                         |
+| Commande                             | Effet                                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------------------ |
+| `npm install`                        | Installe les dépendances front et la CLI Tauri                                       |
+| `npm run tauri dev`                  | Lance l'application en développement                                                 |
+| `npm run dev` / `npm run build`      | Front seul (Vite) / build du front                                                   |
+| `npm run lint` / `npm run typecheck` | ESLint / TypeScript strict                                                           |
+| `npm test`                           | Vitest + Testing Library (API Tauri simulée)                                         |
+| `npm run tauri build`                | Exécutable seul avec installeurs MSI et NSIS (sans player ni convertisseur)          |
+| `npm run build:notices`              | Génère `build/THIRD-PARTY-NOTICES.txt` (licences Rust et npm, installé)              |
+| `npm run build:converter`            | Construit le convertisseur embarqué (réseau)                                         |
+| `npm run build:player`               | Compile `flam-player.exe` (Release) et rassemble `SDL2.dll` et les licences          |
+| `npm run build:installer`            | Enchaîne notices, converter, ffmpeg, player puis produit l'installateur NSIS complet |
+| `npm run test:e2e`                   | Test de bout en bout (voir « Test de bout en bout »)                                 |
 
 Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
 
@@ -119,6 +119,12 @@ l'installeur.
    npm run tauri build -- --config src-tauri/tauri.bundle.conf.json                 # installateur NSIS
    npm run tauri build -- --no-bundle --config src-tauri/tauri.bundle.conf.json     # exe seul
    ```
+
+   **ffmpeg** (conversion audio des podcasts, #209) : `npm run build:ffmpeg` prépare
+   `build/ffmpeg/` (ffmpeg et ffprobe LGPL minimaux, statiques, 6 Mo, avec licences et
+   `BUILD.txt`). Le binaire est construit depuis des sources épinglées (`tools/ffmpeg/`) : sans
+   argument le script le construit avec **Docker** ; sinon `-ArtifactDir <dossier>` reprend la
+   sortie de `tools/ffmpeg/build.sh` (la CI la produit dans le job `ffmpeg`).
 
    Le convertisseur est toujours lancé avec `-B` (aucun `__pycache__` écrit dans le dossier
    d'installation : le désinstallateur ne les connaîtrait pas).
@@ -150,11 +156,10 @@ développement, installation partielle). L'écran Paramètres l'indique.
 **Licences redistribuées** : `telmi2flam/LICENSES.md` (produit par `build-converter.ps1`) liste
 Python (PSF-2.0, libffi, libtommath…), `python.cat`, `vcruntime140*.dll` (redistribuables
 Microsoft), Pillow (renvoi vers `licenses/LICENSE` de la roue, qui regroupe les bibliothèques
-intégrées), le runtime Lunii et les scripts du dépôt. `LICENSES.md` à la racine de
+intégrées), le runtime et les scripts du dépôt (GPL v3). `LICENSES.md` à la racine de
 l'installation couvre le reste (flam-launcher et flam-player GPL v3, SDL2 zlib, Lua MIT, LVGL MIT,
 minimp3 CC0, polices Nunito et Montserrat OFL) ; les textes sont copiés des sous-modules dans
-`licenses/` par `build-player.ps1`. Le mainteneur confirme avoir les droits de redistribution du
-runtime Lunii.
+`licenses/` par `build-player.ps1`.
 
 ## Installateur Windows
 
@@ -193,7 +198,7 @@ Limites connues de la mise à jour (#186) :
   toute version publiée est compatible. Le nettoyage des fichiers retirés ne dépend que du hook de N.
 
 ```
-npm run build:installer      # = build:notices + build:converter + build:player + tauri build --config …
+npm run build:installer      # = build:notices + build:converter + build:ffmpeg + build:player + tauri build --config …
 ```
 
 **Runtime Visual C++** : `flam-player.exe` importe `VCRUNTIME140.dll`, absente d'un Windows
@@ -302,11 +307,14 @@ apps/flam-launcher/
       library.rs           Bibliothèque `<cache>/library/` et `library.json`, commandes `library_*`
       library_thumb.rs     Vignettes des histoires installées (`library/thumbs/`), `library_thumbnail`
       compat.rs            Statut de compatibilité (`status.json` de la campagne + conversions locales), commande `compat_statuses`
+      device/              Flam branchée en USB : `detect.rs` (détection, `.mdf`), `crypto.rs` (AES-128-CBC,
+                           clés d'appareil, fichier `key`),
+                           `prepare.rs` (dossier `str/<uuid>/` préparé hors appareil depuis un `.plain.pk`)
 ```
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`, `device` (détection de la Flam branchée en USB, #225 ; `device::detect`).
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status`).
 
 ### Commandes Tauri
 
@@ -316,37 +324,49 @@ enregistrées dans `generate_handler!` de `lib.rs`) : pas de fichier `commands.r
 Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enregistrées dans
 `generate_handler!` (`lib.rs`). Chacune a un wrapper typé dans `src/api/`.
 
-| Commande               | Arguments                  | Retour                                  | Module          |
-| ---------------------- | -------------------------- | --------------------------------------- | --------------- |
-| `app_info`             |                            | `{ name, version }`                     | `app`           |
-| `settings_get`         |                            | `SettingsView`                          | `settings`      |
-| `settings_set`         | `settings: Settings`       | `SettingsView`                          | `settings`      |
-| `sources_list`         |                            | `SourcesView`                           | `sources`       |
-| `sources_add`          | `input: SourceInput`       | `Source`                                | `sources`       |
-| `sources_update`       | `id`, `input: SourceInput` | `Source`                                | `sources`       |
-| `sources_remove`       | `id`                       | rien                                    | `sources`       |
-| `sources_reorder`      | `ids: string[]`            | `Source[]` (liste complète)             | `sources`       |
-| `config_ack_recovery`  | `file?: string`            | rien                                    | `storage`       |
-| `cache_usage`          |                            | `{ path, bytes }`                       | `cache`         |
-| `cache_clear`          |                            | `{ freed_bytes }`                       | `cache`         |
-| `catalog_refresh`      | `source_id`                | `CatalogView`                           | `catalog`       |
-| `catalog_entries`      | `source_id`                | `CatalogView`                           | `catalog`       |
-| `catalog_thumbnail`    | `source_id`, `thumb_url`   | URL `data:` (string)                    | `catalog`       |
-| `folder_scan`          | `source_id`, `recursive?`  | `FolderScan`                            | `folder`        |
-| `folder_thumbnail`     | `source_id`, `entry_id`    | URL `data:` (chaîne)                    | `folder`        |
-| `folder_watch`         | `source_id`, `enabled`     | rien                                    | `watch`         |
-| `install_start`        | `source_id`, `entry_id`    | `InstallTask`                           | `install`       |
-| `install_cancel`       | `task_id`                  | rien                                    | `install`       |
-| `install_list`         |                            | `InstallTask[]`                         | `install`       |
-| `library_list`         |                            | `LibraryEntry[]`                        | `library`       |
-| `library_remove`       | `uuid`, `purge_saves?`     | rien                                    | `library`       |
-| `library_thumbnail`    | `uuid`                     | URL `data:` (`not_found` sans vignette) | `library_thumb` |
-| `player_launch`        | `uuid`                     | `PlayerSession`                         | `player`        |
-| `player_launch_folder` | `source_id`, `entry_id`    | `PlayerSession`                         | `player`        |
-| `player_status`        |                            | `PlayerSession \| null`                 | `player`        |
-| `player_stop`          |                            | `bool` (faux : aucun player)            | `player`        |
-| `player_embed_layout`  | `rect \| null` (px CSS)    | rien                                    | `player`        |
-| `player_embed_focus`   |                            | rien                                    | `player`        |
+| Commande               | Arguments                  | Retour                                         | Module           |
+| ---------------------- | -------------------------- | ---------------------------------------------- | ---------------- |
+| `app_info`             |                            | `{ name, version }`                            | `app`            |
+| `settings_get`         |                            | `SettingsView`                                 | `settings`       |
+| `settings_set`         | `settings: Settings`       | `SettingsView`                                 | `settings`       |
+| `sources_list`         |                            | `SourcesView`                                  | `sources`        |
+| `sources_add`          | `input: SourceInput`       | `Source`                                       | `sources`        |
+| `sources_update`       | `id`, `input: SourceInput` | `Source`                                       | `sources`        |
+| `sources_remove`       | `id`                       | rien                                           | `sources`        |
+| `sources_reorder`      | `ids: string[]`            | `Source[]` (liste complète)                    | `sources`        |
+| `config_ack_recovery`  | `file?: string`            | rien                                           | `storage`        |
+| `cache_usage`          |                            | `{ path, bytes }`                              | `cache`          |
+| `cache_clear`          |                            | `{ freed_bytes }`                              | `cache`          |
+| `catalog_refresh`      | `source_id`                | `CatalogView`                                  | `catalog`        |
+| `catalog_entries`      | `source_id`                | `CatalogView`                                  | `catalog`        |
+| `catalog_thumbnail`    | `source_id`, `thumb_url`   | URL `data:` (string)                           | `catalog`        |
+| `folder_scan`          | `source_id`, `recursive?`  | `FolderScan`                                   | `folder`         |
+| `folder_thumbnail`     | `source_id`, `entry_id`    | URL `data:` (chaîne)                           | `folder`         |
+| `folder_watch`         | `source_id`, `enabled`     | rien                                           | `watch`          |
+| `install_start`        | `source_id`, `entry_id`    | `InstallTask`                                  | `install`        |
+| `install_cancel`       | `task_id`                  | rien                                           | `install`        |
+| `install_list`         |                            | `InstallTask[]`                                | `install`        |
+| `library_list`         |                            | `LibraryEntry[]`                               | `library`        |
+| `library_remove`       | `uuid`, `purge_saves?`     | rien                                           | `library`        |
+| `library_thumbnail`    | `uuid`                     | URL `data:` (`not_found` sans vignette)        | `library_thumb`  |
+| `player_launch`        | `uuid`                     | `PlayerSession`                                | `player`         |
+| `player_launch_folder` | `source_id`, `entry_id`    | `PlayerSession`                                | `player`         |
+| `player_status`        |                            | `PlayerSession \| null`                        | `player`         |
+| `player_stop`          |                            | `bool` (faux : aucun player)                   | `player`         |
+| `player_embed_layout`  | `rect \| null` (px CSS)    | rien                                           | `player`         |
+| `player_embed_focus`   |                            | rien                                           | `player`         |
+| `device_status`        |                            | `DeviceStatus`                                 | `device::status` |
+| `device_list_stories`  |                            | `DeviceStories \| null` (`null` : aucune Flam) | `device::status` |
+
+`device_status` et `device_list_stories` sont **en lecture seule** sur la Flam : ni reprise
+d'index (`recover`), ni création de dossier. La seule écriture est la copie personnelle de
+`.mdf` (`backup_mdf`) dans le dossier de données du launcher, faite par `device_status`
+(idempotente). Le titre d'une histoire est chiffré dans `str/<uuid>/info` : il n'est connu que
+si l'histoire figure dans la bibliothèque du launcher, sinon l'écran affiche l'UUID court.
+Le numéro de série et le firmware ne sont pas affichés : `parse_mdf` ne lit encore aucun champ
+(format de `.mdf` non spécifié, #224). L'écran « Ma Flam » (`#/device`, `src/features/device/`)
+scrute `device_status` toutes les 2 s tant qu'il est ouvert et laisse des emplacements
+(`toolbar`, `storyActions`) pour l'envoi (#230) et le retrait (#231).
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).

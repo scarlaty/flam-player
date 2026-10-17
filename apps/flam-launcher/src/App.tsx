@@ -5,7 +5,7 @@ import { CompatProvider } from "./features/compat/CompatProvider";
 import { LibraryProvider } from "./features/library/LibraryProvider";
 import { RecoveryProvider } from "./features/recovery/RecoveryProvider";
 import { StoriesProvider } from "./features/stories/StoriesProvider";
-import { DEMO_HASH, useRoute } from "./router";
+import { DEMO_HASH, useRoute, type Route } from "./router";
 
 export { DEMO_HASH };
 
@@ -28,7 +28,7 @@ export function App() {
   return <AppRoutes route={route} />;
 }
 
-function AppRoutes({ route }: { route: "home" | "sources" | "settings" | "library" }) {
+function AppRoutes({ route }: { route: Exclude<Route, "demo"> }) {
   return (
     <ToastProvider>
       <RecoveryProvider>

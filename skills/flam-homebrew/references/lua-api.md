@@ -238,7 +238,7 @@ effets (stop, pause et load y sont instantanés).
 | `audio.load` + `play` après la **fin naturelle** de la piste précédente | sans à-coup |
 | `audio.stop()` ou `audio.pause()` d'une piste **en cours** | l'image **se fige** un instant |
 | `audio.load` pendant qu'une piste joue (sans stop) | **gel total**, redémarrage de la Flam |
-| `audio.load(1, ...)` + `play` | pas un 2ᵉ canal : la musique s'arrête, le nouveau son joue (les scripts Lunii passent toujours `0`) |
+| `audio.load(1, ...)` + `play` | pas un 2ᵉ canal : la musique s'arrête, le nouveau son joue (les scripts du runtime passent toujours `0`) |
 | `audio.seek` pendant la lecture | gel (piège 9) : `pause()` → `seek()` → `play()` |
 
 Conséquences :
