@@ -4,6 +4,7 @@ mod app;
 pub mod cache;
 pub mod catalog;
 pub mod compat;
+pub mod embed;
 mod error;
 pub mod folder;
 pub mod install;
@@ -96,9 +97,13 @@ pub fn run() {
             app.manage(watch::WatchState::default());
             app.manage(catalog);
             app.manage(install.clone());
-            app.manage(player::PlayerService::new(Arc::new(
-                player::TauriPlayerEvents(app.handle().clone()),
+            let player = player::PlayerService::new(Arc::new(player::TauriPlayerEvents(
+                app.handle().clone(),
             )));
+            // Sous Windows, le player est incrusté dans la fenêtre du launcher (#201).
+            #[cfg(windows)]
+            let player = player.with_embed(Arc::new(embed::TauriEmbed::new(app.handle().clone())));
+            app.manage(player);
             // Purge des vignettes périmées de `<cache>/thumbs/` (#37), hors du démarrage.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || purge_stale_thumbs(&handle));
@@ -144,6 +149,8 @@ pub fn run() {
             player::player_launch,
             player::player_launch_folder,
             player::player_status,
+            player::player_stop,
+            player::player_embed_layout,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application Tauri");
