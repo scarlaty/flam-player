@@ -167,7 +167,7 @@ tools/telmi2flam/
   validate.py              — Verification d'un .plain.pk ou d'un dossier .plain
   explore.py               — Exploration automatique d'une histoire dans flam-player sans fenetre
   engine/                  — Moteur d'histoire Lua embarque (story.lua, main.lua)
-  runtime/                 — Modules runtime Lunii embarques (carrousel, audio-player...)
+  runtime/                 — Modules runtime Lua du projet embarques (carrousel, audio-player...)
   tests/                   — Tests unittest du convertisseur et de l'explorateur
 games/casse-briques/        — Jeu casse-briques (contenu Lua FLAM)
 games/attrape-etoiles/      — Jeu Attrape-etoiles (fait avec le skill flam-homebrew)
