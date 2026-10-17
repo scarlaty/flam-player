@@ -181,7 +181,8 @@ Limites connues de la mise à jour (#186) :
   En mode interactif, l'installateur demande de fermer l'application.
 - **Échec de N après le nettoyage** : le désinstallateur de N-1 passe avant la copie de N. L'archive
   de N est vérifiée par le CRC de NSIS au démarrage de l'installateur (avant toute action, donc avant
-  le hook ; l'option `/NCRC` n'est pas utilisée), ce qui écarte un installateur tronqué ou corrompu. En
+  le hook ; l'option `/NCRC` n'est pas utilisée), ce qui écarte un installateur tronqué ou corrompu, y
+  compris en mode silencieux `/S` (code de sortie 2, rien n'est exécuté ; la CI le vérifie). En
   revanche, un échec en cours de copie (disque plein, fichier verrouillé) laisse une installation
   incomplète : relancer l'installateur de N la répare, y compris sans entrée « Programmes et
   fonctionnalités ». Il n'y a pas de sauvegarde de N-1.
@@ -189,8 +190,8 @@ Limites connues de la mise à jour (#186) :
   drapeau `/UPDATE` du désinstallateur de N-1, présent dans les installateurs générés par Tauri 2
   (le launcher utilise Tauri 2.12). Un installateur N-1 d'une génération qui l'ignore (hors Tauri 2) perd
   raccourcis et démarrage automatique : les recréer en relançant l'application ou l'installateur de N.
-  Le launcher est construit avec Tauri 2 depuis son premier installateur : aucune version minimale
-  n'est requise en pratique ; le nettoyage des fichiers retirés ne dépend que du hook de N.
+  **Version minimale de N-1 : 0.1.0**, le premier installateur du launcher (Tauri 2, `/UPDATE` géré) :
+  toute version publiée est compatible. Le nettoyage des fichiers retirés ne dépend que du hook de N.
 
 ```
 npm run build:installer      # = build:notices + build:converter + build:player + tauri build --config …

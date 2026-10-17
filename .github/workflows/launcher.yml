@@ -222,6 +222,18 @@ jobs:
           if ($v -ne $expected) { throw "version installée après mise à jour : $v ($expected attendue)" }
           $ev = Get-ExeVersion
           if ($ev -ne $expected -and $ev -ne "$expected.0") { throw "flam-launcher.exe après mise à jour : version $ev ($expected attendue)" }
+          # 3 bis. Installateur corrompu en mode silencieux (#186) : le CRC de NSIS est contrôlé au
+          # démarrage, avant le hook de nettoyage. L'installateur doit refuser (code non nul) sans toucher
+          # à l'installation de N en place. Un octet est inversé au milieu d'une copie de l'installateur.
+          $bad = Join-Path $env:RUNNER_TEMP 'setup-corrompu.exe'
+          $bytes = [IO.File]::ReadAllBytes($setup.FullName)
+          $bytes[[int]($bytes.Length / 2)] = $bytes[[int]($bytes.Length / 2)] -bxor 0xFF
+          [IO.File]::WriteAllBytes($bad, $bytes)
+          $c = Start-Process -FilePath $bad -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
+          if ($c.ExitCode -eq 0) { throw 'installateur corrompu accepté en mode silencieux : le contrôle CRC ne protège pas la mise à jour' }
+          $diff = Compare-Object $ref (Get-InstallTree $dest)
+          if ($diff) { throw "installateur corrompu : l'installation de N a été modifiée : $($diff | Out-String)" }
+          Remove-Item -LiteralPath $bad
           foreach ($k in $keep.Keys) {
             if (-not (Test-Path -LiteralPath $k)) { throw "donnée utilisateur perdue : $k" }
             if ([IO.File]::ReadAllText($k) -ne $keep[$k]) { throw "donnée utilisateur modifiée : $k" }
