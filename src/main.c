@@ -30,6 +30,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <stdint.h>
 
 #ifdef _WIN32
 #include <windows.h>   /* FindFirstFile / FindNextFile */
@@ -1161,8 +1163,13 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[i], "--parent-hwnd") == 0 && i + 1 < argc) {
             const char *v = argv[++i];
             char *end = NULL;
-            unsigned long long h = strtoull(v, &end, 0);
-            if (!end || *end != '\0' || h == 0) {
+            /* decimal, ou hexadecimal avec 0x (jamais d'octal implicite) */
+            int hex = (v[0] == '0' && (v[1] == 'x' || v[1] == 'X'));
+            errno = 0;
+            unsigned long long h = (*v >= '0' && *v <= '9')
+                ? strtoull(v, &end, hex ? 16 : 10) : 0;
+            if (!end || *end != '\0' || h == 0 || errno == ERANGE ||
+                h > (unsigned long long)UINTPTR_MAX) {
                 fprintf(stderr, "[EMBED] repli : --parent-hwnd invalide : %s\n", v);
             } else {
                 sdl_driver_set_parent((uintptr_t)h);

@@ -233,6 +233,17 @@ def case_fallback_eof(exe, script):
         p.kill()
 
 
+def case_no_control(exe, script):
+    """Sans --stdin-control, un stdin ferme n'arrete pas le player."""
+    p = Player(exe, script, {"SDL_VIDEODRIVER": "dummy"})
+    try:
+        p.proc.stdin.close()
+        time.sleep(2.0)
+        check(not p.exited(), "sans --stdin-control, stdin ferme : le player tourne", p)
+    finally:
+        p.kill()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", required=True, help="dossier contenant flam-player")
@@ -249,6 +260,7 @@ def main():
     # dossiers du mode script direct dans le dossier temporaire (sauvegardes)
     script = ["--save-dir", tmp, "--img-dir", tmp, "--sounds-dir", tmp, path]
     case_fallback_eof(exe, script)
+    case_no_control(exe, script)
     if not IS_WIN:
         print("[SKIP] incrustation : Windows seulement")
         return 0

@@ -361,7 +361,10 @@ int sdl_driver_init(void)
        sinon Windows refuse ou dimensionne mal un enfant d'un autre processus.
        Le mode fenetre separee reste inchange. */
 #ifdef _WIN32
-    if (g_parent_req)
+    /* Pas de hint si le parent est deja invalide : le repli le plus courant
+       garde la fenetre separee habituelle (autres echecs : fenetre separee
+       en DPI par moniteur, donc plus petite sur ecran HiDPI) */
+    if (g_parent_req && IsWindow((HWND)g_parent_req))
         SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
 #else
     if (g_parent_req) {
