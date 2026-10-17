@@ -14,3 +14,8 @@ crates/** text=auto eol=lf
 tools/telmi2flam/engine/** eol=lf
 tools/telmi2flam/runtime/**/*.lua text eol=lf
 tools/telmi2flam/runtime/**/*.lif binary
+
+# Vecteurs de parité des codecs (crates/telmi2flam/tests/vectors) : octets exacts, jamais convertis.
+crates/telmi2flam/tests/vectors/**/*.rgba binary
+crates/telmi2flam/tests/vectors/**/*.lif binary
+crates/telmi2flam/tests/vectors/**/*.mp3 binary

@@ -1,34 +1,64 @@
-//! Décodeur LIF (Lunii Image File Format), porté de `src/formats/lif_decoder.c`.
+//! Codec LIF (Lunii Image File Format), port de `tools/telmi2flam/lif.py`.
 //!
-//! Format : magic `liff`/`LIFF`, largeur et hauteur (u32 big-endian), un octet de canaux
-//! (`0xA2`), une charge utile d'opcodes (RGB565 + alpha, delta, cache de 64 couleurs, RLE),
-//! puis 8 octets de fin. Les fichiers viennent d'archives non fiables : toutes les lectures
-//! sont bornées et les dimensions limitées comme dans le décodeur de référence.
+//! Format : magic `liff`, largeur et hauteur (u32 big-endian), un octet de canaux (`0xA2`),
+//! une charge utile d'opcodes (RGB565 + alpha, deltas, cache de 64 couleurs, RLE), puis 8
+//! octets de fin (`00 … 00 01`). Le décodeur de référence est `src/formats/lif_decoder.c`.
 //!
-//! Le résultat est un tampon RGBA8888 ligne par ligne (le décodeur C produit de l'ARGB pour
-//! LVGL ; seul l'ordre des octets diffère).
+//! - [`encode`] et [`quantize_rgba`] reproduisent `lif.encode` et `lif.quantize_rgba` à l'octet
+//!   près (vecteurs produits par Python dans `tests/vectors/`).
+//! - [`decode`] suit le décodeur C (et non `lif.decode`, simple miroir de test côté Python) :
+//!   lectures bornées, dimensions limitées à [`MAX_DIM`], transposition des images hautes
+//!   stockées en colonnes. Il lit des fichiers d'archives non fiables (vignettes du launcher).
 
-use crate::thumbnail::RgbaImage;
+use std::fmt;
 
+const MAGIC: &[u8; 4] = b"liff";
+const CHANNEL_RGBA: u8 = 0xA2;
+const END_MARKER: [u8; 8] = [0, 0, 0, 0, 0, 0, 0, 1];
 const HEADER_SIZE: usize = 13;
-const END_SIZE: usize = 8;
-/// Dimension maximale (comme `LIF_MAX_DIM` du décodeur C).
-const MAX_DIM: u32 = 2047;
+const END_SIZE: usize = END_MARKER.len();
+/// Dimension maximale acceptée par le décodeur (comme `LIF_MAX_DIM` du décodeur C).
+pub const MAX_DIM: u32 = 2047;
 
-/// Raison pour laquelle un fichier LIF est refusé.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum LifError {
-    #[error("fichier LIF trop court")]
-    TooShort,
-    #[error("signature LIF invalide")]
-    BadMagic,
-    #[error("dimensions LIF non prises en charge")]
-    BadDimensions,
-    #[error("fichier LIF sans données d'image")]
-    NoPayload,
+/// Image RGBA8888 par lignes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RgbaImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Default)]
+/// Raison pour laquelle un fichier LIF est refusé, ou un tampon RGBA rejeté.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifError {
+    /// Fichier plus court que l'en-tête et le marqueur de fin.
+    TooShort,
+    /// Signature autre que `liff` / `LIFF`.
+    BadMagic,
+    /// Largeur ou hauteur nulle, ou au-delà de [`MAX_DIM`].
+    BadDimensions,
+    /// Aucun octet entre l'en-tête et le marqueur de fin.
+    NoPayload,
+    /// Tampon RGBA dont la taille ne correspond pas aux dimensions (`assert` de `lif.py`).
+    BadBufferSize,
+}
+
+impl fmt::Display for LifError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::TooShort => "fichier LIF trop court",
+            Self::BadMagic => "signature LIF invalide",
+            Self::BadDimensions => "dimensions LIF non prises en charge",
+            Self::NoPayload => "fichier LIF sans données d'image",
+            Self::BadBufferSize => "taille buffer RGBA incoherente",
+        })
+    }
+}
+
+impl std::error::Error for LifError {}
+
+/// Couleur interne : RGB565 (r 0..=31, g 0..=63, b 0..=31) et alpha 8 bits.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Color {
     r: i32,
     g: i32,
@@ -36,8 +66,8 @@ struct Color {
     a: u8,
 }
 
-fn hash(c: &Color) -> usize {
-    ((c.r * 7 + c.g * 5 + c.b * 3) & 0x3F) as usize
+fn hash(r: i32, g: i32, b: i32) -> usize {
+    ((r * 7 + g * 5 + b * 3) & 0x3F) as usize
 }
 
 fn mod32(v: i32) -> i32 {
@@ -56,6 +86,141 @@ fn expand6(v: i32) -> u8 {
     ((v * 256) / 64) as u8
 }
 
+/// 8 bits vers RGB565, aller-retour exact avec `expand5` / `expand6` (`lif._quantize`).
+fn quantize(px: &[u8; 4]) -> Color {
+    Color {
+        r: ((i32::from(px[0]) + 4) / 8).min(31),
+        g: ((i32::from(px[1]) + 2) / 4).min(63),
+        b: ((i32::from(px[2]) + 4) / 8).min(31),
+        a: px[3],
+    }
+}
+
+/// Octets `(lo, hi)` d'une couleur RGB565 (`lif._pack565`).
+fn pack565(c: Color) -> [u8; 2] {
+    let lo = (c.b & 0x1F) | ((c.g & 0x07) << 5);
+    let hi = ((c.g >> 3) & 0x07) | ((c.r & 0x1F) << 3);
+    [lo as u8, hi as u8]
+}
+
+/// Nombre de pixels de `w × h`, si le tampon RGBA de `len` octets en contient au moins autant
+/// (`exact` : exactement autant).
+fn pixel_count(len: usize, w: u32, h: u32, exact: bool) -> Result<usize, LifError> {
+    let n = usize::try_from(u64::from(w) * u64::from(h)).map_err(|_| LifError::BadBufferSize)?;
+    let bytes = n.checked_mul(4).ok_or(LifError::BadBufferSize)?;
+    if bytes == len || (!exact && bytes < len) {
+        Ok(n)
+    } else {
+        Err(LifError::BadBufferSize)
+    }
+}
+
+/// Encode une image RGBA8888 par lignes (`rgba.len() == w * h * 4`) en fichier LIF.
+///
+/// Sortie identique à `lif.encode` de Python.
+pub fn encode(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, LifError> {
+    pixel_count(rgba.len(), w, h, true)?;
+    let px: Vec<Color> = rgba.as_chunks::<4>().0.iter().map(quantize).collect();
+    let n = px.len();
+
+    let mut out = Vec::with_capacity(HEADER_SIZE + END_SIZE + n);
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(&w.to_be_bytes());
+    out.extend_from_slice(&h.to_be_bytes());
+    out.push(CHANNEL_RGBA);
+
+    // État initial du décodeur.
+    let mut cur = Color {
+        a: 255,
+        ..Color::default()
+    };
+    let mut cache = [Color::default(); 64];
+    let mut i = 0;
+
+    // Premier pixel toujours en couleur + alpha explicite (0xFF) : ne suppose pas l'état initial
+    // du décodeur (certains initialisent l'alpha à 0).
+    if let Some(&first) = px.first() {
+        out.push(0xFF);
+        out.extend_from_slice(&pack565(first));
+        out.push(first.a);
+        cur = first;
+        cache[hash(cur.r, cur.g, cur.b)] = cur;
+        i = 1;
+    }
+
+    while i < n {
+        let t = px[i];
+
+        // RLE : pixels consécutifs identiques à la couleur courante. `run - 1` ne doit valoir ni
+        // 62 (0xFE) ni 63 (0xFF), lus comme opcodes couleur : 62 pixels au plus.
+        if t == cur {
+            let mut run = 1;
+            while i + run < n && px[i + run] == t && run < 62 {
+                run += 1;
+            }
+            out.push(0xC0 | (run - 1) as u8);
+            cache[hash(cur.r, cur.g, cur.b)] = cur;
+            i += run;
+            continue;
+        }
+
+        let idx = hash(t.r, t.g, t.b);
+        if cache[idx] == t {
+            out.push(idx as u8);
+        } else if t.a == cur.a {
+            let small = |c: i32, t: i32, m: fn(i32) -> i32| (-2..=1).find(|&d| m(c + d) == t);
+            if let (Some(dr), Some(dg), Some(db)) = (
+                small(cur.r, t.r, mod32),
+                small(cur.g, t.g, mod64),
+                small(cur.b, t.b, mod32),
+            ) {
+                // Petit delta (2 bits par canal, -2..=+1).
+                out.push(0x40 | (((db + 2) << 4) | ((dg + 2) << 2) | (dr + 2)) as u8);
+            } else {
+                // Delta vert étendu : `vg` existe toujours (64 valeurs couvrent les 64 résidus).
+                let vg = (-32..32)
+                    .find(|&v| mod64(cur.g + v) == t.g)
+                    .unwrap_or_default();
+                let lo = (t.r - cur.r - vg + 8).rem_euclid(32);
+                let hi = (t.b - cur.b - vg + 8).rem_euclid(32);
+                if lo <= 15 && hi <= 15 {
+                    out.push(0x80 | ((vg + 32) & 0x3F) as u8);
+                    out.push(((hi << 4) | lo) as u8);
+                } else {
+                    // Couleur pleine sans alpha.
+                    out.push(0xFE);
+                    out.extend_from_slice(&pack565(t));
+                }
+            }
+        } else {
+            // Couleur pleine + alpha.
+            out.push(0xFF);
+            out.extend_from_slice(&pack565(t));
+            out.push(t.a);
+        }
+
+        // Mise à jour de l'état et du cache, comme le décodeur à chaque pixel écrit.
+        cur = t;
+        cache[hash(cur.r, cur.g, cur.b)] = cur;
+        i += 1;
+    }
+
+    out.extend_from_slice(&END_MARKER);
+    Ok(out)
+}
+
+/// Tampon RGBA quantifié en RGB565 puis réétendu en 8 bits : l'image que le décodeur restitue
+/// (`lif.quantize_rgba`). Comme en Python, les octets au-delà de `w * h * 4` sont ignorés.
+pub fn quantize_rgba(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, LifError> {
+    let n = pixel_count(rgba.len(), w, h, false)?;
+    let mut out = Vec::with_capacity(n * 4);
+    for p in rgba.as_chunks::<4>().0.iter().take(n) {
+        let c = quantize(p);
+        out.extend_from_slice(&[expand5(c.r), expand6(c.g), expand5(c.b), c.a]);
+    }
+    Ok(out)
+}
+
 /// Somme des écarts RGB entre pixels voisins d'une ligne (détection ligne/colonne).
 fn score_coherence(rgba: &[u8], w: usize, h: usize) -> u64 {
     let mut score = 0u64;
@@ -64,7 +229,7 @@ fn score_coherence(rgba: &[u8], w: usize, h: usize) -> u64 {
         for x in 1..w {
             let (i, p) = (x * 4, (x - 1) * 4);
             for c in 0..3 {
-                score += (i32::from(row[i + c]) - i32::from(row[p + c])).unsigned_abs() as u64;
+                score += u64::from((i32::from(row[i + c]) - i32::from(row[p + c])).unsigned_abs());
             }
         }
     }
@@ -84,7 +249,10 @@ fn transpose(src: &[u8], w: usize, h: usize) -> Vec<u8> {
     dst
 }
 
-/// Décode un fichier LIF complet en image RGBA8888.
+/// Décode un fichier LIF complet en image RGBA8888 (sémantique du décodeur C).
+///
+/// Une charge utile tronquée laisse les pixels restants transparents (zéro) ; un opcode coupé
+/// arrête le décodage. Aucune lecture hors du tampon, allocation bornée par [`MAX_DIM`].
 pub fn decode(data: &[u8]) -> Result<RgbaImage, LifError> {
     if data.len() < HEADER_SIZE + END_SIZE {
         return Err(LifError::TooShort);
@@ -163,7 +331,7 @@ pub fn decode(data: &[u8]) -> Result<RgbaImage, LifError> {
             break;
         }
 
-        cache[hash(&cur)] = cur;
+        cache[hash(cur.r, cur.g, cur.b)] = cur;
         let off = px * 4;
         rgba[off] = expand5(cur.r);
         rgba[off + 1] = expand6(cur.g);
@@ -320,23 +488,24 @@ mod tests {
         );
     }
 
-    /// Fichier produit par `tools/telmi2flam/lif.py` (encode) pour une image 8x4 ;
-    /// l'image attendue est celle du décodeur Python de référence (`lif.decode`).
     #[test]
-    fn fichier_produit_par_lif_py() {
-        let data = hex(PYTHON_LIF);
-        let img = decode(&data).unwrap();
-        assert_eq!((img.width, img.height), (8, 4));
-        assert_eq!(img.rgba, hex(PYTHON_RGBA));
+    fn encode_refuse_un_tampon_de_mauvaise_taille() {
+        assert_eq!(encode(&[0; 15], 2, 2), Err(LifError::BadBufferSize));
+        assert_eq!(encode(&[0; 17], 2, 2), Err(LifError::BadBufferSize));
+        assert_eq!(
+            encode(&[0; 4], u32::MAX, u32::MAX),
+            Err(LifError::BadBufferSize)
+        );
+        assert_eq!(quantize_rgba(&[0; 15], 2, 2), Err(LifError::BadBufferSize));
+        // Comme Python, quantize_rgba ignore les octets en trop.
+        assert_eq!(quantize_rgba(&[0; 17], 2, 2).unwrap().len(), 16);
     }
 
-    fn hex(s: &str) -> Vec<u8> {
-        (0..s.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-            .collect()
+    #[test]
+    fn image_vide_donne_en_tete_et_fin_seulement() {
+        let out = encode(&[], 0, 0).unwrap();
+        assert_eq!(out.len(), HEADER_SIZE + END_SIZE);
+        assert_eq!(&out[..4], b"liff");
+        assert_eq!(&out[HEADER_SIZE..], &END_MARKER);
     }
-
-    const PYTHON_LIF: &str = "6c6966660000000800000004a2ff26cbffc1fe1858a06c9248c13ec19468a427ff440e80c13ec1fe5873fe5694b067c13ec1fed87cfe769eff440e80c10000000000000001";
-    const PYTHON_RGBA: &str = "c86430ffc86430ffc86430ff5800c0ff7800b0ff08c820ff08c820ff08c820ffc86430ffc86430ffc86430ff6834c0ff8044b0ff08c8208008c8208008c82080c86430ffc86430ffc86430ff7068c0ff9088b0ff08c820ff08c820ff08c820ffc86430ffc86430ffc86430ff7898c0ff98ccb0ff08c8208008c8208008c82080";
 }
