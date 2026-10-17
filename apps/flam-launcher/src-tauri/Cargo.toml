@@ -32,6 +32,8 @@ sha2 = "0.10"
 notify = "=8.2.0"
 tauri-plugin-dialog = "=2.8.3"
 tauri-plugin-single-instance = "=2.4.5"
+# Décodeur LIF des vignettes (port Rust de telmi2flam).
+telmi2flam = { path = "../../../crates/telmi2flam" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
