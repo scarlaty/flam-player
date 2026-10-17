@@ -26,23 +26,114 @@ pub enum Lua {
 }
 
 impl Lua {
-    /// Valeur Lua d'une valeur JSON (clés d'objet : chaînes).
+    /// Valeur Lua d'une valeur JSON (clés d'objet : chaînes). Parcours sans récursion, les
+    /// conteneurs en cours sur le tas : la pile d'appels ne dépend pas de l'imbrication (#189).
     pub fn from_json(v: &Value) -> Lua {
-        match v {
-            Value::Null => Lua::Nil,
-            Value::Bool(b) => Lua::Bool(*b),
-            Value::Int(i) => Lua::Int(i128::from(*i)),
-            Value::UInt(u) => Lua::Int(i128::from(*u)),
-            Value::Float(f) => Lua::Float(*f),
-            Value::Str(s) => Lua::Str(s.clone()),
-            Value::List(items) => Lua::List(items.iter().map(Lua::from_json).collect()),
-            Value::Object(map) => Lua::Table(
-                map.iter()
-                    .map(|(k, v)| (Lua::Str(k.clone()), Lua::from_json(v)))
-                    .collect(),
-            ),
+        let mut stack: Vec<FromJson<'_>> = Vec::new();
+        let mut cur = v;
+        'descend: loop {
+            let mut done = match cur {
+                Value::List(items) => {
+                    stack.push(FromJson::List(
+                        items.iter(),
+                        Vec::with_capacity(items.len()),
+                    ));
+                    None
+                }
+                Value::Object(map) => {
+                    let pairs = Vec::with_capacity(map.len());
+                    stack.push(FromJson::Table(map.iter(), pairs, String::new()));
+                    None
+                }
+                Value::Null => Some(Lua::Nil),
+                Value::Bool(b) => Some(Lua::Bool(*b)),
+                Value::Int(i) => Some(Lua::Int(i128::from(*i))),
+                Value::UInt(u) => Some(Lua::Int(i128::from(*u))),
+                Value::Float(f) => Some(Lua::Float(*f)),
+                Value::Str(s) => Some(Lua::Str(s.clone())),
+            };
+            while let Some(top) = stack.last_mut() {
+                if let Some(lua) = done.take() {
+                    match top {
+                        FromJson::List(_, items) => items.push(lua),
+                        FromJson::Table(_, pairs, key) => {
+                            pairs.push((Lua::Str(std::mem::take(key)), lua));
+                        }
+                    }
+                }
+                let next = match top {
+                    FromJson::List(it, _) => it.next(),
+                    FromJson::Table(it, _, key) => it.next().map(|(k, v)| {
+                        k.clone_into(key);
+                        v
+                    }),
+                };
+                if let Some(child) = next {
+                    cur = child;
+                    continue 'descend;
+                }
+                done = stack.pop().map(|frame| match frame {
+                    FromJson::List(_, items) => Lua::List(items),
+                    FromJson::Table(_, pairs, _) => Lua::Table(pairs),
+                });
+            }
+            // Pile vide : `done` porte la racine (un conteneur fermé ou un scalaire).
+            return done.unwrap_or(Lua::Nil);
         }
     }
+}
+
+/// Destruction sans récursion (#189), comme pour [`Value`] : les enfants (clés comprises)
+/// passent sur une pile du tas avant destruction.
+impl Drop for Lua {
+    fn drop(&mut self) {
+        let nested = match self {
+            Lua::List(items) => items.iter().any(Lua::is_container),
+            Lua::Table(pairs) => pairs
+                .iter()
+                .any(|(k, v)| k.is_container() || v.is_container()),
+            _ => false,
+        };
+        if !nested {
+            return; // la colle générée ne descend que d'un niveau
+        }
+        let mut stack = Vec::new();
+        self.move_children(&mut stack);
+        while let Some(mut v) = stack.pop() {
+            v.move_children(&mut stack);
+        }
+    }
+}
+
+impl Lua {
+    fn is_container(&self) -> bool {
+        matches!(self, Lua::List(_) | Lua::Table(_))
+    }
+
+    /// Déplace les enfants d'un conteneur dans `out`, le laissant vide.
+    fn move_children(&mut self, out: &mut Vec<Lua>) {
+        match self {
+            Lua::List(items) => out.append(items),
+            Lua::Table(pairs) => {
+                for (k, v) in pairs.drain(..) {
+                    out.push(k);
+                    out.push(v);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Conteneur JSON en cours de conversion : enfants restants, valeurs Lua déjà converties (et
+/// clé de l'enfant en cours pour un objet).
+enum FromJson<'a> {
+    List(std::slice::Iter<'a, Value>, Vec<Lua>),
+    Table(
+        indexmap::map::Iter<'a, String, Value>,
+        Vec<(Lua, Lua)>,
+        String,
+    ),
 }
 
 /// Nombre non fini : `ValueError` de Python (`NaN`/`Infinity` non sérialisables en Lua).
@@ -87,60 +178,108 @@ fn write_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
+/// Morceau de sortie restant à écrire par [`write_repr`], empilé en ordre inverse.
+enum Task<'a> {
+    Repr(&'a Lua, usize),
+    Key(&'a Lua),
+    Text(&'static str),
+    Pad(usize),
+}
+
+/// Écrit `value` comme la récursion de Python, mais sans récursion : ce qu'il reste à écrire
+/// est une pile de tâches sur le tas, si bien que la pile d'appels ne dépend pas de
+/// l'imbrication (#189). Les tâches d'un conteneur sont empilées à l'envers pour sortir dans
+/// l'ordre.
 fn write_repr(out: &mut String, value: &Lua, indent: usize) -> Result<(), LuaError> {
-    match value {
-        Lua::Nil => out.push_str("nil"),
-        Lua::Bool(true) => out.push_str("true"),
-        Lua::Bool(false) => out.push_str("false"),
-        Lua::Int(i) => out.push_str(&i.to_string()),
-        Lua::Float(f) if !f.is_finite() => {
-            return Err(LuaError(
-                "nombre non fini (NaN/Infinity) non serialisable en Lua".to_owned(),
-            ))
-        }
-        Lua::Float(f) => out.push_str(&py_float_repr(*f)),
-        Lua::Str(s) => write_str(out, s),
-        Lua::List(items) if items.is_empty() => out.push_str("{}"),
-        Lua::Table(items) if items.is_empty() => out.push_str("{}"),
-        Lua::List(items) => {
-            out.push_str("{\n");
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(",\n");
-                }
-                push_pad(out, indent + 1);
-                write_repr(out, item, indent + 1)?;
+    let mut tasks = vec![Task::Repr(value, indent)];
+    while let Some(task) = tasks.pop() {
+        let (value, indent) = match task {
+            Task::Text(s) => {
+                out.push_str(s);
+                continue;
             }
-            out.push('\n');
-            push_pad(out, indent);
-            out.push('}');
-        }
-        Lua::Table(items) => {
-            out.push_str("{\n");
-            for (i, (k, v)) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(",\n");
-                }
-                push_pad(out, indent + 1);
+            Task::Pad(n) => {
+                push_pad(out, n);
+                continue;
+            }
+            Task::Key(k) => {
                 match k {
                     Lua::Str(s) if is_identifier(s) && !LUA_KEYWORDS.contains(&s.as_str()) => {
                         out.push_str(s)
                     }
                     _ => {
                         out.push('[');
-                        write_repr(out, k, 0)?;
-                        out.push(']');
+                        tasks.push(Task::Text("]"));
+                        tasks.push(Task::Repr(k, 0));
                     }
                 }
-                out.push_str(" = ");
-                write_repr(out, v, indent + 1)?;
+                continue;
             }
-            out.push('\n');
-            push_pad(out, indent);
-            out.push('}');
+            Task::Repr(value, indent) => (value, indent),
+        };
+        match value {
+            Lua::Nil => out.push_str("nil"),
+            Lua::Bool(true) => out.push_str("true"),
+            Lua::Bool(false) => out.push_str("false"),
+            Lua::Int(i) => out.push_str(&i.to_string()),
+            Lua::Float(f) if !f.is_finite() => {
+                return Err(LuaError(
+                    "nombre non fini (NaN/Infinity) non serialisable en Lua".to_owned(),
+                ))
+            }
+            Lua::Float(f) => out.push_str(&py_float_repr(*f)),
+            Lua::Str(s) => write_str(out, s),
+            Lua::List(items) if items.is_empty() => out.push_str("{}"),
+            Lua::Table(items) if items.is_empty() => out.push_str("{}"),
+            Lua::List(items) => {
+                out.push_str(
+                    "{
+",
+                );
+                close(&mut tasks, indent);
+                for (i, item) in items.iter().enumerate().rev() {
+                    tasks.push(Task::Repr(item, indent + 1));
+                    tasks.push(Task::Pad(indent + 1));
+                    if i > 0 {
+                        tasks.push(Task::Text(
+                            ",
+",
+                        ));
+                    }
+                }
+            }
+            Lua::Table(items) => {
+                out.push_str(
+                    "{
+",
+                );
+                close(&mut tasks, indent);
+                for (i, (k, v)) in items.iter().enumerate().rev() {
+                    tasks.push(Task::Repr(v, indent + 1));
+                    tasks.push(Task::Text(" = "));
+                    tasks.push(Task::Key(k));
+                    tasks.push(Task::Pad(indent + 1));
+                    if i > 0 {
+                        tasks.push(Task::Text(
+                            ",
+",
+                        ));
+                    }
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// Fermeture d'un conteneur non vide : retour à la ligne, marge, `}`.
+fn close(tasks: &mut Vec<Task<'_>>, indent: usize) {
+    tasks.push(Task::Text("}"));
+    tasks.push(Task::Pad(indent));
+    tasks.push(Task::Text(
+        "
+",
+    ));
 }
 
 fn push_pad(out: &mut String, indent: usize) {
@@ -295,40 +434,81 @@ mod tests {
         );
     }
 
-    /// Imbrications de la profondeur maximale acceptée par `load_json`
-    /// ([`crate::json::MAX_DEPTH`]) : conversion, sérialisation et destruction récursives
-    /// doivent tenir dans une pile de 1 Mo (celle du fil principal sous Windows) même en debug.
-    /// Les valeurs sont construites à la main : l'analyseur JSON a son propre test de pile.
+    /// Chaîne complète à la profondeur maximale acceptée par `load_json`
+    /// ([`crate::json::MAX_DEPTH`]) : analyse, conversion, sérialisation et destruction dans
+    /// une pile de 256 Kio, même en debug (#189). Un débordement aborte le processus de test.
     #[test]
-    fn profondeur_maximale_dans_une_pile_de_1_mo() {
-        use crate::json::{Object, Value};
-        let depth = crate::json::MAX_DEPTH;
-        for label in ["listes", "objets"] {
-            let handle = std::thread::Builder::new()
-                .stack_size(1 << 20)
-                .spawn(move || {
-                    let mut json = Value::Int(1);
-                    for _ in 0..depth {
-                        json = if label == "listes" {
-                            Value::List(vec![json])
-                        } else {
-                            let mut o = Object::new();
-                            o.insert("a".to_owned(), json);
-                            Value::Object(o)
-                        };
-                    }
-                    let lua = Lua::from_json(&json);
-                    drop(json);
-                    let out = lua_repr(&lua, 0).unwrap();
-                    drop(lua);
-                    // Une ligne par ouverture, une par fermeture, une pour la feuille.
-                    out.lines().count()
-                })
-                .unwrap();
-            let lines = handle
-                .join()
-                .unwrap_or_else(|_| panic!("panique du fil ({label})")); // un débordement de pile aborte le processus de test
-            assert_eq!(lines, 2 * depth + 1, "{label}");
+    fn profondeur_maximale_dans_une_pile_de_256_kio() {
+        use crate::json::tests::{nested_docs, on_small_stack};
+        use crate::json::{load_json, MAX_DEPTH};
+        for (label, doc) in nested_docs(MAX_DEPTH) {
+            let lines = on_small_stack(move || {
+                let json = load_json(doc.as_bytes(), "t.json").unwrap();
+                let lua = Lua::from_json(&json);
+                drop(json);
+                let out = lua_repr(&lua, 0).unwrap();
+                drop(lua);
+                // Une ligne par ouverture, une par fermeture, une pour la feuille.
+                out.lines().count()
+            });
+            assert_eq!(lines, 2 * MAX_DEPTH + 1, "{label}");
         }
+    }
+
+    /// Le parcours itératif écrit les mêmes octets que la récursion de Python : clés
+    /// conteneurs (indentation remise à 0), conteneurs vides, ordre et séparateurs.
+    #[test]
+    fn repr_iterative_comme_python() {
+        let t = Lua::Table(vec![
+            (
+                Lua::Str("a".into()),
+                Lua::List(vec![Lua::Int(1), Lua::List(vec![]), Lua::Table(vec![])]),
+            ),
+            (
+                Lua::Table(vec![(
+                    Lua::Int(1),
+                    Lua::List(vec![Lua::Bool(true), Lua::Nil]),
+                )]),
+                Lua::Table(vec![(Lua::Str("b c".into()), Lua::Float(0.5))]),
+            ),
+            (Lua::Int(-3), Lua::Str("x".into())),
+        ]);
+        let want = "{\n  a = {\n    1,\n    {},\n    {}\n  },\n  [{\n  [1] = {\n    true,\n    nil\n  }\n}] = {\n    [\"b c\"] = 0.5\n  },\n  [-3] = \"x\"\n}";
+        assert_eq!(lua_repr(&t, 0).unwrap(), want);
+        assert_eq!(
+            lua_repr(&Lua::List(vec![Lua::Int(1)]), 2).unwrap(),
+            "{\n      1\n    }"
+        );
+        // Nombre non fini au fond d'une clé : même refus.
+        let bad = Lua::Table(vec![(Lua::List(vec![Lua::Float(f64::NAN)]), Lua::Nil)]);
+        assert!(lua_repr(&bad, 0).is_err());
+    }
+
+    #[test]
+    fn from_json_garde_ordre_et_types() {
+        use crate::json::{load_json, Value};
+        let raw = br#"{"z":[1,18446744073709551615,-2.5,null,true,"s",{}],"a":{"b":[]}}"#;
+        let v = load_json(raw, "t").unwrap();
+        let want = Lua::Table(vec![
+            (
+                Lua::Str("z".into()),
+                Lua::List(vec![
+                    Lua::Int(1),
+                    Lua::Int(i128::from(u64::MAX)),
+                    Lua::Float(-2.5),
+                    Lua::Nil,
+                    Lua::Bool(true),
+                    Lua::Str("s".into()),
+                    Lua::Table(vec![]),
+                ]),
+            ),
+            (
+                Lua::Str("a".into()),
+                Lua::Table(vec![(Lua::Str("b".into()), Lua::List(vec![]))]),
+            ),
+        ]);
+        assert_eq!(Lua::from_json(&v), want);
+        assert_eq!(Lua::from_json(&Value::Int(7)), Lua::Int(7));
+        assert_eq!(Lua::from_json(&Value::List(vec![])), Lua::List(vec![]));
     }
 }
