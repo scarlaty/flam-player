@@ -38,8 +38,7 @@ fn purge_stale_thumbs(app: &tauri::AppHandle) {
     let state = app.state::<storage::ConfigState>();
     let cache = {
         let _guard = state.guard();
-        settings::SettingsStore::new(&state.dir)
-            .resolved_cache_dir(&settings::Environment::current())
+        settings::SettingsStore::new(&state.dir).cache_dir(&settings::Environment::current())
     };
     let result = cache.map_err(|e| e.to_string()).and_then(|cache| {
         thumbnail::purge_thumbs(
