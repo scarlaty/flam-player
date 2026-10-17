@@ -1,9 +1,12 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DeviceStatus, DeviceStories, DeviceStory } from "../../api/device";
 import { expectNoAxeViolations } from "../../test/axe";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
+import { ToastProvider } from "../../components";
+import { DeviceProvider } from "./DeviceProvider";
 import { DeviceScreen } from "./DeviceScreen";
 import { POLL_INTERVAL_MS } from "./useDeviceStatus";
 
@@ -67,6 +70,14 @@ function report(
   };
 }
 
+function renderScreen(ui: ReactElement = <DeviceScreen />) {
+  return render(
+    <ToastProvider>
+      <DeviceProvider>{ui}</DeviceProvider>
+    </ToastProvider>,
+  );
+}
+
 let status: DeviceStatus;
 let stories: DeviceStories | null;
 let failures: Record<string, { kind: string; message: string } | undefined>;
@@ -77,21 +88,31 @@ beforeEach(() => {
   stories = report([]);
   failures = {};
   calls = [];
-  mockIPC((cmd) => {
-    calls.push(cmd);
-    const failure = failures[cmd];
-    if (failure) throw failure;
-    switch (cmd) {
-      case "device_status":
-        return status;
-      case "device_list_stories":
-        return stories;
-      case "library_thumbnail":
-        return "data:image/png;base64,AAAA";
-      default:
-        throw { kind: "unknown", message: cmd };
-    }
-  });
+  mockIPC(
+    (cmd) => {
+      calls.push(cmd);
+      const failure = failures[cmd];
+      if (failure) throw failure;
+      switch (cmd) {
+        case "device_status":
+          return status;
+        case "device_recover_transfers":
+          return {
+            incomplete_removed: 0,
+            previous_restored: 0,
+            updates_finished: 0,
+            left_alone: 0,
+          };
+        case "device_list_stories":
+          return stories;
+        case "library_thumbnail":
+          return "data:image/png;base64,AAAA";
+        default:
+          throw { kind: "unknown", message: cmd };
+      }
+    },
+    { shouldMockEvents: true },
+  );
 });
 
 afterEach(() => {
@@ -102,7 +123,7 @@ afterEach(() => {
 const count = (cmd: string) => calls.filter((c) => c === cmd).length;
 
 it("invite à activer le mode USB quand la Flam n'est pas détectée", async () => {
-  const { container } = render(<DeviceScreen />);
+  const { container } = renderScreen();
   expect(screen.getByText("Recherche de la Flam…")).toBeInTheDocument();
   expect(
     await screen.findByRole("heading", { name: "Aucune Flam détectée" }),
@@ -125,7 +146,7 @@ it(
       story(C, { placement: "hidden" }),
       story("44444444-4444-4444-8444-444444444444", { placement: "unlisted" }),
     ]);
-    const { container } = render(<DeviceScreen />);
+    const { container } = renderScreen();
 
     expect(
       await screen.findByRole("heading", { name: "Flam détectée" }),
@@ -157,9 +178,11 @@ it(
 
 it("annonce le nombre d'histoires et affiche un état vide", async () => {
   status = detected();
-  render(<DeviceScreen />);
+  renderScreen();
   expect(await screen.findByText("Aucune histoire sur la Flam")).toBeInTheDocument();
-  expect(screen.getByRole("status")).toHaveTextContent("0 histoire sur la Flam");
+  await waitFor(() =>
+    expect(screen.getByRole("status")).toHaveTextContent("0 histoire sur la Flam"),
+  );
   expect(
     screen.getByRole("heading", { name: "Histoires sur la Flam (0)" }),
   ).toBeInTheDocument();
@@ -177,7 +200,7 @@ it("affiche les avertissements de la Flam et des index", async () => {
     hidden_index: "unreadable",
     str_unreadable: true,
   });
-  const { container } = render(<DeviceScreen />);
+  const { container } = renderScreen();
   expect(
     await screen.findByText(/Le dossier des histoires \(str\) est introuvable/),
   ).toBeInTheDocument();
@@ -199,7 +222,7 @@ it("affiche les avertissements de la Flam et des index", async () => {
 
 it("affiche l'espace indisponible sans mesure", async () => {
   status = detected({ space: null, volume_label: "" });
-  render(<DeviceScreen />);
+  renderScreen();
   expect(await screen.findByText("Espace disque indisponible")).toBeInTheDocument();
   expect(screen.getByText("(sans nom) (E:\\)")).toBeInTheDocument();
   expect(screen.queryByRole("progressbar")).toBeNull();
@@ -207,7 +230,7 @@ it("affiche l'espace indisponible sans mesure", async () => {
 
 it("affiche l'erreur de détection avec un bouton Réessayer", async () => {
   failures.device_status = { kind: "io", message: "disque en panne" };
-  const { container } = render(<DeviceScreen />);
+  const { container } = renderScreen();
   const alert = await screen.findByRole("alert");
   expect(alert).toHaveTextContent("disque en panne");
   failures.device_status = undefined;
@@ -222,7 +245,7 @@ it("affiche l'erreur de détection avec un bouton Réessayer", async () => {
 it("signale l'échec de lecture des histoires et permet de réessayer", async () => {
   status = detected();
   failures.device_list_stories = { kind: "io", message: "illisible" };
-  render(<DeviceScreen />);
+  renderScreen();
   const alert = await screen.findByRole("alert");
   expect(alert).toHaveTextContent(
     "Impossible de lire les histoires de la Flam. illisible",
@@ -237,7 +260,7 @@ it("signale l'échec de lecture des histoires et permet de réessayer", async ()
 
 it("actualise la liste à la demande", async () => {
   status = detected();
-  render(<DeviceScreen />);
+  renderScreen();
   await screen.findByText("Aucune histoire sur la Flam");
   stories = report([story(A)]);
   fireEvent.click(screen.getByRole("button", { name: "Actualiser la liste" }));
@@ -248,7 +271,7 @@ it("actualise la liste à la demande", async () => {
 });
 
 it("rend le focus au titre quand « Réessayer » trouve la Flam", async () => {
-  render(<DeviceScreen />);
+  renderScreen();
   const retry = await screen.findByRole("button", { name: "Réessayer" });
   status = detected();
   fireEvent.click(retry);
@@ -259,7 +282,7 @@ it("rend le focus au titre quand « Réessayer » trouve la Flam", async () => {
 
 it("garde le focus dans la liste quand on actualise ou réessaie", async () => {
   status = detected();
-  render(<DeviceScreen />);
+  renderScreen();
   const refresh = await screen.findByRole("button", { name: "Actualiser la liste" });
   refresh.focus();
   fireEvent.click(refresh);
@@ -271,7 +294,7 @@ it("garde le focus dans la liste quand on actualise ou réessaie", async () => {
 it("sort de l'attente quand la Flam disparaît entre la détection et la lecture", async () => {
   status = detected();
   stories = null;
-  render(<DeviceScreen />);
+  renderScreen();
   const alert = await screen.findByRole("alert");
   expect(alert).toHaveTextContent("La Flam n'a pas répondu");
   stories = report([story(A)]);
@@ -283,7 +306,7 @@ it("sort de l'attente quand la Flam disparaît entre la détection et la lecture
 
 it("ne scrute pas fenêtre masquée et reprend au retour", async () => {
   const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
-  render(<DeviceScreen />);
+  renderScreen();
   await act(async () => {
     await new Promise((r) => setTimeout(r, 50));
   });
@@ -297,65 +320,71 @@ it("ne scrute pas fenêtre masquée et reprend au retour", async () => {
   hidden.mockRestore();
 });
 
-it("prévoit les emplacements des actions d'envoi et de retrait", async () => {
+it("affiche le panneau d'envoi fourni sous la liste", async () => {
   status = detected();
   stories = report([story(A, { title: "Capi" })]);
-  render(
-    <DeviceScreen
-      toolbar={<button type="button">Envoyer</button>}
-      storyActions={(s) => <button type="button">{`Retirer ${s.short_id}`}</button>}
-    />,
-  );
-  expect(await screen.findByRole("button", { name: "Envoyer" })).toBeInTheDocument();
+  renderScreen(<DeviceScreen libraryPanel={<p>Panneau d'envoi</p>} />);
+  expect(await screen.findByText("Panneau d'envoi")).toBeInTheDocument();
   expect(
-    await screen.findByRole("button", { name: "Retirer 11111111" }),
+    await screen.findByRole("button", { name: "Retirer « Capi »" }),
   ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Éjecter la Flam" })).toBeInTheDocument();
 });
 
-it("ne sollicite que des commandes de lecture", async () => {
+it("ne modifie rien au simple affichage (lecture et reprise seulement)", async () => {
   status = detected();
   stories = report([story(A, { in_library: true, title: "Capi" })]);
-  render(<DeviceScreen />);
+  renderScreen();
   await screen.findByText("Capi");
   await waitFor(() => expect(count("library_thumbnail")).toBe(1));
   expect(new Set(calls)).toEqual(
-    new Set(["device_status", "device_list_stories", "library_thumbnail"]),
+    new Set([
+      "device_status",
+      "device_recover_transfers",
+      "device_list_stories",
+      "library_thumbnail",
+    ]),
   );
 });
 
-it("scrute toutes les 2 s et constate le débranchement", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
-  status = detected();
-  render(<DeviceScreen />);
-  await screen.findByRole("heading", { name: "Flam détectée" });
-  expect(count("device_status")).toBe(1);
+it(
+  "scrute toutes les 2 s et constate le débranchement",
+  async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    status = detected();
+    renderScreen();
+    await screen.findByRole("heading", { name: "Flam détectée" });
+    expect(count("device_status")).toBe(1);
+    await waitFor(() => expect(count("device_list_stories")).toBe(1));
 
-  status = absent;
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + 50);
-  });
-  expect(count("device_status")).toBe(2);
-  expect(
-    await screen.findByRole("heading", { name: "Aucune Flam détectée" }),
-  ).toBeInTheDocument();
-  expect(
-    screen.getByText("Flam débranchée ou mode connexion USB désactivé"),
-  ).toBeInTheDocument();
+    status = absent;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + 50);
+    });
+    await waitFor(() => expect(count("device_status")).toBe(2));
+    expect(
+      await screen.findByRole("heading", { name: "Aucune Flam détectée" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Flam débranchée ou mode connexion USB désactivé"),
+    ).toBeInTheDocument();
 
-  status = detected();
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + 50);
-  });
-  expect(
-    await screen.findByRole("heading", { name: "Flam détectée" }),
-  ).toBeInTheDocument();
-  await waitFor(() => expect(count("device_list_stories")).toBe(2));
-});
+    status = detected();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + 50);
+    });
+    expect(
+      await screen.findByRole("heading", { name: "Flam détectée" }),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(count("device_list_stories")).toBe(2));
+  },
+  SLOW_TEST_MS,
+);
 
 it("arrête la scrutation au démontage", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   status = detected();
-  const { unmount } = render(<DeviceScreen />);
+  const { unmount } = renderScreen();
   await screen.findByRole("heading", { name: "Flam détectée" });
   await act(async () => {
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + 50);
@@ -386,7 +415,7 @@ it("ne lance pas deux détections en même temps", async () => {
     running -= 1;
     return absent;
   });
-  render(<DeviceScreen />);
+  renderScreen();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
   });
@@ -410,7 +439,7 @@ it("ne double pas un appel en vol quand on réessaie", async () => {
     running -= 1;
     return absent;
   });
-  render(<DeviceScreen />);
+  renderScreen();
   await waitFor(() => expect(releases).toHaveLength(1));
   // Le premier appel n'est pas fini : un retour au premier plan demande un tour immédiat.
   await act(async () => {
@@ -441,11 +470,11 @@ it("ne double pas un appel en vol quand l'écran est remonté", async () => {
     running -= 1;
     return absent;
   });
-  const first = render(<DeviceScreen />);
+  const first = renderScreen();
   await waitFor(() => expect(releases).toHaveLength(1));
   // Retour rapide sur l'écran : le premier appel n'est pas fini.
   first.unmount();
-  render(<DeviceScreen />);
+  renderScreen();
   await act(async () => {
     await Promise.resolve();
   });
@@ -460,7 +489,7 @@ it("ne double pas un appel en vol quand l'écran est remonté", async () => {
 it("annonce ensemble la détection et le nombre d'histoires", async () => {
   status = detected();
   stories = report([story(A), story(B)]);
-  render(<DeviceScreen />);
+  renderScreen();
   await screen.findByRole("heading", { name: "Histoires sur la Flam (2)" });
   expect(screen.getByRole("status")).toHaveTextContent(
     "Flam détectée. 2 histoires sur la Flam",
@@ -470,7 +499,7 @@ it("annonce ensemble la détection et le nombre d'histoires", async () => {
 it("signale une liste tronquée", async () => {
   status = detected();
   stories = report([story(A)], { truncated: true, limit: 5000 });
-  render(<DeviceScreen />);
+  renderScreen();
   expect(
     await screen.findByText(/seules les 5000 premières histoires/),
   ).toBeInTheDocument();

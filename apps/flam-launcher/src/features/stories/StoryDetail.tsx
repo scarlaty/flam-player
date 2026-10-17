@@ -14,6 +14,8 @@ import {
 import { placeholderTone } from "../../components/StoryCard/StoryCard";
 import { t } from "../../i18n";
 import { useCompat } from "../compat/CompatContext";
+import { useDevice } from "../device/DeviceContext";
+import { SendToDeviceButton } from "../device/SendToDeviceButton";
 import { COMPAT_APPEARANCE, reasonText } from "../compat/compatInfo";
 import { defaultStoryState, STATE_APPEARANCE } from "../library/storyState";
 import { useThumbnail } from "../library/useThumbnail";
@@ -43,6 +45,7 @@ function Fact({ label, value }: { label: string; value: string | null | undefine
  */
 export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const stories = useStories();
+  const { confirmingSend } = useDevice();
   const { compatFor } = useCompat();
   const { url } = useThumbnail(source, entry, { eager: true });
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -77,7 +80,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
     <>
       <Dialog
         wide
-        open={!confirmRemove && !stories.confirming}
+        open={!confirmRemove && !stories.confirming && !confirmingSend}
         onClose={onClose}
         title={entry.title}
         footer={
@@ -100,6 +103,11 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                 >
                   {text.remove}
                 </Button>
+                <SendToDeviceButton
+                  uuid={installed.uuid}
+                  title={entry.title}
+                  size={installed.size}
+                />
                 {stories.updateAvailable(entry) && (
                   <Button icon="refresh" onClick={() => stories.install(entry)}>
                     {text.update}
