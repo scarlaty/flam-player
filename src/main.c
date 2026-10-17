@@ -9,12 +9,18 @@
  *                           (defaut 10000, 0 = desactive)
  *           --screenshot <chemin> fichier BMP des captures (touche S et
  *                           capture auto), prioritaire sur FLAM_SCREENSHOT
+ *           --parent-hwnd <n>  (Windows) fenetre incrustee dans le HWND <n>
+ *                           (decimal, ou hexadecimal 0x...) d'une application
+ *                           hote ; repli sur la fenetre separee en cas d'echec
+ *           --stdin-control la ligne "quit" ou la fin de stdin arretent
+ *                           proprement le player (etat sauvegarde, code 0)
  */
 
 #include "SDL.h"
 #include "lvgl/lvgl.h"
 #include "platform/sdl_driver.h"
 #include "platform/sdl_audio.h"
+#include "platform/control.h"
 #include "bindings/lua_lv.h"
 #include "firmware/fw_globals.h"
 #include "formats/lif_decoder.h"
@@ -1134,6 +1140,7 @@ int main(int argc, char *argv[])
     const char *sounds_dir = NULL;
     const char *save_dir = NULL;
     const char *scan_dir = NULL;
+    int stdin_control = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--img-dir") == 0 && i + 1 < argc) {
@@ -1151,6 +1158,17 @@ int main(int argc, char *argv[])
             g_watchdog_ms = ms > 0 ? (uint32_t)ms : 0;
         } else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
             sdl_driver_set_screenshot_path(argv[++i]);
+        } else if (strcmp(argv[i], "--parent-hwnd") == 0 && i + 1 < argc) {
+            const char *v = argv[++i];
+            char *end = NULL;
+            unsigned long long h = strtoull(v, &end, 0);
+            if (!end || *end != '\0' || h == 0) {
+                fprintf(stderr, "[EMBED] repli : --parent-hwnd invalide : %s\n", v);
+            } else {
+                sdl_driver_set_parent((uintptr_t)h);
+            }
+        } else if (strcmp(argv[i], "--stdin-control") == 0) {
+            stdin_control = 1;
         } else {
             target_path = argv[i];
         }
@@ -1196,6 +1214,10 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Erreur initialisation SDL/LVGL\n");
         return 1;
     }
+
+    /* Pilotage par stdin (application hote) : avant le chargement, pour qu'un
+       arret demande pendant un chargement long soit pris au premier tour */
+    if (stdin_control) control_stdin_start();
 
     /* Initialiser audio */
     if (sdl_audio_init() != 0) {
@@ -1243,7 +1265,7 @@ int main(int argc, char *argv[])
     /* Boucle principale */
     while (1) {
         watchdog_rearm();
-        if (sdl_driver_poll()) {
+        if (sdl_driver_poll() || control_quit_requested()) {
             break;
         }
         sdl_audio_pump(g_lua);

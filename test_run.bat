@@ -14,6 +14,8 @@ REM               processus par fichier (un crash ne masque pas les autres).
 REM  5. Convert. : tools\telmi2flam\tests (python unittest)   [facultatif]
 REM  6. E2E      : tests\e2e\e2e_telmi.py : paquet TELMI -> telmi2flam ->
 REM               flam-player (pilotes SDL dummy)             [facultatif]
+REM               puis tests\e2e\e2e_embed.py : incrustation dans une
+REM               fenetre hote, sortie par stdin             [facultatif]
 REM  Facultatif : saute si python (ou Pillow) ou flam-player.exe absent.
 REM  Code de sortie : 0 si les etapes 1, 2, 3, 5, 6 passent. Avec "strict",
 REM  les echecs des tests isoles comptent aussi, et un flam-test-audio.exe
@@ -133,6 +135,11 @@ if "!HAVE_PY!"=="1" (
     set "E2E_RC=!ERRORLEVEL!"
     if "!E2E_RC!"=="77" set "E2E_RC=SKIP"
     echo EXIT_CODE=!E2E_RC!
+    REM Incrustation --parent-hwnd et pilotage par stdin --stdin-control
+    "%PY%" "%ROOT%tests\e2e\e2e_embed.py" --build "%BUILD%"
+    set "EMBED_RC=!ERRORLEVEL!"
+    echo EXIT_CODE=!EMBED_RC!
+    if not "!EMBED_RC!"=="0" if not "!EMBED_RC!"=="77" set "E2E_RC=!EMBED_RC!"
 ) else (
     echo [SKIP] python avec Pillow introuvable : definir FLAM_PYTHON
 )
