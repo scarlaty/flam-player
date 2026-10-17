@@ -221,17 +221,18 @@ La sortie LIF dépend du redimensionnement de **Pillow 12.3.0** (version épingl
 `build-converter.ps1`) :
 
 - `resize(…, LANCZOS)` sur du RGBA suit cet ordre : `convert("RGBa")` (prémultiplication par
-  **tables entières**, `MULDIV255`), éventuellement `reduce`, puis passage horizontal et passage
+  **tables entières**, `MULDIV255`), puis passage horizontal et passage
   vertical de `Resample.c` en **virgule fixe** (coefficients entiers 32 bits,
   `PRECISION_BITS = 32 - 8 - 2 = 22`, arrondi `1 << 21`, écrêtage à 0..255), puis
   `convert("RGBA")` (dé-prémultiplication entière) ;
 - `thumbnail()` calcule la taille cible avec ses propres règles d'arrondi (rapport conservé au
-  plus près) et utilise `reducing_gap=2.0` : une réduction entière par moyenne de boîte
-  (`Reduce.c`) précède le Lanczos ;
+  plus près). Son `reducing_gap=2.0` reste sans effet sur du RGBA : `resize` ne le transmet pas
+  à l'appel récursif sur l'image `RGBa`, donc `Reduce.c` n'intervient jamais (constaté au port,
+  #127) ;
 - `_open_rgba` a ses règles : 16 bits → 8 bits par `v/256`, clés `tRNS` en gris 1/2/4/16 bits
   et en RGB 16 bits, palettes.
 
-**Choix retenu : porter ces algorithmes de Pillow en Rust** (`Resample.c`, `Reduce.c`, calcul
+**Choix retenu : porter ces algorithmes de Pillow en Rust** (`Resample.c`, calcul
 de taille de `thumbnail`, conversions `RGBa`), avec les **mêmes constantes** et le même ordre
 d'opérations, en code scalaire uniquement. On vise la **parité octet à octet des `.lif`**.
 
