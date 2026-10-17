@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use tauri::State;
@@ -24,6 +25,12 @@ use crate::AppResult;
 
 /// Longueur de l'UUID court affiché quand le titre est inconnu.
 const SHORT_ID_LEN: usize = 8;
+/// Nombre maximal d'histoires renvoyées : au-delà, la liste est tronquée (et signalée).
+pub const MAX_STORIES: usize = 5000;
+
+/// Vrai tant que l'échec de sauvegarde de `.mdf` a déjà été journalisé : un seul message par
+/// épisode, pas un toutes les 2 s.
+static BACKUP_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Résumé de l'appareil détecté.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -111,6 +118,9 @@ pub struct StoriesReport {
     pub stories: Vec<DeviceStory>,
     pub visible_index: IndexHealth,
     pub hidden_index: IndexHealth,
+    /// La liste a été coupée à `limit` histoires.
+    pub truncated: bool,
+    pub limit: usize,
     /// `str/` illisible (absent ou erreur d'entrée/sortie) : seuls les index sont affichés.
     pub str_unreadable: bool,
 }
@@ -143,7 +153,9 @@ pub fn status(env: &Environment, backup_dir: &Path) -> DeviceStatus {
         };
     };
     let backup_failed = detect::backup_mdf(backup_dir, first).is_err();
-    if backup_failed {
+    if !backup_failed {
+        BACKUP_WARNED.store(false, Ordering::Relaxed);
+    } else if !BACKUP_WARNED.swap(true, Ordering::Relaxed) {
         tracing::warn!(
             "sauvegarde de .mdf impossible dans {}",
             backup_dir.display()
@@ -204,8 +216,12 @@ fn read_stories(root: &Path, titles: &HashMap<String, String>) -> StoriesReport 
         push(id, Placement::Unlisted, false);
     }
 
+    let truncated = stories.len() > MAX_STORIES;
+    stories.truncate(MAX_STORIES);
     StoriesReport {
         stories,
+        truncated,
+        limit: MAX_STORIES,
         visible_index: IndexHealth::of(&visible.state),
         hidden_index: IndexHealth::of(&hidden.state),
         str_unreadable,
@@ -420,6 +436,28 @@ mod tests {
         assert_eq!(report.visible_index, IndexHealth::Valid);
         assert_eq!(report.hidden_index, IndexHealth::Valid);
         assert!(!report.str_unreadable);
+    }
+
+    #[test]
+    fn une_liste_demesuree_est_tronquee_et_signalee() {
+        let dev = fake_device();
+        let list: String = (0..MAX_STORIES + 10)
+            .map(|i| {
+                format!(
+                    "00000000-0000-4000-8000-{i:012x}
+"
+                )
+            })
+            .collect();
+        put(dev.path(), "etc/library/list", &list);
+        let report = list_stories(&env(vec![dev.path().to_path_buf()]), &HashMap::new()).unwrap();
+        assert_eq!(report.stories.len(), MAX_STORIES);
+        assert!(report.truncated);
+        assert_eq!(report.limit, MAX_STORIES);
+        assert_eq!(
+            report.stories[0].uuid,
+            "00000000-0000-4000-8000-000000000000"
+        );
     }
 
     #[test]

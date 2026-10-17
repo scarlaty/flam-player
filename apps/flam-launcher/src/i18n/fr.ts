@@ -436,6 +436,8 @@ export const fr = {
       hiddenDamaged:
         "L'index des histoires masquées contient des lignes invalides ou en double : elles sont ignorées.",
       hiddenUnreadable: "L'index des histoires masquées est illisible.",
+      truncated: (limit: number) =>
+        `La liste est tronquée : seules les ${limit} premières histoires sont affichées.`,
       strUnreadable:
         "Le dossier des histoires (str) est illisible : seules les histoires de l'index sont affichées.",
     },

@@ -63,6 +63,9 @@ export interface DeviceStories {
   stories: DeviceStory[];
   visible_index: IndexHealth;
   hidden_index: IndexHealth;
+  /** Liste coupée à `limit` histoires. */
+  truncated: boolean;
+  limit: number;
   /** `str/` illisible : seuls les index sont affichés. */
   str_unreadable: boolean;
 }

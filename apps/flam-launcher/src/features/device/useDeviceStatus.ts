@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toAppError, type AppError } from "../../api/error";
 import { getDeviceStatus, type DeviceStatus } from "../../api/device";
 
@@ -17,47 +17,62 @@ export interface DeviceStatusState {
 /**
  * Scrute l'état de la Flam toutes les `POLL_INTERVAL_MS` tant que le composant est monté : la
  * scrutation s'arrête au démontage (changement d'écran, lecture incrustée). Le délai court
- * depuis la fin de l'appel précédent, donc deux appels ne se chevauchent jamais ; la fenêtre
- * masquée ne scrute pas.
+ * depuis la fin de l'appel précédent ; un appel en vol n'est jamais doublé : « Réessayer » et
+ * le retour au premier plan demandent un tour immédiat, exécuté dès la fin de l'appel en cours.
+ * La fenêtre masquée ne scrute pas.
  */
 export function useDeviceStatus(): DeviceStatusState {
   const [status, setStatus] = useState<DeviceStatus | null>(null);
   const [error, setError] = useState<AppError | null>(null);
-  const [run, setRun] = useState(0);
+  const pollNow = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let inFlight = false;
+    let again = false;
     const poll = async () => {
-      if (!document.hidden) {
-        try {
-          const next = await getDeviceStatus();
-          if (!active) return;
-          setStatus(next);
-          setError(null);
-        } catch (caught) {
-          if (!active) return;
-          setError(toAppError(caught));
-        }
+      clearTimeout(timer);
+      if (inFlight) {
+        again = true;
+        return;
       }
-      if (active) timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
+      inFlight = true;
+      try {
+        if (!document.hidden) {
+          const next = await getDeviceStatus();
+          if (active) {
+            setStatus(next);
+            setError(null);
+          }
+        }
+      } catch (caught) {
+        if (active) setError(toAppError(caught));
+      } finally {
+        inFlight = false;
+      }
+      if (!active) return;
+      if (again) {
+        again = false;
+        void poll();
+        return;
+      }
+      timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
     };
+    pollNow.current = () => void poll();
+    // Au retour au premier plan, la scrutation reprend aussitôt.
+    const onVisible = () => {
+      if (!document.hidden) pollNow.current();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     void poll();
     return () => {
       active = false;
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [run]);
-
-  // Au retour au premier plan, la scrutation reprend aussitôt au lieu d'attendre le prochain tour.
-  useEffect(() => {
-    const onVisible = () => {
-      if (!document.hidden) setRun((n) => n + 1);
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
-  const retry = useCallback(() => setRun((n) => n + 1), []);
+  const retry = useCallback(() => pollNow.current(), []);
   return { status, error, retry };
 }

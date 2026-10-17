@@ -31,7 +31,11 @@ export function DeviceScreen({ toolbar, storyActions }: DeviceScreenProps) {
   // Une nouvelle Flam (ou la même rebranchée) recharge la liste.
   const deviceKey = device ? `${device.root}\u0000${device.volume_label}` : null;
 
-  const [announcement, setAnnouncement] = useState("");
+  // Annonces : l'état de la Flam puis le nombre d'histoires, dites ensemble pour que la
+  // seconde ne couvre pas la première.
+  const [stateNote, setStateNote] = useState("");
+  const [countNote, setCountNote] = useState("");
+  const announcement = [stateNote, countNote].filter(Boolean).join(". ");
   const wasDetected = useRef<boolean | null>(null);
   const retried = useRef(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -44,11 +48,15 @@ export function DeviceScreen({ toolbar, storyActions }: DeviceScreenProps) {
     const before = wasDetected.current;
     wasDetected.current = detected;
     if (before === detected || (before === null && !detected)) return;
-    // Annonce d'un changement observé en dehors de toute interaction de l'utilisateur.
-    setAnnouncement(detected ? text.announce.detected : text.announce.lost);
+    setStateNote(detected ? text.announce.detected : text.announce.lost);
+    setCountNote("");
     if (detected && retried.current) headingRef.current?.focus();
-    retried.current = false;
   }, [known, detected]);
+
+  // « Réessayer » ne réclame le focus que pour le résultat de l'appel qui suit.
+  useEffect(() => {
+    retried.current = false;
+  }, [status, error]);
 
   function onRetry() {
     retried.current = true;
@@ -91,7 +99,7 @@ export function DeviceScreen({ toolbar, storyActions }: DeviceScreenProps) {
           <DeviceStoriesList
             key={deviceKey}
             storyActions={storyActions}
-            onCount={(count) => setAnnouncement(text.announce.stories(count))}
+            onCount={(count) => setCountNote(text.announce.stories(count))}
           />
         </>
       )}
@@ -212,6 +220,9 @@ function indexNotices(report: DeviceStories): Notice[] {
       tone: report.hidden_index === "unreadable" ? "danger" : "warning",
       message: hidden,
     });
+  }
+  if (report.truncated) {
+    notices.push({ tone: "warning", message: text.index.truncated(report.limit) });
   }
   if (report.str_unreadable) {
     notices.push({ tone: "warning", message: text.index.strUnreadable });

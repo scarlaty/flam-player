@@ -61,6 +61,8 @@ function report(
     visible_index: "valid",
     hidden_index: "valid",
     str_unreadable: false,
+    truncated: false,
+    limit: 5000,
     ...extra,
   };
 }
@@ -157,7 +159,7 @@ it("annonce le nombre d'histoires et affiche un état vide", async () => {
   status = detected();
   render(<DeviceScreen />);
   expect(await screen.findByText("Aucune histoire sur la Flam")).toBeInTheDocument();
-  expect(screen.getByText("0 histoire sur la Flam")).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent("0 histoire sur la Flam");
   expect(
     screen.getByRole("heading", { name: "Histoires sur la Flam (0)" }),
   ).toBeInTheDocument();
@@ -393,4 +395,54 @@ it("ne lance pas deux détections en même temps", async () => {
     release?.();
   });
   expect(overlap).toBe(false);
+});
+
+it("ne double pas un appel en vol quand on réessaie", async () => {
+  let running = 0;
+  let maxRunning = 0;
+  const releases: (() => void)[] = [];
+  mockIPC(async (cmd) => {
+    if (cmd !== "device_status") return null;
+    calls.push(cmd);
+    running += 1;
+    maxRunning = Math.max(maxRunning, running);
+    await new Promise<void>((resolve) => releases.push(resolve));
+    running -= 1;
+    return absent;
+  });
+  render(<DeviceScreen />);
+  await waitFor(() => expect(releases).toHaveLength(1));
+  // Le premier appel n'est pas fini : un retour au premier plan demande un tour immédiat.
+  await act(async () => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  expect(count("device_status")).toBe(1);
+  await act(async () => {
+    releases[0]?.();
+  });
+  await waitFor(() => expect(releases).toHaveLength(2));
+  expect(count("device_status")).toBe(2);
+  await act(async () => {
+    releases[1]?.();
+  });
+  expect(maxRunning).toBe(1);
+});
+
+it("annonce ensemble la détection et le nombre d'histoires", async () => {
+  status = detected();
+  stories = report([story(A), story(B)]);
+  render(<DeviceScreen />);
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (2)" });
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Flam détectée. 2 histoires sur la Flam",
+  );
+});
+
+it("signale une liste tronquée", async () => {
+  status = detected();
+  stories = report([story(A)], { truncated: true, limit: 5000 });
+  render(<DeviceScreen />);
+  expect(
+    await screen.findByText(/seules les 5000 premières histoires/),
+  ).toBeInTheDocument();
 });
