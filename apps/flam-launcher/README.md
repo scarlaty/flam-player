@@ -307,11 +307,14 @@ apps/flam-launcher/
       library.rs           Bibliothèque `<cache>/library/` et `library.json`, commandes `library_*`
       library_thumb.rs     Vignettes des histoires installées (`library/thumbs/`), `library_thumbnail`
       compat.rs            Statut de compatibilité (`status.json` de la campagne + conversions locales), commande `compat_statuses`
+      device/              Flam branchée en USB : `detect.rs` (détection, `.mdf`), `crypto.rs` (AES-128-CBC,
+                           clés d'appareil, fichier `key`),
+                           `prepare.rs` (dossier `str/<uuid>/` préparé hors appareil depuis un `.plain.pk`)
 ```
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status`).
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status`).
 
 ### Commandes Tauri
 
