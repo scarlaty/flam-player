@@ -428,6 +428,35 @@ it("ne double pas un appel en vol quand on réessaie", async () => {
   expect(maxRunning).toBe(1);
 });
 
+it("ne double pas un appel en vol quand l'écran est remonté", async () => {
+  let running = 0;
+  let maxRunning = 0;
+  const releases: (() => void)[] = [];
+  mockIPC(async (cmd) => {
+    if (cmd !== "device_status") return null;
+    calls.push(cmd);
+    running += 1;
+    maxRunning = Math.max(maxRunning, running);
+    await new Promise<void>((resolve) => releases.push(resolve));
+    running -= 1;
+    return absent;
+  });
+  const first = render(<DeviceScreen />);
+  await waitFor(() => expect(releases).toHaveLength(1));
+  // Retour rapide sur l'écran : le premier appel n'est pas fini.
+  first.unmount();
+  render(<DeviceScreen />);
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(count("device_status")).toBe(1);
+  await act(async () => {
+    releases[0]?.();
+  });
+  expect(await screen.findByText(/mode connexion USB/)).toBeInTheDocument();
+  expect(maxRunning).toBe(1);
+});
+
 it("annonce ensemble la détection et le nombre d'histoires", async () => {
   status = detected();
   stories = report([story(A), story(B)]);

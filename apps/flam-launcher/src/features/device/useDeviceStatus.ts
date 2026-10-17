@@ -15,11 +15,25 @@ export interface DeviceStatusState {
 }
 
 /**
+ * Appel `device_status` en vol, partagé entre toutes les instances du hook : un remontage
+ * (StrictMode, retour rapide sur l'écran) pendant un appel le rejoint au lieu d'en lancer un
+ * second sur la même Flam.
+ */
+let shared: Promise<DeviceStatus> | null = null;
+
+function fetchStatus(): Promise<DeviceStatus> {
+  shared ??= getDeviceStatus().finally(() => {
+    shared = null;
+  });
+  return shared;
+}
+
+/**
  * Scrute l'état de la Flam toutes les `POLL_INTERVAL_MS` tant que le composant est monté : la
  * scrutation s'arrête au démontage (changement d'écran, lecture incrustée). Le délai court
- * depuis la fin de l'appel précédent ; un appel en vol n'est jamais doublé : « Réessayer » et
- * le retour au premier plan demandent un tour immédiat, exécuté dès la fin de l'appel en cours.
- * La fenêtre masquée ne scrute pas.
+ * depuis la fin de l'appel précédent ; un appel en vol n'est jamais doublé, même entre deux
+ * montages : « Réessayer » et le retour au premier plan demandent un tour immédiat, exécuté dès
+ * la fin de l'appel en cours. La fenêtre masquée ne scrute pas.
  */
 export function useDeviceStatus(): DeviceStatusState {
   const [status, setStatus] = useState<DeviceStatus | null>(null);
@@ -40,7 +54,7 @@ export function useDeviceStatus(): DeviceStatusState {
       inFlight = true;
       try {
         if (!document.hidden) {
-          const next = await getDeviceStatus();
+          const next = await fetchStatus();
           if (active) {
             setStatus(next);
             setError(null);
