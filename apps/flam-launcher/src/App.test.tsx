@@ -137,6 +137,25 @@ slowIt("l'accueil n'a aucune violation axe", async () => {
   await expectNoAxeViolations();
 });
 
+it("un player replié en fenêtre séparée fait quitter l'écran Lecture", async () => {
+  class FakeResizeObserver {
+    observe() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  mockBackend(embedded);
+  render(<App />);
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "Les trois ours" }),
+  ).toBeInTheDocument();
+
+  await act(() => emit("player://updated", { ...embedded, embedded: false }));
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "Bienvenue" }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("navigation", { name: "Navigation" })).toBeInTheDocument();
+});
+
 it("un player incrusté remplace l'application par l'écran Lecture jusqu'à sa fin", async () => {
   class FakeResizeObserver {
     observe() {}

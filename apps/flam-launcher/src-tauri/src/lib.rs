@@ -151,6 +151,7 @@ pub fn run() {
             player::player_status,
             player::player_stop,
             player::player_embed_layout,
+            player::player_embed_focus,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application Tauri");

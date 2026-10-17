@@ -1,11 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- arguments IPC simulés, forme libre */
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { PlayerSession } from "../../api/player";
 import { ToastProvider } from "../../components";
 import { expectNoAxeViolations } from "../../test/axe";
-import { PlayerScreen } from "./PlayerScreen";
+import { PlayerScreen, STOP_TIMEOUT_MS } from "./PlayerScreen";
 
 const session: PlayerSession = {
   origin: "library",
@@ -18,11 +18,15 @@ const session: PlayerSession = {
 
 let calls: { cmd: string; args: Record<string, any> }[];
 let stopFails: boolean;
+let stopResult: boolean;
+let onGone: ReturnType<typeof vi.fn<() => void>>;
 let resize: (() => void) | null;
 
 beforeEach(() => {
   calls = [];
   stopFails = false;
+  stopResult = true;
+  onGone = vi.fn<() => void>();
   resize = null;
   class FakeResizeObserver {
     constructor(callback: () => void) {
@@ -36,13 +40,14 @@ beforeEach(() => {
     calls.push({ cmd, args: (args ?? {}) as Record<string, any> });
     if (cmd === "player_stop") {
       if (stopFails) throw { kind: "io", message: "refusé" };
-      return true;
+      return stopResult;
     }
     return null;
   });
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   clearMocks();
   vi.unstubAllGlobals();
 });
@@ -52,7 +57,7 @@ const layouts = () => calls.filter((c) => c.cmd === "player_embed_layout");
 function renderScreen() {
   return render(
     <ToastProvider>
-      <PlayerScreen session={session} />
+      <PlayerScreen session={session} onGone={onGone} />
     </ToastProvider>,
   );
 }
@@ -66,7 +71,37 @@ it("affiche le titre, la zone du lecteur et l'aide, sans violation axe", async (
     screen.getByRole("region", { name: "Lecteur : Les trois ours" }),
   ).toBeInTheDocument();
   expect(screen.getByText(/Cliquez dans le lecteur/)).toBeInTheDocument();
+  // Focus au montage sur le titre (l'élément qui a lancé la lecture a disparu).
+  expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
   await expectNoAxeViolations();
+});
+
+it("« Clavier au lecteur » donne le clavier au player incrusté", async () => {
+  renderScreen();
+  fireEvent.click(screen.getByRole("button", { name: "Clavier au lecteur" }));
+  await waitFor(() =>
+    expect(calls.some((c) => c.cmd === "player_embed_focus")).toBe(true),
+  );
+});
+
+it("aucun player côté backend : l'écran se ferme (pas de blocage)", async () => {
+  stopResult = false;
+  renderScreen();
+  fireEvent.click(screen.getByRole("button", { name: "Arrêter" }));
+  await waitFor(() => expect(onGone).toHaveBeenCalledTimes(1));
+});
+
+it("sans fin de partie après le délai, Arrêter redevient disponible avec une alerte", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  renderScreen();
+  fireEvent.click(screen.getByRole("button", { name: "Arrêter" }));
+  expect(screen.getByRole("button", { name: "Arrêt en cours…" })).toBeDisabled();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(STOP_TIMEOUT_MS);
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent(/ne répond pas/);
+  expect(screen.getByRole("button", { name: "Arrêter" })).toBeEnabled();
+  expect(onGone).not.toHaveBeenCalled();
 });
 
 it("envoie la zone au montage, à chaque changement, et la cache au démontage", async () => {
@@ -100,12 +135,12 @@ it("Arrêter appelle player_stop et se désactive", async () => {
   expect(screen.getByRole("button", { name: "Arrêt en cours…" })).toBeDisabled();
 });
 
-it("un arrêt refusé réactive le bouton et l'erreur est notifiée", async () => {
+it("un arrêt refusé réactive le bouton et l'erreur s'affiche en alerte hors de la zone", async () => {
   stopFails = true;
   renderScreen();
   fireEvent.click(screen.getByRole("button", { name: "Arrêter" }));
-  expect(
-    await screen.findByText(/flam-player n'a pas pu être arrêté\. refusé/),
-  ).toBeInTheDocument();
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    /flam-player n'a pas pu être arrêté\. refusé/,
+  );
   expect(screen.getByRole("button", { name: "Arrêter" })).toBeEnabled();
 });

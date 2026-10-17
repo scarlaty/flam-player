@@ -345,6 +345,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `player_status`        |                            | `PlayerSession \| null`                 | `player`        |
 | `player_stop`          |                            | `bool` (faux : aucun player)            | `player`        |
 | `player_embed_layout`  | `rect \| null` (px CSS)    | rien                                    | `player`        |
+| `player_embed_focus`   |                            | rien                                    | `player`        |
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).
@@ -568,6 +569,7 @@ avec une charge utile sérialisable typée côté `src/api/`.
 | `install://error`    | `{ task_id, state: "failed" \| "cancelled", error: TaskError }`                                                                                                 |
 | `player://started`   | `PlayerSession { origin, uuid, title, pid, started_at }`                                                                                                        |
 | `player://exited`    | `{ session, code, success, duration_ms, stderr, saves_error }` (`code` nul : processus tué ; `saves_error` : progression non conservée telle quelle, sinon nul) |
+| `player://updated`   | `PlayerSession` (le player s'est replié en fenêtre séparée : `embedded` faux)                                                                                   |
 
 ### Lancement du player (`player`)
 
@@ -597,8 +599,17 @@ seul argument** (dernier), dossier courant = dossier du player.
 - **Repli** : hors Windows, si la fenêtre d'accueil ne peut pas être créée, ou avec
   `FLAM_LAUNCHER_NO_EMBED=1`, le player est lancé sans `--parent-hwnd`, dans sa propre fenêtre,
   comme avant. Si c'est le player qui ne parvient pas à s'incruster, il trace `[EMBED] repli : …`
-  sur stderr et ouvre sa fenêtre séparée ; le launcher affiche quand même l'écran Lecture (zone
-  vide), dont « Arrêter » reste utilisable.
+  sur stderr et ouvre sa fenêtre séparée : le lecteur de stderr repère cette trace, la fenêtre
+  d'accueil est détruite, la session passe à `embedded = false` et `player://updated` (charge :
+  `PlayerSession`) l'annonce ; l'interface quitte alors l'écran Lecture (affichage sans
+  incrustation, comme une fenêtre séparée). Si la création de la fenêtre d'accueil ne répond pas
+  en 3 s, elle est abandonnée (et détruite si elle a eu lieu entre-temps).
+- **Clavier** : à l'ouverture de l'écran Lecture, le focus va au titre ; « Clavier au lecteur »
+  (`player_embed_focus`) donne le clavier à la fenêtre du player (sinon un clic dans la zone) ;
+  à la fin, le focus revient au contenu principal. Les erreurs d'arrêt s'affichent en alerte
+  dans l'en-tête, hors de la zone (une notification pourrait passer sous la fenêtre native).
+  `player_stop` qui renvoie faux (aucun player : fin manquée) ferme l'écran ; sans fin de
+  partie 10 s après « Arrêter », le bouton redevient disponible avec une alerte.
 - **Arrêt (`player_stop`, bouton « Arrêter »)** : le player est lancé avec `--stdin-control` et
   son entrée standard est un tube gardé par le service pendant la session. `player_stop` y écrit
   `quit` : le player sauvegarde et sort avec le code 0 (`player://exited`, `success`). S'il tourne

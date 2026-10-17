@@ -58,6 +58,11 @@ use crate::{AppError, AppResult};
 pub const EVENT_STARTED: &str = "player://started";
 /// Événement émis à la fin du player (charge : [`PlayerExited`]).
 pub const EVENT_EXITED: &str = "player://exited";
+/// Événement émis quand la session change en cours de partie (charge : [`PlayerSession`]) :
+/// le player n'a pas pu s'incruster et s'est ouvert dans sa fenêtre (`embedded` devient faux).
+pub const EVENT_UPDATED: &str = "player://updated";
+/// Trace du player quand l'incrustation échoue et qu'il ouvre sa fenêtre séparée.
+const EMBED_FALLBACK_MARKER: &[u8] = b"[EMBED] repli";
 
 /// Taille maximale de la sortie d'erreur conservée, et nombre de lignes renvoyées.
 const STDERR_KEEP_BYTES: usize = 8 * 1024;
@@ -113,6 +118,8 @@ pub struct PlayerExited {
 pub trait PlayerEvents: Send + Sync {
     fn started(&self, session: &PlayerSession);
     fn exited(&self, event: &PlayerExited);
+    /// La session a changé en cours de partie (repli du player en fenêtre séparée).
+    fn updated(&self, _session: &PlayerSession) {}
 }
 
 /// Émission des événements Tauri.
@@ -126,6 +133,10 @@ impl PlayerEvents for TauriPlayerEvents {
     fn exited(&self, event: &PlayerExited) {
         use tauri::Emitter;
         let _ = self.0.emit(EVENT_EXITED, event);
+    }
+    fn updated(&self, session: &PlayerSession) {
+        use tauri::Emitter;
+        let _ = self.0.emit(EVENT_UPDATED, session);
     }
 }
 
@@ -204,6 +215,47 @@ impl PlayerService {
         let control = lock(&self.control);
         if let Some(hwnd) = control.as_ref().and_then(|c| c.host) {
             self.embed.layout(hwnd, rect);
+        }
+    }
+
+    /// Donne le clavier à la fenêtre du player incrusté. Sans effet si aucun player incrusté
+    /// ne tourne.
+    pub fn embed_focus(&self) {
+        let control = lock(&self.control);
+        if let Some(hwnd) = control.as_ref().and_then(|c| c.host) {
+            self.embed.focus(hwnd);
+        }
+    }
+
+    /// Le player de la session `generation` n'a pas pu s'incruster (trace
+    /// [`EMBED_FALLBACK_MARKER`]) : il s'est ouvert dans sa fenêtre séparée. La fenêtre
+    /// d'accueil est détruite, la session passe à `embedded = false` et `player://updated`
+    /// l'annonce : l'interface quitte l'écran Lecture (zone vide sinon).
+    fn embed_fallback(&self, generation: u64, pid: u32) {
+        let host = {
+            let mut control = lock(&self.control);
+            match control.as_mut() {
+                Some(c) if c.generation == generation => c.host.take(),
+                _ => None,
+            }
+        };
+        let Some(host) = host else {
+            return;
+        };
+        tracing::warn!("flam-player ne s'est pas incrusté : fenêtre séparée");
+        self.embed.destroy(host);
+        let session = {
+            let mut slot = lock(&self.current);
+            match slot.as_mut() {
+                Some(s) if s.pid == pid && s.embedded => {
+                    s.embedded = false;
+                    Some(s.clone())
+                }
+                _ => None,
+            }
+        };
+        if let Some(session) = session {
+            self.events.updated(&session);
         }
     }
 
@@ -395,9 +447,20 @@ impl PlayerService {
         let (done_tx, done) = channel::<()>();
         if let Some(stream) = child.stderr.take() {
             let kept = kept.clone();
+            // Repli du player en fenêtre séparée, guetté sur stderr si le player est incrusté.
+            // Traité dans un thread à part : le lecteur de stderr ne doit jamais attendre le
+            // créneau (tenu par exemple pendant une désinstallation).
+            let on_fallback: Option<Box<dyn FnOnce() + Send>> = host.map(|_| {
+                let service = self.clone();
+                let pid = session.pid;
+                Box::new(move || {
+                    let _ = std::thread::Builder::new()
+                        .spawn(move || service.embed_fallback(generation, pid));
+                }) as Box<dyn FnOnce() + Send>
+            });
             // Échec de création du thread : pas de stderr, sans autre conséquence.
             let _ = std::thread::Builder::new().spawn(move || {
-                read_into(stream, &kept);
+                read_into(stream, &kept, on_fallback);
                 drop(done_tx);
             });
         }
@@ -511,11 +574,35 @@ fn terminate(pid: u32) {
 }
 
 /// Lit le flux jusqu'à sa fin dans `kept`, borné à [`STDERR_KEEP_BYTES`] octets (les derniers).
-fn read_into(mut stream: impl Read, kept: &Mutex<Vec<u8>>) {
+/// `on_fallback` est appelé (une fois) dès que [`EMBED_FALLBACK_MARKER`] apparaît dans le flux,
+/// même coupé entre deux lectures.
+fn read_into(
+    mut stream: impl Read,
+    kept: &Mutex<Vec<u8>>,
+    mut on_fallback: Option<Box<dyn FnOnce() + Send>>,
+) {
     let mut chunk = [0u8; 2048];
+    let mut seen: Vec<u8> = Vec::new();
     while let Ok(n) = stream.read(&mut chunk) {
         if n == 0 {
             break;
+        }
+        if on_fallback.is_some() {
+            seen.extend_from_slice(&chunk[..n]);
+            if seen
+                .windows(EMBED_FALLBACK_MARKER.len())
+                .any(|w| w == EMBED_FALLBACK_MARKER)
+            {
+                if let Some(notify) = on_fallback.take() {
+                    notify();
+                }
+                seen = Vec::new();
+            } else {
+                let keep = EMBED_FALLBACK_MARKER.len() - 1;
+                if seen.len() > keep {
+                    seen.drain(..seen.len() - keep);
+                }
+            }
         }
         let mut kept = lock(kept);
         kept.extend_from_slice(&chunk[..n]);
@@ -1256,6 +1343,13 @@ pub async fn player_embed_layout(
     Ok(())
 }
 
+/// Donne le clavier au player incrusté (accès sans souris, #201). Sans effet sinon.
+#[tauri::command]
+pub async fn player_embed_focus(player: State<'_, PlayerService>) -> AppResult<()> {
+    player.embed_focus();
+    Ok(())
+}
+
 /// Player en cours d'exécution (`null` si aucun) : pour restaurer l'état après un rechargement.
 #[tauri::command]
 pub async fn player_status(player: State<'_, PlayerService>) -> AppResult<Option<PlayerSession>> {
@@ -1485,6 +1579,62 @@ mod tests {
         fn destroy(&self, hwnd: isize) {
             lock(&self.calls).push(format!("destroy {hwnd}"));
         }
+        fn focus(&self, hwnd: isize) {
+            lock(&self.calls).push(format!("focus {hwnd}"));
+        }
+    }
+
+    #[test]
+    fn le_focus_va_a_l_accueil_du_player_incruste() {
+        let embed = Arc::new(FakeEmbed::default());
+        let c = ctx_embed(embed.clone());
+        c.service.embed_focus();
+        let story = c.story("f.plain.pk", "wait_quit\n");
+        c.launch(&story).unwrap();
+        c.service.embed_focus();
+        assert!(c.service.stop());
+        c.wait_exit();
+        c.service.embed_focus();
+        assert_eq!(*lock(&embed.calls), ["create", "focus 42", "destroy 42"]);
+    }
+
+    #[test]
+    fn un_repli_du_player_detruit_l_accueil_et_annonce_la_fenetre_separee() {
+        let embed = Arc::new(FakeEmbed::default());
+        let c = ctx_embed(embed.clone());
+        let story = c.story(
+            "r.plain.pk",
+            "stderr [EMBED] repli : SetParent refuse\nwait_quit\n",
+        );
+        assert!(c.launch(&story).unwrap().embedded);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while c.service.status().is_some_and(|s| s.embedded) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(c.service.status().map(|s| s.embedded), Some(false));
+        assert_eq!(*lock(&embed.calls), ["create", "destroy 42"]);
+        // Plus de fenêtre d'accueil : placement et fin de partie ne la touchent plus.
+        c.service.embed_layout(None);
+        assert!(c.service.stop());
+        assert_eq!(c.wait_exit().code, Some(0));
+        assert_eq!(*lock(&embed.calls), ["create", "destroy 42"]);
+    }
+
+    #[test]
+    fn le_repere_de_repli_est_trouve_meme_coupe_entre_deux_lectures() {
+        let seen = Arc::new(AtomicU64::new(0));
+        let count = seen.clone();
+        let kept = Mutex::new(Vec::new());
+        let stream = (&b"debut [EMB"[..]).chain(&b"ED] repli : x\n[EMBED] repli"[..]);
+        read_into(
+            stream,
+            &kept,
+            Some(Box::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            })),
+        );
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        assert!(lock(&kept).ends_with(b"[EMBED] repli"));
     }
 
     fn ctx_embed(embed: Arc<FakeEmbed>) -> Ctx {
@@ -1587,6 +1737,9 @@ mod tests {
         assert!(c.service.stop());
         let done = c.wait_exit();
         assert!(!done.success);
+        // Code de TerminateProcess : c'est bien l'arrêt forcé qui a mis fin au player.
+        #[cfg(windows)]
+        assert_eq!(done.code, Some(1));
         assert!(asked.elapsed() < Duration::from_secs(15));
     }
 

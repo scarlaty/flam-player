@@ -379,10 +379,12 @@ export const fr = {
   playerScreen: {
     label: "Lecture",
     zone: (title: string) => `Lecteur : ${title}`,
-    hint: "Cliquez dans le lecteur pour lui donner le clavier. Flèches, Entrée, Échap.",
+    hint: "Cliquez dans le lecteur ou utilisez « Clavier au lecteur ». Flèches, Entrée, Échap.",
+    focus: "Clavier au lecteur",
     stop: "Arrêter",
     stopping: "Arrêt en cours…",
     stopFailed: "flam-player n'a pas pu être arrêté.",
+    stopTimeout: "flam-player ne répond pas. Réessayez « Arrêter ».",
   },
   theme: {
     label: "Thème",

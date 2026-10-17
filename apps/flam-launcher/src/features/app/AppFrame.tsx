@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { getSettings } from "../../api/settings";
 import { listSources } from "../../api/sources";
 import { AppShell } from "../../components";
@@ -51,8 +51,17 @@ function useStartupConfig() {
  */
 export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
   useStartupConfig();
-  const { session } = useStories();
-  if (session?.embedded) return <PlayerScreen session={session} />;
+  const { session, forgetSession } = useStories();
+  const embedded = session?.embedded === true;
+  // Fin de l'écran Lecture : le focus va au contenu principal (sinon il serait perdu sur un
+  // élément démonté).
+  const wasEmbedded = useRef(false);
+  useEffect(() => {
+    if (wasEmbedded.current && !embedded) document.getElementById("fl-main")?.focus();
+    wasEmbedded.current = embedded;
+  }, [embedded]);
+  if (session && embedded)
+    return <PlayerScreen session={session} onGone={forgetSession} />;
   return (
     <AppShell
       navLabel={t.nav.label}

@@ -72,6 +72,8 @@ pub trait EmbedHost: Send + Sync {
     fn layout(&self, hwnd: isize, rect: Option<CssRect>);
     /// Détruit la fenêtre d'accueil (sans effet si elle l'est déjà).
     fn destroy(&self, hwnd: isize);
+    /// Donne le clavier à la fenêtre du player incrustée dans la fenêtre d'accueil.
+    fn focus(&self, hwnd: isize);
 }
 
 /// Pas d'incrustation : le player s'ouvre dans sa fenêtre séparée.
@@ -83,6 +85,7 @@ impl EmbedHost for NoEmbed {
     }
     fn layout(&self, _hwnd: isize, _rect: Option<CssRect>) {}
     fn destroy(&self, _hwnd: isize) {}
+    fn focus(&self, _hwnd: isize) {}
 }
 
 /// Incrustation désactivée par `FLAM_LAUNCHER_NO_EMBED=1` (dépannage).
@@ -95,6 +98,7 @@ pub use windows_host::TauriEmbed;
 
 #[cfg(windows)]
 mod windows_host {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::channel;
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::Duration;
@@ -102,9 +106,10 @@ mod windows_host {
     use tauri::{AppHandle, Manager};
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, GetParent, SetWindowPos, ShowWindow, HWND_TOP,
-        SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WS_CHILD, WS_CLIPSIBLINGS,
+        CreateWindowExW, DestroyWindow, GetParent, GetWindow, SetWindowPos, ShowWindow, GW_CHILD,
+        HWND_TOP, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WS_CHILD, WS_CLIPSIBLINGS,
     };
 
     use super::{to_physical, CssRect, EmbedHost};
@@ -137,7 +142,14 @@ mod windows_host {
             let (tx, rx) = channel();
             let app = self.app.clone();
             let live = self.live.clone();
+            // Posé si la réponse n'arrive pas à temps : la création, si elle n'a pas encore eu
+            // lieu, est alors abandonnée.
+            let abandoned = Arc::new(AtomicBool::new(false));
+            let gave_up = abandoned.clone();
             let sent = self.app.run_on_main_thread(move || {
+                if gave_up.load(Ordering::SeqCst) {
+                    return;
+                }
                 let parent = app
                     .get_webview_window("main")
                     .and_then(|window| window.hwnd().ok())
@@ -180,6 +192,20 @@ mod windows_host {
                 Ok(id) => id,
                 Err(_) => {
                     tracing::warn!("création de la fenêtre d'accueil du player sans réponse");
+                    abandoned.store(true, Ordering::SeqCst);
+                    // Si la création a eu lieu entre-temps, la fenêtre est détruite : posté
+                    // après la création (ordre d'envoi), avant toute création suivante (le
+                    // créneau du player est tenu par l'appelant jusqu'à notre retour).
+                    let live = self.live.clone();
+                    let _ = self.app.run_on_main_thread(move || {
+                        let orphan = live.lock().unwrap_or_else(PoisonError::into_inner).take();
+                        if let Some(hwnd) = orphan {
+                            // SAFETY : fenêtre créée par ce thread et jamais remise au player.
+                            unsafe {
+                                DestroyWindow(hwnd as HWND);
+                            }
+                        }
+                    });
                     None
                 }
             }
@@ -217,6 +243,23 @@ mod windows_host {
                                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
                             );
                         }
+                    }
+                }
+            });
+        }
+
+        fn focus(&self, hwnd: isize) {
+            let live = self.live.clone();
+            let _ = self.app.run_on_main_thread(move || {
+                if *live.lock().unwrap_or_else(PoisonError::into_inner) != Some(hwnd) {
+                    return;
+                }
+                // SAFETY : `hwnd` est la fenêtre d'accueil vivante ; son enfant est la fenêtre
+                // du player, dont la file d'entrée est liée à ce thread (fenêtre enfant).
+                unsafe {
+                    let player = GetWindow(hwnd as HWND, GW_CHILD);
+                    if !player.is_null() {
+                        SetFocus(player);
                     }
                 }
             });

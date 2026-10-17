@@ -23,6 +23,7 @@ import {
   launchFolderStory,
   launchPlayer,
   onPlayerExited,
+  onPlayerUpdated,
   onPlayerStarted,
   type PlayerSession,
 } from "../../api/player";
@@ -269,6 +270,15 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     }, []),
   );
   useListener(
+    onPlayerUpdated,
+    useCallback((updated: PlayerSession) => {
+      // Même partie (pid), le player s'est ouvert dans sa fenêtre : écran Lecture quitté.
+      setSession((current) =>
+        current && current.pid === updated.pid ? updated : current,
+      );
+    }, []),
+  );
+  useListener(
     onPlayerExited,
     useCallback(
       (event) => {
@@ -468,6 +478,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
       installed,
       installedRevision,
       session,
+      forgetSession: () => setSession(null),
       panelTasks: visible.map((task) => toPanelTask(task, details[task.id])),
       activeTaskFor: activeFor,
       failedTaskFor: (entry) =>

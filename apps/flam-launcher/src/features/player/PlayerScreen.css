@@ -23,6 +23,25 @@
   white-space: nowrap;
 }
 
+.fl-player-screen__title:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.fl-player-screen__actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-2);
+}
+
+/* Hors de la zone d'accueil : la fenêtre native du player ne peut pas le masquer. */
+.fl-player-screen__error {
+  margin: 0;
+  padding: var(--space-2) var(--space-5);
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
 .fl-player-screen__main {
   display: flex;
   flex: 1;

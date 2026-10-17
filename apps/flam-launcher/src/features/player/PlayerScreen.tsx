@@ -1,14 +1,21 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { toAppError } from "../../api/error";
 import {
+  focusEmbeddedPlayer,
   setPlayerEmbedLayout,
   stopPlayer,
   type EmbedRect,
   type PlayerSession,
 } from "../../api/player";
-import { Button, useToast } from "../../components";
+import { Button } from "../../components";
 import { t } from "../../i18n";
 import "./PlayerScreen.css";
+
+/**
+ * Délai au-delà duquel « Arrêter » est rendu de nouveau disponible si la fin du player n'est
+ * pas arrivée (le backend force l'arrêt après 5 s) : l'écran a toujours une issue.
+ */
+export const STOP_TIMEOUT_MS = 10_000;
 
 function sameRect(a: EmbedRect | null, b: EmbedRect): boolean {
   return (
@@ -59,32 +66,79 @@ function useEmbedZone(zone: RefObject<HTMLDivElement | null>) {
 /**
  * Écran Lecture : affiché à la place de l'application tant qu'un player incrusté tourne. La
  * zone d'accueil reçoit la fenêtre du player ; « Arrêter » le termine proprement.
+ *
+ * Les erreurs sont affichées dans l'en-tête (`role="alert"`), jamais par une notification : la
+ * fenêtre native du player, posée au-dessus de la page, pourrait la masquer. `onGone` est
+ * appelé si le backend répond qu'aucun player ne tourne (fin de partie manquée).
  */
-export function PlayerScreen({ session }: { session: PlayerSession }) {
+export function PlayerScreen({
+  session,
+  onGone,
+}: {
+  session: PlayerSession;
+  onGone: () => void;
+}) {
   const zone = useRef<HTMLDivElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const [stopping, setStopping] = useState(false);
-  const toast = useToast();
+  const [error, setError] = useState<string | null>(null);
   useEmbedZone(zone);
+
+  // Focus au montage : l'élément qui a lancé la lecture vient d'être démonté.
+  useEffect(() => {
+    heading.current?.focus();
+  }, []);
+
+  // Filet : sans fin de partie après le délai, « Arrêter » redevient disponible.
+  useEffect(() => {
+    if (!stopping) return;
+    const timer = window.setTimeout(() => {
+      setStopping(false);
+      setError(t.playerScreen.stopTimeout);
+    }, STOP_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [stopping]);
 
   function stop() {
     setStopping(true);
-    stopPlayer().catch((caught: unknown) => {
-      setStopping(false);
-      toast.show({
-        message: `${t.playerScreen.stopFailed} ${toAppError(caught).message}`,
-        tone: "danger",
+    setError(null);
+    stopPlayer()
+      .then((running) => {
+        // Aucun player côté backend : la fin a été manquée, l'écran se ferme.
+        if (!running) onGone();
+      })
+      .catch((caught: unknown) => {
+        setStopping(false);
+        setError(`${t.playerScreen.stopFailed} ${toAppError(caught).message}`);
       });
-    });
   }
 
   return (
     <div className="fl-player-screen">
       <header className="fl-player-screen__header">
-        <h1 className="fl-player-screen__title">{session.title}</h1>
-        <Button variant="danger" icon="close" onClick={stop} disabled={stopping}>
-          {stopping ? t.playerScreen.stopping : t.playerScreen.stop}
-        </Button>
+        <h1 ref={heading} className="fl-player-screen__title" tabIndex={-1}>
+          {session.title}
+        </h1>
+        <div className="fl-player-screen__actions">
+          <Button
+            variant="secondary"
+            icon="play"
+            onClick={() => {
+              focusEmbeddedPlayer().catch(() => undefined);
+            }}
+          >
+            {t.playerScreen.focus}
+          </Button>
+          <Button variant="danger" icon="close" onClick={stop} disabled={stopping}>
+            {stopping ? t.playerScreen.stopping : t.playerScreen.stop}
+          </Button>
+        </div>
       </header>
+      {error && (
+        <p className="fl-player-screen__error" role="alert">
+          {error}
+        </p>
+      )}
       <main className="fl-player-screen__main" aria-label={t.playerScreen.label}>
         <div
           ref={zone}
