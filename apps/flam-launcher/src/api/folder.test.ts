@@ -87,6 +87,32 @@ it("watchFolder appelle folder_watch", async () => {
   ]);
 });
 
+it("watchFolder exécute les appels dans l'ordre, sans chevauchement", async () => {
+  const events: string[] = [];
+  mockIPC(async (_cmd, args) => {
+    const { enabled } = args as { enabled: boolean };
+    events.push(`début ${enabled}`);
+    // Le démarrage est plus lent que l'arrêt : sans file, l'arrêt le doublerait.
+    await new Promise((resolve) => setTimeout(resolve, enabled ? 30 : 0));
+    events.push(`fin ${enabled}`);
+    return null;
+  });
+  await Promise.all([watchFolder("s", true), watchFolder("s", false)]);
+  expect(events).toEqual(["début true", "fin true", "début false", "fin false"]);
+});
+
+it("watchFolder continue la file après une erreur", async () => {
+  let n = 0;
+  mockIPC(() => {
+    if (n++ === 0) throw { kind: "folder_unavailable", message: "absent" };
+    return null;
+  });
+  const first = watchFolder("s", true);
+  const second = watchFolder("s", false);
+  await expect(first).rejects.toMatchObject({ kind: "folder_unavailable" });
+  await expect(second).resolves.toBeNull();
+});
+
 it("watchFolder normalise l'erreur d'un dossier disparu", async () => {
   mockIPC(() => {
     throw { kind: "folder_unavailable", message: "dossier introuvable" };
