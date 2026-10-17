@@ -49,6 +49,8 @@ FIXED_DATE = (1980, 1, 1, 0, 0, 0)
 # Etiquettes des cas (consommees par parity.py pour la liste fermee des ecarts admis)
 TAG_JSON_LIMIT = "json_limit"          # §3 : JSON limites, divergence assumee du Rust (code 4)
 TAG_ENCRYPTED = "encrypted_entry"      # §3 : entree chiffree (Python 6, Rust 3)
+TAG_BAD_UTF8_NAME = "invalid_utf8_name"    # §4.1 : nom UTF-8 invalide, bit 11 (Python 6, Rust 3)
+TAG_NEGATIVE_OFFSET = "negative_offset"    # §4.1 : position d'en-tete locale < 0 (Python 6, Rust 3)
 TAG_DELEGATED = "delegated"            # D4 : bzip2/LZMA, image non PNG (Rust : code 7)
 
 
@@ -76,6 +78,40 @@ def zip_bytes(files, compress=zipfile.ZIP_STORED, encrypted=()):
             elif data[i - 46:i - 42] == b"PK":    # repertoire central : +8
                 data[i - 46 + 8] |= 0x01
             i = data.find(raw, i + 1)
+    return bytes(data)
+
+
+def zip_bad_utf8_name(files, name="audios/s0.mp3"):
+    """Archive dont l'entree `name` porte le bit 11 (UTF-8) et un nom d'octets non UTF-8
+    (dernier octet 0xFF, meme longueur) dans l'en-tete local et le repertoire central."""
+    data = bytearray(zip_bytes(files))
+    raw = name.encode("utf-8")
+    bad = raw[:-1] + b"\xff"
+    count = 0
+    i = data.find(raw)
+    while i != -1:
+        if data[i - 30:i - 26] == b"PK\x03\x04":      # en-tete local : drapeaux a +6
+            data[i - 30 + 7] |= 0x08                  # octet haut des drapeaux : bit 11
+        elif data[i - 46:i - 42] == b"PK\x01\x02":    # repertoire central : drapeaux a +8
+            data[i - 46 + 9] |= 0x08
+        else:
+            i = data.find(raw, i + 1)
+            continue
+        data[i:i + len(raw)] = bad
+        count += 1
+        i = data.find(raw, i + 1)
+    assert count == 2, count
+    return bytes(data)
+
+
+def zip_negative_header_offset(files):
+    """Archive dont le decalage du repertoire central (EOCD) est trop grand : le decalage
+    de concatenation devient negatif, donc la position de l'en-tete local de la premiere
+    entree aussi (zipfile : seek negatif, OSError)."""
+    data = bytearray(zip_bytes(files))
+    eocd = data.rfind(b"PK\x05\x06")
+    off = struct.unpack_from("<I", data, eocd + 16)[0]
+    struct.pack_into("<I", data, eocd + 16, off + 1000)
     return bytes(data)
 
 
@@ -362,6 +398,9 @@ def corpus_cases():
     add("zip_crc_corrupt", _crc_corrupt)
     add("zip_encrypted_entry", lambda: zip_bytes(S(), encrypted=["audios/s0.mp3"]),
         tags=[TAG_ENCRYPTED])
+    add("zip_invalid_utf8_name", lambda: zip_bad_utf8_name(S()), tags=[TAG_BAD_UTF8_NAME])
+    add("zip_negative_header_offset", lambda: zip_negative_header_offset(S()),
+        tags=[TAG_NEGATIVE_OFFSET])
     add("zip_deflate", lambda: zip_bytes(S(), compress=zipfile.ZIP_DEFLATED))
     add("zip_bzip2_entry", lambda: zip_bytes(S(), compress={"audios/s0.mp3": zipfile.ZIP_BZIP2}),
         tags=[TAG_DELEGATED])
