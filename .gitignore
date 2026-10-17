@@ -24,6 +24,8 @@ __pycache__/
 # Jeux : sortie de build ; les PNG sources des jeux sont versionnes
 games/*/_out/
 !games/*/img/*.png
+# Vecteurs de parite du decodage PNG (telmi2flam-rs), generes par gen_png_vectors.py
+!crates/telmi2flam/tests/vectors/png/*.png
 
 # Editor / OS
 .vscode/
