@@ -206,8 +206,14 @@ Invariants (repris de Python, à tester côté Rust) :
 - **Écarts admis**, listés une fois pour toutes dans `parity.py` : délégation
   `unsupported_format` (code 7, D4 : comptée à part, voir §4.3), entrée chiffrée (code 3 en
   Rust, 6 en Python), et les cas JSON
-  du tableau §3 tranchés comme « divergence assumée ». Tout autre écart fait échouer la
-  comparaison.
+  du tableau §3 tranchés comme « divergence assumée ». Deux autres écarts du lecteur ZIP
+  suivent le même raisonnement que l'entrée chiffrée : le Rust classe l'archive illisible
+  (`archive_unreadable`, code 3) là où Python échoue en `internal_error` (code 6) sur une
+  exception non rattrapée. Ce sont le **nom d'entrée UTF-8 invalide avec le bit 11**
+  (`UnicodeDecodeError`, règle `invalid_utf8_name`) et la **position d'en-tête locale
+  négative** (`OSError`, règle `negative_offset`). Chaque règle est limitée à une étiquette
+  de cas du corpus et au couple de codes exact (Python 6 / Rust 3). Tout autre écart fait
+  échouer la comparaison.
 
 ### 4.2 Images : le point dur
 
