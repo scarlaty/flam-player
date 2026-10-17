@@ -95,6 +95,9 @@ jobs:
       - name: Convertisseur embarqué (Python + Pillow, SHA-256 vérifiés)
         run: npm run build:converter
 
+      - name: ffmpeg LGPL embarqué (SHA-256 vérifié, sans GPL, transcodage WAV vers MP3)
+        run: npm run build:ffmpeg
+
       - name: flam-player.exe et SDL2.dll (CMake, Release)
         run: npm run build:player
 
@@ -136,9 +139,17 @@ jobs:
           $p = Start-Process -FilePath $setup.FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "installateur : code $($p.ExitCode)" }
           foreach ($f in 'flam-launcher.exe', 'flam-player.exe', 'SDL2.dll', 'LICENSES.md', 'uninstall.exe',
-              'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt') {
+              'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt',
+              'ffmpeg/ffmpeg.exe', 'ffmpeg/ffprobe.exe', 'ffmpeg/avcodec-62.dll', 'ffmpeg/LICENSE', 'ffmpeg/BUILD.txt') {
             if (-not (Test-Path (Join-Path $dest $f))) { throw "fichier absent de l'installation : $f" }
           }
+          # ffmpeg installé : ni GPL ni nonfree, libmp3lame présent (le script de build l'a déjà contrôlé,
+          # ici on vérifie ce que l'installateur a réellement déposé, DLL comprises).
+          $ErrorActionPreference = 'Continue'
+          $ff = Join-Path $dest 'ffmpeg/ffmpeg.exe'
+          $conf = (& $ff -hide_banner -buildconf 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $conf -match '--enable-(gpl|nonfree)(\s|$)' -or $conf -notmatch '--enable-libmp3lame') { throw "ffmpeg installé : configuration refusée`n$conf" }
+          if ((& $ff -hide_banner -encoders 2>&1 | Out-String) -notmatch 'libmp3lame') { throw 'ffmpeg installé : libmp3lame absent' }
           # Seuil de 1000 octets : une génération qui a échoué ou vidé le fichier laisserait quelques
           # lignes d'en-tête ; le fichier réel (centaines de paquets) fait plusieurs centaines de Ko.
           if ((Get-Item (Join-Path $dest 'THIRD-PARTY-NOTICES.txt')).Length -lt 1000) { throw 'THIRD-PARTY-NOTICES.txt installé : moins de 1000 octets' }

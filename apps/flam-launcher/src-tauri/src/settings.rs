@@ -290,6 +290,36 @@ pub fn detect_bundled_python(env: &Environment) -> Option<PathBuf> {
     (is_nonempty_file(&python) && dir.join("telmi2flam.py").is_file()).then_some(python)
 }
 
+/// Dossier de ffmpeg embarqué, à côté de l'exécutable (ressource Tauri `ffmpeg/` produite par
+/// `scripts/build-ffmpeg.ps1`, #209) : `ffmpeg.exe`, ses DLL, `LICENSE` et `BUILD.txt`.
+pub const BUNDLED_FFMPEG_DIR: &str = "ffmpeg";
+
+/// Nom de l'exécutable ffmpeg.
+pub const FFMPEG_EXE: &str = if cfg!(windows) {
+    "ffmpeg.exe"
+} else {
+    "ffmpeg"
+};
+
+/// Cherche le ffmpeg LGPL embarqué : `<exe>/ffmpeg/ffmpeg.exe` sinon (développement)
+/// `build/ffmpeg/ffmpeg.exe` d'un dossier ancêtre. Aucun ffmpeg du `PATH` n'est jamais retenu
+/// (build GPL possible) et aucun processus n'est lancé. Pas de réglage de surcharge pour
+/// l'instant : la conversion audio (#214) en décidera.
+pub fn ffmpeg_path(env: &Environment) -> Option<PathBuf> {
+    let exe_dir = env.exe_dir.as_deref()?;
+    let beside = exe_dir.join(BUNDLED_FFMPEG_DIR).join(FFMPEG_EXE);
+    if is_nonempty_file(&beside) {
+        return Some(beside);
+    }
+    if env.search_repo_build {
+        return exe_dir
+            .ancestors()
+            .map(|dir| dir.join("build").join(BUNDLED_FFMPEG_DIR).join(FFMPEG_EXE))
+            .find(|candidate| is_nonempty_file(candidate));
+    }
+    None
+}
+
 /// Résultat de la recherche de Python.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PythonDetection {
@@ -1045,6 +1075,52 @@ mod tests {
         let mut env = env;
         env.exe_dir = None;
         assert_eq!(detect_bundled_python(&env), None);
+    }
+
+    #[test]
+    fn ffmpeg_embarque_a_cote_de_l_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path());
+        assert_eq!(ffmpeg_path(&env), None);
+        let ffmpeg = dir
+            .path()
+            .join("app")
+            .join(BUNDLED_FFMPEG_DIR)
+            .join(FFMPEG_EXE);
+        touch(&ffmpeg);
+        assert_eq!(ffmpeg_path(&env), Some(ffmpeg.clone()));
+        // Fichier vide : pas un exécutable.
+        fs::write(&ffmpeg, "").unwrap();
+        assert_eq!(ffmpeg_path(&env), None);
+        // Jamais le PATH, même avec un ffmpeg dedans.
+        let in_path = dir.path().join("bin");
+        touch(&in_path.join(FFMPEG_EXE));
+        env.path_var = path_of(&[&in_path]);
+        assert_eq!(ffmpeg_path(&env), None);
+        env.exe_dir = None;
+        assert_eq!(ffmpeg_path(&env), None);
+    }
+
+    #[test]
+    fn ffmpeg_de_developpement_dans_build_d_un_ancetre() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path());
+        let dev = dir
+            .path()
+            .join("build")
+            .join(BUNDLED_FFMPEG_DIR)
+            .join(FFMPEG_EXE);
+        touch(&dev);
+        assert_eq!(ffmpeg_path(&env), None);
+        env.search_repo_build = true;
+        assert_eq!(ffmpeg_path(&env), Some(dev));
+        let beside = dir
+            .path()
+            .join("app")
+            .join(BUNDLED_FFMPEG_DIR)
+            .join(FFMPEG_EXE);
+        touch(&beside);
+        assert_eq!(ffmpeg_path(&env), Some(beside));
     }
 
     #[test]
