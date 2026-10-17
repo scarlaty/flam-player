@@ -541,8 +541,12 @@ def interpret_run(res, benign=BENIGN_ERRORS):
     if done == "conditions":
         # #76 : des scenes restent derriere une condition / un indexItem que le pilote
         # n'a pas su satisfaire (reprises sans nouveaute) : couverture partielle
+        blocked = [str(b) for b in (res.get("blocked") or [])]
+        shown = "; ".join(blocked[:BLOCKED_SHOWN]) + (
+            " (+%d)" % (len(blocked) - BLOCKED_SHOWN) if len(blocked) > BLOCKED_SHOWN else "")
         return "warn", (["explore: conditions — scènes derrière une condition non satisfaite",
-                         partial if not full else "couverture %s/%s scènes" % (visited, total)]
+                         partial]
+                        + (["bloquées (scène>cible) : " + shown] if blocked else [])
                         + notes + msgs)
     return "ok", notes + msgs
 
@@ -553,9 +557,12 @@ _RANK = {"ok": 0, "warn": 1, "fail": 2}
 RAW_ERR_HEAD = 100          # erreurs conservees dans la fiche : les N premieres...
 RAW_ERR_TAIL = 100          # ... et les N dernieres
 RAW_ERR_LEN = 200           # caracteres par erreur
+BLOCKED_KEPT = 100          # scenes bloquees (done_reason conditions) gardees dans la fiche
+BLOCKED_SHOWN = 5           # ... et citees dans le message de l'etape run
+BLOCKED_STATUS = 50         # ... et exposees dans status.json
 _RAW_SCALARS = ("status", "done_reason", "scenes_visited", "scenes_total", "coverage",
                 "end_reached", "duration_s", "steps", "ends", "back_ends", "dead_end_backs",
-                "choices_explored", "home_escapes", "exit_code")
+                "choices_explored", "home_escapes", "exit_code", "cond_frontier")
 
 
 def bound_errors(errors):
@@ -581,6 +588,8 @@ def bound_raw(res, seed):
         raw["scenes"] = [str(x)[:100] for x in res["scenes"][:5000]]
     if isinstance(res.get("dead_end_scenes"), list):
         raw["dead_end_scenes"] = [str(x)[:RAW_ERR_LEN] for x in res["dead_end_scenes"][:200]]
+    if isinstance(res.get("blocked"), list):
+        raw["blocked"] = [str(x)[:RAW_ERR_LEN] for x in res["blocked"][:BLOCKED_KEPT]]
     raw["seed"] = seed
     return raw
 
@@ -630,6 +639,13 @@ def build_run_step(raws, params, benign, seconds):
     dead = sorted({d for r in results for d in (r.get("dead_end_scenes") or [])})
     if dead:
         st["dead_end_scenes"] = dead
+    # scenes bloquees : union des parcours, hors cibles atteintes par un autre parcours
+    reached = set().union(*sets) if sets and len(sets) == len(results) else set()
+    blocked = sorted({b for r in results for b in (r.get("blocked") or [])
+                      if r.get("done_reason") == "conditions"
+                      and b.split(">", 1)[-1].split("@", 1)[0] not in reached})
+    if blocked:
+        st["blocked"] = blocked
     if pick[0].get("done_reason"):
         st["done_reason"] = pick[0]["done_reason"]
     if len(runs) > 1:
@@ -1047,6 +1063,8 @@ def build_status(doc):
             "run_reason": run.get("done_reason"),
             "stale": bool(s.get("stale")),
         }
+        if run.get("blocked"):
+            stories[uuid]["blocked"] = list(run["blocked"][:BLOCKED_STATUS])
     return {"schema_version": STATUS_SCHEMA_VERSION, "generated": doc["generated"],
             "converter_hash": doc["converter_hash"], "stories": stories}
 
@@ -1101,6 +1119,14 @@ def render_markdown(doc):
                 r.get("dead_end_backs", "?"),
                 _md(",".join(str(x) for x in r.get("seeds", []))) or "?",
                 r.get("duration_s", "?"), r["status"]))
+        cond = [s for s in runs if s["steps"]["run"].get("blocked")]
+        if cond:
+            L += ["", "## Scenes derriere une condition (arret `conditions`)", ""]
+            for s in cond:
+                b = s["steps"]["run"]["blocked"]
+                L.append("- %s : %s%s" % (
+                    _md(s["title"]), _md("; ".join(b[:BLOCKED_SHOWN * 2])).replace("`", "'"),
+                    " (+%d)" % (len(b) - BLOCKED_SHOWN * 2) if len(b) > BLOCKED_SHOWN * 2 else ""))
         sigs = {}
         for s in runs:
             for g in s["steps"]["run"].get("error_signatures", []):
