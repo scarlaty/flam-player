@@ -1,6 +1,15 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- arguments IPC simulés, forme libre */
+import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { CatalogView } from "../../api/catalog";
 import type { FolderScan } from "../../api/folder";
@@ -86,38 +95,45 @@ beforeEach(() => {
   calls = [];
   installed = [];
   window.location.hash = "";
-  mockIPC((cmd, args) => {
-    const payload = (args ?? {}) as Record<string, any>;
-    calls.push({ cmd, args: payload });
-    const failure = failures[cmd];
-    if (failure) throw failure;
-    switch (cmd) {
-      case "sources_list":
-        return { sources, recovery: null };
-      case "catalog_entries":
-        return catalogs[payload.sourceId];
-      case "catalog_refresh": {
-        const view = refreshed[payload.sourceId] ?? catalogs[payload.sourceId];
-        if (view) catalogs[payload.sourceId] = view;
-        return view;
+  mockIPC(
+    (cmd, args) => {
+      const payload = (args ?? {}) as Record<string, any>;
+      calls.push({ cmd, args: payload });
+      const failure = failures[cmd];
+      if (failure) throw failure;
+      switch (cmd) {
+        case "sources_list":
+          return { sources, recovery: null };
+        case "catalog_entries":
+          return catalogs[payload.sourceId];
+        case "catalog_refresh": {
+          const view = refreshed[payload.sourceId] ?? catalogs[payload.sourceId];
+          if (view) catalogs[payload.sourceId] = view;
+          return view;
+        }
+        case "catalog_thumbnail":
+          return IMAGE;
+        case "folder_scan":
+          return scans[payload.sourceId];
+        case "folder_thumbnail":
+          return IMAGE;
+        case "folder_watch":
+          return null;
+        case "library_list":
+          return installed;
+        case "library_thumbnail":
+          return KEPT_IMAGE;
+        default:
+          throw { kind: "unknown", message: cmd };
       }
-      case "catalog_thumbnail":
-        return IMAGE;
-      case "folder_scan":
-        return scans[payload.sourceId];
-      case "folder_thumbnail":
-        return IMAGE;
-      case "library_list":
-        return installed;
-      case "library_thumbnail":
-        return KEPT_IMAGE;
-      default:
-        throw { kind: "unknown", message: cmd };
-    }
-  });
+    },
+    { shouldMockEvents: true },
+  );
 });
 
 afterEach(() => {
+  // Démonter avant `clearMocks` : le désabonnement des événements a encore besoin des mocks.
+  cleanup();
   clearMocks();
   window.location.hash = "";
 });
@@ -418,6 +434,55 @@ slowIt(
     await expectNoAxeViolations(document.body, PAGE_LEVEL_RULES);
   },
 );
+
+it("rafraîchit un dossier surveillé à chaque folder://changed, et l'arrête en le quittant", async () => {
+  scans.dossier = {
+    entries: [makeEntry({ source_id: "dossier", entry_id: "dossier:1", title: "Avant" })],
+    warnings: [],
+  };
+  goTo("#/library/dossier");
+  renderLibrary();
+  expect(await screen.findByText("Avant")).toBeInTheDocument();
+  await waitFor(() =>
+    expect(calls.filter((c) => c.cmd === "folder_watch").map((c) => c.args)).toEqual([
+      { sourceId: "dossier", enabled: true },
+    ]),
+  );
+
+  scans.dossier = {
+    entries: [makeEntry({ source_id: "dossier", entry_id: "dossier:2", title: "Après" })],
+    warnings: [],
+  };
+  // Un événement d'une autre source ne relance rien.
+  const scansBefore = calls.filter((c) => c.cmd === "folder_scan").length;
+  await act(() => emit("folder://changed", { source_id: "autre" }));
+  expect(calls.filter((c) => c.cmd === "folder_scan")).toHaveLength(scansBefore);
+
+  await act(() => emit("folder://changed", { source_id: "dossier" }));
+  expect(await screen.findByText("Après")).toBeInTheDocument();
+  expect(screen.queryByText("Avant")).not.toBeInTheDocument();
+
+  goTo("#/library/store");
+  await screen.findByText("Les trois ours");
+  await waitFor(() =>
+    expect(calls.filter((c) => c.cmd === "folder_watch").map((c) => c.args)).toEqual([
+      { sourceId: "dossier", enabled: true },
+      { sourceId: "dossier", enabled: false },
+    ]),
+  );
+});
+
+it("garde la liste si la surveillance du dossier ne démarre pas", async () => {
+  failures.folder_watch = { kind: "folder_unavailable", message: "Disque débranché" };
+  scans.dossier = {
+    entries: [makeEntry({ source_id: "dossier", entry_id: "dossier:1", title: "Avant" })],
+    warnings: [],
+  };
+  goTo("#/library/dossier");
+  renderLibrary();
+  expect(await screen.findByText("Avant")).toBeInTheDocument();
+  expect(screen.queryByText("Disque débranché")).not.toBeInTheDocument();
+});
 
 it("signale un dossier introuvable", async () => {
   failures.folder_scan = { kind: "folder_unavailable", message: "Disque débranché" };

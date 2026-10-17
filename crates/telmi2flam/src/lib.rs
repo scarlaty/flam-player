@@ -1,7 +1,8 @@
 //! Convertisseur d'histoires Telmi vers le format flam.
 //!
 //! Port Rust de `tools/telmi2flam` (voir `tools/telmi2flam/PORT-RUST.md`), en cours : codecs
-//! [`lif`] et [`mp3map`], décodage [`png`] ; les autres modules de conversion arrivent dans les PR suivantes.
+//! [`lif`] et [`mp3map`], décodage [`png`] ; les autres modules de conversion arrivent dans les
+//! PR suivantes.
 
 pub mod lif;
 pub mod mp3map;

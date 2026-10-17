@@ -10,8 +10,10 @@ rust-version = "1.89"
 name = "telmi2flam"
 
 [dependencies]
-# Décompression des IDAT et CRC des chunks PNG (même épinglage que la lecture de l'archive, #124).
-flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+# Décodage PNG : inflate dans un tampon non circulaire (distances vérifiées comme zlib) et CRC
+# des chunks. Versions déjà dans le Cargo.lock (dépendances de flate2).
+crc32fast = { version = "=1.5.2", default-features = false }
+miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
 
 [dev-dependencies]
 # Empreintes SHA-256 des vecteurs de parité PNG (déjà dans le Cargo.lock du launcher).
