@@ -25,7 +25,8 @@
 //! | `0x6E` | 16     | non lu ici ; rôle inconnu, à confirmer sur appareil (#236)             |
 //!
 //! La taille totale ([`MDF_LEN`], 126 octets) est celle mesurée sur l'appareil de l'inventaire ;
-//! sa validation relève de la détection (#241). Seuls les octets `0x02..0x6E` servent ici. Le
+//! sa validation relève de la détection (#241). Ce module se sert du texte de version, du numéro
+//! de série, de la clé et de l'IV ; VID et PID sont lus par la détection. Le
 //! numéro de série se décode avec [`parse_serial_field`].
 //!
 //! # Firmwares
@@ -48,8 +49,8 @@ pub const BLOCK_SIZE: usize = 16;
 pub const SERIAL_LEN: usize = 7;
 /// Taille du champ du numéro de série dans `.mdf` (caractères hexadécimaux puis octets nuls).
 pub const SERIAL_FIELD_LEN: usize = 24;
-/// Taille totale de `.mdf` mesurée sur appareil.
-pub const MDF_LEN: usize = 126;
+/// Taille totale de `.mdf` mesurée sur appareil (celle de la détection, #241).
+pub const MDF_LEN: usize = super::detect::MDF_DOCUMENTED_SIZE as usize;
 /// Offset du champ du numéro de série dans `.mdf`.
 pub const MDF_SERIAL_OFFSET: usize = 0x32;
 /// Offset de la clé AES des histoires dans `.mdf` (firmware 2.x).
@@ -132,9 +133,9 @@ pub fn encrypt_zero_padded(key: &[u8; 16], iv: &[u8; 16], plain: &[u8]) -> Vec<u
 
 /// Version de firmware prise en charge, déduite du champ « main » de `.mdf` (`2.4.2`…).
 fn check_firmware(firmware_main: &str) -> Result<(), CryptoError> {
-    let major = firmware_main.trim().split('.').next().unwrap_or("");
-    match major.parse::<u32>() {
-        Ok(2) => Ok(()),
+    // Majeur en chiffres ASCII seulement : ni signe, ni espace, ni zéro initial.
+    match firmware_main.split('.').next() {
+        Some("2") => Ok(()),
         _ => Err(CryptoError::UnsupportedFirmware(firmware_main.to_string())),
     }
 }
@@ -420,7 +421,14 @@ pub(crate) mod tests {
         nul_inside[5] = 0;
         let mut trailing = serial_field(b"00123456789abc");
         trailing[23] = b'1';
-        let cases: [Vec<u8>; 9] = [
+        let mut nul_first = serial_field(b"00123456789abc");
+        nul_first[0] = 0;
+        let mut nul_last = serial_field(b"00123456789abc");
+        nul_last[13] = 0;
+        let cases: [Vec<u8>; 12] = [
+            nul_first,
+            nul_last,
+            serial_field("00123456789aé".as_bytes()),
             serial_field(b""),
             serial_field(b"0012345678"),
             serial_field(b"00123456789ab"),
@@ -447,13 +455,15 @@ pub(crate) mod tests {
 
     #[test]
     fn firmware_hors_2x_refuse() {
-        for fw in ["1.15.14", "3.0.0", "3.1", "4.0.0", "", "abc", "20.1"] {
+        for fw in [
+            "1.15.14", "3.0.0", "3.1", "4.0.0", "", "abc", "20.1", "+2.4.2", "02.4", " 2.4.2",
+        ] {
             assert_eq!(
                 DeviceKeys::new(fw, &TEST_SERIAL, TEST_KEY, TEST_IV).unwrap_err(),
                 CryptoError::UnsupportedFirmware(fw.to_string())
             );
         }
-        for fw in ["2.0.0", "2.4.2", " 2.4.2 "] {
+        for fw in ["2", "2.0.0", "2.4.2"] {
             assert!(
                 DeviceKeys::new(fw, &TEST_SERIAL, TEST_KEY, TEST_IV).is_ok(),
                 "{fw}"
