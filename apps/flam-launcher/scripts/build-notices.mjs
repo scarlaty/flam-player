@@ -1,15 +1,19 @@
 // Génère build/THIRD-PARTY-NOTICES.txt : licences des dépendances tierces embarquées dans
 // l'application (crates Rust liées dans flam-launcher.exe, paquets npm compilés dans l'interface).
 //
-// Sources : `cargo metadata` (graphe de dépendances normales pour Windows, hors dev et build) et
-// package-lock.json (entrées non `dev`). Les textes de licence (LICENSE*, COPYING*, NOTICE*) sont
+// Sources : `cargo metadata` (dépendances normales pour Windows, hors dev, build et
+// membres du workspace) et package-lock.json (entrées non `dev`). Les textes de licence (LICENSE*, COPYING*, NOTICE*) sont
 // repris tels quels depuis les sources de chaque paquet ; aucun outil à installer (Node et cargo
 // suffisent). Échec si un paquet n'a ni licence déclarée ni texte de licence.
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isAllowedLicense, optionalMissingIsExpected } from "./notices-lib.mjs";
+import {
+  isAllowedLicense,
+  optionalMissingIsExpected,
+  thirdPartyRustIds,
+} from "./notices-lib.mjs";
 
 const launcherDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const tauriDir = join(launcherDir, "src-tauri");
@@ -49,9 +53,10 @@ function rustPackages() {
       if (dep.dep_kinds.some((k) => k.kind === null)) todo.push(dep.pkg);
     }
   }
-  seen.delete(meta.resolve.root);
+  // Hors racine et hors membres du workspace (telmi2flam, flam-launcher) : code du dépôt.
+  const third = thirdPartyRustIds(seen, meta.resolve.root, meta.workspace_members);
   return meta.packages
-    .filter((p) => seen.has(p.id))
+    .filter((p) => third.has(p.id))
     .map((p) => ({
       ecosystem: "Rust",
       name: p.name,
