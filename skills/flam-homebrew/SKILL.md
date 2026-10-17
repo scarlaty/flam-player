@@ -6,7 +6,7 @@ description: Fabrique un jeu, une histoire interactive ou une petite application
 # Homebrew FLAM (.plain.pk)
 
 Un homebrew FLAM est un paquet `.plain.pk` (ZIP non compressé) contenant un `main.lua`,
-le code du jeu en **module Lua**, le framework Lunii embarqué, des images `.lif` et de
+le code du jeu en **module Lua**, le runtime Lua du projet embarqué, des images `.lif` et de
 l'audio `.mp3`. Le firmware exécute ce Lua dans une sandbox LVGL (`lv.*`) sur un écran
 320×240 piloté par une molette.
 
@@ -25,7 +25,7 @@ firmware, pas d'import de contenus d'un autre compte.
 | `scripts/flam_build.py` | assemble le `.plain.pk` (+ dossier `.plain` pour le simulateur) et lance le check |
 | `scripts/flam_check.py` | valide un `.plain.pk` (structure, Lua, assets, pièges device) |
 | `scripts/lif.py`, `scripts/mp3map.py` | encodeurs image et table audio (utilisés par le build) |
-| `assets/runtime/` | framework Lunii à embarquer : octets exacts du casse-briques validé sur device (copié par le build, ne pas modifier ni remplacer par une autre version) |
+| `assets/runtime/` | runtime Lua du projet à embarquer, version validée sur device avec le casse-briques (copié par le build, ne pas modifier ni remplacer par une autre version) |
 | `assets/template/` | gabarits de `main.lua` et du module |
 | `references/lua-api.md` | **à lire avant d'écrire du Lua** : contrat de module, molette, dessin, timers, images, audio, polices, liste blanche d'API |
 | `references/device-pitfalls.md` | pièges device vs simulateur, protocole de test |

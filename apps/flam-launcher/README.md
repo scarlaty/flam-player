@@ -23,7 +23,7 @@ et arrivent avec les issues du jalon M3.
 
 L'installation contient tout : `flam-launcher.exe`, `flam-player.exe` et `SDL2.dll` (le
 player), le convertisseur `telmi2flam/` avec son Python embarqué (aucun Python à installer) et
-le runtime Lunii, ainsi que `LICENSES.md` et `licenses/`. Désinstaller : « Applications
+le runtime Lua du projet, ainsi que `LICENSES.md` et `licenses/`. Désinstaller : « Applications
 installées » de Windows, ou `uninstall.exe` du dossier d'installation. Les données vivent hors
 de ce dossier et survivent à une mise à jour ou une désinstallation : sources, paramètres et
 sauvegardes de progression sous `%APPDATA%`, cache (catalogues, téléchargements et histoires
