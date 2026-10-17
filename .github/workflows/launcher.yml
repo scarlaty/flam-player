@@ -229,7 +229,11 @@ jobs:
           $bytes = [IO.File]::ReadAllBytes($setup.FullName)
           $bytes[[int]($bytes.Length / 2)] = $bytes[[int]($bytes.Length / 2)] -bxor 0xFF
           [IO.File]::WriteAllBytes($bad, $bytes)
-          $c = Start-Process -FilePath $bad -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
+          $c = Start-Process -FilePath $bad -ArgumentList @('/S', "/D=$dest") -PassThru
+          if (-not $c.WaitForExit(60000)) {
+            $c.Kill($true)
+            throw 'installateur corrompu : pas de fin au bout de 60 s (boîte bloquante en mode silencieux ?)'
+          }
           if ($c.ExitCode -eq 0) { throw 'installateur corrompu accepté en mode silencieux : le contrôle CRC ne protège pas la mise à jour' }
           $diff = Compare-Object $ref (Get-InstallTree $dest)
           if ($diff) { throw "installateur corrompu : l'installation de N a été modifiée : $($diff | Out-String)" }
