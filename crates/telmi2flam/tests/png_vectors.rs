@@ -48,7 +48,11 @@ fn check_manifest(dir: &Path) -> (usize, Vec<String>) {
     for row in &rows {
         let (name, expected, rust) = (&row[0], &row[1], &row[2]);
         let got = outcome(&read(&dir.join(format!("{name}.png"))));
-        let want = if rust == "delegate" { "delegate" } else { expected };
+        let want = if rust == "delegate" {
+            "delegate"
+        } else {
+            expected
+        };
         if got != want {
             errors.push(format!("{name} : attendu {want}, obtenu {got}"));
         }
@@ -60,7 +64,12 @@ fn check_manifest(dir: &Path) -> (usize, Vec<String>) {
 fn manifeste_identique_a_pillow() {
     let (n, errors) = check_manifest(&dir());
     assert!(n > 300, "manifeste trop court : {n}");
-    assert!(errors.is_empty(), "{} écarts :\n{}", errors.len(), errors.join("\n"));
+    assert!(
+        errors.is_empty(),
+        "{} écarts :\n{}",
+        errors.len(),
+        errors.join("\n")
+    );
 }
 
 #[test]
@@ -86,16 +95,35 @@ fn troncatures_et_octets_alteres_identiques_a_pillow() {
             op => panic!("opération inconnue {op}"),
         };
         let got = outcome(&data);
-        if got == "delegate" {
+        if !data.starts_with(&[0x89, b'P', b'N', b'G', 13, 10, 26, 10]) {
+            // autre format : toujours délégué (Pillow pourrait le lire)
+            if got != "delegate" {
+                errors.push(format!(
+                    "{} {} {} : non délégué ({got})",
+                    row[0], row[1], arg
+                ));
+            }
+        } else if got == "delegate" {
             // délégation à Python : jamais une divergence, mais doit rester rare
             delegated += 1;
         } else if got != row[3] {
-            errors.push(format!("{} {} {} : attendu {}, obtenu {got}", row[0], row[1], arg, row[3]));
+            errors.push(format!(
+                "{} {} {} : attendu {}, obtenu {got}",
+                row[0], row[1], arg, row[3]
+            ));
         }
     }
     assert!(rows.len() > 900);
-    assert!(errors.is_empty(), "{} écarts :\n{}", errors.len(), errors.join("\n"));
-    assert!(delegated * 50 < rows.len(), "trop de délégations : {delegated}");
+    assert!(
+        errors.is_empty(),
+        "{} écarts :\n{}",
+        errors.len(),
+        errors.join("\n")
+    );
+    assert!(
+        delegated * 50 < rows.len(),
+        "trop de délégations : {delegated}"
+    );
 }
 
 /// Matrice de `make_corpus.py` (#123), produite hors dépôt par
@@ -108,5 +136,10 @@ fn matrice_make_corpus() {
     let (n, errors) = check_manifest(&dir);
     eprintln!("{n} images de la matrice comparées");
     assert!(n > 0);
-    assert!(errors.is_empty(), "{} écarts :\n{}", errors.len(), errors.join("\n"));
+    assert!(
+        errors.is_empty(),
+        "{} écarts :\n{}",
+        errors.len(),
+        errors.join("\n")
+    );
 }

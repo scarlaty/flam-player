@@ -2,7 +2,7 @@
 //! exécuté avec **Pillow 12.3.0** : mêmes pixels, et image illisible exactement quand Python lève
 //! une exception (avertissement `image_unreadable`).
 //!
-//! Décodeur écrit à la main au-dessus de `flate2` (et non la crate `png`) pour reproduire les
+//! Décodeur écrit à la main au-dessus de `miniz_oxide` (et non la crate `png`) pour reproduire les
 //! choix de Pillow sur des entrées non fiables :
 //! - CRC vérifié seulement pour les chunks **avant** le premier IDAT ; ni pour les IDAT ni après ;
 //! - lecture arrêtée dès la dernière ligne décodée : données en trop, chunks suivants, IEND
@@ -23,7 +23,12 @@
 
 use std::fmt;
 
-use flate2::{Crc, Decompress, FlushDecompress, Status};
+use miniz_oxide::inflate::core::inflate_flags::{
+    TINFL_FLAG_HAS_MORE_INPUT, TINFL_FLAG_PARSE_ZLIB_HEADER,
+    TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF,
+};
+use miniz_oxide::inflate::core::{decompress, DecompressorOxide};
+use miniz_oxide::inflate::TINFLStatus;
 
 /// `PIL.Image.MAX_IMAGE_PIXELS` : au-delà du double, Pillow refuse l'image.
 pub const MAX_IMAGE_PIXELS: u64 = 1024 * 1024 * 1024 / 4 / 3;
@@ -33,8 +38,6 @@ const MAX_BLOCK: usize = 65536;
 const MAX_TEXT_CHUNK: usize = 1024 * 1024;
 const MAX_TEXT_MEMORY: usize = 64 * MAX_TEXT_CHUNK;
 const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-/// Au-delà du dictionnaire de miniz (32 Kio) et d'une copie maximale (258 octets).
-const DECODE_AHEAD: u64 = 64 * 1024;
 
 /// Image décodée, RGBA8888 par lignes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,14 +79,14 @@ fn unreadable<T>(why: &'static str) -> Result<T> {
 /// Modes de Pillow (`PngImagePlugin._MODES`) pour (profondeur, type de couleur).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    Bit,      // gris 1 bit -> « 1 »
-    Gray,     // gris 2/4/8 bits -> « L »
-    Gray16,   // gris 16 bits -> « I;16 »
-    Rgb,      // RGB 8/16 bits
-    Palette,  // palette 1/2/4/8 bits -> « P »
-    GrayA,    // gris + alpha 8 bits -> « LA »
-    GrayA16,  // gris + alpha 16 bits -> « RGBA » (brut « LA;16B »)
-    RgbaMode, // RGBA 8/16 bits
+    Bit,     // gris 1 bit -> « 1 »
+    Gray,    // gris 2/4/8 bits -> « L »
+    Gray16,  // gris 16 bits -> « I;16 »
+    Rgb,     // RGB 8/16 bits
+    Palette, // palette 1/2/4/8 bits -> « P »
+    GrayA,   // gris + alpha 8 bits -> « LA »
+    GrayA16, // gris + alpha 16 bits -> « RGBA » (brut « LA;16B »)
+    Rgba4,   // RGBA 8/16 bits
 }
 
 fn pillow_mode(depth: u8, color: u8) -> Option<Mode> {
@@ -95,7 +98,7 @@ fn pillow_mode(depth: u8, color: u8) -> Option<Mode> {
         (1 | 2 | 4 | 8, 3) => Mode::Palette,
         (8, 4) => Mode::GrayA,
         (16, 4) => Mode::GrayA16,
-        (8 | 16, 6) => Mode::RgbaMode,
+        (8 | 16, 6) => Mode::Rgba4,
         _ => return None,
     })
 }
@@ -149,6 +152,77 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// Décompresseur zlib dans un tampon sans retour circulaire : comme zlib (et non comme le mode
+/// circulaire de miniz), une distance qui remonte avant le début des données est une erreur.
+struct Inflater {
+    state: Box<DecompressorOxide>,
+    out: Vec<u8>,
+    /// Octets produits dans `out`.
+    pos: usize,
+    done: bool,
+}
+
+/// Résultat d'un appel à [`Inflater::run`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// Octets d'entrée consommés.
+    Consumed(usize),
+    /// Flux zlib invalide (`zlib.error`, ou `IMAGING_CODEC_BROKEN` de `ZipDecode.c`).
+    Broken,
+}
+
+impl Inflater {
+    fn new(capacity: usize) -> Result<Self> {
+        Ok(Inflater {
+            state: Box::default(),
+            out: alloc(capacity)?,
+            pos: 0,
+            done: false,
+        })
+    }
+
+    /// Décompresse `input` sans dépasser `limit` octets produits au total.
+    fn run(&mut self, input: &[u8], limit: usize) -> Step {
+        if self.done {
+            return Step::Consumed(0);
+        }
+        let flags = TINFL_FLAG_PARSE_ZLIB_HEADER
+            | TINFL_FLAG_HAS_MORE_INPUT
+            | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
+        let limit = limit.min(self.out.len());
+        let (status, used, written) = decompress(
+            &mut self.state,
+            input,
+            &mut self.out[..limit],
+            self.pos,
+            flags,
+        );
+        self.pos += written;
+        match status {
+            TINFLStatus::Done => self.done = true,
+            TINFLStatus::NeedsMoreInput | TINFLStatus::HasMoreOutput => {}
+            _ => return Step::Broken,
+        }
+        Step::Consumed(used)
+    }
+
+    /// Ce que zlib fait encore de `input` une fois la sortie pleine : il traite la fin de bloc
+    /// et vérifie l'Adler-32, mais s'arrête au premier octet à produire. `Ok(true)` : il reste
+    /// un octet à produire.
+    fn probe(&mut self, input: &[u8]) -> std::result::Result<bool, ()> {
+        let before = self.pos;
+        let step = self.run(input, before + 1);
+        if self.pos > before {
+            // zlib s'arrête sur cet octet : ce que miniz lit ensuite (Adler-32…) ne compte pas
+            return Ok(true);
+        }
+        match step {
+            Step::Broken => Err(()),
+            Step::Consumed(_) => Ok(false),
+        }
+    }
+}
+
 /// Résultat de `_safe_zlib_decompress`.
 enum Inflated {
     Data(Vec<u8>),
@@ -156,65 +230,25 @@ enum Inflated {
     ZlibError,
 }
 
-/// `_safe_zlib_decompress` : au plus `MAX_TEXT_CHUNK` octets, `ValueError` au-delà.
+/// `_safe_zlib_decompress` : au plus `MAX_TEXT_CHUNK` octets (`ValueError` au-delà). Un flux
+/// tronqué n'est pas une erreur.
 fn safe_zlib_decompress(input: &[u8]) -> Result<Inflated> {
-    let mut z = Decompress::new(true);
-    let mut out = vec![0u8; MAX_TEXT_CHUNK];
-    loop {
-        let (i0, o0) = (z.total_in() as usize, z.total_out() as usize);
-        let status = match z.decompress(&input[i0..], &mut out[o0..], FlushDecompress::None) {
-            Ok(s) => s,
-            Err(_) => return Ok(Inflated::ZlibError),
-        };
-        let (i1, o1) = (z.total_in() as usize, z.total_out() as usize);
-        if o1 == MAX_TEXT_CHUNK && status != Status::StreamEnd {
-            // sortie pleine : zlib continue sans place (fin de bloc, Adler-32) ; une sortie de
-            // plus signifie des données au-delà de la limite (`unconsumed_tail` non vide)
-            return match probe(&mut z, &input[i1..]) {
-                Probe::MoreOutput => unreadable("texte compressé trop grand"),
-                Probe::Error => Ok(Inflated::ZlibError),
-                Probe::Done => {
-                    out.truncate(o1);
-                    Ok(Inflated::Data(out))
-                }
-            };
-        }
-        if status == Status::StreamEnd || (i1 == i0 && o1 == o0) {
-            out.truncate(o1);
-            return Ok(Inflated::Data(out));
+    let mut z = Inflater::new(MAX_TEXT_CHUNK + 1)?;
+    let used = match z.run(input, MAX_TEXT_CHUNK) {
+        Step::Broken => return Ok(Inflated::ZlibError),
+        Step::Consumed(n) => n,
+    };
+    if z.pos == MAX_TEXT_CHUNK && !z.done {
+        // sortie pleine : `unconsumed_tail` non vide si zlib a encore un octet à produire
+        match z.probe(&input[used..]) {
+            Ok(true) => return unreadable("texte compressé trop grand"),
+            Err(()) => return Ok(Inflated::ZlibError),
+            Ok(false) => {}
         }
     }
-}
-
-enum Probe {
-    MoreOutput,
-    Error,
-    Done,
-}
-
-/// Ce que zlib fait encore de `input` sans place en sortie : il traite la fin de bloc et
-/// vérifie l'Adler-32, mais s'arrête au premier octet à produire.
-fn probe(z: &mut Decompress, input: &[u8]) -> Probe {
-    let mut off = 0;
-    let mut byte = [0u8; 1];
-    loop {
-        let (i0, o0) = (z.total_in(), z.total_out());
-        let status = match z.decompress(&input[off..], &mut byte, FlushDecompress::None) {
-            Err(_) => return Probe::Error,
-            Ok(status) => status,
-        };
-        if z.total_out() > o0 {
-            return Probe::MoreOutput;
-        }
-        if status == Status::StreamEnd {
-            return Probe::Done;
-        }
-        let used = (z.total_in() - i0) as usize;
-        off += used;
-        if used == 0 || off >= input.len() {
-            return Probe::Done;
-        }
-    }
+    let n = z.pos.min(MAX_TEXT_CHUNK);
+    z.out.truncate(n);
+    Ok(Inflated::Data(z.out))
 }
 
 /// Clé de transparence retenue par Pillow et `_trns_mask`.
@@ -255,7 +289,7 @@ impl Header {
     fn ancillary(&mut self, kind: &[u8; 4], s: &[u8]) -> Result<()> {
         match kind {
             b"gAMA" if s.len() < 4 => unreadable("gAMA court"),
-            b"cHRM" if s.len() % 4 != 0 => unreadable("cHRM de longueur invalide"),
+            b"cHRM" if !s.len().is_multiple_of(4) => unreadable("cHRM de longueur invalide"),
             b"sRGB" if s.is_empty() => unreadable("sRGB vide"),
             b"pHYs" if s.len() < 9 => unreadable("pHYs court"),
             b"tEXt" => {
@@ -340,10 +374,11 @@ fn split_nul(s: &[u8]) -> (&[u8], &[u8]) {
 }
 
 fn crc_ok(kind: &[u8; 4], data: &[u8], stored: &[u8]) -> bool {
-    let mut crc = Crc::new();
+    let mut crc = crc32fast::Hasher::new();
     crc.update(kind);
     crc.update(data);
-    stored.len() == 4 && crc.sum() == u32::from_be_bytes([stored[0], stored[1], stored[2], stored[3]])
+    stored.len() == 4
+        && crc.finalize() == u32::from_be_bytes([stored[0], stored[1], stored[2], stored[3]])
 }
 
 /// `PngImageFile._open` : chunks jusqu'au premier IDAT. Rend l'en-tête et la longueur de ce
@@ -464,7 +499,7 @@ fn read_trns(h: &mut Header, s: &[u8]) -> Result<()> {
             }
             Trns::Rgb(i16(0), i16(2), i16(4))
         }
-        Mode::GrayA | Mode::GrayA16 | Mode::RgbaMode => return Ok(()),
+        Mode::GrayA | Mode::GrayA16 | Mode::Rgba4 => return Ok(()),
     };
     if h.trns.is_some() {
         return Err(PngError::Unsupported("tRNS répété"));
@@ -481,7 +516,7 @@ fn palette_table(h: &Header) -> Result<Vec<[u8; 4]>> {
         if p.len() / 3 > 256 {
             return unreadable("palette trop longue");
         }
-        for (entry, rgb) in table.iter_mut().zip(p.chunks_exact(3)) {
+        for (entry, rgb) in table.iter_mut().zip(p.as_chunks::<3>().0) {
             entry[..3].copy_from_slice(rgb);
         }
     }
@@ -504,7 +539,8 @@ fn palette_table(h: &Header) -> Result<Vec<[u8; 4]>> {
 }
 
 /// Flux des données d'image, servi comme `PngImageFile.load_read` : blocs d'au plus
-/// `MAX_BLOCK` octets dans chaque IDAT (ou `DDAT`) consécutif, CRC non vérifiés.
+/// `MAX_BLOCK` octets dans chaque IDAT (ou `DDAT`) consécutif, CRC non vérifiés. Les lignes
+/// brutes (octet de filtre compris) sont décompressées dans `z.out`.
 struct IdatStream<'a> {
     cur: Cursor<'a>,
     /// Octets restant à lire dans le chunk courant (longueur annoncée).
@@ -512,10 +548,9 @@ struct IdatStream<'a> {
     /// Bloc courant et position dans ce bloc.
     block: &'a [u8],
     used: usize,
-    z: Decompress,
-    ended: bool,
-    /// Octets décompressés encore attendus (toutes les lignes de toutes les passes).
-    left: u64,
+    z: Inflater,
+    /// Taille totale des lignes brutes de l'image.
+    total: usize,
 }
 
 impl<'a> IdatStream<'a> {
@@ -540,42 +575,19 @@ impl<'a> IdatStream<'a> {
         Ok(())
     }
 
-    /// Remplit `buf` avec les données décompressées suivantes.
-    fn fill(&mut self, buf: &mut [u8]) -> Result<()> {
-        let mut filled = 0;
-        // miniz consomme l'entrée d'avance (zlib la lit au fil de la sortie) : un bloc épuisé
-        // peut encore donner des lignes ; on ne lit le bloc suivant qu'à sortie tarie
-        let mut idle = false;
-        while filled < buf.len() {
-            if self.used >= self.block.len() && idle {
-                self.next_block()?;
-            }
-            // miniz décode jusqu'à 32 Kio d'avance ; près de la fin de l'image, l'entrée est
-            // donnée octet par octet pour ne pas lire (et refuser) ce que zlib ne lirait pas
-            let rest = &self.block[self.used..];
-            let feed = if self.left > DECODE_AHEAD {
-                rest
-            } else {
-                &rest[..rest.len().min(1)]
-            };
-            let (i0, o0) = (self.z.total_in(), self.z.total_out());
-            let status = self
-                .z
-                .decompress(feed, &mut buf[filled..], FlushDecompress::None)
-                .or_else(|_| unreadable("flux zlib corrompu"))?;
-            self.used += (self.z.total_in() - i0) as usize;
-            filled += (self.z.total_out() - o0) as usize;
-            self.left -= self.z.total_out() - o0;
-            idle = self.z.total_in() == i0 && self.z.total_out() == o0;
-            if status == Status::StreamEnd {
-                self.ended = true;
-            }
-            if filled < buf.len() && self.ended {
+    /// Décompresse jusqu'à disposer des `n` premiers octets bruts.
+    fn ensure(&mut self, n: usize) -> Result<()> {
+        while self.z.pos < n {
+            if self.z.done {
                 // flux terminé avant la dernière ligne : Pillow lit jusqu'au bout et échoue
                 return unreadable("données d'image incomplètes");
             }
-            if idle && !feed.is_empty() {
-                return unreadable("flux zlib bloqué");
+            if self.used >= self.block.len() {
+                self.next_block()?;
+            }
+            match self.z.run(&self.block[self.used..], self.total) {
+                Step::Broken => return unreadable("flux zlib corrompu"),
+                Step::Consumed(k) => self.used += k,
             }
         }
         Ok(())
@@ -583,12 +595,9 @@ impl<'a> IdatStream<'a> {
 
     /// Fin de l'image : zlib a encore vu le reste du bloc courant (fin de flux, Adler-32).
     fn finish(&mut self) -> Result<()> {
-        if self.ended {
-            return Ok(());
-        }
-        match probe(&mut self.z, &self.block[self.used..]) {
-            Probe::Error => unreadable("flux zlib corrompu"),
-            _ => Ok(()),
+        match self.z.probe(&self.block[self.used..]) {
+            Err(()) => unreadable("flux zlib corrompu"),
+            Ok(_) => Ok(()),
         }
     }
 
@@ -643,7 +652,8 @@ fn alloc(n: usize) -> Result<Vec<u8>> {
     Ok(v)
 }
 
-fn unfilter(filter: u8, row: &mut [u8], prev: &[u8], bpp: usize) -> Result<()> {
+fn unfilter(filter: u8, row: &mut [u8], prev: Option<&[u8]>, bpp: usize) -> Result<()> {
+    let up = |i: usize| prev.map_or(0, |p| p[i]);
     match filter {
         0 => {}
         1 => {
@@ -652,24 +662,24 @@ fn unfilter(filter: u8, row: &mut [u8], prev: &[u8], bpp: usize) -> Result<()> {
             }
         }
         2 => {
-            for (v, p) in row.iter_mut().zip(prev) {
-                *v = v.wrapping_add(*p);
+            for (i, v) in row.iter_mut().enumerate() {
+                *v = v.wrapping_add(up(i));
             }
         }
         3 => {
             for i in 0..row.len() {
                 let a = if i >= bpp { row[i - bpp] } else { 0 };
-                row[i] = row[i].wrapping_add(((u16::from(a) + u16::from(prev[i])) / 2) as u8);
+                row[i] = row[i].wrapping_add(((u16::from(a) + u16::from(up(i))) / 2) as u8);
             }
         }
         4 => {
             for i in 0..row.len() {
                 let (a, c) = if i >= bpp {
-                    (row[i - bpp], prev[i - bpp])
+                    (row[i - bpp], up(i - bpp))
                 } else {
                     (0, 0)
                 };
-                row[i] = row[i].wrapping_add(paeth(a, prev[i], c));
+                row[i] = row[i].wrapping_add(paeth(a, up(i), c));
             }
         }
         _ => return unreadable("filtre de ligne inconnu"),
@@ -761,7 +771,7 @@ impl Converter {
                 let (l, a) = (hi(self.sample(row, 2 * x)), hi(self.sample(row, 2 * x + 1)));
                 [l, l, l, a]
             }
-            Mode::RgbaMode => {
+            Mode::Rgba4 => {
                 let mut px = [0u8; 4];
                 for (c, v) in px.iter_mut().enumerate() {
                     let s = self.sample(row, 4 * x + c);
@@ -802,52 +812,59 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     let mut out = alloc(size)?;
     let bits = u64::from(channels(h.color)) * u64::from(h.depth);
     let bpp = ((bits / 8) as usize).max(1);
-    let mut stream = IdatStream {
-        cur,
-        remaining: first_idat,
-        block: &[],
-        used: 0,
-        z: Decompress::new(true),
-        ended: false,
-        left: 0,
-    };
-    let passes: &[(u32, u32, u32, u32)] = if h.interlace {
-        &ADAM7
-    } else {
-        &[(0, 0, 1, 1)]
-    };
-    stream.left = passes
-        .iter()
-        .filter(|p| p.0 < w && p.1 < ht)
-        .map(|&(x0, y0, dx, dy)| {
-            let row = (u64::from((w - x0).div_ceil(dx)) * bits).div_ceil(8) + 1;
-            row * u64::from((ht - y0).div_ceil(dy))
-        })
-        .sum();
+    let passes: &[(u32, u32, u32, u32)] = if h.interlace { &ADAM7 } else { &[(0, 0, 1, 1)] };
+    // (passe, largeur, hauteur, octets par ligne sans l'octet de filtre)
+    let mut layout = Vec::new();
+    let mut total: u64 = 0;
     for &(x0, y0, dx, dy) in passes {
         if x0 >= w || y0 >= ht {
             continue;
         }
         let pw = (w - x0).div_ceil(dx);
         let ph = (ht - y0).div_ceil(dy);
-        let row_bytes = usize::try_from((u64::from(pw) * bits).div_ceil(8))
-            .map_or_else(|_| unreadable("taille"), Ok)?;
-        let mut cur_row = alloc(row_bytes + 1)?;
-        let mut prev = alloc(row_bytes)?;
+        let row = (u64::from(pw) * bits).div_ceil(8);
+        total += (row + 1) * u64::from(ph);
+        layout.push(((x0, y0, dx, dy), pw, ph, row as usize));
+    }
+    let total = usize::try_from(total).map_or_else(|_| unreadable("taille"), Ok)?;
+    let mut stream = IdatStream {
+        cur,
+        remaining: first_idat,
+        block: &[],
+        used: 0,
+        z: Inflater::new(
+            total
+                .checked_add(1)
+                .map_or_else(|| unreadable("taille"), Ok)?,
+        )?,
+        total,
+    };
+    let mut at = 0usize;
+    for ((x0, y0, dx, dy), pw, ph, row) in layout {
+        // lignes défiltrées hors du tampon de miniz, qui sert d'historique aux références
+        let mut line = alloc(row)?;
+        let mut prev = alloc(row)?;
         for r in 0..ph {
             if cancelled() {
                 return Err(PngError::Cancelled);
             }
-            stream.fill(&mut cur_row)?;
-            let (filter, row) = cur_row.split_at_mut(1);
-            unfilter(filter[0], row, &prev, bpp)?;
+            stream.ensure(at + 1 + row)?;
+            line.copy_from_slice(&stream.z.out[at + 1..at + 1 + row]);
+            // ligne précédente de la même passe (zéros pour la première)
+            unfilter(
+                stream.z.out[at],
+                &mut line,
+                (r > 0).then_some(&prev[..]),
+                bpp,
+            )?;
             let y = (y0 + r * dy) as usize;
             for i in 0..pw as usize {
                 let x = x0 as usize + i * dx as usize;
-                let at = (y * w as usize + x) * 4;
-                out[at..at + 4].copy_from_slice(&conv.pixel(row, i));
+                let o = (y * w as usize + x) * 4;
+                out[o..o + 4].copy_from_slice(&conv.pixel(&line, i));
             }
-            prev.copy_from_slice(row);
+            std::mem::swap(&mut line, &mut prev);
+            at += 1 + row;
         }
     }
     stream.finish()?;
@@ -869,13 +886,13 @@ mod tests {
     }
 
     fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
-        let mut crc = Crc::new();
+        let mut crc = crc32fast::Hasher::new();
         crc.update(kind);
         crc.update(data);
         let mut v = (data.len() as u32).to_be_bytes().to_vec();
         v.extend_from_slice(kind);
         v.extend_from_slice(data);
-        v.extend_from_slice(&crc.sum().to_be_bytes());
+        v.extend_from_slice(&crc.finalize().to_be_bytes());
         v
     }
 
@@ -886,10 +903,7 @@ mod tests {
             raw.push(0);
             raw.extend((0..w).map(|x| (x + y) as u8));
         }
-        let mut z = flate2::Compress::new(flate2::Compression::default(), true);
-        let mut zdata = Vec::with_capacity(raw.len() + 64);
-        z.compress_vec(&raw, &mut zdata, flate2::FlushCompress::Finish)
-            .unwrap();
+        let zdata = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 6);
         let mut ihdr = w.to_be_bytes().to_vec();
         ihdr.extend_from_slice(&h.to_be_bytes());
         ihdr.extend_from_slice(&[8, 0, 0, 0, 0]);
