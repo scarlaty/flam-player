@@ -525,6 +525,11 @@ export const fr = {
       enteredHint:
         "64 caractères hexadécimaux (0 à 9, a à f) ; espaces et majuscules acceptés.",
       showEntered: "Afficher la clé",
+      checkEntered: "Vérifier la clé",
+      checkingEntered: "Recherche de l'histoire…",
+      recognized: (title: string) =>
+        `Clé reconnue : histoire « ${title} ». Vérifiez que le titre est exact : un titre altéré signale une faute de frappe.`,
+      titleConfirmed: "Le titre est exact",
       enteredNotHex: "Seuls les chiffres 0 à 9 et les lettres a à f sont acceptés.",
       enteredLength: (count: number, expected: number) =>
         `${count} caractères hexadécimaux sur ${expected} attendus.`,

@@ -232,6 +232,9 @@ export function DeviceProvider({
           setItemState(next.uuid, "failed", text.errors.readback);
           setAnnouncement(text.panel.announce.failed(next.title, text.errors.readback));
         } else {
+          // Conservation demandée mais échouée : les envois suivants redemandent les clés.
+          if (next.carrier?.remember && sent.carrier_stored !== true)
+            carrierSession.current = null;
           setItemState(next.uuid, "done");
           setAnnouncement(text.panel.announce.done(next.title));
         }

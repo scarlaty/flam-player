@@ -670,7 +670,8 @@ fn saisie_hexadecimale_toleree_et_validee() {
     assert_eq!(
         choice,
         CarrierChoice::Entered {
-            bt: EnteredBt::new(hex)
+            bt: EnteredBt::new(hex),
+            confirmed: false,
         }
     );
 }
@@ -749,22 +750,31 @@ fn resolution_d_un_bt_saisi() {
     let before = tree(&root);
     let c = consent();
     let mdf = real_mdf();
-    let run = |text: String, consent: Option<&CarrierConsent>, cancel: bool| {
+    let run_with = |text: String, consent: Option<&CarrierConsent>, cancel: bool, confirmed| {
         let request = CarrierRequest {
             consent,
             choice: CarrierChoice::Entered {
                 bt: EnteredBt::new(text),
+                confirmed,
             },
             remember: true,
             store: &store,
         };
         resolve(&root, &mdf, &request, &AtomicBool::new(cancel))
     };
+    let run = |text: String, consent: Option<&CarrierConsent>, cancel: bool| {
+        run_with(text, consent, cancel, true)
+    };
     let good = hex_of(&test_bt()).to_uppercase();
     let logs = capture_logs(|| {
         // Sans consentement : refus avant toute lecture.
         let err = run(good.clone(), None, false).err().unwrap();
         assert!(matches!(err, CarrierError::ConsentRequired));
+        // Titre non confirmé : refus, rien n'est conservé.
+        let err = run_with(good.clone(), Some(&c), false, false)
+            .err()
+            .unwrap();
+        assert!(matches!(err, CarrierError::EnteredUnconfirmed));
         // Saisie invalide, clé ne correspondant à rien, annulation : rien n'est conservé.
         let err = run(good[..60].to_string(), Some(&c), false).err().unwrap();
         assert!(matches!(err, CarrierError::InvalidSource(_)));
@@ -776,9 +786,10 @@ fn resolution_d_un_bt_saisi() {
         assert!(!keys_dir.exists(), "rien conservé sur le PC");
 
         // Clé du compte : couple complet, conservé (chiffré) pour cette Flam.
-        let keys = run(good.clone(), Some(&c), false).unwrap();
-        assert_eq!(keys.key_file(), &test_key_file());
-        assert_no_leak(&format!("{keys:?}"), "Debug");
+        let resolved = run(good.clone(), Some(&c), false).unwrap();
+        assert!(resolved.stored);
+        assert_eq!(resolved.keys.key_file(), &test_key_file());
+        assert_no_leak(&format!("{resolved:?}"), "Debug");
     });
     assert_no_leak(&logs, "journaux");
     assert_eq!(tree(&root), before, "Flam jamais modifiée");
@@ -866,4 +877,127 @@ fn etat_avec_cle_conservee_et_flam_sans_bt() {
     std::fs::write(store.path(&id), b"abime").unwrap();
     let state = carrier_state(&root, Some(consent()), &store).unwrap();
     assert!(state.stored_keys && state.candidates.is_empty());
+}
+
+// --- IV faux (revue de #272) -------------------------------------------------------------------
+
+#[test]
+fn premier_bloc_strict() {
+    assert!(first_block_clean("Titre\nSuite"));
+    assert!(first_block_clean("Titre\r\nSuite"));
+    assert!(!first_block_clean("Ti\rtre\nSuite"));
+    assert!(!first_block_clean("Ti\ttre"));
+    assert!(!first_block_clean("Ti\u{1}tre"));
+    assert!(!first_block_clean("Ti\u{FFFD}tre"));
+    // Au-delà du premier bloc (16 octets), seul le contrôle général s'applique.
+    assert!(first_block_clean("0123456789abcdef\tsuite"));
+    let k = keys();
+    let mut tab = b"Histoi\tre officielle\nSous-titre\n".to_vec();
+    assert!(k.decrypt_info(&encrypted_info(&test_bt(), &tab)).is_none());
+    tab[6] = b'r';
+    assert!(k.decrypt_info(&encrypted_info(&test_bt(), &tab)).is_some());
+}
+
+/// Toutes les fautes d'un chiffre dans la saisie : aucune ne donne le bon titre. Une faute
+/// dans la clé AES donne du bruit (refus) ; une faute dans l'IV n'altère que le premier bloc,
+/// donc le début du titre : soit le contrôle strict refuse, soit le titre affiché à
+/// l'utilisateur pour confirmation est visiblement faux.
+#[test]
+fn faute_de_frappe_refusee_ou_titre_altere() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    real_device(root);
+    let good = hex_of(&test_bt());
+    let (mut key_rejected, mut iv_rejected, mut iv_altered) = (0, 0, 0);
+    for at in 0..good.len() {
+        for digit in "0123456789abcdef".chars() {
+            if good.as_bytes()[at] == digit as u8 {
+                continue;
+            }
+            let mut typo = good.clone();
+            typo.replace_range(at..at + 1, &digit.to_string());
+            let bt = EnteredBt::new(typo);
+            let result = preview_entered(root, Some(&consent()), &bt, &no_cancel());
+            match result {
+                Err(CarrierError::EnteredMismatch) if at < 32 => key_rejected += 1,
+                Err(CarrierError::EnteredMismatch) => iv_rejected += 1,
+                Ok(preview) => {
+                    assert!(at >= 32, "faute dans la clé AES acceptée ({at})");
+                    assert_ne!(preview.title, "Deuxième histoire", "faute invisible ({at})");
+                    assert_ne!(
+                        preview.title, "Histoire du compte",
+                        "faute invisible ({at})"
+                    );
+                    assert_no_leak(&serde_json::to_string(&preview).unwrap(), "IPC");
+                    iv_altered += 1;
+                }
+                Err(other) => panic!("{other}"),
+            }
+        }
+    }
+    assert_eq!(key_rejected, 32 * 15);
+    assert_eq!(iv_rejected + iv_altered, 32 * 15);
+    assert!(iv_rejected > 0, "contrôle strict sans effet");
+}
+
+#[test]
+fn previsualisation_d_un_bt_saisi() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("flam");
+    real_device(&root);
+    real_story(
+        &root,
+        "str.hidden",
+        "aaaaaaaa-0000-0000-0000-000000000001",
+        &unknown_bt(),
+        &test_key_file(),
+        "Masquée",
+    );
+    let before = tree(&root);
+    let entered = |bt: &[u8]| EnteredBt::new(hex_of(bt));
+    let logs = capture_logs(|| {
+        // Consentement exigé.
+        assert!(matches!(
+            preview_entered(&root, None, &entered(&test_bt()), &no_cancel()),
+            Err(CarrierError::ConsentRequired)
+        ));
+        let preview =
+            preview_entered(&root, Some(&consent()), &entered(&test_bt()), &no_cancel()).unwrap();
+        assert_eq!(
+            preview,
+            EnteredPreview {
+                uuid: OTHER.into(),
+                title: "Deuxième histoire".into(),
+                hidden: false,
+            }
+        );
+        let json = serde_json::to_string(&preview).unwrap();
+        assert_no_leak(&json, "IPC");
+        assert!(!json.to_lowercase().contains(&hex_of(&unknown_bt())[..16]));
+        let hidden = preview_entered(
+            &root,
+            Some(&consent()),
+            &entered(&unknown_bt()),
+            &no_cancel(),
+        )
+        .unwrap();
+        assert!(hidden.hidden);
+        assert_eq!(hidden.title, "Masquée");
+        let other: [u8; 32] = std::array::from_fn(|i| 0x42 ^ i as u8);
+        assert!(matches!(
+            preview_entered(&root, Some(&consent()), &entered(&other), &no_cancel()),
+            Err(CarrierError::EnteredMismatch)
+        ));
+        assert!(matches!(
+            preview_entered(
+                &root,
+                Some(&consent()),
+                &entered(&test_bt()),
+                &AtomicBool::new(true)
+            ),
+            Err(CarrierError::Cancelled)
+        ));
+    });
+    assert_no_leak(&logs, "journaux");
+    assert_eq!(tree(&root), before, "lecture seule");
 }

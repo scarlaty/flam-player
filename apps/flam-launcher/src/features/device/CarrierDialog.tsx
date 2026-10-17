@@ -4,6 +4,8 @@ import {
   BT_HEX_DIGITS,
   getCarrierState,
   normalizeBtHex,
+  previewEnteredBt,
+  type EnteredPreview,
   type CarrierChoice,
   type CarrierSend,
   type CarrierState,
@@ -47,13 +49,18 @@ function defaultSource(state: CarrierState): string {
   return first ? `${DEVICE_PREFIX}${first.uuid}` : ENTERED;
 }
 
-function choiceOf(source: string, file: string | null, bt: string): CarrierChoice | null {
+function choiceOf(
+  source: string,
+  file: string | null,
+  bt: string,
+  confirmed: boolean,
+): CarrierChoice | null {
   if (source === STORED) return { kind: "stored" };
   if (source.startsWith(DEVICE_PREFIX))
     return { kind: "device", uuid: source.slice(DEVICE_PREFIX.length) };
   if (source === ENTERED) {
     const hex = normalizeBtHex(bt);
-    return hex ? { kind: "entered", bt: hex } : null;
+    return hex && confirmed ? { kind: "entered", bt: hex, confirmed: true } : null;
   }
   return file ? { kind: "file", path: file } : null;
 }
@@ -94,6 +101,13 @@ export function CarrierDialog({ root, onCancel, onConfirm }: CarrierDialogProps)
   const [file, setFile] = useState<string | null>(null);
   const [bt, setBt] = useState("");
   const [showBt, setShowBt] = useState(false);
+  // Histoire reconnue par la clé saisie (`hex` : saisie vérifiée) et confirmation du titre.
+  const [preview, setPreview] = useState<{ hex: string; story: EnteredPreview } | null>(
+    null,
+  );
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const [titleConfirmed, setTitleConfirmed] = useState(false);
   const [remember, setRemember] = useState(true);
   const cancelButton = useRef<HTMLButtonElement>(null);
 
@@ -139,7 +153,31 @@ export function CarrierDialog({ root, onCancel, onConfirm }: CarrierDialogProps)
   }
 
   const current = state ? (source ?? defaultSource(state)) : FILE;
-  const choice = choiceOf(current, file, bt);
+  const enteredHex = normalizeBtHex(bt);
+  const recognized = preview && preview.hex === enteredHex ? preview.story : null;
+  const choice = choiceOf(current, file, bt, recognized !== null && titleConfirmed);
+
+  function changeBt(value: string) {
+    setBt(value);
+    setPreview(null);
+    setTitleConfirmed(false);
+    setCheckError(null);
+  }
+
+  async function checkBt() {
+    if (!enteredHex || checking) return;
+    setChecking(true);
+    setCheckError(null);
+    try {
+      const story = await previewEnteredBt(root, enteredHex);
+      setPreview({ hex: enteredHex, story });
+      setTitleConfirmed(false);
+    } catch (caught) {
+      setCheckError(toAppError(caught).message);
+    } finally {
+      setChecking(false);
+    }
+  }
   const options: RadioOption<string>[] = state
     ? [
         ...(state.stored_keys ? [{ value: STORED, label: text.stored }] : []),
@@ -242,13 +280,35 @@ export function CarrierDialog({ root, onCancel, onConfirm }: CarrierDialogProps)
                 spellCheck={false}
                 value={bt}
                 error={btError(bt)}
-                onChange={(event) => setBt(event.target.value)}
+                onChange={(event) => changeBt(event.target.value)}
               />
               <CheckboxField
                 label={text.showEntered}
                 checked={showBt}
                 onChange={(event) => setShowBt(event.target.checked)}
               />
+              <p>
+                <Button disabled={!enteredHex || checking} onClick={() => void checkBt()}>
+                  {checking ? text.checkingEntered : text.checkEntered}
+                </Button>
+              </p>
+              {checkError && (
+                <Banner tone="danger" role="alert">
+                  {checkError}
+                </Banner>
+              )}
+              {recognized && (
+                <>
+                  <Banner tone="warning" role="status">
+                    {text.recognized(recognized.title)}
+                  </Banner>
+                  <CheckboxField
+                    label={text.titleConfirmed}
+                    checked={titleConfirmed}
+                    onChange={(event) => setTitleConfirmed(event.target.checked)}
+                  />
+                </>
+              )}
             </>
           )}
           {current === FILE && (

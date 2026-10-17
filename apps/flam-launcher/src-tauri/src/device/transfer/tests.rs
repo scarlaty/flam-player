@@ -344,6 +344,7 @@ fn chemin_nominal_de_bout_en_bout() {
             index_updated: true,
             cache_removed: true,
             carrier_readback: None,
+            carrier_stored: None,
         }
     );
 
@@ -1036,6 +1037,11 @@ mod carrier_flow {
         let c = consent();
         let report = send_carrier(&FaultyFs::new(), &e, Some(&c), device_choice(), true).unwrap();
         assert_eq!(report.carrier_readback, Some(true));
+        assert_eq!(
+            report.carrier_stored,
+            Some(false),
+            "échec de conservation signalé"
+        );
         assert!(!e.keys_dir.exists());
     }
 
@@ -1113,6 +1119,7 @@ mod carrier_flow {
     fn entered(bt: &[u8]) -> CarrierChoice {
         CarrierChoice::Entered {
             bt: EnteredBt::new(hex_of(bt)),
+            confirmed: true,
         }
     }
 
@@ -1124,6 +1131,7 @@ mod carrier_flow {
             let report =
                 send_carrier(&FaultyFs::new(), &e, Some(&c), entered(&test_bt()), true).unwrap();
             assert_eq!(report.carrier_readback, Some(true));
+            assert_eq!(report.carrier_stored, Some(true));
             assert_no_leak(&serde_json::to_string(&report).unwrap(), "rapport");
         });
         assert_no_leak(&logs, "journaux");
@@ -1155,6 +1163,15 @@ mod carrier_flow {
                 (
                     CarrierChoice::Entered {
                         bt: EnteredBt::new(short.clone()),
+                        confirmed: true,
+                    },
+                    "validation",
+                ),
+                // Titre non confirmé : rien n'est écrit.
+                (
+                    CarrierChoice::Entered {
+                        bt: EnteredBt::new(hex_of(&test_bt())),
+                        confirmed: false,
                     },
                     "validation",
                 ),

@@ -81,7 +81,8 @@ use sha2::{Digest, Sha256};
 use tauri::State;
 
 use super::carrier::{
-    self, CarrierChoice, CarrierError, CarrierKeys, CarrierRequest, CarrierStore,
+    self, CarrierChoice, CarrierError, CarrierRequest, CarrierStore, EnteredBt, EnteredPreview,
+    Resolved,
 };
 use super::crypto::{
     firmware_family, parse_serial_field, CryptoError, DeviceKeys, FirmwareFamily, MDF_IV_OFFSET,
@@ -159,6 +160,9 @@ pub struct TransferReport {
     /// Mode carrier (firmware 1.x) : `info` relu sur la Flam se déchiffre avec le couple.
     /// `None` hors mode carrier.
     pub carrier_readback: Option<bool>,
+    /// Mode carrier : le couple est conservé sur ce PC pour cette Flam (les envois suivants
+    /// peuvent le relire). `None` hors mode carrier.
+    pub carrier_stored: Option<bool>,
 }
 
 /// Bilan d'une reprise.
@@ -239,6 +243,7 @@ impl From<TransferError> for AppError {
                 | CarrierError::InvalidSource(_)
                 | CarrierError::Mismatch
                 | CarrierError::EnteredMismatch
+                | CarrierError::EnteredUnconfirmed
                 | CarrierError::Store(_),
             ) => AppError::Validation(err.to_string()),
             TransferError::Carrier(CarrierError::Io(_))
@@ -668,6 +673,7 @@ pub(crate) fn send_with(
         index_updated,
         cache_removed,
         carrier_readback: None,
+        carrier_stored: None,
     })
 }
 
@@ -928,7 +934,7 @@ fn device_keys(
     root: &Path,
     carrier: Option<&CarrierRequest<'_>>,
     cancel: &AtomicBool,
-) -> Result<(DeviceKeys, Option<CarrierKeys>), TransferError> {
+) -> Result<(DeviceKeys, Option<Resolved>), TransferError> {
     let mdf = read_mdf(root)?;
     let firmware = firmware_from_mdf(&mdf);
     if firmware.as_deref().and_then(firmware_family) != Some(FirmwareFamily::V1) {
@@ -937,16 +943,16 @@ fn device_keys(
     }
     let firmware = firmware.unwrap_or_default();
     let request = carrier.ok_or(CarrierError::CarrierRequired)?;
-    let carrier_keys = carrier::resolve(root, &mdf, request, cancel).map_err(|e| match e {
+    let resolved = carrier::resolve(root, &mdf, request, cancel).map_err(|e| match e {
         CarrierError::Cancelled => TransferError::Cancelled,
         other => TransferError::Carrier(other),
     })?;
-    let keys = DeviceKeys::with_carrier(&firmware, &carrier_keys).map_err(|e| match e {
+    let keys = DeviceKeys::with_carrier(&firmware, &resolved.keys).map_err(|e| match e {
         CryptoError::UnsupportedFirmware(v) => TransferError::UnsupportedFirmware(v),
         other => TransferError::KeyUnavailable(other.to_string()),
     })?;
     tracing::info!(firmware = %firmware, "Flam 1.x : clés carrier vérifiées");
-    Ok((keys, Some(carrier_keys)))
+    Ok((keys, Some(resolved)))
 }
 
 /// Prépare `plain_pk` dans `work_dir` pour la Flam de `root`, la transfère, puis supprime la
@@ -990,7 +996,7 @@ pub(crate) fn send_from_library_with(
     if !root.join(MDF_FILE).is_file() {
         return Err(TransferError::DeviceNotFound);
     }
-    let (keys, carrier_keys) = device_keys(root, carrier, cancel)?;
+    let (keys, resolved) = device_keys(root, carrier, cancel)?;
     if let Err(err) = prepare::cleanup_stale(work_dir) {
         tracing::warn!("préparations abandonnées non supprimées : {err}");
     }
@@ -1005,14 +1011,15 @@ pub(crate) fn send_from_library_with(
         tracing::warn!(dossier = %prepared.dir.display(), "préparation non supprimée : {err}");
     }
     let mut report = result?;
-    if let Some(carrier_keys) = &carrier_keys {
+    if let Some(resolved) = &resolved {
         // Relecture de `info` sur la Flam : se déchiffre-t-il avec le couple ?
-        let ok =
-            StoryId::parse(&report.id).is_some_and(|id| carrier::readback(root, &id, carrier_keys));
+        let ok = StoryId::parse(&report.id)
+            .is_some_and(|id| carrier::readback(root, &id, &resolved.keys));
         if !ok {
             tracing::warn!(id = %report.id, "relecture de info après écriture : illisible avec les clés carrier");
         }
         report.carrier_readback = Some(ok);
+        report.carrier_stored = Some(resolved.stored);
     }
     Ok(report)
 }
@@ -1107,6 +1114,47 @@ pub async fn device_send_story(
     })
     .await??;
     Ok(report)
+}
+
+/// Mode carrier : histoire de la Flam de `root` reconnue par le `bt` saisi, montrée avant tout
+/// envoi pour que l'utilisateur vérifie son titre (un IV faux en altère le début). Lecture
+/// seule : consentement exigé, verrou de l'appareil tenu, annulable par
+/// [`device_cancel_transfer`]. La réponse ne contient aucune clé.
+#[tauri::command]
+pub async fn device_carrier_preview(
+    config: State<'_, ConfigState>,
+    root: String,
+    bt: EnteredBt,
+) -> AppResult<EnteredPreview> {
+    let consent = {
+        let _guard = config.guard();
+        SettingsStore::new(&config.dir).load()?.carrier_consent
+    };
+    blocking(move || -> AppResult<EnteredPreview> {
+        let _guard = DEVICE_LOCK
+            .try_begin(Operation::Transfer)
+            .map_err(TransferError::from)?;
+        let root = Path::new(&root);
+        if !root.join(MDF_FILE).is_file() {
+            return Err(TransferError::DeviceNotFound.into());
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        *current_cancel() = Some(cancel.clone());
+        struct ClearCancel;
+        impl Drop for ClearCancel {
+            fn drop(&mut self) {
+                *current_cancel() = None;
+            }
+        }
+        let _clear = ClearCancel;
+        carrier::preview_entered(root, consent.as_ref(), &bt, &cancel).map_err(|e| {
+            AppError::from(match e {
+                CarrierError::Cancelled => TransferError::Cancelled,
+                other => TransferError::Carrier(other),
+            })
+        })
+    })
+    .await?
 }
 
 /// Reprend sur la Flam de racine `root` les transferts puis les écritures d'index

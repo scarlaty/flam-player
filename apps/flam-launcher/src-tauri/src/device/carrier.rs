@@ -99,6 +99,8 @@ pub enum CarrierError {
         "cette clé ne correspond à aucune histoire officielle de cette Flam : rien n'a été écrit"
     )]
     EnteredMismatch,
+    #[error("confirmez le titre de l'histoire reconnue par cette clé avant d'envoyer : rien n'a été écrit")]
+    EnteredUnconfirmed,
     #[error("transfert annulé : la Flam est inchangée")]
     Cancelled,
     #[error("clés conservées : {0}")]
@@ -175,7 +177,23 @@ fn info_text(key: &[u8; 16], iv: &[u8; 16], data: &[u8]) -> Option<String> {
     }
     let mut plain = Zeroizing::new(data[..len].to_vec());
     decrypt_blocks(key, iv, &mut plain).ok()?;
-    readable_text(&plain)
+    readable_text(&plain).filter(|text| first_block_clean(text))
+}
+
+/// Contrôle strict du premier bloc du clair (16 octets). En AES-CBC, l'IV n'agit que sur ce
+/// bloc : un IV faux (faute de frappe dans la seconde moitié d'un `bt` saisi) y altère des
+/// octets sans toucher au reste. Le premier bloc doit donc être de l'UTF-8 strict sans
+/// caractère de remplacement ni caractère de contrôle autre que `\n` (ou `\r` d'un `\r\n`).
+/// Ce contrôle réduit les IV faux acceptés sans les exclure : voir `docs/flam-carrier.md`.
+fn first_block_clean(text: &str) -> bool {
+    text.char_indices()
+        .take_while(|(at, _)| *at < BLOCK_SIZE)
+        .all(|(at, c)| match c {
+            '\n' => true,
+            '\r' => text[at + 1..].starts_with('\n'),
+            '\u{FFFD}' => false,
+            c => !c.is_control(),
+        })
 }
 
 /// `bt` saisi par l'utilisateur : 64 caractères hexadécimaux, espaces et majuscules tolérés.
@@ -479,32 +497,55 @@ fn check_cancel(cancel: &AtomicBool) -> Result<(), CarrierError> {
     }
 }
 
-/// Couple d'un `bt` saisi : parcourt les histoires de la Flam (`str/` puis `str.hidden/`,
-/// bornées) et retient la première dont `info` se déchiffre avec ce `bt` en texte lisible ;
-/// son fichier `key` complète le couple. Aucune : [`CarrierError::EnteredMismatch`].
-/// Lecture seule ; l'annulation est vérifiée à chaque histoire.
+/// Couple d'un `bt` saisi : voir [`find_story_by_bt`].
 pub fn find_by_bt(
     root: &Path,
     bt: &[u8; BT_LEN],
     cancel: &AtomicBool,
 ) -> Result<CarrierKeys, CarrierError> {
+    find_story_by_bt(root, bt, cancel).map(|found| found.keys)
+}
+
+/// Histoire de la Flam reconnue par un `bt` saisi.
+pub struct FoundStory {
+    pub keys: CarrierKeys,
+    pub id: StoryId,
+    pub hidden: bool,
+    /// Titre déchiffré (première ligne de `info`).
+    pub title: String,
+}
+
+/// Parcourt les histoires de la Flam (`str/` puis `str.hidden/`, bornées) et retient la
+/// première dont `info` se déchiffre avec ce `bt` en texte lisible ; son fichier `key`
+/// complète le couple. Aucune : [`CarrierError::EnteredMismatch`]. Lecture seule ;
+/// l'annulation est vérifiée à chaque histoire.
+pub fn find_story_by_bt(
+    root: &Path,
+    bt: &[u8; BT_LEN],
+    cancel: &AtomicBool,
+) -> Result<FoundStory, CarrierError> {
     let mut story_key = Zeroizing::new([0u8; 16]);
     let mut story_iv = Zeroizing::new([0u8; 16]);
     story_key.copy_from_slice(&bt[..16]);
     story_iv.copy_from_slice(&bt[16..]);
-    for (_, dir, _) in story_dirs(root) {
+    for (id, dir, hidden) in story_dirs(root) {
         check_cancel(cancel)?;
         let Ok(Some(info)) = read_info(&dir) else {
             continue;
         };
-        if info_text(&story_key, &story_iv, &info).is_none() {
+        let Some(text) = info_text(&story_key, &story_iv, &info) else {
             continue;
-        }
+        };
         let Ok(Some(key)) = read_small(&dir.join(KEY_FILE), MAX_SMALL_FILE) else {
             continue;
         };
         if let Ok(keys) = CarrierKeys::from_parts(&bt[..], &key) {
-            return Ok(keys);
+            return Ok(FoundStory {
+                keys,
+                id,
+                hidden,
+                title: title_of(&text),
+            });
         }
     }
     check_cancel(cancel)?;
@@ -843,7 +884,13 @@ pub enum CarrierChoice {
     /// Fichier choisi par l'utilisateur.
     File { path: String },
     /// `bt` saisi en hexadécimal ; le `key` est celui de l'histoire de la Flam qu'il déchiffre.
-    Entered { bt: EnteredBt },
+    /// `confirmed` : l'utilisateur a confirmé le titre de l'histoire reconnue
+    /// ([`preview_entered`]) ; sans cela, refus.
+    Entered {
+        bt: EnteredBt,
+        #[serde(default)]
+        confirmed: bool,
+    },
 }
 
 /// Demande d'envoi en mode carrier.
@@ -864,9 +911,18 @@ pub fn resolve(
     mdf: &[u8],
     request: &CarrierRequest<'_>,
     cancel: &AtomicBool,
-) -> Result<CarrierKeys, CarrierError> {
+) -> Result<Resolved, CarrierError> {
     if !consent_is_current(request.consent) {
         return Err(CarrierError::ConsentRequired);
+    }
+    if matches!(
+        request.choice,
+        CarrierChoice::Entered {
+            confirmed: false,
+            ..
+        }
+    ) {
+        return Err(CarrierError::EnteredUnconfirmed);
     }
     let id = DeviceId::from_mdf(mdf);
     let keys = match &request.choice {
@@ -880,21 +936,63 @@ pub fn resolve(
         })?,
         CarrierChoice::File { path } => read_file_carrier(Path::new(path))?,
         // Le couple vient d'une histoire de la Flam dont `info` se déchiffre avec ce `bt`.
-        CarrierChoice::Entered { bt } => find_by_bt(root, &*bt.parse()?, cancel)?,
+        CarrierChoice::Entered { bt, .. } => find_by_bt(root, &*bt.parse()?, cancel)?,
     };
     // Revérifié pour toutes les sources, y compris la saisie (même parcours, borné).
     check_against_device(root, &keys, cancel)?;
-    if request.remember && request.choice != CarrierChoice::Stored {
-        match &id {
-            Some(id) => {
-                if let Err(err) = request.store.save(id, &keys) {
-                    tracing::warn!("clés carrier non conservées : {err}");
-                }
+    let stored = match (&request.choice, &id) {
+        (CarrierChoice::Stored, _) => true,
+        _ if !request.remember => false,
+        (_, Some(id)) => match request.store.save(id, &keys) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!("clés carrier non conservées : {err}");
+                false
             }
-            None => tracing::warn!("clés carrier non conservées : Flam non identifiable"),
+        },
+        (_, None) => {
+            tracing::warn!("clés carrier non conservées : Flam non identifiable");
+            false
         }
+    };
+    Ok(Resolved { keys, stored })
+}
+
+/// Couple résolu et vérifié ([`resolve`]).
+#[derive(Debug)]
+pub struct Resolved {
+    pub keys: CarrierKeys,
+    /// Le couple est conservé sur ce PC pour cette Flam (déjà, ou enregistré à l'instant) :
+    /// les envois suivants peuvent utiliser [`CarrierChoice::Stored`].
+    pub stored: bool,
+}
+
+/// Histoire reconnue par un `bt` saisi, montrée avant tout envoi (aucune clé).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EnteredPreview {
+    pub uuid: String,
+    /// Titre déchiffré : un IV faux altère son début, l'utilisateur le vérifie.
+    pub title: String,
+    pub hidden: bool,
+}
+
+/// Prévisualisation d'un `bt` saisi, en lecture seule : consentement exigé, puis histoire
+/// de la Flam dont `info` se déchiffre avec ce `bt` (titre seulement, jamais de clé).
+pub fn preview_entered(
+    root: &Path,
+    consent: Option<&CarrierConsent>,
+    bt: &EnteredBt,
+    cancel: &AtomicBool,
+) -> Result<EnteredPreview, CarrierError> {
+    if !consent_is_current(consent) {
+        return Err(CarrierError::ConsentRequired);
     }
-    Ok(keys)
+    let found = find_story_by_bt(root, &*bt.parse()?, cancel)?;
+    Ok(EnteredPreview {
+        uuid: found.id.to_string(),
+        title: found.title,
+        hidden: found.hidden,
+    })
 }
 
 // --- Commandes Tauri --------------------------------------------------------------------------
