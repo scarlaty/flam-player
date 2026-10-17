@@ -17,7 +17,7 @@
 //! | Offset | Taille | Contenu                                                                |
 //! |--------|--------|------------------------------------------------------------------------|
 //! | `0x00` | 2      | en-tête, non lu ici (rôle à confirmer sur appareil, #236)              |
-//! | `0x02` | 48     | texte « main: x.y.z-… » puis « comm: … », complété par des octets nuls |
+//! | `0x02` | 48     | version « main: x.y.z-… » (2.x) ou nue « x.y.z-… » (1.x), octets nuls  |
 //! | `0x32` | 24     | numéro de série : 14 caractères ASCII hexadécimaux puis 10 octets nuls |
 //! | `0x4A` | 2      | VID USB (petit-boutiste)                                               |
 //! | `0x4C` | 2      | PID USB (petit-boutiste)                                               |

@@ -859,10 +859,15 @@ pub fn firmware_from_mdf(mdf: &[u8]) -> Option<String> {
     firmware_main(mdf.get(2..MDF_SERIAL_OFFSET)?)
 }
 
-/// Version principale du firmware (`2.4.2`) lue dans le texte « main: … » de `.mdf`.
+/// Version principale du firmware (`2.4.2`) lue dans le texte de `.mdf` : « main: x.y.z-… »,
+/// ou la version nue en tête du champ (`1.15.14-…`, observé sur une Flam 1.x, #269).
 fn firmware_main(text: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(text);
-    let rest = text[text.find("main:")? + "main:".len()..].trim_start();
+    let rest = match text.find("main:") {
+        Some(at) => &text[at + "main:".len()..],
+        None => &text,
+    }
+    .trim_start();
     let version: String = rest
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.')
