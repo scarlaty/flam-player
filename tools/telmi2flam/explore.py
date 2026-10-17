@@ -96,13 +96,110 @@ TAG = "[EXPLORE] "
 # traces d'avant #42 (boucle et ecran fige confondus).
 DONE_STATUS = {"loop": "loop", "unresponsive": "stuck", "stuck": "stuck"}
 
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    class _BasicLimits(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_uint64) for n in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class _ExtendedLimits(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _BasicLimits), ("IoInfo", _IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    _JOB_KILL_ON_CLOSE = 0x2000          # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    _JOB_EXTENDED_LIMITS = 9             # JobObjectExtendedLimitInformation
+
+
+def _job_for(p):
+    """Windows : rattache le processus `p` a un Job Object `KILL_ON_JOB_CLOSE` et retourne
+    son handle (a garder ouvert). Quand le processus Python meurt, meme brutalement
+    (TerminateProcess, Stop-Process), Windows ferme le handle et tue le player et ses
+    descendants : pas d'orphelin (#178). None si le job n'a pas pu etre cree (le player
+    tourne alors sans garde-fou ; il reste arrete en sortie normale)."""
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.restype = wintypes.HANDLE
+    k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                            wintypes.DWORD]
+    k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    job = k32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    info = _ExtendedLimits()
+    info.BasicLimitInformation.LimitFlags = _JOB_KILL_ON_CLOSE
+    if not (k32.SetInformationJobObject(job, _JOB_EXTENDED_LIMITS, ctypes.byref(info),
+                                        ctypes.sizeof(info))
+            and k32.AssignProcessToJobObject(job, int(p._handle))):
+        k32.CloseHandle(job)
+        return None
+    return job
+
+
+def _close_job(job):
+    if job:
+        ctypes.WinDLL("kernel32").CloseHandle(wintypes.HANDLE(job))
+
+
+def _pdeathsig():
+    """POSIX (Linux) : prctl(PR_SET_PDEATHSIG, SIGKILL) dans le fils, avant exec : le noyau
+    tue le player si le parent meurt. Sans effet ailleurs (macOS, BSD : documente)."""
+    try:
+        import ctypes
+        import signal
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(1, int(signal.SIGKILL), 0, 0, 0)     # PR_SET_PDEATHSIG = 1
+    except (OSError, AttributeError, ImportError):
+        pass
+
+
+def _spawn(cmd, **kw):
+    """Popen + garde-fou contre l'orphelin : retourne (processus, garde). Windows : Job
+    Object `KILL_ON_JOB_CLOSE` ; POSIX : nouveau groupe de processus (arret du groupe entier)
+    et, sous Linux, PR_SET_PDEATHSIG. Limite POSIX : hors Linux, un SIGKILL du parent laisse
+    le player vivant (aucun equivalent portable)."""
+    if os.name == "nt":
+        p = subprocess.Popen(cmd, **kw)
+        return p, _job_for(p)
+    pre = _pdeathsig if sys.platform.startswith("linux") else None
+    return subprocess.Popen(cmd, start_new_session=True, preexec_fn=pre, **kw), None
+
+
+def _kill(p):
+    """Arrete le player (et, sous POSIX, tout son groupe de processus)."""
+    if os.name != "nt":
+        try:
+            import signal
+            os.killpg(p.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+    p.kill()
+    p.wait()
+
 
 def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
     """Lance flam-player sans fenetre ; until() -> True arrete l'attente (le
     player tourne encore `grace` s, pour detecter un crash). stdout/stderr vont
     dans cwd/stdout.log et cwd/stderr.log. Retourne (code de sortie, ou None si
     le player a ete arrete, stdout, stderr, duree). Le player est toujours
-    arrete en sortie, meme sur exception (until(), Ctrl+C) : pas d'orphelin."""
+    arrete en sortie, meme sur exception (until(), Ctrl+C) ; et meme si le processus Python
+    est tue brutalement : Job Object (Windows) / PDEATHSIG (Linux), voir _spawn (#178)."""
     env = dict(os.environ)
     env.setdefault("SDL_VIDEODRIVER", "dummy")
     env.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -117,7 +214,7 @@ def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
     out_p, err_p = os.path.join(cwd, "stdout.log"), os.path.join(cwd, "stderr.log")
     with open(out_p, "wb") as fo, open(err_p, "wb") as fe:
         t0 = time.time()
-        p = subprocess.Popen([exe] + args, cwd=cwd, stdout=fo, stderr=fe, env=env)
+        p, guard = _spawn([exe] + args, cwd=cwd, stdout=fo, stderr=fe, env=env)
         code = None
         try:
             while time.time() - t0 < timeout:
@@ -130,9 +227,12 @@ def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
                     break
                 time.sleep(0.2)
         finally:
-            if p.poll() is None:
-                p.kill()
-                p.wait()
+            try:
+                if p.poll() is None:
+                    _kill(p)
+            finally:
+                if os.name == "nt":
+                    _close_job(guard)       # tue aussi les descendants restants
         dt = time.time() - t0
     with open(out_p, "rb") as f:
         out = f.read().decode("utf-8", "replace")

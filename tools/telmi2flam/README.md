@@ -849,11 +849,22 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
 - **Une histoire a toujours une fiche** (#166) : une exception autour de l'exploration
   (`explore` ou l'étape run) donne `ECHEC_EXECUTION` avec `run_reason` `crash` ; un code de
   sortie anormal du player est traduit dans les messages (`-1` : processus tué de
-  l'extérieur, `0xC0000005` : violation d'accès...). Avant chaque exploration, une fiche
-  provisoire `ECHEC_EXECUTION` (`run_reason` `crash`, « exécution non terminée ») est écrite
-  dans `report.json` / `status.json` : si `compat.py` est tué en cours de route (code -1), elle
-  reste en place ; elle n'est jamais reprise comme résultat valide (l'exploration est refaite
-  à la relance, même sans `--force`).
+  l'extérieur, `0xC0000005`: violation d'accès...) ; ce libellé n'est ajouté que pour un `crash`,
+  pas pour un `lua_error` ordinaire. Les fiches provisoires sont écrites **à part**, dans
+  `report.provisional.json` / `status.provisional.json` (même dossier), sans toucher à
+  `report.json` / `status.json` (une ancienne bonne fiche n'est jamais masquée) : au démarrage
+  de la campagne pour toute histoire à traiter (`ECHEC_CONVERSION`, `transient`, « conversion
+  non terminée »), puis avant chaque exploration (`ECHEC_EXECUTION`, `run_reason` `crash`,
+  « exécution non terminée »). Une histoire terminée sort des fichiers provisoires, qui sont
+  supprimés en fin de campagne. Si `compat.py` est tué en cours de route (code -1), ils
+  restent ; à la relance, ils sont réconciliés : une fiche provisoire rejoint `report.json`
+  seulement pour une histoire sans aucune fiche, puis les fichiers sont supprimés. Elles ne
+  sont jamais reprises comme résultat valide (l'histoire est refaite, même sans `--force`).
+- **Pas de player orphelin** (#178) : `explore.run_player` rattache le player à un Job Object
+  Windows `KILL_ON_JOB_CLOSE` (ctypes) : si `compat.py` / `explore.py` est tué brutalement,
+  Windows arrête aussi le player. Sous Linux : groupe de processus + `PR_SET_PDEATHSIG`.
+  Limite : sous macOS / BSD, un `SIGKILL` du parent laisse le player vivant (arrêt propre et
+  Ctrl+C restent couverts).
 - **Réinterprétation sans rejouer** : la fiche conserve le résultat brut borné de chaque
   parcours (`steps.run.raw` : statut, `done_reason`, compteurs, scènes, erreurs **non
   filtrées**, les 100 premières et les 100 dernières, 200 caractères chacune). Quand la
