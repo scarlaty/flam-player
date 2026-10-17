@@ -180,11 +180,17 @@ fn decode_name(raw: &[u8], flags: u16) -> Result<String, ZipError> {
 /// `_sanitize_filename` : coupe au premier NUL ; sous Windows (`os.sep == "\\"`), `\` devient
 /// `/`. Le comportement suit donc le système, comme Python.
 fn sanitize_filename(name: &str) -> String {
+    sanitize_filename_for(name, cfg!(windows))
+}
+
+/// `_sanitize_filename` pour un système donné (`\` séparateur si `backslash_is_sep`), afin
+/// de tester les deux branches quel que soit le système d'exécution.
+fn sanitize_filename_for(name: &str, backslash_is_sep: bool) -> String {
     let cut = match name.find('\0') {
         Some(i) => &name[..i],
         None => name,
     };
-    if cfg!(windows) {
+    if backslash_is_sep {
         cut.replace('\\', "/")
     } else {
         cut.to_string()
@@ -662,6 +668,19 @@ impl<R: Read> ExtFile<'_, R> {
 mod tests {
     use super::*;
     use std::io::Cursor as IoCursor;
+
+    #[test]
+    fn nettoyage_des_noms_selon_le_systeme() {
+        // Windows (`os.sep == "\\"`) : `\` devient `/`, coupure au premier NUL.
+        assert_eq!(sanitize_filename_for("a\\b/c\\d", true), "a/b/c/d");
+        assert_eq!(sanitize_filename_for("a\\b\0c\\d", true), "a/b");
+        // Autres systèmes : `\` est un caractère de nom ordinaire, coupure au NUL seule.
+        assert_eq!(sanitize_filename_for("a\\b/c\\d", false), "a\\b/c\\d");
+        assert_eq!(sanitize_filename_for("a\\b\0c\\d", false), "a\\b");
+        assert_eq!(sanitize_filename_for("\0x", false), "");
+        let here = if cfg!(windows) { "a/b" } else { "a\\b" };
+        assert_eq!(sanitize_filename("a\\b"), here);
+    }
 
     /// Archive *stored* d'une entrée, avec champ ZIP64 dans le répertoire central et
     /// enregistrements de fin ZIP64 (comme une archive de plus de 4 Gio, en miniature).

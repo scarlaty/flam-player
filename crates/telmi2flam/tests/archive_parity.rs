@@ -176,44 +176,117 @@ fn chemins_windows_non_ascii_et_longs() {
     let _ = fs::remove_dir_all(&base);
 }
 
-/// Entrées hostiles : troncatures et octets altérés de chaque vecteur. Aucune panique, et
-/// chaque lecture se termine (succès ou erreur de conversion).
+/// Lit toutes les entrées et `read_info` d'une archive altérée : ni panique ni boucle.
+fn exercise(id: &str, v: Vec<u8>) {
+    let Ok(mut archive) = Archive::new(std::io::Cursor::new(v), id.to_string()) else {
+        return;
+    };
+    let names = archive.names().to_vec();
+    for n in &names {
+        let _ = archive.read(n);
+    }
+    let _ = telmi2flam::info::read_info_from(&mut archive);
+}
+
+/// Variantes ciblées : à chaque signature `PK`, chaque mot de 16 et 32 bits des 46 octets
+/// suivants (en-têtes local, central, fin de répertoire, ZIP64) mis à 0, à tout-à-1, +1 et -1.
+fn targeted_mutations(data: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let sigs: Vec<usize> = (0..data.len().saturating_sub(3))
+        .filter(|&i| data[i] == b'P' && data[i + 1] == b'K' && data[i + 2] < 8 && data[i + 3] < 8)
+        .collect();
+    for s in sigs {
+        for off in (s + 4..(s + 46).min(data.len())).step_by(2) {
+            for width in [2usize, 4] {
+                if off + width > data.len() {
+                    continue;
+                }
+                let old = data[off..off + width]
+                    .iter()
+                    .rev()
+                    .fold(0u64, |a, b| (a << 8) | u64::from(*b));
+                let mask = if width == 2 { 0xFFFF } else { 0xFFFF_FFFF };
+                for new in [
+                    0,
+                    mask,
+                    old.wrapping_add(1) & mask,
+                    old.wrapping_sub(1) & mask,
+                ] {
+                    let mut v = data.to_vec();
+                    for (k, b) in v[off..off + width].iter_mut().enumerate() {
+                        *b = (new >> (8 * k)) as u8;
+                    }
+                    out.push(v);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Entrées hostiles : troncatures, octets aléatoires et mutations ciblées des en-têtes de
+/// chaque vecteur. Aucune panique, et chaque lecture se termine (succès ou erreur de
+/// conversion) ; un garde-fou de durée échoue au lieu de laisser le test tourner sans fin.
 #[test]
 fn aucune_panique_sur_archive_alteree() {
-    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
-    let mut next = move || {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        seed
-    };
-    for case in expected() {
-        let id = case["id"].as_str().unwrap();
-        let data = fs::read(vectors_dir().join(format!("{id}.zip"))).unwrap();
-        let mut variants: Vec<Vec<u8>> = Vec::new();
-        for cut in (0..data.len()).step_by(7) {
-            variants.push(data[..cut].to_vec());
-        }
-        for _ in 0..300 {
-            let mut v = data.clone();
-            if v.is_empty() {
-                break;
+    let worker = std::thread::spawn(|| {
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for case in expected() {
+            let id = case["id"].as_str().unwrap().to_string();
+            let data = fs::read(vectors_dir().join(format!("{id}.zip"))).unwrap();
+            for cut in (0..data.len()).step_by(7) {
+                exercise(&id, data[..cut].to_vec());
             }
-            for _ in 0..1 + next() % 4 {
-                let i = (next() % v.len() as u64) as usize;
-                v[i] = (next() & 0xFF) as u8;
-            }
-            variants.push(v);
-        }
-        for v in variants {
-            let Ok(mut archive) = Archive::new(std::io::Cursor::new(v), id.to_string()) else {
+            if data.is_empty() {
                 continue;
-            };
-            let names = archive.names().to_vec();
-            for n in &names {
-                let _ = archive.read(n);
             }
-            let _ = telmi2flam::info::read_info_from(&mut archive);
+            for _ in 0..300 {
+                let mut v = data.clone();
+                for _ in 0..1 + next() % 4 {
+                    let i = (next() % v.len() as u64) as usize;
+                    v[i] = (next() & 0xFF) as u8;
+                }
+                exercise(&id, v);
+            }
+            for v in targeted_mutations(&data) {
+                exercise(&id, v);
+            }
         }
+    });
+    let start = std::time::Instant::now();
+    while !worker.is_finished() {
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(180),
+            "robustesse : plus de 180 s (boucle ou lenteur anormale)"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    worker.join().expect("panique sur une archive altérée");
+}
+
+/// `--info` avec la sortie standard fermée côté lecteur : pas de panique (`println!` en
+/// aurait une sur un tube fermé).
+#[test]
+fn info_sortie_fermee_sans_panique() {
+    let path = vectors_dir().join("story_stored.zip");
+    for _ in 0..5 {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_telmi2flam"))
+            .arg(&path)
+            .arg("--info")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take());
+        let out = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        assert_eq!(out.status.code(), Some(0), "{stderr}");
     }
 }
