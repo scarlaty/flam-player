@@ -80,19 +80,19 @@ défini dans le `Cargo.toml` racine.
 
 Depuis `apps/flam-launcher/` :
 
-| Commande                             | Effet                                                                        |
-| ------------------------------------ | ---------------------------------------------------------------------------- |
-| `npm install`                        | Installe les dépendances front et la CLI Tauri                               |
-| `npm run tauri dev`                  | Lance l'application en développement                                         |
-| `npm run dev` / `npm run build`      | Front seul (Vite) / build du front                                           |
-| `npm run lint` / `npm run typecheck` | ESLint / TypeScript strict                                                   |
-| `npm test`                           | Vitest + Testing Library (API Tauri simulée)                                 |
-| `npm run tauri build`                | Exécutable seul avec installeurs MSI et NSIS (sans player ni convertisseur)  |
-| `npm run build:notices`              | Génère `build/THIRD-PARTY-NOTICES.txt` (licences Rust et npm, installé)      |
-| `npm run build:converter`            | Construit le convertisseur embarqué (réseau)                                 |
-| `npm run build:player`               | Compile `flam-player.exe` (Release) et rassemble `SDL2.dll` et les licences  |
-| `npm run build:installer`            | Enchaîne notices, converter, player puis produit l'installateur NSIS complet |
-| `npm run test:e2e`                   | Test de bout en bout (voir « Test de bout en bout »)                         |
+| Commande                             | Effet                                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------------------ |
+| `npm install`                        | Installe les dépendances front et la CLI Tauri                                       |
+| `npm run tauri dev`                  | Lance l'application en développement                                                 |
+| `npm run dev` / `npm run build`      | Front seul (Vite) / build du front                                                   |
+| `npm run lint` / `npm run typecheck` | ESLint / TypeScript strict                                                           |
+| `npm test`                           | Vitest + Testing Library (API Tauri simulée)                                         |
+| `npm run tauri build`                | Exécutable seul avec installeurs MSI et NSIS (sans player ni convertisseur)          |
+| `npm run build:notices`              | Génère `build/THIRD-PARTY-NOTICES.txt` (licences Rust et npm, installé)              |
+| `npm run build:converter`            | Construit le convertisseur embarqué (réseau)                                         |
+| `npm run build:player`               | Compile `flam-player.exe` (Release) et rassemble `SDL2.dll` et les licences          |
+| `npm run build:installer`            | Enchaîne notices, converter, ffmpeg, player puis produit l'installateur NSIS complet |
+| `npm run test:e2e`                   | Test de bout en bout (voir « Test de bout en bout »)                                 |
 
 Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
 
@@ -119,6 +119,12 @@ l'installeur.
    npm run tauri build -- --config src-tauri/tauri.bundle.conf.json                 # installateur NSIS
    npm run tauri build -- --no-bundle --config src-tauri/tauri.bundle.conf.json     # exe seul
    ```
+
+   **ffmpeg** (conversion audio des podcasts, #209) : `npm run build:ffmpeg` prépare
+   `build/ffmpeg/` (ffmpeg et ffprobe LGPL minimaux, statiques, 6 Mo, avec licences et
+   `BUILD.txt`). Le binaire est construit depuis des sources épinglées (`tools/ffmpeg/`) : sans
+   argument le script le construit avec **Docker** ; sinon `-ArtifactDir <dossier>` reprend la
+   sortie de `tools/ffmpeg/build.sh` (la CI la produit dans le job `ffmpeg`).
 
    Le convertisseur est toujours lancé avec `-B` (aucun `__pycache__` écrit dans le dossier
    d'installation : le désinstallateur ne les connaîtrait pas).
@@ -192,7 +198,7 @@ Limites connues de la mise à jour (#186) :
   toute version publiée est compatible. Le nettoyage des fichiers retirés ne dépend que du hook de N.
 
 ```
-npm run build:installer      # = build:notices + build:converter + build:player + tauri build --config …
+npm run build:installer      # = build:notices + build:converter + build:ffmpeg + build:player + tauri build --config …
 ```
 
 **Runtime Visual C++** : `flam-player.exe` importe `VCRUNTIME140.dll`, absente d'un Windows
