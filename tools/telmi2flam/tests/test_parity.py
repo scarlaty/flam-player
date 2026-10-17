@@ -121,8 +121,8 @@ class TestAllowedDeviations(unittest.TestCase):
             # autre couple de codes : ecart
             for oo, cc in ((error_run(4, "invalid_content"), c),
                            (o, error_run(4, "invalid_content")),
-                           (o, error_run(6, "internal_error")),
-                           (error_run(3, "archive_unreadable"), c)):
+                           (o, error_run(7, "unsupported_format")),
+                           (error_run(7, "unsupported_format"), c)):
                 self.assertEqual(parity.compare_runs(oo, cc, [tag])["verdict"], "diff")
 
     def test_json_limit(self):
@@ -316,11 +316,14 @@ class TestCorpusGenerator(unittest.TestCase):
         by_id = {c.id: c for c in cases}
         for cid in ("ok_plain", "missing_audio_plain", "zip_crc_corrupt_plain"):
             self.assertIn("--plain", by_id[cid].args, cid)
-        known = {make_corpus.TAG_JSON_LIMIT, make_corpus.TAG_ENCRYPTED, make_corpus.TAG_DELEGATED}
+        known = {make_corpus.TAG_JSON_LIMIT, make_corpus.TAG_ENCRYPTED, make_corpus.TAG_DELEGATED,
+                 make_corpus.TAG_BAD_UTF8_NAME, make_corpus.TAG_NEGATIVE_OFFSET}
         self.assertTrue({t for c in cases for t in c.tags} <= known)
         # les etiquettes lues par parity.py sont celles du generateur
         self.assertEqual(parity.TAG_JSON_LIMIT, make_corpus.TAG_JSON_LIMIT)
         self.assertEqual(parity.TAG_ENCRYPTED, make_corpus.TAG_ENCRYPTED)
+        self.assertEqual(parity.TAG_BAD_UTF8_NAME, make_corpus.TAG_BAD_UTF8_NAME)
+        self.assertEqual(parity.TAG_NEGATIVE_OFFSET, make_corpus.TAG_NEGATIVE_OFFSET)
 
     def test_corpus_is_deterministic(self):
         d1, d2 = os.path.join(self.tmp, "1"), os.path.join(self.tmp, "2")
