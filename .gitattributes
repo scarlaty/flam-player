@@ -19,3 +19,6 @@ tools/telmi2flam/runtime/**/*.lif binary
 crates/telmi2flam/tests/vectors/**/*.rgba binary
 crates/telmi2flam/tests/vectors/**/*.lif binary
 crates/telmi2flam/tests/vectors/**/*.mp3 binary
+
+# Texte officiel de la GPL v3 : octets exacts, LF.
+/LICENSE text eol=lf

@@ -2,7 +2,7 @@
 
 Surcouche de bureau (Windows d'abord) pour parcourir des sources d'histoires, les convertir
 avec `telmi2flam` et les lancer dans `flam-player`. Application Tauri 2 : backend Rust,
-interface React + TypeScript (strict). Licence **MIT** (voir [LICENSE](LICENSE)).
+interface React + TypeScript (strict). Licence **GPL v3** ou ulterieure (voir [LICENSE](../../LICENSE)).
 
 Suivi : issue « Suivi : surcouche flam-launcher ».
 
@@ -151,10 +151,10 @@ développement, installation partielle). L'écran Paramètres l'indique.
 Python (PSF-2.0, libffi, libtommath…), `python.cat`, `vcruntime140*.dll` (redistribuables
 Microsoft), Pillow (renvoi vers `licenses/LICENSE` de la roue, qui regroupe les bibliothèques
 intégrées), le runtime Lunii et les scripts du dépôt. `LICENSES.md` à la racine de
-l'installation couvre le reste (flam-launcher MIT, flam-player, SDL2 zlib, Lua MIT, LVGL MIT,
+l'installation couvre le reste (flam-launcher et flam-player GPL v3, SDL2 zlib, Lua MIT, LVGL MIT,
 minimp3 CC0, polices Nunito et Montserrat OFL) ; les textes sont copiés des sous-modules dans
 `licenses/` par `build-player.ps1`. Le mainteneur confirme avoir les droits de redistribution du
-runtime Lunii et du dépôt (« usage personnel et éducatif »).
+runtime Lunii.
 
 ## Installateur Windows
 
