@@ -23,6 +23,7 @@ import {
   launchFolderStory,
   launchPlayer,
   onPlayerExited,
+  onPlayerUpdated,
   onPlayerStarted,
   type PlayerSession,
 } from "../../api/player";
@@ -261,10 +262,20 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     onPlayerStarted,
     useCallback((started: PlayerSession) => {
       setSession(started);
-      if (getMinimizeDuringPlay()) {
+      // Player incrusté : la fenêtre du launcher le contient, elle n'est jamais réduite.
+      if (!started.embedded && getMinimizeDuringPlay()) {
         minimized.current = true;
         windowOps.current = windowOps.current.then(minimizeWindow);
       }
+    }, []),
+  );
+  useListener(
+    onPlayerUpdated,
+    useCallback((updated: PlayerSession) => {
+      // Même partie (pid), le player s'est ouvert dans sa fenêtre : écran Lecture quitté.
+      setSession((current) =>
+        current && current.pid === updated.pid ? updated : current,
+      );
     }, []),
   );
   useListener(
@@ -467,6 +478,8 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
       installed,
       installedRevision,
       session,
+      forgetSession: (pid) =>
+        setSession((current) => (current && current.pid === pid ? null : current)),
       panelTasks: visible.map((task) => toPanelTask(task, details[task.id])),
       activeTaskFor: activeFor,
       failedTaskFor: (entry) =>

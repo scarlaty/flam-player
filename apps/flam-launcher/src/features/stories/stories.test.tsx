@@ -102,6 +102,7 @@ const session = (title = "Les trois ours", uuid = "ours"): PlayerSession => ({
   title,
   pid: 42,
   started_at: 1_700_000_100,
+  embedded: false,
 });
 
 let sources: Source[];
@@ -1006,6 +1007,16 @@ it("réduit la fenêtre pendant la lecture si le paramètre est activé, puis la
   expect(windowApi.restoreWindow).not.toHaveBeenCalled();
   await send("player://exited", exited());
   await waitFor(() => expect(windowApi.restoreWindow).toHaveBeenCalledTimes(1));
+});
+
+it("ne réduit jamais la fenêtre pour un player incrusté", async () => {
+  window.localStorage.setItem("flam-launcher.minimizeDuringPlay", "1");
+  await renderApp();
+  await send("player://started", { ...session(), embedded: true });
+  await send("player://exited", exited());
+  await screen.findByText("Lecture de « Les trois ours » terminée");
+  expect(windowApi.minimizeWindow).not.toHaveBeenCalled();
+  expect(windowApi.restoreWindow).not.toHaveBeenCalled();
 });
 
 it("ne touche pas à la fenêtre par défaut", async () => {
