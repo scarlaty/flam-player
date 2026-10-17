@@ -232,6 +232,7 @@ fn probe(env: &Environment, root: &Path) -> Option<DetectedDevice> {
 
 /// Balaye les racines candidates et rend les appareils trouvés (lecture seule).
 pub fn detect(env: &Environment) -> DetectionReport {
+    let _quiet = sys::QuietErrors::new();
     let devices: Vec<DetectedDevice> = env
         .roots
         .iter()
@@ -294,6 +295,9 @@ mod sys {
     use windows_sys::Win32::Storage::FileSystem::{
         GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
     };
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        SetThreadErrorMode, SEM_FAILCRITICALERRORS,
+    };
 
     use super::{Space, VolumeInfo};
 
@@ -307,6 +311,25 @@ mod sys {
     fn text(buf: &[u16]) -> String {
         let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
         String::from_utf16_lossy(&buf[..end])
+    }
+
+    /// Désactive la boîte « Insérez un disque » du thread courant tant qu'elle vit.
+    pub struct QuietErrors(u32);
+
+    impl QuietErrors {
+        pub fn new() -> Self {
+            let mut old = 0u32;
+            // SAFETY: pointeur de sortie valide ; ne concerne que le thread courant.
+            unsafe { SetThreadErrorMode(SEM_FAILCRITICALERRORS, &mut old) };
+            Self(old)
+        }
+    }
+
+    impl Drop for QuietErrors {
+        fn drop(&mut self) {
+            // SAFETY: restaure la valeur lue par `new`.
+            unsafe { SetThreadErrorMode(self.0, std::ptr::null_mut()) };
+        }
     }
 
     pub fn volume_info(root: &Path) -> Option<VolumeInfo> {
@@ -346,6 +369,7 @@ mod sys {
     /// Lecteurs amovibles, ou fixes en FAT (un disque USB peut se déclarer fixe). Le disque
     /// système (NTFS, fixe) n'est jamais sondé.
     pub fn candidate_roots() -> Vec<PathBuf> {
+        let _quiet = QuietErrors::new();
         // SAFETY: simple lecture du masque des lecteurs logiques.
         let mask = unsafe { GetLogicalDrives() };
         (0..26u8)
@@ -356,7 +380,8 @@ mod sys {
                 // SAFETY: chemin terminé par un zéro.
                 let kind = unsafe { GetDriveTypeW(wide_root.as_ptr()) };
                 match kind {
-                    DRIVE_REMOVABLE => true,
+                    // Lecteur sans média (lecteur de cartes vide) : ignoré.
+                    DRIVE_REMOVABLE => volume_info(root).is_some(),
                     DRIVE_FIXED => {
                         volume_info(root).is_some_and(|v| v.fs.to_ascii_uppercase().contains("FAT"))
                     }
@@ -383,6 +408,14 @@ mod sys {
 
     pub fn candidate_roots() -> Vec<PathBuf> {
         Vec::new()
+    }
+
+    pub struct QuietErrors;
+
+    impl QuietErrors {
+        pub fn new() -> Self {
+            Self
+        }
     }
 }
 
