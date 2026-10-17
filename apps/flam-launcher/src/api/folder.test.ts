@@ -1,6 +1,14 @@
+import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, expect, it } from "vitest";
-import { folderThumbnail, scanFolder, type FolderScan } from "./folder";
+import {
+  folderThumbnail,
+  onFolderChanged,
+  scanFolder,
+  watchFolder,
+  type FolderChanged,
+  type FolderScan,
+} from "./folder";
 
 afterEach(() => clearMocks());
 
@@ -22,6 +30,7 @@ const scan: FolderScan = {
       download_url: "C:\\Histoires\\a.zip",
       size: 12,
       updated_at: "2026-10-15T08:00:00Z",
+      download_count: null,
       kind: "telmi_zip",
     },
   ],
@@ -62,4 +71,38 @@ it("folderThumbnail appelle folder_thumbnail", async () => {
   expect(calls).toEqual([
     { cmd: "folder_thumbnail", args: { sourceId: "s", entryId: "e1" } },
   ]);
+});
+
+it("watchFolder appelle folder_watch", async () => {
+  const calls: { cmd: string; args: unknown }[] = [];
+  mockIPC((cmd, args) => {
+    calls.push({ cmd, args });
+    return null;
+  });
+  await watchFolder("s", true);
+  await watchFolder("s", false);
+  expect(calls).toEqual([
+    { cmd: "folder_watch", args: { sourceId: "s", enabled: true } },
+    { cmd: "folder_watch", args: { sourceId: "s", enabled: false } },
+  ]);
+});
+
+it("watchFolder normalise l'erreur d'un dossier disparu", async () => {
+  mockIPC(() => {
+    throw { kind: "folder_unavailable", message: "dossier introuvable" };
+  });
+  await expect(watchFolder("s", true)).rejects.toEqual({
+    kind: "folder_unavailable",
+    message: "dossier introuvable",
+  });
+});
+
+it("onFolderChanged reçoit la charge de folder://changed", async () => {
+  mockIPC(() => null, { shouldMockEvents: true });
+  const seen: FolderChanged[] = [];
+  const off = await onFolderChanged((e) => seen.push(e));
+  await emit("folder://changed", { source_id: "s" });
+  off();
+  await emit("folder://changed", { source_id: "autre" });
+  expect(seen).toEqual([{ source_id: "s" }]);
 });

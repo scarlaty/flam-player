@@ -1,3 +1,4 @@
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invokeCommand } from "./error";
 import type { StoryEntry } from "./story";
 
@@ -28,4 +29,28 @@ export function scanFolder(sourceId: string, recursive = false): Promise<FolderS
  */
 export function folderThumbnail(sourceId: string, entryId: string): Promise<string> {
   return invokeCommand<string>("folder_thumbnail", { sourceId, entryId });
+}
+
+/** Nom de l'événement émis quand le contenu d'un dossier surveillé change. */
+export const FOLDER_CHANGED_EVENT = "folder://changed";
+
+/** Charge de `folder://changed` (miroir de `FolderChanged` dans `src-tauri/src/watch.rs`). */
+export interface FolderChanged {
+  source_id: string;
+}
+
+/**
+ * `folder_watch` : démarre (`enabled`) ou arrête la surveillance du dossier d'une source.
+ * Les rafales de modifications donnent un seul événement `folder://changed`. Erreur
+ * `folder_unavailable` si le dossier a disparu.
+ */
+export function watchFolder(sourceId: string, enabled: boolean): Promise<void> {
+  return invokeCommand<void>("folder_watch", { sourceId, enabled });
+}
+
+/** Écoute `folder://changed`. Renvoie la fonction de désabonnement. */
+export function onFolderChanged(
+  handler: (event: FolderChanged) => void,
+): Promise<UnlistenFn> {
+  return listen<FolderChanged>(FOLDER_CHANGED_EVENT, (e) => handler(e.payload));
 }

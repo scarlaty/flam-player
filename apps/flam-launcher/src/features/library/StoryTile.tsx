@@ -1,6 +1,6 @@
 import { memo } from "react";
 import type { Source } from "../../api/sources";
-import type { StoryEntry } from "../../api/story";
+import type { ListedEntry } from "./sourceData";
 import { StoryCard, type StoryBadge } from "../../components";
 import { t } from "../../i18n";
 import { compatBadge } from "../compat/compatInfo";
@@ -14,7 +14,7 @@ import { useThumbnail } from "./useThumbnail";
 
 export interface StoryTileProps extends StoryHooks {
   source: Source;
-  entry: StoryEntry;
+  entry: ListedEntry;
 }
 
 function badgeFor(state: StoryState): StoryBadge {

@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { toAppError, type AppError } from "../../api/error";
+import { onFolderChanged, watchFolder } from "../../api/folder";
 import type { Source } from "../../api/sources";
 import {
   Badge,
@@ -27,6 +28,7 @@ import {
   availableCategories,
   DEFAULT_FILTERS,
   filtersAreDefault,
+  hasPopularity,
   type LibraryFilters,
   type SortKey,
 } from "./filters";
@@ -137,6 +139,28 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
     };
   }, [load]);
 
+  // Dossier local : la liste se rafraîchit quand son contenu change. La surveillance est un
+  // confort : si elle ne démarre pas, le rafraîchissement manuel reste disponible.
+  useEffect(() => {
+    if (sourceType !== "folder") return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    onFolderChanged((event) => {
+      if (event.source_id === sourceId) void load(false);
+    })
+      .then((off) => {
+        if (disposed) off();
+        else unlisten = off;
+      })
+      .catch(() => undefined);
+    watchFolder(sourceId, true).catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+      watchFolder(sourceId, false).catch(() => undefined);
+    };
+  }, [sourceId, sourceType, load]);
+
   const entries = data?.entries;
   const openEntry =
     openId === null ? undefined : entries?.find((e) => e.entry_id === openId);
@@ -180,9 +204,15 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
   }, [openId]);
   const ages = useMemo(() => availableAges(entries ?? []), [entries]);
   const categories = useMemo(() => availableCategories(entries ?? []), [entries]);
-  const visible = useMemo(() => applyFilters(entries ?? [], filters), [entries, filters]);
+  const popularity = useMemo(() => hasPopularity(entries ?? []), [entries]);
+  // « Popularité » n'existe que si la source fournit la donnée : sinon retour au tri par titre.
+  const sort = filters.sort === "popular" && !popularity ? "title" : filters.sort;
+  const visible = useMemo(
+    () => applyFilters(entries ?? [], { ...filters, sort }),
+    [entries, filters, sort],
+  );
 
-  const filterKey = JSON.stringify(filters);
+  const filterKey = JSON.stringify({ ...filters, sort });
   const limit = shown.key === filterKey ? shown.count : PAGE_SIZE;
   const page = visible.slice(0, limit);
 
@@ -280,11 +310,14 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
             />
             <SelectField
               label={t.library.sort}
-              value={filters.sort}
+              value={sort}
               onChange={(event) => update({ sort: event.target.value as SortKey })}
               options={[
                 { value: "title", label: t.library.sortOptions.title },
                 { value: "recent", label: t.library.sortOptions.recent },
+                ...(popularity
+                  ? [{ value: "popular", label: t.library.sortOptions.popular }]
+                  : []),
               ]}
             />
           </form>

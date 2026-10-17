@@ -7,6 +7,7 @@ import {
   availableCategories,
   DEFAULT_FILTERS,
   filtersAreDefault,
+  hasPopularity,
   normalizeText,
 } from "./filters";
 
@@ -50,6 +51,32 @@ it("trie par date de mise à jour décroissante, sans date en dernier", () => {
     "Alice 2",
     "Zébulon le dragon",
   ]);
+});
+
+it("trie par popularité décroissante, sans valeur à la fin, départage par titre", () => {
+  const list = [
+    makeEntry({ title: "Sans valeur B" }),
+    makeEntry({ title: "Zéro", download_count: 0 }),
+    makeEntry({ title: "Beta", download_count: 50 }),
+    makeEntry({ title: "Alpha", download_count: 50 }),
+    makeEntry({ title: "Sans valeur A" }),
+    makeEntry({ title: "Top", download_count: 900 }),
+  ];
+  expect(titles(applyFilters(list, { ...DEFAULT_FILTERS, sort: "popular" }))).toEqual([
+    "Top",
+    "Alpha",
+    "Beta",
+    "Zéro",
+    "Sans valeur A",
+    "Sans valeur B",
+  ]);
+});
+
+it("détecte la présence d'au moins un nombre de téléchargements", () => {
+  expect(hasPopularity(entries)).toBe(false);
+  expect(hasPopularity([...entries, makeEntry({ title: "X", download_count: 0 })])).toBe(
+    true,
+  );
 });
 
 it("cherche dans le titre, l'auteur, la catégorie et la description", () => {
