@@ -44,9 +44,9 @@
   background: var(--color-accent-hover);
 }
 
-.fl-icon-button--ghost:hover:not(:disabled),
-.fl-icon-button--danger-quiet:hover:not(:disabled),
-.fl-icon-button--secondary:hover:not(:disabled) {
+.fl-icon-button--ghost:hover:not(:disabled, [aria-disabled="true"]),
+.fl-icon-button--danger-quiet:hover:not(:disabled, [aria-disabled="true"]),
+.fl-icon-button--secondary:hover:not(:disabled, [aria-disabled="true"]) {
   background: var(--color-surface-hover);
 }
 
@@ -54,7 +54,8 @@
   background: var(--color-primary-hover);
 }
 
-.fl-icon-button:disabled {
+.fl-icon-button:disabled,
+.fl-icon-button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.55;
 }

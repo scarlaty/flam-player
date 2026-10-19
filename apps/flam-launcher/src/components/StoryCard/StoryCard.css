@@ -146,6 +146,12 @@
   align-items: flex-start;
   gap: var(--space-2);
   padding: 0 var(--space-3) var(--space-3);
+  /* Les marges vides laissent passer le clic vers la zone cliquable étendue (ouverture de la fiche). */
+  pointer-events: none;
+}
+
+.fl-story-card__actions > * {
+  pointer-events: auto;
 }
 
 @media (prefers-reduced-motion: reduce) {
