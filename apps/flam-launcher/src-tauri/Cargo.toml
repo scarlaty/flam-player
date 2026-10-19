@@ -40,6 +40,8 @@ zeroize = "=1.9.1"
 notify = "=8.2.0"
 tauri-plugin-dialog = "=2.8.3"
 tauri-plugin-single-instance = "=2.4.5"
+# Ouverture des pages du dépôt dans le navigateur (#323), via la seule commande `open_external`.
+tauri-plugin-opener = { version = "=2.7.2", default-features = false }
 # Décodeur LIF des vignettes (port Rust de telmi2flam).
 telmi2flam = { path = "../../../crates/telmi2flam" }
 

@@ -378,6 +378,7 @@ apps/flam-launcher/
     src/
       lib.rs               Initialisation (traces, builder Tauri)
       app.rs               Commandes générales (`app_info`)
+      external.rs          Ouverture d'une page du dépôt dans le navigateur (`open_external`, #323)
       error.rs             `AppError` (thiserror), sérialisée en `{ kind, message }`
       storage.rs           Persistance JSON : écriture atomique, `*.bak`, migration de schéma
       settings.rs          `settings.json`, détection du player et de Python, commandes `settings_*`
@@ -424,6 +425,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `config_ack_recovery`         | `file?: string`                  | rien                                                       | `storage`            |
 | `cache_usage`                 |                                  | `{ path, bytes }`                                          | `cache`              |
 | `cache_clear`                 |                                  | `{ freed_bytes }`                                          | `cache`              |
+| `open_external`               | `url: string`                    | rien                                                       | `external`           |
 | `catalog_refresh`             | `source_id`                      | `CatalogView`                                              | `catalog`            |
 | `catalog_entries`             | `source_id`                      | `CatalogView`                                              | `catalog`            |
 | `catalog_thumbnail`           | `source_id`, `thumb_url`         | URL `data:` (string)                                       | `catalog`            |
@@ -533,7 +535,8 @@ Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`), `src/api/
 `src/api/recovery.ts` (`ackRecovery`) et `src/api/catalog.ts` (`refreshCatalog`,
 `getCatalogEntries`, `getCatalogThumbnail`, types `StoryEntry`, `CatalogView`). La logique
 `src/api/cache.ts` (`getCacheUsage`, `clearCache`) et `src/api/dialog.ts` (`pickFolder`,
-`pickExecutable` : sélecteurs natifs du plugin `tauri-plugin-dialog`), `src/api/install.ts`
+`pickExecutable` : sélecteurs natifs du plugin `tauri-plugin-dialog`), `src/api/external.ts`
+(`openExternal`), `src/api/install.ts`
 (`startInstall`, `cancelInstall`, `listInstalls`, `onInstallProgress`, `onInstallDone`,
 `onInstallError`) et `src/api/library.ts` (`listLibrary`, `removeFromLibrary`, `hasUpdate`,
 `librarySourceStatus`). La logique
@@ -1240,6 +1243,17 @@ travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
   permission **`dialog:allow-open`** : ni `dialog:default` (messages, confirmations, sauvegarde)
   ni accès au système de fichiers depuis le front. Le chemin choisi n'est qu'une proposition :
   il est revalidé par le backend (`sources_add`, `settings_set`).
+- Plugin `tauri-plugin-opener` (2.7.2, MIT ou Apache-2.0) pour ouvrir une page dans le navigateur
+  (bandeau « Fonction expérimentale » de « Ma Flam », futurs liens du guide, des pré-versions et du
+  modèle d'issue). Il est enregistré dans `lib.rs` mais **aucune permission `opener:*` n'est
+  donnée au front** (ni `allow-open-url`, ni `allow-open-path`, ni `allow-reveal-item-in-dir`) :
+  le paquet JS du plugin n'est pas installé. Le front passe par la seule commande
+  `open_external` (`src/api/external.ts`, `openExternal`), qui n'accepte que `https`, l'hôte
+  `github.com` (sans identifiants, port par défaut seulement) et un chemin sous `/scarlaty/flam-player/`, après
+  normalisation (les `..` et `%2e%2e` sont résolus avant le contrôle). Tout le reste (autre
+  domaine ou dépôt, `http`, `javascript:`, `file:`, chemins locaux) est refusé. Le plugin et ses
+  dépendances (`open`, `dunce` pour Windows) sont repris par `THIRD-PARTY-NOTICES.txt`
+  (généré depuis `Cargo.lock`) et passent le contrôle de licences de `build:notices`.
 
 ### Accès réseau : titres du catalogue officiel de « Ma Flam » (#290)
 
