@@ -7,6 +7,7 @@ pub mod compat;
 pub mod device;
 pub mod embed;
 mod error;
+pub mod external;
 pub mod folder;
 pub mod install;
 pub mod library;
@@ -83,6 +84,14 @@ pub fn run() {
             focus_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        // Ouverture d'adresses : aucune permission du plugin n'est donnée au front, seule la
+        // commande `external::open_external` (liste blanche du dépôt) l'utilise (#323).
+        // Le script de clic sur les liens du plugin est désactivé : tout passe par la commande.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .setup(|app| {
             let config_dir = storage::config_dir()?;
             let catalog = catalog::CatalogService::new()?;
@@ -131,6 +140,7 @@ pub fn run() {
             catalog::catalog_thumbnail,
             cache::cache_usage,
             cache::cache_clear,
+            external::open_external,
             device::carrier::device_carrier_state,
             device::carrier::device_carrier_accept,
             device::carrier::device_carrier_forget,
@@ -197,6 +207,7 @@ mod tests {
             ("device::remove", include_str!("device/remove.rs")),
             ("device::status", include_str!("device/status.rs")),
             ("device::transfer", include_str!("device/transfer.rs")),
+            ("external", include_str!("external.rs")),
             ("folder", include_str!("folder.rs")),
             ("install", include_str!("install/mod.rs")),
             ("library", include_str!("library.rs")),
