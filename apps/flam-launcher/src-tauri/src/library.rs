@@ -15,8 +15,9 @@
 //! `library_remove` purge ensuite la copie de travail `<cache>/play/<empreinte>/` du player, et
 //! la progression de l'enfant (`<config>/saves/<empreinte>/`) seulement sur demande
 //! (`purge_saves`, faux par défaut). Mettre une histoire à jour (nouvelle version du même
-//! `uuid`) ne supprime aucune progression ; voir `player::Workspace` pour ce que le player en
-//! relit.
+//! `uuid`, ou réinstallation depuis une source dossier modifiée à version égale, #288) ne
+//! supprime aucune progression : elle est rangée sous la clé `library:<uuid>` ; voir
+//! `player::Workspace` pour ce que le player en relit.
 //!
 //! **Verrous** : toute écriture et toute réconciliation passent par le seul verrou
 //! inter-processus `library/.lock` (aussi exclusif entre threads du même processus), pris par
@@ -38,6 +39,7 @@ use tauri::State;
 
 use crate::catalog::{blocking, CatalogService};
 use crate::install::InstallService;
+use crate::library_source::SourceStamp;
 use crate::library_thumb::{self, Prepared};
 use crate::player::{purge_library_story, PlayerService, SAVES_ROOT};
 use crate::settings::{Environment, SettingsStore};
@@ -92,6 +94,12 @@ pub struct LibraryEntry {
     /// sans vignette ou pour une installation antérieure à #80.
     #[serde(default)]
     pub thumb: Option<String>,
+    /// Empreinte de la source locale (source dossier) au moment de l'installation (#288), pour
+    /// proposer « Mettre à jour » quand la source change à version égale. `None` : source
+    /// distante (catalogue), empreinte impossible, ou installation antérieure à #288 (voir
+    /// `library_source`).
+    #[serde(default)]
+    pub source_stamp: Option<SourceStamp>,
 }
 
 impl LibraryEntry {
@@ -666,11 +674,12 @@ impl Library {
         converter: Option<String>,
         now: u64,
     ) -> AppResult<LibraryEntry> {
-        self.install_thumbed(staged, source, converter, now, None)
+        self.install_thumbed(staged, source, converter, now, None, None)
     }
 
     /// [`Library::install`] avec la vignette `thumb` (préparée par `library_thumb::prepare`),
     /// écrite sous le verrou avant l'index ; son échec n'empêche jamais l'installation.
+    /// `stamp` : empreinte de la source locale (#288), enregistrée dans l'entrée.
     pub fn install_thumbed(
         &self,
         staged: &Path,
@@ -678,12 +687,14 @@ impl Library {
         converter: Option<String>,
         now: u64,
         thumb: Option<&Prepared>,
+        stamp: Option<SourceStamp>,
     ) -> AppResult<LibraryEntry> {
-        self.install_with(staged, source, converter, now, thumb, &|stories| {
+        self.install_with(staged, source, converter, now, thumb, stamp, &|stories| {
             self.save(stories)
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn install_with(
         &self,
         staged: &Path,
@@ -691,6 +702,7 @@ impl Library {
         converter: Option<String>,
         now: u64,
         thumb: Option<&Prepared>,
+        stamp: Option<SourceStamp>,
         save: &dyn Fn(Vec<LibraryEntry>) -> AppResult<()>,
     ) -> AppResult<LibraryEntry> {
         let target = self.final_path(&source.uuid, source.version)?;
@@ -765,6 +777,7 @@ impl Library {
             converter,
             source: source.clone(),
             thumb,
+            source_stamp: stamp,
         };
         let mut old_files: Vec<String> = stories
             .iter()
@@ -1167,7 +1180,7 @@ pub(crate) mod tests {
         let fail = |_: Vec<LibraryEntry>| Err(AppError::Io(std::io::Error::other("disque plein")));
         let b = staged(&lib, "b.plain.pk", b"nouveau!");
         let err = lib
-            .install_with(&b, &story("abc", Some(2)), None, 2, None, &fail)
+            .install_with(&b, &story("abc", Some(2)), None, 2, None, None, &fail)
             .unwrap_err();
         assert_eq!(err.kind(), "io");
         let path = dir.path().join("library/abc-2.plain.pk");
@@ -1176,7 +1189,7 @@ pub(crate) mod tests {
         assert_eq!((list.len(), list[0].size), (1, 6));
         // Nouvelle histoire : rien ne reste publié.
         let c = staged(&lib, "c.plain.pk", b"x");
-        lib.install_with(&c, &story("neuf", Some(1)), None, 3, None, &fail)
+        lib.install_with(&c, &story("neuf", Some(1)), None, 3, None, None, &fail)
             .unwrap_err();
         assert!(!dir.path().join("library/neuf-1.plain.pk").exists());
     }
@@ -1198,12 +1211,20 @@ pub(crate) mod tests {
         let thumb = Prepared::from_bytes(png).unwrap();
         let a = staged(&lib, "a.plain.pk", b"ancien");
         let first = lib
-            .install_thumbed(&a, &story("abc", Some(2)), None, 1, Some(&thumb))
+            .install_thumbed(&a, &story("abc", Some(2)), None, 1, Some(&thumb), None)
             .unwrap();
         let fail = |_: Vec<LibraryEntry>| Err(AppError::Io(std::io::Error::other("disque plein")));
         let b = staged(&lib, "b.plain.pk", b"nouveau!");
-        lib.install_with(&b, &story("abc", Some(2)), None, 2, Some(&thumb), &fail)
-            .unwrap_err();
+        lib.install_with(
+            &b,
+            &story("abc", Some(2)),
+            None,
+            2,
+            Some(&thumb),
+            None,
+            &fail,
+        )
+        .unwrap_err();
         assert!(thumbs.join("abc-2.2.png").is_file(), "orpheline");
         assert_eq!(lib.list().unwrap()[0].thumb, first.thumb);
         assert!(lib.thumbnail("abc").is_ok());
@@ -1303,6 +1324,92 @@ pub(crate) mod tests {
         assert!(root.join("abc-2.plain.pk").exists());
     }
 
+    /// Copie récursive d'un dossier (instantané de `library/` pour simuler un arrêt brutal).
+    fn copy_tree(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for item in std::fs::read_dir(from).unwrap().flatten() {
+            let target = to.join(item.file_name());
+            if item.file_type().unwrap().is_dir() {
+                copy_tree(&item.path(), &target);
+            } else if item.file_name() != LOCK_FILE {
+                std::fs::copy(item.path(), &target).unwrap();
+            }
+        }
+    }
+
+    /// Injection de panne (#288) : mise à jour à version égale (même fichier `<uuid>-<version>`)
+    /// avec une nouvelle empreinte de source. Arrêt brutal avant ou après l'écriture de l'index,
+    /// puis échec de l'écriture : la copie et son empreinte restent **cohérentes** (ancienne
+    /// copie avec l'ancienne empreinte, ou nouvelle avec la nouvelle), jamais mélangées.
+    #[test]
+    fn mise_a_jour_a_version_egale_copie_et_empreinte_coherentes() {
+        let stamp = |s: &str| SourceStamp {
+            quick: format!("file:{s}"),
+            sha256: format!("sha256:{s}"),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let a = staged(&lib, "a.plain.pk", b"ancien");
+        lib.install_thumbed(&a, &story("abc", Some(0)), None, 1, None, Some(stamp("a")))
+            .unwrap();
+        let root = dir.path().join("library");
+        // Instantanés de `library/` juste avant, puis juste après l'écriture de l'index.
+        let before = dir.path().join("arret-avant/library");
+        let after = dir.path().join("arret-apres/library");
+        let crash = |stories: Vec<LibraryEntry>| -> AppResult<()> {
+            copy_tree(&root, &before);
+            lib.save(stories)?;
+            copy_tree(&root, &after);
+            Ok(())
+        };
+        let b = staged(&lib, "b.plain.pk", b"nouveau!");
+        lib.install_with(
+            &b,
+            &story("abc", Some(0)),
+            None,
+            2,
+            None,
+            Some(stamp("b")),
+            &crash,
+        )
+        .unwrap();
+        for (cache, content, expected) in [
+            (before.parent().unwrap(), &b"ancien"[..], "a"),
+            (after.parent().unwrap(), &b"nouveau!"[..], "b"),
+        ] {
+            // Redémarrage : la réconciliation défait ou termine la publication.
+            let restarted = Library::new(cache);
+            let list = restarted.list().unwrap();
+            assert_eq!(list.len(), 1, "{expected}");
+            assert_eq!(list[0].source_stamp, Some(stamp(expected)));
+            let copy = restarted.checked(&list[0].file).unwrap();
+            assert_eq!(std::fs::read(copy).unwrap(), content, "{expected}");
+            assert!(std::fs::read_dir(cache.join("library/.staging"))
+                .unwrap()
+                .next()
+                .is_none());
+        }
+        // Échec de l'écriture de l'index : l'état précédent (copie et empreinte) reste.
+        let fail = |_: Vec<LibraryEntry>| Err(AppError::Io(std::io::Error::other("disque plein")));
+        let c = staged(&lib, "c.plain.pk", b"encore autre");
+        lib.install_with(
+            &c,
+            &story("abc", Some(0)),
+            None,
+            3,
+            None,
+            Some(stamp("c")),
+            &fail,
+        )
+        .unwrap_err();
+        let list = lib.list().unwrap();
+        assert_eq!(list[0].source_stamp, Some(stamp("b")));
+        assert_eq!(
+            std::fs::read(root.join("abc-0.plain.pk")).unwrap(),
+            b"nouveau!"
+        );
+    }
+
     #[test]
     fn restauration_en_echec_garde_marqueur_et_sauvegarde() {
         let dir = tempfile::tempdir().unwrap();
@@ -1321,7 +1428,7 @@ pub(crate) mod tests {
             Err(AppError::Io(std::io::Error::other("disque plein")))
         };
         let b = staged(&lib, "b.plain.pk", b"nouveau!");
-        lib.install_with(&b, &story("abc", Some(2)), None, 2, None, &blocked)
+        lib.install_with(&b, &story("abc", Some(2)), None, 2, None, None, &blocked)
             .unwrap_err();
         assert!(pending.exists() && backup.is_file(), "journal conservé");
         // Une nouvelle installation du même fichier est refusée, sans rien toucher.
@@ -1361,7 +1468,7 @@ pub(crate) mod tests {
             Ok(())
         };
         let b = staged(&lib, "b.plain.pk", b"nouveau!");
-        lib.install_with(&b, &story("abc", Some(2)), None, 2, None, &block)
+        lib.install_with(&b, &story("abc", Some(2)), None, 2, None, None, &block)
             .unwrap();
         assert!(pending.exists() && backup.exists(), "marqueur conservé");
         assert_eq!(lib.list().unwrap().len(), 1);
@@ -1519,7 +1626,7 @@ pub(crate) mod tests {
             Ok(())
         };
         let b = staged(&lib, "b.plain.pk", b"v2!");
-        lib.install_with(&b, &story("abc", Some(2)), None, 2, None, &block)
+        lib.install_with(&b, &story("abc", Some(2)), None, 2, None, None, &block)
             .unwrap();
         let marker: PendingMarker =
             serde_json::from_slice(&std::fs::read(&pending).unwrap()).unwrap();
@@ -1952,6 +2059,7 @@ pub(crate) mod tests {
                 converter: None,
                 source: s,
                 thumb: None,
+                source_stamp: None,
             };
             storage::write_json(
                 &root.join(format!(".staging/{file}.pending")),

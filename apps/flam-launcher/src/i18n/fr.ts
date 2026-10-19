@@ -464,6 +464,9 @@ export const fr = {
   },
   deviceTransfer: {
     send: "Envoyer sur la Flam",
+    replace: "Remplacer sur la Flam",
+    /** La copie de bibliothèque est plus ancienne que sa source dossier (#288). */
+    staleCopy: "Source modifiée : mettez l'histoire à jour avant l'envoi",
     forStory: (action: string, title: string) => `${action} « ${title} »`,
     reasons: {
       noDevice: "Flam non détectée",

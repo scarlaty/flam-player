@@ -30,6 +30,7 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
           uuid={installed.uuid}
           title={entry.title}
           size={installed.size}
+          stale={stories.sourceChanged(installed.uuid)}
         />
       </>
     );
