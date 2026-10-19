@@ -227,7 +227,12 @@ export function DeviceProvider({
         hasOutcome && previous ? `${previous}. ${started}` : started,
       );
       try {
-        const sent = await sendStoryToDevice(rootNow, next.uuid, next.carrier);
+        const sent = await sendStoryToDevice(
+          rootNow,
+          next.uuid,
+          next.carrier,
+          next.replace === true,
+        );
         if (sent.carrier_readback === false) {
           carrierSession.current = null;
           setItemState(next.uuid, "failed", text.errors.readback);

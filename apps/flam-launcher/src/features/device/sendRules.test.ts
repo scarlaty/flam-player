@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import type { DeviceStories, DeviceSummary } from "../../api/device";
 import {
   estimateMinutes,
+  replaceBlock,
   sendBlock,
   SPACE_MARGIN_BYTES,
   type SendContext,
@@ -89,6 +90,28 @@ it("donne la priorité à l'absence de Flam, puis à la présence, puis à la fi
       1,
     ),
   ).toBe("queued");
+});
+
+it("remplacement : seulement d'une histoire présente et visible, mêmes règles sinon", () => {
+  const visible = (uuid: string) => ({
+    ...stories.stories[0]!,
+    uuid,
+    short_id: uuid,
+    placement: "visible" as const,
+  });
+  const deviceStories = { ...stories, stories: [...stories.stories, visible("capi")] };
+  const ctx = (overrides: Partial<SendContext> = {}) =>
+    context({ deviceStories, ...overrides });
+  expect(replaceBlock(ctx(), "capi", 10 * MB)).toBeNull();
+  expect(replaceBlock(ctx(), "absente", 10 * MB)).toBe("absent");
+  // Masquée : le backend refuse le remplacement.
+  expect(replaceBlock(ctx(), "present", 10 * MB)).toBe("absent");
+  expect(replaceBlock(context({ deviceStories: null }), "capi", 1)).toBe("absent");
+  expect(replaceBlock(ctx({ queuedOrSent: new Set(["capi"]) }), "capi", 1)).toBe(
+    "queued",
+  );
+  expect(replaceBlock(ctx({ firmwareBlocked: true }), "capi", 1)).toBe("firmware");
+  expect(replaceBlock(ctx(), "capi", 500 * MB)).toBe("no_space");
 });
 
 it("estime environ 4 minutes pour 80 Mo, au moins une minute", () => {

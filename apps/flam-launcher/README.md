@@ -317,7 +317,7 @@ apps/flam-launcher/
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status` ; titres déchiffrés et vignettes des histoires #276, `device::details` ; transfert sûr #229, `device::transfer`, commandes `device_send_story`, `device_cancel_transfer` et `device_recover_transfers` (reprise au branchement), événement `device://transfer-progress` ; retrait #231, `device::remove` ; ordre des histoires #233, `device::reorder`, commande `device_reorder_stories` ; éjection #232, `device::eject` ; verrou des opérations, `device::lock`), `podcast` (`rss`).
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `library_source` (empreinte de la source dossier d'une histoire installée, #288), `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status` ; titres déchiffrés et vignettes des histoires #276, `device::details` ; transfert sûr #229, `device::transfer`, commandes `device_send_story`, `device_cancel_transfer` et `device_recover_transfers` (reprise au branchement), événement `device://transfer-progress` ; retrait #231, `device::remove` ; ordre des histoires #233, `device::reorder`, commande `device_reorder_stories` ; éjection #232, `device::eject` ; verrou des opérations, `device::lock`), `podcast` (`rss`).
 
 ### Commandes Tauri
 
@@ -327,43 +327,44 @@ enregistrées dans `generate_handler!` de `lib.rs`) : pas de fichier `commands.r
 Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enregistrées dans
 `generate_handler!` (`lib.rs`). Chacune a un wrapper typé dans `src/api/`.
 
-| Commande                      | Arguments                  | Retour                                                     | Module            |
-| ----------------------------- | -------------------------- | ---------------------------------------------------------- | ----------------- |
-| `app_info`                    |                            | `{ name, version }`                                        | `app`             |
-| `settings_get`                |                            | `SettingsView`                                             | `settings`        |
-| `settings_set`                | `settings: Settings`       | `SettingsView`                                             | `settings`        |
-| `sources_list`                |                            | `SourcesView`                                              | `sources`         |
-| `sources_add`                 | `input: SourceInput`       | `Source`                                                   | `sources`         |
-| `sources_update`              | `id`, `input: SourceInput` | `Source`                                                   | `sources`         |
-| `sources_remove`              | `id`                       | rien                                                       | `sources`         |
-| `sources_reorder`             | `ids: string[]`            | `Source[]` (liste complète)                                | `sources`         |
-| `config_ack_recovery`         | `file?: string`            | rien                                                       | `storage`         |
-| `cache_usage`                 |                            | `{ path, bytes }`                                          | `cache`           |
-| `cache_clear`                 |                            | `{ freed_bytes }`                                          | `cache`           |
-| `catalog_refresh`             | `source_id`                | `CatalogView`                                              | `catalog`         |
-| `catalog_entries`             | `source_id`                | `CatalogView`                                              | `catalog`         |
-| `catalog_thumbnail`           | `source_id`, `thumb_url`   | URL `data:` (string)                                       | `catalog`         |
-| `folder_scan`                 | `source_id`, `recursive?`  | `FolderScan`                                               | `folder`          |
-| `folder_thumbnail`            | `source_id`, `entry_id`    | URL `data:` (chaîne)                                       | `folder`          |
-| `folder_watch`                | `source_id`, `enabled`     | rien                                                       | `watch`           |
-| `install_start`               | `source_id`, `entry_id`    | `InstallTask`                                              | `install`         |
-| `install_cancel`              | `task_id`                  | rien                                                       | `install`         |
-| `install_list`                |                            | `InstallTask[]`                                            | `install`         |
-| `library_list`                |                            | `LibraryEntry[]`                                           | `library`         |
-| `library_remove`              | `uuid`, `purge_saves?`     | rien                                                       | `library`         |
-| `library_thumbnail`           | `uuid`                     | URL `data:` (`not_found` sans vignette)                    | `library_thumb`   |
-| `player_launch`               | `uuid`                     | `PlayerSession`                                            | `player`          |
-| `player_launch_folder`        | `source_id`, `entry_id`    | `PlayerSession`                                            | `player`          |
-| `player_status`               |                            | `PlayerSession \| null`                                    | `player`          |
-| `player_stop`                 |                            | `bool` (faux : aucun player)                               | `player`          |
-| `player_embed_layout`         | `rect \| null` (px CSS)    | rien                                                       | `player`          |
-| `player_embed_focus`          |                            | rien                                                       | `player`          |
-| `device_status`               |                            | `DeviceStatus`                                             | `device::status`  |
-| `device_list_stories`         |                            | `DeviceStories \| null` (`null` : aucune Flam)             | `device::status`  |
-| `device_story_titles`         | `root`, `uuids` (≤ 100)    | `{ titles: { uuid, title \| null }[], interrupted, keys }` | `device::details` |
-| `device_story_thumbnail`      | `root`, `uuid`             | `{ thumb: URL data: \| null, busy }`                       | `device::details` |
-| `device_story_details_cancel` |                            | rien                                                       | `device::details` |
-| `device_reorder_stories`      | `root`, `order: string[]`  | `{ changed, cache_removed, count }`                        | `device::reorder` |
+| Commande                      | Arguments                        | Retour                                                     | Module            |
+| ----------------------------- | -------------------------------- | ---------------------------------------------------------- | ----------------- |
+| `app_info`                    |                                  | `{ name, version }`                                        | `app`             |
+| `settings_get`                |                                  | `SettingsView`                                             | `settings`        |
+| `settings_set`                | `settings: Settings`             | `SettingsView`                                             | `settings`        |
+| `sources_list`                |                                  | `SourcesView`                                              | `sources`         |
+| `sources_add`                 | `input: SourceInput`             | `Source`                                                   | `sources`         |
+| `sources_update`              | `id`, `input: SourceInput`       | `Source`                                                   | `sources`         |
+| `sources_remove`              | `id`                             | rien                                                       | `sources`         |
+| `sources_reorder`             | `ids: string[]`                  | `Source[]` (liste complète)                                | `sources`         |
+| `config_ack_recovery`         | `file?: string`                  | rien                                                       | `storage`         |
+| `cache_usage`                 |                                  | `{ path, bytes }`                                          | `cache`           |
+| `cache_clear`                 |                                  | `{ freed_bytes }`                                          | `cache`           |
+| `catalog_refresh`             | `source_id`                      | `CatalogView`                                              | `catalog`         |
+| `catalog_entries`             | `source_id`                      | `CatalogView`                                              | `catalog`         |
+| `catalog_thumbnail`           | `source_id`, `thumb_url`         | URL `data:` (string)                                       | `catalog`         |
+| `folder_scan`                 | `source_id`, `recursive?`        | `FolderScan`                                               | `folder`          |
+| `folder_thumbnail`            | `source_id`, `entry_id`          | URL `data:` (chaîne)                                       | `folder`          |
+| `folder_watch`                | `source_id`, `enabled`           | rien                                                       | `watch`           |
+| `install_start`               | `source_id`, `entry_id`, `uuid?` | `InstallTask`                                              | `install`         |
+| `install_cancel`              | `task_id`                        | rien                                                       | `install`         |
+| `install_list`                |                                  | `InstallTask[]`                                            | `install`         |
+| `library_list`                |                                  | `LibraryEntry[]`                                           | `library`         |
+| `library_remove`              | `uuid`, `purge_saves?`           | rien                                                       | `library`         |
+| `library_thumbnail`           | `uuid`                           | URL `data:` (`not_found` sans vignette)                    | `library_thumb`   |
+| `library_source_status`       |                                  | `SourceCheck[]` (`{ uuid, state }`)                        | `library_source`  |
+| `player_launch`               | `uuid`                           | `PlayerSession`                                            | `player`          |
+| `player_launch_folder`        | `source_id`, `entry_id`          | `PlayerSession`                                            | `player`          |
+| `player_status`               |                                  | `PlayerSession \| null`                                    | `player`          |
+| `player_stop`                 |                                  | `bool` (faux : aucun player)                               | `player`          |
+| `player_embed_layout`         | `rect \| null` (px CSS)          | rien                                                       | `player`          |
+| `player_embed_focus`          |                                  | rien                                                       | `player`          |
+| `device_status`               |                                  | `DeviceStatus`                                             | `device::status`  |
+| `device_list_stories`         |                                  | `DeviceStories \| null` (`null` : aucune Flam)             | `device::status`  |
+| `device_story_titles`         | `root`, `uuids` (≤ 100)          | `{ titles: { uuid, title \| null }[], interrupted, keys }` | `device::details` |
+| `device_story_thumbnail`      | `root`, `uuid`                   | `{ thumb: URL data: \| null, busy }`                       | `device::details` |
+| `device_story_details_cancel` |                                  | rien                                                       | `device::details` |
+| `device_reorder_stories`      | `root`, `order: string[]`        | `{ changed, cache_removed, count }`                        | `device::reorder` |
 
 `device_status` et `device_list_stories` sont **en lecture seule** sur la Flam : ni reprise
 d'index (`recover`), ni création de dossier. La seule écriture est la copie personnelle de
@@ -394,7 +395,12 @@ la lecture des histoires, file d'envoi séquentielle (`device_send_story`, progr
 (`device_remove_story`), ordre des histoires (`device_reorder_stories`) et éjection
 (`device_eject`). Le bouton « Envoyer sur la Flam » (cartes,
 fiche, « Ma Flam ») reste focalisable quand il est refusé et affiche sa raison (Flam non
-détectée, déjà présente, espace insuffisant, firmware non pris en charge, déjà en file) ;
+détectée, déjà présente, espace insuffisant, firmware non pris en charge, déjà en file) ; une
+histoire déjà sur la Flam (non masquée) propose en plus « Remplacer sur la Flam »
+(`device_send_story` avec `replace`, même à version égale : l'ancienne version n'est retirée
+qu'une fois la nouvelle en place, #288), et une histoire dont la source dossier a changé depuis
+l'installation affiche « Source modifiée : mettez l'histoire à jour avant l'envoi » (sans
+bloquer) ;
 l'avertissement « fonction expérimentale, non officielle » est mémorisé dans le stockage local
 (`preferences.ts`). Le firmware n'étant pas exposé par `device_status`, « non pris en charge »
 n'est connu qu'après un refus du backend.
@@ -427,7 +433,8 @@ Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`), `src/api/
 `src/api/cache.ts` (`getCacheUsage`, `clearCache`) et `src/api/dialog.ts` (`pickFolder`,
 `pickExecutable` : sélecteurs natifs du plugin `tauri-plugin-dialog`), `src/api/install.ts`
 (`startInstall`, `cancelInstall`, `listInstalls`, `onInstallProgress`, `onInstallDone`,
-`onInstallError`) et `src/api/library.ts` (`listLibrary`, `removeFromLibrary`, `hasUpdate`). La logique
+`onInstallError`) et `src/api/library.ts` (`listLibrary`, `removeFromLibrary`, `hasUpdate`,
+`librarySourceStatus`). La logique
 (`SettingsStore`, `SourcesStore`, détection) ne dépend pas de Tauri et reçoit son dossier de
 configuration en paramètre : elle est testée sur des dossiers temporaires ; les commandes
 ne sont que de fines enveloppes qui prennent un verrou (`ConfigState`) autour de chaque opération.
@@ -811,9 +818,11 @@ seul argument** (dernier), dossier courant = dossier du player.
 
 ### Pipeline d'installation (`install`, `library`)
 
-`install_start(source_id, entry_id)` crée une tâche pour une entrée **retrouvée par le backend**
-(catalogue : cache, sans réseau ; dossier : dernier `folder_scan`, sinon `not_found`) : le front ne
-transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est renvoyée telle quelle.
+`install_start(source_id, entry_id, uuid?)` crée une tâche pour une entrée **retrouvée par le backend**
+(catalogue : cache, sans réseau ; dossier : dernier `folder_scan`, et si l'entrée n'y est pas, le
+dossier est analysé, sous-dossiers compris, puis `not_found` si elle reste introuvable) : le front
+ne transmet jamais d'URL ni de chemin. `uuid` : histoire attendue ; une entrée qui en propose une
+autre (fichier remplacé au même chemin) donne `not_found` sans rien installer. Une tâche active pour le même `uuid` est renvoyée telle quelle.
 `InstallTask { id, entry, state, percent, error, created_at }`, `state` parmi `queued`,
 `downloading`, `converting`, `installing`, `done`, `failed`, `cancelled` ;
 `TaskError { kind, message, code }` (`code` : code `telmi2flam` pour `kind = "conversion"`).
@@ -935,7 +944,8 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
 - **Convertisseur** : `<exe>/telmi2flam/telmi2flam.py` (application installée ; construit par `npm run build:converter`, voir « Convertisseur embarqué »),
   sinon en développement `tools/telmi2flam/telmi2flam.py` d'un dossier ancêtre. Python : `resolved.python_path`.
 - **Bibliothèque** : `library.json` = `{ schema_version, stories: LibraryEntry[] }` avec
-  `LibraryEntry { uuid, version, title, file, size, installed_at, converter, source: StoryEntry }`.
+  `LibraryEntry { uuid, version, title, file, size, installed_at, converter, source: StoryEntry,
+thumb, source_stamp }`.
   `converter` est la version de `telmi2flam` lue dans le champ `version` de l'événement `start`
   (#60), avec en repli l'empreinte `sha256:<12 hex>` de `telmi2flam.py`. **Une installation par `uuid`** : la dernière installée remplace la précédente (autre
   version, ou `.plain` / `.plain.pk` de même `uuid` d'un dossier source). Un index corrompu est
@@ -943,6 +953,28 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
   disparu.
 - **Mises à jour** : `hasUpdate(installed, entry)` (front) et `LibraryEntry::is_outdated_by`
   (Rust) : même `uuid`, versions connues et différentes.
+- **Source dossier modifiée à version égale** (#288, `library_source`) : une histoire d'une source
+  dossier est une **copie** ; reconstruite avec le même `uuid` et la même version, sa source change
+  sans que le nom de la copie change. L'installation enregistre donc `source_stamp
+{ quick, sha256 }` : `sha256` est l'empreinte de ce qui a été copié (octets du `.plain.pk` ou du
+  `.zip` ; pour un dossier `.plain`, manifeste nom, taille et SHA-256 de chaque fichier, identique
+  sur le dossier et sur le `.plain.pk` empaqueté), `quick` un pré-filtre relevé avant la copie
+  (taille et date du fichier ; pour un `.plain`, empreinte de la liste nom, taille, date). Une
+  empreinte impossible à calculer ne fait jamais échouer l'installation (`null`).
+  `library_source_status` (lecture seule) compare chaque histoire d'une source dossier encore
+  déclarée : pré-filtre égal, `unchanged` sans rien relire ; sinon l'empreinte de la source est
+  recalculée (mémorisée en mémoire par chemin et pré-filtre) : `unchanged` ou `changed`. Source
+  disparue : `missing`, la copie est conservée. Source dossier retirée, chemin hors de son
+  dossier ou avec `..`, lien refusé, lecture impossible : `unknown`. Entrée **sans empreinte**
+  (installée avant #288) : un `.plain.pk` de taille différente de la copie est `changed` ; une
+  source dont aucun fichier n'est plus récent que l'installation est `unchanged` ; sinon les
+  empreintes de la source et de la copie sont comparées (un `.zip` converti n'est pas comparable :
+  `changed`). `changed` affiche « Mise à jour disponible » sur l'entrée d'origine (dans sa source
+  et dans « Mes histoires ») et « Mettre à jour » réinstalle depuis la source par `install_start`
+  (jamais de remplacement silencieux) ; le front revérifie à chaque changement d'écran ou de
+  source, après chaque relecture de la bibliothèque et à chaque `folder://changed`. La
+  progression de l'enfant n'est pas touchée : même fichier `<uuid>-<version>.plain.pk`, donc
+  mêmes sauvegardes, retrouvées par la copie mise à jour.
 - **Suivis de revue** (stderr borné, Job Object, reprise après erreur réseau, réconciliation de
   l'index…) : #62.
 - **Test réel** (hors CI) : `FLAM_TELMI_ZIP=<archive.zip> cargo test installation_reelle -- --ignored --nocapture`.
@@ -1161,7 +1193,8 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   catégorie, auteur, voix, licence, taille, source, état, badge de compatibilité avec sa raison et
   actions selon l'état : _Télécharger et jouer_ / _Télécharger_ (catalogue ; _Installer…_ pour un
   dossier), _Jouer_, _Mettre à jour_ (le catalogue propose une autre version que celle
-  installée), _Supprimer_ (avec confirmation), _Annuler_ (tâche active) ; un `.plain` /
+  installée, ou la source dossier a changé depuis l'installation, même à version égale, #288),
+  _Supprimer_ (avec confirmation), _Annuler_ (tâche active) ; un `.plain` /
   `.plain.pk` d'un dossier peut aussi être joué sans installation (_Jouer depuis le dossier_,
   `player_launch_folder`). Les cartes portent une action rapide (_Jouer_, _Télécharger_) et la barre
   de progression de leur tâche. Un seul modal à la fois : la fiche s'efface le temps d'une

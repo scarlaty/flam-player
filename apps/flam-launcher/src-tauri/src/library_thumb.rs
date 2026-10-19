@@ -298,7 +298,7 @@ mod tests {
         now: u64,
     ) -> LibraryEntry {
         let prepared = prepare(cache, source, staged);
-        lib.install_thumbed(staged, source, None, now, prepared.as_ref())
+        lib.install_thumbed(staged, source, None, now, prepared.as_ref(), None)
             .unwrap()
     }
 

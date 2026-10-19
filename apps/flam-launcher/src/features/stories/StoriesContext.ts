@@ -38,8 +38,16 @@ export interface StoriesApi {
   progressFor: (entry: StoryEntry) => StoryProgress | undefined;
   /** Version installée de cette histoire (même `uuid`). */
   installedFor: (entry: StoryEntry) => LibraryEntry | undefined;
-  /** Une version plus récente que celle installée est proposée par `entry`. */
+  /**
+   * `entry` propose une autre version que celle installée, ou c'est la source dossier de
+   * l'histoire installée et elle a changé depuis l'installation (même à version égale, #288).
+   */
   updateAvailable: (entry: StoryEntry) => boolean;
+  /**
+   * La copie de bibliothèque de l'histoire `uuid` est plus ancienne que sa source dossier
+   * (modifiée depuis l'installation) : « Mettre à jour » la réinstalle depuis la source.
+   */
+  sourceChanged: (uuid: string) => boolean;
   /**
    * Installe l'histoire ; si elle est marquée incompatible, demande d'abord confirmation
    * (`IncompatibleInstallDialog`). Les erreurs sont signalées par une notification.
