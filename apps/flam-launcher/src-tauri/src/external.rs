@@ -58,6 +58,8 @@ mod tests {
             "https://github.com/scarlaty/flam-player/blob/main/apps/flam-launcher/docs/flam-transfert.md#risques",
             "https://github.com/scarlaty/flam-player/releases",
             "https://github.com/scarlaty/flam-player/issues/new?template=bug.md",
+            // Modèle d'issue des testeurs (#318), ouvert depuis « Ma Flam ».
+            "https://github.com/scarlaty/flam-player/issues/new?template=retour-testeur-flam.yml",
             "https://GITHUB.com/scarlaty/flam-player/issues",
             "https://github.com:443/scarlaty/flam-player/issues",
         ] {

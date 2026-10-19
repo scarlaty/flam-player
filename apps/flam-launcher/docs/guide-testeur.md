@@ -176,7 +176,8 @@ issue sur GitHub avec le modèle **« Retour testeur Flam »** :
    diagnostic**. Le message « Diagnostic copié » confirme la copie. Si la copie est refusée, le
    texte s'affiche dans une zone sélectionnable : cliquez dedans, **Ctrl + A** puis **Ctrl + C**.
    Le bouton fonctionne aussi sans Flam détectée et quand l'écriture sur la Flam est bloquée.
-2. Ouvrez le modèle :
+2. Ouvrez le modèle avec le bouton **Signaler un problème**, juste à côté (il s'ouvre dans votre
+   navigateur ; sinon **Copier le lien**), ou directement :
    <https://github.com/scarlaty/flam-player/issues/new?template=retour-testeur-flam.yml> (un
    compte GitHub est nécessaire).
 3. Remplissez-le : modèle de Flam, ligne « Firmware » de la carte « Flam détectée », version du

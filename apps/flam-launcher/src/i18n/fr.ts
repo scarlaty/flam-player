@@ -667,6 +667,14 @@ export const fr = {
     copyFailed:
       "Copie impossible : sélectionnez le texte ci-dessous (Ctrl + A dans la zone) puis copiez-le (Ctrl + C).",
     fieldLabel: "Diagnostic à copier",
+    report: "Signaler un problème",
+    reportHint:
+      "Le modèle d'issue s'ouvre dans votre navigateur (compte GitHub nécessaire) :",
+    copyLink: "Copier le lien",
+    linkCopied: "Lien copié : collez-le dans votre navigateur.",
+    linkCopyFailed: "Copie impossible : sélectionnez l'adresse ci-dessus pour la copier.",
+    openFailed:
+      "Ouverture impossible : copiez le lien et collez-le dans votre navigateur.",
   },
   toast: {
     region: "Notifications",
