@@ -628,16 +628,6 @@ it("refuse l'éjection pendant un retrait", async () => {
   await screen.findByRole("heading", { name: "Histoires sur la Flam (0)" });
 });
 
-  onDevice = [deviceStory(C, "Déjà là")];
-  let releaseEject!: () => void;
-  ejectGate = new Promise<void>((resolve) => {
-    releaseEject = resolve;
-  });
-  fireEvent.click(screen.getAllByRole("button", { name: "Éjecter la Flam" })[0]!);
-  await screen.findAllByRole("button", { name: "Éjection en cours…" });
-  await act(async () => releaseEject());
-});
-
 it("refuse le retrait pendant une éjection", async () => {
   let release!: () => void;
   ejectGate = new Promise<void>((resolve) => {
@@ -649,7 +639,9 @@ it("refuse le retrait pendant une éjection", async () => {
   await screen.findByRole("button", { name: "Éjection en cours…" });
   const remove = screen.getByRole("button", { name: "Retirer « Déjà là »" });
   expect(remove).toHaveAttribute("aria-disabled", "true");
-  expect(remove).toHaveAccessibleDescription("Retrait indisponible pendant une éjection.");
+  expect(remove).toHaveAccessibleDescription(
+    "Retrait indisponible pendant une éjection.",
+  );
   fireEvent.click(remove);
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   await act(async () => release());
