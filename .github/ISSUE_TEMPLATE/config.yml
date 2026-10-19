@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Guide testeur
+    url: https://github.com/scarlaty/flam-player/blob/main/apps/flam-launcher/docs/guide-testeur.md
+    about: Installation, sauvegarde de la Flam et scénarios de test avant d'ouvrir un retour.

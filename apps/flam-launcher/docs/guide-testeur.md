@@ -170,20 +170,30 @@ chaque réponse dans votre retour, même si tout va bien.
 ## 4. Remonter votre retour
 
 Quel que soit le résultat (réussite comprise : un « tout est OK » est précieux), ouvrez une
-issue sur GitHub :
+issue sur GitHub avec le modèle **« Retour testeur Flam »** :
 
-1. Allez sur <https://github.com/scarlaty/flam-player/issues/new/choose> (un compte GitHub
-   est nécessaire) et choisissez le modèle **« Retour testeur Flam »** (si ce modèle n'existe pas encore dans
-   votre version, voir plus bas).
-2. Remplissez le modèle : modèle de Flam, version du firmware, numéro de test, ce que vous avez
-   vu.
-3. Dans « Ma Flam », cliquez sur **Copier le diagnostic** (si ce bouton n'existe pas encore)
-   et collez le résultat dans l'issue. Il aide à comprendre ce qui s'est passé.
-4. Ne publiez **jamais** de clé, de fichier `.mdf` ni de contenu d'histoire officielle.
+1. Dans « Ma Flam », rubrique **Retour de test** (en bas de l'écran), cliquez sur **Copier le
+   diagnostic**. Le message « Diagnostic copié » confirme la copie. Si la copie est refusée, le
+   texte s'affiche dans une zone sélectionnable : cliquez dedans, **Ctrl + A** puis **Ctrl + C**.
+   Le bouton fonctionne aussi sans Flam détectée et quand l'écriture sur la Flam est bloquée.
+2. Ouvrez le modèle avec le bouton **Signaler un problème**, juste à côté (il s'ouvre dans votre
+   navigateur ; sinon **Copier le lien**), ou directement :
+   <https://github.com/scarlaty/flam-player/issues/new?template=retour-testeur-flam.yml> (un
+   compte GitHub est nécessaire).
+3. Remplissez-le : modèle de Flam, ligne « Firmware » de la carte « Flam détectée », version du
+   launcher (écran « Paramètres », rubrique « À propos »), numéro du test, résultat attendu et
+   obtenu, messages affichés à l'écran. Collez le diagnostic tel quel dans le champ
+   « Diagnostic ».
+4. Ne publiez **jamais** de clé, de fichier `.mdf`, de numéro de série ni de contenu d'histoire
+   officielle.
 
-Si le modèle ou le bouton ne sont pas encore disponibles dans votre version, décrivez votre
-retour avec vos mots : la version du launcher (écran « Paramètres », rubrique « À propos »), le firmware de la
-Flam (affiché sur la carte « Flam détectée ») et les messages affichés à l'écran.
+Le diagnostic est lu sur la Flam sans rien y écrire, et sans accès à internet. Il contient la
+version du launcher et de Windows, l'état du firmware et du fichier `.mdf` (taille, en-tête,
+disposition, sans les clés), l'état des index (nombres d'entrées, fins de ligne, anomalies), la
+présence des dossiers et fichiers de travail, l'espace libre, le nombre d'histoires et les
+dernières erreurs de transfert. Il ne contient ni clé, ni numéro de série, ni titre ou
+identifiant d'histoire, ni votre nom d'utilisateur (le dossier de votre profil Windows y est
+remplacé par `%USERPROFILE%`). Relisez-le avant de le publier.
 
 ## En cas de problème
 

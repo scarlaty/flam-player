@@ -190,6 +190,15 @@ export function getDeviceStatus(): Promise<DeviceStatus> {
 }
 
 /**
+ * `device_diagnostic` : diagnostic Markdown à coller dans une issue « Retour testeur Flam »
+ * (#318). Lecture seule, sans réseau ; disponible sans Flam (diagnostic réduit). Ne contient ni
+ * clé, ni `bt`, ni numéro de série, ni titre ou UUID d'histoire, ni nom d'utilisateur.
+ */
+export function getDeviceDiagnostic(): Promise<string> {
+  return invokeCommand<string>("device_diagnostic");
+}
+
+/**
  * `device_list_stories` : histoires de la Flam (`null` : aucune Flam détectée). Lecture seule,
  * sans reprise d'index.
  */
