@@ -295,8 +295,9 @@ du dépôt concernent le player : elles ne sont pas touchées.
 
 Procédure (exemple : `0.1.0-beta.1`) :
 
-1. Vérifier que la CI de `main` est verte sur le commit visé (le workflow de publication ne rejoue
-   ni lint, ni tests, ni test de mise à jour).
+1. Repérer le commit visé : le **commit de fusion de la montée de version** (étape 2). Il touche
+   `apps/flam-launcher/**`, donc la CI `launcher` y tourne ; attendre qu'elle soit verte (le workflow
+   de publication ne rejoue ni lint, ni tests, ni test de mise à jour, et refuse sans cette CI verte).
 2. Dans une PR : passer `0.1.0-beta.1` dans `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`,
    `package.json`, `package-lock.json` (`npm version 0.1.0-beta.1 --no-git-tag-version`) et
    `Cargo.lock` (`cargo check` depuis `src-tauri/`). Relire `release-notes/0.1.0-beta.1.md` et en
@@ -306,7 +307,7 @@ Procédure (exemple : `0.1.0-beta.1`) :
 3. Facultatif : Actions, « release-launcher », « Run workflow » depuis `main`, étiquette
    `launcher-v0.1.0-beta.1`, `dry_run` coché (valeur par défaut) : construit tout depuis `main` sans
    rien publier ; les contrôles propres à la publication (brouillon, commit dans `main`, release
-   existante) ne sont alors que des avertissements.
+   existante, CI `launcher` verte) ne sont alors que des avertissements.
 4. Poser et pousser l'étiquette sur le commit de fusion :
    `git tag launcher-v0.1.0-beta.1 <commit> && git push origin launcher-v0.1.0-beta.1`.
 5. Le workflow publie. En cas d'échec : le rejeu (« Run workflow » depuis `main`, même étiquette,
@@ -317,9 +318,16 @@ Procédure (exemple : `0.1.0-beta.1`) :
    le workflow refuse d'y toucher : la supprimer à la main d'abord.
 
 Contrôles automatiques avant le build : forme de l'étiquette (`launcher-v` + SemVer, pré-version
-admise), les cinq fichiers de version égaux à la version de l'étiquette, notes présentes et sans
-« BROUILLON », commit de l'étiquette contenu dans `main`, aucune release existante, rejeu lancé
-depuis `main`. Le commit contrôlé est celui qui est construit et publié (l'étiquette ne doit pas
+admise), les fichiers de version (dont `packages[""]` de `package-lock.json`) égaux à la version de l'étiquette, notes présentes et sans
+« BROUILLON » (casse indifférente), commit de l'étiquette contenu dans `main`, aucune release
+existante (brouillon compris, revérifié avant la création), rejeu lancé depuis `main`, et **CI
+`launcher` verte sur ce commit exact** : le workflow `launcher` doit y avoir un run `push` terminé en
+succès (en cas de relances, le plus récent compte). Sans run (commit qui ne touche aucun chemin filtré
+de `launcher.yml`, par ex. un commit de documentation seule), en cours, échoué ou annulé, la
+publication est refusée : il n'y a volontairement pas de repli sur un commit ancêtre, des commits non
+testés pouvant s'être intercalés. Poser alors l'étiquette sur le commit de fusion de la montée de
+version, ou attendre / relancer la CI `launcher` (Actions, « Re-run »). Un dry_run et la répétition
+générale affichent ce contrôle en avertissement. Le commit contrôlé est celui qui est construit et publié (l'étiquette ne doit pas
 avoir bougé). La forme de l'étiquette n'admet pas de tiret dans un identifiant de pré-version
 (`beta.1`, pas `beta-1`). L'installateur
 porte le nom `Flam-Launcher_<version>_x64-setup.exe` (sans espace, comme dans `SHA256SUMS.txt`) et

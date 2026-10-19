@@ -15,7 +15,8 @@ name: release-launcher
 # Procédure complète : apps/flam-launcher/README.md, section « Publier une pré-version ».
 # Les étapes de build reprennent celles de launcher.yml (même cache ffmpeg, mêmes actions épinglées) ;
 # les tests (lint, Vitest, cargo test, e2e, mise à jour N-1) ne sont pas rejoués : l'étiquette doit
-# être posée sur un commit de main dont la CI launcher est verte.
+# être posée sur un commit de main dont la CI launcher est verte, ce que `verify` contrôle (#322) :
+# le workflow `launcher` doit avoir un run `push` terminé en succès sur ce commit exact.
 on:
   push:
     tags:
@@ -40,8 +41,9 @@ permissions:
   contents: read
 
 concurrency:
-  # Une publication par étiquette, jamais annulée en cours de route (seules les PR s'annulent).
-  group: release-launcher-${{ github.event_name == 'pull_request' && github.ref || inputs.tag || github.ref_name }}
+  # Une publication par étiquette, jamais annulée en cours de route (seules les PR s'annulent). Un
+  # dry_run a son propre groupe : il ne retarde pas la vraie publication de la même étiquette.
+  group: release-launcher-${{ github.event_name == 'pull_request' && github.ref || inputs.tag || github.ref_name }}${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '-dry' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -53,6 +55,10 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      # Lecture des runs du workflow `launcher` (garde « CI verte », #322).
+      actions: read
     outputs:
       version: ${{ steps.v.outputs.version }}
       tag: ${{ steps.v.outputs.tag }}
@@ -115,11 +121,12 @@ jobs:
             tauri_conf="$(node -p 'JSON.parse(require("fs").readFileSync("src-tauri/tauri.conf.json","utf8")).version')"
             pkg_json="$(node -p 'JSON.parse(require("fs").readFileSync("package.json","utf8")).version')"
             pkg_lock="$(node -p 'JSON.parse(require("fs").readFileSync("package-lock.json","utf8")).version')"
+            pkg_lock_root="$(node -p 'JSON.parse(require("fs").readFileSync("package-lock.json","utf8")).packages[""].version')"
             ko=0
             expected="$version"
             if [ "$rehearsal" = "true" ]; then expected="$cargo_toml"; fi
-            echo "Versions lues : Cargo.toml=$cargo_toml Cargo.lock=$cargo_lock tauri.conf.json=$tauri_conf package.json=$pkg_json package-lock.json=$pkg_lock"
-            for pair in "Cargo.toml=$cargo_toml" "Cargo.lock=$cargo_lock" "tauri.conf.json=$tauri_conf" "package.json=$pkg_json" "package-lock.json=$pkg_lock"; do
+            echo "Versions lues : Cargo.toml=$cargo_toml Cargo.lock=$cargo_lock tauri.conf.json=$tauri_conf package.json=$pkg_json package-lock.json=$pkg_lock package-lock.json(packages)=$pkg_lock_root"
+            for pair in "Cargo.toml=$cargo_toml" "Cargo.lock=$cargo_lock" "tauri.conf.json=$tauri_conf" "package.json=$pkg_json" "package-lock.json=$pkg_lock" "package-lock.json(packages)=$pkg_lock_root"; do
               if [ -z "$expected" ] || [ "${pair#*=}" != "$expected" ]; then
                 echo "::error::version de ${pair%%=*} : « ${pair#*=} », « $expected » attendue (étiquette $tag)"
                 ko=1
@@ -134,7 +141,7 @@ jobs:
             if [ "$publish" = "true" ]; then echo "::error::$1"; exit 1; else echo "::warning::$1"; fi
           }
           if [ "$rehearsal" = "false" ]; then
-            if grep -q 'BROUILLON' "$notes"; then
+            if grep -qi 'BROUILLON' "$notes"; then
               problem "$notes contient encore « BROUILLON » : relire les notes et retirer la mention"
             fi
             git fetch --no-tags origin main
@@ -144,6 +151,29 @@ jobs:
             if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
               problem "une release $tag existe déjà : la supprimer à la main avant de rejouer"
             fi
+          fi
+          # CI launcher verte sur le commit de l'étiquette (#322). Règle : le workflow `launcher` doit
+          # avoir un run `push` (donc sur main) sur CE commit exact, terminé en succès ; en cas de
+          # relances, le plus récent compte. Aucun run (commit qui ne touche pas les chemins filtrés
+          # de launcher.yml), run en cours, échoué ou annulé : refus. Pas de remontée vers un
+          # ancêtre : des commits non testés auraient pu s'intercaler. Lecture de l'API en échec :
+          # refus aussi. En répétition générale (PR), le contrôle s'exerce, en avertissement, sur le
+          # dernier commit de main qui touche apps/flam-launcher.
+          ci_sha="$(git rev-parse HEAD)"
+          if [ "$rehearsal" = "true" ]; then
+            git fetch --no-tags origin main
+            ci_sha="$(git log -1 --format=%H FETCH_HEAD -- apps/flam-launcher)"
+          fi
+          sha="$ci_sha"
+          if ! ci="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/launcher.yml/runs?head_sha=$sha&event=push&per_page=100" \
+              | jq -r --arg sha "$sha" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | last // empty | "\(.status) \(.conclusion // "-") \(.html_url)"')"; then
+            problem "lecture des runs du workflow launcher impossible : CI launcher non vérifiée sur $sha"
+          elif [ -z "$ci" ]; then
+            problem "aucun run « launcher » sur $sha : poser l'étiquette sur un commit de main qui a déclenché la CI launcher (le commit de fusion de la montée de version la déclenche)"
+          elif [ "${ci%% *}" != "completed" ] || [ "$(echo "$ci" | cut -d' ' -f2)" != "success" ]; then
+            problem "la CI launcher n'est pas verte sur $sha (état conclusion URL : $ci)"
+          else
+            echo "CI launcher verte sur $sha : ${ci##* }"
           fi
           # Le workflow qui publie (et ses permissions) doit être celui de main.
           if [ "$publish" = "true" ] && [ "$EVENT" = "workflow_dispatch" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
@@ -335,6 +365,14 @@ jobs:
         with:
           name: flam-launcher-setup
           path: assets
+
+      # Le jeton `contents: read` de `verify` ne voit pas les brouillons de release : ce jeton
+      # `contents: write` les voit (évite un doublon, #322).
+      - name: Aucune release (même brouillon) pour cette étiquette
+        run: |
+          set -euo pipefail
+          ids="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .id")"
+          if [ -n "$ids" ]; then echo "::error::une release (éventuellement brouillon) $TAG existe déjà : la supprimer à la main"; exit 1; fi
 
       - name: SHA256SUMS.txt
         working-directory: assets
