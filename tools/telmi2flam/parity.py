@@ -158,10 +158,13 @@ def run_converter(cmd, archive, work_dir, args=(), timeout=300):
     Retourne la forme normalisee (voir run_to_dict) et le chemin de la sortie (ou None)."""
     os.makedirs(work_dir, exist_ok=True)
     out = os.path.join(work_dir, "out.plain.pk")
+    # Reechantillonnage MP3 desactive (#46) : l'oracle Python et le candidat Rust doivent
+    # produire la meme sortie quel que soit le ffmpeg present sur la machine.
+    env = {**os.environ, "FLAM_FFMPEG": ""}
     try:
         r = subprocess.run(list(cmd) + [archive, "-o", out, "--progress-json"] + list(args),
                            capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=timeout)
+                           timeout=timeout, env=env)
     except (OSError, subprocess.TimeoutExpired) as e:
         return harness_error(e), None
     events = parse_events(r.stdout)
@@ -178,7 +181,7 @@ def run_converter(cmd, archive, work_dir, args=(), timeout=300):
     try:
         ri = subprocess.run(list(cmd) + [archive, "--info"],
                             capture_output=True, text=True, encoding="utf-8", errors="replace",
-                            timeout=timeout)
+                            timeout=timeout, env=env)
     except (OSError, subprocess.TimeoutExpired) as e:
         return harness_error(e), None
     # --info sans --progress-json : en cas d'erreur, seul le code de sortie compte (le texte

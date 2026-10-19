@@ -22,6 +22,7 @@
 //! (même interpréteur) lancé sans fenêtre, qui quitte sa console, s'attache à celle du
 //! convertisseur, s'immunise contre l'événement puis l'émet vers le groupe du convertisseur.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -63,6 +64,10 @@ pub struct Conversion<'a> {
     pub input: &'a Path,
     /// Sortie `.plain.pk` (publication atomique par le convertisseur).
     pub output: &'a Path,
+    /// ffmpeg à utiliser pour rééchantillonner l'audio à 44 100 Hz (#46), transmis par la
+    /// variable `FLAM_FFMPEG`. `None` : variable vide, donc rééchantillonnage désactivé (le
+    /// convertisseur ne cherche jamais un ffmpeg du `PATH`, dont la licence est inconnue).
+    pub ffmpeg: Option<&'a Path>,
     /// Délai laissé au convertisseur après `CTRL_BREAK_EVENT` avant l'arrêt forcé.
     pub grace: Duration,
 }
@@ -378,6 +383,10 @@ pub async fn convert(
         .parent()
         .ok_or_else(|| AppError::Validation("sortie sans dossier parent".into()))?;
     let mut child = command(req.python, cwd)
+        .env(
+            "FLAM_FFMPEG",
+            req.ffmpeg.map_or(OsStr::new(""), Path::as_os_str),
+        )
         .arg(req.script)
         .arg(req.input)
         .arg("-o")
@@ -619,6 +628,7 @@ b"
                     script: &script,
                     input: &archive,
                     output: &output,
+                    ffmpeg: None,
                     grace: Duration::from_secs(5),
                 },
                 &mut rx,
@@ -650,6 +660,7 @@ b"
                     script: &script,
                     input: &archive,
                     output: &output,
+                    ffmpeg: None,
                     grace: Duration::from_secs(10),
                 },
                 &mut rx,
