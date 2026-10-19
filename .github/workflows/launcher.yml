@@ -43,7 +43,7 @@ concurrency:
   # Un label autre que `ci-installeur` déclenche un run « labeled » sans objet : groupe à part, pour
   # qu'il n'annule pas la CI en cours de la PR.
   group: ${{ github.workflow }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci-installeur' && '-label' || '' }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !(github.event.action == 'labeled' && github.event.label.name != 'ci-installeur') }}
 
 jobs:
   # ffmpeg minimal (audio, LGPL) construit depuis des sources épinglées par cross-compilation
@@ -98,7 +98,9 @@ jobs:
       # Tauri/NSIS (tauri*.json, hooks, icônes), version et dépendances (Cargo.toml, build.rs, package*.json,
       # Cargo.lock), scripts de construction des ressources embarquées et leurs sources épinglées (build-*,
       # notices, Get-InstallTree, check-imports, third-party, LICENSES.md, tools/ffmpeg) et ce workflow.
-      # Hors liste : le code du player, du convertisseur et du launcher, couverts par l'e2e sur N.
+      # Hors liste : le code du player, du convertisseur et du launcher, couverts par l'e2e sur N (le scénario
+      # « application ouverte » du test de mise à jour, qui dépend aussi du code du launcher, n'est alors
+      # vérifié que sur main).
       # Le diff n'a besoin que des deux arbres : on récupère le seul commit de base (pas d'historique).
       # Une PR d'un fork passe par la même voie (le label vient du contenu de l'événement).
       - name: Empaquetage modifié ?
@@ -124,7 +126,7 @@ jobs:
           changed="$(git diff --name-only "$BASE_SHA" HEAD)"
           echo "Fichiers modifiés par la PR :"
           echo "$changed"
-          if echo "$changed" | grep -E -q '^(apps/flam-launcher/src-tauri/(tauri[^/]*\.json|Cargo\.toml|build\.rs|icons/|windows/)|apps/flam-launcher/(package\.json|package-lock\.json|LICENSES\.md|third-party/|scripts/(build-|notices-lib|Get-InstallTree|check-imports))|tools/ffmpeg/|Cargo\.(toml|lock)$|\.github/workflows/launcher\.yml$)'; then
+          if grep -E -q '^(apps/flam-launcher/src-tauri/(tauri[^/]*\.json|Cargo\.toml|build\.rs|icons/|windows/)|apps/flam-launcher/(package\.json|package-lock\.json|LICENSES\.md|third-party/|scripts/(build-|notices-lib|Get-InstallTree|check-imports))|tools/ffmpeg/|Cargo\.(toml|lock)$|\.github/workflows/launcher-TEMP\.yml$)' <<<"$changed"; then
             echo "update=true" >> "$GITHUB_OUTPUT"
             echo "L'empaquetage change : installateur N-1 et test de mise à jour exécutés."
           else
