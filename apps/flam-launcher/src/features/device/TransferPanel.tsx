@@ -171,6 +171,7 @@ export function TransferPanel() {
                 {text.panel.state[item.state]}
               </Badge>
               {item.error && <p className="fl-transfer__error">{item.error}</p>}
+              {item.warning && <p className="fl-transfer__line">{item.warning}</p>}
             </li>
           ))}
         </ul>

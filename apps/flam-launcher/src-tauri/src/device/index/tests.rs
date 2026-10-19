@@ -274,6 +274,46 @@ fn ecriture_refusee_sans_accord_si_index_absent_abime_ou_illisible() {
     }
 }
 
+/// #309 (M4) : une reconstruction ne remplace jamais une copie d'index abîmé déjà gardée ; une
+/// copie identique n'est pas dupliquée ; au-delà de [`CORRUPT_COPIES`], plus rien n'est écrit.
+#[test]
+fn les_copies_d_index_abime_ne_s_ecrasent_pas() {
+    let dev = Device::new(None);
+    let rebuilt = scan_stories(dev.root()).unwrap();
+    let damaged = |n: usize| format!("{A}\nabîmé {n}\n").into_bytes();
+    let rebuild = |n: usize| {
+        dev.put("list", &damaged(n));
+        write_index(dev.root(), IndexKind::Visible, &rebuilt, Consent::Overwrite).unwrap();
+        assert_eq!(dev.get("list").unwrap(), lines(&[A, B, C, D]));
+    };
+    rebuild(1);
+    assert_eq!(dev.get("list.corrupt"), Some(damaged(1)));
+    // Même contenu abîmé : pas de seconde copie.
+    rebuild(1);
+    assert_eq!(dev.get("list.corrupt.2"), None);
+    rebuild(2);
+    rebuild(3);
+    assert_eq!(
+        dev.get("list.corrupt"),
+        Some(damaged(1)),
+        "première copie intacte"
+    );
+    assert_eq!(dev.get("list.corrupt.2"), Some(damaged(2)));
+    assert_eq!(dev.get("list.corrupt.3"), Some(damaged(3)));
+    // Copies épuisées : la reconstruction se fait, sans nouvelle copie ni écrasement.
+    rebuild(4);
+    assert_eq!(dev.get("list.corrupt.4"), None);
+    assert_eq!(dev.get("list.corrupt"), Some(damaged(1)));
+    assert_eq!(dev.get("list.corrupt.3"), Some(damaged(3)));
+    // Index masqué : copies distinctes.
+    dev.put("list.hidden", &damaged(5));
+    write_index(dev.root(), IndexKind::Hidden, &[], Consent::Overwrite).unwrap();
+    assert_eq!(dev.get("list.hidden.corrupt"), Some(damaged(5)));
+    assert_eq!(dev.get("list.corrupt"), Some(damaged(1)));
+    dev.assert_no_work_files("list");
+    dev.assert_no_work_files("list.hidden");
+}
+
 #[test]
 fn cr_seul_separe_les_lignes() {
     let text = format!("{A}\r{B}\r\n{C}\r");

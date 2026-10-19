@@ -200,6 +200,20 @@ fn is_reserved_windows_name(component: &str) -> bool {
             && stem.as_bytes()[3].is_ascii_digit())
 }
 
+/// Majuscules caractère par caractère, comme la table de FAT : une correspondance Unicode à
+/// plusieurs caractères (`ß` → `SS`, `ﬁ` → `FI`) laisse le caractère tel quel.
+fn fat_upper(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            let mut upper = c.to_uppercase();
+            match (upper.next(), upper.next()) {
+                (Some(u), None) => u,
+                _ => c,
+            }
+        })
+        .collect()
+}
+
 /// Chemin relatif sûr (composants séparés par `/`) d'une entrée, ou erreur.
 fn safe_relative(raw_name: &str, enclosed: Option<PathBuf>) -> Result<String, PrepareError> {
     let bad = || invalid(format!("nom d'entrée refusé : {raw_name:?}"));
@@ -277,9 +291,13 @@ pub(crate) fn prepare_with(
 
     // 1. Plan : noms, doublons, entrées obligatoires, UUID. Rien n'est écrit.
     let mut planned = Vec::new();
+    // Noms comparés en minuscules et en majuscules : la table de majuscules de FAT ne suit pas
+    // exactement `to_lowercase` (`ſ` et `s`, `ı` et `i` ne se confondent qu'en majuscules).
     let mut seen_sources = HashSet::new();
+    let mut seen_sources_upper = HashSet::new();
     let mut exact_names = HashSet::new();
     let mut seen_targets = HashSet::new();
+    let mut seen_targets_upper = HashSet::new();
     let mut uuid_index = None;
     let mut declared = 0u64;
     for index in 0..zip.len() {
@@ -296,7 +314,9 @@ pub(crate) fn prepare_with(
             )));
         }
         let relative = safe_relative(entry.name(), entry.enclosed_name())?;
-        if !seen_sources.insert(relative.to_lowercase()) {
+        let new_lower = seen_sources.insert(relative.to_lowercase());
+        let new_upper = seen_sources_upper.insert(fat_upper(&relative));
+        if !(new_lower && new_upper) {
             return Err(invalid(format!("entrée en double : {relative:?}")));
         }
         exact_names.insert(relative.clone());
@@ -304,7 +324,9 @@ pub(crate) fn prepare_with(
             uuid_index = Some(index);
         }
         if let Some((target, action)) = plan_entry(&relative)? {
-            if !seen_targets.insert(target.to_lowercase()) {
+            let new_lower = seen_targets.insert(target.to_lowercase());
+            let new_upper = seen_targets_upper.insert(fat_upper(&target));
+            if !(new_lower && new_upper) {
                 return Err(invalid(format!("deux entrées donnent {target:?}")));
             }
             if target
@@ -323,11 +345,14 @@ pub(crate) fn prepare_with(
     }
     // Un fichier et un dossier de même nom (`a` et `a/b`) : refusé dès le plan, avant toute
     // écriture, plutôt que par une erreur d'E/S en cours de chantier.
-    for target in &seen_targets {
+    for (targets, target) in [&seen_targets, &seen_targets_upper]
+        .into_iter()
+        .flat_map(|set| set.iter().map(move |t| (set, t)))
+    {
         let mut at = 0;
         while let Some(i) = target[at..].find('/') {
             at += i;
-            if seen_targets.contains(&target[..at]) {
+            if targets.contains(&target[..at]) {
                 return Err(invalid(format!(
                     "{:?} est à la fois un fichier et un dossier",
                     &target[..at]
@@ -756,6 +781,25 @@ mod tests {
         entries.push(("img/\u{e9}.png", b"x".to_vec()));
         entries.push(("img/\u{c9}.png", b"y".to_vec()));
         expect_invalid(&entries, "double");
+        // Confondus seulement en majuscules (`ſ` et `s` donnent `S`, `ı` et `i` donnent `I`).
+        for (a, b) in [
+            ("img/\u{17f}.png", "img/s.png"),
+            ("img/\u{131}.png", "img/i.png"),
+        ] {
+            let mut entries = base_entries();
+            entries.push((a, b"x".to_vec()));
+            entries.push((b, b"y".to_vec()));
+            expect_invalid(&entries, "double");
+        }
+        // Correspondance à plusieurs caractères (`ß` → `SS`) : FAT garde `ß`, deux fichiers.
+        let mut entries = base_entries();
+        entries.push(("img/\u{df}.png", b"x".to_vec()));
+        entries.push(("img/ss.png", b"y".to_vec()));
+        let tmp = tempfile::tempdir().unwrap();
+        let prepared = run(&pk_with(tmp.path(), &entries), &tmp.path().join("travail")).unwrap();
+        for name in ["img/\u{df}.png", "img/ss.png"] {
+            assert!(prepared.files.iter().any(|f| f == name), "{name}");
+        }
         // `sounds/a.mp3` est un fichier : `sounds/a.mp3/b` ne peut pas être un dossier.
         let mut entries = base_entries();
         entries.push(("sounds/a.mp3/b", b"x".to_vec()));
