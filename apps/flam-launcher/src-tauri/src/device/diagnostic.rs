@@ -40,7 +40,7 @@ use super::remove::TRASH_DIR;
 use super::transfer::{HIDDEN_STORIES_DIR, TRANSFER_DIR};
 use crate::catalog::blocking;
 use crate::storage::ConfigState;
-use crate::AppResult;
+use crate::{AppError, AppResult};
 
 /// Nombre d'erreurs de la session gardées (les plus anciennes sont oubliées).
 pub const MAX_SESSION_ERRORS: usize = 10;
@@ -85,6 +85,26 @@ pub fn record_error(operation: &'static str, message: &str) {
         operation,
         message,
     });
+}
+
+/// Message d'une erreur de commande à garder pour le diagnostic. Liste blanche : seules les
+/// erreurs de validation, d'entrée/sortie et « introuvable » (messages des couches de la Flam, sans
+/// titre) sont reprises ; une autre variante (dont `StoryFileMissing`, qui cite le titre de
+/// l'histoire) ne donne que son code.
+pub fn session_message(err: &AppError) -> String {
+    match err {
+        AppError::Validation(_) | AppError::Io(_) | AppError::NotFound(_) => err.to_string(),
+        AppError::StoryFileMissing(_) => {
+            "fichier de l'histoire absent de la bibliothèque du launcher".to_string()
+        }
+        other => {
+            let kind = serde_json::to_value(other)
+                .ok()
+                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_string))
+                .unwrap_or_else(|| "inconnue".into());
+            format!("erreur de type « {kind} » (message non repris)")
+        }
+    }
 }
 
 /// Erreurs de la session, de la plus ancienne à la plus récente.
@@ -151,16 +171,11 @@ impl Redactor {
     /// [`MIN_HEX_RUN`] chiffres hexadécimaux et mots de type base64 ([`MASK`]), segment de
     /// `\Users\` des chemins.
     pub fn scrub(&self, text: &str) -> String {
-        let text = mask_users_segment(text);
+        let text = mask_uuids(&mask_users_segment(text));
         let chars: Vec<char> = text.chars().collect();
         let mut out = String::with_capacity(text.len());
         let mut i = 0;
         while i < chars.len() {
-            if is_uuid_at(&chars, i) {
-                out.push_str("<uuid>");
-                i += 36;
-                continue;
-            }
             if is_token_char(chars[i]) && (i == 0 || !is_token_char(chars[i - 1])) {
                 let end = (i..chars.len())
                     .find(|&j| !is_token_char(chars[j]))
@@ -211,6 +226,24 @@ fn mask_token(token: &str) -> String {
         }
     }
     flush(&mut run, &mut out);
+    out
+}
+
+/// Remplace par `<uuid>` tout UUID `8-4-4-4-12`, même collé à un mot (`str/<uuid>/info`,
+/// `x=<uuid>`) : seule une frontière hexadécimale l'empêche.
+fn mask_uuids(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if is_uuid_at(&chars, i) {
+            out.push_str("<uuid>");
+            i += 36;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
     out
 }
 

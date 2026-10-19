@@ -1329,7 +1329,9 @@ pub async fn device_send_story(
             }
         }
         Err(AppError::Cancelled) => {}
-        Err(err) => super::diagnostic::record_error("envoi", &err.to_string()),
+        Err(err) => {
+            super::diagnostic::record_error("envoi", &super::diagnostic::session_message(err))
+        }
     }
     report
 }
@@ -1409,7 +1411,7 @@ pub async fn device_recover_transfers(
     })
     .await?;
     if let Err(err) = &result {
-        super::diagnostic::record_error("reprise", &err.to_string());
+        super::diagnostic::record_error("reprise", &super::diagnostic::session_message(err));
     }
     result
 }

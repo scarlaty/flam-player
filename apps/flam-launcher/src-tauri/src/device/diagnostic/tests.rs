@@ -411,3 +411,46 @@ fn diagnostic_reel() {
     });
     println!("{text}");
 }
+
+/// Revue #318 (M1) : une erreur de la bibliothèque qui cite le titre de l'histoire n'en garde que
+/// le code.
+#[test]
+fn une_erreur_qui_cite_un_titre_n_est_pas_reprise() {
+    let missing = AppError::StoryFileMissing(format!(
+        "le fichier de « {MINE_TITLE} » a disparu de la bibliothèque"
+    ));
+    let message = session_message(&missing);
+    assert_eq!(
+        message,
+        "fichier de l'histoire absent de la bibliothèque du launcher"
+    );
+    let other = AppError::FolderUnavailable(format!("dossier de {OFFICIAL_TITLE} absent"));
+    assert_eq!(
+        session_message(&other),
+        "erreur de type « folder_unavailable » (message non repris)"
+    );
+    let dev = fixture_device();
+    let text = diagnostic(
+        vec![dev.path().to_path_buf()],
+        vec![
+            error("envoi", &message),
+            error("envoi", &session_message(&other)),
+            error(
+                "reprise",
+                &session_message(&AppError::Validation("refus".into())),
+            ),
+        ],
+    );
+    assert_no_leak(&text);
+    assert!(text.contains("- reprise (il y a 0 s) : refus"), "{text}");
+}
+
+#[test]
+fn un_uuid_colle_a_un_mot_est_masque() {
+    let r = Redactor::default();
+    let upper = OFFICIAL.to_uppercase();
+    assert_eq!(
+        r.scrub(&format!("str/{OFFICIAL}/info x={upper}_y")),
+        "str/<uuid>/info x=<uuid>_y"
+    );
+}
