@@ -433,7 +433,7 @@ fn flam_entry(
         .read("version", 32)
         .ok()
         .flatten()
-        .and_then(|raw| String::from_utf8(raw).ok())
+        .and_then(|raw| utf8_text(&raw, "version").ok())
         .and_then(|text| text.trim().parse::<u32>().ok());
 
     let story = StoryEntry {
@@ -801,6 +801,25 @@ impl FolderState {
             .collect();
         inner.entries.insert(source_id.to_string(), entries);
         Ok(scan)
+    }
+
+    /// Retrouve `entry_id` sans scan préalable dans cette session (reprise au démarrage, « Mettre
+    /// à jour » depuis « Mes histoires »). L'écran analyse le dossier sans les sous-dossiers : on
+    /// l'analyse d'abord de la même façon, puis sous-dossiers compris, car une copie à la racine
+    /// peut y être écartée au profit d'une autre (l'identifiant mémorisé donnerait `not_found`).
+    pub fn scan_for_entry(
+        &self,
+        source_id: &str,
+        root: &Path,
+        entry_id: &str,
+    ) -> AppResult<StoryEntry> {
+        for recursive in [false, true] {
+            self.scan(source_id, root, recursive)?;
+            if let Ok(entry) = self.entry(source_id, entry_id) {
+                return Ok(entry);
+            }
+        }
+        self.entry(source_id, entry_id)
     }
 
     /// Entrée `entry_id` du dernier scan de `source_id` (jamais un chemin libre venu du front).
@@ -1503,6 +1522,94 @@ mod tests {
         // Non récursif : les sous-dossiers ne sont pas parcourus.
         let flat = ctx.state.scan("src", dir.path(), false).unwrap();
         assert!(flat.entries.is_empty());
+    }
+
+    #[test]
+    fn scan_for_entry_retrouve_la_copie_de_la_racine_ecartee_en_recursif() {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid: Vec<u8> = (0u8..16).collect();
+        write_files_dir(
+            &dir.path().join("x.plain"),
+            flam_files_with("Racine", "1", uuid.clone()),
+        );
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        write_files_pk(
+            &dir.path().join("sub").join("x.plain.pk"),
+            flam_files_with("Sous-dossier", "2", uuid),
+        );
+        // Ce que l'écran a vu (non récursif) : la copie de la racine.
+        let (seen, _) = scan_one(dir.path(), false, "Racine");
+        // Récursif, la copie du sous-dossier (version plus élevée) l'emporte.
+        let (deep, _) = scan_one(dir.path(), true, "Sous-dossier");
+        assert_ne!(seen.entry_id, deep.entry_id);
+
+        // Après un redémarrage (aucun scan en mémoire), les deux identifiants se retrouvent.
+        let fresh = FolderState::default();
+        let found = fresh
+            .scan_for_entry("src", dir.path(), &seen.entry_id)
+            .unwrap();
+        assert_eq!(found, seen);
+        let fresh = FolderState::default();
+        let found = fresh
+            .scan_for_entry("src", dir.path(), &deep.entry_id)
+            .unwrap();
+        assert_eq!(found, deep);
+        let fresh = FolderState::default();
+        assert_eq!(
+            fresh
+                .scan_for_entry("src", dir.path(), "src:0000000000000000")
+                .unwrap_err()
+                .kind(),
+            "not_found"
+        );
+    }
+
+    /// Copie `.plain` dont le fichier `version` vaut `raw`, face à un `.plain.pk` de version `2`.
+    fn gagnant_contre_pk_v2(raw: &[u8]) -> (StoryEntry, Vec<ScanWarning>) {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid: Vec<u8> = (0u8..16).collect();
+        let mut plain = flam_files_with("Plain", "0", uuid.clone());
+        for (name, content) in &mut plain {
+            if *name == "version" {
+                *content = raw.to_vec();
+            }
+        }
+        write_files_dir(&dir.path().join("x.plain"), plain);
+        write_files_pk(
+            &dir.path().join("x.plain.pk"),
+            flam_files_with("Pk", "2", uuid),
+        );
+        let (scan, _ctx) = scan(dir.path(), false);
+        assert_eq!(scan.entries.len(), 1);
+        (scan.entries[0].clone(), scan.warnings)
+    }
+
+    #[test]
+    fn fichier_version_avec_bom_est_lu() {
+        // Avec BOM : « 10 » est lu, la copie `.plain` (10) l'emporte sur le `.pk` (2).
+        let (entry, _) = gagnant_contre_pk_v2(b"\xEF\xBB\xBF10\n");
+        assert_eq!(entry.title, "Plain");
+        assert_eq!(entry.kind, StoryKind::FlamPlain);
+    }
+
+    #[test]
+    fn fichier_version_non_numerique_est_ignore() {
+        // Version illisible : inconnue < connue, le `.pk` (2) l'emporte, sans avertissement.
+        let (entry, warnings) = gagnant_contre_pk_v2(b"abc");
+        assert_eq!(entry.title, "Pk");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn pk_invalide_et_plain_valide_de_meme_nom() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plain_dir(&dir.path().join("x.plain"), "Valide");
+        std::fs::write(dir.path().join("x.plain.pk"), b"pas une archive").unwrap();
+        let (scan, _ctx) = scan(dir.path(), false);
+        assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
+        assert_eq!(scan.entries[0].title, "Valide");
+        assert_eq!(scan.warnings.len(), 1, "{:?}", scan.warnings);
+        assert!(scan.warnings[0].path.ends_with("x.plain.pk"));
     }
 
     #[test]
