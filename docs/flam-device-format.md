@@ -233,6 +233,11 @@ Comportement du firmware face à un index absent, tronqué ou contenant un UUID 
 | `sounds/*.mp3`, `*.mp3map`      | non             | supposé                                  | audio ; dossier absent d'une histoire sans son [inv]                                                                                                                                      |
 | `bt`                            | —               | supposé [rapport]                        | fichier de 32 octets présent dans certaines histoires officielles ; le code ne le traite pas à part (copié tel quel s'il figure dans l'archive) ; **ne jamais le lire ni le journaliser** |
 
+**Vignette `img/thumbnail.lif`** : **104×136** (portrait), mesurée [inv] sur les 19 histoires
+officielles d'une Flam 1.x réelle. Les vignettes produites par `telmi2flam` et `flam_build.py`
+ont cette taille (remplissage `flou`, `rogner` ou `bandes`, option `--thumb-fit`) ; l'ancienne
+taille 128×96 s'affichait mal sur l'appareil (#279). À confirmer visuellement : #236.
+
 ### 6.2 Fichier `key`
 
 32 octets (supposé, [crypto]) : le numéro de série de l'appareil en hexadécimal ASCII

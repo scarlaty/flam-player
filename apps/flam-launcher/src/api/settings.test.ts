@@ -12,6 +12,7 @@ const settings: Settings = {
   default_catalog_url: "https://exemple.org/c.json",
   theme: "dark",
   max_downloads: 2,
+  thumb_fit: "flou",
 };
 const view: SettingsView = {
   settings,
