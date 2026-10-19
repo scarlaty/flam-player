@@ -1,10 +1,10 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import type { DeviceStatus, DeviceStories, DeviceStory } from "../../api/device";
 import { expectNoAxeViolations } from "../../test/axe";
-import { firmwareV2 } from "../../test/firmware";
+import { firmwareV1, firmwareV2 } from "../../test/firmware";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
 import { ToastProvider } from "../../components";
 import { DeviceProvider } from "./DeviceProvider";
@@ -188,6 +188,85 @@ it("invite à activer le mode USB quand la Flam n'est pas détectée", async () 
   expect(screen.getByRole("button", { name: "Réessayer" })).toBeInTheDocument();
   expect(count("device_list_stories")).toBe(0);
   await expectNoAxeViolations(container);
+});
+
+it("affiche le bandeau expérimental, avec le lien des risques, même sans Flam", async () => {
+  const { container } = renderScreen();
+  expect(
+    await screen.findByRole("heading", { name: "Aucune Flam détectée" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText("Fonction expérimentale et non officielle"),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/flam-transfert\.md#risques/)).toBeInTheDocument();
+  expect(screen.queryByText(/Firmware 2\.x : en test/)).not.toBeInTheDocument();
+  await expectNoAxeViolations(container);
+});
+
+it("ajoute la mention « firmware 2.x » pour une Flam en 2.x seulement", async () => {
+  status = detected({ firmware: "2.4.2" });
+  const first = renderScreen();
+  expect(await screen.findByText(/Firmware 2\.x : en test/)).toBeInTheDocument();
+  expect(screen.getByText(/sauvegardez votre Flam avant/)).toBeInTheDocument();
+  first.unmount();
+
+  status = detected({ firmware: "1.15.14", firmware_status: firmwareV1() });
+  renderScreen();
+  expect(
+    await screen.findByRole("heading", { name: "Flam détectée" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/Firmware 2\.x : en test/)).not.toBeInTheDocument();
+});
+
+it("copie le lien des risques dans le presse-papiers", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText },
+    configurable: true,
+  });
+  onTestFinished(() => {
+    if (original) Object.defineProperty(navigator, "clipboard", original);
+    else Reflect.deleteProperty(navigator, "clipboard");
+  });
+  renderScreen();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Copier le lien des risques" }),
+  );
+  expect(writeText).toHaveBeenCalledWith(
+    expect.stringContaining("apps/flam-launcher/docs/flam-transfert.md#risques"),
+  );
+  expect(await screen.findByText(/Lien copié/)).toBeInTheDocument();
+
+  // Second clic : le message est vidé puis remis, pour être annoncé de nouveau.
+  let release: () => void = () => {};
+  writeText.mockReturnValueOnce(new Promise<void>((resolve) => (release = resolve)));
+  fireEvent.click(screen.getByRole("button", { name: "Copier le lien des risques" }));
+  expect(screen.queryByText(/Lien copié/)).not.toBeInTheDocument();
+  await act(async () => release());
+  expect(await screen.findByText(/Lien copié/)).toBeInTheDocument();
+});
+
+it("affiche le firmware sur la carte, « illisible » s'il est inconnu", async () => {
+  status = detected({ firmware: "1.15.14", firmware_status: firmwareV1() });
+  const first = renderScreen();
+  expect(
+    await screen.findByText("1.15.14 (1.x) · pris en charge (mode carrier)"),
+  ).toBeInTheDocument();
+  first.unmount();
+  status = detected({
+    firmware: null,
+    firmware_status: firmwareV2({
+      version: null,
+      family: "unreadable",
+      version_form: "unreadable",
+      trust: "not_applicable",
+      coherence: { kind: "not_checked" },
+      write_block: { kind: "version_unreadable" },
+    }),
+  });
+  renderScreen();
+  expect(await screen.findByText("illisible · écriture bloquée")).toBeInTheDocument();
 });
 
 it(
