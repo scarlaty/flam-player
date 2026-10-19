@@ -1225,3 +1225,104 @@ it("la case de purge prévient que l'action est irréversible", async () => {
   const confirm = await screen.findByRole("alertdialog");
   expect(within(confirm).getByText(/Cette action est irréversible/)).toBeVisible();
 });
+
+describe("suppression depuis la liste", () => {
+  it("propose Supprimer sur la carte, nommé par l'histoire, et confirme", async () => {
+    installed = [installedEntry(ours())];
+    window.location.hash = "#/library/library";
+    await renderApp();
+    const remove = screen.getByRole("button", { name: "Supprimer « Les trois ours »" });
+    fireEvent.click(remove);
+    const confirm = await screen.findByRole("alertdialog", {
+      name: "Supprimer « Les trois ours » ?",
+    });
+    expect(
+      within(confirm).getByRole("checkbox", { name: "Supprimer aussi la progression" }),
+    ).not.toBeChecked();
+    fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+    await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
+    expect(callsOf("library_remove")[0]?.args).toEqual({
+      uuid: "ours",
+      purgeSaves: false,
+    });
+    expect(await screen.findByText("« Les trois ours » a été supprimée")).toBeVisible();
+    expect(await screen.findByText("Aucune histoire installée")).toBeVisible();
+  });
+
+  it("annuler ne supprime rien et la case de purge revient décochée", async () => {
+    installed = [installedEntry(ours())];
+    window.location.hash = "#/library/library";
+    await renderApp();
+    const open = () =>
+      fireEvent.click(
+        screen.getByRole("button", { name: "Supprimer « Les trois ours »" }),
+      );
+    open();
+    let confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("checkbox"));
+    fireEvent.click(within(confirm).getByRole("button", { name: "Annuler" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(callsOf("library_remove")).toHaveLength(0);
+    open();
+    confirm = await screen.findByRole("alertdialog");
+    expect(within(confirm).getByRole("checkbox")).not.toBeChecked();
+  });
+
+  it("supprime aussi la progression quand la case est cochée", async () => {
+    installed = [installedEntry(ours())];
+    window.location.hash = "#/library/library";
+    await renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Supprimer « Les trois ours »" }));
+    const confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("checkbox"));
+    fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+    await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
+    expect(callsOf("library_remove")[0]?.args).toEqual({
+      uuid: "ours",
+      purgeSaves: true,
+    });
+  });
+
+  it("désactive Supprimer pendant la lecture de cette histoire", async () => {
+    installed = [installedEntry(ours())];
+    window.location.hash = "#/library/library";
+    await renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Jouer « Les trois ours »" }));
+    await waitFor(() => expect(callsOf("player_launch")).toHaveLength(1));
+    await send("player://started", session());
+    expect(
+      screen.getByRole("button", { name: "Supprimer « Les trois ours »" }),
+    ).toBeDisabled();
+  });
+
+  it("ne propose pas Supprimer sur une entrée non installée (source dossier)", async () => {
+    scanEntries = [
+      makeEntry({
+        source_id: "dossier",
+        entry_id: "dossier:conte",
+        uuid: "conte",
+        title: "Conte local",
+        kind: "flam_pk",
+        download_url: "C:\\Contes\\conte.plain.pk",
+      }),
+    ];
+    window.location.hash = "#/library/dossier";
+    render(
+      <ToastProvider>
+        <LibraryProvider>
+          <CompatProvider>
+            <StoriesProvider>
+              <DeviceProvider>
+                <main>
+                  <StoriesLibrary />
+                </main>
+              </DeviceProvider>
+            </StoriesProvider>
+          </CompatProvider>
+        </LibraryProvider>
+      </ToastProvider>,
+    );
+    await screen.findByRole("button", { name: "Installer « Conte local »" });
+    expect(screen.queryByRole("button", { name: /Supprimer/ })).toBeNull();
+  });
+});
