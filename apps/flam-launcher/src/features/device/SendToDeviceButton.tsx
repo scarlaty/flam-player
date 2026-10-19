@@ -40,7 +40,10 @@ function useSendContext(): SendContext {
     () =>
       new Set(
         queue
-          .filter((item) => item.state === "waiting" || item.state === "sending")
+          .filter(
+            (item) =>
+              item.state === "waiting" || item.state === "sending" || item.awaitingList,
+          )
           .map((item) => item.uuid),
       ),
     [queue],

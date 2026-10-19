@@ -83,6 +83,14 @@ export function DeviceProvider({
   const [recoveryNote, setRecoveryNote] = useState<EjectNote | null>(null);
   const [stories, setStories] = useState<StoriesState>({ phase: "loading" });
   const [reload, setReload] = useState(0);
+  // Compteur des relectures demandées, et dernière relecture terminée : un envoi réussi reste
+  // « en file » tant que la relecture qui suit n'est pas revenue (pas de double envoi).
+  const reloadGen = useRef(0);
+  const [settledReload, setSettledReload] = useState(0);
+  const bumpReload = useCallback(() => {
+    reloadGen.current += 1;
+    setReload(reloadGen.current);
+  }, []);
   const [firmwareKey, setFirmwareKey] = useState<string | null>(null);
   const [ejectNote, setEjectNote] = useState<EjectNote | null>(null);
 
@@ -141,9 +149,11 @@ export function DeviceProvider({
   useEffect(() => {
     if (!recovered) return;
     let active = true;
+    const gen = reload;
     listDeviceStories()
       .then((report) => {
         if (!active) return;
+        setSettledReload(gen);
         setStories(
           report
             ? { phase: "ready", report }
@@ -154,17 +164,22 @@ export function DeviceProvider({
         );
       })
       .catch((caught) => {
-        if (active) setStories({ phase: "error", error: toAppError(caught) });
+        if (!active) return;
+        setSettledReload(gen);
+        setStories({ phase: "error", error: toAppError(caught) });
       });
     return () => {
       active = false;
     };
   }, [recovered, deviceKey, reload]);
 
-  const reloadStories = useCallback((options?: { quiet?: boolean }) => {
-    if (!options?.quiet) setStories({ phase: "loading" });
-    setReload((n) => n + 1);
-  }, []);
+  const reloadStories = useCallback(
+    (options?: { quiet?: boolean }) => {
+      if (!options?.quiet) setStories({ phase: "loading" });
+      bumpReload();
+    },
+    [bumpReload],
+  );
 
   // --- File d'envoi ---------------------------------------------------------------------
   const queueRef = useRef<QueueItem[]>([]);
@@ -182,6 +197,16 @@ export function DeviceProvider({
     null,
   );
   const cancelButton = useRef<HTMLButtonElement>(null);
+
+  const exposedQueue = useMemo(
+    () =>
+      queue.map((item) =>
+        item.state === "done" && (item.reloadGen ?? 0) > settledReload
+          ? { ...item, awaitingList: true }
+          : item,
+      ),
+    [queue, settledReload],
+  );
 
   const updateQueue = useCallback((change: (items: QueueItem[]) => QueueItem[]) => {
     queueRef.current = change(queueRef.current);
@@ -250,7 +275,17 @@ export function DeviceProvider({
           setItemState(next.uuid, "done");
           setAnnouncement(text.panel.announce.done(next.title));
         }
-        setReload((n) => n + 1);
+        bumpReload();
+        const gen = reloadGen.current;
+        if (sent.carrier_readback !== false) {
+          updateQueue((items) =>
+            items.map((item) =>
+              item.uuid === next.uuid && item.state === "done"
+                ? { ...item, reloadGen: gen }
+                : item,
+            ),
+          );
+        }
       } catch (caught) {
         const failure = toAppError(caught);
         // Clés refusées ou introuvables : elles seront redemandées au prochain envoi.
@@ -283,7 +318,7 @@ export function DeviceProvider({
     ) {
       setAnnouncement(text.panel.announce.finished);
     }
-  }, [setItemState, updateQueue]);
+  }, [setItemState, updateQueue, bumpReload]);
 
   const enqueue = useCallback(
     (request: SendRequest & { carrier?: CarrierSend }) => {
@@ -445,13 +480,13 @@ export function DeviceProvider({
       setRemoving(true);
       try {
         const report = await removeDeviceStory(rootNow, uuid, true);
-        setReload((n) => n + 1);
+        bumpReload();
         return { cleanupPending: report.cleanup_pending };
       } finally {
         setRemoving(false);
       }
     },
-    [],
+    [bumpReload],
   );
 
   const reorderOnDevice = useCallback(
@@ -463,10 +498,10 @@ export function DeviceProvider({
         return await reorderDeviceStories(rootNow, order);
       } finally {
         // Succès ou refus : la liste affichée suit l'index réel de la Flam.
-        setReload((n) => n + 1);
+        bumpReload();
       }
     },
-    [],
+    [bumpReload],
   );
 
   const [ejecting, setEjecting] = useState(false);
@@ -505,7 +540,7 @@ export function DeviceProvider({
       stories,
       reloadStories,
       firmwareBlocked: firmwareKey !== null && firmwareKey === deviceKey,
-      queue,
+      queue: exposedQueue,
       progress,
       cancelling,
       busy,
@@ -534,7 +569,7 @@ export function DeviceProvider({
       stories,
       reloadStories,
       firmwareKey,
-      queue,
+      exposedQueue,
       progress,
       cancelling,
       busy,

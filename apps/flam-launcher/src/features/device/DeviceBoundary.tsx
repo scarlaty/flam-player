@@ -12,7 +12,7 @@ export const BACKGROUND_POLL_MS = 6000;
  */
 export function DeviceBoundary({ children }: { children: ReactNode }) {
   const route = useRoute();
-  const { session, installed } = useStories();
+  const { session, installed, installedRevision } = useStories();
   const libraryUuids = useMemo(
     () => new Set(installed.map((item) => item.uuid)),
     [installed],
@@ -21,7 +21,8 @@ export function DeviceBoundary({ children }: { children: ReactNode }) {
     <DeviceProvider
       paused={session?.embedded === true}
       intervalMs={route === "device" ? undefined : BACKGROUND_POLL_MS}
-      libraryUuids={libraryUuids}
+      // Tant que la bibliothèque n'a pas été lue, rien n'est retiré de la file.
+      libraryUuids={installedRevision > 0 ? libraryUuids : undefined}
     >
       {children}
     </DeviceProvider>

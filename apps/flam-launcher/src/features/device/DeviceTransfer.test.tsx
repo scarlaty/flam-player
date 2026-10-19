@@ -89,6 +89,7 @@ let sends: Map<string, Deferred>;
 let ejectOutcome: EjectOutcome | { kind: string; message: string };
 let removeFailure: { kind: string; message: string } | null;
 let removeGate: Promise<void> | null;
+let listGate: Promise<void> | null;
 let ejectGate: Promise<void> | null;
 let recoverFailure: { kind: string; message: string } | null;
 let carrierConsent: { text_version: number; accepted_at: string } | null;
@@ -122,6 +123,7 @@ beforeEach(() => {
   ejectOutcome = { status: "ejected", message: "Vous pouvez débrancher la Flam." };
   removeFailure = null;
   removeGate = null;
+  listGate = null;
   ejectGate = null;
   recoverFailure = null;
   carrierConsent = null;
@@ -146,7 +148,7 @@ beforeEach(() => {
             left_alone: 0,
           };
         case "device_list_stories":
-          return report(onDevice);
+          return listGate ? listGate.then(() => report(onDevice)) : report(onDevice);
         case "device_send_story":
           return new Promise((resolve, reject) => {
             sends.set(String(args.uuid), { resolve, reject });
@@ -337,6 +339,28 @@ it("une tâche terminée ne bloque pas un nouvel envoi : envoyer, retirer de la 
   fireEvent.click(sendButton("Capi"));
   await waitFor(() => expect(count("device_send_story")).toBe(2));
   await resolveSend(A);
+});
+
+it("un envoi réussi reste bloqué tant que la relecture de la Flam n'est pas revenue", async () => {
+  acknowledgeWarning();
+  render(<Harness />);
+  await ready();
+  let release!: () => void;
+  listGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fireEvent.click(sendButton("Capi"));
+  await resolveSend(A);
+  // Relecture en attente : pas de second envoi possible.
+  await waitFor(() =>
+    expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "true"),
+  );
+  fireEvent.click(sendButton("Capi"));
+  expect(count("device_send_story")).toBe(1);
+  release();
+  await waitFor(() =>
+    expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "false"),
+  );
 });
 
 it("une tâche en échec ou annulée ne bloque pas non plus un nouvel envoi", async () => {
