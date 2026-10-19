@@ -610,6 +610,8 @@ it("retire une histoire en attente de la file", async () => {
     within(panel).getByRole("button", { name: "Retirer « Les trois ours » de la file" }),
   );
   expect(within(panel).queryByText("Les trois ours")).not.toBeInTheDocument();
+  // Le bouton retiré emporte le focus : il passe au titre du panneau (plus rien à retirer).
+  expect(within(panel).getByRole("heading", { name: "Envoi sur la Flam" })).toHaveFocus();
   await resolveSend(A);
   await waitFor(() => expect(within(panel).getByText("Envoyée")).toBeInTheDocument());
   expect(count("device_send_story")).toBe(1);
