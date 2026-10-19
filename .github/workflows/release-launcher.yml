@@ -40,9 +40,9 @@ permissions:
   contents: read
 
 concurrency:
-  # Une publication par étiquette, jamais annulée en cours de route.
+  # Une publication par étiquette, jamais annulée en cours de route (seules les PR s'annulent).
   group: release-launcher-${{ github.event_name == 'pull_request' && github.ref || inputs.tag || github.ref_name }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Étiquette d'exemple de la répétition générale (PR).
@@ -58,6 +58,7 @@ jobs:
       tag: ${{ steps.v.outputs.tag }}
       publish: ${{ steps.v.outputs.publish }}
       rehearsal: ${{ steps.v.outputs.rehearsal }}
+      sha: ${{ steps.v.outputs.sha }}
     steps:
       # Étiquette (push) ou étiquette saisie (dispatch hors dry_run) ; sinon la branche d'appel.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -104,42 +105,50 @@ jobs:
             exit 1
           fi
 
-          if [ "$rehearsal" = "false" ]; then
-            # Les fichiers de version doivent porter exactement la version de l'étiquette.
+          # Les fichiers de version doivent porter exactement la version de l'étiquette. En répétition
+          # générale (PR), ils portent encore la version courante : on contrôle seulement qu'ils sont
+          # d'accord entre eux (l'extraction est ainsi exercée à chaque PR).
+          (
             cd apps/flam-launcher
-            cargo_toml="$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{gsub(/.*=[[:space:]]*"|".*/,""); print; exit}' src-tauri/Cargo.toml)"
-            cargo_lock="$(awk '$0=="name = \"flam-launcher\""{getline; gsub(/.*"|".*/,""); print; exit}' ../../Cargo.lock)"
+            cargo_toml="$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{sub(/^[^"]*"/,""); sub(/".*/,""); print; exit}' src-tauri/Cargo.toml)"
+            cargo_lock="$(awk '$0=="name = \"flam-launcher\""{getline; sub(/^[^"]*"/,""); sub(/".*/,""); print; exit}' ../../Cargo.lock)"
             tauri_conf="$(node -p 'JSON.parse(require("fs").readFileSync("src-tauri/tauri.conf.json","utf8")).version')"
             pkg_json="$(node -p 'JSON.parse(require("fs").readFileSync("package.json","utf8")).version')"
             pkg_lock="$(node -p 'JSON.parse(require("fs").readFileSync("package-lock.json","utf8")).version')"
             ko=0
+            expected="$version"
+            if [ "$rehearsal" = "true" ]; then expected="$cargo_toml"; fi
+            echo "Versions lues : Cargo.toml=$cargo_toml Cargo.lock=$cargo_lock tauri.conf.json=$tauri_conf package.json=$pkg_json package-lock.json=$pkg_lock"
             for pair in "Cargo.toml=$cargo_toml" "Cargo.lock=$cargo_lock" "tauri.conf.json=$tauri_conf" "package.json=$pkg_json" "package-lock.json=$pkg_lock"; do
-              if [ "${pair#*=}" != "$version" ]; then
-                echo "::error::version de ${pair%%=*} : « ${pair#*=} », « $version » attendue (étiquette $tag)"
+              if [ -z "$expected" ] || [ "${pair#*=}" != "$expected" ]; then
+                echo "::error::version de ${pair%%=*} : « ${pair#*=} », « $expected » attendue (étiquette $tag)"
                 ko=1
               fi
             done
             [ "$ko" = 0 ] || exit 1
-            cd ../..
-          fi
+          )
 
-          if [ "$publish" = "true" ]; then
-            # Les notes d'un brouillon ne sont jamais publiées.
+          # Contrôles propres à la publication : bloquants pour une publication, avertissements en dry_run
+          # (pour qu'il dise ce qui bloquerait la vraie publication).
+          problem() {
+            if [ "$publish" = "true" ]; then echo "::error::$1"; exit 1; else echo "::warning::$1"; fi
+          }
+          if [ "$rehearsal" = "false" ]; then
             if grep -q 'BROUILLON' "$notes"; then
-              echo "::error::$notes contient encore « BROUILLON » : relire les notes et retirer la mention"
-              exit 1
+              problem "$notes contient encore « BROUILLON » : relire les notes et retirer la mention"
             fi
-            # Une publication ne vient que d'un commit de main (pas d'une branche quelconque).
             git fetch --no-tags origin main
             if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
-              echo "::error::le commit de l'étiquette $tag n'est pas dans main : publication refusée"
-              exit 1
+              problem "le commit de $tag n'est pas dans main"
             fi
-            # Jamais d'écrasement : une release existante se supprime à la main, volontairement.
             if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "::error::une release $tag existe déjà : la supprimer à la main avant de rejouer"
-              exit 1
+              problem "une release $tag existe déjà : la supprimer à la main avant de rejouer"
             fi
+          fi
+          # Le workflow qui publie (et ses permissions) doit être celui de main.
+          if [ "$publish" = "true" ] && [ "$EVENT" = "workflow_dispatch" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::rejeu de publication : lancer le workflow depuis main (ref actuelle : $GITHUB_REF)"
+            exit 1
           fi
 
           {
@@ -147,6 +156,7 @@ jobs:
             echo "tag=$tag"
             echo "publish=$publish"
             echo "rehearsal=$rehearsal"
+            echo "sha=$(git rev-parse HEAD)"
           } >> "$GITHUB_OUTPUT"
 
   # ffmpeg minimal (audio, LGPL) : même construction et même clé de cache que launcher.yml (#209).
@@ -157,7 +167,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: ${{ needs.verify.outputs.sha }}
           persist-credentials: false
 
       - name: Cache de ffmpeg construit
@@ -195,7 +205,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: ${{ needs.verify.outputs.sha }}
           # SDL2, Lua, LVGL et minimp3 : sources de flam-player.exe.
           submodules: recursive
           persist-credentials: false
@@ -311,12 +321,13 @@ jobs:
     env:
       VERSION: ${{ needs.verify.outputs.version }}
       TAG: ${{ needs.verify.outputs.tag }}
+      SHA: ${{ needs.verify.outputs.sha }}
       GH_TOKEN: ${{ github.token }}
     steps:
       # Notes de version : lues dans l'arbre de l'étiquette (même commit que le build).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: ${{ needs.verify.outputs.sha }}
           persist-credentials: false
 
       - name: Télécharger l'installateur
@@ -340,6 +351,9 @@ jobs:
           set -euo pipefail
           notes="apps/flam-launcher/release-notes/$VERSION.md"
           [ -s "$notes" ] || { echo "::error::notes absentes : $notes"; exit 1; }
+          # L'étiquette n'a pas été déplacée depuis le contrôle : elle désigne encore le commit construit.
+          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" --jq .sha)"
+          if [ "$tag_sha" != "$SHA" ]; then echo "::error::l'étiquette $TAG désigne $tag_sha, le build porte sur $SHA"; exit 1; fi
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
