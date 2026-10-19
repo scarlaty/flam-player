@@ -14,7 +14,7 @@ Vous n'avez pas besoin d'être développeur. Comptez environ une heure.
 
 ## 1. Installer la pré-version
 
-1. Téléchargez l'installateur `Flam Launcher_<version>_x64-setup.exe` depuis la page des
+1. Téléchargez l'installateur `Flam-Launcher_<version>_x64-setup.exe` depuis la page des
    pré-versions (<https://github.com/scarlaty/flam-player/releases>), ainsi que le fichier `SHA256SUMS.txt` publié avec la pré-version (il contient l'empreinte
    **SHA-256** de l'installateur).
 2. **Vérifiez l'empreinte SHA-256** (cela prouve que le fichier n'a pas été altéré). Ouvrez
@@ -22,7 +22,7 @@ Vous n'avez pas besoin d'être développeur. Comptez environ une heure.
    Terminal » (ou PowerShell), et tapez :
 
    ```powershell
-   Get-FileHash -Algorithm SHA256 ".\Flam Launcher_<version>_x64-setup.exe"
+   Get-FileHash -Algorithm SHA256 ".\Flam-Launcher_<version>_x64-setup.exe"
    ```
 
    La valeur affichée doit être **identique** à celle de `SHA256SUMS.txt`. Sinon, ne
