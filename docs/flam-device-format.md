@@ -370,7 +370,7 @@ visible, sous réserve de T3 et T4 :
 si le firmware réagit à un dossier inconnu à la racine, la copie en cours pourrait être ignorée ou
 supprimée par lui (une copie perdue, sans autre effet).
 
-Entre le renommage final et la suppression de `<uuid>.old`, les dossiers `str/<uuid>`, `str/` et `.flam-transfer/` sont forcés sur le disque (au mieux : un échec est journalisé), car une mise à jour d'une histoire déjà listée n'écrit aucun index. Le dossier racine reçu du front doit être un lecteur détecté (amovible, ou FAT fixe) : un dossier quelconque contenant un `.mdf` est refusé. L'UUID lu dans `uuid.bin` de l'archive doit être égal à celui demandé. Une entrée de `.flam-transfer/` qui ne peut pas être reprise (dossier verrouillé) n'empêche pas l'envoi d'une autre histoire ; l'envoi de la même histoire est refusé tant qu'elle reste.
+Entre le renommage final et la suppression de `<uuid>.old`, les dossiers `str/<uuid>`, `str/` et `.flam-transfer/` sont forcés sur le disque (au mieux : un échec est journalisé), car une mise à jour d'une histoire déjà listée n'écrit aucun index. Le dossier racine reçu du front doit être un lecteur détecté (amovible, ou FAT fixe) : un dossier quelconque contenant un `.mdf` est refusé. Une entrée de `.flam-transfer/` qui ne peut pas être reprise (dossier verrouillé) n'empêche pas l'envoi d'une autre histoire ; l'envoi de la même histoire est refusé tant qu'elle reste.
 
 ### 8.2 Retrait ([retrait], #231, implémenté)
 
@@ -493,6 +493,6 @@ d'histoire officielle :
 | T6  | `str.hidden/` : création à la demande ou présence à l'état neuf ; limites (nombre d'histoires, taille, longueur des noms, casse)                                                                                                        | 4, 8.3   | à mesurer                       |                                   |
 | T7  | Synchronisation officielle : suppression des histoires non officielles, effet du masquage                                                                                                                                               | 8.3      | masquage préservé               |                                   |
 | T8  | Valeurs de `version` acceptées (1 à 4 relevées) ; firmwares 1.x et 2.x couverts ; version 3.x et suivantes (refusées par le code)                                                                                                       | 3.3, 6.1 | à mesurer                       |                                   |
-| T9  | Fichiers de travail de l'index (`list.new`, `.bak`, `.restore`, et `list.hidden.*`) tolérés dans `etc/library/` ; fichier sonde `.flam-sonde-*` toléré                                                                                                      | 4, 5     | ignorés par le firmware         |                                   |
+| T9  | Fichiers de travail de l'index (`list.new`, `.bak`, `.restore`, et `list.hidden.*`, copie `list.corrupt`) tolérés dans `etc/library/` ; fichier sonde `.flam-sonde-*` toléré                                                                                                      | 4, 5     | ignorés par le firmware         |                                   |
 
 Aucun point de ce tableau n'a été mesuré lors de la rédaction de ce document.

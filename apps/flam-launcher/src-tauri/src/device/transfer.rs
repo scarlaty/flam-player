@@ -1037,25 +1037,22 @@ fn device_keys(
 /// Prépare `plain_pk` dans `work_dir` pour la Flam de `root`, la transfère, puis supprime la
 /// préparation. Le verrou de l'appareil est tenu par l'appelant pendant tout l'appel.
 /// `carrier` : demande du mode carrier, obligatoire pour une Flam en firmware 1.x (ignorée
-/// sinon). `expected_uuid` : UUID demandé par l'appelant ; l'UUID de `uuid.bin` dans l'archive
-/// doit lui être égal (sinon l'archive est refusée, rien n'est écrit sur la Flam).
+/// sinon).
 #[allow(clippy::too_many_arguments)]
 pub fn send_from_library(
     _guard: &OpGuard<'_>,
     root: &Path,
     plain_pk: &Path,
-    expected_uuid: Option<&str>,
     work_dir: &Path,
     replace: bool,
     carrier: Option<&CarrierRequest<'_>>,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<TransferReport, TransferError> {
-    send_from_library_checked(
+    send_from_library_with(
         &RealFs::default(),
         root,
         plain_pk,
-        expected_uuid,
         work_dir,
         replace,
         carrier,
@@ -1064,29 +1061,11 @@ pub fn send_from_library(
     )
 }
 
-#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn send_from_library_with(
     fs: &dyn DeviceFs,
     root: &Path,
     plain_pk: &Path,
-    work_dir: &Path,
-    replace: bool,
-    carrier: Option<&CarrierRequest<'_>>,
-    cancel: &AtomicBool,
-    progress: &mut dyn FnMut(Progress),
-) -> Result<TransferReport, TransferError> {
-    send_from_library_checked(
-        fs, root, plain_pk, None, work_dir, replace, carrier, cancel, progress,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn send_from_library_checked(
-    fs: &dyn DeviceFs,
-    root: &Path,
-    plain_pk: &Path,
-    expected_uuid: Option<&str>,
     work_dir: &Path,
     replace: bool,
     carrier: Option<&CarrierRequest<'_>>,
@@ -1106,14 +1085,7 @@ pub(crate) fn send_from_library_checked(
             other => TransferError::Prepare(other),
         })?;
     drop(keys);
-    let result = match expected_uuid {
-        Some(expected) if !prepared.uuid.eq_ignore_ascii_case(expected) => {
-            Err(TransferError::Prepare(PrepareError::Invalid(
-                "l'UUID de uuid.bin ne correspond pas à l'histoire demandée".into(),
-            )))
-        }
-        _ => send_with(fs, root, &prepared, replace, cancel, progress),
-    };
+    let result = send_with(fs, root, &prepared, replace, cancel, progress);
     if let Err(err) = std::fs::remove_dir_all(&prepared.dir) {
         tracing::warn!(dossier = %prepared.dir.display(), "préparation non supprimée : {err}");
     }
@@ -1244,7 +1216,6 @@ pub async fn device_send_story(
             &guard,
             Path::new(&root),
             &plain_pk,
-            Some(&uuid),
             &cache_root.join(WORK_SUBDIR),
             replace.unwrap_or(false),
             request.as_ref(),

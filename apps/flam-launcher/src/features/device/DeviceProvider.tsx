@@ -321,6 +321,16 @@ export function DeviceProvider({
       sendingUuid.current = null;
       setProgress(null);
     }
+    // Plus aucune clé `bt` saisie dans la file (éléments annulés sans envoi compris).
+    if (queueRef.current.some((item) => item.carrier?.choice.kind === "entered")) {
+      updateQueue((items) =>
+        items.map((item) =>
+          item.carrier?.choice.kind === "entered" && item.state !== "waiting"
+            ? { ...item, carrier: undefined }
+            : item,
+        ),
+      );
+    }
     setCancelling(false);
     if (
       queueRef.current.length > 1 &&

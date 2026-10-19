@@ -1411,50 +1411,6 @@ fn reprise_continue_apres_une_entree_verrouillee() {
 }
 
 #[test]
-fn uuid_de_l_archive_different_du_parametre_refuse() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = device(tmp.path(), false);
-    write(&root.join(MDF_FILE), &mdf("2.4.2"));
-    let pk = plain_pk(tmp.path());
-    let work = tmp.path().join("cache").join(WORK_SUBDIR);
-    let before = snapshot(&root);
-    let err = send_from_library_checked(
-        &FaultyFs::new(),
-        &root,
-        &pk,
-        Some(OTHER),
-        &work,
-        false,
-        None,
-        &AtomicBool::new(false),
-        &mut |_| {},
-    )
-    .unwrap_err();
-    assert!(
-        matches!(&err, TransferError::Prepare(PrepareError::Invalid(m)) if m.contains("uuid.bin")),
-        "{err:?}"
-    );
-    assert_eq!(snapshot(&root), before, "Flam inchangée");
-    assert!(
-        !work.join("str").join(NEW).exists(),
-        "préparation supprimée"
-    );
-    // Même UUID (casse indifférente) : accepté.
-    send_from_library_checked(
-        &FaultyFs::new(),
-        &root,
-        &pk,
-        Some(&NEW.to_ascii_uppercase()),
-        &work,
-        false,
-        None,
-        &AtomicBool::new(false),
-        &mut |_| {},
-    )
-    .unwrap();
-}
-
-#[test]
 fn racine_hors_des_lecteurs_detectes_refusee() {
     let roots = [PathBuf::from("D:"), PathBuf::from("E:/")];
     for ok in ["D:", "d:", "D:/", "e:", "E:/"] {
