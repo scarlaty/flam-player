@@ -325,42 +325,42 @@ enregistrées dans `generate_handler!` de `lib.rs`) : pas de fichier `commands.r
 Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enregistrées dans
 `generate_handler!` (`lib.rs`). Chacune a un wrapper typé dans `src/api/`.
 
-| Commande               | Arguments                  | Retour                                         | Module           |
-| ---------------------- | -------------------------- | ---------------------------------------------- | ---------------- |
-| `app_info`             |                            | `{ name, version }`                            | `app`            |
-| `settings_get`         |                            | `SettingsView`                                 | `settings`       |
-| `settings_set`         | `settings: Settings`       | `SettingsView`                                 | `settings`       |
-| `sources_list`         |                            | `SourcesView`                                  | `sources`        |
-| `sources_add`          | `input: SourceInput`       | `Source`                                       | `sources`        |
-| `sources_update`       | `id`, `input: SourceInput` | `Source`                                       | `sources`        |
-| `sources_remove`       | `id`                       | rien                                           | `sources`        |
-| `sources_reorder`      | `ids: string[]`            | `Source[]` (liste complète)                    | `sources`        |
-| `config_ack_recovery`  | `file?: string`            | rien                                           | `storage`        |
-| `cache_usage`          |                            | `{ path, bytes }`                              | `cache`          |
-| `cache_clear`          |                            | `{ freed_bytes }`                              | `cache`          |
-| `catalog_refresh`      | `source_id`                | `CatalogView`                                  | `catalog`        |
-| `catalog_entries`      | `source_id`                | `CatalogView`                                  | `catalog`        |
-| `catalog_thumbnail`    | `source_id`, `thumb_url`   | URL `data:` (string)                           | `catalog`        |
-| `folder_scan`          | `source_id`, `recursive?`  | `FolderScan`                                   | `folder`         |
-| `folder_thumbnail`     | `source_id`, `entry_id`    | URL `data:` (chaîne)                           | `folder`         |
-| `folder_watch`         | `source_id`, `enabled`     | rien                                           | `watch`          |
-| `install_start`        | `source_id`, `entry_id`    | `InstallTask`                                  | `install`        |
-| `install_cancel`       | `task_id`                  | rien                                           | `install`        |
-| `install_list`         |                            | `InstallTask[]`                                | `install`        |
-| `library_list`         |                            | `LibraryEntry[]`                               | `library`        |
-| `library_remove`       | `uuid`, `purge_saves?`     | rien                                           | `library`        |
-| `library_thumbnail`    | `uuid`                     | URL `data:` (`not_found` sans vignette)        | `library_thumb`  |
-| `player_launch`        | `uuid`                     | `PlayerSession`                                | `player`         |
-| `player_launch_folder` | `source_id`, `entry_id`    | `PlayerSession`                                | `player`         |
-| `player_status`        |                            | `PlayerSession \| null`                        | `player`         |
-| `player_stop`          |                            | `bool` (faux : aucun player)                   | `player`         |
-| `player_embed_layout`  | `rect \| null` (px CSS)    | rien                                           | `player`         |
-| `player_embed_focus`   |                            | rien                                           | `player`         |
-| `device_status`        |                            | `DeviceStatus`                                 | `device::status` |
-| `device_list_stories`  |                            | `DeviceStories \| null` (`null` : aucune Flam) | `device::status` |
-| `device_story_titles`  | `root`, `uuids` (≤ 100)    | `{ titles: { uuid, title \| null }[], interrupted, keys }` | `device::details` |
-| `device_story_thumbnail` | `root`, `uuid`           | `{ thumb: URL data: \| null, busy }`           | `device::details` |
-| `device_story_details_cancel` |                     | rien                                           | `device::details` |
+| Commande                      | Arguments                  | Retour                                                     | Module            |
+| ----------------------------- | -------------------------- | ---------------------------------------------------------- | ----------------- |
+| `app_info`                    |                            | `{ name, version }`                                        | `app`             |
+| `settings_get`                |                            | `SettingsView`                                             | `settings`        |
+| `settings_set`                | `settings: Settings`       | `SettingsView`                                             | `settings`        |
+| `sources_list`                |                            | `SourcesView`                                              | `sources`         |
+| `sources_add`                 | `input: SourceInput`       | `Source`                                                   | `sources`         |
+| `sources_update`              | `id`, `input: SourceInput` | `Source`                                                   | `sources`         |
+| `sources_remove`              | `id`                       | rien                                                       | `sources`         |
+| `sources_reorder`             | `ids: string[]`            | `Source[]` (liste complète)                                | `sources`         |
+| `config_ack_recovery`         | `file?: string`            | rien                                                       | `storage`         |
+| `cache_usage`                 |                            | `{ path, bytes }`                                          | `cache`           |
+| `cache_clear`                 |                            | `{ freed_bytes }`                                          | `cache`           |
+| `catalog_refresh`             | `source_id`                | `CatalogView`                                              | `catalog`         |
+| `catalog_entries`             | `source_id`                | `CatalogView`                                              | `catalog`         |
+| `catalog_thumbnail`           | `source_id`, `thumb_url`   | URL `data:` (string)                                       | `catalog`         |
+| `folder_scan`                 | `source_id`, `recursive?`  | `FolderScan`                                               | `folder`          |
+| `folder_thumbnail`            | `source_id`, `entry_id`    | URL `data:` (chaîne)                                       | `folder`          |
+| `folder_watch`                | `source_id`, `enabled`     | rien                                                       | `watch`           |
+| `install_start`               | `source_id`, `entry_id`    | `InstallTask`                                              | `install`         |
+| `install_cancel`              | `task_id`                  | rien                                                       | `install`         |
+| `install_list`                |                            | `InstallTask[]`                                            | `install`         |
+| `library_list`                |                            | `LibraryEntry[]`                                           | `library`         |
+| `library_remove`              | `uuid`, `purge_saves?`     | rien                                                       | `library`         |
+| `library_thumbnail`           | `uuid`                     | URL `data:` (`not_found` sans vignette)                    | `library_thumb`   |
+| `player_launch`               | `uuid`                     | `PlayerSession`                                            | `player`          |
+| `player_launch_folder`        | `source_id`, `entry_id`    | `PlayerSession`                                            | `player`          |
+| `player_status`               |                            | `PlayerSession \| null`                                    | `player`          |
+| `player_stop`                 |                            | `bool` (faux : aucun player)                               | `player`          |
+| `player_embed_layout`         | `rect \| null` (px CSS)    | rien                                                       | `player`          |
+| `player_embed_focus`          |                            | rien                                                       | `player`          |
+| `device_status`               |                            | `DeviceStatus`                                             | `device::status`  |
+| `device_list_stories`         |                            | `DeviceStories \| null` (`null` : aucune Flam)             | `device::status`  |
+| `device_story_titles`         | `root`, `uuids` (≤ 100)    | `{ titles: { uuid, title \| null }[], interrupted, keys }` | `device::details` |
+| `device_story_thumbnail`      | `root`, `uuid`             | `{ thumb: URL data: \| null, busy }`                       | `device::details` |
+| `device_story_details_cancel` |                            | rien                                                       | `device::details` |
 
 `device_status` et `device_list_stories` sont **en lecture seule** sur la Flam : ni reprise
 d'index (`recover`), ni création de dossier. La seule écriture est la copie personnelle de
