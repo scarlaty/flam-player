@@ -780,6 +780,92 @@ async fn sources_locales_plain_et_plain_pk() {
     pack::check_plain_pk(&ctx.cache().join("library").join(&library[0].file)).unwrap();
 }
 
+/// #288 : une source dossier reconstruite à version égale est signalée, et « Mettre à jour »
+/// (nouvelle installation depuis la source) remplace la copie sans toucher aux sauvegardes.
+#[tokio::test]
+async fn source_dossier_modifiee_a_version_egale_puis_mise_a_jour() {
+    use crate::library_source::{self, SourceState};
+    use crate::sources::Source;
+
+    let ctx = Ctx::new(None);
+    let src = ctx.dir.path().join("src");
+    let plain = src.join("capi.plain");
+    let build = |thumb: &[u8]| {
+        std::fs::create_dir_all(plain.join("img")).unwrap();
+        std::fs::write(plain.join("info.plain"), "Capi\n").unwrap();
+        std::fs::write(plain.join("uuid.bin"), [1u8; 16]).unwrap();
+        std::fs::write(plain.join("main.lua"), "-- x").unwrap();
+        std::fs::write(plain.join("img/thumbnail.lif"), thumb).unwrap();
+        let pk = src.join("capi.plain.pk");
+        pack::pack_plain_dir(&plain, &pk).unwrap();
+        std::fs::remove_dir_all(&plain).unwrap();
+        pk
+    };
+    let pk = build(b"128x96");
+
+    let uuid = "01".repeat(16);
+    let mut entry = story(&uuid, Some(0));
+    entry.source_id = "dossier".into();
+    entry.kind = StoryKind::FlamPk;
+    entry.download_url = pk.to_string_lossy().into_owned();
+    let sources = || {
+        vec![Source::Folder {
+            id: "dossier".into(),
+            name: "Jeux".into(),
+            path: src.to_string_lossy().into_owned(),
+        }]
+    };
+    let state = || library_source::statuses(&ctx.cache(), sources()).unwrap()[0].state;
+
+    let t = ctx.service.start(entry.clone()).unwrap();
+    assert_eq!(ctx.finished(&t.id).await.state, TaskState::Done);
+    let installed = ctx.service.library_list().await.unwrap();
+    assert!(installed[0].source_stamp.is_some(), "empreinte enregistrée");
+    assert_eq!(state(), SourceState::Unchanged);
+
+    // Progression de l'enfant (hors cache) : jamais touchée par une mise à jour.
+    let saves = ctx.dir.path().join("config/saves/0123456789abcdef");
+    std::fs::create_dir_all(&saves).unwrap();
+    std::fs::write(saves.join("save.bin"), b"niveau 3").unwrap();
+
+    // Reconstruction : même uuid, même version, nouvelle vignette.
+    build(b"104x136");
+    assert_eq!(state(), SourceState::Changed);
+    let copy = ctx.cache().join("library").join(&installed[0].file);
+    assert_ne!(std::fs::read(&copy).unwrap(), std::fs::read(&pk).unwrap());
+
+    // « Mettre à jour » : réinstallation depuis la source, au même fichier.
+    let t = ctx.service.start(entry).unwrap();
+    assert_eq!(ctx.finished(&t.id).await.state, TaskState::Done);
+    let updated = ctx.service.library_list().await.unwrap();
+    assert_eq!(updated.len(), 1);
+    assert_eq!(updated[0].file, installed[0].file);
+    assert_ne!(updated[0].source_stamp, installed[0].source_stamp);
+    assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(&pk).unwrap());
+    assert_eq!(state(), SourceState::Unchanged);
+    assert_eq!(std::fs::read(saves.join("save.bin")).unwrap(), b"niveau 3");
+    assert!(ctx.staging_is_empty());
+
+    // Source supprimée : la copie est conservée.
+    std::fs::remove_file(&pk).unwrap();
+    assert_eq!(state(), SourceState::Missing);
+    assert_eq!(ctx.service.library_list().await.unwrap().len(), 1);
+    assert!(copy.is_file());
+}
+
+#[test]
+fn uuid_attendu_verifie() {
+    let entry = story("abc", Some(1));
+    assert!(check_expected_uuid(&entry, None).is_ok());
+    assert!(check_expected_uuid(&entry, Some("abc")).is_ok());
+    assert_eq!(
+        check_expected_uuid(&entry, Some("autre"))
+            .unwrap_err()
+            .kind(),
+        "not_found"
+    );
+}
+
 #[tokio::test]
 async fn le_vidage_du_cache_attend_les_taches() {
     let ctx = Ctx::new(None);

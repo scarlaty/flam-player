@@ -737,6 +737,11 @@ const PK_MAIN: &[u8] = b"function setup() end";
 
 /// `.plain.pk` de l'histoire `NEW` dans `dir`.
 fn plain_pk(dir: &Path) -> PathBuf {
+    plain_pk_with(dir, &[9u8; 3000])
+}
+
+/// `.plain.pk` de l'histoire `NEW` (version 1) dont le son `sounds/a.mp3` vaut `sound`.
+fn plain_pk_with(dir: &Path, sound: &[u8]) -> PathBuf {
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipWriter};
 
@@ -749,7 +754,7 @@ fn plain_pk(dir: &Path) -> PathBuf {
         ("info.plain", PK_INFO),
         ("main.lua", PK_MAIN),
         ("version", b"1"),
-        ("sounds/a.mp3", &[9u8; 3000]),
+        ("sounds/a.mp3", sound),
     ] {
         zip.start_file(name, options).unwrap();
         zip.write_all(data).unwrap();
@@ -820,6 +825,55 @@ fn envoi_depuis_un_plain_pk() {
         assert_eq!(snapshot(&root), before);
         assert!(!work.join("str").join(NEW).exists());
     }
+}
+
+/// #288 : une histoire reconstruite **à version égale** (même uuid, même `version`, contenu
+/// différent) se remplace sur la Flam par le chemin « replace » : sans lui, refus « déjà sur la
+/// Flam » et rien n'est écrit ; avec lui, le nouveau contenu remplace l'ancien.
+#[test]
+fn remplacement_a_version_egale_contenu_different() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    write(&root.join(MDF_FILE), &mdf("2.4.2"));
+    let work = tmp.path().join("cache").join(WORK_SUBDIR);
+    let send_pk = |pk: &Path, replace: bool| {
+        send_from_library_with(
+            &FaultyFs::new(),
+            &root,
+            pk,
+            &work,
+            replace,
+            None,
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+    };
+    let first = tmp.path().join("v1");
+    std::fs::create_dir_all(&first).unwrap();
+    send_pk(&plain_pk_with(&first, &[1u8; 3000]), false).unwrap();
+    let before = files_of(&root.join("str").join(NEW));
+
+    let rebuilt = tmp.path().join("v1-reconstruite");
+    std::fs::create_dir_all(&rebuilt).unwrap();
+    let pk = plain_pk_with(&rebuilt, &[2u8; 3000]);
+    let snapshot_before = snapshot(&root);
+    let err = send_pk(&pk, false).unwrap_err();
+    assert!(
+        matches!(err, TransferError::AlreadyInstalled { hidden: false, .. }),
+        "{err:?}"
+    );
+    assert_eq!(snapshot(&root), snapshot_before, "rien n'est écrit");
+
+    let report = send_pk(&pk, true).unwrap();
+    assert!(report.replaced && !report.index_updated);
+    let after = files_of(&root.join("str").join(NEW));
+    assert_eq!(before["version"], after["version"], "même version");
+    assert_ne!(
+        before["sounds/a.mp3"], after["sounds/a.mp3"],
+        "contenu remplacé"
+    );
+    assert_eq!(listed(&root), vec![id(OTHER), id(NEW)]);
+    assert!(!root.join(TRANSFER_DIR).exists());
 }
 
 // --- Mode carrier (firmware 1.x, #234) ---------------------------------------------------------

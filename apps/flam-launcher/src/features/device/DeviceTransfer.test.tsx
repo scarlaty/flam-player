@@ -290,6 +290,53 @@ it("désactive le bouton avec la raison : déjà présente, espace insuffisant",
   expect(count("device_send_story")).toBe(0);
 });
 
+it("remplace une histoire déjà sur la Flam, sur demande explicite", async () => {
+  acknowledgeWarning();
+  render(<Harness />);
+  await ready();
+  const replace = screen.getByRole("button", {
+    name: "Remplacer sur la Flam « Déjà là »",
+  });
+  expect(replace).toHaveAttribute("aria-disabled", "false");
+  // Une histoire absente de la Flam n'a pas de remplacement à proposer.
+  expect(
+    screen.queryByRole("button", { name: "Remplacer sur la Flam « Capi »" }),
+  ).toBeNull();
+  fireEvent.click(replace);
+  await waitFor(() => expect(count("device_send_story")).toBe(1));
+  expect(calls.find((c) => c.cmd === "device_send_story")?.args).toEqual({
+    root: "E:\\",
+    uuid: C,
+    replace: true,
+  });
+  await resolveSend(C, { id: C, replaced: true });
+  // Un envoi ordinaire ne demande jamais le remplacement.
+  fireEvent.click(sendButton("Capi"));
+  await waitFor(() => expect(count("device_send_story")).toBe(2));
+  expect(calls.filter((c) => c.cmd === "device_send_story")[1]?.args).toEqual({
+    root: "E:\\",
+    uuid: A,
+  });
+  await resolveSend(A);
+});
+
+it("signale une copie de bibliothèque plus ancienne que sa source, sans bloquer", async () => {
+  render(
+    <ToastProvider>
+      <DeviceProvider>
+        <SendToDeviceButton {...library[0]!} stale />
+      </DeviceProvider>
+    </ToastProvider>,
+  );
+  const button = await screen.findByRole("button", {
+    name: "Envoyer sur la Flam « Capi »",
+  });
+  await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "false"));
+  expect(button).toHaveAccessibleDescription(
+    "Source modifiée : mettez l'histoire à jour avant l'envoi",
+  );
+});
+
 it("indique la lecture de la Flam tant que ses histoires ne sont pas connues", async () => {
   render(<Harness />);
   await screen.findByRole("heading", { name: "Flam détectée" });
