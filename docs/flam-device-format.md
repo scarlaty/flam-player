@@ -210,7 +210,10 @@ Lecture par l'écran « Ma Flam » ([état]) : en lecture seule, sans reprise ni
 Chaque histoire est « visible » (dans `list`), « masquée » (dans `list.hidden`) ou « non listée »
 (dossier de `str/` absent des deux index) ; une histoire de `list` sans dossier `str/<uuid>/` est
 marquée « manquante ». Seuls les dossiers de `str/` dont le nom est un UUID sont comptés. La liste
-est coupée à 5000 histoires.
+est coupée à 5000 histoires. Titres et vignettes sont lus ensuite, à la demande (`details`, #276) :
+première ligne de `info` déchiffré (4 Kio au plus ; fw 2.x : clés de `.mdf` ; fw 1.x : clé carrier
+déjà conservée sur le PC) et `img/thumbnail.lif` (1 Mio au plus), sans verrou d'appareil et en
+s'arrêtant dès qu'une opération d'écriture est en cours.
 
 Comportement du firmware face à un index absent, tronqué ou contenant un UUID sans dossier :
 **à vérifier** (T4).
@@ -226,7 +229,7 @@ Comportement du firmware face à un index absent, tronqué ou contenant un UUID 
 | `script/*.lsf`                  | **oui**         | présence mesurée [inv]                   | modules du jeu                                                                                                                                                                            |
 | `key`                           | non (32 octets) | présence mesurée [inv] ; taille supposée | autorisation de l'histoire, voir § 6.2                                                                                                                                                    |
 | `version`                       | non             | présence mesurée [inv]                   | texte ASCII court ; valeurs 1 à 4 relevées [inv]                                                                                                                                          |
-| `img/*.lif`, `img/script/*.lif` | non             | supposé                                  | images au format LIF                                                                                                                                                                      |
+| `img/*.lif`, `img/script/*.lif` | non             | supposé ; `img/thumbnail.lif` mesuré     | images au format LIF ; vignette `img/thumbnail.lif` présente dans les 21 histoires d'une Flam 1.15.14 (2026-10-19) : officielles 104 × 136 (12 à 22 Kio), converties 128 × 96             |
 | `sounds/*.mp3`, `*.mp3map`      | non             | supposé                                  | audio ; dossier absent d'une histoire sans son [inv]                                                                                                                                      |
 | `bt`                            | —               | supposé [rapport]                        | fichier de 32 octets présent dans certaines histoires officielles ; le code ne le traite pas à part (copié tel quel s'il figure dans l'archive) ; **ne jamais le lire ni le journaliser** |
 

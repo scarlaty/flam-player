@@ -8,6 +8,7 @@ import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
 import { ToastProvider } from "../../components";
 import { DeviceProvider } from "./DeviceProvider";
 import { DeviceScreen } from "./DeviceScreen";
+import { StrictMode } from "react";
 import { POLL_INTERVAL_MS } from "./useDeviceStatus";
 
 tolerateLoadInAsyncUtils();
@@ -83,14 +84,22 @@ let status: DeviceStatus;
 let stories: DeviceStories | null;
 let failures: Record<string, { kind: string; message: string } | undefined>;
 let calls: string[];
+/** Titres déchiffrés renvoyés par `device_story_titles` (absent : `null`). */
+let deviceTitles: Record<string, string>;
+/** Vignettes renvoyées par `device_story_thumbnail` (absent : `null`). */
+let deviceThumbs: Record<string, string>;
+let titleRequests: string[][];
 
 beforeEach(() => {
   status = absent;
   stories = report([]);
   failures = {};
   calls = [];
+  deviceTitles = {};
+  deviceThumbs = {};
+  titleRequests = [];
   mockIPC(
-    (cmd) => {
+    (cmd, args) => {
       calls.push(cmd);
       const failure = failures[cmd];
       if (failure) throw failure;
@@ -106,8 +115,21 @@ beforeEach(() => {
           };
         case "device_list_stories":
           return stories;
-        case "library_thumbnail":
-          return "data:image/png;base64,AAAA";
+        case "device_story_titles": {
+          const { uuids } = args as { uuids: string[] };
+          titleRequests.push(uuids);
+          return {
+            titles: uuids.map((uuid) => ({ uuid, title: deviceTitles[uuid] ?? null })),
+            interrupted: false,
+            keys: true,
+          };
+        }
+        case "device_story_thumbnail": {
+          const { uuid } = args as { uuid: string };
+          return { thumb: deviceThumbs[uuid] ?? null, busy: false };
+        }
+        case "device_story_details_cancel":
+          return null;
         default:
           throw { kind: "unknown", message: cmd };
       }
@@ -141,6 +163,7 @@ it(
   "affiche la Flam détectée, son espace et ses histoires",
   async () => {
     status = detected();
+    deviceThumbs = { [A]: "data:image/png;base64,AAAA" };
     stories = report([
       story(A, { title: "Capi et la rivière", in_library: true }),
       story(B, { missing: true }),
@@ -333,18 +356,190 @@ it("affiche le panneau d'envoi fourni sous la liste", async () => {
   expect(screen.getByRole("button", { name: "Éjecter la Flam" })).toBeInTheDocument();
 });
 
+it("affiche le titre déchiffré et la vignette de la Flam, avec repli", async () => {
+  status = detected();
+  deviceTitles = { [A]: "Titre de la Flam" };
+  deviceThumbs = { [A]: "data:image/png;base64,QUJD" };
+  stories = report([
+    story(A, { title: "Titre de la bibliothèque", in_library: true }),
+    story(B, { title: "Capi (bibliothèque)", in_library: true }),
+    story(C),
+  ]);
+  const { container } = renderScreen();
+  const list = await screen.findByRole("list", {
+    name: "Histoires installées sur la Flam",
+  });
+  const rows = within(list).getAllByRole("listitem");
+  // Le titre déchiffré remplace celui de la bibliothèque.
+  expect(await within(rows[0]!).findByText("Titre de la Flam")).toBeInTheDocument();
+  expect(within(rows[0]!).queryByText("Titre de la bibliothèque")).toBeNull();
+  await waitFor(() =>
+    expect(rows[0]!.querySelector("img")).toHaveAttribute(
+      "src",
+      "data:image/png;base64,QUJD",
+    ),
+  );
+  // Sans titre déchiffré : titre de la bibliothèque, puis UUID court.
+  expect(within(rows[1]!).getByText("Capi (bibliothèque)")).toBeInTheDocument();
+  expect(within(rows[2]!).getByText("Histoire 33333333")).toBeInTheDocument();
+  expect(within(rows[2]!).queryByText(/^Identifiant/)).toBeNull();
+  // Sans vignette : illustration par défaut, pas d'image.
+  await waitFor(() => expect(count("device_story_thumbnail")).toBe(3));
+  expect(rows[1]!.querySelector("img")).toBeNull();
+  expect(rows[1]!.querySelector(".fl-device-row__thumb svg")).not.toBeNull();
+  await expectNoAxeViolations(container);
+});
+
+it(
+  "demande les titres par lots de 100",
+  async () => {
+    status = detected();
+    const many = Array.from({ length: 150 }, (_, i) =>
+      story(`00000000-0000-4000-8000-${i.toString(16).padStart(12, "0")}`),
+    );
+    stories = report([...many, story(B, { missing: true })]);
+    deviceTitles = { [many[149]!.uuid]: "Dernière" };
+    renderScreen();
+    expect(
+      await screen.findByRole("heading", { name: "Histoires sur la Flam (151)" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Dernière")).toBeInTheDocument();
+    expect(titleRequests.map((r) => r.length)).toEqual([100, 50]);
+    // Une histoire dont le dossier manque n'est pas lue.
+    expect(titleRequests.flat()).not.toContain(B);
+  },
+  SLOW_TEST_MS,
+);
+
+it("redemande un lot interrompu par une opération sur la Flam", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  status = detected();
+  stories = report([story(A), story(B)]);
+  let first = true;
+  mockIPC(
+    (cmd, args) => {
+      calls.push(cmd);
+      switch (cmd) {
+        case "device_status":
+          return status;
+        case "device_recover_transfers":
+          return {
+            incomplete_removed: 0,
+            previous_restored: 0,
+            updates_finished: 0,
+            left_alone: 0,
+          };
+        case "device_list_stories":
+          return stories;
+        case "device_story_titles": {
+          const { uuids } = args as { uuids: string[] };
+          titleRequests.push(uuids);
+          if (first) {
+            first = false;
+            return {
+              titles: [{ uuid: A, title: "Premier" }],
+              interrupted: true,
+              keys: true,
+            };
+          }
+          return {
+            titles: uuids.map((uuid) => ({ uuid, title: "Second" })),
+            interrupted: false,
+            keys: true,
+          };
+        }
+        case "device_story_thumbnail":
+          return { thumb: null, busy: false };
+        default:
+          return null;
+      }
+    },
+    { shouldMockEvents: true },
+  );
+  renderScreen();
+  expect(await screen.findByText("Premier")).toBeInTheDocument();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2100);
+  });
+  expect(await screen.findByText("Second")).toBeInTheDocument();
+  expect(titleRequests).toEqual([[A, B], [B]]);
+});
+
+it("interrompt le lot de titres en cours quand l'écran est quitté", async () => {
+  status = detected();
+  stories = report([story(A)]);
+  let release: (() => void) | undefined;
+  mockIPC(
+    async (cmd) => {
+      calls.push(cmd);
+      switch (cmd) {
+        case "device_status":
+          return status;
+        case "device_recover_transfers":
+          return {
+            incomplete_removed: 0,
+            previous_restored: 0,
+            updates_finished: 0,
+            left_alone: 0,
+          };
+        case "device_list_stories":
+          return stories;
+        case "device_story_titles":
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return { titles: [], interrupted: true, keys: true };
+        case "device_story_thumbnail":
+          return { thumb: null, busy: false };
+        default:
+          return null;
+      }
+    },
+    { shouldMockEvents: true },
+  );
+  const { unmount } = renderScreen();
+  await screen.findByText("Histoire 11111111");
+  await waitFor(() => expect(count("device_story_titles")).toBe(1));
+  unmount();
+  expect(count("device_story_details_cancel")).toBe(1);
+  release?.();
+});
+
+it("charge les vignettes en StrictMode (double montage)", async () => {
+  status = detected();
+  deviceThumbs = { [A]: "data:image/png;base64,QUJD" };
+  stories = report([story(A)]);
+  render(
+    <StrictMode>
+      <ToastProvider>
+        <DeviceProvider>
+          <DeviceScreen />
+        </DeviceProvider>
+      </ToastProvider>
+    </StrictMode>,
+  );
+  const list = await screen.findByRole("list", {
+    name: "Histoires installées sur la Flam",
+  });
+  await waitFor(() =>
+    expect(within(list).getByRole("listitem").querySelector("img")).not.toBeNull(),
+  );
+});
+
 it("ne modifie rien au simple affichage (lecture et reprise seulement)", async () => {
   status = detected();
   stories = report([story(A, { in_library: true, title: "Capi" })]);
   renderScreen();
   await screen.findByText("Capi");
-  await waitFor(() => expect(count("library_thumbnail")).toBe(1));
+  await waitFor(() => expect(count("device_story_thumbnail")).toBe(1));
+  await waitFor(() => expect(count("device_story_titles")).toBe(1));
   expect(new Set(calls)).toEqual(
     new Set([
       "device_status",
       "device_recover_transfers",
       "device_list_stories",
-      "library_thumbnail",
+      "device_story_titles",
+      "device_story_thumbnail",
     ]),
   );
 });

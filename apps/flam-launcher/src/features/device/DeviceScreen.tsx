@@ -1,12 +1,18 @@
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { libraryThumbnail } from "../../api/library";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import {
   type DeviceStories,
   type DeviceStory,
   type DeviceSummary,
   type IndexHealth,
 } from "../../api/device";
-import { Badge, Banner, Button, EmptyState, ProgressBar } from "../../components";
+import { Badge, Banner, Button, EmptyState, Icon, ProgressBar } from "../../components";
 import { t } from "../../i18n";
 import { ErrorBanner } from "../ErrorBanner";
 import { formatBytes } from "../validation";
@@ -14,6 +20,11 @@ import { useDevice } from "./DeviceContext";
 import { EjectButton } from "./EjectButton";
 import { ForgetCarrierKeysButton } from "./ForgetCarrierKeysButton";
 import { RemoveStoryButton } from "./RemoveStoryButton";
+import {
+  ThumbnailLoader,
+  useDeviceStoryTitles,
+  useDeviceThumbnail,
+} from "./storyDetails";
 import "./DeviceScreen.css";
 
 const text = t.deviceScreen;
@@ -242,7 +253,19 @@ function indexNotices(report: DeviceStories): Notice[] {
 
 /** Liste des histoires de la Flam (lues par le `DeviceProvider`), avec retrait par histoire. */
 function DeviceStoriesList() {
-  const { stories: state, reloadStories, busy } = useDevice();
+  const { stories: state, reloadStories, busy, device } = useDevice();
+  const root = device?.root ?? null;
+  const report = state.phase === "ready" ? state.report : null;
+  const uuids = useMemo(
+    () => report?.stories.filter((s) => !s.missing).map((s) => s.uuid) ?? [],
+    [report],
+  );
+  // Titres et vignettes de la Flam : chargés après l'affichage de la liste, suspendus pendant
+  // un envoi ou un retrait.
+  const titles = useDeviceStoryTitles(root, uuids, busy);
+  const loader = useMemo(() => (root ? new ThumbnailLoader(root) : null), [root]);
+  useEffect(() => () => loader?.dispose(), [loader]);
+  useEffect(() => loader?.setPaused(busy), [loader, busy]);
   const wrapperRef = useRef<HTMLDivElement>(null);
   // Après un retrait, la ligne (donc le bouton) disparaît à la relecture : le focus passe à la
   // liste dès que la nouvelle liste est affichée.
@@ -303,6 +326,8 @@ function DeviceStoriesList() {
               <DeviceStoryRow
                 key={story.uuid}
                 story={story}
+                deviceTitle={titles.get(story.uuid)}
+                loader={story.missing ? null : loader}
                 actions={
                   <RemoveStoryButton
                     story={story}
@@ -327,36 +352,33 @@ function DeviceStoriesList() {
   );
 }
 
-/** Vignette conservée par la bibliothèque du launcher, si l'histoire y figure. */
-function useStoryThumbnail(story: DeviceStory): string | undefined {
-  const [thumb, setThumb] = useState<{ uuid: string; url: string }>();
-  const { uuid, in_library: inLibrary } = story;
-  useEffect(() => {
-    if (!inLibrary) return;
-    let active = true;
-    libraryThumbnail(uuid)
-      .then((url) => {
-        if (active && url.startsWith("data:image/")) setThumb({ uuid, url });
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [uuid, inLibrary]);
-  return thumb?.uuid === uuid ? thumb.url : undefined;
-}
-
-function DeviceStoryRow({ story, actions }: { story: DeviceStory; actions?: ReactNode }) {
-  const thumb = useStoryThumbnail(story);
-  const name = story.title ?? text.stories.untitled(story.short_id);
+/**
+ * Ligne d'une histoire. Titre : celui déchiffré sur la Flam (`deviceTitle`), sinon celui de la
+ * bibliothèque, sinon l'UUID court. Vignette : celle de la Flam, sinon l'illustration par défaut.
+ */
+function DeviceStoryRow({
+  story,
+  deviceTitle,
+  loader,
+  actions,
+}: {
+  story: DeviceStory;
+  deviceTitle?: string | null;
+  loader: ThumbnailLoader | null;
+  actions?: ReactNode;
+}) {
+  const rowRef = useRef<HTMLLIElement>(null);
+  const thumb = useDeviceThumbnail(loader, story.uuid, rowRef);
+  const title = deviceTitle ?? story.title;
+  const name = title ?? text.stories.untitled(story.short_id);
   return (
-    <li className="fl-device-row">
+    <li ref={rowRef} className="fl-device-row">
       <span className="fl-device-row__thumb">
-        {thumb ? <img src={thumb} alt="" /> : null}
+        {thumb ? <img src={thumb} alt="" /> : <Icon name="book" size={20} />}
       </span>
       <div className="fl-device-row__text">
         <span className="fl-device-row__name">{name}</span>
-        {story.title && (
+        {title && (
           <span className="fl-device-row__detail">
             {text.stories.idDetail(story.short_id)}
           </span>

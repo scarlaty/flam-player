@@ -275,7 +275,7 @@ impl Library {
     }
 
     /// `name` doit être un simple nom de fichier `.plain.pk` sous `library/`.
-    fn checked(&self, name: &str) -> AppResult<PathBuf> {
+    pub(crate) fn checked(&self, name: &str) -> AppResult<PathBuf> {
         let path = self.root.join(name);
         let direct = path.parent() == Some(self.root.as_path())
             && path.file_name().and_then(|n| n.to_str()) == Some(name)

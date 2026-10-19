@@ -58,13 +58,13 @@ pub const KEY_FILE: &str = "key";
 /// Fichier `info` (titre chiffré) d'une histoire.
 pub const INFO_FILE: &str = "info";
 /// Dossier des histoires masquées.
-const HIDDEN_STORIES_DIR: &str = "str.hidden";
+pub(crate) const HIDDEN_STORIES_DIR: &str = "str.hidden";
 /// Taille du fichier `bt` utile : clé AES (16) puis IV (16).
 pub const BT_LEN: usize = 32;
 /// Taille maximale lue de `bt` et `key` (au-delà : refusé, ce n'est pas un couple).
 const MAX_SMALL_FILE: u64 = 4096;
 /// Taille maximale déchiffrée de `info` pour le contrôle.
-const MAX_INFO: u64 = 4096;
+pub(crate) const MAX_INFO: u64 = 4096;
 /// Taille maximale d'une archive choisie comme source.
 const MAX_ARCHIVE: u64 = 64 * 1024 * 1024;
 /// Nombre maximal de dossiers d'histoires examinés.
@@ -170,7 +170,7 @@ impl CarrierKeys {
 }
 
 /// Clair de `info` déchiffré avec la clé et l'IV d'un `bt`, s'il est lisible.
-fn info_text(key: &[u8; 16], iv: &[u8; 16], data: &[u8]) -> Option<String> {
+pub(crate) fn info_text(key: &[u8; 16], iv: &[u8; 16], data: &[u8]) -> Option<String> {
     let len = data.len().min(MAX_INFO as usize) / BLOCK_SIZE * BLOCK_SIZE;
     if len == 0 {
         return None;
@@ -279,7 +279,7 @@ fn readable_text(plain: &[u8]) -> Option<String> {
 }
 
 /// Première ligne non vide, sans caractère de contrôle, tronquée.
-fn title_of(text: &str) -> String {
+pub(crate) fn title_of(text: &str) -> String {
     text.lines()
         .map(|l| l.chars().filter(|c| !c.is_control()).collect::<String>())
         .map(|l| l.trim().to_string())
@@ -1016,7 +1016,7 @@ pub struct CarrierState {
 }
 
 /// Consentement enregistré dans les réglages.
-fn stored_consent(config: &ConfigState) -> AppResult<Option<CarrierConsent>> {
+pub(crate) fn stored_consent(config: &ConfigState) -> AppResult<Option<CarrierConsent>> {
     let _guard = config.guard();
     Ok(SettingsStore::new(&config.dir).load()?.carrier_consent)
 }
