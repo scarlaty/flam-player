@@ -188,6 +188,8 @@ pub struct Toolchain {
     pub cache_root: PathBuf,
     pub python: Option<PathBuf>,
     pub converter: Option<PathBuf>,
+    /// ffmpeg embarqué (rééchantillonnage audio, #46).
+    pub ffmpeg: Option<PathBuf>,
     pub max_downloads: usize,
 }
 
@@ -223,6 +225,7 @@ pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
             cache_root,
             python: resolved.python_path.map(PathBuf::from),
             converter: detect_converter(&env),
+            ffmpeg: settings::ffmpeg_path(&env),
             max_downloads: saved.max_downloads as usize,
         })
     })
@@ -910,6 +913,7 @@ impl InstallService {
                         script: &script,
                         input: &source,
                         output: staged,
+                        ffmpeg: tc.ffmpeg.as_deref(),
                         grace: self.0.opts.grace,
                     },
                     cancel,

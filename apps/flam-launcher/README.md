@@ -98,6 +98,8 @@ Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo t
 
 ## Convertisseur embarqué
 
+Le launcher passe son ffmpeg embarqué au convertisseur par la variable `FLAM_FFMPEG` (vide s'il n'y en a pas) : les MP3 hors 44 100 Hz sont ainsi rééchantillonnés (#46, voir `tools/telmi2flam/README.md`).
+
 L'application installée ne suppose aucun Python sur la machine : le convertisseur est livré avec
 un Python embarquable officiel (3.14.8, signé PSF) et Pillow 12.3.0, sous `<exe>/telmi2flam/`
 (`python/python.exe`, `telmi2flam.py`, `lif.py`, `mp3map.py`, `engine/`, `runtime/`,
