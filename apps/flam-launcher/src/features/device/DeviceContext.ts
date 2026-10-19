@@ -74,7 +74,13 @@ export interface DeviceApi {
   stories: StoriesState;
   /** Relit les histoires de la Flam ; `quiet` garde la liste affichée pendant la lecture. */
   reloadStories: (options?: { quiet?: boolean }) => void;
+  /**
+   * Envoi refusé sur cette Flam d'après l'état structuré du firmware (`device_status`, #317) :
+   * firmware non pris en charge, `.mdf` illisible, clés invalides ou contradictoires.
+   */
   firmwareBlocked: boolean;
+  /** Flam 2.x pas encore confirmée : sauvegarde à confirmer dans « Ma Flam ». */
+  keysConfirmation: boolean;
   queue: QueueItem[];
   progress: TransferProgressView | null;
   /** Annulation demandée, en attente de l'arrêt du transfert en cours. */

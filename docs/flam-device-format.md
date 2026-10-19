@@ -31,16 +31,17 @@ Sources citées :
 - **[rapport]** : analyse interne du 2026-10-17 (non versionnée), faite sur documentation et sur
   le code existant, **sans appareil**. Rien de ce qui en vient n'est mesuré.
 - **[détection]**, **[index]**, **[état]**, **[crypto]**, **[préparation]**, **[transfert]**,
-  **[retrait]**, **[ordre]**, **[éjection]**, **[verrou]** : le module correspondant de `device/`
+  **[retrait]**, **[ordre]**, **[éjection]**, **[verrou]**, **[garde]** : le module correspondant de `device/`
   (`detect.rs`, `index.rs`, `status.rs`, `crypto.rs`, `prepare.rs`, `transfer.rs`, `remove.rs`,
-  `reorder.rs`, `eject.rs`, `lock.rs`). Ces modules fixent la disposition de `.mdf` et du fichier `key` ; la mesure sur
+  `reorder.rs`, `eject.rs`, `lock.rs`, `guard.rs`). Ces modules fixent la disposition de `.mdf` et du fichier `key` ; la mesure sur
   appareil de ces positions n'est pas consignée dans le dépôt : statut **supposé** (côté firmware)
   tant que #236 ne les a pas confirmées.
 
-Couverture des firmwares : **aucune version mesurée n'est documentée pour une fw 2.x ni pour une
-fw 1.x**. Les firmwares 1.15.14 et 2.4.2 sont cités par [rapport] comme versions rencontrées,
-sans mesure dans ce dépôt. Les critères de #224 ne sont donc pas tous satisfaits tant que le
-mainteneur n'a pas rempli la colonne « Mesure » du § 10.
+Couverture des firmwares : **une Flam 1.15.14 a été mesurée** (2026-10-19, lecture seule puis
+envois en mode carrier validés) : `.mdf` de 126 octets, en-tête `01 00`, version **nue** à
+l'offset 2 (`1.15.14-…`, sans préfixe « main: »). **Aucune Flam 2.x n'a été mesurée dans ce
+dépôt** : tout ce qui concerne la 2.x est une hypothèse documentée ou un comportement observé de
+la 2.x rapporté sans fixture réelle (voir § 3.3), à confirmer par les testeurs (#316).
 
 ## 2. Détection
 
@@ -49,8 +50,8 @@ mainteneur n'a pas rempli la colonne « Mesure » du § 10.
 | Mode connexion USB   | supposé [rapport]               | La Flam n'expose ses fichiers que si l'utilisateur active le « mode connexion USB » dans ses réglages ; sinon elle ne fait que charger. Sans ce mode, aucun volume n'apparaît : message d'aide « Activez le mode connexion USB sur la Flam » ([détection]).                                                                                                                                                                                                                                                                     |
 | Volume               | supposé [rapport]               | Stockage de masse en **FAT** (FAT32 attendu). Sous Windows, [détection] retient les lecteurs amovibles dotés d'un média et les lecteurs fixes dont le système de fichiers contient « FAT » (un disque USB peut se déclarer fixe) ; le disque système NTFS n'est jamais sondé. Hors Windows, aucun volume n'est candidat (non implémenté).                                                                                                                                                                                       |
 | Marqueur             | implémenté                      | Fichier `.mdf` à la racine du volume. Sa présence suffit à reconnaître une Flam. Un lien nommé `.mdf` n'est pas suivi et ne compte pas (`symlink_metadata`). Aucun VID/PID USB n'est interrogé.                                                                                                                                                                                                                                                                                                                                 |
-| Taille de `.mdf`     | mesuré [inv] ; implémenté       | 126 octets (appareil de l'inventaire, firmware non consigné). [détection] : moins de 126 octets = fichier tronqué (erreur, pas de sauvegarde) ; plus de 126 octets = avertissement `UnexpectedMdfSize` ; plus de 64 Kio = trop grand (ni lu ni sauvegardé) ; un envoi le refuse aussi (clés illisibles). Lecture bornée à 64 Kio + 1 octet.                                                                                                                                                                                                                                  |
-| Contenu de `.mdf`    | implémenté                      | La détection **ne décode aucun champ** de `.mdf` : `parse_mdf` rend `FormatUnspecified` et seuls la taille et le SHA-256 sont exposés. Les champs (version, numéro de série, clé, IV) sont lus au moment d'un envoi, par `keys_from_mdf` ([transfert], voir § 3). VID et PID ne sont lus nulle part aujourd'hui.                                                                                                                                                                                                                |
+| Taille de `.mdf`     | mesuré [inv], 1.15.14 ; implémenté | 126 octets (appareil de l'inventaire ; Flam 1.15.14 mesurée). [détection] : moins de 126 octets = avertissement « tronqué » (pas de sauvegarde) ; plus de 126 octets = avertissement `UnexpectedMdfSize` ; plus de 64 Kio = trop grand (ni lu ni sauvegardé). La garde des écritures (§ 8.0) n'exige que 110 octets (fin de l'IV) : une autre taille est signalée « non standard », sans refus. |
+| Contenu de `.mdf`    | implémenté                      | L'état de « Ma Flam » (`device_status`, champ `firmware_status`) lit la version, sa forme (avec ou sans « main: »), la famille, la taille, l'en-tête (2 octets) et le VID/PID ; il n'expose ni clé, ni numéro de série, ni empreinte. La clé et l'IV sont lus au moment d'un envoi par `keys_from_mdf` ([transfert], voir § 3).                                                                                                                                                                                                               |
 | Dossiers attendus    | mesuré [inv] ; implémenté       | `str/` et `etc/library/` ; leur absence n'est qu'un avertissement (`MissingStrDir`, `MissingLibraryDir`).                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Sauvegarde de `.mdf` | choix de conception [détection] | Copie personnelle dans le dossier de données du launcher (`device-backups`), écrite par la commande d'état de l'écran « Ma Flam » (la commande de détection seule n'écrit rien). Nom : `<volume>-<16 premiers caractères hexadécimaux du SHA-256>.mdf`, volume réduit à `[A-Za-z0-9_-]` (32 caractères au plus, `flam` si rien ne reste). Idempotente, écriture atomique, jamais dans le dépôt ; pas de sauvegarde d'un fichier tronqué ou trop grand. Le numéro de série n'entre pas dans le nom : la détection ne le lit pas. |
 
@@ -64,11 +65,11 @@ versionner (son empreinte SHA-256 peut l'être).
 
 | Offset (décimal / hex) | Taille | Champ                                                                      | Statut              |
 | ---------------------- | ------ | -------------------------------------------------------------------------- | ------------------- |
-| 0 / 0x00               | 2      | en-tête, non lu (rôle à consigner)                                         | à vérifier          |
-| 2 / 0x02               | 48     | texte : « main: x.y.z-… » puis « comm: … », complété par des octets nuls   | supposé, implémenté |
+| 0 / 0x00               | 2      | en-tête : `01 00` mesuré en 1.15.14 ; rôle inconnu, non contrôlé            | mesuré (1.x)        |
+| 2 / 0x02               | 48     | texte de version : nue (`1.15.14-…`, mesuré en 1.x) ou « main: x.y.z-… » puis « comm: … » ; octets nuls | mesuré (1.x), supposé (2.x) |
 | 50 / 0x32              | 24     | numéro de série : **14 caractères ASCII hexadécimaux puis 10 octets nuls** | supposé, implémenté |
-| 74 / 0x4A              | 2      | VID (petit-boutiste), non lu                                               | supposé             |
-| 76 / 0x4C              | 2      | PID (petit-boutiste), non lu                                               | supposé             |
+| 74 / 0x4A              | 2      | VID (petit-boutiste) : affiché, journalisé s'il diffère de `0x303A`        | supposé             |
+| 76 / 0x4C              | 2      | PID (petit-boutiste) : affiché, journalisé s'il diffère de `0x819E`        | supposé             |
 | 78 / 0x4E              | 16     | clé de chiffrement des histoires (fw 2.x)                                  | supposé, implémenté |
 | 94 / 0x5E              | 16     | IV de chiffrement des histoires (fw 2.x)                                   | supposé, implémenté |
 | 110 / 0x6E             | 16     | **non lu** : rôle inconnu (126 − 110 octets restants)                      | à vérifier          |
@@ -77,11 +78,20 @@ Total : 126 octets (`MDF_LEN`, repris de la taille de la détection). Les offset
 constantes du code ; un test vérifie qu'ils se déduisent de l'addition des tailles de champs. Leur
 confirmation sur appareil reste à faire (T1).
 
-Lecture par `keys_from_mdf` ([transfert]) : un `.mdf` de moins de 126 octets est refusé (clés
-illisibles) ; un `.mdf` plus long est accepté, seuls les 126 premiers octets étant utilisés. Le
-texte d'offset 2 à 49 est lu comme UTF-8 tolérant : on y cherche « main: », on saute les espaces,
-puis on prend les chiffres et points qui suivent (`2.4.2`) ; sans chiffre en tête, la version est
-illisible. Le reste du texte (« comm: … ») n'est pas lu.
+Lecture par `keys_from_mdf` ([transfert]) : un `.mdf` de moins de 110 octets (fin de l'IV) est
+refusé (clés illisibles) ; un `.mdf` plus long est accepté, seuls les premiers octets étant
+utilisés. Le texte d'offset 2 à 49 est lu comme UTF-8 tolérant : on y cherche « main: » (n'importe
+où, même après « comm: … ») ; sans « main: », la version nue en tête du champ est prise. On saute
+les espaces, puis on prend les chiffres et points qui suivent (`2.4.2`). La version doit être de
+forme stricte (composantes de chiffres non vides : `2..1` et `02.4` sont refusés). Le préfixe est
+**facultatif dans les deux familles** : la 1.15.14 mesurée n'en a pas ; sa présence en 2.x est une
+hypothèse.
+
+**Ce qui est mesuré et ce qui ne l'est pas** : taille 126, en-tête `01 00`, version nue et
+position du numéro de série sont mesurés sur une 1.15.14 seulement. En 2.x, la position de la clé
+(0x4E) et de l'IV (0x5E), en clair, et le fichier `key` déduit du numéro de série (§ 6.2) sont
+conformes au comportement observé de la 2.x, mais **sans `.mdf` 2.x réel dans ce dépôt** ; la
+taille, l'en-tête et la forme de la version d'une 2.x restent à relever (T1).
 
 Valeurs matérielles citées par [rapport] pour une Flam de première génération : VID `0x303A`,
 PID `0x819E` (supposé). Le code n'en tient aucun compte.
@@ -102,20 +112,17 @@ retenue.
 
 | Sujet                            | Firmware 1.x                                                                                                                                                                    | Firmware 2.x                                                              |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Matériel de clé dans `.mdf`      | 32 octets bruts à 0x4E, sans séparation clé / IV (supposé [rapport])                                                                                                            | clé 16 octets puis IV 16 octets à 0x4E (supposé [crypto])                 |
-| Import « classique »             | produit une histoire illisible (titre illisible, ne se lance pas), constaté sur 1.15.14 d'après [rapport]                                                                       | fonctionne : clés lues dans `.mdf` (supposé, jamais mesuré dans ce dépôt) |
-| Prise en charge dans le launcher | **non implémentée** : refus `UnsupportedFirmware`. Mode « carrier » (clé d'une histoire officielle fournie par l'utilisateur, consentement explicite) : issue #234, **à venir** | oui ([crypto], [transfert])                                               |
+| Matériel de clé dans `.mdf`      | 32 octets bruts à 0x4E, sans séparation clé / IV (supposé [rapport])                                                                                                            | clé 16 octets puis IV 16 octets à 0x4E, en clair (comportement observé de la 2.x) |
+| Histoires officielles            | `bt` (clé et IV du compte) et `key` du compte                                                                                                                                  | `key` du compte, chiffrées avec la clé du compte : **les clés de `.mdf` ne les déchiffrent pas** (comportement observé de la 2.x) |
+| Import « classique »             | produit une histoire illisible (titre illisible, ne se lance pas), constaté sur 1.15.14 d'après [rapport]                                                                       | fonctionne : clés lues dans `.mdf`, `key` déduit du numéro de série (comportement observé, jamais mesuré dans ce dépôt) |
+| Prise en charge dans le launcher | **mode carrier** (#234, livré et validé sur 1.15.14) : clés d'une histoire officielle de la Flam, consentement explicite, contrôle avant copie, relecture après (`docs/flam-carrier.md`) | **en test** : confirmation de sauvegarde avant la première écriture, puis vérification par la Flam (§ 8.0) |
 
-Règle exacte du code ([crypto], `check_firmware`) : le firmware est identifié par le champ
-« main » ; sa **première composante**, avant le premier point, doit être exactement la chaîne `2`
-(comparaison de texte, pas de nombre). Sont acceptés `2` et `2.4.2` ; sont refusés `1.x`, `3.x` et
-les suivants, mais aussi toute forme non canonique (`02.1`, `+2`, composante vide). Les versions 3.x
-et suivantes n'ont jamais été observées : elles sont refusées explicitement plutôt que de produire
-un fichier `key` douteux (choix prudent, à confirmer, T8). Ordre des contrôles dans
-`keys_from_mdf` : taille de `.mdf`, version lisible, **numéro de série valide**, puis version prise
-en charge : un `.mdf` 1.x au numéro de série illisible est donc refusé comme « clés illisibles » et
-non comme « firmware non pris en charge ». La position des 32 octets de clé en 1.x n'est pas
-connue : **à vérifier** (T1).
+Règle exacte du code ([crypto], `firmware_family`) : la version doit être de forme stricte
+(composantes de chiffres non vides) et sa **première composante** exactement `1` (1.x, mode
+carrier) ou `2` (2.x, clés de `.mdf`) ; comparaison de texte. Sont refusés `3.x` et les suivants,
+jamais observés, et toute forme non canonique (`02.1`, `+2`, `2..1`, composante vide). Ordre des
+contrôles dans `keys_from_mdf` : taille de `.mdf`, version lisible, **numéro de série valide**,
+puis famille 2.x. La position des 32 octets de clé en 1.x n'est pas connue : **à vérifier** (T1).
 
 ## 4. Arborescence
 
@@ -248,8 +255,10 @@ taille 128×96 s'affichait mal sur l'appareil (#279). À confirmer visuellement 
 **minuscule** (14 caractères, quelle que soit la casse dans `.mdf`), 10 octets nuls, puis les 8
 premiers caractères de ce même hexadécimal (14 + 10 + 8). Ce fichier est donc **déduit du numéro de
 série** (fw 2.x) et ne contient pas la clé de chiffrement. Statut : **supposé**. Sur les histoires
-officielles d'un même compte lié, `key` est identique d'une histoire à l'autre (supposé [rapport]).
-Sur fw 1.x, un `key` fabriqué n'est pas accepté (§ 3.3).
+officielles d'un même compte lié, `key` est identique d'une histoire à l'autre (supposé [rapport]) ;
+en 2.x, ce `key` est **celui du compte**, différent du `key` déduit (comportement observé de la
+2.x). Seules les histoires installées par un outil tiers portent le `key` déduit. Sur fw 1.x, un
+`key` fabriqué n'est pas accepté (§ 3.3).
 
 ### 6.3 Renommages depuis un `.plain.pk` ([préparation], d'après [rapport])
 
@@ -258,7 +267,7 @@ Entrée : `library/<uuid>-<version>.plain.pk` de la bibliothèque du launcher (a
 | Entrée du `.plain.pk`                          | Dans `str/<uuid>/`         | Traitement                                   |
 | ---------------------------------------------- | -------------------------- | -------------------------------------------- |
 | `uuid.bin`                                     | aucune                     | donne le nom du dossier (UUID en minuscules) |
-| `_metadata.json`, `_thumbnail.png`             | aucune                     | ignorées                                     |
+| `_metadata.json`, `_thumbnail.png`, `bt`       | aucune                     | ignorées (un `bt` n'est jamais recopié)      |
 | `info.plain` (et tout `*.plain`)               | `info` (nom sans `.plain`) | chiffré                                      |
 | `main.lua` et tout `*.lua` (`script/*.lua`)    | `main.lsf`, `script/*.lsf` | chiffré                                      |
 | tout le reste (`version`, `img/…`, `sounds/…`) | même nom                   | copié tel quel                               |
@@ -292,7 +301,7 @@ est supprimée après l'envoi, réussi ou non.
 | Bourrage                            | octets nuls jusqu'au multiple de 16 suivant ; aucun bloc ajouté si déjà aligné ; fichier vide : reste vide | supposé ; implémenté ; la taille d'origine n'est pas récupérable, les octets nuls finaux font partie du clair (sans effet sur du texte) |
 | IV                                  | 16 octets, identique pour tous les fichiers de l'appareil                                                  | supposé [crypto] ; à vérifier (T1)                                                                                                      |
 | Source de la clé et de l'IV, fw 2.x | `.mdf` de l'appareil (offsets 0x4E et 0x5E)                                                                | supposé ; implémenté                                                                                                                    |
-| Source de la clé, fw 1.x            | clé d'une histoire officielle du même compte (« carrier »), fournie par l'utilisateur                      | supposé [rapport] ; **non implémenté**, issue #234 (à venir)                                                                            |
+| Source de la clé, fw 1.x            | clé d'une histoire officielle du même compte (« carrier ») de la Flam                                      | **mesuré** sur 1.15.14 (envois validés) ; implémenté (#234, `docs/flam-carrier.md`)                                                     |
 | Non chiffrés                        | images, audio, `version`, `key`                                                                            | supposé                                                                                                                                 |
 
 Règles du dépôt : jamais de clé réelle dans le code, les tests, les journaux ni les documents ;
@@ -305,9 +314,48 @@ messages d'erreur ne contiennent jamais de clé.
 L'ordre protège contre un débranchement : FAT n'a pas de journal. Toutes les opérations sur
 l'appareil (transfert, retrait, éjection) sont sérialisées par le verrou d'appareil (§ 8.5).
 
+### 8.0 Garde commune des écritures ([garde], #317, implémentée)
+
+Toute écriture (envoi, reprise au branchement, retrait, réordonnancement) passe d'abord par
+`guard::check_write`, qui n'écrit rien sur la Flam. Refus, sans rien écrire :
+
+- racine qui n'est pas un lecteur détecté ; `.mdf` absent, illisible, de plus de 64 Kio ou de
+  moins de 110 octets ;
+- version illisible ou hors 1.x et 2.x (3.x et suivants, forme non canonique) ;
+- en 2.x : numéro de série invalide, clé ou IV triviaux (tout à `00` ou tout à `FF`).
+
+Une taille autre que 126 octets ou un en-tête autre que `01 00` **ne refuse rien** : l'état de
+« Ma Flam » signale « fichier .mdf non standard ». Un VID/PID inattendu est journalisé.
+
+En **1.x**, rien d'autre : les clés restent celles du mode carrier, vérifiées à chaque envoi.
+
+En **2.x** (choix de conception, firmware en test) :
+
+1. **Confirmation** avant la première écriture sur une Flam : « Firmware 2.x en test : j'ai
+   sauvegardé ma Flam », formulée plus fermement si `.mdf` est non standard. Mémorisée sur le PC
+   (`device-trust.json` du dossier de données) par **empreinte** de `.mdf` (SHA-256 préfixé, jamais
+   la clé elle-même), d'une session à l'autre.
+2. **Vérification par la Flam** : le firmware reconstruit `usr/0/library.cache` au redémarrage,
+   avec les titres qu'il a pu déchiffrer (supposé [rapport]). Avant toute écriture (donc avant que
+   le launcher supprime ce cache) et à l'affichage, le launcher y cherche, en UTF-8 puis en
+   UTF-16LE, le titre (4 caractères au moins) d'une histoire qu'il a installée (UUID de sa
+   bibliothèque, `key` déduit, `info` déchiffré avec les clés de `.mdf`). Trouvé : la Flam est
+   « vérifiée par la Flam », mémorisé de même ; la confirmation n'est plus demandée. Le format du
+   cache n'est pas décodé : seule la présence du texte est cherchée (encodage **à vérifier**, T4).
+3. **Cohérence** (informative) : seules comptent les histoires **au format Flam** (`main.lsf`
+   présent, `info` non lisible en clair), non installées par le launcher, au `key` déduit. Une
+   d'elles déchiffrée : cohérent. Aucune déchiffrée mais une au `key` déduit : **contradiction**,
+   qui refuse l'envoi (retrait, ordre et reprise restent possibles). Écartées : les histoires au
+   format Lunii (`ni`, `li`, `ri`, `si` sans `.lsf`), celles dont `info` est en clair, les
+   histoires officielles (autre `key`). Un `info` lisible avec un autre `key` confirme la clé et
+   l'IV sans rien conclure sur le `key`.
+
+Après un envoi en 2.x, l'interface rappelle de redémarrer la Flam puis de la rebrancher, pour que
+la vérification par la Flam ait lieu.
+
 ### 8.1 Installation ([transfert], #229, implémentée)
 
-Préalable : lecture de `.mdf` (au plus 64 Kio ; au-delà, refus), clés de l'appareil (§ 3), puis préparation hors
+Préalable : garde commune (§ 8.0), lecture de `.mdf` (au plus 64 Kio ; au-delà, refus), clés de l'appareil (§ 3), puis préparation hors
 appareil (§ 6.3). Un `.mdf` absent donne « Flam introuvable » sans rien écrire. Ensuite
 (`send_with`) :
 
@@ -495,4 +543,8 @@ d'histoire officielle :
 | T8  | Valeurs de `version` acceptées (1 à 4 relevées) ; firmwares 1.x et 2.x couverts ; version 3.x et suivantes (refusées par le code)                                                                                                       | 3.3, 6.1 | à mesurer                       |                                   |
 | T9  | Fichiers de travail de l'index (`list.new`, `.bak`, `.restore`, et `list.hidden.*`, copie `list.corrupt`) tolérés dans `etc/library/` ; fichier sonde `.flam-sonde-*` toléré                                                                                                      | 4, 5     | ignorés par le firmware         |                                   |
 
-Aucun point de ce tableau n'a été mesuré lors de la rédaction de ce document.
+Mesures acquises : une Flam 1.15.14 (taille 126, en-tête `01 00`, version nue, index en LF, mode
+carrier). Aucune mesure 2.x. Points à faire relever par les testeurs 2.x (#316) : taille, en-tête
+et forme de la version d'un vrai `.mdf` 2.x (T1) ; `key` et déchiffrement des histoires officielles
+(T2) ; présence du titre d'une histoire envoyée dans `library.cache` après redémarrage (T4) ;
+tolérance de `.flam-transfer/`, `.flam-trash/` et `list.new` (T3, T9).
