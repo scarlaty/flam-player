@@ -259,6 +259,72 @@ it("réordonne par glisser-déposer", async () => {
   expect(reorderCalls()[0]?.args.order).toEqual([C, A, B]);
 });
 
+const lastAnnouncement = (re: RegExp) =>
+  screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
+
+it("Tout en haut et Tout en bas à la souris : focus gardé, annonce, extrémités désactivées", async () => {
+  visible = [A, B, C];
+  renderScreen();
+  await openOrder();
+  expect(screen.getByRole("button", { name: "Tout en haut « Capi »" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Tout en bas « Le loup »" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Tout en bas « Capi »" })).toBeEnabled();
+
+  const bottom = screen.getByRole("button", { name: "Tout en bas « Capi »" });
+  bottom.focus();
+  fireEvent.click(bottom);
+  expect(orderNames()).toEqual(["Les trois ours", "Le loup", "Capi"]);
+  expect(lastAnnouncement(/« Capi » déplacée en position 3 sur 3/)).toBe(true);
+  // « Tout en bas » est désormais désactivé : le focus passe à un bouton actif de la ligne.
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Monter « Capi »" })).toHaveFocus(),
+  );
+  expect(screen.getByRole("button", { name: "Tout en bas « Capi »" })).toBeDisabled();
+
+  fireEvent.click(screen.getByRole("button", { name: "Tout en haut « Capi »" }));
+  expect(orderNames()).toEqual(["Capi", "Les trois ours", "Le loup"]);
+  expect(lastAnnouncement(/« Capi » déplacée en position 1 sur 3/)).toBe(true);
+  expect(reorderCalls()).toHaveLength(0);
+
+  fireEvent.click(screen.getByRole("button", { name: "Tout en haut « Le loup »" }));
+  expect(orderNames()).toEqual(["Le loup", "Capi", "Les trois ours"]);
+  fireEvent.click(saveButton());
+  await waitFor(() => expect(reorderCalls()).toHaveLength(1));
+  expect(reorderCalls()[0]?.args.order).toEqual([C, A, B]);
+});
+
+it("Fin et Début déplacent la ligne focalisée tout en bas / tout en haut", async () => {
+  renderScreen();
+  await openOrder();
+  const up = screen.getByRole("button", { name: "Descendre « Les trois ours »" });
+  up.focus();
+  fireEvent.keyDown(up, { key: "End" });
+  expect(orderNames()).toEqual(["Capi", "Le loup", "Les trois ours"]);
+  expect(lastAnnouncement(/« Les trois ours » déplacée en position 3 sur 3/)).toBe(true);
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Monter « Les trois ours »" }),
+    ).toHaveFocus(),
+  );
+  // Déjà en bas : Fin ne change rien.
+  fireEvent.keyDown(document.activeElement!, { key: "End" });
+  expect(orderNames()).toEqual(["Capi", "Le loup", "Les trois ours"]);
+
+  fireEvent.keyDown(document.activeElement!, { key: "Home" });
+  expect(orderNames()).toEqual(["Les trois ours", "Capi", "Le loup"]);
+  expect(lastAnnouncement(/« Les trois ours » déplacée en position 1 sur 3/)).toBe(true);
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Descendre « Les trois ours »" }),
+    ).toHaveFocus(),
+  );
+  // Début en haut, avec un modificateur, ou sur une autre touche : sans effet.
+  fireEvent.keyDown(document.activeElement!, { key: "Home" });
+  fireEvent.keyDown(document.activeElement!, { key: "End", ctrlKey: true });
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+  expect(orderNames()).toEqual(["Les trois ours", "Capi", "Le loup"]);
+});
+
 it("un dépôt sur soi-même ne change rien", async () => {
   renderScreen();
   await openOrder();
