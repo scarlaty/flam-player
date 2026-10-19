@@ -1,11 +1,10 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import type { Source } from "../../api/sources";
 import type { ListedEntry } from "../library/sourceData";
 import {
   Badge,
   Banner,
   Button,
-  CheckboxField,
   Dialog,
   Icon,
   ProgressBar,
@@ -21,6 +20,7 @@ import { defaultStoryState, STATE_APPEARANCE } from "../library/storyState";
 import { useThumbnail } from "../library/useThumbnail";
 import { formatBytes } from "../validation";
 import { isRemote, storyStateOf, useStories } from "./StoriesContext";
+import { RemoveStoryDialog } from "./RemoveStoryDialog";
 import "./StoryDetail.css";
 
 export interface StoryDetailProps {
@@ -49,8 +49,6 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const { compatFor } = useCompat();
   const { url } = useThumbnail(source, entry, { eager: true });
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const [purgeSaves, setPurgeSaves] = useState(false);
-  const cancelRef = useRef<HTMLButtonElement>(null);
   const [failedUrl, setFailedUrl] = useState<string>();
 
   const state = storyStateOf(stories, entry) ?? defaultStoryState(source, entry);
@@ -70,7 +68,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const showCover = url !== undefined && url !== failedUrl;
   const tone: BadgeTone = STATE_APPEARANCE[state].tone;
 
-  async function confirmedRemove() {
+  async function confirmedRemove(purgeSaves: boolean) {
     const removed = await stories.remove(entry.uuid, entry.title, purgeSaves);
     setConfirmRemove(false);
     if (removed && source.type === "library") onClose();
@@ -97,7 +95,6 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   icon="trash"
                   disabled={playingThis}
                   onClick={() => {
-                    setPurgeSaves(false);
                     setConfirmRemove(true);
                   }}
                 >
@@ -241,31 +238,12 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
           </div>
         </div>
       </Dialog>
-      <Dialog
+      <RemoveStoryDialog
         open={confirmRemove}
-        onClose={() => setConfirmRemove(false)}
-        role="alertdialog"
-        title={t.stories.removeDialog.title(entry.title)}
-        description={t.stories.removeDialog.description}
-        initialFocus={cancelRef}
-        footer={
-          <>
-            <Button ref={cancelRef} onClick={() => setConfirmRemove(false)}>
-              {t.common.cancel}
-            </Button>
-            <Button variant="danger" onClick={() => void confirmedRemove()}>
-              {t.stories.removeDialog.confirm}
-            </Button>
-          </>
-        }
-      >
-        <CheckboxField
-          label={t.stories.removeDialog.purgeSaves}
-          hint={t.stories.removeDialog.purgeSavesHint}
-          checked={purgeSaves}
-          onChange={(event) => setPurgeSaves(event.target.checked)}
-        />
-      </Dialog>
+        title={entry.title}
+        onCancel={() => setConfirmRemove(false)}
+        onConfirm={(purge) => void confirmedRemove(purge)}
+      />
     </>
   );
 }

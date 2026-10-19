@@ -87,6 +87,8 @@ let calls: { cmd: string; args: Record<string, unknown> }[];
 let sends: Map<string, Deferred>;
 let ejectOutcome: EjectOutcome | { kind: string; message: string };
 let removeFailure: { kind: string; message: string } | null;
+let removeGate: Promise<void> | null;
+let ejectGate: Promise<void> | null;
 let recoverFailure: { kind: string; message: string } | null;
 let carrierConsent: { text_version: number; accepted_at: string } | null;
 let storedKeys: boolean;
@@ -118,6 +120,8 @@ beforeEach(() => {
   sends = new Map();
   ejectOutcome = { status: "ejected", message: "Vous pouvez débrancher la Flam." };
   removeFailure = null;
+  removeGate = null;
+  ejectGate = null;
   recoverFailure = null;
   carrierConsent = null;
   storedKeys = false;
@@ -149,17 +153,21 @@ beforeEach(() => {
         case "device_cancel_transfer":
           return true;
         case "device_remove_story":
-          if (removeFailure) throw removeFailure;
-          onDevice = onDevice.filter((s) => s.uuid !== args.id);
-          return {
-            id: args.id,
-            index_updated: true,
-            folders_removed: 1,
-            cleanup_pending: false,
-          };
+          return (removeGate ?? Promise.resolve()).then(() => {
+            if (removeFailure) throw removeFailure;
+            onDevice = onDevice.filter((s) => s.uuid !== args.id);
+            return {
+              id: args.id,
+              index_updated: true,
+              folders_removed: 1,
+              cleanup_pending: false,
+            };
+          });
         case "device_eject":
-          if ("kind" in ejectOutcome) throw ejectOutcome;
-          return ejectOutcome;
+          return (ejectGate ?? Promise.resolve()).then(() => {
+            if ("kind" in ejectOutcome) throw ejectOutcome;
+            return ejectOutcome;
+          });
         case "library_thumbnail":
           return "data:image/png;base64,AAAA";
         case "device_carrier_state":
@@ -558,6 +566,109 @@ it("retire une histoire de la Flam après confirmation", async () => {
   );
 });
 
+async function startRemoval(title: string) {
+  fireEvent.click(screen.getByRole("button", { name: `Retirer « ${title} »` }));
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Retirer de la Flam",
+    }),
+  );
+}
+
+it("montre le retrait en cours : bouton « Retrait… », ligne grisée, doubles clics ignorés", async () => {
+  let release!: () => void;
+  removeGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  onDevice = [deviceStory(C, "Déjà là"), deviceStory(A, "Capi")];
+  render(<Harness />);
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (2)" });
+  await startRemoval("Déjà là");
+
+  const working = await screen.findByRole("button", { name: "Retrait… « Déjà là »" });
+  expect(working).toHaveTextContent("Retrait…");
+  expect(working).toHaveAttribute("aria-busy", "true");
+  expect(working).toHaveAttribute("aria-disabled", "true");
+  expect(working.closest("li")).toHaveAttribute("aria-busy", "true");
+  // Le dialogue est fermé : l'état est porté par la ligne.
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  fireEvent.click(working);
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  // Les autres retraits sont refusés avec leur raison.
+  const other = screen.getByRole("button", { name: "Retirer « Capi »" });
+  expect(other).toHaveAttribute("aria-disabled", "true");
+  expect(other).toHaveAccessibleDescription("Un retrait est déjà en cours.");
+  fireEvent.click(other);
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  expect(count("device_remove_story")).toBe(1);
+
+  await act(async () => release());
+  expect(await screen.findByText("« Déjà là » retirée de la Flam.")).toBeInTheDocument();
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (1)" });
+  expect(screen.getByRole("button", { name: "Retirer « Capi »" })).not.toHaveAttribute(
+    "aria-disabled",
+  );
+});
+
+it("refuse l'éjection pendant un retrait", async () => {
+  let releaseRemove!: () => void;
+  removeGate = new Promise<void>((resolve) => {
+    releaseRemove = resolve;
+  });
+  render(<Harness />);
+  await ready();
+  await startRemoval("Déjà là");
+  await screen.findByRole("button", { name: "Retrait… « Déjà là »" });
+  const eject = screen.getAllByRole("button", { name: "Éjecter la Flam" })[0]!;
+  expect(eject).toHaveAttribute("aria-disabled", "true");
+  expect(eject).toHaveAccessibleDescription("Éjection indisponible pendant un retrait.");
+  fireEvent.click(eject);
+  expect(count("device_eject")).toBe(0);
+  await act(async () => releaseRemove());
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (0)" });
+});
+
+it("refuse le retrait pendant une éjection", async () => {
+  let release!: () => void;
+  ejectGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  render(<Harness />);
+  await ready();
+  fireEvent.click(screen.getByRole("button", { name: "Éjecter la Flam" }));
+  await screen.findByRole("button", { name: "Éjection en cours…" });
+  const remove = screen.getByRole("button", { name: "Retirer « Déjà là »" });
+  expect(remove).toHaveAttribute("aria-disabled", "true");
+  expect(remove).toHaveAccessibleDescription(
+    "Retrait indisponible pendant une éjection.",
+  );
+  fireEvent.click(remove);
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  await act(async () => release());
+});
+
+it("rend le bouton à l'échec d'un retrait long", async () => {
+  let release!: () => void;
+  removeGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  removeFailure = { kind: "validation", message: "la Flam est occupée" };
+  render(<Harness />);
+  await ready();
+  await startRemoval("Déjà là");
+  expect(
+    await screen.findByRole("button", { name: "Retrait… « Déjà là »" }),
+  ).toHaveAttribute("aria-busy", "true");
+  await act(async () => release());
+  expect(
+    await screen.findByText("Impossible de retirer l'histoire : la Flam est occupée"),
+  ).toBeInTheDocument();
+  const again = screen.getByRole("button", { name: "Retirer « Déjà là »" });
+  expect(again).not.toHaveAttribute("aria-busy");
+  expect(again).not.toHaveAttribute("aria-disabled");
+  expect(again.closest("li")).not.toHaveAttribute("aria-busy");
+});
+
 it("signale l'échec d'un retrait", async () => {
   removeFailure = { kind: "validation", message: "la Flam est occupée" };
   render(<Harness />);
@@ -602,6 +713,23 @@ it("éjecte la Flam et affiche le message du backend", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Éjecter la Flam" }));
   expect(await screen.findByText("Vous pouvez débrancher la Flam.")).toBeInTheDocument();
   expect(calls.find((c) => c.cmd === "device_eject")?.args).toEqual({ root: "E:\\" });
+});
+
+it("montre l'éjection en cours : libellé, aria-busy, pas de second appel", async () => {
+  let release!: () => void;
+  ejectGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  render(<Harness />);
+  await ready();
+  fireEvent.click(screen.getByRole("button", { name: "Éjecter la Flam" }));
+  const working = await screen.findByRole("button", { name: "Éjection en cours…" });
+  expect(working).toHaveAttribute("aria-busy", "true");
+  expect(working).toHaveAttribute("aria-disabled", "true");
+  fireEvent.click(working);
+  expect(count("device_eject")).toBe(1);
+  await act(async () => release());
+  expect(await screen.findByText("Vous pouvez débrancher la Flam.")).toBeInTheDocument();
 });
 
 it("affiche le message de repli quand l'éjection logicielle échoue", async () => {

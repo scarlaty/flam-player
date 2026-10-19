@@ -270,6 +270,7 @@ function DeviceStoriesList() {
   // Après un retrait, la ligne (donc le bouton) disparaît à la relecture : le focus passe à la
   // liste dès que la nouvelle liste est affichée.
   const focusAfterReload = useRef(false);
+  const [removing, setRemoving] = useState<string | null>(null);
   useEffect(() => {
     if (focusAfterReload.current && state.phase === "ready") {
       focusAfterReload.current = false;
@@ -328,10 +329,17 @@ function DeviceStoriesList() {
                 story={story}
                 deviceTitle={titles.get(story.uuid)}
                 loader={story.missing ? null : loader}
+                removing={removing === story.uuid}
                 actions={
                   <RemoveStoryButton
                     story={story}
                     busy={busy}
+                    locked={removing !== null && removing !== story.uuid}
+                    onWorkingChange={(working) =>
+                      setRemoving((current) =>
+                        working ? story.uuid : current === story.uuid ? null : current,
+                      )
+                    }
                     onRemoved={() => {
                       focusAfterReload.current = true;
                     }}
@@ -361,18 +369,21 @@ function DeviceStoryRow({
   deviceTitle,
   loader,
   actions,
+  removing = false,
 }: {
   story: DeviceStory;
   deviceTitle?: string | null;
   loader: ThumbnailLoader | null;
   actions?: ReactNode;
+  /** Retrait en cours : la ligne est grisée. */
+  removing?: boolean;
 }) {
   const rowRef = useRef<HTMLLIElement>(null);
   const thumb = useDeviceThumbnail(loader, story.uuid, rowRef);
   const title = deviceTitle ?? story.title;
   const name = title ?? text.stories.untitled(story.short_id);
   return (
-    <li ref={rowRef} className="fl-device-row">
+    <li ref={rowRef} className="fl-device-row" aria-busy={removing || undefined}>
       <span className="fl-device-row__thumb">
         {thumb ? <img src={thumb} alt="" /> : <Icon name="book" size={20} />}
       </span>
