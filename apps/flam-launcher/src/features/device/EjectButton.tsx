@@ -1,5 +1,6 @@
 import { useId } from "react";
 import { Button } from "../../components";
+import { cx } from "../../components/cx";
 import { t } from "../../i18n";
 import { useDevice } from "./DeviceContext";
 import "./SendToDeviceButton.css";
@@ -15,9 +16,10 @@ export function EjectButton() {
   return (
     <span className="fl-send">
       <Button
-        icon="device"
-        className="fl-send__button"
+        icon={ejecting ? "refresh" : "device"}
+        className={cx("fl-send__button", ejecting && "fl-send__button--working")}
         aria-disabled={blocked || undefined}
+        aria-busy={ejecting || undefined}
         aria-describedby={busy ? hintId : undefined}
         onClick={() => {
           if (!blocked) void eject();

@@ -592,6 +592,8 @@ export const fr = {
       cleanupPending: " L'espace sera libéré à la prochaine opération.",
       failed: (message: string) => `Impossible de retirer l'histoire : ${message}`,
       busy: "Retrait indisponible pendant un envoi.",
+      working: "Retrait…",
+      otherWorking: "Un retrait est déjà en cours.",
     },
     eject: {
       button: "Éjecter la Flam",
