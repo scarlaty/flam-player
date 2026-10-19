@@ -961,11 +961,12 @@ it("Flam 1.x sans bt : clé saisie, aucun envoi tant qu'elle est invalide", asyn
       "Aucune histoire de cette Flam ne contient de fichier bt : saisissez la clé ou choisissez un fichier.",
     ),
   ).toBeInTheDocument();
-  // Saisie proposée d'office ; champ masqué.
+  // Saisie proposée d'office (après le rendu qui suit le chargement des candidats) ; champ
+  // masqué.
+  const field = await within(dialog).findByLabelText("Clé bt");
   expect(
     within(dialog).getByRole("radio", { name: /Saisir la clé \(bt\)/ }),
   ).toBeChecked();
-  const field = within(dialog).getByLabelText("Clé bt");
   expect(field).toHaveAttribute("type", "password");
   const confirm = within(dialog).getByRole("button", { name: "Vérifier et envoyer" });
   expect(confirm).toBeDisabled();
@@ -1020,7 +1021,7 @@ it("Flam 1.x sans bt : clé saisie, aucun envoi tant qu'elle est invalide", asyn
   // Clé saisie non conservée : redemandée à l'envoi suivant.
   fireEvent.click(sendButton("Les trois ours"));
   const again = await screen.findByRole("alertdialog");
-  expect(within(again).getByLabelText("Clé bt")).toHaveValue("");
+  expect(await within(again).findByLabelText("Clé bt")).toHaveValue("");
   expect(count("device_send_story")).toBe(1);
 });
 
