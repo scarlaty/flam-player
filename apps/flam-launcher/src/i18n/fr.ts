@@ -517,6 +517,22 @@ export const fr = {
       stored: "Clés conservées sur ce PC pour cette Flam",
       fromStory: (title: string) => `Histoire officielle « ${title} »`,
       hiddenHint: "Histoire masquée",
+      withStoredHint: "Avec la clé conservée sur ce PC",
+      fromEntered: "Saisir la clé (bt)",
+      fromEnteredHint:
+        "La clé bt d'une histoire officielle de cette Flam, en hexadécimal. flam-launcher retrouve l'histoire qu'elle déchiffre et vérifie tout avant la copie.",
+      enteredLabel: "Clé bt",
+      enteredHint:
+        "64 caractères hexadécimaux (0 à 9, a à f) ; espaces et majuscules acceptés.",
+      showEntered: "Afficher la clé",
+      checkEntered: "Vérifier la clé",
+      checkingEntered: "Recherche de l'histoire…",
+      recognized: (title: string) =>
+        `Clé reconnue : histoire « ${title} ». Vérifiez que le titre est exact : un titre altéré signale une faute de frappe.`,
+      titleConfirmed: "Le titre est exact",
+      enteredNotHex: "Seuls les chiffres 0 à 9 et les lettres a à f sont acceptés.",
+      enteredLength: (count: number, expected: number) =>
+        `${count} caractères hexadécimaux sur ${expected} attendus.`,
       fromFile: "Choisir un fichier…",
       fromFileHint:
         "Fichier bt d'une copie de dossier d'histoire officielle (avec key à côté), ou archive zip qui les contient.",
@@ -524,7 +540,7 @@ export const fr = {
       pick: "Parcourir…",
       picked: (path: string) => `Fichier choisi : ${path}`,
       noCandidate:
-        "Aucune histoire officielle de cette Flam ne porte les clés nécessaires : choisissez un fichier.",
+        "Aucune histoire de cette Flam ne contient de fichier bt : saisissez la clé ou choisissez un fichier.",
       remember: "Conserver ces clés sur ce PC",
       rememberHint:
         "Chiffrées pour votre compte Windows et liées à cette Flam. « Oublier les clés » les supprime.",
