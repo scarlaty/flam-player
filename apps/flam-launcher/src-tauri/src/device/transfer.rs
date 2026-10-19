@@ -918,9 +918,12 @@ pub(crate) fn recover_with(
 /// Une erreur de lecture du dossier de travail lui-même interrompt tout.
 pub(crate) fn recover_collect(
     fs: &dyn DeviceFs,
-    _permit: &WritePermit,
+    permit: &WritePermit,
     root: &Path,
 ) -> Result<(TransferRecovery, Vec<(String, TransferError)>), TransferError> {
+    if !permit.covers(root) {
+        return Err(TransferError::InvalidRoot);
+    }
     let dir = root.join(TRANSFER_DIR);
     let mut names = Vec::new();
     match std::fs::read_dir(&dir) {

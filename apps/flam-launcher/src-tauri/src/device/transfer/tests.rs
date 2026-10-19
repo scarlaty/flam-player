@@ -23,7 +23,7 @@ fn id(s: &str) -> StoryId {
 /// Autorisation de test pour les étapes d'écriture elles-mêmes (la garde est testée à part et
 /// par les envois depuis la bibliothèque).
 fn permit() -> WritePermit {
-    WritePermit::for_tests(FirmwareFamily::V2, &mdf_v1_real())
+    WritePermit::for_tests(FirmwareFamily::V1, &mdf_v1_real())
 }
 
 /// Histoire officielle 2.x inventée (hors bibliothèque) : sa présence prouve les clés de test.
@@ -1753,4 +1753,32 @@ fn comm_avant_main_et_version_nue() {
         firmware_field(&mdf_v1_real()),
         Some(("1.15.14".to_string(), VersionForm::Bare))
     );
+}
+
+/// Un permis obtenu pour une Flam ne permet aucune écriture sur une autre (#317).
+#[test]
+fn reprise_refusee_avec_le_permis_d_une_autre_flam() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    let other = tempfile::tempdir().unwrap();
+    let other_root = device(other.path(), false);
+    write(
+        &other_root
+            .join(TRANSFER_DIR)
+            .join(format!("{NEW}.in"))
+            .join("x"),
+        b"x",
+    );
+    let permit = crate::device::guard::check_write(
+        &root,
+        &test_ctx(),
+        crate::device::guard::WriteKind::Other,
+    )
+    .unwrap();
+    let before = snapshot(&other_root);
+    assert!(matches!(
+        recover_with(&FaultyFs::new(), &permit, &other_root),
+        Err(TransferError::InvalidRoot)
+    ));
+    assert_eq!(snapshot(&other_root), before);
 }

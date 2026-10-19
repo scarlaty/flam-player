@@ -107,9 +107,18 @@ export function firmwareWriteBlock(device: DeviceSummary | null): WriteRefused |
   return block && block.kind !== "confirmation_required" ? block : null;
 }
 
-/** Flam 2.x pas encore confirmée : l'utilisateur doit confirmer avant toute écriture. */
+/**
+ * Flam 2.x pas encore confirmée : l'utilisateur doit confirmer avant toute écriture. Vrai aussi
+ * quand l'envoi est bloqué par une contradiction des clés : la confirmation rend alors le
+ * retrait de l'histoire en cause possible.
+ */
 export function needsFirmwareConfirmation(device: DeviceSummary | null): boolean {
-  return device?.firmware_status?.write_block?.kind === "confirmation_required";
+  const status = device?.firmware_status;
+  const kind = status?.write_block?.kind;
+  return (
+    kind === "confirmation_required" ||
+    (kind === "keys_contradiction" && status?.trust === "unconfirmed")
+  );
 }
 
 /**
@@ -118,7 +127,10 @@ export function needsFirmwareConfirmation(device: DeviceSummary | null): boolean
  */
 export function canMaintain(device: DeviceSummary | null): boolean {
   if (!device) return false;
-  const block = device.firmware_status?.write_block ?? null;
+  const status = device.firmware_status;
+  if (!status) return true;
+  if (status.trust === "unconfirmed") return false;
+  const block = status.write_block;
   return block === null || block.kind === "keys_contradiction";
 }
 

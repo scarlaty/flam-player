@@ -904,3 +904,22 @@ it("Flam 2.x aux clés incohérentes : envoi bloqué, reprise et retrait possibl
   expect(screen.getByText("Envoi sur cette Flam bloqué")).toBeInTheDocument();
   await waitFor(() => expect(calls).toContain("device_recover_transfers"));
 });
+
+it("Flam 2.x incohérente et non confirmée : la confirmation reste proposée", async () => {
+  status = detected({
+    firmware_status: firmwareV2({
+      trust: "unconfirmed",
+      write_block: { kind: "keys_contradiction", version: "2.4.2" },
+    }),
+  });
+  renderScreen();
+  expect(await screen.findByText("Envoi sur cette Flam bloqué")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Confirmer" })).toBeDisabled();
+  // Rien n'est écrit avant la confirmation, pas même la reprise.
+  expect(calls).not.toContain("device_recover_transfers");
+  fireEvent.click(
+    screen.getByLabelText("Firmware 2.x en test : j'ai sauvegardé ma Flam"),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Confirmer" }));
+  await waitFor(() => expect(calls).toContain("device_confirm_firmware"));
+});

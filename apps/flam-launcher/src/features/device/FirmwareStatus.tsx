@@ -68,18 +68,22 @@ function firmwareState(status: FirmwareStatus): string {
  */
 export function FirmwareNotice({ device }: { device: DeviceSummary }) {
   const block = firmwareWriteBlock(device);
-  if (block) {
-    const title =
-      block.kind === "keys_contradiction" ? text.sendBlockedTitle : text.blockedTitle;
-    return (
-      <Banner tone="danger" role="status" title={title}>
-        <p>{blockedMessage(block)}</p>
-        <p>{text.blockedHint}</p>
-      </Banner>
-    );
-  }
-  if (needsFirmwareConfirmation(device)) return <ConfirmFirmware device={device} />;
-  return null;
+  const contradiction = block?.kind === "keys_contradiction";
+  return (
+    <>
+      {block && (
+        <Banner
+          tone="danger"
+          role="status"
+          title={contradiction ? text.sendBlockedTitle : text.blockedTitle}
+        >
+          <p>{blockedMessage(block)}</p>
+          <p>{contradiction ? text.contradictionHint : text.blockedHint}</p>
+        </Banner>
+      )}
+      {needsFirmwareConfirmation(device) && <ConfirmFirmware device={device} />}
+    </>
+  );
 }
 
 function ConfirmFirmware({ device }: { device: DeviceSummary }) {

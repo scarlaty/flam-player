@@ -506,10 +506,10 @@ fn verification_par_la_flam_via_library_cache() {
 fn verification_par_la_flam_en_utf16() {
     let dev = device(&mdf_v2_known());
     story(dev.path(), STORY, &key_v2(), &info_v2("Titre long"));
-    let cache: Vec<u8> = "xxTitre longyy"
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect();
+    // Titre précédé de sa longueur (10 unités) et suivi d'un nul, en UTF-16LE.
+    let mut cache: Vec<u8> = vec![0x41, 0x00, 10, 0x00];
+    cache.extend("Titre long".encode_utf16().flat_map(u16::to_le_bytes));
+    cache.extend([0, 0, 0x42, 0x00]);
     put_cache(dev.path(), &cache);
     assert!(flam_cache_proof(
         dev.path(),
@@ -606,4 +606,54 @@ fn vid_pid_inattendu_signale_sans_refus() {
     assert_ne!(layout.usb, Some(EXPECTED_USB));
     let dev = device(&mdf);
     check_write(dev.path(), &test_ctx(), WriteKind::Send).unwrap();
+}
+
+#[test]
+fn un_titre_inclus_dans_un_autre_ne_prouve_rien() {
+    let dev = device(&mdf_v2_known());
+    story(dev.path(), STORY, &key_v2(), &info_v2("Capi"));
+    let launcher: HashSet<String> = [STORY.to_string()].into();
+    // « Capi » n'apparaît qu'à l'intérieur d'un titre officiel, en UTF-8 puis en UTF-16LE.
+    let mut cache = b"\x00Le Noel de Capi\x00".to_vec();
+    cache.extend("Le Noel de Capi".encode_utf16().flat_map(u16::to_le_bytes));
+    cache.extend([0, 0]);
+    put_cache(dev.path(), &cache);
+    assert!(!flam_cache_proof(dev.path(), &mdf_v2_known(), &launcher));
+    // Le même titre comme champ entier (délimité par des nuls, ou précédé de sa longueur) : oui.
+    put_cache(dev.path(), b"\x10\x00Capi\x00\x01");
+    assert!(flam_cache_proof(dev.path(), &mdf_v2_known(), &launcher));
+    put_cache(dev.path(), b"\x99\x04Capi\x02");
+    assert!(flam_cache_proof(dev.path(), &mdf_v2_known(), &launcher));
+}
+
+#[test]
+fn contradiction_sur_une_flam_non_confirmee_reste_confirmable() {
+    // Premier branchement d'une 2.x avec une histoire tierce incohérente : l'état dit l'envoi
+    // bloqué ET la confiance à donner ; la confirmation rend le retrait possible.
+    let dev = device(&mdf_v2_known());
+    story(dev.path(), STORY, &key_v2(), &wrong_info());
+    let ctx = test_ctx();
+    let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
+    assert!(matches!(
+        status.write_block,
+        Some(WriteRefused::KeysContradiction { .. })
+    ));
+    assert_eq!(status.trust, Trust::Unconfirmed);
+    assert!(matches!(
+        check_write(dev.path(), &ctx, WriteKind::Other),
+        Err(WriteRefused::ConfirmationRequired { .. })
+    ));
+    let status = confirm(dev.path(), &ctx).unwrap();
+    assert_eq!(status.trust, Trust::Confirmed);
+    check_write(dev.path(), &ctx, WriteKind::Other).unwrap();
+    assert!(check_write(dev.path(), &ctx, WriteKind::Send).is_err());
+}
+
+#[test]
+fn un_permis_ne_vaut_que_pour_sa_racine() {
+    let dev = device(&mdf_v1_real());
+    let other = device(&mdf_v1_real());
+    let permit = check_write(dev.path(), &test_ctx(), WriteKind::Other).unwrap();
+    assert!(permit.covers(dev.path()));
+    assert!(!permit.covers(other.path()));
 }

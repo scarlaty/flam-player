@@ -303,8 +303,8 @@ pub fn flam_cache_proof(root: &Path, mdf: &[u8], launcher_stories: &HashSet<Stri
         return false;
     };
     titles.iter().any(|title| {
-        let utf16: Vec<u8> = title.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        contains(&cache, title.as_bytes()) || contains(&cache, &utf16)
+        let units: Vec<u16> = title.encode_utf16().collect();
+        contains_field(&cache, title.as_bytes()) || contains_field_utf16(&cache, &units)
     })
 }
 
@@ -322,8 +322,54 @@ fn read_cache(root: &Path) -> Option<Vec<u8>> {
     Some(data)
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+/// Vrai si `needle` figure dans `haystack` comme **champ entier** : précédé du début, d'un octet
+/// de contrôle (< 0x20) ou de sa longueur, et suivi de la fin ou d'un octet de contrôle. Un titre
+/// inclus dans un autre (« Capi » dans « Le Noël de Capi ») ne compte pas.
+fn contains_field(haystack: &[u8], needle: &[u8]) -> bool {
+    let n = needle.len();
+    if n == 0 || haystack.len() < n {
+        return false;
+    }
+    let len_byte = (n & 0xFF) as u8;
+    memchr_all(haystack, needle).any(|at| {
+        let before = at.checked_sub(1).map(|i| haystack[i]);
+        let after = haystack.get(at + n).copied();
+        before.is_none_or(|b| b < 0x20 || b == len_byte) && after.is_none_or(|b| b < 0x20)
+    })
+}
+
+/// Même règle que [`contains_field`] pour un titre en UTF-16 petit-boutiste (unités de 16 bits
+/// alignées sur leur début dans le texte trouvé).
+fn contains_field_utf16(haystack: &[u8], units: &[u16]) -> bool {
+    let needle: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+    let n = needle.len();
+    if units.is_empty() || haystack.len() < n {
+        return false;
+    }
+    let unit_at = |i: usize| {
+        haystack
+            .get(i..i + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    };
+    let count = units.len() as u16;
+    let found = memchr_all(haystack, &needle).any(|at| {
+        let before = at.checked_sub(2).and_then(unit_at);
+        let after = unit_at(at + n);
+        (at < 2 || before.is_some_and(|u| u < 0x20 || u == count))
+            && (at + n + 2 > haystack.len() || after.is_some_and(|u| u < 0x20))
+    });
+    found
+}
+
+/// Positions de `needle` dans `haystack` (recherche guidée par le premier octet).
+fn memchr_all<'h>(haystack: &'h [u8], needle: &'h [u8]) -> impl Iterator<Item = usize> + 'h {
+    let first = needle[0];
+    let last_start = haystack.len() - needle.len();
+    haystack[..=last_start]
+        .iter()
+        .enumerate()
+        .filter(move |(i, &b)| b == first && &haystack[*i..*i + needle.len()] == needle)
+        .map(|(i, _)| i)
 }
 
 // --- Confirmations et vérifications mémorisées ----------------------------------------------
@@ -602,6 +648,8 @@ pub enum WriteRefused {
 pub struct WritePermit {
     family: FirmwareFamily,
     mdf_digest: [u8; 32],
+    /// Racine contrôlée, normalisée (`None` : permis de test, valable partout).
+    root: Option<String>,
 }
 
 impl WritePermit {
@@ -615,12 +663,20 @@ impl WritePermit {
         <[u8; 32]>::from(Sha256::digest(mdf)) == self.mdf_digest
     }
 
+    /// Vrai si le permis a été donné pour la Flam de `root`.
+    pub fn covers(&self, root: &Path) -> bool {
+        self.root
+            .as_ref()
+            .is_none_or(|checked| *checked == session_key(root, &[]).0)
+    }
+
     /// Autorisation sans contrôle, pour les tests des étapes d'écriture elles-mêmes.
     #[cfg(test)]
     pub(crate) fn for_tests(family: FirmwareFamily, mdf: &[u8]) -> Self {
         Self {
             family,
             mdf_digest: Sha256::digest(mdf).into(),
+            root: None,
         }
     }
 }
@@ -752,8 +808,9 @@ fn assess(root: &Path, mdf: &[u8], ctx: &WriteContext<'_>, mode: Mode) -> Assess
             .ok()
             .map(|m| (m.len(), m.modified().ok()));
         let seen = ctx.session.with(key.clone(), |e| e.cache_seen);
-        if cache_meta.is_some() && cache_meta != seen {
-            if flam_cache_proof(root, mdf, ctx.launcher_stories()) {
+        let launcher = ctx.launcher_stories();
+        if cache_meta.is_some() && cache_meta != seen && !launcher.is_empty() {
+            if flam_cache_proof(root, mdf, launcher) {
                 ctx.trust.record(mdf, true);
                 trust = Trust::FlamVerified;
                 tracing::info!(
@@ -847,6 +904,7 @@ pub fn check_write(
     Ok(WritePermit {
         family,
         mdf_digest: Sha256::digest(&mdf[..]).into(),
+        root: Some(session_key(root, &[]).0),
     })
 }
 
