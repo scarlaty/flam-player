@@ -1320,8 +1320,18 @@ pub async fn device_send_story(
         );
         Ok(result?)
     })
-    .await??;
-    Ok(report)
+    .await?;
+    // Diagnostic copiable (#318) : erreurs de la session, sans les annulations.
+    match &report {
+        Ok(report) => {
+            for failure in &report.recovery_failures {
+                super::diagnostic::record_error("reprise avant envoi", failure);
+            }
+        }
+        Err(AppError::Cancelled) => {}
+        Err(err) => super::diagnostic::record_error("envoi", &err.to_string()),
+    }
+    report
 }
 
 /// Mode carrier : histoire de la Flam de `root` reconnue par le `bt` saisi, montrée avant tout
@@ -1390,14 +1400,18 @@ pub async fn device_recover_transfers(
     root: String,
 ) -> AppResult<TransferRecovery> {
     let cache_root = launcher_cache_root(&config);
-    blocking(move || -> AppResult<TransferRecovery> {
+    let result = blocking(move || -> AppResult<TransferRecovery> {
         let guard = DEVICE_LOCK
             .try_begin(Operation::Transfer)
             .map_err(TransferError::from)?;
         let ctx = WriteContext::current(cache_root);
         Ok(recover_device(&guard, Path::new(&root), &ctx)?)
     })
-    .await?
+    .await?;
+    if let Err(err) = &result {
+        super::diagnostic::record_error("reprise", &err.to_string());
+    }
+    result
 }
 
 /// Dossier de cache du launcher (bibliothèque), pour reconnaître ses propres histoires dans la
