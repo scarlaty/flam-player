@@ -1,0 +1,30 @@
+.fl-device-diagnostic {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fl-device-diagnostic__intro,
+.fl-device-diagnostic__note {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.fl-device-diagnostic__fallback {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.fl-device-diagnostic__fallback textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: var(--font-size-sm);
+  resize: vertical;
+}
