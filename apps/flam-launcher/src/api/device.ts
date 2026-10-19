@@ -16,8 +16,7 @@ export type DeviceWarning =
 /** Problème de lecture de `.mdf` (miroir de `MdfError`, sans « format non spécifié »). */
 export type MdfProblem =
   | { kind: "truncated"; size: number; expected_min: number }
-  | { kind: "too_large"; size: number; max: number }
-  | { kind: "format_unspecified" };
+  | { kind: "too_large"; size: number; max: number };
 
 /** Flam détectée (miroir de `DeviceSummary` dans `device/status.rs`). */
 export interface DeviceSummary {
