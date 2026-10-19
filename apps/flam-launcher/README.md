@@ -410,8 +410,11 @@ n'est connu qu'après un refus du backend.
 **Ordre des histoires** (#233, `device::reorder`, `DeviceStoryOrder.tsx`) : « Modifier l'ordre »
 (proposé quand `list` est valide, `list.hidden` valide ou absent, la liste non tronquée et au
 moins deux histoires visibles) ouvre l'édition des histoires visibles : glisser-déposer, ou
-boutons « Monter » / « Descendre » au clavier (focus gardé sur l'histoire déplacée, position
-annoncée). Rien n'est écrit avant « Enregistrer l'ordre », qui envoie **l'ordre complet** en une
+boutons « Tout en haut » / « Monter » / « Descendre » / « Tout en bas » (touches Début et Fin sur la
+ligne sélectionnée ; désactivés aux extrémités ; focus gardé sur l'histoire déplacée, position
+annoncée). Le glisser-déposer HTML5 exige `dragDropEnabled: false` sur la fenêtre
+(`tauri.conf.json`, verrouillé par `src/tauriConfig.test.ts`) : sinon Tauri intercepte le
+glisser-déposer pour le dépôt de fichiers natif (#300). Rien n'est écrit avant « Enregistrer l'ordre », qui envoie **l'ordre complet** en une
 seule écriture ; « Annuler » abandonne les déplacements. Pendant l'enregistrement, déplacements
 et boutons sont bloqués (« Enregistrement de l'ordre… ») ; pendant un envoi, l'édition est
 indisponible, raison à l'appui. Après l'écriture, un message rappelle de redémarrer la Flam. Le
