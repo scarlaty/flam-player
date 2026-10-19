@@ -286,6 +286,8 @@ function DeviceStoriesList() {
   const orderButtonRef = useRef<HTMLButtonElement>(null);
   const [ordering, setOrdering] = useState(false);
   const reorderable = canReorder(report);
+  // Liste relue non modifiable (index abîmé, tronquée…) : l'édition de l'ordre se ferme.
+  if (ordering && !reorderable) setOrdering(false);
   const showOrder = ordering && reorderable;
   const orderHintId = useId();
   // Après un retrait, la ligne (donc le bouton) disparaît à la relecture : le focus passe à la
