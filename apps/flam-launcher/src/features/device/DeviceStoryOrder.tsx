@@ -24,12 +24,22 @@ export interface DeviceStoryOrderProps {
   onClose: () => void;
 }
 
+type MoveDir = "top" | "up" | "down" | "bottom";
+
+/** Boutons de repli pour garder le focus quand celui de l'action est désactivé à l'arrivée. */
+const FOCUS_FALLBACK: Record<MoveDir, MoveDir[]> = {
+  top: ["top", "down", "bottom", "up"],
+  up: ["up", "down", "top", "bottom"],
+  down: ["down", "up", "bottom", "top"],
+  bottom: ["bottom", "up", "top", "down"],
+};
+
 const sameSet = (a: readonly string[], b: readonly string[]) =>
   a.length === b.length && b.every((uuid) => a.includes(uuid));
 
 /**
- * Édition de l'ordre des histoires visibles de la Flam : glisser-déposer ou boutons Monter /
- * Descendre, puis « Enregistrer l'ordre » (une seule écriture de l'index). Rien n'est écrit
+ * Édition de l'ordre des histoires visibles de la Flam : glisser-déposer ou boutons Tout en haut /
+ * Monter / Descendre / Tout en bas (Début / Fin au clavier), puis « Enregistrer l'ordre » (une seule écriture de l'index). Rien n'est écrit
  * avant l'enregistrement ; « Annuler » abandonne les déplacements.
  */
 export function DeviceStoryOrder({
@@ -51,7 +61,7 @@ export function DeviceStoryOrder({
   const [announcement, setAnnouncement] = useState("");
   const listRef = useRef<HTMLOListElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const pendingFocus = useRef<{ uuid: string; dir: "up" | "down" } | null>(null);
+  const pendingFocus = useRef<{ uuid: string; dir: MoveDir } | null>(null);
 
   // Liste relue entre-temps (envoi, retrait, refus) : un ordre qui ne porte plus sur les mêmes
   // histoires repart de celui de la Flam (ajustement pendant le rendu).
@@ -74,12 +84,13 @@ export function DeviceStoryOrder({
       listRef.current?.querySelector<HTMLButtonElement>(
         `[data-uuid="${pending.uuid}"][data-move="${dir}"]`,
       );
-    const preferred = find(pending.dir);
-    const target =
-      preferred && !preferred.disabled
-        ? preferred
-        : find(pending.dir === "up" ? "down" : "up");
-    target?.focus();
+    for (const dir of FOCUS_FALLBACK[pending.dir]) {
+      const button = find(dir);
+      if (button && !button.disabled) {
+        button.focus();
+        return;
+      }
+    }
   }, [order]);
 
   const byUuid = new Map(stories.map((story) => [story.uuid, story]));
@@ -95,12 +106,18 @@ export function DeviceStoryOrder({
     }
   }
 
-  function moveBy(uuid: string, delta: -1 | 1) {
+  function moveTo(uuid: string, dir: MoveDir) {
     if (locked) return;
     const from = order.indexOf(uuid);
-    const to = from + delta;
-    if (from < 0 || to < 0 || to >= order.length) return;
-    pendingFocus.current = { uuid, dir: delta < 0 ? "up" : "down" };
+    if (from < 0) return;
+    const to =
+      dir === "top"
+        ? 0
+        : dir === "bottom"
+          ? order.length - 1
+          : from + (dir === "up" ? -1 : 1);
+    if (to < 0 || to >= order.length || to === from) return;
+    pendingFocus.current = { uuid, dir };
     apply(moveItem(order, from, to), uuid);
   }
 
@@ -167,6 +184,14 @@ export function DeviceStoryOrder({
                 (locked ? "" : " fl-device-order__row--draggable") +
                 (dragId === uuid ? " fl-device-order__row--dragging" : "")
               }
+              onKeyDown={(event) => {
+                // Début / Fin sur la ligne de l'élément focalisé (bouton ou ligne).
+                if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
+                  return;
+                if (event.key !== "Home" && event.key !== "End") return;
+                event.preventDefault();
+                moveTo(uuid, event.key === "Home" ? "top" : "bottom");
+              }}
               draggable={!locked}
               onDragStart={(event) => {
                 if (locked) return;
@@ -192,13 +217,22 @@ export function DeviceStoryOrder({
               <span className="fl-device-order__name">{name}</span>
               <span className="fl-device-order__moves">
                 <IconButton
+                  icon="arrowTop"
+                  size="sm"
+                  label={text.moveTop(name)}
+                  data-uuid={uuid}
+                  data-move="top"
+                  disabled={locked || index === 0}
+                  onClick={() => moveTo(uuid, "top")}
+                />
+                <IconButton
                   icon="arrowUp"
                   size="sm"
                   label={text.moveUp(name)}
                   data-uuid={uuid}
                   data-move="up"
                   disabled={locked || index === 0}
-                  onClick={() => moveBy(uuid, -1)}
+                  onClick={() => moveTo(uuid, "up")}
                 />
                 <IconButton
                   icon="arrowDown"
@@ -207,7 +241,16 @@ export function DeviceStoryOrder({
                   data-uuid={uuid}
                   data-move="down"
                   disabled={locked || index === order.length - 1}
-                  onClick={() => moveBy(uuid, 1)}
+                  onClick={() => moveTo(uuid, "down")}
+                />
+                <IconButton
+                  icon="arrowBottom"
+                  size="sm"
+                  label={text.moveBottom(name)}
+                  data-uuid={uuid}
+                  data-move="bottom"
+                  disabled={locked || index === order.length - 1}
+                  onClick={() => moveTo(uuid, "bottom")}
                 />
               </span>
             </li>
