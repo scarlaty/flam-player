@@ -144,6 +144,34 @@ export function getDeviceStoryThumbnail(
   return invokeCommand<DeviceStoryThumbnail>("device_story_thumbnail", { root, uuid });
 }
 
+/** Histoire trouvée dans le catalogue officiel (miroir de `OfficialTitle` dans `device/official.rs`). */
+export interface OfficialStoryTitle {
+  uuid: string;
+  title: string;
+  /** Le catalogue a une image pour cette histoire (`getOfficialStoryThumbnail`). */
+  has_image: boolean;
+}
+
+/** Réponse de `device_official_titles` (miroir de `OfficialTitles`). */
+export interface OfficialStoryTitles {
+  /** Histoires demandées que le catalogue connaît (les autres sont omises). */
+  titles: OfficialStoryTitle[];
+}
+
+/**
+ * `device_official_titles` : titre et image du catalogue officiel en ligne pour des histoires
+ * dont le titre n'a pas pu être déchiffré. Le launcher n'appelle l'API qu'à cette condition (au
+ * plus une fois par jour) ; aucune donnée de la Flam n'est envoyée au serveur.
+ */
+export function getOfficialStoryTitles(uuids: string[]): Promise<OfficialStoryTitles> {
+  return invokeCommand<OfficialStoryTitles>("device_official_titles", { uuids });
+}
+
+/** `device_official_thumbnail` : image du catalogue pour une histoire trouvée (`null` : indisponible). */
+export function getOfficialStoryThumbnail(uuid: string): Promise<string | null> {
+  return invokeCommand<string | null>("device_official_thumbnail", { uuid });
+}
+
 /** `device_story_details_cancel` : interrompt le lot de titres en cours. */
 export function cancelDeviceStoryDetails(): Promise<void> {
   return invokeCommand<void>("device_story_details_cancel");

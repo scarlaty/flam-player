@@ -97,6 +97,7 @@ pub fn run() {
             app.manage(folder::FolderState::default());
             app.manage(watch::WatchState::default());
             app.manage(catalog);
+            app.manage(device::official::OfficialCatalog::new()?);
             app.manage(install.clone());
             let player = player::PlayerService::new(Arc::new(player::TauriPlayerEvents(
                 app.handle().clone(),
@@ -141,6 +142,8 @@ pub fn run() {
             device::details::device_story_titles,
             device::details::device_story_thumbnail,
             device::details::device_story_details_cancel,
+            device::official::device_official_titles,
+            device::official::device_official_thumbnail,
             device::transfer::device_send_story,
             device::transfer::device_cancel_transfer,
             device::transfer::device_recover_transfers,
@@ -186,6 +189,7 @@ mod tests {
             ("compat", include_str!("compat.rs")),
             ("device::carrier", include_str!("device/carrier.rs")),
             ("device::eject", include_str!("device/eject.rs")),
+            ("device::official", include_str!("device/official.rs")),
             ("device::remove", include_str!("device/remove.rs")),
             ("device::status", include_str!("device/status.rs")),
             ("device::transfer", include_str!("device/transfer.rs")),

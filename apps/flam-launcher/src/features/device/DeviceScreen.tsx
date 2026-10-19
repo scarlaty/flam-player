@@ -24,6 +24,9 @@ import {
   ThumbnailLoader,
   useDeviceStoryTitles,
   useDeviceThumbnail,
+  useOfficialStoryTitles,
+  useOfficialThumbnail,
+  type OfficialInfo,
 } from "./storyDetails";
 import "./DeviceScreen.css";
 
@@ -263,6 +266,9 @@ function DeviceStoriesList() {
   // Titres et vignettes de la Flam : chargés après l'affichage de la liste, suspendus pendant
   // un envoi ou un retrait.
   const titles = useDeviceStoryTitles(root, uuids, busy);
+  // Titre non déchiffrable (clé d'un autre compte) : catalogue officiel en ligne, seulement s'il
+  // reste au moins une histoire sans titre.
+  const official = useOfficialStoryTitles(titles);
   const loader = useMemo(() => (root ? new ThumbnailLoader(root) : null), [root]);
   useEffect(() => () => loader?.dispose(), [loader]);
   useEffect(() => loader?.setPaused(busy), [loader, busy]);
@@ -327,6 +333,7 @@ function DeviceStoriesList() {
                 key={story.uuid}
                 story={story}
                 deviceTitle={titles.get(story.uuid)}
+                official={official.get(story.uuid)}
                 loader={story.missing ? null : loader}
                 actions={
                   <RemoveStoryButton
@@ -353,23 +360,31 @@ function DeviceStoriesList() {
 }
 
 /**
- * Ligne d'une histoire. Titre : celui déchiffré sur la Flam (`deviceTitle`), sinon celui de la
- * bibliothèque, sinon l'UUID court. Vignette : celle de la Flam, sinon l'illustration par défaut.
+ * Ligne d'une histoire. Titre : celui déchiffré sur la Flam (`deviceTitle`), sinon celui du
+ * catalogue officiel (`official`), sinon celui de la bibliothèque, sinon l'UUID court. Vignette :
+ * celle de la Flam, sinon l'image du catalogue, sinon l'illustration par défaut.
  */
 function DeviceStoryRow({
   story,
   deviceTitle,
+  official,
   loader,
   actions,
 }: {
   story: DeviceStory;
   deviceTitle?: string | null;
+  official?: OfficialInfo;
   loader: ThumbnailLoader | null;
   actions?: ReactNode;
 }) {
   const rowRef = useRef<HTMLLIElement>(null);
-  const thumb = useDeviceThumbnail(loader, story.uuid, rowRef);
-  const title = deviceTitle ?? story.title;
+  const deviceThumb = useDeviceThumbnail(loader, story.uuid, rowRef);
+  const catalogThumb = useOfficialThumbnail(
+    story.uuid,
+    deviceThumb === null && official?.hasImage === true,
+  );
+  const thumb = deviceThumb ?? catalogThumb;
+  const title = deviceTitle ?? official?.title ?? story.title;
   const name = title ?? text.stories.untitled(story.short_id);
   return (
     <li ref={rowRef} className="fl-device-row">

@@ -51,13 +51,13 @@ use crate::story::{validate_story_id, StoryEntry, StoryKind};
 use crate::{AppError, AppResult};
 
 /// Délai de connexion et délai total d'une requête.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Nombre maximal de redirections suivies.
 const MAX_REDIRECTS: usize = 5;
 /// Taille maximale acceptée pour un catalogue et pour une vignette.
-const MAX_CATALOG_BYTES: usize = 16 * 1024 * 1024;
-const MAX_THUMB_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_CATALOG_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_THUMB_BYTES: usize = 2 * 1024 * 1024;
 /// Nombre maximal d'entrées lues dans un catalogue (les suivantes sont ignorées).
 const MAX_ENTRIES: usize = 10_000;
 /// Nombre maximal d'avertissements détaillés conservés (le reste est résumé).
@@ -1069,7 +1069,7 @@ fn network_error(err: &reqwest::Error) -> AppError {
 
 /// Lit le corps de la réponse en refusant de dépasser `max` octets, que la longueur soit
 /// annoncée (`Content-Length`) ou non (flux en morceaux).
-async fn read_body(mut response: reqwest::Response, max: usize) -> AppResult<Vec<u8>> {
+pub(crate) async fn read_body(mut response: reqwest::Response, max: usize) -> AppResult<Vec<u8>> {
     if response
         .content_length()
         .is_some_and(|len| len > max as u64)
