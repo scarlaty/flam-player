@@ -94,7 +94,7 @@ La numérotation reprend celle de la version précédente du document.
 | D8  | **Épisodes explicites** (`itunes:explicit`) : signalés dans la liste et décochés par défaut.                                                                                                                                                                                                                                                                                       |
 | D9  | **Publicité** : signalée dans la mention d'usage et dans le README (rien n'est filtré).                                                                                                                                                                                                                                                                                            |
 | D10 | **Réseau** : refus des adresses privées et locales **partout** (flux, enclosures, images : bouclage, privées, lien-local, partagées 100.64/10, multidiffusion, non spécifiées et équivalents IPv6), contrôlé **après résolution DNS** et **à chaque redirection**, connexion à l'adresse vérifiée ; TLS vérifié ; nombre de redirections borné ; aucune redirection par page HTML. |
-| D11 | **URL de flux traitée comme un secret** : jamais journalisée en entier, masquée dans l'interface après l'ajout. Les identifiants dans l'URL (`user:pass@`) restent refusés (#211).                                                                                                                                                                                                 |
+| D11 | **URL de flux traitée comme un secret** : jamais journalisée en entier (masquage dans l'interface après l'ajout : proposé, à valider). Les identifiants dans l'URL (`user:pass@`) restent refusés (#211).                                                                                                                                                                          |
 | D13 | **Image de repli** : chaîne de P6, puis couleur unie `#122e2c`. Une image manquante ou illisible ne retire **pas** l'épisode.                                                                                                                                                                                                                                                      |
 | D14 | **Message de droits** à la première installation, fermé par « J'ai compris ». Texte proposé au § 4, à valider.                                                                                                                                                                                                                                                                     |
 | D15 | **Suppression d'une source** : les histoires créées sont gardées (P4) ; le cache de la source (flux, fichiers téléchargés) est purgé.                                                                                                                                                                                                                                              |
@@ -131,7 +131,7 @@ Remarques de cohérence :
 - ffmpeg embarqué (**Livré**, #252) : FFmpeg 8.1.3 minimal, audio seulement, statique, LGPL,
   construit par `tools/ffmpeg/build.sh` (versions et empreintes dans `tools/ffmpeg/pins.env`) :
   `ffmpeg.exe` et `ffprobe.exe` ; décodeurs MP3, AAC, Opus, Vorbis, FLAC, PCM ; démultiplexeurs
-  MP3, MOV/MP4, Ogg, FLAC, WAV, AAC, Matroska ; encodeur `libmp3lame` (LAME 3.100) ; protocole
+  MP3, MOV/MP4, Ogg, FLAC, WAV, AAC, Matroska ; encodeurs `libmp3lame` (LAME 3.100) et `pcm_s16le` ; protocole
   `file` seul. Reste à faire (#214) : module Rust de lancement (empreinte, arguments fixes,
   annulation, délai), avec `-nostdin` et `-vn` (ou `-map a`), sans quoi le muxeur MP3 réclame un
   encodeur d'image pour les pochettes intégrées.
@@ -163,8 +163,8 @@ Remarques de cohérence :
 - Reprise sur l'appareil (`tools/telmi2flam/engine/story.lua`) : la sauvegarde retient le dernier
   nœud joué ; s'il n'existe plus, l'histoire redémarre au début.
 - Mémoire : `telmi2flam` assemble **tout le paquet en mémoire** avant d'écrire le `.plain.pk`.
-  La taille d'un pack se paie aussi en mémoire vive pendant la conversion (une raison du plafond
-  de 1 Gio, D1).
+  La taille d'un pack se paie aussi en mémoire vive pendant la conversion ; le plafond de 1 Gio
+  (D1) la borne aussi.
 
 ### 3.4 Identité sur l'appareil
 
@@ -176,8 +176,8 @@ Remarques de cohérence :
   version diffère pour un même uuid, ne se déclenche donc jamais pour un pack.
 - Les sauvegardes de `usr/0/` ne sont jamais touchées par le launcher ; un nouveau pack a une
   progression vierge.
-- Avant un transfert, l'espace libre est vérifié (chaque fichier arrondi à 32 Kio, plus 32 Mio de
-  marge, `docs/flam-device-format.md` à la racine du dépôt, § 8.1). La capacité de la Flam n'est
+- Avant un transfert, l'espace libre est vérifié (chaque fichier arrondi à 32 Kio, plus un cluster par dossier,
+  plus 32 Mio de marge, `docs/flam-device-format.md` à la racine du dépôt, § 8.1). La capacité de la Flam n'est
   pas consignée dans le dépôt : à relever en #219.
 - Appareil de test du mainteneur : **Flam en firmware 1.x**, dont le transfert passe par le mode
   « carrier » (`docs/flam-carrier.md`). Aucun résultat consigné pour le firmware 2.x.
@@ -190,9 +190,13 @@ Remarques de cohérence :
   chaîne de repli des images conforme à P6 ; champs lus : titre, description (HTML retiré),
   date, durée, auteur, image, URL, type et taille annoncée de l'enclosure ; copyright du canal.
   **Non lu** aujourd'hui : `itunes:explicit` (nécessaire pour D8).
+- `strip_html` (`rss.rs`) extrait du texte brut (balises retirées, entités décodées) ; ce n'est
+  pas un assainisseur HTML : descriptions et titres sont toujours affichés comme texte, jamais
+  injectés comme HTML.
 - Sources : `Catalog`, `Folder` et la bibliothèque ; la source podcast reste à ajouter (#211).
-  `sources::remove` ne modifie que `sources.json` : les histoires installées ne sont pas touchées
-  (conforme à P4).
+  La commande `sources_remove` modifie `sources.json`, arrête la surveillance et purge le cache
+  d'une source catalogue (`purge_catalog_cache`, modèle pour D15) ; les histoires installées ne
+  sont pas touchées (conforme à P4).
 - Client de téléchargement (`install/download.rs`, comme celui du catalogue) : TLS par rustls
   (certificats vérifiés), **5 redirections au plus**, jamais de https vers http ; seules les
   redirections HTTP sont suivies (pas de page HTML « refresh ») ; reprise par plages ; 4 Gio au
@@ -246,9 +250,7 @@ URL du flux ─► téléchargement du flux (cache hors ligne du dernier flux va
   tâche, nettoyage à l'annulation et à l'échec, reprise ou nettoyage après un arrêt brutal. Le
   code qui touche à la bibliothèque et au journal d'installation suit `CONTRIBUTING.md` § 5
   (note de conception, test d'injection de panne, `modele:opus`).
-- La composition du pack (arborescence, épisodes, métadonnées) est enregistrée avec la tâche,
-  pour qu'une reprise après arrêt reconstruise le même pack avec le **même** uuid (tiré une
-  fois, à la création de la tâche).
+- Reprise d'une création interrompue (arrêt de l'application ou de la machine) : voir N10.
 - Tout accès réseau passe par le téléchargeur existant (D10) ; `rss` et `artwork` restent purs.
 - L'archive Telmi peut être stockée sans compression (MP3 déjà compressés).
 - **Limite connue** : l'audio existe en plusieurs copies pendant la création (originaux, MP3
@@ -265,8 +267,8 @@ projet.
 
 **Métadonnées** :
 
-- `uuid` : aléatoire (UUID v4 proposé), écrit sous une forme canonique unique, en minuscules avec
-  tirets (`telmi2flam` hache la chaîne telle quelle, § 3.4) ;
+- `uuid` : aléatoire (proposé : UUID v4, écrit en minuscules avec tirets, forme unique puisque
+  `telmi2flam` hache la chaîne telle quelle, § 3.4) ;
 - `version` : fixe (1) ;
 - `title`, `category` (= sous-titre), `age`, `description` : valeurs de D16, saisies ou par
   défaut.
@@ -312,6 +314,10 @@ sans objet :
 - **D3** (réutilisation des épisodes préparés entre deux mises à jour) ;
 - **D4** (progression de lecture après mise à jour) ;
 - **D12** (flux qui change d'adresse : plus aucune identité n'est liée au flux) ;
+- **lien source → installation** (uuid de l'histoire = uuid de la source, #211) ;
+- **une installation d'un podcast déjà en cours est refusée ou mise en file** (#217) : chaque
+  pack est une histoire distincte ;
+- **mise à jour automatique et fenêtre glissante** (#221) ;
 - le graphe « fin d'épisode → retour au menu » : remplacé par l'enchaînement de P8 ;
 - le choix « N derniers épisodes, 10 par défaut » de #212 n'est plus une règle du produit (la
   sélection est libre) ; il peut rester comme raccourci de sélection (voir § 11, #212).
@@ -401,7 +407,8 @@ sur l'appareil, #219).
 | a. Nouvelle commande « créer un pack », qui reçoit la composition (validée par le backend) et crée une tâche de la file existante | Réutilise file, conversion, publication ; le backend revalide tout (épisodes retrouvés dans les flux en cache). |
 | b. Pseudo-source « Packs » dont chaque composition serait une entrée                                                              | Réutilise `install_start` tel quel ; mélange une composition locale et une source distante.                     |
 
-**Recommandation : a**. Le front ne transmet que des identifiants d'épisodes (source + `guid`),
+**Recommandation : a**. Le front ne transmet que des identifiants d'épisodes (source + `guid`, ou URL d'enclosure à défaut, à traiter
+comme un secret, D11),
 comme il ne transmet aujourd'hui ni URL ni chemin.
 
 ### N8. Fichiers téléchargés après la création — À décider
@@ -424,6 +431,18 @@ Sans mise à jour, rien n'oblige à garder les épisodes téléchargés.
 
 **Recommandation : a**.
 
+### N10. Reprise d'une création interrompue — À décider
+
+#217 et A7 demandent qu'un arrêt brutal pendant la préparation « reprenne ou nettoie
+proprement », sans choisir.
+
+| Option                                                                                                                                   | Conséquences                                                                                                                   |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| a. Reprendre : composition (arborescence, épisodes, métadonnées) et uuid enregistrés avec la tâche ; la reprise reconstruit le même pack | Rien n'est perdu ; un état de plus à persister et à migrer ; la reprise doit revalider les épisodes (flux changé entre-temps). |
+| b. Nettoyer et marquer la tâche « échec, à relancer »                                                                                    | Simple ; le parent recompose ou relance (avec N3 b, le brouillon peut servir à relancer).                                      |
+
+**Recommandation : a**, l'uuid étant tiré une seule fois, à la création de la tâche.
+
 ## 10. Ordres de grandeur
 
 Débits en kbit/s ; 1 Mo = 10⁶ octets ; audio seul, CBR.
@@ -442,28 +461,29 @@ Débits en kbit/s ; 1 Mo = 10⁶ octets ; audio seul, CBR.
   ≈ 12,4 h à 192 kbps, 18,6 h à 128 kbps, 37 h à 64 kbps.
 - 10 épisodes de 30 min : 144 Mo à 64 kbps, 288 Mo à 128 kbps, 432 Mo à 192 kbps.
 - Disque du PC pendant la création : originaux + MP3 convertis + archive Telmi + `.plain.pk`,
-  jusqu'à quatre fois la taille du pack si rien n'est supprimé en cours de route.
+  jusqu'à environ quatre fois le volume téléchargé si rien n'est supprimé en cours de route
+  (les originaux peuvent être plus gros que les MP3 convertis).
 
 ## 11. Impact sur les issues
 
 Changements **proposés** (aucune issue n'a été modifiée).
 
-| Issue    | Changement proposé                                                                                                                                                                                                                                                                                                                                                                                                    |
-| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #207     | Remplacer les décisions « 1 podcast = 1 histoire », « identité stable », « mise à jour par version » et le périmètre MVP par le modèle pack (§ 2.2) ; mettre à jour la liste et l'ordre des issues filles (ajouts et abandon ci-dessous).                                                                                                                                                                             |
-| #208     | Critères : « chaque point ouvert a une décision ou un report » est atteint pour D1 à D16 ; restent N1 à N9.                                                                                                                                                                                                                                                                                                           |
-| #209     | Inchangée (reste : cache CI, `BUILD.txt` ; module de lancement en #214).                                                                                                                                                                                                                                                                                                                                              |
-| #210     | Fermée. Suivi à créer : lire `itunes:explicit` (épisode et canal) pour D8.                                                                                                                                                                                                                                                                                                                                            |
-| #211     | Retirer « identifiant stable / uuid dérivé de l'URL » et « lien source vers installation ». Garder : type de source, migration de `sources.json`, validation d'URL, cache hors ligne du flux, commandes. Ajouter : URL traitée comme un secret (D11), suppression sans effet sur les histoires et purge du cache (P4, D15). Titre : « source « Podcast » (flux RSS, persistance, cache) ».                            |
-| #212     | Devient « sélection des épisodes » : liste par flux (date décroissante), plusieurs flux, explicites signalés et décochés (D8), estimation et plafonds par pack (D1, D5), mention d'usage. L'arborescence et les métadonnées passent dans la nouvelle issue « éditeur de pack ». « N derniers, 10 par défaut » : à retirer, ou à garder comme simple raccourci de sélection (au choix du mainteneur).                  |
-| #213     | Ajouter D10 complet (contrôle d'adresse après DNS et à chaque redirection ; TLS vérifié, redirections bornées et absence de redirection HTML existent déjà dans le client) et N8 (sort des fichiers après création). Téléchargement de plusieurs flux dans une même tâche.                                                                                                                                            |
-| #214     | Remplacer la règle par D6 (copie d'un MP3 44,1 kHz mono ou stéréo entre 64 et 192 kbps ; sinon stéréo, multiple de 16 supérieur dans [64, 192], 192 si inconnu) ; retirer « mono accepté ou converti selon #208 ».                                                                                                                                                                                                    |
-| #215     | Fermée. Rien à rouvrir : `FALLBACK_COLOR` = `#122e2c` est la valeur retenue (D13) ; le commentaire « le choix définitif relève de #208 » pourra être mis à jour à l'occasion.                                                                                                                                                                                                                                         |
-| #216     | Réécrire : uuid aléatoire, version fixe 1 ; graphe arborescent (menus, sous-menus, carrousel) avec enchaînement P8 et N4 ; images de catégorie (N5) et couverture (N6) ; métadonnées D16 (sous-titre dans `category`), description listant les échecs (P7). Retirer les critères « deux générations du même flux donnent le même uuid » et « version supérieure ». Ajouter des tests de sous-menus et d'enchaînement. |
-| #217     | Ajouter le point d'entrée « créer un pack » (N7), la composition persistée avec la tâche (même uuid à la reprise), plusieurs flux par tâche. Retirer « une installation d'un podcast déjà en cours est refusée ou mise en file » (chaque pack est unique).                                                                                                                                                            |
-| #218     | **Sans objet** (pas de mise à jour) : à fermer comme abandonnée, avec renvoi à ce document.                                                                                                                                                                                                                                                                                                                           |
-| #219     | Remplacer la mise à jour et la progression après mise à jour par : enchaînement des épisodes, sous-menus (N2), bouton retour depuis un sous-menu, mélange de MP3 mono copiés et stéréo réencodés, packs multi-flux, transfert carrier sur firmware 1.x.                                                                                                                                                               |
-| #220     | README : section « Créer un pack » (ajout de flux, sélection, arborescence, limites) au lieu de « mise à jour » ; mention d'usage avec la phrase sur la publicité (D9) ; message « J'ai compris » (D14).                                                                                                                                                                                                              |
-| #221     | Retirer « arborescence et composition libre » (devenues MVP) et « mise à jour automatique, fenêtre glissante » (sans objet). Ajouter : compositions nommées réutilisables (N3 c), cache des MP3 convertis (N8 b), images de catégorie choisies (N5 c).                                                                                                                                                                |
-| Nouvelle | **Éditeur de pack** (interface) : arborescence libre (catégories, sous-menus, glisser-déposer, accessible au clavier), métadonnées D16 et N1, couverture N6, limites N2, brouillon N3, doublons N9. Dépend de #211 et #212 ; alimente #217.                                                                                                                                                                           |
-| Nouvelle | **Lecture de `itunes:explicit`** (suivi de #210), si elle n'est pas rattachée à #212.                                                                                                                                                                                                                                                                                                                                 |
+| Issue    | Changement proposé                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| #207     | Remplacer les décisions « 1 podcast = 1 histoire », « identité stable », « mise à jour par version » et le périmètre MVP par le modèle pack (§ 2.2) ; mettre à jour la liste et l'ordre des issues filles (ajouts et abandon ci-dessous).                                                                                                                                                                                                        |
+| #208     | Critères : « chaque point ouvert a une décision ou un report » est atteint pour D1 à D16 ; restent N1 à N10.                                                                                                                                                                                                                                                                                                                                     |
+| #209     | Inchangée (reste : cache CI, `BUILD.txt` ; module de lancement en #214).                                                                                                                                                                                                                                                                                                                                                                         |
+| #210     | Fermée. Suivi à créer : lire `itunes:explicit` (épisode et canal) pour D8, et corriger l'en-tête de `rss.rs` (« identifiant stable dérivé de l'URL du flux » : modèle abandonné).                                                                                                                                                                                                                                                                |
+| #211     | Retirer « identifiant stable / uuid dérivé de l'URL » et « lien source vers installation ». Garder : type de source, migration de `sources.json`, validation d'URL, cache hors ligne du flux, commandes. Ajouter : URL traitée comme un secret (D11), suppression sans effet sur les histoires et purge du cache (P4, D15), téléchargement du flux soumis à D10 (client de #213). Titre : « source « Podcast » (flux RSS, persistance, cache) ». |
+| #212     | Devient « sélection des épisodes » : liste par flux (date décroissante), plusieurs flux, explicites signalés et décochés (D8), estimation et plafonds par pack (D1, D5), mention d'usage. L'arborescence et les métadonnées passent dans la nouvelle issue « éditeur de pack ». « N derniers, 10 par défaut » : à retirer, ou à garder comme simple raccourci de sélection (au choix du mainteneur).                                             |
+| #213     | Ajouter D10 complet (contrôle d'adresse après DNS et à chaque redirection ; TLS vérifié, redirections bornées et absence de redirection HTML existent déjà dans le client) et N8 (sort des fichiers après création). Téléchargement de plusieurs flux dans une même tâche.                                                                                                                                                                       |
+| #214     | Remplacer la règle par D6 (copie d'un MP3 44,1 kHz mono ou stéréo entre 64 et 192 kbps ; sinon stéréo, multiple de 16 supérieur dans [64, 192], 192 si inconnu) ; retirer « mono accepté ou converti selon #208 ». Critères : MP3 mono 44,1 kHz 128 kbps copié ; MP3 44,1 kHz 256 kbps réencodé à 192 kbps stéréo ; MP3 22,05 kHz mono → 44,1 kHz stéréo ; AAC 100 kbps → 112 kbps ; débit inconnu → 192 kbps ; pochette intégrée retirée.       |
+| #215     | Fermée. Rien à rouvrir : `FALLBACK_COLOR` = `#122e2c` est la valeur retenue (D13) ; le commentaire « le choix définitif relève de #208 » pourra être mis à jour à l'occasion.                                                                                                                                                                                                                                                                    |
+| #216     | Réécrire : uuid aléatoire, version fixe 1 ; graphe arborescent (menus, sous-menus, carrousel) avec enchaînement P8 et N4 ; images de catégorie (N5) et couverture (N6) ; métadonnées D16 (sous-titre dans `category`), description listant les échecs (P7). Retirer les critères « deux générations du même flux donnent le même uuid » et « version supérieure ». Ajouter des tests de sous-menus et d'enchaînement.                            |
+| #217     | Ajouter le point d'entrée « créer un pack » (N7), le comportement de reprise retenu en N10, plusieurs flux par tâche. Retirer « une installation d'un podcast déjà en cours est refusée ou mise en file » (chaque pack est unique).                                                                                                                                                                                                              |
+| #218     | **Sans objet** (pas de mise à jour) : à fermer comme abandonnée, avec renvoi à ce document.                                                                                                                                                                                                                                                                                                                                                      |
+| #219     | Remplacer la mise à jour et la progression après mise à jour par : enchaînement des épisodes, sous-menus (N2), bouton retour depuis un sous-menu, mélange de MP3 mono copiés et stéréo réencodés, packs multi-flux, transfert carrier sur firmware 1.x, relevé de la capacité de la Flam.                                                                                                                                                        |
+| #220     | README : section « Créer un pack » (ajout de flux, sélection, arborescence, limites) au lieu de « mise à jour » ; mention d'usage avec la phrase sur la publicité (D9) ; message « J'ai compris » (D14). Dépendance : #218 → #217.                                                                                                                                                                                                               |
+| #221     | Retirer « arborescence et composition libre » (devenues MVP) et « mise à jour automatique, fenêtre glissante » (sans objet). Ajouter : compositions nommées réutilisables (N3 c), cache des MP3 convertis (N8 b), images de catégorie choisies (N5 c). Dépendance : #218 retirée (reste #219). Nouveau titre proposé : « podcasts : évolutions (recherche, synthèse vocale, compositions nommées, pochettes) ».                                  |
+| Nouvelle | **Éditeur de pack** (interface) : arborescence libre (catégories, sous-menus, glisser-déposer, accessible au clavier), métadonnées D16 et N1, couverture N6, limites N2, brouillon N3, doublons N9. Dépend de #211 et #212 ; alimente #217.                                                                                                                                                                                                      |
+| Nouvelle | **Lecture de `itunes:explicit`** (suivi de #210), si elle n'est pas rattachée à #212.                                                                                                                                                                                                                                                                                                                                                            |
