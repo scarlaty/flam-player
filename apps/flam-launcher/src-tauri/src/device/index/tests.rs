@@ -269,7 +269,17 @@ fn ecriture_refusee_sans_accord_si_index_absent_abime_ou_illisible() {
         write_index(dev.root(), IndexKind::Visible, &rebuilt, Consent::Overwrite).unwrap();
         assert_eq!(dev.get("list").unwrap(), lines(&[A, B, C, D]));
         assert!(!dev.cache_present());
+        // L'original abîmé est conservé ; un index absent ne laisse rien.
+        assert_eq!(dev.get("list.corrupt"), list.filter(|l| !l.is_empty()));
     }
+}
+
+#[test]
+fn cr_seul_separe_les_lignes() {
+    let text = format!("{A}\r{B}\r\n{C}\r");
+    let read = parse(text.as_bytes());
+    assert_eq!(read.state, IndexState::Valid);
+    assert_eq!(read.entries, ids(&[A, B, C]));
 }
 
 #[test]

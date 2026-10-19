@@ -183,7 +183,8 @@ pub enum Consent {
     /// Réécrit seulement un index valide (ou `list.hidden` absent).
     IfValid,
     /// L'utilisateur a confirmé : réécrit même un index absent, abîmé ou illisible (par
-    /// exemple une reconstruction depuis [`scan_stories`]).
+    /// exemple une reconstruction depuis [`scan_stories`]). Un index abîmé ou illisible est
+    /// d'abord copié dans `list.corrupt` (ou `list.hidden.corrupt`), au mieux.
     Overwrite,
 }
 
@@ -286,6 +287,9 @@ pub fn parse(bytes: &[u8]) -> IndexRead {
     }
     let text = String::from_utf8_lossy(bytes);
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    // CRLF et CR seul deviennent LF : un CR seul serait sinon collé à l'UUID suivant, et les
+    // numéros de ligne des anomalies restent ceux d'un éditeur.
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let mut entries: Vec<StoryId> = Vec::new();
     let mut seen = HashSet::new();
     let mut issues = Vec::new();
@@ -620,6 +624,18 @@ pub(crate) fn write_with(
     };
     if !allowed && consent != Consent::Overwrite {
         return Err(IndexError::NeedsConsent);
+    }
+    if !allowed {
+        if let Some(raw) = &list_raw {
+            // Accord donné pour écraser un index abîmé ou illisible : on en garde une copie
+            // (au mieux, hors transaction : un échec n'empêche pas la reconstruction).
+            let corrupt = p
+                .list
+                .with_file_name(format!("{}.corrupt", kind.file_name()));
+            if let Err(err) = fs::write(&corrupt, raw) {
+                tracing::warn!("copie de l'index abîmé impossible : {err}");
+            }
+        }
     }
     let bytes = serialize(entries);
     if list_read.state == IndexState::Valid && list_raw.as_deref() == Some(&bytes[..]) {

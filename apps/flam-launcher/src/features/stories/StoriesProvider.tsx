@@ -81,6 +81,9 @@ export interface FicheTarget {
 /** Délai avant le retrait automatique d'une installation réussie du panneau des tâches. */
 export const DONE_TASK_TTL_MS = 8000;
 
+/** Regroupe les vérifications des sources dossier demandées à moins de ce délai. */
+const SOURCE_CHECK_DEBOUNCE_MS = 300;
+
 interface PendingInstall {
   entry: StoryEntry;
   options: InstallOptions;
@@ -151,17 +154,23 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   }, [toast, refreshSources]);
 
   // Sources revérifiées à chaque changement d'écran (une source dossier vient peut-être d'être
-  // reconstruite) et quand un dossier surveillé change.
+  // reconstruite) et quand un dossier surveillé change. Les demandes rapprochées (navigation,
+  // rafale d'événements) sont regroupées en une seule vérification.
+  const sourceTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const scheduleSources = useCallback(() => {
+    clearTimeout(sourceTimer.current);
+    sourceTimer.current = setTimeout(
+      () => void refreshSources(),
+      SOURCE_CHECK_DEBOUNCE_MS,
+    );
+  }, [refreshSources]);
+  useEffect(() => () => clearTimeout(sourceTimer.current), []);
   const route = useRoute();
   const shownSource = useSourceId();
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refreshSources();
-  }, [route, shownSource, refreshSources]);
-  useListener(
-    onFolderChanged,
-    useCallback(() => void refreshSources(), [refreshSources]),
-  );
+    scheduleSources();
+  }, [route, shownSource, scheduleSources]);
+  useListener(onFolderChanged, scheduleSources);
 
   const refreshTasks = useCallback(async () => {
     try {

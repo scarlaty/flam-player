@@ -433,6 +433,13 @@ pub fn read_device_carrier(
 /// `bt` et le `key` du même dossier, ou un fichier `bt` avec `key` dans le même dossier
 /// (copie d'un dossier d'histoire officielle).
 pub fn read_file_carrier(path: &Path) -> Result<CarrierKeys, CarrierError> {
+    // Ni périphérique, ni tube, ni dossier : seul un fichier ordinaire est ouvert.
+    // (Une erreur de lecture des métadonnées est laissée aux ouvertures qui suivent.)
+    if fs::metadata(path).is_ok_and(|meta| !meta.is_file()) {
+        return Err(CarrierError::InvalidSource(
+            "le chemin choisi n'est pas un fichier".into(),
+        ));
+    }
     let mut head = [0u8; 4];
     let is_zip = File::open(path)
         .and_then(|mut f| f.read_exact(&mut head))
@@ -938,8 +945,12 @@ pub fn resolve(
         // Le couple vient d'une histoire de la Flam dont `info` se déchiffre avec ce `bt`.
         CarrierChoice::Entered { bt, .. } => find_by_bt(root, &*bt.parse()?, cancel)?,
     };
-    // Revérifié pour toutes les sources, y compris la saisie (même parcours, borné).
-    check_against_device(root, &keys, cancel)?;
+    // Revérifié pour toutes les sources, sauf la saisie : `find_by_bt` vient de retenir une
+    // histoire dont le `key` complète le `bt` et dont `info` se déchiffre avec lui, ce que
+    // `check_against_device` redemanderait (même parcours, jusqu'à 5000 dossiers).
+    if !matches!(request.choice, CarrierChoice::Entered { .. }) {
+        check_against_device(root, &keys, cancel)?;
+    }
     let stored = match (&request.choice, &id) {
         (CarrierChoice::Stored, _) => true,
         _ if !request.remember => false,
@@ -1093,9 +1104,15 @@ pub fn accept(
             "l'avertissement a changé : relisez-le avant de l'accepter".into(),
         ));
     }
+    // Une horloge avant 1970 ne donne pas de date : pas de consentement sans date.
+    let accepted_at = crate::folder::iso8601(now).ok_or_else(|| {
+        AppError::Validation(
+            "l'horloge de l'ordinateur est invalide : corrigez la date puis réessayez".into(),
+        )
+    })?;
     let consent = CarrierConsent {
         text_version,
-        accepted_at: crate::folder::iso8601(now).unwrap_or_default(),
+        accepted_at,
     };
     settings.record_carrier_consent(Some(consent.clone()))?;
     tracing::info!(

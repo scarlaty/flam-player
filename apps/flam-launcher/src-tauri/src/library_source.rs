@@ -21,10 +21,15 @@
 //!
 //! **Migration** (histoire installée avant #288, sans empreinte : jamais de faux positif
 //! bloquant, l'état ne fait que proposer « Mettre à jour ») : un `.plain.pk` de taille
-//! différente de la copie est « modifié » ; une source dont aucun fichier n'est plus récent que
-//! l'installation est « inchangée » ; sinon les empreintes de la source et de la copie sont
-//! calculées et comparées (`.plain.pk`, `.plain`). Un `.zip` converti n'est pas comparable à sa
-//! copie : modifié après l'installation, il est « modifié ».
+//! différente de la copie est « modifié » ; sinon les empreintes de la source et de la copie sont
+//! calculées et comparées (`.plain.pk`, `.plain`), **sans raccourci par la date** : une source
+//! reconstruite avec une date antérieure à l'installation (`robocopy /COPY:T`, dézippage) serait
+//! sinon vue « inchangée » à tort. Le résultat est mémorisé en mémoire par chemin et pré-filtre.
+//! Un `.zip` converti n'est pas comparable à sa copie : seule sa date compte, modifié après
+//! l'installation, il est « modifié ».
+//!
+//! **Fichiers « à la demande »** (OneDrive, point de réanalyse) : refusés ([`SourceState::Unknown`]),
+//! jamais ouverts, pour qu'une vérification ne déclenche pas un téléchargement silencieux.
 //!
 //! Lecture seule : rien n'est écrit ici. La mise à jour est une réinstallation depuis la source
 //! par le chemin d'installation habituel (`install_start`), qui ne touche pas aux sauvegardes
@@ -102,7 +107,12 @@ struct Observed {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 
 fn modified(meta: &std::fs::Metadata) -> (u64, u128) {
@@ -139,7 +149,9 @@ fn observe(path: &Path, kind: StoryKind) -> AppResult<Observed> {
         }
         StoryKind::FlamPk | StoryKind::TelmiZip => {
             let meta = std::fs::symlink_metadata(path)?;
-            if !meta.is_file() {
+            // Un point de réanalyse (OneDrive « à la demande », jonction, lien) est refusé : le
+            // lire pourrait déclencher un téléchargement.
+            if !meta.is_file() || pack::is_link(&meta) {
                 return Err(AppError::Validation(format!(
                     "source qui n'est pas un fichier ordinaire : {}",
                     path.display()
@@ -173,7 +185,7 @@ fn hash_stream(reader: &mut dyn Read) -> io::Result<(u64, [u8; 32])> {
 
 /// `sha256:<hex>` des octets d'un fichier.
 fn file_digest(path: &Path) -> AppResult<String> {
-    let (_, digest) = hash_stream(&mut File::open(path)?)?;
+    let (_, digest) = hash_stream(&mut pack::open_no_follow(path)?)?;
     Ok(format!("{DIGEST_PREFIX}{}", hex(&digest)))
 }
 
@@ -237,6 +249,19 @@ fn source_digest(path: &Path, kind: StoryKind) -> AppResult<String> {
 /// Empreintes déjà calculées : (chemin, pré-filtre) -> empreinte.
 static MEMO: Mutex<Option<HashMap<(PathBuf, String), String>>> = Mutex::new(None);
 
+/// Un seul calcul d'empreinte à la fois : des vérifications simultanées de la même source
+/// (changement d'écran, `folder://changed`, relecture de la bibliothèque) ne la rehachent pas
+/// toutes, les suivantes trouvent le résultat mémorisé.
+static COMPUTING: Mutex<()> = Mutex::new(());
+
+fn memo_lookup(key: &(PathBuf, String)) -> Option<String> {
+    MEMO.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(|memo| memo.get(key))
+        .cloned()
+}
+
 /// Empreinte de `path` dans l'état `quick`, calculée par `compute` si elle n'est pas connue.
 fn memoized(
     path: &Path,
@@ -244,13 +269,12 @@ fn memoized(
     compute: impl FnOnce() -> AppResult<String>,
 ) -> AppResult<String> {
     let key = (path.to_path_buf(), quick.to_string());
-    if let Some(found) = MEMO
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .as_ref()
-        .and_then(|memo| memo.get(&key))
-    {
-        return Ok(found.clone());
+    if let Some(found) = memo_lookup(&key) {
+        return Ok(found);
+    }
+    let _single_flight = COMPUTING.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(found) = memo_lookup(&key) {
+        return Ok(found);
     }
     let digest = compute()?;
     let mut memo = MEMO.lock().unwrap_or_else(PoisonError::into_inner);
@@ -379,8 +403,14 @@ fn migrate(
     if kind == StoryKind::FlamPk && observed.size != entry.size {
         return Ok(SourceState::Changed);
     }
-    if observed.newest < entry.installed_at {
-        return Ok(SourceState::Unchanged);
+    // Un `.zip` converti n'est pas comparable à sa copie : seule la date compte. Pour un
+    // `.plain.pk` ou un `.plain`, les empreintes sont comparées quelle que soit la date.
+    if kind == StoryKind::TelmiZip {
+        return Ok(if observed.newest < entry.installed_at {
+            SourceState::Unchanged
+        } else {
+            SourceState::Changed
+        });
     }
     let copy = library.checked(&entry.file)?;
     let copy_meta = std::fs::metadata(&copy)?;
@@ -388,8 +418,8 @@ fn migrate(
     let theirs = match kind {
         StoryKind::FlamPk => memoized(&copy, &copy_quick, || file_digest(&copy))?,
         StoryKind::FlamPlain => memoized(&copy, &copy_quick, || pk_manifest(&copy))?,
-        // Archive convertie : pas comparable à sa copie ; modifiée après l'installation.
-        StoryKind::TelmiZip => return Ok(SourceState::Changed),
+        // Déjà traité plus haut (comparaison par la date seulement).
+        StoryKind::TelmiZip => return Ok(SourceState::Unknown),
     };
     let ours = memoized(path, &observed.quick, || source_digest(path, kind))?;
     Ok(if ours == theirs {
@@ -645,6 +675,55 @@ mod tests {
         write_pk(&pk, b"vignette beaucoup plus longue");
         set_mtime(&pk, built);
         assert_eq!(state(&env), SourceState::Changed);
+    }
+
+    #[test]
+    fn migration_source_reconstruite_avec_une_date_anterieure() {
+        let first = env();
+        let pk = first.src.join("capi.plain.pk");
+        write_pk(&pk, b"vignette A");
+        let built = mtime(&pk);
+        install(&first, &pk, StoryKind::FlamPk, built + 100, false);
+        // Même taille, contenu différent, date remise avant l'installation (`/COPY:T`).
+        write_pk(&pk, b"vignette B");
+        set_mtime(&pk, built - 50);
+        assert_eq!(state(&first), SourceState::Changed);
+
+        let second = self::env();
+        let plain = second.src.join("capi.plain");
+        write_plain(&plain, b"A");
+        install(
+            &second,
+            &plain,
+            StoryKind::FlamPlain,
+            mtime(&plain) + 100,
+            false,
+        );
+        assert_eq!(state(&second), SourceState::Unchanged);
+        std::fs::write(plain.join("img/thumbnail.lif"), b"B").unwrap();
+        set_mtime(&plain.join("img/thumbnail.lif"), 1_000);
+        assert_eq!(state(&second), SourceState::Changed);
+    }
+
+    #[test]
+    fn calcul_d_empreinte_partage_entre_appels_simultanes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let computed = AtomicUsize::new(0);
+        let path = PathBuf::from("/chemin/unique/pour/ce/test.plain.pk");
+        std::thread::scope(|scope| {
+            for _ in 0..6 {
+                scope.spawn(|| {
+                    let digest = memoized(&path, "file:1:2", || {
+                        computed.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(100));
+                        Ok("sha256:abc".to_string())
+                    })
+                    .unwrap();
+                    assert_eq!(digest, "sha256:abc");
+                });
+            }
+        });
+        assert_eq!(computed.load(Ordering::SeqCst), 1);
     }
 
     #[test]

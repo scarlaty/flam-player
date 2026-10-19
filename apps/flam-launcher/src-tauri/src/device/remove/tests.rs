@@ -255,6 +255,67 @@ fn index_abime_refuse_sans_rien_supprimer() {
     assert!(device.has_story(STORIES_DIR, B));
 }
 
+/// `list.hidden` abîmé alors que `list` est valide : rien n'est retiré (l'appartenance n'est pas
+/// sûre).
+#[test]
+fn list_hidden_abime_refuse_sans_rien_supprimer() {
+    let device = Device::new();
+    let hidden = device.root().join(LIBRARY_DIR).join("list.hidden");
+    fs::write(&hidden, b"\x01\x02 illisible").unwrap();
+    let err = remove(&device, B).unwrap_err();
+    assert!(matches!(err, RemoveError::IndexNeedsUser), "{err}");
+    assert_eq!(device.index(IndexKind::Visible), [A, B, C]);
+    assert!(device.has_story(STORIES_DIR, B));
+    assert_eq!(fs::read(&hidden).unwrap(), b"\x01\x02 illisible");
+}
+
+/// Une jonction nommée comme une entrée de corbeille n'est jamais suivie : sa cible reste.
+#[cfg(windows)]
+#[test]
+fn jonction_dans_la_corbeille_n_est_pas_suivie() {
+    let device = Device::new();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("precieux"), b"x").unwrap();
+    let trash = device.root().join(TRASH_DIR);
+    fs::create_dir_all(&trash).unwrap();
+    let junction = trash.join(format!("{A}-{}", "0123456789abcdef0123456789abcdef"));
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(outside.path())
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !made {
+        eprintln!("jonction impossible : test sans objet");
+        return;
+    }
+    let _ = purge_trash(device.root());
+    assert!(outside.path().join("precieux").is_file(), "cible suivie");
+}
+
+/// La corbeille créée par un retrait est cachée (Explorateur) sous Windows.
+#[cfg(windows)]
+#[test]
+fn corbeille_cachee_si_la_suppression_echoue() {
+    use std::os::windows::fs::MetadataExt;
+    let device = Device::new();
+    let mut calls = 0;
+    // Coupure après le déplacement : la corbeille reste en place.
+    let _ = remove_with(device.root(), &DeviceLock::new(), B, true, &mut |step| {
+        calls += 1;
+        if step == Step::MovedToTrash {
+            Err(io::Error::other("coupure simulée"))
+        } else {
+            Ok(())
+        }
+    });
+    assert!(calls > 0);
+    let attributes = fs::metadata(device.root().join(TRASH_DIR))
+        .unwrap()
+        .file_attributes();
+    assert_ne!(attributes & 0x2, 0, "attribut FILE_ATTRIBUTE_HIDDEN absent");
+}
+
 #[test]
 fn orphelin_signale_puis_supprime_sur_confirmation() {
     let device = Device::new();

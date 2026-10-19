@@ -256,6 +256,11 @@ fn source_fichier_bt_ou_archive() {
         read_file_carrier(&tmp.path().join("seul/bt")),
         Err(CarrierError::InvalidSource(_))
     ));
+    // Un dossier n'est pas un fichier (aucune ouverture tentée).
+    assert!(matches!(
+        read_file_carrier(&dir),
+        Err(CarrierError::InvalidSource(m)) if m.contains("pas un fichier")
+    ));
     // Fichier trop grand pour être un bt.
     write(&tmp.path().join("gros/bt"), &vec![1u8; 10_000]);
     write(&tmp.path().join("gros/key"), &test_key_file());
@@ -322,6 +327,11 @@ fn acceptation_horodatee_et_case_obligatoire() {
     let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_791_000_000);
     assert!(accept(&settings, WARNING_VERSION, false, now).is_err());
     assert!(accept(&settings, WARNING_VERSION + 1, true, now).is_err());
+    assert_eq!(settings.load().unwrap().carrier_consent, None);
+    // Horloge avant 1970 : refus, rien d'enregistré.
+    let before_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_secs(1);
+    let err = accept(&settings, WARNING_VERSION, true, before_epoch).unwrap_err();
+    assert!(matches!(err, AppError::Validation(_)), "{err:?}");
     assert_eq!(settings.load().unwrap().carrier_consent, None);
     let consent = accept(&settings, WARNING_VERSION, true, now).unwrap();
     assert_eq!(consent.accepted_at, "2026-10-03T04:00:00Z");
