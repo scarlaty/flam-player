@@ -28,6 +28,12 @@
   color: var(--color-on-primary);
 }
 
+.fl-icon-button--danger-quiet {
+  background: var(--color-surface);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
 .fl-icon-button--accent {
   border-color: var(--color-accent-border);
   background: var(--color-accent);
@@ -39,6 +45,7 @@
 }
 
 .fl-icon-button--ghost:hover:not(:disabled),
+.fl-icon-button--danger-quiet:hover:not(:disabled),
 .fl-icon-button--secondary:hover:not(:disabled) {
   background: var(--color-surface-hover);
 }

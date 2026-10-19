@@ -15,7 +15,7 @@ export interface SendContext {
   /** Histoires de la Flam, une fois lues (`null` : pas encore). */
   deviceStories: DeviceStories | null;
   firmwareBlocked: boolean;
-  /** Histoires en file d'envoi, en cours d'envoi ou envoyées pendant cette session. */
+  /** Histoires en attente ou en cours d'envoi (jamais les envois terminés : réussis, échoués ou annulés). */
   queuedOrSent: ReadonlySet<string>;
 }
 
