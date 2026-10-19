@@ -3,8 +3,16 @@ name: launcher
 # `crates/**` et `Cargo.*` déclenchent ce job (~10 min) à dessein : le launcher partage le workspace
 # Cargo (Cargo.lock, `target/`) avec `crates/telmi2flam` et en dépendra avec #122 ; une modification
 # de la crate peut donc casser son build ou ses tests.
+#
+# Installateurs (#310) : sur `push` vers main, tout tourne. Sur une PR, l'installateur N (build,
+# installation, e2e sur l'application installée, désinstallation, artefact) tourne toujours : l'e2e
+# couvre le code applicatif. Seuls l'installateur N-1 et le test de mise à jour N-1 vers N (≈ 5 min
+# de build + le scénario) sont conditionnés à l'étape « Empaquetage modifié ? » : ils tournent si la
+# PR touche l'empaquetage (liste ci-dessous) ou porte le label `ci-installeur`. Poser ce label
+# relance la CI (type `labeled`) ; les autres labels ne l'annulent pas (voir `concurrency`).
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - "apps/flam-launcher/**"
       - "tools/telmi2flam/**"
@@ -32,14 +40,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Un label autre que `ci-installeur` déclenche un run « labeled » sans objet : groupe à part, pour
+  # qu'il n'annule pas la CI en cours de la PR.
+  group: ${{ github.workflow }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci-installeur' && '-label' || '' }}
+  cancel-in-progress: ${{ !(github.event.action == 'labeled' && github.event.label.name != 'ci-installeur') }}
 
 jobs:
   # ffmpeg minimal (audio, LGPL) construit depuis des sources épinglées par cross-compilation
   # MinGW-w64 sous Linux (tools/ffmpeg/build.sh, #209). Le résultat est mis en cache d'après le
   # contenu de tools/ffmpeg/ puis transmis au job Windows.
   ffmpeg:
+    if: github.event.action != 'labeled' || github.event.label.name == 'ci-installeur'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -68,6 +79,7 @@ jobs:
 
   windows:
     needs: ffmpeg
+    if: github.event.action != 'labeled' || github.event.label.name == 'ci-installeur'
     runs-on: windows-latest
     timeout-minutes: 75
     defaults:
@@ -79,6 +91,48 @@ jobs:
         with:
           # SDL2, Lua, LVGL et minimp3 : sources de flam-player.exe (e2e et installateur).
           submodules: recursive
+
+      # Faut-il construire N-1 et rejouer le test de mise à jour ? Oui sur tout événement autre que
+      # `pull_request` (push sur main) ; sur une PR, oui si le label `ci-installeur` est posé ou si le
+      # diff PR (base -> fusion de la PR) touche l'empaquetage. Liste des chemins : configuration
+      # Tauri/NSIS (tauri*.json, hooks, icônes), version et dépendances (Cargo.toml, build.rs, package*.json,
+      # Cargo.lock), scripts de construction des ressources embarquées et leurs sources épinglées (build-*,
+      # notices, Get-InstallTree, check-imports, third-party, LICENSES.md, tools/ffmpeg) et ce workflow.
+      # Hors liste : le code du player, du convertisseur et du launcher, couverts par l'e2e sur N (le scénario
+      # « application ouverte » du test de mise à jour, qui dépend aussi du code du launcher, n'est alors
+      # vérifié que sur main).
+      # Le diff n'a besoin que des deux arbres : on récupère le seul commit de base (pas d'historique).
+      # Une PR d'un fork passe par la même voie (le label vient du contenu de l'événement).
+      - name: Empaquetage modifié ?
+        id: pkg
+        working-directory: .
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "update=true" >> "$GITHUB_OUTPUT"
+            echo "Événement $EVENT : installateur N-1 et test de mise à jour exécutés."
+            exit 0
+          fi
+          case ",$LABELS," in
+            *,ci-installeur,*)
+              echo "update=true" >> "$GITHUB_OUTPUT"
+              echo "Label ci-installeur : installateur N-1 et test de mise à jour exécutés."
+              exit 0 ;;
+          esac
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          changed="$(git diff --name-only "$BASE_SHA" HEAD)"
+          echo "Fichiers modifiés par la PR :"
+          echo "$changed"
+          if grep -E -q '^(apps/flam-launcher/src-tauri/(tauri[^/]*\.json|Cargo\.toml|build\.rs|icons/|windows/)|apps/flam-launcher/(package\.json|package-lock\.json|LICENSES\.md|third-party/|scripts/(build-|notices-lib|Get-InstallTree|check-imports))|tools/ffmpeg/|Cargo\.(toml|lock)$|\.github/workflows/launcher.yml$)' <<<"$changed"; then
+            echo "update=true" >> "$GITHUB_OUTPUT"
+            echo "L'empaquetage change : installateur N-1 et test de mise à jour exécutés."
+          else
+            echo "update=false" >> "$GITHUB_OUTPUT"
+            echo "Empaquetage inchangé : installateur N-1 et test de mise à jour sautés (label ci-installeur pour forcer)."
+          fi
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -148,8 +202,10 @@ jobs:
       # N-1 absent de N ». La surcharge et la ressource sont écrites dans RUNNER_TEMP (jamais dans
       # l'arbre : un build en échec ne laisse rien derrière lui). Seul le crate de l'application est
       # recompilé (les dépendances restent en cache), puis le paquet NSIS est refait. Elle est
-      # construite AVANT la version N pour que `target/release` contienne N à la fin.
+      # construite AVANT la version N pour que `target/release` contienne N à la fin. Étapes N-1 et test de
+      # mise à jour : conditionnées à `steps.pkg` (voir plus haut) ; l'installateur N, lui, est toujours construit.
       - name: Installateur NSIS N-1 (version 0.0.1, test de mise à jour)
+        if: steps.pkg.outputs.update == 'true'
         run: |
           tmp="$(cygpath -m "$RUNNER_TEMP")"
           printf 'ressource presente seulement dans N-1\n' > "$tmp/obsolete-n1.txt"
@@ -157,6 +213,7 @@ jobs:
           npm run tauri build -- --config src-tauri/tauri.bundle.conf.json --config "$tmp/tauri.prev.conf.json"
 
       - name: Mettre l'installateur N-1 de côté
+        if: steps.pkg.outputs.update == 'true'
         shell: pwsh
         run: |
           $prev = Join-Path $env:RUNNER_TEMP 'flam-installateur-prev'
@@ -197,6 +254,7 @@ jobs:
           Get-InstallTree $dest | Set-Content (Join-Path $env:RUNNER_TEMP 'arbre-installation-N.txt')
 
       - name: Mise à jour N-1 vers N par-dessus l'installation existante
+        if: steps.pkg.outputs.update == 'true'
         shell: pwsh
         run: |
           $setup = Get-ChildItem "$env:GITHUB_WORKSPACE/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
