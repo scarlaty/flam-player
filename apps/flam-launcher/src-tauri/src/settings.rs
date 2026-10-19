@@ -47,6 +47,37 @@ pub enum Theme {
     System,
 }
 
+/// Remplissage des vignettes de bibliothèque (104 × 136, portrait) par le convertisseur
+/// (#279) : option `--thumb-fit` de `telmi2flam.py`.
+///
+/// Ensemble fermé : l'argument transmis au convertisseur ne vient jamais d'une chaîne libre
+/// ([`ThumbFit::as_arg`]). Une valeur inconnue (fichier édité à la main ou écrit par une autre
+/// version) retombe sur `Flou` au lieu de faire rejeter tout le fichier.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThumbFit {
+    /// Image agrandie et rognée au centre pour couvrir la vignette.
+    Rogner,
+    /// Image entière centrée, bandes transparentes.
+    Bandes,
+    /// Image entière centrée, fond = la même image agrandie et floutée (doit rester la dernière
+    /// variante pour `serde(other)`).
+    #[default]
+    #[serde(other)]
+    Flou,
+}
+
+impl ThumbFit {
+    /// Valeur de l'option `--thumb-fit` du convertisseur.
+    pub fn as_arg(self) -> &'static str {
+        match self {
+            Self::Flou => "flou",
+            Self::Rogner => "rogner",
+            Self::Bandes => "bandes",
+        }
+    }
+}
+
 /// Paramètres enregistrés (miroir de `Settings` dans `src/api/settings.ts`).
 ///
 /// Un chemin à `None` signifie « détection automatique » (voir [`resolve`]).
@@ -73,6 +104,9 @@ pub struct Settings {
     /// seulement par `device_carrier_accept` : la valeur reçue par `settings_set` est ignorée
     /// (l'enregistrée est conservée). Absent des anciens fichiers : `None`.
     pub carrier_consent: Option<CarrierConsent>,
+    /// Remplissage des vignettes des histoires converties (#279). Absent des anciens fichiers :
+    /// `Flou` (`#[serde(default)]`, sans migration de schéma).
+    pub thumb_fit: ThumbFit,
 }
 
 /// Téléchargements simultanés par défaut.
@@ -91,6 +125,7 @@ impl Default for Settings {
             theme: Theme::default(),
             max_downloads: DEFAULT_MAX_DOWNLOADS,
             carrier_consent: None,
+            thumb_fit: ThumbFit::default(),
         }
     }
 }
@@ -501,6 +536,7 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
         theme: settings.theme,
         max_downloads: settings.max_downloads,
         carrier_consent: settings.carrier_consent,
+        thumb_fit: settings.thumb_fit,
     })
 }
 
@@ -805,6 +841,45 @@ mod tests {
     }
 
     #[test]
+    fn remplissage_des_vignettes_ferme_et_par_defaut() {
+        // absent des anciens fichiers : flou
+        let old: Settings = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
+        assert_eq!(old.thumb_fit, ThumbFit::Flou);
+        assert_eq!(Settings::default().thumb_fit.as_arg(), "flou");
+        for (text, fit, arg) in [
+            ("flou", ThumbFit::Flou, "flou"),
+            ("rogner", ThumbFit::Rogner, "rogner"),
+            ("bandes", ThumbFit::Bandes, "bandes"),
+        ] {
+            let s: Settings =
+                serde_json::from_str(&format!(r#"{{"thumb_fit":"{text}"}}"#)).unwrap();
+            assert_eq!(s.thumb_fit, fit);
+            assert_eq!(fit.as_arg(), arg);
+            assert_eq!(
+                serde_json::to_value(fit).unwrap(),
+                serde_json::Value::String(text.into())
+            );
+        }
+        // valeur inconnue (ou tentative d'injection) : retombe sur flou, jamais transmise telle quelle
+        for bad in ["etirer", "flou --plain", "../x", ""] {
+            let s: Settings =
+                serde_json::from_value(serde_json::json!({ "thumb_fit": bad })).unwrap();
+            assert_eq!(s.thumb_fit, ThumbFit::Flou, "{bad:?}");
+            assert_eq!(s.thumb_fit.as_arg(), "flou");
+        }
+        // la valeur choisie survit à la validation
+        let saved = validate_with(
+            Settings {
+                thumb_fit: ThumbFit::Bandes,
+                ..Settings::default()
+            },
+            &[],
+        )
+        .unwrap();
+        assert_eq!(saved.thumb_fit, ThumbFit::Bandes);
+    }
+
+    #[test]
     fn mise_a_jour_valide_est_persistee_et_normalisee() {
         let dir = tempfile::tempdir().unwrap();
         let player = dir.path().join("p/FLAM-Player.EXE");
@@ -820,11 +895,13 @@ mod tests {
                 theme: Theme::Dark,
                 max_downloads: 3,
                 carrier_consent: None,
+                thumb_fit: ThumbFit::Rogner,
             })
             .unwrap();
         assert_eq!(saved.schema_version, SCHEMA_VERSION);
         assert_eq!(saved.player_path, Some(player.display().to_string()));
         assert_eq!(saved.python_path, None);
+        assert_eq!(saved.thumb_fit, ThumbFit::Rogner);
         assert_eq!(store.load().unwrap(), saved);
     }
 
