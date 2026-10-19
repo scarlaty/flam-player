@@ -21,7 +21,7 @@ fn now() -> SystemTime {
 }
 
 fn client() -> reqwest::Client {
-    build_client(Duration::from_secs(2), Duration::from_secs(5)).unwrap()
+    no_redirect_client(Duration::from_secs(2), Duration::from_secs(5)).unwrap()
 }
 
 fn service(server: &MockServer) -> OfficialCatalog {
@@ -529,4 +529,51 @@ fn cache_corrompu_ou_d_une_autre_version_ignore() {
     let cache = read_cache(&path).unwrap();
     assert_eq!(cache.entries.len(), 1);
     assert_eq!(cache.entries[A].image, None);
+}
+
+#[tokio::test]
+async fn aucune_redirection_suivie_et_jeton_non_transmis() {
+    let server = MockServer::start().await;
+    let other = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/guest/create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(token_body()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/packs"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("Location", format!("{}/vol", other.uri())),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let svc = OfficialCatalog::with_endpoints(
+        no_redirect_client(Duration::from_secs(2), Duration::from_secs(5)).unwrap(),
+        format!("{}/guest/create", server.uri()),
+        format!("{}/v2/packs", server.uri()),
+        server.uri(),
+        false,
+    );
+    assert!(svc
+        .titles(dir.path(), &ids(&[A]), now())
+        .await
+        .titles
+        .is_empty());
+    assert!(other.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cache_non_ecrit_arrete_les_telechargements_de_la_session() {
+    let server = MockServer::start().await;
+    mount_api(&server, ok_packs(), 1).await;
+    let dir = tempfile::tempdir().unwrap();
+    // `official` est un fichier : le dossier du cache ne peut pas être créé.
+    std::fs::write(dir.path().join(CACHE_DIR), b"x").unwrap();
+    let svc = service(&server);
+    let reply = svc.titles(dir.path(), &ids(&[A]), now()).await;
+    assert_eq!(titles_of(&reply), [(A, "Totally Spies!")]);
+    assert!(svc.session_failed());
+    // Pas de second téléchargement (le serveur n'en attend qu'un).
+    svc.titles(dir.path(), &ids(&[B]), now()).await;
 }

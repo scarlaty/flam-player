@@ -1101,8 +1101,8 @@ sans préavis, et le launcher s'y adapte en silence (voir ci-dessous).
   histoire sans titre n'y figure pas et que le cache date de plus d'un jour (ou n'existe pas), le
   catalogue est téléchargé de nouveau : au plus une fois par jour, et au plus une fois par
   session après un échec.
-- **Vers où** (HTTPS uniquement, délai de connexion 10 s, délai total 30 s, 5 redirections au
-  plus, jamais de https vers http) :
+- **Vers où** (HTTPS uniquement, délai de connexion 10 s, délai total 30 s, aucune
+  redirection suivie : le jeton ne peut pas partir vers un autre hôte) :
   1. `GET https://server-auth-prod.lunii.com/guest/create` : jeton invité (réponse limitée à
      64 Kio) ;
   2. `GET https://server-data-prod.lunii.com/v2/packs` avec les en-têtes `Application-Sender`,

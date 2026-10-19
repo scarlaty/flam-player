@@ -46,8 +46,8 @@ use url::Url;
 
 use super::index::StoryId;
 use crate::catalog::{
-    blocking, build_client, read_body, sniff_image, CONNECT_TIMEOUT, MAX_CATALOG_BYTES,
-    MAX_THUMB_BYTES, REQUEST_TIMEOUT,
+    blocking, read_body, sniff_image, CONNECT_TIMEOUT, MAX_CATALOG_BYTES, MAX_THUMB_BYTES,
+    REQUEST_TIMEOUT, USER_AGENT,
 };
 use crate::settings::{Environment, SettingsStore};
 use crate::storage::{write_atomic, ConfigState};
@@ -138,7 +138,7 @@ pub struct OfficialCatalog {
 
 impl OfficialCatalog {
     pub fn new() -> reqwest::Result<Self> {
-        build_client(CONNECT_TIMEOUT, REQUEST_TIMEOUT).map(|client| {
+        no_redirect_client(CONNECT_TIMEOUT, REQUEST_TIMEOUT).map(|client| {
             Self::with_endpoints(
                 client,
                 TOKEN_URL.into(),
@@ -203,8 +203,11 @@ impl OfficialCatalog {
                             fetched_at: unix_secs(now),
                             entries,
                         };
-                        if let Some(stored) = store_cache(&path, fresh).await {
-                            cache = Some(stored);
+                        let (stored, written) = store_cache(&path, fresh).await;
+                        cache = stored;
+                        if !written {
+                            // Sans cache durable, chaque appel retélécharge : on s'arrête là.
+                            self.set_session_failed();
                         }
                     }
                     Err(reason) => {
@@ -351,6 +354,18 @@ impl OfficialCatalog {
         .await
         .ok()?
     }
+}
+
+/// Client sans redirection : les hôtes sont connus d'avance, et une redirection enverrait le
+/// jeton (`X-AUTH-TOKEN`, que `reqwest` ne retire pas) ou une requête vers un autre hôte.
+fn no_redirect_client(connect: Duration, total: Duration) -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .use_rustls_tls()
+        .connect_timeout(connect)
+        .timeout(total)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(USER_AGENT)
+        .build()
 }
 
 /// Motif d'échec d'une requête, sans URL (celle de `reqwest::Error` en contient une).
@@ -566,22 +581,30 @@ async fn read_cache_async(path: &Path) -> Option<CacheFile> {
 }
 
 /// Écrit le cache (atomique). Un échec d'écriture n'est pas une erreur : le catalogue reçu sert
-/// quand même pour cet appel.
-async fn store_cache(path: &Path, cache: CacheFile) -> Option<CacheFile> {
+/// quand même pour cet appel (le booléen dit si l'écriture a réussi).
+async fn store_cache(path: &Path, cache: CacheFile) -> (Option<CacheFile>, bool) {
     let path = path.to_path_buf();
-    blocking(move || {
-        match serde_json::to_vec(&cache) {
-            Ok(bytes) => {
-                if let Err(err) = write_atomic(&path, &bytes) {
-                    tracing::warn!("cache du catalogue officiel non écrit : {err}");
-                }
+    let result = blocking(move || {
+        let written = match serde_json::to_vec(&cache) {
+            Ok(bytes) if bytes.len() as u64 <= MAX_CACHE_BYTES => write_atomic(&path, &bytes)
+                .map_err(|err| tracing::warn!("cache du catalogue officiel non écrit : {err}"))
+                .is_ok(),
+            Ok(_) => {
+                tracing::warn!("cache du catalogue officiel trop gros : non écrit");
+                false
             }
-            Err(err) => tracing::warn!("cache du catalogue officiel non sérialisé : {err}"),
-        }
-        cache
+            Err(err) => {
+                tracing::warn!("cache du catalogue officiel non sérialisé : {err}");
+                false
+            }
+        };
+        (cache, written)
     })
-    .await
-    .ok()
+    .await;
+    match result {
+        Ok((cache, written)) => (Some(cache), written),
+        Err(_) => (None, false),
+    }
 }
 
 // ---------------------------------------------------------------------------------------
