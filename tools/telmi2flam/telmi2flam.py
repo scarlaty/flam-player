@@ -310,10 +310,15 @@ def _scaled(im, scale):
 
 
 def _thumb_cover(im):
-    """Agrandit/reduit pour couvrir THUMB_W x THUMB_H, puis rogne au centre."""
-    im = _scaled(im, max(THUMB_W / im.size[0], THUMB_H / im.size[1]))
-    left, top = (im.size[0] - THUMB_W) // 2, (im.size[1] - THUMB_H) // 2
-    return im.crop((left, top, left + THUMB_W, top + THUMB_H))
+    """Couvre THUMB_W x THUMB_H : fenetre centrale de la source au rapport de la vignette
+    (evite une image intermediaire geante sur un ratio extreme), puis redimensionnee."""
+    sw, sh = im.size
+    if sw * THUMB_H > sh * THUMB_W:
+        cw, ch = max(1, round(sh * THUMB_W / THUMB_H)), sh
+    else:
+        cw, ch = sw, max(1, round(sw * THUMB_H / THUMB_W))
+    left, top = (sw - cw) // 2, (sh - ch) // 2
+    return im.crop((left, top, left + cw, top + ch)).resize((THUMB_W, THUMB_H), Image.LANCZOS)
 
 
 def _thumb_contain(im):
@@ -337,7 +342,10 @@ def png_to_thumb_lif(png_bytes, fit=DEFAULT_THUMB_FIT):
     elif fit == "bandes":
         out = _thumb_contain(im)
     else:
-        bg = _thumb_cover(im).filter(ImageFilter.GaussianBlur(_THUMB_BLUR_RADIUS))
+        # fond opaque : flouter du RGBA non premultiplie laisserait des halos sombres
+        bg = _thumb_cover(im)
+        base = Image.new("RGBA", bg.size, (128, 128, 128, 255))
+        bg = Image.alpha_composite(base, bg).filter(ImageFilter.GaussianBlur(_THUMB_BLUR_RADIUS))
         out = Image.alpha_composite(bg, _thumb_contain(im))
     return _encode(out)
 

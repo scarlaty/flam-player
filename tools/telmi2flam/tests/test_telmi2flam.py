@@ -1040,6 +1040,29 @@ class TestThumbFit(unittest.TestCase):
         rgba, w, h = self.thumb(banded_png(20, 400), "flou")
         self.assertTrue(all(rgba[i] == 255 for i in range(3, len(rgba), 4)))
 
+    def test_flou_opaque_meme_avec_une_image_transparente(self):
+        im = Image.new("RGBA", (200, 100), (255, 0, 0, 0))
+        im.paste((0, 0, 255, 255), (50, 25, 150, 75))
+        b = io.BytesIO()
+        im.save(b, "PNG")
+        rgba, w, h = self.thumb(b.getvalue(), "flou")
+        self.assertTrue(all(rgba[i] == 255 for i in range(3, len(rgba), 4)))
+
+    def test_ratio_extreme_sans_explosion_memoire(self):
+        for size in ((2047, 1), (1, 2047)):
+            for fit in T.THUMB_FITS:
+                _, tw, th = self.thumb(banded_png(*size), fit)
+                self.assertEqual((tw, th), (104, 136), (fit, size))
+
+    def test_flam_build_identique_au_convertisseur(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(TOOL), "..", "skills", "flam-homebrew", "scripts"))
+        import flam_build
+        for fit in T.THUMB_FITS:
+            for size in ((400, 200), (200, 400), (1, 1)):
+                data = banded_png(*size)
+                self.assertEqual(flam_build.png_to_thumb(data, fit),
+                                 T.png_to_thumb_lif(data, fit), (fit, size))
+
     def test_modes_differents(self):
         data = banded_png(400, 200)
         outs = {fit: T.png_to_thumb_lif(data, fit) for fit in T.THUMB_FITS}

@@ -362,7 +362,7 @@ python telmi2flam.py --version
   - `rogner` : image agrandie ou réduite pour couvrir 104×136, rognée au centre ;
   - `bandes` : image entière centrée sur fond transparent.
 
-  La sortie est déterministe (mêmes octets pour la même entrée et le même mode).
+  La sortie est déterministe (mêmes octets pour la même entrée, le même mode et la même version de Pillow).
 - `--progress-json` : sortie lisible par machine (voir « Sortie machine » ci-dessous).
 - `--info` : affiche les métadonnées de l'histoire en JSON, **sans convertir**.
 - `--version` : affiche une seule ligne sur stdout, `telmi2flam <version>` (ex.
