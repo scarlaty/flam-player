@@ -435,11 +435,19 @@ voice, license, thumb_url, download_url, size, updated_at, kind`. Pour un dossie
 absente pour un `.plain`, `updated_at` est la date de modification (ISO 8601 UTC) ; les champs
 inconnus valent `null`.
 
-**Doublons** : un `.plain` et un `.plain.pk` de même `uuid` donnent **deux entrées** (`kind`
-différent). Chaque entrée porte un `entry_id` (stable d'un scan à l'autre, unique
-dans la source) à utiliser comme clé d'affichage et pour `folder_thumbnail`. Format
-`"<source_id>:<hash>"`, comme le catalogue (`"<source_id>:<uuid>"`) ; le hash est un FNV-1a 64 bits du
-chemin relatif au dossier de la source (séparateurs `/`).
+**Doublons** : dans une même source, les histoires FLAM (`.plain` et `.plain.pk`) de même `uuid`
+(comparaison insensible à la casse) ne donnent **qu'une entrée**, y compris dans deux sous-dossiers
+d'un scan récursif. Choix de la copie retenue : version la plus élevée (fichier `version` de
+l'histoire ; inconnue < connue), puis `.plain.pk` avant `.plain`, puis modification la plus récente
+(`updated_at`), puis `entry_id` le plus petit (choix indépendant de l'ordre du parcours). La vignette
+(`folder_thumbnail`), la lecture et l'envoi sur la Flam portent sur cette entrée ; l'autre copie
+n'apparaît pas et n'a plus d'`entry_id` valide. Les archives Telmi (`.zip`) ne sont pas regroupées, et
+deux sources différentes gardent chacune leur entrée. Chaque entrée porte un `entry_id` (stable d'un scan
+à l'autre tant que le fichier retenu ne change pas de chemin : supprimer le `.plain.pk` fait passer
+l'entrée sur le `.plain`, donc un autre `entry_id` ; unique dans la source) à utiliser comme clé
+d'affichage et pour `folder_thumbnail`. Format `"<source_id>:<hash>"`, comme le catalogue
+(`"<source_id>:<uuid>"`) ; le hash est un FNV-1a 64 bits du chemin relatif au dossier de la source
+(séparateurs `/`).
 
 **Identifiants non fiables** : l'`uuid` d'un zip Telmi (et `version` si c'est une chaîne) doit
 respecter `^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`, sans `..` ni nom réservé Windows (`CON`, `PRN`,
