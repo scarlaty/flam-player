@@ -31,6 +31,8 @@ for _p in (os.path.join(TOOL, "tests", "parity"), os.path.join(TOOL, "tests"), T
     if _p not in sys.path:
         sys.path.insert(0, _p)
 sys.dont_write_bytecode = True
+# Table deterministe : pas de reechantillonnage audio (#46), donc pas de ffmpeg, quelle que soit la machine.
+os.environ["FLAM_FFMPEG"] = ""
 
 import make_corpus as mc  # noqa: E402
 import telmi2flam as t  # noqa: E402
