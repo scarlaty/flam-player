@@ -8,6 +8,7 @@
 
 pub mod carrier;
 pub mod crypto;
+pub mod details;
 pub mod detect;
 pub mod eject;
 pub mod index;

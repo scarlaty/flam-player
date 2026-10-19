@@ -1,6 +1,12 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, expect, it } from "vitest";
-import { getDeviceStatus, listDeviceStories } from "./device";
+import {
+  cancelDeviceStoryDetails,
+  getDeviceStatus,
+  getDeviceStoryThumbnail,
+  getDeviceStoryTitles,
+  listDeviceStories,
+} from "./device";
 
 afterEach(() => clearMocks());
 
@@ -24,4 +30,23 @@ it("normalise l'erreur du backend", async () => {
     throw { kind: "io", message: "boum" };
   });
   await expect(getDeviceStatus()).rejects.toEqual({ kind: "io", message: "boum" });
+});
+
+it("transmet la racine et les UUID aux commandes de titres et de vignettes", async () => {
+  const calls: string[] = [];
+  mockIPC((cmd, args) => {
+    calls.push(`${cmd}:${JSON.stringify(args ?? {})}`);
+    if (cmd === "device_story_titles")
+      return { titles: [], interrupted: false, keys: false };
+    if (cmd === "device_story_thumbnail") return { thumb: null, busy: false };
+    return null;
+  });
+  await getDeviceStoryTitles("E:\\", ["a"]);
+  await getDeviceStoryThumbnail("E:\\", "a");
+  await cancelDeviceStoryDetails();
+  expect(calls).toEqual([
+    'device_story_titles:{"root":"E:\\\\","uuids":["a"]}',
+    'device_story_thumbnail:{"root":"E:\\\\","uuid":"a"}',
+    "device_story_details_cancel:{}",
+  ]);
 });
