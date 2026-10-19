@@ -49,7 +49,7 @@ modules purs).
 - installation avec uuid stable, mise à jour, erreurs claires.
 
 **Hors MVP** (liste de rappel #221) : recherche de podcasts, synthèse vocale des titres,
-arborescence (saisons, catégories), titre incrusté ou pochette générée, mise à jour automatique
+liste de flux conseillés, arborescence (saisons, catégories) et composition libre, titre incrusté ou pochette générée, mise à jour automatique
 et fenêtre glissante automatique, normalisation du volume, chapitres, reprise par épisode,
 génération directe d'un paquet flam (option B).
 
@@ -74,6 +74,7 @@ pas rediscutées ici.
 | A12 | **Audio** : métadonnées et chapitres retirés ; normalisation du volume non activée au MVP ; parallélisme borné.                                                                                                                                                                                                 | #214         |
 | A13 | **Pipeline** : une seule installation par uuid, un seul convertisseur à la fois, vérification de l'espace disque avant de commencer, annulation possible à chaque étape avec nettoyage, reprise propre après arrêt brutal. L'ancienne installation n'est supprimée qu'après publication réussie de la nouvelle. | #217, #218   |
 | A14 | **Droits** : les podcasts sont protégés par le droit d'auteur ; usage personnel, sans redistribution ; aucun paquet converti n'est versionné dans le dépôt.                                                                                                                                                     | #220         |
+| A15 | **Mention de droits** : texte court sur l'écran d'ajout et message de droits à la première installation ; textes validés par le mainteneur.                                                                                                                                                                     | #212, #220   |
 
 ## 3. Contraintes constatées dans le code et sur l'appareil
 
@@ -87,7 +88,8 @@ Ces faits viennent du code de `main` ; ils encadrent les options du § 9.
 - Filet de sécurité existant : un MP3 qui n'est pas à 44 100 Hz est rééchantillonné par
   `telmi2flam` lui-même avec le ffmpeg embarqué (variable `FLAM_FFMPEG` posée par le launcher,
   `install/convert.rs` ; le launcher ne laisse jamais le convertisseur chercher un ffmpeg du
-  `PATH`). Ce rééchantillonnage garde le nombre de canaux, vise un débit CBR proche de la
+  `PATH` ; sans ffmpeg embarqué, la variable est vide et le rééchantillonnage est désactivé). Ce
+  rééchantillonnage garde le nombre de canaux, vise un débit CBR proche de la
   source dans la plage 64 à 192 kbps, et a un **délai de 120 s par fichier**. Un long épisode
   laissé au convertisseur risque donc de dépasser ce délai : le launcher doit livrer des MP3 déjà
   conformes.
@@ -114,7 +116,7 @@ Ces faits viennent du code de `main` ; ils encadrent les options du § 9.
 - Carte de titre : la couverture est placée dans un emplacement d'environ 89 × 120 (une
   pochette carrée y occupe 89 × 89).
 - Conversion des pochettes (**Livré**, #215, `src-tauri/src/podcast/artwork.rs`) : JPEG (dont
-  progressif), PNG et WebP, reconnus au contenu ; garde-fous de 20 Mo par fichier, 8 000 px par
+  progressif), PNG et WebP, reconnus au contenu ; garde-fous de 20 Mio par fichier, 8 000 px par
   côté, 256 Mio décodés ; transparence aplatie sur fond blanc ; image de repli **unie** dont la
   couleur est un paramètre (valeur provisoire `#122e2c`, à trancher : D13).
 
@@ -122,7 +124,7 @@ Ces faits viennent du code de `main` ; ils encadrent les options du § 9.
 
 - `telmi2flam` garde les **identifiants de scène Telmi tels quels** dans `script/nodes.lua`.
 - Libellés de choix : 40 caractères au plus (`LABEL_MAX`), tirés de `notes.json` (titre, sinon
-  texte) ; caractères hors police ASCII et Latin-1 remplacés, avec un avertissement.
+  texte, sinon notes ; un titre égal à l'identifiant du nœud est ignoré) ; caractères hors police ASCII et Latin-1 remplacés, avec un avertissement.
 - Sélecteur par défaut : `carousel` (trois vignettes et un libellé).
 - Titre et sous-titre de l'histoire sur l'appareil (`info.plain`) : `title` et `category` de
   `metadata.json` (le sous-titre retombe sur le titre si la catégorie est vide).
@@ -139,8 +141,8 @@ Ces faits viennent du code de `main` ; ils encadrent les options du § 9.
 - Le dossier de l'histoire sur la Flam (`str/<uuid>/`) est nommé d'après `uuid.bin`, que
   `telmi2flam` calcule comme l'**empreinte MD5 de la chaîne `uuid` de `metadata.json`**. Le même
   uuid Telmi donne donc toujours le même uuid d'appareil ; mais une chaîne différente (même
-  casse différente) donne un autre uuid. Le générateur écrit toujours l'uuid sous sa forme
-  canonique (minuscules, avec tirets).
+  casse différente) donne un autre uuid. Conséquence : le générateur doit écrire l'uuid sous
+  une forme canonique unique (§ 7).
 - Le fichier `version` du paquet flam vaut toujours `1` : la version d'un podcast vit dans la
   bibliothèque du launcher (`library.json`, `<cache>/library/<uuid>-<version>.plain.pk`), pas
   sur l'appareil.
@@ -150,8 +152,9 @@ Ces faits viennent du code de `main` ; ils encadrent les options du § 9.
 - Avant un transfert, l'espace libre est vérifié (chaque fichier arrondi à 32 Kio, plus 32 Mio de
   marge). La capacité totale de la Flam n'est pas consignée dans le dépôt : elle est à relever
   pendant le test réel (#219).
-- Appareil de test du mainteneur : **Flam en firmware 1.x**. Aucun résultat n'est encore
-  consigné pour le firmware 2.x.
+- Appareil de test du mainteneur : **Flam en firmware 1.x**, dont le transfert passe par le mode
+  « carrier » (`docs/flam-carrier.md`, #234) : à prendre en compte en #219. Aucun résultat n'est
+  encore consigné pour le firmware 2.x.
 
 ### 3.5 Pipeline et sources existants
 
@@ -244,18 +247,20 @@ comme sous-titre sur l'appareil, D16), `age` (D16), `description` sans HTML, aut
 pochette de l'épisode, sinon du podcast, sinon image de repli (D13) ; note = titre de scène et
 description de l'épisode ; audio = MP3 conforme (§ 3.1).
 
-**Identifiants de scène et noms de fichiers** : stables d'une génération à l'autre pour un même
-épisode (dérivés de son identifiant `guid`), et non de sa position dans la liste. C'est la
-condition pour que la reprise de lecture survive à une mise à jour (D4).
+**Noms de fichiers** (Décidé, #216) : stables d'une génération à l'autre pour un même épisode.
+
+**Identifiants de scène** : À décider (D4 ; recommandation a, dérivés du `guid` de l'épisode).
+Des identifiants stables sont la condition pour que la reprise survive à une mise à jour.
 
 **Taille du graphe** : menus de 1, 10 et 50 épisodes testés (#216) ; la limite pratique du moteur
 sur l'appareil est mesurée en #219 (D1).
 
 ## 7. Identité, version et mise à jour
 
-- **uuid** (Décidé) : UUID v5 calculé sur l'URL normalisée du flux (schéma et hôte en minuscules,
-  fragment retiré, règles complètes fixées et testées dans #211), dans un espace de noms fixe
-  propre au launcher, écrit en minuscules. Deux URL équivalentes donnent le même uuid ; deux URL
+- **uuid** (Décidé : dérivé de l'URL normalisée du flux, espace de noms fixe, #211 ; schéma et
+  hôte en minuscules, fragment retiré, règles complètes fixées et testées dans #211).
+  Proposition : UUID v5, forme canonique en minuscules avec tirets (nécessaire, car
+  `telmi2flam` hache la chaîne telle quelle, § 3.4). Deux URL équivalentes donnent le même uuid ; deux URL
   différentes, deux uuid différents. Le comportement quand le flux change d'adresse est à
   décider (D12).
 - **Version** (Décidé) : entier strictement croissant, incrémenté à chaque mise à jour qui change
@@ -266,6 +271,11 @@ sur l'appareil est mesurée en #219 (D1).
   le flux, pas seulement par la date du flux. Pas d'indicateur si aucun épisode nouveau.
 - **Remplacement** : même uuid, version supérieure ; l'ancienne archive n'est supprimée qu'après
   publication réussie ; un échec laisse l'installation précédente utilisable.
+- **Épisodes installés** (proposition, à valider avec D2, D3 et D15) : la liste des épisodes de
+  chaque version installée (`guid`, URL d'enclosure) est enregistrée avec l'installation (entrée
+  de bibliothèque ou fichier à côté du `.plain.pk`), et non dans le cache de la source. Elle sert
+  à la détection des nouveautés et au cumul (D2 b), et survit à la suppression de la source (D15)
+  comme à la purge du cache (D3).
 - Ce qui reste à décider : quels épisodes garder à la mise à jour (D2), réutilisation des
   épisodes déjà préparés (D3), progression de lecture (D4).
 
@@ -316,7 +326,9 @@ dessous de la limite de 4 Gio du pipeline.
 
 ### D2. Épisodes retenus à la mise à jour, sort des anciens — À décider
 
-**Question** : quand de nouveaux épisodes paraissent, que contient la nouvelle version ?
+**Question** : quand de nouveaux épisodes paraissent, que contient la nouvelle version ? #218
+évoque une « fenêtre des N derniers épisodes » et renvoie la règle ici ; retenir b, c ou d
+amende cette formulation.
 
 | Option                                                                                                                                                                                           | Conséquences                                                                                                                                                                                     |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -349,11 +361,11 @@ et le launcher n'y touche jamais (§ 3.4). Elle retient l'identifiant du dernier
 n'existe plus, l'histoire redémarre au début. Pour le menu, elle retient l'**index** de l'option
 présélectionnée.
 
-| Option                                                            | Conséquences                                                                                                                                                                                                                                          |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| a. Identifiants de scène dérivés du `guid` de l'épisode (stables) | La reprise retombe sur le même épisode s'il est toujours là ; sinon redémarrage au début (comportement du moteur, sans message sur l'appareil). Si des épisodes sont ajoutés en tête, la présélection du menu peut se décaler d'un cran (inoffensif). |
-| b. Identifiants séquentiels (position dans la liste)              | Plus simple, mais la reprise peut tomber sur **un autre épisode** que celui en cours : à écarter.                                                                                                                                                     |
-| c. Réinitialiser la progression à chaque mise à jour              | Impossible sans écrire dans `usr/0/` (interdit) ou changer d'uuid (contraire à A2).                                                                                                                                                                   |
+| Option                                                                                            | Conséquences                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a. Identifiants de scène dérivés du `guid` de l'épisode (stables)                                 | La reprise retombe sur le même épisode s'il est toujours là ; sinon redémarrage au début (comportement du moteur, sans message sur l'appareil). Si des épisodes sont ajoutés en tête, la présélection du menu (index de l'option) peut se décaler d'autant de positions que d'épisodes ajoutés avant elle, selon l'ordre D7 (inoffensif).      |
+| b. Identifiants séquentiels (position dans la liste)                                              | Plus simple, mais la reprise peut tomber sur **un autre épisode** que celui en cours : à écarter.                                                                                                                                                                                                                                              |
+| c. Réinitialiser à chaque mise à jour : identifiants de scène et de menu changés à chaque version | Le moteur ne trouve plus le nœud sauvegardé et redémarre au début (sans écrire dans `usr/0/`, uuid inchangé) : comportement prévisible, message possible dans le launcher ; toute reprise est perdue à chaque mise à jour, même si l'épisode en cours n'a pas changé. C'est le repli prévu par #218 (« sinon réinitialisée avec un message »). |
 
 **Recommandation : a**, et un message court dans le launcher au moment de la mise à jour (« la
 reprise peut revenir au début de l'histoire »). Comportement à vérifier sur la Flam du mainteneur
@@ -373,18 +385,18 @@ conversion (D6). Pendant la préparation, l'audio existe en plusieurs copies (§
 | c. Requête `HEAD` par épisode pour lire `Content-Length`                                                             | Plus juste ; une requête par épisode (lent pour 50 épisodes, certains serveurs refusent `HEAD`, mesure d'audience déclenchée). |
 
 **Recommandation : b**. Afficher deux chiffres : taille de l'histoire (pour la Flam) et espace
-disque nécessaire sur le PC pendant la préparation (environ trois fois la taille de l'histoire,
-plus une marge), qui sert aussi à la vérification d'espace de #217.
+disque nécessaire sur le PC pendant la préparation (jusqu'à quatre fois la taille de
+l'histoire, § 10, plus le cache de D3 b s'il est retenu, plus une marge), qui sert aussi à la vérification d'espace de #217.
 
 ### D6. Débit cible, règle de copie, mono — À décider
 
 **Question** : à quel débit transcoder, quand copier sans réencoder, et que faire du mono (#214) ?
 
-| Option                                                                                                                      | Conséquences                                                                                                                           |
-| --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| a. Copie si MP3 44 100 Hz entre 64 et 192 kbps (plage déjà retenue par `telmi2flam`) ; sinon CBR 128 kbps, canaux conservés | Qualité préservée ; 57,6 Mo par heure pour les épisodes transcodés.                                                                    |
-| b. Comme a, mais transcodage à 64 kbps en mono et 96 kbps en stéréo                                                         | Fichiers deux fois plus petits pour la voix parlée ; qualité suffisante pour un haut-parleur de boîtier ; à valider à l'écoute (#219). |
-| c. Comme a, mais mono converti en stéréo                                                                                    | Sans effet sur la taille à débit CBR égal ; utile seulement si l'appareil lit mal le mono.                                             |
+| Option                                                                                                                                                                                                                 | Conséquences                                                                                                                                               |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a. Copie si MP3 44 100 Hz entre 64 et 192 kbps (bornes de la plage cible du rééchantillonnage de `telmi2flam`, qui copie lui-même tout MP3 à 44 100 Hz quel que soit son débit) ; sinon CBR 128 kbps, canaux conservés | Qualité préservée ; 57,6 Mo par heure pour les épisodes transcodés.                                                                                        |
+| b. Comme a, mais transcodage à 64 kbps en mono et 96 kbps en stéréo                                                                                                                                                    | Fichiers deux fois plus petits en mono, un quart plus petits en stéréo ; qualité suffisante pour un haut-parleur de boîtier ; à valider à l'écoute (#219). |
+| c. Comme a, mais mono converti en stéréo                                                                                                                                                                               | Sans effet sur la taille à débit CBR égal ; utile seulement si l'appareil lit mal le mono.                                                                 |
 
 **Recommandation : b**, mono conservé tant que #219 ne montre pas de problème sur l'appareil
 (le MP3 mono 22 kHz fait déjà partie des essais prévus) ; bascule vers c si le mono pose
@@ -481,18 +493,17 @@ l'URL, un jeton renouvelé donne une autre histoire.
 
 **Recommandation : a** au MVP, d en évolution.
 
-### D14. Mention d'usage personnel — À décider (texte à valider)
+### D14. Texte de la mention d'usage — À décider (texte à valider)
 
-**Question** : où l'afficher et avec quel texte ? #212 et #220 prévoient une mention sur l'écran
-d'ajout et un message de droits à la première installation.
+**Question** : l'emplacement est décidé (A15 : écran d'ajout et message à la première
+installation) ; restent le texte et la forme du message de première installation.
 
-| Option                                                                | Conséquences                                      |
-| --------------------------------------------------------------------- | ------------------------------------------------- |
-| a. Texte court sur l'écran d'ajout, sans action demandée              | Discret ; peut passer inaperçu.                   |
-| b. a + message à la première installation, fermé par « J'ai compris » | Lu au moins une fois ; un clic de plus, une fois. |
-| c. Case à cocher obligatoire à chaque ajout                           | Pesant pour un usage répété.                      |
+| Option                                                      | Conséquences                                    |
+| ----------------------------------------------------------- | ----------------------------------------------- |
+| a. Message informatif fermé par « J'ai compris »            | Lu au moins une fois ; un clic, une seule fois. |
+| b. Case « J'ai lu » à cocher avant la première installation | Engagement plus explicite ; un peu plus pesant. |
 
-**Recommandation : b**. Proposition de texte, à valider ou réécrire :
+**Recommandation : a**. Proposition de texte, à valider ou réécrire :
 
 > Les podcasts appartiennent à leurs auteurs. Les histoires créées ici sont réservées à un usage
 > personnel, dans le cadre familial : ne les partagez pas et ne les redistribuez pas.
@@ -502,11 +513,11 @@ d'ajout et un message de droits à la première installation.
 
 **Faits** : aujourd'hui, supprimer une source ne touche pas aux histoires installées.
 
-| Option                                                                                        | Conséquences                                                                                                                       |
-| --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| a. L'histoire installée reste ; le cache du podcast (flux, épisodes préparés de D3) est purgé | Cohérent avec les autres sources ; plus de mise à jour possible ; réajouter la même URL retrouve le même uuid et la même histoire. |
-| b. Proposer aussi de retirer l'histoire de la bibliothèque                                    | Plus complet ; un choix de plus dans une boîte de confirmation.                                                                    |
-| c. Refuser la suppression tant que l'histoire est installée                                   | Bloquant, sans bénéfice clair.                                                                                                     |
+| Option                                                                                                                                              | Conséquences                                                                                                                       |
+| --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| a. L'histoire installée reste ; le cache du podcast (flux, épisodes préparés de D3) est purgé ; la liste des épisodes installés est conservée (§ 7) | Cohérent avec les autres sources ; plus de mise à jour possible ; réajouter la même URL retrouve le même uuid et la même histoire. |
+| b. Proposer aussi de retirer l'histoire de la bibliothèque                                                                                          | Plus complet ; un choix de plus dans une boîte de confirmation.                                                                    |
+| c. Refuser la suppression tant que l'histoire est installée                                                                                         | Bloquant, sans bénéfice clair.                                                                                                     |
 
 **Recommandation : a**.
 
