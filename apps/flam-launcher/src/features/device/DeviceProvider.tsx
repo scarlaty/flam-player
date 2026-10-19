@@ -8,6 +8,7 @@ import {
   onTransferProgress,
   recoverDeviceTransfers,
   removeDeviceStory,
+  reorderDeviceStories,
   sendStoryToDevice,
   type CarrierSend,
   type DeviceSummary,
@@ -424,6 +425,21 @@ export function DeviceProvider({
     [],
   );
 
+  const reorderOnDevice = useCallback(
+    async (order: string[], expectedKey: string | null) => {
+      const rootNow = rootRef.current;
+      if (!rootNow || deviceKeyRef.current !== expectedKey)
+        throw { kind: "not_found", message: text.errors.noDevice };
+      try {
+        return await reorderDeviceStories(rootNow, order);
+      } finally {
+        // Succès ou refus : la liste affichée suit l'index réel de la Flam.
+        setReload((n) => n + 1);
+      }
+    },
+    [],
+  );
+
   const [ejecting, setEjecting] = useState(false);
   const eject = useCallback(async () => {
     const rootNow = rootRef.current;
@@ -471,6 +487,7 @@ export function DeviceProvider({
       removeFromQueue,
       dismissQueue,
       removeFromDevice,
+      reorderOnDevice,
       eject,
       ejecting,
       ejectNote,
@@ -499,6 +516,7 @@ export function DeviceProvider({
       removeFromQueue,
       dismissQueue,
       removeFromDevice,
+      reorderOnDevice,
       eject,
       ejecting,
       ejectNote,

@@ -4,6 +4,7 @@ import type {
   DeviceStatus,
   DeviceStories,
   DeviceSummary,
+  ReorderReport,
   TransferPhase,
 } from "../../api/device";
 import type { AppError } from "../../api/error";
@@ -84,6 +85,14 @@ export interface DeviceApi {
     uuid: string,
     expectedKey: string | null,
   ) => Promise<{ cleanupPending: boolean }>;
+  /**
+   * Enregistre l'ordre des histoires visibles (tous les UUID de l'index) sur la Flam identifiée
+   * par `expectedKey`, puis relit la liste.
+   */
+  reorderOnDevice: (
+    order: string[],
+    expectedKey: string | null,
+  ) => Promise<ReorderReport>;
   eject: () => Promise<void>;
   ejecting: boolean;
   ejectNote: EjectNote | null;
