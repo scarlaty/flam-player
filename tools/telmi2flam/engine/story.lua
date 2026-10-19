@@ -1,5 +1,5 @@
 -- ============================================================================
--- story.lua — BRANCH script (style Lunii Studio) pour histoires TELMI.
+-- story.lua — BRANCH script (graphe de scenes) pour histoires TELMI.
 --
 -- Charge par Global.loadBranch("story") -> require("story"). Doit :
 --   - retourner une table `story`
