@@ -27,8 +27,9 @@
 //!
 //! La taille totale ([`MDF_LEN`], 126 octets) est celle mesurée sur l'appareil de l'inventaire ;
 //! sa validation relève de la détection (#241). Ce module se sert du texte de version, du numéro
-//! de série, de la clé et de l'IV ; VID et PID sont lus par la détection. Le
-//! numéro de série se décode avec [`parse_serial_field`].
+//! de série, de la clé et de l'IV ; VID et PID ne sont décodés nulle part (la détection ne
+//! lit que la taille et la version de `.mdf`). Le numéro de série se décode avec
+//! [`parse_serial_field`].
 //!
 //! # Firmwares
 //!
@@ -223,11 +224,11 @@ impl DeviceKeys {
     pub fn new(
         firmware_main: &str,
         serial: &[u8],
-        story_key: [u8; 16],
-        story_iv: [u8; 16],
+        story_key: &[u8; 16],
+        story_iv: &[u8; 16],
     ) -> Result<Self, CryptoError> {
-        let story_key = Zeroizing::new(story_key);
-        let story_iv = Zeroizing::new(story_iv);
+        let story_key = Zeroizing::new(*story_key);
+        let story_iv = Zeroizing::new(*story_iv);
         check_firmware(firmware_main, FirmwareFamily::V2)?;
         let serial: [u8; SERIAL_LEN] = serial
             .try_into()
@@ -248,10 +249,17 @@ impl DeviceKeys {
     /// `.mdf` restent la seule source.
     pub fn with_carrier(firmware_main: &str, carrier: &CarrierKeys) -> Result<Self, CryptoError> {
         check_firmware(firmware_main, FirmwareFamily::V1)?;
+        // Copie directement dans des tampons effacés : aucun temporaire sur la pile.
+        let mut key_file = Zeroizing::new([0u8; KEY_FILE_LEN]);
+        key_file.copy_from_slice(carrier.key_file());
+        let mut story_key = Zeroizing::new([0u8; 16]);
+        story_key.copy_from_slice(carrier.story_key());
+        let mut story_iv = Zeroizing::new([0u8; 16]);
+        story_iv.copy_from_slice(carrier.story_iv());
         Ok(Self {
-            key_file: Zeroizing::new(*carrier.key_file()),
-            story_key: Zeroizing::new(*carrier.story_key()),
-            story_iv: Zeroizing::new(*carrier.story_iv()),
+            key_file,
+            story_key,
+            story_iv,
         })
     }
 
@@ -352,7 +360,7 @@ pub(crate) mod tests {
     pub(crate) const TEST_SERIAL: [u8; 7] = [0x00, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc];
 
     pub(crate) fn test_keys() -> DeviceKeys {
-        DeviceKeys::new("2.4.2", &TEST_SERIAL, TEST_KEY, TEST_IV).unwrap()
+        DeviceKeys::new("2.4.2", &TEST_SERIAL, &TEST_KEY, &TEST_IV).unwrap()
     }
 
     #[test]
@@ -474,7 +482,7 @@ pub(crate) mod tests {
     fn fichier_key_depuis_un_mdf_en_majuscules() {
         // Champ inventé en majuscules : le fichier `key` reste en minuscules.
         let serial = parse_serial_field(&serial_field(b"3A0B1C2D3E4F50")).unwrap();
-        let keys = DeviceKeys::new("2.4.2", &serial, TEST_KEY, TEST_IV).unwrap();
+        let keys = DeviceKeys::new("2.4.2", &serial, &TEST_KEY, &TEST_IV).unwrap();
         let mut expected = b"3a0b1c2d3e4f50".to_vec();
         expected.extend_from_slice(&[0u8; 10]);
         expected.extend_from_slice(b"3a0b1c2d");
@@ -525,13 +533,13 @@ pub(crate) mod tests {
             "1.15.14", "3.0.0", "3.1", "4.0.0", "", "abc", "20.1", "+2.4.2", "02.4", " 2.4.2",
         ] {
             assert_eq!(
-                DeviceKeys::new(fw, &TEST_SERIAL, TEST_KEY, TEST_IV).unwrap_err(),
+                DeviceKeys::new(fw, &TEST_SERIAL, &TEST_KEY, &TEST_IV).unwrap_err(),
                 CryptoError::UnsupportedFirmware(fw.to_string())
             );
         }
         for fw in ["2", "2.0.0", "2.4.2"] {
             assert!(
-                DeviceKeys::new(fw, &TEST_SERIAL, TEST_KEY, TEST_IV).is_ok(),
+                DeviceKeys::new(fw, &TEST_SERIAL, &TEST_KEY, &TEST_IV).is_ok(),
                 "{fw}"
             );
         }
@@ -540,7 +548,7 @@ pub(crate) mod tests {
     #[test]
     fn numero_de_serie_de_mauvaise_taille_refuse() {
         assert_eq!(
-            DeviceKeys::new("2.4.2", &[1, 2, 3], TEST_KEY, TEST_IV).unwrap_err(),
+            DeviceKeys::new("2.4.2", &[1, 2, 3], &TEST_KEY, &TEST_IV).unwrap_err(),
             CryptoError::InvalidSerial(3)
         );
     }
