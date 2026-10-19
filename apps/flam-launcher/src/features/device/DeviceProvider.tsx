@@ -85,6 +85,8 @@ export function DeviceProvider({
 
   // Reprise : une fois par branchement (changement de volume ou retour après une absence).
   const startedKey = useRef<string | null>(null);
+  // Reprise différée par la garde du firmware : la liste, déjà lue, sera relue après elle.
+  const deferredKey = useRef<string | null>(null);
   const [recoveredKey, setRecoveredKey] = useState<string | null>(null);
   const [recoveryNote, setRecoveryNote] = useState<EjectNote | null>(null);
   const [stories, setStories] = useState<StoriesState>({ phase: "loading" });
@@ -119,6 +121,7 @@ export function DeviceProvider({
     if (startedKey.current === deviceKey) return;
     const key = deviceKey;
     if (!writable) {
+      deferredKey.current = key;
       // La garde du firmware refuse toute écriture, reprise comprise (#317) : la liste se lit
       // quand même ; la reprise est tentée si l'écriture devient possible (confirmation).
       void Promise.resolve().then(() => {
@@ -153,9 +156,14 @@ export function DeviceProvider({
         }
       })
       .finally(() => {
-        if (startedKey.current === key) setRecoveredKey(key);
+        if (startedKey.current !== key) return;
+        setRecoveredKey(key);
+        if (deferredKey.current === key) {
+          deferredKey.current = null;
+          bumpReload();
+        }
       });
-  }, [known, deviceKey, root, writable]);
+  }, [known, deviceKey, root, writable, bumpReload]);
 
   const recovered = deviceKey !== null && recoveredKey === deviceKey;
 

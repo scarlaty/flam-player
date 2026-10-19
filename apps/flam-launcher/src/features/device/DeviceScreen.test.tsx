@@ -965,8 +965,11 @@ it("Flam 2.x non standard : confirmation de sauvegarde renforcée, puis écritur
     await screen.findByText("2.4.2 (2.x) · en test, sauvegarde confirmée"),
   ).toBeInTheDocument();
   expect(calls).toContain("device_confirm_firmware");
-  // L'écriture devient possible : la reprise au branchement a lieu.
+  // L'écriture devient possible : la reprise au branchement a lieu, puis la liste est relue.
   await waitFor(() => expect(calls).toContain("device_recover_transfers"));
+  await waitFor(() =>
+    expect(calls.filter((c) => c === "device_list_stories").length).toBeGreaterThan(1),
+  );
   expect(screen.queryByRole("button", { name: "Confirmer" })).not.toBeInTheDocument();
 });
 

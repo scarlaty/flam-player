@@ -355,7 +355,8 @@ fn contains_field_utf16(haystack: &[u8], units: &[u16]) -> bool {
     let found = memchr_all(haystack, &needle).any(|at| {
         let before = at.checked_sub(2).and_then(unit_at);
         let after = unit_at(at + n);
-        (at < 2 || before.is_some_and(|u| u < 0x20 || u == count))
+        at % 2 == 0
+            && (at == 0 || before.is_some_and(|u| u < 0x20 || u == count))
             && (at + n + 2 > haystack.len() || after.is_some_and(|u| u < 0x20))
     });
     found
@@ -363,9 +364,15 @@ fn contains_field_utf16(haystack: &[u8], units: &[u16]) -> bool {
 
 /// Positions de `needle` dans `haystack` (recherche guidée par le premier octet).
 fn memchr_all<'h>(haystack: &'h [u8], needle: &'h [u8]) -> impl Iterator<Item = usize> + 'h {
-    let first = needle[0];
-    let last_start = haystack.len() - needle.len();
-    haystack[..=last_start]
+    // Motif vide ou plus long que le texte : aucune position (jamais de panique).
+    let usable = !needle.is_empty() && haystack.len() >= needle.len();
+    let first = needle.first().copied().unwrap_or(0);
+    let last_start = if usable {
+        haystack.len() - needle.len() + 1
+    } else {
+        0
+    };
+    haystack[..last_start]
         .iter()
         .enumerate()
         .filter(move |(i, &b)| b == first && &haystack[*i..*i + needle.len()] == needle)

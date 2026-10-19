@@ -657,3 +657,14 @@ fn un_permis_ne_vaut_que_pour_sa_racine() {
     assert!(permit.covers(dev.path()));
     assert!(!permit.covers(other.path()));
 }
+
+#[test]
+fn la_recherche_dans_le_cache_ne_panique_jamais() {
+    assert_eq!(memchr_all(b"abc", b"").count(), 0);
+    assert_eq!(memchr_all(b"ab", b"abc").count(), 0);
+    assert_eq!(memchr_all(b"", b"a").count(), 0);
+    assert_eq!(memchr_all(b"abab", b"ab").collect::<Vec<_>>(), [0, 2]);
+    assert!(!contains_field(b"", b"Capi"));
+    assert!(!contains_field_utf16(b"", &[0x43]));
+    assert!(!contains_field_utf16(b"x", &[]));
+}
