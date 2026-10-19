@@ -14,7 +14,7 @@ import sys
 
 # Version du convertisseur (unique source). A incrementer quand la sortie change ; lue par
 # le launcher (--version ou champ "version" de l'evenement start) pour la bibliotheque.
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # Chemin rapide : --version seul, sans charger Pillow ni les modules du convertisseur.
 if __name__ == "__main__" and sys.argv[1:] == ["--version"]:
@@ -31,6 +31,8 @@ import re
 import shutil
 import signal
 import struct
+import subprocess
+import tempfile
 import time
 import unicodedata
 import zipfile
@@ -588,6 +590,63 @@ def _emit(event):
         _sink(event)
 
 
+SAMPLERATE = 44100            # frequence attendue par le firmware (#46)
+FFMPEG_TIMEOUT = 120          # secondes, par fichier
+_MP3_BITRATES = (64, 80, 96, 112, 128, 160, 192)   # kbps, plage TELMI valide en MPEG-1
+
+
+def _find_ffmpeg():
+    """ffmpeg : FLAM_FFMPEG s'il est defini (vide = desactive ; le launcher y met son
+    ffmpeg embarque), sinon le PATH. Retourne un chemin ou None."""
+    env = os.environ.get("FLAM_FFMPEG")
+    if env is not None:
+        env = env.strip()
+        return os.path.abspath(env) if env and os.path.isfile(env) else None
+    found = shutil.which("ffmpeg")
+    if found and os.path.dirname(os.path.abspath(found)) == os.path.abspath(os.getcwd()):
+        return None       # jamais un ffmpeg depose dans le dossier courant
+    return found
+
+
+def _resample_mp3(data, duration):
+    """MP3 -> MP3 CBR 44100 Hz, meme nombre de canaux, debit proche de la source (borne
+    64-192 kbps). Retourne les octets, ou une chaine (raison de l'echec). ffmpeg est lance
+    sans shell, sans stdin, protocole file seul, dans un dossier de travail temporaire."""
+    exe = _find_ffmpeg()
+    if exe is None:
+        return "ffmpeg introuvable (variable FLAM_FFMPEG ou PATH)"
+    kbps = 128
+    if duration and duration > 0:
+        kbps = len(data) * 8 / duration / 1000
+        kbps = min(_MP3_BITRATES, key=lambda b: abs(b - kbps))
+    try:
+        with tempfile.TemporaryDirectory(prefix="t2f_ff_") as work:
+            src = os.path.join(work, "in.mp3")
+            dst = os.path.join(work, "out.mp3")
+            with open(src, "wb") as fh:
+                fh.write(data)
+            cmd = [exe, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                   "-protocol_whitelist", "file", "-i", "file:" + src,
+                   "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1",
+                   "-ar", str(SAMPLERATE), "-c:a", "libmp3lame", "-b:a", "%dk" % kbps,
+                   "-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", "file:" + dst]
+            kw = {}
+            if sys.platform == "win32":
+                kw["creationflags"] = 0x08000000      # CREATE_NO_WINDOW
+            r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE, timeout=FFMPEG_TIMEOUT, cwd=work, **kw)
+            if r.returncode != 0:
+                msg = r.stderr.decode("utf-8", "replace").strip().splitlines()
+                return "ffmpeg a echoue (%s)" % (msg[-1][:200] if msg else r.returncode)
+            with open(dst, "rb") as fh:
+                out = fh.read()
+            return out if out else "ffmpeg n'a rien produit"
+    except subprocess.TimeoutExpired:
+        return "ffmpeg trop long (> %d s)" % FFMPEG_TIMEOUT
+    except OSError as e:
+        return "ffmpeg inutilisable (%s)" % e
+
+
 def _warn(*args, code="warning"):
     """Avertissement : ligne "  ! ..." sur stderr (contrat lu par compat.py) et
     evenement JSON "warning" si la progression machine est activee."""
@@ -931,16 +990,37 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
         return lif_name
 
     def add_mp3map(pk_name, data, label):
+        """Genere le .mp3map ; un MP3 hors 44100 Hz est d'abord reechantillonne (ffmpeg)
+        et le fichier ecrit dans out_files[pk_name] est alors le fichier reechantillonne."""
         try:
             info = {}
-            mm, _dur, _n = mp3map.build(data, info)
+            mm, dur, _n = mp3map.build(data, info)
+            other = sorted(sr for sr in info.get("samplerates", ()) if sr != SAMPLERATE)
+            if other:
+                rates = "/".join(map(str, other))
+                new = _resample_mp3(data, dur)
+                if isinstance(new, bytes):
+                    info2 = {}
+                    try:
+                        mm2, _d, _n2 = mp3map.build(new, info2)
+                    except Exception:
+                        mm2 = None
+                    if mm2 is not None and info2.get("samplerates") == {SAMPLERATE}:
+                        data, mm = new, mm2
+                        out_files[pk_name] = data
+                        stats["resampled"] = stats.get("resampled", 0) + 1
+                        print("  i %s : %s Hz -> %d Hz (reechantillonne avec ffmpeg)"
+                              % (label, rates, SAMPLERATE), file=sys.stderr)
+                        other = []
+                    else:
+                        new = "sortie ffmpeg illisible ou inattendue"
+                if other:
+                    _warn("%s : %s Hz (le firmware est calibre pour 44100 Hz ; "
+                          "reechantillonnage impossible : %s ; fichier recopie tel quel, "
+                          "reechantillonner conseille)" % (label, rates, new),
+                          code="audio_samplerate")
             out_files[pk_name + "map"] = mm
             stats["mp3map"] += 1
-            other = sorted(sr for sr in info.get("samplerates", ()) if sr != 44100)
-            if other:
-                _warn("%s : %s Hz (le firmware est calibre pour 44100 Hz ; "
-                      "reechantillonner conseille)" % (label, "/".join(map(str, other))),
-                      code="audio_samplerate")
         except Exception as e:
             _warn("mp3map echoue pour", label, ":", e, code="mp3map_failed")
 
@@ -1293,6 +1373,8 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
     say("  stages  : %d | actions : %d" % (len(lua_stages), len(lua_actions)))
     say("  images  : %d | audio : %d | mp3map : %d"
         % (stats["img"], stats["audio"], stats["mp3map"]))
+    if stats.get("resampled"):
+        say("  audio   : %d fichier(s) reechantillonne(s) a %d Hz" % (stats["resampled"], SAMPLERATE))
     say("  lib     : %d scripts framework | %d assets UI" % (stats.get("lib", 0), stats.get("ui", 0)))
     say("  choix   : selecteur '%s'" % selector)
     if missing or bad:

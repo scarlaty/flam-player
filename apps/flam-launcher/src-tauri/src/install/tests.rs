@@ -128,6 +128,7 @@ impl Ctx {
                 cache_root: cache_root.clone(),
                 python: python.clone(),
                 converter: Some(script.clone()),
+                ffmpeg: None,
                 max_downloads: 2,
             })
         });
@@ -905,6 +906,7 @@ async fn installation_reelle() {
                 cache_root: cache_root.clone(),
                 python: python.clone(),
                 converter: Some(script.clone()),
+                ffmpeg: None,
                 max_downloads: 2,
             })
         }),

@@ -790,17 +790,56 @@ class TestMp3map(unittest.TestCase):
         with self.assertRaises(ValueError):
             mp3map.build(os.urandom(512 * 1024))
 
-    def test_warn_48k(self):
+    @staticmethod
+    def _pk_audio(pk):
+        with zipfile.ZipFile(pk) as z:
+            names = [n for n in z.namelist() if n.startswith("sounds/") and n.endswith(".mp3")
+                     and "silent" not in n]
+            return {n: z.read(n) for n in names}
+
+    def _conv_rate(self, b1, b2, ffmpeg):
         tc = Base("setUp")
         tc.setUp()
+        old = os.environ.get("FLAM_FFMPEG")
+        os.environ["FLAM_FFMPEG"] = ffmpeg
         try:
-            n = base_nodes()
-            files = [(a, mp3_frames(0xFB, 0x94, 100) if a == "audios/s0.mp3" else b)
-                     for a, b in std_files(nodes=n)]
-            tc.convert(files)
-            self.assertIn("48000", tc.stderr)
+            src = mp3_frames(b1, b2, 400)
+            files = [(a, src if a == "audios/s0.mp3" else b) for a, b in std_files()]
+            pk = tc.convert(files)
+            return src, TestMp3map._pk_audio(pk), tc.stderr
         finally:
+            if old is None:
+                os.environ.pop("FLAM_FFMPEG", None)
+            else:
+                os.environ["FLAM_FFMPEG"] = old
             tc.tearDown()
+
+    def test_fallback_without_ffmpeg(self):
+        missing = os.path.join(tempfile.gettempdir(), "t2f_no_such_ffmpeg.exe")
+        for b1, b2, sr in ((0xFB, 0x94, 48000), (0xF5, 0x94, 24000)):
+            src, out, err = self._conv_rate(b1, b2, missing)
+            self.assertEqual(list(out.values()), [src])
+            self.assertIn(str(sr), err)
+            self.assertIn("ffmpeg", err)
+
+    def test_44k_copied_unchanged(self):
+        src, out, err = self._conv_rate(0xFB, 0x90, "")
+        self.assertEqual(list(out.values()), [src])
+        self.assertNotIn("Hz", err)
+
+    @unittest.skipUnless(T._find_ffmpeg() and os.environ.get("FLAM_FFMPEG") is None,
+                         "ffmpeg absent")
+    def test_resample_to_44k(self):
+        exe = T._find_ffmpeg()
+        for b1, b2, sr in ((0xFB, 0x94, 48000), (0xF5, 0x94, 24000), (0xF3, 0x90, 22050)):
+            src, out, err = self._conv_rate(b1, b2, exe)
+            (data,) = out.values()
+            self.assertNotEqual(data, src)
+            info = {}
+            mp3map.build(data, info)
+            self.assertEqual(info["samplerates"], {44100}, err)
+            self.assertNotIn("audio_samplerate", err)
+            self.assertNotIn(" ! ", err)
 
 
 class TestValidate(Base):

@@ -34,7 +34,7 @@ Les deux formats ne sont **pas** de même nature :
 | Conteneur | `.zip` (compressé) | `.zip` **stored** (sans compression), extension `.plain.pk` |
 | Logique | **déclarative** : `nodes.json` (graphe de scènes) | **programme Lua** : `main.lua` + `script/*.lua` |
 | Images | PNG 640×480 | `.lif` (Lunii Image Format, QOI-like RGB565) |
-| Audio | MP3 44100 Hz | MP3 + table de seek `.mp3map` (cadence interne 88200 Hz) |
+| Audio | MP3 (toute fréquence) | MP3 44100 Hz (rééchantillonné par ffmpeg si besoin) + table de seek `.mp3map` (cadence interne 88200 Hz) |
 | Métadonnées | `metadata.json` | `info.plain`, `version`, `uuid.bin` |
 
 TELMI décrit **des données** ; FLAM exécute **du code**. La conversion consiste donc à :
@@ -482,9 +482,28 @@ avec le code 0, sans rien convertir ni écrire (`-o` ignoré) :
 `cover.png`). Les erreurs suivent les mêmes codes de sortie ; avec `--progress-json`,
 un événement `error` est aussi émis sur stdout.
 
-Dépendance : `pip install "Pillow>=10.0"`. Versions testées : Pillow 10.0.0, 11.0.0 et 12.2.0
+Dépendance obligatoire : `pip install "Pillow>=10.0"`. Versions testées : Pillow 10.0.0, 11.0.0 et 12.2.0
 (Python 3.12) ; la transparence `tRNS` des PNG est lue dans les octets du PNG, donc
 indépendante des changements de décodage de Pillow entre versions.
+
+### Rééchantillonnage audio (ffmpeg, dépendance optionnelle, #46)
+
+Sur la Flam, les MP3 qui ne sont pas à 44 100 Hz sont lus à la mauvaise vitesse (mesuré sur le
+firmware 1.15.14 : 24 et 22,05 kHz trop aigus et trop rapides, 48 kHz légèrement trop grave).
+Le convertisseur rééchantillonne donc **tout MP3 dont la fréquence n'est pas 44 100 Hz** à
+44 100 Hz, avec **ffmpeg** (encodeur `libmp3lame`) : même nombre de canaux, MP3 CBR, débit proche
+de celui de la source, borné à 64-192 kbps. Le `.mp3map` est généré sur le fichier rééchantillonné.
+Un MP3 déjà à 44 100 Hz est recopié sans changement. ffmpeg est lancé sans shell ni stdin, protocole
+`file` seul, dans un dossier temporaire, avec un délai maximal de 120 s.
+
+- Découverte de ffmpeg : variable d'environnement `FLAM_FFMPEG` (chemin de l'exécutable ; **vide =
+  rééchantillonnage désactivé**), sinon `ffmpeg` du `PATH`. Le launcher renseigne `FLAM_FFMPEG` avec
+  son ffmpeg LGPL embarqué (ou la laisse vide s'il n'y en a pas : jamais de ffmpeg du `PATH`).
+- Sans ffmpeg, ou si ffmpeg échoue (fichier illisible, délai dépassé, sortie inattendue) : le MP3
+  est recopié tel quel et l'avertissement `audio_samplerate` indique la fréquence et la raison.
+  La conversion ne s'interrompt jamais pour cela.
+- Un fichier rééchantillonné est signalé par une ligne `  i ...` sur stderr (ce n'est pas un
+  avertissement) et dans le résumé ; la version du convertisseur passe à 1.1.0.
 
 Le CLI :
 1. lit `metadata.json` + `nodes.json` dans le zip

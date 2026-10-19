@@ -309,8 +309,8 @@ pub const FFMPEG_EXE: &str = if cfg!(windows) {
 
 /// Cherche le ffmpeg LGPL embarqué : `<exe>/ffmpeg/ffmpeg.exe` sinon (développement)
 /// `build/ffmpeg/ffmpeg.exe` d'un dossier ancêtre. Aucun ffmpeg du `PATH` n'est jamais retenu
-/// (build GPL possible) et aucun processus n'est lancé. Pas de réglage de surcharge pour
-/// l'instant : la conversion audio (#214) en décidera.
+/// (build GPL possible) et aucun processus n'est lancé. Le convertisseur la reçoit par
+/// `FLAM_FFMPEG` (rééchantillonnage audio, #46).
 pub fn ffmpeg_path(env: &Environment) -> Option<PathBuf> {
     let exe_dir = env.exe_dir.as_deref()?;
     let beside = exe_dir.join(BUNDLED_FFMPEG_DIR).join(FFMPEG_EXE);
