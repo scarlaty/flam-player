@@ -77,6 +77,10 @@ pub struct StoryTitles {
     /// carrier conservée ou consentement donné plus tard, `.mdf` relu) et peuvent être
     /// redemandés.
     pub keys: bool,
+    /// Firmware 2.x : les clés de `.mdf` n'ont pas pu être lues (message sans aucune donnée de
+    /// l'appareil). Les titres se replient alors sur la bibliothèque ou le catalogue : ce champ
+    /// rend l'échec visible au lieu de le taire (#317).
+    pub keys_problem: Option<String>,
 }
 
 /// Réponse de `device_story_thumbnail`.
@@ -96,29 +100,59 @@ pub fn title_keys(
     consent: Option<&CarrierConsent>,
     store: &CarrierStore,
 ) -> Option<DeviceKeys> {
-    let mdf = read_mdf(root).ok()?;
-    let firmware = firmware_from_mdf(&mdf)?;
-    match firmware_family(&firmware)? {
-        FirmwareFamily::V2 => keys_from_mdf(&mdf).ok(),
-        FirmwareFamily::V1 => {
-            if !consent_is_current(consent) {
-                return None;
+    title_keys_checked(root, consent, store).0
+}
+
+/// [`title_keys`], avec la raison de l'échec en firmware 2.x (clés de `.mdf` illisibles), qui
+/// est aussi journalisée. Seul cet échec est signalé : en 1.x, l'absence de couple conservé est
+/// l'état normal.
+pub fn title_keys_checked(
+    root: &Path,
+    consent: Option<&CarrierConsent>,
+    store: &CarrierStore,
+) -> (Option<DeviceKeys>, Option<String>) {
+    let Ok(mdf) = read_mdf(root) else {
+        return (None, None);
+    };
+    let Some(firmware) = firmware_from_mdf(&mdf) else {
+        return (None, None);
+    };
+    match firmware_family(&firmware) {
+        Some(FirmwareFamily::V2) => match keys_from_mdf(&mdf) {
+            Ok(keys) => (Some(keys), None),
+            Err(err) => {
+                tracing::warn!("titres de la Flam 2.x : clés de .mdf illisibles : {err}");
+                (None, Some(err.to_string()))
             }
-            let id = DeviceId::from_mdf(&mdf)?;
-            if !store.has(&id) {
-                return None;
-            }
-            let carrier = match store.load(&id) {
-                Ok(carrier) => carrier?,
-                Err(err) => {
-                    // Le message ne contient aucune clé (voir `CarrierError`).
-                    tracing::debug!("titres de la Flam : clés carrier illisibles : {err}");
-                    return None;
-                }
-            };
-            DeviceKeys::with_carrier(&firmware, &carrier).ok()
-        }
+        },
+        Some(FirmwareFamily::V1) => (v1_title_keys(&mdf, &firmware, consent, store), None),
+        None => (None, None),
     }
+}
+
+/// Couple carrier conservé pour la Flam 1.x de `mdf`, si le consentement est à jour.
+fn v1_title_keys(
+    mdf: &[u8],
+    firmware: &str,
+    consent: Option<&CarrierConsent>,
+    store: &CarrierStore,
+) -> Option<DeviceKeys> {
+    if !consent_is_current(consent) {
+        return None;
+    }
+    let id = DeviceId::from_mdf(mdf)?;
+    if !store.has(&id) {
+        return None;
+    }
+    let carrier = match store.load(&id) {
+        Ok(carrier) => carrier?,
+        Err(err) => {
+            // Le message ne contient aucune clé (voir `CarrierError`).
+            tracing::debug!("titres de la Flam : clés carrier illisibles : {err}");
+            return None;
+        }
+    };
+    DeviceKeys::with_carrier(firmware, &carrier).ok()
 }
 
 /// Dossier de l'histoire `id` : `str/<uuid>/`, sinon `str.hidden/<uuid>/` (vrais dossiers).
@@ -168,6 +202,7 @@ pub fn read_titles(
                 titles,
                 interrupted: true,
                 keys: keys.is_some(),
+                keys_problem: None,
             };
         }
         let Some(id) = StoryId::parse(uuid) else {
@@ -183,6 +218,7 @@ pub fn read_titles(
         titles,
         interrupted: false,
         keys: keys.is_some(),
+        keys_problem: None,
     }
 }
 
@@ -247,10 +283,14 @@ pub async fn device_story_titles(
                 titles: Vec::new(),
                 interrupted: true,
                 keys: false,
+                keys_problem: None,
             };
         }
-        let keys = title_keys(root, consent.as_ref(), &CarrierStore::app());
-        read_titles(root, &uuids, keys.as_ref(), &stop)
+        let (keys, problem) = title_keys_checked(root, consent.as_ref(), &CarrierStore::app());
+        StoryTitles {
+            keys_problem: problem,
+            ..read_titles(root, &uuids, keys.as_ref(), &stop)
+        }
     })
     .await
 }

@@ -23,7 +23,7 @@ it("ouvre la page des risques dans le navigateur", async () => {
     calls.push({ cmd, args });
     return null;
   });
-  render(<ExperimentalBanner firmware={null} />);
+  render(<ExperimentalBanner family={null} />);
   fireEvent.click(screen.getByRole("button", { name: "Ouvrir la page des risques" }));
   await vi.waitFor(() =>
     expect(calls).toEqual([{ cmd: "open_external", args: { url: RISKS_DOC_URL } }]),
@@ -37,7 +37,7 @@ it("si l'ouverture échoue, annonce l'échec et laisse « Copier le lien » en r
   });
   const writeText = vi.fn().mockResolvedValue(undefined);
   stubClipboard(writeText);
-  render(<ExperimentalBanner firmware={null} />);
+  render(<ExperimentalBanner family={null} />);
   fireEvent.click(screen.getByRole("button", { name: "Ouvrir la page des risques" }));
   expect(await screen.findByText(/Ouverture impossible/)).toBeInTheDocument();
 

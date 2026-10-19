@@ -505,7 +505,7 @@ export const fr = {
       noDevice: "Flam non détectée",
       present: "Déjà sur la Flam",
       noSpace: "Espace insuffisant sur la Flam",
-      firmware: "Firmware de la Flam non pris en charge",
+      firmware: "Écriture bloquée sur cette Flam (voir « Ma Flam »)",
       queued: "Dans la file d'envoi",
       checking: "Lecture de la Flam…",
       removing: "Retrait en cours sur la Flam",
@@ -558,8 +558,6 @@ export const fr = {
     },
     errors: {
       noDevice: "La Flam n'est plus détectée : rien n'a été envoyé.",
-      firmware:
-        "Le firmware de cette Flam n'est pas pris en charge : l'envoi est impossible.",
       readback:
         "Histoire copiée, mais son titre relu sur la Flam ne se déchiffre pas avec les clés choisies : elle risque d'être illisible. Retirez-la et choisissez une autre histoire officielle.",
     },
@@ -675,6 +673,61 @@ export const fr = {
     system: "Système",
     light: "Clair",
     dark: "Sombre",
+  },
+  /** État du firmware et garde des écritures sur la Flam (#317). */
+  deviceFirmware: {
+    unreadable: "illisible",
+    family: {
+      v1: "1.x",
+      v2: "2.x",
+      unsupported: "non pris en charge",
+      unreadable: "illisible",
+    },
+    state: {
+      v1: "pris en charge (mode carrier)",
+      flamVerified: "en test, vérifié par la Flam",
+      confirmed: "en test, sauvegarde confirmée",
+      unconfirmed: "en test, confirmation à donner",
+      contradiction: "envoi bloqué (clés incohérentes)",
+      blocked: "écriture bloquée",
+    },
+    nonStandard: "fichier .mdf non standard",
+    blockedTitle: "Écriture sur cette Flam bloquée",
+    sendBlockedTitle: "Envoi sur cette Flam bloqué",
+    blocked: {
+      device_not_found: "Fichier .mdf absent : la Flam n'est plus détectée.",
+      invalid_root: "Ce lecteur n'est pas une Flam détectée.",
+      mdf_unreadable: (detail: string) => `Fichier .mdf illisible (${detail}).`,
+      truncated: (size: number) => `Fichier .mdf tronqué (${size} octets).`,
+      version_unreadable: "Version du firmware illisible dans le fichier .mdf.",
+      unsupported_firmware: (version: string) =>
+        `Firmware ${version} non pris en charge (seuls les 1.x et 2.x le sont).`,
+      keys_unreadable: (detail: string) =>
+        `Clés illisibles dans le fichier .mdf (${detail}).`,
+      keys_trivial: (version: string) =>
+        `Firmware ${version} : clé ou IV vide dans le fichier .mdf.`,
+      keys_contradiction: (version: string) =>
+        `Firmware ${version} : une histoire installée par un autre outil sur cette Flam ne se déchiffre pas avec les clés du fichier .mdf. Une histoire envoyée serait illisible. Le retrait et l'ordre restent possibles.`,
+      confirmation_required: (version: string) =>
+        `Firmware ${version} : confirmation de sauvegarde à donner avant tout envoi.`,
+    },
+    blockedHint:
+      "Rien n'est écrit tant que ce blocage dure. Notez la version et l'état affichés ici dans votre retour de test.",
+    contradictionHint:
+      "Aucune histoire n'est envoyée tant que ce blocage dure. Le retrait et l'ordre restent possibles (après la confirmation de sauvegarde, si elle est demandée). Notez la version et l'état affichés ici dans votre retour de test.",
+    confirm: {
+      title: "Firmware 2.x en test",
+      body: "L'envoi sur une Flam en firmware 2.x n'a pas encore été vérifié sur un appareil réel. Avant de continuer, copiez tout le contenu de la Flam sur votre ordinateur. Envoyez d'abord une seule petite histoire, puis redémarrez la Flam.",
+      nonStandard: (size: number, header: string) =>
+        `Attention : le fichier .mdf de cette Flam n'a pas la forme connue (${size} octets, en-tête ${header} ; attendu 126 octets, en-tête 01 00). Le risque d'histoire illisible est plus grand : ne continuez que si la sauvegarde est faite.`,
+      understood: "Firmware 2.x en test : j'ai sauvegardé ma Flam",
+      action: "Confirmer",
+      working: "Confirmation…",
+      failed: (message: string) => `Confirmation impossible : ${message}`,
+      sendFirst: "Confirmez d'abord la sauvegarde de la Flam dans « Ma Flam ».",
+    },
+    restartV2:
+      "Firmware 2.x : après le redémarrage, rebranchez la Flam en mode connexion USB. Le launcher vérifie alors que la Flam a bien lu le titre de l'histoire envoyée.",
   },
 };
 

@@ -21,6 +21,7 @@ import { useDevice } from "./DeviceContext";
 import { DeviceStoryOrder } from "./DeviceStoryOrder";
 import { EjectButton } from "./EjectButton";
 import { ExperimentalBanner } from "./ExperimentalBanner";
+import { FirmwareNotice, firmwareSummary } from "./FirmwareStatus";
 import { ForgetCarrierKeysButton } from "./ForgetCarrierKeysButton";
 import { RemoveStoryButton } from "./RemoveStoryButton";
 import {
@@ -80,7 +81,7 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
   return (
     <div className="fl-device-screen">
       <p className="fl-device-screen__intro">{text.intro}</p>
-      <ExperimentalBanner firmware={device?.firmware ?? null} />
+      <ExperimentalBanner family={device?.firmware_status?.family ?? null} />
       <p role="status" className="fl-visually-hidden">
         {announcement}
       </p>
@@ -118,6 +119,7 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
             count={status.device_count}
             headingRef={headingRef}
           />
+          <FirmwareNotice device={device} />
           {recoveryNote && (
             <Banner tone={recoveryNote.tone} role="status">
               {recoveryNote.message}
@@ -184,7 +186,11 @@ function DeviceCard({
         </div>
         <div>
           <dt>{text.detected.firmware}</dt>
-          <dd>{device.firmware ?? text.detected.firmwareUnreadable}</dd>
+          <dd>
+            {device.firmware_status
+              ? firmwareSummary(device.firmware_status)
+              : (device.firmware ?? text.detected.firmwareUnreadable)}
+          </dd>
         </div>
         {device.file_system && (
           <div>
