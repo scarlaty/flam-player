@@ -315,7 +315,7 @@ apps/flam-launcher/
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status` ; transfert sûr #229, `device::transfer`, commandes `device_send_story`, `device_cancel_transfer` et `device_recover_transfers` (reprise au branchement), événement `device://transfer-progress` ; retrait #231, `device::remove` ; éjection #232, `device::eject` ; verrou des opérations, `device::lock`), `podcast` (`rss`).
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status` ; titres déchiffrés et vignettes des histoires #276, `device::details` ; transfert sûr #229, `device::transfer`, commandes `device_send_story`, `device_cancel_transfer` et `device_recover_transfers` (reprise au branchement), événement `device://transfer-progress` ; retrait #231, `device::remove` ; éjection #232, `device::eject` ; verrou des opérations, `device::lock`), `podcast` (`rss`).
 
 ### Commandes Tauri
 
@@ -358,12 +358,28 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `player_embed_focus`   |                            | rien                                           | `player`         |
 | `device_status`        |                            | `DeviceStatus`                                 | `device::status` |
 | `device_list_stories`  |                            | `DeviceStories \| null` (`null` : aucune Flam) | `device::status` |
+| `device_story_titles`  | `root`, `uuids` (≤ 100)    | `{ titles: { uuid, title \| null }[], interrupted }` | `device::details` |
+| `device_story_thumbnail` | `root`, `uuid`           | `{ thumb: URL data: \| null, busy }`           | `device::details` |
+| `device_story_details_cancel` |                     | rien                                           | `device::details` |
 
 `device_status` et `device_list_stories` sont **en lecture seule** sur la Flam : ni reprise
 d'index (`recover`), ni création de dossier. La seule écriture est la copie personnelle de
 `.mdf` (`backup_mdf`) dans le dossier de données du launcher, faite par `device_status`
-(idempotente). Le titre d'une histoire est chiffré dans `str/<uuid>/info` : il n'est connu que
-si l'histoire figure dans la bibliothèque du launcher, sinon l'écran affiche l'UUID court.
+(idempotente). Le titre renvoyé par `device_list_stories` est celui de la bibliothèque du
+launcher, associé à l'histoire de la Flam par l'UUID de `uuid.bin` de son `.plain.pk` (une source
+dossier ou Telmi a un identifiant de bibliothèque différent du nom de `str/<uuid>/`, #276).
+Titres et vignettes de la Flam (#276, `device::details`, lecture seule stricte) sont chargés
+**après** l'affichage de la liste : titres par lots de 100 (première ligne de `info` déchiffré,
+lecture bornée à 4 Kio ; fw 2.x : clés de `.mdf` ; fw 1.x : clé carrier **déjà conservée** pour
+cette Flam, consentement à jour, jamais demandée depuis cet écran), vignettes à l'approche de la
+zone visible, deux à la fois (`img/thumbnail.lif` non chiffré, 1 Mio au plus, décodé en PNG de
+96 px au plus et mis en cache dans `<cache>/thumbs/`, clé : empreinte de l'UUID, de la taille et
+de la date du fichier). Repli du titre : bibliothèque, puis UUID court ; vignette absente ou
+invalide : illustration par défaut. Ces lectures ne prennent pas le verrou d'appareil : elles
+s'arrêtent dès qu'une opération est en cours (`interrupted`, `busy`) et l'écran les redemande
+2 s plus tard ; l'envoi ou le retrait en cours côté interface les suspend, et quitter l'écran ou
+changer de Flam interrompt le lot en cours (`device_story_details_cancel`). Aucune clé dans les
+réponses ni les journaux.
 Le numéro de série et le firmware ne sont pas affichés : `parse_mdf` ne lit encore aucun champ
 (format de `.mdf` non spécifié, #224). L'écran « Ma Flam » (`#/device`, `src/features/device/`) est
 alimenté par `DeviceProvider` : scrutation de `device_status` (2 s sur l'écran, 6 s ailleurs,

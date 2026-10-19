@@ -58,9 +58,12 @@ export interface DeviceStory {
   /** Huit premiers caractères de l'UUID. */
   short_id: string;
   placement: Placement;
-  /** Titre connu de la bibliothèque du launcher (celui de la Flam est chiffré). */
+  /**
+   * Titre de la bibliothèque du launcher (associé par `uuid.bin`). Le titre déchiffré de la Flam
+   * arrive ensuite par `getDeviceStoryTitles` et prime sur celui-ci.
+   */
   title: string | null;
-  /** L'histoire figure dans la bibliothèque du launcher : vignette disponible. */
+  /** L'histoire figure dans la bibliothèque du launcher. */
   in_library: boolean;
   /** Listée dans l'index mais sans dossier sur la Flam. */
   missing: boolean;
@@ -92,6 +95,56 @@ export function getDeviceStatus(): Promise<DeviceStatus> {
  */
 export function listDeviceStories(): Promise<DeviceStories | null> {
   return invokeCommand<DeviceStories | null>("device_list_stories");
+}
+
+/** Titre déchiffré d'une histoire de la Flam (miroir de `StoryTitle` dans `device/details.rs`). */
+export interface DeviceStoryTitle {
+  uuid: string;
+  /** `null` : pas de clé pour cette Flam, ou `info` illisible (repli de l'interface). */
+  title: string | null;
+}
+
+/** Réponse de `device_story_titles` (miroir de `StoryTitles`). */
+export interface DeviceStoryTitles {
+  /** Histoires traitées, dans l'ordre de la demande (UUID invalides omis). */
+  titles: DeviceStoryTitle[];
+  /** Lot interrompu (opération en cours sur la Flam, annulation) : redemander le reste plus tard. */
+  interrupted: boolean;
+}
+
+/** Réponse de `device_story_thumbnail` (miroir de `StoryThumbnail`). */
+export interface DeviceStoryThumbnail {
+  /** URL `data:image/png` ; `null` : vignette absente ou invalide. */
+  thumb: string | null;
+  /** Opération en cours sur la Flam : rien n'a été lu, redemander plus tard. */
+  busy: boolean;
+}
+
+/** Nombre maximal d'histoires par appel de `getDeviceStoryTitles` (`MAX_BATCH`). */
+export const STORY_TITLES_BATCH = 100;
+
+/**
+ * `device_story_titles` : titres déchiffrés d'un lot d'histoires de la Flam de `root` (lecture
+ * seule ; Flam 1.x : seulement avec la clé carrier déjà conservée et le consentement à jour).
+ */
+export function getDeviceStoryTitles(
+  root: string,
+  uuids: string[],
+): Promise<DeviceStoryTitles> {
+  return invokeCommand<DeviceStoryTitles>("device_story_titles", { root, uuids });
+}
+
+/** `device_story_thumbnail` : vignette d'une histoire de la Flam (lecture seule, mise en cache). */
+export function getDeviceStoryThumbnail(
+  root: string,
+  uuid: string,
+): Promise<DeviceStoryThumbnail> {
+  return invokeCommand<DeviceStoryThumbnail>("device_story_thumbnail", { root, uuid });
+}
+
+/** `device_story_details_cancel` : interrompt le lot de titres en cours. */
+export function cancelDeviceStoryDetails(): Promise<void> {
+  return invokeCommand<void>("device_story_details_cancel");
 }
 
 /** Étape d'un transfert (miroir de `Phase` dans `device/transfer.rs`). */

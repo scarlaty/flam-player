@@ -3,16 +3,20 @@
 //!
 //! Rien n'est écrit sur la Flam : ni reprise d'index, ni création de dossier. Le seul fichier
 //! écrit est la sauvegarde personnelle de `.mdf`, dans le dossier de données du launcher
-//! (voir [`super::detect::backup_mdf`]). Le titre d'une histoire est chiffré dans `str/<uuid>/info`
-//! (clé de l'appareil, #228) : il n'est donc connu que si l'histoire figure dans la bibliothèque
-//! du launcher ; sinon l'interface affiche l'UUID court.
+//! (voir [`super::detect::backup_mdf`]). Le titre renvoyé ici est celui de la bibliothèque du
+//! launcher, associé à l'histoire de la Flam par l'UUID de `uuid.bin` de son `.plain.pk` (celui
+//! qui nomme `str/<uuid>/`, #276). Le titre déchiffré de `info` et la vignette de la Flam sont
+//! lus ensuite, à la demande, par [`super::details`] ; à défaut, l'interface affiche l'UUID
+//! court.
 //!
 //! La logique ne dépend pas de Tauri : l'environnement de détection et le dossier de
 //! sauvegarde sont passés en paramètre pour tester sur un faux appareil.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use serde::Serialize;
 use tauri::State;
@@ -21,6 +25,9 @@ use super::detect::{self, DetectedDevice, DeviceWarning, Environment, MdfError, 
 use super::index::{self, IndexKind, IndexState};
 use crate::catalog::blocking;
 use crate::install::InstallService;
+use crate::library::{Library, LibraryEntry};
+use crate::settings::SettingsStore;
+use crate::storage::ConfigState;
 use crate::AppResult;
 
 /// Longueur de l'UUID court affiché quand le titre est inconnu.
@@ -242,24 +249,102 @@ pub async fn device_status() -> AppResult<DeviceStatus> {
     blocking(move || status(&Environment::current(), &backup_dir)).await
 }
 
+/// UUID d'une histoire installée par le launcher, tel que lu dans `uuid.bin` de `archive`
+/// (borné à 16 octets) : c'est lui qui nomme `str/<uuid>/` sur la Flam. `None` si l'archive
+/// ou `uuid.bin` est illisible.
+fn uuid_bin_of(archive: &Path) -> Option<String> {
+    let file = std::fs::File::open(archive).ok()?;
+    let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file)).ok()?;
+    let entry = zip.by_name("uuid.bin").ok()?;
+    let mut bytes = Vec::with_capacity(16);
+    entry.take(17).read_to_end(&mut bytes).ok()?;
+    let uuid = uuid::Uuid::from_slice(&bytes).ok()?;
+    Some(uuid.hyphenated().to_string())
+}
+
+/// Clé de [`DEVICE_UUIDS`] : fichier, taille et date d'installation (une réinstallation change
+/// la clé).
+type ArchiveKey = (String, u64, u64);
+
+/// UUID sur la Flam des archives déjà ouvertes (la liste est relue à chaque rafraîchissement).
+static DEVICE_UUIDS: Mutex<Option<HashMap<ArchiveKey, Option<String>>>> = Mutex::new(None);
+
+/// UUID sur la Flam de l'histoire de la bibliothèque `entry` (archive sous `cache_root`) :
+/// celui de `uuid.bin` ; à défaut, `entry.uuid` s'il s'écrit comme un UUID (forme simple de
+/// 32 caractères d'une source dossier, ou avec tirets). Une histoire Telmi a un identifiant de
+/// source sans rapport avec `uuid.bin` : seul ce dernier permet de la retrouver sur la Flam.
+fn device_uuid_of(cache_root: Option<&Path>, entry: &LibraryEntry) -> Option<String> {
+    let from_archive = cache_root.and_then(|root| archive_uuid(root, entry));
+    from_archive.or_else(|| {
+        uuid::Uuid::try_parse(&entry.uuid)
+            .ok()
+            .map(|u| u.hyphenated().to_string())
+    })
+}
+
+/// UUID de `uuid.bin` de l'archive de `entry`, mémorisé.
+fn archive_uuid(cache_root: &Path, entry: &LibraryEntry) -> Option<String> {
+    let key = (entry.file.clone(), entry.size, entry.installed_at);
+    let cached = DEVICE_UUIDS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(|m| m.get(&key).cloned());
+    match cached {
+        Some(found) => found,
+        None => {
+            let found = Library::new(cache_root)
+                .checked(&entry.file)
+                .ok()
+                .and_then(|path| uuid_bin_of(&path));
+            DEVICE_UUIDS
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get_or_insert_with(HashMap::new)
+                .insert(key, found.clone());
+            found
+        }
+    }
+}
+
+/// Titres de la bibliothèque, par UUID de l'histoire sur la Flam ([`device_uuid_of`]).
+fn library_titles(
+    cache_root: Option<&Path>,
+    entries: Vec<LibraryEntry>,
+) -> HashMap<String, String> {
+    entries
+        .into_iter()
+        .filter_map(|e| Some((device_uuid_of(cache_root, &e)?, e.title)))
+        .collect()
+}
+
 /// Histoires installées sur la Flam (`None` : aucune Flam détectée).
 #[tauri::command]
 pub async fn device_list_stories(
     service: State<'_, InstallService>,
+    config: State<'_, ConfigState>,
 ) -> AppResult<Option<StoriesReport>> {
     // Une bibliothèque illisible ne doit pas empêcher d'afficher l'appareil : les titres
     // manquent simplement.
-    let titles: HashMap<String, String> = match service.library_list().await {
-        Ok(entries) => entries
-            .into_iter()
-            .map(|e| (e.uuid.to_ascii_lowercase(), e.title))
-            .collect(),
+    let entries = match service.library_list().await {
+        Ok(entries) => entries,
         Err(err) => {
             tracing::warn!("bibliothèque illisible pour « Ma Flam » : {err}");
-            HashMap::new()
+            Vec::new()
         }
     };
-    blocking(move || list_stories(&Environment::current(), &titles)).await
+    let cache_root = {
+        let _guard = config.guard();
+        SettingsStore::new(&config.dir).resolved_cache_dir(&crate::settings::Environment::current())
+    };
+    blocking(move || {
+        let cache_root = cache_root
+            .map_err(|err| tracing::warn!("dossier de cache illisible pour « Ma Flam » : {err}"))
+            .ok();
+        let titles = library_titles(cache_root.as_deref(), entries);
+        list_stories(&Environment::current(), &titles)
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -538,6 +623,102 @@ mod tests {
                 "warnings"
             ]
         );
+    }
+
+    fn library_entry(uuid: &str, file: &str, title: &str) -> LibraryEntry {
+        LibraryEntry {
+            uuid: uuid.into(),
+            version: None,
+            title: title.into(),
+            file: file.into(),
+            size: 1,
+            installed_at: 1,
+            converter: None,
+            source: crate::story::StoryEntry {
+                source_id: "s".into(),
+                entry_id: format!("s:{uuid}"),
+                uuid: uuid.into(),
+                version: None,
+                title: title.into(),
+                description: None,
+                age: None,
+                category: None,
+                author: None,
+                voice: None,
+                license: None,
+                thumb_url: None,
+                download_url: String::new(),
+                size: None,
+                updated_at: None,
+                download_count: None,
+                kind: crate::story::StoryKind::FlamPlain,
+            },
+            thumb: None,
+        }
+    }
+
+    /// `.plain.pk` minimal contenant `uuid.bin`.
+    fn archive_with_uuid(path: &Path, uuid_bin: &[u8]) {
+        let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        zip.start_file("uuid.bin", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, uuid_bin).unwrap();
+        zip.finish().unwrap();
+    }
+
+    /// #276 : une histoire d'une source dossier (UUID de bibliothèque sans tirets) ou Telmi
+    /// (identifiant de source sans rapport) est retrouvée sur la Flam par `uuid.bin`.
+    #[test]
+    fn les_titres_de_la_bibliotheque_suivent_uuid_bin() {
+        let cache = tempfile::tempdir().unwrap();
+        fs::create_dir(cache.path().join("library")).unwrap();
+        let capi: [u8; 16] = [
+            0xa7, 0x01, 0xe2, 0x7e, 0x8f, 0x3a, 0x24, 0x8b, 0x72, 0xbd, 0xff, 0x65, 0xfa, 0x5d,
+            0x44, 0x0e,
+        ];
+        archive_with_uuid(&cache.path().join("library/telmi-1.plain.pk"), &[0x11; 16]);
+        archive_with_uuid(&cache.path().join("library/bad-1.plain.pk"), &[1, 2, 3]);
+        let entries = vec![
+            // Source dossier, archive disparue : UUID de la bibliothèque, forme simple.
+            library_entry(
+                "a701e27e8f3a248b72bdff65fa5d440e",
+                "absent-0.plain.pk",
+                "Capi",
+            ),
+            // Telmi : identifiant de source, `uuid.bin` fait foi.
+            library_entry("ffffff-199a63526c4", "telmi-1.plain.pk", "Égypte"),
+            // `uuid.bin` invalide et identifiant non UUID : ignorée.
+            library_entry("zz", "bad-1.plain.pk", "Perdue"),
+            // Nom de fichier hors de la bibliothèque : jamais ouvert.
+            library_entry("zz2", "../evil.plain.pk", "Hors"),
+        ];
+        let titles = library_titles(Some(cache.path()), entries.clone());
+        let capi_uuid = uuid::Uuid::from_bytes(capi).hyphenated().to_string();
+        assert_eq!(capi_uuid, "a701e27e-8f3a-248b-72bd-ff65fa5d440e");
+        assert_eq!(titles.get(&capi_uuid).map(String::as_str), Some("Capi"));
+        assert_eq!(
+            titles
+                .get("11111111-1111-1111-1111-111111111111")
+                .map(String::as_str),
+            Some("Égypte")
+        );
+        assert_eq!(titles.len(), 2);
+        // Sans dossier de cache : repli sur l'UUID de la bibliothèque.
+        assert_eq!(library_titles(None, entries).len(), 1);
+        // Liste de la Flam : le titre de Capi est trouvé.
+        let dev = fake_device();
+        put(
+            dev.path(),
+            "etc/library/list",
+            &format!(
+                "{capi_uuid}
+"
+            ),
+        );
+        put(dev.path(), &format!("str/{capi_uuid}/info"), "x");
+        let report = list_stories(&env(vec![dev.path().to_path_buf()]), &titles).unwrap();
+        assert_eq!(report.stories[0].title.as_deref(), Some("Capi"));
+        assert!(report.stories[0].in_library);
     }
 
     /// Critère d'acceptation : après état et liste, l'arborescence et les octets de la Flam
