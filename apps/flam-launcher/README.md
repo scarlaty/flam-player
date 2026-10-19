@@ -326,7 +326,8 @@ succès (en cas de relances, le plus récent compte). Sans run (commit qui ne to
 de `launcher.yml`, par ex. un commit de documentation seule), en cours, échoué ou annulé, la
 publication est refusée : il n'y a volontairement pas de repli sur un commit ancêtre, des commits non
 testés pouvant s'être intercalés. Poser alors l'étiquette sur le commit de fusion de la montée de
-version, ou attendre / relancer la CI `launcher` (Actions, « Re-run »). Un dry_run et la répétition
+version, ou attendre / relancer la CI `launcher` (Actions, « Re-run »). La CI de `main` annule le run
+précédent quand un autre commit arrive : un run annulé sur le commit visé est à relancer avant la publication. Un dry_run et la répétition
 générale affichent ce contrôle en avertissement. Le commit contrôlé est celui qui est construit et publié (l'étiquette ne doit pas
 avoir bougé). La forme de l'étiquette n'admet pas de tiret dans un identifiant de pré-version
 (`beta.1`, pas `beta-1`). L'installateur

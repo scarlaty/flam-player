@@ -371,7 +371,7 @@ jobs:
       - name: Aucune release (même brouillon) pour cette étiquette
         run: |
           set -euo pipefail
-          ids="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .id")"
+          ids="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -r --arg t "$TAG" '.[] | select(.tag_name == $t) | .id')"
           if [ -n "$ids" ]; then echo "::error::une release (éventuellement brouillon) $TAG existe déjà : la supprimer à la main"; exit 1; fi
 
       - name: SHA256SUMS.txt
