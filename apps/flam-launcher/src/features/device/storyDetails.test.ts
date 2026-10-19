@@ -1,5 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { DeviceStoryThumbnail } from "../../api/device";
 import {
@@ -129,4 +129,52 @@ it("ne retient pas les titres d'une réponse sans clé et redemande ensuite", as
   await waitFor(() => expect(result.current.get("a")).toBe("Capi"));
   expect(requests).toHaveLength(2);
   clearMocks();
+});
+
+it("un lot interrompu sans clé ne retient pas les titres null", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const replies = [
+    {
+      titles: [
+        { uuid: "a", title: null },
+        { uuid: "b", title: "Capi" },
+      ],
+      interrupted: true,
+      keys: false,
+    },
+    {
+      titles: [
+        { uuid: "a", title: "Loup" },
+        { uuid: "b", title: "Capi" },
+      ],
+      interrupted: false,
+      keys: true,
+    },
+  ];
+  const requests: string[][] = [];
+  mockIPC((cmd, args) => {
+    if (cmd !== "device_story_titles") return null;
+    requests.push((args as { uuids: string[] }).uuids);
+    return replies[requests.length - 1];
+  });
+  const { result } = renderHook(() => useDeviceStoryTitles("E:\\", ["a", "b"], false));
+  await waitFor(() => expect(result.current.get("b")).toBe("Capi"));
+  expect(requests).toEqual([["a", "b"]]);
+  // « a » (null faute de clé) n'est pas retenu et est redemandé après le délai.
+  expect(result.current.has("a")).toBe(false);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(DETAILS_RETRY_MS + 10);
+  });
+  await waitFor(() => expect(result.current.get("a")).toBe("Loup"));
+  expect(requests).toEqual([["a", "b"], ["a"]]);
+  clearMocks();
+});
+
+it("lit d'abord la vignette demandée en dernier (celle qui est visible)", async () => {
+  const { pending, fetcher } = controlled();
+  const loader = new ThumbnailLoader("E:\\", fetcher);
+  for (const uuid of ["a", "b", "c", "d"]) void loader.request(uuid);
+  pending[0]!.answer({ thumb: null, busy: false });
+  await flush();
+  expect(pending.map((p) => p.uuid)).toEqual(["a", "b", "d"]);
 });

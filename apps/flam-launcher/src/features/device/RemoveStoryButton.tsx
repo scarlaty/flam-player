@@ -80,7 +80,14 @@ export function RemoveStoryButton({
           {working ? text.working : text.button}
         </Button>
         {blocked && !working && (
-          <span id={hintId} className="fl-send__reason">
+          // « Un autre retrait est en cours » : lu par les lecteurs d'écran seulement, pour ne pas
+          // répéter la même phrase sur chaque ligne (la ligne concernée montre « Retrait… »).
+          <span
+            id={hintId}
+            className={
+              blocked && !busy && !ejecting ? "fl-visually-hidden" : "fl-send__reason"
+            }
+          >
             {busy ? text.busy : ejecting ? text.ejecting : text.otherWorking}
           </span>
         )}

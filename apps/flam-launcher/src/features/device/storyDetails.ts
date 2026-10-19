@@ -68,7 +68,10 @@ export function useDeviceStoryTitles(
         // consentement donné plus tard) : rien n'est retenu, l'effet suivant (fin d'un envoi,
         // nouvelle liste) redemandera. L'affichage se replie d'ici là.
         if (!reply.keys && !reply.interrupted) return;
-        for (const { uuid, title } of reply.titles) map.set(uuid, title);
+        // Lot interrompu sans clé : un titre `null` n'est pas définitif (il ne vient que de
+        // l'absence de clé), seuls les titres lus sont retenus.
+        for (const { uuid, title } of reply.titles)
+          if (reply.keys || title !== null) map.set(uuid, title);
         // Lot complet : une histoire omise (UUID invalide) n'aura pas de titre.
         if (!reply.interrupted)
           for (const uuid of batch) if (!map.has(uuid)) map.set(uuid, null);
@@ -185,7 +188,7 @@ export function useOfficialThumbnail(uuid: string, enabled: boolean): string | u
 type Fetcher = (root: string, uuid: string) => Promise<DeviceStoryThumbnail>;
 
 /**
- * File des vignettes d'une Flam : au plus `THUMB_CONCURRENCY` lectures à la fois, résultats
+ * Pile des vignettes d'une Flam (dernière demandée, première lue) : au plus `THUMB_CONCURRENCY` lectures à la fois, résultats
  * gardés en mémoire, nouvel essai après `DETAILS_RETRY_MS` quand la Flam est occupée.
  * `dispose` abandonne les demandes en attente (démontage) ; le chargeur reste utilisable
  * ensuite (double montage de `StrictMode`).
@@ -246,7 +249,9 @@ export class ThumbnailLoader {
 
   private pump(): void {
     while (!this.paused && this.running < THUMB_CONCURRENCY) {
-      const uuid = this.queue.shift();
+      // Dernière demandée, première lue : ce sont les lignes visibles à l'instant (celles
+      // qu'on a fait défiler sont déjà derrière).
+      const uuid = this.queue.pop();
       if (uuid === undefined) return;
       this.running += 1;
       void this.load(uuid);

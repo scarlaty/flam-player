@@ -667,6 +667,35 @@ it(
   SLOW_TEST_MS,
 );
 
+it(
+  "un autre appareil (autre volume) remplace le premier sans passer par l'état absent",
+  async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    status = detected();
+    stories = report([story(A, { title: "Capi" })]);
+    renderScreen();
+    await screen.findByRole("heading", { name: "Histoires sur la Flam (1)" });
+    expect(await screen.findByText("Capi")).toBeInTheDocument();
+    await waitFor(() => expect(count("device_list_stories")).toBe(1));
+
+    // Le premier appareil est remplacé entre deux scrutations : même lettre, autre volume.
+    status = detected({ volume_label: "FLAM2" });
+    stories = report([story(B, { title: "Loup" }), story(C, { title: "Ours" })]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + 50);
+    });
+    expect(
+      await screen.findByRole("heading", { name: "Histoires sur la Flam (2)" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Capi")).toBeNull();
+    expect(screen.getByText("Loup")).toBeInTheDocument();
+    expect(count("device_list_stories")).toBe(2);
+    // Jamais passé par « Aucune Flam détectée ».
+    expect(screen.queryByRole("heading", { name: "Aucune Flam détectée" })).toBeNull();
+  },
+  SLOW_TEST_MS,
+);
+
 it("arrête la scrutation au démontage", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   status = detected();

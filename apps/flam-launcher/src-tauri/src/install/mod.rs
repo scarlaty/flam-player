@@ -1236,7 +1236,7 @@ async fn discard(path: PathBuf) {
 /// Retrouve l'entrée `entry_id` de la source `source_id` : cache du catalogue (sans réseau)
 /// ou dernier scan du dossier. Une entrée absente du dernier scan (dossier pas encore analysé
 /// dans cette session : reprise au démarrage, « Mettre à jour » depuis « Mes histoires ») fait
-/// analyser le dossier, sous-dossiers compris.
+/// analyser le dossier (comme l'écran, puis sous-dossiers compris si besoin).
 async fn resolve_entry(
     config: &ConfigState,
     catalog: &CatalogService,
@@ -1268,8 +1268,8 @@ async fn resolve_entry(
                     crate::folder::resolve_folder(&config.dir, &Environment::current(), source_id)?
                 };
                 let (state, sid) = (folder.clone(), source_id.to_string());
-                blocking(move || state.scan(&sid, &root, true)).await??;
-                folder.entry(source_id, entry_id)
+                let wanted = entry_id.to_string();
+                blocking(move || state.scan_for_entry(&sid, &root, &wanted)).await?
             }
             found => found,
         },
