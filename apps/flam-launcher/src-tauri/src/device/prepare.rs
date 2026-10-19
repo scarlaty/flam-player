@@ -200,7 +200,6 @@ fn is_reserved_windows_name(component: &str) -> bool {
             && stem.as_bytes()[3].is_ascii_digit())
 }
 
-/// Chemin relatif sûr (composants séparés par `/`) d'une entrée, ou erreur.
 /// Majuscules caractère par caractère, comme la table de FAT : une correspondance Unicode à
 /// plusieurs caractères (`ß` → `SS`, `ﬁ` → `FI`) laisse le caractère tel quel.
 fn fat_upper(name: &str) -> String {
@@ -215,6 +214,7 @@ fn fat_upper(name: &str) -> String {
         .collect()
 }
 
+/// Chemin relatif sûr (composants séparés par `/`) d'une entrée, ou erreur.
 fn safe_relative(raw_name: &str, enclosed: Option<PathBuf>) -> Result<String, PrepareError> {
     let bad = || invalid(format!("nom d'entrée refusé : {raw_name:?}"));
     let path = enclosed.ok_or_else(bad)?;
@@ -796,7 +796,10 @@ mod tests {
         entries.push(("img/\u{df}.png", b"x".to_vec()));
         entries.push(("img/ss.png", b"y".to_vec()));
         let tmp = tempfile::tempdir().unwrap();
-        run(&pk_with(tmp.path(), &entries), &tmp.path().join("travail")).unwrap();
+        let prepared = run(&pk_with(tmp.path(), &entries), &tmp.path().join("travail")).unwrap();
+        for name in ["img/\u{df}.png", "img/ss.png"] {
+            assert!(prepared.files.iter().any(|f| f == name), "{name}");
+        }
         // `sounds/a.mp3` est un fichier : `sounds/a.mp3/b` ne peut pas être un dossier.
         let mut entries = base_entries();
         entries.push(("sounds/a.mp3/b", b"x".to_vec()));
