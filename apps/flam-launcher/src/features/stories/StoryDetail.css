@@ -104,3 +104,18 @@
   flex-direction: column;
   gap: var(--space-1);
 }
+
+/* Rangée d'actions du pied de fiche : mêmes boutons « sm », alignés en haut (la note d'une action
+   ne décale pas les autres), retour à la ligne propre ; « Supprimer » à l'écart, à gauche. */
+.fl-detail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.fl-detail__remove {
+  margin-inline-end: auto;
+}

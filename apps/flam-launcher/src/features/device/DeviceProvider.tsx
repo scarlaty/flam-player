@@ -44,6 +44,11 @@ export interface DeviceProviderProps {
   paused?: boolean;
   /** Délai entre deux scrutations (défaut : celui de `useDeviceStatus`). */
   intervalMs?: number;
+  /**
+   * Identifiants des histoires de la bibliothèque. Quand il est fourni, les envois réussis d'une
+   * histoire qui n'y figure plus (supprimée) sont retirés de la file affichée.
+   */
+  libraryUuids?: ReadonlySet<string>;
 }
 
 /**
@@ -55,6 +60,7 @@ export function DeviceProvider({
   children,
   paused = false,
   intervalMs,
+  libraryUuids,
 }: DeviceProviderProps) {
   const { status, error, retry } = useDeviceStatus({ enabled: !paused, intervalMs });
   const device = status?.detected ? status.device : null;
@@ -385,6 +391,18 @@ export function DeviceProvider({
       ),
     [updateQueue],
   );
+
+  // Histoire supprimée de la bibliothèque : sa ligne d'envoi réussie n'a plus d'objet. Les échecs
+  // et annulations restent (message). Sans effet tant que `libraryUuids` n'est pas connu.
+  useEffect(() => {
+    if (!libraryUuids) return;
+    updateQueue((items) => {
+      const kept = items.filter(
+        (item) => item.state !== "done" || libraryUuids.has(item.uuid),
+      );
+      return kept.length === items.length ? items : kept;
+    });
+  }, [libraryUuids, updateQueue]);
 
   const dismissQueue = useCallback(() => {
     if (running.current) return;

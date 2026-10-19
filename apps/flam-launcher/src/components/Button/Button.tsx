@@ -3,7 +3,8 @@ import { cx } from "../cx";
 import { Icon, type IconName } from "../Icon";
 import "./Button.css";
 
-export type ButtonVariant = "primary" | "accent" | "secondary" | "ghost" | "danger";
+export type ButtonVariant =
+  "primary" | "accent" | "secondary" | "ghost" | "danger" | "danger-quiet";
 export type ButtonSize = "md" | "sm";
 
 export interface ButtonProps extends ComponentPropsWithRef<"button"> {

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { useRoute } from "../../router";
 import { useStories } from "../stories/StoriesContext";
 import { DeviceProvider } from "./DeviceProvider";
@@ -12,11 +12,16 @@ export const BACKGROUND_POLL_MS = 6000;
  */
 export function DeviceBoundary({ children }: { children: ReactNode }) {
   const route = useRoute();
-  const { session } = useStories();
+  const { session, installed } = useStories();
+  const libraryUuids = useMemo(
+    () => new Set(installed.map((item) => item.uuid)),
+    [installed],
+  );
   return (
     <DeviceProvider
       paused={session?.embedded === true}
       intervalMs={route === "device" ? undefined : BACKGROUND_POLL_MS}
+      libraryUuids={libraryUuids}
     >
       {children}
     </DeviceProvider>

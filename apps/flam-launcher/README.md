@@ -401,8 +401,11 @@ détectée, déjà présente, espace insuffisant, firmware non pris en charge, d
 histoire déjà sur la Flam (non masquée) propose en plus « Remplacer sur la Flam »
 (`device_send_story` avec `replace`, même à version égale : l'ancienne version n'est retirée
 qu'une fois la nouvelle en place, #288), et une histoire dont la source dossier a changé depuis
-l'installation affiche « Source modifiée : mettez l'histoire à jour avant l'envoi » (sans
-bloquer) ;
+l'installation affiche « Source modifiée depuis l'installation : mettez l'histoire à jour avant de
+l'envoyer… » (sans bloquer) ;
+seuls un envoi en attente ou en cours bloque un nouvel envoi (« déjà en file ») : une tâche terminée
+(réussie, échouée, annulée) ne bloque jamais, et les envois réussis d'une histoire supprimée de la
+bibliothèque sont retirés de la file (`libraryUuids`, #299) ;
 l'avertissement « fonction expérimentale, non officielle » est mémorisé dans le stockage local
 (`preferences.ts`). Le firmware n'étant pas exposé par `device_status`, « non pris en charge »
 n'est connu qu'après un refus du backend.
@@ -973,7 +976,8 @@ thumb, source_stamp }`.
   empreintes de la source et de la copie sont comparées (un `.zip` converti n'est pas comparable :
   `changed`). `changed` affiche « Mise à jour disponible » sur l'entrée d'origine (dans sa source
   et dans « Mes histoires ») et « Mettre à jour » réinstalle depuis la source par `install_start`
-  (jamais de remplacement silencieux) ; le front revérifie à chaque changement d'écran ou de
+  (jamais de remplacement silencieux ; badge et bouton portent une info-bulle et un texte accessible
+  qui expliquent l'action, #299) ; le front revérifie à chaque changement d'écran ou de
   source, après chaque relecture de la bibliothèque et à chaque `folder://changed`. La
   progression de l'enfant n'est pas touchée : même fichier `<uuid>-<version>.plain.pk`, donc
   mêmes sauvegardes, retrouvées par la copie mise à jour.

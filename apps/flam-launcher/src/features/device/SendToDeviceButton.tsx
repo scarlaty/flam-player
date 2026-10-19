@@ -33,11 +33,14 @@ export interface SendToDeviceButtonProps {
 function useSendContext(): SendContext {
   const { device, stories, firmwareBlocked, queue } = useDevice();
   const report = stories.phase === "ready" ? stories.report : null;
+  // Seuls les envois en attente ou en cours bloquent : une tâche terminée (réussie, en échec ou
+  // annulée) ne bloque jamais un nouvel envoi. Une histoire réussie y figure déjà (« Déjà sur la
+  // Flam », relue après l'envoi) ; si elle en a été retirée, elle peut repartir.
   const queuedOrSent = useMemo(
     () =>
       new Set(
         queue
-          .filter((item) => item.state !== "failed" && item.state !== "cancelled")
+          .filter((item) => item.state === "waiting" || item.state === "sending")
           .map((item) => item.uuid),
       ),
     [queue],
