@@ -10,7 +10,7 @@ export interface IconButtonProps extends Omit<
   icon: IconName;
   /** Libellé accessible, également affiché en infobulle. Obligatoire. */
   label: string;
-  variant?: "ghost" | "secondary" | "primary" | "accent";
+  variant?: "ghost" | "secondary" | "primary" | "accent" | "danger-quiet";
   size?: "md" | "sm";
 }
 

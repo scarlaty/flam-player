@@ -9,6 +9,7 @@ import type {
   EjectOutcome,
 } from "../../api/device";
 import { ToastProvider } from "../../components";
+import { t } from "../../i18n";
 import { expectNoAxeViolations } from "../../test/axe";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
 import { DeviceProvider } from "./DeviceProvider";
@@ -88,6 +89,7 @@ let sends: Map<string, Deferred>;
 let ejectOutcome: EjectOutcome | { kind: string; message: string };
 let removeFailure: { kind: string; message: string } | null;
 let removeGate: Promise<void> | null;
+let listGate: Promise<void> | null;
 let ejectGate: Promise<void> | null;
 let recoverFailure: { kind: string; message: string } | null;
 let carrierConsent: { text_version: number; accepted_at: string } | null;
@@ -121,6 +123,7 @@ beforeEach(() => {
   ejectOutcome = { status: "ejected", message: "Vous pouvez débrancher la Flam." };
   removeFailure = null;
   removeGate = null;
+  listGate = null;
   ejectGate = null;
   recoverFailure = null;
   carrierConsent = null;
@@ -145,7 +148,7 @@ beforeEach(() => {
             left_alone: 0,
           };
         case "device_list_stories":
-          return report(onDevice);
+          return listGate ? listGate.then(() => report(onDevice)) : report(onDevice);
         case "device_send_story":
           return new Promise((resolve, reject) => {
             sends.set(String(args.uuid), { resolve, reject });
@@ -320,6 +323,103 @@ it("remplace une histoire déjà sur la Flam, sur demande explicite", async () =
   await resolveSend(A);
 });
 
+it("une tâche terminée ne bloque pas un nouvel envoi : envoyer, retirer de la Flam, renvoyer", async () => {
+  acknowledgeWarning();
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  await resolveSend(A);
+  // Envoi réussi, ligne terminée toujours dans la file : le bouton reste utilisable une fois
+  // l'histoire absente de la Flam (retirée depuis), sans effacer la tâche à la main.
+  await waitFor(() => expect(count("device_list_stories")).toBeGreaterThan(1));
+  await waitFor(() =>
+    expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "false"),
+  );
+  expect(sendButton("Capi")).not.toHaveAccessibleDescription("Déjà en file d'envoi");
+  fireEvent.click(sendButton("Capi"));
+  await waitFor(() => expect(count("device_send_story")).toBe(2));
+  await resolveSend(A);
+});
+
+it("un envoi réussi reste bloqué tant que la relecture de la Flam n'est pas revenue", async () => {
+  acknowledgeWarning();
+  render(<Harness />);
+  await ready();
+  let release!: () => void;
+  listGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fireEvent.click(sendButton("Capi"));
+  await resolveSend(A);
+  // Relecture en attente : pas de second envoi possible.
+  await waitFor(() =>
+    expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "true"),
+  );
+  fireEvent.click(sendButton("Capi"));
+  expect(count("device_send_story")).toBe(1);
+  release();
+  await waitFor(() =>
+    expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "false"),
+  );
+});
+
+it("une tâche en échec ou annulée ne bloque pas non plus un nouvel envoi", async () => {
+  acknowledgeWarning();
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  await waitFor(() => expect(sends.has(A)).toBe(true));
+  await act(async () => {
+    sends.get(A)?.reject({ kind: "io", message: "Disque plein" });
+  });
+  await waitFor(() =>
+    expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "false"),
+  );
+  sends.delete(A);
+  fireEvent.click(sendButton("Capi"));
+  await waitFor(() => expect(count("device_send_story")).toBe(2));
+  await resolveSend(A);
+});
+
+it("retire de la file l'envoi réussi d'une histoire supprimée de la bibliothèque", async () => {
+  acknowledgeWarning();
+  const view = (uuids: Set<string>) => (
+    <ToastProvider>
+      <DeviceProvider libraryUuids={uuids}>
+        <main>
+          <DeviceScreen
+            libraryPanel={
+              <ul aria-label="Bibliothèque">
+                {library.map((story) => (
+                  <li key={story.uuid}>
+                    <SendToDeviceButton {...story} />
+                  </li>
+                ))}
+              </ul>
+            }
+          />
+        </main>
+        <aside>
+          <TransferPanel />
+        </aside>
+      </DeviceProvider>
+    </ToastProvider>
+  );
+  const all = new Set(library.map((story) => story.uuid));
+  const { rerender } = render(view(all));
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  await resolveSend(A);
+  const panel = () =>
+    within(screen.getByRole("complementary")).queryByRole("list", {
+      name: t.deviceTransfer.panel.listLabel,
+    });
+  await waitFor(() => expect(within(panel()!).getByText("Capi")).toBeInTheDocument());
+  // Capi supprimée de la bibliothèque : sa ligne réussie disparaît sans geste.
+  rerender(view(new Set([...all].filter((uuid) => uuid !== A))));
+  await waitFor(() => expect(panel()).toBeNull());
+});
+
 it("signale une copie de bibliothèque plus ancienne que sa source, sans bloquer", async () => {
   render(
     <ToastProvider>
@@ -333,7 +433,7 @@ it("signale une copie de bibliothèque plus ancienne que sa source, sans bloquer
   });
   await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "false"));
   expect(button).toHaveAccessibleDescription(
-    "Source modifiée : mettez l'histoire à jour avant l'envoi",
+    /^Source modifiée depuis l'installation : mettez l'histoire à jour avant de l'envoyer/,
   );
 });
 

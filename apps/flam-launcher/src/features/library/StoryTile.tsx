@@ -18,7 +18,12 @@ export interface StoryTileProps extends StoryHooks {
 }
 
 function badgeFor(state: StoryState): StoryBadge {
-  return { id: state, label: t.library.state[state], ...STATE_APPEARANCE[state] };
+  return {
+    id: state,
+    label: t.library.state[state],
+    ...STATE_APPEARANCE[state],
+    ...(state === "update_available" && { description: t.stories.actions.updateHelp }),
+  };
 }
 
 /** Carte d'une histoire : vignette chargée à la demande, âge et état dans la source. */
