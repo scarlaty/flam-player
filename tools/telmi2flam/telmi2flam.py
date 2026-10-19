@@ -655,7 +655,10 @@ def _resample_mp3(data, duration):
         return "ffmpeg introuvable (variable FLAM_FFMPEG ou PATH)"
     kbps = 128
     if duration and duration > 0:
-        kbps = len(data) * 8 / duration / 1000
+        # debit de l'audio seul : sans le tag ID3v2 ni l'ID3v1 de fin (une pochette integree
+        # gonflerait l'estimation)
+        end = len(data) - (128 if data[-128:-125] == b"TAG" else 0)
+        kbps = max(0, end - mp3map._skip_id3v2(data)) * 8 / duration / 1000
         kbps = min(_MP3_BITRATES, key=lambda b: abs(b - kbps))
     try:
         with tempfile.TemporaryDirectory(prefix="t2f_ff_") as work:
@@ -960,6 +963,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
 
     img_cache = {}    # ("s7.png", is_inventory) -> "s7.lif"
     audio_cache = {}  # "s5.mp3" -> "s5.mp3"
+    resample_cache = {}  # sha256 du MP3 -> octets reechantillonnes ou raison de l'echec (#274)
 
     # Progression (A03) : sur stderr uniquement si c'est un terminal
     stages_src = _expect(nodes.get("stages", {}), dict, "nodes.json stages") or {}
@@ -1040,7 +1044,10 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
             other = sorted(sr for sr in info.get("samplerates", ()) if sr != SAMPLERATE)
             if other:
                 rates = "/".join(map(str, other))
-                new = _resample_mp3(data, dur)
+                key = hashlib.sha256(data).digest()
+                if key not in resample_cache:      # meme contenu sous deux noms : un seul ffmpeg
+                    resample_cache[key] = _resample_mp3(data, dur)
+                new = resample_cache[key]
                 if isinstance(new, bytes):
                     info2 = {}
                     try:

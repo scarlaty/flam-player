@@ -1233,47 +1233,8 @@ async fn discard(path: PathBuf) {
 // Commandes Tauri
 // ---------------------------------------------------------------------------------------
 
-/// Retrouve l'entrée d'une source dossier. Sans `expected` (reprise au démarrage), le dernier
-/// scan sert s'il a l'entrée ; sinon (dossier pas encore analysé dans cette session) le dossier
-/// est analysé. Avec `expected` (« Mettre à jour » depuis « Mes histoires »), le dossier est
-/// toujours réanalysé : une entrée du dernier scan peut être périmée. L'analyse reprend l'option
-/// récursive du dernier scan connu (récursive sans scan connu) pour ne pas changer ce que
-/// l'écran « Sources » a mémorisé ; si l'entrée reste introuvable et que ce scan n'était pas
-/// récursif, une analyse récursive est tentée. Une entrée disparue (par exemple écartée comme
-/// doublon d'un `.plain` installé) est retrouvée par son `uuid`. Bloquant.
-pub(crate) fn resolve_folder_entry(
-    folder: &FolderState,
-    source_id: &str,
-    root: &Path,
-    entry_id: &str,
-    expected: Option<&str>,
-) -> AppResult<StoryEntry> {
-    if expected.is_none() {
-        if let Ok(found) = folder.entry(source_id, entry_id) {
-            return Ok(found);
-        }
-    }
-    let lookup = || {
-        folder.entry(source_id, entry_id).or_else(|err| {
-            expected
-                .and_then(|uuid| folder.entry_by_uuid(source_id, uuid))
-                .ok_or(err)
-        })
-    };
-    let recursive = folder.last_recursive(source_id).unwrap_or(true);
-    folder.scan(source_id, root, recursive)?;
-    match lookup() {
-        Ok(found) => Ok(found),
-        Err(_) if !recursive => {
-            folder.scan(source_id, root, true)?;
-            lookup()
-        }
-        Err(err) => Err(err),
-    }
-}
-
 /// Retrouve l'entrée `entry_id` de la source `source_id` : cache du catalogue (sans réseau)
-/// ou source dossier (voir [`resolve_folder_entry`]). `expected` : histoire attendue.
+/// ou source dossier (voir [`FolderState::scan_for_entry`]). `expected` : histoire attendue.
 async fn resolve_entry(
     config: &ConfigState,
     catalog: &CatalogService,
@@ -1306,8 +1267,7 @@ async fn resolve_entry(
             };
             let (state, sid, eid) = (folder.clone(), source_id.to_string(), entry_id.to_string());
             let expected = expected.map(str::to_string);
-            blocking(move || resolve_folder_entry(&state, &sid, &root, &eid, expected.as_deref()))
-                .await?
+            blocking(move || state.scan_for_entry(&sid, &root, &eid, expected.as_deref())).await?
         }
         Source::Library { .. } => Err(AppError::Validation(
             "cette histoire est déjà dans la bibliothèque".into(),

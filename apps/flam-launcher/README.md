@@ -1279,9 +1279,9 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   ![Sources, thème clair](docs/screenshots/sources-clair.png)
   ![Sources, thème sombre](docs/screenshots/sources-sombre.png)
 - **Paramètres** : chemins du player, de Python et du cache (sélecteur `.exe`, valeurs utilisées,
-  problèmes signalés), taille du cache et vidage, thème Système/Clair/Sombre, « Vignettes : remplissage » (Flou/Rogner/Bandes, défaut Flou),
-  lecture (réduire
-  la fenêtre pendant la lecture), à propos.
+  problèmes signalés), taille du cache et vidage, thème Système/Clair/Sombre, « Vignettes :
+  remplissage » (Flou/Rogner/Bandes, défaut Flou ; bloqué pendant l'enregistrement du thème, et
+  inversement), lecture (réduire la fenêtre pendant la lecture), à propos.
   ![Paramètres, thème clair](docs/screenshots/settings-clair.png)
   ![Paramètres, thème sombre](docs/screenshots/settings-sombre.png)
 - **Restauration** : si un fichier de configuration corrompu a été remplacé, un bandeau

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useLayoutEffect, useRef } from "react";
 import { Badge, Banner, Button, IconButton, ProgressBar } from "../../components";
 import type { BadgeTone } from "../../components";
 import { t } from "../../i18n";
@@ -39,6 +39,9 @@ export function TransferPanel() {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const wasBusy = useRef(false);
+  const listRef = useRef<HTMLUListElement>(null);
+  // Longueur de la file au clic sur « Retirer » (0 : aucun retrait attendu).
+  const focusAfterRemoval = useRef(0);
 
   // Fin de file : le bouton Annuler disparaît, le focus passe au titre du panneau.
   useEffect(() => {
@@ -47,6 +50,19 @@ export function TransferPanel() {
     }
     wasBusy.current = busy;
   });
+
+  // Un élément retiré de la file emporte son bouton : le focus passe au bouton « Retirer de la
+  // file » suivant restant, sinon au titre du panneau.
+  useLayoutEffect(() => {
+    const before = focusAfterRemoval.current;
+    if (!before) return;
+    focusAfterRemoval.current = 0;
+    // L'élément est parti en envoi entre-temps : rien n'a été retiré, le focus reste en place.
+    if (queue.length >= before) return;
+    const buttons = listRef.current?.querySelectorAll<HTMLElement>("[data-queue-remove]");
+    const target = buttons?.[0] ?? headingRef.current;
+    target?.focus();
+  }, [queue]);
 
   // Annonces de la file (début, fin, échec), sans pourcentage : région vivante toujours présente.
   const live = (
@@ -130,7 +146,7 @@ export function TransferPanel() {
             </Button>
           </div>
         )}
-        <ul className="fl-transfer__list" aria-label={text.panel.listLabel}>
+        <ul ref={listRef} className="fl-transfer__list" aria-label={text.panel.listLabel}>
           {queue.map((item) => (
             <li key={item.uuid} className="fl-transfer__item">
               <div className="fl-transfer__item-head">
@@ -140,7 +156,11 @@ export function TransferPanel() {
                     icon="close"
                     size="sm"
                     label={text.panel.removeFromQueue(item.title)}
-                    onClick={() => removeFromQueue(item.uuid)}
+                    data-queue-remove=""
+                    onClick={() => {
+                      focusAfterRemoval.current = queue.length;
+                      removeFromQueue(item.uuid);
+                    }}
                   />
                 )}
               </div>
@@ -157,7 +177,12 @@ export function TransferPanel() {
         {!busy && (
           <>
             {anyDone && (
-              <Banner tone="success" title={text.finished.title} role="status">
+              <Banner
+                tone="success"
+                title={text.finished.title}
+                // Une file de plusieurs envois est déjà annoncée par la région vivante du panneau.
+                role={queue.length > 1 ? "none" : "status"}
+              >
                 {text.finished.restart}
               </Banner>
             )}

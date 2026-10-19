@@ -33,3 +33,14 @@ it("n'a aucune violation axe", async () => {
   );
   await expectComponentAccessible(container);
 });
+
+it('role="none" : aucun rôle quand une autre région vivante annonce le message', () => {
+  render(
+    <Banner tone="success" role="none">
+      Déjà annoncé
+    </Banner>,
+  );
+  expect(screen.queryByRole("status")).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText("Déjà annoncé")).toBeVisible();
+});

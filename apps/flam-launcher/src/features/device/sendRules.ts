@@ -8,13 +8,15 @@ export const BYTES_PER_MINUTE = (80 * 1024 * 1024) / 4;
 
 /** Raison pour laquelle une histoire ne peut pas être envoyée maintenant. */
 export type SendBlock =
-  "queued" | "no_device" | "firmware" | "checking" | "present" | "no_space";
+  "queued" | "no_device" | "firmware" | "checking" | "present" | "no_space" | "removing";
 
 export interface SendContext {
   device: DeviceSummary | null;
   /** Histoires de la Flam, une fois lues (`null` : pas encore). */
   deviceStories: DeviceStories | null;
   firmwareBlocked: boolean;
+  /** Un retrait d'histoire de la Flam est en cours (l'envoi attend sa fin). */
+  removing: boolean;
   /** Histoires en attente ou en cours d'envoi (jamais les envois terminés : réussis, échoués ou annulés). */
   queuedOrSent: ReadonlySet<string>;
 }
@@ -25,11 +27,12 @@ export interface SendContext {
  * qu'à désactiver le bouton avec une raison lisible.
  */
 export function sendBlock(
-  { device, deviceStories, firmwareBlocked, queuedOrSent }: SendContext,
+  { device, deviceStories, firmwareBlocked, removing, queuedOrSent }: SendContext,
   uuid: string,
   size: number | null,
 ): SendBlock | null {
   if (!device) return "no_device";
+  if (removing) return "removing";
   if (deviceStories?.stories.some((story) => story.uuid === uuid)) return "present";
   if (queuedOrSent.has(uuid)) return "queued";
   if (firmwareBlocked) return "firmware";

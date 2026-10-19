@@ -44,6 +44,7 @@ function context(overrides: Partial<SendContext> = {}): SendContext {
     device,
     deviceStories: stories,
     firmwareBlocked: false,
+    removing: false,
     queuedOrSent: new Set(),
     ...overrides,
   };
@@ -56,6 +57,7 @@ it("autorise une histoire absente avec assez de place", () => {
 
 it.each([
   ["Flam non détectée", context({ device: null }), "present", "no_device"],
+  ["retrait en cours sur la Flam", context({ removing: true }), "new", "removing"],
   ["firmware non pris en charge", context({ firmwareBlocked: true }), "new", "firmware"],
   ["histoires pas encore lues", context({ deviceStories: null }), "new", "checking"],
   ["déjà présente (même masquée)", context(), "present", "present"],

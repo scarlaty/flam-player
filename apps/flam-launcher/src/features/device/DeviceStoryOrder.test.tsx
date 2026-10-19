@@ -296,9 +296,9 @@ it("Tout en haut et Tout en bas à la souris : focus gardé, annonce, extrémit�
 it("Fin et Début déplacent la ligne focalisée tout en bas / tout en haut", async () => {
   renderScreen();
   await openOrder();
-  const up = screen.getByRole("button", { name: "Descendre « Les trois ours »" });
-  up.focus();
-  fireEvent.keyDown(up, { key: "End" });
+  const down = screen.getByRole("button", { name: "Descendre « Les trois ours »" });
+  down.focus();
+  fireEvent.keyDown(down, { key: "End" });
   expect(orderNames()).toEqual(["Capi", "Le loup", "Les trois ours"]);
   expect(lastAnnouncement(/« Les trois ours » déplacée en position 3 sur 3/)).toBe(true);
   await waitFor(() =>
@@ -323,6 +323,36 @@ it("Fin et Début déplacent la ligne focalisée tout en bas / tout en haut", as
   fireEvent.keyDown(document.activeElement!, { key: "End", ctrlKey: true });
   fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
   expect(orderNames()).toEqual(["Les trois ours", "Capi", "Le loup"]);
+});
+
+it("Début / Fin ne sont traités que depuis un bouton de la ligne", async () => {
+  renderScreen();
+  await openOrder();
+  const row = within(orderList()).getAllByRole("listitem")[1]!;
+  fireEvent.keyDown(row, { key: "End" });
+  const field = document.createElement("input");
+  row.appendChild(field);
+  fireEvent.keyDown(field, { key: "End" });
+  field.remove();
+  expect(orderNames()).toEqual(["Capi", "Les trois ours", "Le loup"]);
+});
+
+it("le focus retombe sur le titre si la ligne déplacée disparaît à la relecture", async () => {
+  reorderFailure = { kind: "validation", message: "liste périmée" };
+  renderScreen();
+  await openOrder();
+  const down = screen.getByRole("button", { name: "Descendre « Capi »" });
+  down.focus();
+  fireEvent.click(down);
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Descendre « Capi »" })).toHaveFocus(),
+  );
+  // Capi est retirée de la Flam entre-temps ; l'enregistrement échoue et la liste repart.
+  visible = [B, C];
+  fireEvent.click(saveButton());
+  await screen.findByRole("alert");
+  await waitFor(() => expect(orderNames()).toEqual(["Les trois ours", "Le loup"]));
+  expect(screen.getByRole("heading", { name: /ordre/i, level: 3 })).toHaveFocus();
 });
 
 it("un dépôt sur soi-même ne change rien", async () => {
