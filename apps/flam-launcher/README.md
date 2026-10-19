@@ -426,7 +426,7 @@ backend refuse sans rien écrire un ordre qui ne contient pas exactement les UUI
 non sûr ou une Flam occupée (verrou `Reorder`) ; il réécrit `list` par `write_index` (ancien ou
 nouvel ordre après une coupure, reprise par `recover`), supprime `usr/0/library.cache` et ne
 touche à rien d'autre (`list.hidden`, `str/`, sauvegardes). Après un succès ou un refus, la liste
-est relue ; si ses histoires ont changé, l'édition repart de l'ordre de la Flam. Tests :
+est relue ; si ses histoires ont changé, l'édition repart de l'ordre de la Flam. Si la liste relue n'est plus modifiable (index non sûr, liste tronquée, moins de deux histoires visibles), l'édition se ferme et les déplacements non enregistrés sont perdus. Tests :
 `device/reorder/tests.rs` (validation, relecture, refus sans écriture, verrou, coupure à chaque
 étape puis reprise) et `DeviceStoryOrder.test.tsx`.
 

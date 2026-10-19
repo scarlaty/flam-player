@@ -111,9 +111,11 @@ impl From<RemoveError> for AppError {
             | RemoveError::InvalidId
             | RemoveError::NotADevice
             | RemoveError::Busy(_)
-            | RemoveError::IndexNeedsUser
-            | RemoveError::StillIndexed(_) => AppError::Validation(err.to_string()),
-            RemoveError::Index(_)
+            | RemoveError::IndexNeedsUser => AppError::Validation(err.to_string()),
+            // Incohérence interne (l'index relu contient encore l'UUID après sa réécriture),
+            // pas une erreur de saisie : présentée comme une erreur d'entrée/sortie.
+            RemoveError::StillIndexed(_)
+            | RemoveError::Index(_)
             | RemoveError::FolderLeft(_)
             | RemoveError::TrashUnavailable(_)
             | RemoveError::Io(_) => AppError::Io(io::Error::other(err.to_string())),
@@ -148,6 +150,30 @@ fn is_real_dir(path: &Path) -> io::Result<bool> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err),
     }
+}
+
+/// Pose l'attribut « caché » sur la corbeille (au mieux) : elle ne doit pas s'afficher dans
+/// l'Explorateur si une purge échoue. Sans effet hors Windows.
+fn hide(path: &Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES,
+        };
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY : chaîne UTF-16 terminée par un nul, vivante pendant les deux appels.
+        let ok = unsafe {
+            let attributes = GetFileAttributesW(wide.as_ptr());
+            attributes != INVALID_FILE_ATTRIBUTES
+                && SetFileAttributesW(wide.as_ptr(), attributes | FILE_ATTRIBUTE_HIDDEN) != 0
+        };
+        if !ok {
+            tracing::debug!("attribut caché non posé sur la corbeille de la Flam");
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = path;
 }
 
 /// Dossiers possibles d'une histoire.
@@ -317,6 +343,9 @@ fn remove_with(
     let trash = root.join(TRASH_DIR);
     if !folders.is_empty() {
         let ready = fs::create_dir_all(&trash).and_then(|()| is_real_dir(&trash));
+        if matches!(ready, Ok(true)) {
+            hide(&trash);
+        }
         match ready {
             Ok(true) => {}
             Ok(false) => return Err(RemoveError::TrashUnavailable("pas un dossier".into())),

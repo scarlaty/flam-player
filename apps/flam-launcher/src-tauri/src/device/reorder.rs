@@ -22,10 +22,10 @@
 //! | Coupure ou échec après…              | État laissé                               | Reprise                    |
 //! |--------------------------------------|-------------------------------------------|----------------------------|
 //! | la validation                        | rien de modifié                           | aucune                     |
-//! | `list.new` (complet ou partiel)      | ancien `list` intact, `list.new`          | `index::recover` : ancien ordre |
-//! | `list.bak` (complet ou partiel)      | ancien `list`, `list.new`, `list.bak`     | `index::recover` : ancien ordre |
-//! | le remplacement (renommage FAT)      | nouveau `list`, ou `list` absent + `list.new` | `index::recover` : nouvel ordre |
-//! | la relecture, la suppression du cache | nouveau `list`, `list.bak`               | `index::recover` : nouvel ordre, cache supprimé |
+//! | `list.new` (complet ou partiel)      | ancien `list`, `list.new` sans `list.bak` | `list.new` supprimé : ancien ordre |
+//! | `list.bak` (complet ou partiel)      | ancien `list`, `list.new`, `list.bak`     | ancien ordre gardé |
+//! | le renommage, cible perdue           | `list` absent, `list.new`, `list.bak`     | `list.new` promu : nouvel ordre |
+//! | le remplacement, la relecture, le cache | nouveau `list`, `list.bak`             | nouvel ordre, cache supprimé |
 //!
 //! L'index est donc toujours l'ancien ou le nouvel ordre complet, jamais vide ni tronqué. La
 //! reprise des index ([`recover`]) est lancée au début de chaque opération et au branchement
@@ -69,22 +69,30 @@ pub enum ReorderError {
     Empty,
     #[error("identifiant d'histoire invalide en position {0} : rien n'a été écrit")]
     InvalidId(usize),
-    #[error("l'histoire {0} figure deux fois dans l'ordre demandé : rien n'a été écrit")]
+    #[error("l'histoire {} figure deux fois dans l'ordre demandé : rien n'a été écrit", short(.0))]
     Duplicate(StoryId),
-    #[error("l'histoire {0} n'est pas dans l'index de la Flam : actualisez la liste ; rien n'a été écrit")]
+    #[error("l'histoire {} n'est pas dans l'index de la Flam : actualisez la liste ; rien n'a été écrit", short(.0))]
     Unknown(StoryId),
-    #[error("l'histoire {0} est masquée : son ordre ne se change pas ; rien n'a été écrit")]
+    #[error("l'histoire {} est masquée : son ordre ne se change pas ; rien n'a été écrit", short(.0))]
     Hidden(StoryId),
     #[error(
-        "l'histoire {0} manque dans l'ordre demandé : actualisez la liste ; rien n'a été écrit"
+        "l'histoire {} manque dans l'ordre demandé : actualisez la liste ; rien n'a été écrit",
+        short(.0)
     )]
     Missing(StoryId),
     #[error(transparent)]
     Busy(#[from] Busy),
     #[error("index de la Flam absent, abîmé ou illisible : réparez-le avant de changer l'ordre ; rien n'a été écrit")]
     IndexNeedsUser,
-    #[error("index de la Flam : {0}")]
+    #[error(
+        "index de la Flam : {0} ; l'ordre affiché est celui relu sur la Flam, actualisez la liste"
+    )]
     Index(#[from] IndexError),
+}
+
+/// Identifiant court d'une histoire pour les messages (8 premiers caractères de l'UUID).
+fn short(id: &StoryId) -> &str {
+    &id.as_str()[..8]
 }
 
 impl From<ReorderError> for AppError {
