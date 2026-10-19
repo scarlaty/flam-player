@@ -531,6 +531,8 @@ export const fr = {
       cancel: "Annuler l'envoi",
       cancelling: "Annulation en cours…",
       removeFromQueue: (title: string) => `Retirer « ${title} » de la file`,
+      recoveryFailures: (failures: string[]) =>
+        `Attention : un transfert interrompu n'a pas pu être repris sur la Flam (${failures.join(" ; ")}). Fermez ce qui utilise la Flam, puis débranchez-la et rebranchez-la.`,
       dismiss: "Fermer la liste",
       listLabel: "File d'envoi",
       state: {

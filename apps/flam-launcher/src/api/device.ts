@@ -66,6 +66,11 @@ export interface DeviceStory {
   in_library: boolean;
   /** Listée dans l'index mais sans dossier sur la Flam. */
   missing: boolean;
+  /**
+   * Identifiants de bibliothèque des histoires installées sous cet UUID (associées par
+   * `uuid.bin`) : une source dossier ou Telmi n'a pas l'UUID de la Flam pour identifiant.
+   */
+  library_uuids: string[];
 }
 
 /** Réponse de `device_list_stories` (miroir de `StoriesReport`). */
@@ -199,6 +204,11 @@ export interface TransferReport {
   carrier_readback: boolean | null;
   /** Mode carrier : les clés sont conservées sur ce PC pour cette Flam (`null` hors carrier). */
   carrier_stored: boolean | null;
+  /**
+   * Reprises de transferts interrompus qui ont échoué avant l'envoi (« entrée : erreur ») :
+   * l'envoi a réussi, mais une autre histoire peut rester incomplète. Vide d'ordinaire.
+   */
+  recovery_failures: string[];
 }
 
 /** Consentement à l'avertissement du mode carrier (miroir de `CarrierConsent`). */
@@ -309,19 +319,20 @@ export const TRANSFER_PROGRESS_EVENT = "device://transfer-progress";
 /**
  * `device_send_story` : envoie l'histoire `uuid` de la bibliothèque sur la Flam de racine
  * `root` (`validation` si déjà présente sans `replace`, espace insuffisant, firmware non pris
- * en charge ou Flam occupée ; `cancelled` si annulé). `replace` : remplace l'histoire déjà sur
- * la Flam (même à version égale), l'ancienne n'étant retirée qu'une fois la nouvelle en place.
+ * en charge ou Flam occupée ; `cancelled` si annulé). `replace` : UUID de l'histoire de la Flam
+ * à remplacer (même à version égale), l'ancienne n'étant retirée qu'une fois la nouvelle en
+ * place ; refusé (`validation`) s'il ne désigne pas l'histoire de l'archive.
  */
 export function sendStoryToDevice(
   root: string,
   uuid: string,
   carrier?: CarrierSend,
-  replace = false,
+  replace?: string,
 ): Promise<TransferReport> {
   const args: Record<string, unknown> = carrier
     ? { root, uuid, carrier: carrier.choice, remember: carrier.remember }
     : { root, uuid };
-  if (replace) args.replace = true;
+  if (replace) args.replace = replace;
   return invokeCommand<TransferReport>("device_send_story", args);
 }
 
