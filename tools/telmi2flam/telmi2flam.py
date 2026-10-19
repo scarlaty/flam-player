@@ -38,7 +38,7 @@ import unicodedata
 import zipfile
 import zlib
 
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageFilter
 
 import lif
 import mp3map
@@ -46,7 +46,12 @@ import mp3map
 SCREEN_W, SCREEN_H = 320, 240
 HEADER_H = 28                # bandeau titre du player (src/main.c, global.header_height)
 VISUAL_W, VISUAL_H = SCREEN_W, SCREEN_H - HEADER_H   # zone d'affichage des scenes : 320x212
-THUMB_W, THUMB_H = 128, 96
+# Vignette de bibliotheque : 104x136 (portrait), taille mesuree sur les 19 histoires
+# officielles d'une Flam reelle (img/thumbnail.lif).
+THUMB_W, THUMB_H = 104, 136
+THUMB_FITS = ("flou", "rogner", "bandes")
+DEFAULT_THUMB_FIT = "flou"
+_THUMB_BLUR_RADIUS = 8
 INV_W, INV_H = 128, 128      # icones d'inventaire
 MAX_DIM = 2047               # borne du decodeur LIF (lif_decoder.c, 11 bits lv_img_header_t)
 LABEL_MAX = 40               # longueur max du label d'un choix (carrousel)
@@ -299,17 +304,50 @@ def png_to_fit_lif(png_bytes, maxw, maxh, align="center"):
     return _encode(_avoid_transpose(im, align))
 
 
-def png_to_thumb_lif(png_bytes):
-    """Vignette : on tient dans THUMB_W x THUMB_H en gardant le ratio. Une image
-    portrait (ou carree) est centree sur un canevas paysage THUMB_W x THUMB_H."""
+def _scaled(im, scale):
+    nw, nh = max(1, round(im.size[0] * scale)), max(1, round(im.size[1] * scale))
+    return im if (nw, nh) == im.size else im.resize((nw, nh), Image.LANCZOS)
+
+
+def _thumb_cover(im):
+    """Couvre THUMB_W x THUMB_H : fenetre centrale de la source au rapport de la vignette
+    (evite une image intermediaire geante sur un ratio extreme), puis redimensionnee."""
+    sw, sh = im.size
+    if sw * THUMB_H > sh * THUMB_W:
+        cw, ch = max(1, round(sh * THUMB_W / THUMB_H)), sh
+    else:
+        cw, ch = sw, max(1, round(sw * THUMB_H / THUMB_W))
+    left, top = (sw - cw) // 2, (sh - ch) // 2
+    return im.crop((left, top, left + cw, top + ch)).resize((THUMB_W, THUMB_H), Image.LANCZOS)
+
+
+def _thumb_contain(im):
+    """Image entiere (agrandie si besoin), centree sur un canevas transparent."""
+    im = _scaled(im, min(THUMB_W / im.size[0], THUMB_H / im.size[1]))
+    canvas = Image.new("RGBA", (THUMB_W, THUMB_H), (0, 0, 0, 0))
+    canvas.paste(im, ((THUMB_W - im.size[0]) // 2, (THUMB_H - im.size[1]) // 2))
+    return canvas
+
+
+def png_to_thumb_lif(png_bytes, fit=DEFAULT_THUMB_FIT):
+    """Vignette THUMB_W x THUMB_H (104x136). `fit` : flou (image entiere centree, fond =
+    la meme image agrandie pour couvrir puis floutee), rogner (cover, rognee au centre),
+    bandes (image entiere centree, bandes transparentes)."""
+    if fit not in THUMB_FITS:
+        raise ValueError("remplissage de vignette inconnu : %r (attendu : %s)"
+                         % (fit, ", ".join(THUMB_FITS)))
     im = _open_rgba(png_bytes)
-    im.thumbnail((THUMB_W, THUMB_H), Image.LANCZOS)
-    w, h = im.size
-    if h >= w:
-        canvas = Image.new("RGBA", (THUMB_W, THUMB_H), (0, 0, 0, 0))
-        canvas.paste(im, ((THUMB_W - w) // 2, (THUMB_H - h) // 2))
-        im = canvas
-    return _encode(im)
+    if fit == "rogner":
+        out = _thumb_cover(im)
+    elif fit == "bandes":
+        out = _thumb_contain(im)
+    else:
+        # fond opaque : flouter du RGBA non premultiplie laisserait des halos sombres
+        bg = _thumb_cover(im)
+        base = Image.new("RGBA", bg.size, (128, 128, 128, 255))
+        bg = Image.alpha_composite(base, bg).filter(ImageFilter.GaussianBlur(_THUMB_BLUR_RADIUS))
+        out = Image.alpha_composite(bg, _thumb_contain(im))
+    return _encode(out)
 
 
 # ---------------------------------------------------------------------------
@@ -784,10 +822,13 @@ def find_root(names):
 
 
 def convert(zip_path, out_path=None, keep_size=False, emit_plain=False, selector="carousel",
-            allow_missing=False, progress=None):
+            allow_missing=False, progress=None, thumb_fit=DEFAULT_THUMB_FIT):
     """Convertit une archive TELMI. `progress` (optionnel) : fonction appelee avec chaque
     evenement de progression (dict : start, step, warning, done), cf. README."""
     global _sink
+    if thumb_fit not in THUMB_FITS:
+        raise ConvError("remplissage de vignette inconnu : %r (attendu : %s)"
+                        % (thumb_fit, ", ".join(THUMB_FITS)), code="usage", exit_code=EXIT_USAGE)
     previous = _sink
     n_warn[0] = 0
 
@@ -808,7 +849,7 @@ def convert(zip_path, out_path=None, keep_size=False, emit_plain=False, selector
             raise ArchiveError("%s : %s" % (zip_path, e))
         with zf:
             return _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing,
-                            zip_path)
+                            zip_path, thumb_fit)
     finally:
         _sink = previous
 
@@ -838,7 +879,8 @@ def read_info(zip_path):
             "description": scalar("description"), "cover": has_cover}
 
 
-def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, source=None):
+def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, source=None,
+             thumb_fit=DEFAULT_THUMB_FIT):
     names = zf.namelist()
     nameset = set(names)
     # Index insensible a la casse (S0.PNG reference "s0.png" et inversement)
@@ -1141,7 +1183,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
             # ancre a gauche) : un cover portrait est complete a droite en transparent.
             title_lif = png_to_fit_lif(cover_bytes, 89, 120, align="left")
             # vignette de la bibliotheque
-            thumb_lif = png_to_thumb_lif(cover_bytes)
+            thumb_lif = png_to_thumb_lif(cover_bytes, thumb_fit)
         except Exception as e:
             _warn("couverture illisible (%s: %s) : pas de titre illustre ni de vignette"
                   % (type(e).__name__, e), code="cover_unreadable")
@@ -1447,6 +1489,10 @@ def main(argv=None):
     ap.add_argument("--selector", choices=["carousel", "image"], default="carousel",
                     help="affichage des choix multiples : carousel (defaut, 3 vignettes + "
                          "label) ou image (image-choice plein ecran d'origine)")
+    ap.add_argument("--thumb-fit", choices=THUMB_FITS, default=DEFAULT_THUMB_FIT,
+                    help="remplissage de la vignette 104x136 : flou (defaut : image entiere "
+                         "centree, fond = image agrandie et floutee), rogner (cover centre) "
+                         "ou bandes (image entiere, bandes transparentes)")
     ap.add_argument("--progress-json", action="store_true",
                     help="evenements de progression en JSON (une ligne par evenement) sur "
                          "stdout ; les messages humains restent sur stderr")
@@ -1468,7 +1514,8 @@ def main(argv=None):
             print(json.dumps(read_info(args.input), ensure_ascii=True, separators=(",", ":")))
         else:
             convert(args.input, args.output, args.keep_size, args.plain, args.selector,
-                    args.allow_missing, progress=_print_event if machine else None)
+                    args.allow_missing, progress=_print_event if machine else None,
+                    thumb_fit=args.thumb_fit)
         return EXIT_OK
     except ConvError as e:
         return fail(e.code, str(e), e.exit_code)

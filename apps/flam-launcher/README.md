@@ -944,9 +944,16 @@ transmet jamais d'URL ni de chemin. Une tâche active pour le même `uuid` est r
   "cache_dir": null,
   "default_catalog_url": "https://gist.githubusercontent.com/DantSu/49ed776755f3a01c995e78e3fd1cb79f/raw/telmi-interactive.json",
   "theme": "system",
-  "max_downloads": 2
+  "max_downloads": 2,
+  "thumb_fit": "flou"
 }
 ```
+
+`thumb_fit` (`flou`, `rogner` ou `bandes`, `flou` par défaut) est le remplissage des vignettes
+104×136 des histoires converties (#279) : le launcher le transmet au convertisseur par
+`--thumb-fit` (valeur issue d'un ensemble fermé côté Rust, `ThumbFit::as_arg`, jamais d'un texte
+libre). Absent d'un fichier ancien : `flou` ; une valeur inconnue retombe aussi sur `flou`. Il ne
+s'applique qu'aux prochaines conversions : les histoires déjà converties gardent leur vignette.
 
 `max_downloads` (1 à 4, 2 par défaut) borne les téléchargements simultanés du pipeline
 d'installation ; absent d'un fichier ancien, il prend sa valeur par défaut (`#[serde(default)]`).
@@ -1178,7 +1185,8 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   ![Sources, thème clair](docs/screenshots/sources-clair.png)
   ![Sources, thème sombre](docs/screenshots/sources-sombre.png)
 - **Paramètres** : chemins du player, de Python et du cache (sélecteur `.exe`, valeurs utilisées,
-  problèmes signalés), taille du cache et vidage, thème Système/Clair/Sombre, lecture (réduire
+  problèmes signalés), taille du cache et vidage, thème Système/Clair/Sombre, « Vignettes : remplissage » (Flou/Rogner/Bandes, défaut Flou),
+  lecture (réduire
   la fenêtre pendant la lecture), à propos.
   ![Paramètres, thème clair](docs/screenshots/settings-clair.png)
   ![Paramètres, thème sombre](docs/screenshots/settings-sombre.png)

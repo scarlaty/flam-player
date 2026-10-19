@@ -42,7 +42,7 @@ use crate::compat;
 use crate::folder::FolderState;
 use crate::library::{remove_if_exists, Library, LibraryEntry};
 use crate::library_thumb;
-use crate::settings::{self, Environment, SettingsStore};
+use crate::settings::{self, Environment, SettingsStore, ThumbFit};
 use crate::sources::{Source, SourcesStore};
 use crate::storage::{self, ConfigState, Loaded};
 use crate::story::{validate_story_id, StoryEntry, StoryKind};
@@ -191,6 +191,8 @@ pub struct Toolchain {
     /// ffmpeg embarqué (rééchantillonnage audio, #46).
     pub ffmpeg: Option<PathBuf>,
     pub max_downloads: usize,
+    /// Remplissage des vignettes (`--thumb-fit`, #279).
+    pub thumb_fit: ThumbFit,
 }
 
 pub type Resolver = Arc<dyn Fn() -> AppResult<Toolchain> + Send + Sync>;
@@ -227,6 +229,7 @@ pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
             converter: detect_converter(&env),
             ffmpeg: settings::ffmpeg_path(&env),
             max_downloads: saved.max_downloads as usize,
+            thumb_fit: saved.thumb_fit,
         })
     })
 }
@@ -914,6 +917,7 @@ impl InstallService {
                         input: &source,
                         output: staged,
                         ffmpeg: tc.ffmpeg.as_deref(),
+                        thumb_fit: tc.thumb_fit,
                         grace: self.0.opts.grace,
                     },
                     cancel,

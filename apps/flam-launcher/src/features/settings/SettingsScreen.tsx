@@ -6,7 +6,9 @@ import { toAppError, type AppError } from "../../api/error";
 import {
   getSettings,
   setSettings,
+  THUMB_FITS,
   type SettingsIssue,
+  type ThumbFit,
   type SettingsView,
 } from "../../api/settings";
 import {
@@ -50,6 +52,8 @@ export function SettingsScreen() {
   const [confirmClear, setConfirmClear] = useState(false);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [themeError, setThemeError] = useState(false);
+  const [thumbFitError, setThumbFitError] = useState(false);
+  const [thumbFitSaving, setThumbFitSaving] = useState(false);
   const [minimizeDuringPlay, setMinimize] = useState(getMinimizeDuringPlay);
   const cancelClearRef = useRef<HTMLButtonElement>(null);
   // Derniers paramètres confirmés par le backend et numéro du dernier changement de thème.
@@ -194,6 +198,41 @@ export function SettingsScreen() {
     }
   }
 
+  /** Enregistre le remplissage des vignettes ; un échec rétablit le choix enregistré. */
+  async function changeThumbFit(thumb_fit: ThumbFit) {
+    const confirmed = confirmedRef.current;
+    if (!view || !confirmed || thumbFitSaving) return;
+    setThumbFitError(false);
+    setThumbFitSaving(true);
+    setView((current) =>
+      current ? { ...current, settings: { ...current.settings, thumb_fit } } : current,
+    );
+    try {
+      const next = await setSettings({ ...confirmed.settings, thumb_fit });
+      confirmedRef.current = next;
+      setView((current) =>
+        current
+          ? {
+              ...current,
+              settings: { ...current.settings, thumb_fit: next.settings.thumb_fit },
+            }
+          : current,
+      );
+    } catch {
+      setView((current) =>
+        current
+          ? {
+              ...current,
+              settings: { ...current.settings, thumb_fit: confirmed.settings.thumb_fit },
+            }
+          : current,
+      );
+      setThumbFitError(true);
+    } finally {
+      setThumbFitSaving(false);
+    }
+  }
+
   async function confirmClearCache() {
     setConfirmClear(false);
     try {
@@ -301,6 +340,23 @@ export function SettingsScreen() {
           value={view.settings.theme}
           options={THEME_PREFERENCES.map((value) => ({ value, label: t.theme[value] }))}
           onChange={(theme) => void changeTheme(theme)}
+        />
+      </section>
+
+      <section className="fl-settings__section" aria-labelledby="settings-thumbs">
+        <h2 id="settings-thumbs">{text.thumbFit.title}</h2>
+        <p>{text.thumbFit.note}</p>
+        {thumbFitError && <Banner tone="danger">{text.thumbFit.failed}</Banner>}
+        <RadioGroup
+          legend={text.thumbFit.label}
+          value={view.settings.thumb_fit}
+          disabled={thumbFitSaving}
+          options={THUMB_FITS.map((value) => ({
+            value,
+            label: text.thumbFit.options[value].label,
+            hint: text.thumbFit.options[value].hint,
+          }))}
+          onChange={(thumbFit) => void changeThumbFit(thumbFit)}
         />
       </section>
 

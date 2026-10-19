@@ -17,9 +17,9 @@ type Result<T> = std::result::Result<T, PngError>;
 /// Zone d'affichage des scènes sous le bandeau (`VISUAL_W`, `VISUAL_H`).
 pub const VISUAL_W: u32 = 320;
 pub const VISUAL_H: u32 = 212;
-/// Vignette de l'histoire (`THUMB_W`, `THUMB_H`).
-pub const THUMB_W: u32 = 128;
-pub const THUMB_H: u32 = 96;
+/// Vignette de l'histoire (`THUMB_W`, `THUMB_H`) : 104 × 136, taille des vignettes officielles.
+pub const THUMB_W: u32 = 104;
+pub const THUMB_H: u32 = 136;
 /// Icônes d'inventaire (`INV_W`, `INV_H`).
 pub const INV_W: u32 = 128;
 pub const INV_H: u32 = 128;
@@ -103,10 +103,10 @@ pub fn png_to_lif(png: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>> {
     encode(&avoid_transpose(bound(im, cancelled)?, Align::Center)?)
 }
 
-/// `png_to_scene_lif` : ajustée sans déformation dans 320 × 212 (agrandie ou réduite), centrée
-/// sur un canevas transparent de exactement 320 × 212.
-pub fn png_to_scene_lif(png: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>> {
-    let (w, h) = (VISUAL_W, VISUAL_H);
+/// Image ajustée sans déformation dans `w × h` (agrandie ou réduite), centrée sur un canevas
+/// transparent de exactement `w × h` (corps de `png_to_scene_lif` et de `png_to_thumb_lif`
+/// en mode `bandes`).
+fn fit_on_canvas(png: &[u8], w: u32, h: u32, cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     let mut im = decode_rgba(png, cancelled)?;
     let (sw, sh) = (im.width, im.height);
     if sw == 0 || sh == 0 {
@@ -123,7 +123,13 @@ pub fn png_to_scene_lif(png: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Vec<
     let x = (i64::from(w) - i64::from(nw)).div_euclid(2);
     let y = (i64::from(h) - i64::from(nh)).div_euclid(2);
     paste(&mut canvas, &im, x, y);
-    encode(&canvas)
+    Ok(canvas)
+}
+
+/// `png_to_scene_lif` : ajustée sans déformation dans 320 × 212 (agrandie ou réduite), centrée
+/// sur un canevas transparent de exactement 320 × 212.
+pub fn png_to_scene_lif(png: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>> {
+    encode(&fit_on_canvas(png, VISUAL_W, VISUAL_H, cancelled)?)
 }
 
 /// `png_to_fit_lif(png_bytes, maxw, maxh, align)` : tient dans `max_w × max_h` en gardant le
@@ -139,18 +145,11 @@ pub fn png_to_fit_lif(
     encode(&avoid_transpose(im, align)?)
 }
 
-/// `png_to_thumb_lif` : tient dans 128 × 96 ; une image portrait ou carrée est centrée sur un
-/// canevas paysage 128 × 96.
+/// `png_to_thumb_lif(png_bytes, "bandes")` : image entière (agrandie ou réduite) centrée sur un
+/// canevas transparent 104 × 136. Seul le mode `bandes` est porté ; les modes `flou` (défaut du
+/// convertisseur Python) et `rogner` ne le sont pas encore (suivi dans l'issue du port).
 pub fn png_to_thumb_lif(png: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>> {
-    let im = thumbnail(decode_rgba(png, cancelled)?, THUMB_W, THUMB_H, cancelled)?;
-    if im.height >= im.width {
-        let mut canvas = transparent(THUMB_W, THUMB_H)?;
-        let x = (i64::from(THUMB_W) - i64::from(im.width)).div_euclid(2);
-        let y = (i64::from(THUMB_H) - i64::from(im.height)).div_euclid(2);
-        paste(&mut canvas, &im, x, y);
-        return encode(&canvas);
-    }
-    encode(&im)
+    encode(&fit_on_canvas(png, THUMB_W, THUMB_H, cancelled)?)
 }
 
 #[cfg(test)]
