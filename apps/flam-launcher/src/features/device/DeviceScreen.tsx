@@ -344,6 +344,9 @@ function DeviceStoriesList() {
     if (state.phase === "loading") return <p>{text.stories.loading}</p>;
 
     const { report } = state;
+    const removingStory = removing
+      ? report.stories.find((story) => story.uuid === removing)
+      : undefined;
     return (
       <section className="fl-device-stories" aria-labelledby="fl-device-stories-title">
         <div className="fl-device-stories__head">
@@ -381,6 +384,11 @@ function DeviceStoriesList() {
             </div>
           )}
         </div>
+        {removingStory && (
+          <p role="status" className="fl-visually-hidden">
+            {t.deviceTransfer.remove.workingNamed(nameOf(removingStory))}
+          </p>
+        )}
         {indexNotices(report).map(({ tone, message }) => (
           <Banner key={message} tone={tone} role="status">
             {message}

@@ -62,6 +62,8 @@ export function DeviceStoryOrder({
   const listRef = useRef<HTMLOListElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const pendingFocus = useRef<{ uuid: string; dir: MoveDir } | null>(null);
+  // Le focus est dans la section (un élément retiré du DOM ne déclenche pas de `blur`).
+  const focusInside = useRef(false);
 
   // Liste relue entre-temps (envoi, retrait, refus) : un ordre qui ne porte plus sur les mêmes
   // histoires repart de celui de la Flam (ajustement pendant le rendu).
@@ -75,11 +77,18 @@ export function DeviceStoryOrder({
 
   useLayoutEffect(() => headingRef.current?.focus(), []);
 
-  // Garde le focus sur le bouton de déplacement de l'histoire déplacée au clavier.
+  // Garde le focus sur le bouton de déplacement de l'histoire déplacée au clavier ; si la ligne a
+  // disparu (liste relue), retombe sur le titre plutôt que de perdre le focus.
   useLayoutEffect(() => {
     const pending = pendingFocus.current;
-    if (!pending || !listRef.current) return;
     pendingFocus.current = null;
+    if (!pending || !listRef.current) {
+      const active = document.activeElement;
+      if (focusInside.current && (!active || active === document.body)) {
+        headingRef.current?.focus();
+      }
+      return;
+    }
     const find = (dir: string) =>
       listRef.current?.querySelector<HTMLButtonElement>(
         `[data-uuid="${pending.uuid}"][data-move="${dir}"]`,
@@ -91,6 +100,7 @@ export function DeviceStoryOrder({
         return;
       }
     }
+    if (!listRef.current.contains(document.activeElement)) headingRef.current?.focus();
   }, [order]);
 
   const byUuid = new Map(stories.map((story) => [story.uuid, story]));
@@ -149,7 +159,17 @@ export function DeviceStoryOrder({
   }
 
   return (
-    <section className="fl-device-order" aria-labelledby="fl-device-order-title">
+    <section
+      className="fl-device-order"
+      aria-labelledby="fl-device-order-title"
+      onFocus={() => {
+        focusInside.current = true;
+      }}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget))
+          focusInside.current = false;
+      }}
+    >
       <h3
         id="fl-device-order-title"
         ref={headingRef}
@@ -185,7 +205,12 @@ export function DeviceStoryOrder({
                 (dragId === uuid ? " fl-device-order__row--dragging" : "")
               }
               onKeyDown={(event) => {
-                // Début / Fin sur la ligne de l'élément focalisé (bouton ou ligne).
+                // Début / Fin sur la ligne d'un bouton de déplacement : un futur champ de texte
+                // garde ces touches.
+                if (!(
+                  event.target instanceof HTMLElement && event.target.closest("button")
+                ))
+                  return;
                 if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
                   return;
                 if (event.key !== "Home" && event.key !== "End") return;
