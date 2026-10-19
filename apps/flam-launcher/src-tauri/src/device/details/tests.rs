@@ -320,6 +320,7 @@ fn lot_borne_uuid_invalides_omis_et_arret() {
         .collect();
     let report = read_titles(root, &uuids, None, &never);
     assert!(!report.interrupted);
+    assert!(!report.keys, "sans clé : réponses non définitives");
     assert_eq!(
         report.titles.len(),
         MAX_BATCH - 2,

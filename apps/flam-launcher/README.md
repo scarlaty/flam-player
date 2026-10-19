@@ -358,7 +358,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `player_embed_focus`   |                            | rien                                           | `player`         |
 | `device_status`        |                            | `DeviceStatus`                                 | `device::status` |
 | `device_list_stories`  |                            | `DeviceStories \| null` (`null` : aucune Flam) | `device::status` |
-| `device_story_titles`  | `root`, `uuids` (≤ 100)    | `{ titles: { uuid, title \| null }[], interrupted }` | `device::details` |
+| `device_story_titles`  | `root`, `uuids` (≤ 100)    | `{ titles: { uuid, title \| null }[], interrupted, keys }` | `device::details` |
 | `device_story_thumbnail` | `root`, `uuid`           | `{ thumb: URL data: \| null, busy }`           | `device::details` |
 | `device_story_details_cancel` |                     | rien                                           | `device::details` |
 
@@ -378,7 +378,9 @@ de la date du fichier). Repli du titre : bibliothèque, puis UUID court ; vignet
 invalide : illustration par défaut. Ces lectures ne prennent pas le verrou d'appareil : elles
 s'arrêtent dès qu'une opération est en cours (`interrupted`, `busy`) et l'écran les redemande
 2 s plus tard ; l'envoi ou le retrait en cours côté interface les suspend, et quitter l'écran ou
-changer de Flam interrompt le lot en cours (`device_story_details_cancel`). Aucune clé dans les
+changer de Flam interrompt le lot en cours (`device_story_details_cancel`). Sans clé de titre
+(`keys` faux), les réponses ne sont pas retenues : l'écran redemande après un envoi ou une
+nouvelle liste. Un `.mdf` momentanément illisible donne `interrupted`. Aucune clé dans les
 réponses ni les journaux.
 Le numéro de série et le firmware ne sont pas affichés : `parse_mdf` ne lit encore aucun champ
 (format de `.mdf` non spécifié, #224). L'écran « Ma Flam » (`#/device`, `src/features/device/`) est

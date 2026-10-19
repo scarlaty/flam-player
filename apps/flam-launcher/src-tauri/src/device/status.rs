@@ -297,11 +297,15 @@ fn archive_uuid(cache_root: &Path, entry: &LibraryEntry) -> Option<String> {
                 .checked(&entry.file)
                 .ok()
                 .and_then(|path| uuid_bin_of(&path));
-            DEVICE_UUIDS
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get_or_insert_with(HashMap::new)
-                .insert(key, found.clone());
+            // Un échec peut être passager (archive ouverte ailleurs) : seul un succès est
+            // mémorisé.
+            if found.is_some() {
+                DEVICE_UUIDS
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get_or_insert_with(HashMap::new)
+                    .insert(key, found.clone());
+            }
             found
         }
     }

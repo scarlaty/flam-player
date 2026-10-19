@@ -1,6 +1,13 @@
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { DeviceStoryThumbnail } from "../../api/device";
-import { DETAILS_RETRY_MS, THUMB_CONCURRENCY, ThumbnailLoader } from "./storyDetails";
+import {
+  DETAILS_RETRY_MS,
+  THUMB_CONCURRENCY,
+  ThumbnailLoader,
+  useDeviceStoryTitles,
+} from "./storyDetails";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -91,4 +98,35 @@ it("suspend les lectures pendant une opération et abandonne au changement de Fl
   // Après abandon, aucune nouvelle lecture.
   expect(pending).toHaveLength(THUMB_CONCURRENCY);
   void result;
+  // Le chargeur reste utilisable après `dispose` (double montage de StrictMode).
+  const again = loader.request("d");
+  await flush();
+  pending.at(-1)!.answer({ thumb: PNG, busy: false });
+  expect(await again).toBe(PNG);
+});
+
+it("ne retient pas les titres d'une réponse sans clé et redemande ensuite", async () => {
+  const replies = [
+    { titles: [{ uuid: "a", title: null }], interrupted: false, keys: false },
+    { titles: [{ uuid: "a", title: "Capi" }], interrupted: false, keys: true },
+  ];
+  const requests: string[][] = [];
+  mockIPC((cmd, args) => {
+    if (cmd !== "device_story_titles") return null;
+    requests.push((args as { uuids: string[] }).uuids);
+    return replies[requests.length - 1];
+  });
+  const { result, rerender } = renderHook(
+    ({ paused }) => useDeviceStoryTitles("E:\\", ["a"], paused),
+    { initialProps: { paused: false } },
+  );
+  await waitFor(() => expect(requests).toHaveLength(1));
+  await flush();
+  expect(result.current.get("a")).toBeUndefined();
+  // Fin d'un envoi (la clé carrier vient peut-être d'être conservée) : nouvelle demande.
+  rerender({ paused: true });
+  rerender({ paused: false });
+  await waitFor(() => expect(result.current.get("a")).toBe("Capi"));
+  expect(requests).toHaveLength(2);
+  clearMocks();
 });

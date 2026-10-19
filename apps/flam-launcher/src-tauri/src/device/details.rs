@@ -70,9 +70,13 @@ pub struct StoryTitle {
 pub struct StoryTitles {
     /// Titres des histoires traitées, dans l'ordre de la demande (UUID invalides omis).
     pub titles: Vec<StoryTitle>,
-    /// Lot interrompu (opération en cours sur la Flam, ou annulation) : les histoires absentes
-    /// de `titles` sont à redemander plus tard.
+    /// Lot interrompu (opération en cours sur la Flam, annulation, `.mdf` momentanément
+    /// illisible) : les histoires absentes de `titles` sont à redemander plus tard.
     pub interrupted: bool,
+    /// Des clés de titre étaient disponibles. Faux : les `None` ne sont pas définitifs (clé
+    /// carrier conservée ou consentement donné plus tard, `.mdf` relu) et peuvent être
+    /// redemandés.
+    pub keys: bool,
 }
 
 /// Réponse de `device_story_thumbnail`.
@@ -163,6 +167,7 @@ pub fn read_titles(
             return StoryTitles {
                 titles,
                 interrupted: true,
+                keys: keys.is_some(),
             };
         }
         let Some(id) = StoryId::parse(uuid) else {
@@ -177,6 +182,7 @@ pub fn read_titles(
     StoryTitles {
         titles,
         interrupted: false,
+        keys: keys.is_some(),
     }
 }
 
@@ -235,10 +241,12 @@ pub async fn device_story_titles(
     blocking(move || {
         let root = Path::new(&root);
         let stop = || device_busy() || GENERATION.load(Ordering::SeqCst) != generation;
+        // `.mdf` absent : Flam débranchée ou accroc USB, à redemander (pas un titre illisible).
         if stop() || !root.join(MDF_FILE).is_file() {
             return StoryTitles {
                 titles: Vec::new(),
-                interrupted: stop(),
+                interrupted: true,
+                keys: false,
             };
         }
         let keys = title_keys(root, consent.as_ref(), &CarrierStore::app());

@@ -110,6 +110,8 @@ export interface DeviceStoryTitles {
   titles: DeviceStoryTitle[];
   /** Lot interrompu (opération en cours sur la Flam, annulation) : redemander le reste plus tard. */
   interrupted: boolean;
+  /** Des clés de titre étaient disponibles ; faux : les `null` ne sont pas définitifs. */
+  keys: boolean;
 }
 
 /** Réponse de `device_story_thumbnail` (miroir de `StoryThumbnail`). */

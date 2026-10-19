@@ -8,6 +8,7 @@ import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
 import { ToastProvider } from "../../components";
 import { DeviceProvider } from "./DeviceProvider";
 import { DeviceScreen } from "./DeviceScreen";
+import { StrictMode } from "react";
 import { POLL_INTERVAL_MS } from "./useDeviceStatus";
 
 tolerateLoadInAsyncUtils();
@@ -120,6 +121,7 @@ beforeEach(() => {
           return {
             titles: uuids.map((uuid) => ({ uuid, title: deviceTitles[uuid] ?? null })),
             interrupted: false,
+            keys: true,
           };
         }
         case "device_story_thumbnail": {
@@ -388,22 +390,26 @@ it("affiche le titre déchiffré et la vignette de la Flam, avec repli", async (
   await expectNoAxeViolations(container);
 });
 
-it("demande les titres par lots de 100", async () => {
-  status = detected();
-  const many = Array.from({ length: 150 }, (_, i) =>
-    story(`00000000-0000-4000-8000-${i.toString(16).padStart(12, "0")}`),
-  );
-  stories = report([...many, story(B, { missing: true })]);
-  deviceTitles = { [many[149]!.uuid]: "Dernière" };
-  renderScreen();
-  expect(
-    await screen.findByRole("heading", { name: "Histoires sur la Flam (151)" }),
-  ).toBeInTheDocument();
-  expect(await screen.findByText("Dernière")).toBeInTheDocument();
-  expect(titleRequests.map((r) => r.length)).toEqual([100, 50]);
-  // Une histoire dont le dossier manque n'est pas lue.
-  expect(titleRequests.flat()).not.toContain(B);
-});
+it(
+  "demande les titres par lots de 100",
+  async () => {
+    status = detected();
+    const many = Array.from({ length: 150 }, (_, i) =>
+      story(`00000000-0000-4000-8000-${i.toString(16).padStart(12, "0")}`),
+    );
+    stories = report([...many, story(B, { missing: true })]);
+    deviceTitles = { [many[149]!.uuid]: "Dernière" };
+    renderScreen();
+    expect(
+      await screen.findByRole("heading", { name: "Histoires sur la Flam (151)" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Dernière")).toBeInTheDocument();
+    expect(titleRequests.map((r) => r.length)).toEqual([100, 50]);
+    // Une histoire dont le dossier manque n'est pas lue.
+    expect(titleRequests.flat()).not.toContain(B);
+  },
+  SLOW_TEST_MS,
+);
 
 it("redemande un lot interrompu par une opération sur la Flam", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -430,11 +436,16 @@ it("redemande un lot interrompu par une opération sur la Flam", async () => {
           titleRequests.push(uuids);
           if (first) {
             first = false;
-            return { titles: [{ uuid: A, title: "Premier" }], interrupted: true };
+            return {
+              titles: [{ uuid: A, title: "Premier" }],
+              interrupted: true,
+              keys: true,
+            };
           }
           return {
             titles: uuids.map((uuid) => ({ uuid, title: "Second" })),
             interrupted: false,
+            keys: true,
           };
         }
         case "device_story_thumbnail":
@@ -477,7 +488,7 @@ it("interrompt le lot de titres en cours quand l'écran est quitté", async () =
           await new Promise<void>((resolve) => {
             release = resolve;
           });
-          return { titles: [], interrupted: true };
+          return { titles: [], interrupted: true, keys: true };
         case "device_story_thumbnail":
           return { thumb: null, busy: false };
         default:
@@ -492,6 +503,27 @@ it("interrompt le lot de titres en cours quand l'écran est quitté", async () =
   unmount();
   expect(count("device_story_details_cancel")).toBe(1);
   release?.();
+});
+
+it("charge les vignettes en StrictMode (double montage)", async () => {
+  status = detected();
+  deviceThumbs = { [A]: "data:image/png;base64,QUJD" };
+  stories = report([story(A)]);
+  render(
+    <StrictMode>
+      <ToastProvider>
+        <DeviceProvider>
+          <DeviceScreen />
+        </DeviceProvider>
+      </ToastProvider>
+    </StrictMode>,
+  );
+  const list = await screen.findByRole("list", {
+    name: "Histoires installées sur la Flam",
+  });
+  await waitFor(() =>
+    expect(within(list).getByRole("listitem").querySelector("img")).not.toBeNull(),
+  );
 });
 
 it("ne modifie rien au simple affichage (lecture et reprise seulement)", async () => {

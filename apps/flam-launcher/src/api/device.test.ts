@@ -36,7 +36,8 @@ it("transmet la racine et les UUID aux commandes de titres et de vignettes", asy
   const calls: string[] = [];
   mockIPC((cmd, args) => {
     calls.push(`${cmd}:${JSON.stringify(args ?? {})}`);
-    if (cmd === "device_story_titles") return { titles: [], interrupted: false };
+    if (cmd === "device_story_titles")
+      return { titles: [], interrupted: false, keys: false };
     if (cmd === "device_story_thumbnail") return { thumb: null, busy: false };
     return null;
   });

@@ -62,6 +62,10 @@ export function useDeviceStoryTitles(
           inFlight = false;
         }
         if (!active) return;
+        // Sans clé de titre, les réponses ne sont pas définitives (clé carrier conservée ou
+        // consentement donné plus tard) : rien n'est retenu, l'effet suivant (fin d'un envoi,
+        // nouvelle liste) redemandera. L'affichage se replie d'ici là.
+        if (!reply.keys && !reply.interrupted) return;
         for (const { uuid, title } of reply.titles) map.set(uuid, title);
         // Lot complet : une histoire omise (UUID invalide) n'aura pas de titre.
         if (!reply.interrupted)
@@ -87,7 +91,8 @@ type Fetcher = (root: string, uuid: string) => Promise<DeviceStoryThumbnail>;
 /**
  * File des vignettes d'une Flam : au plus `THUMB_CONCURRENCY` lectures à la fois, résultats
  * gardés en mémoire, nouvel essai après `DETAILS_RETRY_MS` quand la Flam est occupée.
- * `dispose` abandonne les demandes en attente (changement de Flam, démontage).
+ * `dispose` abandonne les demandes en attente (démontage) ; le chargeur reste utilisable
+ * ensuite (double montage de `StrictMode`).
  */
 export class ThumbnailLoader {
   private readonly done = new Map<string, string | null>();
@@ -95,7 +100,8 @@ export class ThumbnailLoader {
   private readonly queue: string[] = [];
   private running = 0;
   private paused = false;
-  private disposed = false;
+  /** Incrémenté par `dispose` : les nouveaux essais d'avant sont abandonnés. */
+  private epoch = 0;
 
   constructor(
     private readonly root: string,
@@ -129,7 +135,7 @@ export class ThumbnailLoader {
   }
 
   dispose(): void {
-    this.disposed = true;
+    this.epoch += 1;
     this.queue.length = 0;
     for (const waiters of this.waiting.values())
       for (const resolve of waiters) resolve(null);
@@ -143,7 +149,7 @@ export class ThumbnailLoader {
   }
 
   private pump(): void {
-    while (!this.disposed && !this.paused && this.running < THUMB_CONCURRENCY) {
+    while (!this.paused && this.running < THUMB_CONCURRENCY) {
       const uuid = this.queue.shift();
       if (uuid === undefined) return;
       this.running += 1;
@@ -152,10 +158,10 @@ export class ThumbnailLoader {
   }
 
   private async load(uuid: string): Promise<void> {
+    const epoch = this.epoch;
     let retry = false;
     try {
       const reply = await this.fetcher(this.root, uuid);
-      if (this.disposed) return;
       if (reply.busy) {
         retry = true;
       } else {
@@ -163,13 +169,13 @@ export class ThumbnailLoader {
         this.finish(uuid, url);
       }
     } catch {
-      if (!this.disposed) this.finish(uuid, null);
+      this.finish(uuid, null);
     } finally {
       this.running -= 1;
     }
     if (retry) {
       await delay(DETAILS_RETRY_MS);
-      if (this.disposed) return;
+      if (this.epoch !== epoch) return;
       this.queue.push(uuid);
     }
     this.pump();
@@ -185,14 +191,18 @@ export function useDeviceThumbnail(
   uuid: string,
   ref: RefObject<Element | null>,
 ): string | undefined {
-  const [thumb, setThumb] = useState<{ uuid: string; url: string | null }>();
+  const [thumb, setThumb] = useState<{
+    loader: ThumbnailLoader;
+    uuid: string;
+    url: string | null;
+  }>();
   const known = loader?.peek(uuid);
   useEffect(() => {
     if (!loader || loader.peek(uuid) !== undefined) return;
     let active = true;
     const load = () => {
       void loader.request(uuid).then((url) => {
-        if (active) setThumb({ uuid, url });
+        if (active) setThumb({ loader, uuid, url });
       });
     };
     const element = ref.current;
@@ -218,5 +228,7 @@ export function useDeviceThumbnail(
     };
   }, [loader, uuid, ref]);
   if (known !== undefined) return known ?? undefined;
-  return thumb?.uuid === uuid ? (thumb.url ?? undefined) : undefined;
+  return thumb?.uuid === uuid && thumb.loader === loader
+    ? (thumb.url ?? undefined)
+    : undefined;
 }
