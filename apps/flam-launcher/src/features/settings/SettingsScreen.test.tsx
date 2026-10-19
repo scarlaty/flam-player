@@ -308,6 +308,29 @@ it("propose le remplissage des vignettes (flou par défaut) et l'enregistre", as
   await waitFor(() => expect(view.settings.thumb_fit).toBe("bandes"));
 });
 
+it("bloque les vignettes pendant l'enregistrement du thème, et inversement", async () => {
+  await renderScreen();
+  const themeGroup = screen.getByRole("group", { name: "Thème" });
+  const thumbGroup = screen.getByRole("group", { name: "Vignettes : remplissage" });
+  pendingSets = [];
+
+  fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
+  await waitFor(() => expect(pendingSets).toHaveLength(1));
+  expect(thumbGroup).toBeDisabled();
+  expect(themeGroup).toBeEnabled();
+  pendingSets?.[0]?.resolve();
+  await waitFor(() => expect(thumbGroup).toBeEnabled());
+
+  fireEvent.click(screen.getByRole("radio", { name: /Rogner/ }));
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+  expect(themeGroup).toBeDisabled();
+  pendingSets?.[1]?.resolve();
+  await waitFor(() => expect(themeGroup).toBeEnabled());
+  // Chaque enregistrement conserve le réglage de l'autre.
+  expect(view.settings.theme).toBe("dark");
+  expect(view.settings.thumb_fit).toBe("rogner");
+});
+
 it("rétablit le remplissage précédent si l'enregistrement échoue", async () => {
   await renderScreen();
   failures.settings_set = { kind: "io", message: "disque plein" };
