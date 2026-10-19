@@ -1159,6 +1159,22 @@ it("Flam 1.x : clé saisie modifiée ou non reconnue, rien n'est envoyé", async
   expect(count("device_send_story")).toBe(0);
 });
 
+it("Flam 1.x : pas d'avertissement « aucun bt » quand des clés sont conservées", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  carrierConsent = { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" };
+  carrierCandidates = [];
+  storedKeys = true;
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  const dialog = await screen.findByRole("alertdialog");
+  await within(dialog).findByRole("radio", { name: /Clés conservées/ });
+  expect(
+    within(dialog).queryByText(/Aucune histoire de cette Flam ne contient/),
+  ).toBeNull();
+});
+
 it("Flam 1.x : conservation échouée, les clés sont redemandées", async () => {
   acknowledgeWarning();
   status = detectedV1();

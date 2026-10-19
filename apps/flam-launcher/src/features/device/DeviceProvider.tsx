@@ -308,6 +308,16 @@ export function DeviceProvider({
           setAnnouncement(text.panel.announce.failed(next.title, failure.message));
         }
       }
+      // Le `bt` saisi ne reste pas dans la file au-delà de l'envoi (fait, échoué ou annulé).
+      if (next.carrier?.choice.kind === "entered") {
+        updateQueue((items) =>
+          items.map((item) =>
+            item.uuid === next.uuid && item.carrier
+              ? { ...item, carrier: undefined }
+              : item,
+          ),
+        );
+      }
       sendingUuid.current = null;
       setProgress(null);
     }
