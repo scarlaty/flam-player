@@ -146,3 +146,16 @@
 .fl-device-row[aria-busy="true"] {
   opacity: 0.6;
 }
+
+.fl-device-beta__line {
+  margin: 0;
+}
+
+.fl-device-beta__line + .fl-device-beta__line {
+  margin-top: var(--space-2);
+}
+
+.fl-device-beta__url {
+  overflow-wrap: anywhere;
+  user-select: text;
+}
