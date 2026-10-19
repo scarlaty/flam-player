@@ -229,6 +229,14 @@ it("copie le lien des risques dans le presse-papiers", async () => {
     expect.stringContaining("apps/flam-launcher/docs/flam-transfert.md#risques"),
   );
   expect(await screen.findByText(/Lien copié/)).toBeInTheDocument();
+
+  // Second clic : le message est vidé puis remis, pour être annoncé de nouveau.
+  let release: () => void = () => {};
+  writeText.mockReturnValueOnce(new Promise<void>((resolve) => (release = resolve)));
+  fireEvent.click(screen.getByRole("button", { name: "Copier le lien des risques" }));
+  expect(screen.queryByText(/Lien copié/)).not.toBeInTheDocument();
+  await act(async () => release());
+  expect(await screen.findByText(/Lien copié/)).toBeInTheDocument();
 });
 
 it("affiche le firmware sur la carte, « illisible » s'il est inconnu", async () => {

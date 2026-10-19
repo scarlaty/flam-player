@@ -15,7 +15,8 @@ Vous n'avez pas besoin d'être développeur. Comptez environ une heure.
 ## 1. Installer la pré-version
 
 1. Téléchargez l'installateur `Flam Launcher_<version>_x64-setup.exe` depuis la page des
-   pré-versions (<https://github.com/scarlaty/flam-player/releases>), ainsi que la valeur **SHA-256** indiquée dans ses notes.
+   pré-versions (<https://github.com/scarlaty/flam-player/releases>), ainsi que le fichier `SHA256SUMS.txt` publié avec la pré-version (il contient l'empreinte
+   **SHA-256** de l'installateur).
 2. **Vérifiez l'empreinte SHA-256** (cela prouve que le fichier n'a pas été altéré). Ouvrez
    le dossier de téléchargement, faites un clic droit dans une zone vide, puis « Ouvrir dans le
    Terminal » (ou PowerShell), et tapez :
@@ -24,7 +25,7 @@ Vous n'avez pas besoin d'être développeur. Comptez environ une heure.
    Get-FileHash -Algorithm SHA256 ".\Flam Launcher_<version>_x64-setup.exe"
    ```
 
-   La valeur affichée doit être **identique** à celle des notes de la pré-version. Sinon, ne
+   La valeur affichée doit être **identique** à celle de `SHA256SUMS.txt`. Sinon, ne
    lancez pas l'installateur.
 
 3. Lancez l'installateur. Il n'est **pas signé** : Windows SmartScreen affiche « Windows a
@@ -40,6 +41,9 @@ Vous n'avez pas besoin d'être développeur. Comptez environ une heure.
 Le launcher ne fait **pas** de sauvegarde complète de la Flam. Il ne garde que son fichier
 `.mdf`. Sans copie de votre part, une erreur pourrait vous faire perdre vos histoires. **Ne
 lancez aucun test avant d'avoir fait cette copie.**
+
+**Pendant toute la bêta, ne synchronisez pas la Flam avec l'application officielle et ne mettez
+pas à jour son firmware.** Si cela arrive, refaites une copie complète avant de continuer.
 
 1. Branchez la Flam au PC et activez le **mode connexion USB** dans ses réglages. Elle apparaît
    dans l'Explorateur de fichiers comme un disque (par exemple `E:`).
@@ -66,6 +70,14 @@ lancez aucun test avant d'avoir fait cette copie.**
 
 Si la Flam ne fonctionne plus correctement après un test :
 
+**Si le firmware affiché dans « Ma Flam » a changé depuis votre copie, ne restaurez pas :
+signalez-le.**
+
+À chaque restauration, ne débranchez pas la Flam pendant la copie ; si Windows signale une
+erreur, recommencez l'étape de copie ; vérifiez ensuite les nombres de fichiers comme à la
+sauvegarde. Attention : ce que vous supprimez sur la Flam ne passe pas par une corbeille
+(disque amovible) : assurez-vous que votre copie est complète avant de supprimer.
+
 Restauration ciblée, sur ce que le launcher modifie (à privilégier) :
 
 1. Fermez le launcher. Branchez la Flam, mode connexion USB activé.
@@ -75,12 +87,13 @@ Restauration ciblée, sur ce que le launcher modifie (à privilégier) :
 3. Depuis votre sauvegarde, recopiez sur la Flam, au même emplacement, `str`, `str.hidden`
    (s'il existe) et `etc\library` seulement.
 4. Ne recopiez **jamais** le fichier `.mdf` ni les autres dossiers de `etc` (réglages de
-   l'appareil, liés à la version du firmware), sauf en dernier recours.
-5. Éjectez la Flam, débranchez-la, puis redémarrez-la.
+   l'appareil, liés à la version du firmware), sauf en dernier recours (voir « Dernier recours » ci-dessous).
+5. Éjectez la Flam depuis l'Explorateur, débranchez-la, puis redémarrez-la.
 
 Dernier recours (la Flam ne démarre plus ou ne se laisse plus lire) : recopiez tout le contenu
-de la sauvegarde sur la Flam en remplaçant les fichiers existants. Cela n'est sûr que si le
-firmware de la Flam n'a pas changé depuis la sauvegarde.
+de la sauvegarde sur la Flam. Supprimez d'abord sur la Flam `str`, `str.hidden`, `etc\library`,
+`.flam-transfer` et `.flam-trash`, puis recopiez tout en remplaçant les fichiers existants. Cela
+n'est sûr que si le firmware de la Flam n'a pas changé depuis la sauvegarde.
 
 Ne **formatez** jamais la Flam.
 
