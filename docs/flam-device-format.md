@@ -133,7 +133,7 @@ conception du code :
 │   │   ├── list.hidden        index des histoires masquées (0 octet : aucune masquée)
 │   │   ├── list.new / .bak / .restore   fichiers de travail d'une réécriture d'index (launcher, éphémères)
 │   │   ├── list.hidden.new / .bak / .restore   idem pour list.hidden
-│   │   └── list.corrupt       copie d'un index abîmé avant sa reconstruction confirmée (launcher)
+│   │   └── list.corrupt       copie d'un index abîmé avant sa reconstruction confirmée (launcher ; puis list.corrupt.2, .3, jamais écrasées)
 │   ├── bluetooth/  onboarding/  update/  wifi/   réglages de l'appareil : ne pas toucher
 ├── System Volume Information/ créé par Windows (présent dans l'inventaire) : ignoré, ne pas toucher
 ├── str/<uuid>/                une histoire installée et visible
@@ -271,7 +271,7 @@ donnant le même nom cible, une entrée dont le nom cible est `key` (à la casse
 cumulés et 16 Mio par fichier à chiffrer (lu en mémoire), contrôlés d'après les tailles
 **réellement lues**. Les tailles déclarées par l'archive sont aussi additionnées dès le plan : un
 total déclaré au-delà de 4 Gio est refusé avant toute écriture. Sont refusés dès le plan un nom
-de plus de 255 caractères et un nom à la fois fichier et dossier (`a` et `a/b`) ; l'extension
+de plus de 255 unités UTF-16 (FAT, noms longs) et un nom à la fois fichier et dossier (`a` et `a/b`) ; l'extension
 `.lua` et les fichiers propres à l'archive se reconnaissent sans tenir compte de la casse.
 
 La préparation **n'écrit rien sur l'appareil**. Elle construit l'histoire dans un dossier de
@@ -370,7 +370,7 @@ visible, sous réserve de T3 et T4 :
 si le firmware réagit à un dossier inconnu à la racine, la copie en cours pourrait être ignorée ou
 supprimée par lui (une copie perdue, sans autre effet).
 
-Entre le renommage final et la suppression de `<uuid>.old`, les dossiers `str/<uuid>`, `str/` et `.flam-transfer/` sont forcés sur le disque (au mieux : un échec est journalisé), car une mise à jour d'une histoire déjà listée n'écrit aucun index. Le dossier racine reçu du front doit être un lecteur détecté (amovible, ou FAT fixe) : un dossier quelconque contenant un `.mdf` est refusé. Une entrée de `.flam-transfer/` qui ne peut pas être reprise (dossier verrouillé) n'empêche pas l'envoi d'une autre histoire ; l'envoi de la même histoire est refusé tant qu'elle reste.
+Entre le renommage final et la suppression de `<uuid>.old`, les dossiers `str/<uuid>`, `str/` et `.flam-transfer/` sont forcés sur le disque (au mieux : un échec est journalisé), car une mise à jour d'une histoire déjà listée n'écrit aucun index. Le dossier racine reçu du front doit être un lecteur détecté (amovible, ou FAT fixe) : un dossier quelconque contenant un `.mdf` est refusé, pour l'envoi comme pour la reprise, le retrait, le réordonnancement et l'oubli des clés carrier d'une Flam. Une entrée de `.flam-transfer/` qui ne peut pas être reprise (dossier verrouillé) n'empêche pas l'envoi d'une autre histoire, mais elle est signalée dans le rapport (`recovery_failures`) ; l'envoi de la même histoire est refusé tant qu'elle reste. « Remplacer » est lié à l'UUID visé : une archive dont `uuid.bin` désigne une autre histoire est refusée sans rien écrire.
 
 ### 8.2 Retrait ([retrait], #231, implémenté)
 
