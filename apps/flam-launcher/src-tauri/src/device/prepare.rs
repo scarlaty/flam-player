@@ -49,6 +49,8 @@ pub const EXCLUDED: [&str; 3] = ["uuid.bin", "_metadata.json", "_thumbnail.png"]
 
 const UUID_ENTRY: &str = "uuid.bin";
 const COPY_CHUNK: usize = 64 * 1024;
+/// Longueur maximale d'un nom de fichier ou de dossier sur FAT (unités UTF-16).
+const MAX_COMPONENT_UTF16: usize = 255;
 
 /// Bornes de la préparation.
 #[derive(Debug, Clone, Copy)]
@@ -119,7 +121,8 @@ impl Sink for RealSink {
         Ok(Box::new(File::create_new(path)?))
     }
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        std::fs::rename(from, to)
+        // Antivirus ou indexeur sous Windows : quelques essais sur un refus transitoire.
+        crate::storage::retry_transient(|| std::fs::rename(from, to), std::thread::sleep)
     }
     fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
         std::fs::remove_dir_all(path)
@@ -224,14 +227,20 @@ fn safe_relative(raw_name: &str, enclosed: Option<PathBuf>) -> Result<String, Pr
     Ok(parts.join("/"))
 }
 
+/// Retire un suffixe ASCII sans tenir compte de la casse (`.LUA` comme `.lua`).
+fn strip_suffix_ci<'a>(text: &'a str, suffix: &str) -> Option<&'a str> {
+    let cut = text.len().checked_sub(suffix.len())?;
+    (text.is_char_boundary(cut) && text[cut..].eq_ignore_ascii_case(suffix)).then(|| &text[..cut])
+}
+
 /// Nom sur la Flam et traitement d'une entrée (`None` : entrée ignorée).
 fn plan_entry(relative: &str) -> Result<Option<(String, Action)>, PrepareError> {
-    if EXCLUDED.contains(&relative) {
+    if EXCLUDED.iter().any(|e| e.eq_ignore_ascii_case(relative)) {
         return Ok(None);
     }
-    let (target, action) = if let Some(stem) = relative.strip_suffix(".plain") {
+    let (target, action) = if let Some(stem) = strip_suffix_ci(relative, ".plain") {
         (stem.to_string(), Action::Encrypt)
-    } else if let Some(stem) = relative.strip_suffix(".lua") {
+    } else if let Some(stem) = strip_suffix_ci(relative, ".lua") {
         (format!("{stem}.lsf"), Action::Encrypt)
     } else {
         (relative.to_string(), Action::Copy)
@@ -272,6 +281,7 @@ pub(crate) fn prepare_with(
     let mut exact_names = HashSet::new();
     let mut seen_targets = HashSet::new();
     let mut uuid_index = None;
+    let mut declared = 0u64;
     for index in 0..zip.len() {
         let entry = zip
             .by_index_raw(index)
@@ -286,7 +296,7 @@ pub(crate) fn prepare_with(
             )));
         }
         let relative = safe_relative(entry.name(), entry.enclosed_name())?;
-        if !seen_sources.insert(relative.to_ascii_lowercase()) {
+        if !seen_sources.insert(relative.to_lowercase()) {
             return Err(invalid(format!("entrée en double : {relative:?}")));
         }
         exact_names.insert(relative.clone());
@@ -294,15 +304,45 @@ pub(crate) fn prepare_with(
             uuid_index = Some(index);
         }
         if let Some((target, action)) = plan_entry(&relative)? {
-            if !seen_targets.insert(target.to_ascii_lowercase()) {
+            if !seen_targets.insert(target.to_lowercase()) {
                 return Err(invalid(format!("deux entrées donnent {target:?}")));
             }
+            if target
+                .split('/')
+                .any(|c| c.encode_utf16().count() > MAX_COMPONENT_UTF16)
+            {
+                return Err(invalid(format!("nom trop long pour FAT : {target:?}")));
+            }
+            declared = declared.saturating_add(entry.size());
             planned.push(Planned {
                 index,
                 target,
                 action,
             });
         }
+    }
+    // Un fichier et un dossier de même nom (`a` et `a/b`) : refusé dès le plan, avant toute
+    // écriture, plutôt que par une erreur d'E/S en cours de chantier.
+    for target in &seen_targets {
+        let mut at = 0;
+        while let Some(i) = target[at..].find('/') {
+            at += i;
+            if seen_targets.contains(&target[..at]) {
+                return Err(invalid(format!(
+                    "{:?} est à la fois un fichier et un dossier",
+                    &target[..at]
+                )));
+            }
+            at += 1;
+        }
+    }
+    // Refus précoce d'après les tailles déclarées par l'annuaire de l'archive (avant
+    // chiffrement). Les tailles réellement lues restent contrôlées pendant l'écriture.
+    if declared > limits.max_total_bytes {
+        return Err(PrepareError::TooLarge(format!(
+            "plus de {} octets déclarés",
+            limits.max_total_bytes
+        )));
     }
     for required in REQUIRED {
         if !exact_names.contains(required) {
@@ -421,7 +461,7 @@ fn write_entries<R: Read + io::Seek>(
                 let max = limits.max_encrypted_bytes;
                 let mut plain = Vec::new();
                 (&mut entry)
-                    .take(max + 1)
+                    .take(max.saturating_add(1))
                     .read_to_end(&mut plain)
                     .map_err(read_err)?;
                 if plain.len() as u64 > max {
@@ -708,6 +748,58 @@ mod tests {
         let mut entries = base_entries();
         entries.push(("Version", b"x".to_vec()));
         expect_invalid(&entries, "double");
+    }
+
+    #[test]
+    fn collisions_de_casse_hors_ascii_et_arbre_incoherent_refuses_au_plan() {
+        let mut entries = base_entries();
+        entries.push(("img/\u{e9}.png", b"x".to_vec()));
+        entries.push(("img/\u{c9}.png", b"y".to_vec()));
+        expect_invalid(&entries, "double");
+        // `sounds/a.mp3` est un fichier : `sounds/a.mp3/b` ne peut pas être un dossier.
+        let mut entries = base_entries();
+        entries.push(("sounds/a.mp3/b", b"x".to_vec()));
+        expect_invalid(&entries, "fichier et un dossier");
+        let long = format!("img/{}.png", "n".repeat(300));
+        let mut entries = base_entries();
+        entries.push((long.as_str(), b"x".to_vec()));
+        expect_invalid(&entries, "trop long");
+    }
+
+    #[test]
+    fn extension_lua_en_majuscules_chiffree_et_fichiers_propres_exclus_a_la_casse_pres() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut entries = base_entries();
+        entries.push(("script/AUTRE.LUA", b"return 1".to_vec()));
+        entries.retain(|(name, _)| *name != "_thumbnail.png");
+        entries.push(("_THUMBNAIL.PNG", b"png".to_vec()));
+        let pk = pk_with(tmp.path(), &entries);
+        let work = tmp.path().join("travail");
+        let story = run(&pk, &work).unwrap();
+        assert!(story.files.contains(&"script/AUTRE.lsf".to_string()));
+        assert!(!story
+            .files
+            .iter()
+            .any(|f| f.to_lowercase().contains("thumbnail.png")));
+        assert!(!story.files.iter().any(|f| f.ends_with(".LUA")));
+    }
+
+    #[test]
+    fn tailles_declarees_refusees_avant_toute_ecriture() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pk = pk_with(tmp.path(), &base_entries());
+        let work = tmp.path().join("travail");
+        let limits = Limits {
+            max_total_bytes: 1_000,
+            ..Limits::default()
+        };
+        let err =
+            prepare_story(&pk, &test_keys(), &work, &limits, &AtomicBool::new(false)).unwrap_err();
+        assert!(
+            matches!(&err, PrepareError::TooLarge(m) if m.contains("déclarés")),
+            "{err:?}"
+        );
+        assert!(!work.exists(), "aucun chantier créé");
     }
 
     #[test]

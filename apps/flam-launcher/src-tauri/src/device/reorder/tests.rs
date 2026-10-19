@@ -377,6 +377,50 @@ fn verrou_tenu_pendant_l_ecriture_puis_libere() {
     assert_eq!(lock.current(), None);
 }
 
+/// Vrai échec de suppression du cache : `usr/0/library.cache` est un dossier non vide.
+#[test]
+fn cache_vraiment_non_supprimable_signale_puis_repris() {
+    let dev = Device::new();
+    let cache = dev.root().join(LIBRARY_CACHE);
+    fs::remove_file(&cache).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("verrou"), b"x").unwrap();
+
+    let report = reorder(&dev, &[B, A, C, D]).unwrap();
+    assert!(report.changed);
+    assert!(!report.cache_removed);
+    assert_eq!(dev.get("list").unwrap(), lines(&[B, A, C, D]));
+    assert!(dev.get("list.bak").is_some(), "transaction à terminer");
+
+    // Cache libéré : la reprise suivante termine la transaction.
+    fs::remove_dir_all(&cache).unwrap();
+    assert_eq!(
+        recover(dev.root(), IndexKind::Visible).unwrap(),
+        Recovery::RolledForward
+    );
+    dev.assert_no_work_files();
+}
+
+/// Un UUID présent dans `list` et dans `list.hidden` est visible (comme pour le statut) : son
+/// ordre se change.
+#[test]
+fn uuid_dans_list_et_list_hidden_reste_visible() {
+    let dev = Device::new();
+    dev.put("list.hidden", &lines(&[H, A]));
+    let report = reorder(&dev, &[B, A, C, D]).unwrap();
+    assert!(report.changed);
+    assert_eq!(dev.get("list").unwrap(), lines(&[B, A, C, D]));
+    assert_eq!(dev.get("list.hidden").unwrap(), lines(&[H, A]));
+}
+
+#[test]
+fn messages_avec_identifiant_court() {
+    let dev = Device::new();
+    let err = reorder(&dev, &[A, A, B, C, D]).unwrap_err();
+    assert!(err.to_string().contains("4639e3ea "), "{err}");
+    assert!(!err.to_string().contains(A), "{err}");
+}
+
 #[test]
 fn cache_non_supprime_signale_et_repris() {
     let dev = Device::new();
@@ -543,10 +587,7 @@ fn echec_d_ecriture_reel_laisse_l_ancien_ordre() {
     let dev = Device::new();
     fs::create_dir_all(dev.path("list.new")).unwrap();
     let err = reorder(&dev, &[B, A, C, D]).unwrap_err();
-    assert!(
-        matches!(err, ReorderError::Index(_) | ReorderError::IndexNeedsUser),
-        "{err}"
-    );
+    assert!(matches!(err, ReorderError::Index(_)), "{err}");
     assert_eq!(dev.get("list").unwrap(), lines(&[A, B, C, D]));
     assert!(dev.cache_present());
 }

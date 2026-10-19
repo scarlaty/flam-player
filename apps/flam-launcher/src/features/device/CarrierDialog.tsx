@@ -42,6 +42,8 @@ const STORED = "stored";
 const FILE = "file";
 const ENTERED = "entered";
 const DEVICE_PREFIX = "device:";
+/** Longueur maximale du champ du `bt` : 64 chiffres hexadécimaux et des espaces de groupement. */
+const BT_MAX_LENGTH = 128;
 
 function defaultSource(state: CarrierState): string {
   if (state.stored_keys) return STORED;
@@ -260,7 +262,7 @@ export function CarrierDialog({ root, onCancel, onConfirm }: CarrierDialogProps)
       {state && consented && (
         <>
           <p>{text.acceptedAt(formatDate(consented.accepted_at))}</p>
-          {state.candidates.length === 0 && (
+          {state.candidates.length === 0 && !state.stored_keys && (
             <Banner tone="info">{text.noCandidate}</Banner>
           )}
           <RadioGroup
@@ -278,6 +280,7 @@ export function CarrierDialog({ root, onCancel, onConfirm }: CarrierDialogProps)
                 autoComplete="off"
                 autoCapitalize="off"
                 spellCheck={false}
+                maxLength={BT_MAX_LENGTH}
                 value={bt}
                 error={btError(bt)}
                 onChange={(event) => changeBt(event.target.value)}

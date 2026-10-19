@@ -514,6 +514,46 @@ fn titres_nettoyes_et_bornes() {
 }
 
 #[test]
+fn cache_au_pire_cas_tient_dans_la_borne_de_taille() {
+    // Entrée la plus lourde possible : titre de 200 caractères de 4 octets, image de 256 octets.
+    let worst = Entry {
+        title: "\u{1F600}".repeat(MAX_TITLE_CHARS),
+        image: Some(format!("/public/images/{}", "a".repeat(256 - 15))),
+    };
+    let entries = (0..MAX_ENTRIES)
+        .map(|i| {
+            (
+                format!("{i:08x}-0000-4000-8000-000000000000"),
+                worst.clone(),
+            )
+        })
+        .collect();
+    let cache = CacheFile {
+        version: CACHE_VERSION,
+        fetched_at: 1,
+        entries,
+    };
+    let size = serde_json::to_vec(&cache).unwrap().len() as u64;
+    assert!(size <= MAX_CACHE_BYTES, "{size} octets");
+}
+
+#[test]
+fn titre_du_cache_nettoye_a_la_relecture() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = cache_path(dir.path());
+    let long = "x".repeat(MAX_TITLE_CHARS + 50);
+    let text = format!(
+        r#"{{"version":1,"fetched_at":1,"entries":{{"{A}":{{"t":"  a{}b "}},"{B}":{{"t":"{long}"}},"{C}":{{"t":"  "}}}}}}"#,
+        "\\u0001"
+    );
+    write_atomic(&path, text.as_bytes()).unwrap();
+    let cache = read_cache(&path).unwrap();
+    assert_eq!(cache.entries[A].title, "ab");
+    assert_eq!(cache.entries[B].title.chars().count(), MAX_TITLE_CHARS);
+    assert!(!cache.entries.contains_key(C));
+}
+
+#[test]
 fn cache_corrompu_ou_d_une_autre_version_ignore() {
     let dir = tempfile::tempdir().unwrap();
     let path = cache_path(dir.path());

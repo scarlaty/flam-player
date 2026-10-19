@@ -49,7 +49,7 @@ mainteneur n'a pas rempli la colonne « Mesure » du § 10.
 | Mode connexion USB   | supposé [rapport]               | La Flam n'expose ses fichiers que si l'utilisateur active le « mode connexion USB » dans ses réglages ; sinon elle ne fait que charger. Sans ce mode, aucun volume n'apparaît : message d'aide « Activez le mode connexion USB sur la Flam » ([détection]).                                                                                                                                                                                                                                                                     |
 | Volume               | supposé [rapport]               | Stockage de masse en **FAT** (FAT32 attendu). Sous Windows, [détection] retient les lecteurs amovibles dotés d'un média et les lecteurs fixes dont le système de fichiers contient « FAT » (un disque USB peut se déclarer fixe) ; le disque système NTFS n'est jamais sondé. Hors Windows, aucun volume n'est candidat (non implémenté).                                                                                                                                                                                       |
 | Marqueur             | implémenté                      | Fichier `.mdf` à la racine du volume. Sa présence suffit à reconnaître une Flam. Un lien nommé `.mdf` n'est pas suivi et ne compte pas (`symlink_metadata`). Aucun VID/PID USB n'est interrogé.                                                                                                                                                                                                                                                                                                                                 |
-| Taille de `.mdf`     | mesuré [inv] ; implémenté       | 126 octets (appareil de l'inventaire, firmware non consigné). [détection] : moins de 126 octets = fichier tronqué (erreur, pas de sauvegarde) ; plus de 126 octets = avertissement `UnexpectedMdfSize` ; plus de 64 Kio = trop grand (ni lu ni sauvegardé). Lecture bornée à 64 Kio + 1 octet.                                                                                                                                                                                                                                  |
+| Taille de `.mdf`     | mesuré [inv] ; implémenté       | 126 octets (appareil de l'inventaire, firmware non consigné). [détection] : moins de 126 octets = fichier tronqué (erreur, pas de sauvegarde) ; plus de 126 octets = avertissement `UnexpectedMdfSize` ; plus de 64 Kio = trop grand (ni lu ni sauvegardé) ; un envoi le refuse aussi (clés illisibles). Lecture bornée à 64 Kio + 1 octet.                                                                                                                                                                                                                                  |
 | Contenu de `.mdf`    | implémenté                      | La détection **ne décode aucun champ** de `.mdf` : `parse_mdf` rend `FormatUnspecified` et seuls la taille et le SHA-256 sont exposés. Les champs (version, numéro de série, clé, IV) sont lus au moment d'un envoi, par `keys_from_mdf` ([transfert], voir § 3). VID et PID ne sont lus nulle part aujourd'hui.                                                                                                                                                                                                                |
 | Dossiers attendus    | mesuré [inv] ; implémenté       | `str/` et `etc/library/` ; leur absence n'est qu'un avertissement (`MissingStrDir`, `MissingLibraryDir`).                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Sauvegarde de `.mdf` | choix de conception [détection] | Copie personnelle dans le dossier de données du launcher (`device-backups`), écrite par la commande d'état de l'écran « Ma Flam » (la commande de détection seule n'écrit rien). Nom : `<volume>-<16 premiers caractères hexadécimaux du SHA-256>.mdf`, volume réduit à `[A-Za-z0-9_-]` (32 caractères au plus, `flam` si rien ne reste). Idempotente, écriture atomique, jamais dans le dépôt ; pas de sauvegarde d'un fichier tronqué ou trop grand. Le numéro de série n'entre pas dans le nom : la détection ne le lit pas. |
@@ -131,8 +131,11 @@ conception du code :
 │   ├── library/
 │   │   ├── list               index des histoires visibles (370 octets pour 10 histoires)
 │   │   ├── list.hidden        index des histoires masquées (0 octet : aucune masquée)
-│   │   └── list.new / .bak / .restore   fichiers de travail d'une réécriture d'index (launcher, éphémères)
+│   │   ├── list.new / .bak / .restore   fichiers de travail d'une réécriture d'index (launcher, éphémères)
+│   │   ├── list.hidden.new / .bak / .restore   idem pour list.hidden
+│   │   └── list.corrupt       copie d'un index abîmé avant sa reconstruction confirmée (launcher)
 │   ├── bluetooth/  onboarding/  update/  wifi/   réglages de l'appareil : ne pas toucher
+├── System Volume Information/ créé par Windows (présent dans l'inventaire) : ignoré, ne pas toucher
 ├── str/<uuid>/                une histoire installée et visible
 ├── str.hidden/<uuid>/         histoires masquées (supposé [rapport] ; absent de [inv])
 ├── tmp/bluetooth/scan/        temporaire de l'appareil
@@ -264,8 +267,12 @@ Entrée : `library/<uuid>-<version>.plain.pk` de la bibliothèque du launcher (a
 Entrées obligatoires : `uuid.bin`, `info.plain`, `main.lua`, `version`. Sont refusés : un lien
 symbolique, un nom d'entrée non sûr (§ 4), deux entrées au même nom à la casse près, deux entrées
 donnant le même nom cible, une entrée dont le nom cible est `key` (à la casse près). Bornes
-(`Limits`), contrôlées d'après les tailles **réellement lues** : 100 000 entrées, 4 Gio cumulés,
-16 Mio par fichier à chiffrer (lu en mémoire).
+(`Limits`) : 100 000 entrées (nombre **déclaré** par l'annuaire de l'archive, sans lecture) ; 4 Gio
+cumulés et 16 Mio par fichier à chiffrer (lu en mémoire), contrôlés d'après les tailles
+**réellement lues**. Les tailles déclarées par l'archive sont aussi additionnées dès le plan : un
+total déclaré au-delà de 4 Gio est refusé avant toute écriture. Sont refusés dès le plan un nom
+de plus de 255 caractères et un nom à la fois fichier et dossier (`a` et `a/b`) ; l'extension
+`.lua` et les fichiers propres à l'archive se reconnaissent sans tenir compte de la casse.
 
 La préparation **n'écrit rien sur l'appareil**. Elle construit l'histoire dans un dossier de
 travail du launcher : tout est écrit dans `<travail>/.partiel-<uuid>-<aléa>/`, renommé en
@@ -300,7 +307,7 @@ l'appareil (transfert, retrait, éjection) sont sérialisées par le verrou d'ap
 
 ### 8.1 Installation ([transfert], #229, implémentée)
 
-Préalable : lecture de `.mdf` (au plus 64 Kio), clés de l'appareil (§ 3), puis préparation hors
+Préalable : lecture de `.mdf` (au plus 64 Kio ; au-delà, refus), clés de l'appareil (§ 3), puis préparation hors
 appareil (§ 6.3). Un `.mdf` absent donne « Flam introuvable » sans rien écrire. Ensuite
 (`send_with`) :
 
@@ -355,10 +362,15 @@ vérifie par un fichier sonde que ce ne sont pas deux noms du même dossier (cou
 renommage FAT) ; si c'est le cas, rien n'est supprimé et l'entrée est laissée (`chkdsk`
 recommandé). Toute entrée inconnue de `.flam-transfer/` est laissée en place.
 
-Un débranchement avant l'étape 6 laisse au pire un dossier non listé (orphelin) ; jamais un index
-qui pointe vers du vide. Une histoire partielle n'est donc pas visible, sous réserve de T3 et T4 :
+Un débranchement avant l'étape 6 laisse au pire un dossier non listé (orphelin) ; pour une
+**installation**, jamais un index qui pointe vers du vide. Lors d'une **mise à jour**, une coupure
+entre le renommage `str/<uuid>` → `.old` et `.in` → `str/<uuid>` laisse brièvement un UUID listé
+sans dossier : `recover` le répare à la détection suivante. Une histoire partielle n'est donc pas
+visible, sous réserve de T3 et T4 :
 si le firmware réagit à un dossier inconnu à la racine, la copie en cours pourrait être ignorée ou
 supprimée par lui (une copie perdue, sans autre effet).
+
+Entre le renommage final et la suppression de `<uuid>.old`, les dossiers `str/<uuid>`, `str/` et `.flam-transfer/` sont forcés sur le disque (au mieux : un échec est journalisé), car une mise à jour d'une histoire déjà listée n'écrit aucun index. Le dossier racine reçu du front doit être un lecteur détecté (amovible, ou FAT fixe) : un dossier quelconque contenant un `.mdf` est refusé. Une entrée de `.flam-transfer/` qui ne peut pas être reprise (dossier verrouillé) n'empêche pas l'envoi d'une autre histoire ; l'envoi de la même histoire est refusé tant qu'elle reste.
 
 ### 8.2 Retrait ([retrait], #231, implémenté)
 
@@ -394,7 +406,7 @@ déplacer `str/<uuid>/` vers `str.hidden/<uuid>/`, retirer l'UUID de `list` et l
 `list.hidden`. Ordre proposé pour qu'aucun état intermédiaire ne perde l'histoire : ajouter à
 `list.hidden`, déplacer le dossier, puis retirer de `list` (`str.hidden/` créé au besoin, T6).
 **Risque** : un débranchement entre le déplacement et le retrait de `list` laisse `list` pointer
-vers un dossier absent de `str/` (contraire au principe du § 8.1) ; le comportement du firmware est
+vers un dossier absent de `str/` (un état que seule la reprise d'une mise à jour tolère, § 8.1) ; le comportement du firmware est
 inconnu (T4) et la reprise (`recover`) ne traite aujourd'hui que chaque index séparément. Le
 déplacement est un renommage FAT entre deux dossiers du même volume. L'envoi et le retrait tiennent
 déjà compte des histoires masquées : un envoi est refusé pour une histoire masquée, un retrait la
@@ -442,7 +454,7 @@ Réordonner revient à réécrire `list` (`reorder_stories`) ; aucun dossier n'e
 4. **Écriture** : ordre identique à `list` = rien n'est écrit ; sinon `write_index` (§ 5) et ses
    six étapes, dont la suppression de `usr/0/library.cache`. Les UUID sont écrits en minuscules.
 
-Seuls `list`, ses fichiers de travail (`list.new`, `.bak`, `.restore`) et `library.cache` sont
+Seuls `list`, ses fichiers de travail (`list.new`, `.bak`, `.restore`, idem pour `list.hidden`) et `library.cache` sont
 modifiés ; `list.hidden`, `str/`, `str.hidden/`, `usr/0/` et les réglages ne le sont jamais
 (vérifié par les tests, qui comparent toute l'arborescence hors de ces fichiers).
 
@@ -481,6 +493,6 @@ d'histoire officielle :
 | T6  | `str.hidden/` : création à la demande ou présence à l'état neuf ; limites (nombre d'histoires, taille, longueur des noms, casse)                                                                                                        | 4, 8.3   | à mesurer                       |                                   |
 | T7  | Synchronisation officielle : suppression des histoires non officielles, effet du masquage                                                                                                                                               | 8.3      | masquage préservé               |                                   |
 | T8  | Valeurs de `version` acceptées (1 à 4 relevées) ; firmwares 1.x et 2.x couverts ; version 3.x et suivantes (refusées par le code)                                                                                                       | 3.3, 6.1 | à mesurer                       |                                   |
-| T9  | Fichiers de travail de l'index (`list.new`, `.bak`, `.restore`) tolérés dans `etc/library/` ; fichier sonde `.flam-sonde-*` toléré                                                                                                      | 4, 5     | ignorés par le firmware         |                                   |
+| T9  | Fichiers de travail de l'index (`list.new`, `.bak`, `.restore`, et `list.hidden.*`, copie `list.corrupt`) tolérés dans `etc/library/` ; fichier sonde `.flam-sonde-*` toléré                                                                                                      | 4, 5     | ignorés par le firmware         |                                   |
 
 Aucun point de ce tableau n'a été mesuré lors de la rédaction de ce document.

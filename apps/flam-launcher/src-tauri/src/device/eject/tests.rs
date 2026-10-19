@@ -133,7 +133,9 @@ fn refus_de_windows_donne_le_repli() {
     let outcome = eject(dir.path(), &DeviceLock::new(), &fake).unwrap();
     assert_eq!(
         outcome,
-        EjectOutcome::fallback("éjection refusée par Windows (motif 6)")
+        EjectOutcome::fallback(format!(
+            "éjection refusée par Windows (motif 6){DISMOUNTED_NOTE}"
+        ))
     );
 }
 
@@ -153,6 +155,40 @@ fn racine_sans_mdf_refusee() {
     let err = eject(dir.path(), &DeviceLock::new(), &fake).unwrap_err();
     assert!(matches!(err, EjectError::NotADevice));
     assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn refus_apres_demontage_le_precise() {
+    let dir = device();
+    let outcome = eject(
+        dir.path(),
+        &DeviceLock::new(),
+        &Fake::new(Ok(()), Err("refusé".into())),
+    )
+    .unwrap();
+    let EjectOutcome::Fallback { reason, .. } = outcome else {
+        panic!("repli attendu");
+    };
+    assert_eq!(reason, format!("refusé{DISMOUNTED_NOTE}"));
+    // Étape de préparation sautée (pas de droit) : rien n'a été démonté.
+    let outcome = eject(
+        dir.path(),
+        &DeviceLock::new(),
+        &Fake::new(Err(PrepareError::NoAccess), Err("refusé".into())),
+    )
+    .unwrap();
+    let EjectOutcome::Fallback { reason, .. } = outcome else {
+        panic!("repli attendu");
+    };
+    assert_eq!(reason, "refusé");
+}
+
+#[test]
+fn libelles_des_motifs_de_refus() {
+    assert_eq!(veto_label(5), "un fichier de l'appareil est encore ouvert");
+    assert_eq!(veto_label(0), "motif inconnu");
+    assert_eq!(veto_label(99), "motif inconnu");
+    assert_eq!(veto_label(-1), "motif inconnu");
 }
 
 #[test]

@@ -114,6 +114,8 @@ struct FaultyFs {
     corrupt: Option<&'static str>,
     /// Réponse forcée de `same_directory`.
     same_dir: bool,
+    /// Dossier dont la suppression échoue (verrouillé) : le chemin contient ce texte.
+    locked: Option<&'static str>,
 }
 
 impl FaultyFs {
@@ -125,6 +127,7 @@ impl FaultyFs {
             budget: Cell::new(None),
             corrupt: None,
             same_dir: false,
+            locked: None,
         }
     }
     fn crash_at(n: usize) -> Self {
@@ -229,6 +232,15 @@ impl DeviceFs for FaultyFs {
     }
     fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
         self.tick()?;
+        if self
+            .locked
+            .is_some_and(|l| path.to_string_lossy().contains(l))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "dossier verrouillé",
+            ));
+        }
         self.real().remove_dir_all(path)
     }
     fn remove_empty_dir(&self, path: &Path) -> io::Result<()> {
@@ -287,6 +299,14 @@ fn check_invariants(
     step: usize,
 ) {
     assert!(!root.join(TRANSFER_DIR).exists(), "résidu (étape {step})");
+    assert!(
+        !snapshot(root).keys().any(|k| k
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .starts_with(PROBE_PREFIX)),
+        "fichier sonde résiduel (étape {step})"
+    );
     let entries = listed(root);
     assert!(
         index::missing_stories(root, &entries).is_empty(),
@@ -1351,4 +1371,71 @@ fn coupures_repetees_pendant_la_reprise() {
         );
         assert!(index::missing_stories(&root, &listed(&root)).is_empty());
     }
+}
+
+/// Une entrée de reprise qui échoue (dossier verrouillé) n'empêche ni la reprise des autres, ni
+/// l'envoi d'une autre histoire ; `recover_with` rend toujours l'erreur.
+#[test]
+fn reprise_continue_apres_une_entree_verrouillee() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    let transfer = root.join(TRANSFER_DIR);
+    write(
+        &transfer
+            .join(format!("{OTHER}{INCOMING_SUFFIX}"))
+            .join("info"),
+        b"x",
+    );
+    let third = "22222222-3333-4444-5555-666666666666";
+    write(
+        &transfer
+            .join(format!("{third}{INCOMING_SUFFIX}"))
+            .join("info"),
+        b"y",
+    );
+    let fs = FaultyFs {
+        locked: Some(OTHER),
+        ..FaultyFs::new()
+    };
+    let (report, failures) = recover_collect(&fs, &root).unwrap();
+    assert_eq!(report.incomplete_removed, 1, "la troisième est reprise");
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].0.starts_with(OTHER));
+    assert!(!transfer.join(format!("{third}{INCOMING_SUFFIX}")).exists());
+    assert!(recover_with(&fs, &root).is_err());
+
+    // L'envoi d'une autre histoire n'est pas bloqué par le résidu verrouillé.
+    let p = prepared(tmp.path(), 1);
+    send(&fs, &root, &p, false).unwrap();
+    assert!(root.join("str").join(NEW).join("info").is_file());
+}
+
+#[test]
+fn racine_hors_des_lecteurs_detectes_refusee() {
+    let roots = [PathBuf::from("D:"), PathBuf::from("E:/")];
+    for ok in ["D:", "d:", "D:/", "e:", "E:/"] {
+        ensure_root_among(Path::new(ok), &roots).unwrap_or_else(|e| panic!("{ok} : {e}"));
+    }
+    for bad in ["", "C:", "D:/dossier", "/", "F:"] {
+        assert!(
+            matches!(
+                ensure_root_among(Path::new(bad), &roots),
+                Err(TransferError::InvalidRoot)
+            ),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn mdf_de_plus_de_64_kio_refuse_comme_a_la_detection() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("flam");
+    write(&root.join(MDF_FILE), &vec![0u8; MDF_MAX_SIZE as usize + 1]);
+    assert!(matches!(
+        read_mdf(&root),
+        Err(TransferError::KeyUnavailable(_))
+    ));
+    write(&root.join(MDF_FILE), &vec![0u8; MDF_MAX_SIZE as usize]);
+    assert_eq!(read_mdf(&root).unwrap().len() as u64, MDF_MAX_SIZE);
 }

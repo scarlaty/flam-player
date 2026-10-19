@@ -1234,15 +1234,14 @@ async fn discard(path: PathBuf) {
 // ---------------------------------------------------------------------------------------
 
 /// Retrouve l'entrée `entry_id` de la source `source_id` : cache du catalogue (sans réseau)
-/// ou dernier scan du dossier. Une entrée absente du dernier scan (dossier pas encore analysé
-/// dans cette session : reprise au démarrage, « Mettre à jour » depuis « Mes histoires ») fait
-/// analyser le dossier (comme l'écran, puis sous-dossiers compris si besoin).
+/// ou source dossier (voir [`FolderState::scan_for_entry`]). `expected` : histoire attendue.
 async fn resolve_entry(
     config: &ConfigState,
     catalog: &CatalogService,
     folder: &FolderState,
     source_id: &str,
     entry_id: &str,
+    expected: Option<&str>,
 ) -> AppResult<StoryEntry> {
     let (source, cache_root) = {
         let _guard = config.guard();
@@ -1261,18 +1260,15 @@ async fn resolve_entry(
             .ok_or_else(|| {
                 AppError::NotFound(format!("histoire inconnue dans le catalogue : {entry_id}"))
             }),
-        Source::Folder { .. } => match folder.entry(source_id, entry_id) {
-            Err(_) => {
-                let (root, _) = {
-                    let _guard = config.guard();
-                    crate::folder::resolve_folder(&config.dir, &Environment::current(), source_id)?
-                };
-                let (state, sid) = (folder.clone(), source_id.to_string());
-                let wanted = entry_id.to_string();
-                blocking(move || state.scan_for_entry(&sid, &root, &wanted)).await?
-            }
-            found => found,
-        },
+        Source::Folder { .. } => {
+            let (root, _) = {
+                let _guard = config.guard();
+                crate::folder::resolve_folder(&config.dir, &Environment::current(), source_id)?
+            };
+            let (state, sid, eid) = (folder.clone(), source_id.to_string(), entry_id.to_string());
+            let expected = expected.map(str::to_string);
+            blocking(move || state.scan_for_entry(&sid, &root, &eid, expected.as_deref())).await?
+        }
         Source::Library { .. } => Err(AppError::Validation(
             "cette histoire est déjà dans la bibliothèque".into(),
         )),
@@ -1302,14 +1298,16 @@ pub async fn resolve_for_restore(
         &app.state::<FolderState>(),
         source_id,
         entry_id,
+        None,
     )
     .await
 }
 
 /// Lance l'installation d'une histoire d'une source (catalogue ou dossier).
 ///
-/// Une entrée de dossier absente du dernier scan (dossier pas encore analysé dans cette
-/// session : « Mettre à jour » depuis « Mes histoires », #288) fait analyser le dossier.
+/// Avec `uuid` (fourni par toute installation depuis l'écran, dont « Mettre à jour » depuis
+/// « Mes histoires », #288), le dossier est réanalysé : une entrée du dernier scan peut être
+/// périmée ; sans `uuid`, une entrée absente du dernier scan fait analyser le dossier.
 /// `uuid` (facultatif) : histoire attendue ; si l'entrée retrouvée en propose une autre (fichier
 /// remplacé par une autre histoire au même chemin), `not_found` sans rien installer.
 #[tauri::command]
@@ -1322,7 +1320,15 @@ pub async fn install_start(
     entry_id: String,
     uuid: Option<String>,
 ) -> AppResult<InstallTask> {
-    let entry = resolve_entry(&config, &catalog, &folder, &source_id, &entry_id).await?;
+    let entry = resolve_entry(
+        &config,
+        &catalog,
+        &folder,
+        &source_id,
+        &entry_id,
+        uuid.as_deref(),
+    )
+    .await?;
     check_expected_uuid(&entry, uuid.as_deref())?;
     service.start(entry)
 }

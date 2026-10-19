@@ -54,7 +54,7 @@ fn too_big() -> AppError {
 /// installer un tel dossier `.plain` : le copier hors du dossier synchronisé avant de le
 /// réanalyser (« Toujours conserver sur cet appareil » n'est pas garanti de retirer le point de
 /// réanalyse : non vérifié sur appareil).
-fn is_link(meta: &std::fs::Metadata) -> bool {
+pub(crate) fn is_link(meta: &std::fs::Metadata) -> bool {
     if meta.file_type().is_symlink() {
         return true;
     }
