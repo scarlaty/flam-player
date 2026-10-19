@@ -309,20 +309,21 @@ export const TRANSFER_PROGRESS_EVENT = "device://transfer-progress";
 
 /**
  * `device_send_story` : envoie l'histoire `uuid` de la bibliothèque sur la Flam de racine
- * `root` (`validation` si déjà présente, espace insuffisant, firmware non pris en charge ou
- * Flam occupée ; `cancelled` si annulé).
+ * `root` (`validation` si déjà présente sans `replace`, espace insuffisant, firmware non pris
+ * en charge ou Flam occupée ; `cancelled` si annulé). `replace` : remplace l'histoire déjà sur
+ * la Flam (même à version égale), l'ancienne n'étant retirée qu'une fois la nouvelle en place.
  */
 export function sendStoryToDevice(
   root: string,
   uuid: string,
   carrier?: CarrierSend,
+  replace = false,
 ): Promise<TransferReport> {
-  return invokeCommand<TransferReport>(
-    "device_send_story",
-    carrier
-      ? { root, uuid, carrier: carrier.choice, remember: carrier.remember }
-      : { root, uuid },
-  );
+  const args: Record<string, unknown> = carrier
+    ? { root, uuid, carrier: carrier.choice, remember: carrier.remember }
+    : { root, uuid };
+  if (replace) args.replace = true;
+  return invokeCommand<TransferReport>("device_send_story", args);
 }
 
 /**

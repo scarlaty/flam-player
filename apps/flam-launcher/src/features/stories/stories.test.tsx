@@ -111,6 +111,7 @@ let catalogEntries: StoryEntry[];
 let scanEntries: StoryEntry[];
 let installed: LibraryEntry[];
 let report: CompatReport;
+let sourceChecks: { uuid: string; state: string }[];
 let started: InstallTask[];
 let status: PlayerSession | null;
 let failures: Record<string, { kind: string; message: string }>;
@@ -133,6 +134,7 @@ beforeEach(() => {
   scanEntries = [];
   installed = [];
   report = { entries: [], issue: null };
+  sourceChecks = [];
   started = [];
   status = null;
   failures = {};
@@ -169,6 +171,8 @@ beforeEach(() => {
           return report;
         case "library_list":
           return installed;
+        case "library_source_status":
+          return sourceChecks;
         case "library_remove":
           installed = installed.filter((item) => item.uuid !== payload.uuid);
           return null;
@@ -326,6 +330,7 @@ it("télécharger et jouer : progression, installation puis lancement, retour su
   expect(callsOf("install_start")[0]?.args).toEqual({
     sourceId: "store",
     entryId: "store:ours",
+    uuid: "ours",
   });
   expect(await within(dialog).findByRole("button", { name: "Annuler" })).toBeVisible();
 
@@ -578,6 +583,98 @@ it("propose la mise à jour d'une histoire dont le catalogue a une autre version
   fireEvent.click(within(dialog).getByRole("button", { name: "Mettre à jour" }));
   await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
   expect(within(dialog).getByRole("button", { name: "Annuler" })).toBeVisible();
+});
+
+/** Histoire installée depuis la source dossier « Contes » (`.plain.pk`, version 0). */
+const capi = () =>
+  makeEntry({
+    source_id: "dossier",
+    entry_id: "dossier:capi",
+    uuid: "capi",
+    version: 0,
+    title: "Capi et la rivière",
+    kind: "flam_pk",
+    download_url: "C:\\Contes\\capi.plain.pk",
+  });
+
+async function renderSource(hash: string) {
+  window.location.hash = hash;
+  render(
+    <ToastProvider>
+      <LibraryProvider>
+        <CompatProvider>
+          <StoriesProvider>
+            <DeviceProvider>
+              <main>
+                <StoriesLibrary />
+              </main>
+            </DeviceProvider>
+          </StoriesProvider>
+        </CompatProvider>
+      </LibraryProvider>
+    </ToastProvider>,
+  );
+  await screen.findByRole("heading", { level: 3, name: capi().title });
+}
+
+it("source dossier modifiée à version égale : « Mettre à jour » dans « Mes histoires »", async () => {
+  installed = [installedEntry(capi())];
+  sourceChecks = [{ uuid: "capi", state: "changed" }];
+  // Entrée retrouvée par le backend (dossier analysé à la demande).
+  scanEntries = [capi()];
+  await renderSource("#/library/library");
+  expect(await screen.findByText("Mise à jour disponible")).toBeInTheDocument();
+  const dialog = await openFiche(capi().title);
+  expect(
+    within(dialog).getByText("Source modifiée : mettez l'histoire à jour avant l'envoi"),
+  ).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Mettre à jour" }));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  // Réinstallation depuis la source d'origine, histoire attendue vérifiée par le backend.
+  expect(callsOf("install_start")[0]?.args).toEqual({
+    sourceId: "dossier",
+    entryId: "dossier:capi",
+    uuid: "capi",
+  });
+});
+
+it("source dossier modifiée : l'entrée d'origine propose la mise à jour, pas un doublon", async () => {
+  installed = [installedEntry(capi())];
+  sourceChecks = [{ uuid: "capi", state: "changed" }];
+  // Même uuid en dossier `.plain` dans la même source : ce n'est pas la source installée.
+  const twin = makeEntry({
+    ...capi(),
+    entry_id: "dossier:capi-plain",
+    title: "Capi (dossier)",
+    kind: "flam_plain",
+  });
+  scanEntries = [capi(), twin];
+  await renderSource("#/library/dossier");
+  await waitFor(() =>
+    expect(screen.getAllByText("Mise à jour disponible")).toHaveLength(1),
+  );
+  let dialog = await openFiche(capi().title);
+  expect(within(dialog).getByRole("button", { name: "Mettre à jour" })).toBeVisible();
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  dialog = await openFiche(twin.title);
+  expect(within(dialog).queryByRole("button", { name: "Mettre à jour" })).toBeNull();
+});
+
+it("source inchangée, disparue ou invérifiable : rien n'est proposé", async () => {
+  installed = [installedEntry(capi())];
+  for (const state of ["unchanged", "missing", "unknown"]) {
+    sourceChecks = [{ uuid: "capi", state }];
+    await renderSource("#/library/library");
+    await waitFor(() =>
+      expect(callsOf("library_source_status").length).toBeGreaterThan(0),
+    );
+    expect(screen.queryByText("Mise à jour disponible")).toBeNull();
+    const dialog = await openFiche(capi().title);
+    expect(within(dialog).queryByRole("button", { name: "Mettre à jour" })).toBeNull();
+    cleanup();
+    calls = [];
+  }
 });
 
 it("signale un lancement refusé et un player qui s'arrête en erreur", async () => {

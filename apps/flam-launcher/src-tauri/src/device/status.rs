@@ -658,6 +658,7 @@ mod tests {
                 kind: crate::story::StoryKind::FlamPlain,
             },
             thumb: None,
+            source_stamp: None,
         }
     }
 

@@ -41,6 +41,24 @@ export function sendBlock(
   return null;
 }
 
+/**
+ * Remplacement de l'histoire `uuid` déjà sur la Flam (« Remplacer sur la Flam », même à version
+ * égale) : `"absent"` si elle n'y est pas ou y est masquée (le backend refuse alors), sinon la
+ * première raison qui l'interdit maintenant (mêmes règles que l'envoi, l'histoire elle-même
+ * mise à part), ou `null`.
+ */
+export function replaceBlock(
+  context: SendContext,
+  uuid: string,
+  size: number | null,
+): SendBlock | "absent" | null {
+  const stories = context.deviceStories;
+  const present = stories?.stories.find((story) => story.uuid === uuid);
+  if (!stories || !present || present.placement === "hidden") return "absent";
+  const others = { ...stories, stories: stories.stories.filter((s) => s.uuid !== uuid) };
+  return sendBlock({ ...context, deviceStories: others }, uuid, size);
+}
+
 /** Minutes restantes (arrondies au-dessus), `null` si une taille manque. */
 export function estimateMinutes(remainingBytes: number | null): number | null {
   if (remainingBytes === null) return null;

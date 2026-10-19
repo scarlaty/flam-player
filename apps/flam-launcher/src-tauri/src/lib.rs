@@ -10,6 +10,7 @@ mod error;
 pub mod folder;
 pub mod install;
 pub mod library;
+pub mod library_source;
 pub mod library_thumb;
 pub mod player;
 pub mod podcast;
@@ -165,6 +166,7 @@ pub fn run() {
             install::install_list,
             library::library_list,
             library::library_remove,
+            library_source::library_source_status,
             library_thumb::library_thumbnail,
             player::player_launch,
             player::player_launch_folder,
