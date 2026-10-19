@@ -147,7 +147,11 @@ export function useOfficialStoryTitles(
   return official;
 }
 
-/** Images du catalogue déjà demandées (une seule demande par histoire et par session). */
+/**
+ * Images du catalogue déjà demandées (une seule demande par histoire et par session). Un échec
+ * (réseau coupé, image absente) est mémorisé comme un résultat : l'image n'est pas redemandée
+ * avant le prochain lancement du launcher, pour ne pas solliciter le serveur en boucle.
+ */
 const officialThumbs = new Map<string, Promise<string | null>>();
 
 /** Vide la mémoire des images du catalogue (tests). */

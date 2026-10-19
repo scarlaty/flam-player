@@ -72,8 +72,10 @@ const MAX_TOKEN_BYTES: usize = 64 * 1024;
 const MAX_TOKEN_LEN: usize = 4096;
 /// Taille maximale lue du fichier de cache.
 const MAX_CACHE_BYTES: u64 = 16 * 1024 * 1024;
-/// Entrées conservées au plus (au-delà : ignorées).
-const MAX_ENTRIES: usize = 20_000;
+/// Entrées conservées au plus (au-delà : ignorées). Plafonné pour que le cache sérialisé reste
+/// sous [`MAX_CACHE_BYTES`] même au pire cas (titre de [`MAX_TITLE_CHARS`] caractères de 4
+/// octets, image de 256 octets) : sinon il ne serait pas écrit et le catalogue retéléchargé.
+const MAX_ENTRIES: usize = 12_000;
 /// UUID pris en compte par demande.
 pub const MAX_QUERY: usize = 1000;
 /// Longueur maximale d'un titre conservé (en caractères).
@@ -570,7 +572,15 @@ fn read_cache(path: &Path) -> Option<CacheFile> {
         if entry.image.as_deref().is_some_and(|i| !valid_image_path(i)) {
             entry.image = None;
         }
-        !entry.title.is_empty()
+        // Même nettoyage qu'à la réception (contrôles, longueur) : un cache modifié à la main
+        // ne contourne pas la borne du titre.
+        match clean_title(&entry.title) {
+            Some(title) => {
+                entry.title = title;
+                true
+            }
+            None => false,
+        }
     });
     Some(cache)
 }

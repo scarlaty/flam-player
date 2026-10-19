@@ -769,6 +769,8 @@ struct Inner {
     thumbs: HashMap<String, ThumbRefs>,
     /// Entrées du dernier scan de chaque source, par `entry_id` (installation, #15).
     entries: HashMap<String, HashMap<String, StoryEntry>>,
+    /// Le dernier scan de chaque source était-il récursif ?
+    recursive: HashMap<String, bool>,
 }
 
 /// Mémoire du dernier scan de chaque source et cache de métadonnées (en mémoire).
@@ -800,7 +802,26 @@ impl FolderState {
             .map(|e| (e.entry_id.clone(), e.clone()))
             .collect();
         inner.entries.insert(source_id.to_string(), entries);
+        inner.recursive.insert(source_id.to_string(), recursive);
         Ok(scan)
+    }
+
+    /// Le dernier scan de `source_id` était-il récursif ? `None` : jamais analysée.
+    pub fn last_recursive(&self, source_id: &str) -> Option<bool> {
+        self.lock().recursive.get(source_id).copied()
+    }
+
+    /// Entrée du dernier scan de `source_id` qui propose l'histoire `uuid` (la première par
+    /// `entry_id`, pour un résultat stable).
+    pub fn entry_by_uuid(&self, source_id: &str, uuid: &str) -> Option<StoryEntry> {
+        let inner = self.lock();
+        inner
+            .entries
+            .get(source_id)?
+            .values()
+            .filter(|e| e.uuid == uuid)
+            .min_by(|a, b| a.entry_id.cmp(&b.entry_id))
+            .cloned()
     }
 
     /// Entrée `entry_id` du dernier scan de `source_id` (jamais un chemin libre venu du front).
@@ -1741,6 +1762,69 @@ mod tests {
         }
         let (scan, _ctx) = scan(dir.path(), true);
         assert!(scan.entries.is_empty(), "{:?}", scan.entries);
+    }
+
+    // --- Résolution d'une entrée pour l'installation (#297) ---
+
+    use crate::install::resolve_folder_entry;
+
+    #[test]
+    fn mise_a_jour_reanalyse_et_retrouve_une_entree_dedupliquee_par_uuid() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plain_dir(&dir.path().join("x.plain"), "Titre plain");
+        let state = FolderState::default();
+        let first = state
+            .scan("src", dir.path(), false)
+            .unwrap()
+            .entries
+            .remove(0);
+        assert_eq!(state.last_recursive("src"), Some(false));
+        // Un `.plain.pk` de même uuid apparaît : l'entrée du `.plain` est écartée au scan.
+        write_plain_pk(&dir.path().join("x.plain.pk"), "Titre pk");
+        // Sans `expected`, le dernier scan (périmé) sert tel quel.
+        let stale = resolve_folder_entry(&state, "src", dir.path(), &first.entry_id, None).unwrap();
+        assert_eq!(stale.title, "Titre plain");
+        // Avec `expected` : réanalyse, puis résolution par uuid (l'entry_id a disparu).
+        let found = resolve_folder_entry(
+            &state,
+            "src",
+            dir.path(),
+            &first.entry_id,
+            Some(&first.uuid),
+        )
+        .unwrap();
+        assert_eq!(found.kind, StoryKind::FlamPk);
+        assert_eq!(found.title, "Titre pk");
+        assert_eq!(state.last_recursive("src"), Some(false), "option conservée");
+        // Un uuid inconnu reste introuvable.
+        let err = resolve_folder_entry(&state, "src", dir.path(), "src:absent", Some("inconnu"))
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    #[test]
+    fn resolution_sans_scan_connu_est_recursive_et_retombe_sur_le_recursif() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sous");
+        std::fs::create_dir_all(&sub).unwrap();
+        write_plain_pk(&sub.join("y.plain.pk"), "Dans un sous-dossier");
+        let state = FolderState::default();
+        // Jamais analysé : scan récursif, l'entrée est trouvée.
+        let probe = FolderState::default();
+        let id = probe
+            .scan("src", dir.path(), true)
+            .unwrap()
+            .entries
+            .remove(0)
+            .entry_id;
+        let found = resolve_folder_entry(&state, "src", dir.path(), &id, None).unwrap();
+        assert_eq!(found.title, "Dans un sous-dossier");
+        assert_eq!(state.last_recursive("src"), Some(true));
+        // Dernier scan non récursif : l'option est reprise, puis repli récursif si introuvable.
+        state.scan("src", dir.path(), false).unwrap();
+        let found =
+            resolve_folder_entry(&state, "src", dir.path(), &id, Some(&found.uuid)).unwrap();
+        assert_eq!(found.title, "Dans un sous-dossier");
     }
 
     #[cfg(windows)]
