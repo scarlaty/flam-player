@@ -495,6 +495,14 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         return false;
       }
       toast.show({ message: t.stories.toast.removed(title) });
+      // Les lignes d'installation réussies de cette histoire n'ont plus d'objet : on les retire
+      // (les échecs et annulations restent, avec « Réessayer »).
+      const finished = tasksRef.current
+        .filter((task) => task.entry.uuid === uuid && task.state === "done")
+        .map((task) => task.id);
+      if (finished.length > 0) {
+        setDismissed((all) => new Set([...all, ...finished]));
+      }
       await refreshInstalled();
       return true;
     },

@@ -1,13 +1,14 @@
 import { useState } from "react";
 import type { StoryEntry } from "../../api/story";
-import { Button } from "../../components";
+import { Button, IconButton } from "../../components";
 import { t } from "../../i18n";
 import { SendToDeviceButton } from "../device/SendToDeviceButton";
 import { isRemote, useStories } from "./StoriesContext";
 import { RemoveStoryDialog } from "./RemoveStoryDialog";
 
 /**
- * Action rapide d'une carte : « Jouer » si l'histoire est installée, sinon « Télécharger » ou
+ * Actions rapides d'une carte : « Jouer », « Envoyer sur la Flam » et « Supprimer » (bouton icône
+ * compact, libellé et info-bulle) si l'histoire est installée, sinon « Télécharger » ou
  * « Installer » ; rien pendant qu'une tâche est active (la carte montre sa progression).
  */
 export function StoryActions({ entry }: { entry: StoryEntry }) {
@@ -40,17 +41,15 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
           size={installed.size}
           stale={stories.sourceChanged(installed.uuid)}
         />
-        <Button
+        <IconButton
           size="sm"
-          variant="danger"
+          variant="danger-quiet"
           icon="trash"
           disabled={playingThis || removing}
           aria-busy={removing || undefined}
-          aria-label={text.forStory(text.remove, entry.title)}
+          label={text.forStory(text.remove, entry.title)}
           onClick={() => setConfirmRemove(true)}
-        >
-          {text.remove}
-        </Button>
+        />
         <RemoveStoryDialog
           open={confirmRemove}
           title={entry.title}
