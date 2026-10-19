@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { cx } from "../cx";
 import { Icon, type IconName } from "../Icon";
@@ -71,15 +72,20 @@ export function Badge({
       >
         {content}
       </span>
-      <span
-        id={tooltipId}
-        role="tooltip"
-        className="fl-badge__tooltip"
-        style={position}
-        hidden={!open}
-      >
-        {description}
-      </span>
+      {/* Portail : une carte survolée est transformée et `overflow: hidden`, ce qui fausserait
+          et rognerait une info-bulle `position: fixed` placée dans la carte. */}
+      {createPortal(
+        <span
+          id={tooltipId}
+          role="tooltip"
+          className="fl-badge__tooltip"
+          style={position}
+          hidden={!open}
+        >
+          {description}
+        </span>,
+        document.body,
+      )}
     </>
   );
 }

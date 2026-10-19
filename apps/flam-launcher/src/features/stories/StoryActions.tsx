@@ -80,9 +80,14 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
             focusAfterRemove.current = true;
             void stories
               .remove(installed.uuid, entry.title, purge)
-              .then((removed) => {
-                if (!removed) focusAfterRemove.current = false;
-              })
+              .then(
+                (removed) => {
+                  if (!removed) focusAfterRemove.current = false;
+                },
+                () => {
+                  focusAfterRemove.current = false;
+                },
+              )
               .finally(() => setRemoving(false));
           }}
         />

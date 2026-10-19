@@ -41,10 +41,12 @@ it("avec description : badge focalisable, info-bulle lue une seule fois, fermabl
   expect(badge).not.toHaveAttribute("title");
   // Le nom du badge ne contient pas la description : pas de lecture en double.
   expect(badge).toHaveTextContent(/^Mise à jour$/);
-  const tooltip = container.querySelector('[role="tooltip"]');
+  const tooltip = document.body.querySelector('[role="tooltip"]');
   expect(badge).toHaveAttribute("aria-describedby", tooltip?.id);
   expect(tooltip).toHaveTextContent("Le fichier a changé.");
   expect(tooltip).not.toBeVisible();
+  // Hors de la carte survolée (transformée) : directement sous le body.
+  expect(tooltip?.parentElement).toBe(document.body);
 
   fireEvent.focus(badge);
   expect(tooltip).toBeVisible();

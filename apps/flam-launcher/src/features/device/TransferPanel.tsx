@@ -40,7 +40,8 @@ export function TransferPanel() {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const wasBusy = useRef(false);
   const listRef = useRef<HTMLUListElement>(null);
-  const focusAfterRemoval = useRef(false);
+  // Longueur de la file au clic sur « Retirer » (0 : aucun retrait attendu).
+  const focusAfterRemoval = useRef(0);
 
   // Fin de file : le bouton Annuler disparaît, le focus passe au titre du panneau.
   useEffect(() => {
@@ -53,8 +54,11 @@ export function TransferPanel() {
   // Un élément retiré de la file emporte son bouton : le focus passe au bouton « Retirer de la
   // file » suivant restant, sinon au titre du panneau.
   useLayoutEffect(() => {
-    if (!focusAfterRemoval.current) return;
-    focusAfterRemoval.current = false;
+    const before = focusAfterRemoval.current;
+    if (!before) return;
+    focusAfterRemoval.current = 0;
+    // L'élément est parti en envoi entre-temps : rien n'a été retiré, le focus reste en place.
+    if (queue.length >= before) return;
     const buttons = listRef.current?.querySelectorAll<HTMLElement>("[data-queue-remove]");
     const target = buttons?.[0] ?? headingRef.current;
     target?.focus();
@@ -154,7 +158,7 @@ export function TransferPanel() {
                     label={text.panel.removeFromQueue(item.title)}
                     data-queue-remove=""
                     onClick={() => {
-                      focusAfterRemoval.current = true;
+                      focusAfterRemoval.current = queue.length;
                       removeFromQueue(item.uuid);
                     }}
                   />
