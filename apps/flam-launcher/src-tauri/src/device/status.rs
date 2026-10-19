@@ -117,6 +117,10 @@ pub struct DeviceStory {
     pub title: Option<String>,
     /// L'histoire figure dans la bibliothèque du launcher (vignette disponible).
     pub in_library: bool,
+    /// Identifiants de bibliothèque des histoires installées sous cet UUID (`uuid.bin` de leur
+    /// archive) : l'interface reconnaît ainsi une histoire d'une source dossier ou Telmi, dont
+    /// l'identifiant de bibliothèque n'est pas l'UUID de la Flam.
+    pub library_uuids: Vec<String>,
     /// Listée dans `list` mais sans dossier `str/<uuid>` (index qui pointe dans le vide).
     pub missing: bool,
 }
@@ -183,16 +187,28 @@ pub fn status(env: &Environment, backup_dir: &Path) -> DeviceStatus {
     }
 }
 
+/// Histoires de la bibliothèque installées sous un même UUID de la Flam.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LibraryMatch {
+    /// Titre de la bibliothèque.
+    pub title: String,
+    /// Identifiants de bibliothèque (`LibraryEntry::uuid`), dans l'ordre de la bibliothèque.
+    pub library_uuids: Vec<String>,
+}
+
 /// Histoires de la première Flam détectée (`None` : aucune Flam). `titles` associe un UUID en
-/// minuscules au titre de la bibliothèque du launcher. Lecture seule : l'index est lu tel quel,
-/// sans reprise.
-pub fn list_stories(env: &Environment, titles: &HashMap<String, String>) -> Option<StoriesReport> {
+/// minuscules aux histoires de la bibliothèque du launcher. Lecture seule : l'index est lu tel
+/// quel, sans reprise.
+pub fn list_stories(
+    env: &Environment,
+    titles: &HashMap<String, LibraryMatch>,
+) -> Option<StoriesReport> {
     let report = detect::detect(env);
     let device = report.devices.first()?;
     Some(read_stories(&device.root, titles))
 }
 
-fn read_stories(root: &Path, titles: &HashMap<String, String>) -> StoriesReport {
+fn read_stories(root: &Path, titles: &HashMap<String, LibraryMatch>) -> StoriesReport {
     let visible = index::read_index(root, IndexKind::Visible);
     let hidden = index::read_index(root, IndexKind::Hidden);
     let missing: HashSet<_> = index::missing_stories(root, &visible.entries)
@@ -210,11 +226,12 @@ fn read_stories(root: &Path, titles: &HashMap<String, String>) -> StoriesReport 
             return;
         }
         let uuid = id.as_str().to_string();
-        let title = titles.get(&uuid).cloned();
+        let found = titles.get(&uuid);
         stories.push(DeviceStory {
             short_id: uuid.chars().take(SHORT_ID_LEN).collect(),
-            in_library: title.is_some(),
-            title,
+            in_library: found.is_some(),
+            title: found.map(|m| m.title.clone()),
+            library_uuids: found.map(|m| m.library_uuids.clone()).unwrap_or_default(),
             uuid,
             placement,
             missing,
@@ -311,15 +328,25 @@ fn archive_uuid(cache_root: &Path, entry: &LibraryEntry) -> Option<String> {
     }
 }
 
-/// Titres de la bibliothèque, par UUID de l'histoire sur la Flam ([`device_uuid_of`]).
+/// Histoires de la bibliothèque, par UUID de l'histoire sur la Flam ([`device_uuid_of`]). Si
+/// plusieurs entrées donnent le même UUID, le titre est celui de la dernière (comme avant) et
+/// tous les identifiants sont gardés.
 fn library_titles(
     cache_root: Option<&Path>,
     entries: Vec<LibraryEntry>,
-) -> HashMap<String, String> {
-    entries
-        .into_iter()
-        .filter_map(|e| Some((device_uuid_of(cache_root, &e)?, e.title)))
-        .collect()
+) -> HashMap<String, LibraryMatch> {
+    let mut found: HashMap<String, LibraryMatch> = HashMap::new();
+    for entry in entries {
+        let Some(device_uuid) = device_uuid_of(cache_root, &entry) else {
+            continue;
+        };
+        let slot = found.entry(device_uuid).or_default();
+        slot.title = entry.title;
+        if !slot.library_uuids.contains(&entry.uuid) {
+            slot.library_uuids.push(entry.uuid);
+        }
+    }
+    found
 }
 
 /// Histoires installées sur la Flam (`None` : aucune Flam détectée).
@@ -510,7 +537,13 @@ mod tests {
     #[test]
     fn les_histoires_sont_visibles_masquees_ou_non_listees() {
         let dev = installed_device();
-        let titles = HashMap::from([(A.to_string(), "Capi".to_string())]);
+        let titles = HashMap::from([(
+            A.to_string(),
+            LibraryMatch {
+                title: "Capi".into(),
+                library_uuids: vec!["capi-bib".into()],
+            },
+        )]);
         let report = list_stories(&env(vec![dev.path().to_path_buf()]), &titles).unwrap();
         let summary: Vec<_> = report
             .stories
@@ -527,7 +560,9 @@ mod tests {
             ]
         );
         assert_eq!(report.stories[0].title.as_deref(), Some("Capi"));
+        assert_eq!(report.stories[0].library_uuids, ["capi-bib"]);
         assert_eq!(report.stories[1].title, None);
+        assert!(report.stories[1].library_uuids.is_empty());
         assert_eq!(report.stories[1].short_id, "22222222");
         assert_eq!(report.visible_index, IndexHealth::Valid);
         assert_eq!(report.hidden_index, IndexHealth::Valid);
@@ -700,13 +735,14 @@ mod tests {
         let titles = library_titles(Some(cache.path()), entries.clone());
         let capi_uuid = uuid::Uuid::from_bytes(capi).hyphenated().to_string();
         assert_eq!(capi_uuid, "a701e27e-8f3a-248b-72bd-ff65fa5d440e");
-        assert_eq!(titles.get(&capi_uuid).map(String::as_str), Some("Capi"));
+        assert_eq!(titles[&capi_uuid].title, "Capi");
         assert_eq!(
-            titles
-                .get("11111111-1111-1111-1111-111111111111")
-                .map(String::as_str),
-            Some("Égypte")
+            titles[&capi_uuid].library_uuids,
+            ["a701e27e8f3a248b72bdff65fa5d440e"]
         );
+        let egypte = &titles["11111111-1111-1111-1111-111111111111"];
+        assert_eq!(egypte.title, "Égypte");
+        assert_eq!(egypte.library_uuids, ["ffffff-199a63526c4"]);
         assert_eq!(titles.len(), 2);
         // Sans dossier de cache : repli sur l'UUID de la bibliothèque.
         assert_eq!(library_titles(None, entries).len(), 1);
@@ -724,6 +760,11 @@ mod tests {
         let report = list_stories(&env(vec![dev.path().to_path_buf()]), &titles).unwrap();
         assert_eq!(report.stories[0].title.as_deref(), Some("Capi"));
         assert!(report.stories[0].in_library);
+        // L'interface retrouve l'histoire de bibliothèque (forme simple) sur la Flam.
+        assert_eq!(
+            report.stories[0].library_uuids,
+            ["a701e27e8f3a248b72bdff65fa5d440e"]
+        );
     }
 
     /// Critère d'acceptation : après état et liste, l'arborescence et les octets de la Flam

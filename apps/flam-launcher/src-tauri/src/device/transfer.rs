@@ -122,6 +122,8 @@ pub const EVENT_PROGRESS: &str = "device://transfer-progress";
 const CHUNK: usize = 1024 * 1024;
 /// Préfixe du fichier sonde de [`DeviceFs::same_directory`].
 const PROBE_PREFIX: &str = ".flam-sonde-";
+/// Vrai une fois un échec de [`DeviceFs::sync_dir`] journalisé en avertissement.
+static SYNC_DIR_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Étape en cours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -163,6 +165,10 @@ pub struct TransferReport {
     /// Mode carrier : le couple est conservé sur ce PC pour cette Flam (les envois suivants
     /// peuvent le relire). `None` hors mode carrier.
     pub carrier_stored: Option<bool>,
+    /// Entrées de `.flam-transfer/` que la reprise faite avant l'envoi n'a pas pu traiter
+    /// (« entrée : erreur »), par exemple un dossier verrouillé : l'envoi a réussi, mais une
+    /// autre histoire peut rester incomplète jusqu'à la prochaine reprise. Vide d'ordinaire.
+    pub recovery_failures: Vec<String>,
 }
 
 /// Bilan d'une reprise.
@@ -193,6 +199,11 @@ pub enum TransferError {
     NotEnoughSpace { needed: u64, free: u64 },
     #[error("l'histoire {id} est déjà sur la Flam{}", hidden_note(.hidden))]
     AlreadyInstalled { id: StoryId, hidden: bool },
+    /// « Remplacer » visait une autre histoire de la Flam que celle préparée (`uuid.bin`).
+    #[error(
+        "l'histoire préparée ({id}) n'est pas celle à remplacer sur la Flam : rien n'a été écrit"
+    )]
+    ReplaceMismatch { id: StoryId },
     #[error("firmware de la Flam non pris en charge : « {0} » (2.x, ou 1.x avec les clés d'une histoire officielle ; 3.x et suivants non vérifiés)")]
     UnsupportedFirmware(String),
     #[error("clés de la Flam illisibles : {0}")]
@@ -237,6 +248,7 @@ impl From<TransferError> for AppError {
             | TransferError::InvalidRoot
             | TransferError::NotEnoughSpace { .. }
             | TransferError::AlreadyInstalled { .. }
+            | TransferError::ReplaceMismatch { .. }
             | TransferError::UnsupportedFirmware(_)
             | TransferError::KeyUnavailable(_)
             | TransferError::Busy(_)
@@ -529,7 +541,9 @@ fn previous_dir(root: &Path, id: &StoryId) -> PathBuf {
 }
 
 /// Transfère `prepared` sur la Flam de racine `root`. `guard` prouve que le verrou de
-/// l'appareil est tenu. `replace` : une histoire déjà listée est mise à jour (sinon
+/// l'appareil est tenu. `replace` : UUID de l'histoire de la Flam que l'utilisateur a choisi de
+/// remplacer (forme simple ou à tirets) ; une histoire déjà listée n'est mise à jour que s'il
+/// désigne `prepared.uuid` (sinon [`TransferError::ReplaceMismatch`] ; sans `replace`,
 /// [`TransferError::AlreadyInstalled`]). Un dossier `str/<uuid>/` absent de l'index (orphelin,
 /// par exemple après une coupure avant l'étape 6) est remplacé sans condition, avec la même
 /// mise de côté qu'une mise à jour. `cancel` est consulté entre chaque bloc, jusqu'au
@@ -538,7 +552,7 @@ pub fn send_story(
     _guard: &OpGuard<'_>,
     root: &Path,
     prepared: &PreparedStory,
-    replace: bool,
+    replace: Option<&str>,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<TransferReport, TransferError> {
@@ -556,7 +570,7 @@ pub(crate) fn send_with(
     fs: &dyn DeviceFs,
     root: &Path,
     prepared: &PreparedStory,
-    replace: bool,
+    replace: Option<&str>,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<TransferReport, TransferError> {
@@ -566,23 +580,50 @@ pub(crate) fn send_with(
     let id = StoryId::parse(&prepared.uuid)
         .filter(|id| id.as_str() == prepared.uuid)
         .ok_or(TransferError::InvalidId)?;
+    // « Remplacer » est lié à l'histoire choisie : une archive dont `uuid.bin` désigne une autre
+    // histoire de la Flam ne l'écrase jamais. Contrôlé avant toute écriture, reprise comprise.
+    let replace = match replace {
+        None => false,
+        Some(target) if same_uuid(target, &id) => true,
+        Some(_) => return Err(TransferError::ReplaceMismatch { id }),
+    };
     check_cancel(cancel)?;
 
     // 1. Reprises et vérifications : rien n'est écrit tant qu'elles ne sont pas passées
     // (hormis la fin d'opérations interrompues).
     // Une entrée de reprise qui échoue (dossier verrouillé) ne bloque pas l'envoi d'une autre
-    // histoire ; celle de cet UUID est refusée plus bas.
-    recover_collect(fs, root)?;
-    // Un résidu laissé par la reprise (deux noms du même dossier) ne doit jamais être réutilisé
-    // ni supprimé par le nettoyage d'un échec : il partage peut-être les fichiers de l'histoire.
+    // histoire ; elle est signalée dans le rapport, et celle de cet UUID est refusée plus bas.
+    let (_, failures) = recover_collect(fs, root)?;
+    // Un résidu laissé par la reprise (deux noms du même dossier, ou entrée verrouillée) ne
+    // doit jamais être réutilisé ni supprimé par le nettoyage d'un échec : il partage peut-être
+    // les fichiers de l'histoire.
     for leftover in [incoming_dir(root, &id), previous_dir(root, &id)] {
         if leftover.try_exists()? {
-            return Err(TransferError::Io(io::Error::other(format!(
-                "{} n'a pas pu être nettoyé (vérifiez la Flam avec chkdsk) : rien n'a été écrit",
-                leftover.display()
-            ))));
+            let name = leftover
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned());
+            let failed = failures
+                .iter()
+                .find(|(entry, _)| Some(entry) == name.as_ref());
+            let message = match failed {
+                // Reprise en échec (fichier ouvert, erreur d'entrée/sortie) : pas une
+                // incohérence du système de fichiers.
+                Some((_, err)) => format!(
+                    "{} n'a pas pu être nettoyé ({err}) : fermez ce qui utilise la Flam puis réessayez ; rien n'a été écrit",
+                    leftover.display()
+                ),
+                None => format!(
+                    "{} n'a pas pu être nettoyé (vérifiez la Flam avec chkdsk) : rien n'a été écrit",
+                    leftover.display()
+                ),
+            };
+            return Err(TransferError::Io(io::Error::other(message)));
         }
     }
+    let recovery_failures: Vec<String> = failures
+        .iter()
+        .map(|(entry, err)| format!("{entry} : {err}"))
+        .collect();
     for kind in IndexKind::ALL {
         if index::recover(root, kind)? == Recovery::NeedsUser {
             return Err(TransferError::IndexNeedsUser);
@@ -669,7 +710,12 @@ pub(crate) fn send_with(
         &root.join(TRANSFER_DIR),
     ] {
         if let Err(err) = fs.sync_dir(dir) {
-            tracing::warn!(%id, dossier = %dir.display(), "synchronisation du dossier impossible : {err}");
+            // FAT peut refuser à chaque envoi : un seul avertissement, puis du débogage.
+            if SYNC_DIR_WARNED.swap(true, Ordering::Relaxed) {
+                tracing::debug!(%id, dossier = %dir.display(), "synchronisation du dossier impossible : {err}");
+            } else {
+                tracing::warn!(%id, dossier = %dir.display(), "synchronisation du dossier impossible : {err}");
+            }
         }
     }
 
@@ -714,7 +760,18 @@ pub(crate) fn send_with(
         cache_removed,
         carrier_readback: None,
         carrier_stored: None,
+        recovery_failures,
     })
+}
+
+/// Vrai si `target` (forme simple de 32 caractères ou forme à tirets, casse indifférente)
+/// désigne l'UUID `id`.
+fn same_uuid(target: &str, id: &StoryId) -> bool {
+    matches!(target.len(), 32 | 36)
+        && matches!(
+            (uuid::Uuid::try_parse(target), uuid::Uuid::try_parse(id.as_str())),
+            (Ok(a), Ok(b)) if a == b
+        )
 }
 
 /// Supprime le dossier temporaire (au mieux : la reprise s'en charge sinon).
@@ -968,7 +1025,8 @@ pub fn keys_from_mdf(mdf: &[u8]) -> Result<DeviceKeys, TransferError> {
     })?;
     let serial = parse_serial_field(&mdf[MDF_SERIAL_OFFSET..MDF_SERIAL_OFFSET + SERIAL_FIELD_LEN])
         .map_err(|e| TransferError::KeyUnavailable(e.to_string()))?;
-    // Références dans le tampon `.mdf` (effacé par l'appelant) : aucune copie des clés sur la pile.
+    // Références dans le tampon `.mdf` (effacé par l'appelant) : ce code ne copie pas les clés
+    // (le compilateur peut toutefois en laisser des copies temporaires en registre ou sur la pile).
     let field = |offset: usize| -> &[u8; 16] {
         (&mdf[offset..offset + 16])
             .try_into()
@@ -1044,7 +1102,7 @@ pub fn send_from_library(
     root: &Path,
     plain_pk: &Path,
     work_dir: &Path,
-    replace: bool,
+    replace: Option<&str>,
     carrier: Option<&CarrierRequest<'_>>,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(Progress),
@@ -1067,7 +1125,7 @@ pub(crate) fn send_from_library_with(
     root: &Path,
     plain_pk: &Path,
     work_dir: &Path,
-    replace: bool,
+    replace: Option<&str>,
     carrier: Option<&CarrierRequest<'_>>,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(Progress),
@@ -1153,9 +1211,9 @@ struct ProgressEvent<'a> {
 
 /// Envoie l'histoire `uuid` de la bibliothèque sur la Flam de racine `root` (préparation puis
 /// transfert sûr). Événements [`EVENT_PROGRESS`] pendant la copie et la vérification.
-/// `replace` : mettre à jour une histoire déjà présente (faux par défaut). `carrier` : source
-/// des clés pour une Flam en firmware 1.x (mode carrier, consentement préalable obligatoire) ;
-/// `remember` : conserver le couple sur ce PC, chiffré (faux par défaut).
+/// `replace` : UUID de l'histoire de la Flam à remplacer (refusé s'il ne désigne pas celle de
+/// l'archive ; absent : pas de remplacement). `carrier` : source des clés pour une Flam en
+/// firmware 1.x (mode carrier, consentement préalable obligatoire) ; `remember` : conserver le couple sur ce PC, chiffré (faux par défaut).
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn device_send_story(
@@ -1164,7 +1222,7 @@ pub async fn device_send_story(
     catalog: State<'_, CatalogService>,
     root: String,
     uuid: String,
-    replace: Option<bool>,
+    replace: Option<String>,
     carrier: Option<CarrierChoice>,
     remember: Option<bool>,
 ) -> AppResult<TransferReport> {
@@ -1217,7 +1275,7 @@ pub async fn device_send_story(
             Path::new(&root),
             &plain_pk,
             &cache_root.join(WORK_SUBDIR),
-            replace.unwrap_or(false),
+            replace.as_deref(),
             request.as_ref(),
             &cancel,
             &mut emit,
@@ -1291,6 +1349,7 @@ pub async fn device_recover_transfers(root: String) -> AppResult<TransferRecover
         let guard = DEVICE_LOCK
             .try_begin(Operation::Transfer)
             .map_err(TransferError::from)?;
+        ensure_detected_root(Path::new(&root))?;
         Ok(recover_device(&guard, Path::new(&root))?)
     })
     .await?

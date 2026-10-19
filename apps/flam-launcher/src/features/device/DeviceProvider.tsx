@@ -262,7 +262,7 @@ export function DeviceProvider({
           rootNow,
           next.uuid,
           next.carrier,
-          next.replace === true,
+          next.replace,
         );
         if (sent.carrier_readback === false) {
           carrierSession.current = null;
@@ -272,8 +272,19 @@ export function DeviceProvider({
           // Conservation demandée mais échouée : les envois suivants redemandent les clés.
           if (next.carrier?.remember && sent.carrier_stored !== true)
             carrierSession.current = null;
-          setItemState(next.uuid, "done");
-          setAnnouncement(text.panel.announce.done(next.title));
+          // Une autre entrée de reprise a échoué : l'envoi a réussi, mais c'est signalé.
+          const warning = sent.recovery_failures?.length
+            ? text.panel.recoveryFailures(sent.recovery_failures)
+            : undefined;
+          updateQueue((items) =>
+            items.map((item) =>
+              item.uuid === next.uuid
+                ? { ...item, state: "done", error: undefined, warning }
+                : item,
+            ),
+          );
+          const done = text.panel.announce.done(next.title);
+          setAnnouncement(warning ? `${done}. ${warning}` : done);
         }
         bumpReload();
         const gen = reloadGen.current;

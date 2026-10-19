@@ -1146,6 +1146,8 @@ pub async fn device_carrier_forget(root: Option<String>) -> AppResult<usize> {
         let store = CarrierStore::app();
         let removed = match root {
             Some(root) => {
+                // Racine reçue de l'interface : un lecteur détecté seulement, comme pour l'envoi.
+                super::transfer::ensure_detected_root(Path::new(&root))?;
                 let mdf = read_mdf(Path::new(&root))?;
                 let id = DeviceId::from_mdf(&mdf).ok_or_else(|| {
                     AppError::Validation("Flam non identifiable (.mdf trop court)".into())

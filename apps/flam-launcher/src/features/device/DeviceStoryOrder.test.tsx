@@ -31,6 +31,7 @@ function story(uuid: string, extra: Partial<DeviceStory> = {}): DeviceStory {
     placement: "visible",
     title: TITLES[uuid] ?? null,
     in_library: false,
+    library_uuids: [],
     missing: false,
     ...extra,
   };
