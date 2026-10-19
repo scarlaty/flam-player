@@ -335,6 +335,9 @@ struct Parsed {
     story: StoryEntry,
     has_thumb: bool,
     warnings: Vec<String>,
+    /// Contenu du fichier `version` d'une histoire FLAM (entier), utilisé seulement pour
+    /// choisir entre deux copies du même `uuid` ; `story.version` reste `None`.
+    flam_version: Option<u32>,
 }
 
 fn telmi_entry(source_id: &str, path: &Path, info: &FileInfo) -> Result<Parsed, String> {
@@ -379,6 +382,7 @@ fn telmi_entry(source_id: &str, path: &Path, info: &FileInfo) -> Result<Parsed, 
         story,
         has_thumb,
         warnings: Vec::new(),
+        flam_version: None,
     })
 }
 
@@ -424,6 +428,13 @@ fn flam_entry(
     }
     let uuid: String = uuid_bin.iter().map(|b| format!("{b:02x}")).collect();
     let has_thumb = files.stat(LIF_NAME).is_some();
+    // Illisible ou non numérique : ignoré (n'empêche pas l'histoire).
+    let flam_version = files
+        .read("version", 32)
+        .ok()
+        .flatten()
+        .and_then(|raw| String::from_utf8(raw).ok())
+        .and_then(|text| text.trim().parse::<u32>().ok());
 
     let story = StoryEntry {
         entry_id: String::new(),
@@ -448,6 +459,7 @@ fn flam_entry(
         story,
         has_thumb,
         warnings: Vec::new(),
+        flam_version,
     })
 }
 
@@ -589,6 +601,54 @@ fn parse_one(
     parsed
 }
 
+/// Histoire analysée avec son chemin, avant le regroupement des doublons.
+struct Candidate {
+    parsed: Parsed,
+    path: PathBuf,
+    kind: StoryKind,
+    shown: String,
+}
+
+/// `true` si `a` doit être préférée à `b` (deux copies FLAM du même `uuid`) : version la plus
+/// élevée (inconnue < connue), puis `.plain.pk` avant `.plain`, puis modification la plus
+/// récente (ISO 8601 UTC, comparable en texte), puis `entry_id` le plus petit (déterministe).
+fn flam_preferred(a: &Candidate, b: &Candidate) -> bool {
+    use std::cmp::Ordering;
+    let rank = |c: &Candidate| (c.parsed.flam_version, c.kind == StoryKind::FlamPk);
+    let order = rank(a)
+        .cmp(&rank(b))
+        .then_with(|| a.parsed.story.updated_at.cmp(&b.parsed.story.updated_at))
+        .then_with(|| b.parsed.story.entry_id.cmp(&a.parsed.story.entry_id));
+    order == Ordering::Greater
+}
+
+/// Regroupe, dans une même source, les histoires FLAM (`.plain`, `.plain.pk`) de même `uuid`
+/// (insensible à la casse) en une seule entrée ; l'ordre d'apparition est conservé (celui de
+/// la meilleure copie à la place de la première). Les archives Telmi ne sont pas regroupées.
+fn dedupe_flam(candidates: Vec<Candidate>) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = Vec::with_capacity(candidates.len());
+    let mut by_uuid: HashMap<String, usize> = HashMap::new();
+    for cand in candidates {
+        if cand.kind == StoryKind::TelmiZip {
+            out.push(cand);
+            continue;
+        }
+        let key = cand.parsed.story.uuid.to_lowercase();
+        match by_uuid.get(&key) {
+            Some(&i) => {
+                if flam_preferred(&cand, &out[i]) {
+                    out[i] = cand;
+                }
+            }
+            None => {
+                by_uuid.insert(key, out.len());
+                out.push(cand);
+            }
+        }
+    }
+    out
+}
+
 /// Analyse `root` (non récursif par défaut) : histoires, avertissements et références de
 /// vignettes (entry_id -> archive).
 fn scan_folder(
@@ -617,30 +677,20 @@ fn scan_folder(
         .0
         .retain(|p, _| !p.starts_with(root) || present.contains(p));
 
+    let mut candidates = Vec::new();
     for (path, kind) in &found {
         let shown = path.to_string_lossy().into_owned();
         match parse_one(source_id, path, *kind, cache) {
             Ok(mut parsed) => {
                 // Le cache de métadonnées est partagé entre sources : identité fixée ici.
-                let entry_id = entry_id_of(source_id, root, path);
                 parsed.story.source_id = source_id.to_string();
-                parsed.story.entry_id = entry_id.clone();
-                if parsed.has_thumb {
-                    parsed.story.thumb_url = Some(entry_id.clone());
-                    refs.insert(
-                        entry_id,
-                        ThumbRef {
-                            path: path.clone(),
-                            kind: *kind,
-                        },
-                    );
-                }
-                scan.entries.push(parsed.story);
-                scan.warnings
-                    .extend(parsed.warnings.into_iter().map(|message| ScanWarning {
-                        path: shown.clone(),
-                        message,
-                    }));
+                parsed.story.entry_id = entry_id_of(source_id, root, path);
+                candidates.push(Candidate {
+                    parsed,
+                    path: path.clone(),
+                    kind: *kind,
+                    shown,
+                });
             }
             Err(message) => {
                 tracing::warn!("{shown} ignoré : {message}");
@@ -650,6 +700,26 @@ fn scan_folder(
                 });
             }
         }
+    }
+
+    for Candidate {
+        mut parsed,
+        path,
+        kind,
+        shown,
+    } in dedupe_flam(candidates)
+    {
+        let entry_id = parsed.story.entry_id.clone();
+        if parsed.has_thumb {
+            parsed.story.thumb_url = Some(entry_id.clone());
+            refs.insert(entry_id, ThumbRef { path, kind });
+        }
+        scan.entries.push(parsed.story);
+        scan.warnings
+            .extend(parsed.warnings.into_iter().map(|message| ScanWarning {
+                path: shown.clone(),
+                message,
+            }));
     }
     Ok((scan, refs))
 }
@@ -879,6 +949,10 @@ mod tests {
 
     /// 16 octets d'uuid, `info.plain` et une vignette LIF 1x1 valide.
     fn flam_files(title: &str) -> Vec<(&'static str, Vec<u8>)> {
+        flam_files_with(title, "1", (0u8..16).collect())
+    }
+
+    fn flam_files_with(title: &str, version: &str, uuid: Vec<u8>) -> Vec<(&'static str, Vec<u8>)> {
         let lif = {
             let mut v = b"liff".to_vec();
             v.extend_from_slice(&1u32.to_be_bytes());
@@ -893,14 +967,18 @@ mod tests {
                 "info.plain",
                 format!("{title}\nsous-titre\n000000\n{title}").into_bytes(),
             ),
-            ("version", b"1".to_vec()),
-            ("uuid.bin", (0u8..16).collect()),
+            ("version", version.as_bytes().to_vec()),
+            ("uuid.bin", uuid),
             ("img/thumbnail.lif", lif),
         ]
     }
 
     fn write_plain_dir(dir: &Path, title: &str) {
-        for (name, data) in flam_files(title) {
+        write_files_dir(dir, flam_files(title));
+    }
+
+    fn write_files_dir(dir: &Path, files: Vec<(&'static str, Vec<u8>)>) {
+        for (name, data) in files {
             let path = dir.join(name);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, data).unwrap();
@@ -908,7 +986,10 @@ mod tests {
     }
 
     fn write_plain_pk(path: &Path, title: &str) {
-        let files = flam_files(title);
+        write_files_pk(path, flam_files(title));
+    }
+
+    fn write_files_pk(path: &Path, files: Vec<(&'static str, Vec<u8>)>) {
         let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, d)| (*n, d.as_slice())).collect();
         write_zip(path, CompressionMethod::Stored, &refs);
     }
@@ -1100,7 +1181,11 @@ mod tests {
             &dir.path().join("Été.1A2B3C4D.plain"),
             "Ça va être « génial »",
         );
-        write_plain_pk(&dir.path().join("histoire.1A2B3C4D.plain.pk"), "Titre pk");
+        // Autre uuid que le `.plain` : deux histoires distinctes (voir les tests de doublons).
+        write_files_pk(
+            &dir.path().join("histoire.1A2B3C4D.plain.pk"),
+            flam_files_with("Titre pk", "1", vec![9; 16]),
+        );
         let (scan, ctx) = scan(dir.path(), false);
         assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
         assert_eq!(scan.entries.len(), 2);
@@ -1344,17 +1429,154 @@ mod tests {
         assert!(ctx.thumb(&scan.entries[0]).is_ok());
     }
 
+    /// Une seule entrée, nommée `titre` : renvoie (entrée, ctx).
+    fn scan_one(root: &Path, recursive: bool, titre: &str) -> (StoryEntry, Ctx) {
+        let (scan, ctx) = scan(root, recursive);
+        assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
+        assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
+        assert_eq!(scan.entries[0].title, titre);
+        (scan.entries[0].clone(), ctx)
+    }
+
     #[test]
-    fn plain_et_pk_de_meme_uuid_ont_deux_entry_id_stables() {
+    fn plain_et_pk_de_meme_uuid_donnent_une_entree_pk_stable() {
         let dir = tempfile::tempdir().unwrap();
-        write_plain_dir(&dir.path().join("x.plain"), "Titre");
-        write_plain_pk(&dir.path().join("x.plain.pk"), "Titre");
-        let (first, ctx) = scan(dir.path(), false);
-        assert_eq!(first.entries.len(), 2);
-        assert_eq!(first.entries[0].uuid, first.entries[1].uuid);
-        assert_ne!(first.entries[0].entry_id, first.entries[1].entry_id);
+        write_plain_dir(&dir.path().join("x.plain"), "Titre plain");
+        write_plain_pk(&dir.path().join("x.plain.pk"), "Titre pk");
+        let (first, ctx) = scan_one(dir.path(), false, "Titre pk");
+        assert_eq!(first.kind, StoryKind::FlamPk);
+        assert!(first.download_url.ends_with("x.plain.pk"));
+        assert!(first.size.is_some());
+        // Vignette cohérente avec l'entrée retenue.
+        assert!(ctx.thumb(&first).is_ok());
         let second = ctx.state.scan("src", dir.path(), false).unwrap();
-        assert_eq!(first.entries, second.entries);
+        assert_eq!(second.entries, vec![first.clone()]);
+        // Le `.plain` écarté n'est plus accessible par son ancien identifiant.
+        let plain_id = entry_id_of("src", dir.path(), &dir.path().join("x.plain"));
+        assert_ne!(plain_id, first.entry_id);
+        assert_eq!(
+            ctx.state.entry("src", &plain_id).unwrap_err().kind(),
+            "not_found"
+        );
+    }
+
+    #[test]
+    fn plain_seul_reste_une_entree() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plain_dir(&dir.path().join("x.plain"), "Titre plain");
+        let (entry, ctx) = scan_one(dir.path(), false, "Titre plain");
+        assert_eq!(entry.kind, StoryKind::FlamPlain);
+        assert!(ctx.thumb(&entry).is_ok());
+    }
+
+    #[test]
+    fn versions_differentes_la_plus_elevee_gagne_meme_en_plain() {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid: Vec<u8> = (0u8..16).collect();
+        write_files_dir(
+            &dir.path().join("x.plain"),
+            flam_files_with("Version 10", "10", uuid.clone()),
+        );
+        write_files_pk(
+            &dir.path().join("x.plain.pk"),
+            flam_files_with("Version 2", "2", uuid),
+        );
+        let (entry, ctx) = scan_one(dir.path(), false, "Version 10");
+        assert_eq!(entry.kind, StoryKind::FlamPlain);
+        assert!(ctx.thumb(&entry).is_ok());
+    }
+
+    #[test]
+    fn meme_uuid_dans_deux_sous_dossiers_une_seule_entree() {
+        let dir = tempfile::tempdir().unwrap();
+        for sub in ["b", "a"] {
+            std::fs::create_dir(dir.path().join(sub)).unwrap();
+            write_plain_pk(
+                &dir.path().join(sub).join("x.plain.pk"),
+                &format!("Copie {sub}"),
+            );
+        }
+        let (scan, ctx) = scan(dir.path(), true);
+        assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
+        let again = ctx.state.scan("src", dir.path(), true).unwrap();
+        assert_eq!(again.entries, scan.entries);
+        // Non récursif : les sous-dossiers ne sont pas parcourus.
+        let flat = ctx.state.scan("src", dir.path(), false).unwrap();
+        assert!(flat.entries.is_empty());
+    }
+
+    #[test]
+    fn uuid_differents_restent_distincts() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plain_dir(&dir.path().join("a.plain"), "A");
+        write_files_pk(
+            &dir.path().join("b.plain.pk"),
+            flam_files_with("B", "1", vec![7; 16]),
+        );
+        let (scan, _ctx) = scan(dir.path(), false);
+        assert_eq!(scan.entries.len(), 2);
+    }
+
+    #[test]
+    fn choix_deterministe_entre_copies() {
+        fn cand(id: &str, kind: StoryKind, version: Option<u32>, date: &str) -> Candidate {
+            let story = StoryEntry {
+                entry_id: id.into(),
+                source_id: "src".into(),
+                uuid: "AB".into(),
+                version: None,
+                title: id.into(),
+                description: None,
+                age: None,
+                category: None,
+                author: None,
+                voice: None,
+                license: None,
+                thumb_url: None,
+                download_url: id.into(),
+                size: None,
+                updated_at: Some(date.into()),
+                download_count: None,
+                kind,
+            };
+            Candidate {
+                parsed: Parsed {
+                    story,
+                    has_thumb: false,
+                    warnings: vec![],
+                    flam_version: version,
+                },
+                path: PathBuf::from(id),
+                kind,
+                shown: id.into(),
+            }
+        }
+        let pk = |id, v, d| cand(id, StoryKind::FlamPk, v, d);
+        let plain = |id, v, d| cand(id, StoryKind::FlamPlain, v, d);
+        let win = |list: Vec<Candidate>| {
+            let out = dedupe_flam(list);
+            assert_eq!(out.len(), 1);
+            out[0].parsed.story.entry_id.clone()
+        };
+        // Même version : le .pk, même plus ancien.
+        let l = vec![plain("p", Some(1), "2026-02"), pk("k", Some(1), "2026-01")];
+        assert_eq!(win(l), "k");
+        // Version plus élevée.
+        let l = vec![pk("k", Some(1), "2026-02"), plain("p", Some(2), "2026-01")];
+        assert_eq!(win(l), "p");
+        // Version inconnue < version connue.
+        let l = vec![pk("k", None, "2026-02"), plain("p", Some(1), "2026-01")];
+        assert_eq!(win(l), "p");
+        // Même version et même type : le plus récent, quel que soit l'ordre.
+        let l = vec![pk("a", Some(1), "2026-01"), pk("b", Some(1), "2026-02")];
+        assert_eq!(win(l), "b");
+        let l = vec![pk("b", Some(1), "2026-02"), pk("a", Some(1), "2026-01")];
+        assert_eq!(win(l), "b");
+        // Égalité parfaite : entry_id le plus petit, quel que soit l'ordre.
+        let l = vec![pk("b", Some(1), "d"), pk("a", Some(1), "d")];
+        assert_eq!(win(l), "a");
+        let l = vec![pk("a", Some(1), "d"), pk("b", Some(1), "d")];
+        assert_eq!(win(l), "a");
     }
 
     #[test]
