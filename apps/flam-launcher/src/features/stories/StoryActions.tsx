@@ -14,6 +14,7 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
   const stories = useStories();
   const text = t.stories.actions;
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
   if (stories.activeTaskFor(entry)) return null;
   const installed = stories.installedFor(entry);
   if (installed) {
@@ -42,7 +43,8 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
           size="sm"
           variant="danger"
           icon="trash"
-          disabled={playingThis}
+          disabled={playingThis || removing}
+          aria-busy={removing || undefined}
           aria-label={text.forStory(text.remove, entry.title)}
           onClick={() => setConfirmRemove(true)}
         >
@@ -54,7 +56,10 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
           onCancel={() => setConfirmRemove(false)}
           onConfirm={(purge) => {
             setConfirmRemove(false);
-            void stories.remove(installed.uuid, entry.title, purge);
+            setRemoving(true);
+            void stories
+              .remove(installed.uuid, entry.title, purge)
+              .finally(() => setRemoving(false));
           }}
         />
       </>

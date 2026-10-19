@@ -20,30 +20,22 @@ export function RemoveStoryDialog({
   const cancelRef = useRef<HTMLButtonElement>(null);
   const [purgeSaves, setPurgeSaves] = useState(false);
   const text = t.stories.removeDialog;
-  const cancel = () => {
-    setPurgeSaves(false);
-    onCancel();
-  };
+  // Remise à zéro à la fermeture (pas à la confirmation : la fiche reste ouverte pendant l'appel).
+  if (!open && purgeSaves) setPurgeSaves(false);
   return (
     <Dialog
       open={open}
-      onClose={cancel}
+      onClose={onCancel}
       role="alertdialog"
       title={text.title(title)}
       description={text.description}
       initialFocus={cancelRef}
       footer={
         <>
-          <Button ref={cancelRef} onClick={cancel}>
+          <Button ref={cancelRef} onClick={onCancel}>
             {t.common.cancel}
           </Button>
-          <Button
-            variant="danger"
-            onClick={() => {
-              onConfirm(purgeSaves);
-              setPurgeSaves(false);
-            }}
-          >
+          <Button variant="danger" onClick={() => onConfirm(purgeSaves)}>
             {text.confirm}
           </Button>
         </>

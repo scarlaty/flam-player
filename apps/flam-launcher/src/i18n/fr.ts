@@ -594,10 +594,12 @@ export const fr = {
       busy: "Retrait indisponible pendant un envoi.",
       working: "Retrait…",
       otherWorking: "Un retrait est déjà en cours.",
+      ejecting: "Retrait indisponible pendant une éjection.",
     },
     eject: {
       button: "Éjecter la Flam",
       working: "Éjection en cours…",
+      removing: "Éjection indisponible pendant un retrait.",
       busy: "Éjection indisponible pendant un envoi.",
       failed: (message: string) => `Impossible d'éjecter la Flam : ${message}`,
     },

@@ -29,14 +29,14 @@ export function RemoveStoryButton({
   onWorkingChange,
   onRemoved,
 }: RemoveStoryButtonProps) {
-  const { removeFromDevice, deviceKey } = useDevice();
+  const { removeFromDevice, deviceKey, ejecting } = useDevice();
   const keyAtOpen = useRef<string | null>(null);
   const toast = useToast();
   const [confirming, setConfirming] = useState(false);
   const [working, setWorking] = useState(false);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const hintId = useId();
-  const blocked = busy || working || locked;
+  const blocked = busy || working || locked || ejecting;
   const name = story.title ?? t.deviceScreen.stories.untitled(story.short_id);
 
   async function confirmRemove() {
@@ -81,7 +81,7 @@ export function RemoveStoryButton({
         </Button>
         {blocked && !working && (
           <span id={hintId} className="fl-send__reason">
-            {busy ? text.busy : text.otherWorking}
+            {busy ? text.busy : ejecting ? text.ejecting : text.otherWorking}
           </span>
         )}
       </span>

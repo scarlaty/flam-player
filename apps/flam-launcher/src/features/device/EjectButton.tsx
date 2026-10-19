@@ -9,10 +9,10 @@ const text = t.deviceTransfer.eject;
 
 /** « Éjecter la Flam » ; refusé pendant un envoi (raison écrite à côté, bouton focalisable). */
 export function EjectButton() {
-  const { device, busy, ejecting, eject } = useDevice();
+  const { device, busy, ejecting, removing, eject } = useDevice();
   const hintId = useId();
   if (!device) return null;
-  const blocked = busy || ejecting;
+  const blocked = busy || ejecting || removing;
   return (
     <span className="fl-send">
       <Button
@@ -20,16 +20,16 @@ export function EjectButton() {
         className={cx("fl-send__button", ejecting && "fl-send__button--working")}
         aria-disabled={blocked || undefined}
         aria-busy={ejecting || undefined}
-        aria-describedby={busy ? hintId : undefined}
+        aria-describedby={busy || removing ? hintId : undefined}
         onClick={() => {
           if (!blocked) void eject();
         }}
       >
         {ejecting ? text.working : text.button}
       </Button>
-      {busy && (
+      {(busy || removing) && (
         <span id={hintId} className="fl-send__reason">
-          {text.busy}
+          {busy ? text.busy : text.removing}
         </span>
       )}
     </span>

@@ -610,6 +610,51 @@ it("montre le retrait en cours : bouton « Retrait… », ligne grisée, doubles
   );
 });
 
+it("refuse l'éjection pendant un retrait", async () => {
+  let releaseRemove!: () => void;
+  removeGate = new Promise<void>((resolve) => {
+    releaseRemove = resolve;
+  });
+  render(<Harness />);
+  await ready();
+  await startRemoval("Déjà là");
+  await screen.findByRole("button", { name: "Retrait… « Déjà là »" });
+  const eject = screen.getAllByRole("button", { name: "Éjecter la Flam" })[0]!;
+  expect(eject).toHaveAttribute("aria-disabled", "true");
+  expect(eject).toHaveAccessibleDescription("Éjection indisponible pendant un retrait.");
+  fireEvent.click(eject);
+  expect(count("device_eject")).toBe(0);
+  await act(async () => releaseRemove());
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (0)" });
+});
+
+  onDevice = [deviceStory(C, "Déjà là")];
+  let releaseEject!: () => void;
+  ejectGate = new Promise<void>((resolve) => {
+    releaseEject = resolve;
+  });
+  fireEvent.click(screen.getAllByRole("button", { name: "Éjecter la Flam" })[0]!);
+  await screen.findAllByRole("button", { name: "Éjection en cours…" });
+  await act(async () => releaseEject());
+});
+
+it("refuse le retrait pendant une éjection", async () => {
+  let release!: () => void;
+  ejectGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  render(<Harness />);
+  await ready();
+  fireEvent.click(screen.getByRole("button", { name: "Éjecter la Flam" }));
+  await screen.findByRole("button", { name: "Éjection en cours…" });
+  const remove = screen.getByRole("button", { name: "Retirer « Déjà là »" });
+  expect(remove).toHaveAttribute("aria-disabled", "true");
+  expect(remove).toHaveAccessibleDescription("Retrait indisponible pendant une éjection.");
+  fireEvent.click(remove);
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  await act(async () => release());
+});
+
 it("rend le bouton à l'échec d'un retrait long", async () => {
   let release!: () => void;
   removeGate = new Promise<void>((resolve) => {
