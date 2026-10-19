@@ -348,6 +348,9 @@ export const fr = {
       play: "Jouer",
       playFromFolder: "Jouer depuis le dossier",
       update: "Mettre à jour",
+      /** Info-bulle et texte accessible du badge « Mise à jour disponible » et du bouton. */
+      updateHelp:
+        "Le fichier de cette histoire a changé dans sa source depuis l'installation. « Mettre à jour » recopie la nouvelle version dans la bibliothèque ; renvoyez-la ensuite sur la Flam.",
       remove: "Supprimer",
       cancel: "Annuler",
       /** Libellé accessible des actions rapides d'une carte. */
@@ -491,7 +494,8 @@ export const fr = {
     send: "Envoyer sur la Flam",
     replace: "Remplacer sur la Flam",
     /** La copie de bibliothèque est plus ancienne que sa source dossier (#288). */
-    staleCopy: "Source modifiée : mettez l'histoire à jour avant l'envoi",
+    staleCopy:
+      "Source modifiée depuis l'installation : mettez l'histoire à jour avant de l'envoyer, sinon l'ancienne version partira",
     forStory: (action: string, title: string) => `${action} « ${title} »`,
     reasons: {
       noDevice: "Flam non détectée",

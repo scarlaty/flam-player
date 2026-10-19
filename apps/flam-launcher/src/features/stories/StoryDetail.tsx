@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { Source } from "../../api/sources";
 import type { ListedEntry } from "../library/sourceData";
 import {
@@ -50,6 +50,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const { url } = useThumbnail(source, entry, { eager: true });
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [failedUrl, setFailedUrl] = useState<string>();
+  const updateHelpId = useId();
 
   const state = storyStateOf(stories, entry) ?? defaultStoryState(source, entry);
   const compat = compatFor(entry);
@@ -82,17 +83,19 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
         onClose={onClose}
         title={entry.title}
         footer={
-          <>
+          <div className="fl-detail__actions">
             {task && (
-              <Button icon="close" onClick={() => stories.cancel(task.id)}>
+              <Button size="sm" icon="close" onClick={() => stories.cancel(task.id)}>
                 {text.cancel}
               </Button>
             )}
             {!task && installed && (
               <>
                 <Button
-                  variant="danger"
+                  size="sm"
+                  variant="danger-quiet"
                   icon="trash"
+                  className="fl-detail__remove"
                   disabled={playingThis}
                   onClick={() => {
                     setConfirmRemove(true);
@@ -107,11 +110,23 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   stale={stories.sourceChanged(installed.uuid)}
                 />
                 {stories.updateAvailable(entry) && (
-                  <Button icon="refresh" onClick={() => stories.install(entry)}>
-                    {text.update}
-                  </Button>
+                  <>
+                    <Button
+                      size="sm"
+                      icon="refresh"
+                      title={text.updateHelp}
+                      aria-describedby={updateHelpId}
+                      onClick={() => stories.install(entry)}
+                    >
+                      {text.update}
+                    </Button>
+                    <span id={updateHelpId} className="fl-visually-hidden">
+                      {text.updateHelp}
+                    </span>
+                  </>
                 )}
                 <Button
+                  size="sm"
                   variant="accent"
                   icon="play"
                   disabled={playing}
@@ -125,6 +140,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
               <>
                 {canPlayFromFolder && (
                   <Button
+                    size="sm"
                     icon="play"
                     disabled={playing}
                     onClick={() => stories.playFromFolder(entry, source.id)}
@@ -132,10 +148,11 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                     {text.playFromFolder}
                   </Button>
                 )}
-                <Button icon="download" onClick={() => stories.install(entry)}>
+                <Button size="sm" icon="download" onClick={() => stories.install(entry)}>
                   {fromCatalog ? text.download : text.install}
                 </Button>
                 <Button
+                  size="sm"
                   variant="accent"
                   icon="play"
                   disabled={playing}
@@ -147,7 +164,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                 </Button>
               </>
             )}
-          </>
+          </div>
         }
       >
         <div className="fl-detail">
@@ -173,7 +190,11 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
             </p>
             <ul className="fl-detail__badges" aria-label={t.stories.detail.badges}>
               <li>
-                <Badge tone={tone} icon={STATE_APPEARANCE[state].icon}>
+                <Badge
+                  tone={tone}
+                  icon={STATE_APPEARANCE[state].icon}
+                  description={state === "update_available" ? text.updateHelp : undefined}
+                >
                   {t.library.state[state]}
                 </Badge>
               </li>

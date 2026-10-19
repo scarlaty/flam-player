@@ -24,6 +24,10 @@ export interface QueueItem {
   carrier?: CarrierSend;
   /** Remplace l'histoire déjà sur la Flam. */
   replace?: boolean;
+  /** Relecture de la Flam qui suit l'envoi réussi (numéro interne). */
+  reloadGen?: number;
+  /** Envoi réussi dont la relecture de la Flam n'est pas encore revenue : bloque un renvoi. */
+  awaitingList?: boolean;
 }
 
 export interface SendRequest {
