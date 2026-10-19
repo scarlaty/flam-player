@@ -20,6 +20,7 @@ import { formatBytes } from "../validation";
 import { useDevice } from "./DeviceContext";
 import { DeviceStoryOrder } from "./DeviceStoryOrder";
 import { EjectButton } from "./EjectButton";
+import { FirmwareNotice, firmwareSummary } from "./FirmwareStatus";
 import { ForgetCarrierKeysButton } from "./ForgetCarrierKeysButton";
 import { RemoveStoryButton } from "./RemoveStoryButton";
 import {
@@ -116,6 +117,7 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
             count={status.device_count}
             headingRef={headingRef}
           />
+          <FirmwareNotice device={device} />
           {recoveryNote && (
             <Banner tone={recoveryNote.tone} role="status">
               {recoveryNote.message}
@@ -184,6 +186,12 @@ function DeviceCard({
           <div>
             <dt>{text.detected.fileSystem}</dt>
             <dd>{device.file_system}</dd>
+          </div>
+        )}
+        {device.firmware_status && (
+          <div>
+            <dt>{t.deviceFirmware.label}</dt>
+            <dd>{firmwareSummary(device.firmware_status)}</dd>
           </div>
         )}
       </dl>
