@@ -1232,7 +1232,7 @@ travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
   donnée au front** (ni `allow-open-url`, ni `allow-open-path`, ni `allow-reveal-item-in-dir`) :
   le paquet JS du plugin n'est pas installé. Le front passe par la seule commande
   `open_external` (`src/api/external.ts`, `openExternal`), qui n'accepte que `https`, l'hôte
-  `github.com` (sans identifiants ni port) et un chemin sous `/scarlaty/flam-player/`, après
+  `github.com` (sans identifiants, port par défaut seulement) et un chemin sous `/scarlaty/flam-player/`, après
   normalisation (les `..` et `%2e%2e` sont résolus avant le contrôle). Tout le reste (autre
   domaine ou dépôt, `http`, `javascript:`, `file:`, chemins locaux) est refusé. Le plugin et ses
   dépendances (`open`, `dunce` pour Windows) sont repris par `THIRD-PARTY-NOTICES.txt`

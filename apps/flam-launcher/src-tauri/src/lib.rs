@@ -86,7 +86,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // Ouverture d'adresses : aucune permission du plugin n'est donnée au front, seule la
         // commande `external::open_external` (liste blanche du dépôt) l'utilise (#323).
-        .plugin(tauri_plugin_opener::init())
+        // Le script de clic sur les liens du plugin est désactivé : tout passe par la commande.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .setup(|app| {
             let config_dir = storage::config_dir()?;
             let catalog = catalog::CatalogService::new()?;

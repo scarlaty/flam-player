@@ -76,8 +76,8 @@ mod tests {
             "javascript:alert(1)",
             "file:///C:/Windows/System32/calc.exe",
             "file://github.com/scarlaty/flam-player/x",
-            r"C:WindowsSystem32lc.exe",
-            r"\serveurpartagex.exe",
+            r"C:\Windows\System32\calc.exe",
+            r"\\serveur\partage\x.exe",
             "mailto:a@b.fr",
             "ms-msdt:/id",
             "https://github.com/autre/depot/issues",
@@ -134,7 +134,16 @@ mod tests {
 
     #[test]
     fn le_front_n_a_aucune_permission_du_plugin() {
-        let capabilities = include_str!("../capabilities/default.json");
-        assert!(!capabilities.contains("opener"));
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities");
+        let mut count = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let content = std::fs::read_to_string(&path).unwrap();
+            assert!(!content.contains("opener"), "{}", path.display());
+            count += 1;
+        }
+        assert!(count >= 1);
+        let conf = include_str!("../tauri.conf.json");
+        assert!(!conf.contains("opener"));
     }
 }
