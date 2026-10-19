@@ -12,6 +12,7 @@ import { ToastProvider } from "../../components";
 import { t } from "../../i18n";
 import { expectNoAxeViolations } from "../../test/axe";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
+import { useDevice } from "./DeviceContext";
 import { DeviceProvider } from "./DeviceProvider";
 import { DeviceScreen } from "./DeviceScreen";
 import { POLL_INTERVAL_MS } from "./useDeviceStatus";
@@ -65,6 +66,7 @@ function deviceStory(uuid: string, title: string | null = null): DeviceStory {
     placement: "visible",
     title,
     in_library: false,
+    library_uuids: [],
     missing: false,
   };
 }
@@ -208,10 +210,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function Harness() {
+function Harness({ children }: { children?: React.ReactNode }) {
   return (
     <ToastProvider>
       <DeviceProvider>
+        {children}
         <main>
           <DeviceScreen
             libraryPanel={
@@ -310,7 +313,7 @@ it("remplace une histoire déjà sur la Flam, sur demande explicite", async () =
   expect(calls.find((c) => c.cmd === "device_send_story")?.args).toEqual({
     root: "E:\\",
     uuid: C,
-    replace: true,
+    replace: C,
   });
   await resolveSend(C, { id: C, replaced: true });
   // Un envoi ordinaire ne demande jamais le remplacement.
@@ -1285,4 +1288,141 @@ it("Flam 2.x : ni dialogue carrier ni bouton « Oublier les clés »", async () 
     uuid: A,
   });
   expect(count("device_carrier_state")).toBe(0);
+});
+
+/** File d'envoi : histoires dont l'élément porte encore une clé `bt` saisie. */
+function QueueBtProbe() {
+  const { queue } = useDevice();
+  const withBt = queue
+    .filter((item) => item.carrier?.choice.kind === "entered")
+    .map((item) => item.uuid);
+  return <output data-testid="bt-in-queue">{withBt.join(",")}</output>;
+}
+
+const btInQueue = () => screen.getByTestId("bt-in-queue").textContent;
+
+/** Flam 1.x sans `bt` : saisit `bt`, confirme le titre reconnu et envoie. */
+async function sendWithEnteredBt(title: string, bt: string) {
+  fireEvent.click(sendButton(title));
+  const dialog = await screen.findByRole("alertdialog");
+  const field = await within(dialog).findByLabelText("Clé bt");
+  fireEvent.change(field, { target: { value: bt } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Vérifier la clé" }));
+  await within(dialog).findByText(/Clé reconnue/);
+  fireEvent.click(within(dialog).getByRole("checkbox", { name: "Le titre est exact" }));
+  // Sans conservation : la clé saisie ne sert qu'à cet envoi.
+  const remember = within(dialog).getByRole("checkbox", {
+    name: "Conserver ces clés sur ce PC",
+  });
+  if ((remember as HTMLInputElement).checked) fireEvent.click(remember);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Vérifier et envoyer" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+}
+
+it("Flam 1.x : la clé saisie quitte la file après un envoi réussi ou en échec (#309)", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  carrierConsent = { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" };
+  carrierCandidates = [];
+  const bt = "0123456789abcdef".repeat(4);
+  render(
+    <Harness>
+      <QueueBtProbe />
+    </Harness>,
+  );
+  await ready();
+  await sendWithEnteredBt("Capi", bt);
+  await waitFor(() => expect(sends.has(A)).toBe(true));
+  expect(btInQueue()).toBe(A);
+  await resolveSend(A, { id: A, carrier_readback: true });
+  await waitFor(() => expect(btInQueue()).toBe(""));
+
+  await sendWithEnteredBt("Les trois ours", bt);
+  await waitFor(() => expect(sends.has(B)).toBe(true));
+  expect(btInQueue()).toBe(B);
+  await act(async () => {
+    sends.get(B)?.reject({ kind: "validation", message: "clé refusée" });
+  });
+  await waitFor(() => expect(btInQueue()).toBe(""));
+  expect(await screen.findByText("clé refusée")).toBeInTheDocument();
+});
+
+it("Flam 1.x : « Annuler l'envoi » retire aussi la clé saisie des envois en attente (#309)", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  carrierConsent = { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" };
+  carrierCandidates = [];
+  const bt = "0123456789abcdef".repeat(4);
+  render(
+    <Harness>
+      <QueueBtProbe />
+    </Harness>,
+  );
+  await ready();
+  await sendWithEnteredBt("Capi", bt);
+  await waitFor(() => expect(sends.has(A)).toBe(true));
+  // Seconde histoire en attente, avec sa propre clé saisie.
+  await sendWithEnteredBt("Les trois ours", bt);
+  expect(btInQueue()).toBe(`${A},${B}`);
+  const panel = screen.getByRole("region", { name: "Envoi sur la Flam" });
+  fireEvent.click(within(panel).getByRole("button", { name: "Annuler l'envoi" }));
+  await waitFor(() => expect(count("device_cancel_transfer")).toBe(1));
+  await act(async () => {
+    sends.get(A)?.reject({ kind: "cancelled", message: "installation annulée" });
+  });
+  await waitFor(() => expect(within(panel).getAllByText("Annulée")).toHaveLength(2));
+  expect(btInQueue()).toBe("");
+  expect(count("device_send_story")).toBe(1);
+});
+
+it("remplace une histoire de source dossier par l'UUID de la Flam (#309)", async () => {
+  acknowledgeWarning();
+  // « Les trois ours » (bibliothèque B) est installée sous un autre UUID (`uuid.bin`).
+  const onFlam = "55555555-5555-4555-8555-555555555555";
+  onDevice = [
+    deviceStory(C, "Déjà là"),
+    { ...deviceStory(onFlam, "Les trois ours"), in_library: true, library_uuids: [B] },
+  ];
+  render(<Harness />);
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (2)" });
+  await waitFor(() =>
+    expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "false"),
+  );
+  const send = sendButton("Les trois ours");
+  expect(send).toHaveAttribute("aria-disabled", "true");
+  expect(send).toHaveAccessibleDescription("Déjà sur la Flam");
+  const replace = screen.getByRole("button", {
+    name: "Remplacer sur la Flam « Les trois ours »",
+  });
+  expect(replace).toHaveAttribute("aria-disabled", "false");
+  fireEvent.click(replace);
+  await waitFor(() => expect(count("device_send_story")).toBe(1));
+  expect(calls.find((c) => c.cmd === "device_send_story")?.args).toEqual({
+    root: "E:\\",
+    uuid: B,
+    replace: onFlam,
+  });
+  await resolveSend(B, { id: onFlam, replaced: true });
+});
+
+it("signale une reprise en échec dans un envoi réussi (#309)", async () => {
+  acknowledgeWarning();
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  const panel = await screen.findByRole("region", { name: "Envoi sur la Flam" });
+  await resolveSend(A, {
+    id: A,
+    recovery_failures: ["0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9.in : dossier verrouillé"],
+  });
+  expect(await within(panel).findByText("Envoyée")).toBeInTheDocument();
+  expect(
+    within(panel).getByText(/n'a pas pu être repris sur la Flam .*dossier verrouillé/),
+  ).toBeInTheDocument();
+  expect(
+    screen
+      .getAllByRole("status")
+      .map((s) => s.textContent)
+      .join(" "),
+  ).toContain("n'a pas pu être repris");
 });

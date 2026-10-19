@@ -417,9 +417,17 @@ pub async fn device_remove_story(
     id: String,
     confirmed: bool,
 ) -> AppResult<RemoveReport> {
-    blocking(move || remove_story(Path::new(&root), &DEVICE_LOCK, &id, confirmed))
-        .await?
-        .map_err(AppError::from)
+    blocking(move || -> AppResult<RemoveReport> {
+        // Racine reçue de l'interface : un lecteur détecté seulement, comme pour l'envoi.
+        super::transfer::ensure_detected_root(Path::new(&root))?;
+        Ok(remove_story(
+            Path::new(&root),
+            &DEVICE_LOCK,
+            &id,
+            confirmed,
+        )?)
+    })
+    .await?
 }
 
 #[cfg(test)]

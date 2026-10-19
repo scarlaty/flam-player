@@ -232,9 +232,12 @@ fn reorder_with(
 /// `list`, dans l'ordre voulu (voir [`reorder_stories`]).
 #[tauri::command]
 pub async fn device_reorder_stories(root: String, order: Vec<String>) -> AppResult<ReorderReport> {
-    blocking(move || reorder_stories(Path::new(&root), &DEVICE_LOCK, &order))
-        .await?
-        .map_err(AppError::from)
+    blocking(move || -> AppResult<ReorderReport> {
+        // Racine reçue de l'interface : un lecteur détecté seulement, comme pour l'envoi.
+        super::transfer::ensure_detected_root(Path::new(&root))?;
+        Ok(reorder_stories(Path::new(&root), &DEVICE_LOCK, &order)?)
+    })
+    .await?
 }
 
 #[cfg(test)]

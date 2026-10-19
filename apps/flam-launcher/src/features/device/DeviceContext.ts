@@ -22,8 +22,10 @@ export interface QueueItem {
   error?: string;
   /** Flam 1.x : clés carrier choisies pour cet envoi. */
   carrier?: CarrierSend;
-  /** Remplace l'histoire déjà sur la Flam. */
-  replace?: boolean;
+  /** UUID de l'histoire de la Flam à remplacer. */
+  replace?: string;
+  /** Envoi réussi, avec une remarque (reprise d'un autre transfert en échec). */
+  warning?: string;
   /** Relecture de la Flam qui suit l'envoi réussi (numéro interne). */
   reloadGen?: number;
   /** Envoi réussi dont la relecture de la Flam n'est pas encore revenue : bloque un renvoi. */
@@ -34,8 +36,11 @@ export interface SendRequest {
   uuid: string;
   title: string;
   size: number | null;
-  /** Remplace l'histoire déjà sur la Flam (« Remplacer sur la Flam »). */
-  replace?: boolean;
+  /**
+   * UUID sur la Flam de l'histoire à remplacer (« Remplacer sur la Flam ») : le backend refuse
+   * si l'archive envoyée en désigne une autre.
+   */
+  replace?: string;
 }
 
 export type StoriesState =

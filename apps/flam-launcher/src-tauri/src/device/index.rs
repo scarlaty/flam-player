@@ -184,7 +184,8 @@ pub enum Consent {
     IfValid,
     /// L'utilisateur a confirmé : réécrit même un index absent, abîmé ou illisible (par
     /// exemple une reconstruction depuis [`scan_stories`]). Un index abîmé ou illisible est
-    /// d'abord copié dans `list.corrupt` (ou `list.hidden.corrupt`), au mieux.
+    /// d'abord copié dans `list.corrupt` (ou `list.hidden.corrupt`), au mieux, sans écraser une
+    /// copie précédente (`list.corrupt.2`, … ; voir [`CORRUPT_COPIES`]).
     Overwrite,
 }
 
@@ -397,6 +398,53 @@ pub fn scan_stories(root: &Path) -> io::Result<Vec<StoryId>> {
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+/// Nombre de copies d'un index abîmé gardées : `list.corrupt`, `list.corrupt.2`, … Au-delà, la
+/// nouvelle copie n'est pas écrite (les plus anciennes sont les plus proches de l'original).
+pub(crate) const CORRUPT_COPIES: usize = 3;
+
+/// Garde `raw` (index abîmé ou illisible sur le point d'être écrasé) dans la première copie
+/// libre, sans jamais écraser une copie précédente ; rien si une copie identique existe déjà.
+/// Au mieux : un échec est journalisé, la copie partielle supprimée.
+fn keep_corrupt_copy(list: &Path, kind: IndexKind, raw: &[u8]) {
+    for n in 1..=CORRUPT_COPIES {
+        let name = match n {
+            1 => format!("{}.corrupt", kind.file_name()),
+            _ => format!("{}.corrupt.{n}", kind.file_name()),
+        };
+        let path = list.with_file_name(name);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                let same = meta.is_file()
+                    && meta.len() == raw.len() as u64
+                    && fs::read(&path).is_ok_and(|existing| existing == raw);
+                if same {
+                    return;
+                }
+                continue;
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                tracing::warn!("copie de l'index abîmé impossible : {err}");
+                return;
+            }
+        }
+        let written = fs::File::create_new(&path).and_then(|mut file| {
+            file.write_all(raw)?;
+            file.sync_all()
+        });
+        if let Err(err) = written {
+            tracing::warn!("copie de l'index abîmé impossible : {err}");
+            if err.kind() != io::ErrorKind::AlreadyExists {
+                let _ = fs::remove_file(&path);
+            }
+        }
+        return;
+    }
+    tracing::warn!(
+        "{CORRUPT_COPIES} copies de l'index abîmé déjà gardées : la nouvelle n'est pas conservée"
+    );
 }
 
 /// Crée (ou écrase) `path` avec `bytes`, synchronise sur le disque, puis relit et compare.
@@ -629,12 +677,7 @@ pub(crate) fn write_with(
         if let Some(raw) = &list_raw {
             // Accord donné pour écraser un index abîmé ou illisible : on en garde une copie
             // (au mieux, hors transaction : un échec n'empêche pas la reconstruction).
-            let corrupt = p
-                .list
-                .with_file_name(format!("{}.corrupt", kind.file_name()));
-            if let Err(err) = fs::write(&corrupt, raw) {
-                tracing::warn!("copie de l'index abîmé impossible : {err}");
-            }
+            keep_corrupt_copy(&p.list, kind, raw);
         }
     }
     let bytes = serialize(entries);

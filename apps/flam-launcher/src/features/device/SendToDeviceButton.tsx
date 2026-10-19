@@ -2,7 +2,13 @@ import { useId, useMemo } from "react";
 import { Button, type ButtonVariant } from "../../components";
 import { t } from "../../i18n";
 import { useDevice } from "./DeviceContext";
-import { replaceBlock, sendBlock, type SendBlock, type SendContext } from "./sendRules";
+import {
+  findOnDevice,
+  replaceBlock,
+  sendBlock,
+  type SendBlock,
+  type SendContext,
+} from "./sendRules";
 import "./SendToDeviceButton.css";
 
 const text = t.deviceTransfer;
@@ -79,6 +85,8 @@ export function SendToDeviceButton({
   const context = useSendContext();
   const block = sendBlock(context, uuid, size);
   const replace = block === "present" ? replaceBlock(context, uuid, size) : "absent";
+  // UUID réel de l'histoire sur la Flam (celui de `uuid.bin`, pas celui de la bibliothèque).
+  const target = findOnDevice(context.deviceStories, uuid)?.uuid;
   const reasonId = useId();
   const staleId = useId();
   const replaceReasonId = useId();
@@ -117,7 +125,8 @@ export function SendToDeviceButton({
             )}
             aria-label={text.forStory(text.replace, title)}
             onClick={() => {
-              if (replace === null) requestSend({ uuid, title, size, replace: true });
+              if (replace === null && target)
+                requestSend({ uuid, title, size, replace: target });
             }}
           >
             {text.replace}
