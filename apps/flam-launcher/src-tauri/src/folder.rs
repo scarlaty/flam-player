@@ -769,6 +769,8 @@ struct Inner {
     thumbs: HashMap<String, ThumbRefs>,
     /// Entrées du dernier scan de chaque source, par `entry_id` (installation, #15).
     entries: HashMap<String, HashMap<String, StoryEntry>>,
+    /// Le dernier scan de chaque source était-il récursif ?
+    recursive: HashMap<String, bool>,
 }
 
 /// Mémoire du dernier scan de chaque source et cache de métadonnées (en mémoire).
@@ -782,6 +784,27 @@ impl FolderState {
 
     /// Analyse un dossier et mémorise les entrées pour `thumbnail`.
     pub fn scan(&self, source_id: &str, root: &Path, recursive: bool) -> AppResult<FolderScan> {
+        self.scan_with(source_id, root, recursive, true)
+    }
+
+    /// Analyse sans toucher à ce que l'écran voit (entrées, vignettes, option récursive) : seul
+    /// le cache de métadonnées est mis à jour. Sert à résoudre une entrée pour l'installation.
+    fn scan_detached(
+        &self,
+        source_id: &str,
+        root: &Path,
+        recursive: bool,
+    ) -> AppResult<FolderScan> {
+        self.scan_with(source_id, root, recursive, false)
+    }
+
+    fn scan_with(
+        &self,
+        source_id: &str,
+        root: &Path,
+        recursive: bool,
+        commit: bool,
+    ) -> AppResult<FolderScan> {
         // Copie de travail du cache : l'analyse (longue) ne tient pas le verrou et plusieurs
         // scans simultanés se partagent le cache fusionné à la fin.
         let mut meta = self.lock().meta.clone();
@@ -793,6 +816,9 @@ impl FolderState {
             .retain(|p, _| !p.starts_with(root) || meta.0.contains_key(p));
         inner.meta.0.extend(meta.0);
         let (scan, refs) = result?;
+        if !commit {
+            return Ok(scan);
+        }
         inner.thumbs.insert(source_id.to_string(), refs);
         let entries = scan
             .entries
@@ -800,26 +826,66 @@ impl FolderState {
             .map(|e| (e.entry_id.clone(), e.clone()))
             .collect();
         inner.entries.insert(source_id.to_string(), entries);
+        inner.recursive.insert(source_id.to_string(), recursive);
         Ok(scan)
     }
 
-    /// Retrouve `entry_id` sans scan préalable dans cette session (reprise au démarrage, « Mettre
-    /// à jour » depuis « Mes histoires »). L'écran analyse le dossier sans les sous-dossiers : on
-    /// l'analyse d'abord de la même façon, puis sous-dossiers compris, car une copie à la racine
-    /// peut y être écartée au profit d'une autre (l'identifiant mémorisé donnerait `not_found`).
+    /// Le dernier scan de `source_id` était-il récursif ? `None` : jamais analysée.
+    pub fn last_recursive(&self, source_id: &str) -> Option<bool> {
+        self.lock().recursive.get(source_id).copied()
+    }
+
+    /// Retrouve `entry_id` d'une source dossier pour l'installer (reprise au démarrage,
+    /// installation depuis l'écran). Bloquant.
+    ///
+    /// - Sans `expected` (reprise), le dernier scan sert s'il a l'entrée.
+    /// - Avec `expected` (histoire attendue, fournie par toute installation depuis l'écran), le
+    ///   dossier est toujours réanalysé : une entrée du dernier scan peut être périmée.
+    ///
+    /// L'analyse se fait dans les deux modes, en commençant par l'option récursive du dernier
+    /// scan connu (sans sous-dossiers si aucun) : l'entrée est cherchée par `entry_id` dans
+    /// chacun (une copie à la racine peut être écartée en récursif au profit d'une autre).
+    /// Seulement si aucun ne l'a, `expected` retrouve l'entrée par `uuid` (copie écartée comme
+    /// doublon d'un `.plain` installé), en préférant le premier mode. Ces analyses ne modifient
+    /// pas ce que l'écran voit (entrées, vignettes, option récursive du dernier scan).
     pub fn scan_for_entry(
         &self,
         source_id: &str,
         root: &Path,
         entry_id: &str,
+        expected: Option<&str>,
     ) -> AppResult<StoryEntry> {
-        for recursive in [false, true] {
-            self.scan(source_id, root, recursive)?;
+        if expected.is_none() {
             if let Ok(entry) = self.entry(source_id, entry_id) {
                 return Ok(entry);
             }
         }
-        self.entry(source_id, entry_id)
+        let first = self.last_recursive(source_id).unwrap_or(false);
+        let mut scans = Vec::new();
+        for recursive in [first, !first] {
+            let scan = self.scan_detached(source_id, root, recursive)?;
+            if let Some(entry) = scan.entries.iter().find(|e| e.entry_id == entry_id) {
+                return Ok(entry.clone());
+            }
+            scans.push(scan);
+        }
+        expected
+            .and_then(|uuid| {
+                scans
+                    .iter()
+                    .find_map(|scan| {
+                        scan.entries
+                            .iter()
+                            .filter(|e| e.uuid == uuid)
+                            .min_by(|a, b| a.entry_id.cmp(&b.entry_id))
+                    })
+                    .cloned()
+            })
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "histoire inconnue dans le dernier scan : {entry_id}"
+                ))
+            })
     }
 
     /// Entrée `entry_id` du dernier scan de `source_id` (jamais un chemin libre venu du front).
@@ -1546,18 +1612,18 @@ mod tests {
         // Après un redémarrage (aucun scan en mémoire), les deux identifiants se retrouvent.
         let fresh = FolderState::default();
         let found = fresh
-            .scan_for_entry("src", dir.path(), &seen.entry_id)
+            .scan_for_entry("src", dir.path(), &seen.entry_id, None)
             .unwrap();
         assert_eq!(found, seen);
         let fresh = FolderState::default();
         let found = fresh
-            .scan_for_entry("src", dir.path(), &deep.entry_id)
+            .scan_for_entry("src", dir.path(), &deep.entry_id, None)
             .unwrap();
         assert_eq!(found, deep);
         let fresh = FolderState::default();
         assert_eq!(
             fresh
-                .scan_for_entry("src", dir.path(), "src:0000000000000000")
+                .scan_for_entry("src", dir.path(), "src:0000000000000000", None)
                 .unwrap_err()
                 .kind(),
             "not_found"
@@ -1848,6 +1914,102 @@ mod tests {
         }
         let (scan, _ctx) = scan(dir.path(), true);
         assert!(scan.entries.is_empty(), "{:?}", scan.entries);
+    }
+
+    // --- Résolution d'une entrée pour l'installation (#297) ---
+
+    #[test]
+    fn mise_a_jour_reanalyse_et_retrouve_une_entree_dedupliquee_par_uuid() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plain_dir(&dir.path().join("x.plain"), "Titre plain");
+        let state = FolderState::default();
+        let first = state
+            .scan("src", dir.path(), false)
+            .unwrap()
+            .entries
+            .remove(0);
+        assert_eq!(state.last_recursive("src"), Some(false));
+        // Un `.plain.pk` de même uuid apparaît : l'entrée du `.plain` est écartée au scan.
+        write_plain_pk(&dir.path().join("x.plain.pk"), "Titre pk");
+        // Sans `expected`, le dernier scan (périmé) sert tel quel.
+        let stale = state
+            .scan_for_entry("src", dir.path(), &first.entry_id, None)
+            .unwrap();
+        assert_eq!(stale.title, "Titre plain");
+        // Avec `expected` : réanalyse, puis résolution par uuid (l'entry_id a disparu).
+        let found = state
+            .scan_for_entry("src", dir.path(), &first.entry_id, Some(&first.uuid))
+            .unwrap();
+        assert_eq!(found.kind, StoryKind::FlamPk);
+        assert_eq!(found.title, "Titre pk");
+        assert_eq!(state.last_recursive("src"), Some(false), "option conservée");
+        // Un uuid inconnu reste introuvable.
+        let err = state
+            .scan_for_entry("src", dir.path(), "src:absent", Some("inconnu"))
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    #[test]
+    fn resolution_essaie_les_deux_modes_sans_changer_ce_que_voit_l_ecran() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sous");
+        std::fs::create_dir_all(&sub).unwrap();
+        write_plain_pk(&sub.join("y.plain.pk"), "Dans un sous-dossier");
+        let state = FolderState::default();
+        // Jamais analysé : non récursif, puis récursif ; l'entrée du sous-dossier est trouvée.
+        let probe = FolderState::default();
+        let id = probe
+            .scan("src", dir.path(), true)
+            .unwrap()
+            .entries
+            .remove(0)
+            .entry_id;
+        let found = state.scan_for_entry("src", dir.path(), &id, None).unwrap();
+        assert_eq!(found.title, "Dans un sous-dossier");
+        assert_eq!(state.last_recursive("src"), None, "l'écran n'a rien vu");
+        // Dernier scan non récursif : l'option est reprise, puis repli récursif si introuvable.
+        state.scan("src", dir.path(), false).unwrap();
+        let found = state
+            .scan_for_entry("src", dir.path(), &id, Some(&found.uuid))
+            .unwrap();
+        assert_eq!(found.title, "Dans un sous-dossier");
+        assert_eq!(state.last_recursive("src"), Some(false), "inchangé");
+        assert!(
+            state.entry("src", &id).is_err(),
+            "entrées de l'écran inchangées"
+        );
+    }
+
+    #[test]
+    fn resolution_prefere_l_id_visible_en_non_recursif_meme_si_le_dernier_scan_est_recursif() {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid: Vec<u8> = (0u8..16).collect();
+        write_files_dir(
+            &dir.path().join("x.plain"),
+            flam_files_with("Racine", "1", uuid.clone()),
+        );
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        write_files_pk(
+            &dir.path().join("sub").join("x.plain.pk"),
+            flam_files_with("Sous-dossier", "2", uuid),
+        );
+        let (seen, _) = scan_one(dir.path(), false, "Racine");
+        let state = FolderState::default();
+        // Dernier scan mémorisé : récursif (la copie du sous-dossier l'emporte).
+        state.scan("src", dir.path(), true).unwrap();
+        let found = state
+            .scan_for_entry("src", dir.path(), &seen.entry_id, Some(&seen.uuid))
+            .unwrap();
+        assert_eq!(
+            found, seen,
+            "la copie de la racine vue par l'écran, pas l'autre"
+        );
+        assert_eq!(
+            state.last_recursive("src"),
+            Some(true),
+            "état de l'écran inchangé"
+        );
     }
 
     #[cfg(windows)]

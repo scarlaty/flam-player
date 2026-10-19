@@ -115,8 +115,9 @@ pub fn eject(
     }
     // Verrou gardé jusqu'à la fin : aucun transfert ne peut démarrer pendant l'éjection.
     let _guard = lock.try_begin(Operation::Eject)?;
-    match system.prepare(root) {
-        Ok(()) | Err(PrepareError::NoAccess) => {}
+    let dismounted = match system.prepare(root) {
+        Ok(()) => true,
+        Err(PrepareError::NoAccess) => false,
         Err(PrepareError::InUse(reason)) => {
             tracing::info!("éjection : volume occupé ({reason})");
             return Ok(EjectOutcome::fallback(format!(
@@ -127,14 +128,43 @@ pub fn eject(
             tracing::warn!("éjection : préparation impossible ({reason})");
             return Ok(EjectOutcome::fallback(reason));
         }
-    }
+    };
     Ok(match system.request_eject(root) {
         Ok(()) => EjectOutcome::ejected(),
         Err(reason) => {
             tracing::warn!("éjection refusée : {reason}");
-            EjectOutcome::fallback(reason)
+            if dismounted {
+                // Volume démonté avant le refus : il se remonte au prochain accès, sans perte.
+                EjectOutcome::fallback(format!("{reason}{DISMOUNTED_NOTE}"))
+            } else {
+                EjectOutcome::fallback(reason)
+            }
         }
     })
+}
+
+/// Précision ajoutée au repli quand le volume avait déjà été démonté.
+pub const DISMOUNTED_NOTE: &str =
+    " (le volume a été démonté sans perte de données ; il se remontera au prochain accès)";
+
+/// Libellé lisible d'un `PNP_VETO_TYPE` (motif d'un refus d'éjection de Windows).
+pub fn veto_label(veto: i32) -> &'static str {
+    match veto {
+        1 => "un pilote hérité s'y oppose",
+        2 => "une fermeture est en cours",
+        3 => "une application Windows s'y oppose",
+        4 => "un service Windows s'y oppose",
+        5 => "un fichier de l'appareil est encore ouvert",
+        6 => "un autre périphérique en dépend",
+        7 => "un pilote s'y oppose",
+        8 => "demande refusée par le pilote",
+        9 => "alimentation insuffisante",
+        10 => "le périphérique ne peut pas être arrêté",
+        11 => "un pilote hérité s'y oppose",
+        12 => "droits insuffisants",
+        13 => "le périphérique est déjà retiré",
+        _ => "motif inconnu",
+    }
 }
 
 #[cfg(not(windows))]
@@ -416,6 +446,10 @@ mod sys {
                 Err(err) if err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
                     return Err(PrepareError::NoAccess)
                 }
+                // Volume ouvert sans partage par un autre processus : occupé, pas en échec.
+                Err(err) if err.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => {
+                    return Err(PrepareError::InUse(err.to_string()))
+                }
                 Err(err) => return Err(PrepareError::Failed(format!("volume : {err}"))),
             };
             // SAFETY : poignée ouverte en écriture, vivante.
@@ -494,9 +528,12 @@ mod sys {
                 last = if cr != CR_SUCCESS {
                     format!("demande refusée (code {cr})")
                 } else if who.is_empty() {
-                    format!("éjection refusée par Windows (motif {veto})")
+                    format!("éjection refusée par Windows : {}", super::veto_label(veto))
                 } else {
-                    format!("éjection refusée par Windows (motif {veto} : {who})")
+                    format!(
+                        "éjection refusée par Windows : {} ({who})",
+                        super::veto_label(veto)
+                    )
                 };
             }
             Err(last)

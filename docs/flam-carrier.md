@@ -78,7 +78,12 @@ ou choisissez un fichier. ») ; la saisie est alors proposée d'office.
 **Cohérence, avant toute copie** : une histoire de la Flam (`str/` ou `str.hidden/`) doit avoir
 le même `key` et un `info` que le couple déchiffre en texte lisible (UTF-8 strict, au moins
 90 % de caractères imprimables). Sinon : refus « couple invalide », rien n'est écrit (ni sur la
-Flam ni dans la préparation). **Après écriture**, `info` de l'histoire installée est relu sur la
+Flam ni dans la préparation). Pour un `bt` saisi, ce contrôle est celui de la recherche
+elle-même (`find_by_bt` retient l'histoire dont le `key` complète le `bt` et dont `info` se déchiffre
+avec lui) : il n'est pas rejoué. **Limite** : une histoire déjà installée en mode carrier porte le même `key` et un `info`
+que le couple déchiffre ; elle valide donc ce contrôle même si l'histoire officielle d'origine a
+disparu de la Flam (ou du compte) : le contrôle prouve la cohérence avec une histoire de la Flam, pas
+avec une histoire officielle encore valide (C5, § 6). **Après écriture**, `info` de l'histoire installée est relu sur la
 Flam et doit se déchiffrer avec le couple (`carrier_readback` du rapport).
 
 ## 4. Conservation sur le PC
@@ -93,6 +98,8 @@ Flam et doit se déchiffrer avec le couple (`carrier_readback` du rapport).
   fichier de la Flam branchée.
 - Conservation facultative (case « Conserver ces clés sur ce PC ») ; sans elle, le choix est
   redemandé.
+  Un échec de la conservation (disque, DPAPI) est journalisé et signalé dans le rapport d'envoi
+  (`carrier_stored` faux) : l'interface n'annonce alors pas de clés conservées.
 
 Les clés ne figurent jamais dans le dépôt, les journaux, les messages d'erreur, les réponses
 IPC ni les exports : `Debug` les masque, la mémoire est effacée (`zeroize`), et des tests

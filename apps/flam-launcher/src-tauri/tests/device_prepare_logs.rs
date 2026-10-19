@@ -66,7 +66,7 @@ fn aucune_cle_dans_les_journaux() {
     let bad = tmp.path().join("ko.plain.pk");
     write_pk(&good, None);
     write_pk(&bad, Some("../evil"));
-    let keys = DeviceKeys::new("2.4.2", &SERIAL, KEY, IV).unwrap();
+    let keys = DeviceKeys::new("2.4.2", &SERIAL, &KEY, &IV).unwrap();
     let work = tmp.path().join("travail");
     let cancel = AtomicBool::new(false);
     prepare_story(&good, &keys, &work, &Limits::default(), &cancel).unwrap();
