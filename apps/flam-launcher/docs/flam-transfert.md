@@ -25,11 +25,11 @@ une vraie Flam, il est dit « non vérifié ».
 
 ## Firmwares pris en charge
 
-| Firmware de la Flam                    | État                                                                         | Ce qui est vérifié                                                                                                                                                                    |
-| -------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1.x** (testé en 1.15.14)             | Validé sur un appareil réel, le 2026-10-19, avec le « mode carrier »         | Envoi d'une histoire avec saisie de la clé `bt`, lancement sur la Flam, titres et vignettes dans « Ma Flam », ordre des histoires, retrait, éjection, envois répétés sans redémarrage |
-| **2.x**                                | Pris en charge dans le code, **expérimental : jamais testé sur un appareil** | Seulement par des tests automatiques sur un faux appareil. C'est l'objet de la bêta                                                                                                   |
-| 3.x et suivants, ou firmware illisible | **Refusé** : l'envoi est impossible                                          | Version jamais observée ; refus volontaire plutôt que d'écrire des fichiers douteux                                                                                                   |
+| Firmware de la Flam                    | État                                                                         | Ce qui est vérifié                                                                                                                                                                                                               |
+| -------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1.x** (testé en 1.15.14)             | Validé sur un appareil réel, le 2026-10-19, avec le « mode carrier »         | Envoi d'une histoire avec saisie de la clé `bt`, lancement sur la Flam, titres et vignettes dans « Ma Flam », ordre des histoires, retrait, éjection, relances successives d'une histoire sans redémarrage, renvoi après retrait |
+| **2.x**                                | Pris en charge dans le code, **expérimental : jamais testé sur un appareil** | Seulement par des tests automatiques sur un faux appareil. C'est l'objet de la bêta                                                                                                                                              |
+| 3.x et suivants, ou firmware illisible | **Refusé** : l'envoi est impossible                                          | Version jamais observée ; refus volontaire plutôt que d'écrire des fichiers douteux                                                                                                                                              |
 
 Le firmware est lu dans le fichier `.mdf` de la Flam.
 
@@ -50,7 +50,7 @@ Le firmware est lu dans le fichier `.mdf` de la Flam.
   se chevauchent pas ; une opération demandée pendant une autre est refusée.
 - **Les envois se font les uns après les autres** (file d'envoi). Une histoire déjà présente
   n'est renvoyée que sur demande (« Remplacer sur la Flam »).
-- **Nombre et taille des histoires** : le launcher ne lit pas plus de 5000 histoires (la liste
+- **Nombre et taille des histoires** : le launcher n'affiche pas plus de 5000 histoires (la liste
   est alors tronquée). Les limites réelles de la Flam (nombre d'histoires, taille) n'ont pas
   été mesurées : non vérifié.
 - **Lenteur** : l'envoi copie l'histoire, puis la relit en entier pour la vérifier, donc la
@@ -59,7 +59,9 @@ Le firmware est lu dans le fichier `.mdf` de la Flam.
   affiche une progression et un temps restant estimé ; l'envoi peut être annulé.
 - **Le launcher n'est pas l'application officielle** : il ne se connecte pas à votre compte,
   et ne peut ni acheter ni télécharger d'histoire officielle.
-- Les titres et vignettes de « Ma Flam » sont lus après l'affichage de la liste. Une histoire
+- Les titres et vignettes de « Ma Flam » sont lus après l'affichage de la liste. Pour les
+  titres introuvables sur la Flam, le launcher interroge le catalogue officiel en ligne
+  (requêtes HTTPS ; rien n'est envoyé depuis la Flam). Une histoire
   dont le titre ne peut pas être déchiffré avec les clés disponibles (par exemple une histoire
   d'un autre compte) prend son titre dans le catalogue officiel en ligne s'il est accessible,
   sinon elle est affichée avec son identifiant court.
@@ -94,13 +96,15 @@ l'écarter :
   temporaire est supprimé.
 - **Index réécrit de façon sûre.** La liste des histoires (`etc/library/list`) n'est jamais
   tronquée ni supprimée avant qu'une copie complète du nouvel index soit écrite et relue ; une
-  copie `list.bak` de l'ancien index est faite avant le remplacement. À chaque détection de
+  copie temporaire `list.bak` de l'ancien index est faite avant le remplacement (supprimée
+  une fois l'écriture terminée : ce n'est pas une sauvegarde à conserver). À chaque détection de
   la Flam, le launcher reprend une opération interrompue (fin du transfert ou retour en arrière)
   et vous le signale par un bandeau.
 - **Retrait dans l'ordre inverse** : l'histoire est d'abord retirée de l'index, puis son dossier
-  est déplacé dans `.flam-trash/` avant d'être supprimé. Vos sauvegardes de progression sur la
-  Flam (`usr/0/`) ne sont jamais touchées.
-- **Aucune écriture sans votre demande**, et rien n'est écrit sur la Flam avant les
+  est déplacé dans `.flam-trash/` avant d'être supprimé. Vos fichiers de progression sur la
+  Flam (`usr/0/`, hors le cache `library.cache`) ne sont jamais touchés.
+- **Aucune écriture sans votre demande** (hors reprise automatique d'une opération du
+  launcher interrompue), et rien n'est écrit sur la Flam avant les
   vérifications (clés, index valide, espace libre).
 - **Sauvegarde du `.mdf` sur le PC.** À chaque affichage de « Ma Flam », une copie du fichier
   `.mdf` de la Flam est enregistrée dans `%LOCALAPPDATA%\flam-launcher\device-backups`. **Ce
@@ -160,7 +164,7 @@ officielle n'a encore été fait).
 | La Flam n'est pas détectée alors qu'un disque apparaît                    | Le launcher cherche un fichier `.mdf` à la racine d'un disque amovible (ou d'un disque FAT). Si le disque n'en contient pas, ce n'est pas une Flam reconnue                                                                                                               |
 | Plusieurs Flam                                                            | Seule la première est affichée : débranchez les autres                                                                                                                                                                                                                    |
 | Avertissement « À noter » sur `.mdf` (taille inattendue, tronqué)         | Le fichier `.mdf` de la Flam n'est pas celui attendu. Un `.mdf` tronqué ou démesuré n'est ni lu ni sauvegardé et empêche l'envoi. Ne continuez pas : signalez-le (voir le guide testeur)                                                                                  |
-| « Firmware de la Flam non pris en charge »                                | Seuls les firmwares 1.x et 2.x sont pris en charge. Indiquez le firmware affiché dans votre retour                                                                                                                                                                        |
+| « Firmware de la Flam non pris en charge »                                | Seuls les firmwares 1.x et 2.x sont pris en charge. Indiquez le firmware affiché sur la carte « Flam détectée » dans votre retour                                                                                                                                         |
 | « Impossible d'éjecter la Flam »                                          | Fermez les fenêtres de l'Explorateur et les programmes qui utilisent la Flam, attendez la fin de toute opération du launcher, puis réessayez. Sinon : clic droit sur le lecteur dans l'Explorateur, « Éjecter », puis débranchez                                          |
 | Une histoire est illisible sur la Flam (titre illisible, ne se lance pas) | Retirez-la avec **Retirer** dans « Ma Flam » puis renvoyez-la. En firmware 1.x, le launcher relit le titre après l'envoi et signale un titre illisible ; vérifiez alors la clé choisie. Si cela se reproduit, signalez-le                                                 |
 | Bandeau sur l'index des histoires de la Flam (absent, abîmé ou illisible) | Le launcher refuse alors d'écrire (aucun envoi, retrait ni changement d'ordre) pour ne rien aggraver, et ne propose pas de reconstruction. Les dossiers trouvés sont affichés comme « Non listée ». Restaurez le fichier `etc/library/list` depuis votre copie de la Flam |

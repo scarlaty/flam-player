@@ -1,7 +1,7 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import type { DeviceStatus, DeviceStories, DeviceStory } from "../../api/device";
 import { expectNoAxeViolations } from "../../test/axe";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
@@ -212,9 +212,14 @@ it("ajoute la mention « firmware 2.x » pour une Flam en 2.x seulement", async 
 
 it("copie le lien des risques dans le presse-papiers", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
+  const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
   Object.defineProperty(navigator, "clipboard", {
     value: { writeText },
     configurable: true,
+  });
+  onTestFinished(() => {
+    if (original) Object.defineProperty(navigator, "clipboard", original);
+    else Reflect.deleteProperty(navigator, "clipboard");
   });
   renderScreen();
   fireEvent.click(
@@ -224,6 +229,16 @@ it("copie le lien des risques dans le presse-papiers", async () => {
     expect.stringContaining("apps/flam-launcher/docs/flam-transfert.md#risques"),
   );
   expect(await screen.findByText(/Lien copié/)).toBeInTheDocument();
+});
+
+it("affiche le firmware sur la carte, « illisible » s'il est inconnu", async () => {
+  status = detected({ firmware: "2.4.2" });
+  const first = renderScreen();
+  expect(await screen.findByText("2.4.2")).toBeInTheDocument();
+  first.unmount();
+  status = detected({ firmware: null });
+  renderScreen();
+  expect(await screen.findByText("illisible")).toBeInTheDocument();
 });
 
 it(

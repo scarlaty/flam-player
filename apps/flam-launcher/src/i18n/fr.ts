@@ -418,6 +418,8 @@ export const fr = {
       volume: "Volume",
       fileSystem: "Système de fichiers",
       unnamedVolume: "(sans nom)",
+      firmware: "Firmware",
+      firmwareUnreadable: "illisible",
       several: (count: number) =>
         `${count} Flam sont branchées. Seule la première est affichée ; débranchez les autres.`,
     },

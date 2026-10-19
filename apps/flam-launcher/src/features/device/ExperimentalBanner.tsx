@@ -24,6 +24,7 @@ export function ExperimentalBanner({ firmware }: { firmware: string | null }) {
   const [copied, setCopied] = useState<"idle" | "done" | "failed">("idle");
 
   async function copy() {
+    setCopied("idle");
     try {
       await navigator.clipboard.writeText(RISKS_DOC_URL);
       setCopied("done");
@@ -50,7 +51,10 @@ export function ExperimentalBanner({ firmware }: { firmware: string | null }) {
         </span>
       </p>
       {isFirmware2(firmware) && <p className="fl-device-beta__line">{text.firmware2}</p>}
-      <p aria-live="polite" className="fl-device-beta__line">
+      <p
+        aria-live="polite"
+        className={copied === "idle" ? undefined : "fl-device-beta__line"}
+      >
         {copied === "done" ? text.copied : copied === "failed" ? text.copyFailed : ""}
       </p>
     </Banner>

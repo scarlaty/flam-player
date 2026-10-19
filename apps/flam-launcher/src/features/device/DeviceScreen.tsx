@@ -182,6 +182,10 @@ function DeviceCard({
             {device.volume_label || text.detected.unnamedVolume} ({device.root})
           </dd>
         </div>
+        <div>
+          <dt>{text.detected.firmware}</dt>
+          <dd>{device.firmware ?? text.detected.firmwareUnreadable}</dd>
+        </div>
         {device.file_system && (
           <div>
             <dt>{text.detected.fileSystem}</dt>

@@ -62,11 +62,12 @@ apparaît comme un disque), liste ses histoires avec leurs titres et vignettes, 
 envoyer depuis « Mes histoires », d'en retirer, de changer leur ordre et d'éjecter la Flam.
 
 - **Firmware 1.x** : validé sur un appareil réel (1.15.14), via le mode carrier (clé `bt`
-  d'une histoire officielle de votre compte, saisie par vous).
+  d'une histoire officielle de votre compte, saisie ou choisie par vous).
 - **Firmware 2.x** : pris en charge mais **jamais testé sur un appareil** ; c'est l'objet de la
   bêta.
-- Avant un envoi : l'application écrit dans un dossier temporaire, vérifie la copie, puis
-  renomme ; l'index est réécrit de façon atomique ; une copie du `.mdf` est gardée sur le PC.
+- Pendant un envoi : l'application écrit dans un dossier temporaire, vérifie la copie, puis
+  renomme ; l'index est réécrit de façon sûre (copie vérifiée, reprise après coupure) ; une
+  copie du `.mdf` est gardée sur le PC.
   Elle ne sauvegarde **pas** les histoires de la Flam.
 
 Détails (prérequis, limites, lenteur, redémarrage et éjection, risques, synchronisation avec
