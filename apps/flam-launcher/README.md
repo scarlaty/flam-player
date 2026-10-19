@@ -11,8 +11,9 @@ et arrivent avec les issues du jalon M3.
 
 ## Installation (Windows)
 
-1. Télécharger l'installateur `Flam Launcher_<version>_x64-setup.exe` (artefact de la CI ou
-   version publiée).
+1. Télécharger l'installateur : `Flam-Launcher_<version>_x64-setup.exe` pour une pré-version publiée
+   (page des releases), ou `Flam Launcher_<version>_x64-setup.exe` (avec une espace) pour l'artefact
+   de la CI.
 2. Le lancer : l'installation se fait **pour l'utilisateur courant**, sans droits
    d'administrateur (dossier par défaut `%LOCALAPPDATA%\Flam Launcher`).
 3. **SmartScreen** : l'installateur n'est **pas signé**. Windows affiche « Windows a protégé
