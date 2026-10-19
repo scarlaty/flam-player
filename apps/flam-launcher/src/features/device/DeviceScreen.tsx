@@ -19,6 +19,7 @@ import { ErrorBanner } from "../ErrorBanner";
 import { formatBytes } from "../validation";
 import { useDevice } from "./DeviceContext";
 import { DeviceStoryOrder } from "./DeviceStoryOrder";
+import { DiagnosticPanel } from "./DiagnosticPanel";
 import { EjectButton } from "./EjectButton";
 import { ExperimentalBanner } from "./ExperimentalBanner";
 import { FirmwareNotice, firmwareSummary } from "./FirmwareStatus";
@@ -41,7 +42,10 @@ export interface DeviceScreenProps {
   libraryPanel?: ReactNode;
 }
 
-/** Écran « Ma Flam » : état de la Flam branchée en USB, ses histoires, envoi, retrait et éjection. */
+/**
+ * Écran « Ma Flam » : état de la Flam branchée en USB, ses histoires, envoi, retrait et éjection,
+ * diagnostic copiable pour les retours de test.
+ */
 export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
   const { status, error, retry, device, stories, recoveryNote, ejectNote } = useDevice();
   const count =
@@ -133,6 +137,8 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
           {libraryPanel}
         </>
       )}
+      {/* Toujours affiché : sans Flam, ou écriture bloquée, c'est là que le diagnostic sert. */}
+      <DiagnosticPanel />
     </div>
   );
 }

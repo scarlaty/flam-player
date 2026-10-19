@@ -655,6 +655,27 @@ export const fr = {
     copied: "Lien copié : collez-le dans votre navigateur.",
     copyFailed: "Copie impossible : sélectionnez l'adresse ci-dessus pour la copier.",
   },
+  /** Diagnostic copiable de l'écran « Ma Flam » (#318). */
+  deviceDiagnostic: {
+    title: "Retour de test",
+    intro:
+      "Le diagnostic décrit le launcher, Windows et l'état de la Flam, sans clé, numéro de série ni titre d'histoire. Collez-le dans le modèle d'issue « Retour testeur Flam ».",
+    copy: "Copier le diagnostic",
+    working: "Préparation du diagnostic…",
+    copied: "Diagnostic copié",
+    failed: (message: string) => `Diagnostic impossible : ${message}`,
+    copyFailed:
+      "Copie impossible : sélectionnez le texte ci-dessous (Ctrl + A dans la zone) puis copiez-le (Ctrl + C).",
+    fieldLabel: "Diagnostic à copier",
+    report: "Signaler un problème",
+    reportHint:
+      "Le modèle d'issue s'ouvre dans votre navigateur (compte GitHub nécessaire) :",
+    copyLink: "Copier le lien",
+    linkCopied: "Lien copié : collez-le dans votre navigateur.",
+    linkCopyFailed: "Copie impossible : sélectionnez l'adresse ci-dessus pour la copier.",
+    openFailed:
+      "Ouverture impossible : copiez le lien et collez-le dans votre navigateur.",
+  },
   toast: {
     region: "Notifications",
   },
