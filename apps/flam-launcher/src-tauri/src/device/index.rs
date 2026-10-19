@@ -250,7 +250,7 @@ fn display_name(path: &Path) -> String {
 
 /// Étapes d'écriture, après lesquelles un test peut simuler une coupure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Step {
+pub(crate) enum Step {
     NewWritten,
     BackupWritten,
     Replaced,
@@ -585,7 +585,7 @@ pub fn write_index(
 
 /// Corps de [`write_index`]. `hook` est appelé après chaque étape ; une erreur rendue par
 /// `hook` interrompt l'écriture sans aucun nettoyage, comme une coupure de courant.
-fn write_with(
+pub(crate) fn write_with(
     root: &Path,
     kind: IndexKind,
     entries: &[StoryId],
