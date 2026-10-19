@@ -20,6 +20,7 @@ import { formatBytes } from "../validation";
 import { useDevice } from "./DeviceContext";
 import { DeviceStoryOrder } from "./DeviceStoryOrder";
 import { EjectButton } from "./EjectButton";
+import { ExperimentalBanner } from "./ExperimentalBanner";
 import { ForgetCarrierKeysButton } from "./ForgetCarrierKeysButton";
 import { RemoveStoryButton } from "./RemoveStoryButton";
 import {
@@ -79,6 +80,7 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
   return (
     <div className="fl-device-screen">
       <p className="fl-device-screen__intro">{text.intro}</p>
+      <ExperimentalBanner firmware={device?.firmware ?? null} />
       <p role="status" className="fl-visually-hidden">
         {announcement}
       </p>

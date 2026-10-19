@@ -640,6 +640,16 @@ export const fr = {
       failed: (message: string) => `Impossible d'éjecter la Flam : ${message}`,
     },
   },
+  /** Bandeau expérimental de l'écran « Ma Flam » (#235). */
+  deviceBeta: {
+    title: "Fonction expérimentale et non officielle",
+    risks:
+      "L'envoi d'histoires sur la Flam n'est ni prévu ni garanti par son fabricant. Lisez les risques avant de continuer :",
+    firmware2: "Firmware 2.x : en test, sauvegardez votre Flam avant.",
+    copy: "Copier le lien des risques",
+    copied: "Lien copié : collez-le dans votre navigateur.",
+    copyFailed: "Copie impossible : sélectionnez l'adresse ci-dessus pour la copier.",
+  },
   toast: {
     region: "Notifications",
   },

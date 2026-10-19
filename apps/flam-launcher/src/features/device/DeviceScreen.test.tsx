@@ -182,6 +182,50 @@ it("invite à activer le mode USB quand la Flam n'est pas détectée", async () 
   await expectNoAxeViolations(container);
 });
 
+it("affiche le bandeau expérimental, avec le lien des risques, même sans Flam", async () => {
+  const { container } = renderScreen();
+  expect(
+    await screen.findByRole("heading", { name: "Aucune Flam détectée" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText("Fonction expérimentale et non officielle"),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/flam-transfert\.md#risques/)).toBeInTheDocument();
+  expect(screen.queryByText(/Firmware 2\.x : en test/)).not.toBeInTheDocument();
+  await expectNoAxeViolations(container);
+});
+
+it("ajoute la mention « firmware 2.x » pour une Flam en 2.x seulement", async () => {
+  status = detected({ firmware: "2.4.2" });
+  const first = renderScreen();
+  expect(await screen.findByText(/Firmware 2\.x : en test/)).toBeInTheDocument();
+  expect(screen.getByText(/sauvegardez votre Flam avant/)).toBeInTheDocument();
+  first.unmount();
+
+  status = detected({ firmware: "1.15.14" });
+  renderScreen();
+  expect(
+    await screen.findByRole("heading", { name: "Flam détectée" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/Firmware 2\.x : en test/)).not.toBeInTheDocument();
+});
+
+it("copie le lien des risques dans le presse-papiers", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText },
+    configurable: true,
+  });
+  renderScreen();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Copier le lien des risques" }),
+  );
+  expect(writeText).toHaveBeenCalledWith(
+    expect.stringContaining("apps/flam-launcher/docs/flam-transfert.md#risques"),
+  );
+  expect(await screen.findByText(/Lien copié/)).toBeInTheDocument();
+});
+
 it(
   "affiche la Flam détectée, son espace et ses histoires",
   async () => {

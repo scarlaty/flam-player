@@ -52,6 +52,29 @@ Dans la bibliothèque d'une source, « Installer » télécharge et convertit (p
 annulation possibles), puis « Jouer » lance l'histoire dans `flam-player` ; la fermeture du
 player ramène à la surcouche. Les histoires installées sont sous « Mes histoires ».
 
+## Flam : envoyer des histoires (expérimental)
+
+> **Fonction expérimentale et non officielle**, ni prévue ni garantie par le fabricant de la
+> Flam. À utiliser à vos risques, après avoir copié le contenu de votre Flam sur le PC.
+
+L'écran **Ma Flam** détecte une Flam branchée en USB (« mode connexion USB » activé, la Flam
+apparaît comme un disque), liste ses histoires avec leurs titres et vignettes, et permet d'en
+envoyer depuis « Mes histoires », d'en retirer, de changer leur ordre et d'éjecter la Flam.
+
+- **Firmware 1.x** : validé sur un appareil réel (1.15.14), via le mode carrier (clé `bt`
+  d'une histoire officielle de votre compte, saisie par vous).
+- **Firmware 2.x** : pris en charge mais **jamais testé sur un appareil** ; c'est l'objet de la
+  bêta.
+- Avant un envoi : l'application écrit dans un dossier temporaire, vérifie la copie, puis
+  renomme ; l'index est réécrit de façon atomique ; une copie du `.mdf` est gardée sur le PC.
+  Elle ne sauvegarde **pas** les histoires de la Flam.
+
+Détails (prérequis, limites, lenteur, redémarrage et éjection, risques, synchronisation avec
+l'application officielle, dépannage) : [docs/flam-transfert.md](docs/flam-transfert.md).
+Testeurs de la bêta : [docs/guide-testeur.md](docs/guide-testeur.md). Formats et procédures :
+[docs/flam-device-format.md](../../docs/flam-device-format.md) et
+[docs/flam-carrier.md](../../docs/flam-carrier.md).
+
 ## Dépannage
 
 | Symptôme                               | Piste                                                                                                                                                                                                                           |
