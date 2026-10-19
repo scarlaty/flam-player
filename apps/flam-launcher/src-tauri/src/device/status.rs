@@ -298,8 +298,9 @@ pub async fn device_status(config: State<'_, ConfigState>) -> AppResult<DeviceSt
 }
 
 /// UUID (forme à tirets, minuscules) sur la Flam des histoires de la bibliothèque du launcher
-/// de `cache_root` : ce sont celles qu'il a pu installer, exclues de la preuve des clés 2.x
-/// ([`guard::prove_v2_keys`]). Vide (journalisé) si la bibliothèque est illisible.
+/// de `cache_root` : ce sont celles qu'il a pu installer, exclues du contrôle de cohérence
+/// ([`guard::coherence_v2`]) et seules cherchées dans `library.cache`
+/// ([`guard::flam_cache_proof`]). Vide (journalisé) si la bibliothèque est illisible.
 pub(crate) fn launcher_story_ids(cache_root: Option<&Path>) -> HashSet<String> {
     let Some(root) = cache_root else {
         return HashSet::new();
@@ -315,11 +316,11 @@ pub(crate) fn launcher_story_ids(cache_root: Option<&Path>) -> HashSet<String> {
     }
 }
 
-/// Confirme, pour la session, que l'utilisateur a sauvegardé sa Flam alors que ses clés 2.x
-/// ne sont pas vérifiables ([`guard::confirm_unverified`]). `understood` : case cochée dans
-/// l'interface (sinon refus). Rend l'état du firmware à jour. Aucune écriture sur la Flam.
+/// Confirmation « Firmware 2.x en test : j'ai sauvegardé ma Flam » ([`guard::confirm`]),
+/// mémorisée sur le PC par empreinte de `.mdf`. `understood` : case cochée dans l'interface
+/// (sinon refus). Rend l'état du firmware à jour. Aucune écriture sur la Flam.
 #[tauri::command]
-pub async fn device_confirm_unverified_keys(
+pub async fn device_confirm_firmware(
     config: State<'_, ConfigState>,
     root: String,
     understood: bool,
@@ -331,7 +332,7 @@ pub async fn device_confirm_unverified_keys(
     }
     let cache_root = super::transfer::launcher_cache_root(&config);
     blocking(move || {
-        guard::confirm_unverified(Path::new(&root), &WriteContext::current(cache_root))
+        guard::confirm(Path::new(&root), &WriteContext::current(cache_root))
             .map_err(|err| crate::AppError::Validation(err.to_string()))
     })
     .await?

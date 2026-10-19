@@ -180,6 +180,12 @@ pub(crate) fn info_text(key: &[u8; 16], iv: &[u8; 16], data: &[u8]) -> Option<St
     readable_text(&plain).filter(|text| first_block_clean(text))
 }
 
+/// Vrai si le début de `info` est déjà du texte lisible, sans déchiffrement (`info` en clair,
+/// histoire au format d'un autre outil).
+pub(crate) fn info_is_plain_text(info: &[u8]) -> bool {
+    readable_text(&info[..info.len().min(MAX_INFO as usize)]).is_some()
+}
+
 /// Contrôle strict du premier bloc du clair (16 octets). En AES-CBC, l'IV n'agit que sur ce
 /// bloc : un IV faux (faute de frappe dans la seconde moitié d'un `bt` saisi) y altère des
 /// octets sans toucher au reste. Le premier bloc doit donc être de l'UTF-8 strict sans

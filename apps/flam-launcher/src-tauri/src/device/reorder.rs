@@ -39,7 +39,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::detect::MDF_FILE;
-use super::guard::{check_write, WriteContext, WriteRefused};
+use super::guard::{check_write, WriteContext, WriteKind, WriteRefused};
 use super::index::{
     read_index, recover, write_index, Consent, IndexError, IndexKind, IndexState, Recovery,
     StoryId, WriteOutcome,
@@ -188,7 +188,7 @@ fn reorder_with(
     check_device(root)?;
     let _guard = lock.try_begin(Operation::Reorder)?;
     // Garde commune, sous le verrou et avant toute écriture (reprise d'index comprise).
-    check_write(root, ctx)?;
+    check_write(root, ctx, WriteKind::Other)?;
 
     // Reprise d'une écriture d'index interrompue, puis lecture des deux index.
     for kind in IndexKind::ALL {

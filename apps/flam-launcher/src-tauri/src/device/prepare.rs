@@ -9,7 +9,7 @@
 //! | Entrée du `.plain.pk`       | Dans `str/<uuid>/`        | Traitement          |
 //! |-----------------------------|---------------------------|---------------------|
 //! | `uuid.bin`                  | (aucune)                  | donne le nom du dossier |
-//! | `_metadata.json`, `_thumbnail.png` | (aucune)           | ignorées            |
+//! | `_metadata.json`, `_thumbnail.png`, `bt` | (aucune)     | ignorées            |
 //! | `info.plain`, `*.plain`     | `info`, nom sans `.plain` | chiffré             |
 //! | `main.lua`, `script/*.lua`  | `main.lsf`, `script/*.lsf`| chiffré             |
 //! | tout le reste (`version`, `img/…`, `sounds/…`) | même nom | copié tel quel |
@@ -44,8 +44,10 @@ pub const STAGING_PREFIX: &str = ".partiel-";
 pub const KEY_FILE: &str = "key";
 /// Entrées obligatoires du `.plain.pk`.
 pub const REQUIRED: [&str; 4] = ["uuid.bin", "info.plain", "main.lua", "version"];
-/// Entrées propres au `.plain.pk`, jamais copiées sur la Flam.
-pub const EXCLUDED: [&str; 3] = ["uuid.bin", "_metadata.json", "_thumbnail.png"];
+/// Entrées propres au `.plain.pk`, jamais copiées sur la Flam. `bt` (couple d'une histoire
+/// officielle) n'a pas de sens dans une histoire chiffrée par le launcher : en 2.x avec les clés
+/// de `.mdf`, en 1.x avec celles du mode carrier ; il n'est jamais recopié (#317).
+pub const EXCLUDED: [&str; 4] = ["uuid.bin", "_metadata.json", "_thumbnail.png", "bt"];
 
 const UUID_ENTRY: &str = "uuid.bin";
 const COPY_CHUNK: usize = 64 * 1024;
@@ -826,6 +828,18 @@ mod tests {
             .iter()
             .any(|f| f.to_lowercase().contains("thumbnail.png")));
         assert!(!story.files.iter().any(|f| f.ends_with(".LUA")));
+    }
+
+    /// #317 : un `bt` d'archive n'est jamais recopié dans une histoire chiffrée par le launcher.
+    #[test]
+    fn bt_de_l_archive_jamais_recopie() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut entries = base_entries();
+        entries.push(("BT", vec![1u8; 32]));
+        let pk = pk_with(tmp.path(), &entries);
+        let story = run(&pk, &tmp.path().join("travail")).unwrap();
+        assert!(!story.files.iter().any(|f| f.eq_ignore_ascii_case("bt")));
+        assert!(!story.dir.join("BT").exists() && !story.dir.join("bt").exists());
     }
 
     #[test]

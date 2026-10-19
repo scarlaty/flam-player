@@ -577,7 +577,7 @@ fn la_garde_du_firmware_refuse_sans_rien_toucher() {
     use crate::device::guard::tests::{mdf_v2_known, mdf_with, snapshot};
     use crate::device::guard::{WriteRefused, KNOWN_HEADER};
     for mdf in [
-        mdf_with([0, 0], "1.15.14-2d356995"),
+        mdf_v1_real()[..100].to_vec(),
         mdf_with(KNOWN_HEADER, "main: 3.0.0-x"),
         mdf_with(KNOWN_HEADER, "illisible"),
         mdf_v2_known(),
@@ -596,7 +596,7 @@ fn la_garde_du_firmware_refuse_sans_rien_toucher() {
         if mdf == mdf_v2_known() {
             assert!(matches!(
                 err,
-                RemoveError::Refused(WriteRefused::KeysUnverified { .. })
+                RemoveError::Refused(WriteRefused::ConfirmationRequired { .. })
             ));
         }
     }
@@ -605,12 +605,10 @@ fn la_garde_du_firmware_refuse_sans_rien_toucher() {
 /// 2.x sans histoire officielle : retrait autorisé après la confirmation de session.
 #[test]
 fn retrait_2x_apres_confirmation() {
-    use crate::device::guard::confirm_unverified;
-    use crate::device::guard::tests::mdf_v2_known;
+    use crate::device::guard::tests::{confirmed_ctx, mdf_v2_known};
     let device = Device::new();
     fs::write(device.root().join(MDF_FILE), mdf_v2_known()).unwrap();
-    let ctx = test_ctx();
-    confirm_unverified(device.root(), &ctx).unwrap();
+    let ctx = confirmed_ctx(device.root());
     remove_story(device.root(), &DeviceLock::new(), B, true, &ctx).unwrap();
     assert_eq!(device.index(IndexKind::Visible), [A, C]);
 }

@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use super::detect::MDF_FILE;
-use super::guard::{check_write, WriteContext, WriteRefused};
+use super::guard::{check_write, WriteContext, WriteKind, WriteRefused};
 use super::index::{
     read_index, recover, write_index, Consent, IndexError, IndexKind, IndexRead, IndexState,
     Recovery, StoryId, STORIES_DIR,
@@ -323,7 +323,7 @@ fn remove_with(
     check_device(root)?;
     let _guard = lock.try_begin(Operation::Remove)?;
     // Garde commune, sous le verrou et avant toute écriture (corbeille, reprise d'index).
-    check_write(root, ctx)?;
+    check_write(root, ctx, WriteKind::Other)?;
 
     if let Err(err) = purge_trash(root) {
         tracing::warn!("restes d'un retrait précédent non supprimés : {err}");

@@ -608,7 +608,7 @@ fn la_garde_du_firmware_refuse_sans_rien_ecrire() {
     use crate::device::guard::tests::{mdf_v2_known, mdf_with, snapshot};
     use crate::device::guard::KNOWN_HEADER;
     for mdf in [
-        mdf_with([2, 0], "1.15.14-2d356995"),
+        mdf_with(KNOWN_HEADER, "illisible"),
         mdf_with(KNOWN_HEADER, "main: 4.1-x"),
         mdf_v2_known(),
     ] {

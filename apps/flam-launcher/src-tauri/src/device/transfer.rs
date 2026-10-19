@@ -3,7 +3,7 @@
 //! # Déroulé
 //!
 //! 0. Garde commune ([`check_write`], #317) : racine détectée, `.mdf` lisible, firmware 1.x ou
-//!    2.x, disposition reconnue ou preuve des clés 2.x ; sinon rien n'est écrit, pas même une
+//!    2.x, clés lisibles, confirmation ou vérification d'une 2.x ; sinon rien n'est écrit, pas même une
 //!    reprise. Clés ([`send_from_library`]) : lues dans `.mdf` en firmware 2.x ; en 1.x, couple
 //!    « carrier » d'une histoire officielle, après consentement et contrôle de cohérence avec la
 //!    Flam ([`carrier::resolve`], #234). Rien n'est écrit tant que ce n'est pas passé ; `info`
@@ -88,10 +88,12 @@ use super::carrier::{
 };
 use super::crypto::{
     parse_serial_field, CryptoError, DeviceKeys, FirmwareFamily, MDF_IV_OFFSET, MDF_KEY_OFFSET,
-    MDF_LEN, MDF_SERIAL_OFFSET, SERIAL_FIELD_LEN,
+    MDF_SERIAL_OFFSET, SERIAL_FIELD_LEN,
 };
 use super::detect::{MDF_FILE, MDF_MAX_SIZE};
-use super::guard::{check_write, VersionForm, WriteContext, WritePermit, WriteRefused};
+use super::guard::{
+    check_write, VersionForm, WriteContext, WriteKind, WritePermit, WriteRefused, MDF_MIN_LEN,
+};
 use super::index::{
     self, read_index, Consent, IndexError, IndexKind, IndexState, Recovery, StoryId, WriteOutcome,
     LIBRARY_CACHE, STORIES_DIR,
@@ -1037,9 +1039,9 @@ fn firmware_main(text: &[u8]) -> Option<(String, VersionForm)> {
 
 /// Clés de l'appareil d'après le contenu de `.mdf` (disposition dans [`super::crypto`]).
 pub fn keys_from_mdf(mdf: &[u8]) -> Result<DeviceKeys, TransferError> {
-    if mdf.len() < MDF_LEN {
+    if mdf.len() < MDF_MIN_LEN {
         return Err(TransferError::KeyUnavailable(format!(
-            "fichier .mdf de {} octets (au moins {MDF_LEN} attendus)",
+            "fichier .mdf de {} octets (au moins {MDF_MIN_LEN} attendus)",
             mdf.len()
         )));
     }
@@ -1163,8 +1165,8 @@ pub(crate) fn send_from_library_with(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<TransferReport, TransferError> {
-    // Garde commune : racine, `.mdf`, firmware, disposition, preuve des clés 2.x.
-    let permit = check_write(root, ctx)?;
+    // Garde commune : racine, `.mdf`, firmware, clés et confiance d'une 2.x.
+    let permit = check_write(root, ctx, WriteKind::Send)?;
     let (keys, resolved) = device_keys(root, &permit, carrier, cancel)?;
     if let Err(err) = prepare::cleanup_stale(work_dir) {
         tracing::warn!("préparations abandonnées non supprimées : {err}");
@@ -1369,7 +1371,7 @@ pub fn recover_device(
     root: &Path,
     ctx: &WriteContext<'_>,
 ) -> Result<TransferRecovery, TransferError> {
-    let permit = check_write(root, ctx)?;
+    let permit = check_write(root, ctx, WriteKind::Other)?;
     let report = recover(guard, &permit, root)?;
     for kind in IndexKind::ALL {
         index::recover(root, kind)?;
@@ -1396,7 +1398,7 @@ pub async fn device_recover_transfers(
 }
 
 /// Dossier de cache du launcher (bibliothèque), pour reconnaître ses propres histoires dans la
-/// preuve des clés 2.x ; `None` (journalisé) s'il est illisible.
+/// garde des clés 2.x ; `None` (journalisé) s'il est illisible.
 pub(crate) fn launcher_cache_root(config: &ConfigState) -> Option<PathBuf> {
     let _guard = config.guard();
     SettingsStore::new(&config.dir)
