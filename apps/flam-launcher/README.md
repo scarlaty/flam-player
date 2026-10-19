@@ -290,6 +290,7 @@ apps/flam-launcher/
     theme/                 Jetons CSS (clair/sombre) et choix du thème
     i18n/                  Textes de l'interface (français)
   docs/DESIGN.md           Design system : principes, palette, composants
+  docs/podcasts.md         Spécification produit des podcasts (#208)
   src-tauri/
     src/
       lib.rs               Initialisation (traces, builder Tauri)
