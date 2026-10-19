@@ -648,6 +648,9 @@ export const fr = {
     risks:
       "L'envoi d'histoires sur la Flam n'est ni prévu ni garanti par son fabricant. Lisez les risques avant de continuer :",
     firmware2: "Firmware 2.x : en test, sauvegardez votre Flam avant.",
+    open: "Ouvrir la page des risques",
+    openFailed:
+      "Ouverture impossible : utilisez « Copier le lien des risques » et collez-le dans votre navigateur.",
     copy: "Copier le lien des risques",
     copied: "Lien copié : collez-le dans votre navigateur.",
     copyFailed: "Copie impossible : sélectionnez l'adresse ci-dessus pour la copier.",
