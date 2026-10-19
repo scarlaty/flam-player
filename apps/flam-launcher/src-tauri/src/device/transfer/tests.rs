@@ -1471,6 +1471,14 @@ fn remplacement_lie_a_l_uuid_vise() {
     let urn = format!("urn:uuid:{NEW}");
     for update in [true, false] {
         let root = device(&tmp.path().join(format!("refus-{update}")), update);
+        // Une reprise en attente : le refus la précède, rien n'est touché.
+        write(
+            &root
+                .join(TRANSFER_DIR)
+                .join(format!("{OTHER}{INCOMING_SUFFIX}"))
+                .join("info"),
+            b"partiel",
+        );
         let before = snapshot(&root);
         for target in [
             OTHER,

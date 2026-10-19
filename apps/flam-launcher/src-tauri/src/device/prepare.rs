@@ -201,6 +201,20 @@ fn is_reserved_windows_name(component: &str) -> bool {
 }
 
 /// Chemin relatif sûr (composants séparés par `/`) d'une entrée, ou erreur.
+/// Majuscules caractère par caractère, comme la table de FAT : une correspondance Unicode à
+/// plusieurs caractères (`ß` → `SS`, `ﬁ` → `FI`) laisse le caractère tel quel.
+fn fat_upper(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            let mut upper = c.to_uppercase();
+            match (upper.next(), upper.next()) {
+                (Some(u), None) => u,
+                _ => c,
+            }
+        })
+        .collect()
+}
+
 fn safe_relative(raw_name: &str, enclosed: Option<PathBuf>) -> Result<String, PrepareError> {
     let bad = || invalid(format!("nom d'entrée refusé : {raw_name:?}"));
     let path = enclosed.ok_or_else(bad)?;
@@ -301,7 +315,7 @@ pub(crate) fn prepare_with(
         }
         let relative = safe_relative(entry.name(), entry.enclosed_name())?;
         let new_lower = seen_sources.insert(relative.to_lowercase());
-        let new_upper = seen_sources_upper.insert(relative.to_uppercase());
+        let new_upper = seen_sources_upper.insert(fat_upper(&relative));
         if !(new_lower && new_upper) {
             return Err(invalid(format!("entrée en double : {relative:?}")));
         }
@@ -311,7 +325,7 @@ pub(crate) fn prepare_with(
         }
         if let Some((target, action)) = plan_entry(&relative)? {
             let new_lower = seen_targets.insert(target.to_lowercase());
-            let new_upper = seen_targets_upper.insert(target.to_uppercase());
+            let new_upper = seen_targets_upper.insert(fat_upper(&target));
             if !(new_lower && new_upper) {
                 return Err(invalid(format!("deux entrées donnent {target:?}")));
             }
@@ -777,6 +791,12 @@ mod tests {
             entries.push((b, b"y".to_vec()));
             expect_invalid(&entries, "double");
         }
+        // Correspondance à plusieurs caractères (`ß` → `SS`) : FAT garde `ß`, deux fichiers.
+        let mut entries = base_entries();
+        entries.push(("img/\u{df}.png", b"x".to_vec()));
+        entries.push(("img/ss.png", b"y".to_vec()));
+        let tmp = tempfile::tempdir().unwrap();
+        run(&pk_with(tmp.path(), &entries), &tmp.path().join("travail")).unwrap();
         // `sounds/a.mp3` est un fichier : `sounds/a.mp3/b` ne peut pas être un dossier.
         let mut entries = base_entries();
         entries.push(("sounds/a.mp3/b", b"x".to_vec()));
