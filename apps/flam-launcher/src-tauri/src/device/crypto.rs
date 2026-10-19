@@ -16,7 +16,7 @@
 //!
 //! | Offset | Taille | Contenu                                                                |
 //! |--------|--------|------------------------------------------------------------------------|
-//! | `0x00` | 2      | en-tête, non lu ici (rôle à confirmer sur appareil, #236)              |
+//! | `0x00` | 2      | en-tête : `01 00` mesuré en 1.15.14 ; contrôlé par [`super::guard`]    |
 //! | `0x02` | 48     | version « main: x.y.z-… » (2.x) ou nue « x.y.z-… » (1.x), octets nuls  |
 //! | `0x32` | 24     | numéro de série : 14 caractères ASCII hexadécimaux puis 10 octets nuls |
 //! | `0x4A` | 2      | VID USB (petit-boutiste)                                               |
@@ -26,7 +26,8 @@
 //! | `0x6E` | 16     | non lu ici ; rôle inconnu, à confirmer sur appareil (#236)             |
 //!
 //! La taille totale ([`MDF_LEN`], 126 octets) est celle mesurée sur l'appareil de l'inventaire ;
-//! sa validation relève de la détection (#241). Ce module se sert du texte de version, du numéro
+//! la disposition reconnue (taille, en-tête `01 00`, forme de la version) est contrôlée avant
+//! toute écriture par [`super::guard`] (#317). Ce module se sert du texte de version, du numéro
 //! de série, de la clé et de l'IV ; VID et PID ne sont décodés nulle part (la détection ne
 //! lit que la taille et la version de `.mdf`). Le numéro de série se décode avec
 //! [`parse_serial_field`].
@@ -147,9 +148,16 @@ pub enum FirmwareFamily {
 }
 
 /// Famille du firmware `firmware_main` (`2.4.2`, `1.15.14`…), `None` hors 1.x et 2.x (3.x et
-/// suivants, texte illisible). Majeur en chiffres ASCII seulement : ni signe, ni espace, ni
-/// zéro initial.
+/// suivants, texte illisible). Forme stricte : composantes non vides de chiffres ASCII séparées
+/// par des points (`2..1`, `2.` et `.2` sont refusés), majeur exactement `1` ou `2` (ni signe,
+/// ni espace, ni zéro initial).
 pub fn firmware_family(firmware_main: &str) -> Option<FirmwareFamily> {
+    let well_formed = firmware_main
+        .split('.')
+        .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+    if !well_formed {
+        return None;
+    }
     match firmware_main.split('.').next() {
         Some("1") => Some(FirmwareFamily::V1),
         Some("2") => Some(FirmwareFamily::V2),
@@ -531,6 +539,7 @@ pub(crate) mod tests {
     fn firmware_hors_2x_refuse() {
         for fw in [
             "1.15.14", "3.0.0", "3.1", "4.0.0", "", "abc", "20.1", "+2.4.2", "02.4", " 2.4.2",
+            "2..", "2.", "2..4", ".2", "2.4a",
         ] {
             assert_eq!(
                 DeviceKeys::new(fw, &TEST_SERIAL, &TEST_KEY, &TEST_IV).unwrap_err(),

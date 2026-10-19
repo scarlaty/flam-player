@@ -1,4 +1,5 @@
 import { emit } from "@tauri-apps/api/event";
+import { firmwareV1, firmwareV2 } from "../../test/firmware";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -55,6 +56,7 @@ function detected(): DeviceStatus {
       mdf_problem: null,
       backup_failed: false,
       firmware: "2.4.2",
+      firmware_status: firmwareV2(),
     },
   };
 }
@@ -654,7 +656,44 @@ it("affiche l'erreur d'une histoire et poursuit la file", async () => {
   expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "false");
 });
 
-it("bloque les envois quand le firmware n'est pas pris en charge", async () => {
+it("bloque les envois en amont quand la garde du firmware refuse (état structuré)", async () => {
+  acknowledgeWarning();
+  status.device!.firmware = "3.0.0";
+  status.device!.firmware_status = firmwareV2({
+    version: "3.0.0",
+    family: "unsupported",
+    trust: "not_applicable",
+    coherence: { kind: "not_checked" },
+    write_block: { kind: "unsupported_firmware", version: "3.0.0" },
+  });
+  render(<Harness />);
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (1)" });
+  expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "true");
+  expect(sendButton("Capi")).toHaveAccessibleDescription(
+    "Écriture bloquée sur cette Flam (voir « Ma Flam »)",
+  );
+  fireEvent.click(sendButton("Capi"));
+  expect(count("device_send_story")).toBe(0);
+  // Aucune écriture, pas même la reprise au branchement.
+  expect(count("device_recover_transfers")).toBe(0);
+});
+
+it("Flam 2.x non confirmée : envoi bloqué jusqu'à la confirmation", async () => {
+  acknowledgeWarning();
+  status.device!.firmware_status = firmwareV2({
+    trust: "unconfirmed",
+    write_block: { kind: "confirmation_required", version: "2.4.2", standard: true },
+  });
+  render(<Harness />);
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (1)" });
+  expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "true");
+  expect(sendButton("Capi")).toHaveAccessibleDescription(
+    "Confirmez d'abord la sauvegarde de la Flam dans « Ma Flam ».",
+  );
+  expect(count("device_recover_transfers")).toBe(0);
+});
+
+it("un refus de la garde pendant la file arrête les envois suivants", async () => {
   acknowledgeWarning();
   render(<Harness />);
   await ready();
@@ -662,21 +701,23 @@ it("bloque les envois quand le firmware n'est pas pris en charge", async () => {
   fireEvent.click(sendButton("Les trois ours"));
   const panel = await screen.findByRole("region", { name: "Envoi sur la Flam" });
   await waitFor(() => expect(sends.has(A)).toBe(true));
-  await act(async () => {
-    sends.get(A)?.reject({
-      kind: "validation",
-      message: "firmware de la Flam non pris en charge : « 1.4 » (seul le 2.x l'est)",
-    });
+  // Une histoire tierce contredit les clés : l'état relu de la Flam le dit, l'envoi est refusé.
+  status.device!.firmware_status = firmwareV2({
+    write_block: { kind: "keys_contradiction", version: "2.4.2" },
   });
-  expect(
-    await within(panel).findByText(/firmware de cette Flam n'est pas pris en charge/),
-  ).toBeInTheDocument();
+  const refusal =
+    "les clés lues dans .mdf ne déchiffrent pas une histoire de cette Flam qui devrait l'être (firmware 2.4.2) : rien n'a été envoyé ; voir l'état du firmware dans « Ma Flam »";
+  await act(async () => {
+    sends.get(A)?.reject({ kind: "validation", message: refusal });
+  });
+  expect(await within(panel).findByText(refusal)).toBeInTheDocument();
+  await waitFor(() =>
+    expect(sendButton("Les trois ours")).toHaveAccessibleDescription(
+      "Écriture bloquée sur cette Flam (voir « Ma Flam »)",
+    ),
+  );
   // Les histoires suivantes ne sont pas tentées.
   expect(count("device_send_story")).toBe(1);
-  expect(sendButton("Les trois ours")).toHaveAttribute("aria-disabled", "true");
-  expect(sendButton("Les trois ours")).toHaveAccessibleDescription(
-    "Firmware de la Flam non pris en charge",
-  );
 });
 
 it("retire une histoire de la Flam après confirmation", async () => {
@@ -981,6 +1022,7 @@ it("signale une reprise échouée sans bloquer l'écran", async () => {
 function detectedV1(): DeviceStatus {
   const value = detected();
   value.device!.firmware = "1.15.14";
+  value.device!.firmware_status = firmwareV1();
   return value;
 }
 

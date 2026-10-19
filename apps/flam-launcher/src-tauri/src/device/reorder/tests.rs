@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::*;
+use crate::device::guard::tests::{mdf_v1_real, test_ctx};
 use crate::device::index::{self, serialize, Step, LIBRARY_CACHE, LIBRARY_DIR, STORIES_DIR};
 
 const A: &str = "4639e3ea-13b4-4550-91c9-f930a4df6b93";
@@ -36,7 +37,7 @@ impl Device {
         let dir = tempfile::tempdir().unwrap();
         let device = Self { dir };
         let root = device.root();
-        fs::write(root.join(MDF_FILE), [7u8; 126]).unwrap();
+        fs::write(root.join(MDF_FILE), mdf_v1_real()).unwrap();
         for uuid in [A, B, C, D] {
             device.story(STORIES_DIR, uuid);
         }
@@ -121,7 +122,7 @@ impl Device {
 }
 
 fn reorder(dev: &Device, uuids: &[&str]) -> Result<ReorderReport, ReorderError> {
-    reorder_stories(dev.root(), &DeviceLock::new(), &order(uuids))
+    reorder_stories(dev.root(), &DeviceLock::new(), &order(uuids), &test_ctx())
 }
 
 /// Refus sans aucune écriture : arborescence entière identique, cache compris.
@@ -335,7 +336,12 @@ fn pas_une_flam_refuse() {
     let err = reorder(&dev, &[B, A, C, D]).unwrap_err();
     assert!(matches!(err, ReorderError::NotADevice), "{err}");
     assert_eq!(dev.get("list").unwrap(), lines(&[A, B, C, D]));
-    let relative = reorder_stories(Path::new("relatif"), &DeviceLock::new(), &order(&[A]));
+    let relative = reorder_stories(
+        Path::new("relatif"),
+        &DeviceLock::new(),
+        &order(&[A]),
+        &test_ctx(),
+    );
     assert!(matches!(relative, Err(ReorderError::NotADevice)));
 }
 
@@ -347,7 +353,7 @@ fn verrou_occupe_refuse_sans_rien_lire_ni_ecrire() {
     let others = dev.others();
     let lock = DeviceLock::new();
     let _transfer = lock.try_begin(Operation::Transfer).unwrap();
-    let err = reorder_stories(dev.root(), &lock, &order(&[B, A, C, D])).unwrap_err();
+    let err = reorder_stories(dev.root(), &lock, &order(&[B, A, C, D]), &test_ctx()).unwrap_err();
     assert!(
         matches!(err, ReorderError::Busy(Busy(Operation::Transfer))),
         "{err}"
@@ -367,6 +373,7 @@ fn verrou_tenu_pendant_l_ecriture_puis_libere() {
         dev.root(),
         &lock,
         &order(&[B, A, C, D]),
+        &test_ctx(),
         &mut |root, entries| {
             seen = lock.current();
             write_index(root, IndexKind::Visible, entries, Consent::IfValid)
@@ -428,6 +435,7 @@ fn cache_non_supprime_signale_et_repris() {
         dev.root(),
         &DeviceLock::new(),
         &order(&[B, A, C, D]),
+        &test_ctx(),
         &mut |root, entries| {
             // Index écrit, puis échec de la suppression du cache (fichier verrouillé).
             index::write_with(
@@ -502,6 +510,7 @@ fn cut_then_recover(step: Step, torn: Torn) {
         dev.root(),
         &DeviceLock::new(),
         &order(&new),
+        &test_ctx(),
         &mut |root, entries| {
             index::write_with(
                 root,
@@ -590,4 +599,25 @@ fn echec_d_ecriture_reel_laisse_l_ancien_ordre() {
     assert!(matches!(err, ReorderError::Index(_)), "{err}");
     assert_eq!(dev.get("list").unwrap(), lines(&[A, B, C, D]));
     assert!(dev.cache_present());
+}
+
+/// Garde commune (#317) : disposition inconnue, firmware non pris en charge ou clés 2.x non
+/// vérifiables : refus, rien n'est écrit (pas même la reprise d'un index interrompu).
+#[test]
+fn la_garde_du_firmware_refuse_sans_rien_ecrire() {
+    use crate::device::guard::tests::{mdf_v2_known, mdf_with, snapshot};
+    use crate::device::guard::KNOWN_HEADER;
+    for mdf in [
+        mdf_with(KNOWN_HEADER, "illisible"),
+        mdf_with(KNOWN_HEADER, "main: 4.1-x"),
+        mdf_v2_known(),
+    ] {
+        let dev = Device::new();
+        fs::write(dev.root().join(MDF_FILE), &mdf).unwrap();
+        dev.put("list.new", b"x");
+        let before = snapshot(dev.root());
+        let err = reorder(&dev, &[B, A, C, D]).unwrap_err();
+        assert!(matches!(err, ReorderError::Refused(_)), "{err}");
+        assert_eq!(snapshot(dev.root()), before);
+    }
 }

@@ -39,6 +39,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::detect::MDF_FILE;
+use super::guard::{check_write, WriteContext, WriteKind, WriteRefused};
 use super::index::{
     read_index, recover, write_index, Consent, IndexError, IndexKind, IndexState, Recovery,
     StoryId, WriteOutcome,
@@ -82,6 +83,9 @@ pub enum ReorderError {
     Missing(StoryId),
     #[error(transparent)]
     Busy(#[from] Busy),
+    /// Refus de la garde commune des écritures ([`super::guard`]) : rien n'a été écrit.
+    #[error(transparent)]
+    Refused(#[from] WriteRefused),
     #[error("index de la Flam absent, abîmé ou illisible : réparez-le avant de changer l'ordre ; rien n'a été écrit")]
     IndexNeedsUser,
     #[error(
@@ -159,13 +163,15 @@ fn check_same_set(
 
 /// Réécrit `list` de la Flam montée en `root` dans l'ordre `order` (liste complète des UUID de
 /// `list`, dans l'ordre voulu). Refuse sans rien écrire si l'ordre ne correspond pas exactement
-/// à l'index, si un index n'est pas sûr ou si une autre opération est en cours.
+/// à l'index, si un index n'est pas sûr, si une autre opération est en cours ou si la garde du
+/// firmware refuse ([`check_write`]).
 pub fn reorder_stories(
     root: &Path,
     lock: &DeviceLock,
     order: &[String],
+    ctx: &WriteContext<'_>,
 ) -> Result<ReorderReport, ReorderError> {
-    reorder_with(root, lock, order, &mut |root, entries| {
+    reorder_with(root, lock, order, ctx, &mut |root, entries| {
         write_index(root, IndexKind::Visible, entries, Consent::IfValid)
     })
 }
@@ -175,11 +181,14 @@ fn reorder_with(
     root: &Path,
     lock: &DeviceLock,
     order: &[String],
+    ctx: &WriteContext<'_>,
     write: &mut WriteList<'_>,
 ) -> Result<ReorderReport, ReorderError> {
     let order = parse_order(order)?;
     check_device(root)?;
     let _guard = lock.try_begin(Operation::Reorder)?;
+    // Garde commune, sous le verrou et avant toute écriture (reprise d'index comprise).
+    check_write(root, ctx, WriteKind::Other)?;
 
     // Reprise d'une écriture d'index interrompue, puis lecture des deux index.
     for kind in IndexKind::ALL {
@@ -231,11 +240,21 @@ fn reorder_with(
 /// Réordonne les histoires de la Flam montée en `root`. `order` : tous les UUID de l'index
 /// `list`, dans l'ordre voulu (voir [`reorder_stories`]).
 #[tauri::command]
-pub async fn device_reorder_stories(root: String, order: Vec<String>) -> AppResult<ReorderReport> {
+pub async fn device_reorder_stories(
+    config: tauri::State<'_, crate::storage::ConfigState>,
+    root: String,
+    order: Vec<String>,
+) -> AppResult<ReorderReport> {
+    let cache_root = super::transfer::launcher_cache_root(&config);
     blocking(move || -> AppResult<ReorderReport> {
-        // Racine reçue de l'interface : un lecteur détecté seulement, comme pour l'envoi.
-        super::transfer::ensure_detected_root(Path::new(&root))?;
-        Ok(reorder_stories(Path::new(&root), &DEVICE_LOCK, &order)?)
+        // Racine reçue de l'interface : contrôlée par la garde (lecteur détecté seulement).
+        let ctx = WriteContext::current(cache_root);
+        Ok(reorder_stories(
+            Path::new(&root),
+            &DEVICE_LOCK,
+            &order,
+            &ctx,
+        )?)
     })
     .await?
 }

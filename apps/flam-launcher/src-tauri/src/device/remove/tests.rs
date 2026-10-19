@@ -3,6 +3,7 @@
 use std::cell::Cell;
 
 use super::*;
+use crate::device::guard::tests::{mdf_v1_real, test_ctx};
 use crate::device::index::{serialize, LIBRARY_CACHE, LIBRARY_DIR};
 
 const A: &str = "4639e3ea-13b4-4550-91c9-f930a4df6b93";
@@ -25,7 +26,7 @@ impl Device {
         let dir = tempfile::tempdir().unwrap();
         let device = Self { dir };
         let root = device.root();
-        fs::write(root.join(MDF_FILE), [7u8; 126]).unwrap();
+        fs::write(root.join(MDF_FILE), mdf_v1_real()).unwrap();
         for uuid in [A, B, C] {
             device.story(STORIES_DIR, uuid);
         }
@@ -103,7 +104,7 @@ impl Device {
 }
 
 fn remove(device: &Device, uuid: &str) -> Result<RemoveReport, RemoveError> {
-    remove_story(device.root(), &DeviceLock::new(), uuid, true)
+    remove_story(device.root(), &DeviceLock::new(), uuid, true, &test_ctx())
 }
 
 #[test]
@@ -160,7 +161,7 @@ fn entree_d_index_sans_dossier_est_retiree() {
 #[test]
 fn sans_confirmation_rien_n_est_touche() {
     let device = Device::new();
-    let err = remove_story(device.root(), &DeviceLock::new(), B, false).unwrap_err();
+    let err = remove_story(device.root(), &DeviceLock::new(), B, false, &test_ctx()).unwrap_err();
     assert!(matches!(err, RemoveError::NotConfirmed));
     assert_eq!(device.index(IndexKind::Visible), [A, B, C]);
     assert!(device.has_story(STORIES_DIR, B));
@@ -224,7 +225,7 @@ fn appareil_occupe_refuse() {
     let device = Device::new();
     let lock = DeviceLock::new();
     let _transfer = lock.try_begin(Operation::Transfer).unwrap();
-    let err = remove_story(device.root(), &lock, B, true).unwrap_err();
+    let err = remove_story(device.root(), &lock, B, true, &test_ctx()).unwrap_err();
     assert!(matches!(err, RemoveError::Busy(Busy(Operation::Transfer))));
     assert!(device.has_story(STORIES_DIR, B));
     assert_eq!(device.index(IndexKind::Visible), [A, B, C]);
@@ -234,9 +235,9 @@ fn appareil_occupe_refuse() {
 fn le_verrou_est_libere_apres_le_retrait() {
     let device = Device::new();
     let lock = DeviceLock::new();
-    remove_story(device.root(), &lock, B, true).unwrap();
+    remove_story(device.root(), &lock, B, true, &test_ctx()).unwrap();
     assert_eq!(lock.current(), None);
-    remove_story(device.root(), &lock, "nimporte", true).unwrap_err();
+    remove_story(device.root(), &lock, "nimporte", true, &test_ctx()).unwrap_err();
     assert_eq!(lock.current(), None);
 }
 
@@ -301,14 +302,21 @@ fn corbeille_cachee_si_la_suppression_echoue() {
     let device = Device::new();
     let mut calls = 0;
     // Coupure après le déplacement : la corbeille reste en place.
-    let _ = remove_with(device.root(), &DeviceLock::new(), B, true, &mut |step| {
-        calls += 1;
-        if step == Step::MovedToTrash {
-            Err(io::Error::other("coupure simulée"))
-        } else {
-            Ok(())
-        }
-    });
+    let _ = remove_with(
+        device.root(),
+        &DeviceLock::new(),
+        B,
+        true,
+        &test_ctx(),
+        &mut |step| {
+            calls += 1;
+            if step == Step::MovedToTrash {
+                Err(io::Error::other("coupure simulée"))
+            } else {
+                Ok(())
+            }
+        },
+    );
     assert!(calls > 0);
     let attributes = fs::metadata(device.root().join(TRASH_DIR))
         .unwrap()
@@ -327,7 +335,7 @@ fn orphelin_signale_puis_supprime_sur_confirmation() {
             hidden: false
         }]
     );
-    let err = remove_story(device.root(), &DeviceLock::new(), B, false).unwrap_err();
+    let err = remove_story(device.root(), &DeviceLock::new(), B, false, &test_ctx()).unwrap_err();
     assert!(matches!(err, RemoveError::NotConfirmed));
     assert!(device.has_story(STORIES_DIR, B));
 
@@ -412,7 +420,7 @@ fn list_absent_orphelin_refuse() {
 
 #[test]
 fn racine_relative_refusee() {
-    let err = remove_story(Path::new("."), &DeviceLock::new(), B, true).unwrap_err();
+    let err = remove_story(Path::new("."), &DeviceLock::new(), B, true, &test_ctx()).unwrap_err();
     assert!(matches!(err, RemoveError::NotADevice));
 }
 
@@ -450,7 +458,7 @@ fn coupure_a_chaque_etape_puis_reprise() {
                 }
             };
             let lock = DeviceLock::new();
-            let result = remove_with(device.root(), &lock, uuid, true, &mut hook);
+            let result = remove_with(device.root(), &lock, uuid, true, &test_ctx(), &mut hook);
             let finished = result.is_ok();
             assert_eq!(lock.current(), None);
 
@@ -526,7 +534,7 @@ fn suppression_partielle_reprise_depuis_la_corbeille() {
         }
         Ok(())
     };
-    remove_with(device.root(), &lock, B, true, &mut hook).unwrap_err();
+    remove_with(device.root(), &lock, B, true, &test_ctx(), &mut hook).unwrap_err();
     assert!(!device.root().join(STORIES_DIR).join(B).exists());
     assert_eq!(device.trash_entries(), 1);
     assert!(find_orphans(device.root()).unwrap().is_empty());
@@ -560,4 +568,47 @@ fn dossier_verrouille_devient_orphelin() {
             hidden: false
         }]
     );
+}
+
+/// Garde commune (#317) : `.mdf` d'une disposition inconnue, firmware non pris en charge ou
+/// clés 2.x non vérifiables : refus, rien n'est touché (ni corbeille, ni index, ni reprise).
+#[test]
+fn la_garde_du_firmware_refuse_sans_rien_toucher() {
+    use crate::device::guard::tests::{mdf_v2_known, mdf_with, snapshot};
+    use crate::device::guard::{WriteRefused, KNOWN_HEADER};
+    for mdf in [
+        mdf_v1_real()[..100].to_vec(),
+        mdf_with(KNOWN_HEADER, "main: 3.0.0-x"),
+        mdf_with(KNOWN_HEADER, "illisible"),
+        mdf_v2_known(),
+    ] {
+        let device = Device::new();
+        fs::write(device.root().join(MDF_FILE), &mdf).unwrap();
+        // Une écriture d'index interrompue : même sa reprise n'est pas lancée.
+        fs::write(device.root().join(LIBRARY_DIR).join("list.new"), b"x").unwrap();
+        let before = snapshot(device.root());
+        let lock = DeviceLock::new();
+        let err = remove_story(device.root(), &lock, B, true, &test_ctx()).unwrap_err();
+        assert!(matches!(err, RemoveError::Refused(_)), "{err}");
+        assert!(err.to_string().contains("rien n'a été écrit"), "{err}");
+        assert_eq!(snapshot(device.root()), before);
+        assert_eq!(lock.current(), None);
+        if mdf == mdf_v2_known() {
+            assert!(matches!(
+                err,
+                RemoveError::Refused(WriteRefused::ConfirmationRequired { .. })
+            ));
+        }
+    }
+}
+
+/// 2.x sans histoire officielle : retrait autorisé après la confirmation de session.
+#[test]
+fn retrait_2x_apres_confirmation() {
+    use crate::device::guard::tests::{confirmed_ctx, mdf_v2_known};
+    let device = Device::new();
+    fs::write(device.root().join(MDF_FILE), mdf_v2_known()).unwrap();
+    let ctx = confirmed_ctx(device.root());
+    remove_story(device.root(), &DeviceLock::new(), B, true, &ctx).unwrap();
+    assert_eq!(device.index(IndexKind::Visible), [A, C]);
 }

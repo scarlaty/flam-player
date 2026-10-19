@@ -135,10 +135,37 @@ d'affilée, et notez la durée.
 
 ### Points à vérifier en 2.x
 
-<!-- À compléter avec les résultats de l'audit #317 (chemin firmware 2.x). -->
+Ces points servent à confirmer, sur une vraie Flam 2.x, ce que le launcher suppose. Notez
+chaque réponse dans votre retour, même si tout va bien.
 
-_À venir : points précis à observer sur une Flam en firmware 2.x. En attendant, notez tout ce
-qui vous semble anormal._
+1. **Ce qu'affiche « Ma Flam ».** Sur la carte « Flam détectée », la ligne **Firmware** donne la
+   version, puis un état. Recopiez la ligne entière, par exemple
+   « 2.4.2 (2.x) · en test, confirmation à donner ». Indiquez si la mention « fichier .mdf non
+   standard » apparaît. La version doit être la même que dans les réglages de la Flam.
+2. **La confirmation.** Avant le premier envoi, le launcher demande de cocher « Firmware 2.x en
+   test : j'ai sauvegardé ma Flam ». Ne cochez qu'**après** avoir fait la sauvegarde (section 2).
+   Notez si le texte vous a paru clair. Si un bandeau rouge « Écriture bloquée » ou « Envoi
+   bloqué » s'affiche, recopiez son texte : rien n'est alors écrit sur la Flam.
+3. **Les titres de vos histoires officielles.** Dans la liste de « Ma Flam », vos histoires
+   achetées s'affichent-elles avec leur vrai titre, sous un identifiant, ou avec un titre venu
+   d'internet ? Indiquez si c'est le cas pour toutes, quelques-unes ou aucune.
+4. **La première histoire envoyée.** Envoyez **une seule** petite histoire. Éjectez la Flam,
+   débranchez-la, **redémarrez-la** : l'histoire apparaît-elle à la fin de la liste, avec son
+   titre lisible ? Se lance-t-elle, avec les images et le son ? Si elle apparaît mais refuse de
+   se lancer, notez exactement ce qui se passe (message, écran figé, histoire absente).
+5. **La vérification par la Flam.** Après ce redémarrage, rebranchez la Flam en mode connexion
+   USB et ouvrez « Ma Flam ». La ligne Firmware indique-t-elle « vérifié par la Flam » ? Si elle
+   indique toujours « sauvegarde confirmée », notez-le : ce n'est pas grave, mais c'est une
+   information utile.
+6. **Les dossiers de travail du launcher.** Si un envoi ou un retrait a été interrompu
+   (débranchement), regardez à la racine de la Flam (fichiers cachés affichés) s'il reste un
+   dossier `.flam-transfer` ou `.flam-trash`, ou dans `etc\library` un fichier `list.new` ou
+   `list.bak`. La Flam démarre-t-elle quand même normalement ? Ces éléments doivent disparaître
+   au branchement suivant.
+7. **L'éjection.** Le bouton **Éjecter la Flam** fonctionne-t-il, ou faut-il passer par
+   l'Explorateur ? Remarquez-vous un effet sur la Flam ?
+8. **En cas de problème grave.** Si la Flam redémarre en boucle ou ne démarre plus, n'envoyez
+   plus rien, appliquez le « Dernier recours » de la section 2 et ouvrez une issue.
 
 ## 4. Remonter votre retour
 
