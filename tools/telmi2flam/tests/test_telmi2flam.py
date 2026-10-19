@@ -27,6 +27,7 @@ sys.dont_write_bytecode = True
 
 from PIL import Image  # noqa: E402
 
+import lif  # noqa: E402
 import mp3map  # noqa: E402
 import telmi2flam as T  # noqa: E402
 import validate  # noqa: E402
@@ -419,9 +420,20 @@ class TestConversion(Base):
         pk = self.convert(files)
         self.assertValid(pk)
         with zipfile.ZipFile(pk) as z:
-            self.assertEqual(lif_dims(z.read("img/thumbnail.lif")), (128, 96))
+            self.assertEqual(lif_dims(z.read("img/thumbnail.lif")), (104, 136))
             w, h = lif_dims(z.read("img/title.lif"))
             self.assertGreaterEqual(w, h)
+
+    def test_thumb_fit_transmis_a_la_conversion(self):
+        files = [(a, png(400, 200) if a == "title.png" else b) for a, b in std_files()]
+        tops = {}
+        for fit in ("bandes", "flou"):
+            pk = self.convert(files, name="t_" + fit, thumb_fit=fit)
+            with zipfile.ZipFile(pk) as z:
+                rgba, w, h = lif.decode(z.read("img/thumbnail.lif"))
+            self.assertEqual((w, h), (104, 136))
+            tops[fit] = rgba[3]
+        self.assertEqual(tops, {"bandes": 0, "flou": 255})
 
     # F52 : label des choix
     def test_choice_label(self):
@@ -968,6 +980,101 @@ class TestValidate(Base):
         self.assertIn("script/global.lua absente", out)
         self.assertIn("LIF img/s0.lif", out)
         self.assertNotIn("Traceback", out)
+
+
+def banded_png(w, h):
+    """Image opaque a deux bandes horizontales (haut rouge, bas bleu)."""
+    im = Image.new("RGBA", (w, h), (200, 20, 20, 255))
+    im.paste((20, 20, 200, 255), (0, h // 2, w, h))
+    b = io.BytesIO()
+    im.save(b, "PNG")
+    return b.getvalue()
+
+
+class TestThumbFit(unittest.TestCase):
+    """Vignette 104x136 (format officiel mesure sur la Flam), 3 modes de remplissage."""
+
+    SIZES = ((400, 200), (200, 400), (300, 300), (3, 2), (1, 1))
+
+    def thumb(self, data, fit=T.DEFAULT_THUMB_FIT):
+        rgba, w, h = lif.decode(T.png_to_thumb_lif(data, fit))
+        return rgba, w, h
+
+    @staticmethod
+    def alpha(rgba, w, x, y):
+        return rgba[(y * w + x) * 4 + 3]
+
+    def test_taille_officielle(self):
+        self.assertEqual((T.THUMB_W, T.THUMB_H), (104, 136))
+        self.assertEqual(T.DEFAULT_THUMB_FIT, "flou")
+        for fit in T.THUMB_FITS:
+            for w, h in self.SIZES:
+                _, tw, th = self.thumb(banded_png(w, h), fit)
+                self.assertEqual((tw, th), (104, 136), (fit, w, h))
+
+    def test_bandes_transparentes_haut_et_bas(self):
+        rgba, w, h = self.thumb(banded_png(400, 200), "bandes")
+        for x in (0, 51, 103):
+            self.assertEqual(self.alpha(rgba, w, x, 0), 0)
+            self.assertEqual(self.alpha(rgba, w, x, 135), 0)
+            self.assertEqual(self.alpha(rgba, w, x, 68), 255)
+
+    def test_rogner_sans_transparence(self):
+        for src in SIZES_ALL:
+            rgba, w, h = self.thumb(banded_png(*src), "rogner")
+            self.assertTrue(all(rgba[i] == 255 for i in range(3, len(rgba), 4)), src)
+
+    def test_flou_sans_transparence_et_centre_identique(self):
+        data = banded_png(400, 200)
+        rgba, w, h = self.thumb(data, "flou")
+        self.assertTrue(all(rgba[i] == 255 for i in range(3, len(rgba), 4)))
+        im = T._open_rgba(data)
+        ref, _, _ = lif.decode(T._encode(T._thumb_contain(im)))
+        # image reduite : 104x52 centree (lignes 42 a 93)
+        for y in range(42, 94):
+            self.assertEqual(rgba[y * w * 4:(y + 1) * w * 4], ref[y * w * 4:(y + 1) * w * 4], y)
+        # le haut est rempli (pas une bande vide) et differe de la bande de l'image
+        self.assertNotEqual(rgba[0:4], bytes(4))
+
+    def test_flou_remplit_aussi_les_cotes_d_une_image_tres_haute(self):
+        rgba, w, h = self.thumb(banded_png(20, 400), "flou")
+        self.assertTrue(all(rgba[i] == 255 for i in range(3, len(rgba), 4)))
+
+    def test_modes_differents(self):
+        data = banded_png(400, 200)
+        outs = {fit: T.png_to_thumb_lif(data, fit) for fit in T.THUMB_FITS}
+        self.assertEqual(len(set(outs.values())), 3)
+
+    def test_deterministe(self):
+        data = banded_png(333, 177)
+        for fit in T.THUMB_FITS:
+            self.assertEqual(T.png_to_thumb_lif(data, fit), T.png_to_thumb_lif(data, fit))
+
+    def test_option_invalide_refusee(self):
+        with self.assertRaises(ValueError):
+            T.png_to_thumb_lif(banded_png(10, 10), "etirer")
+        with self.assertRaises(T.ConvError) as cm:
+            T.convert("absent.zip", thumb_fit="etirer")
+        self.assertEqual(cm.exception.exit_code, T.EXIT_USAGE)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as se:
+            T.main(["in.zip", "--thumb-fit", "etirer"])
+        self.assertNotEqual(se.exception.code, 0)
+
+    def test_cli_transmet_le_mode(self):
+        calls = []
+        orig = T.convert
+        T.convert = lambda *a, **k: calls.append(k)
+        try:
+            self.assertEqual(T.main(["in.zip", "--thumb-fit", "rogner"]), T.EXIT_OK)
+            self.assertEqual(T.main(["in.zip"]), T.EXIT_OK)
+        finally:
+            T.convert = orig
+        self.assertEqual([c["thumb_fit"] for c in calls], ["rogner", "flou"])
+
+
+SIZES_ALL = TestThumbFit.SIZES
+
 
 if __name__ == "__main__":
     unittest.main()
