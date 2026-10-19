@@ -2,6 +2,7 @@
 //! Clés inventées (aucune vraie clé), faux appareil dans un dossier temporaire.
 
 use std::io::Write;
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 use super::*;
@@ -97,7 +98,12 @@ pub(crate) fn leak_forms(secret: &[u8]) -> Vec<String> {
 }
 
 pub(crate) fn assert_no_leak(text: &str, what: &str) {
-    for secret in [&test_bt()[..], &test_key_file()[..], &foreign_bt()[..]] {
+    for secret in [
+        &test_bt()[..],
+        &test_key_file()[..],
+        &foreign_bt()[..],
+        &foreign_key_file()[..],
+    ] {
         for form in leak_forms(secret) {
             assert!(!text.contains(&form), "clé visible dans {what} : {text}");
         }
@@ -173,7 +179,7 @@ fn histoires_officielles_utilisables() {
     );
     write(&root.join("str/pas-un-uuid/bt"), &test_bt());
 
-    let found = list_candidates(root);
+    let found = list_candidates(root, None);
     assert_eq!(
         found,
         vec![
@@ -181,22 +187,24 @@ fn histoires_officielles_utilisables() {
                 uuid: OFFICIAL.into(),
                 title: "Histoire officielle".into(),
                 hidden: false,
+                with_stored: false,
             },
             CarrierCandidate {
                 uuid: "aaaaaaaa-0000-0000-0000-000000000001".into(),
                 title: "Histoire officielle".into(),
                 hidden: true,
+                with_stored: false,
             },
         ]
     );
     assert_no_leak(&serde_json::to_string(&found).unwrap(), "IPC");
-    assert!(read_device_carrier(root, OFFICIAL).is_ok());
+    assert!(read_device_carrier(root, OFFICIAL, || None).is_ok());
     assert!(matches!(
-        read_device_carrier(root, OTHER),
+        read_device_carrier(root, OTHER, || None),
         Err(CarrierError::InvalidSource(_))
     ));
     assert!(matches!(
-        read_device_carrier(root, "../etc"),
+        read_device_carrier(root, "../etc", || None),
         Err(CarrierError::InvalidSource(_))
     ));
 }
@@ -208,24 +216,26 @@ fn coherence_avec_la_flam() {
     // L'histoire officielle n'a plus de bt : le couple fourni par fichier est reconnu.
     official_story(root, "str", OFFICIAL, false);
     assert_eq!(
-        check_against_device(root, &keys()).unwrap().as_str(),
+        check_against_device(root, &keys(), &no_cancel())
+            .unwrap()
+            .as_str(),
         OFFICIAL
     );
     // Autre compte : bt différent, ou key différent.
     let foreign = CarrierKeys::from_parts(&foreign_bt(), &test_key_file()).unwrap();
     assert!(matches!(
-        check_against_device(root, &foreign),
+        check_against_device(root, &foreign, &no_cancel()),
         Err(CarrierError::Mismatch)
     ));
     let other_key = CarrierKeys::from_parts(&test_bt(), &[9u8; 32]).unwrap();
     assert!(matches!(
-        check_against_device(root, &other_key),
+        check_against_device(root, &other_key, &no_cancel()),
         Err(CarrierError::Mismatch)
     ));
     // Flam vide.
     let empty = tempfile::tempdir().unwrap();
     assert!(matches!(
-        check_against_device(empty.path(), &keys()),
+        check_against_device(empty.path(), &keys(), &no_cancel()),
         Err(CarrierError::Mismatch)
     ));
     assert_no_leak(&CarrierError::Mismatch.to_string(), "erreur");
@@ -492,4 +502,502 @@ fn etat_sans_cle_et_sans_lecture_avant_consentement() {
         assert_no_leak(&serde_json::to_string(&after).unwrap(), "IPC");
     });
     assert_no_leak(&logs, "journaux");
+}
+
+// --- Saisie du bt (#271) ----------------------------------------------------------------------
+
+pub(crate) fn no_cancel() -> AtomicBool {
+    AtomicBool::new(false)
+}
+
+/// `bt` en hexadécimal, tel qu'un utilisateur le saisirait.
+pub(crate) fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `key` inventé d'un autre compte.
+pub(crate) fn foreign_key_file() -> [u8; 32] {
+    std::array::from_fn(|i| 0x21 ^ (i as u8).wrapping_mul(3))
+}
+
+/// `.mdf` de la disposition observée sur une Flam 1.x : en-tête `01 00`, version nue sans
+/// « main: » complétée d'octets nuls, numéro de série inventé.
+pub(crate) fn real_mdf() -> Vec<u8> {
+    let mut mdf = vec![1u8, 0];
+    let mut text = b"1.15.14-0a1b2c3d".to_vec();
+    text.resize(48, 0);
+    mdf.extend(text);
+    let mut serial = b"00fedcba987654".to_vec();
+    serial.resize(24, 0);
+    mdf.extend(serial);
+    mdf.resize(crate::device::crypto::MDF_LEN, 0);
+    mdf
+}
+
+/// Histoire officielle comme sur une Flam 1.x réelle : `info`, `key`, `main.lsf`, `version`,
+/// **sans** `bt`. `info` et `main.lsf` sont chiffrés avec `bt`.
+pub(crate) fn real_story(
+    root: &Path,
+    sub: &str,
+    uuid: &str,
+    bt: &[u8; 32],
+    key: &[u8; 32],
+    title: &str,
+) {
+    let dir = root.join(sub).join(uuid);
+    let plain = format!("{title}\nSous-titre\n000000\n{title}\n");
+    write(&dir.join(INFO_FILE), &encrypted_info(bt, plain.as_bytes()));
+    write(&dir.join(KEY_FILE), key);
+    write(
+        &dir.join("main.lsf"),
+        &encrypted_info(bt, b"function setup() end"),
+    );
+    write(&dir.join("version"), b"1");
+}
+
+/// Flam 1.x réelle (aucun `bt`) : une histoire d'un autre compte, deux du compte.
+pub(crate) fn real_device(root: &Path) {
+    write(&root.join(".mdf"), &real_mdf());
+    real_story(
+        root,
+        "str",
+        "22222222-0000-0000-0000-000000000002",
+        &foreign_bt(),
+        &foreign_key_file(),
+        "Autre compte",
+    );
+    real_story(
+        root,
+        "str",
+        OFFICIAL,
+        &test_bt(),
+        &test_key_file(),
+        "Histoire du compte",
+    );
+    real_story(
+        root,
+        "str",
+        OTHER,
+        &test_bt(),
+        &test_key_file(),
+        "Deuxième histoire",
+    );
+}
+
+/// Contenu complet d'une arborescence (chemins relatifs et octets).
+pub(crate) fn tree(root: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            let rel = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if path.is_dir() {
+                out.insert(format!("{rel}/"), Vec::new());
+                stack.push(path);
+            } else {
+                out.insert(rel, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    out
+}
+
+fn consent() -> CarrierConsent {
+    CarrierConsent {
+        text_version: WARNING_VERSION,
+        accepted_at: "2026-10-17T10:00:00Z".into(),
+    }
+}
+
+fn unknown_bt() -> [u8; 32] {
+    std::array::from_fn(|i| 0x99 ^ i as u8)
+}
+
+#[test]
+fn saisie_hexadecimale_toleree_et_validee() {
+    let bt = test_bt();
+    let hex = hex_of(&bt);
+    // Espaces, retours à la ligne, majuscules : tolérés.
+    let spaced = hex
+        .to_uppercase()
+        .as_bytes()
+        .chunks(8)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect::<Vec<_>>()
+        .join(" \n\t");
+    for text in [hex.clone(), spaced, format!("  {hex}  ")] {
+        assert_eq!(&EnteredBt::new(text).parse().unwrap()[..], &bt[..]);
+    }
+    // Refus, sans reprendre le texte saisi.
+    let mut invalid = hex.clone();
+    invalid.replace_range(10..11, "g");
+    let cases = [
+        invalid,
+        hex[..62].to_string(),
+        format!("{hex}ab"),
+        format!("{hex}a"),
+        String::new(),
+        format!("0x{}", &hex[2..]),
+        "a".repeat(5000),
+    ];
+    for text in cases {
+        let err = EnteredBt::new(text.clone()).parse().unwrap_err();
+        assert!(matches!(err, CarrierError::InvalidSource(_)), "{err}");
+        let shown = err.to_string();
+        assert!(
+            shown.starts_with("source des clés invalide : clé saisie"),
+            "{shown}"
+        );
+        assert_no_leak(&shown, "erreur de saisie");
+        assert!(!shown.contains(&hex[..12]), "texte saisi repris");
+    }
+    // `Debug` masqué ; désérialisation depuis l'IPC.
+    let choice: CarrierChoice =
+        serde_json::from_str(&format!(r#"{{"kind":"entered","bt":"{hex}"}}"#)).unwrap();
+    assert_no_leak(&format!("{choice:?} {choice:#?}"), "Debug");
+    assert_eq!(
+        format!("{:?}", EnteredBt::new(hex.clone())),
+        "EnteredBt { <masqué> }"
+    );
+    assert_eq!(
+        choice,
+        CarrierChoice::Entered {
+            bt: EnteredBt::new(hex),
+            confirmed: false,
+        }
+    );
+}
+
+#[test]
+fn bt_saisi_associe_a_une_histoire_de_la_flam() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    real_device(root);
+    // Clé du compte : `key` de la première histoire dont elle déchiffre `info`.
+    let keys = find_by_bt(root, &test_bt(), &no_cancel()).unwrap();
+    assert_eq!(keys.key_file(), &test_key_file());
+    assert_eq!(&keys.story_key()[..], &test_bt()[..16]);
+    assert_eq!(&keys.story_iv()[..], &test_bt()[16..]);
+    // Autre compte : le `key` de son histoire.
+    let other = find_by_bt(root, &foreign_bt(), &no_cancel()).unwrap();
+    assert_eq!(other.key_file(), &foreign_key_file());
+    // Aucune histoire ne correspond.
+    let err = find_by_bt(root, &unknown_bt(), &no_cancel()).err().unwrap();
+    assert!(matches!(err, CarrierError::EnteredMismatch));
+    assert_eq!(
+        err.to_string(),
+        "cette clé ne correspond à aucune histoire officielle de cette Flam : rien n'a été écrit"
+    );
+    // Annulation : vérifiée avant chaque histoire.
+    assert!(matches!(
+        find_by_bt(root, &test_bt(), &AtomicBool::new(true)),
+        Err(CarrierError::Cancelled)
+    ));
+    // Flam vide.
+    let empty = tempfile::tempdir().unwrap();
+    assert!(matches!(
+        find_by_bt(empty.path(), &test_bt(), &no_cancel()),
+        Err(CarrierError::EnteredMismatch)
+    ));
+}
+
+#[test]
+fn bt_saisi_associe_a_une_histoire_masquee() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join(".mdf"), &real_mdf());
+    real_story(
+        root,
+        "str",
+        OTHER,
+        &foreign_bt(),
+        &foreign_key_file(),
+        "Autre compte",
+    );
+    real_story(
+        root,
+        "str.hidden",
+        OFFICIAL,
+        &test_bt(),
+        &test_key_file(),
+        "Masquée",
+    );
+    let keys = find_by_bt(root, &test_bt(), &no_cancel()).unwrap();
+    assert_eq!(keys.key_file(), &test_key_file());
+    assert_eq!(
+        check_against_device(root, &keys, &no_cancel())
+            .unwrap()
+            .as_str(),
+        OFFICIAL
+    );
+}
+
+#[test]
+fn resolution_d_un_bt_saisi() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("flam");
+    real_device(&root);
+    let keys_dir = tmp.path().join("cles");
+    let store = fake_store(&keys_dir);
+    let before = tree(&root);
+    let c = consent();
+    let mdf = real_mdf();
+    let run_with = |text: String, consent: Option<&CarrierConsent>, cancel: bool, confirmed| {
+        let request = CarrierRequest {
+            consent,
+            choice: CarrierChoice::Entered {
+                bt: EnteredBt::new(text),
+                confirmed,
+            },
+            remember: true,
+            store: &store,
+        };
+        resolve(&root, &mdf, &request, &AtomicBool::new(cancel))
+    };
+    let run = |text: String, consent: Option<&CarrierConsent>, cancel: bool| {
+        run_with(text, consent, cancel, true)
+    };
+    let good = hex_of(&test_bt()).to_uppercase();
+    let logs = capture_logs(|| {
+        // Sans consentement : refus avant toute lecture.
+        let err = run(good.clone(), None, false).err().unwrap();
+        assert!(matches!(err, CarrierError::ConsentRequired));
+        // Titre non confirmé : refus, rien n'est conservé.
+        let err = run_with(good.clone(), Some(&c), false, false)
+            .err()
+            .unwrap();
+        assert!(matches!(err, CarrierError::EnteredUnconfirmed));
+        // Saisie invalide, clé ne correspondant à rien, annulation : rien n'est conservé.
+        let err = run(good[..60].to_string(), Some(&c), false).err().unwrap();
+        assert!(matches!(err, CarrierError::InvalidSource(_)));
+        let err = run(hex_of(&unknown_bt()), Some(&c), false).err().unwrap();
+        assert!(matches!(err, CarrierError::EnteredMismatch));
+        assert_no_leak(&format!("{err} {err:?}"), "erreur");
+        let err = run(good.clone(), Some(&c), true).err().unwrap();
+        assert!(matches!(err, CarrierError::Cancelled));
+        assert!(!keys_dir.exists(), "rien conservé sur le PC");
+
+        // Clé du compte : couple complet, conservé (chiffré) pour cette Flam.
+        let resolved = run(good.clone(), Some(&c), false).unwrap();
+        assert!(resolved.stored);
+        assert_eq!(resolved.keys.key_file(), &test_key_file());
+        assert_no_leak(&format!("{resolved:?}"), "Debug");
+    });
+    assert_no_leak(&logs, "journaux");
+    assert_eq!(tree(&root), before, "Flam jamais modifiée");
+    let id = DeviceId::from_mdf(&mdf).unwrap();
+    let stored = store.load(&id).unwrap().unwrap();
+    assert_eq!(stored.key_file(), &test_key_file());
+    for name in tree(&keys_dir).keys() {
+        assert_no_leak(name, "nom de fichier");
+    }
+}
+
+#[test]
+fn histoires_sans_bt_proposees_avec_la_cle_conservee() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("flam");
+    real_device(&root);
+    real_story(
+        &root,
+        "str.hidden",
+        "aaaaaaaa-0000-0000-0000-000000000001",
+        &test_bt(),
+        &test_key_file(),
+        "Masquée",
+    );
+    // Sans clé conservée : aucune histoire (aucun `bt` sur la Flam).
+    assert!(list_candidates(&root, None).is_empty());
+    let stored = keys();
+    let found = list_candidates(&root, Some(&stored));
+    let summary: Vec<(&str, &str, bool, bool)> = found
+        .iter()
+        .map(|c| (c.uuid.as_str(), c.title.as_str(), c.hidden, c.with_stored))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (OTHER, "Deuxième histoire", false, true),
+            (OFFICIAL, "Histoire du compte", false, true),
+            (
+                "aaaaaaaa-0000-0000-0000-000000000001",
+                "Masquée",
+                true,
+                true
+            ),
+        ]
+    );
+    assert_no_leak(&serde_json::to_string(&found).unwrap(), "IPC");
+    // Choix d'une de ces histoires : `bt` conservé, `key` de l'histoire.
+    let k = read_device_carrier(&root, OFFICIAL, || Some(keys())).unwrap();
+    assert_eq!(k.key_file(), &test_key_file());
+    // Sans clé conservée, ou avec celle d'un autre compte : refusé.
+    assert!(matches!(
+        read_device_carrier(&root, OFFICIAL, || None),
+        Err(CarrierError::InvalidSource(_))
+    ));
+    let foreign = CarrierKeys::from_parts(&foreign_bt(), &foreign_key_file()).unwrap();
+    assert!(read_device_carrier(&root, OFFICIAL, || Some(foreign)).is_err());
+}
+
+#[test]
+fn etat_avec_cle_conservee_et_flam_sans_bt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("flam");
+    real_device(&root);
+    // Version préfixée « main: » : la lecture de la version nue relève de #269.
+    let mut mdf = real_mdf();
+    let mut text = b"main: 1.15.14-test\ncomm: x".to_vec();
+    text.resize(48, 0);
+    mdf[2..50].copy_from_slice(&text);
+    write(&root.join(".mdf"), &mdf);
+    let id = DeviceId::from_mdf(&mdf).unwrap();
+    let store = fake_store(&tmp.path().join("cles"));
+    let empty = carrier_state(&root, Some(consent()), &store).unwrap();
+    assert!(empty.carrier_needed && !empty.stored_keys);
+    assert!(empty.candidates.is_empty());
+    store.save(&id, &keys()).unwrap();
+    let logs = capture_logs(|| {
+        let state = carrier_state(&root, Some(consent()), &store).unwrap();
+        assert!(state.stored_keys);
+        assert_eq!(state.candidates.len(), 2);
+        assert!(state.candidates.iter().all(|c| c.with_stored));
+        assert_no_leak(&serde_json::to_string(&state).unwrap(), "IPC");
+    });
+    assert_no_leak(&logs, "journaux");
+    // Clés conservées illisibles : liste sans elles, sans échec.
+    std::fs::write(store.path(&id), b"abime").unwrap();
+    let state = carrier_state(&root, Some(consent()), &store).unwrap();
+    assert!(state.stored_keys && state.candidates.is_empty());
+}
+
+// --- IV faux (revue de #272) -------------------------------------------------------------------
+
+#[test]
+fn premier_bloc_strict() {
+    assert!(first_block_clean("Titre\nSuite"));
+    assert!(first_block_clean("Titre\r\nSuite"));
+    assert!(!first_block_clean("Ti\rtre\nSuite"));
+    assert!(!first_block_clean("Ti\ttre"));
+    assert!(!first_block_clean("Ti\u{1}tre"));
+    assert!(!first_block_clean("Ti\u{FFFD}tre"));
+    // Au-delà du premier bloc (16 octets), seul le contrôle général s'applique.
+    assert!(first_block_clean("0123456789abcdef\tsuite"));
+    let k = keys();
+    let mut tab = b"Histoi\tre officielle\nSous-titre\n".to_vec();
+    assert!(k.decrypt_info(&encrypted_info(&test_bt(), &tab)).is_none());
+    tab[6] = b'r';
+    assert!(k.decrypt_info(&encrypted_info(&test_bt(), &tab)).is_some());
+}
+
+/// Toutes les fautes d'un chiffre dans la saisie : aucune ne donne le bon titre. Une faute
+/// dans la clé AES donne du bruit (refus) ; une faute dans l'IV n'altère que le premier bloc,
+/// donc le début du titre : soit le contrôle strict refuse, soit le titre affiché à
+/// l'utilisateur pour confirmation est visiblement faux.
+#[test]
+fn faute_de_frappe_refusee_ou_titre_altere() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    real_device(root);
+    let good = hex_of(&test_bt());
+    let (mut key_rejected, mut iv_rejected, mut iv_altered) = (0, 0, 0);
+    for at in 0..good.len() {
+        for digit in "0123456789abcdef".chars() {
+            if good.as_bytes()[at] == digit as u8 {
+                continue;
+            }
+            let mut typo = good.clone();
+            typo.replace_range(at..at + 1, &digit.to_string());
+            let bt = EnteredBt::new(typo);
+            let result = preview_entered(root, Some(&consent()), &bt, &no_cancel());
+            match result {
+                Err(CarrierError::EnteredMismatch) if at < 32 => key_rejected += 1,
+                Err(CarrierError::EnteredMismatch) => iv_rejected += 1,
+                Ok(preview) => {
+                    assert!(at >= 32, "faute dans la clé AES acceptée ({at})");
+                    assert_ne!(preview.title, "Deuxième histoire", "faute invisible ({at})");
+                    assert_ne!(
+                        preview.title, "Histoire du compte",
+                        "faute invisible ({at})"
+                    );
+                    assert_no_leak(&serde_json::to_string(&preview).unwrap(), "IPC");
+                    iv_altered += 1;
+                }
+                Err(other) => panic!("{other}"),
+            }
+        }
+    }
+    assert_eq!(key_rejected, 32 * 15);
+    assert_eq!(iv_rejected + iv_altered, 32 * 15);
+    assert!(iv_rejected > 0, "contrôle strict sans effet");
+}
+
+#[test]
+fn previsualisation_d_un_bt_saisi() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("flam");
+    real_device(&root);
+    real_story(
+        &root,
+        "str.hidden",
+        "aaaaaaaa-0000-0000-0000-000000000001",
+        &unknown_bt(),
+        &test_key_file(),
+        "Masquée",
+    );
+    let before = tree(&root);
+    let entered = |bt: &[u8]| EnteredBt::new(hex_of(bt));
+    let logs = capture_logs(|| {
+        // Consentement exigé.
+        assert!(matches!(
+            preview_entered(&root, None, &entered(&test_bt()), &no_cancel()),
+            Err(CarrierError::ConsentRequired)
+        ));
+        let preview =
+            preview_entered(&root, Some(&consent()), &entered(&test_bt()), &no_cancel()).unwrap();
+        assert_eq!(
+            preview,
+            EnteredPreview {
+                uuid: OTHER.into(),
+                title: "Deuxième histoire".into(),
+                hidden: false,
+            }
+        );
+        let json = serde_json::to_string(&preview).unwrap();
+        assert_no_leak(&json, "IPC");
+        assert!(!json.to_lowercase().contains(&hex_of(&unknown_bt())[..16]));
+        let hidden = preview_entered(
+            &root,
+            Some(&consent()),
+            &entered(&unknown_bt()),
+            &no_cancel(),
+        )
+        .unwrap();
+        assert!(hidden.hidden);
+        assert_eq!(hidden.title, "Masquée");
+        let other: [u8; 32] = std::array::from_fn(|i| 0x42 ^ i as u8);
+        assert!(matches!(
+            preview_entered(&root, Some(&consent()), &entered(&other), &no_cancel()),
+            Err(CarrierError::EnteredMismatch)
+        ));
+        assert!(matches!(
+            preview_entered(
+                &root,
+                Some(&consent()),
+                &entered(&test_bt()),
+                &AtomicBool::new(true)
+            ),
+            Err(CarrierError::Cancelled)
+        ));
+    });
+    assert_no_leak(&logs, "journaux");
+    assert_eq!(tree(&root), before, "lecture seule");
 }
