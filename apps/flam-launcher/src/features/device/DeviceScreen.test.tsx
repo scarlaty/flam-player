@@ -9,6 +9,7 @@ import { ToastProvider } from "../../components";
 import { DeviceProvider } from "./DeviceProvider";
 import { DeviceScreen } from "./DeviceScreen";
 import { StrictMode } from "react";
+import { resetOfficialThumbnails } from "./storyDetails";
 import { POLL_INTERVAL_MS } from "./useDeviceStatus";
 
 tolerateLoadInAsyncUtils();
@@ -89,6 +90,11 @@ let deviceTitles: Record<string, string>;
 /** Vignettes renvoyées par `device_story_thumbnail` (absent : `null`). */
 let deviceThumbs: Record<string, string>;
 let titleRequests: string[][];
+/** Titres du catalogue officiel renvoyés par `device_official_titles` (absent : inconnu). */
+let officialTitles: Record<string, { title: string; has_image: boolean }>;
+/** Images renvoyées par `device_official_thumbnail` (absent : `null`). */
+let officialThumbs: Record<string, string>;
+let officialRequests: string[][];
 
 beforeEach(() => {
   status = absent;
@@ -98,6 +104,9 @@ beforeEach(() => {
   deviceTitles = {};
   deviceThumbs = {};
   titleRequests = [];
+  officialTitles = {};
+  officialThumbs = {};
+  officialRequests = [];
   mockIPC(
     (cmd, args) => {
       calls.push(cmd);
@@ -128,6 +137,19 @@ beforeEach(() => {
           const { uuid } = args as { uuid: string };
           return { thumb: deviceThumbs[uuid] ?? null, busy: false };
         }
+        case "device_official_titles": {
+          const { uuids } = args as { uuids: string[] };
+          officialRequests.push(uuids);
+          return {
+            titles: uuids.flatMap((uuid) =>
+              officialTitles[uuid] ? [{ uuid, ...officialTitles[uuid] }] : [],
+            ),
+          };
+        }
+        case "device_official_thumbnail": {
+          const { uuid } = args as { uuid: string };
+          return officialThumbs[uuid] ?? null;
+        }
         case "device_story_details_cancel":
           return null;
         default:
@@ -139,6 +161,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetOfficialThumbnails();
   clearMocks();
   vi.useRealTimers();
 });
@@ -505,6 +528,69 @@ it("interrompt le lot de titres en cours quand l'écran est quitté", async () =
   release?.();
 });
 
+it("titre : déchiffré, puis catalogue officiel, puis bibliothèque ; l'image du catalogue en repli", async () => {
+  status = detected();
+  deviceTitles = { [A]: "Déchiffré" };
+  deviceThumbs = { [C]: "data:image/png;base64,RkxBTQ==" };
+  officialTitles = {
+    [B]: { title: "Catalogue B", has_image: true },
+    [C]: { title: "Catalogue C", has_image: true },
+  };
+  officialThumbs = {
+    [B]: "data:image/png;base64,Q0FUQQ==",
+    [C]: "data:image/png;base64,Q0FUQw==",
+  };
+  stories = report([
+    story(A, { title: "Bibliothèque A", in_library: true }),
+    story(B, { title: "Bibliothèque B", in_library: true }),
+    story(C),
+    story("44444444-4444-4444-8444-444444444444", {
+      title: "Bibliothèque D",
+      in_library: true,
+    }),
+  ]);
+  renderScreen();
+  const list = await screen.findByRole("list", {
+    name: "Histoires installées sur la Flam",
+  });
+  const rows = within(list).getAllByRole("listitem");
+  await waitFor(() =>
+    expect(within(rows[1]!).getByText("Catalogue B")).toBeInTheDocument(),
+  );
+  expect(within(rows[0]!).getByText("Déchiffré")).toBeInTheDocument();
+  expect(within(rows[2]!).getByText("Catalogue C")).toBeInTheDocument();
+  // Hors catalogue : repli sur la bibliothèque.
+  expect(within(rows[3]!).getByText("Bibliothèque D")).toBeInTheDocument();
+  // Seules les histoires sans titre déchiffré sont demandées, en une fois.
+  expect(officialRequests).toEqual([[B, C, "44444444-4444-4444-8444-444444444444"]]);
+  // Image : celle de la Flam d'abord, celle du catalogue en repli.
+  await waitFor(() =>
+    expect(rows[1]!.querySelector("img")).toHaveAttribute(
+      "src",
+      "data:image/png;base64,Q0FUQQ==",
+    ),
+  );
+  await waitFor(() =>
+    expect(rows[2]!.querySelector("img")).toHaveAttribute(
+      "src",
+      "data:image/png;base64,RkxBTQ==",
+    ),
+  );
+  expect(rows[0]!.querySelector("img")).toBeNull();
+});
+
+it("n'interroge pas le catalogue officiel quand tous les titres sont connus", async () => {
+  status = detected();
+  deviceTitles = { [A]: "Un", [B]: "Deux" };
+  stories = report([story(A), story(B)]);
+  renderScreen();
+  expect(await screen.findByText("Deux")).toBeInTheDocument();
+  await waitFor(() => expect(count("device_story_titles")).toBe(1));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(count("device_official_titles")).toBe(0);
+  expect(count("device_official_thumbnail")).toBe(0);
+});
+
 it("charge les vignettes en StrictMode (double montage)", async () => {
   status = detected();
   deviceThumbs = { [A]: "data:image/png;base64,QUJD" };
@@ -533,6 +619,8 @@ it("ne modifie rien au simple affichage (lecture et reprise seulement)", async (
   await screen.findByText("Capi");
   await waitFor(() => expect(count("device_story_thumbnail")).toBe(1));
   await waitFor(() => expect(count("device_story_titles")).toBe(1));
+  // Titre non déchiffré : une demande (lecture seule) au catalogue officiel.
+  await waitFor(() => expect(count("device_official_titles")).toBe(1));
   expect(new Set(calls)).toEqual(
     new Set([
       "device_status",
@@ -540,6 +628,7 @@ it("ne modifie rien au simple affichage (lecture et reprise seulement)", async (
       "device_list_stories",
       "device_story_titles",
       "device_story_thumbnail",
+      "device_official_titles",
     ]),
   );
 });

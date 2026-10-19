@@ -4,6 +4,8 @@ import {
   cancelDeviceStoryDetails,
   getDeviceStoryThumbnail,
   getDeviceStoryTitles,
+  getOfficialStoryThumbnail,
+  getOfficialStoryTitles,
   type DeviceStoryThumbnail,
 } from "../../api/device";
 
@@ -85,6 +87,100 @@ export function useDeviceStoryTitles(
 }
 
 const EMPTY_TITLES: ReadonlyMap<string, string | null> = new Map();
+
+/** Titre du catalogue officiel d'une histoire dont le titre n'a pas pu être déchiffré. */
+export interface OfficialInfo {
+  title: string;
+  /** Le catalogue a une image : repli si la Flam n'a pas de vignette. */
+  hasImage: boolean;
+}
+
+const EMPTY_OFFICIAL: ReadonlyMap<string, OfficialInfo> = new Map();
+
+/**
+ * Titres du catalogue officiel en ligne, demandés **seulement** pour les histoires dont le titre
+ * a été définitivement refusé par le déchiffrement (`null` dans `deviceTitles`) : si tous les
+ * titres sont connus, rien n'est demandé et le réseau n'est pas utilisé. Chaque histoire n'est
+ * demandée qu'une fois ; l'affichage n'attend jamais cette réponse, et un échec n'est pas
+ * affiché (repli sur la bibliothèque, puis l'UUID court).
+ */
+export function useOfficialStoryTitles(
+  deviceTitles: ReadonlyMap<string, string | null>,
+): ReadonlyMap<string, OfficialInfo> {
+  const [official, setOfficial] =
+    useState<ReadonlyMap<string, OfficialInfo>>(EMPTY_OFFICIAL);
+  const asked = useRef(new Set<string>());
+  const unresolved = [...deviceTitles]
+    .filter(([, title]) => title === null)
+    .map(([uuid]) => uuid)
+    .sort()
+    .join(" ");
+
+  useEffect(() => {
+    const known = asked.current;
+    const fresh = unresolved.split(" ").filter((u) => u && !known.has(u));
+    if (fresh.length === 0) return;
+    for (const uuid of fresh) known.add(uuid);
+    let active = true;
+    let settled = false;
+    void getOfficialStoryTitles(fresh)
+      .then((reply) => {
+        settled = true;
+        if (!active || reply.titles.length === 0) return;
+        setOfficial((previous) => {
+          const next = new Map(previous);
+          for (const { uuid, title, has_image } of reply.titles)
+            next.set(uuid, { title, hasImage: has_image });
+          return next;
+        });
+      })
+      .catch(() => {
+        settled = true;
+      });
+    return () => {
+      active = false;
+      // Démontage (ou nouvelle liste) avant la réponse : ces histoires seront redemandées.
+      if (!settled) for (const uuid of fresh) known.delete(uuid);
+    };
+  }, [unresolved]);
+
+  return official;
+}
+
+/** Images du catalogue déjà demandées (une seule demande par histoire et par session). */
+const officialThumbs = new Map<string, Promise<string | null>>();
+
+/** Vide la mémoire des images du catalogue (tests). */
+export function resetOfficialThumbnails(): void {
+  officialThumbs.clear();
+}
+
+/**
+ * Image du catalogue officiel de l'histoire `uuid`, demandée seulement si `enabled` (la Flam n'a
+ * pas de vignette et le catalogue a une image). `undefined` tant qu'elle n'est pas là.
+ */
+export function useOfficialThumbnail(uuid: string, enabled: boolean): string | undefined {
+  const [thumb, setThumb] = useState<{ uuid: string; url: string | null }>();
+  useEffect(() => {
+    if (!enabled) return;
+    let active = true;
+    let request = officialThumbs.get(uuid);
+    if (!request) {
+      request = getOfficialStoryThumbnail(uuid).then(
+        (url) => (url?.startsWith("data:image/") ? url : null),
+        () => null,
+      );
+      officialThumbs.set(uuid, request);
+    }
+    void request.then((url) => {
+      if (active) setThumb({ uuid, url });
+    });
+    return () => {
+      active = false;
+    };
+  }, [uuid, enabled]);
+  return enabled && thumb?.uuid === uuid ? (thumb.url ?? undefined) : undefined;
+}
 
 type Fetcher = (root: string, uuid: string) => Promise<DeviceStoryThumbnail>;
 
@@ -184,13 +280,14 @@ export class ThumbnailLoader {
 
 /**
  * Vignette de l'histoire `uuid`, demandée quand sa ligne `ref` approche de la zone visible
- * (aussitôt si `IntersectionObserver` manque).
+ * (aussitôt si `IntersectionObserver` manque). `undefined` : pas encore lue ; `null` : la Flam
+ * n'en a pas (ou elle est illisible).
  */
 export function useDeviceThumbnail(
   loader: ThumbnailLoader | null,
   uuid: string,
   ref: RefObject<Element | null>,
-): string | undefined {
+): string | null | undefined {
   const [thumb, setThumb] = useState<{
     loader: ThumbnailLoader;
     uuid: string;
@@ -227,8 +324,6 @@ export function useDeviceThumbnail(
       observer.disconnect();
     };
   }, [loader, uuid, ref]);
-  if (known !== undefined) return known ?? undefined;
-  return thumb?.uuid === uuid && thumb.loader === loader
-    ? (thumb.url ?? undefined)
-    : undefined;
+  if (known !== undefined) return known;
+  return thumb?.uuid === uuid && thumb.loader === loader ? thumb.url : undefined;
 }

@@ -14,6 +14,7 @@ pub mod detect;
 pub mod eject;
 pub mod index;
 pub mod lock;
+pub mod official;
 pub mod prepare;
 pub mod remove;
 pub mod reorder;
