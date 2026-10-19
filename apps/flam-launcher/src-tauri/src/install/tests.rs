@@ -130,6 +130,7 @@ impl Ctx {
                 converter: Some(script.clone()),
                 ffmpeg: None,
                 max_downloads: 2,
+                thumb_fit: crate::settings::ThumbFit::default(),
             })
         });
         let service = InstallService::new(InstallOptions {
@@ -908,6 +909,7 @@ async fn installation_reelle() {
                 converter: Some(script.clone()),
                 ffmpeg: None,
                 max_downloads: 2,
+                thumb_fit: crate::settings::ThumbFit::default(),
             })
         }),
         events: events.clone(),

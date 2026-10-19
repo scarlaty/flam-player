@@ -26,13 +26,13 @@ for x in range(10*k, W*k-6*k, 8*k):
     d.line([(x,5*k),(x-2*k,H*k-2*k)], fill=(120,70,30,255), width=k)
 d.rounded_rectangle((0,0,W*k-1,6*k), radius=3*k, fill=(140,80,35,255))
 im.resize((W,H),Image.LANCZOS).save(out+"/img/basket.png")
-# vignette 128x96
-t = Image.new("RGBA",(128,96),(20,24,70,255)); d=ImageDraw.Draw(t)
-for (x,y) in [(10,10),(110,20),(60,8),(30,50),(100,60),(118,85),(5,80)]:
+# vignette 104x136 (portrait, format des vignettes officielles)
+t = Image.new("RGBA",(104,136),(20,24,70,255)); d=ImageDraw.Draw(t)
+for (x,y) in [(10,10),(90,18),(52,8),(24,60),(84,70),(96,112),(6,104),(60,52),(12,126)]:
     d.point((x,y), fill=(255,255,255,255))
-for (s,x,y) in [(40,14,10),(28,74,6),(22,96,40)]:
+for (s,x,y) in [(40,10,14),(28,60,40),(22,18,74)]:
     st = star(s); t.alpha_composite(st,(x,y))
 b = Image.open(out+"/img/basket.png").resize((72,30),Image.LANCZOS)
-t.alpha_composite(b,(28,62))
+t.alpha_composite(b,(16,100))
 t.save(out+"/img/thumbnail.png")
 print("ok")

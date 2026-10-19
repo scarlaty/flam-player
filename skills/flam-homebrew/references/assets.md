@@ -7,12 +7,14 @@ les tailles conseillées et comment générer les fichiers sans le script.
 
 Déposer des **PNG** (RGBA ou non) dans `<projet>/img/` ; le build écrit
 `img/<nom>.lif` (sous-dossiers conservés). Un `.lif` déjà prêt est copié tel quel.
-`img/thumbnail.png` devient la vignette de bibliothèque `img/thumbnail.lif` (128×96).
+`img/thumbnail.png` devient la vignette de bibliothèque `img/thumbnail.lif` (**104×136**, portrait, comme les histoires officielles).
 
 Tailles conseillées :
 - décor plein écran : **320×212** exactement (la zone sous le bandeau) ;
 - sprites : petits (≤ 64 px), paysage ou carrés ;
-- vignette : n'importe quel PNG, réduit et centré en 128×96.
+- vignette : dessiner en **104×136** (portrait). Un autre PNG est ajusté : option
+  `flam_build.py --thumb-fit` `flou` (défaut : image entière centrée, fond = la même image
+  agrandie et floutée), `rogner` (cover centré) ou `bandes` (bandes transparentes).
 
 Limites : ≤ 2047 px par côté (réduit sinon) ; une image plus haute que large et de
 plus de 64 px est posée sur un canevas carré transparent (sinon le décodeur la

@@ -351,6 +351,7 @@ async fn scenario() {
         ffmpeg: None,
         converter: Some(tools.converter.clone()),
         max_downloads: 2,
+        thumb_fit: Default::default(),
     };
     let resolver: Resolver = Arc::new(move || Ok(toolchain.clone()));
     let installer = InstallService::new(InstallOptions {
