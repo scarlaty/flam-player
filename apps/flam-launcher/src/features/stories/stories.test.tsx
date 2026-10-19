@@ -638,12 +638,13 @@ it("info-bulle « Mise à jour disponible » : badge et bouton, avec texte acces
   catalogEntries = [ours({ version: 2 })];
   await renderApp();
   const help =
-    "Le fichier de cette histoire a changé dans sa source depuis l'installation. « Mettre à jour » recopie la nouvelle version dans la bibliothèque ; renvoyez-la ensuite sur la Flam.";
+    "Le fichier de cette histoire a changé dans sa source depuis l'installation. « Mettre à jour » recopie la nouvelle version dans la bibliothèque ; le cas échéant, renvoyez-la ensuite sur la Flam.";
   const cardBadge = screen.getAllByText("Mise à jour disponible")[0]!;
-  expect(cardBadge.closest(".fl-badge")).toHaveAttribute("title", help);
+  expect(cardBadge).toHaveAttribute("tabindex", "0");
+  expect(cardBadge).toHaveAccessibleDescription(help);
   const dialog = await openFiche();
-  const badge = within(dialog).getByText("Mise à jour disponible").closest(".fl-badge");
-  expect(badge).toHaveAttribute("title", help);
+  const badge = within(dialog).getByText("Mise à jour disponible");
+  expect(badge).toHaveAttribute("tabindex", "0");
   expect(badge).toHaveAccessibleDescription(help);
   const update = within(dialog).getByRole("button", { name: "Mettre à jour" });
   expect(update).toHaveAttribute("title", help);

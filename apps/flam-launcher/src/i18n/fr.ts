@@ -350,7 +350,7 @@ export const fr = {
       update: "Mettre à jour",
       /** Info-bulle et texte accessible du badge « Mise à jour disponible » et du bouton. */
       updateHelp:
-        "Le fichier de cette histoire a changé dans sa source depuis l'installation. « Mettre à jour » recopie la nouvelle version dans la bibliothèque ; renvoyez-la ensuite sur la Flam.",
+        "Le fichier de cette histoire a changé dans sa source depuis l'installation. « Mettre à jour » recopie la nouvelle version dans la bibliothèque ; le cas échéant, renvoyez-la ensuite sur la Flam.",
       remove: "Supprimer",
       cancel: "Annuler",
       /** Libellé accessible des actions rapides d'une carte. */
