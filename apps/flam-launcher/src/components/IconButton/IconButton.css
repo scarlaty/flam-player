@@ -54,7 +54,8 @@
   background: var(--color-primary-hover);
 }
 
-.fl-icon-button:disabled {
+.fl-icon-button:disabled,
+.fl-icon-button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.55;
 }

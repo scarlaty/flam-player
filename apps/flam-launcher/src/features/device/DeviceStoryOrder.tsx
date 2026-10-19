@@ -166,7 +166,8 @@ export function DeviceStoryOrder({
         focusInside.current = true;
       }}
       onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) focusInside.current = false;
+        if (!event.currentTarget.contains(event.relatedTarget))
+          focusInside.current = false;
       }}
     >
       <h3
@@ -206,7 +207,9 @@ export function DeviceStoryOrder({
               onKeyDown={(event) => {
                 // Début / Fin sur la ligne d'un bouton de déplacement : un futur champ de texte
                 // garde ces touches.
-                if (!(event.target instanceof HTMLElement && event.target.closest("button")))
+                if (!(
+                  event.target instanceof HTMLElement && event.target.closest("button")
+                ))
                   return;
                 if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
                   return;

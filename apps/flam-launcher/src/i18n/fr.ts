@@ -352,6 +352,8 @@ export const fr = {
       updateHelp:
         "Le fichier de cette histoire a changé dans sa source depuis l'installation. « Mettre à jour » recopie la nouvelle version dans la bibliothèque ; le cas échéant, renvoyez-la ensuite sur la Flam.",
       remove: "Supprimer",
+      removing: "Suppression en cours.",
+      removePlaying: "Suppression impossible : cette histoire est en cours de lecture.",
       cancel: "Annuler",
       /** Libellé accessible des actions rapides d'une carte. */
       forStory: (action: string, title: string) => `${action} « ${title} »`,
@@ -504,6 +506,7 @@ export const fr = {
       firmware: "Firmware de la Flam non pris en charge",
       queued: "Dans la file d'envoi",
       checking: "Lecture de la Flam…",
+      removing: "Retrait en cours sur la Flam",
     },
     experimental: {
       title: "Fonction expérimentale, non officielle",
@@ -625,6 +628,7 @@ export const fr = {
       failed: (message: string) => `Impossible de retirer l'histoire : ${message}`,
       busy: "Retrait indisponible pendant un envoi.",
       working: "Retrait…",
+      workingNamed: (title: string) => `Retrait de « ${title} » en cours…`,
       otherWorking: "Un retrait est déjà en cours.",
       ejecting: "Retrait indisponible pendant une éjection.",
     },

@@ -1474,9 +1474,64 @@ describe("suppression depuis la liste", () => {
     fireEvent.click(screen.getByRole("button", { name: "Jouer « Les trois ours »" }));
     await waitFor(() => expect(callsOf("player_launch")).toHaveLength(1));
     await send("player://started", session());
-    expect(
-      screen.getByRole("button", { name: "Supprimer « Les trois ours »" }),
-    ).toBeDisabled();
+    const remove = screen.getByRole("button", { name: "Supprimer « Les trois ours »" });
+    // aria-disabled (le bouton reste focalisable) avec sa raison, et le clic ne fait rien.
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(remove).toHaveAccessibleDescription(
+      "Suppression impossible : cette histoire est en cours de lecture.",
+    );
+    fireEvent.click(remove);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("échec de la suppression : message d'erreur, le bouton reste utilisable", async () => {
+    installed = [installedEntry(ours())];
+    failures.library_remove = { kind: "io", message: "disque illisible" };
+    window.location.hash = "#/library/library";
+    await renderApp();
+    const remove = screen.getByRole("button", { name: "Supprimer « Les trois ours »" });
+    remove.focus();
+    fireEvent.click(remove);
+    const confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+    expect(await screen.findByText("disque illisible")).toBeVisible();
+    await waitFor(() => expect(remove).not.toHaveAttribute("aria-disabled"));
+    expect(screen.getByRole("button", { name: "Supprimer « Les trois ours »" })).toBe(
+      remove,
+    );
+    expect(remove).toHaveFocus();
+    expect(screen.queryByRole("button", { name: /Installer|Télécharger/ })).toBeNull();
+  });
+
+  it("Échap ferme la confirmation sans rien supprimer", async () => {
+    installed = [installedEntry(ours())];
+    window.location.hash = "#/library/library";
+    await renderApp();
+    const remove = screen.getByRole("button", { name: "Supprimer « Les trois ours »" });
+    remove.focus();
+    fireEvent.click(remove);
+    await screen.findByRole("alertdialog");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(callsOf("library_remove")).toHaveLength(0);
+    expect(remove).toHaveFocus();
+  });
+
+  it("après une suppression réussie, le focus passe au bouton de réinstallation", async () => {
+    installed = [installedEntry(ours())];
+    catalogEntries = [ours()];
+    window.location.hash = "#/library/store";
+    await renderApp();
+    const remove = screen.getByRole("button", { name: "Supprimer « Les trois ours »" });
+    remove.focus();
+    fireEvent.click(remove);
+    const confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+    await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
+    const again = await screen.findByRole("button", {
+      name: /^(Télécharger|Installer) « Les trois ours »$/,
+    });
+    await waitFor(() => expect(again).toHaveFocus());
   });
 
   it("ne propose pas Supprimer sur une entrée non installée (source dossier)", async () => {

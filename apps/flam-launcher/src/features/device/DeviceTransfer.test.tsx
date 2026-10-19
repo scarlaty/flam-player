@@ -748,6 +748,20 @@ it("montre le retrait en cours : bouton « Retrait… », ligne grisée, doubles
   fireEvent.click(other);
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   expect(count("device_remove_story")).toBe(1);
+  // La raison « autre retrait » n'est pas répétée à l'écran : lue seulement par l'accessibilité.
+  expect(screen.queryByText("Un retrait est déjà en cours.")).toHaveClass(
+    "fl-visually-hidden",
+  );
+  // Le retrait en cours est annoncé, et l'envoi attend sa fin.
+  expect(
+    screen
+      .getAllByRole("status")
+      .some((s) => s.textContent === "Retrait de « Déjà là » en cours…"),
+  ).toBe(true);
+  expect(sendButton("Les trois ours")).toHaveAttribute("aria-disabled", "true");
+  expect(sendButton("Les trois ours")).toHaveAccessibleDescription(
+    "Retrait en cours sur la Flam",
+  );
 
   await act(async () => release());
   expect(await screen.findByText("« Déjà là » retirée de la Flam.")).toBeInTheDocument();
@@ -889,6 +903,18 @@ it("affiche le message de repli quand l'éjection logicielle échoue", async () 
   await ready();
   fireEvent.click(screen.getByRole("button", { name: "Éjecter la Flam" }));
   expect(await screen.findByText(/éjectez-la depuis l'Explorateur/)).toBeInTheDocument();
+});
+
+it("rend « Retirer » après une éjection refusée", async () => {
+  ejectOutcome = { kind: "validation", message: "la Flam est occupée" };
+  render(<Harness />);
+  await ready();
+  fireEvent.click(screen.getByRole("button", { name: "Éjecter la Flam" }));
+  await screen.findByText("Impossible d'éjecter la Flam : la Flam est occupée");
+  const remove = screen.getByRole("button", { name: "Retirer « Déjà là »" });
+  expect(remove).not.toHaveAttribute("aria-disabled");
+  fireEvent.click(remove);
+  expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
 });
 
 it("signale un refus d'éjecter", async () => {
