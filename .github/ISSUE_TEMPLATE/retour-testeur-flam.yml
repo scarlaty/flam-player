@@ -1,0 +1,85 @@
+name: Retour testeur Flam
+description: >-
+  Retour de test du launcher sur une Flam (pré-version, firmware 2.x surtout) : réussite comprise.
+title: "[Retour testeur] "
+labels: ["retour-testeur"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Merci de tester ! Suivez le [guide testeur](https://github.com/scarlaty/flam-player/blob/main/apps/flam-launcher/docs/guide-testeur.md).
+        Un « tout est OK » est aussi précieux qu'un problème.
+
+        **Ne publiez jamais** de clé, de fichier `.mdf`, de numéro de série ni de contenu d'histoire officielle.
+        Le diagnostic copié depuis le launcher n'en contient pas.
+  - type: checkboxes
+    id: sauvegarde
+    attributes:
+      label: Sauvegarde
+      options:
+        - label: J'ai sauvegardé ma Flam (copie complète sur le PC) avant de tester.
+          required: true
+  - type: input
+    id: modele
+    attributes:
+      label: Modèle de la Flam
+      description: Modèle ou génération de la Flam, si vous le connaissez.
+      placeholder: "Flam (première génération)"
+    validations:
+      required: false
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware de la Flam
+      description: Recopiez la ligne « Firmware » de la carte « Flam détectée » dans « Ma Flam ».
+      placeholder: "2.4.2 — en test, sauvegarde confirmée"
+    validations:
+      required: true
+  - type: input
+    id: launcher
+    attributes:
+      label: Version du launcher
+      description: Écran « Paramètres », rubrique « À propos » (elle figure aussi en tête du diagnostic).
+      placeholder: "0.1.0-beta.1"
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Ce que vous avez fait
+      description: Numéro du test du guide (section 3) et étapes suivies.
+      placeholder: |
+        Test 4 : envoi d'une seule petite histoire, éjection, redémarrage de la Flam.
+    validations:
+      required: true
+  - type: textarea
+    id: attendu
+    attributes:
+      label: Résultat attendu
+    validations:
+      required: true
+  - type: textarea
+    id: obtenu
+    attributes:
+      label: Résultat obtenu
+      description: Ce que vous avez vu, messages affichés à l'écran compris.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: Diagnostic
+      description: >-
+        Dans « Ma Flam », cliquez sur « Copier le diagnostic » (rubrique « Retour de test »), puis
+        collez ici le texte tel quel. Il est disponible même sans Flam détectée ou quand l'écriture
+        est bloquée.
+      render: markdown
+    validations:
+      required: true
+  - type: checkboxes
+    id: confidentialite
+    attributes:
+      label: Confidentialité
+      options:
+        - label: Je n'ai collé aucune clé ni numéro de série (ni fichier `.mdf`, ni contenu d'histoire officielle).
+          required: true
