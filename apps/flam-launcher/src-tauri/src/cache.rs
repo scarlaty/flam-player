@@ -21,12 +21,14 @@ use crate::storage::ConfigState;
 use crate::AppResult;
 
 /// Sous-dossiers du cache créés par l'application (et eux seuls) : archives téléchargées, catalogues mis en cache,
-/// histoires converties, copies de travail des histoires lancées (`play`), vignettes.
+/// histoires converties, catalogue officiel en ligne (`official`), copies de travail des
+/// histoires lancées (`play`), vignettes.
 pub const APP_CACHE_SUBDIRS: &[&str] = &[
     "archives",
     "catalogs",
     "compat-local",
     "library",
+    "official",
     "play",
     "thumbs",
 ];
@@ -268,6 +270,7 @@ mod tests {
                 "catalogs",
                 "compat-local",
                 "library",
+                "official",
                 "play",
                 "thumbs"
             ]
