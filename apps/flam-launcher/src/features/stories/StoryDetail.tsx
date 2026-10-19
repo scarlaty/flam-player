@@ -104,6 +104,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   uuid={installed.uuid}
                   title={entry.title}
                   size={installed.size}
+                  stale={stories.sourceChanged(installed.uuid)}
                 />
                 {stories.updateAvailable(entry) && (
                   <Button icon="refresh" onClick={() => stories.install(entry)}>

@@ -2,7 +2,7 @@ import { useId, useMemo } from "react";
 import { Button, type ButtonVariant } from "../../components";
 import { t } from "../../i18n";
 import { useDevice } from "./DeviceContext";
-import { sendBlock, type SendBlock } from "./sendRules";
+import { replaceBlock, sendBlock, type SendBlock, type SendContext } from "./sendRules";
 import "./SendToDeviceButton.css";
 
 const text = t.deviceTransfer;
@@ -22,10 +22,15 @@ export interface SendToDeviceButtonProps {
   /** Taille du `.plain.pk` en octets (`null` : inconnue). */
   size: number | null;
   variant?: ButtonVariant;
+  /**
+   * La copie de bibliothèque est plus ancienne que sa source dossier (#288) : signalé à côté du
+   * bouton, sans bloquer l'envoi.
+   */
+  stale?: boolean;
 }
 
-/** Raison de blocage de l'envoi de `uuid` d'après l'état de la Flam et de la file. */
-export function useSendBlock(uuid: string, size: number | null): SendBlock | null {
+/** État de la Flam et de la file, pour les règles d'envoi. */
+function useSendContext(): SendContext {
   const { device, stories, firmwareBlocked, queue } = useDevice();
   const report = stories.phase === "ready" ? stories.report : null;
   const queuedOrSent = useMemo(
@@ -37,26 +42,39 @@ export function useSendBlock(uuid: string, size: number | null): SendBlock | nul
       ),
     [queue],
   );
-  return sendBlock(
-    { device, deviceStories: report, firmwareBlocked, queuedOrSent },
-    uuid,
-    size,
-  );
+  return { device, deviceStories: report, firmwareBlocked, queuedOrSent };
+}
+
+/** Raison de blocage de l'envoi de `uuid` d'après l'état de la Flam et de la file. */
+export function useSendBlock(uuid: string, size: number | null): SendBlock | null {
+  return sendBlock(useSendContext(), uuid, size);
+}
+
+/** Identifiants non vides séparés par des espaces (`aria-describedby`), `undefined` sinon. */
+function describedBy(...ids: (string | false)[]): string | undefined {
+  return ids.filter((id): id is string => id !== false).join(" ") || undefined;
 }
 
 /**
  * « Envoyer sur la Flam ». Quand l'envoi est impossible, le bouton reste focalisable
  * (`aria-disabled`), ne fait rien et sa raison est écrite à côté, reliée par `aria-describedby`.
+ * Une histoire déjà sur la Flam (non masquée) peut y être **remplacée** (« Remplacer sur la
+ * Flam », même à version égale : après une mise à jour depuis la source, #288).
  */
 export function SendToDeviceButton({
   uuid,
   title,
   size,
   variant = "secondary",
+  stale = false,
 }: SendToDeviceButtonProps) {
   const { requestSend } = useDevice();
-  const block = useSendBlock(uuid, size);
+  const context = useSendContext();
+  const block = sendBlock(context, uuid, size);
+  const replace = block === "present" ? replaceBlock(context, uuid, size) : "absent";
   const reasonId = useId();
+  const staleId = useId();
+  const replaceReasonId = useId();
   return (
     <span className="fl-send">
       <Button
@@ -65,7 +83,7 @@ export function SendToDeviceButton({
         icon="device"
         className="fl-send__button"
         aria-disabled={block !== null}
-        aria-describedby={block ? reasonId : undefined}
+        aria-describedby={describedBy(block !== null && reasonId, stale && staleId)}
         aria-label={text.forStory(text.send, title)}
         onClick={() => {
           if (block === null) requestSend({ uuid, title, size });
@@ -76,6 +94,37 @@ export function SendToDeviceButton({
       {block && (
         <span id={reasonId} className="fl-send__reason">
           {REASON_TEXT[block]}
+        </span>
+      )}
+      {replace !== "absent" && (
+        <>
+          <Button
+            size="sm"
+            variant={variant}
+            icon="refresh"
+            className="fl-send__button"
+            aria-disabled={replace !== null}
+            aria-describedby={describedBy(
+              replace !== null && replaceReasonId,
+              stale && staleId,
+            )}
+            aria-label={text.forStory(text.replace, title)}
+            onClick={() => {
+              if (replace === null) requestSend({ uuid, title, size, replace: true });
+            }}
+          >
+            {text.replace}
+          </Button>
+          {replace && (
+            <span id={replaceReasonId} className="fl-send__reason">
+              {REASON_TEXT[replace]}
+            </span>
+          )}
+        </>
+      )}
+      {stale && (
+        <span id={staleId} className="fl-send__reason">
+          {text.staleCopy}
         </span>
       )}
     </span>

@@ -22,12 +22,16 @@ export interface QueueItem {
   error?: string;
   /** Flam 1.x : clés carrier choisies pour cet envoi. */
   carrier?: CarrierSend;
+  /** Remplace l'histoire déjà sur la Flam. */
+  replace?: boolean;
 }
 
 export interface SendRequest {
   uuid: string;
   title: string;
   size: number | null;
+  /** Remplace l'histoire déjà sur la Flam (« Remplacer sur la Flam »). */
+  replace?: boolean;
 }
 
 export type StoriesState =
