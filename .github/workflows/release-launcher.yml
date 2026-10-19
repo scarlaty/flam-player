@@ -1,0 +1,351 @@
+name: release-launcher
+
+# Publication d'une PRÉ-VERSION du launcher (#319, épopée #316).
+#
+# Déclencheurs :
+#   - push d'une étiquette `launcher-v<version>` (ex. launcher-v0.1.0-beta.1) : publie ;
+#   - workflow_dispatch (depuis main) : rejoue la publication d'une étiquette EXISTANTE, ou, avec
+#     `dry_run` (vrai par défaut), construit tout depuis la branche choisie sans rien publier ;
+#   - pull_request, uniquement si ce fichier ou les notes de version changent : répétition générale
+#     (build complet avec la version de l'étiquette d'exemple forcée), jamais de publication.
+#
+# Les releases `v0.x` du dépôt concernent le player : ce workflow n'y touche pas (il ne crée que des
+# releases `launcher-v*`, toujours en pré-version, jamais « Latest »).
+#
+# Procédure complète : apps/flam-launcher/README.md, section « Publier une pré-version ».
+# Les étapes de build reprennent celles de launcher.yml (même cache ffmpeg, mêmes actions épinglées) ;
+# les tests (lint, Vitest, cargo test, e2e, mise à jour N-1) ne sont pas rejoués : l'étiquette doit
+# être posée sur un commit de main dont la CI launcher est verte.
+on:
+  push:
+    tags:
+      - "launcher-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Étiquette launcher-v<version> (existante pour publier ; avec dry_run, la version attendue)"
+        required: true
+        type: string
+      dry_run:
+        description: "Construire sans publier (aucune release créée)"
+        required: true
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - ".github/workflows/release-launcher.yml"
+      - "apps/flam-launcher/release-notes/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Une publication par étiquette, jamais annulée en cours de route.
+  group: release-launcher-${{ github.event_name == 'pull_request' && github.ref || inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # Étiquette d'exemple de la répétition générale (PR).
+  REHEARSAL_TAG: launcher-v0.1.0-beta.1
+
+jobs:
+  # Contrôles rapides AVANT les ~40 min de build : étiquette, versions, notes, release absente.
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      publish: ${{ steps.v.outputs.publish }}
+      rehearsal: ${{ steps.v.outputs.rehearsal }}
+    steps:
+      # Étiquette (push) ou étiquette saisie (dispatch hors dry_run) ; sinon la branche d'appel.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Étiquette, versions, notes
+        id: v
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          publish=true
+          rehearsal=false
+          case "$EVENT" in
+            push) tag="$REF_NAME" ;;
+            workflow_dispatch)
+              tag="$INPUT_TAG"
+              if [ "$INPUT_DRY_RUN" = "true" ]; then publish=false; fi ;;
+            pull_request) tag="$REHEARSAL_TAG"; publish=false; rehearsal=true ;;
+            *) echo "::error::événement inattendu : $EVENT"; exit 1 ;;
+          esac
+
+          # Forme stricte (SemVer, suffixe de pré-version facultatif) : la suite construit des chemins
+          # et des commandes à partir de cette valeur.
+          re='^launcher-v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?)$'
+          if ! [[ "$tag" =~ $re ]]; then
+            echo "::error::étiquette « $tag » invalide : launcher-v<major>.<minor>.<patch>[-<pré-version>] attendu"
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          echo "Étiquette $tag, version $version (publication : $publish, répétition : $rehearsal)"
+
+          # Notes de version : un fichier du dépôt, obligatoire.
+          notes="apps/flam-launcher/release-notes/$version.md"
+          if [ ! -s "$notes" ]; then
+            echo "::error::notes de version absentes ou vides : $notes"
+            exit 1
+          fi
+
+          if [ "$rehearsal" = "false" ]; then
+            # Les fichiers de version doivent porter exactement la version de l'étiquette.
+            cd apps/flam-launcher
+            cargo_toml="$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{gsub(/.*=[[:space:]]*"|".*/,""); print; exit}' src-tauri/Cargo.toml)"
+            cargo_lock="$(awk '$0=="name = \"flam-launcher\""{getline; gsub(/.*"|".*/,""); print; exit}' ../../Cargo.lock)"
+            tauri_conf="$(node -p 'JSON.parse(require("fs").readFileSync("src-tauri/tauri.conf.json","utf8")).version')"
+            pkg_json="$(node -p 'JSON.parse(require("fs").readFileSync("package.json","utf8")).version')"
+            pkg_lock="$(node -p 'JSON.parse(require("fs").readFileSync("package-lock.json","utf8")).version')"
+            ko=0
+            for pair in "Cargo.toml=$cargo_toml" "Cargo.lock=$cargo_lock" "tauri.conf.json=$tauri_conf" "package.json=$pkg_json" "package-lock.json=$pkg_lock"; do
+              if [ "${pair#*=}" != "$version" ]; then
+                echo "::error::version de ${pair%%=*} : « ${pair#*=} », « $version » attendue (étiquette $tag)"
+                ko=1
+              fi
+            done
+            [ "$ko" = 0 ] || exit 1
+            cd ../..
+          fi
+
+          if [ "$publish" = "true" ]; then
+            # Les notes d'un brouillon ne sont jamais publiées.
+            if grep -q 'BROUILLON' "$notes"; then
+              echo "::error::$notes contient encore « BROUILLON » : relire les notes et retirer la mention"
+              exit 1
+            fi
+            # Une publication ne vient que d'un commit de main (pas d'une branche quelconque).
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+              echo "::error::le commit de l'étiquette $tag n'est pas dans main : publication refusée"
+              exit 1
+            fi
+            # Jamais d'écrasement : une release existante se supprime à la main, volontairement.
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "::error::une release $tag existe déjà : la supprimer à la main avant de rejouer"
+              exit 1
+            fi
+          fi
+
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "publish=$publish"
+            echo "rehearsal=$rehearsal"
+          } >> "$GITHUB_OUTPUT"
+
+  # ffmpeg minimal (audio, LGPL) : même construction et même clé de cache que launcher.yml (#209).
+  ffmpeg:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          persist-credentials: false
+
+      - name: Cache de ffmpeg construit
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-win64-${{ runner.os }}-${{ hashFiles('tools/ffmpeg/**') }}
+
+      - name: Construire ffmpeg (sources épinglées, SHA-256 vérifiés)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir ffmpeg-out
+          INSTALL_DEPS=1 bash tools/ffmpeg/build.sh "$PWD/ffmpeg-out"
+
+      - name: Artefact ffmpeg
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ffmpeg-win64
+          path: ffmpeg-out
+          if-no-files-found: error
+          retention-days: 1
+
+  installer:
+    needs: [verify, ffmpeg]
+    runs-on: windows-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/flam-launcher
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      REHEARSAL: ${{ needs.verify.outputs.rehearsal }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          # SDL2, Lua, LVGL et minimp3 : sources de flam-player.exe.
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/flam-launcher/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # tête de la branche stable au 2026-10-16 (pas un tag)
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Workspace Cargo à la racine : un seul `target/` partagé avec crates/telmi2flam.
+          workspaces: ". -> target"
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Convertisseur embarqué (Python + Pillow, SHA-256 vérifiés)
+        run: npm run build:converter
+
+      - name: Télécharger ffmpeg (construit par le job ffmpeg)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ffmpeg-win64
+          path: ffmpeg-artifact
+
+      - name: ffmpeg LGPL embarqué (contrôles, sans GPL, libmp3lame, transcodages MP3)
+        run: npm run build:ffmpeg -- -ArtifactDir "$(cygpath -w "$GITHUB_WORKSPACE/ffmpeg-artifact")"
+
+      - name: flam-player.exe et SDL2.dll (CMake, Release)
+        run: npm run build:player
+
+      - name: Licences tierces (Rust et npm)
+        run: npm run build:notices
+
+      # Répétition générale (PR) : les fichiers du dépôt portent encore la version courante ; la version
+      # de l'étiquette d'exemple est forcée par surcharge de tauri.conf.json (écrite dans RUNNER_TEMP,
+      # pas dans l'arbre) pour prouver que Tauri/NSIS accepte le suffixe de pré-version. Pour une
+      # vraie publication, aucune surcharge : le paquet porte la version déjà contrôlée par `verify`.
+      - name: Installateur NSIS (par utilisateur, non signé)
+        run: |
+          args=(--config src-tauri/tauri.bundle.conf.json)
+          if [ "$REHEARSAL" = "true" ]; then
+            tmp="$(cygpath -m "$RUNNER_TEMP")"
+            printf '{"version":"%s"}' "$VERSION" > "$tmp/tauri.rehearsal.conf.json"
+            args+=(--config "$tmp/tauri.rehearsal.conf.json")
+          fi
+          npm run tauri build -- "${args[@]}"
+
+      # Nom sans espace (« Flam-Launcher_<version>_x64-setup.exe ») : le nom publié est celui de
+      # SHA256SUMS.txt ; GitHub remplace les espaces des noms de fichiers.
+      - name: Nommer l'installateur
+        run: |
+          shopt -s nullglob
+          setups=("$GITHUB_WORKSPACE"/target/release/bundle/nsis/*-setup.exe)
+          if [ "${#setups[@]}" -ne 1 ]; then echo "::error::un seul installateur attendu, trouvé : ${setups[*]}"; exit 1; fi
+          case "$(basename "${setups[0]}")" in
+            *"_${VERSION}_x64-setup.exe") ;;
+            *) echo "::error::le nom de l'installateur ne porte pas la version $VERSION : ${setups[0]}"; exit 1 ;;
+          esac
+          mkdir -p "$GITHUB_WORKSPACE/release-out"
+          cp "${setups[0]}" "$GITHUB_WORKSPACE/release-out/Flam-Launcher_${VERSION}_x64-setup.exe"
+
+      - name: Installer sans interaction, vérifier, désinstaller
+        shell: pwsh
+        run: |
+          $setup = @(Get-ChildItem "$env:GITHUB_WORKSPACE/release-out/*-setup.exe")
+          if ($setup.Count -ne 1) { throw 'un seul installateur attendu' }
+          $dest = Join-Path $env:RUNNER_TEMP 'flam-launcher-install'
+          $p = Start-Process -FilePath $setup[0].FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installateur : code $($p.ExitCode)" }
+          foreach ($f in 'flam-launcher.exe', 'flam-player.exe', 'SDL2.dll', 'LICENSES.md', 'uninstall.exe',
+              'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt',
+              'ffmpeg/ffmpeg.exe', 'ffmpeg/ffprobe.exe', 'ffmpeg/LICENSE', 'ffmpeg/LICENSE-LAME', 'ffmpeg/LICENSE-MINGW-RUNTIME', 'ffmpeg/BUILD.txt') {
+            if (-not (Test-Path (Join-Path $dest $f))) { throw "fichier absent de l'installation : $f" }
+          }
+          $ff = Join-Path $dest 'ffmpeg/ffmpeg.exe'
+          $conf = (& $ff -hide_banner -buildconf 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $conf -match '--enable-(gpl|nonfree)(\s|$)' -or $conf -notmatch '--enable-libmp3lame') { throw "ffmpeg installé : configuration refusée`n$conf" }
+          if ((& $ff -hide_banner -encoders 2>&1 | Out-String) -notmatch 'libmp3lame') { throw 'ffmpeg installé : libmp3lame absent' }
+          if ((Get-Item (Join-Path $dest 'THIRD-PARTY-NOTICES.txt')).Length -lt 1000) { throw 'THIRD-PARTY-NOTICES.txt installé : moins de 1000 octets' }
+          # Version enregistrée par l'installateur (clé de désinstallation) = version de l'étiquette.
+          $keys = @(Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
+            Get-ItemProperty | Where-Object { $_.DisplayName -like '*Flam*' })
+          if ($keys.Count -ne 1) { throw "clé de désinstallation Flam : $($keys.Count) trouvée(s), 1 attendue" }
+          if ($keys[0].DisplayVersion -ne $env:VERSION) { throw "version installée : $($keys[0].DisplayVersion) ($env:VERSION attendue)" }
+          ./scripts/check-imports.ps1 -InstallDir $dest
+          $u = Start-Process -FilePath (Join-Path $dest 'uninstall.exe') -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
+          if ($u.ExitCode -ne 0) { throw "désinstallateur : code $($u.ExitCode)" }
+          $left = Get-ChildItem $dest -Recurse -Force | Where-Object { $_.Name -ne 'uninstall.exe' -and -not $_.PSIsContainer }
+          if ($left) { throw "fichiers restants : $($left.FullName -join ', ')" }
+
+      - name: Artefact (installateur NSIS)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flam-launcher-setup
+          path: release-out/*-setup.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  # Seul job avec `contents: write`. Ne tourne que pour une publication réelle (étiquette poussée ou
+  # rejeu hors dry_run) : jamais sur une PR ni en dry_run.
+  release:
+    needs: [verify, installer]
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      TAG: ${{ needs.verify.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Notes de version : lues dans l'arbre de l'étiquette (même commit que le build).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          persist-credentials: false
+
+      - name: Télécharger l'installateur
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: flam-launcher-setup
+          path: assets
+
+      - name: SHA256SUMS.txt
+        working-directory: assets
+        run: |
+          set -euo pipefail
+          setup="Flam-Launcher_${VERSION}_x64-setup.exe"
+          if [ "$(ls | wc -l)" -ne 1 ] || [ ! -f "$setup" ]; then echo "::error::contenu inattendu : $(ls)"; exit 1; fi
+          sha256sum "$setup" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Créer la pré-version
+        run: |
+          set -euo pipefail
+          notes="apps/flam-launcher/release-notes/$VERSION.md"
+          [ -s "$notes" ] || { echo "::error::notes absentes : $notes"; exit 1; }
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --prerelease \
+            --latest=false \
+            --title "Flam Launcher $VERSION" \
+            --notes-file "$notes" \
+            "assets/Flam-Launcher_${VERSION}_x64-setup.exe" \
+            assets/SHA256SUMS.txt
