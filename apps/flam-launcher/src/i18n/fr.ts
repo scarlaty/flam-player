@@ -461,6 +461,29 @@ export const fr = {
       strUnreadable:
         "Le dossier des histoires (str) est illisible : seules les histoires de l'index sont affichées.",
     },
+    order: {
+      edit: "Modifier l'ordre",
+      busy: "Ordre non modifiable pendant un envoi.",
+      title: "Ordre des histoires sur la Flam",
+      help: "Glissez les histoires, ou utilisez les boutons Monter et Descendre, puis enregistrez. La Flam affiche les histoires dans cet ordre.",
+      othersNote:
+        "Les histoires masquées ou non listées ne font pas partie de l'ordre et ne bougent pas.",
+      listLabel: "Ordre des histoires visibles",
+      position: (position: number) => `${position}.`,
+      moveUp: (name: string) => `Monter « ${name} »`,
+      moveDown: (name: string) => `Descendre « ${name} »`,
+      moved: (name: string, position: number, total: number) =>
+        `« ${name} » déplacée en position ${position} sur ${total}`,
+      save: "Enregistrer l'ordre",
+      saving: "Enregistrement de l'ordre…",
+      cancel: "Annuler",
+      unchangedHint: "Déplacez au moins une histoire pour enregistrer un nouvel ordre.",
+      reset: "La liste de la Flam a changé : l'ordre a été réinitialisé.",
+      saved:
+        "Ordre enregistré sur la Flam. Redémarrez la Flam pour qu'elle affiche le nouvel ordre.",
+      unchanged: "L'ordre de la Flam était déjà celui-ci : rien n'a été écrit.",
+      failed: (message: string) => `Impossible d'enregistrer l'ordre : ${message}`,
+    },
   },
   deviceTransfer: {
     send: "Envoyer sur la Flam",
@@ -592,10 +615,14 @@ export const fr = {
       cleanupPending: " L'espace sera libéré à la prochaine opération.",
       failed: (message: string) => `Impossible de retirer l'histoire : ${message}`,
       busy: "Retrait indisponible pendant un envoi.",
+      working: "Retrait…",
+      otherWorking: "Un retrait est déjà en cours.",
+      ejecting: "Retrait indisponible pendant une éjection.",
     },
     eject: {
       button: "Éjecter la Flam",
       working: "Éjection en cours…",
+      removing: "Éjection indisponible pendant un retrait.",
       busy: "Éjection indisponible pendant un envoi.",
       failed: (message: string) => `Impossible d'éjecter la Flam : ${message}`,
     },

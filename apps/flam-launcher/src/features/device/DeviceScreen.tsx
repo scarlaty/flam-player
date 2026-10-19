@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -17,6 +18,7 @@ import { t } from "../../i18n";
 import { ErrorBanner } from "../ErrorBanner";
 import { formatBytes } from "../validation";
 import { useDevice } from "./DeviceContext";
+import { DeviceStoryOrder } from "./DeviceStoryOrder";
 import { EjectButton } from "./EjectButton";
 import { ForgetCarrierKeysButton } from "./ForgetCarrierKeysButton";
 import { RemoveStoryButton } from "./RemoveStoryButton";
@@ -254,7 +256,21 @@ function indexNotices(report: DeviceStories): Notice[] {
   return notices;
 }
 
-/** Liste des histoires de la Flam (lues par le `DeviceProvider`), avec retrait par histoire. */
+/** Ordre modifiable : index sûrs et liste complète d'au moins deux histoires visibles. */
+function canReorder(report: DeviceStories | null): report is DeviceStories {
+  return (
+    report !== null &&
+    report.visible_index === "valid" &&
+    (report.hidden_index === "valid" || report.hidden_index === "absent") &&
+    !report.truncated &&
+    report.stories.filter((s) => s.placement === "visible").length >= 2
+  );
+}
+
+/**
+ * Liste des histoires de la Flam (lues par le `DeviceProvider`), avec retrait par histoire et
+ * modification de l'ordre.
+ */
 function DeviceStoriesList() {
   const { stories: state, reloadStories, busy, device } = useDevice();
   const root = device?.root ?? null;
@@ -273,15 +289,39 @@ function DeviceStoriesList() {
   useEffect(() => () => loader?.dispose(), [loader]);
   useEffect(() => loader?.setPaused(busy), [loader, busy]);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const orderButtonRef = useRef<HTMLButtonElement>(null);
+  const [ordering, setOrdering] = useState(false);
+  const reorderable = canReorder(report);
+  // Liste relue non modifiable (index abîmé, tronquée…) : l'édition de l'ordre se ferme.
+  if (ordering && !reorderable) setOrdering(false);
+  const showOrder = ordering && reorderable;
+  const orderHintId = useId();
   // Après un retrait, la ligne (donc le bouton) disparaît à la relecture : le focus passe à la
   // liste dès que la nouvelle liste est affichée.
   const focusAfterReload = useRef(false);
+  const [removing, setRemoving] = useState<string | null>(null);
   useEffect(() => {
     if (focusAfterReload.current && state.phase === "ready") {
       focusAfterReload.current = false;
       wrapperRef.current?.focus();
     }
   }, [state]);
+
+  // Fin de l'édition de l'ordre : le focus revient au bouton « Modifier l'ordre » réaffiché.
+  const focusOrderButton = useRef(false);
+  useEffect(() => {
+    if (showOrder || !focusOrderButton.current) return;
+    focusOrderButton.current = false;
+    (orderButtonRef.current ?? wrapperRef.current)?.focus();
+  }, [showOrder]);
+
+  function closeOrder() {
+    focusOrderButton.current = true;
+    setOrdering(false);
+  }
+
+  const nameOf = (story: DeviceStory) =>
+    titles.get(story.uuid) ?? story.title ?? text.stories.untitled(story.short_id);
 
   function refresh() {
     // Le bouton cliqué disparaît pendant le chargement : le focus passe à un élément stable.
@@ -310,16 +350,51 @@ function DeviceStoriesList() {
           <h2 id="fl-device-stories-title" className="fl-device-card__title">
             {text.stories.title(report.stories.length)}
           </h2>
-          <Button variant="secondary" size="sm" icon="refresh" onClick={refresh}>
-            {text.stories.refresh}
-          </Button>
+          {!showOrder && (
+            <div className="fl-device-row__actions">
+              {reorderable && (
+                <span className="fl-send">
+                  <Button
+                    ref={orderButtonRef}
+                    variant="secondary"
+                    size="sm"
+                    icon="sliders"
+                    className="fl-send__button"
+                    aria-disabled={busy || undefined}
+                    aria-describedby={busy ? orderHintId : undefined}
+                    onClick={() => {
+                      if (!busy) setOrdering(true);
+                    }}
+                  >
+                    {text.order.edit}
+                  </Button>
+                  {busy && (
+                    <span id={orderHintId} className="fl-send__reason">
+                      {text.order.busy}
+                    </span>
+                  )}
+                </span>
+              )}
+              <Button variant="secondary" size="sm" icon="refresh" onClick={refresh}>
+                {text.stories.refresh}
+              </Button>
+            </div>
+          )}
         </div>
         {indexNotices(report).map(({ tone, message }) => (
           <Banner key={message} tone={tone} role="status">
             {message}
           </Banner>
         ))}
-        {report.stories.length === 0 ? (
+        {showOrder ? (
+          <DeviceStoryOrder
+            stories={report.stories.filter((s) => s.placement === "visible")}
+            nameOf={nameOf}
+            hasOthers={report.stories.some((s) => s.placement !== "visible")}
+            busy={busy}
+            onClose={closeOrder}
+          />
+        ) : report.stories.length === 0 ? (
           <EmptyState
             icon="book"
             headingLevel={3}
@@ -335,10 +410,17 @@ function DeviceStoriesList() {
                 deviceTitle={titles.get(story.uuid)}
                 official={official.get(story.uuid)}
                 loader={story.missing ? null : loader}
+                removing={removing === story.uuid}
                 actions={
                   <RemoveStoryButton
                     story={story}
                     busy={busy}
+                    locked={removing !== null && removing !== story.uuid}
+                    onWorkingChange={(working) =>
+                      setRemoving((current) =>
+                        working ? story.uuid : current === story.uuid ? null : current,
+                      )
+                    }
                     onRemoved={() => {
                       focusAfterReload.current = true;
                     }}
@@ -370,12 +452,15 @@ function DeviceStoryRow({
   official,
   loader,
   actions,
+  removing = false,
 }: {
   story: DeviceStory;
   deviceTitle?: string | null;
   official?: OfficialInfo;
   loader: ThumbnailLoader | null;
   actions?: ReactNode;
+  /** Retrait en cours : la ligne est grisée. */
+  removing?: boolean;
 }) {
   const rowRef = useRef<HTMLLIElement>(null);
   const deviceThumb = useDeviceThumbnail(loader, story.uuid, rowRef);
@@ -387,7 +472,7 @@ function DeviceStoryRow({
   const title = deviceTitle ?? official?.title ?? story.title;
   const name = title ?? text.stories.untitled(story.short_id);
   return (
-    <li ref={rowRef} className="fl-device-row">
+    <li ref={rowRef} className="fl-device-row" aria-busy={removing || undefined}>
       <span className="fl-device-row__thumb">
         {thumb ? <img src={thumb} alt="" /> : <Icon name="book" size={20} />}
       </span>

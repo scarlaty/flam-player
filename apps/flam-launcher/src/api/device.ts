@@ -291,6 +291,15 @@ export interface RemoveReport {
   cleanup_pending: boolean;
 }
 
+/** Résultat d'un réordonnancement (miroir de `ReorderReport` dans `device/reorder.rs`). */
+export interface ReorderReport {
+  /** L'index a été réécrit (faux : l'ordre était déjà celui de la Flam). */
+  changed: boolean;
+  /** `library.cache` supprimé : la Flam reconstruit sa bibliothèque au redémarrage. */
+  cache_removed: boolean;
+  count: number;
+}
+
 /** Résultat d'une éjection (miroir de `EjectOutcome`) : succès ou repli, message prêt à afficher. */
 export type EjectOutcome =
   | { status: "ejected"; message: string }
@@ -357,6 +366,18 @@ export function removeDeviceStory(
   confirmed: boolean,
 ): Promise<RemoveReport> {
   return invokeCommand<RemoveReport>("device_remove_story", { root, id, confirmed });
+}
+
+/**
+ * `device_reorder_stories` : réécrit l'index de la Flam de `root` dans l'ordre `order` (tous les
+ * UUID de l'index, chacun une fois). `validation` si l'ordre ne correspond plus à l'index, si
+ * l'index est abîmé ou si la Flam est occupée ; rien n'est alors écrit.
+ */
+export function reorderDeviceStories(
+  root: string,
+  order: string[],
+): Promise<ReorderReport> {
+  return invokeCommand<ReorderReport>("device_reorder_stories", { root, order });
 }
 
 /** `device_eject` : éjecte la Flam ; l'échec de l'éjection logicielle est un `fallback`. */
