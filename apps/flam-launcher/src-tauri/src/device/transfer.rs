@@ -2,7 +2,9 @@
 //!
 //! # Déroulé
 //!
-//! 0. Clés ([`send_from_library`]) : lues dans `.mdf` en firmware 2.x ; en 1.x, couple
+//! 0. Garde commune ([`check_write`], #317) : racine détectée, `.mdf` lisible, firmware 1.x ou
+//!    2.x, clés lisibles, confirmation ou vérification d'une 2.x ; sinon rien n'est écrit, pas même une
+//!    reprise. Clés ([`send_from_library`]) : lues dans `.mdf` en firmware 2.x ; en 1.x, couple
 //!    « carrier » d'une histoire officielle, après consentement et contrôle de cohérence avec la
 //!    Flam ([`carrier::resolve`], #234). Rien n'est écrit tant que ce n'est pas passé ; `info`
 //!    est relu après l'installation ([`carrier::readback`]).
@@ -85,10 +87,13 @@ use super::carrier::{
     Resolved,
 };
 use super::crypto::{
-    firmware_family, parse_serial_field, CryptoError, DeviceKeys, FirmwareFamily, MDF_IV_OFFSET,
-    MDF_KEY_OFFSET, MDF_LEN, MDF_SERIAL_OFFSET, SERIAL_FIELD_LEN,
+    parse_serial_field, CryptoError, DeviceKeys, FirmwareFamily, MDF_IV_OFFSET, MDF_KEY_OFFSET,
+    MDF_SERIAL_OFFSET, SERIAL_FIELD_LEN,
 };
 use super::detect::{MDF_FILE, MDF_MAX_SIZE};
+use super::guard::{
+    check_write, VersionForm, WriteContext, WriteKind, WritePermit, WriteRefused, MDF_MIN_LEN,
+};
 use super::index::{
     self, read_index, Consent, IndexError, IndexKind, IndexState, Recovery, StoryId, WriteOutcome,
     LIBRARY_CACHE, STORIES_DIR,
@@ -210,6 +215,9 @@ pub enum TransferError {
     KeyUnavailable(String),
     #[error(transparent)]
     Busy(#[from] Busy),
+    /// Refus de la garde commune des écritures ([`super::guard`]).
+    #[error(transparent)]
+    Refused(#[from] WriteRefused),
     #[error("transfert annulé : la Flam est inchangée")]
     Cancelled,
     #[error("vérification échouée ({0}) : la copie relue sur la Flam diffère de l'original ; rien n'a été installé")]
@@ -252,6 +260,7 @@ impl From<TransferError> for AppError {
             | TransferError::UnsupportedFirmware(_)
             | TransferError::KeyUnavailable(_)
             | TransferError::Busy(_)
+            | TransferError::Refused(_)
             | TransferError::IndexNeedsUser
             | TransferError::Carrier(
                 CarrierError::ConsentRequired
@@ -550,6 +559,7 @@ fn previous_dir(root: &Path, id: &StoryId) -> PathBuf {
 /// renommage final. Bloquant.
 pub fn send_story(
     _guard: &OpGuard<'_>,
+    permit: &WritePermit,
     root: &Path,
     prepared: &PreparedStory,
     replace: Option<&str>,
@@ -558,6 +568,7 @@ pub fn send_story(
 ) -> Result<TransferReport, TransferError> {
     send_with(
         &RealFs::default(),
+        permit,
         root,
         prepared,
         replace,
@@ -568,6 +579,7 @@ pub fn send_story(
 
 pub(crate) fn send_with(
     fs: &dyn DeviceFs,
+    permit: &WritePermit,
     root: &Path,
     prepared: &PreparedStory,
     replace: Option<&str>,
@@ -593,7 +605,7 @@ pub(crate) fn send_with(
     // (hormis la fin d'opérations interrompues).
     // Une entrée de reprise qui échoue (dossier verrouillé) ne bloque pas l'envoi d'une autre
     // histoire ; elle est signalée dans le rapport, et celle de cet UUID est refusée plus bas.
-    let (_, failures) = recover_collect(fs, root)?;
+    let (_, failures) = recover_collect(fs, permit, root)?;
     // Un résidu laissé par la reprise (deux noms du même dossier, ou entrée verrouillée) ne
     // doit jamais être réutilisé ni supprimé par le nettoyage d'un échec : il partage peut-être
     // les fichiers de l'histoire.
@@ -881,15 +893,20 @@ fn copy_and_verify(
 /// appeler sous le verrou de l'appareil, à la détection et avant chaque opération ; le
 /// transfert l'appelle lui-même. Une erreur d'entrée/sortie interrompt la reprise sans toucher
 /// à la suite.
-pub fn recover(_guard: &OpGuard<'_>, root: &Path) -> Result<TransferRecovery, TransferError> {
-    recover_with(&RealFs::default(), root)
+pub fn recover(
+    _guard: &OpGuard<'_>,
+    permit: &WritePermit,
+    root: &Path,
+) -> Result<TransferRecovery, TransferError> {
+    recover_with(&RealFs::default(), permit, root)
 }
 
 pub(crate) fn recover_with(
     fs: &dyn DeviceFs,
+    permit: &WritePermit,
     root: &Path,
 ) -> Result<TransferRecovery, TransferError> {
-    let (report, mut failures) = recover_collect(fs, root)?;
+    let (report, mut failures) = recover_collect(fs, permit, root)?;
     if failures.is_empty() {
         Ok(report)
     } else {
@@ -901,8 +918,12 @@ pub(crate) fn recover_with(
 /// Une erreur de lecture du dossier de travail lui-même interrompt tout.
 pub(crate) fn recover_collect(
     fs: &dyn DeviceFs,
+    permit: &WritePermit,
     root: &Path,
 ) -> Result<(TransferRecovery, Vec<(String, TransferError)>), TransferError> {
+    if !permit.covers(root) {
+        return Err(TransferError::InvalidRoot);
+    }
     let dir = root.join(TRANSFER_DIR);
     let mut names = Vec::new();
     match std::fs::read_dir(&dir) {
@@ -991,36 +1012,43 @@ pub(crate) fn recover_collect(
 
 /// Version principale du firmware (`2.4.2`) lue dans `.mdf` (`None` : illisible).
 pub fn firmware_from_mdf(mdf: &[u8]) -> Option<String> {
+    firmware_field(mdf).map(|(version, _)| version)
+}
+
+/// Version principale du firmware lue dans `.mdf` et forme du texte qui la porte (`None` :
+/// illisible).
+pub(crate) fn firmware_field(mdf: &[u8]) -> Option<(String, VersionForm)> {
     firmware_main(mdf.get(2..MDF_SERIAL_OFFSET)?)
 }
 
-/// Version principale du firmware (`2.4.2`) lue dans le texte de `.mdf` : « main: x.y.z-… »,
-/// ou la version nue en tête du champ (`1.15.14-…`, observé sur une Flam 1.x, #269).
-fn firmware_main(text: &[u8]) -> Option<String> {
+/// Version principale du firmware (`2.4.2`) lue dans le texte de `.mdf` : « main: x.y.z-… »
+/// (cherché n'importe où dans le champ, même après « comm: … »), ou la version nue en tête du
+/// champ (`1.15.14-…`, observée sur une Flam 1.15.14, #269).
+fn firmware_main(text: &[u8]) -> Option<(String, VersionForm)> {
     let text = String::from_utf8_lossy(text);
-    let rest = match text.find("main:") {
-        Some(at) => &text[at + "main:".len()..],
-        None => &text,
-    }
-    .trim_start();
+    let (rest, form) = match text.find("main:") {
+        Some(at) => (&text[at + "main:".len()..], VersionForm::Main),
+        None => (&text[..], VersionForm::Bare),
+    };
     let version: String = rest
+        .trim_start()
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.')
         .collect();
     version
         .starts_with(|c: char| c.is_ascii_digit())
-        .then_some(version)
+        .then_some((version, form))
 }
 
 /// Clés de l'appareil d'après le contenu de `.mdf` (disposition dans [`super::crypto`]).
 pub fn keys_from_mdf(mdf: &[u8]) -> Result<DeviceKeys, TransferError> {
-    if mdf.len() < MDF_LEN {
+    if mdf.len() < MDF_MIN_LEN {
         return Err(TransferError::KeyUnavailable(format!(
-            "fichier .mdf de {} octets (au moins {MDF_LEN} attendus)",
+            "fichier .mdf de {} octets (au moins {MDF_MIN_LEN} attendus)",
             mdf.len()
         )));
     }
-    let firmware = firmware_main(&mdf[2..MDF_SERIAL_OFFSET]).ok_or_else(|| {
+    let (firmware, _) = firmware_main(&mdf[2..MDF_SERIAL_OFFSET]).ok_or_else(|| {
         TransferError::KeyUnavailable("version du firmware illisible dans .mdf".into())
     })?;
     let serial = parse_serial_field(&mdf[MDF_SERIAL_OFFSET..MDF_SERIAL_OFFSET + SERIAL_FIELD_LEN])
@@ -1069,13 +1097,20 @@ pub fn read_mdf(root: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>, TransferErro
 /// la Flam.
 fn device_keys(
     root: &Path,
+    permit: &WritePermit,
     carrier: Option<&CarrierRequest<'_>>,
     cancel: &AtomicBool,
 ) -> Result<(DeviceKeys, Option<Resolved>), TransferError> {
     let mdf = read_mdf(root)?;
+    // Le `.mdf` relu doit être celui que la garde a contrôlé (remplacé entre-temps : refus).
+    if !permit.same_mdf(&mdf) {
+        return Err(TransferError::KeyUnavailable(
+            "le fichier .mdf a changé depuis sa vérification ; rien n'a été écrit".into(),
+        ));
+    }
     let firmware = firmware_from_mdf(&mdf);
-    if firmware.as_deref().and_then(firmware_family) != Some(FirmwareFamily::V1) {
-        // 2.x, ou refus explicite (3.x, illisible) par `keys_from_mdf`.
+    if permit.family() == FirmwareFamily::V2 {
+        // 2.x : clés de `.mdf`, prouvées (ou confirmées) par la garde.
         return Ok((keys_from_mdf(&mdf)?, None));
     }
     let firmware = firmware.unwrap_or_default();
@@ -1104,6 +1139,7 @@ pub fn send_from_library(
     work_dir: &Path,
     replace: Option<&str>,
     carrier: Option<&CarrierRequest<'_>>,
+    ctx: &WriteContext<'_>,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<TransferReport, TransferError> {
@@ -1114,6 +1150,7 @@ pub fn send_from_library(
         work_dir,
         replace,
         carrier,
+        ctx,
         cancel,
         progress,
     )
@@ -1127,13 +1164,13 @@ pub(crate) fn send_from_library_with(
     work_dir: &Path,
     replace: Option<&str>,
     carrier: Option<&CarrierRequest<'_>>,
+    ctx: &WriteContext<'_>,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<TransferReport, TransferError> {
-    if !root.join(MDF_FILE).is_file() {
-        return Err(TransferError::DeviceNotFound);
-    }
-    let (keys, resolved) = device_keys(root, carrier, cancel)?;
+    // Garde commune : racine, `.mdf`, firmware, clés et confiance d'une 2.x.
+    let permit = check_write(root, ctx, WriteKind::Send)?;
+    let (keys, resolved) = device_keys(root, &permit, carrier, cancel)?;
     if let Err(err) = prepare::cleanup_stale(work_dir) {
         tracing::warn!("préparations abandonnées non supprimées : {err}");
     }
@@ -1143,7 +1180,7 @@ pub(crate) fn send_from_library_with(
             other => TransferError::Prepare(other),
         })?;
     drop(keys);
-    let result = send_with(fs, root, &prepared, replace, cancel, progress);
+    let result = send_with(fs, &permit, root, &prepared, replace, cancel, progress);
     if let Err(err) = std::fs::remove_dir_all(&prepared.dir) {
         tracing::warn!(dossier = %prepared.dir.display(), "préparation non supprimée : {err}");
     }
@@ -1251,7 +1288,7 @@ pub async fn device_send_story(
             }
         }
         let _clear = ClearCancel;
-        ensure_detected_root(Path::new(&root))?;
+        let ctx = WriteContext::current(Some(cache_root.clone()));
         let (plain_pk, _) = Library::new(&cache_root).playable(&uuid)?;
         let mut emit = |progress: Progress| {
             use tauri::Emitter;
@@ -1277,6 +1314,7 @@ pub async fn device_send_story(
             &cache_root.join(WORK_SUBDIR),
             replace.as_deref(),
             request.as_ref(),
+            &ctx,
             &cancel,
             &mut emit,
         );
@@ -1331,28 +1369,47 @@ pub async fn device_carrier_preview(
 /// Reprend sur la Flam de racine `root` les transferts puis les écritures d'index
 /// interrompus (voir le tableau du module). À appeler à chaque détection de l'appareil, avant
 /// de lire son contenu ; refusé (`Busy`) pendant une autre opération.
-pub fn recover_device(guard: &OpGuard<'_>, root: &Path) -> Result<TransferRecovery, TransferError> {
-    if !root.join(MDF_FILE).is_file() {
-        return Err(TransferError::DeviceNotFound);
-    }
-    let report = recover(guard, root)?;
+pub fn recover_device(
+    guard: &OpGuard<'_>,
+    root: &Path,
+    ctx: &WriteContext<'_>,
+) -> Result<TransferRecovery, TransferError> {
+    let permit = check_write(root, ctx, WriteKind::Other)?;
+    let report = recover(guard, &permit, root)?;
     for kind in IndexKind::ALL {
         index::recover(root, kind)?;
     }
     Ok(report)
 }
 
-/// Reprise au branchement : transferts et index interrompus ([`recover_device`]).
+/// Reprise au branchement : transferts et index interrompus ([`recover_device`]). Refusée,
+/// comme toute écriture, si la garde du firmware refuse ([`check_write`]).
 #[tauri::command]
-pub async fn device_recover_transfers(root: String) -> AppResult<TransferRecovery> {
+pub async fn device_recover_transfers(
+    config: State<'_, ConfigState>,
+    root: String,
+) -> AppResult<TransferRecovery> {
+    let cache_root = launcher_cache_root(&config);
     blocking(move || -> AppResult<TransferRecovery> {
         let guard = DEVICE_LOCK
             .try_begin(Operation::Transfer)
             .map_err(TransferError::from)?;
-        ensure_detected_root(Path::new(&root))?;
-        Ok(recover_device(&guard, Path::new(&root))?)
+        let ctx = WriteContext::current(cache_root);
+        Ok(recover_device(&guard, Path::new(&root), &ctx)?)
     })
     .await?
+}
+
+/// Dossier de cache du launcher (bibliothèque), pour reconnaître ses propres histoires dans la
+/// garde des clés 2.x ; `None` (journalisé) s'il est illisible.
+pub(crate) fn launcher_cache_root(config: &ConfigState) -> Option<PathBuf> {
+    let _guard = config.guard();
+    SettingsStore::new(&config.dir)
+        .resolved_cache_dir(&Environment::current())
+        .map_err(|err| {
+            tracing::warn!("dossier de cache illisible pour la garde de la Flam : {err}")
+        })
+        .ok()
 }
 
 /// Demande l'annulation du transfert en cours. Rend faux s'il n'y en a pas. Sans effet une fois

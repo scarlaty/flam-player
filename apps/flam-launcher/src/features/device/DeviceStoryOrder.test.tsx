@@ -1,4 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { firmwareV2 } from "../../test/firmware";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import type { DeviceStatus, DeviceStories, DeviceStory } from "../../api/device";
@@ -62,6 +63,7 @@ const status: DeviceStatus = {
     mdf_problem: null,
     backup_failed: false,
     firmware: "2.4.2",
+    firmware_status: firmwareV2(),
   },
 };
 

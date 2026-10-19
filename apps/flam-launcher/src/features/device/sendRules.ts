@@ -8,13 +8,22 @@ export const BYTES_PER_MINUTE = (80 * 1024 * 1024) / 4;
 
 /** Raison pour laquelle une histoire ne peut pas être envoyée maintenant. */
 export type SendBlock =
-  "queued" | "no_device" | "firmware" | "checking" | "present" | "no_space" | "removing";
+  | "queued"
+  | "no_device"
+  | "firmware"
+  | "confirm_keys"
+  | "checking"
+  | "present"
+  | "no_space"
+  | "removing";
 
 export interface SendContext {
   device: DeviceSummary | null;
   /** Histoires de la Flam, une fois lues (`null` : pas encore). */
   deviceStories: DeviceStories | null;
   firmwareBlocked: boolean;
+  /** Flam 2.x pas encore confirmée : sauvegarde à confirmer dans « Ma Flam » (#317). */
+  keysConfirmation?: boolean;
   /** Un retrait d'histoire de la Flam est en cours (l'envoi attend sa fin). */
   removing: boolean;
   /** Histoires en attente ou en cours d'envoi (jamais les envois terminés : réussis, échoués ou annulés). */
@@ -41,7 +50,14 @@ export function findOnDevice(
  * qu'à désactiver le bouton avec une raison lisible.
  */
 export function sendBlock(
-  { device, deviceStories, firmwareBlocked, removing, queuedOrSent }: SendContext,
+  {
+    device,
+    deviceStories,
+    firmwareBlocked,
+    keysConfirmation,
+    removing,
+    queuedOrSent,
+  }: SendContext,
   uuid: string,
   size: number | null,
 ): SendBlock | null {
@@ -50,6 +66,7 @@ export function sendBlock(
   if (findOnDevice(deviceStories, uuid)) return "present";
   if (queuedOrSent.has(uuid)) return "queued";
   if (firmwareBlocked) return "firmware";
+  if (keysConfirmation) return "confirm_keys";
   if (!deviceStories) return "checking";
   const free = device.space?.free;
   if (size !== null && free !== undefined && free < size + SPACE_MARGIN_BYTES) {
