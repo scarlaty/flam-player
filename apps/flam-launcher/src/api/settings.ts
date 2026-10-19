@@ -3,6 +3,10 @@ import type { ThemePreference } from "../theme/theme";
 import type { Recovery } from "./recovery";
 import type { CarrierConsent } from "./device";
 
+/** Remplissage des vignettes des histoires converties (`--thumb-fit` du convertisseur). */
+export const THUMB_FITS = ["flou", "rogner", "bandes"] as const;
+export type ThumbFit = (typeof THUMB_FITS)[number];
+
 /** Paramètres enregistrés (miroir de `Settings` dans `src-tauri/src/settings.rs`). */
 export interface Settings {
   schema_version: number;
@@ -18,6 +22,8 @@ export interface Settings {
   theme: ThemePreference;
   /** Téléchargements simultanés du pipeline d'installation (1 à 4, 2 par défaut). */
   max_downloads: number;
+  /** Remplissage des vignettes 104×136 des histoires converties (`flou` par défaut). */
+  thumb_fit: ThumbFit;
   /**
    * Consentement au mode carrier (Flam 1.x). Lecture seule : écrit par
    * `device_carrier_accept`, ignoré par `settings_set`.

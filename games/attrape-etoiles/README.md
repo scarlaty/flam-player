@@ -18,7 +18,7 @@ python make_images.py .                                   # (re)génère img/*.p
 python ../../skills/flam-homebrew/scripts/flam_build.py .  # -> _out/attrape-etoiles.plain.pk + .plain
 ```
 `flam_build.py` embarque le runtime du skill, convertit les PNG en `.lif` (dont
-`img/thumbnail.png` -> vignette) et lance `flam_check.py`.
+`img/thumbnail.png` -> vignette 104×136) et lance `flam_check.py`.
 
 ## Test
 - **Simulateur** : `build/flam-player.exe --strict "games/attrape-etoiles/_out/attrape-etoiles.plain"`

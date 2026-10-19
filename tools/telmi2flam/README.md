@@ -338,6 +338,7 @@ return {
 ```bash
 python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
                      [--allow-missing] [--selector carousel|image]
+                     [--thumb-fit flou|rogner|bandes]
                      [--progress-json] [--info]
 python telmi2flam.py --version
 ```
@@ -354,6 +355,14 @@ python telmi2flam.py --version
   (sinon **erreur**) ; un audio manquant est remplacé par `silent.mp3` (la scène garde
   sa transition de fin d'audio), une image manquante est omise.
 - `--selector` : affichage des choix multiples (`carousel` par défaut, ou `image`).
+- `--thumb-fit` : remplissage de la vignette `img/thumbnail.lif` (104×136, portrait),
+  `flou` par défaut :
+  - `flou` : image entière centrée ; le haut et le bas (ou les côtés) sont remplis par la
+    même image agrandie pour couvrir la vignette, puis floutée (flou gaussien) ;
+  - `rogner` : image agrandie ou réduite pour couvrir 104×136, rognée au centre ;
+  - `bandes` : image entière centrée sur fond transparent.
+
+  La sortie est déterministe (mêmes octets pour la même entrée, le même mode et la même version de Pillow).
 - `--progress-json` : sortie lisible par machine (voir « Sortie machine » ci-dessous).
 - `--info` : affiche les métadonnées de l'histoire en JSON, **sans convertir**.
 - `--version` : affiche une seule ligne sur stdout, `telmi2flam <version>` (ex.
@@ -552,8 +561,9 @@ fichier reste dans le dossier `.plain`.
 **Images** : scènes ajustées sans déformation dans 320×212 (zone d'affichage sous le
 bandeau de 28 px) et centrées sur un canevas transparent de 320×212 (une image TELMI
 640×480 donne 283×212 avec des bandes de 18 et 19 px) ; icônes d'inventaire ≤ 128×128 (fichier distinct
-`<nom>_inv.lif` si l'image sert aussi à une scène) ; vignette 128×96 (une couverture
-portrait est centrée sur un canevas paysage) ; une image portrait de plus de 64 px est
+`<nom>_inv.lif` si l'image sert aussi à une scène) ; vignette 104×136 (portrait, taille des vignettes
+officielles mesurée sur une Flam réelle ; remplissage réglable par `--thumb-fit`, voir
+« Utilisation ») ; une image portrait de plus de 64 px est
 complétée en carré transparent pour ne pas déclencher l'heuristique de transposition du
 décodeur.
 La clé de transparence `tRNS` est appliquée pour toutes les profondeurs (gris 1/2/4/8/16

@@ -428,7 +428,9 @@ def main(pk_path):
             e, dims = check_lif(zf.read(n))
             if e:
                 lif_bad.append("%s : %s" % (n, e))
-            elif not n.startswith("img/script/") and dims[1] > dims[0] and max(dims) > 64:
+            elif (not n.startswith("img/script/") and n != "img/thumbnail.lif"
+                  and dims[1] > dims[0] and max(dims) > 64):
+                # la vignette de bibliotheque est portrait 104x136 (comme les officielles)
                 lif_portrait.append(n)
     for m in lif_bad:
         errs.append("LIF " + m)

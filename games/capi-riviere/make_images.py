@@ -261,15 +261,17 @@ def title_image(w=320, h=212):
 
 
 def thumbnail():
-    t = Image.new("RGBA", (128, 96), WATER + (255,))
+    """Vignette 104x136 (portrait, format des vignettes officielles)."""
+    t = Image.new("RGBA", (104, 136), WATER + (255,))
     d = ImageDraw.Draw(t)
-    d.rectangle((0, 0, 14, 96), fill=BANK)
-    d.rectangle((113, 0, 128, 96), fill=BANK)
-    t.alpha_composite(ripple(), (22, 12))
-    t.alpha_composite(ripple(), (80, 70))
-    t.alpha_composite(mandarine(), (86, 14))
-    t.alpha_composite(lily().resize((28, 26), Image.LANCZOS), (20, 60))
-    t.alpha_composite(capi(70), (30, 18))
+    d.rectangle((0, 0, 10, 136), fill=BANK)
+    d.rectangle((93, 0, 104, 136), fill=BANK)
+    t.alpha_composite(ripple(), (18, 12))
+    t.alpha_composite(ripple(), (50, 108))
+    t.alpha_composite(mandarine(), (62, 16))
+    t.alpha_composite(lily().resize((28, 26), Image.LANCZOS), (16, 100))
+    c = capi(70)
+    t.alpha_composite(c, ((104 - c.size[0]) // 2, 44))
     return t
 
 

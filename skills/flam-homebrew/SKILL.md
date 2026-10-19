@@ -98,13 +98,13 @@ complet. Les règles qui comptent le plus :
 ### 4. Ajouter les assets
 
 PNG dans `img/` (décor plein écran 320×212, sprites petits et non portrait), MP3
-44,1 kHz dans `sounds/`, `img/thumbnail.png` pour la vignette. Le build convertit.
+44,1 kHz dans `sounds/`, `img/thumbnail.png` pour la vignette (104×136, portrait). Le build convertit.
 Voir `references/assets.md` pour générer des images par code.
 
 ### 5. Builder et valider
 
 ```bash
-python <skill>/scripts/flam_build.py <dossier>
+python <skill>/scripts/flam_build.py <dossier> [--thumb-fit flou|rogner|bandes]
 ```
 
 Écrit `<dossier>/_out/<slug>.plain.pk` et le dossier `<dossier>/_out/<slug>.plain/`

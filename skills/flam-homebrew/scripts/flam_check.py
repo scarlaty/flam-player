@@ -447,7 +447,9 @@ def check(pk_path):
             if e:
                 errs.append("LIF %s : %s" % (n, e))
                 lif_bad += 1
-            elif not n.startswith("img/script/") and dims[1] > dims[0] and dims[1] > 64:
+            elif (not n.startswith("img/script/") and n != "img/thumbnail.lif"
+                  and dims[1] > dims[0] and dims[1] > 64):
+                # la vignette de bibliotheque est portrait 104x136 (comme les officielles)
                 warns.append("LIF %s portrait %dx%d > 64 px : le decodeur le transpose "
                              "(poser sur un canevas carre)" % (n, dims[0], dims[1]))
         elif n.startswith("img/") and not n.endswith(".lif"):

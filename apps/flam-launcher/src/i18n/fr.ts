@@ -127,6 +127,26 @@ export const fr = {
         "Quand flam-player s'ouvre dans une fenêtre séparée, la fenêtre du launcher est réduite à son lancement, puis rétablie à la fin.",
     },
     themeFailed: "Le thème n'a pas pu être enregistré.",
+    thumbFit: {
+      title: "Vignettes",
+      label: "Vignettes : remplissage",
+      note: "Les vignettes de bibliothèque des histoires converties sont en 104 × 136 (portrait). Ce réglage s'applique aux prochaines conversions ; les histoires déjà converties gardent leur vignette.",
+      failed: "Le remplissage des vignettes n'a pas pu être enregistré.",
+      options: {
+        flou: {
+          label: "Flou",
+          hint: "Image entière, fond rempli par la même image agrandie et floutée.",
+        },
+        rogner: {
+          label: "Rogner",
+          hint: "Image agrandie et rognée au centre pour remplir la vignette.",
+        },
+        bandes: {
+          label: "Bandes",
+          hint: "Image entière, bandes transparentes en haut et en bas.",
+        },
+      },
+    },
     about: {
       title: "À propos",
       version: (name: string, version: string) => `${name} — version ${version}`,
