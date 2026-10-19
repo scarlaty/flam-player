@@ -232,6 +232,9 @@ export function DeviceProvider({
           setItemState(next.uuid, "failed", text.errors.readback);
           setAnnouncement(text.panel.announce.failed(next.title, text.errors.readback));
         } else {
+          // Conservation demandée mais échouée : les envois suivants redemandent les clés.
+          if (next.carrier?.remember && sent.carrier_stored !== true)
+            carrierSession.current = null;
           setItemState(next.uuid, "done");
           setAnnouncement(text.panel.announce.done(next.title));
         }
@@ -328,13 +331,16 @@ export function DeviceProvider({
     if (!pendingCarrier) return;
     const request = pendingCarrier;
     setPendingCarrier(null);
-    // Clés conservées : les envois suivants les relisent ; sinon le même choix est réutilisé.
-    carrierSession.current = {
-      key: deviceKeyRef.current,
-      carrier: carrier.remember
-        ? { choice: { kind: "stored" }, remember: false }
-        : carrier,
-    };
+    // Clés conservées : les envois suivants les relisent ; sinon le même choix est réutilisé,
+    // sauf une clé saisie, qui n'est pas gardée en mémoire au-delà de cet envoi.
+    carrierSession.current = carrier.remember
+      ? {
+          key: deviceKeyRef.current,
+          carrier: { choice: { kind: "stored" }, remember: false },
+        }
+      : carrier.choice.kind === "entered"
+        ? null
+        : { key: deviceKeyRef.current, carrier };
     enqueue({ ...request, carrier });
   }
 

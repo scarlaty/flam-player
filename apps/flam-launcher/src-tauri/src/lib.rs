@@ -132,6 +132,7 @@ pub fn run() {
             device::carrier::device_carrier_state,
             device::carrier::device_carrier_accept,
             device::carrier::device_carrier_forget,
+            device::transfer::device_carrier_preview,
             device::detect::device_detect,
             device::remove::device_remove_story,
             device::eject::device_eject,
