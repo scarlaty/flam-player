@@ -261,6 +261,14 @@ variables : `FLAM_E2E_INSTALL_DIR`, ou `FLAM_E2E_PLAYER` + `FLAM_E2E_CONVERTER_D
 (`.github/workflows/launcher.yml`) compile le player, construit l'installateur, l'installe en
 silence, y exécute ce test puis le désinstalle en vérifiant qu'il ne reste aucun fichier.
 
+Sur une PR, l'installateur N-1 et le test de mise à jour N-1 vers N (≈ 5 min de build, plus le
+scénario) ne tournent que si la PR modifie l'empaquetage : `tauri*.json`, `Cargo.toml`, `build.rs`,
+`icons/`, `windows/` (hooks NSIS) de `src-tauri/`, `package*.json`, `LICENSES.md`, `third-party/` et
+les scripts `build-*`, `notices-lib`, `Get-InstallTree`, `check-imports` du launcher, `tools/ffmpeg/`,
+`Cargo.toml`/`Cargo.lock` racine, ou `.github/workflows/launcher.yml`. Le label de PR
+`ci-installeur` force l'exécution (poser le label relance la CI). L'installateur N, son installation,
+l'e2e et l'artefact tournent toujours ; sur `push` vers main, tout tourne.
+
 ### À vérifier sur une session Windows propre
 
 Non couvert par la CI ni par le poste de développement (où Python, Visual Studio et WebView2
