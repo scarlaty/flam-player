@@ -22,7 +22,9 @@ use serde::Serialize;
 use tauri::State;
 
 use super::detect::{self, DetectedDevice, DeviceWarning, Environment, MdfError, Space};
+use super::guard::{self, FirmwareStatus, WriteContext};
 use super::index::{self, IndexKind, IndexState};
+use super::lock::DEVICE_LOCK;
 use crate::catalog::blocking;
 use crate::install::InstallService;
 use crate::library::{Library, LibraryEntry};
@@ -58,6 +60,9 @@ pub struct DeviceSummary {
     /// Version du firmware lue dans `.mdf` (`1.15.14`, `2.4.2`…), `None` si illisible. Une
     /// Flam en 1.x n'accepte que le mode carrier (#234).
     pub firmware: Option<String>,
+    /// État du firmware et de la garde des écritures (#317) : famille, disposition, état des
+    /// clés, raison d'un refus d'écrire. Aucune clé, aucun numéro de série.
+    pub firmware_status: FirmwareStatus,
 }
 
 /// État de l'appareil (réponse de `device_status`).
@@ -139,7 +144,23 @@ pub struct StoriesReport {
     pub str_unreadable: bool,
 }
 
-fn summarize(device: &DetectedDevice, backup_failed: bool) -> DeviceSummary {
+fn summarize(
+    device: &DetectedDevice,
+    backup_failed: bool,
+    ctx: &WriteContext<'_>,
+) -> DeviceSummary {
+    let firmware_status = match device.mdf_bytes.as_deref() {
+        Some(mdf) => {
+            guard::firmware_status(&device.root, mdf, ctx, DEVICE_LOCK.current().is_some())
+        }
+        None => guard::unreadable_status(
+            device.mdf_size,
+            device
+                .mdf_error
+                .as_ref()
+                .map_or_else(|| "illisible".to_string(), ToString::to_string),
+        ),
+    };
     DeviceSummary {
         root: device.root.display().to_string(),
         volume_label: device.volume_label.clone(),
@@ -155,12 +176,14 @@ fn summarize(device: &DetectedDevice, backup_failed: bool) -> DeviceSummary {
             .mdf_bytes
             .as_deref()
             .and_then(super::transfer::firmware_from_mdf),
+        firmware_status,
     }
 }
 
 /// État de l'appareil : détection, puis sauvegarde personnelle de `.mdf` dans `backup_dir`
-/// (idempotente, jamais bloquante). Aucune écriture sur la Flam.
-pub fn status(env: &Environment, backup_dir: &Path) -> DeviceStatus {
+/// (idempotente, jamais bloquante), et état du firmware ([`guard::firmware_status`], preuve
+/// des clés 2.x en lecture seule). Aucune écriture sur la Flam.
+pub fn status(env: &Environment, backup_dir: &Path, ctx: &WriteContext<'_>) -> DeviceStatus {
     let report = detect::detect(env);
     let Some(first) = report.devices.first() else {
         return DeviceStatus {
@@ -182,7 +205,7 @@ pub fn status(env: &Environment, backup_dir: &Path) -> DeviceStatus {
     DeviceStatus {
         detected: true,
         hint: None,
-        device: Some(summarize(first, backup_failed)),
+        device: Some(summarize(first, backup_failed, ctx)),
         device_count: report.devices.len(),
     }
 }
@@ -261,9 +284,57 @@ fn read_stories(root: &Path, titles: &HashMap<String, LibraryMatch>) -> StoriesR
 
 /// Détecte la Flam et sauvegarde son `.mdf` (lecture seule sur l'appareil).
 #[tauri::command]
-pub async fn device_status() -> AppResult<DeviceStatus> {
+pub async fn device_status(config: State<'_, ConfigState>) -> AppResult<DeviceStatus> {
     let backup_dir = crate::storage::data_dir().join(detect::BACKUP_SUBDIR);
-    blocking(move || status(&Environment::current(), &backup_dir)).await
+    let cache_root = super::transfer::launcher_cache_root(&config);
+    blocking(move || {
+        status(
+            &Environment::current(),
+            &backup_dir,
+            &WriteContext::current(cache_root),
+        )
+    })
+    .await
+}
+
+/// UUID (forme à tirets, minuscules) sur la Flam des histoires de la bibliothèque du launcher
+/// de `cache_root` : ce sont celles qu'il a pu installer, exclues de la preuve des clés 2.x
+/// ([`guard::prove_v2_keys`]). Vide (journalisé) si la bibliothèque est illisible.
+pub(crate) fn launcher_story_ids(cache_root: Option<&Path>) -> HashSet<String> {
+    let Some(root) = cache_root else {
+        return HashSet::new();
+    };
+    match Library::new(root).list() {
+        Ok(entries) => library_titles(Some(root), entries).into_keys().collect(),
+        Err(err) => {
+            tracing::warn!(
+                "bibliothèque illisible pour la vérification des clés de la Flam : {err}"
+            );
+            HashSet::new()
+        }
+    }
+}
+
+/// Confirme, pour la session, que l'utilisateur a sauvegardé sa Flam alors que ses clés 2.x
+/// ne sont pas vérifiables ([`guard::confirm_unverified`]). `understood` : case cochée dans
+/// l'interface (sinon refus). Rend l'état du firmware à jour. Aucune écriture sur la Flam.
+#[tauri::command]
+pub async fn device_confirm_unverified_keys(
+    config: State<'_, ConfigState>,
+    root: String,
+    understood: bool,
+) -> AppResult<FirmwareStatus> {
+    if !understood {
+        return Err(crate::AppError::Validation(
+            "cochez « J'ai sauvegardé ma Flam » pour confirmer".into(),
+        ));
+    }
+    let cache_root = super::transfer::launcher_cache_root(&config);
+    blocking(move || {
+        guard::confirm_unverified(Path::new(&root), &WriteContext::current(cache_root))
+            .map_err(|err| crate::AppError::Validation(err.to_string()))
+    })
+    .await?
 }
 
 /// UUID d'une histoire installée par le launcher, tel que lu dans `uuid.bin` de `archive`
@@ -382,6 +453,7 @@ pub async fn device_list_stories(
 mod tests {
     use super::*;
     use crate::device::detect::VolumeInfo;
+    use crate::device::guard::tests::test_ctx;
     use sha2::{Digest, Sha256};
     use std::fs;
     use std::path::PathBuf;
@@ -464,7 +536,11 @@ mod tests {
     fn sans_appareil_l_etat_est_non_detecte_avec_une_aide() {
         let backups = tempfile::tempdir().unwrap();
         let empty = tempfile::tempdir().unwrap();
-        let status = status(&env(vec![empty.path().to_path_buf()]), backups.path());
+        let status = status(
+            &env(vec![empty.path().to_path_buf()]),
+            backups.path(),
+            &test_ctx(),
+        );
         assert!(!status.detected);
         assert_eq!(status.hint.as_deref(), Some(detect::NOT_DETECTED_HINT));
         assert!(status.device.is_none());
@@ -476,7 +552,11 @@ mod tests {
     fn un_appareil_detecte_est_resume_et_son_mdf_sauvegarde() {
         let dev = fake_device();
         let backups = tempfile::tempdir().unwrap();
-        let status = status(&env(vec![dev.path().to_path_buf()]), backups.path());
+        let status = status(
+            &env(vec![dev.path().to_path_buf()]),
+            backups.path(),
+            &test_ctx(),
+        );
         assert!(status.detected);
         assert_eq!(status.device_count, 1);
         let device = status.device.unwrap();
@@ -503,7 +583,11 @@ mod tests {
         let dev = fake_device();
         fs::write(dev.path().join(detect::MDF_FILE), b"court").unwrap();
         let backups = tempfile::tempdir().unwrap();
-        let status = status(&env(vec![dev.path().to_path_buf()]), backups.path());
+        let status = status(
+            &env(vec![dev.path().to_path_buf()]),
+            backups.path(),
+            &test_ctx(),
+        );
         let device = status.device.unwrap();
         assert!(matches!(
             device.mdf_problem,
@@ -517,7 +601,11 @@ mod tests {
         let dev = fake_device();
         let blocker = tempfile::NamedTempFile::new().unwrap();
         // Un fichier à la place du dossier de sauvegarde : l'écriture échoue.
-        let status = status(&env(vec![dev.path().to_path_buf()]), blocker.path());
+        let status = status(
+            &env(vec![dev.path().to_path_buf()]),
+            blocker.path(),
+            &test_ctx(),
+        );
         assert!(status.detected);
         assert!(status.device.unwrap().backup_failed);
     }
@@ -527,7 +615,11 @@ mod tests {
         let dev = fake_device();
         fs::remove_dir(dev.path().join("str")).unwrap();
         let backups = tempfile::tempdir().unwrap();
-        let status = status(&env(vec![dev.path().to_path_buf()]), backups.path());
+        let status = status(
+            &env(vec![dev.path().to_path_buf()]),
+            backups.path(),
+            &test_ctx(),
+        );
         assert_eq!(
             status.device.unwrap().warnings,
             vec![DeviceWarning::MissingStrDir]
@@ -639,6 +731,7 @@ mod tests {
         let json = serde_json::to_string(&status(
             &env(vec![dev.path().to_path_buf()]),
             backups.path(),
+            &test_ctx(),
         ))
         .unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -655,6 +748,7 @@ mod tests {
                 "backup_failed",
                 "file_system",
                 "firmware",
+                "firmware_status",
                 "mdf_problem",
                 "root",
                 "space",
@@ -784,7 +878,7 @@ mod tests {
         let backups = tempfile::tempdir().unwrap();
         let environment = env(vec![dev.path().to_path_buf()]);
         for _ in 0..3 {
-            let _ = status(&environment, backups.path());
+            let _ = status(&environment, backups.path(), &test_ctx());
             let _ = list_stories(&environment, &HashMap::new());
         }
         assert_eq!(fingerprint(dev.path()), before);

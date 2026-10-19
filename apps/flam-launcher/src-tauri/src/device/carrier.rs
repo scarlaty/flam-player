@@ -62,7 +62,7 @@ pub(crate) const HIDDEN_STORIES_DIR: &str = "str.hidden";
 /// Taille du fichier `bt` utile : clé AES (16) puis IV (16).
 pub const BT_LEN: usize = 32;
 /// Taille maximale lue de `bt` et `key` (au-delà : refusé, ce n'est pas un couple).
-const MAX_SMALL_FILE: u64 = 4096;
+pub(crate) const MAX_SMALL_FILE: u64 = 4096;
 /// Taille maximale déchiffrée de `info` pour le contrôle.
 pub(crate) const MAX_INFO: u64 = 4096;
 /// Taille maximale d'une archive choisie comme source.
@@ -291,7 +291,7 @@ pub(crate) fn title_of(text: &str) -> String {
 }
 
 /// Lit au plus `max` octets de `path` ; plus long : `None` (ce n'est pas le fichier attendu).
-fn read_small(path: &Path, max: u64) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
+pub(crate) fn read_small(path: &Path, max: u64) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -303,7 +303,7 @@ fn read_small(path: &Path, max: u64) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
 }
 
 /// Début de `info`, lu pour le contrôle (borné).
-fn read_info(dir: &Path) -> io::Result<Option<Vec<u8>>> {
+pub(crate) fn read_info(dir: &Path) -> io::Result<Option<Vec<u8>>> {
     let file = match File::open(dir.join(INFO_FILE)) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -315,7 +315,7 @@ fn read_info(dir: &Path) -> io::Result<Option<Vec<u8>>> {
 }
 
 /// Dossiers d'histoires de `str/` puis `str.hidden/` (nom au format UUID), bornés.
-fn story_dirs(root: &Path) -> Vec<(StoryId, PathBuf, bool)> {
+pub(crate) fn story_dirs(root: &Path) -> Vec<(StoryId, PathBuf, bool)> {
     let mut out = Vec::new();
     for (sub, hidden) in [(STORIES_DIR, false), (HIDDEN_STORIES_DIR, true)] {
         let Ok(entries) = fs::read_dir(root.join(sub)) else {
