@@ -12,7 +12,7 @@
 --     libre, une scene et une action peuvent partager un id
 --   - resume : story.resume() (main.lua LoadCurrentFunction) -> noeud type
 --   - chaque noeud appelle Global.progression.setProgression{currentFunction, branch}
---     -> etat sauve = champs STANDARD (current_fun + currentBranchName), comme Cluedo.
+--     -> etat sauve = champs STANDARD (current_fun + currentBranchName).
 -- ============================================================================
 
 local N = require("nodes")

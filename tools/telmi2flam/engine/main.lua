@@ -128,7 +128,7 @@ function LoadStartFunction()
     Global.current_branch["__start"]()
 end
 
--- Reprise : recharge le branch sauve et rejoue le noeud courant (comme Cluedo).
+-- Reprise : recharge le branch sauve et rejoue le noeud courant.
 function LoadCurrentFunction()
     Global.loadBranch(state.currentBranchName or "story")
     -- story.resume rejoue le noeud sauve selon son type (scene / action) : pas de
