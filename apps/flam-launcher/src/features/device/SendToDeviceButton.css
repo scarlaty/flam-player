@@ -14,3 +14,20 @@
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
 }
+
+/* Opération longue en cours : l'icône tourne (sauf préférence de mouvement réduit). */
+.fl-send__button--working svg {
+  animation: fl-send-spin 1s linear infinite;
+}
+
+@keyframes fl-send-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fl-send__button--working svg {
+    animation: none;
+  }
+}
