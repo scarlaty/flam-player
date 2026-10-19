@@ -86,6 +86,8 @@ export interface DeviceApi {
   ) => Promise<{ cleanupPending: boolean }>;
   eject: () => Promise<void>;
   ejecting: boolean;
+  /** Un retrait de la Flam est en cours (l'éjection est alors refusée). */
+  removing: boolean;
   ejectNote: EjectNote | null;
   /** Texte à annoncer (état de la file, pas de pourcentage). */
   announcement: string;
