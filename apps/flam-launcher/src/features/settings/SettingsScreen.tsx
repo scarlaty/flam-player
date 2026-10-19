@@ -54,6 +54,7 @@ export function SettingsScreen() {
   const [themeError, setThemeError] = useState(false);
   const [thumbFitError, setThumbFitError] = useState(false);
   const [thumbFitSaving, setThumbFitSaving] = useState(false);
+  const [themeSaving, setThemeSaving] = useState(false);
   const [minimizeDuringPlay, setMinimize] = useState(getMinimizeDuringPlay);
   const cancelClearRef = useRef<HTMLButtonElement>(null);
   // Derniers paramètres confirmés par le backend et numéro du dernier changement de thème.
@@ -156,7 +157,8 @@ export function SettingsScreen() {
 
   async function changeTheme(theme: ThemePreference) {
     const confirmed = confirmedRef.current;
-    if (!view || !confirmed) return;
+    // Chaque enregistrement renvoie l'objet complet : thème et vignettes ne se chevauchent pas.
+    if (!view || !confirmed || thumbFitSaving) return;
     const request = ++themeRequestRef.current;
     const isLatest = () => request === themeRequestRef.current;
     const showConfirmedTheme = () => {
@@ -172,6 +174,7 @@ export function SettingsScreen() {
       applyTheme(settled.settings.theme);
     };
     themeInFlightRef.current += 1;
+    setThemeSaving(true);
     setThemeError(false);
     setView((current) =>
       current ? { ...current, settings: { ...current.settings, theme } } : current,
@@ -194,14 +197,17 @@ export function SettingsScreen() {
     } finally {
       themeInFlightRef.current -= 1;
       // Plus rien en vol : l'affichage doit refléter exactement le thème enregistré.
-      if (themeInFlightRef.current === 0) showConfirmedTheme();
+      if (themeInFlightRef.current === 0) {
+        showConfirmedTheme();
+        setThemeSaving(false);
+      }
     }
   }
 
   /** Enregistre le remplissage des vignettes ; un échec rétablit le choix enregistré. */
   async function changeThumbFit(thumb_fit: ThumbFit) {
     const confirmed = confirmedRef.current;
-    if (!view || !confirmed || thumbFitSaving) return;
+    if (!view || !confirmed || thumbFitSaving || themeInFlightRef.current > 0) return;
     setThumbFitError(false);
     setThumbFitSaving(true);
     setView((current) =>
@@ -338,6 +344,7 @@ export function SettingsScreen() {
         <RadioGroup
           legend={t.theme.label}
           value={view.settings.theme}
+          disabled={thumbFitSaving}
           options={THEME_PREFERENCES.map((value) => ({ value, label: t.theme[value] }))}
           onChange={(theme) => void changeTheme(theme)}
         />
@@ -350,7 +357,7 @@ export function SettingsScreen() {
         <RadioGroup
           legend={text.thumbFit.label}
           value={view.settings.thumb_fit}
-          disabled={thumbFitSaving}
+          disabled={thumbFitSaving || themeSaving}
           options={THUMB_FITS.map((value) => ({
             value,
             label: text.thumbFit.options[value].label,
