@@ -4,8 +4,8 @@ Document de référence du format de la Flam (volume FAT du « mode connexion US
 code de `main` (module `apps/flam-launcher/src-tauri/src/device/`, état du commit `f4f1dbc`).
 Il décrit ce que le code fait : détection (`detect`, #225), index (`index`, #226), écran
 « Ma Flam » (`status`, #227), chiffrement et préparation (`crypto`, `prepare`, #228), transfert
-(`transfer`, #229), retrait (`remove`, #231), éjection (`eject`, #232) et verrou d'appareil
-(`lock`). Il sert aussi aux tests sans appareil (faux appareil : dossier temporaire contenant un
+(`transfer`, #229), retrait (`remove`, #231), ordre des histoires (`reorder`, #233), éjection
+(`eject`, #232) et verrou d'appareil (`lock`). Il sert aussi aux tests sans appareil (faux appareil : dossier temporaire contenant un
 `.mdf` synthétique de 126 octets). Issue : #224, épopée : #222.
 
 Les formats sont décrits ici **en mots**, pour l'interopérabilité. Ce document ne contient
@@ -31,9 +31,9 @@ Sources citées :
 - **[rapport]** : analyse interne du 2026-10-17 (non versionnée), faite sur documentation et sur
   le code existant, **sans appareil**. Rien de ce qui en vient n'est mesuré.
 - **[détection]**, **[index]**, **[état]**, **[crypto]**, **[préparation]**, **[transfert]**,
-  **[retrait]**, **[éjection]**, **[verrou]** : le module correspondant de `device/` (`detect.rs`,
-  `index.rs`, `status.rs`, `crypto.rs`, `prepare.rs`, `transfer.rs`, `remove.rs`, `eject.rs`,
-  `lock.rs`). Ces modules fixent la disposition de `.mdf` et du fichier `key` ; la mesure sur
+  **[retrait]**, **[ordre]**, **[éjection]**, **[verrou]** : le module correspondant de `device/`
+  (`detect.rs`, `index.rs`, `status.rs`, `crypto.rs`, `prepare.rs`, `transfer.rs`, `remove.rs`,
+  `reorder.rs`, `eject.rs`, `lock.rs`). Ces modules fixent la disposition de `.mdf` et du fichier `key` ; la mesure sur
   appareil de ces positions n'est pas consignée dans le dépôt : statut **supposé** (côté firmware)
   tant que #236 ne les a pas confirmées.
 
@@ -168,14 +168,14 @@ conception du code :
 
 ## 5. L'index `etc/library/list` et `list.hidden`
 
-| Propriété    | Valeur                                          | Statut                                                                                              |
-| ------------ | ----------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Contenu      | un UUID par ligne ; `list.hidden` : même format | supposé [rapport]                                                                                   |
-| Fin de ligne | `\n` (LF), y compris après le dernier UUID      | **mesuré** [inv] : 370 octets pour 10 histoires, soit 37 octets (36 + LF) ; avec CRLF on aurait 380 |
-| Encodage     | ASCII (UUID hexadécimaux et tirets), sans BOM   | supposé                                                                                             |
-| Ordre        | ordre d'affichage sur la Flam                   | supposé [rapport]                                                                                   |
-| Liste vide   | fichier vide (0 octet)                          | **mesuré** [inv] pour `list.hidden`                                                                 |
-| Casse        | minuscules                                      | supposé ; mesuré pour les noms de dossiers [inv]                                                    |
+| Propriété    | Valeur                                          | Statut                                                                                                                                                                                                                                                                                                                 |
+| ------------ | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Contenu      | un UUID par ligne ; `list.hidden` : même format | supposé [rapport]                                                                                                                                                                                                                                                                                                      |
+| Fin de ligne | `\n` (LF), y compris après le dernier UUID      | **mesuré** [inv] : 370 octets pour 10 histoires, soit 37 octets (36 + LF) ; avec CRLF on aurait 380. Confirmé sur une Flam 1.15.14 le 2026-10-19 (lecture seule) : 703 octets pour 19 histoires, LF seul, sans BOM, UUID en minuscules distincts, mêmes UUID que les dossiers de `str/` ; `list.hidden` vide (0 octet) |
+| Encodage     | ASCII (UUID hexadécimaux et tirets), sans BOM   | supposé                                                                                                                                                                                                                                                                                                                |
+| Ordre        | ordre d'affichage sur la Flam                   | supposé [rapport]                                                                                                                                                                                                                                                                                                      |
+| Liste vide   | fichier vide (0 octet)                          | **mesuré** [inv] pour `list.hidden`                                                                                                                                                                                                                                                                                    |
+| Casse        | minuscules                                      | supposé ; mesuré pour les noms de dossiers [inv]                                                                                                                                                                                                                                                                       |
 
 Écriture par le launcher ([index]) : UUID normalisés en minuscules, sans doublon (première
 occurrence gardée), ordre conservé, LF final. À la lecture : BOM UTF-8, CRLF, espaces autour de
@@ -183,7 +183,8 @@ l'UUID, lignes vides et majuscules sont tolérés ; lignes invalides et doublons
 signalés (index « abîmé ») ; un fichier de plus de 1 Mio, contenant un octet nul ou non vide sans
 aucun UUID est jugé illisible. Un index illisible, abîmé ou absent n'est jamais réécrit sans le
 consentement explicite de l'utilisateur ; seul un `list.hidden` absent est réécrit sans
-consentement. Les transferts et retraits actuels ne passent que par l'écriture sans consentement.
+consentement. Les transferts, retraits et réordonnancements ne passent que par l'écriture sans
+consentement.
 
 Procédure d'écriture sûre (`write_index`), dont chaque état intermédiaire est reconnaissable par
 `recover` :
@@ -415,17 +416,47 @@ invitant à éjecter depuis l'Explorateur. Une éjection est **refusée** si la 
 Aucune option de retrait forcé n'est utilisée : la Flam peut exécuter des tâches à l'éjection
 (supposé [rapport] ; T5).
 
-Le réordonnancement des histoires (réécriture de l'index dans un autre ordre) n'est **pas
-implémenté** ; l'opération est seulement réservée dans le verrou d'appareil (#233). L'ordre
-d'affichage est celui de `list` ; un envoi ajoute à la fin. Redémarrer la Flam pour qu'elle
-reconstruise son cache (supposé [rapport]).
-
 ### 8.5 Verrou d'appareil ([verrou])
 
-Une seule opération à la fois sur l'appareil : retrait, transfert, réordonnancement (réservé),
+Une seule opération à la fois sur l'appareil : retrait, transfert, réordonnancement (§ 8.6),
 éjection. Le verrou ne bloque jamais : une opération qui le trouve pris est refusée aussitôt, avec
 le nom de l'opération en cours. Il est interne au processus ; un second launcher est empêché par le
 plugin d'instance unique.
+
+### 8.6 Ordre des histoires ([ordre], #233, implémenté)
+
+L'ordre d'affichage est celui de `list` (supposé [rapport]) ; un envoi ajoute à la fin.
+Réordonner revient à réécrire `list` (`reorder_stories`) ; aucun dossier n'est déplacé.
+
+1. **Demande** : l'ordre complet souhaité, liste d'UUID. Refus sans rien lire sur l'appareil si
+   elle est vide, contient un UUID invalide (position signalée) ou un doublon (à la casse près).
+2. **Préalables** : racine absolue contenant un `.mdf` qui est un vrai fichier ; verrou
+   d'appareil (`Reorder` : refus si une autre opération est en cours, sans reprise ni lecture) ;
+   reprise des deux index (`recover`) ; `list` doit être **valide** et `list.hidden` valide ou
+   absent, sinon refus (« réparez l'index »).
+3. **Validation stricte** : la demande doit contenir exactement les UUID de `list`. Un UUID de
+   `list.hidden` est refusé (une histoire masquée n'a pas d'ordre), un UUID inconnu aussi, ainsi
+   qu'une demande où manque un UUID de `list` (la liste a changé depuis son affichage :
+   l'interface la relit). Rien n'est écrit en cas de refus. Une histoire listée sans dossier
+   garde sa place comme les autres.
+4. **Écriture** : ordre identique à `list` = rien n'est écrit ; sinon `write_index` (§ 5) et ses
+   six étapes, dont la suppression de `usr/0/library.cache`. Les UUID sont écrits en minuscules.
+
+Seuls `list`, ses fichiers de travail (`list.new`, `.bak`, `.restore`) et `library.cache` sont
+modifiés ; `list.hidden`, `str/`, `str.hidden/`, `usr/0/` et les réglages ne le sont jamais
+(vérifié par les tests, qui comparent toute l'arborescence hors de ces fichiers).
+
+| Coupure ou échec après…                 | État laissé                               | Reprise (`recover`)                |
+| --------------------------------------- | ----------------------------------------- | ---------------------------------- |
+| la validation                           | rien de modifié                           | aucune                             |
+| `list.new` (complet ou partiel)         | ancien `list`, `list.new` sans `list.bak` | `list.new` supprimé : ancien ordre |
+| `list.bak` (complet ou partiel)         | ancien `list`, `list.new`, `list.bak`     | ancien ordre gardé                 |
+| le renommage, cible perdue              | `list` absent, `list.new`, `list.bak`     | `list.new` promu : nouvel ordre    |
+| le remplacement, la relecture, le cache | nouveau `list`, `list.bak`                | nouvel ordre, cache supprimé       |
+
+L'index est donc toujours l'ancien ou le nouvel ordre complet. Après l'écriture, l'interface
+rappelle de redémarrer la Flam pour qu'elle reconstruise son cache et affiche le nouvel ordre
+(reconstruction **à vérifier**, T4).
 
 ## 9. Empreintes de référence
 

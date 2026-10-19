@@ -317,7 +317,7 @@ apps/flam-launcher/
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `library_source` (empreinte de la source dossier d'une histoire installée, #288), `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status` ; titres déchiffrés et vignettes des histoires #276, `device::details` ; transfert sûr #229, `device::transfer`, commandes `device_send_story`, `device_cancel_transfer` et `device_recover_transfers` (reprise au branchement), événement `device://transfer-progress` ; retrait #231, `device::remove` ; éjection #232, `device::eject` ; verrou des opérations, `device::lock`), `podcast` (`rss`).
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `library_source` (empreinte de la source dossier d'une histoire installée, #288), `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status` ; titres déchiffrés et vignettes des histoires #276, `device::details` ; transfert sûr #229, `device::transfer`, commandes `device_send_story`, `device_cancel_transfer` et `device_recover_transfers` (reprise au branchement), événement `device://transfer-progress` ; retrait #231, `device::remove` ; ordre des histoires #233, `device::reorder`, commande `device_reorder_stories` ; éjection #232, `device::eject` ; verrou des opérations, `device::lock`), `podcast` (`rss`).
 
 ### Commandes Tauri
 
@@ -364,6 +364,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `device_story_titles`         | `root`, `uuids` (≤ 100)          | `{ titles: { uuid, title \| null }[], interrupted, keys }` | `device::details` |
 | `device_story_thumbnail`      | `root`, `uuid`                   | `{ thumb: URL data: \| null, busy }`                       | `device::details` |
 | `device_story_details_cancel` |                                  | rien                                                       | `device::details` |
+| `device_reorder_stories`      | `root`, `order: string[]`        | `{ changed, cache_removed, count }`                        | `device::reorder` |
 
 `device_status` et `device_list_stories` sont **en lecture seule** sur la Flam : ni reprise
 d'index (`recover`), ni création de dossier. La seule écriture est la copie personnelle de
@@ -391,7 +392,8 @@ alimenté par `DeviceProvider` : scrutation de `device_status` (2 s sur l'écran
 arrêtée pendant la lecture incrustée), `device_recover_transfers` une fois par branchement avant
 la lecture des histoires, file d'envoi séquentielle (`device_send_story`, progression par
 `device://transfer-progress`, annulation par `device_cancel_transfer`), retrait confirmé
-(`device_remove_story`) et éjection (`device_eject`). Le bouton « Envoyer sur la Flam » (cartes,
+(`device_remove_story`), ordre des histoires (`device_reorder_stories`) et éjection
+(`device_eject`). Le bouton « Envoyer sur la Flam » (cartes,
 fiche, « Ma Flam ») reste focalisable quand il est refusé et affiche sa raison (Flam non
 détectée, déjà présente, espace insuffisant, firmware non pris en charge, déjà en file) ; une
 histoire déjà sur la Flam (non masquée) propose en plus « Remplacer sur la Flam »
@@ -402,6 +404,23 @@ bloquer) ;
 l'avertissement « fonction expérimentale, non officielle » est mémorisé dans le stockage local
 (`preferences.ts`). Le firmware n'étant pas exposé par `device_status`, « non pris en charge »
 n'est connu qu'après un refus du backend.
+
+**Ordre des histoires** (#233, `device::reorder`, `DeviceStoryOrder.tsx`) : « Modifier l'ordre »
+(proposé quand `list` est valide, `list.hidden` valide ou absent, la liste non tronquée et au
+moins deux histoires visibles) ouvre l'édition des histoires visibles : glisser-déposer, ou
+boutons « Monter » / « Descendre » au clavier (focus gardé sur l'histoire déplacée, position
+annoncée). Rien n'est écrit avant « Enregistrer l'ordre », qui envoie **l'ordre complet** en une
+seule écriture ; « Annuler » abandonne les déplacements. Pendant l'enregistrement, déplacements
+et boutons sont bloqués (« Enregistrement de l'ordre… ») ; pendant un envoi, l'édition est
+indisponible, raison à l'appui. Après l'écriture, un message rappelle de redémarrer la Flam. Le
+backend refuse sans rien écrire un ordre qui ne contient pas exactement les UUID de `list`
+(vide, invalide, doublon, inconnu, masqué, manquant : la liste a changé entre-temps), un index
+non sûr ou une Flam occupée (verrou `Reorder`) ; il réécrit `list` par `write_index` (ancien ou
+nouvel ordre après une coupure, reprise par `recover`), supprime `usr/0/library.cache` et ne
+touche à rien d'autre (`list.hidden`, `str/`, sauvegardes). Après un succès ou un refus, la liste
+est relue ; si ses histoires ont changé, l'édition repart de l'ordre de la Flam. Tests :
+`device/reorder/tests.rs` (validation, relecture, refus sans écriture, verrou, coupure à chaque
+étape puis reprise) et `DeviceStoryOrder.test.tsx`.
 
 `sources_list` renvoie `SourcesView { sources, recovery }` ; `settings_get` / `settings_set`
 renvoient `SettingsView { settings, resolved, issues, recovery }` (voir « Données »).

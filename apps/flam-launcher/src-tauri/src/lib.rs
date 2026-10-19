@@ -136,6 +136,7 @@ pub fn run() {
             device::transfer::device_carrier_preview,
             device::detect::device_detect,
             device::remove::device_remove_story,
+            device::reorder::device_reorder_stories,
             device::eject::device_eject,
             device::status::device_status,
             device::status::device_list_stories,

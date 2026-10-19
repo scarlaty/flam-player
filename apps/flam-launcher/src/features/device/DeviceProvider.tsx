@@ -8,6 +8,7 @@ import {
   onTransferProgress,
   recoverDeviceTransfers,
   removeDeviceStory,
+  reorderDeviceStories,
   sendStoryToDevice,
   type CarrierSend,
   type DeviceSummary,
@@ -417,14 +418,35 @@ export function DeviceProvider({
   }, []);
 
   // --- Retrait et éjection -----------------------------------------------------------------
+  const [removing, setRemoving] = useState(false);
   const removeFromDevice = useCallback(
     async (uuid: string, expectedKey: string | null) => {
       const rootNow = rootRef.current;
       if (!rootNow || deviceKeyRef.current !== expectedKey)
         throw { kind: "not_found", message: text.errors.noDevice };
-      const report = await removeDeviceStory(rootNow, uuid, true);
-      setReload((n) => n + 1);
-      return { cleanupPending: report.cleanup_pending };
+      setRemoving(true);
+      try {
+        const report = await removeDeviceStory(rootNow, uuid, true);
+        setReload((n) => n + 1);
+        return { cleanupPending: report.cleanup_pending };
+      } finally {
+        setRemoving(false);
+      }
+    },
+    [],
+  );
+
+  const reorderOnDevice = useCallback(
+    async (order: string[], expectedKey: string | null) => {
+      const rootNow = rootRef.current;
+      if (!rootNow || deviceKeyRef.current !== expectedKey)
+        throw { kind: "not_found", message: text.errors.noDevice };
+      try {
+        return await reorderDeviceStories(rootNow, order);
+      } finally {
+        // Succès ou refus : la liste affichée suit l'index réel de la Flam.
+        setReload((n) => n + 1);
+      }
     },
     [],
   );
@@ -476,8 +498,10 @@ export function DeviceProvider({
       removeFromQueue,
       dismissQueue,
       removeFromDevice,
+      reorderOnDevice,
       eject,
       ejecting,
+      removing,
       ejectNote,
       announcement,
     }),
@@ -504,8 +528,10 @@ export function DeviceProvider({
       removeFromQueue,
       dismissQueue,
       removeFromDevice,
+      reorderOnDevice,
       eject,
       ejecting,
+      removing,
       ejectNote,
       announcement,
     ],

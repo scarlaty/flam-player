@@ -1,8 +1,10 @@
+import { useState } from "react";
 import type { StoryEntry } from "../../api/story";
 import { Button } from "../../components";
 import { t } from "../../i18n";
 import { SendToDeviceButton } from "../device/SendToDeviceButton";
 import { isRemote, useStories } from "./StoriesContext";
+import { RemoveStoryDialog } from "./RemoveStoryDialog";
 
 /**
  * Action rapide d'une carte : « Jouer » si l'histoire est installée, sinon « Télécharger » ou
@@ -11,9 +13,15 @@ import { isRemote, useStories } from "./StoriesContext";
 export function StoryActions({ entry }: { entry: StoryEntry }) {
   const stories = useStories();
   const text = t.stories.actions;
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
   if (stories.activeTaskFor(entry)) return null;
   const installed = stories.installedFor(entry);
   if (installed) {
+    const { session } = stories;
+    const playingThis =
+      session !== null &&
+      session.uuid === (session.origin === "library" ? entry.uuid : entry.entry_id);
     return (
       <>
         <Button
@@ -31,6 +39,29 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
           title={entry.title}
           size={installed.size}
           stale={stories.sourceChanged(installed.uuid)}
+        />
+        <Button
+          size="sm"
+          variant="danger"
+          icon="trash"
+          disabled={playingThis || removing}
+          aria-busy={removing || undefined}
+          aria-label={text.forStory(text.remove, entry.title)}
+          onClick={() => setConfirmRemove(true)}
+        >
+          {text.remove}
+        </Button>
+        <RemoveStoryDialog
+          open={confirmRemove}
+          title={entry.title}
+          onCancel={() => setConfirmRemove(false)}
+          onConfirm={(purge) => {
+            setConfirmRemove(false);
+            setRemoving(true);
+            void stories
+              .remove(installed.uuid, entry.title, purge)
+              .finally(() => setRemoving(false));
+          }}
         />
       </>
     );
