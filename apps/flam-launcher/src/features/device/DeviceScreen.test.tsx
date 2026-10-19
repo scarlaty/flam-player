@@ -203,6 +203,32 @@ it("affiche le bandeau expérimental, avec le lien des risques, même sans Flam"
   await expectNoAxeViolations(container);
 });
 
+it("propose « Copier le diagnostic » sans Flam et quand l'écriture est bloquée", async () => {
+  const first = renderScreen();
+  expect(
+    await screen.findByRole("heading", { name: "Aucune Flam détectée" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Copier le diagnostic" }),
+  ).toBeInTheDocument();
+  first.unmount();
+
+  status = detected({
+    firmware_status: firmwareV2({
+      write_block: { kind: "keys_trivial", version: "2.4.2" },
+    }),
+  });
+  const { container } = renderScreen();
+  expect(
+    await screen.findByRole("heading", { name: "Flam détectée" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Copier le diagnostic" }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Retour de test" })).toBeInTheDocument();
+  await expectNoAxeViolations(container);
+});
+
 it("ajoute la mention « firmware 2.x » pour une Flam en 2.x seulement", async () => {
   status = detected({ firmware: "2.4.2" });
   const first = renderScreen();
