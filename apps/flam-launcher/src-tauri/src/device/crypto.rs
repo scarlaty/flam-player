@@ -260,6 +260,25 @@ impl DeviceKeys {
         encrypt_zero_padded(&self.story_key, &self.story_iv, plain)
     }
 
+    /// Titre (première ligne non vide) du fichier `info` chiffré `info` d'une histoire, s'il se
+    /// déchiffre avec ces clés en texte lisible (même contrôle que le mode carrier :
+    /// [`super::carrier::info_text`]). `None` sinon : la clé ne correspond pas, ou `info` est
+    /// abîmé. Le clair est effacé de la mémoire.
+    pub fn title_of_info(&self, info: &[u8]) -> Option<String> {
+        let text = zeroize::Zeroizing::new(super::carrier::info_text(
+            &self.story_key,
+            &self.story_iv,
+            info,
+        )?);
+        // Des titres officiels alignent leurs parties avec de longues suites d'espaces
+        // (observé sur une Flam 1.x) : elles sont réduites à une seule.
+        let title = super::carrier::title_of(&text)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some(title).filter(|t| !t.is_empty())
+    }
+
     /// Contenu du fichier `key` d'une histoire (32 octets). Firmware 2.x : déduit du numéro de
     /// série ([`key_file_from_serial`]) ; firmware 1.x : celui de l'histoire officielle.
     pub fn key_file(&self) -> Zeroizing<[u8; KEY_FILE_LEN]> {
