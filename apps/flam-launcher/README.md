@@ -285,6 +285,49 @@ sont déjà présents) : à cocher par le mainteneur avant publication.
       conservées, dossier d'installation vide).
 - [ ] Antivirus : pas de quarantaine de `flam-player.exe` ni de `python.exe`.
 
+## Publier une pré-version
+
+Workflow `.github/workflows/release-launcher.yml` (#319) : une étiquette `launcher-v<version>`
+poussée sur un commit de `main` construit l'installateur NSIS (mêmes étapes que `launcher.yml`),
+calcule `SHA256SUMS.txt` et crée une **pré-version** GitHub « Flam Launcher <version> » avec
+l'installateur, `SHA256SUMS.txt` et les notes de `release-notes/<version>.md`. Les releases `v0.x`
+du dépôt concernent le player : elles ne sont pas touchées.
+
+Procédure (exemple : `0.1.0-beta.1`) :
+
+1. Vérifier que la CI de `main` est verte sur le commit visé (le workflow de publication ne rejoue
+   ni lint, ni tests, ni test de mise à jour).
+2. Dans une PR : passer `0.1.0-beta.1` dans `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`,
+   `package.json`, `package-lock.json` (`npm version 0.1.0-beta.1 --no-git-tag-version`) et
+   `Cargo.lock` (`cargo check` depuis `src-tauri/`). Relire `release-notes/0.1.0-beta.1.md` et en
+   **retirer la ligne « BROUILLON »** : la publication refuse des notes qui la contiennent. Vérifier que
+   `docs/guide-testeur.md` (#235) et le modèle d'issue `.github/ISSUE_TEMPLATE` (#318), cités par les
+   notes, sont fusionnés. Fusionner.
+3. Facultatif : Actions, « release-launcher », « Run workflow » depuis `main`, étiquette
+   `launcher-v0.1.0-beta.1`, `dry_run` coché (valeur par défaut) : construit tout depuis `main` sans
+   rien publier ; les contrôles propres à la publication (brouillon, commit dans `main`, release
+   existante) ne sont alors que des avertissements.
+4. Poser et pousser l'étiquette sur le commit de fusion :
+   `git tag launcher-v0.1.0-beta.1 <commit> && git push origin launcher-v0.1.0-beta.1`.
+5. Le workflow publie. En cas d'échec : le rejeu (« Run workflow » depuis `main`, même étiquette,
+   `dry_run` décoché) reconstruit le commit de l'étiquette ; il convient à une panne passagère ou à
+   une correction du workflow lui-même. Une correction du code, des versions ou des notes impose de
+   supprimer l'étiquette (`git push origin :refs/tags/launcher-v0.1.0-beta.1`), de la reposer sur le
+   nouveau commit de `main`, ou de passer à une nouvelle version. Si une release du même nom existe,
+   le workflow refuse d'y toucher : la supprimer à la main d'abord.
+
+Contrôles automatiques avant le build : forme de l'étiquette (`launcher-v` + SemVer, pré-version
+admise), les cinq fichiers de version égaux à la version de l'étiquette, notes présentes et sans
+« BROUILLON », commit de l'étiquette contenu dans `main`, aucune release existante, rejeu lancé
+depuis `main`. Le commit contrôlé est celui qui est construit et publié (l'étiquette ne doit pas
+avoir bougé). La forme de l'étiquette n'admet pas de tiret dans un identifiant de pré-version
+(`beta.1`, pas `beta-1`). L'installateur
+porte le nom `Flam-Launcher_<version>_x64-setup.exe` (sans espace, comme dans `SHA256SUMS.txt`) et
+la version enregistrée par l'installateur est comparée à celle de l'étiquette. Sur une PR qui modifie
+le workflow ou les notes, une répétition générale construit l'installateur avec la version d'exemple
+`0.1.0-beta.1` forcée (sans publier) : elle valide que Tauri et NSIS acceptent le suffixe de
+pré-version.
+
 ## Architecture
 
 ```
