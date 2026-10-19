@@ -267,11 +267,21 @@ impl DeviceFs for FaultyFs {
     }
 }
 
+/// `replace` : remplacement demandé pour l'histoire préparée elle-même (`NEW`).
 fn send(
     fs: &dyn DeviceFs,
     root: &Path,
     p: &PreparedStory,
     replace: bool,
+) -> Result<TransferReport, TransferError> {
+    send_to(fs, root, p, replace.then_some(NEW))
+}
+
+fn send_to(
+    fs: &dyn DeviceFs,
+    root: &Path,
+    p: &PreparedStory,
+    replace: Option<&str>,
 ) -> Result<TransferReport, TransferError> {
     send_with(fs, root, p, replace, &AtomicBool::new(false), &mut |_| {})
 }
@@ -345,7 +355,7 @@ fn chemin_nominal_de_bout_en_bout() {
         &FaultyFs::new(),
         &root,
         &p,
-        false,
+        None,
         &AtomicBool::new(false),
         &mut |e| events.push(e),
     )
@@ -365,6 +375,7 @@ fn chemin_nominal_de_bout_en_bout() {
             cache_removed: true,
             carrier_readback: None,
             carrier_stored: None,
+            recovery_failures: Vec::new(),
         }
     );
 
@@ -530,7 +541,7 @@ fn annulation_a_trois_moments() {
             let before = snapshot(&root);
             let cancel = AtomicBool::new(false);
             let total = 2 * p.total_bytes;
-            let result = send_with(&FaultyFs::new(), &root, &p, true, &cancel, &mut |e| {
+            let result = send_with(&FaultyFs::new(), &root, &p, Some(NEW), &cancel, &mut |e| {
                 if when(&e, total) {
                     cancel.store(true, Ordering::Relaxed);
                 }
@@ -656,6 +667,7 @@ fn reprise_des_etats_partiels() {
     let p = prepared(tmp.path(), 11);
     let err = send(&fs, &root, &p, true).unwrap_err();
     assert!(matches!(err, TransferError::Io(_)), "{err:?}");
+    assert!(err.to_string().contains("chkdsk"), "{err}");
     assert_eq!(snapshot(&root), before);
 
     // La sonde réelle distingue deux dossiers différents.
@@ -796,7 +808,7 @@ fn envoi_depuis_un_plain_pk() {
         &root,
         &pk,
         &work,
-        false,
+        None,
         None,
         &AtomicBool::new(false),
         &mut |_| {},
@@ -825,7 +837,7 @@ fn envoi_depuis_un_plain_pk() {
             &root,
             &pk,
             &work,
-            true,
+            Some(NEW),
             None,
             &AtomicBool::new(false),
             &mut |_| {},
@@ -862,7 +874,7 @@ fn remplacement_a_version_egale_contenu_different() {
             &root,
             pk,
             &work,
-            replace,
+            replace.then_some(NEW),
             None,
             &AtomicBool::new(false),
             &mut |_| {},
@@ -970,7 +982,7 @@ mod carrier_flow {
             &e.root,
             &e.pk,
             &e.work,
-            false,
+            None,
             Some(&request),
             &AtomicBool::new(false),
             &mut |_| {},
@@ -1274,7 +1286,7 @@ mod carrier_flow {
                 &e.root,
                 &e.pk,
                 &e.work,
-                false,
+                None,
                 Some(&request),
                 &AtomicBool::new(true),
                 &mut |_| {},
@@ -1404,10 +1416,103 @@ fn reprise_continue_apres_une_entree_verrouillee() {
     assert!(!transfer.join(format!("{third}{INCOMING_SUFFIX}")).exists());
     assert!(recover_with(&fs, &root).is_err());
 
-    // L'envoi d'une autre histoire n'est pas bloqué par le résidu verrouillé.
+    // L'envoi d'une autre histoire n'est pas bloqué par le résidu verrouillé, mais le rapport
+    // le signale (#309, M-c).
     let p = prepared(tmp.path(), 1);
-    send(&fs, &root, &p, false).unwrap();
+    let report = send(&fs, &root, &p, false).unwrap();
     assert!(root.join("str").join(NEW).join("info").is_file());
+    assert_eq!(report.recovery_failures.len(), 1, "{report:?}");
+    assert!(
+        report.recovery_failures[0].starts_with(&format!("{OTHER}{INCOMING_SUFFIX} : ")),
+        "{report:?}"
+    );
+    // Reprise réussie ensuite : plus rien à signaler.
+    let report = send(&FaultyFs::new(), &root, &p, true).unwrap();
+    assert!(report.recovery_failures.is_empty(), "{report:?}");
+}
+
+/// #309 (N1) : un résidu de la même histoire que la reprise n'a pas pu supprimer (dossier
+/// verrouillé) est refusé sans renvoyer vers `chkdsk`, et rien n'est écrit.
+#[test]
+fn residu_verrouille_de_la_meme_histoire_sans_chkdsk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    write(
+        &root
+            .join(TRANSFER_DIR)
+            .join(format!("{NEW}{INCOMING_SUFFIX}"))
+            .join("info"),
+        b"x",
+    );
+    let fs = FaultyFs {
+        locked: Some(NEW),
+        ..FaultyFs::new()
+    };
+    let before = snapshot(&root);
+    let p = prepared(tmp.path(), 2);
+    let err = send(&fs, &root, &p, false).unwrap_err();
+    let text = err.to_string();
+    assert!(matches!(err, TransferError::Io(_)), "{err:?}");
+    assert!(
+        !text.contains("chkdsk") && text.contains("réessayez"),
+        "{text}"
+    );
+    assert_eq!(snapshot(&root), before);
+}
+
+/// #309 (M-b) : « Remplacer » ne s'applique qu'à l'histoire visée. Une archive dont l'UUID
+/// diffère de celui que l'utilisateur a choisi de remplacer est refusée sans rien écrire, même
+/// si son UUID est déjà sur la Flam ; l'UUID visé est comparé en forme simple ou à tirets.
+#[test]
+fn remplacement_lie_a_l_uuid_vise() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = prepared(tmp.path(), 12);
+    let braced = format!("{{{NEW}}}");
+    let urn = format!("urn:uuid:{NEW}");
+    for update in [true, false] {
+        let root = device(&tmp.path().join(format!("refus-{update}")), update);
+        // Une reprise en attente : le refus la précède, rien n'est touché.
+        write(
+            &root
+                .join(TRANSFER_DIR)
+                .join(format!("{OTHER}{INCOMING_SUFFIX}"))
+                .join("info"),
+            b"partiel",
+        );
+        let before = snapshot(&root);
+        for target in [
+            OTHER,
+            "11111111222233334444555555555555",
+            "",
+            "pas un uuid",
+            braced.as_str(),
+            urn.as_str(),
+        ] {
+            let err = send_to(&FaultyFs::new(), &root, &p, Some(target)).unwrap_err();
+            assert!(
+                matches!(&err, TransferError::ReplaceMismatch { id } if id.as_str() == NEW),
+                "{target:?} : {err:?}"
+            );
+            assert_eq!(
+                crate::AppError::from(err).kind(),
+                "validation",
+                "{target:?}"
+            );
+            assert_eq!(snapshot(&root), before, "rien n'est écrit ({target:?})");
+        }
+    }
+    // Forme simple (source dossier) et majuscules : même UUID, remplacement accepté.
+    let simple = NEW.replace('-', "");
+    for (n, target) in [simple.clone(), simple.to_uppercase(), NEW.to_uppercase()]
+        .iter()
+        .enumerate()
+    {
+        let root = device(&tmp.path().join(format!("ok-{n}")), true);
+        let report = send_to(&FaultyFs::new(), &root, &p, Some(target)).unwrap();
+        assert!(report.replaced, "{target}");
+        assert_eq!(files_of(&root.join("str").join(NEW)), files_of(&p.dir));
+        assert_eq!(listed(&root), vec![id(OTHER), id(NEW)]);
+    }
 }
 
 #[test]

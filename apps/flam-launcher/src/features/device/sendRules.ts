@@ -1,4 +1,4 @@
-import type { DeviceStories, DeviceSummary } from "../../api/device";
+import type { DeviceStories, DeviceStory, DeviceSummary } from "../../api/device";
 
 /** Marge d'espace libre exigée par le backend après le transfert (`SPACE_MARGIN`). */
 export const SPACE_MARGIN_BYTES = 32 * 1024 * 1024;
@@ -22,6 +22,20 @@ export interface SendContext {
 }
 
 /**
+ * Histoire de la Flam qui correspond à l'histoire de bibliothèque `uuid` : par l'UUID de son
+ * archive (`library_uuids`, cas d'une source dossier ou Telmi), sinon par l'UUID lui-même.
+ */
+export function findOnDevice(
+  stories: DeviceStories | null,
+  uuid: string,
+): DeviceStory | undefined {
+  return (
+    stories?.stories.find((story) => story.library_uuids.includes(uuid)) ??
+    stories?.stories.find((story) => story.uuid === uuid)
+  );
+}
+
+/**
  * Première raison qui interdit l'envoi de l'histoire `uuid` (taille `size` en octets, `null` :
  * inconnue), ou `null` si elle peut partir. Le backend revérifie tout : ces règles ne servent
  * qu'à désactiver le bouton avec une raison lisible.
@@ -33,7 +47,7 @@ export function sendBlock(
 ): SendBlock | null {
   if (!device) return "no_device";
   if (removing) return "removing";
-  if (deviceStories?.stories.some((story) => story.uuid === uuid)) return "present";
+  if (findOnDevice(deviceStories, uuid)) return "present";
   if (queuedOrSent.has(uuid)) return "queued";
   if (firmwareBlocked) return "firmware";
   if (!deviceStories) return "checking";
@@ -56,9 +70,14 @@ export function replaceBlock(
   size: number | null,
 ): SendBlock | "absent" | null {
   const stories = context.deviceStories;
-  const present = stories?.stories.find((story) => story.uuid === uuid);
+  const present = findOnDevice(stories, uuid);
   if (!stories || !present || present.placement === "hidden") return "absent";
-  const others = { ...stories, stories: stories.stories.filter((s) => s.uuid !== uuid) };
+  const others = {
+    ...stories,
+    stories: stories.stories.filter(
+      (s) => s.uuid !== present.uuid && !s.library_uuids.includes(uuid),
+    ),
+  };
   return sendBlock({ ...context, deviceStories: others }, uuid, size);
 }
 

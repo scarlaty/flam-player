@@ -449,9 +449,11 @@ la lecture des histoires, file d'envoi séquentielle (`device_send_story`, progr
 (`device_eject`). Le bouton « Envoyer sur la Flam » (cartes,
 fiche, « Ma Flam ») reste focalisable quand il est refusé et affiche sa raison (Flam non
 détectée, déjà présente, espace insuffisant, firmware non pris en charge, déjà en file) ; une
-histoire déjà sur la Flam (non masquée) propose en plus « Remplacer sur la Flam »
-(`device_send_story` avec `replace`, même à version égale : l'ancienne version n'est retirée
-qu'une fois la nouvelle en place, #288), et une histoire dont la source dossier a changé depuis
+histoire déjà sur la Flam (non masquée ; reconnue par l'UUID de `uuid.bin` de son archive, exposé
+dans `library_uuids` de `device_list_stories`, y compris pour une source dossier ou Telmi) propose
+en plus « Remplacer sur la Flam » (`device_send_story` avec `replace` = UUID de l'histoire sur la
+Flam, refusé si l'archive en désigne une autre ; même à version égale : l'ancienne version n'est
+retirée qu'une fois la nouvelle en place, #288, #309), et une histoire dont la source dossier a changé depuis
 l'installation affiche « Source modifiée depuis l'installation : mettez l'histoire à jour avant de
 l'envoyer… » (sans bloquer) ;
 seuls un envoi en attente ou en cours bloque un nouvel envoi (« déjà en file ») : une tâche terminée
