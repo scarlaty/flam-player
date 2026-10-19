@@ -1305,9 +1305,9 @@ pub async fn resolve_for_restore(
 
 /// Lance l'installation d'une histoire d'une source (catalogue ou dossier).
 ///
-/// Avec `uuid` (« Mettre à jour » depuis « Mes histoires », #288), le dossier est réanalysé :
-/// une entrée du dernier scan peut être périmée ; sans `uuid`, une entrée absente du dernier scan
-/// fait analyser le dossier.
+/// Avec `uuid` (fourni par toute installation depuis l'écran, dont « Mettre à jour » depuis
+/// « Mes histoires », #288), le dossier est réanalysé : une entrée du dernier scan peut être
+/// périmée ; sans `uuid`, une entrée absente du dernier scan fait analyser le dossier.
 /// `uuid` (facultatif) : histoire attendue ; si l'entrée retrouvée en propose une autre (fichier
 /// remplacé par une autre histoire au même chemin), `not_found` sans rien installer.
 #[tauri::command]
