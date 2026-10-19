@@ -465,13 +465,15 @@ export const fr = {
       edit: "Modifier l'ordre",
       busy: "Ordre non modifiable pendant un envoi.",
       title: "Ordre des histoires sur la Flam",
-      help: "Glissez les histoires, ou utilisez les boutons Monter et Descendre, puis enregistrez. La Flam affiche les histoires dans cet ordre.",
+      help: "Glissez les histoires, ou utilisez les boutons Tout en haut, Monter, Descendre et Tout en bas (touches Début et Fin au clavier), puis enregistrez. La Flam affiche les histoires dans cet ordre.",
       othersNote:
         "Les histoires masquées ou non listées ne font pas partie de l'ordre et ne bougent pas.",
       listLabel: "Ordre des histoires visibles",
       position: (position: number) => `${position}.`,
+      moveTop: (name: string) => `Tout en haut « ${name} »`,
       moveUp: (name: string) => `Monter « ${name} »`,
       moveDown: (name: string) => `Descendre « ${name} »`,
+      moveBottom: (name: string) => `Tout en bas « ${name} »`,
       moved: (name: string, position: number, total: number) =>
         `« ${name} » déplacée en position ${position} sur ${total}`,
       save: "Enregistrer l'ordre",
