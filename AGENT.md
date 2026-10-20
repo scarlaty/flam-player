@@ -106,7 +106,10 @@ Options du player :
   chaque clic, et s'arrete proprement si le parent disparait. Sensibilite DPI par moniteur v2
   dans ce mode seulement. Echec (HWND invalide, pilote video sans HWND, `SetParent` refuse) :
   trace `[EMBED] repli : ...` et fenetre separee habituelle ; succes : `[EMBED] ok`. Ignore
-  hors Windows.
+  hors Windows. Rendu `direct3d11` dans ce mode (trace `[EMBED] rendu : <nom>`) : la WebView2
+  de l'hote dessine par DirectComposition, au-dessus des rendus `direct3d` (D3D9, defaut de
+  SDL2), `opengl` et `software`, qui laisseraient la zone vide (#332). Repli sur le rendu par
+  defaut si `direct3d11` echoue ; `SDL_RENDER_DRIVER` reste prioritaire.
 - `--stdin-control` : un thread lit stdin ; la ligne `quit` ou la fin de stdin arretent le
   player comme une fermeture de fenetre (etat sauvegarde, code 0), meme sans fenetre (pilote
   `dummy`). Sans l'option, stdin n'est jamais lu. Test : `tests/e2e/e2e_embed.py`.

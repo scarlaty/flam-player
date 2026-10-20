@@ -13,10 +13,15 @@ Cas :
      ligne "quit" sur stdin l'arrete avec le code 0 ;
   2. parent detruit : la destruction de la fenetre parente arrete le player
      proprement (code 0) ;
+  2b. rendu de l'incrustation (Windows, rendu SDL non force) : le player
+     trace "[EMBED] rendu : direct3d11". La WebView2 du launcher dessine par
+     DirectComposition, au-dessus des rendus direct3d (D3D9), opengl et
+     software : avec eux, la zone Lecture reste vide (#332) ;
   3. repli + fin de stdin (sans fenetre, pilote SDL dummy) : un HWND invalide
      donne la trace "[EMBED] repli" et le player tourne quand meme ; la
      fermeture de stdin l'arrete avec le code 0 (voie de sortie de #119).
-Rendu logiciel (SDL_RENDER_DRIVER=software), audio dummy, pas de capture auto.
+Rendu logiciel (SDL_RENDER_DRIVER=software) sauf au cas 2b, audio dummy, pas
+de capture auto.
 Code de sortie : 0 OK, 1 echec, 77 prerequis absents (flam-player, Windows
 pour les cas 1 et 2 : seul le cas 3 tourne ailleurs).
 """
@@ -136,6 +141,8 @@ class Player:
         env.update({"SDL_AUDIODRIVER": "dummy", "SDL_RENDER_DRIVER": "software",
                     "FLAM_SCREENSHOT_AUTO_MS": "0"})
         env.update(env_extra)
+        for key in [k for k, v in env.items() if v is None]:
+            del env[key]
         self.proc = subprocess.Popen(
             [exe] + args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, env=env, cwd=os.path.dirname(exe))
@@ -250,6 +257,33 @@ def case_parent_destroyed(exe, script):
             user32.DestroyWindow(parent)
 
 
+def case_embed_renderer(exe, script):
+    """Rendu choisi par le player incruste quand rien ne le force (#332)."""
+    parent = make_parent()
+    p = Player(exe, ["--parent-hwnd", str(parent), "--stdin-control"] + script,
+               {"SDL_RENDER_DRIVER": None})
+    try:
+        check(pump(15, lambda: p.exited() or p.has("[EMBED] rendu :")),
+              "trace du rendu de l'incrustation", p)
+        check(p.has("[EMBED] rendu : direct3d11"),
+              "rendu direct3d11 (compose au-dessus de la WebView2 du launcher)", p)
+        child = child_of(parent, p.proc.pid)
+        user32.SetWindowPos(parent, None, 0, 0, 900, 560, SWP_NOMOVE | SWP_NOZORDER)
+        want = client_size(parent)
+        check(child and pump(5, lambda: client_size(child) == want),
+              "direct3d11 : l'enfant suit le redimensionnement %s" % (want,), p)
+        pump(1)
+        check(not p.exited(), "direct3d11 : le player tourne apres redimensionnement", p)
+        p.proc.stdin.write(b"quit\n")
+        p.proc.stdin.flush()
+        check(pump(10, p.exited), "arret apres 'quit' sur stdin (cas rendu)", p)
+        check(p.proc.returncode == 0, "code de sortie 0 (%s)" % p.proc.returncode, p)
+    finally:
+        p.kill()
+        if user32.IsWindow(parent):
+            user32.DestroyWindow(parent)
+
+
 def case_fallback_eof(exe, script):
     p = Player(exe, ["--parent-hwnd", "1", "--stdin-control"] + script,
                {"SDL_VIDEODRIVER": "dummy"})
@@ -304,6 +338,7 @@ def main():
         return 0
     case_embed(exe, script)
     case_parent_destroyed(exe, script)
+    case_embed_renderer(exe, script)
     print("e2e_embed : OK")
     return 0
 
