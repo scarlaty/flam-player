@@ -407,12 +407,35 @@ int sdl_driver_init(void)
         return -1;
     }
 
+#ifdef _WIN32
+    /* Incruste : rendu direct3d11 (chaine d'echange DXGI "flip", qui a son
+       propre visuel de composition). La WebView2 du launcher dessine par
+       DirectComposition, au-dessus de la surface de redirection ou arrivent
+       les rendus direct3d (D3D9, defaut de SDL2), opengl et software : la
+       fenetre du player y serait recouverte malgre l'ordre Z (#332).
+       Priorite normale : SDL_RENDER_DRIVER (environnement) l'emporte. Si
+       direct3d11 echoue, SDL_CreateRenderer reprend d'elle-meme la liste
+       par defaut. */
+    if (g_embed_child) SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d11");
+#endif
     g_renderer = SDL_CreateRenderer(g_window, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!g_renderer) {
         SDL_Log("SDL_CreateRenderer failed: %s", SDL_GetError());
         return -1;
     }
+#ifdef _WIN32
+    if (g_embed_child) {
+        SDL_RendererInfo info;
+        const char *name = SDL_GetRendererInfo(g_renderer, &info) == 0
+                           ? info.name : "?";
+        fprintf(stderr, "[EMBED] rendu : %s\n", name);
+        const char *forced = SDL_getenv("SDL_RENDER_DRIVER");
+        if (strcmp(name, "direct3d11") != 0 && !(forced && *forced))
+            fprintf(stderr, "[EMBED] rendu direct3d11 indisponible : l'image "
+                    "peut etre masquee par l'hote\n");
+    }
+#endif
 
     /* Texture : résolution native 320x240, upscalée par le renderer */
     g_texture = SDL_CreateTexture(g_renderer,
