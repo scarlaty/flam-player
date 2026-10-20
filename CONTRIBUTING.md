@@ -151,3 +151,9 @@ en **squash** dans `main` par le mainteneur. La branche est supprimée après fu
   Sinon, `main` est fusionné dans la branche (`git merge origin/main`, sans rebase) et on
   attend la CI verte sur ce nouveau commit. Deux PR vertes séparément peuvent casser `main`
   une fois fusionnées.
+- **Fermer les issues à la main** : GitHub ne ferme une issue à la fusion qu'avec un
+  mot-clé anglais (`Fixes`, `Closes`, `Resolves #N`). Les PR du projet écrivent
+  « Corrige #N », qui ne ferme rien : après chaque fusion, fermer l'issue avec
+  `gh issue close N --reason completed --comment "Fait par #PR ; suivis dans #…"` et retirer
+  le label `en-cours`. Exception : une issue qui attend encore une validation sur l'appareil
+  reste ouverte, avec un commentaire qui le dit.
