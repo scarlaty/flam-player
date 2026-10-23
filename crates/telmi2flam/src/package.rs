@@ -25,9 +25,22 @@
 //! l'ordre canonique, et refuse une entrée dont la taille ou le CRC a changé. Les octets écrits
 //! sont ceux du paquet en mémoire de [`build_package_with`].
 //!
-//! Écarts assumés avec Python (parité vérifiée par `tests/package_parity.rs` sous ces
-//! conditions) : MP3 hors 44 100 Hz recopiés tels quels, comme Python sans ffmpeg
-//! (rééchantillonnage reporté, #22).
+//! Options ([`Options`]) : `keep_size`, `allow_missing`, sélecteur des choix et mode de la
+//! vignette (`thumb_fit` : `bandes`, `flou`, `rogner`, comme `--thumb-fit` ; #282), transmis à
+//! `png_to_thumb_lif` ; la couverture et les images de scène ne dépendent pas du mode.
+//!
+//! Audio : un MP3 hors 44 100 Hz est rééchantillonné par le ffmpeg externe de [`StoryAssets`]
+//! (#354 ; `FLAM_FFMPEG`, sinon `PATH`) ; sans ffmpeg, ou si sa sortie est inutilisable, il est
+//! recopié tel quel avec l'avertissement `audio_samplerate`, comme Python.
+//!
+//! Parité avec Python : `tests/package_parity.rs` compare les octets du `.plain.pk`, les codes
+//! et les messages des avertissements, avec `FLAM_FFMPEG` vide des deux côtés (Python :
+//! `tests/data/gen_package_cases.py`) ; `tests/ffmpeg.rs` la vérifie avec un faux ffmpeg.
+//! Écarts assumés (listés dans `package_parity.rs`, `assumed_divergence`) : formats délégués à
+//! Python (`unsupported_format`, D4), JSON hors limites, entrées chiffrées, noms non UTF-8 et
+//! positions d'en-tête négatives, où le Rust échoue avec un code propre au port. Les lignes
+//! d'information `  i …` et le compte des MP3 rééchantillonnés ([`StoryAssets::infos`],
+//! [`StoryAssets::resampled`]) ne sont pas encore affichés ni émis (CLI, #133).
 
 use std::collections::HashSet;
 use std::io::{Read, Seek};
@@ -159,13 +172,13 @@ pub fn silent_mp3() -> Vec<u8> {
 
 /// `repr(s)` de Python pour une chaîne dont les caractères sont tous en dessous de U+0100 ;
 /// `None` au-delà (le caractère imprimable ou non dépend des tables Unicode de Python).
-fn py_repr_str(s: &str) -> Option<String> {
+/// Le résultat est ajouté à `out` (pas de copie par niveau d'imbrication).
+fn py_repr_str(s: &str, out: &mut String) -> Option<()> {
     let quote = if s.contains('\'') && !s.contains('"') {
         '"'
     } else {
         '\''
     };
-    let mut out = String::with_capacity(s.len() + 2);
     out.push(quote);
     for c in s.chars() {
         let cp = c as u32;
@@ -187,26 +200,38 @@ fn py_repr_str(s: &str) -> Option<String> {
         }
     }
     out.push(quote);
-    Some(out)
+    Some(())
 }
 
-/// `repr(v)` de Python pour une valeur JSON (dans une liste ou un objet).
-fn py_repr(v: &Value) -> Option<String> {
-    Some(match v {
-        Value::Str(s) => py_repr_str(s)?,
+/// `repr(v)` de Python pour une valeur JSON (dans une liste ou un objet), ajouté à `out`.
+fn py_repr(v: &Value, out: &mut String) -> Option<()> {
+    match v {
+        Value::Str(s) => py_repr_str(s, out)?,
         Value::List(items) => {
-            let parts: Option<Vec<String>> = items.iter().map(py_repr).collect();
-            format!("[{}]", parts?.join(", "))
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                py_repr(item, out)?;
+            }
+            out.push(']');
         }
         Value::Object(map) => {
-            let mut parts = Vec::with_capacity(map.len());
-            for (k, v) in map {
-                parts.push(format!("{}: {}", py_repr_str(k)?, py_repr(v)?));
+            out.push('{');
+            for (i, (k, v)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                py_repr_str(k, out)?;
+                out.push_str(": ");
+                py_repr(v, out)?;
             }
-            format!("{{{}}}", parts.join(", "))
+            out.push('}');
         }
-        other => py_str(other)?,
-    })
+        other => out.push_str(&py_str(other)?),
+    }
+    Some(())
 }
 
 /// `str(v)` de Python pour une valeur JSON. Récursion bornée par la profondeur maximale du
@@ -221,7 +246,11 @@ fn py_str(v: &Value) -> Option<String> {
         Value::UInt(u) => u.to_string(),
         Value::Float(f) => py_float_repr(*f),
         Value::Str(s) => s.clone(),
-        Value::List(_) | Value::Object(_) => py_repr(v)?,
+        Value::List(_) | Value::Object(_) => {
+            let mut out = String::new();
+            py_repr(v, &mut out)?;
+            out
+        }
     })
 }
 
