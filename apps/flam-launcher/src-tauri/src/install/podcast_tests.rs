@@ -546,6 +546,46 @@ async fn sans_python_le_pack_echoue_avant_tout_telechargement() {
     let end = ctx.finished(&task.id).await;
     assert_eq!(end.error.unwrap().kind, "converter_unavailable");
     assert!(!fake.entered.load(Ordering::SeqCst), "rien téléchargé");
+    // #445 : la tâche échouée ne garde pas le chemin du dossier de travail supprimé.
+    assert!(end.entry.download_url.is_empty(), "{:?}", end.entry);
+    let list = ctx.service.list();
+    assert_eq!(list.len(), 1);
+    assert!(list[0].entry.download_url.is_empty());
+    ctx.assert_clean();
+}
+
+/// #445 : moteur Rust, `telmi2flam.exe` présent, aucun Python : le pré-contrôle passe, le pack
+/// n'est pas refusé comme « convertisseur indisponible » et la préparation démarre.
+#[tokio::test]
+async fn moteur_rust_avec_binaire_sans_python_passe_le_precontrole() {
+    let Some(py) = python() else { return };
+    let ctx = Ctx::with_engine(Some(py), ConverterEngine::Rust);
+    let fake = ctx.packs(Fault::None);
+    let task = ctx.start_pack().await;
+    let end = ctx.finished(&task.id).await;
+    // Une éventuelle erreur vient de la suite (le faux exe est un python.exe), jamais du
+    // pré-contrôle ni de la validation.
+    let kind = end.error.as_ref().map(|e| e.kind.as_str());
+    assert!(
+        !matches!(kind, Some("converter_unavailable" | "validation")),
+        "{end:?}"
+    );
+    assert!(fake.entered.load(Ordering::SeqCst), "préparation lancée");
+    ctx.assert_clean();
+}
+
+/// #440 : le pré-contrôle suit le moteur choisi. Moteur Rust sans `telmi2flam.exe` : refus avant
+/// tout téléchargement, avec un message propre au moteur Rust (et non « Python introuvable »).
+#[tokio::test]
+async fn moteur_rust_sans_binaire_le_pack_echoue_avant_tout_telechargement() {
+    let ctx = Ctx::with_engine(None, ConverterEngine::Rust);
+    let fake = ctx.packs(Fault::None);
+    let task = ctx.start_pack().await;
+    let end = ctx.finished(&task.id).await;
+    let error = end.error.unwrap();
+    assert_eq!(error.kind, "converter_unavailable");
+    assert!(error.message.contains("telmi2flam.exe"), "{error:?}");
+    assert!(!fake.entered.load(Ordering::SeqCst), "rien téléchargé");
     ctx.assert_clean();
 }
 
@@ -1001,6 +1041,8 @@ async fn pack_publie_sans_chemin_mort_et_source_inconnue() {
     );
     let done = ctx.finished(&task.id).await;
     assert_eq!(done.state, TaskState::Done, "{done:?}");
+    // #436 : plus de chemin de l'archive de travail dans la tâche terminée.
+    assert!(done.entry.download_url.is_empty(), "{:?}", done.entry);
     let library = ctx.service.library_list().await.unwrap();
     assert_eq!(library.len(), 1);
     assert!(library[0].source.download_url.is_empty());
