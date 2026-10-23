@@ -53,11 +53,22 @@ class Capture:
         self.table = None
         self.loaded = {}
         self.raw = {}
+        self.calls = []
 
 
 CAP = Capture()
 _lua_repr = t.lua_repr
 _load_json = t.load_json
+_check_asset_name = t.check_asset_name
+
+
+def check_asset_name(name, what):
+    # Appele par conv_image / conv_audio pour chaque nom non vide, avant le cache : la suite
+    # des `what` est celle des appels au trait Assets du Rust (graphe seulement, pas la
+    # couverture « metadata.json image »).
+    if what.startswith(("stage ", "inventory[")):
+        CAP.calls.append(what)
+    return _check_asset_name(name, what)
 
 
 def lua_repr(value, indent=0):
@@ -75,6 +86,7 @@ def load_json(raw, what):
 
 t.lua_repr = lua_repr
 t.load_json = load_json
+t.check_asset_name = check_asset_name
 
 
 # --------------------------------------------------------------------------- cas
@@ -394,7 +406,9 @@ def run(cid, data, argv, tmp):
             "nodes": raw_field(CAP.raw["nodes.json"]), "notes": raw_field(CAP.raw.get("notes.json")),
             "warnings": warnings,
             "missing": error is not None and error["code"] == "missing_asset"
-            or "assets_missing_allowed" in warnings}
+            or "assets_missing_allowed" in warnings,
+            # `what` des assets du graphe que Python a convertis, dans l'ordre des appels.
+            "calls": list(CAP.calls)}
     tab = CAP.table
     if tab is not None:
         assets = {}

@@ -90,9 +90,10 @@ def zip_bad_utf8_name(files, name="audios/s0.mp3"):
     count = 0
     i = data.find(raw)
     while i != -1:
-        if data[i - 30:i - 26] == b"PK\x03\x04":      # en-tete local : drapeaux a +6
+        # i >= 30 / 46 : sinon l'indice negatif lirait la fin de l'archive.
+        if i >= 30 and data[i - 30:i - 26] == b"PK\x03\x04":    # en-tete local : drapeaux +6
             data[i - 30 + 7] |= 0x08                  # octet haut des drapeaux : bit 11
-        elif data[i - 46:i - 42] == b"PK\x01\x02":    # repertoire central : drapeaux a +8
+        elif i >= 46 and data[i - 46:i - 42] == b"PK\x01\x02":  # repertoire central : +8
             data[i - 46 + 9] |= 0x08
         else:
             i = data.find(raw, i + 1)
@@ -107,7 +108,8 @@ def zip_bad_utf8_name(files, name="audios/s0.mp3"):
 def zip_negative_header_offset(files):
     """Archive dont le decalage du repertoire central (EOCD) est trop grand : le decalage
     de concatenation devient negatif, donc la position de l'en-tete local de la premiere
-    entree aussi (zipfile : seek negatif, OSError)."""
+    entree aussi (zipfile : seek negatif, OSError). OSError seulement sur un fichier reel,
+    comme le lit le convertisseur : sur un BytesIO, le seek negatif leve ValueError."""
     data = bytearray(zip_bytes(files))
     eocd = data.rfind(b"PK\x05\x06")
     off = struct.unpack_from("<I", data, eocd + 16)[0]
@@ -424,13 +426,25 @@ def corpus_cases():
     return cases
 
 
+def output_cases():
+    """Cas qui changent la sortie (`-o NOM`, NOM pris dans le dossier de travail par
+    parity.py) : propres au banc de parite, hors de corpus_cases(), dont les generateurs des
+    tables Rust (crates/telmi2flam/tests/data) appellent convert() sans option -o."""
+    S = std_files
+    return [
+        # -o x.plain : dossier .plain seul, sans .plain.pk (succes, puis echec sans sortie)
+        Case("ok_plain_dir_only", lambda: zip_bytes(S()), ["-o", "out.plain"], ()),
+        Case("zip_crc_corrupt_plain_dir_only", _crc_corrupt, ["-o", "out.plain"], ()),
+    ]
+
+
 def write_corpus(out_dir):
     """Ecrit les archives dans out_dir/corpus et l'index out_dir/corpus.json. Retourne
     la liste des entrees {id, archive, args, tags}."""
     d = os.path.join(out_dir, "corpus")
     os.makedirs(d, exist_ok=True)
     entries = []
-    for c in corpus_cases():
+    for c in corpus_cases() + output_cases():
         name = c.id + ".zip"
         with open(os.path.join(d, name), "wb") as f:
             f.write(c.build())
@@ -451,8 +465,8 @@ SIZES = (1, 3, 97, 641, 2049)
 QUICK_SIZES = (1, 3, 97)
 CONTENTS = ("gradient", "noise", "alpha")
 NOISE_MAX = 641          # au-dela, le bruit (incompressible) rendrait les PNG enormes...
-# ...sauf pour la plus grande taille, en carre et sur ces deux modes seulement (16 Mo
-# pour du RGBA) : la source qui declenche la borne 2047 avec un contenu non compressible.
+# ...sauf pour la plus grande taille, en carre et sur ces deux modes seulement (PNG de
+# 14,5 Mo en RGBA, 4,2 Mo en L) : la source qui declenche la borne 2047 avec un contenu non compressible.
 NOISE_BIG_MODES = ("RGBA", "L")
 # operations reelles du convertisseur : nom -> description
 OPS = ("scene", "thumb", "inventory", "title", "bound")
@@ -513,14 +527,30 @@ def matrix_png(mode, w, h, content, seed=SEED):
         return _png_trns(g, 8, 0, g.getpixel((w // 2, h // 2)).to_bytes(2, "big"))
     elif mode in ("RGBT", "RGBT16"):
         rgb = base.convert("RGB")
-        key = rgb.getpixel((w // 2, h // 2))
+        key = _trns_key(rgb)
         if mode == "RGBT":
             return _png_trns(rgb, 8, 2, struct.pack(">HHH", *key))
-        # 16 bits : la cle est celle du pixel central apres elargissement (_wide16)
+        # 16 bits : la cle est celle du meme pixel apres elargissement (_wide16). Comportement
+        # fige de l'oracle (Pillow 12.3.0), reproduit par le port Rust : Pillow lit l'image
+        # RGB 16 bits en RGB 8 bits (octet haut) mais garde la cle tRNS sur 16 bits, comparee
+        # telle quelle aux pixels 8 bits. Des qu'un canal de la cle depasse 255 (ici : tout
+        # canal v > 0), aucun pixel ne l'egale et la transparence n'est jamais appliquee ; une
+        # cle aux trois canaux < 256 viserait au contraire un autre pixel (cle (3, 3, 3) ->
+        # pixel 8 bits (3, 3, 3)).
         return _png_trns(rgb, 16, 2, struct.pack(">HHH", *(_wide16(v) for v in key)))
     else:
         raise ValueError(mode)
     return b.getvalue()
+
+
+def _trns_key(rgb):
+    """Cle tRNS d'une image RGB : le pixel le moins gris (ecart max - min des canaux le plus
+    grand) parmi le centre et les quatre coins, premier en cas d'egalite. Une cle franchement
+    non grise, aux canaux distincts, fait echouer une permutation de canaux dans le port."""
+    w, h = rgb.size
+    spots = ((w // 2, h // 2), (w - 1, 0), (0, h - 1), (0, 0), (w - 1, h - 1))
+    pixels = [rgb.getpixel(p) for p in spots]
+    return max(pixels, key=lambda px: max(px) - min(px))
 
 
 def _wide16(v):

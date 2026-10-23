@@ -220,12 +220,18 @@ def deflate_cases():
     c["deflate_no_end_block"] = deflate_story(
         "images/t.png", fixed_block(b"abcabc", end=False, final=False), b"abcabc")
     c["deflate_trailing_bytes"] = deflate_story("images/x.png", comp + b"\x00garbage!!", text)
+    # file_size plus petit que le contenu : la lecture s'arrete avant la fin du flux, les
+    # octets en trop ne sont jamais atteints (le reliquat `tail` du Rust n'est pas exerce ici,
+    # mais par le test unitaire `sortie_aux_bornes_d_un_tour` de zipread.rs).
     c["deflate_trailing_bytes_short_size"] = deflate_story("images/x.png", comp + b"junk", text,
                                                            size=len(text) - 5)
     # Tables et blocs invalides.
     c["deflate_reserved_type"] = deflate_story("images/r.png", b"\x07" + b"\x00" * 8, b"")
-    c["deflate_bad_tables"] = deflate_story("images/b.png", b"\x05" + b"\xff" * 30, b"")
-    c["deflate_bad_tables2"] = deflate_story("images/b.png", b"\xed\xfd" + b"\x00" * 30, b"")
+    # Bloc dynamique, HDIST = 32 codes de distance (> 30) : refuse par zlib et miniz_oxide.
+    c["deflate_hdist_too_big"] = deflate_story("images/b.png", b"\x05" + b"\xff" * 30, b"")
+    # Bloc dynamique dont la table des longueurs de code est vide (les 11 longueurs HCLEN a 0).
+    c["deflate_code_lengths_empty"] = deflate_story(
+        "images/b.png", b"\xed\xfd" + b"\x00" * 30, b"")
     c["deflate_hlit_too_big"] = deflate_story("images/b.png", b"\xfd" + b"\xff" * 30, b"")
     c["deflate_stored_bad_len"] = deflate_story("images/s.png", b"\x01\x05\x00\x00\x00abc", b"abc")
     c["deflate_stored_ok"] = deflate_story("images/s.png", b"\x01\x03\x00\xfc\xffabc", b"abc")
@@ -362,10 +368,11 @@ RUST_INFO_EXIT = {
 
 
 # Ecarts admis de lecture (PORT-RUST.md section 3) : (archive, entree) -> erreur du Rust.
-# miniz_oxide refuse tout de suite une table de Huffman dynamique (ici vide : tous les HCLEN
-# a 0) que zlib accepte en attendant la suite du flux ; Python ne signale pas un flux tronque.
+# miniz_oxide refuse tout de suite un bloc dynamique dont la table des longueurs de code est
+# vide (les longueurs HCLEN toutes a 0), que zlib accepte en attendant la suite du flux ;
+# Python ne signale pas un flux tronque.
 RUST_READ_ERROR = {
-    ("deflate_bad_tables2", "images/b.png"): "corrupt",
+    ("deflate_code_lengths_empty", "images/b.png"): "corrupt",
 }
 
 

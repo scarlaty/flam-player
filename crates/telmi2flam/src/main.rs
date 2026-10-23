@@ -94,6 +94,12 @@ fn install_panic_hook() {
             let _ = writeln!(out, "{line}").and_then(|()| out.flush());
         }
         err_line(&format!("ERREUR inattendue (panic) : {what}{place}"));
+        // Pile d'appels seulement si demandée (`RUST_BACKTRACE`, ou `RUST_LIB_BACKTRACE` qui la
+        // prime pour `Backtrace::capture`, contrairement au crochet par défaut).
+        let trace = std::backtrace::Backtrace::capture();
+        if trace.status() == std::backtrace::BacktraceStatus::Captured {
+            err_line(&format!("pile d'appels :\n{trace}"));
+        }
         std::process::exit(i32::from(EXIT_PANIC));
     }));
 }

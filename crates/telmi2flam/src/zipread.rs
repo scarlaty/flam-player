@@ -830,21 +830,23 @@ mod tests {
                 enc.write_all(&content).unwrap();
                 let comp = enc.finish().unwrap();
                 let crc = crc32fast::hash(&content);
-                let entry = Entry {
-                    filename: "x".into(),
-                    orig_filename: "x".into(),
-                    flag_bits: 0,
-                    compress_type: ZIP_DEFLATED,
-                    crc,
-                    compress_size: comp.len() as u64,
-                    file_size: size as u64,
-                    header_offset: 0,
-                    end_offset: 0,
-                };
                 // Avec et sans octets après la fin du flux (cas où `tail` est non vide).
                 for extra in [0usize, 1, 100] {
                     let mut data = comp.clone();
                     data.extend(std::iter::repeat_n(0x55u8, extra));
+                    // Taille compressée de l'en-tête : flux et octets en trop, comme dans une
+                    // archive (`compress_left` part de la même valeur).
+                    let entry = Entry {
+                        filename: "x".into(),
+                        orig_filename: "x".into(),
+                        flag_bits: 0,
+                        compress_type: ZIP_DEFLATED,
+                        crc,
+                        compress_size: data.len() as u64,
+                        file_size: size as u64,
+                        header_offset: 0,
+                        end_offset: 0,
+                    };
                     let mut cursor = IoCursor::new(data.clone());
                     let ext = ExtFile {
                         reader: &mut cursor,
