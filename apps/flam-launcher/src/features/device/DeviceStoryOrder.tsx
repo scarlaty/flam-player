@@ -49,7 +49,7 @@ export function DeviceStoryOrder({
   busy,
   onClose,
 }: DeviceStoryOrderProps) {
-  const { reorderOnDevice, deviceKey } = useDevice();
+  const { reorderOnDevice, deviceKey, canMaintain } = useDevice();
   const toast = useToast();
   const base = stories.map((story) => story.uuid);
   const [keyAtOpen] = useState(deviceKey);
@@ -104,7 +104,9 @@ export function DeviceStoryOrder({
   }, [order]);
 
   const byUuid = new Map(stories.map((story) => [story.uuid, story]));
-  const locked = saving || busy;
+  // Garde du firmware (#326) : Flam 2.x non confirmée ou écriture bloquée.
+  const firmware = !canMaintain && !busy;
+  const locked = saving || busy || firmware;
   const dirty = order.join() !== base.join();
 
   function apply(next: string[], uuid: string) {
@@ -290,7 +292,7 @@ export function DeviceStoryOrder({
             className="fl-send__button"
             aria-disabled={!dirty || locked || undefined}
             aria-describedby={
-              busy
+              busy || firmware
                 ? "fl-device-order-busy"
                 : !dirty
                   ? "fl-device-order-unchanged"
@@ -300,9 +302,9 @@ export function DeviceStoryOrder({
           >
             {saving ? text.saving : text.save}
           </Button>
-          {busy ? (
+          {busy || firmware ? (
             <span id="fl-device-order-busy" className="fl-send__reason">
-              {text.busy}
+              {busy ? text.busy : text.firmware}
             </span>
           ) : (
             !dirty && (

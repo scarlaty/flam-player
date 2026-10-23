@@ -29,14 +29,16 @@ export function RemoveStoryButton({
   onWorkingChange,
   onRemoved,
 }: RemoveStoryButtonProps) {
-  const { removeFromDevice, deviceKey, ejecting } = useDevice();
+  const { removeFromDevice, deviceKey, ejecting, canMaintain } = useDevice();
   const keyAtOpen = useRef<string | null>(null);
   const toast = useToast();
   const [confirming, setConfirming] = useState(false);
   const [working, setWorking] = useState(false);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const hintId = useId();
-  const blocked = busy || working || locked || ejecting;
+  // Garde du firmware (#326) : Flam 2.x non confirmée ou écriture bloquée.
+  const firmware = !canMaintain;
+  const blocked = busy || working || locked || ejecting || firmware;
   const name = story.title ?? t.deviceScreen.stories.untitled(story.short_id);
 
   async function confirmRemove() {
@@ -80,15 +82,22 @@ export function RemoveStoryButton({
           {working ? text.working : text.button}
         </Button>
         {blocked && !working && (
-          // « Un autre retrait est en cours » : lu par les lecteurs d'écran seulement, pour ne pas
-          // répéter la même phrase sur chaque ligne (la ligne concernée montre « Retrait… »).
+          // « Un autre retrait est en cours » et le blocage du firmware : lus par les lecteurs
+          // d'écran seulement, pour ne pas répéter la même phrase sur chaque ligne (la ligne
+          // concernée montre « Retrait… », le bandeau du firmware explique le blocage).
           <span
             id={hintId}
             className={
               blocked && !busy && !ejecting ? "fl-visually-hidden" : "fl-send__reason"
             }
           >
-            {busy ? text.busy : ejecting ? text.ejecting : text.otherWorking}
+            {busy
+              ? text.busy
+              : ejecting
+                ? text.ejecting
+                : firmware
+                  ? text.firmware
+                  : text.otherWorking}
           </span>
         )}
       </span>

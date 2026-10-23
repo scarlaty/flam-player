@@ -13,7 +13,7 @@ use crate::device::carrier::tests::{official_story, test_bt, test_key_file, OFFI
 use crate::device::crypto::tests::{TEST_IV, TEST_KEY, TEST_SERIAL};
 use crate::device::crypto::MDF_LEN;
 use crate::device::detect::VolumeInfo;
-use crate::device::guard::tests::{info_v2, key_v2, mdf_with, story, TEST_SERIAL_HEX};
+use crate::device::guard::tests::{info_v2, key_v2, mdf_with, story, wrong_info, TEST_SERIAL_HEX};
 use crate::device::guard::{KeySession, TrustStore, KNOWN_HEADER};
 
 /// Titre de l'histoire officielle des fixtures (`INFO_PLAIN`).
@@ -479,6 +479,24 @@ fn un_uuid_colle_a_un_mot_est_masque() {
         r.scrub(&format!("str/{OFFICIAL}/info x={upper}_y")),
         "str/<uuid>/info x=<uuid>_y"
     );
+}
+
+/// Revue #326 (I3) : les UUID des histoires en contradiction ne sont jamais repris, même avant
+/// le filet (la ligne de cohérence ne contient aucun `<uuid>`).
+#[test]
+fn une_contradiction_ne_cite_aucun_uuid() {
+    const BAD: &str = "77777777-6666-4555-8444-333333333333";
+    let dev = tempfile::tempdir().unwrap();
+    write(&dev.path().join(detect::MDF_FILE), &fixture_mdf());
+    story(dev.path(), BAD, &key_v2(), &wrong_info());
+    let text = diagnostic(vec![dev.path().to_path_buf()], Vec::new());
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("- Cohérence des clés"))
+        .unwrap_or_else(|| panic!("ligne de cohérence absente :\n{text}"));
+    assert!(line.contains("contradiction :"), "{line}");
+    assert!(!line.contains("<uuid>") && !line.contains(BAD), "{line}");
+    assert!(!text.to_lowercase().contains(BAD), "{text}");
 }
 
 /// Revue #329 : un nom de compte avec espace ou apostrophe est masqué en entier, même quand le
