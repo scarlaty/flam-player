@@ -6,7 +6,9 @@
 //! l'ordre de Python : `notes.json`, `stages` / `inventory`, stages, actions, inventaire,
 //! assets manquants (`missing_asset`, simulé ici : il relève de la PR des assets),
 //! `startAction`, puis `nodes.lua`. Les noms d'assets et l'en-tête (titre, couverture) sont
-//! ceux que Python a passés à `lua_repr`.
+//! ceux que Python a passés à `lua_repr`. Les appels au trait `Assets` sont contrôlés (nom égal
+//! au champ de `nodes.json`, ordre de Python) ; les cas marqués `divergence` (`json_limit`)
+//! vérifient l'écart assumé du Rust au lieu de la parité.
 
 use std::collections::HashMap;
 
@@ -75,24 +77,129 @@ fn digest(out: &[u8], keep: usize) -> String {
     format!("fnv1a64:{h:016x}:{}", out.len())
 }
 
-/// Noms d'assets rendus par Python, par champ (`stage s0.image`, `inventory[0].image`…).
-struct Table(HashMap<String, Option<String>>);
+/// Ordre des appels de Python : (0 stages / 1 inventaire, position, 0 image / 1 audio).
+type OrderKey = (u8, usize, u8);
 
-impl Table {
+/// Noms d'assets rendus par Python, par champ (`stage s0.image`, `inventory[0].image`…), et
+/// contrôle des appels reçus : nom passé, type d'appel et ordre.
+struct Table<'a> {
+    py: HashMap<String, Option<String>>,
+    nodes: &'a Value,
+    /// `what` de chaque appel, dans l'ordre reçu.
+    calls: Vec<String>,
+    /// Écarts constatés (nom, type d'appel, ordre).
+    problems: Vec<String>,
+    last: Option<OrderKey>,
+}
+
+impl<'a> Table<'a> {
+    fn new(py: HashMap<String, Option<String>>, nodes: &'a Value) -> Self {
+        Table {
+            py,
+            nodes,
+            calls: Vec::new(),
+            problems: Vec::new(),
+            last: None,
+        }
+    }
+
+    /// Clé d'ordre de Python (stages, image puis audio, puis inventaire) et valeur du champ
+    /// dans `nodes.json`, pour un `what` donné.
+    fn locate(&self, what: &str) -> Option<(OrderKey, Option<&'a Value>)> {
+        let (head, field) = what.rsplit_once('.')?;
+        let sub = match field {
+            "image" => 0,
+            "audio" => 1,
+            _ => return None,
+        };
+        if let Some(sid) = head.strip_prefix("stage ") {
+            let Some(Value::Object(stages)) = self.nodes.get("stages") else {
+                return None;
+            };
+            let pos = stages.get_index_of(sid)?;
+            return Some(((0, pos, sub), stages[pos].get(field)));
+        }
+        let i: usize = head
+            .strip_prefix("inventory[")?
+            .strip_suffix(']')?
+            .parse()
+            .ok()?;
+        let Some(Value::List(items)) = self.nodes.get("inventory") else {
+            return None;
+        };
+        Some(((1, i, sub), items.get(i)?.get(field)))
+    }
+
+    fn record(&mut self, kind: &str, inventory: bool, name: &str, what: &str) {
+        self.calls.push(what.to_owned());
+        let Some((key, value)) = self.locate(what) else {
+            self.problems
+                .push(format!("{kind}({name:?}, {what:?}) : champ inconnu"));
+            return;
+        };
+        if !what.ends_with(&format!(".{kind}")) || inventory != (key.0 == 1) {
+            self.problems.push(format!(
+                "{kind}({name:?}, {what:?}, inventory={inventory}) : mauvais appel"
+            ));
+        }
+        match value {
+            Some(Value::Str(expected)) if !name.is_empty() && name == expected => {}
+            other => self.problems.push(format!(
+                "{kind}({name:?}, {what:?}) : attendu un nom non vide égal à {other:?}"
+            )),
+        }
+        if self.last.is_some_and(|last| last >= key) {
+            self.problems.push(format!(
+                "{kind}({name:?}, {what:?}) : hors de l'ordre de Python"
+            ));
+        }
+        self.last = Some(key);
+    }
+
+    /// Appels attendus quand le graphe est converti : chaque nom non vide, dans l'ordre.
+    fn expected_calls(&self) -> Vec<String> {
+        let non_empty = |v: Option<&Value>| matches!(v, Some(Value::Str(s)) if !s.is_empty());
+        let mut out = Vec::new();
+        if let Some(Value::Object(stages)) = self.nodes.get("stages") {
+            for (sid, st) in stages {
+                for field in ["image", "audio"] {
+                    if non_empty(st.get(field)) {
+                        out.push(format!("stage {sid}.{field}"));
+                    }
+                }
+            }
+        }
+        if let Some(Value::List(items)) = self.nodes.get("inventory") {
+            for (i, it) in items.iter().enumerate() {
+                if non_empty(it.get("image")) {
+                    out.push(format!("inventory[{i}].image"));
+                }
+            }
+        }
+        out
+    }
+
     fn get(&self, what: &str) -> Option<String> {
         // Champ inconnu : cas en échec avant `nodes.lua`, le nom n'a pas d'effet.
-        self.0
+        self.py
             .get(what)
             .cloned()
             .unwrap_or_else(|| Some("x.lif".into()))
     }
 }
 
-impl Assets for Table {
-    fn image(&mut self, _: &str, what: &str, _: bool) -> Result<Option<String>, ConvError> {
+impl Assets for Table<'_> {
+    fn image(
+        &mut self,
+        name: &str,
+        what: &str,
+        inventory: bool,
+    ) -> Result<Option<String>, ConvError> {
+        self.record("image", inventory, name, what);
         Ok(self.get(what))
     }
-    fn audio(&mut self, _: &str, what: &str) -> Result<Option<String>, ConvError> {
+    fn audio(&mut self, name: &str, what: &str) -> Result<Option<String>, ConvError> {
+        self.record("audio", false, name, what);
         Ok(self.get(what))
     }
 }
@@ -104,22 +211,34 @@ fn replay(case: &Value) -> Result<(), String> {
         .map_err(|e| format!("nodes.json refusé : {e}"))?;
     let notes_raw = raw(field(case, "notes"));
     let (notes, warning) = load_notes(notes_raw.as_deref());
-    if warning.is_some() != warnings.contains(&"notes_ignored") {
-        return Err(format!(
-            "notes_ignored : Rust {warning:?}, Python {warnings:?}"
-        ));
+    match case.get("divergence").map(str_of) {
+        // JSON hors limites : Python lit `notes.json`, le Rust l'ignore avec un avertissement.
+        Some("json_limit") => {
+            if warning.is_none() || warnings.contains(&"notes_ignored") {
+                return Err(format!(
+                    "json_limit : Rust {warning:?}, Python {warnings:?} (écart attendu absent)"
+                ));
+            }
+        }
+        Some(other) => panic!("divergence inconnue : {other}"),
+        None if warning.is_some() != warnings.contains(&"notes_ignored") => {
+            return Err(format!(
+                "notes_ignored : Rust {warning:?}, Python {warnings:?}"
+            ));
+        }
+        None => {}
     }
-    let mut assets = Table(
-        case.get("assets")
-            .map(list)
-            .unwrap_or_default()
-            .iter()
-            .map(|kv| {
-                let kv = list(kv);
-                (str_of(&kv[0]).to_owned(), opt_str(kv.get(1)))
-            })
-            .collect(),
-    );
+    let py_assets: HashMap<String, Option<String>> = case
+        .get("assets")
+        .map(list)
+        .unwrap_or_default()
+        .iter()
+        .map(|kv| {
+            let kv = list(kv);
+            (str_of(&kv[0]).to_owned(), opt_str(kv.get(1)))
+        })
+        .collect();
+    let mut assets = Table::new(py_assets, &nodes);
     let header = case.get("header");
     let h = |k: &str| header.and_then(|h| opt_str(h.get(k)));
     let (title, subtitle) = (
@@ -131,9 +250,11 @@ fn replay(case: &Value) -> Result<(), String> {
     let allow_missing = matches!(field(case, "allow_missing"), Value::Bool(true));
     let missing = matches!(field(case, "missing"), Value::Bool(true));
     let mut replaced = Replaced::new();
+    let mut graph_done = false;
     let result = (|| {
         let src = Sources::new(&nodes)?;
         let graph = convert_graph(&src, &notes, &mut replaced, &mut assets)?;
+        graph_done = true;
         if missing && !allow_missing {
             return Err(ConvError {
                 code: "missing_asset",
@@ -151,8 +272,28 @@ fn replay(case: &Value) -> Result<(), String> {
         };
         nodes_lua(&header, &graph, &start)
     })();
+    if !assets.problems.is_empty() {
+        return Err(format!("appels à Assets : {:?}", assets.problems));
+    }
+    if graph_done && assets.calls != assets.expected_calls() {
+        return Err(format!(
+            "appels à Assets {:?}, attendus {:?}",
+            assets.calls,
+            assets.expected_calls()
+        ));
+    }
     if !replaced.is_empty() && !warnings.contains(&"font_replaced") {
         return Err(format!("font_replaced absent chez Python : {replaced:?}"));
+    }
+    // Sens inverse : le `font_replaced` de Python vient du graphe ou de l'en-tête (titre,
+    // sous-titre, hors de ce module) ; avec un en-tête ASCII, seul le graphe peut l'avoir levé.
+    if replaced.is_empty()
+        && warnings.contains(&"font_replaced")
+        && header.is_some()
+        && title.is_ascii()
+        && subtitle.is_ascii()
+    {
+        return Err("font_replaced chez Python, rien de remplacé en Rust".into());
     }
     match (result, case.get("error")) {
         (Ok(lua), None) => {
@@ -179,12 +320,9 @@ fn replay(case: &Value) -> Result<(), String> {
             if e.code != code || i64::from(e.exit_code) != exit {
                 return Err(format!("erreur {e:?}, Python {code}/{exit} : {message}"));
             }
-            // Message identique, sauf `%r` de Python (repr) dans `check_asset_name` et
-            // l'erreur simulée des assets manquants.
-            if code == "invalid_content"
-                && !message.contains("(chemin dangereux)")
-                && e.message != message
-            {
+            // Message identique (repr de Python compris), sauf l'erreur simulée des assets
+            // manquants.
+            if code == "invalid_content" && e.message != message {
                 return Err(format!("message « {} », Python « {message} »", e.message));
             }
             Ok(())
@@ -219,6 +357,11 @@ fn graphe_identique_a_python() {
         failures.len(),
         failures.join("\n\n")
     );
+    // Les cas d'écart assumé et les noms refusés sont bien dans la table.
+    assert!(cases.iter().any(|c| c.get("divergence").is_some()));
+    assert!(cases
+        .iter()
+        .any(|c| str_of(field(c, "id")).starts_with("g_bad_name_")));
     // Les deux familles sont couvertes (conversions réussies et erreurs du graphe).
     assert!(ok >= 150 && err >= 50, "{ok} réussites, {err} erreurs");
 }

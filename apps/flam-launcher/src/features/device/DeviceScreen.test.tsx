@@ -85,6 +85,8 @@ function renderScreen(ui: ReactElement = <DeviceScreen />) {
 }
 
 let status: DeviceStatus;
+/** Si défini, `device_status` renvoie ce que rend cette fonction (réponse retenue). */
+let statusGate: (() => Promise<DeviceStatus>) | null;
 let stories: DeviceStories | null;
 let failures: Record<string, { kind: string; message: string } | undefined>;
 let calls: string[];
@@ -101,6 +103,7 @@ let officialRequests: string[][];
 
 beforeEach(() => {
   status = absent;
+  statusGate = null;
   stories = report([]);
   failures = {};
   calls = [];
@@ -117,7 +120,7 @@ beforeEach(() => {
       if (failure) throw failure;
       switch (cmd) {
         case "device_status":
-          return status;
+          return statusGate ? statusGate() : status;
         case "device_recover_transfers":
           return {
             incomplete_removed: 0,
@@ -431,15 +434,73 @@ it("actualise la liste à la demande", async () => {
   expect(count("device_list_stories")).toBe(2);
 });
 
-it("rend le focus au titre quand « Réessayer » trouve la Flam", async () => {
-  renderScreen();
-  const retry = await screen.findByRole("button", { name: "Réessayer" });
-  status = detected();
-  fireEvent.click(retry);
-  const heading = await screen.findByRole("heading", { name: "Flam détectée" });
-  await waitFor(() => expect(heading).toHaveFocus());
-  expect(screen.getByRole("status")).toHaveTextContent(/Flam détectée|histoire/);
-});
+it(
+  "rend le focus au titre quand « Réessayer » trouve la Flam",
+  async () => {
+    renderScreen();
+    const retry = await screen.findByRole("button", { name: "Réessayer" });
+    status = detected();
+    fireEvent.click(retry);
+    const heading = await screen.findByRole("heading", { name: "Flam détectée" });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(screen.getByRole("status")).toHaveTextContent(/Flam détectée|histoire/);
+  },
+  SLOW_TEST_MS,
+);
+
+it(
+  "rend le focus au titre même si un appel en vol répond avant celui de « Réessayer »",
+  async () => {
+    renderScreen();
+    const retry = await screen.findByRole("button", { name: "Réessayer" });
+    // Un appel est déjà en vol (retour au premier plan) quand on clique : sa réponse, périmée
+    // (« non détectée »), arrive et est affichée avant celle de l'appel lancé par le clic.
+    const held: ((value: DeviceStatus) => void)[] = [];
+    const answer = (index: number, value: DeviceStatus) => held[index]?.(value);
+    statusGate = () => new Promise<DeviceStatus>((resolve) => held.push(resolve));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    fireEvent.click(retry);
+    await act(async () => {
+      answer(0, { ...absent });
+    });
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => {
+      answer(1, detected());
+    });
+    statusGate = null;
+    const heading = await screen.findByRole("heading", { name: "Flam détectée" });
+    await waitFor(() => expect(heading).toHaveFocus());
+  },
+  SLOW_TEST_MS,
+);
+
+it(
+  "rend le focus au titre même si l'appel en vol qui précède « Réessayer » trouve déjà la Flam",
+  async () => {
+    renderScreen();
+    const retry = await screen.findByRole("button", { name: "Réessayer" });
+    // Un appel est déjà en vol (retour au premier plan) quand on clique : sa réponse, périmée
+    // (déjà « détectée »), arrive et est affichée avant celle de l'appel lancé par le clic.
+    const held: ((value: DeviceStatus) => void)[] = [];
+    const answer = (index: number, value: DeviceStatus) => held[index]?.(value);
+    statusGate = () => new Promise<DeviceStatus>((resolve) => held.push(resolve));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    fireEvent.click(retry);
+    await act(async () => {
+      answer(0, detected());
+    });
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => {
+      answer(1, detected());
+    });
+    statusGate = null;
+    const heading = await screen.findByRole("heading", { name: "Flam détectée" });
+    await waitFor(() => expect(heading).toHaveFocus());
+  },
+  SLOW_TEST_MS,
+);
 
 it("garde le focus dans la liste quand on actualise ou réessaie", async () => {
   status = detected();
