@@ -775,6 +775,35 @@ class TestConversion(Base):
         with self.assertRaises(T.ConvError):
             T._require_runtime(T.RUNTIME_DIR, None, "scripts framework")
 
+    # #350 : manifeste lisible mais sans ligne "!" (vide, commentaires) -> ConvError
+    def test_runtime_manifest_without_required_lines(self):
+        path = os.path.join(self.tmp, "manifest-reduit.txt")
+        for content in ("", "# commentaire seul\n\n# autre\n", "!script/global.lua\n",
+                        "!img/script/a.lif\n"):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            self.assertEqual(T._runtime_required(path), (None, None), repr(content))
+            with self.assertRaises(ValueError):
+                validate._runtime_required(path)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("")
+        saved = T.RUNTIME_SCRIPTS
+        T.RUNTIME_SCRIPTS = T._runtime_required(path)[0]
+        try:
+            with self.assertRaises(T.ConvError):
+                self.convert(std_files(), name="manifestereduit")
+        finally:
+            T.RUNTIME_SCRIPTS = saved
+
+    # #350 : un BOM UTF-8 en tete du manifeste est ignore
+    def test_runtime_manifest_bom(self):
+        path = os.path.join(self.tmp, "manifest-bom.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\ufeff!script/global.lua\n!img/script/a.lif\n")
+        self.assertEqual(T._runtime_required(path), (("global.lua",), ("a.lif",)))
+        self.assertEqual(validate._runtime_required(path), (("global.lua",), ("a.lif",)))
+
+
 class TestMp3map(unittest.TestCase):
     def ref_44k(self, data):
         """Formule historique (mp3map-tool de reference) pour du 44,1 kHz MPEG1 L3."""

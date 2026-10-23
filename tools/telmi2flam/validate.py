@@ -43,13 +43,16 @@ RUNTIME_MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run
 
 def _runtime_required(manifest=RUNTIME_MANIFEST):
     scripts, icons = [], []
-    with open(manifest, encoding="utf-8") as f:
+    with open(manifest, encoding="utf-8-sig") as f:  # BOM ignore, comme build.rs
         for line in f:
             line = line.strip()
             if line.startswith("!script/"):
                 scripts.append(line[len("!script/"):])
             elif line.startswith("!img/script/"):
                 icons.append(line[len("!img/script/"):])
+    if not scripts or not icons:
+        # manifeste vide ou tronque : ne pas valider silencieusement un paquet sans runtime
+        raise ValueError("%s : aucune ligne '!' de script ou d'icone" % manifest)
     return tuple(scripts), tuple(icons)
 
 
