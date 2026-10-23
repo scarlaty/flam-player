@@ -605,3 +605,121 @@ fn doctype_en_minuscules_ou_apres_le_contenu_refuse() {
     let lower = r#"<!doctype rss [<!entity a "b">]><rss><channel/></rss>"#;
     assert_eq!(parse(lower), Err(RssError::DtdRefused));
 }
+
+// --- itunes:explicit (#361) ---
+
+fn explicits(feed: &PodcastFeed) -> Vec<Option<bool>> {
+    feed.episodes.iter().map(|e| e.explicit).collect()
+}
+
+#[test]
+fn explicite_valeur_de_l_episode() {
+    let xml = wrap(&format!(
+        "<title>T</title>{}{}{}",
+        item("a", "<itunes:explicit>yes</itunes:explicit>"),
+        item("b", "<itunes:explicit>clean</itunes:explicit>"),
+        item("c", "<itunes:explicit>explicit</itunes:explicit>"),
+    ));
+    let feed = parse(&xml).unwrap();
+    assert_eq!(feed.explicit, None);
+    assert_eq!(explicits(&feed), [Some(true), Some(false), Some(true)]);
+}
+
+#[test]
+fn explicite_valeur_du_canal_heritee() {
+    let xml = wrap(&format!(
+        "<title>T</title><itunes:explicit>true</itunes:explicit>{}{}",
+        item("a", ""),
+        item("b", "<itunes:explicit>no</itunes:explicit>"),
+    ));
+    let feed = parse(&xml).unwrap();
+    assert_eq!(feed.explicit, Some(true));
+    // L'épisode sans valeur hérite du canal ; sa propre valeur prime.
+    assert_eq!(explicits(&feed), [Some(true), Some(false)]);
+}
+
+#[test]
+fn explicite_canal_apres_les_episodes() {
+    let xml = wrap(&format!(
+        "<title>T</title>{}<itunes:explicit>false</itunes:explicit>",
+        item("a", ""),
+    ));
+    let feed = parse(&xml).unwrap();
+    assert_eq!(feed.explicit, Some(false));
+    assert_eq!(explicits(&feed), [Some(false)]);
+}
+
+#[test]
+fn explicite_absent_reste_inconnu() {
+    let feed = parse(&wrap(&format!("<title>T</title>{}", item("a", "")))).unwrap();
+    assert_eq!(feed.explicit, None);
+    assert_eq!(explicits(&feed), [None]);
+}
+
+#[test]
+fn explicite_valeurs_invalides_ignorees() {
+    let xml = wrap(&format!(
+        "<title>T</title><itunes:explicit>peut-etre</itunes:explicit>{}{}{}",
+        item("a", "<itunes:explicit>1</itunes:explicit>"),
+        item("b", "<itunes:explicit></itunes:explicit>"),
+        item(
+            "c",
+            &format!("<itunes:explicit>{}</itunes:explicit>", "x".repeat(10_000))
+        ),
+    ));
+    let feed = parse(&xml).unwrap();
+    assert_eq!(feed.explicit, None);
+    assert_eq!(explicits(&feed), [None, None, None]);
+    // Une valeur invalide d'épisode laisse jouer la valeur du canal.
+    let xml = wrap(&format!(
+        "<title>T</title><itunes:explicit>yes</itunes:explicit>{}",
+        item("a", "<itunes:explicit>bof</itunes:explicit>"),
+    ));
+    assert_eq!(explicits(&parse(&xml).unwrap()), [Some(true)]);
+}
+
+#[test]
+fn explicite_casse_et_espaces() {
+    let xml = wrap(&format!(
+        "<title>T</title>{}{}{}{}",
+        item("a", "<itunes:explicit>  YES\n</itunes:explicit>"),
+        item("b", "<itunes:explicit> False </itunes:explicit>"),
+        item(
+            "c",
+            "<itunes:explicit><![CDATA[Explicit]]></itunes:explicit>"
+        ),
+        item("d", "<ITUNES:Explicit>NO</ITUNES:Explicit>"),
+    ));
+    assert_eq!(
+        explicits(&parse(&xml).unwrap()),
+        [Some(true), Some(false), Some(true), Some(false)]
+    );
+}
+
+#[test]
+fn explicite_premiere_valeur_valide_gagne() {
+    let xml = wrap(&format!(
+        "<title>T</title>{}",
+        item(
+            "a",
+            "<itunes:explicit>??</itunes:explicit><itunes:explicit>yes</itunes:explicit>\
+             <itunes:explicit>no</itunes:explicit>"
+        ),
+    ));
+    assert_eq!(explicits(&parse(&xml).unwrap()), [Some(true)]);
+}
+
+#[test]
+fn explicite_flux_type_apple_et_ignore_hors_canal() {
+    // Forme courante : valeur au canal, `clean` par épisode ; un `itunes:explicit` imbriqué
+    // ailleurs (ici dans `itunes:owner`) ne compte pas.
+    let xml = wrap(&format!(
+        "<title>T</title><itunes:owner><itunes:explicit>yes</itunes:explicit></itunes:owner>\
+         <itunes:explicit>no</itunes:explicit>{}{}",
+        item("a", "<itunes:explicit>clean</itunes:explicit>"),
+        item("b", "<itunes:explicit>yes</itunes:explicit>"),
+    ));
+    let feed = parse(&xml).unwrap();
+    assert_eq!(feed.explicit, Some(false));
+    assert_eq!(explicits(&feed), [Some(false), Some(true)]);
+}
