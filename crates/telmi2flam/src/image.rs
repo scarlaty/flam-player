@@ -1,13 +1,16 @@
 //! Conversions PNG vers LIF de `tools/telmi2flam/telmi2flam.py` : `png_to_lif`,
 //! `png_to_scene_lif`, `png_to_fit_lif`, `png_to_thumb_lif`, avec `_bound` et
-//! `_avoid_transpose`. Sortie identique à l'octet près à celle de Python 3.14.8 + Pillow 12.3.0
-//! (décodage [`crate::png`], redimensionnement [`crate::resample`], encodeur [`crate::lif`]).
+//! `_avoid_transpose`, et les trois modes de vignette (`flou`, `rogner`, `bandes`, voir
+//! [`ThumbFit`]). Sortie identique à l'octet près à celle de Python 3.14.8 + Pillow 12.3.0
+//! (décodage [`crate::png`], redimensionnement [`crate::resample`], flou et composition alpha
+//! `crate::blur`, encodeur [`crate::lif`]).
 //!
 //! Erreurs : celles du décodage ([`PngError`]) ; un manque de mémoire pendant le
 //! redimensionnement est [`PngError::Unreadable`], comme le `MemoryError` attrapé par Python
 //! (avertissement `image_unreadable`, ou `cover_unreadable` pour la couverture). Le jeton d'annulation est consulté à chaque ligne décodée
 //! ou redimensionnée.
 
+use crate::blur::{alpha_composite, gaussian_blur};
 use crate::lif;
 use crate::png::{decode_rgba, PngError, Rgba};
 use crate::resample::{resize_rgba, thumbnail};
@@ -20,6 +23,40 @@ pub const VISUAL_H: u32 = 212;
 /// Vignette de l'histoire (`THUMB_W`, `THUMB_H`) : 104 × 136, taille des vignettes officielles.
 pub const THUMB_W: u32 = 104;
 pub const THUMB_H: u32 = 136;
+/// Rayon du flou du fond des vignettes en mode `flou` (`_THUMB_BLUR_RADIUS`).
+const THUMB_BLUR_RADIUS: f32 = 8.0;
+
+/// Remplissage de la vignette 104 × 136 (`--thumb-fit`, `THUMB_FITS` de Python).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThumbFit {
+    /// Image entière centrée ; fond : la même image agrandie pour couvrir puis floutée
+    /// (`GaussianBlur(8)`). Défaut de Python (`DEFAULT_THUMB_FIT`).
+    #[default]
+    Flou,
+    /// Image agrandie pour couvrir la vignette, rognée au centre.
+    Rogner,
+    /// Image entière centrée, bandes transparentes.
+    Bandes,
+}
+
+impl ThumbFit {
+    /// Nom de l'option (`flou`, `rogner`, `bandes`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThumbFit::Flou => "flou",
+            ThumbFit::Rogner => "rogner",
+            ThumbFit::Bandes => "bandes",
+        }
+    }
+
+    /// Mode nommé par l'option, ou `None` si le nom est inconnu.
+    pub fn from_name(name: &str) -> Option<ThumbFit> {
+        [ThumbFit::Flou, ThumbFit::Rogner, ThumbFit::Bandes]
+            .into_iter()
+            .find(|f| f.as_str() == name)
+    }
+}
+
 /// Icônes d'inventaire (`INV_W`, `INV_H`).
 pub const INV_W: u32 = 128;
 pub const INV_H: u32 = 128;
@@ -104,10 +141,9 @@ pub fn png_to_lif(png: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>> {
 }
 
 /// Image ajustée sans déformation dans `w × h` (agrandie ou réduite), centrée sur un canevas
-/// transparent de exactement `w × h` (corps de `png_to_scene_lif` et de `png_to_thumb_lif`
-/// en mode `bandes`).
-fn fit_on_canvas(png: &[u8], w: u32, h: u32, cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
-    let mut im = decode_rgba(png, cancelled)?;
+/// transparent de exactement `w × h` (corps de `png_to_scene_lif`, et `_thumb_contain` de
+/// `png_to_thumb_lif`).
+fn fit_on_canvas(mut im: Rgba, w: u32, h: u32, cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     let (sw, sh) = (im.width, im.height);
     if sw == 0 || sh == 0 {
         return Err(PngError::Unreadable("image vide"));
@@ -126,10 +162,40 @@ fn fit_on_canvas(png: &[u8], w: u32, h: u32, cancelled: &dyn Fn() -> bool) -> Re
     Ok(canvas)
 }
 
+/// `im.crop((left, top, right, bottom))` : copie de la fenêtre (dans l'image).
+fn crop(im: &Rgba, left: u32, top: u32, w: u32, h: u32) -> Result<Rgba> {
+    let mut out = transparent(w, h)?;
+    paste(&mut out, im, -i64::from(left), -i64::from(top));
+    Ok(out)
+}
+
+/// `_thumb_cover` : fenêtre centrale de la source au rapport de la vignette (`round()` de
+/// Python, demi au pair, au moins 1 px), redimensionnée en 104 × 136.
+fn thumb_cover(im: &Rgba, cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
+    let (sw, sh) = (im.width, im.height);
+    if sw == 0 || sh == 0 {
+        return Err(PngError::Unreadable("image vide"));
+    }
+    // sh * THUMB_W / THUMB_H : produit entier exact puis division vraie, comme Python
+    let ratio = |n: u32, num: u32, den: u32| {
+        ((f64::from(n) * f64::from(num)) / f64::from(den))
+            .round_ties_even()
+            .max(1.0) as u32
+    };
+    let (cw, ch) = if u64::from(sw) * u64::from(THUMB_H) > u64::from(sh) * u64::from(THUMB_W) {
+        (ratio(sh, THUMB_W, THUMB_H), sh)
+    } else {
+        (sw, ratio(sw, THUMB_H, THUMB_W))
+    };
+    let (left, top) = ((sw - cw) / 2, (sh - ch) / 2);
+    resize_rgba(crop(im, left, top, cw, ch)?, THUMB_W, THUMB_H, cancelled)
+}
+
 /// `png_to_scene_lif` : ajustée sans déformation dans 320 × 212 (agrandie ou réduite), centrée
 /// sur un canevas transparent de exactement 320 × 212.
 pub fn png_to_scene_lif(png: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>> {
-    encode(&fit_on_canvas(png, VISUAL_W, VISUAL_H, cancelled)?)
+    let im = decode_rgba(png, cancelled)?;
+    encode(&fit_on_canvas(im, VISUAL_W, VISUAL_H, cancelled)?)
 }
 
 /// `png_to_fit_lif(png_bytes, maxw, maxh, align)` : tient dans `max_w × max_h` en gardant le
@@ -145,11 +211,33 @@ pub fn png_to_fit_lif(
     encode(&avoid_transpose(im, align)?)
 }
 
-/// `png_to_thumb_lif(png_bytes, "bandes")` : image entière (agrandie ou réduite) centrée sur un
-/// canevas transparent 104 × 136. Seul le mode `bandes` est porté ; les modes `flou` (défaut du
-/// convertisseur Python) et `rogner` ne le sont pas encore (suivi dans l'issue du port).
-pub fn png_to_thumb_lif(png: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>> {
-    encode(&fit_on_canvas(png, THUMB_W, THUMB_H, cancelled)?)
+/// `png_to_thumb_lif(png_bytes, fit)` : vignette 104 × 136 selon le mode `fit`.
+pub fn png_to_thumb_lif(
+    png: &[u8],
+    fit: ThumbFit,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>> {
+    let im = decode_rgba(png, cancelled)?;
+    let out = match fit {
+        ThumbFit::Rogner => thumb_cover(&im, cancelled)?,
+        ThumbFit::Bandes => fit_on_canvas(im, THUMB_W, THUMB_H, cancelled)?,
+        ThumbFit::Flou => {
+            // fond opaque : flouter du RGBA non prémultiplié laisserait des halos sombres
+            let bg = thumb_cover(&im, cancelled)?;
+            let mut base = transparent(THUMB_W, THUMB_H)?;
+            for p in base.rgba.as_chunks_mut::<4>().0 {
+                *p = [128, 128, 128, 255];
+            }
+            let bg = alpha_composite(&base, &bg, cancelled)?;
+            let bg = gaussian_blur(bg, THUMB_BLUR_RADIUS, cancelled)?;
+            alpha_composite(
+                &bg,
+                &fit_on_canvas(im, THUMB_W, THUMB_H, cancelled)?,
+                cancelled,
+            )?
+        }
+    };
+    encode(&out)
 }
 
 #[cfg(test)]
@@ -173,6 +261,29 @@ mod tests {
         let mut c = im(2, 2, 0);
         paste(&mut c, &im(1, 1, 9), 5, 5);
         assert!(c.rgba.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn modes_de_vignette_comme_python() {
+        assert_eq!(ThumbFit::default(), ThumbFit::Flou); // DEFAULT_THUMB_FIT
+        for name in ["flou", "rogner", "bandes"] {
+            assert_eq!(ThumbFit::from_name(name).unwrap().as_str(), name);
+        }
+        assert_eq!(ThumbFit::from_name("Flou"), None);
+    }
+
+    #[test]
+    fn rognage_centre_au_rapport_de_la_vignette() {
+        // 300 × 136 : fenêtre round(136 × 104 / 136) = 104 px de large, à partir de x = 98
+        let mut src = im(300, 136, 0);
+        for (i, p) in src.rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let x = (i % 300) as u8;
+            *p = [x, 0, 0, 255];
+        }
+        let out = thumb_cover(&src, &|| false).unwrap();
+        assert_eq!((out.width, out.height), (THUMB_W, THUMB_H));
+        assert_eq!(out.rgba[0], 98);
+        assert_eq!(out.rgba[(THUMB_W as usize - 1) * 4], 201);
     }
 
     #[test]

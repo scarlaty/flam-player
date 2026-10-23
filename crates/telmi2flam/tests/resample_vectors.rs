@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use telmi2flam::image::{
-    png_to_fit_lif, png_to_lif, png_to_scene_lif, png_to_thumb_lif, Align, INV_H, INV_W,
+    png_to_fit_lif, png_to_lif, png_to_scene_lif, png_to_thumb_lif, Align, ThumbFit, INV_H, INV_W,
 };
 use telmi2flam::png::PngError;
 
@@ -26,7 +26,9 @@ fn never() -> bool {
 fn convert(png: &[u8], op: &str) -> Result<Vec<u8>, PngError> {
     match op {
         "scene" => png_to_scene_lif(png, &never),
-        "thumb" => png_to_thumb_lif(png, &never),
+        "thumb" => png_to_thumb_lif(png, ThumbFit::Bandes, &never),
+        "thumb_flou" => png_to_thumb_lif(png, ThumbFit::Flou, &never),
+        "thumb_rogner" => png_to_thumb_lif(png, ThumbFit::Rogner, &never),
         "inventory" => png_to_fit_lif(png, INV_W, INV_H, Align::Center, &never),
         "title" => png_to_fit_lif(png, 89, 120, Align::Left, &never),
         "bound" => png_to_lif(png, &never),
