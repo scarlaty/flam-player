@@ -1,0 +1,533 @@
+//! Téléchargement par lot des épisodes et des pochettes d'un pack (#213).
+//!
+//! S'appuie sur le téléchargeur de l'installation ([`crate::install::download`] : fichier
+//! `.part`, reprise `Range`/`If-Range`, taille bornée, renommage final) avec le client gardé de
+//! [`super::net`] (D10 : adresses privées refusées après DNS et à chaque redirection).
+//!
+//! Comportement :
+//! - un pack peut mêler des épisodes de **plusieurs flux** (`Item::feed` n'est qu'une étiquette) ;
+//! - concurrence bornée, progression globale, annulation (tous les fichiers du lot sont alors
+//!   supprimés) ;
+//! - épisode inaccessible (HTTP, délai, adresse refusée, trop gros) : **retiré** et signalé
+//!   (P7) ; échec global seulement si aucun épisode n'est récupérable ;
+//! - pochette inaccessible : l'épisode est gardé sans pochette, signalé dans le rapport ;
+//! - plafonds D1 vérifiés pendant le téléchargement : par épisode (l'épisode est retiré), au
+//!   total du lot (arrêt propre de tout le lot, fichiers supprimés) ;
+//! - coupure en cours de fichier : reprise automatique (jusqu'à 3 essais) avec `Range` ;
+//! - aucune URL dans les journaux ni dans les erreurs (D11) : seuls les identifiants d'épisode.
+//!
+//! Les fichiers sont nommés `ep-<n>.audio` et `ep-<n>.img` dans le dossier de travail ; ce
+//! dernier est supprimé par l'appelant après la publication du pack (N8 a, [`Workdir`]).
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::{watch, Semaphore};
+use tokio::task::JoinSet;
+use url::Url;
+
+use super::net::{check_url, guarded_client, redact_url, NetPolicy};
+use crate::install::download::{self, Download, Validator, BLOCKED_MESSAGE};
+use crate::{AppError, AppResult};
+
+/// D1 : épisodes par pack.
+pub const MAX_EPISODES: usize = 50;
+/// D1 : octets par épisode (200 Mo).
+pub const MAX_EPISODE_BYTES: u64 = 200 * 1024 * 1024;
+/// D1 : octets au total (1 Gio), audio et pochettes confondus.
+pub const MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
+/// Octets par pochette (comme l'entrée de la conversion).
+pub const MAX_IMAGE_BYTES: u64 = super::artwork::MAX_INPUT_BYTES as u64;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+const ATTEMPTS: usize = 3;
+
+/// Bornes d'un lot. `Default` : les plafonds D1.
+#[derive(Debug, Clone)]
+pub struct Limits {
+    pub max_episodes: usize,
+    pub max_episode_bytes: u64,
+    pub max_total_bytes: u64,
+    pub max_image_bytes: u64,
+    /// Téléchargements simultanés.
+    pub concurrency: usize,
+    /// Durée maximale d'un fichier (silence ou lenteur extrême), reprises comprises.
+    pub file_timeout: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_episodes: MAX_EPISODES,
+            max_episode_bytes: MAX_EPISODE_BYTES,
+            max_total_bytes: MAX_TOTAL_BYTES,
+            max_image_bytes: MAX_IMAGE_BYTES,
+            concurrency: 4,
+            file_timeout: Duration::from_secs(30 * 60),
+        }
+    }
+}
+
+/// Un épisode à récupérer. Les URL sont des secrets (D11) : ne jamais les journaliser.
+#[derive(Clone)]
+pub struct Item {
+    /// Identifiant stable de l'épisode (journaux, rapport). Jamais une URL (D11) : un guid RSS\n    /// qui en est une doit être remplacé par un identifiant local.
+    pub id: String,
+    /// Étiquette du flux d'origine (plusieurs flux possibles dans un même lot).
+    pub feed: String,
+    pub audio_url: String,
+    pub image_url: Option<String>,
+}
+
+// Pas de `Debug` dérivé : il afficherait les URL.
+impl std::fmt::Debug for Item {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Item")
+            .field("id", &self.id)
+            .field("feed", &self.feed)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Pourquoi un épisode est retiré du pack (P7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropReason {
+    /// Erreur HTTP, connexion impossible ou coupée.
+    Unreachable,
+    /// Délai dépassé.
+    TimedOut,
+    /// Adresse privée, locale ou non publique (D10).
+    Blocked,
+    /// Au-delà du plafond par épisode (D1).
+    TooLarge,
+    /// Réponse inexploitable (taille incohérente…).
+    Invalid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dropped {
+    pub id: String,
+    pub feed: String,
+    pub reason: DropReason,
+}
+
+/// Épisode récupéré.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fetched {
+    pub id: String,
+    pub feed: String,
+    pub audio: PathBuf,
+    pub audio_bytes: u64,
+    /// `None` : pas d'adresse de pochette, ou pochette inaccessible (voir
+    /// [`Report::image_failures`]).
+    pub image: Option<PathBuf>,
+}
+
+/// Résultat d'un lot : épisodes dans l'ordre d'entrée.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Report {
+    pub fetched: Vec<Fetched>,
+    pub dropped: Vec<Dropped>,
+    /// Identifiants des épisodes dont la pochette n'a pas pu être récupérée.
+    pub image_failures: Vec<String>,
+}
+
+/// Progression globale du lot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    pub items_done: usize,
+    pub items_total: usize,
+    /// Octets reçus au total (audio et pochettes).
+    pub bytes: u64,
+}
+
+/// Dossier de travail d'un lot, supprimé à la fin (N8 a) : [`Workdir::finish`] ou, à défaut,
+/// à l'abandon (`Drop`, au mieux).
+pub struct Workdir {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl Workdir {
+    /// Crée un sous-dossier unique de `base`.
+    pub fn create(base: &Path) -> AppResult<Self> {
+        let path = base.join(format!("podcast-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path, armed: true })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Supprime le dossier et son contenu ; l'erreur éventuelle est renvoyée.
+    pub fn finish(mut self) -> AppResult<()> {
+        self.armed = false;
+        match std::fs::remove_dir_all(&self.path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl Drop for Workdir {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+/// Téléchargeur de lots : client gardé (D10) et politique réseau.
+pub struct Fetcher {
+    client: reqwest::Client,
+    policy: NetPolicy,
+}
+
+impl Fetcher {
+    pub fn new(policy: NetPolicy) -> AppResult<Self> {
+        let client = guarded_client(policy, CONNECT_TIMEOUT, READ_TIMEOUT)
+            .map_err(|_| AppError::Network("client réseau indisponible".into()))?;
+        Ok(Self { client, policy })
+    }
+
+    /// Télécharge tous les `items` dans `dir` (existant). Voir la documentation du module.
+    pub async fn fetch_all(
+        &self,
+        items: &[Item],
+        dir: &Path,
+        limits: &Limits,
+        mut cancel: watch::Receiver<bool>,
+        on_progress: Arc<dyn Fn(Progress) + Send + Sync>,
+    ) -> AppResult<Report> {
+        if items.is_empty() {
+            return Err(AppError::Validation("aucun épisode à télécharger".into()));
+        }
+        if items.len() > limits.max_episodes {
+            return Err(AppError::Validation(format!(
+                "trop d'épisodes ({} au plus par pack)",
+                limits.max_episodes
+            )));
+        }
+        let (abort, _) = watch::channel(false);
+        let shared = Arc::new(Shared {
+            client: self.client.clone(),
+            policy: self.policy,
+            dir: dir.to_path_buf(),
+            limits: limits.clone(),
+            total: AtomicU64::new(0),
+            exceeded: AtomicBool::new(false),
+            abort,
+            done: AtomicUsize::new(0),
+            items_total: items.len(),
+            on_progress,
+        });
+        let semaphore = Arc::new(Semaphore::new(limits.concurrency.max(1)));
+        let mut set = JoinSet::new();
+        for (index, item) in items.iter().cloned().enumerate() {
+            let shared = Arc::clone(&shared);
+            let semaphore = Arc::clone(&semaphore);
+            set.spawn(async move {
+                let Ok(_permit) = semaphore.acquire_owned().await else {
+                    return (index, Ok(ItemOutcome::Aborted));
+                };
+                if *shared.abort.borrow() {
+                    return (index, Ok(ItemOutcome::Aborted));
+                }
+                let outcome = run_item(&shared, index, item).await;
+                shared.done.fetch_add(1, Ordering::Relaxed);
+                shared.report();
+                (index, outcome)
+            });
+        }
+
+        let mut outcomes: Vec<Option<ItemOutcome>> = (0..items.len()).map(|_| None).collect();
+        let mut fatal: Option<AppError> = None;
+        let mut user_cancelled = false;
+        loop {
+            tokio::select! {
+                joined = set.join_next() => match joined {
+                    None => break,
+                    Some(Ok((index, Ok(outcome)))) => outcomes[index] = Some(outcome),
+                    Some(Ok((_, Err(err)))) => {
+                        fatal.get_or_insert(err);
+                        shared.abort.send_replace(true);
+                    }
+                    Some(Err(err)) => {
+                        fatal.get_or_insert(AppError::Io(std::io::Error::other(err.to_string())));
+                        shared.abort.send_replace(true);
+                    }
+                },
+                () = download::cancelled(&mut cancel), if !user_cancelled => {
+                    user_cancelled = true;
+                    shared.abort.send_replace(true);
+                }
+            }
+        }
+
+        if user_cancelled || fatal.is_some() || shared.exceeded.load(Ordering::Relaxed) {
+            remove_batch_files(dir).await;
+            if let Some(err) = fatal {
+                return Err(err);
+            }
+            if user_cancelled {
+                return Err(AppError::Cancelled);
+            }
+            return Err(AppError::DownloadInvalid(format!(
+                "le pack dépasse le plafond de {} octets au total",
+                limits.max_total_bytes
+            )));
+        }
+
+        let mut report = Report::default();
+        for outcome in outcomes.into_iter().flatten() {
+            match outcome {
+                ItemOutcome::Fetched(fetched, image_failed) => {
+                    if image_failed {
+                        report.image_failures.push(fetched.id.clone());
+                    }
+                    report.fetched.push(fetched);
+                }
+                ItemOutcome::Dropped(dropped) => report.dropped.push(dropped),
+                ItemOutcome::Aborted => {}
+            }
+        }
+        if report.fetched.is_empty() {
+            remove_batch_files(dir).await;
+            return Err(AppError::DownloadInvalid(format!(
+                "aucun épisode récupérable ({} retiré(s))",
+                report.dropped.len()
+            )));
+        }
+        Ok(report)
+    }
+}
+
+struct Shared {
+    client: reqwest::Client,
+    policy: NetPolicy,
+    dir: PathBuf,
+    limits: Limits,
+    total: AtomicU64,
+    exceeded: AtomicBool,
+    abort: watch::Sender<bool>,
+    done: AtomicUsize,
+    items_total: usize,
+    on_progress: Arc<dyn Fn(Progress) + Send + Sync>,
+}
+
+impl Shared {
+    fn report(&self) {
+        (self.on_progress)(Progress {
+            items_done: self.done.load(Ordering::Relaxed),
+            items_total: self.items_total,
+            bytes: self.total.load(Ordering::Relaxed),
+        });
+    }
+}
+
+enum ItemOutcome {
+    /// Épisode récupéré ; `true` si sa pochette a échoué.
+    Fetched(Fetched, bool),
+    Dropped(Dropped),
+    Aborted,
+}
+
+/// Échec d'un fichier, hors erreurs fatales (disque…).
+enum FileFailure {
+    Aborted,
+    Drop(DropReason),
+    Fatal(AppError),
+}
+
+async fn run_item(shared: &Shared, index: usize, item: Item) -> AppResult<ItemOutcome> {
+    let audio = shared.dir.join(format!("ep-{index:04}.audio"));
+    let drop_with = |reason| {
+        ItemOutcome::Dropped(Dropped {
+            id: item.id.clone(),
+            feed: item.feed.clone(),
+            reason,
+        })
+    };
+    let audio_bytes = match fetch_file(
+        shared,
+        &item.audio_url,
+        &audio,
+        shared.limits.max_episode_bytes,
+    )
+    .await
+    {
+        Ok(bytes) => bytes,
+        Err(FileFailure::Aborted) => {
+            discard(&audio).await;
+            return Ok(ItemOutcome::Aborted);
+        }
+        Err(FileFailure::Drop(reason)) => {
+            discard(&audio).await;
+            tracing::warn!(episode = %item.id, ?reason, "épisode retiré du pack");
+            return Ok(drop_with(reason));
+        }
+        Err(FileFailure::Fatal(err)) => {
+            discard(&audio).await;
+            return Err(err);
+        }
+    };
+
+    let mut image = None;
+    let mut image_failed = false;
+    if let Some(url) = &item.image_url {
+        let path = shared.dir.join(format!("ep-{index:04}.img"));
+        match fetch_file(shared, url, &path, shared.limits.max_image_bytes).await {
+            Ok(_) => image = Some(path),
+            Err(FileFailure::Aborted) => {
+                discard(&audio).await;
+                discard(&path).await;
+                return Ok(ItemOutcome::Aborted);
+            }
+            Err(FileFailure::Drop(reason)) => {
+                discard(&path).await;
+                tracing::warn!(episode = %item.id, ?reason, "pochette ignorée");
+                image_failed = true;
+            }
+            Err(FileFailure::Fatal(err)) => {
+                discard(&audio).await;
+                discard(&path).await;
+                return Err(err);
+            }
+        }
+    }
+    Ok(ItemOutcome::Fetched(
+        Fetched {
+            id: item.id,
+            feed: item.feed,
+            audio,
+            audio_bytes,
+            image,
+        },
+        image_failed,
+    ))
+}
+
+/// Télécharge une URL vers `dest` : contrôle de l'adresse littérale, reprises, plafond du lot.
+async fn fetch_file(
+    shared: &Shared,
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+) -> Result<u64, FileFailure> {
+    let mut counted: u64 = 0;
+    let result = fetch_file_counted(shared, url, dest, max_bytes, &mut counted).await;
+    if result.is_err() {
+        // Les octets d'un fichier retiré ne comptent plus dans le plafond du lot.
+        shared.total.fetch_sub(counted, Ordering::Relaxed);
+    }
+    result
+}
+
+async fn fetch_file_counted(
+    shared: &Shared,
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+    counted: &mut u64,
+) -> Result<u64, FileFailure> {
+    let parsed = Url::parse(url).map_err(|_| FileFailure::Drop(DropReason::Invalid))?;
+    if check_url(&parsed, shared.policy).is_err() {
+        tracing::warn!(url = %redact_url(url), "adresse refusée (D10)");
+        return Err(FileFailure::Drop(DropReason::Blocked));
+    }
+    tracing::debug!(url = %redact_url(url), "téléchargement");
+
+    let started = tokio::time::Instant::now();
+    let mut validator = Validator::default();
+    let mut last_error = FileFailure::Drop(DropReason::Unreachable);
+    for _ in 0..ATTEMPTS {
+        let remaining = shared.limits.file_timeout.saturating_sub(started.elapsed());
+        let mut cancel = shared.abort.subscribe();
+        let request = Download {
+            client: &shared.client,
+            url: parsed.as_str(),
+            dest,
+            max_bytes,
+        };
+        let mut on_progress = |received: u64, _total: Option<u64>| {
+            if received >= *counted {
+                shared
+                    .total
+                    .fetch_add(received - *counted, Ordering::Relaxed);
+            } else {
+                shared
+                    .total
+                    .fetch_sub(*counted - received, Ordering::Relaxed);
+            }
+            *counted = received;
+            if shared.total.load(Ordering::Relaxed) > shared.limits.max_total_bytes {
+                shared.exceeded.store(true, Ordering::Relaxed);
+                shared.abort.send_replace(true);
+            }
+            shared.report();
+        };
+        let result = tokio::time::timeout(
+            remaining,
+            download::download(
+                &request,
+                &mut validator,
+                &mut cancel,
+                &mut |_| {},
+                &mut on_progress,
+            ),
+        )
+        .await;
+        let error = match result {
+            Ok(Ok(())) => return Ok(*counted),
+            Err(_elapsed) => return Err(FileFailure::Drop(DropReason::TimedOut)),
+            Ok(Err(error)) => error,
+        };
+        // Reprise seulement s'il reste des octets reçus (coupure) ; les octets d'un fichier
+        // retiré restent comptés dans le total du lot (estimation prudente).
+        let had_part = tokio::fs::metadata(download::part_path(dest))
+            .await
+            .is_ok_and(|m| m.len() > 0);
+        let failure = match error {
+            AppError::Cancelled => return Err(FileFailure::Aborted),
+            AppError::Network(m) if m == BLOCKED_MESSAGE => {
+                return Err(FileFailure::Drop(DropReason::Blocked))
+            }
+            AppError::Io(_) => return Err(FileFailure::Fatal(error)),
+            AppError::DownloadInvalid(m) if m.contains("volumineu") => {
+                return Err(FileFailure::Drop(DropReason::TooLarge))
+            }
+            AppError::DownloadInvalid(_) => FileFailure::Drop(DropReason::Invalid),
+            _ => FileFailure::Drop(DropReason::Unreachable),
+        };
+        if !had_part {
+            // Pas d'octets à reprendre (404, refus…) : inutile de réessayer.
+            return Err(failure);
+        }
+        last_error = failure;
+    }
+    Err(last_error)
+}
+
+async fn discard(path: &Path) {
+    let _ = tokio::fs::remove_file(path).await;
+    let _ = tokio::fs::remove_file(download::part_path(path)).await;
+}
+
+/// Supprime les fichiers `ep-*` du lot (annulation, plafond, échec global).
+async fn remove_batch_files(dir: &Path) {
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if entry.file_name().to_string_lossy().starts_with("ep-") {
+            let _ = tokio::fs::remove_file(entry.path()).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
