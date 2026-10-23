@@ -640,6 +640,15 @@ b"
     /// `FLAM_TEST_CONVERTER_DIR` = dossier `telmi2flam/` (avec `python/python.exe`) et
     /// `FLAM_TEST_ARCHIVE` = histoire `.zip`. Pour prouver l'autonomie, lancer le binaire de test
     /// avec un `PATH` réduit à `C:\Windows\System32` (voir le README du launcher).
+    ///
+    /// Port Rust (#131) : avec `FLAM_TEST_RUST_CONVERTER` = binaire `telmi2flam.exe`
+    /// (`cargo build -p telmi2flam`), les mêmes tests visent le binaire Rust, sans changer le
+    /// convertisseur du launcher : `convert` lance toujours `python <script>`, et le script est
+    /// un relais minimal qui exécute le binaire avec les mêmes arguments (stdout et stderr
+    /// hérités, code de sortie rendu). L'annulation n'y est encore que l'arrêt du processus par
+    /// `CTRL_BREAK_EVENT`, demandé dès la première étape, donc avant toute écriture : le test ne
+    /// prouve pas le nettoyage du `.part` du binaire, qui porte le PID du binaire et non celui du
+    /// relais (gestion du signal et nettoyage : #132).
     #[cfg(windows)]
     mod embarque {
         use super::*;
@@ -651,20 +660,53 @@ b"
             Some((dir, archive))
         }
 
+        /// Convertisseur visé : `telmi2flam.py` embarqué, ou le binaire Rust par un relais.
+        struct Convertisseur {
+            python: PathBuf,
+            script: PathBuf,
+            _relais: Option<tempfile::TempDir>,
+        }
+
+        fn convertisseur(dir: &Path) -> Convertisseur {
+            let python = dir.join("python").join("python.exe");
+            let Some(exe) = std::env::var_os("FLAM_TEST_RUST_CONVERTER") else {
+                return Convertisseur {
+                    python,
+                    script: dir.join("telmi2flam.py"),
+                    _relais: None,
+                };
+            };
+            let relais = tempfile::tempdir().unwrap();
+            let script = relais.path().join("telmi2flam_rust.py");
+            // Chaîne JSON : littéral de chaîne Python valide (`\\`, `\"`, `\uXXXX`).
+            let exe = serde_json::to_string(&PathBuf::from(exe).to_string_lossy()).unwrap();
+            std::fs::write(
+                &script,
+                format!(
+                    "import subprocess, sys\nsys.exit(subprocess.call([{exe}] + sys.argv[1:]))\n"
+                ),
+            )
+            .unwrap();
+            Convertisseur {
+                python,
+                script,
+                _relais: Some(relais),
+            }
+        }
+
         #[tokio::test]
         #[ignore = "exige FLAM_TEST_CONVERTER_DIR et FLAM_TEST_ARCHIVE"]
         async fn conversion_avec_python_embarque() {
             let (dir, archive) = environnement().expect("variables d'environnement manquantes");
             let out = tempfile::tempdir().unwrap();
             let output = out.path().join("histoire.plain.pk");
-            let python = dir.join("python").join("python.exe");
-            let script = dir.join("telmi2flam.py");
+            let conv = convertisseur(&dir);
             let (_tx, mut rx) = watch::channel(false);
             let mut steps = 0usize;
             let converted = convert(
                 &Conversion {
-                    python: &python,
-                    script: &script,
+                    python: &conv.python,
+                    script: &conv.script,
                     input: &archive,
                     output: &output,
                     ffmpeg: None,
@@ -678,9 +720,10 @@ b"
             .expect("conversion");
             assert!(steps > 0, "aucune progression reçue");
             assert!(output.metadata().unwrap().len() > 0);
+            assert!(converted.version.is_some(), "version de l'événement start");
             println!(
-                "conversion ok : {} avertissement(s), {steps} étapes",
-                converted.warnings
+                "conversion ok : {} avertissement(s), {steps} étapes, version {:?}",
+                converted.warnings, converted.version
             );
         }
 
@@ -690,14 +733,13 @@ b"
             let (dir, archive) = environnement().expect("variables d'environnement manquantes");
             let out = tempfile::tempdir().unwrap();
             let output = out.path().join("histoire.plain.pk");
-            let python = dir.join("python").join("python.exe");
-            let script = dir.join("telmi2flam.py");
+            let conv = convertisseur(&dir);
             let (tx, mut rx) = watch::channel(false);
             let tx = Arc::new(Mutex::new(tx));
             let result = convert(
                 &Conversion {
-                    python: &python,
-                    script: &script,
+                    python: &conv.python,
+                    script: &conv.script,
                     input: &archive,
                     output: &output,
                     ffmpeg: None,
