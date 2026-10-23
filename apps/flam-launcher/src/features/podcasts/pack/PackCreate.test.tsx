@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- arguments IPC simulés, forme libre */
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { InstallTask } from "../../../api/install";
@@ -161,10 +161,16 @@ function renderEditor(ids: string[] = NO_IDS) {
   return render(editorTree(ids));
 }
 
-/** Gestionnaire React du bouton, appelable sans passer par l'état « désactivé » du DOM. */
-function reactOnClick(element: HTMLElement): () => void {
-  const key = Object.keys(element).find((k) => k.startsWith("__reactProps$"))!;
-  return (element as unknown as Record<string, { onClick: () => void }>)[key]!.onClick;
+/**
+ * Deux clics dans un même `act` : React n'a pas encore rendu le bouton désactivé au second, c'est
+ * donc le verrou (`useRef`) qui doit l'arrêter. Passe par de vrais événements, sans toucher aux
+ * propriétés internes de React.
+ */
+function clickTwice(element: HTMLElement) {
+  act(() => {
+    fireEvent.click(element);
+    fireEvent.click(element);
+  });
 }
 
 async function readyButton() {
@@ -256,13 +262,10 @@ it("verrou : le gestionnaire appelé pendant l'envoi ne relance pas la création
   created = () => new Promise((resolve) => (release = resolve));
   renderEditor();
   const button = await readyButton();
-  const click = reactOnClick(button);
-  fireEvent.click(button);
+  clickTwice(button);
   await screen.findByRole("button", { name: "Création en cours…" });
   await waitFor(() => expect(createCalls()).toHaveLength(1));
-  click();
-  click();
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await act(async () => {});
   expect(createCalls()).toHaveLength(1);
   release({ task, report: okReport });
   await waitFor(() => expect(tracked).toHaveLength(1));
@@ -275,13 +278,9 @@ it("verrou : « J'ai compris » appelé deux fois ne crée qu'une fois", async (
   renderEditor();
   fireEvent.click(await readyButton());
   const dialog = await screen.findByRole("dialog");
-  const accept = reactOnClick(
-    within(dialog).getByRole("button", { name: "J'ai compris" }),
-  );
-  accept();
-  accept();
+  clickTwice(within(dialog).getByRole("button", { name: "J'ai compris" }));
   await waitFor(() => expect(createCalls()).toHaveLength(1));
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await act(async () => {});
   expect(createCalls()).toHaveLength(1);
   release({ task, report: okReport });
   await waitFor(() => expect(tracked).toHaveLength(1));

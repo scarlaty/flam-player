@@ -45,6 +45,7 @@ import {
   beginCreation,
   creationsVersion,
   isCreating,
+  forgetFinishedTasks,
   rememberTask,
   subscribeCreations,
 } from "./creations";
@@ -185,12 +186,23 @@ export function PackEditor({
   } | null>(null);
   const [rightsOpen, setRightsOpen] = useState(false);
   // Révision lue avec le brouillon ; `edited` : modifié depuis, donc plus celui d'une création
-  // en cours (#429).
+  // en cours (#429). `edited` passe à vrai à toute modification, même annulée ensuite (retour à
+  // l'état d'origine compris) : comportement voulu par la spec, qui ne compare pas les contenus.
   // Relit l'état des envois en cours quand une autre instance de l'éditeur les termine.
   useSyncExternalStore(subscribeCreations, creationsVersion);
   const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
   const [edited, setEdited] = useState(false);
   const createLock = useRef(false);
+  const isTaskActive = (taskId: string) =>
+    panelTasks?.some(
+      (task) =>
+        task.id === taskId && (task.state === "queued" || task.state === "running"),
+    ) ?? false;
+  // Les tâches terminées sortent du registre des créations (#435).
+  useEffect(() => {
+    forgetFinishedTasks(isTaskActive);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `isTaskActive` ne dépend que de `panelTasks`
+  }, [panelTasks]);
   const validation = useDebouncedValidation(composition, validateDelayMs);
   const seedValidation = validation.seed;
 
@@ -363,11 +375,6 @@ export function PackEditor({
   }
 
   const report = validation.report;
-  const isTaskActive = (taskId: string) =>
-    panelTasks?.some(
-      (task) =>
-        task.id === taskId && (task.state === "queued" || task.state === "running"),
-    ) ?? false;
   // Brouillon inchangé dont la création tourne encore (éditeur quitté puis rouvert, #429).
   const alreadyCreating =
     !edited && loadedRevision !== null && isCreating(loadedRevision, isTaskActive);
