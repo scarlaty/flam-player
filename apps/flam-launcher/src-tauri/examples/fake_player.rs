@@ -3,12 +3,30 @@
 //! Appelé comme le vrai player : `fake_player [--stdin-control] [--parent-hwnd <n>] <chemin>`.
 //! Le fichier `<chemin>` contient un scénario, une instruction par ligne : `stderr <texte>`,
 //! `sleep <ms>`, `child_sleep <ms>`, `exit <code>`, `args` (écrit les options reçues sur
-//! stderr), `wait_quit` (attend la ligne `quit` ou la fin de stdin, puis sort avec le code 0,
+//! stderr), `console` (écrit sur stderr si le processus a une fenêtre de console, Windows),
+//! `wait_quit` (attend la ligne `quit` ou la fin de stdin, puis sort avec le code 0,
 //! comme le vrai player avec `--stdin-control`).
 //! Fichier illisible : message sur stderr et code 3 (le vrai player échoue aussi au chargement).
 
 use std::io::Write;
 use std::time::Duration;
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetConsoleWindow() -> *mut std::ffi::c_void;
+}
+
+/// Windows : le processus a-t-il une fenêtre de console (hors `CREATE_NO_WINDOW`) ?
+fn has_console_window() -> bool {
+    #[cfg(windows)]
+    // SAFETY : appel sans argument ni effet de bord.
+    unsafe {
+        !GetConsoleWindow().is_null()
+    }
+    #[cfg(not(windows))]
+    false
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -57,6 +75,14 @@ fn main() {
                     .spawn();
             }
             "exit" => std::process::exit(rest.parse().unwrap_or(0)),
+            "console" => eprintln!(
+                "console : {}",
+                if has_console_window() {
+                    "fenêtre"
+                } else {
+                    "aucune"
+                }
+            ),
             "args" => eprintln!("options : {}", options.join(" | ")),
             "wait_quit" => {
                 let mut line = String::new();
