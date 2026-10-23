@@ -60,7 +60,7 @@ pub fn flat(s: &str) -> String {
 }
 
 /// `s.strip()` de Python.
-fn py_strip(s: &str) -> &str {
+pub fn py_strip(s: &str) -> &str {
     s.trim_matches(is_py_space)
 }
 

@@ -402,11 +402,12 @@ def cases():
     rgb("text_memoire_epuisee", before=many)
     rgb("actl_delegue", before=[chunk(b"acTL", struct.pack(">II", 1, 0))], rust="delegate")
     rgb("fctl_delegue", after=[chunk(b"fcTL", bytes(26))], rust="delegate")
-    # autres formats : délégation (Pillow sait peut-être les lire)
+    # autres formats : délégation si Pillow sait peut-être les lire, sinon illisibles comme
+    # pour Pillow (src/identify.rs, #129)
     add("pas_png", b"GIF89a" + bytes(20), "delegate")
-    add("vide", b"", "delegate")
+    add("vide", b"")
     add("signature_seule", SIG)
-    add("signature_tronquee", SIG[:5], "delegate")
+    add("signature_tronquee", SIG[:5])
     return out
 
 
