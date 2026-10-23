@@ -8,6 +8,7 @@ pub mod device;
 pub mod embed;
 mod error;
 pub mod external;
+pub mod ffmpeg;
 pub mod folder;
 pub mod install;
 pub mod library;

@@ -16,8 +16,10 @@ l'heure locale, le port Rust fixe cette date (PORT-RUST.md 4.1). A horodatage eg
 
 Cas : corpus de parite (tests/parity/make_corpus.py) et cas propres aux assets (collisions
 de noms, noms reserves, couverture, title.mp3, uuid, metadonnees de types inattendus).
-La vignette est produite en mode `bandes` (seul mode porte, #282) et sans ffmpeg
-(FLAM_FFMPEG vide ; avec ffmpeg : gen_ffmpeg_cases.py, #354).
+La vignette est produite en mode `bandes` par defaut ; les cas `pkg_thumb_*` fixent `flou` ou
+`rogner` (`--thumb-fit`, champ `thumb_fit` de expected.json, absent pour `bandes`) pour
+verifier que `Options.thumb_fit` atteint la vignette. Sans ffmpeg (FLAM_FFMPEG vide ; avec
+ffmpeg : gen_ffmpeg_cases.py, #354).
 
 A lancer avec le Python de l'installateur (build-converter.ps1 : 3.14.8, Pillow 12.3.0),
 depuis la racine du depot :
@@ -218,13 +220,30 @@ def package_cases():
         return zipc(S(nodes=n))
     add("pkg_missing_many", missing_many)
     add("pkg_missing_many_allowed", missing_many, ["--allow-missing"])
+    # --- mode de la vignette : couverture non uniforme (le fond flou et le rognage different
+    # des bandes), portrait et paysage
+    def gradient_png(w, h):
+        import io
+        im = Image.new("RGBA", (w, h))
+        im.putdata([((x * 255) // max(w - 1, 1), (y * 255) // max(h - 1, 1),
+                     (x * 7 + y * 13) % 256, 255 - (x + y) % 40)
+                    for y in range(h) for x in range(w)])
+        b = io.BytesIO()
+        im.save(b, "PNG")
+        return b.getvalue()
+    for mode in ("flou", "rogner", "bandes"):
+        for shape, (w, h) in (("portrait", (40, 100)), ("paysage", (120, 30))):
+            add("pkg_thumb_%s_%s" % (mode, shape),
+                lambda w=w, h=h: zipc(replace(S(), "title.png", gradient_png(w, h))),
+                ["--thumb-fit", mode])
     add("pkg_keep_size_selector", lambda: zipc(S(nodes=mc.two_node_choices())),
         ["--keep-size", "--selector", "image"])
     return cases
 
 
 def args_of(argv):
-    kw = {"keep_size": False, "selector": "carousel", "allow_missing": False}
+    kw = {"keep_size": False, "selector": "carousel", "allow_missing": False,
+          "thumb_fit": "bandes"}
     it = iter(argv)
     for a in it:
         if a == "--keep-size":
@@ -233,6 +252,8 @@ def args_of(argv):
             kw["allow_missing"] = True
         elif a == "--selector":
             kw["selector"] = next(it)
+        elif a == "--thumb-fit":
+            kw["thumb_fit"] = next(it)
         elif a != "--plain":
             raise ValueError(a)
     return kw
@@ -248,8 +269,10 @@ def run(case, data, tmp):
     kw = args_of(case.args)
     warnings = []
     exp = {"id": case.id, "tags": case.tags, **kw}
+    if kw["thumb_fit"] == "bandes":
+        del exp["thumb_fit"]  # champ absent : les cas existants gardent leur JSON
     try:
-        t.convert(src, out, thumb_fit="bandes",
+        t.convert(src, out,
                   progress=lambda e: warnings.append(e["code"]) if e["event"] == "warning" else None,
                   **kw)
     except t.ConvError as e:

@@ -284,15 +284,16 @@ fn transpose(src: &[[u8; 4]], w: usize, h: usize, dst: &mut [[u8; 4]]) {
 }
 
 /// `Image.filter(ImageFilter.GaussianBlur(radius))` sur une image `RGBA` (rayon identique en
-/// x et en y, 3 passes). Rayon nul : image inchangée (`image.copy()`).
+/// x et en y, 3 passes). Rayon nul : image inchangée (`image.copy()`). Rayon négatif ou NaN :
+/// refusé, même sur une image vide.
 pub fn gaussian_blur(img: Rgba, radius: f32, cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     let n = checked_len(&img)?;
     let (w, h) = (img.width as usize, img.height as usize);
-    if radius == 0.0 || w == 0 || h == 0 {
-        return Ok(img);
-    }
     if radius < 0.0 || radius.is_nan() {
         return Err(PngError::Unreadable("rayon de flou négatif"));
+    }
+    if radius == 0.0 || w == 0 || h == 0 {
+        return Ok(img);
     }
     let b = BoxWeights::new(gaussian_blur_radius(radius, PASSES));
     let mut rgba = img.rgba;
@@ -324,7 +325,7 @@ mod tests {
     fn rayon_de_boite_de_pillow() {
         // _gaussian_blur_radius(8, 3) : l = 7, a = 15 × (56 − 64) / (6 × (64/3 − 64))
         let r = gaussian_blur_radius(8.0, 3);
-        assert!((r - 7.46875).abs() < 1e-4, "{r}");
+        assert!((r - 7.46875).abs() < 1e-6, "{r}");
         let b = BoxWeights::new(r);
         assert_eq!(b.radius, 7);
         assert_eq!(b.fw, ((1 << 24) - 15 * b.ww) / 2);
@@ -341,6 +342,102 @@ mod tests {
             let out = gaussian_blur(img.clone(), 8.0, &never).unwrap();
             assert_eq!(out, img);
         }
+    }
+
+    /// Image non uniforme `w × h` (même motif que le générateur Pillow des vecteurs ci-dessous).
+    fn motif(w: u32, h: u32) -> Rgba {
+        let mut rgba = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                rgba.extend([
+                    (x * 53 + y * 97 + 7) % 256,
+                    (x * 191 + y * 31 + 3) % 256,
+                    (x * 17 + y * 211 + 101) % 256,
+                    (x * 29 + y * 61 + 200) % 256,
+                ]);
+            }
+        }
+        Rgba {
+            width: w,
+            height: h,
+            rgba: rgba.into_iter().map(|v| v as u8).collect(),
+        }
+    }
+
+    /// Branche `edgeA > edgeB` (rayon de boîte au moins égal à la moitié de la ligne) sur des
+    /// pixels non uniformes, contre Pillow 12.3.0 :
+    /// `Image.filter(ImageFilter.GaussianBlur(r))` sur `motif(w, h)`.
+    #[test]
+    fn rayon_large_devant_la_ligne_contre_pillow() {
+        let cases: [(u32, u32, f32, &[u8]); 2] = [
+            (
+                5,
+                3,
+                3.0,
+                &[
+                    122, 92, 83, 107, 125, 99, 87, 107, 129, 105, 92, 107, 133, 112, 97, 106, 136,
+                    117, 101, 107, 123, 92, 81, 106, 126, 98, 85, 107, 130, 104, 90, 107, 133, 111,
+                    95, 107, 136, 116, 99, 107, 125, 92, 79, 106, 127, 97, 83, 106, 130, 104, 88,
+                    107, 134, 110, 93, 108, 137, 115, 97, 108,
+                ],
+            ),
+            (
+                3,
+                2,
+                8.0,
+                &[
+                    108, 89, 96, 72, 108, 89, 96, 72, 108, 89, 96, 72, 109, 90, 95, 71, 109, 90,
+                    95, 71, 109, 90, 95, 71,
+                ],
+            ),
+        ];
+        for (w, h, radius, want) in cases {
+            let out = gaussian_blur(motif(w, h), radius, &never).unwrap();
+            assert_eq!(out.rgba, want, "{w}x{h}, rayon {radius}");
+        }
+    }
+
+    #[test]
+    fn rayon_negatif_refuse_meme_sur_image_vide() {
+        for (w, h) in [(0, 0), (0, 3), (4, 4)] {
+            let img = Rgba {
+                width: w,
+                height: h,
+                rgba: vec![0; (w * h * 4) as usize],
+            };
+            assert!(gaussian_blur(img.clone(), -1.0, &never).is_err());
+            assert!(gaussian_blur(img, f32::NAN, &never).is_err());
+        }
+    }
+
+    /// Annulation dans le flou : le jeton est consulté une fois par ligne (`h` lignes, puis `w`
+    /// lignes de l'image transposée) ; annulé au *n*-ième appel, `gaussian_blur` échoue avec
+    /// l'erreur d'annulation, et jamais au-delà du dernier appel.
+    #[test]
+    fn annulation_a_chaque_ligne() {
+        use std::cell::Cell;
+        let (w, h) = (7u32, 5u32);
+        let calls = Cell::new(0usize);
+        let reference = gaussian_blur(motif(w, h), 2.0, &|| {
+            calls.set(calls.get() + 1);
+            false
+        })
+        .unwrap();
+        let total = calls.get();
+        assert_eq!(total, (w + h) as usize);
+        for n in 0..total {
+            let seen = Cell::new(0usize);
+            let got = gaussian_blur(motif(w, h), 2.0, &|| {
+                seen.set(seen.get() + 1);
+                seen.get() > n
+            });
+            assert!(
+                matches!(got, Err(PngError::Cancelled)),
+                "annulation ignorée à l'appel {n}"
+            );
+        }
+        let again = gaussian_blur(motif(w, h), 2.0, &never).unwrap();
+        assert_eq!(again, reference);
     }
 
     #[test]
