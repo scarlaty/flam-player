@@ -26,8 +26,9 @@ Chaque affirmation porte un statut :
 
 Sources citées :
 
-- **[inv]** : `flam-device-inventory.md`, scan du volume d'une Flam le 2026-06-14, par listage de
-  l'arborescence et des tailles. La version de firmware de cet appareil n'y est **pas consignée**.
+- **[inv]** : [`security/flam-device-inventory.md`](security/flam-device-inventory.md), scan du
+  volume d'une Flam le 2026-06-14, par listage de l'arborescence et des tailles. La version
+  de firmware de cet appareil n'y est **pas consignée**.
 - **[rapport]** : analyse interne du 2026-10-17 (non versionnée), faite sur documentation et sur
   le code existant, **sans appareil**. Rien de ce qui en vient n'est mesuré.
 - **[détection]**, **[index]**, **[état]**, **[crypto]**, **[préparation]**, **[transfert]**,

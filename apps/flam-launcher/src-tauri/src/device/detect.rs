@@ -1,9 +1,9 @@
 //! Détection d'une Flam en « mode connexion USB » (#225).
 //!
 //! Dans ce mode, la Flam apparaît comme un volume FAT dont la racine contient le fichier
-//! `.mdf` (126 octets sur l'appareil inventorié, voir `flam-device-inventory.md`). Ce fichier
-//! est le marqueur de l'appareil ; `str/` (histoires) et `etc/library/` (index) sont attendus
-//! mais leur absence n'est qu'un avertissement.
+//! `.mdf` (126 octets sur l'appareil inventorié, voir `docs/security/flam-device-inventory.md`).
+//! Ce fichier est le marqueur de l'appareil ; `str/` (histoires) et `etc/library/` (index) sont
+//! attendus mais leur absence n'est qu'un avertissement.
 //!
 //! Le format interne de `.mdf` n'est **pas encore spécifié** (#224) : [`parse_mdf`] renvoie
 //! [`MdfError::FormatUnspecified`] et ne lit aucun champ. Seuls la taille et l'empreinte

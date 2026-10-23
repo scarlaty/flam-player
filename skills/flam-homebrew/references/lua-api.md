@@ -315,7 +315,7 @@ end
 ## 11. Sauvegarde
 
 `state` est une table globale persistée par le firmware (par UUID, fichiers
-`/usr/0/{uuid}.save` et `.prog`, voir `flam-device-inventory.md` à la racine du dépôt).
+`/usr/0/{uuid}.save` et `.prog`, voir `docs/security/flam-device-inventory.md` dans le dépôt).
 
 - **Jeu : ne rien écrire dans `state`.** Sur device, un homebrew qui y écrivait
   (`state.best = score`) donnait un écran noir à la relance, réparé seulement en

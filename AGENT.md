@@ -176,6 +176,11 @@ games/casse-briques/        — Jeu casse-briques (contenu Lua FLAM)
 games/attrape-etoiles/      — Jeu Attrape-etoiles (fait avec le skill flam-homebrew)
 skills/flam-homebrew/       — Skill IA : fabriquer un homebrew .plain.pk (SKILL.md, build, check, runtime)
 patches/                    — Correctifs pour le fork LVGL (voir patches/README.md)
+docs/
+  player.md                 — Emulateur, compilation, telmi2flam, jeux (ancien README racine)
+  flam-device-format.md     — Format du volume de la Flam ; flam-carrier.md : mode carrier
+  security/                 — Rapport d'audit et inventaire d'un appareil
+  assets/                   — Captures du README (apps/flam-launcher : npm run screenshots)
 stories/
   *.plain/                — Histoires (dossier avec info.plain + main.lua + img/ + sounds/)
   *.plain.pk              — Archives d'histoires (ZIP store)
