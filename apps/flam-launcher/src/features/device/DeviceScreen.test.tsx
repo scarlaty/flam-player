@@ -468,6 +468,34 @@ it(
     await act(async () => {
       answer(1, detected());
     });
+    statusGate = null;
+    const heading = await screen.findByRole("heading", { name: "Flam détectée" });
+    await waitFor(() => expect(heading).toHaveFocus());
+  },
+  SLOW_TEST_MS,
+);
+
+it(
+  "rend le focus au titre même si l'appel en vol qui précède « Réessayer » trouve déjà la Flam",
+  async () => {
+    renderScreen();
+    const retry = await screen.findByRole("button", { name: "Réessayer" });
+    // Un appel est déjà en vol (retour au premier plan) quand on clique : sa réponse, périmée
+    // (déjà « détectée »), arrive et est affichée avant celle de l'appel lancé par le clic.
+    const held: ((value: DeviceStatus) => void)[] = [];
+    const answer = (index: number, value: DeviceStatus) => held[index]?.(value);
+    statusGate = () => new Promise<DeviceStatus>((resolve) => held.push(resolve));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    fireEvent.click(retry);
+    await act(async () => {
+      answer(0, detected());
+    });
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => {
+      answer(1, detected());
+    });
+    statusGate = null;
     const heading = await screen.findByRole("heading", { name: "Flam détectée" });
     await waitFor(() => expect(heading).toHaveFocus());
   },

@@ -79,9 +79,8 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
     wasDetected.current = detected;
     if (before === detected || (before === null && !detected)) return;
     setStateNote(detected ? text.announce.detected : text.announce.lost);
-    if (detected && retried.current > 0 && retryAnswered >= retried.current)
-      headingRef.current?.focus();
-  }, [known, detected, retryAnswered]);
+    if (detected && retried.current > 0) headingRef.current?.focus();
+  }, [known, detected]);
 
   // « Réessayer » ne réclame le focus que pour la réponse d'un appel lancé après le clic : celle
   // d'un appel déjà en vol (numéro plus ancien) ne l'éteint pas.
