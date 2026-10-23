@@ -20,6 +20,8 @@ export function isActiveState(state: InstallState): boolean {
 
 const KINDS: Record<InstallState, TaskKind> = {
   queued: "install",
+  preparing: "download",
+  prepared: "convert",
   downloading: "download",
   converting: "convert",
   installing: "install",
@@ -30,6 +32,8 @@ const KINDS: Record<InstallState, TaskKind> = {
 
 const STATES: Record<InstallState, TaskState> = {
   queued: "queued",
+  preparing: "running",
+  prepared: "queued",
   downloading: "running",
   converting: "running",
   installing: "running",
@@ -47,6 +51,12 @@ export function describePhase(
   switch (state) {
     case "queued":
       return text.queued;
+    case "preparing": {
+      const phase = detail.phase ? (text.preparePhase[detail.phase] ?? null) : null;
+      return phase ? text.preparingPhase(phase) : text.preparing;
+    }
+    case "prepared":
+      return text.prepared;
     case "downloading":
       return detail.received !== null && detail.total !== null && detail.total > 0
         ? text.downloadingSize(formatBytes(detail.received), formatBytes(detail.total))
@@ -80,6 +90,12 @@ export function toPanelTask(task: InstallTask, detail?: TaskDetail): Task {
     state,
     progress: task.percent === null ? undefined : task.percent,
     phase: state === "running" ? describePhase(task.state, detail) : undefined,
-    detail: task.error?.message,
+    detail: task.error?.message ?? packDetail(task),
   };
+}
+
+/** Pack de podcasts : épisodes retirés (P7), signalés dans le panneau des tâches. */
+function packDetail(task: InstallTask): string | undefined {
+  const dropped = task.pack?.dropped ?? [];
+  return dropped.length > 0 ? t.stories.progress.packDropped(dropped) : undefined;
 }

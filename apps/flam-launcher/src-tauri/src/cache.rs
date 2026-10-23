@@ -30,6 +30,7 @@ pub const APP_CACHE_SUBDIRS: &[&str] = &[
     "library",
     "official",
     "play",
+    "podcast-work",
     "podcasts",
     "thumbs",
 ];
@@ -273,6 +274,7 @@ mod tests {
                 "library",
                 "official",
                 "play",
+                "podcast-work",
                 "podcasts",
                 "thumbs"
             ]
