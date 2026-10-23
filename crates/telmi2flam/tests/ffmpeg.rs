@@ -338,6 +338,26 @@ fn recherche_de_ffmpeg() {
     std::env::set_current_dir(&bin).unwrap();
     assert_eq!(find_ffmpeg(), None, "ffmpeg du dossier courant");
     std::env::set_current_dir(&old_cwd).unwrap();
+    // Entrée vide du PATH = dossier courant (`shutil.which` la lit ainsi) : refusée aussi, y
+    // compris quand le dossier courant n'est plus ajouté d'office (#369).
+    let empty = scratch("path-vide");
+    let mut with_empty = OsString::from(if cfg!(windows) { ";" } else { ":" });
+    with_empty.push(empty.as_os_str());
+    let old_nodefault = std::env::var_os("NoDefaultCurrentDirectoryInExePath");
+    std::env::set_var("NoDefaultCurrentDirectoryInExePath", "1");
+    std::env::set_var("PATH", &with_empty);
+    std::env::set_current_dir(&bin).unwrap();
+    assert_eq!(
+        find_ffmpeg(),
+        None,
+        "entrée vide du PATH, ffmpeg du dossier courant"
+    );
+    std::env::set_current_dir(&old_cwd).unwrap();
+    match old_nodefault {
+        Some(v) => std::env::set_var("NoDefaultCurrentDirectoryInExePath", v),
+        None => std::env::remove_var("NoDefaultCurrentDirectoryInExePath"),
+    }
+    let _ = std::fs::remove_dir_all(&empty);
     std::env::set_var("PATH", "");
     assert_eq!(find_ffmpeg(), None);
 

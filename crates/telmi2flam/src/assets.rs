@@ -17,7 +17,7 @@
 //! - un MP3 hors 44 100 Hz n'est remplacé que par une sortie de ffmpeg ([`crate::ffmpeg`])
 //!   validée par `mp3map::build` (44 100 Hz seulement) ; sinon il est recopié tel quel, avec
 //!   l'avertissement `audio_samplerate` et la raison de Python. Un même contenu sous plusieurs
-//!   noms ne lance ffmpeg qu'une fois (cache par contenu : MD5 et taille ; Python : SHA-256) ;
+//!   noms ne lance ffmpeg qu'une fois (cache par contenu : SHA-256, comme Python) ;
 //! - en flux ([`StoryAssets::stream`], #355) : un MP3 recopié tel quel est rangé comme
 //!   [`Data::Source`] (nom exact dans l'archive, taille et CRC-32 de la lecture faite pour
 //!   `mp3map`) et ses octets sont libérés ; une sortie de ffmpeg reste en mémoire.
@@ -30,10 +30,11 @@ use crate::error::ConvError;
 use crate::ffmpeg::{self, Outcome, SAMPLERATE};
 use crate::graph::{Assets, Warning};
 use crate::image::{png_to_fit_lif, png_to_lif, png_to_scene_lif, Align, INV_H, INV_W};
+use crate::mp3map;
 use crate::package::Data;
 use crate::png::PngError;
 use crate::progress::{Phase, Progress};
-use crate::{md5, mp3map};
+use sha2::{Digest, Sha256};
 
 /// Noms réservés par le convertisseur et le moteur (en minuscules).
 const RESERVED: [&str; 5] = [
@@ -141,11 +142,10 @@ pub struct StoryAssets<'a, R> {
     pub stream: bool,
     pub warnings: Vec<Warning>,
     pub missing: Vec<Missing>,
-    /// Rééchantillonnages par contenu source (`resample_cache` de Python, clé SHA-256) : clé
-    /// MD5 et taille (une collision ne peut être que fabriquée par l'auteur de l'histoire, qui
-    /// n'échange alors que ses propres audios) ; valeur : nom dans `out` de la sortie validée
-    /// (pas de copie gardée), ou raison de l'échec.
-    resample_cache: HashMap<([u8; 16], usize), Result<String, String>>,
+    /// Rééchantillonnages par contenu source (`resample_cache` de Python) : clé SHA-256 du
+    /// contenu ; valeur : nom dans `out` de la sortie validée (pas de copie gardée), ou raison
+    /// de l'échec.
+    resample_cache: HashMap<[u8; 32], Result<String, String>>,
     /// Fichiers rééchantillonnés (`stats["resampled"]`, compté par fichier, cache compris).
     pub resampled: usize,
     /// Lignes d'information `  i …` de Python (rééchantillonnage réussi), sans le préfixe.
@@ -227,7 +227,7 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
         data: &[u8],
         duration: f64,
     ) -> Result<Result<(Vec<u8>, mp3map::Mp3Map), String>, ConvError> {
-        let key = (md5::digest(&[data]), data.len());
+        let key: [u8; 32] = Sha256::digest(data).into();
         let validate = |new: Vec<u8>| -> Result<(Vec<u8>, mp3map::Mp3Map), String> {
             match mp3map::build(&new) {
                 Ok(map) if map.samplerates.len() == 1 && map.samplerates.contains(&SAMPLERATE) => {
