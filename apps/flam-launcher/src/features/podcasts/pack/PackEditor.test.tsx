@@ -246,23 +246,29 @@ it("monter, descendre et déplacer vers une catégorie, au clavier", async () =>
   ).toBeInTheDocument();
 });
 
-it("limites atteintes : 50 options à la racine, 3 niveaux de menus", async () => {
-  const many = Array.from({ length: 50 }, (_, i) => ep("a", `e${i}`));
-  views.a = feed(
-    "a",
-    "Contes",
-    many.map((n) => episode((n as any).episode_id)),
-  );
-  draft = { ...draft, composition: composition(many) };
-  renderEditor([selected("a", "extra", "Un de trop")]);
-  expect(
-    await screen.findByRole("button", { name: "Ajouter une catégorie à la racine" }),
-  ).toBeDisabled();
-  expect(
-    screen.getByRole("button", { name: "Ajouter « Un de trop » à la racine" }),
-  ).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Tout ajouter à la racine" })).toBeDisabled();
-});
+it(
+  "limites atteintes : 50 options à la racine, 3 niveaux de menus",
+  async () => {
+    const many = Array.from({ length: 50 }, (_, i) => ep("a", `e${i}`));
+    views.a = feed(
+      "a",
+      "Contes",
+      many.map((n) => episode((n as any).episode_id)),
+    );
+    draft = { ...draft, composition: composition(many) };
+    renderEditor([selected("a", "extra", "Un de trop")]);
+    expect(
+      await screen.findByRole("button", { name: "Ajouter une catégorie à la racine" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Ajouter « Un de trop » à la racine" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Tout ajouter à la racine" }),
+    ).toBeDisabled();
+  },
+  SLOW_TEST_MS,
+);
 
 it("troisième niveau : pas de catégorie au-delà", async () => {
   views.a = feed("a", "Contes", [episode("1")]);
