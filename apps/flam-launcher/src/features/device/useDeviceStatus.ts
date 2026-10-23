@@ -17,8 +17,8 @@ export interface DeviceStatusState {
   retry: () => number;
   /**
    * Numéro de la dernière demande de `retry` prise en compte par la réponse (ou l'échec) la plus
-   * récente. Une réponse d'un appel déjà en vol au moment du clic porte un numéro plus ancien :
-   * elle ne répond pas à « Réessayer ».
+   * récente, ou close sans appel (fenêtre masquée, scrutation désactivée). Une réponse d'un appel
+   * déjà en vol au moment du clic porte un numéro plus ancien : elle ne répond pas à « Réessayer ».
    */
   answered: number;
 }

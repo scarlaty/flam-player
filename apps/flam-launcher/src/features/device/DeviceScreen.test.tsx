@@ -510,6 +510,10 @@ it(
     status = detected();
     document.dispatchEvent(new Event("visibilitychange"));
     const back = await screen.findByRole("heading", { name: "Flam détectée" });
+    // L'annonce est posée par le même effet, juste avant l'éventuel focus.
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(/Flam détectée/),
+    );
     expect(back).not.toHaveFocus();
   },
   SLOW_TEST_MS,
