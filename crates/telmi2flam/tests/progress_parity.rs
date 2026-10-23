@@ -96,10 +96,13 @@ fn run_binary(work: &Path, args: &[String], machine: bool) -> Result<Outcome, St
     // vérifiées ici : jamais `done > total`, `done` croissant, rien après `done == total`.
     let mut phases: std::collections::HashMap<String, (u64, u64)> = Default::default();
     for line in stdout.lines() {
-        // #133 : sans --progress-json, Python écrit le résumé humain sur stdout (pas encore
-        // porté) ; le Rust n'y écrit rien.
+        // Sans --progress-json, stdout ne porte que le résumé humain (`OK -> …`, lignes
+        // indentées), comme Python (#133).
         if !machine {
-            return Err(format!("stdout sans --progress-json : {line:?}"));
+            if !(line.starts_with("OK -> ") || line.starts_with("  ")) {
+                return Err(format!("stdout sans --progress-json : {line:?}"));
+            }
+            continue;
         }
         if !line.is_ascii() {
             return Err(format!("ligne non ASCII : {line:?}"));
