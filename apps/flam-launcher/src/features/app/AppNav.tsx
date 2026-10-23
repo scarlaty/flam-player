@@ -6,7 +6,7 @@ import "./AppNav.css";
 const ITEMS: { route: keyof typeof ROUTE_HASHES; icon: IconName }[] = [
   { route: "home", icon: "library" },
   { route: "sources", icon: "catalog" },
-  { route: "podcasts", icon: "catalog" },
+  { route: "podcasts", icon: "podcast" },
   { route: "device", icon: "device" },
   { route: "settings", icon: "sliders" },
 ];

@@ -132,7 +132,6 @@ export const fr = {
     episodes: {
       title: (feed: string) => `Épisodes de « ${feed} »`,
       loading: "Chargement des épisodes…",
-      loadFailed: "Impossible de charger ce flux.",
       refreshFailed:
         "Le flux n'a pas pu être actualisé : la version enregistrée est affichée.",
       offline: (date: string | null) =>
@@ -145,7 +144,6 @@ export const fr = {
       },
       list: "Épisodes",
       explicit: "Explicite",
-      explicitHint: "Contenu explicite, décoché par défaut.",
       unknownDate: "Date inconnue",
       unknownSize: "taille inconnue",
       size: (size: string, approximate: boolean) =>

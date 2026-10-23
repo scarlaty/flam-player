@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { toAppError, type AppError } from "../../api/error";
 import {
   getPodcastFeed,
@@ -24,8 +24,11 @@ function formatDate(seconds: number | null): string | null {
   return new Date(seconds * 1000).toLocaleDateString("fr-FR", { dateStyle: "long" });
 }
 
-/** Flux de la source choisie : version enregistrée d'abord, puis actualisation réseau. */
-function useFeed(sourceId: string | null) {
+/**
+ * Flux de la source choisie : version enregistrée d'abord, puis actualisation réseau. `seed` porte
+ * la vue qu'un ajout vient de rapporter : elle est affichée telle quelle, sans seconde requête.
+ */
+function useFeed(sourceId: string | null, seedRef: RefObject<PodcastView | null>) {
   const [view, setView] = useState<PodcastView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<AppError | null>(null);
@@ -34,13 +37,19 @@ function useFeed(sourceId: string | null) {
   useEffect(() => {
     if (sourceId === null) return;
     let cancelled = false;
+    const seeded = seedRef.current?.source_id === sourceId ? seedRef.current : null;
     // Chargement du flux choisi depuis le backend.
-    /* eslint-disable react-hooks/set-state-in-effect */
+    if (seeded?.feed) {
+      setView(seeded);
+      setError(null);
+      setRefreshError(null);
+      setLoading(false);
+      return;
+    }
     setView(null);
     setError(null);
     setRefreshError(null);
     setLoading(true);
-    /* eslint-enable react-hooks/set-state-in-effect */
     void (async () => {
       let cached: PodcastView | null = null;
       try {
@@ -67,7 +76,7 @@ function useFeed(sourceId: string | null) {
     return () => {
       cancelled = true;
     };
-  }, [sourceId]);
+  }, [sourceId, seedRef]);
 
   return { view, loading, error, refreshError };
 }
@@ -83,6 +92,7 @@ export function PodcastsScreen() {
   const [chosenId, setChosenId] = useState<string | null>(null);
   const episodesHeading = useRef<HTMLHeadingElement>(null);
   const focusOnLoad = useRef(false);
+  const addedView = useRef<PodcastView | null>(null);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -103,7 +113,7 @@ export function PodcastsScreen() {
   }, [load]);
 
   const chosen = feeds?.find((f) => f.id === chosenId) ?? null;
-  const { view, loading, error, refreshError } = useFeed(chosen?.id ?? null);
+  const { view, loading, error, refreshError } = useFeed(chosen?.id ?? null, addedView);
 
   // Après un choix explicite, le focus va au titre de la liste d'épisodes.
   useEffect(() => {
@@ -117,8 +127,11 @@ export function PodcastsScreen() {
     const source = added.source;
     if (!isPodcast(source)) return;
     setFeeds((list) => [...(list ?? []).filter((f) => f.id !== source.id), source]);
-    focusOnLoad.current = true;
-    setChosenId(source.id);
+    if (source.id !== chosenId) {
+      focusOnLoad.current = true;
+      addedView.current = added.view;
+      setChosenId(source.id);
+    }
     toast.show({ message: t.podcasts.add.added(source.name), tone: "success" });
   }
 
@@ -166,7 +179,10 @@ export function PodcastsScreen() {
                   variant={feed.id === chosenId ? "primary" : "secondary"}
                   aria-pressed={feed.id === chosenId}
                   onClick={() => {
+                    // Le flux déjà choisi ne se recharge pas : le focus ne doit pas bouger.
+                    if (feed.id === chosenId) return;
                     focusOnLoad.current = true;
+                    addedView.current = null;
                     setChosenId(feed.id);
                   }}
                 >
@@ -210,16 +226,15 @@ export function PodcastsScreen() {
               <p>{text.episodes.warnings(view.feed.warnings.length)}</p>
             </Banner>
           )}
+          {/* Hors de la condition : la sélection multi-flux reste visible si ce flux est en erreur. */}
+          <SelectionSummary />
           {view?.feed && (
-            <>
-              <SelectionSummary />
-              <EpisodeList
-                key={chosen.id}
-                sourceId={chosen.id}
-                sourceName={chosen.name}
-                episodes={view.feed.episodes}
-              />
-            </>
+            <EpisodeList
+              key={chosen.id}
+              sourceId={chosen.id}
+              sourceName={chosen.name}
+              episodes={view.feed.episodes}
+            />
           )}
         </section>
       )}

@@ -24,6 +24,10 @@ enum Resp {
     Cut(Vec<u8>, usize),
     /// Envoie 10 octets puis se tait longtemps.
     Hang,
+    /// Annonce 100 000 octets, en envoie un toutes les 30 ms.
+    Trickle,
+    /// Corps « chunked » interrompu (pas de chunk final) puis fermeture.
+    ChunkedCut,
     Status(u16),
     Redirect(String),
 }
@@ -116,6 +120,26 @@ async fn serve(handler: Handler) -> u16 {
                         let _ = socket.flush().await;
                         tokio::time::sleep(Duration::from_secs(60)).await;
                     }
+                    Resp::Trickle => {
+                        let _ = socket
+                            .write_all(head("200 OK", "", 100_000).as_bytes())
+                            .await;
+                        for _ in 0..200 {
+                            if socket.write_all(&[9u8]).await.is_err() {
+                                return;
+                            }
+                            let _ = socket.flush().await;
+                            tokio::time::sleep(Duration::from_millis(30)).await;
+                        }
+                    }
+                    Resp::ChunkedCut => {
+                        let _ = socket
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n",
+                            )
+                            .await;
+                        let _ = socket.flush().await;
+                    }
                     Resp::Status(code) => {
                         let _ = socket
                             .write_all(head(&format!("{code} X"), "", 0).as_bytes())
@@ -188,7 +212,8 @@ async fn lot_de_deux_flux_complet_taille_et_empreinte() {
     }))
     .await;
     let base = format!("http://127.0.0.1:{port}");
-    let dir = tempfile::tempdir().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
     let progress = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&progress);
     let report = fetcher()
@@ -197,7 +222,7 @@ async fn lot_de_deux_flux_complet_taille_et_empreinte() {
                 item("e1", "feedA", &base, "/a.mp3", Some("/cover.jpg")),
                 item("e2", "feedB", &base, "/b.mp3", None),
             ],
-            dir.path(),
+            &dir,
             &Limits::default(),
             never_cancel(),
             Arc::new(move |p| sink.lock().unwrap().push(p)),
@@ -238,14 +263,15 @@ async fn episode_en_404_retire_et_signale_pochette_en_404_ignoree() {
     }))
     .await;
     let base = format!("http://127.0.0.1:{port}");
-    let dir = tempfile::tempdir().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
     let report = fetcher()
         .fetch_all(
             &[
                 item("ok", "f", &base, "/a.mp3", Some("/absente.jpg")),
                 item("ko", "f", &base, "/absent.mp3", None),
             ],
-            dir.path(),
+            &dir,
             &Limits::default(),
             never_cancel(),
             no_progress(),
@@ -271,14 +297,15 @@ async fn episode_en_404_retire_et_signale_pochette_en_404_ignoree() {
 async fn echec_global_si_aucun_episode_recuperable() {
     let port = serve(Arc::new(|_| Resp::Status(404))).await;
     let base = format!("http://127.0.0.1:{port}");
-    let dir = tempfile::tempdir().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
     let err = fetcher()
         .fetch_all(
             &[
                 item("x", "f", &base, "/x", None),
                 item("y", "f", &base, "/y", None),
             ],
-            dir.path(),
+            &dir,
             &Limits::default(),
             never_cancel(),
             no_progress(),
@@ -306,11 +333,12 @@ async fn coupure_puis_reprise_complete_le_fichier() {
     }))
     .await;
     let base = format!("http://127.0.0.1:{port}");
-    let dir = tempfile::tempdir().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
     let report = fetcher()
         .fetch_all(
             &[item("e", "f", &base, "/e.mp3", None)],
-            dir.path(),
+            &dir,
             &Limits::default(),
             never_cancel(),
             no_progress(),
@@ -347,7 +375,8 @@ async fn adresses_privees_refusees_litterales_et_apres_redirection() {
     }))
     .await;
     let base = format!("http://127.0.0.1:{port}");
-    let dir = tempfile::tempdir().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
     let items = [
         item("meta", "f", &base, "/to-meta", None),
         item("lan", "f", &base, "/to-lan", None),
@@ -366,7 +395,7 @@ async fn adresses_privees_refusees_litterales_et_apres_redirection() {
     let report = fetcher()
         .fetch_all(
             &items,
-            dir.path(),
+            &dir,
             &Limits::default(),
             never_cancel(),
             no_progress(),
@@ -379,6 +408,8 @@ async fn adresses_privees_refusees_litterales_et_apres_redirection() {
     for d in &report.dropped {
         assert_eq!(d.reason, DropReason::Blocked, "{}", d.id);
     }
+    // Six redirections lues + « fine » : aucune requête n'a atteint les cibles privées.
+    assert_eq!(hits.load(Ordering::SeqCst), 7);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -390,14 +421,15 @@ async fn politique_stricte_refuse_le_bouclage_sans_requete() {
         Resp::Ok(vec![1; 10])
     }))
     .await;
-    let dir = tempfile::tempdir().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
     let strict = Fetcher::new(NetPolicy::strict()).unwrap();
     for host in ["127.0.0.1", "localhost", "[::1]"] {
         let base = format!("http://{host}:{port}");
         let err = strict
             .fetch_all(
                 &[item("x", "f", &base, "/a", None)],
-                dir.path(),
+                &dir,
                 &Limits::default(),
                 never_cancel(),
                 no_progress(),
@@ -430,7 +462,8 @@ async fn annulation_supprime_les_fichiers_partiels() {
     }))
     .await;
     let base = format!("http://127.0.0.1:{port}");
-    let dir = tempfile::tempdir().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
     let (tx, rx) = watch::channel(false);
     let cancel = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(600)).await;
@@ -443,7 +476,7 @@ async fn annulation_supprime_les_fichiers_partiels() {
                 item("b", "f", &base, "/slow1", None),
                 item("c", "f", &base, "/slow2", None),
             ],
-            dir.path(),
+            &dir,
             &Limits::default(),
             rx,
             no_progress(),
@@ -459,7 +492,8 @@ async fn annulation_supprime_les_fichiers_partiels() {
 async fn plafond_total_arrete_le_lot_et_supprime_les_fichiers() {
     let port = serve(Arc::new(|_| Resp::Ok(vec![5; 80]))).await;
     let base = format!("http://127.0.0.1:{port}");
-    let dir = tempfile::tempdir().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
     let limits = Limits {
         max_total_bytes: 100,
         ..Limits::default()
@@ -471,7 +505,7 @@ async fn plafond_total_arrete_le_lot_et_supprime_les_fichiers() {
                 item("b", "f", &base, "/2", None),
                 item("c", "f", &base, "/3", None),
             ],
-            dir.path(),
+            &dir,
             &limits,
             never_cancel(),
             no_progress(),
@@ -491,7 +525,8 @@ async fn plafond_par_episode_retire_l_episode() {
     }))
     .await;
     let base = format!("http://127.0.0.1:{port}");
-    let dir = tempfile::tempdir().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
     let limits = Limits {
         max_episode_bytes: 100,
         ..Limits::default()
@@ -502,7 +537,7 @@ async fn plafond_par_episode_retire_l_episode() {
                 item("big", "f", &base, "/big", None),
                 item("small", "f", &base, "/small", None),
             ],
-            dir.path(),
+            &dir,
             &limits,
             never_cancel(),
             no_progress(),
@@ -523,7 +558,8 @@ async fn delai_depasse_retire_l_episode() {
     }))
     .await;
     let base = format!("http://127.0.0.1:{port}");
-    let dir = tempfile::tempdir().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
     let limits = Limits {
         file_timeout: Duration::from_millis(400),
         ..Limits::default()
@@ -534,7 +570,7 @@ async fn delai_depasse_retire_l_episode() {
                 item("slow", "f", &base, "/slow", None),
                 item("fast", "f", &base, "/fast", None),
             ],
-            dir.path(),
+            &dir,
             &limits,
             never_cancel(),
             no_progress(),
@@ -548,16 +584,11 @@ async fn delai_depasse_retire_l_episode() {
 
 #[tokio::test]
 async fn trop_d_episodes_ou_lot_vide_refuses() {
-    let dir = tempfile::tempdir().unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
     let f = fetcher();
     let err = f
-        .fetch_all(
-            &[],
-            dir.path(),
-            &Limits::default(),
-            never_cancel(),
-            no_progress(),
-        )
+        .fetch_all(&[], &dir, &Limits::default(), never_cancel(), no_progress())
         .await
         .unwrap_err();
     assert_eq!(err.kind(), "validation");
@@ -567,7 +598,7 @@ async fn trop_d_episodes_ou_lot_vide_refuses() {
     let err = f
         .fetch_all(
             &many,
-            dir.path(),
+            &dir,
             &Limits::default(),
             never_cancel(),
             no_progress(),
@@ -601,4 +632,208 @@ fn dossier_de_travail_supprime_apres_publication() {
     let path = wd.path().to_path_buf();
     drop(wd);
     assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn id_ou_flux_qui_est_une_url_refuse_sans_la_recopier() {
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
+    for (id, feed) in [
+        ("https://h.example/SECRET-GUID.mp3?t=SECRET", "f"),
+        ("e1", "https://h.example/feed?key=SECRET"),
+        ("ftp://SECRET@h.example/x", "f"),
+    ] {
+        let err = fetcher()
+            .fetch_all(
+                &[item(id, feed, "http://127.0.0.1:9", "/a", None)],
+                &dir,
+                &Limits::default(),
+                never_cancel(),
+                no_progress(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "validation", "{id}");
+        assert!(!err.to_string().contains("SECRET"), "{err}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identifiants_dans_l_url_d_enclosure_refuses_sans_requete() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let h2 = Arc::clone(&hits);
+    let port = serve(Arc::new(move |_| {
+        h2.fetch_add(1, Ordering::SeqCst);
+        Resp::Ok(vec![1; 10])
+    }))
+    .await;
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+    let report = fetcher()
+        .fetch_all(
+            &[
+                Item {
+                    id: "cred".into(),
+                    feed: "f".into(),
+                    audio_url: format!("http://user:pass@127.0.0.1:{port}/a.mp3"),
+                    image_url: None,
+                },
+                item("ok", "f", &base, "/b.mp3", None),
+            ],
+            &dir,
+            &Limits::default(),
+            never_cancel(),
+            no_progress(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.dropped.len(), 1);
+    assert_eq!(report.dropped[0].reason, DropReason::Blocked);
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "seul « ok » a été demandé");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn debit_minimal_retire_l_episode_lent() {
+    let port = serve(Arc::new(|r| match r.path.as_str() {
+        "/slow" => Resp::Trickle,
+        _ => Resp::Ok(vec![2; 50]),
+    }))
+    .await;
+    let base = format!("http://127.0.0.1:{port}");
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
+    // ~33 octets/s reçus ; minimum exigé : 1000 octets/s sur 500 ms.
+    let limits = Limits {
+        min_rate_bytes_per_sec: 1000,
+        min_rate_window: Duration::from_millis(500),
+        ..Limits::default()
+    };
+    let started = std::time::Instant::now();
+    let report = fetcher()
+        .fetch_all(
+            &[
+                item("slow", "f", &base, "/slow", None),
+                item("fast", "f", &base, "/fast", None),
+            ],
+            &dir,
+            &limits,
+            never_cancel(),
+            no_progress(),
+        )
+        .await
+        .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(report.dropped.len(), 1);
+    assert_eq!(report.dropped[0].id, "slow");
+    assert_eq!(report.dropped[0].reason, DropReason::TimedOut);
+    assert_eq!(report.fetched[0].id, "fast");
+    assert_eq!(files(dir.path()), vec!["ep-0001.audio".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn debit_minimal_inactif_si_fenetre_nulle() {
+    // Fenêtre nulle : pas de contrôle de débit ; le délai du fichier reste le seul garde-fou.
+    let port = serve(Arc::new(|_| Resp::Trickle)).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
+    let limits = Limits {
+        min_rate_window: Duration::ZERO,
+        file_timeout: Duration::from_millis(500),
+        ..Limits::default()
+    };
+    let started = std::time::Instant::now();
+    let err = fetcher()
+        .fetch_all(
+            &[item("a", "f", &base, "/a", None)],
+            &dir,
+            &limits,
+            never_cancel(),
+            no_progress(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "download_invalid");
+    assert!(started.elapsed() >= Duration::from_millis(450));
+}
+
+#[test]
+fn debit_minimal_par_defaut_1_kio_s_sur_2_minutes() {
+    let l = Limits::default();
+    assert_eq!(l.min_rate_bytes_per_sec, 1024);
+    assert_eq!(l.min_rate_window, Duration::from_secs(120));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn corps_chunked_coupe_sans_longueur_est_detecte() {
+    let port = serve(Arc::new(|_| Resp::ChunkedCut)).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
+    let err = fetcher()
+        .fetch_all(
+            &[item("a", "f", &base, "/a", None)],
+            &dir,
+            &Limits::default(),
+            never_cancel(),
+            no_progress(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "download_invalid");
+    assert!(files(dir.path()).is_empty(), "{:?}", files(dir.path()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn noms_locaux_refuses_sans_requete() {
+    let strict = Fetcher::new(NetPolicy::strict()).unwrap();
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
+    for host in [
+        "nas",
+        "box:8080",
+        "nas.local",
+        "x.lan",
+        "x.home.arpa",
+        "a.internal",
+        "a.localhost",
+    ] {
+        let err = strict
+            .fetch_all(
+                &[item("x", "f", &format!("http://{host}"), "/a.mp3", None)],
+                &dir,
+                &Limits::default(),
+                never_cancel(),
+                no_progress(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "download_invalid", "{host}");
+    }
+}
+
+#[tokio::test]
+async fn guid_sans_hote_est_accepte() {
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
+    // `tag:` et `urn:` ne sont pas des URL réseau : pas de refus de validation (le lot échoue
+    // ensuite pour une autre raison : serveur injoignable).
+    let err = fetcher()
+        .fetch_all(
+            &[item(
+                "tag:soundcloud,2010:tracks/1",
+                "Mythes:Grecs",
+                "http://127.0.0.1:9",
+                "/a",
+                None,
+            )],
+            &dir,
+            &Limits::default(),
+            never_cancel(),
+            no_progress(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "download_invalid");
 }

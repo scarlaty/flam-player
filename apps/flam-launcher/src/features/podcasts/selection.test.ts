@@ -46,6 +46,12 @@ it("refuse un épisode trop gros, un doublon, le 51e épisode et le dépassement
   expect(refusalFor(heavy, item("y", room))).toBeNull();
 });
 
+it("un même identifiant dans deux flux désigne deux épisodes distincts", () => {
+  const other = { ...item("a", 1), sourceId: "autre" };
+  expect(refusalFor([item("a", 1)], other)).toBeNull();
+  expect(refusalFor([item("a", 1), other], other)).toBe("duplicate");
+});
+
 it("latestIds prend les n premiers épisodes", () => {
   const episodes = [{ id: "1" }, { id: "2" }, { id: "3" }];
   expect(latestIds(episodes, 2)).toEqual(["1", "2"]);
