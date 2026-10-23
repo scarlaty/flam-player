@@ -5,8 +5,12 @@
 //! - `artwork` (#215) : conversion des pochettes de podcast en PNG ;
 //! - `rss` (#210) : lecture d'un flux RSS 2.0 avec extensions iTunes ; le contenu est déjà
 //!   téléchargé ;
+//! - `net` (#213) : contrôle des adresses (D10) et client HTTP gardé, pour tout accès réseau ;
+//! - `fetch` (#213) : téléchargement par lot des épisodes et pochettes d'un pack ;
 //! - `source` (#211) : source « Podcast » (URL du flux, cache hors ligne, commandes).
 
 pub mod artwork;
+pub mod fetch;
+pub mod net;
 pub mod rss;
 pub mod source;

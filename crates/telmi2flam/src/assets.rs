@@ -10,7 +10,10 @@
 //! - coût linéaire : la recherche du premier suffixe libre reprend où la précédente s'est
 //!   arrêtée pour la même base (Python repart de `_2`, avec le même résultat) ;
 //! - aucune panique ; le jeton d'annulation est consulté avant chaque asset et pendant le
-//!   décodage et le redimensionnement des images.
+//!   décodage et le redimensionnement des images ;
+//! - progression comme Python : avertissements émis à l'instant où ils surviennent, une étape
+//!   des phases `images` / `audio` par asset distinct traité (manquant ou illisible compris),
+//!   aucune pour un asset déjà en cache.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek};
@@ -21,6 +24,7 @@ use crate::graph::{Assets, Warning};
 use crate::image::{png_to_fit_lif, png_to_lif, png_to_scene_lif, Align, INV_H, INV_W};
 use crate::mp3map;
 use crate::png::PngError;
+use crate::progress::{Phase, Progress};
 
 /// Noms réservés par le convertisseur et le moteur (en minuscules).
 const RESERVED: [&str; 5] = [
@@ -117,6 +121,7 @@ pub struct StoryAssets<'a, R> {
     root: &'a str,
     keep_size: bool,
     cancelled: &'a dyn Fn() -> bool,
+    pub(crate) progress: &'a mut dyn Progress,
     pub names: Names,
     img_cache: HashMap<(String, bool), Option<String>>,
     audio_cache: HashMap<String, String>,
@@ -132,12 +137,14 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
         root: &'a str,
         keep_size: bool,
         cancelled: &'a dyn Fn() -> bool,
+        progress: &'a mut dyn Progress,
     ) -> Self {
         StoryAssets {
             archive,
             root,
             keep_size,
             cancelled,
+            progress,
             names: Names::default(),
             img_cache: HashMap::new(),
             audio_cache: HashMap::new(),
@@ -147,8 +154,15 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
         }
     }
 
+    /// Avertissement : émis tout de suite (`_warn`) et gardé dans [`Self::warnings`].
     pub fn warn(&mut self, code: &'static str, message: String) {
+        self.progress.warn(code, &message);
         self.warnings.push(Warning { code, message });
+    }
+
+    /// Progression de la conversion (phases suivantes, après le graphe).
+    pub fn progress(&mut self) -> &mut dyn Progress {
+        &mut *self.progress
     }
 
     fn check_cancel(&self) -> Result<(), ConvError> {
@@ -229,6 +243,7 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
                 kind: "image",
                 name: name.to_owned(),
             });
+            self.progress.tick(Phase::Images);
             self.img_cache.insert(key, None);
             return Ok(None);
         };
@@ -250,6 +265,7 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
                 );
                 let out = Some("empty.lif".to_owned());
                 self.img_cache.insert(key, out.clone());
+                self.progress.tick(Phase::Images);
                 return Ok(out);
             }
             Err(e) => return Err(image_error(name, e)),
@@ -259,6 +275,7 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
         let lif_name = self.names.alloc("img/", &base, ".lif");
         self.out.insert(format!("img/{lif_name}"), lif);
         self.img_cache.insert(key, Some(lif_name.clone()));
+        self.progress.tick(Phase::Images);
         Ok(Some(lif_name))
     }
 
@@ -279,6 +296,7 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
             });
             self.audio_cache
                 .insert(name.to_owned(), "silent.mp3".to_owned());
+            self.progress.tick(Phase::Audio);
             return Ok(Some("silent.mp3".to_owned()));
         };
         let out_name = self.names.alloc("sounds/", base_no_ext(name), ".mp3");
@@ -286,6 +304,7 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
         self.add_mp3map(&pk_name, &data, name);
         self.out.insert(pk_name, data);
         self.audio_cache.insert(name.to_owned(), out_name.clone());
+        self.progress.tick(Phase::Audio);
         Ok(Some(out_name))
     }
 }
