@@ -7,6 +7,13 @@
 //! Une fois levé, le drapeau ne retombe pas : la conversion s'arrête au prochain point de
 //! contrôle (entre deux assets, à chaque ligne d'image, avant chaque entrée écrite et avant les
 //! publications), supprime ses `.part` et rend [`crate::error::ConvError::cancelled`].
+//!
+//! Limites (comme Python) : un second signal ne force pas l'arrêt (un point de contrôle doit
+//! être atteint ; l'arrêt forcé reste celui du job du launcher ou `kill`) ; la fermeture de la
+//! console, la déconnexion et l'arrêt du système gardent le comportement par défaut (arrêt
+//! sans nettoyage, `.part` repris par `_clean_orphans`) ; un processus lancé avec
+//! `CREATE_NEW_PROCESS_GROUP` ignore `Ctrl+C` (indicateur hérité) et ne reçoit que
+//! `CTRL_BREAK`.
 
 use std::io::{ErrorKind, Read};
 use std::sync::atomic::{AtomicBool, Ordering};

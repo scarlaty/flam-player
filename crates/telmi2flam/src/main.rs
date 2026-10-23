@@ -273,6 +273,17 @@ fn run() -> ExitCode {
     let input = Path::new(args.input.as_deref().unwrap_or(OsStr::new("")));
     if args.info {
         return match telmi2flam::info::read_info(input) {
+            // `read_info` ne consulte pas le jeton : un Ctrl+C reçu pendant la lecture annule
+            // ici, comme le `KeyboardInterrupt` de Python.
+            Ok(_) | Err(_) if cancel::is_cancelled() => {
+                let e = telmi2flam::error::ConvError::cancelled();
+                events.fail(
+                    e.code,
+                    &e.message,
+                    e.exit_code,
+                    Some("Annule : aucune sortie partielle conservee."),
+                )
+            }
             Ok(info) => {
                 out_line(&info.to_json());
                 ExitCode::SUCCESS
@@ -293,6 +304,8 @@ fn run() -> ExitCode {
     };
     #[cfg(any(debug_assertions, feature = "test-hooks"))]
     let mut fault = fault::Fault::from_env();
+    #[cfg(any(debug_assertions, feature = "test-hooks"))]
+    let fault_set = fault.is_some();
     let result = {
         let mut sink = |e: &Event<'_>| {
             // `_warn` : la ligne de stderr d'abord, puis l'événement.
@@ -305,6 +318,13 @@ fn run() -> ExitCode {
                 f.on_step(phase.as_str(), *done, *total);
             }
         };
+        #[cfg(any(debug_assertions, feature = "test-hooks"))]
+        let mut reporter = if fault_set {
+            Reporter::with_interval(&mut sink, std::time::Duration::ZERO)
+        } else {
+            Reporter::new(&mut sink)
+        };
+        #[cfg(not(any(debug_assertions, feature = "test-hooks")))]
         let mut reporter = Reporter::new(&mut sink);
         convert(&req, &mut reporter, &cancel::is_cancelled)
     };
@@ -323,8 +343,9 @@ fn run() -> ExitCode {
 /// Injection de fautes pour les tests d'intégration (`tests/cancel_panic.rs`), absente de la
 /// release du launcher (ni `debug_assertions`, ni la feature `test-hooks`).
 ///
-/// `TELMI2FLAM_TEST_FAULT=<action>:<phase>:<begin|end>` agit sur le premier événement `step`
-/// de la phase (`begin` : `done == 0` ; `end` : `done == total`), après son émission :
+/// `TELMI2FLAM_TEST_FAULT=<action>:<phase>:<begin|end|N>` agit sur le premier événement `step`
+/// de la phase (`begin` : `done == 0` ; `end` : `done == total` ; `N` : `done == N`), après
+/// son émission. Avec une faute, tous les `step` sont émis (pas d'espacement de 0,1 s) :
 /// - `cancel` : lève le jeton d'annulation ;
 /// - `panic` : panique dans le fil de travail ;
 /// - `wait` : attend l'annulation (60 s au plus), pour annuler de l'extérieur (stdin,
@@ -344,8 +365,15 @@ mod fault {
     pub struct Fault {
         action: Action,
         phase: String,
-        at_end: bool,
+        point: Point,
         fired: bool,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Point {
+        Begin,
+        End,
+        Done(u64),
     }
 
     impl Fault {
@@ -359,21 +387,25 @@ mod fault {
                 _ => return None,
             };
             let phase = it.next()?.to_owned();
-            let at_end = match it.next()? {
-                "begin" => false,
-                "end" => true,
-                _ => return None,
+            let point = match it.next()? {
+                "begin" => Point::Begin,
+                "end" => Point::End,
+                n => Point::Done(n.parse().ok()?),
             };
             Some(Fault {
                 action,
                 phase,
-                at_end,
+                point,
                 fired: false,
             })
         }
 
         pub fn on_step(&mut self, phase: &str, done: u64, total: u64) {
-            let point = if self.at_end { total } else { 0 };
+            let point = match self.point {
+                Point::Begin => 0,
+                Point::End => total,
+                Point::Done(n) => n,
+            };
             if self.fired || phase != self.phase || done != point {
                 return;
             }

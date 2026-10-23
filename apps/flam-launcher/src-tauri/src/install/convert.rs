@@ -793,7 +793,8 @@ b"
             if rust {
                 assert!(
                     part_seen.load(std::sync::atomic::Ordering::SeqCst),
-                    "aucun .part pendant l'attente : l'annulation ne teste pas le nettoyage"
+                    "aucun .part pendant l'attente : l'annulation ne teste pas le nettoyage \
+                     (FLAM_TEST_RUST_CONVERTER : binaire de debug ou avec test-hooks)"
                 );
             }
             let restes: Vec<_> = std::fs::read_dir(out.path()).unwrap().collect();

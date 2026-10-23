@@ -659,7 +659,8 @@ fn pending() -> MutexGuard<'static, Vec<PathBuf>> {
 }
 
 /// Inscrit `tmp` **avant** sa création : une panique entre la création et le nettoyage le
-/// retrouve toujours.
+/// retrouve toujours. Fichier ou dossier : tout temporaire de la crate peut s'y inscrire (par
+/// exemple le dossier de travail de ffmpeg), puis en être retiré par [`untrack`].
 pub(crate) fn track(tmp: &Path) {
     pending().push(tmp.to_path_buf());
 }

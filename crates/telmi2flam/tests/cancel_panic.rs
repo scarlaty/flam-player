@@ -3,7 +3,9 @@
 //! arrive par le jeton (faute injectée), par la fin de stdin (`--cancel-on-stdin-eof`,
 //! protocole du launcher) ou par `CTRL_BREAK` / `SIGINT` / `SIGTERM`.
 //!
-//! Les fautes passent par `TELMI2FLAM_TEST_FAULT` (voir `src/main.rs`, actif en debug).
+//! Les fautes passent par `TELMI2FLAM_TEST_FAULT` (voir `src/main.rs`, actif en debug ou avec
+//! la feature `test-hooks`) : sans elles, ces tests ne prouveraient rien.
+#![cfg(any(debug_assertions, feature = "test-hooks"))]
 
 use std::io::Cursor;
 use std::io::{BufRead, BufReader};
@@ -15,15 +17,19 @@ use telmi2flam::archive::Archive;
 
 const VECTORS: &[u8] = include_bytes!("data/package_cases.zip");
 
-/// Points de faute : (phase, début ou fin), dans l'ordre de la conversion. `zip:end` : le
-/// `.plain.pk` et le dossier `.plain` sont écrits dans leurs `.part`, rien n'est publié.
+/// Points de faute : (phase, début, `done` ou fin), dans l'ordre de la conversion. `zip:1` :
+/// le `.part` du `.plain.pk` est ouvert, en cours d'écriture ; `zip:end` : le `.plain.pk` et
+/// le dossier `.plain` sont écrits dans leurs `.part` (dernier fichier du dossier encore
+/// ouvert), rien n'est publié.
 const POINTS: &[&str] = &[
     "images:begin",
     "images:end",
+    "audio:begin",
     "audio:end",
     "scripts:begin",
     "scripts:end",
     "zip:begin",
+    "zip:1",
     "zip:end",
 ];
 
@@ -275,11 +281,12 @@ fn stdin_ferme_sans_option_ignore() {
     assert_ne!(std::fs::read(w.0.join("out.plain.pk")).unwrap(), b"ancien");
 }
 
-/// Avec l'option, un stdin déjà fermé annule dès le premier point de contrôle.
+/// Avec l'option, un stdin déjà fermé annule : le binaire attend au début des images
+/// (`wait`) jusqu'à ce que le fil de stdin lève le jeton, sans course avec la conversion.
 #[test]
 fn stdin_deja_ferme_avec_option_annule() {
     let w = work("stdin-null");
-    let out = command(&w.0, None, &["--cancel-on-stdin-eof"])
+    let out = command(&w.0, Some("wait:images:begin"), &["--cancel-on-stdin-eof"])
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -291,27 +298,21 @@ fn stdin_deja_ferme_avec_option_annule() {
 fn octets_sur_stdin_sans_effet() {
     use std::io::Write;
     let w = work("stdin-octets");
-    let mut child = command(&w.0, None, &["--cancel-on-stdin-eof"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = spawn_waiting(&w.0, &["--cancel-on-stdin-eof"], |c| {
+        c.stdin(Stdio::piped());
+    });
     let mut stdin = child.stdin.take().unwrap();
-    let _ = stdin.write_all(b"bonjour\n");
-    let _ = stdin.flush();
-    // stdin gardé ouvert jusqu'à la fin du binaire.
-    let out = child.wait_with_output().unwrap();
-    drop(stdin);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+    stdin.write_all(b"bonjour\nq\n").unwrap();
+    stdin.flush().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "des octets sur stdin ont arrêté le binaire"
     );
-    assert!(parts(&w.0).is_empty());
+    drop(stdin);
+    let out = finish(child);
+    assert_cancelled(&w.0, &out, "fin de stdin après des octets");
 }
-
 #[cfg(windows)]
 mod console {
     use super::*;
