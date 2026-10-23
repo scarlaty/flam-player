@@ -56,3 +56,7 @@ apps/flam-launcher/src-tauri/gen/
 # Captures du design system (docs/DESIGN.md) : le dossier échappe aussi à `screenshot*`
 !apps/flam-launcher/docs/screenshots/
 !apps/flam-launcher/docs/screenshots/*.png
+# Captures du README racine, produites par apps/flam-launcher/scripts/screenshots.mjs
+# (`npm run screenshots`) ; le script lui-même échappe aussi à `screenshot*`.
+!docs/assets/*.png
+!apps/flam-launcher/scripts/screenshots.mjs
