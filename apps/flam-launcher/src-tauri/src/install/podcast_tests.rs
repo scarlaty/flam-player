@@ -550,7 +550,7 @@ async fn sans_python_le_pack_echoue_avant_tout_telechargement() {
 }
 
 /// #440 : le pré-contrôle suit le moteur choisi. Moteur Rust sans `telmi2flam.exe` : refus avant
-/// tout téléchargement, même si Python est présent (ici le faux exécutable tient lieu des deux).
+/// tout téléchargement, avec un message propre au moteur Rust (et non « Python introuvable »).
 #[tokio::test]
 async fn moteur_rust_sans_binaire_le_pack_echoue_avant_tout_telechargement() {
     let ctx = Ctx::with_engine(None, ConverterEngine::Rust);
