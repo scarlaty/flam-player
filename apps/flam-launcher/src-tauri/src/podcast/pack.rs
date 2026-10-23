@@ -809,8 +809,9 @@ pub fn clear_draft(dir: &Path, revision: u64) -> AppResult<()> {
 // Commandes Tauri
 // ---------------------------------------------------------------------------------------
 
-/// Flux en cache des sources citées par `composition` (sans réseau).
-async fn load_feeds(
+/// Flux en cache des sources citées par `composition` (sans réseau). Aussi pour la création
+/// d'un pack (#217), qui revalide la composition.
+pub(crate) async fn load_feeds(
     config: &ConfigState,
     service: &PodcastService,
     composition: &PackComposition,
