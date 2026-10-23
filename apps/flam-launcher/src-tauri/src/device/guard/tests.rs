@@ -130,7 +130,8 @@ fn refused(root: &Path, ctx: &WriteContext<'_>, kind: WriteKind) -> WriteRefused
     err
 }
 
-pub(crate) fn wrong_info() -> Vec<u8> {
+/// `info` chiffré avec d'autres clés que celles de test (illisible avec les clés de `.mdf`).
+pub(in crate::device) fn wrong_info() -> Vec<u8> {
     encrypt_zero_padded(&[9u8; 16], &[8u8; 16], b"Autre\nclef\n000000\n")
 }
 
@@ -701,4 +702,186 @@ fn la_recherche_dans_le_cache_ne_panique_jamais() {
     assert!(!contains_field(b"", b"Capi"));
     assert!(!contains_field_utf16(b"", &[0x43]));
     assert!(!contains_field_utf16(b"x", &[]));
+}
+
+#[test]
+fn apres_un_retrait_l_etat_ne_montre_plus_l_histoire_retiree() {
+    // #345 : le contrôle fait par la garde d'un retrait n'est pas réutilisé par « Ma Flam ».
+    let dev = device(&mdf_v2_known());
+    let ctx = confirmed_ctx(dev.path());
+    story(dev.path(), STORY, &key_v2(), &wrong_info());
+    let mdf = mdf_v2_known();
+    let status = firmware_status(dev.path(), &mdf, &ctx, false);
+    assert!(matches!(status.coherence, Coherence::Contradiction { .. }));
+    // Retrait : garde, puis suppression du dossier.
+    check_write(dev.path(), &ctx, WriteKind::Other).unwrap();
+    // Pendant l'écriture : aucun contrôle ancien n'est montré.
+    let status = firmware_status(dev.path(), &mdf, &ctx, true);
+    assert_eq!(status.coherence, Coherence::NotChecked);
+    std::fs::remove_dir_all(dev.path().join("str").join(STORY)).unwrap();
+    // Aussitôt après (bien avant `STATUS_REUSE`) : contrôle refait, envoi débloqué.
+    let status = firmware_status(dev.path(), &mdf, &ctx, false);
+    assert!(
+        matches!(status.coherence, Coherence::NoEvidence { .. }),
+        "{:?}",
+        status.coherence
+    );
+    assert_eq!(status.write_block, None);
+    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+}
+
+#[test]
+fn l_envoi_garde_le_controle_pour_l_affichage() {
+    let dev = device(&mdf_v2_known());
+    let ctx = confirmed_ctx(dev.path());
+    story(dev.path(), STORY, &key_v2(), &info_v2("Histoire importée"));
+    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+    // Réutilisé pendant l'écriture (Flam occupée).
+    let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, true);
+    assert!(matches!(status.coherence, Coherence::Coherent { .. }));
+}
+
+#[test]
+fn un_info_dechiffre_sans_titre_n_est_pas_une_contradiction() {
+    // #326 : le déchiffrement est jugé sur la structure du clair, pas sur le titre.
+    let dev = device(&mdf_v2_known());
+    let blank = encrypt_zero_padded(&TEST_KEY, &TEST_IV, b"\n   \n\n");
+    story(dev.path(), STORY, &key_v2(), &blank);
+    let ctx = confirmed_ctx(dev.path());
+    let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
+    assert!(
+        matches!(
+            status.coherence,
+            Coherence::Coherent { counts } if counts.decrypted == 1
+        ),
+        "{:?}",
+        status.coherence
+    );
+    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+}
+
+#[test]
+fn des_cles_invalides_gardent_la_confiance_memorisee() {
+    // #326 (NIT) : une Flam confirmée reste « confirmée » à l'affichage ; le refus tient.
+    let mut zero_key = mdf_v2_known();
+    zero_key[MDF_KEY_OFFSET..MDF_KEY_OFFSET + 16].fill(0);
+    let mut bad_serial = mdf_v2_known();
+    bad_serial[0x32] = b'g';
+    for mdf in [zero_key, bad_serial] {
+        let dev = device(&mdf);
+        let ctx = test_ctx();
+        let status = firmware_status(dev.path(), &mdf, &ctx, false);
+        assert_eq!(status.trust, Trust::Unconfirmed);
+        ctx.trust.record(&mdf, false);
+        let status = firmware_status(dev.path(), &mdf, &ctx, false);
+        assert_eq!(status.trust, Trust::Confirmed);
+        assert!(matches!(
+            status.write_block,
+            Some(WriteRefused::KeysTrivial { .. } | WriteRefused::KeysUnreadable { .. })
+        ));
+        assert!(check_write(dev.path(), &ctx, WriteKind::Other).is_err());
+    }
+}
+
+/// `.mdf` 2.x numéroté `n` (octets de rôle inconnu à 0x6E), donc d'empreinte distincte.
+fn mdf_numbered(n: u32) -> Vec<u8> {
+    let mut mdf = mdf_v2_known();
+    mdf[MDF_IV_OFFSET + 16..MDF_IV_OFFSET + 20].copy_from_slice(&n.to_le_bytes());
+    mdf
+}
+
+#[test]
+fn l_eviction_oublie_l_empreinte_la_plus_ancienne() {
+    let data = tempfile::tempdir().unwrap();
+    let file = data.path().join(TRUST_FILE);
+    let trust = TrustStore::at(file.clone());
+    let total = MAX_TRUST_ENTRIES as u32 + 1;
+    for n in 0..total {
+        trust.record(&mdf_numbered(n), false);
+    }
+    // L'ordre alphabétique des empreintes n'est pas celui d'enregistrement.
+    let first_alpha = (0..total)
+        .min_by_key(|n| fingerprint(&mdf_numbered(*n)))
+        .unwrap();
+    assert_ne!(first_alpha, 0, "fixture : choisir d'autres numéros");
+    for store in [&trust, &TrustStore::at(file)] {
+        assert_eq!(store.trust(&mdf_numbered(0)), Trust::Unconfirmed);
+        assert_eq!(store.trust(&mdf_numbered(1)), Trust::Confirmed);
+        assert_eq!(store.trust(&mdf_numbered(first_alpha)), Trust::Confirmed);
+        assert_eq!(store.trust(&mdf_numbered(total - 1)), Trust::Confirmed);
+    }
+}
+
+#[test]
+fn des_enregistrements_simultanes_sont_tous_ecrits() {
+    let data = tempfile::tempdir().unwrap();
+    let file = data.path().join(TRUST_FILE);
+    let trust = TrustStore::at(file.clone());
+    std::thread::scope(|scope| {
+        for n in 0..16 {
+            let trust = &trust;
+            scope.spawn(move || trust.record(&mdf_numbered(n), n % 2 == 0));
+        }
+    });
+    // Relu d'une autre session : aucun enregistrement perdu.
+    let reread = TrustStore::at(file);
+    for n in 0..16 {
+        let expected = if n % 2 == 0 {
+            Trust::FlamVerified
+        } else {
+            Trust::Confirmed
+        };
+        assert_eq!(reread.trust(&mdf_numbered(n)), expected, "n = {n}");
+    }
+}
+
+#[test]
+fn un_fichier_de_confiance_ancien_reste_lu_et_borne() {
+    let data = tempfile::tempdir().unwrap();
+    let file = data.path().join(TRUST_FILE);
+    // Ancienne forme (ensembles triés), avec un doublon et une liste trop longue.
+    let mut confirmed: Vec<String> = (0..MAX_TRUST_ENTRIES as u32 + 2)
+        .map(|n| fingerprint(&mdf_numbered(n)))
+        .collect();
+    confirmed.push(confirmed[5].clone());
+    let json = serde_json::json!({ "confirmed": confirmed, "flam_verified": [] });
+    std::fs::write(&file, json.to_string()).unwrap();
+    let trust = TrustStore::at(file);
+    // Les deux plus anciennes sont oubliées, les autres relues.
+    assert_eq!(trust.trust(&mdf_numbered(0)), Trust::Unconfirmed);
+    assert_eq!(trust.trust(&mdf_numbered(1)), Trust::Unconfirmed);
+    assert_eq!(trust.trust(&mdf_numbered(5)), Trust::Confirmed);
+    assert_eq!(
+        trust.trust(&mdf_numbered(MAX_TRUST_ENTRIES as u32 + 1)),
+        Trust::Confirmed
+    );
+    trust.with(|data| {
+        assert_eq!(data.confirmed.len(), MAX_TRUST_ENTRIES);
+        let distinct: HashSet<&String> = data.confirmed.iter().collect();
+        assert_eq!(distinct.len(), MAX_TRUST_ENTRIES);
+    });
+}
+
+#[test]
+fn une_version_a_point_final_est_lue() {
+    for (text, family, version) in [
+        ("1.15.14.", Family::V1, Some("1.15.14")),
+        ("main: 2.4.2. comm: x", Family::V2, Some("2.4.2")),
+        ("main: 2..-x", Family::Unsupported, Some("2.")),
+        ("main: 2..1-x", Family::Unsupported, Some("2..1")),
+    ] {
+        let layout = analyze(&mdf_with(KNOWN_HEADER, text));
+        assert_eq!(layout.family, family, "{text}");
+        assert_eq!(layout.version.as_deref(), version, "{text}");
+    }
+}
+
+#[test]
+fn l_affichage_n_enumere_pas_les_lecteurs() {
+    // #326 : `device_status` (scruté) n'a pas besoin des racines détectées.
+    let dev = device(&mdf_v1_real());
+    let ctx = WriteContext::current(None);
+    let status = firmware_status(dev.path(), &mdf_v1_real(), &ctx, false);
+    assert_eq!(status.family, Family::V1);
+    assert!(ctx.detected_roots.get().is_none());
 }
