@@ -549,6 +549,21 @@ async fn sans_python_le_pack_echoue_avant_tout_telechargement() {
     ctx.assert_clean();
 }
 
+/// #440 : le pré-contrôle suit le moteur choisi. Moteur Rust sans `telmi2flam.exe` : refus avant
+/// tout téléchargement, avec un message propre au moteur Rust (et non « Python introuvable »).
+#[tokio::test]
+async fn moteur_rust_sans_binaire_le_pack_echoue_avant_tout_telechargement() {
+    let ctx = Ctx::with_engine(None, ConverterEngine::Rust);
+    let fake = ctx.packs(Fault::None);
+    let task = ctx.start_pack().await;
+    let end = ctx.finished(&task.id).await;
+    let error = end.error.unwrap();
+    assert_eq!(error.kind, "converter_unavailable");
+    assert!(error.message.contains("telmi2flam.exe"), "{error:?}");
+    assert!(!fake.entered.load(Ordering::SeqCst), "rien téléchargé");
+    ctx.assert_clean();
+}
+
 #[test]
 fn le_brouillon_n_est_efface_que_s_il_n_a_pas_change() {
     let dir = tempfile::tempdir().unwrap();
@@ -1001,6 +1016,8 @@ async fn pack_publie_sans_chemin_mort_et_source_inconnue() {
     );
     let done = ctx.finished(&task.id).await;
     assert_eq!(done.state, TaskState::Done, "{done:?}");
+    // #436 : plus de chemin de l'archive de travail dans la tâche terminée.
+    assert!(done.entry.download_url.is_empty(), "{:?}", done.entry);
     let library = ctx.service.library_list().await.unwrap();
     assert_eq!(library.len(), 1);
     assert!(library[0].source.download_url.is_empty());

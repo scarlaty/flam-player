@@ -275,13 +275,13 @@ pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
 /// Moteur effectif d'une tâche (#136) : celui du réglage, avec ses chemins détectés. Jamais de
 /// repli implicite sur l'autre moteur (le repli Python est l'objet de #137) : le moteur Rust
 /// n'exige pas Python, et son binaire absent donne `converter_unavailable`.
-enum ChosenEngine {
+pub(super) enum ChosenEngine {
     Python { python: PathBuf, script: PathBuf },
     Rust { exe: PathBuf },
 }
 
 impl ChosenEngine {
-    fn of(tc: &Toolchain) -> AppResult<Self> {
+    pub(super) fn of(tc: &Toolchain) -> AppResult<Self> {
         match tc.engine {
             ConverterEngine::Python => {
                 let python = tc.python.clone().ok_or_else(|| {
@@ -1053,6 +1053,14 @@ impl InstallService {
             )
             .await;
         podcast::finish_workdir(prepared.workdir).await;
+        // Archive de travail supprimée : son chemin ne reste ni dans l'événement « done » ni
+        // dans la file persistée (#436).
+        {
+            let mut tasks = lock(&self.0.tasks);
+            if let Some(slot) = tasks.iter_mut().find(|s| s.task.id == id) {
+                slot.task.entry.download_url.clear();
+            }
+        }
         result.map(|produced| (prepared.entry, produced))
     }
 
