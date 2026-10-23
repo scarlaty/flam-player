@@ -997,6 +997,25 @@ b"
         /// tournent jamais en même temps.
         static ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+        /// Pose `TELMI2FLAM_TEST_FAULT` le temps de la conversion et la retire à la chute, y
+        /// compris si le test panique : la variable ne survit jamais à son test.
+        struct Faute;
+
+        impl Faute {
+            fn pose(valeur: &str) -> Faute {
+                // SAFETY (édition 2021 : fonction sûre) : lue seulement par le binaire lancé par
+                // la conversion ; l'autre test qui lance un convertisseur attend le verrou `ENV`.
+                std::env::set_var("TELMI2FLAM_TEST_FAULT", valeur);
+                Faute
+            }
+        }
+
+        impl Drop for Faute {
+            fn drop(&mut self) {
+                std::env::remove_var("TELMI2FLAM_TEST_FAULT");
+            }
+        }
+
         enum Convertisseur {
             Python { python: PathBuf, script: PathBuf },
             Rust(PathBuf),
@@ -1064,11 +1083,7 @@ b"
             let rust = matches!(conv, Convertisseur::Rust(_));
             let out = tempfile::tempdir().unwrap();
             let output = out.path().join("histoire.plain.pk");
-            if rust {
-                // SAFETY (édition 2021 : fonction sûre) : lu seulement par le binaire lancé
-                // ci-dessous ; l'autre test qui lance un convertisseur attend le verrou.
-                std::env::set_var("TELMI2FLAM_TEST_FAULT", "wait:zip:end");
-            }
+            let faute = rust.then(|| Faute::pose("wait:zip:end"));
             let (tx, mut rx) = watch::channel(false);
             let tx = Arc::new(Mutex::new(tx));
             let part_seen = AtomicBool::new(false);
@@ -1104,7 +1119,7 @@ b"
                 },
             )
             .await;
-            std::env::remove_var("TELMI2FLAM_TEST_FAULT");
+            drop(faute);
             assert!(matches!(result, Err(AppError::Cancelled)), "{result:?}");
             if rust {
                 assert!(
