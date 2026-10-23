@@ -86,10 +86,14 @@ def entries_from_pk(path):
 
 def entries_from_dir(path):
     """Entrees d'un dossier `.plain` : chemins relatifs en `/`, tries ; methode et
-    drapeau UTF-8 sans objet (None)."""
+    drapeau UTF-8 sans objet (None). Un dossier vide compte comme une entree `nom/`
+    (taille et SHA-256 None) : un moteur qui en laisse un est en ecart."""
     out = []
     for dp, dn, fns in os.walk(path):
         dn.sort()
+        if dp != path and not dn and not fns:
+            out.append({"name": os.path.relpath(dp, path).replace(os.sep, "/") + "/",
+                        "method": None, "utf8": None, "size": None, "sha256": None})
         for fn in sorted(fns):
             full = os.path.join(dp, fn)
             with open(full, "rb") as f:
@@ -155,9 +159,22 @@ def harness_error(exc):
 
 def run_converter(cmd, archive, work_dir, args=(), timeout=300):
     """Execute `cmd archive -o sortie --progress-json args` puis `cmd archive --info`.
-    Retourne la forme normalisee (voir run_to_dict) et le chemin de la sortie (ou None)."""
+    Retourne la forme normalisee (voir run_to_dict) et le chemin du `.plain.pk` produit (ou
+    None). Sortie `out.plain.pk`, sauf si `args` porte `-o NOM` (NOM pris dans `work_dir`,
+    par exemple `out.plain` : dossier seul, sans `.plain.pk`). NOM doit commencer par
+    `out.plain` (sortie laissee apres un echec reperee par stray_files)."""
     os.makedirs(work_dir, exist_ok=True)
-    out = os.path.join(work_dir, "out.plain.pk")
+    args = list(args)
+    out_name = "out.plain.pk"
+    if "-o" in args:
+        i = args.index("-o")
+        if i + 1 >= len(args) or not args[i + 1].startswith("out.plain"):
+            raise ValueError("cas de corpus : -o out.plain[...] attendu, recu %r" % args[i:])
+        out_name = args[i + 1]
+        del args[i:i + 2]
+    if any(a == "--output" or a.startswith("--output=") for a in args):
+        raise ValueError("cas de corpus : sortie a donner par -o, pas --output")
+    out = os.path.join(work_dir, out_name)
     # Reechantillonnage MP3 desactive (#46) : l'oracle Python et le candidat Rust doivent
     # produire la meme sortie quel que soit le ffmpeg present sur la machine.
     env = {**os.environ, "FLAM_FFMPEG": ""}
@@ -171,7 +188,11 @@ def run_converter(cmd, archive, work_dir, args=(), timeout=300):
     entries = None
     plain_entries = None
     produced = None
-    if r.returncode == 0 and os.path.exists(out):
+    if r.returncode == 0 and out.endswith(".plain"):
+        # -o x.plain : seul le dossier est ecrit (aucun .plain.pk a lire ni a valider)
+        if os.path.isdir(out):
+            plain_entries = entries_from_dir(out)
+    elif r.returncode == 0 and os.path.exists(out):
         entries = entries_from_pk(out)
         produced = out
         plain_dir = out[:-len(".pk")]            # ".plain.pk" -> ".plain"
@@ -225,7 +246,8 @@ ALLOWED_DEVIATIONS = (
     Deviation(
         "negative_offset", "§4.1 / §3",
         "position d'en-tete local negative : le Rust rend archive_unreadable (code 3), "
-        "Python internal_error (6, OSError)",
+        "Python internal_error (6, OSError : seek negatif sur un fichier reel ; sur un "
+        "BytesIO, ce serait ValueError)",
         TAG_NEGATIVE_OFFSET,
         lambda o, c: _pair(o) == (6, "internal_error") and _pair(c) == (3, "archive_unreadable")),
     Deviation(
@@ -425,8 +447,17 @@ def load_make_corpus():
     path = os.path.join(HERE, "tests", "parity", "make_corpus.py")
     spec = importlib.util.spec_from_file_location("make_corpus", path)
     module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get("make_corpus")
     sys.modules["make_corpus"] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # chargement rate : pas de module a moitie initialise laisse dans sys.modules
+        if previous is None:
+            sys.modules.pop("make_corpus", None)
+        else:
+            sys.modules["make_corpus"] = previous
+        raise
     return module
 
 

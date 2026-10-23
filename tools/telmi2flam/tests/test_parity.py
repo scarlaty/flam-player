@@ -269,6 +269,11 @@ class TestEntries(unittest.TestCase):
         j = lambda d: os.path.join(self.tmp, d)  # noqa: E731
         self.assertEqual(parity.main(["compare", j("p1"), j("p2")]), 0)
         self.assertEqual(parity.main(["compare", j("p1"), j("p3")]), 1)
+        # un dossier vide en plus est un ecart (entree `nom/`)
+        os.makedirs(os.path.join(self.tmp, "p2", "vide", "aussi"))
+        self.assertEqual([e["name"] for e in parity.entries_from_dir(j("p2"))],
+                         ["sub/f.txt", "vide/aussi/"])
+        self.assertEqual(parity.main(["compare", j("p1"), j("p2")]), 1)
 
 
 class TestLifDirs(unittest.TestCase):
@@ -309,7 +314,7 @@ class TestCorpusGenerator(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_ids_unique_and_tags_known(self):
-        cases = make_corpus.corpus_cases()
+        cases = make_corpus.corpus_cases() + make_corpus.output_cases()
         ids = [c.id for c in cases]
         self.assertEqual(len(ids), len(set(ids)))
         # cas --plain (nominal et en echec) presents
@@ -367,11 +372,26 @@ class TestCorpusGenerator(unittest.TestCase):
         from PIL import Image
         want = {"RGB16": (16, 2, False), "RGBA16": (16, 6, False), "LT": (8, 0, True),
                 "RGBT": (8, 2, True), "RGBT16": (16, 2, True)}
+        def chunks(data):
+            """Chunks du PNG (type -> donnees), parcourus en suivant les longueurs."""
+            out, pos = {}, 8
+            while pos + 8 <= len(data):
+                n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+                out[kind] = data[pos + 8:pos + 8 + n]
+                pos += 12 + n
+            return out
+
         for mode, (depth, ctype, trns) in want.items():
             data = make_corpus.matrix_png(mode, 7, 5, "gradient")
             ihdr = struct.unpack(">IIBBBBB", data[16:29])
             self.assertEqual((ihdr[2], ihdr[3]), (depth, ctype), mode)
-            self.assertEqual(b"tRNS" in data, trns, mode)
+            found = chunks(data)
+            self.assertEqual(b"tRNS" in found, trns, mode)
+            if ctype == 2 and trns:
+                # cle de couleur franchement non grise, canaux distincts (permutation visible)
+                key = struct.unpack(">HHH", found[b"tRNS"])
+                self.assertEqual(len(set(key)), 3, (mode, key))
+                self.assertGreaterEqual(max(key) - min(key), 100 << (depth - 8), (mode, key))
             Image.open(io.BytesIO(data)).load()
         self.assertIsNone(make_corpus.matrix_png("RGBT", 7, 5, "alpha"))
         self.assertIsNotNone(make_corpus.matrix_png("RGBA16", 7, 5, "alpha"))
@@ -392,9 +412,10 @@ class TestPythonAgainstPython(unittest.TestCase):
 
     # un cas par famille (nominal, image, noms, MP3, erreurs, delegation) ; le corpus
     # complet est compare par la CI de parite (#134), trop long pour ce test unitaire
-    SAMPLE = ("ok_basic", "ok_plain", "missing_audio_plain", "img_mode_PT", "names_cp437", "mp3_id3_prefix", "missing_audio",
-              "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry", "img_jpeg_delegated",
-              "zip_invalid_utf8_name", "zip_negative_header_offset")
+    SAMPLE = ("ok_basic", "ok_plain", "missing_audio_plain", "ok_plain_dir_only",
+              "zip_crc_corrupt_plain_dir_only", "img_mode_PT", "names_cp437",
+              "mp3_id3_prefix", "missing_audio", "zip_crc_corrupt", "json_deep_nesting",
+              "zip_encrypted_entry", "img_jpeg_delegated", "zip_invalid_utf8_name", "zip_negative_header_offset")
     STUB_SAMPLE = ("ok_basic", "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry",
                    "img_jpeg_delegated", "zip_invalid_utf8_name", "zip_negative_header_offset")
 
@@ -432,6 +453,25 @@ class TestPythonAgainstPython(unittest.TestCase):
             else:
                 self.assertEqual(run["status"], "error")
                 self.assertIsNone(produced)
+                self.assertEqual(run["files"], [])
+
+    def test_plain_dir_only_output(self):
+        """-o x.plain : dossier seul, compare par plain_entries, rien laisse en echec."""
+        by_id = {e["id"]: e for e in self.entries}
+        for cid, ok in (("ok_plain_dir_only", True), ("zip_crc_corrupt_plain_dir_only", False)):
+            work = os.path.join(self.tmp, "w_" + cid)
+            run, produced = parity.run_converter(
+                parity.default_oracle(), os.path.join(self.tmp, by_id[cid]["archive"]), work,
+                by_id[cid]["args"])
+            self.assertIsNone(produced, cid)
+            self.assertIsNone(run["entries"], cid)
+            if ok:
+                self.assertEqual(run["status"], "ok")
+                self.assertIn("info.plain", [e["name"] for e in run["plain_entries"]])
+                self.assertEqual(run["files"], ["out.plain"])
+            else:
+                self.assertEqual(run["status"], "error")
+                self.assertIsNone(run["plain_entries"])
                 self.assertEqual(run["files"], [])
 
     def test_zero_deviation(self):
