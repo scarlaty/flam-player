@@ -214,7 +214,7 @@ Sources exactes (offre de sources LGPL)
   Flam Launcher fournissent aussi ces sources sur demande, au prix de la distribution et pendant
   au moins trois ans (https://github.com/scarlaty/flam-player/issues).
 
-Origine et empreintes de ce build (construit par nous le $builtOn)
+Origine et empreintes de ce build (construit par nous ; empaqueté le $builtOn)
 $sizes
 
 Configuration (ffmpeg -buildconf)

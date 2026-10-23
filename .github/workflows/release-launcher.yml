@@ -274,7 +274,7 @@ jobs:
       - name: ffmpeg LGPL embarqué (contrôles, sans GPL, libmp3lame, transcodages MP3)
         env:
           # Commit cité dans BUILD.txt : la tête de la PR (la fusion éphémère n'existera plus).
-          FLAM_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          FLAM_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || needs.verify.outputs.sha }}
         run: npm run build:ffmpeg -- -ArtifactDir "$(cygpath -w "$GITHUB_WORKSPACE/ffmpeg-artifact")"
 
       - name: flam-player.exe et SDL2.dll (CMake, Release)

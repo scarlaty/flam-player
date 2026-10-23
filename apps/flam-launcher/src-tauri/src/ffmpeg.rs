@@ -147,7 +147,8 @@ impl Ffmpeg {
 
     /// Vérifie l'empreinte puis lance `tool` avec `args` (sans shell). Annulation par `cancel`
     /// (`AppError::Cancelled`), délai dépassé : erreur `TimedOut`. Le processus est tué dans ces
-    /// deux cas.
+    /// deux cas. Un fichier de sortie partiel peut rester : l'appelant écrit dans un temporaire et ne le
+    /// renomme que si success().
     pub async fn run(
         &self,
         tool: Tool,
@@ -209,7 +210,7 @@ async fn run_program(
         () = cancelled(cancel) => Err(AppError::Cancelled),
         () = tokio::time::sleep(limits.timeout) => Err(AppError::Io(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
-            format!("ffmpeg : délai de {} s dépassé", limits.timeout.as_secs()),
+            format!("ffmpeg : délai de {:?} dépassé", limits.timeout),
         ))),
     };
     let status = match outcome {
@@ -544,6 +545,10 @@ mod tests {
         let here = Path::new(env!("CARGO_MANIFEST_DIR"));
         let dir = here.join("..").join("build").join("ffmpeg");
         if !dir.join(Tool::Ffmpeg.file_name()).is_file() || !dir.join(MANIFEST_FILE).is_file() {
+            assert!(
+                std::env::var_os("FLAM_REQUIRE_FFMPEG").is_none(),
+                "ffmpeg embarqué non construit alors que FLAM_REQUIRE_FFMPEG est défini"
+            );
             eprintln!("ffmpeg embarqué non construit : test ignoré");
             return;
         }

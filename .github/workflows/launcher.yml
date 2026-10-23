@@ -204,6 +204,14 @@ jobs:
           FLAM_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: npm run build:ffmpeg -- -ArtifactDir "$(cygpath -w "$GITHUB_WORKSPACE/ffmpeg-artifact")"
 
+      # Le test bout en bout (manifeste écrit par le script + vérification Rust + lancement réel) a besoin
+      # du ffmpeg construit ci-dessus : exigé ici, ignoré en local sans build.
+      - name: Test du module ffmpeg sur le ffmpeg construit
+        working-directory: apps/flam-launcher/src-tauri
+        env:
+          FLAM_REQUIRE_FFMPEG: '1'
+        run: cargo test --lib ffmpeg::
+
       - name: flam-player.exe et SDL2.dll (CMake, Release)
         run: npm run build:player
 
