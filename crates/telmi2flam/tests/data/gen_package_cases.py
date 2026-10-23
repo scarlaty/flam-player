@@ -6,7 +6,8 @@ crates/telmi2flam/tests/package_parity.rs. Elle contient :
 - cases/<id>.zip : l'archive TELMI de chaque cas ;
 - expected.json : pour chaque cas, les options, les etiquettes du corpus, et soit l'erreur
   de Python (code), soit les entrees du .plain.pk dans l'ordre (nom, SHA-256), le SHA-256 du
-  .plain.pk complet (`pk_sha256`) et les codes d'avertissement dans l'ordre d'emission ;
+  .plain.pk complet (`pk_sha256`), les codes d'avertissement (`warnings`) et leurs messages
+  (`warning_messages`) dans l'ordre d'emission ;
 - zip_cases.json : SHA-256 du ZIP ecrit par `zipfile.writestr` pour des listes d'entrees
   synthetiques (noms non ASCII, seuils ZIP64 reduits), relues par output.rs (#130).
 
@@ -24,11 +25,14 @@ ffmpeg : gen_ffmpeg_cases.py, #354).
 A lancer avec le Python de l'installateur (build-converter.ps1 : 3.14.8, Pillow 12.3.0),
 depuis la racine du depot :
     python crates/telmi2flam/tests/data/gen_package_cases.py
+`--check` ne reecrit rien : il echoue si package_cases.zip n'est pas celui que l'oracle produit
+(lance par .github/workflows/telmi2flam.yml, #351).
 """
 
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -268,12 +272,14 @@ def run(case, data, tmp):
         os.remove(out)
     kw = args_of(case.args)
     warnings = []
+    messages = []
     exp = {"id": case.id, "tags": case.tags, **kw}
     if kw["thumb_fit"] == "bandes":
         del exp["thumb_fit"]  # champ absent : les cas existants gardent leur JSON
     try:
         t.convert(src, out,
-                  progress=lambda e: warnings.append(e["code"]) if e["event"] == "warning" else None,
+                  progress=lambda e: (warnings.append(e["code"]), messages.append(_ADDR.sub("", e["message"])))
+                  if e["event"] == "warning" else None,
                   **kw)
     except t.ConvError as e:
         exp["error"] = e.code
@@ -286,10 +292,22 @@ def run(case, data, tmp):
     with open(out, "rb") as f:
         exp["pk_sha256"] = hashlib.sha256(f.read()).hexdigest()
     exp["warnings"] = warnings
+    exp["warning_messages"] = messages  # texte exact (#351) : le Rust doit dire la meme chose
     return exp
 
 
-def main():
+_ADDR = re.compile(r" at 0x[0-9A-Fa-f]+")  # repr(BytesIO) : adresse differente a chaque processus
+
+
+def _same_members(a, b):
+    """Memes entrees, memes octets (le flux deflate, lui, peut varier avec zlib)."""
+    with zipfile.ZipFile(a) as za, zipfile.ZipFile(b) as zb:
+        if za.namelist() != zb.namelist():
+            return ["liste des entrees differente"]
+        return [n for n in za.namelist() if za.read(n) != zb.read(n)]
+
+
+def main(check=False):
     # create_system (octet du repertoire central) vaut 0 sous Windows seulement : le port Rust
     # reproduit le Python de l'installateur, sous Windows.
     if sys.platform != "win32":
@@ -314,6 +332,14 @@ def main():
             z.writestr(zipfile.ZipInfo("zip_cases.json", FIXED_DATE),
                        json.dumps(zip_cases(), ensure_ascii=True, indent=0) + "\n",
                        zipfile.ZIP_DEFLATED, 9)
+        if check:
+            # Fraicheur (#351) : le fichier commite doit etre celui que l'oracle produit.
+            diff = _same_members(OUT, OUT + ".part")
+            os.remove(OUT + ".part")
+            if diff:
+                sys.exit("%s perime (relancer sans --check) : %s" % (OUT, ", ".join(diff[:10])))
+            print("%d cas a jour dans %s" % (len(expected), OUT))
+            return
         os.replace(OUT + ".part", OUT)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -321,4 +347,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] not in ([], ["--check"]):
+        sys.exit("usage : gen_package_cases.py [--check]")
+    main(check=sys.argv[1:] == ["--check"])

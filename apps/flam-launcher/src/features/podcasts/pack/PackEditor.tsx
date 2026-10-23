@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toAppError, type AppError } from "../../../api/error";
+import { createPack } from "../../../api/install";
 import {
   readPackDraft,
   type EpisodeRef,
@@ -10,14 +19,18 @@ import {
 import {
   Banner,
   Button,
+  Dialog,
   EmptyState,
   SelectField,
   TextField,
   type SelectOption,
 } from "../../../components";
+import { ToastContext } from "../../../components/Toast/ToastContext";
 import { t } from "../../../i18n";
-import { ROUTE_HASHES } from "../../../router";
+import { libraryHash, ROUTE_HASHES } from "../../../router";
 import { ErrorBanner } from "../../ErrorBanner";
+import { getPackRightsAck, setPackRightsAck } from "../../settings/preferences";
+import { StoriesContext } from "../../stories/StoriesContext";
 import { formatBytes } from "../../validation";
 import { MAX_EPISODES } from "../selection";
 import { usePodcastSelection } from "../SelectionContext";
@@ -142,7 +155,26 @@ export function PackEditor({
     announceToggle.current = !announceToggle.current;
     setAnnouncement(announceToggle.current ? message : `${message}\u00a0`);
   }, []);
-  const { status, init: initDraft, schedule, retry } = useDraftAutosave(saveDelayMs);
+  const {
+    status,
+    init: initDraft,
+    schedule,
+    retry,
+    settle,
+  } = useDraftAutosave(saveDelayMs);
+  const toast = useContext(ToastContext);
+  // Contextes absents hors de l'application (éditeur rendu seul) : la tâche apparaît alors avec ses
+  // premiers événements.
+  const trackTask = useContext(StoriesContext)?.trackTask;
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<AppError | null>(null);
+  // Problèmes renvoyés par le backend à la création (et la composition qu'ils décrivent).
+  const [refused, setRefused] = useState<{
+    problems: Problem[];
+    menu: PackNode[];
+  } | null>(null);
+  const [rightsOpen, setRightsOpen] = useState(false);
+  const createLock = useRef(false);
   const validation = useDebouncedValidation(composition, validateDelayMs);
   const seedValidation = validation.seed;
 
@@ -231,6 +263,8 @@ export function PackEditor({
 
   function edit(next: PackComposition, message = "") {
     setComposition(next);
+    setRefused(null);
+    setCreateError(null);
     schedule(next);
     if (message !== "") announce(message);
   }
@@ -310,6 +344,50 @@ export function PackEditor({
   }
 
   const report = validation.report;
+  const canCreate =
+    !creating &&
+    validation.error === null &&
+    !validation.pending &&
+    report !== null &&
+    report.problems.length === 0;
+
+  /** Création : première fois, le message de droits (D14) passe d'abord. */
+  function requestCreate() {
+    if (!canCreate) return;
+    if (getPackRightsAck()) void create();
+    else setRightsOpen(true);
+  }
+
+  async function create() {
+    if (createLock.current) return;
+    createLock.current = true;
+    setCreating(true);
+    setCreateError(null);
+    setRefused(null);
+    try {
+      // Une modification faite pendant l'enregistrement fait partie de la révision renvoyée :
+      // c'est elle qui part, pas la composition affichée au moment du clic.
+      const saved = await settle();
+      const submitted = saved.composition ?? current;
+      const created = await createPack(submitted, saved.revision);
+      if (created.task === null) {
+        setRefused({ problems: created.report.problems, menu: submitted.menu });
+        return;
+      }
+      trackTask?.(created.task);
+      selection.clear();
+      toast?.show({
+        message: text.create.started(created.task.entry.title),
+        tone: "success",
+      });
+      window.location.hash = libraryHash();
+    } catch (caught) {
+      setCreateError(toAppError(caught));
+    } finally {
+      createLock.current = false;
+      setCreating(false);
+    }
+  }
   const levels = menuHeight(current.menu);
   const descriptionError = fieldError("description");
 
@@ -465,7 +543,9 @@ export function PackEditor({
         />
         <TextField
           label={text.metadata.subtitle}
-          hint={text.metadata.subtitleHint(single?.copyright ?? null)}
+          hint={text.metadata.subtitleHint(
+            current.metadata.subtitle === null && Boolean(single?.copyright?.trim()),
+          )}
           value={
             current.metadata.subtitle ??
             [...(single?.copyright?.trim() ?? "")].slice(0, MAX_TITLE_CHARS).join("")
@@ -524,14 +604,59 @@ export function PackEditor({
       </section>
 
       <section className="fl-pack__section fl-pack__create">
-        {/* TODO #217 : brancher ce bouton sur la création de l'histoire (installation). */}
-        <Button variant="primary" disabled aria-describedby="fl-pack-create-hint">
-          {text.create.label}
+        <Button
+          variant="primary"
+          disabled={!canCreate}
+          aria-describedby={canCreate || creating ? undefined : "fl-pack-create-hint"}
+          onClick={requestCreate}
+        >
+          {creating ? text.create.creating : text.create.label}
         </Button>
-        <p id="fl-pack-create-hint" className="fl-pack__hint">
-          {text.create.unavailable}
-        </p>
+        {!canCreate && !creating && (
+          <p id="fl-pack-create-hint" className="fl-pack__hint">
+            {validation.error
+              ? text.create.checkFailed
+              : report === null || validation.pending
+                ? text.create.checking
+                : text.create.blocked}
+          </p>
+        )}
+        {createError && <ErrorBanner error={createError} />}
+        {refused && (
+          <Banner tone="danger">
+            <p>{text.create.refused}</p>
+            <ul className="fl-pack__problems">
+              {refused.problems.map((problem, i) => (
+                <li key={i}>{problemText(problem, refused.menu)}</li>
+              ))}
+            </ul>
+          </Banner>
+        )}
       </section>
+      <Dialog
+        open={rightsOpen}
+        onClose={() => setRightsOpen(false)}
+        title={text.rights.title}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setRightsOpen(false)}>
+              {text.rights.cancel}
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                setPackRightsAck();
+                setRightsOpen(false);
+                void create();
+              }}
+            >
+              {text.rights.accept}
+            </Button>
+          </>
+        }
+      >
+        <p>{text.rights.text}</p>
+      </Dialog>
     </div>
   );
 }

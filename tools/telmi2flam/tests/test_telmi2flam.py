@@ -803,6 +803,18 @@ class TestConversion(Base):
         self.assertEqual(T._runtime_required(path), (("global.lua",), ("a.lif",)))
         self.assertEqual(validate._runtime_required(path), (("global.lua",), ("a.lif",)))
 
+    # #351 : ligne de commentaire ("#", meme avec un "!" derriere), ligne non indispensable
+    # (sans "!") et espaces autour : meme lecture par telmi2flam.py et validate.py (copie
+    # volontaire : validate.py reste sans dependance, oracle independant)
+    def test_runtime_manifest_comments_and_optional_lines(self):
+        path = os.path.join(self.tmp, "manifest-commentaires.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# !script/ignore.lua\n  !script/global.lua  \nscript/autre.lua\n"
+                    "#!img/script/b.lif\n!img/script/a.lif\n")
+        want = (("global.lua",), ("a.lif",))
+        self.assertEqual(T._runtime_required(path), want)
+        self.assertEqual(validate._runtime_required(path), want)
+
 
 class TestMp3map(unittest.TestCase):
     def ref_44k(self, data):

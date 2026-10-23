@@ -529,6 +529,7 @@ it("raccourci : coche les 10 derniers épisodes, la sélection reste libre", asy
   expect(screen.getByRole("checkbox", { name: "Ep 10" })).not.toBeChecked();
   expect(screen.getByText("Raccourci : 10 épisodes cochés.")).toBeInTheDocument();
   check("Ep 0");
+  expect(screen.queryByText(/Raccourci/)).toBeNull();
   check("Ep 11");
   expect(screen.getByTestId("probe")).toHaveTextContent("10");
 });
@@ -549,5 +550,12 @@ it("raccourci : les épisodes refusés par les plafonds ne sont pas cochés, le 
   expect(screen.getByRole("checkbox", { name: "Ep 1" })).not.toBeChecked();
   expect(screen.getByRole("checkbox", { name: "Ep 2" })).not.toBeChecked();
   expect(screen.getByRole("checkbox", { name: "Ep 3" })).toBeChecked();
-  expect(screen.getByText(/2 épisodes cochés sur les 4 derniers/)).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      "Raccourci : 2 épisodes cochés sur les 4 derniers (1 explicite, 1 refusé par les plafonds).",
+    ),
+  ).toBeInTheDocument();
+  // Un cochage manuel efface un message qui ne décrit plus la sélection.
+  fireEvent.click(screen.getByRole("checkbox", { name: "Ep 3" }));
+  expect(screen.queryByText(/Raccourci/)).toBeNull();
 });

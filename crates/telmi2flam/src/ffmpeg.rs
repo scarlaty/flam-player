@@ -163,9 +163,26 @@ fn access_check(path: &Path) -> bool {
     }
 }
 
-/// `shutil.which(cmd)` pour un nom sans dossier (Python 3.12+).
+/// `shutil.which(cmd)` pour un nom sans dossier (Python 3.12+), avec l'environnement du
+/// processus.
 fn which(cmd: &str) -> Option<PathBuf> {
-    let path = match std::env::var_os("PATH") {
+    which_in(
+        cmd,
+        std::env::var_os("PATH"),
+        std::env::var_os("NoDefaultCurrentDirectoryInExePath").is_some(),
+        std::env::var_os("PATHEXT"),
+    )
+}
+
+/// [`which`] sur un environnement donné : `path` (`PATH`), `no_default_cwd` (la variable
+/// `NoDefaultCurrentDirectoryInExePath` existe), `pathext` (`PATHEXT`, Windows).
+fn which_in(
+    cmd: &str,
+    path: Option<OsString>,
+    no_default_cwd: bool,
+    pathext: Option<OsString>,
+) -> Option<PathBuf> {
+    let path = match path {
         Some(p) => p,
         None if cfg!(windows) => OsString::from(".;C:\\bin"),
         None => OsString::from("/bin:/usr/bin"),
@@ -178,10 +195,10 @@ fn which(cmd: &str) -> Option<PathBuf> {
     if cfg!(windows) {
         // NeedCurrentDirectoryForExePath : le dossier courant d'abord, sauf si la variable
         // NoDefaultCurrentDirectoryInExePath existe.
-        if std::env::var_os("NoDefaultCurrentDirectoryInExePath").is_none() {
+        if !no_default_cwd {
             dirs.insert(0, OsString::from("."));
         }
-        let pathext = std::env::var_os("PATHEXT")
+        let pathext = pathext
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| OsString::from(".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC"));
         let exts: Vec<String> = split_list(&pathext)
@@ -304,6 +321,14 @@ struct WorkDir {
 impl WorkDir {
     fn create(root: &Path) -> io::Result<WorkDir> {
         static SEQ: AtomicU64 = AtomicU64::new(0);
+        // `abspath(gettempdir())` de Python : un dossier temporaire relatif (`TMPDIR=tmp`) serait
+        // résolu une seconde fois par ffmpeg, qui tourne avec ce dossier pour dossier courant.
+        let root = abspath(root).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "dossier temporaire inutilisable",
+            )
+        })?;
         for _ in 0..100 {
             let n = SEQ.fetch_add(1, Ordering::Relaxed);
             let nanos = std::time::SystemTime::now()
@@ -843,6 +868,124 @@ mod tests {
         let padded = format!("  {}\n", exe.display());
         assert_eq!(from_env(OsStr::new(&padded)), Some(abspath(&exe).unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Dossier temporaire relatif (`TMPDIR=tmp`) : le dossier de travail est absolu (#369).
+    #[test]
+    fn dossier_de_travail_absolu() {
+        let rel = PathBuf::from(format!("t2f-ffrel-{}", std::process::id()));
+        std::fs::create_dir_all(&rel).unwrap();
+        let path = {
+            let w = WorkDir::create(&rel).unwrap();
+            assert!(w.path.is_absolute(), "{:?}", w.path);
+            assert!(w.path.is_dir());
+            w.path.clone()
+        };
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&rel);
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("t2f-ffwhich-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Fichier exécutable (bit `x` requis par `access_check` sous Unix).
+    fn write_exe(path: &Path) {
+        std::fs::write(path, b"x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn list(dirs: &[&Path]) -> Option<OsString> {
+        Some(std::env::join_paths(dirs).unwrap())
+    }
+
+    /// `which` : premier dossier du `PATH` gagnant, dossier vide ou introuvable.
+    #[test]
+    fn which_ordre_du_path() {
+        let (a, b) = (scratch_dir("ordre-a"), scratch_dir("ordre-b"));
+        let name = if cfg!(windows) { "outil.exe" } else { "outil" };
+        write_exe(&b.join(name));
+        let pathext = Some(OsString::from(".EXE"));
+        let both = list(&[&a, &b]);
+        assert_eq!(
+            which_in("outil", both.clone(), true, pathext.clone()),
+            Some(b.join(name.replace(".exe", ".EXE")))
+        );
+        write_exe(&a.join(name));
+        assert_eq!(
+            which_in("outil", both, true, pathext.clone()),
+            Some(a.join(name.replace(".exe", ".EXE")))
+        );
+        assert_eq!(
+            which_in("outil", Some(OsString::new()), true, pathext),
+            None
+        );
+        assert_eq!(
+            which_in("outil", list(&[&b.join("absent")]), true, None),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
+    }
+
+    /// Windows : les extensions de `PATHEXT` sont essayées dans l'ordre, le nom déjà terminé
+    /// par l'une d'elles d'abord.
+    #[cfg(windows)]
+    #[test]
+    fn which_ordre_de_pathext() {
+        let d = scratch_dir("pathext");
+        std::fs::write(d.join("outil.cmd"), b"x").unwrap();
+        std::fs::write(d.join("outil.exe"), b"x").unwrap();
+        let dirs = list(&[&d]);
+        let found = |ext: &str, cmd: &str| {
+            which_in(cmd, dirs.clone(), true, Some(OsString::from(ext)))
+                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        };
+        assert_eq!(found(".CMD;.EXE", "outil").as_deref(), Some("outil.CMD"));
+        assert_eq!(found(".EXE;.CMD", "outil").as_deref(), Some("outil.EXE"));
+        // Extension vide ignorée ; point final retiré (`.EXE.`).
+        assert_eq!(found(";.EXE.;", "outil").as_deref(), Some("outil.EXE"));
+        // Nom déjà terminé par une extension de PATHEXT : essayé tel quel en premier.
+        assert_eq!(
+            found(".CMD;.EXE", "outil.exe").as_deref(),
+            Some("outil.exe")
+        );
+        // PATHEXT vide : valeur par défaut de Python.
+        assert_eq!(found("", "outil").as_deref(), Some("outil.EXE"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Windows : le dossier courant est cherché en premier, sauf avec
+    /// `NoDefaultCurrentDirectoryInExePath` ; une entrée vide du `PATH` désigne le dossier
+    /// courant dans tous les cas (le dossier du paquet, `Cargo.toml`, sert de témoin).
+    #[test]
+    fn which_dossier_courant() {
+        let other = scratch_dir("cwd");
+        let pathext = Some(OsString::from(".TOML"));
+        let in_cwd = which_in("Cargo.toml", list(&[&other]), false, pathext.clone());
+        let empty_entry = {
+            let mut p = OsString::from(if cfg!(windows) { ";" } else { ":" });
+            p.push(other.as_os_str());
+            which_in("Cargo.toml", Some(p), true, pathext.clone())
+        };
+        let skipped = which_in("Cargo.toml", list(&[&other]), true, pathext);
+        if cfg!(windows) {
+            assert_eq!(in_cwd, Some(PathBuf::from(".").join("Cargo.toml")));
+            assert_eq!(skipped, None);
+            assert_eq!(empty_entry, Some(PathBuf::from("Cargo.toml")));
+        } else {
+            // Sans PATHEXT : le dossier courant n'est pas ajouté, l'entrée vide le désigne.
+            assert_eq!(in_cwd, None);
+            assert_eq!(empty_entry, None, "Cargo.toml n'est pas exécutable");
+        }
+        let _ = std::fs::remove_dir_all(&other);
     }
 
     #[test]

@@ -93,6 +93,7 @@ function task(
     percent: null,
     error: null,
     created_at: 1_700_000_000,
+    pack: null,
     ...over,
   };
 }

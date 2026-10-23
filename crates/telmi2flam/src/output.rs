@@ -578,7 +578,7 @@ static WRITES: AtomicU64 = AtomicU64::new(0);
 /// première (le nom de Python, que son `_clean_orphans` sait nettoyer), `<cible>.<pid>-<n>.part`
 /// pour les suivantes. Le `-` (jamais un `.`) rend le nom non ambigu : le suffixe est toujours
 /// le dernier composant pointé avant `.part`.
-pub fn part_path(target: &Path, call: u64) -> PathBuf {
+pub(crate) fn part_path(target: &Path, call: u64) -> PathBuf {
     let pid = std::process::id();
     if call == 0 {
         with_suffix(target, &format!(".{pid}.part"))
@@ -695,12 +695,36 @@ pub(crate) fn write_any<D: Body, S: Source>(
         }
     }
     let call = WRITES.fetch_add(1, Ordering::Relaxed);
-    let mut tmps = Vec::new();
-    let result = write_and_commit(
-        package, src, target, call, limits, cancelled, progress, hook, &mut tmps,
+    // Garde RAII : les `.part` sont supprimés et désinscrits du registre à la sortie de cette
+    // fonction, y compris par une panique qui se déroule (bibliothèque, `panic = "unwind"`).
+    let mut guard = PartGuard(Vec::new());
+    let mut src = Some(src);
+    let mut verified = false;
+    let mut result = write_and_commit(
+        package,
+        &mut src,
+        target,
+        call,
+        limits,
+        cancelled,
+        progress,
+        hook,
+        &mut guard.0,
+        &mut verified,
     );
-    discard(&tmps);
-    untrack(&tmps);
+    // Cause première : une panne de sortie qui survient avant que l'archive d'entrée ait été
+    // relue en entier masquerait une archive illisible (`archive_unreadable`). Relecture
+    // seulement en cas d'échec, l'archive étant encore ouverte.
+    // Inutile si toutes les entrées ont déjà été relues et vérifiées (`verified`).
+    if let (Err(Fail::Io(io)), Some(src), false) = (&result, src.as_mut(), verified) {
+        if let Some(e) = first_source_error(package, src, cancelled) {
+            let mut e = e;
+            e.message = format!("{} (ecriture de la sortie : {io})", e.message);
+            result = Err(Fail::Conv(e));
+        }
+    }
+    drop(src);
+    drop(guard);
     match result {
         Ok(()) => Ok(target.published()),
         Err(Fail::Conv(e)) => Err(e),
@@ -709,6 +733,34 @@ pub(crate) fn write_any<D: Body, S: Source>(
             target.out_path.display()
         ))),
     }
+}
+
+/// Temporaires d'une écriture : supprimés puis retirés du registre au `Drop`.
+struct PartGuard(Vec<PathBuf>);
+
+impl Drop for PartGuard {
+    fn drop(&mut self) {
+        discard(&self.0);
+        untrack(&self.0);
+    }
+}
+
+/// Première entrée dont la relecture dans l'archive d'entrée est refusée (`archive_unreadable`),
+/// sans rien écrire. Les autres erreurs (annulation, entrée en mémoire) sont ignorées.
+fn first_source_error<D: Body>(
+    package: &Package<D>,
+    src: &mut dyn Source,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<ConvError> {
+    for (_, body) in &package.entries {
+        if cancelled() {
+            return None;
+        }
+        if let Err(ZipStop::Source(e)) = body.copy(src, cancelled, &mut |_| Ok(())) {
+            return Some(e);
+        }
+    }
+    None
 }
 
 #[derive(Debug)]
@@ -764,7 +816,7 @@ impl Write for Tap<'_, '_> {
 #[allow(clippy::too_many_arguments)]
 fn write_and_commit<D: Body, S: Source>(
     package: &Package<D>,
-    mut src: S,
+    src_slot: &mut Option<S>,
     target: &Target,
     call: u64,
     limits: ZipLimits,
@@ -772,17 +824,21 @@ fn write_and_commit<D: Body, S: Source>(
     progress: &mut dyn Progress,
     hook: Hook<'_>,
     tmps: &mut Vec<PathBuf>,
+    verified: &mut bool,
 ) -> Result<(), Fail> {
     let hook = RefCell::new(hook);
     let mut commits = Vec::new();
+    let Some(src) = src_slot.as_mut() else {
+        return Err(Fail::Conv(ConvError::internal_error("archive deja fermee")));
+    };
     if !target.dir_only {
         let abs = std::path::absolute(&target.out_path)?;
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent)?;
         }
         let tmp = part_path(&target.out_path, call);
-        claim(&tmp);
         tmps.push(tmp.clone());
+        claim(&tmp);
         fire(&hook, Step::CreatePk)?;
         let file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         let tap = Tap {
@@ -796,7 +852,7 @@ fn write_and_commit<D: Body, S: Source>(
         let written = zip_entries(
             &mut buf,
             &package.entries,
-            &mut src,
+            &mut *src,
             limits,
             cancelled,
             &mut |i| {
@@ -816,6 +872,8 @@ fn write_and_commit<D: Body, S: Source>(
             progress.tick(Phase::Zip);
         }
         let file = buf.into_inner().map_err(|e| e.into_error())?.file;
+        // Toutes les entrées relues et vérifiées si aucun `.plain` ne les relit.
+        *verified = target.plain_dir.is_none();
         fire(&hook, Step::SyncPk)?;
         file.sync_all()?;
         drop(file);
@@ -823,8 +881,8 @@ fn write_and_commit<D: Body, S: Source>(
     }
     if let Some(plain_dir) = &target.plain_dir {
         let tmp = part_path(plain_dir, call);
-        claim(&tmp);
         tmps.push(tmp.clone());
+        claim(&tmp);
         fire(&hook, Step::CreateDir)?;
         let abs = std::path::absolute(&tmp)?;
         if let Some(parent) = abs.parent() {
@@ -846,7 +904,7 @@ fn write_and_commit<D: Body, S: Source>(
                 .write(true)
                 .create_new(true)
                 .open(parent.join(file_name))?;
-            body.copy(&mut src, cancelled, &mut |chunk: &[u8]| {
+            body.copy(&mut *src, cancelled, &mut |chunk: &[u8]| {
                 Ok(f.write_all(chunk)?)
             })?;
             fire(&hook, Step::SyncDir(i))?;
@@ -854,6 +912,7 @@ fn write_and_commit<D: Body, S: Source>(
             drop(f);
             progress.tick(Phase::Zip);
         }
+        *verified = true;
         // Un `.part` effacé (même en partie) par un autre processus qui l'a cru orphelin
         // (partage réseau, autre machine) n'est jamais publié incomplet.
         let found = count_files(&abs)?;
@@ -867,7 +926,7 @@ fn write_and_commit<D: Body, S: Source>(
         commits.push((tmp, plain_dir.clone()));
     }
     // Archive d'entrée fermée avant toute publication (#402).
-    drop(src);
+    drop(src_slot.take());
     if cancelled() {
         return Err(Fail::Conv(ConvError::cancelled()));
     }
@@ -1626,7 +1685,9 @@ mod tests {
             tracked_part(&pk).is_none() && tracked_part(&dir).is_none(),
             "échec : retirés"
         );
-        // Panique au milieu du `.plain.pk` : le `.part` existe et reste inscrit.
+        // Panique qui se déroule au milieu du `.plain.pk` : la garde RAII supprime le `.part`
+        // et le désinscrit (#416). Avec `panic = "abort"` (binaire), c'est `discard_pending`
+        // (jamais appelé ici : il viderait les écritures des autres tests).
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = write_package_with(
                 &pkg,
@@ -1643,13 +1704,8 @@ mod tests {
             );
         }));
         assert!(r.is_err());
-        let pk_part = tracked_part(&pk).expect("inscrit");
-        assert!(pk_part.exists());
-        // Inscrit : épargné par le nettoyage des orphelins de ce processus.
-        clean_orphans(&pk);
-        assert!(pk_part.exists());
-        discard(std::slice::from_ref(&pk_part));
-        untrack(std::slice::from_ref(&pk_part));
+        assert!(tracked_part(&pk).is_none(), "désinscrit au Drop");
+        assert_no_part(&d);
         assert_no_part(&d);
     }
 
@@ -2514,5 +2570,133 @@ mod tests {
         assert_eq!(e.code, "output_error");
         assert_eq!(after.get(), 0, "tampon vidé après l'échec");
         assert_no_part(&d);
+    }
+
+    /// Panne de sortie et archive d'entrée illisible : la cause première (`archive_unreadable`)
+    /// l'emporte sur `output_error`, au `.plain.pk` comme au dossier `.plain`.
+    #[test]
+    fn archive_illisible_l_emporte_sur_une_panne_de_sortie() {
+        let (_, pkg) = streamed_sample(&[0xFFu8; 3000]);
+        for (what, out, plain, at) in [
+            ("pk", "o.plain.pk", false, Step::CreatePk),
+            ("dossier", "o.plain", false, Step::CreateDir),
+            ("dossier apres pk", "o.plain.pk", true, Step::WritePk(0)),
+        ] {
+            let d = scratch(&format!("cause-{what}").replace(' ', "-"));
+            old_output(&d);
+            let t = Target::new(Some(&d.join(out)), plain, &pkg);
+            let mut hook = |s: Step| {
+                if s == at {
+                    Err(io::Error::other("disque plein"))
+                } else {
+                    Ok(())
+                }
+            };
+            // Sans archive illisible : la panne de sortie reste `output_error`.
+            let (good, _) = streamed_sample(&[0xFFu8; 3000]);
+            let e = write_any(
+                &pkg,
+                good,
+                &t,
+                ZipLimits::PYTHON,
+                &never,
+                &mut (),
+                &mut hook,
+            )
+            .unwrap_err();
+            assert_eq!(e.code, "output_error", "{what}");
+            // Archive modifiée : `archive_unreadable`.
+            let (bad, _) = streamed_sample(&[0xFEu8; 3000]);
+            let e = write_any(&pkg, bad, &t, ZipLimits::PYTHON, &never, &mut (), &mut hook)
+                .unwrap_err();
+            assert_eq!(e.code, "archive_unreadable", "{what}");
+            assert_eq!(fs::read(d.join("o.plain.pk")).unwrap(), b"ancien paquet");
+            assert_eq!(fs::read(d.join("o.plain/version")).unwrap(), b"ancien");
+            assert_no_part(&d);
+        }
+    }
+
+    /// Une panique qui se déroule (bibliothèque) ne laisse ni `.part` ni inscription au registre.
+    #[test]
+    fn panique_qui_se_deroule_desinscrit_les_part() {
+        let pkg = sample();
+        let d = scratch("panique-deroulee");
+        let t = Target::new(Some(&d.join("o.plain.pk")), true, &pkg);
+        let mut hook = |s: Step| {
+            if s == Step::WriteDir(1) {
+                panic!("panique de test");
+            }
+            Ok(())
+        };
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            write_package_with(&pkg, &t, ZipLimits::PYTHON, &never, &mut (), &mut hook)
+        }));
+        assert!(r.is_err());
+        assert_no_part(&d);
+        assert!(
+            pending().iter().all(|p| !p.starts_with(&*d)),
+            "registre : {:?}",
+            pending()
+        );
+        assert_eq!(fs::read_dir(&*d).unwrap().count(), 0);
+    }
+
+    /// Mesure (#416) : coût du `sync_all` par fichier du `.plain`. `cargo test -p telmi2flam
+    /// --release mesure_sync_all -- --ignored --nocapture` ; `T2F_MESURE_DIR` choisit le disque.
+    #[test]
+    #[ignore = "mesure, pas un test"]
+    fn mesure_sync_all() {
+        use std::time::Instant;
+        let n: usize = std::env::var("T2F_MESURE_FICHIERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(500);
+        let base = std::env::var_os("T2F_MESURE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let entries: Vec<(String, Vec<u8>)> = (0..n)
+            .map(|i| {
+                let size = if i % 5 == 0 { 200_000 } else { 4_000 };
+                (format!("d{}/f{i}.bin", i % 7), vec![(i % 251) as u8; size])
+            })
+            .collect();
+        // Variantes brutes (sans la crate) : sans sync, par fichier, final séquentiel, final sur 8 fils.
+        for round in 0..3 {
+            for mode in ["aucun", "par fichier", "final sequentiel", "final 8 fils"] {
+                let d = base.join(format!("t2f-mesure-v-{}-{round}", std::process::id()));
+                let _ = fs::remove_dir_all(&d);
+                fs::create_dir_all(&d).unwrap();
+                let t0 = Instant::now();
+                let mut files = Vec::new();
+                for (i, (_, data)) in entries.iter().enumerate() {
+                    let path = d.join(format!("f{i}.bin"));
+                    let mut f = fs::File::create(&path).unwrap();
+                    f.write_all(data).unwrap();
+                    if mode == "par fichier" {
+                        f.sync_all().unwrap();
+                    } else if mode.starts_with("final") {
+                        files.push(f);
+                    }
+                }
+                if mode == "final sequentiel" {
+                    for f in &files {
+                        f.sync_all().unwrap();
+                    }
+                } else if mode == "final 8 fils" {
+                    let chunks: Vec<&[fs::File]> = files.chunks(files.len().div_ceil(8)).collect();
+                    std::thread::scope(|sc| {
+                        for c in chunks {
+                            sc.spawn(move || c.iter().for_each(|f| f.sync_all().unwrap()));
+                        }
+                    });
+                }
+                drop(files);
+                eprintln!(
+                    "MESURE-V {mode} : {n} fichiers : {:.0} ms",
+                    t0.elapsed().as_secs_f64() * 1000.0
+                );
+                let _ = fs::remove_dir_all(&d);
+            }
+        }
     }
 }

@@ -268,7 +268,13 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     onInstallDone,
     useCallback(
       (event) => {
-        patchTask(event.task_id, { state: "done", percent: 100, error: null });
+        patchTask(event.task_id, {
+          state: "done",
+          percent: 100,
+          error: null,
+          // Pack : épisodes retirés (P7), connus seulement à la fin de la préparation.
+          ...(event.pack ? { pack: event.pack } : {}),
+        });
         compatReload();
         void refreshInstalled();
         const { uuid, title } = event.entry;
@@ -438,6 +444,20 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     [toast],
   );
 
+  const trackTask = useCallback((task: InstallTask) => {
+    // Un événement arrivé avant ce retour est déjà appliqué (`early`) ; une tâche connue reste.
+    const added = early.current.take(task);
+    setTasks((current) =>
+      current.some((other) => other.id === task.id) ? current : [added, ...current],
+    );
+    setDismissed((all) => {
+      if (!all.has(task.id)) return all;
+      const next = new Set(all);
+      next.delete(task.id);
+      return next;
+    });
+  }, []);
+
   const dismiss = useCallback((taskId: string) => {
     const task = tasksRef.current.find((other) => other.id === taskId);
     // Retirer à la main une ligne terminée ne retire pas le lancement ni le retour à la fiche
@@ -580,6 +600,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
       cancel,
       retry,
       dismiss,
+      trackTask,
       confirming: pending !== null,
     };
   }, [
@@ -598,6 +619,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     cancel,
     retry,
     dismiss,
+    trackTask,
     pending,
   ]);
 

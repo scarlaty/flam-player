@@ -18,6 +18,8 @@ on:
       - "tools/telmi2flam/*.py"
       - "tools/telmi2flam/tests/parity/**"
       - "tools/telmi2flam/tests/test_telmi2flam.py"
+      # Attributs de fin de ligne des vecteurs figés (#351).
+      - ".gitattributes"
   push:
     branches: [main]
     paths:
@@ -34,6 +36,8 @@ on:
       - "tools/telmi2flam/*.py"
       - "tools/telmi2flam/tests/parity/**"
       - "tools/telmi2flam/tests/test_telmi2flam.py"
+      # Attributs de fin de ligne des vecteurs figés (#351).
+      - ".gitattributes"
 
 permissions:
   contents: read
