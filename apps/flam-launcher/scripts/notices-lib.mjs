@@ -100,7 +100,7 @@ export function thirdPartyRustIds(reached, root, workspaceMembers) {
 export const DERIVED_NOTICES = [
   {
     ecosystem: "Rust",
-    name: "telmi2flam (code dérivé de Pillow 12.3.0 : resample.rs, blur.rs)",
+    name: "Pillow (code dérivé dans telmi2flam : resample.rs, blur.rs)",
     version: "12.3.0",
     license: "HPND",
     url: "https://github.com/python-pillow/Pillow",

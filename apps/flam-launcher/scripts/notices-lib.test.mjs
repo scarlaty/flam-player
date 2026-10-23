@@ -87,5 +87,8 @@ test("code dérivé de Pillow : entrée de notices avec son texte de licence", (
   assert.ok(file, "LICENSE-Pillow.txt absent");
   assert.match(readFileSync(join(dir, file), "utf8"), /Secret Labs AB/);
   // Cargo.toml de la crate déclare la licence d'origine du code dérivé.
-  assert.match(readFileSync(join(dir, "Cargo.toml"), "utf8"), /^license = ".*\bHPND\b.*"/m);
+  assert.match(
+    readFileSync(join(dir, "Cargo.toml"), "utf8"),
+    /^license = ".*\bHPND\b.*"/m,
+  );
 });

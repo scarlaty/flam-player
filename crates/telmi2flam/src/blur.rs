@@ -284,7 +284,8 @@ fn transpose(src: &[[u8; 4]], w: usize, h: usize, dst: &mut [[u8; 4]]) {
 }
 
 /// `Image.filter(ImageFilter.GaussianBlur(radius))` sur une image `RGBA` (rayon identique en
-/// x et en y, 3 passes). Rayon nul : image inchangée (`image.copy()`).
+/// x et en y, 3 passes). Rayon nul : image inchangée (`image.copy()`). Rayon négatif ou NaN :
+/// refusé, même sur une image vide.
 pub fn gaussian_blur(img: Rgba, radius: f32, cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     let n = checked_len(&img)?;
     let (w, h) = (img.width as usize, img.height as usize);
