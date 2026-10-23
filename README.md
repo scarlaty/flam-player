@@ -1,247 +1,247 @@
-# Flam Player
+<div align="center">
 
-[![launcher](https://github.com/scarlaty/flam-player/actions/workflows/launcher.yml/badge.svg)](https://github.com/scarlaty/flam-player/actions/workflows/launcher.yml) [![telmi2flam](https://github.com/scarlaty/flam-player/actions/workflows/telmi2flam.yml/badge.svg)](https://github.com/scarlaty/flam-player/actions/workflows/telmi2flam.yml)
+<img src="apps/flam-launcher/src-tauri/icons/128x128.png" alt="" width="96" height="96">
 
-Emulateur desktop du firmware Flam (Lunii v3) capable d'executer les histoires `.plain` extraites,
-et convertisseur d'histoires TELMI vers FLAM (`tools/telmi2flam`).
+# Flam Launcher
 
-## Fonctionnalites
+**Des histoires interactives libres pour la Flam, en quelques clics.**
 
-- Navigateur d'histoires avec vignettes et selection de dossier (dialog natif Windows)
-- Support des archives `.plain.pk` (extraction automatique)
-- Barre de titre avec le nom de l'histoire en cours
-- Fenetre redimensionnable avec ratio 4:3 preserve
-- Sauvegarde/restauration de la progression entre les sessions
-- Retour au navigateur d'histoires avec ESC (sans quitter l'application)
-- Menu contextuel (touche M)
-- Audio MP3 avec seek et callbacks
-- Navigation encodeur fidele au firmware reel (LEFT/RIGHT/ENTER)
-- Mode `--strict` proche du device et watchdog contre les boucles Lua infinies
+Flam Launcher est une application Windows qui trouve des histoires TELMI, les convertit pour la
+Flam, les fait jouer sur le PC et les copie sur l'appareil.
 
-## Installer la surcouche (Windows)
+[![launcher](https://github.com/scarlaty/flam-player/actions/workflows/launcher.yml/badge.svg)](https://github.com/scarlaty/flam-player/actions/workflows/launcher.yml)
+[![release-launcher](https://github.com/scarlaty/flam-player/actions/workflows/release-launcher.yml/badge.svg)](https://github.com/scarlaty/flam-player/actions/workflows/release-launcher.yml)
+[![telmi2flam-rs](https://github.com/scarlaty/flam-player/actions/workflows/telmi2flam-rs.yml/badge.svg)](https://github.com/scarlaty/flam-player/actions/workflows/telmi2flam-rs.yml)
+<br>
+[![Dernière version](https://img.shields.io/github/v/release/scarlaty/flam-player?include_prereleases&filter=launcher-*&label=version&color=2a7d6f)](https://github.com/scarlaty/flam-player/releases)
+[![Plateforme : Windows x64](https://img.shields.io/badge/plateforme-Windows%20x64-0078D6)](#installation)
+[![Licence : GPL-3.0](https://img.shields.io/badge/licence-GPL--3.0-blue)](LICENSE)
 
-Pour utiliser flam-player sans compiler : l'installateur `Flam Launcher_<version>_x64-setup.exe`
-(artefact de la CI ; `Flam-Launcher_<version>_x64-setup.exe` dans une pré-version publiée) installe, **pour l'utilisateur courant et sans droits d'administrateur**, la
-surcouche, `flam-player.exe` et le convertisseur TELMI vers FLAM (Python inclus). Il n'est pas
-signe : SmartScreen affiche un avertissement (« Informations complementaires » puis « Executer
-quand meme »). Utilisation, sources, depannage et construction de l'installateur :
-[apps/flam-launcher/README.md](apps/flam-launcher/README.md).
+[**Télécharger**](https://github.com/scarlaty/flam-player/releases) ·
+[Démarrage rapide](#démarrage-rapide) ·
+[FAQ](#faq) ·
+[Contribuer](#contribuer)
 
-## Contenu du depot
+</div>
 
-| Dossier | Role |
-|---------|------|
-| `src/` | Emulateur (voir Architecture) |
-| `tools/telmi2flam/` | Convertisseur d'histoires TELMI (`.zip`) vers FLAM (`.plain.pk`) — voir [son README](tools/telmi2flam/README.md) |
-| `apps/flam-launcher/` | Surcouche de bureau (Tauri 2 : Rust + React/TypeScript, licence GPL v3) pour parcourir, convertir et lancer des histoires — voir [son README](apps/flam-launcher/README.md) ; installateur Windows (NSIS, non signe) avec player et convertisseur embarques |
-| `games/casse-briques/` | Jeu casse-briques en contenu Lua FLAM (avec verrou parental) |
-| `tests/` | Tests : suite Lua, moteur telmi2flam, audio reel, non-regression, bout en bout |
-| `patches/` | Correctifs pour le fork LVGL (non appliques automatiquement) — voir [patches/README.md](patches/README.md) |
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/catalogue-sombre.png">
+    <img src="docs/assets/catalogue-clair.png" alt="Flam Launcher : catalogue d'histoires avec vignettes, filtres par âge et catégorie, et badges d'état" width="900">
+  </picture>
+</p>
 
-## Architecture
+> [!NOTE]
+> Flam Launcher est en **pré-version** (bêta). Il est indépendant du fabricant de la Flam :
+> ni officiel, ni soutenu par lui.
 
-- [**LVGL 8.3**](https://github.com/lvgl/lvgl) — moteur de rendu UI (identique au firmware reel)
-- [**Lua 5.4.8**](https://www.lua.org/) — runtime des scripts d'histoires
-- [**SDL2**](https://github.com/libsdl-org/SDL) — fenetre, evenements clavier, sortie audio
-- [**minimp3**](https://github.com/lieff/minimp3) — decodage MP3
+## Fonctionnalités
 
-```
-src/
-  main.c                    Point d'entree, navigateur, chargement d'histoire
-  bindings/
-    lua_lv.c/h              Bindings Lua <-> LVGL (table `lv`)
-    lua_lv_obj.c            Objets: obj, btn, label, img, slider, arc
-    lua_lv_style.c          Styles LVGL
-    lua_lv_event.c          Evenements, timers et animations
-  firmware/
-    fw_globals.c/h          Objets firmware (state, progression, context_menu, screen)
-  formats/
-    lif_decoder.c/h         Decodeur d'images LIF -> LVGL img_dsc
-    mp3map_parser.c/h       Parser mp3map pour le seek audio
-    pk_reader.c/h           Lecteur d'archives .plain.pk (ZIP store)
-  platform/
-    sdl_driver.c/h          Driver SDL2 pour LVGL (display + input encodeur)
-    sdl_audio.c/h           Lecture audio MP3 via SDL2
-  fonts/
-    nunito_*.c              Polices Nunito (Bold/ExtraBold, 12-20px)
-tests/
-  test_main.c               Runner de tests headless (flam-test, flam-test-audio)
-  test_headless_driver.c/h  Display driver sans fenetre
-  test_audio_stub.c/h       Stub audio (flam-test ; flam-test-audio utilise le vrai sdl_audio.c)
-  lua/
-    test_helpers.lua         Framework de test (test/expect_eq/expect_true/expect_error)
-    test_*.lua               Tests unitaires et d'integration (suite principale)
-    regress_*.lua            Tests de non-regression (lances isolement)
-    poc_*.lua, fuzz_*.lua    PoCs de securite et fuzzer (lances isolement)
-  engine/test_*.lua         Moteur et modules runtime de telmi2flam (avec mocks)
-  audio/                    Audio reel (pilote SDL dummy) : seek, pause, reouverture du lua_State
-  e2e/e2e_telmi.py          Bout en bout : paquet TELMI -> telmi2flam -> flam-player pilote
-```
+### Parcourir des catalogues et vos dossiers
 
-## Dependances externes
+Ajoutez des catalogues d'histoires en ligne ou un dossier de votre PC. Cherchez par titre, par
+âge ou par catégorie. Chaque fiche donne la description, l'auteur, la licence et la taille. Un
+badge indique si l'histoire a été testée et fonctionne sur la Flam.
 
-Toutes les dependances sont gerees comme des **submodules git** (voir `.gitmodules`),
-compilees depuis les sources lors du build (aucun binaire a placer manuellement).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/fiche-sombre.png">
+  <img src="docs/assets/fiche-clair.png" alt="Fiche d'une histoire : description, âge, auteur, licence, badge de compatibilité et boutons Télécharger" width="800">
+</picture>
 
-| Bibliotheque | Version | Submodule | Lien |
-|-------------|---------|-----------|------|
-| SDL2 | branche `SDL2` (2.x) | `libs/SDL2` | [libsdl-org/SDL](https://github.com/libsdl-org/SDL) |
-| Lua | 5.4.8 (tag `v5.4.8`, branche `v5.4`) | `libs/lua` | [lua/lua](https://github.com/lua/lua) |
-| LVGL | 8.3 (`release/v8.3` + 1 commit) | `libs/lvgl` | fork [scarlaty/lvgl](https://github.com/scarlaty/lvgl) de [lvgl/lvgl](https://github.com/lvgl/lvgl) |
-| minimp3 | `master` | `libs/minimp3` | [lieff/minimp3](https://github.com/lieff/minimp3) |
+### Convertir sans ligne de commande
 
-`libs/lv_conf.h` (config LVGL personnalisee, tas LVGL de 512 Ko) est versionne directement
-dans le depot. Le fork LVGL ajoute un seul commit a `release/v8.3` : garde contre la division
-par zero de `lv_bar` quand `min == max`, et traces `[MEM FAIL]` (details dans `AGENT.md`).
-`LV_ASSERT_HANDLER` appelle `flam_assert_crash` (`src/firmware/fw_globals.c`), qui logue
-fichier:ligne, la traceback Lua et le tas LVGL, puis fait `abort()` au lieu de boucler.
+« Télécharger » récupère l'archive TELMI et la convertit au format de la Flam (`.plain.pk`). Le
+convertisseur et son Python sont fournis : rien d'autre à installer. Les tâches s'affichent à
+droite avec leur avancement, et chacune peut être annulée.
 
-## Compilation
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/installation-sombre.png">
+  <img src="docs/assets/installation-clair.png" alt="Tâches en cours : un téléchargement à 62 %, une conversion des sons, une installation en attente" width="800">
+</picture>
 
-**Prerequis** : Visual Studio (2022 ou +) avec le composant *Desktop development with C++*
-(`Microsoft.VisualStudio.Component.VC.Tools.x86.x64`), ainsi que **CMake** et **Ninja**
-(fournis par Visual Studio ou via `pip install cmake ninja`).
+### Jouer sur le PC
 
-```bash
-# Recuperer les submodules (au clone ou apres coup)
-git clone --recurse-submodules https://github.com/scarlaty/flam-player.git
-# ou, sur un clone existant :
-git submodule update --init --recursive
-```
+Les histoires installées sont rangées dans « Mes histoires ». « Jouer » les lance dans
+`flam-player`, un émulateur du firmware de la Flam, intégré à la fenêtre de l'application. La
+progression de l'enfant est sauvegardée d'une session à l'autre.
 
-### Windows — script automatique (recommande)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/mes-histoires-sombre.png">
+  <img src="docs/assets/mes-histoires-clair.png" alt="Mes histoires : cartes des histoires installées avec les boutons Jouer et Envoyer sur la Flam" width="800">
+</picture>
 
-```bat
-do_build.bat            :: configure (si besoin) + compile flam-player.exe
-do_build.bat tests      :: compile flam-test.exe, flam-test-audio.exe et flam-player.exe
-```
+### Envoyer sur la Flam (expérimental)
 
-`do_build.bat` localise Visual Studio (via `vswhere`), charge l'environnement compilateur
-x64 (`vcvarsall.bat`), trouve `cmake` et `ninja`, puis lance le build. Aucune configuration
-manuelle ; les chemins sont resolus automatiquement.
+Branchez la Flam en USB : l'écran « Ma Flam » liste ses histoires avec leurs titres et
+vignettes. Vous pouvez en envoyer depuis « Mes histoires », en retirer, changer leur ordre et
+éjecter la Flam. Chaque copie est vérifiée avant d'être mise en place.
 
-`manual_build.bat` est un simple alias de `do_build.bat` (memes arguments).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/ma-flam-sombre.png">
+  <img src="docs/assets/ma-flam-clair.png" alt="Ma Flam : volume, firmware, espace libre et liste des histoires présentes sur l'appareil" width="800">
+</picture>
 
-### Windows — manuel
+> [!WARNING]
+> Cette fonction est **non officielle** et n'est ni prévue ni garantie par le fabricant.
+> Lisez [les risques](apps/flam-launcher/docs/flam-transfert.md#risques) avant de l'utiliser
+> et gardez une copie du contenu de votre Flam.
 
-Charger d'abord l'environnement MSVC x64 (`vcvarsall.bat`, ou un *x64 Native Tools Command
-Prompt*), sinon `cl.exe` ne trouve pas `stddef.h` :
+### Sources, réglages et thème sombre
 
-```bat
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
-```
+Ajoutez, renommez et ordonnez vos sources. Les paramètres indiquent les programmes utilisés et
+la place occupée par le cache. L'interface suit le thème clair ou sombre de Windows, ou celui
+que vous choisissez.
 
-Ajouter `-DBUILD_TESTS=ON` pour construire aussi `flam-test.exe` et `flam-test-audio.exe`, et
-`-DCMAKE_MAKE_PROGRAM=<chemin\ninja.exe>` si `ninja` n'est pas dans le PATH.
+<table>
+  <tr>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/sources-sombre.png">
+        <img src="docs/assets/sources-clair.png" alt="Écran Sources : catalogue et dossier local, avec boutons pour monter, descendre, modifier et supprimer">
+      </picture>
+    </td>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/parametres-sombre.png">
+        <img src="docs/assets/parametres-clair.png" alt="Écran Paramètres : chemins de flam-player et de Python, dossier de cache">
+      </picture>
+    </td>
+  </tr>
+</table>
 
-### Tests
+### Bientôt : les podcasts
 
-```bat
-do_build.bat tests      :: compile flam-test.exe, flam-test-audio.exe, flam-player.exe
-test_run.bat            :: lance les 6 etapes ci-dessous
-test_run.bat strict     :: idem, et un echec d'un test isole compte aussi
-```
+Composer un « pack » à partir d'épisodes de podcasts, avec son propre menu, à écouter sur la
+Flam. En cours de développement, pas encore livré dans une version publiée
+([spécification](apps/flam-launcher/docs/podcasts.md)).
 
-`test_run.bat` enchaine ces etapes puis affiche un recapitulatif (`RESULTAT : OK` si tout passe) :
+## Le parcours en image
 
-| Etape | Contenu |
-|-------|---------|
-| 1. Suite | `tests\lua\test_*.lua`, un seul processus (flam-test) |
-| 2. Moteur/runtime | `tests\engine\test_*.lua` : moteur et modules runtime de telmi2flam |
-| 3. Audio reel | `tests\audio\` avec flam-test-audio (vrai `sdl_audio.c`, pilote SDL dummy) |
-| 4. Tests isoles | `regress_*.lua`, `poc_*.lua`, `fuzz_*.lua`, un processus chacun (timeout 30 s ; 1 = erreur Lua, 3 = timeout, autre = crash) |
-| 5. Convertisseur | `tools\telmi2flam\tests` (python unittest) ; saute si python ou Pillow absent |
-| 6. Bout en bout | `tests\e2e\e2e_telmi.py` ; saute si python ou flam-player.exe absent |
+Du catalogue à la Flam : choisir une histoire, la télécharger, puis l'envoyer sur l'appareil.
 
-- Les echecs de l'etape 4 ne comptent qu'en mode `strict` ; en `strict`, un
-  `flam-test-audio.exe` absent est aussi un echec.
-- `FLAM_BUILD_DIR` : autre dossier de build que `build\`. `FLAM_PYTHON` : interpreteur python.
-  `FLAM_LUA` : Lua 5.4 autonome (verification de `nodes.lua` par les tests du convertisseur).
-- La capture d'ecran automatique du player est desactivee pendant les tests.
+<p align="center">
+  <img src="docs/assets/parcours.gif" alt="Animation : ouverture d'une fiche, téléchargement et conversion, envoi sur la Flam, puis liste des histoires de la Flam" width="900">
+</p>
 
-## Utilisation
+## Installation
 
-Via le script (chemins relatifs, logs dans `build\stdout.log` / `stderr.log`) :
+1. Ouvrez la page des [**versions publiées**](https://github.com/scarlaty/flam-player/releases)
+   et prenez la plus récente nommée « Flam Launcher ».
+2. Téléchargez le fichier `Flam-Launcher_<version>_x64-setup.exe` et lancez-le.
+3. L'installation se fait pour votre compte Windows, **sans droits d'administrateur**.
 
-```bat
-run.bat                      :: scanne le dossier build (ex: Enquete.plain)
-run.bat "D:\mes\histoires"   :: scanne un dossier specifique
-```
+> [!IMPORTANT]
+> **Avertissement SmartScreen.** L'installateur n'est pas signé. Windows affiche « Windows a
+> protégé votre ordinateur » : cliquez sur « Informations complémentaires », puis sur
+> « Exécuter quand même ». Le fichier `SHA256SUMS.txt` de la version permet de vérifier le
+> téléchargement.
 
-Ou directement :
+Tout est inclus : l'application, `flam-player` et le convertisseur avec son Python. WebView2
+est requis ; il est présent sur Windows 11 et sur Windows 10 à jour. Vos sources, paramètres
+et progressions survivent aux mises à jour. Détails, désinstallation et dépannage :
+[apps/flam-launcher/README.md](apps/flam-launcher/README.md#installation-windows).
 
-```bash
-# Navigateur d'histoires (scan le dossier de l'executable)
-flam-player.exe
+## Démarrage rapide
 
-# Scan un dossier specifique
-flam-player.exe --scan-dir <chemin/vers/dossier>
+1. **Ouvrez une source.** Un catalogue d'histoires TELMI est déjà configuré. Vous pouvez en
+   ajouter d'autres, ou un dossier de votre PC, depuis l'écran « Sources ».
+2. **Choisissez une histoire** et cliquez sur « Télécharger » (ou « Télécharger et jouer »).
+   La conversion se fait toute seule.
+3. **Jouez** depuis « Mes histoires », ou **envoyez-la sur la Flam** branchée en USB.
 
-# Charger une histoire directement (dossier .plain ou archive .plain.pk)
-flam-player.exe <chemin/vers/histoire.plain>
-```
+## FAQ
 
-Options :
+<details>
+<summary><b>Windows bloque l'installateur (SmartScreen). Est-ce normal ?</b></summary>
 
-| Option | Effet |
-|--------|-------|
-| `--scan-dir <dossier>` | Dossier scanne par le navigateur |
-| `--strict` | Plus proche du device : `require()` limite a `script/`, image `.lif` absente = erreur |
-| `--watchdog <ms>` | Interrompt un script Lua qui ne rend pas la main (defaut 10000, `0` = desactive) |
-| `--screenshot <chemin>` | Fichier BMP des captures (prioritaire sur `FLAM_SCREENSHOT`) |
-| `--img-dir`, `--sounds-dir`, `--save-dir` | Dossiers images, sons et sauvegardes (mode script `.lua` direct) |
+Oui. L'installateur n'est pas signé numériquement, donc Windows ne connaît pas son éditeur.
+Cliquez sur « Informations complémentaires », puis sur « Exécuter quand même ». Vous pouvez
+comparer l'empreinte du fichier avec `SHA256SUMS.txt`, publié avec chaque version.
+</details>
 
-Le navigateur detecte les dossiers `.plain` et les archives `.plain.pk`, affiche les vignettes et titres, et offre un bouton "Choisir un dossier..." pour changer le repertoire de recherche. Les archives `.plain.pk` sont extraites automatiquement au premier lancement.
+<details>
+<summary><b>Quelles versions du firmware de la Flam sont prises en charge ?</b></summary>
 
-### Controles clavier
+- **Firmware 1.x** : l'envoi a été validé sur un appareil réel (1.15.14). Il demande la clé
+  d'une histoire officielle de votre compte (« mode carrier »), avec un avertissement à
+  accepter.
+- **Firmware 2.x** : pris en charge, mais **jamais testé sur un appareil**. C'est l'objet de
+  la bêta : le [guide testeur](apps/flam-launcher/docs/guide-testeur.md) explique comment
+  essayer et faire un retour.
 
-| Touche | Action |
-|--------|--------|
-| Fleches gauche/droite | Navigation |
-| Entree / Espace | Valider |
-| Echap | Retour / Revenir au navigateur |
-| M | Menu contextuel |
-| P | Pause / reprise de l'audio en cours |
-| S | Screenshot (sauvegarde `screenshot.bmp`) |
+Le firmware détecté s'affiche dans l'écran « Ma Flam ». Un firmware inconnu bloque l'envoi.
+Détails : [flam-transfert.md](apps/flam-launcher/docs/flam-transfert.md).
+</details>
 
-Captures d'ecran : fichier BMP 320x240 fidele a l'ecran. Chemin par defaut code en dur
-`C:/temp/flam-player/screenshot.bmp` ; `--screenshot <chemin>` (prioritaire) ou la
-variable `FLAM_SCREENSHOT=<chemin>` le changent. Une capture automatique
-est aussi prise 12 s apres le demarrage : `FLAM_SCREENSHOT_AUTO_MS=<ms>` change
-ce delai, `FLAM_SCREENSHOT_AUTO_MS=0` la desactive.
+<details>
+<summary><b>Quels formats d'histoires sont acceptés ?</b></summary>
 
-## Format .plain / .plain.pk
+- archives TELMI `.zip` (description `nodes.json`), converties à l'installation ;
+- histoires déjà au format de la Flam : dossiers `.plain` et archives `.plain.pk`, copiées
+  telles quelles.
 
-Les histoires `.plain` sont des dossiers (ou archives ZIP `.plain.pk`) contenant :
-- `main.lua` — point d'entree Lua
-- `script/` — modules Lua (UI, navigation, logique)
-- `img/` — images au format LIF (dont `thumbnail.lif` pour la vignette)
-- `sounds/` — audio MP3 + fichiers `.mp3map` (index de seek)
-- `info.plain` — metadonnees (titre, auteur, description, age)
-- `uuid.bin` — identifiant unique (16 octets)
+Le format STUdio (`story.json`) n'est pas pris en charge. Une source peut être un catalogue en
+ligne au format Telmi Store, ou un dossier local, qui n'est jamais modifié.
+</details>
 
-Les fichiers `.plain.pk` sont des archives ZIP (store, sans compression) generees par des outils de
-sauvegarde Lunii ou par `tools/telmi2flam`. L'extraction refuse les chemins dangereux (`..`,
-chemins absolus) et les tailles incoherentes.
+<details>
+<summary><b>Faut-il une Flam pour utiliser l'application ?</b></summary>
 
-## Convertir une histoire TELMI
+Non. Sans Flam, vous pouvez parcourir, convertir et jouer les histoires sur le PC avec
+`flam-player`.
+</details>
 
-```bat
-python tools\telmi2flam\telmi2flam.py "Mon histoire.zip" -o "Mon_histoire.plain.pk"
-python tools\telmi2flam\validate.py "Mon_histoire.plain.pk"
-```
+<details>
+<summary><b>Existe-t-il une version Mac ou Linux ?</b></summary>
 
-Prerequis : python 3 et Pillow. Seul le format TELMI (`nodes.json`) est pris en charge, pas le
-format STUdio (`story.json`). Options (`--plain`, `--selector`, `--keep-size`, `--allow-missing`...)
-et details : [tools/telmi2flam/README.md](tools/telmi2flam/README.md).
+Non. Seul Windows 10 ou 11 en 64 bits est pris en charge et publié. L'émulateur et le
+convertisseur se compilent aussi ailleurs, mais sans version prête à installer.
+</details>
+
+<details>
+<summary><b>Où sont mes données ?</b></summary>
+
+Sources, paramètres et sauvegardes de progression sont dans `%APPDATA%\flam-launcher`. Le cache
+et les histoires installées sont par défaut dans `%LOCALAPPDATA%\flam-launcher`. La
+désinstallation les conserve : supprimez ces dossiers pour tout effacer.
+</details>
+
+## Contribuer
+
+Les contributions sont bienvenues : rapports de bogue, retours de test sur une Flam, code et
+documentation.
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) : organisation du travail, réservation d'une tâche,
+  qualité attendue et revue.
+- [Guide testeur](apps/flam-launcher/docs/guide-testeur.md) : tester la bêta sur une Flam et
+  envoyer un retour.
+- [Documentation développeur du launcher](apps/flam-launcher/README.md) : prérequis,
+  commandes, architecture.
+- Les captures de cette page sont produites par
+  [`apps/flam-launcher/scripts/screenshots.mjs`](apps/flam-launcher/scripts/screenshots.mjs)
+  (`npm run screenshots`), avec des données fictives.
+
+## Sous le capot
+
+Flam Launcher est une application [Tauri 2](https://tauri.app/) (backend Rust, interface React
+et TypeScript). Il s'appuie sur d'autres briques de ce dépôt :
+
+| Composant | Rôle | Documentation |
+|-----------|------|---------------|
+| `flam-player` | Émulateur du firmware de la Flam (C, LVGL, Lua, SDL2) | [docs/player.md](docs/player.md) |
+| `telmi2flam` | Convertisseur TELMI vers FLAM (Python) | [tools/telmi2flam](tools/telmi2flam/README.md) |
+| `crates/telmi2flam` | Port Rust du convertisseur, en cours | [crates/telmi2flam](crates/telmi2flam/) |
+| Jeux homebrew | Jeux en Lua pour la Flam | [docs/player.md](docs/player.md#jeux-et-contenus-homebrew) |
+| Skill `flam-homebrew` | Fabriquer un contenu `.plain.pk` avec une IA | [skills/flam-homebrew](skills/flam-homebrew/SKILL.md) |
+| Formats de la Flam | Volume USB, index, chiffrement | [flam-device-format.md](docs/flam-device-format.md), [flam-carrier.md](docs/flam-carrier.md) |
+| Sécurité | Audit et inventaire d'un appareil | [docs/security/](docs/security/) |
 
 ## Licence
 
-Ce projet (emulateur flam-player, convertisseur telmi2flam, flam-launcher, jeux et skills) est distribue sous licence GNU GPL v3 ou ulterieure (`GPL-3.0-or-later`), voir [`LICENSE`](LICENSE). Les composants tiers gardent chacun leur licence (voir ci-dessous).
+Flam Launcher et le reste du dépôt sont distribués sous licence
+[GNU GPL v3 ou ultérieure](LICENSE) (`GPL-3.0-or-later`). Les composants tiers redistribués
+par l'installateur gardent leur propre licence : voir
+[apps/flam-launcher/LICENSES.md](apps/flam-launcher/LICENSES.md).
 
-L'installateur Windows de flam-launcher redistribue flam-player, le convertisseur telmi2flam (avec
-un Python embarque et Pillow) et son runtime Lua (GPL v3, comme le reste du dépôt) ; les licences de
-chaque composant tiers (SDL2, Lua, LVGL, minimp3, Python, Pillow, redistribuables Microsoft) sont
-dans [`apps/flam-launcher/LICENSES.md`](apps/flam-launcher/LICENSES.md).
+Flam et Lunii sont des marques de leurs propriétaires. Ce projet n'est ni affilié à eux ni
+approuvé par eux.
