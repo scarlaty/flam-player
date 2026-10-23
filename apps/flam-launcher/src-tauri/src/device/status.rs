@@ -286,7 +286,8 @@ fn read_stories(root: &Path, titles: &HashMap<String, LibraryMatch>) -> StoriesR
 #[tauri::command]
 pub async fn device_status(config: State<'_, ConfigState>) -> AppResult<DeviceStatus> {
     let backup_dir = crate::storage::data_dir().join(detect::BACKUP_SUBDIR);
-    let cache_root = super::transfer::launcher_cache_root(&config);
+    // Scrutée : dossier de cache résolu à neuf seulement si les réglages ont changé (#326).
+    let cache_root = super::transfer::polled_cache_root(&config);
     blocking(move || {
         status(
             &Environment::current(),
