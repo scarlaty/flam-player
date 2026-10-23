@@ -26,6 +26,7 @@
 pub mod convert;
 pub mod download;
 pub mod pack;
+pub mod podcast;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,6 +52,7 @@ use crate::{AppError, AppResult};
 
 use self::convert::{Conversion, Step};
 use self::download::{cancelled, Download, Validator};
+use self::podcast::{PackBackend, PackJob, PackStatus};
 
 /// Sous-dossier du cache des archives téléchargées (listé dans `cache::APP_CACHE_SUBDIRS`).
 pub const ARCHIVES_DIR: &str = "archives";
@@ -78,6 +80,10 @@ pub const EVENT_ERROR: &str = "install://error";
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
     Queued,
+    /// Pack de podcasts : préparation (téléchargements, audio, pochettes, archive, #217).
+    Preparing,
+    /// Pack de podcasts : archive prête, en attente du convertisseur.
+    Prepared,
     Downloading,
     Converting,
     Installing,
@@ -125,6 +131,8 @@ pub struct InstallTask {
     pub error: Option<TaskError>,
     /// Création (secondes Unix).
     pub created_at: u64,
+    /// Pack de podcasts (#217) : `None` pour une histoire d'une source.
+    pub pack: Option<PackStatus>,
 }
 
 /// Charge de `install://progress` : changement d'état ou avancement.
@@ -364,6 +372,9 @@ struct QueuedTask {
     created_at: u64,
     #[serde(default)]
     validator: Validator,
+    /// Pack de podcasts : composition et uuid (N10 a). Absent pour une histoire d'une source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pack: Option<PackJob>,
 }
 
 /// Contenu de la file à écrire, avec son numéro d'ordre.
@@ -397,6 +408,7 @@ struct Slot {
     task: InstallTask,
     cancel: watch::Sender<bool>,
     validator: Validator,
+    pack: Option<PackJob>,
 }
 
 /// Paramètres du service (injectés pour les tests).
@@ -418,6 +430,8 @@ struct Inner {
     queue_requested: AtomicU64,
     /// Numéro de la dernière capture écrite ; sérialise aussi les écritures du fichier.
     queue_written: Mutex<u64>,
+    /// Préparation des packs de podcasts (#217) ; `None` : création de pack indisponible.
+    packs: Mutex<Option<Arc<dyn PackBackend>>>,
 }
 
 /// Service d'installation (état Tauri).
@@ -433,7 +447,13 @@ impl InstallService {
             conversions: Semaphore::new(1),
             queue_requested: AtomicU64::new(0),
             queue_written: Mutex::new(0),
+            packs: Mutex::new(None),
         }))
+    }
+
+    /// Branche la préparation des packs de podcasts (#217).
+    pub fn set_pack_backend(&self, backend: Arc<dyn PackBackend>) {
+        *lock(&self.0.packs) = Some(backend);
     }
 
     /// Relance les tâches de la file persistée (au démarrage).
@@ -456,9 +476,14 @@ impl InstallService {
                 );
                 continue;
             }
-            let fresh = lookup(q.entry.source_id.clone(), q.entry.entry_id.clone())
-                .await
-                .and_then(|entry| validate_entry(&entry).map(|()| entry));
+            // Pack (N10 a) : aucune source à interroger ; l'entrée est reconstruite à partir de
+            // l'uuid enregistré, la composition est revalidée par la préparation.
+            let fresh = if let Some(job) = &q.pack {
+                self.restored_pack_entry(&q.id, job, &q.entry)
+            } else {
+                lookup(q.entry.source_id.clone(), q.entry.entry_id.clone()).await
+            }
+            .and_then(|entry| validate_entry(&entry).map(|()| entry));
             match fresh {
                 Ok(entry) => accepted.push((q, entry)),
                 Err(err) => tracing::warn!(
@@ -490,15 +515,21 @@ impl InstallService {
                         percent: None,
                         error: None,
                         created_at: q.created_at,
+                        pack: q.pack.as_ref().map(|job| PackStatus {
+                            episodes: job.composition.episodes().len(),
+                            dropped: Vec::new(),
+                        }),
                     },
                     cancel: watch::channel(false).0,
                     validator,
+                    pack: q.pack,
                 });
             }
             let snap = self.snapshot(&tasks);
             (tasks.iter().map(|s| s.task.id.clone()).collect(), snap)
         };
         self.write_queue(snap).await;
+        self.sweep_workdirs().await;
         for id in ids {
             self.spawn(id);
         }
@@ -507,6 +538,18 @@ impl InstallService {
     /// Ajoute une tâche pour `entry` (déjà résolue par le backend). Une tâche active pour le
     /// même `uuid` est renvoyée telle quelle au lieu d'en créer une seconde.
     pub fn start(&self, entry: StoryEntry) -> AppResult<InstallTask> {
+        self.enqueue(uuid::Uuid::new_v4().to_string(), entry, None, now_secs())
+    }
+
+    /// Ajoute la tâche `id`. Hors pack, une tâche active pour le même `uuid` est renvoyée telle
+    /// quelle ; un pack a toujours son propre uuid (P3).
+    fn enqueue(
+        &self,
+        id: String,
+        entry: StoryEntry,
+        pack: Option<PackJob>,
+        created_at: u64,
+    ) -> AppResult<InstallTask> {
         validate_entry(&entry)?;
         let (task, snap) = {
             let mut tasks = lock(&self.0.tasks);
@@ -514,20 +557,28 @@ impl InstallService {
                 .iter()
                 .find(|s| s.task.state.is_active() && s.task.entry.uuid == entry.uuid)
             {
+                if pack.is_some() {
+                    return Err(AppError::Validation("uuid de pack déjà utilisé".into()));
+                }
                 return Ok(slot.task.clone());
             }
             let task = InstallTask {
-                id: uuid::Uuid::new_v4().to_string(),
+                id,
                 entry,
                 state: TaskState::Queued,
                 percent: None,
                 error: None,
-                created_at: now_secs(),
+                created_at,
+                pack: pack.as_ref().map(|job| PackStatus {
+                    episodes: job.composition.episodes().len(),
+                    dropped: Vec::new(),
+                }),
             };
             tasks.push(Slot {
                 task: task.clone(),
                 cancel: watch::channel(false).0,
                 validator: Validator::default(),
+                pack,
             });
             let snap = self.snapshot(&tasks);
             (task, snap)
@@ -616,6 +667,7 @@ impl InstallService {
                     entry: s.task.entry.clone(),
                     created_at: s.task.created_at,
                     validator: s.validator.clone(),
+                    pack: s.pack.clone(),
                 })
                 .collect(),
         };
@@ -703,7 +755,7 @@ impl InstallService {
     }
 
     async fn run(self, id: String) {
-        let Some((entry, mut cancel, validator)) = lock(&self.0.tasks)
+        let Some((entry, mut cancel, validator, pack)) = lock(&self.0.tasks)
             .iter()
             .find(|s| s.task.id == id)
             .map(|s| {
@@ -711,12 +763,22 @@ impl InstallService {
                     s.task.entry.clone(),
                     s.cancel.subscribe(),
                     s.validator.clone(),
+                    s.pack.clone(),
                 )
             })
         else {
             return;
         };
-        let result = self.pipeline(&id, &entry, &mut cancel, validator).await;
+        let result = self
+            .pipeline(&id, &entry, &mut cancel, validator, pack.as_ref())
+            .await;
+        // Pack publié : brouillon effacé s'il n'a pas changé depuis la création (#362).
+        if let (Ok(_), Some(revision)) = (&result, pack.as_ref().and_then(|p| p.draft_revision)) {
+            let backend = lock(&self.0.packs).clone();
+            if let Some(backend) = backend {
+                let _ = blocking(move || backend.draft_done(revision)).await;
+            }
+        }
         let (state, error) = match &result {
             Ok(_) => (TaskState::Done, None),
             Err(AppError::Cancelled) => (
@@ -768,6 +830,7 @@ impl InstallService {
         entry: &StoryEntry,
         cancel: &mut watch::Receiver<bool>,
         validator: Validator,
+        pack: Option<&PackJob>,
     ) -> AppResult<(LibraryEntry, u32)> {
         if !is_task_id(id) {
             return Err(AppError::Validation(format!(
@@ -793,9 +856,18 @@ impl InstallService {
             .await??
         };
         let staged = child_of(&staging, &format!("{id}.plain.pk"))?;
-        let result = self
-            .produce(id, entry, &tc, &staged, cancel, validator)
-            .await;
+        let (entry, result) = match pack {
+            None => (
+                entry.clone(),
+                self.produce(id, entry, &tc, &staged, cancel, validator)
+                    .await,
+            ),
+            Some(job) => match self.produce_pack(id, job, &tc, &staged, cancel).await {
+                Ok((fresh, produced)) => (fresh, Ok((None, produced))),
+                Err(err) => (entry.clone(), Err(err)),
+            },
+        };
+        let entry = &entry;
         let (
             downloaded,
             Produced {
@@ -838,6 +910,85 @@ impl InstallService {
             let _ = blocking(move || remove_archive(&archive)).await;
         }
         Ok((installed, warnings))
+    }
+
+    /// Pack de podcasts : préparation puis conversion de l'archive Telmi vers `staged`. Le
+    /// dossier de travail est supprimé (hors runtime) avant de rendre la main, quelle que soit
+    /// l'issue (N8 a). Renvoie l'entrée à publier, mise à jour par la revalidation.
+    async fn produce_pack(
+        &self,
+        id: &str,
+        job: &PackJob,
+        tc: &Toolchain,
+        staged: &Path,
+        cancel: &mut watch::Receiver<bool>,
+    ) -> AppResult<(StoryEntry, Produced)> {
+        let prepared = self.prepare_pack(id, job, tc, cancel).await?;
+        {
+            let mut tasks = lock(&self.0.tasks);
+            if let Some(slot) = tasks.iter_mut().find(|s| s.task.id == id) {
+                slot.task.entry = prepared.entry.clone();
+            }
+        }
+        self.emit_state(id, TaskState::Prepared, None);
+        let result = self
+            .transform(
+                id,
+                &prepared.entry,
+                tc,
+                &prepared.archive,
+                staged,
+                false,
+                cancel,
+            )
+            .await;
+        podcast::finish_workdir(prepared.workdir).await;
+        result.map(|produced| (prepared.entry, produced))
+    }
+
+    /// Entrée d'un pack relu de la file (N10 a) : uuid enregistré revérifié, chemin de
+    /// l'archive recalculé (le dossier de cache a pu changer), textes bornés.
+    fn restored_pack_entry(
+        &self,
+        id: &str,
+        job: &PackJob,
+        saved: &StoryEntry,
+    ) -> AppResult<StoryEntry> {
+        if !podcast::is_pack_uuid(&job.uuid) {
+            return Err(AppError::Validation("uuid de pack invalide".into()));
+        }
+        let tc = (self.0.opts.resolver)()?;
+        let archive = podcast::archive_path(&tc.cache_root, id)?;
+        let max = crate::podcast::archive::MAX_TITLE_CHARS;
+        Ok(podcast::pack_entry(
+            &job.uuid,
+            &crate::podcast::pack::ResolvedMetadata {
+                title: saved.title.chars().take(max).collect(),
+                subtitle: saved
+                    .category
+                    .as_deref()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(max)
+                    .collect(),
+                age: saved.age.and_then(|a| u8::try_from(a).ok()).unwrap_or(0),
+                description: None,
+            },
+            &archive,
+        ))
+    }
+
+    /// Supprime les dossiers de travail des packs qui n'appartiennent à aucune tâche connue
+    /// (arrêt brutal). Une nouvelle tâche a un identifiant neuf : jamais concernée.
+    async fn sweep_workdirs(&self) {
+        let Ok(tc) = (self.0.opts.resolver)() else {
+            return;
+        };
+        let known: std::collections::HashSet<String> = lock(&self.0.tasks)
+            .iter()
+            .map(|s| s.task.id.clone())
+            .collect();
+        let _ = blocking(move || podcast::sweep_workdirs(&tc.cache_root, &known)).await;
     }
 
     /// Produit le `.plain.pk` à publier dans `staged`. Renvoie l'archive téléchargée (à
@@ -960,9 +1111,12 @@ impl InstallService {
                     Some(version) => version,
                     None => blocking(move || converter_fingerprint(&script)).await??,
                 };
-                // Résultat réel de la conversion, pour le statut de compatibilité (#20).
-                if let Some(outcome) = compat::outcome_of(entry, &converter, &converted, now_secs())
-                {
+                // Résultat réel de la conversion, pour le statut de compatibilité (#20) ; sans
+                // objet pour un pack (histoire unique, sans source).
+                let outcome = (entry.source_id != podcast::PACK_SOURCE_ID)
+                    .then(|| compat::outcome_of(entry, &converter, &converted, now_secs()))
+                    .flatten();
+                if let Some(outcome) = outcome {
                     let (root, uuid) = (tc.cache_root.clone(), entry.uuid.clone());
                     // Échec d'enregistrement ignoré : il ne doit pas gêner l'installation.
                     let _ = blocking(move || compat::store_outcome(&root, &uuid, outcome)).await;

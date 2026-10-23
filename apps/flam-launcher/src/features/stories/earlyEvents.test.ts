@@ -10,6 +10,7 @@ const base: InstallTask = {
   percent: null,
   error: null,
   created_at: 1,
+  pack: null,
 };
 
 it("applique les événements mémorisés puis les oublie", () => {

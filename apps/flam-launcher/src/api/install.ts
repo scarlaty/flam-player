@@ -6,6 +6,8 @@ import type { StoryEntry } from "./story";
 /** État d'une tâche d'installation (miroir de `TaskState` dans `src-tauri/src/install/mod.rs`). */
 export type TaskState =
   | "queued"
+  | "preparing"
+  | "prepared"
   | "downloading"
   | "converting"
   | "installing"
@@ -34,6 +36,71 @@ export interface InstallTask {
   error: TaskError | null;
   /** Création (secondes Unix). */
   created_at: number;
+  /** Pack de podcasts (#217) ; `null` pour une histoire d'une source. */
+  pack: PackStatus | null;
+}
+
+/** État d'un pack de podcasts dans la file (miroir de `PackStatus`, `install/podcast.rs`). */
+export interface PackStatus {
+  /** Épisodes de la composition. */
+  episodes: number;
+  /** Titres des épisodes retirés du pack (échec de téléchargement ou de conversion, P7). */
+  dropped: string[];
+}
+
+/** Épisode désigné par sa source et son identifiant opaque (miroir de `EpisodeRef`). */
+export interface PackEpisodeRef {
+  source_id: string;
+  episode_id: string;
+}
+
+/** Option d'un menu de pack (miroir de `PackNode`). */
+export type PackNode =
+  | ({ kind: "episode" } & PackEpisodeRef)
+  | { kind: "category"; name: string; entries: PackNode[] };
+
+/** Couverture choisie (miroir de `CoverChoice`). */
+export type PackCover =
+  | { kind: "default" }
+  | { kind: "feed"; source_id: string }
+  | ({ kind: "episode" } & PackEpisodeRef);
+
+/** Composition d'un pack (miroir de `PackComposition`, `podcast/pack.rs`). */
+export interface PackComposition {
+  metadata: {
+    title: string;
+    subtitle: string | null;
+    age: number;
+    description: string | null;
+  };
+  cover: PackCover;
+  menu: PackNode[];
+}
+
+/** Problème bloquant la création (miroir de `Problem`) : s'appuyer sur `code`. */
+export interface PackProblem {
+  code: string;
+  message: string;
+  path: number[] | null;
+  episode: PackEpisodeRef | null;
+  field: string | null;
+}
+
+/** Rapport de validation (miroir de `ValidationReport`, champs utiles à la création). */
+export interface PackValidationReport {
+  valid: boolean;
+  problems: PackProblem[];
+  unavailable: PackEpisodeRef[];
+  episodes: number;
+  feeds: number;
+  estimated_bytes: number;
+  unknown_size: number;
+}
+
+/** Résultat de `pack_create` : `task` vaut `null` si la composition est refusée. */
+export interface PackCreated {
+  task: InstallTask | null;
+  report: PackValidationReport;
 }
 
 /** Charge de `install://progress` : changement d'état ou avancement d'une tâche. */
@@ -81,6 +148,22 @@ export function startInstall(
   return invokeCommand<InstallTask>(
     "install_start",
     uuid === undefined ? { sourceId, entryId } : { sourceId, entryId, uuid },
+  );
+}
+
+/**
+ * `pack_create` : revalide la composition dans le backend (épisodes retrouvés dans les flux en
+ * cache) et, si elle est valide, ajoute la création du pack à la file d'installation. Sinon,
+ * `task` vaut `null` et `report.problems` dit pourquoi. `draftRevision` : dernière révision du
+ * brouillon, effacé après la publication du pack s'il n'a pas changé entre-temps.
+ */
+export function createPack(
+  composition: PackComposition,
+  draftRevision?: number,
+): Promise<PackCreated> {
+  return invokeCommand<PackCreated>(
+    "pack_create",
+    draftRevision === undefined ? { composition } : { composition, draftRevision },
   );
 }
 

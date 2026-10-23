@@ -462,6 +462,18 @@ export const fr = {
         zip: "archive",
       } as Record<string, string>,
       convertingPhase: (phase: string) => `Conversion : ${phase}`,
+      preparing: "Préparation du pack",
+      preparingPhase: (phase: string) => `Préparation du pack : ${phase}`,
+      preparePhase: {
+        validation: "vérification des épisodes",
+        download: "téléchargement des épisodes",
+        audio: "conversion audio",
+        images: "pochettes",
+        archive: "assemblage",
+      } as Record<string, string>,
+      prepared: "Pack préparé, en attente de conversion",
+      packDropped: (titles: string[]) =>
+        `${titles.length} épisode${titles.length > 1 ? "s" : ""} non inclus : ${titles.join(", ")}`,
     },
     playing: "En cours de lecture dans flam-player",
     playerBusy:
