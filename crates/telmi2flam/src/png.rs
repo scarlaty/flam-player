@@ -18,7 +18,8 @@
 //!   illisible, comme le `MemoryError` attrapé par Python.
 //!
 //! Les cas que ce module ne modélise pas sont **délégués** à Python ([`PngError::Unsupported`],
-//! code 7, décision D4) : autre format que PNG, APNG (`acTL`, `fcTL`, `fdAT`), `IHDR` absent en
+//! code 7, décision D4) : autre format que PNG que Pillow pourrait lire (voir [`crate::identify`] ;
+//! des données qu'aucun greffon de Pillow n'accepte sont illisibles), APNG (`acTL`, `fcTL`, `fdAT`), `IHDR` absent en
 //! tête ou répété, `tRNS` répété, placé après l'IDAT ou de longueur inattendue.
 
 use std::fmt;
@@ -842,7 +843,13 @@ impl Converter {
 /// décodée : [`PngError::Cancelled`] dès qu'il rend `true`.
 pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     if data.len() < SIGNATURE.len() || &data[..8] != SIGNATURE {
-        return Err(PngError::Unsupported("pas un PNG"));
+        // Autre format : délégué si Pillow pourrait le lire, sinon illisible pour Pillow aussi
+        // (`UnidentifiedImageError`).
+        return Err(if crate::identify::pillow_may_open(data) {
+            PngError::Unsupported("pas un PNG")
+        } else {
+            PngError::Unreadable("cannot identify image file")
+        });
     }
     let mut cur = Cursor { data, pos: 8 };
     let (mut h, first_idat) = read_header(&mut cur, cancelled)?;
@@ -1036,10 +1043,17 @@ mod tests {
 
     #[test]
     fn autres_formats_delegues() {
-        for data in [&b""[..], b"GIF89a", b"\xff\xd8\xff\xe0", b"\x89PNG\r\n"] {
+        for data in [&b"GIF89a"[..], b"\xff\xd8\xff\xe0", b"\x89PNG\r\n"] {
             assert!(matches!(
                 decode_rgba(data, &never),
                 Err(PngError::Unsupported(_))
+            ));
+        }
+        // Aucun greffon de Pillow ne les accepte : illisibles, comme pour Python.
+        for data in [&b""[..], b"garbage", b"\x89PNGgarbage"] {
+            assert!(matches!(
+                decode_rgba(data, &never),
+                Err(PngError::Unreadable(_))
             ));
         }
     }
