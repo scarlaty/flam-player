@@ -118,3 +118,11 @@
   min-height: 1.5em;
   color: var(--color-text-muted);
 }
+
+.fl-pack__grip {
+  align-self: center;
+  padding: 0 var(--space-1);
+  color: var(--color-text-muted);
+  cursor: grab;
+  user-select: none;
+}

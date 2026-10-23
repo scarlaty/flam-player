@@ -7,54 +7,93 @@ import {
   type ValidationReport,
 } from "../../../api/pack";
 import { getPodcastFeed, type Episode } from "../../../api/podcast";
+import { onWindowCloseRequested } from "../../../api/window";
 
 export type SaveStatus = "idle" | "saving" | "saved" | "error";
 
 /** Nouvelles tentatives d'une sauvegarde dont la révision a été devancée (une seule suffit). */
 const MAX_STALE_RETRIES = 3;
 
+/** Temps laissé à la sauvegarde de fermeture avant de laisser la fenêtre se fermer. */
+export const CLOSE_FLUSH_MS = 1000;
+
+/** Attente maximale, à l'ouverture de l'éditeur, de la sauvegarde d'un éditeur fermé. */
+const SETTLE_SAVE_MS = 2000;
+
+/** Sauvegarde en cours (au plus une : le brouillon est unique), toutes instances du hook. */
+let pendingSave: Promise<void> | null = null;
+
+/**
+ * Attend la sauvegarde lancée par un éditeur qui vient de se fermer : à rouvrir l'éditeur
+ * aussitôt, la lecture du brouillon doit voir cette sauvegarde, pas la précédente.
+ */
+export async function settlePendingSave(): Promise<void> {
+  let giveUp: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    giveUp = setTimeout(resolve, SETTLE_SAVE_MS);
+  });
+  try {
+    // Borné : une sauvegarde qui ne répond pas ne doit pas empêcher d'ouvrir l'éditeur.
+    await Promise.race([
+      timeout,
+      (async () => {
+        while (pendingSave !== null) await pendingSave.catch(() => {});
+      })(),
+    ]);
+  } finally {
+    clearTimeout(giveUp);
+  }
+}
+
 /**
  * Sauvegarde automatique du brouillon (N3 b) : après `delayMs` sans modification, une seule
  * sauvegarde à la fois, avec la révision renvoyée par le backend (`init` à la lecture, puis
- * celle de chaque réponse). Une sauvegarde en attente est lancée au démontage.
+ * celle de chaque réponse). Une sauvegarde en attente est lancée au démontage et à la
+ * demande de fermeture de la fenêtre (attendue au plus `CLOSE_FLUSH_MS`).
  */
 export function useDraftAutosave(delayMs: number) {
   const [status, setStatus] = useState<SaveStatus>("idle");
   const revision = useRef(0);
   const latest = useRef<PackComposition | null>(null);
   const dirty = useRef(false);
-  const flushing = useRef(false);
+  const running = useRef<Promise<void> | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const mounted = useRef(false);
 
-  const flush = useCallback(async () => {
-    if (flushing.current) return;
-    flushing.current = true;
-    try {
-      let stale = 0;
-      while (dirty.current && latest.current) {
-        dirty.current = false;
-        if (mounted.current) setStatus("saving");
-        try {
-          const outcome = await savePackDraft(latest.current, revision.current + 1);
-          revision.current = outcome.revision;
-          if (!outcome.saved) {
-            stale += 1;
-            if (stale >= MAX_STALE_RETRIES) throw new Error("révision devancée");
-            dirty.current = true;
-          } else if (mounted.current && !dirty.current) {
-            setStatus("saved");
-          }
-        } catch {
+  const save = useCallback(async () => {
+    let stale = 0;
+    while (dirty.current && latest.current) {
+      dirty.current = false;
+      if (mounted.current) setStatus("saving");
+      try {
+        const outcome = await savePackDraft(latest.current, revision.current + 1);
+        revision.current = outcome.revision;
+        if (!outcome.saved) {
+          stale += 1;
+          if (stale >= MAX_STALE_RETRIES) throw new Error("révision devancée");
           dirty.current = true;
-          if (mounted.current) setStatus("error");
-          return;
+        } else if (mounted.current && !dirty.current) {
+          setStatus("saved");
         }
+      } catch {
+        dirty.current = true;
+        if (mounted.current) setStatus("error");
+        return;
       }
-    } finally {
-      flushing.current = false;
     }
   }, []);
+
+  /** Lance la sauvegarde (ou rejoint celle en cours, qui reprend tant que c'est modifié). */
+  const flush = useCallback((): Promise<void> => {
+    if (running.current) return running.current;
+    const run = save().finally(() => {
+      running.current = null;
+      if (pendingSave === run) pendingSave = null;
+    });
+    running.current = run;
+    pendingSave = run;
+    return run;
+  }, [save]);
 
   useEffect(() => {
     mounted.current = true;
@@ -62,6 +101,32 @@ export function useDraftAutosave(delayMs: number) {
       mounted.current = false;
       clearTimeout(timer.current);
       if (dirty.current) void flush();
+    };
+  }, [flush]);
+
+  // Fermeture de la fenêtre : le débounce est vidé avant qu'elle ne se ferme (800 ms de
+  // modifications seraient perdues sinon). L'attente est bornée : un disque lent ne bloque pas.
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    let disposed = false;
+    void onWindowCloseRequested(async () => {
+      clearTimeout(timer.current);
+      if (!dirty.current && running.current === null) return;
+      let giveUp: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        flush(),
+        new Promise<void>((resolve) => {
+          giveUp = setTimeout(resolve, CLOSE_FLUSH_MS);
+        }),
+      ]);
+      clearTimeout(giveUp);
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else off = unlisten;
+    });
+    return () => {
+      disposed = true;
+      off?.();
     };
   }, [flush]);
 
