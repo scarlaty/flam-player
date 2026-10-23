@@ -78,6 +78,7 @@ pub struct Limits {
     /// Fenêtre de mesure du débit minimal (zéro : désactivé).
     pub min_rate_window: Duration,
     /// Durée maximale du lot entier ; au-delà, le lot est arrêté et ses fichiers supprimés.
+    /// Contrairement à `min_rate_window`, zéro ne désactive rien : le lot expire aussitôt.
     pub batch_timeout: Duration,
 }
 
@@ -112,12 +113,21 @@ pub struct Item {
     pub image_url: Option<String>,
 }
 
-// Pas de `Debug` dérivé : il afficherait les URL.
+// Pas de `Debug` dérivé : il afficherait les URL. Un `id` ou un `feed` qui a la forme d'une
+// URL est masqué (D11) : `fetch_all` les refuse ou les remplace, mais un `Item` peut être
+// affiché avant.
 impl std::fmt::Debug for Item {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let shown = |v: &str| {
+            if looks_like_url(v) {
+                NEUTRAL_FEED_LABEL.to_string()
+            } else {
+                v.to_string()
+            }
+        };
         f.debug_struct("Item")
-            .field("id", &self.id)
-            .field("feed", &self.feed)
+            .field("id", &shown(&self.id))
+            .field("feed", &shown(&self.feed))
             .finish_non_exhaustive()
     }
 }
@@ -537,7 +547,8 @@ async fn fetch_file_counted(
         let mut previous: Option<u64> = None;
         let mut on_progress = |received: u64, _total: Option<u64>| {
             if let Some(prev) = previous {
-                // Une reprise refusée (416) repart de zéro : rien de nouveau à compter.
+                // Défense : `received` ne décroît pas au sein d'une tentative (une reprise
+                // refusée sort avant tout appel) ; une baisse n'ajouterait rien.
                 fresh.fetch_add(received.saturating_sub(prev), Ordering::Relaxed);
             }
             previous = Some(received);

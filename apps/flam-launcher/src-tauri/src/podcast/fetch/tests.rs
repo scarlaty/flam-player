@@ -473,9 +473,10 @@ async fn politique_stricte_refuse_le_bouclage_sans_requete() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn nom_resolu_vers_bouclage_refuse_par_le_client_garde() {
-    // Le nom `localhost` passe `check_url` (nom de domaine) : c'est la résolution DNS du
-    // client qui le refuse, avec une erreur reconnaissable.
+async fn nom_local_refuse_par_le_resolveur_du_client_garde() {
+    // Requête directe sur le client (sans `check_url`) : son résolveur refuse le nom local
+    // avant toute résolution, avec une erreur reconnaissable. Le filtrage des adresses
+    // résolues est testé sur `net::resolve_host`.
     let client = guarded_client(NetPolicy::strict(), CONNECT_TIMEOUT, READ_TIMEOUT).unwrap();
     let err = client.get("http://localhost:9/").send().await.unwrap_err();
     assert!(crate::podcast::net::is_blocked(&err), "{err:?}");
@@ -644,6 +645,15 @@ fn le_debug_d_un_item_n_affiche_pas_les_url() {
         image_url: Some("https://h.example/SECRET-IMG.jpg".into()),
     };
     assert!(!format!("{it:?}").contains("SECRET"));
+    let it = Item {
+        id: "https://h.example/SECRET-GUID".into(),
+        feed: "https://h.example/f?key=SECRET".into(),
+        audio_url: String::new(),
+        image_url: None,
+    };
+    let shown = format!("{it:?}");
+    assert!(!shown.contains("SECRET"), "{shown}");
+    assert!(shown.contains(NEUTRAL_FEED_LABEL));
 }
 
 #[tokio::test]
@@ -909,18 +919,16 @@ async fn delai_du_lot_arrete_tout_et_supprime_les_fichiers() {
         ..Limits::default()
     };
     let started = std::time::Instant::now();
-    let err = fetcher()
-        .fetch_all(
-            &[
-                item("fast", "f", &base, "/fast", None),
-                item("hang", "f", &base, "/hang", None),
-            ],
-            &dir,
-            &limits,
-            never_cancel(),
-            no_progress(),
-        )
+    let fetcher = fetcher();
+    let items = [
+        item("fast", "f", &base, "/fast", None),
+        item("hang", "f", &base, "/hang", None),
+    ];
+    let batch = fetcher.fetch_all(&items, &dir, &limits, never_cancel(), no_progress());
+    // Garde-fou : sans délai du lot, le test échoue au lieu de bloquer 30 min.
+    let err = tokio::time::timeout(Duration::from_secs(10), batch)
         .await
+        .expect("le délai du lot n'a pas arrêté le lot")
         .unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(err.kind(), "download_invalid");
