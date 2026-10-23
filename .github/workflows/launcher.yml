@@ -109,10 +109,11 @@ jobs:
       # Tauri/NSIS (tauri*.json, hooks, icônes), version et dépendances (Cargo.toml, build.rs, package*.json,
       # Cargo.lock), scripts de construction des ressources embarquées et leurs sources épinglées (build-*,
       # notices, Get-InstallTree, check-imports, third-party, LICENSES.md, tools/ffmpeg), le LICENSE racine
-      # (licenseFile de tauri.conf.json) et ce workflow.
-      # Hors liste : le code du player, du convertisseur et du launcher, couverts par l'e2e sur N (le scénario
-      # « application ouverte » du test de mise à jour, qui dépend aussi du code du launcher, n'est alors
-      # vérifié que sur main).
+      # (licenseFile de tauri.conf.json), ce workflow, et le socle de démarrage du launcher dont dépend le
+      # scénario « application ouverte » (src-tauri/capabilities, src/main.rs, lib.rs, app.rs).
+      # Hors liste : le reste du code du player, du convertisseur et du launcher (modules métier de
+      # src-tauri/src), couvert par l'e2e sur N ; surveiller tout src-tauri/src ferait tourner N-1 (~5 min)
+      # sur presque toute PR du launcher, ce cas reste alors vérifié sur main (label ci-installeur pour forcer).
       # Le diff compare les deux parents de la fusion (fetch-depth: 2 ci-dessus), sans fetch par SHA.
       # Une PR d'un fork passe par la même voie (le label vient du contenu de l'événement).
       - name: Empaquetage modifié ?
@@ -136,7 +137,7 @@ jobs:
           changed="$(git diff --name-only HEAD^1 HEAD)"
           echo "Fichiers modifiés par la PR :"
           echo "$changed"
-          if grep -E -q '^(apps/flam-launcher/src-tauri/(tauri[^/]*\.json|Cargo\.toml|build\.rs|icons/|windows/)|apps/flam-launcher/(package\.json|package-lock\.json|LICENSES\.md|third-party/|scripts/(build-|notices-lib|Get-InstallTree|check-imports))|tools/ffmpeg/|LICENSE$|Cargo\.(toml|lock)$|\.github/workflows/launcher.yml$)' <<<"$changed"; then
+          if grep -E -q '^(apps/flam-launcher/src-tauri/(tauri[^/]*\.json|Cargo\.toml|build\.rs|icons/|windows/|capabilities/|src/(main|lib|app)\.rs$)|apps/flam-launcher/(package\.json|package-lock\.json|LICENSES\.md|third-party/|scripts/(build-|notices-lib|Get-InstallTree|check-imports))|tools/ffmpeg/|LICENSE$|Cargo\.(toml|lock)$|\.github/workflows/launcher.yml$)' <<<"$changed"; then
             echo "update=true" >> "$GITHUB_OUTPUT"
             echo "L'empaquetage change : installateur N-1 et test de mise à jour exécutés."
           else
