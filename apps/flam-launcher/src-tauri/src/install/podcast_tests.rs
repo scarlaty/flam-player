@@ -2,6 +2,7 @@
 //! étape (état final, aucun fichier résiduel, `library.json` cohérent), reprise après un arrêt
 //! brutal (même uuid), composition invalide refusée.
 
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 
 use super::*;
@@ -679,4 +680,333 @@ fn la_preparation_decode_les_pochettes_par_le_decodeur_fourni() {
     assert_eq!(*lock(&calls), [ArtworkKind::Cover, ArtworkKind::Episode]);
     assert!(pngs.is_empty() && cover_png.is_none(), "repli");
     assert!(!img.exists(), "originaux supprimés");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bout en bout (#426) : serveur HTTP local, vrai ffmpeg embarqué, vrai convertisseur Python
+// ---------------------------------------------------------------------------------------------
+
+/// Dossier `apps/flam-launcher/build` (sortie de `npm run build:ffmpeg` et `build:converter`).
+fn build_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("build")
+}
+
+/// ffmpeg embarqué, sinon `None` (test ignoré) ; exigé avec `FLAM_REQUIRE_FFMPEG` (CI).
+fn real_ffmpeg_dir() -> Option<PathBuf> {
+    let dir = build_dir().join("ffmpeg");
+    let present = ["ffmpeg.exe", "ffprobe.exe", "ffmpeg.sha256"]
+        .iter()
+        .all(|f| dir.join(f).is_file());
+    if !present {
+        assert!(
+            std::env::var_os("FLAM_REQUIRE_FFMPEG").is_none(),
+            "ffmpeg embarqué non construit alors que FLAM_REQUIRE_FFMPEG est défini"
+        );
+        eprintln!("ffmpeg embarqué non construit : test ignoré");
+        return None;
+    }
+    Some(dir)
+}
+
+/// Python embarqué et `telmi2flam.py` voisin (`build/telmi2flam`), sinon `None` ; exigé avec
+/// `FLAM_TEST_REQUIRE_PYTHON=1` (CI, après `npm run build:converter`).
+fn embedded_converter() -> Option<(PathBuf, PathBuf)> {
+    let root = std::env::var_os("FLAM_TEST_PYTHON")
+        .map(PathBuf::from)
+        .and_then(|p| p.parent()?.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| build_dir().join("telmi2flam"));
+    let python = root.join("python").join("python.exe");
+    let script = root.join("telmi2flam.py");
+    if !python.is_file() || !script.is_file() {
+        assert!(
+            std::env::var_os("FLAM_TEST_REQUIRE_PYTHON").is_none_or(|v| v != "1"),
+            "FLAM_TEST_REQUIRE_PYTHON=1 : Python embarqué introuvable"
+        );
+        eprintln!("Python embarqué absent : test ignoré");
+        return None;
+    }
+    Some((python, script))
+}
+
+type Served = HashMap<String, (&'static str, Vec<u8>)>;
+
+/// Serveur HTTP local : chemin -> (type, corps). Renvoie le port.
+async fn serve_files(files: Served) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let files = Arc::new(files);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let files = Arc::clone(&files);
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 1024];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match socket.read(&mut tmp).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                    }
+                }
+                let text = String::from_utf8_lossy(&buf).into_owned();
+                let target = text
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split(' ').nth(1))
+                    .unwrap_or("/");
+                let path = target.split('?').next().unwrap_or("/");
+                let reply = match files.get(path) {
+                    Some((kind, body)) => {
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let mut out = head.into_bytes();
+                        out.extend_from_slice(body);
+                        out
+                    }
+                    None => {
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_vec()
+                    }
+                };
+                let _ = socket.write_all(&reply).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    port
+}
+
+/// MP3 réel (sinus) produit par le ffmpeg embarqué.
+fn make_mp3(ffmpeg_dir: &Path, out: &Path, hz: u32, rate: u32, channels: u32) {
+    let status = std::process::Command::new(ffmpeg_dir.join("ffmpeg.exe"))
+        .args([
+            "-hide_banner",
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+        ])
+        .arg(format!("sine=frequency={hz}:duration=2:sample_rate={rate}"))
+        .args(["-ac", &channels.to_string(), "-c:a", "libmp3lame"])
+        .arg(out)
+        .status()
+        .expect("lancement de ffmpeg");
+    assert!(status.success(), "ffmpeg n'a pas produit {}", out.display());
+}
+
+/// Accès réseau et audio réels, réseau de test (bouclage autorisé) ; flux en cache fournis.
+struct LocalPacks {
+    feeds: Feeds,
+    ffmpeg: crate::ffmpeg::Ffmpeg,
+    drafts: Mutex<Vec<u64>>,
+}
+
+impl PackBackend for LocalPacks {
+    fn ready(&self) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn feeds<'a>(&'a self, _c: &'a PackComposition) -> BoxFuture<'a, AppResult<Feeds>> {
+        Box::pin(async move { Ok(self.feeds.clone()) })
+    }
+
+    fn free_space(&self, _dir: &Path) -> Option<u64> {
+        None
+    }
+
+    fn fetch<'a>(
+        &'a self,
+        items: &'a [Item],
+        dir: &'a Workdir,
+        concurrency: usize,
+        cancel: watch::Receiver<bool>,
+        on_progress: Arc<dyn Fn(Progress) + Send + Sync>,
+    ) -> BoxFuture<'a, AppResult<Report>> {
+        Box::pin(async move {
+            let limits = crate::podcast::fetch::Limits {
+                concurrency,
+                ..Default::default()
+            };
+            let fetcher = crate::podcast::fetch::Fetcher::new(
+                crate::podcast::net::NetPolicy::loopback_for_tests(),
+            )?;
+            fetcher
+                .fetch_all(items, dir, &limits, cancel, on_progress)
+                .await
+        })
+    }
+
+    fn fetch_image<'a>(
+        &'a self,
+        url: &'a str,
+        dest: &'a Path,
+        cancel: watch::Receiver<bool>,
+    ) -> BoxFuture<'a, AppResult<bool>> {
+        Box::pin(crate::install::podcast::download_image(
+            crate::podcast::net::NetPolicy::loopback_for_tests(),
+            url,
+            dest,
+            cancel,
+        ))
+    }
+
+    fn convert_audio<'a>(
+        &'a self,
+        items: Vec<(PathBuf, PathBuf)>,
+        cancel: &'a watch::Receiver<bool>,
+    ) -> BoxFuture<'a, AppResult<Vec<AppResult<u64>>>> {
+        Box::pin(async move {
+            Ok(
+                crate::podcast::audio::convert_all(&self.ffmpeg, items, cancel)
+                    .await
+                    .into_iter()
+                    .map(|r| r.map(|c| c.output_bytes))
+                    .collect(),
+            )
+        })
+    }
+
+    fn draft_done(&self, revision: u64) {
+        lock(&self.drafts).push(revision);
+    }
+
+    // Décodage des pochettes dans le processus de test : l'enfant isolé est le binaire du
+    // launcher, absent d'un `cargo test`.
+    fn convert_artwork(
+        &self,
+        bytes: &[u8],
+        kind: ArtworkKind,
+    ) -> Result<Artwork, crate::podcast::artwork::ArtworkError> {
+        Artwork::convert(bytes, kind)
+    }
+}
+
+/// Pack complet, de bout en bout : enclosures et images servies par un serveur HTTP local, vrai
+/// ffmpeg embarqué (MP3 sources de formats différents, un épisode introuvable), vrai
+/// `telmi2flam.py` du Python embarqué, jusqu'à l'histoire publiée dans `library.json`. Ignoré sans
+/// ffmpeg ou sans Python embarqué, sauf `FLAM_REQUIRE_FFMPEG` / `FLAM_TEST_REQUIRE_PYTHON=1` (CI).
+#[tokio::test]
+async fn bout_en_bout_pack_reel_jusqu_a_la_bibliotheque() {
+    let Some(ffmpeg_dir) = real_ffmpeg_dir() else {
+        return;
+    };
+    let Some((python, script)) = embedded_converter() else {
+        return;
+    };
+    let work = tempfile::tempdir().unwrap();
+    let mut files = Served::new();
+    // g1 : mono 22 050 Hz, g2 : stéréo 48 000 Hz ; g3 n'est pas servi (404, P7).
+    for (guid, hz, rate, channels) in [("g1", 440, 22_050, 1), ("g2", 660, 48_000, 2)] {
+        let mp3 = work.path().join(format!("{guid}.mp3"));
+        make_mp3(&ffmpeg_dir, &mp3, hz, rate, channels);
+        files.insert(
+            format!("/{guid}.mp3"),
+            ("audio/mpeg", std::fs::read(&mp3).unwrap()),
+        );
+        files.insert(format!("/{guid}.png"), ("image/png", png()));
+    }
+    files.insert("/feed.png".into(), ("image/png", png()));
+    let port = serve_files(files).await;
+
+    let mut feeds = feeds(Fault::None);
+    for cached in feeds.values_mut() {
+        let CachedFeed::Ready(f) = cached else {
+            continue;
+        };
+        f.image = Some(format!("http://127.0.0.1:{port}/feed.png"));
+        for e in &mut f.episodes {
+            e.image = Some(format!("http://127.0.0.1:{port}/{}.png", e.guid));
+            e.enclosure_url = format!("http://127.0.0.1:{port}/{}.mp3?token=secret", e.guid);
+            e.enclosure_length = None;
+        }
+    }
+    let backend = Arc::new(LocalPacks {
+        feeds: feeds.clone(),
+        ffmpeg: crate::ffmpeg::Ffmpeg::in_dir(&ffmpeg_dir),
+        drafts: Mutex::default(),
+    });
+
+    let ctx = Ctx::with_converter(
+        tempfile::tempdir().unwrap(),
+        Some(python),
+        Duration::from_secs(5),
+        Some(script),
+    );
+    ctx.service.set_pack_backend(backend.clone());
+    let c = composition();
+    let report = packmod::validate(&c, &feeds);
+    assert!(report.valid, "{report:?}");
+    let task = ctx.service.start_pack(c, &report, Some(7)).await.unwrap();
+    let job_uuid = task.entry.uuid.clone();
+
+    let done = ctx.finished(&task.id).await;
+    assert_eq!(done.state, TaskState::Done, "{done:?}");
+    assert_eq!(
+        ctx.events.states(&task.id),
+        [
+            TaskState::Queued,
+            TaskState::Preparing,
+            TaskState::Prepared,
+            TaskState::Converting,
+            TaskState::Installing
+        ]
+    );
+    // Épisode introuvable retiré (P7), les deux autres publiés.
+    assert_eq!(done.pack.unwrap().dropped, ["Trois"]);
+
+    let library = ctx.service.library_list().await.unwrap();
+    assert_eq!(library.len(), 1, "{library:?}");
+    let entry = &library[0];
+    assert_eq!(entry.uuid, job_uuid);
+    assert_eq!(entry.title, "Mon pack");
+    assert!(entry.size > 0);
+    // Fichier publié : un vrai `.plain.pk` (zip), de la taille enregistrée.
+    let published = ctx.cache().join("library").join(&entry.file);
+    let bytes = std::fs::read(&published).unwrap();
+    assert_eq!(bytes.len() as u64, entry.size);
+    assert_eq!(&bytes[..2], b"PK", "paquet zip");
+
+    // Aucun chemin de l'archive de travail supprimée (ni nom d'utilisateur) dans `library.json`.
+    assert!(entry.source.download_url.is_empty(), "{:?}", entry.source);
+    let index = std::fs::read_to_string(ctx.cache().join("library").join("library.json")).unwrap();
+    assert!(!index.contains("podcast-work"), "{index}");
+    assert!(!index.contains("pack.zip"), "{index}");
+    assert!(!index.contains("token=secret"), "{index}");
+    assert!(!index.contains(&format!("127.0.0.1:{port}")), "{index}");
+
+    ctx.assert_clean();
+    assert_eq!(*lock(&backend.drafts), [7]);
+}
+
+/// L'entrée d'un pack ne garde aucun chemin local dans `library.json` : `library_source::check`
+/// la juge inconnue (jamais lue) au lieu de suivre un lien mort.
+#[tokio::test]
+async fn pack_publie_sans_chemin_mort_et_source_inconnue() {
+    let Some(py) = python() else { return };
+    let ctx = Ctx::new(Some(py));
+    ctx.packs(Fault::None);
+    let task = ctx.start_pack().await;
+    assert!(
+        task.entry.download_url.contains("pack.zip"),
+        "l'archive de travail sert encore à la conversion"
+    );
+    let done = ctx.finished(&task.id).await;
+    assert_eq!(done.state, TaskState::Done, "{done:?}");
+    let library = ctx.service.library_list().await.unwrap();
+    assert_eq!(library.len(), 1);
+    assert!(library[0].source.download_url.is_empty());
+    let index = std::fs::read_to_string(ctx.cache().join("library").join("library.json")).unwrap();
+    assert!(!index.contains("podcast-work"), "{index}");
+    let lib = crate::library::Library::new(&ctx.cache());
+    let state = crate::library_source::check(&library[0], &lib, &HashMap::new());
+    assert_eq!(state, crate::library_source::SourceState::Unknown);
 }
