@@ -192,6 +192,19 @@ jobs:
       - name: Convertisseur embarqué (Python + Pillow, SHA-256 vérifiés)
         run: npm run build:converter
 
+      # Archive Telmi d'un pack de podcasts (#216) convertie par telmi2flam.py avec le Python
+      # embarqué, puis validate.py : exigé ici (le test est ignoré sans Python dans `cargo test`).
+      - name: Archive Telmi des podcasts convertie par le Python embarqué
+        working-directory: apps/flam-launcher/src-tauri
+        env:
+          FLAM_TEST_REQUIRE_PYTHON: "1"
+        run: |
+          export FLAM_TEST_PYTHON="$(cygpath -w "$GITHUB_WORKSPACE/apps/flam-launcher/build/telmi2flam/python/python.exe")"
+          out="$(cargo test --lib podcast::archive::tests::python_convertit_et_valide_l_archive -- --exact 2>&1)" || { echo "$out"; exit 1; }
+          echo "$out"
+          # Un filtre qui ne correspond plus à aucun test (renommage) donnerait « 0 passed » en vert.
+          grep -q "test result: ok. 1 passed" <<< "$out"
+
       - name: Télécharger ffmpeg (construit par le job ffmpeg)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
