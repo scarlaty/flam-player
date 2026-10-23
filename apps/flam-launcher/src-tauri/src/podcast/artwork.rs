@@ -13,6 +13,16 @@
 //!
 //! Le format est reconnu à son contenu (jamais à l'extension ni au `Content-Type`).
 //!
+//! # Isolation du décodage (#263)
+//!
+//! Le profil release a `panic = "abort"` : un panic d'un décodeur sur une pochette hostile
+//! arrêterait le launcher. [`convert_isolated`] décode donc dans un processus enfant (le
+//! launcher relancé avec [`DECODE_ARG`], voir `main.rs`) ; si l'enfant meurt ou dépasse son
+//! délai, l'appelant reçoit [`ArtworkError::Isolated`] et peut prendre [`Artwork::fallback`].
+//! Aucun appelant de production n'existe encore : le pipeline d'installation (#217) **doit** passer
+//! par cette fonction et non par [`Artwork::convert`], qui décode dans le processus courant
+//! (réservé aux tests et à l'enfant).
+//!
 //! # Choix de la crate
 //!
 //! `image` (MIT ou Apache-2.0), limitée aux fonctionnalités `jpeg`, `png` et `webp` : elle tire
@@ -20,6 +30,10 @@
 //! `image-webp` (WebP avec et sans perte), toutes en Rust pur, sans code C à compiler ni DLL.
 //! Elle fournit en plus le redimensionnement Lanczos, l'orientation EXIF et `Limits`. Trois
 //! crates dédiées auraient obligé à réécrire ces trois derniers points.
+
+mod isolated;
+
+pub use isolated::{convert_isolated, convert_isolated_with, run_child, CHILD_TIMEOUT, DECODE_ARG};
 
 use std::io::Cursor;
 
@@ -81,6 +95,8 @@ pub enum ArtworkError {
     Memory(u64),
     #[error("image illisible : {0}")]
     Decode(String),
+    #[error("décodage isolé impossible : {0}")]
+    Isolated(String),
     #[error("encodage PNG impossible : {0}")]
     Encode(String),
 }
