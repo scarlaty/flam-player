@@ -543,7 +543,9 @@ export function PackEditor({
         />
         <TextField
           label={text.metadata.subtitle}
-          hint={text.metadata.subtitleHint(single?.copyright ?? null)}
+          hint={text.metadata.subtitleHint(
+            current.metadata.subtitle === null && Boolean(single?.copyright?.trim()),
+          )}
           value={
             current.metadata.subtitle ??
             [...(single?.copyright?.trim() ?? "")].slice(0, MAX_TITLE_CHARS).join("")

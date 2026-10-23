@@ -228,15 +228,17 @@ fn peak_of<T>(f: impl FnOnce() -> T) -> (T, usize) {
     (r, PEAK.load(Ordering::SeqCst).saturating_sub(base))
 }
 
-/// 40 MP3 de 2 Mo : pic du chemin en mémoire > somme des MP3, pic du chemin en flux borné par
+/// 12 MP3 de 8 Mo : pic du chemin en mémoire > somme des MP3, pic du chemin en flux borné par
 /// quelques MP3 ; pendant l'écriture seule, moins d'un MP3 (copie par tours, #402) ; les deux
 /// `.plain.pk` sont identiques.
 #[test]
 fn pic_memoire_d_un_mp3_et_non_de_la_somme() {
     let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     std::env::set_var("FLAM_FFMPEG", "");
-    const N: usize = 40;
-    const FRAMES: usize = 5_000; // 2 085 000 octets
+    // MP3 de 8 Mo : l'écriture en flux (tampon 1 Mio + tour 256 Kio + tampons de lecture, ~1,6 Mio) reste très loin
+    // sous un MP3 entier (#416, la marge était mince avec 2 Mo).
+    const N: usize = 12;
+    const FRAMES: usize = 20_000; // 8 340 000 octets
     let mp3_size = 417 * FRAMES;
     let d = scratch("memoire");
     let input = d.0.join("grosse.zip");
@@ -283,7 +285,7 @@ fn pic_memoire_d_un_mp3_et_non_de_la_somme() {
         std::fs::read(&stream_out).unwrap()
     );
     assert!(before > N * mp3_size, "en mémoire : {before}");
-    assert!(after < 4 * mp3_size, "en flux : {after}");
+    assert!(after < 2 * mp3_size + (8 << 20), "en flux : {after}");
     // Tampon d'écriture (1 Mio) et un tour de relecture (256 Kio), jamais un MP3 entier.
-    assert!(write < mp3_size, "écriture en flux : {write}");
+    assert!(write < mp3_size / 3, "écriture en flux : {write}");
 }

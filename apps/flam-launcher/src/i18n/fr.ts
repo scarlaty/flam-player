@@ -297,8 +297,8 @@ export const fr = {
               ? "Facultatif tant que le pack n'utilise qu'un seul flux."
               : `Laissez vide pour reprendre le titre du flux : « ${feedTitle} ».`,
         subtitle: "Sous-titre",
-        subtitleHint: (feedCopyright: string | null) =>
-          feedCopyright === null
+        subtitleHint: (prefilledFromFeed: boolean) =>
+          !prefilledFromFeed
             ? "Facultatif."
             : "Prérempli avec le copyright du flux : modifiez-le, ou effacez-le pour n'avoir aucun sous-titre.",
         age: "Âge conseillé",
