@@ -3,7 +3,7 @@
 //!
 //! Invariants (PORT-RUST.md §3) :
 //! - **jamais de sortie partielle** : tout s'écrit dans un `.part` voisin de la cible, propre à
-//!   l'écriture ([`part_path`] : `<cible>.<pid>.part`, puis `<cible>.<pid>-<n>.part` pour les
+//!   l'écriture (`part_path`, privé au crate : `<cible>.<pid>.part`, puis `<cible>.<pid>-<n>.part` pour les
 //!   écritures suivantes du même processus), puis le `.part` est publié par renommage
 //!   (`std::fs::rename`, soit `MoveFileExW(REPLACE_EXISTING)` ou son équivalent POSIX sous
 //!   Windows), relancé quelques fois si le fichier est verrouillé (antivirus). Le `.plain.pk`
@@ -745,8 +745,9 @@ impl Drop for PartGuard {
     }
 }
 
-/// Première entrée dont la relecture dans l'archive d'entrée est refusée (`archive_unreadable`),
-/// sans rien écrire. Les autres erreurs (annulation, entrée en mémoire) sont ignorées.
+/// Première erreur de source rencontrée en relisant les entrées dans l'archive d'entrée (le plus
+/// souvent `archive_unreadable`, mais toute erreur de la source est rendue), sans rien écrire.
+/// L'annulation et les entrées en mémoire ne comptent pas.
 fn first_source_error<D: Body>(
     package: &Package<D>,
     src: &mut dyn Source,
