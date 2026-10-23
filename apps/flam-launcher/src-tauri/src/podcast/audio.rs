@@ -2,12 +2,11 @@
 //!
 //! Règle **D6** (`docs/podcasts.md`) :
 //!
-//! - **copie** si le fichier est un MP3 à 44 100 Hz, mono ou stéréo, entre 64 et 192 kbps ;
+//! - **copie** si le fichier est un MP3 à 44 100 Hz, mono ou stéréo, entre 64 et 192 kbps :
+//!   les trames audio sont recopiées sans réencodage (`-c:a copy`, identiques à la source) ;
 //! - sinon **réencodage** en MP3 44 100 Hz **stéréo**, au débit source arrondi au multiple de
 //!   16 kbps supérieur, borné à [64, 192] kbps (192 si le débit est inconnu) ;
-//! - métadonnées, chapitres et flux vidéo (pochettes intégrées) retirés à chaque réencodage. Un
-//!   MP3 conforme sans pochette est copié octet pour octet ; avec une pochette intégrée, il est
-//!   recopié par ffmpeg sans réencodage (`-c:a copy`) pour retirer l'image.
+//! - métadonnées (ID3), chapitres et flux vidéo (pochettes intégrées) retirés dans les deux cas.
 //!
 //! Précautions de #366 : les chemins passés à ffmpeg et ffprobe sont préfixés `file:` (jamais
 //! interprétés comme option, `-`, `pipe:`, `concat:`…) avec `-protocol_whitelist file` ; la
@@ -62,10 +61,9 @@ pub struct SourceInfo {
 /// Décision de la règle D6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Plan {
-    /// MP3 conforme : copie octet pour octet.
+    /// MP3 conforme : trames audio recopiées sans réencodage, étiquettes, chapitres et pochette
+    /// retirés.
     Copy,
-    /// MP3 conforme avec pochette intégrée : flux audio recopié sans réencodage, image retirée.
-    CopyStripped,
     /// Réencodage en MP3 44 100 Hz stéréo à ce débit (kbps).
     Transcode { kbps: u32 },
 }
@@ -92,12 +90,12 @@ pub fn decide(info: &SourceInfo) -> Plan {
         && info.sample_rate == Some(TARGET_SAMPLE_RATE)
         && matches!(info.channels, Some(1 | 2))
         && kbps_of(info.bit_rate).is_some_and(|k| (MIN_KBPS..=MAX_KBPS).contains(&k));
-    match (conforming, info.has_video) {
-        (true, false) => Plan::Copy,
-        (true, true) => Plan::CopyStripped,
-        (false, _) => Plan::Transcode {
+    if conforming {
+        Plan::Copy
+    } else {
+        Plan::Transcode {
             kbps: transcode_kbps(info.bit_rate),
-        },
+        }
     }
 }
 
@@ -297,7 +295,7 @@ fn base_args(input: &Path) -> Vec<OsString> {
     args
 }
 
-/// Arguments de ffmpeg pour un plan avec ffmpeg (`CopyStripped` ou `Transcode`).
+/// Arguments de ffmpeg pour un plan avec ffmpeg (`Copy` ou `Transcode`).
 fn ffmpeg_args(plan: Plan, input: &Path, temp: &Path) -> Vec<OsString> {
     let mut args = base_args(input);
     // Premier flux audio seul ; ni vidéo, ni sous-titres, ni données, ni métadonnées, ni
@@ -371,13 +369,7 @@ async fn convert_with(
     let plan = decide(&info);
     let mut temp = TempOutput::beside(output);
     match plan {
-        Plan::Copy => {
-            let (from, to) = (input.to_path_buf(), temp.path.clone());
-            tokio::task::spawn_blocking(move || std::fs::copy(from, to))
-                .await
-                .map_err(|e| std::io::Error::other(e.to_string()))??;
-        }
-        Plan::CopyStripped | Plan::Transcode { .. } => {
+        Plan::Copy | Plan::Transcode { .. } => {
             let args = ffmpeg_args(plan, input, &temp.path);
             let limits =
                 Limits::new(timeout.unwrap_or_else(|| convert_timeout(info.duration_secs)));
@@ -469,12 +461,12 @@ mod tests {
     }
 
     #[test]
-    fn mp3_conforme_avec_pochette_recopie_sans_image() {
+    fn mp3_conforme_avec_pochette_est_copie() {
         let info = SourceInfo {
             has_video: true,
             ..mp3(44_100, 1, Some(128_000))
         };
-        assert_eq!(decide(&info), Plan::CopyStripped);
+        assert_eq!(decide(&info), Plan::Copy);
     }
 
     #[test]
@@ -585,7 +577,7 @@ mod tests {
         for flag in ["-nostdin", "-vn", "-sn", "-dn"] {
             assert!(args.iter().any(|a| a == flag), "{flag}");
         }
-        let stripped = ffmpeg_args(Plan::CopyStripped, Path::new("a"), Path::new("b"));
+        let stripped = ffmpeg_args(Plan::Copy, Path::new("a"), Path::new("b"));
         assert!(stripped.iter().any(|a| a == "copy"));
         assert!(!stripped.iter().any(|a| a == "libmp3lame"));
     }
@@ -602,7 +594,7 @@ mod tests {
         assert_eq!(info.sample_rate, Some(44_100));
         assert_eq!(info.bit_rate, Some(128_000));
         assert_eq!(info.duration_secs, Some(61.5));
-        assert_eq!(decide(&info), Plan::CopyStripped);
+        assert_eq!(decide(&info), Plan::Copy);
 
         // Débit du flux absent : celui du conteneur ; format MP4 : pas un MP3.
         let json = br#"{"streams":[{"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2}],
@@ -766,22 +758,96 @@ mod tests {
         assert!(left.is_empty(), "temporaires restants : {left:?}");
     }
 
+    /// Empreinte des paquets audio (sans étiquettes ni en-têtes).
+    async fn frames_md5(ff: &Ffmpeg, path: &Path) -> String {
+        let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-v", "error", "-i"]
+            .map(OsString::from)
+            .to_vec();
+        args.push(file_arg(path));
+        args.extend(["-map", "0:a:0", "-c", "copy", "-f", "md5", "-"].map(OsString::from));
+        let (_tx, mut rx) = watch::channel(false);
+        let out = ff
+            .run(
+                Tool::Ffmpeg,
+                &args,
+                Limits::new(Duration::from_secs(60)),
+                &mut rx,
+            )
+            .await
+            .unwrap();
+        assert!(out.success(), "{out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Étiquettes du conteneur, en JSON.
+    async fn tags_of(ff: &Ffmpeg, path: &Path) -> String {
+        let mut args: Vec<OsString> = [
+            "-v",
+            "error",
+            "-show_entries",
+            "format_tags",
+            "-of",
+            "json",
+            "-i",
+        ]
+        .map(OsString::from)
+        .to_vec();
+        args.push(file_arg(path));
+        let (_tx, mut rx) = watch::channel(false);
+        let out = ff
+            .run(
+                Tool::Ffprobe,
+                &args,
+                Limits::new(Duration::from_secs(60)),
+                &mut rx,
+            )
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
     async fn probe_of(ff: &Ffmpeg, path: &Path) -> SourceInfo {
         let (_tx, mut rx) = watch::channel(false);
         probe(ff, path, &mut rx).await.unwrap()
     }
 
     #[tokio::test]
-    async fn reel_mp3_mono_128_copie_a_l_identique() {
+    async fn reel_mp3_mono_128_trames_identiques_sans_etiquettes() {
         let Some(ff) = real_ffmpeg() else { return };
         let dir = tempfile::tempdir().unwrap();
         let (src, dst) = (dir.path().join("a.mp3"), dir.path().join("b.mp3"));
-        gen_mp3(&ff, &src, 44_100, 1, 128).await;
+        let mut args = gen_args(44_100);
+        args.extend(
+            [
+                "-ac",
+                "1",
+                "-c:a",
+                "libmp3lame",
+                "-b:a",
+                "128k",
+                "-metadata",
+                "title=Secret",
+                "-f",
+                "mp3",
+            ]
+            .map(OsString::from),
+        );
+        args.push(file_arg(&src));
+        run_ff(&ff, args).await;
+        assert!(
+            tags_of(&ff, &src).await.contains("Secret"),
+            "étiquette source"
+        );
         let (_tx, mut rx) = watch::channel(false);
         let done = convert(&ff, &src, &dst, &mut rx).await.unwrap();
         assert_eq!(done.plan, Plan::Copy);
-        assert_eq!(fs::read(&src).unwrap(), fs::read(&dst).unwrap());
-        assert_eq!(done.input_bytes, done.output_bytes);
+        assert_eq!(frames_md5(&ff, &src).await, frames_md5(&ff, &dst).await);
+        assert!(
+            !tags_of(&ff, &dst).await.contains("Secret"),
+            "étiquette retirée"
+        );
+        let info = probe_of(&ff, &dst).await;
+        assert_eq!((info.sample_rate, info.channels), (Some(44_100), Some(1)));
         assert!(done.duration_secs.is_some_and(|d| d > 0.5));
         no_part_files(dir.path());
     }
@@ -840,7 +906,7 @@ mod tests {
         // Conforme : recopié sans l'image.
         let dst = dir.path().join("out1.mp3");
         let done = convert(&ff, &covered, &dst, &mut rx).await.unwrap();
-        assert_eq!(done.plan, Plan::CopyStripped);
+        assert_eq!(done.plan, Plan::Copy);
         assert!(!probe_of(&ff, &dst).await.has_video);
         // Réencodé (22 050 Hz) : sans l'image non plus.
         let low = dir.path().join("low.mp3");
