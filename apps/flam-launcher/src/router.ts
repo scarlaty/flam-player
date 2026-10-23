@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from "react";
 
 /** Écrans de l'application, désignés par le hash de l'URL (`#/sources`…). */
-export type Route = "home" | "sources" | "settings" | "library" | "device" | "demo";
+export type Route =
+  "home" | "sources" | "settings" | "library" | "device" | "podcasts" | "demo";
 
 /** Adresse de la page de démonstration des composants (développement uniquement). */
 export const DEMO_HASH = "#/demo";
@@ -11,6 +12,7 @@ export const ROUTE_HASHES = {
   sources: "#/sources",
   settings: "#/settings",
   device: "#/device",
+  podcasts: "#/podcasts",
 } as const;
 
 /** Préfixe de la bibliothèque : `#/library` (première source) ou `#/library/<id de source>`. */
@@ -41,6 +43,7 @@ export function routeFromHash(hash: string): Route {
   if (hash === ROUTE_HASHES.sources) return "sources";
   if (hash === ROUTE_HASHES.settings) return "settings";
   if (hash === ROUTE_HASHES.device) return "device";
+  if (hash === ROUTE_HASHES.podcasts) return "podcasts";
   if (hash === DEMO_HASH) return "demo";
   return "home";
 }
