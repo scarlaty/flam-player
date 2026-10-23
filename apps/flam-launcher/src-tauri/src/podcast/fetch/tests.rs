@@ -28,6 +28,9 @@ enum Resp {
     Trickle,
     /// Corps « chunked » interrompu (pas de chunk final) puis fermeture.
     ChunkedCut,
+    /// Comme `Ranged`, mais la partie demandée est envoyée octet par octet, un toutes les
+    /// `Duration`.
+    RangedSlow(Vec<u8>, Duration),
     Status(u16),
     Redirect(String),
 }
@@ -139,6 +142,30 @@ async fn serve(handler: Handler) -> u16 {
                             )
                             .await;
                         let _ = socket.flush().await;
+                    }
+                    Resp::RangedSlow(body, every) => {
+                        let start = range_start.unwrap_or(0) as usize;
+                        let part = &body[start..];
+                        let extra = format!(
+                            "ETag: \"v1\"\r\nContent-Range: bytes {start}-{}/{}\r\n",
+                            body.len() - 1,
+                            body.len()
+                        );
+                        let status = if start > 0 {
+                            "206 Partial Content"
+                        } else {
+                            "200 OK"
+                        };
+                        let _ = socket
+                            .write_all(head(status, &extra, part.len()).as_bytes())
+                            .await;
+                        for byte in part {
+                            if socket.write_all(&[*byte]).await.is_err() {
+                                return;
+                            }
+                            let _ = socket.flush().await;
+                            tokio::time::sleep(every).await;
+                        }
                     }
                     Resp::Status(code) => {
                         let _ = socket
@@ -446,9 +473,10 @@ async fn politique_stricte_refuse_le_bouclage_sans_requete() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn nom_resolu_vers_bouclage_refuse_par_le_client_garde() {
-    // Le nom `localhost` passe `check_url` (nom de domaine) : c'est la résolution DNS du
-    // client qui le refuse, avec une erreur reconnaissable.
+async fn nom_local_refuse_par_le_resolveur_du_client_garde() {
+    // Requête directe sur le client (sans `check_url`) : son résolveur refuse le nom local
+    // avant toute résolution, avec une erreur reconnaissable. Le filtrage des adresses
+    // résolues est testé sur `net::resolve_host`.
     let client = guarded_client(NetPolicy::strict(), CONNECT_TIMEOUT, READ_TIMEOUT).unwrap();
     let err = client.get("http://localhost:9/").send().await.unwrap_err();
     assert!(crate::podcast::net::is_blocked(&err), "{err:?}");
@@ -617,17 +645,30 @@ fn le_debug_d_un_item_n_affiche_pas_les_url() {
         image_url: Some("https://h.example/SECRET-IMG.jpg".into()),
     };
     assert!(!format!("{it:?}").contains("SECRET"));
+    let it = Item {
+        id: "https://h.example/SECRET-GUID".into(),
+        feed: "https://h.example/f?key=SECRET".into(),
+        audio_url: String::new(),
+        image_url: None,
+    };
+    let shown = format!("{it:?}");
+    assert!(!shown.contains("SECRET"), "{shown}");
+    assert!(shown.contains(NEUTRAL_FEED_LABEL));
 }
 
-#[test]
-fn dossier_de_travail_supprime_apres_publication() {
+#[tokio::test]
+async fn dossier_de_travail_supprime_apres_publication() {
     let base = tempfile::tempdir().unwrap();
     let wd = Workdir::create(base.path()).unwrap();
     std::fs::write(wd.path().join("ep-0000.audio"), b"x").unwrap();
     let path = wd.path().to_path_buf();
-    wd.finish().unwrap();
+    wd.finish().await.unwrap();
     assert!(!path.exists());
-    // Abandon : supprimé aussi.
+}
+
+#[test]
+fn dossier_de_travail_supprime_a_l_abandon() {
+    let base = tempfile::tempdir().unwrap();
     let wd = Workdir::create(base.path()).unwrap();
     let path = wd.path().to_path_buf();
     drop(wd);
@@ -635,12 +676,11 @@ fn dossier_de_travail_supprime_apres_publication() {
 }
 
 #[tokio::test]
-async fn id_ou_flux_qui_est_une_url_refuse_sans_la_recopier() {
+async fn id_qui_est_une_url_refuse_sans_la_recopier() {
     let base_dir = tempfile::tempdir().unwrap();
     let dir = Workdir::create(base_dir.path()).unwrap();
     for (id, feed) in [
         ("https://h.example/SECRET-GUID.mp3?t=SECRET", "f"),
-        ("e1", "https://h.example/feed?key=SECRET"),
         ("ftp://SECRET@h.example/x", "f"),
     ] {
         let err = fetcher()
@@ -786,31 +826,161 @@ async fn corps_chunked_coupe_sans_longueur_est_detecte() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn noms_locaux_refuses_sans_requete() {
-    let strict = Fetcher::new(NetPolicy::strict()).unwrap();
+async fn flux_qui_est_une_url_remplace_par_un_libelle_neutre() {
+    let port = serve(Arc::new(|_| Resp::Ok(vec![4; 20]))).await;
+    let base = format!("http://127.0.0.1:{port}");
     let base_dir = tempfile::tempdir().unwrap();
     let dir = Workdir::create(base_dir.path()).unwrap();
-    for host in [
+    let report = fetcher()
+        .fetch_all(
+            &[
+                item("e1", "https://h.example/feed?key=SECRET", &base, "/a", None),
+                item("e2", "Mon flux", &base, "/b", None),
+                item("e3", "http://SECRET.example/x", &base, "/c", None),
+            ],
+            &dir,
+            &Limits::default(),
+            never_cancel(),
+            no_progress(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.fetched.len(), 3);
+    assert_eq!(report.fetched[0].feed, NEUTRAL_FEED_LABEL);
+    assert_eq!(report.fetched[1].feed, "Mon flux");
+    assert_eq!(report.fetched[2].feed, NEUTRAL_FEED_LABEL);
+    assert!(!format!("{report:?}").contains("SECRET"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn noms_locaux_refuses_sans_requete() {
+    // Politique de test (bouclage permis) : sans le refus des noms locaux, `a.localhost`
+    // pourrait joindre le serveur, et un nom inconnu donnerait `Unreachable` (échec DNS) au
+    // lieu de `Blocked`.
+    let hits = Arc::new(AtomicUsize::new(0));
+    let h2 = Arc::clone(&hits);
+    let port = serve(Arc::new(move |_| {
+        h2.fetch_add(1, Ordering::SeqCst);
+        Resp::Ok(vec![1; 10])
+    }))
+    .await;
+    let ok_base = format!("http://127.0.0.1:{port}");
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
+    let hosts = [
         "nas",
-        "box:8080",
+        "box",
         "nas.local",
         "x.lan",
         "x.home.arpa",
         "a.internal",
         "a.localhost",
-    ] {
-        let err = strict
-            .fetch_all(
-                &[item("x", "f", &format!("http://{host}"), "/a.mp3", None)],
-                &dir,
-                &Limits::default(),
-                never_cancel(),
-                no_progress(),
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(err.kind(), "download_invalid", "{host}");
+        "serveur.test",
+        "x.invalid",
+    ];
+    let mut items: Vec<Item> = hosts
+        .iter()
+        .map(|h| item(h, "f", &format!("http://{h}:{port}"), "/a.mp3", None))
+        .collect();
+    items.push(item("ok", "f", &ok_base, "/a.mp3", None));
+    let report = fetcher()
+        .fetch_all(
+            &items,
+            &dir,
+            &Limits::default(),
+            never_cancel(),
+            no_progress(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.fetched.len(), 1);
+    assert_eq!(report.dropped.len(), hosts.len());
+    for d in &report.dropped {
+        assert_eq!(d.reason, DropReason::Blocked, "{}", d.id);
     }
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "seul « ok » a été demandé");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn delai_du_lot_arrete_tout_et_supprime_les_fichiers() {
+    // Chaque fichier respecte son délai (30 min) et le débit minimal est désactivé : seul le
+    // délai du lot arrête le serveur muet.
+    let port = serve(Arc::new(|r| match r.path.as_str() {
+        "/fast" => Resp::Ok(vec![1; 100]),
+        _ => Resp::Hang,
+    }))
+    .await;
+    let base = format!("http://127.0.0.1:{port}");
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
+    let limits = Limits {
+        min_rate_window: Duration::ZERO,
+        batch_timeout: Duration::from_millis(500),
+        ..Limits::default()
+    };
+    let started = std::time::Instant::now();
+    let fetcher = fetcher();
+    let items = [
+        item("fast", "f", &base, "/fast", None),
+        item("hang", "f", &base, "/hang", None),
+    ];
+    let batch = fetcher.fetch_all(&items, &dir, &limits, never_cancel(), no_progress());
+    // Garde-fou : sans délai du lot, le test échoue au lieu de bloquer 30 min.
+    let err = tokio::time::timeout(Duration::from_secs(10), batch)
+        .await
+        .expect("le délai du lot n'a pas arrêté le lot")
+        .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(err.kind(), "download_invalid");
+    assert!(err.to_string().contains("délai du lot"), "{err}");
+    assert!(files(dir.path()).is_empty(), "{:?}", files(dir.path()));
+}
+
+#[test]
+fn delai_du_lot_par_defaut_2_heures() {
+    assert_eq!(Limits::default().batch_timeout, Duration::from_secs(7200));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn debit_minimal_apres_reprise_ignore_les_octets_deja_recus() {
+    // 2 000 octets reçus puis coupure ; la reprise n'envoie ensuite qu'un octet toutes les
+    // 80 ms (20 octets en 1,6 s). Minimum : 100 octets/s sur 1 s. Si les 2 000 octets du
+    // `.part` comptaient dans la première fenêtre, l'épisode passerait (fin à 1,6 s).
+    let full = bytes(5, 2_020);
+    let full2 = full.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c2 = Arc::clone(&calls);
+    let port = serve(Arc::new(move |r| match r.path.as_str() {
+        "/ok" => Resp::Ok(vec![3; 10]),
+        _ if c2.fetch_add(1, Ordering::SeqCst) == 0 => Resp::Cut(full2.clone(), 2_000),
+        _ => Resp::RangedSlow(full2.clone(), Duration::from_millis(80)),
+    }))
+    .await;
+    let base = format!("http://127.0.0.1:{port}");
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
+    let limits = Limits {
+        min_rate_bytes_per_sec: 100,
+        min_rate_window: Duration::from_secs(1),
+        ..Limits::default()
+    };
+    let report = fetcher()
+        .fetch_all(
+            &[
+                item("lent", "f", &base, "/lent", None),
+                item("ok", "f", &base, "/ok", None),
+            ],
+            &dir,
+            &limits,
+            never_cancel(),
+            no_progress(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "une reprise a eu lieu");
+    assert_eq!(report.dropped.len(), 1, "{report:?}");
+    assert_eq!(report.dropped[0].id, "lent");
+    assert_eq!(report.dropped[0].reason, DropReason::TimedOut);
 }
 
 #[tokio::test]

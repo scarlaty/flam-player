@@ -7,6 +7,7 @@ on:
       - "tests/e2e/**"
       - ".github/workflows/telmi2flam.yml"
       - ".gitattributes"
+      - "crates/telmi2flam/tests/data/**"
   push:
     branches: [main]
     paths:
@@ -14,6 +15,7 @@ on:
       - "tests/e2e/**"
       - ".github/workflows/telmi2flam.yml"
       - ".gitattributes"
+      - "crates/telmi2flam/tests/data/**"
 
 permissions:
   contents: read
@@ -42,3 +44,9 @@ jobs:
       # n'est pas compilé dans ce workflow).
       - name: Tests unitaires
         run: python -m unittest discover -s tools/telmi2flam/tests
+
+      # Fraîcheur des vecteurs figés de la crate Rust (#351) : package_cases.zip doit être celui
+      # que l'oracle (Python 3.14.8 + Pillow 12.3.0) produit aujourd'hui. Sinon : relancer
+      # `python crates/telmi2flam/tests/data/gen_package_cases.py` et commiter le résultat.
+      - name: Vecteurs de parité du paquet à jour
+        run: python crates/telmi2flam/tests/data/gen_package_cases.py --check

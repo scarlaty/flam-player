@@ -122,6 +122,9 @@ pub fn run() {
             app.manage(catalog);
             app.manage(podcasts);
             app.manage(device::official::OfficialCatalog::new()?);
+            install.set_pack_backend(Arc::new(install::podcast::LivePackBackend {
+                app: app.handle().clone(),
+            }));
             app.manage(install.clone());
             let player = player::PlayerService::new(Arc::new(player::TauriPlayerEvents(
                 app.handle().clone(),
@@ -180,6 +183,7 @@ pub fn run() {
             podcast::pack::pack_draft_read,
             podcast::pack::pack_draft_save,
             podcast::pack::pack_validate,
+            install::podcast::pack_create,
             podcast::source::podcast_add,
             podcast::source::podcast_feed,
             podcast::source::podcast_refresh,
@@ -233,6 +237,7 @@ mod tests {
             ("external", include_str!("external.rs")),
             ("folder", include_str!("folder.rs")),
             ("install", include_str!("install/mod.rs")),
+            ("install::podcast", include_str!("install/podcast.rs")),
             ("library", include_str!("library.rs")),
             ("player", include_str!("player.rs")),
             ("podcast::pack", include_str!("podcast/pack.rs")),

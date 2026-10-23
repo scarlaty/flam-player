@@ -360,6 +360,28 @@ fn episodes_indisponibles_signales_sans_perte_du_reste() {
 }
 
 #[test]
+fn guid_de_plus_de_512_caracteres_signale_comme_retire_du_flux() {
+    // Le flux ne garde que les 512 premiers caractères du `guid` (voir `podcast::rss`) : un
+    // brouillon calculé sur le `guid` brut ne retrouve plus l'épisode.
+    let raw = format!("urn:{}", "g".repeat(600));
+    let truncated: String = raw.chars().take(512).collect();
+    let mut f = Feeds::new();
+    f.insert(
+        "a".into(),
+        CachedFeed::Ready(feed("Contes", &[truncated.as_str()])),
+    );
+    let mut c = comp(vec![e("a", &raw)]);
+    c.metadata.title = "Pack".into();
+    let report = validate(&c, &f);
+    assert_eq!(codes(&report), vec![ProblemCode::EpisodeUnavailable]);
+    assert!(report.problems[0].message.contains("retiré du flux"));
+    assert_eq!(report.unavailable, vec![r("a", &raw)]);
+    // Recalculé sur le `guid` tronqué, l'épisode est retrouvé.
+    let c = comp(vec![e("a", &truncated)]);
+    assert!(!codes(&validate(&c, &f)).contains(&ProblemCode::EpisodeUnavailable));
+}
+
+#[test]
 fn titre_par_defaut_absent_si_flux_unique_indisponible() {
     let report = validate(&comp(vec![e("absent", "g0")]), &feeds(1));
     assert!(codes(&report).contains(&ProblemCode::TitleRequired));
