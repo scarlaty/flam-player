@@ -45,7 +45,9 @@ concurrency:
   # Un label autre que `ci-installeur` déclenche un run « labeled » sans objet : groupe à part, pour
   # qu'il n'annule pas la CI en cours de la PR.
   group: ${{ github.workflow }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci-installeur' && '-label' || '' }}
-  cancel-in-progress: ${{ !(github.event.action == 'labeled' && github.event.label.name != 'ci-installeur') }}
+  # Sur main (push), aucune annulation : sinon chaque fusion annule la CI de la précédente et main n'a
+  # plus de run complet. Un run en attente du groupe est remplacé par le plus récent.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !(github.event.action == 'labeled' && github.event.label.name != 'ci-installeur') }}
 
 jobs:
   # ffmpeg minimal (audio, LGPL) construit depuis des sources épinglées par cross-compilation
@@ -204,7 +206,10 @@ jobs:
           out="$(cargo test --lib podcast::archive::tests::python_convertit_et_valide_l_archive -- --exact 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
           # Un filtre qui ne correspond plus à aucun test (renommage) donnerait « 0 passed » en vert.
-          grep -q "test result: ok. 1 passed" <<< "$out"
+          grep -q "test result: ok. 1 passed" <<< "$out" || {
+            echo "::error::Le test python_convertit_et_valide_l_archive n'a pas été exécuté (0 passed) : filtre ou nom de test à corriger."
+            exit 1
+          }
 
       - name: Télécharger ffmpeg (construit par le job ffmpeg)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

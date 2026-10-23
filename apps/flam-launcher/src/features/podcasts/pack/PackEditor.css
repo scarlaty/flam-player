@@ -1,0 +1,128 @@
+.fl-pack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 52rem;
+}
+
+.fl-pack__intro,
+.fl-pack__limits,
+.fl-pack__hint,
+.fl-pack__status {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.fl-pack__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fl-pack__heading {
+  margin: 0;
+  font-size: var(--font-size-lg);
+}
+
+.fl-pack__section p {
+  margin: 0;
+}
+
+.fl-pack__problems,
+.fl-pack__pool,
+.fl-pack__menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fl-pack__problems {
+  padding-left: var(--space-4);
+  list-style: disc;
+}
+
+.fl-pack__pool-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.fl-pack__tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.fl-pack__node {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.fl-pack__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.fl-pack__label {
+  flex: 1 1 14rem;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.fl-pack__name {
+  flex: 1 1 14rem;
+}
+
+.fl-pack__tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.fl-pack__children {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-left: var(--space-4);
+}
+
+.fl-pack__children > .fl-pack__menu {
+  align-self: stretch;
+}
+
+.fl-pack__empty {
+  color: var(--color-text-muted);
+}
+
+.fl-pack__description {
+  width: 100%;
+  font: inherit;
+  resize: vertical;
+}
+
+.fl-pack__announce {
+  min-height: 1.5em;
+  color: var(--color-text-muted);
+}
+
+.fl-pack__grip {
+  align-self: center;
+  padding: 0 var(--space-1);
+  color: var(--color-text-muted);
+  cursor: grab;
+  user-select: none;
+}

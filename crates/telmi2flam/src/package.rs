@@ -129,6 +129,31 @@ pub struct Package<D = Vec<u8>> {
     pub title: String,
     /// Contenu de `uuid.bin` (nom de sortie par défaut : 4 premiers octets).
     pub uuid: [u8; 16],
+    /// Compteurs du résumé humain.
+    pub stats: Stats,
+}
+
+/// Compteurs du résumé humain de `_convert` (`stats`, `lua_stages`, `lua_actions`, `missing`
+/// et `bad` de Python).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stats {
+    pub stages: usize,
+    pub actions: usize,
+    /// Images écrites (converties, couverture et vignette, `empty.lif`).
+    pub img: usize,
+    /// Audios écrits (`title.mp3` compris).
+    pub audio: usize,
+    pub mp3map: usize,
+    /// MP3 rééchantillonnés par ffmpeg (compté par fichier, cache compris).
+    pub resampled: usize,
+    /// Scripts du runtime (`.lua`).
+    pub lib: usize,
+    /// Icônes du runtime (`.lif`).
+    pub ui: usize,
+    /// Assets manquants (`--allow-missing`).
+    pub missing: usize,
+    /// Assets illisibles remplacés.
+    pub bad: usize,
 }
 
 /// En-tête du MP3 silencieux : MPEG1 Layer III, 128 kbit/s, 44 100 Hz, stéréo.
@@ -326,6 +351,7 @@ pub fn build_package_with<R: Read + Seek>(
         warnings: pkg.warnings,
         title: pkg.title,
         uuid: pkg.uuid,
+        stats: pkg.stats,
     })
 }
 
@@ -438,6 +464,7 @@ fn build<R: Read + Seek>(
     let mut title_audio = None;
     if let Some((source, mp3)) = assets.read_named("title.mp3")? {
         assets.add_mp3map("sounds/title.mp3", mp3, "title.mp3", &source)?;
+        assets.stats.audio += 1;
         title_audio = Some("title.mp3");
     }
     let mut title_image = None;
@@ -455,12 +482,18 @@ fn build<R: Read + Seek>(
                 assets
                     .out
                     .insert("img/thumbnail.lif".to_owned(), thumb_lif.into());
+                assets.stats.img += 2;
                 title_image = Some("title.lif");
             }
-            Err(PngError::Unreadable(why)) => assets.warn(
-                "cover_unreadable",
-                format!("couverture illisible ({why}) : pas de titre illustre ni de vignette"),
-            ),
+            Err(PngError::Unreadable(why)) => {
+                assets.warn(
+                    "cover_unreadable",
+                    format!("couverture illisible ({why}) : pas de titre illustre ni de vignette"),
+                );
+                assets
+                    .bad
+                    .push(cover_name.unwrap_or("title.png").to_owned());
+            }
             Err(e) => return Err(image_error(cover_name.unwrap_or("title.png"), e)),
         }
     }
@@ -510,6 +543,18 @@ fn build<R: Read + Seek>(
         selector: options.selector.as_str(),
     };
     let nodes_lua = nodes_lua(&header, &graph, &start)?;
+    let mut stats = Stats {
+        stages: graph.stages.len(),
+        actions: graph.actions.len(),
+        img: assets.stats.img,
+        audio: assets.stats.audio,
+        mp3map: assets.stats.mp3map,
+        resampled: assets.resampled,
+        lib: RUNTIME.iter().filter(|f| f.name.ends_with(".lua")).count(),
+        ui: RUNTIME.iter().filter(|f| f.name.ends_with(".lif")).count(),
+        missing: assets.missing.len(),
+        bad: assets.bad.len(),
+    };
     drop(graph);
 
     let StoryAssets {
@@ -534,6 +579,7 @@ fn build<R: Read + Seek>(
     let empty = lif::encode(&[0u8; 8 * 8 * 4], 8, 8)
         .map_err(|e| ConvError::internal_error(format!("img/empty.lif : {e}")))?;
     files.insert("img/empty.lif".to_owned(), empty.into());
+    stats.img += 1;
     let silent = silent_mp3();
     if let Ok(map) = mp3map::build(&silent) {
         files.insert("sounds/silent.mp3map".to_owned(), map.data.into());
@@ -561,6 +607,7 @@ fn build<R: Read + Seek>(
         warnings,
         title,
         uuid,
+        stats,
     })
 }
 

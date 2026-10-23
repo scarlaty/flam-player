@@ -9,6 +9,7 @@ import {
 import { listSources, type Source } from "../../api/sources";
 import { Banner, Button, EmptyState, useToast } from "../../components";
 import { t } from "../../i18n";
+import { PACK_HASH } from "../../router";
 import { ErrorBanner } from "../ErrorBanner";
 import { AddFeedForm } from "./AddFeedForm";
 import { EpisodeList, SelectionSummary } from "./EpisodeList";
@@ -138,9 +139,9 @@ export function PodcastsScreen() {
   return (
     <div className="fl-podcasts">
       <p className="fl-podcasts__intro">{text.intro}</p>
-      <Banner tone="info" title={text.usageTitle} role="none">
-        <p>{text.usage}</p>
-      </Banner>
+      <p>
+        <a href={PACK_HASH}>{text.pack.link}</a>
+      </p>
 
       <AddFeedForm onAdded={onAdded} />
 

@@ -56,6 +56,9 @@ export function AddFeedForm({ onAdded }: { onAdded: (added: PodcastAdded) => voi
       <h2 id="fl-podcasts-add" className="fl-podcasts__heading">
         {text.title}
       </h2>
+      <Banner tone="info" title={t.podcasts.usageTitle} role="none">
+        <p>{t.podcasts.usage}</p>
+      </Banner>
       <form className="fl-form" noValidate onSubmit={submit}>
         {error && (
           <Banner tone="danger" title={feedErrorTitle(error)}>

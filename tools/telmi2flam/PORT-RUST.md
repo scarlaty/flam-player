@@ -151,7 +151,7 @@ Invariants (repris de Python, à tester côté Rust) :
    (avertissement `image_unreadable`, `empty.lif`), comme aujourd'hui. Il n'y a aucune borne
    sur la taille décompressée des entrées ZIP (Python n'en a pas), ni de limite mémoire du Job
    Object plus stricte que l'existant. Le Rust réduit sa consommation sans refuser : MP3 écrits
-   en flux dans le `.part` au lieu d'être tous gardés en mémoire, copies d'images libérées au
+   en flux dans le `.part` (par tours de 256 Kio, #402) au lieu d'être tous gardés en mémoire, copies d'images libérées au
    plus tôt.
 6. **Délégation des cas non gérés** (décision D4) : face à une image dans un autre format que PNG
    ou à une entrée ZIP en bzip2/LZMA, le Rust ne convertit pas. Il nettoie son `.part`, émet
@@ -180,7 +180,7 @@ Invariants (repris de Python, à tester côté Rust) :
 | Disque plein, droits refusés, chemin trop long | écriture du `.part` | `.part` supprimé | `output_error`, code 6, pas de sortie |
 | Échec du renommage final | commit | `.part` supprimé, ancienne sortie intacte | `output_error`, code 6 |
 | Annulation (stdin fermé, Ctrl+C, `CTRL_BREAK`) | n'importe laquelle | `.part` supprimé | code 130, événement `error` `cancelled` |
-| Arrêt brutal (job terminé, coupure de courant) | n'importe laquelle | `<sortie>.<pid>.part` orphelin | supprimé à la conversion suivante vers la même sortie (`_clean_orphans` : seulement si le PID n'est plus vivant, via `OpenProcess`/`GetExitCodeProcess`). Un PID réutilisé empêche ce nettoyage : c'est une limite connue. Le launcher jette aussi son `staging`. |
+| Arrêt brutal (job terminé, coupure de courant) | n'importe laquelle | `<sortie>.<pid>.part` (ou `<sortie>.<pid>-<n>.part` pour la n-ième écriture du processus, #357 ; jamais produit par la CLI, qui n'écrit qu'une fois, et ignoré par le `_clean_orphans` de Python) orphelin | supprimé à la conversion suivante vers la même sortie (`_clean_orphans` : seulement si le PID n'est plus vivant, via `OpenProcess`/`GetExitCodeProcess` ; notre propre PID s'il n'est pas au registre des temporaires). Un PID réutilisé empêche ce nettoyage : c'est une limite connue. Un `.part` jugé mort à tort (partage réseau) fait échouer l'écriture qui le possède, sans publication partielle. Le launcher jette aussi son `staging`. |
 | Panique Rust | n'importe laquelle | rien | Avec `panic = "abort"`, aucun `Drop` ne s'exécute après le crochet. Le **crochet de panique** fait donc lui-même le nettoyage : il supprime les temporaires notés dans un registre global, émet l'événement `error` `internal_error`, puis appelle `process::exit(6)`. Test d'intégration dédié. |
 | Mémoire épuisée | image, lecture | `.part` possible | comme Python : pas de refus en amont (D5). Le système tue le processus, le launcher signale l'échec (plantage, donc repli Python pendant la transition) et le nettoyage se fait à la reprise. |
 | Chemin long (> 260 caractères) | toutes | — | chemins `\\?\` ou manifeste `longPathAware`, testés |
@@ -265,6 +265,10 @@ sont identiques à l'octet près dès la PR 6.
    Ces archives ne contiennent aucun contenu sous licence. Elles sont **générées en CI** et ne
    sont pas commitées. Le job convertit chaque archive avec Python (l'oracle), puis avec Rust ;
    `parity.py` ne doit trouver aucun écart hors de la liste §4.1.
+   Le job `parity` de `.github/workflows/telmi2flam-rs.yml` (#134, Python 3.14.8, Pillow 12.3.0,
+   lupa 2.8) génère le corpus, compare les sorties (`parity.py corpus`, avec `validate.py` sur
+   la sortie Rust) et échoue au premier écart hors liste. Mesure locale : 88 archives, 79
+   identiques, 6 admis, 3 délégués, 0 écart.
 2. **Matrice de rééchantillonnage (CI)** : les images des tests sont minuscules et ne prouvent
    rien sur le Lanczos. Le générateur produit donc aussi une matrice :
    - modes PNG × tailles sources impaires ou premières (par ex. 1, 3, 97, 641, 2049) ;
@@ -274,7 +278,9 @@ sont identiques à l'octet près dès la PR 6.
    - agrandissements et réductions de plus de 2× (pour passer par `reduce`) ;
    - contenus variés : bruit pseudo-aléatoire à graine fixe, dégradés, alpha partiel.
 
-   Elle est comparée **`.lif` contre `.lif`, à l'octet près**. Un résultat de 100 % sur cette
+   Elle est comparée **`.lif` contre `.lif`, à l'octet près**. Le test ignoré `crates/telmi2flam/tests/matrix_render.rs` écrit les `.lif` du Rust
+   (`TELMI2FLAM_MATRIX_DIR`, `TELMI2FLAM_MATRIX_OUT`), puis `parity.py matrix --candidate-lif-dir`
+   les compare (1465 cellules, 0 écart en local ; `thumb` en mode `bandes`). Un résultat de 100 % sur cette
    matrice est requis pour fusionner la PR 7.
 3. **Campagne (locale)** : les archives réelles de `.cache/telmi/` (ignoré par Git, jamais
    commité). `compat.py --engine rust`, ou un script dédié, convertit chaque archive avec les

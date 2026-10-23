@@ -21,3 +21,9 @@ it("route l'écran Ma Flam", () => {
   expect(routeFromHash("#/device")).toBe("device");
   expect(routeFromHash("#/devices")).toBe("home");
 });
+
+it("route l'éditeur de pack sous les podcasts", () => {
+  expect(routeFromHash("#/podcasts")).toBe("podcasts");
+  expect(routeFromHash("#/podcasts/pack")).toBe("pack");
+  expect(routeFromHash("#/podcasts/packs")).toBe("home");
+});
