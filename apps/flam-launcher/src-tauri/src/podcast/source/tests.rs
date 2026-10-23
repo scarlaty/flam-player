@@ -107,19 +107,49 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
 }
 
 impl Logs {
-    fn capture() -> (Logs, tracing::subscriber::DefaultGuard) {
-        let logs = Logs::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(logs.clone())
-            .with_ansi(false)
-            .with_max_level(tracing::Level::TRACE)
-            .finish();
-        (logs, tracing::subscriber::set_default(subscriber))
+    /// Journal **global** (une seule fois par processus) : `try_init` pose aussi `LogTracer`,
+    /// si bien que les traces `log` (reqwest, hyper) et celles des tâches `blocking` y passent,
+    /// ce qu'un abonné de thread (`set_default`) ne voyait pas. Le filtre est celui de
+    /// production (`crate::log_filter`) réglé sur `trace` : `reqwest` reste à `info`. Le journal
+    /// est partagé entre les tests : on ne vérifie que l'absence du secret.
+    fn capture() -> Logs {
+        static LOGS: std::sync::OnceLock<Logs> = std::sync::OnceLock::new();
+        LOGS.get_or_init(|| {
+            let logs = Logs::default();
+            tracing_subscriber::fmt()
+                .with_writer(logs.clone())
+                .with_ansi(false)
+                .with_env_filter(crate::log_filter(Some("trace")))
+                .try_init()
+                .expect("abonné global déjà posé : le journal serait vide");
+            logs
+        })
+        .clone()
     }
 
     fn text(&self) -> String {
         String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
     }
+}
+
+#[test]
+fn le_filtre_de_traces_desactive_reqwest_en_debug() {
+    let logs = Logs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(logs.clone())
+        .with_ansi(false)
+        .with_env_filter(crate::log_filter(Some("debug")))
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::debug!(target: "reqwest::connect", "ROUGE reqwest");
+        tracing::debug!(target: "flam_launcher::x", "VERT flam");
+    });
+    let text = logs.text();
+    assert!(!text.contains("ROUGE"), "reqwest en debug : {text}");
+    assert!(text.contains("VERT"), "{text}");
+    // Sans RUST_LOG : `info`.
+    let default = crate::log_filter(None).to_string();
+    assert!(default.contains("info"), "{default}");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -172,6 +202,42 @@ fn l_identifiant_d_episode_est_opaque_et_stable() {
         episode_id("https://cdn.example.test/a.mp3?jeton=SECRET42")
     );
     assert_ne!(id, episode_id("g1"));
+}
+
+#[test]
+fn un_identifiant_de_source_n_accepte_que_des_minuscules() {
+    let root = Path::new("cache");
+    assert!(source_dir(root, "3f2a-b_9").is_ok());
+    for bad in ["", "ABC", "aBc", "a/b", "..", "a.b", &"a".repeat(65)] {
+        assert!(source_dir(root, bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn la_vue_d_episode_expose_explicit_avec_heritage_du_canal() {
+    let xml = r#"<?xml version="1.0"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel>
+  <title>T</title><itunes:explicit>yes</itunes:explicit>
+  <item><title>Hérite</title><guid>a</guid>
+    <enclosure url="https://c.example.test/a.mp3" type="audio/mpeg"/></item>
+  <item><title>Propre</title><guid>b</guid><itunes:explicit>false</itunes:explicit>
+    <enclosure url="https://c.example.test/b.mp3" type="audio/mpeg"/></item>
+</channel></rss>"#;
+    let view = FeedView::from(&parse_feed(xml.as_bytes()).unwrap());
+    let by_title = |t: &str| {
+        view.episodes
+            .iter()
+            .find(|e| e.title == t)
+            .unwrap()
+            .explicit
+    };
+    assert_eq!(by_title("Hérite"), Some(true));
+    assert_eq!(by_title("Propre"), Some(false));
+    let json = serde_json::to_value(&view).unwrap();
+    assert_eq!(json["episodes"][0]["explicit"], serde_json::json!(true));
+    let none = FeedView::from(&parse_feed(FEED.as_bytes()).unwrap());
+    assert!(none.episodes.iter().all(|e| e.explicit.is_none()));
+    assert!(serde_json::to_value(&none).unwrap()["episodes"][0]["explicit"].is_null());
 }
 
 #[test]
@@ -318,11 +384,14 @@ async fn un_flux_indisponible_sert_le_cache_hors_ligne_sans_journaliser_l_url() 
     let root = tempfile::tempdir().unwrap();
     let svc = service();
     let url = feed_url(&server);
-    add(&svc, root.path(), "p1", &url).await;
-    let (logs, _guard) = Logs::capture();
+    add(&svc, root.path(), "journal-p1", &url).await;
+    let logs = Logs::capture();
 
     serve_status(&server, 503).await;
-    let view = svc.refresh(0, root.path(), "p1", &url, 200).await.unwrap();
+    let view = svc
+        .refresh(0, root.path(), "journal-p1", &url, 200)
+        .await
+        .unwrap();
     assert!(view.status.offline);
     assert_eq!(view.status.error.as_ref().unwrap().kind, "network");
     assert_eq!(titles(&view), ["Récent", "Ancien", "Sans date"]);
@@ -331,12 +400,18 @@ async fn un_flux_indisponible_sert_le_cache_hors_ligne_sans_journaliser_l_url() 
 
     // Serveur arrêté : même repli.
     drop(server);
-    let view = svc.refresh(0, root.path(), "p1", &url, 300).await.unwrap();
+    let view = svc
+        .refresh(0, root.path(), "journal-p1", &url, 300)
+        .await
+        .unwrap();
     assert!(view.status.offline);
     assert_eq!(titles(&view).len(), 3);
 
     let text = logs.text();
-    assert!(text.contains("p1"), "le journal cite la source : {text}");
+    assert!(
+        text.contains("journal-p1"),
+        "le journal cite la source : {text}"
+    );
     assert_no_secret(&text, &url);
 }
 
@@ -506,6 +581,25 @@ async fn la_purge_ne_touche_que_le_cache_de_la_source() {
 /// Un rafraîchissement ou une écriture de cache qui a lu la génération avant la purge
 /// abandonne : la purge ne laisse jamais un cache recréé derrière elle.
 #[tokio::test]
+async fn la_purge_retire_le_verrou_mais_garde_la_generation() {
+    let server = MockServer::start().await;
+    serve(&server, FEED).await;
+    let root = tempfile::tempdir().unwrap();
+    let svc = service();
+    add(&svc, root.path(), "p1", &feed_url(&server)).await;
+    assert_eq!(lock(&svc.locks).len(), 1);
+    svc.purge_source(root.path(), "p1").await.unwrap();
+    assert!(lock(&svc.locks).is_empty());
+    // Un rafraîchissement lancé avant la purge reste abandonné.
+    assert_eq!(svc.generation("p1"), 1);
+    let err = svc
+        .refresh(0, root.path(), "p1", &feed_url(&server), 200)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "not_found");
+}
+
+#[tokio::test]
 async fn apres_la_purge_aucun_cache_n_est_recree() {
     let server = MockServer::start().await;
     serve(&server, FEED).await;
@@ -597,12 +691,52 @@ async fn une_redirection_vers_une_adresse_privee_est_refusee() {
         .await;
     let svc = service();
     let url = feed_url(&server);
-    let (logs, _guard) = Logs::capture();
+    let logs = Logs::capture();
     let err = svc.fetch(&url).await.err().unwrap();
     assert_eq!(err.kind(), "network");
     assert_eq!(err.to_string(), BLOCKED_MESSAGE);
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
     assert_no_secret(&logs.text(), &url);
+}
+
+/// Serveur HTTP/1.1 minimal répondant en `Transfer-Encoding: chunked` (donc sans
+/// `Content-Length`) avec `chunks` morceaux de 1 Mio d'espaces.
+fn chunked_server(chunks: usize) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/flux.xml", listener.local_addr().unwrap());
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 4096];
+        let _ = stream.read(&mut request);
+        let _ = stream.write_all(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+        );
+        let block = vec![b' '; 1024 * 1024];
+        for _ in 0..chunks {
+            // Le client coupe dès le plafond atteint : les erreurs d'écriture sont normales.
+            if stream.write_all(b"100000\r\n").is_err()
+                || stream.write_all(&block).is_err()
+                || stream.write_all(b"\r\n").is_err()
+            {
+                return;
+            }
+        }
+        let _ = stream.write_all(b"0\r\n\r\n");
+    });
+    (url, handle)
+}
+
+#[tokio::test]
+async fn un_corps_en_morceaux_sans_longueur_est_plafonne() {
+    let max_mib = MAX_FEED_BYTES / (1024 * 1024);
+    let (url, handle) = chunked_server(max_mib + 2);
+    let err = service().fetch(&url).await.err().unwrap();
+    assert_eq!(err.kind(), "feed_invalid", "{err}");
+    assert!(err.to_string().contains("volumineux"), "{err}");
+    // Pas de `join` : bloquer le fil du runtime empêcherait la fermeture de la connexion, dont
+    // dépend la fin du fil serveur.
+    drop(handle);
 }
 
 // ---------------------------------------------------------------------------------------

@@ -21,7 +21,12 @@ import { ErrorBanner } from "../../ErrorBanner";
 import { formatBytes } from "../../validation";
 import { MAX_EPISODES } from "../selection";
 import { usePodcastSelection } from "../SelectionContext";
-import { useDebouncedValidation, useDraftAutosave, useFeedInfo } from "./hooks";
+import {
+  settlePendingSave,
+  useDebouncedValidation,
+  useDraftAutosave,
+  useFeedInfo,
+} from "./hooks";
 import { PackTree, menuLabel } from "./PackTree";
 import {
   MAX_MENU_DEPTH,
@@ -130,6 +135,13 @@ export function PackEditor({
   const [notice, setNotice] = useState<string | null>(null);
   const [composition, setComposition] = useState<PackComposition | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const announceToggle = useRef(false);
+  // Un message identique au précédent (refus répétés) n'est pas relu par le lecteur d'écran :
+  // une espace insécable en fin de message, alternée, force la nouvelle annonce.
+  const announce = useCallback((message: string) => {
+    announceToggle.current = !announceToggle.current;
+    setAnnouncement(announceToggle.current ? message : `${message}\u00a0`);
+  }, []);
   const { status, init: initDraft, schedule, retry } = useDraftAutosave(saveDelayMs);
   const validation = useDebouncedValidation(composition, validateDelayMs);
   const seedValidation = validation.seed;
@@ -138,6 +150,9 @@ export function PackEditor({
     let cancelled = false;
     void (async () => {
       try {
+        // Un éditeur fermé à l'instant a pu laisser une sauvegarde en cours : la lire d'abord.
+        await settlePendingSave();
+        if (cancelled) return;
         const view = await readPackDraft();
         if (cancelled) return;
         initDraft(view.revision);
@@ -217,7 +232,7 @@ export function PackEditor({
   function edit(next: PackComposition, message = "") {
     setComposition(next);
     schedule(next);
-    if (message !== "") setAnnouncement(message);
+    if (message !== "") announce(message);
   }
   const current = composition;
   const editMetadata = (change: Partial<PackComposition["metadata"]>) =>
@@ -413,7 +428,7 @@ export function PackEditor({
         <h2 id="fl-pack-tree" className="fl-pack__heading">
           {text.tree.title}
         </h2>
-        <p className="fl-pack__hint">{text.tree.hint}</p>
+        <p className="fl-pack__hint">{text.tree.hint(MAX_LABEL_CHARS)}</p>
         {root.length === 0 && (
           <EmptyState
             icon="catalog"
@@ -429,7 +444,7 @@ export function PackEditor({
           onChange={(next, message) => {
             edit({ ...current, menu: next }, message);
           }}
-          onRefuse={setAnnouncement}
+          onRefuse={announce}
         />
         <div role="status" className="fl-pack__announce">
           {announcement}
@@ -451,12 +466,20 @@ export function PackEditor({
         <TextField
           label={text.metadata.subtitle}
           hint={text.metadata.subtitleHint(single?.copyright ?? null)}
-          value={current.metadata.subtitle ?? ""}
+          value={
+            current.metadata.subtitle ??
+            [...(single?.copyright?.trim() ?? "")].slice(0, MAX_TITLE_CHARS).join("")
+          }
           maxLength={MAX_TITLE_CHARS}
           error={fieldError("subtitle")}
           onChange={(event) =>
             editMetadata({
-              subtitle: event.target.value === "" ? null : event.target.value,
+              // Vide avec un copyright par défaut : sous-titre explicitement vide (D16), sans
+              // quoi le défaut serait réimposé ; sans copyright, `null` et "" sont équivalents.
+              subtitle:
+                event.target.value === "" && !single?.copyright
+                  ? null
+                  : event.target.value,
             })
           }
         />
