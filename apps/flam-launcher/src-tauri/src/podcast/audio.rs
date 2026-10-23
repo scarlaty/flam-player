@@ -1146,7 +1146,7 @@ mod tests {
     /// Branche « durée nulle » (#430). Avec le vrai ffmpeg elle est **inatteignable** : un MP3
     /// sans trame (en-tête Xing seul) est refusé par ffprobe (« sortie inexploitable »), et dès
     /// qu'une trame existe, la durée relue est strictement positive (cf. le test réel
-    /// ci-dessous, avec un seul échantillon). On vérifie donc le contrôle lui-même sur les
+    /// ci-dessous, avec 0,1 s de silence). On vérifie donc le contrôle lui-même sur les
     /// réponses que ffprobe pourrait donner : durée nulle, absente, ou positive.
     #[test]
     fn duree_nulle_ou_inconnue_est_ffmpeg_failed() {
@@ -1171,19 +1171,21 @@ mod tests {
         }
     }
 
-    /// Un seul échantillon : la sortie contient une trame et sa durée relue est > 0, donc elle
-    /// est acceptée. Avec `empty_wav` (zéro échantillon), la sortie est refusée : la durée
-    /// nulle est la frontière entre les deux, mais ffprobe ne la rend jamais pour du MP3.
+    /// Très court (0,1 s de silence) : la sortie contient des trames et sa durée relue est > 0,
+    /// donc elle est acceptée. Avec `empty_wav` (zéro échantillon) elle est refusée par ffprobe
+    /// avant le contrôle de durée : ffprobe ne rend jamais une durée nulle pour du MP3. (Un seul
+    /// échantillon est déjà refusé : « sortie inexploitable ».)
     #[tokio::test]
-    async fn reel_un_seul_echantillon_donne_une_duree_non_nulle() {
+    async fn reel_wav_tres_court_donne_une_duree_non_nulle() {
         let Some(ff) = real_ffmpeg() else { return };
         let dir = tempfile::tempdir().unwrap();
         let (src, dst) = (dir.path().join("un.wav"), dir.path().join("out.mp3"));
         let mut wav = empty_wav();
-        wav[4..8].copy_from_slice(&38u32.to_le_bytes()); // RIFF : 36 + 2 octets de données
+        let data = 2 * 2205u32; // 2 205 échantillons à 22 050 Hz = 0,1 s
+        wav[4..8].copy_from_slice(&(36 + data).to_le_bytes());
         let len = wav.len();
-        wav[len - 4..].copy_from_slice(&2u32.to_le_bytes());
-        wav.extend_from_slice(&[0, 0]);
+        wav[len - 4..].copy_from_slice(&data.to_le_bytes());
+        wav.resize(len + data as usize, 0);
         fs::write(&src, wav).unwrap();
         let (_tx, mut rx) = watch::channel(false);
         convert(&ff, &src, &dst, &mut rx).await.unwrap();
