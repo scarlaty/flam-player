@@ -559,7 +559,7 @@ fn parse_iso_date(raw: &str) -> Option<String> {
 /// ignorés). Toute autre valeur donne `None`.
 fn parse_explicit(raw: &str) -> Option<bool> {
     let raw = raw.trim();
-    // Aucune valeur valide ne dépasse 8 caractères : inutile de copier un texte géant.
+    // Aucune valeur valide ne dépasse 8 octets : au-delà de 16, inutile de copier un texte géant.
     if raw.len() > 16 {
         return None;
     }
