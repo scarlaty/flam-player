@@ -14,6 +14,10 @@ on:
       # Moteur et runtime embarqués dans le binaire (include_bytes!, build.rs) : #129.
       - "tools/telmi2flam/engine/**"
       - "tools/telmi2flam/runtime/**"
+      # Oracle Python (parity.py) et générateur du corpus : #134.
+      - "tools/telmi2flam/*.py"
+      - "tools/telmi2flam/tests/parity/**"
+      - "tools/telmi2flam/tests/test_telmi2flam.py"
   push:
     branches: [main]
     paths:
@@ -26,6 +30,10 @@ on:
       # Moteur et runtime embarqués dans le binaire (include_bytes!, build.rs) : #129.
       - "tools/telmi2flam/engine/**"
       - "tools/telmi2flam/runtime/**"
+      # Oracle Python (parity.py) et générateur du corpus : #134.
+      - "tools/telmi2flam/*.py"
+      - "tools/telmi2flam/tests/parity/**"
+      - "tools/telmi2flam/tests/test_telmi2flam.py"
 
 permissions:
   contents: read
@@ -86,3 +94,66 @@ jobs:
           tail -n 1 events.txt | grep -q '"code":"internal_error"'
           if ls | grep -q '\.part$'; then echo "temporaires restants"; ls; exit 1; fi
           test ! -e out.plain.pk
+
+  # Parité avec l'oracle Python (PORT-RUST.md §4.3, #134) : corpus synthétique et matrice de
+  # rééchantillonnage, générés ici (jamais commités). Échoue à la moindre divergence hors de
+  # la liste admise (parity.py, ALLOWED_DEVIATIONS) ; validate.py passe sur la sortie du Rust.
+  parity:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # Oracle épinglé (PORT-RUST.md §4.3) : mêmes versions que telmi2flam.yml et que
+          # l'installateur (apps/flam-launcher/scripts/build-converter.ps1).
+          python-version: "3.14.8"
+
+      - name: Installer les dépendances de l'oracle
+        run: pip install "Pillow==12.3.0" "lupa==2.8"
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # tête de la branche stable au 2026-10-16 (pas un tag)
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target"
+
+      - name: Binaire Rust (release)
+        run: cargo build -p telmi2flam --bin telmi2flam --release --locked
+
+      - name: Générer le corpus et la matrice
+        run: python -I tools/telmi2flam/tests/parity/make_corpus.py "$RUNNER_TEMP/parity"
+
+      - name: Parité du corpus (oracle Python contre Rust, validate.py sur la sortie Rust)
+        run: |
+          python -I tools/telmi2flam/parity.py corpus "$RUNNER_TEMP/parity" \
+            --candidate target/release/telmi2flam.exe \
+            --report "$RUNNER_TEMP/parity/corpus-report.json"
+
+      - name: Rendu de la matrice par le Rust
+        if: ${{ !cancelled() }}
+        env:
+          TELMI2FLAM_MATRIX_DIR: ${{ runner.temp }}/parity
+          TELMI2FLAM_MATRIX_OUT: ${{ runner.temp }}/parity/matrix-rs
+        run: cargo test -p telmi2flam --release --locked --test matrix_render -- --ignored
+
+      - name: Parité de la matrice (.lif contre .lif, octet à octet)
+        if: ${{ !cancelled() }}
+        run: |
+          python -I tools/telmi2flam/parity.py matrix "$RUNNER_TEMP/parity" \
+            --candidate-lif-dir "$RUNNER_TEMP/parity/matrix-rs" \
+            --report "$RUNNER_TEMP/parity/matrix-report.json"
+
+      - name: Rapports de parité
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: telmi2flam-parity
+          path: |
+            ${{ runner.temp }}/parity/corpus-report.json
+            ${{ runner.temp }}/parity/matrix-report.json
+          if-no-files-found: ignore

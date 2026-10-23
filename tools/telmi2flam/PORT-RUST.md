@@ -265,6 +265,10 @@ sont identiques à l'octet près dès la PR 6.
    Ces archives ne contiennent aucun contenu sous licence. Elles sont **générées en CI** et ne
    sont pas commitées. Le job convertit chaque archive avec Python (l'oracle), puis avec Rust ;
    `parity.py` ne doit trouver aucun écart hors de la liste §4.1.
+   Le job `parity` de `.github/workflows/telmi2flam-rs.yml` (#134, Python 3.14.8, Pillow 12.3.0,
+   lupa 2.8) génère le corpus, compare les sorties (`parity.py corpus`, avec `validate.py` sur
+   la sortie Rust) et échoue au premier écart hors liste. Mesure locale : 88 archives, 79
+   identiques, 6 admis, 3 délégués, 0 écart.
 2. **Matrice de rééchantillonnage (CI)** : les images des tests sont minuscules et ne prouvent
    rien sur le Lanczos. Le générateur produit donc aussi une matrice :
    - modes PNG × tailles sources impaires ou premières (par ex. 1, 3, 97, 641, 2049) ;
@@ -274,7 +278,9 @@ sont identiques à l'octet près dès la PR 6.
    - agrandissements et réductions de plus de 2× (pour passer par `reduce`) ;
    - contenus variés : bruit pseudo-aléatoire à graine fixe, dégradés, alpha partiel.
 
-   Elle est comparée **`.lif` contre `.lif`, à l'octet près**. Un résultat de 100 % sur cette
+   Elle est comparée **`.lif` contre `.lif`, à l'octet près**. Le test ignoré `crates/telmi2flam/tests/matrix_render.rs` écrit les `.lif` du Rust
+   (`TELMI2FLAM_MATRIX_DIR`, `TELMI2FLAM_MATRIX_OUT`), puis `parity.py matrix --candidate-lif-dir`
+   les compare (1465 cellules, 0 écart en local ; `thumb` en mode `bandes`). Un résultat de 100 % sur cette
    matrice est requis pour fusionner la PR 7.
 3. **Campagne (locale)** : les archives réelles de `.cache/telmi/` (ignoré par Git, jamais
    commité). `compat.py --engine rust`, ou un script dédié, convertit chaque archive avec les
