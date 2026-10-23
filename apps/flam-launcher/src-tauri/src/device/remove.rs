@@ -69,12 +69,14 @@ pub struct RemoveReport {
     pub cleanup_pending: bool,
 }
 
-/// Dossier d'histoire présent sur l'appareil mais absent des deux index.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Orphan {
-    pub id: String,
+/// Dossier d'histoire présent sur l'appareil mais absent des deux index (rendu par
+/// `find_orphans`, réservée aux tests, #345).
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Orphan {
+    id: String,
     /// Dans `str.hidden/` plutôt que `str/`.
-    pub hidden: bool,
+    hidden: bool,
 }
 
 /// Erreur d'un retrait.

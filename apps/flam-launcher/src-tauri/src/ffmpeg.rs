@@ -16,17 +16,32 @@
 //! - **lit la sortie** : stdout borné (le début), stderr borné (la fin) ;
 //! - gère l'**annulation** (`watch`, comme les téléchargements et la conversion) et un **délai
 //!   maximal** : dans les deux cas le processus est tué et attendu.
+//!
+//! Limites assumées (#366) :
+//!
+//! - l'arrêt tue le processus lancé, **pas ses éventuels petits-enfants** (sous Windows, `kill`
+//!   ne vise que le processus ; ffmpeg et ffprobe statiques n'en créent pas). Si un autre
+//!   programme passe un jour par ce module, il faudra un Job Object ;
+//! - la vérification d'empreinte puis le lancement ne sont pas atomiques (TOCTOU) : le fichier
+//!   peut être remplacé entre les deux par quiconque écrit dans le dossier d'installation, ce
+//!   qui est hors du modèle de menace décrit plus haut ;
+//! - le hachage s'interrompt à l'annulation (entre deux morceaux de 64 Kio) ; après la fin du
+//!   processus, la lecture de stdout/stderr n'attend qu'un court délai ([`READER_GRACE`]) : un
+//!   petit-enfant qui garderait les tubes ouverts ne bloque pas l'appelant (sortie alors vide).
 
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use crate::install::download::cancelled;
 use crate::settings::{self, Environment};
@@ -41,6 +56,8 @@ const MAX_MANIFEST: u64 = 16 * 1024;
 pub const DEFAULT_STDOUT_CAP: usize = 1024 * 1024;
 /// Fin de stderr conservée.
 const STDERR_TAIL: usize = 8 * 1024;
+/// Attente maximale des lecteurs de stdout/stderr après la fin du processus.
+const READER_GRACE: Duration = Duration::from_secs(5);
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -130,10 +147,15 @@ impl Ffmpeg {
     /// Chemin de l'exécutable après vérification de son empreinte (calcul bloquant : à appeler
     /// depuis `spawn_blocking` dans un contexte asynchrone).
     pub fn verified_path(&self, tool: Tool) -> AppResult<PathBuf> {
+        self.verified_path_until(tool, None)
+    }
+
+    /// Comme [`Self::verified_path`] ; le hachage s'arrête (erreur) dès que `stop` passe à vrai.
+    fn verified_path_until(&self, tool: Tool, stop: Option<&AtomicBool>) -> AppResult<PathBuf> {
         let name = tool.file_name();
         let path = self.dir.join(name);
         let expected = expected_hash(&self.dir.join(MANIFEST_FILE), name)?;
-        let actual = hash_file(&path).map_err(|e| {
+        let actual = hash_file(&path, stop).map_err(|e| {
             AppError::ConverterUnavailable(format!("{name} illisible ({}) : {e}", path.display()))
         })?;
         if actual != expected {
@@ -160,9 +182,17 @@ impl Ffmpeg {
             return Err(AppError::Cancelled);
         }
         let this = self.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_hash = stop.clone();
         let path = tokio::select! {
-            () = cancelled(cancel) => return Err(AppError::Cancelled),
-            joined = tokio::task::spawn_blocking(move || this.verified_path(tool)) => {
+            () = cancelled(cancel) => {
+                // Le hachage en cours (thread bloquant) s'arrête au prochain morceau.
+                stop.store(true, Ordering::Relaxed);
+                return Err(AppError::Cancelled);
+            }
+            joined = tokio::task::spawn_blocking(move || {
+                this.verified_path_until(tool, Some(&stop_hash))
+            }) => {
                 joined.map_err(|e| std::io::Error::other(e.to_string()))??
             }
         };
@@ -223,13 +253,27 @@ async fn run_program(
             return Err(stop);
         }
     };
-    let stdout = out_task.await.unwrap_or_default();
-    let stderr = err_task.await.unwrap_or_default();
+    let (stdout, stderr) = tokio::join!(
+        join_bounded(out_task, READER_GRACE),
+        join_bounded(err_task, READER_GRACE)
+    );
     Ok(Output {
         code: status.code(),
         stdout,
         stderr,
     })
+}
+
+/// Attend un lecteur au plus `grace` ; au-delà (tube gardé ouvert par un petit-enfant), il est
+/// abandonné et la valeur par défaut est rendue.
+async fn join_bounded<T: Default>(mut handle: JoinHandle<T>, grace: Duration) -> T {
+    match tokio::time::timeout(grace, &mut handle).await {
+        Ok(joined) => joined.unwrap_or_default(),
+        Err(_) => {
+            handle.abort();
+            T::default()
+        }
+    }
 }
 
 /// Lit jusqu'à la fin ; ne garde que les `cap` premiers octets.
@@ -267,12 +311,15 @@ async fn read_tail<R: AsyncRead + Unpin>(mut reader: R, cap: usize) -> String {
     String::from_utf8_lossy(&tail[start..]).into_owned()
 }
 
-/// SHA-256 (hexadécimal minuscule) d'un fichier, lu par morceaux.
-fn hash_file(path: &Path) -> std::io::Result<String> {
+/// SHA-256 (hexadécimal minuscule) d'un fichier, lu par morceaux ; `stop` l'interrompt.
+fn hash_file(path: &Path, stop: Option<&AtomicBool>) -> std::io::Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut chunk = vec![0u8; 64 * 1024];
     loop {
+        if stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
+            return Err(std::io::ErrorKind::Interrupted.into());
+        }
         let n = file.read(&mut chunk)?;
         if n == 0 {
             break;
@@ -503,9 +550,21 @@ mod tests {
         drop(canceller.await);
     }
 
+    /// Programme système qui écrit au moins 100 octets sur stdout puis se termine.
+    fn talker() -> (PathBuf, Vec<OsString>) {
+        if cfg!(windows) {
+            sleeper(0)
+        } else {
+            (
+                PathBuf::from("/bin/sh"),
+                vec!["-c".into(), "printf '%0100d' 0".into()],
+            )
+        }
+    }
+
     #[tokio::test]
     async fn sortie_lue_et_bornee() {
-        let (program, args) = sleeper(0);
+        let (program, args) = talker();
         let (_tx, mut rx) = no_cancel();
         let out = run_program(
             &program,
@@ -519,9 +578,32 @@ mod tests {
         .await
         .unwrap();
         assert!(out.success(), "{out:?}");
-        if cfg!(windows) {
-            assert_eq!(out.stdout.len(), 16, "stdout tronqué au début");
-        }
+        assert_eq!(out.stdout.len(), 16, "stdout tronqué au début");
+    }
+
+    #[tokio::test]
+    async fn lecteur_abandonne_apres_le_delai() {
+        let never = tokio::spawn(async {
+            std::future::pending::<()>().await;
+            vec![1u8]
+        });
+        let started = std::time::Instant::now();
+        let got = join_bounded(never, Duration::from_millis(100)).await;
+        assert!(got.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let done = tokio::spawn(async { vec![7u8] });
+        assert_eq!(join_bounded(done, Duration::from_secs(5)).await, vec![7]);
+    }
+
+    #[test]
+    fn hachage_interrompu() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        fs::write(&path, b"x").unwrap();
+        let stop = AtomicBool::new(true);
+        let err = hash_file(&path, Some(&stop)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(hash_file(&path, None).unwrap(), sha(b"x"));
     }
 
     #[tokio::test]

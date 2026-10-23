@@ -66,16 +66,21 @@ fn purge_stale_thumbs(app: &tauri::AppHandle) {
     }
 }
 
+/// Filtre des traces : `spec` (équivalent de `RUST_LOG`) ou, à défaut, `info`. En `debug`,
+/// `reqwest` journalise les URL (redirections, réponses) : celle d'un flux podcast est un
+/// secret (D11, #211), d'où la directive `reqwest=info`. Elle ne couvre pas une directive plus
+/// précise de l'utilisateur (`RUST_LOG=reqwest::x=debug`), qui la contourne.
+pub(crate) fn log_filter(spec: Option<&str>) -> tracing_subscriber::EnvFilter {
+    let base = spec
+        .and_then(|s| tracing_subscriber::EnvFilter::try_new(s).ok())
+        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("info"));
+    base.add_directive("reqwest=info".parse().expect("directive de trace valide"))
+}
+
 /// Point d'entrée : initialise les traces puis lance l'application Tauri.
 pub fn run() {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
-                // En `debug`, `reqwest` journalise les URL (redirections, réponses) : celle d'un
-                // flux podcast est un secret (D11, #211).
-                .add_directive("reqwest=info".parse().expect("directive de trace valide")),
-        )
+        .with_env_filter(log_filter(std::env::var("RUST_LOG").ok().as_deref()))
         .init();
     tracing::info!("démarrage de flam-launcher {}", env!("CARGO_PKG_VERSION"));
 
@@ -171,6 +176,10 @@ pub fn run() {
             device::transfer::device_cancel_transfer,
             device::transfer::device_recover_transfers,
             compat::compat_statuses,
+            podcast::pack::pack_draft_clear,
+            podcast::pack::pack_draft_read,
+            podcast::pack::pack_draft_save,
+            podcast::pack::pack_validate,
             podcast::source::podcast_add,
             podcast::source::podcast_feed,
             podcast::source::podcast_refresh,
@@ -226,6 +235,7 @@ mod tests {
             ("install", include_str!("install/mod.rs")),
             ("library", include_str!("library.rs")),
             ("player", include_str!("player.rs")),
+            ("podcast::pack", include_str!("podcast/pack.rs")),
             ("podcast::source", include_str!("podcast/source.rs")),
             ("settings", include_str!("settings.rs")),
             ("sources", include_str!("sources.rs")),

@@ -63,6 +63,10 @@ pub enum Event<'a> {
         code: &'a str,
         message: &'a str,
     },
+    /// Information humaine (`  i …` de stderr) : jamais émise en JSON.
+    Info {
+        message: &'a str,
+    },
     Done {
         output: &'a OsStr,
         size: u64,
@@ -104,6 +108,10 @@ impl Event<'_> {
                 out.push_str("\"warning\",\"code\":");
                 json_str(code, &mut out);
                 out.push_str(",\"message\":");
+                json_str(message, &mut out);
+            }
+            Event::Info { message } => {
+                out.push_str("\"info\",\"message\":");
                 json_str(message, &mut out);
             }
             Event::Done {
@@ -185,6 +193,8 @@ pub trait Progress {
     fn tick(&mut self, phase: Phase);
     /// Avertissement non bloquant (`code` stable, `message` lisible).
     fn warn(&mut self, code: &'static str, message: &str);
+    /// Information non bloquante (rééchantillonnage réussi) : ligne humaine seulement.
+    fn info(&mut self, _message: &str) {}
 }
 
 /// Progression ignorée (appel de la bibliothèque sans suivi).
@@ -285,6 +295,10 @@ impl Progress for Reporter<'_> {
     fn warn(&mut self, code: &'static str, message: &str) {
         self.warnings += 1;
         (self.sink)(&Event::Warning { code, message });
+    }
+
+    fn info(&mut self, message: &str) {
+        (self.sink)(&Event::Info { message });
     }
 }
 

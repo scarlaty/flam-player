@@ -30,6 +30,7 @@ pub mod archive;
 pub mod assets;
 mod blur;
 pub mod cancel;
+pub mod cli;
 pub mod convert;
 pub mod error;
 pub mod ffmpeg;

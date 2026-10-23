@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use crate::archive::Archive;
 use crate::error::ConvError;
-use crate::output::{write_package_progress, Target};
-use crate::package::{build_package_with, Options};
+use crate::output::{write_package_from, Target};
+use crate::package::{build_package_streamed, Options, Stats};
 use crate::progress::Reporter;
 
 /// Conversion demandée.
@@ -36,6 +36,12 @@ pub struct Report {
     pub size: u64,
     /// Avertissements émis.
     pub warnings: u64,
+    /// Titre de l'histoire (résumé humain).
+    pub title: String,
+    /// Compteurs du résumé humain.
+    pub stats: Stats,
+    /// Seul le dossier `.plain` a été écrit (`-o` finissant par `.plain`).
+    pub dir_only: bool,
 }
 
 /// Convertit `req.input`. Émet `start` avant toute lecture, puis les étapes et
@@ -47,12 +53,13 @@ pub fn convert(
 ) -> Result<Report, ConvError> {
     reporter.start(req.input.as_os_str());
     let mut archive = Archive::open(req.input)?;
-    let package = build_package_with(&mut archive, &req.options, cancelled, reporter)?;
-    drop(archive);
+    // MP3 recopiés tels quels relus dans l'archive à l'écriture (#355).
+    let package = build_package_streamed(&mut archive, &req.options, cancelled, reporter)?;
     let target = Target::new(req.output, req.emit_plain, &package);
-    let published = write_package_progress(&package, &target, cancelled, reporter)?;
+    // L'archive est rendue à l'écriture, qui la ferme avant de publier (#402).
+    let published = write_package_from(&package, archive, &target, cancelled, reporter)?;
     let size = if target.dir_only {
-        package.entries.iter().map(|(_, d)| d.len() as u64).sum()
+        package.entries.iter().map(|(_, d)| d.size()).sum()
     } else {
         std::fs::metadata(&target.out_path)
             .map_err(|e| {
@@ -62,6 +69,9 @@ pub fn convert(
     };
     reporter.done(target.out_path.as_os_str(), size);
     Ok(Report {
+        title: package.title,
+        stats: package.stats,
+        dir_only: target.dir_only,
         output: target.out_path,
         published,
         size,

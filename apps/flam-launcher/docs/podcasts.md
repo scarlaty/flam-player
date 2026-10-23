@@ -89,20 +89,20 @@ volume, chapitres, reprise par épisode, génération directe d'un paquet flam (
 
 La numérotation reprend celle de la version précédente du document.
 
-| #   | Décision (2026-10-19)                                                                                                                                                                                                                                                                                                                                                              |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | **Plafonds fixes par pack** : 50 épisodes, 200 Mo par épisode, 1 Gio au total. Appliqués dans l'interface et dans le backend ; création impossible au-delà.                                                                                                                                                                                                                        |
-| D5  | **Estimation** : taille annoncée de l'enclosure, sinon durée × débit, affichée « environ » ; espace disque nécessaire sur le PC affiché aussi (jusqu'à quatre fois la taille du pack, § 10, plus une marge). Les plafonds restent vérifiés pendant le téléchargement.                                                                                                              |
-| D6  | **Audio** : **copie** si le fichier est un MP3 à 44 100 Hz, mono ou stéréo, entre 64 et 192 kbps ; sinon **réencodage** en MP3 44 100 Hz **stéréo**, au débit source arrondi au multiple de 16 supérieur et borné à [64, 192] kbps (192 si le débit est inconnu). Métadonnées, chapitres et flux vidéo (pochettes intégrées) retirés.                                              |
-| D7  | **Ordre** : celui que le parent donne dans l'arborescence. Liste de sélection par défaut : date décroissante, bandes-annonces écartées (P5).                                                                                                                                                                                                                                       |
-| D8  | **Épisodes explicites** (`itunes:explicit`) : signalés dans la liste et décochés par défaut.                                                                                                                                                                                                                                                                                       |
-| D9  | **Publicité** : signalée dans la mention d'usage et dans le README (rien n'est filtré).                                                                                                                                                                                                                                                                                            |
-| D10 | **Réseau** : refus des adresses privées et locales **partout** (flux, enclosures, images : bouclage, privées, lien-local, partagées 100.64/10, multidiffusion, non spécifiées et équivalents IPv6), contrôlé **après résolution DNS** et **à chaque redirection**, connexion à l'adresse vérifiée ; TLS vérifié ; nombre de redirections borné ; aucune redirection par page HTML. |
-| D11 | Décidé le 2026-10-23 : **URL de flux affichée en clair dans l'interface** ; jamais journalisée ni recopiée dans les erreurs ou le diagnostic. Les identifiants dans l'URL (`user:pass@`) restent refusés (#211).                                                                                                                                                                   |
-| D13 | **Image de repli** : chaîne de P6, puis couleur unie `#122e2c`. Une image manquante ou illisible ne retire **pas** l'épisode.                                                                                                                                                                                                                                                      |
-| D14 | **Message de droits** à la première installation, fermé par « J'ai compris ». Texte proposé au § 4, à valider.                                                                                                                                                                                                                                                                     |
-| D15 | **Suppression d'une source** : les histoires créées sont gardées (P4) ; le cache de la source (flux, fichiers téléchargés) est purgé.                                                                                                                                                                                                                                              |
-| D16 | **Métadonnées modifiables** par le parent, avec ces défauts : titre = titre du flux ; sous-titre = copyright du flux ; âge = 0 ; description = liste des épisodes (et des échecs, P7).                                                                                                                                                                                             |
+| #   | Décision (2026-10-19)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | **Plafonds fixes par pack** : 50 épisodes, 200 Mio par épisode, 1 Gio au total. Appliqués dans l'interface et dans le backend ; création impossible au-delà.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| D5  | **Estimation** : taille annoncée de l'enclosure, sinon durée × débit, affichée « environ » ; espace disque nécessaire sur le PC affiché aussi (jusqu'à quatre fois la taille du pack, § 10, plus une marge). Les plafonds restent vérifiés pendant le téléchargement.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| D6  | **Audio** : **copie** si le fichier est un MP3 à 44 100 Hz, mono ou stéréo, entre 64 et 192 kbps ; sinon **réencodage** en MP3 44 100 Hz **stéréo**, au débit source arrondi au multiple de 16 supérieur et borné à [64, 192] kbps (192 si le débit est inconnu). Métadonnées, chapitres et flux vidéo (pochettes intégrées) retirés.                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| D7  | **Ordre** : celui que le parent donne dans l'arborescence. Liste de sélection par défaut : date décroissante, bandes-annonces écartées (P5).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| D8  | **Épisodes explicites** (`itunes:explicit`) : signalés dans la liste et décochés par défaut.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| D9  | **Publicité** : signalée dans la mention d'usage et dans le README (rien n'est filtré).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| D10 | **Réseau** : refus des adresses privées et locales **partout** (flux, enclosures, images : bouclage, privées, lien-local, partagées 100.64/10, multidiffusion, non spécifiées et équivalents IPv6), contrôlé **après résolution DNS** et **à chaque redirection**, connexion à l'adresse vérifiée ; TLS vérifié ; nombre de redirections borné ; aucune redirection par page HTML ; noms à une étiquette et suffixes `.local`, `.lan`, `.home.arpa`, `.internal`, `.localhost` refusés, identifiants `user:pass@` refusés ; **mandataires ignorés** (`no_proxy`, décision du 2026-10-23 : un mandataire résoudrait le nom hors contrôle) ; **résidu** : un nom public multi-étiquettes résolu vers l'adresse publique de la box de l'utilisateur reste joignable. |
+| D11 | Décidé le 2026-10-23 : **URL de flux affichée en clair dans l'interface** ; jamais journalisée ni recopiée dans les erreurs ou le diagnostic. Les identifiants dans l'URL (`user:pass@`) restent refusés (#211).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| D13 | **Image de repli** : chaîne de P6, puis couleur unie `#122e2c`. Une image manquante ou illisible ne retire **pas** l'épisode.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| D14 | **Message de droits** à la première installation, fermé par « J'ai compris ». Texte complet du § 4, **validé le 2026-10-23** (#220).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| D15 | **Suppression d'une source** : les histoires créées sont gardées (P4) ; le cache de la source (flux, fichiers téléchargés) est purgé.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| D16 | **Métadonnées modifiables** par le parent, avec ces défauts : titre = titre du flux ; sous-titre = copyright du flux ; âge = 0 ; description = liste des épisodes (et des échecs, P7).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 Remarques de cohérence :
 
@@ -238,11 +238,19 @@ Remarques de cohérence :
 
 Textes en français, dans le fichier de textes de l'interface ; parcours complet au clavier.
 
-**Mention d'usage** (A8, D9, D14 ; texte proposé, à valider) :
+**Mentions d'usage** (A8, D9, D14 ; décidées par le mainteneur le 2026-10-23, #220) :
 
-> Les podcasts appartiennent à leurs auteurs. Les histoires créées ici sont réservées à un usage
-> personnel, dans le cadre familial : ne les partagez pas et ne les redistribuez pas. L'audio est
-> téléchargé tel que l'éditeur le diffuse, publicité comprise.
+- **Écran d'ajout d'un flux** : version courte, affichée en permanence.
+
+  > Usage personnel et familial uniquement : ne partagez pas les histoires créées. L'audio est
+  > repris tel quel, publicité comprise.
+
+- **Première installation d'un pack** (D14) : texte complet ci-dessous, fermé par le bouton
+  « J'ai compris ».
+
+  > Les podcasts appartiennent à leurs auteurs. Les histoires créées ici sont réservées à un usage
+  > personnel, dans le cadre familial : ne les partagez pas et ne les redistribuez pas. L'audio est
+  > téléchargé tel que l'éditeur le diffuse, publicité comprise.
 
 ## 5. Architecture A : préparation puis conversion
 
@@ -324,8 +332,12 @@ l'appareil mesurée en #219 (D1, N2 à revoir après #219).
   flam-launcher »).
 - **ffmpeg** : build LGPL sans options GPL, SHA-256 vérifié, `LICENSES.md` à jour, sources ou
   offre de sources (`ffmpeg/BUILD.txt`).
-- **Nouvelles crates** : licence compatible (MIT, Apache-2.0 ou MPL-2.0), ajoutées à
-  `LICENSES.md`.
+- **Format Telmi** : décrit à partir du wiki public du format ; aucune ressource d'un autre
+  projet n'est reprise.
+- **Nouvelles crates** (`quick-xml`, `image` et ses décodeurs, `reqwest`, `sha2`, `base64`,
+  etc.) : licences permissives (MIT, Apache-2.0, BSD, Zlib, Unlicense), listées automatiquement
+  dans `THIRD-PARTY-NOTICES.txt` par `npm run build:notices` (liste d'autorisation dans
+  `scripts/notices-lib.mjs`) ; `LICENSES.md` couvre ffmpeg et LAME.
 - **Synthèse vocale (évolution)** : piper dépend d'espeak-ng (GPL-3.0) ; pas d'embarquement sans
   analyse de licence dédiée.
 - **Contenus** : aucun flux réel, aucune archive Telmi, aucune histoire convertie dans le dépôt ;
@@ -348,7 +360,7 @@ sans objet :
 - **mise à jour automatique et fenêtre glissante** (#221) ;
 - le graphe « fin d'épisode → retour au menu » : remplacé par l'enchaînement de P8 ;
 - le choix « N derniers épisodes, 10 par défaut » de #212 n'est plus une règle du produit (la
-  sélection est libre) ; il peut rester comme raccourci de sélection (voir § 11, #212).
+  sélection est libre) ; il est **gardé comme simple raccourci de sélection** : 10 par défaut, dans la limite des plafonds, la sélection restant libre (décision du 2026-10-23, #220 ; voir § 11, #212).
 
 ## 9. Décisions du 2026-10-23 (N1 à N10)
 
@@ -486,14 +498,19 @@ proprement », sans choisir.
 
 **Recommandation : a** (adoptée le 2026-10-23), l'uuid étant tiré une seule fois, à la création de la tâche.
 
+### Décisions du mainteneur du 2026-10-23 (#220)
+
+- **Mention d'usage de l'écran d'ajout** : version courte (§ 4).
+- **Message de droits de la première installation (D14)** : texte complet du § 4, fermé par
+  « J'ai compris ».
+- **Raccourci « N derniers épisodes » (#212)** : **gardé**, 10 par défaut, dans la limite des
+  plafonds (les épisodes refusés par les plafonds ne sont pas cochés et l'écran dit combien l'ont
+  été) ; la sélection reste libre. Les épisodes explicites ne sont pas cochés d'office (D8).
+
 ### Points restant à décider
 
-Aucune décision n'est inventée ici : ces points restent ouverts ou à valider.
+Aucune décision n'est inventée ici : ces points restent ouverts ou à vérifier.
 
-- **D14 et mention d'usage (§ 4)** : textes proposés, **à valider** par le mainteneur (#212,
-  #220).
-- **#212, raccourci « N derniers épisodes »** : à retirer ou à garder comme simple raccourci de
-  sélection, **au choix du mainteneur**.
 - **N2 b** : limites (3 niveaux, 50 options) **à revoir après le test sur appareil** (#219).
 - **N4 a** : bouton retour depuis un sous-menu **à vérifier sur l'appareil** (#219).
 - **D6 et le MP3 mono** copié tel quel : **à vérifier sur l'appareil** (#219).
@@ -513,7 +530,7 @@ Débits en kbit/s ; 1 Mo = 10⁶ octets ; audio seul, CBR.
 - Règle D6 : un fichier AAC à 96 kbps est réencodé à 96 kbps ; à 100 kbps, à 112 kbps ; à débit
   inconnu, à 192 kbps (86,4 Mo par heure). Le débit inconnu est donc le cas le plus coûteux pour
   l'estimation D5.
-- Plafond D1 : 200 Mo par épisode ≈ 2 h 19 à 192 kbps, 3 h 28 à 128 kbps ; 1 Gio (1,074 Go)
+- Plafond D1 : 200 Mio par épisode ≈ 2 h 19 à 192 kbps, 3 h 28 à 128 kbps ; 1 Gio (1,074 Go)
   ≈ 12,4 h à 192 kbps, 18,6 h à 128 kbps, 37 h à 64 kbps.
 - 10 épisodes de 30 min : 144 Mo à 64 kbps, 288 Mo à 128 kbps, 432 Mo à 192 kbps.
 - Disque du PC pendant la création : originaux + MP3 convertis + archive Telmi + `.plain.pk`,
@@ -524,26 +541,26 @@ Débits en kbit/s ; 1 Mo = 10⁶ octets ; audio seul, CBR.
 
 Changements **appliqués sur GitHub le 2026-10-23**, après adoption de N1 à N10.
 
-| Issue | Changement appliqué                                                                                                                                                                                                 |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #207  | Décisions et périmètre MVP remplacés par le modèle pack ; liste, dépendances, ordre et parallélisme mis à jour.                                                                                                     |
-| #208  | Fermée par la fusion de la PR de cette spécification : D1 à D16 et N1 à N10 sont décidés ; restent les points « à valider » ci-dessus.                                                                              |
-| #209  | Inchangée (reste : cache CI, `BUILD.txt` ; module de lancement en #214).                                                                                                                                            |
-| #210  | Fermée. Suivi : #361 (`itunes:explicit`, en-tête de `rss.rs`).                                                                                                                                                      |
-| #211  | Source « Podcast » (flux RSS, persistance, cache) : sans identifiant stable ni lien source vers installation ; URL traitée comme un secret (D11) ; suppression sans effet sur les histoires, cache purgé (P4, D15). |
-| #212  | Sélection des épisodes : liste par flux, plusieurs flux, explicites signalés et décochés (D8), estimation et plafonds par pack (D1, D5), mention d'usage ; dépend de #361.                                          |
-| #213  | D10 complet (adresses privées contrôlées après DNS et à chaque redirection), plusieurs flux par tâche, suppression des fichiers après création (N8 a).                                                              |
-| #214  | Règle D6 et critères associés ; mono accepté si MP3 conforme.                                                                                                                                                       |
-| #215  | Fermée (`FALLBACK_COLOR` = `#122e2c`, D13).                                                                                                                                                                         |
-| #216  | Réécrite : uuid aléatoire, version 1, graphe arborescent, P8 et N4 a, catégories (N5 a), couverture (N6 b), métadonnées D16 et N1 b.                                                                                |
-| #217  | Commande « créer un pack » (N7 a), reprise de la création (N10 a), plusieurs flux par tâche ; dépend de #362.                                                                                                       |
-| #218  | Fermée, abandonnée (pas de mise à jour).                                                                                                                                                                            |
-| #219  | Enchaînement, sous-menus, retour, mono et stéréo mélangés, packs multi-flux, transfert carrier firmware 1.x, capacité de la Flam.                                                                                   |
-| #220  | README « Créer un pack », mention d'usage avec la publicité (D9), message « J'ai compris » (D14) ; dépend de #217 et #363.                                                                                          |
-| #221  | Évolutions : recherche, synthèse vocale, compositions nommées (N3 c), cache des MP3 convertis (N8 b), image de catégorie choisie (N5 c), pochettes ; dépend de #219.                                                |
-| #361  | Nouvelle : lecture de `itunes:explicit` (D8) et correction de l'en-tête de `rss.rs`.                                                                                                                                |
-| #362  | Nouvelle : modèle de composition du pack (types, validation N1, N2, N9, D1) et brouillon unique (N3 b).                                                                                                             |
-| #363  | Nouvelle : éditeur de pack (arborescence, métadonnées, couverture).                                                                                                                                                 |
+| Issue | Changement appliqué                                                                                                                                                                                                                                    |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| #207  | Décisions et périmètre MVP remplacés par le modèle pack ; liste, dépendances, ordre et parallélisme mis à jour.                                                                                                                                        |
+| #208  | Fermée par la fusion de la PR de cette spécification : D1 à D16 et N1 à N10 sont décidés ; restent les points ouverts ci-dessus.                                                                                                                       |
+| #209  | Inchangée (reste : cache CI, `BUILD.txt` ; module de lancement en #214).                                                                                                                                                                               |
+| #210  | Fermée. Suivi : #361 (`itunes:explicit`, en-tête de `rss.rs`).                                                                                                                                                                                         |
+| #211  | Source « Podcast » (flux RSS, persistance, cache) : sans identifiant stable ni lien source vers installation ; URL traitée comme un secret (D11) ; suppression sans effet sur les histoires, cache purgé (P4, D15).                                    |
+| #212  | Sélection des épisodes : liste par flux, plusieurs flux, explicites signalés et décochés (D8), estimation et plafonds par pack (D1, D5), mention d'usage courte ; raccourci « 10 derniers » gardé dans la limite des plafonds (#220) ; dépend de #361. |
+| #213  | D10 complet (adresses privées contrôlées après DNS et à chaque redirection), plusieurs flux par tâche, suppression des fichiers après création (N8 a).                                                                                                 |
+| #214  | Règle D6 et critères associés ; mono accepté si MP3 conforme.                                                                                                                                                                                          |
+| #215  | Fermée (`FALLBACK_COLOR` = `#122e2c`, D13).                                                                                                                                                                                                            |
+| #216  | Réécrite : uuid aléatoire, version 1, graphe arborescent, P8 et N4 a, catégories (N5 a), couverture (N6 b), métadonnées D16 et N1 b.                                                                                                                   |
+| #217  | Commande « créer un pack » (N7 a), reprise de la création (N10 a), plusieurs flux par tâche ; dépend de #362.                                                                                                                                          |
+| #218  | Fermée, abandonnée (pas de mise à jour).                                                                                                                                                                                                               |
+| #219  | Enchaînement, sous-menus, retour, mono et stéréo mélangés, packs multi-flux, transfert carrier firmware 1.x, capacité de la Flam.                                                                                                                      |
+| #220  | README « Créer un pack », mention d'usage avec la publicité (D9), message « J'ai compris » (D14) ; dépend de #217 et #363.                                                                                                                             |
+| #221  | Évolutions : recherche, synthèse vocale, compositions nommées (N3 c), cache des MP3 convertis (N8 b), image de catégorie choisie (N5 c), pochettes ; dépend de #219.                                                                                   |
+| #361  | Nouvelle : lecture de `itunes:explicit` (D8) et correction de l'en-tête de `rss.rs`.                                                                                                                                                                   |
+| #362  | Nouvelle : modèle de composition du pack (types, validation N1, N2, N9, D1) et brouillon unique (N3 b).                                                                                                                                                |
+| #363  | Nouvelle : éditeur de pack (arborescence, métadonnées, couverture).                                                                                                                                                                                    |
 
 ### Ordre et parallélisme conseillés
 

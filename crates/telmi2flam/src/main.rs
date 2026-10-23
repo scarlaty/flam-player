@@ -18,23 +18,28 @@
 //!   ([`telmi2flam::output::discard_pending`]), événement `error` `internal_error`, code 6.
 //!   Il s'exécute avant l'abandon du profil release (`panic = "abort"`) et sort lui-même.
 //!
-//! Reste à faire ailleurs : analyse des options façon `argparse` (formes `--opt=valeur`,
-//! préfixes, `-h`), résumé humain `OK -> …` (#133).
+//! Options (#133) : analyse façon `argparse` dans [`telmi2flam::cli`] (formes `--opt=valeur`,
+//! préfixes, `--`, `-h`, messages et codes de Python). Résumé humain `OK -> …` comme
+//! `telmi2flam.py` : sur stdout, ou sur stderr avec `--progress-json` ; les lignes `  i …`
+//! (rééchantillonnage réussi) et `  ! …` (avertissements) vont toujours sur stderr, au fil de
+//! la conversion. L'événement `done` précède le résumé (Python : après) ; seul un `2>&1`
+//! fusionné le voit. `-h` et `--version` écrivent sur stdout ; un tube fermé est ignoré
+//! partout (Python lèverait `BrokenPipeError` hors mode JSON).
 //!
 //! Fin de ligne : `\n` sur tous les systèmes. Python, en mode texte, écrit `\r\n` sous
 //! Windows ; l'écart est assumé (les consommateurs lisent ligne à ligne et la parité
 //! compare après `strip()`).
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use telmi2flam::cancel;
-use telmi2flam::convert::{convert, Request};
-use telmi2flam::image::ThumbFit;
-use telmi2flam::package::{Options, Selector};
+use telmi2flam::cli::{self, Parsed};
+use telmi2flam::convert::{convert, Report, Request};
+use telmi2flam::package::Options;
 use telmi2flam::progress::{Event, Reporter};
 
 /// Écrit une ligne sur la sortie standard ; l'erreur d'écriture (tube fermé) est ignorée.
@@ -51,10 +56,6 @@ fn err_line(line: &str) {
 /// principal n'a qu'1 Mo sous Windows ; un débordement de pile aborte le processus sans
 /// message, contrairement à une erreur `invalid_content`.
 const WORKER_STACK: usize = 8 << 20;
-
-const USAGE: &str = "usage: telmi2flam [-h] [--version] [-o OUTPUT] [--plain] [--keep-size] \
-[--allow-missing] [--selector {carousel,image}] [--thumb-fit {flou,rogner,bandes}] \
-[--progress-json] [--info] [--cancel-on-stdin-eof] input";
 
 /// `--progress-json` actif : lu par le crochet de panique.
 static PROGRESS_JSON: AtomicBool = AtomicBool::new(false);
@@ -130,7 +131,7 @@ impl Events {
     }
 
     fn emit(&mut self, event: &Event<'_>) {
-        if !self.enabled || self.dead {
+        if !self.enabled || self.dead || matches!(event, Event::Info { .. }) {
             return;
         }
         let mut out = std::io::stdout().lock();
@@ -155,107 +156,32 @@ impl Events {
     }
 }
 
-/// Arguments reconnus.
-#[derive(Debug, Default)]
-struct Args {
-    input: Option<OsString>,
-    output: Option<OsString>,
-    plain: bool,
-    keep_size: bool,
-    allow_missing: bool,
-    selector: Selector,
-    thumb_fit: ThumbFit,
-    progress_json: bool,
-    info: bool,
-    version: bool,
-    cancel_on_stdin_eof: bool,
-}
-
-/// Analyse minimale des arguments (formes séparées seulement : `-o SORTIE`) ; `Err` : message
-/// d'erreur d'usage (code 2).
-fn parse(argv: &[OsString]) -> Result<Args, String> {
-    let mut args = Args::default();
-    let mut it = argv.iter();
-    let mut extra: Vec<String> = Vec::new();
-    while let Some(arg) = it.next() {
-        let mut value = |name: &str| {
-            it.next()
-                .filter(|v| !v.as_encoded_bytes().starts_with(b"-"))
-                .cloned()
-                .ok_or_else(|| format!("argument {name}: expected one argument"))
-        };
-        match arg.to_str() {
-            Some("--version") => args.version = true,
-            Some("-o" | "--output") => args.output = Some(value("-o/--output")?),
-            Some("--plain") => args.plain = true,
-            Some("--keep-size") => args.keep_size = true,
-            Some("--allow-missing") => args.allow_missing = true,
-            Some("--progress-json") => args.progress_json = true,
-            Some("--info") => args.info = true,
-            Some("--cancel-on-stdin-eof") => args.cancel_on_stdin_eof = true,
-            Some("--selector") => {
-                let v = value("--selector")?;
-                args.selector = match v.to_str() {
-                    Some("carousel") => Selector::Carousel,
-                    Some("image") => Selector::Image,
-                    _ => {
-                        return Err(format!(
-                            "argument --selector: invalid choice: {:?} \
-                             (choose from carousel, image)",
-                            v.to_string_lossy()
-                        ))
-                    }
-                };
-            }
-            Some("--thumb-fit") => {
-                let v = value("--thumb-fit")?;
-                args.thumb_fit = v.to_str().and_then(ThumbFit::from_name).ok_or_else(|| {
-                    format!(
-                        "argument --thumb-fit: invalid choice: {:?} \
-                         (choose from flou, rogner, bandes)",
-                        v.to_string_lossy()
-                    )
-                })?;
-            }
-            _ if arg.as_encoded_bytes().starts_with(b"-") && arg.len() > 1 => {
-                extra.push(arg.to_string_lossy().into_owned());
-            }
-            _ if args.input.is_none() => args.input = Some(arg.clone()),
-            _ => extra.push(arg.to_string_lossy().into_owned()),
-        }
-    }
-    if args.version {
-        return Ok(args);
-    }
-    if args.input.is_none() {
-        return Err("the following arguments are required: input".to_owned());
-    }
-    if !extra.is_empty() {
-        return Err(format!("unrecognized arguments: {}", extra.join(" ")));
-    }
-    Ok(args)
-}
-
 fn run() -> ExitCode {
     // args_os : un chemin non Unicode ne doit pas faire paniquer le binaire.
     let argv: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let args = match parse(&argv) {
-        Ok(args) => args,
-        Err(message) => {
+    let args = match cli::parse(&argv) {
+        Parsed::Run(args) => args,
+        // `-h` et `--version` : texte de Python sur stdout, tube fermé ignoré.
+        parsed @ (Parsed::Help | Parsed::Version) => {
+            if let Some((code, stdout, _)) = parsed.render() {
+                let mut out = std::io::stdout().lock();
+                let _ = out.write_all(stdout.as_bytes()).and_then(|()| out.flush());
+                return ExitCode::from(code);
+            }
+            return ExitCode::SUCCESS;
+        }
+        Parsed::Error(message) => {
             // Comme `_Parser.error` : l'événement d'abord, si `--progress-json` est présent.
             let mut events = Events::new(argv.iter().any(|a| a == "--progress-json"));
+            let usage = cli::usage_error(&message);
             return events.fail(
                 "bad_arguments",
                 &message,
                 2,
-                Some(&format!("{USAGE}\ntelmi2flam: error: {message}")),
+                Some(usage.trim_end_matches('\n')),
             );
         }
     };
-    if args.version {
-        out_line(&format!("telmi2flam {}", telmi2flam::VERSION));
-        return ExitCode::SUCCESS;
-    }
     let mut events = Events::new(args.progress_json);
     PROGRESS_JSON.store(args.progress_json, Ordering::SeqCst);
     // Après l'analyse des arguments, comme `_install_cancel_handlers` de Python. Un échec
@@ -272,7 +198,7 @@ fn run() -> ExitCode {
             );
         }
     }
-    let input = Path::new(args.input.as_deref().unwrap_or(OsStr::new("")));
+    let input = Path::new(&args.input);
     if args.info {
         return match telmi2flam::info::read_info(input) {
             // `read_info` ne consulte pas le jeton : un Ctrl+C reçu pendant la lecture annule
@@ -304,6 +230,7 @@ fn run() -> ExitCode {
             thumb_fit: args.thumb_fit,
         },
     };
+    let selector = args.selector;
     #[cfg(any(debug_assertions, feature = "test-hooks"))]
     let mut fault = fault::Fault::from_env();
     #[cfg(any(debug_assertions, feature = "test-hooks"))]
@@ -311,8 +238,10 @@ fn run() -> ExitCode {
     let result = {
         let mut sink = |e: &Event<'_>| {
             // `_warn` : la ligne de stderr d'abord, puis l'événement.
-            if let Event::Warning { message, .. } = e {
-                err_line(&format!("  ! {message}"));
+            match e {
+                Event::Warning { message, .. } => err_line(&format!("  ! {message}")),
+                Event::Info { message } => err_line(&format!("  i {message}")),
+                _ => {}
             }
             events.emit(e);
             #[cfg(any(debug_assertions, feature = "test-hooks"))]
@@ -331,7 +260,10 @@ fn run() -> ExitCode {
         convert(&req, &mut reporter, &cancel::is_cancelled)
     };
     match result {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(report) => {
+            summary(&report, selector.as_str(), args.progress_json);
+            ExitCode::SUCCESS
+        }
         Err(e) if e.code == "cancelled" => events.fail(
             e.code,
             &e.message,
@@ -339,6 +271,58 @@ fn run() -> ExitCode {
             Some("Annule : aucune sortie partielle conservee."),
         ),
         Err(e) => events.fail(e.code, &e.message, e.exit_code, None),
+    }
+}
+
+/// Résumé humain de `_convert` : sur stdout, ou sur stderr avec `--progress-json` (stdout est
+/// alors réservé aux événements). Tube fermé ignoré.
+fn summary(report: &Report, selector: &str, progress_json: bool) {
+    let say = |line: String| {
+        if progress_json {
+            err_line(&line);
+        } else {
+            out_line(&line);
+        }
+    };
+    let sep = std::path::MAIN_SEPARATOR;
+    for (i, p) in report.published.iter().enumerate() {
+        // Après le `.plain.pk` éventuel, le dossier `.plain` : terminé par le séparateur.
+        let dir = report.dir_only || i > 0;
+        say(format!(
+            "OK -> {}{}",
+            p.display(),
+            if dir { sep.to_string() } else { String::new() }
+        ));
+    }
+    let st = &report.stats;
+    say(format!("  titre   : {}", report.title));
+    say(format!(
+        "  stages  : {} | actions : {}",
+        st.stages, st.actions
+    ));
+    say(format!(
+        "  images  : {} | audio : {} | mp3map : {}",
+        st.img, st.audio, st.mp3map
+    ));
+    if st.resampled > 0 {
+        say(format!(
+            "  audio   : {} fichier(s) reechantillonne(s) a 44100 Hz",
+            st.resampled
+        ));
+    }
+    say(format!(
+        "  lib     : {} scripts framework | {} assets UI",
+        st.lib, st.ui
+    ));
+    say(format!("  choix   : selecteur '{selector}'"));
+    if st.missing > 0 || st.bad > 0 {
+        say(format!(
+            "  alertes : {} manquant(s) | {} illisible(s)",
+            st.missing, st.bad
+        ));
+    }
+    if !report.dir_only {
+        say(format!("  taille  : {:.1} Mo", report.size as f64 / 1e6));
     }
 }
 
@@ -425,59 +409,5 @@ mod fault {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn args(list: &[&str]) -> Result<Args, String> {
-        parse(&list.iter().map(OsString::from).collect::<Vec<_>>())
-    }
-
-    #[test]
-    fn options_du_launcher() {
-        let a = args(&[
-            "in.zip",
-            "-o",
-            "out.plain.pk",
-            "--progress-json",
-            "--thumb-fit",
-            "bandes",
-        ])
-        .unwrap();
-        assert_eq!(a.input.as_deref(), Some(OsStr::new("in.zip")));
-        assert_eq!(a.output.as_deref(), Some(OsStr::new("out.plain.pk")));
-        assert!(a.progress_json && !a.plain && !a.info);
-        assert_eq!(a.thumb_fit, ThumbFit::Bandes);
-        let a = args(&["--allow-missing", "x.zip", "--plain", "--selector", "image"]).unwrap();
-        assert!(a.allow_missing && a.plain);
-        assert_eq!(a.selector, Selector::Image);
-        assert_eq!(args(&["x.zip"]).unwrap().thumb_fit, ThumbFit::Flou);
-        assert!(!args(&["x.zip"]).unwrap().cancel_on_stdin_eof);
-        assert!(
-            args(&["x.zip", "--cancel-on-stdin-eof"])
-                .unwrap()
-                .cancel_on_stdin_eof
-        );
-    }
-
-    #[test]
-    fn arguments_invalides() {
-        for bad in [
-            &[][..],
-            &["--progress-json"],
-            &["x.zip", "y.zip"],
-            &["x.zip", "--bogus"],
-            &["x.zip", "-o"],
-            &["x.zip", "-o", "--plain"],
-            &["x.zip", "--selector", "nope"],
-            &["x.zip", "--thumb-fit", "x"],
-        ] {
-            assert!(args(bad).is_err(), "{bad:?}");
-        }
-        // `--version` l'emporte, comme l'action `version` d'argparse.
-        assert!(args(&["--version"]).unwrap().version);
     }
 }
