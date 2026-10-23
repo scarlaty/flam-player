@@ -56,6 +56,9 @@ pub struct Download<'a> {
     pub dest: &'a Path,
     /// Taille maximale acceptée.
     pub max_bytes: u64,
+    /// `true` si le client n'utilise aucun mandataire (podcasts, D10) : les erreurs de
+    /// connexion le rappellent, un mandataire d'entreprise étant alors une cause probable.
+    pub ignores_proxy: bool,
 }
 
 /// `<dest>.part`.
@@ -68,14 +71,18 @@ pub fn part_path(dest: &Path) -> PathBuf {
 /// Message d'une adresse refusée par le contrôle D10 (`podcast::net`). L'URL n'y figure jamais.
 pub const BLOCKED_MESSAGE: &str = "téléchargement refusé : adresse privée, locale ou non publique";
 
-fn network(err: &reqwest::Error) -> AppError {
+fn network(err: &reqwest::Error, ignores_proxy: bool) -> AppError {
     if crate::podcast::net::is_blocked(err) {
         return AppError::Network(BLOCKED_MESSAGE.into());
     }
+    let proxy_reason;
     let reason = if err.is_timeout() {
         "délai dépassé"
     } else if err.is_redirect() {
         "redirection refusée ou trop longue"
+    } else if err.is_connect() && ignores_proxy {
+        proxy_reason = format!("connexion impossible ({})", crate::podcast::net::PROXY_HINT);
+        &proxy_reason
     } else if err.is_connect() {
         "connexion impossible"
     } else {
@@ -159,7 +166,7 @@ async fn attempt(
             .header(IF_RANGE, validator.if_range().unwrap_or_default());
     }
     let response = tokio::select! {
-        r = request.send() => r.map_err(|e| network(&e))?,
+        r = request.send() => r.map_err(|e| network(&e, req.ignores_proxy))?,
         _ = cancelled(cancel) => return Err(AppError::Cancelled),
     };
     let status = response.status();
@@ -205,7 +212,7 @@ async fn attempt(
     let mut response = response;
     loop {
         let chunk = tokio::select! {
-            c = response.chunk() => c.map_err(|e| network(&e))?,
+            c = response.chunk() => c.map_err(|e| network(&e, req.ignores_proxy))?,
             _ = cancelled(cancel) => {
                 file.flush().await?;
                 return Err(AppError::Cancelled);
@@ -226,6 +233,9 @@ async fn attempt(
     file.flush().await?;
     file.sync_all().await?;
     drop(file);
+    // Sans longueur annoncée, la fin du corps ne se distingue d'une coupure que si le transfert
+    // est « chunked » (hyper signale alors l'erreur : voir `chunk()` ci-dessus) ; une réponse
+    // HTTP/1.0 sans `Content-Length` coupée par fermeture reste indétectable (résidu #370).
     if let Some(total) = total {
         if received != total {
             // Connexion coupée : le `.part` est gardé pour une reprise.

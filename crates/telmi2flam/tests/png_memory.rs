@@ -76,7 +76,7 @@ fn never() -> bool {
 
 #[test]
 fn taille_annoncee_sans_donnees_n_engage_pas_de_memoire() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     // 178 956 970 x 1 en RGBA 16 bits : 1,4 Go de lignes brutes et 716 Mo de RGBA annoncés
     let idat = miniz_oxide::deflate::compress_to_vec_zlib(&[0u8; 100], 6);
     let data = png(178_956_970, 1, 16, 6, &[], &idat);
@@ -100,21 +100,39 @@ fn many_ztxt(n: usize) -> Vec<u8> {
     png(1, 1, 8, 0, &vec![body; n], &idat)
 }
 
+/// Meilleur temps de décodage sur trois essais (le minimum écarte le bruit de charge).
+fn temps_decodage(data: &[u8]) -> Duration {
+    (0..3)
+        .map(|_| {
+            let start = Instant::now();
+            let img = decode_rgba(data, &never).unwrap();
+            let elapsed = start.elapsed();
+            assert_eq!((img.width, img.height), (1, 1));
+            elapsed
+        })
+        .min()
+        .unwrap()
+}
+
 #[test]
-fn cent_mille_chunks_ztxt_restent_rapides() {
-    let _serial = SERIAL.lock().unwrap();
-    let data = many_ztxt(100_000);
-    let start = Instant::now();
-    let img = decode_rgba(&data, &never).unwrap();
-    let elapsed = start.elapsed();
-    assert_eq!((img.width, img.height), (1, 1));
-    // ~1 s en debug sur un poste chargé ; bien moins en release
-    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+fn cent_mille_chunks_ztxt_restent_lineaires() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let petit = temps_decodage(&many_ztxt(10_000));
+    let grand = temps_decodage(&many_ztxt(100_000));
+    // On mesure la complexité, pas l'horloge : 10x plus de chunks doit coûter ~10x (linéaire),
+    // alors qu'un coût quadratique donnerait ~100x. Borne à 40x pour absorber le bruit.
+    let rapport = grand.as_secs_f64() / petit.as_secs_f64().max(1e-3);
+    assert!(
+        rapport < 40.0,
+        "rapport {rapport:.1} ({petit:?} -> {grand:?})"
+    );
+    // garde-fou absolu très large (blocage), insensible à la charge normale
+    assert!(grand < Duration::from_secs(120), "{grand:?}");
 }
 
 #[test]
 fn annulation_pendant_les_chunks_avant_l_image() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let data = many_ztxt(1000);
     let calls = Cell::new(0);
     let stop = || {
@@ -127,7 +145,7 @@ fn annulation_pendant_les_chunks_avant_l_image() {
 
 #[test]
 fn annulation_pendant_les_chunks_apres_l_image() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     // image 1 x 1 (une ligne), puis 1000 chunks de texte après l'IDAT
     let mut data = many_ztxt(0);
     data.truncate(data.len() - 12); // retire l'IEND

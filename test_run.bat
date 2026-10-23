@@ -130,6 +130,7 @@ REM ---------------- 6. Bout en bout ----------------
 echo.
 echo ############ 6. Bout en bout : TELMI -^> telmi2flam -^> flam-player ############
 set "E2E_RC=SKIP"
+set "E2E_NOTE="
 if "!HAVE_PY!"=="1" (
     "%PY%" "%ROOT%tests\e2e\e2e_telmi.py" --build "%BUILD%"
     set "E2E_RC=!ERRORLEVEL!"
@@ -140,6 +141,7 @@ if "!HAVE_PY!"=="1" (
     set "EMBED_RC=!ERRORLEVEL!"
     echo EXIT_CODE=!EMBED_RC!
     if not "!EMBED_RC!"=="0" if not "!EMBED_RC!"=="77" set "E2E_RC=!EMBED_RC!"
+    if "!EMBED_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE= (incrustation : SKIP partiel)"
 ) else (
     echo [SKIP] python avec Pillow introuvable : definir FLAM_PYTHON
 )
@@ -153,7 +155,7 @@ echo 3. Audio reel            : !AUDIO_RC!
 echo 4. Tests isoles          : !ISO_FAIL! en echec
 for %%s in (!ISO_SUMMARY!) do echo      %%s
 echo 5. Convertisseur         : !CONV_RC!
-echo 6. Bout en bout          : !E2E_RC!
+echo 6. Bout en bout          : !E2E_RC!!E2E_NOTE!
 echo   (0 = OK ; SKIP = saute ; 1 = assertion/erreur, 3 = timeout, autre = crash)
 echo ========================================
 

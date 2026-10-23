@@ -276,6 +276,16 @@ impl DeviceKeys {
         encrypt_zero_padded(&self.story_key, &self.story_iv, plain)
     }
 
+    /// Vrai si le fichier `info` chiffré `info` se déchiffre avec ces clés en texte lisible
+    /// (UTF-8, premier bloc strict : [`super::carrier::info_text`]), **même sans titre** (texte
+    /// fait de lignes vides ou d'espaces). Le jugement porte sur la structure du clair, pas sur
+    /// la présence d'un titre (#326). Le clair est effacé de la mémoire.
+    pub fn decrypts_info(&self, info: &[u8]) -> bool {
+        super::carrier::info_text(&self.story_key, &self.story_iv, info)
+            .map(zeroize::Zeroizing::new)
+            .is_some()
+    }
+
     /// Titre (première ligne non vide) du fichier `info` chiffré `info` d'une histoire, s'il se
     /// déchiffre avec ces clés en texte lisible (même contrôle que le mode carrier :
     /// [`super::carrier::info_text`]). `None` sinon : la clé ne correspond pas, ou `info` est

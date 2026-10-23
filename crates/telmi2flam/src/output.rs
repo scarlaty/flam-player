@@ -16,7 +16,11 @@
 //!   attributs externes `0o600 << 16`, bit 11 (UTF-8) seulement pour un nom non ASCII, ZIP64
 //!   aux mêmes seuils que `zipfile`. Seul écart : l'horodatage est fixé au 1980-01-01 00:00
 //!   (Python prend l'heure locale, PORT-RUST.md §4.1) ; le lecteur du player
-//!   (`src/formats/pk_reader.c`) l'ignore.
+//!   (`src/formats/pk_reader.c`) l'ignore ;
+//! - **MP3 référencés** ([`Data::Source`], #355) : relus dans l'archive d'entrée un à un, au
+//!   moment de leur écriture (`.plain.pk` puis dossier `.plain`), et refusés
+//!   (`archive_unreadable`, sortie non publiée) si leur taille ou leur CRC-32 diffère de ceux
+//!   de l'assemblage. Une seule de ces entrées est en mémoire à la fois.
 //!
 //! Limites reprises de Python : le dossier `.plain` existant est mis à jour fichier par fichier
 //! (`_commit`), donc sans atomicité, et les publications du `.plain.pk` puis du `.plain` ne sont
@@ -29,15 +33,17 @@
 //! ASCII (Python accepte tout `str.isdigit()`) ; un lien symbolique orphelin est supprimé sans
 //! être suivi.
 
+use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::Duration;
 
+use crate::archive::Archive;
 use crate::error::ConvError;
-use crate::package::Package;
+use crate::package::{Data, Package};
 use crate::progress::{Phase, Progress};
 
 /// `zipfile.ZIP64_LIMIT` : au-delà, tailles et positions passent en ZIP64.
@@ -97,6 +103,56 @@ pub fn check_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<(), C
 pub enum ZipStop {
     Io(io::Error),
     Cancelled,
+    /// Entrée référencée illisible ou modifiée dans l'archive d'entrée.
+    Source(ConvError),
+}
+
+/// Archive d'où relire les entrées [`Data::Source`].
+pub(crate) trait Source {
+    /// Octets de l'entrée `name`, refusés si leur taille ou leur CRC-32 diffère.
+    fn fetch(&mut self, name: &str, size: u64, crc: u32) -> Result<Vec<u8>, ConvError>;
+}
+
+/// Pas d'archive : toute entrée référencée est refusée.
+struct NoSource;
+
+impl Source for NoSource {
+    fn fetch(&mut self, name: &str, _: u64, _: u32) -> Result<Vec<u8>, ConvError> {
+        Err(ConvError::internal_error(format!(
+            "{name} : entree referencee sans archive"
+        )))
+    }
+}
+
+impl<R: Read + Seek> Source for Archive<R> {
+    fn fetch(&mut self, name: &str, size: u64, crc: u32) -> Result<Vec<u8>, ConvError> {
+        match self.read(name)? {
+            Some(data) if data.len() as u64 == size && crc32fast::hash(&data) == crc => Ok(data),
+            _ => Err(ConvError::archive_unreadable(format!(
+                "{name} : entree modifiee ou disparue depuis sa lecture"
+            ))),
+        }
+    }
+}
+
+/// Contenu d'une entrée à écrire : en mémoire, ou relu dans l'archive d'entrée.
+pub(crate) trait Body {
+    fn load(&self, src: &mut dyn Source) -> Result<Cow<'_, [u8]>, ConvError>;
+}
+
+impl Body for Vec<u8> {
+    fn load(&self, _: &mut dyn Source) -> Result<Cow<'_, [u8]>, ConvError> {
+        Ok(Cow::Borrowed(self))
+    }
+}
+
+impl Body for Data {
+    fn load(&self, src: &mut dyn Source) -> Result<Cow<'_, [u8]>, ConvError> {
+        match self {
+            Data::Bytes(b) => Ok(Cow::Borrowed(b)),
+            Data::Source { name, size, crc } => Ok(Cow::Owned(src.fetch(name, *size, *crc)?)),
+        }
+    }
 }
 
 impl From<io::Error> for ZipStop {
@@ -146,9 +202,22 @@ pub fn write_zip<W: Write>(
     cancelled: &dyn Fn() -> bool,
     hook: &mut dyn FnMut(usize) -> io::Result<()>,
 ) -> Result<(), ZipStop> {
+    zip_entries(out, entries, &mut NoSource, limits, cancelled, hook)
+}
+
+/// [`write_zip`] pour des entrées en mémoire ou relues dans `src` (une à la fois, après la
+/// consultation de `cancelled` et avant l'en-tête local).
+fn zip_entries<W: Write, D: Body>(
+    out: &mut W,
+    entries: &[(String, D)],
+    src: &mut dyn Source,
+    limits: ZipLimits,
+    cancelled: &dyn Fn() -> bool,
+    hook: &mut dyn FnMut(usize) -> io::Result<()>,
+) -> Result<(), ZipStop> {
     let mut w = Counted { inner: out, pos: 0 };
     let mut written = Vec::with_capacity(entries.len());
-    for (i, (name, data)) in entries.iter().enumerate() {
+    for (i, (name, body)) in entries.iter().enumerate() {
         if cancelled() {
             return Err(ZipStop::Cancelled);
         }
@@ -161,6 +230,8 @@ pub fn write_zip<W: Write>(
                 format!("nom d'entree trop long ({} octets)", name.len()),
             )));
         }
+        let data = body.load(src).map_err(ZipStop::Source)?;
+        let data: &[u8] = &data;
         let size = data.len() as u64;
         // `_open_to_write` : `zip64 = file_size * 1.05 > ZIP64_LIMIT` (calcul en flottant).
         let local_zip64 = (size as f64) * 1.05 > limits.zip64 as f64;
@@ -346,7 +417,7 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 
 impl Target {
     /// `out` : option `-o` ; `emit_plain` : option `--plain`.
-    pub fn new(out: Option<&Path>, emit_plain: bool, package: &Package) -> Target {
+    pub fn new<D>(out: Option<&Path>, emit_plain: bool, package: &Package<D>) -> Target {
         let out_path = match out {
             Some(p) => p.to_owned(),
             None => PathBuf::from(default_name(&package.title, &package.uuid)),
@@ -435,8 +506,48 @@ pub fn write_package_progress(
     )
 }
 
+/// [`write_package_progress`] d'un paquet de [`crate::package::build_package_streamed`] : les
+/// entrées [`Data::Source`] sont relues dans `archive` (celle de l'assemblage), une à la fois.
+pub fn write_package_from<R: Read + Seek>(
+    package: &Package<Data>,
+    archive: &mut Archive<R>,
+    target: &Target,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn Progress,
+) -> Result<Vec<PathBuf>, ConvError> {
+    write_any(
+        package,
+        archive,
+        target,
+        ZipLimits::PYTHON,
+        cancelled,
+        progress,
+        &mut |_| Ok(()),
+    )
+}
+
 pub(crate) fn write_package_with(
     package: &Package,
+    target: &Target,
+    limits: ZipLimits,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn Progress,
+    hook: Hook<'_>,
+) -> Result<Vec<PathBuf>, ConvError> {
+    write_any(
+        package,
+        &mut NoSource,
+        target,
+        limits,
+        cancelled,
+        progress,
+        hook,
+    )
+}
+
+pub(crate) fn write_any<D: Body>(
+    package: &Package<D>,
+    src: &mut dyn Source,
     target: &Target,
     limits: ZipLimits,
     cancelled: &dyn Fn() -> bool,
@@ -454,7 +565,7 @@ pub(crate) fn write_package_with(
     }
     let mut tmps = Vec::new();
     let result = write_and_commit(
-        package, target, limits, cancelled, progress, hook, &mut tmps,
+        package, src, target, limits, cancelled, progress, hook, &mut tmps,
     );
     discard(&tmps);
     untrack(&tmps);
@@ -484,12 +595,15 @@ impl From<ZipStop> for Fail {
         match e {
             ZipStop::Io(e) => Fail::Io(e),
             ZipStop::Cancelled => Fail::Conv(ConvError::cancelled()),
+            ZipStop::Source(e) => Fail::Conv(e),
         }
     }
 }
 
-fn write_and_commit(
-    package: &Package,
+#[allow(clippy::too_many_arguments)]
+fn write_and_commit<D: Body>(
+    package: &Package<D>,
+    src: &mut dyn Source,
     target: &Target,
     limits: ZipLimits,
     cancelled: &dyn Fn() -> bool,
@@ -512,12 +626,19 @@ fn write_and_commit(
         let mut buf = BufWriter::with_capacity(1 << 20, file);
         // Une étape par entrée écrite (après `writestr` en Python) : l'entrée `i - 1` est
         // complète quand l'en-tête de l'entrée `i` est écrit, la dernière au retour.
-        write_zip(&mut buf, &package.entries, limits, cancelled, &mut |i| {
-            if i > 0 {
-                progress.tick(Phase::Zip);
-            }
-            hook(Step::WritePk(i))
-        })?;
+        zip_entries(
+            &mut buf,
+            &package.entries,
+            src,
+            limits,
+            cancelled,
+            &mut |i| {
+                if i > 0 {
+                    progress.tick(Phase::Zip);
+                }
+                hook(Step::WritePk(i))
+            },
+        )?;
         if !package.entries.is_empty() {
             progress.tick(Phase::Zip);
         }
@@ -540,10 +661,11 @@ fn write_and_commit(
         // `discard` et ici est refusé au lieu d'être suivi (écriture hors de la destination).
         fs::create_dir(&tmp)?;
         let real = fs::canonicalize(&tmp)?;
-        for (i, (name, data)) in package.entries.iter().enumerate() {
+        for (i, (name, body)) in package.entries.iter().enumerate() {
             if cancelled() {
                 return Err(Fail::Conv(ConvError::cancelled()));
             }
+            let data = body.load(src).map_err(Fail::Conv)?;
             let mut parts: Vec<&str> = name.split('/').collect();
             let file_name = parts.pop().unwrap_or_default();
             let parent = parts.iter().fold(real.clone(), |p, c| p.join(c));
@@ -559,7 +681,7 @@ fn write_and_commit(
                 .write(true)
                 .create_new(true)
                 .open(parent.join(file_name))?;
-            f.write_all(data)?;
+            f.write_all(&data)?;
             progress.tick(Phase::Zip);
         }
         commits.push((tmp, plain_dir.clone()));
@@ -1353,6 +1475,145 @@ mod tests {
             write_package(&pkg, &t, &never).unwrap_err().code,
             "output_error"
         );
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
+    }
+
+    /// Archive d'entrée en mémoire et paquet dont `sounds/s.mp3` y est référencé (#355).
+    fn streamed_sample(mp3: &[u8]) -> (Archive<Cursor<Vec<u8>>>, Package<Data>) {
+        let mut zip = Vec::new();
+        let src = [("histoire/audios/s.mp3".to_owned(), mp3.to_vec())];
+        write_zip(&mut zip, &src, ZipLimits::PYTHON, &never, &mut |_| Ok(())).unwrap();
+        let archive = Archive::new(Cursor::new(zip), "in.zip".into()).unwrap();
+        let entries = sample()
+            .entries
+            .into_iter()
+            .map(|(n, d)| {
+                let data = if n == "sounds/s.mp3" {
+                    Data::Source {
+                        name: "histoire/audios/s.mp3".to_owned(),
+                        size: d.len() as u64,
+                        crc: crc32fast::hash(&d),
+                    }
+                } else {
+                    Data::Bytes(d)
+                };
+                (n, data)
+            })
+            .collect();
+        let pkg = Package {
+            entries,
+            warnings: Vec::new(),
+            title: "Titre".to_owned(),
+            uuid: [0xAB; 16],
+            stats: Default::default(),
+        };
+        (archive, pkg)
+    }
+
+    /// MP3 relu en flux : mêmes octets que le paquet en mémoire, au `.plain.pk` comme au
+    /// dossier ; panne d'écriture injectée au milieu de l'entrée relue (en-tête écrit, données
+    /// non) puis avant son fichier dans le dossier : ancienne sortie intacte, aucun `.part`
+    /// (l'échec de la relecture elle-même : `mp3_en_flux_modifie_refuse`).
+    #[test]
+    fn mp3_en_flux_et_panne_au_milieu() {
+        let mem = sample();
+        let (mut archive, pkg) = streamed_sample(&[0xFFu8; 3000]);
+        let i = pkg
+            .entries
+            .iter()
+            .position(|(n, _)| n == "sounds/s.mp3")
+            .unwrap();
+        for (k, step) in [Step::WritePk(i), Step::WriteDir(i)]
+            .into_iter()
+            .enumerate()
+        {
+            let d = scratch(&format!("flux-panne-{k}"));
+            old_output(&d);
+            let target = Target::new(Some(&d.join("o.plain.pk")), true, &pkg);
+            let err = write_any(
+                &pkg,
+                &mut archive,
+                &target,
+                ZipLimits::PYTHON,
+                &never,
+                &mut (),
+                &mut |s| {
+                    if s == step {
+                        Err(io::Error::other("panne injectee"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(err.code, "output_error", "{step:?}");
+            assert_eq!(fs::read(d.join("o.plain.pk")).unwrap(), b"ancien paquet");
+            assert_eq!(fs::read(d.join("o.plain/version")).unwrap(), b"ancien");
+            assert_no_part(&d);
+            // Reprise : sortie complète, identique au paquet en mémoire.
+            write_package_from(&pkg, &mut archive, &target, &never, &mut ()).unwrap();
+            assert_eq!(read_pk(&d.join("o.plain.pk")), mem.entries);
+            for (name, data) in &mem.entries {
+                assert_eq!(&fs::read(d.join("o.plain").join(name)).unwrap(), data);
+            }
+            assert_no_part(&d);
+        }
+        // Mêmes octets que l'écriture en mémoire.
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        let ok = |_| Ok(());
+        zip_entries(
+            &mut a,
+            &pkg.entries,
+            &mut archive,
+            ZipLimits::PYTHON,
+            &never,
+            &mut { ok },
+        )
+        .unwrap();
+        write_zip(&mut b, &mem.entries, ZipLimits::PYTHON, &never, &mut { ok }).unwrap();
+        assert_eq!(a, b);
+    }
+
+    /// Archive d'entrée modifiée (ou entrée disparue) entre l'assemblage et l'écriture : refus
+    /// (`archive_unreadable`), ancienne sortie intacte, aucun `.part` ; sans archive, refus.
+    #[test]
+    fn mp3_en_flux_modifie_refuse() {
+        let (_, pkg) = streamed_sample(&[0xFFu8; 3000]);
+        let mut changed = [0xFFu8; 3000];
+        changed[1500] = 0;
+        for (what, mp3) in [("contenu", &changed[..]), ("taille", &[0xFFu8; 2999][..])] {
+            let (mut other, _) = streamed_sample(mp3);
+            let d = scratch(&format!("flux-modifie-{what}"));
+            old_output(&d);
+            let target = Target::new(Some(&d.join("o.plain.pk")), true, &pkg);
+            let e = write_package_from(&pkg, &mut other, &target, &never, &mut ()).unwrap_err();
+            assert_eq!(e.code, "archive_unreadable", "{what}");
+            assert_eq!(fs::read(d.join("o.plain.pk")).unwrap(), b"ancien paquet");
+            assert_eq!(fs::read(d.join("o.plain/version")).unwrap(), b"ancien");
+            assert_no_part(&d);
+        }
+        // Entrée absente de l'archive.
+        let mut empty = Vec::new();
+        let none: &[(String, Vec<u8>)] = &[];
+        write_zip(&mut empty, none, ZipLimits::PYTHON, &never, &mut |_| Ok(())).unwrap();
+        let mut empty = Archive::new(Cursor::new(empty), "vide.zip".into()).unwrap();
+        let d = scratch("flux-absent");
+        let target = Target::new(Some(&d.join("o.plain.pk")), false, &pkg);
+        let e = write_package_from(&pkg, &mut empty, &target, &never, &mut ()).unwrap_err();
+        assert_eq!(e.code, "archive_unreadable");
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
+        // Sans archive (chemin interne) : erreur interne, jamais d'entrée vide écrite.
+        let e = write_any(
+            &pkg,
+            &mut NoSource,
+            &target,
+            ZipLimits::PYTHON,
+            &never,
+            &mut (),
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "internal_error");
         assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
     }
 

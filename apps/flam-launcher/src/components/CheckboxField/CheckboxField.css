@@ -22,3 +22,8 @@
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
 }
+
+.fl-check input[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

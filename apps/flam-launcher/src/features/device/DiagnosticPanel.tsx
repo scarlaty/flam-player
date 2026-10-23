@@ -37,6 +37,9 @@ export function DiagnosticPanel() {
   const [state, setState] = useState<State>({ phase: "idle" });
   const [linkNote, setLinkNote] = useState<LinkNote>("idle");
   const areaRef = useRef<HTMLTextAreaElement>(null);
+  // Verrou de `copy()` : la garde `working` est figée au rendu, deux clics avant le rendu suivant
+  // passeraient tous deux ; la référence est lue et posée de façon synchrone (#342).
+  const busyRef = useRef(false);
   const titleId = useId();
   const areaId = useId();
   const working = state.phase === "working";
@@ -51,20 +54,25 @@ export function DiagnosticPanel() {
   }, [state]);
 
   async function copy() {
-    if (working) return;
-    setState({ phase: "working" });
-    let diagnostic: string;
+    if (busyRef.current) return;
+    busyRef.current = true;
     try {
-      diagnostic = await getDeviceDiagnostic();
-    } catch (error) {
-      setState({ phase: "error", message: toAppError(error).message });
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(diagnostic);
-      setState({ phase: "copied" });
-    } catch {
-      setState({ phase: "fallback", diagnostic });
+      setState({ phase: "working" });
+      let diagnostic: string;
+      try {
+        diagnostic = await getDeviceDiagnostic();
+      } catch (error) {
+        setState({ phase: "error", message: toAppError(error).message });
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(diagnostic);
+        setState({ phase: "copied" });
+      } catch {
+        setState({ phase: "fallback", diagnostic });
+      }
+    } finally {
+      busyRef.current = false;
     }
   }
 

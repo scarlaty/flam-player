@@ -114,7 +114,7 @@ pub(crate) fn retry_transient<T>(
 }
 
 /// Renomme en patientant si le fichier est brièvement verrouillé (antivirus, indexeur).
-fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
     retry_transient(|| fs::rename(from, to), thread::sleep)
 }
 
