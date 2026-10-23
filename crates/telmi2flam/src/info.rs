@@ -12,6 +12,7 @@ use std::path::Path;
 use crate::archive::{find_root, fold, Archive};
 use crate::error::ConvError;
 use crate::json::{expect, load_json, Kind, Value};
+use crate::progress::json_str;
 
 /// Valeur scalaire de `read_info` (`str`, `int` ou `float`, jamais `bool`), sinon `null`.
 #[derive(Debug, Clone, PartialEq)]
@@ -109,31 +110,6 @@ pub fn py_float_repr(f: f64) -> String {
         format!("{a}.{b}")
     };
     format!("{sign}{body}")
-}
-
-/// Chaîne JSON avec `ensure_ascii=True` : tout ce qui n'est pas entre `' '` et `'~'` est
-/// échappé, en `\uXXXX` minuscule (paires de surrogates au-delà du plan de base).
-fn json_str(s: &str, out: &mut String) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            ' '..='~' => out.push(c),
-            _ => {
-                let mut buf = [0u16; 2];
-                for unit in c.encode_utf16(&mut buf) {
-                    out.push_str(&format!("\\u{unit:04x}"));
-                }
-            }
-        }
-    }
-    out.push('"');
 }
 
 impl Info {
