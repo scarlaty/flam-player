@@ -11,6 +11,7 @@
       LICENSE                     LGPL-2.1 de FFmpeg
       LICENSE-LAME                licence de LAME (LGPL, GNU Library GPL v2 ; encodeur MP3 libmp3lame), + LICENSE-LAME-NOTICE
       LICENSE-MINGW-RUNTIME       mentions du runtime MinGW-w64 lié statiquement
+      ffmpeg.sha256               SHA-256 des exécutables (vérifiés par le launcher avant chaque lancement)
       BUILD.txt                   versions, sources exactes, empreintes, configuration (-buildconf)
 
   Le binaire est construit par nous (tools/ffmpeg/build.sh : cross-compilation MinGW-w64 sous
@@ -171,11 +172,26 @@ try {
     }
 
     # --- BUILD.txt ------------------------------------------------------------------------
+    # Commit fourni par la CI (tête de la PR, pas la fusion éphémère) ; sinon HEAD local.
     $commit = 'inconnu'
-    try {
+    if ($env:FLAM_SOURCE_COMMIT -match '^[0-9a-f]{40}$') { $commit = $env:FLAM_SOURCE_COMMIT }
+    else { try {
       $rev = & git -C $RepoRoot rev-parse HEAD 2>$null
       if ($LASTEXITCODE -eq 0 -and $rev) { $commit = $rev.Trim() }
-    } catch { }
+    } catch { } }
+    # Empreintes des exécutables : ffmpeg.sha256 (format sha256sum), vérifié par le launcher avant
+    # chaque lancement (src-tauri/src/ffmpeg.rs), et rappelé dans BUILD.txt avec tailles et date.
+    $hashLines = @()
+    $sizeLines = @()
+    foreach ($exe in 'ffmpeg.exe', 'ffprobe.exe') {
+      $file = Join-Path $OutDir $exe
+      $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+      $hashLines += "$hash  $exe"
+      $sizeLines += ('  {0}  {1} octets ({2:N1} Mo)  sha256 {3}' -f $exe, (Get-Item -LiteralPath $file).Length, ((Get-Item -LiteralPath $file).Length / 1MB), $hash)
+    }
+    [IO.File]::WriteAllText((Join-Path $OutDir 'ffmpeg.sha256'), (($hashLines -join "`n") + "`n"), (New-Object Text.UTF8Encoding $false))
+    $builtOn = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
+    $sizes = $sizeLines -join "`n"
     $configureArgs = (Get-Content -LiteralPath (Join-Path $ArtifactDir 'configure-args.txt')) -join "`n"
     $buildTxt = @"
 FFmpeg $($pins['FFMPEG_VERSION']) minimal, audio seulement (Windows x64, statique, LGPL-2.1-or-later)
@@ -197,6 +213,9 @@ Sources exactes (offre de sources LGPL)
   refait en modifiant ces sources puis en relançant tools/ffmpeg/build.sh. Les mainteneurs de
   Flam Launcher fournissent aussi ces sources sur demande, au prix de la distribution et pendant
   au moins trois ans (https://github.com/scarlaty/flam-player/issues).
+
+Origine et empreintes de ce build (construit par nous le $builtOn)
+$sizes
 
 Configuration (ffmpeg -buildconf)
 $buildconf
