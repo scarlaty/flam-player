@@ -337,6 +337,25 @@ it("double création : modifier le pack débloque la création d'un autre pack",
   await waitFor(() => expect(button).toBeEnabled());
 });
 
+it("double création : l'envoi de l'éditeur quitté échoue, l'éditeur rouvert se débloque", async () => {
+  window.localStorage.setItem(RIGHTS_KEY, "1");
+  let fail!: () => void;
+  created = () =>
+    new Promise(
+      (_, reject) => (fail = () => reject({ kind: "io", message: "disque plein" })),
+    );
+  const first = renderEditor();
+  fireEvent.click(await readyButton());
+  await waitFor(() => expect(createCalls()).toHaveLength(1));
+  first.unmount();
+  renderEditor();
+  await screen.findByText(/La création de ce pack est déjà en cours/);
+  fail();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Créer l'histoire" })).toBeEnabled(),
+  );
+});
+
 it("double création : éditeur rouvert pendant l'envoi, la création est bloquée", async () => {
   window.localStorage.setItem(RIGHTS_KEY, "1");
   let release!: (value: unknown) => void;

@@ -11,13 +11,31 @@ const inFlight = new Map<number, number>();
 /** Tâches créées à partir d'une révision du brouillon : identifiant de tâche -> révision. */
 const tasks = new Map<string, number>();
 
+const listeners = new Set<() => void>();
+let version = 0;
+const notify = () => {
+  version += 1;
+  listeners.forEach((listener) => listener());
+};
+
+/** Abonnement aux changements des envois en cours (pour `useSyncExternalStore`). */
+export function subscribeCreations(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => void listeners.delete(listener);
+}
+
+/** Change à chaque début ou fin d'envoi : l'éditeur rouvert se met alors à jour. */
+export const creationsVersion = () => version;
+
 /** Marque l'envoi de la révision `revision` ; renvoie la fonction qui lève la marque. */
 export function beginCreation(revision: number): () => void {
   inFlight.set(revision, (inFlight.get(revision) ?? 0) + 1);
+  notify();
   return () => {
     const left = (inFlight.get(revision) ?? 1) - 1;
     if (left <= 0) inFlight.delete(revision);
     else inFlight.set(revision, left);
+    notify();
   };
 }
 
@@ -28,7 +46,7 @@ export function rememberTask(taskId: string, revision: number): void {
 
 /**
  * Une création issue de cette révision est en cours : envoi en cours, ou tâche encore active
- * d'après `isActive` (tâches du panneau).
+ * d'après `isActive` (tâches du panneau ; absentes hors de l'application, où seul l'envoi compte).
  */
 export function isCreating(revision: number, isActive: (taskId: string) => boolean) {
   if (inFlight.has(revision)) return true;
@@ -42,4 +60,5 @@ export function isCreating(revision: number, isActive: (taskId: string) => boole
 export function resetCreations(): void {
   inFlight.clear();
   tasks.clear();
+  notify();
 }

@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { toAppError, type AppError } from "../../../api/error";
 import { createPack } from "../../../api/install";
@@ -40,7 +41,13 @@ import {
   useDraftAutosave,
   useFeedInfo,
 } from "./hooks";
-import { beginCreation, isCreating, rememberTask } from "./creations";
+import {
+  beginCreation,
+  creationsVersion,
+  isCreating,
+  rememberTask,
+  subscribeCreations,
+} from "./creations";
 import { PackTree, menuLabel } from "./PackTree";
 import {
   MAX_MENU_DEPTH,
@@ -179,6 +186,8 @@ export function PackEditor({
   const [rightsOpen, setRightsOpen] = useState(false);
   // Révision lue avec le brouillon ; `edited` : modifié depuis, donc plus celui d'une création
   // en cours (#429).
+  // Relit l'état des envois en cours quand une autre instance de l'éditeur les termine.
+  useSyncExternalStore(subscribeCreations, creationsVersion);
   const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
   const [edited, setEdited] = useState(false);
   const createLock = useRef(false);
@@ -391,6 +400,7 @@ export function PackEditor({
       const submitted = saved.composition ?? current;
       // Verrou durable : une autre instance de l'éditeur (quitté puis rouvert) peut déjà créer
       // ce brouillon.
+      // Sortie sans message : une autre instance crée déjà ce brouillon (le bouton le dit).
       if (isCreating(saved.revision, isTaskActive)) return;
       endCreation = beginCreation(saved.revision);
       const created = await createPack(submitted, saved.revision);
