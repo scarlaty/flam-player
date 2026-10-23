@@ -26,7 +26,7 @@
 //! - **Espace disque** (D5) vérifié avant tout téléchargement.
 //! - `library.json` n'est jamais touché ici : seule la publication existante l'écrit.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -299,25 +299,28 @@ pub fn archive_path(cache_root: &Path, id: &str) -> AppResult<PathBuf> {
     Ok(workdir_path(cache_root, id)?.join(ARCHIVE_NAME))
 }
 
-/// Supprime les dossiers de travail qui n'appartiennent à aucune tâche de `known` (arrêt
-/// brutal : le `Drop` de [`Workdir`] ne s'exécute pas à l'arrêt du runtime). Bloquant.
-pub fn sweep_workdirs(cache_root: &Path, known: &HashSet<String>) {
+/// Supprime les dossiers de travail orphelins (arrêt brutal : le `Drop` de [`Workdir`] ne
+/// s'exécute pas à l'arrêt du runtime). `guard(nom, supprimer)` appelle `supprimer` si le
+/// dossier `nom` n'appartient à aucune tâche, en tenant le verrou des tâches pendant la
+/// suppression (une tâche créée entre-temps ne perd jamais son dossier). Bloquant.
+pub fn sweep_workdirs(cache_root: &Path, guard: &dyn Fn(&str, &dyn Fn())) {
     let Ok(entries) = std::fs::read_dir(cache_root.join(WORK_DIR)) else {
         return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if known.contains(&name) {
-            continue;
-        }
         let path = entry.path();
-        let result = match entry.file_type() {
-            Ok(t) if t.is_dir() => std::fs::remove_dir_all(&path),
-            _ => std::fs::remove_file(&path),
-        };
-        if let Err(err) = result {
-            tracing::warn!("dossier de travail orphelin {name} non supprimé : {err}");
-        }
+        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+        guard(&name, &|| {
+            let result = if is_dir {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            if let Err(err) = result {
+                tracing::warn!("dossier de travail orphelin {name} non supprimé : {err}");
+            }
+        });
     }
 }
 
@@ -388,6 +391,12 @@ impl InstallService {
         tc: &Toolchain,
         cancel: &mut watch::Receiver<bool>,
     ) -> AppResult<Prepared> {
+        // Une préparation à la fois (attente annulable) : D5 n'est pas compté deux fois, le
+        // réseau et ffmpeg restent bornés.
+        let _slot = tokio::select! {
+            s = self.0.preparations.acquire() => s.map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?,
+            _ = super::download::cancelled(cancel) => return Err(AppError::Cancelled),
+        };
         // Dossier de travail d'abord (vidé s'il reste d'un arrêt brutal) : toute erreur qui
         // suit passe par sa suppression.
         let dir = workdir_path(&tc.cache_root, id)?;
@@ -835,6 +844,11 @@ pub async fn pack_create(
     composition: PackComposition,
     draft_revision: Option<u64>,
 ) -> AppResult<PackCreated> {
+    if draft_revision.is_some_and(|r| r > pack::MAX_REVISION) {
+        return Err(AppError::Validation(
+            "révision de brouillon invalide".into(),
+        ));
+    }
     let feeds = pack::load_feeds(&config, &podcasts, &composition).await?;
     let report = pack::validate(&composition, &feeds);
     if !report.valid {

@@ -156,6 +156,8 @@ pub struct InstallDone {
     pub entry: LibraryEntry,
     /// Avertissements de la conversion.
     pub warnings: u32,
+    /// Pack de podcasts : épisodes retirés (P7), `None` pour une histoire d'une source.
+    pub pack: Option<PackStatus>,
 }
 
 /// Charge de `install://error` : `state` vaut `failed` ou `cancelled`.
@@ -426,6 +428,9 @@ struct Inner {
     tasks: Mutex<Vec<Slot>>,
     downloads: Arc<Limiter>,
     conversions: Semaphore,
+    /// **Une** préparation de pack à la fois (D5 vérifié sans compter double, réseau et ffmpeg
+    /// bornés).
+    preparations: Semaphore,
     /// Numéro de la dernière capture de la file demandée (attribué sous le verrou `tasks`).
     queue_requested: AtomicU64,
     /// Numéro de la dernière capture écrite ; sérialise aussi les écritures du fichier.
@@ -445,6 +450,7 @@ impl InstallService {
             tasks: Mutex::default(),
             downloads: Arc::new(Limiter::new(settings::DEFAULT_MAX_DOWNLOADS as usize)),
             conversions: Semaphore::new(1),
+            preparations: Semaphore::new(1),
             queue_requested: AtomicU64::new(0),
             queue_written: Mutex::new(0),
             packs: Mutex::new(None),
@@ -787,12 +793,14 @@ impl InstallService {
             ),
             Err(err) => (TaskState::Failed, Some(TaskError::from(err))),
         };
-        let snap = {
+        let (snap, pack_status) = {
             let mut tasks = lock(&self.0.tasks);
+            let mut pack_status = None;
             if let Some(slot) = tasks.iter_mut().find(|s| s.task.id == id) {
                 slot.task.state = state;
                 slot.task.error = error.clone();
                 slot.task.percent = (state == TaskState::Done).then_some(100.0);
+                pack_status = slot.task.pack.clone();
             }
             let snap = self.snapshot(&tasks);
             let finished = tasks.iter().filter(|s| !s.task.state.is_active()).count();
@@ -801,7 +809,7 @@ impl InstallService {
                     tasks.remove(pos);
                 }
             }
-            snap
+            (snap, pack_status)
         };
         // Fichier de file à jour avant d'annoncer la fin (écriture hors verrou).
         self.write_queue(snap).await;
@@ -810,6 +818,7 @@ impl InstallService {
                 task_id: id,
                 entry,
                 warnings,
+                pack: pack_status,
             }),
             Err(err) => {
                 if !matches!(err, AppError::Cancelled) {
@@ -979,16 +988,22 @@ impl InstallService {
     }
 
     /// Supprime les dossiers de travail des packs qui n'appartiennent à aucune tâche connue
-    /// (arrêt brutal). Une nouvelle tâche a un identifiant neuf : jamais concernée.
+    /// (arrêt brutal). L'appartenance est revérifiée sous le verrou des tâches juste avant
+    /// chaque suppression : le dossier d'une tâche n'est créé qu'après son insertion.
     async fn sweep_workdirs(&self) {
         let Ok(tc) = (self.0.opts.resolver)() else {
             return;
         };
-        let known: std::collections::HashSet<String> = lock(&self.0.tasks)
-            .iter()
-            .map(|s| s.task.id.clone())
-            .collect();
-        let _ = blocking(move || podcast::sweep_workdirs(&tc.cache_root, &known)).await;
+        let inner = self.0.clone();
+        let _ = blocking(move || {
+            podcast::sweep_workdirs(&tc.cache_root, &|name: &str, remove: &dyn Fn()| {
+                let tasks = lock(&inner.tasks);
+                if !tasks.iter().any(|s| s.task.id == name) {
+                    remove();
+                }
+            })
+        })
+        .await;
     }
 
     /// Produit le `.plain.pk` à publier dans `staged`. Renvoie l'archive téléchargée (à

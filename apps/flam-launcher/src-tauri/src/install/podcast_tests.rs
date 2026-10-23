@@ -305,8 +305,18 @@ async fn creation_complete_d_un_pack_multi_flux_avec_sous_menu() {
             TaskState::Installing
         ]
     );
-    // P7 : l'épisode en échec est retiré et signalé.
+    // P7 : l'épisode en échec est retiré et signalé, jusque dans `install://done`.
     assert_eq!(done.pack.unwrap().dropped, ["Deux"]);
+    let event = ctx
+        .events
+        .all()
+        .into_iter()
+        .find_map(|e| match e {
+            Recorded::Done(d) if d.task_id == task.id => Some(d),
+            _ => None,
+        })
+        .expect("événement de fin");
+    assert_eq!(event.pack.unwrap().dropped, ["Deux"]);
     let library = ctx.service.library_list().await.unwrap();
     assert_eq!(library.len(), 1);
     assert_eq!(library[0].uuid, job.uuid);
@@ -507,4 +517,21 @@ fn le_brouillon_n_est_efface_que_s_il_n_a_pas_change() {
         .unwrap()
         .composition
         .is_none());
+}
+
+#[tokio::test]
+async fn annulation_en_attente_du_convertisseur_sans_residu() {
+    let Some(py) = python() else { return };
+    let ctx = Ctx::new(Some(py));
+    ctx.packs(Fault::None);
+    // Convertisseur occupé par une autre tâche : le pack préparé attend son tour.
+    let busy = ctx.service.0.conversions.acquire().await.unwrap();
+    let task = ctx.start_pack();
+    ctx.wait(&task.id, |t| t.state == TaskState::Prepared).await;
+    ctx.service.cancel(&task.id).unwrap();
+    let end = ctx.finished(&task.id).await;
+    drop(busy);
+    assert_eq!(end.state, TaskState::Cancelled, "{end:?}");
+    assert!(ctx.service.library_list().await.unwrap().is_empty());
+    ctx.assert_clean();
 }

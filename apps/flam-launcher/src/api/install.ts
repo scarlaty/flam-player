@@ -1,6 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invokeCommand } from "./error";
 import type { LibraryEntry } from "./library";
+import type { PackComposition, ValidationReport } from "./pack";
 import type { StoryEntry } from "./story";
 
 /** État d'une tâche d'installation (miroir de `TaskState` dans `src-tauri/src/install/mod.rs`). */
@@ -48,59 +49,10 @@ export interface PackStatus {
   dropped: string[];
 }
 
-/** Épisode désigné par sa source et son identifiant opaque (miroir de `EpisodeRef`). */
-export interface PackEpisodeRef {
-  source_id: string;
-  episode_id: string;
-}
-
-/** Option d'un menu de pack (miroir de `PackNode`). */
-export type PackNode =
-  | ({ kind: "episode" } & PackEpisodeRef)
-  | { kind: "category"; name: string; entries: PackNode[] };
-
-/** Couverture choisie (miroir de `CoverChoice`). */
-export type PackCover =
-  | { kind: "default" }
-  | { kind: "feed"; source_id: string }
-  | ({ kind: "episode" } & PackEpisodeRef);
-
-/** Composition d'un pack (miroir de `PackComposition`, `podcast/pack.rs`). */
-export interface PackComposition {
-  metadata: {
-    title: string;
-    subtitle: string | null;
-    age: number;
-    description: string | null;
-  };
-  cover: PackCover;
-  menu: PackNode[];
-}
-
-/** Problème bloquant la création (miroir de `Problem`) : s'appuyer sur `code`. */
-export interface PackProblem {
-  code: string;
-  message: string;
-  path: number[] | null;
-  episode: PackEpisodeRef | null;
-  field: string | null;
-}
-
-/** Rapport de validation (miroir de `ValidationReport`, champs utiles à la création). */
-export interface PackValidationReport {
-  valid: boolean;
-  problems: PackProblem[];
-  unavailable: PackEpisodeRef[];
-  episodes: number;
-  feeds: number;
-  estimated_bytes: number;
-  unknown_size: number;
-}
-
 /** Résultat de `pack_create` : `task` vaut `null` si la composition est refusée. */
 export interface PackCreated {
   task: InstallTask | null;
-  report: PackValidationReport;
+  report: ValidationReport;
 }
 
 /** Charge de `install://progress` : changement d'état ou avancement d'une tâche. */
@@ -121,6 +73,8 @@ export interface InstallDone {
   entry: LibraryEntry;
   /** Avertissements de la conversion. */
   warnings: number;
+  /** Pack de podcasts : épisodes retirés (P7) ; `null` pour une histoire d'une source. */
+  pack: PackStatus | null;
 }
 
 /** Charge de `install://error` (`state` : `failed` ou `cancelled`). */

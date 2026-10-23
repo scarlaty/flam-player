@@ -60,3 +60,5 @@ apps/flam-launcher/src-tauri/gen/
 # (`npm run screenshots`) ; le script lui-même échappe aussi à `screenshot*`.
 !docs/assets/*.png
 !apps/flam-launcher/scripts/screenshots.mjs
+# Sorties de vitest (rapport JSON local)
+apps/flam-launcher/.vitest/
