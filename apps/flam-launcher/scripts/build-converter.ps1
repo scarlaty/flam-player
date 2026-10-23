@@ -185,7 +185,14 @@ foreach ($file in $ConverterFiles) {
 # Binaire Rust (#136). `cargo metadata` donne le dossier cible effectif (CARGO_TARGET_DIR compris).
 $RustTarget = 'x86_64-pc-windows-msvc'
 $manifest = Join-Path $RepoRoot 'Cargo.toml'
-$metadata = & cargo metadata --format-version 1 --no-deps --locked --manifest-path $manifest
+# Sortie UTF-8 de cargo : décodée en UTF-8 (sinon page OEM, chemin cible non ASCII déformé).
+$savedEncoding = [Console]::OutputEncoding
+try {
+  [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
+  $metadata = & cargo metadata --format-version 1 --no-deps --locked --manifest-path $manifest
+} finally {
+  [Console]::OutputEncoding = $savedEncoding
+}
 if ($LASTEXITCODE -ne 0) { throw "cargo metadata : échec (code $LASTEXITCODE)" }
 $cargoTarget = (($metadata -join "`n") | ConvertFrom-Json).target_directory
 $savedFlags = $env:RUSTFLAGS

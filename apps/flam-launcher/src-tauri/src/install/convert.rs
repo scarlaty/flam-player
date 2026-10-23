@@ -1197,6 +1197,17 @@ for phase in ["images", "audio", "scripts", "zip"]:
     ev(event="step", phase=phase, done=0, total=2)
     ev(event="unknown_event", x=1)
     ev(event="step", phase=phase, done=2, total=2)
+if rust:
+    # Le tube de stdin doit rester ouvert jusqu'à la fin : fermé trop tôt, c'est une annulation
+    # (comme le binaire), donc un échec visible des tests de conversion réussie.
+    eof = threading.Event()
+    def early():
+        sys.stdin.buffer.read()
+        eof.set()
+    threading.Thread(target=early, daemon=True).start()
+    if eof.wait(0.3):
+        ev(event="error", code="cancelled", message="stdin ferme avant la fin", exit=130)
+        sys.exit(130)
 open(part, "wb").write(b"PK\x03\x04plain.pk converti")
 os.replace(part, out)
 ev(event="done", output=out, size=os.path.getsize(out), warnings=1)

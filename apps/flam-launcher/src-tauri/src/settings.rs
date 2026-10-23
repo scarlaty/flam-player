@@ -145,6 +145,10 @@ pub struct Settings {
 /// tout `settings.json` (`serde(other)` ne couvre que les chaînes inconnues).
 fn lenient_engine<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ConverterEngine, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
+    if !value.is_null() && !matches!(value.as_str(), Some("python" | "rust")) {
+        // Réglage caché édité à la main : une faute de frappe ne doit pas passer inaperçue.
+        tracing::warn!("converter_engine non reconnu ({value}) : moteur python utilisé");
+    }
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 

@@ -103,10 +103,12 @@ fn find_tools() -> Option<Tools> {
         let rust = install::detect_rust_converter(&env);
         if rust.is_none() {
             // Échec avec `FLAM_E2E_REQUIRE` ; sinon seule l'étape du moteur Rust est sautée.
-            skip_or_fail(&format!(
-                "telmi2flam/telmi2flam.exe absent de {}",
-                dir.display()
-            ));
+            let reason = format!("telmi2flam/telmi2flam.exe absent de {}", dir.display());
+            assert!(
+                std::env::var_os("FLAM_E2E_REQUIRE").is_none(),
+                "prérequis du test e2e absents : {reason}"
+            );
+            eprintln!("e2e : étape du moteur Rust ignorée ({reason})");
         }
         return Some(Tools {
             player,
