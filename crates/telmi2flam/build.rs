@@ -25,6 +25,9 @@ fn main() {
     let text = fs::read_to_string(&manifest)
         .unwrap_or_else(|e| panic!("{} illisible : {e}", manifest.display()));
 
+    // BOM UTF-8 en tete ignore (comme le convertisseur Python, utf-8-sig)
+    let text = text.trim_start_matches('\u{feff}');
+
     let mut seen = HashSet::new();
     let mut code = String::from("&[\n");
     for (n, raw) in text.lines().enumerate() {
