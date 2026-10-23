@@ -56,7 +56,9 @@ pub const MAX_EPISODES: usize = 50;
 /// 2 catégories par épisode sur 3 niveaux), soit 201. Garde-fou pour le moteur Lua.
 pub const MAX_STAGES: usize = 256;
 /// Taille d'un MP3 : D1 (200 Mo par épisode) × 1,25, marge du réencodage D6 (débit arrondi au
-/// multiple de 16 supérieur, au moins 64 kbps : au plus + 23 %).
+/// multiple de 16 supérieur : au plus + 23 % pour une source d'au moins 64 kbps). Une source
+/// plus faible (32 à 48 kbps, remontée à 64) peut grossir davantage : garde-fou technique
+/// seulement, la taille des MP3 convertis reste à contrôler par l'appelant (#217).
 pub const MAX_AUDIO_BYTES: u64 = 250_000_000;
 /// Taille cumulée des MP3 : D1 (1 Gio) × 1,25. Reste loin de la limite zip32 (4 Gio).
 pub const MAX_TOTAL_AUDIO_BYTES: u64 = 1_342_177_280;
@@ -216,8 +218,18 @@ pub fn with_failures(description: &str, failed: &[String]) -> String {
     }
 }
 
+/// Longueur d'une ligne de description (titre RSS non borné) : 50 épisodes et 50 échecs
+/// tiennent alors largement dans [`MAX_DESCRIPTION_BYTES`].
+const DESCRIPTION_LINE_CHARS: usize = 200;
+
+/// Texte sur une ligne, [`DESCRIPTION_LINE_CHARS`] caractères au plus (`…` en fin).
 fn one_line(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.chars().count() <= DESCRIPTION_LINE_CHARS {
+        return s;
+    }
+    let cut: String = s.chars().take(DESCRIPTION_LINE_CHARS - 1).collect();
+    format!("{}…", cut.trim_end())
 }
 
 /// Lettres latines sans décomposition Unicode, que `telmi2flam` remplacerait par `?`.
@@ -451,11 +463,12 @@ fn probe(path: &Path, head: &mut [u8]) -> io::Result<(u64, usize)> {
     }
     let mut n = 0;
     while n < head.len() {
-        let read = f.read(&mut head[n..])?;
-        if read == 0 {
-            break;
+        match f.read(&mut head[n..]) {
+            Ok(0) => break,
+            Ok(read) => n += read,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
         }
-        n += read;
     }
     Ok((meta.len(), n))
 }
@@ -468,8 +481,11 @@ fn check_audio(path: &Path) -> Result<u64, ArchiveError> {
     };
     let mut head = [0u8; 3];
     let (len, n) = probe(path, &mut head).map_err(|e| bad(e.to_string()))?;
-    if len == 0 || n < 2 {
+    if len == 0 {
         return Err(bad("fichier vide".into()));
+    }
+    if n < 2 {
+        return Err(bad("pas un fichier MP3".into()));
     }
     if len > MAX_AUDIO_BYTES {
         return Err(bad(format!("{len} octets (au plus {MAX_AUDIO_BYTES})")));

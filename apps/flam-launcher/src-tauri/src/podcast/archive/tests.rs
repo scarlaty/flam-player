@@ -557,6 +557,11 @@ fn description_par_defaut_et_echecs() {
     let d = default_description(&menu);
     assert_eq!(d, "- Un titre\n- Deux");
     assert_eq!(with_failures(&d, &[]), d);
+    // titre RSS démesuré : ligne tronquée
+    let long = with_failures("", &["x".repeat(10_000)]);
+    let last = long.lines().last().unwrap();
+    assert_eq!(last.chars().count(), 2 + 200);
+    assert!(last.ends_with('…'));
     assert_eq!(
         with_failures(&d, &["Trois".into()]),
         "- Un titre\n- Deux\n\nÉpisodes non inclus (échec du téléchargement ou de la conversion) :\n- Trois"
