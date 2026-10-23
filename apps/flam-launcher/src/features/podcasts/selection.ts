@@ -34,13 +34,26 @@ export function estimateSize(episode: Pick<Episode, "enclosure_length" | "durati
   return { bytes: null, approximate: true } satisfies SizeEstimate;
 }
 
+/**
+ * Clé d'un épisode dans la sélection : l'identifiant d'épisode n'est unique qu'au sein de son
+ * flux (source + `guid`), deux flux peuvent donc en partager un sans que ce soit le même épisode.
+ */
+export function episodeKey(sourceId: string, id: string): string {
+  return `${sourceId}\u0000${id}`;
+}
+
 /** Épisode retenu pour le pack (instantané : reste valable si le flux est rafraîchi). */
 export interface SelectedEpisode {
   id: string;
   sourceId: string;
   sourceName: string;
   title: string;
-  /** Taille estimée en octets ; `null` : inconnue (comptée pour 0 dans le total). */
+  /**
+   * Taille estimée en octets ; `null` : inconnue, comptée pour 0 dans le total. Le plafond de
+   * 1 Gio peut donc être dépassé par des épisodes sans taille ni durée : l'écran le signale
+   * (« non comptés ») et la commande « créer un pack » (#217, spec § 5) devra revalider entièrement la composition
+   * dans le backend, plafond de 1 Gio compris sur les tailles réelles.
+   */
   bytes: number | null;
   explicit: boolean;
 }
@@ -67,9 +80,10 @@ export function totalsOf(selected: readonly SelectedEpisode[]): Totals {
 /** Raison pour laquelle `candidate` ne peut pas être ajouté, ou `null` (plafonds D1, N9). */
 export function refusalFor(
   selected: readonly SelectedEpisode[],
-  candidate: Pick<SelectedEpisode, "id" | "bytes">,
+  candidate: Pick<SelectedEpisode, "id" | "sourceId" | "bytes">,
 ): Refusal | null {
-  if (selected.some((s) => s.id === candidate.id)) return "duplicate";
+  const key = episodeKey(candidate.sourceId, candidate.id);
+  if (selected.some((s) => episodeKey(s.sourceId, s.id) === key)) return "duplicate";
   if (candidate.bytes !== null && candidate.bytes > MAX_EPISODE_BYTES) {
     return "episodeTooBig";
   }

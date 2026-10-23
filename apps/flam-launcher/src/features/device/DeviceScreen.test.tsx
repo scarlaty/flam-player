@@ -502,7 +502,9 @@ it(
     statusGate = null;
     const heading = await screen.findByRole("heading", { name: "Flam détectée" });
     await waitFor(() => expect(heading).toHaveFocus());
-    // La demande est close : une perte puis un retour spontanés ne volent pas le focus.
+    // La demande de « Réessayer » est close (`answered` a rattrapé son numéro). Ensuite, la perte
+    // de la Flam puis son retour, tous deux spontanés (aucun clic sur « Réessayer »), ne doivent
+    // pas redonner le focus au titre : le focus n'est pris que pour une demande en attente.
     heading.blur();
     status = { ...absent };
     document.dispatchEvent(new Event("visibilitychange"));
