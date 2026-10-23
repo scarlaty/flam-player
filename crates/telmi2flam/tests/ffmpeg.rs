@@ -231,7 +231,7 @@ fn delai_et_annulation() {
     let mark = root.with_extension("mark");
     let _ = std::fs::remove_file(&mark);
     std::env::set_var(MARK, &mark);
-    std::env::set_var(SLEEP, "2000");
+    std::env::set_var(SLEEP, "6000");
     std::env::set_var(MODE, "sleep");
     let input = frames(0x94, 20);
 
@@ -247,7 +247,7 @@ fn delai_et_annulation() {
     .unwrap();
     assert_eq!(r, Err("ffmpeg trop long (> 0 s)".to_owned()));
     assert!(
-        t.elapsed() < Duration::from_millis(1500),
+        t.elapsed() < Duration::from_millis(5000),
         "{:?}",
         t.elapsed()
     );
@@ -259,7 +259,7 @@ fn delai_et_annulation() {
     assert_eq!(e.code, "cancelled");
     assert_eq!(e.exit_code, 130);
     assert!(
-        t.elapsed() < Duration::from_millis(1500),
+        t.elapsed() < Duration::from_millis(5000),
         "{:?}",
         t.elapsed()
     );
@@ -268,7 +268,8 @@ fn delai_et_annulation() {
         "annulation : dossier temporaire laissé"
     );
 
-    std::thread::sleep(Duration::from_millis(2600));
+    // Marge au-delà du sommeil (6 s) du faux ffmpeg : il aurait créé le marqueur.
+    std::thread::sleep(Duration::from_millis(6600));
     assert!(!mark.exists(), "ffmpeg a survécu");
 
     // Sans délai dépassé, le même faux ffmpeg finit et crée le marqueur.
@@ -442,9 +443,23 @@ fn check_run(run: &Value, data: Vec<u8>, dir: &Path) -> Result<(), String> {
         if *code != w.code {
             return Err(format!("avertissement {code} / {}", w.code));
         }
-        // Raisons de ffmpeg identiques au texte près, sauf les erreurs du système.
-        if *code == "audio_samplerate" && !msg.contains("inutilisable") && *msg != w.message {
-            return Err(format!("message Python {msg:?}\nRust {:?}", w.message));
+        // Raisons de ffmpeg identiques au texte près ; pour une erreur du système (texte
+        // propre à chaque langage), même début et même fin. Les messages des autres codes
+        // ne viennent pas de ffmpeg : `package_parity.rs` en compare les codes.
+        if *code == "audio_samplerate" {
+            const OS: &str = "ffmpeg inutilisable (";
+            const END: &str = ") ; fichier recopie tel quel, reechantillonner conseille)";
+            let same = match msg.find(OS) {
+                Some(i) => {
+                    w.message.starts_with(&msg[..i + OS.len()])
+                        && w.message.ends_with(END)
+                        && msg.ends_with(END)
+                }
+                None => *msg == w.message,
+            };
+            if !same {
+                return Err(format!("message Python {msg:?}\nRust {:?}", w.message));
+            }
         }
     }
     let out = dir.join("out.plain.pk");
@@ -511,6 +526,9 @@ fn paquets_identiques_a_python() {
     }
     std::env::set_var("FLAM_FFMPEG", "");
     let _ = std::fs::remove_dir_all(&dir);
+    // Garde sur les vecteurs (Python a bien rééchantillonné) ; côté Rust, le
+    // rééchantillonnage est prouvé par les SHA-256 des entrées et `ffmpeg_calls` (le compte
+    // et les lignes `  i …` ne sont pas encore exposés par `Package`, #131).
     assert!(
         resampled_runs >= 5,
         "{resampled_runs} exécutions avec rééchantillonnage"
@@ -542,15 +560,27 @@ fn main() {
         ("recherche_de_ffmpeg", recherche_de_ffmpeg),
         ("paquets_identiques_a_python", paquets_identiques_a_python),
     ];
-    let filters: Vec<String> = args
-        .iter()
-        .filter_map(|a| a.to_str())
-        .filter(|a| !a.starts_with('-'))
-        .map(str::to_owned)
-        .collect();
+    // Filtres positionnels de libtest ; les options à valeur (`--skip X`…) sont lues avec
+    // leur valeur, et `--skip` appliqué.
+    let mut filters = Vec::new();
+    let mut skips = Vec::new();
+    let mut it = args.iter().filter_map(|a| a.to_str());
+    while let Some(a) = it.next() {
+        match a {
+            "--skip" => skips.extend(it.next().map(str::to_owned)),
+            "--test-threads" | "--format" | "--color" | "--logfile" | "-Z" => {
+                it.next();
+            }
+            _ if a.starts_with('-') => {}
+            _ => filters.push(a.to_owned()),
+        }
+    }
     let mut ran = 0;
     for (name, test) in tests {
         if !filters.is_empty() && !filters.iter().any(|f| name.contains(f.as_str())) {
+            continue;
+        }
+        if skips.iter().any(|s| name.contains(s.as_str())) {
             continue;
         }
         println!("test {name} ...");

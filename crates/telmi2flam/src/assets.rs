@@ -24,8 +24,8 @@ use crate::error::ConvError;
 use crate::ffmpeg::{self, Outcome, SAMPLERATE};
 use crate::graph::{Assets, Warning};
 use crate::image::{png_to_fit_lif, png_to_lif, png_to_scene_lif, Align, INV_H, INV_W};
-use crate::mp3map;
 use crate::png::PngError;
+use crate::{md5, mp3map};
 
 /// Noms réservés par le convertisseur et le moteur (en minuscules).
 const RESERVED: [&str; 5] = [
@@ -129,8 +129,11 @@ pub struct StoryAssets<'a, R> {
     pub out: BTreeMap<String, Vec<u8>>,
     pub warnings: Vec<Warning>,
     pub missing: Vec<Missing>,
-    /// Sorties de ffmpeg par contenu source (`resample_cache` de Python, clé SHA-256).
-    resample_cache: HashMap<Vec<u8>, Outcome>,
+    /// Rééchantillonnages par contenu source (`resample_cache` de Python, clé SHA-256) : clé
+    /// MD5 et taille (une collision ne peut être que fabriquée par l'auteur de l'histoire, qui
+    /// n'échange alors que ses propres audios) ; valeur : nom dans `out` de la sortie validée
+    /// (pas de copie gardée), ou raison de l'échec.
+    resample_cache: HashMap<([u8; 16], usize), Result<String, String>>,
     /// Fichiers rééchantillonnés (`stats["resampled"]`, compté par fichier, cache compris).
     pub resampled: usize,
     /// Lignes d'information `  i …` de Python (rééchantillonnage réussi), sans le préfixe.
@@ -187,14 +190,41 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
         }
     }
 
-    /// Rééchantillonnage de `data` par ffmpeg, une fois par contenu (`resample_cache`).
-    fn resample(&mut self, data: &[u8], duration: f64) -> Result<Outcome, ConvError> {
-        if let Some(cached) = self.resample_cache.get(data) {
-            return Ok(cached.clone());
+    /// Sortie de ffmpeg validée (lisible, 44 100 Hz seulement) et sa table, ou raison de
+    /// l'échec. Un seul ffmpeg par contenu (`resample_cache`) : la validation étant
+    /// déterministe, garder son résultat équivaut à garder la sortie brute comme Python.
+    /// `pk_name` : nom sous lequel `add_mp3map` rangera la sortie validée.
+    fn resample(
+        &mut self,
+        pk_name: &str,
+        data: &[u8],
+        duration: f64,
+    ) -> Result<Result<(Vec<u8>, mp3map::Mp3Map), String>, ConvError> {
+        let key = (md5::digest(&[data]), data.len());
+        let validate = |new: Vec<u8>| -> Result<(Vec<u8>, mp3map::Mp3Map), String> {
+            match mp3map::build(&new) {
+                Ok(map) if map.samplerates.len() == 1 && map.samplerates.contains(&SAMPLERATE) => {
+                    Ok((new, map))
+                }
+                _ => Err("sortie ffmpeg illisible ou inattendue".to_owned()),
+            }
+        };
+        match self.resample_cache.get(&key) {
+            Some(Ok(name)) => {
+                let new = self.out.get(name).cloned().unwrap_or_default();
+                return Ok(validate(new));
+            }
+            Some(Err(why)) => return Ok(Err(why.clone())),
+            None => {}
         }
-        let outcome = ffmpeg::resample_mp3(data, duration, self.cancelled)?;
-        self.resample_cache.insert(data.to_vec(), outcome.clone());
-        Ok(outcome)
+        let outcome: Outcome = ffmpeg::resample_mp3(data, duration, self.cancelled)?;
+        let checked = outcome.and_then(validate);
+        let cached = match &checked {
+            Ok(_) => Ok(pk_name.to_owned()),
+            Err(why) => Err(why.clone()),
+        };
+        self.resample_cache.insert(key, cached);
+        Ok(checked)
     }
 
     /// `add_mp3map` : écrit `pk_name` et sa table de seek. Un MP3 hors 44 100 Hz est d'abord
@@ -218,23 +248,17 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
                     .collect();
                 if !other.is_empty() {
                     let rates = other.join("/");
-                    let failure = match self.resample(&data, map.duration_s)? {
-                        Ok(new) => match mp3map::build(&new) {
-                            Ok(map2)
-                                if map2.samplerates.len() == 1
-                                    && map2.samplerates.contains(&SAMPLERATE) =>
-                            {
-                                data = new;
-                                map = map2;
-                                self.resampled += 1;
-                                self.infos.push(format!(
-                                    "{label} : {rates} Hz -> {SAMPLERATE} Hz \
-                                     (reechantillonne avec ffmpeg)"
-                                ));
-                                None
-                            }
-                            _ => Some("sortie ffmpeg illisible ou inattendue".to_owned()),
-                        },
+                    let failure = match self.resample(pk_name, &data, map.duration_s)? {
+                        Ok((new, map2)) => {
+                            data = new;
+                            map = map2;
+                            self.resampled += 1;
+                            self.infos.push(format!(
+                                "{label} : {rates} Hz -> {SAMPLERATE} Hz \
+                                 (reechantillonne avec ffmpeg)"
+                            ));
+                            None
+                        }
                         Err(why) => Some(why),
                     };
                     if let Some(why) = failure {

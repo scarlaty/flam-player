@@ -21,7 +21,11 @@
 //! est celui de Rust ; un ffmpeg trouvé dans le `PATH` est lancé par son chemin absolu (Python
 //! garde un chemin relatif si l'entrée du `PATH` l'est) ; si un descendant de ffmpeg garde la
 //! sortie d'erreur ouverte, son fil de lecture survit à l'appel (Python attendrait la fin du
-//! tube jusqu'au délai, puis échoue de la même façon).
+//! tube jusqu'au délai, puis échoue de la même façon) ; une dernière ligne d'erreur de plus de
+//! [`STDERR_TAIL`] octets (ou plus de `STDERR_TAIL` octets de blancs finaux) donne un autre
+//! message (improbable avec `-loglevel error`) ; sous Unix, « exécutable » est un bit `x`
+//! quelconque (Python : `os.access(X_OK)`, selon l'utilisateur) ; un dossier courant supprimé
+//! donne « introuvable » (Python : exception, avertissement `mp3map_failed`).
 
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read};
@@ -482,6 +486,8 @@ pub fn run_ffmpeg(
             kill(&mut child);
             return Ok(Err(unusable(&e)));
         }
+    } else {
+        drop(tx);
     }
     let mut pause = Duration::from_millis(1);
     let status = loop {
