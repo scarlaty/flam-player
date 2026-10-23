@@ -228,7 +228,7 @@ fn html_retire_des_descriptions() {
     );
     assert_eq!(strip_html("1 < 2 et 3 > 2"), "1 < 2 et 3 > 2");
     assert_eq!(strip_html("a<!-- caché -->b"), "ab");
-    assert_eq!(strip_html("a<b"), "a");
+    assert_eq!(strip_html("a<b"), "a<b");
     assert_eq!(strip_html("a &inconnue; &"), "a &inconnue; &");
 }
 
@@ -722,4 +722,246 @@ fn explicite_flux_type_apple_et_ignore_hors_canal() {
     let feed = parse(&xml).unwrap();
     assert_eq!(feed.explicit, Some(false));
     assert_eq!(explicits(&feed), [Some(false), Some(true)]);
+}
+
+// ---------------------------------------------------------------------------------------
+// Suivis de #249
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn esperluette_et_chevron_isoles_ne_rejettent_pas_le_flux() {
+    let xml = wrap(&format!(
+        "<title>AT&T < Contes</title>{}",
+        item(
+            "a",
+            "<description>Pierre & Paul &amp; Jacques &eacute;t&eacute; &#233; &inconnue;</description>"
+        )
+        .replace(
+            "https://cdn.example/a.mp3",
+            "https://cdn.example/a.mp3?x=1&y=2"
+        )
+    ));
+    let feed = parse(&xml).unwrap();
+    assert_eq!(feed.title, "AT&T < Contes");
+    let ep = &feed.episodes[0];
+    assert_eq!(ep.enclosure_url, "https://cdn.example/a.mp3?x=1&y=2");
+    assert_eq!(
+        ep.description.as_deref(),
+        Some("Pierre & Paul & Jacques été é")
+    );
+}
+
+#[test]
+fn le_pretraitement_laisse_cdata_et_commentaires_intacts() {
+    let text = "<a><![CDATA[x & y < z]]><!-- a & b --><?pi & ?>&amp; &#x41;</a>";
+    assert!(matches!(sanitize_xml(text), Cow::Borrowed(_)));
+    assert_eq!(
+        sanitize_xml("<a>1 & 2 <br> <img src=\"u?a=1&b=2\"> <br/></a>"),
+        "<a>1 &amp; 2 <br/> <img src=\"u?a=1&amp;b=2\"/> <br/></a>"
+    );
+    let feed = parse(&wrap(&item(
+        "c",
+        "<description><![CDATA[AT&T < 3]]></description>",
+    )))
+    .unwrap();
+    assert_eq!(feed.episodes[0].description.as_deref(), Some("AT&T < 3"));
+}
+
+#[test]
+fn le_pretraitement_suit_les_guillemets_des_attributs() {
+    // `>` et `<` entre guillemets (doubles ou simples) ne ferment ni n'ouvrent la balise.
+    assert_eq!(
+        sanitize_xml("<a><img alt=\"a > b\" src=\"u\"> <br> </a>"),
+        "<a><img alt=\"a > b\" src=\"u\"/> <br/> </a>"
+    );
+    assert_eq!(
+        sanitize_xml("<a><img alt='a > b' src='u'>x</a>"),
+        "<a><img alt='a > b' src='u'/>x</a>"
+    );
+    assert_eq!(
+        sanitize_xml("<a><br title=\"x < y\"> z < t</a>"),
+        "<a><br title=\"x < y\"/> z &lt; t</a>"
+    );
+    // Une apostrophe dans le texte n'ouvre aucune citation.
+    assert_eq!(
+        sanitize_xml("<a>l'été <br> d'or > 1</a>"),
+        "<a>l'été <br/> d'or > 1</a>"
+    );
+    let feed = parse(&wrap(&item(
+        "q",
+        "<description>x<img alt=\"a > b\" title=\"c < d\">y</description>",
+    )))
+    .unwrap();
+    assert_eq!(feed.episodes.len(), 1);
+    assert_eq!(feed.episodes[0].description.as_deref(), Some("xy"));
+}
+
+#[test]
+fn un_guid_trop_long_change_l_identifiant_d_episode() {
+    let long = format!("urn:{}", "g".repeat(MAX_GUID_CHARS + 10));
+    let feed = parse(&wrap(&item(&long, ""))).unwrap();
+    let guid = &feed.episodes[0].guid;
+    assert_eq!(guid.chars().count(), MAX_GUID_CHARS);
+    assert_ne!(guid, &long);
+    // Un identifiant calculé avant la limite (sur le `guid` brut) ne retrouve plus l'épisode :
+    // la validation de pack le signale « épisode retiré du flux » (voir `pack::validate`).
+    assert_ne!(
+        crate::podcast::source::episode_id(guid),
+        crate::podcast::source::episode_id(&long)
+    );
+}
+
+#[test]
+fn html_non_ferme_dans_un_xml_est_corrige_pour_les_balises_vides() {
+    let feed = parse(&wrap(&item(
+        "b",
+        "<description>Ligne un<br>Ligne deux<hr>Fin</description>",
+    )))
+    .unwrap();
+    assert_eq!(
+        feed.episodes[0].description.as_deref(),
+        Some("Ligne un\nLigne deux\nFin")
+    );
+}
+
+#[test]
+fn balise_html_jamais_fermee_garde_la_suite() {
+    assert_eq!(strip_html("avant <b texte apres"), "avant <b texte apres");
+    assert_eq!(strip_html("<p>un</p> a <i"), "un\na <i");
+    // Entrée pathologique : pas de coût quadratique.
+    let long = "<a".repeat(30_000);
+    assert_eq!(strip_html(&long).len(), 60_000);
+}
+
+#[test]
+fn fuseau_illisible_donne_une_date_inconnue() {
+    for raw in [
+        "Tue, 03 Jun 2008 11:05:30 +2",
+        "Tue, 03 Jun 2008 11:05:30 GMT+2",
+        "Tue, 03 Jun 2008 11:05:30 XYZ",
+        "2008-06-03T11:05:30+2",
+        "2008-06-03T11:05:30+99:99",
+    ] {
+        assert_eq!(parse_pub_date(raw), None, "{raw}");
+    }
+    let ok = [
+        ("Tue, 03 Jun 2008 11:05:30 +0200", "2008-06-03T09:05:30Z"),
+        ("Tue, 03 Jun 2008 11:05:30 GMT+0200", "2008-06-03T09:05:30Z"),
+        ("Tue, 03 Jun 2008 11:05:30 UT", "2008-06-03T11:05:30Z"),
+        ("Tue, 03 Jun 2008 11:05:30", "2008-06-03T11:05:30Z"),
+        ("2008-06-03T11:05:30+02", "2008-06-03T09:05:30Z"),
+        ("2008-06-03T11:05:30-05:00", "2008-06-03T16:05:30Z"),
+        ("2008-06-03T11:05:30Z", "2008-06-03T11:05:30Z"),
+    ];
+    for (raw, iso) in ok {
+        assert_eq!(parse_pub_date(raw).as_deref(), Some(iso), "{raw}");
+    }
+}
+
+#[test]
+fn annees_a_deux_chiffres_autour_de_49_et_50() {
+    let date = |y: &str| parse_pub_date(&format!("03 Jun {y} 10:00:00 GMT"));
+    assert_eq!(date("49").as_deref(), Some("2049-06-03T10:00:00Z"));
+    assert_eq!(date("50").as_deref(), Some("1950-06-03T10:00:00Z"));
+    assert_eq!(date("00").as_deref(), Some("2000-06-03T10:00:00Z"));
+    assert_eq!(date("99").as_deref(), Some("1999-06-03T10:00:00Z"));
+}
+
+#[test]
+fn le_29_fevrier_n_existe_que_les_annees_bissextiles() {
+    assert!(parse_pub_date("29 Feb 2024 10:00:00 GMT").is_some());
+    assert_eq!(parse_pub_date("29 Feb 2023 10:00:00 GMT"), None);
+    assert_eq!(parse_pub_date("29 Feb 1900 10:00:00 GMT"), None);
+    assert!(parse_pub_date("29 Feb 2000 10:00:00 GMT").is_some());
+    assert_eq!(parse_pub_date("2023-02-29"), None);
+}
+
+#[test]
+fn items_imbriques_ne_creent_pas_d_episode() {
+    let xml = wrap(&format!(
+        "<title>T</title><item><title>Externe</title><guid>x</guid>\
+         <item><title>Interne</title><guid>y</guid>\
+         <enclosure url=\"https://cdn.example/y.mp3\" type=\"audio/mpeg\"/></item>\
+         <enclosure url=\"https://cdn.example/x.mp3\" type=\"audio/mpeg\"/></item>{}",
+        item("z", "")
+    ));
+    let feed = parse(&xml).unwrap();
+    let guids: Vec<&str> = feed.episodes.iter().map(|e| e.guid.as_str()).collect();
+    assert_eq!(guids, ["x", "z"]);
+    assert_eq!(feed.episodes[0].title, "Externe");
+}
+
+#[test]
+fn prefixes_de_namespace_libres_et_attributs_insensibles_a_la_casse() {
+    let xml = r#"<?xml version="1.0"?>
+<rss version="2.0" xmlns:it="http://www.itunes.com/dtds/podcast-1.0.dtd"
+     xmlns:d="http://purl.org/dc/elements/1.1/">
+<channel><title>T</title><it:author>Chaîne</it:author><it:explicit>yes</it:explicit>
+<item><title>Un</title><guid>1</guid><it:duration>01:00</it:duration>
+  <d:creator>Dédé</d:creator><it:IMAGE HREF="https://img.example/1.png"/>
+  <enclosure URL="https://cdn.example/1.mp3" TYPE="audio/mpeg" Length="9"/></item>
+<item xmlns:itunes="http://autre.example/ns"><title>Deux</title><guid>2</guid>
+  <itunes:duration>02:00</itunes:duration>
+  <enclosure url="https://cdn.example/2.mp3" type="audio/mpeg"/></item>
+</channel></rss>"#;
+    let feed = parse(xml).unwrap();
+    let (a, b) = (&feed.episodes[0], &feed.episodes[1]);
+    assert_eq!(a.duration, Some(60));
+    assert_eq!(a.author.as_deref(), Some("Dédé"));
+    assert_eq!(a.image.as_deref(), Some("https://img.example/1.png"));
+    assert_eq!(a.enclosure_url, "https://cdn.example/1.mp3");
+    assert_eq!(a.enclosure_length, Some(9));
+    assert_eq!(a.explicit, Some(true));
+    // `itunes` lié à un autre espace de noms : n'est pas l'extension iTunes.
+    assert_eq!(b.duration, None);
+    assert_eq!(b.author.as_deref(), Some("Chaîne"));
+    // Préfixe usuel sans déclaration : toléré.
+    let bare = r#"<rss version="2.0"><channel><title>T</title>
+<item><title>U</title><itunes:duration>03:00</itunes:duration>
+<enclosure url="https://cdn.example/u.mp3" type="audio/mpeg"/></item></channel></rss>"#;
+    assert_eq!(parse(bare).unwrap().episodes[0].duration, Some(180));
+}
+
+#[test]
+fn guid_long_reste_distinct_et_titre_de_repli_suit_les_episodes_conserves() {
+    let (a, b) = ("g".repeat(600), format!("{}h", "g".repeat(599)));
+    let xml = wrap(&format!(
+        "<item><guid>{a}</guid><enclosure url=\"https://c.example/a.mp3\" type=\"audio/mpeg\"/></item>\
+         <item><title>Sans audio</title></item>\
+         <item><guid>{b}</guid><enclosure url=\"https://c.example/b.mp3\" type=\"audio/mpeg\"/></item>"
+    ));
+    let feed = parse(&xml).unwrap();
+    assert_eq!(feed.episodes.len(), 2, "{:?}", feed.warnings);
+    let (ga, gb) = (&feed.episodes[0].guid, &feed.episodes[1].guid);
+    assert_ne!(ga, gb);
+    assert!(ga.chars().count() <= MAX_GUID_CHARS);
+    assert_eq!(feed.episodes[0].title, "Épisode 1");
+    assert_eq!(feed.episodes[1].title, "Épisode 2");
+    // Déterministe.
+    assert_eq!(parse(&xml).unwrap().episodes[0].guid, *ga);
+}
+
+#[test]
+fn variantes_courantes_de_l_uri_itunes_et_zones_nommees() {
+    for uri in [
+        "http://www.itunes.com/DTDs/Podcast-1.0.dtd",
+        "https://www.itunes.com/dtds/podcast-1.0.dtd/",
+        " http://www.itunes.com/dtds/podcast-1.0.dtd ",
+    ] {
+        let xml = format!(
+            r#"<rss version="2.0" xmlns:itunes="{uri}"><channel><title>T</title>
+<item><title>U</title><itunes:duration>03:00</itunes:duration><itunes:explicit>yes</itunes:explicit>
+<enclosure url="https://cdn.example/u.mp3" type="audio/mpeg"/></item></channel></rss>"#
+        );
+        let ep = &parse(&xml).unwrap().episodes[0];
+        assert_eq!((ep.duration, ep.explicit), (Some(180), Some(true)), "{uri}");
+    }
+    assert_eq!(
+        parse_pub_date("Tue, 03 Jun 2008 11:05:30 CEST").as_deref(),
+        Some("2008-06-03T09:05:30Z")
+    );
+    // Balises vides déjà fermées ou à fermeture explicite : inchangées.
+    let desc = "<description>a<br></br>b<br />c<img src=\"x\"/>d</description>";
+    let feed = parse(&wrap(&item("v", desc))).unwrap();
+    assert!(feed.episodes[0].description.is_some());
 }

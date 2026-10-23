@@ -12,20 +12,29 @@
 //! - **Bornes** : flux de 16 Mio au plus, profondeur d'éléments limitée, 5 000 épisodes au
 //!   plus, longueur de chaque chaîne bornée, texte accumulé par élément borné.
 //! - **Sûreté XML** : toute déclaration `<!DOCTYPE …>` est refusée. Aucune entité n'est donc
-//!   jamais définie (pas de « billion laughs »), aucune DTD ni entité externe n'est lue. Seules
-//!   les cinq entités prédéfinies XML, les références numériques et `&nbsp;` sont résolues ;
-//!   toute autre entité est ignorée.
+//!   jamais définie (pas de « billion laughs »), aucune DTD ni entité externe n'est lue. Sont
+//!   résolues, au niveau XML comme dans les descriptions, les cinq entités prédéfinies, les
+//!   références numériques et une liste fixe d'entités HTML courantes (`&nbsp;`, `&eacute;`,
+//!   `&hellip;`…) ; toute autre entité est ignorée. `&nbsp;` devient une espace ordinaire : les
+//!   textes sont normalisés sur une ligne (ou en paragraphes), l'insécable n'y a pas de sens.
 //! - **Encodages** : UTF-8 (avec ou sans BOM), UTF-16 avec BOM, ISO-8859-1 et Windows-1252
 //!   (selon la déclaration XML). Tout autre encodage déclaré est refusé.
-//! - **Tolérance** : champs absents, ordre quelconque des balises, dates RFC 822 (ou ISO 8601),
-//!   `<![CDATA[…]]>`, HTML dans les descriptions (retiré), balises inconnues ignorées.
+//! - **Tolérance** : champs absents, ordre quelconque des balises (noms d'éléments et
+//!   d'attributs insensibles à la casse), préfixes `itunes:`/`dc:` quelconques s'ils sont liés à
+//!   leur espace de noms (ou usuels, à défaut de déclaration), dates RFC 822 (ou ISO 8601),
+//!   `<![CDATA[…]]>`, HTML dans les descriptions (retiré, une balise jamais fermée est du texte),
+//!   balises inconnues ignorées. Un `&` ou un `<` isolé et les `<br>`, `<hr>`, `<img>` non fermés
+//!   d'un texte non échappé sont corrigés avant l'analyse (`sanitize_xml`).
 //! - Un épisode sans enclosure audio (type MIME `audio/…`) valide, de type bande-annonce
 //!   (`itunes:episodeType` = `trailer`) ou en doublon de `guid` est ignoré avec un
 //!   avertissement.
 //!
 //! # Repli documenté
 //!
-//! - Date de publication absente ou illisible : `pub_date` vaut `None` (jamais 1970).
+//! - Date de publication absente ou illisible : `pub_date` vaut `None` (jamais 1970). Sans
+//!   fuseau : UTC ; fuseau illisible (`+2`, `GMT+2`, `XYZ`) : `None` plutôt qu'une heure fausse.
+//! - `guid` de plus de 512 caractères : début suivi de l'empreinte SHA-256 du texte entier.
+//! - Titre absent : `Épisode n`, `n` étant le rang parmi les épisodes conservés.
 //! - Image du canal : balise `image`, sinon `itunes:image` du canal, sinon image du premier
 //!   épisode conservé ; sinon `None` (pas de rejet : les pochettes sont traitées par #215).
 //! - Image d'un épisode : `itunes:image` de l'épisode, sinon image du canal.
@@ -43,6 +52,7 @@ use std::collections::HashSet;
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
 
@@ -61,6 +71,12 @@ const MAX_TITLE_CHARS: usize = 300;
 const MAX_DESCRIPTION_CHARS: usize = 4_000;
 const MAX_AUTHOR_CHARS: usize = 200;
 const MAX_GUID_CHARS: usize = 512;
+/// Nombre maximal de déclarations `xmlns:` simultanées (les suivantes sont ignorées).
+const MAX_NAMESPACES: usize = 64;
+/// Espaces de noms reconnus (les préfixes qui les désignent sont libres).
+/// (forme de [`ns_key`] : les flux écrivent `DTDs/Podcast-1.0.dtd`, `https://`, un `/` final…).
+const ITUNES_NS: &str = "www.itunes.com/dtds/podcast-1.0.dtd";
+const DC_NS: &str = "purl.org/dc/elements/1.1";
 const MAX_MIME_CHARS: usize = 100;
 /// Longueur maximale d'une URL (en octets) ; au-delà, elle est ignorée.
 const MAX_URL_BYTES: usize = 2_048;
@@ -150,6 +166,31 @@ fn clean_line(s: &str, max: usize) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     truncate_chars(&joined, max)
+}
+
+/// URI d'espace de noms comparable : sans espaces, schéma ni `/` final, en minuscules.
+fn ns_key(uri: &str) -> String {
+    let lower = uri.trim().to_ascii_lowercase();
+    let bare = lower
+        .strip_prefix("http://")
+        .or_else(|| lower.strip_prefix("https://"))
+        .unwrap_or(&lower);
+    bare.trim_end_matches('/').to_string()
+}
+
+/// Identifiant `guid` sur une ligne. Au-delà de [`MAX_GUID_CHARS`], le début est suivi de
+/// l'empreinte SHA-256 du texte entier : deux `guid` longs au même début restent distincts.
+fn guid_text(raw: &str) -> Option<String> {
+    let line = clean_line(raw, usize::MAX);
+    if line.chars().count() <= MAX_GUID_CHARS {
+        return non_empty(line);
+    }
+    let digest = Sha256::digest(line.as_bytes());
+    let tag: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+    Some(format!(
+        "{}#{tag}",
+        truncate_chars(&line, MAX_GUID_CHARS - 33)
+    ))
 }
 
 fn non_empty(s: String) -> Option<String> {
@@ -259,8 +300,9 @@ pub fn strip_html(input: &str) -> String {
             continue;
         }
         let Some(end) = tag_area.find('>') else {
-            // Balise jamais fermée : le reste est abandonné.
-            rest = "";
+            // Aucun « > » plus loin : ce « < » n'ouvre pas de balise, le reste est du texte.
+            text.push('<');
+            rest = tag_area;
             break;
         };
         let tag = &tag_area[..end];
@@ -457,35 +499,49 @@ fn parse_clock(token: &str) -> Option<(i64, i64, i64)> {
     parts.next().is_none().then_some((h, m, s))
 }
 
-/// Décalage en minutes d'un fuseau RFC 822 ou numérique (`+0200`, `-05:00`) ; inconnu : 0.
-fn zone_offset(token: &str) -> i64 {
+/// Décalage en minutes d'un fuseau RFC 822 ou numérique (`+0200`, `-05:00`, `+02` en ISO 8601,
+/// `GMT+0200`). `None` si le fuseau est illisible (`+2`, `GMT+2`, `CEST`) : la date n'est alors
+/// pas devinée (pas de repli silencieux sur UTC).
+fn zone_offset(token: &str) -> Option<i64> {
     match token.to_ascii_uppercase().as_str() {
-        "EST" | "CDT" => return -300,
-        "EDT" => return -240,
-        "CST" | "MDT" => return -360,
-        "MST" | "PDT" => return -420,
-        "PST" => return -480,
+        "Z" | "UT" | "UTC" | "GMT" => return Some(0),
+        "CET" | "MET" | "BST" | "WEST" => return Some(60),
+        "CEST" | "MEST" | "EET" => return Some(120),
+        "EEST" => return Some(180),
+        "WET" => return Some(0),
+        "EST" | "CDT" => return Some(-300),
+        "EDT" => return Some(-240),
+        "CST" | "MDT" => return Some(-360),
+        "MST" | "PDT" => return Some(-420),
+        "PST" => return Some(-480),
         _ => {}
     }
-    let Some(sign) = token
-        .strip_prefix('+')
-        .map(|_| 1)
-        .or_else(|| token.strip_prefix('-').map(|_| -1))
-    else {
-        return 0;
+    let upper = token.to_ascii_uppercase();
+    let numeric = upper
+        .strip_prefix("GMT")
+        .or_else(|| upper.strip_prefix("UTC"))
+        .or_else(|| upper.strip_prefix("UT"))
+        .unwrap_or(&upper);
+    let sign = match numeric.chars().next()? {
+        '+' => 1,
+        '-' => -1,
+        _ => return None,
     };
-    let digits: String = token[1..].chars().filter(char::is_ascii_digit).collect();
-    if digits.len() != 4 || token[1..].chars().any(|c| !c.is_ascii_digit() && c != ':') {
-        return 0;
+    let body = &numeric[1..];
+    if body.chars().any(|c| !c.is_ascii_digit() && c != ':') {
+        return None;
     }
-    let (h, m): (i64, i64) = (
-        digits[..2].parse().unwrap_or(0),
-        digits[2..].parse().unwrap_or(0),
-    );
+    let digits: String = body.chars().filter(char::is_ascii_digit).collect();
+    // `HH` (ISO 8601) ou `HHMM` ; un seul chiffre (`+2`) ou une forme intermédiaire est ambigu.
+    let (h, m): (i64, i64) = match digits.len() {
+        2 => (digits.parse().ok()?, 0),
+        4 => (digits[..2].parse().ok()?, digits[2..].parse().ok()?),
+        _ => return None,
+    };
     if h > 23 || m > 59 {
-        return 0;
+        return None;
     }
-    sign * (h * 60 + m)
+    Some(sign * (h * 60 + m))
 }
 
 /// Lit une date RFC 822 / 2822 (`Tue, 03 Jun 2008 11:05:30 GMT`, jour de semaine, secondes et
@@ -516,7 +572,11 @@ pub fn parse_pub_date(raw: &str) -> Option<String> {
                 3 => 1900 + y,
                 _ => y,
             };
-            let offset = rest.first().map_or(0, |z| zone_offset(z));
+            // Sans fuseau : UTC. Fuseau illisible : date inconnue.
+            let offset = match rest.first() {
+                None => 0,
+                Some(z) => zone_offset(z)?,
+            };
             return iso_utc(y, mo, d, h, mi, s, offset);
         }
     }
@@ -544,10 +604,10 @@ fn parse_iso_date(raw: &str) -> Option<String> {
                 None => (t, ""),
             };
             let (h, mi, s) = parse_clock(clock.trim())?;
-            let offset = if zone.eq_ignore_ascii_case("z") {
+            let offset = if zone.is_empty() {
                 0
             } else {
-                zone_offset(zone.trim())
+                zone_offset(zone.trim())?
             };
             (h, mi, s, offset)
         }
@@ -656,6 +716,128 @@ fn decode_to_utf8(bytes: &[u8]) -> Result<Cow<'_, str>, RssError> {
 }
 
 // ---------------------------------------------------------------------------------------
+// Prétraitement tolérant
+// ---------------------------------------------------------------------------------------
+
+/// Éléments HTML sans fermeture qu'un flux mal écrit laisse ouverts dans un texte non échappé.
+const VOID_TAGS: [&str; 4] = ["br", "hr", "img", "wbr"];
+
+/// `s` (après un `&`) commence par une référence d'entité complète : `nom;` ou `#123;`/`#x1F;`.
+fn starts_with_entity(s: &str) -> bool {
+    let end = s.bytes().take(12).position(|b| b == b';');
+    let Some(end) = end.filter(|e| *e > 0) else {
+        return false;
+    };
+    let body = &s[..end];
+    match body.strip_prefix('#') {
+        Some(num) => match num.strip_prefix(['x', 'X']) {
+            Some(hex) => !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+            None => !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()),
+        },
+        None => body.bytes().all(|b| b.is_ascii_alphanumeric()),
+    }
+}
+
+/// Rend analysable un flux dont le texte n'est pas du XML bien formé : `&` isolé (`AT&T`,
+/// `?a=1&b=2`) devenu `&amp;`, `<` isolé (`a < b`) devenu `&lt;`, `<br>`, `<hr>`, `<img …>` et
+/// `<wbr>` non fermés rendus auto-fermants. Les sections CDATA, commentaires et instructions
+/// de traitement sont laissés tels quels. D'autres HTML mal formés (`<b>` jamais fermé)
+/// restent refusés : on ne devine pas leur fin. Dans une balise, les valeurs d'attribut entre
+/// guillemets (simples ou doubles, après `=`) sont suivies : un `>` ou un `<` y reste du texte.
+fn sanitize_xml(text: &str) -> Cow<'_, str> {
+    let bytes = text.as_bytes();
+    let mut out: Option<String> = None;
+    // `text[..copied]` est déjà dans `out`.
+    let mut copied = 0;
+    // Dans une balise vide HTML (`<br`…) dont le `>` n'a pas été lu.
+    let mut in_void = false;
+    // Dans une balise (`<` lu, `>` non lu) : seuls les guillemets d'une valeur d'attribut
+    // (`="…"` ou `='…'`) sont suivis, un `>` ou un `<` entre guillemets ne ferme ni n'ouvre rien.
+    let mut in_tag = false;
+    let mut quote: Option<u8> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        if in_tag {
+            match (quote, bytes[i]) {
+                (Some(q), b) if b == q => quote = None,
+                (None, b'"' | b'\'') if text[..i].trim_end().ends_with('=') => {
+                    quote = Some(bytes[i]);
+                }
+                _ => {}
+            }
+            if quote.is_some() && bytes[i] != b'&' {
+                i += 1;
+                continue;
+            }
+        }
+        match bytes[i] {
+            b'<' => {
+                let rest = &text[i..];
+                let skip = [("<![CDATA[", "]]>"), ("<!--", "-->"), ("<?", "?>")]
+                    .into_iter()
+                    .find(|(open, _)| rest.starts_with(open));
+                if let Some((open, close)) = skip {
+                    i += rest[open.len()..]
+                        .find(close)
+                        .map_or(rest.len(), |e| open.len() + e + close.len());
+                    continue;
+                }
+                let after = &rest[1..];
+                let first = after.bytes().next();
+                let opens_tag =
+                    matches!(first, Some(b) if b.is_ascii_alphabetic() || matches!(b, b'/' | b'!'));
+                if !opens_tag {
+                    let o = out.get_or_insert_with(String::new);
+                    o.push_str(&text[copied..i]);
+                    o.push_str("&lt;");
+                    copied = i + 1;
+                } else {
+                    let name: String = after
+                        .chars()
+                        .take_while(char::is_ascii_alphanumeric)
+                        .collect::<String>()
+                        .to_ascii_lowercase();
+                    // Le `/` est ajouté au `>` qui ferme cette balise.
+                    in_void = VOID_TAGS.contains(&name.as_str());
+                    in_tag = true;
+                }
+                i += 1;
+            }
+            b'>' => {
+                let self_closed = text[..i].trim_end().ends_with('/');
+                let closed_after = text[i + 1..].starts_with("</");
+                if in_void && !self_closed && !closed_after {
+                    let o = out.get_or_insert_with(String::new);
+                    o.push_str(&text[copied..i]);
+                    o.push('/');
+                    copied = i;
+                }
+                in_void = false;
+                in_tag = false;
+                i += 1;
+            }
+            b'&' => {
+                if !starts_with_entity(&text[i + 1..]) {
+                    let o = out.get_or_insert_with(String::new);
+                    o.push_str(&text[copied..i]);
+                    o.push_str("&amp;");
+                    copied = i + 1;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    match out {
+        Some(mut o) => {
+            o.push_str(&text[copied..]);
+            Cow::Owned(o)
+        }
+        None => Cow::Borrowed(text),
+    }
+}
+
+// ---------------------------------------------------------------------------------------
 // Analyse
 // ---------------------------------------------------------------------------------------
 
@@ -696,7 +878,12 @@ struct FeedBuilder {
 }
 
 struct State {
+    /// Noms canoniques (`itunes:duration`, `pubdate`…) des éléments ouverts.
     stack: Vec<String>,
+    /// Déclarations `xmlns:préfixe` en vigueur (préfixe, URI) et leur nombre avant chaque
+    /// élément ouvert (parallèle à `stack`).
+    ns: Vec<(String, String)>,
+    ns_marks: Vec<usize>,
     /// Texte accumulé par élément ouvert (parallèle à `stack`).
     texts: Vec<String>,
     saw_root: bool,
@@ -739,8 +926,40 @@ impl State {
         self.stack.len() == 3 && self.stack[1] == "channel"
     }
 
+    /// Nom canonique d'un élément : le préfixe lié à l'espace iTunes ou Dublin Core est ramené à
+    /// `itunes:` ou `dc:` quel que soit son nom dans le flux ; un préfixe non déclaré `itunes` ou
+    /// `dc` est accepté tel quel (flux sans `xmlns`) ; tout autre espace de noms garde son nom
+    /// sous le préfixe `ext:` (il ne peut pas se confondre avec un élément connu).
+    fn canonical_name(&self, raw: &str) -> String {
+        let lower = raw.to_ascii_lowercase();
+        let Some((prefix, local)) = raw.split_once(':') else {
+            return lower;
+        };
+        let local = local.to_ascii_lowercase();
+        let bound = self.ns.iter().rev().find(|(p, _)| p == prefix);
+        match bound.map(|(_, uri)| ns_key(uri)) {
+            Some(uri) if uri == ITUNES_NS => format!("itunes:{local}"),
+            Some(uri) if uri == DC_NS => format!("dc:{local}"),
+            Some(_) => format!("ext:{lower}"),
+            None => lower,
+        }
+    }
+
     fn start(&mut self, e: &BytesStart<'_>) -> Result<(), RssError> {
-        let name = e.name().as_ref().to_ascii_lowercase();
+        let mark = self.ns.len();
+        for a in e.attributes().flatten() {
+            let key: &str = a.key.as_ref();
+            if let Some(prefix) = key.strip_prefix("xmlns:") {
+                if self.ns.len() >= MAX_NAMESPACES {
+                    continue;
+                }
+                if let Ok(uri) = a.normalized_value(XmlVersion::Implicit1_0) {
+                    self.ns
+                        .push((prefix.to_string(), truncate_chars(&uri, MAX_URL_BYTES)));
+                }
+            }
+        }
+        let name = self.canonical_name(e.name().as_ref());
         if self.stack.len() >= MAX_DEPTH {
             return Err(RssError::InvalidFeed(format!(
                 "imbrication trop profonde (plus de {MAX_DEPTH} niveaux)"
@@ -759,6 +978,7 @@ impl State {
             self.saw_root = true;
         }
         self.stack.push(name);
+        self.ns_marks.push(mark);
         self.texts.push(String::new());
         if self.stack.len() == 2 && self.stack[1] == "channel" {
             self.saw_channel = true;
@@ -767,10 +987,11 @@ impl State {
             self.item = Some(ItemBuilder::default());
             return Ok(());
         }
+        // Nom d'attribut insensible à la casse (`HREF`, `Url`).
         let attr = |key: &str| -> Option<String> {
-            e.try_get_attribute(key)
-                .ok()
+            e.attributes()
                 .flatten()
+                .find(|a| a.key.as_ref().eq_ignore_ascii_case(key))
                 .and_then(|a| a.normalized_value(XmlVersion::Implicit1_0).ok())
                 .map(|v| v.into_owned())
         };
@@ -791,10 +1012,7 @@ impl State {
                     if let Some(url) = attr("url").as_deref().and_then(http_url) {
                         item.enclosure = Some(Enclosure {
                             url,
-                            mime: truncate_chars(
-                                &clean_line(&mime, MAX_MIME_CHARS),
-                                MAX_MIME_CHARS,
-                            ),
+                            mime: clean_line(&mime, MAX_MIME_CHARS),
                             length: attr("length").and_then(|l| l.trim().parse().ok()),
                         });
                     }
@@ -825,12 +1043,7 @@ impl State {
                     "itunes:summary" => {
                         item.summary = item.summary.take().or_else(|| description_text(&raw))
                     }
-                    "guid" => {
-                        item.guid = item
-                            .guid
-                            .take()
-                            .or_else(|| non_empty(clean_line(&raw, MAX_GUID_CHARS)))
-                    }
+                    "guid" => item.guid = item.guid.take().or_else(|| guid_text(&raw)),
                     "pubdate" => {
                         item.pub_date = item.pub_date.take().or_else(|| parse_pub_date(&raw))
                     }
@@ -895,9 +1108,29 @@ impl State {
             }
         }
         self.stack.pop();
+        if let Some(mark) = self.ns_marks.pop() {
+            self.ns.truncate(mark);
+        }
         // Balises HTML non échappées dans un texte : leur contenu rejoint celui du parent.
         if self.stack.len() >= 3 && self.stack.last().is_some_and(|p| p != "item") {
+            let block = matches!(
+                name.as_str(),
+                "br" | "hr" | "p" | "div" | "li" | "ul" | "ol" | "tr" | "blockquote"
+            );
+            let line_break = matches!(name.as_str(), "br" | "hr");
+            if block && !line_break {
+                self.push_text(
+                    "
+",
+                );
+            }
             self.push_text(&raw);
+            if block {
+                self.push_text(
+                    "
+",
+                );
+            }
         }
     }
 
@@ -925,7 +1158,10 @@ impl State {
         if !self.seen_guids.insert(guid.clone()) {
             return self.warn(format!("épisode {n} ignoré : identifiant en double"));
         }
-        let title = item.title.unwrap_or_else(|| format!("Épisode {n}"));
+        // Titre de repli : rang parmi les épisodes conservés (celui que voit l'utilisateur).
+        let title = item
+            .title
+            .unwrap_or_else(|| format!("Épisode {}", self.episodes.len() + 1));
         self.episodes.push(PodcastEpisode {
             guid,
             title,
@@ -953,10 +1189,13 @@ pub fn parse_feed(bytes: &[u8]) -> Result<PodcastFeed, RssError> {
         });
     }
     let text = decode_to_utf8(bytes)?;
+    let text = sanitize_xml(&text);
     let mut reader = Reader::from_str(&text);
     reader.config_mut().check_end_names = true;
     let mut state = State {
         stack: Vec::new(),
+        ns: Vec::new(),
+        ns_marks: Vec::new(),
         texts: Vec::new(),
         saw_root: false,
         saw_channel: false,
@@ -995,9 +1234,14 @@ pub fn parse_feed(bytes: &[u8]) -> Result<PodcastFeed, RssError> {
                     "amp" => state.push_text("&"),
                     "quot" => state.push_text("\""),
                     "apos" => state.push_text("'"),
-                    "nbsp" => state.push_text(" "),
-                    // Entité inconnue : ignorée (aucune n'est définissable, DOCTYPE refusé).
-                    _ => {}
+                    // Entités HTML courantes (`nbsp` : espace ordinaire) ; toute autre est
+                    // ignorée (aucune n'est définissable, DOCTYPE refusé).
+                    name => {
+                        if let Some(c) = html_named_entity(name) {
+                            let mut buf = [0u8; 4];
+                            state.push_text(c.encode_utf8(&mut buf));
+                        }
+                    }
                 },
                 Err(_) => {}
             },

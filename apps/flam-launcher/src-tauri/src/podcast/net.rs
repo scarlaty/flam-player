@@ -17,10 +17,11 @@
 //! `no_proxy` conservé, la limite est documentée dans la spec D10 et dans [`PROXY_HINT`]).
 //!
 //! Noms locaux : un nom à **une seule étiquette** (`nas`, `box`) ou finissant par `.local`,
-//! `.lan`, `.home.arpa`, `.internal`, `.localhost` est refusé avant toute résolution
-//! ([`is_local_name`]). **Résidu** : un nom public multi-étiquettes qui résout vers l'adresse
-//! publique de la box de l'utilisateur (rebouclage NAT) reste joignable ; seul le contrôle des
-//! adresses résolues s'applique alors.
+//! `.lan`, `.home.arpa`, `.internal`, `.localhost`, `.test`, `.invalid`… est refusé avant toute
+//! résolution ([`is_local_name`]), et de nouveau par le résolveur du client (défense en
+//! profondeur). **Résidu** : l'adresse IP publique de la box de l'utilisateur, saisie
+//! littéralement ou obtenue par un nom public multi-étiquettes (rebouclage NAT), reste
+//! joignable ; seul le contrôle des adresses s'applique alors.
 //!
 //! # Brancher le téléchargement du flux (#211)
 //!
@@ -153,6 +154,8 @@ fn forbidden_v6(ip: Ipv6Addr) -> bool {
         // Documentation 2001:db8::/32 et 3fff::/20, Teredo 2001::/32 (tunnel), discard 100::/64.
         || (s[0] == 0x2001 && (s[1] == 0x0db8 || s[1] == 0))
         || (s[0] == 0x3fff && s[1] < 0x1000)
+        // Identifiants de segment SRv6 5f00::/16 (RFC 9602).
+        || s[0] == 0x5f00
         // Tests de performance 2001:2::/48, ORCHID v1 2001:10::/28 (obsolète).
         || (s[0] == 0x2001 && s[1] == 2 && s[2] == 0)
         || (s[0] == 0x2001 && (0x10..=0x1f).contains(&s[1]))
@@ -180,8 +183,9 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
     }
 }
 
-/// Suffixes de noms réservés aux réseaux locaux (D10).
-const LOCAL_SUFFIXES: [&str; 10] = [
+/// Suffixes de noms réservés aux réseaux locaux ou non résolubles publiquement (D10, RFC 6761 :
+/// `.test`, `.invalid`).
+const LOCAL_SUFFIXES: [&str; 12] = [
     ".local",
     ".lan",
     ".home.arpa",
@@ -192,6 +196,8 @@ const LOCAL_SUFFIXES: [&str; 10] = [
     ".corp",
     ".intranet",
     ".private",
+    ".test",
+    ".invalid",
 ];
 
 /// `true` si `host` est un nom de réseau local : une seule étiquette (`nas`, `box`,
@@ -252,6 +258,11 @@ impl Resolve for GuardedResolver {
         let policy = self.policy;
         let host = name.as_str().to_string();
         Box::pin(async move {
+            // Défense en profondeur : `check_url` refuse déjà ces noms, mais une URL qui
+            // n'y serait pas passée (nouvel appelant) ne doit pas atteindre la résolution.
+            if is_local_name(&host) {
+                return Err(Box::new(BlockedAddress) as Box<dyn Error + Send + Sync>);
+            }
             let addrs = resolve_host(&host, policy).await?;
             Ok(Box::new(addrs.into_iter()) as Addrs)
         })
@@ -358,6 +369,8 @@ mod tests {
             "2001:2::1",
             "2001:10::1",
             "2001:1f:ffff::1",
+            "5f00::1",
+            "5f00:ffff::1",
         ] {
             assert!(is_forbidden_ip(ip(s)), "{s} devrait être refusée");
         }
@@ -385,6 +398,8 @@ mod tests {
             "3fff:1000::1",
             "2001:2:1::1",
             "2001:20::1",
+            "5f01::1",
+            "5eff::1",
         ] {
             assert!(!is_forbidden_ip(ip(s)), "{s} devrait être acceptée");
         }
@@ -440,6 +455,8 @@ mod tests {
             "http://a.b.Local/a",
             "http://livebox.home/a",
             "http://pc.localdomain/a",
+            "http://serveur.test/a",
+            "http://x.invalid./a",
         ] {
             assert!(check(u).is_err(), "{u} devrait être refusé");
         }
@@ -449,6 +466,8 @@ mod tests {
             "https://notlocal.com/a",
             "https://my.lan.example.org/a",
             "https://internal.example.org/a",
+            "https://test.example.org/a",
+            "https://invalid.example/a",
         ] {
             assert!(check(u).is_ok(), "{u} devrait être accepté");
         }
@@ -490,6 +509,21 @@ mod tests {
             .await
             .unwrap();
         assert!(!ok.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolveur_du_client_refuse_les_noms_locaux() {
+        // Politique de test : `localhost` résout vers 127.0.0.1, adresse permise ; seul le
+        // refus des noms locaux dans le résolveur l'arrête.
+        let resolver = GuardedResolver {
+            policy: NetPolicy::loopback_for_tests(),
+        };
+        let name: Name = "localhost".parse().unwrap();
+        let err = match resolver.resolve(name).await {
+            Ok(_) => panic!("localhost devrait être refusé par le résolveur"),
+            Err(e) => e,
+        };
+        assert!(is_blocked(err.as_ref()), "{err:?}");
     }
 
     #[test]

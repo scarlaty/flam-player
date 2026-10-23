@@ -10,6 +10,12 @@
 //!   cause), donc jamais dans le diagnostic copiable ;
 //! - **jamais écrite dans le cache** : `meta.json` garde son empreinte SHA-256.
 //!
+//! [`redact_url`] garde le **schéma et l'hôte** (`https://hôte/…`) : un jeton porté par un
+//! sous-domaine (`https://<jeton>.exemple.org/…`) serait donc journalisé. Choix conforme à D11
+//! (seuls le chemin, la requête et les identifiants sont secrets) et utile au diagnostic ; une
+//! directive `RUST_LOG=reqwest::x=debug` plus précise que `reqwest=info` (voir `lib.rs`)
+//! contourne en outre la neutralisation des traces `reqwest`.
+//!
 //! Les épisodes sont désignés par un identifiant opaque (empreinte du `guid`, qui peut être
 //! l'URL de l'enclosure), sans URL d'enclosure ni d'image.
 //!
@@ -31,7 +37,11 @@
 //! - seul un flux lisible remplace le cache : un flux invalide ou sans épisode audio le laisse
 //!   intact et l'erreur est signalée avec le cache ;
 //! - un seul rafraîchissement à la fois par source ; le portillon d'écriture est celui du
-//!   catalogue (vidage du cache) ;
+//!   catalogue (vidage du cache). Le rafraîchissement le garde **en lecture pendant la requête**
+//!   (jusqu'à environ 2 × 60 s), comme le catalogue : un vidage du cache attend d'abord la fin
+//!   des rafraîchissements, ce qui évite de recréer un cache vidé ;
+//! - le rafraîchissement ne lit que `meta.json` et `feed.xml` avant la requête : le flux en cache
+//!   n'est analysé que s'il est servi (304, échec) ;
 //! - la purge supprime `meta.json` en premier : un dossier à moitié supprimé n'est jamais
 //!   relu comme un cache ; un rafraîchissement en attente pendant la purge est abandonné
 //!   (compteur de génération).
@@ -150,7 +160,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 // Vues renvoyées au front
 // ---------------------------------------------------------------------------------------
 
-/// Épisode d'un flux (miroir à créer côté front avec #212). Aucune URL (D11).
+/// Épisode d'un flux (miroir `Episode` dans `src/api/podcast.ts`). Aucune URL (D11).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EpisodeView {
     /// Identifiant opaque et stable ([`episode_id`]).
@@ -168,6 +178,9 @@ pub struct EpisodeView {
     pub enclosure_length: Option<u64>,
     /// L'épisode (ou le canal) a une image.
     pub has_image: bool,
+    /// Contenu explicite (`itunes:explicit` de l'épisode, sinon du canal, D8) ; `None` si
+    /// inconnu.
+    pub explicit: Option<bool>,
 }
 
 /// Contenu d'un flux, épisodes triés par date décroissante (P5 ; sans date : à la fin, dans
@@ -198,6 +211,7 @@ impl From<&PodcastFeed> for FeedView {
                 enclosure_type: e.enclosure_type.clone(),
                 enclosure_length: e.enclosure_length,
                 has_image: e.image.is_some(),
+                explicit: e.explicit,
             })
             .collect();
         // Tri stable : dates ISO 8601 UTC de même forme, comparables comme du texte.
@@ -254,17 +268,17 @@ struct CacheMeta {
 struct Cached {
     meta: CacheMeta,
     feed: PodcastFeed,
-    /// `feed.xml` correspond à `meta.sha256` : ETag et date utilisables.
-    trusted: bool,
 }
 
-/// Dossier de cache d'une source (identifiant restreint à un nom de dossier sûr).
+/// Dossier de cache d'une source (identifiant restreint à un nom de dossier sûr). Les
+/// majuscules sont refusées : sous NTFS, deux identifiants ne différant que par la casse
+/// désigneraient le même dossier (les identifiants de source sont des UUID en minuscules).
 pub fn source_dir(cache_root: &Path, source_id: &str) -> AppResult<PathBuf> {
     let safe = !source_id.is_empty()
         && source_id.len() <= 64
         && source_id
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
     if !safe {
         return Err(AppError::Validation(format!(
             "identifiant de source invalide : {source_id}"
@@ -273,9 +287,18 @@ pub fn source_dir(cache_root: &Path, source_id: &str) -> AppResult<PathBuf> {
     Ok(cache_root.join(CACHE_SUBDIR).join(source_id))
 }
 
-/// Charge le cache s'il est lisible et provient de l'URL d'empreinte `url_sha256`. Ne reçoit
-/// jamais l'URL elle-même : rien de ce qui est journalisé ici ne peut la contenir.
-fn load_cache(dir: &Path, source_id: &str, url_sha256: &str) -> Option<Cached> {
+/// Cache lu sur disque mais pas encore analysé (l'analyse d'un grand flux est coûteuse : elle
+/// n'a lieu que si le flux en cache est servi).
+struct RawCache {
+    meta: CacheMeta,
+    bytes: Vec<u8>,
+    /// `feed.xml` correspond à `meta.sha256` : ETag et date utilisables.
+    trusted: bool,
+}
+
+/// Lit le cache s'il provient de l'URL d'empreinte `url_sha256`. Ne reçoit jamais l'URL
+/// elle-même : rien de ce qui est journalisé ici ne peut la contenir.
+fn load_raw(dir: &Path, source_id: &str, url_sha256: &str) -> Option<RawCache> {
     let meta: CacheMeta = match std::fs::read(dir.join(META_FILE)) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|err| tracing::warn!("cache du podcast {source_id} : meta illisible ({err})"))
@@ -296,14 +319,27 @@ fn load_cache(dir: &Path, source_id: &str, url_sha256: &str) -> Option<Cached> {
     if !trusted {
         tracing::warn!("flux en cache du podcast {source_id} modifié ou incomplet : ETag ignoré");
     }
-    let feed = parse_feed(&bytes)
+    Some(RawCache {
+        meta,
+        bytes,
+        trusted,
+    })
+}
+
+/// Analyse un cache lu ; `None` (journalisé) s'il est illisible.
+fn parse_raw(raw: RawCache, source_id: &str) -> Option<Cached> {
+    let feed = parse_feed(&raw.bytes)
         .map_err(|err| tracing::warn!("flux en cache du podcast {source_id} illisible : {err}"))
         .ok()?;
     Some(Cached {
-        meta,
+        meta: raw.meta,
         feed,
-        trusted,
     })
+}
+
+/// Charge le cache s'il est lisible et provient de l'URL d'empreinte `url_sha256`.
+fn load_cache(dir: &Path, source_id: &str, url_sha256: &str) -> Option<Cached> {
+    parse_raw(load_raw(dir, source_id, url_sha256)?, source_id)
 }
 
 async fn load_cache_blocking(dir: &Path, source_id: &str, url_sha256: &str) -> Option<Cached> {
@@ -316,6 +352,23 @@ async fn load_cache_blocking(dir: &Path, source_id: &str, url_sha256: &str) -> O
         .await
         .ok()
         .flatten()
+}
+
+async fn load_raw_blocking(dir: &Path, source_id: &str, url_sha256: &str) -> Option<RawCache> {
+    let (dir, sid, hash) = (
+        dir.to_path_buf(),
+        source_id.to_string(),
+        url_sha256.to_string(),
+    );
+    blocking(move || load_raw(&dir, &sid, &hash))
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn parse_raw_blocking(raw: RawCache, source_id: &str) -> Option<Cached> {
+    let sid = source_id.to_string();
+    blocking(move || parse_raw(raw, &sid)).await.ok().flatten()
 }
 
 /// Écrit `feed.xml` puis `meta.json`, chacun de façon atomique.
@@ -457,7 +510,10 @@ pub struct PodcastService {
     cache_gate: Arc<tokio::sync::RwLock<()>>,
     /// Un verrou par source : un seul rafraîchissement (ou une purge) à la fois.
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    /// Génération de chaque source, incrémentée par la purge.
+    /// Génération de chaque source, incrémentée par la purge. Une entrée par source purgée,
+    /// jamais retirée : un identifiant (UUID) n'est jamais réutilisé et un compteur remis à zéro
+    /// ferait reprendre un rafraîchissement en attente ; la croissance reste négligeable (une
+    /// entrée par source supprimée par l'utilisateur).
     generations: Mutex<HashMap<String, u64>>,
 }
 
@@ -497,11 +553,22 @@ impl PodcastService {
         let dir = source_dir(cache_root, source_id)?;
         let _gate = self.cache_gate.read().await;
         let source_lock = self.source_lock(source_id);
-        let _held = source_lock.lock().await;
+        let held = source_lock.lock().await;
         *lock(&self.generations)
             .entry(source_id.to_string())
             .or_default() += 1;
-        blocking(move || remove_source_dir(&dir)).await??;
+        let removed = blocking(move || remove_source_dir(&dir)).await;
+        drop(held);
+        // Le verrou d'une source purgée n'a plus d'utilité : retiré s'il n'a pas de preneur en
+        // attente (la table et `source_lock` le tiennent seules). Les attentes en cours
+        // gardent leur `Arc` et sont abandonnées par le compteur de génération.
+        {
+            let mut locks = lock(&self.locks);
+            if Arc::strong_count(&source_lock) == 2 {
+                locks.remove(source_id);
+            }
+        }
+        removed??;
         Ok(())
     }
 
@@ -603,7 +670,6 @@ impl PodcastService {
                 fetched_at: now,
             },
             feed: fetched.feed,
-            trusted: true,
         };
         if self.generation(source_id) != generation {
             return Err(AppError::NotFound(
@@ -646,48 +712,65 @@ impl PodcastService {
             ));
         }
         let url_sha256 = digest(url);
-        let cached = load_cache_blocking(&dir, source_id, &url_sha256).await;
-        let fail = |cached: Option<Cached>, error: AppError, offline: bool| match cached {
-            Some(c) => {
-                tracing::warn!("rafraîchissement du podcast {source_id} en échec : {error}");
-                Ok(view_from(source_id, Some(&c), offline, Some(&error)))
+        // Le cache n'est que lu ici : il n'est analysé que s'il est servi (304 ou échec).
+        let mut raw = load_raw_blocking(&dir, source_id, &url_sha256).await;
+        // Servir le cache après un échec (`Err` sans cache lisible).
+        let fail = |raw: Option<RawCache>, error: AppError, offline: bool| async move {
+            let cached = match raw {
+                Some(raw) => parse_raw_blocking(raw, source_id).await,
+                None => None,
+            };
+            match cached {
+                Some(c) => {
+                    tracing::warn!("rafraîchissement du podcast {source_id} en échec : {error}");
+                    Ok(view_from(source_id, Some(&c), offline, Some(&error)))
+                }
+                None => Err(error),
             }
-            None => Err(error),
         };
 
-        let trusted = cached.as_ref().filter(|c| c.trusted).map(|c| &c.meta);
+        let trusted = raw.as_ref().filter(|r| r.trusted).map(|r| &r.meta);
         let mut response = match self.send(url, trusted).await {
             Ok(response) => response,
-            Err(err) => return fail(cached, err, true),
+            Err(err) => return fail(raw, err, true).await,
         };
-        // 304 sans copie de confiance (aucun en-tête conditionnel envoyé) : nouvelle requête.
-        if response.status() == StatusCode::NOT_MODIFIED && trusted.is_none() {
+        if response.status() == StatusCode::NOT_MODIFIED {
+            // Copie de confiance et lisible : elle reste servie, vérification renouvelée.
+            let cached = match raw.take_if(|r| r.trusted) {
+                Some(r) => parse_raw_blocking(r, source_id).await,
+                None => None,
+            };
+            if let Some(mut c) = cached {
+                c.meta.fetched_at = now;
+                let (meta_path, meta) = (dir.join(META_FILE), c.meta.clone());
+                let written = blocking(move || storage::write_json(&meta_path, &meta)).await?;
+                if let Err(err) = written {
+                    tracing::warn!(
+                        "mise à jour du cache du podcast {source_id} impossible : {err}"
+                    );
+                }
+                return Ok(view_from(source_id, Some(&c), false, None));
+            }
+            // 304 sans copie exploitable (aucun en-tête conditionnel envoyé, ou cache illisible) :
+            // nouvelle requête sans condition.
             response = match self.send(url, None).await {
                 Ok(response) => response,
-                Err(err) => return fail(cached, err, true),
+                Err(err) => return fail(raw, err, true).await,
             };
+            if response.status() == StatusCode::NOT_MODIFIED {
+                let error = AppError::Network(
+                    "le serveur répond « inchangé » sans cache utilisable".into(),
+                );
+                return fail(raw, error, true).await;
+            }
         }
         let status = response.status();
-        if status == StatusCode::NOT_MODIFIED {
-            let Some(mut c) = cached else {
-                return Err(AppError::Network(
-                    "le serveur répond « inchangé » sans cache local".into(),
-                ));
-            };
-            c.meta.fetched_at = now;
-            let (meta_path, meta) = (dir.join(META_FILE), c.meta.clone());
-            let written = blocking(move || storage::write_json(&meta_path, &meta)).await?;
-            if let Err(err) = written {
-                tracing::warn!("mise à jour du cache du podcast {source_id} impossible : {err}");
-            }
-            return Ok(view_from(source_id, Some(&c), false, None));
-        }
         if !status.is_success() {
             let error = AppError::Network(format!(
                 "flux inaccessible : réponse HTTP {}",
                 status.as_u16()
             ));
-            return fail(cached, error, true);
+            return fail(raw, error, true).await;
         }
         let etag = header_text(&response, ETAG);
         let last_modified = header_text(&response, LAST_MODIFIED);
@@ -695,12 +778,12 @@ impl PodcastService {
             Ok(body) => body,
             Err(err) => {
                 let offline = matches!(err, AppError::Network(_));
-                return fail(cached, err, offline);
+                return fail(raw, err, offline).await;
             }
         };
         let (body, feed) = match parse_blocking(body).await {
             Ok(parsed) => parsed,
-            Err(err) => return fail(cached, err, false),
+            Err(err) => return fail(raw, err, false).await,
         };
         let fresh = Cached {
             meta: CacheMeta {
@@ -711,7 +794,6 @@ impl PodcastService {
                 fetched_at: now,
             },
             feed,
-            trusted: true,
         };
         let (dir_owned, meta) = (dir.clone(), fresh.meta.clone());
         let stored = blocking(move || store_cache(&dir_owned, &body, &meta)).await?;
@@ -813,9 +895,21 @@ pub async fn podcast_add(
         let _guard = config.guard();
         SourcesStore::new(&config.dir).add_podcast(id.clone(), name, url.clone())?
     };
-    let view = service
+    // La source est enregistrée : une erreur de cache ne la défait pas (une nouvelle tentative
+    // répondrait « déjà dans vos sources »). Elle est journalisée et la vue est rendue sans flux
+    // (`status.error`) ; le flux viendra au prochain rafraîchissement. Une source purgée entre-temps
+    // (`NotFound`) n'existe plus : erreur.
+    let view = match service
         .store_fetched(generation, &root, &id, &url, fetched, now_secs())
-        .await?;
+        .await
+    {
+        Ok(view) => view,
+        Err(err @ AppError::NotFound(_)) => return Err(err),
+        Err(err) => {
+            tracing::warn!("cache du podcast {id} indisponible après l'ajout : {err}");
+            view_from(&id, None, false, Some(&err))
+        }
+    };
     Ok(PodcastAdded {
         source: source.into(),
         view,
@@ -823,6 +917,10 @@ pub async fn podcast_add(
 }
 
 /// Flux en cache d'une source podcast, sans réseau.
+///
+/// Le fichier de cache est relu et analysé à chaque appel : choix assumé (#418), l'appel est
+/// rare (ouverture d'une source) et un cache en mémoire devrait être invalidé à chaque
+/// rafraîchissement, ajout ou suppression pour un gain négligeable.
 #[tauri::command]
 pub async fn podcast_feed(
     config: State<'_, ConfigState>,
