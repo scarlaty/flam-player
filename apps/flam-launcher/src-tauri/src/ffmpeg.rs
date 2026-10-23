@@ -27,14 +27,15 @@
 //!   qui est hors du modèle de menace décrit plus haut ;
 //! - le hachage s'interrompt à l'annulation (entre deux morceaux de 64 Kio) ; après la fin du
 //!   processus, la lecture de stdout/stderr n'attend qu'un court délai ([`READER_GRACE`]) : un
-//!   petit-enfant qui garderait les tubes ouverts ne bloque pas l'appelant (sortie alors vide).
+//!   petit-enfant qui garderait les tubes ouverts ne bloque pas l'appelant ; ce qui a déjà été
+//!   lu à ce moment-là est conservé (sortie partielle, jamais perdue).
 
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -182,12 +183,12 @@ impl Ffmpeg {
             return Err(AppError::Cancelled);
         }
         let this = self.clone();
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_hash = stop.clone();
+        // Le hachage (thread bloquant) s'arrête au prochain morceau dès que la garde tombe :
+        // annulation, mais aussi futur abandonné par l'appelant ou sortie anticipée.
+        let stop = StopOnDrop::default();
+        let stop_hash = stop.flag();
         let path = tokio::select! {
             () = cancelled(cancel) => {
-                // Le hachage en cours (thread bloquant) s'arrête au prochain morceau.
-                stop.store(true, Ordering::Relaxed);
                 return Err(AppError::Cancelled);
             }
             joined = tokio::task::spawn_blocking(move || {
@@ -197,6 +198,22 @@ impl Ffmpeg {
             }
         };
         run_program(&path, args, limits, cancel).await
+    }
+}
+
+/// Drapeau d'arrêt d'une tâche bloquante, levé à la destruction de la garde.
+#[derive(Default)]
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl StopOnDrop {
+    fn flag(&self) -> Arc<AtomicBool> {
+        self.0.clone()
+    }
+}
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
     }
 }
 
@@ -232,8 +249,8 @@ async fn run_program(
     })?;
     let stdout = child.stdout.take().expect("stdout redirigé");
     let stderr = child.stderr.take().expect("stderr redirigé");
-    let out_task = tokio::spawn(read_head(stdout, limits.stdout_cap));
-    let err_task = tokio::spawn(read_tail(stderr, STDERR_TAIL));
+    let out_task = Collector::spawn(stdout, Keep::Head(limits.stdout_cap));
+    let err_task = Collector::spawn(stderr, Keep::Tail(STDERR_TAIL));
 
     let outcome = tokio::select! {
         status = child.wait() => Ok(status),
@@ -254,66 +271,91 @@ async fn run_program(
         }
     };
     let (stdout, stderr) = tokio::join!(
-        join_bounded(out_task, READER_GRACE),
-        join_bounded(err_task, READER_GRACE)
+        out_task.collect(READER_GRACE),
+        err_task.collect(READER_GRACE)
     );
     Ok(Output {
         code: status.code(),
         stdout,
-        stderr,
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
     })
 }
 
-/// Attend un lecteur au plus `grace` ; au-delà (tube gardé ouvert par un petit-enfant), il est
-/// abandonné et la valeur par défaut est rendue.
-async fn join_bounded<T: Default>(mut handle: JoinHandle<T>, grace: Duration) -> T {
-    match tokio::time::timeout(grace, &mut handle).await {
-        Ok(joined) => joined.unwrap_or_default(),
-        Err(_) => {
-            handle.abort();
-            T::default()
+/// Ce que garde un lecteur de tube.
+#[derive(Debug, Clone, Copy)]
+enum Keep {
+    /// Les `n` premiers octets.
+    Head(usize),
+    /// Les `n` derniers octets.
+    Tail(usize),
+}
+
+/// Lecteur de tube en tâche : les octets lus sont déposés au fur et à mesure dans un tampon
+/// partagé, pour que la sortie déjà reçue survive à l'abandon d'un lecteur trop lent (#400).
+struct Collector {
+    handle: JoinHandle<()>,
+    buf: Arc<Mutex<Vec<u8>>>,
+    keep: Keep,
+}
+
+impl Collector {
+    fn spawn<R: AsyncRead + Unpin + Send + 'static>(reader: R, keep: Keep) -> Self {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let handle = tokio::spawn(read_into(reader, keep, buf.clone()));
+        Self { handle, buf, keep }
+    }
+
+    fn abort(&self) {
+        self.handle.abort();
+    }
+
+    /// Attend la fin de la lecture au plus `grace` ; au-delà (tube gardé ouvert par un
+    /// petit-enfant), le lecteur est abandonné et ce qui a déjà été lu est rendu.
+    async fn collect(mut self, grace: Duration) -> Vec<u8> {
+        if tokio::time::timeout(grace, &mut self.handle).await.is_err() {
+            self.handle.abort();
         }
+        let mut kept =
+            std::mem::take(&mut *self.buf.lock().unwrap_or_else(PoisonError::into_inner));
+        if let Keep::Tail(cap) = self.keep {
+            kept.drain(..kept.len().saturating_sub(cap));
+        }
+        kept
     }
 }
 
-/// Lit jusqu'à la fin ; ne garde que les `cap` premiers octets.
-async fn read_head<R: AsyncRead + Unpin>(mut reader: R, cap: usize) -> Vec<u8> {
-    let mut kept = Vec::new();
+/// Lit jusqu'à la fin en ne gardant dans `sink` que ce que demande `keep`.
+async fn read_into<R: AsyncRead + Unpin>(mut reader: R, keep: Keep, sink: Arc<Mutex<Vec<u8>>>) {
     let mut chunk = [0u8; 8192];
     loop {
-        match reader.read(&mut chunk).await {
+        let n = match reader.read(&mut chunk).await {
             Ok(0) | Err(_) => break,
-            Ok(n) => {
+            Ok(n) => n,
+        };
+        let mut kept = sink.lock().unwrap_or_else(PoisonError::into_inner);
+        match keep {
+            Keep::Head(cap) => {
                 let room = cap.saturating_sub(kept.len());
                 kept.extend_from_slice(&chunk[..n.min(room)]);
             }
-        }
-    }
-    kept
-}
-
-/// Lit jusqu'à la fin ; ne garde que les `cap` derniers octets.
-async fn read_tail<R: AsyncRead + Unpin>(mut reader: R, cap: usize) -> String {
-    let mut tail: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        match reader.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                tail.extend_from_slice(&chunk[..n]);
-                if tail.len() > cap * 2 {
-                    tail.drain(..tail.len() - cap);
+            Keep::Tail(cap) => {
+                kept.extend_from_slice(&chunk[..n]);
+                if kept.len() > cap * 2 {
+                    let excess = kept.len() - cap;
+                    kept.drain(..excess);
                 }
             }
         }
     }
-    let start = tail.len().saturating_sub(cap);
-    String::from_utf8_lossy(&tail[start..]).into_owned()
 }
 
 /// SHA-256 (hexadécimal minuscule) d'un fichier, lu par morceaux ; `stop` l'interrompt.
 fn hash_file(path: &Path, stop: Option<&AtomicBool>) -> std::io::Result<String> {
-    let mut file = std::fs::File::open(path)?;
+    hash_reader(std::fs::File::open(path)?, stop)
+}
+
+/// Corps de [`hash_file`] : `stop` est consulté avant chaque lecture.
+fn hash_reader<R: Read>(mut file: R, stop: Option<&AtomicBool>) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     let mut chunk = vec![0u8; 64 * 1024];
     loop {
@@ -582,17 +624,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lecteur_abandonne_apres_le_delai() {
-        let never = tokio::spawn(async {
-            std::future::pending::<()>().await;
-            vec![1u8]
-        });
+    async fn lecteur_abandonne_garde_la_sortie_deja_lue() {
+        // Le tube reste ouvert (écrivain vivant) : la lecture ne se termine jamais.
+        let (mut writer, reader) = tokio::io::duplex(64);
+        tokio::io::AsyncWriteExt::write_all(&mut writer, b"abcdef")
+            .await
+            .unwrap();
         let started = std::time::Instant::now();
-        let got = join_bounded(never, Duration::from_millis(100)).await;
-        assert!(got.is_empty());
+        let head = Collector::spawn(reader, Keep::Head(4));
+        assert_eq!(head.collect(Duration::from_millis(300)).await, b"abcd");
         assert!(started.elapsed() < Duration::from_secs(5));
-        let done = tokio::spawn(async { vec![7u8] });
-        assert_eq!(join_bounded(done, Duration::from_secs(5)).await, vec![7]);
+
+        let (mut writer2, reader2) = tokio::io::duplex(64);
+        tokio::io::AsyncWriteExt::write_all(&mut writer2, b"abcdef")
+            .await
+            .unwrap();
+        let tail = Collector::spawn(reader2, Keep::Tail(4));
+        assert_eq!(tail.collect(Duration::from_millis(300)).await, b"cdef");
+        drop((writer, writer2));
+    }
+
+    #[tokio::test]
+    async fn lecteur_termine_rend_toute_la_sortie() {
+        let data = vec![7u8; 100_000];
+        let head = Collector::spawn(std::io::Cursor::new(data.clone()), Keep::Head(10));
+        assert_eq!(head.collect(Duration::from_secs(5)).await, vec![7u8; 10]);
+        let mut data = data;
+        data.extend_from_slice(b"fin");
+        let tail = Collector::spawn(std::io::Cursor::new(data), Keep::Tail(5));
+        assert_eq!(tail.collect(Duration::from_secs(5)).await, b"\x07\x07fin");
     }
 
     #[test]
@@ -604,6 +664,58 @@ mod tests {
         let err = hash_file(&path, Some(&stop)).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
         assert_eq!(hash_file(&path, None).unwrap(), sha(b"x"));
+    }
+
+    /// Lecteur de 10 morceaux qui lève `stop` à la troisième lecture : le hachage s'arrête en
+    /// cours de lecture, sans consommer le reste.
+    struct StopsAt<'a> {
+        reads: usize,
+        stop: Option<&'a AtomicBool>,
+    }
+
+    impl Read for StopsAt<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            if self.reads > 10 {
+                return Ok(0);
+            }
+            if self.reads == 3 {
+                if let Some(stop) = self.stop {
+                    stop.store(true, Ordering::Relaxed);
+                }
+            }
+            buf.fill(1);
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn hachage_interrompu_en_cours_de_lecture() {
+        let stop = AtomicBool::new(false);
+        let mut reader = StopsAt {
+            reads: 0,
+            stop: Some(&stop),
+        };
+        let err = hash_reader(&mut reader, Some(&stop)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(reader.reads, 3, "aucune lecture après l'arrêt");
+        // Sans arrêt levé, la lecture va au bout.
+        let calm = AtomicBool::new(false);
+        let mut reader = StopsAt {
+            reads: 0,
+            stop: None,
+        };
+        assert!(hash_reader(&mut reader, Some(&calm)).is_ok());
+        assert_eq!(reader.reads, 11);
+    }
+
+    #[test]
+    fn la_garde_leve_le_drapeau_a_la_destruction() {
+        let guard = StopOnDrop::default();
+        let flag = guard.flag();
+        assert!(!flag.load(Ordering::Relaxed));
+        drop(guard);
+        assert!(flag.load(Ordering::Relaxed));
     }
 
     #[tokio::test]

@@ -466,6 +466,7 @@ pub(crate) fn capture_logs(f: impl FnOnce()) -> String {
             Ok(())
         }
     }
+    crate::test_logs::keep_callsites_enabled();
     let buf = Buf::default();
     let writer = buf.clone();
     let subscriber = tracing_subscriber::fmt()

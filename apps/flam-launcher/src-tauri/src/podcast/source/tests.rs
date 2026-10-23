@@ -108,6 +108,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
 
 impl Logs {
     fn capture() -> (Logs, tracing::subscriber::DefaultGuard) {
+        crate::test_logs::keep_callsites_enabled();
         let logs = Logs::default();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(logs.clone())
