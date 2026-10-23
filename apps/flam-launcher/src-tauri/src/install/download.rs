@@ -235,7 +235,8 @@ async fn attempt(
     drop(file);
     // Sans longueur annoncée, la fin du corps ne se distingue d'une coupure que si le transfert
     // est « chunked » (hyper signale alors l'erreur : voir `chunk()` ci-dessus) ; une réponse
-    // HTTP/1.0 sans `Content-Length` coupée par fermeture reste indétectable (résidu #370).
+    // délimitée par la fermeture (HTTP/1.0, ou HTTP/1.1 sans `Content-Length` ni `chunked`)
+    // et coupée reste indétectable (résidu #370).
     if let Some(total) = total {
         if received != total {
             // Connexion coupée : le `.part` est gardé pour une reprise.
