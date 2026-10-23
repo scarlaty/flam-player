@@ -8,20 +8,29 @@ export interface CheckboxFieldProps extends Omit<
   label: string;
   /** Précision affichée sous le libellé et reliée par `aria-describedby`. */
   hint?: string;
+  /** Identifiants d'éléments supplémentaires décrivant la case (ex. motif d'un refus). */
+  describedBy?: string;
 }
 
 /** Case à cocher avec libellé cliquable et précision optionnelle. */
-export function CheckboxField({ label, hint, id, ...rest }: CheckboxFieldProps) {
+export function CheckboxField({
+  label,
+  hint,
+  describedBy,
+  id,
+  ...rest
+}: CheckboxFieldProps) {
   const generated = useId();
   const inputId = id ?? generated;
   const hintId = `${inputId}-hint`;
+  const described = [hint ? hintId : null, describedBy].filter(Boolean).join(" ");
   return (
     <div className="fl-check">
       <input
         {...rest}
         id={inputId}
         type="checkbox"
-        aria-describedby={hint ? hintId : undefined}
+        aria-describedby={described || undefined}
       />
       <div>
         <label htmlFor={inputId}>{label}</label>
