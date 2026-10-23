@@ -5,8 +5,14 @@ Sortie (commitee) : crates/telmi2flam/tests/data/package_cases.zip (deflate), lu
 crates/telmi2flam/tests/package_parity.rs. Elle contient :
 - cases/<id>.zip : l'archive TELMI de chaque cas ;
 - expected.json : pour chaque cas, les options, les etiquettes du corpus, et soit l'erreur
-  de Python (code), soit les entrees du .plain.pk dans l'ordre (nom, SHA-256) et les codes
-  d'avertissement dans l'ordre d'emission.
+  de Python (code), soit les entrees du .plain.pk dans l'ordre (nom, SHA-256), le SHA-256 du
+  .plain.pk complet (`pk_sha256`) et les codes d'avertissement dans l'ordre d'emission ;
+- zip_cases.json : SHA-256 du ZIP ecrit par `zipfile.writestr` pour des listes d'entrees
+  synthetiques (noms non ASCII, seuils ZIP64 reduits), relues par output.rs (#130).
+
+L'horloge de `zipfile` est figee au 1980-01-01 00:00:00 : `writestr` horodate chaque entree a
+l'heure locale, le port Rust fixe cette date (PORT-RUST.md 4.1). A horodatage egal, le
+.plain.pk de Rust doit etre identique a l'octet pres a celui de Python.
 
 Cas : corpus de parite (tests/parity/make_corpus.py) et cas propres aux assets (collisions
 de noms, noms reserves, couverture, title.mp3, uuid, metadonnees de types inattendus).
@@ -43,6 +49,62 @@ from test_telmi2flam import MP3, base_nodes, mp3_frames, png, std_files  # noqa:
 
 OUT = os.path.join(HERE, "package_cases.zip")
 FIXED_DATE = (2026, 1, 1, 0, 0, 0)
+
+
+class _FrozenClock:
+    """Remplace le module `time` vu par `zipfile` : `writestr` date alors chaque entree du
+    1980-01-01 00:00:00, la date fixe du port Rust."""
+
+    @staticmethod
+    def time():
+        return 0.0
+
+    @staticmethod
+    def localtime(_secs=None):
+        return (1980, 1, 1, 0, 0, 0, 1, 1, -1)
+
+
+zipfile.time = _FrozenClock
+
+
+def pattern(i, size):
+    """Contenu synthetique de l'entree i (repris par output.rs)."""
+    return bytes((i * 7 + j) % 251 for j in range(size))
+
+
+def zip_cases():
+    """ZIP de `zipfile.writestr` pour des entrees synthetiques ; ZIP64 exerce en reduisant
+    les seuils du module (globaux lus a chaque ecriture)."""
+    lists = {
+        "ascii": [("a.txt", 0), ("dir/b.bin", 300)],
+        "non_ascii": [("é/ü.mp3", 10), ("日本/語.lif", 5), ("emoji_\U0001F600", 3), ("x", 1)],
+        "empty": [],
+    }
+    cases = []
+    # 300 : en-tete local ZIP64 (300 * 1,05 > 300) sans ZIP64 dans le repertoire central.
+    for zip64, count in [(None, None), (100, None), (250, None), (300, None), (40, None),
+                         (None, 2), (60, 3)]:
+        for lid, entries in lists.items():
+            saved = zipfile.ZIP64_LIMIT, zipfile.ZIP_FILECOUNT_LIMIT
+            path = os.path.join(tempfile.gettempdir(), "zip_case_%d.zip" % os.getpid())
+            try:
+                if zip64 is not None:
+                    zipfile.ZIP64_LIMIT = zip64
+                if count is not None:
+                    zipfile.ZIP_FILECOUNT_LIMIT = count
+                with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
+                    for i, (name, size) in enumerate(entries):
+                        z.writestr(name, pattern(i, size))
+                with open(path, "rb") as f:
+                    digest = hashlib.sha256(f.read()).hexdigest()
+            finally:
+                zipfile.ZIP64_LIMIT, zipfile.ZIP_FILECOUNT_LIMIT = saved
+                if os.path.exists(path):
+                    os.remove(path)
+            cases.append({"entries": entries, "zip64": zip64 or zipfile.ZIP64_LIMIT,
+                          "file_count": count or zipfile.ZIP_FILECOUNT_LIMIT,
+                          "sha256": digest})
+    return cases
 
 
 def zipc(files):
@@ -198,11 +260,17 @@ def run(case, data, tmp):
         return exp
     with zipfile.ZipFile(out) as z:
         exp["entries"] = [[n, hashlib.sha256(z.read(n)).hexdigest()] for n in z.namelist()]
+    with open(out, "rb") as f:
+        exp["pk_sha256"] = hashlib.sha256(f.read()).hexdigest()
     exp["warnings"] = warnings
     return exp
 
 
 def main():
+    # create_system (octet du repertoire central) vaut 0 sous Windows seulement : le port Rust
+    # reproduit le Python de l'installateur, sous Windows.
+    if sys.platform != "win32":
+        sys.exit("vecteurs a produire sous Windows (create_system = 0 de zipfile)")
     if sys.version_info[:3] != (3, 14, 8) or Image.__version__ != "12.3.0":
         sys.exit("vecteurs a produire avec Python 3.14.8 + Pillow 12.3.0 (oracle de build-converter.ps1)")
     builds = mc.corpus_cases() + package_cases()
@@ -220,6 +288,9 @@ def main():
                 ",\n".join(json.dumps(c, ensure_ascii=True, separators=(",", ":"))
                            for c in expected))
             z.writestr(zipfile.ZipInfo("expected.json", FIXED_DATE), body, zipfile.ZIP_DEFLATED, 9)
+            z.writestr(zipfile.ZipInfo("zip_cases.json", FIXED_DATE),
+                       json.dumps(zip_cases(), ensure_ascii=True, indent=0) + "\n",
+                       zipfile.ZIP_DEFLATED, 9)
         os.replace(OUT + ".part", OUT)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

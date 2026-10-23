@@ -5,7 +5,7 @@
 //! ([`text`]), sérialisation Lua ([`lua`]), décodage [`png`], redimensionnement [`resample`]
 //! (port de Pillow), conversions d'images en LIF ([`image`]) et graphe `nodes.json` vers Lua
 //! ([`graph`]), assets et assemblage du paquet en mémoire ([`assets`], [`package`], runtime
-//! embarqué [`runtime`]) ; l'écriture de la sortie arrive dans la PR suivante (#130).
+//! embarqué [`runtime`]) et écriture atomique de la sortie ([`output`]).
 //!
 //! # Pile d'appels
 //!
@@ -37,6 +37,7 @@ pub mod lif;
 pub mod lua;
 mod md5;
 pub mod mp3map;
+pub mod output;
 pub mod package;
 pub mod png;
 pub mod resample;

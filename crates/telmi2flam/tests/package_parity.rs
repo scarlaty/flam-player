@@ -7,6 +7,11 @@
 //! d'avertissement dans le même ordre, ou même code d'erreur. Les écarts assumés du port
 //! (PORT-RUST.md §3 et D4) sont vérifiés à part : le Rust échoue aussi, avec le code prévu.
 //!
+//! Écriture (#130) : le `.plain.pk` écrit par [`write_package`] est identique à l'octet près à
+//! celui de Python (`pk_sha256`, horloge de `zipfile` figée au 1980-01-01 par le générateur),
+//! et [`write_zip`] reproduit `zipfile.writestr` sur des entrées synthétiques (`zip_cases.json` :
+//! noms non ASCII, seuils ZIP64 réduits).
+//!
 //! Test d'injection de panne : annulation au *n*-ième appel du jeton, pour chaque *n*.
 
 use std::cell::Cell;
@@ -17,6 +22,7 @@ use sha2::{Digest, Sha256};
 use telmi2flam::archive::Archive;
 use telmi2flam::error::ConvError;
 use telmi2flam::image::ThumbFit;
+use telmi2flam::output::{write_package, write_zip, Target, ZipLimits};
 use telmi2flam::package::{build_package, Options, Package, Selector};
 
 const VECTORS: &[u8] = include_bytes!("data/package_cases.zip");
@@ -87,8 +93,23 @@ fn assumed_divergence(tags: &[&str]) -> Option<&'static str> {
     None
 }
 
+/// Écrit le paquet dans `dir` et compare le SHA-256 du `.plain.pk` à celui de Python.
+fn check_pk(case: &Value, pkg: &Package, dir: &std::path::Path) -> Result<(), String> {
+    let out = dir.join(format!("{}.plain.pk", case["id"].as_str().unwrap()));
+    let target = Target::new(Some(&out), false, pkg);
+    write_package(pkg, &target, &|| false).map_err(|e| format!("écriture : {e}"))?;
+    let bytes = std::fs::read(&out).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&out);
+    let want = case["pk_sha256"].as_str().unwrap();
+    let have = hex(&Sha256::digest(&bytes));
+    if want != have {
+        return Err(format!(".plain.pk : SHA-256 Python {want}, Rust {have}"));
+    }
+    Ok(())
+}
+
 /// Compare un cas ; `Err` décrit l'écart.
-fn check(case: &Value, data: Vec<u8>) -> Result<(), String> {
+fn check(case: &Value, data: Vec<u8>, dir: &std::path::Path) -> Result<(), String> {
     let tags: Vec<&str> = case["tags"]
         .as_array()
         .unwrap()
@@ -153,7 +174,7 @@ fn check(case: &Value, data: Vec<u8>) -> Result<(), String> {
                     "avertissements : Python {want_w:?}, Rust {have_w:?}"
                 ));
             }
-            Ok(())
+            check_pk(case, &pkg, dir)
         }
     }
 }
@@ -162,15 +183,23 @@ fn check(case: &Value, data: Vec<u8>) -> Result<(), String> {
 fn paquet_identique_a_python() {
     let cases = expected();
     assert!(cases.len() > 100, "{} cas", cases.len());
+    let written = cases
+        .iter()
+        .filter(|c| c.get("pk_sha256").is_some())
+        .count();
+    assert!(written > 80, "{written} .plain.pk de référence");
+    let dir = std::env::temp_dir().join(format!("t2f-parity-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
     let mut zip = vectors();
     let mut failures = Vec::new();
     for case in &cases {
         let id = case["id"].as_str().unwrap();
         let data = zip.read(&format!("cases/{id}.zip")).unwrap().unwrap();
-        if let Err(why) = check(case, data) {
+        if let Err(why) = check(case, data, &dir) {
             failures.push(format!("{id} : {why}"));
         }
     }
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         failures.is_empty(),
         "{} écart(s) sur {} cas :\n{}",
@@ -178,6 +207,45 @@ fn paquet_identique_a_python() {
         cases.len(),
         failures.join("\n")
     );
+}
+
+/// Contenu synthétique de l'entrée `i` (`pattern` du générateur).
+fn pattern(i: usize, size: usize) -> Vec<u8> {
+    (0..size).map(|j| ((i * 7 + j) % 251) as u8).collect()
+}
+
+/// Octets de `zipfile.writestr` (horloge figée) pour des listes d'entrées synthétiques,
+/// seuils ZIP64 de Python ou réduits (en-tête local ZIP64 dès `1,05 × taille`, répertoire
+/// central ZIP64 par taille, position ou nombre d'entrées).
+#[test]
+fn zip_identique_a_zipfile() {
+    let raw = vectors().read("zip_cases.json").unwrap().unwrap();
+    let cases: Value = serde_json::from_slice(&raw).unwrap();
+    let cases = cases.as_array().unwrap();
+    assert_eq!(cases.len(), 21);
+    for case in cases {
+        let entries: Vec<(String, Vec<u8>)> = case["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let size = e[1].as_u64().unwrap() as usize;
+                (e[0].as_str().unwrap().to_owned(), pattern(i, size))
+            })
+            .collect();
+        let limits = ZipLimits {
+            zip64: case["zip64"].as_u64().unwrap(),
+            file_count: case["file_count"].as_u64().unwrap() as usize,
+        };
+        let mut out = Vec::new();
+        write_zip(&mut out, &entries, limits, &|| false, &mut |_| Ok(())).unwrap();
+        assert_eq!(
+            hex(&Sha256::digest(&out)),
+            case["sha256"].as_str().unwrap(),
+            "{case}"
+        );
+    }
 }
 
 /// Annulation au *n*-ième appel du jeton d'une conversion complète : toujours `cancelled` et
