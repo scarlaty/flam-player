@@ -26,6 +26,7 @@
 
 pub mod archive;
 pub mod assets;
+mod blur;
 pub mod error;
 pub mod graph;
 mod identify;

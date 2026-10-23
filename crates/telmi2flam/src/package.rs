@@ -58,6 +58,8 @@ pub struct Options {
     /// `--allow-missing` : assets manquants remplacés au lieu d'un échec.
     pub allow_missing: bool,
     pub selector: Selector,
+    /// `--thumb-fit` : remplissage de la vignette (défaut `flou`, comme Python).
+    pub thumb_fit: crate::image::ThumbFit,
 }
 
 /// Paquet assemblé, prêt à écrire.
@@ -290,7 +292,7 @@ pub fn build_package<R: Read + Seek>(
         // title-card place la couverture à taille native dans un emplacement d'environ
         // 89 × 120, ancré à gauche : une couverture portrait est complétée à droite.
         let converted = png_to_fit_lif(&cover, 89, 120, Align::Left, cancelled)
-            .and_then(|t| Ok((t, png_to_thumb_lif(&cover, cancelled)?)));
+            .and_then(|t| Ok((t, png_to_thumb_lif(&cover, options.thumb_fit, cancelled)?)));
         match converted {
             Ok((title_lif, thumb_lif)) => {
                 assets.out.insert("img/title.lif".to_owned(), title_lif);
