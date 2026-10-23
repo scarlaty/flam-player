@@ -548,7 +548,9 @@ async fn sans_python_le_pack_echoue_avant_tout_telechargement() {
     assert!(!fake.entered.load(Ordering::SeqCst), "rien téléchargé");
     // #445 : la tâche échouée ne garde pas le chemin du dossier de travail supprimé.
     assert!(end.entry.download_url.is_empty(), "{:?}", end.entry);
-    assert!(ctx.service.list()[0].entry.download_url.is_empty());
+    let list = ctx.service.list();
+    assert_eq!(list.len(), 1);
+    assert!(list[0].entry.download_url.is_empty());
     ctx.assert_clean();
 }
 
@@ -561,12 +563,15 @@ async fn moteur_rust_avec_binaire_sans_python_passe_le_precontrole() {
     let fake = ctx.packs(Fault::None);
     let task = ctx.start_pack().await;
     let end = ctx.finished(&task.id).await;
-    assert_ne!(
-        end.error.as_ref().map(|e| e.kind.as_str()),
-        Some("converter_unavailable"),
+    // Une éventuelle erreur vient de la suite (le faux exe est un python.exe), jamais du
+    // pré-contrôle ni de la validation.
+    let kind = end.error.as_ref().map(|e| e.kind.as_str());
+    assert!(
+        !matches!(kind, Some("converter_unavailable" | "validation")),
         "{end:?}"
     );
     assert!(fake.entered.load(Ordering::SeqCst), "préparation lancée");
+    ctx.assert_clean();
 }
 
 /// #440 : le pré-contrôle suit le moteur choisi. Moteur Rust sans `telmi2flam.exe` : refus avant
