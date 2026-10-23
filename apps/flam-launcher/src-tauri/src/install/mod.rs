@@ -1272,6 +1272,10 @@ async fn resolve_entry(
         Source::Library { .. } => Err(AppError::Validation(
             "cette histoire est déjà dans la bibliothèque".into(),
         )),
+        // Un épisode n'est pas une histoire : il entre dans un pack (#217, N7 a).
+        Source::Podcast { .. } => Err(AppError::Validation(
+            "un épisode de podcast ne s'installe pas seul : il faut créer un pack".into(),
+        )),
     }
 }
 

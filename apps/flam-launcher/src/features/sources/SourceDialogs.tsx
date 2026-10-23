@@ -96,7 +96,8 @@ export function AddCatalogDialog({ onClose, onAdded }: CatalogDialogProps) {
 }
 
 interface RenameDialogProps {
-  source: Exclude<Source, { type: "library" }>;
+  /** Les flux podcast ne se renomment pas encore (#212). */
+  source: Exclude<Source, { type: "library" } | { type: "podcast" }>;
   onClose: () => void;
   onRenamed: (source: Source) => void;
 }
