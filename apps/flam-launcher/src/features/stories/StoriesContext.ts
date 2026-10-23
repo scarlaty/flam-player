@@ -71,6 +71,11 @@ export interface StoriesApi {
   cancel: (taskId: string) => void;
   retry: (taskId: string) => void;
   dismiss: (taskId: string) => void;
+  /**
+   * Ajoute au panneau une tâche créée hors du provider (création d'un pack de podcasts, #217),
+   * sans attendre son premier événement.
+   */
+  trackTask: (task: InstallTask) => void;
   /** Une confirmation d'installation (histoire incompatible) est affichée. */
   confirming: boolean;
 }

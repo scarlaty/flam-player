@@ -4,6 +4,7 @@ import { afterEach, expect, it } from "vitest";
 import { isAppError } from "./error";
 import {
   cancelInstall,
+  createPack,
   listInstalls,
   onInstallDone,
   onInstallError,
@@ -81,4 +82,24 @@ it("les écouteurs reçoivent les charges des événements install://", async ()
   expect(failures[0]?.error.code).toBe("missing_asset");
   expect(done).toEqual(["t2"]);
   off.forEach((unlisten) => unlisten());
+});
+
+it("createPack appelle pack_create avec la composition et la révision du brouillon", async () => {
+  const calls: { cmd: string; args: unknown }[] = [];
+  mockIPC((cmd, args) => {
+    calls.push({ cmd, args });
+    return { task: null, report: { valid: false, problems: [] } };
+  });
+  const composition = {
+    metadata: { title: "Pack", subtitle: null, age: 0, description: null },
+    cover: { kind: "default" as const },
+    menu: [{ kind: "episode" as const, source_id: "s1", episode_id: "e1" }],
+  };
+  const created = await createPack(composition, 4);
+  await createPack(composition);
+  expect(calls).toEqual([
+    { cmd: "pack_create", args: { composition, draftRevision: 4 } },
+    { cmd: "pack_create", args: { composition } },
+  ]);
+  expect(created.task).toBeNull();
 });

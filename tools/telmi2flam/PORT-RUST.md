@@ -137,6 +137,23 @@ Invariants (repris de Python, à tester côté Rust) :
    dossier existant, donc sans atomicité. De plus, les deux publications successives
    (`.plain.pk` puis `.plain`) ne sont pas atomiques ensemble. Le launcher n'utilise que le
    `.plain.pk`. Le comportement du dossier est conservé et testé tel quel.
+   Durabilité (#357, #416) : le `.plain.pk` et chaque fichier du `.plain` sont vidés sur disque
+   (`sync_all`) avant le renommage. Mesure (#416, 500 fichiers dont 100 de 200 Kio, soit 21 Mio,
+   disque local NTFS, antivirus actif, `mesure_sync_all` ignoré par défaut de `output.rs`) :
+   sans vidage 0,34 à 0,40 s (jusqu'à 4,5 s en cas d'activité disque concurrente), vidage par
+   fichier 1,6 s (environ 2,5 ms par fichier, soit environ 4 fois le temps d'écriture sans vidage), vidage
+   final séquentiel 1,3 à 1,9 s (aucun gain : chaque `FlushFileBuffers` coûte autant), vidage
+   final sur 8 fils 0,65 à 1,35 s (gain partiel seulement). Le coût absolu reste de l'ordre de
+   la seconde pour des centaines de fichiers, et le launcher n'écrit que le `.plain.pk` (un seul
+   vidage) : le dossier `.plain` ne sert qu'à la CLI. Le vidage par fichier est conservé, sans
+   vidage final. Pas de mesure sur clé USB
+   (aucun volume amovible monté pendant la mesure).
+   Classement des erreurs : si la sortie échoue (`output_error`) alors que l'archive d'entrée
+   relue en flux est elle-même illisible ou modifiée, l'erreur rendue est `archive_unreadable`
+   (cause première) : l'archive est relue en entier seulement après un échec d'écriture.
+   Bibliothèque : `output::part_path` n'est plus public (`pub(crate)`, le paramètre `call`
+   d'#357 n'est pas une API) ; une panique qui se déroule supprime et désinscrit les `.part`
+   (garde RAII), `discard_pending` ne servant qu'à `panic = "abort"`.
 2. **Aucune écriture hors de la destination** : les noms de sortie sont relatifs, sans `..`,
    sans `\`, sans `:`, sans composant vide (garde zip-slip). Le dossier `.plain` est vérifié
    par chemin canonique. Les entrées de l'archive d'entrée ne sont **jamais extraites** sur
@@ -175,7 +192,7 @@ Invariants (repris de Python, à tester côté Rust) :
 | `--info` : fin de ligne | sortie | rien | Le Rust écrit `\n` partout ; Python, en mode texte, écrit `\r\n` sous Windows. Écart assumé : `parity.py` et les tests comparent après `strip()`, et les consommateurs lisent ligne à ligne. Un tube fermé (EPIPE) n'est pas une erreur : l'échec d'écriture est ignoré (pas de panique). |
 | ffmpeg (MP3 hors 44 100 Hz, #354) : absent, en échec, trop long (120 s), sortie vide ou illisible, annulation | `ffmpeg.rs` | dossier temporaire `t2f_ff_*` supprimé, ffmpeg tué | Avertissement `audio_samplerate` avec la raison de Python et MP3 recopié ; annulation : `cancelled` (130). **Écarts assumés** : texte des erreurs du système ; échec de suppression du dossier temporaire ignoré (Python perd la sortie et avertit, constat de #274) ; dernière ligne d'erreur de plus de 64 Kio ; bit `x` sous Unix au lieu de `os.access` ; lignes `  i …` et compte des fichiers rééchantillonnés ni affichés ni émis (#131). |
 | Asset manquant | graphe | rien | `missing_asset`, code 5 ; avec `--allow-missing` : `empty.lif` / `silent.mp3` et avertissement |
-| Image illisible (aussi pour Pillow), ou au-delà de `2 × MAX_IMAGE_PIXELS` | image | rien | avertissement `image_unreadable`, `empty.lif` (pas d'échec) |
+| Image illisible (aussi pour Pillow), ou au-delà de `2 × MAX_IMAGE_PIXELS` | image | rien | avertissement `image_unreadable`, `empty.lif` (pas d'échec). **Messages** : le Rust reformule le détail de l'exception de Python (texte de Pillow, adresse mémoire de `BytesIO`), de même pour `notes.json` (`JSON invalide (…)`), et omet le nom Unicode des caractères remplacés (`U+65E5 -> '?'`) ; `package_parity.rs` compare tous les autres messages d'avertissement à l'identique (#351) |
 | MP3 sans trame valide | mp3map | rien | avertissement `mp3map_failed`, MP3 copié sans `.mp3map` |
 | Disque plein, droits refusés, chemin trop long | écriture du `.part` | `.part` supprimé | `output_error`, code 6, pas de sortie |
 | Échec du renommage final | commit | `.part` supprimé, ancienne sortie intacte | `output_error`, code 6 |
@@ -265,6 +282,10 @@ sont identiques à l'octet près dès la PR 6.
    Ces archives ne contiennent aucun contenu sous licence. Elles sont **générées en CI** et ne
    sont pas commitées. Le job convertit chaque archive avec Python (l'oracle), puis avec Rust ;
    `parity.py` ne doit trouver aucun écart hors de la liste §4.1.
+   Le job `parity` de `.github/workflows/telmi2flam-rs.yml` (#134, Python 3.14.8, Pillow 12.3.0,
+   lupa 2.8) génère le corpus, compare les sorties (`parity.py corpus`, avec `validate.py` sur
+   la sortie Rust) et échoue au premier écart hors liste. Mesure locale : 88 archives, 79
+   identiques, 6 admis, 3 délégués, 0 écart.
 2. **Matrice de rééchantillonnage (CI)** : les images des tests sont minuscules et ne prouvent
    rien sur le Lanczos. Le générateur produit donc aussi une matrice :
    - modes PNG × tailles sources impaires ou premières (par ex. 1, 3, 97, 641, 2049) ;
@@ -274,7 +295,9 @@ sont identiques à l'octet près dès la PR 6.
    - agrandissements et réductions de plus de 2× (pour passer par `reduce`) ;
    - contenus variés : bruit pseudo-aléatoire à graine fixe, dégradés, alpha partiel.
 
-   Elle est comparée **`.lif` contre `.lif`, à l'octet près**. Un résultat de 100 % sur cette
+   Elle est comparée **`.lif` contre `.lif`, à l'octet près**. Le test ignoré `crates/telmi2flam/tests/matrix_render.rs` écrit les `.lif` du Rust
+   (`TELMI2FLAM_MATRIX_DIR`, `TELMI2FLAM_MATRIX_OUT`), puis `parity.py matrix --candidate-lif-dir`
+   les compare (1465 cellules, 0 écart en local ; `thumb` en mode `bandes`). Un résultat de 100 % sur cette
    matrice est requis pour fusionner la PR 7.
 3. **Campagne (locale)** : les archives réelles de `.cache/telmi/` (ignoré par Git, jamais
    commité). `compat.py --engine rust`, ou un script dédié, convertit chaque archive avec les

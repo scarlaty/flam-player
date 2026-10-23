@@ -917,6 +917,10 @@ pub async fn podcast_add(
 }
 
 /// Flux en cache d'une source podcast, sans réseau.
+///
+/// Le fichier de cache est relu et analysé à chaque appel : choix assumé (#418), l'appel est
+/// rare (ouverture d'une source) et un cache en mémoire devrait être invalidé à chaque
+/// rafraîchissement, ajout ou suppression pour un gain négligeable.
 #[tauri::command]
 pub async fn podcast_feed(
     config: State<'_, ConfigState>,
