@@ -1782,3 +1782,29 @@ fn reprise_refusee_avec_le_permis_d_une_autre_flam() {
     ));
     assert_eq!(snapshot(&other_root), before);
 }
+
+#[test]
+fn le_dossier_de_cache_scrute_suit_les_reglages() {
+    // #326 : `device_status` ne relit les réglages que s'ils ont changé.
+    let config_dir = tempfile::tempdir().unwrap();
+    let first = config_dir.path().join("cache-a");
+    let second = config_dir.path().join("cache-bb");
+    let store = SettingsStore::new(config_dir.path());
+    let set = |dir: &Path| {
+        let mut settings = store.load().unwrap();
+        settings.cache_dir = Some(dir.to_string_lossy().into_owned());
+        store.update(settings).unwrap();
+    };
+    set(&first);
+    let config = ConfigState::new(config_dir.path().to_path_buf());
+    assert_eq!(polled_cache_root(&config), Some(first.clone()));
+    assert!(first.is_dir());
+    // Réglages inchangés : résolution réutilisée (le dossier supprimé n'est pas recréé).
+    fs::remove_dir(&first).unwrap();
+    assert_eq!(polled_cache_root(&config), Some(first.clone()));
+    assert!(!first.exists());
+    // Réglages enregistrés : résolu à neuf.
+    set(&second);
+    assert_eq!(polled_cache_root(&config), Some(second.clone()));
+    assert_eq!(launcher_cache_root(&config), Some(second));
+}
