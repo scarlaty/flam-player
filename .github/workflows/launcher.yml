@@ -45,7 +45,9 @@ concurrency:
   # Un label autre que `ci-installeur` déclenche un run « labeled » sans objet : groupe à part, pour
   # qu'il n'annule pas la CI en cours de la PR.
   group: ${{ github.workflow }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci-installeur' && '-label' || '' }}
-  cancel-in-progress: ${{ !(github.event.action == 'labeled' && github.event.label.name != 'ci-installeur') }}
+  # Sur main (push), aucune annulation : sinon chaque fusion annule la CI de la précédente et main n'a
+  # plus de run complet. Un run en attente du groupe est remplacé par le plus récent.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !(github.event.action == 'labeled' && github.event.label.name != 'ci-installeur') }}
 
 jobs:
   # ffmpeg minimal (audio, LGPL) construit depuis des sources épinglées par cross-compilation

@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- arguments IPC simulés, forme libre */
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useEffect } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Episode, Feed, PodcastView } from "../../api/podcast";
 import type { Source } from "../../api/sources";
@@ -96,11 +97,30 @@ function Probe() {
   return <output data-testid="probe">{totals.count}</output>;
 }
 
-function renderScreen() {
+/** Sélectionne d'emblée `count` épisodes d'un autre flux (évite autant de clics rendus un à un). */
+function Prefill({ count }: { count: number }) {
+  const { toggle } = usePodcastSelection();
+  useEffect(() => {
+    for (let i = 0; i < count; i++) {
+      toggle({
+        id: `pre${i}`,
+        sourceId: "pre",
+        sourceName: "Pré",
+        title: `Pré ${i}`,
+        bytes: 1000,
+        explicit: false,
+      });
+    }
+  }, [count, toggle]);
+  return null;
+}
+
+function renderScreen(prefill = 0) {
   return render(
     <ToastProvider>
       <PodcastSelectionProvider>
         <PodcastsScreen />
+        {prefill > 0 && <Prefill count={prefill} />}
         <Probe />
       </PodcastSelectionProvider>
     </ToastProvider>,
@@ -108,7 +128,7 @@ function renderScreen() {
 }
 
 function check(name: string | RegExp) {
-  fireEvent.click(screen.getByRole("checkbox", { name }));
+  fireEvent.click(screen.getByLabelText(name));
 }
 
 async function fillAndSubmit(url: string, name?: string) {
@@ -190,12 +210,14 @@ it(
     );
     sources = [library, podcast("a", "A")];
     views.a = view("a", many);
-    renderScreen();
-    await screen.findByRole("checkbox", { name: "Ep 0" });
-    for (const box of screen.getAllByRole("checkbox").slice(0, 50)) fireEvent.click(box);
+    // 49 épisodes déjà retenus : un seul vrai clic atteint le plafond de 50.
+    renderScreen(49);
+    await screen.findByLabelText("Ep 0");
+    await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("49"));
+    check("Ep 0");
     expect(screen.getByTestId("probe")).toHaveTextContent("50");
     fireEvent.click(screen.getByRole("button", { name: /Afficher plus/ }));
-    const last = await screen.findByRole("checkbox", { name: "Ep 50" });
+    const last = await screen.findByLabelText("Ep 50");
     expect(last).toHaveAttribute("aria-disabled", "true");
     expect(last).toHaveAccessibleDescription(/50 épisodes par pack au plus/);
     // Un seul message de plafond pour toutes les cases refusées.
@@ -354,29 +376,29 @@ it(
   SLOW_TEST_MS,
 );
 
-it("« Afficher plus » : le focus passe au premier épisode ajouté", async () => {
-  const many = Array.from({ length: 120 }, (_, i) =>
-    episode(String(i), { title: `Ep ${i}`, enclosure_length: 1000 }),
-  );
-  sources = [library, podcast("a", "A")];
-  views.a = view("a", many);
-  renderScreen();
-  await screen.findByRole("checkbox", { name: "Ep 0" });
-  expect(screen.getAllByRole("checkbox")).toHaveLength(50);
-  const more = screen.getByRole("button", { name: /Afficher plus \(70 restants\)/ });
-  more.focus();
-  fireEvent.click(more);
-  await waitFor(() =>
-    expect(screen.getByRole("checkbox", { name: "Ep 50" })).toHaveFocus(),
-  );
-  expect(screen.getAllByRole("checkbox")).toHaveLength(100);
-  fireEvent.click(screen.getByRole("button", { name: /Afficher plus \(20 restants\)/ }));
-  await waitFor(() =>
-    expect(screen.getByRole("checkbox", { name: "Ep 100" })).toHaveFocus(),
-  );
-  expect(screen.getAllByRole("checkbox")).toHaveLength(120);
-  expect(screen.queryByRole("button", { name: /Afficher plus/ })).not.toBeInTheDocument();
-});
+it(
+  "« Afficher plus » : le focus passe au premier épisode ajouté",
+  async () => {
+    const many = Array.from({ length: 120 }, (_, i) =>
+      episode(String(i), { title: `Ep ${i}`, enclosure_length: 1000 }),
+    );
+    sources = [library, podcast("a", "A")];
+    views.a = view("a", many);
+    renderScreen();
+    await screen.findByLabelText("Ep 0");
+    expect(document.querySelectorAll("input[type=checkbox]")).toHaveLength(50);
+    const more = screen.getByText(/Afficher plus \(70 restants\)/);
+    more.focus();
+    fireEvent.click(more);
+    await waitFor(() => expect(screen.getByLabelText("Ep 50")).toHaveFocus());
+    expect(document.querySelectorAll("input[type=checkbox]")).toHaveLength(100);
+    fireEvent.click(screen.getByText(/Afficher plus \(20 restants\)/));
+    await waitFor(() => expect(screen.getByLabelText("Ep 100")).toHaveFocus());
+    expect(document.querySelectorAll("input[type=checkbox]")).toHaveLength(120);
+    expect(screen.queryByText(/Afficher plus/)).not.toBeInTheDocument();
+  },
+  SLOW_TEST_MS,
+);
 
 it("changer de flux remet la pagination à zéro", async () => {
   const many = Array.from({ length: 60 }, (_, i) =>
@@ -390,13 +412,13 @@ it("changer de flux remet la pagination à zéro", async () => {
     "Flux B",
   );
   renderScreen();
-  await screen.findByRole("checkbox", { name: "A 0" });
+  await screen.findByLabelText("A 0");
   fireEvent.click(screen.getByRole("button", { name: /Afficher plus/ }));
-  await screen.findByRole("checkbox", { name: "A 59" });
+  await screen.findByLabelText("A 59");
   fireEvent.click(screen.getByRole("button", { name: "B" }));
   await screen.findByRole("heading", { name: /Flux B/ });
-  await screen.findByRole("checkbox", { name: "B A 0" });
-  expect(screen.getAllByRole("checkbox")).toHaveLength(50);
+  await screen.findByLabelText("B A 0");
+  expect(document.querySelectorAll("input[type=checkbox]")).toHaveLength(50);
   expect(
     screen.getByRole("button", { name: /Afficher plus \(10 restants\)/ }),
   ).toBeVisible();
@@ -478,4 +500,54 @@ it("D11 : l'adresse du flux n'est jamais journalisée", async () => {
 
 it("routeFromHash reconnaît #/podcasts", () => {
   expect(routeFromHash("#/podcasts")).toBe("podcasts");
+});
+
+it("la mention d'usage courte décidée par le mainteneur figure dans l'ajout de flux", async () => {
+  renderScreen();
+  await screen.findByText("Aucun flux podcast");
+  const form = screen.getByRole("region", { name: "Ajouter un flux" });
+  expect(
+    within(form).getByText(
+      "Usage personnel et familial uniquement : ne partagez pas les histoires créées. L'audio est repris tel quel, publicité comprise.",
+    ),
+  ).toBeInTheDocument();
+});
+
+it("raccourci : coche les 10 derniers épisodes, la sélection reste libre", async () => {
+  const many = Array.from({ length: 12 }, (_, i) =>
+    episode(String(i), { title: `Ep ${i}` }),
+  );
+  sources = [library, podcast("a", "A")];
+  views.a = view("a", many);
+  renderScreen();
+  await screen.findByRole("checkbox", { name: "Ep 0" });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Cocher les 10 derniers épisodes" }),
+  );
+  expect(screen.getByTestId("probe")).toHaveTextContent("10");
+  expect(screen.getByRole("checkbox", { name: "Ep 9" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Ep 10" })).not.toBeChecked();
+  expect(screen.getByText("Raccourci : 10 épisodes cochés.")).toBeInTheDocument();
+  check("Ep 0");
+  check("Ep 11");
+  expect(screen.getByTestId("probe")).toHaveTextContent("10");
+});
+
+it("raccourci : les épisodes refusés par les plafonds ne sont pas cochés, le message le dit", async () => {
+  const eps = [
+    episode("0", { title: "Ep 0", enclosure_length: 100_000_000 }),
+    episode("1", { title: "Ep 1", enclosure_length: 250_000_000 }),
+    episode("2", { title: "Ep 2", enclosure_length: 100_000_000, explicit: true }),
+    episode("3", { title: "Ep 3", enclosure_length: 100_000_000 }),
+  ];
+  sources = [library, podcast("a", "A")];
+  views.a = view("a", eps);
+  renderScreen();
+  await screen.findByRole("checkbox", { name: "Ep 0" });
+  fireEvent.click(screen.getByRole("button", { name: "Cocher les 4 derniers épisodes" }));
+  expect(screen.getByRole("checkbox", { name: "Ep 0" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Ep 1" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Ep 2" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Ep 3" })).toBeChecked();
+  expect(screen.getByText(/2 épisodes cochés sur les 4 derniers/)).toBeInTheDocument();
 });

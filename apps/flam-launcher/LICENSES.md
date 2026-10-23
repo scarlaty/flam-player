@@ -24,6 +24,12 @@ l'installateur et renvoie vers leurs textes de licence complets, présents dans 
 | FFmpeg 8.1.3 minimal, audio seulement (`ffmpeg/ffmpeg.exe`, `ffmpeg/ffprobe.exe` : programmes externes statiques, jamais liés au launcher), construit depuis les sources par `tools/ffmpeg/build.sh`, sans `--enable-gpl` ni `--enable-nonfree` ; runtime MinGW-w64 lié statiquement (mentions dans `ffmpeg/LICENSE-MINGW-RUNTIME`) | LGPL-2.1-or-later ; sources exactes et offre de sources dans `ffmpeg/BUILD.txt`                             | `ffmpeg/LICENSE`, `ffmpeg/BUILD.txt`                                                              |
 | LAME 3.100 (`libmp3lame`, encodeur MP3, compilé depuis ses sources dans `ffmpeg/ffmpeg.exe`)                                                                                                                                                                                                                                        | LGPL-2.1                                                                                                    | `ffmpeg/LICENSE-LAME`, `ffmpeg/BUILD.txt`                                                         |
 
+Les podcasts (Sources, « Podcast ») s'appuient sur les composants déjà listés : le FFmpeg LGPL ci-dessus
+(copie ou réencodage MP3 des épisodes) et les crates Rust `quick-xml` (MIT, lecture des flux RSS),
+`image` avec ses décodeurs JPEG, PNG et WebP (MIT ou Apache-2.0, pochettes), `reqwest`, `sha2` et
+`base64` (MIT ou Apache-2.0). Le format d'archive Telmi produit est décrit d'après le wiki public
+du format ; aucune ressource (code, texte, image, voix) d'un autre projet n'est reprise.
+
 Les dépendances de l'application elle-même (bibliothèques Rust compilées dans
 `flam-launcher.exe`, paquets npm compilés dans l'interface) sont sous licences permissives
 (MIT, Apache-2.0, ISC, BSD, MPL-2.0 pour certaines). Leurs licences et textes de licence sont

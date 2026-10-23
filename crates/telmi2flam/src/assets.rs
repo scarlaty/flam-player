@@ -17,7 +17,10 @@
 //! - un MP3 hors 44 100 Hz n'est remplacé que par une sortie de ffmpeg ([`crate::ffmpeg`])
 //!   validée par `mp3map::build` (44 100 Hz seulement) ; sinon il est recopié tel quel, avec
 //!   l'avertissement `audio_samplerate` et la raison de Python. Un même contenu sous plusieurs
-//!   noms ne lance ffmpeg qu'une fois (cache par contenu : MD5 et taille ; Python : SHA-256).
+//!   noms ne lance ffmpeg qu'une fois (cache par contenu : MD5 et taille ; Python : SHA-256) ;
+//! - en flux ([`StoryAssets::stream`], #355) : un MP3 recopié tel quel est rangé comme
+//!   [`Data::Source`] (nom exact dans l'archive, taille et CRC-32 de la lecture faite pour
+//!   `mp3map`) et ses octets sont libérés ; une sortie de ffmpeg reste en mémoire.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek};
@@ -27,6 +30,7 @@ use crate::error::ConvError;
 use crate::ffmpeg::{self, Outcome, SAMPLERATE};
 use crate::graph::{Assets, Warning};
 use crate::image::{png_to_fit_lif, png_to_lif, png_to_scene_lif, Align, INV_H, INV_W};
+use crate::package::Data;
 use crate::png::PngError;
 use crate::progress::{Phase, Progress};
 use crate::{md5, mp3map};
@@ -130,8 +134,11 @@ pub struct StoryAssets<'a, R> {
     pub names: Names,
     img_cache: HashMap<(String, bool), Option<String>>,
     audio_cache: HashMap<String, String>,
-    /// Fichiers produits : nom dans le paquet → octets (`out_files`).
-    pub out: BTreeMap<String, Vec<u8>>,
+    /// Fichiers produits : nom dans le paquet → contenu (`out_files`).
+    pub out: BTreeMap<String, Data>,
+    /// MP3 recopiés tels quels gardés comme référence à l'archive ([`Data::Source`]) au lieu
+    /// de leurs octets (faux par défaut : tout en mémoire, comme Python).
+    pub stream: bool,
     pub warnings: Vec<Warning>,
     pub missing: Vec<Missing>,
     /// Rééchantillonnages par contenu source (`resample_cache` de Python, clé SHA-256) : clé
@@ -141,9 +148,24 @@ pub struct StoryAssets<'a, R> {
     resample_cache: HashMap<([u8; 16], usize), Result<String, String>>,
     /// Fichiers rééchantillonnés (`stats["resampled"]`, compté par fichier, cache compris).
     pub resampled: usize,
-    /// Lignes d'information `  i …` de Python (rééchantillonnage réussi), sans le préfixe.
-    /// Pas encore affichées ni émises en progression (#131).
+    /// Lignes d'information `  i …` de Python (rééchantillonnage réussi), sans le préfixe ;
+    /// aussi transmises tout de suite à [`Progress::info`].
     pub infos: Vec<String>,
+    /// Compteurs du résumé humain (`stats` de Python).
+    pub stats: AssetStats,
+    /// Assets illisibles remplacés (`bad` de Python : images, puis couverture).
+    pub bad: Vec<String>,
+}
+
+/// Compteurs de `stats` de `_convert` pour les assets (`img`, `audio`, `mp3map`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AssetStats {
+    /// Images converties (sans le cache, sans les illisibles).
+    pub img: usize,
+    /// Audios copiés (sans le cache, sans les manquants).
+    pub audio: usize,
+    /// Tables de seek (`.mp3map`) produites.
+    pub mp3map: usize,
 }
 
 impl<'a, R: Read + Seek> StoryAssets<'a, R> {
@@ -164,11 +186,14 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
             img_cache: HashMap::new(),
             audio_cache: HashMap::new(),
             out: BTreeMap::new(),
+            stream: false,
             warnings: Vec::new(),
             missing: Vec::new(),
             resample_cache: HashMap::new(),
             resampled: 0,
             infos: Vec::new(),
+            stats: AssetStats::default(),
+            bad: Vec::new(),
         }
     }
 
@@ -193,11 +218,16 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
 
     /// `read(rel)` de `_convert` : nom exact sous la racine, sinon recherche repliée.
     pub fn read(&mut self, rel: &str) -> Result<Option<Vec<u8>>, ConvError> {
+        Ok(self.read_named(rel)?.map(|(_, data)| data))
+    }
+
+    /// [`Self::read`] avec le nom exact de l'entrée lue dans l'archive.
+    pub fn read_named(&mut self, rel: &str) -> Result<Option<(String, Vec<u8>)>, ConvError> {
         let Some(full) = self.archive.lookup(&format!("{}{rel}", self.root)) else {
             return Ok(None);
         };
         match self.archive.read(&full)? {
-            Some(data) => Ok(Some(data)),
+            Some(data) => Ok(Some((full, data))),
             None => Err(ConvError::internal_error(format!(
                 "{full} : entree listee mais introuvable"
             ))),
@@ -225,7 +255,13 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
         };
         match self.resample_cache.get(&key) {
             Some(Ok(name)) => {
-                let new = self.out.get(name).cloned().unwrap_or_default();
+                // Sortie validée, gardée en mémoire (jamais [`Data::Source`]).
+                let Some(Data::Bytes(new)) = self.out.get(name) else {
+                    return Err(ConvError::internal_error(format!(
+                        "{name} : sortie ffmpeg absente du paquet"
+                    )));
+                };
+                let new = new.clone();
                 return Ok(validate(new));
             }
             Some(Err(why)) => return Ok(Err(why.clone())),
@@ -245,13 +281,16 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
     /// rééchantillonné par ffmpeg ([`crate::ffmpeg`]) ; la sortie, si `mp3map::build` la lit
     /// et n'y voit que 44 100 Hz, remplace le fichier. Sinon avertissement `audio_samplerate`
     /// avec la raison, et MP3 recopié tel quel. `mp3map_failed` si aucune trame n'est valide
-    /// (MP3 recopié, sans table). `Err` seulement sur annulation pendant ffmpeg.
+    /// (MP3 recopié, sans table). `Err` seulement sur annulation pendant ffmpeg. `source` : nom
+    /// exact de l'entrée lue (référencé à la place des octets en flux, si recopié tel quel).
     pub fn add_mp3map(
         &mut self,
         pk_name: &str,
         mut data: Vec<u8>,
         label: &str,
+        source: &str,
     ) -> Result<(), ConvError> {
+        let mut copied = true;
         match mp3map::build(&data) {
             Ok(mut map) => {
                 let other: Vec<String> = map
@@ -265,12 +304,15 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
                     let failure = match self.resample(pk_name, &data, map.duration_s)? {
                         Ok((new, map2)) => {
                             data = new;
+                            copied = false;
                             map = map2;
                             self.resampled += 1;
-                            self.infos.push(format!(
+                            let info = format!(
                                 "{label} : {rates} Hz -> {SAMPLERATE} Hz \
                                  (reechantillonne avec ffmpeg)"
-                            ));
+                            );
+                            self.progress.info(&info);
+                            self.infos.push(info);
                             None
                         }
                         Err(why) => Some(why),
@@ -286,11 +328,21 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
                         );
                     }
                 }
-                self.out.insert(format!("{pk_name}map"), map.data);
+                self.out.insert(format!("{pk_name}map"), map.data.into());
+                self.stats.mp3map += 1;
             }
             Err(e) => self.warn("mp3map_failed", format!("mp3map echoue pour {label} : {e}")),
         }
-        self.out.insert(pk_name.to_owned(), data);
+        let entry = if self.stream && copied {
+            Data::Source {
+                name: source.to_owned(),
+                size: data.len() as u64,
+                crc: crc32fast::hash(&data),
+            }
+        } else {
+            Data::Bytes(data)
+        };
+        self.out.insert(pk_name.to_owned(), entry);
         Ok(())
     }
 }
@@ -341,6 +393,7 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
                     "image_unreadable",
                     format!("image illisible {name} ({why}) -> empty.lif"),
                 );
+                self.bad.push(name.to_owned());
                 let out = Some("empty.lif".to_owned());
                 self.img_cache.insert(key, out.clone());
                 self.progress.tick(Phase::Images);
@@ -351,8 +404,9 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
         let suffix = if inventory { "_inv" } else { "" };
         let base = format!("{}{suffix}", base_no_ext(name));
         let lif_name = self.names.alloc("img/", &base, ".lif");
-        self.out.insert(format!("img/{lif_name}"), lif);
+        self.out.insert(format!("img/{lif_name}"), lif.into());
         self.img_cache.insert(key, Some(lif_name.clone()));
+        self.stats.img += 1;
         self.progress.tick(Phase::Images);
         Ok(Some(lif_name))
     }
@@ -362,7 +416,7 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
         if let Some(cached) = self.audio_cache.get(name) {
             return Ok(Some(cached.clone()));
         }
-        let Some(data) = self.read(&format!("audios/{name}"))? else {
+        let Some((source, data)) = self.read_named(&format!("audios/{name}"))? else {
             // Repli sur silent.mp3 : la scène garde son audio (et sa transition de fin).
             self.warn(
                 "audio_missing",
@@ -379,8 +433,9 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
         };
         let out_name = self.names.alloc("sounds/", base_no_ext(name), ".mp3");
         let pk_name = format!("sounds/{out_name}");
-        self.add_mp3map(&pk_name, data, name)?;
+        self.add_mp3map(&pk_name, data, name, &source)?;
         self.audio_cache.insert(name.to_owned(), out_name.clone());
+        self.stats.audio += 1;
         self.progress.tick(Phase::Audio);
         Ok(Some(out_name))
     }
