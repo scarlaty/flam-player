@@ -263,8 +263,13 @@ def case_embed_renderer(exe, script):
     p = Player(exe, ["--parent-hwnd", str(parent), "--stdin-control"] + script,
                {"SDL_RENDER_DRIVER": None})
     try:
-        check(pump(15, lambda: p.exited() or p.has("[EMBED] rendu :")),
+        check(pump(15, lambda: p.exited() or p.has("[EMBED] rendu : direct3d11")
+                   or p.has("[EMBED] rendu direct3d11 indisponible")),
               "trace du rendu de l'incrustation", p)
+        if p.has("[EMBED] rendu direct3d11 indisponible"):
+            # Machine sans adaptateur D3D11 : prerequis absent, pas un echec (#335)
+            print("[SKIP] cas rendu : direct3d11 indisponible sur cette machine")
+            raise SystemExit(SKIP)
         check(p.has("[EMBED] rendu : direct3d11"),
               "rendu direct3d11 (compose au-dessus de la WebView2 du launcher)", p)
         child = child_of(parent, p.proc.pid)
