@@ -1127,6 +1127,11 @@ pub(crate) fn untrack(tmps: &[PathBuf]) {
 /// (impossible en pratique, voir [`pending`]), rien n'est supprimé plutôt que de se bloquer.
 /// Un chemin déjà publié (renommé) ou supprimé ne coûte rien. Les entrées restent inscrites :
 /// le processus s'arrête ensuite.
+///
+/// Limite : sur FAT/exFAT (clé USB, carte de la Flam), une panique pendant l'écriture du
+/// dossier (`WriteDir`) peut laisser `.plain.<pid>.part` : le fichier en cours d'écriture est
+/// encore ouvert, et sans la suppression POSIX de NTFS, Windows ne l'efface pas avant sa
+/// fermeture (la sortie du processus), donc le dossier n'est pas vide pour `remove_dir_all`.
 pub fn discard_pending() {
     for _ in 0..100 {
         match PENDING.try_lock() {
