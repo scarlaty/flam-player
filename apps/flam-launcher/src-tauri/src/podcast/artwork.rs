@@ -19,7 +19,9 @@
 //! arrêterait le launcher. [`convert_isolated`] décode donc dans un processus enfant (le
 //! launcher relancé avec [`DECODE_ARG`], voir `main.rs`) ; si l'enfant meurt ou dépasse son
 //! délai, l'appelant reçoit [`ArtworkError::Isolated`] et peut prendre [`Artwork::fallback`].
-//! Les appelants de production passent par cette fonction, pas par [`Artwork::convert`].
+//! Aucun appelant de production n'existe encore : le pipeline d'installation (#217) **doit** passer
+//! par cette fonction et non par [`Artwork::convert`], qui décode dans le processus courant
+//! (réservé aux tests et à l'enfant).
 //!
 //! # Choix de la crate
 //!

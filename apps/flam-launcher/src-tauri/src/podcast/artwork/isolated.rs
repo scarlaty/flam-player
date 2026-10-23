@@ -166,11 +166,11 @@ pub fn convert_isolated_with(
             "décodeur interrompu ({status})"
         )));
     }
-    parse_response(&output)
+    parse_response(&output, kind)
 }
 
 /// Lit la réponse de l'enfant.
-fn parse_response(out: &[u8]) -> Result<Artwork, ArtworkError> {
+fn parse_response(out: &[u8], kind: ArtworkKind) -> Result<Artwork, ArtworkError> {
     let bad = |what: &str| ArtworkError::Isolated(format!("réponse du décodeur invalide : {what}"));
     if out.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(bad("trop longue"));
@@ -195,6 +195,11 @@ fn parse_response(out: &[u8]) -> Result<Artwork, ArtworkError> {
                 .get(8..)
                 .filter(|p| !p.is_empty())
                 .ok_or_else(|| bad("PNG absent"))?;
+            // L'enfant traite l'entrée hostile : sa réponse est revérifiée (taille de l'usage, PNG).
+            let (tw, th) = kind.size();
+            if (width, height) != (tw, th) || !png.starts_with(&[0x89, b'P', b'N', b'G']) {
+                return Err(bad("image inattendue"));
+            }
             Ok(Artwork {
                 width,
                 height,
@@ -280,6 +285,11 @@ fn serve(
 /// Point d'entrée de l'enfant (`--decode-artwork`) : entrée et sortie standard. Rend le code
 /// de sortie du processus (0 : réponse écrite, y compris pour une image refusée).
 pub fn run_child() -> i32 {
+    // Garde-fou : si le parent disparaît, l'enfant ne tourne pas indéfiniment.
+    thread::spawn(|| {
+        thread::sleep(CHILD_TIMEOUT + Duration::from_secs(5));
+        std::process::exit(3);
+    });
     let stdin = io::stdin();
     let stdout = io::stdout();
     match serve(&mut stdin.lock(), &mut stdout.lock(), Artwork::convert_on) {
@@ -305,8 +315,8 @@ mod tests {
             return;
         };
         match mode.as_str() {
-            // panic d'un décodeur : le test lance `serve` avec un décodeur qui panique ; avec
-            // `panic = "abort"` du profil release, le processus s'arrête sans réponse.
+            // panic d'un décodeur : en profil test le panic est rattrapé par le harnais (sortie 101),
+            // l'abandon du profil release est couvert par le mode `abort`.
             "panic" => {
                 let _ = serve(
                     &mut io::stdin().lock(),
@@ -408,7 +418,7 @@ mod tests {
         req.extend_from_slice(JPEG);
         let mut out = Vec::new();
         serve(&mut Cursor::new(req), &mut out, Artwork::convert_on).unwrap();
-        let art = parse_response(&out).unwrap();
+        let art = parse_response(&out, ArtworkKind::Cover).unwrap();
         let direct = Artwork::convert_on(JPEG, ArtworkKind::Cover, [0xff; 3]).unwrap();
         assert_eq!(art, direct);
         assert_eq!((art.width, art.height), (512, 512));
@@ -426,7 +436,7 @@ mod tests {
             let shown = e.to_string();
             let mut out = Vec::new();
             write_response(&mut out, Err(e)).unwrap();
-            let back = parse_response(&out).unwrap_err();
+            let back = parse_response(&out, ArtworkKind::Cover).unwrap_err();
             assert_eq!(back.to_string(), shown);
         }
     }
@@ -441,7 +451,10 @@ mod tests {
                 Artwork::convert_on,
             )
             .unwrap();
-            assert!(matches!(parse_response(&out), Err(ArtworkError::Decode(_))));
+            assert!(matches!(
+                parse_response(&out, ArtworkKind::Cover),
+                Err(ArtworkError::Decode(_))
+            ));
         }
         // image refusée par le décodeur : erreur transmise telle quelle
         let mut out = Vec::new();
@@ -452,12 +465,12 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            parse_response(&out),
+            parse_response(&out, ArtworkKind::Cover),
             Err(ArtworkError::UnsupportedFormat)
         ));
         for out in [&[][..], &[99][..], &[4, 1][..], &[0, 1, 0, 0, 0][..]] {
             assert!(matches!(
-                parse_response(out),
+                parse_response(out, ArtworkKind::Cover),
                 Err(ArtworkError::Isolated(_))
             ));
         }
