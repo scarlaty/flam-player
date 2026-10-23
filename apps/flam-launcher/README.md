@@ -1080,6 +1080,8 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
   fait hors des verrous, sur un thread bloquant, avec des écritures ordonnées.
 - **Convertisseur** : `<exe>/telmi2flam/telmi2flam.py` (application installée ; construit par `npm run build:converter`, voir « Convertisseur embarqué »),
   sinon en développement `tools/telmi2flam/telmi2flam.py` d'un dossier ancêtre. Python : `resolved.python_path`.
+  Moteur Rust (#136, réglage caché `converter_engine`) : `<exe>/telmi2flam/telmi2flam.exe`, sinon en
+  développement `telmi2flam.exe` à côté de l'exécutable (même `target/` Cargo, `cargo build -p telmi2flam`).
 - **Bibliothèque** : `library.json` = `{ schema_version, stories: LibraryEntry[] }` avec
   `LibraryEntry { uuid, version, title, file, size, installed_at, converter, source: StoryEntry,
 thumb, source_stamp }`.
@@ -1143,6 +1145,13 @@ thumb, source_stamp }`.
 `--thumb-fit` (valeur issue d'un ensemble fermé côté Rust, `ThumbFit::as_arg`, jamais d'un texte
 libre). Absent d'un fichier ancien : `flou` ; une valeur inconnue retombe aussi sur `flou`. Il ne
 s'applique qu'aux prochaines conversions : les histoires déjà converties gardent leur vignette.
+
+`converter_engine` (`python` ou `rust`, `python` par défaut) est un réglage **caché** (#136) : absent
+de l'écran Paramètres, il se change à la main dans `settings.json`, et `settings_set` conserve la
+valeur enregistrée. Il est relu au début de chaque tâche : `rust` convertit avec
+`telmi2flam/telmi2flam.exe` (port Rust, sans Python ; annulation par fermeture de stdin,
+`--cancel-on-stdin-eof`), `python` avec `telmi2flam.py`. Valeur absente, inconnue ou mal typée :
+`python`. Moteur `rust` sans binaire : `converter_unavailable`, sans repli sur Python (#137).
 
 `max_downloads` (1 à 4, 2 par défaut) borne les téléchargements simultanés du pipeline
 d'installation ; absent d'un fichier ancien, il prend sa valeur par défaut (`#[serde(default)]`).

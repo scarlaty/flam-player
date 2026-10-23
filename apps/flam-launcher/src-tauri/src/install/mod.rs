@@ -44,13 +44,13 @@ use crate::folder::FolderState;
 use crate::library::{remove_if_exists, Library, LibraryEntry};
 use crate::library_source::{self, SourceStamp};
 use crate::library_thumb;
-use crate::settings::{self, Environment, SettingsStore, ThumbFit};
+use crate::settings::{self, ConverterEngine, Environment, SettingsStore, ThumbFit};
 use crate::sources::{Source, SourcesStore};
 use crate::storage::{self, ConfigState, Loaded};
 use crate::story::{validate_story_id, StoryEntry, StoryKind};
 use crate::{AppError, AppResult};
 
-use self::convert::{Conversion, Step};
+use self::convert::{Conversion, Engine, Step};
 use self::download::{cancelled, Download, Validator};
 use self::podcast::{PackBackend, PackJob, PackStatus};
 
@@ -197,8 +197,13 @@ impl InstallEvents for TauriEvents {
 #[derive(Debug, Clone)]
 pub struct Toolchain {
     pub cache_root: PathBuf,
+    /// Moteur de conversion (`converter_engine`, réglage caché, #136), relu à chaque tâche.
+    pub engine: ConverterEngine,
     pub python: Option<PathBuf>,
+    /// `telmi2flam.py` (moteur Python).
     pub converter: Option<PathBuf>,
+    /// `telmi2flam.exe` (moteur Rust, [`detect_rust_converter`]).
+    pub rust_converter: Option<PathBuf>,
     /// ffmpeg embarqué (rééchantillonnage audio, #46).
     pub ffmpeg: Option<PathBuf>,
     pub max_downloads: usize,
@@ -225,8 +230,28 @@ pub fn detect_converter(env: &Environment) -> Option<PathBuf> {
     None
 }
 
-/// Résolution réelle : `settings.json` (cache, Python, téléchargements simultanés) et
-/// détection du convertisseur.
+/// Nom du binaire Rust du convertisseur (#136).
+pub const RUST_CONVERTER_EXE: &str = "telmi2flam.exe";
+
+/// `telmi2flam.exe` (moteur Rust, #136) : `<exe>/telmi2flam/telmi2flam.exe` (application
+/// installée, déposé par `build-converter.ps1` à côté de `telmi2flam.py`), sinon en
+/// développement `<exe>/telmi2flam.exe` : le launcher et le convertisseur partagent le `target/`
+/// du workspace Cargo (`cargo build -p telmi2flam`).
+pub fn detect_rust_converter(env: &Environment) -> Option<PathBuf> {
+    let exe_dir = env.exe_dir.as_deref()?;
+    let bundled = exe_dir.join("telmi2flam").join(RUST_CONVERTER_EXE);
+    if bundled.is_file() {
+        return Some(bundled);
+    }
+    if env.search_repo_build {
+        let built = exe_dir.join(RUST_CONVERTER_EXE);
+        return built.is_file().then_some(built);
+    }
+    None
+}
+
+/// Résolution réelle : `settings.json` (cache, Python, téléchargements simultanés, moteur) et
+/// détection des deux convertisseurs.
 pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
     Arc::new(move || {
         let env = Environment::current();
@@ -236,8 +261,10 @@ pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
         std::fs::create_dir_all(&cache_root)?;
         Ok(Toolchain {
             cache_root,
+            engine: saved.converter_engine,
             python: resolved.python_path.map(PathBuf::from),
             converter: detect_converter(&env),
+            rust_converter: detect_rust_converter(&env),
             ffmpeg: settings::ffmpeg_path(&env),
             max_downloads: saved.max_downloads as usize,
             thumb_fit: saved.thumb_fit,
@@ -245,8 +272,51 @@ pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
     })
 }
 
-/// Repli pour la version du convertisseur : empreinte `sha256:<12 hex>` du script, utilisée
-/// seulement si l'événement `start` ne porte pas de champ `version`.
+/// Moteur effectif d'une tâche (#136) : celui du réglage, avec ses chemins détectés. Jamais de
+/// repli implicite sur l'autre moteur (le repli Python est l'objet de #137) : le moteur Rust
+/// n'exige pas Python, et son binaire absent donne `converter_unavailable`.
+enum ChosenEngine {
+    Python { python: PathBuf, script: PathBuf },
+    Rust { exe: PathBuf },
+}
+
+impl ChosenEngine {
+    fn of(tc: &Toolchain) -> AppResult<Self> {
+        match tc.engine {
+            ConverterEngine::Python => {
+                let python = tc.python.clone().ok_or_else(|| {
+                    AppError::ConverterUnavailable(
+                        "Python introuvable : indiquez le chemin de python.exe dans les paramètres"
+                            .into(),
+                    )
+                })?;
+                let script = tc.converter.clone().ok_or_else(|| {
+                    AppError::ConverterUnavailable("convertisseur telmi2flam.py introuvable".into())
+                })?;
+                Ok(Self::Python { python, script })
+            }
+            ConverterEngine::Rust => {
+                let exe = tc.rust_converter.clone().ok_or_else(|| {
+                    AppError::ConverterUnavailable(format!(
+                        "convertisseur {RUST_CONVERTER_EXE} introuvable (moteur « rust » choisi \
+                         dans settings.json)"
+                    ))
+                })?;
+                Ok(Self::Rust { exe })
+            }
+        }
+    }
+
+    fn engine(&self) -> Engine<'_> {
+        match self {
+            Self::Python { python, script } => Engine::Python { python, script },
+            Self::Rust { exe } => Engine::Rust { exe },
+        }
+    }
+}
+
+/// Repli pour la version du convertisseur : empreinte `sha256:<12 hex>` du script (Python) ou
+/// du binaire (Rust), utilisée seulement si l'événement `start` ne porte pas de champ `version`.
 pub fn converter_fingerprint(script: &Path) -> AppResult<String> {
     let bytes = std::fs::read(script)?;
     let digest = Sha256::digest(&bytes);
@@ -1104,15 +1174,9 @@ impl InstallService {
         let kind = entry.kind;
         match kind {
             StoryKind::TelmiZip => {
-                let python = tc.python.clone().ok_or_else(|| {
-                    AppError::ConverterUnavailable(
-                        "Python introuvable : indiquez le chemin de python.exe dans les paramètres"
-                            .into(),
-                    )
-                })?;
-                let script = tc.converter.clone().ok_or_else(|| {
-                    AppError::ConverterUnavailable("convertisseur telmi2flam.py introuvable".into())
-                })?;
+                // Moteur choisi par le réglage (relu pour cette tâche) ; jamais de repli
+                // implicite sur l'autre moteur (le repli Python est l'objet de #137).
+                let chosen = ChosenEngine::of(tc)?;
                 if !source.is_file() {
                     return Err(AppError::NotFound(format!(
                         "archive introuvable : {}",
@@ -1149,8 +1213,7 @@ impl InstallService {
                 };
                 let converted = convert::convert(
                     &Conversion {
-                        python: &python,
-                        script: &script,
+                        engine: chosen.engine(),
                         input: &source,
                         output: staged,
                         ffmpeg: tc.ffmpeg.as_deref(),
@@ -1161,12 +1224,20 @@ impl InstallService {
                     &mut on_step,
                 )
                 .await;
-                // Version annoncée par l'événement `start` ; empreinte du script en repli
-                // (convertisseur plus ancien, sans champ `version`, ou échec avant `start`).
+                // Version annoncée par l'événement `start` ; empreinte du script ou du binaire
+                // en repli (convertisseur plus ancien, sans champ `version`, ou échec avant
+                // `start`). Empreinte impossible (binaire disparu ou illisible) : l'erreur de la
+                // conversion, cause première, l'emporte.
                 let announced = converted.as_ref().ok().and_then(|c| c.version.clone());
                 let converter = match announced {
                     Some(version) => version,
-                    None => blocking(move || converter_fingerprint(&script)).await??,
+                    None => {
+                        let identity = chosen.engine().identity().to_path_buf();
+                        match blocking(move || converter_fingerprint(&identity)).await? {
+                            Ok(fingerprint) => fingerprint,
+                            Err(err) => return Err(converted.err().unwrap_or(err)),
+                        }
+                    }
                 };
                 // Résultat réel de la conversion, pour le statut de compatibilité (#20) ; sans
                 // objet pour un pack (histoire unique, sans source).
