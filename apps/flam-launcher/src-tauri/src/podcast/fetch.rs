@@ -74,7 +74,7 @@ impl Default for Limits {
 /// Un épisode à récupérer. Les URL sont des secrets (D11) : ne jamais les journaliser.
 #[derive(Clone)]
 pub struct Item {
-    /// Identifiant stable de l'épisode (journaux, rapport).
+    /// Identifiant stable de l'épisode (journaux, rapport). Jamais une URL (D11) : un guid RSS\n    /// qui en est une doit être remplacé par un identifiant local.
     pub id: String,
     /// Étiquette du flux d'origine (plusieurs flux possibles dans un même lot).
     pub feed: String,
@@ -418,6 +418,22 @@ async fn fetch_file(
     dest: &Path,
     max_bytes: u64,
 ) -> Result<u64, FileFailure> {
+    let mut counted: u64 = 0;
+    let result = fetch_file_counted(shared, url, dest, max_bytes, &mut counted).await;
+    if result.is_err() {
+        // Les octets d'un fichier retiré ne comptent plus dans le plafond du lot.
+        shared.total.fetch_sub(counted, Ordering::Relaxed);
+    }
+    result
+}
+
+async fn fetch_file_counted(
+    shared: &Shared,
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+    counted: &mut u64,
+) -> Result<u64, FileFailure> {
     let parsed = Url::parse(url).map_err(|_| FileFailure::Drop(DropReason::Invalid))?;
     if check_url(&parsed, shared.policy).is_err() {
         tracing::warn!(url = %redact_url(url), "adresse refusée (D10)");
@@ -427,8 +443,6 @@ async fn fetch_file(
 
     let started = tokio::time::Instant::now();
     let mut validator = Validator::default();
-    // Octets de ce fichier déjà comptés dans le total du lot.
-    let mut counted: u64 = 0;
     let mut last_error = FileFailure::Drop(DropReason::Unreachable);
     for _ in 0..ATTEMPTS {
         let remaining = shared.limits.file_timeout.saturating_sub(started.elapsed());
@@ -440,16 +454,16 @@ async fn fetch_file(
             max_bytes,
         };
         let mut on_progress = |received: u64, _total: Option<u64>| {
-            if received >= counted {
+            if received >= *counted {
                 shared
                     .total
-                    .fetch_add(received - counted, Ordering::Relaxed);
+                    .fetch_add(received - *counted, Ordering::Relaxed);
             } else {
                 shared
                     .total
-                    .fetch_sub(counted - received, Ordering::Relaxed);
+                    .fetch_sub(*counted - received, Ordering::Relaxed);
             }
-            counted = received;
+            *counted = received;
             if shared.total.load(Ordering::Relaxed) > shared.limits.max_total_bytes {
                 shared.exceeded.store(true, Ordering::Relaxed);
                 shared.abort.send_replace(true);
@@ -468,7 +482,7 @@ async fn fetch_file(
         )
         .await;
         let error = match result {
-            Ok(Ok(())) => return Ok(counted),
+            Ok(Ok(())) => return Ok(*counted),
             Err(_elapsed) => return Err(FileFailure::Drop(DropReason::TimedOut)),
             Ok(Err(error)) => error,
         };

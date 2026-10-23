@@ -115,6 +115,8 @@ fn forbidden_v4(ip: Ipv4Addr) -> bool {
         || (a == 203 && b == 0 && c == 113)
         // Tests de performance 198.18.0.0/15.
         || (a == 198 && (b == 18 || b == 19))
+        // Relais 6to4 192.88.99.0/24 (obsolète).
+        || (a == 192 && b == 88 && c == 99)
         // Classe E réservée 240.0.0.0/4.
         || a >= 240
 }
@@ -144,6 +146,11 @@ fn forbidden_v6(ip: Ipv6Addr) -> bool {
         || (s[..6].iter().all(|x| *x == 0) && forbidden_v4(embedded(s[6], s[7])))
         // NAT64 64:ff9b::/96 : l'IPv4 contenue décide.
         || (s[0] == 0x0064 && s[1] == 0xff9b && s[2..6].iter().all(|x| *x == 0)
+            && forbidden_v4(embedded(s[6], s[7])))
+        // NAT64 local 64:ff9b:1::/48 (RFC 8215) : refusé.
+        || (s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 1)
+        // SIIT ::ffff:0:a.b.c.d : l'IPv4 contenue décide.
+        || (s[..4].iter().all(|x| *x == 0) && s[4] == 0xffff && s[5] == 0
             && forbidden_v4(embedded(s[6], s[7])))
         // 6to4 2002::/16 : l'IPv4 contenue décide.
         || (s[0] == 0x2002 && forbidden_v4(embedded(s[1], s[2])))
@@ -302,6 +309,9 @@ mod tests {
             "64:ff9b::7f00:1",
             "2002:a00:1::1",
             "2002:7f00:1::",
+            "64:ff9b:1::a00:1",
+            "::ffff:0:a00:1",
+            "192.88.99.1",
         ] {
             assert!(is_forbidden_ip(ip(s)), "{s} devrait être refusée");
         }
