@@ -59,15 +59,30 @@ ENGINE_MAIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine",
 ENGINE_STORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine", "story.lua")
 RUNTIME_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime", "script")
 RUNTIME_IMG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime", "img", "script")
-# Modules framework indispensables au demarrage (main.lua -> require("global") et
-# ses require, modules d'ecran utilises par engine/) et icones UI qu'ils chargent.
-# Meme liste dans validate.py (RUNTIME_SCRIPTS / RUNTIME_UI_LIF).
-RUNTIME_SCRIPTS = ("global.lua", "progressionManager.lua", "button.lua", "button-theme.lua",
-                   "button-theme-default.lua", "button-theme-interactive.lua", "v-scroll.lua",
-                   "v-container.lua", "audio-player_1_0_0.lua", "carousel_1_0_0.lua",
-                   "image-choice_1_0_0.lua", "list-choice_1_0_0.lua", "title-card.lua")
-RUNTIME_UI_LIF = ("audio-player-pause.lif", "arrow-left-18x18-ui-000.lif",
-                  "arrow-right-18x18-ui-000.lif", "arrow-right-ui-000.lif")
+RUNTIME_MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime", "manifest.txt")
+
+
+def _runtime_required(manifest=RUNTIME_MANIFEST):
+    """Modules framework indispensables au demarrage (main.lua -> require("global") et
+    ses require, modules d'ecran utilises par engine/) et icones UI qu'ils chargent :
+    lignes "!" du manifeste unique runtime/manifest.txt, lu aussi par validate.py et
+    embarque par le port Rust. Rend (scripts, icones) : noms dans runtime/script et
+    runtime/img/script."""
+    scripts, icons = [], []
+    try:
+        with open(manifest, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("!script/"):
+                    scripts.append(line[len("!script/"):])
+                elif line.startswith("!img/script/"):
+                    icons.append(line[len("!img/script/"):])
+    except (OSError, UnicodeDecodeError):
+        return None, None    # signale par _require_runtime a la conversion, pas a l'import
+    return tuple(scripts), tuple(icons)
+
+
+RUNTIME_SCRIPTS, RUNTIME_UI_LIF = _runtime_required()
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +278,9 @@ def _encode(im):
 def _require_runtime(d, names, what):
     """Le runtime du projet (runtime/script, runtime/img/script) doit accompagner
     le convertisseur : sinon le paquet genere ne peut pas demarrer."""
+    if names is None:
+        raise ConvError("%s introuvables : %s illisible (le runtime doit "
+                        "accompagner telmi2flam.py)" % (what, RUNTIME_MANIFEST))
     if not os.path.isdir(d):
         raise ConvError("%s introuvables : dossier %s absent (le runtime doit "
                         "accompagner telmi2flam.py)" % (what, d))
