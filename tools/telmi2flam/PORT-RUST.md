@@ -195,7 +195,11 @@ Invariants (repris de Python, à tester côté Rust) :
   l'heure locale, donc deux conversions Python ne donnent déjà pas le même fichier. On compare
   la **liste ordonnée des entrées** : nom, méthode (*stored*), drapeau UTF-8 et contenu octet à
   octet. Le Rust fixe l'horodatage (1980-01-01). Le lecteur du player (`src/formats/pk_reader.c`)
-  ignore la date : on le vérifie dans la PR 10.
+  ignore la date (vérifié dans la PR 10 : extraction complète d'un `.plain.pk` écrit par le Rust).
+  À horloge égale, le conteneur est identique à l'octet près : les vecteurs du corpus
+  (`gen_package_cases.py`) figent l'horloge de `zipfile` au 1980-01-01, et
+  `tests/package_parity.rs` exige le même SHA-256 pour le `.plain.pk` du Rust (écriture ZIP faite
+  à la main dans `output.rs`, sans la crate `zip`).
 - On compare aussi les résultats : succès ou code d'erreur identique, code de sortie identique,
   **multiensemble des codes d'avertissement** identique (pas le texte), et sortie JSON de
   `--info` identique (`ensure_ascii`, séparateurs compacts).
