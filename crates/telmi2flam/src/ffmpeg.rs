@@ -344,6 +344,10 @@ impl WorkDir {
                 builder.mode(0o700);
             }
             // Inscrit avant la création : le crochet de panique du binaire le supprime (#132).
+            // Un échec de création le retire aussitôt. Dans l'intervalle, une panique d'un autre
+            // fil pourrait supprimer un dossier de ce nom déjà présent (`AlreadyExists`) : le
+            // nom porte le pid, l'horloge et un compteur, ce ne peut être que le reste
+            // abandonné d'un ancien processus de même pid, jamais un dossier vivant.
             crate::output::track(&path);
             match builder.create(&path) {
                 Ok(()) => return Ok(WorkDir { path }),
@@ -398,14 +402,17 @@ impl Drop for Running {
     }
 }
 
-/// Tue les ffmpeg en cours et attend leur fin (5 s au plus chacun sous Windows, pour que leurs
-/// fichiers soient fermés avant la suppression de `t2f_ff_*`). Appelé par le crochet de panique
+/// Tue les ffmpeg en cours et attend leur fin (5 s au plus chacun, pour que leurs fichiers
+/// soient fermés avant la suppression de `t2f_ff_*`). Appelé par le crochet de panique
 /// du binaire, avant [`crate::output::discard_pending`] : après `process::exit`, rien d'autre
 /// ne les arrêterait (le job du launcher seulement à sa fermeture). Verrou tenté 1 s au plus.
 ///
 /// Limite sous Unix : le PID est retiré juste après que `try_wait` a récolté le processus ;
 /// une panique d'un autre fil dans cet intervalle de quelques instructions pourrait viser un
-/// PID réattribué. Verrou non obtenu en 1 s (impossible en pratique) : rien n'est tué.
+/// PID réattribué. De même, `waitpid` récolte ici le processus à l'insu du [`Child`] : si le
+/// fil de travail l'interroge ensuite avant `process::exit` (panique d'un autre fil, cas
+/// théorique avec un seul fil de travail), `try_wait` échoue (`ECHILD`) et `Child::kill` vise
+/// un PID libéré. Verrou non obtenu en 1 s (impossible en pratique) : rien n'est tué.
 ///
 /// Hors de portée (ffmpeg finit seul son fichier, `t2f_ff_*` reste sur le disque) : arrêt
 /// brutal de telmi2flam (`TerminateProcess`, `kill -9` ; sous le launcher, son job tue aussi
@@ -453,16 +460,44 @@ mod sys {
 
 #[cfg(unix)]
 mod sys {
+    use std::time::{Duration, Instant};
+
     extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
+        fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
     }
 
+    /// `WNOHANG` : même valeur sous Linux, macOS et les BSD. Ailleurs (illumos : 0x40),
+    /// `waitpid` refuse l'option (`EINVAL`) et l'attente s'arrête aussitôt, comme avant.
+    const WNOHANG: i32 = 1;
+
+    /// `SIGKILL`, puis attente de la fin (5 s au plus, toutes les 10 ms), comme
+    /// `WaitForSingleObject` sous Windows : ffmpeg récolté, ses fichiers sont fermés avant la
+    /// suppression de `t2f_ff_*`. `waitpid` rend une erreur (`ECHILD`) si le processus a déjà
+    /// été récolté : l'attente s'arrête alors aussi.
     pub fn kill_pid(pid: u32) {
-        if let Ok(pid) = i32::try_from(pid) {
-            // SAFETY : appel sans pointeur ; SIGKILL (9).
-            unsafe {
-                kill(pid, 9);
+        let Ok(pid) = i32::try_from(pid) else {
+            return;
+        };
+        // SAFETY : appel sans pointeur ; SIGKILL (9).
+        if unsafe { kill(pid, 9) } != 0 {
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let mut status = 0i32;
+            // SAFETY : `status` est un entier local valide pendant l'appel.
+            let r = unsafe { waitpid(pid, &mut status, WNOHANG) };
+            if r > 0
+                || (r < 0
+                    && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted)
+            {
+                return;
             }
+            if Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }
@@ -665,6 +700,11 @@ pub fn run_ffmpeg(
     };
     // Processus récolté : PID retiré du registre avant qu'il puisse être réattribué (Unix).
     drop(running);
+    // Sous Unix, un Ctrl+C au terminal envoie aussi SIGINT à ffmpeg (même groupe) : son échec
+    // est alors celui de l'annulation, pas un « ffmpeg a echoue » à signaler avant `cancelled`.
+    if cancelled() {
+        return Err(ConvError::cancelled());
+    }
     // Fin du tube d'erreur (un descendant peut le garder ouvert) : même délai, même jeton.
     let stderr = loop {
         match rx.recv_timeout(pause) {
