@@ -758,25 +758,43 @@ mod tests {
         assert!(left.is_empty(), "temporaires restants : {left:?}");
     }
 
-    /// Empreinte des paquets audio (sans étiquettes ni en-têtes).
-    async fn frames_md5(ff: &Ffmpeg, path: &Path) -> String {
-        let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-v", "error", "-i"]
-            .map(OsString::from)
-            .to_vec();
+    /// Trames audio seules (sans étiquettes ni en-têtes) : remux dans un fichier, lu en octets.
+    /// N'utilise que le muxer `mp3` et le protocole `file` du ffmpeg embarqué.
+    async fn frames_of(ff: &Ffmpeg, path: &Path) -> Vec<u8> {
+        let tmp = path.with_extension("frames.mp3");
+        let mut args: Vec<OsString> = [
+            "-hide_banner",
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-protocol_whitelist",
+            "file",
+            "-i",
+        ]
+        .map(OsString::from)
+        .to_vec();
         args.push(file_arg(path));
-        args.extend(["-map", "0:a:0", "-c", "copy", "-f", "md5", "-"].map(OsString::from));
-        let (_tx, mut rx) = watch::channel(false);
-        let out = ff
-            .run(
-                Tool::Ffmpeg,
-                &args,
-                Limits::new(Duration::from_secs(60)),
-                &mut rx,
-            )
-            .await
-            .unwrap();
-        assert!(out.success(), "{out:?}");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        args.extend(
+            [
+                "-map",
+                "0:a:0",
+                "-c:a",
+                "copy",
+                "-map_metadata",
+                "-1",
+                "-map_chapters",
+                "-1",
+                "-fflags",
+                "+bitexact",
+                "-f",
+                "mp3",
+            ]
+            .map(OsString::from),
+        );
+        args.push(file_arg(&tmp));
+        run_ff(ff, args).await;
+        fs::read(&tmp).unwrap()
     }
 
     /// Étiquettes du conteneur, en JSON.
@@ -841,7 +859,7 @@ mod tests {
         let (_tx, mut rx) = watch::channel(false);
         let done = convert(&ff, &src, &dst, &mut rx).await.unwrap();
         assert_eq!(done.plan, Plan::Copy);
-        assert_eq!(frames_md5(&ff, &src).await, frames_md5(&ff, &dst).await);
+        assert_eq!(frames_of(&ff, &src).await, frames_of(&ff, &dst).await);
         assert!(
             !tags_of(&ff, &dst).await.contains("Secret"),
             "étiquette retirée"
@@ -952,14 +970,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reel_annulation_ne_laisse_aucun_fichier() {
+    async fn reel_annulation_en_cours_ne_laisse_aucun_fichier() {
         let Some(ff) = real_ffmpeg() else { return };
         let dir = tempfile::tempdir().unwrap();
-        let (src, dst) = (dir.path().join("a.mp3"), dir.path().join("b.mp3"));
-        gen_mp3(&ff, &src, 22_050, 1, 64).await;
+        let (src, dst) = (dir.path().join("long.wav"), dir.path().join("b.mp3"));
+        // 10 minutes de PCM : la conversion dure bien plus que le délai avant l'annulation.
+        let mut args: Vec<OsString> = [
+            "-hide_banner",
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=600:sample_rate=22050",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            "-f",
+            "wav",
+        ]
+        .map(OsString::from)
+        .to_vec();
+        args.push(file_arg(&src));
+        run_ff(&ff, args).await;
         let (tx, mut rx) = watch::channel(false);
+        let (ff2, src2, dst2) = (ff.clone(), src.clone(), dst.clone());
+        let task = tokio::spawn(async move { convert(&ff2, &src2, &dst2, &mut rx).await });
+        tokio::time::sleep(Duration::from_millis(200)).await;
         tx.send(true).unwrap();
-        let err = convert(&ff, &src, &dst, &mut rx).await.unwrap_err();
+        let err = task.await.unwrap().unwrap_err();
         assert!(matches!(err, AppError::Cancelled), "{err:?}");
         assert!(!dst.exists());
         no_part_files(dir.path());
