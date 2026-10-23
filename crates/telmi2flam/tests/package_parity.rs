@@ -62,6 +62,12 @@ fn options(case: &Value) -> Options {
 
 /// Vecteurs produits sans ffmpeg (`FLAM_FFMPEG=""`) : même réglage ici, quel que soit le
 /// `PATH` de la machine de test (avec ffmpeg : `tests/ffmpeg.rs`).
+///
+/// `set_var` sous le harnais multi-fil (#369) : seul ce `Once` écrit l'environnement, une
+/// fois, et tout code qui lit `FLAM_FFMPEG` (`find_ffmpeg`, appelé par `convert`) passe
+/// d'abord par ici, donc attend la fin de l'écriture ; les autres tests de ce binaire ne
+/// lisent pas l'environnement. Pas de `[env]` dans `.cargo/config.toml` : il s'appliquerait
+/// aussi au launcher du même workspace, et un binaire de test lancé à la main n'en profiterait pas.
 fn without_ffmpeg() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| std::env::set_var("FLAM_FFMPEG", ""));
@@ -123,6 +129,53 @@ fn check_pk(case: &Value, pkg: &Package, dir: &std::path::Path) -> Result<(), St
     Ok(())
 }
 
+/// Message d'avertissement privé de ce qui diffère par construction entre Python et le Rust
+/// (appliqué aux deux côtés, texte restant comparé tel quel) :
+/// - nom Unicode des caractères remplacés (`U+65E5 CJK UNIFIED IDEOGRAPH-65E5 -> '?'` côté
+///   Python, `U+65E5 -> '?'` côté Rust : pas de `unicodedata.name`, voir `describe_replaced`) ;
+/// - détail entre parenthèses après `illisible` (image, couverture) ou `JSON invalide` : texte
+///   de l'exception de Python (Pillow, `json`, adresse mémoire de `BytesIO`), reformulé par le
+///   Rust (documenté dans PORT-RUST.md, « messages »).
+fn normalized(message: &str) -> String {
+    let mut m = message.to_owned();
+    if let Some(at) = m.find("hors police") {
+        if let Some(colon) = m[at..].find(" : ") {
+            let head = at + colon + 3;
+            let items: Vec<String> = m[head..]
+                .split(", ")
+                .map(|item| match (item.find(' '), item.find(" -> ")) {
+                    (Some(sp), Some(arrow)) if item.starts_with("U+") && sp < arrow => {
+                        format!("{}{}", &item[..sp], &item[arrow..])
+                    }
+                    _ => item.to_owned(),
+                })
+                .collect();
+            m = format!("{}{}", &m[..head], items.join(", "));
+        }
+    }
+    for keyword in ["illisible", "JSON invalide"] {
+        let Some(k) = m.find(keyword) else { continue };
+        let Some(open) = m[k..].find(" (").map(|i| k + i + 1) else {
+            continue;
+        };
+        let mut depth = 0;
+        for (i, c) in m[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        m.replace_range(open + 1..open + i, "...");
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    m
+}
+
 /// Compare un cas ; `Err` décrit l'écart.
 fn check(case: &Value, data: Vec<u8>, dir: &std::path::Path) -> Result<(), String> {
     let tags: Vec<&str> = case["tags"]
@@ -140,8 +193,21 @@ fn check(case: &Value, data: Vec<u8>, dir: &std::path::Path) -> Result<(), Strin
         };
     }
     match (case.get("error").and_then(Value::as_str), got) {
-        // Exception non rattrapée de Python (archive corrompue…) : le Rust refuse aussi.
-        (Some(py), Err(_)) if py.starts_with("python_crash:") => Ok(()),
+        // Exception non rattrapée de Python : le Rust refuse aussi, avec un code attendu
+        // (archive corrompue : `archive_unreadable`) et jamais `internal_error`.
+        (Some(py), Err(e)) if py.starts_with("python_crash:") => {
+            let want = (py == "python_crash:BadZipFile").then_some("archive_unreadable");
+            match want {
+                Some(code) if e.code != code => Err(format!(
+                    "erreur Python {py}, attendu {code}, Rust {} ({e})",
+                    e.code
+                )),
+                None if e.code == "internal_error" => {
+                    Err(format!("erreur Python {py}, Rust internal_error ({e})"))
+                }
+                _ => Ok(()),
+            }
+        }
         (Some(py), Err(e)) if e.code == py => Ok(()),
         (Some(py), Err(e)) => Err(format!("erreur Python {py}, Rust {} ({e})", e.code)),
         (Some(py), Ok(_)) => Err(format!("erreur Python {py}, le Rust réussit")),
@@ -187,6 +253,23 @@ fn check(case: &Value, data: Vec<u8>, dir: &std::path::Path) -> Result<(), Strin
             if want_w != have_w {
                 return Err(format!(
                     "avertissements : Python {want_w:?}, Rust {have_w:?}"
+                ));
+            }
+            // Messages : le texte de Python (#351), aux écarts de `normalized` près.
+            let want_m: Vec<String> = case["warning_messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| normalized(w.as_str().unwrap()))
+                .collect();
+            let have_m: Vec<String> = pkg
+                .warnings
+                .iter()
+                .map(|w| normalized(&w.message))
+                .collect();
+            if want_m != have_m {
+                return Err(format!(
+                    "messages d'avertissement : Python {want_m:?}, Rust {have_m:?}"
                 ));
             }
             check_pk(case, &pkg, dir)
