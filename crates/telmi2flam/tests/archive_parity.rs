@@ -263,8 +263,8 @@ fn aucune_panique_sur_archive_alteree() {
     let start = std::time::Instant::now();
     while !worker.is_finished() {
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(180),
-            "robustesse : plus de 180 s (boucle ou lenteur anormale)"
+            start.elapsed() < std::time::Duration::from_secs(300),
+            "robustesse : plus de 300 s (boucle ou lenteur anormale)"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
     }

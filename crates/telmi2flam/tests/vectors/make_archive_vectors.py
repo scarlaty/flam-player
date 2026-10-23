@@ -362,8 +362,8 @@ RUST_INFO_EXIT = {
 
 
 # Ecarts admis de lecture (PORT-RUST.md section 3) : (archive, entree) -> erreur du Rust.
-# miniz_oxide refuse tout de suite une table de Huffman dynamique que zlib laisse
-# "incomplete" (il attend la suite du flux, et Python ne signale pas un flux tronque).
+# miniz_oxide refuse tout de suite une table de Huffman dynamique (ici vide : tous les HCLEN
+# a 0) que zlib accepte en attendant la suite du flux ; Python ne signale pas un flux tronque.
 RUST_READ_ERROR = {
     ("deflate_bad_tables2", "images/b.png"): "corrupt",
 }
@@ -408,6 +408,7 @@ def describe(cid, data):
                 else:
                     reads.append({"name": n, "hex": content.hex()})
                 if (cid, n) in RUST_READ_ERROR:
+                    assert "hex" in reads[-1], "ecart devenu inutile : Python refuse aussi"
                     reads[-1]["rust_error"] = RUST_READ_ERROR[(cid, n)]
             exp["reads"] = reads
             index = {}
