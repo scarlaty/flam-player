@@ -62,7 +62,10 @@ export function DeviceProvider({
   intervalMs,
   libraryUuids,
 }: DeviceProviderProps) {
-  const { status, error, retry } = useDeviceStatus({ enabled: !paused, intervalMs });
+  const { status, error, retry, answered } = useDeviceStatus({
+    enabled: !paused,
+    intervalMs,
+  });
   const device = status?.detected ? status.device : null;
   const root = device?.root ?? null;
   const deviceKey = device ? `${device.root}\u0000${device.volume_label}` : null;
@@ -591,6 +594,7 @@ export function DeviceProvider({
       status,
       error,
       retry,
+      retryAnswered: answered,
       device,
       deviceKey,
       recovered,
@@ -621,6 +625,7 @@ export function DeviceProvider({
       status,
       error,
       retry,
+      answered,
       device,
       deviceKey,
       recovered,
