@@ -293,6 +293,77 @@ fn stdin_deja_ferme_avec_option_annule() {
     assert_cancelled(&w.0, &out, "stdin nul");
 }
 
+/// Chemin de production du launcher : `--cancel-on-stdin-eof`, stdin gardé ouvert pendant toute
+/// la conversion, qui réussit (code 0, `done`, aucun `.part`, sortie remplacée).
+#[test]
+fn stdin_ouvert_avec_option_conversion_reussie() {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+    let w = work("stdin-ouvert");
+    let mut child = command(&w.0, None, &["--cancel-on-stdin-eof"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdin = child.stdin.take().unwrap();
+    // Tubes vidés par des fils : un tube plein bloquerait le binaire.
+    let drain = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = r.read_to_end(&mut v);
+            v
+        })
+    };
+    let out = drain(Box::new(child.stdout.take().unwrap()));
+    let err = drain(Box::new(child.stderr.take().unwrap()));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("conversion non terminée en 30 s avec stdin ouvert");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // stdin fermé seulement après la fin : rien n'a pu annuler la conversion.
+    drop(stdin);
+    let (stdout, stderr) = (out.join().unwrap(), err.join().unwrap());
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(last_event(&stdout)["event"], "done");
+    assert!(parts(&w.0).is_empty(), "{:?}", parts(&w.0));
+    assert_ne!(std::fs::read(w.0.join("out.plain.pk")).unwrap(), b"ancien");
+}
+
+/// Panique avec `RUST_BACKTRACE=1` : la pile d'appels suit le message ; sans, rien de plus.
+#[test]
+fn panique_pile_d_appels_si_demandee() {
+    for (value, shown) in [("1", true), ("0", false)] {
+        let w = work(&format!("panique-pile-{value}"));
+        let out = command(&w.0, Some("panic:images:begin"), &[])
+            .env("RUST_BACKTRACE", value)
+            .env_remove("RUST_LIB_BACKTRACE")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(6), "{stderr}");
+        assert_eq!(
+            stderr.contains("pile d'appels :"),
+            shown,
+            "RUST_BACKTRACE={value} : {stderr}"
+        );
+        assert_clean(&w.0, "panique avec pile");
+    }
+}
+
 /// Des octets reçus sur stdin ne déclenchent rien : seule la fin annule.
 #[test]
 fn octets_sur_stdin_sans_effet() {
@@ -328,7 +399,9 @@ mod console {
 
     /// `CTRL_BREAK_EVENT` envoyé au groupe du binaire pendant l'écriture (ce que fait
     /// l'assistant Python du launcher) : `.part` supprimés, code 130. Sans console attachée
-    /// (certains environnements de CI), l'envoi échoue et le test le signale sans échouer.
+    /// (certains environnements de CI), l'envoi échoue : le test le signale et passe en CI
+    /// (variable `CI` définie) ou avec `T2F_SKIP_CTRL_BREAK`, mais échoue ailleurs, où une
+    /// console est attendue.
     #[test]
     fn annulation_par_ctrl_break() {
         let w = work("ctrl-break");
@@ -338,12 +411,18 @@ mod console {
         // SAFETY : appel sans pointeur ; le groupe est celui du processus enfant.
         let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) } != 0;
         if !sent {
-            eprintln!(
-                "CTRL_BREAK non envoyé (pas de console) : {}",
-                std::io::Error::last_os_error()
-            );
+            let why = std::io::Error::last_os_error();
             let _ = child.kill();
             let _ = finish(child);
+            assert!(
+                std::env::var_os("CI").is_some()
+                    || std::env::var_os("T2F_SKIP_CTRL_BREAK").is_some(),
+                "CTRL_BREAK non envoyé hors CI (console attendue ; lancement sans console : \
+                 T2F_SKIP_CTRL_BREAK=1) : {why}"
+            );
+            eprintln!(
+                "AVERTISSEMENT : annulation_par_ctrl_break NON VÉRIFIÉE (pas de console) : {why}"
+            );
             return;
         }
         let out = finish(child);

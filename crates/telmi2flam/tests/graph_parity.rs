@@ -7,7 +7,8 @@
 //! assets manquants (`missing_asset`, simulé ici : il relève de la PR des assets),
 //! `startAction`, puis `nodes.lua`. Les noms d'assets et l'en-tête (titre, couverture) sont
 //! ceux que Python a passés à `lua_repr`. Les appels au trait `Assets` sont contrôlés (nom égal
-//! au champ de `nodes.json`, ordre de Python) ; les cas marqués `divergence` (`json_limit`)
+//! au champ de `nodes.json`, ordre de Python, liste égale aux appels relevés chez Python dans
+//! la colonne `calls`) ; les cas marqués `divergence` (`json_limit`)
 //! vérifient l'écart assumé du Rust au lieu de la parité.
 
 use std::collections::HashMap;
@@ -156,29 +157,6 @@ impl<'a> Table<'a> {
         self.last = Some(key);
     }
 
-    /// Appels attendus quand le graphe est converti : chaque nom non vide, dans l'ordre.
-    fn expected_calls(&self) -> Vec<String> {
-        let non_empty = |v: Option<&Value>| matches!(v, Some(Value::Str(s)) if !s.is_empty());
-        let mut out = Vec::new();
-        if let Some(Value::Object(stages)) = self.nodes.get("stages") {
-            for (sid, st) in stages {
-                for field in ["image", "audio"] {
-                    if non_empty(st.get(field)) {
-                        out.push(format!("stage {sid}.{field}"));
-                    }
-                }
-            }
-        }
-        if let Some(Value::List(items)) = self.nodes.get("inventory") {
-            for (i, it) in items.iter().enumerate() {
-                if non_empty(it.get("image")) {
-                    out.push(format!("inventory[{i}].image"));
-                }
-            }
-        }
-        out
-    }
-
     fn get(&self, what: &str) -> Option<String> {
         // Champ inconnu : cas en échec avant `nodes.lua`, le nom n'a pas d'effet.
         self.py
@@ -275,11 +253,13 @@ fn replay(case: &Value) -> Result<(), String> {
     if !assets.problems.is_empty() {
         return Err(format!("appels à Assets : {:?}", assets.problems));
     }
-    if graph_done && assets.calls != assets.expected_calls() {
+    // Appels attendus : ceux que Python a faits (colonne `calls` du générateur, relevée dans
+    // `check_asset_name`), pas une règle recalculée ici à partir de `nodes.json`.
+    let expected_calls: Vec<&str> = list(field(case, "calls")).iter().map(str_of).collect();
+    if graph_done && assets.calls != expected_calls {
         return Err(format!(
-            "appels à Assets {:?}, attendus {:?}",
-            assets.calls,
-            assets.expected_calls()
+            "appels à Assets {:?}, attendus {expected_calls:?}",
+            assets.calls
         ));
     }
     if !replaced.is_empty() && !warnings.contains(&"font_replaced") {
