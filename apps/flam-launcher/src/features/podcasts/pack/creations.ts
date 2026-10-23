@@ -56,6 +56,20 @@ export function isCreating(revision: number, isActive: (taskId: string) => boole
   return false;
 }
 
+/**
+ * Purge les tâches terminées (#435). `isFinished` n'est vrai que pour une tâche présente dans le
+ * panneau avec un état terminal : une tâche absente (liste périmée, pas encore listée) est
+ * conservée, pour ne pas rouvrir la porte à une double création.
+ */
+export function forgetFinishedTasks(isFinished: (taskId: string) => boolean): void {
+  for (const taskId of [...tasks.keys()]) {
+    if (isFinished(taskId)) tasks.delete(taskId);
+  }
+}
+
+/** Nombre de tâches retenues (tests). */
+export const rememberedTaskCount = () => tasks.size;
+
 /** Remise à zéro (tests). */
 export function resetCreations(): void {
   inFlight.clear();
