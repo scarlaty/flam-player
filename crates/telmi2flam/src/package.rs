@@ -1,6 +1,6 @@
 //! Assemblage en mémoire du paquet FLAM : la partie de `_convert` (`tools/telmi2flam/telmi2flam.py`)
-//! qui va de la lecture de `metadata.json` à la liste ordonnée des fichiers de sortie, sans
-//! l'écriture du `.plain.pk` ni du dossier `.plain` (PR suivante, #130).
+//! qui va de la lecture de `metadata.json` à la liste ordonnée des fichiers de sortie. L'écriture
+//! du `.plain.pk` et du dossier `.plain` est dans [`crate::output`].
 //!
 //! Ordre des étapes identique à Python, pour que la première erreur et les avertissements
 //! soient les mêmes : `metadata.json`, `nodes.json`, `notes.json`, titre, sous-titre et UUID,
@@ -9,7 +9,8 @@
 //! `img/empty.lif`, `sounds/silent.mp3`, `info.plain`, `version`, `uuid.bin`).
 //!
 //! Invariants : aucune panique ; noms de sortie relatifs et sûrs (préfixes fixes et
-//! `[A-Za-z0-9_-]`, runtime vérifié par `build.rs`) ; coût linéaire en la taille de l'archive
+//! `[A-Za-z0-9_-]`, runtime vérifié par `build.rs`), revérifiés en fin d'assemblage par la garde
+//! zip-slip de Python ([`check_names`], `invalid_content`) ; coût linéaire en la taille de l'archive
 //! (chaque image est décodée une fois, la couverture deux fois comme en Python) ; annulation
 //! consultée avant chaque asset et dans les boucles de lignes des images.
 //!
@@ -28,6 +29,7 @@ use crate::graph::{
 use crate::image::{png_to_fit_lif, png_to_thumb_lif, Align};
 use crate::json::{expect, load_json, Kind, Value};
 use crate::lua::py_float_repr;
+use crate::output::check_names;
 use crate::png::PngError;
 use crate::runtime::{RUNTIME, STORY_LUA};
 use crate::text::{describe_replaced, py_strip, text, Replaced};
@@ -385,8 +387,10 @@ pub fn build_package<R: Read + Seek>(
     files.insert("version".to_owned(), b"1".to_vec());
     files.insert("uuid.bin".to_owned(), uuid.to_vec());
 
+    let entries = canonical(files);
+    check_names(entries.iter().map(|(n, _)| n.as_str()))?;
     Ok(Package {
-        entries: canonical(files),
+        entries,
         warnings,
         title,
         uuid,
