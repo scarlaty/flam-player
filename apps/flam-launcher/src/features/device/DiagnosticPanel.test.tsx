@@ -1,5 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { expectComponentAccessible } from "../../test/axe";
 import { DiagnosticPanel, REPORT_ISSUE_URL } from "./DiagnosticPanel";
@@ -68,7 +68,7 @@ it("montre le texte sélectionné si la copie échoue", async () => {
   const area = await screen.findByRole("textbox", { name: "Diagnostic à copier" });
   expect(area).toHaveValue(DIAGNOSTIC);
   expect(area).toHaveAttribute("readonly");
-  expect(area).toHaveFocus();
+  await waitFor(() => expect(area).toHaveFocus());
   expect(screen.getByText(/Copie impossible/)).toHaveAttribute("aria-live", "polite");
   await expectComponentAccessible(container);
 });
