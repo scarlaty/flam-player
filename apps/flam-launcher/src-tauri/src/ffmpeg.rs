@@ -28,7 +28,7 @@
 //! - le hachage s'interrompt à l'annulation (entre deux morceaux de 64 Kio) ; après la fin du
 //!   processus, la lecture de stdout/stderr n'attend qu'un court délai ([`READER_GRACE`]) : un
 //!   petit-enfant qui garderait les tubes ouverts ne bloque pas l'appelant ; ce qui a déjà été
-//!   lu à ce moment-là est conservé (sortie partielle, jamais perdue).
+//!   lu avant le délai est conservé (sortie partielle).
 
 use std::ffi::OsString;
 use std::io::Read;

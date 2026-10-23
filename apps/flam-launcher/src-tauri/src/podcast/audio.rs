@@ -1144,7 +1144,9 @@ mod tests {
         let err = convert(&ff, &src, &dst, &mut rx).await.unwrap_err();
         assert!(
             matches!(&err, AppError::Conversion { code, message }
-                if code == "ffmpeg_failed" && message.contains("sortie")),
+                if code == "ffmpeg_failed"
+                    && (message.contains("sortie inexploitable")
+                        || message.contains("sortie sans audio"))),
             "{err:?}"
         );
         assert!(!dst.exists());
