@@ -1,0 +1,85 @@
+.fl-device-order {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fl-device-order__title {
+  margin: 0;
+  font-size: var(--font-size-md);
+}
+
+.fl-device-order__title:focus {
+  outline: none;
+}
+
+.fl-device-order__help {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.fl-device-order__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fl-device-order__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.fl-device-order__row--draggable {
+  cursor: grab;
+}
+
+.fl-device-order__row--dragging {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
+/* Poignée : deux colonnes de points, purement décorative (le clavier passe par les boutons). */
+.fl-device-order__grip {
+  flex: none;
+  inline-size: 0.625rem;
+  block-size: 1.125rem;
+  background-image: radial-gradient(currentcolor 1.5px, transparent 1.6px);
+  background-size: 5px 6px;
+  color: var(--color-text-muted);
+}
+
+.fl-device-order__position {
+  flex: none;
+  min-inline-size: 2ch;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.fl-device-order__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: var(--font-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.fl-device-order__moves {
+  display: flex;
+  flex: none;
+  gap: var(--space-1);
+}
+
+.fl-device-order__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2);
+}

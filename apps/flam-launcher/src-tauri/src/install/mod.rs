@@ -41,8 +41,9 @@ use crate::catalog::{blocking, CatalogService};
 use crate::compat;
 use crate::folder::FolderState;
 use crate::library::{remove_if_exists, Library, LibraryEntry};
+use crate::library_source::{self, SourceStamp};
 use crate::library_thumb;
-use crate::settings::{self, Environment, SettingsStore};
+use crate::settings::{self, Environment, SettingsStore, ThumbFit};
 use crate::sources::{Source, SourcesStore};
 use crate::storage::{self, ConfigState, Loaded};
 use crate::story::{validate_story_id, StoryEntry, StoryKind};
@@ -188,7 +189,11 @@ pub struct Toolchain {
     pub cache_root: PathBuf,
     pub python: Option<PathBuf>,
     pub converter: Option<PathBuf>,
+    /// ffmpeg embarqué (rééchantillonnage audio, #46).
+    pub ffmpeg: Option<PathBuf>,
     pub max_downloads: usize,
+    /// Remplissage des vignettes (`--thumb-fit`, #279).
+    pub thumb_fit: ThumbFit,
 }
 
 pub type Resolver = Arc<dyn Fn() -> AppResult<Toolchain> + Send + Sync>;
@@ -223,7 +228,9 @@ pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
             cache_root,
             python: resolved.python_path.map(PathBuf::from),
             converter: detect_converter(&env),
+            ffmpeg: settings::ffmpeg_path(&env),
             max_downloads: saved.max_downloads as usize,
+            thumb_fit: saved.thumb_fit,
         })
     })
 }
@@ -789,7 +796,14 @@ impl InstallService {
         let result = self
             .produce(id, entry, &tc, &staged, cancel, validator)
             .await;
-        let (downloaded, converter, warnings) = match result {
+        let (
+            downloaded,
+            Produced {
+                converter,
+                warnings,
+                stamp,
+            },
+        ) = match result {
             Ok(produced) => produced,
             Err(err) => {
                 discard(staged.clone()).await;
@@ -806,8 +820,14 @@ impl InstallService {
         let installed = blocking(move || {
             // Vignette conservée (#80) : préparée hors verrou, jamais bloquante.
             let thumb = library_thumb::prepare(&cache_root, &source, &staged);
-            let result =
-                library.install_thumbed(&staged, &source, converter, now_secs(), thumb.as_ref());
+            let result = library.install_thumbed(
+                &staged,
+                &source,
+                converter,
+                now_secs(),
+                thumb.as_ref(),
+                stamp,
+            );
             if result.is_err() {
                 let _ = remove_if_exists(&staged);
             }
@@ -821,7 +841,7 @@ impl InstallService {
     }
 
     /// Produit le `.plain.pk` à publier dans `staged`. Renvoie l'archive téléchargée (à
-    /// supprimer après publication), la version du convertisseur et ses avertissements.
+    /// supprimer après publication) et le résultat de la transformation.
     async fn produce(
         &self,
         id: &str,
@@ -830,7 +850,7 @@ impl InstallService {
         staged: &Path,
         cancel: &mut watch::Receiver<bool>,
         validator: Validator,
-    ) -> AppResult<(Option<PathBuf>, Option<String>, u32)> {
+    ) -> AppResult<(Option<PathBuf>, Produced)> {
         let downloaded = if is_remote(&entry.download_url) {
             Some(self.fetch(id, entry, tc, cancel, validator).await?)
         } else {
@@ -839,9 +859,12 @@ impl InstallService {
         let source = downloaded
             .clone()
             .unwrap_or_else(|| PathBuf::from(&entry.download_url));
-        let result = self.transform(id, entry, tc, &source, staged, cancel).await;
+        let local = downloaded.is_none();
+        let result = self
+            .transform(id, entry, tc, &source, staged, local, cancel)
+            .await;
         match result {
-            Ok((converter, warnings)) => Ok((downloaded, converter, warnings)),
+            Ok(produced) => Ok((downloaded, produced)),
             Err(err) => {
                 // Annulée (en attente du créneau de conversion comme pendant la conversion) :
                 // l'archive téléchargée est abandonnée avec la tâche.
@@ -856,7 +879,9 @@ impl InstallService {
     }
 
     /// Convertit, vérifie ou empaquette `source` vers `staged`. Renvoie la version du
-    /// convertisseur et ses avertissements.
+    /// convertisseur, ses avertissements et, pour une source locale (`local`, source dossier),
+    /// l'empreinte de la source (#288).
+    #[allow(clippy::too_many_arguments)]
     async fn transform(
         &self,
         id: &str,
@@ -864,10 +889,12 @@ impl InstallService {
         tc: &Toolchain,
         source: &Path,
         staged: &Path,
+        local: bool,
         cancel: &mut watch::Receiver<bool>,
-    ) -> AppResult<(Option<String>, u32)> {
+    ) -> AppResult<Produced> {
         let source = source.to_path_buf();
-        match entry.kind {
+        let kind = entry.kind;
+        match kind {
             StoryKind::TelmiZip => {
                 let python = tc.python.clone().ok_or_else(|| {
                     AppError::ConverterUnavailable(
@@ -884,6 +911,14 @@ impl InstallService {
                         source.display()
                     )));
                 }
+                // Empreinte de l'archive locale, avant sa conversion (une copie convertie ne
+                // se compare pas à sa source).
+                let stamp = if local {
+                    let from = source.clone();
+                    blocking(move || library_source::stamp_source(&from, kind)).await?
+                } else {
+                    None
+                };
                 let _slot = tokio::select! {
                     s = self.0.conversions.acquire() => s.map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?,
                     _ = cancelled(cancel) => return Err(AppError::Cancelled),
@@ -910,6 +945,8 @@ impl InstallService {
                         script: &script,
                         input: &source,
                         output: staged,
+                        ffmpeg: tc.ffmpeg.as_deref(),
+                        thumb_fit: tc.thumb_fit,
                         grace: self.0.opts.grace,
                     },
                     cancel,
@@ -930,24 +967,36 @@ impl InstallService {
                     // Échec d'enregistrement ignoré : il ne doit pas gêner l'installation.
                     let _ = blocking(move || compat::store_outcome(&root, &uuid, outcome)).await;
                 }
-                Ok((Some(converter), converted?.warnings))
+                Ok(Produced {
+                    converter: Some(converter),
+                    warnings: converted?.warnings,
+                    stamp,
+                })
             }
-            StoryKind::FlamPk => {
+            StoryKind::FlamPk | StoryKind::FlamPlain => {
                 self.emit_state(id, TaskState::Installing, None);
                 let (from, to) = (source.clone(), staged.to_path_buf());
-                blocking(move || {
-                    pack::check_plain_pk(&from)?;
-                    std::fs::copy(&from, &to)?;
-                    Ok::<_, AppError>(())
+                let stamp = blocking(move || {
+                    // Pré-filtre relevé avant la copie, empreinte calculée sur la copie.
+                    let quick = if local {
+                        library_source::quick_of(&from, kind)
+                    } else {
+                        None
+                    };
+                    if kind == StoryKind::FlamPk {
+                        pack::check_plain_pk(&from)?;
+                        std::fs::copy(&from, &to)?;
+                    } else {
+                        pack::pack_plain_dir(&from, &to)?;
+                    }
+                    Ok::<_, AppError>(library_source::stamp_copy(quick, kind, &to))
                 })
                 .await??;
-                Ok((None, 0))
-            }
-            StoryKind::FlamPlain => {
-                self.emit_state(id, TaskState::Installing, None);
-                let (from, to) = (source.clone(), staged.to_path_buf());
-                blocking(move || pack::pack_plain_dir(&from, &to)).await??;
-                Ok((None, 0))
+                Ok(Produced {
+                    converter: None,
+                    warnings: 0,
+                    stamp,
+                })
             }
         }
     }
@@ -1185,15 +1234,14 @@ async fn discard(path: PathBuf) {
 // ---------------------------------------------------------------------------------------
 
 /// Retrouve l'entrée `entry_id` de la source `source_id` : cache du catalogue (sans réseau)
-/// ou dernier scan du dossier. Avec `rescan`, un dossier pas encore analysé dans cette session
-/// (reprise au démarrage) est analysé, sous-dossiers compris.
+/// ou source dossier (voir [`FolderState::scan_for_entry`]). `expected` : histoire attendue.
 async fn resolve_entry(
     config: &ConfigState,
     catalog: &CatalogService,
     folder: &FolderState,
     source_id: &str,
     entry_id: &str,
-    rescan: bool,
+    expected: Option<&str>,
 ) -> AppResult<StoryEntry> {
     let (source, cache_root) = {
         let _guard = config.guard();
@@ -1212,22 +1260,29 @@ async fn resolve_entry(
             .ok_or_else(|| {
                 AppError::NotFound(format!("histoire inconnue dans le catalogue : {entry_id}"))
             }),
-        Source::Folder { .. } => match folder.entry(source_id, entry_id) {
-            Err(_) if rescan => {
-                let (root, _) = {
-                    let _guard = config.guard();
-                    crate::folder::resolve_folder(&config.dir, &Environment::current(), source_id)?
-                };
-                let (state, sid) = (folder.clone(), source_id.to_string());
-                blocking(move || state.scan(&sid, &root, true)).await??;
-                folder.entry(source_id, entry_id)
-            }
-            found => found,
-        },
+        Source::Folder { .. } => {
+            let (root, _) = {
+                let _guard = config.guard();
+                crate::folder::resolve_folder(&config.dir, &Environment::current(), source_id)?
+            };
+            let (state, sid, eid) = (folder.clone(), source_id.to_string(), entry_id.to_string());
+            let expected = expected.map(str::to_string);
+            blocking(move || state.scan_for_entry(&sid, &root, &eid, expected.as_deref())).await?
+        }
         Source::Library { .. } => Err(AppError::Validation(
             "cette histoire est déjà dans la bibliothèque".into(),
         )),
     }
+}
+
+/// Résultat de la transformation d'une source en `.plain.pk` ([`InstallService::transform`]).
+struct Produced {
+    /// Version du convertisseur (`None` sans conversion).
+    converter: Option<String>,
+    /// Avertissements de la conversion.
+    warnings: u32,
+    /// Empreinte de la source locale (#288), `None` pour une source distante.
+    stamp: Option<SourceStamp>,
 }
 
 /// Ré-résolution d'une entrée de la file persistée au démarrage (voir [`InstallService::restore`]).
@@ -1243,12 +1298,18 @@ pub async fn resolve_for_restore(
         &app.state::<FolderState>(),
         source_id,
         entry_id,
-        true,
+        None,
     )
     .await
 }
 
 /// Lance l'installation d'une histoire d'une source (catalogue ou dossier).
+///
+/// Avec `uuid` (fourni par toute installation depuis l'écran, dont « Mettre à jour » depuis
+/// « Mes histoires », #288), le dossier est réanalysé : une entrée du dernier scan peut être
+/// périmée ; sans `uuid`, une entrée absente du dernier scan fait analyser le dossier.
+/// `uuid` (facultatif) : histoire attendue ; si l'entrée retrouvée en propose une autre (fichier
+/// remplacé par une autre histoire au même chemin), `not_found` sans rien installer.
 #[tauri::command]
 pub async fn install_start(
     config: State<'_, ConfigState>,
@@ -1257,9 +1318,30 @@ pub async fn install_start(
     service: State<'_, InstallService>,
     source_id: String,
     entry_id: String,
+    uuid: Option<String>,
 ) -> AppResult<InstallTask> {
-    let entry = resolve_entry(&config, &catalog, &folder, &source_id, &entry_id, false).await?;
+    let entry = resolve_entry(
+        &config,
+        &catalog,
+        &folder,
+        &source_id,
+        &entry_id,
+        uuid.as_deref(),
+    )
+    .await?;
+    check_expected_uuid(&entry, uuid.as_deref())?;
     service.start(entry)
+}
+
+/// `not_found` si `entry` ne propose pas l'histoire `expected` (quand elle est donnée).
+fn check_expected_uuid(entry: &StoryEntry, expected: Option<&str>) -> AppResult<()> {
+    match expected {
+        Some(uuid) if uuid != entry.uuid => Err(AppError::NotFound(format!(
+            "l'entrée {} ne propose plus l'histoire {uuid}",
+            entry.entry_id
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// Annule une tâche d'installation.

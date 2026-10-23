@@ -1,11 +1,10 @@
-import { useRef, useState } from "react";
+import { useId, useState } from "react";
 import type { Source } from "../../api/sources";
 import type { ListedEntry } from "../library/sourceData";
 import {
   Badge,
   Banner,
   Button,
-  CheckboxField,
   Dialog,
   Icon,
   ProgressBar,
@@ -14,11 +13,14 @@ import {
 import { placeholderTone } from "../../components/StoryCard/StoryCard";
 import { t } from "../../i18n";
 import { useCompat } from "../compat/CompatContext";
+import { useDevice } from "../device/DeviceContext";
+import { SendToDeviceButton } from "../device/SendToDeviceButton";
 import { COMPAT_APPEARANCE, reasonText } from "../compat/compatInfo";
 import { defaultStoryState, STATE_APPEARANCE } from "../library/storyState";
 import { useThumbnail } from "../library/useThumbnail";
 import { formatBytes } from "../validation";
 import { isRemote, storyStateOf, useStories } from "./StoriesContext";
+import { RemoveStoryDialog } from "./RemoveStoryDialog";
 import "./StoryDetail.css";
 
 export interface StoryDetailProps {
@@ -43,12 +45,12 @@ function Fact({ label, value }: { label: string; value: string | null | undefine
  */
 export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const stories = useStories();
+  const { confirmingSend } = useDevice();
   const { compatFor } = useCompat();
-  const { url } = useThumbnail(source, entry);
+  const { url } = useThumbnail(source, entry, { eager: true });
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const [purgeSaves, setPurgeSaves] = useState(false);
-  const cancelRef = useRef<HTMLButtonElement>(null);
   const [failedUrl, setFailedUrl] = useState<string>();
+  const updateHelpId = useId();
 
   const state = storyStateOf(stories, entry) ?? defaultStoryState(source, entry);
   const compat = compatFor(entry);
@@ -67,7 +69,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const showCover = url !== undefined && url !== failedUrl;
   const tone: BadgeTone = STATE_APPEARANCE[state].tone;
 
-  async function confirmedRemove() {
+  async function confirmedRemove(purgeSaves: boolean) {
     const removed = await stories.remove(entry.uuid, entry.title, purgeSaves);
     setConfirmRemove(false);
     if (removed && source.type === "library") onClose();
@@ -77,35 +79,54 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
     <>
       <Dialog
         wide
-        open={!confirmRemove && !stories.confirming}
+        open={!confirmRemove && !stories.confirming && !confirmingSend}
         onClose={onClose}
         title={entry.title}
         footer={
-          <>
+          <div className="fl-detail__actions">
             {task && (
-              <Button icon="close" onClick={() => stories.cancel(task.id)}>
+              <Button size="sm" icon="close" onClick={() => stories.cancel(task.id)}>
                 {text.cancel}
               </Button>
             )}
             {!task && installed && (
               <>
                 <Button
-                  variant="danger"
+                  size="sm"
+                  variant="danger-quiet"
                   icon="trash"
+                  className="fl-detail__remove"
                   disabled={playingThis}
                   onClick={() => {
-                    setPurgeSaves(false);
                     setConfirmRemove(true);
                   }}
                 >
                   {text.remove}
                 </Button>
+                <SendToDeviceButton
+                  uuid={installed.uuid}
+                  title={entry.title}
+                  size={installed.size}
+                  stale={stories.sourceChanged(installed.uuid)}
+                />
                 {stories.updateAvailable(entry) && (
-                  <Button icon="refresh" onClick={() => stories.install(entry)}>
-                    {text.update}
-                  </Button>
+                  <>
+                    <Button
+                      size="sm"
+                      icon="refresh"
+                      title={text.updateHelp}
+                      aria-describedby={updateHelpId}
+                      onClick={() => stories.install(entry)}
+                    >
+                      {text.update}
+                    </Button>
+                    <span id={updateHelpId} className="fl-visually-hidden">
+                      {text.updateHelp}
+                    </span>
+                  </>
                 )}
                 <Button
+                  size="sm"
                   variant="accent"
                   icon="play"
                   disabled={playing}
@@ -119,6 +140,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
               <>
                 {canPlayFromFolder && (
                   <Button
+                    size="sm"
                     icon="play"
                     disabled={playing}
                     onClick={() => stories.playFromFolder(entry, source.id)}
@@ -126,10 +148,11 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                     {text.playFromFolder}
                   </Button>
                 )}
-                <Button icon="download" onClick={() => stories.install(entry)}>
+                <Button size="sm" icon="download" onClick={() => stories.install(entry)}>
                   {fromCatalog ? text.download : text.install}
                 </Button>
                 <Button
+                  size="sm"
                   variant="accent"
                   icon="play"
                   disabled={playing}
@@ -141,7 +164,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                 </Button>
               </>
             )}
-          </>
+          </div>
         }
       >
         <div className="fl-detail">
@@ -167,7 +190,11 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
             </p>
             <ul className="fl-detail__badges" aria-label={t.stories.detail.badges}>
               <li>
-                <Badge tone={tone} icon={STATE_APPEARANCE[state].icon}>
+                <Badge
+                  tone={tone}
+                  icon={STATE_APPEARANCE[state].icon}
+                  description={state === "update_available" ? text.updateHelp : undefined}
+                >
                   {t.library.state[state]}
                 </Badge>
               </li>
@@ -233,31 +260,12 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
           </div>
         </div>
       </Dialog>
-      <Dialog
+      <RemoveStoryDialog
         open={confirmRemove}
-        onClose={() => setConfirmRemove(false)}
-        role="alertdialog"
-        title={t.stories.removeDialog.title(entry.title)}
-        description={t.stories.removeDialog.description}
-        initialFocus={cancelRef}
-        footer={
-          <>
-            <Button ref={cancelRef} onClick={() => setConfirmRemove(false)}>
-              {t.common.cancel}
-            </Button>
-            <Button variant="danger" onClick={() => void confirmedRemove()}>
-              {t.stories.removeDialog.confirm}
-            </Button>
-          </>
-        }
-      >
-        <CheckboxField
-          label={t.stories.removeDialog.purgeSaves}
-          hint={t.stories.removeDialog.purgeSavesHint}
-          checked={purgeSaves}
-          onChange={(event) => setPurgeSaves(event.target.checked)}
-        />
-      </Dialog>
+        title={entry.title}
+        onCancel={() => setConfirmRemove(false)}
+        onConfirm={(purge) => void confirmedRemove(purge)}
+      />
     </>
   );
 }

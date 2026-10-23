@@ -191,8 +191,8 @@ couvre le reste de l'application (flam-launcher, flam-player, SDL2, Lua, LVGL, m
 
 | Composant | Version | Licence | Texte |
 | --- | --- | --- | --- |
-| telmi2flam (``telmi2flam.py``, ``lif.py``, ``mp3map.py``, moteur Lua ``engine/``) | dépôt flam-player | usage personnel et éducatif (voir le dépôt) ; redistribué avec l'accord du mainteneur | ``README.md`` du dépôt |
-| Runtime Lunii ``runtime/`` (bibliothèque Lua ``script/``, icônes LIF ``img/``) | dépôt flam-player | propriété de leurs auteurs (Lunii) ; le mainteneur du dépôt confirme avoir les droits de redistribution | |
+| telmi2flam (``telmi2flam.py``, ``lif.py``, ``mp3map.py``, moteur Lua ``engine/``) | dépôt flam-player | GPL-3.0-or-later | ``LICENSE`` du dépôt (``licenses/flam-launcher-LICENSE.txt`` à la racine de l'installation) |
+| Runtime ``runtime/`` (bibliothèque Lua ``script/``, icônes LIF ``img/``) | dépôt flam-player | GPL-3.0-or-later | ``LICENSE`` du dépôt (``licenses/flam-launcher-LICENSE.txt`` à la racine de l'installation) |
 | Python (python.org, paquet embarquable) | $PythonVersion | PSF-2.0 | ``python/LICENSE.txt`` |
 | libffi (``python/libffi-8.dll``) | livré avec Python | MIT | ``python/LICENSE.txt`` |
 | libtommath (``python/libtommath.dll``) | livré avec Python | domaine public (Unlicense) | |

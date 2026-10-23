@@ -21,6 +21,7 @@ import { ToastProvider } from "../../components";
 import { PAGE_LEVEL_RULES, expectNoAxeViolations } from "../../test/axe";
 import { makeEntry } from "../../test/entries";
 import { CompatProvider } from "../compat/CompatProvider";
+import { DeviceProvider } from "../device/DeviceProvider";
 import { LibraryProvider } from "../library/LibraryProvider";
 import { StoriesLibrary } from "./StoriesLibrary";
 import { DONE_TASK_TTL_MS, StoriesProvider } from "./StoriesProvider";
@@ -63,6 +64,7 @@ const ours = (over: Partial<StoryEntry> = {}) =>
     voice: "Vic Voix",
     license: "CC BY 4.0",
     size: 3 * 1024 * 1024,
+    thumb_url: "ours.png",
     ...over,
   });
 
@@ -101,6 +103,7 @@ const session = (title = "Les trois ours", uuid = "ours"): PlayerSession => ({
   title,
   pid: 42,
   started_at: 1_700_000_100,
+  embedded: false,
 });
 
 let sources: Source[];
@@ -108,6 +111,7 @@ let catalogEntries: StoryEntry[];
 let scanEntries: StoryEntry[];
 let installed: LibraryEntry[];
 let report: CompatReport;
+let sourceChecks: { uuid: string; state: string }[];
 let started: InstallTask[];
 let status: PlayerSession | null;
 let failures: Record<string, { kind: string; message: string }>;
@@ -130,6 +134,7 @@ beforeEach(() => {
   scanEntries = [];
   installed = [];
   report = { entries: [], issue: null };
+  sourceChecks = [];
   started = [];
   status = null;
   failures = {};
@@ -166,6 +171,8 @@ beforeEach(() => {
           return report;
         case "library_list":
           return installed;
+        case "library_source_status":
+          return sourceChecks;
         case "library_remove":
           installed = installed.filter((item) => item.uuid !== payload.uuid);
           return null;
@@ -223,12 +230,14 @@ async function renderApp() {
       <LibraryProvider>
         <CompatProvider>
           <StoriesProvider>
-            <main>
-              <StoriesLibrary />
-            </main>
-            <aside>
-              <StoriesTaskPanel />
-            </aside>
+            <DeviceProvider>
+              <main>
+                <StoriesLibrary />
+              </main>
+              <aside>
+                <StoriesTaskPanel />
+              </aside>
+            </DeviceProvider>
           </StoriesProvider>
         </CompatProvider>
       </LibraryProvider>
@@ -276,9 +285,13 @@ slowIt(
     };
     await renderApp();
     const dialog = await openFiche();
+    // La carte n'est jamais « vue » (observateur factice) : la fiche demande l'image d'elle-même.
     await waitFor(() =>
-      expect(within(dialog).getByRole("img", { name: /Vignette/ })).toBeInTheDocument(),
-    ).catch(() => undefined);
+      expect(within(dialog).getByRole("img", { name: /Vignette/ })).toHaveAttribute(
+        "src",
+        "data:image/png;base64,AAAA",
+      ),
+    );
     expect(
       within(dialog).getByText("Une visite chez trois ours gourmands."),
     ).toBeVisible();
@@ -317,6 +330,7 @@ it("télécharger et jouer : progression, installation puis lancement, retour su
   expect(callsOf("install_start")[0]?.args).toEqual({
     sourceId: "store",
     entryId: "store:ours",
+    uuid: "ours",
   });
   expect(await within(dialog).findByRole("button", { name: "Annuler" })).toBeVisible();
 
@@ -571,6 +585,185 @@ it("propose la mise à jour d'une histoire dont le catalogue a une autre version
   expect(within(dialog).getByRole("button", { name: "Annuler" })).toBeVisible();
 });
 
+it("fiche d'une histoire installée : actions de même gabarit, Supprimer discret, Jouer principal", async () => {
+  installed = [installedEntry(ours())];
+  window.location.hash = "#/library/library";
+  await renderApp();
+  const dialog = await openFiche();
+  const send = within(dialog).getByRole("button", { name: /Envoyer sur la Flam/ });
+  const remove = within(dialog).getByRole("button", { name: "Supprimer" });
+  const play = within(dialog).getByRole("button", { name: "Jouer" });
+  for (const button of [send, remove, play]) {
+    expect(button).toHaveClass("fl-button--sm");
+    expect(button).not.toHaveClass("fl-button--md");
+  }
+  expect(send).toHaveClass("fl-button--secondary");
+  expect(remove).toHaveClass("fl-button--danger-quiet");
+  expect(remove).not.toHaveClass("fl-button--danger");
+  expect(play).toHaveClass("fl-button--accent");
+  // Une seule rangée d'actions, dans le pied de la fiche.
+  const row = remove.closest(".fl-detail__actions");
+  expect(row).not.toBeNull();
+  expect(row).toContainElement(send);
+  expect(row).toContainElement(play);
+});
+
+it("carte : « Supprimer » est un bouton icône dans la rangée d'actions, sans recouvrir la vignette", async () => {
+  installed = [installedEntry(ours())];
+  window.location.hash = "#/library/library";
+  await renderApp();
+  const card = screen
+    .getByRole("heading", { level: 3, name: "Les trois ours" })
+    .closest("article") as HTMLElement;
+  const remove = within(card).getByRole("button", {
+    name: "Supprimer « Les trois ours »",
+  });
+  expect(remove).toHaveAttribute("title", "Supprimer « Les trois ours »");
+  expect(remove).toHaveClass("fl-icon-button", "fl-icon-button--danger-quiet");
+  expect(remove).toHaveTextContent("");
+  const actions = remove.closest(".fl-story-card__actions");
+  expect(actions).not.toBeNull();
+  // La rangée est un enfant direct de la carte, frère (et non descendante) de la vignette.
+  expect(actions?.parentElement).toBe(card);
+  expect(card.querySelector(".fl-story-card__cover")).not.toContainElement(
+    actions as HTMLElement,
+  );
+  expect(actions).toContainElement(
+    within(card).getByRole("button", { name: "Jouer « Les trois ours »" }),
+  );
+});
+
+it("info-bulle « Mise à jour disponible » : badge et bouton, avec texte accessible", async () => {
+  installed = [installedEntry(ours({ version: 1 }))];
+  catalogEntries = [ours({ version: 2 })];
+  await renderApp();
+  const help =
+    "Le fichier de cette histoire a changé dans sa source depuis l'installation. « Mettre à jour » recopie la nouvelle version dans la bibliothèque ; le cas échéant, renvoyez-la ensuite sur la Flam.";
+  const cardBadge = screen.getAllByText("Mise à jour disponible")[0]!;
+  expect(cardBadge).toHaveAttribute("tabindex", "0");
+  expect(cardBadge).toHaveAccessibleDescription(help);
+  const dialog = await openFiche();
+  const badge = within(dialog).getByText("Mise à jour disponible");
+  expect(badge).toHaveAttribute("tabindex", "0");
+  expect(badge).toHaveAccessibleDescription(help);
+  const update = within(dialog).getByRole("button", { name: "Mettre à jour" });
+  expect(update).toHaveAttribute("title", help);
+  expect(update).toHaveAccessibleDescription(help);
+  expect(update).toHaveClass("fl-button--sm", "fl-button--secondary");
+});
+
+it("une installation terminée ne bloque pas une nouvelle : installer, supprimer, réinstaller", async () => {
+  await renderApp();
+  const dialog = await openFiche();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Télécharger" }));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  installed = [installedEntry(ours())];
+  await send("install://done", { task_id: "t1", entry: installed[0], warnings: 0 });
+  fireEvent.click(await within(dialog).findByRole("button", { name: "Supprimer" }));
+  const confirm = await screen.findByRole("alertdialog", { name: /Supprimer/ });
+  fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+  await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
+  // La ligne réussie est retirée avec l'histoire, sans attendre le délai ni un geste.
+  await waitFor(() =>
+    expect(within(panel()).getByText("Aucune tâche en cours.")).toBeVisible(),
+  );
+  const again = await screen.findByRole("dialog", { name: "Les trois ours" });
+  fireEvent.click(await within(again).findByRole("button", { name: "Télécharger" }));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(2));
+});
+
+/** Histoire installée depuis la source dossier « Contes » (`.plain.pk`, version 0). */
+const capi = () =>
+  makeEntry({
+    source_id: "dossier",
+    entry_id: "dossier:capi",
+    uuid: "capi",
+    version: 0,
+    title: "Capi et la rivière",
+    kind: "flam_pk",
+    download_url: "C:\\Contes\\capi.plain.pk",
+  });
+
+async function renderSource(hash: string) {
+  window.location.hash = hash;
+  render(
+    <ToastProvider>
+      <LibraryProvider>
+        <CompatProvider>
+          <StoriesProvider>
+            <DeviceProvider>
+              <main>
+                <StoriesLibrary />
+              </main>
+            </DeviceProvider>
+          </StoriesProvider>
+        </CompatProvider>
+      </LibraryProvider>
+    </ToastProvider>,
+  );
+  await screen.findByRole("heading", { level: 3, name: capi().title });
+}
+
+it("source dossier modifiée à version égale : « Mettre à jour » dans « Mes histoires »", async () => {
+  installed = [installedEntry(capi())];
+  sourceChecks = [{ uuid: "capi", state: "changed" }];
+  // Entrée retrouvée par le backend (dossier analysé à la demande).
+  scanEntries = [capi()];
+  await renderSource("#/library/library");
+  expect(await screen.findByText("Mise à jour disponible")).toBeInTheDocument();
+  const dialog = await openFiche(capi().title);
+  expect(
+    within(dialog).getByText(/^Source modifiée depuis l'installation/),
+  ).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Mettre à jour" }));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  // Réinstallation depuis la source d'origine, histoire attendue vérifiée par le backend.
+  expect(callsOf("install_start")[0]?.args).toEqual({
+    sourceId: "dossier",
+    entryId: "dossier:capi",
+    uuid: "capi",
+  });
+});
+
+it("source dossier modifiée : l'entrée d'origine propose la mise à jour, pas un doublon", async () => {
+  installed = [installedEntry(capi())];
+  sourceChecks = [{ uuid: "capi", state: "changed" }];
+  // Même uuid en dossier `.plain` dans la même source : ce n'est pas la source installée.
+  const twin = makeEntry({
+    ...capi(),
+    entry_id: "dossier:capi-plain",
+    title: "Capi (dossier)",
+    kind: "flam_plain",
+  });
+  scanEntries = [capi(), twin];
+  await renderSource("#/library/dossier");
+  await waitFor(() =>
+    expect(screen.getAllByText("Mise à jour disponible")).toHaveLength(1),
+  );
+  let dialog = await openFiche(capi().title);
+  expect(within(dialog).getByRole("button", { name: "Mettre à jour" })).toBeVisible();
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  dialog = await openFiche(twin.title);
+  expect(within(dialog).queryByRole("button", { name: "Mettre à jour" })).toBeNull();
+});
+
+it("source inchangée, disparue ou invérifiable : rien n'est proposé", async () => {
+  installed = [installedEntry(capi())];
+  for (const state of ["unchanged", "missing", "unknown"]) {
+    sourceChecks = [{ uuid: "capi", state }];
+    await renderSource("#/library/library");
+    await waitFor(() =>
+      expect(callsOf("library_source_status").length).toBeGreaterThan(0),
+    );
+    expect(screen.queryByText("Mise à jour disponible")).toBeNull();
+    const dialog = await openFiche(capi().title);
+    expect(within(dialog).queryByRole("button", { name: "Mettre à jour" })).toBeNull();
+    cleanup();
+    calls = [];
+  }
+});
+
 it("signale un lancement refusé et un player qui s'arrête en erreur", async () => {
   installed = [installedEntry(ours())];
   window.location.hash = "#/library/library";
@@ -625,9 +818,11 @@ it("joue directement un fichier d'une source dossier, sans installation", async 
       <LibraryProvider>
         <CompatProvider>
           <StoriesProvider>
-            <main>
-              <StoriesLibrary />
-            </main>
+            <DeviceProvider>
+              <main>
+                <StoriesLibrary />
+              </main>
+            </DeviceProvider>
           </StoriesProvider>
         </CompatProvider>
       </LibraryProvider>
@@ -1003,6 +1198,16 @@ it("réduit la fenêtre pendant la lecture si le paramètre est activé, puis la
   await waitFor(() => expect(windowApi.restoreWindow).toHaveBeenCalledTimes(1));
 });
 
+it("ne réduit jamais la fenêtre pour un player incrusté", async () => {
+  window.localStorage.setItem("flam-launcher.minimizeDuringPlay", "1");
+  await renderApp();
+  await send("player://started", { ...session(), embedded: true });
+  await send("player://exited", exited());
+  await screen.findByText("Lecture de « Les trois ours » terminée");
+  expect(windowApi.minimizeWindow).not.toHaveBeenCalled();
+  expect(windowApi.restoreWindow).not.toHaveBeenCalled();
+});
+
 it("ne touche pas à la fenêtre par défaut", async () => {
   await renderApp();
   await send("player://started", session());
@@ -1203,4 +1408,160 @@ it("la case de purge prévient que l'action est irréversible", async () => {
   fireEvent.click(within(dialog).getByRole("button", { name: "Supprimer" }));
   const confirm = await screen.findByRole("alertdialog");
   expect(within(confirm).getByText(/Cette action est irréversible/)).toBeVisible();
+});
+
+describe("suppression depuis la liste", () => {
+  it("propose Supprimer sur la carte, nommé par l'histoire, et confirme", async () => {
+    installed = [installedEntry(ours())];
+    window.location.hash = "#/library/library";
+    await renderApp();
+    const remove = screen.getByRole("button", { name: "Supprimer « Les trois ours »" });
+    fireEvent.click(remove);
+    const confirm = await screen.findByRole("alertdialog", {
+      name: "Supprimer « Les trois ours » ?",
+    });
+    expect(
+      within(confirm).getByRole("checkbox", { name: "Supprimer aussi la progression" }),
+    ).not.toBeChecked();
+    fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+    await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
+    expect(callsOf("library_remove")[0]?.args).toEqual({
+      uuid: "ours",
+      purgeSaves: false,
+    });
+    expect(await screen.findByText("« Les trois ours » a été supprimée")).toBeVisible();
+    expect(await screen.findByText("Aucune histoire installée")).toBeVisible();
+  });
+
+  it("annuler ne supprime rien et la case de purge revient décochée", async () => {
+    installed = [installedEntry(ours())];
+    window.location.hash = "#/library/library";
+    await renderApp();
+    const open = () =>
+      fireEvent.click(
+        screen.getByRole("button", { name: "Supprimer « Les trois ours »" }),
+      );
+    open();
+    let confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("checkbox"));
+    fireEvent.click(within(confirm).getByRole("button", { name: "Annuler" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(callsOf("library_remove")).toHaveLength(0);
+    open();
+    confirm = await screen.findByRole("alertdialog");
+    expect(within(confirm).getByRole("checkbox")).not.toBeChecked();
+  });
+
+  it("supprime aussi la progression quand la case est cochée", async () => {
+    installed = [installedEntry(ours())];
+    window.location.hash = "#/library/library";
+    await renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Supprimer « Les trois ours »" }));
+    const confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("checkbox"));
+    fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+    await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
+    expect(callsOf("library_remove")[0]?.args).toEqual({
+      uuid: "ours",
+      purgeSaves: true,
+    });
+  });
+
+  it("désactive Supprimer pendant la lecture de cette histoire", async () => {
+    installed = [installedEntry(ours())];
+    window.location.hash = "#/library/library";
+    await renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Jouer « Les trois ours »" }));
+    await waitFor(() => expect(callsOf("player_launch")).toHaveLength(1));
+    await send("player://started", session());
+    const remove = screen.getByRole("button", { name: "Supprimer « Les trois ours »" });
+    // aria-disabled (le bouton reste focalisable) avec sa raison, et le clic ne fait rien.
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(remove).toHaveAccessibleDescription(
+      "Suppression impossible : cette histoire est en cours de lecture.",
+    );
+    fireEvent.click(remove);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("échec de la suppression : message d'erreur, le bouton reste utilisable", async () => {
+    installed = [installedEntry(ours())];
+    failures.library_remove = { kind: "io", message: "disque illisible" };
+    window.location.hash = "#/library/library";
+    await renderApp();
+    const remove = screen.getByRole("button", { name: "Supprimer « Les trois ours »" });
+    remove.focus();
+    fireEvent.click(remove);
+    const confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+    expect(await screen.findByText("disque illisible")).toBeVisible();
+    await waitFor(() => expect(remove).not.toHaveAttribute("aria-disabled"));
+    expect(screen.getByRole("button", { name: "Supprimer « Les trois ours »" })).toBe(
+      remove,
+    );
+    expect(remove).toHaveFocus();
+    expect(screen.queryByRole("button", { name: /Installer|Télécharger/ })).toBeNull();
+  });
+
+  it("Échap ferme la confirmation sans rien supprimer", async () => {
+    installed = [installedEntry(ours())];
+    window.location.hash = "#/library/library";
+    await renderApp();
+    const remove = screen.getByRole("button", { name: "Supprimer « Les trois ours »" });
+    remove.focus();
+    fireEvent.click(remove);
+    await screen.findByRole("alertdialog");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(callsOf("library_remove")).toHaveLength(0);
+    expect(remove).toHaveFocus();
+  });
+
+  it("après une suppression réussie, le focus passe au bouton de réinstallation", async () => {
+    installed = [installedEntry(ours())];
+    catalogEntries = [ours()];
+    window.location.hash = "#/library/store";
+    await renderApp();
+    const remove = screen.getByRole("button", { name: "Supprimer « Les trois ours »" });
+    remove.focus();
+    fireEvent.click(remove);
+    const confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+    await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
+    const again = await screen.findByRole("button", {
+      name: /^(Télécharger|Installer) « Les trois ours »$/,
+    });
+    await waitFor(() => expect(again).toHaveFocus());
+  });
+
+  it("ne propose pas Supprimer sur une entrée non installée (source dossier)", async () => {
+    scanEntries = [
+      makeEntry({
+        source_id: "dossier",
+        entry_id: "dossier:conte",
+        uuid: "conte",
+        title: "Conte local",
+        kind: "flam_pk",
+        download_url: "C:\\Contes\\conte.plain.pk",
+      }),
+    ];
+    window.location.hash = "#/library/dossier";
+    render(
+      <ToastProvider>
+        <LibraryProvider>
+          <CompatProvider>
+            <StoriesProvider>
+              <DeviceProvider>
+                <main>
+                  <StoriesLibrary />
+                </main>
+              </DeviceProvider>
+            </StoriesProvider>
+          </CompatProvider>
+        </LibraryProvider>
+      </ToastProvider>,
+    );
+    await screen.findByRole("button", { name: "Installer « Conte local »" });
+    expect(screen.queryByRole("button", { name: /Supprimer/ })).toBeNull();
+  });
 });

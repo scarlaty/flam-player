@@ -10,7 +10,7 @@ commite, aucun contenu sous licence), deux jeux :
      MP3 MPEG1/2/2.5, ID3, trames cassees...). Index : `corpus.json`.
   2. la matrice de reechantillonnage : des PNG (modes x tailles sources impaires ou
      premieres x contenus varies) et, pour chacun, les operations d'image reelles du
-     convertisseur (scene 320x212, vignette 128x96, inventaire 128x128, titre 89x120,
+     convertisseur (scene 320x212, vignette 104x136, inventaire 128x128, titre 89x120,
      borne 2047). Index : `matrix.json`. Le resultat attendu (`.lif`) se compare octet
      a octet : `python_lif()` fournit celui de l'oracle Python.
 
@@ -611,7 +611,8 @@ def python_lif(png_bytes, op):
     if op == "scene":
         return T.png_to_scene_lif(png_bytes)
     if op == "thumb":
-        return T.png_to_thumb_lif(png_bytes)
+        # le port Rust ne fait que le mode `bandes` (le defaut Python est `flou`)
+        return T.png_to_thumb_lif(png_bytes, "bandes")
     if op == "inventory":
         return T.png_to_fit_lif(png_bytes, T.INV_W, T.INV_H)
     if op == "title":

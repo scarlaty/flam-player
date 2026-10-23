@@ -12,6 +12,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::device::carrier::CarrierConsent;
 use crate::sources::{validate_catalog_url, TELMI_STORE_URL};
 use crate::storage::{self, ConfigState, MigrationStep, Recovery};
 use crate::{AppError, AppResult};
@@ -46,6 +47,37 @@ pub enum Theme {
     System,
 }
 
+/// Remplissage des vignettes de bibliothèque (104 × 136, portrait) par le convertisseur
+/// (#279) : option `--thumb-fit` de `telmi2flam.py`.
+///
+/// Ensemble fermé : l'argument transmis au convertisseur ne vient jamais d'une chaîne libre
+/// ([`ThumbFit::as_arg`]). Une valeur inconnue (fichier édité à la main ou écrit par une autre
+/// version) retombe sur `Flou` au lieu de faire rejeter tout le fichier.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThumbFit {
+    /// Image agrandie et rognée au centre pour couvrir la vignette.
+    Rogner,
+    /// Image entière centrée, bandes transparentes.
+    Bandes,
+    /// Image entière centrée, fond = la même image agrandie et floutée (doit rester la dernière
+    /// variante pour `serde(other)`).
+    #[default]
+    #[serde(other)]
+    Flou,
+}
+
+impl ThumbFit {
+    /// Valeur de l'option `--thumb-fit` du convertisseur.
+    pub fn as_arg(self) -> &'static str {
+        match self {
+            Self::Flou => "flou",
+            Self::Rogner => "rogner",
+            Self::Bandes => "bandes",
+        }
+    }
+}
+
 /// Paramètres enregistrés (miroir de `Settings` dans `src/api/settings.ts`).
 ///
 /// Un chemin à `None` signifie « détection automatique » (voir [`resolve`]).
@@ -68,6 +100,13 @@ pub struct Settings {
     /// [`MAX_DOWNLOADS_LIMIT`]). Absent des fichiers écrits avant son ajout :
     /// [`DEFAULT_MAX_DOWNLOADS`] (`#[serde(default)]`, sans migration de schéma).
     pub max_downloads: u32,
+    /// Consentement à l'avertissement du mode carrier (Flam 1.x, #234), avec sa date. Écrit
+    /// seulement par `device_carrier_accept` : la valeur reçue par `settings_set` est ignorée
+    /// (l'enregistrée est conservée). Absent des anciens fichiers : `None`.
+    pub carrier_consent: Option<CarrierConsent>,
+    /// Remplissage des vignettes des histoires converties (#279). Absent des anciens fichiers :
+    /// `Flou` (`#[serde(default)]`, sans migration de schéma).
+    pub thumb_fit: ThumbFit,
 }
 
 /// Téléchargements simultanés par défaut.
@@ -85,6 +124,8 @@ impl Default for Settings {
             default_catalog_url: TELMI_STORE_URL.into(),
             theme: Theme::default(),
             max_downloads: DEFAULT_MAX_DOWNLOADS,
+            carrier_consent: None,
+            thumb_fit: ThumbFit::default(),
         }
     }
 }
@@ -290,6 +331,43 @@ pub fn detect_bundled_python(env: &Environment) -> Option<PathBuf> {
     (is_nonempty_file(&python) && dir.join("telmi2flam.py").is_file()).then_some(python)
 }
 
+/// Dossier de ffmpeg embarqué, à côté de l'exécutable (ressource Tauri `ffmpeg/` produite par
+/// `scripts/build-ffmpeg.ps1`, #209) : `ffmpeg.exe`, `ffprobe.exe` (statiques), les licences et `BUILD.txt`.
+pub const BUNDLED_FFMPEG_DIR: &str = "ffmpeg";
+
+/// Nom de l'exécutable ffmpeg.
+pub const FFMPEG_EXE: &str = if cfg!(windows) {
+    "ffmpeg.exe"
+} else {
+    "ffmpeg"
+};
+
+/// Cherche le ffmpeg LGPL embarqué : `<exe>/ffmpeg/ffmpeg.exe` sinon (développement)
+/// `build/ffmpeg/ffmpeg.exe` d'un dossier ancêtre. Aucun ffmpeg du `PATH` n'est jamais retenu
+/// (build GPL possible) et aucun processus n'est lancé. Le convertisseur la reçoit par
+/// `FLAM_FFMPEG` (rééchantillonnage audio, #46).
+pub fn ffmpeg_path(env: &Environment) -> Option<PathBuf> {
+    let exe_dir = env.exe_dir.as_deref()?;
+    let beside = exe_dir.join(BUNDLED_FFMPEG_DIR).join(FFMPEG_EXE);
+    if is_nonempty_file(&beside) {
+        return Some(beside);
+    }
+    if env.search_repo_build {
+        // `build-ffmpeg.ps1` écrit dans `apps/flam-launcher/build/ffmpeg` ; `build/ffmpeg` à la
+        // racine d'un ancêtre est aussi accepté.
+        return exe_dir.ancestors().find_map(|dir| {
+            [
+                dir.join("apps").join("flam-launcher").join("build"),
+                dir.join("build"),
+            ]
+            .into_iter()
+            .map(|base| base.join(BUNDLED_FFMPEG_DIR).join(FFMPEG_EXE))
+            .find(|candidate| is_nonempty_file(candidate))
+        });
+    }
+    None
+}
+
 /// Résultat de la recherche de Python.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PythonDetection {
@@ -457,6 +535,8 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
         default_catalog_url: validate_catalog_url(&settings.default_catalog_url)?,
         theme: settings.theme,
         max_downloads: settings.max_downloads,
+        carrier_consent: settings.carrier_consent,
+        thumb_fit: settings.thumb_fit,
     })
 }
 
@@ -482,11 +562,22 @@ impl SettingsStore {
     /// en automatique). Le fichier existant est d'abord relu par le même chemin que `load` :
     /// version future -> refus sans le toucher ; fichier corrompu -> sauvegardé en `*.bak`.
     /// Renvoie les paramètres normalisés.
+    ///
+    /// Le consentement du mode carrier n'est pas modifiable ici : la valeur enregistrée est
+    /// conservée quelle que soit celle reçue (voir [`Self::record_carrier_consent`]).
     pub fn update(&self, settings: Settings) -> AppResult<Settings> {
-        self.load()?;
-        let settings = validate(settings)?;
+        let stored = self.load()?;
+        let mut settings = validate(settings)?;
+        settings.carrier_consent = stored.carrier_consent;
         storage::write_json(&self.dir.join(FILE_NAME), &settings)?;
         Ok(settings)
+    }
+
+    /// Enregistre (ou retire, `None`) le consentement du mode carrier, sans toucher au reste.
+    pub fn record_carrier_consent(&self, consent: Option<CarrierConsent>) -> AppResult<()> {
+        let mut settings = self.load()?;
+        settings.carrier_consent = consent;
+        storage::write_json(&self.dir.join(FILE_NAME), &settings)
     }
 
     /// Paramètres, valeurs effectives, problèmes et restauration à signaler.
@@ -502,10 +593,16 @@ impl SettingsStore {
         })
     }
 
+    /// Dossier de cache effectif, **sans** le créer (lecture seule, pour les traitements qui n'ont
+    /// rien à faire si le cache n'existe pas encore, comme la purge des vignettes au démarrage).
+    pub fn cache_dir(&self, env: &Environment) -> AppResult<PathBuf> {
+        let (resolved, _) = resolve(&self.load()?, env);
+        Ok(PathBuf::from(resolved.cache_dir))
+    }
+
     /// Dossier de cache effectif, créé s'il n'existe pas.
     pub fn resolved_cache_dir(&self, env: &Environment) -> AppResult<PathBuf> {
-        let (resolved, _) = resolve(&self.load()?, env);
-        let dir = PathBuf::from(resolved.cache_dir);
+        let dir = self.cache_dir(env)?;
         std::fs::create_dir_all(&dir)?;
         Ok(dir)
     }
@@ -744,6 +841,45 @@ mod tests {
     }
 
     #[test]
+    fn remplissage_des_vignettes_ferme_et_par_defaut() {
+        // absent des anciens fichiers : flou
+        let old: Settings = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
+        assert_eq!(old.thumb_fit, ThumbFit::Flou);
+        assert_eq!(Settings::default().thumb_fit.as_arg(), "flou");
+        for (text, fit, arg) in [
+            ("flou", ThumbFit::Flou, "flou"),
+            ("rogner", ThumbFit::Rogner, "rogner"),
+            ("bandes", ThumbFit::Bandes, "bandes"),
+        ] {
+            let s: Settings =
+                serde_json::from_str(&format!(r#"{{"thumb_fit":"{text}"}}"#)).unwrap();
+            assert_eq!(s.thumb_fit, fit);
+            assert_eq!(fit.as_arg(), arg);
+            assert_eq!(
+                serde_json::to_value(fit).unwrap(),
+                serde_json::Value::String(text.into())
+            );
+        }
+        // valeur inconnue (ou tentative d'injection) : retombe sur flou, jamais transmise telle quelle
+        for bad in ["etirer", "flou --plain", "../x", ""] {
+            let s: Settings =
+                serde_json::from_value(serde_json::json!({ "thumb_fit": bad })).unwrap();
+            assert_eq!(s.thumb_fit, ThumbFit::Flou, "{bad:?}");
+            assert_eq!(s.thumb_fit.as_arg(), "flou");
+        }
+        // la valeur choisie survit à la validation
+        let saved = validate_with(
+            Settings {
+                thumb_fit: ThumbFit::Bandes,
+                ..Settings::default()
+            },
+            &[],
+        )
+        .unwrap();
+        assert_eq!(saved.thumb_fit, ThumbFit::Bandes);
+    }
+
+    #[test]
     fn mise_a_jour_valide_est_persistee_et_normalisee() {
         let dir = tempfile::tempdir().unwrap();
         let player = dir.path().join("p/FLAM-Player.EXE");
@@ -758,11 +894,14 @@ mod tests {
                 schema_version: 0,
                 theme: Theme::Dark,
                 max_downloads: 3,
+                carrier_consent: None,
+                thumb_fit: ThumbFit::Rogner,
             })
             .unwrap();
         assert_eq!(saved.schema_version, SCHEMA_VERSION);
         assert_eq!(saved.player_path, Some(player.display().to_string()));
         assert_eq!(saved.python_path, None);
+        assert_eq!(saved.thumb_fit, ThumbFit::Rogner);
         assert_eq!(store.load().unwrap(), saved);
     }
 
@@ -1042,6 +1181,69 @@ mod tests {
     }
 
     #[test]
+    fn ffmpeg_embarque_a_cote_de_l_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path());
+        assert_eq!(ffmpeg_path(&env), None);
+        let ffmpeg = dir
+            .path()
+            .join("app")
+            .join(BUNDLED_FFMPEG_DIR)
+            .join(FFMPEG_EXE);
+        touch(&ffmpeg);
+        assert_eq!(ffmpeg_path(&env), Some(ffmpeg.clone()));
+        // Fichier vide : pas un exécutable.
+        fs::write(&ffmpeg, "").unwrap();
+        assert_eq!(ffmpeg_path(&env), None);
+        // Jamais le PATH, même avec un ffmpeg dedans.
+        let in_path = dir.path().join("bin");
+        touch(&in_path.join(FFMPEG_EXE));
+        env.path_var = path_of(&[&in_path]);
+        assert_eq!(ffmpeg_path(&env), None);
+        env.exe_dir = None;
+        assert_eq!(ffmpeg_path(&env), None);
+    }
+
+    #[test]
+    fn ffmpeg_de_developpement_dans_build_d_un_ancetre() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path());
+        let dev = dir
+            .path()
+            .join("build")
+            .join(BUNDLED_FFMPEG_DIR)
+            .join(FFMPEG_EXE);
+        touch(&dev);
+        assert_eq!(ffmpeg_path(&env), None);
+        env.search_repo_build = true;
+        assert_eq!(ffmpeg_path(&env), Some(dev));
+        let beside = dir
+            .path()
+            .join("app")
+            .join(BUNDLED_FFMPEG_DIR)
+            .join(FFMPEG_EXE);
+        touch(&beside);
+        assert_eq!(ffmpeg_path(&env), Some(beside));
+    }
+
+    #[test]
+    fn ffmpeg_de_developpement_disposition_du_depot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path());
+        env.exe_dir = Some(dir.path().join("target").join("debug"));
+        env.search_repo_build = true;
+        let dev = dir
+            .path()
+            .join("apps")
+            .join("flam-launcher")
+            .join("build")
+            .join(BUNDLED_FFMPEG_DIR)
+            .join(FFMPEG_EXE);
+        touch(&dev);
+        assert_eq!(ffmpeg_path(&env), Some(dev));
+    }
+
+    #[test]
     fn python_embarque_prioritaire_sans_avertissement() {
         let dir = tempfile::tempdir().unwrap();
         let mut env = env_in(dir.path());
@@ -1176,6 +1378,18 @@ mod tests {
             view.settings.player_path,
             Some(player.display().to_string())
         );
+    }
+
+    #[test]
+    fn cache_dir_ne_cree_pas_le_dossier() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = env_in(dir.path());
+        let store = SettingsStore::new(dir.path());
+        let cache = store.cache_dir(&env).unwrap();
+        assert_eq!(cache, dir.path().join("cache-defaut"));
+        assert!(!cache.exists());
+        assert_eq!(store.resolved_cache_dir(&env).unwrap(), cache);
+        assert!(cache.is_dir());
     }
 
     #[test]

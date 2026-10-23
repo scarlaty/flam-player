@@ -54,7 +54,7 @@ fn too_big() -> AppError {
 /// installer un tel dossier `.plain` : le copier hors du dossier synchronisé avant de le
 /// réanalyser (« Toujours conserver sur cet appareil » n'est pas garanti de retirer le point de
 /// réanalyse : non vérifié sur appareil).
-fn is_link(meta: &std::fs::Metadata) -> bool {
+pub(crate) fn is_link(meta: &std::fs::Metadata) -> bool {
     if meta.file_type().is_symlink() {
         return true;
     }
@@ -71,7 +71,7 @@ fn is_link(meta: &std::fs::Metadata) -> bool {
 
 /// Ouvre un fichier **sans suivre** de lien, puis contrôle la poignée ouverte (une substitution
 /// entre la collecte et la lecture est ainsi détectée).
-fn open_no_follow(path: &Path) -> AppResult<File> {
+pub(crate) fn open_no_follow(path: &Path) -> AppResult<File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
@@ -94,6 +94,20 @@ fn open_no_follow(path: &Path) -> AppResult<File> {
         }
     }
     Ok(file)
+}
+
+/// Fichiers du dossier `.plain` `dir` tels que [`pack_plain_dir`] les empaquetterait : noms
+/// relatifs en `/` et chemins, mêmes refus (racine ou entrée en lien, profondeur, nombre et
+/// taille cumulée). Sert à l'empreinte de la source (#288), sans rien écrire.
+pub fn plain_dir_files(dir: &Path) -> AppResult<Vec<(String, PathBuf)>> {
+    let root = std::fs::symlink_metadata(dir)?;
+    if is_link(&root) || !root.is_dir() {
+        return Err(refused(dir));
+    }
+    let mut files = Vec::new();
+    let mut total = 0u64;
+    collect(dir, "", 0, &mut files, &mut total, MAX_TOTAL_BYTES)?;
+    Ok(files)
 }
 
 /// Empaquette le dossier `.plain` `dir` dans `output` (zip « stored », noms relatifs en `/`).

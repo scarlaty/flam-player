@@ -23,6 +23,7 @@ function makeView(overrides: Partial<SettingsView> = {}): SettingsView {
       default_catalog_url: "https://exemple.org/c.json",
       theme: "system",
       max_downloads: 2,
+      thumb_fit: "flou",
     },
     resolved: {
       player_path: "C:\\app\\flam-player.exe",
@@ -126,8 +127,7 @@ it("affiche les valeurs utilisées, les problèmes et la section À propos", asy
   expect(screen.getByText("alias du Store ignoré")).toBeInTheDocument();
   expect(screen.getByText(/embarque son propre Python/)).toBeInTheDocument();
   expect(await screen.findByText("flam-launcher — version 0.1.0")).toBeInTheDocument();
-  expect(screen.getByText("Licence MIT.")).toBeInTheDocument();
-  expect(screen.getByText(/Telmi Store et de TelmiSync/)).toBeInTheDocument();
+  expect(screen.getByText("Licence GPL v3.")).toBeInTheDocument();
   expect(screen.getByText("2 Ko occupés dans C:\\cache")).toBeInTheDocument();
 });
 
@@ -178,6 +178,7 @@ it("enregistre l'objet complet avec les chemins choisis (sélecteurs natifs)", a
     default_catalog_url: "https://exemple.org/c.json",
     theme: "system",
     max_downloads: 2,
+    thumb_fit: "flou",
   });
 });
 
@@ -287,6 +288,59 @@ it("un échec ancien n'annule pas un choix plus récent enregistré", async () =
   );
   expect(document.documentElement.dataset.theme).toBe("dark");
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("propose le remplissage des vignettes (flou par défaut) et l'enregistre", async () => {
+  await renderScreen();
+  expect(screen.getByRole("radio", { name: /Flou/ })).toBeChecked();
+  expect(
+    screen.getByRole("group", { name: "Vignettes : remplissage" }),
+  ).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("radio", { name: /Rogner/ }));
+
+  await waitFor(() => expect(callsOf("settings_set")).toHaveLength(1));
+  expect(callsOf("settings_set")[0]?.args.settings.thumb_fit).toBe("rogner");
+  await waitFor(() => expect(view.settings.thumb_fit).toBe("rogner"));
+  expect(screen.getByRole("radio", { name: /Rogner/ })).toBeChecked();
+
+  fireEvent.click(screen.getByRole("radio", { name: /Bandes/ }));
+  await waitFor(() => expect(view.settings.thumb_fit).toBe("bandes"));
+});
+
+it("bloque les vignettes pendant l'enregistrement du thème, et inversement", async () => {
+  await renderScreen();
+  const themeGroup = screen.getByRole("group", { name: "Thème" });
+  const thumbGroup = screen.getByRole("group", { name: "Vignettes : remplissage" });
+  pendingSets = [];
+
+  fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
+  await waitFor(() => expect(pendingSets).toHaveLength(1));
+  expect(thumbGroup).toBeDisabled();
+  expect(themeGroup).toBeEnabled();
+  pendingSets?.[0]?.resolve();
+  await waitFor(() => expect(thumbGroup).toBeEnabled());
+
+  fireEvent.click(screen.getByRole("radio", { name: /Rogner/ }));
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+  expect(themeGroup).toBeDisabled();
+  pendingSets?.[1]?.resolve();
+  await waitFor(() => expect(themeGroup).toBeEnabled());
+  // Chaque enregistrement conserve le réglage de l'autre.
+  expect(view.settings.theme).toBe("dark");
+  expect(view.settings.thumb_fit).toBe("rogner");
+});
+
+it("rétablit le remplissage précédent si l'enregistrement échoue", async () => {
+  await renderScreen();
+  failures.settings_set = { kind: "io", message: "disque plein" };
+
+  fireEvent.click(screen.getByRole("radio", { name: /Bandes/ }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Le remplissage des vignettes n'a pas pu être enregistré.",
+  );
+  expect(screen.getByRole("radio", { name: /Flou/ })).toBeChecked();
 });
 
 it("vide le cache seulement après confirmation (focus sur Annuler)", async () => {

@@ -348,8 +348,10 @@ async fn scenario() {
     let toolchain = Toolchain {
         cache_root: cache_root.clone(),
         python: tools.python.clone(),
+        ffmpeg: None,
         converter: Some(tools.converter.clone()),
         max_downloads: 2,
+        thumb_fit: Default::default(),
     };
     let resolver: Resolver = Arc::new(move || Ok(toolchain.clone()));
     let installer = InstallService::new(InstallOptions {

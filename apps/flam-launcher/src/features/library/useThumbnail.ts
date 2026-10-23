@@ -37,15 +37,18 @@ function fetchFromSource(source: Source, entry: StoryEntry): Promise<string> | n
  * Vignette d'une carte, chargée seulement quand la carte approche de l'écran (une source
  * peut compter des milliers d'histoires). Renvoie l'URL (ou `undefined`) et la fonction à poser
  * en `ref` sur l'élément observé. Sans `IntersectionObserver`, la vignette est demandée aussitôt.
+ * Avec `eager` (fiche ouverte, donc déjà à l'écran et sans élément à observer), elle l'est aussi.
  */
 export function useThumbnail(
   source: Source,
   entry: ListedEntry,
+  { eager = false }: { eager?: boolean } = {},
 ): {
   url: string | undefined;
   observe: (node: HTMLElement | null) => (() => void) | void;
 } {
-  const [visible, setVisible] = useState(typeof IntersectionObserver === "undefined");
+  const [observed, setVisible] = useState(typeof IntersectionObserver === "undefined");
+  const visible = eager || observed;
   const [loaded, setLoaded] = useState<{ key: string; url: string }>();
 
   const observe = useCallback((node: HTMLElement | null) => {

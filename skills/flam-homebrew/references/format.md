@@ -24,10 +24,10 @@ assembler sans le script.
 | `version` | `1` (octet ASCII, sans retour ligne). Le device accepte aussi `2`. |
 | `uuid.bin` | 16 octets bruts = `md5(uuid_seed)`. Identifie l'histoire sur le device (dossier `str/<UUID>/`, sauvegardes). |
 | `main.lua` | Bootstrap : définit `function setup()` (appelée par le firmware). |
-| `script/*.lua` | Framework runtime Lunii + modules du jeu. `require("x")` ne cherche que `script/x.lua`. **À plat** : pas de sous-dossier. |
+| `script/*.lua` | Runtime Lua du projet + modules du jeu. `require("x")` ne cherche que `script/x.lua`. **À plat** : pas de sous-dossier. |
 | `img/script/*.lif` | Icônes UI du framework (pause, flèches…). Réservé au runtime. |
 | `img/empty.lif` | Image transparente utilisée par défaut par plusieurs modules. |
-| `img/thumbnail.lif` | Vignette de la bibliothèque (128×96), optionnelle. |
+| `img/thumbnail.lif` | Vignette de la bibliothèque (104×136), optionnelle. |
 | `img/**.lif` | Images du jeu. `Global.load_image("x.lif")` charge `img/x.lif`. |
 | `sounds/*.mp3` + `.mp3map` | Audio. `Global.requestAudioPlay({path="x.mp3"})` lit `sounds/x.mp3`. |
 | `sounds/silent.mp3` (+map) | MP3 silencieux (~0,6 s) : audio de remplissage exigé par certains modules (ex. `list-choice`). |

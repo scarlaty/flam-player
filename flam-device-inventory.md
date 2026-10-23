@@ -1,6 +1,6 @@
 # Inventaire FLAM Device (D:)
 
-> Scan effectue le 2026-06-14
+> Scan effectue le 2026-06-14. Format détaillé et statuts : `docs/flam-device-format.md`.
 
 ## Structure racine
 

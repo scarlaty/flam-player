@@ -34,7 +34,7 @@ Les deux formats ne sont **pas** de même nature :
 | Conteneur | `.zip` (compressé) | `.zip` **stored** (sans compression), extension `.plain.pk` |
 | Logique | **déclarative** : `nodes.json` (graphe de scènes) | **programme Lua** : `main.lua` + `script/*.lua` |
 | Images | PNG 640×480 | `.lif` (Lunii Image Format, QOI-like RGB565) |
-| Audio | MP3 44100 Hz | MP3 + table de seek `.mp3map` (cadence interne 88200 Hz) |
+| Audio | MP3 (toute fréquence) | MP3 44100 Hz (rééchantillonné par ffmpeg si besoin) + table de seek `.mp3map` (cadence interne 88200 Hz) |
 | Métadonnées | `metadata.json` | `info.plain`, `version`, `uuid.bin` |
 
 TELMI décrit **des données** ; FLAM exécute **du code**. La conversion consiste donc à :
@@ -66,8 +66,8 @@ sounds/*.mp3map     # table de seek associée (optionnelle)
 ### API runtime exposée au Lua (firmware)
 
 Le firmware fournit **uniquement** ces globales (cf. `src/firmware/`, `src/bindings/`,
-`src/platform/sdl_audio.c`) — il **ne fournit pas** la bibliothèque UI Lunii
-(`Global`, `button`, etc.) : celle-ci est embarquée dans chaque histoire Lunii.
+`src/platform/sdl_audio.c`) — il **ne fournit pas** les modules UI
+(`Global`, `button`, etc.) : ceux-ci sont fournis par le runtime Lua du projet (`runtime/`), embarqué dans chaque paquet.
 Notre moteur n'en dépend donc pas.
 
 - `window` — conteneur LVGL de contenu (320×212 dans le sim : écran 320×240 − barre 28px)
@@ -220,8 +220,8 @@ tools/telmi2flam/
 │   ├── main.lua         # bootstrap (setup → title-card → menu Démarrer/Reprendre)
 │   └── story.lua        # BRANCH (logique de scènes ; rejoue nodes.lua via les modules Global)
 ├── runtime/
-│   ├── script/          # bibliothèque standard Lunii (global.lua + deps + modules)
-│   └── img/script/      # assets UI Lunii (flèches, play/pause, empty…)
+│   ├── script/          # runtime Lua du projet (global.lua + deps + modules)
+│   └── img/script/      # icônes UI du runtime (flèches, play/pause, empty…)
 ├── telmi2flam.py        # CLI de conversion
 ├── validate.py          # validation hors-GUI d'un .plain.pk généré
 ├── explore.py           # exploration automatique sans fenêtre dans flam-player
@@ -259,7 +259,7 @@ officielle *Cluedo* (`mine == real`) ; en 44,1 kHz la sortie est inchangée (tes
 
 ### `engine/main.lua` (bootstrap) + `engine/story.lua` (branch)
 
-Architecture **identique aux histoires Lunii officielles** (Cluedo) : tout passe par les
+Architecture attendue par le firmware de la Flam : tout passe par les
 modules `Global` (le device rend/gère les entrées via `Global.current_module` ; un moteur
 en `lv.*` direct marche au sim mais PAS sur device).
 
@@ -338,6 +338,7 @@ return {
 ```bash
 python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
                      [--allow-missing] [--selector carousel|image]
+                     [--thumb-fit flou|rogner|bandes]
                      [--progress-json] [--info]
 python telmi2flam.py --version
 ```
@@ -354,6 +355,14 @@ python telmi2flam.py --version
   (sinon **erreur**) ; un audio manquant est remplacé par `silent.mp3` (la scène garde
   sa transition de fin d'audio), une image manquante est omise.
 - `--selector` : affichage des choix multiples (`carousel` par défaut, ou `image`).
+- `--thumb-fit` : remplissage de la vignette `img/thumbnail.lif` (104×136, portrait),
+  `flou` par défaut :
+  - `flou` : image entière centrée ; le haut et le bas (ou les côtés) sont remplis par la
+    même image agrandie pour couvrir la vignette, puis floutée (flou gaussien) ;
+  - `rogner` : image agrandie ou réduite pour couvrir 104×136, rognée au centre ;
+  - `bandes` : image entière centrée sur fond transparent.
+
+  La sortie est déterministe (mêmes octets pour la même entrée, le même mode et la même version de Pillow).
 - `--progress-json` : sortie lisible par machine (voir « Sortie machine » ci-dessous).
 - `--info` : affiche les métadonnées de l'histoire en JSON, **sans convertir**.
 - `--version` : affiche une seule ligne sur stdout, `telmi2flam <version>` (ex.
@@ -482,9 +491,28 @@ avec le code 0, sans rien convertir ni écrire (`-o` ignoré) :
 `cover.png`). Les erreurs suivent les mêmes codes de sortie ; avec `--progress-json`,
 un événement `error` est aussi émis sur stdout.
 
-Dépendance : `pip install "Pillow>=10.0"`. Versions testées : Pillow 10.0.0, 11.0.0 et 12.2.0
+Dépendance obligatoire : `pip install "Pillow>=10.0"`. Versions testées : Pillow 10.0.0, 11.0.0 et 12.2.0
 (Python 3.12) ; la transparence `tRNS` des PNG est lue dans les octets du PNG, donc
 indépendante des changements de décodage de Pillow entre versions.
+
+### Rééchantillonnage audio (ffmpeg, dépendance optionnelle, #46)
+
+Sur la Flam, les MP3 qui ne sont pas à 44 100 Hz sont lus à la mauvaise vitesse (mesuré sur le
+firmware 1.15.14 : 24 et 22,05 kHz trop aigus et trop rapides, 48 kHz légèrement trop grave).
+Le convertisseur rééchantillonne donc **tout MP3 dont la fréquence n'est pas 44 100 Hz** à
+44 100 Hz, avec **ffmpeg** (encodeur `libmp3lame`) : même nombre de canaux, MP3 CBR, débit proche
+de celui de la source, borné à 64-192 kbps. Le `.mp3map` est généré sur le fichier rééchantillonné.
+Un MP3 déjà à 44 100 Hz est recopié sans changement. ffmpeg est lancé sans shell ni stdin, protocole
+`file` seul, dans un dossier temporaire, avec un délai maximal de 120 s.
+
+- Découverte de ffmpeg : variable d'environnement `FLAM_FFMPEG` (chemin de l'exécutable ; **vide =
+  rééchantillonnage désactivé**), sinon `ffmpeg` du `PATH`. Le launcher renseigne `FLAM_FFMPEG` avec
+  son ffmpeg LGPL embarqué (ou la laisse vide s'il n'y en a pas : jamais de ffmpeg du `PATH`).
+- Sans ffmpeg, ou si ffmpeg échoue (fichier illisible, délai dépassé, sortie inattendue) : le MP3
+  est recopié tel quel et l'avertissement `audio_samplerate` indique la fréquence et la raison.
+  La conversion ne s'interrompt jamais pour cela.
+- Un fichier rééchantillonné est signalé par une ligne `  i ...` sur stderr (ce n'est pas un
+  avertissement) et dans le résumé ; la version du convertisseur passe à 1.1.0.
 
 Le CLI :
 1. lit `metadata.json` + `nodes.json` dans le zip
@@ -496,7 +524,7 @@ Le CLI :
    et repli sur `empty.lif`) ;
 3. génère `script/nodes.lua` (table de données, dont `totalChapters`, voir plus bas) +
    embarque `engine/main.lua` (→ `main.lua`), `engine/story.lua` (→ `script/story.lua`)
-   et le runtime Lunii (`runtime/` → `script/`, `img/script/`) ;
+   et le runtime du projet (`runtime/` → `script/`, `img/script/`) ;
 4. écrit `info.plain` (titre/sous-titre aplatis sur une ligne) / `version` / `uuid.bin`
    (= MD5 de l'UUID TELMI ; sans uuid, MD5 du contenu de `nodes.json` + avertissement) /
    `img/thumbnail.lif` ;
@@ -519,7 +547,7 @@ qu'une même partie peut visiter avant la fin d'histoire. C'est une borne haute 
 conditions peuvent fermer des chemins) : la jauge reste dans [0, 100] et atteint 100 %
 sur la branche la plus longue. Une scène non atteignable ne compte pas.
 Pourquoi pas une jauge par branche : `totalChapters` est une valeur unique passée à
-`progression.create` (bibliothèque Lunii embarquée). Une jauge par composante demanderait
+`progression.create` (runtime du projet embarqué). Une jauge par composante demanderait
 de modifier le moteur et le `progressionManager`, sans garantie de compatibilité avec le
 firmware officiel.
 
@@ -533,8 +561,9 @@ fichier reste dans le dossier `.plain`.
 **Images** : scènes ajustées sans déformation dans 320×212 (zone d'affichage sous le
 bandeau de 28 px) et centrées sur un canevas transparent de 320×212 (une image TELMI
 640×480 donne 283×212 avec des bandes de 18 et 19 px) ; icônes d'inventaire ≤ 128×128 (fichier distinct
-`<nom>_inv.lif` si l'image sert aussi à une scène) ; vignette 128×96 (une couverture
-portrait est centrée sur un canevas paysage) ; une image portrait de plus de 64 px est
+`<nom>_inv.lif` si l'image sert aussi à une scène) ; vignette 104×136 (portrait, taille des vignettes
+officielles mesurée sur une Flam réelle ; remplissage réglable par `--thumb-fit`, voir
+« Utilisation ») ; une image portrait de plus de 64 px est
 complétée en carré transparent pour ne pas déclencher l'heuristique de transposition du
 décodeur.
 La clé de transparence `tRNS` est appliquée pour toutes les profondeurs (gris 1/2/4/8/16
@@ -999,7 +1028,7 @@ nécessaires pour que l'histoire **charge sur le device**) :
   échoue → `setup()` jamais défini → l'histoire ne charge pas. ⇒ tous les `require`
   (dont `require("nodes")`) sont faits **dans `setup()`**.
 - **`require()` résolu uniquement depuis `script/`** ⇒ `nodes.lua` est en `script/nodes.lua`.
-- **Bibliothèque Lunii embarquée** (`global.lua`, `progressionManager.lua` + deps, modules
+- **Runtime du projet embarqué** (`global.lua`, `progressionManager.lua` + deps, modules
   `audio-player`, `carousel`, `image-choice`, `list-choice`, `title-card`) dans `script/`.
 - **`title-card` avance via `back_callback()`** (fin d'audio) : `progression.create{
   backBehavior = Start }` règle ce callback sur le menu Start avant `IntroCard()`.

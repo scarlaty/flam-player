@@ -45,8 +45,19 @@ export interface FolderChanged {
  * `folder_unavailable` si le dossier a disparu.
  */
 export function watchFolder(sourceId: string, enabled: boolean): Promise<void> {
-  return invokeCommand<void>("folder_watch", { sourceId, enabled });
+  // Appels exécutés l'un après l'autre : un démontage rapide de l'écran (arrêt) ne doit pas
+  // doubler le démarrage correspondant, ni un remontage (démarrage) précéder l'arrêt précédent.
+  const run = watchQueue.then(() =>
+    invokeCommand<void>("folder_watch", { sourceId, enabled }),
+  );
+  watchQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
+
+let watchQueue: Promise<void> = Promise.resolve();
 
 /** Écoute `folder://changed`. Renvoie la fonction de désabonnement. */
 export function onFolderChanged(

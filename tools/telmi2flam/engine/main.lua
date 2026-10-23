@@ -1,13 +1,13 @@
 -- ============================================================================
 -- main.lua — Bootstrap FLAM pour histoires converties depuis TELMI.
 --
--- Reproduit le flux des histoires Lunii officielles (Cluedo) :
+-- Suit le flux habituel d'une histoire FLAM :
 --   setup() -> title-card -> Start() (menu Demarrer / Reprendre / Inventaire)
 --   -> loadBranch("story") -> current_branch[<noeud>]()
 --
 -- La logique de scenes est dans le branch script/story.lua. La reprise utilise
 -- les champs STANDARD (state.current_fun + state.currentBranchName) sauves par
--- Global.progression.setProgression, exactement comme les histoires officielles.
+-- Global.progression.setProgression, comme le prevoit le firmware.
 -- ============================================================================
 
 -- Pas de require() au top-level (le firmware installe le searcher apres le
@@ -128,7 +128,7 @@ function LoadStartFunction()
     Global.current_branch["__start"]()
 end
 
--- Reprise : recharge le branch sauve et rejoue le noeud courant (comme Cluedo).
+-- Reprise : recharge le branch sauve et rejoue le noeud courant.
 function LoadCurrentFunction()
     Global.loadBranch(state.currentBranchName or "story")
     -- story.resume rejoue le noeud sauve selon son type (scene / action) : pas de

@@ -243,7 +243,7 @@ fn json_u32(object: &Value, key: &str) -> Option<u32> {
 }
 
 /// Date UTC ISO 8601 (`2026-10-15T08:30:00Z`) à partir d'un instant.
-fn iso8601(time: SystemTime) -> Option<String> {
+pub(crate) fn iso8601(time: SystemTime) -> Option<String> {
     let secs = i64::try_from(time.duration_since(UNIX_EPOCH).ok()?.as_secs()).ok()?;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Jour civil depuis le nombre de jours écoulés depuis 1970-01-01 (algorithme de H. Hinnant).
@@ -335,6 +335,9 @@ struct Parsed {
     story: StoryEntry,
     has_thumb: bool,
     warnings: Vec<String>,
+    /// Contenu du fichier `version` d'une histoire FLAM (entier), utilisé seulement pour
+    /// choisir entre deux copies du même `uuid` ; `story.version` reste `None`.
+    flam_version: Option<u32>,
 }
 
 fn telmi_entry(source_id: &str, path: &Path, info: &FileInfo) -> Result<Parsed, String> {
@@ -379,6 +382,7 @@ fn telmi_entry(source_id: &str, path: &Path, info: &FileInfo) -> Result<Parsed, 
         story,
         has_thumb,
         warnings: Vec::new(),
+        flam_version: None,
     })
 }
 
@@ -424,6 +428,13 @@ fn flam_entry(
     }
     let uuid: String = uuid_bin.iter().map(|b| format!("{b:02x}")).collect();
     let has_thumb = files.stat(LIF_NAME).is_some();
+    // Illisible ou non numérique : ignoré (n'empêche pas l'histoire).
+    let flam_version = files
+        .read("version", 32)
+        .ok()
+        .flatten()
+        .and_then(|raw| utf8_text(&raw, "version").ok())
+        .and_then(|text| text.trim().parse::<u32>().ok());
 
     let story = StoryEntry {
         entry_id: String::new(),
@@ -448,6 +459,7 @@ fn flam_entry(
         story,
         has_thumb,
         warnings: Vec::new(),
+        flam_version,
     })
 }
 
@@ -589,6 +601,54 @@ fn parse_one(
     parsed
 }
 
+/// Histoire analysée avec son chemin, avant le regroupement des doublons.
+struct Candidate {
+    parsed: Parsed,
+    path: PathBuf,
+    kind: StoryKind,
+    shown: String,
+}
+
+/// `true` si `a` doit être préférée à `b` (deux copies FLAM du même `uuid`) : version la plus
+/// élevée (inconnue < connue), puis `.plain.pk` avant `.plain`, puis modification la plus
+/// récente (ISO 8601 UTC, comparable en texte), puis `entry_id` le plus petit (déterministe).
+fn flam_preferred(a: &Candidate, b: &Candidate) -> bool {
+    use std::cmp::Ordering;
+    let rank = |c: &Candidate| (c.parsed.flam_version, c.kind == StoryKind::FlamPk);
+    let order = rank(a)
+        .cmp(&rank(b))
+        .then_with(|| a.parsed.story.updated_at.cmp(&b.parsed.story.updated_at))
+        .then_with(|| b.parsed.story.entry_id.cmp(&a.parsed.story.entry_id));
+    order == Ordering::Greater
+}
+
+/// Regroupe, dans une même source, les histoires FLAM (`.plain`, `.plain.pk`) de même `uuid`
+/// (insensible à la casse) en une seule entrée ; l'ordre d'apparition est conservé (celui de
+/// la meilleure copie à la place de la première). Les archives Telmi ne sont pas regroupées.
+fn dedupe_flam(candidates: Vec<Candidate>) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = Vec::with_capacity(candidates.len());
+    let mut by_uuid: HashMap<String, usize> = HashMap::new();
+    for cand in candidates {
+        if cand.kind == StoryKind::TelmiZip {
+            out.push(cand);
+            continue;
+        }
+        let key = cand.parsed.story.uuid.to_lowercase();
+        match by_uuid.get(&key) {
+            Some(&i) => {
+                if flam_preferred(&cand, &out[i]) {
+                    out[i] = cand;
+                }
+            }
+            None => {
+                by_uuid.insert(key, out.len());
+                out.push(cand);
+            }
+        }
+    }
+    out
+}
+
 /// Analyse `root` (non récursif par défaut) : histoires, avertissements et références de
 /// vignettes (entry_id -> archive).
 fn scan_folder(
@@ -617,30 +677,20 @@ fn scan_folder(
         .0
         .retain(|p, _| !p.starts_with(root) || present.contains(p));
 
+    let mut candidates = Vec::new();
     for (path, kind) in &found {
         let shown = path.to_string_lossy().into_owned();
         match parse_one(source_id, path, *kind, cache) {
             Ok(mut parsed) => {
                 // Le cache de métadonnées est partagé entre sources : identité fixée ici.
-                let entry_id = entry_id_of(source_id, root, path);
                 parsed.story.source_id = source_id.to_string();
-                parsed.story.entry_id = entry_id.clone();
-                if parsed.has_thumb {
-                    parsed.story.thumb_url = Some(entry_id.clone());
-                    refs.insert(
-                        entry_id,
-                        ThumbRef {
-                            path: path.clone(),
-                            kind: *kind,
-                        },
-                    );
-                }
-                scan.entries.push(parsed.story);
-                scan.warnings
-                    .extend(parsed.warnings.into_iter().map(|message| ScanWarning {
-                        path: shown.clone(),
-                        message,
-                    }));
+                parsed.story.entry_id = entry_id_of(source_id, root, path);
+                candidates.push(Candidate {
+                    parsed,
+                    path: path.clone(),
+                    kind: *kind,
+                    shown,
+                });
             }
             Err(message) => {
                 tracing::warn!("{shown} ignoré : {message}");
@@ -650,6 +700,26 @@ fn scan_folder(
                 });
             }
         }
+    }
+
+    for Candidate {
+        mut parsed,
+        path,
+        kind,
+        shown,
+    } in dedupe_flam(candidates)
+    {
+        let entry_id = parsed.story.entry_id.clone();
+        if parsed.has_thumb {
+            parsed.story.thumb_url = Some(entry_id.clone());
+            refs.insert(entry_id, ThumbRef { path, kind });
+        }
+        scan.entries.push(parsed.story);
+        scan.warnings
+            .extend(parsed.warnings.into_iter().map(|message| ScanWarning {
+                path: shown.clone(),
+                message,
+            }));
     }
     Ok((scan, refs))
 }
@@ -699,6 +769,8 @@ struct Inner {
     thumbs: HashMap<String, ThumbRefs>,
     /// Entrées du dernier scan de chaque source, par `entry_id` (installation, #15).
     entries: HashMap<String, HashMap<String, StoryEntry>>,
+    /// Le dernier scan de chaque source était-il récursif ?
+    recursive: HashMap<String, bool>,
 }
 
 /// Mémoire du dernier scan de chaque source et cache de métadonnées (en mémoire).
@@ -712,6 +784,27 @@ impl FolderState {
 
     /// Analyse un dossier et mémorise les entrées pour `thumbnail`.
     pub fn scan(&self, source_id: &str, root: &Path, recursive: bool) -> AppResult<FolderScan> {
+        self.scan_with(source_id, root, recursive, true)
+    }
+
+    /// Analyse sans toucher à ce que l'écran voit (entrées, vignettes, option récursive) : seul
+    /// le cache de métadonnées est mis à jour. Sert à résoudre une entrée pour l'installation.
+    fn scan_detached(
+        &self,
+        source_id: &str,
+        root: &Path,
+        recursive: bool,
+    ) -> AppResult<FolderScan> {
+        self.scan_with(source_id, root, recursive, false)
+    }
+
+    fn scan_with(
+        &self,
+        source_id: &str,
+        root: &Path,
+        recursive: bool,
+        commit: bool,
+    ) -> AppResult<FolderScan> {
         // Copie de travail du cache : l'analyse (longue) ne tient pas le verrou et plusieurs
         // scans simultanés se partagent le cache fusionné à la fin.
         let mut meta = self.lock().meta.clone();
@@ -723,6 +816,9 @@ impl FolderState {
             .retain(|p, _| !p.starts_with(root) || meta.0.contains_key(p));
         inner.meta.0.extend(meta.0);
         let (scan, refs) = result?;
+        if !commit {
+            return Ok(scan);
+        }
         inner.thumbs.insert(source_id.to_string(), refs);
         let entries = scan
             .entries
@@ -730,7 +826,66 @@ impl FolderState {
             .map(|e| (e.entry_id.clone(), e.clone()))
             .collect();
         inner.entries.insert(source_id.to_string(), entries);
+        inner.recursive.insert(source_id.to_string(), recursive);
         Ok(scan)
+    }
+
+    /// Le dernier scan de `source_id` était-il récursif ? `None` : jamais analysée.
+    pub fn last_recursive(&self, source_id: &str) -> Option<bool> {
+        self.lock().recursive.get(source_id).copied()
+    }
+
+    /// Retrouve `entry_id` d'une source dossier pour l'installer (reprise au démarrage,
+    /// installation depuis l'écran). Bloquant.
+    ///
+    /// - Sans `expected` (reprise), le dernier scan sert s'il a l'entrée.
+    /// - Avec `expected` (histoire attendue, fournie par toute installation depuis l'écran), le
+    ///   dossier est toujours réanalysé : une entrée du dernier scan peut être périmée.
+    ///
+    /// L'analyse se fait dans les deux modes, en commençant par l'option récursive du dernier
+    /// scan connu (sans sous-dossiers si aucun) : l'entrée est cherchée par `entry_id` dans
+    /// chacun (une copie à la racine peut être écartée en récursif au profit d'une autre).
+    /// Seulement si aucun ne l'a, `expected` retrouve l'entrée par `uuid` (copie écartée comme
+    /// doublon d'un `.plain` installé), en préférant le premier mode. Ces analyses ne modifient
+    /// pas ce que l'écran voit (entrées, vignettes, option récursive du dernier scan).
+    pub fn scan_for_entry(
+        &self,
+        source_id: &str,
+        root: &Path,
+        entry_id: &str,
+        expected: Option<&str>,
+    ) -> AppResult<StoryEntry> {
+        if expected.is_none() {
+            if let Ok(entry) = self.entry(source_id, entry_id) {
+                return Ok(entry);
+            }
+        }
+        let first = self.last_recursive(source_id).unwrap_or(false);
+        let mut scans = Vec::new();
+        for recursive in [first, !first] {
+            let scan = self.scan_detached(source_id, root, recursive)?;
+            if let Some(entry) = scan.entries.iter().find(|e| e.entry_id == entry_id) {
+                return Ok(entry.clone());
+            }
+            scans.push(scan);
+        }
+        expected
+            .and_then(|uuid| {
+                scans
+                    .iter()
+                    .find_map(|scan| {
+                        scan.entries
+                            .iter()
+                            .filter(|e| e.uuid == uuid)
+                            .min_by(|a, b| a.entry_id.cmp(&b.entry_id))
+                    })
+                    .cloned()
+            })
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "histoire inconnue dans le dernier scan : {entry_id}"
+                ))
+            })
     }
 
     /// Entrée `entry_id` du dernier scan de `source_id` (jamais un chemin libre venu du front).
@@ -879,6 +1034,10 @@ mod tests {
 
     /// 16 octets d'uuid, `info.plain` et une vignette LIF 1x1 valide.
     fn flam_files(title: &str) -> Vec<(&'static str, Vec<u8>)> {
+        flam_files_with(title, "1", (0u8..16).collect())
+    }
+
+    fn flam_files_with(title: &str, version: &str, uuid: Vec<u8>) -> Vec<(&'static str, Vec<u8>)> {
         let lif = {
             let mut v = b"liff".to_vec();
             v.extend_from_slice(&1u32.to_be_bytes());
@@ -893,14 +1052,18 @@ mod tests {
                 "info.plain",
                 format!("{title}\nsous-titre\n000000\n{title}").into_bytes(),
             ),
-            ("version", b"1".to_vec()),
-            ("uuid.bin", (0u8..16).collect()),
+            ("version", version.as_bytes().to_vec()),
+            ("uuid.bin", uuid),
             ("img/thumbnail.lif", lif),
         ]
     }
 
     fn write_plain_dir(dir: &Path, title: &str) {
-        for (name, data) in flam_files(title) {
+        write_files_dir(dir, flam_files(title));
+    }
+
+    fn write_files_dir(dir: &Path, files: Vec<(&'static str, Vec<u8>)>) {
+        for (name, data) in files {
             let path = dir.join(name);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, data).unwrap();
@@ -908,7 +1071,10 @@ mod tests {
     }
 
     fn write_plain_pk(path: &Path, title: &str) {
-        let files = flam_files(title);
+        write_files_pk(path, flam_files(title));
+    }
+
+    fn write_files_pk(path: &Path, files: Vec<(&'static str, Vec<u8>)>) {
         let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, d)| (*n, d.as_slice())).collect();
         write_zip(path, CompressionMethod::Stored, &refs);
     }
@@ -1100,7 +1266,11 @@ mod tests {
             &dir.path().join("Été.1A2B3C4D.plain"),
             "Ça va être « génial »",
         );
-        write_plain_pk(&dir.path().join("histoire.1A2B3C4D.plain.pk"), "Titre pk");
+        // Autre uuid que le `.plain` : deux histoires distinctes (voir les tests de doublons).
+        write_files_pk(
+            &dir.path().join("histoire.1A2B3C4D.plain.pk"),
+            flam_files_with("Titre pk", "1", vec![9; 16]),
+        );
         let (scan, ctx) = scan(dir.path(), false);
         assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
         assert_eq!(scan.entries.len(), 2);
@@ -1344,17 +1514,242 @@ mod tests {
         assert!(ctx.thumb(&scan.entries[0]).is_ok());
     }
 
+    /// Une seule entrée, nommée `titre` : renvoie (entrée, ctx).
+    fn scan_one(root: &Path, recursive: bool, titre: &str) -> (StoryEntry, Ctx) {
+        let (scan, ctx) = scan(root, recursive);
+        assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
+        assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
+        assert_eq!(scan.entries[0].title, titre);
+        (scan.entries[0].clone(), ctx)
+    }
+
     #[test]
-    fn plain_et_pk_de_meme_uuid_ont_deux_entry_id_stables() {
+    fn plain_et_pk_de_meme_uuid_donnent_une_entree_pk_stable() {
         let dir = tempfile::tempdir().unwrap();
-        write_plain_dir(&dir.path().join("x.plain"), "Titre");
-        write_plain_pk(&dir.path().join("x.plain.pk"), "Titre");
-        let (first, ctx) = scan(dir.path(), false);
-        assert_eq!(first.entries.len(), 2);
-        assert_eq!(first.entries[0].uuid, first.entries[1].uuid);
-        assert_ne!(first.entries[0].entry_id, first.entries[1].entry_id);
+        write_plain_dir(&dir.path().join("x.plain"), "Titre plain");
+        write_plain_pk(&dir.path().join("x.plain.pk"), "Titre pk");
+        let (first, ctx) = scan_one(dir.path(), false, "Titre pk");
+        assert_eq!(first.kind, StoryKind::FlamPk);
+        assert!(first.download_url.ends_with("x.plain.pk"));
+        assert!(first.size.is_some());
+        // Vignette cohérente avec l'entrée retenue.
+        assert!(ctx.thumb(&first).is_ok());
         let second = ctx.state.scan("src", dir.path(), false).unwrap();
-        assert_eq!(first.entries, second.entries);
+        assert_eq!(second.entries, vec![first.clone()]);
+        // Le `.plain` écarté n'est plus accessible par son ancien identifiant.
+        let plain_id = entry_id_of("src", dir.path(), &dir.path().join("x.plain"));
+        assert_ne!(plain_id, first.entry_id);
+        assert_eq!(
+            ctx.state.entry("src", &plain_id).unwrap_err().kind(),
+            "not_found"
+        );
+    }
+
+    #[test]
+    fn plain_seul_reste_une_entree() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plain_dir(&dir.path().join("x.plain"), "Titre plain");
+        let (entry, ctx) = scan_one(dir.path(), false, "Titre plain");
+        assert_eq!(entry.kind, StoryKind::FlamPlain);
+        assert!(ctx.thumb(&entry).is_ok());
+    }
+
+    #[test]
+    fn versions_differentes_la_plus_elevee_gagne_meme_en_plain() {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid: Vec<u8> = (0u8..16).collect();
+        write_files_dir(
+            &dir.path().join("x.plain"),
+            flam_files_with("Version 10", "10", uuid.clone()),
+        );
+        write_files_pk(
+            &dir.path().join("x.plain.pk"),
+            flam_files_with("Version 2", "2", uuid),
+        );
+        let (entry, ctx) = scan_one(dir.path(), false, "Version 10");
+        assert_eq!(entry.kind, StoryKind::FlamPlain);
+        assert!(ctx.thumb(&entry).is_ok());
+    }
+
+    #[test]
+    fn meme_uuid_dans_deux_sous_dossiers_une_seule_entree() {
+        let dir = tempfile::tempdir().unwrap();
+        for sub in ["b", "a"] {
+            std::fs::create_dir(dir.path().join(sub)).unwrap();
+            write_plain_pk(
+                &dir.path().join(sub).join("x.plain.pk"),
+                &format!("Copie {sub}"),
+            );
+        }
+        let (scan, ctx) = scan(dir.path(), true);
+        assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
+        let again = ctx.state.scan("src", dir.path(), true).unwrap();
+        assert_eq!(again.entries, scan.entries);
+        // Non récursif : les sous-dossiers ne sont pas parcourus.
+        let flat = ctx.state.scan("src", dir.path(), false).unwrap();
+        assert!(flat.entries.is_empty());
+    }
+
+    #[test]
+    fn scan_for_entry_retrouve_la_copie_de_la_racine_ecartee_en_recursif() {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid: Vec<u8> = (0u8..16).collect();
+        write_files_dir(
+            &dir.path().join("x.plain"),
+            flam_files_with("Racine", "1", uuid.clone()),
+        );
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        write_files_pk(
+            &dir.path().join("sub").join("x.plain.pk"),
+            flam_files_with("Sous-dossier", "2", uuid),
+        );
+        // Ce que l'écran a vu (non récursif) : la copie de la racine.
+        let (seen, _) = scan_one(dir.path(), false, "Racine");
+        // Récursif, la copie du sous-dossier (version plus élevée) l'emporte.
+        let (deep, _) = scan_one(dir.path(), true, "Sous-dossier");
+        assert_ne!(seen.entry_id, deep.entry_id);
+
+        // Après un redémarrage (aucun scan en mémoire), les deux identifiants se retrouvent.
+        let fresh = FolderState::default();
+        let found = fresh
+            .scan_for_entry("src", dir.path(), &seen.entry_id, None)
+            .unwrap();
+        assert_eq!(found, seen);
+        let fresh = FolderState::default();
+        let found = fresh
+            .scan_for_entry("src", dir.path(), &deep.entry_id, None)
+            .unwrap();
+        assert_eq!(found, deep);
+        let fresh = FolderState::default();
+        assert_eq!(
+            fresh
+                .scan_for_entry("src", dir.path(), "src:0000000000000000", None)
+                .unwrap_err()
+                .kind(),
+            "not_found"
+        );
+    }
+
+    /// Copie `.plain` dont le fichier `version` vaut `raw`, face à un `.plain.pk` de version `2`.
+    fn gagnant_contre_pk_v2(raw: &[u8]) -> (StoryEntry, Vec<ScanWarning>) {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid: Vec<u8> = (0u8..16).collect();
+        let mut plain = flam_files_with("Plain", "0", uuid.clone());
+        for (name, content) in &mut plain {
+            if *name == "version" {
+                *content = raw.to_vec();
+            }
+        }
+        write_files_dir(&dir.path().join("x.plain"), plain);
+        write_files_pk(
+            &dir.path().join("x.plain.pk"),
+            flam_files_with("Pk", "2", uuid),
+        );
+        let (scan, _ctx) = scan(dir.path(), false);
+        assert_eq!(scan.entries.len(), 1);
+        (scan.entries[0].clone(), scan.warnings)
+    }
+
+    #[test]
+    fn fichier_version_avec_bom_est_lu() {
+        // Avec BOM : « 10 » est lu, la copie `.plain` (10) l'emporte sur le `.pk` (2).
+        let (entry, _) = gagnant_contre_pk_v2(b"\xEF\xBB\xBF10\n");
+        assert_eq!(entry.title, "Plain");
+        assert_eq!(entry.kind, StoryKind::FlamPlain);
+    }
+
+    #[test]
+    fn fichier_version_non_numerique_est_ignore() {
+        // Version illisible : inconnue < connue, le `.pk` (2) l'emporte, sans avertissement.
+        let (entry, warnings) = gagnant_contre_pk_v2(b"abc");
+        assert_eq!(entry.title, "Pk");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn pk_invalide_et_plain_valide_de_meme_nom() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plain_dir(&dir.path().join("x.plain"), "Valide");
+        std::fs::write(dir.path().join("x.plain.pk"), b"pas une archive").unwrap();
+        let (scan, _ctx) = scan(dir.path(), false);
+        assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
+        assert_eq!(scan.entries[0].title, "Valide");
+        assert_eq!(scan.warnings.len(), 1, "{:?}", scan.warnings);
+        assert!(scan.warnings[0].path.ends_with("x.plain.pk"));
+    }
+
+    #[test]
+    fn uuid_differents_restent_distincts() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plain_dir(&dir.path().join("a.plain"), "A");
+        write_files_pk(
+            &dir.path().join("b.plain.pk"),
+            flam_files_with("B", "1", vec![7; 16]),
+        );
+        let (scan, _ctx) = scan(dir.path(), false);
+        assert_eq!(scan.entries.len(), 2);
+    }
+
+    #[test]
+    fn choix_deterministe_entre_copies() {
+        fn cand(id: &str, kind: StoryKind, version: Option<u32>, date: &str) -> Candidate {
+            let story = StoryEntry {
+                entry_id: id.into(),
+                source_id: "src".into(),
+                uuid: "AB".into(),
+                version: None,
+                title: id.into(),
+                description: None,
+                age: None,
+                category: None,
+                author: None,
+                voice: None,
+                license: None,
+                thumb_url: None,
+                download_url: id.into(),
+                size: None,
+                updated_at: Some(date.into()),
+                download_count: None,
+                kind,
+            };
+            Candidate {
+                parsed: Parsed {
+                    story,
+                    has_thumb: false,
+                    warnings: vec![],
+                    flam_version: version,
+                },
+                path: PathBuf::from(id),
+                kind,
+                shown: id.into(),
+            }
+        }
+        let pk = |id, v, d| cand(id, StoryKind::FlamPk, v, d);
+        let plain = |id, v, d| cand(id, StoryKind::FlamPlain, v, d);
+        let win = |list: Vec<Candidate>| {
+            let out = dedupe_flam(list);
+            assert_eq!(out.len(), 1);
+            out[0].parsed.story.entry_id.clone()
+        };
+        // Même version : le .pk, même plus ancien.
+        let l = vec![plain("p", Some(1), "2026-02"), pk("k", Some(1), "2026-01")];
+        assert_eq!(win(l), "k");
+        // Version plus élevée.
+        let l = vec![pk("k", Some(1), "2026-02"), plain("p", Some(2), "2026-01")];
+        assert_eq!(win(l), "p");
+        // Version inconnue < version connue.
+        let l = vec![pk("k", None, "2026-02"), plain("p", Some(1), "2026-01")];
+        assert_eq!(win(l), "p");
+        // Même version et même type : le plus récent, quel que soit l'ordre.
+        let l = vec![pk("a", Some(1), "2026-01"), pk("b", Some(1), "2026-02")];
+        assert_eq!(win(l), "b");
+        let l = vec![pk("b", Some(1), "2026-02"), pk("a", Some(1), "2026-01")];
+        assert_eq!(win(l), "b");
+        // Égalité parfaite : entry_id le plus petit, quel que soit l'ordre.
+        let l = vec![pk("b", Some(1), "d"), pk("a", Some(1), "d")];
+        assert_eq!(win(l), "a");
+        let l = vec![pk("a", Some(1), "d"), pk("b", Some(1), "d")];
+        assert_eq!(win(l), "a");
     }
 
     #[test]
@@ -1519,6 +1914,102 @@ mod tests {
         }
         let (scan, _ctx) = scan(dir.path(), true);
         assert!(scan.entries.is_empty(), "{:?}", scan.entries);
+    }
+
+    // --- Résolution d'une entrée pour l'installation (#297) ---
+
+    #[test]
+    fn mise_a_jour_reanalyse_et_retrouve_une_entree_dedupliquee_par_uuid() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plain_dir(&dir.path().join("x.plain"), "Titre plain");
+        let state = FolderState::default();
+        let first = state
+            .scan("src", dir.path(), false)
+            .unwrap()
+            .entries
+            .remove(0);
+        assert_eq!(state.last_recursive("src"), Some(false));
+        // Un `.plain.pk` de même uuid apparaît : l'entrée du `.plain` est écartée au scan.
+        write_plain_pk(&dir.path().join("x.plain.pk"), "Titre pk");
+        // Sans `expected`, le dernier scan (périmé) sert tel quel.
+        let stale = state
+            .scan_for_entry("src", dir.path(), &first.entry_id, None)
+            .unwrap();
+        assert_eq!(stale.title, "Titre plain");
+        // Avec `expected` : réanalyse, puis résolution par uuid (l'entry_id a disparu).
+        let found = state
+            .scan_for_entry("src", dir.path(), &first.entry_id, Some(&first.uuid))
+            .unwrap();
+        assert_eq!(found.kind, StoryKind::FlamPk);
+        assert_eq!(found.title, "Titre pk");
+        assert_eq!(state.last_recursive("src"), Some(false), "option conservée");
+        // Un uuid inconnu reste introuvable.
+        let err = state
+            .scan_for_entry("src", dir.path(), "src:absent", Some("inconnu"))
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    #[test]
+    fn resolution_essaie_les_deux_modes_sans_changer_ce_que_voit_l_ecran() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sous");
+        std::fs::create_dir_all(&sub).unwrap();
+        write_plain_pk(&sub.join("y.plain.pk"), "Dans un sous-dossier");
+        let state = FolderState::default();
+        // Jamais analysé : non récursif, puis récursif ; l'entrée du sous-dossier est trouvée.
+        let probe = FolderState::default();
+        let id = probe
+            .scan("src", dir.path(), true)
+            .unwrap()
+            .entries
+            .remove(0)
+            .entry_id;
+        let found = state.scan_for_entry("src", dir.path(), &id, None).unwrap();
+        assert_eq!(found.title, "Dans un sous-dossier");
+        assert_eq!(state.last_recursive("src"), None, "l'écran n'a rien vu");
+        // Dernier scan non récursif : l'option est reprise, puis repli récursif si introuvable.
+        state.scan("src", dir.path(), false).unwrap();
+        let found = state
+            .scan_for_entry("src", dir.path(), &id, Some(&found.uuid))
+            .unwrap();
+        assert_eq!(found.title, "Dans un sous-dossier");
+        assert_eq!(state.last_recursive("src"), Some(false), "inchangé");
+        assert!(
+            state.entry("src", &id).is_err(),
+            "entrées de l'écran inchangées"
+        );
+    }
+
+    #[test]
+    fn resolution_prefere_l_id_visible_en_non_recursif_meme_si_le_dernier_scan_est_recursif() {
+        let dir = tempfile::tempdir().unwrap();
+        let uuid: Vec<u8> = (0u8..16).collect();
+        write_files_dir(
+            &dir.path().join("x.plain"),
+            flam_files_with("Racine", "1", uuid.clone()),
+        );
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        write_files_pk(
+            &dir.path().join("sub").join("x.plain.pk"),
+            flam_files_with("Sous-dossier", "2", uuid),
+        );
+        let (seen, _) = scan_one(dir.path(), false, "Racine");
+        let state = FolderState::default();
+        // Dernier scan mémorisé : récursif (la copie du sous-dossier l'emporte).
+        state.scan("src", dir.path(), true).unwrap();
+        let found = state
+            .scan_for_entry("src", dir.path(), &seen.entry_id, Some(&seen.uuid))
+            .unwrap();
+        assert_eq!(
+            found, seen,
+            "la copie de la racine vue par l'écran, pas l'autre"
+        );
+        assert_eq!(
+            state.last_recursive("src"),
+            Some(true),
+            "état de l'écran inchangé"
+        );
     }
 
     #[cfg(windows)]

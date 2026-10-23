@@ -1,8 +1,8 @@
 [package]
 name = "flam-launcher"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 description = "Surcouche de bureau pour flam-player"
-license = "MIT"
+license = "GPL-3.0-or-later"
 edition = "2021"
 rust-version = "1.89"
 
@@ -25,18 +25,28 @@ dirs = "=6.0.0"
 uuid = { version = "=1.28.0", features = ["v4"] }
 zip = { version = "=4.6.1", default-features = false, features = ["deflate-flate2"] }
 png = "=0.18.1"
+# Pochettes de podcast : décodage JPEG/PNG/WebP et redimensionnement (aucune autre fonctionnalité).
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
 base64 = "=0.23.1"
+# Lecture XML des flux podcast (#210) : pas de DTD ni d'entités externes.
+quick-xml = "=0.42.0"
 sha2 = "0.10"
+# AES-128-CBC pour le format de la Flam (#228).
+aes = { version = "=0.8.4", features = ["zeroize"] }
+cbc = { version = "=0.1.2", features = ["zeroize"] }
+zeroize = "=1.9.1"
 notify = "=8.2.0"
 tauri-plugin-dialog = "=2.8.3"
 tauri-plugin-single-instance = "=2.4.5"
+# Ouverture des pages du dépôt dans le navigateur (#323), via la seule commande `open_external`.
+tauri-plugin-opener = { version = "=2.7.2", default-features = false }
 # Décodeur LIF des vignettes (port Rust de telmi2flam).
 telmi2flam = { path = "../../../crates/telmi2flam" }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Registry", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
