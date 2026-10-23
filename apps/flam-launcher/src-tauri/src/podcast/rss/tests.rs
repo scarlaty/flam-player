@@ -768,6 +768,49 @@ fn le_pretraitement_laisse_cdata_et_commentaires_intacts() {
 }
 
 #[test]
+fn le_pretraitement_suit_les_guillemets_des_attributs() {
+    // `>` et `<` entre guillemets (doubles ou simples) ne ferment ni n'ouvrent la balise.
+    assert_eq!(
+        sanitize_xml("<a><img alt=\"a > b\" src=\"u\"> <br> </a>"),
+        "<a><img alt=\"a > b\" src=\"u\"/> <br/> </a>"
+    );
+    assert_eq!(
+        sanitize_xml("<a><img alt='a > b' src='u'>x</a>"),
+        "<a><img alt='a > b' src='u'/>x</a>"
+    );
+    assert_eq!(
+        sanitize_xml("<a><br title=\"x < y\"> z < t</a>"),
+        "<a><br title=\"x < y\"/> z &lt; t</a>"
+    );
+    // Une apostrophe dans le texte n'ouvre aucune citation.
+    assert_eq!(
+        sanitize_xml("<a>l'été <br> d'or > 1</a>"),
+        "<a>l'été <br/> d'or > 1</a>"
+    );
+    let feed = parse(&wrap(&item(
+        "q",
+        "<description>x<img alt=\"a > b\">y</description>",
+    )))
+    .unwrap();
+    assert_eq!(feed.episodes.len(), 1);
+}
+
+#[test]
+fn un_guid_trop_long_change_l_identifiant_d_episode() {
+    let long = format!("urn:{}", "g".repeat(MAX_GUID_CHARS + 10));
+    let feed = parse(&wrap(&item(&long, ""))).unwrap();
+    let guid = &feed.episodes[0].guid;
+    assert_eq!(guid.chars().count(), MAX_GUID_CHARS);
+    assert_ne!(guid, &long);
+    // Un identifiant calculé avant la limite (sur le `guid` brut) ne retrouve plus l'épisode :
+    // la validation de pack le signale « épisode retiré du flux » (voir `pack::validate`).
+    assert_ne!(
+        crate::podcast::source::episode_id(guid),
+        crate::podcast::source::episode_id(&long)
+    );
+}
+
+#[test]
 fn html_non_ferme_dans_un_xml_est_corrige_pour_les_balises_vides() {
     let feed = parse(&wrap(&item(
         "b",

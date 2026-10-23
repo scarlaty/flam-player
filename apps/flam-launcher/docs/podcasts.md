@@ -196,6 +196,15 @@ Remarques de cohérence :
   chaîne de repli des images conforme à P6 ; champs lus : titre, description (HTML retiré),
   date, durée, auteur, image, URL, type et taille annoncée de l'enclosure ; copyright du canal.
   `itunes:explicit` (D8) est lu depuis #361 : canal et épisode, l'épisode héritant du canal.
+- Prétraitement du XML (`sanitize_xml`, `rss.rs`) : `&` et `<` isolés échappés, `<br>`, `<hr>`,
+  `<img>` et `<wbr>` non fermés rendus auto-fermants, `>` ou `<` entre guillemets d'un attribut
+  ignorés. Refus assumé : un `<b>` (ou toute balise non vide) jamais fermé dans du XML non
+  échappé reste une erreur de flux, on ne devine pas sa fin.
+- `guid` de plus de 512 caractères : tronqué avec une empreinte SHA-256, donc l'`episode_id`
+  de ces épisodes diffère de celui calculé sur le `guid` brut. Un brouillon de pack qui
+  référence l'ancien identifiant le voit signalé « épisode indisponible » (validation de pack).
+- `podcast_feed` relit et analyse le cache à chaque appel : choix assumé, pas de cache mémoire
+  (appel rare, invalidation à chaque rafraîchissement pour un gain négligeable).
 - `strip_html` (`rss.rs`) extrait du texte brut (balises retirées, entités décodées) ; ce n'est
   pas un assainisseur HTML : descriptions et titres sont toujours affichés comme texte, jamais
   injectés comme HTML.

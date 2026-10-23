@@ -147,9 +147,22 @@ fn le_filtre_de_traces_desactive_reqwest_en_debug() {
     let text = logs.text();
     assert!(!text.contains("ROUGE"), "reqwest en debug : {text}");
     assert!(text.contains("VERT"), "{text}");
-    // Sans RUST_LOG : `info`.
-    let default = crate::log_filter(None).to_string();
-    assert!(default.contains("info"), "{default}");
+    // Sans RUST_LOG : `info` (le debug de l'application est coupé, `reqwest` reste à `info`
+    // même si l'on demande `trace`).
+    let logs = Logs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(logs.clone())
+        .with_ansi(false)
+        .with_env_filter(crate::log_filter(None))
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::debug!(target: "flam_launcher::x", "ROUGE debug");
+        tracing::trace!(target: "reqwest::connect", "ROUGE reqwest trace");
+        tracing::info!(target: "flam_launcher::x", "VERT info");
+    });
+    let text = logs.text();
+    assert!(!text.contains("ROUGE"), "filtre par défaut : {text}");
+    assert!(text.contains("VERT"), "{text}");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -734,9 +747,12 @@ async fn un_corps_en_morceaux_sans_longueur_est_plafonne() {
     let err = service().fetch(&url).await.err().unwrap();
     assert_eq!(err.kind(), "feed_invalid", "{err}");
     assert!(err.to_string().contains("volumineux"), "{err}");
-    // Pas de `join` : bloquer le fil du runtime empêcherait la fermeture de la connexion, dont
-    // dépend la fin du fil serveur.
-    drop(handle);
+    // Joint hors du runtime : `fetch` a rendu la main, donc la connexion est fermée et le fil
+    // serveur (erreur d'écriture) se termine.
+    tokio::task::spawn_blocking(move || handle.join())
+        .await
+        .unwrap()
+        .expect("le fil du serveur chunked ne doit pas paniquer");
 }
 
 // ---------------------------------------------------------------------------------------

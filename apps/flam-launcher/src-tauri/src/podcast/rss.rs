@@ -742,7 +742,8 @@ fn starts_with_entity(s: &str) -> bool {
 /// `?a=1&b=2`) devenu `&amp;`, `<` isolé (`a < b`) devenu `&lt;`, `<br>`, `<hr>`, `<img …>` et
 /// `<wbr>` non fermés rendus auto-fermants. Les sections CDATA, commentaires et instructions
 /// de traitement sont laissés tels quels. D'autres HTML mal formés (`<b>` jamais fermé)
-/// restent refusés : on ne devine pas leur fin.
+/// restent refusés : on ne devine pas leur fin. Dans une balise, les valeurs d'attribut entre
+/// guillemets (simples ou doubles, après `=`) sont suivies : un `>` ou un `<` y reste du texte.
 fn sanitize_xml(text: &str) -> Cow<'_, str> {
     let bytes = text.as_bytes();
     let mut out: Option<String> = None;
@@ -750,8 +751,25 @@ fn sanitize_xml(text: &str) -> Cow<'_, str> {
     let mut copied = 0;
     // Dans une balise vide HTML (`<br`…) dont le `>` n'a pas été lu.
     let mut in_void = false;
+    // Dans une balise (`<` lu, `>` non lu) : seuls les guillemets d'une valeur d'attribut
+    // (`="…"` ou `='…'`) sont suivis, un `>` ou un `<` entre guillemets ne ferme ni n'ouvre rien.
+    let mut in_tag = false;
+    let mut quote: Option<u8> = None;
     let mut i = 0;
     while i < bytes.len() {
+        if in_tag {
+            match (quote, bytes[i]) {
+                (Some(q), b) if b == q => quote = None,
+                (None, b'"' | b'\'') if text[..i].trim_end().ends_with('=') => {
+                    quote = Some(bytes[i]);
+                }
+                _ => {}
+            }
+            if quote.is_some() && bytes[i] != b'&' {
+                i += 1;
+                continue;
+            }
+        }
         match bytes[i] {
             b'<' => {
                 let rest = &text[i..];
@@ -781,6 +799,7 @@ fn sanitize_xml(text: &str) -> Cow<'_, str> {
                         .to_ascii_lowercase();
                     // Le `/` est ajouté au `>` qui ferme cette balise.
                     in_void = VOID_TAGS.contains(&name.as_str());
+                    in_tag = true;
                 }
                 i += 1;
             }
@@ -794,6 +813,7 @@ fn sanitize_xml(text: &str) -> Cow<'_, str> {
                     copied = i;
                 }
                 in_void = false;
+                in_tag = false;
                 i += 1;
             }
             b'&' => {
