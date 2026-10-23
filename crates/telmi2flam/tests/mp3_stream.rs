@@ -109,8 +109,7 @@ fn convert_streamed(data: &[u8], opts: &Options, out: &Path) -> Result<usize, St
         .filter(|(_, d)| matches!(d, Data::Source { .. }))
         .count();
     let target = Target::new(Some(out), false, &pkg);
-    write_package_from(&pkg, &mut archive, &target, &never, &mut ())
-        .map_err(|e| e.code.to_owned())?;
+    write_package_from(&pkg, archive, &target, &never, &mut ()).map_err(|e| e.code.to_owned())?;
     Ok(refs)
 }
 
@@ -230,7 +229,8 @@ fn peak_of<T>(f: impl FnOnce() -> T) -> (T, usize) {
 }
 
 /// 40 MP3 de 2 Mo : pic du chemin en mémoire > somme des MP3, pic du chemin en flux borné par
-/// quelques MP3 ; les deux `.plain.pk` sont identiques.
+/// quelques MP3 ; pendant l'écriture seule, moins d'un MP3 (copie par tours, #402) ; les deux
+/// `.plain.pk` sont identiques.
 #[test]
 fn pic_memoire_d_un_mp3_et_non_de_la_somme() {
     let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
@@ -252,25 +252,31 @@ fn pic_memoire_d_un_mp3_et_non_de_la_somme() {
                     if streamed {
                         let pkg = build_package_streamed(&mut a, &opts, &never, &mut ()).unwrap();
                         let t = Target::new(Some(&out), false, &pkg);
-                        write_package_from(&pkg, &mut a, &t, &never, &mut ()).unwrap();
+                        // Pic de l'écriture seule, puis pic global rétabli.
+                        let build_peak = PEAK.load(Ordering::SeqCst);
+                        let (_, write_peak) = peak_of(|| {
+                            write_package_from(&pkg, a, &t, &never, &mut ()).unwrap();
+                        });
+                        PEAK.fetch_max(build_peak, Ordering::SeqCst);
+                        write_peak
                     } else {
                         let pkg = build_package_with(&mut a, &opts, &never, &mut ()).unwrap();
                         let t = Target::new(Some(&out), false, &pkg);
                         write_package(&pkg, &t, &never).unwrap();
+                        0
                     }
                 })
-                .1
             })
             .unwrap()
             .join()
             .unwrap()
     };
     let (mem_out, stream_out) = (d.0.join("mem.plain.pk"), d.0.join("flux.plain.pk"));
-    let before = run(false, mem_out.clone());
-    let after = run(true, stream_out.clone());
+    let (_, before) = run(false, mem_out.clone());
+    let (write, after) = run(true, stream_out.clone());
     eprintln!(
         "pic mémoire, {N} MP3 de {mp3_size} octets : en mémoire {before} octets, \
-         en flux {after} octets"
+         en flux {after} octets, dont écriture {write} octets"
     );
     assert_eq!(
         std::fs::read(&mem_out).unwrap(),
@@ -278,4 +284,6 @@ fn pic_memoire_d_un_mp3_et_non_de_la_somme() {
     );
     assert!(before > N * mp3_size, "en mémoire : {before}");
     assert!(after < 4 * mp3_size, "en flux : {after}");
+    // Tampon d'écriture (1 Mio) et un tour de relecture (256 Kio), jamais un MP3 entier.
+    assert!(write < mp3_size, "écriture en flux : {write}");
 }

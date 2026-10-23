@@ -33,8 +33,10 @@ use telmi2flam::ffmpeg::{
     ffmpeg_args, find_ffmpeg, resample_mp3, run_ffmpeg, MP3_BITRATES, NOT_FOUND, SAMPLERATE,
 };
 use telmi2flam::image::ThumbFit;
-use telmi2flam::output::{write_package, Target};
-use telmi2flam::package::{build_package, Options, Package, Selector};
+use telmi2flam::output::{write_package, write_package_from, Target};
+use telmi2flam::package::{
+    build_package, build_package_streamed, Data, Options, Package, Selector,
+};
 
 const MODE: &str = "T2F_FAKE_FFMPEG_MODE";
 const LOG: &str = "T2F_FAKE_FFMPEG_LOG";
@@ -474,6 +476,51 @@ fn check_run(run: &Value, data: Vec<u8>, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Passe en flux (#402) : assemblage par `build_package_streamed`, écriture par
+/// `write_package_from` (MP3 recopiés relus dans l'archive), même `.plain.pk` que Python à
+/// l'octet. Rend le nombre d'entrées relues en flux.
+fn check_streamed(run: &Value, data: &[u8], dir: &Path) -> Result<usize, String> {
+    let options = options(run);
+    let out = dir.join("flux.plain.pk");
+    let data = data.to_vec();
+    let target_out = out.clone();
+    let got = std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(move || -> Result<usize, ConvError> {
+            let mut archive = Archive::new(Cursor::new(data), "in.zip".into())?;
+            let pkg = build_package_streamed(&mut archive, &options, &|| false, &mut ())?;
+            let refs = pkg
+                .entries
+                .iter()
+                .filter(|(_, d)| matches!(d, Data::Source { .. }))
+                .count();
+            let target = Target::new(Some(&target_out), false, &pkg);
+            write_package_from(&pkg, archive, &target, &|| false, &mut ())?;
+            Ok(refs)
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    if assumed_divergence(run) {
+        let _ = std::fs::remove_file(&out);
+        return Ok(0);
+    }
+    let refs = match (run.get("error").and_then(Value::as_str), got) {
+        (Some(py), Err(_)) if py.starts_with("python_crash:") => return Ok(0),
+        (Some(py), Err(e)) if e.code == py => return Ok(0),
+        (Some(py), Err(e)) => return Err(format!("erreur Python {py}, Rust {}", e.code)),
+        (Some(py), Ok(_)) => return Err(format!("erreur Python {py}, le Rust réussit")),
+        (None, Err(e)) => return Err(format!("Python réussit, Rust {e}")),
+        (None, Ok(refs)) => refs,
+    };
+    let bytes = std::fs::read(&out).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&out);
+    if run["pk_sha256"].as_str().unwrap() != hex(&Sha256::digest(&bytes)) {
+        return Err(".plain.pk en flux différent".to_owned());
+    }
+    Ok(refs)
+}
+
 fn paquets_identiques_a_python() {
     let mut ff = Archive::new(Cursor::new(FFMPEG_VECTORS), "ffmpeg_cases.zip".into()).unwrap();
     let mut pkg = Archive::new(Cursor::new(PACKAGE_VECTORS), "package_cases.zip".into()).unwrap();
@@ -487,6 +534,7 @@ fn paquets_identiques_a_python() {
     let absent = dir.join("absent").join("ffmpeg.exe");
     let mut failures = Vec::new();
     let mut resampled_runs = 0;
+    let mut mixed_runs = 0;
     for run in runs {
         let id = run["id"].as_str().unwrap();
         let mode = run["mode"].as_str().unwrap();
@@ -504,17 +552,31 @@ fn paquets_identiques_a_python() {
             _ => std::env::set_var("FLAM_FFMPEG", &absent),
         }
         std::env::set_var(MODE, mode);
-        let _ = std::fs::remove_file(&log);
-        std::env::set_var(LOG, &log);
-        if let Err(why) = check_run(run, data, &dir) {
-            failures.push(format!("{id} [{mode}] : {why}"));
-        }
-        let calls = std::fs::read_to_string(&log).map_or(0, |s| s.lines().count());
-        if let Some(want) = run.get("ffmpeg_calls").and_then(Value::as_u64) {
-            if calls as u64 != want {
-                failures.push(format!(
-                    "{id} [{mode}] : {calls} appel(s) de ffmpeg, Python {want}"
-                ));
+        // Deux passes (#402) : paquet en mémoire, puis en flux (MP3 recopiés relus dans
+        // l'archive à l'écriture, à côté des MP3 rééchantillonnés par ffmpeg).
+        for streamed in [false, true] {
+            let pass = if streamed { "flux" } else { "memoire" };
+            let _ = std::fs::remove_file(&log);
+            std::env::set_var(LOG, &log);
+            let r = if streamed {
+                check_streamed(run, &data, &dir)
+            } else {
+                check_run(run, data.clone(), &dir).map(|()| 0)
+            };
+            match r {
+                Ok(refs) if streamed && refs > 0 && run["resampled"].as_u64().unwrap_or(0) > 0 => {
+                    mixed_runs += 1
+                }
+                Ok(_) => {}
+                Err(why) => failures.push(format!("{id} [{mode}, {pass}] : {why}")),
+            }
+            let calls = std::fs::read_to_string(&log).map_or(0, |s| s.lines().count());
+            if let Some(want) = run.get("ffmpeg_calls").and_then(Value::as_u64) {
+                if calls as u64 != want {
+                    failures.push(format!(
+                        "{id} [{mode}, {pass}] : {calls} appel(s) de ffmpeg, Python {want}"
+                    ));
+                }
             }
         }
         if run["resampled"].as_u64().unwrap_or(0) > 0 {
@@ -533,6 +595,8 @@ fn paquets_identiques_a_python() {
         resampled_runs >= 5,
         "{resampled_runs} exécutions avec rééchantillonnage"
     );
+    // Au moins une archive mêle MP3 rééchantillonnés et MP3 recopiés relus en flux.
+    assert!(mixed_runs >= 1, "aucune exécution mixte en flux");
     assert!(
         failures.is_empty(),
         "{} écart(s) sur {} exécutions :\n{}",

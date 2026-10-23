@@ -10,7 +10,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::error::ConvError;
 use crate::text::py_repr;
-use crate::zipread::{ZipError, ZipReader};
+use crate::zipread::{ChunkStop, ZipError, ZipReader};
 
 /// `_fold` : clé de recherche d'asset, NFC puis minuscules (`str.lower()`, sigma final et
 /// U+0130 compris).
@@ -151,6 +151,23 @@ impl<R: Read + Seek> Archive<R> {
     pub fn read(&mut self, name: &str) -> Result<Option<Vec<u8>>, ConvError> {
         let source = self.source.clone();
         self.zip.read(name).map_err(|e| conv(&source, e))
+    }
+
+    /// [`Archive::read`] par tours d'au plus `chunk` octets passés à `sink` (CRC vérifié après
+    /// le dernier). `Ok(false)` si le nom est absent ; une erreur de `sink` est rendue telle
+    /// quelle, une erreur de lecture convertie comme pour `read`.
+    pub fn read_chunks<E: From<ConvError>>(
+        &mut self,
+        name: &str,
+        chunk: usize,
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<bool, E> {
+        self.zip
+            .read_chunks(name, chunk, sink)
+            .map_err(|e| match e {
+                ChunkStop::Zip(e) => E::from(conv(&self.source, e)),
+                ChunkStop::Sink(e) => e,
+            })
     }
 }
 
