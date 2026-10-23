@@ -37,6 +37,7 @@ use std::time::Duration;
 
 use crate::error::ConvError;
 use crate::package::Package;
+use crate::progress::{Phase, Progress};
 
 /// `zipfile.ZIP64_LIMIT` : au-delà, tailles et positions passent en ZIP64.
 pub const ZIP64_LIMIT: u64 = (1 << 31) - 1;
@@ -412,9 +413,25 @@ pub fn write_package(
     target: &Target,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<PathBuf>, ConvError> {
-    write_package_with(package, target, ZipLimits::PYTHON, cancelled, &mut |_| {
-        Ok(())
-    })
+    write_package_progress(package, target, cancelled, &mut ())
+}
+
+/// [`write_package`] avec la phase `zip` : annoncée après la garde zip-slip, total = nombre
+/// d'entrées × nombre de sorties (`.plain.pk`, dossier `.plain`), une étape par fichier écrit.
+pub fn write_package_progress(
+    package: &Package,
+    target: &Target,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn Progress,
+) -> Result<Vec<PathBuf>, ConvError> {
+    write_package_with(
+        package,
+        target,
+        ZipLimits::PYTHON,
+        cancelled,
+        progress,
+        &mut |_| Ok(()),
+    )
 }
 
 pub(crate) fn write_package_with(
@@ -422,9 +439,12 @@ pub(crate) fn write_package_with(
     target: &Target,
     limits: ZipLimits,
     cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn Progress,
     hook: Hook<'_>,
 ) -> Result<Vec<PathBuf>, ConvError> {
     check_names(package.entries.iter().map(|(n, _)| n.as_str()))?;
+    let outputs = u64::from(!target.dir_only) + u64::from(target.plain_dir.is_some());
+    progress.begin(Phase::Zip, package.entries.len() as u64 * outputs);
     clean_orphans(&target.out_path);
     if let Some(dir) = &target.plain_dir {
         if dir != &target.out_path {
@@ -432,7 +452,9 @@ pub(crate) fn write_package_with(
         }
     }
     let mut tmps = Vec::new();
-    let result = write_and_commit(package, target, limits, cancelled, hook, &mut tmps);
+    let result = write_and_commit(
+        package, target, limits, cancelled, progress, hook, &mut tmps,
+    );
     discard(&tmps);
     match result {
         Ok(()) => Ok(target.published()),
@@ -469,6 +491,7 @@ fn write_and_commit(
     target: &Target,
     limits: ZipLimits,
     cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn Progress,
     hook: Hook<'_>,
     tmps: &mut Vec<PathBuf>,
 ) -> Result<(), Fail> {
@@ -484,9 +507,17 @@ fn write_and_commit(
         hook(Step::CreatePk)?;
         let file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         let mut buf = BufWriter::with_capacity(1 << 20, file);
+        // Une étape par entrée écrite (après `writestr` en Python) : l'entrée `i - 1` est
+        // complète quand l'en-tête de l'entrée `i` est écrit, la dernière au retour.
         write_zip(&mut buf, &package.entries, limits, cancelled, &mut |i| {
+            if i > 0 {
+                progress.tick(Phase::Zip);
+            }
             hook(Step::WritePk(i))
         })?;
+        if !package.entries.is_empty() {
+            progress.tick(Phase::Zip);
+        }
         let file = buf.into_inner().map_err(|e| e.into_error())?;
         hook(Step::SyncPk)?;
         file.sync_all()?;
@@ -525,6 +556,7 @@ fn write_and_commit(
                 .create_new(true)
                 .open(parent.join(file_name))?;
             f.write_all(data)?;
+            progress.tick(Phase::Zip);
         }
         commits.push((tmp, plain_dir.clone()));
     }
@@ -956,10 +988,17 @@ mod tests {
         old_output(&d);
         let target = Target::new(Some(&d.join("o.plain.pk")), true, &pkg);
         let steps = RefCell::new(Vec::new());
-        write_package_with(&pkg, &target, ZipLimits::PYTHON, &never, &mut |s| {
-            steps.borrow_mut().push(s);
-            Ok(())
-        })
+        write_package_with(
+            &pkg,
+            &target,
+            ZipLimits::PYTHON,
+            &never,
+            &mut (),
+            &mut |s| {
+                steps.borrow_mut().push(s);
+                Ok(())
+            },
+        )
         .unwrap();
         let steps = steps.into_inner();
         let n = pkg.entries.len();
@@ -977,17 +1016,24 @@ mod tests {
                 old_output(&d);
                 let target = Target::new(Some(&d.join("o.plain.pk")), true, &pkg);
                 let seen = Cell::new(0usize);
-                let err = write_package_with(&pkg, &target, ZipLimits::PYTHON, &never, &mut |_| {
-                    seen.set(seen.get() + 1);
-                    if seen.get() != k + 1 {
-                        Ok(())
-                    } else if disk_full {
-                        // ERROR_DISK_FULL sous Windows.
-                        Err(io::Error::from_raw_os_error(112))
-                    } else {
-                        Err(io::Error::other("panne injectee"))
-                    }
-                })
+                let err = write_package_with(
+                    &pkg,
+                    &target,
+                    ZipLimits::PYTHON,
+                    &never,
+                    &mut (),
+                    &mut |_| {
+                        seen.set(seen.get() + 1);
+                        if seen.get() != k + 1 {
+                            Ok(())
+                        } else if disk_full {
+                            // ERROR_DISK_FULL sous Windows.
+                            Err(io::Error::from_raw_os_error(112))
+                        } else {
+                            Err(io::Error::other("panne injectee"))
+                        }
+                    },
+                )
                 .unwrap_err();
                 let what = format!("étape {k} ({step:?}, disque plein : {disk_full})");
                 assert_eq!(err.code, "output_error", "{what}");
@@ -1015,16 +1061,23 @@ mod tests {
             old_output(&d);
             let target = Target::new(Some(&d.join("o.plain.pk")), false, &pkg);
             let attempts = Cell::new(0u32);
-            let r = write_package_with(&pkg, &target, ZipLimits::PYTHON, &never, &mut |s| {
-                if let Step::Rename(a) = s {
-                    attempts.set(a + 1);
-                    if a < failures {
-                        // ERROR_SHARING_VIOLATION.
-                        return Err(io::Error::from_raw_os_error(32));
+            let r = write_package_with(
+                &pkg,
+                &target,
+                ZipLimits::PYTHON,
+                &never,
+                &mut (),
+                &mut |s| {
+                    if let Step::Rename(a) = s {
+                        attempts.set(a + 1);
+                        if a < failures {
+                            // ERROR_SHARING_VIOLATION.
+                            return Err(io::Error::from_raw_os_error(32));
+                        }
                     }
-                }
-                Ok(())
-            });
+                    Ok(())
+                },
+            );
             if failures <= 5 {
                 r.unwrap();
                 assert_eq!(attempts.get(), failures + 1);
@@ -1188,7 +1241,7 @@ mod tests {
         let d = scratch("plante");
         let tmp = part_path(&d.join("o.plain"));
         let t = Target::new(Some(&d.join("o.plain")), false, &pkg);
-        let e = write_package_with(&pkg, &t, ZipLimits::PYTHON, &never, &mut |s| {
+        let e = write_package_with(&pkg, &t, ZipLimits::PYTHON, &never, &mut (), &mut |s| {
             if s == Step::CreateDir {
                 fs::create_dir(&tmp)?;
             }
