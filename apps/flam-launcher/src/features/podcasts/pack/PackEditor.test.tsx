@@ -16,6 +16,7 @@ import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../../test/timeouts";
 import { PodcastSelectionProvider, usePodcastSelection } from "../SelectionContext";
 import type { SelectedEpisode } from "../selection";
 import { PackEditor } from "./PackEditor";
+import { CLOSE_FLUSH_MS } from "./hooks";
 
 tolerateLoadInAsyncUtils();
 
@@ -515,6 +516,18 @@ it("sous-titre : prérempli par le copyright du flux unique, effaçable (D16)", 
   expect(saves()[0]!.args.composition.metadata.subtitle).toBe("");
 });
 
+it("sous-titre : l'aide « Prérempli » disparaît après une saisie personnalisée", async () => {
+  views.a = feed("a", "Contes", [episode("1")], { copyright: "© Radio" });
+  draft = { ...draft, composition: composition([ep("a", "1")]) };
+  renderEditor();
+  const subtitle = await screen.findByLabelText("Sous-titre");
+  await waitFor(() => expect(subtitle).toHaveValue("© Radio"));
+  expect(screen.getByText(/Prérempli avec le copyright du flux/)).toBeInTheDocument();
+  fireEvent.change(subtitle, { target: { value: "Mon sous-titre" } });
+  expect(screen.queryByText(/Prérempli/)).not.toBeInTheDocument();
+  expect(screen.getByText("Facultatif.")).toBeInTheDocument();
+});
+
 it("sauvegarde : une seule à la fois, la dernière composition part ensuite", async () => {
   views.a = feed("a", "Contes", [episode("1")]);
   draft = { ...draft, composition: composition([ep("a", "1")]), revision: 3 };
@@ -628,9 +641,21 @@ it("fermeture de la fenêtre : l'attente est bornée si la sauvegarde traîne", 
   renderSlowSave();
   fireEvent.change(await screen.findByLabelText("Titre"), { target: { value: "Vite" } });
   await waitFor(() => expect(closeHandlers.current).not.toBeNull());
-  const started = Date.now();
-  await closeHandlers.current!();
-  expect(Date.now() - started).toBeLessThan(2500);
+  // Timers factices à partir d'ici : la bascule de l'abandon est avancée sans attendre 1 s.
+  vi.useFakeTimers();
+  try {
+    let closed = false;
+    const closing = closeHandlers.current!().then(() => {
+      closed = true;
+    });
+    await vi.advanceTimersByTimeAsync(CLOSE_FLUSH_MS - 1);
+    expect(closed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await closing;
+    expect(closed).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
   expect(saves().length).toBe(1);
   finish!();
 });
