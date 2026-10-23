@@ -32,6 +32,7 @@ mod blur;
 pub mod cancel;
 pub mod convert;
 pub mod error;
+pub mod ffmpeg;
 pub mod graph;
 mod identify;
 pub mod image;

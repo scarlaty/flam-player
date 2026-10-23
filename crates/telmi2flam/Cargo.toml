@@ -2,7 +2,7 @@
 name = "telmi2flam"
 version = "0.1.0"
 description = "Convertisseur d'histoires Telmi vers le format flam (port Rust de tools/telmi2flam)"
-license = "GPL-3.0-or-later"
+license = "GPL-3.0-or-later AND HPND"
 edition = "2021"
 rust-version = "1.89"
 
@@ -15,6 +15,11 @@ path = "src/main.rs"
 # en debug ; cette feature l'active en release pour vérifier le profil `panic = "abort"`.
 # Jamais activée par le launcher.
 test-hooks = []
+
+# Ce test joue aussi le faux ffmpeg (il se relance lui-même) : pas de harnais libtest.
+[[test]]
+name = "ffmpeg"
+harness = false
 
 [dependencies]
 # Lecture ZIP faite à la main (src/zipread.rs, équivalence avec zipfile) : seulement le
