@@ -40,3 +40,22 @@ export function setFlamSendWarningAck(): void {
     // Non mémorisé : l'avertissement sera simplement redemandé.
   }
 }
+
+const PACK_RIGHTS_ACK_KEY = "flam-launcher.podcastPackRightsAck";
+
+/** Le message de droits de la première création d'un pack de podcasts (D14) a été acquitté. */
+export function getPackRightsAck(): boolean {
+  try {
+    return window.localStorage.getItem(PACK_RIGHTS_ACK_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setPackRightsAck(): void {
+  try {
+    window.localStorage.setItem(PACK_RIGHTS_ACK_KEY, "1");
+  } catch {
+    // Non mémorisé : le message sera simplement redemandé à la prochaine création.
+  }
+}

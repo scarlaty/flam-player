@@ -60,11 +60,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # La clé de cache porte aussi l'image du runner (donc sa chaîne MinGW-w64) : le binaire n'est
-      # pas reproductible d'une chaîne d'outils à l'autre.
-      - name: Version de l'image du runner
+      # La clé de cache porte la version de la distribution du runner (`ImageOS`, ex. ubuntu24),
+      # donc la génération de la chaîne MinGW-w64 : le binaire n'est pas reproductible d'une
+      # génération à l'autre. Elle ne porte PAS `ImageVersion` : celle-ci change à chaque
+      # publication hebdomadaire de l'image et invalidait le cache sans changer le binaire de
+      # façon utile (#400). Les sources, leurs SHA-256 et la configuration viennent de
+      # tools/ffmpeg/ (pins.env, build.sh), déjà dans le hachage.
+      - name: Génération de l'image du runner
         id: image
-        run: echo "version=${ImageOS:-inconnu}-${ImageVersion:-inconnue}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${ImageOS:-inconnu}" >> "$GITHUB_OUTPUT"
 
       - name: Cache de ffmpeg construit
         id: cache

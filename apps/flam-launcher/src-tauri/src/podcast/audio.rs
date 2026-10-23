@@ -1114,6 +1114,45 @@ mod tests {
         no_part_files(dir.path());
     }
 
+    /// WAV PCM 16 bits mono 22 050 Hz **sans aucun échantillon** : lisible, mais l'encodage MP3
+    /// qui en découle ne produit que l'en-tête Xing/Info (aucune trame audio). ffprobe refuse
+    /// une telle sortie (« sortie inexploitable ») ; la branche « durée nulle » du contrôle
+    /// couvre le cas où il l'accepterait.
+    fn empty_wav() -> Vec<u8> {
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&36u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+        wav.extend_from_slice(&22_050u32.to_le_bytes());
+        wav.extend_from_slice(&44_100u32.to_le_bytes()); // octets par seconde
+        wav.extend_from_slice(&2u16.to_le_bytes()); // alignement
+        wav.extend_from_slice(&16u16.to_le_bytes()); // bits par échantillon
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&0u32.to_le_bytes());
+        wav
+    }
+
+    #[tokio::test]
+    async fn reel_mp3_reduit_a_l_en_tete_xing_est_ffmpeg_failed() {
+        let Some(ff) = real_ffmpeg() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dst) = (dir.path().join("vide.wav"), dir.path().join("out.mp3"));
+        fs::write(&src, empty_wav()).unwrap();
+        let (_tx, mut rx) = watch::channel(false);
+        let err = convert(&ff, &src, &dst, &mut rx).await.unwrap_err();
+        assert!(
+            matches!(&err, AppError::Conversion { code, message }
+                if code == "ffmpeg_failed"
+                    && (message.contains("sortie inexploitable")
+                        || message.contains("sortie sans audio"))),
+            "{err:?}"
+        );
+        assert!(!dst.exists());
+        no_part_files(dir.path());
+    }
+
     #[tokio::test]
     async fn reel_nom_de_fichier_ressemblant_a_une_option() {
         let Some(ff) = real_ffmpeg() else { return };

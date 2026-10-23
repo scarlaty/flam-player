@@ -147,16 +147,36 @@ export const fr = {
         count === 1
           ? "Cocher le dernier épisode"
           : `Cocher les ${count} derniers épisodes`,
-      latestDone: (checked: number, count: number) => {
+      latestDone: (
+        outcome: {
+          accepted: readonly unknown[];
+          already: number;
+          explicit: number;
+          capped: number;
+        },
+        count: number,
+      ) => {
+        const checked = outcome.accepted.length;
         const done = `${checked} ${checked > 1 ? "épisodes cochés" : "épisode coché"}`;
         if (checked === count) return `Raccourci : ${done}.`;
-        const others = "déjà cochés, explicites ou refusés par les plafonds";
+        const causes = [
+          outcome.already > 0
+            ? `${outcome.already} déjà coché${outcome.already > 1 ? "s" : ""}`
+            : null,
+          outcome.explicit > 0
+            ? `${outcome.explicit} explicite${outcome.explicit > 1 ? "s" : ""}`
+            : null,
+          outcome.capped > 0
+            ? `${outcome.capped} refusé${outcome.capped > 1 ? "s" : ""} par les plafonds`
+            : null,
+        ].filter((cause) => cause !== null);
+        const detail = causes.length > 0 ? ` (${causes.join(", ")})` : "";
         if (checked === 0) {
           return count === 1
-            ? `Raccourci : le dernier épisode n'a pas été coché (${others}).`
-            : `Raccourci : aucun des ${count} derniers épisodes n'a été coché (${others}).`;
+            ? `Raccourci : le dernier épisode n'a pas été coché${detail}.`
+            : `Raccourci : aucun des ${count} derniers épisodes n'a été coché${detail}.`;
         }
-        return `Raccourci : ${done} sur les ${count} derniers (les autres sont ${others}).`;
+        return `Raccourci : ${done} sur les ${count} derniers${detail}.`;
       },
       explicit: "Explicite",
       unknownDate: "Date inconnue",
@@ -318,10 +338,22 @@ export const fr = {
         coverUnavailable: "La couverture choisie n'est plus disponible.",
       },
       create: {
-        // TODO #217 : brancher la création de l'histoire (commande de l'installation).
         label: "Créer l'histoire",
-        unavailable:
-          "La création de l'histoire n'est pas encore disponible dans cette version : votre brouillon est conservé.",
+        creating: "Création en cours…",
+        blocked:
+          "Corrigez les points signalés ci-dessus : la création est possible dès que le pack est prêt.",
+        checking: "Vérification du pack en cours…",
+        checkFailed:
+          "La vérification du pack a échoué : modifiez le pack pour la relancer.",
+        refused: "Le pack n'a pas été créé : corrigez les points suivants.",
+        started: (title: string) =>
+          `La création de « ${title} » a démarré : suivez-la dans le panneau des tâches.`,
+      },
+      rights: {
+        title: "Avant de créer votre premier pack",
+        text: "Les podcasts appartiennent à leurs auteurs. Les histoires créées ici sont réservées à un usage personnel, dans le cadre familial : ne les partagez pas et ne les redistribuez pas. L'audio est téléchargé tel que l'éditeur le diffuse, publicité comprise.",
+        accept: "J'ai compris",
+        cancel: "Annuler",
       },
     },
   },
