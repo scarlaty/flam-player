@@ -30,6 +30,8 @@ export interface PodcastSelection {
   ) => Refusal | null;
   /** Ajoute (si les plafonds le permettent) ou retire l'épisode ; un refus ne change rien. */
   toggle: (episode: SelectedEpisode) => void;
+  /** Ajoute d'un coup les épisodes que les plafonds acceptent, dans l'ordre ; les autres sont ignorés. */
+  addMany: (episodes: readonly SelectedEpisode[]) => void;
   remove: (sourceId: string, id: string) => void;
   clear: () => void;
 }
@@ -50,6 +52,16 @@ export function PodcastSelectionProvider({ children }: { children: ReactNode }) 
     });
   }, []);
 
+  const addMany = useCallback((episodes: readonly SelectedEpisode[]) => {
+    setSelected((list) => {
+      const next = [...list];
+      for (const episode of episodes) {
+        if (refusalFor(next, episode) === null) next.push(episode);
+      }
+      return next.length === list.length ? list : next;
+    });
+  }, []);
+
   const value = useMemo<PodcastSelection>(() => {
     const keys = new Set(selected.map((s) => episodeKey(s.sourceId, s.id)));
     return {
@@ -61,13 +73,14 @@ export function PodcastSelectionProvider({ children }: { children: ReactNode }) 
           ? null
           : refusalFor(selected, candidate),
       toggle,
+      addMany,
       remove: (sourceId, id) => {
         const key = episodeKey(sourceId, id);
         setSelected((list) => list.filter((s) => episodeKey(s.sourceId, s.id) !== key));
       },
       clear: () => setSelected([]),
     };
-  }, [selected, toggle]);
+  }, [selected, toggle, addMany]);
 
   return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;
 }

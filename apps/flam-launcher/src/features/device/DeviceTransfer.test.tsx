@@ -729,7 +729,12 @@ const contradictionCounts = {
 it("Flam 2.x aux clés incohérentes non confirmée : retrait désactivé (#345)", async () => {
   status.device!.firmware_status = firmwareV2({
     trust: "unconfirmed",
-    coherence: { kind: "contradiction", counts: contradictionCounts, stories: [A], total: 1 },
+    coherence: {
+      kind: "contradiction",
+      counts: contradictionCounts,
+      stories: [A],
+      total: 1,
+    },
     write_block: { kind: "keys_contradiction", version: "2.4.2" },
   });
   render(<Harness />);
@@ -745,7 +750,12 @@ it("Flam 2.x aux clés incohérentes non confirmée : retrait désactivé (#345)
 
 it("contradiction sans histoire désignée : bandeau sans liste (#345)", async () => {
   status.device!.firmware_status = firmwareV2({
-    coherence: { kind: "contradiction", counts: contradictionCounts, stories: [], total: 0 },
+    coherence: {
+      kind: "contradiction",
+      counts: contradictionCounts,
+      stories: [],
+      total: 0,
+    },
     write_block: { kind: "keys_contradiction", version: "2.4.2" },
   });
   render(<Harness />);
@@ -755,7 +765,12 @@ it("contradiction sans histoire désignée : bandeau sans liste (#345)", async (
 
 it("contradiction : liste complète des histoires en cause, sans « et N autres » (#345)", async () => {
   status.device!.firmware_status = firmwareV2({
-    coherence: { kind: "contradiction", counts: contradictionCounts, stories: [A, B], total: 2 },
+    coherence: {
+      kind: "contradiction",
+      counts: contradictionCounts,
+      stories: [A, B],
+      total: 2,
+    },
     write_block: { kind: "keys_contradiction", version: "2.4.2" },
   });
   render(<Harness />);
