@@ -110,7 +110,7 @@ jobs:
       # Cargo.lock), scripts de construction des ressources embarquées et leurs sources épinglées (build-*,
       # notices, Get-InstallTree, check-imports, third-party, LICENSES.md, tools/ffmpeg), le LICENSE racine
       # (licenseFile de tauri.conf.json), ce workflow, et le socle de démarrage du launcher dont dépend le
-      # scénario « application ouverte » (src-tauri/capabilities, src/main.rs, lib.rs, app.rs).
+      # scénario « application ouverte » (src-tauri/capabilities, src-tauri/src/{main,lib,app}.rs).
       # Hors liste : le reste du code du player, du convertisseur et du launcher (modules métier de
       # src-tauri/src), couvert par l'e2e sur N ; surveiller tout src-tauri/src ferait tourner N-1 (~5 min)
       # sur presque toute PR du launcher, ce cas reste alors vérifié sur main (label ci-installeur pour forcer).
