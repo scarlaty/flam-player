@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- arguments IPC simulés, forme libre */
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { InstallTask } from "../../../api/install";
@@ -14,6 +14,18 @@ import { StoriesContext, type StoriesApi } from "../../stories/StoriesContext";
 import type { SelectedEpisode } from "../selection";
 import { PodcastSelectionProvider, usePodcastSelection } from "../SelectionContext";
 import { resetCreations } from "./creations";
+
+// Le verrou durable (`isCreating`) est neutralisé pour les tests de `createLock` : sinon le second
+// appel sortirait par lui et le test passerait sans le verrou. `lockOnly` l'active à la demande.
+let lockOnly = false;
+vi.mock("./creations", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./creations")>();
+  return {
+    ...actual,
+    isCreating: (...args: Parameters<typeof actual.isCreating>) =>
+      lockOnly ? false : actual.isCreating(...args),
+  };
+});
 import { PackEditor } from "./PackEditor";
 
 tolerateLoadInAsyncUtils();
@@ -92,6 +104,7 @@ function SelectionProbe({ ids }: { ids: string[] }) {
 }
 
 beforeEach(() => {
+  lockOnly = false;
   resetCreations();
   toasts = [];
   panelTasks = [];
@@ -161,10 +174,15 @@ function renderEditor(ids: string[] = NO_IDS) {
   return render(editorTree(ids));
 }
 
-/** Gestionnaire React du bouton, appelable sans passer par l'état « désactivé » du DOM. */
-function reactOnClick(element: HTMLElement): () => void {
-  const key = Object.keys(element).find((k) => k.startsWith("__reactProps$"))!;
-  return (element as unknown as Record<string, { onClick: () => void }>)[key]!.onClick;
+/**
+ * Deux clics dans un même `act` : React n'a pas encore rendu le bouton désactivé au second, donc
+ * seul le verrou local (`createLock`) peut l'arrêter. Vrais événements DOM, sans API interne.
+ */
+function clickTwice(element: HTMLElement) {
+  act(() => {
+    fireEvent.click(element);
+    fireEvent.click(element);
+  });
 }
 
 async function readyButton() {
@@ -251,18 +269,16 @@ it("le bouton est désactivé pendant l'envoi", async () => {
 });
 
 it("verrou : le gestionnaire appelé pendant l'envoi ne relance pas la création", async () => {
+  lockOnly = true;
   window.localStorage.setItem(RIGHTS_KEY, "1");
   let release!: (value: unknown) => void;
   created = () => new Promise((resolve) => (release = resolve));
   renderEditor();
   const button = await readyButton();
-  const click = reactOnClick(button);
-  fireEvent.click(button);
+  clickTwice(button);
   await screen.findByRole("button", { name: "Création en cours…" });
   await waitFor(() => expect(createCalls()).toHaveLength(1));
-  click();
-  click();
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await act(async () => {});
   expect(createCalls()).toHaveLength(1);
   release({ task, report: okReport });
   await waitFor(() => expect(tracked).toHaveLength(1));
@@ -270,18 +286,15 @@ it("verrou : le gestionnaire appelé pendant l'envoi ne relance pas la création
 });
 
 it("verrou : « J'ai compris » appelé deux fois ne crée qu'une fois", async () => {
+  lockOnly = true;
   let release!: (value: unknown) => void;
   created = () => new Promise((resolve) => (release = resolve));
   renderEditor();
   fireEvent.click(await readyButton());
   const dialog = await screen.findByRole("dialog");
-  const accept = reactOnClick(
-    within(dialog).getByRole("button", { name: "J'ai compris" }),
-  );
-  accept();
-  accept();
+  clickTwice(within(dialog).getByRole("button", { name: "J'ai compris" }));
   await waitFor(() => expect(createCalls()).toHaveLength(1));
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await act(async () => {});
   expect(createCalls()).toHaveLength(1);
   release({ task, report: okReport });
   await waitFor(() => expect(tracked).toHaveLength(1));
