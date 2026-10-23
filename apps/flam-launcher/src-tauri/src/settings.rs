@@ -53,6 +53,10 @@ pub enum Theme {
 /// Ensemble fermé : l'argument transmis au convertisseur ne vient jamais d'une chaîne libre
 /// ([`ThumbFit::as_arg`]). Une valeur inconnue (fichier édité à la main ou écrit par une autre
 /// version) retombe sur `Flou` au lieu de faire rejeter tout le fichier.
+///
+/// Copie de `telmi2flam::image::ThumbFit` (la crate n'a pas de serde et ce type porte le repli
+/// `serde(other)`) : le test `memes_modes_que_la_crate_telmi2flam` garde les deux alignés ; à
+/// remplacer par celui de la crate au branchement du binaire Rust (#360).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThumbFit {
@@ -837,6 +841,20 @@ mod tests {
                 &[],
             );
             assert_eq!(result.is_ok(), ok, "{n}");
+        }
+    }
+
+    #[test]
+    fn memes_modes_que_la_crate_telmi2flam() {
+        use telmi2flam::image::ThumbFit as Crate;
+        for fit in [ThumbFit::Flou, ThumbFit::Rogner, ThumbFit::Bandes] {
+            let theirs = Crate::from_name(fit.as_arg()).expect("mode inconnu de la crate");
+            assert_eq!(theirs.as_str(), fit.as_arg());
+        }
+        assert_eq!(Crate::default().as_str(), ThumbFit::default().as_arg());
+        // Et dans l'autre sens : les noms que la crate accepte sont tous connus ici.
+        for name in ["flou", "rogner", "bandes"] {
+            assert_eq!(Crate::from_name(name).unwrap().as_str(), name);
         }
     }
 
