@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  DERIVED_NOTICES,
   isAllowedLicense,
   optionalMissingIsExpected,
   platformExcluded,
@@ -70,4 +74,18 @@ test("membres du workspace exclus des paquets Rust tiers", () => {
     "telmi2flam",
     "zip",
   ]);
+});
+
+test("code dérivé de Pillow : entrée de notices avec son texte de licence", () => {
+  const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  const pillow = DERIVED_NOTICES.find((d) => d.name.includes("Pillow"));
+  assert.ok(pillow, "entrée Pillow absente");
+  assert.equal(pillow.license, "HPND");
+  const dir = join(repo, pillow.dir);
+  assert.ok(existsSync(dir), dir);
+  const file = readdirSync(dir).find((f) => /^licen[cs]e-pillow/i.test(f));
+  assert.ok(file, "LICENSE-Pillow.txt absent");
+  assert.match(readFileSync(join(dir, file), "utf8"), /Secret Labs AB/);
+  // Cargo.toml de la crate déclare la licence d'origine du code dérivé.
+  assert.match(readFileSync(join(dir, "Cargo.toml"), "utf8"), /^license = ".*\bHPND\b.*"/m);
 });
