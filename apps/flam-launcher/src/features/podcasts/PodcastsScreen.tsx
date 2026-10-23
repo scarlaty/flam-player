@@ -29,11 +29,8 @@ function useFeed(sourceId: string | null) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<AppError | null>(null);
   const [refreshError, setRefreshError] = useState<AppError | null>(null);
-  // Ignore la réponse d'un flux qui n'est plus celui affiché.
-  const current = useRef<string | null>(null);
 
   useEffect(() => {
-    current.current = sourceId;
     if (sourceId === null) return;
     let cancelled = false;
     // Chargement du flux choisi depuis le backend.
@@ -192,9 +189,10 @@ export function PodcastsScreen() {
           </h2>
           <div role="status">{loading ? text.episodes.loading : ""}</div>
           {error && <ErrorBanner error={error} />}
-          {refreshError && !view?.status.offline && (
+          {(refreshError || view?.status.error) && !view?.status.offline && (
             <Banner tone="warning">
               <p>{text.episodes.refreshFailed}</p>
+              {view?.status.error && <p>{view.status.error.message}</p>}
             </Banner>
           )}
           {view?.status.offline && (

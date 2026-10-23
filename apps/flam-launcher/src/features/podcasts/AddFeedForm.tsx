@@ -51,7 +51,9 @@ export function AddFeedForm({ onAdded }: { onAdded: (added: PodcastAdded) => voi
         {error && (
           <Banner tone="danger" title={feedErrorTitle(error)}>
             <p>{error.message}</p>
-            {error.kind === "network" && <p>{t.podcasts.error.networkHint}</p>}
+            {feedErrorTitle(error) === t.podcasts.error.network && (
+              <p>{t.podcasts.error.networkHint}</p>
+            )}
           </Banner>
         )}
         <TextField

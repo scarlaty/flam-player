@@ -6,9 +6,7 @@ import { formatBytes } from "../validation";
 import { usePodcastSelection } from "./SelectionContext";
 import {
   estimateSize,
-  MAX_EPISODE_BYTES,
   MAX_EPISODES,
-  MAX_PACK_BYTES,
   type Refusal,
   type SelectedEpisode,
 } from "./selection";
@@ -29,9 +27,9 @@ function refusalText(refusal: Refusal): string {
     case "count":
       return text.count(MAX_EPISODES);
     case "episodeTooBig":
-      return text.episodeTooBig(formatBytes(MAX_EPISODE_BYTES));
+      return text.episodeTooBig(t.podcasts.limits.episode);
     case "total":
-      return text.total(formatBytes(MAX_PACK_BYTES));
+      return text.total(t.podcasts.limits.pack);
     case "duplicate":
       return text.duplicate;
   }
@@ -49,7 +47,7 @@ export function SelectionSummary() {
         ) : (
           <>
             <p>{text.count(totals.count, MAX_EPISODES)}</p>
-            <p>{text.size(formatBytes(totals.bytes), formatBytes(MAX_PACK_BYTES))}</p>
+            <p>{text.size(formatBytes(totals.bytes), t.podcasts.limits.pack)}</p>
             {totals.unknownSize > 0 && <p>{text.unknown(totals.unknownSize)}</p>}
           </>
         )}

@@ -11,15 +11,14 @@ export function feedErrorTitle(error: AppError): string {
   const message = error.message.toLowerCase();
   switch (error.kind) {
     case "network":
-      return message.includes("adresse privée") || message.includes("refusé")
-        ? text.blocked
-        : text.network;
+      return message.includes("adresse privée") ? text.blocked : text.network;
     case "feed_invalid":
       if (message.includes("aucun épisode")) return text.noAudio;
       if (message.includes("trop volumineux")) return text.tooLarge;
       return text.invalidFeed;
     case "validation":
-      return message.includes("déjà") ? text.duplicate : text.invalidUrl;
+      if (message.includes("déjà")) return text.duplicate;
+      return message.includes("adresse") ? text.invalidUrl : t.errors.title(error.kind);
     default:
       return t.errors.title(error.kind);
   }

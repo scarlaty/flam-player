@@ -245,6 +245,11 @@ it.each([
     "téléchargement refusé : adresse privée, locale ou non publique",
     "Adresse refusée",
   ],
+  [
+    "network",
+    "flux inaccessible : redirection refusée ou trop longue",
+    "Flux injoignable",
+  ],
   ["validation", "ce flux podcast est déjà dans vos sources", "Flux déjà ajouté"],
 ])("erreur d'ajout %s : %s", async (kind, message, title) => {
   failures.podcast_add = { kind, message };
@@ -267,13 +272,20 @@ it("hors ligne : la version enregistrée est affichée avec un avis", async () =
   expect(await screen.findByText(/Hors ligne : la version du flux/)).toBeInTheDocument();
 });
 
-it("échec d'actualisation avec cache : épisodes conservés et avertissement", async () => {
+it("flux devenu illisible : épisodes conservés et avertissement avec la cause", async () => {
   sources = [library, podcast("a", "A")];
-  views.a = view("a", [episode("1")]);
-  failures.podcast_refresh = { kind: "feed_invalid", message: "flux invalide : x" };
+  views.a = {
+    ...view("a", [episode("1")]),
+    status: {
+      offline: false,
+      updated_at: 1_790_000_000,
+      error: { kind: "feed_invalid", message: "flux invalide : x" },
+    },
+  };
   renderScreen();
   expect(await screen.findByRole("checkbox", { name: "Épisode 1" })).toBeInTheDocument();
   expect(await screen.findByText(/n'a pas pu être actualisé/)).toBeInTheDocument();
+  expect(screen.getByText("flux invalide : x")).toBeInTheDocument();
 });
 
 it("flux sans cache et injoignable : erreur affichée, aucune liste", async () => {

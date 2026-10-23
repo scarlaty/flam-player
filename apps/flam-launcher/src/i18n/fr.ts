@@ -155,6 +155,8 @@ export const fr = {
       warnings: (count: number) =>
         count === 1 ? "1 élément du flux ignoré" : `${count} éléments du flux ignorés`,
     },
+    /** Plafonds D1 en unités de la spec (1 Mo = 10⁶ octets, 1 Gio = 2³⁰ octets). */
+    limits: { episode: "200 Mo", pack: "1 Gio" },
     refusal: {
       count: (max: number) => `Plafond atteint : ${max} épisodes par pack au plus.`,
       episodeTooBig: (size: string) =>
