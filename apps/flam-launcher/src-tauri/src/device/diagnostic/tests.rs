@@ -31,6 +31,8 @@ const TAIL: [u8; 16] = [
 ];
 const PROFILE: &str = r"C:\Users\jdupont";
 const USERNAME: &str = "jdupont";
+/// Dossier de cache réglé hors du profil.
+const CACHE: &str = r"D:\Jean\FlamCache";
 
 fn write(path: &Path, data: &[u8]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -110,6 +112,7 @@ fn redactor() -> Redactor {
     Redactor {
         profile: Some(PROFILE.into()),
         username: Some(USERNAME.into()),
+        cache: Some(CACHE.into()),
     }
 }
 
@@ -122,6 +125,10 @@ fn error(operation: &'static str, message: &str) -> SessionError {
 }
 
 fn diagnostic(roots: Vec<PathBuf>, errors: Vec<SessionError>) -> String {
+    diagnostic_busy(roots, errors, false)
+}
+
+fn diagnostic_busy(roots: Vec<PathBuf>, errors: Vec<SessionError>, busy: bool) -> String {
     let session: &'static KeySession = Box::leak(Box::default());
     let trust: &'static TrustStore = Box::leak(Box::default());
     let launcher = HashSet::from([MINE.to_string()]);
@@ -129,7 +136,7 @@ fn diagnostic(roots: Vec<PathBuf>, errors: Vec<SessionError>) -> String {
     build(&Inputs {
         env: &env(roots),
         ctx: &ctx,
-        busy: false,
+        busy,
         launcher_stories: &launcher,
         os: "Windows 11 (build 26100.1, 24H2), x86_64".into(),
         errors,
@@ -213,6 +220,8 @@ fn secrets() -> Vec<(String, String)> {
     out.push(("profil (/)".into(), PROFILE.replace('\\', "/")));
     out.push(("nom d'utilisateur".into(), USERNAME.into()));
     out.push(("nom du volume".into(), "FLAM DE JDUPONT".into()));
+    out.push(("dossier de cache".into(), CACHE.into()));
+    out.push(("dossier de cache (/)".into(), CACHE.replace('\\', "/")));
     out
 }
 
@@ -232,8 +241,8 @@ fn leaky_error() -> SessionError {
     error(
         "envoi",
         &format!(
-            "échec sur {PROFILE}\\AppData\\Local\\flam\\x.tmp et C:/Users/{USERNAME}/Desktop (utilisateur {USERNAME}) : \
-             bt {} / {} / {}, série {} {}, clé {}, histoire {} {}",
+            "échec sur {PROFILE}\\AppData\\Local\\flam\\x.tmp et C:/Users/{USERNAME}/Desktop (utilisateur {USERNAME}), \
+             cache {CACHE}\\work\\y.tmp : bt {} / {} / {}, série {} {}, clé {}, histoire {} {}",
             hex(&bt),
             hex(&bt).to_uppercase(),
             b64(&bt)[0],
@@ -276,6 +285,7 @@ fn aucune_cle_bt_numero_de_serie_ni_empreinte_dans_le_diagnostic() {
     );
     assert!(text.contains("et %USERPROFILE%/Desktop"), "{text}");
     assert!(text.contains("(utilisateur %USERNAME%)"), "{text}");
+    assert!(text.contains("cache %CACHE%\\work\\y.tmp"), "{text}");
     assert!(text.contains("histoire <uuid>"), "{text}");
 }
 
@@ -301,7 +311,7 @@ fn le_diagnostic_decrit_la_flam_sans_rien_ecrire() {
         "| UUID non canoniques | 1 | 0 |",
         "| Entrées sans dossier | 1 | 0 |",
         "- Dossiers hors index : str/ 1, str.hidden/ 0",
-        "- Histoires : 5 (installées par ce launcher : 1 ; autres, officielles ou d'autres outils : 4)",
+        "- Histoires (UUID distincts, index et dossiers) : 5 (installées par ce launcher : 1 ; autres, officielles ou d'autres outils : 4)",
         "- .flam-transfer : présent (1 entrée(s))",
         "- .flam-trash : absent",
         "- etc/library : list.bak (36 octets), list.corrupt (3 octets)",
@@ -367,7 +377,7 @@ fn le_masquage_garde_le_texte_utile() {
 #[test]
 fn les_erreurs_de_la_session_sont_bornees() {
     for i in 0..MAX_SESSION_ERRORS + 3 {
-        record_error("envoi", &format!("erreur {i}"));
+        record_error("envoi", None, &format!("erreur {i}"));
     }
     let errors = session_errors();
     assert_eq!(errors.len(), MAX_SESSION_ERRORS);
@@ -375,6 +385,22 @@ fn les_erreurs_de_la_session_sont_bornees() {
         errors.last().unwrap().message,
         format!("erreur {}", MAX_SESSION_ERRORS + 2)
     );
+    // Revue #329 : nettoyage à l'enregistrement avec le profil réel (`Redactor::current`) et le
+    // dossier de cache. Dans le même test, la liste des erreurs étant globale.
+    let cache = Path::new(r"D:\Jean Dupont\FlamCache");
+    let profile = Redactor::current().profile;
+    let message = format!(
+        r"{}\AppData\x.tmp et {}\work\y.tmp",
+        profile.as_deref().unwrap_or(r"C:\Users\Jean Dupont"),
+        cache.display()
+    );
+    record_error("reprise", Some(cache), &message);
+    let recorded = session_errors().last().unwrap().message.clone();
+    assert!(recorded.ends_with(r"et %CACHE%\work\y.tmp"), "{recorded}");
+    assert!(!recorded.contains("Jean"), "{recorded}");
+    if let Some(profile) = profile {
+        assert!(!recorded.contains(&profile), "{recorded}");
+    }
 }
 
 #[test]
@@ -453,4 +479,94 @@ fn un_uuid_colle_a_un_mot_est_masque() {
         r.scrub(&format!("str/{OFFICIAL}/info x={upper}_y")),
         "str/<uuid>/info x=<uuid>_y"
     );
+}
+
+/// Revue #329 : un nom de compte avec espace ou apostrophe est masqué en entier, même quand le
+/// chemin n'est pas celui du profil courant.
+#[test]
+fn un_profil_avec_espace_ou_apostrophe_est_masque_en_entier() {
+    let r = Redactor {
+        profile: Some(r"C:\Users\Jean Dupont".into()),
+        username: Some("Jean Dupont".into()),
+        cache: None,
+    };
+    assert_eq!(
+        r.clean_message(r"échec C:\Users\Jean Dupont\x, D:\Users\Marie O'Brien\y (fin)"),
+        r"échec %USERPROFILE%\x, D:\Users\%USERNAME%\y (fin)"
+    );
+    assert_eq!(
+        r.scrub("C:/Users/Marie O'Brien: refus\nC:\\Users\\Paul Martin\nsuite"),
+        "C:/Users/%USERNAME%: refus\nC:\\Users\\%USERNAME%\nsuite"
+    );
+    assert_eq!(r.scrub(r#""C:\Users\Ana Lee""#), r#""C:\Users\%USERNAME%""#);
+}
+
+/// Revue #329 : filet durci (paires hexadécimales séparées, base64 sans chiffre, UUID collé).
+#[test]
+fn le_filet_masque_hex_separe_base64_sans_chiffre_et_uuid_colle() {
+    let r = Redactor::default();
+    let pairs: Vec<String> = TAIL.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        r.scrub(&format!("clé {} fin", pairs.join(" "))),
+        "clé <masqué> fin"
+    );
+    assert_eq!(
+        r.scrub(&format!("clé {} fin", pairs.join(":").to_uppercase())),
+        "clé <masqué> fin"
+    );
+    // Moins de 8 paires (adresse MAC, en-tête, VID:PID, mots courts) : gardé.
+    for kept in ["aa:bb:cc:dd:ee:ff", "01 00", "303a:819e", "de ce fa be"] {
+        assert_eq!(r.scrub(kept), kept);
+    }
+    // Base64 sans chiffre (avec ou sans remplissage) ; identifiant CamelCase gardé.
+    assert_eq!(r.scrub("k AbCdEfGhIjKlMnOpQrStUv fin"), "k <masqué> fin");
+    assert_eq!(r.scrub("k AbcdEfghIjklMnop== fin"), "k <masqué> fin");
+    assert_eq!(
+        r.scrub("StoryFileMissingWarning"),
+        "StoryFileMissingWarning"
+    );
+    // UUID collé à des caractères hexadécimaux.
+    assert_eq!(r.scrub(&format!("cafe{OFFICIAL}0")), "cafe<uuid>0");
+    assert_eq!(
+        r.scrub(&format!("x {}f", OFFICIAL.to_uppercase())),
+        "x <uuid>f"
+    );
+}
+
+/// Revue #329 : pendant une écriture, ni index, ni dossiers, ni fichiers de travail ne sont
+/// parcourus.
+#[test]
+fn pendant_une_ecriture_les_balayages_sont_sautes() {
+    let dev = fixture_device();
+    let text = diagnostic_busy(vec![dev.path().to_path_buf()], Vec::new(), true);
+    assert!(text.contains("### Firmware"), "{text}");
+    assert!(
+        text.contains("- non examinés : écriture en cours sur la Flam"),
+        "{text}"
+    );
+    for absent in [
+        "| Entrées",
+        "Dossiers hors index",
+        ".flam-transfer",
+        "- etc/library",
+    ] {
+        assert!(!text.contains(absent), "« {absent} » inattendu :\n{text}");
+    }
+}
+
+/// Revue #329 : le suffixe libre d'un `list.corrupt*` n'est pas affiché.
+#[test]
+fn le_suffixe_d_un_index_abime_n_est_pas_affiche() {
+    let dev = fixture_device();
+    write(
+        &dev.path()
+            .join("etc/library/list.hidden.corrupt-Mon histoire perso"),
+        b"zz",
+    );
+    let text = diagnostic(vec![dev.path().to_path_buf()], Vec::new());
+    assert!(
+        text.contains("list.corrupt (3 octets), list.hidden.corrupt… (2 octets)"),
+        "{text}"
+    );
+    assert_no_leak(&text);
 }
