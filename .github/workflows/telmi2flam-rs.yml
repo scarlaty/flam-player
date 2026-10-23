@@ -141,7 +141,8 @@ jobs:
           TELMI2FLAM_MATRIX_OUT: ${{ runner.temp }}/parity/matrix-rs
         run: cargo test -p telmi2flam --release --locked --test matrix_render -- --ignored
 
-      - name: Parité de la matrice (.lifXX contre .lif, octet à octet)
+      - name: Parité de la matrice (.lif contre .lif, octet à octet)
+        if: ${{ !cancelled() }}
         run: |
           python -I tools/telmi2flam/parity.py matrix "$RUNNER_TEMP/parity" \
             --candidate-lif-dir "$RUNNER_TEMP/parity/matrix-rs" \
