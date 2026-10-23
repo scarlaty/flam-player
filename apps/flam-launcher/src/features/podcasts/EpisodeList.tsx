@@ -5,12 +5,11 @@ import { t } from "../../i18n";
 import { formatBytes } from "../validation";
 import { usePodcastSelection } from "./SelectionContext";
 import {
-  acceptedForShortcut,
   estimateSize,
-  latestIds,
   LATEST_DEFAULT_COUNT,
   MAX_EPISODES,
   type Refusal,
+  shortcutOutcome,
   type SelectedEpisode,
 } from "./selection";
 
@@ -100,22 +99,19 @@ export function EpisodeList({ sourceId, sourceName, episodes }: EpisodeListProps
 
   /** Raccourci : coche les derniers épisodes que les plafonds acceptent ; la sélection reste libre. */
   function checkLatest() {
-    const ids = new Set(latestIds(episodes, LATEST_DEFAULT_COUNT));
     const latest = episodes
-      .filter((episode) => ids.has(episode.id))
-      .map((episode): SelectedEpisode => {
-        return {
-          id: episode.id,
-          sourceId,
-          sourceName,
-          title: episode.title,
-          bytes: estimateSize(episode).bytes,
-          explicit: episode.explicit === true,
-        };
-      });
-    const accepted = acceptedForShortcut(selection.selected, latest);
-    selection.addMany(accepted);
-    setShortcutResult(text.latestDone(accepted.length, latest.length));
+      .slice(0, LATEST_DEFAULT_COUNT)
+      .map((episode): SelectedEpisode => ({
+        id: episode.id,
+        sourceId,
+        sourceName,
+        title: episode.title,
+        bytes: estimateSize(episode).bytes,
+        explicit: episode.explicit === true,
+      }));
+    const outcome = shortcutOutcome(selection.selected, latest);
+    selection.addMany(outcome.accepted);
+    setShortcutResult(text.latestDone(outcome, latest.length));
   }
 
   const visible = episodes.slice(0, shown);
@@ -176,6 +172,8 @@ export function EpisodeList({ sourceId, sourceName, episodes }: EpisodeListProps
                 checked={selection.isSelected(sourceId, episode.id)}
                 aria-disabled={refusal !== null ? true : undefined}
                 onChange={() => {
+                  // Le message du raccourci décrit un état que ce cochage vient de changer.
+                  setShortcutResult(null);
                   if (refusal === null || selection.isSelected(sourceId, episode.id)) {
                     selection.toggle(candidate);
                   }

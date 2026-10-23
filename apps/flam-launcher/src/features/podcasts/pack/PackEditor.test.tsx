@@ -211,7 +211,7 @@ it("arbre vide : message, problème signalé, création désactivée", async () 
     await screen.findByText("Le pack ne contient aucun épisode."),
   ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Créer l'histoire" })).toBeDisabled();
-  expect(screen.getByText(/pas encore disponible/)).toBeInTheDocument();
+  expect(screen.getByText(/Corrigez les points signalés/)).toBeInTheDocument();
 });
 
 it("sans brouillon, les épisodes sélectionnés sont rangés à la racine", async () => {
