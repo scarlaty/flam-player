@@ -9,8 +9,10 @@
 //! - aucun shell, entrée standard et sortie standard nulles, protocole `file` seul, dossier de
 //!   travail temporaire `t2f_ff_*` propre à l'appel (droits `0700` sous Unix) ;
 //! - le processus enfant ne survit jamais à l'appel : annulation (jeton consulté pendant
-//!   l'attente) ou délai dépassé → `kill` puis `wait` ;
-//! - le dossier temporaire est supprimé dans tous les cas (garde [`Drop`]) ; la sortie est lue
+//!   l'attente) ou délai dépassé → `kill` puis `wait` ; panique du binaire → le crochet le tue
+//!   ([`kill_children`], registre des PID) avant de supprimer les temporaires (#132) ;
+//! - le dossier temporaire est inscrit au registre des temporaires de [`crate::output`] (le
+//!   crochet de panique le supprime) et supprimé dans tous les cas (garde [`Drop`]) ; la sortie est lue
 //!   avant, et un échec de suppression (antivirus, handle Windows) est ignoré au lieu de perdre
 //!   une sortie valide (constat de #274, corrigé ici seulement) ;
 //! - la sortie d'erreur est lue par un fil (pas d'interblocage de tube), mémoire bornée à sa
@@ -33,6 +35,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use crate::error::ConvError;
@@ -315,10 +318,17 @@ impl WorkDir {
                 use std::os::unix::fs::DirBuilderExt;
                 builder.mode(0o700);
             }
+            // Inscrit avant la création : le crochet de panique du binaire le supprime (#132).
+            crate::output::track(&path);
             match builder.create(&path) {
                 Ok(()) => return Ok(WorkDir { path }),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(e),
+                Err(e) => {
+                    crate::output::untrack(std::slice::from_ref(&path));
+                    if e.kind() == io::ErrorKind::AlreadyExists {
+                        continue;
+                    }
+                    return Err(e);
+                }
             }
         }
         Err(io::Error::new(
@@ -331,7 +341,106 @@ impl WorkDir {
 impl Drop for WorkDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
+        crate::output::untrack(std::slice::from_ref(&self.path));
     }
+}
+
+/// PID des ffmpeg en cours, pour [`kill_children`] (crochet de panique du binaire, #132).
+static CHILDREN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+fn children() -> MutexGuard<'static, Vec<u32>> {
+    CHILDREN.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Inscription d'un ffmpeg lancé, retirée à la destruction. Déclarée **après** le [`Child`] :
+/// elle est détruite avant lui, donc tant qu'un PID est inscrit, le handle du processus reste
+/// ouvert (sous Windows, le PID ne peut pas être réattribué).
+struct Running(u32);
+
+impl Running {
+    fn new(child: &Child) -> Running {
+        children().push(child.id());
+        Running(child.id())
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let mut reg = children();
+        if let Some(i) = reg.iter().rposition(|&p| p == self.0) {
+            reg.swap_remove(i);
+        }
+    }
+}
+
+/// Tue les ffmpeg en cours et attend leur fin (5 s au plus chacun sous Windows, pour que leurs
+/// fichiers soient fermés avant la suppression de `t2f_ff_*`). Appelé par le crochet de panique
+/// du binaire, avant [`crate::output::discard_pending`] : après `process::exit`, rien d'autre
+/// ne les arrêterait (le job du launcher seulement à sa fermeture). Verrou tenté 1 s au plus.
+///
+/// Limite sous Unix : un PID est retiré du registre au retour de [`run_ffmpeg`], après que
+/// `try_wait` a récolté le processus ; une panique dans cet intervalle (aucune n'est possible
+/// dans ce code) pourrait viser un PID réattribué.
+pub fn kill_children() {
+    for _ in 0..100 {
+        match CHILDREN.try_lock() {
+            Ok(reg) => return reg.iter().for_each(|&pid| sys::kill_pid(pid)),
+            Err(TryLockError::Poisoned(p)) => {
+                return p.into_inner().iter().for_each(|&pid| sys::kill_pid(pid))
+            }
+            Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
+#[cfg(windows)]
+mod sys {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn TerminateProcess(process: *mut c_void, code: u32) -> i32;
+        fn WaitForSingleObject(handle: *mut c_void, ms: u32) -> u32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+
+    pub fn kill_pid(pid: u32) {
+        // SAFETY : handle vérifié non nul, fermé une fois.
+        unsafe {
+            let h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid);
+            if h.is_null() {
+                return;
+            }
+            TerminateProcess(h, 1);
+            WaitForSingleObject(h, 5000);
+            CloseHandle(h);
+        }
+    }
+}
+
+#[cfg(unix)]
+mod sys {
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+
+    pub fn kill_pid(pid: u32) {
+        if let Ok(pid) = i32::try_from(pid) {
+            // SAFETY : appel sans pointeur ; SIGKILL (9).
+            unsafe {
+                kill(pid, 9);
+            }
+        }
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
+mod sys {
+    pub fn kill_pid(_pid: u32) {}
 }
 
 /// Tue le processus et attend sa fin (handles et fichiers libérés avant la suppression du
@@ -416,6 +525,17 @@ fn read_tail(mut stream: impl Read) -> Vec<u8> {
     tail
 }
 
+/// Faute de test (#132) : avec `TELMI2FLAM_TEST_FAULT=panic:ffmpeg`, panique 300 ms après le
+/// lancement de ffmpeg, pendant qu'il tourne. Absente de la release du launcher.
+#[cfg(any(debug_assertions, feature = "test-hooks"))]
+fn test_panic(started: Instant) {
+    if started.elapsed() >= Duration::from_millis(300)
+        && std::env::var("TELMI2FLAM_TEST_FAULT").is_ok_and(|v| v == "panic:ffmpeg")
+    {
+        panic!("faute injectee (ffmpeg en cours)");
+    }
+}
+
 /// `_resample_mp3(data, duration)` : ffmpeg de [`find_ffmpeg`], dossier temporaire du
 /// système, délai [`FFMPEG_TIMEOUT`]. `Err` seulement sur annulation.
 pub fn resample_mp3(
@@ -470,11 +590,13 @@ pub fn run_ffmpeg(
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let deadline = Instant::now() + timeout;
+    let started = Instant::now();
+    let deadline = started + timeout;
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return Ok(Err(unusable(&e))),
     };
+    let _running = Running::new(&child);
     let (tx, rx) = mpsc::channel();
     if let Some(stderr) = child.stderr.take() {
         let reader = std::thread::Builder::new()
@@ -503,6 +625,8 @@ pub fn run_ffmpeg(
             kill(&mut child);
             return Err(ConvError::cancelled());
         }
+        #[cfg(any(debug_assertions, feature = "test-hooks"))]
+        test_panic(started);
         if Instant::now() >= deadline {
             kill(&mut child);
             return Ok(Err(too_long(timeout)));

@@ -68,6 +68,8 @@ const EXIT_PANIC: u8 = 6;
 /// déroulement.
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
+        // ffmpeg d'abord : ses fichiers ouverts empêcheraient de supprimer `t2f_ff_*`.
+        telmi2flam::ffmpeg::kill_children();
         telmi2flam::output::discard_pending();
         let payload = info.payload();
         let what = payload

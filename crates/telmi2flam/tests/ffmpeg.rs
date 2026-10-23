@@ -542,6 +542,89 @@ fn paquets_identiques_a_python() {
     );
 }
 
+/// Binaire (#132) : annulation (fin de stdin) puis panique pendant que le faux ffmpeg tourne.
+/// Codes 130 et 6, aucun `t2f_ff_*` ni `.part` laissé, et ffmpeg tué : son marqueur, écrit à la
+/// fin de son sommeil, n'apparaît jamais.
+#[cfg(any(debug_assertions, feature = "test-hooks"))]
+fn binaire_annulation_et_panique_pendant_ffmpeg() {
+    use std::process::{Command, Stdio};
+    let mut pkg = Archive::new(Cursor::new(PACKAGE_VECTORS), "package_cases.zip".into()).unwrap();
+    let story = pkg.read("cases/mp3_48khz_warning.zip").unwrap().unwrap();
+    for (name, want) in [("annulation", 130), ("panique", 6)] {
+        let dir = scratch(&format!("bin-{name}"));
+        let tmp = dir.join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(dir.join("in.zip"), &story).unwrap();
+        let (mark, log) = (dir.join("mark"), dir.join("calls.log"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_telmi2flam"));
+        cmd.args(["in.zip", "-o", "out.plain.pk", "--progress-json"])
+            .current_dir(&dir)
+            .env("FLAM_FFMPEG", exe())
+            .env(MODE, "sleep")
+            .env(SLEEP, "4000")
+            .env(MARK, &mark)
+            .env(LOG, &log)
+            .env("TMP", &tmp)
+            .env("TEMP", &tmp)
+            .env("TMPDIR", &tmp)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if want == 130 {
+            cmd.arg("--cancel-on-stdin-eof")
+                .stdin(Stdio::piped())
+                .env_remove("TELMI2FLAM_TEST_FAULT");
+        } else {
+            cmd.stdin(Stdio::null())
+                .env("TELMI2FLAM_TEST_FAULT", "panic:ffmpeg");
+        }
+        let mut child = cmd.spawn().unwrap();
+        // Le faux ffmpeg tourne dès qu'il a écrit dans le journal.
+        let t = Instant::now();
+        while !log.exists() && t.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(log.exists(), "{name} : ffmpeg jamais lancé");
+        drop(child.stdin.take());
+        let out = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(want), "{name} : {stderr}");
+        assert!(
+            t.elapsed() < Duration::from_millis(3000),
+            "{name} : arrêt trop lent ({:?}), ffmpeg attendu",
+            t.elapsed()
+        );
+        let last = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .to_owned();
+        let code = if want == 130 {
+            "cancelled"
+        } else {
+            "internal_error"
+        };
+        assert!(
+            last.contains(&format!("\"code\":\"{code}\"")),
+            "{name} : {last}"
+        );
+        assert!(is_empty_dir(&tmp), "{name} : t2f_ff_* laissé");
+        let parts: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+            .collect();
+        assert!(parts.is_empty(), "{name} : {parts:?}");
+        assert!(
+            !dir.join("out.plain.pk").exists(),
+            "{name} : sortie publiée"
+        );
+        // Marge au-delà du sommeil (4 s) du faux ffmpeg : il aurait créé le marqueur.
+        std::thread::sleep(Duration::from_millis(4600));
+        assert!(!mark.exists(), "{name} : ffmpeg a survécu");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 
 fn main() {
@@ -554,12 +637,18 @@ fn main() {
     }
     // Jamais le ffmpeg de la machine : chaque test choisit le sien.
     std::env::set_var("FLAM_FFMPEG", "");
-    let tests: [(&str, fn()); 4] = [
+    #[allow(unused_mut)]
+    let mut tests: Vec<(&str, fn())> = vec![
         ("sortie_et_echecs", sortie_et_echecs),
         ("delai_et_annulation", delai_et_annulation),
         ("recherche_de_ffmpeg", recherche_de_ffmpeg),
         ("paquets_identiques_a_python", paquets_identiques_a_python),
     ];
+    #[cfg(any(debug_assertions, feature = "test-hooks"))]
+    tests.push((
+        "binaire_annulation_et_panique_pendant_ffmpeg",
+        binaire_annulation_et_panique_pendant_ffmpeg,
+    ));
     // Filtres positionnels de libtest ; les options à valeur (`--skip X`…) sont lues avec
     // leur valeur, et `--skip` appliqué.
     let mut filters = Vec::new();
