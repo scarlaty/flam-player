@@ -220,7 +220,7 @@ fn is_trash_name(name: &str) -> bool {
 /// d'entrées supprimées ; continue après une entrée verrouillée et rend la première erreur à
 /// la fin. Ne suit aucun lien : une corbeille qui n'est pas un vrai dossier est laissée telle
 /// quelle. À appeler sous [`DeviceLock`].
-pub fn purge_trash(root: &Path) -> io::Result<usize> {
+fn purge_trash(root: &Path) -> io::Result<usize> {
     let trash = root.join(TRASH_DIR);
     if !is_real_dir(&trash)? {
         return Ok(0);
@@ -260,8 +260,10 @@ pub fn purge_trash(root: &Path) -> io::Result<usize> {
 /// Dossiers d'histoire (nom au format UUID) présents dans `str/` ou `str.hidden/` mais
 /// absents des deux index. Signalés à l'utilisateur, jamais supprimés sans confirmation.
 /// Refuse si `list` est absent : toutes les histoires paraîtraient orphelines. Peut lancer
-/// une reprise de l'index : à appeler sous [`DeviceLock`].
-pub fn find_orphans(root: &Path) -> Result<Vec<Orphan>, RemoveError> {
+/// une reprise de l'index, sans permis de la garde : réservée aux tests tant qu'aucune
+/// commande ne l'expose (#326) ; à appeler sous [`DeviceLock`].
+#[cfg(test)]
+fn find_orphans(root: &Path) -> Result<Vec<Orphan>, RemoveError> {
     let reads = read_indexes(root)?;
     if reads[0].state != IndexState::Valid {
         return Err(RemoveError::IndexNeedsUser);

@@ -376,12 +376,40 @@ fn contradiction_reelle_au_format_flam_refuse_l_envoi_pas_le_retrait() {
         "{err}"
     );
     assert!(err.to_string().contains("« Ma Flam »"), "{err}");
+    // L'histoire en cause est désignée (#326).
+    let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
+    assert!(
+        matches!(
+            &status.coherence,
+            Coherence::Contradiction { counts, stories }
+                if counts.key_matches == 1 && stories == &[STORY.to_string()]
+        ),
+        "{:?}",
+        status.coherence
+    );
     // Le retrait reste possible (rien n'est chiffré).
     check_write(dev.path(), &ctx, WriteKind::Other).unwrap();
     // La confirmation reste possible sur une Flam non encore confirmée.
     let fresh = test_ctx();
     confirm(dev.path(), &fresh).unwrap();
     check_write(dev.path(), &fresh, WriteKind::Other).unwrap();
+}
+
+#[test]
+fn les_histoires_en_contradiction_sont_bornees_et_triees() {
+    let dev = device(&mdf_v2_known());
+    for i in (0..MAX_CONTRADICTING + 3).rev() {
+        let id = format!("00000000-0000-4000-8000-{i:012}");
+        story(dev.path(), &id, &key_v2(), &wrong_info());
+    }
+    let coherence = coherence_v2(dev.path(), &mdf_v2_known(), &HashSet::new()).unwrap();
+    let Coherence::Contradiction { counts, stories } = coherence else {
+        panic!("contradiction attendue : {coherence:?}");
+    };
+    assert_eq!(counts.key_matches, MAX_CONTRADICTING + 3);
+    assert_eq!(stories.len(), MAX_CONTRADICTING);
+    assert_eq!(stories[0], "00000000-0000-4000-8000-000000000000");
+    assert!(stories.windows(2).all(|w| w[0] < w[1]));
 }
 
 #[test]

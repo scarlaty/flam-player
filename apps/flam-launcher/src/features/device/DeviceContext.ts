@@ -81,6 +81,12 @@ export interface DeviceApi {
   firmwareBlocked: boolean;
   /** Flam 2.x pas encore confirmée : sauvegarde à confirmer dans « Ma Flam ». */
   keysConfirmation: boolean;
+  /**
+   * Reprise, retrait et ordre autorisés par la garde du firmware (#326) : faux sur une Flam
+   * 2.x non confirmée ou dont l'écriture est bloquée (une contradiction des clés ne bloque que
+   * l'envoi).
+   */
+  canMaintain: boolean;
   queue: QueueItem[];
   progress: TransferProgressView | null;
   /** Annulation demandée, en attente de l'arrêt du transfert en cours. */

@@ -471,6 +471,8 @@ export const fr = {
     order: {
       edit: "Modifier l'ordre",
       busy: "Ordre non modifiable pendant un envoi.",
+      firmware:
+        "Ordre non modifiable : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
       title: "Ordre des histoires sur la Flam",
       help: "Glissez les histoires, ou utilisez les boutons Tout en haut, Monter, Descendre et Tout en bas (touches Début et Fin au clavier), puis enregistrez. La Flam affiche les histoires dans cet ordre.",
       othersNote:
@@ -633,6 +635,8 @@ export const fr = {
       workingNamed: (title: string) => `Retrait de « ${title} » en cours…`,
       otherWorking: "Un retrait est déjà en cours.",
       ejecting: "Retrait indisponible pendant une éjection.",
+      firmware:
+        "Retrait indisponible : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
     },
     eject: {
       button: "Éjecter la Flam",
@@ -734,6 +738,8 @@ export const fr = {
     },
     blockedHint:
       "Rien n'est écrit tant que ce blocage dure. Notez la version et l'état affichés ici dans votre retour de test.",
+    contradictionStories: (ids: string[], total: number) =>
+      `Histoires en cause : ${ids.join(", ")}${total > ids.length ? ` (et ${total - ids.length} autres)` : ""}.`,
     contradictionHint:
       "Aucune histoire n'est envoyée tant que ce blocage dure. Le retrait et l'ordre restent possibles (après la confirmation de sauvegarde, si elle est demandée). Notez la version et l'état affichés ici dans votre retour de test.",
     confirm: {

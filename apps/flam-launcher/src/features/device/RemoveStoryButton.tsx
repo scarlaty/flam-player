@@ -29,14 +29,16 @@ export function RemoveStoryButton({
   onWorkingChange,
   onRemoved,
 }: RemoveStoryButtonProps) {
-  const { removeFromDevice, deviceKey, ejecting } = useDevice();
+  const { removeFromDevice, deviceKey, ejecting, canMaintain } = useDevice();
   const keyAtOpen = useRef<string | null>(null);
   const toast = useToast();
   const [confirming, setConfirming] = useState(false);
   const [working, setWorking] = useState(false);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const hintId = useId();
-  const blocked = busy || working || locked || ejecting;
+  // Garde du firmware (#326) : Flam 2.x non confirmée ou écriture bloquée.
+  const firmware = !canMaintain;
+  const blocked = busy || working || locked || ejecting || firmware;
   const name = story.title ?? t.deviceScreen.stories.untitled(story.short_id);
 
   async function confirmRemove() {
@@ -85,10 +87,18 @@ export function RemoveStoryButton({
           <span
             id={hintId}
             className={
-              blocked && !busy && !ejecting ? "fl-visually-hidden" : "fl-send__reason"
+              blocked && !busy && !ejecting && !firmware
+                ? "fl-visually-hidden"
+                : "fl-send__reason"
             }
           >
-            {busy ? text.busy : ejecting ? text.ejecting : text.otherWorking}
+            {busy
+              ? text.busy
+              : ejecting
+                ? text.ejecting
+                : firmware
+                  ? text.firmware
+                  : text.otherWorking}
           </span>
         )}
       </span>
