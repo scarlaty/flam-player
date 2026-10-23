@@ -200,11 +200,11 @@ jobs:
           ref: ${{ needs.verify.outputs.sha }}
           persist-credentials: false
 
-      # La clé de cache porte aussi l'image du runner (donc sa chaîne MinGW-w64) : le binaire n'est
-      # pas reproductible d'une chaîne d'outils à l'autre.
-      - name: Version de l'image du runner
+      # Même clé que launcher.yml (cache partagé) : génération de la distribution du runner
+      # (`ImageOS`, donc de la chaîne MinGW-w64), sans `ImageVersion` (#400).
+      - name: Génération de l'image du runner
         id: image
-        run: echo "version=${ImageOS:-inconnu}-${ImageVersion:-inconnue}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${ImageOS:-inconnu}" >> "$GITHUB_OUTPUT"
 
       - name: Cache de ffmpeg construit
         id: cache
