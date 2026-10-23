@@ -10,6 +10,12 @@ rust-version = "1.89"
 name = "telmi2flam"
 path = "src/main.rs"
 
+[features]
+# Injection de fautes du binaire (`TELMI2FLAM_TEST_FAULT`, voir src/main.rs), toujours active
+# en debug ; cette feature l'active en release pour vérifier le profil `panic = "abort"`.
+# Jamais activée par le launcher.
+test-hooks = []
+
 # Ce test joue aussi le faux ffmpeg (il se relance lui-même) : pas de harnais libtest.
 [[test]]
 name = "ffmpeg"
