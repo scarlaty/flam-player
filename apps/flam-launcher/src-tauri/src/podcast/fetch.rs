@@ -194,6 +194,8 @@ impl Drop for Workdir {
         if self.armed {
             let path = std::mem::take(&mut self.path);
             // Suppression hors du thread appelant (souvent un thread asynchrone) si possible.
+            // Résidu : à l'arrêt du runtime la tâche peut être annulée ; le nettoyage au
+            // démarrage (#217, N10 a) rattrape ce cas.
             match tokio::runtime::Handle::try_current() {
                 Ok(handle) => {
                     drop(handle.spawn_blocking(move || {
@@ -236,7 +238,7 @@ impl Fetcher {
         }
         if items
             .iter()
-            .any(|i| Url::parse(&i.id).is_ok() || Url::parse(&i.feed).is_ok())
+            .any(|i| looks_like_url(&i.id) || looks_like_url(&i.feed))
         {
             // Jamais de valeur dans le message : ce pourrait être une URL secrète (D11).
             return Err(AppError::Validation(
@@ -561,6 +563,12 @@ async fn fetch_file_counted(
         last_error = failure;
     }
     Err(last_error)
+}
+
+/// URL avec autorité (`schéma://…`) : refusée comme id ou libellé. Les URI sans hôte
+/// (`tag:…`, `urn:uuid:…`) restent permises : ce sont des guid RSS courants, sans jeton réseau.
+fn looks_like_url(value: &str) -> bool {
+    Url::parse(value).is_ok_and(|u| u.has_host())
 }
 
 /// Se termine quand moins de `min_rate` octets/s ont été reçus sur une fenêtre `window`

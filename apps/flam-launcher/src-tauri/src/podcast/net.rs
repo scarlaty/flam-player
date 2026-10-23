@@ -181,7 +181,18 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
 }
 
 /// Suffixes de noms réservés aux réseaux locaux (D10).
-const LOCAL_SUFFIXES: [&str; 5] = [".local", ".lan", ".home.arpa", ".internal", ".localhost"];
+const LOCAL_SUFFIXES: [&str; 10] = [
+    ".local",
+    ".lan",
+    ".home.arpa",
+    ".internal",
+    ".localhost",
+    ".localdomain",
+    ".home",
+    ".corp",
+    ".intranet",
+    ".private",
+];
 
 /// `true` si `host` est un nom de réseau local : une seule étiquette (`nas`, `box`,
 /// `localhost`), ou un suffixe de [`LOCAL_SUFFIXES`]. Le point final et la casse sont ignorés.
@@ -427,6 +438,8 @@ mod tests {
             "http://serveur.internal./a",
             "http://app.localhost/a",
             "http://a.b.Local/a",
+            "http://livebox.home/a",
+            "http://pc.localdomain/a",
         ] {
             assert!(check(u).is_err(), "{u} devrait être refusé");
         }

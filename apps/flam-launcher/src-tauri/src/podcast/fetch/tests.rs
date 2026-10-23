@@ -641,7 +641,7 @@ async fn id_ou_flux_qui_est_une_url_refuse_sans_la_recopier() {
     for (id, feed) in [
         ("https://h.example/SECRET-GUID.mp3?t=SECRET", "f"),
         ("e1", "https://h.example/feed?key=SECRET"),
-        ("mailto:SECRET@h.example", "f"),
+        ("ftp://SECRET@h.example/x", "f"),
     ] {
         let err = fetcher()
             .fetch_all(
@@ -703,10 +703,10 @@ async fn debit_minimal_retire_l_episode_lent() {
     let base = format!("http://127.0.0.1:{port}");
     let base_dir = tempfile::tempdir().unwrap();
     let dir = Workdir::create(base_dir.path()).unwrap();
-    // ~33 octets/s reçus ; minimum exigé : 1000 octets/s sur 300 ms.
+    // ~33 octets/s reçus ; minimum exigé : 1000 octets/s sur 500 ms.
     let limits = Limits {
         min_rate_bytes_per_sec: 1000,
-        min_rate_window: Duration::from_millis(300),
+        min_rate_window: Duration::from_millis(500),
         ..Limits::default()
     };
     let started = std::time::Instant::now();
@@ -811,4 +811,29 @@ async fn noms_locaux_refuses_sans_requete() {
             .unwrap_err();
         assert_eq!(err.kind(), "download_invalid", "{host}");
     }
+}
+
+#[tokio::test]
+async fn guid_sans_hote_est_accepte() {
+    let base_dir = tempfile::tempdir().unwrap();
+    let dir = Workdir::create(base_dir.path()).unwrap();
+    // `tag:` et `urn:` ne sont pas des URL réseau : pas de refus de validation (le lot échoue
+    // ensuite pour une autre raison : serveur injoignable).
+    let err = fetcher()
+        .fetch_all(
+            &[item(
+                "tag:soundcloud,2010:tracks/1",
+                "Mythes:Grecs",
+                "http://127.0.0.1:9",
+                "/a",
+                None,
+            )],
+            &dir,
+            &Limits::default(),
+            never_cancel(),
+            no_progress(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "download_invalid");
 }
