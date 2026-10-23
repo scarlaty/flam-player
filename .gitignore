@@ -59,5 +59,4 @@ apps/flam-launcher/src-tauri/gen/
 # Captures du README racine, produites par apps/flam-launcher/scripts/screenshots.mjs
 # (`npm run screenshots`) ; le script lui-même échappe aussi à `screenshot*`.
 !docs/assets/*.png
-!docs/assets/*.gif
 !apps/flam-launcher/scripts/screenshots.mjs

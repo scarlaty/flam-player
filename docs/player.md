@@ -25,7 +25,8 @@ Pour utiliser Flam Launcher sans rien compiler, voir l'[installation](../README.
 ## Émulateur flam-player
 
 Émulateur de bureau du firmware Flam (Lunii v3), capable d'exécuter les histoires `.plain`
-extraites, et convertisseur d'histoires TELMI vers FLAM (`tools/telmi2flam`).
+extraites. Le convertisseur TELMI vers FLAM (`tools/telmi2flam`) a sa
+[propre section](#convertir-une-histoire-telmi).
 
 ### Fonctionnalités
 
@@ -44,7 +45,7 @@ extraites, et convertisseur d'histoires TELMI vers FLAM (`tools/telmi2flam`).
 
 L'installateur de Flam Launcher (`Flam-Launcher_<version>_x64-setup.exe` dans une pré-version
 publiée, `Flam Launcher_<version>_x64-setup.exe` comme artefact de la CI) installe, **pour
-l'utilisateur courant et sans droits d'administrateur**, la surcouche, `flam-player.exe` et le
+l'utilisateur courant et sans droits d'administrateur**, l'application, `flam-player.exe` et le
 convertisseur TELMI vers FLAM (Python inclus). Il n'est pas signé : SmartScreen affiche un
 avertissement (« Informations complémentaires » puis « Exécuter quand même »). Utilisation,
 sources, dépannage et construction de l'installateur :

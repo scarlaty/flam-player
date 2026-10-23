@@ -17,7 +17,7 @@ Flam, les fait jouer sur le PC et les copie sur l'appareil.
 [![Plateforme : Windows x64](https://img.shields.io/badge/plateforme-Windows%20x64-0078D6)](#installation)
 [![Licence : GPL-3.0](https://img.shields.io/badge/licence-GPL--3.0-blue)](LICENSE)
 
-[**Télécharger**](https://github.com/scarlaty/flam-player/releases) ·
+[**Télécharger**](https://github.com/scarlaty/flam-player/releases?q=launcher) ·
 [Démarrage rapide](#démarrage-rapide) ·
 [FAQ](#faq) ·
 [Contribuer](#contribuer)
@@ -125,8 +125,8 @@ Du catalogue à la Flam : choisir une histoire, la télécharger, puis l'envoyer
 
 ## Installation
 
-1. Ouvrez la page des [**versions publiées**](https://github.com/scarlaty/flam-player/releases)
-   et prenez la plus récente nommée « Flam Launcher ».
+1. Ouvrez la page des [**versions publiées**](https://github.com/scarlaty/flam-player/releases?q=launcher)
+   et prenez la plus récente nommée « Flam Launcher » (marquée « Pre-release » pendant la bêta).
 2. Téléchargez le fichier `Flam-Launcher_<version>_x64-setup.exe` et lancez-le.
 3. L'installation se fait pour votre compte Windows, **sans droits d'administrateur**.
 
@@ -163,8 +163,8 @@ comparer l'empreinte du fichier avec `SHA256SUMS.txt`, publié avec chaque versi
 <summary><b>Quelles versions du firmware de la Flam sont prises en charge ?</b></summary>
 
 - **Firmware 1.x** : l'envoi a été validé sur un appareil réel (1.15.14). Il demande la clé
-  d'une histoire officielle de votre compte (« mode carrier »), avec un avertissement à
-  accepter.
+  d'une histoire officielle déjà présente sur la Flam (« mode carrier »), avec un
+  avertissement à accepter.
 - **Firmware 2.x** : pris en charge, mais **jamais testé sur un appareil**. C'est l'objet de
   la bêta : le [guide testeur](apps/flam-launcher/docs/guide-testeur.md) explique comment
   essayer et faire un retour.

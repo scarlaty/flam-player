@@ -125,7 +125,8 @@ Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§
   « Empaquetage modifié ? »). Pour forcer ce test sur une PR qui ne le déclenche pas, poser le label
   `ci-installeur` (il relance la CI). `main` exécute toujours tout.
 - Pas de code mort, pas de `TODO` sans issue associée, documentation à jour
-  (`README.md`, `AGENT.md`, README du module touché).
+  (`README.md` pour la vitrine du launcher, `docs/player.md` pour le player, le convertisseur
+  et les jeux, `AGENT.md`, README du module touché).
 - **PR courtes** : un seul thème, au plus cinq changements fonctionnels (hors tests et
   documentation). Au-delà, l'issue est découpée en plusieurs PR successives.
 - **Revue préalable par l'auteur** : avant d'ouvrir la PR, l'auteur fait relire son diff

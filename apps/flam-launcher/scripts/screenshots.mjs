@@ -18,7 +18,7 @@
  * Hors CI : le résultat dépend des polices et du rendu d'Edge du poste.
  */
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -202,6 +202,7 @@ const DEVICE_ONLY = [
 ];
 
 const CONFIG = {
+  version: JSON.parse(await readFile(path.join(APP_DIR, "package.json"), "utf8")).version,
   covers: Array.from({ length: 16 }, (_, i) => coverDataUrl(i)),
   details: DEMO_DETAILS,
   extras: EXTRA_STORIES,
@@ -362,7 +363,7 @@ function installMockBackend({ config, scenario }) {
     resolved: {
       player_path: `${installDir}\\flam-player.exe`,
       python_path: `${installDir}\\telmi2flam\\python\\python.exe`,
-      cache_dir: "C:\\Users\\demo\\AppData\\Local\\flam-launcher",
+      cache_dir: "C:\\Users\\demo\\AppData\\Local\\flam-launcher\\cache",
     },
     issues: [],
     recovery: null,
@@ -440,7 +441,7 @@ function installMockBackend({ config, scenario }) {
   }
 
   const handlers = {
-    app_info: () => ({ name: "Flam Launcher", version: "0.1.0-beta.1" }),
+    app_info: () => ({ name: "Flam Launcher", version: config.version }),
     settings_get: settingsView,
     settings_set: (args) => {
       Object.assign(settings, args.settings);
@@ -449,7 +450,7 @@ function installMockBackend({ config, scenario }) {
     sources_list: () => ({ sources, recovery: null }),
     config_ack_recovery: () => null,
     cache_usage: () => ({
-      path: "C:\\Users\\demo\\AppData\\Local\\flam-launcher",
+      path: "C:\\Users\\demo\\AppData\\Local\\flam-launcher\\cache",
       bytes: 412_000_000,
       subdirs: ["catalogs", "downloads", "library", "thumbs"],
     }),
@@ -777,11 +778,19 @@ async function settle(page, ready) {
   await page.waitForTimeout(600);
 }
 
+/** Problèmes relevés pendant les captures : le script sort alors en échec. */
+let problems = 0;
+
 async function report(page, errors, label) {
   const unknown = await page.evaluate(() => globalThis.__flamDemo.unknown());
-  if (unknown.length)
-    console.warn(`  ${label} : commandes non simulées : ${unknown.join(", ")}`);
-  for (const error of errors) console.warn(`  ${label} : erreur de page : ${error}`);
+  if (unknown.length) {
+    problems++;
+    console.error(`  ${label} : commandes non simulées : ${unknown.join(", ")}`);
+  }
+  for (const error of errors) {
+    problems++;
+    console.error(`  ${label} : erreur de page : ${error}`);
+  }
 }
 
 async function captureStills(browser, baseUrl) {
@@ -935,22 +944,21 @@ async function buildGif(ffmpeg, frames, framesDir, output) {
 async function main() {
   await mkdir(OUT_DIR, { recursive: true });
   const server = await startServer();
-  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  let browser;
   try {
+    browser = await chromium.launch({ channel: "msedge", headless: true });
     console.log(`Captures depuis ${server.url} vers ${OUT_DIR}`);
     const stills = await captureStills(browser, server.url);
-    if (!options["no-gif"]) {
-      const ffmpeg = findFfmpeg();
+    const ffmpeg = options["no-gif"] ? null : findFfmpeg();
+    if (!options["no-gif"] && !ffmpeg)
+      console.warn("ffmpeg introuvable (PATH ou FFMPEG) : GIF non produit.");
+    if (ffmpeg) {
       const framesDir = await mkdtemp(path.join(tmpdir(), "flam-screens-"));
       try {
         const frames = await captureJourney(browser, server.url, framesDir);
-        if (ffmpeg) {
-          const gif = path.join(OUT_DIR, "parcours.gif");
-          await buildGif(ffmpeg, frames, framesDir, gif);
-          stills.push(gif);
-        } else {
-          console.warn("ffmpeg introuvable (PATH ou FFMPEG) : GIF non produit.");
-        }
+        const gif = path.join(OUT_DIR, "parcours.gif");
+        await buildGif(ffmpeg, frames, framesDir, gif);
+        stills.push(gif);
       } finally {
         await rm(framesDir, { recursive: true, force: true });
       }
@@ -960,8 +968,17 @@ async function main() {
       console.log(`  ${path.relative(REPO_ROOT, file)}  ${Math.round(size / 1024)} Ko`);
     }
   } finally {
-    await browser.close();
-    await server.close();
+    try {
+      await browser?.close();
+    } finally {
+      await server.close();
+    }
+  }
+  if (problems > 0) {
+    console.error(
+      `${problems} problème(s) : vérifier les captures avant de les committer.`,
+    );
+    process.exitCode = 1;
   }
 }
 
