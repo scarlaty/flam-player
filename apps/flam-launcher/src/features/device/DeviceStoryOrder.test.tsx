@@ -603,7 +603,9 @@ it("Flam débranchée : ordre non modifiable, sans raison « firmware » (#345)"
       </DeviceContext.Provider>
     </ToastProvider>,
   );
-  expect(screen.getByRole("button", { name: "Monter « Les trois ours »" })).toBeDisabled();
+  expect(
+    screen.getByRole("button", { name: "Monter « Les trois ours »" }),
+  ).toBeDisabled();
   expect(screen.getByRole("button", { name: "Descendre « Capi »" })).toBeDisabled();
   expect(screen.queryByText(/écriture sur cette Flam bloquée/)).not.toBeInTheDocument();
   expect(api.reorderOnDevice).not.toHaveBeenCalled();
