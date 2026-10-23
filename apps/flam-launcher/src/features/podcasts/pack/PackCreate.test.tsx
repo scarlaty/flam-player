@@ -1,14 +1,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- arguments IPC simulés, forme libre */
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useEffect } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { InstallTask } from "../../../api/install";
 import type { DraftView, PackComposition, ValidationReport } from "../../../api/pack";
 import type { Episode, PodcastView } from "../../../api/podcast";
 import { expectNoAxeViolations } from "../../../test/axe";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../../test/timeouts";
+import type { Task } from "../../../components";
+import { ToastContext, type ToastOptions } from "../../../components/Toast/ToastContext";
 import { StoriesContext, type StoriesApi } from "../../stories/StoriesContext";
-import { PodcastSelectionProvider } from "../SelectionContext";
+import type { SelectedEpisode } from "../selection";
+import { PodcastSelectionProvider, usePodcastSelection } from "../SelectionContext";
+import { resetCreations } from "./creations";
 import { PackEditor } from "./PackEditor";
 
 tolerateLoadInAsyncUtils();
@@ -66,8 +71,30 @@ let calls: { cmd: string; args: Record<string, any> }[];
 let draft: DraftView;
 let created: (() => unknown) | null;
 let tracked: InstallTask[];
+let toasts: ToastOptions[];
+let panelTasks: Task[];
+
+const picked = (id: string): SelectedEpisode => ({
+  id,
+  sourceId: "a",
+  sourceName: "Contes",
+  title: `Épisode ${id}`,
+  bytes: 10_000_000,
+  explicit: false,
+});
+
+/** Remplit la sélection au montage et en affiche les identifiants. */
+function SelectionProbe({ ids }: { ids: string[] }) {
+  const selection = usePodcastSelection();
+  const { addMany } = selection;
+  useEffect(() => addMany(ids.map(picked)), [addMany, ids]);
+  return <p data-testid="selection">{selection.selected.map((s) => s.id).join(",")}</p>;
+}
 
 beforeEach(() => {
+  resetCreations();
+  toasts = [];
+  panelTasks = [];
   calls = [];
   tracked = [];
   created = null;
@@ -106,17 +133,38 @@ beforeEach(() => {
 
 afterEach(() => clearMocks());
 
-function renderEditor() {
+const NO_IDS: string[] = [];
+
+function editorTree(ids: string[] = NO_IDS) {
   const stories = {
     trackTask: (t: InstallTask) => tracked.push(t),
+    panelTasks,
   } as unknown as StoriesApi;
-  return render(
-    <StoriesContext.Provider value={stories}>
-      <PodcastSelectionProvider>
-        <PackEditor saveDelayMs={20} validateDelayMs={20} />
-      </PodcastSelectionProvider>
-    </StoriesContext.Provider>,
+  return (
+    <ToastContext.Provider
+      value={{
+        show: (options) => toasts.push(options),
+        dismiss: () => {},
+      }}
+    >
+      <StoriesContext.Provider value={stories}>
+        <PodcastSelectionProvider>
+          <SelectionProbe ids={ids} />
+          <PackEditor saveDelayMs={20} validateDelayMs={20} />
+        </PodcastSelectionProvider>
+      </StoriesContext.Provider>
+    </ToastContext.Provider>
   );
+}
+
+function renderEditor(ids: string[] = NO_IDS) {
+  return render(editorTree(ids));
+}
+
+/** Gestionnaire React du bouton, appelable sans passer par l'état « désactivé » du DOM. */
+function reactOnClick(element: HTMLElement): () => void {
+  const key = Object.keys(element).find((k) => k.startsWith("__reactProps$"))!;
+  return (element as unknown as Record<string, { onClick: () => void }>)[key]!.onClick;
 }
 
 async function readyButton() {
@@ -161,10 +209,22 @@ it(
     fireEvent.click(await readyButton());
     const dialog = await screen.findByRole("dialog");
     await expectNoAxeViolations(dialog);
-    const accept = within(dialog).getByRole("button", { name: "J'ai compris" });
-    accept.focus();
-    fireEvent.keyDown(dialog, { key: "Tab" });
-    expect(dialog.contains(document.activeElement)).toBe(true);
+    // jsdom ne déplace pas le focus avec Tab (et `user-event` n'est pas installé) : on teste
+    // la logique du piège, aux deux extrémités du dialogue.
+    const buttons = within(dialog).getAllByRole("button");
+    const first = buttons[0]!;
+    const last = within(dialog).getByRole("button", { name: "J'ai compris" });
+    expect(buttons[buttons.length - 1]).toBe(last);
+    last.focus();
+    fireEvent.keyDown(last, { key: "Tab" });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(last);
+    // Au milieu, le navigateur gère : le piège n'intervient pas.
+    const cancel = within(dialog).getByRole("button", { name: "Annuler" });
+    cancel.focus();
+    fireEvent.keyDown(cancel, { key: "Tab" });
+    expect(document.activeElement).toBe(cancel);
   },
   SLOW_TEST_MS,
 );
@@ -177,16 +237,136 @@ it("message déjà acquitté : création directe, sans dialogue", async () => {
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-it("le bouton est désactivé pendant l'envoi : un seul appel", async () => {
+it("le bouton est désactivé pendant l'envoi", async () => {
   window.localStorage.setItem(RIGHTS_KEY, "1");
   let release!: (value: unknown) => void;
-  const gate = new Promise((resolve) => (release = resolve));
-  created = () => gate;
+  created = () => new Promise((resolve) => (release = resolve));
   renderEditor();
   fireEvent.click(await readyButton());
-  const busy = await screen.findByRole("button", { name: "Création en cours…" });
-  expect(busy).toBeDisabled();
-  fireEvent.click(busy);
+  expect(
+    await screen.findByRole("button", { name: "Création en cours…" }),
+  ).toBeDisabled();
+  release({ task, report: okReport });
+  await waitFor(() => expect(tracked).toHaveLength(1));
+});
+
+it("verrou : le gestionnaire appelé pendant l'envoi ne relance pas la création", async () => {
+  window.localStorage.setItem(RIGHTS_KEY, "1");
+  let release!: (value: unknown) => void;
+  created = () => new Promise((resolve) => (release = resolve));
+  renderEditor();
+  const button = await readyButton();
+  const click = reactOnClick(button);
+  fireEvent.click(button);
+  await screen.findByRole("button", { name: "Création en cours…" });
+  await waitFor(() => expect(createCalls()).toHaveLength(1));
+  click();
+  click();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(createCalls()).toHaveLength(1);
+  release({ task, report: okReport });
+  await waitFor(() => expect(tracked).toHaveLength(1));
+  expect(createCalls()).toHaveLength(1);
+});
+
+it("verrou : « J'ai compris » appelé deux fois ne crée qu'une fois", async () => {
+  let release!: (value: unknown) => void;
+  created = () => new Promise((resolve) => (release = resolve));
+  renderEditor();
+  fireEvent.click(await readyButton());
+  const dialog = await screen.findByRole("dialog");
+  const accept = reactOnClick(
+    within(dialog).getByRole("button", { name: "J'ai compris" }),
+  );
+  accept();
+  accept();
+  await waitFor(() => expect(createCalls()).toHaveLength(1));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(createCalls()).toHaveLength(1);
+  release({ task, report: okReport });
+  await waitFor(() => expect(tracked).toHaveLength(1));
+});
+
+it("après création : notification de démarrage, seuls les épisodes du pack quittent la sélection", async () => {
+  window.localStorage.setItem(RIGHTS_KEY, "1");
+  renderEditor(["1", "2"]);
+  await waitFor(() => expect(screen.getByTestId("selection")).toHaveTextContent("1,2"));
+  fireEvent.click(await readyButton());
+  await waitFor(() => expect(tracked).toHaveLength(1));
+  expect(toasts).toEqual([
+    {
+      message:
+        "La création de « Contes » a démarré : suivez-la dans le panneau des tâches.",
+      tone: "success",
+    },
+  ]);
+  // L'épisode 2 était coché mais pas placé dans le pack : il reste coché.
+  expect(screen.getByTestId("selection")).toHaveTextContent(/^2$/);
+});
+
+it("double création : éditeur rouvert pendant la tâche, la création est bloquée", async () => {
+  window.localStorage.setItem(RIGHTS_KEY, "1");
+  const first = renderEditor();
+  fireEvent.click(await readyButton());
+  await waitFor(() => expect(tracked).toHaveLength(1));
+  first.unmount();
+  panelTasks = [{ id: "t1", title: "Contes", kind: "download", state: "running" }];
+  const again = renderEditor();
+  const button = await screen.findByRole("button", { name: "Créer l'histoire" });
+  await screen.findByText(/La création de ce pack est déjà en cours/);
+  expect(button).toBeDisabled();
+  expect(createCalls()).toHaveLength(1);
+  // Tâche en échec, brouillon conservé : on peut relancer.
+  panelTasks = [{ id: "t1", title: "Contes", kind: "download", state: "error" }];
+  again.rerender(editorTree());
+  await waitFor(() => expect(button).toBeEnabled());
+  expect(screen.queryByText(/La création de ce pack est déjà en cours/)).toBeNull();
+});
+
+it("double création : modifier le pack débloque la création d'un autre pack", async () => {
+  window.localStorage.setItem(RIGHTS_KEY, "1");
+  const first = renderEditor();
+  fireEvent.click(await readyButton());
+  await waitFor(() => expect(tracked).toHaveLength(1));
+  first.unmount();
+  panelTasks = [{ id: "t1", title: "Contes", kind: "download", state: "queued" }];
+  renderEditor();
+  const button = await screen.findByRole("button", { name: "Créer l'histoire" });
+  await screen.findByText(/La création de ce pack est déjà en cours/);
+  fireEvent.change(screen.getByLabelText("Titre"), { target: { value: "Autre pack" } });
+  await waitFor(() => expect(button).toBeEnabled());
+});
+
+it("double création : l'envoi de l'éditeur quitté échoue, l'éditeur rouvert se débloque", async () => {
+  window.localStorage.setItem(RIGHTS_KEY, "1");
+  let fail!: () => void;
+  created = () =>
+    new Promise(
+      (_, reject) => (fail = () => reject({ kind: "io", message: "disque plein" })),
+    );
+  const first = renderEditor();
+  fireEvent.click(await readyButton());
+  await waitFor(() => expect(createCalls()).toHaveLength(1));
+  first.unmount();
+  renderEditor();
+  await screen.findByText(/La création de ce pack est déjà en cours/);
+  fail();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Créer l'histoire" })).toBeEnabled(),
+  );
+});
+
+it("double création : éditeur rouvert pendant l'envoi, la création est bloquée", async () => {
+  window.localStorage.setItem(RIGHTS_KEY, "1");
+  let release!: (value: unknown) => void;
+  created = () => new Promise((resolve) => (release = resolve));
+  const first = renderEditor();
+  fireEvent.click(await readyButton());
+  await waitFor(() => expect(createCalls()).toHaveLength(1));
+  first.unmount();
+  renderEditor();
+  await screen.findByText(/La création de ce pack est déjà en cours/);
+  expect(screen.getByRole("button", { name: "Créer l'histoire" })).toBeDisabled();
   release({ task, report: okReport });
   await waitFor(() => expect(tracked).toHaveLength(1));
   expect(createCalls()).toHaveLength(1);

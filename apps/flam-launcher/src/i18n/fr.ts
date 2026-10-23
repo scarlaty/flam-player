@@ -345,6 +345,8 @@ export const fr = {
         checking: "Vérification du pack en cours…",
         checkFailed:
           "La vérification du pack a échoué : modifiez le pack pour la relancer.",
+        inProgress:
+          "La création de ce pack est déjà en cours : suivez-la dans le panneau des tâches, ou modifiez le pack pour en créer un autre.",
         refused: "Le pack n'a pas été créé : corrigez les points suivants.",
         started: (title: string) =>
           `La création de « ${title} » a démarré : suivez-la dans le panneau des tâches.`,

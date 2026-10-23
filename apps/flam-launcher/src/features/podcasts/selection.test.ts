@@ -1,7 +1,6 @@
 import { expect, it } from "vitest";
 import {
   estimateSize,
-  acceptedForShortcut,
   shortcutOutcome,
   MAX_EPISODE_BYTES,
   MAX_EPISODES,
@@ -61,7 +60,7 @@ it("raccourci : garde les épisodes acceptés par les plafonds, saute explicites
     item("big", MAX_EPISODE_BYTES + 1),
     item("b", 10),
   ];
-  expect(acceptedForShortcut(selected, candidates).map((e) => e.id)).toEqual(["b"]);
+  expect(shortcutOutcome(selected, candidates).accepted.map((e) => e.id)).toEqual(["b"]);
 });
 
 it("raccourci : distingue déjà cochés, explicites et plafonds", () => {
@@ -82,16 +81,16 @@ it("raccourci : tient compte du plafond total au fil des ajouts", () => {
   const big = 190_000_000;
   const candidates = [..."abcde"].map((id) => item(id, big));
   candidates.push(item("f", big), item("g", 1));
-  const accepted = acceptedForShortcut([], candidates);
+  const accepted = shortcutOutcome([], candidates).accepted;
   expect(accepted.map((e) => e.id)).toEqual(["a", "b", "c", "d", "e", "g"]);
 });
 
 it("raccourci : s'arrête au plafond du nombre d'épisodes", () => {
   const selected = Array.from({ length: MAX_EPISODES - 2 }, (_, i) => item(`s${i}`, 1));
-  const accepted = acceptedForShortcut(selected, [
+  const accepted = shortcutOutcome(selected, [
     item("a", 1),
     item("b", 1),
     item("c", 1),
-  ]);
+  ]).accepted;
   expect(accepted.map((e) => e.id)).toEqual(["a", "b"]);
 });

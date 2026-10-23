@@ -12,16 +12,24 @@
 //!
 //! # Protocole
 //!
-//! Entrée : 1 octet d'usage (0 épisode, 1 couverture), 3 octets de fond, puis l'image jusqu'à
-//! la fin du flux. Sortie : un octet de statut (0 = succès, sinon [`ArtworkError`] voir
-//! `Tag`) suivi de la charge : largeur et hauteur (u32 petit-boutiste) puis le PNG, ou la
+//! Entrée : 1 octet de version ([`PROTOCOL_VERSION`]), 1 octet d'usage (0 épisode, 1
+//! couverture), 3 octets de fond, puis l'image jusqu'à la fin du flux. Sortie : l'octet de
+//! version, un octet de statut (0 = succès, sinon [`ArtworkError`] voir `Tag`) suivi de la
+//! charge : largeur et hauteur (u32 petit-boutiste) puis le PNG, ou la
 //! taille (u64) / les dimensions (2 × u32) / le message UTF-8 de l'erreur.
 //!
 //! Les garde-fous de taille, de dimensions et de mémoire de [`Artwork::convert_on`] s'appliquent
 //! dans l'enfant ; la taille d'entrée est aussi refusée côté parent, avant tout lancement.
+//!
+//! # Confinement
+//!
+//! Sous Windows, l'enfant est rattaché à un Job Object (plafond mémoire de 512 Mio, arrêt à la
+//! fermeture du job, donc aussi de ses éventuels descendants) et ne déclenche pas la fenêtre de
+//! rapport d'erreurs de Windows s'il s'arrête.
 
 use std::io::{self, Read, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -31,6 +39,16 @@ use super::{Artwork, ArtworkError, ArtworkKind, FLATTEN_BACKGROUND, MAX_INPUT_BY
 pub const DECODE_ARG: &str = "--decode-artwork";
 /// Durée maximale d'un décodage : au-delà, l'enfant est tué.
 pub const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
+/// Version du protocole stdin/stdout, en tête de la requête et de la réponse : un parent et un
+/// enfant de versions différentes se refusent proprement au lieu de mal s'interpréter.
+const PROTOCOL_VERSION: u8 = 1;
+/// Plafond mémoire de l'enfant (Job Object, Windows) : au-dessus du budget de décodage (256 Mio)
+/// et de l'entrée (20 Mio).
+#[cfg(windows)]
+const CHILD_MEMORY_LIMIT: usize = 512 * 1024 * 1024;
+/// Attente maximale de la lecture de la réponse une fois l'enfant terminé : un autre processus
+/// qui aurait hérité du tube ne doit pas bloquer l'appelant.
+const IO_GRACE: Duration = Duration::from_secs(2);
 /// Taille maximale de la réponse lue (un PNG 640 × 480 non compressé fait moins de 1 Mio).
 const MAX_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
 /// Intervalle de surveillance de l'enfant.
@@ -63,6 +81,99 @@ impl Tag {
             7 => Self::Encode,
             _ => return None,
         })
+    }
+}
+
+/// Confinement de l'enfant : Job Object Windows (plafond mémoire, arrêt à la fermeture). Ailleurs,
+/// l'arrêt se limite au processus direct. Le `Job` du convertisseur (`install/convert.rs`) est
+/// lié à `tokio::process::Child` et sans plafond mémoire ; celui-ci suit le même schéma pour
+/// `std::process::Child`.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+    };
+
+    pub struct Job(HANDLE);
+
+    impl Job {
+        /// Crée un job `KILL_ON_JOB_CLOSE` plafonné à `memory` octets par processus et y rattache
+        /// `child`. `None` si une étape échoue : l'enfant tourne alors sans confinement (échec
+        /// ouvert assumé, le confinement est une défense en profondeur ; le délai reste appliqué).
+        pub fn attach(child: &Child, memory: usize) -> Option<Self> {
+            // SAFETY : appels Win32 sur des poignées valides ; structure initialisée à zéro.
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return None;
+                }
+                let job = Job(handle);
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags =
+                    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+                info.ProcessMemoryLimit = memory;
+                let ok = SetInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformation,
+                    std::ptr::addr_of!(info).cast(),
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if ok == 0 || AssignProcessToJobObject(handle, child.as_raw_handle() as _) == 0 {
+                    return None;
+                }
+                Some(job)
+            }
+        }
+
+        pub fn terminate(&self) {
+            // SAFETY : poignée valide tant que `self` existe.
+            unsafe {
+                TerminateJobObject(self.0, 1);
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY : poignée possédée, fermée une seule fois (tue le job s'il vit encore).
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+/// Enfant et son confinement.
+struct Confined {
+    child: Child,
+    #[cfg(windows)]
+    job: Option<job::Job>,
+}
+
+impl Confined {
+    fn new(child: Child) -> Self {
+        #[cfg(windows)]
+        let job = job::Job::attach(&child, CHILD_MEMORY_LIMIT);
+        Self {
+            child,
+            #[cfg(windows)]
+            job,
+        }
+    }
+
+    /// Tue l'enfant (et son job) et le récupère.
+    fn kill(&mut self) {
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            job.terminate();
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -121,30 +232,38 @@ pub fn convert_isolated_with(
         .map_err(|e| isolated("lancement du décodeur", &e))?;
     let mut stdin = child.stdin.take().expect("entrée en tube");
     let stdout = child.stdout.take().expect("sortie en tube");
+    // Rattaché avant d'écrire l'entrée : l'enfant n'a encore rien à décoder.
+    let mut child = Confined::new(child);
 
-    let mut input = Vec::with_capacity(bytes.len() + 4);
+    let mut input = Vec::with_capacity(bytes.len() + 5);
+    input.push(PROTOCOL_VERSION);
     input.push(kind_byte(kind));
     input.extend_from_slice(&bg);
     input.extend_from_slice(bytes);
     // Écriture et lecture dans des fils : l'enfant peut remplir son tube de sortie avant d'avoir
     // fini de lire son entrée, et un enfant mort ferme les deux tubes (le fil se termine).
-    let writer = thread::spawn(move || {
+    // Aucun des deux n'est joint : si un autre processus a hérité d'un tube, le fil reste
+    // bloqué mais l'appelant n'attend que `IO_GRACE` (le fil se termine avec le tube).
+    thread::spawn(move || {
         let _ = stdin.write_all(&input);
         // `stdin` est fermé ici : fin de flux pour l'enfant.
     });
-    let reader = thread::spawn(move || {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
         let mut out = Vec::new();
-        stdout.take(MAX_OUTPUT_BYTES + 1).read_to_end(&mut out)?;
-        io::Result::Ok(out)
+        let r = stdout
+            .take(MAX_OUTPUT_BYTES + 1)
+            .read_to_end(&mut out)
+            .map(|_| out);
+        let _ = tx.send(r);
     });
 
     let deadline = Instant::now() + timeout;
     let status = loop {
-        match child.try_wait() {
+        match child.child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
+                child.kill();
                 break Err(ArtworkError::Isolated(format!(
                     "décodeur arrêté après {} s",
                     timeout.as_secs()
@@ -152,20 +271,30 @@ pub fn convert_isolated_with(
             }
             Ok(None) => thread::sleep(POLL),
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                child.kill();
                 break Err(isolated("attente du décodeur", &e));
             }
         }
     };
-    let _ = writer.join();
-    let output = reader.join().ok().and_then(Result::ok).unwrap_or_default();
     let status = status?;
     if !status.success() {
         return Err(ArtworkError::Isolated(format!(
             "décodeur interrompu ({status})"
         )));
     }
+    // Un descendant qui garde le tube ouvert : on le tue avec le job, puis on attend encore un
+    // court instant la fin de la lecture.
+    let output = match rx.recv_timeout(IO_GRACE) {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(isolated("lecture de la réponse", &e)),
+        Err(_) => {
+            child.kill();
+            rx.recv_timeout(IO_GRACE)
+                .ok()
+                .and_then(Result::ok)
+                .ok_or_else(|| isolated("lecture de la réponse", &"délai dépassé"))?
+        }
+    };
     parse_response(&output, kind)
 }
 
@@ -175,7 +304,11 @@ fn parse_response(out: &[u8], kind: ArtworkKind) -> Result<Artwork, ArtworkError
     if out.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(bad("trop longue"));
     }
-    let (&status, rest) = out.split_first().ok_or_else(|| bad("vide"))?;
+    let (&version, out) = out.split_first().ok_or_else(|| bad("vide"))?;
+    if version != PROTOCOL_VERSION {
+        return Err(bad("version de protocole inconnue"));
+    }
+    let (&status, rest) = out.split_first().ok_or_else(|| bad("tronquée"))?;
     let tag = Tag::from_byte(status).ok_or_else(|| bad("statut inconnu"))?;
     let u32_at = |i: usize| -> Result<u32, ArtworkError> {
         rest.get(i..i + 4)
@@ -220,7 +353,7 @@ fn parse_response(out: &[u8], kind: ArtworkKind) -> Result<Artwork, ArtworkError
 
 /// Écrit la réponse pour `result`.
 fn write_response(out: &mut impl Write, result: Result<Artwork, ArtworkError>) -> io::Result<()> {
-    let mut buf = Vec::new();
+    let mut buf = vec![PROTOCOL_VERSION];
     match result {
         Ok(a) => {
             buf.push(Tag::Ok as u8);
@@ -270,10 +403,13 @@ fn serve(
     // Une lecture de plus que la borne : une entrée trop grande est refusée sans tout lire.
     let mut req = Vec::new();
     input
-        .take(MAX_INPUT_BYTES as u64 + 5)
+        .take(MAX_INPUT_BYTES as u64 + 6)
         .read_to_end(&mut req)?;
     let result = match req.as_slice() {
-        [k, r, g, b, image @ ..] => match kind_from_byte(*k) {
+        [v, ..] if *v != PROTOCOL_VERSION => {
+            Err(ArtworkError::Decode("version de protocole inconnue".into()))
+        }
+        [_, k, r, g, b, image @ ..] => match kind_from_byte(*k) {
             Some(kind) => decode(image, kind, [*r, *g, *b]),
             None => Err(ArtworkError::Decode("requête invalide".into())),
         },
@@ -282,9 +418,23 @@ fn serve(
     write_response(output, result)
 }
 
+/// Pas de fenêtre de rapport d'erreurs Windows si l'enfant s'arrête (abandon du profil release,
+/// mémoire refusée) : elle resterait affichée jusqu'au délai.
+fn quiet_crashes() {
+    #[cfg(windows)]
+    // SAFETY : réglage du mode d'erreur du processus courant, sans pointeur.
+    unsafe {
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX,
+        };
+        SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+    }
+}
+
 /// Point d'entrée de l'enfant (`--decode-artwork`) : entrée et sortie standard. Rend le code
 /// de sortie du processus (0 : réponse écrite, y compris pour une image refusée).
 pub fn run_child() -> i32 {
+    quiet_crashes();
     // Garde-fou : si le parent disparaît, l'enfant ne tourne pas indéfiniment.
     thread::spawn(|| {
         thread::sleep(CHILD_TIMEOUT + Duration::from_secs(5));
@@ -314,6 +464,8 @@ mod tests {
         let Ok(mode) = std::env::var(CHILD_ENV) else {
             return;
         };
+        // Comme `run_child` : un abandon ne doit pas ouvrir la fenêtre de rapport d'erreurs.
+        quiet_crashes();
         match mode.as_str() {
             // panic d'un décodeur : en profil test le panic est rattrapé par le harnais (sortie 101),
             // l'abandon du profil release est couvert par le mode `abort`.
@@ -326,6 +478,20 @@ mod tests {
             }
             "abort" => std::process::abort(),
             "sleep" => thread::sleep(Duration::from_secs(60)),
+            "sleep_court" => thread::sleep(Duration::from_secs(8)),
+            "alloc" => {
+                // Dépasse le plafond du job : l'allocation échoue, donc abandon.
+                let mut v = vec![1u8; 900 * 1024 * 1024];
+                v[12345] = 2;
+                std::hint::black_box(&v);
+            }
+            "heritier" => {
+                // petit-enfant dormant qui hérite des tubes, puis l'enfant sort sans réponse
+                let _ = Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "podcast::artwork::isolated::tests::enfant"])
+                    .env(CHILD_ENV, "sleep_court")
+                    .spawn();
+            }
             "garbage" => {
                 let _ = io::stdout().write_all(b"pas une reponse");
             }
@@ -390,6 +556,23 @@ mod tests {
         ));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn le_plafond_memoire_du_job_arrete_l_enfant() {
+        assert!(matches!(
+            run("alloc", Duration::from_secs(60)),
+            Err(ArtworkError::Isolated(m)) if m.contains("interrompu")
+        ));
+    }
+
+    #[test]
+    fn un_descendant_qui_garde_le_tube_ne_bloque_pas() {
+        let start = Instant::now();
+        let r = run("heritier", Duration::from_secs(60));
+        assert!(matches!(r, Err(ArtworkError::Isolated(_))), "{r:?}");
+        assert!(start.elapsed() < Duration::from_secs(20));
+    }
+
     #[test]
     fn un_binaire_absent_est_une_erreur() {
         let cmd = Command::new("flam-decodeur-inexistant-xyz");
@@ -414,7 +597,7 @@ mod tests {
     /// Aller-retour du protocole, sans processus : image valide, puis chaque erreur.
     #[test]
     fn protocole_aller_retour() {
-        let mut req = vec![1u8, 0xff, 0xff, 0xff];
+        let mut req = vec![PROTOCOL_VERSION, 1u8, 0xff, 0xff, 0xff];
         req.extend_from_slice(JPEG);
         let mut out = Vec::new();
         serve(&mut Cursor::new(req), &mut out, Artwork::convert_on).unwrap();
@@ -443,7 +626,12 @@ mod tests {
 
     #[test]
     fn requetes_et_reponses_malformees() {
-        for req in [&[][..], &[0, 1, 2][..], &[9, 0, 0, 0, 1, 2][..]] {
+        for req in [
+            &[][..],
+            &[1, 0, 1, 2][..],
+            &[1, 9, 0, 0, 0, 1, 2][..],
+            &[2, 0, 0, 0, 0, 1, 2][..],
+        ] {
             let mut out = Vec::new();
             serve(
                 &mut Cursor::new(req.to_vec()),
@@ -459,7 +647,7 @@ mod tests {
         // image refusée par le décodeur : erreur transmise telle quelle
         let mut out = Vec::new();
         serve(
-            &mut Cursor::new(vec![0, 0, 0, 0, b'x', b'y']),
+            &mut Cursor::new(vec![1, 0, 0, 0, 0, b'x', b'y']),
             &mut out,
             Artwork::convert_on,
         )
@@ -468,7 +656,15 @@ mod tests {
             parse_response(&out, ArtworkKind::Cover),
             Err(ArtworkError::UnsupportedFormat)
         ));
-        for out in [&[][..], &[99][..], &[4, 1][..], &[0, 1, 0, 0, 0][..]] {
+        for out in [
+            &[][..],
+            &[1][..],
+            &[1, 99][..],
+            &[1, 4, 1][..],
+            &[1, 0, 1, 0, 0, 0][..],
+            &[2, 1][..],
+            &[0, 1][..],
+        ] {
             assert!(matches!(
                 parse_response(out, ArtworkKind::Cover),
                 Err(ArtworkError::Isolated(_))
