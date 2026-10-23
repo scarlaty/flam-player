@@ -173,6 +173,11 @@ impl Redactor {
 
     /// Message d'erreur d'une seule ligne, sans profil ni nom d'utilisateur, tronqué à
     /// [`MAX_ERROR_LEN`] caractères, puis [`Self::scrub`].
+    ///
+    /// Le message est nettoyé à l'enregistrement ([`record_error`]) puis une seconde fois au rendu
+    /// ([`build`]), volontairement (filet si un message entre sans passer par `record_error`).
+    /// Le second passage est sans effet visible : un message déjà tronqué (`…` compris) garde son
+    /// texte, et `%CACHE%`, `%USERNAME%` ou `<masqué>` ne se remasquent pas.
     pub fn clean_message(&self, message: &str) -> String {
         let mut text: String = message
             .chars()
@@ -185,12 +190,22 @@ impl Redactor {
         for (path, with) in paths {
             let Some(path) = path else { continue };
             let path = path.trim_end_matches(['\\', '/']);
+            // Un cache réglé sur `C:\Users` ne doit pas faire passer le nom d'un autre compte pour
+            // un sous-dossier du cache (`%CACHE%\Marie\x`) : il est ignoré, `mask_users_segment`
+            // masque alors le segment (revue #338).
+            if is_users_dir(path) {
+                continue;
+            }
             if path.chars().count() >= 3 {
                 text = replace_ci(&text, path, with);
                 text = replace_ci(&text, &path.replace('\\', "/"), with);
             }
         }
         text = mask_users_segment(&text);
+        // Nom d'utilisateur hors `\Users\` : remplacé comme mot entier, partout dans le message
+        // (un compte `flam` ou `test` masque aussi ces mots ailleurs : sur-masquage voulu). Sous
+        // 3 caractères, jamais remplacé hors `\Users\` : `a` ou `bo` mettraient le texte en
+        // lambeaux ; le segment de `\Users\` reste masqué quelle que soit sa longueur.
         if let Some(name) = &self.username {
             if name.chars().count() >= 3 {
                 text = replace_word_ci(&text, name, "%USERNAME%");
@@ -229,6 +244,13 @@ impl Redactor {
     }
 }
 
+/// Vrai si le dernier segment de `path` est `Users` (casse indifférente) : dossier des profils.
+fn is_users_dir(path: &str) -> bool {
+    path.rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|last| last.eq_ignore_ascii_case("users"))
+}
+
 /// Caractère d'un mot examiné par [`mask_token`] : alphabet base64 (standard et URL).
 fn is_token_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '-' | '_')
@@ -263,7 +285,9 @@ fn mask_token(token: &str) -> String {
 }
 
 /// Vrai si `token` (alphabet base64) ressemble à du base64 : voir [`MIN_BASE64_RUN`] et
-/// [`MIN_BASE64_LETTERS_RUN`].
+/// [`MIN_BASE64_LETTERS_RUN`]. L'alphabet accepte aussi `_` et `-` (base64 URL) : un long
+/// identifiant en casse mixte avec un chiffre (`Mon_Dossier-2024-Final`) est donc masqué
+/// (sur-masquage inoffensif).
 fn looks_base64(token: &str) -> bool {
     let count = |f: fn(&u8) -> bool| token.bytes().filter(f).count();
     let digits = count(u8::is_ascii_digit);
@@ -276,6 +300,9 @@ fn looks_base64(token: &str) -> bool {
     {
         return true;
     }
+    // Premier critère : un chemin à `/` qui mêle chiffres et deux casses (`/Data2/Flam/Work`)
+    // est masqué en entier. Sur-masquage voulu : le base64 standard contient `/`, et une clé qui
+    // fuit coûte plus cher qu'un chemin illisible dans un diagnostic.
     // Sans chiffre ni remplissage : jamais un chemin (`/FLAMCACHE/work/stories`).
     let letters = upper + lower;
     token.len() >= MIN_BASE64_LETTERS_RUN
@@ -365,31 +392,49 @@ fn replace_matching(
     with: &str,
     accept: impl Fn(Option<char>, Option<char>) -> bool,
 ) -> String {
-    let lower = |s: &str| -> Vec<char> { s.chars().flat_map(char::to_lowercase).collect() };
-    let needle = lower(needle);
+    let needle: Vec<char> = needle.chars().flat_map(char::to_lowercase).collect();
     if needle.is_empty() {
         return text.to_string();
     }
-    // Comparaison caractère par caractère (la mise en minuscules peut changer la longueur :
-    // on compare chaque caractère d'origine à sa forme minuscule d'un seul caractère).
+    // Texte mis en minuscules (une lettre peut donner plusieurs caractères : `İ` → `i̇`), avec
+    // pour chaque caractère minuscule l'indice du caractère d'origine dont il vient.
     let chars: Vec<char> = text.chars().collect();
-    let folded: Vec<char> = chars
-        .iter()
-        .map(|c| c.to_lowercase().next().unwrap_or(*c))
-        .collect();
+    let mut folded: Vec<char> = Vec::with_capacity(chars.len());
+    let mut origin: Vec<usize> = Vec::with_capacity(chars.len() + 1);
+    for (k, c) in chars.iter().enumerate() {
+        for low in c.to_lowercase() {
+            folded.push(low);
+            origin.push(k);
+        }
+    }
+    origin.push(chars.len());
     let mut out = String::with_capacity(text.len());
-    let mut i = 0;
+    let mut i = 0; // indice dans `chars`
+    let mut f = 0; // indice dans `folded` du premier caractère minuscule de `chars[i]`
     while i < chars.len() {
-        let end = i + needle.len();
-        if end <= chars.len()
-            && folded[i..end] == needle[..]
-            && accept(i.checked_sub(1).map(|k| chars[k]), chars.get(end).copied())
+        let end = f + needle.len();
+        // Le motif doit finir sur une frontière de caractère d'origine.
+        if end <= folded.len()
+            && folded[f..end] == needle[..]
+            && (end == folded.len() || origin[end] != origin[end - 1])
         {
-            out.push_str(with);
-            i = end;
-        } else {
-            out.push(chars[i]);
-            i += 1;
+            let after = origin[end];
+            if accept(
+                i.checked_sub(1).map(|k| chars[k]),
+                chars.get(after).copied(),
+            ) {
+                out.push_str(with);
+                i = after;
+                while f < folded.len() && origin[f] < i {
+                    f += 1;
+                }
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+        while f < folded.len() && origin[f] < i {
+            f += 1;
         }
     }
     out
@@ -400,6 +445,10 @@ fn replace_matching(
 /// Windows (`| < > ; , = + * ? [ ]`), à une fin de ligne ou, par compromis (chemin cité entre
 /// parenthèses), à `)` qui est pourtant permis : un nom avec une espace ou une apostrophe
 /// (`Jean Dupont`, `O'Brien`) est masqué en entier.
+///
+/// Sans séparateur après le nom, le segment va jusqu'à la fin de la ligne : `C:\Users\bob (accès
+/// refusé)` donne `C:\Users\%USERNAME%` et perd la raison. Sur-masquage voulu : couper à
+/// l'espace ou à ` (` laisserait fuiter la fin d'un nom composé (`Jean Dupont`, `Bob (pro)`).
 fn mask_users_segment(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -1053,11 +1102,15 @@ pub fn build(inputs: &Inputs<'_>) -> String {
 
     let report = detect::detect(inputs.env);
     let _ = writeln!(out, "- Flam détectées : {}\n", report.devices.len());
-    match report.devices.first() {
-        Some(device) => device_section(&mut out, inputs, device),
-        None => {
-            let _ = writeln!(out, "Aucune Flam détectée : diagnostic réduit.\n");
+    if report.devices.is_empty() {
+        let _ = writeln!(out, "Aucune Flam détectée : diagnostic réduit.\n");
+    }
+    let total = report.devices.len();
+    for (n, device) in report.devices.iter().enumerate() {
+        if total > 1 {
+            let _ = writeln!(out, "**Flam {} sur {total}**\n", n + 1);
         }
+        device_section(&mut out, inputs, device);
     }
 
     let _ = writeln!(out, "### Erreurs de la session\n");
