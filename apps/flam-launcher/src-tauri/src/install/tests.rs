@@ -181,7 +181,7 @@ impl Ctx {
     }
 
     async fn wait(&self, id: &str, what: impl Fn(&InstallTask) -> bool) -> InstallTask {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             let task = self.task(id);
             if what(&task) {

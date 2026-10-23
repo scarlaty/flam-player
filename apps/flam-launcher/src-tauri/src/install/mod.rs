@@ -919,7 +919,7 @@ impl InstallService {
             // L'archive de travail est supprimée à la fin de la préparation : son chemin (qui
             // contient le nom d'utilisateur) n'a rien à faire dans `library.json`. Une source
             // vide est neutre : `PACK_SOURCE_ID` n'est pas un dossier connu (`library_source::check`
-            // la juge `Unknown`) et le player ne lit que `library.json` pour le chemin installé.
+            // la juge `Unknown`) et `player::folder_target` ne sert qu'aux sources dossier.
             source.download_url.clear();
         }
         let cache_root = tc.cache_root.clone();
