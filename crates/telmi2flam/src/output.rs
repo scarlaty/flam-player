@@ -864,6 +864,7 @@ mod tests {
             warnings: Vec::new(),
             title: "Titre".to_owned(),
             uuid: [0xAB; 16],
+            stats: Default::default(),
         }
     }
 

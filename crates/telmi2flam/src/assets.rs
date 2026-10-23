@@ -141,9 +141,24 @@ pub struct StoryAssets<'a, R> {
     resample_cache: HashMap<([u8; 16], usize), Result<String, String>>,
     /// Fichiers rééchantillonnés (`stats["resampled"]`, compté par fichier, cache compris).
     pub resampled: usize,
-    /// Lignes d'information `  i …` de Python (rééchantillonnage réussi), sans le préfixe.
-    /// Pas encore affichées ni émises en progression (#131).
+    /// Lignes d'information `  i …` de Python (rééchantillonnage réussi), sans le préfixe ;
+    /// aussi transmises tout de suite à [`Progress::info`].
     pub infos: Vec<String>,
+    /// Compteurs du résumé humain (`stats` de Python).
+    pub stats: AssetStats,
+    /// Assets illisibles remplacés (`bad` de Python : images, puis couverture).
+    pub bad: Vec<String>,
+}
+
+/// Compteurs de `stats` de `_convert` pour les assets (`img`, `audio`, `mp3map`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AssetStats {
+    /// Images converties (sans le cache, sans les illisibles).
+    pub img: usize,
+    /// Audios copiés (sans le cache, sans les manquants).
+    pub audio: usize,
+    /// Tables de seek (`.mp3map`) produites.
+    pub mp3map: usize,
 }
 
 impl<'a, R: Read + Seek> StoryAssets<'a, R> {
@@ -169,6 +184,8 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
             resample_cache: HashMap::new(),
             resampled: 0,
             infos: Vec::new(),
+            stats: AssetStats::default(),
+            bad: Vec::new(),
         }
     }
 
@@ -267,10 +284,12 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
                             data = new;
                             map = map2;
                             self.resampled += 1;
-                            self.infos.push(format!(
+                            let info = format!(
                                 "{label} : {rates} Hz -> {SAMPLERATE} Hz \
                                  (reechantillonne avec ffmpeg)"
-                            ));
+                            );
+                            self.progress.info(&info);
+                            self.infos.push(info);
                             None
                         }
                         Err(why) => Some(why),
@@ -287,6 +306,7 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
                     }
                 }
                 self.out.insert(format!("{pk_name}map"), map.data);
+                self.stats.mp3map += 1;
             }
             Err(e) => self.warn("mp3map_failed", format!("mp3map echoue pour {label} : {e}")),
         }
@@ -341,6 +361,7 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
                     "image_unreadable",
                     format!("image illisible {name} ({why}) -> empty.lif"),
                 );
+                self.bad.push(name.to_owned());
                 let out = Some("empty.lif".to_owned());
                 self.img_cache.insert(key, out.clone());
                 self.progress.tick(Phase::Images);
@@ -353,6 +374,7 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
         let lif_name = self.names.alloc("img/", &base, ".lif");
         self.out.insert(format!("img/{lif_name}"), lif);
         self.img_cache.insert(key, Some(lif_name.clone()));
+        self.stats.img += 1;
         self.progress.tick(Phase::Images);
         Ok(Some(lif_name))
     }
@@ -381,6 +403,7 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
         let pk_name = format!("sounds/{out_name}");
         self.add_mp3map(&pk_name, data, name)?;
         self.audio_cache.insert(name.to_owned(), out_name.clone());
+        self.stats.audio += 1;
         self.progress.tick(Phase::Audio);
         Ok(Some(out_name))
     }

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::archive::Archive;
 use crate::error::ConvError;
 use crate::output::{write_package_progress, Target};
-use crate::package::{build_package_with, Options};
+use crate::package::{build_package_with, Options, Stats};
 use crate::progress::Reporter;
 
 /// Conversion demandée.
@@ -36,6 +36,12 @@ pub struct Report {
     pub size: u64,
     /// Avertissements émis.
     pub warnings: u64,
+    /// Titre de l'histoire (résumé humain).
+    pub title: String,
+    /// Compteurs du résumé humain.
+    pub stats: Stats,
+    /// Seul le dossier `.plain` a été écrit (`-o` finissant par `.plain`).
+    pub dir_only: bool,
 }
 
 /// Convertit `req.input`. Émet `start` avant toute lecture, puis les étapes et
@@ -62,6 +68,9 @@ pub fn convert(
     };
     reporter.done(target.out_path.as_os_str(), size);
     Ok(Report {
+        title: package.title,
+        stats: package.stats,
+        dir_only: target.dir_only,
         output: target.out_path,
         published,
         size,
