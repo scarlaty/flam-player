@@ -1,8 +1,11 @@
 //! Lecture tolérante d'un flux RSS 2.0 avec extensions iTunes (#210).
 //!
-//! Logique pure : le contenu du flux est déjà téléchargé, aucun accès réseau ni Tauri. La
-//! conversion en `StoryEntry` (identifiant stable dérivé de l'URL du flux, genre d'archive) est
-//! laissée à la source « Podcast » (#211) : elle dépend de l'URL du flux, que ce module ignore.
+//! Logique pure : le contenu du flux est déjà téléchargé, aucun accès réseau ni Tauri. Ce module
+//! ignore l'URL du flux et ne dérive aucun identifiant stable de flux : dans le modèle « pack »
+//! (`docs/podcasts.md`, § 2.2), chaque pack est une nouvelle histoire à uuid aléatoire, sans
+//! identité liée au flux. Il se borne à fournir les épisodes (leur `guid` les distingue dans le
+//! flux) ; la composition du pack et sa conversion en archive sont l'affaire des tâches
+//! suivantes (#211 et suivantes).
 //!
 //! # Garanties
 //!
@@ -30,6 +33,10 @@
 //!   canal (`itunes:author`), sinon `copyright`.
 //! - Identifiant `guid` absent : URL de l'enclosure.
 //! - Description : `description`, sinon `itunes:summary`.
+//! - Contenu explicite (`itunes:explicit`, #361) : valeurs `true`, `yes`, `explicit` (explicite)
+//!   et `false`, `no`, `clean` (non explicite), casse et espaces ignorés. Toute autre valeur est
+//!   ignorée, une valeur absente reste inconnue (`None`). Un épisode sans valeur exploitable
+//!   hérite de celle du canal.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -100,6 +107,8 @@ pub struct PodcastEpisode {
     pub enclosure_type: String,
     /// Taille annoncée de l'enclosure en octets, si connue (non vérifiée).
     pub enclosure_length: Option<u64>,
+    /// Contenu explicite (`itunes:explicit` de l'épisode, sinon du canal) ; `None` si inconnu.
+    pub explicit: Option<bool>,
 }
 
 /// Un flux podcast normalisé.
@@ -113,6 +122,8 @@ pub struct PodcastFeed {
     /// URL (http ou https) du site.
     pub link: Option<String>,
     pub copyright: Option<String>,
+    /// Contenu explicite déclaré par le canal (`itunes:explicit`) ; `None` si inconnu.
+    pub explicit: Option<bool>,
     /// Épisodes exploitables, dans l'ordre du flux.
     pub episodes: Vec<PodcastEpisode>,
     /// Épisodes ou éléments ignorés, au plus 50 messages détaillés.
@@ -544,6 +555,21 @@ fn parse_iso_date(raw: &str) -> Option<String> {
     iso_utc(y, mo, d, h, mi, s, offset)
 }
 
+/// `itunes:explicit` : `true`/`yes`/`explicit` ou `false`/`no`/`clean` (casse et espaces
+/// ignorés). Toute autre valeur donne `None`.
+fn parse_explicit(raw: &str) -> Option<bool> {
+    let raw = raw.trim();
+    // Aucune valeur valide ne dépasse 8 caractères : inutile de copier un texte géant.
+    if raw.len() > 16 {
+        return None;
+    }
+    match raw.to_ascii_lowercase().as_str() {
+        "true" | "yes" | "explicit" => Some(true),
+        "false" | "no" | "clean" => Some(false),
+        _ => None,
+    }
+}
+
 /// `itunes:duration` : secondes (`3600`), `MM:SS` ou `HH:MM:SS`. Non nul, plafonné à 100 h.
 fn parse_duration(raw: &str) -> Option<u32> {
     let raw = raw.trim();
@@ -652,6 +678,7 @@ struct ItemBuilder {
     author: Option<String>,
     image: Option<String>,
     trailer: bool,
+    explicit: Option<bool>,
     enclosure: Option<Enclosure>,
 }
 
@@ -665,6 +692,7 @@ struct FeedBuilder {
     author: Option<String>,
     image: Option<String>,
     itunes_image: Option<String>,
+    explicit: Option<bool>,
 }
 
 struct State {
@@ -821,6 +849,9 @@ impl State {
                             .take()
                             .or_else(|| non_empty(clean_line(&raw, MAX_AUTHOR_CHARS)))
                     }
+                    "itunes:explicit" => {
+                        item.explicit = item.explicit.or_else(|| parse_explicit(&raw))
+                    }
                     "itunes:episodetype" => {
                         item.trailer = clean_line(&raw, 20).eq_ignore_ascii_case("trailer")
                     }
@@ -847,6 +878,7 @@ impl State {
                         .take()
                         .or_else(|| non_empty(clean_line(&raw, MAX_AUTHOR_CHARS)))
                 }
+                "itunes:explicit" => f.explicit = f.explicit.or_else(|| parse_explicit(&raw)),
                 "itunes:author" => {
                     f.author = f
                         .author
@@ -905,6 +937,7 @@ impl State {
             enclosure_url: enclosure.url,
             enclosure_type: enclosure.mime,
             enclosure_length: enclosure.length,
+            explicit: item.explicit,
         });
     }
 }
@@ -1004,6 +1037,9 @@ pub fn parse_feed(bytes: &[u8]) -> Result<PodcastFeed, RssError> {
         if episode.author.is_none() {
             episode.author.clone_from(&author_fallback);
         }
+        if episode.explicit.is_none() {
+            episode.explicit = f.explicit;
+        }
     }
     Ok(PodcastFeed {
         title: f.title.unwrap_or_else(|| "Podcast sans titre".to_string()),
@@ -1011,6 +1047,7 @@ pub fn parse_feed(bytes: &[u8]) -> Result<PodcastFeed, RssError> {
         image: channel_image,
         link: f.link,
         copyright: f.copyright,
+        explicit: f.explicit,
         episodes: state.episodes,
         warnings: state.warnings,
     })
