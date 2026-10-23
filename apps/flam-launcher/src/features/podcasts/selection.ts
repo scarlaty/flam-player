@@ -8,11 +8,8 @@ export const MAX_PACK_BYTES = 1_073_741_824;
 /** Débit supposé quand la taille n'est pas annoncée : 192 kbit/s, le cas le plus coûteux (D5, D6). */
 const FALLBACK_BYTES_PER_SECOND = 24_000;
 
-/**
- * Raccourci « N derniers épisodes » : au choix du mainteneur (spec § 9, #212). Désactivé tant
- * qu'il n'a pas tranché ; la fonction `latestIds` reste prête.
- */
-export const LATEST_SHORTCUT_ENABLED = false;
+/** Raccourci « N derniers épisodes » : 10 par défaut ; la sélection reste libre (#220, spec § 9). */
+export const LATEST_DEFAULT_COUNT = 10;
 
 /** Taille d'un épisode : annoncée par l'enclosure, sinon durée × débit (D5), sinon inconnue. */
 export interface SizeEstimate {
@@ -95,4 +92,23 @@ export function refusalFor(
 /** Identifiants des `n` premiers épisodes (liste déjà triée par date décroissante). */
 export function latestIds(episodes: readonly Pick<Episode, "id">[], n: number): string[] {
   return episodes.slice(0, Math.max(0, n)).map((e) => e.id);
+}
+
+/**
+ * Épisodes que le raccourci « N derniers » peut cocher : parcourt `candidates` dans l'ordre et
+ * garde ceux que les plafonds acceptent (D1, N9), en tenant compte de ceux déjà retenus dans la
+ * foulée. Les épisodes explicites ne sont pas cochés d'office (D8) ; les doublons sont ignorés.
+ */
+export function acceptedForShortcut(
+  selected: readonly SelectedEpisode[],
+  candidates: readonly SelectedEpisode[],
+): SelectedEpisode[] {
+  const accepted: SelectedEpisode[] = [];
+  for (const candidate of candidates) {
+    if (candidate.explicit) continue;
+    if (refusalFor([...selected, ...accepted], candidate) === null) {
+      accepted.push(candidate);
+    }
+  }
+  return accepted;
 }
