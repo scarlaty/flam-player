@@ -118,6 +118,7 @@ Depuis `apps/flam-launcher/` :
 | `npm run build:player`               | Compile `flam-player.exe` (Release) et rassemble `SDL2.dll` et les licences          |
 | `npm run build:installer`            | Enchaîne notices, converter, ffmpeg, player puis produit l'installateur NSIS complet |
 | `npm run test:e2e`                   | Test de bout en bout (voir « Test de bout en bout »)                                 |
+| `npm run screenshots`                | Captures du README racine dans `docs/assets/` (Edge, ffmpeg pour le GIF ; hors CI)   |
 
 Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
 
