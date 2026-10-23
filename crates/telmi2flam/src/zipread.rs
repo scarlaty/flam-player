@@ -550,7 +550,7 @@ impl<R: Read + Seek> ZipReader<R> {
             decompressor: Decompress::new(false),
             tail: Vec::new(),
         }
-        .read_all(zinfo)
+        .read_all(zinfo, MAX_N)
     }
 }
 
@@ -622,29 +622,35 @@ impl<R: Read> ExtFile<'_, R> {
         Ok((out, pos, false, produced))
     }
 
-    fn read_all(mut self, zinfo: &Entry) -> Result<Vec<u8>, ZipError> {
+    /// `ZipExtFile.read()` ; `max_n` est `MAX_N` (paramétré pour tester les bornes de tour
+    /// sans produire 2 Gio).
+    fn read_all(mut self, zinfo: &Entry, max_n: usize) -> Result<Vec<u8>, ZipError> {
         let mut out = Vec::new();
         let mut crc = crc32fast::Hasher::new();
         let mut eof = false;
         while !eof {
-            // _read1(MAX_N)
+            // _read1(max_n)
             let mut chunk = if self.deflate {
                 let mut data = std::mem::take(&mut self.tail);
-                if MAX_N > data.len() {
-                    let more = self.read2(MAX_N - data.len())?;
+                if max_n > data.len() {
+                    let more = self.read2(max_n - data.len())?;
                     data.extend_from_slice(&more);
                 }
                 let keep = usize::try_from(self.left).unwrap_or(usize::MAX);
-                let (chunk, used, stream_end, produced) = self.inflate(&data, MAX_N, keep)?;
-                if !stream_end && produced >= MAX_N {
+                let (chunk, used, stream_end, produced) = self.inflate(&data, max_n, keep)?;
+                if !stream_end && produced >= max_n {
                     self.tail = data[used..].to_vec();
                 }
                 // Le flush() final ne rend rien de plus : chaque tour vide déjà la sortie
                 // (Z_SYNC_FLUSH).
-                eof = stream_end || (self.compress_left == 0 && self.tail.is_empty());
+                // Tour plein sans fin de flux : miniz_oxide peut avoir consommé toute l'entrée
+                // en gardant de la sortie en attente (zlib laisserait ces octets dans
+                // `unconsumed_tail`) ; un tour de plus la vide.
+                eof = stream_end
+                    || (self.compress_left == 0 && self.tail.is_empty() && produced < max_n);
                 chunk
             } else {
-                let data = self.read2(MAX_N)?;
+                let data = self.read2(max_n)?;
                 eof = self.compress_left == 0;
                 data
             };
@@ -734,6 +740,72 @@ mod tests {
         z.extend_from_slice(&u32::MAX.to_le_bytes());
         z.extend_from_slice(&0u16.to_le_bytes());
         z
+    }
+
+    /// Sortie de taille exactement égale à un tour (`MAX_N`), à un multiple, ou à ±1 : le flux
+    /// se termine pile à la borne (NIT de #161 : « 1 Gio pile en un tour »). `MAX_N` vaut
+    /// `2^31 - 1` : on teste la même logique avec un tour de 5000 octets.
+    #[test]
+    fn sortie_aux_bornes_d_un_tour() {
+        use flate2::write::DeflateEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        const TOUR: usize = 5000;
+        let mut seed = 7u32;
+        let mut noise = |n: usize| -> Vec<u8> {
+            (0..n)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                    (seed >> 16) as u8
+                })
+                .collect()
+        };
+        for size in [
+            TOUR - 1,
+            TOUR,
+            TOUR + 1,
+            2 * TOUR - 1,
+            2 * TOUR,
+            2 * TOUR + 1,
+            3 * TOUR,
+        ] {
+            for content in [noise(size), vec![b'a'; size]] {
+                let mut enc = DeflateEncoder::new(Vec::new(), Compression::new(6));
+                enc.write_all(&content).unwrap();
+                let comp = enc.finish().unwrap();
+                let crc = crc32fast::hash(&content);
+                let entry = Entry {
+                    filename: "x".into(),
+                    orig_filename: "x".into(),
+                    flag_bits: 0,
+                    compress_type: ZIP_DEFLATED,
+                    crc,
+                    compress_size: comp.len() as u64,
+                    file_size: size as u64,
+                    header_offset: 0,
+                    end_offset: 0,
+                };
+                // Avec et sans octets après la fin du flux (cas où `tail` est non vide).
+                for extra in [0usize, 1, 100] {
+                    let mut data = comp.clone();
+                    data.extend(std::iter::repeat_n(0x55u8, extra));
+                    let mut cursor = IoCursor::new(data.clone());
+                    let ext = ExtFile {
+                        reader: &mut cursor,
+                        deflate: true,
+                        compress_left: data.len() as u64,
+                        left: size as u64,
+                        decompressor: Decompress::new(false),
+                        tail: Vec::new(),
+                    };
+                    let got = ext
+                        .read_all(&entry, TOUR)
+                        .unwrap_or_else(|e| panic!("taille {size}, {extra} octets en trop : {e}"));
+                    assert!(got == content, "taille {size}, {extra} octets en trop");
+                }
+            }
+        }
     }
 
     #[test]
