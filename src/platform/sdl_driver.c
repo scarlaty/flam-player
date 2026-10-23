@@ -559,7 +559,13 @@ int sdl_driver_poll(void)
 
         case SDL_RENDER_DEVICE_RESET:
             /* direct3d11 libere toutes les textures quand le peripherique
-               est perdu (TDR, pilote GPU) : on la recree (#334). */
+               est perdu (TDR, pilote GPU) : on la recree (#334).
+               NON TESTABLE en e2e : une perte de peripherique ne peut pas
+               etre simulee (ni par le pilote dummy, ni par SDL). Verifier
+               a la main (ex. desactiver/reactiver la carte graphique dans
+               le Gestionnaire de peripheriques). Si la recreation echoue
+               (peripherique encore en restauration), sdl_driver_poll la
+               retente a chaque image (#344). */
             if (g_texture) SDL_DestroyTexture(g_texture);
             g_texture = create_screen_texture();
             if (!g_texture)
@@ -616,6 +622,22 @@ int sdl_driver_poll(void)
             SDL_GetTicks() - g_start_ticks >= (Uint32)ctx_test_ms) {
             ctx_test_ms = -1;
             fw_trigger_context_menu();
+        }
+    }
+
+    /* Texture absente (recreation echouee apres SDL_RENDER_DEVICE_RESET) :
+       on retente a chaque image pour eviter un ecran noir durable (#344).
+       L'echec n'est trace qu'une fois, jusqu'au prochain succes. */
+    if (!g_texture) {
+        static int tex_fail_logged = 0;
+        g_texture = create_screen_texture();
+        if (g_texture) {
+            tex_fail_logged = 0;
+            lv_obj_invalidate(lv_scr_act());
+        } else if (!tex_fail_logged) {
+            tex_fail_logged = 1;
+            SDL_Log("recreation de la texture ecran impossible, nouvel essai "
+                    "a chaque image : %s", SDL_GetError());
         }
     }
 
