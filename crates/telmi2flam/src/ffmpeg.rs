@@ -378,9 +378,13 @@ impl Drop for Running {
 /// du binaire, avant [`crate::output::discard_pending`] : après `process::exit`, rien d'autre
 /// ne les arrêterait (le job du launcher seulement à sa fermeture). Verrou tenté 1 s au plus.
 ///
-/// Limite sous Unix : un PID est retiré du registre au retour de [`run_ffmpeg`], après que
-/// `try_wait` a récolté le processus ; une panique dans cet intervalle (aucune n'est possible
-/// dans ce code) pourrait viser un PID réattribué.
+/// Limite sous Unix : le PID est retiré juste après que `try_wait` a récolté le processus ;
+/// une panique d'un autre fil dans cet intervalle de quelques instructions pourrait viser un
+/// PID réattribué. Verrou non obtenu en 1 s (impossible en pratique) : rien n'est tué.
+///
+/// Hors de portée (ffmpeg finit seul son fichier, `t2f_ff_*` reste sur le disque) : arrêt
+/// brutal de telmi2flam (`TerminateProcess`, `kill -9` ; sous le launcher, son job tue aussi
+/// ffmpeg) et débordement de pile (abandon sans crochet).
 pub fn kill_children() {
     for _ in 0..100 {
         match CHILDREN.try_lock() {
@@ -596,7 +600,7 @@ pub fn run_ffmpeg(
         Ok(c) => c,
         Err(e) => return Ok(Err(unusable(&e))),
     };
-    let _running = Running::new(&child);
+    let running = Running::new(&child);
     let (tx, rx) = mpsc::channel();
     if let Some(stderr) = child.stderr.take() {
         let reader = std::thread::Builder::new()
@@ -634,6 +638,8 @@ pub fn run_ffmpeg(
         std::thread::sleep(pause);
         pause = (pause * 2).min(POLL_MAX);
     };
+    // Processus récolté : PID retiré du registre avant qu'il puisse être réattribué (Unix).
+    drop(running);
     // Fin du tube d'erreur (un descendant peut le garder ouvert) : même délai, même jeton.
     let stderr = loop {
         match rx.recv_timeout(pause) {

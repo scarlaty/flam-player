@@ -584,6 +584,7 @@ fn binaire_annulation_et_panique_pendant_ffmpeg() {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(log.exists(), "{name} : ffmpeg jamais lancé");
+        let t = Instant::now();
         drop(child.stdin.take());
         let out = child.wait_with_output().unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -619,7 +620,7 @@ fn binaire_annulation_et_panique_pendant_ffmpeg() {
             "{name} : sortie publiée"
         );
         // Marge au-delà du sommeil (4 s) du faux ffmpeg : il aurait créé le marqueur.
-        std::thread::sleep(Duration::from_millis(4600));
+        std::thread::sleep(Duration::from_millis(5500));
         assert!(!mark.exists(), "{name} : ffmpeg a survécu");
         let _ = std::fs::remove_dir_all(&dir);
     }
