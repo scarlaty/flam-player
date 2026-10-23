@@ -482,8 +482,31 @@ impl<R: Read + Seek> ZipReader<R> {
         self.read_entry(&entry).map(Some)
     }
 
+    /// [`ZipReader::read`] par tours d'au plus `chunk` octets décompressés, passés à `sink` un
+    /// à un (la mémoire reste bornée par `chunk`) ; le CRC est vérifié après le dernier tour,
+    /// donc **après** que `sink` a reçu toutes les données. `Ok(false)` si le nom n'existe pas.
+    /// Mêmes contrôles d'en-tête que `read` ; seule la taille des tours diffère.
+    pub fn read_chunks<E>(
+        &mut self,
+        name: &str,
+        chunk: usize,
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<bool, ChunkStop<E>> {
+        let Some(&index) = self.name_to_info.get(name) else {
+            return Ok(false);
+        };
+        let entry = self.entries[index].clone();
+        self.open_entry(&entry)?.pump(&entry, chunk.max(1), sink)?;
+        Ok(true)
+    }
+
     /// `ZipFile.open(name)` puis `ZipExtFile.read()`.
     fn read_entry(&mut self, zinfo: &Entry) -> Result<Vec<u8>, ZipError> {
+        self.open_entry(zinfo)?.read_all(zinfo, MAX_N)
+    }
+
+    /// `ZipFile.open(name)` : contrôles de l'en-tête local, lecteur placé sur les données.
+    fn open_entry(&mut self, zinfo: &Entry) -> Result<ExtFile<'_, R>, ZipError> {
         let r = &mut self.reader;
         seek_to(r, zinfo.header_offset)?;
         let fheader = read_up_to(r, SIZE_FILE_HEADER as u64).map_err(io_corrupt)?;
@@ -542,15 +565,27 @@ impl<R: Read + Seek> ZipReader<R> {
             _ => return Err(corrupt("That compression method is not supported")),
         }
         seek_to(r, data_start)?;
-        ExtFile {
+        Ok(ExtFile {
             reader: r,
             deflate: zinfo.compress_type == ZIP_DEFLATED,
             compress_left: zinfo.compress_size,
             left: zinfo.file_size,
             decompressor: Decompress::new(false),
             tail: Vec::new(),
-        }
-        .read_all(zinfo, MAX_N)
+        })
+    }
+}
+
+/// Arrêt de [`ZipReader::read_chunks`] : entrée illisible, ou refus du destinataire.
+#[derive(Debug)]
+pub enum ChunkStop<E> {
+    Zip(ZipError),
+    Sink(E),
+}
+
+impl<E> From<ZipError> for ChunkStop<E> {
+    fn from(e: ZipError) -> Self {
+        ChunkStop::Zip(e)
     }
 }
 
@@ -624,8 +659,26 @@ impl<R: Read> ExtFile<'_, R> {
 
     /// `ZipExtFile.read()` ; `max_n` est `MAX_N` (paramétré pour tester les bornes de tour
     /// sans produire 2 Gio).
-    fn read_all(mut self, zinfo: &Entry, max_n: usize) -> Result<Vec<u8>, ZipError> {
+    fn read_all(self, zinfo: &Entry, max_n: usize) -> Result<Vec<u8>, ZipError> {
         let mut out = Vec::new();
+        self.pump(zinfo, max_n, &mut |chunk: &[u8]| {
+            out.extend_from_slice(chunk);
+            Ok::<(), ZipError>(())
+        })
+        .map_err(|e| match e {
+            ChunkStop::Zip(e) | ChunkStop::Sink(e) => e,
+        })?;
+        Ok(out)
+    }
+
+    /// Boucle de `ZipExtFile.read()` : chaque tour (au plus `max_n` octets) est passé à
+    /// `sink`, puis le CRC est vérifié.
+    fn pump<E>(
+        mut self,
+        zinfo: &Entry,
+        max_n: usize,
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), ChunkStop<E>> {
         let mut crc = crc32fast::Hasher::new();
         let mut eof = false;
         while !eof {
@@ -661,12 +714,14 @@ impl<R: Read> ExtFile<'_, R> {
                 eof = true;
             }
             crc.update(&chunk);
-            out.extend_from_slice(&chunk);
+            if !chunk.is_empty() {
+                sink(&chunk).map_err(ChunkStop::Sink)?;
+            }
         }
         if crc.finalize() != zinfo.crc {
-            return Err(corrupt(format!("Bad CRC-32 for file {:?}", zinfo.filename)));
+            return Err(corrupt(format!("Bad CRC-32 for file {:?}", zinfo.filename)).into());
         }
-        Ok(out)
+        Ok(())
     }
 }
 
@@ -808,6 +863,87 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Lecture par tours (#402) : tours d'au plus `chunk` octets, contenu identique à `read`,
+    /// CRC faux détecté après le dernier tour, refus du destinataire rendu tel quel.
+    #[test]
+    fn lecture_par_tours() {
+        use flate2::write::DeflateEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let content: Vec<u8> = (0..20_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let mut enc = DeflateEncoder::new(Vec::new(), Compression::new(6));
+        enc.write_all(&content).unwrap();
+        let comp = enc.finish().unwrap();
+        for (deflate, data) in [(false, content.clone()), (true, comp)] {
+            for crc in [crc32fast::hash(&content), 0] {
+                let entry = Entry {
+                    filename: "x".into(),
+                    orig_filename: "x".into(),
+                    flag_bits: 0,
+                    compress_type: if deflate { ZIP_DEFLATED } else { ZIP_STORED },
+                    crc,
+                    compress_size: data.len() as u64,
+                    file_size: content.len() as u64,
+                    header_offset: 0,
+                    end_offset: 0,
+                };
+                for chunk in [1usize, 4096, 4097, 7000, 1 << 20] {
+                    let mut cursor = IoCursor::new(data.clone());
+                    let ext = ExtFile {
+                        reader: &mut cursor,
+                        deflate,
+                        compress_left: data.len() as u64,
+                        left: content.len() as u64,
+                        decompressor: Decompress::new(false),
+                        tail: Vec::new(),
+                    };
+                    let mut got = Vec::new();
+                    let r = ext.pump(&entry, chunk, &mut |c: &[u8]| {
+                        assert!(!c.is_empty() && c.len() <= chunk.max(MIN_READ_SIZE));
+                        got.extend_from_slice(c);
+                        Ok::<(), ()>(())
+                    });
+                    let what = format!("deflate {deflate}, crc {crc}, tour {chunk}");
+                    // Tout est transmis avant le contrôle du CRC.
+                    assert!(got == content, "{what}");
+                    match r {
+                        Ok(()) => assert_ne!(crc, 0, "{what}"),
+                        Err(ChunkStop::Zip(ZipError::Corrupt(m))) => {
+                            assert_eq!(crc, 0, "{what}");
+                            assert!(m.starts_with("Bad CRC-32"), "{what} : {m}");
+                        }
+                        Err(e) => panic!("{what} : {e:?}"),
+                    }
+                }
+            }
+        }
+        // Refus du destinataire au deuxième tour : rendu tel quel, lecture arrêtée.
+        let mut zr = ZipReader::new(IoCursor::new(zip64(&content, b""))).unwrap();
+        let mut calls = 0;
+        let r = zr.read_chunks("metadata.json", 5000, &mut |_| {
+            calls += 1;
+            if calls == 2 {
+                Err("stop")
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(r, Err(ChunkStop::Sink("stop"))));
+        assert_eq!(calls, 2);
+        let mut all = Vec::new();
+        let found = zr
+            .read_chunks("metadata.json", 5000, &mut |c: &[u8]| {
+                all.extend_from_slice(c);
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        assert!(found && all == content);
+        assert!(!zr
+            .read_chunks("absent", 5000, &mut |_| Ok::<(), ()>(()))
+            .unwrap());
     }
 
     #[test]

@@ -434,10 +434,10 @@ fn bornes_refusees_sans_rien_ecrire() {
     check(&fx, pack(wide, None), |e| {
         matches!(e, ArchiveError::TooManyOptions(51))
     });
-    // 51 épisodes répartis dans deux catégories
-    let (a, b) = (fx.episodes(26), fx.episodes(25));
+    // 60 épisodes répartis dans deux catégories : le message donne le total, pas « 51 »
+    let (a, b) = (fx.episodes(35), fx.episodes(25));
     check(&fx, pack(vec![cat("a", a), cat("b", b)], None), |e| {
-        matches!(e, ArchiveError::TooManyEpisodes(51))
+        matches!(e, ArchiveError::TooManyEpisodes(60))
     });
     check(&fx, pack(vec![], None), |e| {
         matches!(e, ArchiveError::NoEpisode)
@@ -463,6 +463,21 @@ fn bornes_refusees_sans_rien_ecrire() {
     let mut p = pack(fx.episodes(1), None);
     p.metadata.description = "d".repeat(MAX_DESCRIPTION_BYTES + 1);
     check(&fx, p, |e| matches!(e, ArchiveError::TextTooLong { .. }));
+}
+
+/// Titre et sous-titre du pack translittérés dans `metadata.json` (U+2019, emoji), sans
+/// titre vide si tout est supprimé ; la validation garde le texte saisi.
+#[test]
+fn metadonnees_translitterees() {
+    let mut fx = Fixture::new();
+    let mut p = pack(fx.episodes(1), None);
+    p.metadata.title = " L’œuvre d’art 🎉 ".into();
+    p.metadata.subtitle = "© Radio d’Exemple".into();
+    let m = metadata_json(&p);
+    assert_eq!(m["title"], "L'oeuvre d'art");
+    assert_eq!(m["category"], "© Radio d'Exemple");
+    p.metadata.title = "🎉".into();
+    assert_eq!(metadata_json(&p)["title"], "Podcast");
 }
 
 #[test]
@@ -652,6 +667,19 @@ fn tools_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/telmi2flam")
 }
 
+/// `telmi2flam.py` à lancer : celui voisin du Python embarqué (`<racine>/python/python.exe` et
+/// `<racine>/telmi2flam.py`, comme `install/convert.rs`), car le `._pth` du Python y importe
+/// `lif` et `mp3map` ; la copie de `tools/` ne sert qu'à défaut (mélange de versions sinon).
+/// `validate.py` reste pris dans `tools/`.
+fn converter_script(python: &Path) -> PathBuf {
+    python
+        .parent()
+        .and_then(Path::parent)
+        .map(|root| root.join("telmi2flam.py"))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| tools_dir().join("telmi2flam.py"))
+}
+
 /// Lance un script Python comme le launcher (`install/convert.rs` : `-E -s -B -X utf8`).
 fn run_py(python: &Path, cwd: &Path, args: &[&std::ffi::OsStr]) -> (i32, String, String) {
     let out = Command::new(python)
@@ -682,7 +710,7 @@ fn python_convertit_et_valide_l_archive() {
         return;
     };
     let tools = tools_dir();
-    let script = tools.join("telmi2flam.py");
+    let script = converter_script(&python);
     let validate = tools.join("validate.py");
     assert!(
         script.is_file() && validate.is_file(),
@@ -697,7 +725,11 @@ fn python_convertit_et_valide_l_archive() {
         e.title = "L’œuvre — 🎉 un très long titre d’épisode qui déborde".into();
         e.image = None;
     }
-    let p = pack(menu, Some(fx.cover()));
+    let mut p = pack(menu, Some(fx.cover()));
+    // Titre et sous-titre du pack avec une apostrophe typographique (U+2019) : translittérés
+    // dans `metadata.json`, sinon avertissement `font_replaced`.
+    p.metadata.title = "L’heure du conte".into();
+    p.metadata.subtitle = "© Radio d’Exemple".into();
     write_archive(&p, &fx.out(), &never).unwrap();
     let archive = fx.out();
     let work = fx.dir.path();
@@ -712,7 +744,8 @@ fn python_convertit_et_valide_l_archive() {
     let info: Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(info["uuid"], p.uuid.hyphenated().to_string());
     assert_eq!(info["version"], 1);
-    assert_eq!(info["title"], "Mon pack");
+    assert_eq!(info["title"], "L'heure du conte");
+    assert_eq!(info["category"], "© Radio d'Exemple");
 
     // conversion, événements machine : aucun avertissement
     let pk = fx.path("pack.plain.pk");
@@ -728,12 +761,17 @@ fn python_convertit_et_valide_l_archive() {
         ],
     );
     assert_eq!(code, 0, "conversion : {stderr}\n{stdout}");
-    let warnings: Vec<Value> = stdout
+    let events: Vec<Value> = stdout
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|v| v["event"] == "warning")
         .collect();
+    let warnings: Vec<&Value> = events.iter().filter(|v| v["event"] == "warning").collect();
     assert!(warnings.is_empty(), "avertissements : {warnings:?}");
+    // Sans événement `done`, une sortie illisible ou vide passerait pour « aucun avertissement ».
+    assert!(
+        events.iter().any(|v| v["event"] == "done"),
+        "aucun événement done : {stdout}"
+    );
 
     // uuid.bin = MD5 de la chaîne uuid (§ 3.4), calculé par Python
     let pk_files = read_zip_any(&pk);
@@ -755,13 +793,21 @@ fn python_convertit_et_valide_l_archive() {
     assert_eq!(pk_files["version"], b"1");
     let info_plain = String::from_utf8(pk_files["info.plain"].clone()).unwrap();
     assert!(
-        info_plain.starts_with("Mon pack\n© Radio Exemple\n"),
+        info_plain.starts_with("L'heure du conte\n© Radio d'Exemple\n"),
         "{info_plain}"
     );
 
     // validate.py
     let (code, stdout, stderr) = run_py(&python, work, &[validate.as_os_str(), pk.as_os_str()]);
     assert_eq!(code, 0, "validate.py :\n{stdout}\n{stderr}");
+    // Aucun `[WARN]` (régression de focus N4 a, de retour…), sauf le contrôle Lua ignoré faute
+    // de `lupa` ou d'interpréteur.
+    let warns: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.trim_start().starts_with("[WARN]"))
+        .filter(|l| !l.contains("syntaxe Lua non verifiee"))
+        .collect();
+    assert!(warns.is_empty(), "validate.py :\n{stdout}");
 }
 
 /// Entrées d'un zip quelconque (méthode non vérifiée).

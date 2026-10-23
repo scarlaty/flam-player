@@ -225,7 +225,8 @@ export const fr = {
       tree: {
         title: "Arborescence",
         label: "Arborescence du pack",
-        hint: "L'ordre ci-dessous est l'ordre dans l'appareil. Utilisez les boutons pour monter, descendre ou déplacer un élément ; le glisser-déposer est aussi possible à la souris.",
+        hint: (maxName: number) =>
+          `L'ordre ci-dessous est l'ordre dans l'appareil. Utilisez les boutons pour monter, descendre ou déplacer un élément ; le glisser-déposer par la poignée est aussi possible à la souris. Un nom de catégorie compte ${maxName} caractères au plus.`,
         empty: {
           title: "Le pack est vide",
           description:
@@ -239,7 +240,6 @@ export const fr = {
         unavailableBadge: "Indisponible",
         unknownTitle: "Épisode indisponible",
         categoryName: (position: string) => `Nom de la catégorie n° ${position}`,
-        categoryNameHint: (max: number) => `${max} caractères au plus.`,
         newCategory: "Nouvelle catégorie",
         addCategory: "Ajouter une catégorie à la racine",
         addCategoryIn: (menu: string) => `Ajouter une catégorie dans « ${menu} »`,
@@ -280,7 +280,7 @@ export const fr = {
         subtitleHint: (feedCopyright: string | null) =>
           feedCopyright === null
             ? "Facultatif."
-            : `Laissez vide pour reprendre le copyright du flux : « ${feedCopyright} ».`,
+            : "Prérempli avec le copyright du flux : modifiez-le, ou effacez-le pour n'avoir aucun sous-titre.",
         age: "Âge conseillé",
         ageOption: (age: number) => (age === 0 ? "Tout public" : `${age} ans`),
         description: "Description",
