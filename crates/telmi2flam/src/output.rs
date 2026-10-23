@@ -151,6 +151,14 @@ pub fn write_zip<W: Write>(
             return Err(ZipStop::Cancelled);
         }
         let (name, flags) = name_flags(name);
+        // Longueur du nom sur 16 bits : Python lève `struct.error` (rien n'est publié) ; ici,
+        // `output_error` au lieu d'un ZIP dont la longueur de nom serait tronquée.
+        if name.len() > 0xFFFF {
+            return Err(ZipStop::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("nom d'entree trop long ({} octets)", name.len()),
+            )));
+        }
         let size = data.len() as u64;
         // `_open_to_write` : `zip64 = file_size * 1.05 > ZIP64_LIMIT` (calcul en flottant).
         let local_zip64 = (size as f64) * 1.05 > limits.zip64 as f64;
@@ -490,7 +498,12 @@ fn write_and_commit(
         discard(std::slice::from_ref(&tmp));
         tmps.push(tmp.clone());
         hook(Step::CreateDir)?;
-        fs::create_dir_all(&tmp)?;
+        if let Some(parent) = std::path::absolute(&tmp)?.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // `create_dir` et non `create_dir_all` : un lien ou une jonction placé à ce nom entre
+        // `discard` et ici est refusé au lieu d'être suivi (écriture hors de la destination).
+        fs::create_dir(&tmp)?;
         let real = fs::canonicalize(&tmp)?;
         for (i, (name, data)) in package.entries.iter().enumerate() {
             if cancelled() {
@@ -569,8 +582,15 @@ fn merge_dir(tmp: &Path, fin: &Path, hook: Hook<'_>) -> io::Result<()> {
 const RENAME_RETRY_DELAYS_MS: [u64; 5] = [50, 100, 200, 400, 800];
 
 /// Erreur transitoire : accès refusé, violation de partage ou de verrou (Windows).
+#[cfg(windows)]
 fn is_transient(e: &io::Error) -> bool {
     e.kind() == io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(5 | 32 | 33))
+}
+
+/// Hors Windows, un renommage n'est pas bloqué par un verrou : aucune relance.
+#[cfg(not(windows))]
+fn is_transient(_e: &io::Error) -> bool {
+    false
 }
 
 fn rename_retry(from: &Path, to: &Path, hook: Hook<'_>) -> io::Result<()> {
@@ -726,12 +746,33 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::io::Cursor;
 
-    /// Dossier de test vide, propre au processus et au test.
-    fn scratch(name: &str) -> PathBuf {
+    /// Dossier de test vide, propre au processus et au test, supprimé à la fin.
+    struct Scratch(PathBuf);
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for Scratch {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(name: &str) -> Scratch {
         let d = std::env::temp_dir().join(format!("t2f-output-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
-        d
+        Scratch(d)
     }
 
     fn package(entries: &[(&str, &[u8])]) -> Package {
@@ -1019,8 +1060,18 @@ mod tests {
         }
     }
 
-    /// Processus fils qui dure (pour un PID vivant), tué par le test.
-    fn long_child() -> std::process::Child {
+    /// Processus fils tué et attendu à la fin, même si le test panique.
+    struct Child(std::process::Child);
+
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Processus fils qui dure (pour un PID vivant).
+    fn long_child() -> Child {
         let mut c = if cfg!(windows) {
             let mut c = std::process::Command::new("ping");
             c.args(["-n", "60", "127.0.0.1"]);
@@ -1030,7 +1081,7 @@ mod tests {
             c.arg("60");
             c
         };
-        c.stdout(std::process::Stdio::null()).spawn().unwrap()
+        Child(c.stdout(std::process::Stdio::null()).spawn().unwrap())
     }
 
     /// Arrêt brutal puis reprise : les `.part` d'un PID mort (fichier tronqué, dossier) sont
@@ -1040,13 +1091,12 @@ mod tests {
     fn orphelins_apres_arret_brutal() {
         let pkg = sample();
         let d = scratch("orphelins");
-        let mut dead = long_child();
-        let dead_pid = dead.id();
-        dead.kill().unwrap();
-        dead.wait().unwrap();
+        let dead = long_child();
+        let dead_pid = dead.0.id();
+        drop(dead);
         assert!(!pid_alive(dead_pid));
-        let mut alive = long_child();
-        let alive_pid = alive.id();
+        let alive = long_child();
+        let alive_pid = alive.0.id();
         assert!(pid_alive(alive_pid));
         assert!(pid_alive(std::process::id()));
 
@@ -1077,8 +1127,7 @@ mod tests {
         let pk = d.join("o.plain.pk");
         let target = Target::new(Some(&pk), true, &pkg);
         write_package(&pkg, &target, &never).unwrap();
-        alive.kill().unwrap();
-        alive.wait().unwrap();
+        drop(alive);
 
         let mut left: Vec<String> = fs::read_dir(&d)
             .unwrap()
@@ -1114,6 +1163,40 @@ mod tests {
             "output_error"
         );
         assert_eq!(fs::read(d.join("f.plain")).unwrap(), b"fichier");
+        assert_no_part(&d);
+    }
+
+    /// Nom de plus de 65 535 octets : refus (`output_error`), rien de publié, aucun `.part`.
+    #[test]
+    fn nom_trop_long() {
+        let long = format!("img/{}.lif", "a".repeat(0xFFFF));
+        let d = scratch("long");
+        let pkg = package(&[("version", b"1"), (long.as_str(), b"x")]);
+        let t = Target::new(Some(&d.join("o.plain.pk")), false, &pkg);
+        assert_eq!(
+            write_package(&pkg, &t, &never).unwrap_err().code,
+            "output_error"
+        );
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
+    }
+
+    /// Un `.part` de dossier qui réapparaît (lien, jonction ou dossier planté) après le
+    /// nettoyage est refusé, pas réutilisé.
+    #[test]
+    fn dossier_part_deja_present_refuse() {
+        let pkg = sample();
+        let d = scratch("plante");
+        let tmp = part_path(&d.join("o.plain"));
+        let t = Target::new(Some(&d.join("o.plain")), false, &pkg);
+        let e = write_package_with(&pkg, &t, ZipLimits::PYTHON, &never, &mut |s| {
+            if s == Step::CreateDir {
+                fs::create_dir(&tmp)?;
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(e.code, "output_error");
+        assert!(!d.join("o.plain").exists());
         assert_no_part(&d);
     }
 

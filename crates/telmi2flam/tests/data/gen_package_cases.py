@@ -86,20 +86,21 @@ def zip_cases():
                          (None, 2), (60, 3)]:
         for lid, entries in lists.items():
             saved = zipfile.ZIP64_LIMIT, zipfile.ZIP_FILECOUNT_LIMIT
+            path = os.path.join(tempfile.gettempdir(), "zip_case_%d.zip" % os.getpid())
             try:
                 if zip64 is not None:
                     zipfile.ZIP64_LIMIT = zip64
                 if count is not None:
                     zipfile.ZIP_FILECOUNT_LIMIT = count
-                path = os.path.join(tempfile.gettempdir(), "zip_case_%d.zip" % os.getpid())
                 with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
                     for i, (name, size) in enumerate(entries):
                         z.writestr(name, pattern(i, size))
                 with open(path, "rb") as f:
                     digest = hashlib.sha256(f.read()).hexdigest()
-                os.remove(path)
             finally:
                 zipfile.ZIP64_LIMIT, zipfile.ZIP_FILECOUNT_LIMIT = saved
+                if os.path.exists(path):
+                    os.remove(path)
             cases.append({"entries": entries, "zip64": zip64 or zipfile.ZIP64_LIMIT,
                           "file_count": count or zipfile.ZIP_FILECOUNT_LIMIT,
                           "sha256": digest})
@@ -266,6 +267,10 @@ def run(case, data, tmp):
 
 
 def main():
+    # create_system (octet du repertoire central) vaut 0 sous Windows seulement : le port Rust
+    # reproduit le Python de l'installateur, sous Windows.
+    if sys.platform != "win32":
+        sys.exit("vecteurs a produire sous Windows (create_system = 0 de zipfile)")
     if sys.version_info[:3] != (3, 14, 8) or Image.__version__ != "12.3.0":
         sys.exit("vecteurs a produire avec Python 3.14.8 + Pillow 12.3.0 (oracle de build-converter.ps1)")
     builds = mc.corpus_cases() + package_cases()
