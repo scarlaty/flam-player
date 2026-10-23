@@ -17,6 +17,7 @@ export const fr = {
     settings: "Paramètres",
     library: "Bibliothèque",
     device: "Ma Flam",
+    podcasts: "Podcasts",
   },
   errors: {
     title: (kind: string) =>
@@ -90,6 +91,90 @@ export const fr = {
     pathNotAbsolute: "Indiquez un chemin complet, par exemple C:\\Dossier.",
     pathNetwork: "Les chemins réseau ne sont pas acceptés.",
     pathNotExe: "Le fichier doit se terminer par .exe.",
+  },
+  podcasts: {
+    title: "Podcasts",
+    intro:
+      "Ajoutez un flux de podcast, puis choisissez les épisodes à réunir dans un pack.",
+    /** Mention d'usage : texte proposé par la spécification (§ 4), à valider par le mainteneur (#220). */
+    usageTitle: "Usage personnel",
+    usage:
+      "Les podcasts appartiennent à leurs auteurs. Les histoires créées ici sont réservées à un usage personnel, dans le cadre familial : ne les partagez pas et ne les redistribuez pas. L'audio est téléchargé tel que l'éditeur le diffuse, publicité comprise.",
+    add: {
+      title: "Ajouter un flux",
+      url: "Adresse du flux (RSS)",
+      urlHint: "Adresse complète, commençant par http:// ou https://.",
+      name: "Nom (facultatif)",
+      nameHint: "Par défaut, le titre du flux.",
+      submit: "Ajouter le flux",
+      adding: "Téléchargement du flux…",
+      added: (name: string) => `Flux « ${name} » ajouté.`,
+    },
+    error: {
+      invalidFeed: "Flux invalide",
+      noAudio: "Aucun épisode audio",
+      tooLarge: "Flux trop grand",
+      network: "Flux injoignable",
+      networkHint:
+        "Vérifiez la connexion, puis réessayez. Un flux déjà ajouté reste consultable hors ligne.",
+      blocked: "Adresse refusée",
+      duplicate: "Flux déjà ajouté",
+      invalidUrl: "Adresse invalide",
+    },
+    feeds: {
+      title: "Mes flux",
+      empty: {
+        title: "Aucun flux podcast",
+        description: "Ajoutez l'adresse d'un flux ci-dessus pour choisir ses épisodes.",
+      },
+      urlLabel: "Adresse :",
+    },
+    episodes: {
+      title: (feed: string) => `Épisodes de « ${feed} »`,
+      loading: "Chargement des épisodes…",
+      loadFailed: "Impossible de charger ce flux.",
+      refreshFailed:
+        "Le flux n'a pas pu être actualisé : la version enregistrée est affichée.",
+      offline: (date: string | null) =>
+        date === null
+          ? "Hors ligne : la version enregistrée du flux est affichée."
+          : `Hors ligne : la version du flux du ${date} est affichée.`,
+      empty: {
+        title: "Aucun épisode",
+        description: "Ce flux ne contient aucun épisode audio exploitable.",
+      },
+      list: "Épisodes",
+      explicit: "Explicite",
+      explicitHint: "Contenu explicite, décoché par défaut.",
+      unknownDate: "Date inconnue",
+      unknownSize: "taille inconnue",
+      size: (size: string, approximate: boolean) =>
+        approximate ? `environ ${size}` : size,
+      duration: (minutes: number) => `${minutes} min`,
+      showMore: (remaining: number) => `Afficher plus (${remaining} restants)`,
+      warnings: (count: number) =>
+        count === 1 ? "1 élément du flux ignoré" : `${count} éléments du flux ignorés`,
+    },
+    refusal: {
+      count: (max: number) => `Plafond atteint : ${max} épisodes par pack au plus.`,
+      episodeTooBig: (size: string) =>
+        `Épisode trop volumineux : ${size} au plus par épisode.`,
+      total: (size: string) => `Plafond atteint : ${size} au plus par pack.`,
+      duplicate: "Cet épisode est déjà dans la sélection.",
+    },
+    summary: {
+      title: "Sélection",
+      count: (count: number, max: number) =>
+        `${count} ${count > 1 ? "épisodes sélectionnés" : "épisode sélectionné"} sur ${max} au plus`,
+      size: (size: string, max: string) =>
+        `taille estimée : environ ${size} sur ${max} au plus`,
+      unknown: (count: number) =>
+        count === 1
+          ? "1 épisode de taille inconnue n'est pas compté"
+          : `${count} épisodes de taille inconnue ne sont pas comptés`,
+      clear: "Tout désélectionner",
+      empty: "Aucun épisode sélectionné.",
+    },
   },
   settingsScreen: {
     paths: "Programmes et dossiers",
