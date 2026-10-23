@@ -1,5 +1,10 @@
-//! Registre des sources d'histoires : `sources.json` (catalogues et dossiers locaux),
-//! source par défaut « Telmi Store » et source implicite « Mes histoires ».
+//! Registre des sources d'histoires : `sources.json` (catalogues, dossiers locaux, flux
+//! podcast), source par défaut « Telmi Store » et source implicite « Mes histoires ».
+//!
+//! L'URL d'un flux podcast peut porter un jeton (D11, `docs/podcasts.md`, décidé le
+//! 2026-10-23) : elle est affichée en clair dans l'interface, mais n'est jamais journalisée ni
+//! recopiée dans un message d'erreur ou le diagnostic. Le front reçoit une [`PublicSource`],
+//! qui ajoute un libellé court (`feed_hint`, `https://hôte/…`).
 
 use std::path::{Path, PathBuf};
 
@@ -7,12 +12,21 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::catalog::{purge_catalog_cache, CatalogService};
+use crate::podcast::net::redact_url;
+use crate::podcast::source::{purge_podcast_cache, PodcastService};
 use crate::storage::{self, ConfigState, MigrationStep, Recovery};
 use crate::watch::WatchState;
 use crate::{AppError, AppResult};
 
 /// Version courante du schéma de `sources.json`.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// - v1 : catalogues et dossiers ;
+/// - v2 (#211) : ajout des sources podcast. Aucune donnée ne change, mais la version monte :
+///   un launcher v1 refuse ainsi un fichier v2 (`config_version`, fichier intact) au lieu de
+///   le mettre entièrement en quarantaine faute de connaître la variante `podcast`. Un fichier
+///   sans podcast est toujours écrit en v1 : sans podcast, revenir à un launcher v1 reste
+///   possible.
+pub const SCHEMA_VERSION: u32 = 2;
 const FILE_NAME: &str = "sources.json";
 
 /// URL du catalogue Telmi Store (source par défaut).
@@ -22,7 +36,7 @@ pub const TELMI_STORE_ID: &str = "telmi-store";
 /// Identifiant de la source implicite « Mes histoires » (jamais écrite dans `sources.json`).
 pub const LIBRARY_ID: &str = "library";
 const LIBRARY_NAME: &str = "Mes histoires";
-const MAX_NAME_LEN: usize = 100;
+pub(crate) const MAX_NAME_LEN: usize = 100;
 const MAX_URL_LEN: usize = 2048;
 
 /// Une source d'histoires (miroir de `Source` dans `src/api/sources.ts`).
@@ -43,14 +57,22 @@ pub enum Source {
         name: String,
         path: String,
     },
+    /// Flux podcast RSS (#211). `url` est affichée dans l'interface mais jamais journalisée
+    /// (D11) : ne pas formater cette valeur avec `{:?}` dans une trace.
+    Podcast {
+        id: String,
+        name: String,
+        url: String,
+    },
 }
 
 impl Source {
     pub fn id(&self) -> &str {
         match self {
-            Source::Library { id, .. } | Source::Catalog { id, .. } | Source::Folder { id, .. } => {
-                id
-            }
+            Source::Library { id, .. }
+            | Source::Catalog { id, .. }
+            | Source::Folder { id, .. }
+            | Source::Podcast { id, .. } => id,
         }
     }
 
@@ -78,10 +100,59 @@ pub enum SourceInput {
     Folder { name: String, path: String },
 }
 
+/// Source telle que renvoyée au front (miroir de `Source` dans `src/api/sources.ts`) : comme
+/// [`Source`], avec en plus, pour un flux podcast, un libellé court `feed_hint` (`https://hôte/…`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PublicSource {
+    Library {
+        id: String,
+        name: String,
+    },
+    Catalog {
+        id: String,
+        name: String,
+        url: String,
+    },
+    Folder {
+        id: String,
+        name: String,
+        path: String,
+    },
+    Podcast {
+        id: String,
+        name: String,
+        /// URL complète, affichée dans l'interface (D11, décidé le 2026-10-23).
+        url: String,
+        /// Libellé court : schéma et hôte.
+        feed_hint: String,
+    },
+}
+
+impl From<Source> for PublicSource {
+    fn from(source: Source) -> Self {
+        match source {
+            Source::Library { id, name } => PublicSource::Library { id, name },
+            Source::Catalog { id, name, url } => PublicSource::Catalog { id, name, url },
+            Source::Folder { id, name, path } => PublicSource::Folder { id, name, path },
+            Source::Podcast { id, name, url } => PublicSource::Podcast {
+                id,
+                name,
+                feed_hint: redact_url(&url),
+                url,
+            },
+        }
+    }
+}
+
+fn public(sources: Vec<Source>) -> Vec<PublicSource> {
+    sources.into_iter().map(PublicSource::from).collect()
+}
+
 /// Réponse de `sources_list` (miroir de `SourcesView` dans `src/api/sources.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SourcesView {
-    pub sources: Vec<Source>,
+    pub sources: Vec<PublicSource>,
     /// Présent tant que l'utilisateur n'a pas acquitté (`config_ack_recovery`) la
     /// restauration de `sources.json` aux valeurs par défaut.
     pub recovery: Option<Recovery>,
@@ -94,17 +165,25 @@ struct SourcesFile {
     sources: Vec<Source>,
 }
 
+/// Forme écrite de `sources.json` (version choisie à l'écriture, voir `SourcesStore::save`).
+#[derive(Serialize)]
+struct SourcesFileRef<'a> {
+    schema_version: u32,
+    sources: &'a [Source],
+}
+
 impl Default for SourcesFile {
     fn default() -> Self {
         Self {
-            schema_version: SCHEMA_VERSION,
+            // Sans podcast, le fichier reste en v1 (voir `SourcesStore::save`).
+            schema_version: 1,
             sources: vec![Source::telmi_store()],
         }
     }
 }
 
-/// Migrations de schéma de `sources.json` (aucune pour l'instant : v0 -> v1 ajoute
-/// seulement `schema_version`).
+/// Migrations de schéma de `sources.json`. Aucune ne transforme de donnée : v0 -> v1 ajoute
+/// seulement `schema_version`, v1 -> v2 ajoute le type `podcast` (voir [`SCHEMA_VERSION`]).
 fn migrate(_from: u32, _object: &mut serde_json::Map<String, serde_json::Value>) {}
 const MIGRATE: MigrationStep = migrate;
 
@@ -131,7 +210,7 @@ pub fn validate_catalog_url(raw: &str) -> AppResult<String> {
     Ok(url.into())
 }
 
-fn validate_name(raw: &str) -> AppResult<String> {
+pub(crate) fn validate_name(raw: &str) -> AppResult<String> {
     let name = raw.trim();
     if name.is_empty() {
         return Err(AppError::Validation("le nom ne peut pas être vide".into()));
@@ -221,13 +300,24 @@ impl SourcesStore {
         Ok(file)
     }
 
+    /// Écrit le fichier. La version écrite est la plus basse qui décrit son contenu : v1 tant
+    /// qu'aucune source podcast n'existe, pour qu'un retour à un launcher v1 reste possible ;
+    /// v2 dès qu'il y en a une (un launcher v1 refuse alors le fichier sans le modifier).
     fn save(&self, file: &SourcesFile) -> AppResult<()> {
-        storage::write_json(&self.dir.join(FILE_NAME), file)
+        let has_podcast = file
+            .sources
+            .iter()
+            .any(|s| matches!(s, Source::Podcast { .. }));
+        let written = SourcesFileRef {
+            schema_version: if has_podcast { SCHEMA_VERSION } else { 1 },
+            sources: &file.sources,
+        };
+        storage::write_json(&self.dir.join(FILE_NAME), &written)
     }
 
     /// Liste et restauration éventuelle à signaler à l'utilisateur.
     pub fn view(&self) -> AppResult<SourcesView> {
-        let sources = self.list()?;
+        let sources = public(self.list()?);
         let recovery = storage::pending_recovery(&self.dir, FILE_NAME);
         Ok(SourcesView { sources, recovery })
     }
@@ -251,6 +341,32 @@ impl SourcesStore {
     pub fn add(&self, input: SourceInput) -> AppResult<Source> {
         let mut file = self.load()?;
         let source = build(uuid::Uuid::new_v4().to_string(), input)?;
+        file.sources.push(source.clone());
+        self.save(&file)?;
+        Ok(source)
+    }
+
+    /// Enregistre une source podcast déjà validée (`url` normalisée par
+    /// [`crate::podcast::source::validate_feed_url`], `name` par [`validate_name`]) sous
+    /// l'identifiant `id`. Refusé si le même flux est déjà une source : le message ne cite pas
+    /// l'URL (D11).
+    pub fn add_podcast(&self, id: String, name: String, url: String) -> AppResult<Source> {
+        let mut file = self.load()?;
+        if file
+            .sources
+            .iter()
+            .any(|s| matches!(s, Source::Podcast { url: u, .. } if *u == url))
+        {
+            return Err(AppError::Validation(
+                "ce flux podcast est déjà dans vos sources".into(),
+            ));
+        }
+        if file.sources.iter().any(|s| s.id() == id) {
+            return Err(AppError::Validation(format!(
+                "identifiant de source déjà utilisé : {id}"
+            )));
+        }
+        let source = Source::Podcast { id, name, url };
         file.sources.push(source.clone());
         self.save(&file)?;
         Ok(source)
@@ -341,9 +457,12 @@ pub async fn sources_list(state: State<'_, ConfigState>) -> AppResult<SourcesVie
 
 /// Ajoute une source de type catalogue ou dossier.
 #[tauri::command]
-pub async fn sources_add(state: State<'_, ConfigState>, input: SourceInput) -> AppResult<Source> {
+pub async fn sources_add(
+    state: State<'_, ConfigState>,
+    input: SourceInput,
+) -> AppResult<PublicSource> {
     let _guard = state.guard();
-    SourcesStore::new(&state.dir).add(input)
+    SourcesStore::new(&state.dir).add(input).map(Into::into)
 }
 
 /// Met à jour le nom et l'URL/le chemin d'une source.
@@ -354,7 +473,7 @@ pub async fn sources_update(
     watch: State<'_, WatchState>,
     id: String,
     input: SourceInput,
-) -> AppResult<Source> {
+) -> AppResult<PublicSource> {
     let (previous, updated) = {
         let _guard = state.guard();
         let store = SourcesStore::new(&state.dir);
@@ -372,14 +491,16 @@ pub async fn sources_update(
     if previous.is_some_and(|old| catalog_url_changed(&old, &updated)) {
         purge_catalog_cache(&state, &catalog, &id).await;
     }
-    Ok(updated)
+    Ok(updated.into())
 }
 
-/// Supprime une source.
+/// Supprime une source. Le cache d'un catalogue ou d'un podcast est purgé ; les histoires
+/// installées ne sont jamais touchées (P4, D15).
 #[tauri::command]
 pub async fn sources_remove(
     state: State<'_, ConfigState>,
     catalog: State<'_, CatalogService>,
+    podcasts: State<'_, PodcastService>,
     watch: State<'_, WatchState>,
     id: String,
 ) -> AppResult<()> {
@@ -392,8 +513,10 @@ pub async fn sources_remove(
     };
     // Sans effet si la source n'était pas un dossier surveillé.
     watch.stop(&id);
-    if matches!(removed, Some(Source::Catalog { .. })) {
-        purge_catalog_cache(&state, &catalog, &id).await;
+    match removed {
+        Some(Source::Catalog { .. }) => purge_catalog_cache(&state, &catalog, &id).await,
+        Some(Source::Podcast { .. }) => purge_podcast_cache(&state, &podcasts, &id).await,
+        _ => {}
     }
     Ok(())
 }
@@ -413,9 +536,9 @@ fn catalog_url_changed(old: &Source, new: &Source) -> bool {
 pub async fn sources_reorder(
     state: State<'_, ConfigState>,
     ids: Vec<String>,
-) -> AppResult<Vec<Source>> {
+) -> AppResult<Vec<PublicSource>> {
     let _guard = state.guard();
-    SourcesStore::new(&state.dir).reorder(&ids)
+    SourcesStore::new(&state.dir).reorder(&ids).map(public)
 }
 
 #[cfg(test)]
@@ -824,6 +947,196 @@ mod tests {
         let a = store.add(catalog("A", url)).unwrap();
         let b = store.add(catalog("A", url)).unwrap();
         assert_ne!(a.id(), b.id());
+    }
+
+    const FEED: &str = "https://podcasts.example.test/prive/flux.xml?jeton=SECRET42";
+
+    fn podcast(store: &SourcesStore, id: &str, url: &str) -> AppResult<Source> {
+        store.add_podcast(id.into(), "Podcast".into(), url.into())
+    }
+
+    fn sources_json(dir: &Path) -> serde_json::Value {
+        serde_json::from_str(&fs::read_to_string(dir.join("sources.json")).unwrap()).unwrap()
+    }
+
+    /// Fichier v1 réel (catalogue modifié, dossier, Telmi Store supprimé puis ajouté à la main) :
+    /// lu sans perte, réécrit en v2 seulement à la première écriture, avec toutes ses entrées.
+    #[test]
+    fn un_fichier_v1_est_lu_sans_perte_puis_reecrit_en_v2() {
+        let (dir, store) = store();
+        let folder = tempfile::tempdir().unwrap();
+        let folder_path = folder.path().to_str().unwrap().replace('\\', "\\\\");
+        let v1 = format!(
+            r#"{{"schema_version":1,"sources":[
+                {{"type":"folder","id":"f","name":"Clé USB","path":"{folder_path}"}},
+                {{"type":"catalog","id":"c","name":"Catalogue","url":"https://exemple.org/c.json","inconnu":1}},
+                {{"type":"catalog","id":"telmi-store","name":"Telmi","url":"{TELMI_STORE_URL}"}}]}}"#
+        );
+        fs::write(dir.path().join("sources.json"), &v1).unwrap();
+        let before = store.list().unwrap();
+        assert_eq!(ids(&before), [LIBRARY_ID, "f", "c", TELMI_STORE_ID]);
+        // Lecture seule : le fichier n'est pas réécrit.
+        assert_eq!(
+            fs::read_to_string(dir.path().join("sources.json")).unwrap(),
+            v1
+        );
+        podcast(&store, "p", FEED).unwrap();
+        let json = sources_json(dir.path());
+        assert_eq!(json["schema_version"], 2);
+        let after = store.list().unwrap();
+        assert_eq!(&after[..4], &before[..]);
+        assert!(matches!(&after[4], Source::Podcast { id, url, .. } if id == "p" && url == FEED));
+        assert_eq!(storage::pending_recovery(dir.path(), FILE_NAME), None);
+    }
+
+    /// Retour possible à un launcher v1 : la version écrite ne monte qu'avec un podcast, et
+    /// redescend quand le dernier podcast est supprimé.
+    #[test]
+    fn la_version_ecrite_ne_monte_qu_avec_un_podcast() {
+        let (dir, store) = store();
+        store
+            .add(catalog("A", "https://exemple.org/a.json"))
+            .unwrap();
+        assert_eq!(sources_json(dir.path())["schema_version"], 1);
+        podcast(&store, "p", FEED).unwrap();
+        assert_eq!(sources_json(dir.path())["schema_version"], 2);
+        store.remove("p").unwrap();
+        assert_eq!(sources_json(dir.path())["schema_version"], 1);
+    }
+
+    #[test]
+    fn un_fichier_v2_avec_podcast_est_relu() {
+        let (dir, store) = store();
+        fs::write(
+            dir.path().join("sources.json"),
+            format!(
+                r#"{{"schema_version":2,"sources":[{{"type":"podcast","id":"p","name":"P","url":"{FEED}"}}]}}"#
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            store.get("p").unwrap(),
+            Source::Podcast {
+                id: "p".into(),
+                name: "P".into(),
+                url: FEED.into()
+            }
+        );
+    }
+
+    /// Un fichier v2 lu par un launcher v1 serait refusé (version future), pas mis en
+    /// quarantaine : même garde, vue depuis la version courante avec une version v3.
+    #[test]
+    fn un_fichier_d_une_version_future_reste_intact() {
+        let (dir, store) = store();
+        let v3 = r#"{"schema_version":3,"sources":[{"type":"inconnu","id":"x"}]}"#;
+        fs::write(dir.path().join("sources.json"), v3).unwrap();
+        assert_eq!(store.list().unwrap_err().kind(), "config_version");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("sources.json")).unwrap(),
+            v3
+        );
+    }
+
+    /// Panne : `sources.json` tronqué au milieu d'une entrée podcast. Les octets d'origine
+    /// sont gardés dans le `.bak`, la restauration est signalée.
+    #[test]
+    fn un_fichier_tronque_est_mis_de_cote_sans_perte_d_octets() {
+        let (dir, store) = store();
+        podcast(&store, "p", FEED).unwrap();
+        let full = fs::read(dir.path().join("sources.json")).unwrap();
+        let truncated = &full[..full.len() - 20];
+        fs::write(dir.path().join("sources.json"), truncated).unwrap();
+        let view = store.view().unwrap();
+        assert_eq!(ids_public(&view.sources), [LIBRARY_ID, TELMI_STORE_ID]);
+        let recovery = view.recovery.unwrap();
+        assert_eq!(
+            fs::read(dir.path().join(&recovery.backup)).unwrap(),
+            truncated
+        );
+    }
+
+    /// Panne : écriture interrompue avant le renommage. Le fichier temporaire est ignoré, le
+    /// fichier précédent (complet) est lu.
+    #[test]
+    fn une_ecriture_interrompue_laisse_le_fichier_precedent() {
+        let (dir, store) = store();
+        podcast(&store, "p", FEED).unwrap();
+        fs::write(
+            dir.path().join(".sources.json.999-0.tmp"),
+            r#"{"schema_version":2,"sour"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&store.list().unwrap()),
+            [LIBRARY_ID, TELMI_STORE_ID, "p"]
+        );
+        assert_eq!(storage::pending_recovery(dir.path(), FILE_NAME), None);
+    }
+
+    #[test]
+    fn un_flux_deja_present_ou_un_identifiant_pris_est_refuse() {
+        let (dir, store) = store();
+        podcast(&store, "p", FEED).unwrap();
+        let err = podcast(&store, "q", FEED).unwrap_err();
+        assert_eq!(err.kind(), "validation");
+        assert!(!err.to_string().contains("SECRET42"), "{err}");
+        let err = podcast(&store, "p", "https://autre.example.test/f.xml").unwrap_err();
+        assert_eq!(err.kind(), "validation");
+        assert_eq!(
+            sources_json(dir.path())["sources"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn un_podcast_ne_change_pas_de_type_et_se_supprime() {
+        let (_dir, store) = store();
+        podcast(&store, "p", FEED).unwrap();
+        let err = store
+            .update("p", catalog("X", "https://exemple.org/c.json"))
+            .unwrap_err();
+        assert_eq!(err.kind(), "validation");
+        store.remove("p").unwrap();
+        assert_eq!(ids(&store.list().unwrap()), [LIBRARY_ID, TELMI_STORE_ID]);
+    }
+
+    /// D11 (décidé le 2026-10-23) : la vue renvoyée au front contient l'URL complète et un
+    /// libellé court.
+    #[test]
+    fn la_vue_publique_donne_l_url_et_un_libelle_court() {
+        let (_dir, store) = store();
+        podcast(&store, "p", FEED).unwrap();
+        let view = store.view().unwrap();
+        assert_eq!(
+            view.sources[2],
+            PublicSource::Podcast {
+                id: "p".into(),
+                name: "Podcast".into(),
+                url: FEED.into(),
+                feed_hint: "https://podcasts.example.test/…".into()
+            }
+        );
+        // Les autres types sont inchangés.
+        assert_eq!(
+            serde_json::to_value(&view.sources[1]).unwrap(),
+            serde_json::to_value(Source::telmi_store()).unwrap()
+        );
+    }
+
+    fn ids_public(sources: &[PublicSource]) -> Vec<String> {
+        sources
+            .iter()
+            .map(|s| match s {
+                PublicSource::Library { id, .. }
+                | PublicSource::Catalog { id, .. }
+                | PublicSource::Folder { id, .. }
+                | PublicSource::Podcast { id, .. } => id.clone(),
+            })
+            .collect()
     }
 
     #[test]

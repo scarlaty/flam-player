@@ -78,6 +78,10 @@ export async function loadSourceData(
           library_thumb: item.thumb ?? null,
         })),
       };
+    case "podcast":
+      // Un flux podcast n'a pas d'histoires à installer : ses épisodes entrent dans un pack
+      // (écran de sélection : #212).
+      return EMPTY;
   }
 }
 

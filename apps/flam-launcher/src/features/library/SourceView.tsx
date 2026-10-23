@@ -426,7 +426,7 @@ function EmptyForSource({ source }: { source: Source }) {
   const text = t.library.empty[source.type];
   return (
     <EmptyState
-      icon={source.type === "library" ? "library" : source.type}
+      icon={source.type === "podcast" ? "catalog" : source.type}
       headingLevel={3}
       title={text.title}
       description={text.description}
