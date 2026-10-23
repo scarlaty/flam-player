@@ -4,8 +4,8 @@
 use telmi2flam::json::{expect, load_json, Kind, Value};
 use telmi2flam::lua::{lua_repr, py_float_repr, Lua};
 use telmi2flam::text::{
-    choice_label, describe_replaced, flat, font_safe, is_py_space, text, Replaced, LABEL_MAX,
-    UNIDATA_VERSION,
+    choice_label, describe_replaced, flat, font_safe, is_py_space, py_repr, text, Replaced,
+    LABEL_MAX, UNIDATA_VERSION,
 };
 
 fn table() -> Value {
@@ -284,6 +284,32 @@ fn font_safe_exhaustif_comme_python() {
                 &mut h,
                 font_safe(c.encode_utf8(&mut [0; 4]), None).as_bytes(),
             );
+            fnv1a(&mut h, b"\xff");
+        }
+        if format!("{h:016x}") != str_of(digest) {
+            diffs.push(format!("U+{start:04X}..U+{:04X}", start + block - 1));
+        }
+    }
+    assert!(diffs.is_empty(), "blocs differents de Python : {diffs:?}");
+}
+
+/// `repr(str)` : noms choisis (guillemets, échappements, non imprimables) puis tous les points
+/// de code par blocs (empreinte FNV-1a), ce qui contrôle aussi la table `isprintable`.
+#[test]
+fn py_repr_comme_python() {
+    let t = table();
+    for case in list(field(&t, "py_repr")) {
+        let c = list(case);
+        assert_eq!(py_repr(str_of(&c[0])), str_of(&c[1]), "{:?}", c[0]);
+    }
+    let ex = field(&t, "py_repr_exhaustive");
+    let block = int_of(field(ex, "block")) as u32;
+    let mut diffs = Vec::new();
+    for (i, digest) in list(field(ex, "fnv1a64")).iter().enumerate() {
+        let start = i as u32 * block;
+        let mut h = 0xCBF29CE484222325u64;
+        for c in (start..start + block).filter_map(char::from_u32) {
+            fnv1a(&mut h, py_repr(c.encode_utf8(&mut [0; 4])).as_bytes());
             fnv1a(&mut h, b"\xff");
         }
         if format!("{h:016x}") != str_of(digest) {

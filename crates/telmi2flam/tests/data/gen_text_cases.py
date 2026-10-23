@@ -5,7 +5,8 @@ Sorties (commitees) :
   - crates/telmi2flam/tests/data/text_cases.json : cas et resultats de Python, lus par
     crates/telmi2flam/tests/text_parity.rs ;
   - crates/telmi2flam/src/text_tables.rs : tables Unicode de Python (espaces de str.split(),
-    categories L* / N* de unicodedata) utilisees par le Rust.
+    categories L* / N* de unicodedata, non imprimables de str.isprintable) utilisees par le
+    Rust.
 
 A lancer avec la version de Python embarquee par l'installateur (build-converter.ps1 :
 3.14.x, Unicode 16.0.0), depuis la racine du depot :
@@ -334,6 +335,36 @@ def float_cases():
     return [[bits(f), repr(f)] for f in fl]
 
 
+REPR_NAMES = [
+    "", "a.png", "../x.png", "/x.png", "a\\b.png", "c:x.png", "a//b.png", "it's.png",
+    'say "hi".png', "it's " + '"x"' + ".png", "'", '"', "'" + '"', "\\",
+    "a\tb\nc\rd", "a\x00b", "\x01",
+    "\x1f", "\x7f", "\x80", "\x9f", "\xa0", "\xad", "\xe9",
+    "été/b.mp3", "e\u0301", "\u200b", "\u2028", "\u2029", "\u3000",
+    "\u00ff", "\u0100", "\ufeff", "\ud7ff", "\ue000", "\uffff",
+    "\ufffd", "\U0001f511", "\U0001f98a.png", "\U000e0001",
+    "\U0010ffff", "\U00010000", "\u0378", "\u0600", "\u061c",
+    "\u2060", "\u2066", "a\u202eb", "\u1680", "\u180e",
+    "\U0001d173", "\U000e0100", "x\x00..\\y'" + '"',
+]
+
+
+def repr_cases():
+    return [[n, repr(n)] for n in REPR_NAMES]
+
+
+def repr_exhaustive():
+    digests = []
+    for start in range(0, 0x110000, BLOCK):
+        buf = bytearray()
+        for cp in range(start, start + BLOCK):
+            if 0xD800 <= cp <= 0xDFFF:
+                continue
+            buf += repr(chr(cp)).encode("utf-8") + b"\xff"
+        digests.append("%016x" % fnv1a(buf))
+    return digests
+
+
 def gen_tables():
     ws = [cp for cp in range(0x110000) if chr(cp).isspace()]
     ranges = []
@@ -365,6 +396,20 @@ def gen_tables():
     ]
     lines += ["    (0x%x, 0x%x)," % (a, b) for a, b in ranges]
     lines += ["];", ""]
+    lines += [
+        "/// Intervalles (inclus) des points de code `c` tels que `not c.isprintable()`.",
+        "#[rustfmt::skip]",
+        "pub(crate) const NON_PRINTABLE: &[(u32, u32)] = &[",
+    ]
+    unprintable = []
+    for cp in range(0x110000):
+        if not chr(cp).isprintable():
+            if unprintable and unprintable[-1][1] == cp - 1:
+                unprintable[-1][1] = cp
+            else:
+                unprintable.append([cp, cp])
+    lines += ["    (0x%x, 0x%x)," % (a, b) for a, b in unprintable]
+    lines += ["];", ""]
     return "\n".join(lines), ws
 
 
@@ -386,6 +431,8 @@ def main():
                                 "block": SEQ_BLOCK, "max_len": SEQ_MAX_LEN,
                                 "pool": seq_pool(), "fnv1a64": sequence_digests()},
         "float_repr": float_cases(),
+        "py_repr": repr_cases(),
+        "py_repr_exhaustive": {"block": BLOCK, "fnv1a64": repr_exhaustive()},
     }
     with open(JSON_OUT, "w", encoding="ascii", newline="\n") as f:
         json.dump(data, f, ensure_ascii=True, indent=1)
