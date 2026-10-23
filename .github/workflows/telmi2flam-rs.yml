@@ -11,6 +11,9 @@ on:
       - ".github/workflows/telmi2flam-rs.yml"
       # La table de parité Unicode est liée à $PythonVersion (test table_produite_par_le_python...).
       - "apps/flam-launcher/scripts/build-converter.ps1"
+      # Moteur et runtime embarqués dans le binaire (include_bytes!, build.rs) : #129.
+      - "tools/telmi2flam/engine/**"
+      - "tools/telmi2flam/runtime/**"
   push:
     branches: [main]
     paths:
@@ -20,6 +23,9 @@ on:
       - ".github/workflows/telmi2flam-rs.yml"
       # La table de parité Unicode est liée à $PythonVersion (test table_produite_par_le_python...).
       - "apps/flam-launcher/scripts/build-converter.ps1"
+      # Moteur et runtime embarqués dans le binaire (include_bytes!, build.rs) : #129.
+      - "tools/telmi2flam/engine/**"
+      - "tools/telmi2flam/runtime/**"
 
 permissions:
   contents: read
