@@ -86,7 +86,7 @@ export function FirmwareNotice({ device }: { device: DeviceSummary }) {
           <p>{blockedMessage(block)}</p>
           {culprits && (
             <p style={{ overflowWrap: "anywhere" }}>
-              {text.contradictionStories(culprits.stories, culprits.counts.key_matches)}
+              {text.contradictionStories(culprits.stories, culprits.total)}
             </p>
           )}
           <p>{contradiction ? text.contradictionHint : text.blockedHint}</p>

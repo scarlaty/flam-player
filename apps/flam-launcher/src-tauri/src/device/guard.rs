@@ -199,6 +199,9 @@ pub enum Coherence {
     Contradiction {
         counts: CoherenceCounts,
         stories: Vec<String>,
+        /// Nombre d'UUID distincts en cause, avant troncature (un même UUID dans `str/` et
+        /// `str.hidden/` ne compte qu'une fois).
+        total: usize,
     },
     /// Aucune histoire exploitable.
     NoEvidence { counts: CoherenceCounts },
@@ -270,10 +273,12 @@ pub fn coherence_v2(
     } else if counts.key_matches > 0 {
         contradicting.sort();
         contradicting.dedup();
+        let total = contradicting.len();
         contradicting.truncate(MAX_CONTRADICTING);
         Coherence::Contradiction {
             counts,
             stories: contradicting,
+            total,
         }
     } else {
         Coherence::NoEvidence { counts }

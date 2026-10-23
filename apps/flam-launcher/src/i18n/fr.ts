@@ -738,8 +738,11 @@ export const fr = {
     },
     blockedHint:
       "Rien n'est écrit tant que ce blocage dure. Notez la version et l'état affichés ici dans votre retour de test.",
-    contradictionStories: (ids: string[], total: number) =>
-      `Histoires en cause : ${ids.join(", ")}${total > ids.length ? ` (et ${total - ids.length} autres)` : ""}.`,
+    contradictionStories: (ids: string[], total: number) => {
+      const more = total - ids.length;
+      const tail = more > 0 ? ` (et ${more} ${more > 1 ? "autres" : "autre"})` : "";
+      return `Histoires en cause : ${ids.join(", ")}${tail}.`;
+    },
     contradictionHint:
       "Aucune histoire n'est envoyée tant que ce blocage dure. Le retrait et l'ordre restent possibles (après la confirmation de sauvegarde, si elle est demandée). Notez la version et l'état affichés ici dans votre retour de test.",
     confirm: {

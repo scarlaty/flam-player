@@ -82,14 +82,13 @@ export function RemoveStoryButton({
           {working ? text.working : text.button}
         </Button>
         {blocked && !working && (
-          // « Un autre retrait est en cours » : lu par les lecteurs d'écran seulement, pour ne pas
-          // répéter la même phrase sur chaque ligne (la ligne concernée montre « Retrait… »).
+          // « Un autre retrait est en cours » et le blocage du firmware : lus par les lecteurs
+          // d'écran seulement, pour ne pas répéter la même phrase sur chaque ligne (la ligne
+          // concernée montre « Retrait… », le bandeau du firmware explique le blocage).
           <span
             id={hintId}
             className={
-              blocked && !busy && !ejecting && !firmware
-                ? "fl-visually-hidden"
-                : "fl-send__reason"
+              blocked && !busy && !ejecting ? "fl-visually-hidden" : "fl-send__reason"
             }
           >
             {busy

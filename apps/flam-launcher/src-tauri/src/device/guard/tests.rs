@@ -130,7 +130,7 @@ fn refused(root: &Path, ctx: &WriteContext<'_>, kind: WriteKind) -> WriteRefused
     err
 }
 
-fn wrong_info() -> Vec<u8> {
+pub(crate) fn wrong_info() -> Vec<u8> {
     encrypt_zero_padded(&[9u8; 16], &[8u8; 16], b"Autre\nclef\n000000\n")
 }
 
@@ -381,8 +381,8 @@ fn contradiction_reelle_au_format_flam_refuse_l_envoi_pas_le_retrait() {
     assert!(
         matches!(
             &status.coherence,
-            Coherence::Contradiction { counts, stories }
-                if counts.key_matches == 1 && stories == &[STORY.to_string()]
+            Coherence::Contradiction { counts, stories, total }
+                if counts.key_matches == 1 && stories == &[STORY.to_string()] && *total == 1
         ),
         "{:?}",
         status.coherence
@@ -403,11 +403,17 @@ fn les_histoires_en_contradiction_sont_bornees_et_triees() {
         story(dev.path(), &id, &key_v2(), &wrong_info());
     }
     let coherence = coherence_v2(dev.path(), &mdf_v2_known(), &HashSet::new()).unwrap();
-    let Coherence::Contradiction { counts, stories } = coherence else {
+    let Coherence::Contradiction {
+        counts,
+        stories,
+        total,
+    } = coherence
+    else {
         panic!("contradiction attendue : {coherence:?}");
     };
     assert_eq!(counts.key_matches, MAX_CONTRADICTING + 3);
     assert_eq!(stories.len(), MAX_CONTRADICTING);
+    assert_eq!(total, MAX_CONTRADICTING + 3);
     assert_eq!(stories[0], "00000000-0000-4000-8000-000000000000");
     assert!(stories.windows(2).all(|w| w[0] < w[1]));
 }

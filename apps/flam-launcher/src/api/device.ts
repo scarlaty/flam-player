@@ -58,6 +58,8 @@ export type Coherence =
       counts: CoherenceCounts;
       /** UUID des histoires en cause (au plus 20, triés). */
       stories: string[];
+      /** Nombre d'UUID distincts en cause, avant troncature. */
+      total: number;
     }
   | { kind: "no_evidence"; counts: CoherenceCounts };
 

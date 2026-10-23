@@ -277,13 +277,13 @@ it("Flam 2.x aux clés incohérentes : les histoires en cause sont désignées (
     clear_info: 0,
   };
   status.device!.firmware_status = firmwareV2({
-    coherence: { kind: "contradiction", counts, stories: [A, B] },
+    coherence: { kind: "contradiction", counts, stories: [A, B], total: 3 },
     write_block: { kind: "keys_contradiction", version: "2.4.2" },
   });
   try {
     renderScreen();
     expect(
-      await screen.findByText(`Histoires en cause : ${A}, ${B} (et 21 autres).`),
+      await screen.findByText(`Histoires en cause : ${A}, ${B} (et 1 autre).`),
     ).toBeInTheDocument();
   } finally {
     status.device!.firmware_status = before;
