@@ -603,3 +603,51 @@ fn le_suffixe_d_un_index_abime_n_est_pas_affiche() {
     );
     assert_no_leak(&text);
 }
+
+/// #342 : un cache réglé sur `C:\Users` ne fait pas passer le nom d'un autre compte pour un
+/// sous-dossier du cache.
+#[test]
+fn un_cache_regle_sur_users_ne_laisse_pas_fuiter_un_autre_compte() {
+    for cache in [r"C:\Users", r"C:\Users\", "c:/users"] {
+        let r = Redactor {
+            profile: Some(PROFILE.into()),
+            username: None,
+            cache: Some(cache.into()),
+        };
+        assert_eq!(
+            r.clean_message(r"échec C:\Users\Marie\x et C:\Users\jdupont\y"),
+            r"échec C:\Users\%USERNAME%\x et %USERPROFILE%\y",
+            "cache {cache}"
+        );
+    }
+}
+
+/// #342 : la casse Unicode à longueur variable (`İ` → `i̇`) ne fait pas rater le nom, ne décale
+/// ni la suite du texte ni les frontières de mot.
+#[test]
+fn la_casse_unicode_a_longueur_variable_est_geree() {
+    assert_eq!(replace_ci("a İSTANBUL b", "i̇stanbul", "X"), "a X b");
+    assert_eq!(replace_ci("a İSTANBUL b", "İstanbul", "X"), "a X b");
+    // Le motif ne peut pas s'arrêter au milieu d'un caractère d'origine.
+    assert_eq!(replace_ci("İ", "i", "X"), "İ");
+    assert_eq!(replace_word_ci("İbob, bob", "bob", "X"), "İbob, X");
+    assert_eq!(replace_word_ci("xİ bob İ", "bob", "N"), "xİ N İ");
+}
+
+/// #342 : plusieurs Flam, toutes décrites.
+#[test]
+fn plusieurs_flam_sont_toutes_decrites() {
+    let a = fixture_device();
+    let b = fixture_device();
+    let text = diagnostic(
+        vec![a.path().to_path_buf(), b.path().to_path_buf()],
+        Vec::new(),
+    );
+    assert!(text.contains("- Flam détectées : 2"), "{text}");
+    assert!(text.contains("**Flam 1 sur 2**"), "{text}");
+    assert!(text.contains("**Flam 2 sur 2**"), "{text}");
+    assert_eq!(text.matches("### Firmware").count(), 2, "{text}");
+    // Une seule Flam : pas d'intertitre.
+    let one = diagnostic(vec![a.path().to_path_buf()], Vec::new());
+    assert!(!one.contains("**Flam 1 sur"), "{one}");
+}

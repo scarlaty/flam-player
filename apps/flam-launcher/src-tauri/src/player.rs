@@ -608,6 +608,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// stderr (repères d'incrustation, messages d'erreur) sont inchangés ; l'arrêt forcé passe par
 /// `TerminateProcess`, sans événement de console. Lancé à la main (`run.bat`), le player garde
 /// sa console.
+///
+/// En version de développement (`debug`), le player n'est plus rattaché à la console du launcher :
+/// ses écritures directes sur la console ne s'y affichent plus ; stdout est ignoré et ses traces
+/// ne passent que par le tube stderr lu par le launcher (repères, messages d'erreur).
 fn hide_console(command: &mut Command) {
     #[cfg(windows)]
     {
@@ -1580,8 +1584,11 @@ mod tests {
             FreeConsole();
             assert!(AllocConsole() != 0, "console du test non allouée");
             let window = GetConsoleWindow();
-            assert!(!window.is_null(), "console du test sans fenêtre");
-            ShowWindow(window, 0); // SW_HIDE
+            // Pas de fenêtre (ConPTY, Windows Terminal par défaut, session sans bureau) : rien à
+            // cacher, le test reste valable (aucune fenêtre ne peut être héritée).
+            if !window.is_null() {
+                ShowWindow(window, 0); // SW_HIDE
+            }
         }
     }
 
