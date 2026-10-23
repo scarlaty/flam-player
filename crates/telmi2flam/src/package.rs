@@ -14,10 +14,16 @@
 //! (chaque image est décodée une fois, la couverture deux fois comme en Python) ; annulation
 //! consultée avant chaque asset et dans les boucles de lignes des images.
 //!
+//! Progression ([`build_package_with`]) : phases `images` et `audio` annoncées après la
+//! validation de `stages` et `inventory` (totaux : assets distincts référencés), `scripts`
+//! après la génération de `nodes.lua` (`nodes.lua`, moteur, runtime), avertissements émis dans
+//! l'ordre de Python.
+//!
 //! Écarts assumés avec Python (parité vérifiée par `tests/package_parity.rs` sous ces
 //! conditions) : vignette en mode `bandes` seulement (défaut Python `flou`, #282) ; MP3 hors
 //! 44 100 Hz recopiés tels quels, comme Python sans ffmpeg (rééchantillonnage reporté, #22).
 
+use std::collections::HashSet;
 use std::io::{Read, Seek};
 
 use crate::archive::{check_asset_name, find_root, Archive};
@@ -27,10 +33,11 @@ use crate::graph::{
     convert_graph, load_notes, nodes_lua, truthy, Header, Sources, Start, Warning, MAIN_LUA,
 };
 use crate::image::{png_to_fit_lif, png_to_thumb_lif, Align};
-use crate::json::{expect, load_json, Kind, Value};
+use crate::json::{expect, load_json, Kind, Object, Value};
 use crate::lua::py_float_repr;
 use crate::output::check_names;
 use crate::png::PngError;
+use crate::progress::{Phase, Progress};
 use crate::runtime::{RUNTIME, STORY_LUA};
 use crate::text::{describe_replaced, py_strip, text, Replaced};
 use crate::{lif, md5, mp3map};
@@ -195,12 +202,50 @@ fn read_exact<R: Read + Seek>(archive: &mut Archive<R>, name: &str) -> Result<Ve
         .ok_or_else(|| ConvError::internal_error(format!("{name} : entree introuvable")))
 }
 
-/// Assemble le paquet d'une archive Telmi ouverte. `cancelled` est consulté avant chaque
-/// asset et pendant le traitement des images ([`ConvError::cancelled`]).
+/// Totaux des phases `images` et `audio` : assets distincts référencés par les stages
+/// (image, audio) et l'inventaire (image), noms non vides seulement (`imgs_todo` /
+/// `audios_todo` de Python). Une même image en scène et en inventaire compte deux fois.
+fn asset_totals(src: &Sources<'_>) -> (u64, u64) {
+    fn name<'v>(obj: &'v Object, key: &str) -> Option<&'v str> {
+        match obj.get(key) {
+            Some(Value::Str(s)) if !s.is_empty() => Some(s),
+            _ => None,
+        }
+    }
+    let mut images: HashSet<(&str, bool)> = HashSet::new();
+    let mut audios: HashSet<&str> = HashSet::new();
+    for st in src.stages.into_iter().flat_map(|m| m.values()) {
+        if let Value::Object(st) = st {
+            images.extend(name(st, "image").map(|n| (n, false)));
+            audios.extend(name(st, "audio"));
+        }
+    }
+    for it in src.inventory {
+        if let Value::Object(it) = it {
+            images.extend(name(it, "image").map(|n| (n, true)));
+        }
+    }
+    (images.len() as u64, audios.len() as u64)
+}
+
+/// Assemble le paquet d'une archive Telmi ouverte, sans suivi de progression (voir
+/// [`build_package_with`]).
 pub fn build_package<R: Read + Seek>(
     archive: &mut Archive<R>,
     options: &Options,
     cancelled: &dyn Fn() -> bool,
+) -> Result<Package, ConvError> {
+    build_package_with(archive, options, cancelled, &mut ())
+}
+
+/// Assemble le paquet d'une archive Telmi ouverte. `cancelled` est consulté avant chaque
+/// asset et pendant le traitement des images ([`ConvError::cancelled`]) ; `progress` reçoit
+/// les phases `images`, `audio`, `scripts` et les avertissements.
+pub fn build_package_with<R: Read + Seek>(
+    archive: &mut Archive<R>,
+    options: &Options,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn Progress,
 ) -> Result<Package, ConvError> {
     let check = || {
         if cancelled() {
@@ -220,11 +265,13 @@ pub fn build_package<R: Read + Seek>(
     expect(Some(&metadata), &[Kind::Object], "metadata.json", false)?;
     expect(Some(&nodes), &[Kind::Object], "nodes.json", false)?;
 
-    let mut assets = StoryAssets::new(archive, &root, options.keep_size, cancelled);
+    let mut assets = StoryAssets::new(archive, &root, options.keep_size, cancelled, progress);
     let notes_raw = assets.read("notes.json")?;
     let (notes, notes_warning) = load_notes(notes_raw.as_deref());
     drop(notes_raw);
-    assets.warnings.extend(notes_warning);
+    if let Some(w) = notes_warning {
+        assets.warn(w.code, w.message);
+    }
 
     // Titre, sous-titre (catégorie) et UUID.
     let mut replaced = Replaced::new();
@@ -260,6 +307,9 @@ pub fn build_package<R: Read + Seek>(
 
     // Graphe : stages, actions, inventaire (assets convertis à la demande).
     let src = Sources::new(&nodes)?;
+    let (images_total, audio_total) = asset_totals(&src);
+    assets.progress().begin(Phase::Images, images_total);
+    assets.progress().begin(Phase::Audio, audio_total);
     let graph = convert_graph(&src, &notes, &mut replaced, &mut assets)?;
 
     // Titre illustré et vignette : `image` de metadata.json, sinon title.png, sinon cover.png
@@ -358,13 +408,20 @@ pub fn build_package<R: Read + Seek>(
     let StoryAssets {
         out: mut files,
         warnings,
+        progress,
         ..
     } = assets;
+    // `scripts` : nodes.lua, main.lua et story.lua (comptés 3), puis chaque fichier du runtime.
+    progress.begin(Phase::Scripts, 3 + RUNTIME.len() as u64);
     files.insert("script/nodes.lua".to_owned(), nodes_lua);
+    progress.tick(Phase::Scripts);
     files.insert("main.lua".to_owned(), MAIN_LUA.to_vec());
     files.insert("script/story.lua".to_owned(), STORY_LUA.to_vec());
+    progress.tick(Phase::Scripts);
+    progress.tick(Phase::Scripts);
     for f in RUNTIME {
         files.insert(f.name.to_owned(), f.data.to_vec());
+        progress.tick(Phase::Scripts);
     }
     // Couverture par défaut de audio-player : petite image transparente.
     let empty = lif::encode(&[0u8; 8 * 8 * 4], 8, 8)

@@ -5,7 +5,8 @@
 //! ([`text`]), sérialisation Lua ([`lua`]), décodage [`png`], redimensionnement [`resample`]
 //! (port de Pillow), conversions d'images en LIF ([`image`]) et graphe `nodes.json` vers Lua
 //! ([`graph`]), assets et assemblage du paquet en mémoire ([`assets`], [`package`], runtime
-//! embarqué [`runtime`]) et écriture atomique de la sortie ([`output`]).
+//! embarqué [`runtime`]), écriture atomique de la sortie ([`output`]), conversion complète
+//! ([`convert`]) et événements de progression ([`progress`]).
 //!
 //! # Pile d'appels
 //!
@@ -27,6 +28,7 @@
 pub mod archive;
 pub mod assets;
 mod blur;
+pub mod convert;
 pub mod error;
 pub mod ffmpeg;
 pub mod graph;
@@ -41,6 +43,7 @@ pub mod mp3map;
 pub mod output;
 pub mod package;
 pub mod png;
+pub mod progress;
 pub mod resample;
 pub mod runtime;
 pub mod text;

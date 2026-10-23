@@ -172,6 +172,10 @@ l'installeur.
    & <binaire-de-test>.exe --ignored --nocapture embarque
    ```
 
+   Port Rust (#131) : avec en plus `$env:FLAM_TEST_RUST_CONVERTER = "<...>\telmi2flam.exe"`
+   (`cargo build -p telmi2flam`), les deux tests visent le binaire Rust, par un script relais
+   lancé avec le Python embarqué ; le launcher garde son convertisseur Python.
+
    L'archive de test se génère avec `make_story.py` (issue #46) ; ne jamais committer de
    contenu sous licence. Pillow embarqué n'a pas FreeType : avec le Python embarqué, retirer
    `font_size=48` de ce script.
@@ -375,6 +379,7 @@ apps/flam-launcher/
     theme/                 Jetons CSS (clair/sombre) et choix du thème
     i18n/                  Textes de l'interface (français)
   docs/DESIGN.md           Design system : principes, palette, composants
+  docs/podcasts.md         Spécification produit des podcasts (#208)
   src-tauri/
     src/
       lib.rs               Initialisation (traces, builder Tauri)
