@@ -42,6 +42,19 @@ export function nodeAt(root: Menu, path: Path): PackNode | null {
   return parent?.[path[path.length - 1]!] ?? null;
 }
 
+/** Chemin du nœud `target` (même objet) dans `root` ; `null` s'il n'y figure pas. */
+export function pathOf(root: Menu, target: PackNode): Path | null {
+  for (let i = 0; i < root.length; i++) {
+    const node = root[i]!;
+    if (node === target) return [i];
+    if (node.kind === "category") {
+      const inner = pathOf(node.entries, target);
+      if (inner !== null) return [i, ...inner];
+    }
+  }
+  return null;
+}
+
 /** Remplace le menu situé à `parent` par `change(menu)`. */
 function updateMenu(root: Menu, parent: Path, change: (menu: Menu) => Menu): PackNode[] {
   if (parent.length === 0) return [...change(root)];
