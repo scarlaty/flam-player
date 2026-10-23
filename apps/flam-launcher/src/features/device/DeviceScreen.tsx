@@ -67,7 +67,7 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
   const announcement = [stateNote, countNote].filter(Boolean).join(". ");
   const wasDetected = useRef<boolean | null>(null);
   // Numéro de la demande « Réessayer » dont le résultat doit recevoir le focus (0 : aucune).
-  const retried = useRef(0);
+  const pendingRetry = useRef(0);
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   // Annonce les changements d'état (pas l'état initial « non détecté », déjà visible).
@@ -79,17 +79,17 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
     wasDetected.current = detected;
     if (before === detected || (before === null && !detected)) return;
     setStateNote(detected ? text.announce.detected : text.announce.lost);
-    if (detected && retried.current > 0) headingRef.current?.focus();
+    if (detected && pendingRetry.current > 0) headingRef.current?.focus();
   }, [known, detected]);
 
   // « Réessayer » ne réclame le focus que pour la réponse d'un appel lancé après le clic : celle
   // d'un appel déjà en vol (numéro plus ancien) ne l'éteint pas.
   useEffect(() => {
-    if (retryAnswered >= retried.current) retried.current = 0;
+    if (retryAnswered >= pendingRetry.current) pendingRetry.current = 0;
   }, [retryAnswered]);
 
   function onRetry() {
-    retried.current = retry();
+    pendingRetry.current = retry();
   }
 
   return (
