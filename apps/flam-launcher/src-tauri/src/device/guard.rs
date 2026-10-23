@@ -50,7 +50,7 @@
 //! VID/PID et des nombres d'histoires.
 
 use std::cell::OnceCell;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -254,7 +254,9 @@ pub fn coherence_v2(
         }
         counts.examined += 1;
         let same_key = key.len() == KEY_FILE_LEN && key[..] == expected_key[..];
-        let readable = keys.title_of_info(&info).is_some();
+        // Jugé sur la structure du clair (UTF-8, premier bloc strict), pas sur la présence d'un
+        // titre : un `info` déchiffré sans titre n'est pas une contradiction (#326).
+        let readable = keys.decrypts_info(&info);
         match (same_key, readable) {
             (true, true) => {
                 counts.key_matches += 1;
@@ -291,6 +293,13 @@ pub fn coherence_v2(
 /// d'une histoire installée par ce launcher (UUID de `launcher_stories`, fichier `key` déduit du
 /// numéro de série, `info` déchiffré avec les clés de `mdf`) : le firmware a donc déchiffré cette
 /// histoire. Lecture seule (le cache n'est jamais modifié ici).
+///
+/// TODO(#326, mainteneur, Flam 2.x réelle) : la preuve n'est liée qu'au **titre**. Une histoire
+/// du launcher qui porte exactement le titre d'une histoire officielle (au moins
+/// [`MIN_PROOF_TITLE`] caractères, champ entier) peut marquer la Flam « vérifiée par la Flam »
+/// à tort ; seul le libellé en dépend (une confirmation a été donnée avant l'envoi). Le
+/// durcissement (lier la preuve à l'UUID, exclure les titres hors launcher, relever le seuil)
+/// dépend du format de `library.cache`, à relever sur une vraie 2.x : comportement inchangé.
 pub fn flam_cache_proof(root: &Path, mdf: &[u8], launcher_stories: &HashSet<String>) -> bool {
     if launcher_stories.is_empty() {
         return false;
@@ -348,6 +357,10 @@ fn read_cache(root: &Path) -> Option<Vec<u8>> {
 /// Vrai si `needle` figure dans `haystack` comme **champ entier** : précédé du début, d'un octet
 /// de contrôle (< 0x20) ou de sa longueur, et suivi de la fin ou d'un octet de contrôle. Un titre
 /// inclus dans un autre (« Capi » dans « Le Noël de Capi ») ne compte pas.
+///
+/// TODO(#326, mainteneur, Flam 2.x réelle) : « précédé de sa longueur » ne compare que l'octet
+/// de poids faible (un titre de plus de 255 octets n'a pas de préfixe fidèle sur un octet).
+/// L'encodage réel des longueurs dans `library.cache` reste à relever : règle inchangée.
 fn contains_field(haystack: &[u8], needle: &[u8]) -> bool {
     let n = needle.len();
     if n == 0 || haystack.len() < n {
@@ -406,6 +419,11 @@ fn memchr_all<'h>(haystack: &'h [u8], needle: &'h [u8]) -> impl Iterator<Item = 
 
 /// Empreinte de `.mdf` pour la mémoire du PC : SHA-256 préfixé, en hexadécimal. Jamais exposée
 /// à l'interface ni journalisée.
+///
+/// TODO(#326, mainteneur, Flam 2.x réelle) : l'empreinte couvre tout le fichier, y compris les
+/// 16 octets de rôle inconnu à 0x6E. Si le firmware les réécrit, la confirmation est perdue
+/// (redemandée, jamais accordée à tort). À observer sur une vraie 2.x avant de restreindre
+/// l'empreinte aux champs stables : comportement inchangé.
 fn fingerprint(mdf: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"flam-launcher/mdf-fingerprint/v1/");
@@ -417,12 +435,30 @@ fn fingerprint(mdf: &[u8]) -> String {
         .collect()
 }
 
+/// Empreintes mémorisées, **dans l'ordre d'enregistrement** (la plus ancienne en tête), pour
+/// que l'éviction au-delà de [`MAX_TRUST_ENTRIES`] retire la plus ancienne (#326). Même forme
+/// JSON (tableaux de chaînes) que les fichiers déjà écrits, dont l'ordre (alphabétique) est
+/// repris tel quel.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct TrustData {
     #[serde(default)]
-    confirmed: BTreeSet<String>,
+    confirmed: Vec<String>,
     #[serde(default)]
-    flam_verified: BTreeSet<String>,
+    flam_verified: Vec<String>,
+}
+
+impl TrustData {
+    /// Retire les doublons (première occurrence gardée) et borne chaque liste à
+    /// [`MAX_TRUST_ENTRIES`] en oubliant les plus anciennes.
+    fn normalized(mut self) -> Self {
+        for list in [&mut self.confirmed, &mut self.flam_verified] {
+            let mut seen = HashSet::new();
+            list.retain(|fp| seen.insert(fp.clone()));
+            let excess = list.len().saturating_sub(MAX_TRUST_ENTRIES);
+            list.drain(..excess);
+        }
+        self
+    }
 }
 
 /// Confiance accordée à une Flam 2.x, pour l'interface.
@@ -478,10 +514,12 @@ impl TrustStore {
         let read =
             fs::File::open(path).and_then(|f| f.take(MAX_TRUST_FILE).read_to_string(&mut text));
         match read {
-            Ok(_) => serde_json::from_str(&text).unwrap_or_else(|err| {
-                tracing::warn!("confirmations des Flam illisibles, ignorées : {err}");
-                TrustData::default()
-            }),
+            Ok(_) => serde_json::from_str::<TrustData>(&text)
+                .map(TrustData::normalized)
+                .unwrap_or_else(|err| {
+                    tracing::warn!("confirmations des Flam illisibles, ignorées : {err}");
+                    TrustData::default()
+                }),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => TrustData::default(),
             Err(err) => {
                 tracing::warn!("confirmations des Flam illisibles, ignorées : {err}");
@@ -515,28 +553,26 @@ impl TrustStore {
         })
     }
 
+    /// Mémorise l'empreinte de `mdf` (confirmée, ou vérifiée par la Flam si `verified`). Le
+    /// fichier est écrit **sous le verrou** (#326) : deux enregistrements simultanés ne peuvent
+    /// plus écrire leurs instantanés dans le désordre et en perdre un. Au-delà de
+    /// [`MAX_TRUST_ENTRIES`], l'empreinte la plus anciennement enregistrée est oubliée.
     fn record(&self, mdf: &[u8], verified: bool) {
         let fp = fingerprint(mdf);
-        let snapshot = self.with(|data| {
-            let set = if verified {
+        self.with(|data| {
+            let list = if verified {
                 &mut data.flam_verified
             } else {
                 &mut data.confirmed
             };
-            if !set.insert(fp) {
-                return None;
+            if list.contains(&fp) {
+                return;
             }
-            while set.len() > MAX_TRUST_ENTRIES {
-                let first = set.iter().next().cloned();
-                if let Some(first) = first {
-                    set.remove(&first);
-                }
-            }
-            Some(data.clone())
+            list.push(fp);
+            let excess = list.len().saturating_sub(MAX_TRUST_ENTRIES);
+            list.drain(..excess);
+            self.save(data);
         });
-        if let Some(data) = snapshot {
-            self.save(&data);
-        }
     }
 }
 
@@ -552,6 +588,9 @@ pub struct KeySession {
 #[derive(Debug, Clone, Default)]
 struct SessionEntry {
     coherence: Option<(Coherence, Instant)>,
+    /// Nombre d'écritures `Other` contrôlées : une scrutation commencée avant l'une d'elles ne
+    /// garde pas son résultat, peut-être antérieur à un retrait (#345).
+    generation: u64,
     /// Taille et date du `library.cache` déjà examiné sans succès.
     cache_seen: Option<(u64, Option<std::time::SystemTime>)>,
     usb_logged: bool,
@@ -580,28 +619,26 @@ fn session_key(root: &Path, mdf: &[u8]) -> (String, String) {
 }
 
 /// Contexte d'une écriture : mémoires, racines détectées, histoires installées par ce launcher
-/// (lues à la demande, une seule fois).
+/// (les deux dernières lues à la demande, une seule fois).
 pub struct WriteContext<'a> {
     session: &'a KeySession,
     trust: &'a TrustStore,
-    /// Racines détectées ; `None` : pas de contrôle (hors Windows, aucune détection).
-    detected_roots: Option<Vec<PathBuf>>,
+    /// Racines détectées ; `None` : pas de contrôle (hors Windows, aucune détection). Énumérées
+    /// au premier contrôle de racine seulement : l'affichage (`device_status`, scruté) n'en a
+    /// pas besoin (#326).
+    detected_roots: OnceCell<Option<Vec<PathBuf>>>,
     cache_root: Option<PathBuf>,
     launcher: OnceCell<HashSet<String>>,
 }
 
 impl WriteContext<'static> {
-    /// Contexte de l'application : mémoires globales, lecteurs détectés (Windows), bibliothèque
-    /// du dossier de cache `cache_root`.
+    /// Contexte de l'application : mémoires globales, lecteurs détectés (Windows, énumérés à la
+    /// demande), bibliothèque du dossier de cache `cache_root`.
     pub fn current(cache_root: Option<PathBuf>) -> Self {
         Self {
             session: KeySession::global(),
             trust: TrustStore::app(),
-            detected_roots: if cfg!(windows) {
-                Some(super::detect::Environment::current().roots)
-            } else {
-                None
-            },
+            detected_roots: OnceCell::new(),
             cache_root,
             launcher: OnceCell::new(),
         }
@@ -621,10 +658,17 @@ impl<'a> WriteContext<'a> {
         Self {
             session,
             trust,
-            detected_roots,
+            detected_roots: OnceCell::from(detected_roots),
             cache_root: None,
             launcher,
         }
+    }
+
+    /// Racines détectées (énumérées au premier appel pour le contexte de l'application).
+    fn detected_roots(&self) -> Option<&[PathBuf]> {
+        self.detected_roots
+            .get_or_init(|| cfg!(windows).then(|| super::detect::Environment::current().roots))
+            .as_deref()
     }
 
     fn launcher_stories(&self) -> &HashSet<String> {
@@ -806,28 +850,21 @@ fn assess(root: &Path, mdf: &[u8], ctx: &WriteContext<'_>, mode: Mode) -> Assess
         Family::V2 => {}
     }
 
-    // 2.x : clés de `.mdf` lisibles et non triviales.
+    // 2.x : clés de `.mdf` lisibles et non triviales. La confiance mémorisée est rendue telle
+    // quelle (une Flam confirmée reste « confirmée » à l'affichage) ; le refus, lui, tient.
     if let Err(err) = keys_from_mdf(mdf) {
         let refused = WriteRefused::KeysUnreadable {
             detail: err.to_string(),
         };
-        return done(
-            layout,
-            Coherence::NotChecked,
-            Trust::Unconfirmed,
-            Some(refused),
-        );
+        let trust = ctx.trust.trust(mdf);
+        return done(layout, Coherence::NotChecked, trust, Some(refused));
     }
     if trivial(&mdf[MDF_KEY_OFFSET..MDF_KEY_OFFSET + 16])
         || trivial(&mdf[MDF_IV_OFFSET..MDF_IV_OFFSET + 16])
     {
         let refused = WriteRefused::KeysTrivial { version };
-        return done(
-            layout,
-            Coherence::NotChecked,
-            Trust::Unconfirmed,
-            Some(refused),
-        );
+        let trust = ctx.trust.trust(mdf);
+        return done(layout, Coherence::NotChecked, trust, Some(refused));
     }
     let busy = mode == Mode::Status { busy: true };
 
@@ -853,15 +890,30 @@ fn assess(root: &Path, mdf: &[u8], ctx: &WriteContext<'_>, mode: Mode) -> Assess
     }
 
     // Cohérence (informative ; une contradiction refuse l'envoi).
-    let cached = ctx.session.with(key.clone(), |e| e.coherence.clone());
+    let (cached, generation) = ctx.session.with(key.clone(), |e| {
+        if mode == Mode::Write(WriteKind::Other) {
+            e.generation += 1;
+        }
+        (e.coherence.clone(), e.generation)
+    });
     let coherence = match (mode, cached) {
         (Mode::Status { .. }, Some((c, at))) if busy || at.elapsed() < STATUS_REUSE => c,
         (Mode::Status { busy: true }, None) => Coherence::NotChecked,
         _ => match coherence_v2(root, mdf, ctx.launcher_stories()) {
             Ok(c) => {
-                let stored = c.clone();
+                // Une écriture `Other` (retrait, réordonnancement, reprise, confirmation) peut
+                // retirer l'histoire en cause : le contrôle n'est pas gardé pour l'affichage, et
+                // celui d'avant est oublié, pour que « Ma Flam » ne montre pas un UUID retiré
+                // pendant [`STATUS_REUSE`] (#345). L'envoi (`Send`) ne retire rien et n'écrit que
+                // des histoires du launcher, exclues du contrôle : il le garde. Une scrutation
+                // dépassée par une écriture `Other` (génération changée) ne garde rien. Pendant
+                // l'écriture, la cohérence s'affiche donc « non contrôlée ».
                 ctx.session.with(key.clone(), |e| {
-                    e.coherence = Some((stored, Instant::now()))
+                    if mode == Mode::Write(WriteKind::Other) {
+                        e.coherence = None;
+                    } else if e.generation == generation {
+                        e.coherence = Some((c.clone(), Instant::now()));
+                    }
                 });
                 c
             }
@@ -899,7 +951,7 @@ fn read_device_mdf(root: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>, WriteRefu
 }
 
 fn check_root(root: &Path, ctx: &WriteContext<'_>) -> Result<(), WriteRefused> {
-    if let Some(roots) = &ctx.detected_roots {
+    if let Some(roots) = ctx.detected_roots() {
         ensure_root_among(root, roots).map_err(|_| WriteRefused::InvalidRoot)?;
     }
     if !fs::symlink_metadata(root.join(MDF_FILE)).is_ok_and(|m| m.is_file()) {
@@ -985,6 +1037,10 @@ pub fn unreadable_status(size: u64, detail: String) -> FirmwareStatus {
 /// Enregistre la confirmation « Firmware 2.x en test : j'ai sauvegardé ma Flam », mémorisée par
 /// empreinte de `.mdf`. Acceptée seulement si la confirmation est la seule chose qui manque ;
 /// sinon rend la raison du refus. Rien n'est écrit sur la Flam.
+///
+/// TODO(#326, NIT) : la Flam confirmée est celle relue à la lettre de lecteur `root`, pas
+/// forcément celle affichée si une autre a été branchée entre-temps à la même lettre. Lier la
+/// confirmation à l'état affiché demande un jeton non secret côté interface : non traité.
 pub fn confirm(root: &Path, ctx: &WriteContext<'_>) -> Result<FirmwareStatus, WriteRefused> {
     check_root(root, ctx)?;
     let mdf = read_device_mdf(root)?;

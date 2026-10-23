@@ -7,7 +7,7 @@
 //!    avec le **vrai** `telmi2flam.py` (Python embarqué si disponible) ;
 //! 3. la bibliothèque la liste ; `PlayerService` lance le **vrai** `flam-player.exe` en pilotes
 //!    SDL `dummy` et rendu logiciel (ni fenêtre ni carte son ni GPU) sur une copie de travail ;
-//! 4. le player est arrêté et l'événement `exited` est reçu (retour à la surcouche).
+//! 4. le player est arrêté par l'ordre `quit` (sortie volontaire, code 0) et l'événement `exited` est reçu (retour à la surcouche).
 //!
 //! L'archive est synthétique (aucun contenu sous licence : images unies, MP3 muets).
 //!
@@ -242,9 +242,9 @@ impl PlayerEvents for PlayerRecorder {
     }
 }
 
-/// Ferme le player (et ses enfants) quand le test se termine, y compris sur un échec : sinon un
+/// Filet de sécurité : ferme le player (et ses enfants) quand le test se termine, y compris sur un échec : sinon un
 /// `assert!` en cours de route laisserait `flam-player.exe` vivant.
-struct KillOnDrop(u32);
+struct KillOnDrop(u32, std::sync::atomic::AtomicBool);
 
 impl KillOnDrop {
     fn kill(&self) -> std::io::Result<std::process::Output> {
@@ -256,7 +256,10 @@ impl KillOnDrop {
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
-        let _ = self.kill();
+        // Désarmé après une sortie volontaire : le pid pourrait avoir été réutilisé.
+        if !self.1.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = self.kill();
+        }
     }
 }
 
@@ -409,7 +412,7 @@ async fn scenario() {
             &title,
         )
         .expect("lancement du player");
-    let killer = KillOnDrop(session.pid);
+    let _killer = KillOnDrop(session.pid, std::sync::atomic::AtomicBool::new(false));
     let started = started_rx
         .recv_timeout(Duration::from_secs(30))
         .expect("événement started");
@@ -444,8 +447,9 @@ async fn scenario() {
     );
 
     // 5. Retour : le player est fermé, la surcouche reçoit `exited` et libère le créneau.
-    let kill = killer.kill().expect("taskkill");
-    assert!(kill.status.success(), "taskkill : {kill:?}");
+    // Sortie volontaire (#119) : `PlayerService::stop` envoie `quit` sur stdin, le player
+    // sauvegarde et sort avec le code 0. `_killer` ne sert plus que de filet si le test échoue.
+    assert!(player.stop(), "aucun player à arrêter");
     let exited =
         tokio::task::spawn_blocking(move || exited_rx.recv_timeout(Duration::from_secs(10)))
             .await
@@ -453,7 +457,12 @@ async fn scenario() {
             .expect("événement exited");
     assert_eq!(exited.session.uuid, STORY_UUID);
     assert_eq!(exited.session.pid, session.pid);
-    assert!(!exited.success, "arrêt forcé : code {:?}", exited.code);
+    assert!(
+        exited.success && exited.code == Some(0),
+        "sortie non volontaire : code {:?}, stderr {}",
+        exited.code,
+        exited.stderr
+    );
     for bad in ["Erreur", "ASSERT", "attempt to", "CRASH", "unprotected"] {
         assert!(
             !exited.stderr.contains(bad),
@@ -461,6 +470,7 @@ async fn scenario() {
             exited.stderr
         );
     }
+    _killer.1.store(true, std::sync::atomic::Ordering::SeqCst);
     let release = Instant::now() + Duration::from_secs(5);
     while player.status().is_some() {
         assert!(Instant::now() < release, "créneau du player jamais libéré");

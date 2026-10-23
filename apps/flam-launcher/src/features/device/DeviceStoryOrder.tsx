@@ -49,7 +49,7 @@ export function DeviceStoryOrder({
   busy,
   onClose,
 }: DeviceStoryOrderProps) {
-  const { reorderOnDevice, deviceKey, canMaintain } = useDevice();
+  const { reorderOnDevice, deviceKey, canMaintain, device } = useDevice();
   const toast = useToast();
   const base = stories.map((story) => story.uuid);
   const [keyAtOpen] = useState(deviceKey);
@@ -104,9 +104,10 @@ export function DeviceStoryOrder({
   }, [order]);
 
   const byUuid = new Map(stories.map((story) => [story.uuid, story]));
-  // Garde du firmware (#326) : Flam 2.x non confirmée ou écriture bloquée.
-  const firmware = !canMaintain && !busy;
-  const locked = saving || busy || firmware;
+  // Garde du firmware (#326) : Flam 2.x non confirmée ou écriture bloquée. Flam débranchée :
+  // rien n'est modifiable, mais la raison n'est pas le firmware (#345).
+  const firmware = device !== null && !canMaintain && !busy;
+  const locked = saving || busy || !canMaintain;
   const dirty = order.join() !== base.join();
 
   function apply(next: string[], uuid: string) {

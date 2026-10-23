@@ -2,10 +2,13 @@ import { useSyncExternalStore } from "react";
 
 /** Écrans de l'application, désignés par le hash de l'URL (`#/sources`…). */
 export type Route =
-  "home" | "sources" | "settings" | "library" | "device" | "podcasts" | "demo";
+  "home" | "sources" | "settings" | "library" | "device" | "podcasts" | "pack" | "demo";
 
 /** Adresse de la page de démonstration des composants (développement uniquement). */
 export const DEMO_HASH = "#/demo";
+
+/** Éditeur de pack de podcasts (#363), sous l'écran Podcasts. */
+export const PACK_HASH = "#/podcasts/pack";
 
 export const ROUTE_HASHES = {
   home: "#/",
@@ -44,6 +47,7 @@ export function routeFromHash(hash: string): Route {
   if (hash === ROUTE_HASHES.settings) return "settings";
   if (hash === ROUTE_HASHES.device) return "device";
   if (hash === ROUTE_HASHES.podcasts) return "podcasts";
+  if (hash === PACK_HASH) return "pack";
   if (hash === DEMO_HASH) return "demo";
   return "home";
 }

@@ -2,42 +2,58 @@
 //! (`tools/telmi2flam/telmi2flam.py`) avec `_commit`, `_clean_orphans` et `_discard`.
 //!
 //! Invariants (PORT-RUST.md §3) :
-//! - **jamais de sortie partielle** : tout s'écrit dans `<cible>.<pid>.part`, voisin de la
-//!   cible, puis le `.part` est publié par renommage (`std::fs::rename`, soit
-//!   `MoveFileExW(REPLACE_EXISTING)` ou son équivalent POSIX sous Windows), relancé quelques
-//!   fois si le fichier est verrouillé (antivirus). Le `.plain.pk` est vidé sur disque
-//!   (`sync_all`) avant le renommage : une coupure de courant ne publie pas un fichier creux ;
+//! - **jamais de sortie partielle** : tout s'écrit dans un `.part` voisin de la cible, propre à
+//!   l'écriture ([`part_path`] : `<cible>.<pid>.part`, puis `<cible>.<pid>-<n>.part` pour les
+//!   écritures suivantes du même processus), puis le `.part` est publié par renommage
+//!   (`std::fs::rename`, soit `MoveFileExW(REPLACE_EXISTING)` ou son équivalent POSIX sous
+//!   Windows), relancé quelques fois si le fichier est verrouillé (antivirus). Le `.plain.pk`
+//!   et chaque fichier du `.plain` sont vidés sur disque (`sync_all`) avant le renommage : une
+//!   coupure de courant ne publie pas un fichier creux. Le dossier `.part` n'est jamais recréé
+//!   en cours d'écriture, et son nombre de fichiers est vérifié avant publication : un `.part`
+//!   effacé par un autre processus (qui l'a cru orphelin) fait échouer l'écriture ;
 //! - **un échec ne détruit rien** : à chaque étape (création, écriture, `sync`, renommage,
-//!   annulation), les `.part` sont supprimés et l'ancienne sortie reste intacte ;
+//!   annulation), les `.part` sont supprimés et l'ancienne sortie reste intacte ; les types des
+//!   cibles (fichier, dossier) sont vérifiés avant la première publication ;
 //! - **aucune écriture hors de la destination** : garde zip-slip de Python sur les noms
-//!   ([`check_names`]), et chaque dossier du `.plain` est vérifié par chemin canonique ;
+//!   ([`check_names`]), et chaque dossier du `.plain` est créé composant par composant, un
+//!   composant existant devant être un vrai dossier (ni lien ni jonction) ;
 //! - **octets du ZIP identiques à `zipfile.writestr`** (Python 3.14 sous Windows) à horodatage
 //!   égal : méthode *stored*, versions 20 (45 en ZIP64), système créateur 0 (MS-DOS),
 //!   attributs externes `0o600 << 16`, bit 11 (UTF-8) seulement pour un nom non ASCII, ZIP64
 //!   aux mêmes seuils que `zipfile`. Seul écart : l'horodatage est fixé au 1980-01-01 00:00
 //!   (Python prend l'heure locale, PORT-RUST.md §4.1) ; le lecteur du player
-//!   (`src/formats/pk_reader.c`) l'ignore.
+//!   (`src/formats/pk_reader.c`) l'ignore ;
+//! - **MP3 référencés** ([`Data::Source`], #355) : relus dans l'archive d'entrée un à un, au
+//!   moment de leur écriture (`.plain.pk` puis dossier `.plain`), par tours de [`COPY_CHUNK`]
+//!   octets (annulation consultée entre deux tours), et refusés (`archive_unreadable`, sortie
+//!   non publiée) si leur taille ou leur CRC-32 diffère de ceux de l'assemblage. L'archive
+//!   d'entrée est fermée avant la première publication (#402).
 //!
 //! Limites reprises de Python : le dossier `.plain` existant est mis à jour fichier par fichier
 //! (`_commit`), donc sans atomicité, et les publications du `.plain.pk` puis du `.plain` ne sont
-//! pas atomiques ensemble. Le launcher n'utilise que le `.plain.pk`.
+//! pas atomiques ensemble. Le launcher n'utilise que le `.plain.pk`. Le dossier parent n'est
+//! vidé sur disque après le renommage que sous POSIX (NTFS journalise le renommage).
 //!
 //! Écarts voulus avec Python : un `.part` laissé par un processus mort qui portait **notre**
 //! PID est supprimé avant l'écriture (Python le réutiliserait et publierait ses fichiers
-//! périmés dans le `.plain`) ; un `.plain` à publier sur un fichier existant (et non un
-//! dossier) est refusé sans rien remplacer ; un PID orphelin n'est reconnu qu'en chiffres
+//! périmés dans le `.plain`) ; deux écritures du même processus vers la même cible ont chacune
+//! leur `.part` ; un `.plain` à publier sur un fichier existant (et non un dossier) est refusé
+//! sans rien remplacer, `.plain.pk` compris ; un PID orphelin n'est reconnu qu'en chiffres
 //! ASCII (Python accepte tout `str.isdigit()`) ; un lien symbolique orphelin est supprimé sans
 //! être suivi.
 
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::Duration;
 
+use crate::archive::Archive;
 use crate::error::ConvError;
-use crate::package::Package;
+use crate::package::{Data, Package};
 use crate::progress::{Phase, Progress};
 
 /// `zipfile.ZIP64_LIMIT` : au-delà, tailles et positions passent en ZIP64.
@@ -97,11 +113,165 @@ pub fn check_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<(), C
 pub enum ZipStop {
     Io(io::Error),
     Cancelled,
+    /// Entrée référencée illisible ou modifiée dans l'archive d'entrée.
+    Source(ConvError),
+}
+
+/// Taille des tours de relecture d'une entrée [`Data::Source`] (#402) : la mémoire reste
+/// bornée par ce tour, et l'annulation est consultée entre deux tours.
+pub(crate) const COPY_CHUNK: usize = 256 * 1024;
+
+/// Destinataire des octets d'une entrée, tour par tour.
+pub(crate) type Sink<'a> = &'a mut dyn FnMut(&[u8]) -> Result<(), ZipStop>;
+
+/// Archive d'où relire les entrées [`Data::Source`].
+pub(crate) trait Source {
+    /// Copie l'entrée `name` vers `sink` par tours d'au plus [`COPY_CHUNK`] octets ;
+    /// `cancelled` est consulté avant chaque tour sauf le premier. Refus
+    /// (`archive_unreadable`) si la taille ou le CRC-32 diffère de `size` et `crc` : le refus
+    /// peut survenir **après** que `sink` a reçu des octets (l'appelant jette alors sa sortie).
+    fn copy(
+        &mut self,
+        name: &str,
+        size: u64,
+        crc: u32,
+        cancelled: &dyn Fn() -> bool,
+        sink: Sink<'_>,
+    ) -> Result<(), ZipStop>;
+}
+
+/// Une référence suffit (tests, ou archive gardée par l'appelant).
+impl<S: Source + ?Sized> Source for &mut S {
+    fn copy(
+        &mut self,
+        name: &str,
+        size: u64,
+        crc: u32,
+        cancelled: &dyn Fn() -> bool,
+        sink: Sink<'_>,
+    ) -> Result<(), ZipStop> {
+        (**self).copy(name, size, crc, cancelled, sink)
+    }
+}
+
+/// Pas d'archive : toute entrée référencée est refusée.
+pub(crate) struct NoSource;
+
+impl Source for NoSource {
+    fn copy(
+        &mut self,
+        name: &str,
+        _: u64,
+        _: u32,
+        _: &dyn Fn() -> bool,
+        _: Sink<'_>,
+    ) -> Result<(), ZipStop> {
+        Err(ZipStop::Source(ConvError::internal_error(format!(
+            "{name} : entree referencee sans archive"
+        ))))
+    }
+}
+
+impl<R: Read + Seek> Source for Archive<R> {
+    fn copy(
+        &mut self,
+        name: &str,
+        size: u64,
+        crc: u32,
+        cancelled: &dyn Fn() -> bool,
+        sink: Sink<'_>,
+    ) -> Result<(), ZipStop> {
+        let changed = || {
+            ZipStop::Source(ConvError::archive_unreadable(format!(
+                "{name} : entree modifiee ou disparue depuis sa lecture"
+            )))
+        };
+        let mut seen = 0u64;
+        let mut hasher = crc32fast::Hasher::new();
+        let found = self.read_chunks(name, COPY_CHUNK, &mut |chunk: &[u8]| {
+            if seen > 0 && cancelled() {
+                return Err(ZipStop::Cancelled);
+            }
+            seen += chunk.len() as u64;
+            // Entrée devenue plus grande : arrêt avant d'écrire au-delà de la taille annoncée.
+            if seen > size {
+                return Err(changed());
+            }
+            hasher.update(chunk);
+            sink(chunk)
+        })?;
+        if !found || seen != size || hasher.finalize() != crc {
+            return Err(changed());
+        }
+        Ok(())
+    }
+}
+
+/// Contenu d'une entrée à écrire : en mémoire, ou relu dans l'archive d'entrée.
+pub(crate) trait Body {
+    /// Taille annoncée dans l'en-tête.
+    fn size(&self) -> u64;
+    /// CRC-32 annoncé dans l'en-tête : celui des octets, ou celui de l'assemblage pour une
+    /// entrée référencée (vérifié pendant la copie).
+    fn crc(&self) -> u32;
+    /// Envoie le contenu à `sink` (en un tour pour des octets en mémoire).
+    fn copy(
+        &self,
+        src: &mut dyn Source,
+        cancelled: &dyn Fn() -> bool,
+        sink: Sink<'_>,
+    ) -> Result<(), ZipStop>;
+}
+
+impl Body for Vec<u8> {
+    fn size(&self) -> u64 {
+        self.len() as u64
+    }
+    fn crc(&self) -> u32 {
+        crc32fast::hash(self)
+    }
+    fn copy(
+        &self,
+        _: &mut dyn Source,
+        _: &dyn Fn() -> bool,
+        sink: Sink<'_>,
+    ) -> Result<(), ZipStop> {
+        sink(self)
+    }
+}
+
+impl Body for Data {
+    fn size(&self) -> u64 {
+        Data::size(self)
+    }
+    fn crc(&self) -> u32 {
+        match self {
+            Data::Bytes(b) => crc32fast::hash(b),
+            Data::Source { crc, .. } => *crc,
+        }
+    }
+    fn copy(
+        &self,
+        src: &mut dyn Source,
+        cancelled: &dyn Fn() -> bool,
+        sink: Sink<'_>,
+    ) -> Result<(), ZipStop> {
+        match self {
+            Data::Bytes(b) => sink(b),
+            Data::Source { name, size, crc } => src.copy(name, *size, *crc, cancelled, sink),
+        }
+    }
 }
 
 impl From<io::Error> for ZipStop {
     fn from(e: io::Error) -> Self {
         ZipStop::Io(e)
+    }
+}
+
+impl From<ConvError> for ZipStop {
+    fn from(e: ConvError) -> Self {
+        ZipStop::Source(e)
     }
 }
 
@@ -146,9 +316,22 @@ pub fn write_zip<W: Write>(
     cancelled: &dyn Fn() -> bool,
     hook: &mut dyn FnMut(usize) -> io::Result<()>,
 ) -> Result<(), ZipStop> {
+    zip_entries(out, entries, &mut NoSource, limits, cancelled, hook)
+}
+
+/// [`write_zip`] pour des entrées en mémoire ou relues dans `src` (une à la fois, par tours,
+/// après l'en-tête local, qui porte la taille et le CRC de l'assemblage).
+fn zip_entries<W: Write, D: Body>(
+    out: &mut W,
+    entries: &[(String, D)],
+    src: &mut dyn Source,
+    limits: ZipLimits,
+    cancelled: &dyn Fn() -> bool,
+    hook: &mut dyn FnMut(usize) -> io::Result<()>,
+) -> Result<(), ZipStop> {
     let mut w = Counted { inner: out, pos: 0 };
     let mut written = Vec::with_capacity(entries.len());
-    for (i, (name, data)) in entries.iter().enumerate() {
+    for (i, (name, body)) in entries.iter().enumerate() {
         if cancelled() {
             return Err(ZipStop::Cancelled);
         }
@@ -161,7 +344,7 @@ pub fn write_zip<W: Write>(
                 format!("nom d'entree trop long ({} octets)", name.len()),
             )));
         }
-        let size = data.len() as u64;
+        let size = body.size();
         // `_open_to_write` : `zip64 = file_size * 1.05 > ZIP64_LIMIT` (calcul en flottant).
         let local_zip64 = (size as f64) * 1.05 > limits.zip64 as f64;
         let mut extra = Vec::new();
@@ -177,7 +360,7 @@ pub fn write_zip<W: Write>(
         } else {
             DEFAULT_VERSION
         };
-        let crc = crc32fast::hash(data);
+        let crc = body.crc();
         let offset = w.pos;
         let mut h = Vec::with_capacity(30 + name.len() + extra.len());
         h.extend_from_slice(b"PK\x03\x04");
@@ -196,7 +379,14 @@ pub fn write_zip<W: Write>(
         h.extend_from_slice(&extra);
         w.put(&h)?;
         hook(i)?;
-        w.put(data)?;
+        let start = w.pos;
+        body.copy(src, cancelled, &mut |chunk: &[u8]| Ok(w.put(chunk)?))?;
+        if w.pos - start != size {
+            return Err(ZipStop::Source(ConvError::internal_error(format!(
+                "{} : taille ecrite differente de l'en-tete",
+                String::from_utf8_lossy(name)
+            ))));
+        }
         written.push(Written {
             name,
             flags,
@@ -346,7 +536,7 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 
 impl Target {
     /// `out` : option `-o` ; `emit_plain` : option `--plain`.
-    pub fn new(out: Option<&Path>, emit_plain: bool, package: &Package) -> Target {
+    pub fn new<D>(out: Option<&Path>, emit_plain: bool, package: &Package<D>) -> Target {
         let out_path = match out {
             Some(p) => p.to_owned(),
             None => PathBuf::from(default_name(&package.title, &package.uuid)),
@@ -380,9 +570,21 @@ impl Target {
     }
 }
 
-/// Temporaire voisin : `<cible>.<pid>.part`.
-pub fn part_path(target: &Path) -> PathBuf {
-    with_suffix(target, &format!(".{}.part", std::process::id()))
+/// Numéro d'écriture dans le processus : deux écritures (fils, appels successifs) vers la même
+/// cible n'ont jamais le même `.part` (#357).
+static WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// Temporaire voisin de l'écriture n° `call` du processus : `<cible>.<pid>.part` pour la
+/// première (le nom de Python, que son `_clean_orphans` sait nettoyer), `<cible>.<pid>-<n>.part`
+/// pour les suivantes. Le `-` (jamais un `.`) rend le nom non ambigu : le suffixe est toujours
+/// le dernier composant pointé avant `.part`.
+pub fn part_path(target: &Path, call: u64) -> PathBuf {
+    let pid = std::process::id();
+    if call == 0 {
+        with_suffix(target, &format!(".{pid}.part"))
+    } else {
+        with_suffix(target, &format!(".{pid}-{call}.part"))
+    }
 }
 
 /// Étapes où un test injecte une panne.
@@ -392,12 +594,17 @@ pub(crate) enum Step {
     CreatePk,
     /// Au milieu de l'entrée `i` du `.plain.pk` (en-tête écrit, données non).
     WritePk(usize),
+    /// Écriture réelle dans le fichier `.part` du `.plain.pk`, à la position donnée (vidages
+    /// du tampon, dont le dernier, `BufWriter::into_inner`).
+    FilePk(u64),
     /// `sync_all` du `.plain.pk`.
     SyncPk,
     /// Création du dossier `.part` du `.plain`.
     CreateDir,
     /// Fichier `i` du dossier `.plain`.
     WriteDir(usize),
+    /// `sync_all` du fichier `i` du dossier `.plain`.
+    SyncDir(usize),
     /// Tentative `attempt` (0 = première) d'un renommage de publication.
     Rename(u32),
 }
@@ -435,8 +642,43 @@ pub fn write_package_progress(
     )
 }
 
+/// [`write_package_progress`] d'un paquet de [`crate::package::build_package_streamed`] : les
+/// entrées [`Data::Source`] sont relues dans `archive` (celle de l'assemblage), une à la fois
+/// et par tours. L'archive est fermée (rendue) avant la publication (#402 : sous Windows, un
+/// fichier encore ouvert peut bloquer le renommage, entrée et sortie sur le même volume).
+pub fn write_package_from<R: Read + Seek>(
+    package: &Package<Data>,
+    archive: Archive<R>,
+    target: &Target,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn Progress,
+) -> Result<Vec<PathBuf>, ConvError> {
+    write_any(
+        package,
+        archive,
+        target,
+        ZipLimits::PYTHON,
+        cancelled,
+        progress,
+        &mut |_| Ok(()),
+    )
+}
+
 pub(crate) fn write_package_with(
     package: &Package,
+    target: &Target,
+    limits: ZipLimits,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn Progress,
+    hook: Hook<'_>,
+) -> Result<Vec<PathBuf>, ConvError> {
+    write_any(package, NoSource, target, limits, cancelled, progress, hook)
+}
+
+/// Écriture complète ; `src` est rendu (fermé) avant la première publication.
+pub(crate) fn write_any<D: Body, S: Source>(
+    package: &Package<D>,
+    src: S,
     target: &Target,
     limits: ZipLimits,
     cancelled: &dyn Fn() -> bool,
@@ -452,9 +694,10 @@ pub(crate) fn write_package_with(
             clean_orphans(dir);
         }
     }
+    let call = WRITES.fetch_add(1, Ordering::Relaxed);
     let mut tmps = Vec::new();
     let result = write_and_commit(
-        package, target, limits, cancelled, progress, hook, &mut tmps,
+        package, src, target, call, limits, cancelled, progress, hook, &mut tmps,
     );
     discard(&tmps);
     untrack(&tmps);
@@ -468,6 +711,7 @@ pub(crate) fn write_package_with(
     }
 }
 
+#[derive(Debug)]
 enum Fail {
     Io(io::Error),
     Conv(ConvError),
@@ -484,118 +728,253 @@ impl From<ZipStop> for Fail {
         match e {
             ZipStop::Io(e) => Fail::Io(e),
             ZipStop::Cancelled => Fail::Conv(ConvError::cancelled()),
+            ZipStop::Source(e) => Fail::Conv(e),
         }
     }
 }
 
-fn write_and_commit(
-    package: &Package,
+/// Appelle le crochet d'injection de panne partagé.
+fn fire(hook: &RefCell<Hook<'_>>, step: Step) -> io::Result<()> {
+    let mut guard = hook.borrow_mut();
+    let f: &mut dyn FnMut(Step) -> io::Result<()> = &mut **guard;
+    f(step)
+}
+
+/// Fichier `.part` du `.plain.pk` : chaque écriture réelle passe d'abord par le crochet
+/// ([`Step::FilePk`]), pour simuler un disque qui lâche après `k` octets.
+struct Tap<'a, 'h> {
+    file: fs::File,
+    hook: &'a RefCell<Hook<'h>>,
+    pos: u64,
+}
+
+impl Write for Tap<'_, '_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        fire(self.hook, Step::FilePk(self.pos))?;
+        let n = self.file.write(buf)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_and_commit<D: Body, S: Source>(
+    package: &Package<D>,
+    mut src: S,
     target: &Target,
+    call: u64,
     limits: ZipLimits,
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn Progress,
     hook: Hook<'_>,
     tmps: &mut Vec<PathBuf>,
 ) -> Result<(), Fail> {
+    let hook = RefCell::new(hook);
     let mut commits = Vec::new();
     if !target.dir_only {
         let abs = std::path::absolute(&target.out_path)?;
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent)?;
         }
-        let tmp = part_path(&target.out_path);
-        discard(std::slice::from_ref(&tmp));
-        track(&tmp);
+        let tmp = part_path(&target.out_path, call);
+        claim(&tmp);
         tmps.push(tmp.clone());
-        hook(Step::CreatePk)?;
+        fire(&hook, Step::CreatePk)?;
         let file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-        let mut buf = BufWriter::with_capacity(1 << 20, file);
+        let tap = Tap {
+            file,
+            hook: &hook,
+            pos: 0,
+        };
+        let mut buf = BufWriter::with_capacity(1 << 20, tap);
         // Une étape par entrée écrite (après `writestr` en Python) : l'entrée `i - 1` est
         // complète quand l'en-tête de l'entrée `i` est écrit, la dernière au retour.
-        write_zip(&mut buf, &package.entries, limits, cancelled, &mut |i| {
-            if i > 0 {
-                progress.tick(Phase::Zip);
-            }
-            hook(Step::WritePk(i))
-        })?;
+        let written = zip_entries(
+            &mut buf,
+            &package.entries,
+            &mut src,
+            limits,
+            cancelled,
+            &mut |i| {
+                if i > 0 {
+                    progress.tick(Phase::Zip);
+                }
+                fire(&hook, Step::WritePk(i))
+            },
+        );
+        if let Err(e) = written {
+            // Tampon jeté sans être écrit : le `.part` sera supprimé (pas de vidage inutile ni de
+            // nouvel appel au crochet).
+            let _ = buf.into_parts();
+            return Err(e.into());
+        }
         if !package.entries.is_empty() {
             progress.tick(Phase::Zip);
         }
-        let file = buf.into_inner().map_err(|e| e.into_error())?;
-        hook(Step::SyncPk)?;
+        let file = buf.into_inner().map_err(|e| e.into_error())?.file;
+        fire(&hook, Step::SyncPk)?;
         file.sync_all()?;
         drop(file);
         commits.push((tmp, target.out_path.clone()));
     }
     if let Some(plain_dir) = &target.plain_dir {
-        let tmp = part_path(plain_dir);
-        discard(std::slice::from_ref(&tmp));
-        track(&tmp);
+        let tmp = part_path(plain_dir, call);
+        claim(&tmp);
         tmps.push(tmp.clone());
-        hook(Step::CreateDir)?;
-        if let Some(parent) = std::path::absolute(&tmp)?.parent() {
+        fire(&hook, Step::CreateDir)?;
+        let abs = std::path::absolute(&tmp)?;
+        if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent)?;
         }
         // `create_dir` et non `create_dir_all` : un lien ou une jonction placé à ce nom entre
         // `discard` et ici est refusé au lieu d'être suivi (écriture hors de la destination).
-        fs::create_dir(&tmp)?;
-        let real = fs::canonicalize(&tmp)?;
-        for (i, (name, data)) in package.entries.iter().enumerate() {
+        fs::create_dir(&abs)?;
+        for (i, (name, body)) in package.entries.iter().enumerate() {
             if cancelled() {
                 return Err(Fail::Conv(ConvError::cancelled()));
             }
             let mut parts: Vec<&str> = name.split('/').collect();
             let file_name = parts.pop().unwrap_or_default();
-            let parent = parts.iter().fold(real.clone(), |p, c| p.join(c));
-            fs::create_dir_all(&parent)?;
-            if !fs::canonicalize(&parent)?.starts_with(&real) {
-                return Err(Fail::Conv(ConvError::invalid_content(format!(
-                    "ecriture hors du dossier .plain refusee : {name:?}"
-                ))));
-            }
-            hook(Step::WriteDir(i))?;
+            let parent = make_dirs(&abs, &parts)?;
+            fire(&hook, Step::WriteDir(i))?;
             // `create_new` : jamais d'écriture à travers un lien déjà présent.
             let mut f = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(parent.join(file_name))?;
-            f.write_all(data)?;
+            body.copy(&mut src, cancelled, &mut |chunk: &[u8]| {
+                Ok(f.write_all(chunk)?)
+            })?;
+            fire(&hook, Step::SyncDir(i))?;
+            f.sync_all()?;
+            drop(f);
             progress.tick(Phase::Zip);
+        }
+        // Un `.part` effacé (même en partie) par un autre processus qui l'a cru orphelin
+        // (partage réseau, autre machine) n'est jamais publié incomplet.
+        let found = count_files(&abs)?;
+        if found != package.entries.len() as u64 {
+            return Err(Fail::Io(io::Error::other(format!(
+                "{} : {found} fichier(s) au lieu de {}, dossier modifie pendant l'ecriture",
+                abs.display(),
+                package.entries.len()
+            ))));
         }
         commits.push((tmp, plain_dir.clone()));
     }
+    // Archive d'entrée fermée avant toute publication (#402).
+    drop(src);
     if cancelled() {
         return Err(Fail::Conv(ConvError::cancelled()));
     }
+    // Types des cibles vérifiés avant la première publication : un `.plain` qui est un fichier
+    // ne laisse pas un `.plain.pk` publié seul.
     for (tmp, fin) in &commits {
-        commit(tmp, fin, hook)?;
+        check_target(tmp, fin)?;
+    }
+    for (tmp, fin) in &commits {
+        commit(tmp, fin, &mut |s| fire(&hook, s))?;
+        sync_parent(fin);
     }
     Ok(())
+}
+
+/// Crée les dossiers `parts` sous `root`, un composant à la fois, et rend le dernier. `root`
+/// n'est jamais recréé : s'il a disparu, échec (`NotFound`). Un composant déjà présent doit
+/// être un vrai dossier : un lien ou une jonction est refusé (`invalid_content`) sans recourir
+/// à `fs::canonicalize` (indisponible sur certains volumes virtuels). Composant `.` ignoré.
+fn make_dirs(root: &Path, parts: &[&str]) -> Result<PathBuf, Fail> {
+    let mut cur = root.to_path_buf();
+    for part in parts {
+        if *part == "." {
+            continue;
+        }
+        cur.push(part);
+        match fs::create_dir(&cur) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                let meta = fs::symlink_metadata(&cur)?;
+                if meta.file_type().is_symlink() {
+                    return Err(Fail::Conv(ConvError::invalid_content(format!(
+                        "ecriture hors du dossier .plain refusee : {}",
+                        cur.display()
+                    ))));
+                }
+                if !meta.is_dir() {
+                    return Err(Fail::Io(e));
+                }
+            }
+            Err(e) => return Err(Fail::Io(e)),
+        }
+    }
+    Ok(cur)
+}
+
+/// Nombre de fichiers sous `dir` (liens comptés sans être suivis).
+fn count_files(dir: &Path) -> io::Result<u64> {
+    let mut n = 0;
+    for e in fs::read_dir(dir)? {
+        let e = e?;
+        if e.file_type()?.is_dir() {
+            n += count_files(&e.path())?;
+        } else {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// Vide sur disque l'entrée du dossier parent après un renommage (POSIX). Sous Windows, NTFS
+/// journalise le renommage et un dossier ne s'ouvre pas en écriture : rien à faire. Au mieux :
+/// la sortie est déjà publiée, une erreur ici n'est pas remontée.
+fn sync_parent(path: &Path) {
+    #[cfg(unix)]
+    if let Some(parent) = std::path::absolute(path)
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
+        if let Ok(dir) = fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Refus d'un temporaire dont la cible est d'un autre type (dossier contre fichier).
+fn check_target(tmp: &Path, fin: &Path) -> io::Result<()> {
+    let tmp_is_dir = fs::symlink_metadata(tmp)?.is_dir();
+    // Lien cassé : jugé sur le lien lui-même (un dossier ne le remplace pas).
+    match fs::metadata(fin).or_else(|_| fs::symlink_metadata(fin)) {
+        // Python échoue aussi (`os.replace` d'un dossier sur un fichier, ou l'inverse) ; le
+        // refus explicite évite qu'un renommage POSIX remplace quand même la cible.
+        Ok(m) if tmp_is_dir && !m.is_dir() => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} existe et n'est pas un dossier", fin.display()),
+        )),
+        Ok(m) if !tmp_is_dir && m.is_dir() => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} est un dossier", fin.display()),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// `_commit` : publie un temporaire. Dossier vers dossier existant : fichiers remplacés un à
 /// un sans supprimer le reste (comportement historique), puis temporaire supprimé.
 fn commit(tmp: &Path, fin: &Path, hook: Hook<'_>) -> io::Result<()> {
+    check_target(tmp, fin)?;
     let tmp_is_dir = fs::symlink_metadata(tmp)?.is_dir();
-    let fin_meta = fs::metadata(fin).ok();
-    match (tmp_is_dir, fin_meta) {
-        (true, Some(m)) if m.is_dir() => {
-            merge_dir(tmp, fin, hook)?;
-            let _ = fs::remove_dir_all(tmp);
-            Ok(())
-        }
-        // Python échoue aussi (`os.replace` d'un dossier sur un fichier, ou l'inverse) ; le
-        // refus explicite évite qu'un renommage POSIX remplace quand même la cible.
-        (true, Some(_)) => Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{} existe et n'est pas un dossier", fin.display()),
-        )),
-        (false, Some(m)) if m.is_dir() => Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{} est un dossier", fin.display()),
-        )),
-        _ => rename_retry(tmp, fin, hook),
+    if tmp_is_dir && fs::metadata(fin).is_ok_and(|m| m.is_dir()) {
+        merge_dir(tmp, fin, hook)?;
+        let _ = fs::remove_dir_all(tmp);
+        return Ok(());
     }
+    rename_retry(tmp, fin, hook)
 }
 
 /// `os.walk(tmp)` puis `os.replace` de chaque fichier vers le dossier final.
@@ -665,6 +1044,14 @@ pub(crate) fn track(tmp: &Path) {
     pending().push(tmp.to_path_buf());
 }
 
+/// Supprime un éventuel reste à ce nom puis inscrit `tmp`, sous le verrou du registre :
+/// [`clean_orphans`] ne peut pas supprimer entre les deux un `.part` qui vient d'être créé.
+fn claim(tmp: &Path) {
+    let mut reg = pending();
+    discard(std::slice::from_ref(&tmp.to_path_buf()));
+    reg.push(tmp.to_path_buf());
+}
+
 /// Retire `tmps` du registre **après** leur suppression ou leur publication. Retrait par
 /// valeur, une occurrence chacun : des écritures concurrentes (bibliothèque) gardent les leurs.
 pub(crate) fn untrack(tmps: &[PathBuf]) {
@@ -711,10 +1098,14 @@ pub fn discard(paths: &[PathBuf]) {
     }
 }
 
-/// `_clean_orphans` : supprime les `<cible>.<pid>.part` voisins dont le PID n'est plus vivant
-/// (une conversion concurrente vivante est épargnée). Arrêt brutal puis reprise : le `.part`
-/// laissé disparaît à la conversion suivante vers la même cible. Un PID réutilisé empêche ce
-/// nettoyage (limite connue).
+/// `_clean_orphans` : supprime les `<cible>.<pid>.part` et `<cible>.<pid>-<n>.part` voisins
+/// dont le PID n'est plus vivant (une conversion concurrente vivante est épargnée). Arrêt
+/// brutal puis reprise : le `.part` laissé disparaît à la conversion suivante vers la même
+/// cible. Notre propre PID (porté avant nous par un processus mort) : supprimé, sauf s'il est
+/// inscrit au registre des temporaires (écriture en cours dans ce processus). Un PID réutilisé
+/// par un autre processus vivant empêche ce nettoyage (limite connue). Un `.part` d'une autre
+/// machine sur un partage réseau peut être jugé mort à tort : l'écriture qui le possède échoue
+/// alors sans rien publier ([`write_package`] ne recrée jamais un `.part` disparu).
 pub fn clean_orphans(target: &Path) {
     let Ok(abs) = std::path::absolute(target) else {
         return;
@@ -730,13 +1121,19 @@ pub fn clean_orphans(target: &Path) {
     for entry in read.flatten() {
         let name = entry.file_name();
         let bytes = name.as_encoded_bytes();
-        let Some(pid) = bytes
+        let Some(middle) = bytes
             .strip_prefix(prefix.as_slice())
             .and_then(|r| r.strip_suffix(b".part"))
         else {
             continue;
         };
-        if pid.is_empty() || !pid.iter().all(u8::is_ascii_digit) {
+        // `<pid>` (Python, première écriture du processus) ou `<pid>-<n>` (écritures suivantes).
+        let (pid, call) = match middle.iter().position(|&b| b == b'-') {
+            Some(i) => (&middle[..i], Some(&middle[i + 1..])),
+            None => (middle, None),
+        };
+        let digits = |s: &[u8]| !s.is_empty() && s.iter().all(u8::is_ascii_digit);
+        if !digits(pid) || call.is_some_and(|c| !digits(c)) {
             continue;
         }
         // Au-delà de 32 bits, aucun processus ne peut porter ce PID ; Python échouerait
@@ -747,8 +1144,17 @@ pub fn clean_orphans(target: &Path) {
         else {
             continue;
         };
-        if !pid_alive(pid) {
-            discard(&[dir.join(&name)]);
+        let path = dir.join(&name);
+        if pid == std::process::id() {
+            // Verrou tenu de la consultation à la suppression : une écriture de ce processus
+            // inscrit son `.part` sous ce même verrou ([`claim`]). Comparaison par nom (il porte
+            // le PID et le numéro d'écriture), quelle que soit l'écriture du chemin (8.3, `\\?\`).
+            let reg = pending();
+            if !reg.iter().any(|p| p.file_name() == Some(name.as_os_str())) {
+                discard(&[path]);
+            }
+        } else if !pid_alive(pid) {
+            discard(&[path]);
         }
     }
 }
@@ -864,6 +1270,7 @@ mod tests {
             warnings: Vec::new(),
             title: "Titre".to_owned(),
             uuid: [0xAB; 16],
+            stats: Default::default(),
         }
     }
 
@@ -959,8 +1366,12 @@ mod tests {
         let t = Target::new(Some(Path::new(".plain.pk")), true, &pkg);
         assert_eq!(t.plain_dir, Some(PathBuf::from(".plain")));
         assert_eq!(
-            part_path(Path::new("a/b.plain.pk")),
+            part_path(Path::new("a/b.plain.pk"), 0),
             PathBuf::from(format!("a/b.plain.pk.{}.part", std::process::id()))
+        );
+        assert_eq!(
+            part_path(Path::new("a/b.plain.pk"), 12),
+            PathBuf::from(format!("a/b.plain.pk.{}-12.part", std::process::id()))
         );
     }
 
@@ -1139,8 +1550,25 @@ mod tests {
         }
     }
 
-    fn tracked(p: &Path) -> bool {
-        pending().iter().any(|q| q == p)
+    /// `.part` de `base` inscrit au registre (écriture en cours de ce processus), s'il y en a.
+    fn tracked_part(base: &Path) -> Option<PathBuf> {
+        let prefix = format!("{}.{}", base.display(), std::process::id());
+        pending()
+            .iter()
+            .find(|p| {
+                let s = p.display().to_string();
+                let Some(rest) = s.strip_prefix(&prefix) else {
+                    return false;
+                };
+                let Some(call) = rest.strip_suffix(".part") else {
+                    return false;
+                };
+                call.is_empty()
+                    || call
+                        .strip_prefix('-')
+                        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            })
+            .cloned()
     }
 
     /// Registre des temporaires (#132) : chaque `.part` y est inscrit pendant l'écriture, puis
@@ -1152,8 +1580,8 @@ mod tests {
         let pkg = sample();
         let d = scratch("registre");
         let target = Target::new(Some(&d.join("o.plain.pk")), true, &pkg);
-        let pk_part = part_path(&target.out_path);
-        let dir_part = part_path(target.plain_dir.as_ref().unwrap());
+        let pk = target.out_path.clone();
+        let dir = target.plain_dir.clone().unwrap();
         // Pendant l'écriture : inscrits (vu depuis le crochet de chaque étape).
         let seen = Cell::new(false);
         write_package_with(
@@ -1164,7 +1592,7 @@ mod tests {
             &mut (),
             &mut |s| {
                 if s == Step::CreateDir {
-                    assert!(tracked(&pk_part) && tracked(&dir_part));
+                    assert!(tracked_part(&pk).is_some() && tracked_part(&dir).is_some());
                     seen.set(true);
                 }
                 Ok(())
@@ -1173,7 +1601,7 @@ mod tests {
         .unwrap();
         assert!(seen.get());
         assert!(
-            !tracked(&pk_part) && !tracked(&dir_part),
+            tracked_part(&pk).is_none() && tracked_part(&dir).is_none(),
             "succès : retirés"
         );
         // Échec : retirés aussi.
@@ -1189,7 +1617,10 @@ mod tests {
             },
         );
         assert_eq!(r.unwrap_err().code, "output_error");
-        assert!(!tracked(&pk_part) && !tracked(&dir_part), "échec : retirés");
+        assert!(
+            tracked_part(&pk).is_none() && tracked_part(&dir).is_none(),
+            "échec : retirés"
+        );
         // Panique au milieu du `.plain.pk` : le `.part` existe et reste inscrit.
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = write_package_with(
@@ -1207,7 +1638,11 @@ mod tests {
             );
         }));
         assert!(r.is_err());
-        assert!(pk_part.exists() && tracked(&pk_part));
+        let pk_part = tracked_part(&pk).expect("inscrit");
+        assert!(pk_part.exists());
+        // Inscrit : épargné par le nettoyage des orphelins de ce processus.
+        clean_orphans(&pk);
+        assert!(pk_part.exists());
         discard(std::slice::from_ref(&pk_part));
         untrack(std::slice::from_ref(&pk_part));
         assert_no_part(&d);
@@ -1259,17 +1694,29 @@ mod tests {
         Child(c.stdout(std::process::Stdio::null()).spawn().unwrap())
     }
 
-    /// Arrêt brutal puis reprise : les `.part` d'un PID mort (fichier tronqué, dossier) sont
-    /// supprimés par la conversion suivante ; celui d'une conversion vivante est épargné, de
-    /// même que les noms qui ne sont pas `<cible>.<chiffres>.part`.
+    /// PID d'un processus terminé et non réattribué : Windows peut redonner aussitôt le numéro
+    /// d'un fils attendu à un autre processus, on réessaie alors avec un autre fils (#357).
+    fn dead_pid() -> u32 {
+        for _ in 0..20 {
+            let child = long_child();
+            let pid = child.0.id();
+            drop(child);
+            if !pid_alive(pid) {
+                return pid;
+            }
+        }
+        panic!("aucun PID mort stable en 20 essais");
+    }
+
+    /// Arrêt brutal puis reprise : les `.part` d'un PID mort (fichier tronqué, dossier, nom de
+    /// Python `<pid>` ou suivant `<pid>-<n>`) sont supprimés par la conversion suivante ;
+    /// celui d'une conversion vivante est épargné, de même que les noms qui ne sont pas
+    /// `<cible>.<chiffres>[-<chiffres>].part`.
     #[test]
     fn orphelins_apres_arret_brutal() {
         let pkg = sample();
         let d = scratch("orphelins");
-        let dead = long_child();
-        let dead_pid = dead.0.id();
-        drop(dead);
-        assert!(!pid_alive(dead_pid));
+        let dead_pid = dead_pid();
         let alive = long_child();
         let alive_pid = alive.0.id();
         assert!(pid_alive(alive_pid));
@@ -1281,18 +1728,23 @@ mod tests {
             b"PK\x03\x04tronque",
         )
         .unwrap();
+        fs::write(d.join(format!("o.plain.pk.{dead_pid}-3.part")), b"x").unwrap();
         fs::create_dir_all(d.join(format!("o.plain.{dead_pid}.part/img"))).unwrap();
         fs::write(d.join(format!("o.plain.{dead_pid}.part/img/a.lif")), b"x").unwrap();
-        // Notre propre PID (processus mort qui portait le même numéro) : réécrit à neuf.
-        fs::write(
-            d.join(format!("o.plain.pk.{}.part", std::process::id())),
-            b"vieux",
-        )
-        .unwrap();
+        // Notre propre PID (processus mort qui portait le même numéro), non inscrit au
+        // registre : supprimé.
+        let me = std::process::id();
+        fs::write(d.join(format!("o.plain.pk.{me}.part")), b"vieux").unwrap();
+        fs::write(d.join(format!("o.plain.pk.{me}-99999.part")), b"vieux").unwrap();
         let kept = [
             format!("o.plain.pk.{alive_pid}.part"),
+            format!("o.plain.pk.{alive_pid}-2.part"),
             "o.plain.pk.abc.part".to_owned(),
             "o.plain.pk..part".to_owned(),
+            format!("o.plain.pk.{dead_pid}-.part"),
+            format!("o.plain.pk.{dead_pid}-x.part"),
+            format!("o.plain.pk.-{dead_pid}.part"),
+            format!("o.plain.pk.{dead_pid}.1.part"),
             "o.plain.pk.99999999999.part".to_owned(),
             format!("autre.plain.pk.{dead_pid}.part"),
         ];
@@ -1355,17 +1807,164 @@ mod tests {
         assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
     }
 
+    /// Archive d'entrée en mémoire et paquet dont `sounds/s.mp3` y est référencé (#355).
+    fn streamed_sample(mp3: &[u8]) -> (Archive<Cursor<Vec<u8>>>, Package<Data>) {
+        let mut zip = Vec::new();
+        let src = [("histoire/audios/s.mp3".to_owned(), mp3.to_vec())];
+        write_zip(&mut zip, &src, ZipLimits::PYTHON, &never, &mut |_| Ok(())).unwrap();
+        let archive = Archive::new(Cursor::new(zip), "in.zip".into()).unwrap();
+        let entries = sample()
+            .entries
+            .into_iter()
+            .map(|(n, d)| {
+                let data = if n == "sounds/s.mp3" {
+                    Data::Source {
+                        name: "histoire/audios/s.mp3".to_owned(),
+                        size: mp3.len() as u64,
+                        crc: crc32fast::hash(mp3),
+                    }
+                } else {
+                    Data::Bytes(d)
+                };
+                (n, data)
+            })
+            .collect();
+        let pkg = Package {
+            entries,
+            warnings: Vec::new(),
+            title: "Titre".to_owned(),
+            uuid: [0xAB; 16],
+            stats: Default::default(),
+        };
+        (archive, pkg)
+    }
+
+    /// MP3 relu en flux : mêmes octets que le paquet en mémoire, au `.plain.pk` comme au
+    /// dossier ; panne d'écriture injectée au milieu de l'entrée relue (en-tête écrit, données
+    /// non) puis avant son fichier dans le dossier : ancienne sortie intacte, aucun `.part`
+    /// (l'échec de la relecture elle-même : `mp3_en_flux_modifie_refuse`).
+    #[test]
+    fn mp3_en_flux_et_panne_au_milieu() {
+        let mem = sample();
+        let (mut archive, pkg) = streamed_sample(&[0xFFu8; 3000]);
+        let i = pkg
+            .entries
+            .iter()
+            .position(|(n, _)| n == "sounds/s.mp3")
+            .unwrap();
+        for (k, step) in [Step::WritePk(i), Step::WriteDir(i)]
+            .into_iter()
+            .enumerate()
+        {
+            let d = scratch(&format!("flux-panne-{k}"));
+            old_output(&d);
+            let target = Target::new(Some(&d.join("o.plain.pk")), true, &pkg);
+            let err = write_any(
+                &pkg,
+                &mut archive,
+                &target,
+                ZipLimits::PYTHON,
+                &never,
+                &mut (),
+                &mut |s| {
+                    if s == step {
+                        Err(io::Error::other("panne injectee"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(err.code, "output_error", "{step:?}");
+            assert_eq!(fs::read(d.join("o.plain.pk")).unwrap(), b"ancien paquet");
+            assert_eq!(fs::read(d.join("o.plain/version")).unwrap(), b"ancien");
+            assert_no_part(&d);
+            // Reprise : sortie complète, identique au paquet en mémoire.
+            write_any(
+                &pkg,
+                &mut archive,
+                &target,
+                ZipLimits::PYTHON,
+                &never,
+                &mut (),
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(read_pk(&d.join("o.plain.pk")), mem.entries);
+            for (name, data) in &mem.entries {
+                assert_eq!(&fs::read(d.join("o.plain").join(name)).unwrap(), data);
+            }
+            assert_no_part(&d);
+        }
+        // Mêmes octets que l'écriture en mémoire.
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        let ok = |_| Ok(());
+        zip_entries(
+            &mut a,
+            &pkg.entries,
+            &mut archive,
+            ZipLimits::PYTHON,
+            &never,
+            &mut { ok },
+        )
+        .unwrap();
+        write_zip(&mut b, &mem.entries, ZipLimits::PYTHON, &never, &mut { ok }).unwrap();
+        assert_eq!(a, b);
+    }
+
+    /// Archive d'entrée modifiée (ou entrée disparue) entre l'assemblage et l'écriture : refus
+    /// (`archive_unreadable`), ancienne sortie intacte, aucun `.part` ; sans archive, refus.
+    #[test]
+    fn mp3_en_flux_modifie_refuse() {
+        let (_, pkg) = streamed_sample(&[0xFFu8; 3000]);
+        let mut changed = [0xFFu8; 3000];
+        changed[1500] = 0;
+        for (what, mp3) in [("contenu", &changed[..]), ("taille", &[0xFFu8; 2999][..])] {
+            let (other, _) = streamed_sample(mp3);
+            let d = scratch(&format!("flux-modifie-{what}"));
+            old_output(&d);
+            let target = Target::new(Some(&d.join("o.plain.pk")), true, &pkg);
+            let e = write_package_from(&pkg, other, &target, &never, &mut ()).unwrap_err();
+            assert_eq!(e.code, "archive_unreadable", "{what}");
+            assert_eq!(fs::read(d.join("o.plain.pk")).unwrap(), b"ancien paquet");
+            assert_eq!(fs::read(d.join("o.plain/version")).unwrap(), b"ancien");
+            assert_no_part(&d);
+        }
+        // Entrée absente de l'archive.
+        let mut empty = Vec::new();
+        let none: &[(String, Vec<u8>)] = &[];
+        write_zip(&mut empty, none, ZipLimits::PYTHON, &never, &mut |_| Ok(())).unwrap();
+        let empty = Archive::new(Cursor::new(empty), "vide.zip".into()).unwrap();
+        let d = scratch("flux-absent");
+        let target = Target::new(Some(&d.join("o.plain.pk")), false, &pkg);
+        let e = write_package_from(&pkg, empty, &target, &never, &mut ()).unwrap_err();
+        assert_eq!(e.code, "archive_unreadable");
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
+        // Sans archive (chemin interne) : erreur interne, jamais d'entrée vide écrite.
+        let e = write_any(
+            &pkg,
+            NoSource,
+            &target,
+            ZipLimits::PYTHON,
+            &never,
+            &mut (),
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "internal_error");
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
+    }
+
     /// Un `.part` de dossier qui réapparaît (lien, jonction ou dossier planté) après le
     /// nettoyage est refusé, pas réutilisé.
     #[test]
     fn dossier_part_deja_present_refuse() {
         let pkg = sample();
         let d = scratch("plante");
-        let tmp = part_path(&d.join("o.plain"));
         let t = Target::new(Some(&d.join("o.plain")), false, &pkg);
         let e = write_package_with(&pkg, &t, ZipLimits::PYTHON, &never, &mut (), &mut |s| {
             if s == Step::CreateDir {
-                fs::create_dir(&tmp)?;
+                fs::create_dir(tracked_part(&d.join("o.plain")).unwrap())?;
             }
             Ok(())
         })
@@ -1394,5 +1993,521 @@ mod tests {
         assert_eq!(&out[second + 6..second + 8], &[0, 8]);
         // Heure et date fixes : 00:00:00, 1980-01-01.
         assert_eq!(&out[10..14], &[0, 0, 0x21, 0]);
+    }
+
+    /// Deux écritures du même processus vers la même cible (#357) : la seconde, lancée au
+    /// milieu de la première, a son propre `.part` ; chacune publie un paquet complet, la
+    /// dernière publiée gagne, aucun `.part` ne reste.
+    #[test]
+    fn ecritures_imbriquees_meme_cible() {
+        let d = scratch("imbriquees");
+        let a = package(&[("version", b"A"), ("img/a.lif", &[1u8; 5000])]);
+        let b = package(&[("version", b"B"), ("img/b.lif", &[2u8; 7000])]);
+        for plain in [false, true] {
+            let ta = Target::new(Some(&d.join("o.plain.pk")), plain, &a);
+            let tb = Target::new(Some(&d.join("o.plain.pk")), plain, &b);
+            let nested = Cell::new(false);
+            write_package_with(&a, &ta, ZipLimits::PYTHON, &never, &mut (), &mut |s| {
+                if s == Step::WritePk(1) && !nested.replace(true) {
+                    write_package(&b, &tb, &never).unwrap();
+                    assert_eq!(read_pk(&d.join("o.plain.pk")), b.entries);
+                }
+                Ok(())
+            })
+            .unwrap();
+            assert!(nested.get());
+            assert_eq!(read_pk(&d.join("o.plain.pk")), a.entries, "plain {plain}");
+            if plain {
+                assert_eq!(fs::read(d.join("o.plain/version")).unwrap(), b"A");
+                assert_eq!(fs::read(d.join("o.plain/img/b.lif")).unwrap(), [2u8; 7000]);
+            }
+            assert_no_part(&d);
+        }
+    }
+
+    /// Paquet dont le `.plain.pk` dépasse le tampon d'écriture (1 Mio) : plusieurs écritures
+    /// réelles dans le fichier.
+    fn big_package() -> Package {
+        package(&[
+            ("version", b"1"),
+            ("sounds/a.mp3", &[1u8; 1_500_000]),
+            ("sounds/b.mp3", &[2u8; 1_500_000]),
+            ("img/c.lif", &[3u8; 700_000]),
+        ])
+    }
+
+    /// Disque qui lâche au milieu du fichier (#357) : panne à chaque écriture réelle du
+    /// `.part` (dont le vidage final du tampon), erreur quelconque ou disque plein : ancienne
+    /// sortie intacte, aucun `.part`.
+    #[test]
+    fn panne_du_fichier_apres_k_octets() {
+        let pkg = big_package();
+        let d = scratch("fichier-k");
+        old_output(&d);
+        let target = Target::new(Some(&d.join("o.plain.pk")), false, &pkg);
+        let offsets = RefCell::new(Vec::new());
+        write_package_with(
+            &pkg,
+            &target,
+            ZipLimits::PYTHON,
+            &never,
+            &mut (),
+            &mut |s| {
+                if let Step::FilePk(k) = s {
+                    offsets.borrow_mut().push(k);
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        let offsets = offsets.into_inner();
+        assert!(offsets.len() >= 3, "{offsets:?}");
+        assert_eq!(offsets[0], 0);
+        assert!(offsets.windows(2).all(|w| w[0] < w[1]));
+        for &k in &offsets {
+            for disk_full in [false, true] {
+                old_output(&d);
+                let e = write_package_with(
+                    &pkg,
+                    &target,
+                    ZipLimits::PYTHON,
+                    &never,
+                    &mut (),
+                    &mut |s| match s {
+                        Step::FilePk(o) if o == k && disk_full => {
+                            Err(io::Error::from_raw_os_error(112))
+                        }
+                        Step::FilePk(o) if o == k => Err(io::Error::other("panne")),
+                        _ => Ok(()),
+                    },
+                )
+                .unwrap_err();
+                assert_eq!(e.code, "output_error", "k = {k}");
+                assert_eq!(fs::read(d.join("o.plain.pk")).unwrap(), b"ancien paquet");
+                assert_no_part(&d);
+            }
+        }
+    }
+
+    /// Écrivain qui accepte `left` octets puis échoue (disque plein).
+    struct FailAfter {
+        out: Vec<u8>,
+        left: usize,
+    }
+
+    impl Write for FailAfter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.left == 0 {
+                return Err(io::Error::from_raw_os_error(112));
+            }
+            let n = buf.len().min(self.left);
+            self.out.extend_from_slice(&buf[..n]);
+            self.left -= n;
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `write_zip` (et la copie en flux) sur un écrivain qui lâche après `k` octets, pour
+    /// `k` de 0 à la taille complète : erreur d'entrée-sortie, jamais de succès tronqué.
+    #[test]
+    fn write_zip_ecrivain_qui_lache() {
+        let pkg = sample();
+        let mut full = Vec::new();
+        write_zip(
+            &mut full,
+            &pkg.entries,
+            ZipLimits::PYTHON,
+            &never,
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+        let (mut archive, streamed) = streamed_sample(&[0xFFu8; 3000]);
+        for k in 0..=full.len() {
+            let mut w = FailAfter {
+                out: Vec::new(),
+                left: k,
+            };
+            let r = write_zip(&mut w, &pkg.entries, ZipLimits::PYTHON, &never, &mut |_| {
+                Ok(())
+            });
+            let mut s = FailAfter {
+                out: Vec::new(),
+                left: k,
+            };
+            let rs = zip_entries(
+                &mut s,
+                &streamed.entries,
+                &mut archive,
+                ZipLimits::PYTHON,
+                &never,
+                &mut |_| Ok(()),
+            );
+            if k == full.len() {
+                r.unwrap();
+                rs.unwrap();
+                assert!(w.out == full && s.out == full);
+            } else {
+                assert!(matches!(r, Err(ZipStop::Io(_))), "k = {k}");
+                assert!(matches!(rs, Err(ZipStop::Io(_))), "flux, k = {k}");
+                assert_eq!(w.out.len(), k);
+            }
+        }
+    }
+
+    /// Dossiers créés composant par composant (#357) : la racine (le `.part`) n'est jamais
+    /// recréée, `.` est ignoré, un fichier ou un lien à la place d'un dossier est refusé.
+    #[test]
+    fn dossiers_sans_recreer_la_racine() {
+        let d = scratch("make-dirs");
+        let root = d.join("racine");
+        assert!(matches!(make_dirs(&root, &["a", "b"]), Err(Fail::Io(_))));
+        assert!(!root.exists(), "racine recréée");
+        fs::create_dir(&root).unwrap();
+        let p = make_dirs(&root, &["a", ".", "b"]).unwrap();
+        assert_eq!(p, root.join("a").join("b"));
+        assert!(p.is_dir());
+        assert_eq!(make_dirs(&root, &["a", "b"]).unwrap(), p);
+        assert_eq!(make_dirs(&root, &[]).unwrap(), root);
+        fs::write(root.join("f"), b"x").unwrap();
+        assert!(matches!(make_dirs(&root, &["f", "g"]), Err(Fail::Io(_))));
+        // Lien symbolique ou jonction vers l'extérieur : refusé, rien d'écrit dehors.
+        let outside = d.join("dehors");
+        fs::create_dir(&outside).unwrap();
+        let link = root.join("lien");
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&outside, &link).is_ok();
+        #[cfg(windows)]
+        let made = std::process::Command::new("cmd")
+            .arg("/c")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&link)
+            .arg(&outside)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        #[cfg(not(any(unix, windows)))]
+        let made = false;
+        if made {
+            match make_dirs(&root, &["lien", "x"]) {
+                Err(Fail::Conv(e)) => assert_eq!(e.code, "invalid_content"),
+                _ => panic!("lien suivi"),
+            }
+            assert!(!outside.join("x").exists());
+            discard(&[link]);
+        }
+        assert!(outside.exists());
+    }
+
+    /// Composant `.` dans un nom : écrit au même endroit que Python (`os.path.join`), le nom
+    /// reste tel quel dans le `.plain.pk`.
+    #[test]
+    fn point_dans_un_nom() {
+        let d = scratch("point");
+        let pkg = package(&[("version", b"1"), ("a/./b.txt", b"2")]);
+        let t = Target::new(Some(&d.join("o.plain.pk")), true, &pkg);
+        write_package(&pkg, &t, &never).unwrap();
+        assert_eq!(read_pk(&d.join("o.plain.pk")), pkg.entries);
+        assert_eq!(fs::read(d.join("o.plain/a/b.txt")).unwrap(), b"2");
+        assert_no_part(&d);
+    }
+
+    /// `.part` du dossier effacé (en partie ou en entier) pendant l'écriture, comme par un
+    /// autre processus qui l'a cru orphelin (#357) : rien n'est publié, aucun `.part`.
+    #[test]
+    fn dossier_part_efface_pendant_l_ecriture() {
+        let pkg = sample();
+        let n = pkg.entries.len();
+        for whole in [false, true] {
+            let d = scratch(&format!("efface-{whole}"));
+            old_output(&d);
+            let t = Target::new(Some(&d.join("neuf.plain")), false, &pkg);
+            let e = write_package_with(&pkg, &t, ZipLimits::PYTHON, &never, &mut (), &mut |s| {
+                let at = if whole { 3 } else { n - 1 };
+                if s == Step::WriteDir(at) {
+                    let tmp = tracked_part(&d.join("neuf.plain")).unwrap();
+                    if whole {
+                        discard(&[tmp]);
+                    } else {
+                        fs::remove_file(tmp.join("version"))?;
+                    }
+                }
+                Ok(())
+            })
+            .unwrap_err();
+            assert_eq!(e.code, "output_error", "entier : {whole}");
+            assert!(!d.join("neuf.plain").exists());
+            assert_no_part(&d);
+        }
+    }
+
+    /// Renommage du dossier entier (cible absente) en échec : rien de publié, aucun `.part`.
+    #[test]
+    fn renommage_du_dossier_entier_en_echec() {
+        let pkg = sample();
+        let d = scratch("dossier-entier");
+        let t = Target::new(Some(&d.join("o.plain")), false, &pkg);
+        let e = write_package_with(&pkg, &t, ZipLimits::PYTHON, &never, &mut (), &mut |s| {
+            if s == Step::Rename(0) {
+                return Err(io::Error::other("panne"));
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(e.code, "output_error");
+        assert!(!d.join("o.plain").exists());
+        assert_no_part(&d);
+        write_package(&pkg, &t, &never).unwrap();
+        assert_eq!(fs::read(d.join("o.plain/version")).unwrap(), b"1");
+        assert_no_part(&d);
+    }
+
+    /// `--plain` vers un `.plain` qui est un fichier : refus avant toute publication, le
+    /// `.plain.pk` existant n'est pas remplacé (#357).
+    #[test]
+    fn plain_fichier_refuse_avant_publication() {
+        let pkg = sample();
+        let d = scratch("plain-fichier");
+        fs::write(d.join("o.plain.pk"), b"ancien paquet").unwrap();
+        fs::write(d.join("o.plain"), b"fichier").unwrap();
+        let t = Target::new(Some(&d.join("o.plain.pk")), true, &pkg);
+        let e = write_package(&pkg, &t, &never).unwrap_err();
+        assert_eq!(e.code, "output_error");
+        assert_eq!(fs::read(d.join("o.plain.pk")).unwrap(), b"ancien paquet");
+        assert_eq!(fs::read(d.join("o.plain")).unwrap(), b"fichier");
+        assert_no_part(&d);
+    }
+
+    /// Source qui relit normalement, sauf à l'appel n° `fail_at` : la moitié du premier tour
+    /// est transmise, puis l'entrée est déclarée modifiée.
+    struct Flaky<S> {
+        inner: S,
+        calls: usize,
+        fail_at: usize,
+    }
+
+    impl<S: Source> Source for Flaky<S> {
+        fn copy(
+            &mut self,
+            name: &str,
+            size: u64,
+            crc: u32,
+            cancelled: &dyn Fn() -> bool,
+            sink: Sink<'_>,
+        ) -> Result<(), ZipStop> {
+            self.calls += 1;
+            if self.calls != self.fail_at {
+                return self.inner.copy(name, size, crc, cancelled, sink);
+            }
+            self.inner
+                .copy(name, size, crc, cancelled, &mut |c: &[u8]| {
+                    sink(&c[..c.len() / 2])?;
+                    Err(ZipStop::Source(ConvError::archive_unreadable("modifiee")))
+                })
+        }
+    }
+
+    /// Relecture en échec au milieu d'une entrée (#402), au `.plain.pk` comme au dossier
+    /// `.plain` : `archive_unreadable`, ancienne sortie intacte, aucun `.part`.
+    #[test]
+    fn relecture_en_echec_au_pk_et_au_dossier() {
+        for (what, out, plain, fail_at) in [
+            ("pk", "o.plain.pk", false, 1),
+            ("pk avec dossier", "o.plain.pk", true, 1),
+            ("dossier apres pk", "o.plain.pk", true, 2),
+            ("dossier seul", "o.plain", false, 1),
+        ] {
+            let (archive, pkg) = streamed_sample(&[0xFFu8; 3000]);
+            let d = scratch(&format!("relecture-{fail_at}-{plain}-{}", out.len()));
+            old_output(&d);
+            let t = Target::new(Some(&d.join(out)), plain, &pkg);
+            let src = Flaky {
+                inner: archive,
+                calls: 0,
+                fail_at,
+            };
+            let e = write_any(
+                &pkg,
+                src,
+                &t,
+                ZipLimits::PYTHON,
+                &never,
+                &mut (),
+                &mut |_| Ok(()),
+            )
+            .unwrap_err();
+            assert_eq!(e.code, "archive_unreadable", "{what}");
+            assert_eq!(fs::read(d.join("o.plain.pk")).unwrap(), b"ancien paquet");
+            assert_eq!(fs::read(d.join("o.plain/version")).unwrap(), b"ancien");
+            assert_no_part(&d);
+        }
+    }
+
+    /// Source qui signale sa fermeture.
+    struct Probe<'a, S> {
+        inner: S,
+        closed: &'a Cell<bool>,
+    }
+
+    impl<S> Drop for Probe<'_, S> {
+        fn drop(&mut self) {
+            self.closed.set(true);
+        }
+    }
+
+    impl<S: Source> Source for Probe<'_, S> {
+        fn copy(
+            &mut self,
+            name: &str,
+            size: u64,
+            crc: u32,
+            cancelled: &dyn Fn() -> bool,
+            sink: Sink<'_>,
+        ) -> Result<(), ZipStop> {
+            self.inner.copy(name, size, crc, cancelled, sink)
+        }
+    }
+
+    /// L'archive d'entrée est fermée avant le premier renommage de publication (#402).
+    #[test]
+    fn archive_fermee_avant_publication() {
+        let (archive, pkg) = streamed_sample(&[0xFFu8; 3000]);
+        let d = scratch("fermee");
+        old_output(&d);
+        let t = Target::new(Some(&d.join("o.plain.pk")), true, &pkg);
+        let closed = Cell::new(false);
+        let renames = Cell::new(0);
+        let src = Probe {
+            inner: archive,
+            closed: &closed,
+        };
+        write_any(
+            &pkg,
+            src,
+            &t,
+            ZipLimits::PYTHON,
+            &never,
+            &mut (),
+            &mut |s| {
+                match s {
+                    Step::Rename(_) => {
+                        assert!(closed.get(), "archive encore ouverte à la publication");
+                        renames.set(renames.get() + 1);
+                    }
+                    _ => assert!(!closed.get(), "archive fermée trop tôt ({s:?})"),
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(renames.get() > 1);
+        assert_eq!(read_pk(&d.join("o.plain.pk")), sample().entries);
+    }
+
+    /// MP3 de plusieurs tours (#402) : mêmes octets qu'en mémoire, au `.plain.pk` comme au
+    /// dossier ; l'annulation est consultée entre les tours, et une annulation à n'importe
+    /// quel appel laisse l'ancienne sortie intacte, sans `.part`.
+    #[test]
+    fn copie_par_tours_et_annulation() {
+        let mp3: Vec<u8> = (0..2 * COPY_CHUNK + 1000)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let mut mem = sample();
+        for (n, data) in &mut mem.entries {
+            if n == "sounds/s.mp3" {
+                *data = mp3.clone();
+            }
+        }
+        let d = scratch("tours");
+        let t = Target::new(Some(&d.join("o.plain.pk")), true, &mem);
+        let (archive, pkg) = streamed_sample(&mp3);
+        let calls = Cell::new(0usize);
+        let count = || {
+            calls.set(calls.get() + 1);
+            false
+        };
+        write_any(
+            &pkg,
+            archive,
+            &t,
+            ZipLimits::PYTHON,
+            &count,
+            &mut (),
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(read_pk(&d.join("o.plain.pk")), mem.entries);
+        assert_eq!(fs::read(d.join("o.plain/sounds/s.mp3")).unwrap(), mp3);
+        // Deux tours après le premier, au `.plain.pk` puis au dossier.
+        let total = calls.get();
+        assert_eq!(total, 2 * mem.entries.len() + 1 + 2 * 2);
+        for n in 0..total {
+            old_output(&d);
+            let (archive, _) = streamed_sample(&mp3);
+            let calls = Cell::new(0usize);
+            let cancel = || {
+                calls.set(calls.get() + 1);
+                calls.get() > n
+            };
+            let e = write_any(
+                &pkg,
+                archive,
+                &t,
+                ZipLimits::PYTHON,
+                &cancel,
+                &mut (),
+                &mut |_| Ok(()),
+            )
+            .unwrap_err();
+            assert_eq!(e.code, "cancelled", "appel {n}");
+            assert_eq!(fs::read(d.join("o.plain.pk")).unwrap(), b"ancien paquet");
+            assert_no_part(&d);
+        }
+    }
+
+    /// Registre comparé par nom de fichier (#357) : un `.part` de ce processus inscrit sous
+    /// une autre écriture du chemin est épargné ; retiré du registre, il est supprimé.
+    #[test]
+    fn orphelin_du_processus_compare_par_nom() {
+        let d = scratch("par-nom");
+        let name = format!("o.plain.pk.{}-777777.part", std::process::id());
+        fs::write(d.join(&name), b"en cours").unwrap();
+        fs::create_dir(d.join("x")).unwrap();
+        let other = d.join("x").join("..").join(&name);
+        track(&other);
+        clean_orphans(&d.join("o.plain.pk"));
+        assert!(d.join(&name).exists(), "écriture en cours supprimée");
+        untrack(std::slice::from_ref(&other));
+        clean_orphans(&d.join("o.plain.pk"));
+        assert!(!d.join(&name).exists());
+    }
+
+    /// Échec au milieu du `.plain.pk` : le tampon est jeté sans être écrit dans le `.part`.
+    #[test]
+    fn tampon_jete_sur_echec() {
+        let pkg = big_package();
+        let d = scratch("tampon");
+        let t = Target::new(Some(&d.join("o.plain.pk")), false, &pkg);
+        let after = Cell::new(0usize);
+        let failed = Cell::new(false);
+        let e = write_package_with(&pkg, &t, ZipLimits::PYTHON, &never, &mut (), &mut |s| {
+            match s {
+                Step::WritePk(3) => {
+                    failed.set(true);
+                    return Err(io::Error::other("panne"));
+                }
+                Step::FilePk(_) if failed.get() => after.set(after.get() + 1),
+                _ => {}
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(e.code, "output_error");
+        assert_eq!(after.get(), 0, "tampon vidé après l'échec");
+        assert_no_part(&d);
     }
 }

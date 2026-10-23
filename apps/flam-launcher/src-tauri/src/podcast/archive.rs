@@ -66,7 +66,10 @@ pub const MAX_TOTAL_AUDIO_BYTES: u64 = 1_342_177_280;
 pub const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 /// Titre et sous-titre, en caractères.
 pub const MAX_TITLE_CHARS: usize = 256;
-/// Description, en octets UTF-8.
+/// Description, en octets UTF-8. La note de conception annonçait 16 Kio ; 64 Kio sont retenus :
+/// la description par défaut (au plus 100 lignes de [`DESCRIPTION_LINE_CHARS`] caractères, avec
+/// les échecs) peut dépasser 16 Kio avec des titres longs ou non latins, et l'écrêter
+/// perdrait des épisodes de la liste. Le plafond ne protège que d'une saisie démesurée.
 pub const MAX_DESCRIPTION_BYTES: usize = 64 * 1024;
 
 /// Taille des blocs de copie de l'audio (annulation vérifiée entre deux blocs).
@@ -191,6 +194,16 @@ pub fn default_description(menu: &[MenuEntry]) -> String {
         .join("\n")
 }
 
+/// Nombre d'épisodes de l'arborescence, catégories comprises.
+fn count_episodes(menu: &[MenuEntry]) -> usize {
+    menu.iter()
+        .map(|e| match e {
+            MenuEntry::Episode(_) => 1,
+            MenuEntry::Category { entries, .. } => count_episodes(entries),
+        })
+        .sum()
+}
+
 fn collect_titles<'a>(menu: &'a [MenuEntry], out: &mut Vec<&'a str>) {
     for entry in menu {
         match entry {
@@ -248,20 +261,27 @@ const LATIN_EXTRA: [(char, &str); 12] = [
     ('ŋ', "n"),
 ];
 
-/// Libellé d'option (A6) : caractères hors police translittérés comme `telmi2flam`
-/// (accents hors Latin-1 retirés, typographie remplacée, emoji supprimés, lettres sans
-/// équivalent remplacées par `?`, par exemple le grec ou le cyrillique), plus quelques lettres
-/// latines ([`LATIN_EXTRA`]) ; une ligne, [`LABEL_MAX`] caractères au plus (`...` en fin) ;
-/// `fallback` si vide.
-pub fn label(title: &str, fallback: &str) -> String {
-    let latin: String = title
+/// Texte sur une ligne dont les caractères hors police sont translittérés (voir [`label`]),
+/// sans troncature : titre et sous-titre du pack (`metadata.json`), que `telmi2flam` affiche
+/// tels quels (un `’` y déclencherait l'avertissement `font_replaced`).
+fn translit(s: &str) -> String {
+    let latin: String = s
         .chars()
         .map(|c| match LATIN_EXTRA.iter().find(|(k, _)| *k == c) {
             Some((_, r)) => (*r).to_string(),
             None => c.to_string(),
         })
         .collect();
-    let mut s = font_text(&latin, None);
+    font_text(&latin, None)
+}
+
+/// Libellé d'option (A6) : caractères hors police translittérés comme `telmi2flam`
+/// (accents hors Latin-1 retirés, typographie remplacée, emoji supprimés, lettres sans
+/// équivalent remplacées par `?`, par exemple le grec ou le cyrillique), plus quelques lettres
+/// latines ([`LATIN_EXTRA`]) ; une ligne, [`LABEL_MAX`] caractères au plus (`...` en fin) ;
+/// `fallback` si vide.
+pub fn label(title: &str, fallback: &str) -> String {
+    let mut s = translit(title);
     if s.is_empty() {
         s = fallback.to_string();
     }
@@ -286,6 +306,8 @@ struct Graph<'a> {
     /// Épisodes dans l'ordre de l'arborescence (parcours en profondeur) : le n-ième (à partir
     /// de 1) a pour fichiers `eNNN.mp3` et `eNNN.png`.
     episodes: Vec<&'a PackEpisode>,
+    /// Épisodes de tout le pack (calculé avant le parcours), pour le message de dépassement.
+    total_episodes: usize,
     menus: usize,
     options: usize,
     categories: usize,
@@ -298,7 +320,10 @@ fn trans(action: &str, index: usize) -> Value {
 
 impl<'a> Graph<'a> {
     fn build(menu: &'a [MenuEntry]) -> Result<Self, ArchiveError> {
-        let mut g = Graph::default();
+        let mut g = Graph {
+            total_episodes: count_episodes(menu),
+            ..Graph::default()
+        };
         if menu.is_empty() {
             return Err(ArchiveError::NoEpisode);
         }
@@ -351,7 +376,7 @@ impl<'a> Graph<'a> {
             let (image, ok, text) = match entry {
                 MenuEntry::Episode(ep) => {
                     if self.episodes.len() >= MAX_EPISODES {
-                        return Err(ArchiveError::TooManyEpisodes(self.episodes.len() + 1));
+                        return Err(ArchiveError::TooManyEpisodes(self.total_episodes));
                     }
                     self.episodes.push(ep);
                     let n = self.episodes.len();
@@ -524,6 +549,11 @@ fn read_png(path: &Path) -> Result<Vec<u8>, ArchiveError> {
 }
 
 /// Vérifie les fichiers d'entrée (avant toute écriture) : MP3, PNG, doublons (N9 a), bornes.
+///
+/// Le doublon (N9 a) est détecté sur le **chemin tel que reçu**, sans canonicalisation : deux
+/// écritures différentes du même fichier (casse, `..`, lien) ne sont pas vues. L'appelant (#217)
+/// génère les chemins des MP3 dans le dossier de travail de la tâche, un par épisode, ce
+/// contrôle ne garde donc que d'une erreur de construction du pack.
 fn check_files(pack: &Pack, episodes: &[&PackEpisode]) -> Result<(), ArchiveError> {
     let mut seen = HashSet::new();
     let mut total = 0u64;
@@ -547,12 +577,17 @@ fn check_files(pack: &Pack, episodes: &[&PackEpisode]) -> Result<(), ArchiveErro
 
 fn metadata_json(pack: &Pack) -> Value {
     let m = &pack.metadata;
+    let mut title = translit(m.title.trim());
+    if title.is_empty() {
+        // Titre fait uniquement d'emoji ou de symboles : jamais de titre vide dans l'archive.
+        title = "Podcast".to_string();
+    }
     json!({
-        "title": m.title.trim(),
+        "title": title,
         "uuid": pack.uuid.hyphenated().to_string(),
         "image": COVER_NAME,
         "version": 1,
-        "category": m.subtitle.trim(),
+        "category": translit(m.subtitle.trim()),
         "description": m.description,
         "age": m.age,
     })

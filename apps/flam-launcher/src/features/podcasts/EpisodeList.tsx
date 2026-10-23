@@ -1,11 +1,14 @@
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { Episode } from "../../api/podcast";
 import { Button, CheckboxField, EmptyState } from "../../components";
 import { t } from "../../i18n";
 import { formatBytes } from "../validation";
 import { usePodcastSelection } from "./SelectionContext";
 import {
+  acceptedForShortcut,
   estimateSize,
+  latestIds,
+  LATEST_DEFAULT_COUNT,
   MAX_EPISODES,
   type Refusal,
   type SelectedEpisode,
@@ -69,7 +72,20 @@ interface EpisodeListProps {
 export function EpisodeList({ sourceId, sourceName, episodes }: EpisodeListProps) {
   const selection = usePodcastSelection();
   const [shown, setShown] = useState(EPISODES_PAGE_SIZE);
+  const list = useRef<HTMLUListElement>(null);
+  const focusFrom = useRef<number | null>(null);
+  const capId = useId();
   const text = t.podcasts.episodes;
+  const [shortcutResult, setShortcutResult] = useState<string | null>(null);
+
+  // « Afficher plus » disparaît parfois avec le focus : il passe au premier épisode ajouté.
+  useEffect(() => {
+    if (focusFrom.current === null) return;
+    const boxes =
+      list.current?.querySelectorAll<HTMLInputElement>("input[type=checkbox]");
+    boxes?.[focusFrom.current]?.focus();
+    focusFrom.current = null;
+  }, [shown]);
 
   if (episodes.length === 0) {
     return (
@@ -82,22 +98,61 @@ export function EpisodeList({ sourceId, sourceName, episodes }: EpisodeListProps
     );
   }
 
+  /** Raccourci : coche les derniers épisodes que les plafonds acceptent ; la sélection reste libre. */
+  function checkLatest() {
+    const ids = new Set(latestIds(episodes, LATEST_DEFAULT_COUNT));
+    const latest = episodes
+      .filter((episode) => ids.has(episode.id))
+      .map((episode): SelectedEpisode => {
+        return {
+          id: episode.id,
+          sourceId,
+          sourceName,
+          title: episode.title,
+          bytes: estimateSize(episode).bytes,
+          explicit: episode.explicit === true,
+        };
+      });
+    const accepted = acceptedForShortcut(selection.selected, latest);
+    selection.addMany(accepted);
+    setShortcutResult(text.latestDone(accepted.length, latest.length));
+  }
+
   const visible = episodes.slice(0, shown);
+  // Plafonds du pack : un seul message pour toutes les cases refusées, pas un par case.
+  const capRefusals = new Set<Refusal>();
+  const rows = visible.map((episode) => {
+    const size = estimateSize(episode);
+    const candidate: SelectedEpisode = {
+      id: episode.id,
+      sourceId,
+      sourceName,
+      title: episode.title,
+      bytes: size.bytes,
+      explicit: episode.explicit === true,
+    };
+    const refusal = selection.refusal(candidate);
+    if (refusal === "count" || refusal === "total") capRefusals.add(refusal);
+    return { episode, size, candidate, refusal };
+  });
   return (
     <>
-      <ul className="fl-podcasts__episodes" aria-label={text.list}>
-        {visible.map((episode) => {
-          const size = estimateSize(episode);
-          const candidate: SelectedEpisode = {
-            id: episode.id,
-            sourceId,
-            sourceName,
-            title: episode.title,
-            bytes: size.bytes,
-            explicit: episode.explicit === true,
-          };
-          const checked = selection.isSelected(episode.id);
-          const refusal = selection.refusal(candidate);
+      <div className="fl-podcasts__actions">
+        <Button variant="secondary" size="sm" onClick={checkLatest}>
+          {text.latest(Math.min(LATEST_DEFAULT_COUNT, episodes.length))}
+        </Button>
+        <p role="status" className="fl-podcasts__status">
+          {shortcutResult ?? ""}
+        </p>
+      </div>
+      <div id={capId} className="fl-podcasts__cap">
+        {[...capRefusals].map((refusal) => (
+          <p key={refusal}>{refusalText(refusal)}</p>
+        ))}
+      </div>
+      <ul ref={list} className="fl-podcasts__episodes" aria-label={text.list}>
+        {rows.map(({ episode, size, candidate, refusal }) => {
+          const perEpisode = refusal === "episodeTooBig";
           const details = [
             formatDate(episode.pub_date),
             episode.duration !== null && episode.duration > 0
@@ -107,16 +162,24 @@ export function EpisodeList({ sourceId, sourceName, episodes }: EpisodeListProps
               ? text.unknownSize
               : text.size(formatBytes(size.bytes), size.approximate),
             candidate.explicit ? text.explicit : null,
-            refusal ? refusalText(refusal) : null,
+            perEpisode ? refusalText(refusal) : null,
           ].filter((part): part is string => part !== null);
           return (
             <li key={episode.id} className="fl-podcasts__episode">
+              {/* aria-disabled et non disabled : la case reste atteignable au clavier. */}
               <CheckboxField
                 label={episode.title}
                 hint={details.join(" · ")}
-                checked={checked}
-                disabled={refusal !== null}
-                onChange={() => selection.toggle(candidate)}
+                describedBy={
+                  refusal === "count" || refusal === "total" ? capId : undefined
+                }
+                checked={selection.isSelected(sourceId, episode.id)}
+                aria-disabled={refusal !== null ? true : undefined}
+                onChange={() => {
+                  if (refusal === null || selection.isSelected(sourceId, episode.id)) {
+                    selection.toggle(candidate);
+                  }
+                }}
               />
             </li>
           );
@@ -125,7 +188,10 @@ export function EpisodeList({ sourceId, sourceName, episodes }: EpisodeListProps
       {shown < episodes.length && (
         <Button
           variant="secondary"
-          onClick={() => setShown((n) => n + EPISODES_PAGE_SIZE)}
+          onClick={() => {
+            focusFrom.current = shown;
+            setShown((n) => n + EPISODES_PAGE_SIZE);
+          }}
         >
           {text.showMore(episodes.length - shown)}
         </Button>

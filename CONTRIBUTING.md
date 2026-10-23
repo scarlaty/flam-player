@@ -1,7 +1,29 @@
-# Contribuer à flam-player
+# Contribuer à Flam Launcher
+
+Le produit principal de ce dépôt est **Flam Launcher** (`apps/flam-launcher/`), l'application
+Windows présentée dans le [README](README.md). L'émulateur `flam-player`, le convertisseur
+`telmi2flam` et les jeux en sont les briques : leurs règles propres sont en
+[annexe](#annexe--player-convertisseur-et-jeux).
 
 Plusieurs personnes et agents travaillent en même temps sur ce dépôt. Les règles
 ci-dessous évitent que deux contributeurs fassent le même travail.
+
+## 0. Démarrer sur le launcher
+
+- **Tester sans coder** : le [guide testeur](apps/flam-launcher/docs/guide-testeur.md) explique
+  comment installer la pré-version, essayer l'envoi sur une Flam et envoyer un retour.
+- **Prérequis** : Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2,
+  Node 24+ et npm (détails dans [apps/flam-launcher/README.md](apps/flam-launcher/README.md#développement)).
+- **Lancer** : depuis `apps/flam-launcher/`, `npm ci` puis `npm run tauri dev`. Le front seul
+  (`npm run dev`) offre une page de démonstration des composants (`#/demo`, voir
+  [DESIGN.md](apps/flam-launcher/docs/DESIGN.md)).
+- **Captures du README** : `npm run screenshots` régénère `docs/assets/` (Edge installé, et
+  ffmpeg dans le PATH pour le GIF) avec des données fictives. À relancer quand un écran montré
+  change ; hors CI.
+- **Documentation** : architecture et commandes Tauri dans
+  [apps/flam-launcher/README.md](apps/flam-launcher/README.md), interface dans
+  [DESIGN.md](apps/flam-launcher/docs/DESIGN.md), envoi sur la Flam dans
+  [flam-transfert.md](apps/flam-launcher/docs/flam-transfert.md).
 
 ## 1. Organisation
 
@@ -94,24 +116,17 @@ Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§
 
 ## 5. Qualité attendue avant PR
 
-- `test_run.bat` (player, moteur, convertisseur) au vert pour toute modification de code hors
-  `apps/flam-launcher/`.
-- `tools/telmi2flam` : `python -m unittest discover -s tools/telmi2flam/tests` au vert ;
-  toute correction de compatibilité est accompagnée d'un test de non-régression.
 - `apps/flam-launcher` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`,
   `npm run lint`, `npm run typecheck`, `npm test`.
-- `crates/telmi2flam` (port Rust du convertisseur, workspace Cargo à la racine) :
-  `cargo test -p telmi2flam`, `cargo fmt --check` et `cargo clippy -p telmi2flam -- -D warnings`.
-  Une modification de `crates/**` déclenche aussi la CI du launcher, qui partage le workspace (et en dépendra avec #122).
+- Player, convertisseur (`tools/telmi2flam`, `crates/telmi2flam`) : voir
+  l'[annexe](#annexe--player-convertisseur-et-jeux).
 - **CI du launcher et installateurs** : sur une PR, l'installateur N-1 et le test de mise à jour ne
   tournent que si l'empaquetage change (liste dans `.github/workflows/launcher.yml`, étape
   « Empaquetage modifié ? »). Pour forcer ce test sur une PR qui ne le déclenche pas, poser le label
   `ci-installeur` (il relance la CI). `main` exécute toujours tout.
-- Copie de travail extraite avant l'ajout de `.gitattributes` : `tools/telmi2flam/engine/` peut
-  garder des fins de ligne CRLF. `git add --renormalize tools/telmi2flam/engine/` les remet en LF
-  (`include_bytes!` embarque les octets de la copie de travail).
 - Pas de code mort, pas de `TODO` sans issue associée, documentation à jour
-  (`README.md`, `AGENT.md`, README du module touché).
+  (`README.md` pour la vitrine du launcher, `docs/player.md` pour le player, le convertisseur
+  et les jeux, `AGENT.md`, README du module touché).
 - **PR courtes** : un seul thème, au plus cinq changements fonctionnels (hors tests et
   documentation). Au-delà, l'issue est découpée en plusieurs PR successives.
 - **Revue préalable par l'auteur** : avant d'ouvrir la PR, l'auteur fait relire son diff
@@ -125,7 +140,8 @@ Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§
     vérifie les invariants ;
   - exception : un diff qui ne change ni l'écriture ni la suppression de données
     (renommage, commentaire, journalisation) en est dispensé, à condition de le justifier
-    dans la PR ;
+    dans la PR (ex. `player.rs` : le lancement et l'arrêt du processus du player, ses
+    indicateurs de création, ses tests n'écrivent ni ne suppriment rien de l'utilisateur) ;
   - label `modele:opus` sur l'issue (voir §1).
 
 ## 6. Revue et fusion
@@ -157,3 +173,21 @@ en **squash** dans `main` par le mainteneur. La branche est supprimée après fu
   `gh issue close N --reason completed --comment "Fait par #<PR> ; suivis dans #<suivi>"` et retirer
   le label `en-cours`. Exception : une issue qui attend encore une validation sur l'appareil
   reste ouverte, avec un commentaire qui le dit.
+
+## Annexe : player, convertisseur et jeux
+
+Règles propres aux briques sur lesquelles repose le launcher (documentation :
+[docs/player.md](docs/player.md)). Elles s'ajoutent à celles du §5.
+
+- `test_run.bat` (player, moteur, convertisseur) au vert pour toute modification de code hors
+  `apps/flam-launcher/`.
+- `tools/telmi2flam` : `python -m unittest discover -s tools/telmi2flam/tests` au vert ;
+  toute correction de compatibilité est accompagnée d'un test de non-régression.
+- `crates/telmi2flam` (port Rust du convertisseur, workspace Cargo à la racine) :
+  `cargo test -p telmi2flam`, `cargo fmt --check` et `cargo clippy -p telmi2flam -- -D warnings`.
+  Une modification de `crates/**` déclenche aussi la CI du launcher, qui partage le workspace (et en dépendra avec #122).
+- Copie de travail extraite avant l'ajout de `.gitattributes` : `tools/telmi2flam/engine/` peut
+  garder des fins de ligne CRLF. `git add --renormalize tools/telmi2flam/engine/` les remet en LF
+  (`include_bytes!` embarque les octets de la copie de travail).
+- Jeux (`games/`) et contenus homebrew : voir le README de chaque jeu et le skill
+  [`skills/flam-homebrew`](skills/flam-homebrew/SKILL.md).

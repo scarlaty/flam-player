@@ -1,10 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- arguments IPC simulés, forme libre */
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { useEffect } from "react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Episode, Feed, PodcastView } from "../../api/podcast";
 import type { Source } from "../../api/sources";
 import { ToastProvider } from "../../components";
+import { routeFromHash } from "../../router";
 import { expectNoAxeViolations } from "../../test/axe";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
 import { PodcastsScreen } from "./PodcastsScreen";
@@ -95,11 +97,30 @@ function Probe() {
   return <output data-testid="probe">{totals.count}</output>;
 }
 
-function renderScreen() {
+/** Sélectionne d'emblée `count` épisodes d'un autre flux (évite autant de clics rendus un à un). */
+function Prefill({ count }: { count: number }) {
+  const { toggle } = usePodcastSelection();
+  useEffect(() => {
+    for (let i = 0; i < count; i++) {
+      toggle({
+        id: `pre${i}`,
+        sourceId: "pre",
+        sourceName: "Pré",
+        title: `Pré ${i}`,
+        bytes: 1000,
+        explicit: false,
+      });
+    }
+  }, [count, toggle]);
+  return null;
+}
+
+function renderScreen(prefill = 0) {
   return render(
     <ToastProvider>
       <PodcastSelectionProvider>
         <PodcastsScreen />
+        {prefill > 0 && <Prefill count={prefill} />}
         <Probe />
       </PodcastSelectionProvider>
     </ToastProvider>,
@@ -107,7 +128,7 @@ function renderScreen() {
 }
 
 function check(name: string | RegExp) {
-  fireEvent.click(screen.getByRole("checkbox", { name }));
+  fireEvent.click(screen.getByLabelText(name));
 }
 
 async function fillAndSubmit(url: string, name?: string) {
@@ -164,7 +185,7 @@ it("la sélection est annoncée et se vide d'un clic", async () => {
   expect(status).toHaveTextContent("Aucun épisode sélectionné.");
 });
 
-it("deux flux : épisodes cumulés, et un même épisode une seule fois (N9)", async () => {
+it("deux flux : épisodes cumulés ; un même identifiant dans deux flux reste deux épisodes", async () => {
   sources = [library, podcast("a", "A"), podcast("b", "B")];
   views.a = view("a", [episode("1"), episode("shared")], "Flux A");
   views.b = view("b", [episode("2"), episode("shared")], "Flux B");
@@ -176,8 +197,9 @@ it("deux flux : épisodes cumulés, et un même épisode une seule fois (N9)", a
   await screen.findByRole("heading", { name: /Flux B/ });
   await screen.findByRole("checkbox", { name: "Épisode 2" });
   check("Épisode 2");
-  expect(screen.getByRole("checkbox", { name: "Épisode shared" })).toBeChecked();
-  expect(screen.getByTestId("probe")).toHaveTextContent("3");
+  expect(screen.getByRole("checkbox", { name: "Épisode shared" })).not.toBeChecked();
+  check("Épisode shared");
+  expect(screen.getByTestId("probe")).toHaveTextContent("4");
 });
 
 it(
@@ -188,14 +210,24 @@ it(
     );
     sources = [library, podcast("a", "A")];
     views.a = view("a", many);
-    renderScreen();
-    await screen.findByRole("checkbox", { name: "Ep 0" });
-    for (const box of screen.getAllByRole("checkbox").slice(0, 50)) fireEvent.click(box);
+    // 49 épisodes déjà retenus : un seul vrai clic atteint le plafond de 50.
+    renderScreen(49);
+    await screen.findByLabelText("Ep 0");
+    await waitFor(() => expect(screen.getByTestId("probe")).toHaveTextContent("49"));
+    check("Ep 0");
     expect(screen.getByTestId("probe")).toHaveTextContent("50");
     fireEvent.click(screen.getByRole("button", { name: /Afficher plus/ }));
-    const last = await screen.findByRole("checkbox", { name: "Ep 50" });
-    expect(last).toBeDisabled();
+    const last = await screen.findByLabelText("Ep 50");
+    expect(last).toHaveAttribute("aria-disabled", "true");
     expect(last).toHaveAccessibleDescription(/50 épisodes par pack au plus/);
+    // Un seul message de plafond pour toutes les cases refusées.
+    expect(screen.getAllByText(/50 épisodes par pack au plus/)).toHaveLength(1);
+    // Case refusée : atteignable au clavier, et un clic ne change rien.
+    last.focus();
+    expect(last).toHaveFocus();
+    fireEvent.click(last);
+    expect(last).not.toBeChecked();
+    expect(screen.getByTestId("probe")).toHaveTextContent("50");
   },
   SLOW_TEST_MS,
 );
@@ -210,11 +242,11 @@ it("plafond par épisode et plafond du pack", async () => {
   ]);
   renderScreen();
   const huge = await screen.findByRole("checkbox", { name: "Énorme" });
-  expect(huge).toBeDisabled();
+  expect(huge).toHaveAttribute("aria-disabled", "true");
   expect(huge).toHaveAccessibleDescription(/Épisode trop volumineux/);
   for (const name of ["B1", "B2", "B3", "B4", "B5"]) check(name);
   const over = screen.getByRole("checkbox", { name: "B6" });
-  expect(over).toBeDisabled();
+  expect(over).toHaveAttribute("aria-disabled", "true");
   expect(over).toHaveAccessibleDescription(/Plafond atteint/);
 });
 
@@ -226,6 +258,13 @@ it("ajoute un flux et affiche ses épisodes", async () => {
     url: "https://exemple.org/new.xml",
     name: "Mon flux",
   });
+  // La vue rapportée par l'ajout suffit : ni lecture du cache ni seconde actualisation.
+  expect(calls.some((c) => c.cmd === "podcast_feed" || c.cmd === "podcast_refresh")).toBe(
+    false,
+  );
+  // Le focus va au titre de la liste, et l'ajout est annoncé par un toast.
+  expect(screen.getByRole("heading", { name: /Épisodes de « Flux »/ })).toHaveFocus();
+  expect(screen.getByText("Flux « Mon flux » ajouté.")).toBeInTheDocument();
 });
 
 it("refuse une adresse invalide sans appeler le backend", async () => {
@@ -336,3 +375,179 @@ it(
   },
   SLOW_TEST_MS,
 );
+
+it(
+  "« Afficher plus » : le focus passe au premier épisode ajouté",
+  async () => {
+    const many = Array.from({ length: 120 }, (_, i) =>
+      episode(String(i), { title: `Ep ${i}`, enclosure_length: 1000 }),
+    );
+    sources = [library, podcast("a", "A")];
+    views.a = view("a", many);
+    renderScreen();
+    await screen.findByLabelText("Ep 0");
+    expect(document.querySelectorAll("input[type=checkbox]")).toHaveLength(50);
+    const more = screen.getByText(/Afficher plus \(70 restants\)/);
+    more.focus();
+    fireEvent.click(more);
+    await waitFor(() => expect(screen.getByLabelText("Ep 50")).toHaveFocus());
+    expect(document.querySelectorAll("input[type=checkbox]")).toHaveLength(100);
+    fireEvent.click(screen.getByText(/Afficher plus \(20 restants\)/));
+    await waitFor(() => expect(screen.getByLabelText("Ep 100")).toHaveFocus());
+    expect(document.querySelectorAll("input[type=checkbox]")).toHaveLength(120);
+    expect(screen.queryByText(/Afficher plus/)).not.toBeInTheDocument();
+  },
+  SLOW_TEST_MS,
+);
+
+it("changer de flux remet la pagination à zéro", async () => {
+  const many = Array.from({ length: 60 }, (_, i) =>
+    episode(`a${i}`, { title: `A ${i}` }),
+  );
+  sources = [library, podcast("a", "A"), podcast("b", "B")];
+  views.a = view("a", many, "Flux A");
+  views.b = view(
+    "b",
+    many.map((e) => ({ ...e, id: `b${e.id}`, title: `B ${e.title}` })),
+    "Flux B",
+  );
+  renderScreen();
+  await screen.findByLabelText("A 0");
+  fireEvent.click(screen.getByRole("button", { name: /Afficher plus/ }));
+  await screen.findByLabelText("A 59");
+  fireEvent.click(screen.getByRole("button", { name: "B" }));
+  await screen.findByRole("heading", { name: /Flux B/ });
+  await screen.findByLabelText("B A 0");
+  expect(document.querySelectorAll("input[type=checkbox]")).toHaveLength(50);
+  expect(
+    screen.getByRole("button", { name: /Afficher plus \(10 restants\)/ }),
+  ).toBeVisible();
+});
+
+it("recliquer le flux déjà choisi ne déplace pas le focus", async () => {
+  sources = [library, podcast("a", "A")];
+  views.a = view("a", [episode("1")]);
+  renderScreen();
+  const box = await screen.findByRole("checkbox", { name: "Épisode 1" });
+  box.focus();
+  fireEvent.click(screen.getByRole("button", { name: "A" }));
+  expect(box).toHaveFocus();
+});
+
+it("liste des flux en échec : message et « Réessayer »", async () => {
+  failures.sources_list = { kind: "io", message: "lecture impossible" };
+  renderScreen();
+  const alert = await screen.findByRole("alert");
+  expect(within(alert).getByText(/lecture impossible/)).toBeInTheDocument();
+  delete failures.sources_list;
+  fireEvent.click(within(alert).getByRole("button", { name: "Réessayer" }));
+  expect(await screen.findByText("Aucun flux podcast")).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("actualisation en échec avec un cache : épisodes conservés et avertissement", async () => {
+  sources = [library, podcast("a", "A")];
+  views.a = view("a", [episode("1")]);
+  failures.podcast_refresh = { kind: "network", message: "flux inaccessible : délai" };
+  renderScreen();
+  expect(await screen.findByRole("checkbox", { name: "Épisode 1" })).toBeInTheDocument();
+  expect(await screen.findByText(/n'a pas pu être actualisé/)).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("la sélection multi-flux reste visible quand le flux choisi est en erreur", async () => {
+  sources = [library, podcast("a", "A"), podcast("b", "B")];
+  views.a = view("a", [episode("1")], "Flux A");
+  views.b = { ...view("b", []), feed: null };
+  renderScreen();
+  await screen.findByRole("checkbox", { name: "Épisode 1" });
+  check("Épisode 1");
+  failures.podcast_refresh = { kind: "network", message: "flux inaccessible : délai" };
+  fireEvent.click(screen.getByRole("button", { name: "B" }));
+  expect(await screen.findByText("flux inaccessible : délai")).toBeInTheDocument();
+  expect(screen.getByRole("status", { name: "Sélection" })).toHaveTextContent(
+    "1 épisode sélectionné",
+  );
+});
+
+it("adresse invalide : le focus va au premier champ invalide", async () => {
+  renderScreen();
+  await fillAndSubmit("pas une adresse");
+  await screen.findByText(/doit commencer par http/);
+  expect(screen.getByLabelText(/Adresse du flux/)).toHaveFocus();
+});
+
+it("D11 : l'adresse du flux n'est jamais journalisée", async () => {
+  const spies = (["log", "info", "warn", "error", "debug"] as const).map((method) =>
+    vi.spyOn(console, method).mockImplementation(() => undefined),
+  );
+  try {
+    sources = [library, podcast("a", "A")];
+    views.a = view("a", [episode("1")]);
+    renderScreen();
+    await screen.findByRole("checkbox", { name: "Épisode 1" });
+    failures.podcast_add = { kind: "network", message: "flux inaccessible" };
+    fireEvent.change(screen.getByLabelText(/Adresse du flux/), {
+      target: { value: "https://exemple.org/x.xml?token=secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ajouter le flux" }));
+    await screen.findByRole("alert");
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+  }
+});
+
+it("routeFromHash reconnaît #/podcasts", () => {
+  expect(routeFromHash("#/podcasts")).toBe("podcasts");
+});
+
+it("la mention d'usage courte décidée par le mainteneur figure dans l'ajout de flux", async () => {
+  renderScreen();
+  await screen.findByText("Aucun flux podcast");
+  const form = screen.getByRole("region", { name: "Ajouter un flux" });
+  expect(
+    within(form).getByText(
+      "Usage personnel et familial uniquement : ne partagez pas les histoires créées. L'audio est repris tel quel, publicité comprise.",
+    ),
+  ).toBeInTheDocument();
+});
+
+it("raccourci : coche les 10 derniers épisodes, la sélection reste libre", async () => {
+  const many = Array.from({ length: 12 }, (_, i) =>
+    episode(String(i), { title: `Ep ${i}` }),
+  );
+  sources = [library, podcast("a", "A")];
+  views.a = view("a", many);
+  renderScreen();
+  await screen.findByRole("checkbox", { name: "Ep 0" });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Cocher les 10 derniers épisodes" }),
+  );
+  expect(screen.getByTestId("probe")).toHaveTextContent("10");
+  expect(screen.getByRole("checkbox", { name: "Ep 9" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Ep 10" })).not.toBeChecked();
+  expect(screen.getByText("Raccourci : 10 épisodes cochés.")).toBeInTheDocument();
+  check("Ep 0");
+  check("Ep 11");
+  expect(screen.getByTestId("probe")).toHaveTextContent("10");
+});
+
+it("raccourci : les épisodes refusés par les plafonds ne sont pas cochés, le message le dit", async () => {
+  const eps = [
+    episode("0", { title: "Ep 0", enclosure_length: 100_000_000 }),
+    episode("1", { title: "Ep 1", enclosure_length: 250_000_000 }),
+    episode("2", { title: "Ep 2", enclosure_length: 100_000_000, explicit: true }),
+    episode("3", { title: "Ep 3", enclosure_length: 100_000_000 }),
+  ];
+  sources = [library, podcast("a", "A")];
+  views.a = view("a", eps);
+  renderScreen();
+  await screen.findByRole("checkbox", { name: "Ep 0" });
+  fireEvent.click(screen.getByRole("button", { name: "Cocher les 4 derniers épisodes" }));
+  expect(screen.getByRole("checkbox", { name: "Ep 0" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Ep 1" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Ep 2" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Ep 3" })).toBeChecked();
+  expect(screen.getByText(/2 épisodes cochés sur les 4 derniers/)).toBeInTheDocument();
+});

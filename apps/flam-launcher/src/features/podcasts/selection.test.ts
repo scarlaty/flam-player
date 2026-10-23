@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import {
   estimateSize,
+  acceptedForShortcut,
   latestIds,
   MAX_EPISODE_BYTES,
   MAX_EPISODES,
@@ -46,8 +47,43 @@ it("refuse un épisode trop gros, un doublon, le 51e épisode et le dépassement
   expect(refusalFor(heavy, item("y", room))).toBeNull();
 });
 
+it("un même identifiant dans deux flux désigne deux épisodes distincts", () => {
+  const other = { ...item("a", 1), sourceId: "autre" };
+  expect(refusalFor([item("a", 1)], other)).toBeNull();
+  expect(refusalFor([item("a", 1), other], other)).toBe("duplicate");
+});
+
 it("latestIds prend les n premiers épisodes", () => {
   const episodes = [{ id: "1" }, { id: "2" }, { id: "3" }];
   expect(latestIds(episodes, 2)).toEqual(["1", "2"]);
   expect(latestIds(episodes, -1)).toEqual([]);
+});
+
+it("raccourci : garde les épisodes acceptés par les plafonds, saute explicites et doublons", () => {
+  const selected = [item("a", 10)];
+  const candidates = [
+    item("a", 10),
+    { ...item("x", 10), explicit: true },
+    item("big", MAX_EPISODE_BYTES + 1),
+    item("b", 10),
+  ];
+  expect(acceptedForShortcut(selected, candidates).map((e) => e.id)).toEqual(["b"]);
+});
+
+it("raccourci : tient compte du plafond total au fil des ajouts", () => {
+  const big = 190_000_000;
+  const candidates = [..."abcde"].map((id) => item(id, big));
+  candidates.push(item("f", big), item("g", 1));
+  const accepted = acceptedForShortcut([], candidates);
+  expect(accepted.map((e) => e.id)).toEqual(["a", "b", "c", "d", "e", "g"]);
+});
+
+it("raccourci : s'arrête au plafond du nombre d'épisodes", () => {
+  const selected = Array.from({ length: MAX_EPISODES - 2 }, (_, i) => item(`s${i}`, 1));
+  const accepted = acceptedForShortcut(selected, [
+    item("a", 1),
+    item("b", 1),
+    item("c", 1),
+  ]);
+  expect(accepted.map((e) => e.id)).toEqual(["a", "b"]);
 });

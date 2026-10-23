@@ -96,10 +96,10 @@ export const fr = {
     title: "Podcasts",
     intro:
       "Ajoutez un flux de podcast, puis choisissez les épisodes à réunir dans un pack.",
-    /** Mention d'usage : texte proposé par la spécification (§ 4), à valider par le mainteneur (#220). */
+    /** Mention d'usage de l'écran d'ajout : version courte décidée par le mainteneur (#220, spec § 4). */
     usageTitle: "Usage personnel",
     usage:
-      "Les podcasts appartiennent à leurs auteurs. Les histoires créées ici sont réservées à un usage personnel, dans le cadre familial : ne les partagez pas et ne les redistribuez pas. L'audio est téléchargé tel que l'éditeur le diffuse, publicité comprise.",
+      "Usage personnel et familial uniquement : ne partagez pas les histoires créées. L'audio est repris tel quel, publicité comprise.",
     add: {
       title: "Ajouter un flux",
       url: "Adresse du flux (RSS)",
@@ -132,7 +132,6 @@ export const fr = {
     episodes: {
       title: (feed: string) => `Épisodes de « ${feed} »`,
       loading: "Chargement des épisodes…",
-      loadFailed: "Impossible de charger ce flux.",
       refreshFailed:
         "Le flux n'a pas pu être actualisé : la version enregistrée est affichée.",
       offline: (date: string | null) =>
@@ -144,8 +143,22 @@ export const fr = {
         description: "Ce flux ne contient aucun épisode audio exploitable.",
       },
       list: "Épisodes",
+      latest: (count: number) =>
+        count === 1
+          ? "Cocher le dernier épisode"
+          : `Cocher les ${count} derniers épisodes`,
+      latestDone: (checked: number, count: number) => {
+        const done = `${checked} ${checked > 1 ? "épisodes cochés" : "épisode coché"}`;
+        if (checked === count) return `Raccourci : ${done}.`;
+        const others = "déjà cochés, explicites ou refusés par les plafonds";
+        if (checked === 0) {
+          return count === 1
+            ? `Raccourci : le dernier épisode n'a pas été coché (${others}).`
+            : `Raccourci : aucun des ${count} derniers épisodes n'a été coché (${others}).`;
+        }
+        return `Raccourci : ${done} sur les ${count} derniers (les autres sont ${others}).`;
+      },
       explicit: "Explicite",
-      explicitHint: "Contenu explicite, décoché par défaut.",
       unknownDate: "Date inconnue",
       unknownSize: "taille inconnue",
       size: (size: string, approximate: boolean) =>
@@ -176,6 +189,140 @@ export const fr = {
           : `${count} épisodes de taille inconnue ne sont pas comptés`,
       clear: "Tout désélectionner",
       empty: "Aucun épisode sélectionné.",
+    },
+    pack: {
+      title: "Composer un pack",
+      link: "Composer le pack",
+      back: "Retour aux épisodes",
+      intro:
+        "Rangez les épisodes choisis dans une arborescence libre, réglez le titre et la couverture : le pack deviendra une nouvelle histoire. Votre travail est enregistré automatiquement.",
+      loading: "Chargement du brouillon…",
+      loadFailed: "Impossible de lire le brouillon du pack.",
+      draftSaving: "Enregistrement du brouillon…",
+      draftSaved: "Brouillon enregistré.",
+      draftFailed: "Le brouillon n'a pas pu être enregistré.",
+      validateFailed: "La vérification du pack a échoué.",
+      checking: "Vérification en cours…",
+      unavailableBanner: (count: number) =>
+        count === 1
+          ? "1 épisode n'est plus disponible dans son flux : retirez-le du pack."
+          : `${count} épisodes ne sont plus disponibles dans leur flux : retirez-les du pack.`,
+      summary: {
+        title: "Récapitulatif",
+        episodes: (count: number, max: number) =>
+          `${count} ${count > 1 ? "épisodes" : "épisode"} sur ${max} au plus`,
+        levels: (levels: number, max: number) =>
+          `${levels} ${levels > 1 ? "niveaux" : "niveau"} de menus sur ${max} au plus`,
+        size: (size: string, max: string) =>
+          `taille estimée : environ ${size} sur ${max} au plus`,
+        unknown: (count: number) =>
+          count === 1
+            ? "1 épisode de taille inconnue n'est pas compté"
+            : `${count} épisodes de taille inconnue ne sont pas comptés`,
+      },
+      limits: (options: number, levels: number) =>
+        `Limites : ${levels} niveaux de menus, ${options} options par menu, aucune catégorie vide, chaque épisode une seule fois.`,
+      tree: {
+        title: "Arborescence",
+        label: "Arborescence du pack",
+        hint: (maxName: number) =>
+          `L'ordre ci-dessous est l'ordre dans l'appareil. Utilisez les boutons pour monter, descendre ou déplacer un élément ; le glisser-déposer par la poignée est aussi possible à la souris. Un nom de catégorie compte ${maxName} caractères au plus.`,
+        empty: {
+          title: "Le pack est vide",
+          description:
+            "Choisissez des épisodes dans l'écran Podcasts : ils apparaîtront ici.",
+        },
+        root: "Racine",
+        untitled: "(sans nom)",
+        menuEmpty: "Aucun élément.",
+        episode: "Épisode",
+        category: "Catégorie",
+        unavailableBadge: "Indisponible",
+        unknownTitle: "Épisode indisponible",
+        categoryName: (position: string) => `Nom de la catégorie n° ${position}`,
+        newCategory: "Nouvelle catégorie",
+        addCategory: "Ajouter une catégorie à la racine",
+        addCategoryIn: (menu: string) => `Ajouter une catégorie dans « ${menu} »`,
+        up: (label: string) => `Monter « ${label} »`,
+        down: (label: string) => `Descendre « ${label} »`,
+        moveTo: (label: string) => `Déplacer « ${label} » vers`,
+        movePlaceholder: "Choisir un menu…",
+        moveButton: "Déplacer",
+        moveConfirm: (label: string) => `Déplacer « ${label} » vers le menu choisi`,
+        loadingTitle: "Chargement du titre…",
+        remove: (label: string) => `Retirer « ${label} »`,
+        removeCategory: (label: string) => `Supprimer la catégorie « ${label} »`,
+      },
+      announce: {
+        moved: (label: string, position: number, count: number) =>
+          `« ${label} » : position ${position} sur ${count}.`,
+        movedTo: (label: string, menu: string) =>
+          `« ${label} » déplacé vers « ${menu} ».`,
+        removed: (label: string) => `« ${label} » retiré du pack.`,
+        added: (label: string, menu: string) => `« ${label} » ajouté à « ${menu} ».`,
+        refused: "Déplacement impossible : limite de l'arborescence atteinte.",
+      },
+      pool: {
+        title: "Épisodes sélectionnés, pas encore placés",
+        addRoot: (label: string) => `Ajouter « ${label} » à la racine`,
+        addAll: "Tout ajouter à la racine",
+      },
+      metadata: {
+        title: "Histoire",
+        storyTitle: "Titre",
+        titleHint: (feedTitle: string | null, multiple: boolean) =>
+          multiple
+            ? "Obligatoire : le pack réunit plusieurs flux."
+            : feedTitle === null
+              ? "Facultatif tant que le pack n'utilise qu'un seul flux."
+              : `Laissez vide pour reprendre le titre du flux : « ${feedTitle} ».`,
+        subtitle: "Sous-titre",
+        subtitleHint: (feedCopyright: string | null) =>
+          feedCopyright === null
+            ? "Facultatif."
+            : "Prérempli avec le copyright du flux : modifiez-le, ou effacez-le pour n'avoir aucun sous-titre.",
+        age: "Âge conseillé",
+        ageOption: (age: number) => (age === 0 ? "Tout public" : `${age} ans`),
+        description: "Description",
+        descriptionHint:
+          "Laissez vide pour utiliser la liste des épisodes (regroupée par flux si le pack en réunit plusieurs).",
+      },
+      cover: {
+        title: "Couverture",
+        label: "Image de la couverture",
+        hint: "Par défaut, l'image du podcast du premier flux utilisé.",
+        default: "Image du premier flux (par défaut)",
+        feed: (name: string) => `Image du flux « ${name} »`,
+        episode: (title: string) => `Image de l'épisode « ${title} »`,
+        missing: "Image indisponible : choisissez-en une autre",
+      },
+      problems: {
+        title: "À corriger avant de créer l'histoire",
+        ok: "Le pack est prêt à être créé.",
+        at: (place: string) => `(${place})`,
+        noEpisode: "Le pack ne contient aucun épisode.",
+        tooManyEpisodes: (max: number) => `Trop d'épisodes : ${max} au plus par pack.`,
+        tooDeep: (max: number) => `Arborescence trop profonde : ${max} niveaux au plus.`,
+        tooManyOptions: (max: number) => `Trop d'options dans un menu : ${max} au plus.`,
+        emptyCategory: "Une catégorie est vide : ajoutez-y un épisode ou supprimez-la.",
+        invalidCategoryName: (max: number) =>
+          `Le nom d'une catégorie doit faire de 1 à ${max} caractères.`,
+        duplicateEpisode: "Un épisode est présent deux fois dans le pack.",
+        invalidId: "Un épisode du brouillon est invalide : retirez-le.",
+        titleRequired: "Le titre est obligatoire quand le pack réunit plusieurs flux.",
+        textTooLong: "Un texte est trop long.",
+        episodeUnavailable: "Un épisode n'est plus disponible : retirez-le du pack.",
+        episodeTooLarge: (max: string) =>
+          `Un épisode dépasse la taille maximale de ${max}.`,
+        packTooLarge: (max: string) => `Le pack dépasse la taille maximale de ${max}.`,
+        coverUnavailable: "La couverture choisie n'est plus disponible.",
+      },
+      create: {
+        // TODO #217 : brancher la création de l'histoire (commande de l'installation).
+        label: "Créer l'histoire",
+        unavailable:
+          "La création de l'histoire n'est pas encore disponible dans cette version : votre brouillon est conservé.",
+      },
     },
   },
   settingsScreen: {
