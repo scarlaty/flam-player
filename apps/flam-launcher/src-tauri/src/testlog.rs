@@ -8,7 +8,8 @@
 //! et celles des tâches `blocking` y passent aussi.
 //!
 //! Le journal est partagé entre tous les tests du processus : on n'y vérifie que l'**absence**
-//! d'un secret, jamais la présence d'une trace précise propre à un test.
+//! d'un secret, jamais la présence d'une trace précise propre à un test (seul le témoin
+//! ci-dessous cherche un marqueur qui lui est propre, pour prouver que le journal capture).
 
 use std::sync::{Arc, Mutex, OnceLock};
 
