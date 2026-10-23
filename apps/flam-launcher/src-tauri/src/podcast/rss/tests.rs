@@ -797,6 +797,29 @@ fn le_pretraitement_suit_les_guillemets_des_attributs() {
 }
 
 #[test]
+fn guillemet_d_attribut_jamais_ferme_reste_une_erreur_propre() {
+    // Le guillemet ouvert avale le reste du document : le `>` n'est jamais vu, le texte est
+    // laissé tel quel et l'analyse échoue proprement (pas de panique, message lisible).
+    let text = "<a><img alt=\"jamais ferme src=u> <br></a>";
+    assert!(matches!(sanitize_xml(text), Cow::Borrowed(_)));
+    let err = parse(&wrap(&item(
+        "q",
+        "<description>x<img alt=\"jamais ferme src=u>y</description>",
+    )))
+    .unwrap_err();
+    assert!(matches!(err, RssError::InvalidFeed(_)), "{err:?}");
+    assert!(err.to_string().starts_with("flux invalide : "), "{err}");
+    // Même chose avec une apostrophe.
+    assert!(matches!(
+        parse(&wrap(&item(
+            "q",
+            "<description>x<br title='y>z</description>"
+        ))),
+        Err(RssError::InvalidFeed(_))
+    ));
+}
+
+#[test]
 fn un_guid_trop_long_change_l_identifiant_d_episode() {
     let long = format!("urn:{}", "g".repeat(MAX_GUID_CHARS + 10));
     let feed = parse(&wrap(&item(&long, ""))).unwrap();
