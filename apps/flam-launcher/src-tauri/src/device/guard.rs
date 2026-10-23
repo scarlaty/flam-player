@@ -180,8 +180,11 @@ pub struct CoherenceCounts {
     pub clear_info: usize,
 }
 
+/// Nombre maximal d'UUID d'histoires en cause gardés dans [`Coherence::Contradiction`].
+pub const MAX_CONTRADICTING: usize = 20;
+
 /// Résultat du contrôle de cohérence des clés 2.x.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Coherence {
     /// 1.x : sans objet (mode carrier).
@@ -190,8 +193,16 @@ pub enum Coherence {
     NotChecked,
     /// Au moins une histoire au format Flam se déchiffre avec les clés de `.mdf`.
     Coherent { counts: CoherenceCounts },
-    /// Aucune ne se déchiffre, et l'une au moins aurait dû (même fichier `key`).
-    Contradiction { counts: CoherenceCounts },
+    /// Aucune ne se déchiffre, et l'une au moins aurait dû (même fichier `key`). `stories` :
+    /// UUID de ces histoires (au plus [`MAX_CONTRADICTING`], triés), pour que l'utilisateur
+    /// sache lesquelles retirer ; pas un secret, jamais repris dans le diagnostic copiable.
+    Contradiction {
+        counts: CoherenceCounts,
+        stories: Vec<String>,
+        /// Nombre d'UUID distincts en cause, avant troncature (un même UUID dans `str/` et
+        /// `str.hidden/` ne compte qu'une fois).
+        total: usize,
+    },
     /// Aucune histoire exploitable.
     NoEvidence { counts: CoherenceCounts },
 }
@@ -219,6 +230,7 @@ pub fn coherence_v2(
     let keys = keys_from_mdf(mdf)?;
     let expected_key = keys.key_file();
     let mut counts = CoherenceCounts::default();
+    let mut contradicting = Vec::new();
     for (id, dir, _) in story_dirs(root) {
         if launcher_stories.contains(id.as_str()) {
             continue;
@@ -248,7 +260,10 @@ pub fn coherence_v2(
                 counts.key_matches += 1;
                 counts.decrypted += 1;
             }
-            (true, false) => counts.key_matches += 1,
+            (true, false) => {
+                counts.key_matches += 1;
+                contradicting.push(id.as_str().to_string());
+            }
             (false, true) => counts.decrypted_other_key += 1,
             (false, false) => {}
         }
@@ -256,7 +271,15 @@ pub fn coherence_v2(
     Ok(if counts.decrypted + counts.decrypted_other_key > 0 {
         Coherence::Coherent { counts }
     } else if counts.key_matches > 0 {
-        Coherence::Contradiction { counts }
+        contradicting.sort();
+        contradicting.dedup();
+        let total = contradicting.len();
+        contradicting.truncate(MAX_CONTRADICTING);
+        Coherence::Contradiction {
+            counts,
+            stories: contradicting,
+            total,
+        }
     } else {
         Coherence::NoEvidence { counts }
     })
@@ -830,14 +853,16 @@ fn assess(root: &Path, mdf: &[u8], ctx: &WriteContext<'_>, mode: Mode) -> Assess
     }
 
     // Cohérence (informative ; une contradiction refuse l'envoi).
-    let cached = ctx.session.with(key.clone(), |e| e.coherence);
+    let cached = ctx.session.with(key.clone(), |e| e.coherence.clone());
     let coherence = match (mode, cached) {
         (Mode::Status { .. }, Some((c, at))) if busy || at.elapsed() < STATUS_REUSE => c,
         (Mode::Status { busy: true }, None) => Coherence::NotChecked,
         _ => match coherence_v2(root, mdf, ctx.launcher_stories()) {
             Ok(c) => {
-                ctx.session
-                    .with(key.clone(), |e| e.coherence = Some((c, Instant::now())));
+                let stored = c.clone();
+                ctx.session.with(key.clone(), |e| {
+                    e.coherence = Some((stored, Instant::now()))
+                });
                 c
             }
             Err(err) => {
