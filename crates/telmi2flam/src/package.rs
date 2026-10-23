@@ -19,6 +19,12 @@
 //! après la génération de `nodes.lua` (`nodes.lua`, moteur, runtime), avertissements émis dans
 //! l'ordre de Python.
 //!
+//! Mémoire (#355) : [`build_package_streamed`] ne garde pas les MP3 recopiés tels quels, mais
+//! une référence à leur entrée dans l'archive ([`Data::Source`] : nom, taille, CRC calculés à la
+//! lecture faite pour `mp3map`) ; [`crate::output::write_package_from`] les relit un à un, dans
+//! l'ordre canonique, et refuse une entrée dont la taille ou le CRC a changé. Les octets écrits
+//! sont ceux du paquet en mémoire de [`build_package_with`].
+//!
 //! Écarts assumés avec Python (parité vérifiée par `tests/package_parity.rs` sous ces
 //! conditions) : MP3 hors 44 100 Hz recopiés tels quels, comme Python sans ffmpeg
 //! (rééchantillonnage reporté, #22).
@@ -71,12 +77,39 @@ pub struct Options {
     pub thumb_fit: crate::image::ThumbFit,
 }
 
-/// Paquet assemblé, prêt à écrire.
+/// Contenu d'une entrée du paquet assemblé par [`build_package_streamed`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Data {
+    /// Octets produits par la conversion.
+    Bytes(Vec<u8>),
+    /// MP3 recopié tel quel : entrée `name` (nom exact) de l'archive d'entrée, relue à
+    /// l'écriture et refusée si sa taille ou son CRC-32 diffère.
+    Source { name: String, size: u64, crc: u32 },
+}
+
+impl Data {
+    /// Taille de l'entrée en octets.
+    pub fn size(&self) -> u64 {
+        match self {
+            Data::Bytes(b) => b.len() as u64,
+            Data::Source { size, .. } => *size,
+        }
+    }
+}
+
+impl From<Vec<u8>> for Data {
+    fn from(bytes: Vec<u8>) -> Self {
+        Data::Bytes(bytes)
+    }
+}
+
+/// Paquet assemblé, prêt à écrire : tout en mémoire (`Vec<u8>`, [`build_package_with`]) ou
+/// MP3 référencés dans l'archive ([`Data`], [`build_package_streamed`]).
 #[derive(Debug, Clone)]
-pub struct Package {
+pub struct Package<D = Vec<u8>> {
     /// Fichiers dans l'ordre canonique de Python : `info.plain`, `version`, `main.lua`,
     /// `script/nodes.lua`, puis les autres triés, `uuid.bin` en dernier.
-    pub entries: Vec<(String, Vec<u8>)>,
+    pub entries: Vec<(String, D)>,
     /// Avertissements dans l'ordre d'émission (codes stables de l'événement `warning`).
     pub warnings: Vec<Warning>,
     /// Titre affiché (nom de sortie par défaut).
@@ -180,7 +213,7 @@ fn display_text(v: &Value, what: &str, replaced: &mut Replaced) -> Result<String
 
 /// Ordre canonique des entrées (`order` de Python) ; les noms sont uniques (clés du `BTreeMap`,
 /// déjà triées par points de code comme `sorted()`).
-fn canonical(mut files: std::collections::BTreeMap<String, Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+fn canonical<D>(mut files: std::collections::BTreeMap<String, D>) -> Vec<(String, D)> {
     let mut entries = Vec::with_capacity(files.len());
     for head in ["info.plain", "version", "main.lua", "script/nodes.lua"] {
         if let Some(data) = files.remove(head) {
@@ -247,6 +280,46 @@ pub fn build_package_with<R: Read + Seek>(
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn Progress,
 ) -> Result<Package, ConvError> {
+    let pkg = build(archive, options, cancelled, progress, false)?;
+    let mut entries = Vec::with_capacity(pkg.entries.len());
+    for (name, data) in pkg.entries {
+        match data {
+            Data::Bytes(b) => entries.push((name, b)),
+            Data::Source { .. } => {
+                return Err(ConvError::internal_error(format!(
+                    "{name} : entree non chargee"
+                )))
+            }
+        }
+    }
+    Ok(Package {
+        entries,
+        warnings: pkg.warnings,
+        title: pkg.title,
+        uuid: pkg.uuid,
+    })
+}
+
+/// [`build_package_with`] sans garder en mémoire les MP3 recopiés tels quels : leurs entrées
+/// sont des [`Data::Source`] de `archive`, à écrire avec
+/// [`crate::output::write_package_from`] et la même archive. Progression, avertissements,
+/// erreurs et octets écrits identiques.
+pub fn build_package_streamed<R: Read + Seek>(
+    archive: &mut Archive<R>,
+    options: &Options,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn Progress,
+) -> Result<Package<Data>, ConvError> {
+    build(archive, options, cancelled, progress, true)
+}
+
+fn build<R: Read + Seek>(
+    archive: &mut Archive<R>,
+    options: &Options,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn Progress,
+    stream: bool,
+) -> Result<Package<Data>, ConvError> {
     let check = || {
         if cancelled() {
             Err(ConvError::cancelled())
@@ -266,6 +339,7 @@ pub fn build_package_with<R: Read + Seek>(
     expect(Some(&nodes), &[Kind::Object], "nodes.json", false)?;
 
     let mut assets = StoryAssets::new(archive, &root, options.keep_size, cancelled, progress);
+    assets.stream = stream;
     let notes_raw = assets.read("notes.json")?;
     let (notes, notes_warning) = load_notes(notes_raw.as_deref());
     drop(notes_raw);
@@ -333,8 +407,8 @@ pub fn build_package_with<R: Read + Seek>(
         cover = assets.read(fallback)?;
     }
     let mut title_audio = None;
-    if let Some(mp3) = assets.read("title.mp3")? {
-        assets.add_mp3map("sounds/title.mp3", mp3, "title.mp3")?;
+    if let Some((source, mp3)) = assets.read_named("title.mp3")? {
+        assets.add_mp3map("sounds/title.mp3", mp3, "title.mp3", &source)?;
         title_audio = Some("title.mp3");
     }
     let mut title_image = None;
@@ -346,8 +420,12 @@ pub fn build_package_with<R: Read + Seek>(
             .and_then(|t| Ok((t, png_to_thumb_lif(&cover, options.thumb_fit, cancelled)?)));
         match converted {
             Ok((title_lif, thumb_lif)) => {
-                assets.out.insert("img/title.lif".to_owned(), title_lif);
-                assets.out.insert("img/thumbnail.lif".to_owned(), thumb_lif);
+                assets
+                    .out
+                    .insert("img/title.lif".to_owned(), title_lif.into());
+                assets
+                    .out
+                    .insert("img/thumbnail.lif".to_owned(), thumb_lif.into());
                 title_image = Some("title.lif");
             }
             Err(PngError::Unreadable(why)) => assets.warn(
@@ -413,25 +491,25 @@ pub fn build_package_with<R: Read + Seek>(
     } = assets;
     // `scripts` : nodes.lua, main.lua et story.lua (comptés 3), puis chaque fichier du runtime.
     progress.begin(Phase::Scripts, 3 + RUNTIME.len() as u64);
-    files.insert("script/nodes.lua".to_owned(), nodes_lua);
+    files.insert("script/nodes.lua".to_owned(), nodes_lua.into());
     progress.tick(Phase::Scripts);
-    files.insert("main.lua".to_owned(), MAIN_LUA.to_vec());
-    files.insert("script/story.lua".to_owned(), STORY_LUA.to_vec());
+    files.insert("main.lua".to_owned(), MAIN_LUA.to_vec().into());
+    files.insert("script/story.lua".to_owned(), STORY_LUA.to_vec().into());
     progress.tick(Phase::Scripts);
     progress.tick(Phase::Scripts);
     for f in RUNTIME {
-        files.insert(f.name.to_owned(), f.data.to_vec());
+        files.insert(f.name.to_owned(), f.data.to_vec().into());
         progress.tick(Phase::Scripts);
     }
     // Couverture par défaut de audio-player : petite image transparente.
     let empty = lif::encode(&[0u8; 8 * 8 * 4], 8, 8)
         .map_err(|e| ConvError::internal_error(format!("img/empty.lif : {e}")))?;
-    files.insert("img/empty.lif".to_owned(), empty);
+    files.insert("img/empty.lif".to_owned(), empty.into());
     let silent = silent_mp3();
     if let Ok(map) = mp3map::build(&silent) {
-        files.insert("sounds/silent.mp3map".to_owned(), map.data);
+        files.insert("sounds/silent.mp3map".to_owned(), map.data.into());
     }
-    files.insert("sounds/silent.mp3".to_owned(), silent);
+    files.insert("sounds/silent.mp3".to_owned(), silent.into());
     // Métadonnées FLAM (titre / sous-titre / id / titre), lues ligne par ligne.
     let info_subtitle = if subtitle.is_empty() {
         &title
@@ -440,10 +518,12 @@ pub fn build_package_with<R: Read + Seek>(
     };
     files.insert(
         "info.plain".to_owned(),
-        format!("{title}\n{info_subtitle}\n000000\n{title}").into_bytes(),
+        format!("{title}\n{info_subtitle}\n000000\n{title}")
+            .into_bytes()
+            .into(),
     );
-    files.insert("version".to_owned(), b"1".to_vec());
-    files.insert("uuid.bin".to_owned(), uuid.to_vec());
+    files.insert("version".to_owned(), b"1".to_vec().into());
+    files.insert("uuid.bin".to_owned(), uuid.to_vec().into());
 
     let entries = canonical(files);
     check_names(entries.iter().map(|(n, _)| n.as_str()))?;
@@ -492,7 +572,7 @@ mod tests {
             "main.lua",
             "script/story.lua",
         ] {
-            files.insert(n.to_owned(), Vec::new());
+            files.insert(n.to_owned(), Vec::<u8>::new());
         }
         let names: Vec<String> = canonical(files).into_iter().map(|(n, _)| n).collect();
         assert_eq!(

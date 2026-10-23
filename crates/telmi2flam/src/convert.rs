@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use crate::archive::Archive;
 use crate::error::ConvError;
-use crate::output::{write_package_progress, Target};
-use crate::package::{build_package_with, Options};
+use crate::output::{write_package_from, Target};
+use crate::package::{build_package_streamed, Options};
 use crate::progress::Reporter;
 
 /// Conversion demandée.
@@ -47,12 +47,13 @@ pub fn convert(
 ) -> Result<Report, ConvError> {
     reporter.start(req.input.as_os_str());
     let mut archive = Archive::open(req.input)?;
-    let package = build_package_with(&mut archive, &req.options, cancelled, reporter)?;
-    drop(archive);
+    // MP3 recopiés tels quels relus dans l'archive à l'écriture (#355).
+    let package = build_package_streamed(&mut archive, &req.options, cancelled, reporter)?;
     let target = Target::new(req.output, req.emit_plain, &package);
-    let published = write_package_progress(&package, &target, cancelled, reporter)?;
+    let published = write_package_from(&package, &mut archive, &target, cancelled, reporter)?;
+    drop(archive);
     let size = if target.dir_only {
-        package.entries.iter().map(|(_, d)| d.len() as u64).sum()
+        package.entries.iter().map(|(_, d)| d.size()).sum()
     } else {
         std::fs::metadata(&target.out_path)
             .map_err(|e| {
