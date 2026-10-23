@@ -69,8 +69,11 @@ fn feeds(n: usize) -> Feeds {
     let g = guids(n);
     let g: Vec<&str> = g.iter().map(String::as_str).collect();
     let mut f = Feeds::new();
-    f.insert("a".into(), Some(feed("Contes", &g)));
-    f.insert("b".into(), Some(feed("Comptines", &["h0", "h1"])));
+    f.insert("a".into(), CachedFeed::Ready(feed("Contes", &g)));
+    f.insert(
+        "b".into(),
+        CachedFeed::Ready(feed("Comptines", &["h0", "h1"])),
+    );
     f
 }
 
@@ -117,6 +120,61 @@ fn trois_niveaux_acceptes_quatre_refuses() {
     let report = validate(&deep, &feeds(1));
     assert_eq!(codes(&report), vec![ProblemCode::TooDeep]);
     assert_eq!(report.problems[0].path, Some(vec![0, 0, 0]));
+
+    // Catégorie de niveau 3 contenant plusieurs catégories : chacune est signalée, une fois.
+    let wide = comp(vec![cat(
+        "N2",
+        vec![cat(
+            "N3",
+            vec![
+                cat("N4a", vec![cat("N5", vec![e("a", "g0")])]),
+                cat("N4b", vec![e("a", "g1")]),
+            ],
+        )],
+    )]);
+    let report = validate(&wide, &feeds(2));
+    assert_eq!(codes(&report), vec![ProblemCode::TooDeep; 2]);
+    let paths: Vec<_> = report.problems.iter().map(|p| p.path.clone()).collect();
+    assert_eq!(paths, vec![Some(vec![0, 0, 0]), Some(vec![0, 0, 1])]);
+}
+
+#[test]
+fn estimation_d5_taille_annoncee_prioritaire() {
+    // Taille annoncée présente : utilisée telle quelle, même au-dessus de durée × 192 kbps.
+    let announced = ep("x", Some(300_000_000), Some(3600));
+    assert_eq!(estimate_bytes(&announced), Some(300_000_000));
+    assert_eq!(
+        estimate_bytes(&ep("y", None, Some(3600))),
+        Some(3600 * FALLBACK_BYTES_PER_SECOND)
+    );
+    assert_eq!(estimate_bytes(&ep("z", Some(0), Some(10))), Some(240_000));
+    assert_eq!(estimate_bytes(&ep("w", None, None)), None);
+}
+
+#[test]
+fn description_saisie_bornee_avec_reserve() {
+    let mut c = comp(vec![e("a", "g0")]);
+    c.metadata.description = Some("d".repeat(MAX_DESCRIPTION_INPUT_BYTES));
+    assert!(validate(&c, &feeds(1)).valid);
+    c.metadata.description = Some("d".repeat(MAX_DESCRIPTION_INPUT_BYTES + 1));
+    let report = validate(&c, &feeds(1));
+    assert_eq!(codes(&report), vec![ProblemCode::TextTooLong]);
+    assert_eq!(report.problems[0].field, Some("description"));
+    // La réserve couvre 50 échecs aux titres longs de caractères de 4 octets.
+    let failures: Vec<String> = (0..50).map(|_| "😀".repeat(300)).collect();
+    let full =
+        crate::podcast::archive::with_failures(&"d".repeat(MAX_DESCRIPTION_INPUT_BYTES), &failures);
+    assert!(full.len() <= MAX_DESCRIPTION_BYTES, "{}", full.len());
+}
+
+#[test]
+fn liste_de_problemes_plafonnee() {
+    let menu: Vec<PackNode> = (0..MAX_PROBLEMS + 10)
+        .map(|i| cat(&format!("c{i}"), vec![]))
+        .collect();
+    let report = validate(&comp(menu), &feeds(1));
+    assert!(!report.valid);
+    assert_eq!(report.problems.len(), MAX_PROBLEMS);
 }
 
 #[test]
@@ -216,7 +274,7 @@ fn plafonds_de_taille_d1() {
         ep("duree", None, Some(3 * 3600)),
         ep("inconnu", None, None),
     ];
-    f.insert("l".into(), Some(big));
+    f.insert("l".into(), CachedFeed::Ready(big));
     let c = comp(vec![
         e("l", "ok"),
         e("l", "trop"),
@@ -236,7 +294,7 @@ fn plafonds_de_taille_d1() {
     total.episodes = (0..6)
         .map(|i| ep(&format!("t{i}"), Some(199_000_000), None))
         .collect();
-    f.insert("t".into(), Some(total));
+    f.insert("t".into(), CachedFeed::Ready(total));
     let c = comp((0..6).map(|i| e("t", &format!("t{i}"))).collect());
     let report = validate(&c, &f);
     assert_eq!(codes(&report), vec![ProblemCode::PackTooLarge]);
@@ -272,24 +330,32 @@ fn textes_trop_longs_refuses() {
 #[test]
 fn episodes_indisponibles_signales_sans_perte_du_reste() {
     let mut f = feeds(1);
-    f.insert("jamais".into(), None);
+    f.insert("jamais".into(), CachedFeed::Never);
+    f.insert("abime".into(), CachedFeed::Unreadable);
     let mut c = comp(vec![
         e("a", "g0"),
         e("a", "retire"),
         e("supprimee", "x"),
         e("jamais", "y"),
+        e("abime", "z"),
     ]);
     c.metadata.title = "Pack".into();
     let report = validate(&c, &f);
     assert_eq!(
         report.unavailable,
-        vec![r("a", "retire"), r("supprimee", "x"), r("jamais", "y")]
+        vec![
+            r("a", "retire"),
+            r("supprimee", "x"),
+            r("jamais", "y"),
+            r("abime", "z")
+        ]
     );
-    assert_eq!(codes(&report), vec![ProblemCode::EpisodeUnavailable; 3]);
+    assert_eq!(codes(&report), vec![ProblemCode::EpisodeUnavailable; 4]);
     let messages: Vec<&str> = report.problems.iter().map(|p| p.message.as_str()).collect();
     assert!(messages[0].contains("retiré du flux"));
     assert!(messages[1].contains("source supprimée"));
     assert!(messages[2].contains("jamais obtenu"));
+    assert!(messages[3].contains("cache illisible"));
     assert_eq!(report.estimated_bytes, 10_000_000, "le reste est compté");
 }
 
@@ -303,7 +369,7 @@ fn titre_par_defaut_absent_si_flux_unique_indisponible() {
 fn couverture_n6() {
     // Défaut : premier flux utilisé (ordre de l'arborescence) ayant une image.
     let mut f = feeds(1);
-    if let Some(Some(a)) = f.get_mut("a") {
+    if let Some(CachedFeed::Ready(a)) = f.get_mut("a") {
         a.image = None;
     }
     let mut c = comp(vec![e("a", "g0"), e("b", "h0")]);
@@ -594,6 +660,8 @@ fn sauvegarde_sur_fichier_corrompu_non_lu_le_met_de_cote() {
     for content in [
         &b"{\"revision\": 3, tronqu"[..],
         b"{\"schema_version\": 99, \"revision\": 3}",
+        // En-tête valide, composition invalide.
+        b"{\"schema_version\": 1, \"revision\": 3, \"composition\": {\"menu\": [{\"kind\": \"x\"}]}}",
     ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(DRAFT_FILE);
@@ -608,6 +676,23 @@ fn sauvegarde_sur_fichier_corrompu_non_lu_le_met_de_cote() {
         assert_eq!(backups(dir.path()).len(), 2);
         assert_eq!(read_draft(dir.path()).unwrap().revision, 2);
     }
+}
+
+#[test]
+fn revision_bornee_aux_entiers_exacts_javascript() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(
+        save_draft(dir.path(), &sample(), MAX_REVISION)
+            .unwrap()
+            .saved
+    );
+    for bad in [MAX_REVISION + 1, u64::MAX] {
+        let err = save_draft(dir.path(), &sample(), bad).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+        let err = clear_draft(dir.path(), bad).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+    assert_eq!(read_draft(dir.path()).unwrap().revision, MAX_REVISION);
 }
 
 #[test]

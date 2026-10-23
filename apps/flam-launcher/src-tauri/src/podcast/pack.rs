@@ -41,22 +41,25 @@ use crate::sources::{Source, SourcesStore};
 use crate::storage::{self, ConfigState, Loaded};
 use crate::{AppError, AppResult};
 
-/// Niveaux de menus au plus, racine comprise (N2 b ; comme `archive::MAX_MENU_DEPTH`).
-pub const MAX_MENU_DEPTH: usize = 3;
-/// Options (épisodes et catégories) par menu (N2 b).
-pub const MAX_OPTIONS_PER_MENU: usize = 50;
-/// Épisodes par pack (D1).
-pub const MAX_EPISODES: usize = 50;
-/// Taille estimée d'un épisode (D1 : 200 Mo).
+/// Bornes de l'arborescence et des textes : celles de l'archive (#216), jamais dupliquées.
+pub use super::archive::{
+    MAX_DESCRIPTION_BYTES, MAX_EPISODES, MAX_MENU_DEPTH, MAX_OPTIONS_PER_MENU, MAX_TITLE_CHARS,
+};
+/// Taille estimée d'un épisode (D1 : 200 Mo, 10⁶ octets, comme le front). `fetch.rs` plafonne
+/// le téléchargement à 200 Mio : la validation est volontairement plus stricte.
 pub const MAX_EPISODE_BYTES: u64 = 200_000_000;
 /// Taille estimée du pack (D1 : 1 Gio).
 pub const MAX_PACK_BYTES: u64 = 1_073_741_824;
 /// Nom de catégorie, en caractères (A6).
 pub const MAX_LABEL_CHARS: usize = 40;
-/// Titre et sous-titre, en caractères (comme `archive::MAX_TITLE_CHARS`).
-pub const MAX_TITLE_CHARS: usize = 256;
-/// Description, en octets UTF-8 (comme `archive::MAX_DESCRIPTION_BYTES`).
-pub const MAX_DESCRIPTION_BYTES: usize = 64 * 1024;
+/// Description saisie, en octets UTF-8. Réserve sur [`MAX_DESCRIPTION_BYTES`] (64 Kio, refusé
+/// par l'archive au-delà) : à la création, `archive::with_failures` ajoute la liste des
+/// épisodes en échec (jusqu'à 50 lignes de 200 caractères, environ 40 Ko en UTF-8).
+pub const MAX_DESCRIPTION_INPUT_BYTES: usize = 16 * 1024;
+/// Problèmes rapportés au plus : au-delà, la liste est tronquée (composition aberrante).
+pub const MAX_PROBLEMS: usize = 10 * MAX_EPISODES;
+/// Révision de brouillon au plus : entier exact en JavaScript (2⁵³ − 1).
+pub const MAX_REVISION: u64 = (1 << 53) - 1;
 /// Débit d'estimation sans taille annoncée : 192 kbps, pire cas du réencodage (D5, D6).
 pub const FALLBACK_BYTES_PER_SECOND: u64 = 24_000;
 /// Longueur d'un identifiant de source ou d'épisode.
@@ -238,9 +241,27 @@ pub struct ValidationReport {
     pub cover: Option<CoverChoice>,
 }
 
-/// Flux connus, par source : clé absente = source supprimée (ou qui n'est pas un podcast) ;
-/// `None` = flux jamais obtenu.
-pub type Feeds = HashMap<String, Option<PodcastFeed>>;
+/// Flux en cache d'une source podcast.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CachedFeed {
+    /// Flux jamais obtenu (aucun cache).
+    Never,
+    /// Cache illisible (erreur à la lecture).
+    Unreadable,
+    Ready(PodcastFeed),
+}
+
+impl CachedFeed {
+    pub fn ready(&self) -> Option<&PodcastFeed> {
+        match self {
+            CachedFeed::Ready(feed) => Some(feed),
+            _ => None,
+        }
+    }
+}
+
+/// Flux connus, par source : clé absente = source supprimée (ou qui n'est pas un podcast).
+pub type Feeds = HashMap<String, CachedFeed>;
 
 fn problem(code: ProblemCode, message: String) -> Problem {
     Problem {
@@ -412,7 +433,7 @@ pub fn validate(composition: &PackComposition, feeds: &Feeds) -> ValidationRepor
     // Index des épisodes de chaque flux utilisé, par identifiant opaque.
     let mut index: HashMap<&str, HashMap<String, &PodcastEpisode>> = HashMap::new();
     for (e, _) in &seen {
-        if let Some(Some(feed)) = feeds.get(&e.source_id) {
+        if let Some(feed) = feeds.get(&e.source_id).and_then(CachedFeed::ready) {
             index.entry(e.source_id.as_str()).or_insert_with(|| {
                 feed.episodes
                     .iter()
@@ -438,8 +459,9 @@ pub fn validate(composition: &PackComposition, feeds: &Feeds) -> ValidationRepor
         let Some(ep) = find(e) else {
             let reason = match feeds.get(&e.source_id) {
                 None => "source supprimée",
-                Some(None) => "flux jamais obtenu",
-                Some(Some(_)) => "épisode retiré du flux",
+                Some(CachedFeed::Never) => "flux jamais obtenu",
+                Some(CachedFeed::Unreadable) => "flux en cache illisible",
+                Some(CachedFeed::Ready(_)) => "épisode retiré du flux",
             };
             let mut p = at(
                 problem(
@@ -489,7 +511,7 @@ pub fn validate(composition: &PackComposition, feeds: &Feeds) -> ValidationRepor
 
     // Métadonnées (D16, N1 b).
     let single_feed = match sources.as_slice() {
-        [only] => feeds.get(*only).and_then(Option::as_ref),
+        [only] => feeds.get(*only).and_then(CachedFeed::ready),
         _ => None,
     };
     let input = &composition.metadata;
@@ -533,12 +555,12 @@ pub fn validate(composition: &PackComposition, feeds: &Feeds) -> ValidationRepor
         }
     }
     if let Some(d) = &input.description {
-        if d.len() > MAX_DESCRIPTION_BYTES {
+        if d.len() > MAX_DESCRIPTION_INPUT_BYTES {
             problems.push(on(
                 problem(
                     ProblemCode::TextTooLong,
                     format!(
-                        "description trop longue : {} octets (au plus {MAX_DESCRIPTION_BYTES})",
+                        "description trop longue : {} octets (au plus {MAX_DESCRIPTION_INPUT_BYTES})",
                         d.len()
                     ),
                 ),
@@ -555,7 +577,11 @@ pub fn validate(composition: &PackComposition, feeds: &Feeds) -> ValidationRepor
 
     // Couverture (N6 b).
     let feed_has_image = |id: &str| {
-        sources.contains(&id) && matches!(feeds.get(id), Some(Some(f)) if f.image.is_some())
+        sources.contains(&id)
+            && feeds
+                .get(id)
+                .and_then(CachedFeed::ready)
+                .is_some_and(|f| f.image.is_some())
     };
     let cover = match &composition.cover {
         CoverChoice::Default => {
@@ -588,8 +614,10 @@ pub fn validate(composition: &PackComposition, feeds: &Feeds) -> ValidationRepor
         }
     };
 
+    let valid = problems.is_empty();
+    problems.truncate(MAX_PROBLEMS);
     ValidationReport {
-        valid: problems.is_empty(),
+        valid,
         problems,
         unavailable,
         episodes: count,
@@ -681,27 +709,37 @@ pub fn read_draft(dir: &Path) -> AppResult<DraftRead> {
 
 /// Révision enregistrée (0 si absente). Un fichier présent mais illisible, trop gros ou d'un
 /// schéma plus récent est d'abord mis de côté (`*.bak`) : il n'est jamais écrasé.
+/// Le fichier est désérialisé en entier : une composition invalide sous un en-tête valide est
+/// aussi mise de côté.
 fn stored_revision(path: &Path) -> AppResult<u64> {
-    #[derive(Deserialize)]
-    struct Head {
-        #[serde(default)]
-        schema_version: u64,
-        #[serde(default)]
-        revision: u64,
-    }
-    let bytes = match fs::metadata(path) {
+    match fs::metadata(path) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(err) => return Err(err.into()),
-        Ok(meta) if meta.len() > MAX_DRAFT_BYTES => None,
-        Ok(_) => Some(fs::read(path)?),
-    };
-    match bytes.and_then(|b| serde_json::from_slice::<Head>(&b).ok()) {
-        Some(head) if head.schema_version <= u64::from(DRAFT_SCHEMA) => Ok(head.revision),
-        _ => {
-            set_aside(path, "illisible ou d'une autre version")?;
+        Ok(meta) if meta.len() > MAX_DRAFT_BYTES => {
+            set_aside(path, "trop volumineux")?;
+            return Ok(0);
+        }
+        Ok(_) => {}
+    }
+    match storage::load_versioned::<PackDraft>(path, DRAFT_SCHEMA, migrate) {
+        Ok(Loaded::Found(draft)) => Ok(draft.revision),
+        // `Recovered` : déjà mis de côté par `load_versioned`.
+        Ok(Loaded::Missing | Loaded::Recovered { .. }) => Ok(0),
+        Err(AppError::ConfigVersion { .. }) => {
+            set_aside(path, "écrit par une version plus récente")?;
             Ok(0)
         }
+        Err(err) => Err(err),
     }
+}
+
+fn check_revision(revision: u64) -> AppResult<()> {
+    if revision > MAX_REVISION {
+        return Err(AppError::Validation(format!(
+            "révision de brouillon invalide : {revision} (au plus {MAX_REVISION})"
+        )));
+    }
+    Ok(())
 }
 
 /// Résultat d'une sauvegarde.
@@ -733,6 +771,7 @@ pub fn save_draft(
     composition: &PackComposition,
     revision: u64,
 ) -> AppResult<SaveOutcome> {
+    check_revision(revision)?;
     let path = dir.join(DRAFT_FILE);
     let stored = stored_revision(&path)?;
     if revision <= stored {
@@ -756,6 +795,7 @@ pub fn save_draft(
 /// Efface le brouillon (après la création du pack) en gardant la plus grande révision connue :
 /// une sauvegarde de révision inférieure ou égale à `revision` arrivée ensuite est ignorée.
 pub fn clear_draft(dir: &Path, revision: u64) -> AppResult<()> {
+    check_revision(revision)?;
     let path = dir.join(DRAFT_FILE);
     let draft = PackDraft {
         schema_version: DRAFT_SCHEMA,
@@ -792,10 +832,11 @@ async fn load_feeds(
     let mut feeds = Feeds::new();
     for (id, url) in podcasts {
         let feed = match service.cached_feed(&root, &id, &url).await {
-            Ok(feed) => feed,
+            Ok(Some(feed)) => CachedFeed::Ready(feed),
+            Ok(None) => CachedFeed::Never,
             Err(err) => {
                 tracing::warn!("pack : flux en cache de la source {id} illisible : {err}");
-                None
+                CachedFeed::Unreadable
             }
         };
         feeds.insert(id, feed);
@@ -850,7 +891,10 @@ pub async fn pack_draft_read(
     Ok(draft_view(draft, feeds))
 }
 
-/// Enregistre le brouillon (sauvegarde automatique, révision croissante émise par le front).
+/// Enregistre le brouillon (sauvegarde automatique, révision croissante émise par le front,
+/// au plus [`MAX_REVISION`]). Si `saved == false` alors que la composition envoyée est la
+/// dernière émise (révision du front en retard, par exemple après un brouillon repris), le
+/// front se recale sur `revision + 1` et la renvoie.
 #[tauri::command]
 pub async fn pack_draft_save(
     config: State<'_, ConfigState>,
