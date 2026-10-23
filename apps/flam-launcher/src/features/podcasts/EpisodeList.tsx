@@ -113,7 +113,7 @@ export function EpisodeList({ sourceId, sourceName, episodes }: EpisodeListProps
   });
   return (
     <>
-      <div role="status" id={capId} className="fl-podcasts__cap">
+      <div id={capId} className="fl-podcasts__cap">
         {[...capRefusals].map((refusal) => (
           <p key={refusal}>{refusalText(refusal)}</p>
         ))}

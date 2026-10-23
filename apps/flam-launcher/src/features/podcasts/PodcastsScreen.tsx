@@ -37,7 +37,6 @@ function useFeed(sourceId: string | null, seedRef: RefObject<PodcastView | null>
     if (sourceId === null) return;
     let cancelled = false;
     const seeded = seedRef.current?.source_id === sourceId ? seedRef.current : null;
-    seedRef.current = null;
     // Chargement du flux choisi depuis le backend.
     if (seeded?.feed) {
       setView(seeded);
@@ -127,9 +126,11 @@ export function PodcastsScreen() {
     const source = added.source;
     if (!isPodcast(source)) return;
     setFeeds((list) => [...(list ?? []).filter((f) => f.id !== source.id), source]);
-    focusOnLoad.current = true;
-    addedView.current = added.view;
-    setChosenId(source.id);
+    if (source.id !== chosenId) {
+      focusOnLoad.current = true;
+      addedView.current = added.view;
+      setChosenId(source.id);
+    }
     toast.show({ message: t.podcasts.add.added(source.name), tone: "success" });
   }
 
@@ -176,6 +177,7 @@ export function PodcastsScreen() {
                     // Le flux déjà choisi ne se recharge pas : le focus ne doit pas bouger.
                     if (feed.id === chosenId) return;
                     focusOnLoad.current = true;
+                    addedView.current = null;
                     setChosenId(feed.id);
                   }}
                 >
