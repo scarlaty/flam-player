@@ -20,8 +20,6 @@ pub mod settings;
 pub mod sources;
 pub mod storage;
 pub mod story;
-#[cfg(test)]
-mod test_logs;
 pub mod thumbnail;
 pub mod watch;
 
@@ -68,16 +66,21 @@ fn purge_stale_thumbs(app: &tauri::AppHandle) {
     }
 }
 
+/// Filtre des traces : `spec` (équivalent de `RUST_LOG`) ou, à défaut, `info`. En `debug`,
+/// `reqwest` journalise les URL (redirections, réponses) : celle d'un flux podcast est un
+/// secret (D11, #211), d'où la directive `reqwest=info`. Elle ne couvre pas une directive plus
+/// précise de l'utilisateur (`RUST_LOG=reqwest::x=debug`), qui la contourne.
+pub(crate) fn log_filter(spec: Option<&str>) -> tracing_subscriber::EnvFilter {
+    let base = spec
+        .and_then(|s| tracing_subscriber::EnvFilter::try_new(s).ok())
+        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("info"));
+    base.add_directive("reqwest=info".parse().expect("directive de trace valide"))
+}
+
 /// Point d'entrée : initialise les traces puis lance l'application Tauri.
 pub fn run() {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
-                // En `debug`, `reqwest` journalise les URL (redirections, réponses) : celle d'un
-                // flux podcast est un secret (D11, #211).
-                .add_directive("reqwest=info".parse().expect("directive de trace valide")),
-        )
+        .with_env_filter(log_filter(std::env::var("RUST_LOG").ok().as_deref()))
         .init();
     tracing::info!("démarrage de flam-launcher {}", env!("CARGO_PKG_VERSION"));
 

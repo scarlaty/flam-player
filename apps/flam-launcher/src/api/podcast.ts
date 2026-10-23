@@ -18,8 +18,8 @@ export interface Episode {
   enclosure_length: number | null;
   has_image: boolean;
   /**
-   * Contenu explicite (D8). Absent tant que le backend ne l'expose pas dans `EpisodeView` :
-   * un épisode sans valeur est traité comme de statut inconnu (ni signalé, ni décoché de plus).
+   * Contenu explicite (D8) : `itunes:explicit` de l'épisode, sinon du canal ; `null` si inconnu.
+   * Toujours renvoyé par `EpisodeView`, le `?` ne sert qu'aux données simulées des tests.
    */
   explicit?: boolean | null;
 }
