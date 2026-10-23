@@ -120,11 +120,3 @@ export function shortcutOutcome(
   }
   return outcome;
 }
-
-/** Épisodes que le raccourci coche (voir `shortcutOutcome`). */
-export function acceptedForShortcut(
-  selected: readonly SelectedEpisode[],
-  candidates: readonly SelectedEpisode[],
-): SelectedEpisode[] {
-  return shortcutOutcome(selected, candidates).accepted;
-}

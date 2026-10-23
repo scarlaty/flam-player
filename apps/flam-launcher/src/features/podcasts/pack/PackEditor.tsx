@@ -40,6 +40,7 @@ import {
   useDraftAutosave,
   useFeedInfo,
 } from "./hooks";
+import { beginCreation, isCreating, rememberTask } from "./creations";
 import { PackTree, menuLabel } from "./PackTree";
 import {
   MAX_MENU_DEPTH,
@@ -165,7 +166,9 @@ export function PackEditor({
   const toast = useContext(ToastContext);
   // Contextes absents hors de l'application (éditeur rendu seul) : la tâche apparaît alors avec ses
   // premiers événements.
-  const trackTask = useContext(StoriesContext)?.trackTask;
+  const stories = useContext(StoriesContext);
+  const trackTask = stories?.trackTask;
+  const panelTasks = stories?.panelTasks;
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<AppError | null>(null);
   // Problèmes renvoyés par le backend à la création (et la composition qu'ils décrivent).
@@ -174,6 +177,10 @@ export function PackEditor({
     menu: PackNode[];
   } | null>(null);
   const [rightsOpen, setRightsOpen] = useState(false);
+  // Révision lue avec le brouillon ; `edited` : modifié depuis, donc plus celui d'une création
+  // en cours (#429).
+  const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
+  const [edited, setEdited] = useState(false);
   const createLock = useRef(false);
   const validation = useDebouncedValidation(composition, validateDelayMs);
   const seedValidation = validation.seed;
@@ -188,6 +195,8 @@ export function PackEditor({
         const view = await readPackDraft();
         if (cancelled) return;
         initDraft(view.revision);
+        setLoadedRevision(view.revision);
+        setEdited(false);
         const loaded =
           view.composition ??
           emptyComposition(
@@ -263,6 +272,7 @@ export function PackEditor({
 
   function edit(next: PackComposition, message = "") {
     setComposition(next);
+    setEdited(true);
     setRefused(null);
     setCreateError(null);
     schedule(next);
@@ -344,8 +354,17 @@ export function PackEditor({
   }
 
   const report = validation.report;
+  const isTaskActive = (taskId: string) =>
+    panelTasks?.some(
+      (task) =>
+        task.id === taskId && (task.state === "queued" || task.state === "running"),
+    ) ?? false;
+  // Brouillon inchangé dont la création tourne encore (éditeur quitté puis rouvert, #429).
+  const alreadyCreating =
+    !edited && loadedRevision !== null && isCreating(loadedRevision, isTaskActive);
   const canCreate =
     !creating &&
+    !alreadyCreating &&
     validation.error === null &&
     !validation.pending &&
     report !== null &&
@@ -364,18 +383,29 @@ export function PackEditor({
     setCreating(true);
     setCreateError(null);
     setRefused(null);
+    let endCreation: (() => void) | undefined;
     try {
       // Une modification faite pendant l'enregistrement fait partie de la révision renvoyée :
       // c'est elle qui part, pas la composition affichée au moment du clic.
       const saved = await settle();
       const submitted = saved.composition ?? current;
+      // Verrou durable : une autre instance de l'éditeur (quitté puis rouvert) peut déjà créer
+      // ce brouillon.
+      if (isCreating(saved.revision, isTaskActive)) return;
+      endCreation = beginCreation(saved.revision);
       const created = await createPack(submitted, saved.revision);
       if (created.task === null) {
         setRefused({ problems: created.report.problems, menu: submitted.menu });
         return;
       }
+      rememberTask(created.task.id, saved.revision);
       trackTask?.(created.task);
-      selection.clear();
+      selection.removeMany(
+        episodesOf(submitted.menu).map((e) => ({
+          sourceId: e.source_id,
+          id: e.episode_id,
+        })),
+      );
       toast?.show({
         message: text.create.started(created.task.entry.title),
         tone: "success",
@@ -384,6 +414,7 @@ export function PackEditor({
     } catch (caught) {
       setCreateError(toAppError(caught));
     } finally {
+      endCreation?.();
       createLock.current = false;
       setCreating(false);
     }
@@ -614,11 +645,13 @@ export function PackEditor({
         </Button>
         {!canCreate && !creating && (
           <p id="fl-pack-create-hint" className="fl-pack__hint">
-            {validation.error
-              ? text.create.checkFailed
-              : report === null || validation.pending
-                ? text.create.checking
-                : text.create.blocked}
+            {alreadyCreating
+              ? text.create.inProgress
+              : validation.error
+                ? text.create.checkFailed
+                : report === null || validation.pending
+                  ? text.create.checking
+                  : text.create.blocked}
           </p>
         )}
         {createError && <ErrorBanner error={createError} />}
