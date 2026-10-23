@@ -152,7 +152,18 @@ export function useDraftAutosave(delayMs: number) {
     void flush();
   }, [flush]);
 
-  return { status, init, schedule, retry };
+  /**
+   * Enregistre sans attendre ce qui est en attente puis renvoie la révision enregistrée (celle
+   * que `pack_create` compare pour effacer le brouillon). Si l'enregistrement échoue, la
+   * dernière révision connue est renvoyée : le brouillon sera alors conservé.
+   */
+  const settle = useCallback(async (): Promise<number> => {
+    clearTimeout(timer.current);
+    await flush();
+    return revision.current;
+  }, [flush]);
+
+  return { status, init, schedule, retry, settle };
 }
 
 interface ValidationResult {

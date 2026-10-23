@@ -53,6 +53,23 @@ Dans la bibliothèque d'une source, « Installer » télécharge et convertit (p
 annulation possibles), puis « Jouer » lance l'histoire dans `flam-player` ; la fermeture du
 player ramène à la surcouche. Les histoires installées sont sous « Mes histoires ».
 
+## Podcasts : créer un pack
+
+Disponible dans la prochaine version. Une source **podcast** (adresse d'un flux RSS) fournit des
+épisodes ; l'écran **Podcasts** les liste (raccourci « Cocher les 10 derniers épisodes »,
+épisodes explicites décochés d'office), puis **Composer le pack** les range dans un menu
+(catégories, 3 niveaux, 50 options par menu), avec titre, âge, description et couverture. Le
+brouillon est enregistré automatiquement.
+
+**Créer l'histoire** vérifie le pack, puis ajoute sa création à la file d'installation
+(téléchargement, conversion audio, archive, conversion, bibliothèque ; progression et
+annulation dans le panneau des tâches). Les épisodes qui échouent sont retirés du pack et listés
+à la fin. Plafonds : 50 épisodes, 200 Mo par épisode, 1 Gio par pack.
+
+À la première création, un message rappelle les droits (usage personnel et familial, pas de
+partage, publicité comprise) ; « J'ai compris » le ferme et il n'est plus affiché. Détails et
+décisions : [docs/podcasts.md](docs/podcasts.md).
+
 ## Flam : envoyer des histoires (expérimental)
 
 > **Fonction expérimentale et non officielle**, ni prévue ni garantie par le fabricant de la
