@@ -17,6 +17,7 @@ on:
       # Oracle Python (parity.py) et générateur du corpus : #134.
       - "tools/telmi2flam/*.py"
       - "tools/telmi2flam/tests/parity/**"
+      - "tools/telmi2flam/tests/test_telmi2flam.py"
   push:
     branches: [main]
     paths:
@@ -32,6 +33,7 @@ on:
       # Oracle Python (parity.py) et générateur du corpus : #134.
       - "tools/telmi2flam/*.py"
       - "tools/telmi2flam/tests/parity/**"
+      - "tools/telmi2flam/tests/test_telmi2flam.py"
 
 permissions:
   contents: read
@@ -129,16 +131,17 @@ jobs:
       - name: Parité du corpus (oracle Python contre Rust, validate.py sur la sortie Rust)
         run: |
           python -I tools/telmi2flam/parity.py corpus "$RUNNER_TEMP/parity" \
-            --candidate "$GITHUB_WORKSPACE/target/release/telmi2flam.exe" \
+            --candidate target/release/telmi2flam.exe \
             --report "$RUNNER_TEMP/parity/corpus-report.json"
 
       - name: Rendu de la matrice par le Rust
+        if: ${{ !cancelled() }}
         env:
           TELMI2FLAM_MATRIX_DIR: ${{ runner.temp }}/parity
           TELMI2FLAM_MATRIX_OUT: ${{ runner.temp }}/parity/matrix-rs
         run: cargo test -p telmi2flam --release --locked --test matrix_render -- --ignored
 
-      - name: Parité de la matrice (.lif contre .lif, octet à octet)
+      - name: Parité de la matrice (.lifXX contre .lif, octet à octet)
         run: |
           python -I tools/telmi2flam/parity.py matrix "$RUNNER_TEMP/parity" \
             --candidate-lif-dir "$RUNNER_TEMP/parity/matrix-rs" \
