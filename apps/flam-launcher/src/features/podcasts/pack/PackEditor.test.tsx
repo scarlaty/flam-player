@@ -174,7 +174,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => clearMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  clearMocks();
+});
 
 function Seed({ items, children }: { items: SelectedEpisode[]; children: ReactNode }) {
   const selection = usePodcastSelection();
@@ -514,6 +517,16 @@ it("sous-titre : prérempli par le copyright du flux unique, effaçable (D16)", 
   expect(subtitle).toHaveValue("");
   await waitFor(() => expect(count("pack_draft_save")).toBe(1));
   expect(saves()[0]!.args.composition.metadata.subtitle).toBe("");
+  expect(screen.queryByText(/Prérempli/)).not.toBeInTheDocument();
+});
+
+it("sous-titre : un copyright blanc n'annonce aucun préremplissage", async () => {
+  views.a = feed("a", "Contes", [episode("1")], { copyright: "  " });
+  draft = { ...draft, composition: composition([ep("a", "1")]) };
+  renderEditor();
+  await screen.findByLabelText("Sous-titre");
+  expect(screen.getByText("Facultatif.")).toBeInTheDocument();
+  expect(screen.queryByText(/Prérempli/)).not.toBeInTheDocument();
 });
 
 it("sous-titre : l'aide « Prérempli » disparaît après une saisie personnalisée", async () => {
