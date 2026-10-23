@@ -58,9 +58,15 @@ os.replace(part, out)
 ev(event="done", output=out, size=os.path.getsize(out), warnings=1)
 "#;
 
+/// Python du PATH. Avec `FLAM_REQUIRE_PATH_PYTHON=1` (CI), son absence fait échouer le test au
+/// lieu de le sauter en silence (#426).
 fn python() -> Option<PathBuf> {
     let found = settings::detect_python(&Environment::current()).path;
     if found.is_none() {
+        assert!(
+            std::env::var_os("FLAM_REQUIRE_PATH_PYTHON").is_none_or(|v| v != "1"),
+            "FLAM_REQUIRE_PATH_PYTHON=1 : Python introuvable dans le PATH"
+        );
         eprintln!("Python introuvable : test de conversion ignoré");
     }
     found
@@ -118,8 +124,21 @@ impl Ctx {
     }
 
     fn with_dir(dir: tempfile::TempDir, python: Option<PathBuf>, grace: Duration) -> Self {
-        let script = dir.path().join("fake_telmi2flam.py");
-        std::fs::write(&script, FAKE_CONVERTER).unwrap();
+        Self::with_converter(dir, python, grace, None)
+    }
+
+    /// `real_script` : vrai `telmi2flam.py` (bout en bout) au lieu du faux convertisseur.
+    fn with_converter(
+        dir: tempfile::TempDir,
+        python: Option<PathBuf>,
+        grace: Duration,
+        real_script: Option<PathBuf>,
+    ) -> Self {
+        let script = real_script.unwrap_or_else(|| {
+            let script = dir.path().join("fake_telmi2flam.py");
+            std::fs::write(&script, FAKE_CONVERTER).unwrap();
+            script
+        });
         let cache_root = dir.path().join("cache");
         let events = Arc::new(Recorder::default());
         let gate = Arc::new(RwLock::new(()));

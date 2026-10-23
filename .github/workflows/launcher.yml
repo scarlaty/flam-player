@@ -188,8 +188,12 @@ jobs:
         working-directory: apps/flam-launcher/src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
+      # Les tests de pack (`install::tests::pack_tests`) lancent le faux convertisseur avec le Python
+      # du PATH : sans cette exigence ils se sautent en silence quand il est absent (#426).
       - name: Tests Rust
         working-directory: apps/flam-launcher/src-tauri
+        env:
+          FLAM_REQUIRE_PATH_PYTHON: '1'
         run: cargo test
 
       - name: Convertisseur embarqué (Python + Pillow, SHA-256 vérifiés)
@@ -230,6 +234,23 @@ jobs:
         env:
           FLAM_REQUIRE_FFMPEG: '1'
         run: 'cargo test --lib -- ffmpeg:: podcast::audio::'
+
+      # Pack de podcasts de bout en bout (#426) : serveur HTTP local de test, ffmpeg construit
+      # ci-dessus, Python embarqué et vrai telmi2flam.py, jusqu'à l'histoire publiée.
+      - name: Pack de podcasts de bout en bout (ffmpeg et Python embarqués)
+        working-directory: apps/flam-launcher/src-tauri
+        env:
+          FLAM_REQUIRE_FFMPEG: '1'
+          FLAM_TEST_REQUIRE_PYTHON: '1'
+        run: |
+          export FLAM_TEST_PYTHON="$(cygpath -w "$GITHUB_WORKSPACE/apps/flam-launcher/build/telmi2flam/python/python.exe")"
+          out="$(cargo test --lib install::tests::pack_tests::bout_en_bout_pack_reel_jusqu_a_la_bibliotheque -- --exact 2>&1)" || { echo "$out"; exit 1; }
+          echo "$out"
+          # Un filtre qui ne correspond plus à aucun test (renommage) donnerait « 0 passed » en vert.
+          grep -q "test result: ok. 1 passed" <<< "$out" || {
+            echo "::error::Le test de pack de bout en bout n'a pas été exécuté (0 passed) : filtre ou nom de test à corriger."
+            exit 1
+          }
 
       - name: flam-player.exe et SDL2.dll (CMake, Release)
         run: npm run build:player

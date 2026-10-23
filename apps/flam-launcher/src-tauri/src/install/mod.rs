@@ -914,7 +914,14 @@ impl InstallService {
             return Err(AppError::Cancelled);
         }
         self.emit_state(id, TaskState::Installing, None);
-        let source = entry.clone();
+        let mut source = entry.clone();
+        if pack.is_some() {
+            // L'archive de travail est supprimée à la fin de la préparation : son chemin (qui
+            // contient le nom d'utilisateur) n'a rien à faire dans `library.json`. Une source
+            // vide est neutre : `PACK_SOURCE_ID` n'est pas un dossier connu (`library_source::check`
+            // la juge `Unknown`) et le player ne lit que `library.json` pour le chemin installé.
+            source.download_url.clear();
+        }
         let cache_root = tc.cache_root.clone();
         let installed = blocking(move || {
             // Vignette conservée (#80) : préparée hors verrou, jamais bloquante.

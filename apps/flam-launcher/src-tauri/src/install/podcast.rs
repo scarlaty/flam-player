@@ -228,7 +228,7 @@ pub fn clear_draft_if_unchanged(dir: &Path, revision: u64) -> AppResult<()> {
 
 /// Télécharge une image (couverture) par le client gardé (D10). `Ok(false)` si elle est
 /// inaccessible ; seule une erreur disque ou l'annulation remontent.
-async fn download_image(
+pub(crate) async fn download_image(
     policy: crate::podcast::net::NetPolicy,
     url: &str,
     dest: &Path,
