@@ -65,3 +65,24 @@ jobs:
         run: |
           cargo build -p telmi2flam --bin telmi2flam --release --locked
           ./target/release/telmi2flam.exe --version
+
+      # Profil release (`panic = "abort"`, que `cargo test` n'exerce pas) : le crochet de panique
+      # supprime les `.part`, émet `internal_error` et sort avec 6 (#132). Faute injectée par la
+      # feature `test-hooks`, jamais activée par le launcher.
+      - name: Panique en release (panic = abort)
+        run: |
+          cargo build -p telmi2flam --bin telmi2flam --release --locked --features test-hooks
+          work="$RUNNER_TEMP/t2f-panic"
+          mkdir -p "$work"
+          unzip -p crates/telmi2flam/tests/data/package_cases.zip cases/ok_inventory.zip > "$work/in.zip"
+          cd "$work"
+          set +e
+          TELMI2FLAM_TEST_FAULT=panic:zip:1 "$GITHUB_WORKSPACE/target/release/telmi2flam.exe" \
+            in.zip -o out.plain.pk --plain --progress-json > events.txt
+          code=$?
+          set -e
+          tail -n 1 events.txt
+          test "$code" -eq 6
+          tail -n 1 events.txt | grep -q '"code":"internal_error"'
+          if ls | grep -q '\.part$'; then echo "temporaires restants"; ls; exit 1; fi
+          test ! -e out.plain.pk
