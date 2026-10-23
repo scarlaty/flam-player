@@ -627,12 +627,11 @@ async fn le_diagnostic_ne_reprend_jamais_l_url_du_flux() {
     serve(&server, "<rss").await;
     errors.push(svc.fetch(&url).await.err().unwrap());
     errors.push(validate_feed_url(&format!("ftp://h/{SECRET}")).unwrap_err());
+    // Vérification pure (sans l'état global des erreurs de la session) : ce que le diagnostic
+    // garderait d'une erreur, et le message tel qu'il serait nettoyé à l'enregistrement.
+    let redactor = crate::device::diagnostic::Redactor::current();
     for err in &errors {
-        let kept = crate::device::diagnostic::session_message(err);
-        crate::device::diagnostic::record_error("test", None, &err.to_string());
-        assert_no_secret(&kept, &url);
-    }
-    for kept in crate::device::diagnostic::session_errors() {
-        assert_no_secret(&format!("{kept:?}"), &url);
+        assert_no_secret(&crate::device::diagnostic::session_message(err), &url);
+        assert_no_secret(&redactor.clean_message(&err.to_string()), &url);
     }
 }

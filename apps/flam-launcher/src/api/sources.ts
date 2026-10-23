@@ -8,7 +8,9 @@ export const LIBRARY_SOURCE_ID = "library";
 export type Source =
   | { type: "library"; id: string; name: string }
   | { type: "catalog"; id: string; name: string; url: string }
-  | { type: "folder"; id: string; name: string; path: string };
+  | { type: "folder"; id: string; name: string; path: string }
+  /** Flux podcast (#211) : `url` complète (D11), `feed_hint` = `https://hôte/…`. */
+  | { type: "podcast"; id: string; name: string; url: string; feed_hint: string };
 
 /** Données d'une source à créer ou à modifier (le type ne peut pas changer). */
 export type SourceInput =

@@ -354,3 +354,29 @@ it("propose un nom de dossier et déplace des éléments", () => {
   expect(moveItem([1, 2, 3], 0, 2)).toEqual([2, 3, 1]);
   expect(moveItem([1, 2, 3], 5, 0)).toEqual([1, 2, 3]);
 });
+
+it("affiche une source podcast avec son URL, sans renommage (#211)", async () => {
+  const podcast: Source = {
+    type: "podcast",
+    id: "p1",
+    name: "Contes du soir",
+    url: "https://flux.exemple.org/contes.xml?jeton=abc",
+    feed_hint: "https://flux.exemple.org/…",
+  };
+  sources = [library, store, podcast];
+  await renderScreen();
+
+  const items = within(
+    screen.getByRole("list", { name: "Sources enregistrées" }),
+  ).getAllByRole("listitem");
+  expect(items).toHaveLength(3);
+  expect(within(items[2]!).getByText("Contes du soir")).toBeInTheDocument();
+  expect(within(items[2]!).getByText(podcast.url)).toBeInTheDocument();
+  expect(within(items[2]!).getByText("Podcast")).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Renommer « Contes du soir »" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Supprimer « Contes du soir »" }),
+  ).toBeInTheDocument();
+});
