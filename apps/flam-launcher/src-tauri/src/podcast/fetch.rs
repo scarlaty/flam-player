@@ -14,7 +14,10 @@
 //! - plafonds D1 vérifiés pendant le téléchargement : par épisode (l'épisode est retiré), au
 //!   total du lot (arrêt propre de tout le lot, fichiers supprimés) ;
 //! - coupure en cours de fichier : reprise automatique (jusqu'à 3 essais) avec `Range` ;
-//! - aucune URL dans les journaux ni dans les erreurs (D11) : seuls les identifiants d'épisode.
+//! - débit minimal : un fichier qui reçoit moins de 1 Kio/s pendant 2 minutes est retiré
+//!   (`TimedOut`), en plus du délai par fichier ;
+//! - aucune URL ni identifiant d'épisode dans les journaux (D11) : seul l'index dans le lot ;
+//!   `Item::id` et `Item::feed` sont des libellés, jamais des URL (refusé par `fetch_all`).
 //!
 //! Les fichiers sont nommés `ep-<n>.audio` et `ep-<n>.img` dans le dossier de travail ; ce
 //! dernier est supprimé par l'appelant après la publication du pack (N8 a, [`Workdir`]).
@@ -34,10 +37,14 @@ use crate::{AppError, AppResult};
 
 /// D1 : épisodes par pack.
 pub const MAX_EPISODES: usize = 50;
-/// D1 : octets par épisode (200 Mo).
+/// D1 : octets par épisode (200 Mio).
 pub const MAX_EPISODE_BYTES: u64 = 200 * 1024 * 1024;
 /// D1 : octets au total (1 Gio), audio et pochettes confondus.
 pub const MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
+/// Débit minimal toléré (octets par seconde), mesuré sur [`MIN_RATE_WINDOW`].
+pub const MIN_RATE_BYTES_PER_SEC: u64 = 1024;
+/// Fenêtre de mesure du débit minimal.
+pub const MIN_RATE_WINDOW: Duration = Duration::from_secs(120);
 /// Octets par pochette (comme l'entrée de la conversion).
 pub const MAX_IMAGE_BYTES: u64 = super::artwork::MAX_INPUT_BYTES as u64;
 
@@ -56,6 +63,11 @@ pub struct Limits {
     pub concurrency: usize,
     /// Durée maximale d'un fichier (silence ou lenteur extrême), reprises comprises.
     pub file_timeout: Duration,
+    /// Débit minimal (octets par seconde) sur `min_rate_window` ; en dessous, le fichier est
+    /// retiré (`TimedOut`). Un flux malveillant très lent ne peut pas occuper le lot des heures.
+    pub min_rate_bytes_per_sec: u64,
+    /// Fenêtre de mesure du débit minimal (zéro : désactivé).
+    pub min_rate_window: Duration,
 }
 
 impl Default for Limits {
@@ -67,6 +79,8 @@ impl Default for Limits {
             max_image_bytes: MAX_IMAGE_BYTES,
             concurrency: 4,
             file_timeout: Duration::from_secs(30 * 60),
+            min_rate_bytes_per_sec: MIN_RATE_BYTES_PER_SEC,
+            min_rate_window: MIN_RATE_WINDOW,
         }
     }
 }
@@ -74,9 +88,11 @@ impl Default for Limits {
 /// Un épisode à récupérer. Les URL sont des secrets (D11) : ne jamais les journaliser.
 #[derive(Clone)]
 pub struct Item {
-    /// Identifiant stable de l'épisode (journaux, rapport). Jamais une URL (D11) : un guid RSS\n    /// qui en est une doit être remplacé par un identifiant local.
+    /// Identifiant stable de l'épisode (rapport). Jamais une URL (D11) : un guid RSS qui en
+    /// est une doit être remplacé par un identifiant local ; `fetch_all` le refuse sinon.
     pub id: String,
-    /// Étiquette du flux d'origine (plusieurs flux possibles dans un même lot).
+    /// Libellé affichable du flux d'origine (plusieurs flux possibles dans un même lot) ; jamais
+    /// une URL, comme `id`.
     pub feed: String,
     pub audio_url: String,
     pub image_url: Option<String>,
@@ -176,7 +192,20 @@ impl Workdir {
 impl Drop for Workdir {
     fn drop(&mut self) {
         if self.armed {
-            let _ = std::fs::remove_dir_all(&self.path);
+            let path = std::mem::take(&mut self.path);
+            // Suppression hors du thread appelant (souvent un thread asynchrone) si possible.
+            // Résidu : à l'arrêt du runtime la tâche peut être annulée ; le nettoyage au
+            // démarrage (#217, N10 a) rattrape ce cas.
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    drop(handle.spawn_blocking(move || {
+                        let _ = std::fs::remove_dir_all(path);
+                    }));
+                }
+                Err(_) => {
+                    let _ = std::fs::remove_dir_all(path);
+                }
+            }
         }
     }
 }
@@ -194,11 +223,12 @@ impl Fetcher {
         Ok(Self { client, policy })
     }
 
-    /// Télécharge tous les `items` dans `dir` (existant). Voir la documentation du module.
+    /// Télécharge tous les `items` dans `dir` (dossier de travail dédié : les fichiers `ep-*`
+    /// y sont supprimés en cas d'échec). Voir la documentation du module.
     pub async fn fetch_all(
         &self,
         items: &[Item],
-        dir: &Path,
+        dir: &Workdir,
         limits: &Limits,
         mut cancel: watch::Receiver<bool>,
         on_progress: Arc<dyn Fn(Progress) + Send + Sync>,
@@ -206,6 +236,16 @@ impl Fetcher {
         if items.is_empty() {
             return Err(AppError::Validation("aucun épisode à télécharger".into()));
         }
+        if items
+            .iter()
+            .any(|i| looks_like_url(&i.id) || looks_like_url(&i.feed))
+        {
+            // Jamais de valeur dans le message : ce pourrait être une URL secrète (D11).
+            return Err(AppError::Validation(
+                "identifiant ou libellé de flux invalide (une URL n'est pas permise)".into(),
+            ));
+        }
+        let dir = dir.path();
         if items.len() > limits.max_episodes {
             return Err(AppError::Validation(format!(
                 "trop d'épisodes ({} au plus par pack)",
@@ -367,7 +407,7 @@ async fn run_item(shared: &Shared, index: usize, item: Item) -> AppResult<ItemOu
         }
         Err(FileFailure::Drop(reason)) => {
             discard(&audio).await;
-            tracing::warn!(episode = %item.id, ?reason, "épisode retiré du pack");
+            tracing::warn!(episode = index, ?reason, "épisode retiré du pack");
             return Ok(drop_with(reason));
         }
         Err(FileFailure::Fatal(err)) => {
@@ -389,7 +429,7 @@ async fn run_item(shared: &Shared, index: usize, item: Item) -> AppResult<ItemOu
             }
             Err(FileFailure::Drop(reason)) => {
                 discard(&path).await;
-                tracing::warn!(episode = %item.id, ?reason, "pochette ignorée");
+                tracing::warn!(episode = index, ?reason, "pochette ignorée");
                 image_failed = true;
             }
             Err(FileFailure::Fatal(err)) => {
@@ -452,8 +492,11 @@ async fn fetch_file_counted(
             url: parsed.as_str(),
             dest,
             max_bytes,
+            ignores_proxy: true,
         };
+        let received_now = AtomicU64::new(0);
         let mut on_progress = |received: u64, _total: Option<u64>| {
+            received_now.store(received, Ordering::Relaxed);
             if received >= *counted {
                 shared
                     .total
@@ -470,24 +513,34 @@ async fn fetch_file_counted(
             }
             shared.report();
         };
-        let result = tokio::time::timeout(
-            remaining,
-            download::download(
-                &request,
-                &mut validator,
-                &mut cancel,
-                &mut |_| {},
-                &mut on_progress,
-            ),
-        )
+        let mut on_validator = |_: &Validator| {};
+        let transfer = download::download(
+            &request,
+            &mut validator,
+            &mut cancel,
+            &mut on_validator,
+            &mut on_progress,
+        );
+        let slow = too_slow(
+            &received_now,
+            shared.limits.min_rate_window,
+            shared.limits.min_rate_bytes_per_sec,
+        );
+        let result = tokio::time::timeout(remaining, async {
+            tokio::select! {
+                r = transfer => Some(r),
+                () = slow => None,
+            }
+        })
         .await;
         let error = match result {
-            Ok(Ok(())) => return Ok(*counted),
-            Err(_elapsed) => return Err(FileFailure::Drop(DropReason::TimedOut)),
-            Ok(Err(error)) => error,
+            Ok(Some(Ok(()))) => return Ok(*counted),
+            // Délai du fichier dépassé, ou débit sous le minimum.
+            Err(_) | Ok(None) => return Err(FileFailure::Drop(DropReason::TimedOut)),
+            Ok(Some(Err(error))) => error,
         };
-        // Reprise seulement s'il reste des octets reçus (coupure) ; les octets d'un fichier
-        // retiré restent comptés dans le total du lot (estimation prudente).
+        // Reprise seulement s'il reste des octets reçus (coupure). Si l'épisode est finalement
+        // retiré, `fetch_file` retire ses octets du total du lot.
         let had_part = tokio::fs::metadata(download::part_path(dest))
             .await
             .is_ok_and(|m| m.len() > 0);
@@ -510,6 +563,31 @@ async fn fetch_file_counted(
         last_error = failure;
     }
     Err(last_error)
+}
+
+/// URL avec autorité (`schéma://…`) : refusée comme id ou libellé. Les URI sans hôte
+/// (`tag:…`, `urn:uuid:…`) restent permises : ce sont des guid RSS courants, sans jeton réseau.
+fn looks_like_url(value: &str) -> bool {
+    Url::parse(value).is_ok_and(|u| u.has_host())
+}
+
+/// Se termine quand moins de `min_rate` octets/s ont été reçus sur une fenêtre `window`
+/// (jamais si `window` est nulle). `received` : octets reçus par la tentative en cours.
+async fn too_slow(received: &AtomicU64, window: Duration, min_rate: u64) {
+    if window.is_zero() {
+        std::future::pending::<()>().await;
+    }
+    let needed =
+        u64::try_from(u128::from(min_rate) * window.as_millis() / 1000).unwrap_or(u64::MAX);
+    let mut last = received.load(Ordering::Relaxed);
+    loop {
+        tokio::time::sleep(window).await;
+        let now = received.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < needed {
+            return;
+        }
+        last = now;
+    }
 }
 
 async fn discard(path: &Path) {

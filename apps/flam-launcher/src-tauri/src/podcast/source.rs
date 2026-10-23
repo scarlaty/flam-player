@@ -378,12 +378,15 @@ fn network_error(err: &reqwest::Error) -> AppError {
     if is_blocked(err) {
         return AppError::Network(BLOCKED_MESSAGE.into());
     }
+    let proxy_reason;
     let reason = if err.is_timeout() {
         "délai dépassé"
     } else if err.is_redirect() {
         "redirection refusée ou trop longue"
     } else if err.is_connect() {
-        "connexion impossible"
+        // Décision D10 : mandataires ignorés, rappelés dans l'erreur (#370).
+        proxy_reason = format!("connexion impossible ({})", super::net::PROXY_HINT);
+        &proxy_reason
     } else {
         "échec de la requête"
     };
