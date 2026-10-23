@@ -693,6 +693,30 @@ it("Flam 2.x non confirmée : envoi bloqué jusqu'à la confirmation", async () 
   expect(count("device_recover_transfers")).toBe(0);
 });
 
+it("Flam 2.x non confirmée : retrait désactivé avec sa raison (#326)", async () => {
+  status.device!.firmware_status = firmwareV2({
+    trust: "unconfirmed",
+    write_block: { kind: "confirmation_required", version: "2.4.2", standard: true },
+  });
+  render(<Harness />);
+  const remove = await screen.findByRole("button", { name: "Retirer « Déjà là »" });
+  expect(remove).toHaveAttribute("aria-disabled", "true");
+  expect(remove).toHaveAccessibleDescription(
+    "Retrait indisponible : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
+  );
+  fireEvent.click(remove);
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+});
+
+it("Flam 2.x aux clés incohérentes et confirmée : retrait possible (#326)", async () => {
+  status.device!.firmware_status = firmwareV2({
+    write_block: { kind: "keys_contradiction", version: "2.4.2" },
+  });
+  render(<Harness />);
+  const remove = await screen.findByRole("button", { name: "Retirer « Déjà là »" });
+  expect(remove).not.toHaveAttribute("aria-disabled");
+});
+
 it("un refus de la garde pendant la file arrête les envois suivants", async () => {
   acknowledgeWarning();
   render(<Harness />);

@@ -536,7 +536,7 @@ fn replace_once(from: &Path, to: &Path) -> io::Result<()> {
 /// rien n'est touché. Une erreur d'entrée/sortie à la lecture interrompt la reprise sans rien
 /// toucher. Un `list.restore` résiduel (restauration interrompue) n'est jamais une source : il
 /// est supprimé d'abord.
-pub fn recover(root: &Path, kind: IndexKind) -> Result<Recovery, IndexError> {
+pub(super) fn recover(root: &Path, kind: IndexKind) -> Result<Recovery, IndexError> {
     let p = Paths::new(root, kind);
     let new_present = exists(&p.new)?;
     let bak_present = exists(&p.bak)?;
@@ -618,7 +618,7 @@ fn exists(path: &Path) -> Result<bool, IndexError> {
 ///
 /// Les appelants sérialisent leurs appels à `write_index` et [`recover`] pour un même
 /// appareil : il n'y a de verrou ni entre processus ni entre fils d'exécution.
-pub fn write_index(
+pub(super) fn write_index(
     root: &Path,
     kind: IndexKind,
     entries: &[StoryId],
