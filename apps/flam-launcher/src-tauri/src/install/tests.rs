@@ -671,6 +671,7 @@ async fn reprise_apres_redemarrage() {
             id: TASK_ID.into(),
             entry: remote(&url, "abc"),
             created_at: 1,
+            pack: None,
             validator: Validator {
                 etag: Some("\"v1\"".into()),
                 last_modified: None,
@@ -1062,6 +1063,7 @@ async fn reprise_ignore_les_identifiants_malveillants_et_re_resout_les_entrees()
         id: (*id).into(),
         entry: evil.clone(),
         created_at: 1,
+        pack: None,
         validator: Validator::default(),
     })
     .chain([
@@ -1069,12 +1071,14 @@ async fn reprise_ignore_les_identifiants_malveillants_et_re_resout_les_entrees()
             id: "11111111-2222-4333-8444-555555555555".into(),
             entry: gone,
             created_at: 1,
+            pack: None,
             validator: Validator::default(),
         },
         QueuedTask {
             id: TASK_ID.into(),
             entry: evil.clone(),
             created_at: 1,
+            pack: None,
             validator: Validator {
                 etag: Some("\"e\"".into()),
                 last_modified: None,
@@ -1547,3 +1551,6 @@ async fn library_list_ne_se_fige_pas_quand_une_autre_instance_tient_le_verrou() 
         "lecture sans attendre le verrou"
     );
 }
+
+#[path = "podcast_tests.rs"]
+mod pack_tests;
