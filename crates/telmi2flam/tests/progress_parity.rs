@@ -71,6 +71,21 @@ fn comparable(code: &str, message: &str) -> String {
     }
 }
 
+/// Dossier temporaire en nom long : `TEMP` peut être un nom court 8.3 (`TFOURN~1`), alors que
+/// le binaire et les messages voient le chemin canonique (#421). Préfixe verbatim `\\?\`
+/// (Windows) retiré : les chemins restent ordinaires.
+fn temp_root() -> std::path::PathBuf {
+    let temp = std::env::temp_dir();
+    let Ok(long) = std::fs::canonicalize(&temp) else {
+        return temp;
+    };
+    match long.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) if !plain.starts_with("UNC\\") => plain.into(),
+        Some(_) => temp,
+        None => long,
+    }
+}
+
 struct Outcome {
     exit: i32,
     events: Option<Vec<Value>>,
@@ -174,7 +189,7 @@ fn well_formed_failure(o: &Outcome) -> Result<(), String> {
 
 fn check(run: &Value, cases: &[Value], zip: &mut Archive<Cursor<&[u8]>>) -> Result<(), String> {
     let id = run["id"].as_str().unwrap();
-    let work = std::env::temp_dir().join(format!(
+    let work = temp_root().join(format!(
         "t2f-progress-{}-{}",
         std::process::id(),
         id.replace('+', "_")
@@ -389,7 +404,7 @@ fn stdout_ferme_la_conversion_continue() {
         .read("cases/missing_image_allowed.zip")
         .unwrap()
         .unwrap();
-    let work = std::env::temp_dir().join(format!("t2f-progress-{}-ferme", std::process::id()));
+    let work = temp_root().join(format!("t2f-progress-{}-ferme", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap();
     std::fs::write(work.join("in.zip"), data).unwrap();

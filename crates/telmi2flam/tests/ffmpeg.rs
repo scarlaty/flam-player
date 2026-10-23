@@ -626,15 +626,16 @@ fn paquets_identiques_a_python() {
     );
 }
 
-/// Binaire (#132) : annulation (fin de stdin) puis panique pendant que le faux ffmpeg tourne.
-/// Codes 130 et 6, aucun `t2f_ff_*` ni `.part` laissé, et ffmpeg tué : son marqueur, écrit à la
+/// Binaire (#132, #421) : annulation (fin de stdin), panique, puis signal console (`CTRL_BREAK`
+/// sous Windows, `SIGINT` ailleurs) pendant que le faux ffmpeg tourne.
+/// Codes 130, 6 et 130, aucun `t2f_ff_*` ni `.part` laissé, et ffmpeg tué : son marqueur, écrit à la
 /// fin de son sommeil, n'apparaît jamais.
 #[cfg(any(debug_assertions, feature = "test-hooks"))]
 fn binaire_annulation_et_panique_pendant_ffmpeg() {
     use std::process::{Command, Stdio};
     let mut pkg = Archive::new(Cursor::new(PACKAGE_VECTORS), "package_cases.zip".into()).unwrap();
     let story = pkg.read("cases/mp3_48khz_warning.zip").unwrap().unwrap();
-    for (name, want) in [("annulation", 130), ("panique", 6)] {
+    for (name, want) in [("annulation", 130), ("panique", 6), ("signal", 130)] {
         let dir = scratch(&format!("bin-{name}"));
         let tmp = dir.join("tmp");
         std::fs::create_dir_all(&tmp).unwrap();
@@ -653,7 +654,20 @@ fn binaire_annulation_et_panique_pendant_ffmpeg() {
             .env("TMPDIR", &tmp)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if want == 130 {
+        if name == "signal" {
+            // Groupe de processus propre : le signal ne vise pas le harnais de test.
+            cmd.stdin(Stdio::null()).env_remove("TELMI2FLAM_TEST_FAULT");
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0000_0200); // CREATE_NEW_PROCESS_GROUP
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                cmd.process_group(0);
+            }
+        } else if want == 130 {
             cmd.arg("--cancel-on-stdin-eof")
                 .stdin(Stdio::piped())
                 .env_remove("TELMI2FLAM_TEST_FAULT");
@@ -669,7 +683,24 @@ fn binaire_annulation_et_panique_pendant_ffmpeg() {
         }
         assert!(log.exists(), "{name} : ffmpeg jamais lancé");
         let t = Instant::now();
-        drop(child.stdin.take());
+        if name == "signal" {
+            // Windows : CTRL_BREAK vise tout le groupe, le faux ffmpeg (sans gestionnaire) le
+            // reçoit aussi ; ce cas prouve l'arrêt propre, pas `kill_children` (voir « panique »).
+            if !send_interrupt(&child) {
+                // Sans console (agent, IDE) l'envoi échoue : bloquant seulement en CI.
+                assert!(
+                    std::env::var_os("CI").is_none(),
+                    "signal : envoi de l'interruption impossible"
+                );
+                eprintln!("signal : aucune console, cas ignoré");
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_dir_all(&dir);
+                continue;
+            }
+        } else {
+            drop(child.stdin.take());
+        }
         let out = child.wait_with_output().unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(want), "{name} : {stderr}");
@@ -707,6 +738,29 @@ fn binaire_annulation_et_panique_pendant_ffmpeg() {
         std::thread::sleep(Duration::from_millis(5500));
         assert!(!mark.exists(), "{name} : ffmpeg a survécu");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Interruption console du binaire : `CTRL_BREAK` (le processus est seul dans son groupe) sous
+/// Windows, `SIGINT` ailleurs. Faux si l'envoi a échoué.
+#[cfg(any(debug_assertions, feature = "test-hooks"))]
+fn send_interrupt(child: &std::process::Child) -> bool {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GenerateConsoleCtrlEvent(event: u32, group: u32) -> i32;
+        }
+        // SAFETY : appel sans pointeur ; l'identifiant du groupe est le pid du fils.
+        unsafe { GenerateConsoleCtrlEvent(1, child.id()) != 0 }
+    }
+    #[cfg(unix)]
+    {
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        // SAFETY : appel sans pointeur ; SIGINT (2).
+        unsafe { kill(child.id() as i32, 2) == 0 }
     }
 }
 

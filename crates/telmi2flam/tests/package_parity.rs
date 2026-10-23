@@ -153,7 +153,8 @@ fn normalized(message: &str) -> String {
             m = format!("{}{}", &m[..head], items.join(", "));
         }
     }
-    for keyword in ["illisible", "JSON invalide"] {
+    // Motifs exacts (#421) : « sortie ffmpeg illisible ou inattendue » n'a pas de détail.
+    for keyword in ["image illisible", "couverture illisible", "JSON invalide"] {
         let Some(k) = m.find(keyword) else { continue };
         let Some(open) = m[k..].find(" (").map(|i| k + i + 1) else {
             continue;

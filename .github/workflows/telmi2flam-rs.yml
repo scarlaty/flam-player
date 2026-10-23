@@ -99,6 +99,28 @@ jobs:
           if ls | grep -q '\.part$'; then echo "temporaires restants"; ls; exit 1; fi
           test ! -e out.plain.pk
 
+  # Compilation Unix (#421) : `kill_pid`, les signaux de cancel.rs et les `cfg(unix)` n'étaient
+  # jamais compilés (CI Windows seulement). Vérification de type et clippy, sans les tests.
+  unix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # tête de la branche stable au 2026-10-16 (pas un tag)
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target"
+
+      - name: Vérification de type (toutes cibles)
+        run: cargo check -p telmi2flam --all-targets --locked
+
+      - name: Clippy
+        run: cargo clippy -p telmi2flam --all-targets --locked -- -D warnings
+
   # Parité avec l'oracle Python (PORT-RUST.md §4.3, #134) : corpus synthétique et matrice de
   # rééchantillonnage, générés ici (jamais commités). Échoue à la moindre divergence hors de
   # la liste admise (parity.py, ALLOWED_DEVIATIONS) ; validate.py passe sur la sortie du Rust.
