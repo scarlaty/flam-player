@@ -392,7 +392,7 @@ fn brouillon_absent_vide_sans_message() {
 fn brouillon_aller_retour_sans_perte() {
     let dir = tempfile::tempdir().unwrap();
     let c = sample();
-    assert!(save_draft(dir.path(), &c, 1).unwrap());
+    assert!(save_draft(dir.path(), &c, 1).unwrap().saved);
     let read = read_draft(dir.path()).unwrap();
     assert_eq!(read.composition, Some(c));
     assert_eq!(read.revision, 1);
@@ -407,28 +407,34 @@ fn sauvegarde_en_retard_ignoree() {
     let dir = tempfile::tempdir().unwrap();
     let mut newer = sample();
     newer.metadata.title = "récent".into();
-    assert!(save_draft(dir.path(), &newer, 5).unwrap());
-    assert!(!save_draft(dir.path(), &sample(), 4).unwrap());
-    assert!(!save_draft(dir.path(), &sample(), 5).unwrap());
+    assert!(save_draft(dir.path(), &newer, 5).unwrap().saved);
+    assert_eq!(
+        save_draft(dir.path(), &sample(), 4).unwrap(),
+        SaveOutcome {
+            saved: false,
+            revision: 5
+        }
+    );
+    assert!(!save_draft(dir.path(), &sample(), 5).unwrap().saved);
     assert_eq!(read_draft(dir.path()).unwrap().composition, Some(newer));
 }
 
 #[test]
 fn brouillon_efface_apres_creation_et_non_ressuscite() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(save_draft(dir.path(), &sample(), 3).unwrap());
+    assert!(save_draft(dir.path(), &sample(), 3).unwrap().saved);
     // Le front a émis la révision 4, encore en vol au moment de la création.
     clear_draft(dir.path(), 4).unwrap();
     let read = read_draft(dir.path()).unwrap();
     assert_eq!(read.composition, None);
     assert_eq!(read.revision, 4);
     assert!(
-        !save_draft(dir.path(), &sample(), 4).unwrap(),
+        !save_draft(dir.path(), &sample(), 4).unwrap().saved,
         "autosave en retard"
     );
     assert_eq!(read_draft(dir.path()).unwrap().composition, None);
     // Nouvelle composition : révisions suivantes acceptées.
-    assert!(save_draft(dir.path(), &sample(), 5).unwrap());
+    assert!(save_draft(dir.path(), &sample(), 5).unwrap().saved);
     assert!(read_draft(dir.path()).unwrap().composition.is_some());
     // Effacement sans brouillon : sans erreur.
     let empty = tempfile::tempdir().unwrap();
@@ -449,7 +455,7 @@ fn brouillon_tronque_mis_de_cote_avec_message() {
     assert!(!path.exists());
     assert_eq!(backups(dir.path()).len(), 1, "contenu conservé en .bak");
     // La sauvegarde suivante repart proprement.
-    assert!(save_draft(dir.path(), &sample(), 1).unwrap());
+    assert!(save_draft(dir.path(), &sample(), 1).unwrap().saved);
     assert!(read_draft(dir.path()).unwrap().composition.is_some());
 }
 
@@ -552,16 +558,92 @@ fn ecriture_interrompue_ancien_brouillon_intact() {
     .unwrap();
     let read = read_draft(dir.path()).unwrap();
     assert_eq!((read.composition, read.revision), (Some(sample()), 1));
-    assert!(save_draft(dir.path(), &sample(), 2).unwrap());
+    assert!(save_draft(dir.path(), &sample(), 2).unwrap().saved);
 }
 
+/// Renommage final impossible (destination en lecture seule, refusée par Windows) : erreur,
+/// ancien brouillon intact, aucun temporaire laissé.
+#[cfg(windows)]
 #[test]
 fn ecriture_impossible_erreur_ancien_intact() {
     let dir = tempfile::tempdir().unwrap();
     save_draft(dir.path(), &sample(), 1).unwrap();
-    // Dossier de configuration remplacé par un fichier : l'écriture échoue.
-    let blocked = dir.path().join("bloque");
-    fs::write(&blocked, b"").unwrap();
-    assert!(save_draft(&blocked, &sample(), 2).is_err());
-    assert_eq!(read_draft(dir.path()).unwrap().revision, 1);
+    let path = dir.path().join(DRAFT_FILE);
+    let before = fs::read(&path).unwrap();
+    let mut perms = fs::metadata(&path).unwrap().permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&path, perms.clone()).unwrap();
+    let mut other = sample();
+    other.metadata.title = "autre".into();
+    let result = save_draft(dir.path(), &other, 2);
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    fs::set_permissions(&path, perms).unwrap();
+    assert!(result.is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let leftovers: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty());
+}
+
+#[test]
+fn sauvegarde_sur_fichier_corrompu_non_lu_le_met_de_cote() {
+    for content in [
+        &b"{\"revision\": 3, tronqu"[..],
+        b"{\"schema_version\": 99, \"revision\": 3}",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DRAFT_FILE);
+        fs::write(&path, content).unwrap();
+        assert!(save_draft(dir.path(), &sample(), 1).unwrap().saved);
+        assert_eq!(backups(dir.path()).len(), 1, "{content:?}");
+        let bak = dir.path().join(&backups(dir.path())[0]);
+        assert_eq!(fs::read(bak).unwrap(), content);
+        // Même chose pour l'effacement.
+        fs::write(&path, content).unwrap();
+        clear_draft(dir.path(), 2).unwrap();
+        assert_eq!(backups(dir.path()).len(), 2);
+        assert_eq!(read_draft(dir.path()).unwrap().revision, 2);
+    }
+}
+
+#[test]
+fn flux_illisibles_le_brouillon_reste_transmis() {
+    let draft = DraftRead {
+        composition: Some(sample()),
+        revision: 7,
+        notice: None,
+    };
+    let view = draft_view(draft.clone(), Some(Err(AppError::ConfigDir)));
+    assert_eq!(view.draft.composition, draft.composition);
+    assert_eq!(view.draft.revision, 7);
+    assert!(view.draft.notice.unwrap().contains("pas pu être vérifiés"));
+    assert_eq!(view.report, None);
+    let view = draft_view(draft, Some(Ok(feeds(2))));
+    assert!(view.report.is_some());
+    assert_eq!(view.draft.notice, None);
+}
+
+#[test]
+fn problemes_de_metadonnees_designent_leur_champ() {
+    let mut c = comp(vec![e("a", "g0"), e("b", "h0")]);
+    c.metadata.subtitle = Some("s".repeat(MAX_TITLE_CHARS + 1));
+    c.metadata.description = Some("d".repeat(MAX_DESCRIPTION_BYTES + 1));
+    c.cover = CoverChoice::Feed {
+        source_id: "z".into(),
+    };
+    let report = validate(&c, &feeds(1));
+    let fields: Vec<_> = report.problems.iter().map(|p| p.field).collect();
+    assert_eq!(
+        fields,
+        vec![
+            Some("title"),
+            Some("subtitle"),
+            Some("description"),
+            Some("cover")
+        ]
+    );
 }

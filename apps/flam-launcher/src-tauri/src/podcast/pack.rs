@@ -96,7 +96,8 @@ pub enum PackNode {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CoverChoice {
-    /// Image du premier flux utilisé (dans l'ordre de l'arborescence).
+    /// Image du premier flux utilisé qui en a une (ordre de l'arborescence) ; aucun : image
+    /// unie de repli.
     #[default]
     Default,
     /// Image d'un flux du pack.
@@ -111,12 +112,12 @@ pub struct PackMetadataInput {
     /// Vide : titre du flux s'il n'y en a qu'un, sinon obligatoire (N1 b).
     #[serde(default)]
     pub title: String,
-    /// Absent : copyright du flux s'il n'y en a qu'un, sinon vide (N1 b).
+    /// `null` : copyright du flux s'il n'y en a qu'un, sinon vide (N1 b) ; `""` : vide voulu.
     #[serde(default)]
     pub subtitle: Option<String>,
     #[serde(default)]
     pub age: u8,
-    /// Absente : liste des épisodes, calculée à la création (D16).
+    /// `null` : liste des épisodes, calculée à la création (D16).
     #[serde(default)]
     pub description: Option<String>,
 }
@@ -202,6 +203,8 @@ pub struct Problem {
     /// Position dans l'arborescence (indices depuis le menu racine ; `[]` : menu racine).
     pub path: Option<Vec<usize>>,
     pub episode: Option<EpisodeRef>,
+    /// Champ des métadonnées concerné : `title`, `subtitle`, `description` ou `cover`.
+    pub field: Option<&'static str>,
 }
 
 /// Métadonnées effectives (défauts appliqués).
@@ -245,7 +248,13 @@ fn problem(code: ProblemCode, message: String) -> Problem {
         message,
         path: None,
         episode: None,
+        field: None,
     }
+}
+
+fn on(mut p: Problem, field: &'static str) -> Problem {
+    p.field = Some(field);
+    p
 }
 
 fn at(mut p: Problem, path: &[usize]) -> Problem {
@@ -493,9 +502,12 @@ pub fn validate(composition: &PackComposition, feeds: &Feeds) -> ValidationRepor
         Some(given.to_string())
     };
     if title.is_none() {
-        problems.push(problem(
-            ProblemCode::TitleRequired,
-            "titre du pack obligatoire (plusieurs flux ou flux indisponible)".into(),
+        problems.push(on(
+            problem(
+                ProblemCode::TitleRequired,
+                "titre du pack obligatoire (plusieurs flux ou flux indisponible)".into(),
+            ),
+            "title",
         ));
     }
     let subtitle = match &input.subtitle {
@@ -505,23 +517,32 @@ pub fn validate(composition: &PackComposition, feeds: &Feeds) -> ValidationRepor
             .map(|c| truncate_chars(c.trim(), MAX_TITLE_CHARS))
             .unwrap_or_default(),
     };
-    for (what, text) in [("titre", given), ("sous-titre", subtitle.as_str())] {
+    for (field, what, text) in [
+        ("title", "titre", given),
+        ("subtitle", "sous-titre", subtitle.as_str()),
+    ] {
         let len = text.chars().count();
         if len > MAX_TITLE_CHARS {
-            problems.push(problem(
-                ProblemCode::TextTooLong,
-                format!("{what} trop long : {len} caractères (au plus {MAX_TITLE_CHARS})"),
+            problems.push(on(
+                problem(
+                    ProblemCode::TextTooLong,
+                    format!("{what} trop long : {len} caractères (au plus {MAX_TITLE_CHARS})"),
+                ),
+                field,
             ));
         }
     }
     if let Some(d) = &input.description {
         if d.len() > MAX_DESCRIPTION_BYTES {
-            problems.push(problem(
-                ProblemCode::TextTooLong,
-                format!(
-                    "description trop longue : {} octets (au plus {MAX_DESCRIPTION_BYTES})",
-                    d.len()
+            problems.push(on(
+                problem(
+                    ProblemCode::TextTooLong,
+                    format!(
+                        "description trop longue : {} octets (au plus {MAX_DESCRIPTION_BYTES})",
+                        d.len()
+                    ),
                 ),
+                "description",
             ));
         }
     }
@@ -555,9 +576,12 @@ pub fn validate(composition: &PackComposition, feeds: &Feeds) -> ValidationRepor
                 CoverChoice::Default => true,
             };
             if !ok {
-                problems.push(problem(
-                    ProblemCode::CoverUnavailable,
-                    "couverture choisie indisponible (image absente ou hors du pack)".into(),
+                problems.push(on(
+                    problem(
+                        ProblemCode::CoverUnavailable,
+                        "couverture choisie indisponible (image absente ou hors du pack)".into(),
+                    ),
+                    "cover",
                 ));
             }
             ok.then(|| chosen.clone())
@@ -655,41 +679,78 @@ pub fn read_draft(dir: &Path) -> AppResult<DraftRead> {
     }
 }
 
-/// Révision enregistrée (0 si absente ou illisible).
-fn stored_revision(path: &Path) -> u64 {
+/// Révision enregistrée (0 si absente). Un fichier présent mais illisible, trop gros ou d'un
+/// schéma plus récent est d'abord mis de côté (`*.bak`) : il n'est jamais écrasé.
+fn stored_revision(path: &Path) -> AppResult<u64> {
     #[derive(Deserialize)]
-    struct Revision {
+    struct Head {
+        #[serde(default)]
+        schema_version: u64,
         #[serde(default)]
         revision: u64,
     }
-    match fs::metadata(path) {
-        Ok(meta) if meta.len() <= MAX_DRAFT_BYTES => fs::read(path)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Revision>(&b).ok())
-            .map_or(0, |r| r.revision),
-        _ => 0,
+    let bytes = match fs::metadata(path) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(err.into()),
+        Ok(meta) if meta.len() > MAX_DRAFT_BYTES => None,
+        Ok(_) => Some(fs::read(path)?),
+    };
+    match bytes.and_then(|b| serde_json::from_slice::<Head>(&b).ok()) {
+        Some(head) if head.schema_version <= u64::from(DRAFT_SCHEMA) => Ok(head.revision),
+        _ => {
+            set_aside(path, "illisible ou d'une autre version")?;
+            Ok(0)
+        }
     }
 }
 
-/// Enregistre le brouillon. `Ok(false)` : révision dépassée, rien n'est écrit.
-pub fn save_draft(dir: &Path, composition: &PackComposition, revision: u64) -> AppResult<bool> {
+/// Résultat d'une sauvegarde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SaveOutcome {
+    /// `false` : révision dépassée, rien n'est écrit.
+    pub saved: bool,
+    /// Révision enregistrée après l'appel : la prochaine sauvegarde doit la dépasser.
+    pub revision: u64,
+}
+
+/// Écrit le brouillon de façon atomique, sérialisé une seule fois et borné.
+fn write_draft(path: &Path, draft: &PackDraft) -> AppResult<()> {
+    let mut bytes = serde_json::to_vec_pretty(draft)?;
+    bytes.push(b'\n');
+    let size = bytes.len() as u64;
+    if size > MAX_DRAFT_BYTES {
+        return Err(AppError::Validation(format!(
+            "brouillon de pack trop volumineux : {size} octets (au plus {MAX_DRAFT_BYTES})"
+        )));
+    }
+    storage::write_atomic(path, &bytes)?;
+    Ok(())
+}
+
+/// Enregistre le brouillon si `revision` dépasse la révision enregistrée.
+pub fn save_draft(
+    dir: &Path,
+    composition: &PackComposition,
+    revision: u64,
+) -> AppResult<SaveOutcome> {
     let path = dir.join(DRAFT_FILE);
-    if revision <= stored_revision(&path) {
-        return Ok(false);
+    let stored = stored_revision(&path)?;
+    if revision <= stored {
+        return Ok(SaveOutcome {
+            saved: false,
+            revision: stored,
+        });
     }
     let draft = PackDraft {
         schema_version: DRAFT_SCHEMA,
         revision,
         composition: Some(composition.clone()),
     };
-    let size = serde_json::to_vec_pretty(&draft)?.len() as u64;
-    if size >= MAX_DRAFT_BYTES {
-        return Err(AppError::Validation(format!(
-            "brouillon de pack trop volumineux : {size} octets (au plus {MAX_DRAFT_BYTES})"
-        )));
-    }
-    storage::write_json(&path, &draft)?;
-    Ok(true)
+    write_draft(&path, &draft)?;
+    Ok(SaveOutcome {
+        saved: true,
+        revision,
+    })
 }
 
 /// Efface le brouillon (après la création du pack) en gardant la plus grande révision connue :
@@ -698,10 +759,10 @@ pub fn clear_draft(dir: &Path, revision: u64) -> AppResult<()> {
     let path = dir.join(DRAFT_FILE);
     let draft = PackDraft {
         schema_version: DRAFT_SCHEMA,
-        revision: revision.max(stored_revision(&path)),
+        revision: revision.max(stored_revision(&path)?),
         composition: None,
     };
-    storage::write_json(&path, &draft)
+    write_draft(&path, &draft)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -748,10 +809,31 @@ async fn load_feeds(
 pub struct DraftView {
     #[serde(flatten)]
     pub draft: DraftRead,
+    /// `None` : pas de brouillon, ou flux illisibles (voir `notice`).
     pub report: Option<ValidationReport>,
 }
 
-/// Lit le brouillon unique et le valide.
+/// Assemble la vue : un échec de lecture des flux ne masque jamais le brouillon (sa
+/// composition et sa révision restent transmises au front), il est seulement signalé.
+pub fn draft_view(mut draft: DraftRead, feeds: Option<AppResult<Feeds>>) -> DraftView {
+    let report = match (&draft.composition, feeds) {
+        (Some(c), Some(Ok(feeds))) => Some(validate(c, &feeds)),
+        (_, Some(Err(err))) => {
+            tracing::warn!("pack : validation du brouillon impossible : {err}");
+            let text = "Les épisodes du brouillon n'ont pas pu être vérifiés \
+                        (sources ou cache inaccessibles).";
+            draft.notice = Some(match draft.notice.take() {
+                Some(n) => format!("{n} {text}"),
+                None => text.to_string(),
+            });
+            None
+        }
+        _ => None,
+    };
+    DraftView { draft, report }
+}
+
+/// Lit le brouillon unique et le valide. Le front reprend ses sauvegardes à `revision + 1`.
 #[tauri::command]
 pub async fn pack_draft_read(
     config: State<'_, ConfigState>,
@@ -761,20 +843,20 @@ pub async fn pack_draft_read(
         let _guard = config.guard();
         read_draft(&config.dir)?
     };
-    let report = match &draft.composition {
-        Some(c) => Some(validate(c, &load_feeds(&config, &service, c).await?)),
+    let feeds = match &draft.composition {
+        Some(c) => Some(load_feeds(&config, &service, c).await),
         None => None,
     };
-    Ok(DraftView { draft, report })
+    Ok(draft_view(draft, feeds))
 }
 
-/// Enregistre le brouillon (sauvegarde automatique). `false` : révision dépassée, ignorée.
+/// Enregistre le brouillon (sauvegarde automatique, révision croissante émise par le front).
 #[tauri::command]
 pub async fn pack_draft_save(
     config: State<'_, ConfigState>,
     composition: PackComposition,
     revision: u64,
-) -> AppResult<bool> {
+) -> AppResult<SaveOutcome> {
     let _guard = config.guard();
     save_draft(&config.dir, &composition, revision)
 }
@@ -786,7 +868,8 @@ pub async fn pack_draft_clear(config: State<'_, ConfigState>, revision: u64) -> 
     clear_draft(&config.dir, revision)
 }
 
-/// Valide une composition à partir des flux en cache.
+/// Valide une composition à partir des flux en cache. Relit et analyse le flux de chaque
+/// source : le front espace les appels (après une modification, pas à chaque frappe).
 #[tauri::command]
 pub async fn pack_validate(
     config: State<'_, ConfigState>,
