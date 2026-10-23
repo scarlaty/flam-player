@@ -256,7 +256,18 @@ fn replay(case: &Value) -> Result<(), String> {
     // Appels attendus : ceux que Python a faits (colonne `calls` du générateur, relevée dans
     // `check_asset_name`), pas une règle recalculée ici à partir de `nodes.json`.
     let expected_calls: Vec<&str> = list(field(case, "calls")).iter().map(str_of).collect();
-    if graph_done && assets.calls != expected_calls {
+    // Aussi quand le graphe échoue sur un nom d'asset refusé (#421) : Python relève l'appel dans
+    // `check_asset_name` *avant* de rejeter le nom, son dernier appel est donc celui qui échoue ;
+    // le Rust valide le nom avant d'appeler `Assets` et ne le fait pas. Les autres échecs ne
+    // sont pas comparés (les deux moteurs peuvent s'arrêter à des endroits différents).
+    let name_refused = case
+        .get("error")
+        .is_some_and(|e| str_of(field(e, "message")).contains("nom d'asset refuse"));
+    let expected_calls = match expected_calls.split_last() {
+        Some((_, before)) if !graph_done && name_refused => before,
+        _ => &expected_calls[..],
+    };
+    if (graph_done || name_refused) && assets.calls != expected_calls {
         return Err(format!(
             "appels à Assets {:?}, attendus {expected_calls:?}",
             assets.calls

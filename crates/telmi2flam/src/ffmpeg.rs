@@ -873,8 +873,23 @@ mod tests {
     /// Dossier temporaire relatif (`TMPDIR=tmp`) : le dossier de travail est absolu (#369).
     #[test]
     fn dossier_de_travail_absolu() {
-        let rel = PathBuf::from(format!("t2f-ffrel-{}", std::process::id()));
-        std::fs::create_dir_all(&rel).unwrap();
+        // Dossier dans le dossier temporaire du système, désigné par un chemin relatif au
+        // dossier courant (rien n'est créé dans le dépôt, #421).
+        let mut base = scratch_dir("rel");
+        let rel = match relative_from_cwd(&base) {
+            Some(rel) => rel,
+            None => {
+                // Autre volume que le dossier courant (Windows, CI) : repli dans `target/`
+                // (ignoré par git), sur le volume du crate.
+                let _ = std::fs::remove_dir_all(&base);
+                base = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target")
+                    .join(format!("t2f-ffrel-{}", std::process::id()));
+                std::fs::create_dir_all(&base).unwrap();
+                relative_from_cwd(&base).expect("chemin relatif sur le volume du crate")
+            }
+        };
+        assert!(rel.is_relative(), "{rel:?}");
         let path = {
             let w = WorkDir::create(&rel).unwrap();
             assert!(w.path.is_absolute(), "{:?}", w.path);
@@ -882,7 +897,26 @@ mod tests {
             w.path.clone()
         };
         assert!(!path.exists());
-        let _ = std::fs::remove_dir_all(&rel);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Chemin relatif du dossier courant vers `target` ; `None` si les racines diffèrent.
+    fn relative_from_cwd(target: &Path) -> Option<PathBuf> {
+        let cwd = std::env::current_dir().ok()?.canonicalize().ok()?;
+        let target = target.canonicalize().ok()?;
+        let (a, b): (Vec<_>, Vec<_>) = (cwd.components().collect(), target.components().collect());
+        let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        if common == 0 {
+            return None;
+        }
+        let mut rel = PathBuf::new();
+        for _ in common..a.len() {
+            rel.push("..");
+        }
+        for c in &b[common..] {
+            rel.push(c.as_os_str());
+        }
+        Some(rel)
     }
 
     fn scratch_dir(name: &str) -> PathBuf {
