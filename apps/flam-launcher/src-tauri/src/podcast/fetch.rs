@@ -199,6 +199,17 @@ impl Workdir {
         Ok(Self { path, armed: true })
     }
 
+    /// Dossier de travail `path` nommé par l'appelant (#217 : d'après la tâche) ; un dossier
+    /// laissé par un arrêt brutal est d'abord vidé. Bloquant.
+    pub fn at(path: PathBuf) -> AppResult<Self> {
+        match std::fs::remove_dir_all(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path, armed: true })
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

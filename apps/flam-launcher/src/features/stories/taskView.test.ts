@@ -11,6 +11,7 @@ function task(over: Partial<InstallTask>): InstallTask {
     percent: null,
     error: null,
     created_at: 0,
+    pack: null,
     ...over,
   };
 }
@@ -72,4 +73,17 @@ it("donne l'avancement affiché sur la carte", () => {
     text: "Conversion",
   });
   expect(taskProgress(task({ state: "queued" })).value).toBe("indeterminate");
+});
+
+it("décrit la préparation d'un pack et signale les épisodes retirés", () => {
+  expect(describePhase("preparing")).toBe("Préparation du pack");
+  expect(
+    describePhase("preparing", { received: null, total: null, phase: "audio" }),
+  ).toBe("Préparation du pack : conversion audio");
+  expect(describePhase("prepared")).toBe("Pack préparé, en attente de conversion");
+  const panel = toPanelTask(
+    task({ state: "done", pack: { episodes: 3, dropped: ["Deux"] } }),
+  );
+  expect(panel.detail).toBe("1 épisode non inclus : Deux");
+  expect(toPanelTask(task({ state: "preparing", percent: 40 })).state).toBe("running");
 });
