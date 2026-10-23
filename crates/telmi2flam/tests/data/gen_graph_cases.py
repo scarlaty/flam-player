@@ -40,6 +40,7 @@ from test_telmi2flam import base_nodes, std_files  # noqa: E402
 
 OUT = os.path.join(HERE, "graph_cases.json")
 SEED = 20261017
+JSON_LIMIT_IDS = ("g_notes_json_limit",)  # divergence assumee (PORT-RUST.md section 3)
 GRAPH_ERRORS = ("invalid_content", "missing_asset")
 
 
@@ -144,8 +145,16 @@ def graph_cases():
     for i, v in enumerate([None, "", 3, ["x.png"]]):
         add("g_image_%d" % i, lambda v=v: zipc(variant(setp(s0 + ("image",), v))))
         add("g_audio_%d" % i, lambda v=v: zipc(variant(setp(s0 + ("audio",), v))))
-    for i, v in enumerate(["../x.png", "/x.png", "a\\b.png", "c:x.png", "a//b.png", "a/./b.png"]):
+    # noms refuses : le message cite le nom avec repr() (guillemets, echappements, Unicode)
+    for i, v in enumerate(["../x.png", "/x.png", "a\\b.png", "c:x.png", "a//b.png", "a/./b.png",
+                           "a\x01.png/..", "it's/../x", 'say "hi"/../x', "it's \"x\"/../x",
+                           "a\tb\nc\rd:x", "\x7f\x80\x9f\xa0:", "é​/../x",
+                           " 　:x", "\U0001f98a/..", "\U000e0001�:",
+                           "a\x00b", "x/../\\y"]):
         add("g_bad_name_%d" % i, lambda v=v: zipc(variant(setp(s0 + ("image",), v))))
+    add("g_bad_name_audio", lambda: zipc(variant(setp(s0 + ("audio",), "../é'\x1b"))))
+    add("g_bad_name_inventory", lambda: zipc(variant(setp(
+        ("inventory",), [{"name": "n", "image": "..\\Ā"}]))))
     a0 = ("actions", "a0")
     for i, v in enumerate([[], {}, "x", None, [None], ["s0"], [{}], [{"stage": 1}],
                            [{"stage": "s0", "conditions": None}],
@@ -215,6 +224,10 @@ def graph_cases():
                                {"s1": {"title": "a" * 37 + " " + "b" * 5},
                                 "s2": {"text": "x " * 30}}]):
         add("g_notes_%d" % i, lambda notes=notes: zipc(two, notes=notes))
+    # entier de notes.json au-dela de u64 : Python le lit, le Rust ignore le fichier
+    # (divergence assumee json_limit) ; au-dela de i64 mais dans u64 : pas de divergence
+    add("g_notes_u64", lambda: zipc(two, notes='{"x": 12345678901234567890}'))
+    add("g_notes_json_limit", lambda: zipc(two, notes='{"x": 123456789012345678901234567890}'))
     add("g_selector_image", lambda: zipc(two, notes=mc.CHOICE_NOTES), ["--selector", "image"])
 
     # chapitres (tests de test_telmi2flam.py)
@@ -394,6 +407,8 @@ def run(cid, data, argv, tmp):
         case["header"] = {"title": tab["meta"]["title"], "subtitle": tab["meta"]["subtitle"],
                           "title_image": title.get("image"), "title_audio": title.get("audio")}
         case["assets"] = [[k, v] for k, v in assets.items()]
+    if cid in JSON_LIMIT_IDS:
+        case["divergence"] = "json_limit"
     if error is not None:
         case["error"] = error
     else:
@@ -416,6 +431,10 @@ def main():
             case = run(cid, build(), argv, tmp)
             if case is not None:
                 cases.append(case)
+            elif cid.startswith("g_"):
+                # un cas du graphe qui n'atteint plus le graphe (ou echoue ailleurs) ne doit
+                # pas disparaitre de la table : seuls les cas du corpus peuvent etre ecartes
+                sys.exit("cas %s ecarte : il n'atteint plus le graphe" % cid)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     # un cas par ligne : diff lisible, fichier compact
