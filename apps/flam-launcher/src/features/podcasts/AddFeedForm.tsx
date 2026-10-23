@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { addPodcast, type PodcastAdded } from "../../api/podcast";
 import { toAppError, type AppError } from "../../api/error";
 import { Banner, Button, TextField } from "../../components";
@@ -14,6 +14,9 @@ export function AddFeedForm({ onAdded }: { onAdded: (added: PodcastAdded) => voi
   const [error, setError] = useState<AppError | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const urlInput = useRef<HTMLInputElement>(null);
+  const nameInput = useRef<HTMLInputElement>(null);
+
   const nameValue = name.trim();
   const urlError = touched.url ? validateCatalogUrl(url) : null;
   const nameError = touched.name && nameValue !== "" ? validateName(name) : null;
@@ -22,7 +25,13 @@ export function AddFeedForm({ onAdded }: { onAdded: (added: PodcastAdded) => voi
     event.preventDefault();
     if (busy) return;
     setTouched({ url: true, name: true });
-    if (validateCatalogUrl(url) || (nameValue !== "" && validateName(name))) return;
+    const invalidUrl = validateCatalogUrl(url) !== null;
+    const invalidName = nameValue !== "" && validateName(name) !== null;
+    if (invalidUrl || invalidName) {
+      // Focus sur le premier champ invalide.
+      (invalidUrl ? urlInput : nameInput).current?.focus();
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -64,6 +73,7 @@ export function AddFeedForm({ onAdded }: { onAdded: (added: PodcastAdded) => voi
           autoComplete="off"
           spellCheck={false}
           required
+          ref={urlInput}
           value={url}
           error={urlError}
           readOnly={busy}
@@ -75,6 +85,7 @@ export function AddFeedForm({ onAdded }: { onAdded: (added: PodcastAdded) => voi
         <TextField
           label={text.name}
           hint={text.nameHint}
+          ref={nameInput}
           value={name}
           error={nameError}
           readOnly={busy}
