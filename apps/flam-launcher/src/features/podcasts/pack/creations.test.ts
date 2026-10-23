@@ -9,20 +9,17 @@ import {
 
 beforeEach(resetCreations);
 
-it("purge les tâches terminées, garde les actives et celles pas encore vues", () => {
+it("purge les tâches terminées présentes, garde les actives et les absentes", () => {
   rememberTask("t1", 1);
   rememberTask("t2", 1);
   rememberTask("t3", 2);
-  let active = new Set(["t1", "t2"]);
-  forgetFinishedTasks((id) => active.has(id));
-  expect(rememberedTaskCount()).toBe(3);
-  active = new Set(["t2"]);
-  forgetFinishedTasks((id) => active.has(id));
-  // t1 terminée : purgée ; t3 jamais vue active : conservée.
+  const finished = new Set(["t1"]);
+  forgetFinishedTasks((id) => finished.has(id));
+  // t1 terminée : purgée ; t2 active et t3 absente du panneau : conservées.
   expect(rememberedTaskCount()).toBe(2);
-  expect(isCreating(1, (id) => active.has(id))).toBe(true);
-  active = new Set();
-  forgetFinishedTasks((id) => active.has(id));
+  expect(isCreating(1, (id) => id === "t2")).toBe(true);
+  finished.add("t2");
+  forgetFinishedTasks((id) => finished.has(id));
   expect(rememberedTaskCount()).toBe(1);
   expect(isCreating(1, () => false)).toBe(false);
 });
