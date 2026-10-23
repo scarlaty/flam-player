@@ -33,6 +33,8 @@ export interface PodcastSelection {
   /** Ajoute d'un coup les épisodes que les plafonds acceptent, dans l'ordre ; les autres sont ignorés. */
   addMany: (episodes: readonly SelectedEpisode[]) => void;
   remove: (sourceId: string, id: string) => void;
+  /** Retire ces épisodes (ceux d'un pack créé) ; les autres épisodes cochés sont gardés. */
+  removeMany: (episodes: readonly { sourceId: string; id: string }[]) => void;
   clear: () => void;
 }
 
@@ -77,6 +79,12 @@ export function PodcastSelectionProvider({ children }: { children: ReactNode }) 
       remove: (sourceId, id) => {
         const key = episodeKey(sourceId, id);
         setSelected((list) => list.filter((s) => episodeKey(s.sourceId, s.id) !== key));
+      },
+      removeMany: (episodes) => {
+        const keys = new Set(episodes.map((e) => episodeKey(e.sourceId, e.id)));
+        setSelected((list) =>
+          list.filter((s) => !keys.has(episodeKey(s.sourceId, s.id))),
+        );
       },
       clear: () => setSelected([]),
     };
