@@ -33,6 +33,7 @@ use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::Duration;
 
 use crate::error::ConvError;
@@ -456,6 +457,7 @@ pub(crate) fn write_package_with(
         package, target, limits, cancelled, progress, hook, &mut tmps,
     );
     discard(&tmps);
+    untrack(&tmps);
     match result {
         Ok(()) => Ok(target.published()),
         Err(Fail::Conv(e)) => Err(e),
@@ -503,6 +505,7 @@ fn write_and_commit(
         }
         let tmp = part_path(&target.out_path);
         discard(std::slice::from_ref(&tmp));
+        track(&tmp);
         tmps.push(tmp.clone());
         hook(Step::CreatePk)?;
         let file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
@@ -527,6 +530,7 @@ fn write_and_commit(
     if let Some(plain_dir) = &target.plain_dir {
         let tmp = part_path(plain_dir);
         discard(std::slice::from_ref(&tmp));
+        track(&tmp);
         tmps.push(tmp.clone());
         hook(Step::CreateDir)?;
         if let Some(parent) = std::path::absolute(&tmp)?.parent() {
@@ -639,6 +643,49 @@ fn rename_retry(from: &Path, to: &Path, hook: Hook<'_>) -> io::Result<()> {
                 attempt += 1;
             }
             r => return r,
+        }
+    }
+}
+
+/// Registre global des temporaires en cours (`.part` de toutes les écritures du processus), lu
+/// par [`discard_pending`] : avec `panic = "abort"`, aucun `Drop` ne s'exécute après le crochet
+/// de panique, qui doit donc retrouver lui-même les chemins à supprimer.
+static PENDING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Verrou du registre, même empoisonné (le registre n'est jamais laissé incohérent : un `push`
+/// ou un `remove` ne panique pas à mi-chemin).
+fn pending() -> MutexGuard<'static, Vec<PathBuf>> {
+    PENDING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Inscrit `tmp` **avant** sa création : une panique entre la création et le nettoyage le
+/// retrouve toujours.
+pub(crate) fn track(tmp: &Path) {
+    pending().push(tmp.to_path_buf());
+}
+
+/// Retire `tmps` du registre **après** leur suppression ou leur publication. Retrait par
+/// valeur, une occurrence chacun : des écritures concurrentes (bibliothèque) gardent les leurs.
+pub(crate) fn untrack(tmps: &[PathBuf]) {
+    let mut reg = pending();
+    for t in tmps {
+        if let Some(i) = reg.iter().rposition(|p| p == t) {
+            reg.swap_remove(i);
+        }
+    }
+}
+
+/// Supprime les temporaires inscrits au registre (crochet de panique du binaire). Le verrou est
+/// tenté pendant environ 1 s au plus, sans bloquer : si le fil qui panique le détient déjà
+/// (impossible en pratique, voir [`pending`]), rien n'est supprimé plutôt que de se bloquer.
+/// Un chemin déjà publié (renommé) ou supprimé ne coûte rien. Les entrées restent inscrites :
+/// le processus s'arrête ensuite.
+pub fn discard_pending() {
+    for _ in 0..100 {
+        match PENDING.try_lock() {
+            Ok(reg) => return discard(&reg),
+            Err(TryLockError::Poisoned(p)) => return discard(&p.into_inner()),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(10)),
         }
     }
 }
@@ -1089,6 +1136,80 @@ mod tests {
             }
             assert_no_part(&d);
         }
+    }
+
+    fn tracked(p: &Path) -> bool {
+        pending().iter().any(|q| q == p)
+    }
+
+    /// Registre des temporaires (#132) : chaque `.part` y est inscrit pendant l'écriture, puis
+    /// retiré au retour, en succès comme en échec. Une panique en cours d'écriture (le crochet
+    /// du binaire ne rend pas la main) laisse les `.part` inscrits, donc retrouvables.
+    /// `discard_pending` n'est pas appelé ici : il viderait les `.part` des tests concurrents.
+    #[test]
+    fn registre_des_temporaires() {
+        let pkg = sample();
+        let d = scratch("registre");
+        let target = Target::new(Some(&d.join("o.plain.pk")), true, &pkg);
+        let pk_part = part_path(&target.out_path);
+        let dir_part = part_path(target.plain_dir.as_ref().unwrap());
+        // Pendant l'écriture : inscrits (vu depuis le crochet de chaque étape).
+        let seen = Cell::new(false);
+        write_package_with(
+            &pkg,
+            &target,
+            ZipLimits::PYTHON,
+            &never,
+            &mut (),
+            &mut |s| {
+                if s == Step::CreateDir {
+                    assert!(tracked(&pk_part) && tracked(&dir_part));
+                    seen.set(true);
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(seen.get());
+        assert!(
+            !tracked(&pk_part) && !tracked(&dir_part),
+            "succès : retirés"
+        );
+        // Échec : retirés aussi.
+        let r = write_package_with(
+            &pkg,
+            &target,
+            ZipLimits::PYTHON,
+            &never,
+            &mut (),
+            &mut |s| match s {
+                Step::WriteDir(1) => Err(io::Error::other("panne")),
+                _ => Ok(()),
+            },
+        );
+        assert_eq!(r.unwrap_err().code, "output_error");
+        assert!(!tracked(&pk_part) && !tracked(&dir_part), "échec : retirés");
+        // Panique au milieu du `.plain.pk` : le `.part` existe et reste inscrit.
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = write_package_with(
+                &pkg,
+                &target,
+                ZipLimits::PYTHON,
+                &never,
+                &mut (),
+                &mut |s| {
+                    if s == Step::WritePk(1) {
+                        panic!("panique injectee");
+                    }
+                    Ok(())
+                },
+            );
+        }));
+        assert!(r.is_err());
+        assert!(pk_part.exists() && tracked(&pk_part));
+        discard(std::slice::from_ref(&pk_part));
+        untrack(std::slice::from_ref(&pk_part));
+        assert_no_part(&d);
     }
 
     /// Annulation avant chaque entrée (`.plain.pk` puis dossier) et avant les publications.

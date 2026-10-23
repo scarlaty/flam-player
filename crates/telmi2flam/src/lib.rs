@@ -6,7 +6,8 @@
 //! (port de Pillow), conversions d'images en LIF ([`image`]) et graphe `nodes.json` vers Lua
 //! ([`graph`]), assets et assemblage du paquet en mémoire ([`assets`], [`package`], runtime
 //! embarqué [`runtime`]), écriture atomique de la sortie ([`output`]), conversion complète
-//! ([`convert`]) et événements de progression ([`progress`]).
+//! ([`convert`]), événements de progression ([`progress`]) et jeton d'annulation du binaire
+//! ([`cancel`]).
 //!
 //! # Pile d'appels
 //!
@@ -28,6 +29,7 @@
 pub mod archive;
 pub mod assets;
 mod blur;
+pub mod cancel;
 pub mod convert;
 pub mod error;
 pub mod graph;

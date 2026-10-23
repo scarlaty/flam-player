@@ -645,10 +645,15 @@ b"
     /// (`cargo build -p telmi2flam`), les mêmes tests visent le binaire Rust, sans changer le
     /// convertisseur du launcher : `convert` lance toujours `python <script>`, et le script est
     /// un relais minimal qui exécute le binaire avec les mêmes arguments (stdout et stderr
-    /// hérités, code de sortie rendu). L'annulation n'y est encore que l'arrêt du processus par
-    /// `CTRL_BREAK_EVENT`, demandé dès la première étape, donc avant toute écriture : le test ne
-    /// prouve pas le nettoyage du `.part` du binaire, qui porte le PID du binaire et non celui du
-    /// relais (gestion du signal et nettoyage : #132).
+    /// hérités, code de sortie rendu).
+    ///
+    /// Annulation (#132) : le relais simule le protocole prévu pour la bascule (#137). Il lance
+    /// le binaire avec `--cancel-on-stdin-eof`, stdin en tube, dans son propre groupe de
+    /// processus (le `CTRL_BREAK_EVENT` du launcher ne l'atteint pas), et ferme ce tube quand
+    /// il reçoit lui-même `CTRL_BREAK_EVENT`. L'annulation est demandée à la fin de la phase
+    /// `zip` : le binaire y attend (`TELMI2FLAM_TEST_FAULT=wait:zip:end`, binaire de debug),
+    /// avec son `.part` présent. Ce `.part` porte le PID du binaire et non celui du relais : le
+    /// launcher ne le supprime pas, le test prouve donc le nettoyage par le binaire.
     #[cfg(windows)]
     mod embarque {
         use super::*;
@@ -667,7 +672,32 @@ b"
             _relais: Option<tempfile::TempDir>,
         }
 
-        fn convertisseur(dir: &Path) -> Convertisseur {
+        fn rust_converter() -> bool {
+            std::env::var_os("FLAM_TEST_RUST_CONVERTER").is_some()
+        }
+
+        /// Relais vers le binaire Rust (voir l'en-tête du module) : `--cancel-on-stdin-eof`,
+        /// stdin en tube fermé au `CTRL_BREAK_EVENT`, faute de test `fault` éventuelle.
+        fn relais_rust(exe: &str, fault: Option<&str>) -> String {
+            // Chaînes JSON : littéraux de chaîne Python valides (`\\`, `\"`, `\uXXXX`).
+            let fault = fault.map_or("None".to_owned(), |f| serde_json::to_string(f).unwrap());
+            format!(
+                "import os, signal, subprocess, sys\n\
+                 env = dict(os.environ)\n\
+                 env.pop('TELMI2FLAM_TEST_FAULT', None)\n\
+                 fault = {fault}\n\
+                 if fault is not None:\n    env['TELMI2FLAM_TEST_FAULT'] = fault\n\
+                 p = subprocess.Popen([{exe}, '--cancel-on-stdin-eof'] + sys.argv[1:],\n\
+                 \x20   stdin=subprocess.PIPE, env=env,\n\
+                 \x20   creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)\n\
+                 def stop(signum, frame):\n    try:\n        p.stdin.close()\n    except OSError:\n        pass\n\
+                 signal.signal(signal.SIGBREAK, stop)\n\
+                 while True:\n    try:\n        code = p.wait(timeout=0.1)\n        break\n    except subprocess.TimeoutExpired:\n        pass\n\
+                 sys.exit(code)\n"
+            )
+        }
+
+        fn convertisseur(dir: &Path, fault: Option<&str>) -> Convertisseur {
             let python = dir.join("python").join("python.exe");
             let Some(exe) = std::env::var_os("FLAM_TEST_RUST_CONVERTER") else {
                 return Convertisseur {
@@ -678,15 +708,8 @@ b"
             };
             let relais = tempfile::tempdir().unwrap();
             let script = relais.path().join("telmi2flam_rust.py");
-            // Chaîne JSON : littéral de chaîne Python valide (`\\`, `\"`, `\uXXXX`).
             let exe = serde_json::to_string(&PathBuf::from(exe).to_string_lossy()).unwrap();
-            std::fs::write(
-                &script,
-                format!(
-                    "import subprocess, sys\nsys.exit(subprocess.call([{exe}] + sys.argv[1:]))\n"
-                ),
-            )
-            .unwrap();
+            std::fs::write(&script, relais_rust(&exe, fault)).unwrap();
             Convertisseur {
                 python,
                 script,
@@ -700,7 +723,7 @@ b"
             let (dir, archive) = environnement().expect("variables d'environnement manquantes");
             let out = tempfile::tempdir().unwrap();
             let output = out.path().join("histoire.plain.pk");
-            let conv = convertisseur(&dir);
+            let conv = convertisseur(&dir, None);
             let (_tx, mut rx) = watch::channel(false);
             let mut steps = 0usize;
             let converted = convert(
@@ -733,9 +756,13 @@ b"
             let (dir, archive) = environnement().expect("variables d'environnement manquantes");
             let out = tempfile::tempdir().unwrap();
             let output = out.path().join("histoire.plain.pk");
-            let conv = convertisseur(&dir);
+            // Binaire Rust : annulation pendant l'écriture, `.part` présent (voir l'en-tête).
+            let rust = rust_converter();
+            let conv = convertisseur(&dir, rust.then_some("wait:zip:end"));
             let (tx, mut rx) = watch::channel(false);
             let tx = Arc::new(Mutex::new(tx));
+            let part_seen = std::sync::atomic::AtomicBool::new(false);
+            let dir_out = out.path().to_path_buf();
             let result = convert(
                 &Conversion {
                     python: &conv.python,
@@ -747,12 +774,28 @@ b"
                     grace: Duration::from_secs(10),
                 },
                 &mut rx,
-                &mut |_| {
+                &mut |step| {
+                    if rust && !(step.phase == "zip" && step.done == step.total) {
+                        return;
+                    }
+                    if rust {
+                        let part = std::fs::read_dir(&dir_out)
+                            .unwrap()
+                            .filter_map(|e| e.ok())
+                            .any(|e| e.file_name().to_string_lossy().ends_with(".part"));
+                        part_seen.store(part, std::sync::atomic::Ordering::SeqCst);
+                    }
                     let _ = tx.lock().unwrap().send(true);
                 },
             )
             .await;
             assert!(matches!(result, Err(AppError::Cancelled)), "{result:?}");
+            if rust {
+                assert!(
+                    part_seen.load(std::sync::atomic::Ordering::SeqCst),
+                    "aucun .part pendant l'attente : l'annulation ne teste pas le nettoyage"
+                );
+            }
             let restes: Vec<_> = std::fs::read_dir(out.path()).unwrap().collect();
             assert!(restes.is_empty(), "fichiers résiduels : {restes:?}");
         }
