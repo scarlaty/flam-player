@@ -245,6 +245,11 @@ fn hidden_note(hidden: &bool) -> &'static str {
     }
 }
 
+/// Les variantes `Validation` et `Io` produites ici sont reprises telles quelles dans le
+/// diagnostic copiable (liste blanche de `diagnostic::session_message`) : un message de
+/// transfert ne doit citer ni titre ni nom de fichier d'histoire. Écart connu, suivi dans #329 :
+/// `Verify`, « a changé pendant la copie » et `PrepareError::Invalid` citent encore un nom de
+/// fichier interne de l'histoire.
 impl From<TransferError> for AppError {
     fn from(err: TransferError) -> Self {
         match err {
@@ -1271,6 +1276,7 @@ pub async fn device_send_story(
             store.load()?.carrier_consent,
         )
     };
+    let error_cache_root = cache_root.clone();
     // Pas de vidage du cache pendant la préparation.
     let _gate = catalog.cache_gate().read_owned().await;
     let report = blocking(move || -> AppResult<TransferReport> {
@@ -1325,13 +1331,19 @@ pub async fn device_send_story(
     match &report {
         Ok(report) => {
             for failure in &report.recovery_failures {
-                super::diagnostic::record_error("reprise avant envoi", failure);
+                super::diagnostic::record_error(
+                    "reprise avant envoi",
+                    Some(&error_cache_root),
+                    failure,
+                );
             }
         }
         Err(AppError::Cancelled) => {}
-        Err(err) => {
-            super::diagnostic::record_error("envoi", &super::diagnostic::session_message(err))
-        }
+        Err(err) => super::diagnostic::record_error(
+            "envoi",
+            Some(&error_cache_root),
+            &super::diagnostic::session_message(err),
+        ),
     }
     report
 }
@@ -1402,6 +1414,7 @@ pub async fn device_recover_transfers(
     root: String,
 ) -> AppResult<TransferRecovery> {
     let cache_root = launcher_cache_root(&config);
+    let error_cache_root = cache_root.clone();
     let result = blocking(move || -> AppResult<TransferRecovery> {
         let guard = DEVICE_LOCK
             .try_begin(Operation::Transfer)
@@ -1411,7 +1424,11 @@ pub async fn device_recover_transfers(
     })
     .await?;
     if let Err(err) = &result {
-        super::diagnostic::record_error("reprise", &super::diagnostic::session_message(err));
+        super::diagnostic::record_error(
+            "reprise",
+            error_cache_root.as_deref(),
+            &super::diagnostic::session_message(err),
+        );
     }
     result
 }
