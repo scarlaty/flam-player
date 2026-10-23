@@ -100,7 +100,8 @@ jobs:
           test ! -e out.plain.pk
 
   # Compilation Unix (#421) : `kill_pid`, les signaux de cancel.rs et les `cfg(unix)` n'étaient
-  # jamais compilés (CI Windows seulement). Vérification de type et clippy, sans les tests.
+  # jamais compilés (CI Windows seulement). Clippy (`--all-targets` couvre la vérification de type de
+  # toutes les cibles : un `cargo check` séparé serait redondant), sans les tests.
   unix:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -114,9 +115,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> target"
-
-      - name: Vérification de type (toutes cibles)
-        run: cargo check -p telmi2flam --all-targets --locked
 
       - name: Clippy
         run: cargo clippy -p telmi2flam --all-targets --locked -- -D warnings

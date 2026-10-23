@@ -117,6 +117,10 @@ jobs:
       # notices, Get-InstallTree, check-imports, third-party, LICENSES.md, tools/ffmpeg), le LICENSE racine
       # (licenseFile de tauri.conf.json), ce workflow, et le socle de démarrage du launcher dont dépend le
       # scénario « application ouverte » (src-tauri/capabilities, src-tauri/src/{main,lib,app}.rs).
+      # `crates/telmi2flam/` est absent de la liste À DESSEIN : le convertisseur Rust n'est pas un
+      # fichier d'empaquetage (le launcher l'embarque par un script de construction déjà listé) et
+      # l'e2e sur N exécute le binaire livré ; une modification de la crate ne justifie pas à elle
+      # seule N-1 (~5 min). Même raisonnement pour le code du player et du launcher ci-dessous.
       # Hors liste : le reste du code du player, du convertisseur et du launcher (modules métier de
       # src-tauri/src), couvert par l'e2e sur N ; surveiller tout src-tauri/src ferait tourner N-1 (~5 min)
       # sur presque toute PR du launcher, ce cas reste alors vérifié sur main (label ci-installeur pour forcer).

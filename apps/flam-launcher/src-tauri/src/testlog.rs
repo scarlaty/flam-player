@@ -55,3 +55,20 @@ impl Logs {
         String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Témoin : le journal global capture bien une trace connue. Sans lui, les assertions
+    /// d'absence de secret (`assert_no_leak`) passeraient à vide si le journal restait vide.
+    #[test]
+    fn le_journal_global_capture_une_trace_connue() {
+        let logs = Logs::capture();
+        tracing::info!("temoin-testlog-7f3a");
+        assert!(
+            logs.text().contains("temoin-testlog-7f3a"),
+            "journal global vide : les assertions d'absence de secret passeraient à vide"
+        );
+    }
+}

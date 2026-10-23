@@ -3,8 +3,8 @@
 //!
 //! Invariants (PORT-RUST.md §3) :
 //! - **jamais de sortie partielle** : tout s'écrit dans un `.part` voisin de la cible, propre à
-//!   l'écriture (`part_path`, privé au crate : `<cible>.<pid>.part`, puis `<cible>.<pid>-<n>.part` pour les
-//!   écritures suivantes du même processus), puis le `.part` est publié par renommage
+//!   l'écriture (`part_path`, privé au crate : `<cible>.<pid>.part`, puis `<cible>.<pid>-<n>.part`
+//!   pour les écritures suivantes du même processus), puis le `.part` est publié par renommage
 //!   (`std::fs::rename`, soit `MoveFileExW(REPLACE_EXISTING)` ou son équivalent POSIX sous
 //!   Windows), relancé quelques fois si le fichier est verrouillé (antivirus). Le `.plain.pk`
 //!   et chaque fichier du `.plain` sont vidés sur disque (`sync_all`) avant le renommage : une
