@@ -17,8 +17,8 @@ export interface DeviceStatusState {
   retry: () => number;
   /**
    * Numéro de la dernière demande de `retry` prise en compte par la réponse (ou l'échec) la plus
-   * récente. Une réponse d'un appel déjà en vol au moment du clic porte un numéro plus ancien :
-   * elle ne répond pas à « Réessayer ».
+   * récente, ou close sans appel (fenêtre masquée, scrutation désactivée). Une réponse d'un appel
+   * déjà en vol au moment du clic porte un numéro plus ancien : elle ne répond pas à « Réessayer ».
    */
   answered: number;
 }
@@ -60,6 +60,10 @@ export function useDeviceStatus(
   const [answered, setAnswered] = useState(0);
   const pollNow = useRef<() => void>(() => undefined);
   const requests = useRef(0);
+  const isEnabled = useRef(enabled);
+  useEffect(() => {
+    isEnabled.current = enabled;
+  });
 
   useEffect(() => {
     if (!enabled) return;
@@ -77,7 +81,10 @@ export function useDeviceStatus(
       // Les demandes de « Réessayer » faites avant ce départ sont servies par cet appel.
       const served = requests.current;
       try {
-        if (!document.hidden) {
+        if (document.hidden) {
+          // Pas d'appel : la demande est tout de même close, sans quoi elle resterait en attente.
+          if (active) setAnswered(served);
+        } else {
           const next = await fetchStatus();
           if (active) {
             setStatus(next);
@@ -118,6 +125,8 @@ export function useDeviceStatus(
   const retry = useCallback(() => {
     const request = ++requests.current;
     pollNow.current();
+    // Scrutation désactivée : rien ne servira la demande, elle est close aussitôt.
+    if (!isEnabled.current) setAnswered(request);
     return request;
   }, []);
   return { status, error, retry, answered };
