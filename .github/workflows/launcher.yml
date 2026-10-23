@@ -206,7 +206,10 @@ jobs:
           out="$(cargo test --lib podcast::archive::tests::python_convertit_et_valide_l_archive -- --exact 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
           # Un filtre qui ne correspond plus à aucun test (renommage) donnerait « 0 passed » en vert.
-          grep -q "test result: ok. 1 passed" <<< "$out"
+          grep -q "test result: ok. 1 passed" <<< "$out" || {
+            echo "::error::Le test python_convertit_et_valide_l_archive n'a pas été exécuté (0 passed) : filtre ou nom de test à corriger."
+            exit 1
+          }
 
       - name: Télécharger ffmpeg (construit par le job ffmpeg)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
