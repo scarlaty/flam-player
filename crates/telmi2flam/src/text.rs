@@ -165,7 +165,9 @@ pub fn choice_label(
 }
 
 /// `str.isprintable()` pour un caractère (table `NON_PRINTABLE` : catégories Cc, Cf, Cs, Co,
-/// Cn, Zl, Zp et Zs sauf l'espace).
+/// Cn, Zl, Zp et Zs sauf l'espace). La table reprend les surrogates (Cs, `0xd800..=0xdfff`)
+/// pour rester identique à celle de Python, mais un `char` ne peut pas en être un : cette
+/// plage n'est jamais atteinte ici.
 pub fn is_py_printable(c: char) -> bool {
     let cp = c as u32;
     NON_PRINTABLE
