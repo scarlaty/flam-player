@@ -81,7 +81,13 @@ export function useDraftAutosave(delayMs: number) {
     [delayMs, flush],
   );
 
-  return { status, init, schedule };
+  /** Nouvelle tentative après un échec. */
+  const retry = useCallback(() => {
+    clearTimeout(timer.current);
+    void flush();
+  }, [flush]);
+
+  return { status, init, schedule, retry };
 }
 
 interface ValidationResult {
@@ -100,9 +106,16 @@ export function useDebouncedValidation(
   delayMs: number,
 ) {
   const [result, setResult] = useState<ValidationResult | null>(null);
+  const seeded = useRef<PackComposition | null>(null);
+
+  /** Rapport déjà connu de `known` (lu avec le brouillon) : pas de nouvel appel. */
+  const seed = useCallback((known: PackComposition, report: ValidationReport) => {
+    seeded.current = known;
+    setResult({ for: known, report, error: null });
+  }, []);
 
   useEffect(() => {
-    if (composition === null) return;
+    if (composition === null || composition === seeded.current) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       validatePack(composition)
@@ -123,8 +136,11 @@ export function useDebouncedValidation(
   const fresh = result !== null && result.for === composition;
   return {
     report: result?.report ?? null,
+    /** Composition que `report` décrit (ses chemins valent pour celle-ci). */
+    reportFor: result?.for ?? null,
     error: fresh ? result.error : null,
     pending: !fresh,
+    seed,
   };
 }
 

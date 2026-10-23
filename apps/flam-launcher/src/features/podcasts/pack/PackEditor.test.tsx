@@ -232,6 +232,13 @@ it("monter, descendre et déplacer vers une catégorie, au clavier", async () =>
   fireEvent.change(screen.getByLabelText("Déplacer « Épisode 1 » vers"), {
     target: { value: "0" },
   });
+  // Choisir une destination ne déplace rien tant qu'on ne valide pas.
+  expect(
+    within(screen.getByRole("list", { name: "Racine > Hiver" })).queryByText("Épisode 1"),
+  ).toBeNull();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Déplacer « Épisode 1 » vers le menu choisi" }),
+  );
   const hiver = await screen.findByRole("list", { name: "Racine > Hiver" });
   expect(within(hiver).getByText("Épisode 1")).toBeInTheDocument();
   expect(
@@ -450,3 +457,13 @@ it(
   },
   SLOW_TEST_MS,
 );
+
+it("reprise : le rapport lu avec le brouillon évite un premier appel à pack_validate", async () => {
+  views.a = feed("a", "Contes", [episode("1")]);
+  const c = composition([ep("a", "1")]);
+  draft = { composition: c, revision: 2, notice: null, report: report(c) };
+  renderEditor();
+  expect(await screen.findByText("Le pack est prêt à être créé.")).toBeInTheDocument();
+  await new Promise((r) => setTimeout(r, 80));
+  expect(count("pack_validate")).toBe(0);
+});

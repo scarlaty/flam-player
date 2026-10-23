@@ -25,6 +25,7 @@ import { useDebouncedValidation, useDraftAutosave, useFeedInfo } from "./hooks";
 import { PackTree, menuLabel } from "./PackTree";
 import {
   MAX_MENU_DEPTH,
+  MAX_LABEL_CHARS,
   MAX_OPTIONS_PER_MENU,
   append,
   canPlace,
@@ -64,7 +65,7 @@ function problemText(problem: Problem, menu: readonly PackNode[]): string {
       case "empty_category":
         return text.emptyCategory;
       case "invalid_category_name":
-        return text.invalidCategoryName(40);
+        return text.invalidCategoryName(MAX_LABEL_CHARS);
       case "duplicate_episode":
         return text.duplicateEpisode;
       case "invalid_id":
@@ -129,8 +130,9 @@ export function PackEditor({
   const [notice, setNotice] = useState<string | null>(null);
   const [composition, setComposition] = useState<PackComposition | null>(null);
   const [announcement, setAnnouncement] = useState("");
-  const { status, init: initDraft, schedule } = useDraftAutosave(saveDelayMs);
+  const { status, init: initDraft, schedule, retry } = useDraftAutosave(saveDelayMs);
   const validation = useDebouncedValidation(composition, validateDelayMs);
+  const seedValidation = validation.seed;
 
   useEffect(() => {
     let cancelled = false;
@@ -139,14 +141,16 @@ export function PackEditor({
         const view = await readPackDraft();
         if (cancelled) return;
         initDraft(view.revision);
-        setComposition(
+        const loaded =
           view.composition ??
-            emptyComposition(
-              initialSelection.current.map((s) =>
-                episodeNode({ source_id: s.sourceId, episode_id: s.id }),
-              ),
+          emptyComposition(
+            initialSelection.current.map((s) =>
+              episodeNode({ source_id: s.sourceId, episode_id: s.id }),
             ),
-        );
+          );
+        if (view.composition && view.report)
+          seedValidation(view.composition, view.report);
+        setComposition(loaded);
         setNotice(view.notice);
         setLoadError(null);
       } catch (caught) {
@@ -158,7 +162,7 @@ export function PackEditor({
     return () => {
       cancelled = true;
     };
-  }, [attempt, initDraft]);
+  }, [attempt, initDraft, seedValidation]);
 
   const menu = composition?.menu;
   const packEpisodes = useMemo(() => episodesOf(menu ?? []), [menu]);
@@ -179,7 +183,7 @@ export function PackEditor({
       selection.selected.find(
         (s) => s.sourceId === ref.source_id && s.id === ref.episode_id,
       )?.title ??
-      null,
+      (feeds.has(ref.source_id) ? null : t.podcasts.pack.tree.loadingTitle),
     [feeds, selection.selected],
   );
   const unavailable = useMemo(
@@ -255,7 +259,9 @@ export function PackEditor({
     validation.report?.problems.find((p) => p.field === field) ?? null;
   const fieldError = (field: Problem["field"]) => {
     const problem = problemsOf(field);
-    return problem ? problemText(problem, current.menu) : null;
+    return problem
+      ? problemText(problem, validation.reportFor?.menu ?? current.menu)
+      : null;
   };
 
   // Couverture (N6 b) : images des flux et des épisodes du pack.
@@ -311,7 +317,7 @@ export function PackEditor({
         <h2 id="fl-pack-summary" className="fl-pack__heading">
           {text.summary.title}
         </h2>
-        <div role="status">
+        <div>
           <p>{text.summary.episodes(packEpisodes.length, MAX_EPISODES)}</p>
           <p>{text.summary.levels(levels, MAX_MENU_DEPTH)}</p>
           {report && (
@@ -333,7 +339,14 @@ export function PackEditor({
           {status === "saved" && text.draftSaved}
         </p>
         {status === "error" && (
-          <Banner tone="danger">
+          <Banner
+            tone="danger"
+            action={
+              <Button variant="secondary" size="sm" onClick={retry}>
+                {t.errors.retry}
+              </Button>
+            }
+          >
             <p>{text.draftFailed}</p>
           </Banner>
         )}
@@ -359,7 +372,9 @@ export function PackEditor({
           ) : (
             <ul className="fl-pack__problems">
               {report.problems.map((problem, i) => (
-                <li key={i}>{problemText(problem, current.menu)}</li>
+                <li key={i}>
+                  {problemText(problem, validation.reportFor?.menu ?? current.menu)}
+                </li>
               ))}
             </ul>
           )}
@@ -427,9 +442,7 @@ export function PackEditor({
         </h2>
         <TextField
           label={text.metadata.storyTitle}
-          hint={text.metadata.titleHint(
-            feedIds.length > 1 ? null : (single?.title ?? null),
-          )}
+          hint={text.metadata.titleHint(single?.title ?? null, feedIds.length > 1)}
           value={current.metadata.title}
           maxLength={MAX_TITLE_CHARS}
           error={fieldError("title")}
@@ -459,7 +472,9 @@ export function PackEditor({
         <DescriptionField
           value={current.metadata.description ?? ""}
           error={descriptionError}
-          onChange={(value) => editMetadata({ description: value === "" ? null : value })}
+          onChange={(value) =>
+            editMetadata({ description: value.trim() === "" ? null : value })
+          }
         />
       </section>
 
@@ -517,14 +532,20 @@ function DescriptionField({ value, error, onChange }: DescriptionFieldProps) {
         className="fl-field__input fl-pack__description"
         rows={4}
         value={value}
-        aria-describedby={`${id}-hint`}
+        aria-describedby={error ? `${id}-hint ${id}-error` : `${id}-hint`}
         aria-invalid={error ? true : undefined}
         onChange={(event) => onChange(event.target.value)}
       />
       <p id={`${id}-hint`} className="fl-field__hint">
         {text.descriptionHint}
       </p>
-      <div aria-live="polite">{error && <p className="fl-field__error">{error}</p>}</div>
+      <div aria-live="polite">
+        {error && (
+          <p id={`${id}-error`} className="fl-field__error">
+            {error}
+          </p>
+        )}
+      </div>
     </div>
   );
 }

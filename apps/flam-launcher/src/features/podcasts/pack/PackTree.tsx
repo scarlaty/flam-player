@@ -1,4 +1,4 @@
-import { useEffect, useRef, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
 import type { EpisodeRef, PackNode } from "../../../api/pack";
 import { Badge, Button, IconButton, SelectField, TextField } from "../../../components";
 import { t } from "../../../i18n";
@@ -275,19 +275,12 @@ export function PackTree(props: PackTreeProps) {
               data-action="down"
               onClick={() => shiftNode(path, 1)}
             />
-            <SelectField
-              className="fl-pack__move"
-              label={text.moveTo(label)}
-              value=""
-              disabled={destinations.length === 0}
-              data-path={key}
-              data-action="move"
-              options={[
-                { value: "", label: text.movePlaceholder },
-                ...destinations.map((d, i) => ({ value: String(i), label: d.label })),
-              ]}
-              onChange={(event) => {
-                const chosen = destinations[Number(event.target.value)];
+            <MoveControl
+              label={label}
+              dataPath={key}
+              destinations={destinations.map((d) => d.label)}
+              onMove={(i) => {
+                const chosen = destinations[i];
                 if (chosen) moveTo(path, chosen.path);
               }}
             />
@@ -314,6 +307,47 @@ export function PackTree(props: PackTreeProps) {
   return (
     <div ref={root} tabIndex={-1} className="fl-pack__tree" aria-label={text.label}>
       {renderMenu(menu, [])}
+    </div>
+  );
+}
+
+interface MoveControlProps {
+  label: string;
+  dataPath: string;
+  destinations: readonly string[];
+  onMove: (index: number) => void;
+}
+
+/** Choix d'un menu puis validation explicite : parcourir la liste au clavier ne déplace rien. */
+function MoveControl({ label, dataPath, destinations, onMove }: MoveControlProps) {
+  const text = t.podcasts.pack.tree;
+  const [choice, setChoice] = useState("");
+  return (
+    <div className="fl-pack__move">
+      <SelectField
+        label={text.moveTo(label)}
+        value={choice}
+        disabled={destinations.length === 0}
+        data-path={dataPath}
+        data-action="move"
+        options={[
+          { value: "", label: text.movePlaceholder },
+          ...destinations.map((d, i) => ({ value: String(i), label: d })),
+        ]}
+        onChange={(event) => setChoice(event.target.value)}
+      />
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={choice === ""}
+        aria-label={text.moveConfirm(label)}
+        onClick={() => {
+          onMove(Number(choice));
+          setChoice("");
+        }}
+      >
+        {text.moveButton}
+      </Button>
     </div>
   );
 }

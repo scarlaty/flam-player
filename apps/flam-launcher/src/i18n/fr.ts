@@ -232,6 +232,9 @@ export const fr = {
         down: (label: string) => `Descendre « ${label} »`,
         moveTo: (label: string) => `Déplacer « ${label} » vers`,
         movePlaceholder: "Choisir un menu…",
+        moveButton: "Déplacer",
+        moveConfirm: (label: string) => `Déplacer « ${label} » vers le menu choisi`,
+        loadingTitle: "Chargement du titre…",
         remove: (label: string) => `Retirer « ${label} »`,
         removeCategory: (label: string) => `Supprimer la catégorie « ${label} »`,
       },
@@ -252,10 +255,12 @@ export const fr = {
       metadata: {
         title: "Histoire",
         storyTitle: "Titre",
-        titleHint: (feedTitle: string | null) =>
-          feedTitle === null
+        titleHint: (feedTitle: string | null, multiple: boolean) =>
+          multiple
             ? "Obligatoire : le pack réunit plusieurs flux."
-            : `Laissez vide pour reprendre le titre du flux : « ${feedTitle} ».`,
+            : feedTitle === null
+              ? "Facultatif tant que le pack n'utilise qu'un seul flux."
+              : `Laissez vide pour reprendre le titre du flux : « ${feedTitle} ».`,
         subtitle: "Sous-titre",
         subtitleHint: (feedCopyright: string | null) =>
           feedCopyright === null
