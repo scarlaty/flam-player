@@ -749,10 +749,14 @@ async fn un_corps_en_morceaux_sans_longueur_est_plafonne() {
     assert!(err.to_string().contains("volumineux"), "{err}");
     // Joint hors du runtime : `fetch` a rendu la main, donc la connexion est fermée et le fil
     // serveur (erreur d'écriture) se termine.
-    tokio::task::spawn_blocking(move || handle.join())
-        .await
-        .unwrap()
-        .expect("le fil du serveur chunked ne doit pas paniquer");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::task::spawn_blocking(move || handle.join()),
+    )
+    .await
+    .expect("le fil du serveur chunked ne se termine pas")
+    .unwrap()
+    .expect("le fil du serveur chunked ne doit pas paniquer");
 }
 
 // ---------------------------------------------------------------------------------------

@@ -202,7 +202,8 @@ Remarques de cohérence :
   échappé reste une erreur de flux, on ne devine pas sa fin.
 - `guid` de plus de 512 caractères : tronqué avec une empreinte SHA-256, donc l'`episode_id`
   de ces épisodes diffère de celui calculé sur le `guid` brut. Un brouillon de pack qui
-  référence l'ancien identifiant le voit signalé « épisode indisponible » (validation de pack).
+  référence l'ancien identifiant le voit signalé
+  « épisode retiré du flux » (validation de pack).
 - `podcast_feed` relit et analyse le cache à chaque appel : choix assumé, pas de cache mémoire
   (appel rare, invalidation à chaque rafraîchissement pour un gain négligeable).
 - `strip_html` (`rss.rs`) extrait du texte brut (balises retirées, entités décodées) ; ce n'est

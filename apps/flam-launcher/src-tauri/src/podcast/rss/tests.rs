@@ -789,10 +789,11 @@ fn le_pretraitement_suit_les_guillemets_des_attributs() {
     );
     let feed = parse(&wrap(&item(
         "q",
-        "<description>x<img alt=\"a > b\">y</description>",
+        "<description>x<img alt=\"a > b\" title=\"c < d\">y</description>",
     )))
     .unwrap();
     assert_eq!(feed.episodes.len(), 1);
+    assert_eq!(feed.episodes[0].description.as_deref(), Some("xy"));
 }
 
 #[test]
