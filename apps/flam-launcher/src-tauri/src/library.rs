@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::catalog::{blocking, CatalogService};
+use crate::install::podcast::PACK_SOURCE_ID;
 use crate::install::InstallService;
 use crate::library_source::SourceStamp;
 use crate::library_thumb::{self, Prepared};
@@ -309,7 +310,17 @@ impl Library {
         let path = self.root.join(INDEX_FILE);
         let loaded = storage::load_versioned::<IndexFile>(&path, SCHEMA_VERSION, |_, _| {})?;
         Ok(match loaded {
-            Loaded::Found(index) => (index.stories, false),
+            Loaded::Found(mut index) => {
+                // Packs publiés avant #426 : le chemin de l'archive de travail (supprimée, avec
+                // le nom d'utilisateur) n'est plus utile ; nettoyé à la lecture, l'index est
+                // réécrit sans lui à la prochaine écriture (#436).
+                for story in &mut index.stories {
+                    if story.source.source_id == PACK_SOURCE_ID {
+                        story.source.download_url.clear();
+                    }
+                }
+                (index.stories, false)
+            }
             // Index absent mais un index corrompu a été mis de côté : l'absence vient de cette
             // mise de côté, elle ne prouve pas que rien n'est publié.
             Loaded::Missing => (Vec::new(), self.index_quarantined()),
@@ -1078,6 +1089,30 @@ pub(crate) mod tests {
         assert!(lib.list().unwrap().is_empty());
         assert!(!dir.path().join("library/abc-3.plain.pk").exists());
         assert_eq!(lib.remove("abc").unwrap_err().kind(), "not_found");
+    }
+
+    #[test]
+    fn la_lecture_vide_le_chemin_d_archive_des_packs_publies() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        for (uuid, source_id) in [("pk", PACK_SOURCE_ID), ("ot", "telmi")] {
+            let s = staged(&lib, &format!("{uuid}.plain.pk"), b"PK1234");
+            let mut source = story(uuid, Some(1));
+            source.source_id = source_id.into();
+            source.download_url = "podcast-work/pack.zip".into();
+            lib.install(&s, &source, None, 7).unwrap();
+        }
+        let list = lib.list().unwrap();
+        let url = |uuid: &str| {
+            list.iter()
+                .find(|e| e.uuid == uuid)
+                .unwrap()
+                .source
+                .download_url
+                .clone()
+        };
+        assert!(url("pk").is_empty());
+        assert!(url("ot").contains("pack.zip"), "autres sources intactes");
     }
 
     #[test]
