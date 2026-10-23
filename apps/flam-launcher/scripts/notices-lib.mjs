@@ -92,3 +92,18 @@ export function thirdPartyRustIds(reached, root, workspaceMembers) {
   const members = new Set(workspaceMembers ?? []);
   return new Set([...reached].filter((id) => id !== root && !members.has(id)));
 }
+
+// Code du dépôt qui dérive de code tiers : il est exclu de la liste ci-dessus (membre du
+// workspace) mais sa licence d'origine doit être reprise dans les notices. `dir` est relatif à
+// la racine du dépôt et contient le texte de licence (fichier LICENSE*). Ce ne sont pas des
+// dépendances : la licence (HPND, texte de Pillow) n'est pas dans ALLOWED_LICENSES.
+export const DERIVED_NOTICES = [
+  {
+    ecosystem: "Rust",
+    name: "Pillow (code dérivé dans telmi2flam : resample.rs, blur.rs)",
+    version: "12.3.0",
+    license: "HPND",
+    url: "https://github.com/python-pillow/Pillow",
+    dir: "crates/telmi2flam",
+  },
+];

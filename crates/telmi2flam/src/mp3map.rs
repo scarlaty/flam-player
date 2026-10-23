@@ -101,7 +101,7 @@ struct Frame {
 }
 
 /// Position des trames audio : saute un tag ID3v2 s'il existe (`_skip_id3v2`).
-fn skip_id3v2(data: &[u8]) -> usize {
+pub(crate) fn skip_id3v2(data: &[u8]) -> usize {
     match data {
         [b'I', b'D', b'3', _, _, flags, s0, s1, s2, s3, ..] => {
             let size = (usize::from(s0 & 0x7F) << 21)
