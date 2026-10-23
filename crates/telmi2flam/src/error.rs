@@ -51,6 +51,11 @@ impl ConvError {
         Self::new("cancelled", 130, "conversion annulee")
     }
 
+    /// Écriture de la sortie impossible (Python : `OutputError`, code 6).
+    pub fn output_error(message: impl Into<String>) -> Self {
+        Self::new("output_error", 6, message)
+    }
+
     /// État impossible atteint (Python : exception non rattrapée, `internal_error`, code 6).
     pub fn internal_error(message: impl Into<String>) -> Self {
         Self::new("internal_error", 6, message)
