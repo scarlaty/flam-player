@@ -83,6 +83,9 @@ struct Outcome {
 fn run_binary(work: &Path, args: &[String], machine: bool) -> Result<Outcome, String> {
     let out = Command::new(env!("CARGO_BIN_EXE_telmi2flam"))
         .args(args)
+        // Vecteurs produits sans ffmpeg, comme le générateur (#354 : sinon le ffmpeg du PATH
+        // rééchantillonne).
+        .env("FLAM_FFMPEG", "")
         .current_dir(work)
         .output()
         .map_err(|e| e.to_string())?;
@@ -388,6 +391,7 @@ fn stdout_ferme_la_conversion_continue() {
     std::fs::create_dir_all(&work).unwrap();
     std::fs::write(work.join("in.zip"), data).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_telmi2flam"))
+        .env("FLAM_FFMPEG", "")
         .args([
             "in.zip",
             "-o",

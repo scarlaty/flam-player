@@ -18,8 +18,8 @@ Cas : corpus de parite (tests/parity/make_corpus.py) et cas propres aux assets (
 de noms, noms reserves, couverture, title.mp3, uuid, metadonnees de types inattendus).
 La vignette est produite en mode `bandes` par defaut ; les cas `pkg_thumb_*` fixent `flou` ou
 `rogner` (`--thumb-fit`, champ `thumb_fit` de expected.json, absent pour `bandes`) pour
-verifier que `Options.thumb_fit` atteint la vignette. Sans ffmpeg (pas de reechantillonnage
-audio : divergence assumee du port, #22).
+verifier que `Options.thumb_fit` atteint la vignette. Sans ffmpeg (FLAM_FFMPEG vide ; avec
+ffmpeg : gen_ffmpeg_cases.py, #354).
 
 A lancer avec le Python de l'installateur (build-converter.ps1 : 3.14.8, Pillow 12.3.0),
 depuis la racine du depot :
