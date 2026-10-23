@@ -431,6 +431,9 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `catalog_refresh`             | `source_id`                      | `CatalogView`                                              | `catalog`            |
 | `catalog_entries`             | `source_id`                      | `CatalogView`                                              | `catalog`            |
 | `catalog_thumbnail`           | `source_id`, `thumb_url`         | URL `data:` (string)                                       | `catalog`            |
+| `podcast_add`                 | `url`, `name?`                   | `{ source, view: PodcastView }`                            | `podcast::source`    |
+| `podcast_feed`                | `source_id`                      | `PodcastView` (cache, sans réseau)                         | `podcast::source`    |
+| `podcast_refresh`             | `source_id`                      | `PodcastView`                                              | `podcast::source`    |
 | `folder_scan`                 | `source_id`, `recursive?`        | `FolderScan`                                               | `folder`             |
 | `folder_thumbnail`            | `source_id`, `entry_id`          | URL `data:` (chaîne)                                       | `folder`             |
 | `folder_watch`                | `source_id`, `enabled`           | rien                                                       | `watch`              |
@@ -642,6 +645,7 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 | `serialization`         | Échec de sérialisation JSON                                                                         |
 | `network`               | Réseau indisponible, délai dépassé, réponse HTTP en échec, réponse trop grosse                      |
 | `catalog_invalid`       | Catalogue (ou vignette) reçu inexploitable : JSON invalide, pas de liste `data`, image non reconnue |
+| `feed_invalid`          | Flux podcast inexploitable : XML invalide, DTD, encodage inconnu, trop grand, sans épisode audio    |
 | `folder_unavailable`    | Dossier d'une source locale absent ou inaccessible (disque débranché…)                              |
 | `cancelled`             | Tâche d'installation annulée                                                                        |
 | `download_invalid`      | Téléchargement incomplet, trop gros (4 Gio), ou qui n'est pas l'archive attendue                    |
@@ -1169,7 +1173,7 @@ d'exécuter. Accesseurs Rust pour les issues suivantes : `SourcesStore::get(id)`
 supprime et renvoie les octets libérés. Le dossier de cache pouvant être choisi par
 l'utilisateur, ces deux commandes ne comptent et ne suppriment **que** les sous-dossiers créés
 par l'application, listés dans `APP_CACHE_SUBDIRS` (`cache.rs`) : `archives`, `catalogs`, `compat-local`,
-`library`, `play`, `thumbs`. Le reste du dossier et le dossier lui-même ne sont jamais touchés ; les
+`library`, `play`, `podcasts`, `thumbs`. Le reste du dossier et le dossier lui-même ne sont jamais touchés ; les
 liens symboliques et jonctions ne sont ni suivis ni supprimés. `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
 sous-dossier de cache doit l'ajouter à cette liste.** L'interface demande une confirmation
 (boîte `alertdialog`, focus sur « Annuler ») qui rappelle les dossiers concernés et la taille
@@ -1181,7 +1185,7 @@ travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "sources": [
     {
       "type": "catalog",
@@ -1189,7 +1193,13 @@ travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
       "name": "Telmi Store",
       "url": "https://…/telmi-interactive.json"
     },
-    { "type": "folder", "id": "3f2c…", "name": "Mon dossier", "path": "C:\\Histoires" }
+    { "type": "folder", "id": "3f2c…", "name": "Mon dossier", "path": "C:\\Histoires" },
+    {
+      "type": "podcast",
+      "id": "9a1b…",
+      "name": "Mon podcast",
+      "url": "https://…/flux.xml"
+    }
   ]
 }
 ```
@@ -1205,6 +1215,9 @@ travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
   hôte, 2048 caractères max, sans identifiants, dossier absolu existant,
   type immuable à la mise à jour ; `sources_reorder` exige une permutation exacte des identifiants
   enregistrés.
+- Schéma v2 (#211) : ajout du type `podcast` ; un fichier v0 ou v1 est lu sans changement. L'URL
+  d'un flux est un secret (D11, `docs/podcasts.md`) : ni journalisée, ni renvoyée au front (les
+  commandes renvoient `feed_hint`, `https://hôte/…`) ; détails dans `src-tauri/src/podcast/source.rs`.
 
 #### Écriture, corruption, migration
 

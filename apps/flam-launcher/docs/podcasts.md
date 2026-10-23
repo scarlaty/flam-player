@@ -199,10 +199,11 @@ Remarques de cohérence :
 - `strip_html` (`rss.rs`) extrait du texte brut (balises retirées, entités décodées) ; ce n'est
   pas un assainisseur HTML : descriptions et titres sont toujours affichés comme texte, jamais
   injectés comme HTML.
-- Sources : `Catalog`, `Folder` et la bibliothèque ; la source podcast reste à ajouter (#211).
-  La commande `sources_remove` modifie `sources.json`, arrête la surveillance et purge le cache
-  d'une source catalogue (`purge_catalog_cache`, modèle pour D15) ; les histoires installées ne
-  sont pas touchées (conforme à P4).
+- Sources : `Catalog`, `Folder`, `Podcast` (**Livré**, #211, `src-tauri/src/podcast/source.rs` ;
+  schéma v2 de `sources.json`, cache `<cache>/podcasts/<id>/`) et la bibliothèque. La commande
+  `sources_remove` modifie `sources.json`, arrête la surveillance et purge le cache d'une source
+  catalogue ou podcast (`purge_catalog_cache`, `purge_podcast_cache` : D15) ; les histoires
+  installées ne sont pas touchées (conforme à P4).
 - Client de téléchargement (`install/download.rs`, comme celui du catalogue) : TLS par rustls
   (certificats vérifiés), **5 redirections au plus**, jamais de https vers http ; seules les
   redirections HTTP sont suivies (pas de page HTML « refresh ») ; reprise par plages ; 4 Gio au
