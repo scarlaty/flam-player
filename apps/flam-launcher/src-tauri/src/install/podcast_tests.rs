@@ -33,12 +33,19 @@ enum Fault {
     CancelAudio,
     /// Le convertisseur (faux telmi2flam) échoue.
     ConvertFail,
+    /// Le décodeur isolé des pochettes échoue (enfant mort) : images de repli.
+    ArtworkChildDies,
 }
 
 struct FakePacks {
     fault: Fault,
     entered: AtomicBool,
     drafts: Mutex<Vec<u64>>,
+    /// Concurrence demandée à chaque lot.
+    concurrency: Mutex<Vec<usize>>,
+    /// Lots en cours et maximum observé (sérialisation des préparations).
+    running: AtomicUsize,
+    max_running: AtomicUsize,
 }
 
 impl FakePacks {
@@ -47,6 +54,9 @@ impl FakePacks {
             fault,
             entered: AtomicBool::new(false),
             drafts: Mutex::default(),
+            concurrency: Mutex::default(),
+            running: AtomicUsize::new(0),
+            max_running: AtomicUsize::new(0),
         })
     }
 }
@@ -147,10 +157,16 @@ impl PackBackend for FakePacks {
         &'a self,
         items: &'a [Item],
         dir: &'a Workdir,
+        concurrency: usize,
         mut cancel: watch::Receiver<bool>,
         _on_progress: Arc<dyn Fn(Progress) + Send + Sync>,
     ) -> BoxFuture<'a, AppResult<Report>> {
         Box::pin(async move {
+            lock(&self.concurrency).push(concurrency);
+            let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_running.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            self.running.fetch_sub(1, Ordering::SeqCst);
             // Aucune URL ni titre dans les étiquettes (D11).
             for item in items {
                 assert!(!item.id.contains("://") && !item.feed.contains("://"));
@@ -245,6 +261,19 @@ impl PackBackend for FakePacks {
     fn draft_done(&self, revision: u64) {
         lock(&self.drafts).push(revision);
     }
+
+    fn convert_artwork(
+        &self,
+        bytes: &[u8],
+        kind: ArtworkKind,
+    ) -> Result<Artwork, crate::podcast::artwork::ArtworkError> {
+        if self.fault == Fault::ArtworkChildDies {
+            return Err(crate::podcast::artwork::ArtworkError::Isolated(
+                "décodeur arrêté".into(),
+            ));
+        }
+        Artwork::convert(bytes, kind)
+    }
 }
 
 impl Ctx {
@@ -254,11 +283,11 @@ impl Ctx {
         fake
     }
 
-    fn start_pack(&self) -> InstallTask {
+    async fn start_pack(&self) -> InstallTask {
         let c = composition();
         let report = packmod::validate(&c, &feeds(Fault::None));
         assert!(report.valid, "{report:?}");
-        self.service.start_pack(c, &report, Some(7)).unwrap()
+        self.service.start_pack(c, &report, Some(7)).await.unwrap()
     }
 
     /// Aucun fichier de travail ni de publication en cours ne reste.
@@ -278,7 +307,7 @@ async fn creation_complete_d_un_pack_multi_flux_avec_sous_menu() {
     let Some(py) = python() else { return };
     let ctx = Ctx::new(Some(py));
     let fake = ctx.packs(Fault::DropOne);
-    let task = ctx.start_pack();
+    let task = ctx.start_pack().await;
     assert_eq!(
         task.entry.source_id,
         crate::install::podcast::PACK_SOURCE_ID
@@ -328,6 +357,8 @@ async fn creation_complete_d_un_pack_multi_flux_avec_sous_menu() {
         [7],
         "brouillon effacé après publication"
     );
+    // `max_downloads` (2 dans `Ctx`) borne les téléchargements du lot.
+    assert_eq!(*lock(&fake.concurrency), [2]);
 }
 
 /// Injection de pannes à chaque étape : état final, aucun fichier résiduel, bibliothèque
@@ -348,7 +379,7 @@ async fn pannes_a_chaque_etape_sans_residu_et_bibliotheque_coherente() {
         let ctx = Ctx::new(Some(py.clone()));
         install_directly(&ctx, "deja", b"PK");
         let fake = ctx.packs(fault);
-        let task = ctx.start_pack();
+        let task = ctx.start_pack().await;
         if matches!(fault, Fault::CancelFetch | Fault::CancelAudio) {
             let deadline = Instant::now() + Duration::from_secs(10);
             while !fake.entered.load(Ordering::SeqCst) {
@@ -383,7 +414,7 @@ fn queued_pack(ctx_dir: &Path, fault_title: &str) -> (PackJob, String) {
     let job = PackJob {
         uuid: "5d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d".into(),
         composition: composition(),
-        draft_revision: None,
+        draft_revision: Some(9),
     };
     let cache = ctx_dir.join("cache");
     let mut entry = pack_entry(
@@ -471,7 +502,7 @@ async fn composition_invalide_refusee_par_le_backend() {
     c.menu.push(PackNode::Episode(ep("s1", "g1")));
     let report = packmod::validate(&c, &feeds(Fault::None));
     assert!(!report.valid);
-    let err = ctx.service.start_pack(c, &report, None).unwrap_err();
+    let err = ctx.service.start_pack(c, &report, None).await.unwrap_err();
     assert_eq!(err.kind(), "validation");
     // Profondeur : 4 niveaux de menus.
     let mut deep = composition();
@@ -486,7 +517,7 @@ async fn composition_invalide_refusee_par_le_backend() {
         }],
     }];
     let report = packmod::validate(&deep, &feeds(Fault::None));
-    assert!(ctx.service.start_pack(deep, &report, None).is_err());
+    assert!(ctx.service.start_pack(deep, &report, None).await.is_err());
     assert!(ctx.service.list().is_empty());
     assert!(ctx.queue().is_empty());
 }
@@ -495,7 +526,7 @@ async fn composition_invalide_refusee_par_le_backend() {
 async fn sans_python_le_pack_echoue_avant_tout_telechargement() {
     let ctx = Ctx::new(None);
     let fake = ctx.packs(Fault::None);
-    let task = ctx.start_pack();
+    let task = ctx.start_pack().await;
     let end = ctx.finished(&task.id).await;
     assert_eq!(end.error.unwrap().kind, "converter_unavailable");
     assert!(!fake.entered.load(Ordering::SeqCst), "rien téléchargé");
@@ -526,7 +557,7 @@ async fn annulation_en_attente_du_convertisseur_sans_residu() {
     ctx.packs(Fault::None);
     // Convertisseur occupé par une autre tâche : le pack préparé attend son tour.
     let busy = ctx.service.0.conversions.acquire().await.unwrap();
-    let task = ctx.start_pack();
+    let task = ctx.start_pack().await;
     ctx.wait(&task.id, |t| t.state == TaskState::Prepared).await;
     ctx.service.cancel(&task.id).unwrap();
     let end = ctx.finished(&task.id).await;
@@ -534,4 +565,103 @@ async fn annulation_en_attente_du_convertisseur_sans_residu() {
     assert_eq!(end.state, TaskState::Cancelled, "{end:?}");
     assert!(ctx.service.library_list().await.unwrap().is_empty());
     ctx.assert_clean();
+}
+
+#[tokio::test]
+async fn reprise_d_un_pack_deja_publie_ne_relance_rien() {
+    let dir = tempfile::tempdir().unwrap();
+    let (job, orphan) = queued_pack(dir.path(), "Mon pack");
+    let ctx = Ctx::with_dir(dir, None, GRACE);
+    // Arrêt brutal entre la publication et la réécriture de la file.
+    install_directly(&ctx, &job.uuid, b"PK");
+    let fake = ctx.packs(Fault::None);
+    ctx.service
+        .restore(|_, _| async { Err(AppError::NotFound("aucune source".into())) })
+        .await;
+    assert!(ctx.service.list().is_empty(), "aucune tâche relancée");
+    assert!(!fake.entered.load(Ordering::SeqCst));
+    assert_eq!(*lock(&fake.drafts), [9], "brouillon effacé");
+    assert!(!Path::new(&orphan).exists());
+    ctx.assert_clean();
+    let library = ctx.service.library_list().await.unwrap();
+    assert_eq!(library.len(), 1);
+    assert_eq!(library[0].uuid, job.uuid);
+}
+
+#[tokio::test]
+async fn deux_packs_simultanes_sont_prepares_l_un_apres_l_autre() {
+    let Some(py) = python() else { return };
+    let ctx = Ctx::new(Some(py));
+    let fake = ctx.packs(Fault::None);
+    let (a, b) = tokio::join!(ctx.start_pack(), ctx.start_pack());
+    assert_ne!(a.entry.uuid, b.entry.uuid, "deux histoires distinctes (P3)");
+    for id in [&a.id, &b.id] {
+        let end = ctx.finished(id).await;
+        assert_eq!(end.state, TaskState::Done, "{end:?}");
+    }
+    assert_eq!(lock(&fake.concurrency).len(), 2);
+    assert_eq!(
+        fake.max_running.load(Ordering::SeqCst),
+        1,
+        "une seule préparation à la fois"
+    );
+    assert_eq!(ctx.service.library_list().await.unwrap().len(), 2);
+    ctx.assert_clean();
+}
+
+#[test]
+fn le_nettoyage_ne_supprime_que_les_orphelins_releves() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join(WORK_DIR);
+    for name in ["garde", "orphelin"] {
+        std::fs::create_dir_all(work.join(name)).unwrap();
+        std::fs::write(work.join(name).join("f"), b"x").unwrap();
+    }
+    std::fs::write(work.join("fichier"), b"x").unwrap();
+    crate::install::podcast::sweep_workdirs(dir.path(), &|names| {
+        names.into_iter().filter(|n| n != "garde").collect()
+    });
+    assert!(work.join("garde/f").is_file());
+    assert!(!work.join("orphelin").exists());
+    assert!(!work.join("fichier").exists());
+}
+
+#[tokio::test]
+async fn pochettes_en_echec_dans_l_enfant_donnent_l_image_de_repli() {
+    let Some(py) = python() else { return };
+    let ctx = Ctx::new(Some(py));
+    ctx.packs(Fault::ArtworkChildDies);
+    let task = ctx.start_pack().await;
+    let done = ctx.finished(&task.id).await;
+    assert_eq!(done.state, TaskState::Done, "{done:?}");
+    assert!(
+        done.pack.unwrap().dropped.is_empty(),
+        "aucun épisode retiré (D13)"
+    );
+    ctx.assert_clean();
+}
+
+#[test]
+fn la_preparation_decode_les_pochettes_par_le_decodeur_fourni() {
+    let dir = tempfile::tempdir().unwrap();
+    let img = dir.path().join("ep-0000.img");
+    std::fs::write(&img, png()).unwrap();
+    let cover = dir.path().join("cover.img");
+    std::fs::write(&cover, png()).unwrap();
+    let calls = Mutex::new(Vec::new());
+    let (pngs, cover_png) = crate::install::podcast::convert_artwork(
+        dir.path(),
+        &[(0, Some(img.clone()))],
+        Some(cover),
+        &|_, kind| {
+            lock(&calls).push(kind);
+            Err(crate::podcast::artwork::ArtworkError::Isolated(
+                "mort".into(),
+            ))
+        },
+    )
+    .unwrap();
+    assert_eq!(*lock(&calls), [ArtworkKind::Cover, ArtworkKind::Episode]);
+    assert!(pngs.is_empty() && cover_png.is_none(), "repli");
+    assert!(!img.exists(), "originaux supprimés");
 }

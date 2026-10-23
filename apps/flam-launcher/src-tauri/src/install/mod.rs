@@ -431,6 +431,9 @@ struct Inner {
     /// **Une** préparation de pack à la fois (D5 vérifié sans compter double, réseau et ffmpeg
     /// bornés).
     preparations: Semaphore,
+    /// Taille des archives de packs préparés en attente de conversion : leur `.plain.pk`
+    /// à venir est compté dans le contrôle D5 des préparations suivantes.
+    reserved_bytes: AtomicU64,
     /// Numéro de la dernière capture de la file demandée (attribué sous le verrou `tasks`).
     queue_requested: AtomicU64,
     /// Numéro de la dernière capture écrite ; sérialise aussi les écritures du fichier.
@@ -451,6 +454,7 @@ impl InstallService {
             downloads: Arc::new(Limiter::new(settings::DEFAULT_MAX_DOWNLOADS as usize)),
             conversions: Semaphore::new(1),
             preparations: Semaphore::new(1),
+            reserved_bytes: AtomicU64::new(0),
             queue_requested: AtomicU64::new(0),
             queue_written: Mutex::new(0),
             packs: Mutex::new(None),
@@ -485,7 +489,21 @@ impl InstallService {
             // Pack (N10 a) : aucune source à interroger ; l'entrée est reconstruite à partir de
             // l'uuid enregistré, la composition est revalidée par la préparation.
             let fresh = if let Some(job) = &q.pack {
-                self.restored_pack_entry(&q.id, job, &q.entry)
+                // Arrêt brutal entre la publication et la réécriture de la file : le pack est
+                // déjà installé, rien n'est refait.
+                if self.pack_installed(&job.uuid).await {
+                    tracing::info!(
+                        "tâche {} : pack {} déjà publié, non relancé",
+                        q.id,
+                        job.uuid
+                    );
+                    let backend = lock(&self.0.packs).clone();
+                    if let (Some(revision), Some(backend)) = (job.draft_revision, backend) {
+                        let _ = blocking(move || backend.draft_done(revision)).await;
+                    }
+                    continue;
+                }
+                self.restored_pack_entry(&q.id, job, &q.entry).await
             } else {
                 lookup(q.entry.source_id.clone(), q.entry.entry_id.clone()).await
             }
@@ -933,6 +951,12 @@ impl InstallService {
         cancel: &mut watch::Receiver<bool>,
     ) -> AppResult<(StoryEntry, Produced)> {
         let prepared = self.prepare_pack(id, job, tc, cancel).await?;
+        // D5 : le `.plain.pk` à venir (environ la taille de l'archive) reste réservé jusqu'à la
+        // fin de la conversion.
+        let size = tokio::fs::metadata(&prepared.archive)
+            .await
+            .map_or(0, |m| m.len());
+        let _reserved = Reserved::new(&self.0.reserved_bytes, size);
         {
             let mut tasks = lock(&self.0.tasks);
             if let Some(slot) = tasks.iter_mut().find(|s| s.task.id == id) {
@@ -957,7 +981,7 @@ impl InstallService {
 
     /// Entrée d'un pack relu de la file (N10 a) : uuid enregistré revérifié, chemin de
     /// l'archive recalculé (le dossier de cache a pu changer), textes bornés.
-    fn restored_pack_entry(
+    async fn restored_pack_entry(
         &self,
         id: &str,
         job: &PackJob,
@@ -966,7 +990,7 @@ impl InstallService {
         if !podcast::is_pack_uuid(&job.uuid) {
             return Err(AppError::Validation("uuid de pack invalide".into()));
         }
-        let tc = (self.0.opts.resolver)()?;
+        let tc = self.toolchain().await?;
         let archive = podcast::archive_path(&tc.cache_root, id)?;
         let max = crate::podcast::archive::MAX_TITLE_CHARS;
         Ok(podcast::pack_entry(
@@ -991,19 +1015,37 @@ impl InstallService {
     /// (arrêt brutal). L'appartenance est revérifiée sous le verrou des tâches juste avant
     /// chaque suppression : le dossier d'une tâche n'est créé qu'après son insertion.
     async fn sweep_workdirs(&self) {
-        let Ok(tc) = (self.0.opts.resolver)() else {
+        let Ok(tc) = self.toolchain().await else {
             return;
         };
         let inner = self.0.clone();
         let _ = blocking(move || {
-            podcast::sweep_workdirs(&tc.cache_root, &|name: &str, remove: &dyn Fn()| {
+            podcast::sweep_workdirs(&tc.cache_root, &|names: Vec<String>| {
                 let tasks = lock(&inner.tasks);
-                if !tasks.iter().any(|s| s.task.id == name) {
-                    remove();
-                }
+                names
+                    .into_iter()
+                    .filter(|name| !tasks.iter().any(|s| &s.task.id == name))
+                    .collect()
             })
         })
         .await;
+    }
+
+    /// Outils et dossiers effectifs, lus hors du runtime asynchrone (`settings.json`).
+    async fn toolchain(&self) -> AppResult<Toolchain> {
+        let resolver = self.0.opts.resolver.clone();
+        blocking(move || resolver()).await?
+    }
+
+    /// Vrai si le pack `uuid` est déjà dans la bibliothèque (fichier présent).
+    async fn pack_installed(&self, uuid: &str) -> bool {
+        let Ok(tc) = self.toolchain().await else {
+            return false;
+        };
+        let uuid = uuid.to_string();
+        blocking(move || Library::new(&tc.cache_root).playable(&uuid).is_ok())
+            .await
+            .unwrap_or(false)
     }
 
     /// Produit le `.plain.pk` à publier dans `staged`. Renvoie l'archive téléchargée (à
@@ -1446,6 +1488,25 @@ async fn resolve_entry(
         Source::Podcast { .. } => Err(AppError::Validation(
             "un épisode de podcast ne s'installe pas seul : il faut créer un pack".into(),
         )),
+    }
+}
+
+/// Réservation d'espace disque (D5), rendue à la destruction.
+struct Reserved<'a> {
+    counter: &'a AtomicU64,
+    bytes: u64,
+}
+
+impl<'a> Reserved<'a> {
+    fn new(counter: &'a AtomicU64, bytes: u64) -> Self {
+        counter.fetch_add(bytes, Ordering::SeqCst);
+        Self { counter, bytes }
+    }
+}
+
+impl Drop for Reserved<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(self.bytes, Ordering::SeqCst);
     }
 }
 

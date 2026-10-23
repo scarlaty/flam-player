@@ -42,7 +42,7 @@ use crate::catalog::blocking;
 use crate::podcast::archive::{
     self, MenuEntry, Pack, PackEpisode, PackMetadata, MAX_AUDIO_BYTES, MAX_TOTAL_AUDIO_BYTES,
 };
-use crate::podcast::artwork::{Artwork, ArtworkKind};
+use crate::podcast::artwork::{self, Artwork, ArtworkError, ArtworkKind};
 use crate::podcast::fetch::{self, Item, Progress, Report, Workdir};
 use crate::podcast::pack::{
     self, CachedFeed, CoverChoice, EpisodeRef, Feeds, PackComposition, PackNode, ResolvedMetadata,
@@ -102,11 +102,12 @@ pub trait PackBackend: Send + Sync {
     fn feeds<'a>(&'a self, composition: &'a PackComposition) -> BoxFuture<'a, AppResult<Feeds>>;
     /// Espace libre du volume de `dir` (`None` : inconnu, non bloquant).
     fn free_space(&self, dir: &Path) -> Option<u64>;
-    /// Téléchargement du lot (#213).
+    /// Téléchargement du lot (#213), `concurrency` fichiers à la fois.
     fn fetch<'a>(
         &'a self,
         items: &'a [Item],
         dir: &'a Workdir,
+        concurrency: usize,
         cancel: watch::Receiver<bool>,
         on_progress: Arc<dyn Fn(Progress) + Send + Sync>,
     ) -> BoxFuture<'a, AppResult<Report>>;
@@ -125,6 +126,12 @@ pub trait PackBackend: Send + Sync {
     ) -> BoxFuture<'a, AppResult<Vec<AppResult<u64>>>>;
     /// Pack publié : efface le brouillon s'il n'a pas changé depuis `revision`.
     fn draft_done(&self, revision: u64);
+    /// Conversion d'une pochette (#215), bloquante. Par défaut **dans un processus enfant**
+    /// (#263, [`artwork::convert_isolated`]) : un décodeur qui panique sur une image hostile
+    /// n'arrête pas le launcher ; l'échec donne l'image de repli (D13).
+    fn convert_artwork(&self, bytes: &[u8], kind: ArtworkKind) -> Result<Artwork, ArtworkError> {
+        artwork::convert_isolated(bytes, kind, None)
+    }
 }
 
 /// Accès réels : état Tauri (configuration, flux en cache), réseau gardé (D10), ffmpeg.
@@ -154,13 +161,18 @@ impl PackBackend for LivePackBackend {
         &'a self,
         items: &'a [Item],
         dir: &'a Workdir,
+        concurrency: usize,
         cancel: watch::Receiver<bool>,
         on_progress: Arc<dyn Fn(Progress) + Send + Sync>,
     ) -> BoxFuture<'a, AppResult<Report>> {
         Box::pin(async move {
+            let limits = fetch::Limits {
+                concurrency,
+                ..fetch::Limits::default()
+            };
             let fetcher = fetch::Fetcher::new(crate::podcast::net::NetPolicy::strict())?;
             fetcher
-                .fetch_all(items, dir, &fetch::Limits::default(), cancel, on_progress)
+                .fetch_all(items, dir, &limits, cancel, on_progress)
                 .await
         })
     }
@@ -281,6 +293,9 @@ pub fn pack_entry(uuid: &str, meta: &ResolvedMetadata, archive: &Path) -> StoryE
         voice: None,
         license: None,
         thumb_url: None,
+        // Archive du dossier de travail : la conversion la lit, puis elle est supprimée (N8 a).
+        // Le lien recopié dans `library.json` (`LibraryEntry::source`) est donc **mort** après
+        // la publication : sans usage pour un pack (`PACK_SOURCE_ID` n'est pas une source).
         download_url: archive.display().to_string(),
         size: None,
         updated_at: None,
@@ -300,27 +315,34 @@ pub fn archive_path(cache_root: &Path, id: &str) -> AppResult<PathBuf> {
 }
 
 /// Supprime les dossiers de travail orphelins (arrêt brutal : le `Drop` de [`Workdir`] ne
-/// s'exécute pas à l'arrêt du runtime). `guard(nom, supprimer)` appelle `supprimer` si le
-/// dossier `nom` n'appartient à aucune tâche, en tenant le verrou des tâches pendant la
-/// suppression (une tâche créée entre-temps ne perd jamais son dossier). Bloquant.
-pub fn sweep_workdirs(cache_root: &Path, guard: &dyn Fn(&str, &dyn Fn())) {
-    let Ok(entries) = std::fs::read_dir(cache_root.join(WORK_DIR)) else {
+/// s'exécute pas à l'arrêt du runtime). Bloquant.
+///
+/// Ordre sûr : le dossier est **lu d'abord**, puis `orphans` (appelé une fois, sous le verrou
+/// des tâches) garde les noms qui n'appartiennent à aucune tâche ; la suppression se fait hors
+/// verrou. Le dossier d'une tâche n'est créé qu'après son insertion dans la liste : un nom lu
+/// avant le relevé appartient soit à une tâche déjà listée (gardé), soit à aucune (une tâche
+/// créée ensuite a un identifiant neuf).
+pub fn sweep_workdirs(cache_root: &Path, orphans: &dyn Fn(Vec<String>) -> Vec<String>) {
+    let work = cache_root.join(WORK_DIR);
+    let Ok(entries) = std::fs::read_dir(&work) else {
         return;
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let path = entry.path();
-        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-        guard(&name, &|| {
-            let result = if is_dir {
-                std::fs::remove_dir_all(&path)
-            } else {
-                std::fs::remove_file(&path)
-            };
-            if let Err(err) = result {
-                tracing::warn!("dossier de travail orphelin {name} non supprimé : {err}");
-            }
-        });
+    let names: Vec<String> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    for name in orphans(names) {
+        let Ok(path) = child_of(&work, &name) else {
+            continue;
+        };
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if let Err(err) = result {
+            tracing::warn!("dossier de travail orphelin {name} non supprimé : {err}");
+        }
     }
 }
 
@@ -358,7 +380,7 @@ pub(super) async fn finish_workdir(workdir: Workdir) {
 
 impl InstallService {
     /// Ajoute une tâche de pack pour une composition **déjà validée** (`report.valid`).
-    pub fn start_pack(
+    pub async fn start_pack(
         &self,
         composition: PackComposition,
         report: &ValidationReport,
@@ -368,7 +390,7 @@ impl InstallService {
             (Some(m), true) => m,
             _ => return Err(AppError::Validation(invalid_message(report))),
         };
-        let tc = (self.0.opts.resolver)()?;
+        let tc = self.toolchain().await?;
         let id = uuid::Uuid::new_v4().to_string();
         let uuid = archive::new_pack_uuid().hyphenated().to_string();
         let archive = archive_path(&tc.cache_root, &id)?;
@@ -436,7 +458,10 @@ impl InstallService {
                 "convertisseur telmi2flam.py introuvable".into(),
             ));
         }
-        backend.ready()?;
+        {
+            let backend = backend.clone();
+            blocking(move || backend.ready()).await??;
+        }
         self.emit_phase(id, 0.0, "validation");
 
         // Revalidation complète (reprise : flux changé entre-temps).
@@ -450,10 +475,20 @@ impl InstallService {
         let estimate = report
             .estimated_bytes
             .saturating_add((report.unknown_size as u64).saturating_mul(UNKNOWN_EPISODE_BYTES));
+        // Les packs préparés en attente du convertisseur produiront aussi leur `.plain.pk`.
+        let reserved = self
+            .0
+            .reserved_bytes
+            .load(std::sync::atomic::Ordering::SeqCst);
         let needed = estimate
             .saturating_mul(DISK_FACTOR)
-            .saturating_add(DISK_MARGIN);
-        if let Some(free) = backend.free_space(&tc.cache_root) {
+            .saturating_add(DISK_MARGIN)
+            .saturating_add(reserved);
+        let free = {
+            let (backend, root) = (backend.clone(), tc.cache_root.clone());
+            blocking(move || backend.free_space(&root)).await?
+        };
+        if let Some(free) = free {
             if free < needed {
                 return Err(AppError::Io(std::io::Error::new(
                     std::io::ErrorKind::StorageFull,
@@ -468,8 +503,17 @@ impl InstallService {
         if *cancel.borrow() {
             return Err(AppError::Cancelled);
         }
+        let concurrency = tc.max_downloads.clamp(1, 4);
         self.prepare_in(
-            id, job, &feeds, &report, metadata, workdir, &*backend, cancel,
+            id,
+            job,
+            &feeds,
+            &report,
+            metadata,
+            workdir,
+            &backend,
+            concurrency,
+            cancel,
         )
         .await
     }
@@ -494,7 +538,8 @@ impl InstallService {
         report: &ValidationReport,
         metadata: ResolvedMetadata,
         workdir: &Workdir,
-        backend: &dyn PackBackend,
+        backend: &Arc<dyn PackBackend>,
+        concurrency: usize,
         cancel: &mut watch::Receiver<bool>,
     ) -> AppResult<(PathBuf, StoryEntry)> {
         // Épisodes retrouvés dans les flux en cache (validation réussie : tous présents).
@@ -552,7 +597,7 @@ impl InstallService {
             })
         };
         let fetched = backend
-            .fetch(&items, workdir, cancel.clone(), progress)
+            .fetch(&items, workdir, concurrency, cancel.clone(), progress)
             .await?;
         if *cancel.borrow() {
             return Err(AppError::Cancelled);
@@ -607,9 +652,16 @@ impl InstallService {
             }
         }
         if kept.is_empty() {
-            return Err(AppError::DownloadInvalid(
-                "aucun épisode utilisable (téléchargement ou conversion en échec)".into(),
-            ));
+            let titles: Vec<String> = dropped
+                .iter()
+                .take(3)
+                .filter_map(|&n| chosen.get(n).map(|c| archive::label(&c.episode.title, "?")))
+                .collect();
+            let more = if dropped.len() > 3 { ", …" } else { "" };
+            return Err(AppError::DownloadInvalid(format!(
+                "aucun épisode utilisable (téléchargement ou conversion en échec) : {}{more}",
+                titles.join(", ")
+            )));
         }
         if audio_total > MAX_TOTAL_AUDIO_BYTES {
             return Err(AppError::DownloadInvalid(format!(
@@ -667,7 +719,13 @@ impl InstallService {
         let dir = workdir.path().to_path_buf();
         let jobs: Vec<(usize, Option<PathBuf>)> =
             kept.iter().map(|(n, _, img)| (*n, img.clone())).collect();
-        let (pngs, cover) = blocking(move || convert_artwork(&dir, &jobs, cover_source)).await??;
+        let converter = backend.clone();
+        let (pngs, cover) = blocking(move || {
+            convert_artwork(&dir, &jobs, cover_source, &|bytes, kind| {
+                converter.convert_artwork(bytes, kind)
+            })
+        })
+        .await??;
 
         // 4. Archive Telmi (90 à 100 %).
         self.emit_phase(id, 90.0, "archive");
@@ -734,19 +792,23 @@ impl InstallService {
     }
 }
 
+/// Décodeur de pochette ([`PackBackend::convert_artwork`]).
+pub(super) type ArtworkDecoder = dyn Fn(&[u8], ArtworkKind) -> Result<Artwork, ArtworkError>;
+
 /// Convertit les pochettes (640 × 480) et la couverture (512 × 512) en PNG ; supprime les
 /// originaux. Une image illisible donne l'image de repli (D13). Bloquant.
-fn convert_artwork(
+pub(super) fn convert_artwork(
     dir: &Path,
     jobs: &[(usize, Option<PathBuf>)],
     cover: Option<PathBuf>,
+    decode: &ArtworkDecoder,
 ) -> AppResult<(HashMap<usize, PathBuf>, Option<PathBuf>)> {
     let convert = |src: &Path, kind: ArtworkKind, dest: PathBuf| -> AppResult<Option<PathBuf>> {
         let bytes = match read_bounded(src, fetch::MAX_IMAGE_BYTES) {
             Some(b) => b,
             None => return Ok(None),
         };
-        match Artwork::convert(&bytes, kind) {
+        match decode(&bytes, kind) {
             Ok(art) => {
                 std::fs::write(&dest, &art.png)?;
                 Ok(Some(dest))
@@ -854,7 +916,9 @@ pub async fn pack_create(
     if !report.valid {
         return Ok(PackCreated { task: None, report });
     }
-    let task = service.start_pack(composition, &report, draft_revision)?;
+    let task = service
+        .start_pack(composition, &report, draft_revision)
+        .await?;
     Ok(PackCreated {
         task: Some(task),
         report,
