@@ -12,6 +12,10 @@
 //! `[A-Za-z0-9_-]`, runtime vérifié par `build.rs`) ; coût linéaire en la taille de l'archive
 //! (chaque image est décodée une fois, la couverture deux fois comme en Python) ; annulation
 //! consultée avant chaque asset et dans les boucles de lignes des images.
+//!
+//! Écarts assumés avec Python (parité vérifiée par `tests/package_parity.rs` sous ces
+//! conditions) : vignette en mode `bandes` seulement (défaut Python `flou`, #282) ; MP3 hors
+//! 44 100 Hz recopiés tels quels, comme Python sans ffmpeg (rééchantillonnage reporté, #22).
 
 use std::io::{Read, Seek};
 
