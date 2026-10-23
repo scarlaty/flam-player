@@ -15,9 +15,13 @@
 //!   total du lot (arrêt propre de tout le lot, fichiers supprimés) ;
 //! - coupure en cours de fichier : reprise automatique (jusqu'à 3 essais) avec `Range` ;
 //! - débit minimal : un fichier qui reçoit moins de 1 Kio/s pendant 2 minutes est retiré
-//!   (`TimedOut`), en plus du délai par fichier ;
+//!   (`TimedOut`), en plus du délai par fichier ; après une reprise, seuls les octets reçus
+//!   par la nouvelle requête comptent ;
+//! - durée du lot bornée ([`Limits::batch_timeout`], 2 h) : au-delà, tout le lot est arrêté et
+//!   ses fichiers supprimés ;
 //! - aucune URL ni identifiant d'épisode dans les journaux (D11) : seul l'index dans le lot ;
-//!   `Item::id` et `Item::feed` sont des libellés, jamais des URL (refusé par `fetch_all`).
+//!   `Item::id` n'est jamais une URL (lot refusé), un `Item::feed` qui en a la forme est
+//!   remplacé par [`NEUTRAL_FEED_LABEL`].
 //!
 //! Les fichiers sont nommés `ep-<n>.audio` et `ep-<n>.img` dans le dossier de travail ; ce
 //! dernier est supprimé par l'appelant après la publication du pack (N8 a, [`Workdir`]).
@@ -47,6 +51,11 @@ pub const MIN_RATE_BYTES_PER_SEC: u64 = 1024;
 pub const MIN_RATE_WINDOW: Duration = Duration::from_secs(120);
 /// Octets par pochette (comme l'entrée de la conversion).
 pub const MAX_IMAGE_BYTES: u64 = super::artwork::MAX_INPUT_BYTES as u64;
+/// Durée maximale d'un lot complet : le débit minimal seul laisserait 50 épisodes et leurs
+/// pochettes à ~1 Kio/s occuper le lot une douzaine d'heures.
+pub const BATCH_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+/// Libellé qui remplace un `Item::feed` ayant la forme d'une URL (D11).
+pub const NEUTRAL_FEED_LABEL: &str = "flux";
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
@@ -68,6 +77,9 @@ pub struct Limits {
     pub min_rate_bytes_per_sec: u64,
     /// Fenêtre de mesure du débit minimal (zéro : désactivé).
     pub min_rate_window: Duration,
+    /// Durée maximale du lot entier ; au-delà, le lot est arrêté et ses fichiers supprimés.
+    /// Contrairement à `min_rate_window`, zéro ne désactive rien : le lot expire aussitôt.
+    pub batch_timeout: Duration,
 }
 
 impl Default for Limits {
@@ -81,6 +93,7 @@ impl Default for Limits {
             file_timeout: Duration::from_secs(30 * 60),
             min_rate_bytes_per_sec: MIN_RATE_BYTES_PER_SEC,
             min_rate_window: MIN_RATE_WINDOW,
+            batch_timeout: BATCH_TIMEOUT,
         }
     }
 }
@@ -91,19 +104,30 @@ pub struct Item {
     /// Identifiant stable de l'épisode (rapport). Jamais une URL (D11) : un guid RSS qui en
     /// est une doit être remplacé par un identifiant local ; `fetch_all` le refuse sinon.
     pub id: String,
-    /// Libellé affichable du flux d'origine (plusieurs flux possibles dans un même lot) ; jamais
-    /// une URL, comme `id`.
+    /// Libellé affichable du flux d'origine (plusieurs flux possibles dans un même lot). #217 y
+    /// passe l'identifiant local de la source, pas son titre ni son URL. Une valeur qui a la
+    /// forme d'une URL (titre de flux mal choisi, URL passée par erreur) n'est ni journalisée ni
+    /// renvoyée : elle est remplacée par [`NEUTRAL_FEED_LABEL`], sans faire échouer le lot.
     pub feed: String,
     pub audio_url: String,
     pub image_url: Option<String>,
 }
 
-// Pas de `Debug` dérivé : il afficherait les URL.
+// Pas de `Debug` dérivé : il afficherait les URL. Un `id` ou un `feed` qui a la forme d'une
+// URL est masqué (D11) : `fetch_all` les refuse ou les remplace, mais un `Item` peut être
+// affiché avant.
 impl std::fmt::Debug for Item {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let shown = |v: &str| {
+            if looks_like_url(v) {
+                NEUTRAL_FEED_LABEL.to_string()
+            } else {
+                v.to_string()
+            }
+        };
         f.debug_struct("Item")
-            .field("id", &self.id)
-            .field("feed", &self.feed)
+            .field("id", &shown(&self.id))
+            .field("feed", &shown(&self.feed))
             .finish_non_exhaustive()
     }
 }
@@ -190,10 +214,15 @@ impl Workdir {
         &self.path
     }
 
-    /// Supprime le dossier et son contenu ; l'erreur éventuelle est renvoyée.
-    pub fn finish(mut self) -> AppResult<()> {
+    /// Supprime le dossier et son contenu (hors du thread asynchrone appelant) ; l'erreur
+    /// éventuelle est renvoyée.
+    pub async fn finish(mut self) -> AppResult<()> {
         self.armed = false;
-        match std::fs::remove_dir_all(&self.path) {
+        let path = std::mem::take(&mut self.path);
+        let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(path))
+            .await
+            .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
+        match removed {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
         }
@@ -205,8 +234,10 @@ impl Drop for Workdir {
         if self.armed {
             let path = std::mem::take(&mut self.path);
             // Suppression hors du thread appelant (souvent un thread asynchrone) si possible.
-            // Résidu : à l'arrêt du runtime la tâche peut être annulée ; le nettoyage au
-            // démarrage (#217, N10 a) rattrape ce cas.
+            // TODO(#217) : à l'arrêt du runtime cette tâche peut ne jamais s'exécuter, et un
+            // arrêt brutal ne passe pas ici : le dossier `podcast-*` reste orphelin. Le
+            // nettoyage au démarrage de #217 (N10 a) doit supprimer ces dossiers ; à vérifier
+            // dans #217.
             match tokio::runtime::Handle::try_current() {
                 Ok(handle) => {
                     drop(handle.spawn_blocking(move || {
@@ -247,13 +278,10 @@ impl Fetcher {
         if items.is_empty() {
             return Err(AppError::Validation("aucun épisode à télécharger".into()));
         }
-        if items
-            .iter()
-            .any(|i| looks_like_url(&i.id) || looks_like_url(&i.feed))
-        {
+        if items.iter().any(|i| looks_like_url(&i.id)) {
             // Jamais de valeur dans le message : ce pourrait être une URL secrète (D11).
             return Err(AppError::Validation(
-                "identifiant ou libellé de flux invalide (une URL n'est pas permise)".into(),
+                "identifiant d'épisode invalide (une URL n'est pas permise)".into(),
             ));
         }
         let dir = dir.path();
@@ -278,7 +306,10 @@ impl Fetcher {
         });
         let semaphore = Arc::new(Semaphore::new(limits.concurrency.max(1)));
         let mut set = JoinSet::new();
-        for (index, item) in items.iter().cloned().enumerate() {
+        for (index, mut item) in items.iter().cloned().enumerate() {
+            if looks_like_url(&item.feed) {
+                item.feed = NEUTRAL_FEED_LABEL.to_string();
+            }
             let shared = Arc::clone(&shared);
             let semaphore = Arc::clone(&semaphore);
             set.spawn(async move {
@@ -298,6 +329,9 @@ impl Fetcher {
         let mut outcomes: Vec<Option<ItemOutcome>> = (0..items.len()).map(|_| None).collect();
         let mut fatal: Option<AppError> = None;
         let mut user_cancelled = false;
+        let mut batch_timed_out = false;
+        let deadline = tokio::time::sleep(limits.batch_timeout);
+        tokio::pin!(deadline);
         loop {
             tokio::select! {
                 joined = set.join_next() => match joined {
@@ -316,16 +350,29 @@ impl Fetcher {
                     user_cancelled = true;
                     shared.abort.send_replace(true);
                 }
+                // Les tâches s'arrêtent sur `abort` ; la boucle continue jusqu'à leur fin pour
+                // qu'aucune n'écrive après la suppression des fichiers.
+                () = &mut deadline, if !batch_timed_out => {
+                    batch_timed_out = true;
+                    shared.abort.send_replace(true);
+                }
             }
         }
 
-        if user_cancelled || fatal.is_some() || shared.exceeded.load(Ordering::Relaxed) {
+        if user_cancelled
+            || batch_timed_out
+            || fatal.is_some()
+            || shared.exceeded.load(Ordering::Relaxed)
+        {
             remove_batch_files(dir).await;
             if let Some(err) = fatal {
                 return Err(err);
             }
             if user_cancelled {
                 return Err(AppError::Cancelled);
+            }
+            if batch_timed_out {
+                return Err(AppError::DownloadInvalid("délai du lot dépassé".into()));
             }
             return Err(AppError::DownloadInvalid(format!(
                 "le pack dépasse le plafond de {} octets au total",
@@ -505,9 +552,17 @@ async fn fetch_file_counted(
             max_bytes,
             ignores_proxy: true,
         };
-        let received_now = AtomicU64::new(0);
+        // Octets reçus par cette tentative seulement (débit minimal) : le premier appel donne
+        // la taille déjà présente du `.part` repris, qui ne doit pas payer la première fenêtre.
+        let fresh = AtomicU64::new(0);
+        let mut previous: Option<u64> = None;
         let mut on_progress = |received: u64, _total: Option<u64>| {
-            received_now.store(received, Ordering::Relaxed);
+            if let Some(prev) = previous {
+                // Défense : `received` ne décroît pas au sein d'une tentative (une reprise
+                // refusée sort avant tout appel) ; une baisse n'ajouterait rien.
+                fresh.fetch_add(received.saturating_sub(prev), Ordering::Relaxed);
+            }
+            previous = Some(received);
             if received >= *counted {
                 shared
                     .total
@@ -533,7 +588,7 @@ async fn fetch_file_counted(
             &mut on_progress,
         );
         let slow = too_slow(
-            &received_now,
+            &fresh,
             shared.limits.min_rate_window,
             shared.limits.min_rate_bytes_per_sec,
         );
@@ -583,7 +638,8 @@ fn looks_like_url(value: &str) -> bool {
 }
 
 /// Se termine quand moins de `min_rate` octets/s ont été reçus sur une fenêtre `window`
-/// (jamais si `window` est nulle). `received` : octets reçus par la tentative en cours.
+/// (jamais si `window` est nulle). `received` : octets reçus par la tentative en cours, sans
+/// ceux du `.part` repris.
 async fn too_slow(received: &AtomicU64, window: Duration, min_rate: u64) {
     if window.is_zero() {
         std::future::pending::<()>().await;
