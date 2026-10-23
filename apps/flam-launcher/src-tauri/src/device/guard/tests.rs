@@ -708,8 +708,8 @@ fn la_recherche_dans_le_cache_ne_panique_jamais() {
 fn apres_un_retrait_l_etat_ne_montre_plus_l_histoire_retiree() {
     // #345 : le contrôle fait par la garde d'un retrait n'est pas réutilisé par « Ma Flam ».
     let dev = device(&mdf_v2_known());
-    let ctx = confirmed_ctx(dev.path());
     story(dev.path(), STORY, &key_v2(), &wrong_info());
+    let ctx = confirmed_ctx(dev.path());
     let mdf = mdf_v2_known();
     let status = firmware_status(dev.path(), &mdf, &ctx, false);
     assert!(matches!(status.coherence, Coherence::Contradiction { .. }));
@@ -869,6 +869,9 @@ fn une_version_a_point_final_est_lue() {
         ("main: 2.4.2. comm: x", Family::V2, Some("2.4.2")),
         ("main: 2..-x", Family::Unsupported, Some("2.")),
         ("main: 2..1-x", Family::Unsupported, Some("2..1")),
+        ("main: 2.4.x", Family::Unsupported, Some("2.4.")),
+        ("1.x-", Family::Unsupported, Some("1.")),
+        ("main: 2.4.2.-x", Family::V2, Some("2.4.2")),
     ] {
         let layout = analyze(&mdf_with(KNOWN_HEADER, text));
         assert_eq!(layout.family, family, "{text}");
@@ -884,4 +887,18 @@ fn l_affichage_n_enumere_pas_les_lecteurs() {
     let status = firmware_status(dev.path(), &mdf_v1_real(), &ctx, false);
     assert_eq!(status.family, Family::V1);
     assert!(ctx.detected_roots.get().is_none());
+}
+
+#[test]
+fn chaque_ecriture_other_change_la_generation() {
+    // #345 : une scrutation commencée avant un retrait ne garde pas son contrôle (génération
+    // relue au stockage) ; ici, la génération avance à chaque garde `Other`, pas à l'envoi.
+    let dev = device(&mdf_v2_known());
+    let ctx = confirmed_ctx(dev.path());
+    let key = session_key(dev.path(), &mdf_v2_known());
+    let before = ctx.session.with(key.clone(), |e| e.generation);
+    check_write(dev.path(), &ctx, WriteKind::Other).unwrap();
+    assert_eq!(ctx.session.with(key.clone(), |e| e.generation), before + 1);
+    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+    assert_eq!(ctx.session.with(key, |e| e.generation), before + 1);
 }

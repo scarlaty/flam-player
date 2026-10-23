@@ -588,6 +588,9 @@ pub struct KeySession {
 #[derive(Debug, Clone, Default)]
 struct SessionEntry {
     coherence: Option<(Coherence, Instant)>,
+    /// Nombre d'écritures `Other` contrôlées : une scrutation commencée avant l'une d'elles ne
+    /// garde pas son résultat, peut-être antérieur à un retrait (#345).
+    generation: u64,
     /// Taille et date du `library.cache` déjà examiné sans succès.
     cache_seen: Option<(u64, Option<std::time::SystemTime>)>,
     usb_logged: bool,
@@ -887,7 +890,12 @@ fn assess(root: &Path, mdf: &[u8], ctx: &WriteContext<'_>, mode: Mode) -> Assess
     }
 
     // Cohérence (informative ; une contradiction refuse l'envoi).
-    let cached = ctx.session.with(key.clone(), |e| e.coherence.clone());
+    let (cached, generation) = ctx.session.with(key.clone(), |e| {
+        if mode == Mode::Write(WriteKind::Other) {
+            e.generation += 1;
+        }
+        (e.coherence.clone(), e.generation)
+    });
     let coherence = match (mode, cached) {
         (Mode::Status { .. }, Some((c, at))) if busy || at.elapsed() < STATUS_REUSE => c,
         (Mode::Status { busy: true }, None) => Coherence::NotChecked,
@@ -897,10 +905,16 @@ fn assess(root: &Path, mdf: &[u8], ctx: &WriteContext<'_>, mode: Mode) -> Assess
                 // retirer l'histoire en cause : le contrôle n'est pas gardé pour l'affichage, et
                 // celui d'avant est oublié, pour que « Ma Flam » ne montre pas un UUID retiré
                 // pendant [`STATUS_REUSE`] (#345). L'envoi (`Send`) ne retire rien et n'écrit que
-                // des histoires du launcher, exclues du contrôle : il le garde.
-                let stored =
-                    (mode != Mode::Write(WriteKind::Other)).then(|| (c.clone(), Instant::now()));
-                ctx.session.with(key.clone(), |e| e.coherence = stored);
+                // des histoires du launcher, exclues du contrôle : il le garde. Une scrutation
+                // dépassée par une écriture `Other` (génération changée) ne garde rien. Pendant
+                // l'écriture, la cohérence s'affiche donc « non contrôlée ».
+                ctx.session.with(key.clone(), |e| {
+                    if mode == Mode::Write(WriteKind::Other) {
+                        e.coherence = None;
+                    } else if e.generation == generation {
+                        e.coherence = Some((c.clone(), Instant::now()));
+                    }
+                });
                 c
             }
             Err(err) => {
@@ -1023,6 +1037,10 @@ pub fn unreadable_status(size: u64, detail: String) -> FirmwareStatus {
 /// Enregistre la confirmation « Firmware 2.x en test : j'ai sauvegardé ma Flam », mémorisée par
 /// empreinte de `.mdf`. Acceptée seulement si la confirmation est la seule chose qui manque ;
 /// sinon rend la raison du refus. Rien n'est écrit sur la Flam.
+///
+/// TODO(#326, NIT) : la Flam confirmée est celle relue à la lettre de lecteur `root`, pas
+/// forcément celle affichée si une autre a été branchée entre-temps à la même lettre. Lier la
+/// confirmation à l'état affiché demande un jeton non secret côté interface : non traité.
 pub fn confirm(root: &Path, ctx: &WriteContext<'_>) -> Result<FirmwareStatus, WriteRefused> {
     check_root(root, ctx)?;
     let mdf = read_device_mdf(root)?;

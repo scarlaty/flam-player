@@ -1037,14 +1037,20 @@ fn firmware_main(text: &[u8]) -> Option<(String, VersionForm)> {
         Some(at) => (&text[at + "main:".len()..], VersionForm::Main),
         None => (&text[..], VersionForm::Bare),
     };
+    let rest = rest.trim_start();
     let version: String = rest
-        .trim_start()
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.')
         .collect();
-    // Un point final unique (« 1.15.14. », fin de phrase) n'appartient pas à la version (#326) ;
-    // les formes douteuses (`2..1`, `2..`, `.2`) restent refusées par `firmware_family`.
-    let version = version.strip_suffix('.').unwrap_or(&version).to_string();
+    // Un point final unique (« 1.15.14. », fin de phrase) n'appartient pas à la version (#326),
+    // s'il est suivi de la fin du champ, d'un blanc, d'un nul ou d'un tiret. Les formes douteuses
+    // (`2..1`, `2..`, `.2`, `2.4.x`, `1.rc`) restent refusées par `firmware_family`.
+    let next = rest[version.len()..].chars().next();
+    let ends_field = next.is_none_or(|c| c.is_whitespace() || c == '\0' || c == '-');
+    let version = match version.strip_suffix('.') {
+        Some(trimmed) if ends_field => trimmed.to_string(),
+        _ => version,
+    };
     version
         .starts_with(|c: char| c.is_ascii_digit())
         .then_some((version, form))
