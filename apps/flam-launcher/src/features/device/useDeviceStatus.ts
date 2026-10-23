@@ -10,8 +10,17 @@ export interface DeviceStatusState {
   status: DeviceStatus | null;
   /** Échec du dernier appel (effacé au premier succès suivant). */
   error: AppError | null;
-  /** Relance aussitôt la scrutation (bouton « Réessayer »). */
-  retry: () => void;
+  /**
+   * Relance aussitôt la scrutation (bouton « Réessayer »). Renvoie le numéro de la demande : la
+   * réponse à cette demande est celle d'un appel lancé après elle, signalée par `answered`.
+   */
+  retry: () => number;
+  /**
+   * Numéro de la dernière demande de `retry` prise en compte par la réponse (ou l'échec) la plus
+   * récente. Une réponse d'un appel déjà en vol au moment du clic porte un numéro plus ancien :
+   * elle ne répond pas à « Réessayer ».
+   */
+  answered: number;
 }
 
 /**
@@ -48,7 +57,9 @@ export function useDeviceStatus(
   });
   const [status, setStatus] = useState<DeviceStatus | null>(null);
   const [error, setError] = useState<AppError | null>(null);
+  const [answered, setAnswered] = useState(0);
   const pollNow = useRef<() => void>(() => undefined);
+  const requests = useRef(0);
 
   useEffect(() => {
     if (!enabled) return;
@@ -63,16 +74,22 @@ export function useDeviceStatus(
         return;
       }
       inFlight = true;
+      // Les demandes de « Réessayer » faites avant ce départ sont servies par cet appel.
+      const served = requests.current;
       try {
         if (!document.hidden) {
           const next = await fetchStatus();
           if (active) {
             setStatus(next);
             setError(null);
+            setAnswered(served);
           }
         }
       } catch (caught) {
-        if (active) setError(toAppError(caught));
+        if (active) {
+          setError(toAppError(caught));
+          setAnswered(served);
+        }
       } finally {
         inFlight = false;
       }
@@ -98,6 +115,10 @@ export function useDeviceStatus(
     };
   }, [enabled]);
 
-  const retry = useCallback(() => pollNow.current(), []);
-  return { status, error, retry };
+  const retry = useCallback(() => {
+    const request = ++requests.current;
+    pollNow.current();
+    return request;
+  }, []);
+  return { status, error, retry, answered };
 }
