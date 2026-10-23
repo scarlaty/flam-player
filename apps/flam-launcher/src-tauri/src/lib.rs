@@ -20,6 +20,8 @@ pub mod settings;
 pub mod sources;
 pub mod storage;
 pub mod story;
+#[cfg(test)]
+mod testlog;
 pub mod thumbnail;
 pub mod watch;
 

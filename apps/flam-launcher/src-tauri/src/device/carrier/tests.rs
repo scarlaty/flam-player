@@ -3,7 +3,6 @@
 
 use std::io::Write;
 use std::sync::atomic::AtomicBool;
-use std::sync::Mutex;
 
 use super::*;
 use crate::device::crypto::encrypt_zero_padded;
@@ -453,29 +452,14 @@ fn dpapi_aller_retour() {
     assert_eq!(back.key_file(), &test_key_file());
 }
 
-/// Sortie des journaux capturée pendant `f`.
+/// Journaux émis pendant `f`, lus dans le journal **global** partagé des tests (`testlog`) : un
+/// abonné local au thread (`with_default`) était rendu aveugle par le cache d'intérêt des
+/// callsites quand un test parallèle sans abonné les atteignait d'abord (#430). Le texte
+/// contient donc aussi les traces des autres tests : on n'y vérifie que l'absence d'un secret.
 pub(crate) fn capture_logs(f: impl FnOnce()) -> String {
-    #[derive(Clone, Default)]
-    struct Buf(std::sync::Arc<Mutex<Vec<u8>>>);
-    impl io::Write for Buf {
-        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(data);
-            Ok(data.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-    let buf = Buf::default();
-    let writer = buf.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(move || writer.clone())
-        .finish();
-    tracing::subscriber::with_default(subscriber, f);
-    let out = buf.0.lock().unwrap().clone();
-    String::from_utf8_lossy(&out).into_owned()
+    let logs = crate::testlog::Logs::capture();
+    f();
+    logs.text()
 }
 
 #[test]
