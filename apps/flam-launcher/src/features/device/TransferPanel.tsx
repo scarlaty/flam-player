@@ -34,7 +34,12 @@ export function TransferPanel() {
     removeFromQueue,
     dismissQueue,
     announcement,
+    device,
   } = useDevice();
+  // Firmware 2.x pas encore vérifié par la Flam : la vérification se fait au rebranchement.
+  const remindV2 =
+    device?.firmware_status?.family === "v2" &&
+    device.firmware_status.trust !== "flam_verified";
   const titleId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -171,6 +176,7 @@ export function TransferPanel() {
                 {text.panel.state[item.state]}
               </Badge>
               {item.error && <p className="fl-transfer__error">{item.error}</p>}
+              {item.warning && <p className="fl-transfer__line">{item.warning}</p>}
             </li>
           ))}
         </ul>
@@ -183,7 +189,8 @@ export function TransferPanel() {
                 // Une file de plusieurs envois est déjà annoncée par la région vivante du panneau.
                 role={queue.length > 1 ? "none" : "status"}
               >
-                {text.finished.restart}
+                <p>{text.finished.restart}</p>
+                {remindV2 && <p>{t.deviceFirmware.restartV2}</p>}
               </Banner>
             )}
             <div className="fl-transfer__actions">

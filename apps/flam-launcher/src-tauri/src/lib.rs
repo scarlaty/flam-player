@@ -7,6 +7,7 @@ pub mod compat;
 pub mod device;
 pub mod embed;
 mod error;
+pub mod external;
 pub mod folder;
 pub mod install;
 pub mod library;
@@ -83,6 +84,14 @@ pub fn run() {
             focus_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        // Ouverture d'adresses : aucune permission du plugin n'est donnée au front, seule la
+        // commande `external::open_external` (liste blanche du dépôt) l'utilise (#323).
+        // Le script de clic sur les liens du plugin est désactivé : tout passe par la commande.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .setup(|app| {
             let config_dir = storage::config_dir()?;
             let catalog = catalog::CatalogService::new()?;
@@ -131,15 +140,18 @@ pub fn run() {
             catalog::catalog_thumbnail,
             cache::cache_usage,
             cache::cache_clear,
+            external::open_external,
             device::carrier::device_carrier_state,
             device::carrier::device_carrier_accept,
             device::carrier::device_carrier_forget,
             device::transfer::device_carrier_preview,
             device::detect::device_detect,
+            device::diagnostic::device_diagnostic,
             device::remove::device_remove_story,
             device::reorder::device_reorder_stories,
             device::eject::device_eject,
             device::status::device_status,
+            device::status::device_confirm_firmware,
             device::status::device_list_stories,
             device::details::device_story_titles,
             device::details::device_story_thumbnail,
@@ -191,11 +203,13 @@ mod tests {
             ("catalog", include_str!("catalog.rs")),
             ("compat", include_str!("compat.rs")),
             ("device::carrier", include_str!("device/carrier.rs")),
+            ("device::diagnostic", include_str!("device/diagnostic.rs")),
             ("device::eject", include_str!("device/eject.rs")),
             ("device::official", include_str!("device/official.rs")),
             ("device::remove", include_str!("device/remove.rs")),
             ("device::status", include_str!("device/status.rs")),
             ("device::transfer", include_str!("device/transfer.rs")),
+            ("external", include_str!("external.rs")),
             ("folder", include_str!("folder.rs")),
             ("install", include_str!("install/mod.rs")),
             ("library", include_str!("library.rs")),

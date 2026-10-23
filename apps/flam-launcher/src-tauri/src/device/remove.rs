@@ -40,6 +40,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use super::detect::MDF_FILE;
+use super::guard::{check_write, WriteContext, WriteKind, WriteRefused};
 use super::index::{
     read_index, recover, write_index, Consent, IndexError, IndexKind, IndexRead, IndexState,
     Recovery, StoryId, STORIES_DIR,
@@ -89,6 +90,9 @@ pub enum RemoveError {
     NotFound(StoryId),
     #[error(transparent)]
     Busy(#[from] Busy),
+    /// Refus de la garde commune des écritures ([`super::guard`]) : aucune suppression.
+    #[error(transparent)]
+    Refused(#[from] WriteRefused),
     #[error("index de la Flam abîmé ou illisible : réparez-le avant de retirer une histoire")]
     IndexNeedsUser,
     #[error("l'histoire {0} figure encore dans l'index : son dossier n'est pas supprimé")]
@@ -111,6 +115,7 @@ impl From<RemoveError> for AppError {
             | RemoveError::InvalidId
             | RemoveError::NotADevice
             | RemoveError::Busy(_)
+            | RemoveError::Refused(_)
             | RemoveError::IndexNeedsUser => AppError::Validation(err.to_string()),
             // Incohérence interne (l'index relu contient encore l'UUID après sa réécriture),
             // pas une erreur de saisie : présentée comme une erreur d'entrée/sortie.
@@ -215,7 +220,7 @@ fn is_trash_name(name: &str) -> bool {
 /// d'entrées supprimées ; continue après une entrée verrouillée et rend la première erreur à
 /// la fin. Ne suit aucun lien : une corbeille qui n'est pas un vrai dossier est laissée telle
 /// quelle. À appeler sous [`DeviceLock`].
-pub fn purge_trash(root: &Path) -> io::Result<usize> {
+fn purge_trash(root: &Path) -> io::Result<usize> {
     let trash = root.join(TRASH_DIR);
     if !is_real_dir(&trash)? {
         return Ok(0);
@@ -255,8 +260,10 @@ pub fn purge_trash(root: &Path) -> io::Result<usize> {
 /// Dossiers d'histoire (nom au format UUID) présents dans `str/` ou `str.hidden/` mais
 /// absents des deux index. Signalés à l'utilisateur, jamais supprimés sans confirmation.
 /// Refuse si `list` est absent : toutes les histoires paraîtraient orphelines. Peut lancer
-/// une reprise de l'index : à appeler sous [`DeviceLock`].
-pub fn find_orphans(root: &Path) -> Result<Vec<Orphan>, RemoveError> {
+/// une reprise de l'index, sans permis de la garde : réservée aux tests tant qu'aucune
+/// commande ne l'expose (#326) ; à appeler sous [`DeviceLock`].
+#[cfg(test)]
+fn find_orphans(root: &Path) -> Result<Vec<Orphan>, RemoveError> {
     let reads = read_indexes(root)?;
     if reads[0].state != IndexState::Valid {
         return Err(RemoveError::IndexNeedsUser);
@@ -289,14 +296,16 @@ pub fn find_orphans(root: &Path) -> Result<Vec<Orphan>, RemoveError> {
 /// Retire l'histoire `id` de la Flam montée en `root` : index d'abord, dossier ensuite (voir
 /// le module). Une histoire absente des index mais dont le dossier existe (orphelin) est
 /// supprimée sans toucher aux index. Refuse sans `confirmed`, si l'UUID est invalide, si
-/// l'histoire n'existe pas ou si une autre opération est en cours sur l'appareil.
+/// l'histoire n'existe pas, si une autre opération est en cours sur l'appareil ou si la garde
+/// du firmware refuse ([`check_write`]).
 pub fn remove_story(
     root: &Path,
     lock: &DeviceLock,
     id: &str,
     confirmed: bool,
+    ctx: &WriteContext<'_>,
 ) -> Result<RemoveReport, RemoveError> {
-    remove_with(root, lock, id, confirmed, &mut |_| Ok(()))
+    remove_with(root, lock, id, confirmed, ctx, &mut |_| Ok(()))
 }
 
 /// Corps de [`remove_story`]. `hook` est appelé après chaque étape ; une erreur rendue par
@@ -306,6 +315,7 @@ fn remove_with(
     lock: &DeviceLock,
     id: &str,
     confirmed: bool,
+    ctx: &WriteContext<'_>,
     hook: &mut dyn FnMut(Step) -> io::Result<()>,
 ) -> Result<RemoveReport, RemoveError> {
     if !confirmed {
@@ -314,6 +324,8 @@ fn remove_with(
     let id = StoryId::parse(id).ok_or(RemoveError::InvalidId)?;
     check_device(root)?;
     let _guard = lock.try_begin(Operation::Remove)?;
+    // Garde commune, sous le verrou et avant toute écriture (corbeille, reprise d'index).
+    check_write(root, ctx, WriteKind::Other)?;
 
     if let Err(err) = purge_trash(root) {
         tracing::warn!("restes d'un retrait précédent non supprimés : {err}");
@@ -413,13 +425,24 @@ fn remove_with(
 /// la suppression dans l'interface (sinon refus, rien n'est touché).
 #[tauri::command]
 pub async fn device_remove_story(
+    config: tauri::State<'_, crate::storage::ConfigState>,
     root: String,
     id: String,
     confirmed: bool,
 ) -> AppResult<RemoveReport> {
-    blocking(move || remove_story(Path::new(&root), &DEVICE_LOCK, &id, confirmed))
-        .await?
-        .map_err(AppError::from)
+    let cache_root = super::transfer::launcher_cache_root(&config);
+    blocking(move || -> AppResult<RemoveReport> {
+        // Racine reçue de l'interface : contrôlée par la garde (lecteur détecté seulement).
+        let ctx = WriteContext::current(cache_root);
+        Ok(remove_story(
+            Path::new(&root),
+            &DEVICE_LOCK,
+            &id,
+            confirmed,
+            &ctx,
+        )?)
+    })
+    .await?
 }
 
 #[cfg(test)]

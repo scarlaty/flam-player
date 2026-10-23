@@ -92,7 +92,7 @@ fn py_type_name(kind: Kind) -> &'static str {
 }
 
 /// Vérité d'une valeur JSON au sens de Python (`if v:`).
-fn truthy(v: Option<&Value>) -> bool {
+pub(crate) fn truthy(v: Option<&Value>) -> bool {
     match v {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
@@ -110,12 +110,16 @@ fn get_or<'a>(map: &'a Object, key: &str, default: &'a Value) -> &'a Value {
     map.get(key).unwrap_or(default)
 }
 
+/// Repli des `expect_*` : `expect` a déjà refusé tout autre type, ce message ne sort donc que
+/// si les types acceptés et la valeur extraite divergent (erreur de programmation).
+fn kind_mismatch(what: &str, expected: &str) -> ConvError {
+    ConvError::invalid_content(format!("{what} : {expected} attendu"))
+}
+
 fn expect_obj<'a>(v: Option<&'a Value>, what: &str) -> Result<&'a Object, ConvError> {
     match expect(v, &[Kind::Object], what, false)? {
         Some(Value::Object(m)) => Ok(m),
-        _ => Err(ConvError::invalid_content(format!(
-            "{what} : objet attendu"
-        ))),
+        _ => Err(kind_mismatch(what, "objet")),
     }
 }
 
@@ -143,9 +147,7 @@ fn expect_opt_str<'a>(v: Option<&'a Value>, what: &str) -> Result<Option<&'a str
 fn expect_str(v: Option<&Value>, what: &str) -> Result<String, ConvError> {
     match expect(v, &[Kind::Str], what, false)? {
         Some(Value::Str(s)) => Ok(s.clone()),
-        _ => Err(ConvError::invalid_content(format!(
-            "{what} : chaine attendu"
-        ))),
+        _ => Err(kind_mismatch(what, "chaine")),
     }
 }
 
@@ -153,9 +155,7 @@ fn expect_int(v: &Value, what: &str) -> Result<i128, ConvError> {
     match expect(Some(v), &[Kind::Int], what, false)? {
         Some(Value::Int(i)) => Ok(i128::from(*i)),
         Some(Value::UInt(u)) => Ok(i128::from(*u)),
-        _ => Err(ConvError::invalid_content(format!(
-            "{what} : entier attendu"
-        ))),
+        _ => Err(kind_mismatch(what, "entier")),
     }
 }
 
@@ -164,9 +164,7 @@ fn expect_number(v: &Value, what: &str) -> Result<Number, ConvError> {
         Some(Value::Int(i)) => Ok(Number::Int(i128::from(*i))),
         Some(Value::UInt(u)) => Ok(Number::Int(i128::from(*u))),
         Some(Value::Float(f)) => Ok(Number::Float(*f)),
-        _ => Err(ConvError::invalid_content(format!(
-            "{what} : entier/nombre attendu"
-        ))),
+        _ => Err(kind_mismatch(what, "entier/nombre")),
     }
 }
 
@@ -433,7 +431,8 @@ impl<'a> Sources<'a> {
 }
 
 /// `conv_image` / `conv_audio` : rien pour un nom absent ou vide, sinon nom vérifié puis
-/// résolu par `assets`.
+/// résolu par `assets`. Un nom d'image d'inventaire vide donne donc `None` (`nil` dans
+/// `nodes.lua`), sans appel à `assets`.
 fn asset(
     name: Option<&str>,
     what: &str,

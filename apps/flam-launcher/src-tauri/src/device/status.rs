@@ -22,7 +22,9 @@ use serde::Serialize;
 use tauri::State;
 
 use super::detect::{self, DetectedDevice, DeviceWarning, Environment, MdfError, Space};
+use super::guard::{self, FirmwareStatus, WriteContext};
 use super::index::{self, IndexKind, IndexState};
+use super::lock::DEVICE_LOCK;
 use crate::catalog::blocking;
 use crate::install::InstallService;
 use crate::library::{Library, LibraryEntry};
@@ -58,6 +60,9 @@ pub struct DeviceSummary {
     /// Version du firmware lue dans `.mdf` (`1.15.14`, `2.4.2`…), `None` si illisible. Une
     /// Flam en 1.x n'accepte que le mode carrier (#234).
     pub firmware: Option<String>,
+    /// État du firmware et de la garde des écritures (#317) : famille, disposition, état des
+    /// clés, raison d'un refus d'écrire. Aucune clé, aucun numéro de série.
+    pub firmware_status: FirmwareStatus,
 }
 
 /// État de l'appareil (réponse de `device_status`).
@@ -117,6 +122,10 @@ pub struct DeviceStory {
     pub title: Option<String>,
     /// L'histoire figure dans la bibliothèque du launcher (vignette disponible).
     pub in_library: bool,
+    /// Identifiants de bibliothèque des histoires installées sous cet UUID (`uuid.bin` de leur
+    /// archive) : l'interface reconnaît ainsi une histoire d'une source dossier ou Telmi, dont
+    /// l'identifiant de bibliothèque n'est pas l'UUID de la Flam.
+    pub library_uuids: Vec<String>,
     /// Listée dans `list` mais sans dossier `str/<uuid>` (index qui pointe dans le vide).
     pub missing: bool,
 }
@@ -135,7 +144,23 @@ pub struct StoriesReport {
     pub str_unreadable: bool,
 }
 
-fn summarize(device: &DetectedDevice, backup_failed: bool) -> DeviceSummary {
+fn summarize(
+    device: &DetectedDevice,
+    backup_failed: bool,
+    ctx: &WriteContext<'_>,
+) -> DeviceSummary {
+    let firmware_status = match device.mdf_bytes.as_deref() {
+        Some(mdf) => {
+            guard::firmware_status(&device.root, mdf, ctx, DEVICE_LOCK.current().is_some())
+        }
+        None => guard::unreadable_status(
+            device.mdf_size,
+            device
+                .mdf_error
+                .as_ref()
+                .map_or_else(|| "illisible".to_string(), ToString::to_string),
+        ),
+    };
     DeviceSummary {
         root: device.root.display().to_string(),
         volume_label: device.volume_label.clone(),
@@ -151,12 +176,14 @@ fn summarize(device: &DetectedDevice, backup_failed: bool) -> DeviceSummary {
             .mdf_bytes
             .as_deref()
             .and_then(super::transfer::firmware_from_mdf),
+        firmware_status,
     }
 }
 
 /// État de l'appareil : détection, puis sauvegarde personnelle de `.mdf` dans `backup_dir`
-/// (idempotente, jamais bloquante). Aucune écriture sur la Flam.
-pub fn status(env: &Environment, backup_dir: &Path) -> DeviceStatus {
+/// (idempotente, jamais bloquante), et état du firmware ([`guard::firmware_status`], preuve
+/// des clés 2.x en lecture seule). Aucune écriture sur la Flam.
+pub fn status(env: &Environment, backup_dir: &Path, ctx: &WriteContext<'_>) -> DeviceStatus {
     let report = detect::detect(env);
     let Some(first) = report.devices.first() else {
         return DeviceStatus {
@@ -178,21 +205,33 @@ pub fn status(env: &Environment, backup_dir: &Path) -> DeviceStatus {
     DeviceStatus {
         detected: true,
         hint: None,
-        device: Some(summarize(first, backup_failed)),
+        device: Some(summarize(first, backup_failed, ctx)),
         device_count: report.devices.len(),
     }
 }
 
+/// Histoires de la bibliothèque installées sous un même UUID de la Flam.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LibraryMatch {
+    /// Titre de la bibliothèque.
+    pub title: String,
+    /// Identifiants de bibliothèque (`LibraryEntry::uuid`), dans l'ordre de la bibliothèque.
+    pub library_uuids: Vec<String>,
+}
+
 /// Histoires de la première Flam détectée (`None` : aucune Flam). `titles` associe un UUID en
-/// minuscules au titre de la bibliothèque du launcher. Lecture seule : l'index est lu tel quel,
-/// sans reprise.
-pub fn list_stories(env: &Environment, titles: &HashMap<String, String>) -> Option<StoriesReport> {
+/// minuscules aux histoires de la bibliothèque du launcher. Lecture seule : l'index est lu tel
+/// quel, sans reprise.
+pub fn list_stories(
+    env: &Environment,
+    titles: &HashMap<String, LibraryMatch>,
+) -> Option<StoriesReport> {
     let report = detect::detect(env);
     let device = report.devices.first()?;
     Some(read_stories(&device.root, titles))
 }
 
-fn read_stories(root: &Path, titles: &HashMap<String, String>) -> StoriesReport {
+fn read_stories(root: &Path, titles: &HashMap<String, LibraryMatch>) -> StoriesReport {
     let visible = index::read_index(root, IndexKind::Visible);
     let hidden = index::read_index(root, IndexKind::Hidden);
     let missing: HashSet<_> = index::missing_stories(root, &visible.entries)
@@ -210,11 +249,12 @@ fn read_stories(root: &Path, titles: &HashMap<String, String>) -> StoriesReport 
             return;
         }
         let uuid = id.as_str().to_string();
-        let title = titles.get(&uuid).cloned();
+        let found = titles.get(&uuid);
         stories.push(DeviceStory {
             short_id: uuid.chars().take(SHORT_ID_LEN).collect(),
-            in_library: title.is_some(),
-            title,
+            in_library: found.is_some(),
+            title: found.map(|m| m.title.clone()),
+            library_uuids: found.map(|m| m.library_uuids.clone()).unwrap_or_default(),
             uuid,
             placement,
             missing,
@@ -244,9 +284,58 @@ fn read_stories(root: &Path, titles: &HashMap<String, String>) -> StoriesReport 
 
 /// Détecte la Flam et sauvegarde son `.mdf` (lecture seule sur l'appareil).
 #[tauri::command]
-pub async fn device_status() -> AppResult<DeviceStatus> {
+pub async fn device_status(config: State<'_, ConfigState>) -> AppResult<DeviceStatus> {
     let backup_dir = crate::storage::data_dir().join(detect::BACKUP_SUBDIR);
-    blocking(move || status(&Environment::current(), &backup_dir)).await
+    let cache_root = super::transfer::launcher_cache_root(&config);
+    blocking(move || {
+        status(
+            &Environment::current(),
+            &backup_dir,
+            &WriteContext::current(cache_root),
+        )
+    })
+    .await
+}
+
+/// UUID (forme à tirets, minuscules) sur la Flam des histoires de la bibliothèque du launcher
+/// de `cache_root` : ce sont celles qu'il a pu installer, exclues du contrôle de cohérence
+/// ([`guard::coherence_v2`]) et seules cherchées dans `library.cache`
+/// ([`guard::flam_cache_proof`]). Vide (journalisé) si la bibliothèque est illisible.
+pub(crate) fn launcher_story_ids(cache_root: Option<&Path>) -> HashSet<String> {
+    let Some(root) = cache_root else {
+        return HashSet::new();
+    };
+    match Library::new(root).list() {
+        Ok(entries) => library_titles(Some(root), entries).into_keys().collect(),
+        Err(err) => {
+            tracing::warn!(
+                "bibliothèque illisible pour la vérification des clés de la Flam : {err}"
+            );
+            HashSet::new()
+        }
+    }
+}
+
+/// Confirmation « Firmware 2.x en test : j'ai sauvegardé ma Flam » ([`guard::confirm`]),
+/// mémorisée sur le PC par empreinte de `.mdf`. `understood` : case cochée dans l'interface
+/// (sinon refus). Rend l'état du firmware à jour. Aucune écriture sur la Flam.
+#[tauri::command]
+pub async fn device_confirm_firmware(
+    config: State<'_, ConfigState>,
+    root: String,
+    understood: bool,
+) -> AppResult<FirmwareStatus> {
+    if !understood {
+        return Err(crate::AppError::Validation(
+            "cochez « J'ai sauvegardé ma Flam » pour confirmer".into(),
+        ));
+    }
+    let cache_root = super::transfer::launcher_cache_root(&config);
+    blocking(move || {
+        guard::confirm(Path::new(&root), &WriteContext::current(cache_root))
+            .map_err(|err| crate::AppError::Validation(err.to_string()))
+    })
+    .await?
 }
 
 /// UUID d'une histoire installée par le launcher, tel que lu dans `uuid.bin` de `archive`
@@ -311,15 +400,25 @@ fn archive_uuid(cache_root: &Path, entry: &LibraryEntry) -> Option<String> {
     }
 }
 
-/// Titres de la bibliothèque, par UUID de l'histoire sur la Flam ([`device_uuid_of`]).
+/// Histoires de la bibliothèque, par UUID de l'histoire sur la Flam ([`device_uuid_of`]). Si
+/// plusieurs entrées donnent le même UUID, le titre est celui de la dernière (comme avant) et
+/// tous les identifiants sont gardés.
 fn library_titles(
     cache_root: Option<&Path>,
     entries: Vec<LibraryEntry>,
-) -> HashMap<String, String> {
-    entries
-        .into_iter()
-        .filter_map(|e| Some((device_uuid_of(cache_root, &e)?, e.title)))
-        .collect()
+) -> HashMap<String, LibraryMatch> {
+    let mut found: HashMap<String, LibraryMatch> = HashMap::new();
+    for entry in entries {
+        let Some(device_uuid) = device_uuid_of(cache_root, &entry) else {
+            continue;
+        };
+        let slot = found.entry(device_uuid).or_default();
+        slot.title = entry.title;
+        if !slot.library_uuids.contains(&entry.uuid) {
+            slot.library_uuids.push(entry.uuid);
+        }
+    }
+    found
 }
 
 /// Histoires installées sur la Flam (`None` : aucune Flam détectée).
@@ -355,6 +454,7 @@ pub async fn device_list_stories(
 mod tests {
     use super::*;
     use crate::device::detect::VolumeInfo;
+    use crate::device::guard::tests::test_ctx;
     use sha2::{Digest, Sha256};
     use std::fs;
     use std::path::PathBuf;
@@ -437,7 +537,11 @@ mod tests {
     fn sans_appareil_l_etat_est_non_detecte_avec_une_aide() {
         let backups = tempfile::tempdir().unwrap();
         let empty = tempfile::tempdir().unwrap();
-        let status = status(&env(vec![empty.path().to_path_buf()]), backups.path());
+        let status = status(
+            &env(vec![empty.path().to_path_buf()]),
+            backups.path(),
+            &test_ctx(),
+        );
         assert!(!status.detected);
         assert_eq!(status.hint.as_deref(), Some(detect::NOT_DETECTED_HINT));
         assert!(status.device.is_none());
@@ -449,7 +553,11 @@ mod tests {
     fn un_appareil_detecte_est_resume_et_son_mdf_sauvegarde() {
         let dev = fake_device();
         let backups = tempfile::tempdir().unwrap();
-        let status = status(&env(vec![dev.path().to_path_buf()]), backups.path());
+        let status = status(
+            &env(vec![dev.path().to_path_buf()]),
+            backups.path(),
+            &test_ctx(),
+        );
         assert!(status.detected);
         assert_eq!(status.device_count, 1);
         let device = status.device.unwrap();
@@ -476,7 +584,11 @@ mod tests {
         let dev = fake_device();
         fs::write(dev.path().join(detect::MDF_FILE), b"court").unwrap();
         let backups = tempfile::tempdir().unwrap();
-        let status = status(&env(vec![dev.path().to_path_buf()]), backups.path());
+        let status = status(
+            &env(vec![dev.path().to_path_buf()]),
+            backups.path(),
+            &test_ctx(),
+        );
         let device = status.device.unwrap();
         assert!(matches!(
             device.mdf_problem,
@@ -490,7 +602,11 @@ mod tests {
         let dev = fake_device();
         let blocker = tempfile::NamedTempFile::new().unwrap();
         // Un fichier à la place du dossier de sauvegarde : l'écriture échoue.
-        let status = status(&env(vec![dev.path().to_path_buf()]), blocker.path());
+        let status = status(
+            &env(vec![dev.path().to_path_buf()]),
+            blocker.path(),
+            &test_ctx(),
+        );
         assert!(status.detected);
         assert!(status.device.unwrap().backup_failed);
     }
@@ -500,7 +616,11 @@ mod tests {
         let dev = fake_device();
         fs::remove_dir(dev.path().join("str")).unwrap();
         let backups = tempfile::tempdir().unwrap();
-        let status = status(&env(vec![dev.path().to_path_buf()]), backups.path());
+        let status = status(
+            &env(vec![dev.path().to_path_buf()]),
+            backups.path(),
+            &test_ctx(),
+        );
         assert_eq!(
             status.device.unwrap().warnings,
             vec![DeviceWarning::MissingStrDir]
@@ -510,7 +630,13 @@ mod tests {
     #[test]
     fn les_histoires_sont_visibles_masquees_ou_non_listees() {
         let dev = installed_device();
-        let titles = HashMap::from([(A.to_string(), "Capi".to_string())]);
+        let titles = HashMap::from([(
+            A.to_string(),
+            LibraryMatch {
+                title: "Capi".into(),
+                library_uuids: vec!["capi-bib".into()],
+            },
+        )]);
         let report = list_stories(&env(vec![dev.path().to_path_buf()]), &titles).unwrap();
         let summary: Vec<_> = report
             .stories
@@ -527,7 +653,9 @@ mod tests {
             ]
         );
         assert_eq!(report.stories[0].title.as_deref(), Some("Capi"));
+        assert_eq!(report.stories[0].library_uuids, ["capi-bib"]);
         assert_eq!(report.stories[1].title, None);
+        assert!(report.stories[1].library_uuids.is_empty());
         assert_eq!(report.stories[1].short_id, "22222222");
         assert_eq!(report.visible_index, IndexHealth::Valid);
         assert_eq!(report.hidden_index, IndexHealth::Valid);
@@ -604,6 +732,7 @@ mod tests {
         let json = serde_json::to_string(&status(
             &env(vec![dev.path().to_path_buf()]),
             backups.path(),
+            &test_ctx(),
         ))
         .unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -620,6 +749,7 @@ mod tests {
                 "backup_failed",
                 "file_system",
                 "firmware",
+                "firmware_status",
                 "mdf_problem",
                 "root",
                 "space",
@@ -700,13 +830,14 @@ mod tests {
         let titles = library_titles(Some(cache.path()), entries.clone());
         let capi_uuid = uuid::Uuid::from_bytes(capi).hyphenated().to_string();
         assert_eq!(capi_uuid, "a701e27e-8f3a-248b-72bd-ff65fa5d440e");
-        assert_eq!(titles.get(&capi_uuid).map(String::as_str), Some("Capi"));
+        assert_eq!(titles[&capi_uuid].title, "Capi");
         assert_eq!(
-            titles
-                .get("11111111-1111-1111-1111-111111111111")
-                .map(String::as_str),
-            Some("Égypte")
+            titles[&capi_uuid].library_uuids,
+            ["a701e27e8f3a248b72bdff65fa5d440e"]
         );
+        let egypte = &titles["11111111-1111-1111-1111-111111111111"];
+        assert_eq!(egypte.title, "Égypte");
+        assert_eq!(egypte.library_uuids, ["ffffff-199a63526c4"]);
         assert_eq!(titles.len(), 2);
         // Sans dossier de cache : repli sur l'UUID de la bibliothèque.
         assert_eq!(library_titles(None, entries).len(), 1);
@@ -724,6 +855,11 @@ mod tests {
         let report = list_stories(&env(vec![dev.path().to_path_buf()]), &titles).unwrap();
         assert_eq!(report.stories[0].title.as_deref(), Some("Capi"));
         assert!(report.stories[0].in_library);
+        // L'interface retrouve l'histoire de bibliothèque (forme simple) sur la Flam.
+        assert_eq!(
+            report.stories[0].library_uuids,
+            ["a701e27e8f3a248b72bdff65fa5d440e"]
+        );
     }
 
     /// Critère d'acceptation : après état et liste, l'arborescence et les octets de la Flam
@@ -743,7 +879,7 @@ mod tests {
         let backups = tempfile::tempdir().unwrap();
         let environment = env(vec![dev.path().to_path_buf()]);
         for _ in 0..3 {
-            let _ = status(&environment, backups.path());
+            let _ = status(&environment, backups.path(), &test_ctx());
             let _ = list_stories(&environment, &HashMap::new());
         }
         assert_eq!(fingerprint(dev.path()), before);

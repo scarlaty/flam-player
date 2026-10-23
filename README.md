@@ -21,7 +21,7 @@ et convertisseur d'histoires TELMI vers FLAM (`tools/telmi2flam`).
 ## Installer la surcouche (Windows)
 
 Pour utiliser flam-player sans compiler : l'installateur `Flam Launcher_<version>_x64-setup.exe`
-(artefact de la CI) installe, **pour l'utilisateur courant et sans droits d'administrateur**, la
+(artefact de la CI ; `Flam-Launcher_<version>_x64-setup.exe` dans une pré-version publiée) installe, **pour l'utilisateur courant et sans droits d'administrateur**, la
 surcouche, `flam-player.exe` et le convertisseur TELMI vers FLAM (Python inclus). Il n'est pas
 signe : SmartScreen affiche un avertissement (« Informations complementaires » puis « Executer
 quand meme »). Utilisation, sources, depannage et construction de l'installateur :

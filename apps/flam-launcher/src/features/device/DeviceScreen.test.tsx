@@ -1,9 +1,10 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import type { DeviceStatus, DeviceStories, DeviceStory } from "../../api/device";
 import { expectNoAxeViolations } from "../../test/axe";
+import { firmwareV1, firmwareV2 } from "../../test/firmware";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
 import { ToastProvider } from "../../components";
 import { DeviceProvider } from "./DeviceProvider";
@@ -41,6 +42,7 @@ function detected(
       mdf_problem: null,
       backup_failed: false,
       firmware: "2.4.2",
+      firmware_status: firmwareV2(),
       ...overrides,
     },
   };
@@ -53,6 +55,7 @@ function story(uuid: string, extra: Partial<DeviceStory> = {}): DeviceStory {
     placement: "visible",
     title: null,
     in_library: false,
+    library_uuids: [],
     missing: false,
     ...extra,
   };
@@ -82,6 +85,8 @@ function renderScreen(ui: ReactElement = <DeviceScreen />) {
 }
 
 let status: DeviceStatus;
+/** Si défini, `device_status` renvoie ce que rend cette fonction (réponse retenue). */
+let statusGate: (() => Promise<DeviceStatus>) | null;
 let stories: DeviceStories | null;
 let failures: Record<string, { kind: string; message: string } | undefined>;
 let calls: string[];
@@ -98,6 +103,7 @@ let officialRequests: string[][];
 
 beforeEach(() => {
   status = absent;
+  statusGate = null;
   stories = report([]);
   failures = {};
   calls = [];
@@ -114,7 +120,7 @@ beforeEach(() => {
       if (failure) throw failure;
       switch (cmd) {
         case "device_status":
-          return status;
+          return statusGate ? statusGate() : status;
         case "device_recover_transfers":
           return {
             incomplete_removed: 0,
@@ -124,6 +130,11 @@ beforeEach(() => {
           };
         case "device_list_stories":
           return stories;
+        case "device_confirm_firmware": {
+          const confirmed = firmwareV2({ trust: "confirmed", write_block: null });
+          if (status.device) status.device.firmware_status = confirmed;
+          return confirmed;
+        }
         case "device_story_titles": {
           const { uuids } = args as { uuids: string[] };
           titleRequests.push(uuids);
@@ -180,6 +191,111 @@ it("invite à activer le mode USB quand la Flam n'est pas détectée", async () 
   expect(screen.getByRole("button", { name: "Réessayer" })).toBeInTheDocument();
   expect(count("device_list_stories")).toBe(0);
   await expectNoAxeViolations(container);
+});
+
+it("affiche le bandeau expérimental, avec le lien des risques, même sans Flam", async () => {
+  const { container } = renderScreen();
+  expect(
+    await screen.findByRole("heading", { name: "Aucune Flam détectée" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText("Fonction expérimentale et non officielle"),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/flam-transfert\.md#risques/)).toBeInTheDocument();
+  expect(screen.queryByText(/Firmware 2\.x : en test/)).not.toBeInTheDocument();
+  await expectNoAxeViolations(container);
+});
+
+it("propose « Copier le diagnostic » sans Flam et quand l'écriture est bloquée", async () => {
+  const first = renderScreen();
+  expect(
+    await screen.findByRole("heading", { name: "Aucune Flam détectée" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Copier le diagnostic" }),
+  ).toBeInTheDocument();
+  first.unmount();
+
+  status = detected({
+    firmware_status: firmwareV2({
+      write_block: { kind: "keys_trivial", version: "2.4.2" },
+    }),
+  });
+  const { container } = renderScreen();
+  expect(
+    await screen.findByRole("heading", { name: "Flam détectée" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Copier le diagnostic" }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Retour de test" })).toBeInTheDocument();
+  await expectNoAxeViolations(container);
+});
+
+it("ajoute la mention « firmware 2.x » pour une Flam en 2.x seulement", async () => {
+  status = detected({ firmware: "2.4.2" });
+  const first = renderScreen();
+  expect(await screen.findByText(/Firmware 2\.x : en test/)).toBeInTheDocument();
+  expect(screen.getByText(/sauvegardez votre Flam avant/)).toBeInTheDocument();
+  first.unmount();
+
+  status = detected({ firmware: "1.15.14", firmware_status: firmwareV1() });
+  renderScreen();
+  expect(
+    await screen.findByRole("heading", { name: "Flam détectée" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/Firmware 2\.x : en test/)).not.toBeInTheDocument();
+});
+
+it("copie le lien des risques dans le presse-papiers", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText },
+    configurable: true,
+  });
+  onTestFinished(() => {
+    if (original) Object.defineProperty(navigator, "clipboard", original);
+    else Reflect.deleteProperty(navigator, "clipboard");
+  });
+  renderScreen();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Copier le lien des risques" }),
+  );
+  expect(writeText).toHaveBeenCalledWith(
+    expect.stringContaining("apps/flam-launcher/docs/flam-transfert.md#risques"),
+  );
+  expect(await screen.findByText(/Lien copié/)).toBeInTheDocument();
+
+  // Second clic : le message est vidé puis remis, pour être annoncé de nouveau.
+  let release: () => void = () => {};
+  writeText.mockReturnValueOnce(new Promise<void>((resolve) => (release = resolve)));
+  fireEvent.click(screen.getByRole("button", { name: "Copier le lien des risques" }));
+  expect(screen.queryByText(/Lien copié/)).not.toBeInTheDocument();
+  await act(async () => release());
+  expect(await screen.findByText(/Lien copié/)).toBeInTheDocument();
+});
+
+it("affiche le firmware sur la carte, « illisible » s'il est inconnu", async () => {
+  status = detected({ firmware: "1.15.14", firmware_status: firmwareV1() });
+  const first = renderScreen();
+  expect(
+    await screen.findByText("1.15.14 (1.x) · pris en charge (mode carrier)"),
+  ).toBeInTheDocument();
+  first.unmount();
+  status = detected({
+    firmware: null,
+    firmware_status: firmwareV2({
+      version: null,
+      family: "unreadable",
+      version_form: "unreadable",
+      trust: "not_applicable",
+      coherence: { kind: "not_checked" },
+      write_block: { kind: "version_unreadable" },
+    }),
+  });
+  renderScreen();
+  expect(await screen.findByText("illisible · écriture bloquée")).toBeInTheDocument();
 });
 
 it(
@@ -318,15 +434,73 @@ it("actualise la liste à la demande", async () => {
   expect(count("device_list_stories")).toBe(2);
 });
 
-it("rend le focus au titre quand « Réessayer » trouve la Flam", async () => {
-  renderScreen();
-  const retry = await screen.findByRole("button", { name: "Réessayer" });
-  status = detected();
-  fireEvent.click(retry);
-  const heading = await screen.findByRole("heading", { name: "Flam détectée" });
-  await waitFor(() => expect(heading).toHaveFocus());
-  expect(screen.getByRole("status")).toHaveTextContent(/Flam détectée|histoire/);
-});
+it(
+  "rend le focus au titre quand « Réessayer » trouve la Flam",
+  async () => {
+    renderScreen();
+    const retry = await screen.findByRole("button", { name: "Réessayer" });
+    status = detected();
+    fireEvent.click(retry);
+    const heading = await screen.findByRole("heading", { name: "Flam détectée" });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(screen.getByRole("status")).toHaveTextContent(/Flam détectée|histoire/);
+  },
+  SLOW_TEST_MS,
+);
+
+it(
+  "rend le focus au titre même si un appel en vol répond avant celui de « Réessayer »",
+  async () => {
+    renderScreen();
+    const retry = await screen.findByRole("button", { name: "Réessayer" });
+    // Un appel est déjà en vol (retour au premier plan) quand on clique : sa réponse, périmée
+    // (« non détectée »), arrive et est affichée avant celle de l'appel lancé par le clic.
+    const held: ((value: DeviceStatus) => void)[] = [];
+    const answer = (index: number, value: DeviceStatus) => held[index]?.(value);
+    statusGate = () => new Promise<DeviceStatus>((resolve) => held.push(resolve));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    fireEvent.click(retry);
+    await act(async () => {
+      answer(0, { ...absent });
+    });
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => {
+      answer(1, detected());
+    });
+    statusGate = null;
+    const heading = await screen.findByRole("heading", { name: "Flam détectée" });
+    await waitFor(() => expect(heading).toHaveFocus());
+  },
+  SLOW_TEST_MS,
+);
+
+it(
+  "rend le focus au titre même si l'appel en vol qui précède « Réessayer » trouve déjà la Flam",
+  async () => {
+    renderScreen();
+    const retry = await screen.findByRole("button", { name: "Réessayer" });
+    // Un appel est déjà en vol (retour au premier plan) quand on clique : sa réponse, périmée
+    // (déjà « détectée »), arrive et est affichée avant celle de l'appel lancé par le clic.
+    const held: ((value: DeviceStatus) => void)[] = [];
+    const answer = (index: number, value: DeviceStatus) => held[index]?.(value);
+    statusGate = () => new Promise<DeviceStatus>((resolve) => held.push(resolve));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    fireEvent.click(retry);
+    await act(async () => {
+      answer(0, detected());
+    });
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => {
+      answer(1, detected());
+    });
+    statusGate = null;
+    const heading = await screen.findByRole("heading", { name: "Flam détectée" });
+    await waitFor(() => expect(heading).toHaveFocus());
+  },
+  SLOW_TEST_MS,
+);
 
 it("garde le focus dans la liste quand on actualise ou réessaie", async () => {
   status = detected();
@@ -818,4 +992,103 @@ it("signale une liste tronquée", async () => {
   expect(
     await screen.findByText(/seules les 5000 premières histoires/),
   ).toBeInTheDocument();
+});
+
+it("affiche la version et l'état du firmware sur la carte de la Flam", async () => {
+  status = detected();
+  renderScreen();
+  expect(
+    await screen.findByText("2.4.2 (2.x) · en test, sauvegarde confirmée"),
+  ).toBeInTheDocument();
+});
+
+it("affiche un refus d'écrire avec sa raison et la version", async () => {
+  status = detected({
+    firmware: "3.0.0",
+    firmware_status: firmwareV2({
+      version: "3.0.0",
+      family: "unsupported",
+      trust: "not_applicable",
+      coherence: { kind: "not_checked" },
+      write_block: { kind: "unsupported_firmware", version: "3.0.0" },
+    }),
+  });
+  renderScreen();
+  expect(
+    await screen.findByText("3.0.0 (non pris en charge) · écriture bloquée"),
+  ).toBeInTheDocument();
+  expect(screen.getByText("Écriture sur cette Flam bloquée")).toBeInTheDocument();
+  expect(screen.getByText(/Firmware 3.0.0 non pris en charge/)).toBeInTheDocument();
+  // Rien n'est écrit, pas même la reprise.
+  expect(calls).not.toContain("device_recover_transfers");
+});
+
+it("Flam 2.x non standard : confirmation de sauvegarde renforcée, puis écriture", async () => {
+  status = detected({
+    firmware_status: firmwareV2({
+      mdf_size: 128,
+      header: "02 00",
+      layout_standard: false,
+      trust: "unconfirmed",
+      write_block: { kind: "confirmation_required", version: "2.4.2", standard: false },
+    }),
+  });
+  renderScreen();
+  expect(
+    await screen.findByText(
+      "2.4.2 (2.x) · en test, confirmation à donner · fichier .mdf non standard",
+    ),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/128 octets, en-tête 02 00/)).toBeInTheDocument();
+  const confirm = screen.getByRole("button", { name: "Confirmer" });
+  expect(confirm).toBeDisabled();
+  expect(calls).not.toContain("device_recover_transfers");
+  fireEvent.click(
+    screen.getByLabelText("Firmware 2.x en test : j'ai sauvegardé ma Flam"),
+  );
+  expect(confirm).toBeEnabled();
+  fireEvent.click(confirm);
+  expect(
+    await screen.findByText("2.4.2 (2.x) · en test, sauvegarde confirmée"),
+  ).toBeInTheDocument();
+  expect(calls).toContain("device_confirm_firmware");
+  // L'écriture devient possible : la reprise au branchement a lieu, puis la liste est relue.
+  await waitFor(() => expect(calls).toContain("device_recover_transfers"));
+  await waitFor(() =>
+    expect(calls.filter((c) => c === "device_list_stories").length).toBeGreaterThan(1),
+  );
+  expect(screen.queryByRole("button", { name: "Confirmer" })).not.toBeInTheDocument();
+});
+
+it("Flam 2.x aux clés incohérentes : envoi bloqué, reprise et retrait possibles", async () => {
+  status = detected({
+    firmware_status: firmwareV2({
+      write_block: { kind: "keys_contradiction", version: "2.4.2" },
+    }),
+  });
+  renderScreen();
+  expect(
+    await screen.findByText("2.4.2 (2.x) · envoi bloqué (clés incohérentes)"),
+  ).toBeInTheDocument();
+  expect(screen.getByText("Envoi sur cette Flam bloqué")).toBeInTheDocument();
+  await waitFor(() => expect(calls).toContain("device_recover_transfers"));
+});
+
+it("Flam 2.x incohérente et non confirmée : la confirmation reste proposée", async () => {
+  status = detected({
+    firmware_status: firmwareV2({
+      trust: "unconfirmed",
+      write_block: { kind: "keys_contradiction", version: "2.4.2" },
+    }),
+  });
+  renderScreen();
+  expect(await screen.findByText("Envoi sur cette Flam bloqué")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Confirmer" })).toBeDisabled();
+  // Rien n'est écrit avant la confirmation, pas même la reprise.
+  expect(calls).not.toContain("device_recover_transfers");
+  fireEvent.click(
+    screen.getByLabelText("Firmware 2.x en test : j'ai sauvegardé ma Flam"),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Confirmer" }));
+  await waitFor(() => expect(calls).toContain("device_confirm_firmware"));
 });

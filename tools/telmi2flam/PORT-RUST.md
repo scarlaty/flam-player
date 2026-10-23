@@ -171,7 +171,7 @@ Invariants (repris de Python, à tester côté Rust) :
 | Noms dupliqués dans l'archive | indexation | rien | même entrée retenue que Python (`ZipFile.getinfo` : la **dernière**). `zip` 4.6.1 retient aussi la dernière (`IndexMap::insert`), mais ne liste le nom qu'une fois : `find_root` et l'index replié (`setdefault`, premier nom rencontré) doivent reproduire `namelist()`. Test dédié. |
 | Pas une histoire Telmi | `find_root` | rien | `not_telmi`, code 3 |
 | JSON invalide / types inattendus | `load_json`, `_expect` | rien | `invalid_content`, code 4 ; `notes.json` illisible : avertissement `notes_ignored` |
-| JSON limites : flottant hors plage (`1e400`), entier hors 64 bits (`i64::MIN..=u64::MAX` accepté : `Value::Int` ou `Value::UInt`), imbrication profonde, surrogate isolé | `load_json` | rien | **Divergences assumées** (listées dans `parity.py`). Python accepte `1e400` (→ `inf`) et les grands entiers ; il lève `RecursionError` au-delà de la pile (code 6) ; il accepte `"\ud800"` puis échoue à l'encodage UTF-8 (code 6). Rust : `invalid_content`, code 4, dans tous ces cas. Valeurs proches (`NaN`, `Infinity`, clés dupliquées) : comportement de Python reproduit. Profondeur : le Rust refuse au-delà de 512 niveaux, Python lève `RecursionError` vers 985 niveaux (limite de récursion 1000 moins la pile déjà utilisée) : un document de 513 à environ 985 niveaux est accepté par Python et refusé par le Rust (code 4). Écart voulu, pile bornée sans récursion profonde. |
+| JSON limites : flottant hors plage (`1e400`), entier hors 64 bits (`i64::MIN..=u64::MAX` accepté : `Value::Int` ou `Value::UInt`), imbrication profonde, surrogate isolé | `load_json` | rien | **Divergences assumées** (listées dans `parity.py`). Python accepte `1e400` (→ `inf`) et les grands entiers ; il lève `RecursionError` au-delà de la pile (code 6) ; il accepte `"\ud800"` puis échoue à l'encodage UTF-8 (code 6). Rust : `invalid_content`, code 4, dans tous ces cas. Valeurs proches (`NaN`, `Infinity`, clés dupliquées) : comportement de Python reproduit. Profondeur : le Rust refuse au-delà de 512 niveaux, Python lève `RecursionError` vers 985 niveaux (limite de récursion 1000 moins la pile déjà utilisée) : un document de 513 à environ 985 niveaux est accepté par Python et refusé par le Rust (code 4). Écart voulu, pile bornée sans récursion profonde. **Messages d'erreur** : Python dit « line L column C (char N) » (N en caractères), le Rust « position N » en **octets** UTF-8 ; seuls le code et la catégorie sont comparés, le texte n'est pas une interface. |
 | `--info` : fin de ligne | sortie | rien | Le Rust écrit `\n` partout ; Python, en mode texte, écrit `\r\n` sous Windows. Écart assumé : `parity.py` et les tests comparent après `strip()`, et les consommateurs lisent ligne à ligne. Un tube fermé (EPIPE) n'est pas une erreur : l'échec d'écriture est ignoré (pas de panique). |
 | Asset manquant | graphe | rien | `missing_asset`, code 5 ; avec `--allow-missing` : `empty.lif` / `silent.mp3` et avertissement |
 | Image illisible (aussi pour Pillow), ou au-delà de `2 × MAX_IMAGE_PIXELS` | image | rien | avertissement `image_unreadable`, `empty.lif` (pas d'échec) |
@@ -185,7 +185,8 @@ Invariants (repris de Python, à tester côté Rust) :
 | Chemin long (> 260 caractères) | toutes | — | chemins `\\?\` ou manifeste `longPathAware`, testés |
 | Chemins non ASCII (entrée, sortie, profil Windows) | toutes | — | API larges de Windows (`std::fs`, pas de conversion ANSI). Tests avec `é`, idéogrammes et emoji dans les chemins. |
 | Noms d'assets non ASCII dans l'archive | lecture, sortie | — | `_fold` NFC + minuscules. Noms de sortie identiques à Python, avec le drapeau UTF-8 (bit 11) posé seulement si le nom n'est pas ASCII, comme `zipfile`. |
-| Bombe de décompression (entrée ZIP énorme) | lecture | rien | comme Python : pas de borne propre (D5). Les tailles calculées sont vérifiées (`checked_*`), et un manque de mémoire est traité comme ci-dessus. |
+| Bombe de décompression (entrée ZIP énorme) | lecture | rien | comme Python : pas de borne propre (D5). Les tailles calculées sont vérifiées (`checked_*`), et un manque de mémoire est traité comme ci-dessus. Les décalages et tailles des en-têtes ZIP, entiers non bornés en Python (négatifs possibles avec un préfixe, ZIP64), sont calculés en `i128` : aucun dépassement n'est possible, le `checked_*` ne sert qu'au passage vers `usize`/`u64`. |
+| Décompression deflate : flux que `miniz_oxide` et zlib jugent différemment | lecture | rien | Les vecteurs `deflate_*` (blocs dynamiques, sortie > 64 Kio, flux tronqué, octets après la fin du flux, tables et distances invalides, `file_size` faux) donnent le même verdict, sauf une **divergence assumée** : une table de Huffman dynamique incomplète (`deflate_bad_tables2`) est refusée tout de suite par `miniz_oxide` (`archive_unreadable`, code 3), alors que zlib attend la suite du flux et que Python, qui ne signale pas un flux tronqué ni ne contrôle `file_size` en fin de lecture, lit un contenu vide si le CRC attendu est celui d'un contenu vide (0). Seuls des flux tronqués en plein en-tête dynamique invalide divergent (Python accepte le préfixe déjà décodé si le CRC attendu est celui de ce préfixe) : aucune archive légitime n'est concernée. |
 
 ## 4. Stratégie de parité
 
@@ -195,7 +196,11 @@ Invariants (repris de Python, à tester côté Rust) :
   l'heure locale, donc deux conversions Python ne donnent déjà pas le même fichier. On compare
   la **liste ordonnée des entrées** : nom, méthode (*stored*), drapeau UTF-8 et contenu octet à
   octet. Le Rust fixe l'horodatage (1980-01-01). Le lecteur du player (`src/formats/pk_reader.c`)
-  ignore la date : on le vérifie dans la PR 10.
+  ignore la date (vérifié dans la PR 10 : extraction complète d'un `.plain.pk` écrit par le Rust).
+  À horloge égale, le conteneur est identique à l'octet près : les vecteurs du corpus
+  (`gen_package_cases.py`) figent l'horloge de `zipfile` au 1980-01-01, et
+  `tests/package_parity.rs` exige le même SHA-256 pour le `.plain.pk` du Rust (écriture ZIP faite
+  à la main dans `output.rs`, sans la crate `zip`).
 - On compare aussi les résultats : succès ou code d'erreur identique, code de sortie identique,
   **multiensemble des codes d'avertissement** identique (pas le texte), et sortie JSON de
   `--info` identique (`ensure_ascii`, séparateurs compacts).
@@ -262,7 +267,8 @@ sont identiques à l'octet près dès la PR 6.
 2. **Matrice de rééchantillonnage (CI)** : les images des tests sont minuscules et ne prouvent
    rien sur le Lanczos. Le générateur produit donc aussi une matrice :
    - modes PNG × tailles sources impaires ou premières (par ex. 1, 3, 97, 641, 2049) ;
-   - toutes les cibles réelles : scène 320×212, vignette 104×136 (mode `bandes` seulement ; `flou` et `rogner` : #282), inventaire 128×128,
+   - toutes les cibles réelles : scène 320×212, vignette 104×136 (mode `bandes` ; `flou` et `rogner` couverts par les vecteurs
+     `thumb_flou` et `thumb_rogner` de `gen_resample_vectors.py`, #282), inventaire 128×128,
      titre 89×120, borne 2047 ;
    - agrandissements et réductions de plus de 2× (pour passer par `reduce`) ;
    - contenus variés : bruit pseudo-aléatoire à graine fixe, dégradés, alpha partiel.

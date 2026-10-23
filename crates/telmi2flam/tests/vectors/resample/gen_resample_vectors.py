@@ -1,7 +1,8 @@
 """Vecteurs de parité du redimensionnement et des conversions en LIF (port Rust, issue #127).
 
 L'oracle est `png_to_lif`, `png_to_scene_lif`, `png_to_fit_lif` et `png_to_thumb_lif` de
-`tools/telmi2flam/telmi2flam.py`, exécutés avec **Python 3.14.8 et Pillow 12.3.0** exactement
+`tools/telmi2flam/telmi2flam.py` (vignette : `thumb` en mode `bandes`, `thumb_flou` et
+`thumb_rogner`), exécutés avec **Python 3.14.8 et Pillow 12.3.0** exactement
 (versions de `apps/flam-launcher/scripts/build-converter.ps1`) : le script refuse de tourner
 avec une autre version. Déterministe (à versions épinglées, zlib compris) : relancer le script ne doit rien changer (`git status`
 propre).
@@ -33,7 +34,7 @@ PILLOW = "12.3.0"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(HERE, "..", "..", "..", "..", "..", "tools", "telmi2flam")
-OPS = ("scene", "thumb", "inventory", "title", "bound")
+OPS = ("scene", "thumb", "thumb_flou", "thumb_rogner", "inventory", "title", "bound")
 
 
 def check_versions():
@@ -48,8 +49,13 @@ def oracle(data, op):
     sys.path.insert(0, os.path.join(TOOLS, "tests"))
     sys.path.insert(0, TOOLS)
     import make_corpus
+    import telmi2flam
     try:
-        lif = make_corpus.python_lif(data, op)
+        if op.startswith("thumb_"):
+            # modes `flou` et `rogner` de la vignette (#282) ; `thumb` est le mode `bandes`
+            lif = telmi2flam.png_to_thumb_lif(data, op[len("thumb_"):])
+        else:
+            lif = make_corpus.python_lif(data, op)
     except Exception:
         return "unreadable"
     return "lif:%d:%s" % (len(lif), hashlib.sha256(lif).hexdigest())

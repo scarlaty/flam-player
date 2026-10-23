@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   cancelDeviceTransfer,
   ejectDevice,
+  canMaintain,
+  firmwareWriteBlock,
   forgetCarrierKeys,
   listDeviceStories,
   needsCarrier,
+  needsFirmwareConfirmation,
   onTransferProgress,
   recoverDeviceTransfers,
   removeDeviceStory,
@@ -35,9 +38,6 @@ const text = t.deviceTransfer;
 const CANCEL_RETRY_MS = 200;
 const CANCEL_RETRIES = 15;
 
-/** Refus du backend pour un firmware non pris en charge (3.x et suivants, `.mdf` illisible). */
-const FIRMWARE_ERROR = /firmware de la Flam non pris en charge/i;
-
 export interface DeviceProviderProps {
   children: ReactNode;
   /** Pas de scrutation (player incrusté). */
@@ -62,11 +62,20 @@ export function DeviceProvider({
   intervalMs,
   libraryUuids,
 }: DeviceProviderProps) {
-  const { status, error, retry } = useDeviceStatus({ enabled: !paused, intervalMs });
+  const { status, error, retry, answered } = useDeviceStatus({
+    enabled: !paused,
+    intervalMs,
+  });
   const device = status?.detected ? status.device : null;
   const root = device?.root ?? null;
   const deviceKey = device ? `${device.root}\u0000${device.volume_label}` : null;
   const known = status !== null;
+  // Garde des écritures (#317) : l'état structuré du firmware décide, pas le texte des erreurs.
+  const firmwareBlocked = firmwareWriteBlock(device) !== null;
+  const keysConfirmation = needsFirmwareConfirmation(device);
+  // Reprise possible : rien ne bloque, sauf une contradiction des clés (qui ne refuse que
+  // l'envoi).
+  const writable = canMaintain(device);
 
   const rootRef = useRef<string | null>(null);
   const deviceKeyRef = useRef<string | null>(null);
@@ -79,6 +88,8 @@ export function DeviceProvider({
 
   // Reprise : une fois par branchement (changement de volume ou retour après une absence).
   const startedKey = useRef<string | null>(null);
+  // Reprise différée par la garde du firmware : la liste, déjà lue, sera relue après elle.
+  const deferredKey = useRef<string | null>(null);
   const [recoveredKey, setRecoveredKey] = useState<string | null>(null);
   const [recoveryNote, setRecoveryNote] = useState<EjectNote | null>(null);
   const [stories, setStories] = useState<StoriesState>({ phase: "loading" });
@@ -91,7 +102,6 @@ export function DeviceProvider({
     reloadGen.current += 1;
     setReload(reloadGen.current);
   }, []);
-  const [firmwareKey, setFirmwareKey] = useState<string | null>(null);
   const [ejectNote, setEjectNote] = useState<EjectNote | null>(null);
 
   // Nouvelle Flam, retour après une absence ou perte : l'état lié à la détection repart de zéro
@@ -113,6 +123,15 @@ export function DeviceProvider({
     }
     if (startedKey.current === deviceKey) return;
     const key = deviceKey;
+    if (!writable) {
+      deferredKey.current = key;
+      // La garde du firmware refuse toute écriture, reprise comprise (#317) : la liste se lit
+      // quand même ; la reprise est tentée si l'écriture devient possible (confirmation).
+      void Promise.resolve().then(() => {
+        if (deviceKeyRef.current === key) setRecoveredKey(key);
+      });
+      return;
+    }
     startedKey.current = key;
     if (running.current) {
       // Un envoi tient le verrou de la Flam (simple absence transitoire) : rien à reprendre.
@@ -140,9 +159,14 @@ export function DeviceProvider({
         }
       })
       .finally(() => {
-        if (startedKey.current === key) setRecoveredKey(key);
+        if (startedKey.current !== key) return;
+        setRecoveredKey(key);
+        if (deferredKey.current === key) {
+          deferredKey.current = null;
+          bumpReload();
+        }
       });
-  }, [known, deviceKey, root]);
+  }, [known, deviceKey, root, writable, bumpReload]);
 
   const recovered = deviceKey !== null && recoveredKey === deviceKey;
 
@@ -262,7 +286,7 @@ export function DeviceProvider({
           rootNow,
           next.uuid,
           next.carrier,
-          next.replace === true,
+          next.replace,
         );
         if (sent.carrier_readback === false) {
           carrierSession.current = null;
@@ -272,8 +296,19 @@ export function DeviceProvider({
           // Conservation demandée mais échouée : les envois suivants redemandent les clés.
           if (next.carrier?.remember && sent.carrier_stored !== true)
             carrierSession.current = null;
-          setItemState(next.uuid, "done");
-          setAnnouncement(text.panel.announce.done(next.title));
+          // Une autre entrée de reprise a échoué : l'envoi a réussi, mais c'est signalé.
+          const warning = sent.recovery_failures?.length
+            ? text.panel.recoveryFailures(sent.recovery_failures)
+            : undefined;
+          updateQueue((items) =>
+            items.map((item) =>
+              item.uuid === next.uuid
+                ? { ...item, state: "done", error: undefined, warning }
+                : item,
+            ),
+          );
+          const done = text.panel.announce.done(next.title);
+          setAnnouncement(warning ? `${done}. ${warning}` : done);
         }
         bumpReload();
         const gen = reloadGen.current;
@@ -293,19 +328,25 @@ export function DeviceProvider({
         if (failure.kind === "cancelled") {
           setItemState(next.uuid, "cancelled");
           setAnnouncement(text.panel.announce.cancelled);
-        } else if (FIRMWARE_ERROR.test(failure.message)) {
-          setFirmwareKey(keyAtStart);
-          setItemState(next.uuid, "failed", text.errors.firmware);
-          // Inutile d'essayer les suivantes : elles échoueraient de la même façon.
+        } else if (
+          deviceKeyRef.current === keyAtStart &&
+          (firmwareWriteBlock(deviceRef.current) ||
+            needsFirmwareConfirmation(deviceRef.current))
+        ) {
+          // Refus de la garde du firmware (état connu de la Flam) : les suivantes échoueraient
+          // de la même façon.
+          setItemState(next.uuid, "failed", failure.message);
           updateQueue((items) =>
             items.map((item) =>
               item.state === "waiting" ? { ...item, state: "cancelled" } : item,
             ),
           );
-          setAnnouncement(text.panel.announce.failed(next.title, text.errors.firmware));
+          setAnnouncement(text.panel.announce.failed(next.title, failure.message));
         } else {
           setItemState(next.uuid, "failed", failure.message);
           setAnnouncement(text.panel.announce.failed(next.title, failure.message));
+          // Un refus de la garde apparu entre-temps (contradiction) : l'état est relu.
+          if (failure.kind === "validation") retry();
         }
       }
       // Le `bt` saisi ne reste pas dans la file au-delà de l'envoi (fait, échoué ou annulé).
@@ -338,7 +379,7 @@ export function DeviceProvider({
     ) {
       setAnnouncement(text.panel.announce.finished);
     }
-  }, [setItemState, updateQueue, bumpReload]);
+  }, [setItemState, updateQueue, bumpReload, retry]);
 
   const enqueue = useCallback(
     (request: SendRequest & { carrier?: CarrierSend }) => {
@@ -553,13 +594,16 @@ export function DeviceProvider({
       status,
       error,
       retry,
+      retryAnswered: answered,
       device,
       deviceKey,
       recovered,
       recoveryNote,
       stories,
       reloadStories,
-      firmwareBlocked: firmwareKey !== null && firmwareKey === deviceKey,
+      firmwareBlocked,
+      keysConfirmation,
+      canMaintain: writable,
       queue: exposedQueue,
       progress,
       cancelling,
@@ -582,13 +626,16 @@ export function DeviceProvider({
       status,
       error,
       retry,
+      answered,
       device,
       deviceKey,
       recovered,
       recoveryNote,
       stories,
       reloadStories,
-      firmwareKey,
+      firmwareBlocked,
+      keysConfirmation,
+      writable,
       exposedQueue,
       progress,
       cancelling,

@@ -173,6 +173,19 @@ static void save_screenshot(void) {
 /* ------------------------------------------------------------------ */
 
 /**
+ * Cree la texture de l'ecran : resolution native 320x240, upscalee par le
+ * renderer. Utilisee a l'init et pour la recreation apres une perte du
+ * peripherique (SDL_RENDER_DEVICE_RESET, direct3d11).
+ */
+static SDL_Texture *create_screen_texture(void)
+{
+    return SDL_CreateTexture(g_renderer,
+        SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING,
+        FLAM_SCREEN_W, FLAM_SCREEN_H);
+}
+
+/**
  * Flush callback : LVGL nous donne une zone mise à jour du framebuffer.
  * On copie les pixels dans la texture SDL.
  */
@@ -185,7 +198,8 @@ static void disp_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
     int32_t h = area->y2 - area->y1 + 1;
 
     SDL_Rect rect = {area->x1, area->y1, w, h};
-    SDL_UpdateTexture(g_texture, &rect, color_p, w * sizeof(lv_color_t));
+    if (g_texture)   /* NULL si la recreation apres SDL_RENDER_DEVICE_RESET a echoue */
+        SDL_UpdateTexture(g_texture, &rect, color_p, w * sizeof(lv_color_t));
 
     /* Copie dans le framebuffer d'ombre (zone bornee a l'ecran) */
     for (int32_t y = 0; y < h; y++) {
@@ -407,18 +421,49 @@ int sdl_driver_init(void)
         return -1;
     }
 
+#ifdef _WIN32
+    /* Incruste : rendu direct3d11 (chaine d'echange DXGI "flip", qui a son
+       propre visuel de composition). La WebView2 du launcher dessine par
+       DirectComposition, au-dessus de la surface de redirection ou arrivent
+       les rendus direct3d (D3D9, defaut de SDL2), opengl et software : la
+       fenetre du player y serait recouverte malgre l'ordre Z (#332).
+       Priorite normale : SDL_RENDER_DRIVER (environnement) l'emporte. Si
+       direct3d11 echoue, SDL_CreateRenderer reprend d'elle-meme la liste
+       par defaut. */
+    if (g_embed_child) {
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d11");
+        /* Un pilote choisi par hint coupe le batching de SDL : on le retablit */
+        SDL_SetHint(SDL_HINT_RENDER_BATCHING, "1");
+    }
+#endif
     g_renderer = SDL_CreateRenderer(g_window, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+#ifdef _WIN32
+    if (g_embed_child) {
+        /* Les hints ne servent qu'a la creation du rendu */
+        SDL_ResetHint(SDL_HINT_RENDER_DRIVER);
+        SDL_ResetHint(SDL_HINT_RENDER_BATCHING);
+    }
+#endif
     if (!g_renderer) {
         SDL_Log("SDL_CreateRenderer failed: %s", SDL_GetError());
         return -1;
     }
+#ifdef _WIN32
+    if (g_embed_child) {
+        SDL_RendererInfo info;
+        const char *name = SDL_GetRendererInfo(g_renderer, &info) == 0
+                           ? info.name : "?";
+        fprintf(stderr, "[EMBED] rendu : %s\n", name);
+        const char *forced = SDL_getenv("SDL_RENDER_DRIVER");
+        if (strcmp(name, "direct3d11") != 0 && !(forced && *forced))
+            fprintf(stderr, "[EMBED] rendu direct3d11 indisponible : l'image "
+                    "peut etre masquee par l'hote\n");
+    }
+#endif
 
     /* Texture : résolution native 320x240, upscalée par le renderer */
-    g_texture = SDL_CreateTexture(g_renderer,
-        SDL_PIXELFORMAT_ARGB8888,
-        SDL_TEXTUREACCESS_STREAMING,
-        FLAM_SCREEN_W, FLAM_SCREEN_H);
+    g_texture = create_screen_texture();
     if (!g_texture) {
         SDL_Log("SDL_CreateTexture failed: %s", SDL_GetError());
         return -1;
@@ -511,6 +556,21 @@ int sdl_driver_poll(void)
             if (k) key_queue_push(k, LV_INDEV_STATE_RELEASED);
             break;
         }
+
+        case SDL_RENDER_DEVICE_RESET:
+            /* direct3d11 libere toutes les textures quand le peripherique
+               est perdu (TDR, pilote GPU) : on la recree (#334). */
+            if (g_texture) SDL_DestroyTexture(g_texture);
+            g_texture = create_screen_texture();
+            if (!g_texture)
+                SDL_Log("SDL_RENDER_DEVICE_RESET : recreation de la texture "
+                        "impossible : %s", SDL_GetError());
+            /* fallthrough */
+        case SDL_RENDER_TARGETS_RESET:
+            /* La texture est vide : LVGL ne redessine que des zones
+               partielles, on force l'ecran entier. */
+            lv_obj_invalidate(lv_scr_act());
+            break;
         }
     }
 
@@ -570,7 +630,7 @@ int sdl_driver_poll(void)
         int dst_w = (int)(FLAM_SCREEN_W * scale);
         int dst_h = (int)(FLAM_SCREEN_H * scale);
         SDL_Rect dst = { (win_w - dst_w) / 2, (win_h - dst_h) / 2, dst_w, dst_h };
-        SDL_RenderCopy(g_renderer, g_texture, NULL, &dst);
+        if (g_texture) SDL_RenderCopy(g_renderer, g_texture, NULL, &dst);
     }
     SDL_RenderPresent(g_renderer);
 

@@ -39,6 +39,27 @@ impl ConvError {
     pub fn unsupported_format(message: impl Into<String>) -> Self {
         Self::new("unsupported_format", 7, message)
     }
+
+    /// Image ou audio référencé mais absent de l'archive, sans `--allow-missing` (Python :
+    /// `MissingAssetError`, code 5).
+    pub fn missing_asset(message: impl Into<String>) -> Self {
+        Self::new("missing_asset", 5, message)
+    }
+
+    /// Conversion annulée (Python : `KeyboardInterrupt`, événement `cancelled`, code 130).
+    pub fn cancelled() -> Self {
+        Self::new("cancelled", 130, "conversion annulee")
+    }
+
+    /// Écriture de la sortie impossible (Python : `OutputError`, code 6).
+    pub fn output_error(message: impl Into<String>) -> Self {
+        Self::new("output_error", 6, message)
+    }
+
+    /// État impossible atteint (Python : exception non rattrapée, `internal_error`, code 6).
+    pub fn internal_error(message: impl Into<String>) -> Self {
+        Self::new("internal_error", 6, message)
+    }
 }
 
 impl fmt::Display for ConvError {

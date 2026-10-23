@@ -3,8 +3,16 @@ name: launcher
 # `crates/**` et `Cargo.*` déclenchent ce job (~10 min) à dessein : le launcher partage le workspace
 # Cargo (Cargo.lock, `target/`) avec `crates/telmi2flam` et en dépendra avec #122 ; une modification
 # de la crate peut donc casser son build ou ses tests.
+#
+# Installateurs (#310) : sur `push` vers main, tout tourne. Sur une PR, l'installateur N (build,
+# installation, e2e sur l'application installée, désinstallation, artefact) tourne toujours : l'e2e
+# couvre le code applicatif. Seuls l'installateur N-1 et le test de mise à jour N-1 vers N (≈ 5 min
+# de build + le scénario) sont conditionnés à l'étape « Empaquetage modifié ? » : ils tournent si la
+# PR touche l'empaquetage (liste ci-dessous) ou porte le label `ci-installeur`. Poser ce label
+# relance la CI (type `labeled`) ; les autres labels ne l'annulent pas (voir `concurrency`).
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - "apps/flam-launcher/**"
       - "tools/telmi2flam/**"
@@ -14,6 +22,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/**"
+      - "LICENSE"
       - ".github/workflows/launcher.yml"
   push:
     branches: [main]
@@ -26,20 +35,24 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/**"
+      - "LICENSE"
       - ".github/workflows/launcher.yml"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Un label autre que `ci-installeur` déclenche un run « labeled » sans objet : groupe à part, pour
+  # qu'il n'annule pas la CI en cours de la PR.
+  group: ${{ github.workflow }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci-installeur' && '-label' || '' }}
+  cancel-in-progress: ${{ !(github.event.action == 'labeled' && github.event.label.name != 'ci-installeur') }}
 
 jobs:
   # ffmpeg minimal (audio, LGPL) construit depuis des sources épinglées par cross-compilation
   # MinGW-w64 sous Linux (tools/ffmpeg/build.sh, #209). Le résultat est mis en cache d'après le
   # contenu de tools/ffmpeg/ puis transmis au job Windows.
   ffmpeg:
+    if: github.event.action != 'labeled' || github.event.label.name == 'ci-installeur'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -68,6 +81,7 @@ jobs:
 
   windows:
     needs: ffmpeg
+    if: github.event.action != 'labeled' || github.event.label.name == 'ci-installeur'
     runs-on: windows-latest
     timeout-minutes: 75
     defaults:
@@ -79,6 +93,50 @@ jobs:
         with:
           # SDL2, Lua, LVGL et minimp3 : sources de flam-player.exe (e2e et installateur).
           submodules: recursive
+          # Deux commits : sur une PR, HEAD est la fusion (base, PR) et HEAD^1 la tête de la base ;
+          # `git diff HEAD^1 HEAD` donne exactement ce que la PR apporte (étape « Empaquetage modifié ? »).
+          fetch-depth: 2
+
+      # Faut-il construire N-1 et rejouer le test de mise à jour ? Oui sur tout événement autre que
+      # `pull_request` (push sur main) ; sur une PR, oui si le label `ci-installeur` est posé ou si le
+      # diff PR (base -> fusion de la PR) touche l'empaquetage. Liste des chemins : configuration
+      # Tauri/NSIS (tauri*.json, hooks, icônes), version et dépendances (Cargo.toml, build.rs, package*.json,
+      # Cargo.lock), scripts de construction des ressources embarquées et leurs sources épinglées (build-*,
+      # notices, Get-InstallTree, check-imports, third-party, LICENSES.md, tools/ffmpeg), le LICENSE racine
+      # (licenseFile de tauri.conf.json) et ce workflow.
+      # Hors liste : le code du player, du convertisseur et du launcher, couverts par l'e2e sur N (le scénario
+      # « application ouverte » du test de mise à jour, qui dépend aussi du code du launcher, n'est alors
+      # vérifié que sur main).
+      # Le diff compare les deux parents de la fusion (fetch-depth: 2 ci-dessus), sans fetch par SHA.
+      # Une PR d'un fork passe par la même voie (le label vient du contenu de l'événement).
+      - name: Empaquetage modifié ?
+        id: pkg
+        working-directory: .
+        env:
+          EVENT: ${{ github.event_name }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "update=true" >> "$GITHUB_OUTPUT"
+            echo "Événement $EVENT : installateur N-1 et test de mise à jour exécutés."
+            exit 0
+          fi
+          case ",$LABELS," in
+            *,ci-installeur,*)
+              echo "update=true" >> "$GITHUB_OUTPUT"
+              echo "Label ci-installeur : installateur N-1 et test de mise à jour exécutés."
+              exit 0 ;;
+          esac
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          echo "Fichiers modifiés par la PR :"
+          echo "$changed"
+          if grep -E -q '^(apps/flam-launcher/src-tauri/(tauri[^/]*\.json|Cargo\.toml|build\.rs|icons/|windows/)|apps/flam-launcher/(package\.json|package-lock\.json|LICENSES\.md|third-party/|scripts/(build-|notices-lib|Get-InstallTree|check-imports))|tools/ffmpeg/|LICENSE$|Cargo\.(toml|lock)$|\.github/workflows/launcher.yml$)' <<<"$changed"; then
+            echo "update=true" >> "$GITHUB_OUTPUT"
+            echo "L'empaquetage change : installateur N-1 et test de mise à jour exécutés."
+          else
+            echo "update=false" >> "$GITHUB_OUTPUT"
+            echo "Empaquetage inchangé : installateur N-1 et test de mise à jour sautés (label ci-installeur pour forcer)."
+          fi
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -148,8 +206,10 @@ jobs:
       # N-1 absent de N ». La surcharge et la ressource sont écrites dans RUNNER_TEMP (jamais dans
       # l'arbre : un build en échec ne laisse rien derrière lui). Seul le crate de l'application est
       # recompilé (les dépendances restent en cache), puis le paquet NSIS est refait. Elle est
-      # construite AVANT la version N pour que `target/release` contienne N à la fin.
+      # construite AVANT la version N pour que `target/release` contienne N à la fin. Étapes N-1 et test de
+      # mise à jour : conditionnées à `steps.pkg` (voir plus haut) ; l'installateur N, lui, est toujours construit.
       - name: Installateur NSIS N-1 (version 0.0.1, test de mise à jour)
+        if: steps.pkg.outputs.update == 'true'
         run: |
           tmp="$(cygpath -m "$RUNNER_TEMP")"
           printf 'ressource presente seulement dans N-1\n' > "$tmp/obsolete-n1.txt"
@@ -157,6 +217,7 @@ jobs:
           npm run tauri build -- --config src-tauri/tauri.bundle.conf.json --config "$tmp/tauri.prev.conf.json"
 
       - name: Mettre l'installateur N-1 de côté
+        if: steps.pkg.outputs.update == 'true'
         shell: pwsh
         run: |
           $prev = Join-Path $env:RUNNER_TEMP 'flam-installateur-prev'
@@ -172,13 +233,14 @@ jobs:
       - name: Installer sans interaction, vérifier les fichiers
         shell: pwsh
         run: |
-          $setup = Get-ChildItem "$env:GITHUB_WORKSPACE/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
-          if (-not $setup) { throw 'installateur NSIS introuvable' }
+          $setups = @(Get-ChildItem "$env:GITHUB_WORKSPACE/target/release/bundle/nsis/*-setup.exe")
+          if ($setups.Count -ne 1) { throw "installateur NSIS : 1 attendu, trouvé $($setups.Count) : $($setups.Name -join ', ')" }
+          $setup = $setups[0]
           $dest = Join-Path $env:RUNNER_TEMP 'flam-launcher-install'
           $p = Start-Process -FilePath $setup.FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "installateur : code $($p.ExitCode)" }
           foreach ($f in 'flam-launcher.exe', 'flam-player.exe', 'SDL2.dll', 'LICENSES.md', 'uninstall.exe',
-              'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'licenses/SDL2-LICENSE.txt',
+              'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'telmi2flam/runtime/manifest.txt', 'licenses/SDL2-LICENSE.txt',
               'ffmpeg/ffmpeg.exe', 'ffmpeg/ffprobe.exe', 'ffmpeg/LICENSE', 'ffmpeg/LICENSE-LAME', 'ffmpeg/LICENSE-MINGW-RUNTIME', 'ffmpeg/BUILD.txt') {
             if (-not (Test-Path (Join-Path $dest $f))) { throw "fichier absent de l'installation : $f" }
           }
@@ -197,9 +259,12 @@ jobs:
           Get-InstallTree $dest | Set-Content (Join-Path $env:RUNNER_TEMP 'arbre-installation-N.txt')
 
       - name: Mise à jour N-1 vers N par-dessus l'installation existante
+        if: steps.pkg.outputs.update == 'true'
         shell: pwsh
         run: |
-          $setup = Get-ChildItem "$env:GITHUB_WORKSPACE/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          $setups = @(Get-ChildItem "$env:GITHUB_WORKSPACE/target/release/bundle/nsis/*-setup.exe")
+          if ($setups.Count -ne 1) { throw "installateur NSIS : 1 attendu, trouvé $($setups.Count) : $($setups.Name -join ', ')" }
+          $setup = $setups[0]
           $dest = $env:FLAM_E2E_INSTALL_DIR
           $expected = (Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json).version
           if (-not $expected) { throw 'version absente de tauri.conf.json' }
@@ -218,13 +283,35 @@ jobs:
             $p = Start-Process -FilePath $exe -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
             if ($p.ExitCode -ne 0) { throw "$label : code $($p.ExitCode)" }
           }
+          function Remove-InstallDir {
+            # Retire le dossier d'installation juste après la désinstallation (#261). Le fichier peut rester
+            # verrouillé un court instant (processus fils du désinstallateur, antivirus) : nouvelles
+            # tentatives bornées (10 x 2 s) tant que le dossier existe. Ce n'est pas un masque : si le dossier
+            # existe encore après la dernière tentative, l'étape échoue avec la dernière erreur.
+            $err = $null
+            for ($i = 1; $i -le 10; $i++) {
+              if (-not (Test-Path -LiteralPath $dest)) { return }
+              try {
+                Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction Stop
+              } catch {
+                $err = $_.Exception.Message
+                Write-Host "suppression de $dest : tentative $i/10 échouée ($err)"
+              }
+              if (-not (Test-Path -LiteralPath $dest)) { return }
+              Start-Sleep -Seconds 2
+            }
+            if (Test-Path -LiteralPath $dest) {
+              $left = @(Get-ChildItem -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object FullName)
+              throw "dossier d'installation toujours présent après 10 tentatives (dernière erreur : $(if ($err) { $err } else { 'aucune, suppression en attente ?' })). Restant : $($left -join ', ')"
+            }
+          }
           $ref = Get-Content (Join-Path $env:RUNNER_TEMP 'arbre-installation-N.txt')
           if (-not $ref) { throw 'arbre de référence de N vide' }
 
           # Repartir d'une machine propre : on retire l'installation de N faite à l'étape précédente.
           $u = Start-Process -FilePath (Join-Path $dest 'uninstall.exe') -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
           if ($u.ExitCode -ne 0) { throw "désinstallation préalable : code $($u.ExitCode)" }
-          Remove-Item -LiteralPath $dest -Recurse -Force
+          Remove-InstallDir
 
           # 1. Installer N-1 et le vérifier.
           Invoke-Setup $env:FLAM_PREV_SETUP 'installation N-1'
@@ -299,7 +386,7 @@ jobs:
           # ce script, tout comme N-1) est arrêté et l'étape échoue.
           $u = Start-Process -FilePath (Join-Path $dest 'uninstall.exe') -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
           if ($u.ExitCode -ne 0) { throw "désinstallation avant le scénario application ouverte : code $($u.ExitCode)" }
-          Remove-Item -LiteralPath $dest -Recurse -Force
+          Remove-InstallDir
           Invoke-Setup $env:FLAM_PREV_SETUP 'installation N-1 (application ouverte)'
           $app = Start-Process -FilePath (Join-Path $dest 'flam-launcher.exe') -PassThru
           # Attendre la fenêtre (démarrage à froid de WebView2), au plus 60 s, puis une courte marge.

@@ -22,8 +22,10 @@ export interface QueueItem {
   error?: string;
   /** Flam 1.x : clés carrier choisies pour cet envoi. */
   carrier?: CarrierSend;
-  /** Remplace l'histoire déjà sur la Flam. */
-  replace?: boolean;
+  /** UUID de l'histoire de la Flam à remplacer. */
+  replace?: string;
+  /** Envoi réussi, avec une remarque (reprise d'un autre transfert en échec). */
+  warning?: string;
   /** Relecture de la Flam qui suit l'envoi réussi (numéro interne). */
   reloadGen?: number;
   /** Envoi réussi dont la relecture de la Flam n'est pas encore revenue : bloque un renvoi. */
@@ -34,8 +36,11 @@ export interface SendRequest {
   uuid: string;
   title: string;
   size: number | null;
-  /** Remplace l'histoire déjà sur la Flam (« Remplacer sur la Flam »). */
-  replace?: boolean;
+  /**
+   * UUID sur la Flam de l'histoire à remplacer (« Remplacer sur la Flam ») : le backend refuse
+   * si l'archive envoyée en désigne une autre.
+   */
+  replace?: string;
 }
 
 export type StoriesState =
@@ -59,7 +64,10 @@ export interface EjectNote {
 export interface DeviceApi {
   status: DeviceStatus | null;
   error: AppError | null;
-  retry: () => void;
+  /** Relance la scrutation ; renvoie le numéro de la demande (voir `retryAnswered`). */
+  retry: () => number;
+  /** Numéro de la dernière demande de `retry` à laquelle une réponse est arrivée. */
+  retryAnswered: number;
   /** Flam détectée, ou `null`. */
   device: DeviceSummary | null;
   /** La reprise des transferts interrompus de cette détection est terminée. */
@@ -69,7 +77,19 @@ export interface DeviceApi {
   stories: StoriesState;
   /** Relit les histoires de la Flam ; `quiet` garde la liste affichée pendant la lecture. */
   reloadStories: (options?: { quiet?: boolean }) => void;
+  /**
+   * Envoi refusé sur cette Flam d'après l'état structuré du firmware (`device_status`, #317) :
+   * firmware non pris en charge, `.mdf` illisible, clés invalides ou contradictoires.
+   */
   firmwareBlocked: boolean;
+  /** Flam 2.x pas encore confirmée : sauvegarde à confirmer dans « Ma Flam ». */
+  keysConfirmation: boolean;
+  /**
+   * Reprise, retrait et ordre autorisés par la garde du firmware (#326) : faux sur une Flam
+   * 2.x non confirmée ou dont l'écriture est bloquée (une contradiction des clés ne bloque que
+   * l'envoi).
+   */
+  canMaintain: boolean;
   queue: QueueItem[];
   progress: TransferProgressView | null;
   /** Annulation demandée, en attente de l'arrêt du transfert en cours. */

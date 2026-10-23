@@ -4,7 +4,8 @@
 //! [`lif`] et [`mp3map`], lecture de l'archive ([`archive`], [`info`]), JSON ([`json`]), texte
 //! ([`text`]), sérialisation Lua ([`lua`]), décodage [`png`], redimensionnement [`resample`]
 //! (port de Pillow), conversions d'images en LIF ([`image`]) et graphe `nodes.json` vers Lua
-//! ([`graph`]) ; les autres modules de conversion arrivent dans les PR suivantes.
+//! ([`graph`]), assets et assemblage du paquet en mémoire ([`assets`], [`package`], runtime
+//! embarqué [`runtime`]) et écriture atomique de la sortie ([`output`]).
 //!
 //! # Pile d'appels
 //!
@@ -24,16 +25,23 @@
 //! qu'1 Mo sous Windows. Les codecs seuls (par exemple [`lif`]) n'en ont pas besoin.
 
 pub mod archive;
+pub mod assets;
+mod blur;
 pub mod error;
 pub mod graph;
+mod identify;
 pub mod image;
 pub mod info;
 pub mod json;
 pub mod lif;
 pub mod lua;
+mod md5;
 pub mod mp3map;
+pub mod output;
+pub mod package;
 pub mod png;
 pub mod resample;
+pub mod runtime;
 pub mod text;
 mod text_tables;
 mod zipread;

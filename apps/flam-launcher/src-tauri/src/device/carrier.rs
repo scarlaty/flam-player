@@ -62,7 +62,7 @@ pub(crate) const HIDDEN_STORIES_DIR: &str = "str.hidden";
 /// Taille du fichier `bt` utile : clé AES (16) puis IV (16).
 pub const BT_LEN: usize = 32;
 /// Taille maximale lue de `bt` et `key` (au-delà : refusé, ce n'est pas un couple).
-const MAX_SMALL_FILE: u64 = 4096;
+pub(crate) const MAX_SMALL_FILE: u64 = 4096;
 /// Taille maximale déchiffrée de `info` pour le contrôle.
 pub(crate) const MAX_INFO: u64 = 4096;
 /// Taille maximale d'une archive choisie comme source.
@@ -180,6 +180,12 @@ pub(crate) fn info_text(key: &[u8; 16], iv: &[u8; 16], data: &[u8]) -> Option<St
     readable_text(&plain).filter(|text| first_block_clean(text))
 }
 
+/// Vrai si le début de `info` est déjà du texte lisible, sans déchiffrement (`info` en clair,
+/// histoire au format d'un autre outil).
+pub(crate) fn info_is_plain_text(info: &[u8]) -> bool {
+    readable_text(&info[..info.len().min(MAX_INFO as usize)]).is_some()
+}
+
 /// Contrôle strict du premier bloc du clair (16 octets). En AES-CBC, l'IV n'agit que sur ce
 /// bloc : un IV faux (faute de frappe dans la seconde moitié d'un `bt` saisi) y altère des
 /// octets sans toucher au reste. Le premier bloc doit donc être de l'UTF-8 strict sans
@@ -291,7 +297,7 @@ pub(crate) fn title_of(text: &str) -> String {
 }
 
 /// Lit au plus `max` octets de `path` ; plus long : `None` (ce n'est pas le fichier attendu).
-fn read_small(path: &Path, max: u64) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
+pub(crate) fn read_small(path: &Path, max: u64) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -303,7 +309,7 @@ fn read_small(path: &Path, max: u64) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
 }
 
 /// Début de `info`, lu pour le contrôle (borné).
-fn read_info(dir: &Path) -> io::Result<Option<Vec<u8>>> {
+pub(crate) fn read_info(dir: &Path) -> io::Result<Option<Vec<u8>>> {
     let file = match File::open(dir.join(INFO_FILE)) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -315,7 +321,7 @@ fn read_info(dir: &Path) -> io::Result<Option<Vec<u8>>> {
 }
 
 /// Dossiers d'histoires de `str/` puis `str.hidden/` (nom au format UUID), bornés.
-fn story_dirs(root: &Path) -> Vec<(StoryId, PathBuf, bool)> {
+pub(crate) fn story_dirs(root: &Path) -> Vec<(StoryId, PathBuf, bool)> {
     let mut out = Vec::new();
     for (sub, hidden) in [(STORIES_DIR, false), (HIDDEN_STORIES_DIR, true)] {
         let Ok(entries) = fs::read_dir(root.join(sub)) else {
@@ -1146,6 +1152,8 @@ pub async fn device_carrier_forget(root: Option<String>) -> AppResult<usize> {
         let store = CarrierStore::app();
         let removed = match root {
             Some(root) => {
+                // Racine reçue de l'interface : un lecteur détecté seulement, comme pour l'envoi.
+                super::transfer::ensure_detected_root(Path::new(&root))?;
                 let mdf = read_mdf(Path::new(&root))?;
                 let id = DeviceId::from_mdf(&mdf).ok_or_else(|| {
                     AppError::Validation("Flam non identifiable (.mdf trop court)".into())

@@ -6,6 +6,9 @@ use std::io::Write;
 
 use super::*;
 use crate::device::crypto::tests::{test_keys, TEST_IV, TEST_KEY};
+use crate::device::crypto::FirmwareFamily;
+use crate::device::guard::tests::{confirmed_ctx, key_v2, mdf_v1_real, mdf_with, story, test_ctx};
+use crate::device::guard::KNOWN_HEADER;
 use crate::device::index::serialize;
 
 const NEW: &str = "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9";
@@ -16,6 +19,15 @@ const PLENTY: u64 = 1 << 40;
 fn id(s: &str) -> StoryId {
     StoryId::parse(s).unwrap()
 }
+
+/// Autorisation de test pour les étapes d'écriture elles-mêmes (la garde est testée à part et
+/// par les envois depuis la bibliothèque).
+fn permit() -> WritePermit {
+    WritePermit::for_tests(FirmwareFamily::V1, &mdf_v1_real())
+}
+
+/// Histoire officielle 2.x inventée (hors bibliothèque) : sa présence prouve les clés de test.
+const OFFICIAL_V2: &str = "abababab-cdcd-4efe-8a8a-121212121212";
 
 /// Arborescence complète (fichiers et dossiers vides) avec contenu, relative à `root`.
 fn snapshot(root: &Path) -> BTreeMap<String, Option<Vec<u8>>> {
@@ -85,7 +97,7 @@ fn prepared(base: &Path, seed: u8) -> PreparedStory {
 /// version de `NEW` listée.
 fn device(base: &Path, old: bool) -> PathBuf {
     let root = base.join("flam");
-    write(&root.join(MDF_FILE), &[0u8; 126]);
+    write(&root.join(MDF_FILE), &mdf_v1_real());
     write(&root.join("str").join(OTHER).join("info"), b"autre");
     write(&root.join(LIBRARY_CACHE), b"cache");
     let mut list = vec![id(OTHER)];
@@ -267,18 +279,36 @@ impl DeviceFs for FaultyFs {
     }
 }
 
+/// `replace` : remplacement demandé pour l'histoire préparée elle-même (`NEW`).
 fn send(
     fs: &dyn DeviceFs,
     root: &Path,
     p: &PreparedStory,
     replace: bool,
 ) -> Result<TransferReport, TransferError> {
-    send_with(fs, root, p, replace, &AtomicBool::new(false), &mut |_| {})
+    send_to(fs, root, p, replace.then_some(NEW))
+}
+
+fn send_to(
+    fs: &dyn DeviceFs,
+    root: &Path,
+    p: &PreparedStory,
+    replace: Option<&str>,
+) -> Result<TransferReport, TransferError> {
+    send_with(
+        fs,
+        &permit(),
+        root,
+        p,
+        replace,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    )
 }
 
 /// Redémarrage : reprise des transferts puis des index, avec un appareil sain.
 fn restart(root: &Path) {
-    recover_with(&FaultyFs::new(), root).unwrap();
+    recover_with(&FaultyFs::new(), &permit(), root).unwrap();
     for kind in IndexKind::ALL {
         index::recover(root, kind).unwrap();
     }
@@ -343,9 +373,10 @@ fn chemin_nominal_de_bout_en_bout() {
     let mut events = Vec::new();
     let report = send_with(
         &FaultyFs::new(),
+        &permit(),
         &root,
         &p,
-        false,
+        None,
         &AtomicBool::new(false),
         &mut |e| events.push(e),
     )
@@ -365,6 +396,7 @@ fn chemin_nominal_de_bout_en_bout() {
             cache_removed: true,
             carrier_readback: None,
             carrier_stored: None,
+            recovery_failures: Vec::new(),
         }
     );
 
@@ -530,11 +562,19 @@ fn annulation_a_trois_moments() {
             let before = snapshot(&root);
             let cancel = AtomicBool::new(false);
             let total = 2 * p.total_bytes;
-            let result = send_with(&FaultyFs::new(), &root, &p, true, &cancel, &mut |e| {
-                if when(&e, total) {
-                    cancel.store(true, Ordering::Relaxed);
-                }
-            });
+            let result = send_with(
+                &FaultyFs::new(),
+                &permit(),
+                &root,
+                &p,
+                Some(NEW),
+                &cancel,
+                &mut |e| {
+                    if when(&e, total) {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                },
+            );
             assert!(
                 matches!(result, Err(TransferError::Cancelled)),
                 "{what} : {result:?}"
@@ -599,7 +639,7 @@ fn index_illisible_ou_appareil_absent() {
 
     let mut bad = p.clone();
     bad.uuid = NEW.to_uppercase();
-    write(&root.join(MDF_FILE), &[0u8; 126]);
+    write(&root.join(MDF_FILE), &mdf_v1_real());
     let err = send(&FaultyFs::new(), &root, &bad, false).unwrap_err();
     assert!(matches!(err, TransferError::InvalidId), "{err:?}");
     let mut bad = p.clone();
@@ -619,7 +659,7 @@ fn reprise_des_etats_partiels() {
     std::fs::create_dir_all(&t).unwrap();
     std::fs::rename(root.join("str").join(NEW), t.join(format!("{NEW}.old"))).unwrap();
     write(&t.join(format!("{NEW}.in")).join("info"), b"partiel");
-    let report = recover_with(&FaultyFs::new(), &root).unwrap();
+    let report = recover_with(&FaultyFs::new(), &permit(), &root).unwrap();
     assert_eq!(report.previous_restored, 1);
     assert_eq!(report.incomplete_removed, 1);
     assert_eq!(files_of(&root.join("str").join(NEW)), old);
@@ -627,7 +667,7 @@ fn reprise_des_etats_partiels() {
 
     // Nouvelle version en place, ancienne restée : supprimée, cache supprimé.
     write(&t.join(format!("{NEW}.old")).join("info"), b"ancienne");
-    let report = recover_with(&FaultyFs::new(), &root).unwrap();
+    let report = recover_with(&FaultyFs::new(), &permit(), &root).unwrap();
     assert_eq!(report.updates_finished, 1);
     assert!(!root.join(LIBRARY_CACHE).exists());
     assert_eq!(files_of(&root.join("str").join(NEW)), old);
@@ -635,7 +675,7 @@ fn reprise_des_etats_partiels() {
 
     // Entrée inconnue : laissée.
     write(&t.join("inconnu").join("x"), b"x");
-    let report = recover_with(&FaultyFs::new(), &root).unwrap();
+    let report = recover_with(&FaultyFs::new(), &permit(), &root).unwrap();
     assert_eq!(report.left_alone, 1);
     assert!(t.join("inconnu").exists());
     std::fs::remove_dir_all(&t).unwrap();
@@ -647,7 +687,7 @@ fn reprise_des_etats_partiels() {
         same_dir: true,
         ..FaultyFs::new()
     };
-    let report = recover_with(&fs, &root).unwrap();
+    let report = recover_with(&fs, &permit(), &root).unwrap();
     assert_eq!(report.left_alone, 2);
     assert!(t.join(format!("{NEW}.old")).exists());
     assert!(t.join(format!("{NEW}.in")).exists());
@@ -656,6 +696,7 @@ fn reprise_des_etats_partiels() {
     let p = prepared(tmp.path(), 11);
     let err = send(&fs, &root, &p, true).unwrap_err();
     assert!(matches!(err, TransferError::Io(_)), "{err:?}");
+    assert!(err.to_string().contains("chkdsk"), "{err}");
     assert_eq!(snapshot(&root), before);
 
     // La sonde réelle distingue deux dossiers différents.
@@ -675,7 +716,8 @@ fn reprise_des_etats_partiels() {
 
 /// `.mdf` synthétique (clés de test inventées).
 fn mdf(version: &str) -> Vec<u8> {
-    let mut m = vec![0u8; 2];
+    // En-tête `01 00` : seule valeur mesurée (Flam 1.15.14), reprise pour la 2.x supposée.
+    let mut m = KNOWN_HEADER.to_vec();
     let mut text = format!("main: {version}-test\ncomm: x").into_bytes();
     text.resize(48, 0);
     m.extend(text);
@@ -686,7 +728,7 @@ fn mdf(version: &str) -> Vec<u8> {
     m.extend(TEST_KEY);
     m.extend(TEST_IV);
     m.extend([0u8; 16]);
-    assert_eq!(m.len(), MDF_LEN);
+    assert_eq!(m.len(), crate::device::crypto::MDF_LEN);
     m
 }
 
@@ -788,6 +830,8 @@ fn envoi_depuis_un_plain_pk() {
     let tmp = tempfile::tempdir().unwrap();
     let root = device(tmp.path(), false);
     write(&root.join(MDF_FILE), &mdf("2.4.2"));
+    // Flam 2.x : sauvegarde confirmée par l'utilisateur.
+    let ctx = confirmed_ctx(&root);
     let pk = plain_pk(tmp.path());
 
     let work = tmp.path().join("cache").join(WORK_SUBDIR);
@@ -796,8 +840,9 @@ fn envoi_depuis_un_plain_pk() {
         &root,
         &pk,
         &work,
-        false,
         None,
+        None,
+        &ctx,
         &AtomicBool::new(false),
         &mut |_| {},
     )
@@ -817,16 +862,20 @@ fn envoi_depuis_un_plain_pk() {
 
     // Firmware non pris en charge (3.x), ou 1.x sans demande carrier : rien n'est préparé ni
     // écrit.
-    for (version, carrier_needed) in [("3.0.0", false), ("1.2.0", true)] {
-        write(&root.join(MDF_FILE), &mdf(version));
+    for (mdf, carrier_needed) in [
+        (mdf("3.0.0"), false),
+        (mdf_with(KNOWN_HEADER, "1.2.0-abcdef"), true),
+    ] {
+        write(&root.join(MDF_FILE), &mdf);
         let before = snapshot(&root);
         let err = send_from_library_with(
             &FaultyFs::new(),
             &root,
             &pk,
             &work,
-            true,
+            Some(NEW),
             None,
+            &ctx,
             &AtomicBool::new(false),
             &mut |_| {},
         )
@@ -838,7 +887,10 @@ fn envoi_depuis_un_plain_pk() {
             );
         } else {
             assert!(
-                matches!(err, TransferError::UnsupportedFirmware(_)),
+                matches!(
+                    err,
+                    TransferError::Refused(WriteRefused::UnsupportedFirmware { .. })
+                ),
                 "{err:?}"
             );
         }
@@ -855,6 +907,8 @@ fn remplacement_a_version_egale_contenu_different() {
     let tmp = tempfile::tempdir().unwrap();
     let root = device(tmp.path(), false);
     write(&root.join(MDF_FILE), &mdf("2.4.2"));
+    // Flam 2.x : sauvegarde confirmée par l'utilisateur.
+    let ctx = confirmed_ctx(&root);
     let work = tmp.path().join("cache").join(WORK_SUBDIR);
     let send_pk = |pk: &Path, replace: bool| {
         send_from_library_with(
@@ -862,8 +916,9 @@ fn remplacement_a_version_egale_contenu_different() {
             &root,
             pk,
             &work,
-            replace,
+            replace.then_some(NEW),
             None,
+            &ctx,
             &AtomicBool::new(false),
             &mut |_| {},
         )
@@ -918,7 +973,7 @@ mod carrier_flow {
     /// listée, cache du firmware.
     fn device_v1(base: &Path) -> PathBuf {
         let root = base.join("flam");
-        write(&root.join(MDF_FILE), &mdf("1.15.14"));
+        write(&root.join(MDF_FILE), &mdf_v1_real());
         official_story(&root, "str", OFFICIAL, true);
         write(&root.join(LIBRARY_CACHE), b"cache");
         write(&root.join("etc/library/list"), &serialize(&[id(OFFICIAL)]));
@@ -970,8 +1025,9 @@ mod carrier_flow {
             &e.root,
             &e.pk,
             &e.work,
-            false,
+            None,
             Some(&request),
+            &test_ctx(),
             &AtomicBool::new(false),
             &mut |_| {},
         )
@@ -1023,7 +1079,7 @@ mod carrier_flow {
         assert_eq!(official["bt"], test_bt().to_vec());
         assert_eq!(official["info"], encrypted_info(&test_bt(), INFO_PLAIN));
         // Couple conservé, relisible ; puis réutilisé depuis la conservation.
-        let id_flam = crate::device::carrier::DeviceId::from_mdf(&mdf("1.15.14")).unwrap();
+        let id_flam = crate::device::carrier::DeviceId::from_mdf(&mdf_v1_real()).unwrap();
         assert!(e.store.has(&id_flam));
         std::fs::remove_dir_all(e.root.join("str").join(NEW)).unwrap();
         write(
@@ -1214,7 +1270,7 @@ mod carrier_flow {
         assert!(!installed.contains_key("bt"), "bt jamais copié");
         assert!(decrypt_with_bt(&installed["info"]).starts_with(PK_INFO));
         // Couple conservé : réutilisable sans nouvelle saisie.
-        let id_flam = crate::device::carrier::DeviceId::from_mdf(&mdf("1.15.14")).unwrap();
+        let id_flam = crate::device::carrier::DeviceId::from_mdf(&mdf_v1_real()).unwrap();
         assert!(e.store.has(&id_flam));
         for entry in std::fs::read_dir(&e.keys_dir).unwrap() {
             let name = entry.unwrap().file_name().to_string_lossy().into_owned();
@@ -1274,8 +1330,9 @@ mod carrier_flow {
                 &e.root,
                 &e.pk,
                 &e.work,
-                false,
+                None,
                 Some(&request),
+                &test_ctx(),
                 &AtomicBool::new(true),
                 &mut |_| {},
             )
@@ -1353,16 +1410,16 @@ fn coupures_repetees_pendant_la_reprise() {
     };
     let old = files_of(&device(&tmp.path().join("ref"), true).join("str").join(NEW));
     let counter = FaultyFs::new();
-    recover_with(&counter, &setup(&tmp.path().join("compte"))).unwrap();
+    recover_with(&counter, &permit(), &setup(&tmp.path().join("compte"))).unwrap();
     let total_ops = counter.ops.get();
     for crash_at in 0..total_ops {
         let root = setup(&tmp.path().join(format!("r{crash_at}")));
         // Première reprise coupée, deuxième coupée plus tôt encore, puis reprise saine.
-        let _ = recover_with(&FaultyFs::crash_at(crash_at), &root);
-        let _ = recover_with(&FaultyFs::crash_at(crash_at / 2), &root);
+        let _ = recover_with(&FaultyFs::crash_at(crash_at), &permit(), &root);
+        let _ = recover_with(&FaultyFs::crash_at(crash_at / 2), &permit(), &root);
         let lock = crate::device::lock::DeviceLock::new();
         let guard = lock.try_begin(Operation::Transfer).unwrap();
-        recover_device(&guard, &root).unwrap();
+        recover_device(&guard, &root, &test_ctx()).unwrap();
         assert!(!root.join(TRANSFER_DIR).exists(), "étape {crash_at}");
         assert_eq!(
             files_of(&root.join("str").join(NEW)),
@@ -1397,17 +1454,110 @@ fn reprise_continue_apres_une_entree_verrouillee() {
         locked: Some(OTHER),
         ..FaultyFs::new()
     };
-    let (report, failures) = recover_collect(&fs, &root).unwrap();
+    let (report, failures) = recover_collect(&fs, &permit(), &root).unwrap();
     assert_eq!(report.incomplete_removed, 1, "la troisième est reprise");
     assert_eq!(failures.len(), 1);
     assert!(failures[0].0.starts_with(OTHER));
     assert!(!transfer.join(format!("{third}{INCOMING_SUFFIX}")).exists());
-    assert!(recover_with(&fs, &root).is_err());
+    assert!(recover_with(&fs, &permit(), &root).is_err());
 
-    // L'envoi d'une autre histoire n'est pas bloqué par le résidu verrouillé.
+    // L'envoi d'une autre histoire n'est pas bloqué par le résidu verrouillé, mais le rapport
+    // le signale (#309, M-c).
     let p = prepared(tmp.path(), 1);
-    send(&fs, &root, &p, false).unwrap();
+    let report = send(&fs, &root, &p, false).unwrap();
     assert!(root.join("str").join(NEW).join("info").is_file());
+    assert_eq!(report.recovery_failures.len(), 1, "{report:?}");
+    assert!(
+        report.recovery_failures[0].starts_with(&format!("{OTHER}{INCOMING_SUFFIX} : ")),
+        "{report:?}"
+    );
+    // Reprise réussie ensuite : plus rien à signaler.
+    let report = send(&FaultyFs::new(), &root, &p, true).unwrap();
+    assert!(report.recovery_failures.is_empty(), "{report:?}");
+}
+
+/// #309 (N1) : un résidu de la même histoire que la reprise n'a pas pu supprimer (dossier
+/// verrouillé) est refusé sans renvoyer vers `chkdsk`, et rien n'est écrit.
+#[test]
+fn residu_verrouille_de_la_meme_histoire_sans_chkdsk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    write(
+        &root
+            .join(TRANSFER_DIR)
+            .join(format!("{NEW}{INCOMING_SUFFIX}"))
+            .join("info"),
+        b"x",
+    );
+    let fs = FaultyFs {
+        locked: Some(NEW),
+        ..FaultyFs::new()
+    };
+    let before = snapshot(&root);
+    let p = prepared(tmp.path(), 2);
+    let err = send(&fs, &root, &p, false).unwrap_err();
+    let text = err.to_string();
+    assert!(matches!(err, TransferError::Io(_)), "{err:?}");
+    assert!(
+        !text.contains("chkdsk") && text.contains("réessayez"),
+        "{text}"
+    );
+    assert_eq!(snapshot(&root), before);
+}
+
+/// #309 (M-b) : « Remplacer » ne s'applique qu'à l'histoire visée. Une archive dont l'UUID
+/// diffère de celui que l'utilisateur a choisi de remplacer est refusée sans rien écrire, même
+/// si son UUID est déjà sur la Flam ; l'UUID visé est comparé en forme simple ou à tirets.
+#[test]
+fn remplacement_lie_a_l_uuid_vise() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = prepared(tmp.path(), 12);
+    let braced = format!("{{{NEW}}}");
+    let urn = format!("urn:uuid:{NEW}");
+    for update in [true, false] {
+        let root = device(&tmp.path().join(format!("refus-{update}")), update);
+        // Une reprise en attente : le refus la précède, rien n'est touché.
+        write(
+            &root
+                .join(TRANSFER_DIR)
+                .join(format!("{OTHER}{INCOMING_SUFFIX}"))
+                .join("info"),
+            b"partiel",
+        );
+        let before = snapshot(&root);
+        for target in [
+            OTHER,
+            "11111111222233334444555555555555",
+            "",
+            "pas un uuid",
+            braced.as_str(),
+            urn.as_str(),
+        ] {
+            let err = send_to(&FaultyFs::new(), &root, &p, Some(target)).unwrap_err();
+            assert!(
+                matches!(&err, TransferError::ReplaceMismatch { id } if id.as_str() == NEW),
+                "{target:?} : {err:?}"
+            );
+            assert_eq!(
+                crate::AppError::from(err).kind(),
+                "validation",
+                "{target:?}"
+            );
+            assert_eq!(snapshot(&root), before, "rien n'est écrit ({target:?})");
+        }
+    }
+    // Forme simple (source dossier) et majuscules : même UUID, remplacement accepté.
+    let simple = NEW.replace('-', "");
+    for (n, target) in [simple.clone(), simple.to_uppercase(), NEW.to_uppercase()]
+        .iter()
+        .enumerate()
+    {
+        let root = device(&tmp.path().join(format!("ok-{n}")), true);
+        let report = send_to(&FaultyFs::new(), &root, &p, Some(target)).unwrap();
+        assert!(report.replaced, "{target}");
+        assert_eq!(files_of(&root.join("str").join(NEW)), files_of(&p.dir));
+        assert_eq!(listed(&root), vec![id(OTHER), id(NEW)]);
+    }
 }
 
 #[test]
@@ -1438,4 +1588,197 @@ fn mdf_de_plus_de_64_kio_refuse_comme_a_la_detection() {
     ));
     write(&root.join(MDF_FILE), &vec![0u8; MDF_MAX_SIZE as usize]);
     assert_eq!(read_mdf(&root).unwrap().len() as u64, MDF_MAX_SIZE);
+}
+
+/// Garde commune (#317) à l'envoi : confirmation manquante, contradiction réelle (histoire au
+/// format Flam au fichier `key` déduit mais `info` illisible), firmware refusé : rien n'est
+/// préparé ni écrit, pas même la reprise d'un envoi interrompu.
+#[test]
+fn envoi_refuse_par_la_garde_du_firmware() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    let pk = plain_pk(tmp.path());
+    let work = tmp.path().join("cache").join(WORK_SUBDIR);
+    // Reste d'un envoi interrompu : la reprise ne doit pas tourner.
+    write(
+        &root.join(TRANSFER_DIR).join(format!("{NEW}.in")).join("x"),
+        b"x",
+    );
+    let mut long = mdf("2.4.2");
+    long.extend([0u8; 2]);
+    let wrong_info = crate::device::crypto::encrypt_zero_padded(&[3; 16], &[4; 16], b"Faux\n");
+    type Expect = fn(&WriteRefused) -> bool;
+    // (mdf, confirmée, contradiction, refus attendu)
+    let cases: [(Vec<u8>, bool, bool, Expect); 5] = [
+        (mdf("2.4.2"), false, false, |e| {
+            matches!(e, WriteRefused::ConfirmationRequired { standard: true, .. })
+        }),
+        (long, false, false, |e| {
+            matches!(
+                e,
+                WriteRefused::ConfirmationRequired {
+                    standard: false,
+                    ..
+                }
+            )
+        }),
+        (mdf_with([0, 0], "2.4.2-nue"), false, false, |e| {
+            matches!(
+                e,
+                WriteRefused::ConfirmationRequired {
+                    standard: false,
+                    ..
+                }
+            )
+        }),
+        (mdf("2.4.2"), true, true, |e| {
+            matches!(e, WriteRefused::KeysContradiction { .. })
+        }),
+        (mdf("3.0.0"), false, false, |e| {
+            matches!(e, WriteRefused::UnsupportedFirmware { .. })
+        }),
+    ];
+    for (mdf, confirmed, contradiction, expected) in cases {
+        write(&root.join(MDF_FILE), &mdf);
+        let _ = std::fs::remove_dir_all(root.join("str").join(OFFICIAL_V2));
+        let ctx = if confirmed {
+            confirmed_ctx(&root)
+        } else {
+            test_ctx()
+        };
+        if contradiction {
+            story(&root, OFFICIAL_V2, &key_v2(), &wrong_info);
+        }
+        let before = snapshot(&root);
+        let err = send_from_library_with(
+            &FaultyFs::new(),
+            &root,
+            &pk,
+            &work,
+            None,
+            None,
+            &ctx,
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        match &err {
+            TransferError::Refused(reason) => assert!(expected(reason), "{reason}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(crate::AppError::from(err).kind(), "validation");
+        assert_eq!(snapshot(&root), before, "rien écrit");
+        assert!(!work.join("str").join(NEW).exists(), "rien préparé");
+    }
+}
+
+/// 2.x de disposition non standard, version sans « main: » : envoi après confirmation, avec
+/// les clés de `.mdf` et le fichier `key` déduit du numéro de série. Une histoire installée par
+/// un autre outil au format Lunii n'empêche rien.
+#[test]
+fn envoi_2x_non_standard_apres_confirmation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    let mut mdf = mdf_with([0, 0], "2.4.2-nue");
+    mdf.extend([0u8; 10]);
+    write(&root.join(MDF_FILE), &mdf);
+    let lunii = root.join("str").join(OFFICIAL_V2);
+    write(&lunii.join("key"), &key_v2());
+    write(&lunii.join("ni"), b"ni");
+    write(&lunii.join("info"), &[7u8; 32]);
+    let pk = plain_pk(tmp.path());
+    let work = tmp.path().join("cache").join(WORK_SUBDIR);
+    let ctx = confirmed_ctx(&root);
+    let report = send_from_library_with(
+        &FaultyFs::new(),
+        &root,
+        &pk,
+        &work,
+        None,
+        None,
+        &ctx,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(report.id, NEW);
+    let installed = files_of(&root.join("str").join(NEW));
+    assert_eq!(installed["key"], key_v2());
+    assert_eq!(
+        test_keys().title_of_info(&installed["info"]).as_deref(),
+        Some("Titre")
+    );
+}
+
+/// La reprise au branchement passe par la garde : refusée sur un firmware non pris en charge.
+#[test]
+fn reprise_refusee_par_la_garde_du_firmware() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    write(&root.join(MDF_FILE), &mdf("3.0.0"));
+    write(
+        &root.join(TRANSFER_DIR).join(format!("{NEW}.in")).join("x"),
+        b"x",
+    );
+    let before = snapshot(&root);
+    let guard = crate::device::lock::DeviceLock::new();
+    let guard = guard.try_begin(Operation::Transfer).unwrap();
+    let err = recover_device(&guard, &root, &test_ctx()).unwrap_err();
+    assert!(matches!(err, TransferError::Refused(_)), "{err:?}");
+    assert_eq!(snapshot(&root), before);
+    // Flam 1.15.14 réelle : la reprise a lieu.
+    write(&root.join(MDF_FILE), &mdf_v1_real());
+    recover_device(&guard, &root, &test_ctx()).unwrap();
+    assert!(!root.join(TRANSFER_DIR).exists());
+    // Flam 2.x non confirmée : refusée aussi.
+    write(&root.join(MDF_FILE), &mdf("2.4.2"));
+    write(
+        &root.join(TRANSFER_DIR).join(format!("{NEW}.in")).join("x"),
+        b"x",
+    );
+    assert!(matches!(
+        recover_device(&guard, &root, &test_ctx()),
+        Err(TransferError::Refused(
+            WriteRefused::ConfirmationRequired { .. }
+        ))
+    ));
+    recover_device(&guard, &root, &confirmed_ctx(&root)).unwrap();
+}
+
+#[test]
+fn comm_avant_main_et_version_nue() {
+    let m = mdf_with(KNOWN_HEADER, "comm: 7.7.7\nmain: 2.4.2-x");
+    assert_eq!(firmware_from_mdf(&m).as_deref(), Some("2.4.2"));
+    assert_eq!(
+        firmware_field(&mdf_v1_real()),
+        Some(("1.15.14".to_string(), VersionForm::Bare))
+    );
+}
+
+/// Un permis obtenu pour une Flam ne permet aucune écriture sur une autre (#317).
+#[test]
+fn reprise_refusee_avec_le_permis_d_une_autre_flam() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    let other = tempfile::tempdir().unwrap();
+    let other_root = device(other.path(), false);
+    write(
+        &other_root
+            .join(TRANSFER_DIR)
+            .join(format!("{NEW}.in"))
+            .join("x"),
+        b"x",
+    );
+    let permit = crate::device::guard::check_write(
+        &root,
+        &test_ctx(),
+        crate::device::guard::WriteKind::Other,
+    )
+    .unwrap();
+    let before = snapshot(&other_root);
+    assert!(matches!(
+        recover_with(&FaultyFs::new(), &permit, &other_root),
+        Err(TransferError::InvalidRoot)
+    ));
+    assert_eq!(snapshot(&other_root), before);
 }

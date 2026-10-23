@@ -2,7 +2,13 @@ import { useId, useMemo } from "react";
 import { Button, type ButtonVariant } from "../../components";
 import { t } from "../../i18n";
 import { useDevice } from "./DeviceContext";
-import { replaceBlock, sendBlock, type SendBlock, type SendContext } from "./sendRules";
+import {
+  findOnDevice,
+  replaceBlock,
+  sendBlock,
+  type SendBlock,
+  type SendContext,
+} from "./sendRules";
 import "./SendToDeviceButton.css";
 
 const text = t.deviceTransfer;
@@ -11,6 +17,7 @@ const REASON_TEXT: Record<SendBlock, string> = {
   queued: text.reasons.queued,
   no_device: text.reasons.noDevice,
   firmware: text.reasons.firmware,
+  confirm_keys: t.deviceFirmware.confirm.sendFirst,
   checking: text.reasons.checking,
   present: text.reasons.present,
   no_space: text.reasons.noSpace,
@@ -32,7 +39,8 @@ export interface SendToDeviceButtonProps {
 
 /** État de la Flam et de la file, pour les règles d'envoi. */
 function useSendContext(): SendContext {
-  const { device, stories, firmwareBlocked, queue, removing } = useDevice();
+  const { device, stories, firmwareBlocked, keysConfirmation, queue, removing } =
+    useDevice();
   const report = stories.phase === "ready" ? stories.report : null;
   // Seuls les envois en attente ou en cours bloquent : une tâche terminée (réussie, en échec ou
   // annulée) ne bloque jamais un nouvel envoi. Une histoire réussie y figure déjà (« Déjà sur la
@@ -49,7 +57,14 @@ function useSendContext(): SendContext {
       ),
     [queue],
   );
-  return { device, deviceStories: report, firmwareBlocked, removing, queuedOrSent };
+  return {
+    device,
+    deviceStories: report,
+    firmwareBlocked,
+    keysConfirmation,
+    removing,
+    queuedOrSent,
+  };
 }
 
 /** Raison de blocage de l'envoi de `uuid` d'après l'état de la Flam et de la file. */
@@ -79,6 +94,8 @@ export function SendToDeviceButton({
   const context = useSendContext();
   const block = sendBlock(context, uuid, size);
   const replace = block === "present" ? replaceBlock(context, uuid, size) : "absent";
+  // UUID réel de l'histoire sur la Flam (celui de `uuid.bin`, pas celui de la bibliothèque).
+  const target = findOnDevice(context.deviceStories, uuid)?.uuid;
   const reasonId = useId();
   const staleId = useId();
   const replaceReasonId = useId();
@@ -117,7 +134,8 @@ export function SendToDeviceButton({
             )}
             aria-label={text.forStory(text.replace, title)}
             onClick={() => {
-              if (replace === null) requestSend({ uuid, title, size, replace: true });
+              if (replace === null && target)
+                requestSend({ uuid, title, size, replace: target });
             }}
           >
             {text.replace}

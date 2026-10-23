@@ -31,11 +31,114 @@ export interface DeviceSummary {
   backup_failed: boolean;
   /** Version du firmware lue dans `.mdf` (`1.15.14`, `2.4.2`…), `null` si illisible. */
   firmware: string | null;
+  /** État du firmware et de la garde des écritures (#317). Aucune clé ni numéro de série. */
+  firmware_status: FirmwareStatus;
+}
+
+/** Famille du firmware (miroir de `Family` dans `device/guard.rs`). */
+export type FirmwareFamily = "v1" | "v2" | "unsupported" | "unreadable";
+
+/** Bilan du contrôle de cohérence des clés 2.x (miroir de `CoherenceCounts`). */
+export interface CoherenceCounts {
+  examined: number;
+  key_matches: number;
+  decrypted: number;
+  decrypted_other_key: number;
+  lunii_format: number;
+  clear_info: number;
+}
+
+/** Contrôle de cohérence des clés 2.x (miroir de `Coherence`, informatif). */
+export type Coherence =
+  | { kind: "not_applicable" }
+  | { kind: "not_checked" }
+  | { kind: "coherent"; counts: CoherenceCounts }
+  | {
+      kind: "contradiction";
+      counts: CoherenceCounts;
+      /** UUID des histoires en cause (au plus 20, triés). */
+      stories: string[];
+      /** Nombre d'UUID distincts en cause, avant troncature. */
+      total: number;
+    }
+  | { kind: "no_evidence"; counts: CoherenceCounts };
+
+/** Confiance accordée à une Flam 2.x (miroir de `Trust`). */
+export type FirmwareTrust =
+  "not_applicable" | "flam_verified" | "confirmed" | "unconfirmed";
+
+/** Refus d'écrire de la garde (miroir de `WriteRefused`). */
+export type WriteRefused =
+  | { kind: "device_not_found" }
+  | { kind: "invalid_root" }
+  | { kind: "mdf_unreadable"; detail: string }
+  | { kind: "truncated"; size: number }
+  | { kind: "version_unreadable" }
+  | { kind: "unsupported_firmware"; version: string }
+  | { kind: "keys_unreadable"; detail: string }
+  | { kind: "keys_trivial"; version: string }
+  | { kind: "keys_contradiction"; version: string }
+  | { kind: "confirmation_required"; version: string; standard: boolean };
+
+/** État du firmware (miroir de `FirmwareStatus` dans `device/guard.rs`). */
+export interface FirmwareStatus {
+  version: string | null;
+  family: FirmwareFamily;
+  version_form: "main" | "bare" | "unreadable";
+  mdf_size: number;
+  /** Deux premiers octets de `.mdf` (`01 00`). */
+  header: string | null;
+  /** 126 octets et en-tête `01 00` (seule disposition mesurée). */
+  layout_standard: boolean;
+  /** VID:PID USB lus dans `.mdf` (`303a:819e`). */
+  usb_ids: string | null;
+  coherence: Coherence;
+  trust: FirmwareTrust;
+  /** Raison du refus d'écrire ; `null` : écriture autorisée. */
+  write_block: WriteRefused | null;
 }
 
 /** Le firmware exige le mode carrier (1.x). */
 export function needsCarrier(device: DeviceSummary | null): boolean {
-  return device?.firmware?.split(".")[0] === "1";
+  if (!device) return false;
+  if (device.firmware_status) return device.firmware_status.family === "v1";
+  return device.firmware?.split(".")[0] === "1";
+}
+
+/**
+ * Refus d'envoyer sur la Flam d'après l'état du firmware (`null` : envoi possible, éventuellement
+ * après confirmation, voir `needsFirmwareConfirmation`).
+ */
+export function firmwareWriteBlock(device: DeviceSummary | null): WriteRefused | null {
+  const block = device?.firmware_status?.write_block ?? null;
+  return block && block.kind !== "confirmation_required" ? block : null;
+}
+
+/**
+ * Flam 2.x pas encore confirmée : l'utilisateur doit confirmer avant toute écriture. Vrai aussi
+ * quand l'envoi est bloqué par une contradiction des clés : la confirmation rend alors le
+ * retrait de l'histoire en cause possible.
+ */
+export function needsFirmwareConfirmation(device: DeviceSummary | null): boolean {
+  const status = device?.firmware_status;
+  const kind = status?.write_block?.kind;
+  return (
+    kind === "confirmation_required" ||
+    (kind === "keys_contradiction" && status?.trust === "unconfirmed")
+  );
+}
+
+/**
+ * Reprise, retrait et ordre possibles : seule une contradiction des clés (qui ne refuse que
+ * l'envoi) est tolérée.
+ */
+export function canMaintain(device: DeviceSummary | null): boolean {
+  if (!device) return false;
+  const status = device.firmware_status;
+  if (!status) return true;
+  if (status.trust === "unconfirmed") return false;
+  const block = status.write_block;
+  return block === null || block.kind === "keys_contradiction";
 }
 
 /** Réponse de `device_status` (miroir de `DeviceStatus`). */
@@ -66,6 +169,11 @@ export interface DeviceStory {
   in_library: boolean;
   /** Listée dans l'index mais sans dossier sur la Flam. */
   missing: boolean;
+  /**
+   * Identifiants de bibliothèque des histoires installées sous cet UUID (associées par
+   * `uuid.bin`) : une source dossier ou Telmi n'a pas l'UUID de la Flam pour identifiant.
+   */
+  library_uuids: string[];
 }
 
 /** Réponse de `device_list_stories` (miroir de `StoriesReport`). */
@@ -86,6 +194,15 @@ export interface DeviceStories {
  */
 export function getDeviceStatus(): Promise<DeviceStatus> {
   return invokeCommand<DeviceStatus>("device_status");
+}
+
+/**
+ * `device_diagnostic` : diagnostic Markdown à coller dans une issue « Retour testeur Flam »
+ * (#318). Lecture seule, sans réseau ; disponible sans Flam (diagnostic réduit). Ne contient ni
+ * clé, ni `bt`, ni numéro de série, ni titre ou UUID d'histoire, ni nom d'utilisateur.
+ */
+export function getDeviceDiagnostic(): Promise<string> {
+  return invokeCommand<string>("device_diagnostic");
 }
 
 /**
@@ -199,6 +316,11 @@ export interface TransferReport {
   carrier_readback: boolean | null;
   /** Mode carrier : les clés sont conservées sur ce PC pour cette Flam (`null` hors carrier). */
   carrier_stored: boolean | null;
+  /**
+   * Reprises de transferts interrompus qui ont échoué avant l'envoi (« entrée : erreur ») :
+   * l'envoi a réussi, mais une autre histoire peut rester incomplète. Vide d'ordinaire.
+   */
+  recovery_failures: string[];
 }
 
 /** Consentement à l'avertissement du mode carrier (miroir de `CarrierConsent`). */
@@ -309,19 +431,20 @@ export const TRANSFER_PROGRESS_EVENT = "device://transfer-progress";
 /**
  * `device_send_story` : envoie l'histoire `uuid` de la bibliothèque sur la Flam de racine
  * `root` (`validation` si déjà présente sans `replace`, espace insuffisant, firmware non pris
- * en charge ou Flam occupée ; `cancelled` si annulé). `replace` : remplace l'histoire déjà sur
- * la Flam (même à version égale), l'ancienne n'étant retirée qu'une fois la nouvelle en place.
+ * en charge ou Flam occupée ; `cancelled` si annulé). `replace` : UUID de l'histoire de la Flam
+ * à remplacer (même à version égale), l'ancienne n'étant retirée qu'une fois la nouvelle en
+ * place ; refusé (`validation`) s'il ne désigne pas l'histoire de l'archive.
  */
 export function sendStoryToDevice(
   root: string,
   uuid: string,
   carrier?: CarrierSend,
-  replace = false,
+  replace?: string,
 ): Promise<TransferReport> {
   const args: Record<string, unknown> = carrier
     ? { root, uuid, carrier: carrier.choice, remember: carrier.remember }
     : { root, uuid };
-  if (replace) args.replace = true;
+  if (replace) args.replace = replace;
   return invokeCommand<TransferReport>("device_send_story", args);
 }
 
@@ -347,6 +470,20 @@ export function acceptCarrierWarning(
 /** `device_carrier_forget` : oublie les clés conservées pour la Flam de `root`. */
 export function forgetCarrierKeys(root: string): Promise<number> {
   return invokeCommand<number>("device_carrier_forget", { root });
+}
+
+/**
+ * `device_confirm_firmware` : « Firmware 2.x en test : j'ai sauvegardé ma Flam » (`understood` :
+ * case cochée), mémorisé sur ce PC pour cette Flam. Rend l'état du firmware à jour.
+ */
+export function confirmFirmware(
+  root: string,
+  understood: boolean,
+): Promise<FirmwareStatus> {
+  return invokeCommand<FirmwareStatus>("device_confirm_firmware", {
+    root,
+    understood,
+  });
 }
 
 /** `device_cancel_transfer` : demande l'annulation du transfert en cours (faux : aucun). */

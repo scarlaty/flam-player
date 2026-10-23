@@ -11,8 +11,9 @@ et arrivent avec les issues du jalon M3.
 
 ## Installation (Windows)
 
-1. Télécharger l'installateur `Flam Launcher_<version>_x64-setup.exe` (artefact de la CI ou
-   version publiée).
+1. Télécharger l'installateur : `Flam-Launcher_<version>_x64-setup.exe` pour une pré-version publiée
+   (page des releases), ou `Flam Launcher_<version>_x64-setup.exe` (avec une espace) pour l'artefact
+   de la CI.
 2. Le lancer : l'installation se fait **pour l'utilisateur courant**, sans droits
    d'administrateur (dossier par défaut `%LOCALAPPDATA%\Flam Launcher`).
 3. **SmartScreen** : l'installateur n'est **pas signé**. Windows affiche « Windows a protégé
@@ -51,6 +52,30 @@ pour tout effacer, supprimer ces deux dossiers à la main.
 Dans la bibliothèque d'une source, « Installer » télécharge et convertit (progression et
 annulation possibles), puis « Jouer » lance l'histoire dans `flam-player` ; la fermeture du
 player ramène à la surcouche. Les histoires installées sont sous « Mes histoires ».
+
+## Flam : envoyer des histoires (expérimental)
+
+> **Fonction expérimentale et non officielle**, ni prévue ni garantie par le fabricant de la
+> Flam. À utiliser à vos risques, après avoir copié le contenu de votre Flam sur le PC.
+
+L'écran **Ma Flam** détecte une Flam branchée en USB (« mode connexion USB » activé, la Flam
+apparaît comme un disque), liste ses histoires avec leurs titres et vignettes, et permet d'en
+envoyer depuis « Mes histoires », d'en retirer, de changer leur ordre et d'éjecter la Flam.
+
+- **Firmware 1.x** : validé sur un appareil réel (1.15.14), via le mode carrier (clé `bt`
+  d'une histoire officielle de votre compte, saisie ou choisie par vous).
+- **Firmware 2.x** : pris en charge mais **jamais testé sur un appareil** ; c'est l'objet de la
+  bêta.
+- Pendant un envoi : l'application écrit dans un dossier temporaire, vérifie la copie, puis
+  renomme ; l'index est réécrit de façon sûre (copie vérifiée, reprise après coupure) ; une
+  copie du `.mdf` est gardée sur le PC.
+  Elle ne sauvegarde **pas** les histoires de la Flam.
+
+Détails (prérequis, limites, lenteur, redémarrage et éjection, risques, synchronisation avec
+l'application officielle, dépannage) : [docs/flam-transfert.md](docs/flam-transfert.md).
+Testeurs de la bêta : [docs/guide-testeur.md](docs/guide-testeur.md). Formats et procédures :
+[docs/flam-device-format.md](../../docs/flam-device-format.md) et
+[docs/flam-carrier.md](../../docs/flam-carrier.md).
 
 ## Dépannage
 
@@ -261,6 +286,14 @@ variables : `FLAM_E2E_INSTALL_DIR`, ou `FLAM_E2E_PLAYER` + `FLAM_E2E_CONVERTER_D
 (`.github/workflows/launcher.yml`) compile le player, construit l'installateur, l'installe en
 silence, y exécute ce test puis le désinstalle en vérifiant qu'il ne reste aucun fichier.
 
+Sur une PR, l'installateur N-1 et le test de mise à jour N-1 vers N (≈ 5 min de build, plus le
+scénario) ne tournent que si la PR modifie l'empaquetage : `tauri*.json`, `Cargo.toml`, `build.rs`,
+`icons/`, `windows/` (hooks NSIS) de `src-tauri/`, `package*.json`, `LICENSES.md`, `third-party/` et
+les scripts `build-*`, `notices-lib`, `Get-InstallTree`, `check-imports` du launcher, `tools/ffmpeg/`,
+`Cargo.toml`/`Cargo.lock` racine, ou `.github/workflows/launcher.yml`. Le label de PR
+`ci-installeur` force l'exécution (poser le label relance la CI). L'installateur N, son installation,
+l'e2e et l'artefact tournent toujours ; sur `push` vers main, tout tourne.
+
 ### À vérifier sur une session Windows propre
 
 Non couvert par la CI ni par le poste de développement (où Python, Visual Studio et WebView2
@@ -276,6 +309,58 @@ sont déjà présents) : à cocher par le mainteneur avant publication.
 - [ ] Mise à jour par-dessus une version installée ; désinstallation (données utilisateur
       conservées, dossier d'installation vide).
 - [ ] Antivirus : pas de quarantaine de `flam-player.exe` ni de `python.exe`.
+
+## Publier une pré-version
+
+Workflow `.github/workflows/release-launcher.yml` (#319) : une étiquette `launcher-v<version>`
+poussée sur un commit de `main` construit l'installateur NSIS (mêmes étapes que `launcher.yml`),
+calcule `SHA256SUMS.txt` et crée une **pré-version** GitHub « Flam Launcher <version> » avec
+l'installateur, `SHA256SUMS.txt` et les notes de `release-notes/<version>.md`. Les releases `v0.x`
+du dépôt concernent le player : elles ne sont pas touchées.
+
+Procédure (exemple : `0.1.0-beta.1`) :
+
+1. Repérer le commit visé : le **commit de fusion de la montée de version** (étape 2). Il touche
+   `apps/flam-launcher/**`, donc la CI `launcher` y tourne ; attendre qu'elle soit verte (le workflow
+   de publication ne rejoue ni lint, ni tests, ni test de mise à jour, et refuse sans cette CI verte).
+2. Dans une PR : passer `0.1.0-beta.1` dans `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`,
+   `package.json`, `package-lock.json` (`npm version 0.1.0-beta.1 --no-git-tag-version`) et
+   `Cargo.lock` (`cargo check` depuis `src-tauri/`). Relire `release-notes/0.1.0-beta.1.md` et en
+   **retirer la ligne « BROUILLON »** : la publication refuse des notes qui la contiennent. Vérifier que
+   `docs/guide-testeur.md` (#235) et le modèle d'issue `.github/ISSUE_TEMPLATE` (#318), cités par les
+   notes, sont fusionnés. Fusionner.
+3. Facultatif : Actions, « release-launcher », « Run workflow » depuis `main`, étiquette
+   `launcher-v0.1.0-beta.1`, `dry_run` coché (valeur par défaut) : construit tout depuis `main` sans
+   rien publier ; les contrôles propres à la publication (brouillon, commit dans `main`, release
+   existante, CI `launcher` verte) ne sont alors que des avertissements.
+4. Poser et pousser l'étiquette sur le commit de fusion :
+   `git tag launcher-v0.1.0-beta.1 <commit> && git push origin launcher-v0.1.0-beta.1`.
+5. Le workflow publie. En cas d'échec : le rejeu (« Run workflow » depuis `main`, même étiquette,
+   `dry_run` décoché) reconstruit le commit de l'étiquette ; il convient à une panne passagère ou à
+   une correction du workflow lui-même. Une correction du code, des versions ou des notes impose de
+   supprimer l'étiquette (`git push origin :refs/tags/launcher-v0.1.0-beta.1`), de la reposer sur le
+   nouveau commit de `main`, ou de passer à une nouvelle version. Si une release du même nom existe,
+   le workflow refuse d'y toucher : la supprimer à la main d'abord.
+
+Contrôles automatiques avant le build : forme de l'étiquette (`launcher-v` + SemVer, pré-version
+admise), les fichiers de version (dont `packages[""]` de `package-lock.json`) égaux à la version de l'étiquette, notes présentes et sans
+« BROUILLON » (casse indifférente), commit de l'étiquette contenu dans `main`, aucune release
+existante (brouillon compris, revérifié avant la création), rejeu lancé depuis `main`, et **CI
+`launcher` verte sur ce commit exact** : le workflow `launcher` doit y avoir un run `push` terminé en
+succès (en cas de relances, le plus récent compte). Sans run (commit qui ne touche aucun chemin filtré
+de `launcher.yml`, par ex. un commit de documentation seule), en cours, échoué ou annulé, la
+publication est refusée : il n'y a volontairement pas de repli sur un commit ancêtre, des commits non
+testés pouvant s'être intercalés. Poser alors l'étiquette sur le commit de fusion de la montée de
+version, ou attendre / relancer la CI `launcher` (Actions, « Re-run »). La CI de `main` annule le run
+précédent quand un autre commit arrive : un run annulé sur le commit visé est à relancer avant la publication. Un dry_run et la répétition
+générale affichent ce contrôle en avertissement. Le commit contrôlé est celui qui est construit et publié (l'étiquette ne doit pas
+avoir bougé). La forme de l'étiquette n'admet pas de tiret dans un identifiant de pré-version
+(`beta.1`, pas `beta-1`). L'installateur
+porte le nom `Flam-Launcher_<version>_x64-setup.exe` (sans espace, comme dans `SHA256SUMS.txt`) et
+la version enregistrée par l'installateur est comparée à celle de l'étiquette. Sur une PR qui modifie
+le workflow ou les notes, une répétition générale construit l'installateur avec la version d'exemple
+`0.1.0-beta.1` forcée (sans publier) : elle valide que Tauri et NSIS acceptent le suffixe de
+pré-version.
 
 ## Architecture
 
@@ -295,6 +380,7 @@ apps/flam-launcher/
     src/
       lib.rs               Initialisation (traces, builder Tauri)
       app.rs               Commandes générales (`app_info`)
+      external.rs          Ouverture d'une page du dépôt dans le navigateur (`open_external`, #323)
       error.rs             `AppError` (thiserror), sérialisée en `{ kind, message }`
       storage.rs           Persistance JSON : écriture atomique, `*.bak`, migration de schéma
       settings.rs          `settings.json`, détection du player et de Python, commandes `settings_*`
@@ -328,46 +414,48 @@ enregistrées dans `generate_handler!` de `lib.rs`) : pas de fichier `commands.r
 Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enregistrées dans
 `generate_handler!` (`lib.rs`). Chacune a un wrapper typé dans `src/api/`.
 
-| Commande                      | Arguments                        | Retour                                                     | Module             |
-| ----------------------------- | -------------------------------- | ---------------------------------------------------------- | ------------------ |
-| `app_info`                    |                                  | `{ name, version }`                                        | `app`              |
-| `settings_get`                |                                  | `SettingsView`                                             | `settings`         |
-| `settings_set`                | `settings: Settings`             | `SettingsView`                                             | `settings`         |
-| `sources_list`                |                                  | `SourcesView`                                              | `sources`          |
-| `sources_add`                 | `input: SourceInput`             | `Source`                                                   | `sources`          |
-| `sources_update`              | `id`, `input: SourceInput`       | `Source`                                                   | `sources`          |
-| `sources_remove`              | `id`                             | rien                                                       | `sources`          |
-| `sources_reorder`             | `ids: string[]`                  | `Source[]` (liste complète)                                | `sources`          |
-| `config_ack_recovery`         | `file?: string`                  | rien                                                       | `storage`          |
-| `cache_usage`                 |                                  | `{ path, bytes }`                                          | `cache`            |
-| `cache_clear`                 |                                  | `{ freed_bytes }`                                          | `cache`            |
-| `catalog_refresh`             | `source_id`                      | `CatalogView`                                              | `catalog`          |
-| `catalog_entries`             | `source_id`                      | `CatalogView`                                              | `catalog`          |
-| `catalog_thumbnail`           | `source_id`, `thumb_url`         | URL `data:` (string)                                       | `catalog`          |
-| `folder_scan`                 | `source_id`, `recursive?`        | `FolderScan`                                               | `folder`           |
-| `folder_thumbnail`            | `source_id`, `entry_id`          | URL `data:` (chaîne)                                       | `folder`           |
-| `folder_watch`                | `source_id`, `enabled`           | rien                                                       | `watch`            |
-| `install_start`               | `source_id`, `entry_id`, `uuid?` | `InstallTask`                                              | `install`          |
-| `install_cancel`              | `task_id`                        | rien                                                       | `install`          |
-| `install_list`                |                                  | `InstallTask[]`                                            | `install`          |
-| `library_list`                |                                  | `LibraryEntry[]`                                           | `library`          |
-| `library_remove`              | `uuid`, `purge_saves?`           | rien                                                       | `library`          |
-| `library_thumbnail`           | `uuid`                           | URL `data:` (`not_found` sans vignette)                    | `library_thumb`    |
-| `library_source_status`       |                                  | `SourceCheck[]` (`{ uuid, state }`)                        | `library_source`   |
-| `player_launch`               | `uuid`                           | `PlayerSession`                                            | `player`           |
-| `player_launch_folder`        | `source_id`, `entry_id`          | `PlayerSession`                                            | `player`           |
-| `player_status`               |                                  | `PlayerSession \| null`                                    | `player`           |
-| `player_stop`                 |                                  | `bool` (faux : aucun player)                               | `player`           |
-| `player_embed_layout`         | `rect \| null` (px CSS)          | rien                                                       | `player`           |
-| `player_embed_focus`          |                                  | rien                                                       | `player`           |
-| `device_status`               |                                  | `DeviceStatus`                                             | `device::status`   |
-| `device_list_stories`         |                                  | `DeviceStories \| null` (`null` : aucune Flam)             | `device::status`   |
-| `device_story_titles`         | `root`, `uuids` (≤ 100)          | `{ titles: { uuid, title \| null }[], interrupted, keys }` | `device::details`  |
-| `device_story_thumbnail`      | `root`, `uuid`                   | `{ thumb: URL data: \| null, busy }`                       | `device::details`  |
-| `device_story_details_cancel` |                                  | rien                                                       | `device::details`  |
-| `device_official_titles`      | `uuids` (≤ 1000)                 | `{ titles: { uuid, title, has_image }[] }`                 | `device::official` |
-| `device_official_thumbnail`   | `uuid`                           | URL data: \| null                                          | `device::official` |
-| `device_reorder_stories`      | `root`, `order: string[]`        | `{ changed, cache_removed, count }`                        | `device::reorder`  |
+| Commande                      | Arguments                        | Retour                                                     | Module               |
+| ----------------------------- | -------------------------------- | ---------------------------------------------------------- | -------------------- |
+| `app_info`                    |                                  | `{ name, version }`                                        | `app`                |
+| `settings_get`                |                                  | `SettingsView`                                             | `settings`           |
+| `settings_set`                | `settings: Settings`             | `SettingsView`                                             | `settings`           |
+| `sources_list`                |                                  | `SourcesView`                                              | `sources`            |
+| `sources_add`                 | `input: SourceInput`             | `Source`                                                   | `sources`            |
+| `sources_update`              | `id`, `input: SourceInput`       | `Source`                                                   | `sources`            |
+| `sources_remove`              | `id`                             | rien                                                       | `sources`            |
+| `sources_reorder`             | `ids: string[]`                  | `Source[]` (liste complète)                                | `sources`            |
+| `config_ack_recovery`         | `file?: string`                  | rien                                                       | `storage`            |
+| `cache_usage`                 |                                  | `{ path, bytes }`                                          | `cache`              |
+| `cache_clear`                 |                                  | `{ freed_bytes }`                                          | `cache`              |
+| `open_external`               | `url: string`                    | rien                                                       | `external`           |
+| `catalog_refresh`             | `source_id`                      | `CatalogView`                                              | `catalog`            |
+| `catalog_entries`             | `source_id`                      | `CatalogView`                                              | `catalog`            |
+| `catalog_thumbnail`           | `source_id`, `thumb_url`         | URL `data:` (string)                                       | `catalog`            |
+| `folder_scan`                 | `source_id`, `recursive?`        | `FolderScan`                                               | `folder`             |
+| `folder_thumbnail`            | `source_id`, `entry_id`          | URL `data:` (chaîne)                                       | `folder`             |
+| `folder_watch`                | `source_id`, `enabled`           | rien                                                       | `watch`              |
+| `install_start`               | `source_id`, `entry_id`, `uuid?` | `InstallTask`                                              | `install`            |
+| `install_cancel`              | `task_id`                        | rien                                                       | `install`            |
+| `install_list`                |                                  | `InstallTask[]`                                            | `install`            |
+| `library_list`                |                                  | `LibraryEntry[]`                                           | `library`            |
+| `library_remove`              | `uuid`, `purge_saves?`           | rien                                                       | `library`            |
+| `library_thumbnail`           | `uuid`                           | URL `data:` (`not_found` sans vignette)                    | `library_thumb`      |
+| `library_source_status`       |                                  | `SourceCheck[]` (`{ uuid, state }`)                        | `library_source`     |
+| `player_launch`               | `uuid`                           | `PlayerSession`                                            | `player`             |
+| `player_launch_folder`        | `source_id`, `entry_id`          | `PlayerSession`                                            | `player`             |
+| `player_status`               |                                  | `PlayerSession \| null`                                    | `player`             |
+| `player_stop`                 |                                  | `bool` (faux : aucun player)                               | `player`             |
+| `player_embed_layout`         | `rect \| null` (px CSS)          | rien                                                       | `player`             |
+| `player_embed_focus`          |                                  | rien                                                       | `player`             |
+| `device_status`               |                                  | `DeviceStatus`                                             | `device::status`     |
+| `device_list_stories`         |                                  | `DeviceStories \| null` (`null` : aucune Flam)             | `device::status`     |
+| `device_story_titles`         | `root`, `uuids` (≤ 100)          | `{ titles: { uuid, title \| null }[], interrupted, keys }` | `device::details`    |
+| `device_story_thumbnail`      | `root`, `uuid`                   | `{ thumb: URL data: \| null, busy }`                       | `device::details`    |
+| `device_story_details_cancel` |                                  | rien                                                       | `device::details`    |
+| `device_official_titles`      | `uuids` (≤ 1000)                 | `{ titles: { uuid, title, has_image }[] }`                 | `device::official`   |
+| `device_official_thumbnail`   | `uuid`                           | URL data: \| null                                          | `device::official`   |
+| `device_reorder_stories`      | `root`, `order: string[]`        | `{ changed, cache_removed, count }`                        | `device::reorder`    |
+| `device_diagnostic`           |                                  | `string` (Markdown)                                        | `device::diagnostic` |
 
 `device_status` et `device_list_stories` sont **en lecture seule** sur la Flam : ni reprise
 d'index (`recover`), ni création de dossier. La seule écriture est la copie personnelle de
@@ -375,6 +463,17 @@ d'index (`recover`), ni création de dossier. La seule écriture est la copie pe
 (idempotente). Le titre renvoyé par `device_list_stories` est celui de la bibliothèque du
 launcher, associé à l'histoire de la Flam par l'UUID de `uuid.bin` de son `.plain.pk` (une source
 dossier ou Telmi a un identifiant de bibliothèque différent du nom de `str/<uuid>/`, #276).
+`device_diagnostic` (#318, bouton « Copier le diagnostic » de « Ma Flam ») est aussi en lecture
+seule, sans accès réseau et sans sauvegarde de `.mdf` : texte Markdown pour le modèle d'issue
+« Retour testeur Flam » (version du launcher et de Windows, état du firmware, index, fichiers de
+travail, espace, nombre d'histoires, dernières erreurs d'envoi et de reprise de la session, gardées
+en mémoire). Ni clé, ni `bt`, ni numéro de série, ni empreinte de `.mdf`, ni nom de volume, ni
+titre ou UUID d'histoire ; profil Windows remplacé par `%USERPROFILE%` et dossier de cache par
+`%CACHE%`, puis tout UUID, toute suite hexadécimale d'au moins 14 caractères (ou d'au moins 8 paires
+séparées par une espace ou `:`) et tout mot de type base64 masqués. Pendant une écriture, index,
+dossiers et fichiers de travail ne sont pas parcourus. Sur le PC, comme pour `device_status`,
+l'évaluation du firmware peut enregistrer une Flam 2.x « vérifiée par la Flam » dans
+`device-trust.json` (dossier de données du launcher) : c'est la seule écriture du diagnostic.
 Titres et vignettes de la Flam (#276, `device::details`, lecture seule stricte) sont chargés
 **après** l'affichage de la liste : titres par lots de 100 (première ligne de `info` déchiffré,
 lecture bornée à 4 Kio ; fw 2.x : clés de `.mdf` ; fw 1.x : clé carrier **déjà conservée** pour
@@ -399,9 +498,11 @@ la lecture des histoires, file d'envoi séquentielle (`device_send_story`, progr
 (`device_eject`). Le bouton « Envoyer sur la Flam » (cartes,
 fiche, « Ma Flam ») reste focalisable quand il est refusé et affiche sa raison (Flam non
 détectée, déjà présente, espace insuffisant, firmware non pris en charge, déjà en file) ; une
-histoire déjà sur la Flam (non masquée) propose en plus « Remplacer sur la Flam »
-(`device_send_story` avec `replace`, même à version égale : l'ancienne version n'est retirée
-qu'une fois la nouvelle en place, #288), et une histoire dont la source dossier a changé depuis
+histoire déjà sur la Flam (non masquée ; reconnue par l'UUID de `uuid.bin` de son archive, exposé
+dans `library_uuids` de `device_list_stories`, y compris pour une source dossier ou Telmi) propose
+en plus « Remplacer sur la Flam » (`device_send_story` avec `replace` = UUID de l'histoire sur la
+Flam, refusé si l'archive en désigne une autre ; même à version égale : l'ancienne version n'est
+retirée qu'une fois la nouvelle en place, #288, #309), et une histoire dont la source dossier a changé depuis
 l'installation affiche « Source modifiée depuis l'installation : mettez l'histoire à jour avant de
 l'envoyer… » (sans bloquer) ;
 seuls un envoi en attente ou en cours bloque un nouvel envoi (« déjà en file ») : une tâche terminée
@@ -440,7 +541,8 @@ Wrappers front : `src/api/settings.ts` (`getSettings`, `setSettings`), `src/api/
 `src/api/recovery.ts` (`ackRecovery`) et `src/api/catalog.ts` (`refreshCatalog`,
 `getCatalogEntries`, `getCatalogThumbnail`, types `StoryEntry`, `CatalogView`). La logique
 `src/api/cache.ts` (`getCacheUsage`, `clearCache`) et `src/api/dialog.ts` (`pickFolder`,
-`pickExecutable` : sélecteurs natifs du plugin `tauri-plugin-dialog`), `src/api/install.ts`
+`pickExecutable` : sélecteurs natifs du plugin `tauri-plugin-dialog`), `src/api/external.ts`
+(`openExternal`), `src/api/install.ts`
 (`startInstall`, `cancelInstall`, `listInstalls`, `onInstallProgress`, `onInstallDone`,
 `onInstallError`) et `src/api/library.ts` (`listLibrary`, `removeFromLibrary`, `hasUpdate`,
 `librarySourceStatus`). La logique
@@ -1147,6 +1249,17 @@ travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
   permission **`dialog:allow-open`** : ni `dialog:default` (messages, confirmations, sauvegarde)
   ni accès au système de fichiers depuis le front. Le chemin choisi n'est qu'une proposition :
   il est revalidé par le backend (`sources_add`, `settings_set`).
+- Plugin `tauri-plugin-opener` (2.7.2, MIT ou Apache-2.0) pour ouvrir une page dans le navigateur
+  (bandeau « Fonction expérimentale » de « Ma Flam », futurs liens du guide, des pré-versions et du
+  modèle d'issue). Il est enregistré dans `lib.rs` mais **aucune permission `opener:*` n'est
+  donnée au front** (ni `allow-open-url`, ni `allow-open-path`, ni `allow-reveal-item-in-dir`) :
+  le paquet JS du plugin n'est pas installé. Le front passe par la seule commande
+  `open_external` (`src/api/external.ts`, `openExternal`), qui n'accepte que `https`, l'hôte
+  `github.com` (sans identifiants, port par défaut seulement) et un chemin sous `/scarlaty/flam-player/`, après
+  normalisation (les `..` et `%2e%2e` sont résolus avant le contrôle). Tout le reste (autre
+  domaine ou dépôt, `http`, `javascript:`, `file:`, chemins locaux) est refusé. Le plugin et ses
+  dépendances (`open`, `dunce` pour Windows) sont repris par `THIRD-PARTY-NOTICES.txt`
+  (généré depuis `Cargo.lock`) et passent le contrôle de licences de `build:notices`.
 
 ### Accès réseau : titres du catalogue officiel de « Ma Flam » (#290)
 

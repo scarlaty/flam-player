@@ -1,4 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { firmwareV2 } from "../../test/firmware";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import type { DeviceStatus, DeviceStories, DeviceStory } from "../../api/device";
@@ -31,6 +32,7 @@ function story(uuid: string, extra: Partial<DeviceStory> = {}): DeviceStory {
     placement: "visible",
     title: TITLES[uuid] ?? null,
     in_library: false,
+    library_uuids: [],
     missing: false,
     ...extra,
   };
@@ -61,6 +63,7 @@ const status: DeviceStatus = {
     mdf_problem: null,
     backup_failed: false,
     firmware: "2.4.2",
+    firmware_status: firmwareV2(),
   },
 };
 
@@ -241,6 +244,51 @@ it(
   },
   SLOW_TEST_MS,
 );
+
+it("Flam 2.x non confirmée : ordre non enregistrable, raison à l'appui (#326)", async () => {
+  const before = status.device!.firmware_status;
+  status.device!.firmware_status = firmwareV2({
+    trust: "unconfirmed",
+    write_block: { kind: "confirmation_required", version: "2.4.2", standard: true },
+  });
+  try {
+    renderScreen();
+    await openOrder();
+    expect(saveButton()).toHaveAttribute("aria-disabled", "true");
+    expect(saveButton()).toHaveAccessibleDescription(
+      "Ordre non modifiable : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
+    );
+    expect(screen.getByRole("button", { name: "Descendre « Capi »" })).toBeDisabled();
+    fireEvent.click(saveButton());
+    expect(reorderCalls()).toHaveLength(0);
+  } finally {
+    status.device!.firmware_status = before;
+  }
+});
+
+it("Flam 2.x aux clés incohérentes : les histoires en cause sont désignées (#326)", async () => {
+  const before = status.device!.firmware_status;
+  const counts = {
+    examined: 23,
+    key_matches: 23,
+    decrypted: 0,
+    decrypted_other_key: 0,
+    lunii_format: 0,
+    clear_info: 0,
+  };
+  status.device!.firmware_status = firmwareV2({
+    coherence: { kind: "contradiction", counts, stories: [A, B], total: 3 },
+    write_block: { kind: "keys_contradiction", version: "2.4.2" },
+  });
+  try {
+    renderScreen();
+    expect(
+      await screen.findByText(`Histoires en cause : ${A}, ${B} (et 1 autre).`),
+    ).toBeInTheDocument();
+  } finally {
+    status.device!.firmware_status = before;
+  }
+});
 
 it("réordonne par glisser-déposer", async () => {
   renderScreen();

@@ -9,6 +9,7 @@ use std::path::Path;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::error::ConvError;
+use crate::text::py_repr;
 use crate::zipread::{ZipError, ZipReader};
 
 /// `_fold` : clé de recherche d'asset, NFC puis minuscules (`str.lower()`, sigma final et
@@ -72,7 +73,8 @@ pub fn check_asset_name<'a>(name: &'a str, what: &str) -> Result<&'a str, ConvEr
         || parts.contains(&"")
     {
         return Err(ConvError::invalid_content(format!(
-            "{what} : nom d'asset refuse (chemin dangereux) : {name:?}"
+            "{what} : nom d'asset refuse (chemin dangereux) : {}",
+            py_repr(name)
         )));
     }
     Ok(name)
@@ -221,6 +223,11 @@ mod tests {
             let e = check_asset_name(bad, "test").unwrap_err();
             assert_eq!((e.code, e.exit_code), ("invalid_content", 4), "{bad:?}");
         }
+        // Le nom est cité comme le `%r` de Python.
+        let e = check_asset_name("../x.png", "test").unwrap_err();
+        assert!(e.message.ends_with(" : '../x.png'"), "{}", e.message);
+        let e = check_asset_name("it's/../\u{1}", "test").unwrap_err();
+        assert!(e.message.ends_with(" : \"it's/../\\x01\""), "{}", e.message);
         for ok in ["a.png", "img/a.png", "été/b.mp3", "..a/b", "a..png"] {
             assert_eq!(check_asset_name(ok, "test").unwrap(), ok);
         }

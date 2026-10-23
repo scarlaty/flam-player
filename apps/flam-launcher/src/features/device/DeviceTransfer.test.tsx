@@ -1,4 +1,5 @@
 import { emit } from "@tauri-apps/api/event";
+import { firmwareV1, firmwareV2 } from "../../test/firmware";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -12,6 +13,7 @@ import { ToastProvider } from "../../components";
 import { t } from "../../i18n";
 import { expectNoAxeViolations } from "../../test/axe";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
+import { useDevice } from "./DeviceContext";
 import { DeviceProvider } from "./DeviceProvider";
 import { DeviceScreen } from "./DeviceScreen";
 import { POLL_INTERVAL_MS } from "./useDeviceStatus";
@@ -54,6 +56,7 @@ function detected(): DeviceStatus {
       mdf_problem: null,
       backup_failed: false,
       firmware: "2.4.2",
+      firmware_status: firmwareV2(),
     },
   };
 }
@@ -65,6 +68,7 @@ function deviceStory(uuid: string, title: string | null = null): DeviceStory {
     placement: "visible",
     title,
     in_library: false,
+    library_uuids: [],
     missing: false,
   };
 }
@@ -208,10 +212,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function Harness() {
+function Harness({ children }: { children?: React.ReactNode }) {
   return (
     <ToastProvider>
       <DeviceProvider>
+        {children}
         <main>
           <DeviceScreen
             libraryPanel={
@@ -310,7 +315,7 @@ it("remplace une histoire déjà sur la Flam, sur demande explicite", async () =
   expect(calls.find((c) => c.cmd === "device_send_story")?.args).toEqual({
     root: "E:\\",
     uuid: C,
-    replace: true,
+    replace: C,
   });
   await resolveSend(C, { id: C, replaced: true });
   // Un envoi ordinaire ne demande jamais le remplacement.
@@ -651,7 +656,68 @@ it("affiche l'erreur d'une histoire et poursuit la file", async () => {
   expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "false");
 });
 
-it("bloque les envois quand le firmware n'est pas pris en charge", async () => {
+it("bloque les envois en amont quand la garde du firmware refuse (état structuré)", async () => {
+  acknowledgeWarning();
+  status.device!.firmware = "3.0.0";
+  status.device!.firmware_status = firmwareV2({
+    version: "3.0.0",
+    family: "unsupported",
+    trust: "not_applicable",
+    coherence: { kind: "not_checked" },
+    write_block: { kind: "unsupported_firmware", version: "3.0.0" },
+  });
+  render(<Harness />);
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (1)" });
+  expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "true");
+  expect(sendButton("Capi")).toHaveAccessibleDescription(
+    "Écriture bloquée sur cette Flam (voir « Ma Flam »)",
+  );
+  fireEvent.click(sendButton("Capi"));
+  expect(count("device_send_story")).toBe(0);
+  // Aucune écriture, pas même la reprise au branchement.
+  expect(count("device_recover_transfers")).toBe(0);
+});
+
+it("Flam 2.x non confirmée : envoi bloqué jusqu'à la confirmation", async () => {
+  acknowledgeWarning();
+  status.device!.firmware_status = firmwareV2({
+    trust: "unconfirmed",
+    write_block: { kind: "confirmation_required", version: "2.4.2", standard: true },
+  });
+  render(<Harness />);
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (1)" });
+  expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "true");
+  expect(sendButton("Capi")).toHaveAccessibleDescription(
+    "Confirmez d'abord la sauvegarde de la Flam dans « Ma Flam ».",
+  );
+  expect(count("device_recover_transfers")).toBe(0);
+});
+
+it("Flam 2.x non confirmée : retrait désactivé avec sa raison (#326)", async () => {
+  status.device!.firmware_status = firmwareV2({
+    trust: "unconfirmed",
+    write_block: { kind: "confirmation_required", version: "2.4.2", standard: true },
+  });
+  render(<Harness />);
+  const remove = await screen.findByRole("button", { name: "Retirer « Déjà là »" });
+  expect(remove).toHaveAttribute("aria-disabled", "true");
+  expect(remove).toHaveAccessibleDescription(
+    "Retrait indisponible : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
+  );
+  fireEvent.click(remove);
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+});
+
+it("Flam 2.x aux clés incohérentes et confirmée : retrait possible (#326)", async () => {
+  status.device!.firmware_status = firmwareV2({
+    write_block: { kind: "keys_contradiction", version: "2.4.2" },
+  });
+  render(<Harness />);
+  const remove = await screen.findByRole("button", { name: "Retirer « Déjà là »" });
+  expect(remove).not.toHaveAttribute("aria-disabled");
+});
+
+it("un refus de la garde pendant la file arrête les envois suivants", async () => {
   acknowledgeWarning();
   render(<Harness />);
   await ready();
@@ -659,21 +725,23 @@ it("bloque les envois quand le firmware n'est pas pris en charge", async () => {
   fireEvent.click(sendButton("Les trois ours"));
   const panel = await screen.findByRole("region", { name: "Envoi sur la Flam" });
   await waitFor(() => expect(sends.has(A)).toBe(true));
-  await act(async () => {
-    sends.get(A)?.reject({
-      kind: "validation",
-      message: "firmware de la Flam non pris en charge : « 1.4 » (seul le 2.x l'est)",
-    });
+  // Une histoire tierce contredit les clés : l'état relu de la Flam le dit, l'envoi est refusé.
+  status.device!.firmware_status = firmwareV2({
+    write_block: { kind: "keys_contradiction", version: "2.4.2" },
   });
-  expect(
-    await within(panel).findByText(/firmware de cette Flam n'est pas pris en charge/),
-  ).toBeInTheDocument();
+  const refusal =
+    "les clés lues dans .mdf ne déchiffrent pas une histoire de cette Flam qui devrait l'être (firmware 2.4.2) : rien n'a été envoyé ; voir l'état du firmware dans « Ma Flam »";
+  await act(async () => {
+    sends.get(A)?.reject({ kind: "validation", message: refusal });
+  });
+  expect(await within(panel).findByText(refusal)).toBeInTheDocument();
+  await waitFor(() =>
+    expect(sendButton("Les trois ours")).toHaveAccessibleDescription(
+      "Écriture bloquée sur cette Flam (voir « Ma Flam »)",
+    ),
+  );
   // Les histoires suivantes ne sont pas tentées.
   expect(count("device_send_story")).toBe(1);
-  expect(sendButton("Les trois ours")).toHaveAttribute("aria-disabled", "true");
-  expect(sendButton("Les trois ours")).toHaveAccessibleDescription(
-    "Firmware de la Flam non pris en charge",
-  );
 });
 
 it("retire une histoire de la Flam après confirmation", async () => {
@@ -978,6 +1046,7 @@ it("signale une reprise échouée sans bloquer l'écran", async () => {
 function detectedV1(): DeviceStatus {
   const value = detected();
   value.device!.firmware = "1.15.14";
+  value.device!.firmware_status = firmwareV1();
   return value;
 }
 
@@ -1285,4 +1354,141 @@ it("Flam 2.x : ni dialogue carrier ni bouton « Oublier les clés »", async () 
     uuid: A,
   });
   expect(count("device_carrier_state")).toBe(0);
+});
+
+/** File d'envoi : histoires dont l'élément porte encore une clé `bt` saisie. */
+function QueueBtProbe() {
+  const { queue } = useDevice();
+  const withBt = queue
+    .filter((item) => item.carrier?.choice.kind === "entered")
+    .map((item) => item.uuid);
+  return <output data-testid="bt-in-queue">{withBt.join(",")}</output>;
+}
+
+const btInQueue = () => screen.getByTestId("bt-in-queue").textContent;
+
+/** Flam 1.x sans `bt` : saisit `bt`, confirme le titre reconnu et envoie. */
+async function sendWithEnteredBt(title: string, bt: string) {
+  fireEvent.click(sendButton(title));
+  const dialog = await screen.findByRole("alertdialog");
+  const field = await within(dialog).findByLabelText("Clé bt");
+  fireEvent.change(field, { target: { value: bt } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Vérifier la clé" }));
+  await within(dialog).findByText(/Clé reconnue/);
+  fireEvent.click(within(dialog).getByRole("checkbox", { name: "Le titre est exact" }));
+  // Sans conservation : la clé saisie ne sert qu'à cet envoi.
+  const remember = within(dialog).getByRole("checkbox", {
+    name: "Conserver ces clés sur ce PC",
+  });
+  if ((remember as HTMLInputElement).checked) fireEvent.click(remember);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Vérifier et envoyer" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+}
+
+it("Flam 1.x : la clé saisie quitte la file après un envoi réussi ou en échec (#309)", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  carrierConsent = { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" };
+  carrierCandidates = [];
+  const bt = "0123456789abcdef".repeat(4);
+  render(
+    <Harness>
+      <QueueBtProbe />
+    </Harness>,
+  );
+  await ready();
+  await sendWithEnteredBt("Capi", bt);
+  await waitFor(() => expect(sends.has(A)).toBe(true));
+  expect(btInQueue()).toBe(A);
+  await resolveSend(A, { id: A, carrier_readback: true });
+  await waitFor(() => expect(btInQueue()).toBe(""));
+
+  await sendWithEnteredBt("Les trois ours", bt);
+  await waitFor(() => expect(sends.has(B)).toBe(true));
+  expect(btInQueue()).toBe(B);
+  await act(async () => {
+    sends.get(B)?.reject({ kind: "validation", message: "clé refusée" });
+  });
+  await waitFor(() => expect(btInQueue()).toBe(""));
+  expect(await screen.findByText("clé refusée")).toBeInTheDocument();
+});
+
+it("Flam 1.x : « Annuler l'envoi » retire aussi la clé saisie des envois en attente (#309)", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  carrierConsent = { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" };
+  carrierCandidates = [];
+  const bt = "0123456789abcdef".repeat(4);
+  render(
+    <Harness>
+      <QueueBtProbe />
+    </Harness>,
+  );
+  await ready();
+  await sendWithEnteredBt("Capi", bt);
+  await waitFor(() => expect(sends.has(A)).toBe(true));
+  // Seconde histoire en attente, avec sa propre clé saisie.
+  await sendWithEnteredBt("Les trois ours", bt);
+  expect(btInQueue()).toBe(`${A},${B}`);
+  const panel = screen.getByRole("region", { name: "Envoi sur la Flam" });
+  fireEvent.click(within(panel).getByRole("button", { name: "Annuler l'envoi" }));
+  await waitFor(() => expect(count("device_cancel_transfer")).toBe(1));
+  await act(async () => {
+    sends.get(A)?.reject({ kind: "cancelled", message: "installation annulée" });
+  });
+  await waitFor(() => expect(within(panel).getAllByText("Annulée")).toHaveLength(2));
+  expect(btInQueue()).toBe("");
+  expect(count("device_send_story")).toBe(1);
+});
+
+it("remplace une histoire de source dossier par l'UUID de la Flam (#309)", async () => {
+  acknowledgeWarning();
+  // « Les trois ours » (bibliothèque B) est installée sous un autre UUID (`uuid.bin`).
+  const onFlam = "55555555-5555-4555-8555-555555555555";
+  onDevice = [
+    deviceStory(C, "Déjà là"),
+    { ...deviceStory(onFlam, "Les trois ours"), in_library: true, library_uuids: [B] },
+  ];
+  render(<Harness />);
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (2)" });
+  await waitFor(() =>
+    expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "false"),
+  );
+  const send = sendButton("Les trois ours");
+  expect(send).toHaveAttribute("aria-disabled", "true");
+  expect(send).toHaveAccessibleDescription("Déjà sur la Flam");
+  const replace = screen.getByRole("button", {
+    name: "Remplacer sur la Flam « Les trois ours »",
+  });
+  expect(replace).toHaveAttribute("aria-disabled", "false");
+  fireEvent.click(replace);
+  await waitFor(() => expect(count("device_send_story")).toBe(1));
+  expect(calls.find((c) => c.cmd === "device_send_story")?.args).toEqual({
+    root: "E:\\",
+    uuid: B,
+    replace: onFlam,
+  });
+  await resolveSend(B, { id: onFlam, replaced: true });
+});
+
+it("signale une reprise en échec dans un envoi réussi (#309)", async () => {
+  acknowledgeWarning();
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  const panel = await screen.findByRole("region", { name: "Envoi sur la Flam" });
+  await resolveSend(A, {
+    id: A,
+    recovery_failures: ["0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9.in : dossier verrouillé"],
+  });
+  expect(await within(panel).findByText("Envoyée")).toBeInTheDocument();
+  expect(
+    within(panel).getByText(/n'a pas pu être repris sur la Flam .*dossier verrouillé/),
+  ).toBeInTheDocument();
+  expect(
+    screen
+      .getAllByRole("status")
+      .map((s) => s.textContent)
+      .join(" "),
+  ).toContain("n'a pas pu être repris");
 });

@@ -19,7 +19,10 @@ import { ErrorBanner } from "../ErrorBanner";
 import { formatBytes } from "../validation";
 import { useDevice } from "./DeviceContext";
 import { DeviceStoryOrder } from "./DeviceStoryOrder";
+import { DiagnosticPanel } from "./DiagnosticPanel";
 import { EjectButton } from "./EjectButton";
+import { ExperimentalBanner } from "./ExperimentalBanner";
+import { FirmwareNotice, firmwareSummary } from "./FirmwareStatus";
 import { ForgetCarrierKeysButton } from "./ForgetCarrierKeysButton";
 import { RemoveStoryButton } from "./RemoveStoryButton";
 import {
@@ -39,9 +42,21 @@ export interface DeviceScreenProps {
   libraryPanel?: ReactNode;
 }
 
-/** Écran « Ma Flam » : état de la Flam branchée en USB, ses histoires, envoi, retrait et éjection. */
+/**
+ * Écran « Ma Flam » : état de la Flam branchée en USB, ses histoires, envoi, retrait et éjection,
+ * diagnostic copiable pour les retours de test.
+ */
 export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
-  const { status, error, retry, device, stories, recoveryNote, ejectNote } = useDevice();
+  const {
+    status,
+    error,
+    retry,
+    retryAnswered,
+    device,
+    stories,
+    recoveryNote,
+    ejectNote,
+  } = useDevice();
   const count =
     device && stories.phase === "ready" ? stories.report.stories.length : null;
 
@@ -51,7 +66,8 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
   const countNote = count === null ? "" : text.announce.stories(count);
   const announcement = [stateNote, countNote].filter(Boolean).join(". ");
   const wasDetected = useRef<boolean | null>(null);
-  const retried = useRef(false);
+  // Numéro de la demande « Réessayer » dont le résultat doit recevoir le focus (0 : aucune).
+  const retried = useRef(0);
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   // Annonce les changements d'état (pas l'état initial « non détecté », déjà visible).
@@ -63,22 +79,23 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
     wasDetected.current = detected;
     if (before === detected || (before === null && !detected)) return;
     setStateNote(detected ? text.announce.detected : text.announce.lost);
-    if (detected && retried.current) headingRef.current?.focus();
+    if (detected && retried.current > 0) headingRef.current?.focus();
   }, [known, detected]);
 
-  // « Réessayer » ne réclame le focus que pour le résultat de l'appel qui suit.
+  // « Réessayer » ne réclame le focus que pour la réponse d'un appel lancé après le clic : celle
+  // d'un appel déjà en vol (numéro plus ancien) ne l'éteint pas.
   useEffect(() => {
-    retried.current = false;
-  }, [status, error]);
+    if (retryAnswered >= retried.current) retried.current = 0;
+  }, [retryAnswered]);
 
   function onRetry() {
-    retried.current = true;
-    retry();
+    retried.current = retry();
   }
 
   return (
     <div className="fl-device-screen">
       <p className="fl-device-screen__intro">{text.intro}</p>
+      <ExperimentalBanner family={device?.firmware_status?.family ?? null} />
       <p role="status" className="fl-visually-hidden">
         {announcement}
       </p>
@@ -116,6 +133,7 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
             count={status.device_count}
             headingRef={headingRef}
           />
+          <FirmwareNotice device={device} />
           {recoveryNote && (
             <Banner tone={recoveryNote.tone} role="status">
               {recoveryNote.message}
@@ -129,6 +147,8 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
           {libraryPanel}
         </>
       )}
+      {/* Toujours affiché : sans Flam, ou écriture bloquée, c'est là que le diagnostic sert. */}
+      <DiagnosticPanel />
     </div>
   );
 }
@@ -178,6 +198,14 @@ function DeviceCard({
           <dt>{text.detected.volume}</dt>
           <dd>
             {device.volume_label || text.detected.unnamedVolume} ({device.root})
+          </dd>
+        </div>
+        <div>
+          <dt>{text.detected.firmware}</dt>
+          <dd>
+            {device.firmware_status
+              ? firmwareSummary(device.firmware_status)
+              : (device.firmware ?? text.detected.firmwareUnreadable)}
           </dd>
         </div>
         {device.file_system && (

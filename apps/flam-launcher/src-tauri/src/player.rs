@@ -438,6 +438,7 @@ impl PlayerService {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
+        hide_console(&mut command);
         if let Some(dir) = exe.parent() {
             command.current_dir(dir);
         }
@@ -594,6 +595,27 @@ fn player_args(host: Option<isize>, target: &Path) -> Vec<OsString> {
     }
     args.push(target.as_os_str().to_owned());
     args
+}
+
+/// Windows : indicateur de création de processus `CREATE_NO_WINDOW`.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Lance le player sans fenêtre de console. Le player est une application console, mais le
+/// launcher (version livrée) n'en a pas : sans cet indicateur, Windows ouvrirait une
+/// fenêtre de console à côté de la fenêtre du player (#336). Le processus garde une console
+/// (cachée) et ses entrée et sorties redirigées : l'ordre `quit` sur stdin et la lecture de
+/// stderr (repères d'incrustation, messages d'erreur) sont inchangés ; l'arrêt forcé passe par
+/// `TerminateProcess`, sans événement de console. Lancé à la main (`run.bat`), le player garde
+/// sa console.
+fn hide_console(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
 }
 
 /// Arrêt forcé du processus `pid`.
@@ -1533,6 +1555,79 @@ mod tests {
         assert_eq!(done.stderr, "");
         assert_eq!(done.saves_error, None);
         assert_eq!(c.service.status(), None);
+    }
+
+    /// Donne au processus courant sa propre console, cachée, comme en aurait une application
+    /// graphique qui en reçoit une visible : un enfant lancé sans `CREATE_NO_WINDOW` l'hériterait
+    /// avec sa fenêtre. Sans cela, le test serait sans effet quand le processus de test a déjà une
+    /// console sans fenêtre ou aucune console. Modifie la console du processus entier (la
+    /// console d'origine n'est pas rétablie) : à n'appeler que dans le processus enfant du test.
+    #[cfg(windows)]
+    fn give_hidden_console() {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetConsoleWindow() -> *mut std::ffi::c_void;
+            fn AllocConsole() -> i32;
+            fn FreeConsole() -> i32;
+        }
+        #[link(name = "user32")]
+        extern "system" {
+            fn ShowWindow(hwnd: *mut std::ffi::c_void, cmd: i32) -> i32;
+        }
+        // SAFETY : appels Win32 sans pointeur de l'appelant ; `ShowWindow` reçoit la fenêtre de
+        // la console qu'on vient d'allouer.
+        unsafe {
+            FreeConsole();
+            assert!(AllocConsole() != 0, "console du test non allouée");
+            let window = GetConsoleWindow();
+            assert!(!window.is_null(), "console du test sans fenêtre");
+            ShowWindow(window, 0); // SW_HIDE
+        }
+    }
+
+    const CONSOLE_CHILD_ENV: &str = "FLAM_TEST_CONSOLE_CHILD";
+    #[cfg(windows)]
+    const CONSOLE_TEST: &str = "player::tests::player_lance_sans_fenetre_de_console";
+
+    /// #336 : le player lancé par le launcher n'a pas de fenêtre de console, et reste pilotable
+    /// par stdin (arrêt propre) avec stderr lu. Le test se relance dans un processus enfant, car
+    /// il change la console du processus (les autres tests, en parallèle, n'en seraient pas
+    /// affectés).
+    #[test]
+    #[cfg(windows)]
+    fn player_lance_sans_fenetre_de_console() {
+        if std::env::var_os(CONSOLE_CHILD_ENV).is_none() {
+            let out = Command::new(std::env::current_exe().unwrap())
+                .args([CONSOLE_TEST, "--exact", "--nocapture", "--test-threads=1"])
+                .env(CONSOLE_CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+                "le test enfant n'a pas tourné"
+            );
+            return;
+        }
+        give_hidden_console();
+        let c = ctx();
+        c.launch(&c.story(
+            "console.plain.pk",
+            "console
+wait_quit
+",
+        ))
+        .unwrap();
+        assert!(c.service.stop());
+        let done = c.wait_exit();
+        assert_eq!(done.code, Some(0));
+        assert!(done.stderr.contains("console : aucune"), "{}", done.stderr);
+        assert!(done.stderr.contains("arrêt demandé"));
     }
 
     #[test]
