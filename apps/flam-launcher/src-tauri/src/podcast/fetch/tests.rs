@@ -588,8 +588,12 @@ async fn delai_depasse_retire_l_episode() {
     let base = format!("http://127.0.0.1:{port}");
     let base_dir = tempfile::tempdir().unwrap();
     let dir = Workdir::create(base_dir.path()).unwrap();
+    // Le délai court pour **tous** les fichiers : l'épisode rapide (50 octets en boucle locale)
+    // doit le tenir même quand la machine est saturée (#430). Le délai est donc large devant
+    // sa durée réelle (quelques ms) ; l'épisode bloqué, lui, ne répond jamais (`Hang`) et
+    // dépasse n'importe quel délai.
     let limits = Limits {
-        file_timeout: Duration::from_millis(400),
+        file_timeout: Duration::from_secs(3),
         ..Limits::default()
     };
     let report = fetcher()
@@ -743,10 +747,13 @@ async fn debit_minimal_retire_l_episode_lent() {
     let base = format!("http://127.0.0.1:{port}");
     let base_dir = tempfile::tempdir().unwrap();
     let dir = Workdir::create(base_dir.path()).unwrap();
-    // ~33 octets/s reçus ; minimum exigé : 1000 octets/s sur 500 ms.
+    // ~33 octets/s reçus ; minimum exigé : 1000 octets/s sur 2 s (2 000 octets, soit trente
+    // fois ce que reçoit l'épisode lent). L'épisode rapide (50 octets) doit finir avant la
+    // première fenêtre : une fenêtre large devant sa durée réelle le garde même sous
+    // forte charge (#430), sans affaiblir le contrôle du débit.
     let limits = Limits {
         min_rate_bytes_per_sec: 1000,
-        min_rate_window: Duration::from_millis(500),
+        min_rate_window: Duration::from_secs(2),
         ..Limits::default()
     };
     let started = std::time::Instant::now();
@@ -763,7 +770,9 @@ async fn debit_minimal_retire_l_episode_lent() {
         )
         .await
         .unwrap();
-    assert!(started.elapsed() < Duration::from_secs(5));
+    // Retiré par le débit, bien avant le délai de fichier par défaut (2 min) ; marge large
+    // pour une machine saturée.
+    assert!(started.elapsed() < Duration::from_secs(30));
     assert_eq!(report.dropped.len(), 1);
     assert_eq!(report.dropped[0].id, "slow");
     assert_eq!(report.dropped[0].reason, DropReason::TimedOut);

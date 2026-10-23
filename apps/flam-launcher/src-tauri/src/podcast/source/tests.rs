@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -85,52 +85,7 @@ fn assert_no_secret(text: &str, url: &str) {
     assert!(!text.contains(url), "URL présente : {text}");
 }
 
-/// Journal en mémoire (thread courant) pour vérifier qu'aucune trace ne contient l'URL.
-#[derive(Clone, Default)]
-struct Logs(Arc<Mutex<Vec<u8>>>);
-
-impl std::io::Write for Logs {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
-    type Writer = Logs;
-    fn make_writer(&'a self) -> Logs {
-        self.clone()
-    }
-}
-
-impl Logs {
-    /// Journal **global** (une seule fois par processus) : `try_init` pose aussi `LogTracer`,
-    /// si bien que les traces `log` (reqwest, hyper) et celles des tâches `blocking` y passent,
-    /// ce qu'un abonné de thread (`set_default`) ne voyait pas. Le filtre est celui de
-    /// production (`crate::log_filter`) réglé sur `trace` : `reqwest` reste à `info`. Le journal
-    /// est partagé entre les tests : on ne vérifie que l'absence du secret.
-    fn capture() -> Logs {
-        static LOGS: std::sync::OnceLock<Logs> = std::sync::OnceLock::new();
-        LOGS.get_or_init(|| {
-            let logs = Logs::default();
-            tracing_subscriber::fmt()
-                .with_writer(logs.clone())
-                .with_ansi(false)
-                .with_env_filter(crate::log_filter(Some("trace")))
-                .try_init()
-                .expect("abonné global déjà posé : le journal serait vide");
-            logs
-        })
-        .clone()
-    }
-
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
-    }
-}
+use crate::testlog::Logs;
 
 #[test]
 fn le_filtre_de_traces_desactive_reqwest_en_debug() {

@@ -378,6 +378,17 @@ fn failed(why: &str) -> AppError {
     }
 }
 
+/// Contrôle de la sortie relue : une durée nulle ou inconnue signifie qu'aucune trame audio n'a
+/// été écrite. Isolé de `convert_with` : aucune conversion réelle n'atteint cette branche (voir
+/// les tests), il se vérifie donc sur le `SourceInfo` que ffprobe aurait rendu.
+fn ensure_audible(written: &SourceInfo) -> AppResult<()> {
+    if written.duration_secs.is_some_and(|d| d > 0.0) {
+        Ok(())
+    } else {
+        Err(failed("sortie sans audio (durée nulle ou inconnue)"))
+    }
+}
+
 /// Convertit `input` en MP3 conforme dans `output` (règle D6). `output` n'existe qu'en cas de
 /// succès ; en cas d'échec, d'annulation ou de délai, aucun fichier partiel ne reste.
 pub async fn convert(
@@ -426,9 +437,7 @@ async fn convert_with(
         }
         other => other?,
     };
-    if !written.duration_secs.is_some_and(|d| d > 0.0) {
-        return Err(failed("sortie sans audio (durée nulle ou inconnue)"));
-    }
+    ensure_audible(&written)?;
     if *cancel.borrow() {
         return Err(AppError::Cancelled);
     }
@@ -1117,7 +1126,7 @@ mod tests {
     /// WAV PCM 16 bits mono 22 050 Hz **sans aucun échantillon** : lisible, mais l'encodage MP3
     /// qui en découle ne produit que l'en-tête Xing/Info (aucune trame audio). ffprobe refuse
     /// une telle sortie (« sortie inexploitable ») ; la branche « durée nulle » du contrôle
-    /// couvre le cas où il l'accepterait.
+    /// couvre le cas où il l'accepterait (test `duree_nulle_ou_inconnue_est_ffmpeg_failed`).
     fn empty_wav() -> Vec<u8> {
         let mut wav = b"RIFF".to_vec();
         wav.extend_from_slice(&36u32.to_le_bytes());
@@ -1132,6 +1141,55 @@ mod tests {
         wav.extend_from_slice(b"data");
         wav.extend_from_slice(&0u32.to_le_bytes());
         wav
+    }
+
+    /// Branche « durée nulle » (#430). Avec le vrai ffmpeg elle est **inatteignable** : un MP3
+    /// sans trame (en-tête Xing seul) est refusé par ffprobe (« sortie inexploitable »), et dès
+    /// qu'une trame existe, la durée relue est strictement positive (cf. le test réel
+    /// ci-dessous, avec un seul échantillon). On vérifie donc le contrôle lui-même sur les
+    /// réponses que ffprobe pourrait donner : durée nulle, absente, ou positive.
+    #[test]
+    fn duree_nulle_ou_inconnue_est_ffmpeg_failed() {
+        for duration_secs in [Some(0.0), None, Some(-1.0), Some(f64::NAN)] {
+            let info = SourceInfo {
+                duration_secs,
+                ..SourceInfo::default()
+            };
+            let err = ensure_audible(&info).unwrap_err();
+            assert!(
+                matches!(&err, AppError::Conversion { code, message }
+                    if code == "ffmpeg_failed" && message.contains("sortie sans audio")),
+                "{duration_secs:?} : {err:?}"
+            );
+        }
+        for duration_secs in [0.001, 26.1] {
+            let info = SourceInfo {
+                duration_secs: Some(duration_secs),
+                ..SourceInfo::default()
+            };
+            ensure_audible(&info).unwrap();
+        }
+    }
+
+    /// Un seul échantillon : la sortie contient une trame et sa durée relue est > 0, donc elle
+    /// est acceptée. Avec `empty_wav` (zéro échantillon), la sortie est refusée : la durée
+    /// nulle est la frontière entre les deux, mais ffprobe ne la rend jamais pour du MP3.
+    #[tokio::test]
+    async fn reel_un_seul_echantillon_donne_une_duree_non_nulle() {
+        let Some(ff) = real_ffmpeg() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dst) = (dir.path().join("un.wav"), dir.path().join("out.mp3"));
+        let mut wav = empty_wav();
+        wav[4..8].copy_from_slice(&38u32.to_le_bytes()); // RIFF : 36 + 2 octets de données
+        let len = wav.len();
+        wav[len - 4..].copy_from_slice(&2u32.to_le_bytes());
+        wav.extend_from_slice(&[0, 0]);
+        fs::write(&src, wav).unwrap();
+        let (_tx, mut rx) = watch::channel(false);
+        convert(&ff, &src, &dst, &mut rx).await.unwrap();
+        let info = probe_of(&ff, &dst).await;
+        assert!(info.duration_secs.is_some_and(|d| d > 0.0), "{info:?}");
+        no_part_files(dir.path());
     }
 
     #[tokio::test]
