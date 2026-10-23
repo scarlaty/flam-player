@@ -546,7 +546,27 @@ async fn sans_python_le_pack_echoue_avant_tout_telechargement() {
     let end = ctx.finished(&task.id).await;
     assert_eq!(end.error.unwrap().kind, "converter_unavailable");
     assert!(!fake.entered.load(Ordering::SeqCst), "rien téléchargé");
+    // #445 : la tâche échouée ne garde pas le chemin du dossier de travail supprimé.
+    assert!(end.entry.download_url.is_empty(), "{:?}", end.entry);
+    assert!(ctx.service.list()[0].entry.download_url.is_empty());
     ctx.assert_clean();
+}
+
+/// #445 : moteur Rust, `telmi2flam.exe` présent, aucun Python : le pré-contrôle passe, le pack
+/// n'est pas refusé comme « convertisseur indisponible » et la préparation démarre.
+#[tokio::test]
+async fn moteur_rust_avec_binaire_sans_python_passe_le_precontrole() {
+    let Some(py) = python() else { return };
+    let ctx = Ctx::with_engine(Some(py), ConverterEngine::Rust);
+    let fake = ctx.packs(Fault::None);
+    let task = ctx.start_pack().await;
+    let end = ctx.finished(&task.id).await;
+    assert_ne!(
+        end.error.as_ref().map(|e| e.kind.as_str()),
+        Some("converter_unavailable"),
+        "{end:?}"
+    );
+    assert!(fake.entered.load(Ordering::SeqCst), "préparation lancée");
 }
 
 /// #440 : le pré-contrôle suit le moteur choisi. Moteur Rust sans `telmi2flam.exe` : refus avant
