@@ -55,7 +55,7 @@ use url::Url;
 use super::rss::{parse_feed, PodcastFeed, RssError, MAX_FEED_BYTES};
 use crate::catalog::{blocking, build_client, CatalogProblem, CatalogStatus};
 use crate::settings::{Environment, SettingsStore};
-use crate::sources::{validate_name, PublicSource, Source, SourcesStore};
+use crate::sources::{validate_name, PublicSource, Source, SourcesStore, MAX_NAME_LEN};
 use crate::storage::{self, ConfigState};
 use crate::{AppError, AppResult};
 
@@ -70,7 +70,6 @@ const FEED_FILE: &str = "feed.xml";
 const META_FILE: &str = "meta.json";
 /// Nom d'une source dont le flux n'a pas de titre exploitable.
 const DEFAULT_NAME: &str = "Podcast";
-const MAX_NAME_CHARS: usize = 100;
 
 /// Valide l'URL d'un flux et la renvoie normalisée (fragment retiré) : http ou https, hôte
 /// présent, 2 048 octets au plus, sans identifiants (`utilisateur:mot de passe@`). Les
@@ -295,7 +294,13 @@ fn load_cache(dir: &Path, source_id: &str, url_sha256: &str) -> Option<Cached> {
     if meta.url_sha256 != url_sha256 {
         return None;
     }
-    let bytes = std::fs::read(dir.join(FEED_FILE)).ok()?;
+    let path = dir.join(FEED_FILE);
+    // Un fichier plus grand qu'un flux accepté n'est pas lu en mémoire.
+    if std::fs::metadata(&path).ok()?.len() > MAX_FEED_BYTES as u64 {
+        tracing::warn!("flux en cache du podcast {source_id} trop volumineux : ignoré");
+        return None;
+    }
+    let bytes = std::fs::read(&path).ok()?;
     let trusted = hex(&Sha256::digest(&bytes)) == meta.sha256;
     if !trusted {
         tracing::warn!("flux en cache du podcast {source_id} modifié ou incomplet : ETag ignoré");
@@ -561,8 +566,9 @@ impl PodcastService {
         })
     }
 
-    /// Écrit le flux `fetched` dans le cache d'une source qui vient d'être enregistrée, sauf si
-    /// elle a été purgée depuis la lecture de `generation`. Renvoie la vue du flux.
+    /// Écrit le flux `fetched` dans le cache d'une source qui vient d'être enregistrée et renvoie
+    /// la vue du flux. `NotFound` sans rien écrire si elle a été purgée depuis la lecture de
+    /// `generation`.
     pub async fn store_fetched(
         &self,
         generation: u64,
@@ -587,12 +593,15 @@ impl PodcastService {
             feed: fetched.feed,
             trusted: true,
         };
-        if self.generation(source_id) == generation {
-            let (body, meta) = (fetched.body, cached.meta.clone());
-            let stored = blocking(move || store_cache(&dir, &body, &meta)).await?;
-            if let Err(err) = stored {
-                tracing::warn!("écriture du cache du podcast {source_id} impossible : {err}");
-            }
+        if self.generation(source_id) != generation {
+            return Err(AppError::NotFound(
+                "source supprimée pendant son ajout".into(),
+            ));
+        }
+        let (body, meta) = (fetched.body, cached.meta.clone());
+        let stored = blocking(move || store_cache(&dir, &body, &meta)).await?;
+        if let Err(err) = stored {
+            tracing::warn!("écriture du cache du podcast {source_id} impossible : {err}");
         }
         Ok(view_from(source_id, Some(&cached), false, None))
     }
@@ -715,7 +724,7 @@ fn default_name(feed: &PodcastFeed) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let name: String = one_line.chars().take(MAX_NAME_CHARS).collect();
+    let name: String = one_line.chars().take(MAX_NAME_LEN).collect();
     validate_name(&name).unwrap_or_else(|_| DEFAULT_NAME.to_string())
 }
 

@@ -21,7 +21,9 @@ use crate::{AppError, AppResult};
 /// - v1 : catalogues et dossiers ;
 /// - v2 (#211) : ajout des sources podcast. Aucune donnée ne change, mais la version monte :
 ///   un launcher v1 refuse ainsi un fichier v2 (`config_version`, fichier intact) au lieu de
-///   le mettre entièrement en quarantaine faute de connaître la variante `podcast`.
+///   le mettre entièrement en quarantaine faute de connaître la variante `podcast`. Un fichier
+///   sans podcast est toujours écrit en v1 : sans podcast, revenir à un launcher v1 reste
+///   possible.
 pub const SCHEMA_VERSION: u32 = 2;
 const FILE_NAME: &str = "sources.json";
 
@@ -32,7 +34,7 @@ pub const TELMI_STORE_ID: &str = "telmi-store";
 /// Identifiant de la source implicite « Mes histoires » (jamais écrite dans `sources.json`).
 pub const LIBRARY_ID: &str = "library";
 const LIBRARY_NAME: &str = "Mes histoires";
-const MAX_NAME_LEN: usize = 100;
+pub(crate) const MAX_NAME_LEN: usize = 100;
 const MAX_URL_LEN: usize = 2048;
 
 /// Une source d'histoires (miroir de `Source` dans `src/api/sources.ts`).
@@ -157,10 +159,18 @@ struct SourcesFile {
     sources: Vec<Source>,
 }
 
+/// Forme écrite de `sources.json` (version choisie à l'écriture, voir `SourcesStore::save`).
+#[derive(Serialize)]
+struct SourcesFileRef<'a> {
+    schema_version: u32,
+    sources: &'a [Source],
+}
+
 impl Default for SourcesFile {
     fn default() -> Self {
         Self {
-            schema_version: SCHEMA_VERSION,
+            // Sans podcast, le fichier reste en v1 (voir `SourcesStore::save`).
+            schema_version: 1,
             sources: vec![Source::telmi_store()],
         }
     }
@@ -284,8 +294,19 @@ impl SourcesStore {
         Ok(file)
     }
 
+    /// Écrit le fichier. La version écrite est la plus basse qui décrit son contenu : v1 tant
+    /// qu'aucune source podcast n'existe, pour qu'un retour à un launcher v1 reste possible ;
+    /// v2 dès qu'il y en a une (un launcher v1 refuse alors le fichier sans le modifier).
     fn save(&self, file: &SourcesFile) -> AppResult<()> {
-        storage::write_json(&self.dir.join(FILE_NAME), file)
+        let has_podcast = file
+            .sources
+            .iter()
+            .any(|s| matches!(s, Source::Podcast { .. }));
+        let written = SourcesFileRef {
+            schema_version: if has_podcast { SCHEMA_VERSION } else { 1 },
+            sources: &file.sources,
+        };
+        storage::write_json(&self.dir.join(FILE_NAME), &written)
     }
 
     /// Liste et restauration éventuelle à signaler à l'utilisateur.
@@ -592,7 +613,7 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.path().join("sources.json")).unwrap())
                 .unwrap();
-        assert_eq!(json["schema_version"], SCHEMA_VERSION);
+        assert_eq!(json["schema_version"], 1);
         assert_eq!(json["sources"].as_array().unwrap().len(), 1);
         assert_eq!(json["sources"][0]["type"], "catalog");
         assert_eq!(json["sources"][0]["url"], TELMI_STORE_URL);
@@ -960,6 +981,21 @@ mod tests {
         assert_eq!(&after[..4], &before[..]);
         assert!(matches!(&after[4], Source::Podcast { id, url, .. } if id == "p" && url == FEED));
         assert_eq!(storage::pending_recovery(dir.path(), FILE_NAME), None);
+    }
+
+    /// Retour possible à un launcher v1 : la version écrite ne monte qu'avec un podcast, et
+    /// redescend quand le dernier podcast est supprimé.
+    #[test]
+    fn la_version_ecrite_ne_monte_qu_avec_un_podcast() {
+        let (dir, store) = store();
+        store
+            .add(catalog("A", "https://exemple.org/a.json"))
+            .unwrap();
+        assert_eq!(sources_json(dir.path())["schema_version"], 1);
+        podcast(&store, "p", FEED).unwrap();
+        assert_eq!(sources_json(dir.path())["schema_version"], 2);
+        store.remove("p").unwrap();
+        assert_eq!(sources_json(dir.path())["schema_version"], 1);
     }
 
     #[test]

@@ -1215,7 +1215,8 @@ travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
   hôte, 2048 caractères max, sans identifiants, dossier absolu existant,
   type immuable à la mise à jour ; `sources_reorder` exige une permutation exacte des identifiants
   enregistrés.
-- Schéma v2 (#211) : ajout du type `podcast` ; un fichier v0 ou v1 est lu sans changement. L'URL
+- Schéma v2 (#211) : ajout du type `podcast` ; un fichier v0 ou v1 est lu sans changement, et le
+  fichier n'est écrit en v2 que s'il contient un podcast (retour à un launcher v1 possible sinon). L'URL
   d'un flux est un secret (D11, `docs/podcasts.md`) : ni journalisée, ni renvoyée au front (les
   commandes renvoient `feed_hint`, `https://hôte/…`) ; détails dans `src-tauri/src/podcast/source.rs`.
 

@@ -298,6 +298,28 @@ async fn le_rafraichissement_remplace_le_cache_puis_utilise_l_etag() {
     assert_eq!(cached.status.updated_at, Some(300));
 }
 
+/// 304 alors qu'aucun en-tête conditionnel n'a été envoyé (pas de cache) : nouvelle requête.
+#[tokio::test]
+async fn un_304_sans_cache_relance_la_requete() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(304))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(FEED))
+        .mount(&server)
+        .await;
+    let root = tempfile::tempdir().unwrap();
+    let svc = service();
+    let url = feed_url(&server);
+    let view = svc.refresh(0, root.path(), "p1", &url, 5).await.unwrap();
+    assert_eq!(titles(&view).len(), 3);
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
 /// Critère d'acceptation : un flux indisponible affiche le cache hors ligne ; ni l'erreur ni
 /// le journal ne contiennent l'URL.
 #[tokio::test]
@@ -511,9 +533,11 @@ async fn apres_la_purge_aucun_cache_n_est_recree() {
         .await
         .unwrap_err();
     assert_eq!(err.kind(), "not_found");
-    svc.store_fetched(generation, root.path(), "p1", &url, fetched, 1)
+    let err = svc
+        .store_fetched(generation, root.path(), "p1", &url, fetched, 1)
         .await
-        .unwrap();
+        .unwrap_err();
+    assert_eq!(err.kind(), "not_found");
     assert!(!root.path().join("podcasts/p1").exists());
 }
 
