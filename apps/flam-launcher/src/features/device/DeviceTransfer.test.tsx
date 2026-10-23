@@ -717,6 +717,59 @@ it("Flam 2.x aux clés incohérentes et confirmée : retrait possible (#326)", a
   expect(remove).not.toHaveAttribute("aria-disabled");
 });
 
+const contradictionCounts = {
+  examined: 2,
+  key_matches: 2,
+  decrypted: 0,
+  decrypted_other_key: 0,
+  lunii_format: 0,
+  clear_info: 0,
+};
+
+it("Flam 2.x aux clés incohérentes non confirmée : retrait désactivé (#345)", async () => {
+  status.device!.firmware_status = firmwareV2({
+    trust: "unconfirmed",
+    coherence: { kind: "contradiction", counts: contradictionCounts, stories: [A], total: 1 },
+    write_block: { kind: "keys_contradiction", version: "2.4.2" },
+  });
+  render(<Harness />);
+  const remove = await screen.findByRole("button", { name: "Retirer « Déjà là »" });
+  expect(remove).toHaveAttribute("aria-disabled", "true");
+  expect(remove).toHaveAccessibleDescription(
+    "Retrait indisponible : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
+  );
+  fireEvent.click(remove);
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  expect(count("device_remove_story")).toBe(0);
+});
+
+it("contradiction sans histoire désignée : bandeau sans liste (#345)", async () => {
+  status.device!.firmware_status = firmwareV2({
+    coherence: { kind: "contradiction", counts: contradictionCounts, stories: [], total: 0 },
+    write_block: { kind: "keys_contradiction", version: "2.4.2" },
+  });
+  render(<Harness />);
+  expect(await screen.findByText("Envoi sur cette Flam bloqué")).toBeInTheDocument();
+  expect(screen.queryByText(/Histoires en cause/)).not.toBeInTheDocument();
+});
+
+it("contradiction : liste complète des histoires en cause, sans « et N autres » (#345)", async () => {
+  status.device!.firmware_status = firmwareV2({
+    coherence: { kind: "contradiction", counts: contradictionCounts, stories: [A, B], total: 2 },
+    write_block: { kind: "keys_contradiction", version: "2.4.2" },
+  });
+  render(<Harness />);
+  expect(await screen.findByText(`Histoires en cause : ${A}, ${B}.`)).toBeInTheDocument();
+});
+
+it("Flam 1.x avec état du firmware : retrait possible (#345)", async () => {
+  status.device!.firmware = "1.15.14";
+  status.device!.firmware_status = firmwareV1();
+  render(<Harness />);
+  const remove = await screen.findByRole("button", { name: "Retirer « Déjà là »" });
+  await waitFor(() => expect(remove).not.toHaveAttribute("aria-disabled"));
+});
+
 it("un refus de la garde pendant la file arrête les envois suivants", async () => {
   acknowledgeWarning();
   render(<Harness />);
