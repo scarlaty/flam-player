@@ -56,8 +56,8 @@ pub fn convert(
     // MP3 recopiés tels quels relus dans l'archive à l'écriture (#355).
     let package = build_package_streamed(&mut archive, &req.options, cancelled, reporter)?;
     let target = Target::new(req.output, req.emit_plain, &package);
-    let published = write_package_from(&package, &mut archive, &target, cancelled, reporter)?;
-    drop(archive);
+    // L'archive est rendue à l'écriture, qui la ferme avant de publier (#402).
+    let published = write_package_from(&package, archive, &target, cancelled, reporter)?;
     let size = if target.dir_only {
         package.entries.iter().map(|(_, d)| d.size()).sum()
     } else {
