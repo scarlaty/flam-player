@@ -54,9 +54,9 @@ pub enum Theme {
 /// ([`ThumbFit::as_arg`]). Une valeur inconnue (fichier édité à la main ou écrit par une autre
 /// version) retombe sur `Flou` au lieu de faire rejeter tout le fichier.
 ///
-/// Copie de `telmi2flam::image::ThumbFit` (la crate n'a pas de serde et ce type porte le repli
-/// `serde(other)`) : le test `memes_modes_que_la_crate_telmi2flam` garde les deux alignés ; à
-/// remplacer par celui de la crate au branchement du binaire Rust (#360).
+/// Pendant de `telmi2flam::image::ThumbFit`, gardé ici parce que la crate n'a pas de serde et
+/// que ce type porte le repli `serde(other)`. Les noms viennent de la crate ([`ThumbFit::as_arg`]
+/// passe par `From`) ; le test `memes_modes_que_la_crate_telmi2flam` garde les variantes alignées.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThumbFit {
@@ -71,15 +71,39 @@ pub enum ThumbFit {
     Flou,
 }
 
-impl ThumbFit {
-    /// Valeur de l'option `--thumb-fit` du convertisseur.
-    pub fn as_arg(self) -> &'static str {
-        match self {
-            Self::Flou => "flou",
-            Self::Rogner => "rogner",
-            Self::Bandes => "bandes",
+impl From<ThumbFit> for telmi2flam::image::ThumbFit {
+    fn from(fit: ThumbFit) -> Self {
+        match fit {
+            ThumbFit::Flou => Self::Flou,
+            ThumbFit::Rogner => Self::Rogner,
+            ThumbFit::Bandes => Self::Bandes,
         }
     }
+}
+
+impl ThumbFit {
+    /// Valeur de l'option `--thumb-fit` du convertisseur (nom défini par la crate, commun aux
+    /// deux moteurs).
+    pub fn as_arg(self) -> &'static str {
+        telmi2flam::image::ThumbFit::from(self).as_str()
+    }
+}
+
+/// Moteur de conversion des archives Telmi (#136, PORT-RUST.md §5) : `telmi2flam.py` avec le
+/// Python embarqué, ou le binaire Rust `telmi2flam.exe` livré à côté.
+///
+/// Réglage **caché** : absent de l'écran Paramètres, et `settings_set` conserve la valeur
+/// enregistrée (voir [`SettingsStore::update`]) ; il se change à la main dans `settings.json`.
+/// Une valeur absente, inconnue ou mal typée retombe sur `Python`, le moteur par défaut.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConverterEngine {
+    /// Binaire Rust `telmi2flam.exe`.
+    Rust,
+    /// `telmi2flam.py` (doit rester la dernière variante pour `serde(other)`).
+    #[default]
+    #[serde(other)]
+    Python,
 }
 
 /// Paramètres enregistrés (miroir de `Settings` dans `src/api/settings.ts`).
@@ -111,6 +135,21 @@ pub struct Settings {
     /// Remplissage des vignettes des histoires converties (#279). Absent des anciens fichiers :
     /// `Flou` (`#[serde(default)]`, sans migration de schéma).
     pub thumb_fit: ThumbFit,
+    /// Moteur de conversion (#136), réglage caché : `Python` par défaut, conservé par
+    /// [`SettingsStore::update`]. Absent des anciens fichiers : `Python`.
+    #[serde(deserialize_with = "lenient_engine")]
+    pub converter_engine: ConverterEngine,
+}
+
+/// `converter_engine` mal typé (nombre, objet, `null`) : moteur par défaut plutôt que le rejet de
+/// tout `settings.json` (`serde(other)` ne couvre que les chaînes inconnues).
+fn lenient_engine<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ConverterEngine, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    if !value.is_null() && !matches!(value.as_str(), Some("python" | "rust")) {
+        // Réglage caché édité à la main : une faute de frappe ne doit pas passer inaperçue.
+        tracing::warn!("converter_engine non reconnu ({value}) : moteur python utilisé");
+    }
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// Téléchargements simultanés par défaut.
@@ -130,6 +169,7 @@ impl Default for Settings {
             max_downloads: DEFAULT_MAX_DOWNLOADS,
             carrier_consent: None,
             thumb_fit: ThumbFit::default(),
+            converter_engine: ConverterEngine::default(),
         }
     }
 }
@@ -541,6 +581,7 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
         max_downloads: settings.max_downloads,
         carrier_consent: settings.carrier_consent,
         thumb_fit: settings.thumb_fit,
+        converter_engine: settings.converter_engine,
     })
 }
 
@@ -568,11 +609,13 @@ impl SettingsStore {
     /// Renvoie les paramètres normalisés.
     ///
     /// Le consentement du mode carrier n'est pas modifiable ici : la valeur enregistrée est
-    /// conservée quelle que soit celle reçue (voir [`Self::record_carrier_consent`]).
+    /// conservée quelle que soit celle reçue (voir [`Self::record_carrier_consent`]). De même
+    /// pour le moteur de conversion, réglage caché (#136) : l'écran Paramètres ne le connaît pas.
     pub fn update(&self, settings: Settings) -> AppResult<Settings> {
         let stored = self.load()?;
         let mut settings = validate(settings)?;
         settings.carrier_consent = stored.carrier_consent;
+        settings.converter_engine = stored.converter_engine;
         storage::write_json(&self.dir.join(FILE_NAME), &settings)?;
         Ok(settings)
     }
@@ -859,6 +902,62 @@ mod tests {
     }
 
     #[test]
+    fn moteur_de_conversion_python_par_defaut_et_tolerant() {
+        let old: Settings = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
+        assert_eq!(old.converter_engine, ConverterEngine::Python);
+        assert_eq!(
+            Settings::default().converter_engine,
+            ConverterEngine::Python
+        );
+        let rust: Settings = serde_json::from_str(r#"{"converter_engine":"rust"}"#).unwrap();
+        assert_eq!(rust.converter_engine, ConverterEngine::Rust);
+        assert_eq!(
+            serde_json::to_value(ConverterEngine::Rust).unwrap(),
+            serde_json::json!("rust")
+        );
+        // Inconnu, mal typé ou nul : Python, sans rejeter le reste du fichier.
+        for bad in [
+            serde_json::json!("Rust"),
+            serde_json::json!("go"),
+            serde_json::json!(1),
+            serde_json::json!({ "engine": "rust" }),
+            serde_json::Value::Null,
+        ] {
+            let s: Settings = serde_json::from_value(
+                serde_json::json!({ "converter_engine": bad, "max_downloads": 3 }),
+            )
+            .unwrap();
+            assert_eq!(s.converter_engine, ConverterEngine::Python, "{bad:?}");
+            assert_eq!(s.max_downloads, 3, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn moteur_de_conversion_cache_conserve_par_la_mise_a_jour() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("settings.json"),
+            r#"{"schema_version":1,"converter_engine":"rust"}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(dir.path());
+        // L'écran Paramètres renvoie l'objet sans ce champ (ou avec une autre valeur).
+        for sent in [ConverterEngine::Python, ConverterEngine::Rust] {
+            let saved = store
+                .update(Settings {
+                    converter_engine: sent,
+                    max_downloads: 3,
+                    ..Settings::default()
+                })
+                .unwrap();
+            assert_eq!(saved.converter_engine, ConverterEngine::Rust);
+        }
+        let reloaded = store.load().unwrap();
+        assert_eq!(reloaded.converter_engine, ConverterEngine::Rust);
+        assert_eq!(reloaded.max_downloads, 3);
+    }
+
+    #[test]
     fn remplissage_des_vignettes_ferme_et_par_defaut() {
         // absent des anciens fichiers : flou
         let old: Settings = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
@@ -914,6 +1013,7 @@ mod tests {
                 max_downloads: 3,
                 carrier_consent: None,
                 thumb_fit: ThumbFit::Rogner,
+                converter_engine: ConverterEngine::Python,
             })
             .unwrap();
         assert_eq!(saved.schema_version, SCHEMA_VERSION);
