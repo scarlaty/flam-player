@@ -769,6 +769,12 @@ class TestConversion(Base):
         self.assertIn("global.lua", T.RUNTIME_SCRIPTS)
         self.assertIn("audio-player-pause.lif", T.RUNTIME_UI_LIF)
 
+    # #129 : manifeste absent -> ConvError a la conversion, pas d'exception a l'import
+    def test_runtime_manifest_missing_is_a_conv_error(self):
+        self.assertEqual(T._runtime_required(os.path.join(self.tmp, "absent.txt")), (None, None))
+        with self.assertRaises(T.ConvError):
+            T._require_runtime(T.RUNTIME_DIR, None, "scripts framework")
+
 class TestMp3map(unittest.TestCase):
     def ref_44k(self, data):
         """Formule historique (mp3map-tool de reference) pour du 44,1 kHz MPEG1 L3."""

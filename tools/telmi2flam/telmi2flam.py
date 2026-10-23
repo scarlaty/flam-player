@@ -69,13 +69,16 @@ def _runtime_required(manifest=RUNTIME_MANIFEST):
     embarque par le port Rust. Rend (scripts, icones) : noms dans runtime/script et
     runtime/img/script."""
     scripts, icons = [], []
-    with open(manifest, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("!script/"):
-                scripts.append(line[len("!script/"):])
-            elif line.startswith("!img/script/"):
-                icons.append(line[len("!img/script/"):])
+    try:
+        with open(manifest, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("!script/"):
+                    scripts.append(line[len("!script/"):])
+                elif line.startswith("!img/script/"):
+                    icons.append(line[len("!img/script/"):])
+    except (OSError, UnicodeDecodeError):
+        return None, None    # signale par _require_runtime a la conversion, pas a l'import
     return tuple(scripts), tuple(icons)
 
 
@@ -275,6 +278,9 @@ def _encode(im):
 def _require_runtime(d, names, what):
     """Le runtime du projet (runtime/script, runtime/img/script) doit accompagner
     le convertisseur : sinon le paquet genere ne peut pas demarrer."""
+    if names is None:
+        raise ConvError("%s introuvables : %s illisible (le runtime doit "
+                        "accompagner telmi2flam.py)" % (what, RUNTIME_MANIFEST))
     if not os.path.isdir(d):
         raise ConvError("%s introuvables : dossier %s absent (le runtime doit "
                         "accompagner telmi2flam.py)" % (what, d))

@@ -178,9 +178,9 @@ fn paquet_identique_a_python() {
 }
 
 /// Annulation au *n*-ième appel du jeton d'une conversion complète : toujours `cancelled` et
-/// aucun paquet ; au-delà, paquet identique à une conversion normale. Chaque *n* jusqu'à 100
-/// (étapes avant et entre les assets), puis une soixantaine de points répartis sur les boucles de
-/// lignes des images, et le dernier appel.
+/// aucun paquet ; au-delà, paquet identique à une conversion normale. Chaque *n* pour
+/// `missing_image_allowed` ; pour `pkg_name_collisions` (plus long), chaque *n* jusqu'à 100 puis
+/// une soixantaine de points répartis sur les boucles de lignes des images, et le dernier appel.
 #[test]
 fn annulation_a_chaque_etape() {
     let mut zip = vectors();
@@ -196,7 +196,11 @@ fn annulation_a_chaque_etape() {
         .unwrap();
         let total = calls.get();
         assert!(total > 10, "{id} : {total} appels du jeton");
-        let stride = (total / 60).max(1);
+        let stride = if id == "missing_image_allowed" {
+            1
+        } else {
+            (total / 60).max(1)
+        };
         let points = (0..total.min(100))
             .chain((100..total).step_by(stride))
             .chain([total - 1]);

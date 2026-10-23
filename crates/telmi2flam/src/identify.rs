@@ -1,6 +1,6 @@
 //! Données qui ne sont pas un PNG : Pillow 12.3.0 pourrait-il les ouvrir ?
 //!
-//! `Image.open` essaie chacun de ses 43 greffons de lecture : ceux qui ont une fonction
+//! `Image.open` essaie chacun de ses 43 greffons de lecture (45 avec `olefile`) : ceux qui ont une fonction
 //! `_accept` ne voient que les 16 premiers octets, les autres (`IM`, `IMT`, `IPTC`, `PCD`,
 //! `SPIDER`, `TGA`) sont ouverts directement et lèvent une exception sur un en-tête invalide.
 //! Si aucun ne peut accepter les données, Pillow lève `UnidentifiedImageError` : Python émet
@@ -69,6 +69,9 @@ fn some_accept(p: &[u8]) -> bool {
         b"\x01\0\0\0",
         b"/* XPM */",
         b"P7 332",
+        // FPX et MIC : greffons chargés seulement si `olefile` est installé (pas dans
+        // l'installateur) ; pris quand même, par prudence.
+        b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
     ];
     if MAGICS.iter().any(|m| p.starts_with(m)) {
         return true;
