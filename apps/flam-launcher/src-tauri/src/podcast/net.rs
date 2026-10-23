@@ -12,8 +12,15 @@
 //!   résolution possible : pas de « DNS rebinding ») ;
 //! - équivalents IPv6 : IPv4 encapsulée (`::ffff:a.b.c.d`, NAT64, 6to4), lien local, ULA…
 //!
-//! Le client refuse aussi les mandataires (`HTTP_PROXY`…) : un mandataire résoudrait lui-même
-//! le nom, hors de ce contrôle.
+//! Le client refuse aussi les mandataires (`HTTP_PROXY`, proxy système Windows) : un
+//! mandataire résoudrait lui-même le nom, hors de ce contrôle (décision du mainteneur, #370 :
+//! `no_proxy` conservé, la limite est documentée dans la spec D10 et dans [`PROXY_HINT`]).
+//!
+//! Noms locaux : un nom à **une seule étiquette** (`nas`, `box`) ou finissant par `.local`,
+//! `.lan`, `.home.arpa`, `.internal`, `.localhost` est refusé avant toute résolution
+//! ([`is_local_name`]). **Résidu** : un nom public multi-étiquettes qui résout vers l'adresse
+//! publique de la box de l'utilisateur (rebouclage NAT) reste joignable ; seul le contrôle des
+//! adresses résolues s'applique alors.
 //!
 //! # Brancher le téléchargement du flux (#211)
 //!
@@ -40,6 +47,10 @@ use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use url::{Host, Url};
 
 use crate::catalog::{redirect_policy, USER_AGENT};
+
+/// Complément des messages d'erreur réseau : les mandataires (système ou variables
+/// d'environnement) ne sont jamais utilisés pour les podcasts (D10).
+pub const PROXY_HINT: &str = "les mandataires système sont ignorés";
 
 /// Politique réseau. Par défaut (et en production) : [`NetPolicy::strict`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -139,8 +150,12 @@ fn forbidden_v6(ip: Ipv6Addr) -> bool {
         || (s[0] & 0xffc0) == 0xfec0
         // Locale unique fc00::/7.
         || (s[0] & 0xfe00) == 0xfc00
-        // Documentation 2001:db8::/32, Teredo 2001::/32 (tunnel), discard 100::/64.
+        // Documentation 2001:db8::/32 et 3fff::/20, Teredo 2001::/32 (tunnel), discard 100::/64.
         || (s[0] == 0x2001 && (s[1] == 0x0db8 || s[1] == 0))
+        || (s[0] == 0x3fff && s[1] < 0x1000)
+        // Tests de performance 2001:2::/48, ORCHID v1 2001:10::/28 (obsolète).
+        || (s[0] == 0x2001 && s[1] == 2 && s[2] == 0)
+        || (s[0] == 0x2001 && (0x10..=0x1f).contains(&s[1]))
         || (s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0)
         // IPv4 compatible ::a.b.c.d (obsolète) : on juge l'IPv4 contenue.
         || (s[..6].iter().all(|x| *x == 0) && forbidden_v4(embedded(s[6], s[7])))
@@ -165,15 +180,30 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
     }
 }
 
-/// Contrôle une URL **avant** toute connexion : schéma `http`/`https`, hôte présent, et
-/// adresse IP littérale publique. Un nom de domaine est contrôlé à la résolution DNS
+/// Suffixes de noms réservés aux réseaux locaux (D10).
+const LOCAL_SUFFIXES: [&str; 5] = [".local", ".lan", ".home.arpa", ".internal", ".localhost"];
+
+/// `true` si `host` est un nom de réseau local : une seule étiquette (`nas`, `box`,
+/// `localhost`), ou un suffixe de [`LOCAL_SUFFIXES`]. Le point final et la casse sont ignorés.
+pub fn is_local_name(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    !host.contains('.') || LOCAL_SUFFIXES.iter().any(|s| host.ends_with(s))
+}
+
+/// Contrôle une URL **avant** toute connexion : schéma `http`/`https`, hôte présent, pas
+/// d'identifiants (`user:pass@`, D11), nom non local ([`is_local_name`]) et adresse IP
+/// littérale publique. Les adresses d'un nom de domaine sont contrôlées à la résolution DNS
 /// ([`guarded_client`]).
 pub fn check_url(url: &Url, policy: NetPolicy) -> Result<(), BlockedAddress> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(BlockedAddress);
     }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(BlockedAddress);
+    }
     match url.host() {
         None => Err(BlockedAddress),
+        Some(Host::Domain(d)) if is_local_name(d) => Err(BlockedAddress),
         Some(Host::Domain(_)) => Ok(()),
         Some(Host::Ipv4(ip)) if policy.allows(IpAddr::V4(ip)) => Ok(()),
         Some(Host::Ipv6(ip)) if policy.allows(IpAddr::V6(ip)) => Ok(()),
@@ -312,6 +342,11 @@ mod tests {
             "64:ff9b:1::a00:1",
             "::ffff:0:a00:1",
             "192.88.99.1",
+            "3fff::1",
+            "3fff:fff:ffff::1",
+            "2001:2::1",
+            "2001:10::1",
+            "2001:1f:ffff::1",
         ] {
             assert!(is_forbidden_ip(ip(s)), "{s} devrait être refusée");
         }
@@ -336,6 +371,9 @@ mod tests {
             "::ffff:8.8.8.8",
             "64:ff9b::808:808",
             "2002:808:808::1",
+            "3fff:1000::1",
+            "2001:2:1::1",
+            "2001:20::1",
         ] {
             assert!(!is_forbidden_ip(ip(s)), "{s} devrait être acceptée");
         }
@@ -362,10 +400,7 @@ mod tests {
         assert!(check("https://example.org/a.mp3").is_ok());
         assert!(check("http://8.8.8.8/a.mp3").is_ok());
         assert!(check("http://127.0.0.1/a").is_err());
-        assert!(
-            check("http://localhost.:80/a").is_ok(),
-            "nom : contrôlé au DNS"
-        );
+        assert!(check("http://localhost.:80/a").is_err());
         assert!(check("http://[::1]/a").is_err());
         assert!(check("http://[::ffff:192.168.0.1]/a").is_err());
         assert!(check("http://169.254.169.254/latest").is_err());
@@ -375,6 +410,48 @@ mod tests {
         assert!(check("http://017700000001/").is_err());
         assert!(check("ftp://example.org/a").is_err());
         assert!(check("file:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn noms_locaux_refuses() {
+        let strict = NetPolicy::strict();
+        let check = |u: &str| check_url(&Url::parse(u).unwrap(), strict);
+        for u in [
+            "http://nas/a.mp3",
+            "http://box:8080/a.mp3",
+            "http://NAS./a.mp3",
+            "http://localhost/a",
+            "http://nas.local/a",
+            "http://nas.lan/a",
+            "http://nas.home.arpa/a",
+            "http://serveur.internal./a",
+            "http://app.localhost/a",
+            "http://a.b.Local/a",
+        ] {
+            assert!(check(u).is_err(), "{u} devrait être refusé");
+        }
+        for u in [
+            "https://example.org/a",
+            "https://localnet.example/a",
+            "https://notlocal.com/a",
+            "https://my.lan.example.org/a",
+            "https://internal.example.org/a",
+        ] {
+            assert!(check(u).is_ok(), "{u} devrait être accepté");
+        }
+        assert!(is_local_name("x.home.arpa"));
+        assert!(!is_local_name("arpa.example"));
+    }
+
+    #[test]
+    fn identifiants_dans_l_url_refuses() {
+        let strict = NetPolicy::strict();
+        let check = |u: &str| check_url(&Url::parse(u).unwrap(), strict);
+        assert!(check("https://user:pass@example.org/a.mp3").is_err());
+        assert!(check("https://user@example.org/a.mp3").is_err());
+        assert!(check("https://:pass@example.org/a.mp3").is_err());
+        assert!(check("http://user:pass@8.8.8.8/a").is_err());
+        assert!(check("https://example.org/a@b:c").is_ok());
     }
 
     #[test]
