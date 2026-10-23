@@ -22,7 +22,9 @@
 //! préfixes, `--`, `-h`, messages et codes de Python). Résumé humain `OK -> …` comme
 //! `telmi2flam.py` : sur stdout, ou sur stderr avec `--progress-json` ; les lignes `  i …`
 //! (rééchantillonnage réussi) et `  ! …` (avertissements) vont toujours sur stderr, au fil de
-//! la conversion.
+//! la conversion. L'événement `done` précède le résumé (Python : après) ; seul un `2>&1`
+//! fusionné le voit. `-h` et `--version` écrivent sur stdout ; un tube fermé est ignoré
+//! partout (Python lèverait `BrokenPipeError` hors mode JSON).
 //!
 //! Fin de ligne : `\n` sur tous les systèmes. Python, en mode texte, écrit `\r\n` sous
 //! Windows ; l'écart est assumé (les consommateurs lisent ligne à ligne et la parité

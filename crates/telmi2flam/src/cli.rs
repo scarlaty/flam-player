@@ -9,7 +9,9 @@
 //! - `--cancel-on-stdin-eof` (option du port, voir `cancel`) est acceptée mais absente de
 //!   l'usage et de l'aide ; elle participe aux préfixes (`--c` la désigne) ;
 //! - l'aide est mise en forme pour 80 colonnes (`COLUMNS` est ignoré) ;
-//! - les valeurs non Unicode sont comparées sur leur forme avec remplacement.
+//! - les valeurs non Unicode sont comparées sur leur forme avec remplacement ;
+//! - `repr` des valeurs citées dans les messages : seuls les caractères de contrôle ASCII sont
+//!   échappés (Python échappe aussi les non imprimables Unicode : `\xa0`, `\u200b`…).
 
 use std::ffi::OsString;
 
