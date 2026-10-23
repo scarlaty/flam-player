@@ -72,11 +72,13 @@
 //! Les opérations sur l'appareil sont sérialisées par [`DeviceLock`](super::lock::DeviceLock) (dans le processus) ; un
 //! second launcher est empêché par le plugin d'instance unique.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -1035,11 +1037,20 @@ fn firmware_main(text: &[u8]) -> Option<(String, VersionForm)> {
         Some(at) => (&text[at + "main:".len()..], VersionForm::Main),
         None => (&text[..], VersionForm::Bare),
     };
+    let rest = rest.trim_start();
     let version: String = rest
-        .trim_start()
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.')
         .collect();
+    // Un point final unique (« 1.15.14. », fin de phrase) n'appartient pas à la version (#326),
+    // s'il est suivi de la fin du champ, d'un blanc, d'un nul ou d'un tiret. Les formes douteuses
+    // (`2..1`, `2..`, `.2`, `2.4.x`, `1.rc`) restent refusées par `firmware_family`.
+    let next = rest[version.len()..].chars().next();
+    let ends_field = next.is_none_or(|c| c.is_whitespace() || c == '\0' || c == '-');
+    let version = match version.strip_suffix('.') {
+        Some(trimmed) if ends_field => trimmed.to_string(),
+        _ => version,
+    };
     version
         .starts_with(|c: char| c.is_ascii_digit())
         .then_some((version, form))
@@ -1437,12 +1448,61 @@ pub async fn device_recover_transfers(
 /// garde des clés 2.x ; `None` (journalisé) s'il est illisible.
 pub(crate) fn launcher_cache_root(config: &ConfigState) -> Option<PathBuf> {
     let _guard = config.guard();
-    SettingsStore::new(&config.dir)
+    resolve_cache_root(&config.dir)
+}
+
+/// Corps de [`launcher_cache_root`], sous le verrou des réglages.
+fn resolve_cache_root(config_dir: &Path) -> Option<PathBuf> {
+    SettingsStore::new(config_dir)
         .resolved_cache_dir(&Environment::current())
         .map_err(|err| {
             tracing::warn!("dossier de cache illisible pour la garde de la Flam : {err}")
         })
         .ok()
+}
+
+/// Durée de validité de [`polled_cache_root`].
+const CACHE_ROOT_REUSE: Duration = Duration::from_secs(30);
+
+/// Taille et date de `settings.json` : un enregistrement des réglages les change.
+type SettingsStamp = Option<(u64, Option<std::time::SystemTime>)>;
+
+/// Dernière résolution par dossier de configuration (au plus un dans l'application).
+type CacheRootMemo = HashMap<PathBuf, (SettingsStamp, Instant, PathBuf)>;
+static CACHE_ROOT_MEMO: Mutex<Option<CacheRootMemo>> = Mutex::new(None);
+
+/// [`launcher_cache_root`] pour la scrutation de `device_status` (#326) : la résolution
+/// (lecture et analyse des réglages, création du dossier) est réutilisée tant que
+/// `settings.json` n'a changé ni de taille ni de date, et au plus [`CACHE_ROOT_REUSE`]. Les
+/// écritures (envoi, retrait, ordre, reprise, confirmation) résolvent toujours à neuf.
+pub(crate) fn polled_cache_root(config: &ConfigState) -> Option<PathBuf> {
+    let _guard = config.guard();
+    let stamp: SettingsStamp = fs::metadata(config.dir.join(crate::settings::FILE_NAME))
+        .ok()
+        .map(|m| (m.len(), m.modified().ok()));
+    let mut memo = CACHE_ROOT_MEMO
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let memo = memo.get_or_insert_with(HashMap::new);
+    if let Some((seen, at, root)) = memo.get(&config.dir) {
+        if *seen == stamp && at.elapsed() < CACHE_ROOT_REUSE {
+            return Some(root.clone());
+        }
+    }
+    let root = resolve_cache_root(&config.dir);
+    match &root {
+        // Le chargement peut écrire `settings.json` (valeurs par défaut) : date relue.
+        Some(root) => {
+            let stamp: SettingsStamp = fs::metadata(config.dir.join(crate::settings::FILE_NAME))
+                .ok()
+                .map(|m| (m.len(), m.modified().ok()));
+            memo.insert(config.dir.clone(), (stamp, Instant::now(), root.clone()));
+        }
+        None => {
+            memo.remove(&config.dir);
+        }
+    }
+    root
 }
 
 /// Demande l'annulation du transfert en cours. Rend faux s'il n'y en a pas. Sans effet une fois
