@@ -130,14 +130,15 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
   );
 
   useEffect(() => {
-    // Chargement initial depuis le backend.
+    // Chargement initial depuis le backend. Dossier local : le premier scan attend le
+    // démarrage de la surveillance (effet suivant), pour ne manquer aucun changement.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load(false);
+    if (sourceType !== "folder") void load(false);
     const counter = latest;
     return () => {
       counter.current++;
     };
-  }, [load]);
+  }, [load, sourceType]);
 
   // Dossier local : la liste se rafraîchit quand son contenu change. La surveillance est un
   // confort : si elle ne démarre pas, le rafraîchissement manuel reste disponible.
@@ -153,7 +154,13 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
         else unlisten = off;
       })
       .catch(() => undefined);
-    watchFolder(sourceId, true).catch(() => undefined);
+    // Surveillance démarrée (ou en échec : le rafraîchissement manuel reste) avant le scan
+    // initial : un fichier ajouté entre les deux déclenche un nouveau scan.
+    watchFolder(sourceId, true)
+      .catch(() => undefined)
+      .then(() => {
+        if (!disposed) void load(false);
+      });
     return () => {
       disposed = true;
       unlisten?.();

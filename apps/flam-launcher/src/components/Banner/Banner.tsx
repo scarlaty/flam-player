@@ -12,8 +12,11 @@ export interface BannerProps {
   children?: ReactNode;
   /** Action proposée à droite (en général un `Button`). */
   action?: ReactNode;
-  /** Rôle ARIA : `alert` (annonce immédiate) par défaut pour `danger`, `status` sinon. */
-  role?: "alert" | "status";
+  /**
+   * Rôle ARIA : `alert` (annonce immédiate) par défaut pour `danger`, `status` sinon ; `none`
+   * quand une autre région vivante annonce déjà le même message (pas de lecture en double).
+   */
+  role?: "alert" | "status" | "none";
   className?: string;
 }
 
@@ -36,7 +39,9 @@ export function Banner({
   return (
     <div
       className={cx("fl-banner", `fl-banner--${tone}`, className)}
-      role={role ?? (tone === "danger" ? "alert" : "status")}
+      role={
+        role === "none" ? undefined : (role ?? (tone === "danger" ? "alert" : "status"))
+      }
     >
       <span className="fl-banner__icon">
         <Icon name={TONE_ICONS[tone]} />

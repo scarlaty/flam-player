@@ -4,12 +4,17 @@ mod app;
 pub mod cache;
 pub mod catalog;
 pub mod compat;
+pub mod device;
+pub mod embed;
 mod error;
+pub mod external;
 pub mod folder;
 pub mod install;
 pub mod library;
+pub mod library_source;
 pub mod library_thumb;
 pub mod player;
+pub mod podcast;
 pub mod settings;
 pub mod sources;
 pub mod storage;
@@ -38,8 +43,7 @@ fn purge_stale_thumbs(app: &tauri::AppHandle) {
     let state = app.state::<storage::ConfigState>();
     let cache = {
         let _guard = state.guard();
-        settings::SettingsStore::new(&state.dir)
-            .resolved_cache_dir(&settings::Environment::current())
+        settings::SettingsStore::new(&state.dir).cache_dir(&settings::Environment::current())
     };
     let result = cache.map_err(|e| e.to_string()).and_then(|cache| {
         thumbnail::purge_thumbs(
@@ -80,6 +84,14 @@ pub fn run() {
             focus_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        // Ouverture d'adresses : aucune permission du plugin n'est donnée au front, seule la
+        // commande `external::open_external` (liste blanche du dépôt) l'utilise (#323).
+        // Le script de clic sur les liens du plugin est désactivé : tout passe par la commande.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .setup(|app| {
             let config_dir = storage::config_dir()?;
             let catalog = catalog::CatalogService::new()?;
@@ -95,10 +107,15 @@ pub fn run() {
             app.manage(folder::FolderState::default());
             app.manage(watch::WatchState::default());
             app.manage(catalog);
+            app.manage(device::official::OfficialCatalog::new()?);
             app.manage(install.clone());
-            app.manage(player::PlayerService::new(Arc::new(
-                player::TauriPlayerEvents(app.handle().clone()),
+            let player = player::PlayerService::new(Arc::new(player::TauriPlayerEvents(
+                app.handle().clone(),
             )));
+            // Sous Windows, le player est incrusté dans la fenêtre du launcher (#201).
+            #[cfg(windows)]
+            let player = player.with_embed(Arc::new(embed::TauriEmbed::new(app.handle().clone())));
+            app.manage(player);
             // Purge des vignettes périmées de `<cache>/thumbs/` (#37), hors du démarrage.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || purge_stale_thumbs(&handle));
@@ -123,6 +140,27 @@ pub fn run() {
             catalog::catalog_thumbnail,
             cache::cache_usage,
             cache::cache_clear,
+            external::open_external,
+            device::carrier::device_carrier_state,
+            device::carrier::device_carrier_accept,
+            device::carrier::device_carrier_forget,
+            device::transfer::device_carrier_preview,
+            device::detect::device_detect,
+            device::diagnostic::device_diagnostic,
+            device::remove::device_remove_story,
+            device::reorder::device_reorder_stories,
+            device::eject::device_eject,
+            device::status::device_status,
+            device::status::device_confirm_firmware,
+            device::status::device_list_stories,
+            device::details::device_story_titles,
+            device::details::device_story_thumbnail,
+            device::details::device_story_details_cancel,
+            device::official::device_official_titles,
+            device::official::device_official_thumbnail,
+            device::transfer::device_send_story,
+            device::transfer::device_cancel_transfer,
+            device::transfer::device_recover_transfers,
             compat::compat_statuses,
             storage::config_ack_recovery,
             settings::settings_get,
@@ -140,10 +178,14 @@ pub fn run() {
             install::install_list,
             library::library_list,
             library::library_remove,
+            library_source::library_source_status,
             library_thumb::library_thumbnail,
             player::player_launch,
             player::player_launch_folder,
             player::player_status,
+            player::player_stop,
+            player::player_embed_layout,
+            player::player_embed_focus,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application Tauri");
@@ -160,6 +202,14 @@ mod tests {
             ("app", include_str!("app.rs")),
             ("catalog", include_str!("catalog.rs")),
             ("compat", include_str!("compat.rs")),
+            ("device::carrier", include_str!("device/carrier.rs")),
+            ("device::diagnostic", include_str!("device/diagnostic.rs")),
+            ("device::eject", include_str!("device/eject.rs")),
+            ("device::official", include_str!("device/official.rs")),
+            ("device::remove", include_str!("device/remove.rs")),
+            ("device::status", include_str!("device/status.rs")),
+            ("device::transfer", include_str!("device/transfer.rs")),
+            ("external", include_str!("external.rs")),
             ("folder", include_str!("folder.rs")),
             ("install", include_str!("install/mod.rs")),
             ("library", include_str!("library.rs")),

@@ -20,7 +20,7 @@ de bascule et le découpage en PR. Elle ne contient aucun code.
 | `telmi2flam.py` : texte | `_flat`, `_font_safe` (police ASCII + Latin-1, NFKD, `unicodedata.name`), `_choice_label`, troncature `LABEL_MAX` | Mêmes tables de remplacement, même découpage en points de code. `_flat` coupe sur les espaces au sens de `str.split()` de Python (dont `\x1c`-`\x1f` et U+0085), pas au sens de `split_whitespace` : table explicite. Tests sur le sigma final et U+0130. |
 | `telmi2flam.py` : moteur Lua | `lua_repr`, génération de `script/nodes.lua`, `_max_chapters_per_run`, copie de `engine/` et du runtime (`runtime/script`, `runtime/img/script`) | `repr(float)` de Python (forme la plus courte, exposant au-delà de 1e16, `1.0` et non `1`) doit être reproduit exactement. |
 | `telmi2flam.py` : images | `_open_rgba` (modes PNG, `tRNS`, 16 bits), `png_to_lif`, `png_to_scene_lif`, `png_to_fit_lif`, `png_to_thumb_lif`, `_avoid_transpose`, `_bound` | Le point le plus délicat : voir §4.2. |
-| `telmi2flam.py` : audio | copie des MP3 **telle quelle**, `silent.mp3` constant, avertissement `audio_samplerate` | **Aucun décodage ni ré-encodage MP3**. Il n'y a donc ni décodeur ni rééchantillonneur à embarquer. |
+| `telmi2flam.py` : audio | copie des MP3 **telle quelle** à 44 100 Hz (hors 44 100 Hz : rééchantillonnage par un ffmpeg externe depuis telmi2flam 1.1.0, #46 ; à porter ou à garder externe), `silent.mp3` constant, avertissement `audio_samplerate` | **Aucun décodage ni ré-encodage MP3**. Il n'y a donc ni décodeur ni rééchantillonneur à embarquer. |
 | `telmi2flam.py` : sortie | ordre canonique des entrées, `.plain.pk` (ZIP *stored*), `--plain` / `-o *.plain`, `<sortie>.<pid>.part`, `_commit`, `_clean_orphans` | Voir les invariants §3. |
 | `telmi2flam.py` : protocole | options CLI, `--progress-json` (événements `start` avec `version`, `step` avec `phase`/`done`/`total` espacés de 0,1 s, `warning`, `done`, `error` avec `exit`), lignes `  ! …` sur stderr, codes de sortie 0/2/3/4/5/6/130, plus 7 (`unsupported_format`) pour le Rust | Contrats lus par `convert.rs` (événements) et par `compat.py` (lignes `  !` de stderr), à garder tels quels. |
 | `lif.py` | `encode`, `quantize_rgba` | `decode` a été déplacé du launcher (`src-tauri/src/lif.rs`) dans la crate (`crates/telmi2flam/src/lif.rs`) : tests aller-retour dans la crate, le launcher l'utilise comme dépendance. |
@@ -262,7 +262,7 @@ sont identiques à l'octet près dès la PR 6.
 2. **Matrice de rééchantillonnage (CI)** : les images des tests sont minuscules et ne prouvent
    rien sur le Lanczos. Le générateur produit donc aussi une matrice :
    - modes PNG × tailles sources impaires ou premières (par ex. 1, 3, 97, 641, 2049) ;
-   - toutes les cibles réelles : scène 320×212, vignette 128×96, inventaire 128×128,
+   - toutes les cibles réelles : scène 320×212, vignette 104×136 (mode `bandes` seulement ; `flou` et `rogner` : #282), inventaire 128×128,
      titre 89×120, borne 2047 ;
    - agrandissements et réductions de plus de 2× (pour passer par `reduce`) ;
    - contenus variés : bruit pseudo-aléatoire à graine fixe, dégradés, alpha partiel.

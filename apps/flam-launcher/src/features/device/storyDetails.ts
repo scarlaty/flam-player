@@ -1,0 +1,338 @@
+import { useEffect, useRef, useState, type RefObject } from "react";
+import {
+  STORY_TITLES_BATCH,
+  cancelDeviceStoryDetails,
+  getDeviceStoryThumbnail,
+  getDeviceStoryTitles,
+  getOfficialStoryThumbnail,
+  getOfficialStoryTitles,
+  type DeviceStoryThumbnail,
+} from "../../api/device";
+
+/** Délai avant de redemander ce qu'une opération en cours sur la Flam a interrompu. */
+export const DETAILS_RETRY_MS = 2000;
+/** Vignettes lues en même temps sur la Flam (clé USB lente : peu à la fois). */
+export const THUMB_CONCURRENCY = 2;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Titres déchiffrés des histoires `uuids` de la Flam de `root`, chargés par lots en tâche de
+ * fond après l'affichage de la liste. Une histoire absente de la table n'a pas encore de
+ * réponse ; `null` : pas de titre lisible (repli sur la bibliothèque, puis l'UUID court).
+ *
+ * `paused` (envoi ou retrait en cours) suspend les demandes. Le chargement s'arrête au
+ * changement de Flam ou au démontage, et le lot en cours est interrompu côté Rust. Un échec
+ * n'est pas affiché : les titres se replient.
+ */
+export function useDeviceStoryTitles(
+  root: string | null,
+  uuids: string[],
+  paused: boolean,
+): ReadonlyMap<string, string | null> {
+  const [titles, setTitles] = useState<{
+    root: string | null;
+    map: ReadonlyMap<string, string | null>;
+  }>({ root: null, map: EMPTY_TITLES });
+  // Réponses déjà reçues pour la Flam en cours (lu et écrit seulement dans l'effet).
+  const known = useRef<{ root: string | null; map: Map<string, string | null> }>({
+    root: null,
+    map: new Map(),
+  });
+  const uuidsKey = uuids.join(" ");
+
+  useEffect(() => {
+    if (!root || paused) return;
+    if (known.current.root !== root) known.current = { root, map: new Map() };
+    const map = known.current.map;
+    let pending = uuidsKey ? uuidsKey.split(" ").filter((u) => !map.has(u)) : [];
+    if (pending.length === 0) return;
+    let active = true;
+    let inFlight = false;
+    void (async () => {
+      while (active && pending.length > 0) {
+        const batch = pending.slice(0, STORY_TITLES_BATCH);
+        inFlight = true;
+        let reply;
+        try {
+          reply = await getDeviceStoryTitles(root, batch);
+        } catch {
+          return;
+        } finally {
+          inFlight = false;
+        }
+        if (!active) return;
+        // Sans clé de titre, les réponses ne sont pas définitives (clé carrier conservée ou
+        // consentement donné plus tard) : rien n'est retenu, l'effet suivant (fin d'un envoi,
+        // nouvelle liste) redemandera. L'affichage se replie d'ici là.
+        if (!reply.keys && !reply.interrupted) return;
+        // Lot interrompu sans clé : un titre `null` n'est pas définitif (il ne vient que de
+        // l'absence de clé), seuls les titres lus sont retenus.
+        for (const { uuid, title } of reply.titles)
+          if (reply.keys || title !== null) map.set(uuid, title);
+        // Lot complet : une histoire omise (UUID invalide) n'aura pas de titre.
+        if (!reply.interrupted)
+          for (const uuid of batch) if (!map.has(uuid)) map.set(uuid, null);
+        setTitles({ root, map: new Map(map) });
+        pending = pending.filter((u) => !map.has(u));
+        if (reply.interrupted) await delay(DETAILS_RETRY_MS);
+      }
+    })();
+    return () => {
+      active = false;
+      if (inFlight) void cancelDeviceStoryDetails().catch(() => undefined);
+    };
+  }, [root, uuidsKey, paused]);
+
+  return titles.root === root ? titles.map : EMPTY_TITLES;
+}
+
+const EMPTY_TITLES: ReadonlyMap<string, string | null> = new Map();
+
+/** Titre du catalogue officiel d'une histoire dont le titre n'a pas pu être déchiffré. */
+export interface OfficialInfo {
+  title: string;
+  /** Le catalogue a une image : repli si la Flam n'a pas de vignette. */
+  hasImage: boolean;
+}
+
+const EMPTY_OFFICIAL: ReadonlyMap<string, OfficialInfo> = new Map();
+
+/**
+ * Titres du catalogue officiel en ligne, demandés **seulement** pour les histoires dont le titre
+ * a été définitivement refusé par le déchiffrement (`null` dans `deviceTitles`) : si tous les
+ * titres sont connus, rien n'est demandé et le réseau n'est pas utilisé. Chaque histoire n'est
+ * demandée qu'une fois ; l'affichage n'attend jamais cette réponse, et un échec n'est pas
+ * affiché (repli sur la bibliothèque, puis l'UUID court).
+ */
+export function useOfficialStoryTitles(
+  deviceTitles: ReadonlyMap<string, string | null>,
+): ReadonlyMap<string, OfficialInfo> {
+  const [official, setOfficial] =
+    useState<ReadonlyMap<string, OfficialInfo>>(EMPTY_OFFICIAL);
+  const asked = useRef(new Set<string>());
+  const unresolved = [...deviceTitles]
+    .filter(([, title]) => title === null)
+    .map(([uuid]) => uuid)
+    .sort()
+    .join(" ");
+
+  useEffect(() => {
+    const known = asked.current;
+    const fresh = unresolved.split(" ").filter((u) => u && !known.has(u));
+    if (fresh.length === 0) return;
+    for (const uuid of fresh) known.add(uuid);
+    let active = true;
+    let settled = false;
+    void getOfficialStoryTitles(fresh)
+      .then((reply) => {
+        settled = true;
+        if (!active || reply.titles.length === 0) return;
+        setOfficial((previous) => {
+          const next = new Map(previous);
+          for (const { uuid, title, has_image } of reply.titles)
+            next.set(uuid, { title, hasImage: has_image });
+          return next;
+        });
+      })
+      .catch(() => {
+        settled = true;
+      });
+    return () => {
+      active = false;
+      // Démontage (ou nouvelle liste) avant la réponse : ces histoires seront redemandées.
+      if (!settled) for (const uuid of fresh) known.delete(uuid);
+    };
+  }, [unresolved]);
+
+  return official;
+}
+
+/**
+ * Images du catalogue déjà demandées (une seule demande par histoire et par session). Un échec
+ * (réseau coupé, image absente) est mémorisé comme un résultat : l'image n'est pas redemandée
+ * avant le prochain lancement du launcher, pour ne pas solliciter le serveur en boucle.
+ */
+const officialThumbs = new Map<string, Promise<string | null>>();
+
+/** Vide la mémoire des images du catalogue (tests). */
+export function resetOfficialThumbnails(): void {
+  officialThumbs.clear();
+}
+
+/**
+ * Image du catalogue officiel de l'histoire `uuid`, demandée seulement si `enabled` (la Flam n'a
+ * pas de vignette et le catalogue a une image). `undefined` tant qu'elle n'est pas là.
+ */
+export function useOfficialThumbnail(uuid: string, enabled: boolean): string | undefined {
+  const [thumb, setThumb] = useState<{ uuid: string; url: string | null }>();
+  useEffect(() => {
+    if (!enabled) return;
+    let active = true;
+    let request = officialThumbs.get(uuid);
+    if (!request) {
+      request = getOfficialStoryThumbnail(uuid).then(
+        (url) => (url?.startsWith("data:image/") ? url : null),
+        () => null,
+      );
+      officialThumbs.set(uuid, request);
+    }
+    void request.then((url) => {
+      if (active) setThumb({ uuid, url });
+    });
+    return () => {
+      active = false;
+    };
+  }, [uuid, enabled]);
+  return enabled && thumb?.uuid === uuid ? (thumb.url ?? undefined) : undefined;
+}
+
+type Fetcher = (root: string, uuid: string) => Promise<DeviceStoryThumbnail>;
+
+/**
+ * Pile des vignettes d'une Flam (dernière demandée, première lue) : au plus `THUMB_CONCURRENCY` lectures à la fois, résultats
+ * gardés en mémoire, nouvel essai après `DETAILS_RETRY_MS` quand la Flam est occupée.
+ * `dispose` abandonne les demandes en attente (démontage) ; le chargeur reste utilisable
+ * ensuite (double montage de `StrictMode`).
+ */
+export class ThumbnailLoader {
+  private readonly done = new Map<string, string | null>();
+  private readonly waiting = new Map<string, Array<(url: string | null) => void>>();
+  private readonly queue: string[] = [];
+  private running = 0;
+  private paused = false;
+  /** Incrémenté par `dispose` : les nouveaux essais d'avant sont abandonnés. */
+  private epoch = 0;
+
+  constructor(
+    private readonly root: string,
+    private readonly fetcher: Fetcher = getDeviceStoryThumbnail,
+  ) {}
+
+  /** Vignette déjà connue (`undefined` : pas encore lue). */
+  peek(uuid: string): string | null | undefined {
+    return this.done.get(uuid);
+  }
+
+  /** Demande la vignette `uuid` ; `null` si absente, invalide ou abandonnée. */
+  request(uuid: string): Promise<string | null> {
+    const known = this.done.get(uuid);
+    if (known !== undefined) return Promise.resolve(known);
+    return new Promise((resolve) => {
+      const waiters = this.waiting.get(uuid);
+      if (waiters) {
+        waiters.push(resolve);
+        return;
+      }
+      this.waiting.set(uuid, [resolve]);
+      this.queue.push(uuid);
+      this.pump();
+    });
+  }
+
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+    this.pump();
+  }
+
+  dispose(): void {
+    this.epoch += 1;
+    this.queue.length = 0;
+    for (const waiters of this.waiting.values())
+      for (const resolve of waiters) resolve(null);
+    this.waiting.clear();
+  }
+
+  private finish(uuid: string, url: string | null): void {
+    this.done.set(uuid, url);
+    for (const resolve of this.waiting.get(uuid) ?? []) resolve(url);
+    this.waiting.delete(uuid);
+  }
+
+  private pump(): void {
+    while (!this.paused && this.running < THUMB_CONCURRENCY) {
+      // Dernière demandée, première lue : ce sont les lignes visibles à l'instant (celles
+      // qu'on a fait défiler sont déjà derrière).
+      const uuid = this.queue.pop();
+      if (uuid === undefined) return;
+      this.running += 1;
+      void this.load(uuid);
+    }
+  }
+
+  private async load(uuid: string): Promise<void> {
+    const epoch = this.epoch;
+    let retry = false;
+    try {
+      const reply = await this.fetcher(this.root, uuid);
+      if (reply.busy) {
+        retry = true;
+      } else {
+        const url = reply.thumb?.startsWith("data:image/") ? reply.thumb : null;
+        this.finish(uuid, url);
+      }
+    } catch {
+      this.finish(uuid, null);
+    } finally {
+      this.running -= 1;
+    }
+    if (retry) {
+      await delay(DETAILS_RETRY_MS);
+      if (this.epoch !== epoch) return;
+      this.queue.push(uuid);
+    }
+    this.pump();
+  }
+}
+
+/**
+ * Vignette de l'histoire `uuid`, demandée quand sa ligne `ref` approche de la zone visible
+ * (aussitôt si `IntersectionObserver` manque). `undefined` : pas encore lue ; `null` : la Flam
+ * n'en a pas (ou elle est illisible).
+ */
+export function useDeviceThumbnail(
+  loader: ThumbnailLoader | null,
+  uuid: string,
+  ref: RefObject<Element | null>,
+): string | null | undefined {
+  const [thumb, setThumb] = useState<{
+    loader: ThumbnailLoader;
+    uuid: string;
+    url: string | null;
+  }>();
+  const known = loader?.peek(uuid);
+  useEffect(() => {
+    if (!loader || loader.peek(uuid) !== undefined) return;
+    let active = true;
+    const load = () => {
+      void loader.request(uuid).then((url) => {
+        if (active) setThumb({ loader, uuid, url });
+      });
+    };
+    const element = ref.current;
+    if (typeof IntersectionObserver === "undefined" || !element) {
+      load();
+      return () => {
+        active = false;
+      };
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          observer.disconnect();
+          load();
+        }
+      },
+      { rootMargin: "300px" },
+    );
+    observer.observe(element);
+    return () => {
+      active = false;
+      observer.disconnect();
+    };
+  }, [loader, uuid, ref]);
+  if (known !== undefined) return known;
+  return thumb?.uuid === uuid && thumb.loader === loader ? thumb.url : undefined;
+}

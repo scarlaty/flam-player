@@ -69,11 +69,19 @@ export const INSTALL_ERROR_EVENT = "install://error";
 
 /**
  * `install_start` : installe l'histoire `entryId` de la source `sourceId` (catalogue : entrée du
- * catalogue en cache ; dossier : entrée du dernier `scanFolder`). Une tâche déjà active pour le
- * même `uuid` est renvoyée telle quelle.
+ * catalogue en cache ; dossier : entrée du dernier `scanFolder`, le dossier étant analysé s'il
+ * ne l'a pas encore été). Une tâche déjà active pour le même `uuid` est renvoyée telle quelle.
+ * `uuid` : histoire attendue (`not_found` si l'entrée en propose une autre).
  */
-export function startInstall(sourceId: string, entryId: string): Promise<InstallTask> {
-  return invokeCommand<InstallTask>("install_start", { sourceId, entryId });
+export function startInstall(
+  sourceId: string,
+  entryId: string,
+  uuid?: string,
+): Promise<InstallTask> {
+  return invokeCommand<InstallTask>(
+    "install_start",
+    uuid === undefined ? { sourceId, entryId } : { sourceId, entryId, uuid },
+  );
 }
 
 /** `install_cancel` : annule une tâche (sans effet si elle est terminée). */

@@ -1,6 +1,7 @@
+import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { act, render, screen } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
 import { App, DEMO_HASH } from "./App";
 import { routeFromHash } from "./router";
 import { expectNoAxeViolations } from "./test/axe";
@@ -17,30 +18,48 @@ const settingsView = {
     default_catalog_url: "https://exemple.org/c.json",
     theme: "dark",
     max_downloads: 2,
+    thumb_fit: "flou",
   },
   resolved: { player_path: null, python_path: null, cache_dir: "C:\\cache" },
   issues: [],
   recovery: null,
 };
 
-function mockBackend() {
-  mockIPC((cmd) => {
-    switch (cmd) {
-      case "app_info":
-        return { name: "flam-launcher", version: "0.1.0" };
-      case "settings_get":
-        return settingsView;
-      case "sources_list":
-        return {
-          sources: [{ type: "library", id: "library", name: "Mes histoires" }],
-          recovery: null,
-        };
-      case "cache_usage":
-        return { path: "C:\\cache", bytes: 0, subdirs: [] };
-      default:
-        throw { kind: "unknown", message: cmd };
-    }
-  });
+const embedded = {
+  origin: "library",
+  uuid: "u1",
+  title: "Les trois ours",
+  pid: 42,
+  started_at: 1,
+  embedded: true,
+};
+
+function mockBackend(playing: object | null = null, calls: string[] = []) {
+  mockIPC(
+    (cmd) => {
+      calls.push(cmd);
+      switch (cmd) {
+        case "player_status":
+          return playing;
+        case "player_embed_layout":
+          return null;
+        case "app_info":
+          return { name: "flam-launcher", version: "0.1.0" };
+        case "settings_get":
+          return settingsView;
+        case "sources_list":
+          return {
+            sources: [{ type: "library", id: "library", name: "Mes histoires" }],
+            recovery: null,
+          };
+        case "cache_usage":
+          return { path: "C:\\cache", bytes: 0, subdirs: [] };
+        default:
+          throw { kind: "unknown", message: cmd };
+      }
+    },
+    { shouldMockEvents: true },
+  );
 }
 
 function goTo(hash: string) {
@@ -51,7 +70,10 @@ function goTo(hash: string) {
 }
 
 afterEach(() => {
+  // Démonte avant d'effacer les simulations : les désabonnements appellent l'API d'événements.
+  cleanup();
   clearMocks();
+  vi.unstubAllGlobals();
   window.location.hash = "";
   document.documentElement.removeAttribute("data-theme");
 });
@@ -114,4 +136,58 @@ slowIt("l'accueil n'a aucune violation axe", async () => {
   render(<App />);
   await screen.findByText("flam-launcher — version 0.1.0");
   await expectNoAxeViolations();
+});
+
+it("un player replié en fenêtre séparée fait quitter l'écran Lecture", async () => {
+  class FakeResizeObserver {
+    observe() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  mockBackend(embedded);
+  render(<App />);
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "Les trois ours" }),
+  ).toBeInTheDocument();
+
+  await act(() => emit("player://updated", { ...embedded, embedded: false }));
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "Bienvenue" }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("navigation", { name: "Navigation" })).toBeInTheDocument();
+  // Le focus revient au contenu principal.
+  expect(document.getElementById("fl-main")).toHaveFocus();
+});
+
+it("un player incrusté remplace l'application par l'écran Lecture jusqu'à sa fin", async () => {
+  class FakeResizeObserver {
+    observe() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  const calls: string[] = [];
+  mockBackend(embedded, calls);
+  render(<App />);
+
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "Les trois ours" }),
+  ).toBeInTheDocument();
+  // Pas de navigation pendant la lecture.
+  expect(screen.queryByRole("navigation")).toBeNull();
+  await waitFor(() => expect(calls).toContain("player_embed_layout"));
+
+  await act(() =>
+    emit("player://exited", {
+      session: embedded,
+      code: 0,
+      success: true,
+      duration_ms: 1000,
+      stderr: "",
+      saves_error: null,
+    }),
+  );
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "Bienvenue" }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("navigation", { name: "Navigation" })).toBeInTheDocument();
 });

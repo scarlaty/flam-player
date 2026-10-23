@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toAppError } from "../../api/error";
 import { minimizeWindow, restoreWindow } from "../../api/window";
-import { libraryHash } from "../../router";
+import { libraryHash, useRoute, useSourceId } from "../../router";
 import { getMinimizeDuringPlay } from "../settings/preferences";
 import {
   cancelInstall,
@@ -12,8 +12,10 @@ import {
   startInstall,
   type InstallTask,
 } from "../../api/install";
+import { onFolderChanged } from "../../api/folder";
 import {
   hasUpdate,
+  librarySourceStatus,
   listLibrary,
   removeFromLibrary,
   type LibraryEntry,
@@ -23,6 +25,7 @@ import {
   launchFolderStory,
   launchPlayer,
   onPlayerExited,
+  onPlayerUpdated,
   onPlayerStarted,
   type PlayerSession,
 } from "../../api/player";
@@ -78,6 +81,9 @@ export interface FicheTarget {
 /** Délai avant le retrait automatique d'une installation réussie du panneau des tâches. */
 export const DONE_TASK_TTL_MS = 8000;
 
+/** Regroupe les vérifications des sources dossier demandées à moins de ce délai. */
+const SOURCE_CHECK_DEBOUNCE_MS = 300;
+
 interface PendingInstall {
   entry: StoryEntry;
   options: InstallOptions;
@@ -93,6 +99,8 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   const compat = useCompat();
   const [installed, setInstalled] = useState<LibraryEntry[]>([]);
   const [installedRevision, setInstalledRevision] = useState(0);
+  // `uuid` des histoires dont la source dossier a changé depuis l'installation (#288).
+  const [changedSources, setChangedSources] = useState<ReadonlySet<string>>(new Set());
   const [tasks, setTasks] = useState<InstallTask[]>([]);
   const [details, setDetails] = useState<Record<string, TaskDetail>>({});
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
@@ -120,6 +128,21 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   });
   const compatReload = compat.reload;
 
+  // Les vérifications se succèdent : seule la réponse de la plus récente est retenue.
+  const sourceCheck = useRef(0);
+  const refreshSources = useCallback(async () => {
+    const id = ++sourceCheck.current;
+    try {
+      const checks = await librarySourceStatus();
+      if (id !== sourceCheck.current) return;
+      setChangedSources(
+        new Set(checks.filter((c) => c.state === "changed").map((c) => c.uuid)),
+      );
+    } catch {
+      // Confort : sans vérification, rien n'est proposé (aucun remplacement silencieux).
+    }
+  }, []);
+
   const refreshInstalled = useCallback(async () => {
     try {
       setInstalled(await listLibrary());
@@ -127,7 +150,27 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     } catch (caught) {
       toast.show({ message: toAppError(caught).message, tone: "danger" });
     }
-  }, [toast]);
+    void refreshSources();
+  }, [toast, refreshSources]);
+
+  // Sources revérifiées à chaque changement d'écran (une source dossier vient peut-être d'être
+  // reconstruite) et quand un dossier surveillé change. Les demandes rapprochées (navigation,
+  // rafale d'événements) sont regroupées en une seule vérification.
+  const sourceTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const scheduleSources = useCallback(() => {
+    clearTimeout(sourceTimer.current);
+    sourceTimer.current = setTimeout(
+      () => void refreshSources(),
+      SOURCE_CHECK_DEBOUNCE_MS,
+    );
+  }, [refreshSources]);
+  useEffect(() => () => clearTimeout(sourceTimer.current), []);
+  const route = useRoute();
+  const shownSource = useSourceId();
+  useEffect(() => {
+    scheduleSources();
+  }, [route, shownSource, scheduleSources]);
+  useListener(onFolderChanged, scheduleSources);
 
   const refreshTasks = useCallback(async () => {
     try {
@@ -261,10 +304,20 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     onPlayerStarted,
     useCallback((started: PlayerSession) => {
       setSession(started);
-      if (getMinimizeDuringPlay()) {
+      // Player incrusté : la fenêtre du launcher le contient, elle n'est jamais réduite.
+      if (!started.embedded && getMinimizeDuringPlay()) {
         minimized.current = true;
         windowOps.current = windowOps.current.then(minimizeWindow);
       }
+    }, []),
+  );
+  useListener(
+    onPlayerUpdated,
+    useCallback((updated: PlayerSession) => {
+      // Même partie (pid), le player s'est ouvert dans sa fenêtre : écran Lecture quitté.
+      setSession((current) =>
+        current && current.pid === updated.pid ? updated : current,
+      );
     }, []),
   );
   useListener(
@@ -319,7 +372,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         returnTo.current.delete(entry.uuid);
       }
       try {
-        const task = await startInstall(entry.source_id, entry.entry_id);
+        const task = await startInstall(entry.source_id, entry.entry_id, entry.uuid);
         // La nouvelle tâche remplace les tâches inactives (échec, annulation) de la même histoire.
         const stale = tasksRef.current
           .filter(
@@ -451,6 +504,14 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         return false;
       }
       toast.show({ message: t.stories.toast.removed(title) });
+      // Les lignes d'installation réussies de cette histoire n'ont plus d'objet : on les retire
+      // (les échecs et annulations restent, avec « Réessayer »).
+      const finished = tasksRef.current
+        .filter((task) => task.entry.uuid === uuid && task.state === "done")
+        .map((task) => task.id);
+      if (finished.length > 0) {
+        setDismissed((all) => new Set([...all, ...finished]));
+      }
       await refreshInstalled();
       return true;
     },
@@ -463,10 +524,22 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
       tasks.find((task) => task.entry.uuid === entry.uuid && isActiveState(task.state));
     const installedFor = (entry: StoryEntry) =>
       installed.find((item) => item.uuid === entry.uuid);
+    // Seule l'entrée d'où vient l'installation la met à jour (pas un doublon d'un autre format).
+    const fromChangedSource = (entry: StoryEntry) => {
+      const item = installedFor(entry);
+      return (
+        item !== undefined &&
+        changedSources.has(item.uuid) &&
+        item.source.source_id === entry.source_id &&
+        item.source.entry_id === entry.entry_id
+      );
+    };
     return {
       installed,
       installedRevision,
       session,
+      forgetSession: (pid) =>
+        setSession((current) => (current && current.pid === pid ? null : current)),
       panelTasks: visible.map((task) => toPanelTask(task, details[task.id])),
       activeTaskFor: activeFor,
       failedTaskFor: (entry) =>
@@ -480,7 +553,9 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         return task ? taskProgress(task, details[task.id] ?? NO_DETAIL) : undefined;
       },
       installedFor,
-      updateAvailable: (entry) => hasUpdate(installedFor(entry), entry),
+      updateAvailable: (entry) =>
+        hasUpdate(installedFor(entry), entry) || fromChangedSource(entry),
+      sourceChanged: (uuid) => changedSources.has(uuid),
       install,
       play: (entry, fromSourceId) => {
         const target =
@@ -513,6 +588,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     details,
     installed,
     installedRevision,
+    changedSources,
     session,
     reopen,
     install,

@@ -100,9 +100,24 @@ Options du player :
   `C:/temp/flam-player/screenshot.bmp` code en dur). Capture auto 12 s apres le demarrage :
   `FLAM_SCREENSHOT_AUTO_MS=<ms>`, `0` = desactivee.
 - `--img-dir`, `--sounds-dir`, `--save-dir` : dossiers en mode script `.lua` direct.
+- `--parent-hwnd <n>` (Windows) : fenetre incrustee (fenetre enfant `WS_CHILD`) dans le HWND
+  `<n>` (decimal ou `0x...`) d'une application hote (flam-launcher, #201). Le player remplit
+  la zone cliente du parent et en suit la taille, prend le clavier a l'incrustation et a
+  chaque clic, et s'arrete proprement si le parent disparait. Sensibilite DPI par moniteur v2
+  dans ce mode seulement. Echec (HWND invalide, pilote video sans HWND, `SetParent` refuse) :
+  trace `[EMBED] repli : ...` et fenetre separee habituelle ; succes : `[EMBED] ok`. Ignore
+  hors Windows. Rendu `direct3d11` dans ce mode (trace `[EMBED] rendu : <nom>`) : la WebView2
+  de l'hote dessine par DirectComposition, au-dessus des rendus `direct3d` (D3D9, defaut de
+  SDL2), `opengl` et `software`, qui laisseraient la zone vide (#332). Repli sur le rendu par
+  defaut si `direct3d11` echoue ; `SDL_RENDER_DRIVER` reste prioritaire.
+- `--stdin-control` : un thread lit stdin ; la ligne `quit` ou la fin de stdin arretent le
+  player comme une fermeture de fenetre (etat sauvegarde, code 0), meme sans fenetre (pilote
+  `dummy`). Sans l'option, stdin n'est jamais lu. Test : `tests/e2e/e2e_embed.py`.
 
 Touches : gauche/droite = molette, Entree/Espace = OK, Echap = retour (`back_callback`),
-M = menu contextuel, P = pause/reprise audio, S = capture d'ecran.
+M = menu contextuel, P = pause/reprise audio, S = capture d'ecran. F6 (mode `--parent-hwnd`
+seulement, Windows) = rend le clavier a la fenetre hote : `SetFocus` sur la fenetre racine du
+parent et trace `[EMBED] focus-host` sur stderr (le launcher la relaie, #237).
 
 **Timeout en CI/test** : utiliser `timeout 8 ./build/flam-player.exe ...` car le player ouvre une fenetre SDL et attend indefiniment.
 Sans fenetre : `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy` (voir `tests/e2e/e2e_telmi.py`).
@@ -155,7 +170,7 @@ tools/telmi2flam/
   validate.py              — Verification d'un .plain.pk ou d'un dossier .plain
   explore.py               — Exploration automatique d'une histoire dans flam-player sans fenetre
   engine/                  — Moteur d'histoire Lua embarque (story.lua, main.lua)
-  runtime/                 — Modules runtime Lunii embarques (carrousel, audio-player...)
+  runtime/                 — Modules runtime Lua du projet embarques (carrousel, audio-player...)
   tests/                   — Tests unittest du convertisseur et de l'explorateur
 games/casse-briques/        — Jeu casse-briques (contenu Lua FLAM)
 games/attrape-etoiles/      — Jeu Attrape-etoiles (fait avec le skill flam-homebrew)
@@ -303,11 +318,11 @@ de hauteur de texte est protege par un test d'overflow (`LV_LOG_WARN` puis retou
 
 ## Surcouche flam-launcher
 
-`apps/flam-launcher/` : application de bureau Tauri 2 (Rust + React/TypeScript strict), licence MIT,
+`apps/flam-launcher/` : application de bureau Tauri 2 (Rust + React/TypeScript strict), licence GPL v3,
 independante du code C/Lua de l'emulateur. Architecture et commandes : `apps/flam-launcher/README.md`.
 Qualite avant PR : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` (dans `src-tauri/`),
-`npm run lint`, `npm run typecheck`, `npm test` (voir `CONTRIBUTING.md` §5). Ne jamais copier de code
-ni de style de TelmiSync (GPL-3.0), et ne jamais versionner d'archive Telmi ni d'histoire convertie.
+`npm run lint`, `npm run typecheck`, `npm test` (voir `CONTRIBUTING.md` §5). On peut s'inspirer de TelmiSync (GPL-3.0) et lire son code pour comprendre, mais
+jamais le recopier tel quel ; ne jamais versionner d'archive Telmi ni d'histoire convertie.
 
 Workspace Cargo a la racine (`Cargo.toml`) : membres `apps/flam-launcher/src-tauri` et
 `crates/telmi2flam` (port Rust du convertisseur), sorties dans `target/` a la racine. Tests de la

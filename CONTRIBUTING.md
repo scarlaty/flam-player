@@ -103,6 +103,10 @@ Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§
 - `crates/telmi2flam` (port Rust du convertisseur, workspace Cargo à la racine) :
   `cargo test -p telmi2flam`, `cargo fmt --check` et `cargo clippy -p telmi2flam -- -D warnings`.
   Une modification de `crates/**` déclenche aussi la CI du launcher, qui partage le workspace (et en dépendra avec #122).
+- **CI du launcher et installateurs** : sur une PR, l'installateur N-1 et le test de mise à jour ne
+  tournent que si l'empaquetage change (liste dans `.github/workflows/launcher.yml`, étape
+  « Empaquetage modifié ? »). Pour forcer ce test sur une PR qui ne le déclenche pas, poser le label
+  `ci-installeur` (il relance la CI). `main` exécute toujours tout.
 - Copie de travail extraite avant l'ajout de `.gitattributes` : `tools/telmi2flam/engine/` peut
   garder des fins de ligne CRLF. `git add --renormalize tools/telmi2flam/engine/` les remet en LF
   (`include_bytes!` embarque les octets de la copie de travail).
@@ -147,3 +151,9 @@ en **squash** dans `main` par le mainteneur. La branche est supprimée après fu
   Sinon, `main` est fusionné dans la branche (`git merge origin/main`, sans rebase) et on
   attend la CI verte sur ce nouveau commit. Deux PR vertes séparément peuvent casser `main`
   une fois fusionnées.
+- **Fermer les issues à la main** : GitHub ne ferme une issue à la fusion qu'avec un
+  mot-clé anglais (`Fixes #N`, `Closes #N`, `Resolves #N`…). Les PR du projet écrivent
+  « Corrige #N », qui ne ferme rien : après chaque fusion, fermer l'issue avec
+  `gh issue close N --reason completed --comment "Fait par #<PR> ; suivis dans #<suivi>"` et retirer
+  le label `en-cours`. Exception : une issue qui attend encore une validation sur l'appareil
+  reste ouverte, avec un commentaire qui le dit.

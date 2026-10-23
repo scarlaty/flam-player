@@ -14,7 +14,7 @@ import sys
 
 # Version du convertisseur (unique source). A incrementer quand la sortie change ; lue par
 # le launcher (--version ou champ "version" de l'evenement start) pour la bibliotheque.
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # Chemin rapide : --version seul, sans charger Pillow ni les modules du convertisseur.
 if __name__ == "__main__" and sys.argv[1:] == ["--version"]:
@@ -31,12 +31,14 @@ import re
 import shutil
 import signal
 import struct
+import subprocess
+import tempfile
 import time
 import unicodedata
 import zipfile
 import zlib
 
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageFilter
 
 import lif
 import mp3map
@@ -44,7 +46,12 @@ import mp3map
 SCREEN_W, SCREEN_H = 320, 240
 HEADER_H = 28                # bandeau titre du player (src/main.c, global.header_height)
 VISUAL_W, VISUAL_H = SCREEN_W, SCREEN_H - HEADER_H   # zone d'affichage des scenes : 320x212
-THUMB_W, THUMB_H = 128, 96
+# Vignette de bibliotheque : 104x136 (portrait), taille mesuree sur les 19 histoires
+# officielles d'une Flam reelle (img/thumbnail.lif).
+THUMB_W, THUMB_H = 104, 136
+THUMB_FITS = ("flou", "rogner", "bandes")
+DEFAULT_THUMB_FIT = "flou"
+_THUMB_BLUR_RADIUS = 8
 INV_W, INV_H = 128, 128      # icones d'inventaire
 MAX_DIM = 2047               # borne du decodeur LIF (lif_decoder.c, 11 bits lv_img_header_t)
 LABEL_MAX = 40               # longueur max du label d'un choix (carrousel)
@@ -266,7 +273,7 @@ def _encode(im):
 
 
 def _require_runtime(d, names, what):
-    """Le runtime Lunii (runtime/script, runtime/img/script) doit accompagner
+    """Le runtime du projet (runtime/script, runtime/img/script) doit accompagner
     le convertisseur : sinon le paquet genere ne peut pas demarrer."""
     if not os.path.isdir(d):
         raise ConvError("%s introuvables : dossier %s absent (le runtime doit "
@@ -309,17 +316,50 @@ def png_to_fit_lif(png_bytes, maxw, maxh, align="center"):
     return _encode(_avoid_transpose(im, align))
 
 
-def png_to_thumb_lif(png_bytes):
-    """Vignette : on tient dans THUMB_W x THUMB_H en gardant le ratio. Une image
-    portrait (ou carree) est centree sur un canevas paysage THUMB_W x THUMB_H."""
+def _scaled(im, scale):
+    nw, nh = max(1, round(im.size[0] * scale)), max(1, round(im.size[1] * scale))
+    return im if (nw, nh) == im.size else im.resize((nw, nh), Image.LANCZOS)
+
+
+def _thumb_cover(im):
+    """Couvre THUMB_W x THUMB_H : fenetre centrale de la source au rapport de la vignette
+    (evite une image intermediaire geante sur un ratio extreme), puis redimensionnee."""
+    sw, sh = im.size
+    if sw * THUMB_H > sh * THUMB_W:
+        cw, ch = max(1, round(sh * THUMB_W / THUMB_H)), sh
+    else:
+        cw, ch = sw, max(1, round(sw * THUMB_H / THUMB_W))
+    left, top = (sw - cw) // 2, (sh - ch) // 2
+    return im.crop((left, top, left + cw, top + ch)).resize((THUMB_W, THUMB_H), Image.LANCZOS)
+
+
+def _thumb_contain(im):
+    """Image entiere (agrandie si besoin), centree sur un canevas transparent."""
+    im = _scaled(im, min(THUMB_W / im.size[0], THUMB_H / im.size[1]))
+    canvas = Image.new("RGBA", (THUMB_W, THUMB_H), (0, 0, 0, 0))
+    canvas.paste(im, ((THUMB_W - im.size[0]) // 2, (THUMB_H - im.size[1]) // 2))
+    return canvas
+
+
+def png_to_thumb_lif(png_bytes, fit=DEFAULT_THUMB_FIT):
+    """Vignette THUMB_W x THUMB_H (104x136). `fit` : flou (image entiere centree, fond =
+    la meme image agrandie pour couvrir puis floutee), rogner (cover, rognee au centre),
+    bandes (image entiere centree, bandes transparentes)."""
+    if fit not in THUMB_FITS:
+        raise ValueError("remplissage de vignette inconnu : %r (attendu : %s)"
+                         % (fit, ", ".join(THUMB_FITS)))
     im = _open_rgba(png_bytes)
-    im.thumbnail((THUMB_W, THUMB_H), Image.LANCZOS)
-    w, h = im.size
-    if h >= w:
-        canvas = Image.new("RGBA", (THUMB_W, THUMB_H), (0, 0, 0, 0))
-        canvas.paste(im, ((THUMB_W - w) // 2, (THUMB_H - h) // 2))
-        im = canvas
-    return _encode(im)
+    if fit == "rogner":
+        out = _thumb_cover(im)
+    elif fit == "bandes":
+        out = _thumb_contain(im)
+    else:
+        # fond opaque : flouter du RGBA non premultiplie laisserait des halos sombres
+        bg = _thumb_cover(im)
+        base = Image.new("RGBA", bg.size, (128, 128, 128, 255))
+        bg = Image.alpha_composite(base, bg).filter(ImageFilter.GaussianBlur(_THUMB_BLUR_RADIUS))
+        out = Image.alpha_composite(bg, _thumb_contain(im))
+    return _encode(out)
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +640,66 @@ def _emit(event):
         _sink(event)
 
 
+SAMPLERATE = 44100            # frequence attendue par le firmware (#46)
+FFMPEG_TIMEOUT = 120          # secondes, par fichier
+_MP3_BITRATES = (64, 80, 96, 112, 128, 160, 192)   # kbps, plage TELMI valide en MPEG-1
+
+
+def _find_ffmpeg():
+    """ffmpeg : FLAM_FFMPEG s'il est defini (vide = desactive ; le launcher y met son
+    ffmpeg embarque), sinon le PATH. Retourne un chemin ou None."""
+    env = os.environ.get("FLAM_FFMPEG")
+    if env is not None:
+        env = env.strip()
+        return os.path.abspath(env) if env and os.path.isfile(env) else None
+    found = shutil.which("ffmpeg")
+    if found and os.path.dirname(os.path.abspath(found)) == os.path.abspath(os.getcwd()):
+        return None       # jamais un ffmpeg depose dans le dossier courant
+    return found
+
+
+def _resample_mp3(data, duration):
+    """MP3 -> MP3 CBR 44100 Hz, meme nombre de canaux, debit proche de la source (borne
+    64-192 kbps). Retourne les octets, ou une chaine (raison de l'echec). ffmpeg est lance
+    sans shell, sans stdin, protocole file seul, dans un dossier de travail temporaire."""
+    exe = _find_ffmpeg()
+    if exe is None:
+        return "ffmpeg introuvable (variable FLAM_FFMPEG ou PATH)"
+    kbps = 128
+    if duration and duration > 0:
+        # debit de l'audio seul : sans le tag ID3v2 ni l'ID3v1 de fin (une pochette integree
+        # gonflerait l'estimation)
+        end = len(data) - (128 if data[-128:-125] == b"TAG" else 0)
+        kbps = max(0, end - mp3map._skip_id3v2(data)) * 8 / duration / 1000
+        kbps = min(_MP3_BITRATES, key=lambda b: abs(b - kbps))
+    try:
+        with tempfile.TemporaryDirectory(prefix="t2f_ff_") as work:
+            src = os.path.join(work, "in.mp3")
+            dst = os.path.join(work, "out.mp3")
+            with open(src, "wb") as fh:
+                fh.write(data)
+            cmd = [exe, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                   "-protocol_whitelist", "file", "-i", "file:" + src,
+                   "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1",
+                   "-ar", str(SAMPLERATE), "-c:a", "libmp3lame", "-b:a", "%dk" % kbps,
+                   "-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", "file:" + dst]
+            kw = {}
+            if sys.platform == "win32":
+                kw["creationflags"] = 0x08000000      # CREATE_NO_WINDOW
+            r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE, timeout=FFMPEG_TIMEOUT, cwd=work, **kw)
+            if r.returncode != 0:
+                msg = r.stderr.decode("utf-8", "replace").strip().splitlines()
+                return "ffmpeg a echoue (%s)" % (msg[-1][:200] if msg else r.returncode)
+            with open(dst, "rb") as fh:
+                out = fh.read()
+            return out if out else "ffmpeg n'a rien produit"
+    except subprocess.TimeoutExpired:
+        return "ffmpeg trop long (> %d s)" % FFMPEG_TIMEOUT
+    except OSError as e:
+        return "ffmpeg inutilisable (%s)" % e
+
+
 def _warn(*args, code="warning"):
     """Avertissement : ligne "  ! ..." sur stderr (contrat lu par compat.py) et
     evenement JSON "warning" si la progression machine est activee."""
@@ -737,10 +837,13 @@ def find_root(names):
 
 
 def convert(zip_path, out_path=None, keep_size=False, emit_plain=False, selector="carousel",
-            allow_missing=False, progress=None):
+            allow_missing=False, progress=None, thumb_fit=DEFAULT_THUMB_FIT):
     """Convertit une archive TELMI. `progress` (optionnel) : fonction appelee avec chaque
     evenement de progression (dict : start, step, warning, done), cf. README."""
     global _sink
+    if thumb_fit not in THUMB_FITS:
+        raise ConvError("remplissage de vignette inconnu : %r (attendu : %s)"
+                        % (thumb_fit, ", ".join(THUMB_FITS)), code="usage", exit_code=EXIT_USAGE)
     previous = _sink
     n_warn[0] = 0
 
@@ -761,7 +864,7 @@ def convert(zip_path, out_path=None, keep_size=False, emit_plain=False, selector
             raise ArchiveError("%s : %s" % (zip_path, e))
         with zf:
             return _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing,
-                            zip_path)
+                            zip_path, thumb_fit)
     finally:
         _sink = previous
 
@@ -791,7 +894,8 @@ def read_info(zip_path):
             "description": scalar("description"), "cover": has_cover}
 
 
-def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, source=None):
+def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, source=None,
+             thumb_fit=DEFAULT_THUMB_FIT):
     names = zf.namelist()
     nameset = set(names)
     # Index insensible a la casse (S0.PNG reference "s0.png" et inversement)
@@ -871,6 +975,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
 
     img_cache = {}    # ("s7.png", is_inventory) -> "s7.lif"
     audio_cache = {}  # "s5.mp3" -> "s5.mp3"
+    resample_cache = {}  # sha256 du MP3 -> octets reechantillonnes ou raison de l'echec (#274)
 
     # Progression (A03) : sur stderr uniquement si c'est un terminal
     stages_src = _expect(nodes.get("stages", {}), dict, "nodes.json stages") or {}
@@ -943,16 +1048,40 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
         return lif_name
 
     def add_mp3map(pk_name, data, label):
+        """Genere le .mp3map ; un MP3 hors 44100 Hz est d'abord reechantillonne (ffmpeg)
+        et le fichier ecrit dans out_files[pk_name] est alors le fichier reechantillonne."""
         try:
             info = {}
-            mm, _dur, _n = mp3map.build(data, info)
+            mm, dur, _n = mp3map.build(data, info)
+            other = sorted(sr for sr in info.get("samplerates", ()) if sr != SAMPLERATE)
+            if other:
+                rates = "/".join(map(str, other))
+                key = hashlib.sha256(data).digest()
+                if key not in resample_cache:      # meme contenu sous deux noms : un seul ffmpeg
+                    resample_cache[key] = _resample_mp3(data, dur)
+                new = resample_cache[key]
+                if isinstance(new, bytes):
+                    info2 = {}
+                    try:
+                        mm2, _d, _n2 = mp3map.build(new, info2)
+                    except Exception:
+                        mm2 = None
+                    if mm2 is not None and info2.get("samplerates") == {SAMPLERATE}:
+                        data, mm = new, mm2
+                        out_files[pk_name] = data
+                        stats["resampled"] = stats.get("resampled", 0) + 1
+                        print("  i %s : %s Hz -> %d Hz (reechantillonne avec ffmpeg)"
+                              % (label, rates, SAMPLERATE), file=sys.stderr)
+                        other = []
+                    else:
+                        new = "sortie ffmpeg illisible ou inattendue"
+                if other:
+                    _warn("%s : %s Hz (le firmware est calibre pour 44100 Hz ; "
+                          "reechantillonnage impossible : %s ; fichier recopie tel quel, "
+                          "reechantillonner conseille)" % (label, rates, new),
+                          code="audio_samplerate")
             out_files[pk_name + "map"] = mm
             stats["mp3map"] += 1
-            other = sorted(sr for sr in info.get("samplerates", ()) if sr != 44100)
-            if other:
-                _warn("%s : %s Hz (le firmware est calibre pour 44100 Hz ; "
-                      "reechantillonner conseille)" % (label, "/".join(map(str, other))),
-                      code="audio_samplerate")
         except Exception as e:
             _warn("mp3map echoue pour", label, ":", e, code="mp3map_failed")
 
@@ -1073,7 +1202,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
             # ancre a gauche) : un cover portrait est complete a droite en transparent.
             title_lif = png_to_fit_lif(cover_bytes, 89, 120, align="left")
             # vignette de la bibliotheque
-            thumb_lif = png_to_thumb_lif(cover_bytes)
+            thumb_lif = png_to_thumb_lif(cover_bytes, thumb_fit)
         except Exception as e:
             _warn("couverture illisible (%s: %s) : pas de titre illustre ni de vignette"
                   % (type(e).__name__, e), code="cover_unreadable")
@@ -1167,7 +1296,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
     prog.tick("scripts")
     prog.tick("scripts")
 
-    # --- bibliotheque standard Lunii (framework) : requise par le firmware reel ---
+    # --- runtime Lua du projet (modules Global, button...) : requis par le firmware reel ---
     # sans elle, main.lua echoue des setup() (module 'global' not found)
     nlib = 0
     _require_runtime(RUNTIME_DIR, RUNTIME_SCRIPTS, "scripts framework")
@@ -1181,7 +1310,7 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
                 prog.tick("scripts")
     stats["lib"] = nlib
 
-    # --- assets UI Lunii (fleches, play/pause, etc.) requis par les modules ---
+    # --- icones UI du runtime (fleches, play/pause, etc.) requis par les modules ---
     nui = 0
     if os.path.isdir(RUNTIME_IMG_DIR):
         for fn in sorted(os.listdir(RUNTIME_IMG_DIR)):
@@ -1305,6 +1434,8 @@ def _convert(zf, out_path, keep_size, emit_plain, selector, allow_missing, sourc
     say("  stages  : %d | actions : %d" % (len(lua_stages), len(lua_actions)))
     say("  images  : %d | audio : %d | mp3map : %d"
         % (stats["img"], stats["audio"], stats["mp3map"]))
+    if stats.get("resampled"):
+        say("  audio   : %d fichier(s) reechantillonne(s) a %d Hz" % (stats["resampled"], SAMPLERATE))
     say("  lib     : %d scripts framework | %d assets UI" % (stats.get("lib", 0), stats.get("ui", 0)))
     say("  choix   : selecteur '%s'" % selector)
     if missing or bad:
@@ -1377,6 +1508,10 @@ def main(argv=None):
     ap.add_argument("--selector", choices=["carousel", "image"], default="carousel",
                     help="affichage des choix multiples : carousel (defaut, 3 vignettes + "
                          "label) ou image (image-choice plein ecran d'origine)")
+    ap.add_argument("--thumb-fit", choices=THUMB_FITS, default=DEFAULT_THUMB_FIT,
+                    help="remplissage de la vignette 104x136 : flou (defaut : image entiere "
+                         "centree, fond = image agrandie et floutee), rogner (cover centre) "
+                         "ou bandes (image entiere, bandes transparentes)")
     ap.add_argument("--progress-json", action="store_true",
                     help="evenements de progression en JSON (une ligne par evenement) sur "
                          "stdout ; les messages humains restent sur stderr")
@@ -1398,7 +1533,8 @@ def main(argv=None):
             print(json.dumps(read_info(args.input), ensure_ascii=True, separators=(",", ":")))
         else:
             convert(args.input, args.output, args.keep_size, args.plain, args.selector,
-                    args.allow_missing, progress=_print_event if machine else None)
+                    args.allow_missing, progress=_print_event if machine else None,
+                    thumb_fit=args.thumb_fit)
         return EXIT_OK
     except ConvError as e:
         return fail(e.code, str(e), e.exit_code)

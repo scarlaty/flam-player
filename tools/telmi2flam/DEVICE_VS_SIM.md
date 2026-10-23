@@ -45,7 +45,7 @@ Légende : ✅ confirmé sur device · 🔶 fortement suspecté · ⬜ en cours 
 - **Correctif sim** : difficile à simuler fidèlement ; a minima documenter que seul le
   contenu créé via les modules standard est « officiellement » rendu.
 
-## 4. ✅ Bibliothèque standard Lunii obligatoire dans `script/`
+## 4. ✅ Runtime Lua du projet obligatoire dans `script/`
 
 - **Device** : `global.lua` (+ `button`, `progressionManager`, `v-scroll`,
   `v-container`, `button-theme*`) et les modules (`title-card`, `audio-player`,

@@ -21,7 +21,7 @@ et convertisseur d'histoires TELMI vers FLAM (`tools/telmi2flam`).
 ## Installer la surcouche (Windows)
 
 Pour utiliser flam-player sans compiler : l'installateur `Flam Launcher_<version>_x64-setup.exe`
-(artefact de la CI) installe, **pour l'utilisateur courant et sans droits d'administrateur**, la
+(artefact de la CI ; `Flam-Launcher_<version>_x64-setup.exe` dans une pré-version publiée) installe, **pour l'utilisateur courant et sans droits d'administrateur**, la
 surcouche, `flam-player.exe` et le convertisseur TELMI vers FLAM (Python inclus). Il n'est pas
 signe : SmartScreen affiche un avertissement (« Informations complementaires » puis « Executer
 quand meme »). Utilisation, sources, depannage et construction de l'installateur :
@@ -33,7 +33,7 @@ quand meme »). Utilisation, sources, depannage et construction de l'installateu
 |---------|------|
 | `src/` | Emulateur (voir Architecture) |
 | `tools/telmi2flam/` | Convertisseur d'histoires TELMI (`.zip`) vers FLAM (`.plain.pk`) — voir [son README](tools/telmi2flam/README.md) |
-| `apps/flam-launcher/` | Surcouche de bureau (Tauri 2 : Rust + React/TypeScript, licence MIT) pour parcourir, convertir et lancer des histoires — voir [son README](apps/flam-launcher/README.md) ; installateur Windows (NSIS, non signe) avec player et convertisseur embarques |
+| `apps/flam-launcher/` | Surcouche de bureau (Tauri 2 : Rust + React/TypeScript, licence GPL v3) pour parcourir, convertir et lancer des histoires — voir [son README](apps/flam-launcher/README.md) ; installateur Windows (NSIS, non signe) avec player et convertisseur embarques |
 | `games/casse-briques/` | Jeu casse-briques en contenu Lua FLAM (avec verrou parental) |
 | `tests/` | Tests : suite Lua, moteur telmi2flam, audio reel, non-regression, bout en bout |
 | `patches/` | Correctifs pour le fork LVGL (non appliques automatiquement) — voir [patches/README.md](patches/README.md) |
@@ -239,11 +239,9 @@ et details : [tools/telmi2flam/README.md](tools/telmi2flam/README.md).
 
 ## Licence
 
-Ce projet est a usage personnel et educatif.
-
-Exception : `apps/flam-launcher/` (surcouche de bureau) est distribue sous licence MIT, voir [`apps/flam-launcher/LICENSE`](apps/flam-launcher/LICENSE).
+Ce projet (emulateur flam-player, convertisseur telmi2flam, flam-launcher, jeux et skills) est distribue sous licence GNU GPL v3 ou ulterieure (`GPL-3.0-or-later`), voir [`LICENSE`](LICENSE). Les composants tiers gardent chacun leur licence (voir ci-dessous).
 
 L'installateur Windows de flam-launcher redistribue flam-player, le convertisseur telmi2flam (avec
-un Python embarque et Pillow) et le runtime Lunii avec l'accord du mainteneur ; les licences de
+un Python embarque et Pillow) et son runtime Lua (GPL v3, comme le reste du dépôt) ; les licences de
 chaque composant tiers (SDL2, Lua, LVGL, minimp3, Python, Pillow, redistribuables Microsoft) sont
 dans [`apps/flam-launcher/LICENSES.md`](apps/flam-launcher/LICENSES.md).

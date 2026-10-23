@@ -1,0 +1,80 @@
+.fl-transfer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.fl-transfer__title {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+}
+
+.fl-transfer__title:focus {
+  outline: none;
+}
+
+.fl-transfer__progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.fl-transfer__line,
+.fl-transfer__hint,
+.fl-transfer__error {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.fl-transfer__hint {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.fl-transfer__error {
+  color: var(--color-danger);
+}
+
+.fl-transfer__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fl-transfer__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+}
+
+.fl-transfer__item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  inline-size: 100%;
+}
+
+.fl-transfer__name {
+  overflow: hidden;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fl-transfer__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}

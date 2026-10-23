@@ -13,11 +13,13 @@ import contextlib
 import io
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +29,7 @@ sys.dont_write_bytecode = True
 
 from PIL import Image  # noqa: E402
 
+import lif  # noqa: E402
 import mp3map  # noqa: E402
 import telmi2flam as T  # noqa: E402
 import validate  # noqa: E402
@@ -419,9 +422,20 @@ class TestConversion(Base):
         pk = self.convert(files)
         self.assertValid(pk)
         with zipfile.ZipFile(pk) as z:
-            self.assertEqual(lif_dims(z.read("img/thumbnail.lif")), (128, 96))
+            self.assertEqual(lif_dims(z.read("img/thumbnail.lif")), (104, 136))
             w, h = lif_dims(z.read("img/title.lif"))
             self.assertGreaterEqual(w, h)
+
+    def test_thumb_fit_transmis_a_la_conversion(self):
+        files = [(a, png(400, 200) if a == "title.png" else b) for a, b in std_files()]
+        tops = {}
+        for fit in ("bandes", "flou"):
+            pk = self.convert(files, name="t_" + fit, thumb_fit=fit)
+            with zipfile.ZipFile(pk) as z:
+                rgba, w, h = lif.decode(z.read("img/thumbnail.lif"))
+            self.assertEqual((w, h), (104, 136))
+            tops[fit] = rgba[3]
+        self.assertEqual(tops, {"bandes": 0, "flou": 255})
 
     # F52 : label des choix
     def test_choice_label(self):
@@ -721,7 +735,7 @@ class TestConversion(Base):
             mask = T._trns_mask(im, data)
             self.assertEqual([mask.getpixel((x, 0)) for x in range(4)], [0, 255, 0, 255], fake)
 
-    # hunt3 : runtime Lunii absent ou incomplet -> ConvError (pas de paquet muet)
+    # hunt3 : runtime du projet absent ou incomplet -> ConvError (pas de paquet muet)
     def test_runtime_missing(self):
         self.assertEqual(tuple(T.RUNTIME_SCRIPTS), tuple(validate.RUNTIME_SCRIPTS))
         self.assertEqual(tuple(T.RUNTIME_UI_LIF), tuple(validate.RUNTIME_UI_LIF))
@@ -802,17 +816,208 @@ class TestMp3map(unittest.TestCase):
         with self.assertRaises(ValueError):
             mp3map.build(os.urandom(512 * 1024))
 
-    def test_warn_48k(self):
+    @staticmethod
+    def _pk_audio(pk):
+        with zipfile.ZipFile(pk) as z:
+            names = [n for n in z.namelist() if n.startswith("sounds/") and n.endswith(".mp3")
+                     and "silent" not in n]
+            return {n: z.read(n) for n in names}
+
+    def _conv_rate(self, b1, b2, ffmpeg):
         tc = Base("setUp")
         tc.setUp()
+        old = os.environ.get("FLAM_FFMPEG")
+        os.environ["FLAM_FFMPEG"] = ffmpeg
         try:
-            n = base_nodes()
-            files = [(a, mp3_frames(0xFB, 0x94, 100) if a == "audios/s0.mp3" else b)
-                     for a, b in std_files(nodes=n)]
-            tc.convert(files)
-            self.assertIn("48000", tc.stderr)
+            src = mp3_frames(b1, b2, 400)
+            files = [(a, src if a == "audios/s0.mp3" else b) for a, b in std_files()]
+            pk = tc.convert(files)
+            return src, TestMp3map._pk_audio(pk), tc.stderr
         finally:
+            if old is None:
+                os.environ.pop("FLAM_FFMPEG", None)
+            else:
+                os.environ["FLAM_FFMPEG"] = old
             tc.tearDown()
+
+    def test_fallback_without_ffmpeg(self):
+        missing = os.path.join(tempfile.gettempdir(), "t2f_no_such_ffmpeg.exe")
+        for b1, b2, sr in ((0xFB, 0x94, 48000), (0xF5, 0x94, 24000)):
+            src, out, err = self._conv_rate(b1, b2, missing)
+            self.assertEqual(list(out.values()), [src])
+            self.assertIn(str(sr), err)
+            self.assertIn("ffmpeg", err)
+
+    def test_44k_copied_unchanged(self):
+        src, out, err = self._conv_rate(0xFB, 0x90, "")
+        self.assertEqual(list(out.values()), [src])
+        self.assertNotIn("Hz", err)
+
+    @unittest.skipUnless(T._find_ffmpeg(), "ffmpeg absent")
+    def test_resample_to_44k(self):
+        exe = T._find_ffmpeg()
+        for b1, b2, sr in ((0xFB, 0x94, 48000), (0xF5, 0x94, 24000), (0xF3, 0x90, 22050)):
+            src, out, err = self._conv_rate(b1, b2, exe)
+            (data,) = out.values()
+            self.assertNotEqual(data, src)
+            info = {}
+            mp3map.build(data, info)
+            self.assertEqual(info["samplerates"], {44100}, err)
+            self.assertNotIn("audio_samplerate", err)
+            self.assertNotIn(" ! ", err)
+
+
+class FakeFfmpeg:
+    """Remplace subprocess.run : ecrit `out` comme sortie de ffmpeg (ou leve un delai depasse)."""
+
+    def __init__(self, out=None, rc=0, stderr=b"", timeout=False):
+        self.out, self.rc, self.stderr, self.timeout = out, rc, stderr, timeout
+        self.calls = []
+
+    def __call__(self, cmd, **kw):
+        self.calls.append((cmd, kw))
+        if self.timeout:
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        if self.out is not None:
+            with open(cmd[-1][len("file:"):], "wb") as fh:
+                fh.write(self.out)
+        return subprocess.CompletedProcess(cmd, self.rc, b"", self.stderr)
+
+
+class TestFfmpegSimule(Base):
+    """Resampling audio (#46) avec un faux ffmpeg : delai, sortie invalide ou vide, debit,
+    cache par contenu, chemin relatif, title.mp3 et fichier multi-frequences (#274)."""
+
+    SRC_48K = mp3_frames(0xFB, 0x94, 400)       # 128 kbit/s, 48 kHz, 9,6 s
+    OUT_44K = mp3_frames(0xFB, 0x90, 400)
+
+    def setUp(self):
+        super().setUp()
+        self.exe = os.path.join(self.tmp, "ffmpeg-factice.exe")
+        with open(self.exe, "wb") as fh:
+            fh.write(b"x")
+        patcher = unittest.mock.patch.dict(os.environ, {"FLAM_FFMPEG": self.exe})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_with(self, fake):
+        with unittest.mock.patch.object(T.subprocess, "run", fake):
+            return T._resample_mp3(self.SRC_48K, 9.6)
+
+    def conv(self, fake, files):
+        with unittest.mock.patch.object(T.subprocess, "run", fake):
+            pk = self.convert(files)
+        return TestMp3map._pk_audio(pk)
+
+    def with_s0(self, data, **kw):
+        return [(a, data if a == "audios/s0.mp3" else b) for a, b in std_files(**kw)]
+
+    def test_delai_depasse(self):
+        res = self.run_with(FakeFfmpeg(timeout=True))
+        self.assertIsInstance(res, str)
+        self.assertIn("trop long", res)
+
+    def test_echec_de_ffmpeg(self):
+        res = self.run_with(FakeFfmpeg(rc=1, stderr=b"ligne 1\nGrosse erreur\n"))
+        self.assertEqual(res, "ffmpeg a echoue (Grosse erreur)")
+
+    def test_sortie_vide(self):
+        res = self.run_with(FakeFfmpeg(out=b""))
+        self.assertEqual(res, "ffmpeg n'a rien produit")
+
+    def test_sortie_valide_et_commande(self):
+        fake = FakeFfmpeg(out=self.OUT_44K)
+        self.assertEqual(self.run_with(fake), self.OUT_44K)
+        (cmd, kw), = fake.calls
+        self.assertEqual(cmd[0], self.exe)
+        self.assertIs(kw["stdin"], subprocess.DEVNULL)
+        self.assertEqual(kw["timeout"], T.FFMPEG_TIMEOUT)
+        self.assertEqual(cmd[cmd.index("-ar") + 1], "44100")
+        self.assertEqual(cmd[cmd.index("-b:a") + 1], "128k")
+
+    def test_debit_sans_les_tags(self):
+        # ID3v2 de 200 Ko (pochette) + ID3v1 : l'ancien calcul sur la taille totale donnait 192k
+        size = 200000
+        syncsafe = bytes([(size >> 21) & 0x7F, (size >> 14) & 0x7F, (size >> 7) & 0x7F,
+                          size & 0x7F])
+        id3 = b"ID3\x04\x00\x00" + syncsafe + bytes(size)
+        data = id3 + self.SRC_48K + b"TAG" + bytes(125)
+        _mm, dur, _n = mp3map.build(data, {})
+        fake = FakeFfmpeg(out=self.OUT_44K)
+        with unittest.mock.patch.object(T.subprocess, "run", fake):
+            T._resample_mp3(data, dur)
+        cmd = fake.calls[0][0]
+        self.assertEqual(cmd[cmd.index("-b:a") + 1], "128k")
+
+    def test_chemin_relatif_resolu_en_absolu(self):
+        old = os.getcwd()
+        os.chdir(self.tmp)
+        try:
+            os.environ["FLAM_FFMPEG"] = "ffmpeg-factice.exe"
+            found = T._find_ffmpeg()
+            os.environ["FLAM_FFMPEG"] = "absent.exe"
+            missing = T._find_ffmpeg()
+        finally:
+            os.chdir(old)
+        self.assertTrue(os.path.isabs(found))
+        self.assertEqual(os.path.normcase(os.path.realpath(found)),
+                         os.path.normcase(os.path.realpath(self.exe)))
+        self.assertIsNone(missing)
+
+    def test_sortie_invalide_repli_sur_la_copie(self):
+        out = self.conv(FakeFfmpeg(out=os.urandom(4096)), self.with_s0(self.SRC_48K))
+        self.assertEqual(list(out.values()), [self.SRC_48K])
+        self.assertIn("illisible", self.stderr)
+        self.assertIn("48000", self.stderr)
+
+    def test_sortie_a_une_autre_frequence_refusee(self):
+        out = self.conv(FakeFfmpeg(out=self.SRC_48K), self.with_s0(self.SRC_48K))
+        self.assertEqual(list(out.values()), [self.SRC_48K])
+        self.assertIn("illisible ou inattendue", self.stderr)
+
+    def test_ffmpeg_remplace_le_fichier(self):
+        fake = FakeFfmpeg(out=self.OUT_44K)
+        out = self.conv(fake, self.with_s0(self.SRC_48K))
+        self.assertEqual(list(out.values()), [self.OUT_44K])
+        self.assertIn("reechantillonne", self.stderr)
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_title_mp3_hors_44k(self):
+        fake = FakeFfmpeg(out=self.OUT_44K)
+        files = list(std_files()) + [("title.mp3", self.SRC_48K)]
+        with unittest.mock.patch.object(T.subprocess, "run", fake):
+            pk = self.convert(files)
+        with zipfile.ZipFile(pk) as z:
+            title = z.read("sounds/title.mp3")
+        self.assertEqual(title, self.OUT_44K)
+        info = {}
+        mp3map.build(title, info)
+        self.assertEqual(info["samplerates"], {44100})
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_fichier_multi_frequences(self):
+        mixed = mp3_frames(0xFB, 0x90, 200) + mp3_frames(0xFB, 0x94, 200)
+        info = {}
+        mp3map.build(mixed, info)
+        self.assertEqual(info["samplerates"], {44100, 48000})
+        fake = FakeFfmpeg(out=self.OUT_44K)
+        out = self.conv(fake, self.with_s0(mixed))
+        self.assertEqual(list(out.values()), [self.OUT_44K])
+        self.assertEqual(len(fake.calls), 1)
+        self.assertIn("48000", self.stderr)
+
+    def test_meme_contenu_sous_deux_noms_un_seul_ffmpeg(self):
+        def stage(audio):
+            return {"image": "s0.png", "audio": audio, "ok": None, "home": None,
+                    "control": {"ok": True, "home": False, "autoplay": True}}
+        nodes = {"startAction": {"action": "a0", "index": 0},
+                 "stages": {"s0": stage("s0.mp3"), "s1": stage("copie.mp3")},
+                 "actions": {"a0": [{"stage": "s0"}, {"stage": "s1"}]}}
+        files = self.with_s0(self.SRC_48K, nodes=nodes) + [("audios/copie.mp3", self.SRC_48K)]
+        fake = FakeFfmpeg(out=self.OUT_44K)
+        out = self.conv(fake, files)
+        self.assertEqual(sorted(out.values()), [self.OUT_44K, self.OUT_44K])
+        self.assertEqual(len(fake.calls), 1)
 
 
 class TestValidate(Base):
@@ -941,6 +1146,171 @@ class TestValidate(Base):
         self.assertIn("script/global.lua absente", out)
         self.assertIn("LIF img/s0.lif", out)
         self.assertNotIn("Traceback", out)
+
+
+def banded_png(w, h):
+    """Image opaque a deux bandes horizontales (haut rouge, bas bleu)."""
+    im = Image.new("RGBA", (w, h), (200, 20, 20, 255))
+    im.paste((20, 20, 200, 255), (0, h // 2, w, h))
+    b = io.BytesIO()
+    im.save(b, "PNG")
+    return b.getvalue()
+
+
+class TestThumbFit(unittest.TestCase):
+    """Vignette 104x136 (format officiel mesure sur la Flam), 3 modes de remplissage."""
+
+    SIZES = ((400, 200), (200, 400), (300, 300), (3, 2), (1, 1))
+
+    @staticmethod
+    def _score(rgba, w, h):
+        """score_coherence de lif_decoder.c : somme des ecarts RVB entre pixels voisins."""
+        total = 0
+        for y in range(h):
+            row = rgba[y * w * 4:(y + 1) * w * 4]
+            for x in range(1, w):
+                a, b = x * 4, x * 4 - 4
+                total += (abs(row[a] - row[b]) + abs(row[a + 1] - row[b + 1])
+                          + abs(row[a + 2] - row[b + 2]))
+        return total
+
+    @classmethod
+    def decoder_transposes(cls, rgba, w, h):
+        """Reproduit la decision de lif_decode_mem : transposition si h > w, max(w, h) > 64
+        et que la lecture colonne-major est au moins 12 % plus coherente."""
+        if not (max(w, h) > 64 and h > w):
+            return False
+        transposed = bytearray(len(rgba))
+        for y in range(h):
+            for x in range(w):
+                s, d = (x * h + y) * 4, (y * w + x) * 4
+                transposed[d:d + 4] = rgba[s:s + 4]
+        row, col = cls._score(rgba, w, h), cls._score(bytes(transposed), w, h)
+        return row > 0 and col < row and 1.0 - col / row >= 0.12
+
+    def thumb(self, data, fit=T.DEFAULT_THUMB_FIT):
+        rgba, w, h = lif.decode(T.png_to_thumb_lif(data, fit))
+        return rgba, w, h
+
+    @staticmethod
+    def alpha(rgba, w, x, y):
+        return rgba[(y * w + x) * 4 + 3]
+
+    def test_taille_officielle(self):
+        self.assertEqual((T.THUMB_W, T.THUMB_H), (104, 136))
+        self.assertEqual(T.DEFAULT_THUMB_FIT, "flou")
+        for fit in T.THUMB_FITS:
+            for w, h in self.SIZES:
+                _, tw, th = self.thumb(banded_png(w, h), fit)
+                self.assertEqual((tw, th), (104, 136), (fit, w, h))
+
+    def test_bandes_transparentes_haut_et_bas(self):
+        rgba, w, h = self.thumb(banded_png(400, 200), "bandes")
+        for x in (0, 51, 103):
+            self.assertEqual(self.alpha(rgba, w, x, 0), 0)
+            self.assertEqual(self.alpha(rgba, w, x, 135), 0)
+            self.assertEqual(self.alpha(rgba, w, x, 68), 255)
+
+    def test_le_decodeur_ne_transpose_pas_la_vignette(self):
+        # La vignette est portrait (104x136, comme les officielles) : validate.py l'exempte de
+        # l'avertissement « LIF portrait », a condition que l'heuristique du decodeur ne se
+        # declenche pas sur le contenu produit.
+        rng = random.Random(285)
+        noise = Image.new("RGBA", (200, 300))
+        noise.putdata([(rng.randrange(256), rng.randrange(256), rng.randrange(256), 255)
+                       for _ in range(200 * 300)])
+        b = io.BytesIO()
+        noise.save(b, "PNG")
+        sources = [banded_png(*size) for size in self.SIZES] + [b.getvalue()]
+        # colonnes de degrade : lues en colonnes, elles paraissent plus coherentes
+        grad = Image.new("RGBA", (100, 300))
+        grad.putdata([(y * 255 // 299, 40, 200 - y * 200 // 299, 255)
+                      for y in range(300) for _x in range(100)])
+        b = io.BytesIO()
+        grad.save(b, "PNG")
+        sources.append(b.getvalue())
+        for data in sources:
+            for fit in T.THUMB_FITS:
+                rgba, w, h = self.thumb(data, fit)
+                self.assertEqual((w, h), (104, 136))
+                self.assertFalse(self.decoder_transposes(rgba, w, h), fit)
+
+    def test_rogner_sans_transparence(self):
+        for src in self.SIZES:
+            rgba, w, h = self.thumb(banded_png(*src), "rogner")
+            self.assertTrue(all(rgba[i] == 255 for i in range(3, len(rgba), 4)), src)
+
+    def test_flou_sans_transparence_et_centre_identique(self):
+        data = banded_png(400, 200)
+        rgba, w, h = self.thumb(data, "flou")
+        self.assertTrue(all(rgba[i] == 255 for i in range(3, len(rgba), 4)))
+        im = T._open_rgba(data)
+        ref, _, _ = lif.decode(T._encode(T._thumb_contain(im)))
+        # image reduite : 104x52 centree (lignes 42 a 93)
+        for y in range(42, 94):
+            self.assertEqual(rgba[y * w * 4:(y + 1) * w * 4], ref[y * w * 4:(y + 1) * w * 4], y)
+        # le haut est rempli (pas une bande vide) et differe de la bande de l'image
+        self.assertNotEqual(rgba[0:4], bytes(4))
+
+    def test_flou_remplit_aussi_les_cotes_d_une_image_tres_haute(self):
+        rgba, w, h = self.thumb(banded_png(20, 400), "flou")
+        self.assertTrue(all(rgba[i] == 255 for i in range(3, len(rgba), 4)))
+
+    def test_flou_opaque_meme_avec_une_image_transparente(self):
+        im = Image.new("RGBA", (200, 100), (255, 0, 0, 0))
+        im.paste((0, 0, 255, 255), (50, 25, 150, 75))
+        b = io.BytesIO()
+        im.save(b, "PNG")
+        rgba, w, h = self.thumb(b.getvalue(), "flou")
+        self.assertTrue(all(rgba[i] == 255 for i in range(3, len(rgba), 4)))
+
+    def test_ratio_extreme_sans_explosion_memoire(self):
+        for size in ((2047, 1), (1, 2047)):
+            for fit in T.THUMB_FITS:
+                _, tw, th = self.thumb(banded_png(*size), fit)
+                self.assertEqual((tw, th), (104, 136), (fit, size))
+
+    def test_flam_build_identique_au_convertisseur(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(TOOL), "..", "skills", "flam-homebrew", "scripts"))
+        import flam_build
+        for fit in T.THUMB_FITS:
+            for size in ((400, 200), (200, 400), (1, 1)):
+                data = banded_png(*size)
+                self.assertEqual(flam_build.png_to_thumb(data, fit),
+                                 T.png_to_thumb_lif(data, fit), (fit, size))
+
+    def test_modes_differents(self):
+        data = banded_png(400, 200)
+        outs = {fit: T.png_to_thumb_lif(data, fit) for fit in T.THUMB_FITS}
+        self.assertEqual(len(set(outs.values())), 3)
+
+    def test_deterministe(self):
+        data = banded_png(333, 177)
+        for fit in T.THUMB_FITS:
+            self.assertEqual(T.png_to_thumb_lif(data, fit), T.png_to_thumb_lif(data, fit))
+
+    def test_option_invalide_refusee(self):
+        with self.assertRaises(ValueError):
+            T.png_to_thumb_lif(banded_png(10, 10), "etirer")
+        with self.assertRaises(T.ConvError) as cm:
+            T.convert("absent.zip", thumb_fit="etirer")
+        self.assertEqual(cm.exception.exit_code, T.EXIT_USAGE)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as se:
+            T.main(["in.zip", "--thumb-fit", "etirer"])
+        self.assertNotEqual(se.exception.code, 0)
+
+    def test_cli_transmet_le_mode(self):
+        calls = []
+        orig = T.convert
+        T.convert = lambda *a, **k: calls.append(k)
+        try:
+            self.assertEqual(T.main(["in.zip", "--thumb-fit", "rogner"]), T.EXIT_OK)
+            self.assertEqual(T.main(["in.zip"]), T.EXIT_OK)
+        finally:
+            T.convert = orig
+        self.assertEqual([c["thumb_fit"] for c in calls], ["rogner", "flou"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,8 @@
 {
   "name": "flam-launcher",
   "private": true,
-  "version": "0.1.0",
-  "license": "MIT",
+  "version": "0.1.0-beta.1",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -17,9 +17,10 @@
     "test": "vitest run",
     "test:scripts": "node --test scripts/*.test.mjs",
     "build:converter": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-converter.ps1",
+    "build:ffmpeg": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-ffmpeg.ps1",
     "build:player": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-player.ps1",
     "build:notices": "node scripts/build-notices.mjs",
-    "build:installer": "npm run build:notices && npm run build:converter && npm run build:player && tauri build --config src-tauri/tauri.bundle.conf.json",
+    "build:installer": "npm run build:notices && npm run build:converter && npm run build:ffmpeg && npm run build:player && tauri build --config src-tauri/tauri.bundle.conf.json",
     "test:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-e2e.ps1",
     "tauri": "tauri"
   },

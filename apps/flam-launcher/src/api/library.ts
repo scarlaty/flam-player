@@ -19,6 +19,40 @@ export interface LibraryEntry {
   source: StoryEntry;
   /** Vignette conservée sous `<cache>/library/thumbs/` (nom de fichier), `null` sans vignette. */
   thumb?: string | null;
+  /**
+   * Empreinte de la source dossier à l'installation (#288), `null` : source distante, ou
+   * installation antérieure (comparée autrement, voir `library_source.rs`).
+   */
+  source_stamp?: SourceStamp | null;
+}
+
+/** Empreinte d'une source locale (miroir de `SourceStamp` dans `src-tauri/src/library_source.rs`). */
+export interface SourceStamp {
+  /** Pré-filtre (taille et date, ou liste d'un dossier `.plain`). */
+  quick: string;
+  /** `sha256:<hex>` du contenu installé. */
+  sha256: string;
+}
+
+/**
+ * État de la source dossier d'une histoire installée (miroir de `SourceState`) : `changed`
+ * (modifiée depuis l'installation, même à version égale), `missing` (disparue : la copie est
+ * conservée), `unknown` (non vérifiable).
+ */
+export type SourceState = "unchanged" | "changed" | "missing" | "unknown";
+
+/** Réponse de `library_source_status` pour une histoire (miroir de `SourceCheck`). */
+export interface SourceCheck {
+  uuid: string;
+  state: SourceState;
+}
+
+/**
+ * `library_source_status` : état de la source des histoires installées depuis une source
+ * dossier (lecture seule ; la source n'est relue que si sa taille ou sa date a changé).
+ */
+export function librarySourceStatus(): Promise<SourceCheck[]> {
+  return invokeCommand<SourceCheck[]>("library_source_status");
 }
 
 /** `library_list` : histoires installées, triées par titre. */

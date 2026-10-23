@@ -14,6 +14,8 @@ export interface StoryBadge {
   icon?: IconName;
   /** Précision visible sous le badge (ex. la raison d'une incompatibilité). */
   detail?: string;
+  /** Info-bulle et texte accessible expliquant le badge. */
+  description?: string;
 }
 
 export interface StoryCardProps {
@@ -34,7 +36,10 @@ export interface StoryCardProps {
   progress?: number | "indeterminate";
   /** Texte visible sous la barre (ex. « Conversion… »). */
   progressText?: string;
-  /** Actions rapides (ex. bouton Jouer), placées au-dessus de la zone cliquable. */
+  /**
+   * Actions rapides (ex. Jouer, Envoyer, Supprimer), dans une rangée en bas de la carte : dans le
+   * flux, au-dessus de la zone cliquable, sans recouvrir la vignette ni les badges.
+   */
   actions?: ReactNode;
 }
 
@@ -105,7 +110,11 @@ export function StoryCard({
           <ul className="fl-story-card__badges">
             {badges.map((badge) => (
               <li key={badge.id}>
-                <Badge tone={badge.tone} icon={badge.icon}>
+                <Badge
+                  tone={badge.tone}
+                  icon={badge.icon}
+                  description={badge.description}
+                >
                   {badge.label}
                 </Badge>
                 {badge.detail && (

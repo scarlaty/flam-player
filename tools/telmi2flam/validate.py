@@ -36,7 +36,7 @@ except ImportError:   # lupa optionnel
 LIF_MAGIC = b"liff"
 LIF_END = b"\x00\x00\x00\x00\x00\x00\x00\x01"
 LIF_MAX_DIM = 2047  # 11 bits de lv_img_header_t (LVGL 8.3), cf. lif_decoder.c
-# Runtime Lunii indispensable au demarrage : lignes "!" du manifeste unique
+# Runtime du projet indispensable au demarrage : lignes "!" du manifeste unique
 # runtime/manifest.txt (lu aussi par telmi2flam.py, embarque par le port Rust).
 RUNTIME_MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime", "manifest.txt")
 
@@ -439,7 +439,9 @@ def main(pk_path):
             e, dims = check_lif(zf.read(n))
             if e:
                 lif_bad.append("%s : %s" % (n, e))
-            elif not n.startswith("img/script/") and dims[1] > dims[0] and max(dims) > 64:
+            elif (not n.startswith("img/script/") and n != "img/thumbnail.lif"
+                  and dims[1] > dims[0] and max(dims) > 64):
+                # la vignette de bibliotheque est portrait 104x136 (comme les officielles)
                 lif_portrait.append(n)
     for m in lif_bad:
         errs.append("LIF " + m)

@@ -8,7 +8,7 @@ Controles (ERR = bloque le device a coup sur ou presque, WARN = a verifier) :
   archive   ZIP STORED, sans data descriptor, noms surs, pas de doublon de casse,
             ordre info.plain / version / main.lua en tete, uuid.bin en dernier
   meta      info.plain 4 lignes (titre/sous-titre/000000/titre), version, uuid 16 o
-  runtime   framework Lunii present (global.lua & co, img/script/*.lif, img/empty.lif)
+  runtime   runtime du projet present (global.lua & co, img/script/*.lif, img/empty.lif)
   lua       syntaxe (lupa, ou lua/luac du PATH, ou FLAM_LUA), pas de require au
             top-level de main.lua, setup() defini, Global non local, modules
             Global.load_module(...) et require(...) resolus dans script/,
@@ -447,7 +447,9 @@ def check(pk_path):
             if e:
                 errs.append("LIF %s : %s" % (n, e))
                 lif_bad += 1
-            elif not n.startswith("img/script/") and dims[1] > dims[0] and dims[1] > 64:
+            elif (not n.startswith("img/script/") and n != "img/thumbnail.lif"
+                  and dims[1] > dims[0] and dims[1] > 64):
+                # la vignette de bibliotheque est portrait 104x136 (comme les officielles)
                 warns.append("LIF %s portrait %dx%d > 64 px : le decodeur le transpose "
                              "(poser sur un canevas carre)" % (n, dims[0], dims[1]))
         elif n.startswith("img/") and not n.endswith(".lif"):

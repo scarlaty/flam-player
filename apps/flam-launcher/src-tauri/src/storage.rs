@@ -33,6 +33,14 @@ pub fn config_dir() -> AppResult<PathBuf> {
         .ok_or(AppError::ConfigDir)
 }
 
+/// Dossier de données personnelles de l'application (sauvegardes de l'appareil…), à ne jamais
+/// confondre avec le cache : l'utilisateur peut vider celui-ci à tout moment.
+pub fn data_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(APP_DIR)
+}
+
 /// Dossier de cache par défaut (sous les données locales de l'application).
 pub fn default_cache_dir() -> PathBuf {
     dirs::data_local_dir()
@@ -81,7 +89,7 @@ fn is_transient(err: &io::Error) -> bool {
 /// Exécute `op` ; sur une erreur transitoire, réessaie après chacune des attentes de
 /// `RETRY_DELAYS_MS` (via `sleep`, injectable pour les tests). Toute autre erreur est rendue
 /// immédiatement ; un verrou persistant donne une erreur claire de même nature.
-fn retry_transient<T>(
+pub(crate) fn retry_transient<T>(
     mut op: impl FnMut() -> io::Result<T>,
     mut sleep: impl FnMut(Duration),
 ) -> io::Result<T> {

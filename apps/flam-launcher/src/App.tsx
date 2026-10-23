@@ -1,11 +1,12 @@
 import { lazy, Suspense } from "react";
 import { ToastProvider } from "./components";
 import { AppFrame } from "./features/app/AppFrame";
+import { DeviceBoundary } from "./features/device/DeviceBoundary";
 import { CompatProvider } from "./features/compat/CompatProvider";
 import { LibraryProvider } from "./features/library/LibraryProvider";
 import { RecoveryProvider } from "./features/recovery/RecoveryProvider";
 import { StoriesProvider } from "./features/stories/StoriesProvider";
-import { DEMO_HASH, useRoute } from "./router";
+import { DEMO_HASH, useRoute, type Route } from "./router";
 
 export { DEMO_HASH };
 
@@ -28,14 +29,16 @@ export function App() {
   return <AppRoutes route={route} />;
 }
 
-function AppRoutes({ route }: { route: "home" | "sources" | "settings" | "library" }) {
+function AppRoutes({ route }: { route: Exclude<Route, "demo"> }) {
   return (
     <ToastProvider>
       <RecoveryProvider>
         <LibraryProvider>
           <CompatProvider>
             <StoriesProvider>
-              <AppFrame route={route} />
+              <DeviceBoundary>
+                <AppFrame route={route} />
+              </DeviceBoundary>
             </StoriesProvider>
           </CompatProvider>
         </LibraryProvider>

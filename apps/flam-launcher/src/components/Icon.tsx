@@ -37,6 +37,8 @@ const paths = {
   pencil: <path d="M5 19h3.5L19 8.5 15.5 5 5 15.5zM13.5 7l3.5 3.5" />,
   arrowUp: <path d="M12 19V5m-5.5 5.5L12 5l5.5 5.5" />,
   arrowDown: <path d="M12 5v14m-5.5-5.5L12 19l5.5-5.5" />,
+  arrowTop: <path d="M5 4.5h14M12 20V9m-5 4 5-5 5 5" />,
+  arrowBottom: <path d="M5 19.5h14M12 4v11m-5-4 5 5 5-5" />,
   plus: <path d="M12 5v14M5 12h14" />,
   close: <path d="m6 6 12 12M18 6 6 18" />,
   download: <path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 19h14" />,
@@ -47,6 +49,12 @@ const paths = {
     <>
       <path d="M19 12a7 7 0 1 1-2-4.9" />
       <path d="M19 4v4h-4" />
+    </>
+  ),
+  device: (
+    <>
+      <rect x="5" y="4" width="14" height="16" rx="3" />
+      <circle cx="12" cy="12" r="3" />
     </>
   ),
   sliders: (

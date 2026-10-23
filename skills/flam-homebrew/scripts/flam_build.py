@@ -4,6 +4,7 @@
 
 Usage :
     python flam_build.py <projet> [-o sortie.plain.pk] [--no-plain] [--no-check]
+                             [--thumb-fit flou|rogner|bandes]
 
 Projet (cree par new_project.py) :
     flam.json      {"title", "subtitle", "uuid_seed", "module", "version"}
@@ -12,7 +13,7 @@ Projet (cree par new_project.py) :
     img/**         .png (converti en .lif) ou .lif ; img/thumbnail.png = vignette
     sounds/*.mp3   audio (+ .mp3map genere)
 
-Le paquet recoit en plus le framework runtime Lunii (assets/runtime : script/*.lua,
+Le paquet recoit en plus le runtime Lua du projet (assets/runtime : script/*.lua,
 img/script/*.lif), img/empty.lif, sounds/silent.mp3(+map) et les metadonnees
 (info.plain, version, uuid.bin). Archive ZIP STORED, ordre : info.plain, version,
 main.lua, script du module, puis le reste trie, uuid.bin en dernier.
@@ -43,7 +44,11 @@ RUNTIME_SCRIPT = os.path.join(HERE, "..", "assets", "runtime", "script")
 RUNTIME_IMG = os.path.join(HERE, "..", "assets", "runtime", "img", "script")
 
 MAX_DIM = 2047            # borne du decodeur LIF
-THUMB_W, THUMB_H = 128, 96
+# Vignette de bibliotheque : 104x136 (portrait), taille des vignettes des histoires officielles
+THUMB_W, THUMB_H = 104, 136
+THUMB_FITS = ("flou", "rogner", "bandes")
+DEFAULT_THUMB_FIT = "flou"
+_THUMB_BLUR_RADIUS = 8
 ZIP_DATE = (2020, 1, 1, 0, 0, 0)   # date fixe : build reproductible
 _SAFE_PART = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 
@@ -124,16 +129,56 @@ def png_to_lif(data, name):
     return _encode(im)
 
 
-def png_to_thumb(data):
-    """Vignette bibliotheque : tient dans 128x96, centree sur un canevas 128x96."""
+def _scaled(im, scale):
     Image = _pil()
+    nw, nh = max(1, round(im.size[0] * scale)), max(1, round(im.size[1] * scale))
+    return im if (nw, nh) == im.size else im.resize((nw, nh), Image.LANCZOS)
+
+
+def _thumb_cover(im):
+    """Couvre THUMB_W x THUMB_H : fenetre centrale de la source au rapport de la vignette
+    (evite une image intermediaire geante sur un ratio extreme), puis redimensionnee."""
+    sw, sh = im.size
+    if sw * THUMB_H > sh * THUMB_W:
+        cw, ch = max(1, round(sh * THUMB_W / THUMB_H)), sh
+    else:
+        cw, ch = sw, max(1, round(sw * THUMB_H / THUMB_W))
+    left, top = (sw - cw) // 2, (sh - ch) // 2
+    return im.crop((left, top, left + cw, top + ch)).resize((THUMB_W, THUMB_H), _pil().LANCZOS)
+
+
+def _thumb_contain(im):
+    """Image entiere (agrandie si besoin), centree sur un canevas transparent."""
+    Image = _pil()
+    im = _scaled(im, min(THUMB_W / im.size[0], THUMB_H / im.size[1]))
+    canvas = Image.new("RGBA", (THUMB_W, THUMB_H), (0, 0, 0, 0))
+    canvas.paste(im, ((THUMB_W - im.size[0]) // 2, (THUMB_H - im.size[1]) // 2))
+    return canvas
+
+
+def png_to_thumb(data, fit=DEFAULT_THUMB_FIT):
+    """Vignette bibliotheque 104x136. fit : flou (image entiere centree, fond = la meme
+    image agrandie pour couvrir puis floutee), rogner (cover centre), bandes (image
+    entiere centree, bandes transparentes)."""
+    if fit not in THUMB_FITS:
+        raise BuildError("remplissage de vignette inconnu : %r (attendu : %s)"
+                         % (fit, ", ".join(THUMB_FITS)))
+    Image = _pil()
+    from PIL import ImageFilter
     im = Image.open(io.BytesIO(data))
     im.load()
     im = im.convert("RGBA")
-    im.thumbnail((THUMB_W, THUMB_H), Image.LANCZOS)
-    canvas = Image.new("RGBA", (THUMB_W, THUMB_H), (0, 0, 0, 0))
-    canvas.paste(im, ((THUMB_W - im.size[0]) // 2, (THUMB_H - im.size[1]) // 2))
-    return _encode(canvas)
+    if fit == "rogner":
+        out = _thumb_cover(im)
+    elif fit == "bandes":
+        out = _thumb_contain(im)
+    else:
+        # fond opaque : flouter du RGBA non premultiplie laisserait des halos sombres
+        bg = _thumb_cover(im)
+        base = Image.new("RGBA", bg.size, (128, 128, 128, 255))
+        bg = Image.alpha_composite(base, bg).filter(ImageFilter.GaussianBlur(_THUMB_BLUR_RADIUS))
+        out = Image.alpha_composite(bg, _thumb_contain(im))
+    return _encode(out)
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +211,7 @@ def _read(p):
         return f.read()
 
 
-def build(project):
+def build(project, thumb_fit=DEFAULT_THUMB_FIT):
     cfg_path = os.path.join(project, "flam.json")
     if not os.path.isfile(cfg_path):
         raise BuildError("%s introuvable (creer le projet avec new_project.py)" % cfg_path)
@@ -197,7 +242,7 @@ def build(project):
         files[name] = data
         origin[name] = src
 
-    # --- runtime (framework Lunii) ---
+    # --- runtime (Lua du projet) ---
     for p, rel in _walk(RUNTIME_SCRIPT):
         if rel.endswith(".lua") and "/" not in rel:
             add("script/" + rel, _read(p), "runtime")
@@ -238,7 +283,7 @@ def build(project):
             if low.startswith("script/"):
                 raise BuildError("img/script/ est reserve au runtime : deplacer img/%s" % rel)
             if low == "thumbnail.png":
-                add("img/thumbnail.lif", png_to_thumb(_read(p)), "projet")
+                add("img/thumbnail.lif", png_to_thumb(_read(p), thumb_fit), "projet")
                 nimg += 1
                 continue
             if low.endswith(".png"):
@@ -310,10 +355,12 @@ def main():
     ap.add_argument("project", help="dossier du projet (contient flam.json)")
     ap.add_argument("-o", "--output", help="chemin du .plain.pk (defaut : <projet>/_out/<titre>.plain.pk)")
     ap.add_argument("--no-plain", action="store_true", help="ne pas ecrire le dossier .plain (simulateur)")
+    ap.add_argument("--thumb-fit", choices=THUMB_FITS, default=DEFAULT_THUMB_FIT,
+                    help="remplissage de la vignette 104x136 : flou (defaut), rogner ou bandes")
     ap.add_argument("--no-check", action="store_true", help="ne pas lancer flam_check.py")
     args = ap.parse_args()
     try:
-        files, cfg, title, module_file, nimg, naud = build(args.project)
+        files, cfg, title, module_file, nimg, naud = build(args.project, args.thumb_fit)
     except (BuildError, json.JSONDecodeError, OSError) as e:
         print("ERREUR : %s" % e, file=sys.stderr)
         return 1

@@ -22,6 +22,7 @@
 //! (même interpréteur) lancé sans fenêtre, qui quitte sa console, s'attache à celle du
 //! convertisseur, s'immunise contre l'événement puis l'émet vers le groupe du convertisseur.
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -32,6 +33,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::watch;
 
 use super::download::cancelled;
+use crate::settings::ThumbFit;
 use crate::{AppError, AppResult};
 
 /// Ligne JSON la plus longue lue (au-delà : tronquée, donc ignorée).
@@ -63,6 +65,12 @@ pub struct Conversion<'a> {
     pub input: &'a Path,
     /// Sortie `.plain.pk` (publication atomique par le convertisseur).
     pub output: &'a Path,
+    /// ffmpeg à utiliser pour rééchantillonner l'audio à 44 100 Hz (#46), transmis par la
+    /// variable `FLAM_FFMPEG`. `None` : variable vide, donc rééchantillonnage désactivé (le
+    /// convertisseur ne cherche jamais un ffmpeg du `PATH`, dont la licence est inconnue).
+    pub ffmpeg: Option<&'a Path>,
+    /// Remplissage des vignettes, transmis par `--thumb-fit` (ensemble fermé, #279).
+    pub thumb_fit: ThumbFit,
     /// Délai laissé au convertisseur après `CTRL_BREAK_EVENT` avant l'arrêt forcé.
     pub grace: Duration,
 }
@@ -364,6 +372,20 @@ struct Reported {
     message: String,
 }
 
+/// Arguments du script : jamais d'interpolation de texte libre (le remplissage vient d'un
+/// ensemble fermé).
+fn converter_args(req: &Conversion<'_>) -> Vec<OsString> {
+    vec![
+        req.script.as_os_str().to_owned(),
+        req.input.as_os_str().to_owned(),
+        "-o".into(),
+        req.output.as_os_str().to_owned(),
+        "--progress-json".into(),
+        "--thumb-fit".into(),
+        req.thumb_fit.as_arg().into(),
+    ]
+}
+
 /// Lance la conversion et relaie les événements `step` à `on_step`. Annulation via `cancel`.
 pub async fn convert(
     req: &Conversion<'_>,
@@ -378,11 +400,11 @@ pub async fn convert(
         .parent()
         .ok_or_else(|| AppError::Validation("sortie sans dossier parent".into()))?;
     let mut child = command(req.python, cwd)
-        .arg(req.script)
-        .arg(req.input)
-        .arg("-o")
-        .arg(req.output)
-        .arg("--progress-json")
+        .env(
+            "FLAM_FFMPEG",
+            req.ffmpeg.map_or(OsStr::new(""), Path::as_os_str),
+        )
+        .args(converter_args(req))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -580,6 +602,32 @@ b"
     }
 
     #[test]
+    fn remplissage_des_vignettes_transmis_au_convertisseur() {
+        let req = |thumb_fit| Conversion {
+            python: Path::new("python.exe"),
+            script: Path::new("telmi2flam.py"),
+            input: Path::new("in.zip"),
+            output: Path::new("out.plain.pk"),
+            ffmpeg: None,
+            thumb_fit,
+            grace: Duration::from_secs(1),
+        };
+        for (fit, arg) in [
+            (ThumbFit::Flou, "flou"),
+            (ThumbFit::Rogner, "rogner"),
+            (ThumbFit::Bandes, "bandes"),
+        ] {
+            let args = converter_args(&req(fit));
+            assert_eq!(
+                args[args.len() - 2..],
+                [OsString::from("--thumb-fit"), OsString::from(arg)]
+            );
+            assert_eq!(args[0], OsString::from("telmi2flam.py"));
+            assert!(args.contains(&OsString::from("--progress-json")));
+        }
+    }
+
+    #[test]
     fn temporaire_du_convertisseur() {
         assert_eq!(
             part_of(Path::new("/l/.staging/t.plain.pk"), 42),
@@ -619,6 +667,8 @@ b"
                     script: &script,
                     input: &archive,
                     output: &output,
+                    ffmpeg: None,
+                    thumb_fit: ThumbFit::default(),
                     grace: Duration::from_secs(5),
                 },
                 &mut rx,
@@ -650,6 +700,8 @@ b"
                     script: &script,
                     input: &archive,
                     output: &output,
+                    ffmpeg: None,
+                    thumb_fit: ThumbFit::default(),
                     grace: Duration::from_secs(10),
                 },
                 &mut rx,
