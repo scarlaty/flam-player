@@ -137,6 +137,23 @@ Invariants (repris de Python, à tester côté Rust) :
    dossier existant, donc sans atomicité. De plus, les deux publications successives
    (`.plain.pk` puis `.plain`) ne sont pas atomiques ensemble. Le launcher n'utilise que le
    `.plain.pk`. Le comportement du dossier est conservé et testé tel quel.
+   Durabilité (#357, #416) : le `.plain.pk` et chaque fichier du `.plain` sont vidés sur disque
+   (`sync_all`) avant le renommage. Mesure (#416, 500 fichiers dont 100 de 200 Kio, soit 21 Mio,
+   disque local NTFS, antivirus actif, `mesure_sync_all` ignoré par défaut de `output.rs`) :
+   sans vidage 0,34 à 0,40 s (jusqu'à 4,5 s en cas d'activité disque concurrente), vidage par
+   fichier 1,6 s (environ 2,5 ms par fichier, soit environ 4 fois le temps d'écriture sans vidage), vidage
+   final séquentiel 1,3 à 1,9 s (aucun gain : chaque `FlushFileBuffers` coûte autant), vidage
+   final sur 8 fils 0,65 à 1,35 s (gain partiel seulement). Le coût absolu reste de l'ordre de
+   la seconde pour des centaines de fichiers, et le launcher n'écrit que le `.plain.pk` (un seul
+   vidage) : le dossier `.plain` ne sert qu'à la CLI. Le vidage par fichier est conservé, sans
+   vidage final. Pas de mesure sur clé USB
+   (aucun volume amovible monté pendant la mesure).
+   Classement des erreurs : si la sortie échoue (`output_error`) alors que l'archive d'entrée
+   relue en flux est elle-même illisible ou modifiée, l'erreur rendue est `archive_unreadable`
+   (cause première) : l'archive est relue en entier seulement après un échec d'écriture.
+   Bibliothèque : `output::part_path` n'est plus public (`pub(crate)`, le paramètre `call`
+   d'#357 n'est pas une API) ; une panique qui se déroule supprime et désinscrit les `.part`
+   (garde RAII), `discard_pending` ne servant qu'à `panic = "abort"`.
 2. **Aucune écriture hors de la destination** : les noms de sortie sont relatifs, sans `..`,
    sans `\`, sans `:`, sans composant vide (garde zip-slip). Le dossier `.plain` est vérifié
    par chemin canonique. Les entrées de l'archive d'entrée ne sont **jamais extraites** sur
