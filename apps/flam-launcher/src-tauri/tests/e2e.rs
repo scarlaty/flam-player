@@ -18,6 +18,9 @@
 //! - `FLAM_E2E_PLAYER` (chemin de `flam-player.exe`) et `FLAM_E2E_CONVERTER_DIR` (dossier
 //!   `telmi2flam/` embarqué), ou à défaut le Python du `PATH` et `tools/telmi2flam/`.
 //!
+//! Moteur Rust (#136) : l'histoire est aussi installée par `telmi2flam/telmi2flam.exe` (détecté
+//! dans l'installation, exigé avec `FLAM_E2E_REQUIRE`, ou `FLAM_E2E_RUST_CONVERTER`), sans Python.
+//!
 //! Sans `flam-player.exe`, le test se saute avec un message ; `FLAM_E2E_REQUIRE=1` (CI) le
 //! transforme en échec.
 
@@ -50,6 +53,9 @@ struct Tools {
     player: PathBuf,
     python: Option<PathBuf>,
     converter: PathBuf,
+    /// `telmi2flam.exe` (moteur Rust, #136) : détecté dans l'installation (exigé avec
+    /// `FLAM_E2E_REQUIRE`), sinon `FLAM_E2E_RUST_CONVERTER` ; absent : étape sautée.
+    rust: Option<PathBuf>,
 }
 
 fn repo_root() -> PathBuf {
@@ -94,10 +100,21 @@ fn find_tools() -> Option<Tools> {
         if python.is_none() {
             return skip_or_fail(&format!("Python embarqué absent de {}", dir.display()));
         }
+        let rust = install::detect_rust_converter(&env);
+        if rust.is_none() {
+            // Échec avec `FLAM_E2E_REQUIRE` ; sinon seule l'étape du moteur Rust est sautée.
+            let reason = format!("telmi2flam/telmi2flam.exe absent de {}", dir.display());
+            assert!(
+                std::env::var_os("FLAM_E2E_REQUIRE").is_none(),
+                "prérequis du test e2e absents : {reason}"
+            );
+            eprintln!("e2e : étape du moteur Rust ignorée ({reason})");
+        }
         return Some(Tools {
             player,
             python,
             converter,
+            rust,
         });
     }
     let Some(player) = env_path("FLAM_E2E_PLAYER").filter(|p| p.is_file()) else {
@@ -114,6 +131,7 @@ fn find_tools() -> Option<Tools> {
             player,
             python: Some(python),
             converter: dir.join("telmi2flam.py"),
+            rust: env_path("FLAM_E2E_RUST_CONVERTER"),
         });
     }
     let converter = repo_root().join("tools/telmi2flam/telmi2flam.py");
@@ -125,6 +143,7 @@ fn find_tools() -> Option<Tools> {
         player,
         python,
         converter,
+        rust: env_path("FLAM_E2E_RUST_CONVERTER"),
     })
 }
 
@@ -350,9 +369,11 @@ async fn scenario() {
     let (install_tx, install_rx) = channel();
     let toolchain = Toolchain {
         cache_root: cache_root.clone(),
+        engine: Default::default(),
         python: tools.python.clone(),
         ffmpeg: None,
         converter: Some(tools.converter.clone()),
+        rust_converter: None,
         max_downloads: 2,
         thumb_fit: Default::default(),
     };
@@ -365,7 +386,9 @@ async fn scenario() {
         gate: catalogs.cache_gate(),
         grace: install::GRACE,
     });
-    let task = installer.start(entry).expect("installation acceptée");
+    let task = installer
+        .start(entry.clone())
+        .expect("installation acceptée");
     let finished =
         tokio::task::spawn_blocking(move || install_rx.recv_timeout(Duration::from_secs(180)))
             .await
@@ -387,6 +410,53 @@ async fn scenario() {
     assert_eq!(title, "Histoire E2E");
     assert!(story_file.to_string_lossy().ends_with(".plain.pk"));
     assert_eq!(&std::fs::read(&story_file).unwrap()[..2], b"PK");
+
+    // 3 bis. Moteur Rust (#136) : même installation, dans un autre cache, par le binaire livré
+    // (`converter_engine = rust`), sans Python.
+    if let Some(exe) = tools.rust.clone() {
+        let rust_cache = dir.path().join("cache-rust");
+        std::fs::create_dir_all(&rust_cache).unwrap();
+        let (tx, rx) = channel();
+        let toolchain = Toolchain {
+            cache_root: rust_cache.clone(),
+            engine: settings::ConverterEngine::Rust,
+            python: None,
+            ffmpeg: None,
+            converter: None,
+            rust_converter: Some(exe.clone()),
+            max_downloads: 2,
+            thumb_fit: Default::default(),
+        };
+        let rust_installer = InstallService::new(InstallOptions {
+            client: install::download::build_client().unwrap(),
+            resolver: Arc::new(move || Ok(toolchain.clone())),
+            events: Arc::new(InstallRecorder(Mutex::new(tx))),
+            queue_path: config_dir.join("rust").join(install::QUEUE_FILE),
+            gate: catalogs.cache_gate(),
+            grace: install::GRACE,
+        });
+        rust_installer
+            .start(entry)
+            .expect("installation acceptée (moteur Rust)");
+        let finished =
+            tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(180)))
+                .await
+                .unwrap()
+                .expect("fin de l'installation (moteur Rust) avant le délai");
+        if let Finished::Failed(failed) = finished {
+            panic!(
+                "installation en échec (moteur Rust, {}) : {:?}",
+                exe.display(),
+                failed.error
+            );
+        }
+        let (rust_file, rust_title) = Library::new(&rust_cache)
+            .playable(STORY_UUID)
+            .expect("histoire jouable (moteur Rust)");
+        assert_eq!(rust_title, "Histoire E2E");
+        assert_eq!(&std::fs::read(&rust_file).unwrap()[..2], b"PK");
+        eprintln!("e2e : conversion par {} ok", exe.display());
+    }
 
     // 4. Lancement du vrai player en pilotes SDL « dummy » (rendu logiciel), depuis une copie de travail.
     let (started_tx, started_rx) = channel();
