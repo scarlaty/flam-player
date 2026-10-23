@@ -4,6 +4,7 @@ import { AppFrame } from "./features/app/AppFrame";
 import { DeviceBoundary } from "./features/device/DeviceBoundary";
 import { CompatProvider } from "./features/compat/CompatProvider";
 import { LibraryProvider } from "./features/library/LibraryProvider";
+import { PodcastSelectionProvider } from "./features/podcasts/SelectionContext";
 import { RecoveryProvider } from "./features/recovery/RecoveryProvider";
 import { StoriesProvider } from "./features/stories/StoriesProvider";
 import { DEMO_HASH, useRoute, type Route } from "./router";
@@ -36,9 +37,11 @@ function AppRoutes({ route }: { route: Exclude<Route, "demo"> }) {
         <LibraryProvider>
           <CompatProvider>
             <StoriesProvider>
-              <DeviceBoundary>
-                <AppFrame route={route} />
-              </DeviceBoundary>
+              <PodcastSelectionProvider>
+                <DeviceBoundary>
+                  <AppFrame route={route} />
+                </DeviceBoundary>
+              </PodcastSelectionProvider>
             </StoriesProvider>
           </CompatProvider>
         </LibraryProvider>

@@ -10,6 +10,7 @@ import { DeviceScreen } from "../device/DeviceScreen";
 import { TransferPanel } from "../device/TransferPanel";
 import { DeviceLibrarySend } from "../stories/DeviceLibrarySend";
 import { LibrarySidebar } from "../library/LibrarySidebar";
+import { PodcastsScreen } from "../podcasts/PodcastsScreen";
 import { PlayerScreen } from "../player/PlayerScreen";
 import { RecoveryBanners } from "../recovery/RecoveryBanners";
 import { useRecovery } from "../recovery/RecoveryContext";
@@ -27,6 +28,7 @@ const TITLES: Record<Exclude<Route, "demo">, string> = {
   settings: t.nav.settings,
   library: t.nav.library,
   device: t.nav.device,
+  podcasts: t.podcasts.title,
 };
 
 /**
@@ -86,6 +88,7 @@ export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
       <RecoveryBanners />
       {route === "sources" && <SourcesScreen />}
       {route === "settings" && <SettingsScreen />}
+      {route === "podcasts" && <PodcastsScreen />}
       {route === "device" && <DeviceScreen libraryPanel={<DeviceLibrarySend />} />}
       {route === "library" && (
         <>
