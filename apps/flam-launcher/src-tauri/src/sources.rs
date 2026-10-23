@@ -1,9 +1,10 @@
 //! Registre des sources d'histoires : `sources.json` (catalogues, dossiers locaux, flux
 //! podcast), source par défaut « Telmi Store » et source implicite « Mes histoires ».
 //!
-//! L'URL d'un flux podcast est un secret (D11, `docs/podcasts.md`) : elle n'est ni journalisée
-//! ni renvoyée au front ; les commandes renvoient une [`PublicSource`], où elle est remplacée
-//! par un indice (`feed_hint`).
+//! L'URL d'un flux podcast peut porter un jeton (D11, `docs/podcasts.md`, décidé le
+//! 2026-10-23) : elle est affichée en clair dans l'interface, mais n'est jamais journalisée ni
+//! recopiée dans un message d'erreur ou le diagnostic. Le front reçoit une [`PublicSource`],
+//! qui ajoute un libellé court (`feed_hint`, `https://hôte/…`).
 
 use std::path::{Path, PathBuf};
 
@@ -11,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::catalog::{purge_catalog_cache, CatalogService};
-use crate::podcast::source::{feed_hint, purge_podcast_cache, PodcastService};
+use crate::podcast::net::redact_url;
+use crate::podcast::source::{purge_podcast_cache, PodcastService};
 use crate::storage::{self, ConfigState, MigrationStep, Recovery};
 use crate::watch::WatchState;
 use crate::{AppError, AppResult};
@@ -55,8 +57,8 @@ pub enum Source {
         name: String,
         path: String,
     },
-    /// Flux podcast RSS (#211). `url` est un secret (D11) : jamais journalisée, jamais renvoyée
-    /// au front (voir [`PublicSource`]).
+    /// Flux podcast RSS (#211). `url` est affichée dans l'interface mais jamais journalisée
+    /// (D11) : ne pas formater cette valeur avec `{:?}` dans une trace.
     Podcast {
         id: String,
         name: String,
@@ -99,7 +101,7 @@ pub enum SourceInput {
 }
 
 /// Source telle que renvoyée au front (miroir de `Source` dans `src/api/sources.ts`) : comme
-/// [`Source`], sauf l'URL d'un flux podcast, remplacée par un indice (`https://hôte/…`, D11).
+/// [`Source`], avec en plus, pour un flux podcast, un libellé court `feed_hint` (`https://hôte/…`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PublicSource {
@@ -120,6 +122,9 @@ pub enum PublicSource {
     Podcast {
         id: String,
         name: String,
+        /// URL complète, affichée dans l'interface (D11, décidé le 2026-10-23).
+        url: String,
+        /// Libellé court : schéma et hôte.
         feed_hint: String,
     },
 }
@@ -133,7 +138,8 @@ impl From<Source> for PublicSource {
             Source::Podcast { id, name, url } => PublicSource::Podcast {
                 id,
                 name,
-                feed_hint: feed_hint(&url),
+                feed_hint: redact_url(&url),
+                url,
             },
         }
     }
@@ -1098,20 +1104,19 @@ mod tests {
         assert_eq!(ids(&store.list().unwrap()), [LIBRARY_ID, TELMI_STORE_ID]);
     }
 
-    /// D11 : la vue renvoyée au front ne contient pas l'URL du flux, seulement un indice.
+    /// D11 (décidé le 2026-10-23) : la vue renvoyée au front contient l'URL complète et un
+    /// libellé court.
     #[test]
-    fn la_vue_publique_masque_l_url_du_flux() {
+    fn la_vue_publique_donne_l_url_et_un_libelle_court() {
         let (_dir, store) = store();
         podcast(&store, "p", FEED).unwrap();
         let view = store.view().unwrap();
-        let json = serde_json::to_string(&view).unwrap();
-        assert!(!json.contains("SECRET42"), "{json}");
-        assert!(!json.contains("/prive/"), "{json}");
         assert_eq!(
             view.sources[2],
             PublicSource::Podcast {
                 id: "p".into(),
                 name: "Podcast".into(),
+                url: FEED.into(),
                 feed_hint: "https://podcasts.example.test/…".into()
             }
         );

@@ -36,7 +36,7 @@ const NO_AUDIO: &str = r#"<?xml version="1.0"?>
 </channel></rss>"#;
 
 fn service() -> PodcastService {
-    PodcastService::new(reqwest::Client::new(), Arc::default())
+    PodcastService::new(NetPolicy::loopback_for_tests(), Arc::default()).unwrap()
 }
 
 fn feed_url(server: &MockServer) -> String {
@@ -159,17 +159,6 @@ fn une_url_invalide_ou_avec_identifiants_est_refusee_sans_etre_recopiee() {
     }
     let err = validate_feed_url(&format!("https://moi:{SECRET}@exemple.org/f.xml")).unwrap_err();
     assert!(err.to_string().contains("identifiants"), "{err}");
-}
-
-#[test]
-fn l_indice_ne_garde_que_le_schema_et_l_hote() {
-    assert_eq!(
-        feed_hint(&format!(
-            "https://h.example.test:8443{FEED_PATH}?jeton={SECRET}"
-        )),
-        "https://h.example.test/…"
-    );
-    assert_eq!(feed_hint("pas une url"), "…");
 }
 
 #[test]
@@ -544,7 +533,7 @@ async fn apres_la_purge_aucun_cache_n_est_recree() {
 #[tokio::test]
 async fn la_purge_attend_le_portillon_du_vidage() {
     let gate: Arc<tokio::sync::RwLock<()>> = Arc::default();
-    let svc = PodcastService::new(reqwest::Client::new(), gate.clone());
+    let svc = PodcastService::new(NetPolicy::loopback_for_tests(), gate.clone()).unwrap();
     let root = tempfile::tempdir().unwrap();
     let paused = gate.write().await;
     let blocked = tokio::time::timeout(
@@ -558,4 +547,92 @@ async fn la_purge_attend_le_portillon_du_vidage() {
     );
     drop(paused);
     svc.purge_source(root.path(), "p1").await.unwrap();
+}
+
+// ---------------------------------------------------------------------------------------
+// Adresses privées (D10)
+// ---------------------------------------------------------------------------------------
+
+/// Politique stricte (production) : le serveur de test, sur 127.0.0.1, est refusé avant toute
+/// connexion ; avec la politique de test, les autres plages privées restent refusées.
+#[tokio::test]
+async fn un_flux_sur_une_adresse_privee_litterale_est_refuse() {
+    let server = MockServer::start().await;
+    serve(&server, FEED).await;
+    let strict = PodcastService::new(NetPolicy::strict(), Arc::default()).unwrap();
+    let url = feed_url(&server);
+    let err = strict.fetch(&url).await.err().unwrap();
+    assert_eq!(err.kind(), "network");
+    assert_eq!(err.to_string(), BLOCKED_MESSAGE);
+    assert_no_secret(&err.to_string(), &url);
+    assert!(server.received_requests().await.unwrap().is_empty());
+
+    let svc = service();
+    for private in [
+        format!("http://10.0.0.1{FEED_PATH}?jeton={SECRET}"),
+        format!("http://169.254.169.254{FEED_PATH}"),
+        format!("http://[::ffff:192.168.1.1]{FEED_PATH}"),
+    ] {
+        let err = svc.fetch(&private).await.err().unwrap();
+        assert_eq!(err.to_string(), BLOCKED_MESSAGE, "{private}");
+    }
+    // Rafraîchissement avec un cache : adresse refusée, cache servi hors ligne.
+    let root = tempfile::tempdir().unwrap();
+    add(&svc, root.path(), "p1", &url).await;
+    let err = strict.refresh(0, root.path(), "p1", &url, 2).await.unwrap();
+    assert!(err.status.offline);
+    assert_eq!(err.status.error.unwrap().message, BLOCKED_MESSAGE);
+}
+
+/// Une redirection vers une adresse privée est refusée par le client gardé, sans la suivre.
+#[tokio::test]
+async fn une_redirection_vers_une_adresse_privee_est_refusee() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(302).insert_header(
+            "Location",
+            format!("http://10.0.0.1/flux.xml?jeton={SECRET}"),
+        ))
+        .mount(&server)
+        .await;
+    let svc = service();
+    let url = feed_url(&server);
+    let (logs, _guard) = Logs::capture();
+    let err = svc.fetch(&url).await.err().unwrap();
+    assert_eq!(err.kind(), "network");
+    assert_eq!(err.to_string(), BLOCKED_MESSAGE);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert_no_secret(&logs.text(), &url);
+}
+
+// ---------------------------------------------------------------------------------------
+// Diagnostic copiable (D11)
+// ---------------------------------------------------------------------------------------
+
+/// Le diagnostic copiable (`device::diagnostic`) ne lit ni `sources.json` ni les podcasts, et
+/// une erreur de flux qui y serait enregistrée ne contient pas l'URL.
+#[tokio::test]
+async fn le_diagnostic_ne_reprend_jamais_l_url_du_flux() {
+    let diagnostic = include_str!("../../device/diagnostic.rs");
+    for needle in ["SourcesStore", "sources.json", "podcast", "Source::"] {
+        assert!(!diagnostic.contains(needle), "le diagnostic lit {needle}");
+    }
+    let server = MockServer::start().await;
+    let svc = service();
+    let url = feed_url(&server);
+    let strict = PodcastService::new(NetPolicy::strict(), Arc::default()).unwrap();
+    let mut errors = vec![strict.fetch(&url).await.err().unwrap()];
+    serve_status(&server, 404).await;
+    errors.push(svc.fetch(&url).await.err().unwrap());
+    serve(&server, "<rss").await;
+    errors.push(svc.fetch(&url).await.err().unwrap());
+    errors.push(validate_feed_url(&format!("ftp://h/{SECRET}")).unwrap_err());
+    for err in &errors {
+        let kept = crate::device::diagnostic::session_message(err);
+        crate::device::diagnostic::record_error("test", None, &err.to_string());
+        assert_no_secret(&kept, &url);
+    }
+    for kept in crate::device::diagnostic::session_errors() {
+        assert_no_secret(&format!("{kept:?}"), &url);
+    }
 }

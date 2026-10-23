@@ -107,9 +107,9 @@ pub fn run() {
                 grace: install::GRACE,
             });
             let podcasts = podcast::source::PodcastService::new(
-                podcast::source::feed_client()?,
+                podcast::net::NetPolicy::strict(),
                 catalog.cache_gate(),
-            );
+            )?;
             app.manage(storage::ConfigState::new(config_dir));
             app.manage(folder::FolderState::default());
             app.manage(watch::WatchState::default());

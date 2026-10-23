@@ -1221,8 +1221,9 @@ travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
   enregistrés.
 - Schéma v2 (#211) : ajout du type `podcast` ; un fichier v0 ou v1 est lu sans changement, et le
   fichier n'est écrit en v2 que s'il contient un podcast (retour à un launcher v1 possible sinon). L'URL
-  d'un flux est un secret (D11, `docs/podcasts.md`) : ni journalisée, ni renvoyée au front (les
-  commandes renvoient `feed_hint`, `https://hôte/…`) ; détails dans `src-tauri/src/podcast/source.rs`.
+  d'un flux est affichée dans l'interface (avec un libellé court `feed_hint`, `https://hôte/…`),
+  mais jamais journalisée ni recopiée dans les erreurs ou le diagnostic (D11, `docs/podcasts.md`) ;
+  adresses privées refusées (D10, `podcast::net`) ; détails dans `src-tauri/src/podcast/source.rs`.
 
 #### Écriture, corruption, migration
 

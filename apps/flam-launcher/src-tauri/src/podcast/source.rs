@@ -1,15 +1,17 @@
 //! Source « Podcast » (#211) : un flux RSS ajouté par son URL (P1), téléchargé, lu par
 //! [`super::rss`] et gardé en cache hors ligne.
 //!
-//! # URL du flux : un secret (D11)
+//! # URL du flux (D11, décidé le 2026-10-23)
 //!
-//! Une URL de flux peut porter un jeton d'abonnement. Elle n'est donc :
-//! - **jamais journalisée** ni recopiée dans un message d'erreur (les erreurs `reqwest`, dont
-//!   le texte contient l'URL, sont réduites à leur cause) ;
-//! - **jamais renvoyée au front** : la liste des sources en donne un indice ([`feed_hint`]),
-//!   les épisodes sont désignés par un identifiant opaque (empreinte du `guid`, qui peut être
-//!   l'URL de l'enclosure), sans URL d'enclosure ni d'image ;
+//! Une URL de flux peut porter un jeton d'abonnement. Elle est **affichée en clair** dans
+//! l'interface (`sources_list`), mais elle n'est :
+//! - **jamais journalisée** (seule [`redact_url`] apparaît dans une trace) ni recopiée dans un
+//!   message d'erreur (les erreurs `reqwest`, dont le texte contient l'URL, sont réduites à leur
+//!   cause), donc jamais dans le diagnostic copiable ;
 //! - **jamais écrite dans le cache** : `meta.json` garde son empreinte SHA-256.
+//!
+//! Les épisodes sont désignés par un identifiant opaque (empreinte du `guid`, qui peut être
+//! l'URL de l'enclosure), sans URL d'enclosure ni d'image.
 //!
 //! # Cache
 //!
@@ -36,9 +38,10 @@
 //!
 //! # Adresses privées (D10)
 //!
-//! Le contrôle des adresses privées et locales appartient au client de téléchargement de #213,
-//! absent de `main` à l'écriture de ce module. Tout accès réseau d'une source podcast passe par
-//! le client construit par [`feed_client`] : c'est le point où brancher ce contrôle.
+//! Tout accès réseau d'une source podcast passe par le client gardé de [`super::net`] (#213),
+//! construit par [`feed_client`] : adresse littérale contrôlée avant la requête ([`check_url`]),
+//! adresses résolues et redirections contrôlées par le client. Un refus est rendu comme une
+//! erreur `network` au message d'adresse refusée ([`BLOCKED_MESSAGE`]), sans URL.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -52,8 +55,10 @@ use sha2::{Digest, Sha256};
 use tauri::State;
 use url::Url;
 
+use super::net::{check_url, guarded_client, is_blocked, redact_url, NetPolicy};
 use super::rss::{parse_feed, PodcastFeed, RssError, MAX_FEED_BYTES};
-use crate::catalog::{blocking, build_client, CatalogProblem, CatalogStatus};
+use crate::catalog::{blocking, CatalogProblem, CatalogStatus};
+use crate::install::download::BLOCKED_MESSAGE;
 use crate::settings::{Environment, SettingsStore};
 use crate::sources::{validate_name, PublicSource, Source, SourcesStore, MAX_NAME_LEN};
 use crate::storage::{self, ConfigState};
@@ -61,8 +66,9 @@ use crate::{AppError, AppResult};
 
 /// Longueur maximale de l'URL d'un flux, en octets.
 pub const MAX_FEED_URL_LEN: usize = 2048;
-/// Délais de connexion et de requête (un flux peut atteindre 16 Mio).
+/// Délais de connexion, de silence et de requête complète (un flux peut atteindre 16 Mio).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Sous-dossier du cache (déclaré dans `cache::APP_CACHE_SUBDIRS`).
 pub const CACHE_SUBDIR: &str = "podcasts";
@@ -109,26 +115,11 @@ pub fn validate_feed_url(raw: &str) -> AppResult<String> {
     Ok(normalized)
 }
 
-/// Indice affichable d'une URL de flux : schéma et hôte seulement (`https://hôte/…`), sans
-/// chemin, port ni paramètres. `…` si l'URL est illisible.
-pub fn feed_hint(url: &str) -> String {
-    match Url::parse(url) {
-        Ok(url) => match url.host_str() {
-            Some(host) => format!("{}://{host}/…", url.scheme()),
-            None => "…".into(),
-        },
-        Err(_) => "…".into(),
-    }
-}
-
-/// Client HTTP des flux podcast : rustls (certificats vérifiés), 5 redirections au plus,
-/// jamais de https vers http, aucune redirection par page HTML.
-///
-/// **Point d'accroche D10 (#213)** : le refus des adresses privées et locales (après
-/// résolution DNS et à chaque redirection) s'ajoute ici, en remplaçant ce client par celui de
-/// #213. C'est le seul client utilisé par ce module.
-pub fn feed_client() -> reqwest::Result<reqwest::Client> {
-    build_client(CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+/// Client HTTP des flux podcast : client gardé de [`super::net`] (D10 : adresses résolues et
+/// redirections contrôlées, connexion à l'adresse vérifiée, aucun mandataire ; rustls,
+/// 5 redirections au plus, jamais de https vers http). Le délai total est posé par requête.
+pub fn feed_client(policy: NetPolicy) -> reqwest::Result<reqwest::Client> {
+    guarded_client(policy, CONNECT_TIMEOUT, READ_TIMEOUT)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -384,6 +375,9 @@ fn view_from(
 
 /// Erreur réseau sans l'URL (le texte d'une `reqwest::Error` la contient).
 fn network_error(err: &reqwest::Error) -> AppError {
+    if is_blocked(err) {
+        return AppError::Network(BLOCKED_MESSAGE.into());
+    }
     let reason = if err.is_timeout() {
         "délai dépassé"
     } else if err.is_redirect() {
@@ -453,6 +447,8 @@ async fn parse_blocking(body: Vec<u8>) -> AppResult<(Vec<u8>, PodcastFeed)> {
 
 /// Service des sources podcast (état Tauri) : client HTTP, verrous et générations par source.
 pub struct PodcastService {
+    /// Politique D10 : celle du client et du contrôle des adresses littérales.
+    policy: NetPolicy,
     client: reqwest::Client,
     /// Portillon d'écriture du cache, partagé avec le catalogue et le vidage du cache.
     cache_gate: Arc<tokio::sync::RwLock<()>>,
@@ -463,13 +459,18 @@ pub struct PodcastService {
 }
 
 impl PodcastService {
-    pub fn new(client: reqwest::Client, cache_gate: Arc<tokio::sync::RwLock<()>>) -> Self {
-        Self {
-            client,
+    /// Service avec la politique `policy` (en production : [`NetPolicy::strict`]).
+    pub fn new(
+        policy: NetPolicy,
+        cache_gate: Arc<tokio::sync::RwLock<()>>,
+    ) -> reqwest::Result<Self> {
+        Ok(Self {
+            policy,
+            client: feed_client(policy)?,
             cache_gate,
             locks: Mutex::default(),
             generations: Mutex::default(),
-        }
+        })
     }
 
     fn source_lock(&self, source_id: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -532,7 +533,15 @@ impl PodcastService {
         url: &str,
         conditional: Option<&CacheMeta>,
     ) -> AppResult<reqwest::Response> {
-        let mut request = self.client.get(url);
+        // D10 : adresse littérale refusée avant toute connexion (le nom de domaine est contrôlé
+        // à la résolution, chaque redirection par le client gardé).
+        let parsed =
+            Url::parse(url).map_err(|_| AppError::Validation("adresse de flux invalide".into()))?;
+        if check_url(&parsed, self.policy).is_err() {
+            tracing::warn!(url = %redact_url(url), "flux podcast : adresse refusée (D10)");
+            return Err(AppError::Network(BLOCKED_MESSAGE.into()));
+        }
+        let mut request = self.client.get(parsed).timeout(REQUEST_TIMEOUT);
         if let Some(meta) = conditional {
             if let Some(etag) = &meta.etag {
                 request = request.header(IF_NONE_MATCH, etag);
