@@ -293,6 +293,9 @@ fn looks_base64(token: &str) -> bool {
     let digits = count(u8::is_ascii_digit);
     let upper = count(u8::is_ascii_uppercase);
     let lower = count(u8::is_ascii_lowercase);
+    // Premier critère : un chemin à `/` qui mêle chiffres et deux casses (`/Data2/Flam/Work`)
+    // est masqué en entier. Sur-masquage voulu : le base64 standard contient `/`, et une clé qui
+    // fuit coûte plus cher qu'un chemin illisible dans un diagnostic.
     if token.len() >= MIN_BASE64_RUN
         && upper > 0
         && lower > 0
@@ -300,9 +303,6 @@ fn looks_base64(token: &str) -> bool {
     {
         return true;
     }
-    // Premier critère : un chemin à `/` qui mêle chiffres et deux casses (`/Data2/Flam/Work`)
-    // est masqué en entier. Sur-masquage voulu : le base64 standard contient `/`, et une clé qui
-    // fuit coûte plus cher qu'un chemin illisible dans un diagnostic.
     // Sans chiffre ni remplissage : jamais un chemin (`/FLAMCACHE/work/stories`).
     let letters = upper + lower;
     token.len() >= MIN_BASE64_LETTERS_RUN
@@ -373,7 +373,7 @@ fn is_uuid_at(chars: &[char], at: usize) -> bool {
         })
 }
 
-/// Remplace `needle` par `with`, sans tenir compte de la casse (ASCII et Unicode simple).
+/// Remplace `needle` par `with`, sans tenir compte de la casse (Unicode, y compris à longueur variable : `İ` → `i̇`).
 fn replace_ci(text: &str, needle: &str, with: &str) -> String {
     replace_matching(text, needle, with, |_, _| true)
 }

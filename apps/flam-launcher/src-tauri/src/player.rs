@@ -609,9 +609,9 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// `TerminateProcess`, sans événement de console. Lancé à la main (`run.bat`), le player garde
 /// sa console.
 ///
-/// En version de développement (`debug`), le player héritait jusqu'ici de la console du launcher :
-/// ses traces (stdout comme stderr) s'y affichaient. Elles ne passent désormais que par le tube
-/// stderr lu par le launcher (repères, messages d'erreur) ; stdout n'est plus affiché.
+/// En version de développement (`debug`), le player n'est plus rattaché à la console du launcher :
+/// ses écritures directes sur la console ne s'y affichent plus ; stdout est ignoré et ses traces
+/// ne passent que par le tube stderr lu par le launcher (repères, messages d'erreur).
 fn hide_console(command: &mut Command) {
     #[cfg(windows)]
     {
