@@ -89,26 +89,42 @@ export function refusalFor(
   return null;
 }
 
-/** Identifiants des `n` premiers épisodes (liste déjà triée par date décroissante). */
-export function latestIds(episodes: readonly Pick<Episode, "id">[], n: number): string[] {
-  return episodes.slice(0, Math.max(0, n)).map((e) => e.id);
+/** Issue du raccourci « N derniers » : épisodes cochés et cause de chaque refus. */
+export interface ShortcutOutcome {
+  accepted: SelectedEpisode[];
+  /** Déjà cochés avant le raccourci. */
+  already: number;
+  /** Explicites, non cochés d'office (D8). */
+  explicit: number;
+  /** Refusés par les plafonds (nombre, taille de l'épisode ou du pack : D1, N9). */
+  capped: number;
 }
 
 /**
  * Épisodes que le raccourci « N derniers » peut cocher : parcourt `candidates` dans l'ordre et
  * garde ceux que les plafonds acceptent (D1, N9), en tenant compte de ceux déjà retenus dans la
- * foulée. Les épisodes explicites ne sont pas cochés d'office (D8) ; les doublons sont ignorés.
+ * foulée. Les épisodes déjà cochés sont comptés à part, puis les explicites (non cochés
+ * d'office, D8), puis ceux que les plafonds refusent.
  */
+export function shortcutOutcome(
+  selected: readonly SelectedEpisode[],
+  candidates: readonly SelectedEpisode[],
+): ShortcutOutcome {
+  const outcome: ShortcutOutcome = { accepted: [], already: 0, explicit: 0, capped: 0 };
+  for (const candidate of candidates) {
+    const refusal = refusalFor([...selected, ...outcome.accepted], candidate);
+    if (refusal === "duplicate") outcome.already += 1;
+    else if (candidate.explicit) outcome.explicit += 1;
+    else if (refusal !== null) outcome.capped += 1;
+    else outcome.accepted.push(candidate);
+  }
+  return outcome;
+}
+
+/** Épisodes que le raccourci coche (voir `shortcutOutcome`). */
 export function acceptedForShortcut(
   selected: readonly SelectedEpisode[],
   candidates: readonly SelectedEpisode[],
 ): SelectedEpisode[] {
-  const accepted: SelectedEpisode[] = [];
-  for (const candidate of candidates) {
-    if (candidate.explicit) continue;
-    if (refusalFor([...selected, ...accepted], candidate) === null) {
-      accepted.push(candidate);
-    }
-  }
-  return accepted;
+  return shortcutOutcome(selected, candidates).accepted;
 }

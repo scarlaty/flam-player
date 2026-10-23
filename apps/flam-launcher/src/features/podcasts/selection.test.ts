@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import {
   estimateSize,
   acceptedForShortcut,
-  latestIds,
+  shortcutOutcome,
   MAX_EPISODE_BYTES,
   MAX_EPISODES,
   MAX_PACK_BYTES,
@@ -53,12 +53,6 @@ it("un même identifiant dans deux flux désigne deux épisodes distincts", () =
   expect(refusalFor([item("a", 1), other], other)).toBe("duplicate");
 });
 
-it("latestIds prend les n premiers épisodes", () => {
-  const episodes = [{ id: "1" }, { id: "2" }, { id: "3" }];
-  expect(latestIds(episodes, 2)).toEqual(["1", "2"]);
-  expect(latestIds(episodes, -1)).toEqual([]);
-});
-
 it("raccourci : garde les épisodes acceptés par les plafonds, saute explicites et doublons", () => {
   const selected = [item("a", 10)];
   const candidates = [
@@ -68,6 +62,20 @@ it("raccourci : garde les épisodes acceptés par les plafonds, saute explicites
     item("b", 10),
   ];
   expect(acceptedForShortcut(selected, candidates).map((e) => e.id)).toEqual(["b"]);
+});
+
+it("raccourci : distingue déjà cochés, explicites et plafonds", () => {
+  const outcome = shortcutOutcome(
+    [item("a", 10)],
+    [
+      item("a", 10),
+      { ...item("x", 10), explicit: true },
+      item("big", MAX_EPISODE_BYTES + 1),
+      item("b", 10),
+    ],
+  );
+  expect(outcome.accepted.map((e) => e.id)).toEqual(["b"]);
+  expect([outcome.already, outcome.explicit, outcome.capped]).toEqual([1, 1, 1]);
 });
 
 it("raccourci : tient compte du plafond total au fil des ajouts", () => {
