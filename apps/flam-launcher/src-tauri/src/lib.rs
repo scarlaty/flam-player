@@ -8,6 +8,7 @@ pub mod device;
 pub mod embed;
 mod error;
 pub mod external;
+pub mod ffmpeg;
 pub mod folder;
 pub mod install;
 pub mod library;
@@ -70,7 +71,10 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+                // En `debug`, `reqwest` journalise les URL (redirections, réponses) : celle d'un
+                // flux podcast est un secret (D11, #211).
+                .add_directive("reqwest=info".parse().expect("directive de trace valide")),
         )
         .init();
     tracing::info!("démarrage de flam-launcher {}", env!("CARGO_PKG_VERSION"));
@@ -103,10 +107,15 @@ pub fn run() {
                 gate: catalog.cache_gate(),
                 grace: install::GRACE,
             });
+            let podcasts = podcast::source::PodcastService::new(
+                podcast::net::NetPolicy::strict(),
+                catalog.cache_gate(),
+            )?;
             app.manage(storage::ConfigState::new(config_dir));
             app.manage(folder::FolderState::default());
             app.manage(watch::WatchState::default());
             app.manage(catalog);
+            app.manage(podcasts);
             app.manage(device::official::OfficialCatalog::new()?);
             app.manage(install.clone());
             let player = player::PlayerService::new(Arc::new(player::TauriPlayerEvents(
@@ -162,6 +171,9 @@ pub fn run() {
             device::transfer::device_cancel_transfer,
             device::transfer::device_recover_transfers,
             compat::compat_statuses,
+            podcast::source::podcast_add,
+            podcast::source::podcast_feed,
+            podcast::source::podcast_refresh,
             storage::config_ack_recovery,
             settings::settings_get,
             settings::settings_set,
@@ -214,6 +226,7 @@ mod tests {
             ("install", include_str!("install/mod.rs")),
             ("library", include_str!("library.rs")),
             ("player", include_str!("player.rs")),
+            ("podcast::source", include_str!("podcast/source.rs")),
             ("settings", include_str!("settings.rs")),
             ("sources", include_str!("sources.rs")),
             ("storage", include_str!("storage.rs")),

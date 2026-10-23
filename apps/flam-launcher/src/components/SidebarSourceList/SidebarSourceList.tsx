@@ -11,7 +11,7 @@ import { cx } from "../cx";
 import { Icon, type IconName } from "../Icon";
 import "./SidebarSourceList.css";
 
-export type SourceKind = "library" | "catalog" | "folder";
+export type SourceKind = "library" | "catalog" | "folder" | "podcast";
 
 /** `offline` : source injoignable pour l'instant ; `error` : source illisible ou invalide. */
 export type SourceStatus = "ok" | "offline" | "error";
@@ -46,6 +46,8 @@ const KIND_ICONS: Record<SourceKind, IconName> = {
   library: "library",
   catalog: "catalog",
   folder: "folder",
+  // Icône dédiée : #212.
+  podcast: "catalog",
 };
 
 const STATUS_ICONS: Record<Exclude<SourceStatus, "ok">, IconName> = {

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import { getDeviceDiagnostic } from "../../api/device";
 import { toAppError } from "../../api/error";
 import { openExternal } from "../../api/external";
@@ -41,8 +41,10 @@ export function DiagnosticPanel() {
   const areaId = useId();
   const working = state.phase === "working";
 
-  // Repli : le texte est sélectionné pour une copie au clavier.
-  useEffect(() => {
+  // Repli : le texte est sélectionné pour une copie au clavier. Effet de mise en page : le focus
+  // est posé dans le même passage que l'insertion de la zone, sans fenêtre où elle est affichée
+  // sans focus (un effet passif part après la peinture, voire plus tard sous charge, #371).
+  useLayoutEffect(() => {
     if (state.phase !== "fallback") return;
     areaRef.current?.focus();
     areaRef.current?.select();

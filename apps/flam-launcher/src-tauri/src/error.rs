@@ -18,6 +18,7 @@ use serde::{Serialize, Serializer};
 /// | `FolderUnavailable` | `folder_unavailable` | Dossier d'une source locale absent ou inaccessible |
 /// | `Network`       | `network`       | Réseau indisponible, délai dépassé ou réponse HTTP en échec |
 /// | `CatalogInvalid`| `catalog_invalid`| Catalogue reçu inexploitable (JSON invalide, structure inconnue) |
+/// | `FeedInvalid`   | `feed_invalid`  | Flux podcast reçu inexploitable (XML invalide, DTD, trop grand, sans épisode audio) |
 /// | `Cancelled`     | `cancelled`     | Tâche d'installation annulée                            |
 /// | `DownloadInvalid` | `download_invalid` | Téléchargement incomplet, trop gros ou contenu inattendu |
 /// | `ConverterUnavailable` | `converter_unavailable` | Python ou `telmi2flam.py` introuvable |
@@ -70,6 +71,11 @@ pub enum AppError {
     #[error("{0}")]
     CatalogInvalid(String),
 
+    /// Flux podcast reçu mais inexploitable : XML invalide, DTD refusée, encodage inconnu, flux
+    /// trop grand ou sans épisode audio (message distinct pour chaque cas, sans l'URL : D11).
+    #[error("{0}")]
+    FeedInvalid(String),
+
     /// Dossier d'une source locale absent ou inaccessible (disque débranché, dossier supprimé).
     #[error("{0}")]
     FolderUnavailable(String),
@@ -119,6 +125,7 @@ impl AppError {
             AppError::Serialization(_) => "serialization",
             AppError::Network(_) => "network",
             AppError::CatalogInvalid(_) => "catalog_invalid",
+            AppError::FeedInvalid(_) => "feed_invalid",
             AppError::FolderUnavailable(_) => "folder_unavailable",
             AppError::Cancelled => "cancelled",
             AppError::DownloadInvalid(_) => "download_invalid",
@@ -198,6 +205,7 @@ mod tests {
             AppError::FolderUnavailable("x".into()).kind(),
             "folder_unavailable"
         );
+        assert_eq!(AppError::FeedInvalid("x".into()).kind(), "feed_invalid");
         assert_eq!(AppError::Cancelled.kind(), "cancelled");
         assert_eq!(
             AppError::DownloadInvalid("x".into()).kind(),

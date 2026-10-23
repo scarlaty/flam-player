@@ -45,7 +45,9 @@ export function SourcesScreen() {
   const [actionError, setActionError] = useState<AppError | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [adding, setAdding] = useState(false);
-  const [renaming, setRenaming] = useState<Editable | null>(null);
+  const [renaming, setRenaming] = useState<Exclude<Editable, { type: "podcast" }> | null>(
+    null,
+  );
   const [deleting, setDeleting] = useState<Editable | null>(null);
   const [busy, setBusy] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -234,11 +236,11 @@ export function SourcesScreen() {
               }}
               onDragEnd={() => setDragId(null)}
             >
-              <Icon name={source.type === "catalog" ? "catalog" : "folder"} />
+              <Icon name={source.type === "folder" ? "folder" : "catalog"} />
               <div className="fl-source-row__text">
                 <span className="fl-source-row__name">{source.name}</span>
                 <span className="fl-source-row__detail">
-                  {source.type === "catalog" ? source.url : source.path}
+                  {source.type === "folder" ? source.path : source.url}
                 </span>
               </div>
               <Badge>{t.sources.kind[source.type]}</Badge>
@@ -261,12 +263,14 @@ export function SourcesScreen() {
                   disabled={index === registered.length - 1}
                   onClick={() => moveBy(source.id, 1)}
                 />
-                <IconButton
-                  icon="pencil"
-                  size="sm"
-                  label={t.sourcesScreen.rename(source.name)}
-                  onClick={() => setRenaming(source)}
-                />
+                {source.type !== "podcast" && (
+                  <IconButton
+                    icon="pencil"
+                    size="sm"
+                    label={t.sourcesScreen.rename(source.name)}
+                    onClick={() => setRenaming(source)}
+                  />
+                )}
                 <IconButton
                   icon="trash"
                   size="sm"

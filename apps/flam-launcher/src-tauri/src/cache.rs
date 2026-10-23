@@ -22,7 +22,7 @@ use crate::AppResult;
 
 /// Sous-dossiers du cache créés par l'application (et eux seuls) : archives téléchargées, catalogues mis en cache,
 /// histoires converties, catalogue officiel en ligne (`official`), copies de travail des
-/// histoires lancées (`play`), vignettes.
+/// histoires lancées (`play`), flux podcast mis en cache (`podcasts`, #211), vignettes.
 pub const APP_CACHE_SUBDIRS: &[&str] = &[
     "archives",
     "catalogs",
@@ -30,6 +30,7 @@ pub const APP_CACHE_SUBDIRS: &[&str] = &[
     "library",
     "official",
     "play",
+    "podcasts",
     "thumbs",
 ];
 
@@ -272,6 +273,7 @@ mod tests {
                 "library",
                 "official",
                 "play",
+                "podcasts",
                 "thumbs"
             ]
         );

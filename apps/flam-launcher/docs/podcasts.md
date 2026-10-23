@@ -98,7 +98,7 @@ La numérotation reprend celle de la version précédente du document.
 | D8  | **Épisodes explicites** (`itunes:explicit`) : signalés dans la liste et décochés par défaut.                                                                                                                                                                                                                                                                                       |
 | D9  | **Publicité** : signalée dans la mention d'usage et dans le README (rien n'est filtré).                                                                                                                                                                                                                                                                                            |
 | D10 | **Réseau** : refus des adresses privées et locales **partout** (flux, enclosures, images : bouclage, privées, lien-local, partagées 100.64/10, multidiffusion, non spécifiées et équivalents IPv6), contrôlé **après résolution DNS** et **à chaque redirection**, connexion à l'adresse vérifiée ; TLS vérifié ; nombre de redirections borné ; aucune redirection par page HTML. |
-| D11 | **URL de flux traitée comme un secret** : jamais journalisée en entier (masquage dans l'interface après l'ajout : proposé, à valider). Les identifiants dans l'URL (`user:pass@`) restent refusés (#211).                                                                                                                                                                          |
+| D11 | Décidé le 2026-10-23 : **URL de flux affichée en clair dans l'interface** ; jamais journalisée ni recopiée dans les erreurs ou le diagnostic. Les identifiants dans l'URL (`user:pass@`) restent refusés (#211).                                                                                                                                                                   |
 | D13 | **Image de repli** : chaîne de P6, puis couleur unie `#122e2c`. Une image manquante ou illisible ne retire **pas** l'épisode.                                                                                                                                                                                                                                                      |
 | D14 | **Message de droits** à la première installation, fermé par « J'ai compris ». Texte proposé au § 4, à valider.                                                                                                                                                                                                                                                                     |
 | D15 | **Suppression d'une source** : les histoires créées sont gardées (P4) ; le cache de la source (flux, fichiers téléchargés) est purgé.                                                                                                                                                                                                                                              |
@@ -195,14 +195,15 @@ Remarques de cohérence :
   bandes-annonces et épisodes sans enclosure audio écartés (P5) ; doublons de `guid` ignorés ;
   chaîne de repli des images conforme à P6 ; champs lus : titre, description (HTML retiré),
   date, durée, auteur, image, URL, type et taille annoncée de l'enclosure ; copyright du canal.
-  **Non lu** aujourd'hui : `itunes:explicit` (nécessaire pour D8).
+  `itunes:explicit` (D8) est lu depuis #361 : canal et épisode, l'épisode héritant du canal.
 - `strip_html` (`rss.rs`) extrait du texte brut (balises retirées, entités décodées) ; ce n'est
   pas un assainisseur HTML : descriptions et titres sont toujours affichés comme texte, jamais
   injectés comme HTML.
-- Sources : `Catalog`, `Folder` et la bibliothèque ; la source podcast reste à ajouter (#211).
-  La commande `sources_remove` modifie `sources.json`, arrête la surveillance et purge le cache
-  d'une source catalogue (`purge_catalog_cache`, modèle pour D15) ; les histoires installées ne
-  sont pas touchées (conforme à P4).
+- Sources : `Catalog`, `Folder`, `Podcast` (**Livré**, #211, `src-tauri/src/podcast/source.rs` ;
+  schéma v2 de `sources.json`, cache `<cache>/podcasts/<id>/`) et la bibliothèque. La commande
+  `sources_remove` modifie `sources.json`, arrête la surveillance et purge le cache d'une source
+  catalogue ou podcast (`purge_catalog_cache`, `purge_podcast_cache` : D15) ; les histoires
+  installées ne sont pas touchées (conforme à P4).
 - Client de téléchargement (`install/download.rs`, comme celui du catalogue) : TLS par rustls
   (certificats vérifiés), **5 redirections au plus**, jamais de https vers http ; seules les
   redirections HTTP sont suivies (pas de page HTML « refresh ») ; reprise par plages ; 4 Gio au
@@ -489,8 +490,6 @@ proprement », sans choisir.
 
 Aucune décision n'est inventée ici : ces points restent ouverts ou à valider.
 
-- **D11, masquage de l'URL du flux** dans l'interface après l'ajout : proposé, **à valider** par
-  le mainteneur (#211).
 - **D14 et mention d'usage (§ 4)** : textes proposés, **à valider** par le mainteneur (#212,
   #220).
 - **#212, raccourci « N derniers épisodes »** : à retirer ou à garder comme simple raccourci de

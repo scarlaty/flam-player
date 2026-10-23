@@ -58,12 +58,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # La clé de cache porte aussi l'image du runner (donc sa chaîne MinGW-w64) : le binaire n'est
+      # pas reproductible d'une chaîne d'outils à l'autre.
+      - name: Version de l'image du runner
+        id: image
+        run: echo "version=${ImageOS:-inconnu}-${ImageVersion:-inconnue}" >> "$GITHUB_OUTPUT"
+
       - name: Cache de ffmpeg construit
         id: cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ffmpeg-out
-          key: ffmpeg-win64-${{ runner.os }}-${{ hashFiles('tools/ffmpeg/**') }}
+          key: ffmpeg-win64-${{ steps.image.outputs.version }}-${{ hashFiles('tools/ffmpeg/**') }}
 
       - name: Construire ffmpeg (sources épinglées, SHA-256 vérifiés)
         if: steps.cache.outputs.cache-hit != 'true'
@@ -206,7 +212,18 @@ jobs:
           path: ffmpeg-artifact
 
       - name: ffmpeg LGPL embarqué (contrôles, sans GPL, libmp3lame, transcodages MP3)
+        env:
+          # Commit cité dans BUILD.txt : la tête de la PR (la fusion éphémère n'existera plus).
+          FLAM_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: npm run build:ffmpeg -- -ArtifactDir "$(cygpath -w "$GITHUB_WORKSPACE/ffmpeg-artifact")"
+
+      # Le test bout en bout (manifeste écrit par le script + vérification Rust + lancement réel) a besoin
+      # du ffmpeg construit ci-dessus : exigé ici, ignoré en local sans build.
+      - name: Test du module ffmpeg sur le ffmpeg construit
+        working-directory: apps/flam-launcher/src-tauri
+        env:
+          FLAM_REQUIRE_FFMPEG: '1'
+        run: 'cargo test --lib ffmpeg::'
 
       - name: flam-player.exe et SDL2.dll (CMake, Release)
         run: npm run build:player
@@ -254,7 +271,7 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "installateur : code $($p.ExitCode)" }
           foreach ($f in 'flam-launcher.exe', 'flam-player.exe', 'SDL2.dll', 'LICENSES.md', 'uninstall.exe',
               'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'telmi2flam/runtime/manifest.txt', 'licenses/SDL2-LICENSE.txt',
-              'ffmpeg/ffmpeg.exe', 'ffmpeg/ffprobe.exe', 'ffmpeg/LICENSE', 'ffmpeg/LICENSE-LAME', 'ffmpeg/LICENSE-MINGW-RUNTIME', 'ffmpeg/BUILD.txt') {
+              'ffmpeg/ffmpeg.exe', 'ffmpeg/ffprobe.exe', 'ffmpeg/LICENSE', 'ffmpeg/LICENSE-LAME', 'ffmpeg/LICENSE-MINGW-RUNTIME', 'ffmpeg/BUILD.txt', 'ffmpeg/ffmpeg.sha256') {
             if (-not (Test-Path (Join-Path $dest $f))) { throw "fichier absent de l'installation : $f" }
           }
           # ffmpeg installé : ni GPL ni nonfree, libmp3lame présent (le script de build l'a déjà contrôlé,

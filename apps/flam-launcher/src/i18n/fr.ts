@@ -215,6 +215,10 @@ export const fr = {
         description:
           "Ajoutez des archives .zip, des dossiers .plain ou des fichiers .plain.pk dans le dossier.",
       },
+      podcast: {
+        title: "Flux podcast",
+        description: "La sélection des épisodes de ce flux n'est pas encore disponible.",
+      },
       noResults: {
         title: "Aucun résultat",
         description: "Aucune histoire ne correspond à la recherche et aux filtres.",
@@ -279,6 +283,7 @@ export const fr = {
       library: "Bibliothèque",
       catalog: "Catalogue",
       folder: "Dossier local",
+      podcast: "Podcast",
     },
     title: "Sources",
     add: "Ajouter une source",
