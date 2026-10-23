@@ -29,6 +29,11 @@ export interface Settings {
    * `device_carrier_accept`, ignoré par `settings_set`.
    */
   carrier_consent?: CarrierConsent | null;
+  /**
+   * Moteur de conversion (réglage caché, `python` par défaut, #136). Lecture seule : modifié à
+   * la main dans `settings.json`, la valeur enregistrée est conservée par `settings_set`.
+   */
+  converter_engine?: "python" | "rust";
 }
 
 /**

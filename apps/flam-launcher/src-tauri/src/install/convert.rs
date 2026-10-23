@@ -1,4 +1,7 @@
-//! Conversion par `telmi2flam.py --progress-json` (issue #14) en processus enfant.
+//! Conversion par `telmi2flam --progress-json` (issue #14) en processus enfant, avec l'un des
+//! deux moteurs ([`Engine`], #136) : `telmi2flam.py` (Python embarqué, par défaut) ou le binaire
+//! Rust `telmi2flam.exe` (même protocole, PORT-RUST.md §2.2). Seuls la ligne de commande et
+//! l'annulation polie diffèrent ; protocole, Job Object, délai de grâce et nettoyage sont communs.
 //!
 //! - Lancement sans console visible : `CREATE_NO_WINDOW`, et `CREATE_NEW_PROCESS_GROUP` pour
 //!   pouvoir viser le seul convertisseur avec `CTRL_BREAK_EVENT`.
@@ -13,8 +16,13 @@
 //!   principal est repris : il n'exécute aucune instruction avant d'être dans le job. Si le job ne
 //!   peut pas être créé (avertissement), la conversion continue sans lui : l'arrêt forcé se limite
 //!   alors au processus direct.
-//! - Annulation : `CTRL_BREAK_EVENT` (le convertisseur nettoie ses temporaires et sort avec
-//!   130), puis arrêt forcé après un délai de grâce, puis suppression de `<sortie>.<pid>.part`.
+//! - Annulation : demande polie (le convertisseur nettoie ses temporaires et sort avec 130), puis
+//!   arrêt forcé après un délai de grâce, puis suppression de `<sortie>.<pid>.part`. La demande
+//!   polie dépend du moteur :
+//!   - Rust : `--cancel-on-stdin-eof`, stdin en tube gardé ouvert pendant toute la conversion
+//!     et **fermé** pour annuler (aucun Python nécessaire) ;
+//!   - Python : `CTRL_BREAK_EVENT` par l'assistant décrit ci-dessous.
+//! - Aucune limite mémoire sur le job (décision D5) : seul `KILL_ON_JOB_CLOSE` est posé.
 //!
 //! Une application graphique n'a pas de console et le convertisseur, lancé avec
 //! `CREATE_NO_WINDOW`, a la sienne (cachée) : `GenerateConsoleCtrlEvent` ne peut viser qu'un
@@ -29,7 +37,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::watch;
 
 use super::download::cancelled;
@@ -58,10 +66,45 @@ k.FreeConsole()\n\
 ok=k.AttachConsole(pid) and k.SetConsoleCtrlHandler(None,True) and k.GenerateConsoleCtrlEvent(1,pid)\n\
 sys.exit(0 if ok else 1)\n";
 
+/// Moteur de conversion lancé (#136).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine<'a> {
+    /// `python <options durcies> telmi2flam.py …` ; annulation par `CTRL_BREAK_HELPER`.
+    Python { python: &'a Path, script: &'a Path },
+    /// `telmi2flam.exe … --cancel-on-stdin-eof` ; annulation par fermeture de stdin.
+    Rust { exe: &'a Path },
+}
+
+impl Engine<'_> {
+    /// Exécutable lancé.
+    fn program(&self) -> &Path {
+        match self {
+            Self::Python { python, .. } => python,
+            Self::Rust { exe } => exe,
+        }
+    }
+
+    /// Désignation dans les messages d'erreur.
+    fn label(&self) -> String {
+        match self {
+            Self::Python { python, .. } => format!("Python ({})", python.display()),
+            Self::Rust { exe } => format!("telmi2flam.exe ({})", exe.display()),
+        }
+    }
+
+    /// Fichier qui identifie le convertisseur (empreinte de repli de la version, voir
+    /// `install::converter_fingerprint`) : le script pour Python, le binaire pour Rust.
+    pub fn identity(&self) -> &Path {
+        match self {
+            Self::Python { script, .. } => script,
+            Self::Rust { exe } => exe,
+        }
+    }
+}
+
 /// Une conversion à lancer.
 pub struct Conversion<'a> {
-    pub python: &'a Path,
-    pub script: &'a Path,
+    pub engine: Engine<'a>,
     pub input: &'a Path,
     /// Sortie `.plain.pk` (publication atomique par le convertisseur).
     pub output: &'a Path,
@@ -71,7 +114,7 @@ pub struct Conversion<'a> {
     pub ffmpeg: Option<&'a Path>,
     /// Remplissage des vignettes, transmis par `--thumb-fit` (ensemble fermé, #279).
     pub thumb_fit: ThumbFit,
-    /// Délai laissé au convertisseur après `CTRL_BREAK_EVENT` avant l'arrêt forcé.
+    /// Délai laissé au convertisseur après la demande d'arrêt polie avant l'arrêt forcé.
     pub grace: Duration,
 }
 
@@ -275,8 +318,11 @@ mod job {
 
 use job::Job;
 
-/// Interpréteur durci, lancé depuis `cwd` (un dossier de l'application), **suspendu** sous
-/// Windows : l'appelant le rattache au job puis le reprend ([`job::resume`]) :
+/// Convertisseur lancé depuis `cwd` (un dossier de l'application), **suspendu** sous Windows :
+/// l'appelant le rattache au job puis le reprend ([`job::resume`]).
+///
+/// Rust : stdin en tube, que l'appelant garde ouvert jusqu'à la fin (sa fermeture annule, voir
+/// [`converter_args`]). Python : stdin vide, interpréteur durci :
 /// - `-E` : variables `PYTHON*` ignorées (`PYTHONPATH`, `PYTHONSTARTUP`…) ;
 /// - `-s` : pas de `site-packages` utilisateur ;
 /// - `-B` : aucun `__pycache__` écrit (le dossier d'une application installée doit rester
@@ -287,12 +333,18 @@ use job::Job;
 /// `-I` (isolement complet) n'est pas utilisable pour `telmi2flam.py` : il retire aussi le
 /// dossier du script de `sys.path`, d'où viennent ses modules (`lif`, `mp3map`). Le dossier
 /// courant, lui, n'est pas dans `sys.path` quand on lance un script.
-fn command(python: &Path, cwd: &Path) -> Command {
-    let mut cmd = Command::new(python);
-    cmd.args(["-E", "-s", "-B", "-u", "-X", "utf8"])
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .kill_on_drop(true);
+fn command(engine: &Engine<'_>, cwd: &Path) -> Command {
+    let mut cmd = Command::new(engine.program());
+    match engine {
+        Engine::Python { .. } => {
+            cmd.args(["-E", "-s", "-B", "-u", "-X", "utf8"])
+                .stdin(Stdio::null());
+        }
+        Engine::Rust { .. } => {
+            cmd.stdin(Stdio::piped());
+        }
+    }
+    cmd.current_dir(cwd).kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_SUSPENDED);
     cmd
@@ -337,11 +389,22 @@ fn part_of(output: &Path, pid: u32) -> PathBuf {
     output.with_file_name(name)
 }
 
-/// Arrête le convertisseur : demande polie, délai de grâce, arrêt forcé, puis nettoyage du
-/// temporaire `<sortie>.<pid>.part` (et d'une sortie éventuellement publiée entre-temps).
-async fn stop(child: &mut Child, job: Option<&Job>, req: &Conversion<'_>) {
+/// Arrête le convertisseur : demande polie (fermeture de `stdin` pour Rust, `CTRL_BREAK_EVENT`
+/// pour Python), délai de grâce, arrêt forcé, puis nettoyage du temporaire
+/// `<sortie>.<pid>.part` (et d'une sortie éventuellement publiée entre-temps).
+async fn stop(
+    child: &mut Child,
+    job: Option<&Job>,
+    stdin: &mut Option<ChildStdin>,
+    req: &Conversion<'_>,
+) {
     if let Some(pid) = child.id() {
-        let polite = request_stop(req.python, pid).await;
+        let polite = match req.engine {
+            Engine::Python { python, .. } => request_stop(python, pid).await,
+            // `--cancel-on-stdin-eof` : la fin de stdin annule. Sans tube (jamais le cas en
+            // pratique), pas de demande polie : arrêt forcé direct.
+            Engine::Rust { .. } => stdin.take().is_some(),
+        };
         let exited = polite
             && tokio::time::timeout(req.grace, child.wait())
                 .await
@@ -372,18 +435,27 @@ struct Reported {
     message: String,
 }
 
-/// Arguments du script : jamais d'interpolation de texte libre (le remplissage vient d'un
-/// ensemble fermé).
+/// Arguments du convertisseur : jamais d'interpolation de texte libre (le remplissage vient d'un
+/// ensemble fermé). Mêmes options pour les deux moteurs ; le script en tête pour Python,
+/// `--cancel-on-stdin-eof` en plus pour Rust (option propre au port, passée seulement par le
+/// launcher : sans elle, le binaire ne lit jamais stdin).
 fn converter_args(req: &Conversion<'_>) -> Vec<OsString> {
-    vec![
-        req.script.as_os_str().to_owned(),
+    let mut args = Vec::with_capacity(9);
+    if let Engine::Python { script, .. } = req.engine {
+        args.push(script.as_os_str().to_owned());
+    }
+    args.extend([
         req.input.as_os_str().to_owned(),
         "-o".into(),
         req.output.as_os_str().to_owned(),
         "--progress-json".into(),
         "--thumb-fit".into(),
         req.thumb_fit.as_arg().into(),
-    ]
+    ]);
+    if let Engine::Rust { .. } = req.engine {
+        args.push("--cancel-on-stdin-eof".into());
+    }
+    args
 }
 
 /// Lance la conversion et relaie les événements `step` à `on_step`. Annulation via `cancel`.
@@ -399,7 +471,7 @@ pub async fn convert(
         .output
         .parent()
         .ok_or_else(|| AppError::Validation("sortie sans dossier parent".into()))?;
-    let mut child = command(req.python, cwd)
+    let mut child = command(&req.engine, cwd)
         .env(
             "FLAM_FFMPEG",
             req.ffmpeg.map_or(OsStr::new(""), Path::as_os_str),
@@ -410,12 +482,14 @@ pub async fn convert(
         .spawn()
         .map_err(|e| {
             AppError::ConverterUnavailable(format!(
-                "impossible de lancer Python ({}) : {e}",
-                req.python.display()
+                "impossible de lancer {} : {e}",
+                req.engine.label()
             ))
         })?;
     let stdout = child.stdout.take().expect("stdout redirigé");
     let stderr = child.stderr.take().expect("stderr redirigé");
+    // Rust : tube de stdin tenu jusqu'à la fin de la conversion (le fermer annule). Python : `None`.
+    let mut stdin = child.stdin.take();
     // Lancé suspendu : rattaché au job avant d'exécuter la moindre instruction. Sans job (échec de
     // l'attache), il est tout de même repris ; si la reprise échoue, il est tué (`kill_on_drop`).
     // Création du job et reprise (instantané des threads du système) sont des appels Win32
@@ -429,8 +503,8 @@ pub async fn convert(
     .await;
     let (mut child, job, resumed) = attached.map_err(|e| {
         AppError::ConverterUnavailable(format!(
-            "impossible de préparer Python ({}) : {e}",
-            req.python.display()
+            "impossible de préparer {} : {e}",
+            req.engine.label()
         ))
     })?;
     if job.is_none() {
@@ -441,8 +515,8 @@ pub async fn convert(
     if let Err(err) = resumed {
         let _ = child.start_kill();
         return Err(AppError::ConverterUnavailable(format!(
-            "impossible de reprendre Python ({}) : {err}",
-            req.python.display()
+            "impossible de reprendre {} : {err}",
+            req.engine.label()
         )));
     }
     let stderr_task = tokio::spawn(read_tail(stderr, STDERR_TAIL));
@@ -459,7 +533,7 @@ pub async fn convert(
         let read = tokio::select! {
             r = limited.read_until(b'\n', &mut line) => r,
             _ = cancelled(cancel) => {
-                stop(&mut child, job.as_ref(), req).await;
+                stop(&mut child, job.as_ref(), &mut stdin, req).await;
                 stderr_task.abort();
                 return Err(AppError::Cancelled);
             }
@@ -516,11 +590,13 @@ pub async fn convert(
     let status = tokio::select! {
         s = child.wait() => s?,
         _ = cancelled(cancel) => {
-            stop(&mut child, job.as_ref(), req).await;
+            stop(&mut child, job.as_ref(), &mut stdin, req).await;
             stderr_task.abort();
             return Err(AppError::Cancelled);
         }
     };
+    // Processus terminé : le tube de stdin (Rust) n'annule plus rien.
+    drop(stdin);
     let stderr_tail = stderr_task.await.unwrap_or_default();
     let exit = status.code();
     match (exit, done, reported) {
@@ -602,29 +678,50 @@ b"
     }
 
     #[test]
-    fn remplissage_des_vignettes_transmis_au_convertisseur() {
-        let req = |thumb_fit| Conversion {
+    fn arguments_des_deux_moteurs() {
+        let python = Engine::Python {
             python: Path::new("python.exe"),
             script: Path::new("telmi2flam.py"),
+        };
+        let rust = Engine::Rust {
+            exe: Path::new("telmi2flam.exe"),
+        };
+        let req = |engine, thumb_fit| Conversion {
+            engine,
             input: Path::new("in.zip"),
             output: Path::new("out.plain.pk"),
             ffmpeg: None,
             thumb_fit,
             grace: Duration::from_secs(1),
         };
+        let common = |fit: &str| -> Vec<OsString> {
+            [
+                "in.zip",
+                "-o",
+                "out.plain.pk",
+                "--progress-json",
+                "--thumb-fit",
+                fit,
+            ]
+            .map(OsString::from)
+            .to_vec()
+        };
         for (fit, arg) in [
             (ThumbFit::Flou, "flou"),
             (ThumbFit::Rogner, "rogner"),
             (ThumbFit::Bandes, "bandes"),
         ] {
-            let args = converter_args(&req(fit));
-            assert_eq!(
-                args[args.len() - 2..],
-                [OsString::from("--thumb-fit"), OsString::from(arg)]
-            );
-            assert_eq!(args[0], OsString::from("telmi2flam.py"));
-            assert!(args.contains(&OsString::from("--progress-json")));
+            // Python : le script en tête, puis les options communes.
+            let mut expected = vec![OsString::from("telmi2flam.py")];
+            expected.extend(common(arg));
+            assert_eq!(converter_args(&req(python, fit)), expected);
+            // Rust : les mêmes options, plus l'annulation par fin de stdin.
+            let mut expected = common(arg);
+            expected.push("--cancel-on-stdin-eof".into());
+            assert_eq!(converter_args(&req(rust, fit)), expected);
         }
+        assert_eq!(python.identity(), Path::new("telmi2flam.py"));
+        assert_eq!(rust.identity(), Path::new("telmi2flam.exe"));
     }
 
     #[test]
@@ -635,101 +732,310 @@ b"
         );
     }
 
-    /// Vérification réelle avec le convertisseur embarqué (issue #71). Ignorée par défaut : elle
-    /// exige l'artefact de `npm run build:converter` et une archive de test.
-    /// `FLAM_TEST_CONVERTER_DIR` = dossier `telmi2flam/` (avec `python/python.exe`) et
-    /// `FLAM_TEST_ARCHIVE` = histoire `.zip`. Pour prouver l'autonomie, lancer le binaire de test
-    /// avec un `PATH` réduit à `C:\Windows\System32` (voir le README du launcher).
-    ///
-    /// Port Rust (#131) : avec `FLAM_TEST_RUST_CONVERTER` = binaire `telmi2flam.exe`
-    /// (`cargo build -p telmi2flam`), les mêmes tests visent le binaire Rust, sans changer le
-    /// convertisseur du launcher : `convert` lance toujours `python <script>`, et le script est
-    /// un relais minimal qui exécute le binaire avec les mêmes arguments (stdout et stderr
-    /// hérités, code de sortie rendu).
-    ///
-    /// Annulation (#132) : le relais simule le protocole prévu pour la bascule (#137). Il lance
-    /// le binaire avec `--cancel-on-stdin-eof`, stdin en tube, dans son propre groupe de
-    /// processus (le `CTRL_BREAK_EVENT` du launcher ne l'atteint pas), et ferme ce tube quand
-    /// il reçoit lui-même `CTRL_BREAK_EVENT`. L'annulation est demandée à la fin de la phase
-    /// `zip` : le binaire y attend (`TELMI2FLAM_TEST_FAULT=wait:zip:end`, binaire de debug),
-    /// avec son `.part` présent. Ce `.part` porte le PID du binaire et non celui du relais : le
-    /// launcher ne le supprime pas, le test prouve donc le nettoyage par le binaire.
-    #[cfg(windows)]
-    mod embarque {
-        use super::*;
-        use std::sync::{Arc, Mutex};
-
-        fn environnement() -> Option<(PathBuf, PathBuf)> {
-            let dir = PathBuf::from(std::env::var_os("FLAM_TEST_CONVERTER_DIR")?);
-            let archive = PathBuf::from(std::env::var_os("FLAM_TEST_ARCHIVE")?);
-            Some((dir, archive))
-        }
-
-        /// Convertisseur visé : `telmi2flam.py` embarqué, ou le binaire Rust par un relais.
-        struct Convertisseur {
-            python: PathBuf,
-            script: PathBuf,
-            _relais: Option<tempfile::TempDir>,
-        }
-
-        fn rust_converter() -> bool {
-            std::env::var_os("FLAM_TEST_RUST_CONVERTER").is_some()
-        }
-
-        /// Relais vers le binaire Rust (voir l'en-tête du module) : `--cancel-on-stdin-eof`,
-        /// stdin en tube fermé au `CTRL_BREAK_EVENT`, faute de test `fault` éventuelle.
-        fn relais_rust(exe: &str, fault: Option<&str>) -> String {
-            // Chaînes JSON : littéraux de chaîne Python valides (`\\`, `\"`, `\uXXXX`).
-            let fault = fault.map_or("None".to_owned(), |f| serde_json::to_string(f).unwrap());
-            format!(
-                "import os, signal, subprocess, sys\n\
-                 env = dict(os.environ)\n\
-                 env.pop('TELMI2FLAM_TEST_FAULT', None)\n\
-                 fault = {fault}\n\
-                 if fault is not None:\n    env['TELMI2FLAM_TEST_FAULT'] = fault\n\
-                 p = subprocess.Popen([{exe}, '--cancel-on-stdin-eof'] + sys.argv[1:],\n\
-                 \x20   stdin=subprocess.PIPE, env=env,\n\
-                 \x20   creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)\n\
-                 def stop(signum, frame):\n    try:\n        p.stdin.close()\n    except OSError:\n        pass\n\
-                 signal.signal(signal.SIGBREAK, stop)\n\
-                 while True:\n    try:\n        code = p.wait(timeout=0.1)\n        break\n    except subprocess.TimeoutExpired:\n        pass\n\
-                 sys.exit(code)\n"
+    /// Panne injectée : exécutable absent (binaire Rust non livré, supprimé ou bloqué ;
+    /// interpréteur Python disparu). Erreur `converter_unavailable` qui nomme le moteur, rien
+    /// d'écrit.
+    #[tokio::test]
+    async fn executable_absent_pour_les_deux_moteurs() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent").join("telmi2flam.exe");
+        let script = dir.path().join("telmi2flam.py");
+        let output = dir.path().join("out.plain.pk");
+        let input = dir.path().join("in.zip");
+        std::fs::write(&input, b"PK").unwrap();
+        for (engine, label) in [
+            (Engine::Rust { exe: &missing }, "telmi2flam.exe"),
+            (
+                Engine::Python {
+                    python: &missing,
+                    script: &script,
+                },
+                "Python",
+            ),
+        ] {
+            let (_tx, mut rx) = watch::channel(false);
+            let err = convert(
+                &Conversion {
+                    engine,
+                    input: &input,
+                    output: &output,
+                    ffmpeg: None,
+                    thumb_fit: ThumbFit::default(),
+                    grace: Duration::from_secs(1),
+                },
+                &mut rx,
+                &mut |_| {},
             )
+            .await
+            .unwrap_err();
+            assert_eq!(err.kind(), "converter_unavailable", "{err}");
+            assert!(err.to_string().contains(label), "{err}");
         }
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [OsString::from("in.zip")]);
+    }
 
-        fn convertisseur(dir: &Path, fault: Option<&str>) -> Convertisseur {
-            let python = dir.join("python").join("python.exe");
-            let Some(exe) = std::env::var_os("FLAM_TEST_RUST_CONVERTER") else {
-                return Convertisseur {
-                    python,
-                    script: dir.join("telmi2flam.py"),
-                    _relais: None,
-                };
-            };
-            let relais = tempfile::tempdir().unwrap();
-            let script = relais.path().join("telmi2flam_rust.py");
-            let exe = serde_json::to_string(&PathBuf::from(exe).to_string_lossy()).unwrap();
-            std::fs::write(&script, relais_rust(&exe, fault)).unwrap();
-            Convertisseur {
+    /// Faux convertisseur ([`fake`]) lancé avec le moteur voulu. Rust : l'« exécutable » est
+    /// l'interpréteur, qui exécute le `__main__.py` de l'archive d'entrée : la ligne de commande
+    /// est exactement celle du moteur Rust (`<exe> <entrée> -o … --cancel-on-stdin-eof`).
+    struct Banc {
+        dir: tempfile::TempDir,
+        python: PathBuf,
+        script: PathBuf,
+        input: PathBuf,
+        output: PathBuf,
+    }
+
+    impl Banc {
+        fn new(mode: &str) -> Option<Self> {
+            let python =
+                crate::settings::detect_python(&crate::settings::Environment::current()).path?;
+            let dir = tempfile::tempdir().unwrap();
+            let script = dir.path().join("fake_telmi2flam.py");
+            std::fs::write(&script, fake::SCRIPT).unwrap();
+            let input = dir.path().join("in.zip");
+            std::fs::write(&input, fake::archive(mode, 0)).unwrap();
+            // Le faux convertisseur signale qu'il est prêt deux dossiers au-dessus de la sortie.
+            let staging = dir.path().join("library").join(".staging");
+            std::fs::create_dir_all(&staging).unwrap();
+            let output = staging.join("t.plain.pk");
+            Some(Self {
+                dir,
                 python,
                 script,
-                _relais: Some(relais),
+                input,
+                output,
+            })
+        }
+
+        fn engine(&self, rust: bool) -> Engine<'_> {
+            if rust {
+                Engine::Rust { exe: &self.python }
+            } else {
+                Engine::Python {
+                    python: &self.python,
+                    script: &self.script,
+                }
             }
         }
 
+        fn ready(&self) -> bool {
+            std::fs::read_dir(self.dir.path()).is_ok_and(|d| {
+                d.flatten()
+                    .any(|e| e.file_name().to_string_lossy().starts_with("ready-"))
+            })
+        }
+
+        fn staging_is_empty(&self) -> bool {
+            std::fs::read_dir(self.output.parent().unwrap())
+                .unwrap()
+                .next()
+                .is_none()
+        }
+
+        /// Lance la conversion, annule dès que le faux convertisseur est prêt (`.part` écrit,
+        /// annulation armée), puis renvoie le résultat et la durée de l'arrêt.
+        async fn cancel_when_ready(
+            &self,
+            rust: bool,
+            grace: Duration,
+        ) -> (AppResult<Converted>, Duration) {
+            let (tx, mut rx) = watch::channel(false);
+            let req = Conversion {
+                engine: self.engine(rust),
+                input: &self.input,
+                output: &self.output,
+                ffmpeg: None,
+                thumb_fit: ThumbFit::default(),
+                grace,
+            };
+            let canceller = async {
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                while !self.ready() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "convertisseur jamais prêt"
+                    );
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                let part = std::fs::read_dir(self.output.parent().unwrap())
+                    .unwrap()
+                    .flatten()
+                    .any(|e| e.file_name().to_string_lossy().ends_with(".part"));
+                assert!(part, "le .part existe avant le signal de disponibilité");
+                tx.send(true).unwrap();
+                std::time::Instant::now()
+            };
+            let mut ignore = |_: &Step| {};
+            let (result, asked) = tokio::join!(convert(&req, &mut rx, &mut ignore), canceller);
+            (result, asked.elapsed())
+        }
+    }
+
+    #[tokio::test]
+    async fn conversion_par_les_deux_moteurs() {
+        for rust in [false, true] {
+            let Some(banc) = Banc::new("versioned") else {
+                eprintln!("Python introuvable : test ignoré");
+                return;
+            };
+            let (_tx, mut rx) = watch::channel(false);
+            let mut phases = Vec::new();
+            let converted = convert(
+                &Conversion {
+                    engine: banc.engine(rust),
+                    input: &banc.input,
+                    output: &banc.output,
+                    ffmpeg: None,
+                    thumb_fit: ThumbFit::Bandes,
+                    grace: Duration::from_secs(5),
+                },
+                &mut rx,
+                &mut |step| phases.push(step.phase.clone()),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("rust={rust} : {e}"));
+            assert_eq!(converted.warnings, 1, "rust={rust}");
+            assert_eq!(
+                converted.version.as_deref(),
+                Some("9.9.9-test"),
+                "rust={rust}"
+            );
+            assert!(
+                phases.contains(&"zip".to_string()),
+                "rust={rust} : {phases:?}"
+            );
+            assert!(banc.output.is_file(), "rust={rust}");
+            // Le faux convertisseur rend les options reçues : même protocole pour les deux.
+            let seen = std::fs::read_to_string(banc.dir.path().join("args.txt")).unwrap();
+            assert!(seen.contains("--thumb-fit bandes"), "rust={rust} : {seen}");
+            assert_eq!(seen.contains("--cancel-on-stdin-eof"), rust, "{seen}");
+        }
+    }
+
+    /// Panne injectée : annulation polie. Rust : fermeture de stdin (le faux convertisseur ignore
+    /// `CTRL_BREAK_EVENT` dans ce mode, l'arrêt avant le délai de grâce prouve que la fin de
+    /// stdin a suffi) ; Python : `CTRL_BREAK_EVENT`.
+    #[tokio::test]
+    async fn annulation_polie_des_deux_moteurs() {
+        for rust in [false, true] {
+            let Some(banc) = Banc::new("slow") else {
+                eprintln!("Python introuvable : test ignoré");
+                return;
+            };
+            let grace = Duration::from_secs(20);
+            let (result, took) = banc.cancel_when_ready(rust, grace).await;
+            assert!(
+                matches!(result, Err(AppError::Cancelled)),
+                "rust={rust} : {result:?}"
+            );
+            assert!(
+                took < Duration::from_secs(10),
+                "rust={rust} : arrêt en {took:?}"
+            );
+            assert!(
+                banc.staging_is_empty(),
+                "rust={rust} : temporaires nettoyés"
+            );
+        }
+    }
+
+    /// Panne injectée : convertisseur sourd à l'annulation. Arrêt forcé par le job après le
+    /// délai de grâce, puis suppression du `.part` par le launcher.
+    #[tokio::test]
+    async fn arret_force_des_deux_moteurs() {
+        for rust in [false, true] {
+            let Some(banc) = Banc::new("stubborn") else {
+                eprintln!("Python introuvable : test ignoré");
+                return;
+            };
+            let grace = Duration::from_millis(500);
+            let (result, took) = banc.cancel_when_ready(rust, grace).await;
+            assert!(
+                matches!(result, Err(AppError::Cancelled)),
+                "rust={rust} : {result:?}"
+            );
+            assert!(
+                took >= grace,
+                "rust={rust} : arrêt en {took:?}, avant le délai de grâce"
+            );
+            assert!(
+                took < Duration::from_secs(15),
+                "rust={rust} : arrêt en {took:?}"
+            );
+            assert!(
+                banc.staging_is_empty(),
+                "rust={rust} : .part supprimé par le launcher"
+            );
+        }
+    }
+
+    /// Vérification réelle avec les convertisseurs livrés (issues #71, #136). Ignorée par
+    /// défaut : elle exige une archive de test (`FLAM_TEST_ARCHIVE` = histoire `.zip`) et l'un des
+    /// deux moteurs :
+    /// - `FLAM_TEST_RUST_CONVERTER` = binaire `telmi2flam.exe` (`cargo build -p telmi2flam`, ou
+    ///   `build/telmi2flam/telmi2flam.exe` de `npm run build:converter`), lancé directement
+    ///   comme par le launcher (`--cancel-on-stdin-eof`, stdin en tube) ;
+    /// - sinon `FLAM_TEST_CONVERTER_DIR` = dossier `telmi2flam/` de `npm run build:converter`
+    ///   (avec `python/python.exe`). Pour prouver l'autonomie, lancer le binaire de test avec un
+    ///   `PATH` réduit à `C:\Windows\System32` (voir le README du launcher).
+    ///
+    /// Annulation avec le binaire Rust : demandée à la fin de la phase `zip`, où le binaire
+    /// attend (`TELMI2FLAM_TEST_FAULT=wait:zip:end`, binaire de debug ou feature `test-hooks`)
+    /// avec son `.part` présent. L'arrêt doit venir de la fermeture de stdin, avant le délai de
+    /// grâce (sinon ce serait l'arrêt forcé).
+    #[cfg(windows)]
+    mod embarque {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        /// La faute de test passe par l'environnement du processus : les deux tests ne
+        /// tournent jamais en même temps.
+        static ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+        enum Convertisseur {
+            Python { python: PathBuf, script: PathBuf },
+            Rust(PathBuf),
+        }
+
+        impl Convertisseur {
+            fn engine(&self) -> Engine<'_> {
+                match self {
+                    Self::Python { python, script } => Engine::Python { python, script },
+                    Self::Rust(exe) => Engine::Rust { exe },
+                }
+            }
+        }
+
+        fn environnement() -> Option<(Convertisseur, PathBuf)> {
+            let archive = PathBuf::from(std::env::var_os("FLAM_TEST_ARCHIVE")?);
+            if let Some(exe) = std::env::var_os("FLAM_TEST_RUST_CONVERTER") {
+                return Some((Convertisseur::Rust(PathBuf::from(exe)), archive));
+            }
+            let dir = PathBuf::from(std::env::var_os("FLAM_TEST_CONVERTER_DIR")?);
+            let conv = Convertisseur::Python {
+                python: dir.join("python").join("python.exe"),
+                script: dir.join("telmi2flam.py"),
+            };
+            Some((conv, archive))
+        }
+
         #[tokio::test]
-        #[ignore = "exige FLAM_TEST_CONVERTER_DIR et FLAM_TEST_ARCHIVE"]
-        async fn conversion_avec_python_embarque() {
-            let (dir, archive) = environnement().expect("variables d'environnement manquantes");
+        #[ignore = "exige FLAM_TEST_ARCHIVE et FLAM_TEST_RUST_CONVERTER ou FLAM_TEST_CONVERTER_DIR"]
+        async fn conversion_avec_le_convertisseur_livre() {
+            let _env = ENV.lock().await;
+            let (conv, archive) = environnement().expect("variables d'environnement manquantes");
             let out = tempfile::tempdir().unwrap();
             let output = out.path().join("histoire.plain.pk");
-            let conv = convertisseur(&dir, None);
             let (_tx, mut rx) = watch::channel(false);
             let mut steps = 0usize;
             let converted = convert(
                 &Conversion {
-                    python: &conv.python,
-                    script: &conv.script,
+                    engine: conv.engine(),
                     input: &archive,
                     output: &output,
                     ffmpeg: None,
@@ -751,27 +1057,32 @@ b"
         }
 
         #[tokio::test]
-        #[ignore = "exige FLAM_TEST_CONVERTER_DIR et FLAM_TEST_ARCHIVE"]
-        async fn annulation_avec_python_embarque() {
-            let (dir, archive) = environnement().expect("variables d'environnement manquantes");
+        #[ignore = "exige FLAM_TEST_ARCHIVE et FLAM_TEST_RUST_CONVERTER ou FLAM_TEST_CONVERTER_DIR"]
+        async fn annulation_avec_le_convertisseur_livre() {
+            let _env = ENV.lock().await;
+            let (conv, archive) = environnement().expect("variables d'environnement manquantes");
+            let rust = matches!(conv, Convertisseur::Rust(_));
             let out = tempfile::tempdir().unwrap();
             let output = out.path().join("histoire.plain.pk");
-            // Binaire Rust : annulation pendant l'écriture, `.part` présent (voir l'en-tête).
-            let rust = rust_converter();
-            let conv = convertisseur(&dir, rust.then_some("wait:zip:end"));
+            if rust {
+                // SAFETY (édition 2021 : fonction sûre) : lu seulement par le binaire lancé
+                // ci-dessous ; l'autre test qui lance un convertisseur attend le verrou.
+                std::env::set_var("TELMI2FLAM_TEST_FAULT", "wait:zip:end");
+            }
             let (tx, mut rx) = watch::channel(false);
             let tx = Arc::new(Mutex::new(tx));
-            let part_seen = std::sync::atomic::AtomicBool::new(false);
+            let part_seen = AtomicBool::new(false);
+            let asked = Mutex::new(None);
+            let grace = Duration::from_secs(10);
             let dir_out = out.path().to_path_buf();
             let result = convert(
                 &Conversion {
-                    python: &conv.python,
-                    script: &conv.script,
+                    engine: conv.engine(),
                     input: &archive,
                     output: &output,
                     ffmpeg: None,
                     thumb_fit: ThumbFit::default(),
-                    grace: Duration::from_secs(10),
+                    grace,
                 },
                 &mut rx,
                 &mut |step| {
@@ -783,23 +1094,143 @@ b"
                             .unwrap()
                             .filter_map(|e| e.ok())
                             .any(|e| e.file_name().to_string_lossy().ends_with(".part"));
-                        part_seen.store(part, std::sync::atomic::Ordering::SeqCst);
+                        part_seen.store(part, Ordering::SeqCst);
                     }
+                    asked
+                        .lock()
+                        .unwrap()
+                        .get_or_insert_with(std::time::Instant::now);
                     let _ = tx.lock().unwrap().send(true);
                 },
             )
             .await;
+            std::env::remove_var("TELMI2FLAM_TEST_FAULT");
             assert!(matches!(result, Err(AppError::Cancelled)), "{result:?}");
             if rust {
                 assert!(
-                    part_seen.load(std::sync::atomic::Ordering::SeqCst),
+                    part_seen.load(Ordering::SeqCst),
                     "aucun .part pendant l'attente : l'annulation ne teste pas le nettoyage \
                      (FLAM_TEST_RUST_CONVERTER : binaire de debug ou avec test-hooks)"
                 );
+                let took = asked
+                    .lock()
+                    .unwrap()
+                    .expect("annulation demandée")
+                    .elapsed();
+                assert!(took < grace, "arrêt en {took:?} : stdin fermé sans effet");
             }
             let restes: Vec<_> = std::fs::read_dir(out.path()).unwrap().collect();
             assert!(restes.is_empty(), "fichiers résiduels : {restes:?}");
         }
+    }
+}
+
+/// Faux `telmi2flam` des tests (ce module et `install::tests`), commun aux deux moteurs. Le
+/// comportement est lu dans l'archive d'entrée (`mode=<x>;`).
+///
+/// - Moteur Python : `python … fake_telmi2flam.py <entrée> -o <sortie> …` ;
+/// - moteur Rust : l'« exécutable » est l'interpréteur, et l'archive d'entrée contient ce même
+///   script en `__main__.py` : `python <entrée> -o <sortie> … --cancel-on-stdin-eof` l'exécute.
+///   Dans ce mode, seule la fin de stdin annule (`CTRL_BREAK_EVENT` est ignoré), comme le
+///   binaire avec `--cancel-on-stdin-eof`.
+///
+/// Modes : `ok` (par défaut), `noise` (lignes non JSON, stderr en cp1252), `versioned`
+/// (`start.version`), `fail` (`missing_asset`, 5), `crash` (code 6 sans événement `error`),
+/// `slow` (annulation polie), `stubborn` (sourd à l'annulation), `tree` (sourd, avec un
+/// sous-processus). En mode `versioned`, les options reçues sont écrites dans `args.txt`, deux
+/// dossiers au-dessus de la sortie.
+#[cfg(test)]
+pub(crate) mod fake {
+    use std::io::Write as _;
+
+    pub const SCRIPT: &str = r#"
+import json, os, signal, sys, threading, time
+args = sys.argv[1:]
+rust = "--cancel-on-stdin-eof" in args
+src = sys.argv[0] if rust else args[0]
+out = args[args.index("-o") + 1]
+mode = open(src, "rb").read().split(b"mode=")[1].split(b";")[0].decode()
+def ev(**k):
+    print(json.dumps(k), flush=True)
+part = "%s.%d.part" % (out, os.getpid())
+if mode == "noise":
+    print("ceci n'est pas du JSON", flush=True)
+    sys.stderr.buffer.write("caf\xe9 en cp1252\n".encode("cp1252")); sys.stderr.flush()
+extra = {"version": "9.9.9-test"} if mode == "versioned" else {}
+if mode == "tree":
+    import subprocess
+    g = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
+    open(out + ".gpid", "w").write(str(g.pid))
+ev(event="start", total=4, phases=["images", "audio", "scripts", "zip"], input=src, **extra)
+if mode == "fail":
+    ev(event="error", code="missing_asset", message="image manquante : s1.png", exit=5)
+    sys.exit(5)
+if mode == "crash":
+    sys.stderr.write("Traceback: boum\n"); sys.exit(6)
+if mode in ("slow", "stubborn", "tree"):
+    open(part, "wb").write(b"partiel")
+    polite = mode == "slow"
+    def stop(*a):
+        os.remove(part)
+        ev(event="error", code="cancelled", message="annule", exit=130)
+        os._exit(130)
+    brk = getattr(signal, "SIGBREAK", signal.SIGTERM)
+    if rust:
+        signal.signal(brk, signal.SIG_IGN)
+        def watch():
+            sys.stdin.buffer.read()
+            if polite:
+                stop()
+        threading.Thread(target=watch, daemon=True).start()
+    else:
+        signal.signal(brk, stop if polite else signal.SIG_IGN)
+    ev(event="step", phase="images", done=0, total=10)
+    # Poignée de main : annulation armée et `.part` écrit (deux dossiers au-dessus de la
+    # sortie, hors de `.staging`), le test peut annuler.
+    open(os.path.join(os.path.dirname(out), "..", "..", "ready-%d" % os.getpid()), "wb").close()
+    for _ in range(600):
+        time.sleep(0.05)
+    sys.exit(0)
+if mode == "versioned":
+    open(os.path.join(os.path.dirname(out), "..", "..", "args.txt"), "w").write(" ".join(args))
+for phase in ["images", "audio", "scripts", "zip"]:
+    ev(event="step", phase=phase, done=0, total=2)
+    ev(event="unknown_event", x=1)
+    ev(event="step", phase=phase, done=2, total=2)
+if rust:
+    # Le tube de stdin doit rester ouvert jusqu'à la fin : fermé trop tôt, c'est une annulation
+    # (comme le binaire), donc un échec visible des tests de conversion réussie.
+    eof = threading.Event()
+    def early():
+        sys.stdin.buffer.read()
+        eof.set()
+    threading.Thread(target=early, daemon=True).start()
+    if eof.wait(0.3):
+        ev(event="error", code="cancelled", message="stdin ferme avant la fin", exit=130)
+        sys.exit(130)
+open(part, "wb").write(b"PK\x03\x04plain.pk converti")
+os.replace(part, out)
+ev(event="done", output=out, size=os.path.getsize(out), warnings=1)
+if rust:
+    # Sortie sans finalisation de l'interpréteur : un fil démon bloqué dans la lecture de stdin
+    # peut y faire planter Python sous Windows (0xC0000005).
+    os._exit(0)
+"#;
+
+    /// Archive zip « stored » réelle : `mode.txt` (lu par le faux convertisseur, en premier
+    /// pour que `mode=` y soit trouvé avant le script), `pad.bin` (`pad` octets) et le script en
+    /// `__main__.py` (moteur Rust).
+    pub fn archive(mode: &str, pad: usize) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("mode.txt", options).unwrap();
+        zip.write_all(format!("mode={mode};").as_bytes()).unwrap();
+        zip.start_file("pad.bin", options).unwrap();
+        zip.write_all(&vec![b'z'; pad]).unwrap();
+        zip.start_file("__main__.py", options).unwrap();
+        zip.write_all(SCRIPT.as_bytes()).unwrap();
+        zip.finish().unwrap().into_inner()
     }
 }
 
