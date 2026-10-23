@@ -5,7 +5,10 @@ import { t } from "../../i18n";
 import { formatBytes } from "../validation";
 import { usePodcastSelection } from "./SelectionContext";
 import {
+  acceptedForShortcut,
   estimateSize,
+  latestIds,
+  LATEST_DEFAULT_COUNT,
   MAX_EPISODES,
   type Refusal,
   type SelectedEpisode,
@@ -73,6 +76,7 @@ export function EpisodeList({ sourceId, sourceName, episodes }: EpisodeListProps
   const focusFrom = useRef<number | null>(null);
   const capId = useId();
   const text = t.podcasts.episodes;
+  const [shortcutResult, setShortcutResult] = useState<string | null>(null);
 
   // « Afficher plus » disparaît parfois avec le focus : il passe au premier épisode ajouté.
   useEffect(() => {
@@ -94,6 +98,26 @@ export function EpisodeList({ sourceId, sourceName, episodes }: EpisodeListProps
     );
   }
 
+  /** Raccourci : coche les derniers épisodes que les plafonds acceptent ; la sélection reste libre. */
+  function checkLatest() {
+    const ids = new Set(latestIds(episodes, LATEST_DEFAULT_COUNT));
+    const latest = episodes
+      .filter((episode) => ids.has(episode.id))
+      .map((episode): SelectedEpisode => {
+        return {
+          id: episode.id,
+          sourceId,
+          sourceName,
+          title: episode.title,
+          bytes: estimateSize(episode).bytes,
+          explicit: episode.explicit === true,
+        };
+      });
+    const accepted = acceptedForShortcut(selection.selected, latest);
+    selection.addMany(accepted);
+    setShortcutResult(text.latestDone(accepted.length, latest.length));
+  }
+
   const visible = episodes.slice(0, shown);
   // Plafonds du pack : un seul message pour toutes les cases refusées, pas un par case.
   const capRefusals = new Set<Refusal>();
@@ -113,6 +137,14 @@ export function EpisodeList({ sourceId, sourceName, episodes }: EpisodeListProps
   });
   return (
     <>
+      <div className="fl-podcasts__actions">
+        <Button variant="secondary" size="sm" onClick={checkLatest}>
+          {text.latest(Math.min(LATEST_DEFAULT_COUNT, episodes.length))}
+        </Button>
+        <p role="status" className="fl-podcasts__status">
+          {shortcutResult ?? ""}
+        </p>
+      </div>
       <div id={capId} className="fl-podcasts__cap">
         {[...capRefusals].map((refusal) => (
           <p key={refusal}>{refusalText(refusal)}</p>

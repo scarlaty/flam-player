@@ -479,3 +479,53 @@ it("D11 : l'adresse du flux n'est jamais journalisée", async () => {
 it("routeFromHash reconnaît #/podcasts", () => {
   expect(routeFromHash("#/podcasts")).toBe("podcasts");
 });
+
+it("la mention d'usage courte décidée par le mainteneur figure dans l'ajout de flux", async () => {
+  renderScreen();
+  await screen.findByText("Aucun flux podcast");
+  const form = screen.getByRole("region", { name: "Ajouter un flux" });
+  expect(
+    within(form).getByText(
+      "Usage personnel et familial uniquement : ne partagez pas les histoires créées. L'audio est repris tel quel, publicité comprise.",
+    ),
+  ).toBeInTheDocument();
+});
+
+it("raccourci : coche les 10 derniers épisodes, la sélection reste libre", async () => {
+  const many = Array.from({ length: 12 }, (_, i) =>
+    episode(String(i), { title: `Ep ${i}` }),
+  );
+  sources = [library, podcast("a", "A")];
+  views.a = view("a", many);
+  renderScreen();
+  await screen.findByRole("checkbox", { name: "Ep 0" });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Cocher les 10 derniers épisodes" }),
+  );
+  expect(screen.getByTestId("probe")).toHaveTextContent("10");
+  expect(screen.getByRole("checkbox", { name: "Ep 9" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Ep 10" })).not.toBeChecked();
+  expect(screen.getByText("Raccourci : 10 épisodes cochés.")).toBeInTheDocument();
+  check("Ep 0");
+  check("Ep 11");
+  expect(screen.getByTestId("probe")).toHaveTextContent("10");
+});
+
+it("raccourci : les épisodes refusés par les plafonds ne sont pas cochés, le message le dit", async () => {
+  const eps = [
+    episode("0", { title: "Ep 0", enclosure_length: 100_000_000 }),
+    episode("1", { title: "Ep 1", enclosure_length: 250_000_000 }),
+    episode("2", { title: "Ep 2", enclosure_length: 100_000_000, explicit: true }),
+    episode("3", { title: "Ep 3", enclosure_length: 100_000_000 }),
+  ];
+  sources = [library, podcast("a", "A")];
+  views.a = view("a", eps);
+  renderScreen();
+  await screen.findByRole("checkbox", { name: "Ep 0" });
+  fireEvent.click(screen.getByRole("button", { name: "Cocher les 4 derniers épisodes" }));
+  expect(screen.getByRole("checkbox", { name: "Ep 0" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Ep 1" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Ep 2" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Ep 3" })).toBeChecked();
+  expect(screen.getByText(/2 épisodes cochés sur les 4 derniers/)).toBeInTheDocument();
+});
