@@ -268,7 +268,13 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     onInstallDone,
     useCallback(
       (event) => {
-        patchTask(event.task_id, { state: "done", percent: 100, error: null });
+        patchTask(event.task_id, {
+          state: "done",
+          percent: 100,
+          error: null,
+          // Pack : épisodes retirés (P7), connus seulement à la fin de la préparation.
+          ...(event.pack ? { pack: event.pack } : {}),
+        });
         compatReload();
         void refreshInstalled();
         const { uuid, title } = event.entry;

@@ -1,11 +1,14 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invokeCommand } from "./error";
 import type { LibraryEntry } from "./library";
+import type { PackComposition, ValidationReport } from "./pack";
 import type { StoryEntry } from "./story";
 
 /** État d'une tâche d'installation (miroir de `TaskState` dans `src-tauri/src/install/mod.rs`). */
 export type TaskState =
   | "queued"
+  | "preparing"
+  | "prepared"
   | "downloading"
   | "converting"
   | "installing"
@@ -34,6 +37,22 @@ export interface InstallTask {
   error: TaskError | null;
   /** Création (secondes Unix). */
   created_at: number;
+  /** Pack de podcasts (#217) ; `null` pour une histoire d'une source. */
+  pack: PackStatus | null;
+}
+
+/** État d'un pack de podcasts dans la file (miroir de `PackStatus`, `install/podcast.rs`). */
+export interface PackStatus {
+  /** Épisodes de la composition. */
+  episodes: number;
+  /** Titres des épisodes retirés du pack (échec de téléchargement ou de conversion, P7). */
+  dropped: string[];
+}
+
+/** Résultat de `pack_create` : `task` vaut `null` si la composition est refusée. */
+export interface PackCreated {
+  task: InstallTask | null;
+  report: ValidationReport;
 }
 
 /** Charge de `install://progress` : changement d'état ou avancement d'une tâche. */
@@ -54,6 +73,8 @@ export interface InstallDone {
   entry: LibraryEntry;
   /** Avertissements de la conversion. */
   warnings: number;
+  /** Pack de podcasts : épisodes retirés (P7) ; `null` pour une histoire d'une source. */
+  pack: PackStatus | null;
 }
 
 /** Charge de `install://error` (`state` : `failed` ou `cancelled`). */
@@ -81,6 +102,22 @@ export function startInstall(
   return invokeCommand<InstallTask>(
     "install_start",
     uuid === undefined ? { sourceId, entryId } : { sourceId, entryId, uuid },
+  );
+}
+
+/**
+ * `pack_create` : revalide la composition dans le backend (épisodes retrouvés dans les flux en
+ * cache) et, si elle est valide, ajoute la création du pack à la file d'installation. Sinon,
+ * `task` vaut `null` et `report.problems` dit pourquoi. `draftRevision` : dernière révision du
+ * brouillon, effacé après la publication du pack s'il n'a pas changé entre-temps.
+ */
+export function createPack(
+  composition: PackComposition,
+  draftRevision?: number,
+): Promise<PackCreated> {
+  return invokeCommand<PackCreated>(
+    "pack_create",
+    draftRevision === undefined ? { composition } : { composition, draftRevision },
   );
 }
 
