@@ -64,7 +64,10 @@ export interface EjectNote {
 export interface DeviceApi {
   status: DeviceStatus | null;
   error: AppError | null;
-  retry: () => void;
+  /** Relance la scrutation ; renvoie le numéro de la demande (voir `retryAnswered`). */
+  retry: () => number;
+  /** Numéro de la dernière demande de `retry` à laquelle une réponse est arrivée. */
+  retryAnswered: number;
   /** Flam détectée, ou `null`. */
   device: DeviceSummary | null;
   /** La reprise des transferts interrompus de cette détection est terminée. */
