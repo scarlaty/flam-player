@@ -16,9 +16,15 @@ use crate::library::tests::story;
 const PYTHON: ConverterEngine = ConverterEngine::Python;
 const RUST: ConverterEngine = ConverterEngine::Rust;
 
+/// Python du PATH. Avec `FLAM_REQUIRE_PATH_PYTHON=1` (CI), son absence fait échouer le test au
+/// lieu de le sauter en silence (#426).
 fn python() -> Option<PathBuf> {
     let found = settings::detect_python(&Environment::current()).path;
     if found.is_none() {
+        assert!(
+            std::env::var_os("FLAM_REQUIRE_PATH_PYTHON").is_none_or(|v| v != "1"),
+            "FLAM_REQUIRE_PATH_PYTHON=1 : Python introuvable dans le PATH"
+        );
         eprintln!("Python introuvable : test de conversion ignoré");
     }
     found
@@ -83,12 +89,23 @@ impl Ctx {
             python,
             Duration::from_secs(5),
             engine,
+            None,
         )
     }
 
     /// Moteur Python (utilisé aussi par `podcast_tests`).
     fn with_dir(dir: tempfile::TempDir, python: Option<PathBuf>, grace: Duration) -> Self {
-        Self::with_dir_engine(dir, python, grace, PYTHON)
+        Self::with_dir_engine(dir, python, grace, PYTHON, None)
+    }
+
+    /// `real_script` : vrai `telmi2flam.py` (bout en bout) au lieu du faux convertisseur.
+    fn with_converter(
+        dir: tempfile::TempDir,
+        python: Option<PathBuf>,
+        grace: Duration,
+        real_script: Option<PathBuf>,
+    ) -> Self {
+        Self::with_dir_engine(dir, python, grace, PYTHON, real_script)
     }
 
     /// `python` : interpréteur des faux convertisseurs. Moteur Python : `python` + le script ;
@@ -99,9 +116,13 @@ impl Ctx {
         python: Option<PathBuf>,
         grace: Duration,
         engine: ConverterEngine,
+        real_script: Option<PathBuf>,
     ) -> Self {
-        let script = dir.path().join("fake_telmi2flam.py");
-        std::fs::write(&script, convert::fake::SCRIPT).unwrap();
+        let script = real_script.unwrap_or_else(|| {
+            let script = dir.path().join("fake_telmi2flam.py");
+            std::fs::write(&script, convert::fake::SCRIPT).unwrap();
+            script
+        });
         let cache_root = dir.path().join("cache");
         let events = Arc::new(Recorder::default());
         let gate = Arc::new(RwLock::new(()));
@@ -151,7 +172,7 @@ impl Ctx {
     }
 
     async fn wait(&self, id: &str, what: impl Fn(&InstallTask) -> bool) -> InstallTask {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             let task = self.task(id);
             if what(&task) {
@@ -373,7 +394,7 @@ async fn plantage_sans_evenement_error_utilise_stderr_rust() {
 
 async fn annulation_pendant_la_conversion(mode: &str, grace: Duration, engine: ConverterEngine) {
     let Some(py) = python() else { return };
-    let ctx = Ctx::with_dir_engine(tempfile::tempdir().unwrap(), Some(py), grace, engine);
+    let ctx = Ctx::with_dir_engine(tempfile::tempdir().unwrap(), Some(py), grace, engine, None);
     let server = serve(zip_bytes(mode)).await;
     let task = ctx
         .service
@@ -1384,6 +1405,7 @@ async fn arret_force_termine_aussi_les_sous_processus(engine: ConverterEngine) {
         Some(py),
         Duration::from_millis(500),
         engine,
+        None,
     );
     let server = serve(zip_bytes("tree")).await;
     let task = ctx

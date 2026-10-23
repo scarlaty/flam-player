@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { toAppError, type AppError } from "../../../api/error";
 import { createPack } from "../../../api/install";
@@ -40,6 +41,14 @@ import {
   useDraftAutosave,
   useFeedInfo,
 } from "./hooks";
+import {
+  beginCreation,
+  creationsVersion,
+  forgetFinishedTasks,
+  isCreating,
+  rememberTask,
+  subscribeCreations,
+} from "./creations";
 import { PackTree, menuLabel } from "./PackTree";
 import {
   MAX_MENU_DEPTH,
@@ -165,7 +174,9 @@ export function PackEditor({
   const toast = useContext(ToastContext);
   // Contextes absents hors de l'application (éditeur rendu seul) : la tâche apparaît alors avec ses
   // premiers événements.
-  const trackTask = useContext(StoriesContext)?.trackTask;
+  const stories = useContext(StoriesContext);
+  const trackTask = stories?.trackTask;
+  const panelTasks = stories?.panelTasks;
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<AppError | null>(null);
   // Problèmes renvoyés par le backend à la création (et la composition qu'ils décrivent).
@@ -174,7 +185,31 @@ export function PackEditor({
     menu: PackNode[];
   } | null>(null);
   const [rightsOpen, setRightsOpen] = useState(false);
+  // Relit l'état des envois en cours quand une autre instance de l'éditeur les termine.
+  useSyncExternalStore(subscribeCreations, creationsVersion);
+  const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
+  // `edited` : modifié depuis la lecture, donc plus le brouillon d'une création en cours (#429).
+  // Il passe à vrai à toute modification, même annulée ensuite : les contenus ne sont pas comparés.
+  const [edited, setEdited] = useState(false);
   const createLock = useRef(false);
+  const isTaskActive = (taskId: string) =>
+    panelTasks?.some(
+      (task) =>
+        task.id === taskId && (task.state === "queued" || task.state === "running"),
+    ) ?? false;
+  // Les tâches terminées sortent du registre des créations (#435).
+  useEffect(() => {
+    forgetFinishedTasks(
+      (taskId) =>
+        panelTasks?.some(
+          (task) =>
+            task.id === taskId &&
+            (task.state === "done" ||
+              task.state === "error" ||
+              task.state === "cancelled"),
+        ) ?? false,
+    );
+  }, [panelTasks]);
   const validation = useDebouncedValidation(composition, validateDelayMs);
   const seedValidation = validation.seed;
 
@@ -188,6 +223,8 @@ export function PackEditor({
         const view = await readPackDraft();
         if (cancelled) return;
         initDraft(view.revision);
+        setLoadedRevision(view.revision);
+        setEdited(false);
         const loaded =
           view.composition ??
           emptyComposition(
@@ -263,6 +300,7 @@ export function PackEditor({
 
   function edit(next: PackComposition, message = "") {
     setComposition(next);
+    setEdited(true);
     setRefused(null);
     setCreateError(null);
     schedule(next);
@@ -344,8 +382,12 @@ export function PackEditor({
   }
 
   const report = validation.report;
+  // Brouillon inchangé dont la création tourne encore (éditeur quitté puis rouvert, #429).
+  const alreadyCreating =
+    !edited && loadedRevision !== null && isCreating(loadedRevision, isTaskActive);
   const canCreate =
     !creating &&
+    !alreadyCreating &&
     validation.error === null &&
     !validation.pending &&
     report !== null &&
@@ -364,18 +406,30 @@ export function PackEditor({
     setCreating(true);
     setCreateError(null);
     setRefused(null);
+    let endCreation: (() => void) | undefined;
     try {
       // Une modification faite pendant l'enregistrement fait partie de la révision renvoyée :
       // c'est elle qui part, pas la composition affichée au moment du clic.
       const saved = await settle();
       const submitted = saved.composition ?? current;
+      // Verrou durable : une autre instance de l'éditeur (quitté puis rouvert) peut déjà créer
+      // ce brouillon.
+      // Sortie sans message : une autre instance crée déjà ce brouillon (le bouton le dit).
+      if (isCreating(saved.revision, isTaskActive)) return;
+      endCreation = beginCreation(saved.revision);
       const created = await createPack(submitted, saved.revision);
       if (created.task === null) {
         setRefused({ problems: created.report.problems, menu: submitted.menu });
         return;
       }
+      rememberTask(created.task.id, saved.revision);
       trackTask?.(created.task);
-      selection.clear();
+      selection.removeMany(
+        episodesOf(submitted.menu).map((e) => ({
+          sourceId: e.source_id,
+          id: e.episode_id,
+        })),
+      );
       toast?.show({
         message: text.create.started(created.task.entry.title),
         tone: "success",
@@ -384,6 +438,7 @@ export function PackEditor({
     } catch (caught) {
       setCreateError(toAppError(caught));
     } finally {
+      endCreation?.();
       createLock.current = false;
       setCreating(false);
     }
@@ -614,11 +669,13 @@ export function PackEditor({
         </Button>
         {!canCreate && !creating && (
           <p id="fl-pack-create-hint" className="fl-pack__hint">
-            {validation.error
-              ? text.create.checkFailed
-              : report === null || validation.pending
-                ? text.create.checking
-                : text.create.blocked}
+            {alreadyCreating
+              ? text.create.inProgress
+              : validation.error
+                ? text.create.checkFailed
+                : report === null || validation.pending
+                  ? text.create.checking
+                  : text.create.blocked}
           </p>
         )}
         {createError && <ErrorBanner error={createError} />}

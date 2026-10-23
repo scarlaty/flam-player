@@ -1211,6 +1211,10 @@ if rust:
 open(part, "wb").write(b"PK\x03\x04plain.pk converti")
 os.replace(part, out)
 ev(event="done", output=out, size=os.path.getsize(out), warnings=1)
+if rust:
+    # Sortie sans finalisation de l'interpréteur : un fil démon bloqué dans la lecture de stdin
+    # peut y faire planter Python sous Windows (0xC0000005).
+    os._exit(0)
 "#;
 
     /// Archive zip « stored » réelle : `mode.txt` (lu par le faux convertisseur, en premier
