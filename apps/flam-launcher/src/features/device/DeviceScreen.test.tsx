@@ -434,6 +434,14 @@ it("actualise la liste à la demande", async () => {
   expect(count("device_list_stories")).toBe(2);
 });
 
+/** Retient les appels `device_status` jusqu'à `answer(index, valeur)` ; `statusGate = null` les libère. */
+function holdStatusCalls() {
+  const held: ((value: DeviceStatus) => void)[] = [];
+  const answer = (index: number, value: DeviceStatus) => held[index]?.(value);
+  statusGate = () => new Promise<DeviceStatus>((resolve) => held.push(resolve));
+  return { held, answer };
+}
+
 it(
   "rend le focus au titre quand « Réessayer » trouve la Flam",
   async () => {
@@ -455,9 +463,7 @@ it(
     const retry = await screen.findByRole("button", { name: "Réessayer" });
     // Un appel est déjà en vol (retour au premier plan) quand on clique : sa réponse, périmée
     // (« non détectée »), arrive et est affichée avant celle de l'appel lancé par le clic.
-    const held: ((value: DeviceStatus) => void)[] = [];
-    const answer = (index: number, value: DeviceStatus) => held[index]?.(value);
-    statusGate = () => new Promise<DeviceStatus>((resolve) => held.push(resolve));
+    const { held, answer } = holdStatusCalls();
     document.dispatchEvent(new Event("visibilitychange"));
     await waitFor(() => expect(held).toHaveLength(1));
     fireEvent.click(retry);
@@ -482,9 +488,7 @@ it(
     const retry = await screen.findByRole("button", { name: "Réessayer" });
     // Un appel est déjà en vol (retour au premier plan) quand on clique : sa réponse, périmée
     // (déjà « détectée »), arrive et est affichée avant celle de l'appel lancé par le clic.
-    const held: ((value: DeviceStatus) => void)[] = [];
-    const answer = (index: number, value: DeviceStatus) => held[index]?.(value);
-    statusGate = () => new Promise<DeviceStatus>((resolve) => held.push(resolve));
+    const { held, answer } = holdStatusCalls();
     document.dispatchEvent(new Event("visibilitychange"));
     await waitFor(() => expect(held).toHaveLength(1));
     fireEvent.click(retry);
@@ -498,6 +502,15 @@ it(
     statusGate = null;
     const heading = await screen.findByRole("heading", { name: "Flam détectée" });
     await waitFor(() => expect(heading).toHaveFocus());
+    // La demande est close : une perte puis un retour spontanés ne volent pas le focus.
+    heading.blur();
+    status = { ...absent };
+    document.dispatchEvent(new Event("visibilitychange"));
+    await screen.findByRole("heading", { name: "Aucune Flam détectée" });
+    status = detected();
+    document.dispatchEvent(new Event("visibilitychange"));
+    const back = await screen.findByRole("heading", { name: "Flam détectée" });
+    expect(back).not.toHaveFocus();
   },
   SLOW_TEST_MS,
 );
