@@ -1,7 +1,8 @@
 //! Parité avec Python du paquet assemblé en mémoire ([`build_package`]) : les vecteurs
 //! `tests/data/package_cases.zip` sont produits par `tests/data/gen_package_cases.py`
 //! (conversion complète par `tools/telmi2flam/telmi2flam.py`, Python 3.14.8 + Pillow 12.3.0,
-//! vignette en mode `bandes`, sans ffmpeg).
+//! vignette en `bandes` par défaut, `flou` ou `rogner` selon le champ `thumb_fit` du cas, sans
+//! ffmpeg).
 //!
 //! Pour chaque cas : mêmes entrées dans le même ordre et mêmes octets (SHA-256), mêmes codes
 //! d'avertissement dans le même ordre, ou même code d'erreur. Les écarts assumés du port
@@ -48,9 +49,22 @@ fn options(case: &Value) -> Options {
             "image" => Selector::Image,
             other => panic!("sélecteur {other}"),
         },
-        // vecteurs produits avec thumb_fit="bandes" (gen_package_cases.py)
-        thumb_fit: ThumbFit::Bandes,
+        // `thumb_fit` absent : `bandes`, le mode des vecteurs sans `--thumb-fit`
+        // (gen_package_cases.py)
+        thumb_fit: match case.get("thumb_fit").and_then(Value::as_str) {
+            None | Some("bandes") => ThumbFit::Bandes,
+            Some("flou") => ThumbFit::Flou,
+            Some("rogner") => ThumbFit::Rogner,
+            Some(other) => panic!("thumb_fit {other}"),
+        },
     }
+}
+
+/// Vecteurs produits sans ffmpeg (`FLAM_FFMPEG=""`) : même réglage ici, quel que soit le
+/// `PATH` de la machine de test (avec ffmpeg : `tests/ffmpeg.rs`).
+fn without_ffmpeg() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::env::set_var("FLAM_FFMPEG", ""));
 }
 
 fn convert(
@@ -58,6 +72,7 @@ fn convert(
     options: &Options,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Package, ConvError> {
+    without_ffmpeg();
     let mut archive = Archive::new(Cursor::new(data), "in.zip".into())?;
     build_package(&mut archive, options, cancelled)
 }
@@ -207,6 +222,50 @@ fn paquet_identique_a_python() {
         cases.len(),
         failures.join("\n")
     );
+}
+
+/// `Options.thumb_fit` atteint bien `png_to_thumb_lif` : pour une même couverture, les trois
+/// modes donnent trois `img/thumbnail.lif` différents, et chacun est celui des vecteurs Python
+/// (le SHA-256 du `.plain.pk` est vérifié par `paquet_identique_a_python`).
+#[test]
+fn thumb_fit_atteint_la_vignette() {
+    let cases = expected();
+    let mut zip = vectors();
+    for shape in ["portrait", "paysage"] {
+        let mut thumbs = Vec::new();
+        for (mode, fit) in [
+            ("flou", ThumbFit::Flou),
+            ("rogner", ThumbFit::Rogner),
+            ("bandes", ThumbFit::Bandes),
+        ] {
+            let id = format!("pkg_thumb_{mode}_{shape}");
+            let case = cases
+                .iter()
+                .find(|c| c["id"] == id.as_str())
+                .unwrap_or_else(|| panic!("cas {id}"));
+            let data = zip.read(&format!("cases/{id}.zip")).unwrap().unwrap();
+            let opts = options(case);
+            assert_eq!(opts.thumb_fit, fit, "{id}");
+            let pkg = convert_on_big_stack(data, opts).unwrap();
+            let thumb = pkg
+                .entries
+                .iter()
+                .find(|(name, _)| name == "img/thumbnail.lif")
+                .unwrap_or_else(|| panic!("{id} : pas de vignette"))
+                .1
+                .clone();
+            thumbs.push((mode, hex(&Sha256::digest(&thumb))));
+        }
+        for i in 0..thumbs.len() {
+            for j in i + 1..thumbs.len() {
+                assert_ne!(
+                    thumbs[i].1, thumbs[j].1,
+                    "{shape} : {} et {} donnent la même vignette",
+                    thumbs[i].0, thumbs[j].0
+                );
+            }
+        }
+    }
 }
 
 /// Contenu synthétique de l'entrée `i` (`pattern` du générateur).

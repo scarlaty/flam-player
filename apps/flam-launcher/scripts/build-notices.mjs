@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  DERIVED_NOTICES,
   isAllowedLicense,
   optionalMissingIsExpected,
   thirdPartyRustIds,
@@ -18,6 +19,7 @@ import {
 const launcherDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const tauriDir = join(launcherDir, "src-tauri");
 const outFile = join(launcherDir, "build", "THIRD-PARTY-NOTICES.txt");
+const repoDir = join(launcherDir, "..", "..");
 const LICENSE_FILE = /^(licen[cs]e|copying|notice|unlicense)([-_.].*)?$/i;
 
 function licenseTexts(dir) {
@@ -97,7 +99,9 @@ function npmPackages() {
   return out;
 }
 
-const packages = [...rustPackages(), ...npmPackages()].sort(
+// Code dérivé de Pillow (membre du workspace, donc absent de cargo metadata) : entrée explicite.
+const derived = DERIVED_NOTICES.map((d) => ({ ...d, dir: join(repoDir, d.dir) }));
+const packages = [...rustPackages(), ...npmPackages(), ...derived].sort(
   (a, b) =>
     a.ecosystem.localeCompare(b.ecosystem) ||
     a.name.localeCompare(b.name) ||
@@ -131,6 +135,7 @@ for (const p of packages) {
   for (const t of texts) lines.push(`--- ${t.name} ---`, t.text, "");
 }
 const refused = packages
+  .filter((p) => !derived.includes(p))
   .filter((p) => !isAllowedLicense(p.license))
   .map((p) => `${p.ecosystem} ${p.name}@${p.version} : ${p.license || "non déclarée"}`);
 if (refused.length > 0) {

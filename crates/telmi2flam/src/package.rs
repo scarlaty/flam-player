@@ -20,8 +20,8 @@
 //! l'ordre de Python.
 //!
 //! Écarts assumés avec Python (parité vérifiée par `tests/package_parity.rs` sous ces
-//! conditions) : vignette en mode `bandes` seulement (défaut Python `flou`, #282) ; MP3 hors
-//! 44 100 Hz recopiés tels quels, comme Python sans ffmpeg (rééchantillonnage reporté, #22).
+//! conditions) : MP3 hors 44 100 Hz recopiés tels quels, comme Python sans ffmpeg
+//! (rééchantillonnage reporté, #22).
 
 use std::collections::HashSet;
 use std::io::{Read, Seek};
@@ -334,8 +334,7 @@ pub fn build_package_with<R: Read + Seek>(
     }
     let mut title_audio = None;
     if let Some(mp3) = assets.read("title.mp3")? {
-        assets.add_mp3map("sounds/title.mp3", &mp3, "title.mp3");
-        assets.out.insert("sounds/title.mp3".to_owned(), mp3);
+        assets.add_mp3map("sounds/title.mp3", mp3, "title.mp3")?;
         title_audio = Some("title.mp3");
     }
     let mut title_image = None;
