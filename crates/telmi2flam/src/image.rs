@@ -169,8 +169,8 @@ fn crop(im: &Rgba, left: u32, top: u32, w: u32, h: u32) -> Result<Rgba> {
     Ok(out)
 }
 
-/// `_thumb_cover` : fenêtre centrale de la source au rapport de la vignette (arrondi au pair,
-/// au moins 1 px), redimensionnée en 104 × 136.
+/// `_thumb_cover` : fenêtre centrale de la source au rapport de la vignette (`round()` de
+/// Python, demi au pair, au moins 1 px), redimensionnée en 104 × 136.
 fn thumb_cover(im: &Rgba, cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     let (sw, sh) = (im.width, im.height);
     if sw == 0 || sh == 0 {
