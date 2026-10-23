@@ -53,7 +53,14 @@ export type Coherence =
   | { kind: "not_applicable" }
   | { kind: "not_checked" }
   | { kind: "coherent"; counts: CoherenceCounts }
-  | { kind: "contradiction"; counts: CoherenceCounts }
+  | {
+      kind: "contradiction";
+      counts: CoherenceCounts;
+      /** UUID des histoires en cause (au plus 20, triés). */
+      stories: string[];
+      /** Nombre d'UUID distincts en cause, avant troncature. */
+      total: number;
+    }
   | { kind: "no_evidence"; counts: CoherenceCounts };
 
 /** Confiance accordée à une Flam 2.x (miroir de `Trust`). */

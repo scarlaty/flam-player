@@ -96,8 +96,9 @@ fn troncatures_et_octets_alteres_identiques_a_pillow() {
         };
         let got = outcome(&data);
         if !data.starts_with(&[0x89, b'P', b'N', b'G', 13, 10, 26, 10]) {
-            // autre format : toujours délégué (Pillow pourrait le lire)
-            if got != "delegate" {
+            // autre format : délégué (Pillow pourrait le lire), ou illisible comme pour Pillow
+            // (src/identify.rs, règle prudente)
+            if got != "delegate" && got != row[3] {
                 errors.push(format!(
                     "{} {} {} : non délégué ({got})",
                     row[0], row[1], arg

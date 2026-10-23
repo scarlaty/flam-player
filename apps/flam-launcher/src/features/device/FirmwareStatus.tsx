@@ -69,6 +69,12 @@ function firmwareState(status: FirmwareStatus): string {
 export function FirmwareNotice({ device }: { device: DeviceSummary }) {
   const block = firmwareWriteBlock(device);
   const contradiction = block?.kind === "keys_contradiction";
+  // Histoires en cause (#326) : UUID, pour savoir lesquelles retirer.
+  const coherence = device.firmware_status?.coherence;
+  const culprits =
+    contradiction && coherence?.kind === "contradiction" && coherence.stories.length > 0
+      ? coherence
+      : null;
   return (
     <>
       {block && (
@@ -78,6 +84,11 @@ export function FirmwareNotice({ device }: { device: DeviceSummary }) {
           title={contradiction ? text.sendBlockedTitle : text.blockedTitle}
         >
           <p>{blockedMessage(block)}</p>
+          {culprits && (
+            <p style={{ overflowWrap: "anywhere" }}>
+              {text.contradictionStories(culprits.stories, culprits.total)}
+            </p>
+          )}
           <p>{contradiction ? text.contradictionHint : text.blockedHint}</p>
         </Banner>
       )}

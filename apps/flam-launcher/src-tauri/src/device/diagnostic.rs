@@ -786,7 +786,8 @@ fn coherence_text(coherence: &Coherence) -> String {
         Coherence::NotApplicable => return "sans objet (not_applicable)".into(),
         Coherence::NotChecked => return "non vérifiée (not_checked)".into(),
         Coherence::Coherent { counts } => ("cohérente (coherent)", counts),
-        Coherence::Contradiction { counts } => ("contradiction", counts),
+        // Les UUID en cause ne sont jamais repris (des nombres seulement).
+        Coherence::Contradiction { counts, .. } => ("contradiction", counts),
         Coherence::NoEvidence { counts } => ("aucune preuve (no_evidence)", counts),
     };
     format!(
