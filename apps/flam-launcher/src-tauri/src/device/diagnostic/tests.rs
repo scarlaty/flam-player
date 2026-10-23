@@ -525,6 +525,21 @@ fn le_filet_masque_hex_separe_base64_sans_chiffre_et_uuid_colle() {
         r.scrub("StoryFileMissingWarning"),
         "StoryFileMissingWarning"
     );
+    // Chemin à dossier en majuscules : gardé.
+    assert_eq!(
+        r.scrub("D:/FLAMCACHE/work/stories"),
+        "D:/FLAMCACHE/work/stories"
+    );
+    // Cache réglé sur un parent du profil : le profil reste masqué.
+    let parent = Redactor {
+        profile: Some(PROFILE.into()),
+        username: None,
+        cache: Some(r"C:\Users".into()),
+    };
+    assert_eq!(
+        parent.clean_message(&format!(r"{PROFILE}\x")),
+        r"%USERPROFILE%\x"
+    );
     // UUID collé à des caractères hexadécimaux.
     assert_eq!(r.scrub(&format!("cafe{OFFICIAL}0")), "cafe<uuid>0");
     assert_eq!(

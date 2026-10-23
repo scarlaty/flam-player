@@ -247,7 +247,9 @@ fn hidden_note(hidden: &bool) -> &'static str {
 
 /// Les variantes `Validation` et `Io` produites ici sont reprises telles quelles dans le
 /// diagnostic copiable (liste blanche de `diagnostic::session_message`) : un message de
-/// transfert ne doit citer ni titre ni nom de fichier d'histoire.
+/// transfert ne doit citer ni titre ni nom de fichier d'histoire. Écart connu, suivi dans #329 :
+/// `Verify`, « a changé pendant la copie » et `PrepareError::Invalid` citent encore un nom de
+/// fichier interne de l'histoire.
 impl From<TransferError> for AppError {
     fn from(err: TransferError) -> Self {
         match err {

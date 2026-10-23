@@ -178,8 +178,11 @@ impl Redactor {
             .chars()
             .map(|c| if c.is_control() || c == '`' { ' ' } else { c })
             .collect();
-        // Le dossier de cache d'abord : souvent dans le profil, il est plus précis.
-        for (path, with) in [(&self.cache, "%CACHE%"), (&self.profile, "%USERPROFILE%")] {
+        // Le chemin le plus long d'abord : le cache est souvent dans le profil (plus précis),
+        // mais un cache réglé sur un parent du profil (`C:\Users`) ne doit pas le cacher.
+        let mut paths = [(&self.cache, "%CACHE%"), (&self.profile, "%USERPROFILE%")];
+        paths.sort_by_key(|(path, _)| std::cmp::Reverse(path.as_ref().map_or(0, String::len)));
+        for (path, with) in paths {
             let Some(path) = path else { continue };
             let path = path.trim_end_matches(['\\', '/']);
             if path.chars().count() >= 3 {
@@ -273,8 +276,12 @@ fn looks_base64(token: &str) -> bool {
     {
         return true;
     }
+    // Sans chiffre ni remplissage : jamais un chemin (`/FLAMCACHE/work/stories`).
     let letters = upper + lower;
-    token.len() >= MIN_BASE64_LETTERS_RUN && upper * 4 >= letters && lower * 4 >= letters
+    token.len() >= MIN_BASE64_LETTERS_RUN
+        && !token.contains('/')
+        && upper * 4 >= letters
+        && lower * 4 >= letters
 }
 
 /// Remplace par [`MASK`] toute suite d'au moins [`MIN_HEX_PAIRS`] paires hexadécimales séparées
@@ -389,9 +396,10 @@ fn replace_matching(
 }
 
 /// Remplace le segment qui suit `\Users\` ou `/Users/` (casse indifférente) par `%USERNAME%`.
-/// Le segment ne s'arrête qu'à `\ / " ) :`, à un autre caractère interdit dans un nom de compte
-/// Windows (`| < > ; , = + * ? [ ]`) ou à une fin de ligne : un nom avec une espace ou une
-/// apostrophe (`Jean Dupont`, `O'Brien`) est masqué en entier.
+/// Le segment ne s'arrête qu'à `\ / " :`, à un autre caractère interdit dans un nom de compte
+/// Windows (`| < > ; , = + * ? [ ]`), à une fin de ligne ou, par compromis (chemin cité entre
+/// parenthèses), à `)` qui est pourtant permis : un nom avec une espace ou une apostrophe
+/// (`Jean Dupont`, `O'Brien`) est masqué en entier.
 fn mask_users_segment(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
