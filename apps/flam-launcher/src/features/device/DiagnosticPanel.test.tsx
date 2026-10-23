@@ -1,5 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { expectComponentAccessible } from "../../test/axe";
 import { DiagnosticPanel, REPORT_ISSUE_URL } from "./DiagnosticPanel";
@@ -123,4 +123,20 @@ it("propose de copier le lien si l'ouverture échoue", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Copier le lien" }));
   expect(await screen.findByText(/Lien copié/)).toBeInTheDocument();
   expect(writeText).toHaveBeenCalledWith(REPORT_ISSUE_URL);
+});
+
+it("un double clic rapide ne lance qu'un seul diagnostic", async () => {
+  mockClipboard(vi.fn().mockResolvedValue(undefined));
+  render(<DiagnosticPanel />);
+  const button = screen.getByRole("button", { name: "Copier le diagnostic" });
+  // Deux clics dans le même passage : la garde d'état n'est pas encore à jour.
+  act(() => {
+    button.click();
+    button.click();
+  });
+  expect(await screen.findByText("Diagnostic copié")).toBeInTheDocument();
+  expect(calls).toBe(1);
+  // Le verrou est levé : un nouvel essai part.
+  fireEvent.click(screen.getByRole("button", { name: "Copier le diagnostic" }));
+  await waitFor(() => expect(calls).toBe(2));
 });
