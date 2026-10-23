@@ -35,9 +35,10 @@ miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-
 # NFC / NFKD et classe combinatoire de `unicodedata`. Version épinglée : 0.1.24 porte
 # Unicode 16.0.0, celui du Python 3.14 de l'installateur (0.1.25 passe à Unicode 17.0.0).
 unicode-normalization = "=0.1.24"
+# Clé SHA-256 du cache de rééchantillonnage (comme Python) ; aussi empreintes des vecteurs de
+# parité PNG des tests. Déjà dans le Cargo.lock du launcher.
+sha2 = { version = "=0.10.9", default-features = false }
 
 [dev-dependencies]
 # Lecture de tests/vectors/archive/expected.json (vecteurs produits par Python).
 serde_json = "=1.0.154"
-# Empreintes SHA-256 des vecteurs de parité PNG (déjà dans le Cargo.lock du launcher).
-sha2 = { version = "=0.10.9", default-features = false }
