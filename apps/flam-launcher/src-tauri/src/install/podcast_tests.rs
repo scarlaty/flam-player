@@ -35,6 +35,8 @@ enum Fault {
     ConvertFail,
     /// Le décodeur isolé des pochettes échoue (enfant mort) : images de repli.
     ArtworkChildDies,
+    /// `fetch::Limits::batch_timeout` dépassé.
+    BatchTimeout,
 }
 
 struct FakePacks {
@@ -211,6 +213,9 @@ impl PackBackend for FakePacks {
                     Err(AppError::Cancelled)
                 }
                 Fault::FetchFatal => Err(AppError::Io(std::io::Error::other("disque"))),
+                Fault::BatchTimeout => {
+                    Err(AppError::DownloadInvalid("délai du lot dépassé".into()))
+                }
                 Fault::AllDropped => Err(AppError::DownloadInvalid(
                     "aucun épisode récupérable".into(),
                 )),
@@ -375,6 +380,7 @@ async fn pannes_a_chaque_etape_sans_residu_et_bibliotheque_coherente() {
         (Fault::CancelFetch, TaskState::Cancelled, "cancelled"),
         (Fault::CancelAudio, TaskState::Cancelled, "cancelled"),
         (Fault::ConvertFail, TaskState::Failed, "conversion"),
+        (Fault::BatchTimeout, TaskState::Failed, "download_invalid"),
     ] {
         let ctx = Ctx::new(Some(py.clone()));
         install_directly(&ctx, "deja", b"PK");
@@ -393,6 +399,15 @@ async fn pannes_a_chaque_etape_sans_residu_et_bibliotheque_coherente() {
         }
         let end = ctx.finished(&task.id).await;
         assert_eq!(end.state, expected, "{fault:?} : {end:?}");
+        if fault == Fault::BatchTimeout {
+            let message = &end.error.as_ref().unwrap().message;
+            assert!(
+                message.contains("téléchargement du pack interrompu")
+                    && message.contains("délai du lot dépassé")
+                    && message.contains("2 h"),
+                "{message}"
+            );
+        }
         assert_eq!(
             end.error.as_ref().unwrap().kind,
             kind,

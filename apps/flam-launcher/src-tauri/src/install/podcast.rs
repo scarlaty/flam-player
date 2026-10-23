@@ -370,11 +370,24 @@ fn invalid_message(report: &ValidationReport) -> String {
     format!("composition du pack invalide : {}", details.join(" ; "))
 }
 
-/// Supprime le dossier de travail hors du runtime asynchrone.
+/// Supprime le dossier de travail (hors du runtime asynchrone : `Workdir::finish`).
 pub(super) async fn finish_workdir(workdir: Workdir) {
-    match blocking(move || workdir.finish()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) | Err(err) => tracing::warn!("dossier de travail non supprimé : {err}"),
+    if let Err(err) = workdir.finish().await {
+        tracing::warn!("dossier de travail non supprimé : {err}");
+    }
+}
+
+/// Message d'un lot arrêté par `fetch::Limits::batch_timeout` : dit clairement à l'utilisateur
+/// ce qui s'est passé et quoi faire. Les autres erreurs passent telles quelles.
+pub(super) fn explain_fetch_error(err: AppError) -> AppError {
+    match err {
+        AppError::DownloadInvalid(m) if m.contains("délai du lot") => {
+            AppError::DownloadInvalid(format!(
+                "téléchargement du pack interrompu : {m} ({} h au plus ; connexion trop lente ou                  serveur qui ne répond plus). Réessayez plus tard ou avec moins d'épisodes.",
+                fetch::BATCH_TIMEOUT.as_secs() / 3600
+            ))
+        }
+        other => other,
     }
 }
 
@@ -598,7 +611,8 @@ impl InstallService {
         };
         let fetched = backend
             .fetch(&items, workdir, concurrency, cancel.clone(), progress)
-            .await?;
+            .await
+            .map_err(explain_fetch_error)?;
         if *cancel.borrow() {
             return Err(AppError::Cancelled);
         }
@@ -793,7 +807,8 @@ impl InstallService {
 }
 
 /// Décodeur de pochette ([`PackBackend::convert_artwork`]).
-pub(super) type ArtworkDecoder = dyn Fn(&[u8], ArtworkKind) -> Result<Artwork, ArtworkError>;
+pub(super) type ArtworkDecoder<'a> =
+    dyn Fn(&[u8], ArtworkKind) -> Result<Artwork, ArtworkError> + 'a;
 
 /// Convertit les pochettes (640 × 480) et la couverture (512 × 512) en PNG ; supprime les
 /// originaux. Une image illisible donne l'image de repli (D13). Bloquant.
@@ -801,7 +816,7 @@ pub(super) fn convert_artwork(
     dir: &Path,
     jobs: &[(usize, Option<PathBuf>)],
     cover: Option<PathBuf>,
-    decode: &ArtworkDecoder,
+    decode: &ArtworkDecoder<'_>,
 ) -> AppResult<(HashMap<usize, PathBuf>, Option<PathBuf>)> {
     let convert = |src: &Path, kind: ArtworkKind, dest: PathBuf| -> AppResult<Option<PathBuf>> {
         let bytes = match read_bounded(src, fetch::MAX_IMAGE_BYTES) {
