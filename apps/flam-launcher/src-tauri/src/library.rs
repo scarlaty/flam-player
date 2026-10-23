@@ -1115,6 +1115,31 @@ pub(crate) mod tests {
         assert!(url("ot").contains("pack.zip"), "autres sources intactes");
     }
 
+    /// #445 : un index écrit avant #426 garde l'ancien chemin sur disque jusqu'à la prochaine
+    /// écriture, qui le réécrit sans lui ; la lecture seule ne touche pas au fichier.
+    #[test]
+    fn l_index_ancien_est_reecrit_sans_chemin_a_la_prochaine_ecriture() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let s = staged(&lib, "pk.plain.pk", b"PK1234");
+        let mut source = story("pk", Some(1));
+        source.source_id = PACK_SOURCE_ID.into();
+        let entry = lib.install(&s, &source, None, 7).unwrap();
+        // Index d'avant #426 : chemin d'archive présent sur disque.
+        let mut old = entry.clone();
+        old.source.download_url = "podcast-work/pack.zip".into();
+        lib.save(vec![old]).unwrap();
+        let path = lib.root().join(INDEX_FILE);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("pack.zip"));
+        // Lecture : chemin vidé en mémoire, fichier intact.
+        assert!(lib.list().unwrap()[0].source.download_url.is_empty());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("pack.zip"));
+        // Écriture suivante : réécrit sans le chemin.
+        let s2 = staged(&lib, "ot.plain.pk", b"PK1234");
+        lib.install(&s2, &story("ot", Some(1)), None, 8).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("pack.zip"));
+    }
+
     #[test]
     fn playable_donne_chemin_et_titre_de_l_index() {
         let dir = tempfile::tempdir().unwrap();
