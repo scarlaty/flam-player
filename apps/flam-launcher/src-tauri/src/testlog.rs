@@ -8,7 +8,8 @@
 //! et celles des tâches `blocking` y passent aussi.
 //!
 //! Le journal est partagé entre tous les tests du processus : on n'y vérifie que l'**absence**
-//! d'un secret, jamais la présence d'une trace précise propre à un test.
+//! d'un secret, jamais la présence d'une trace précise propre à un test (seul le témoin
+//! ci-dessous cherche un marqueur qui lui est propre, pour prouver que le journal capture).
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -53,5 +54,22 @@ impl Logs {
 
     pub(crate) fn text(&self) -> String {
         String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Témoin : le journal global capture bien une trace connue. Sans lui, les assertions
+    /// d'absence de secret (`assert_no_leak`) passeraient à vide si le journal restait vide.
+    #[test]
+    fn le_journal_global_capture_une_trace_connue() {
+        let logs = Logs::capture();
+        tracing::info!("temoin-testlog-7f3a");
+        assert!(
+            logs.text().contains("temoin-testlog-7f3a"),
+            "journal global vide : les assertions d'absence de secret passeraient à vide"
+        );
     }
 }
