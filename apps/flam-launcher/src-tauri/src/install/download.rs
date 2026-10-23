@@ -65,7 +65,13 @@ pub fn part_path(dest: &Path) -> PathBuf {
     dest.with_file_name(name)
 }
 
+/// Message d'une adresse refusée par le contrôle D10 (`podcast::net`). L'URL n'y figure jamais.
+pub const BLOCKED_MESSAGE: &str = "téléchargement refusé : adresse privée, locale ou non publique";
+
 fn network(err: &reqwest::Error) -> AppError {
+    if crate::podcast::net::is_blocked(err) {
+        return AppError::Network(BLOCKED_MESSAGE.into());
+    }
     let reason = if err.is_timeout() {
         "délai dépassé"
     } else if err.is_redirect() {
