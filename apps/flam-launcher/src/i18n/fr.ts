@@ -96,10 +96,10 @@ export const fr = {
     title: "Podcasts",
     intro:
       "Ajoutez un flux de podcast, puis choisissez les épisodes à réunir dans un pack.",
-    /** Mention d'usage : texte proposé par la spécification (§ 4), à valider par le mainteneur (#220). */
+    /** Mention d'usage de l'écran d'ajout : version courte décidée par le mainteneur (#220, spec § 4). */
     usageTitle: "Usage personnel",
     usage:
-      "Les podcasts appartiennent à leurs auteurs. Les histoires créées ici sont réservées à un usage personnel, dans le cadre familial : ne les partagez pas et ne les redistribuez pas. L'audio est téléchargé tel que l'éditeur le diffuse, publicité comprise.",
+      "Usage personnel et familial uniquement : ne partagez pas les histoires créées. L'audio est repris tel quel, publicité comprise.",
     add: {
       title: "Ajouter un flux",
       url: "Adresse du flux (RSS)",
@@ -143,6 +143,21 @@ export const fr = {
         description: "Ce flux ne contient aucun épisode audio exploitable.",
       },
       list: "Épisodes",
+      latest: (count: number) =>
+        count === 1
+          ? "Cocher le dernier épisode"
+          : `Cocher les ${count} derniers épisodes`,
+      latestDone: (checked: number, count: number) => {
+        const done = `${checked} ${checked > 1 ? "épisodes cochés" : "épisode coché"}`;
+        if (checked === count) return `Raccourci : ${done}.`;
+        const others = "déjà cochés, explicites ou refusés par les plafonds";
+        if (checked === 0) {
+          return count === 1
+            ? `Raccourci : le dernier épisode n'a pas été coché (${others}).`
+            : `Raccourci : aucun des ${count} derniers épisodes n'a été coché (${others}).`;
+        }
+        return `Raccourci : ${done} sur les ${count} derniers (les autres sont ${others}).`;
+      },
       explicit: "Explicite",
       unknownDate: "Date inconnue",
       unknownSize: "taille inconnue",
