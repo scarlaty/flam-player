@@ -11,6 +11,7 @@ import {
   menuAt,
   move,
   nodeAt,
+  pathOf,
   removeAt,
   renameAt,
   shift,
@@ -18,7 +19,7 @@ import {
   type Path,
 } from "./tree";
 
-type Action = "up" | "down" | "move" | "remove" | "name";
+type Action = "up" | "down" | "move" | "name";
 
 /** Élément à focaliser après le rendu qui suit une modification. */
 interface FocusRequest {
@@ -80,7 +81,9 @@ export function PackTree(props: PackTreeProps) {
         ? ["up", "down", "move"]
         : request.action === "down"
           ? ["down", "up", "move"]
-          : [request.action];
+          : request.action === "move"
+            ? ["move", "up", "down"]
+            : [request.action];
     for (const action of order) {
       const element = target(action);
       if (element && !(element as HTMLButtonElement).disabled) {
@@ -121,8 +124,11 @@ export function PackTree(props: PackTreeProps) {
       onRefuse(t.podcasts.pack.announce.refused);
       return;
     }
-    // Le focus revient à l'arborescence : l'élément a changé de menu.
-    focus.current = { path: [], action: "name" };
+    // Le focus suit l'élément déplacé (le même objet dans la nouvelle arborescence).
+    const moved = pathOf(next, node);
+    focus.current = moved
+      ? { path: moved, action: "move" }
+      : { path: [], action: "name" };
     onChange(
       next,
       t.podcasts.pack.announce.movedTo(labelOf(node), menuLabel(menu, parent)),
@@ -131,8 +137,19 @@ export function PackTree(props: PackTreeProps) {
 
   function remove(path: Path) {
     const node = nodeAt(menu, path)!;
-    focus.current = { path: [], action: "name" };
-    onChange(removeAt(menu, path), t.podcasts.pack.announce.removed(labelOf(node)));
+    const next = removeAt(menu, path);
+    const parent = path.slice(0, -1);
+    const siblings = menuAt(next, parent)!;
+    // Le focus passe à l'élément voisin (celui qui prend la place, sinon le précédent), à
+    // défaut à la catégorie parente.
+    focus.current =
+      siblings.length > 0
+        ? {
+            path: [...parent, Math.min(path[path.length - 1]!, siblings.length - 1)],
+            action: "move",
+          }
+        : { path: parent, action: "name" };
+    onChange(next, t.podcasts.pack.announce.removed(labelOf(node)));
   }
 
   function addCategory(parent: Path) {
@@ -166,6 +183,8 @@ export function PackTree(props: PackTreeProps) {
       return;
     }
     const moved = nodeAt(menu, from)!;
+    const landed = pathOf(next, moved);
+    if (landed) focus.current = { path: landed, action: "move" };
     onChange(
       next,
       t.podcasts.pack.announce.movedTo(labelOf(moved), menuLabel(menu, parent)),
@@ -209,18 +228,6 @@ export function PackTree(props: PackTreeProps) {
       <li
         key={key}
         className="fl-pack__node"
-        draggable
-        onDragStart={(event) => {
-          event.stopPropagation();
-          dragFrom.current = path;
-          if (event.dataTransfer) {
-            event.dataTransfer.effectAllowed = "move";
-            event.dataTransfer.setData("text/plain", "");
-          }
-        }}
-        onDragEnd={() => {
-          dragFrom.current = null;
-        }}
         onDragOver={(event) => {
           if (dragFrom.current !== null) {
             event.preventDefault();
@@ -230,11 +237,30 @@ export function PackTree(props: PackTreeProps) {
         onDrop={(event) => drop(event, path)}
       >
         <div className="fl-pack__row">
+          <span
+            className="fl-pack__grip"
+            aria-hidden="true"
+            draggable
+            onDragStart={(event) => {
+              event.stopPropagation();
+              dragFrom.current = path;
+              if (event.dataTransfer) {
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", "");
+                const row = event.currentTarget.closest("li");
+                if (row) event.dataTransfer.setDragImage(row, 0, 0);
+              }
+            }}
+            onDragEnd={() => {
+              dragFrom.current = null;
+            }}
+          >
+            ⠿
+          </span>
           {node.kind === "category" ? (
             <TextField
               className="fl-pack__name"
               label={text.categoryName(path.map((i) => i + 1).join("."))}
-              hint={text.categoryNameHint(MAX_LABEL_CHARS)}
               value={node.name}
               maxLength={MAX_LABEL_CHARS}
               data-path={key}

@@ -2,7 +2,7 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useEffect, useState, type ReactNode } from "react";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type {
   DraftView,
   PackComposition,
@@ -18,6 +18,19 @@ import type { SelectedEpisode } from "../selection";
 import { PackEditor } from "./PackEditor";
 
 tolerateLoadInAsyncUtils();
+
+// Fermeture de la fenêtre : le gestionnaire enregistré par l'éditeur est capturé ici.
+const closeHandlers = vi.hoisted(() => ({
+  current: null as null | (() => Promise<void>),
+}));
+vi.mock("../../../api/window", () => ({
+  onWindowCloseRequested: (handler: () => Promise<void>) => {
+    closeHandlers.current = handler;
+    return Promise.resolve(() => {
+      if (closeHandlers.current === handler) closeHandlers.current = null;
+    });
+  },
+}));
 
 const episode = (id: string, extra: Partial<Episode> = {}): Episode => ({
   id,
@@ -343,7 +356,8 @@ it("titre obligatoire en multi-flux, titre du flux proposé en flux unique", asy
       /Laissez vide pour reprendre le titre du flux : « Contes du soir »/,
     ),
   ).toBeInTheDocument();
-  expect(screen.getByText(/copyright du flux : « © Radio »/)).toBeInTheDocument();
+  expect(screen.getByText(/Prérempli avec le copyright du flux/)).toBeInTheDocument();
+  expect(screen.getByLabelText("Sous-titre")).toHaveValue("© Radio");
   expect(screen.queryByText(/titre est obligatoire/)).toBeNull();
 });
 
@@ -472,4 +486,215 @@ it("reprise : le rapport lu avec le brouillon évite un premier appel à pack_va
   expect(await screen.findByText("Le pack est prêt à être créé.")).toBeInTheDocument();
   await new Promise((r) => setTimeout(r, 80));
   expect(count("pack_validate")).toBe(0);
+});
+
+const saves = () => calls.filter((c) => c.cmd === "pack_draft_save");
+
+/** IPC dont la commande de sauvegarde est fournie par le test. */
+function mockWithSave(save: (payload: Record<string, any>) => unknown) {
+  mockIPC((cmd, args) => {
+    const payload = (args ?? {}) as Record<string, any>;
+    calls.push({ cmd, args: payload });
+    if (cmd === "pack_draft_read") return draft;
+    if (cmd === "pack_validate") return report(payload.composition);
+    if (cmd === "podcast_feed") return views[payload.sourceId];
+    if (cmd === "pack_draft_save") return save(payload);
+    throw new Error(`commande inattendue : ${cmd}`);
+  });
+}
+
+it("sous-titre : prérempli par le copyright du flux unique, effaçable (D16)", async () => {
+  views.a = feed("a", "Contes", [episode("1")], { copyright: "© Radio" });
+  draft = { ...draft, composition: composition([ep("a", "1")]) };
+  renderEditor();
+  const subtitle = await screen.findByLabelText("Sous-titre");
+  await waitFor(() => expect(subtitle).toHaveValue("© Radio"));
+  fireEvent.change(subtitle, { target: { value: "" } });
+  expect(subtitle).toHaveValue("");
+  await waitFor(() => expect(count("pack_draft_save")).toBe(1));
+  expect(saves()[0]!.args.composition.metadata.subtitle).toBe("");
+});
+
+it("sauvegarde : une seule à la fois, la dernière composition part ensuite", async () => {
+  views.a = feed("a", "Contes", [episode("1")]);
+  draft = { ...draft, composition: composition([ep("a", "1")]), revision: 3 };
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let release: (() => void) | null = null;
+  mockWithSave(async (payload) => {
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    if (saves().length === 1) await new Promise<void>((r) => (release = r));
+    inFlight -= 1;
+    return { saved: true, revision: payload.revision };
+  });
+  renderEditor();
+  const title = await screen.findByLabelText("Titre");
+  fireEvent.change(title, { target: { value: "A" } });
+  await waitFor(() => expect(saves().length).toBe(1));
+  fireEvent.change(title, { target: { value: "AB" } });
+  await new Promise((r) => setTimeout(r, 80));
+  expect(saves().length).toBe(1);
+  release!();
+  await waitFor(() => expect(saves().length).toBe(2));
+  expect(maxInFlight).toBe(1);
+  expect(saves()[1]!.args.composition.metadata.title).toBe("AB");
+  expect(saves()[1]!.args.revision).toBe(5);
+});
+
+it("saved == false : recalage sur la révision renvoyée + 1, puis renvoi", async () => {
+  views.a = feed("a", "Contes", [episode("1")]);
+  draft = { ...draft, composition: composition([ep("a", "1")]), revision: 1 };
+  // Le backend est à la révision 9 : la 2 est refusée, la 10 acceptée.
+  mockWithSave((payload) =>
+    payload.revision <= 9
+      ? { saved: false, revision: 9 }
+      : { saved: true, revision: payload.revision },
+  );
+  renderEditor();
+  fireEvent.change(await screen.findByLabelText("Titre"), {
+    target: { value: "Mon pack" },
+  });
+  await waitFor(() => expect(saves().length).toBe(2));
+  expect(saves().map((c) => c.args.revision)).toEqual([2, 10]);
+  expect(saves()[1]!.args.composition.metadata.title).toBe("Mon pack");
+  expect(await screen.findByText("Brouillon enregistré.")).toBeInTheDocument();
+});
+
+it("échec de sauvegarde : bannière, puis « Réessayer » renvoie la composition", async () => {
+  views.a = feed("a", "Contes", [episode("1")]);
+  draft = { ...draft, composition: composition([ep("a", "1")]), revision: 4 };
+  let fail = true;
+  mockWithSave((payload) => {
+    if (fail) throw { kind: "io", message: "disque plein" };
+    return { saved: true, revision: payload.revision };
+  });
+  renderEditor();
+  fireEvent.change(await screen.findByLabelText("Titre"), {
+    target: { value: "Mon pack" },
+  });
+  const retry = await screen.findByRole("button", { name: "Réessayer" });
+  fail = false;
+  fireEvent.click(retry);
+  await waitFor(() => expect(saves().length).toBe(2));
+  expect(saves()[1]!.args.revision).toBe(5);
+  expect(saves()[1]!.args.composition.metadata.title).toBe("Mon pack");
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Réessayer" })).toBeNull(),
+  );
+});
+
+function renderSlowSave(delay = 5000) {
+  return render(
+    <PodcastSelectionProvider>
+      <PackEditor saveDelayMs={delay} validateDelayMs={20} />
+    </PodcastSelectionProvider>,
+  );
+}
+
+it("démontage : la modification en attente est sauvegardée sans attendre le débounce", async () => {
+  views.a = feed("a", "Contes", [episode("1")]);
+  draft = { ...draft, composition: composition([ep("a", "1")]), revision: 1 };
+  const { unmount } = renderSlowSave();
+  fireEvent.change(await screen.findByLabelText("Titre"), { target: { value: "Vite" } });
+  expect(saves().length).toBe(0);
+  unmount();
+  await waitFor(() => expect(saves().length).toBe(1));
+  expect(saves()[0]!.args.composition.metadata.title).toBe("Vite");
+});
+
+it("fermeture de la fenêtre : le débounce est vidé avant la fermeture", async () => {
+  views.a = feed("a", "Contes", [episode("1")]);
+  draft = { ...draft, composition: composition([ep("a", "1")]), revision: 1 };
+  renderSlowSave();
+  fireEvent.change(await screen.findByLabelText("Titre"), { target: { value: "Vite" } });
+  await waitFor(() => expect(closeHandlers.current).not.toBeNull());
+  expect(saves().length).toBe(0);
+  await closeHandlers.current!();
+  expect(saves().length).toBe(1);
+  expect(saves()[0]!.args.composition.metadata.title).toBe("Vite");
+});
+
+it("fermeture de la fenêtre : l'attente est bornée si la sauvegarde traîne", async () => {
+  views.a = feed("a", "Contes", [episode("1")]);
+  draft = { ...draft, composition: composition([ep("a", "1")]), revision: 1 };
+  let finish: (() => void) | null = null;
+  mockWithSave(
+    (payload) =>
+      new Promise((resolve) => {
+        finish = () => resolve({ saved: true, revision: payload.revision });
+      }),
+  );
+  renderSlowSave();
+  fireEvent.change(await screen.findByLabelText("Titre"), { target: { value: "Vite" } });
+  await waitFor(() => expect(closeHandlers.current).not.toBeNull());
+  const started = Date.now();
+  await closeHandlers.current!();
+  expect(Date.now() - started).toBeLessThan(2500);
+  expect(saves().length).toBe(1);
+  finish!();
+});
+
+it("quitter puis rouvrir aussitôt : la lecture attend la sauvegarde en cours", async () => {
+  views.a = feed("a", "Contes", [episode("1")]);
+  draft = { ...draft, composition: composition([ep("a", "1")]), revision: 1 };
+  const events: string[] = [];
+  mockIPC(async (cmd, args) => {
+    const payload = (args ?? {}) as Record<string, any>;
+    calls.push({ cmd, args: payload });
+    if (cmd === "pack_draft_read") {
+      events.push("read");
+      return draft;
+    }
+    if (cmd === "pack_validate") return report(payload.composition);
+    if (cmd === "podcast_feed") return views[payload.sourceId];
+    if (cmd === "pack_draft_save") {
+      events.push("save-start");
+      await new Promise((r) => setTimeout(r, 60));
+      events.push("save-end");
+      return { saved: true, revision: payload.revision };
+    }
+    throw new Error(`commande inattendue : ${cmd}`);
+  });
+  const first = renderSlowSave();
+  fireEvent.change(await screen.findByLabelText("Titre"), { target: { value: "Vite" } });
+  first.unmount();
+  renderSlowSave();
+  await screen.findByLabelText("Titre");
+  expect(events).toEqual(["read", "save-start", "save-end", "read"]);
+});
+
+it("retrait d'un élément : le focus passe au voisin ; dernier élément : au parent", async () => {
+  views.a = feed("a", "Contes", [episode("1"), episode("2"), episode("3")]);
+  draft = {
+    ...draft,
+    composition: composition([ep("a", "1"), ep("a", "2"), cat("Hiver", ep("a", "3"))]),
+  };
+  renderEditor();
+  fireEvent.click(await screen.findByRole("button", { name: "Retirer « Épisode 1 »" }));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Déplacer « Épisode 2 » vers")).toHaveFocus(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retirer « Épisode 3 »" }));
+  await waitFor(() =>
+    expect(screen.getByLabelText(/Nom de la catégorie n° 2/)).toHaveFocus(),
+  );
+});
+
+it("déplacement vers un autre menu : le focus suit l'élément déplacé", async () => {
+  views.a = feed("a", "Contes", [episode("1"), episode("2")]);
+  draft = {
+    ...draft,
+    composition: composition([ep("a", "1"), ep("a", "2"), cat("Hiver")]),
+  };
+  renderEditor();
+  fireEvent.change(await screen.findByLabelText("Déplacer « Épisode 1 » vers"), {
+    target: { value: "0" },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Déplacer « Épisode 1 » vers le menu choisi" }),
+  );
+  await waitFor(() =>
+    expect(screen.getByLabelText("Déplacer « Épisode 1 » vers")).toHaveFocus(),
+  );
 });
