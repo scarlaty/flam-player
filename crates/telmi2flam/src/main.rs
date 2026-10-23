@@ -9,10 +9,17 @@
 //!   5 asset manquant, 6 sortie ou erreur interne, 7 délégation à Python
 //!   (`unsupported_format`, décision D4), 130 annulation.
 //!
+//! Annulation et panique (#132) :
+//! - `--cancel-on-stdin-eof` (option propre au port, passée par le launcher) : la fin de stdin
+//!   annule ; sans l'option, stdin n'est jamais lu. `Ctrl+C`, `CTRL_BREAK` (Windows),
+//!   `SIGINT`, `SIGTERM` (ailleurs) annulent aussi ([`telmi2flam::cancel`]). Annulation :
+//!   `.part` supprimés, événement `error` `cancelled`, code 130 ;
+//! - crochet de panique ([`install_panic_hook`]) : temporaires du registre supprimés
+//!   ([`telmi2flam::output::discard_pending`]), événement `error` `internal_error`, code 6.
+//!   Il s'exécute avant l'abandon du profil release (`panic = "abort"`) et sort lui-même.
+//!
 //! Reste à faire ailleurs : analyse des options façon `argparse` (formes `--opt=valeur`,
-//! préfixes, `-h`), résumé humain `OK -> …` (#133) ; annulation par signal ou par fermeture
-//! de stdin et crochet de panique (#132) : une panique sort aujourd'hui avec 101, sans
-//! événement `error`.
+//! préfixes, `-h`), résumé humain `OK -> …` (#133).
 //!
 //! Fin de ligne : `\n` sur tous les systèmes. Python, en mode texte, écrit `\r\n` sous
 //! Windows ; l'écart est assumé (les consommateurs lisent ligne à ligne et la parité
@@ -22,7 +29,9 @@ use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use telmi2flam::cancel;
 use telmi2flam::convert::{convert, Request};
 use telmi2flam::image::ThumbFit;
 use telmi2flam::package::{Options, Selector};
@@ -45,15 +54,57 @@ const WORKER_STACK: usize = 8 << 20;
 
 const USAGE: &str = "usage: telmi2flam [-h] [--version] [-o OUTPUT] [--plain] [--keep-size] \
 [--allow-missing] [--selector {carousel,image}] [--thumb-fit {flou,rogner,bandes}] \
-[--progress-json] [--info] input";
+[--progress-json] [--info] [--cancel-on-stdin-eof] input";
+
+/// `--progress-json` actif : lu par le crochet de panique.
+static PROGRESS_JSON: AtomicBool = AtomicBool::new(false);
+
+/// Code de sortie d'une panique (`internal_error`, comme une exception non prévue en Python).
+const EXIT_PANIC: u8 = 6;
+
+/// Crochet de panique : supprime les temporaires en cours, émet `internal_error` (avec
+/// `--progress-json`) et le message humain, puis sort avec le code 6. Aucun `Drop` ne
+/// s'exécute ensuite : ni en `panic = "abort"` (release), ni ici, puisque `exit` précède le
+/// déroulement.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        // ffmpeg d'abord : ses fichiers ouverts empêcheraient de supprimer `t2f_ff_*`.
+        telmi2flam::ffmpeg::kill_children();
+        telmi2flam::output::discard_pending();
+        let payload = info.payload();
+        let what = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("panique");
+        let place = info
+            .location()
+            .map(|l| format!(" ({}:{})", l.file(), l.line()))
+            .unwrap_or_default();
+        let message = format!("panic: {what}{place}");
+        if PROGRESS_JSON.load(Ordering::SeqCst) {
+            let line = Event::Error {
+                code: "internal_error",
+                message: &message,
+                exit: EXIT_PANIC,
+            }
+            .to_json();
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{line}").and_then(|()| out.flush());
+        }
+        err_line(&format!("ERREUR inattendue (panic) : {what}{place}"));
+        std::process::exit(i32::from(EXIT_PANIC));
+    }));
+}
 
 fn main() -> ExitCode {
+    install_panic_hook();
     let worker = std::thread::Builder::new()
         .name("telmi2flam".to_owned())
         .stack_size(WORKER_STACK)
         .spawn(run);
     match worker {
-        // Une panique du fil est relancée ici : même sortie (code 101) que sans fil.
+        // Le crochet sort avant ; reste le cas d'un crochet remplacé : même sortie que sans fil.
         Ok(handle) => handle
             .join()
             .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
@@ -117,6 +168,7 @@ struct Args {
     progress_json: bool,
     info: bool,
     version: bool,
+    cancel_on_stdin_eof: bool,
 }
 
 /// Analyse minimale des arguments (formes séparées seulement : `-o SORTIE`) ; `Err` : message
@@ -140,6 +192,7 @@ fn parse(argv: &[OsString]) -> Result<Args, String> {
             Some("--allow-missing") => args.allow_missing = true,
             Some("--progress-json") => args.progress_json = true,
             Some("--info") => args.info = true,
+            Some("--cancel-on-stdin-eof") => args.cancel_on_stdin_eof = true,
             Some("--selector") => {
                 let v = value("--selector")?;
                 args.selector = match v.to_str() {
@@ -204,9 +257,35 @@ fn run() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let mut events = Events::new(args.progress_json);
+    PROGRESS_JSON.store(args.progress_json, Ordering::SeqCst);
+    // Après l'analyse des arguments, comme `_install_cancel_handlers` de Python. Un échec
+    // d'installation laisse le comportement par défaut (arrêt sans nettoyage).
+    cancel::install_signal_handlers();
+    if args.cancel_on_stdin_eof {
+        if let Err(e) = cancel::cancel_on_stdin_eof() {
+            // Sans ce fil, le launcher ne pourrait plus annuler proprement.
+            return events.fail(
+                "internal_error",
+                &format!("OSError: lecture de stdin impossible : {e}"),
+                6,
+                None,
+            );
+        }
+    }
     let input = Path::new(args.input.as_deref().unwrap_or(OsStr::new("")));
     if args.info {
         return match telmi2flam::info::read_info(input) {
+            // `read_info` ne consulte pas le jeton : un Ctrl+C reçu pendant la lecture annule
+            // ici, comme le `KeyboardInterrupt` de Python.
+            Ok(_) | Err(_) if cancel::is_cancelled() => {
+                let e = telmi2flam::error::ConvError::cancelled();
+                events.fail(
+                    e.code,
+                    &e.message,
+                    e.exit_code,
+                    Some("Annule : aucune sortie partielle conservee."),
+                )
+            }
             Ok(info) => {
                 out_line(&info.to_json());
                 ExitCode::SUCCESS
@@ -225,6 +304,10 @@ fn run() -> ExitCode {
             thumb_fit: args.thumb_fit,
         },
     };
+    #[cfg(any(debug_assertions, feature = "test-hooks"))]
+    let mut fault = fault::Fault::from_env();
+    #[cfg(any(debug_assertions, feature = "test-hooks"))]
+    let fault_set = fault.is_some();
     let result = {
         let mut sink = |e: &Event<'_>| {
             // `_warn` : la ligne de stderr d'abord, puis l'événement.
@@ -232,9 +315,20 @@ fn run() -> ExitCode {
                 err_line(&format!("  ! {message}"));
             }
             events.emit(e);
+            #[cfg(any(debug_assertions, feature = "test-hooks"))]
+            if let (Some(f), Event::Step { phase, done, total }) = (fault.as_mut(), e) {
+                f.on_step(phase.as_str(), *done, *total);
+            }
         };
+        #[cfg(any(debug_assertions, feature = "test-hooks"))]
+        let mut reporter = if fault_set {
+            Reporter::with_interval(&mut sink, std::time::Duration::ZERO)
+        } else {
+            Reporter::new(&mut sink)
+        };
+        #[cfg(not(any(debug_assertions, feature = "test-hooks")))]
         let mut reporter = Reporter::new(&mut sink);
-        convert(&req, &mut reporter, &|| false)
+        convert(&req, &mut reporter, &cancel::is_cancelled)
     };
     match result {
         Ok(_) => ExitCode::SUCCESS,
@@ -245,6 +339,92 @@ fn run() -> ExitCode {
             Some("Annule : aucune sortie partielle conservee."),
         ),
         Err(e) => events.fail(e.code, &e.message, e.exit_code, None),
+    }
+}
+
+/// Injection de fautes pour les tests d'intégration (`tests/cancel_panic.rs`), absente de la
+/// release du launcher (ni `debug_assertions`, ni la feature `test-hooks`).
+///
+/// `TELMI2FLAM_TEST_FAULT=<action>:<phase>:<begin|end|N>` agit sur le premier événement `step`
+/// de la phase (`begin` : `done == 0` ; `end` : `done == total` ; `N` : `done == N`), après
+/// son émission. Avec une faute, tous les `step` sont émis (pas d'espacement de 0,1 s) :
+/// - `cancel` : lève le jeton d'annulation ;
+/// - `panic` : panique dans le fil de travail ;
+/// - `wait` : attend l'annulation (60 s au plus), pour annuler de l'extérieur (stdin,
+///   `CTRL_BREAK`, signal) à un point connu, par exemple avec le `.part` présent (`zip:end`).
+#[cfg(any(debug_assertions, feature = "test-hooks"))]
+mod fault {
+    use std::time::{Duration, Instant};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Action {
+        Cancel,
+        Panic,
+        Wait,
+    }
+
+    #[derive(Debug)]
+    pub struct Fault {
+        action: Action,
+        phase: String,
+        point: Point,
+        fired: bool,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Point {
+        Begin,
+        End,
+        Done(u64),
+    }
+
+    impl Fault {
+        pub fn from_env() -> Option<Fault> {
+            let spec = std::env::var("TELMI2FLAM_TEST_FAULT").ok()?;
+            let mut it = spec.splitn(3, ':');
+            let action = match it.next()? {
+                "cancel" => Action::Cancel,
+                "panic" => Action::Panic,
+                "wait" => Action::Wait,
+                _ => return None,
+            };
+            let phase = it.next()?.to_owned();
+            let point = match it.next()? {
+                "begin" => Point::Begin,
+                "end" => Point::End,
+                n => Point::Done(n.parse().ok()?),
+            };
+            Some(Fault {
+                action,
+                phase,
+                point,
+                fired: false,
+            })
+        }
+
+        pub fn on_step(&mut self, phase: &str, done: u64, total: u64) {
+            let point = match self.point {
+                Point::Begin => 0,
+                Point::End => total,
+                Point::Done(n) => n,
+            };
+            if self.fired || phase != self.phase || done != point {
+                return;
+            }
+            self.fired = true;
+            match self.action {
+                Action::Cancel => telmi2flam::cancel::request(),
+                Action::Panic => panic!("faute injectee ({phase} {done}/{total})"),
+                Action::Wait => {
+                    let start = Instant::now();
+                    while !telmi2flam::cancel::is_cancelled()
+                        && start.elapsed() < Duration::from_secs(60)
+                    {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -275,6 +455,12 @@ mod tests {
         assert!(a.allow_missing && a.plain);
         assert_eq!(a.selector, Selector::Image);
         assert_eq!(args(&["x.zip"]).unwrap().thumb_fit, ThumbFit::Flou);
+        assert!(!args(&["x.zip"]).unwrap().cancel_on_stdin_eof);
+        assert!(
+            args(&["x.zip", "--cancel-on-stdin-eof"])
+                .unwrap()
+                .cancel_on_stdin_eof
+        );
     }
 
     #[test]
