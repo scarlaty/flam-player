@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::sync::watch;
 
-use super::{child_of, is_task_id, lock, InstallService, TaskState, Toolchain};
+use super::{child_of, is_task_id, lock, ChosenEngine, InstallService, TaskState, Toolchain};
 use crate::catalog::blocking;
 use crate::podcast::archive::{
     self, MenuEntry, Pack, PackEpisode, PackMetadata, MAX_AUDIO_BYTES, MAX_TOTAL_AUDIO_BYTES,
@@ -460,17 +460,9 @@ impl InstallService {
         let backend = lock(&self.0.packs).clone().ok_or_else(|| {
             AppError::ConverterUnavailable("création de pack indisponible".into())
         })?;
-        // Prérequis avant tout téléchargement : le pack ne pourrait pas être converti.
-        if tc.python.is_none() {
-            return Err(AppError::ConverterUnavailable(
-                "Python introuvable : indiquez le chemin de python.exe dans les paramètres".into(),
-            ));
-        }
-        if tc.converter.is_none() {
-            return Err(AppError::ConverterUnavailable(
-                "convertisseur telmi2flam.py introuvable".into(),
-            ));
-        }
+        // Prérequis avant tout téléchargement : le pack ne pourrait pas être converti par le
+        // moteur choisi (Python et `telmi2flam.py`, ou `telmi2flam.exe`) (#440).
+        ChosenEngine::of(tc)?;
         {
             let backend = backend.clone();
             blocking(move || backend.ready()).await??;
