@@ -153,14 +153,15 @@ export function useDraftAutosave(delayMs: number) {
   }, [flush]);
 
   /**
-   * Enregistre sans attendre ce qui est en attente puis renvoie la révision enregistrée (celle
+   * Enregistre sans attendre ce qui est en attente puis renvoie la révision enregistrée et la composition correspondante (celle
    * que `pack_create` compare pour effacer le brouillon). Si l'enregistrement échoue, la
    * dernière révision connue est renvoyée : le brouillon sera alors conservé.
    */
-  const settle = useCallback(async (): Promise<number> => {
+  const settle = useCallback(async () => {
     clearTimeout(timer.current);
     await flush();
-    return revision.current;
+    // `composition` : la plus récente demandée, celle que `revision` décrit.
+    return { revision: revision.current, composition: latest.current };
   }, [flush]);
 
   return { status, init, schedule, retry, settle };

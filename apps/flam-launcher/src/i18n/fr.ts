@@ -343,6 +343,8 @@ export const fr = {
         blocked:
           "Corrigez les points signalés ci-dessus : la création est possible dès que le pack est prêt.",
         checking: "Vérification du pack en cours…",
+        checkFailed:
+          "La vérification du pack a échoué : modifiez le pack pour la relancer.",
         refused: "Le pack n'a pas été créé : corrigez les points suivants.",
         started: (title: string) =>
           `La création de « ${title} » a démarré : suivez-la dans le panneau des tâches.`,

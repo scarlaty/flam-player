@@ -57,7 +57,7 @@ player ramène à la surcouche. Les histoires installées sont sous « Mes histo
 
 Disponible dans la prochaine version. Une source **podcast** (adresse d'un flux RSS) fournit des
 épisodes ; l'écran **Podcasts** les liste (raccourci « Cocher les 10 derniers épisodes »,
-épisodes explicites décochés d'office), puis **Composer le pack** les range dans un menu
+les épisodes explicites ne sont jamais cochés d'office), puis **Composer le pack** les range dans un menu
 (catégories, 3 niveaux, 50 options par menu), avec titre, âge, description et couverture. Le
 brouillon est enregistré automatiquement.
 

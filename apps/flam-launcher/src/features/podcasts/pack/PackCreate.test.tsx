@@ -247,3 +247,20 @@ it("création désactivée tant que la validation signale des problèmes", async
   const button = await screen.findByRole("button", { name: "Créer l'histoire" });
   expect(button).toBeDisabled();
 });
+
+it("une modification récente est enregistrée avant la création, avec sa révision", async () => {
+  window.localStorage.setItem(RIGHTS_KEY, "1");
+  renderEditor();
+  const button = await readyButton();
+  fireEvent.change(screen.getByLabelText("Titre"), {
+    target: { value: "Nouveau titre" },
+  });
+  // La validation de la nouvelle composition est en attente : attendre qu'elle soit prête.
+  await waitFor(() => expect(button).toBeEnabled());
+  fireEvent.click(button);
+  await waitFor(() => expect(createCalls()).toHaveLength(1));
+  const order = calls.map((c) => c.cmd);
+  expect(order.lastIndexOf("pack_draft_save")).toBeLessThan(order.indexOf("pack_create"));
+  expect(createCalls()[0]!.args.draftRevision).toBe(5);
+  expect(createCalls()[0]!.args.composition.metadata.title).toBe("Nouveau titre");
+});

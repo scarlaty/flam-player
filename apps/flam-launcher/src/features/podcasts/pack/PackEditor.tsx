@@ -263,6 +263,8 @@ export function PackEditor({
 
   function edit(next: PackComposition, message = "") {
     setComposition(next);
+    setRefused(null);
+    setCreateError(null);
     schedule(next);
     if (message !== "") announce(message);
   }
@@ -362,10 +364,12 @@ export function PackEditor({
     setCreating(true);
     setCreateError(null);
     setRefused(null);
-    const submitted = current;
     try {
-      const revision = await settle();
-      const created = await createPack(submitted, revision);
+      // Une modification faite pendant l'enregistrement fait partie de la révision renvoyée :
+      // c'est elle qui part, pas la composition affichée au moment du clic.
+      const saved = await settle();
+      const submitted = saved.composition ?? current;
+      const created = await createPack(submitted, saved.revision);
       if (created.task === null) {
         setRefused({ problems: created.report.problems, menu: submitted.menu });
         return;
@@ -608,9 +612,11 @@ export function PackEditor({
         </Button>
         {!canCreate && !creating && (
           <p id="fl-pack-create-hint" className="fl-pack__hint">
-            {report === null || validation.pending
-              ? text.create.checking
-              : text.create.blocked}
+            {validation.error
+              ? text.create.checkFailed
+              : report === null || validation.pending
+                ? text.create.checking
+                : text.create.blocked}
           </p>
         )}
         {createError && <ErrorBanner error={createError} />}
