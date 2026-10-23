@@ -70,7 +70,7 @@ def _runtime_required(manifest=RUNTIME_MANIFEST):
     runtime/img/script."""
     scripts, icons = [], []
     try:
-        with open(manifest, encoding="utf-8") as f:
+        with open(manifest, encoding="utf-8-sig") as f:  # BOM ignore, comme build.rs
             for line in f:
                 line = line.strip()
                 if line.startswith("!script/"):
@@ -79,6 +79,8 @@ def _runtime_required(manifest=RUNTIME_MANIFEST):
                     icons.append(line[len("!img/script/"):])
     except (OSError, UnicodeDecodeError):
         return None, None    # signale par _require_runtime a la conversion, pas a l'import
+    if not scripts or not icons:
+        return None, None    # manifeste vide ou tronque : meme effet qu'un manifeste illisible
     return tuple(scripts), tuple(icons)
 
 
