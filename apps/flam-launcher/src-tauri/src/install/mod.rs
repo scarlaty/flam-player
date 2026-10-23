@@ -1065,6 +1065,7 @@ impl InstallService {
                 url: &entry.download_url,
                 dest: &dest,
                 max_bytes: MAX_DOWNLOAD_BYTES,
+                ignores_proxy: false,
             },
             &mut validator,
             cancel,

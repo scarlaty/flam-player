@@ -1,13 +1,15 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { firmwareV2 } from "../../test/firmware";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DeviceStatus, DeviceStories, DeviceStory } from "../../api/device";
 import { ToastProvider } from "../../components";
 import { expectNoAxeViolations } from "../../test/axe";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
+import { DeviceContext, type DeviceApi } from "./DeviceContext";
 import { DeviceProvider } from "./DeviceProvider";
 import { DeviceScreen } from "./DeviceScreen";
+import { DeviceStoryOrder } from "./DeviceStoryOrder";
 import { SendToDeviceButton } from "./SendToDeviceButton";
 
 tolerateLoadInAsyncUtils();
@@ -579,4 +581,30 @@ it("ne propose pas de modifier l'ordre d'un index non sûr ou trop court", async
   expect(
     await screen.findByRole("button", { name: "Modifier l'ordre" }),
   ).toBeInTheDocument();
+});
+
+it("Flam débranchée : ordre non modifiable, sans raison « firmware » (#345)", () => {
+  const api = {
+    reorderOnDevice: vi.fn(),
+    deviceKey: null,
+    canMaintain: false,
+    device: null,
+  } as unknown as DeviceApi;
+  render(
+    <ToastProvider>
+      <DeviceContext.Provider value={api}>
+        <DeviceStoryOrder
+          stories={[story(A), story(B)]}
+          nameOf={(s) => s.title ?? s.uuid}
+          hasOthers={false}
+          busy={false}
+          onClose={() => {}}
+        />
+      </DeviceContext.Provider>
+    </ToastProvider>,
+  );
+  expect(screen.getByRole("button", { name: "Monter « Les trois ours »" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Descendre « Capi »" })).toBeDisabled();
+  expect(screen.queryByText(/écriture sur cette Flam bloquée/)).not.toBeInTheDocument();
+  expect(api.reorderOnDevice).not.toHaveBeenCalled();
 });

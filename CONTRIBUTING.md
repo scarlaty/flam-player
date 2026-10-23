@@ -140,7 +140,8 @@ Une issue `en-cours` n'est **jamais** prise, sauf si son verrou est périmé (§
     vérifie les invariants ;
   - exception : un diff qui ne change ni l'écriture ni la suppression de données
     (renommage, commentaire, journalisation) en est dispensé, à condition de le justifier
-    dans la PR ;
+    dans la PR (ex. `player.rs` : le lancement et l'arrêt du processus du player, ses
+    indicateurs de création, ses tests n'écrivent ni ne suppriment rien de l'utilisateur) ;
   - label `modele:opus` sur l'issue (voir §1).
 
 ## 6. Revue et fusion

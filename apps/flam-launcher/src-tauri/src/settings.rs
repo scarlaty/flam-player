@@ -19,7 +19,7 @@ use crate::{AppError, AppResult};
 
 /// Version courante du schéma de `settings.json`.
 pub const SCHEMA_VERSION: u32 = 1;
-const FILE_NAME: &str = "settings.json";
+pub(crate) const FILE_NAME: &str = "settings.json";
 const PLAYER_EXE: &str = "flam-player.exe";
 /// Valeur de retour de `GetDriveTypeW` pour un lecteur réseau (`DRIVE_REMOTE`).
 #[cfg(windows)]
