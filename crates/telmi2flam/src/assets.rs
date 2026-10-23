@@ -173,7 +173,9 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
     }
 
     /// `add_mp3map` : table de seek, avertissement si la fréquence n'est pas 44 100 Hz,
-    /// `mp3map_failed` si aucune trame n'est valide.
+    /// `mp3map_failed` si aucune trame n'est valide. Python rééchantillonne alors avec ffmpeg
+    /// s'il le trouve ; le port recopie le MP3 tel quel, comme Python sans ffmpeg
+    /// (divergence assumée, rééchantillonnage reporté : #22, #274).
     pub fn add_mp3map(&mut self, pk_name: &str, data: &[u8], label: &str) {
         match mp3map::build(data) {
             Ok(map) => {
@@ -189,7 +191,8 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
                         "audio_samplerate",
                         format!(
                             "{label} : {} Hz (le firmware est calibre pour 44100 Hz ; \
-                             reechantillonner conseille)",
+                             reechantillonnage impossible : non porte en Rust (#22) ; \
+                             fichier recopie tel quel, reechantillonner conseille)",
                             other.join("/")
                         ),
                     );
@@ -266,7 +269,10 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
         }
         let Some(data) = self.read(&format!("audios/{name}"))? else {
             // Repli sur silent.mp3 : la scène garde son audio (et sa transition de fin).
-            self.warn("audio_missing", format!("audio manquant: {name} -> silent.mp3"));
+            self.warn(
+                "audio_missing",
+                format!("audio manquant: {name} -> silent.mp3"),
+            );
             self.missing.push(Missing {
                 kind: "audio",
                 name: name.to_owned(),
@@ -349,7 +355,9 @@ mod tests {
             used.insert(format!("{prefix}{cand}{ext}").to_ascii_lowercase());
             cand + ext
         }
-        let bases = ["a", "A", "a_2", "a_3", "a_2_2", "b", "a!", "title", "a__3", "a_10"];
+        let bases = [
+            "a", "A", "a_2", "a_3", "a_2_2", "b", "a!", "title", "a__3", "a_10",
+        ];
         let mut used: HashSet<String> = RESERVED.iter().map(|s| (*s).to_owned()).collect();
         let mut n = Names::default();
         let mut seed: u32 = 7;

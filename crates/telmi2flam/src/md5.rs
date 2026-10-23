@@ -24,8 +24,8 @@ const K: [u32; 64] = [
 
 fn block(state: &mut [u32; 4], chunk: &[u8]) {
     let mut m = [0u32; 16];
-    for (w, b) in m.iter_mut().zip(chunk.chunks_exact(4)) {
-        *w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    for (w, b) in m.iter_mut().zip(chunk.as_chunks::<4>().0) {
+        *w = u32::from_le_bytes(*b);
     }
     let [mut a, mut b, mut c, mut d] = *state;
     for i in 0..64 {
@@ -78,7 +78,7 @@ pub fn digest(parts: &[&[u8]]) -> [u8; 16] {
     feed(&len.to_le_bytes(), &mut state, &mut buf, &mut fill);
     debug_assert_eq!(fill, 0);
     let mut out = [0u8; 16];
-    for (o, s) in out.chunks_exact_mut(4).zip(state) {
+    for (o, s) in out.as_chunks_mut::<4>().0.iter_mut().zip(state) {
         o.copy_from_slice(&s.to_le_bytes());
     }
     out

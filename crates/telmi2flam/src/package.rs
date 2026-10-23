@@ -369,7 +369,11 @@ pub fn build_package<R: Read + Seek>(
     }
     files.insert("sounds/silent.mp3".to_owned(), silent);
     // Métadonnées FLAM (titre / sous-titre / id / titre), lues ligne par ligne.
-    let info_subtitle = if subtitle.is_empty() { &title } else { &subtitle };
+    let info_subtitle = if subtitle.is_empty() {
+        &title
+    } else {
+        &subtitle
+    };
     files.insert(
         "info.plain".to_owned(),
         format!("{title}\n{info_subtitle}\n000000\n{title}").into_bytes(),

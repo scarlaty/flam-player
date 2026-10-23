@@ -1,4 +1,4 @@
-//! Runtime Lunii embarqué : lit le manifeste unique `tools/telmi2flam/runtime/manifest.txt`
+//! Runtime du projet embarqué : lit le manifeste unique `tools/telmi2flam/runtime/manifest.txt`
 //! (aussi lu par `telmi2flam.py` et `validate.py`) et génère la table `include_bytes!` de
 //! `src/runtime.rs` (PORT-RUST.md §2.1). Un manifeste mal formé arrête la compilation ; le
 //! test `manifeste_identique_aux_dossiers` vérifie qu'il liste exactement les dossiers.
@@ -14,7 +14,10 @@ fn main() {
     let runtime = crate_dir.join("../../tools/telmi2flam/runtime");
     let manifest = runtime.join("manifest.txt");
     println!("cargo:rerun-if-changed={}", manifest.display());
-    println!("cargo:rerun-if-changed={}", runtime.join("script").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        runtime.join("script").display()
+    );
     println!(
         "cargo:rerun-if-changed={}",
         runtime.join("img/script").display()

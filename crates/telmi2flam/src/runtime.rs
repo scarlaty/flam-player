@@ -1,4 +1,4 @@
-//! Moteur (`tools/telmi2flam/engine/`) et runtime Lunii (`tools/telmi2flam/runtime/`) inclus
+//! Moteur (`tools/telmi2flam/engine/`) et runtime du projet (`tools/telmi2flam/runtime/`) inclus
 //! dans le binaire (PORT-RUST.md §2.1) : plus de dossier de ressources à trouver à l'exécution.
 //!
 //! La liste du runtime vient du manifeste unique `runtime/manifest.txt`, lu aussi par

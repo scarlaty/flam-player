@@ -164,6 +164,7 @@ mod tests {
             &b""[..],
             b"garbage",
             b"\x89PNGgarbage",
+            b"\x89PNGgarb\0\0\0\x01",
             b"<html><body>404</body></html>",
             &[0xAA; 200],
         ] {
@@ -182,7 +183,6 @@ mod tests {
             b"P1 1 1 1",
             b"RIFF\0\0\0\0WEBPVP8 ",
             b"  #define w 1",
-            b"\x89PNGgarb\0\0\0\x01",
             b"text\nwith newline",
             &tga,
             b"\x1c\x02\x00",
