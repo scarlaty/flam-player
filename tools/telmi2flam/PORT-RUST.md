@@ -267,7 +267,8 @@ sont identiques à l'octet près dès la PR 6.
 2. **Matrice de rééchantillonnage (CI)** : les images des tests sont minuscules et ne prouvent
    rien sur le Lanczos. Le générateur produit donc aussi une matrice :
    - modes PNG × tailles sources impaires ou premières (par ex. 1, 3, 97, 641, 2049) ;
-   - toutes les cibles réelles : scène 320×212, vignette 104×136 (mode `bandes` seulement ; `flou` et `rogner` : #282), inventaire 128×128,
+   - toutes les cibles réelles : scène 320×212, vignette 104×136 (mode `bandes` ; `flou` et `rogner` couverts par les vecteurs
+     `thumb_flou` et `thumb_rogner` de `gen_resample_vectors.py`, #282), inventaire 128×128,
      titre 89×120, borne 2047 ;
    - agrandissements et réductions de plus de 2× (pour passer par `reduce`) ;
    - contenus variés : bruit pseudo-aléatoire à graine fixe, dégradés, alpha partiel.

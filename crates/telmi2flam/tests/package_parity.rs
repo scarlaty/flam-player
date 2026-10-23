@@ -21,6 +21,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use telmi2flam::archive::Archive;
 use telmi2flam::error::ConvError;
+use telmi2flam::image::ThumbFit;
 use telmi2flam::output::{write_package, write_zip, Target, ZipLimits};
 use telmi2flam::package::{build_package, Options, Package, Selector};
 
@@ -47,6 +48,8 @@ fn options(case: &Value) -> Options {
             "image" => Selector::Image,
             other => panic!("sélecteur {other}"),
         },
+        // vecteurs produits avec thumb_fit="bandes" (gen_package_cases.py)
+        thumb_fit: ThumbFit::Bandes,
     }
 }
 
