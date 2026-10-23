@@ -53,11 +53,19 @@ fn options(case: &Value) -> Options {
     }
 }
 
+/// Vecteurs produits sans ffmpeg (`FLAM_FFMPEG=""`) : même réglage ici, quel que soit le
+/// `PATH` de la machine de test (avec ffmpeg : `tests/ffmpeg.rs`).
+fn without_ffmpeg() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::env::set_var("FLAM_FFMPEG", ""));
+}
+
 fn convert(
     data: &[u8],
     options: &Options,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Package, ConvError> {
+    without_ffmpeg();
     let mut archive = Archive::new(Cursor::new(data), "in.zip".into())?;
     build_package(&mut archive, options, cancelled)
 }

@@ -284,8 +284,7 @@ pub fn build_package<R: Read + Seek>(
     }
     let mut title_audio = None;
     if let Some(mp3) = assets.read("title.mp3")? {
-        assets.add_mp3map("sounds/title.mp3", &mp3, "title.mp3");
-        assets.out.insert("sounds/title.mp3".to_owned(), mp3);
+        assets.add_mp3map("sounds/title.mp3", mp3, "title.mp3")?;
         title_audio = Some("title.mp3");
     }
     let mut title_image = None;

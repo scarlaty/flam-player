@@ -9,14 +9,19 @@
 //!   `sounds/silent.mp3`) : mêmes suffixes `_2`, `_3`… que Python ;
 //! - coût linéaire : la recherche du premier suffixe libre reprend où la précédente s'est
 //!   arrêtée pour la même base (Python repart de `_2`, avec le même résultat) ;
-//! - aucune panique ; le jeton d'annulation est consulté avant chaque asset et pendant le
-//!   décodage et le redimensionnement des images.
+//! - aucune panique ; le jeton d'annulation est consulté avant chaque asset, pendant le
+//!   décodage et le redimensionnement des images et pendant ffmpeg ;
+//! - un MP3 hors 44 100 Hz n'est remplacé que par une sortie de ffmpeg ([`crate::ffmpeg`])
+//!   validée par `mp3map::build` (44 100 Hz seulement) ; sinon il est recopié tel quel, avec
+//!   l'avertissement `audio_samplerate` et la raison de Python. Un même contenu sous plusieurs
+//!   noms ne lance ffmpeg qu'une fois (cache par contenu exact ; Python : SHA-256).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek};
 
 use crate::archive::Archive;
 use crate::error::ConvError;
+use crate::ffmpeg::{self, Outcome, SAMPLERATE};
 use crate::graph::{Assets, Warning};
 use crate::image::{png_to_fit_lif, png_to_lif, png_to_scene_lif, Align, INV_H, INV_W};
 use crate::mp3map;
@@ -124,6 +129,13 @@ pub struct StoryAssets<'a, R> {
     pub out: BTreeMap<String, Vec<u8>>,
     pub warnings: Vec<Warning>,
     pub missing: Vec<Missing>,
+    /// Sorties de ffmpeg par contenu source (`resample_cache` de Python, clé SHA-256).
+    resample_cache: HashMap<Vec<u8>, Outcome>,
+    /// Fichiers rééchantillonnés (`stats["resampled"]`, compté par fichier, cache compris).
+    pub resampled: usize,
+    /// Lignes d'information `  i …` de Python (rééchantillonnage réussi), sans le préfixe.
+    /// Pas encore affichées ni émises en progression (#131).
+    pub infos: Vec<String>,
 }
 
 impl<'a, R: Read + Seek> StoryAssets<'a, R> {
@@ -144,6 +156,9 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
             out: BTreeMap::new(),
             warnings: Vec::new(),
             missing: Vec::new(),
+            resample_cache: HashMap::new(),
+            resampled: 0,
+            infos: Vec::new(),
         }
     }
 
@@ -172,34 +187,73 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
         }
     }
 
-    /// `add_mp3map` : table de seek, avertissement si la fréquence n'est pas 44 100 Hz,
-    /// `mp3map_failed` si aucune trame n'est valide. Python rééchantillonne alors avec ffmpeg
-    /// s'il le trouve ; le port recopie le MP3 tel quel, comme Python sans ffmpeg
-    /// (divergence assumée, rééchantillonnage reporté : #22, #274).
-    pub fn add_mp3map(&mut self, pk_name: &str, data: &[u8], label: &str) {
-        match mp3map::build(data) {
-            Ok(map) => {
-                self.out.insert(format!("{pk_name}map"), map.data);
+    /// Rééchantillonnage de `data` par ffmpeg, une fois par contenu (`resample_cache`).
+    fn resample(&mut self, data: &[u8], duration: f64) -> Result<Outcome, ConvError> {
+        if let Some(cached) = self.resample_cache.get(data) {
+            return Ok(cached.clone());
+        }
+        let outcome = ffmpeg::resample_mp3(data, duration, self.cancelled)?;
+        self.resample_cache.insert(data.to_vec(), outcome.clone());
+        Ok(outcome)
+    }
+
+    /// `add_mp3map` : écrit `pk_name` et sa table de seek. Un MP3 hors 44 100 Hz est d'abord
+    /// rééchantillonné par ffmpeg ([`crate::ffmpeg`]) ; la sortie, si `mp3map::build` la lit
+    /// et n'y voit que 44 100 Hz, remplace le fichier. Sinon avertissement `audio_samplerate`
+    /// avec la raison, et MP3 recopié tel quel. `mp3map_failed` si aucune trame n'est valide
+    /// (MP3 recopié, sans table). `Err` seulement sur annulation pendant ffmpeg.
+    pub fn add_mp3map(
+        &mut self,
+        pk_name: &str,
+        mut data: Vec<u8>,
+        label: &str,
+    ) -> Result<(), ConvError> {
+        match mp3map::build(&data) {
+            Ok(mut map) => {
                 let other: Vec<String> = map
                     .samplerates
                     .iter()
-                    .filter(|&&sr| sr != 44100)
+                    .filter(|&&sr| sr != SAMPLERATE)
                     .map(u32::to_string)
                     .collect();
                 if !other.is_empty() {
-                    self.warn(
-                        "audio_samplerate",
-                        format!(
-                            "{label} : {} Hz (le firmware est calibre pour 44100 Hz ; \
-                             reechantillonnage impossible : non porte en Rust (#22) ; \
-                             fichier recopie tel quel, reechantillonner conseille)",
-                            other.join("/")
-                        ),
-                    );
+                    let rates = other.join("/");
+                    let failure = match self.resample(&data, map.duration_s)? {
+                        Ok(new) => match mp3map::build(&new) {
+                            Ok(map2)
+                                if map2.samplerates.len() == 1
+                                    && map2.samplerates.contains(&SAMPLERATE) =>
+                            {
+                                data = new;
+                                map = map2;
+                                self.resampled += 1;
+                                self.infos.push(format!(
+                                    "{label} : {rates} Hz -> {SAMPLERATE} Hz \
+                                     (reechantillonne avec ffmpeg)"
+                                ));
+                                None
+                            }
+                            _ => Some("sortie ffmpeg illisible ou inattendue".to_owned()),
+                        },
+                        Err(why) => Some(why),
+                    };
+                    if let Some(why) = failure {
+                        self.warn(
+                            "audio_samplerate",
+                            format!(
+                                "{label} : {rates} Hz (le firmware est calibre pour 44100 Hz ; \
+                                 reechantillonnage impossible : {why} ; \
+                                 fichier recopie tel quel, reechantillonner conseille)"
+                            ),
+                        );
+                    }
                 }
+                self.out.insert(format!("{pk_name}map"), map.data);
             }
             Err(e) => self.warn("mp3map_failed", format!("mp3map echoue pour {label} : {e}")),
         }
+        self.out.insert(pk_name.to_owned(), data);
+        Ok(())
     }
 }
 
@@ -283,8 +337,7 @@ impl<R: Read + Seek> Assets for StoryAssets<'_, R> {
         };
         let out_name = self.names.alloc("sounds/", base_no_ext(name), ".mp3");
         let pk_name = format!("sounds/{out_name}");
-        self.add_mp3map(&pk_name, &data, name);
-        self.out.insert(pk_name, data);
+        self.add_mp3map(&pk_name, data, name)?;
         self.audio_cache.insert(name.to_owned(), out_name.clone());
         Ok(Some(out_name))
     }

@@ -10,6 +10,11 @@ rust-version = "1.89"
 name = "telmi2flam"
 path = "src/main.rs"
 
+# Ce test joue aussi le faux ffmpeg (il se relance lui-même) : pas de harnais libtest.
+[[test]]
+name = "ffmpeg"
+harness = false
+
 [dependencies]
 # Lecture ZIP faite à la main (src/zipread.rs, équivalence avec zipfile) : seulement le
 # décompresseur deflate en Rust pur (miniz_oxide) et le CRC-32 (aussi pour les chunks PNG).

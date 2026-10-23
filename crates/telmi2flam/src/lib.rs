@@ -28,6 +28,7 @@ pub mod archive;
 pub mod assets;
 mod blur;
 pub mod error;
+pub mod ffmpeg;
 pub mod graph;
 mod identify;
 pub mod image;
