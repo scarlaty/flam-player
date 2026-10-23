@@ -139,10 +139,6 @@ export function PodcastsScreen() {
   return (
     <div className="fl-podcasts">
       <p className="fl-podcasts__intro">{text.intro}</p>
-      <Banner tone="info" title={text.usageTitle} role="none">
-        <p>{text.usage}</p>
-      </Banner>
-
       <p>
         <a href={PACK_HASH}>{text.pack.link}</a>
       </p>
