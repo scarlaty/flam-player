@@ -5,7 +5,9 @@
 //! - **copie** si le fichier est un MP3 à 44 100 Hz, mono ou stéréo, entre 64 et 192 kbps :
 //!   les trames audio sont recopiées sans réencodage (`-c:a copy`, identiques à la source) ;
 //! - sinon **réencodage** en MP3 44 100 Hz **stéréo**, au débit source arrondi au multiple de
-//!   16 kbps supérieur, borné à [64, 192] kbps (192 si le débit est inconnu) ;
+//!   16 kbps supérieur, borné à [64, 192] kbps (192 si le débit est inconnu). Le débit annoncé
+//!   par ffprobe (bits/s, estimé) est d'abord arrondi **au plus proche** en kbps, puis au
+//!   multiple de 16 supérieur : 128,4 kbps donne 128 puis 128, 129 kbps donne 144 ;
 //! - métadonnées (ID3), chapitres et flux vidéo (pochettes intégrées) retirés dans les deux cas.
 //!
 //! Précautions de #366 : les chemins passés à ffmpeg et ffprobe sont préfixés `file:` (jamais
@@ -13,10 +15,15 @@
 //! sortie est écrite dans un temporaire voisin, renommé seulement en cas de succès, et le
 //! temporaire est supprimé sur échec, annulation ou délai. Si l'appel est abandonné en cours de
 //! route (futur détruit), le temporaire peut subsister sous Windows (ffmpeg le tient encore
-//! ouvert) : chaque conversion supprime d'abord les `.part` périmés laissés à côté de sa sortie.
+//! ouvert) : chaque conversion supprime d'abord les `.part` laissés à côté de sa sortie depuis
+//! plus de [`STALE_PART_AGE`] (un `.part` récent peut appartenir à une conversion en cours).
+//! Règle : **une conversion à la fois par fichier de sortie** ; [`convert_all`] refuse les
+//! sorties en double (`duplicate_output`). Après conversion, la sortie est sondée : une durée
+//! nulle ou inconnue (MP3 réduit à son en-tête) est refusée (`ffmpeg_failed`).
 //!
 //! Erreurs par épisode : `AppError::Conversion` avec un code stable (`unreadable_audio`,
-//! `no_audio`, `ffmpeg_failed`), `AppError::Cancelled`, ou `AppError::Io` de genre `TimedOut`.
+//! `no_audio`, `ffmpeg_failed`, `duplicate_output`), `AppError::Cancelled`, ou `AppError::Io`
+//! de genre `TimedOut` ou `NotFound` (dossier de sortie absent).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -41,6 +48,10 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Délai d'une conversion dont la durée est inconnue.
 const UNKNOWN_DURATION_TIMEOUT: Duration = Duration::from_secs(600);
 const MIN_CONVERT_TIMEOUT: Duration = Duration::from_secs(120);
+/// Plafond du délai de conversion, quelle que soit la durée annoncée par la source (non fiable).
+const MAX_CONVERT_TIMEOUT: Duration = Duration::from_secs(6 * 3600);
+/// Âge au-delà duquel un `.part` voisin de la sortie est considéré comme abandonné.
+pub const STALE_PART_AGE: Duration = Duration::from_secs(10 * 60);
 
 /// Ce que ffprobe dit du premier flux audio d'un fichier.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -68,14 +79,16 @@ pub enum Plan {
     Transcode { kbps: u32 },
 }
 
-/// Débit en kbps, arrondi au plus proche (ffprobe donne des bits par seconde estimés).
+/// Débit en kbps, arrondi au plus proche (ffprobe donne des bits par seconde estimés ; un
+/// débit variable ou mal annoncé peut être légèrement au-dessus ou au-dessous).
 fn kbps_of(bit_rate: Option<u64>) -> Option<u32> {
     bit_rate
         .filter(|&b| b > 0)
         .map(|b| u32::try_from(b.saturating_add(500) / 1000).unwrap_or(u32::MAX))
 }
 
-/// Débit de réencodage : multiple de 16 supérieur, borné ; 192 si inconnu.
+/// Débit de réencodage : débit source arrondi au plus proche (kbps, voir `kbps_of`) puis au
+/// multiple de 16 supérieur, borné à [64, 192] ; 192 si inconnu.
 pub fn transcode_kbps(bit_rate: Option<u64>) -> u32 {
     match kbps_of(bit_rate) {
         None => MAX_KBPS,
@@ -239,20 +252,9 @@ struct TempOutput {
 }
 
 impl TempOutput {
-    fn beside(output: &Path) -> Self {
+    async fn beside(output: &Path) -> Self {
         let mut name = output.file_name().unwrap_or_default().to_os_string();
-        // Supprime les temporaires périmés d'une conversion abandonnée vers la même sortie.
-        if let Some(dir) = output.parent() {
-            let prefix = format!("{}.", name.to_string_lossy());
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let n = entry.file_name().to_string_lossy().into_owned();
-                    if n.starts_with(&prefix) && n.ends_with(".part") {
-                        let _ = std::fs::remove_file(entry.path());
-                    }
-                }
-            }
-        }
+        remove_stale_parts(output, STALE_PART_AGE).await;
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         name.push(format!(".{}-{n}.part", std::process::id()));
@@ -262,10 +264,37 @@ impl TempOutput {
         }
     }
 
-    fn commit(&mut self, output: &Path) -> std::io::Result<()> {
-        std::fs::rename(&self.path, output)?;
+    async fn commit(&mut self, output: &Path) -> std::io::Result<()> {
+        tokio::fs::rename(&self.path, output).await?;
         self.armed = false;
         Ok(())
+    }
+}
+
+/// Supprime les `<sortie>.<…>.part` modifiés il y a plus de `max_age` (conversion abandonnée vers
+/// la même sortie). Les `.part` récents, ou d'une autre sortie, sont conservés.
+async fn remove_stale_parts(output: &Path, max_age: Duration) {
+    let (Some(dir), Some(name)) = (output.parent(), output.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.", name.to_string_lossy());
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let n = entry.file_name().to_string_lossy().into_owned();
+        if !(n.starts_with(&prefix) && n.ends_with(".part")) {
+            continue;
+        }
+        let age = entry
+            .metadata()
+            .await
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok());
+        if age.is_some_and(|a| a >= max_age) {
+            let _ = tokio::fs::remove_file(entry.path()).await;
+        }
     }
 }
 
@@ -332,8 +361,12 @@ fn ffmpeg_args(plan: Plan, input: &Path, temp: &Path) -> Vec<OsString> {
 
 fn convert_timeout(duration_secs: Option<f64>) -> Duration {
     match duration_secs {
-        // Largement au-dessus de la vitesse réelle de libmp3lame (> 50 fois le temps réel).
-        Some(d) => Duration::from_secs_f64(60.0 + d / 4.0).max(MIN_CONVERT_TIMEOUT),
+        // Un quart de la durée annoncée, plus 60 s : la conversion doit aller au moins 4 fois plus
+        // vite que le temps réel, alors que libmp3lame fait bien plus de 50 fois le temps réel.
+        // La durée vient du fichier (non fiable) : plafonnée, et bornée avant la conversion en
+        // `Duration` (qui paniquerait sur une valeur énorme).
+        Some(d) => Duration::from_secs_f64((60.0 + d / 4.0).min(MAX_CONVERT_TIMEOUT.as_secs_f64()))
+            .clamp(MIN_CONVERT_TIMEOUT, MAX_CONVERT_TIMEOUT),
         None => UNKNOWN_DURATION_TIMEOUT,
     }
 }
@@ -364,30 +397,43 @@ async fn convert_with(
     timeout: Option<Duration>,
 ) -> AppResult<Converted> {
     let started = Instant::now();
-    let input_bytes = std::fs::metadata(input)?.len();
-    let info = probe(ff, input, cancel).await?;
-    let plan = decide(&info);
-    let mut temp = TempOutput::beside(output);
-    match plan {
-        Plan::Copy | Plan::Transcode { .. } => {
-            let args = ffmpeg_args(plan, input, &temp.path);
-            let limits =
-                Limits::new(timeout.unwrap_or_else(|| convert_timeout(info.duration_secs)));
-            let out = ff.run(Tool::Ffmpeg, &args, limits, cancel).await?;
-            if !out.success() {
-                return Err(failed(&last_line(&out.stderr)));
-            }
+    if let Some(dir) = output.parent().filter(|d| !d.as_os_str().is_empty()) {
+        if !tokio::fs::metadata(dir).await.is_ok_and(|m| m.is_dir()) {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("dossier de sortie absent : {}", dir.display()),
+            )));
         }
     }
-    let output_bytes = std::fs::metadata(&temp.path)?.len();
+    let input_bytes = tokio::fs::metadata(input).await?.len();
+    let info = probe(ff, input, cancel).await?;
+    let plan = decide(&info);
+    let mut temp = TempOutput::beside(output).await;
+    let args = ffmpeg_args(plan, input, &temp.path);
+    let limits = Limits::new(timeout.unwrap_or_else(|| convert_timeout(info.duration_secs)));
+    let out = ff.run(Tool::Ffmpeg, &args, limits, cancel).await?;
+    if !out.success() {
+        return Err(failed(&last_line(&out.stderr)));
+    }
+    let output_bytes = tokio::fs::metadata(&temp.path).await?.len();
     if output_bytes == 0 {
         return Err(failed("fichier de sortie vide"));
+    }
+    // Un MP3 réduit à son en-tête (Xing) a une taille non nulle mais aucune trame audio.
+    let written = match probe(ff, &temp.path, cancel).await {
+        Err(AppError::Conversion { message, .. }) => {
+            return Err(failed(&format!("sortie inexploitable ({message})")))
+        }
+        other => other?,
+    };
+    if !written.duration_secs.is_some_and(|d| d > 0.0) {
+        return Err(failed("sortie sans audio (durée nulle ou inconnue)"));
     }
     if *cancel.borrow() {
         return Err(AppError::Cancelled);
     }
     // Une sortie existante est remplacée.
-    temp.commit(output)?;
+    temp.commit(output).await?;
     Ok(Converted {
         plan,
         input_bytes,
@@ -397,9 +443,29 @@ async fn convert_with(
     })
 }
 
+/// Clé de comparaison de deux chemins de sortie (dossier résolu si possible, nom en minuscules
+/// sous Windows). Limite : ni liens symboliques ou physiques du fichier lui-même, ni systèmes de
+/// fichiers insensibles à la casse hors Windows (macOS) ne sont reconnus.
+async fn output_key(output: &Path) -> PathBuf {
+    let dir = output
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let dir = tokio::fs::canonicalize(dir)
+        .await
+        .unwrap_or_else(|_| dir.to_path_buf());
+    let name = output.file_name().unwrap_or_default();
+    if cfg!(windows) {
+        dir.join(name.to_string_lossy().to_lowercase())
+    } else {
+        dir.join(name)
+    }
+}
+
 /// Convertit plusieurs fichiers (`(entrée, sortie)`), au plus [`MAX_PARALLEL`] à la fois. Le
 /// résultat de chaque fichier est rendu dans l'ordre de `items` : un échec n'arrête pas les
-/// autres (le fichier est signalé, P7) ; l'annulation les arrête tous.
+/// autres (le fichier est signalé, P7) ; l'annulation les arrête tous. Une sortie en double dans
+/// `items` est refusée (`duplicate_output`) : une conversion à la fois par sortie.
 pub async fn convert_all(
     ff: &Ffmpeg,
     items: Vec<(PathBuf, PathBuf)>,
@@ -408,7 +474,17 @@ pub async fn convert_all(
     let gate = Arc::new(Semaphore::new(MAX_PARALLEL));
     let mut set = tokio::task::JoinSet::new();
     let count = items.len();
+    let mut results: Vec<Option<AppResult<Converted>>> = (0..count).map(|_| None).collect();
+    let mut seen = std::collections::HashSet::new();
     for (index, (input, output)) in items.into_iter().enumerate() {
+        // Une conversion à la fois par sortie : la seconde écraserait la première.
+        if !seen.insert(output_key(&output).await) {
+            results[index] = Some(Err(AppError::Conversion {
+                code: "duplicate_output".into(),
+                message: format!("sortie en double : {}", output.display()),
+            }));
+            continue;
+        }
         let (ff, gate, mut cancel) = (ff.clone(), gate.clone(), cancel.clone());
         set.spawn(async move {
             let result = match gate.acquire().await {
@@ -418,7 +494,6 @@ pub async fn convert_all(
             (index, result)
         });
     }
-    let mut results: Vec<Option<AppResult<Converted>>> = (0..count).map(|_| None).collect();
     while let Some(joined) = set.join_next().await {
         if let Ok((index, result)) = joined {
             results[index] = Some(result);
@@ -623,23 +698,108 @@ mod tests {
         assert_eq!(convert_timeout(Some(60.0)), MIN_CONVERT_TIMEOUT);
         assert!(convert_timeout(Some(36_000.0)) > Duration::from_secs(5000));
         assert_eq!(convert_timeout(None), UNKNOWN_DURATION_TIMEOUT);
+        // Durée annoncée aberrante : plafonnée, sans panique.
+        assert_eq!(convert_timeout(Some(1e300)), MAX_CONVERT_TIMEOUT);
+        assert_eq!(convert_timeout(Some(f64::MAX)), MAX_CONVERT_TIMEOUT);
     }
 
-    #[test]
-    fn temporaire_supprime_sauf_renomme() {
+    #[tokio::test]
+    async fn temporaire_supprime_sauf_renomme() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("ep.mp3");
         let tmp_path = {
-            let temp = TempOutput::beside(&out);
+            let temp = TempOutput::beside(&out).await;
             fs::write(&temp.path, b"partiel").unwrap();
             temp.path.clone()
         };
         assert!(!tmp_path.exists(), "supprimé à la destruction");
-        let mut temp = TempOutput::beside(&out);
+        let mut temp = TempOutput::beside(&out).await;
         fs::write(&temp.path, b"complet").unwrap();
-        temp.commit(&out).unwrap();
+        temp.commit(&out).await.unwrap();
         drop(temp);
         assert_eq!(fs::read(&out).unwrap(), b"complet");
+    }
+
+    #[tokio::test]
+    async fn part_perime_supprime_autre_sortie_ou_recent_garde() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("ep.mp3");
+        let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let write = |name: &str, mtime: std::time::SystemTime| {
+            let path = dir.path().join(name);
+            fs::write(&path, b"x").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+            path
+        };
+        let stale = write("ep.mp3.9-0.part", old);
+        let other = write("autre.mp3.9-0.part", old);
+        let live = write("ep.mp3.9-1.part", std::time::SystemTime::now());
+        remove_stale_parts(&out, STALE_PART_AGE).await;
+        assert!(!stale.exists(), "périmé supprimé");
+        assert!(other.exists(), "autre sortie conservée");
+        assert!(live.exists(), "récent (conversion en cours) conservé");
+        // `beside` applique le même nettoyage.
+        let _temp = TempOutput::beside(&out).await;
+        assert!(live.exists());
+    }
+
+    #[tokio::test]
+    async fn sorties_en_double_meme_cle() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("ep.mp3");
+        assert_eq!(
+            output_key(&a).await,
+            output_key(&dir.path().join(".").join("ep.mp3")).await
+        );
+        assert_ne!(
+            output_key(&a).await,
+            output_key(&dir.path().join("autre.mp3")).await
+        );
+    }
+
+    fn is_duplicate(r: &AppResult<Converted>) -> bool {
+        matches!(r, Err(AppError::Conversion { code, .. }) if code == "duplicate_output")
+    }
+
+    #[tokio::test]
+    async fn convert_all_refuse_les_sorties_en_double() {
+        let dir = tempfile::tempdir().unwrap();
+        let ff = Ffmpeg::in_dir(dir.path());
+        let out = dir.path().join("ep.mp3");
+        let items = vec![
+            (dir.path().join("a.mp3"), out.clone()),
+            (dir.path().join("b.mp3"), out),
+        ];
+        let (_tx, rx) = watch::channel(false);
+        let results = convert_all(&ff, items, &rx).await;
+        assert_eq!(results.len(), 2);
+        assert!(is_duplicate(&results[1]), "{:?}", results[1]);
+        // La première n'est pas refusée comme doublon (ici : entrée absente).
+        assert!(!is_duplicate(&results[0]));
+    }
+
+    #[tokio::test]
+    async fn dossier_de_sortie_absent_n_est_pas_ffmpeg_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let ff = Ffmpeg::in_dir(dir.path());
+        let (_tx, mut rx) = watch::channel(false);
+        let err = convert(
+            &ff,
+            &dir.path().join("a.mp3"),
+            &dir.path().join("absent").join("b.mp3"),
+            &mut rx,
+        )
+        .await
+        .unwrap_err();
+        match err {
+            AppError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+            other => panic!("{other:?}"),
+        }
     }
 
     // --- tests avec le vrai ffmpeg embarqué --------------------------------------------------
