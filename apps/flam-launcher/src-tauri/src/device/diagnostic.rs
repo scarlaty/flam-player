@@ -5,6 +5,14 @@
 //! accès réseau. Le texte reste utile sans Flam détectée (version du launcher, système, erreurs
 //! de la session) et quand la garde refuse d'écrire (c'est là qu'il sert le plus).
 //!
+//! **Sur le PC**, l'état du firmware est calculé comme pour `device_status`
+//! ([`guard::firmware_status`]) : s'il trouve la preuve qu'une Flam 2.x est bien reconnue, il
+//! enregistre l'empreinte de son `.mdf` comme « vérifiée par la Flam » dans
+//! [`guard::TRUST_FILE`] (dossier de données du launcher). C'est la seule écriture possible.
+//!
+//! Pendant une écriture sur la Flam (verrou tenu), dossiers, index et fichiers de travail ne
+//! sont pas parcourus (état transitoire, fichiers ouverts) : le texte l'indique.
+//!
 //! # Contenu
 //!
 //! Version du launcher, version de Windows, état du firmware ([`FirmwareStatus`] complet), état
@@ -18,9 +26,11 @@
 //!
 //! Ni clé, ni IV, ni `bt`, ni numéro de série, ni empreinte de `.mdf`, ni nom de volume, ni
 //! titre, contenu ou UUID d'histoire (des nombres seulement), ni nom d'utilisateur : le profil
-//! Windows est remplacé par `%USERPROFILE%` dans les messages d'erreur. Par sécurité, le texte
-//! final passe en plus par [`Redactor::scrub`] : tout UUID, toute suite d'au moins
-//! [`MIN_HEX_RUN`] chiffres hexadécimaux et tout mot qui ressemble à du base64 sont masqués.
+//! Windows est remplacé par `%USERPROFILE%` et le dossier de cache du launcher par `%CACHE%` dans
+//! les messages d'erreur. Par sécurité, le texte final passe en plus par [`Redactor::scrub`] :
+//! tout UUID, toute suite d'au moins [`MIN_HEX_RUN`] chiffres hexadécimaux (ou d'au moins
+//! [`MIN_HEX_PAIRS`] paires séparées par une espace ou `:`) et tout mot qui ressemble à du base64
+//! sont masqués.
 
 use std::collections::{HashSet, VecDeque};
 use std::fmt::Write as _;
@@ -48,9 +58,16 @@ pub const MAX_SESSION_ERRORS: usize = 10;
 const MAX_ERROR_LEN: usize = 300;
 /// Suite de chiffres hexadécimaux masquée à partir de cette longueur (numéro de série : 14).
 pub const MIN_HEX_RUN: usize = 14;
-/// Mot de type base64 masqué à partir de cette longueur (s'il mêle chiffres, majuscules et
-/// minuscules).
+/// Suite de paires hexadécimales séparées par une espace ou `:` (`c3 1f 77…`, `c3:1f:77…`)
+/// masquée à partir de ce nombre de paires (une adresse MAC en a 6).
+pub const MIN_HEX_PAIRS: usize = 8;
+/// Mot de type base64 masqué à partir de cette longueur s'il mêle majuscules et minuscules et
+/// contient un chiffre ou se termine par `=` (remplissage).
 const MIN_BASE64_RUN: usize = 16;
+/// Mot de type base64 sans chiffre (≈ 1,7 % des clés de 16 octets) masqué à partir de cette
+/// longueur si au moins un quart de ses lettres sont des majuscules et un quart des minuscules
+/// (un identifiant en CamelCase en a bien moins).
+const MIN_BASE64_LETTERS_RUN: usize = 20;
 /// Nombre maximal d'entrées de dossier examinées par dossier (Flam abîmée : pas de balayage
 /// sans fin).
 const MAX_DIR_ENTRIES: usize = 10_000;
@@ -71,9 +88,12 @@ pub struct SessionError {
 static SESSION_ERRORS: Mutex<VecDeque<SessionError>> = Mutex::new(VecDeque::new());
 
 /// Garde le message d'une erreur de `operation` (« envoi », « reprise ») pour le diagnostic.
-/// Le message est nettoyé dès l'enregistrement ([`Redactor::current`]) et tronqué.
-pub fn record_error(operation: &'static str, message: &str) {
-    let message = Redactor::current().clean_message(message);
+/// Le message est nettoyé dès l'enregistrement ([`Redactor::current`], avec le dossier de cache
+/// `cache_root` du launcher) et tronqué.
+pub fn record_error(operation: &'static str, cache_root: Option<&Path>, message: &str) {
+    let message = Redactor::current()
+        .with_cache(cache_root)
+        .clean_message(message);
     let mut errors = SESSION_ERRORS
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
@@ -119,14 +139,17 @@ pub fn session_errors() -> Vec<SessionError> {
 
 // --- Masquage ---------------------------------------------------------------------------------
 
-/// Masquage des données personnelles d'un texte : profil Windows, nom d'utilisateur, UUID,
-/// suites hexadécimales et mots de type base64.
+/// Masquage des données personnelles d'un texte : dossier de cache, profil Windows, nom
+/// d'utilisateur, UUID, suites hexadécimales et mots de type base64.
 #[derive(Debug, Clone, Default)]
 pub struct Redactor {
     /// Dossier du profil (`C:\Users\nom`), remplacé par `%USERPROFILE%`.
     pub profile: Option<String>,
     /// Nom d'utilisateur, remplacé par `%USERNAME%` dans les messages d'erreur.
     pub username: Option<String>,
+    /// Dossier de cache du launcher, réglable hors du profil (`D:\Jean\FlamCache`), remplacé par
+    /// `%CACHE%` dans les messages d'erreur.
+    pub cache: Option<String>,
 }
 
 impl Redactor {
@@ -136,7 +159,16 @@ impl Redactor {
         Self {
             profile: var("USERPROFILE"),
             username: var("USERNAME"),
+            cache: None,
         }
+    }
+
+    /// Même masquage, avec en plus le dossier de cache `cache_root` du launcher.
+    pub fn with_cache(mut self, cache_root: Option<&Path>) -> Self {
+        self.cache = cache_root
+            .map(|p| p.to_string_lossy().into_owned())
+            .filter(|p| !p.trim().is_empty());
+        self
     }
 
     /// Message d'erreur d'une seule ligne, sans profil ni nom d'utilisateur, tronqué à
@@ -146,11 +178,16 @@ impl Redactor {
             .chars()
             .map(|c| if c.is_control() || c == '`' { ' ' } else { c })
             .collect();
-        if let Some(profile) = &self.profile {
-            let profile = profile.trim_end_matches(['\\', '/']);
-            if profile.chars().count() >= 3 {
-                text = replace_ci(&text, profile, "%USERPROFILE%");
-                text = replace_ci(&text, &profile.replace('\\', "/"), "%USERPROFILE%");
+        // Le chemin le plus long d'abord : le cache est souvent dans le profil (plus précis),
+        // mais un cache réglé sur un parent du profil (`C:\Users`) ne doit pas le cacher.
+        let mut paths = [(&self.cache, "%CACHE%"), (&self.profile, "%USERPROFILE%")];
+        paths.sort_by_key(|(path, _)| std::cmp::Reverse(path.as_ref().map_or(0, String::len)));
+        for (path, with) in paths {
+            let Some(path) = path else { continue };
+            let path = path.trim_end_matches(['\\', '/']);
+            if path.chars().count() >= 3 {
+                text = replace_ci(&text, path, with);
+                text = replace_ci(&text, &path.replace('\\', "/"), with);
             }
         }
         text = mask_users_segment(&text);
@@ -168,10 +205,10 @@ impl Redactor {
     }
 
     /// Dernier filet, appliqué au texte entier : UUID (`<uuid>`), suites d'au moins
-    /// [`MIN_HEX_RUN`] chiffres hexadécimaux et mots de type base64 ([`MASK`]), segment de
-    /// `\Users\` des chemins.
+    /// [`MIN_HEX_RUN`] chiffres hexadécimaux ou [`MIN_HEX_PAIRS`] paires séparées et mots de type
+    /// base64 ([`MASK`]), segment de `\Users\` des chemins.
     pub fn scrub(&self, text: &str) -> String {
-        let text = mask_uuids(&mask_users_segment(text));
+        let text = mask_hex_pairs(&mask_uuids(&mask_users_segment(text)));
         let chars: Vec<char> = text.chars().collect();
         let mut out = String::with_capacity(text.len());
         let mut i = 0;
@@ -200,11 +237,7 @@ fn is_token_char(c: char) -> bool {
 /// Masque dans `token` les suites hexadécimales longues, ou le mot entier s'il ressemble à du
 /// base64.
 fn mask_token(token: &str) -> String {
-    let looks_base64 = token.len() >= MIN_BASE64_RUN
-        && token.bytes().any(|b| b.is_ascii_digit())
-        && token.bytes().any(|b| b.is_ascii_uppercase())
-        && token.bytes().any(|b| b.is_ascii_lowercase());
-    if looks_base64 {
+    if looks_base64(token) {
         return MASK.to_string();
     }
     let mut out = String::with_capacity(token.len());
@@ -229,8 +262,64 @@ fn mask_token(token: &str) -> String {
     out
 }
 
+/// Vrai si `token` (alphabet base64) ressemble à du base64 : voir [`MIN_BASE64_RUN`] et
+/// [`MIN_BASE64_LETTERS_RUN`].
+fn looks_base64(token: &str) -> bool {
+    let count = |f: fn(&u8) -> bool| token.bytes().filter(f).count();
+    let digits = count(u8::is_ascii_digit);
+    let upper = count(u8::is_ascii_uppercase);
+    let lower = count(u8::is_ascii_lowercase);
+    if token.len() >= MIN_BASE64_RUN
+        && upper > 0
+        && lower > 0
+        && (digits > 0 || token.ends_with('='))
+    {
+        return true;
+    }
+    // Sans chiffre ni remplissage : jamais un chemin (`/FLAMCACHE/work/stories`).
+    let letters = upper + lower;
+    token.len() >= MIN_BASE64_LETTERS_RUN
+        && !token.contains('/')
+        && upper * 4 >= letters
+        && lower * 4 >= letters
+}
+
+/// Remplace par [`MASK`] toute suite d'au moins [`MIN_HEX_PAIRS`] paires hexadécimales séparées
+/// chacune par une seule espace ou un seul `:` (octets affichés un par un), hors d'un mot.
+fn mask_hex_pairs(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let is_pair_at = |k: usize| {
+        k + 2 <= chars.len()
+            && chars[k].is_ascii_hexdigit()
+            && chars[k + 1].is_ascii_hexdigit()
+            && chars.get(k + 2).is_none_or(|c| !c.is_ascii_alphanumeric())
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if (i == 0 || !chars[i - 1].is_ascii_alphanumeric()) && is_pair_at(i) {
+            let mut pairs = 1;
+            let mut end = i + 2;
+            if let Some(&sep) = chars.get(end).filter(|c| matches!(c, ' ' | ':')) {
+                while chars.get(end) == Some(&sep) && is_pair_at(end + 1) {
+                    pairs += 1;
+                    end += 3;
+                }
+            }
+            if pairs >= MIN_HEX_PAIRS {
+                out.push_str(MASK);
+                i = end;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
 /// Remplace par `<uuid>` tout UUID `8-4-4-4-12`, même collé à un mot (`str/<uuid>/info`,
-/// `x=<uuid>`) : seule une frontière hexadécimale l'empêche.
+/// `x=<uuid>`, `cafe<uuid>`, `<uuid>0`).
 fn mask_uuids(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -247,16 +336,14 @@ fn mask_uuids(text: &str) -> String {
     out
 }
 
-/// Vrai si un UUID `8-4-4-4-12` commence en `at` (casse indifférente).
+/// Vrai si un UUID `8-4-4-4-12` commence en `at` (casse indifférente). Aucune frontière n'est
+/// exigée : un caractère hexadécimal collé avant ou après ne protège pas l'UUID.
 fn is_uuid_at(chars: &[char], at: usize) -> bool {
-    if at + 36 > chars.len() || (at > 0 && chars[at - 1].is_ascii_hexdigit()) {
-        return false;
-    }
-    let ok = (0..36).all(|k| match k {
-        8 | 13 | 18 | 23 => chars[at + k] == '-',
-        _ => chars[at + k].is_ascii_hexdigit(),
-    });
-    ok && chars.get(at + 36).is_none_or(|c| !c.is_ascii_hexdigit())
+    at + 36 <= chars.len()
+        && (0..36).all(|k| match k {
+            8 | 13 | 18 | 23 => chars[at + k] == '-',
+            _ => chars[at + k].is_ascii_hexdigit(),
+        })
 }
 
 /// Remplace `needle` par `with`, sans tenir compte de la casse (ASCII et Unicode simple).
@@ -309,6 +396,10 @@ fn replace_matching(
 }
 
 /// Remplace le segment qui suit `\Users\` ou `/Users/` (casse indifférente) par `%USERNAME%`.
+/// Le segment ne s'arrête qu'à `\ / " :`, à un autre caractère interdit dans un nom de compte
+/// Windows (`| < > ; , = + * ? [ ]`), à une fin de ligne ou, par compromis (chemin cité entre
+/// parenthèses), à `)` qui est pourtant permis : un nom avec une espace ou une apostrophe
+/// (`Jean Dupont`, `O'Brien`) est masqué en entier.
 fn mask_users_segment(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -330,7 +421,28 @@ fn mask_users_segment(text: &str) -> String {
         out.extend(&chars[i..i + 7]);
         let mut j = i + 7;
         let start = j;
-        while j < chars.len() && !matches!(chars[j], '\\' | '/' | '"' | '\'' | ' ' | ')' | ':') {
+        while j < chars.len()
+            && !matches!(
+                chars[j],
+                '\\' | '/'
+                    | '"'
+                    | ')'
+                    | ':'
+                    | '|'
+                    | '<'
+                    | '>'
+                    | ';'
+                    | ','
+                    | '='
+                    | '+'
+                    | '*'
+                    | '?'
+                    | '['
+                    | ']'
+                    | '\n'
+                    | '\r'
+            )
+        {
             j += 1;
         }
         let segment: String = chars[start..j].iter().collect();
@@ -403,7 +515,10 @@ fn os_name() -> String {
         };
         (status == 0).then_some(value)
     };
-    let build = read_sz("CurrentBuildNumber").or_else(|| read_sz("CurrentBuild"));
+    let digits_only = |v: &String| v.len() <= 10 && v.chars().all(|c| c.is_ascii_digit());
+    let build = read_sz("CurrentBuildNumber")
+        .filter(digits_only)
+        .or_else(|| read_sz("CurrentBuild").filter(digits_only));
     let Some(build) = build else {
         return "Windows (version illisible)".into();
     };
@@ -819,6 +934,15 @@ fn device_section(out: &mut String, inputs: &Inputs<'_>, device: &detect::Detect
     };
     firmware_section(out, &status);
 
+    if inputs.busy {
+        // Écriture en cours : dossiers et index en transition, fichiers ouverts.
+        let _ = writeln!(
+            out,
+            "### Index et fichiers de travail\n\n- non examinés : écriture en cours sur la Flam (relancer le diagnostic une fois l'opération terminée)\n"
+        );
+        return;
+    }
+
     // Index et dossiers d'histoires.
     let (str_ids, str_others) = scan_dir(&root.join(index::STORIES_DIR)).unwrap_or_default();
     let str_readable = root.join(index::STORIES_DIR).is_dir();
@@ -862,7 +986,7 @@ fn device_section(out: &mut String, inputs: &Inputs<'_>, device: &detect::Detect
         .count();
     let _ = writeln!(
         out,
-        "- Histoires : {} (installées par ce launcher : {mine} ; autres, officielles ou d'autres outils : {})\n",
+        "- Histoires (UUID distincts, index et dossiers) : {} (installées par ce launcher : {mine} ; autres, officielles ou d'autres outils : {})\n",
         all.len(),
         all.len() - mine
     );
@@ -883,14 +1007,20 @@ fn device_section(out: &mut String, inputs: &Inputs<'_>, device: &detect::Detect
             let Some(name) = entry.file_name().to_str().map(str::to_string) else {
                 continue;
             };
-            let work = ["list", "list.hidden"].iter().any(|base| {
-                name.strip_prefix(base).is_some_and(|rest| {
-                    matches!(rest, ".new" | ".bak" | ".restore") || rest.starts_with(".corrupt")
-                })
+            // Nom affiché : jamais le suffixe libre d'un `list.corrupt*` (`list.corrupt…`).
+            let work = ["list", "list.hidden"].iter().find_map(|base| {
+                let rest = name.strip_prefix(base)?;
+                if matches!(rest, ".new" | ".bak" | ".restore" | ".corrupt") {
+                    Some(name.clone())
+                } else if rest.starts_with(".corrupt") {
+                    Some(format!("{base}.corrupt…"))
+                } else {
+                    None
+                }
             });
-            if work {
+            if let Some(shown) = work {
                 let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                leftovers.push(format!("{name} ({size} octets)"));
+                leftovers.push(format!("{shown} ({size} octets)"));
             }
         }
     }
@@ -956,7 +1086,7 @@ pub async fn device_diagnostic(config: State<'_, ConfigState>) -> AppResult<Stri
         let env = Environment::current();
         let ctx = WriteContext::current(cache_root.clone());
         let launcher = super::status::launcher_story_ids(cache_root.as_deref());
-        let redactor = Redactor::current();
+        let redactor = Redactor::current().with_cache(cache_root.as_deref());
         build(&Inputs {
             env: &env,
             ctx: &ctx,
