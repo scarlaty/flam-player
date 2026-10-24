@@ -467,12 +467,22 @@ it("voix mémorisée relue ; voix disparue : la voix par défaut est annoncée",
 
   view.settings.tts_voice = "v-disparue";
   await renderScreen();
-  expect(await voiceSelect()).toHaveValue(HORTENSE.id);
+  const select = await voiceSelect();
+  expect(select).toHaveValue("");
   expect(
     screen.getByText(
       "La voix choisie n'est plus installée : la voix par défaut sera utilisée.",
     ),
   ).toBeInTheDocument();
+  // Choisir la voix de repli l'enregistre et efface le message.
+  fireEvent.change(select, { target: { value: HORTENSE.id } });
+  await waitFor(() =>
+    expect(callsOf("settings_set").at(-1)?.args.settings.tts_voice).toBe(HORTENSE.id),
+  );
+  await waitFor(() =>
+    expect(screen.queryByText(/La voix choisie n'est plus installée/)).toBeNull(),
+  );
+  expect(select).toHaveValue(HORTENSE.id);
 });
 
 it("voix : un échec d'enregistrement rétablit le choix précédent", async () => {
@@ -486,6 +496,28 @@ it("voix : un échec d'enregistrement rétablit le choix précédent", async () 
   expect(select).toHaveValue(HORTENSE.id);
 });
 
+it("voix, thème et vignettes ne s'enregistrent pas en même temps (objet complet)", async () => {
+  pendingSets = [];
+  await renderScreen();
+  const select = await voiceSelect();
+  fireEvent.change(select, { target: { value: PAUL.id } });
+  await waitFor(() => expect(pendingSets).toHaveLength(1));
+  expect(screen.getByRole("radio", { name: "Sombre" })).toBeDisabled();
+  expect(screen.getByRole("radio", { name: /^Rogner/ })).toBeDisabled();
+  pendingSets[0]!.resolve();
+  await waitFor(() =>
+    expect(screen.getByRole("radio", { name: "Sombre" })).toBeEnabled(),
+  );
+  // Le thème enregistré ensuite garde la voix choisie.
+  fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+  expect(select).toBeDisabled();
+  expect(pendingSets.length).toBe(2);
+  pendingSets[1]!.resolve();
+  await waitFor(() => expect(select).toBeEnabled());
+  expect(view.settings).toMatchObject({ theme: "dark", tts_voice: PAUL.id });
+});
+
 it("essayer la voix choisie, puis arrêter", async () => {
   view = makeView();
   view.settings.tts_voice = PAUL.id;
@@ -494,7 +526,7 @@ it("essayer la voix choisie, puis arrêter", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Essayer la voix" }));
   const stop = await screen.findByRole("button", { name: "Arrêter" });
   expect(callsOf("tts_preview")[0]!.args).toEqual({
-    text: "Bonjour ! Je lis le titre de tes histoires.",
+    text: "Bonjour ! Je lirai les titres de vos histoires.",
     voice: PAUL.id,
   });
   fireEvent.click(stop);

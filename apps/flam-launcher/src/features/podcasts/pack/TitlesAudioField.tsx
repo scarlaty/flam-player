@@ -62,6 +62,7 @@ export function TitlesAudioField({
   else if (listError) status = text.listFailed;
   else if (!hasVoice) status = text.noVoice;
   else if (gone) status = text.voiceGone(usedName ?? "");
+  else if (voice !== null) status = text.voiceOfComposition(usedName ?? "");
   else status = text.voiceUsed(usedName ?? "");
 
   return (
@@ -98,6 +99,9 @@ export function TitlesAudioField({
           )}
         </div>
       )}
+      <p role="status" className="fl-visually-hidden">
+        {preview.playing ? text.playing : ""}
+      </p>
       {preview.error && (
         <p role="alert" className="fl-field__error">
           {previewErrorMessage(preview.error)}

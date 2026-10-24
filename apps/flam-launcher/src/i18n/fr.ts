@@ -67,6 +67,7 @@ export const fr = {
     listFailed:
       "Les voix de Windows n'ont pas pu être listées : les titres ne peuvent pas être lus à voix haute pour l'instant.",
     voiceUsed: (name: string) => `Voix : ${name} (à changer dans les Paramètres).`,
+    voiceOfComposition: (name: string) => `Voix : ${name} (celle de la composition).`,
     voiceGone: (name: string) =>
       `La voix choisie dans les Paramètres n'est plus installée : ${name} sera utilisée.`,
     listen: "Écouter",
@@ -87,8 +88,9 @@ export const fr = {
       voice: "Voix",
       voiceOption: (name: string, language: string) => `${name} (${language})`,
       gone: "La voix choisie n'est plus installée : la voix par défaut sera utilisée.",
+      goneOption: "Voix choisie (plus installée)",
       tryLabel: "Essayer la voix",
-      trySample: "Bonjour ! Je lis le titre de tes histoires.",
+      trySample: "Bonjour ! Je lirai les titres de vos histoires.",
       failed: "La voix n'a pas pu être enregistrée.",
     },
     /** Pack terminé : avertissements des titres lus, dans le suivi de la tâche. */

@@ -41,13 +41,18 @@ export function VoiceSection({ value, onChange, disabled, failed }: VoiceSection
           {gone && <p>{text.settings.gone}</p>}
           <SelectField
             label={text.settings.voice}
-            value={used ?? ""}
+            // Voix mémorisée disparue : choix vide, pour que choisir la voix de repli l'enregistre.
+            value={gone ? "" : (used ?? "")}
             disabled={disabled}
-            options={voices.map((voice) => ({
-              value: voice.id,
-              label: text.settings.voiceOption(voice.name, voice.language),
-            }))}
+            options={[
+              ...(gone ? [{ value: "", label: text.settings.goneOption }] : []),
+              ...voices.map((voice) => ({
+                value: voice.id,
+                label: text.settings.voiceOption(voice.name, voice.language),
+              })),
+            ]}
             onChange={(event) => {
+              if (event.target.value === "") return;
               preview.stop();
               onChange(event.target.value);
             }}
@@ -66,6 +71,9 @@ export function VoiceSection({ value, onChange, disabled, failed }: VoiceSection
               {preview.playing ? text.stop : text.settings.tryLabel}
             </Button>
           </div>
+          <p role="status" className="fl-visually-hidden">
+            {preview.playing ? text.playing : ""}
+          </p>
           {preview.error && (
             <p role="alert" className="fl-field__error">
               {previewErrorMessage(preview.error)}

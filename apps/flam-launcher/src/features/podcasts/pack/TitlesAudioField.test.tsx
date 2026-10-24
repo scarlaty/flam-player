@@ -125,7 +125,9 @@ it("voix des Paramètres disparue : la voix par défaut est annoncée", async ()
 it("la voix de la composition l'emporte sur celle des Paramètres", async () => {
   preferred = HORTENSE.id;
   render(<Harness voice={PAUL.id} />);
-  expect(await screen.findByText(/Voix : Microsoft Paul/)).toBeInTheDocument();
+  expect(
+    await screen.findByText("Voix : Microsoft Paul (celle de la composition)."),
+  ).toBeInTheDocument();
 });
 
 it("écouter puis arrêter l'aperçu du titre du pack", async () => {
