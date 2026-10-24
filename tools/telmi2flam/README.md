@@ -658,24 +658,30 @@ Chaque archive est convertie par l'oracle puis par le candidat (`--jobs` archive
 donc au plus autant de conversions simultanées). Un état par archive (`cases/`) permet de
 reprendre une campagne interrompue en relançant la même commande ; un résultat obtenu avec un
 autre moteur (empreinte des fichiers de la commande) ou une exécution impossible (délai,
-commande absente) est refait. Seules la délégation D4 et l'écart borné des JPEG (D7 : `.lif`
-dont le nom correspond à un JPEG de l'archive, approximation du nommage de `alloc`) sont
-admis : tout autre écart, même de la
+commande absente) est refait. Seules la délégation D4 (image) et l'écart borné des JPEG (D7 :
+`.lif` dont le nom correspond à un JPEG de l'archive, approximation du nommage de `alloc`)
+sont admis : tout autre écart, même de la
 liste fermée, est à classer à la main (le dossier de travail de l'archive est alors gardé sous
 `work/`). Le rapport compte les délégations par cause, format d'image et méthode ZIP. Le
 journal ne donne que des comptes ; le rapport nomme les archives et reste dans `.cache/`.
 
 Lecture du rapport :
 
-- Causes de délégation : `zip:<méthode>` (message `: compression N (bzip2/LZMA/Zstandard)`),
-  `image:<raison>` (liste fermée des raisons du décodeur d'image : depuis #459, `pas un PNG`
-  pour un autre format que PNG et JPEG ; pour les JPEG que libjpeg-turbo lit, ou peut lire,
-  mais pas le Rust : `JPEG arithmétique`, `JPEG sans perte`, `JPEG refusé par zune-jpeg`,
-  `JPEG à tables séparées`, `JPEG sans marqueur final`, `JPEG corrompu (redémarrage)` ; PNG
-  atypiques et autres JPEG décodés), `metadata` ou `autre`. Un
-  message hors de ces formes exactes est `autre`. `metadata` et `autre` sont hors D4 strict :
-  la ligne `attention : delegations hors D4 strict…` (comptes seulement) les signale et elles
-  sont à classer à la main.
+- Causes de délégation : `image:<raison>` (liste fermée des raisons du décodeur d'image :
+  depuis #459, `pas un PNG` pour un autre format que PNG, JPEG et GIF ; pour les JPEG que
+  libjpeg-turbo lit, ou peut lire, mais pas le Rust : `JPEG arithmétique`, `JPEG sans perte`,
+  `JPEG refusé par zune-jpeg`, `JPEG à tables séparées`, `JPEG sans marqueur final`,
+  `JPEG corrompu (redémarrage)`), `metadata` ou `autre`. Un message hors de ces formes exactes
+  est `autre`. `metadata` et `autre` sont hors D4 strict : la ligne `attention : delegations
+  hors D4 strict…` (comptes seulement) les signale et elles sont à classer à la main.
+- Méthodes ZIP bzip2, LZMA et Zstandard : lues par le Rust depuis #458, plus de délégation.
+  Un candidat antérieur qui délègue encore une entrée (message `: compression N
+  (bzip2/LZMA/Zstandard)`, cause `zip:<méthode>`) est compté en **écart** `delegation`, pas
+  en délégation admise.
+- Formats d'image du convertisseur Rust (#459) : PNG, GIF (première image, comme Pillow :
+  `crates/telmi2flam/src/gif.rs`, vecteurs `tests/vectors/gif/`) et JPEG (`zune-jpeg`, à ±4
+  près, décision D7 : `crates/telmi2flam/src/jpeg.rs`, vecteurs `tests/vectors/jpeg/`) sont
+  décodés ; les autres formats (BMP…) sont encore délégués (`image:pas un PNG`).
 - `--limit N` écrit le même `report.json` sur les N premières archives seulement, avec
   `"partial": true` (`false` sinon) ; ce n'est pas un résultat de campagne complet.
 - Formats d'image : détection par signature. `ftyp` exige une marque AVIF/HEIF (`avif`, `avis`,

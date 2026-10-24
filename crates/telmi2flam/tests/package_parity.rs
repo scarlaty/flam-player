@@ -105,7 +105,7 @@ fn hex(bytes: &[u8]) -> String {
 fn assumed_divergence(tags: &[&str]) -> Option<&'static str> {
     for tag in tags {
         match *tag {
-            // D4 : image non PNG, bzip2 / LZMA délégués à Python.
+            // D4 : image non PNG déléguée à Python (bzip2/LZMA/Zstandard lus depuis #458).
             "delegated" => return Some("unsupported_format"),
             // §3 / §4.1 : JSON hors limites, entrée chiffrée, nom UTF-8 invalide, position
             // d'en-tête négative : le Rust échoue (code propre au port).

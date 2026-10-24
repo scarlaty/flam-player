@@ -404,6 +404,7 @@ zlib_distance_avant_fin	unreadable	same
 zlib_distance_apres_fin_puis_code_faux	rgba:1x1:6505030c2514aa26237248c055b2ec6bf00c0e4539c823e67891a68da3556f63	same
 zlib_litteral_apres_fin	rgba:1x1:6505030c2514aa26237248c055b2ec6bf00c0e4539c823e67891a68da3556f63	same
 pas_png	unreadable	delegate
+gif_vide	unreadable	same
 vide	unreadable	same
 signature_seule	unreadable	same
 signature_tronquee	unreadable	same

@@ -24,9 +24,13 @@
 //! - **Plafonds sur les tailles réelles** : total téléchargé (D1, 1 Gio), MP3 produits (bornes de
 //!   l'archive) ; un épisode trop gros est retiré (P7), un total dépassé fait échouer la tâche.
 //! - **Espace disque** (D5) vérifié avant tout téléchargement.
+//! - **Cache des MP3 convertis** (#460, N8 b, [`mp3cache`]) : un épisode déjà converti est
+//!   repris du cache (ni téléchargé ni reconverti), un épisode converti y est mis avant la
+//!   suppression du dossier de travail. Le cache est au mieux : ses erreurs ne font jamais
+//!   échouer le pack.
 //! - `library.json` n'est jamais touché ici : seule la publication existante l'écrit.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -44,6 +48,7 @@ use crate::podcast::archive::{
 };
 use crate::podcast::artwork::{self, Artwork, ArtworkError, ArtworkKind};
 use crate::podcast::fetch::{self, Item, Progress, Report, Workdir};
+use crate::podcast::mp3cache::{self, CacheAccess, EntryKey, Hit, Wanted};
 use crate::podcast::pack::{
     self, CachedFeed, CoverChoice, EpisodeRef, Feeds, PackComposition, PackNode, ResolvedMetadata,
     ValidationReport, MAX_PACK_BYTES,
@@ -126,6 +131,12 @@ pub trait PackBackend: Send + Sync {
     ) -> BoxFuture<'a, AppResult<Vec<AppResult<u64>>>>;
     /// Pack publié : efface le brouillon s'il n'a pas changé depuis `revision`.
     fn draft_done(&self, revision: u64);
+    /// Cache des MP3 convertis (#460) des `sources`, sous `cache_root` ; `None` : sans cache.
+    /// Appelé **avant** le chargement des flux (générations des sources, voir
+    /// [`CacheAccess::new`]).
+    fn mp3_cache(&self, _cache_root: PathBuf, _sources: BTreeSet<String>) -> Option<CacheAccess> {
+        None
+    }
     /// Conversion d'une pochette (#215), bloquante. Par défaut **dans un processus enfant**
     /// (#263, [`artwork::convert_isolated`]) : un décodeur qui panique sur une image hostile
     /// n'arrête pas le launcher ; l'échec donne l'image de repli (D13).
@@ -213,6 +224,14 @@ impl PackBackend for LivePackBackend {
         if let Err(err) = clear_draft_if_unchanged(&config.dir, revision) {
             tracing::warn!("brouillon de pack non effacé : {err}");
         }
+    }
+
+    fn mp3_cache(&self, cache_root: PathBuf, sources: BTreeSet<String>) -> Option<CacheAccess> {
+        Some(CacheAccess::new(
+            Arc::new(mp3cache::LiveLocks(self.app.clone())),
+            cache_root,
+            sources,
+        ))
     }
 }
 
@@ -370,6 +389,74 @@ fn invalid_message(report: &ValidationReport) -> String {
     format!("composition du pack invalide : {}", details.join(" ; "))
 }
 
+/// Épisodes servis par le cache des MP3 (#460), par rang, placés dans le dossier de travail
+/// sous des noms distincts de ceux du téléchargement (`cache-<rang>.mp3`, `cache-<rang>.img`).
+async fn lookup_cache(
+    cache: &CacheAccess,
+    keys: &[EntryKey],
+    dir: &Path,
+    now: u64,
+) -> HashMap<usize, Hit> {
+    let wanted = keys
+        .iter()
+        .enumerate()
+        .map(|(n, key)| Wanted {
+            rank: n,
+            key: key.clone(),
+            mp3_dest: dir.join(format!("cache-{n:04}.mp3")),
+            image_dest: dir.join(format!("cache-{n:04}.img")),
+        })
+        .collect();
+    cache
+        .lookup(wanted, now)
+        .await
+        .into_iter()
+        .map(|h| (h.rank, h))
+        .collect()
+}
+
+/// Télécharge les images `(rang, URL, destination)`, `concurrency` à la fois ; rend celles
+/// obtenues, par rang. La première erreur (disque, annulation) arrête les autres.
+async fn fetch_images(
+    backend: &Arc<dyn PackBackend>,
+    jobs: Vec<(usize, String, PathBuf)>,
+    concurrency: usize,
+    cancel: &watch::Receiver<bool>,
+) -> AppResult<Vec<(usize, PathBuf)>> {
+    let mut jobs = jobs.into_iter();
+    let mut running = tokio::task::JoinSet::new();
+    let mut fetched = Vec::new();
+    loop {
+        while running.len() < concurrency.max(1) {
+            let Some((n, url, dest)) = jobs.next() else {
+                break;
+            };
+            let (backend, cancel) = (backend.clone(), cancel.clone());
+            running.spawn(async move {
+                let ok = backend.fetch_image(&url, &dest, cancel).await?;
+                AppResult::Ok(ok.then_some((n, dest)))
+            });
+        }
+        // `running` abandonné sur erreur : les téléchargements restants sont interrompus.
+        let Some(done) = running.join_next().await else {
+            break;
+        };
+        let done = match done {
+            Ok(done) => done,
+            // Panique d'un téléchargement : propagée comme sans parallélisme.
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(_) => {
+                return Err(AppError::Io(std::io::Error::other(
+                    "téléchargement interrompu",
+                )))
+            }
+        };
+        fetched.extend(done?);
+    }
+    fetched.sort_unstable();
+    Ok(fetched)
+}
+
 /// Supprime le dossier de travail (hors du runtime asynchrone : `Workdir::finish`).
 pub(super) async fn finish_workdir(workdir: Workdir) {
     if let Err(err) = workdir.finish().await {
@@ -469,6 +556,11 @@ impl InstallService {
         }
         self.emit_phase(id, 0.0, "validation");
 
+        // Cache des MP3 (#460) : générations des sources lues avant le chargement des flux
+        // (une source supprimée ensuite n'est jamais recréée sur le disque).
+        let cache = backend
+            .mp3_cache(tc.cache_root.clone(), job.composition.source_ids())
+            .map(|c| c.with_cancel(cancel.clone()));
         // Revalidation complète (reprise : flux changé entre-temps).
         let feeds = backend.feeds(&job.composition).await?;
         let report = pack::validate(&job.composition, &feeds);
@@ -517,6 +609,7 @@ impl InstallService {
             metadata,
             workdir,
             &backend,
+            cache.as_ref(),
             concurrency,
             cancel,
         )
@@ -544,6 +637,7 @@ impl InstallService {
         metadata: ResolvedMetadata,
         workdir: &Workdir,
         backend: &Arc<dyn PackBackend>,
+        cache: Option<&CacheAccess>,
         concurrency: usize,
         cancel: &mut watch::Receiver<bool>,
     ) -> AppResult<(PathBuf, StoryEntry)> {
@@ -566,10 +660,28 @@ impl InstallService {
             chosen.push(Chosen { reference, episode });
         }
         self.set_pack_status(id, chosen.len(), Vec::new());
+
+        // 0. Cache des MP3 convertis (#460) : un épisode servi n'est ni téléchargé ni converti.
+        let now = super::now_secs();
+        let keys: Vec<EntryKey> = chosen
+            .iter()
+            .map(|c| EntryKey::of(&c.reference.source_id, c.episode))
+            .collect();
+        let hits = match cache {
+            Some(cache) => lookup_cache(cache, &keys, workdir.path(), now).await,
+            None => HashMap::new(),
+        };
+        if !hits.is_empty() {
+            tracing::info!(
+                hits = hits.len(),
+                "pack : épisodes servis par le cache des MP3"
+            );
+        }
         // `id` : rang ; `feed` : uuid de la source. Jamais d'URL ni de titre (D11).
         let items: Vec<Item> = chosen
             .iter()
             .enumerate()
+            .filter(|(n, _)| !hits.contains_key(n))
             .map(|(n, c)| Item {
                 id: format!("e{n}"),
                 feed: c.reference.source_id.clone(),
@@ -601,10 +713,15 @@ impl InstallService {
                 }
             })
         };
-        let fetched = backend
-            .fetch(&items, workdir, concurrency, cancel.clone(), progress)
-            .await
-            .map_err(explain_fetch_error)?;
+        let fetched = if items.is_empty() {
+            // Tout vient du cache.
+            Report::default()
+        } else {
+            backend
+                .fetch(&items, workdir, concurrency, cancel.clone(), progress)
+                .await
+                .map_err(explain_fetch_error)?
+        };
         if *cancel.borrow() {
             return Err(AppError::Cancelled);
         }
@@ -624,6 +741,39 @@ impl InstallService {
             )));
         }
 
+        // Pochettes des épisodes servis par le cache qui n'y ont pas la leur (absente ou
+        // périmée) : téléchargées `concurrency` à la fois (D13 : un échec donne l'image de
+        // repli).
+        let mut hit_images: BTreeMap<usize, PathBuf> = BTreeMap::new();
+        let mut to_cache: Vec<mp3cache::Store> = Vec::new();
+        let mut hit_ranks: Vec<usize> = hits.keys().copied().collect();
+        hit_ranks.sort_unstable();
+        let mut missing: Vec<(usize, String, PathBuf)> = Vec::new();
+        for &n in &hit_ranks {
+            match (&hits[&n].image, &chosen[n].episode.image) {
+                (Some(path), _) => {
+                    hit_images.insert(n, path.clone());
+                }
+                (None, Some(url)) => {
+                    let dest = workdir.path().join(format!("cache-{n:04}.img"));
+                    missing.push((n, url.clone(), dest));
+                }
+                (None, None) => {}
+            }
+        }
+        for (n, dest) in fetch_images(backend, missing, concurrency, cancel).await? {
+            // Remise en cache avec la nouvelle pochette (le MP3 est relié).
+            to_cache.push(mp3cache::Store {
+                key: keys[n].clone(),
+                mp3: hits[&n].mp3.clone(),
+                image: Some(dest.clone()),
+            });
+            hit_images.insert(n, dest);
+        }
+        if *cancel.borrow() {
+            return Err(AppError::Cancelled);
+        }
+
         // 2. Audio (60 à 85 %).
         self.emit_phase(id, 60.0, "audio");
         let mut ready: Vec<(usize, PathBuf, Option<PathBuf>)> = Vec::new();
@@ -634,16 +784,38 @@ impl InstallService {
             conversions.push((f.audio.clone(), mp3.clone()));
             ready.push((n, mp3, f.image.clone()));
         }
-        let results = backend.convert_audio(conversions, cancel).await?;
+        let results = if conversions.is_empty() {
+            Vec::new()
+        } else {
+            backend.convert_audio(conversions, cancel).await?
+        };
         if *cancel.borrow() {
             return Err(AppError::Cancelled);
         }
         let mut kept: Vec<(usize, PathBuf, Option<PathBuf>)> = Vec::new();
         let mut audio_total = 0u64;
+        for &n in &hit_ranks {
+            let hit = &hits[&n];
+            if hit.mp3_bytes <= MAX_AUDIO_BYTES {
+                audio_total += hit.mp3_bytes;
+                kept.push((n, hit.mp3.clone(), hit_images.get(&n).cloned()));
+            } else {
+                tracing::warn!(
+                    episode = n,
+                    "épisode retiré du pack : MP3 en cache trop volumineux"
+                );
+                dropped.push(n);
+            }
+        }
         for ((n, mp3, image), result) in ready.into_iter().zip(results) {
             match result {
                 Ok(bytes) if bytes <= MAX_AUDIO_BYTES => {
                     audio_total += bytes;
+                    to_cache.push(mp3cache::Store {
+                        key: keys[n].clone(),
+                        mp3: mp3.clone(),
+                        image: image.clone(),
+                    });
                     kept.push((n, mp3, image));
                 }
                 Ok(_) => {
@@ -656,6 +828,21 @@ impl InstallService {
                     dropped.push(n);
                 }
             }
+        }
+        // Mise en cache des MP3 convertis, avant que les pochettes d'origine ne soient
+        // supprimées du dossier de travail ; puis éviction (jamais les épisodes de ce pack).
+        if let Some(cache) = cache {
+            if !to_cache.is_empty() {
+                cache.store(to_cache, now).await;
+            }
+            let protect: HashSet<(String, String)> = keys
+                .iter()
+                .map(|k| (k.source_id.clone(), k.episode_id.clone()))
+                .collect();
+            cache.evict(protect).await;
+        }
+        if *cancel.borrow() {
+            return Err(AppError::Cancelled);
         }
         if kept.is_empty() {
             let titles: Vec<String> = dropped
@@ -701,12 +888,15 @@ impl InstallService {
         let cover_source: Option<PathBuf> = match &cover_url {
             None => None,
             Some(url) => {
-                let known = fetched.fetched.iter().find_map(|f| {
-                    let n = rank(&f.id)?;
-                    (chosen.get(n)?.episode.image.as_deref() == Some(url.as_str()))
-                        .then(|| f.image.clone())
-                        .flatten()
-                });
+                let known = fetched
+                    .fetched
+                    .iter()
+                    .filter_map(|f| Some((rank(&f.id)?, f.image.clone()?)))
+                    .chain(hit_images.iter().map(|(n, p)| (*n, p.clone())))
+                    .find_map(|(n, path)| {
+                        (chosen.get(n)?.episode.image.as_deref() == Some(url.as_str()))
+                            .then_some(path)
+                    });
                 match known {
                     Some(path) => Some(path),
                     None => {
@@ -900,6 +1090,8 @@ pub struct PackCreated {
     /// Tâche créée ; `None` si la composition est invalide (voir `report`).
     pub task: Option<super::InstallTask>,
     pub report: ValidationReport,
+    /// Composition conservée après la création de la tâche (#461) ; `None` sans tâche.
+    pub composition: Option<crate::podcast::compositions::CompositionRecord>,
 }
 
 /// Crée un pack (N7 a) : revalide la composition à partir des flux en cache et, si elle est
@@ -921,14 +1113,25 @@ pub async fn pack_create(
     let feeds = pack::load_feeds(&config, &podcasts, &composition).await?;
     let report = pack::validate(&composition, &feeds);
     if !report.valid {
-        return Ok(PackCreated { task: None, report });
+        return Ok(PackCreated {
+            task: None,
+            report,
+            composition: None,
+        });
     }
     let task = service
-        .start_pack(composition, &report, draft_revision)
+        .start_pack(composition.clone(), &report, draft_revision)
         .await?;
+    // Composition conservée sous un nom (#461) ; un échec ne remet pas la tâche en cause.
+    let record = {
+        let title = report.metadata.as_ref().map_or("", |m| m.title.as_str());
+        let _guard = config.guard();
+        crate::podcast::compositions::record_after_create(&config.dir, &composition, title)
+    };
     Ok(PackCreated {
         task: Some(task),
         report,
+        composition: Some(record),
     })
 }
 
@@ -936,3 +1139,7 @@ pub async fn pack_create(
 pub fn is_pack_uuid(uuid: &str) -> bool {
     is_task_id(uuid)
 }
+
+#[cfg(test)]
+#[path = "podcast_cache_tests.rs"]
+mod cache_tests;

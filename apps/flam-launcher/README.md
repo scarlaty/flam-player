@@ -32,8 +32,8 @@ installées de « Mes histoires ») sous `%LOCALAPPDATA%` (« Paramètres » →
 emplacement).
 
 **Désinstallation et données** : la désinstallation retire le dossier d'installation seulement.
-Les données (`%APPDATA%lam-launcher` : sources, paramètres, sauvegardes ; et
-`%LOCALAPPDATA%lam-launcher` : cache et histoires installées) sont **conservées**, y compris si
+Les données (`%APPDATA%\flam-launcher` : sources, paramètres, sauvegardes ; et
+`%LOCALAPPDATA%\flam-launcher` : cache et histoires installées) sont **conservées**, y compris si
 l'on coche « supprimer les données de l'application » du désinstallateur, qui ne les connaît pas :
 pour tout effacer, supprimer ces deux dossiers à la main.
 
@@ -65,6 +65,10 @@ brouillon est enregistré automatiquement.
 (téléchargement, conversion audio, archive, conversion, bibliothèque ; progression et
 annulation dans le panneau des tâches). Les épisodes qui échouent sont retirés du pack et listés
 à la fin. Plafonds : 50 épisodes, 200 Mo par épisode, 1 Gio par pack.
+
+Chaque pack créé garde sa composition sous un nom (**Compositions enregistrées**, écran
+Podcasts, 50 au plus) : « Ouvrir » la recopie dans le brouillon pour refaire le pack ou en
+dériver un autre (chaque création donne une nouvelle histoire) ; elle se renomme et se supprime.
 
 À la première création, un message rappelle les droits (usage personnel et familial, pas de
 partage, publicité comprise) ; « J'ai compris » le ferme et il n'est plus affiché. Détails et
@@ -112,6 +116,11 @@ Testeurs de la bêta : [docs/guide-testeur.md](docs/guide-testeur.md). Formats e
 ### Prérequis
 
 Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2, Node 24+ et npm.
+
+Python 3 n'est **pas** nécessaire pour utiliser, construire ou tester le launcher : l'installation
+n'en contient plus (#138). Il ne sert qu'aux outils de campagne et de parité de
+`tools/telmi2flam/` (oracle Python de #135) et aux générateurs de vecteurs de test de
+`crates/telmi2flam/tests/vectors/`. Le convertisseur se développe dans `crates/telmi2flam`.
 
 Le launcher est membre d'un **workspace Cargo** dont le `Cargo.toml` est à la racine du dépôt (avec
 `crates/telmi2flam`) : `Cargo.lock` et `target/` sont à la racine, pas dans `src-tauri/`. Les commandes
@@ -190,8 +199,8 @@ fermeture de stdin). Environ 1,5 Mo sur disque.
    ```
 
    L'annulation du test exige un binaire de debug ou la feature `test-hooks`
-   (`TELMI2FLAM_TEST_FAULT=wait:zip:end`). L'archive de test se génère avec `make_story.py`
-   (issue #46) ; ne jamais committer de contenu sous licence.
+   (`TELMI2FLAM_TEST_FAULT=wait:zip:end`). L'archive de test est synthétique, à fabriquer
+   localement (issue #46) ; ne jamais committer de contenu sous licence.
 
 **Plus de Python dans l'installation** : le réglage `python_path` n'existe plus (#139) et
 l'écran Paramètres ne propose plus de chemin de Python. Un ancien `settings.json` qui porte
@@ -209,7 +218,7 @@ l'histoire, n'est ni affiché ni journalisé). La campagne de parité sur 30 arc
 n'en a trouvé aucune.
 
 **Licences redistribuées** : `telmi2flam/LICENSES.md` (produit par `build-converter.ps1`) liste
-le binaire (GPL v3, et HPND pour le code dérivé de Pillow : `resample.rs`, `blur.rs`), le
+le binaire (GPL v3, et HPND pour le code dérivé de Pillow : `resample.rs`, `blur.rs`, `gif.rs`), le
 runtime C Microsoft lié statiquement et `vcruntime140.dll`. Python et Pillow ne sont plus livrés ;
 seule la mention du code de Pillow porté en Rust reste (`THIRD-PARTY-NOTICES.txt`, texte intégral
 MIT-CMU). `LICENSES.md` à la racine de

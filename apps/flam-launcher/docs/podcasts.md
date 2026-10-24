@@ -30,6 +30,8 @@ Légende :
 10. [Ordres de grandeur](#10-ordres-de-grandeur)
 11. [Impact sur les issues](#11-impact-sur-les-issues)
 12. [Synthèse vocale des titres (#462)](#12-synthèse-vocale-des-titres-462)
+13. [Cache des MP3 convertis (N8 b, #460)](#13-cache-des-mp3-convertis-n8-b-460)
+14. [Compositions nommées réutilisables (N3 c, #461)](#14-compositions-nommées-réutilisables-n3-c-461)
 
 ## 1. Objectif et périmètre
 
@@ -53,8 +55,8 @@ fonctionnelle du launcher ; elle peut être préparée dès maintenant.
 - erreurs claires ; un épisode en échec est retiré et signalé.
 
 **Hors MVP** (#221, voir § 11) : recherche de podcasts et liste de flux conseillés, synthèse
-vocale des titres, titre incrusté ou pochette générée, compositions nommées réutilisables (N3 c),
-cache des MP3 convertis (N8 b), image de catégorie choisie par le parent (N5 c), normalisation du
+vocale des titres, titre incrusté ou pochette générée, compositions nommées réutilisables (N3 c,
+livré par #461, § 14), cache des MP3 convertis (N8 b, livré par #460, § 13), image de catégorie choisie par le parent (N5 c), normalisation du
 volume, chapitres, reprise par épisode, génération directe d'un paquet flam (option B).
 
 ## 2. Décisions prises
@@ -299,7 +301,8 @@ URL du flux ─► téléchargement du flux (cache hors ligne du dernier flux va
   convertis, archive Telmi, `.plain.pk`) ; la génération directe d'un paquet flam (option B) est
   une évolution (#221).
 - **Après la publication** : tout est supprimé (originaux, MP3 convertis, archive Telmi) ; refaire
-  un pack retélécharge tout (N8 a). Le cache des MP3 convertis est une évolution (N8 b, #221).
+  un pack retélécharge tout (N8 a). Depuis #460, les MP3 convertis sont gardés en cache par
+  source (N8 b, § 13) : refaire un pack ne retélécharge que ce qui manque.
 
 ## 6. Histoire générée (archive Telmi synthétique)
 
@@ -491,6 +494,7 @@ Sans mise à jour, rien n'oblige à garder les épisodes téléchargés.
 | b. Garder les MP3 convertis par source, purgés avec la source (D15)         | Refaire un pack est rapide ; coûte jusqu'à la taille des packs sur le disque. |
 
 **Recommandation : a** (adoptée le 2026-10-23) au MVP ; b plus tard si le besoin apparaît.
+**b retenue le 2026-10-24** pour les MP3 convertis seulement (#460, § 13).
 
 ### N9. Même épisode plusieurs fois — Décidé le 2026-10-23 : a
 
@@ -810,3 +814,281 @@ faire dès maintenant, avant la PR 1. Les noms d'entrées suivent la convention 
 | Q2  | Sans voix française : bloquer, ou créer un pack silencieux ? Et si un seul titre échoue ?                                                     | Case désactivée avec message, jamais de pack silencieux par surprise ; titre isolé en échec = silencieux et avertissement, mais arrêt si le premier titre ou plus de la moitié échouent (12.5). |
 | Q3  | Réglages : voix seule, voix et débit, voix selon la langue du flux ?                                                                          | Voix choisie par poste (liste des voix françaises), **sans débit** en v1 ; voix selon la langue du flux plus tard.                                                                              |
 | Q4  | API et licence : WinRT seul (crate `windows`) ou WinRT puis SAPI ; accepte-t-on l'usage des voix Microsoft limité au cadre personnel du § 4 ? | **WinRT seul** ; usage personnel et familial déjà imposé (A8, D14), avec une vérification du contrat des voix avant la fusion de la PR 2.                                                       |
+
+## 13. Cache des MP3 convertis (N8 b, #460)
+
+Évolution retenue par le mainteneur le 2026-10-24 (#460, issue de #221) : **refaire un pack sans
+retélécharger ni reconvertir**. Elle remplace N8 a pour l'audio converti seulement : les
+originaux, l'archive Telmi et le dossier de travail restent supprimés après chaque création.
+Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparation
+(`src-tauri/src/install/podcast.rs`).
+
+### 13.1 Clé, emplacement, contenu
+
+- **Emplacement** : `<cache>/podcasts/<source_id>/mp3/`, sous le dossier de cache de la source
+  (§ 3.5). La suppression de la source purge donc aussi ses MP3 (D15) sans code de plus, et
+  « Vider le cache » les compte et les supprime (sous-dossier `podcasts` déjà listé).
+- **Nom d'une entrée** : identifiant opaque de l'épisode (`episode_id`, empreinte SHA-256 du
+  `guid`, 32 chiffres hexadécimaux). Trois fichiers : `<id>.mp3` (MP3 converti selon D6),
+  `<id>.img` (pochette d'origine de l'épisode, facultative), `<id>.json` (métadonnées).
+- **Empreinte d'entrée** (dans `<id>.json`) : SHA-256 de la version du format, du **profil de
+  conversion** (`AUDIO_PROFILE`), du `guid`, de l'URL, de la taille annoncée et du type de
+  l'enclosure. La pochette a sa propre empreinte (SHA-256 de son URL). **Aucune URL en clair**
+  sur le disque ni dans les journaux (D11) : seules les empreintes sont écrites, les traces ne
+  citent que l'uuid de la source et le rang de l'épisode.
+- **Métadonnées** : taille et SHA-256 du MP3 (et de la pochette), dates d'écriture et de
+  dernier usage.
+
+### 13.2 Invalidation
+
+- **Épisode modifié** (nouvelle URL d'enclosure, taille ou type annoncés différents) :
+  l'empreinte ne correspond plus, l'entrée est supprimée et l'épisode retéléchargé.
+- **Règle de conversion changée** : `AUDIO_PROFILE` est une constante à incrémenter à chaque
+  changement de D6 ou de `podcast/audio.rs` ; toutes les entrées existantes deviennent alors
+  invalides. Il n'existe aucun réglage utilisateur de conversion.
+- **Pochette changée** : seule la pochette est retéléchargée (empreinte d'image différente),
+  le MP3 reste servi ; l'entrée est remise en cache avec la nouvelle pochette.
+- **Publicité** (D9) : l'audio est repris tel quel, publicité comprise ; le cache garde le
+  fichier tel qu'il a été téléchargé la première fois. Avec une publicité insérée
+  dynamiquement par le serveur, un pack refait reprend donc la publicité du premier
+  téléchargement (rien n'est filtré, comportement inchangé sur le fond). Vider le cache ou
+  supprimer la source force un nouveau téléchargement.
+- **Borne d'un épisode abaissée** : une entrée plus grande que `MAX_AUDIO_BYTES` n'est jamais
+  servie ; elle est supprimée avec un avertissement (#466).
+- **À observer sur de vrais flux** (#466) : l'empreinte contient l'URL de l'enclosure, paramètres
+  compris. Un hébergeur qui fait tourner ces paramètres (jeton signé, identifiant de suivi
+  renouvelé à chaque lecture du flux) rend le cache inopérant pour ses épisodes : chaque pack
+  les retélécharge, sans autre gêne (l'entrée est simplement remplacée). Aucun cas constaté à ce
+  jour ; si cela se présente, retirer de l'empreinte les paramètres reconnus comme variables
+  plutôt que toute la requête (une URL d'enclosure changée doit rester une invalidation).
+
+### 13.3 Taille maximale et éviction
+
+- **2 Gio au plus** (`MAX_CACHE_BYTES`, soit deux packs au plafond D1), toutes sources
+  confondues, comptés sur les tailles réelles (MP3 et pochettes).
+- **Éviction LRU** à chaque préparation de pack : les entrées les moins récemment utilisées sont
+  supprimées jusqu'à repasser sous le plafond ; les entrées du pack en cours ne sont jamais
+  évincées. Les restes (fichier sans métadonnées valides, `.part`, temporaires) sont supprimés
+  au même passage.
+- D5 (espace disque avant la création) reste calculé comme sans cache : estimation prudente.
+
+### 13.4 Écriture, lecture, concurrence
+
+- **Écriture atomique** : `<id>.json` est supprimé d'abord (l'ancienne entrée n'est plus
+  servie), le MP3 et la pochette sont écrits en `.part` puis renommés, et `<id>.json` est écrit
+  **en dernier** (temporaire puis renommage) : il vaut validation de l'entrée. Le MP3 est
+  d'abord **lié** (lien physique, aucune place en plus sur le disque) depuis le dossier de
+  travail, ou copié si le système de fichiers ne le permet pas (FAT, exFAT).
+- **Lecture** : l'entrée n'est servie que si `<id>.json` est lisible, si l'empreinte correspond
+  et si la taille **et** le SHA-256 du MP3 correspondent ; le fichier est alors lié (ou copié)
+  dans le dossier de travail sous un nom distinct (`cache-<rang>.mp3`) et la date d'usage est
+  renouvelée. Aucun fichier du dossier de travail n'est modifié sur place : un lien physique
+  ne peut pas altérer l'entrée.
+- **Verrou** : toute lecture, écriture ou éviction d'une source se fait sous le **verrou de la
+  source** (celui des rafraîchissements et de la purge, `PodcastService`), avec contrôle du
+  **compteur de génération** lu avant le chargement des flux : une source supprimée pendant la
+  création n'est jamais recréée sur le disque. Le portillon du cache est déjà tenu par la tâche
+  d'installation (« Vider le cache » attend la fin de la création) ; le cache ne le reprend
+  pas (une seconde prise en lecture bloquerait derrière un vidage en attente).
+- **Deux packs simultanés** : les préparations sont déjà sérialisées (une à la fois) ; le
+  verrou par source suffit en plus pour qu'une écriture, une lecture et une éviction de la même
+  source ne se croisent jamais.
+- **Annulation** (#466) : le hachage (SHA-256 complet à chaque lecture) et la copie de repli
+  lisent par blocs de 256 Kio et s'arrêtent au bloc suivant quand la tâche est annulée, ce qui
+  libère vite le verrou de la source. Une lecture annulée ne juge ni ne supprime aucune entrée ;
+  une écriture annulée ne laisse rien de l'entrée (une écriture annulée avant de commencer garde
+  l'ancienne). Cas accepté : l'annulation pendant la remise en cache d'un épisode servi dont
+  seule la pochette a changé efface aussi son MP3 (l'ancienne entrée est retirée avant
+  l'écriture) ; il sera retéléchargé au pack suivant.
+- **Liens et jonctions** (#466) : `podcasts/`, `podcasts/<id>/` et `podcasts/<id>/mp3/` doivent
+  être de vrais dossiers (contrôle sans suivre de lien, à chaque accès, dossiers manquants créés
+  un par un puis recontrôlés) ; sinon la source est ignorée avec un avertissement : rien n'est
+  lu, écrit ni supprimé hors du cache. Les fichiers d'une entrée doivent être de vrais fichiers,
+  et seuls `<id>.mp3`, `<id>.img` et `<id>.json` comptent comme tels (le reste est supprimé à
+  l'éviction).
+- **Pochettes des épisodes servis** : celles à retélécharger (absentes du cache ou périmées) le
+  sont en parallèle, au plus autant à la fois que les épisodes (`max_downloads`, borné à 4).
+- Le cache est **au mieux** : aucune de ses erreurs ne fait échouer un pack ; une entrée
+  inutilisable donne un retéléchargement.
+
+### 13.5 Tableau des pannes
+
+| Panne                                                 | Effet                                                                             |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------- |
+| MP3 tronqué ou modifié (taille ou SHA-256 différents) | Entrée supprimée, épisode retéléchargé et reconverti, puis remis en cache.        |
+| `<id>.json` absent, illisible ou d'un autre format    | Entrée ignorée (restes supprimés à l'éviction) ; épisode retéléchargé.            |
+| Pochette en cache altérée                             | Pochette retéléchargée ; le MP3 reste servi.                                      |
+| Disque plein pendant l'écriture en cache              | `.part` et entrée supprimés, avertissement journalisé ; le pack continue.         |
+| Disque plein pendant la lecture (copie de repli)      | Copie supprimée, épisode traité comme absent du cache (retéléchargé).             |
+| Arrêt brutal pendant l'écriture                       | Sans `<id>.json` valide, l'entrée n'est jamais servie ; restes supprimés ensuite. |
+| Source supprimée pendant la création                  | Génération changée : rien n'est écrit ; la purge supprime tout le dossier.        |
+| « Vider le cache » pendant la création                | Attend la fin de la tâche (portillon) ; les liens du dossier de travail restent.  |
+| Épisode ou règle de conversion modifiés               | Empreinte différente : entrée remplacée.                                          |
+| Plafond de 2 Gio dépassé                              | Entrées les plus anciennes évincées (jamais celles du pack en cours).             |
+| Tâche annulée pendant le hachage ou la copie          | Arrêt au bloc suivant ; aucune entrée supprimée, écriture en cours effacée.       |
+| `podcasts/` ou `podcasts/<id>/` remplacé par un lien  | Source ignorée (avertissement) : rien lu, écrit ni supprimé hors du cache.        |
+| Fichier d'extension inconnue dans `mp3/`              | Compté comme reste, supprimé à l'éviction.                                        |
+
+### 13.6 Interface
+
+Aucun écran dédié : la taille du cache des MP3 est comptée dans la taille du cache affichée par
+les paramètres, « Vider le cache » la supprime, et la suppression d'une source purge la sienne.
+Un affichage séparé (taille du cache des MP3, bouton dédié) est une évolution possible, non
+faite dans #466 (suivi : #489).
+
+## 14. Compositions nommées réutilisables (N3 c, #461)
+
+Évolution retenue par le mainteneur le 2026-10-24 (#461, issue de #221) : après la création
+d'un pack, sa **composition** (épisodes choisis et leurs flux, arborescence, titre, sous-titre,
+âge, description, couverture) est conservée sous un nom. Le parent peut la **rouvrir** pour
+refaire le même pack ou en **dériver** un autre, la **renommer** et la **supprimer**. Le modèle
+pack est inchangé : chaque création donne une **nouvelle histoire** (nouvel uuid, P3), jamais
+une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
+
+### 14.1 Quand une composition est conservée
+
+- **À la création de la tâche** (`pack_create` accepté, composition revalidée), pas à la
+  publication. Une création qui échoue ou qu'on annule (réseau coupé, disque plein) se relance
+  ainsi sans tout ressaisir ; et la file d'installation (#217) n'a pas à connaître les
+  compositions : seule la commande `pack_create` les appelle, après l'ajout de la tâche.
+- **Composition identique** à une composition conservée (même arborescence, mêmes épisodes,
+  mêmes métadonnées saisies, même couverture) : pas de doublon, l'entrée existante est mise à
+  jour (date du dernier pack, nombre de packs). C'est le cas « refaire ».
+- **Composition différente** : nouvelle entrée, nommée d'après le **titre effectif** du pack
+  (titre saisi, sinon titre du flux, N1 b), avec un suffixe « (2) », « (3) »… si ce nom est
+  déjà pris. C'est le cas « dériver » : la composition d'origine reste intacte.
+- Un échec d'enregistrement (fichier illisible, disque plein, limite atteinte) **ne bloque
+  jamais la création** du pack : la tâche est créée, un message dit que la composition n'a pas
+  été conservée et pourquoi.
+
+### 14.2 Rouvrir : refaire ou dériver
+
+- « Ouvrir » **copie** la composition dans le brouillon unique (N3 b), à la révision suivante
+  de celui-ci (une sauvegarde automatique en retard est refusée ; cas limite d'une sauvegarde
+  d'éditeur fermé encore en vol au-delà de 2 s : suivi #484), puis affiche
+  l'éditeur. Si le brouillon contient déjà des épisodes, une confirmation le dit : « Le
+  brouillon en cours sera remplacé. »
+- La composition conservée n'est jamais modifiée par l'éditeur : seul le brouillon l'est.
+  « Créer l'histoire » sans modification la refait (même entrée) ; avec des modifications, une
+  nouvelle entrée est créée (14.1).
+- Épisodes disparus : voir 14.5. La création reste impossible tant qu'ils sont dans
+  l'arborescence (validation existante, N3 b) ; le parent les retire puis crée.
+
+### 14.3 Format et emplacement
+
+- Fichier `pack-compositions.json` du **dossier de configuration**, à côté de
+  `pack-draft.json` : ce sont des données du parent, pas un cache (« Vider le cache » n'y
+  touche pas).
+- JSON versionné (`schema_version` = 1, lu par `storage::load_versioned`) :
+
+  ```json
+  {
+    "schema_version": 1,
+    "compositions": [
+      {
+        "id": "uuid v4 tiré par le launcher",
+        "name": "Contes du soir",
+        "created_at": 1761300000,
+        "last_used_at": 1761300000,
+        "packs": 1,
+        "composition": { "metadata": {}, "cover": {}, "menu": [] }
+      }
+    ]
+  }
+  ```
+
+  `composition` a exactement la forme du brouillon (`PackComposition`, #362) ; dates en
+  secondes Unix ; `packs` : nombre de créations lancées depuis cette composition.
+
+- **Aucune URL** sur le disque (D11) : la composition ne contient que des identifiants
+  (source, épisode) et des textes saisis.
+- **Couverture référencée, jamais copiée** : la composition garde le choix (`CoverChoice` :
+  défaut, flux ou épisode), comme le brouillon. Aucune image à stocker ni à purger ; si l'image
+  a disparu du flux, l'ouverture signale « couverture indisponible » et le parent en choisit
+  une autre (ou le défaut).
+
+### 14.4 Écriture, lecture, concurrence
+
+- Toute modification (conservation, renommage, suppression) est un cycle
+  lecture-modification-écriture **sous le verrou de configuration** (`ConfigState::guard`,
+  celui du brouillon et des sources), terminé par une **écriture atomique**
+  (`storage::write_atomic` : temporaire voisin, `sync_all`, renommage). Un arrêt brutal laisse
+  l'ancien fichier ou le nouveau, jamais un mélange ; un temporaire abandonné est ignoré.
+- Rien n'est gardé en mémoire : chaque commande relit le fichier.
+- **Entrée illisible** dans un fichier lisible (type d'option inconnu, champ manquant,
+  identifiant en double) : le fichier entier est d'abord **copié** en
+  `pack-compositions.json.<horodatage>.bak`, puis réécrit avec les seules entrées lisibles ;
+  un message le dit une fois. Rien n'est perdu : la copie garde tout.
+- **Fichier illisible** (tronqué, JSON invalide, non UTF-8), **trop gros** ou d'un **schéma
+  plus récent** : mis de côté en `*.bak` (jamais écrasé), liste vide, message.
+
+### 14.5 Épisodes disparus, source supprimée
+
+- **Épisode retiré du flux** : la composition est gardée telle quelle. La liste n'analyse pas
+  les flux (coût : un flux relu par source) ; à l'ouverture, la validation de l'éditeur
+  signale l'épisode comme indisponible, sans erreur.
+- **Source supprimée** : la composition est **gardée et marquée** dans la liste (« 1 flux
+  supprimé »). Justification : la suppression d'une source ne touche pas aux histoires créées
+  (P4) ; par analogie, elle ne détruit pas le travail du parent (arborescence, noms de
+  catégories, métadonnées), encore utile pour dériver un pack avec les autres flux. Les
+  identifiants de source sont aléatoires : réajouter le même flux ne reconnecte pas la
+  composition (évolution possible, issue de suivi). Le parent la supprime s'il n'en veut plus.
+
+### 14.6 Limites
+
+- **50 compositions** au plus (`MAX_COMPOSITIONS`). Au-delà, la création du pack continue mais
+  la composition n'est pas conservée, avec un message ; aucune suppression automatique : ce
+  sont les données du parent.
+- Nom : 1 à 60 caractères (`MAX_NAME_CHARS`), espaces de bord retirés, sans caractère de
+  contrôle, **unique** sans tenir compte de la casse.
+- Taille : 256 Kio par composition sérialisée (une composition valide en fait au plus
+  quelques dizaines : 50 épisodes, 16 Kio de description) et 16 Mio pour le fichier ; au-delà,
+  l'entrée n'est pas conservée (message), un fichier trop gros est mis de côté.
+
+### 14.7 Rétrocompatibilité
+
+- Le **brouillon** ne change pas (schéma 1, aucun champ ajouté) : les brouillons existants se
+  lisent comme avant.
+- Fichier des compositions absent (versions précédentes) : liste vide, rien n'est écrit tant
+  qu'aucun pack n'est créé.
+- Champs ajoutés plus tard à `PackComposition` (voix des titres, #462, § 12.10) : en
+  `serde(default)`, une composition conservée avant leur ajout se relit avec la valeur par
+  défaut ; ils entrent dans la comparaison de 14.1.
+
+### 14.8 Pannes
+
+| Étape / panne                                        | État laissé                                  | Reprise ou message                                                            |
+| ---------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------- |
+| Arrêt brutal pendant l'écriture                      | ancien fichier intact (temporaire abandonné) | la composition sera conservée à la prochaine création                         |
+| Disque plein, fichier en lecture seule               | ancien fichier intact, temporaire supprimé   | création du pack poursuivie, message ; renommer ou supprimer : erreur         |
+| Fichier tronqué ou JSON invalide                     | mis de côté en `*.bak`                       | liste vide, message une fois                                                  |
+| Entrée illisible dans un fichier lisible             | copie `*.bak`, entrées lisibles réécrites    | message une fois                                                              |
+| Fichier d'un schéma plus récent ou trop gros         | mis de côté en `*.bak`, jamais écrasé        | liste vide, message                                                           |
+| Limite de 50 atteinte                                | inchangé                                     | création poursuivie, message                                                  |
+| Ouvrir : brouillon illisible                         | brouillon mis de côté (`*.bak`, N3 b)        | composition copiée dans un brouillon neuf                                     |
+| Ouvrir : écriture du brouillon impossible            | brouillon inchangé                           | erreur affichée, l'éditeur n'est pas ouvert                                   |
+| Ouvrir, renommer, supprimer une composition disparue | inchangé                                     | « composition introuvable », liste relue                                      |
+| Épisode retiré du flux, flux jamais obtenu           | composition intacte                          | épisode signalé indisponible à l'ouverture, création bloquée tant qu'il y est |
+| Source supprimée                                     | composition intacte                          | marquée dans la liste ; épisodes indisponibles à l'ouverture                  |
+| Couverture disparue                                  | composition intacte                          | « couverture indisponible » à l'ouverture                                     |
+
+### 14.9 Interface
+
+- Écran Podcasts, section **« Compositions enregistrées »** : nom, nombre d'épisodes, date du
+  dernier pack, flux supprimés éventuels ; boutons « Ouvrir », « Renommer », « Supprimer »
+  (confirmation). Liste vide : une phrase dit que les compositions apparaissent après la
+  création d'un pack.
+- Après « Créer l'histoire », le message de lancement dit sous quel nom la composition est
+  conservée, ou pourquoi elle ne l'a pas été.
+- La mention d'usage (§ 4) est inchangée ; refaire un pack passe par le même message de
+  droits de la première installation (D14, déjà acquitté sur le poste).
+
+### 14.10 Tests
+
+- Unitaires (`compositions.rs`) : conservation, déduplication, noms uniques, limite, renommage,
+  suppression, ouverture dans le brouillon (révision suivante), source supprimée marquée.
+- Injection de panne : fichier tronqué, JSON invalide, entrée illisible, schéma plus récent,
+  fichier trop gros, disque plein simulé à l'écriture (écrivain injecté) : ancien fichier
+  intact, aucune perte, création poursuivie.
+- Interface (vitest) : liste, ouverture avec et sans confirmation, renommage, suppression,
+  erreurs.

@@ -34,6 +34,7 @@ pub mod cli;
 pub mod convert;
 pub mod error;
 pub mod ffmpeg;
+pub mod gif;
 pub mod graph;
 mod identify;
 pub mod image;
@@ -52,6 +53,10 @@ pub mod resample;
 pub mod runtime;
 pub mod text;
 mod text_tables;
+mod unbzip2;
+mod unlzma;
+mod unzstd;
+mod zipcodec;
 mod zipread;
 
 /// Version de la crate, affichée par `telmi2flam --version`.

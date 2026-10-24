@@ -51,7 +51,7 @@ TAG_JSON_LIMIT = "json_limit"          # §3 : JSON limites, divergence assumee 
 TAG_ENCRYPTED = "encrypted_entry"      # §3 : entree chiffree (Python 6, Rust 3)
 TAG_BAD_UTF8_NAME = "invalid_utf8_name"    # §4.1 : nom UTF-8 invalide, bit 11 (Python 6, Rust 3)
 TAG_NEGATIVE_OFFSET = "negative_offset"    # §4.1 : position d'en-tete locale < 0 (Python 6, Rust 3)
-TAG_DELEGATED = "delegated"            # D4 : bzip2/LZMA, image non PNG (Rust : code 7)
+TAG_DELEGATED = "delegated"            # D4 : image non PNG (Rust : code 7) ; bzip2/LZMA lus (#458)
 # D7 (#459) : images issues d'un JPEG, decodees par zune-jpeg a +-4 pres de libjpeg-turbo ; seules
 # les entrees nommees par `jpeg_entries` du cas peuvent differer (ecart borne, parity.py)
 TAG_JPEG = "jpeg_bounded"
@@ -309,6 +309,22 @@ def corpus_cases():
     add("img_corrupt_cover", lambda: zip_bytes(
         [(n, b"garbage" if n == "title.png" else d) for n, d in S()]))
 
+    # GIF decode par le Rust depuis #459 : animation ecrite par Pillow (premiere image),
+    # transparence, cadre plus petit que l'ecran
+    def gif():
+        a = Image.new("P", (64, 48), 2)
+        a.putpalette(bytes((i * 37) % 256 for i in range(48)))
+        a.paste(5, (8, 8, 40, 30))
+        b2 = a.copy()
+        b2.paste(9, (20, 20, 30, 30))
+        b = io.BytesIO()
+        a.save(b, "GIF", save_all=True, append_images=[b2], transparency=2, duration=80,
+               loop=0)
+        data = b.getvalue()
+        return zip_bytes([(n, data if n in ("images/s0.png", "title.png") else d)
+                          for n, d in S()])
+    add("img_gif", gif)
+
     # PNG atypiques decodes par le Rust depuis #459 : APNG ecrit par Pillow (premiere image),
     # tRNS apres l'IDAT, IHDR repete
     def apng():
@@ -475,10 +491,13 @@ def corpus_cases():
     add("zip_negative_header_offset", lambda: zip_negative_header_offset(S()),
         tags=[TAG_NEGATIVE_OFFSET])
     add("zip_deflate", lambda: zip_bytes(S(), compress=zipfile.ZIP_DEFLATED))
-    add("zip_bzip2_entry", lambda: zip_bytes(S(), compress={"audios/s0.mp3": zipfile.ZIP_BZIP2}),
-        tags=[TAG_DELEGATED])
-    add("zip_lzma_entry", lambda: zip_bytes(S(), compress={"nodes.json": zipfile.ZIP_LZMA}),
-        tags=[TAG_DELEGATED])
+    # bzip2, LZMA, Zstandard : lus par le Rust (#458), plus de delegation admise.
+    add("zip_bzip2_entry", lambda: zip_bytes(S(), compress={"audios/s0.mp3": zipfile.ZIP_BZIP2}))
+    add("zip_lzma_entry", lambda: zip_bytes(S(), compress={"nodes.json": zipfile.ZIP_LZMA}))
+    add("zip_zstd_entry", lambda: zip_bytes(S(), compress={"images/s0.png": zipfile.ZIP_ZSTANDARD}))
+    add("zip_codecs_all", lambda: zip_bytes(S(), compress={
+        "metadata.json": zipfile.ZIP_LZMA, "nodes.json": zipfile.ZIP_BZIP2,
+        "audios/s0.mp3": zipfile.ZIP_ZSTANDARD, "images/s0.png": zipfile.ZIP_BZIP2}))
 
     # --- MP3
     def with_audio(data):

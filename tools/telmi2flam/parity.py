@@ -27,8 +27,9 @@ ecart fait echouer la comparaison (code de sortie 1). Les delegations
 
 `campaign` (#135, §4.3) compare les deux moteurs sur les archives reelles, par lots avec
 reprise (un etat par archive sous DOSSIER/cases/, rapport DOSSIER/report.json, defaut
-.cache/parity). Seule la delegation D4 y est admise ; le rapport compte les delegations par
-cause, format d'image et methode ZIP. Le journal ne donne que des comptes : le rapport, lui,
+.cache/parity). Seule la delegation D4 y est admise (image non PNG : une delegation d'entree
+bzip2/LZMA/Zstandard, lues par le Rust depuis #458, est un ecart `delegation`) ; le rapport
+compte les delegations par cause, format d'image et methode ZIP. Le journal ne donne que des comptes : le rapport, lui,
 nomme les archives et reste hors du depot.
 
 `corpus` et `matrix` lisent les index `corpus.json` / `matrix.json` produits par
@@ -339,8 +340,8 @@ ALLOWED_DEVIATIONS = (
 
 def is_delegation(candidate, tags=()):
     """Delegation D4 : comptee a part, jamais un ecart. Admise seulement sur les cas
-    etiquetes `delegated` (image non PNG, entree bzip2/LZMA) : un candidat qui delegue
-    autre chose est en ecart."""
+    etiquetes `delegated` (image non PNG ; les entrees bzip2/LZMA/Zstandard sont lues
+    depuis #458) : un candidat qui delegue autre chose est en ecart."""
     return TAG_DELEGATED in tags and _pair(candidate) == (DELEGATION_EXIT, DELEGATION_CODE)
 
 
@@ -593,6 +594,9 @@ CAMPAIGN_TAGS = (TAG_DELEGATED,)
 CAMPAIGN_TIMEOUT = 1800
 ZIP_METHODS = {zipfile.ZIP_STORED: "stored", zipfile.ZIP_DEFLATED: "deflate",
                zipfile.ZIP_BZIP2: "bzip2", zipfile.ZIP_LZMA: "lzma", 93: "zstd"}
+# Methodes ZIP lues par le Rust depuis #458 : leur delegation (candidat anterieur) n'est plus
+# admise, elle compte comme un ecart (`delegation`). La cause reste reconnue pour le classer.
+SUPPORTED_ZIP_CAUSES = ("zip:bzip2", "zip:lzma", "zip:zstd")
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".avif",
               ".heic", ".heif", ".ico", ".svg")
 
@@ -787,6 +791,12 @@ def campaign_case(archive, oracle, candidate, work, timeout=CAMPAIGN_TIMEOUT, va
     res["candidate"]["validation"] = c.get("validation")
     if res["verdict"] == "delegated":
         res["delegation"] = delegation_cause(c["error_message"])
+        if res["delegation"] in SUPPORTED_ZIP_CAUSES:
+            # bzip2/LZMA/Zstandard lus par le Rust depuis #458 : une delegation est un ecart.
+            res = {"verdict": "diff", "rule": None, "delegation": res["delegation"],
+                   "diffs": [{"kind": "delegation", "oracle": None,
+                              "candidate": res["delegation"]}],
+                   "oracle": res["oracle"], "candidate": res["candidate"]}
     res["inventory"] = archive_inventory(archive)
     if res["verdict"] != "diff":
         shutil.rmtree(work, ignore_errors=True)
