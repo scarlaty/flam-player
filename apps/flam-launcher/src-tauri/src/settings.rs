@@ -114,8 +114,35 @@ pub struct Settings {
     /// `Flou` (`#[serde(default)]`, sans migration de schéma).
     pub thumb_fit: ThumbFit,
     /// Voix des titres lus des packs (#462, `VoiceInformation.Id`), mémorisée par poste ;
-    /// `None` : voix française par défaut. Absent des anciens fichiers : `None`.
+    /// `None` : voix française par défaut. Absent des anciens fichiers : `None`. Une valeur
+    /// invalide (mauvais type, trop longue, caractères de contrôle) est **ignorée** à la lecture
+    /// comme à l'enregistrement (`None`, avertissement sans la valeur) : elle ne fait jamais
+    /// échouer `load` ni `settings_set`.
+    #[serde(deserialize_with = "lenient_voice")]
     pub tts_voice: Option<String>,
+}
+
+/// Lecture tolérante de `tts_voice` : toute valeur JSON est acceptée, seule une chaîne valide
+/// est gardée.
+fn lenient_voice<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let raw = serde_json::Value::deserialize(d)?;
+    Ok(match raw {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => lenient_voice_id(Some(s)),
+        _ => {
+            tracing::warn!("réglage tts_voice ignoré : type inattendu");
+            None
+        }
+    })
+}
+
+/// [`clean_voice_id`] sans erreur : un identifiant invalide devient `None` (avertissement
+/// journalisé sans la valeur).
+pub fn lenient_voice_id(value: Option<String>) -> Option<String> {
+    clean_voice_id(value).unwrap_or_else(|_| {
+        tracing::warn!("réglage tts_voice ignoré : identifiant de voix invalide");
+        None
+    })
 }
 
 /// Longueur maximale d'un identifiant de voix (`tts_voice`, `titles_voice` d'un pack).
@@ -456,7 +483,7 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
         max_downloads: settings.max_downloads,
         carrier_consent: settings.carrier_consent,
         thumb_fit: settings.thumb_fit,
-        tts_voice: clean_voice_id(settings.tts_voice)?,
+        tts_voice: lenient_voice_id(settings.tts_voice),
     })
 }
 
@@ -1216,12 +1243,62 @@ mod tests {
         assert!(cache.is_dir());
     }
 
+    /// Un `tts_voice` corrompu sur le disque n'empêche ni la lecture ni l'enregistrement : il
+    /// est ignoré, les autres réglages sont gardés et le fichier est réécrit propre.
+    #[test]
+    fn voix_des_titres_corrompue_sur_disque_ignoree() {
+        let long = format!("\"{}\"", "v".repeat(MAX_VOICE_ID_CHARS + 1));
+        for bad in [
+            "\"a\\u0007b\"",
+            long.as_str(),
+            "42",
+            "[\"x\"]",
+            "{\"id\": 1}",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(FILE_NAME);
+            std::fs::write(
+                &path,
+                format!(
+                    "{{\"schema_version\": {SCHEMA_VERSION}, \"max_downloads\": 3, \
+                     \"tts_voice\": {bad}}}"
+                ),
+            )
+            .unwrap();
+            let store = SettingsStore::new(dir.path());
+            let loaded = store.load().unwrap();
+            assert_eq!(loaded.tts_voice, None, "{bad}");
+            assert_eq!(loaded.max_downloads, 3, "{bad} : autres réglages gardés");
+            let saved = store
+                .update(Settings {
+                    theme: Theme::Dark,
+                    ..loaded
+                })
+                .unwrap();
+            assert_eq!(saved.tts_voice, None);
+            let written = std::fs::read_to_string(&path).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&written).unwrap();
+            assert!(json["tts_voice"].is_null(), "{bad} : {written}");
+            assert_eq!(json["max_downloads"], 3);
+        }
+        // `settings_set` avec une voix invalide : ignorée, jamais une erreur.
+        let dir = tempfile::tempdir().unwrap();
+        let saved = SettingsStore::new(dir.path())
+            .update(Settings {
+                tts_voice: Some("a\u{0}b".into()),
+                ..Settings::default()
+            })
+            .unwrap();
+        assert_eq!(saved.tts_voice, None);
+    }
+
     #[test]
     fn voix_des_titres_absente_des_anciens_fichiers_et_bornee() {
         // Fichier écrit avant #462 : pas de `tts_voice`.
         let old: Settings =
             serde_json::from_str(r#"{"schema_version": 1, "max_downloads": 2}"#).unwrap();
         assert_eq!(old.tts_voice, None);
+        assert_eq!(lenient_voice_id(Some("a\u{1}b".into())), None);
         assert_eq!(clean_voice_id(Some("   ".into())).unwrap(), None);
         for bad in ["a\u{0}b".to_string(), "v".repeat(MAX_VOICE_ID_CHARS + 1)] {
             assert_eq!(clean_voice_id(Some(bad)).unwrap_err().kind(), "validation");

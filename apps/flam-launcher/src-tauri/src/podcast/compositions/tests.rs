@@ -24,6 +24,7 @@ fn comp(title: &str, ids: &[&str]) -> PackComposition {
                 entries: ids[1..].iter().map(|id| ep("b", id)).collect(),
             },
         ],
+        ..PackComposition::default()
     }
 }
 
