@@ -927,7 +927,6 @@ mod tests {
         fs::create_dir_all(&exe).unwrap();
         let env = Environment {
             exe_dir: Some(exe),
-            path_var: None,
             default_cache_dir: dir.path().join("c"),
             search_repo_build: true,
             protected_dirs: vec![],
