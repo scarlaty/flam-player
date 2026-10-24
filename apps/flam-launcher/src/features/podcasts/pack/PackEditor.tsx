@@ -32,6 +32,7 @@ import { libraryHash, ROUTE_HASHES } from "../../../router";
 import { ErrorBanner } from "../../ErrorBanner";
 import { getPackRightsAck, setPackRightsAck } from "../../settings/preferences";
 import { StoriesContext } from "../../stories/StoriesContext";
+import { errorKindText } from "../../stories/taskView";
 import { formatBytes } from "../../validation";
 import { MAX_EPISODES } from "../selection";
 import { usePodcastSelection } from "../SelectionContext";
@@ -50,6 +51,7 @@ import {
   subscribeCreations,
 } from "./creations";
 import { PackTree, menuLabel } from "./PackTree";
+import { TitlesAudioField } from "./TitlesAudioField";
 import {
   MAX_MENU_DEPTH,
   MAX_LABEL_CHARS,
@@ -645,6 +647,15 @@ export function PackEditor({
             editMetadata({ description: value.trim() === "" ? null : value })
           }
         />
+        <TitlesAudioField
+          checked={current.titles_audio === true}
+          voice={current.titles_voice ?? null}
+          previewText={
+            current.metadata.title.trim() ||
+            (report?.metadata?.title ?? single?.title ?? "")
+          }
+          onChange={(checked) => edit({ ...current, titles_audio: checked })}
+        />
       </section>
 
       <section className="fl-pack__section" aria-labelledby="fl-pack-cover">
@@ -689,7 +700,14 @@ export function PackEditor({
                   : text.create.blocked}
           </p>
         )}
-        {createError && <ErrorBanner error={createError} />}
+        {createError && (
+          <ErrorBanner
+            error={{
+              ...createError,
+              message: errorKindText(createError.kind) ?? createError.message,
+            }}
+          />
+        )}
         {refused && (
           <Banner tone="danger">
             <p>{text.create.refused}</p>
