@@ -32,6 +32,7 @@ Légende :
 12. [Synthèse vocale des titres (#462)](#12-synthèse-vocale-des-titres-462)
 13. [Cache des MP3 convertis (N8 b, #460)](#13-cache-des-mp3-convertis-n8-b-460)
 14. [Compositions nommées réutilisables (N3 c, #461)](#14-compositions-nommées-réutilisables-n3-c-461)
+15. [Image de catégorie choisie (N5 c, #499)](#15-image-de-catégorie-choisie-n5-c-499)
 
 ## 1. Objectif et périmètre
 
@@ -56,7 +57,7 @@ fonctionnelle du launcher ; elle peut être préparée dès maintenant.
 
 **Hors MVP** (#221, voir § 11) : recherche de podcasts et liste de flux conseillés, synthèse
 vocale des titres, titre incrusté ou pochette générée, compositions nommées réutilisables (N3 c,
-livré par #461, § 14), cache des MP3 convertis (N8 b, livré par #460, § 13), image de catégorie choisie par le parent (N5 c), normalisation du
+livré par #461, § 14), cache des MP3 convertis (N8 b, livré par #460, § 13), image de catégorie choisie par le parent (N5 c, livré par #499, § 15), normalisation du
 volume, chapitres, reprise par épisode, génération directe d'un paquet flam (option B).
 
 ## 2. Décisions prises
@@ -331,7 +332,7 @@ projet.
   au menu parent (à vérifier sur l'appareil, #219) ;
 - libellés : titres d'épisodes et noms de catégories (40 caractères, translittérés) ;
 - images : P6 puis D13 pour les épisodes ; image d'une catégorie = image du **premier épisode**
-  de la catégorie (N5 a) ; couverture du pack = image du podcast du premier flux utilisé par
+  de la catégorie par défaut (N5 a), ou épisode choisi par le parent (N5 c, § 15) ; couverture du pack = image du podcast du premier flux utilisé par
   défaut, modifiable parmi les images des flux et épisodes du pack (N6 b) ;
 - profondeur : 3 niveaux de menus au plus (racine + 2), 50 options par menu, catégorie vide
   refusée (N2 b).
@@ -458,7 +459,8 @@ sur l'appareil, #219).
 | b. Image unie de repli (`#122e2c`) avec le nom en libellé                              | Distingue les catégories ; visuellement pauvre.                   |
 | c. Image choisie par le parent parmi celles des épisodes de la catégorie, a par défaut | Le plus clair ; un réglage de plus dans l'éditeur.                |
 
-**Recommandation : a** (adoptée le 2026-10-23) au MVP, c en évolution.
+**Recommandation : a** (adoptée le 2026-10-23) au MVP, c en évolution. **c livré le
+2026-10-24** (#499, § 15) : « Automatique » reste le défaut.
 
 ### N6. Couverture du pack (et vignette 104 × 136) — Décidé le 2026-10-23 : b
 
@@ -576,7 +578,7 @@ Changements **appliqués sur GitHub le 2026-10-23**, après adoption de N1 à N1
 | #218  | Fermée, abandonnée (pas de mise à jour).                                                                                                                                                                                                               |
 | #219  | Enchaînement, sous-menus, retour, mono et stéréo mélangés, packs multi-flux, transfert carrier firmware 1.x, capacité de la Flam.                                                                                                                      |
 | #220  | README « Créer un pack », mention d'usage avec la publicité (D9), message « J'ai compris » (D14) ; dépend de #217 et #363.                                                                                                                             |
-| #221  | Évolutions : recherche, synthèse vocale, compositions nommées (N3 c), cache des MP3 convertis (N8 b), image de catégorie choisie (N5 c), pochettes ; dépend de #219.                                                                                   |
+| #221  | Évolutions : recherche, synthèse vocale, compositions nommées (N3 c), cache des MP3 convertis (N8 b), image de catégorie choisie (N5 c, livrée par #499), pochettes ; dépend de #219.                                                                  |
 | #361  | Nouvelle : lecture de `itunes:explicit` (D8) et correction de l'en-tête de `rss.rs`.                                                                                                                                                                   |
 | #362  | Nouvelle : modèle de composition du pack (types, validation N1, N2, N9, D1) et brouillon unique (N3 b).                                                                                                                                                |
 | #363  | Nouvelle : éditeur de pack (arborescence, métadonnées, couverture).                                                                                                                                                                                    |
@@ -1230,3 +1232,60 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
   fermé non réessayée, message de conservation gardé.
 - Suivis #489 : message d'une action réussie après l'échec de la réécriture (nouvel état,
   copie nommée), copies comparées sur le nom brut (non-régression : nom non Unicode jamais supprimé).
+
+## 15. Image de catégorie choisie (N5 c, #499)
+
+Évolution retenue par le mainteneur le 2026-10-24 (#499, issue de #221) : le parent peut choisir
+l'image d'une catégorie parmi les pochettes des épisodes qu'elle contient. **« Automatique »**
+(image du premier épisode, N5 a) reste le défaut et le comportement des packs existants.
+
+### 15.1 Modèle
+
+- `PackNode::Category` reçoit un champ optionnel `image` : un `EpisodeRef` (source + identifiant
+  d'épisode), jamais d'URL ni de chemin (D11). Absent = automatique ; omis à l'écriture quand il
+  est absent, donc un brouillon ou une composition nommée (§ 14) d'avant #499 se charge sans
+  erreur et se réécrit à l'identique. La composition ne contient aucune image : le choix est une
+  référence, comme la couverture (N6 b).
+- L'épisode choisi doit figurer dans la catégorie, **à toute profondeur** (un sous-menu compte).
+- Limite connue : un launcher d'avant #499 qui relirait puis réécrirait `pack-compositions.json`
+  perdrait le champ `image` des catégories (les champs inconnus ne sont conservés qu'au premier
+  niveau d'une composition).
+- Deux compositions qui ne diffèrent que par ce choix sont différentes (§ 14.1) : « dériver » un
+  pack en changeant seulement l'image crée une nouvelle entrée.
+
+### 15.2 Création
+
+- Même chaîne d'image que l'automatique : la pochette de l'épisode choisi est celle déjà
+  téléchargée et convertie en PNG 640 × 480 pour l'épisode lui-même (D13) ; l'archive ne
+  contient aucun fichier de plus, la scène de la catégorie cite le fichier de cet épisode
+  (`MenuEntry::Category::image`, `archive.rs`).
+- Repli sur l'automatique si l'épisode choisi n'est pas dans la catégorie, a été
+  retiré du pack (échec de téléchargement ou de conversion, P7) ou n'a pas de pochette lisible.
+  La création ne s'arrête pas : un avertissement « Image de la catégorie « X » : l'épisode choisi
+  n'est plus disponible, image automatique utilisée. » est ajouté aux `warnings` du pack
+  (aucun avertissement pour une catégorie entièrement retirée, ni sans choix).
+- Aucun problème de validation (`ProblemCode`) n'est ajouté : un choix périmé n'empêche jamais
+  de créer le pack.
+
+### 15.3 Interface
+
+- Éditeur, sous chaque catégorie qui contient au moins **deux** épisodes avec pochette (ou qui a déjà un choix, pour
+  pouvoir le défaire) : un groupe
+  de boutons radio natifs « Image de la catégorie « X » » (« Automatique » puis un choix par
+  épisode, libellé = titre). Une tabulation, flèches pour changer de choix, annonce vocale du
+  choix. Les pochettes elles-mêmes ne sont **pas** aperçues : le front n'a aucune image des
+  épisodes (D11, pas d'adresse) ; un aperçu demanderait une commande de vignettes à part
+  (suivi).
+- Quand l'épisode choisi est retiré du pack ou déplacé hors de la catégorie, le choix est effacé
+  sans bruit (`pruneImages`, `tree.ts`) : retour à « Automatique ». Un brouillon ancien dont
+  l'épisode a disparu est traité côté backend (15.2).
+
+### 15.4 Tests
+
+- Rust : choix appliqué à la scène de la catégorie (y compris catégorie imbriquée), repli
+  (épisode hors catégorie, chemin inconnu), `build_menu` (choix appliqué, sans choix, épisode
+  retiré, sans pochette, hors catégorie ou inconnu, catégorie vidée), compatibilité JSON
+  (ancien brouillon, aller-retour, brouillon écrit puis relu).
+- vitest : `CategoryImageChoice` (groupe nommé, choix et retour à Automatique, clavier, choix
+  périmé, masqué sans alternative, axe), `PackTree` (enregistrement et annonce), `tree.ts`
+  (choix, effacement silencieux au retrait ou au déplacement, parent conservé).
