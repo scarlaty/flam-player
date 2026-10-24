@@ -18,7 +18,7 @@
 
   Le dossier est déposé tel quel à côté de l'exécutable par `tauri build --config
   src-tauri/tauri.bundle.conf.json` (ressource Tauri `telmi2flam/`). La surcouche y cherche
-  `telmi2flam/python/python.exe` et `telmi2flam/telmi2flam.py` (moteur Python, par défaut), et
+  `telmi2flam/python/python.exe` et `telmi2flam/telmi2flam.py` (moteur Python, de repli), et
   `telmi2flam/telmi2flam.exe` (moteur Rust, réglage caché `converter_engine`, #136).
 
   Le binaire Rust est construit par `cargo build --release --locked -p telmi2flam` pour la cible
