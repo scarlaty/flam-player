@@ -27,6 +27,17 @@ static PEAK: AtomicUsize = AtomicUsize::new(0);
 /// Les tests de ce fichier s'exécutent l'un après l'autre (pic global au processus).
 static SERIAL: Mutex<()> = Mutex::new(());
 
+/// Prend le verrou de série et règle `FLAM_FFMPEG=""` (jamais le ffmpeg de la machine).
+///
+/// SAFETY (édition 2021 : `set_var` est une fonction sûre ; en 2024 elle serait `unsafe`) : les
+/// deux seuls tests de ce binaire passent ici, sous `SERIAL`, et écrivent la même valeur ; aucun
+/// autre test ne lit ni n'écrit l'environnement pendant ce temps.
+fn serial_sans_ffmpeg() -> std::sync::MutexGuard<'static, ()> {
+    let serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    std::env::set_var("FLAM_FFMPEG", "");
+    serial
+}
+
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let p = System.alloc(layout);
@@ -117,8 +128,7 @@ fn convert_streamed(data: &[u8], opts: &Options, out: &Path) -> Result<usize, St
 /// (sans ffmpeg, comme les vecteurs : un MP3 hors 44 100 Hz est référencé aussi).
 #[test]
 fn flux_identique_a_python() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
-    std::env::set_var("FLAM_FFMPEG", "");
+    let _serial = serial_sans_ffmpeg();
     let mut zip = Archive::new(Cursor::new(VECTORS), "package_cases.zip".into()).unwrap();
     let raw = zip.read("expected.json").unwrap().unwrap();
     let v: Value = serde_json::from_slice(&raw).unwrap();
@@ -233,8 +243,7 @@ fn peak_of<T>(f: impl FnOnce() -> T) -> (T, usize) {
 /// `.plain.pk` sont identiques.
 #[test]
 fn pic_memoire_d_un_mp3_et_non_de_la_somme() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
-    std::env::set_var("FLAM_FFMPEG", "");
+    let _serial = serial_sans_ffmpeg();
     // MP3 de 8 Mo : l'écriture en flux (tampon 1 Mio + tour 256 Kio + tampons de lecture, ~1,6 Mio) reste très loin
     // sous un MP3 entier (#416, la marge était mince avec 2 Mo).
     const N: usize = 12;
