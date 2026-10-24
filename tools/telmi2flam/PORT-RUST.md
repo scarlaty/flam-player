@@ -121,7 +121,7 @@ figurer, même avec `OR`.
 | JSON | `serde_json` (déjà), fonction `preserve_order` | MIT OR Apache-2.0 | Fait entrer `indexmap` (Apache-2.0 OR MIT). |
 | Flottants façon Python | `ryu` (ou formatage maison) | Apache-2.0 OR BSL-1.0 | Les deux termes sont autorisés. |
 | Rééchantillonnage | **port de l'algorithme de Pillow** (pas de crate) | Pillow : MIT-CMU (HPND) | Ce n'est pas une dépendance Cargo : `ALLOWED_LICENSES` ne change pas. En-tête de licence et mention dans les notices (D3, §4.2). |
-| Autres formats d'image (JPEG…) | `zune-jpeg` ou `jpeg-decoder` si nécessaire ; `gif` pour le GIF | MIT OR Apache-2.0 (OR Zlib) | D4 : délégation à Python (`unsupported_format`, code 7) pendant la transition. Le support devient obligatoire avant #138 pour chaque format que la campagne trouve : en cours (#459, §4.4 ; PNG atypiques faits). |
+| Autres formats d'image (JPEG…) | `zune-jpeg` ou `jpeg-decoder` si nécessaire ; GIF : port de Pillow (`gif.rs`, HPND, voir la ligne du rééchantillonnage) | MIT OR Apache-2.0 (OR Zlib) | D4 : délégation à Python (`unsupported_format`, code 7) pendant la transition. Le support devient obligatoire avant #138 pour chaque format que la campagne trouve : en cours (#459, §4.4 ; PNG atypiques et GIF faits, le GIF par un port de `GifDecode.c` sans crate). |
 | Méthodes ZIP bzip2/LZMA/Zstandard | bzip2 et LZMA écrits à la main (`unbzip2.rs`, `unlzma.rs`) ; Zstandard : `ruzstd` `=0.9.1` (MIT) et `twox-hash` `=2.1.5` (MIT) | MIT (dépendances) | **Fait (#458)**, voir §3.1. `bzip2-sys` et `libbz2-rs-sys` : licence bzip2-1.0.6, non autorisée ; `bzip2-rs` (MIT/Apache-2.0) échoue sur un bloc incompressible ; `lzma-rs` (MIT) exige le marqueur de fin. |
 
 Pas de `image` (crate complète) : trop de dépendances, et ses conversions (16 → 8 bits par
@@ -172,8 +172,8 @@ Invariants (repris de Python, à tester côté Rust) :
    Object plus stricte que l'existant. Le Rust réduit sa consommation sans refuser : MP3 écrits
    en flux dans le `.part` (par tours de 256 Kio, #402) au lieu d'être tous gardés en mémoire, copies d'images libérées au
    plus tôt.
-6. **Délégation des cas non gérés** (décision D4) : face à une image dans un autre format que PNG
-   (les PNG atypiques, APNG compris, sont décodés depuis #459, §4.4), le Rust ne convertit pas
+6. **Délégation des cas non gérés** (décision D4) : face à une image dans un autre format que PNG ou GIF
+   (les PNG atypiques, APNG compris, et le GIF sont décodés depuis #459, §4.4), le Rust ne convertit pas
    (les entrées ZIP bzip2, LZMA et Zstandard sont lues depuis #458). Il nettoie son `.part`, émet
    l'événement `error` avec le code `unsupported_format` et sort avec le **code 7**, distinct de
    `internal_error`. Tant que le repli Python existe, le launcher rejoue alors la conversion
@@ -187,7 +187,7 @@ Invariants (repris de Python, à tester côté Rust) :
 | Archive corrompue (CRC, en-tête, troncature) | lecture d'une entrée | rien | `archive_unreadable`, code 3. Le CRC doit être vérifié : lire chaque entrée jusqu'au bout. |
 | Entrée chiffrée, méthode que Python ne lit pas non plus (deflate64…) | lecture | rien | `archive_unreadable`, code 3 (Python : 3 pour une méthode inconnue, mais `internal_error` 6 pour une entrée chiffrée ; divergence volontaire, car Python échoue aussi) |
 | Entrée bzip2, LZMA ou Zstandard | lecture | rien | Lue comme `zipfile` (#458, §3.1). Flux invalide : Python lève `OSError`, `LZMAError` ou `ZstdError` (`internal_error`, code 6), le Rust rend `archive_unreadable` (code 3) : divergence volontaire, Python échoue aussi. Flux tronqué, CRC faux, bombe : voir §3.1. |
-| Image dans un autre format que PNG (JPEG, GIF…) | image | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6), et non `image_unreadable` : Pillow la lirait. Prise en charge format par format (#459, §4.4) |
+| Image dans un autre format que PNG ou GIF (JPEG…) | image | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6), et non `image_unreadable` : Pillow la lirait. Prise en charge format par format (#459, §4.4) |
 | PNG atypique (APNG, `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue) | image | — | décodé comme Pillow, erreurs comprises (#459, §4.4) ; plus de délégation |
 | Noms dupliqués dans l'archive | indexation | rien | même entrée retenue que Python (`ZipFile.getinfo` : la **dernière**). `zip` 4.6.1 retient aussi la dernière (`IndexMap::insert`), mais ne liste le nom qu'une fois : `find_root` et l'index replié (`setdefault`, premier nom rencontré) doivent reproduire `namelist()`. Test dédié. |
 | Pas une histoire Telmi | `find_root` | rien | `not_telmi`, code 3 |
@@ -414,7 +414,7 @@ aucun appel dans `telmi2flam.py`), le Rust ne l'applique pas non plus. Ni `draft
 | --- | --- | --- | --- | --- |
 | PNG atypique (PR 1, fait) | modes PNG ; APNG : première image (zone du `fcTL`) | celle des PNG (§4.2, `_trns_mask`) | `png.rs` (fait main) | octet à octet, erreurs comprises |
 | JPEG (PR 2) | `L` (1 composante), `RGB` (3 : YCbCr→RGB par libjpeg-turbo, ou RGB brut selon JFIF/Adobe), `CMYK` (4, rawmode `CMYK;I` : polarité Adobe toujours supposée ; YCCK converti par libjpeg) ; refus (illisible) si précision ≠ 8 bits ou 2/5+ composantes | `L`→gris opaque, `CMYK`→`cmyk2rgb` de Pillow (`255 - k` modulé, entier) | `zune-jpeg` (MIT OR Apache-2.0 OR Zlib) ou `jpeg-decoder` (MIT OR Apache-2.0), licences vérifiées dans `Cargo.lock` | identité visée (libjpeg-turbo : IDCT `JDCT_ISLOW`, suréchantillonnage « fancy », tables YCbCr de `jdcolor.c`) ; écart d'IDCT ou de suréchantillonnage mesuré sur le corpus, borné (par ex. ±1 par composante) et inscrit dans `ALLOWED_DEVIATIONS` |
-| GIF (PR 3) | première image en `P` (palette locale ou globale ; `L` sans palette), `info["transparency"]` = index du GCE ; image plus petite que l'écran : fond rempli de l'index transparent (sinon 0) | palette → RGBA, index transparent à alpha 0 | crate `gif` (MIT OR Apache-2.0, avec `weezl`), sans sa conversion RGBA | octet à octet (pas d'arithmétique flottante) |
+| GIF (PR 3, fait) | première image en `P` (palette locale ou globale ; `L` sans palette), `info["transparency"]` = index du GCE ; image plus petite que l'écran : fond rempli de l'index transparent (sinon 0) | palette → RGBA, index transparent à alpha 0 | `gif.rs` (port de `GifImagePlugin.py` et `GifDecode.c`, code dérivé de Pillow, HPND : notices) ; pas de crate `gif` | octet à octet (pas d'arithmétique flottante) |
 | BMP, WebP… | à évaluer : seulement si une histoire réelle en contient (campagne #135) | — | — | issue de suivi sinon |
 
 **Invariants** (en plus de §3) :

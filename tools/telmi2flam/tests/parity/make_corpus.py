@@ -288,6 +288,22 @@ def corpus_cases():
     add("img_corrupt_cover", lambda: zip_bytes(
         [(n, b"garbage" if n == "title.png" else d) for n, d in S()]))
 
+    # GIF decode par le Rust depuis #459 : animation ecrite par Pillow (premiere image),
+    # transparence, cadre plus petit que l'ecran
+    def gif():
+        a = Image.new("P", (64, 48), 2)
+        a.putpalette(bytes((i * 37) % 256 for i in range(48)))
+        a.paste(5, (8, 8, 40, 30))
+        b2 = a.copy()
+        b2.paste(9, (20, 20, 30, 30))
+        b = io.BytesIO()
+        a.save(b, "GIF", save_all=True, append_images=[b2], transparency=2, duration=80,
+               loop=0)
+        data = b.getvalue()
+        return zip_bytes([(n, data if n in ("images/s0.png", "title.png") else d)
+                          for n, d in S()])
+    add("img_gif", gif)
+
     # PNG atypiques decodes par le Rust depuis #459 : APNG ecrit par Pillow (premiere image),
     # tRNS apres l'IDAT, IHDR repete
     def apng():

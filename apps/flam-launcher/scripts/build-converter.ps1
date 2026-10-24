@@ -92,7 +92,7 @@ reprend le texte de licence du code dérivé de Pillow.
 
 | Composant | Version | Licence | Texte |
 | --- | --- | --- | --- |
-| ``telmi2flam.exe`` (port Rust, crate ``crates/telmi2flam`` ; moteur Lua ``engine/`` et runtime du projet ``runtime/`` (bibliothèque Lua ``script/``, icônes LIF ``img/``) inclus dans le binaire) | dépôt flam-player | GPL-3.0-or-later, et HPND pour le code dérivé de Pillow (``resample.rs``, ``blur.rs``) | ``licenses/flam-launcher-LICENSE.txt`` et ``THIRD-PARTY-NOTICES.txt`` (crates Rust et texte de Pillow) à la racine de l'installation |
+| ``telmi2flam.exe`` (port Rust, crate ``crates/telmi2flam`` ; moteur Lua ``engine/`` et runtime du projet ``runtime/`` (bibliothèque Lua ``script/``, icônes LIF ``img/``) inclus dans le binaire) | dépôt flam-player | GPL-3.0-or-later, et HPND pour le code dérivé de Pillow (``resample.rs``, ``blur.rs``, ``gif.rs``) | ``licenses/flam-launcher-LICENSE.txt`` et ``THIRD-PARTY-NOTICES.txt`` (crates Rust et texte de Pillow) à la racine de l'installation |
 | Runtime C Microsoft (CRT statique) compilé dans ``telmi2flam.exe`` ; ``vcruntime140.dll`` livrée à côté de ``flam-player.exe`` | Visual Studio | Microsoft Visual C++ : bibliothèques redistribuables selon les conditions de licence de Microsoft | |
 
 Aucun Python ni aucune bibliothèque Pillow n'est livré : seul un algorithme de Pillow 12.3.0 est
