@@ -82,7 +82,8 @@ jobs:
         run: |
           $tree = cargo tree -p telmi2flam -e features -i zune-jpeg --locked | Out-String
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          if ($tree -match 'zune-jpeg feature "(x86|neon|default)"') {
+          if ($tree -notmatch 'zune-jpeg feature "std"' -or
+              $tree -match 'zune-jpeg feature "(x86|neon|default)"') {
             Write-Output $tree
             throw "zune-jpeg compilé avec ses fonctions SIMD dans telmi2flam"
           }

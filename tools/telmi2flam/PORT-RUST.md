@@ -508,7 +508,8 @@ dès la signature `FF D8 FF` (`_accept` de `JpegImagePlugin`).
   taille du fichier ; les tampons internes de `zune-jpeg` (coefficients d'une image
   progressive, sortie brute) sont alloués d'après l'en-tête, comme ceux de libjpeg et de
   Pillow, dans la limite de la garde anti-bombe ; un manque de mémoire dans `zune-jpeg` arrête
-  le processus (§3, « Mémoire épuisée »).
+  le processus (§3, « Mémoire épuisée »). Balayage unique sans `EOI` : jusqu'à trois décodages,
+  deux sorties brutes en mémoire à la fois (plus de 500 Mio près de la garde).
 - Annulation : avant l'analyse, après le parcours du flux, avant et après chaque décodage de
   `zune-jpeg` (un seul en général, trois pour un balayage unique sans `EOI`), puis à chaque
   ligne de la conversion ; test d'injection à chaque appel du jeton
