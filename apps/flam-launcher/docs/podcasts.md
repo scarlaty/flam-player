@@ -1234,6 +1234,9 @@ l'image d'une catégorie parmi les pochettes des épisodes qu'elle contient. **�
   erreur et se réécrit à l'identique. La composition ne contient aucune image : le choix est une
   référence, comme la couverture (N6 b).
 - L'épisode choisi doit figurer dans la catégorie, **à toute profondeur** (un sous-menu compte).
+- Limite connue : un launcher d'avant #499 qui relirait puis réécrirait `pack-compositions.json`
+  perdrait le champ `image` des catégories (les champs inconnus ne sont conservés qu'au premier
+  niveau d'une composition).
 - Deux compositions qui ne diffèrent que par ce choix sont différentes (§ 14.1) : « dériver » un
   pack en changeant seulement l'image crée une nouvelle entrée.
 
@@ -1243,7 +1246,7 @@ l'image d'une catégorie parmi les pochettes des épisodes qu'elle contient. **�
   téléchargée et convertie en PNG 640 × 480 pour l'épisode lui-même (D13) ; l'archive ne
   contient aucun fichier de plus, la scène de la catégorie cite le fichier de cet épisode
   (`MenuEntry::Category::image`, `archive.rs`).
-- Repli silencieux sur l'automatique si l'épisode choisi n'est pas dans la catégorie, a été
+- Repli sur l'automatique si l'épisode choisi n'est pas dans la catégorie, a été
   retiré du pack (échec de téléchargement ou de conversion, P7) ou n'a pas de pochette lisible.
   La création ne s'arrête pas : un avertissement « Image de la catégorie « X » : l'épisode choisi
   n'est plus disponible, image automatique utilisée. » est ajouté aux `warnings` du pack
@@ -1253,7 +1256,8 @@ l'image d'une catégorie parmi les pochettes des épisodes qu'elle contient. **�
 
 ### 15.3 Interface
 
-- Éditeur, sous chaque catégorie qui contient au moins **deux** épisodes avec pochette : un groupe
+- Éditeur, sous chaque catégorie qui contient au moins **deux** épisodes avec pochette (ou qui a déjà un choix, pour
+  pouvoir le défaire) : un groupe
   de boutons radio natifs « Image de la catégorie « X » » (« Automatique » puis un choix par
   épisode, libellé = titre). Une tabulation, flèches pour changer de choix, annonce vocale du
   choix. Les pochettes elles-mêmes ne sont **pas** aperçues : le front n'a aucune image des

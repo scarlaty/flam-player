@@ -32,9 +32,10 @@ export function CategoryImageChoice({
   onChange,
 }: CategoryImageChoiceProps) {
   const text = t.podcasts.pack.categoryImage;
-  if (candidates.length < 2) return null;
   const index =
     value === null ? -1 : candidates.findIndex((c) => sameEpisode(c.ref, value));
+  // Rien à choisir : un seul candidat, sans choix à défaire.
+  if (candidates.length < 2 && value === null) return null;
   const options: RadioOption<string>[] = [
     { value: AUTO, label: text.auto, hint: text.autoHint },
     ...candidates.map((c, i) => ({ value: `e${i}`, label: c.title })),

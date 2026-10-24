@@ -1307,7 +1307,7 @@ pub(super) fn build_menu(
                             warnings.push(format!(
                                 "Image de la catégorie « {} » : l'épisode choisi n'est plus \
                                  disponible, image automatique utilisée.",
-                                archive::label(name, "?")
+                                archive::label(name, "sans nom")
                             ));
                             None
                         }

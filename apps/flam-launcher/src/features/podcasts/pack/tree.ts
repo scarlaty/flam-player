@@ -71,12 +71,15 @@ export function append(root: Menu, parent: Path, node: PackNode): PackNode[] {
   return updateMenu(root, parent, (menu) => [...menu, node]);
 }
 
-export function removeAt(root: Menu, path: Path): PackNode[] {
-  return pruneImages(
-    updateMenu(root, path.slice(0, -1), (menu) =>
-      menu.filter((_, i) => i !== path[path.length - 1]),
-    ),
+/** Retrait brut : n'efface aucune image choisie (utilisé par `move`, qui réinsère le nœud). */
+function removeAtRaw(root: Menu, path: Path): PackNode[] {
+  return updateMenu(root, path.slice(0, -1), (menu) =>
+    menu.filter((_, i) => i !== path[path.length - 1]),
   );
+}
+
+export function removeAt(root: Menu, path: Path): PackNode[] {
+  return pruneImages(removeAtRaw(root, path));
 }
 
 /**
@@ -107,11 +110,12 @@ export function setCategoryImage(
   return updateMenu(root, path.slice(0, -1), (menu) =>
     menu.map((node, i) => {
       if (i !== path[path.length - 1] || node.kind !== "category") return node;
-      const base = { kind: node.kind, name: node.name, entries: node.entries };
+      const { image: _previous, ...rest } = node;
+      void _previous;
       return image === null
-        ? base
+        ? rest
         : {
-            ...base,
+            ...rest,
             image: { source_id: image.source_id, episode_id: image.episode_id },
           };
     }),
@@ -201,7 +205,7 @@ export function move(
   const adjusted = parent.map((v, i) =>
     i === fromParent.length && isPrefix(fromParent, parent) && v > fromIndex ? v - 1 : v,
   );
-  const without = removeAt(root, from);
+  const without = removeAtRaw(root, from);
   const sameMenu = samePath(fromParent, parent);
   const insertAt =
     before === undefined
