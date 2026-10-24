@@ -617,6 +617,27 @@ fn store_one(dir: &Path, s: &Store, op: &Op<'_>) -> io::Result<u64> {
     result
 }
 
+/// Octets de la pochette d'origine en cache pour `key`, lecture seule (aucune date d'usage
+/// renouvelée, aucune entrée supprimée) : `None` si l'entrée, la pochette ou son empreinte
+/// manque, si elle dépasse `limit` octets ou si elle est altérée (taille et SHA-256).
+fn read_cached_image(dir: &Path, key: &EntryKey, limit: u64) -> Option<Vec<u8>> {
+    let id = key.episode_id.as_str();
+    if !valid_id(id) {
+        return None;
+    }
+    let stored = read_meta(dir, id)?.image?;
+    if key.image_fingerprint.as_deref() != Some(stored.fingerprint.as_str())
+        || stored.file.bytes > limit
+    {
+        return None;
+    }
+    let path = file(dir, id, IMG_EXT);
+    if !intact(&path, &stored.file, &Cancel::default()) {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
 /// Entrée relevée par [`scan`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Scanned {
@@ -882,6 +903,18 @@ impl CacheAccess {
             hits.extend(found);
         }
         hits
+    }
+
+    /// Pochette d'origine en cache pour `key` (aperçu, #504), sans la placer ni renouveler
+    /// l'entrée ; `None` si elle n'y est pas, est altérée ou dépasse `limit` octets.
+    pub async fn cached_image(&self, key: &EntryKey, limit: u64) -> Option<Vec<u8>> {
+        let generation = *self.generations.get(&key.source_id)?;
+        let key = key.clone();
+        self.under_lock(&key.source_id.clone(), generation, Mode::Read, move |dir| {
+            read_cached_image(dir, &key, limit)
+        })
+        .await
+        .flatten()
     }
 
     /// Met en cache les épisodes convertis ; rend le nombre d'entrées écrites.

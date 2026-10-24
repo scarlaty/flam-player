@@ -1,10 +1,13 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { EpisodeRef, PackNode } from "../../../api/pack";
 import { expectComponentAccessible } from "../../../test/axe";
 import { CategoryImageChoice } from "./CategoryImageChoice";
 import { PackTree } from "./PackTree";
 
+/** PNG 1 × 1 transparent. */
+const PIXEL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 const ref = (id: string): EpisodeRef => ({ source_id: "s", episode_id: id });
 const candidates = [
   { ref: ref("a"), title: "Premier" },
@@ -103,9 +106,99 @@ describe("CategoryImageChoice", () => {
         candidates={candidates}
         value={ref("a")}
         onChange={vi.fn()}
+        thumbnailOf={() => Promise.resolve(PIXEL)}
       />,
     );
+    await screen.findAllByRole("img");
     await expectComponentAccessible(container);
+  });
+
+  it("distingue deux épisodes de même titre par leur rang", () => {
+    render(
+      <CategoryImageChoice
+        categoryLabel="Saison"
+        candidates={[
+          { ref: ref("a"), title: "Conte" },
+          { ref: ref("b"), title: "Autre" },
+          { ref: ref("c"), title: "Conte" },
+        ]}
+        value={null}
+        onChange={vi.fn()}
+        thumbnailOf={() => Promise.resolve(null)}
+      />,
+    );
+    expect(screen.getByRole("radio", { name: "Conte (n° 1)" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Conte (n° 3)" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Autre" })).toBeInTheDocument();
+  });
+
+  describe("aperçus des pochettes", () => {
+    it("affiche la vignette de chaque épisode, texte alternatif = titre", async () => {
+      const load = vi.fn((r: EpisodeRef) =>
+        Promise.resolve(r.episode_id === "b" ? null : PIXEL),
+      );
+      render(
+        <CategoryImageChoice
+          categoryLabel="Saison"
+          candidates={candidates}
+          value={null}
+          onChange={vi.fn()}
+          thumbnailOf={load}
+        />,
+      );
+      const premier = await screen.findByRole("img", { name: "Premier" });
+      expect(premier).toHaveAttribute("src", PIXEL);
+      expect(premier).toHaveAttribute("loading", "lazy");
+      expect(await screen.findByRole("img", { name: "Troisième" })).toBeInTheDocument();
+      // Sans aperçu : le libellé seul, le choix reste possible.
+      expect(screen.queryByRole("img", { name: "Deuxième" })).toBeNull();
+      expect(screen.getByRole("radio", { name: /Deuxième/ })).toBeInTheDocument();
+      expect(load).toHaveBeenCalledTimes(3);
+    });
+
+    it("replie sur le libellé seul quand la lecture de l'aperçu échoue", async () => {
+      const load = vi.fn(() => Promise.reject(new Error("boum")));
+      render(
+        <CategoryImageChoice
+          categoryLabel="Saison"
+          candidates={candidates}
+          value={null}
+          onChange={vi.fn()}
+          thumbnailOf={load}
+        />,
+      );
+      await waitFor(() => expect(load).toHaveBeenCalledTimes(3));
+      await waitFor(() =>
+        expect(document.querySelectorAll(".fl-pack__thumb")).toHaveLength(0),
+      );
+      expect(screen.queryByRole("img")).toBeNull();
+      expect(screen.getAllByRole("radio")).toHaveLength(4);
+    });
+
+    it("garde les boutons radio natifs et le clavier avec les vignettes", async () => {
+      const onChange = vi.fn();
+      render(
+        <CategoryImageChoice
+          categoryLabel="Saison"
+          candidates={candidates}
+          value={null}
+          onChange={onChange}
+          thumbnailOf={() => Promise.resolve(PIXEL)}
+        />,
+      );
+      await screen.findAllByRole("img");
+      const radios = screen.getAllByRole<HTMLInputElement>("radio");
+      expect(radios.every((r) => r.type === "radio")).toBe(true);
+      // Une seule tabulation pour le groupe, focus possible sur chaque radio.
+      expect(radios.every((r) => r.tabIndex === 0)).toBe(true);
+      radios[1]!.focus();
+      expect(radios[1]).toHaveFocus();
+      fireEvent.click(radios[1]!);
+      expect(onChange).toHaveBeenLastCalledWith(ref("a"));
+      // Cliquer sur la vignette (dans le libellé) choisit l'épisode.
+      fireEvent.click(screen.getByRole("img", { name: "Troisième" }));
+      expect(onChange).toHaveBeenLastCalledWith(ref("c"));
+    });
   });
 });
 
