@@ -454,6 +454,11 @@ fn lookup_one(dir: &Path, w: &Wanted, op: &Op<'_>) -> Option<Hit> {
         return None;
     }
     let mut image = None;
+    if meta.image.is_none() && !op.cancel.is_set() {
+        // Pochette seule restée après un arrêt brutal (renommée, métadonnées jamais écrites) :
+        // jamais servie, retirée pour ne plus être comptée dans l'entrée (#489).
+        let _ = remove_if_exists(&file(dir, id, IMG_EXT));
+    }
     if let Some(stored) = &meta.image {
         let img = file(dir, id, IMG_EXT);
         if w.key.image_fingerprint.as_deref() != Some(stored.fingerprint.as_str())

@@ -1,3 +1,5 @@
+import { ownText } from "./lookup";
+
 const storyCount = (n: number) => (n <= 1 ? `${n} histoire` : `${n} histoires`);
 
 /**
@@ -21,18 +23,21 @@ export const fr = {
   },
   errors: {
     title: (kind: string) =>
-      ({
-        validation: "Valeur refusée",
-        not_found: "Élément introuvable",
-        io: "Erreur d'accès aux fichiers",
-        config_version: "Configuration trop récente",
-        network: "Réseau indisponible",
-        catalog_invalid: "Catalogue illisible",
-        folder_unavailable: "Dossier introuvable",
-        tts_no_voice: "Aucune voix française",
-        tts_unavailable: "Synthèse vocale indisponible",
-        tts_failed: "Titres non lus à voix haute",
-      })[kind] ?? "Une erreur est survenue",
+      ownText(
+        {
+          validation: "Valeur refusée",
+          not_found: "Élément introuvable",
+          io: "Erreur d'accès aux fichiers",
+          config_version: "Configuration trop récente",
+          network: "Réseau indisponible",
+          catalog_invalid: "Catalogue illisible",
+          folder_unavailable: "Dossier introuvable",
+          tts_no_voice: "Aucune voix française",
+          tts_unavailable: "Synthèse vocale indisponible",
+          tts_failed: "Titres non lus à voix haute",
+        },
+        kind,
+      ) ?? "Une erreur est survenue",
     loadFailed: "Impossible de charger les données.",
     retry: "Réessayer",
     /**
@@ -43,6 +48,8 @@ export const fr = {
       unsupported_format:
         "Cette histoire utilise un format que le launcher ne sait pas encore convertir (image non PNG ou archive compressée en bzip2/LZMA).",
     } as Record<string, string>,
+    /** Détail du backend, sous le texte traduit d'un échec `tts_failed` (panneau des tâches). */
+    detail: (message: string) => `Détail : ${message}`,
     /**
      * Message montré pour une tâche (ou une création de pack) en échec, selon son `kind`, à la
      * place du texte du backend. `kind` absent de la table : le message du backend.
@@ -70,6 +77,9 @@ export const fr = {
     voiceOfComposition: (name: string) => `Voix : ${name} (celle de la composition).`,
     voiceGone: (name: string) =>
       `La voix choisie dans les Paramètres n'est plus installée : ${name} sera utilisée.`,
+    preferredLoading: "Lecture de la voix choisie dans les Paramètres…",
+    preferredFailed: (name: string) =>
+      `La voix choisie dans les Paramètres n'a pas pu être lue : ${name} sera utilisée.`,
     listen: "Écouter",
     stop: "Arrêter",
     listenTitle: "Écouter le titre du pack",
@@ -93,10 +103,10 @@ export const fr = {
       trySample: "Bonjour ! Je lirai les titres de vos histoires.",
       failed: "La voix n'a pas pu être enregistrée.",
     },
-    /** Pack terminé : avertissements des titres lus, dans le suivi de la tâche. */
+    /** Pack terminé : avertissements des titres lus (voix de repli, titres muets…), dans le suivi de la tâche. */
     warnings: (shown: string[], more: number) =>
       more > 0
-        ? `${shown.join(" ")} Et ${more} autre${more > 1 ? "s" : ""} titre${more > 1 ? "s" : ""} resté${more > 1 ? "s" : ""} muet${more > 1 ? "s" : ""}.`
+        ? `${shown.join(" ")} Et ${more} autre${more > 1 ? "s" : ""} avertissement${more > 1 ? "s" : ""}.`
         : shown.join(" "),
   },
   recovery: {
@@ -505,6 +515,10 @@ export const fr = {
       title: "Cache",
       usage: (size: string, path: string) => `${size} occupés dans ${path}`,
       empty: (path: string) => `Le cache est vide (${path}).`,
+      /** Part du cache occupée par les MP3 de podcasts (déjà comprise dans la taille ci-dessus). */
+      mp3: (size: string) =>
+        `Dont MP3 de podcasts : ${size}, gardés pour refaire un pack sans tout retélécharger.`,
+      mp3Empty: "Aucun MP3 de podcast n'est gardé en cache.",
       clear: "Vider le cache",
       confirmTitle: "Vider le cache ?",
       confirmDescription: (dirs: string, path: string, size: string) =>

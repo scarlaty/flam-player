@@ -14,12 +14,17 @@ let voices: VoiceList | Error | null;
 let preferred: string | null;
 let preview: { played: boolean; duration_ms: number } | { kind: string; message: string };
 let calls: { cmd: string; args: Record<string, any> }[];
+// Réponse de `settings_get` : différée (porte) ou en échec.
+let settingsGate: Promise<void> | null;
+let settingsFails: boolean;
 
 beforeEach(() => {
   voices = { voices: [HORTENSE, PAUL], default_id: HORTENSE.id };
   preferred = null;
   preview = { played: true, duration_ms: 60_000 };
   calls = [];
+  settingsGate = null;
+  settingsFails = false;
   mockIPC((cmd, args) => {
     calls.push({ cmd, args: (args ?? {}) as Record<string, any> });
     switch (cmd) {
@@ -28,6 +33,10 @@ beforeEach(() => {
         if (voices instanceof Error) throw { kind: "io", message: voices.message };
         return voices;
       case "settings_get":
+        if (settingsFails) throw { kind: "io", message: "illisible" };
+        if (settingsGate) {
+          return settingsGate.then(() => ({ settings: { tts_voice: preferred } }));
+        }
         return { settings: { tts_voice: preferred } };
       case "tts_preview":
         if ("kind" in preview) throw preview;
@@ -196,9 +205,99 @@ it("code d'erreur inconnu ou hérité : message du backend", async () => {
 it("sans titre de pack, l'aperçu est désactivé avec une explication", async () => {
   render(<Harness previewText="   " />);
   const button = await screen.findByRole("button", { name: "Écouter le titre du pack" });
-  expect(button).toBeDisabled();
+  // aria-disabled : le bouton reste focalisable, et un clic ne lance rien.
+  expect(button).toHaveAttribute("aria-disabled", "true");
+  expect(button).toBeEnabled();
   expect(button).toHaveAccessibleDescription(
     "Saisissez un titre de pack pour l'écouter.",
+  );
+  fireEvent.click(button);
+  expect(callsOf("tts_preview")).toHaveLength(0);
+});
+
+it("titre vidé pendant l'aperçu : le bouton garde le focus", async () => {
+  function Emptying() {
+    const [title, setTitle] = useState("Mon pack");
+    return (
+      <>
+        <button onClick={() => setTitle("")}>vider</button>
+        <TitlesAudioField
+          checked={false}
+          onChange={() => {}}
+          voice={null}
+          previewText={title}
+        />
+      </>
+    );
+  }
+  render(<Emptying />);
+  const listen = await screen.findByRole("button", { name: "Écouter le titre du pack" });
+  fireEvent.click(listen);
+  const stop = await screen.findByRole("button", {
+    name: "Arrêter la lecture du titre du pack",
+  });
+  stop.focus();
+  expect(stop).toHaveFocus();
+  fireEvent.click(screen.getByRole("button", { name: "vider" }));
+  const back = await screen.findByRole("button", { name: "Écouter le titre du pack" });
+  expect(back).toHaveAttribute("aria-disabled", "true");
+  // Le focus n'est pas tombé sur le corps de la page.
+  expect(back).toHaveFocus();
+});
+
+it("voix des Paramètres pas encore lue : l'aperçu attend au lieu de jouer la voix par défaut", async () => {
+  preferred = PAUL.id;
+  let release = () => {};
+  settingsGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  render(<Harness />);
+  expect(
+    await screen.findByText("Lecture de la voix choisie dans les Paramètres…"),
+  ).toBeInTheDocument();
+  const button = screen.getByRole("button", { name: "Écouter le titre du pack" });
+  expect(button).toHaveAttribute("aria-disabled", "true");
+  // L'attente est expliquée au clavier et aux lecteurs d'écran.
+  expect(button).toHaveAccessibleDescription(
+    "Lecture de la voix choisie dans les Paramètres…",
+  );
+  fireEvent.click(button);
+  expect(callsOf("tts_preview")).toHaveLength(0);
+
+  release();
+  await screen.findByText(/Voix : Microsoft Paul/);
+  expect(button).not.toHaveAttribute("aria-disabled");
+  fireEvent.click(button);
+  await waitFor(() =>
+    expect(callsOf("tts_preview")[0]?.args).toEqual({ text: "Mon pack", voice: PAUL.id }),
+  );
+});
+
+it("voix de la composition : l'aperçu n'attend pas les Paramètres", async () => {
+  settingsGate = new Promise<void>(() => {});
+  render(<Harness voice={PAUL.id} />);
+  await screen.findByText("Voix : Microsoft Paul (celle de la composition).");
+  fireEvent.click(screen.getByRole("button", { name: "Écouter le titre du pack" }));
+  await waitFor(() =>
+    expect(callsOf("tts_preview")[0]?.args).toEqual({ text: "Mon pack", voice: PAUL.id }),
+  );
+});
+
+it("lecture des Paramètres en échec : repli sur la voix par défaut, signalé", async () => {
+  preferred = PAUL.id;
+  settingsFails = true;
+  render(<Harness />);
+  expect(
+    await screen.findByText(
+      "La voix choisie dans les Paramètres n'a pas pu être lue : Microsoft Hortense sera utilisée.",
+    ),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Écouter le titre du pack" }));
+  await waitFor(() =>
+    expect(callsOf("tts_preview")[0]?.args).toEqual({
+      text: "Mon pack",
+      voice: HORTENSE.id,
+    }),
   );
 });
 
