@@ -7,7 +7,9 @@ Etapes :
   1. genere un paquet TELMI (generateurs de tools/telmi2flam/tests) :
      demarrage -> noeud de passage sans audio (F01) -> scene audio -> choix a
      2 options (carrousel) -> option 2 -> scene -> fin d'histoire (F08) ;
-  2. le convertit (telmi2flam.convert) en .plain.pk + dossier .plain ;
+  2. le convertit avec le binaire telmi2flam (--plain : .plain.pk + dossier .plain ;
+     binaire de tools/telmi2flam/converter_bin.py : --converter, FLAM_TELMI2FLAM ou
+     target/release) ;
   3. A (fumee) : flam-player sur le .plain.pk (extraction pk_reader, title-card
      sans title.mp3 -> silent.mp3 -> menu Start), quelques secondes ;
   4. B (parcours) : flam-player sur une copie du .plain dont main.lua est
@@ -18,7 +20,7 @@ Etapes :
 Pilotes SDL "dummy" (video et audio) : ni fenetre ni carte son.
 Echec si : crash/sortie anticipee, erreur Lua ou assertion sur stderr,
 parcours non termine dans le delai.
-Code de sortie : 0 OK, 1 echec, 77 prerequis absents (Pillow, flam-player).
+Code de sortie : 0 OK, 1 echec, 77 prerequis absents (binaire telmi2flam, flam-player).
 """
 import argparse
 import json
@@ -38,12 +40,8 @@ sys.dont_write_bytecode = True
 
 SKIP = 77
 
-try:
-    import test_telmi2flam as G  # generateurs png() / mp3_frames()
-    import telmi2flam as T
-except ImportError as e:  # Pillow absent
-    print("[SKIP] e2e : import impossible (%s)" % e)
-    sys.exit(SKIP)
+import campaign_fixtures as G  # noqa: E402  (generateurs png() / mp3_frames())
+import converter_bin  # noqa: E402
 
 # Lancement sans fenetre et motifs d'erreur sur stderr : partages avec
 # l'explorateur (tools/telmi2flam/explore.py)
@@ -174,10 +172,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", required=True, help="dossier contenant flam-player.exe")
     ap.add_argument("--keep", action="store_true", help="garder le dossier temporaire")
+    ap.add_argument("--converter", help="binaire telmi2flam (defaut : voir converter_bin.py)")
     a = ap.parse_args()
     exe = os.path.join(a.build, "flam-player.exe")
     if not os.path.isfile(exe):
         print("[SKIP] e2e : %s introuvable" % exe)
+        return SKIP
+    try:
+        converter = converter_bin.find_converter(a.converter)
+    except converter_bin.ConverterNotFound as e:
+        print("[SKIP] e2e : %s" % e)
         return SKIP
 
     tmp = tempfile.mkdtemp(prefix="flam_e2e_")
@@ -191,7 +195,9 @@ def main():
         conv = os.path.join(tmp, "conv")
         os.makedirs(conv)
         pk = os.path.join(conv, "E2E.plain.pk")
-        T.convert(zpath, pk, emit_plain=True)
+        warnings, error = converter_bin.convert(converter, zpath, pk, ["--plain"])
+        if error:
+            raise RuntimeError("conversion : %s" % error)
         plain = pk[:-3]
         print("[e2e] converti : %s" % pk)
 

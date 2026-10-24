@@ -1,11 +1,11 @@
 //! Analyse des arguments, à la façon d'`argparse` de Python 3.14 (#133) : mêmes formes
 //! acceptées (`--opt=valeur`, `-ovaleur`, `-o=valeur`, préfixes d'options, `--`, valeurs
 //! qui ressemblent à un nombre négatif), mêmes messages et même ordre des erreurs que
-//! `telmi2flam.py`. Les vecteurs de `tests/data/cli_cases.json` (générés par l'oracle Python,
-//! `gen_cli_cases.py`) sont rejoués par `tests/cli_parity.rs`.
+//! l'ancien convertisseur Python. Les vecteurs de `tests/data/cli_cases.json` (générés par
+//! l'oracle Python, `gen_cli_cases.py`) sont rejoués par `tests/cli_parity.rs`.
 //!
 //! Écarts assumés :
-//! - le nom du programme est `telmi2flam` (et non `telmi2flam.py`) ;
+//! - le nom du programme est `telmi2flam` (l'ancien script Python portait l'extension `.py`) ;
 //! - `--cancel-on-stdin-eof` (option du port, voir `cancel`) est acceptée mais absente de
 //!   l'usage et de l'aide ; elle participe aux préfixes (`--c` la désigne) ;
 //! - l'aide est mise en forme pour 80 colonnes (`COLUMNS` est ignoré) ;

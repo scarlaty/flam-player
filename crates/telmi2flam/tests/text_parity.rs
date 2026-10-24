@@ -1,5 +1,5 @@
 //! Parité avec Python de `json`, `text` et `lua` : la table `tests/data/text_cases.json` est
-//! produite par `tests/data/gen_text_cases.py` à partir de `tools/telmi2flam/telmi2flam.py`.
+//! produite par `gen_text_cases.py` (supprimé) à partir de l'ancien convertisseur Python.
 
 use telmi2flam::json::{expect, load_json, Kind, Value};
 use telmi2flam::lua::{lua_repr, py_float_repr, Lua};
@@ -119,11 +119,10 @@ fn table_produite_par_le_python_de_l_oracle() {
     assert_eq!(
         str_of(field(&t, "unidata_version")),
         UNIDATA_VERSION,
-        "table generee avec un Python d'une autre version d'Unicode : relancer \
-         gen_text_cases.py avec le Python de ORACLE-VERSIONS.txt"
+        "table figée et crate unicode-normalization de versions d'Unicode différentes \
+         (références figées : PORT-RUST.md §4.5)"
     );
-    // Même Python que l'oracle épinglé : une montée de version dans ORACLE-VERSIONS.txt impose
-    // de régénérer la table.
+    // Même Python que l'oracle qui a figé la table (ORACLE-VERSIONS.txt, §4.5).
     let pins = include_str!("../../../tools/telmi2flam/ORACLE-VERSIONS.txt");
     let oracle = pins
         .lines()

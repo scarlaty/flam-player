@@ -1,5 +1,5 @@
 //! Écriture de la sortie : `.plain.pk` (ZIP *stored*) et dossier `.plain`, la fin de `_convert`
-//! (`tools/telmi2flam/telmi2flam.py`) avec `_commit`, `_clean_orphans` et `_discard`.
+//! (de l'ancien convertisseur Python) avec `_commit`, `_clean_orphans` et `_discard`.
 //!
 //! Invariants (PORT-RUST.md §3) :
 //! - **jamais de sortie partielle** : tout s'écrit dans un `.part` voisin de la cible, propre à

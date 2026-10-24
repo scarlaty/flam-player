@@ -1,6 +1,6 @@
 //! Parité des conversions PNG vers LIF (redimensionnement porté de Pillow) avec
 //! `png_to_*_lif` de Python 3.14.8 + Pillow 12.3.0 : vecteurs produits par
-//! `tests/vectors/resample/gen_resample_vectors.py`.
+//! `gen_resample_vectors.py` (supprimé).
 
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,7 @@ fn never() -> bool {
     false
 }
 
-/// Opération de la matrice (`make_corpus.python_lif`).
+/// Opération de la matrice (mêmes appels que `matrix_render.rs`).
 fn convert(png: &[u8], op: &str) -> Result<Vec<u8>, PngError> {
     match op {
         "scene" => png_to_scene_lif(png, &never),
@@ -82,27 +82,6 @@ fn check_manifest(dir: &Path) -> (usize, Vec<String>) {
 fn conversions_identiques_a_pillow() {
     let (n, errors) = check_manifest(&dir());
     assert!(n > 700, "manifeste trop court : {n}");
-    assert!(
-        errors.is_empty(),
-        "{} écarts sur {n} :\n{}",
-        errors.len(),
-        errors.join("\n")
-    );
-}
-
-/// Matrice de `make_corpus.py` (#123), produite hors dépôt par
-/// `gen_resample_vectors.py --matrix <dossier> [--big]` :
-/// `TELMI2FLAM_RESAMPLE_MATRIX=<dossier> cargo test --release -p telmi2flam --test
-/// resample_vectors -- --ignored`.
-#[test]
-#[ignore = "matrice générée hors dépôt (TELMI2FLAM_RESAMPLE_MATRIX)"]
-fn matrice_make_corpus() {
-    let dir = PathBuf::from(
-        std::env::var("TELMI2FLAM_RESAMPLE_MATRIX").expect("TELMI2FLAM_RESAMPLE_MATRIX"),
-    );
-    let (n, errors) = check_manifest(&dir);
-    eprintln!("{} cellules identiques sur {n}", n - errors.len());
-    assert!(n > 0);
     assert!(
         errors.is_empty(),
         "{} écarts sur {n} :\n{}",

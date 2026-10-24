@@ -2,8 +2,8 @@
 //! identique à `json.dumps(read_info(...), ensure_ascii=True, separators=(",", ":"))`.
 //!
 //! Le décodage de `metadata.json` est celui de [`crate::json::load_json`] (`load_json` de
-//! `telmi2flam.py`) et ses cas limites tranchés au §3 de `PORT-RUST.md` : flottant hors
-//! plage, entier hors 64 bits, imbrication de plus de [`crate::json::MAX_DEPTH`] niveaux et
+//! l'ancien convertisseur Python) et ses cas limites tranchés au §3 de `PORT-RUST.md` : flottant
+//! hors plage, entier hors 64 bits, imbrication de plus de [`crate::json::MAX_DEPTH`] niveaux et
 //! surrogate isolé donnent `invalid_content` (code 4).
 
 use std::io::{Read, Seek};

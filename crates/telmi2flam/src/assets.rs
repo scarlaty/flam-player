@@ -1,5 +1,5 @@
-//! Assets d'une histoire (`conv_image`, `conv_audio`, `add_mp3map`, `alloc` de `_convert` dans
-//! `tools/telmi2flam/telmi2flam.py`) : noms de sortie, caches, conversions et avertissements.
+//! Assets d'une histoire (`conv_image`, `conv_audio`, `add_mp3map`, `alloc` de `_convert` de
+//! l'ancien convertisseur Python) : noms de sortie, caches, conversions et avertissements.
 //!
 //! Invariants :
 //! - noms de sortie de la forme `img/<nom>.lif` ou `sounds/<nom>.mp3[map]`, `<nom>` dans

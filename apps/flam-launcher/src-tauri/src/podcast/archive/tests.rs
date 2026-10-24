@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -911,28 +912,45 @@ fn convertie_par_la_crate_telmi2flam_sans_avertissement() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Outils Python de développement (`tools/telmi2flam/telmi2flam.py`, `validate.py`) : oracle
+// Binaire `telmi2flam.exe` livré et `validate.py` (outil Python de développement) : critère de #216
 // ---------------------------------------------------------------------------------------------
 
-/// Python de développement (Pillow et lupa installés) : `FLAM_TEST_PYTHON`. Le launcher ne livre
-/// plus de Python (#138).
+/// `telmi2flam.exe` livré (`build/telmi2flam`, après `npm run build:converter`) ou
+/// `FLAM_TEST_RUST_CONVERTER`.
+fn converter() -> Option<PathBuf> {
+    let exe = std::env::var_os("FLAM_TEST_RUST_CONVERTER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../build/telmi2flam")
+                .join("telmi2flam.exe")
+        });
+    exe.is_file().then_some(exe)
+}
+
+/// Python de développement pour `validate.py` (bibliothèque standard, `lupa` pour le contrôle
+/// de syntaxe Lua) : `FLAM_TEST_PYTHON`. Le launcher ne livre pas de Python (#138).
 fn python() -> Option<PathBuf> {
     std::env::var_os("FLAM_TEST_PYTHON").map(PathBuf::from)
 }
 
-fn tools_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/telmi2flam")
+fn validate_script() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/telmi2flam/validate.py")
 }
 
-/// Lance un script Python en mode isolé de l'environnement (`-E -s -B -X utf8`).
-fn run_py(python: &Path, cwd: &Path, args: &[&std::ffi::OsStr]) -> (i32, String, String) {
-    let out = Command::new(python)
-        .args(["-E", "-s", "-B", "-X", "utf8"])
+/// Lance `program args` dans `cwd`, sans `FLAM_FFMPEG` (pas de rééchantillonnage) ; `isolated`
+/// : options d'isolement de Python (`-E -s -B -X utf8`) en tête. Renvoie (code, stdout, stderr).
+fn run(program: &Path, isolated: bool, cwd: &Path, args: &[&OsStr]) -> (i32, String, String) {
+    let mut cmd = Command::new(program);
+    if isolated {
+        cmd.args(["-E", "-s", "-B", "-X", "utf8"]);
+    }
+    let out = cmd
         .args(args)
         .current_dir(cwd)
         .env_remove("FLAM_FFMPEG")
         .output()
-        .expect("lancement de Python");
+        .expect("lancement du programme");
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -940,27 +958,23 @@ fn run_py(python: &Path, cwd: &Path, args: &[&std::ffi::OsStr]) -> (i32, String,
     )
 }
 
-/// Critère de #216 : l'archive est lue (`--info`) et convertie par le convertisseur Python de
-/// `tools/` (oracle), sans avertissement, et le paquet passe `validate.py`. Ignoré sans
-/// `FLAM_TEST_PYTHON`, sauf avec `FLAM_TEST_REQUIRE_PYTHON=1` (CI).
+/// Critère de #216 : l'archive est lue (`--info`) et convertie par le binaire `telmi2flam.exe`
+/// livré (processus enfant, comme le launcher), sans avertissement, et le paquet passe
+/// `validate.py`. Ignoré sans binaire ni `FLAM_TEST_PYTHON`, sauf avec
+/// `FLAM_TEST_REQUIRE_CONVERTER=1` (CI, après `npm run build:converter`).
 #[test]
-fn python_convertit_et_valide_l_archive() {
-    let Some(python) = python() else {
+fn binaire_convertit_et_valide_l_archive() {
+    let required = std::env::var_os("FLAM_TEST_REQUIRE_CONVERTER").is_some_and(|v| v == "1");
+    let (Some(exe), Some(python)) = (converter(), python()) else {
         assert!(
-            std::env::var_os("FLAM_TEST_REQUIRE_PYTHON").is_none_or(|v| v != "1"),
-            "FLAM_TEST_REQUIRE_PYTHON=1 : Python du convertisseur introuvable"
+            !required,
+            "FLAM_TEST_REQUIRE_CONVERTER=1 : telmi2flam.exe ou FLAM_TEST_PYTHON introuvable"
         );
-        eprintln!("Python du convertisseur absent : test ignoré");
+        eprintln!("telmi2flam.exe ou Python de validate.py absent : test ignoré");
         return;
     };
-    let tools = tools_dir();
-    let script = tools.join("telmi2flam.py");
-    let validate = tools.join("validate.py");
-    assert!(
-        script.is_file() && validate.is_file(),
-        "{}",
-        tools.display()
-    );
+    let validate = validate_script();
+    assert!(validate.is_file(), "{}", validate.display());
 
     let mut fx = Fixture::new();
     let mut menu = three_levels(&mut fx);
@@ -979,11 +993,7 @@ fn python_convertit_et_valide_l_archive() {
     let work = fx.dir.path();
 
     // --info
-    let (code, stdout, stderr) = run_py(
-        &python,
-        work,
-        &[script.as_os_str(), "--info".as_ref(), archive.as_os_str()],
-    );
+    let (code, stdout, stderr) = run(&exe, false, work, &["--info".as_ref(), archive.as_os_str()]);
     assert_eq!(code, 0, "--info : {stderr}");
     let info: Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(info["uuid"], p.uuid.hyphenated().to_string());
@@ -993,15 +1003,15 @@ fn python_convertit_et_valide_l_archive() {
 
     // conversion, événements machine : aucun avertissement
     let pk = fx.path("pack.plain.pk");
-    let (code, stdout, stderr) = run_py(
-        &python,
+    let (code, stdout, stderr) = run(
+        &exe,
+        false,
         work,
         &[
-            script.as_os_str(),
-            "--progress-json".as_ref(),
             archive.as_os_str(),
             "-o".as_ref(),
             pk.as_os_str(),
+            "--progress-json".as_ref(),
         ],
     );
     assert_eq!(code, 0, "conversion : {stderr}\n{stdout}");
@@ -1017,10 +1027,11 @@ fn python_convertit_et_valide_l_archive() {
         "aucun événement done : {stdout}"
     );
 
-    // uuid.bin = MD5 de la chaîne uuid (§ 3.4), calculé par Python
+    // uuid.bin = MD5 de la chaîne uuid (§ 3.4), calculé indépendamment par Python
     let pk_files = read_zip_any(&pk);
-    let (code, md5, stderr) = run_py(
+    let (code, md5, stderr) = run(
         &python,
+        true,
         work,
         &[
             "-c".as_ref(),
@@ -1042,7 +1053,7 @@ fn python_convertit_et_valide_l_archive() {
     );
 
     // validate.py
-    let (code, stdout, stderr) = run_py(&python, work, &[validate.as_os_str(), pk.as_os_str()]);
+    let (code, stdout, stderr) = run(&python, true, work, &[validate.as_os_str(), pk.as_os_str()]);
     assert_eq!(code, 0, "validate.py :\n{stdout}\n{stderr}");
     // Aucun `[WARN]` (régression de focus N4 a, de retour…), sauf le contrôle Lua ignoré faute
     // de `lupa` ou d'interpréteur.

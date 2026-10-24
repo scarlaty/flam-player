@@ -1,4 +1,4 @@
-//! Parité avec les modules Python : vecteurs produits par `tests/vectors/gen_vectors.py`
+//! Parité avec les modules Python : vecteurs produits par `gen_vectors.py` (supprimé)
 //! (`lif.encode`, `lif.quantize_rgba`, `mp3map.build`), comparés à l'octet près.
 
 use std::path::{Path, PathBuf};
