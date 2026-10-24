@@ -7,6 +7,8 @@ Python contre Python : zero ecart. Les comparaisons sont aussi verifiees sur des
 resultats fabriques et sur un faux candidat (script) pour prouver que les ecarts sont
 detectes, et que la liste fermee des ecarts admis ne laisse rien passer d'autre.
 """
+import contextlib
+import io
 import json
 import os
 import re
@@ -520,8 +522,8 @@ class TestPythonAgainstPython(unittest.TestCase):
         self.assertEqual(parity.exit_code(report), 1)
 
     def test_cli_exit_code_on_deviation(self):
-        cmd = "%s %s 6 internal_error" % (sys.executable.replace("\\", "/"),
-                                          self.stub.replace("\\", "/"))
+        cmd = '"%s" "%s" 6 internal_error' % (sys.executable.replace("\\", "/"),
+                                              self.stub.replace("\\", "/"))
         self.assertEqual(parity.main(["corpus", self.small, "--candidate", cmd]), 1)
 
 
@@ -599,6 +601,95 @@ class TestCampaign(unittest.TestCase):
             f.write(b"pas une archive")
         self.assertEqual(parity.archive_inventory(bad)["error"], "BadZipFile")
 
+    def test_image_format_signatures_are_narrow(self):
+        mp4 = b"\0\0\0\x20ftypisom\0\0\2\0"
+        m4a = b"\0\0\0\x20ftypM4A \0\0\0\0"
+        self.assertIsNone(parity.image_format(mp4, "audios/s0.m4a"))
+        self.assertIsNone(parity.image_format(m4a, "images/x.avif"))
+        for brand in (b"avif", b"avis", b"heic", b"heix", b"mif1"):
+            self.assertEqual(parity.image_format(b"\0\0\0\x20ftyp" + brand + b"\0\0"),
+                             "avif_heif")
+        # BM et <?xml : seulement avec une extension d'image
+        self.assertIsNone(parity.image_format(b"BMxxxxxxxxxxxxxx", "audios/s0.mp3"))
+        self.assertIsNone(parity.image_format(b"BMxxxxxxxxxxxxxx"))
+        self.assertEqual(parity.image_format(b"BMxxxxxxxxxxxxxx", "images/x.BMP"), "bmp")
+        self.assertIsNone(parity.image_format(b"<?xml version=1.0", "metadata.xml"))
+        self.assertEqual(parity.image_format(b"<?xml version=1.0", "images/x.svg"), "svg")
+        self.assertEqual(parity.image_format(b"<svg xmlns=...>"), "svg")
+        # inventaire : une entree MP4 ou XML non image n'est comptee nulle part
+        path = os.path.join(self.tmp, "n.zip")
+        with open(path, "wb") as f:
+            f.write(make_corpus.zip_bytes([("audios/a.m4a", mp4), ("x/b.xml", b"<?xml v"),
+                                           ("audios/c.mp3", b"BMxxxxxxxx")], zipfile.ZIP_STORED))
+        self.assertEqual(parity.archive_inventory(path)["images"], {})
+
+    def test_delegation_cause_is_anchored_with_closed_reasons(self):
+        # un nom d'asset ne fausse pas la cause
+        self.assertEqual(parity.delegation_cause(
+            "compression 3 (x).png : format non pris en charge : APNG"), "image:APNG")
+        self.assertEqual(parity.delegation_cause(
+            "format non pris en charge : APNG.png : compression 93 (bzip2/LZMA/Zstandard) "
+            "déléguée à Python"), "zip:zstd")
+        self.assertEqual(parity.delegation_cause("compression 12 sans le reste"), "autre")
+        # nom piege cote ZIP : la derniere occurrence (le vrai message) fait foi
+        self.assertEqual(parity.delegation_cause(
+            "a.zip : \"a : compression 3 (bzip2/LZMA/Zstandard) déléguée à Python\" : "
+            "compression 12 (bzip2/LZMA/Zstandard) déléguée à Python"), "zip:bzip2")
+        self.assertEqual(parity.delegation_cause(
+            "a\nb.png : format non pris en charge : APNG"), "image:APNG")
+        # raison hors liste fermee, ou message sans ancre : autre
+        self.assertEqual(parity.delegation_cause(
+            "i.png : format non pris en charge : raison inventee"), "autre")
+        self.assertEqual(parity.delegation_cause(
+            "format non pris en charge : APNG"), "autre")
+        for why in parity.IMAGE_REASONS:
+            self.assertEqual(parity.delegation_cause("i.png : format non pris en charge : " + why),
+                             "image:" + why)
+
+    def test_delegation_warning_counts_only(self):
+        self.assertIsNone(parity.delegation_warning({}))
+        self.assertIsNone(parity.delegation_warning({"zip:bzip2": 3, "image:APNG": 1}))
+        w = parity.delegation_warning({"autre": 2, "metadata": 1, "zip:zstd": 4})
+        self.assertIn("2 `autre`", w)
+        self.assertIn("1 `metadata`", w)
+        self.assertNotIn("zstd", w)
+        self.assertIn("1 `metadata`", parity.delegation_warning({"metadata": 1}))
+
+    def test_limit_marks_report_partial(self):
+        oracle = parity.default_oracle()
+        doc = parity.run_campaign(self.archives, oracle, oracle, self.out, validate=False,
+                                  limit=1)
+        self.assertTrue(doc["partial"])
+        self.assertEqual(doc["summary"]["total"], 1)
+        with open(os.path.join(self.out, "report.json"), encoding="utf-8") as f:
+            self.assertTrue(json.load(f)["partial"])
+        doc = parity.run_campaign(self.archives, oracle, oracle, self.out, validate=False)
+        self.assertFalse(doc["partial"])
+        self.assertEqual(doc["summary"]["total"], 2)
+
+    def test_unexpected_exception_in_one_is_a_harness_failure(self):
+        oracle = parity.default_oracle()
+        real = parity._write_json_atomic
+
+        def failing(path, doc):
+            if os.path.basename(os.path.dirname(path)) == "cases":
+                raise RuntimeError("secret-path-marker")
+            return real(path, doc)
+        parity._write_json_atomic = failing
+        stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(stderr):
+                doc = parity.run_campaign(self.archives, oracle, oracle, self.out,
+                                          validate=False)
+        finally:
+            parity._write_json_atomic = real
+        self.assertEqual(doc["summary"]["diff"], 2)
+        self.assertFalse(doc["threshold_met"])
+        self.assertEqual({d["kind"] for c in doc["cases"] for d in c["diffs"]}, {"harness"})
+        self.assertEqual(doc["cases"][0]["diffs"][0]["candidate"], "RuntimeError")
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertNotIn("secret-path-marker", json.dumps(doc))
+
     def test_python_against_python_then_resume(self):
         oracle = parity.default_oracle()
         doc = parity.run_campaign(self.archives, oracle, oracle, self.out, jobs=2,
@@ -625,6 +716,7 @@ class TestCampaign(unittest.TestCase):
         self.assertNotIn("marker", doc["cases"][0])
         self.assertEqual(doc["summary"]["delegated"], 2)
         self.assertEqual(doc["delegations_by_cause"], {"image:pas un PNG": 2})
+        self.assertFalse(doc["partial"])
         self.assertEqual(doc["delegated_archives"]["images"], {"jpeg": 1, "png": 2})
         self.assertEqual(doc["delegated_archives"]["zip_methods"], {"bzip2": 1, "stored": 2})
         self.assertTrue(doc["threshold_met"])
@@ -689,6 +781,7 @@ class TestCampaign(unittest.TestCase):
         with open(os.path.join(self.out, "report.json"), encoding="utf-8") as f:
             doc = json.load(f)
         self.assertFalse(doc["threshold_met"])
+        self.assertTrue(doc["partial"])
         self.assertEqual(doc["summary"]["diff"], 1)
         self.assertIn("exit", doc["diff_kinds"])
         self.assertEqual(doc["cases"][0]["candidate"]["error_code"], "internal_error")
