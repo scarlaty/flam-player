@@ -236,6 +236,15 @@ pcd_polyglotte	rgba:768x512
 pcd_polyglotte_court	unreadable
 pcd_erreur_libjpeg	unreadable
 pcd_libjpeg_puis_pillow	rgba:768x512
+spider_polyglotte	rgba:2x2
+fin_dqt_reste_eof	rgba:33x21
+fin_dqt_reste_10_octets	rgba:33x21
+fin_dqt_reste_70_octets	unreadable
+fin_dqt_index_coupe	unreadable
+fin_dac_impair_eof	rgba:33x21
+fin_dac_index_coupe	unreadable
+fin_dri_longueur_coupee	unreadable
+fin_dht_coupe	rgba:33x21
 dqt_reste_apres_sos	unreadable
 dqt_16_bits_impair_apres_sos	unreadable
 dqt_apres_sos	rgba:33x21

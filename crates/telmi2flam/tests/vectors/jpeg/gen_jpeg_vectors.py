@@ -14,8 +14,9 @@ Fichiers produits (lus par `tests/jpeg_vectors.rs`) :
   et `<nom>.rgba` (`tobytes()` de l'image RGBA de Python) pour chaque vecteur lisible ;
 - `vectors.tsv` : `nom  attendu`, où `attendu` vaut `rgba:<largeur>x<hauteur>` (image lue :
   le Rust doit donner la même taille et chaque composante à ±4 près, alpha exact), `unreadable`
-  (exception levée par `_open_rgba` : avertissement `image_unreadable`) ou `delegate` (lu par
-  libjpeg-turbo mais pas par zune-jpeg : codage arithmétique ou sans perte, code 7) ;
+  (exception levée par `_open_rgba` : avertissement `image_unreadable`) ; les délégations du
+  Rust (code 7 : lu par Pillow mais pas par zune-jpeg) sont listées à la main dans
+  `tests/jpeg_vectors.rs` (`ASSUMED`) ;
 - `alterations.tsv` : `base  opération  argument  attendu`, verdict de `_open_rgba` (`ok` ou
   `unreadable`) sur chaque troncature (`cut`, longueur) et chaque octet inversé (`xor`,
   position) des bases `alt_*`. Les écarts de verdict du Rust sont listés à la main dans
@@ -390,6 +391,29 @@ def followups_491(base, noise, sof_pos, prog):
          .ljust(2048, b"\x00") + b"PCD_"),
         ("pcd_erreur_libjpeg", pcd(base[:sof_pos] + sof + base[sof_pos:])),
         ("pcd_libjpeg_puis_pillow", pcd(base[:sof_pos] + sof + b"\xff\x01" + base[sof_pos:])),
+    ]
+    # SPIDER (greffon sans `_accept`, petit-boutiste) : `FF D8 FF E0` est un flottant entier,
+    # APP0 de longueur nulle puis octets parasites jusqu'à la fin (exception de `_open`)
+    spider = bytearray(27 * 4)
+    spider[0:8] = b"\xff\xd8\xff\xe0\x00\x00\x00\x40"  # h1 entier, h2 = 2.0 (hauteur)
+    for i, v in ((5, 1.0), (12, 2.0), (13, 1.0), (22, 108.0), (23, 108.0)):
+        spider[(i - 1) * 4:i * 4] = struct.pack("<f", v)
+    spider = bytes(spider) + struct.pack("<4f", 0.0, 100.0, 200.0, 255.0)
+    assert b"\xff" not in spider[4:]
+    out.append(("spider_polyglotte", spider))
+    # tables d'une image à un seul balayage coupées par la fin du fichier : libjpeg suspend
+    # (image lue), sauf erreur dans les octets présents ; libjpeg lit 64 valeurs de DQT ou la
+    # valeur d'une paire DAC au-delà d'un segment trop court
+    single = base[:-2]
+    out += [
+        ("fin_dqt_reste_eof", single + b"\xff\xdb\x00\x03\x00"),
+        ("fin_dqt_reste_10_octets", single + b"\xff\xdb\x00\x03\x00" + bytes(10)),
+        ("fin_dqt_reste_70_octets", single + b"\xff\xdb\x00\x03\x00" + bytes(70)),
+        ("fin_dqt_index_coupe", single + b"\xff\xdb\x00\x50\x04" + bytes(10)),
+        ("fin_dac_impair_eof", single + b"\xff\xcc\x00\x03\x00"),
+        ("fin_dac_index_coupe", single + b"\xff\xcc\x00\x10\x20\x00"),
+        ("fin_dri_longueur_coupee", single + b"\xff\xdd\x00\x05\x00"),
+        ("fin_dht_coupe", single + b"\xff\xc4\x00\x20\x00\x01"),
     ]
     # m6 : DQT après le premier balayage, reste plus court qu'une table (libjpeg lit 64 valeurs
     # au-delà du segment : JERR_BAD_LENGTH), table entière valide (index 2, inutilisée)

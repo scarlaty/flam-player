@@ -659,70 +659,87 @@ def _fold_name(name):
 
 def jpeg_outputs(path):
     """Campagne (D7) : predicat des entrees de sortie issues d'un JPEG de l'archive, ou None
-    sans JPEG. Approximation du nommage de telmi2flam.py (`alloc`) :
-    - `img/<base>[_inv].lif` pour chaque JPEG de `images/` (base nettoyee comme `alloc`), avec
-      le suffixe `_N` seulement si une collision est possible (autre image de meme base a la
-      casse pres, base reservee, ou base qui prolonge une autre base de `_inv` ou `_N`) ;
+    sans JPEG. Approximation du nommage de telmi2flam.py (`conv_image`, `alloc`) :
+    - pour chaque reference d'image distincte de nodes.json (etapes, puis inventaire, cle
+      `(reference, inventaire)` comme `img_cache`) dont l'entree `images/<reference>` est un
+      JPEG : `img/<base>[_inv].lif`, base tiree de la reference (nettoyee comme `alloc`), avec
+      le suffixe `_N` seulement si une collision est possible (autre sortie de meme nom a la
+      casse pres, nom reserve, ou nom qui prolonge une autre sortie de `_N`) ;
     - `img/title.lif` et `img/thumbnail.lif` seulement si la couverture retenue (image de
-      metadata.json, sinon title.png, sinon cover.png, a la racine de l'histoire) est un JPEG.
-    Une image PNG de meme nom de sortie qu'un JPEG profite aussi de l'ecart borne."""
+      metadata.json, sinon title.png, sinon cover.png, a la racine de l'histoire) est un JPEG."""
     try:
         with zipfile.ZipFile(path) as z:
             names = [zi.filename for zi in z.infolist() if not zi.is_dir()]
             root = _story_root(names)
             if root is None:
                 return None
-            index = {}
+            nameset, index = set(names), {}
             for n in names:
                 index.setdefault(_fold_name(n), n)
 
-            def head_of(name):
+            def lookup(rel):
+                """`lookup` de `_convert` : nom exact, sinon a la casse et a la NFC pres."""
+                full = root + rel
+                return full if full in nameset else index.get(_fold_name(full))
+
+            def is_jpeg(full):
                 try:
-                    with z.open(name) as f:
-                        return f.read(16)
+                    with z.open(full) as f:
+                        head = f.read(16)
                 except Exception:  # entree illisible : le convertisseur en decidera
-                    return b""
+                    return False
+                return image_format(head, full) == "jpeg"
 
-            def entry(rel):
-                return index.get(_fold_name(root + rel))
+            def loaded(name):
+                try:
+                    return json.loads(z.read(root + name))
+                except Exception:  # JSON invalide : le convertisseur echouera
+                    return None
 
-            jpegs, others = [], []
-            prefix = _fold_name(root + "images/")
-            for n in names:
-                if not _fold_name(n).startswith(prefix):
+            nodes = loaded("nodes.json")
+            stages = nodes.get("stages") if isinstance(nodes, dict) else None
+            inventory = nodes.get("inventory") if isinstance(nodes, dict) else None
+            keys = [(st["image"], False) for st in
+                    (stages.values() if isinstance(stages, dict) else ())
+                    if isinstance(st, dict) and isinstance(st.get("image"), str) and st["image"]]
+            keys += [(it["image"], True) for it in
+                     (inventory if isinstance(inventory, list) else ())
+                     if isinstance(it, dict) and isinstance(it.get("image"), str) and it["image"]]
+            outputs = []  # (nom de sortie sans extension, en minuscules ; issu d'un JPEG)
+            for ref, inv in dict.fromkeys(keys):
+                full = lookup("images/" + ref)
+                if full is None:
                     continue
-                base = os.path.splitext(os.path.basename(n))[0]
-                clean = (re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_") or "asset").lower()
-                is_jpeg = image_format(head_of(n), n) == "jpeg"
-                (jpegs if is_jpeg else others).append((n, clean))
+                base = os.path.splitext(os.path.basename(ref))[0] + ("_inv" if inv else "")
+                clean = re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_") or "asset"
+                outputs.append((clean.lower(), is_jpeg(full)))
             # couverture : premier candidat present et non vide (`read(...) or ...`)
             cover = False
-            try:
-                meta = json.loads(z.read(root + "metadata.json"))
-            except Exception:  # metadata.json invalide : le convertisseur echouera
-                meta = {}
+            meta = loaded("metadata.json")
             image = meta.get("image") if isinstance(meta, dict) else None
             for rel in ([image] if isinstance(image, str) and image else []) + ["title.png",
                                                                                    "cover.png"]:
-                full = entry(rel)
+                full = lookup(rel)
                 if full is None or z.getinfo(full).file_size == 0:
                     continue
-                cover = image_format(head_of(full), full) == "jpeg"
+                cover = is_jpeg(full)
                 break
     except Exception:  # archive illisible : pas d'ecart borne
         return None
-    if not jpegs and not cover:
-        return None
-    all_bases = [b for _, b in jpegs + others]
+    all_names = [n for n, _ in outputs]
     plain, numbered = set(), set()
-    for name, base in jpegs:
-        rest = list(all_bases)
-        rest.remove(base)
-        collide = (base in RESERVED_IMG_BASES or base in rest or base + "_inv" in rest
-                   or any(re.fullmatch(re.escape(o) + r"(?:_inv)?(?:_\d+)?", base) for o in rest))
-        (numbered if collide else plain).add(base)
+    for name, jpeg in outputs:
+        if not jpeg:
+            continue
+        others = list(all_names)
+        others.remove(name)
+        collide = (name in RESERVED_IMG_BASES or name in others
+                   or any(re.fullmatch(re.escape(o) + r"_\d+", name) for o in others))
+        (numbered if collide else plain).add(name)
+    if not plain and not numbered and not cover:
+        return None
     pattern = re.compile(
-        r"^img/(?:(?:%s)(?:_inv)?|(?:%s)(?:_inv)?(?:_\d+)?)\.lif$"
+        r"^img/(?:%s|(?:%s)(?:_\d+)?)\.lif$"
         % ("|".join(re.escape(b) for b in sorted(plain)) or "(?!)",
            "|".join(re.escape(b) for b in sorted(numbered)) or "(?!)"), re.IGNORECASE)
     covers = ("img/title.lif", "img/thumbnail.lif") if cover else ()

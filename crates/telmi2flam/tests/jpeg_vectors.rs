@@ -26,6 +26,7 @@ const ASSUMED: &[(&str, &str)] = &[
     ("pcd_polyglotte", "delegate"),
     ("pcd_polyglotte_court", "delegate"),
     ("pcd_libjpeg_puis_pillow", "delegate"),
+    ("spider_polyglotte", "delegate"),
     // refus de zune-jpeg (DQT de précision 2, facteur 3, table inutilisée invalide), lus par
     // libjpeg-turbo : délégués
     ("dqt_pq_2", "delegate"),

@@ -23,7 +23,7 @@ TOOL = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "parity"))
 
-from test_telmi2flam import std_files  # noqa: E402  (ajoute TOOL au sys.path)
+from test_telmi2flam import base_nodes, std_files  # noqa: E402  (ajoute TOOL au sys.path)
 import make_corpus  # noqa: E402
 import parity  # noqa: E402
 
@@ -246,25 +246,44 @@ class TestJpegBounded(unittest.TestCase):
             jpeg = b"\xff\xd8\xff\xe0" + bytes(12)
             png_ = b"\x89PNG\r\n\x1a\n" + bytes(8)
 
-            def pred(*files, meta=None):
-                story = [(n, d) for n, d in std_files(meta) if n not in dict(files)]
+            def pred(*files, meta=None, stages=(), inventory=()):
+                """Histoire minimale, images référencées par des étapes et l'inventaire."""
+                nodes = base_nodes()
+                for i, ref in enumerate(stages):
+                    nodes["stages"]["x%d" % i] = dict(nodes["stages"]["s0"], image=ref)
+                if inventory:
+                    nodes["inventory"] = [{"name": "o", "image": ref} for ref in inventory]
+                story = [(n, d) for n, d in std_files(meta, nodes) if n not in dict(files)]
                 with open(path, "wb") as f:
                     f.write(make_corpus.zip_bytes(story + list(files)))
                 return parity.jpeg_outputs(path)
 
-            p = pred(("images/Forêt 1.jpg", jpeg))
-            for name in ("img/For_t_1.lif", "img/For_t_1_inv.lif"):
+            p = pred(("images/Forêt 1.jpg", jpeg), stages=["Forêt 1.jpg"],
+                     inventory=["Forêt 1.jpg"])
+            for name in ("img/For_t_1.lif", "img/For_t_1_inv.lif", "img/for_t_1.LIF"):
                 self.assertTrue(p(name), name)
             # `_N` sans collision possible, image PNG, couverture PNG, hors de img/ : refusés
             for name in ("img/For_t_1_2.lif", "img/s0.lif", "img/title.lif",
                          "img/thumbnail.lif", "img/For_t_1x.lif", "For_t_1.lif"):
                 self.assertFalse(p(name), name)
-            # collisions réelles : même base à la casse près, base réservée, base prolongée
-            p = pred(("images/Forêt 1.jpg", jpeg), ("images/forêt_1.png", png_))
-            self.assertTrue(p("img/For_t_1_2.lif"))
-            self.assertTrue(pred(("images/title.jpg", jpeg))("img/title_2.lif"))
-            p = pred(("images/a_inv.jpg", jpeg), ("images/a.png", png_))
-            self.assertTrue(p("img/a_inv_2.lif"))
+            # JPEG non référencé : pas de sortie
+            self.assertIsNone(pred(("images/Forêt 1.jpg", jpeg)))
+            # base tirée de la référence (NFC du JSON), entrée trouvée à la NFC et à la casse
+            # près (zip macOS en NFD)
+            p = pred(("images/FORE" + chr(0x302) + "T 1.jpg", jpeg), stages=["Forêt 1.jpg"])
+            self.assertTrue(p("img/For_t_1.lif"))
+            # collisions réelles : même nom à la casse près (deux références, une seule
+            # entrée comprise), nom réservé, nom qui prolonge une autre sortie de `_N`
+            p = pred(("images/Forêt 1.jpg", jpeg), stages=["Forêt 1.jpg", "forêt 1.JPG"])
+            self.assertTrue(p("img/for_t_1_2.lif"))
+            p = pred(("images/a.jpg", jpeg), ("images/a.png", png_),
+                     stages=["a.jpg", "a.png"])
+            self.assertTrue(p("img/a_2.lif"))
+            self.assertTrue(pred(("images/title.jpg", jpeg), stages=["title.jpg"])(
+                "img/title_2.lif"))
+            p = pred(("images/a_2.jpg", jpeg), ("images/a.png", png_), ("images/A.png", png_),
+                     stages=["a.png", "A.png", "a_2.jpg"])
+            self.assertTrue(p("img/a_2_2.lif"))
             # couverture : la première présente parmi image de metadata.json, title.png,
             # cover.png, à la racine de l'histoire
             self.assertTrue(pred(("title.png", jpeg))("img/thumbnail.lif"))
