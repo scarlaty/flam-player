@@ -13,7 +13,16 @@ export interface EpisodeRef {
 
 export type PackNode =
   | ({ kind: "episode" } & EpisodeRef)
-  | { kind: "category"; name: string; entries: PackNode[] };
+  | {
+      kind: "category";
+      name: string;
+      entries: PackNode[];
+      /**
+       * Image choisie (N5 c) : un épisode de la catégorie, à toute profondeur. Absent :
+       * image du premier épisode (omis par le backend quand il est automatique).
+       */
+      image?: EpisodeRef;
+    };
 
 export type CoverChoice =
   | { kind: "default" }

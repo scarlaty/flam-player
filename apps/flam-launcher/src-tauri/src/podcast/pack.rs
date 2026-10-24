@@ -97,7 +97,22 @@ pub enum PackNode {
         name: String,
         #[serde(default)]
         entries: Vec<PackNode>,
+        /// Image choisie par le parent (N5 c) : un épisode de la catégorie, à toute profondeur.
+        /// Absent : image du premier épisode (N5 a), comme les compositions antérieures ;
+        /// omis à l'écriture quand il est absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image: Option<EpisodeRef>,
     },
+}
+
+impl PackNode {
+    /// Cet épisode figure-t-il dans `menu`, à toute profondeur ?
+    pub fn contains_episode(menu: &[PackNode], episode: &EpisodeRef) -> bool {
+        menu.iter().any(|node| match node {
+            PackNode::Episode(e) => e == episode,
+            PackNode::Category { entries, .. } => Self::contains_episode(entries, episode),
+        })
+    }
 }
 
 /// Couverture choisie (N6 b).
@@ -346,7 +361,7 @@ impl<'a> Walker<'a> {
             path.push(i);
             match node {
                 PackNode::Episode(e) => self.episode(e, path),
-                PackNode::Category { name, entries } => {
+                PackNode::Category { name, entries, .. } => {
                     let name = name.trim();
                     let len = name.chars().count();
                     if len == 0 || len > MAX_LABEL_CHARS || name.chars().any(char::is_control) {

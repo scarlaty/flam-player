@@ -105,7 +105,7 @@ pub fn titles(
                         });
                     }
                 }
-                PackNode::Category { name, entries } => {
+                PackNode::Category { name, entries, .. } => {
                     // Rang dans l'ordre de l'archive (une catégorie avant ses options).
                     *categories += 1;
                     let k = *categories;
@@ -348,6 +348,7 @@ mod tests {
                 PackNode::Category {
                     name: "  Saison  ".into(),
                     entries: vec![e(2), e(3)],
+                    image: None,
                 },
                 e(4),
             ],
