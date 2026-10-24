@@ -28,7 +28,7 @@ import { useRecovery } from "../recovery/RecoveryContext";
 import { formatBytes, validateOptionalPath } from "../validation";
 import "./SettingsScreen.css";
 
-type PathField = "player_path" | "python_path" | "cache_dir";
+type PathField = "player_path" | "cache_dir";
 
 /** Écran des paramètres : chemins, cache, thème et à propos. */
 export function SettingsScreen() {
@@ -39,12 +39,10 @@ export function SettingsScreen() {
   const [saveError, setSaveError] = useState<AppError | null>(null);
   const [values, setValues] = useState<Record<PathField, string>>({
     player_path: "",
-    python_path: "",
     cache_dir: "",
   });
   const [touched, setTouched] = useState<Record<PathField, boolean>>({
     player_path: false,
-    python_path: false,
     cache_dir: false,
   });
   const [usage, setUsage] = useState<CacheUsage | null>(null);
@@ -79,10 +77,9 @@ export function SettingsScreen() {
       setView(next);
       setValues({
         player_path: next.settings.player_path ?? "",
-        python_path: next.settings.python_path ?? "",
         cache_dir: next.settings.cache_dir ?? "",
       });
-      setTouched({ player_path: false, python_path: false, cache_dir: false });
+      setTouched({ player_path: false, cache_dir: false });
       report("settings.json", next.recovery);
     },
     [report],
@@ -109,7 +106,6 @@ export function SettingsScreen() {
 
   const errors: Record<PathField, string | null> = {
     player_path: validateOptionalPath(values.player_path, { exe: true }),
-    python_path: validateOptionalPath(values.python_path, { exe: true }),
     cache_dir: validateOptionalPath(values.cache_dir, { exe: false }),
   };
   const shown = (field: PathField) => (touched[field] ? errors[field] : null);
@@ -124,11 +120,7 @@ export function SettingsScreen() {
       const path =
         field === "cache_dir"
           ? await pickFolder(t.settingsScreen.pickCache)
-          : await pickExecutable(
-              field === "player_path"
-                ? t.settingsScreen.pickPlayer
-                : t.settingsScreen.pickPython,
-            );
+          : await pickExecutable(t.settingsScreen.pickPlayer);
       if (path) edit(field, path);
     } catch (caught) {
       setSaveError(toAppError(caught));
@@ -137,14 +129,13 @@ export function SettingsScreen() {
 
   async function save(event: FormEvent) {
     event.preventDefault();
-    setTouched({ player_path: true, python_path: true, cache_dir: true });
+    setTouched({ player_path: true, cache_dir: true });
     if (!view || Object.values(errors).some(Boolean)) return;
     setSaveError(null);
     try {
       const next = await setSettings({
         ...view.settings,
         player_path: values.player_path.trim() || null,
-        python_path: values.python_path.trim() || null,
         cache_dir: values.cache_dir.trim() || null,
       });
       applyView(next);
@@ -271,7 +262,6 @@ export function SettingsScreen() {
     <div className="fl-settings">
       <section className="fl-settings__section" aria-labelledby="settings-paths">
         <h2 id="settings-paths">{text.paths}</h2>
-        <p>{text.pythonNote}</p>
         {issues.length > 0 && (
           <Banner tone="warning" title={text.issuesTitle}>
             {issues.map((issue) => (
@@ -284,7 +274,6 @@ export function SettingsScreen() {
           {(
             [
               ["player_path", text.player],
-              ["python_path", text.python],
               ["cache_dir", text.cacheDir],
             ] as const
           ).map(([field, label]) => (

@@ -577,8 +577,8 @@ _COMPRESSION_RE = re.compile(
     r"^.* : compression (\d+) \(bzip2/LZMA/Zstandard\) d\u00e9l\u00e9gu\u00e9e \u00e0 Python$", re.S)
 _IMAGE_WHY_RE = re.compile(r"^.* : format non pris en charge : (.+)$", re.S)
 # Raisons du decodeur PNG (`PngError::Unsupported`) : liste fermee, le reste est `autre`.
-IMAGE_REASONS = ("APNG", "IHDR absent en t\u00eate ou r\u00e9p\u00e9t\u00e9", "pas un PNG",
-                 "tRNS apr\u00e8s l'IDAT", "tRNS de longueur inattendue", "tRNS r\u00e9p\u00e9t\u00e9")
+# Depuis #459, les PNG atypiques (APNG, IHDR, tRNS) sont decodes : seul un autre format reste.
+IMAGE_REASONS = ("pas un PNG",)
 SUSPECT_CAUSES = ("autre", "metadata")
 
 

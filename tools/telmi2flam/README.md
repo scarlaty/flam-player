@@ -662,10 +662,11 @@ journal ne donne que des comptes ; le rapport nomme les archives et reste dans `
 
 Lecture du rapport :
 
-- Causes de délégation : `image:<raison>` (liste fermée des raisons du décodeur PNG),
-  `metadata` ou `autre`. Un message hors de ces formes exactes est `autre`. `metadata` et
-  `autre` sont hors D4 strict : la ligne `attention : delegations hors D4 strict…` (comptes
-  seulement) les signale et elles sont à classer à la main.
+- Causes de délégation : `image:<raison>` (liste fermée des raisons du décodeur PNG : depuis
+  #459, seulement `pas un PNG`, les PNG atypiques APNG/IHDR/tRNS étant décodés), `metadata`
+  ou `autre`. Un message hors de ces formes exactes est `autre`. `metadata` et `autre` sont
+  hors D4 strict : la ligne `attention : delegations hors D4 strict…` (comptes seulement) les
+  signale et elles sont à classer à la main.
 - Méthodes ZIP bzip2, LZMA et Zstandard : lues par le Rust depuis #458, plus de délégation.
   Un candidat antérieur qui délègue encore une entrée (message `: compression N
   (bzip2/LZMA/Zstandard)`, cause `zip:<méthode>`) est compté en **écart** `delegation`, pas

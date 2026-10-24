@@ -109,6 +109,16 @@ it("traduit unsupported_format en un message clair et non technique", () => {
   expect(
     taskErrorMessage({ kind: "conversion", message: "m", code: "missing_asset" }),
   ).toBe("m");
+  // Un code libre qui porte le nom d'une propriété héritée n'est jamais pris pour une clé.
+  for (const code of [
+    "constructor",
+    "__proto__",
+    "toString",
+    "hasOwnProperty",
+    "valueOf",
+  ]) {
+    expect(taskErrorMessage({ kind: "conversion", message: "m", code })).toBe("m");
+  }
   expect(taskErrorMessage({ kind: "io", message: "disque", code: null })).toBe("disque");
   expect(taskErrorMessage({ kind: "io", message: "x", code: "unsupported_format" })).toBe(
     "x",

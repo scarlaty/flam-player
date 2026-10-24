@@ -288,6 +288,32 @@ def corpus_cases():
     add("img_corrupt_cover", lambda: zip_bytes(
         [(n, b"garbage" if n == "title.png" else d) for n, d in S()]))
 
+    # PNG atypiques decodes par le Rust depuis #459 : APNG ecrit par Pillow (premiere image),
+    # tRNS apres l'IDAT, IHDR repete
+    def apng():
+        frames = [Image.new("RGBA", (64, 48), (200, 10, 10, 128)),
+                  Image.new("RGBA", (64, 48), (10, 200, 10, 255))]
+        frames[0].paste((10, 10, 200, 255), (8, 8, 40, 30))
+        b = io.BytesIO()
+        frames[0].save(b, "PNG", save_all=True, append_images=frames[1:], duration=100)
+        data = b.getvalue()
+        assert b"acTL" in data
+        return zip_bytes([(n, data if n in ("images/s0.png", "title.png") else d)
+                          for n, d in S()])
+    add("img_apng", apng)
+
+    def trns_after_idat():
+        data = raw_png(4, 2, 8, 0, [[0, 1, 2, 3], [3, 2, 1, 0]], None)
+        data = data[:-12] + _chunk(b"tRNS", b"\x00\x02") + data[-12:]
+        return zip_bytes([(n, data if n == "images/s0.png" else d) for n, d in S()])
+    add("img_trns_after_idat", trns_after_idat)
+
+    def ihdr_twice():
+        data = raw_png(4, 2, 8, 2, [[(1, 2, 3)] * 4, [(4, 5, 6)] * 4], None)
+        data = data[:33] + _chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 2, 8, 2, 0, 0, 0)) + data[33:]
+        return zip_bytes([(n, data if n == "images/s0.png" else d) for n, d in S()])
+    add("img_ihdr_twice", ihdr_twice)
+
     def jpeg():
         b = io.BytesIO()
         Image.new("RGB", (64, 48), (10, 20, 30)).save(b, "JPEG")

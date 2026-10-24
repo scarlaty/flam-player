@@ -121,7 +121,7 @@ figurer, même avec `OR`.
 | JSON | `serde_json` (déjà), fonction `preserve_order` | MIT OR Apache-2.0 | Fait entrer `indexmap` (Apache-2.0 OR MIT). |
 | Flottants façon Python | `ryu` (ou formatage maison) | Apache-2.0 OR BSL-1.0 | Les deux termes sont autorisés. |
 | Rééchantillonnage | **port de l'algorithme de Pillow** (pas de crate) | Pillow : MIT-CMU (HPND) | Ce n'est pas une dépendance Cargo : `ALLOWED_LICENSES` ne change pas. En-tête de licence et mention dans les notices (D3, §4.2). |
-| Autres formats d'image (JPEG…) | `zune-jpeg` ou `jpeg-decoder` si nécessaire | MIT OR Apache-2.0 (OR Zlib) | D4 : délégation à Python (`unsupported_format`, code 7) pendant la transition. Le support devient obligatoire avant #138 pour chaque format que la campagne trouve. |
+| Autres formats d'image (JPEG…) | `zune-jpeg` ou `jpeg-decoder` si nécessaire ; `gif` pour le GIF | MIT OR Apache-2.0 (OR Zlib) | D4 : délégation à Python (`unsupported_format`, code 7) pendant la transition. Le support devient obligatoire avant #138 pour chaque format que la campagne trouve : en cours (#459, §4.4 ; PNG atypiques faits). |
 | Méthodes ZIP bzip2/LZMA/Zstandard | bzip2 et LZMA écrits à la main (`unbzip2.rs`, `unlzma.rs`) ; Zstandard : `ruzstd` `=0.9.1` (MIT) et `twox-hash` `=2.1.5` (MIT) | MIT (dépendances) | **Fait (#458)**, voir §3.1. `bzip2-sys` et `libbz2-rs-sys` : licence bzip2-1.0.6, non autorisée ; `bzip2-rs` (MIT/Apache-2.0) échoue sur un bloc incompressible ; `lzma-rs` (MIT) exige le marqueur de fin. |
 
 Pas de `image` (crate complète) : trop de dépendances, et ses conversions (16 → 8 bits par
@@ -172,8 +172,9 @@ Invariants (repris de Python, à tester côté Rust) :
    Object plus stricte que l'existant. Le Rust réduit sa consommation sans refuser : MP3 écrits
    en flux dans le `.part` (par tours de 256 Kio, #402) au lieu d'être tous gardés en mémoire, copies d'images libérées au
    plus tôt.
-6. **Délégation des cas non gérés** (décision D4) : face à une image dans un autre format que PNG,
-   le Rust ne convertit pas (les entrées ZIP bzip2, LZMA et Zstandard sont lues depuis #458). Il nettoie son `.part`, émet
+6. **Délégation des cas non gérés** (décision D4) : face à une image dans un autre format que PNG
+   (les PNG atypiques, APNG compris, sont décodés depuis #459, §4.4), le Rust ne convertit pas
+   (les entrées ZIP bzip2, LZMA et Zstandard sont lues depuis #458). Il nettoie son `.part`, émet
    l'événement `error` avec le code `unsupported_format` et sort avec le **code 7**, distinct de
    `internal_error`. Tant que le repli Python existe, le launcher rejoue alors la conversion
    en Python.
@@ -186,7 +187,8 @@ Invariants (repris de Python, à tester côté Rust) :
 | Archive corrompue (CRC, en-tête, troncature) | lecture d'une entrée | rien | `archive_unreadable`, code 3. Le CRC doit être vérifié : lire chaque entrée jusqu'au bout. |
 | Entrée chiffrée, méthode que Python ne lit pas non plus (deflate64…) | lecture | rien | `archive_unreadable`, code 3 (Python : 3 pour une méthode inconnue, mais `internal_error` 6 pour une entrée chiffrée ; divergence volontaire, car Python échoue aussi) |
 | Entrée bzip2, LZMA ou Zstandard | lecture | rien | Lue comme `zipfile` (#458, §3.1). Flux invalide : Python lève `OSError`, `LZMAError` ou `ZstdError` (`internal_error`, code 6), le Rust rend `archive_unreadable` (code 3) : divergence volontaire, Python échoue aussi. Flux tronqué, CRC faux, bombe : voir §3.1. |
-| Image dans un autre format que PNG (JPEG, GIF…) | image | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6), et non `image_unreadable` : Pillow la lirait |
+| Image dans un autre format que PNG (JPEG, GIF…) | image | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6), et non `image_unreadable` : Pillow la lirait. Prise en charge format par format (#459, §4.4) |
+| PNG atypique (APNG, `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue) | image | — | décodé comme Pillow, erreurs comprises (#459, §4.4) ; plus de délégation |
 | Noms dupliqués dans l'archive | indexation | rien | même entrée retenue que Python (`ZipFile.getinfo` : la **dernière**). `zip` 4.6.1 retient aussi la dernière (`IndexMap::insert`), mais ne liste le nom qu'une fois : `find_root` et l'index replié (`setdefault`, premier nom rencontré) doivent reproduire `namelist()`. Test dédié. |
 | Pas une histoire Telmi | `find_root` | rien | `not_telmi`, code 3 |
 | JSON invalide / types inattendus | `load_json`, `_expect` | rien | `invalid_content`, code 4 ; `notes.json` illisible : avertissement `notes_ignored` |
@@ -222,10 +224,9 @@ impose de les lire avec le même résultat que `zipfile` de Python 3.14.8, qui l
 | LZMA (14) | `src/unlzma.rs`, d'après la spécification LZMA (`LzmaSpec.cpp`, domaine public) | `lzma-rs` 0.3.0 (MIT) exige le marqueur de fin quand la taille est inconnue (Python lit un flux sans marqueur, vecteur `lzma_no_eos`), ne signale pas la fin du flux en mode incrémental et ne fait pas les contrôles de liblzma. |
 | Zstandard (93) | `ruzstd` `=0.9.1` (MIT) pour les blocs, `twox-hash` `=2.1.5` (MIT) pour XXH64, trames et contrôles dans `src/unzstd.rs` | Rust pur ; les contrôles de libzstd absents de `ruzstd` (somme de contrôle, taille annoncée, bit réservé, trame « skippable », fenêtre de `2^27 + 1` au plus) sont faits à côté. |
 
-Point à trancher par le mainteneur : `unbzip2.rs` reproduit le comportement de libbzip2 1.0.8
-(tables de décodage de Huffman, contrôles, granularité de sortie) sans en copier le code ; si
-ce module est jugé dérivé de libbzip2, il faudrait une mention dans `DERIVED_NOTICES` (comme
-Pillow, D3), la licence bzip2-1.0.6 n'étant pas dans `ALLOWED_LICENSES`.
+Licence (décision du mainteneur, revue de #479) : `unbzip2.rs` est écrit d'après le format
+public bzip2 et le comportement observable de libbzip2, sans copie de son code ; il n'est
+donc pas dérivé de libbzip2 et n'a pas d'entrée dans `DERIVED_NOTICES`.
 
 **Invariants** (`zipread.rs`, `pump_codec`, comme `ZipExtFile.read()`) :
 
@@ -268,8 +269,8 @@ Injection de pannes : `injection_de_pannes_bzip2_lzma_zstd` (archives altérées
 `TELMI2FLAM_FUZZ_ITER=30000` en release en local, soit 210 000 flux, sans panique).
 
 **Écarts connus**, tous sur des flux que les encodeurs n'écrivent pas. Les trois premiers vont
-dans le sens « le Rust refuse ce que Python lit » (D5) et demandent l'accord explicite du
-mainteneur :
+dans le sens « le Rust refuse ce que Python lit » (D5) ; ils sont acceptés par le mainteneur
+(revue de #479) parce qu'aucun encodeur n'écrit ces flux :
 
 - bzip2 sans marqueur de fin dont le dernier bloc dépasse le tampon de sortie courant de
   Python (32 Kio au départ) : Python s'arrête dès que l'entrée est épuisée et perd la fin du
@@ -394,6 +395,87 @@ sont identiques à l'octet près dès la PR 6.
    `telmi2flam.yml` (PR 3), avec `lupa` à une version exacte (2.8, celle de la CI) : le Lua de
    l'oracle ne doit pas changer sans qu'on le voie. Les tables Unicode de `unicodedata` et d'`unicode-normalization`
    doivent aussi correspondre (versions notées dans la PR 5).
+
+### 4.4 Images non PNG et PNG atypiques (#459)
+
+Décision du mainteneur (24/10) : le Rust lit ce que Pillow lisait, pour retirer Python (#138)
+sans perte. Chaque format est livré dans une PR courte et fusionnable seule (PR 1 : PNG
+atypiques, PR 2 : JPEG, PR 3 : GIF, puis BMP/WebP si le coût est faible, sinon issue de suivi
+motivée). Tant qu'un format n'est pas livré, il reste délégué (code 7).
+
+**Chemin Python reproduit** (`_open_rgba` de `telmi2flam.py`) : `Image.open` puis `load()`
+(première image d'une animation), `_trns_mask` (n'agit que sur un PNG : clé `tRNS` brute,
+`IHDR` à position fixe), `point(v / 256).convert("L")` pour `I;16`, puis `convert("RGBA")`.
+**Pas d'`ImageOps.exif_transpose`** : l'orientation EXIF n'est jamais appliquée (vérifié :
+aucun appel dans `telmi2flam.py`), le Rust ne l'applique pas non plus. Ni `draft()` ni
+`reduce` : décodage pleine taille.
+
+| Format | Mode à l'ouverture (Pillow 12.3.0) | Conversion vers RGBA | Décodeur Rust | Parité visée |
+| --- | --- | --- | --- | --- |
+| PNG atypique (PR 1, fait) | modes PNG ; APNG : première image (zone du `fcTL`) | celle des PNG (§4.2, `_trns_mask`) | `png.rs` (fait main) | octet à octet, erreurs comprises |
+| JPEG (PR 2) | `L` (1 composante), `RGB` (3 : YCbCr→RGB par libjpeg-turbo, ou RGB brut selon JFIF/Adobe), `CMYK` (4, rawmode `CMYK;I` : polarité Adobe toujours supposée ; YCCK converti par libjpeg) ; refus (illisible) si précision ≠ 8 bits ou 2/5+ composantes | `L`→gris opaque, `CMYK`→`cmyk2rgb` de Pillow (`255 - k` modulé, entier) | `zune-jpeg` (MIT OR Apache-2.0 OR Zlib) ou `jpeg-decoder` (MIT OR Apache-2.0), licences vérifiées dans `Cargo.lock` | identité visée (libjpeg-turbo : IDCT `JDCT_ISLOW`, suréchantillonnage « fancy », tables YCbCr de `jdcolor.c`) ; écart d'IDCT ou de suréchantillonnage mesuré sur le corpus, borné (par ex. ±1 par composante) et inscrit dans `ALLOWED_DEVIATIONS` |
+| GIF (PR 3) | première image en `P` (palette locale ou globale ; `L` sans palette), `info["transparency"]` = index du GCE ; image plus petite que l'écran : fond rempli de l'index transparent (sinon 0) | palette → RGBA, index transparent à alpha 0 | crate `gif` (MIT OR Apache-2.0, avec `weezl`), sans sa conversion RGBA | octet à octet (pas d'arithmétique flottante) |
+| BMP, WebP… | à évaluer : seulement si une histoire réelle en contient (campagne #135) | — | — | issue de suivi sinon |
+
+**Invariants** (en plus de §3) :
+
+1. Une image que Pillow lit donne les mêmes pixels (ou l'écart borné et listé du JPEG) ; une
+   image que Pillow refuse donne `image_unreadable` (`empty.lif`), jamais un échec de la
+   conversion.
+2. Garde anti-bombe de Pillow seulement, pour tous les formats : plus de `2 × MAX_IMAGE_PIXELS`
+   pixels annoncés, image illisible (D5). Aucune mémoire engagée sur la seule foi d'un
+   en-tête (tampons alloués quand les données arrivent, `try_reserve`) ; exception assumée :
+   une zone partielle (cadre APNG, image GIF plus petite que l'écran) engage toute l'image dès
+   ses premières données, comme `Image.core.new` de Pillow, dans la limite de la garde.
+3. Déterminisme : aucun code SIMD choisi à l'exécution dont le résultat dépend du processeur
+   (même règle que `fast_image_resize`, §4.2) ; décodeurs utilisés en scalaire ou avec des
+   chemins SIMD prouvés identiques au scalaire.
+4. Annulation vérifiée par ligne (ou par bloc de lignes MCU) comme pour le PNG.
+5. Aucune panique sur une entrée non fiable (préfixes, octets inversés : tests de troncature
+   et d'altération contre l'oracle, comme `alterations.tsv`).
+
+**Tableau des pannes** :
+
+| Panne | Comportement de Pillow (oracle) | Comportement attendu du Rust |
+| --- | --- | --- |
+| Fichier tronqué (JPEG, GIF) | `OSError: image file is truncated` (`LOAD_TRUNCATED_IMAGES` faux) | illisible, sauf si Pillow a déjà toutes les lignes (fin de flux absente tolérée) : mêmes cas, testés par troncature |
+| Données corrompues dans un JPEG (code de Huffman invalide, marqueur `RSTn` manquant) | libjpeg-turbo **avertit et continue** (blocs mis à zéro, resynchronisation) : image lue | reproduire la reprise de libjpeg-turbo est hors de portée d'un décodeur tiers : écart **assumé** (pixels différents, jamais un refus de la conversion), mesuré et listé ; à défaut, image illisible = divergence à signaler |
+| Bombe (dimensions énormes) | `DecompressionBombError` au-delà de `2 × MAX_IMAGE_PIXELS` | illisible, avant toute allocation |
+| JPEG CMYK / YCCK | `CMYK` inversé (Adobe) puis `cmyk2rgb` | même formule entière ; vecteurs CMYK et YCCK |
+| JPEG progressif, arithmétique, 4:1:1, 4:4:0, échantillonnages impairs | lus par libjpeg-turbo | lus ; un décodeur qui n'accepte pas un cas (par ex. codage arithmétique) le **délègue** encore (code 7) tant que Python existe, puis issue de suivi |
+| JPEG 12 bits, sans perte (`SOF3`) | `SyntaxError` (précision ≠ 8) ou erreur libjpeg : illisible | illisible |
+| GIF entrelacé | lu (ordre des passes) | lu |
+| GIF animé, image partielle, sans palette globale | première image, fond index transparent ou 0 | idem |
+| APNG (PR 1) | première image ; séquence `fcTL`/`fdAT` fausse, `fcTL` court ou hors de l'image : illisible ; zone vide : illisible | idem, testé (`apng_*` de `gen_png_vectors.py`) |
+| `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue (PR 1) | dernier `IHDR` (taille ; mode du dernier couple valide), transparence rangée selon le mode courant, `_trns_mask` sur la clé brute et l'`IHDR` à position fixe | idem, y compris les erreurs (`TypeError` d'un triplet sur du gris, palette sur une image d'un autre mode que `L`/`LA`) : 634 combinaisons dans `combos.tsv` |
+
+**Écarts attendus** : aucun pour le PNG et le GIF. JPEG : écart d'IDCT/suréchantillonnage
+borné s'il est inévitable, et pixels des JPEG corrompus (reprise de libjpeg-turbo), chacun
+inscrit dans `ALLOWED_DEVIATIONS` avec sa mesure, et signalé dans la PR.
+
+**PR 1 (PNG atypiques, faite)** : `png.rs` ne délègue plus que les autres formats (`pas un
+PNG`). Détails reproduits de Pillow, tous vérifiés contre l'oracle :
+- APNG : `acTL` (court : illisible ; double ou nombre d'images hors bornes : ignoré),
+  `fcTL` (court, séquence, cadre hors de l'image : illisible), `fdAT` (court, séquence :
+  illisible) avant les données (un `fdAT` peut porter la première image), dans les données
+  (suite de l'image) et après (vérifié puis sauté) ; `load_end` d'un APNG animé s'arrête au
+  `fcTL` suivant, celui d'un APNG à une image continue (chunks vérifiés) ; zone décodée = cadre
+  du dernier `fcTL` lu avant les données, reste au pixel nul du mode ; en entrelacé,
+  `ZipDecode.c` ignore le décalage du cadre (zone en haut à gauche) ;
+- `IHDR` : taille du dernier lu, mode du dernier couple connu (`KeyError` : mode précédent),
+  entrelacement jamais retiré ; un `PLTE` lu sous un mode palette puis un `IHDR` d'un autre
+  mode : `Image.load` pose la palette sur le cœur de l'image, accepté pour `L` et `LA` (la
+  valeur grise sert d'index, alpha du canal A ; avec transparence : illisible en `L`, masque
+  sur la luminance de la palette en `LA`), refusé (illisible) pour les autres modes ;
+- transparence : valeur de Pillow typée selon le mode courant à chaque `tRNS` (entier, triplet
+  ou octets ; le dernier gagne, même après l'image : second passage de conversion), masque de
+  `_trns_mask` sur la clé brute de `_png_trns_key` et l'`IHDR` à position fixe de `_png_ihdr`,
+  conversions de Pillow quel que soit le mode réellement décodé (`rgb2l`, `I;16` écrêté à 255,
+  `convert_transparent` : premier élément d'un triplet sur du gris, entier sur du RGB comparé à
+  `(k, 0, 0)`) ; octets sur du gris ou du RGB et triplet sur une palette : illisible ;
+- zlib : sortie pleine, zlib s'arrête au premier octet à écrire sans contrôler une distance trop
+  lointaine (miniz la refuse au décodage) : échec rejoué dans un tampon jetable à historique
+  fictif (constaté sur une longueur d'IDAT altérée, `alterations.tsv`).
 
 ## 5. Plan de bascule
 

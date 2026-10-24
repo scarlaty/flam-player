@@ -18,7 +18,6 @@ function makeView(overrides: Partial<SettingsView> = {}): SettingsView {
     settings: {
       schema_version: 1,
       player_path: null,
-      python_path: null,
       cache_dir: null,
       default_catalog_url: "https://exemple.org/c.json",
       theme: "system",
@@ -27,7 +26,6 @@ function makeView(overrides: Partial<SettingsView> = {}): SettingsView {
     },
     resolved: {
       player_path: "C:\\app\\flam-player.exe",
-      python_path: null,
       cache_dir: "C:\\cache",
     },
     issues: [],
@@ -116,16 +114,14 @@ const callsOf = (cmd: string) => calls.filter((c) => c.cmd === cmd);
 
 it("affiche les valeurs utilisées, les problèmes et la section À propos", async () => {
   view = makeView({
-    issues: [
-      { field: "python_path", kind: "store_alias", message: "alias du Store ignoré" },
-    ],
+    issues: [{ field: "player_path", kind: "not_found", message: "fichier disparu" }],
   });
   await renderScreen();
 
   expect(screen.getByText("Utilisé : C:\\app\\flam-player.exe")).toBeInTheDocument();
-  expect(screen.getAllByText(/Aucun fichier trouvé/)).toHaveLength(1);
-  expect(screen.getByText("alias du Store ignoré")).toBeInTheDocument();
-  expect(screen.getByText(/embarque son propre Python/)).toBeInTheDocument();
+  expect(screen.queryByText(/Aucun fichier trouvé/)).toBeNull();
+  expect(screen.getByText("fichier disparu")).toBeInTheDocument();
+  expect(screen.queryByText(/Python/)).toBeNull();
   expect(await screen.findByText("flam-launcher — version 0.1.0")).toBeInTheDocument();
   expect(screen.getByText("Licence GPL v3.")).toBeInTheDocument();
   expect(screen.getByText("2 Ko occupés dans C:\\cache")).toBeInTheDocument();
@@ -147,17 +143,17 @@ it("valide les chemins en direct et n'enregistre rien tant qu'ils sont invalides
 });
 
 it("enregistre l'objet complet avec les chemins choisis (sélecteurs natifs)", async () => {
-  pickExecutable.mockResolvedValue("C:\\Python\\python.exe");
+  pickExecutable.mockResolvedValue("C:\\app\\flam-player.exe");
   pickFolder.mockResolvedValue("D:\\MonCache");
   await renderScreen();
 
-  const [, pythonBrowse, cacheBrowse] = screen.getAllByRole("button", {
+  const [playerBrowse, cacheBrowse] = screen.getAllByRole("button", {
     name: "Parcourir…",
   });
-  fireEvent.click(pythonBrowse!);
+  fireEvent.click(playerBrowse!);
   await waitFor(() =>
-    expect(screen.getByRole("textbox", { name: "Chemin de Python" })).toHaveValue(
-      "C:\\Python\\python.exe",
+    expect(screen.getByRole("textbox", { name: "Chemin de flam-player" })).toHaveValue(
+      "C:\\app\\flam-player.exe",
     ),
   );
   fireEvent.click(cacheBrowse!);
@@ -172,8 +168,7 @@ it("enregistre l'objet complet avec les chemins choisis (sélecteurs natifs)", a
   expect(await screen.findByText("Paramètres enregistrés")).toBeInTheDocument();
   expect(callsOf("settings_set")[0]?.args.settings).toEqual({
     schema_version: 1,
-    player_path: null,
-    python_path: "C:\\Python\\python.exe",
+    player_path: "C:\\app\\flam-player.exe",
     cache_dir: "D:\\MonCache",
     default_catalog_url: "https://exemple.org/c.json",
     theme: "system",

@@ -72,6 +72,38 @@ fn manifeste_identique_a_pillow() {
     );
 }
 
+fn unhex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// Combinaisons de transparence (#459) : `tRNS` rangé sous un mode et image décodée sous un
+/// autre (IHDR répété), `tRNS` après l'image, IHDR pas en tête ; PNG en hexadécimal.
+#[test]
+fn combinaisons_de_transparence_identiques_a_pillow() {
+    let rows = rows(&dir().join("combos.tsv"));
+    let mut errors = Vec::new();
+    for row in &rows {
+        let got = outcome(&unhex(&row[1]));
+        if got != row[2] {
+            errors.push(format!("{} : attendu {}, obtenu {got}", row[0], row[2]));
+        }
+    }
+    assert!(
+        rows.len() > 200,
+        "trop peu de combinaisons : {}",
+        rows.len()
+    );
+    assert!(
+        errors.is_empty(),
+        "{} écarts :\n{}",
+        errors.len(),
+        errors.join("\n")
+    );
+}
+
 #[test]
 fn troncatures_et_octets_alteres_identiques_a_pillow() {
     let mut errors = Vec::new();

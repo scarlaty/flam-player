@@ -4,6 +4,9 @@
 //! même granularité de sortie (un bloc n'est rendu qu'une fois entièrement décodé), un seul
 //! flux (les octets qui suivent la fin du flux sont ignorés, comme `unused_data`).
 //!
+//! Licence : écrit d'après le format public et le comportement observable de libbzip2, sans
+//! copie de son code, ce module n'est pas dérivé de libbzip2 (décision du mainteneur, #479).
+//!
 //! Pourquoi pas une crate : `bzip2-sys` et `libbz2-rs-sys` sont sous licence bzip2-1.0.6 (hors
 //! `ALLOWED_LICENSES`), et `bzip2-rs` (MIT/Apache-2.0) échoue sur un bloc compressé plus grand
 //! que la taille de bloc annoncée, ce qui arrive avec des données incompressibles (MP3) : ce
