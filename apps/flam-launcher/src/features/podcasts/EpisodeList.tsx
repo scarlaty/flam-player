@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { Episode } from "../../api/podcast";
 import { Button, CheckboxField, EmptyState } from "../../components";
 import { t } from "../../i18n";
@@ -78,7 +78,11 @@ export function EpisodeList({ sourceId, sourceName, episodes }: EpisodeListProps
   const [shortcutResult, setShortcutResult] = useState<string | null>(null);
 
   // « Afficher plus » disparaît parfois avec le focus : il passe au premier épisode ajouté.
-  useEffect(() => {
+  // Effet de mise en page (synchrone, à la validation du rendu) et non passif : l'effet du
+  // montage est ainsi toujours passé avant le premier clic. Un effet passif encore en attente
+  // consommait sinon `focusFrom` d'un clic très rapide sur la liste encore à 50 cases, et le
+  // focus était perdu (#489).
+  useLayoutEffect(() => {
     if (focusFrom.current === null) return;
     const boxes =
       list.current?.querySelectorAll<HTMLInputElement>("input[type=checkbox]");
