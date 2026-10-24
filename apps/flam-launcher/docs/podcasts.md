@@ -1326,7 +1326,11 @@ l'image d'une catégorie parmi les pochettes des épisodes qu'elle contient. **�
   d'une vignette. Le format est contrôlé par la **signature** à la conversion (PNG, JPEG, WebP) :
   SVG, GIF et tout autre contenu donnent « pas d'aperçu ». Aucune adresse n'est journalisée
   (D11). Les échecs (réseau, refus, image illisible) ne sont **pas** mis en cache : un nouvel
-  essai a lieu à la prochaine demande, que le front limite par la mémoïsation ci-dessous.
+  essai a lieu à la prochaine demande, que le front limite par la mémoïsation ci-dessous
+  (coût assumé : une catégorie dont toutes les images sont mortes refait ses essais, 3 à la
+  fois, à chaque ouverture du choix). Une image changée dans le flux supprime l'ancienne
+  vignette du même épisode. Limite : une purge de la source pendant un téléchargement en cours
+  peut échouer sous Windows (fichier ouvert) ; le reste part avec « Vider le cache ».
 - **Purge** : la génération de la source est lue **avant** la résolution de son adresse
   (`CacheAccess::at_generation`) ; une source supprimée entre-temps n'obtient ni lecture ni
   écriture de cache, et son dossier n'est pas recréé.

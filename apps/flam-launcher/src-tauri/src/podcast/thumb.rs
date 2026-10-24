@@ -118,11 +118,31 @@ fn read_thumb(dir: &Path, name: &str) -> Option<Vec<u8>> {
 /// téléchargements interrompus.
 fn write_thumb(dir: &Path, name: &str, png: &[u8]) -> std::io::Result<()> {
     sweep_stale(dir);
+    remove_outdated(dir, name);
     let tmp = dir.join(format!("{name}.part"));
     std::fs::write(&tmp, png)?;
     std::fs::rename(&tmp, dir.join(name)).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
+}
+
+/// Supprime les vignettes du même épisode que `name` portant une autre empreinte d'image
+/// (image changée dans le flux) : le dossier ne grossit pas à chaque changement.
+fn remove_outdated(dir: &Path, name: &str) {
+    let Some((episode, _)) = name.rsplit_once('-') else {
+        return;
+    };
+    let prefix = format!("{episode}-");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file = entry.file_name();
+        let file = file.to_string_lossy();
+        if file != name && file.starts_with(&prefix) && file.ends_with(".png") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn sweep_stale(dir: &Path) {

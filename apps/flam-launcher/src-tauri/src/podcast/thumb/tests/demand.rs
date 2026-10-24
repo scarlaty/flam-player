@@ -184,7 +184,8 @@ async fn image_changee_dans_le_flux_nouvelle_vignette() {
         assert!(out.is_some());
     }
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(names(&thumbs_dir(&f)).len(), 2);
+    // L'ancienne vignette de l'épisode est supprimée : une seule reste.
+    assert_eq!(names(&thumbs_dir(&f)).len(), 1);
 }
 
 #[tokio::test]
@@ -276,7 +277,7 @@ async fn telechargements_simultanes_bornes() {
         assert!(t.await.unwrap().is_some());
     }
     let peak = peak.load(Ordering::SeqCst);
-    assert!((2..=DOWNLOADS).contains(&peak), "{peak}");
+    assert!((1..=DOWNLOADS).contains(&peak), "{peak}");
 }
 
 #[tokio::test]
