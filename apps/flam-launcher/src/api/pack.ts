@@ -35,6 +35,13 @@ export interface PackComposition {
   cover: CoverChoice;
   /** Menu racine. */
   menu: PackNode[];
+  /**
+   * Titres lus à voix haute (#462) : épisodes, catégories et titre du pack. Absent : `false`
+   * (omis par le backend quand il est faux).
+   */
+  titles_audio?: boolean;
+  /** Voix choisie (`tts_voices`) ; absente : voix mémorisée du poste, sinon voix par défaut. */
+  titles_voice?: string | null;
 }
 
 export type ProblemCode =

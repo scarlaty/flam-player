@@ -7,7 +7,7 @@
 //!
 //! - `startAction` → scène d'entrée (passage sans audio) → menu racine ;
 //! - un menu est une action à plusieurs entrées (carrousel) ; chaque option est une scène
-//!   image sans audio dont `ok` mène à l'action « jouer l'épisode » (action à une entrée) ou à
+//!   image (audio : titre lu ou rien, voir plus bas) dont `ok` mène à l'action « jouer l'épisode » (action à une entrée) ou à
 //!   l'action du sous-menu ;
 //! - un épisode est une scène `autoplay` : à sa fin, l'épisode **suivant du même menu** (les
 //!   catégories sont sautées) ; la fin du dernier retourne à **ce menu**, focalisé sur l'épisode
@@ -18,7 +18,12 @@
 //!   (`telmi2flam::text`), 40 caractères au plus (A6) ;
 //! - images : celle de l'épisode, sinon l'image unie de repli (D13) ; image d'une catégorie =
 //!   image de son premier épisode (N5 a) ; couverture choisie par l'appelant (N6 b), sinon
-//!   repli.
+//!   repli ;
+//! - titres lus (synthèse vocale, § 12, #462) : l'audio d'une scène d'option est le titre
+//!   prononcé de l'épisode (`audios/tNNN.mp3`, NNN = rang de l'épisode) ou de la catégorie
+//!   (`audios/cNNN.mp3`, NNN = rang de la catégorie), joué quand l'option prend le focus ;
+//!   sans titre lu, `"audio": null` (`telmi2flam` met alors `silent.mp3`). Le titre lu du pack
+//!   est `title.mp3`, à la racine de l'archive. Pas d'annonce avant l'épisode.
 //!
 //! Module pur (ni réseau, ni Tauri) : les MP3 (#214) et PNG (#215) sont déjà sur le disque.
 //!
@@ -102,6 +107,8 @@ pub struct PackEpisode {
     pub audio: PathBuf,
     /// Absente : image unie de repli (D13).
     pub image: Option<PathBuf>,
+    /// MP3 du titre lu (§ 12) ; absent : option muette (`"audio": null`).
+    pub title_audio: Option<PathBuf>,
 }
 
 /// Option d'un menu : un épisode ou une catégorie (sous-menu).
@@ -111,6 +118,8 @@ pub enum MenuEntry {
     Category {
         name: String,
         entries: Vec<MenuEntry>,
+        /// MP3 du nom lu (§ 12) ; absent : option muette (`"audio": null`).
+        audio: Option<PathBuf>,
     },
 }
 
@@ -124,6 +133,8 @@ pub struct Pack {
     pub cover: Option<PathBuf>,
     /// Menu racine.
     pub menu: Vec<MenuEntry>,
+    /// MP3 du titre lu du pack (`title.mp3`, § 12) ; absent : pas de `title.mp3`.
+    pub title_audio: Option<PathBuf>,
 }
 
 /// Résumé de l'archive écrite.
@@ -297,6 +308,19 @@ fn episode_file(n: usize, ext: &str) -> String {
     format!("e{n:03}.{ext}")
 }
 
+/// Titre lu de l'épisode `n` (à partir de 1), dans `audios/`.
+fn episode_title_file(n: usize) -> String {
+    format!("t{n:03}.mp3")
+}
+
+/// Nom lu de la catégorie `n` (à partir de 1), dans `audios/`.
+fn category_title_file(n: usize) -> String {
+    format!("c{n:03}.mp3")
+}
+
+/// Titre lu du pack, à la racine de l'archive (lu par `telmi2flam`).
+const TITLE_AUDIO_NAME: &str = "title.mp3";
+
 /// Graphe Telmi construit à partir de l'arborescence (aucune entrée/sortie).
 #[derive(Debug, Default)]
 struct Graph<'a> {
@@ -306,6 +330,9 @@ struct Graph<'a> {
     /// Épisodes dans l'ordre de l'arborescence (parcours en profondeur) : le n-ième (à partir
     /// de 1) a pour fichiers `eNNN.mp3` et `eNNN.png`.
     episodes: Vec<&'a PackEpisode>,
+    /// Titres lus des options (§ 12) : nom d'entrée dans `audios/` et MP3 source, dans l'ordre
+    /// du parcours.
+    title_audios: Vec<(String, &'a Path)>,
     /// Épisodes de tout le pack (calculé avant le parcours), pour le message de dépassement.
     total_episodes: usize,
     menus: usize,
@@ -373,7 +400,7 @@ impl<'a> Graph<'a> {
         for (i, entry) in entries.iter().enumerate() {
             self.options += 1;
             let option = format!("o{}", self.options);
-            let (image, ok, text) = match entry {
+            let (image, ok, text, spoken) = match entry {
                 MenuEntry::Episode(ep) => {
                     if self.episodes.len() >= MAX_EPISODES {
                         return Err(ArchiveError::TooManyEpisodes(self.total_episodes));
@@ -398,17 +425,34 @@ impl<'a> Graph<'a> {
                     self.actions
                         .insert(play.clone(), json!([{ "stage": stage }]));
                     played.push((stage, play.clone()));
-                    (image, trans(&play, 0), text)
+                    let spoken = ep.title_audio.as_deref().map(|mp3| {
+                        let file = episode_title_file(n);
+                        self.title_audios.push((file.clone(), mp3));
+                        file
+                    });
+                    (image, trans(&play, 0), text, spoken)
                 }
-                MenuEntry::Category { name, entries } => {
+                MenuEntry::Category {
+                    name,
+                    entries,
+                    audio,
+                } => {
                     self.categories += 1;
-                    let fallback = format!("Catégorie {}", self.categories);
+                    let k = self.categories;
+                    let fallback = format!("Catégorie {k}");
                     if entries.is_empty() {
                         return Err(ArchiveError::EmptyCategory(one_line(name)));
                     }
-                    let sub = format!("m{}", self.categories);
+                    // Nom lu noté avant le sous-menu : ordre du parcours (la catégorie, puis
+                    // ses options).
+                    let spoken = audio.as_deref().map(|mp3| {
+                        let file = category_title_file(k);
+                        self.title_audios.push((file.clone(), mp3));
+                        file
+                    });
+                    let sub = format!("m{k}");
                     let image = self.menu(entries, &sub, depth + 1, Some((action, i)))?;
-                    (image, trans(&sub, 0), label(name, &fallback))
+                    (image, trans(&sub, 0), label(name, &fallback), spoken)
                 }
             };
             if first_image.is_none() {
@@ -422,7 +466,7 @@ impl<'a> Graph<'a> {
                 option.clone(),
                 json!({
                     "image": image,
-                    "audio": null,
+                    "audio": spoken,
                     "ok": ok,
                     "home": home,
                     "control": { "ok": true, "home": control_home, "autoplay": false },
@@ -554,10 +598,10 @@ fn read_png(path: &Path) -> Result<Vec<u8>, ArchiveError> {
 /// écritures différentes du même fichier (casse, `..`, lien) ne sont pas vues. L'appelant (#217)
 /// génère les chemins des MP3 dans le dossier de travail de la tâche, un par épisode, ce
 /// contrôle ne garde donc que d'une erreur de construction du pack.
-fn check_files(pack: &Pack, episodes: &[&PackEpisode]) -> Result<(), ArchiveError> {
+fn check_files(pack: &Pack, graph: &Graph<'_>) -> Result<(), ArchiveError> {
     let mut seen = HashSet::new();
     let mut total = 0u64;
-    for ep in episodes {
+    for ep in &graph.episodes {
         if !seen.insert(ep.audio.as_path()) {
             return Err(ArchiveError::DuplicateEpisode(one_line(&ep.title)));
         }
@@ -567,6 +611,25 @@ fn check_files(pack: &Pack, episodes: &[&PackEpisode]) -> Result<(), ArchiveErro
         }
         if let Some(img) = &ep.image {
             read_png(img)?;
+        }
+    }
+    // Titres lus (§ 12) : mêmes contrôles, comptés dans le total ; un même fichier ne sert
+    // jamais deux fois (erreur de construction du pack).
+    let titles = graph
+        .title_audios
+        .iter()
+        .map(|(_, path)| *path)
+        .chain(pack.title_audio.as_deref());
+    for path in titles {
+        if !seen.insert(path) {
+            return Err(ArchiveError::InvalidAudio {
+                path: shown(path),
+                reason: "fichier utilisé deux fois".into(),
+            });
+        }
+        total += check_audio(path)?;
+        if total > MAX_TOTAL_AUDIO_BYTES {
+            return Err(ArchiveError::TooLarge(total));
         }
     }
     if let Some(cover) = &pack.cover {
@@ -619,7 +682,7 @@ pub fn write_archive(
 ) -> Result<ArchiveSummary, ArchiveError> {
     check_metadata(&pack.metadata)?;
     let graph = Graph::build(&pack.menu)?;
-    check_files(pack, &graph.episodes)?;
+    check_files(pack, &graph)?;
     if cancelled() {
         return Err(ArchiveError::Cancelled);
     }
@@ -706,6 +769,16 @@ fn write_zip(
         zip.write_all(&png)?;
         zip.start_file(format!("audios/{}", episode_file(n, "mp3")), options)?;
         copy_audio(&ep.audio, &mut zip, &mut buf, &mut total, &check)?;
+    }
+    for (name, path) in &graph.title_audios {
+        check()?;
+        zip.start_file(format!("audios/{name}"), options)?;
+        copy_audio(path, &mut zip, &mut buf, &mut total, &check)?;
+    }
+    if let Some(path) = &pack.title_audio {
+        check()?;
+        zip.start_file(TITLE_AUDIO_NAME, options)?;
+        copy_audio(path, &mut zip, &mut buf, &mut total, &check)?;
     }
     check()?;
     let mut out = zip.finish()?;

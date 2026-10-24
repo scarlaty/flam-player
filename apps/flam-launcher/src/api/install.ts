@@ -47,6 +47,11 @@ export interface PackStatus {
   episodes: number;
   /** Titres des épisodes retirés du pack (échec de téléchargement ou de conversion, P7). */
   dropped: string[];
+  /**
+   * Avertissements des titres lus (#462) : voix remplacée par la voix par défaut, titres restés
+   * muets. Vide sans titres lus.
+   */
+  warnings: string[];
 }
 
 /** Résultat de `pack_create` : `task` vaut `null` si la composition est refusée. */

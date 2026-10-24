@@ -134,6 +134,7 @@ fn composition() -> PackComposition {
                 ],
             },
         ],
+        ..PackComposition::default()
     }
 }
 

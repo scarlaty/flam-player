@@ -113,6 +113,26 @@ pub struct Settings {
     /// Remplissage des vignettes des histoires converties (#279). Absent des anciens fichiers :
     /// `Flou` (`#[serde(default)]`, sans migration de schéma).
     pub thumb_fit: ThumbFit,
+    /// Voix des titres lus des packs (#462, `VoiceInformation.Id`), mémorisée par poste ;
+    /// `None` : voix française par défaut. Absent des anciens fichiers : `None`.
+    pub tts_voice: Option<String>,
+}
+
+/// Longueur maximale d'un identifiant de voix (`tts_voice`, `titles_voice` d'un pack).
+pub const MAX_VOICE_ID_CHARS: usize = 512;
+
+/// Identifiant de voix normalisé : espaces retirés, vide -> `None` ; trop long ou avec des
+/// caractères de contrôle : refusé.
+pub fn clean_voice_id(value: Option<String>) -> AppResult<Option<String>> {
+    let value = clean(value);
+    if let Some(id) = &value {
+        if id.chars().count() > MAX_VOICE_ID_CHARS || id.chars().any(char::is_control) {
+            return Err(AppError::Validation(
+                "identifiant de voix invalide (trop long ou caractères de contrôle)".into(),
+            ));
+        }
+    }
+    Ok(value)
 }
 
 /// Téléchargements simultanés par défaut.
@@ -131,6 +151,7 @@ impl Default for Settings {
             max_downloads: DEFAULT_MAX_DOWNLOADS,
             carrier_consent: None,
             thumb_fit: ThumbFit::default(),
+            tts_voice: None,
         }
     }
 }
@@ -435,6 +456,7 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
         max_downloads: settings.max_downloads,
         carrier_consent: settings.carrier_consent,
         thumb_fit: settings.thumb_fit,
+        tts_voice: clean_voice_id(settings.tts_voice)?,
     })
 }
 
@@ -870,11 +892,13 @@ mod tests {
                 max_downloads: 3,
                 carrier_consent: None,
                 thumb_fit: ThumbFit::Rogner,
+                tts_voice: Some("  fr-hortense ".into()),
             })
             .unwrap();
         assert_eq!(saved.schema_version, SCHEMA_VERSION);
         assert_eq!(saved.player_path, Some(player.display().to_string()));
         assert_eq!(saved.thumb_fit, ThumbFit::Rogner);
+        assert_eq!(saved.tts_voice.as_deref(), Some("fr-hortense"));
         assert_eq!(store.load().unwrap(), saved);
     }
 
@@ -1190,5 +1214,17 @@ mod tests {
         let cache = store.resolved_cache_dir(&env).unwrap();
         assert_eq!(cache, dir.path().join("cache-defaut"));
         assert!(cache.is_dir());
+    }
+
+    #[test]
+    fn voix_des_titres_absente_des_anciens_fichiers_et_bornee() {
+        // Fichier écrit avant #462 : pas de `tts_voice`.
+        let old: Settings =
+            serde_json::from_str(r#"{"schema_version": 1, "max_downloads": 2}"#).unwrap();
+        assert_eq!(old.tts_voice, None);
+        assert_eq!(clean_voice_id(Some("   ".into())).unwrap(), None);
+        for bad in ["a\u{0}b".to_string(), "v".repeat(MAX_VOICE_ID_CHARS + 1)] {
+            assert_eq!(clean_voice_id(Some(bad)).unwrap_err().kind(), "validation");
+        }
     }
 }

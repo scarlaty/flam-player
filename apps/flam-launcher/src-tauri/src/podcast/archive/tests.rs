@@ -49,7 +49,16 @@ impl Fixture {
             title: title.to_string(),
             audio,
             image: Some(image),
+            title_audio: None,
         })
+    }
+
+    /// MP3 de titre lu (§ 12), distinct à chaque appel.
+    fn title_mp3(&mut self) -> PathBuf {
+        self.next += 1;
+        let path = self.path(&format!("title{}.mp3", self.next));
+        fs::write(&path, mp3_bytes(3 + self.next % 5)).unwrap();
+        path
     }
 
     fn episodes(&mut self, count: usize) -> Vec<MenuEntry> {
@@ -79,6 +88,7 @@ fn cat(name: &str, entries: Vec<MenuEntry>) -> MenuEntry {
     MenuEntry::Category {
         name: name.to_string(),
         entries,
+        audio: None,
     }
 }
 
@@ -93,6 +103,7 @@ fn pack(menu: Vec<MenuEntry>, cover: Option<PathBuf>) -> Pack {
         },
         cover,
         menu,
+        title_audio: None,
     }
 }
 
@@ -278,6 +289,180 @@ fn sous_menus_sur_trois_niveaux() {
     }
     assert_eq!(nodes.stage(&r[1])["image"], "e002.png");
     assert_eq!(nodes.stage(&xo[1])["image"], "e003.png");
+}
+
+// --- titres lus (§ 12, #462) -------------------------------------------------------------------
+
+/// Donne un titre lu à chaque option de l'arborescence dont le libellé n'est pas dans `mute`.
+fn speak_all(fx: &mut Fixture, menu: &mut [MenuEntry], mute: &[&str]) {
+    for entry in menu {
+        match entry {
+            MenuEntry::Episode(ep) => {
+                if !mute.contains(&ep.title.as_str()) {
+                    ep.title_audio = Some(fx.title_mp3());
+                }
+            }
+            MenuEntry::Category {
+                name,
+                entries,
+                audio,
+            } => {
+                if !mute.contains(&name.as_str()) {
+                    *audio = Some(fx.title_mp3());
+                }
+                speak_all(fx, entries, mute);
+            }
+        }
+    }
+}
+
+/// Options de l'arborescence (parcours en profondeur) : libellé, audio de la scène d'option.
+fn option_audios(nodes: &Nodes, notes: &Value, action: &str, out: &mut Vec<(String, Value)>) {
+    for option in nodes.action(action) {
+        let st = nodes.stage(&option);
+        out.push((
+            notes[&option]["title"].as_str().unwrap().to_string(),
+            st["audio"].clone(),
+        ));
+        let (target, _) = nodes.target(&option, "ok");
+        let list = nodes.action(&target);
+        // Sous-menu : plusieurs options ou une option qui n'est pas un épisode.
+        if !(list.len() == 1 && list[0].starts_with('e')) {
+            option_audios(nodes, notes, &target, out);
+        }
+    }
+}
+
+#[test]
+fn titres_lus_un_audio_par_option_et_title_mp3() {
+    let mut fx = Fixture::new();
+    let mut menu = three_levels(&mut fx);
+    speak_all(&mut fx, &mut menu, &[]);
+    let mut p = pack(menu, None);
+    let title = fx.title_mp3();
+    p.title_audio = Some(title.clone());
+    write_archive(&p, &fx.out(), &never).unwrap();
+    let files = read_zip(&fx.out());
+    let nodes = Nodes::of(&files);
+    let notes = json_of(&files, "notes.json");
+    let mut audios = Vec::new();
+    option_audios(&nodes, &notes, &nodes.menu_of_root(), &mut audios);
+    // Épisodes A..F = 1..6 ; catégories X = 1, Y = 2 (ordre du parcours).
+    let expected = [
+        ("A", "t001.mp3"),
+        ("X", "c001.mp3"),
+        ("B", "t002.mp3"),
+        ("Y", "c002.mp3"),
+        ("C", "t003.mp3"),
+        ("D", "t004.mp3"),
+        ("E", "t005.mp3"),
+        ("F", "t006.mp3"),
+    ];
+    assert_eq!(
+        audios,
+        expected
+            .iter()
+            .map(|(l, a)| (l.to_string(), Value::from(*a)))
+            .collect::<Vec<_>>()
+    );
+    // Chaque audio cité est dans l'archive, copie exacte de son MP3.
+    let sources: Vec<&Path> = {
+        fn walk<'a>(menu: &'a [MenuEntry], out: &mut Vec<(&'a str, &'a Path)>) {
+            for e in menu {
+                match e {
+                    MenuEntry::Episode(ep) => {
+                        out.push((&ep.title, ep.title_audio.as_deref().unwrap()))
+                    }
+                    MenuEntry::Category {
+                        name,
+                        entries,
+                        audio,
+                    } => {
+                        out.push((name, audio.as_deref().unwrap()));
+                        walk(entries, out);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&p.menu, &mut out);
+        out.into_iter().map(|(_, path)| path).collect()
+    };
+    for ((_, file), src) in expected.iter().zip(sources) {
+        assert_eq!(
+            files[&format!("audios/{file}")],
+            fs::read(src).unwrap(),
+            "{file}"
+        );
+    }
+    assert_eq!(files["title.mp3"], fs::read(&title).unwrap());
+    // Scènes d'épisode et d'entrée inchangées : pas d'annonce avant l'épisode.
+    let r = nodes.action(&nodes.menu_of_root());
+    assert_eq!(nodes.stage(&nodes.played_by(&r[0]))["audio"], "e001.mp3");
+    let audio_entries = files.keys().filter(|k| k.starts_with("audios/")).count();
+    assert_eq!(audio_entries, 6 + 8, "épisodes et titres lus, rien d'autre");
+}
+
+#[test]
+fn titres_lus_partiels_les_autres_options_restent_muettes() {
+    let mut fx = Fixture::new();
+    let mut menu = three_levels(&mut fx);
+    // B et Y muets (échec ou rien à lire) : `"audio": null` (silent.mp3 par telmi2flam).
+    speak_all(&mut fx, &mut menu, &["B", "Y"]);
+    write_archive(&pack(menu, None), &fx.out(), &never).unwrap();
+    let files = read_zip(&fx.out());
+    let nodes = Nodes::of(&files);
+    let notes = json_of(&files, "notes.json");
+    let mut audios = Vec::new();
+    option_audios(&nodes, &notes, &nodes.menu_of_root(), &mut audios);
+    for (label, audio) in &audios {
+        if label == "B" || label == "Y" {
+            assert!(audio.is_null(), "{label} : {audio}");
+        } else {
+            let name = audio.as_str().unwrap_or_else(|| panic!("{label} muet"));
+            assert!(files.contains_key(&format!("audios/{name}")), "{name}");
+        }
+    }
+    assert!(!files.contains_key("audios/t002.mp3"));
+    assert!(!files.contains_key("audios/c002.mp3"));
+    assert!(!files.contains_key("title.mp3"), "pas de titre lu du pack");
+}
+
+#[test]
+fn sans_titre_lu_l_archive_est_inchangee() {
+    let mut fx = Fixture::new();
+    let menu = three_levels(&mut fx);
+    write_archive(&pack(menu, None), &fx.out(), &never).unwrap();
+    let files = read_zip(&fx.out());
+    assert!(!files.contains_key("title.mp3"));
+    assert!(files
+        .keys()
+        .filter(|k| k.starts_with("audios/"))
+        .all(|k| k.starts_with("audios/e")));
+}
+
+#[test]
+fn un_titre_lu_invalide_ou_reutilise_est_refuse_sans_rien_ecrire() {
+    let mut fx = Fixture::new();
+    let mut menu = fx.episodes(2);
+    let bad = fx.path("bad.mp3");
+    fs::write(&bad, b"pas un mp3").unwrap();
+    if let MenuEntry::Episode(ep) = &mut menu[0] {
+        ep.title_audio = Some(bad);
+    }
+    let err = write_archive(&pack(menu.clone(), None), &fx.out(), &never).unwrap_err();
+    assert!(matches!(err, ArchiveError::InvalidAudio { .. }), "{err}");
+    assert!(!fx.out().exists());
+    // Même MP3 pour le titre lu de l'épisode et celui du pack.
+    let shared = fx.title_mp3();
+    if let MenuEntry::Episode(ep) = &mut menu[0] {
+        ep.title_audio = Some(shared.clone());
+    }
+    let mut p = pack(menu, None);
+    p.title_audio = Some(shared);
+    let err = write_archive(&p, &fx.out(), &never).unwrap_err();
+    assert!(err.to_string().contains("deux fois"), "{err}");
+    assert!(!fx.out().exists());
 }
 
 #[test]

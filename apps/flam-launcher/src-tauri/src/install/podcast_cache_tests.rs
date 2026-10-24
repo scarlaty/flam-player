@@ -99,6 +99,7 @@ fn composition() -> PackComposition {
             source_id: "s1".into(),
         },
         menu: vec![ep("s1", "g1"), ep("s1", "g2"), ep("s2", "g3")],
+        ..PackComposition::default()
     }
 }
 
