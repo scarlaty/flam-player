@@ -312,7 +312,7 @@ fn at(mut p: Problem, path: &[usize]) -> Problem {
     p
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= MAX_ID_LEN && !id.chars().any(char::is_control)
 }
 
@@ -361,7 +361,25 @@ impl<'a> Walker<'a> {
             path.push(i);
             match node {
                 PackNode::Episode(e) => self.episode(e, path),
-                PackNode::Category { name, entries, .. } => {
+                PackNode::Category {
+                    name,
+                    entries,
+                    image,
+                } => {
+                    // Référence d'image bornée comme tout identifiant d'épisode (#504) ; sa
+                    // présence dans la catégorie est vérifiée à la création du pack.
+                    if image
+                        .as_ref()
+                        .is_some_and(|e| !valid_id(&e.source_id) || !valid_id(&e.episode_id))
+                    {
+                        self.problems.push(at(
+                            problem(
+                                ProblemCode::InvalidId,
+                                "identifiant d'image de catégorie invalide".into(),
+                            ),
+                            path,
+                        ));
+                    }
                     let name = name.trim();
                     let len = name.chars().count();
                     if len == 0 || len > MAX_LABEL_CHARS || name.chars().any(char::is_control) {
