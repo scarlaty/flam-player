@@ -26,6 +26,8 @@
 //! - `meta.json` : `{ url_sha256, etag, last_modified, sha256, fetched_at }`, écrit après
 //!   `feed.xml`.
 //!
+//! - `mp3/` : MP3 convertis gardés pour refaire un pack (#460, [`super::mp3cache`]).
+//!
 //! Tout fichier propre à une source podcast (épisodes téléchargés compris) doit vivre sous ce
 //! dossier : la suppression de la source le purge entièrement (D15), sans toucher aux
 //! histoires installées (P4).
@@ -570,6 +572,19 @@ impl PodcastService {
         }
         removed??;
         Ok(())
+    }
+
+    /// Verrou de la source pour le cache des MP3 convertis (#460) : `None` si elle a été
+    /// purgée depuis la lecture de `generation`. Ne prend **pas** le portillon du cache :
+    /// l'appelant (tâche d'installation) le tient déjà en lecture, et une seconde prise
+    /// bloquerait derrière un vidage du cache en attente.
+    pub async fn lock_source(
+        &self,
+        source_id: &str,
+        generation: u64,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let guard = self.source_lock(source_id).lock_owned().await;
+        (self.generation(source_id) == generation).then_some(guard)
     }
 
     /// Flux en cache, sans réseau (vue vide si jamais obtenu).
