@@ -66,6 +66,10 @@ brouillon est enregistré automatiquement.
 annulation dans le panneau des tâches). Les épisodes qui échouent sont retirés du pack et listés
 à la fin. Plafonds : 50 épisodes, 200 Mo par épisode, 1 Gio par pack.
 
+Chaque pack créé garde sa composition sous un nom (**Compositions enregistrées**, écran
+Podcasts, 50 au plus) : « Ouvrir » la recopie dans le brouillon pour refaire le pack ou en
+dériver un autre (chaque création donne une nouvelle histoire) ; elle se renomme et se supprime.
+
 À la première création, un message rappelle les droits (usage personnel et familial, pas de
 partage, publicité comprise) ; « J'ai compris » le ferme et il n'est plus affiché. Détails et
 décisions : [docs/podcasts.md](docs/podcasts.md).
