@@ -1007,7 +1007,8 @@ avec 0 même si aucune fin n'a été jouée ou si la couverture est partielle. P
 
 `.cache/telmi/compat/status.json` (dans `<cache>/compat/`), réécrit atomiquement avec
 `report.json` après chaque histoire (sur une grosse campagne, quand une écriture dépasse 0,25 s,
-les suivantes sont espacées de dix fois sa durée ; l'écriture finale est toujours faite). Format **stable et versionné** (enveloppe) ; de
+les suivantes sont espacées de dix fois sa durée ; l'écriture finale est toujours faite, et un
+journal court `report.pending.json` couvre l'intervalle). Format **stable et versionné** (enveloppe) ; de
 nouvelles clés optionnelles pourront être ajoutées, jamais renommées (sinon
 `schema_version` change).
 

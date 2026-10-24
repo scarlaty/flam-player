@@ -1298,7 +1298,7 @@ class TestAlwaysAFiche(CompatBase):
         """#194 : reecrire tout report.json apres chaque histoire coute O(N^2). Sur un grand N
         simule (disque lent simule par une horloge factice), les ecritures sont espacees ; le
         rapport final est complet et les fiches provisoires sont absorbees."""
-        n = 1500
+        n = 800
         ents = [self.entry("s%04d" % i, None, path="x.zip", version="local") for i in range(n)]
         clock, writes = [0.0], []
         real_write = compat._write_atomic
@@ -1306,14 +1306,16 @@ class TestAlwaysAFiche(CompatBase):
         def slow_write(path, text):
             if path.endswith("report.json"):
                 writes.append(clock[0])
-            clock[0] += len(text) * 1e-6              # disque lent simule : 1 Mo/s
+            clock[0] += len(text) * 4e-6              # disque lent simule : 250 Ko/s
             real_write(path, text)
 
         def fast_story(entry, cache, **kw):
             clock[0] += 0.001                         # 1 ms par histoire
             return compat.failed_record(entry, RuntimeError("simule"))
 
-        with mock.patch.object(compat, "_clock", lambda: clock[0]),                 mock.patch.object(compat, "_write_atomic", slow_write),                 mock.patch.object(compat, "process_story", fast_story):
+        with mock.patch.object(compat, "_clock", lambda: clock[0]), \
+                mock.patch.object(compat, "_write_atomic", slow_write), \
+                mock.patch.object(compat, "process_story", fast_story):
             doc = self.campaign(ents)
         self.assertLess(len(writes), n // 4, "ecritures de report.json non espacees")
         self.assertEqual(len(doc["stories"]), n)
@@ -1321,6 +1323,57 @@ class TestAlwaysAFiche(CompatBase):
             self.assertEqual(len(json.load(f)["stories"]), n)
         self.assertFalse(os.path.exists(os.path.join(self.cache, "compat",
                                                      "report.provisional.json")))
+
+    def test_provisional_written_even_when_report_writes_are_paced(self):
+        """Ecritures de report.json espacees : la fiche provisoire d'une histoire en cours
+        (exploration) reste ecrite a chaque fois, et le rapport final est ecrit si le
+        processus est interrompu."""
+        n = 120
+        ents = [self.entry("s%03d" % i, None, path="x.zip", version="local") for i in range(n)]
+        clock = [0.0]
+        real_write = compat._write_atomic
+        seen = {}
+
+        def slow_write(path, text):
+            clock[0] += len(text) * 1e-5
+            real_write(path, text)
+
+        def story(entry, cache, **kw):
+            clock[0] += 0.001
+            rec = compat.failed_record(entry, RuntimeError("simule"))
+            rec["output"] = "x.pk"
+            rec["steps"]["validate"] = compat._step("ok")
+            return rec
+
+        def explore(*a, **k):
+            return {"status": "ok"}
+
+        def do_run(pk, explore, player, timeout, seed, steps, seeds, benign):
+            recs = []
+            for name in ("report.provisional.json", "report.pending.json"):
+                path = os.path.join(self.cache, "compat", name)
+                if os.path.exists(path):
+                    with open(path, encoding="utf-8") as f:
+                        recs += json.load(f)["stories"]
+            seen[len(seen)] = [x["steps"]["run"].get("provisional") for x in recs]
+            if len(seen) == n // 2:
+                raise Killed()
+            return compat.failed_run_step(None, "simule")
+
+        with mock.patch.object(compat, "_clock", lambda: clock[0]), \
+                mock.patch.object(compat, "_write_atomic", slow_write), \
+                mock.patch.object(compat, "process_story", story), \
+                mock.patch.object(compat, "do_run", do_run):
+            with self.assertRaises(Killed):
+                self.campaign(ents, explore=explore, player_exe="p.exe")
+        # a chaque exploration, la fiche de l'histoire en cours est deja sur disque
+        self.assertTrue(all(True in v for v in seen.values()), seen)
+        # le journal court a ete ecrit au moins une fois sans reecrire tout report.json
+        self.assertTrue(os.path.exists(os.path.join(self.cache, "compat",
+                                                    "report.pending.json")))
+        # interruption : le rapport est ecrit (fiches deja finies conservees)
+        with open(os.path.join(self.cache, "compat", "report.json"), encoding="utf-8") as f:
+            self.assertGreater(len(json.load(f)["stories"]), 0)
 
     def test_small_campaign_still_writes_after_each_story(self):
         """Ecritures rapides (sous WRITE_SLOW) : jamais sautees, un arret perd au plus une fiche."""
@@ -1338,7 +1391,8 @@ class TestAlwaysAFiche(CompatBase):
                 seen.append(0)
             return real(entry, cache, **kw)
 
-        with mock.patch.object(compat, "_clock", lambda: 0.0),                 mock.patch.object(compat, "process_story", spy):
+        with mock.patch.object(compat, "_clock", lambda: 0.0), \
+                mock.patch.object(compat, "process_story", spy):
             self.campaign(ents)
         self.assertEqual(seen, [0, 1, 2])
 

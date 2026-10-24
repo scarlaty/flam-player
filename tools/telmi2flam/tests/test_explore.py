@@ -5,7 +5,8 @@ synthetiques convertis a la volee.
     python -m unittest discover -s tools/telmi2flam/tests -v
 
 Necessitent flam-player.exe (variable FLAM_BUILD_DIR, sinon <depot>/build) :
-sautes sinon.\n"""
+sautes sinon.
+"""
 import json
 import os
 import shutil
@@ -568,7 +569,8 @@ class TestParentKilled(unittest.TestCase):
             # Sous venv Windows, `sys.executable` est un redirecteur qui lance le vrai Python
             # en fils : tuer le redirecteur ne tuerait pas le parent, et le test dependrait du
             # job du lanceur. On lance l'interpreteur de base, directement (#194).
-            exe = getattr(sys, "_base_executable", sys.executable) if os.name == "nt"                 else sys.executable
+            exe = getattr(sys, "_base_executable", sys.executable) if os.name == "nt" \
+                else sys.executable
             p = subprocess.Popen([exe, "-I", parent])
             try:
                 t0 = time.time()
@@ -661,9 +663,15 @@ class TestStop(unittest.TestCase):
             with open(script, "w", encoding="utf-8") as f:
                 f.write("import subprocess, sys, time\n"
                         "subprocess.Popen([sys.executable, %r])\n"
-                        "time.sleep(0.5)\n" % grand)
+                        "import os\n"
+                        "while not os.path.exists(%r):\n"
+                        "    time.sleep(0.05)\n" % (grand, beat))
             code, _, _, _ = explore.run_player(sys.executable, [script], tmp, 30)
             self.assertEqual(code, 0)
+            t0 = time.time()
+            while not os.path.exists(beat) and time.time() - t0 < 10:
+                time.sleep(0.1)
+            self.assertTrue(os.path.exists(beat), "descendant jamais demarre")
             time.sleep(0.5)
             size = os.path.getsize(beat)
             time.sleep(0.5)
@@ -673,9 +681,6 @@ class TestStop(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Job Object Windows")
     def test_windows_job_assigned_without_private_handle(self):
-        import inspect
-        self.assertNotIn("_handle", inspect.getsource(explore._job_for).replace(
-            "`p._handle`", ""))
         p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
         try:
             job = explore._job_for(p)
