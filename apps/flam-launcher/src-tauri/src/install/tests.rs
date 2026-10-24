@@ -275,6 +275,7 @@ async fn telechargement_conversion_et_installation() {
 #[tokio::test]
 async fn echec_de_conversion_type() {
     let Some(py) = fake_converter() else { return };
+    let logs = crate::testlog::Logs::capture();
     let ctx = Ctx::new(Some(py));
     let server = serve(zip_bytes("fail")).await;
     let task = ctx
@@ -286,7 +287,16 @@ async fn echec_de_conversion_type() {
     let error = failed.error.unwrap();
     assert_eq!(error.kind, "conversion");
     assert_eq!(error.code.as_deref(), Some("missing_asset"));
-    assert!(error.message.contains("s1.png"), "{}", error.message);
+    // Message fixe par code : le nom de fichier du convertisseur n'est ni montré ni journalisé (#475).
+    assert!(!error.message.contains("s1.png"), "{}", error.message);
+    assert!(
+        error.message.contains("absent de l'archive"),
+        "{}",
+        error.message
+    );
+    let text = logs.text();
+    assert!(!text.contains("s1.png"), "{text}");
+    assert!(text.contains("conversion (missing_asset)"), "{text}");
     assert!(matches!(
         ctx.events.all().last(),
         Some(Recorded::Failed(InstallFailed {
