@@ -558,13 +558,15 @@ fn preview_with(
 ) -> Result<PreviewInfo, SpeechError> {
     let mine = generation.fetch_add(1, Ordering::SeqCst) + 1;
     stop();
-    let wav = prepare_preview(synth, text, voice)?;
+    let result = prepare_preview(synth, text, voice);
+    // Aperçu abandonné entre-temps : ni lecture, ni erreur pour une demande caduque.
     if generation.load(Ordering::SeqCst) != mine {
         return Ok(PreviewInfo {
             played: false,
             duration_ms: 0,
         });
     }
+    let wav = result?;
     let duration_ms = (wav.duration_secs * 1000.0).round() as u64;
     play(wav.bytes)?;
     Ok(PreviewInfo {
@@ -573,8 +575,9 @@ fn preview_with(
     })
 }
 
-fn join_error(e: tokio::task::JoinError) -> AppError {
-    AppError::TtsFailed(format!("La synthèse vocale a été interrompue ({e})."))
+fn join_error(_: tokio::task::JoinError) -> AppError {
+    // Message fixe : celui d'une panique pourrait citer le texte du titre.
+    AppError::TtsFailed("La synthèse vocale a été interrompue.".into())
 }
 
 /// Voix françaises installées (liste vide si aucune ou si la synthèse est indisponible).
