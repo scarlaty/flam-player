@@ -1,6 +1,7 @@
 //! Synthèse vocale des titres d'un pack (#462, épopée podcasts #207, note § 12).
 //!
-//! PR 1 : le module seul, sans lien avec l'archive ni l'interface. Il fournit :
+//! PR 1 : le module seul ; la PR 2 l'appelle depuis la création des packs
+//! (`install::pack_speech`). Il fournit :
 //!
 //! - un trait [`Synthesizer`] (liste des voix, synthèse d'un texte en WAV) : implémentation
 //!   WinRT `Windows.Media.SpeechSynthesis` sous Windows (`winrt`), « aucune voix » ailleurs
@@ -50,9 +51,13 @@ pub const MAX_TEXT_CHARS: usize = 120;
 pub const MAX_AUDIO_SECS: f64 = 15.0;
 /// Délai d'une synthèse.
 pub const SYNTH_TIMEOUT: Duration = Duration::from_secs(10);
-/// Délai de la liste des voix et de la voix par défaut (WinRT).
+/// Délai de la liste des voix et de la voix par défaut (WinRT), chacune.
 #[cfg(windows)]
 const VOICES_TIMEOUT: Duration = Duration::from_secs(10);
+/// Délai global de l'énumération des voix françaises (liste **et** voix par défaut, qui ont
+/// chacune leur délai de 10 s) : un service de voix bloqué ne retient jamais l'appelant plus
+/// longtemps (#480).
+pub const VOICES_TOTAL_TIMEOUT: Duration = Duration::from_secs(12);
 /// Délai de la conversion d'un titre en MP3.
 pub const MP3_TIMEOUT: Duration = Duration::from_secs(30);
 /// Taille maximale d'un WAV accepté (15 s en 48 kHz stéréo 16 bits font moins de 3 Mio).
@@ -193,6 +198,20 @@ pub fn french_voices(synth: &dyn Synthesizer) -> Result<VoiceList, SpeechError> 
         .filter(|id| voices.iter().any(|v| &v.id == id))
         .or_else(|| voices.first().map(|v| v.id.clone()));
     Ok(VoiceList { voices, default_id })
+}
+
+/// [`french_voices`] borné par un délai global (thread dédié, résultat tardif jeté) ; délai
+/// dépassé : [`SpeechError::Unavailable`] (service de voix qui ne répond pas).
+pub fn french_voices_within(
+    synth: &Arc<dyn Synthesizer>,
+    timeout: Duration,
+) -> Result<VoiceList, SpeechError> {
+    let engine = Arc::clone(synth);
+    match run_bounded(timeout, move || french_voices(engine.as_ref())) {
+        Ok(result) => result,
+        Err(SpeechError::Timeout) => Err(SpeechError::Unavailable),
+        Err(e) => Err(e),
+    }
 }
 
 /// Choisit la voix : `requested` s'il existe encore (`VoiceGone` sinon), le défaut si aucune
@@ -565,8 +584,8 @@ pub struct PreviewInfo {
 
 /// Voix françaises pour la liste de l'éditeur. Synthèse indisponible : liste vide (même
 /// comportement que « aucune voix », la case est désactivée).
-fn voices_for_front(synth: &dyn Synthesizer) -> AppResult<VoiceList> {
-    match french_voices(synth) {
+fn voices_for_front(synth: &Arc<dyn Synthesizer>) -> AppResult<VoiceList> {
+    match french_voices_within(synth, VOICES_TOTAL_TIMEOUT) {
         Ok(list) => Ok(list),
         Err(SpeechError::Unavailable) => Ok(VoiceList {
             voices: Vec::new(),
@@ -582,7 +601,7 @@ fn prepare_preview(
     text: &str,
     voice: Option<&str>,
 ) -> Result<Wav, SpeechError> {
-    let list = french_voices(synth.as_ref())?;
+    let list = french_voices_within(synth, VOICES_TOTAL_TIMEOUT)?;
     let voice = resolve_voice(&list, voice)?;
     synthesize_wav(synth, text, &voice.id, SYNTH_TIMEOUT)
 }
@@ -628,7 +647,7 @@ fn join_error(_: tokio::task::JoinError) -> AppError {
 #[tauri::command]
 pub async fn tts_voices() -> AppResult<VoiceList> {
     let synth = system();
-    tokio::task::spawn_blocking(move || voices_for_front(synth.as_ref()))
+    tokio::task::spawn_blocking(move || voices_for_front(&synth))
         .await
         .map_err(join_error)?
 }

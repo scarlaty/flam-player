@@ -27,6 +27,8 @@ export interface Settings {
    * `device_carrier_accept`, ignoré par `settings_set`.
    */
   carrier_consent?: CarrierConsent | null;
+  /** Voix des titres lus des packs (#462), mémorisée par poste ; `null` : voix par défaut. */
+  tts_voice?: string | null;
 }
 
 /**

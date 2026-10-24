@@ -76,7 +76,7 @@ const task: InstallTask = {
   percent: null,
   error: null,
   created_at: 1,
-  pack: { episodes: 1, dropped: [] },
+  pack: { episodes: 1, dropped: [], warnings: [] },
 };
 
 let calls: { cmd: string; args: Record<string, any> }[];

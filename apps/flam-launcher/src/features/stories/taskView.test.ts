@@ -88,7 +88,7 @@ it("décrit la préparation d'un pack et signale les épisodes retirés", () => 
   ).toBe("Préparation du pack : conversion audio");
   expect(describePhase("prepared")).toBe("Pack préparé, en attente de conversion");
   const panel = toPanelTask(
-    task({ state: "done", pack: { episodes: 3, dropped: ["Deux"] } }),
+    task({ state: "done", pack: { episodes: 3, dropped: ["Deux"], warnings: [] } }),
   );
   expect(panel.detail).toBe("1 épisode non inclus : Deux");
   expect(toPanelTask(task({ state: "preparing", percent: 40 })).state).toBe("running");
