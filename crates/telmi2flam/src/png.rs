@@ -842,6 +842,10 @@ impl Converter {
 /// `cancelled` est consulté avant chaque chunk (avant et après l'image) et avant chaque ligne
 /// décodée : [`PngError::Cancelled`] dès qu'il rend `true`.
 pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
+    if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        // GIF (#459) : décodé comme Pillow, première image
+        return crate::gif::decode_rgba(data, cancelled);
+    }
     if data.len() < SIGNATURE.len() || &data[..8] != SIGNATURE {
         // Autre format : délégué si Pillow pourrait le lire, sinon illisible pour Pillow aussi
         // (`UnidentifiedImageError`).
@@ -1043,7 +1047,7 @@ mod tests {
 
     #[test]
     fn autres_formats_delegues() {
-        for data in [&b"GIF89a"[..], b"\xff\xd8\xff\xe0", b"\x89PNG\r\n"] {
+        for data in [&b"BM\0\0"[..], b"\xff\xd8\xff\xe0", b"\x89PNG\r\n"] {
             assert!(matches!(
                 decode_rgba(data, &never),
                 Err(PngError::Unsupported(_))

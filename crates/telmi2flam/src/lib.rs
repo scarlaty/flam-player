@@ -34,6 +34,7 @@ pub mod cli;
 pub mod convert;
 pub mod error;
 pub mod ffmpeg;
+pub mod gif;
 pub mod graph;
 mod identify;
 pub mod image;
