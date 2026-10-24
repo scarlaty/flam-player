@@ -1,9 +1,12 @@
-# Versions de l'oracle Python de la parité (PORT-RUST.md §4.3, point 4).
+# Oracle Python de la parité (PORT-RUST.md §4.3 et §4.5) : versions qui ont figé les références.
 #
-# Source unique des versions épinglées de l'oracle : Python et Pillow. Les vecteurs figés du
-# crate `telmi2flam` sont produits avec ces versions (générateurs `gen_*.py`), la CI les
-# installe (`.github/workflows/telmi2flam.yml`, `telmi2flam-rs.yml`, `launcher.yml`) et deux
-# tests le vérifient (`text_parity.rs`, `test_parity.py`). Plus aucun Python n'est livré avec
-# l'installateur du launcher (#138) : ces versions ne concernent que les outils de développement.
+# Le convertisseur Python (telmi2flam.py, Pillow) est supprimé (#140). Ses sorties ont été figées
+# une dernière fois avec ces versions, sous Windows, à la révision `revision` : vecteurs et tables
+# de crates/telmi2flam/tests (générateurs gen_*.py relancés puis supprimés, voir PORT-RUST.md §4.5), corpus de
+# parité (tests/data/parity_corpus.zip) et matrice de rééchantillonnage
+# (tests/data/matrix_expected.json). Les deux derniers fichiers portent les mêmes valeurs
+# (`frozen_with`), vérifiées par test_parity.py ; text_parity.rs et graph_parity.rs relisent
+# `python`. Aucun Python ni Pillow n'est plus installé pour le convertisseur, ni livré.
 python=3.14.8
 pillow=12.3.0
+revision=fdc09e9

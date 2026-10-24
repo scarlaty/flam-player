@@ -30,13 +30,20 @@ de bascule et le découpage en PR. Elle ne contient aucun code.
 
 ### Ce qui reste en Python (outils du dépôt, jamais livrés)
 
-- `compat.py`, `explore.py` : outils de campagne. Ils appellent aujourd'hui
-  `telmi2flam.convert()` en Python. À la fin du port, ils lancent le **binaire Rust** en
-  processus enfant (PR 20).
+- `compat.py`, `explore.py` : outils de campagne. Ils lancent le **binaire Rust** en
+  processus enfant (PR 20, #140, partie 1).
 - `validate.py` : validateur de paquets, sans dépendance. Il reste en Python et sert
-  d'**oracle indépendant** pour les deux implémentations.
-- `tests/` : les tests Python restent tant que `telmi2flam.py` existe. Ils sont supprimés avec
-  lui, une fois leurs cas couverts par les tests Rust et le corpus de parité.
+  d'**oracle indépendant** du binaire.
+- `parity.py` : compare le binaire aux références figées de l'ancien convertisseur (§4.5), ou
+  deux binaires en campagne.
+- `tests/` : les tests du convertisseur Python sont supprimés avec lui (#140, partie 2), leurs
+  cas étant couverts par les tests Rust et le corpus figé ; restent les tests des outils
+  (`campaign_fixtures.py` : générateurs de paquets synthétiques repris, sans Pillow).
+
+**État (#140, fait)** : `telmi2flam.py`, `lif.py`, `mp3map.py`, leurs tests et les générateurs
+de vecteurs qui dépendaient de l'oracle ou de Pillow sont supprimés. Les modules du tableau
+ci-dessus n'existent plus qu'en Rust ; les noms de fonctions Python cités dans cette note
+désignent l'ancienne implémentation, dont les sorties restent la référence (§4.5).
 
 ## 2. Architecture
 
@@ -308,7 +315,8 @@ dans le sens « le Rust refuse ce que Python lit » (D5) ; ils sont acceptés pa
   `--info` identique (`ensure_ascii`, séparateurs compacts).
 - Outil : `tools/telmi2flam/parity.py` compare deux `.plain.pk` ou deux dossiers de sortie et
   écrit un rapport JSON. Il passe aussi `validate.py` sur la sortie Rust (celle de l'oracle
-  n'y passe pas : elle sert de référence). Avec `--plain`, il compare aussi les fichiers du
+  n'y passe pas : elle sert de référence). Depuis #140, la référence du corpus est le résultat
+  figé de l'oracle (§4.5), plus une exécution de Python. Avec `--plain`, il compare aussi les fichiers du
   dossier `.plain`, et il exige qu'aucun `.part` ne reste après un échec ni qu'une sortie
   finale subsiste.
 - **Écarts admis**, listés une fois pour toutes dans `parity.py` : délégation
@@ -360,31 +368,40 @@ sont identiques à l'octet près dès la PR 6.
 
 ### 4.3 Corpus
 
-1. **Synthétique (CI)** : un générateur Python (`tools/telmi2flam/tests/parity/make_corpus.py`)
-   produit des archives qui reprennent les cas de `tests/test_telmi2flam.py` et
-   `test_progress.py` : tous les modes PNG, `tRNS`, 16 bits, portraits, noms NFD et cp437, JSON
-   limites, assets manquants, archives corrompues, MP3 MPEG1/2/2.5, ID3, trames cassées.
-   Ces archives ne contiennent aucun contenu sous licence. Elles sont **générées en CI** et ne
-   sont pas commitées. Le job convertit chaque archive avec Python (l'oracle), puis avec Rust ;
-   `parity.py` ne doit trouver aucun écart hors de la liste §4.1.
-   Le job `parity` de `.github/workflows/telmi2flam-rs.yml` (#134, Python 3.14.8, Pillow 12.3.0,
-   lupa 2.8) génère le corpus, compare les sorties (`parity.py corpus`, avec `validate.py` sur
-   la sortie Rust) et échoue au premier écart hors liste. Mesure locale (#458) : 92 archives,
-   85 identiques, 6 admis, 1 délégué (JPEG), 0 écart ; les entrées bzip2, LZMA et Zstandard
-   (`zip_*_entry`, `zip_codecs_all`) ne sont plus étiquetées `delegated`.
+1. **Synthétique (CI)** : à l'origine, un générateur Python (`tests/parity/make_corpus.py`)
+   produisait des archives reprenant les cas des tests Python de l'oracle : tous les modes PNG,
+   `tRNS`, 16 bits, portraits, noms NFD et cp437, JSON limites, assets manquants, archives
+   corrompues, MP3 MPEG1/2/2.5, ID3, trames cassées, `--plain`, `-o x.plain`, JPEG, GIF, APNG.
+   Aucun contenu sous licence. Le job convertissait chaque archive avec Python (l'oracle), puis
+   avec Rust ; `parity.py` ne devait trouver aucun écart hors de la liste §4.1. Mesure locale
+   (#458) : 92 archives, 85 identiques, 6 admis, 1 délégué, 0 écart.
+   **Depuis #140** : archives et résultats de l'oracle sont figés dans
+   `crates/telmi2flam/tests/data/parity_corpus.zip` (§4.5). Le job `parity` de
+   `.github/workflows/telmi2flam-rs.yml` convertit chaque archive avec le binaire, compare au
+   résultat figé (`parity.py corpus`, `validate.py` sur la sortie) et échoue au premier écart
+   hors liste. Au gel : 101 cas, 89 identiques, 11 admis (dont 5 `jpeg_bounded`), 1 délégué
+   (BMP), 0 écart.
 2. **Matrice de rééchantillonnage (CI)** : les images des tests sont minuscules et ne prouvent
-   rien sur le Lanczos. Le générateur produit donc aussi une matrice :
-   - modes PNG × tailles sources impaires ou premières (par ex. 1, 3, 97, 641, 2049) ;
-   - toutes les cibles réelles : scène 320×212, vignette 104×136 (mode `bandes` ; `flou` et `rogner` couverts par les vecteurs
-     `thumb_flou` et `thumb_rogner` de `gen_resample_vectors.py`, #282), inventaire 128×128,
-     titre 89×120, borne 2047 ;
+   rien sur le Lanczos. Une matrice les complète :
+   - modes PNG × tailles sources impaires ou premières (1, 3, 97, 641, 2049) ;
+   - toutes les cibles réelles : scène 320×212, vignette 104×136 (mode `bandes` ; `flou` et
+     `rogner` couverts par les vecteurs `thumb_flou` et `thumb_rogner` de
+     `tests/vectors/resample`, #282), inventaire 128×128, titre 89×120, borne 2047 ;
    - agrandissements et réductions de plus de 2× (pour passer par `reduce`) ;
    - contenus variés : bruit pseudo-aléatoire à graine fixe, dégradés, alpha partiel.
 
-   Elle est comparée **`.lif` contre `.lif`, à l'octet près**. Le test ignoré `crates/telmi2flam/tests/matrix_render.rs` écrit les `.lif` du Rust
-   (`TELMI2FLAM_MATRIX_DIR`, `TELMI2FLAM_MATRIX_OUT`), puis `parity.py matrix --candidate-lif-dir`
-   les compare (1465 cellules, 0 écart en local ; `thumb` en mode `bandes`). Un résultat de 100 % sur cette
-   matrice est requis pour fusionner la PR 7.
+   Elle est comparée **`.lif` contre `.lif`, à l'octet près** (1465 cellules ; un résultat de
+   100 % était requis pour fusionner la PR 7). **Depuis #140** : les PNG sont écrits sans
+   Pillow par `tests/parity/make_matrix.py` (même grille de cellules, PNG faits main) et les
+   `.lif` de l'oracle sur ces PNG sont figés par leur SHA-256 dans
+   `crates/telmi2flam/tests/data/matrix_expected.json`, avec l'empreinte du contenu de chaque
+   PNG. Couverture un peu réduite par rapport aux PNG de Pillow : palettes en 8 bits seulement
+   (Pillow écrivait aussi des palettes 1 et 4 bits) et filtre 0 partout (Pillow filtrait
+   L, RGB et RGBA de façon adaptative) ; le décodage de ces variantes reste couvert par les
+   vecteurs de `tests/vectors/png`, le rééchantillonnage travaillant sur du RGBA décodé.
+   `crates/telmi2flam/tests/matrix_render.rs` (test ignoré, lancé en release par le job
+   `parity`) vérifie les PNG puis compare chaque `.lif` du Rust. Au gel : 1465 cellules sur
+   353 PNG, 0 écart.
 3. **Campagne (locale)** : les archives réelles de `.cache/telmi/` (ignoré par Git, jamais
    commité). `compat.py --engine rust`, ou un script dédié, convertit chaque archive avec les
    deux moteurs et écrit `.cache/parity/report.json`. **Seuil de bascule** : aucun écart hors
@@ -393,12 +410,11 @@ sont identiques à l'octet près dès la PR 6.
    Chaque format présent doit être pris en charge par le Rust, avec la même parité, **avant le
    retrait de Python** (#138). Les machines de
    mesure sont chargées : prévoir des lots et une reprise (PR 15).
-4. **Oracle épinglé** : la CI installe aujourd'hui `Pillow>=10.0` sur Python 3.12. Elle doit
-   épingler Pillow 12.3.0 et la version de Python de `build-converter.ps1` dans
-   `telmi2flam.yml` (PR 3), avec `lupa` à une version exacte (2.8, celle de la CI) : le Lua de
-   l'oracle ne doit pas changer sans qu'on le voie. Les tables Unicode de `unicodedata` et d'`unicode-normalization`
-   doivent aussi correspondre (versions notées dans la PR 5).
-
+4. **Oracle épinglé** : la CI épinglait Python 3.14.8, Pillow 12.3.0 et `lupa` 2.8 (PR 3) : le
+   Lua de l'oracle ne devait pas changer sans qu'on le voie. Les tables Unicode de
+   `unicodedata` et d'`unicode-normalization` correspondent (versions notées dans la PR 5).
+   **Depuis #140**, plus aucun oracle n'est installé : ces versions sont celles du gel
+   (`ORACLE-VERSIONS.txt`, §4.5) ; la CI n'installe que Python et `lupa` pour les outils.
 ### 4.4 Images non PNG et PNG atypiques (#459)
 
 Décision du mainteneur (24/10) : le Rust lit ce que Pillow lisait, pour retirer Python (#138)
@@ -453,9 +469,9 @@ aucun appel dans `telmi2flam.py`), le Rust ne l'applique pas non plus. Ni `draft
 | Tables de Huffman absentes ou invalides | séquentiel : tables 0 et 1 standard ; progressif : `JERR_NO_HUFF_TABLE` ; index ≥ 4, code « tout à un », symbole DC > 15 : illisible | idem (contrôles de `jpeg.rs`, puis `AVI1` pour les tables standard de `zune-jpeg`) |
 | JPEG arithmétique (`SOF9`, `SOF10`), sans perte (`SOF3`, `SOF11`) | lus par libjpeg-turbo 3.1 (arithmétique vérifié sur l'oracle) | **délégués** (code 7, `JPEG arithmétique` / `JPEG sans perte`) : `zune-jpeg` ne les lit pas ; avec le repli Python retiré (#138), c'est une erreur de conversion visible. Arithmétique (`SOF9`, `SOF10`) : délégué après le verdict de la structure (tables de quantification, progression, `DAC`, suite du flux : illisible comme pour libjpeg) ; sans perte : dès l'en-tête |
 | `DAC` invalide (index ≥ 32, borne basse > borne haute, longueur impaire), avant ou après un balayage, quel que soit le codage | `JERR_DAC_INDEX`, `JERR_DAC_VALUE`, `JERR_BAD_LENGTH` : illisible | illisible |
-| `DQT` dont le reste est plus court qu'une table (après le premier `SOS`, là où Pillow ne lit pas) | libjpeg lit 64 valeurs au-delà du segment : `JERR_BAD_LENGTH` (ou `JERR_DQT_INDEX`) | illisible |
+| `DQT` dont le reste est plus court qu'une table, `DAC` de longueur impaire (après le premier `SOS`, là où Pillow ne lit pas) ; segment de tables coupé par la fin du fichier | libjpeg lit 64 valeurs (ou la valeur de la paire) au-delà du segment : `JERR_BAD_LENGTH` ; la fin du fichier suspend la lecture : image à un balayage lue, sauf erreur dans les octets présents (index, longueur de `DRI`, comptes de `DHT`) | idem (lecture octet par octet de `jpeg.rs`, vecteurs `fin_dqt_*`, `fin_dac_*`) |
 | JPEG progressif de plus de 1 000 balayages | lu (aucune limite) | **délégué** (`MAX_SCANS` de `jpeg.rs`, `JPEG refusé par zune-jpeg`) |
-| Exception de `_open` (rattrapée par `Image.open`) et `PCD_` à l'octet 2048 | greffon PCD essayé (image 768 × 512) | **délégué** (`pas un PNG`) ; erreur de libjpeg ou garde anti-bombe : illisible (elles ne sont pas rattrapées) |
+| Exception de `_open` (rattrapée par `Image.open`) sur des données qu'un greffon sans `_accept` lit : SPIDER, PCD (`PCD_` à l'octet 2048) | greffon essayé (PCD : image 768 × 512) | **délégué** (`pas un PNG`) ; erreur de libjpeg ou garde anti-bombe : illisible (elles ne sont pas rattrapées) |
 | JPEG 12 bits, différentiel (`SOF5`-`7`, `SOF13`-`15`), `DHP`, `EXP`, `JPGn`, `SOF` ou `SOI` répété | `SyntaxError` (précision ≠ 8) ou erreur fatale libjpeg : illisible | illisible |
 | Flux de tables seules (`EOI`) suivi d'une image | lu (deux `jpeg_read_header`) | délégué (`JPEG à tables séparées`) ; `EOI` non suivi de `SOI` : illisible (`JERR_NO_SOI`) |
 | Balayage entrelacé de plus de 10 blocs par MCU | `JERR_BAD_MCU_SIZE` | illisible |
@@ -474,8 +490,8 @@ déclare illisible (écart accepté, #473). JPEG : écart d'IDCT/suréchantillon
 (D7, règle `jpeg_bounded` de `ALLOWED_DEVIATIONS`) ; pixels d'un JPEG corrompu, ou coupé puis
 terminé par un marqueur, **non bornés : accepté par le mainteneur** (entrée abîmée ; libjpeg
 met les blocs manquants en gris uniforme, `zune-jpeg` non), hors corpus, vecteurs
-`fin_*_moitie_*` comparés sur le verdict seulement. Un JPEG polyglotte PCD dont l'analyse de
-`_open` échoue est délégué (Pillow le relit en PCD), au lieu d'être déclaré illisible comme le
+`fin_*_moitie_*` comparés sur le verdict seulement. Un JPEG polyglotte PCD ou SPIDER dont l'analyse de
+`_open` échoue est délégué (Pillow le relit avec ce greffon), au lieu d'être déclaré illisible comme le
 GIF (#491).
 
 **PR 2 (JPEG, faite, D7)** : `crates/telmi2flam/src/jpeg.rs`, appelé par `png::decode_rgba`
@@ -503,16 +519,16 @@ dès la signature `FF D8 FF` (`_accept` de `JpegImagePlugin`).
   standard) et rend les composantes brutes ; la conversion YCbCr→RGB (JFIF, virgule fixe
   16 bits), YCCK→CMYK et `cmyk2rgb` sont faites dans `jpeg.rs` selon l'espace choisi par
   libjpeg-turbo.
-- Mesure (`tests/jpeg_vectors.rs`, 260 vecteurs, écrits par Pillow ou retouchés, 203 lus) :
+- Mesure (`tests/jpeg_vectors.rs`, 269 vecteurs, écrits par Pillow ou retouchés, 207 lus ; les 36 ajoutés par #491 après le gel, attendus de l'oracle figé (§4.5) calculés hors dépôt) :
   écart maximal 4 en RGB (4:2:0, 4:2:2 et 4:4:4, séquentiel et progressif), 1 en gris et en
   CMYK, alpha exact ; 33 vecteurs identiques à l'octet près. Corpus de parité (cas `img_jpeg*`, `pkg_cover_jpeg_*`) :
   après redimensionnement Lanczos et quantification RGB565, chaque `.lif` reste dans un pas de
   quantification (règle `jpeg_bounded` : écart minimal avant quantification compatible ≤ 4,
   alpha exact). Les lobes négatifs du Lanczos peuvent porter un écart source de 4 à 5 ou 6 : la
   règle est alors plus stricte que D7 (faux écart possible en campagne, jamais un écart masqué).
-- Verdicts : identiques sur les 260 vecteurs, hors délégations (arithmétique, sans perte, flux
+- Verdicts : identiques sur les 269 vecteurs, hors délégations (arithmétique, sans perte, flux
   de tables seules, balayage unique sans `EOI`, refus de `zune-jpeg`, plus de 1 000
-  balayages, polyglotte PCD) ; sur 3 680 troncatures et octets inversés,
+  balayages, polyglotte PCD ou SPIDER) ; sur 3 680 troncatures et octets inversés,
   10 écarts, tous des délégations là où libjpeg tranche selon des détails non reproduits
   (`alterations_divergences.tsv`), plus les préfixes qui perdent la signature (délégation
   prudente d'`identify`). Aucun cas lu par Pillow n'est jugé illisible par le Rust : chaque
@@ -531,7 +547,8 @@ dès la signature `FF D8 FF` (`_accept` de `JpegImagePlugin`).
   pendant un décodage : pour une image proche de la garde, ou un JPEG progressif fait de très
   nombreux balayages vides, l'annulation attend la fin du décodage (aussi lent côté Python).
   libjpeg ne borne pas le nombre de balayages ; le Rust en lit au plus 1 000 (`MAX_SCANS`,
-  seuil généreux : une dizaine dans un JPEG progressif courant) et délègue au-delà (#491).
+  seuil généreux : une dizaine dans un JPEG progressif courant ; seul un script extrême, un
+  balayage par coefficient et par bit, le dépasse) et délègue au-delà (#491).
   Mesuré (release, 8192 × 8192 gris, 1 000 balayages AC vides de quelques octets) : 2,6 s
   pour le Rust, 4,1 s pour Pillow ; 5 000 balayages : 12 s et 20 s, d'où la borne.
 - Parité : `parity.py` admet `jpeg_bounded` seulement sur les cas étiquetés `jpeg_bounded` et
@@ -571,6 +588,62 @@ PNG`). Détails reproduits de Pillow, tous vérifiés contre l'oracle :
   `unconsumed_tail` n'est pas vide, c'est-à-dire s'il reste de l'entrée après le symbole en
   attente (lu par zlib, distance comprise, mais pas un octet de bloc stocké) ; une entrée qui
   finit sur ce symbole ou au milieu est lue (#473, `ztxt_1mio_*`, `iccp_1mio_*`).
+
+### 4.5 Références figées (#140)
+
+L'ancien convertisseur Python (`telmi2flam` 1.x, Pillow) est supprimé. Il ne sert plus d'oracle
+vivant : ses sorties ont été **figées une dernière fois** et le Rust est comparé à ces
+références, en CI comme en local.
+
+**Gel** : Python 3.14.8 + Pillow 12.3.0 (libjpeg-turbo 3.1.4.1, zlib-ng) + `lupa` 2.8, sous
+Windows, sur l'arbre de la révision notée `revision` dans `ORACLE-VERSIONS.txt` (`main` après
+la fusion des derniers vecteurs ajoutés avec l'oracle). Ce qui a été figé :
+
+- vecteurs et tables déjà commités de `crates/telmi2flam/tests/data` et `tests/vectors` (JSON,
+  ZIP, `.lif`, `.rgba`, TSV) : chaque générateur (`gen_*.py`, `make_archive_vectors.py`) a été
+  relancé une dernière fois sur cet arbre, sortie identique à l'octet près aux fichiers du
+  dépôt, puis supprimé. Deux exceptions : `graph_cases.json` était en retard sur le corpus
+  (11 cas ajoutés depuis sa dernière génération, dont GIF, APNG, JPEG, Zstandard ; un cas
+  retiré du corpus, `img_jpeg_delegated`) : la version régénérée est commitée, les 323 cas
+  communs étant identiques ; `ffmpeg_cases.zip` ne diffère que par des textes non
+  déterministes (adresses mémoire et dossiers temporaires dans les messages
+  d'avertissement, jamais comparés) : la version du dépôt est gardée ;
+- corpus de parité : `tests/data/parity_corpus.zip` (archives de `make_corpus.py`, index
+  `corpus.json`, résultat normalisé de l'oracle par cas `expected.json`, au format de
+  `parity.run_converter`, contenu des `.lif` issus d'un JPEG sous `blobs/<sha256>` pour la
+  règle `jpeg_bounded`) ;
+- matrice : `tests/data/matrix_expected.json` (empreinte du contenu de chaque PNG de `make_matrix.py`, en-têtes et données
+  décompressées, indépendante de zlib, et SHA-256 du
+  `.lif` de l'oracle pour chaque cellule).
+
+Les deux derniers fichiers portent la provenance (`frozen_with` : versions et révision),
+vérifiée contre `ORACLE-VERSIONS.txt` par `test_parity.py`. Le script de gel
+(`tests/parity/freeze_references.py`, avec `make_corpus.py`) a été supprimé après usage : il
+reste dans l'historique Git avec la révision du gel.
+
+Ce que la CI compare désormais (sans Python de l'oracle ni Pillow) : tests de la crate contre
+les vecteurs et tables (`cargo test -p telmi2flam`) ; job `parity` de `telmi2flam-rs.yml` :
+`parity.py corpus` (binaire contre `parity_corpus.zip`, liste fermée §4.1, `validate.py` sur la
+sortie) et `matrix_render.rs` (matrice régénérée par `make_matrix.py`, sans dépendance, contre
+`matrix_expected.json`).
+
+**Ajouter un vecteur ou un cas désormais** : il n'y a plus d'oracle pour produire l'attendu.
+
+1. Préférer un **attendu écrit à la main et justifié** : valeur dérivée de la spécification
+   (format LIF, `mp3map`, protocole `--progress-json`, comportement documenté de Pillow ou de
+   `zipfile` cité avec sa source), écrite dans le fichier de vecteurs ou dans le test, avec la
+   justification en commentaire ou dans le message de commit.
+2. À défaut, **sortie du binaire relue** : produire l'attendu avec le binaire actuel, le relire
+   (contenu décodé, statuts, avertissements) et justifier dans la PR pourquoi il est juste ;
+   la revue de la PR le vérifie explicitement. Ne jamais régénérer en masse des références
+   existantes à partir du Rust : une référence qui change est une régression tant que le
+   contraire n'est pas démontré.
+3. Corpus : ajouter l'archive sous `corpus/`, son entrée dans `corpus.json` (étiquettes
+   §4.1) et son résultat dans `expected.json`, sans toucher aux autres cas ni à
+   `frozen_with` ; un cas ajouté après le gel porte `"source": "relu"` ou `"source": "main"`
+   dans son entrée de `corpus.json`.
+4. Matrice : modifier `make_matrix.py` change les PNG et invalide le gel ; ajouter plutôt des
+   cellules (nouvelles empreintes relues), jamais modifier celles qui existent.
 
 ## 5. Plan de bascule
 
@@ -621,8 +694,8 @@ PNG`). Détails reproduits de Pillow, tous vérifiés contre l'oracle :
    dans les journaux. Les résultats de compatibilité enregistrés avec `engine: python` ou
    `python_fallback` restent lisibles. Les versions de l'oracle Python (3.14.8, Pillow 12.3.0),
    jusque-là lues dans `build-converter.ps1`, sont dans `tools/telmi2flam/ORACLE-VERSIONS.txt`.
-   Restent à faire : le réglage `python_path` et l'écran Paramètres (#139), les outils Python
-   de développement (#140).
+   Restaient à faire : le réglage `python_path` et l'écran Paramètres (#139, fait), les outils
+   Python de développement (#140, fait, voir le point 5).
 5. **Suppression** (PR 18 à 20). Condition préalable : tous les formats délégués que la
    campagne (#135) a comptés sont pris en charge par le Rust, puisque sans Python une
    délégation devient un échec.
@@ -633,6 +706,13 @@ PNG`). Détails reproduits de Pillow, tous vérifiés contre l'oracle :
      `settings.json` qui contient ce champ reste lisible, et le champ est ignoré ;
    - bascule des outils de campagne sur le binaire, puis suppression de `telmi2flam.py`,
      `lif.py` et `mp3map.py`.
+
+   **État (PR 20, #140, faite)** : outils de campagne sur le binaire (partie 1, #464), puis
+   suppression du convertisseur Python, de ses tests et des générateurs de vecteurs dépendant
+   de l'oracle ou de Pillow, après un dernier gel des références (§4.5). La CI n'installe plus
+   ni Pillow ni oracle ; le test de l'archive des podcasts du launcher passe par
+   `telmi2flam.exe` ; le faux convertisseur Python des tests de pack du launcher et le kit
+   homebrew (`skills/flam-homebrew`, ses propres `lif.py` et `mp3map.py`) restent en Python.
 
 **Version du convertisseur** (décision D6) : la bibliothèque et l'outil `compat` enregistrent
 la version annoncée (`start.version`, `converter` dans `library.json` et les résultats de
@@ -669,11 +749,11 @@ sortie, pipeline d'installation, corrections issues de la campagne.
 | 13 | #133 | CLI complète : options (`-o`, `--plain`, `--keep-size`, `--allow-missing`, `--selector`, `--info`, `--version`), messages humains sur stderr, code 2 | 12 | sonnet | telmi2flam | 0,5 j |
 | 14 | #134 | CI de parité : corpus et matrice, oracle Python contre Rust, `validate.py` sur la sortie Rust | 3, 13 | sonnet | telmi2flam, ci | 0,5 j |
 | 15 | #135 | Campagne de parité sur `.cache/telmi/` (`compat.py --engine rust`, rapport, lots avec reprise, comptage des délégations par format) et corrections des écarts ; liste des formats à prendre en charge avant #138 | 14 | opus | telmi2flam | 1 j + mesures |
-| 16 | #136 | Launcher : construire et livrer `telmi2flam.exe`, réglage `converter_engine` (défaut `python` jusqu'à #137), `convert.rs` pour les deux moteurs, Job Object sans limite mémoire supplémentaire | 13 | opus | launcher-rust, ci | 1,5 j |
+| 16 | #136 | Launcher : construire et livrer `telmi2flam.exe`, réglage `converter_engine` (défaut `python` jusqu'à #137), `convert.rs` pour les deux moteurs, Job Object sans limite mémoire supplémentaire (**faite** ; défaut `rust` depuis #137, Python retiré en #138) | 13 | opus | launcher-rust, ci | 1,5 j |
 | 17 | #137 | Bascule : défaut `rust`, repli Python sur `unsupported_format`, `internal_error` ou plantage seulement, trace dans le résultat de compatibilité, version selon D6 | 15, 16 | opus | launcher-rust | 1 j |
 | 18 | #138 | Retrait de Python de l'installateur et du backend : `build-converter.ps1`, ressources, `launcher.yml`, notices, `CTRL_BREAK_HELPER`, repli (**faite**, sans version intermédiaire) | 15 (formats délégués pris en charge), 17 | opus | launcher-rust, ci | 1 j |
-| 19 | #139 | Retrait du réglage `python_path` : backend (ancien champ lu puis ignoré), écran Paramètres, tests | 18 | sonnet | launcher-rust, launcher-ui | 0,5 j |
-| 20 | #140 | Outils de campagne sur le binaire Rust (`compat.py`, `explore.py`), suppression de `telmi2flam.py`, `lif.py`, `mp3map.py` et de leurs tests (cas repris par le corpus) | 18 | sonnet | telmi2flam | 1 j |
+| 19 | #139 | Retrait du réglage `python_path` : backend (ancien champ lu puis ignoré), écran Paramètres, tests (**faite**) | 18 | sonnet | launcher-rust, launcher-ui | 0,5 j |
+| 20 | #140 | Outils de campagne sur le binaire Rust (`compat.py`, `explore.py`), suppression de `telmi2flam.py`, `lif.py`, `mp3map.py` et de leurs tests (cas repris par le corpus), références figées §4.5 (**faite**) | 18 | sonnet | telmi2flam | 1 j |
 
 Ordre conseillé :
 

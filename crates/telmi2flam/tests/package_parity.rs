@@ -1,6 +1,6 @@
 //! Parité avec Python du paquet assemblé en mémoire ([`build_package`]) : les vecteurs
-//! `tests/data/package_cases.zip` sont produits par `tests/data/gen_package_cases.py`
-//! (conversion complète par `tools/telmi2flam/telmi2flam.py`, Python 3.14.8 + Pillow 12.3.0,
+//! `tests/data/package_cases.zip` sont produits par `gen_package_cases.py` (supprimé)
+//! (conversion complète par l'ancien convertisseur Python, Python 3.14.8 + Pillow 12.3.0,
 //! vignette en `bandes` par défaut, `flou` ou `rogner` selon le champ `thumb_fit` du cas, sans
 //! ffmpeg).
 //!

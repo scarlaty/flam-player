@@ -122,6 +122,7 @@ impl Fixture {
             .store(
                 vec![Store {
                     key: EntryKey::of(source, ep),
+                    image_only: false,
                     mp3,
                     image: Some(img),
                 }],
@@ -362,6 +363,7 @@ async fn disque_plein_a_l_ecriture_ne_laisse_rien() {
         .store(
             vec![Store {
                 key: EntryKey::of("s1", &ep),
+                image_only: false,
                 mp3: mp3.clone(),
                 image: Some(img),
             }],
@@ -426,6 +428,7 @@ async fn source_purgee_pendant_la_creation_jamais_recreee() {
         .store(
             vec![Store {
                 key: EntryKey::of("s1", &ep),
+                image_only: false,
                 mp3,
                 image: Some(img),
             }],
@@ -456,6 +459,7 @@ async fn eviction_lru_respecte_le_plafond_et_les_protections() {
             .store(
                 vec![Store {
                     key: EntryKey::of("s1", &episode(guid)),
+                    image_only: false,
                     mp3,
                     image: Some(img),
                 }],
@@ -615,6 +619,7 @@ async fn jonction_sur_le_chemin_du_cache_jamais_suivie() {
             .store(
                 vec![Store {
                     key: EntryKey::of("s1", &episode("g2")),
+                    image_only: false,
                     mp3: mp3_src,
                     image: Some(img),
                 }],
@@ -729,6 +734,7 @@ async fn ecriture_annulee_ne_laisse_rien() {
     let store = || {
         vec![Store {
             key: EntryKey::of("s1", &ep),
+            image_only: false,
             mp3: mp3.clone(),
             image: Some(img.clone()),
         }]
@@ -849,6 +855,7 @@ async fn verrous_du_service_partages_avec_le_cache() {
     let store = || {
         vec![Store {
             key: EntryKey::of("s1", &ep),
+            image_only: false,
             mp3: mp3.clone(),
             image: None,
         }]
@@ -910,4 +917,307 @@ async fn verrou_de_source_obtenu_sous_portillon_avec_vidage_en_attente() {
         .await
         .unwrap()
         .unwrap();
+}
+
+/// Épisode servi dont seule la pochette a changé : la lecture retire l'ancienne pochette et
+/// sert le MP3 ; rend l'épisode modifié, le MP3 placé et la nouvelle pochette téléchargée.
+async fn served_with_new_image(fx: &Fixture) -> (PodcastEpisode, PathBuf, PathBuf) {
+    let ep = episode("g1");
+    fx.store(&fx.access(), "s1", &ep, BODY).await;
+    let new_image = PodcastEpisode {
+        image: Some("https://img.example.test/nouvelle.png".into()),
+        ..ep
+    };
+    let hits = fx
+        .access()
+        .lookup(vec![fx.wanted(0, "s1", &new_image)], 200)
+        .await;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].image, None);
+    let img = fx.work().join("cache-0000.img");
+    std::fs::write(&img, b"\x89PNG nouvelle").unwrap();
+    (new_image, hits[0].mp3.clone(), img)
+}
+
+fn image_only(ep: &PodcastEpisode, mp3: &Path, img: &Path) -> Vec<Store> {
+    vec![Store {
+        key: EntryKey::of("s1", ep),
+        mp3: mp3.to_path_buf(),
+        image: Some(img.to_path_buf()),
+        image_only: true,
+    }]
+}
+
+/// #489 : remise en cache de la seule pochette d'un épisode servi. Réussie, l'entrée garde son
+/// MP3 (date d'écriture inchangée) et sert la nouvelle pochette.
+#[tokio::test]
+async fn pochette_seule_remise_en_cache() {
+    let fx = Fixture::new();
+    let (ep, mp3, img) = served_with_new_image(&fx).await;
+    assert_eq!(fx.access().store(image_only(&ep, &mp3, &img), 300).await, 1);
+    let id = episode_id("g1");
+    assert_eq!(
+        fx.files("s1"),
+        [
+            format!("{id}.img"),
+            format!("{id}.json"),
+            format!("{id}.mp3")
+        ]
+    );
+    let meta = read_meta(&fx.mp3_dir("s1"), &id).unwrap();
+    assert_eq!((meta.stored_at, meta.used_at), (100, 300));
+    std::fs::remove_file(&mp3).unwrap();
+    let hits = fx.access().lookup(vec![fx.wanted(0, "s1", &ep)], 400).await;
+    assert_eq!(std::fs::read(&hits[0].mp3).unwrap(), BODY);
+    assert_eq!(
+        std::fs::read(hits[0].image.as_ref().unwrap()).unwrap(),
+        b"\x89PNG nouvelle"
+    );
+}
+
+/// #489, injection de panne : annulation ou disque plein pendant la remise en cache de la
+/// seule pochette. La pochette n'est pas gardée (ni `.part`), le MP3 valide reste en cache et
+/// servi (il n'est pas retéléchargé).
+#[tokio::test]
+async fn pochette_seule_annulee_ou_en_echec_garde_le_mp3() {
+    for fault in ["annulation", "disque plein"] {
+        let fx = Fixture::new();
+        let (ep, mp3, img) = served_with_new_image(&fx).await;
+        let tx = Arc::new(watch::channel(false).0);
+        let access = match fault {
+            "annulation" => fx
+                .access()
+                .with_cancel(tx.subscribe())
+                .with_placer(cancel_after_place(tx.clone())),
+            _ => fx.access().with_placer(Arc::new(disk_full)),
+        };
+        assert_eq!(
+            access.store(image_only(&ep, &mp3, &img), 300).await,
+            0,
+            "{fault}"
+        );
+        let id = episode_id("g1");
+        assert_eq!(
+            fx.files("s1"),
+            [format!("{id}.json"), format!("{id}.mp3")],
+            "{fault}"
+        );
+        std::fs::remove_file(&mp3).unwrap();
+        let hits = fx.access().lookup(vec![fx.wanted(0, "s1", &ep)], 400).await;
+        assert_eq!(hits.len(), 1, "{fault} : MP3 effacé");
+        assert_eq!(std::fs::read(&hits[0].mp3).unwrap(), BODY);
+        assert_eq!(hits[0].image, None);
+    }
+}
+
+/// #489 : entrée disparue ou changée depuis la lecture : réécrite en entier depuis le MP3
+/// placé dans le dossier de travail.
+#[tokio::test]
+async fn pochette_seule_sur_entree_disparue_reecrit_tout() {
+    let fx = Fixture::new();
+    let (ep, mp3, img) = served_with_new_image(&fx).await;
+    let id = episode_id("g1");
+    std::fs::remove_file(fx.mp3_dir("s1").join(format!("{id}.json"))).unwrap();
+    assert_eq!(fx.access().store(image_only(&ep, &mp3, &img), 300).await, 1);
+    let meta = read_meta(&fx.mp3_dir("s1"), &id).unwrap();
+    assert_eq!(meta.stored_at, 300);
+    let hits = fx.access().lookup(vec![fx.wanted(0, "s1", &ep)], 400).await;
+    assert_eq!(std::fs::read(&hits[0].mp3).unwrap(), BODY);
+    assert!(hits[0].image.is_some());
+}
+
+/// Copie de repli (sans lien physique) interrompue dans `lookup_one`, au MP3 puis à la
+/// pochette : l'épisode n'est pas servi, rien n'est laissé dans le dossier de travail, aucune
+/// entrée n'est supprimée ni renouvelée.
+#[tokio::test]
+async fn copie_interrompue_a_la_lecture() {
+    let fx = Fixture::new();
+    let ep = episode("g1");
+    fx.store(&fx.access(), "s1", &ep, BODY).await;
+    let id = episode_id("g1");
+    let meta_path = fx.mp3_dir("s1").join(format!("{id}.json"));
+    let before = fx.files("s1");
+    let meta_before = std::fs::read(&meta_path).unwrap();
+    for interrupted in [1usize, 2] {
+        // Annulation levée juste avant la copie n° `interrupted` (1 : MP3, 2 : pochette).
+        let (tx, rx) = watch::channel(false);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let place = move |src: &Path, dest: &Path, cancel: &Cancel| {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == interrupted {
+                tx.send_replace(true);
+            }
+            copy_file(src, dest, cancel)
+        };
+        let cancel = Cancel::new(rx);
+        let op = Op {
+            now: 300,
+            place: &place,
+            cancel: &cancel,
+            max_entry_bytes: u64::MAX,
+        };
+        let wanted = fx.wanted(0, "s1", &ep);
+        assert!(
+            lookup_one(&fx.mp3_dir("s1"), &wanted, &op).is_none(),
+            "copie {interrupted}"
+        );
+        assert!(
+            !wanted.mp3_dest.exists(),
+            "copie {interrupted} : MP3 laissé"
+        );
+        assert!(
+            !wanted.image_dest.exists(),
+            "copie {interrupted} : pochette"
+        );
+        assert_eq!(fx.files("s1"), before);
+        assert_eq!(
+            std::fs::read(&meta_path).unwrap(),
+            meta_before,
+            "copie {interrupted} : date d'usage renouvelée"
+        );
+    }
+    assert_eq!(
+        fx.access()
+            .lookup(vec![fx.wanted(0, "s1", &ep)], 400)
+            .await
+            .len(),
+        1
+    );
+}
+
+/// #489 : pochette seule restée après un arrêt brutal (`<id>.img` renommé, `<id>.json` écrit
+/// sans pochette) : jamais servie, retirée à la lecture, donc plus comptée dans l'entrée.
+#[tokio::test]
+async fn pochette_orpheline_retiree_a_la_lecture() {
+    let fx = Fixture::new();
+    let ep = episode("g1");
+    let (mp3, _) = fx.converted("g1", BODY);
+    let n = fx
+        .access()
+        .store(
+            vec![Store {
+                key: EntryKey::of("s1", &ep),
+                image_only: false,
+                mp3,
+                image: None,
+            }],
+            100,
+        )
+        .await;
+    assert_eq!(n, 1);
+    let id = episode_id("g1");
+    let orphan = fx.mp3_dir("s1").join(format!("{id}.img"));
+    let orphan_body = b"\x89PNG orpheline";
+    std::fs::write(&orphan, orphan_body).unwrap();
+    let counted = |fx: &Fixture| scan(&fx.root()).entries[0].bytes;
+    assert_eq!(counted(&fx), (BODY.len() + orphan_body.len()) as u64);
+
+    let hits = fx.access().lookup(vec![fx.wanted(0, "s1", &ep)], 200).await;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].image, None);
+    assert!(!orphan.exists());
+    assert_eq!(counted(&fx), BODY.len() as u64);
+
+    // Lecture annulée : rien n'est jugé, la pochette orpheline n'est pas touchée.
+    std::fs::write(&orphan, orphan_body).unwrap();
+    let (tx, rx) = watch::channel(false);
+    tx.send_replace(true);
+    let cancel = Cancel::new(rx);
+    let op = Op {
+        now: 300,
+        place: &copy_file,
+        cancel: &cancel,
+        max_entry_bytes: u64::MAX,
+    };
+    let _ = lookup_one(&fx.mp3_dir("s1"), &fx.wanted(0, "s1", &ep), &op);
+    assert!(orphan.exists());
+}
+
+/// #489 : entrée changée depuis la lecture (autre empreinte, ou MP3 d'une autre taille) : la
+/// remise en cache de la seule pochette réécrit l'entrée en entier depuis le MP3 placé.
+#[tokio::test]
+async fn pochette_seule_sur_entree_changee_reecrit_tout() {
+    for change in ["empreinte", "taille"] {
+        let fx = Fixture::new();
+        let (ep, mp3, img) = served_with_new_image(&fx).await;
+        let id = episode_id("g1");
+        let ep = match change {
+            "empreinte" => PodcastEpisode {
+                enclosure_length: Some(2000),
+                ..ep
+            },
+            _ => {
+                let cached = fx.mp3_dir("s1").join(format!("{id}.mp3"));
+                // Remplacé (pas modifié en place) : le MP3 placé peut en être un lien physique.
+                let mut bytes = std::fs::read(&cached).unwrap();
+                bytes.push(b'!');
+                std::fs::remove_file(&cached).unwrap();
+                std::fs::write(&cached, bytes).unwrap();
+                ep
+            }
+        };
+        assert_eq!(
+            fx.access().store(image_only(&ep, &mp3, &img), 300).await,
+            1,
+            "{change}"
+        );
+        let meta = read_meta(&fx.mp3_dir("s1"), &id).unwrap();
+        assert_eq!(meta.stored_at, 300, "{change} : entrée non réécrite");
+        assert_eq!(meta.fingerprint, EntryKey::of("s1", &ep).fingerprint);
+        std::fs::remove_file(&mp3).unwrap();
+        let hits = fx.access().lookup(vec![fx.wanted(0, "s1", &ep)], 400).await;
+        assert_eq!(hits.len(), 1, "{change}");
+        assert_eq!(std::fs::read(&hits[0].mp3).unwrap(), BODY, "{change}");
+        assert!(hits[0].image.is_some(), "{change}");
+    }
+}
+
+/// #489 : première réécriture de `refresh_image`, quand l'entrée cite encore l'ancienne
+/// pochette (aucune lecture ne l'a retirée avant) : le MP3 et sa date d'écriture sont gardés, la
+/// nouvelle pochette est servie, rien ne traîne.
+#[tokio::test]
+async fn pochette_seule_remplace_l_ancienne_pochette_citee() {
+    let fx = Fixture::new();
+    let ep = episode("g1");
+    fx.store(&fx.access(), "s1", &ep, BODY).await;
+    let id = episode_id("g1");
+    let dir = fx.mp3_dir("s1");
+    assert!(read_meta(&dir, &id).unwrap().image.is_some());
+
+    let new_ep = PodcastEpisode {
+        image: Some("https://img.example.test/nouvelle.png".into()),
+        ..ep
+    };
+    let mp3 = fx.work().join("placed.mp3");
+    std::fs::write(&mp3, BODY).unwrap();
+    let img = fx.work().join("nouvelle.img");
+    std::fs::write(&img, b"\x89PNG nouvelle").unwrap();
+    assert_eq!(
+        fx.access()
+            .store(image_only(&new_ep, &mp3, &img), 300)
+            .await,
+        1
+    );
+    let meta = read_meta(&dir, &id).unwrap();
+    assert_eq!((meta.stored_at, meta.used_at), (100, 300));
+    let stored = meta.image.unwrap();
+    assert_eq!(
+        Some(stored.fingerprint),
+        EntryKey::of("s1", &new_ep).image_fingerprint
+    );
+    assert_eq!(
+        fx.files("s1"),
+        [
+            format!("{id}.img"),
+            format!("{id}.json"),
+            format!("{id}.mp3")
+        ]
+    );
+    let hits = fx
+        .access()
+        .lookup(vec![fx.wanted(0, "s1", &new_ep)], 400)
+        .await;
+    assert_eq!(
+        std::fs::read(hits[0].image.as_ref().unwrap()).unwrap(),
+        b"\x89PNG nouvelle"
+    );
 }

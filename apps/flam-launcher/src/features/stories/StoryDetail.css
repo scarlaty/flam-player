@@ -119,3 +119,7 @@
 .fl-detail__remove {
   margin-inline-end: auto;
 }
+
+.fl-detail__error {
+  white-space: pre-line;
+}

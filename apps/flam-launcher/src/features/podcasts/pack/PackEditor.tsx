@@ -32,7 +32,7 @@ import { libraryHash, ROUTE_HASHES } from "../../../router";
 import { ErrorBanner } from "../../ErrorBanner";
 import { getPackRightsAck, setPackRightsAck } from "../../settings/preferences";
 import { StoriesContext } from "../../stories/StoriesContext";
-import { errorKindText } from "../../stories/taskView";
+import { taskErrorMessage } from "../../stories/taskView";
 import { formatBytes } from "../../validation";
 import { MAX_EPISODES } from "../selection";
 import { usePodcastSelection } from "../SelectionContext";
@@ -587,6 +587,9 @@ export function PackEditor({
           menu={current.menu}
           titleOf={titleOf}
           isUnavailable={(ref) => unavailable.has(refKey(ref))}
+          hasImage={(ref) =>
+            feeds.get(ref.source_id)?.episodes.get(ref.episode_id)?.has_image === true
+          }
           onChange={(next, message) => {
             edit({ ...current, menu: next }, message);
           }}
@@ -704,7 +707,11 @@ export function PackEditor({
           <ErrorBanner
             error={{
               ...createError,
-              message: errorKindText(createError.kind) ?? createError.message,
+              message: taskErrorMessage({
+                kind: createError.kind,
+                message: createError.message,
+                code: null,
+              }),
             }}
           />
         )}

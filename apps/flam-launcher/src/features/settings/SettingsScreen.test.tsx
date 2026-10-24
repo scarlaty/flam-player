@@ -37,6 +37,7 @@ function makeView(overrides: Partial<SettingsView> = {}): SettingsView {
 
 let view: SettingsView;
 let usageBytes: number;
+let mp3Bytes: number;
 let calls: { cmd: string; args: Record<string, any> }[];
 let failures: Record<string, { kind: string; message: string }>;
 // Réponses différées de `settings_set` (résolues/rejetées par le test, dans l'ordre des appels).
@@ -50,6 +51,7 @@ beforeEach(() => {
   voices = { voices: [HORTENSE, PAUL], default_id: HORTENSE.id };
   view = makeView();
   usageBytes = 2048;
+  mp3Bytes = 1024;
   calls = [];
   failures = {};
   pendingSets = null;
@@ -86,9 +88,12 @@ beforeEach(() => {
           bytes: usageBytes,
           subdirs: ["archives", "catalogs", "library", "thumbs"],
         };
+      case "podcast_mp3_cache_size":
+        return { bytes: mp3Bytes };
       case "cache_clear": {
         const freed = usageBytes;
         usageBytes = 0;
+        mp3Bytes = 0;
         return { freed_bytes: freed };
       }
       case "config_ack_recovery":
@@ -245,36 +250,42 @@ it("rétablit le thème précédent si l'enregistrement échoue", async () => {
   expect(document.documentElement.dataset.theme).toBeUndefined();
 });
 
-it("deux échecs rapprochés restaurent le dernier thème enregistré", async () => {
+it("deux échecs rapprochés : seul le dernier est signalé, le thème enregistré revient", async () => {
   await renderScreen();
   pendingSets = [];
   fireEvent.click(screen.getByRole("radio", { name: "Clair" }));
   fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
-  await waitFor(() => expect(pendingSets).toHaveLength(2));
+  await waitFor(() => expect(pendingSets).toHaveLength(1));
   expect(document.documentElement.dataset.theme).toBe("dark");
 
-  // Le second échoue d'abord, puis le premier : le thème revient à celui enregistré.
-  pendingSets?.[1]?.reject();
-  await screen.findByRole("alert");
+  // Le premier échoue : le second (déjà demandé) reste affiché, sans erreur.
   pendingSets?.[0]?.reject();
-  await waitFor(() =>
-    expect(screen.getByRole("radio", { name: "Système" })).toBeChecked(),
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.getByRole("radio", { name: "Sombre" })).toBeChecked();
+  expect(document.documentElement.dataset.theme).toBe("dark");
+
+  // Le second échoue à son tour : retour au thème réellement enregistré.
+  pendingSets?.[1]?.reject();
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Le thème n'a pas pu être enregistré.",
   );
+  expect(screen.getByRole("radio", { name: "Système" })).toBeChecked();
   expect(document.documentElement.dataset.theme).toBeUndefined();
 });
 
-it("une réponse ancienne réussie après l'échec de la dernière resynchronise l'affichage", async () => {
+it("un premier choix enregistré puis l'échec du dernier : retour au premier", async () => {
   await renderScreen();
   pendingSets = [];
   fireEvent.click(screen.getByRole("radio", { name: "Clair" }));
   fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
-  await waitFor(() => expect(pendingSets).toHaveLength(2));
-
-  pendingSets?.[1]?.reject();
-  await screen.findByRole("alert");
-  expect(screen.getByRole("radio", { name: "Système" })).toBeChecked();
+  await waitFor(() => expect(pendingSets).toHaveLength(1));
 
   pendingSets?.[0]?.resolve();
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+  expect(screen.getByRole("radio", { name: "Sombre" })).toBeChecked();
+  pendingSets?.[1]?.reject();
+  await screen.findByRole("alert");
   await waitFor(() => expect(screen.getByRole("radio", { name: "Clair" })).toBeChecked());
   expect(document.documentElement.dataset.theme).toBe("light");
   expect(view.settings.theme).toBe("light");
@@ -285,11 +296,12 @@ it("un échec ancien n'annule pas un choix plus récent enregistré", async () =
   pendingSets = [];
   fireEvent.click(screen.getByRole("radio", { name: "Clair" }));
   fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
-  await waitFor(() => expect(pendingSets).toHaveLength(2));
+  await waitFor(() => expect(pendingSets).toHaveLength(1));
 
+  pendingSets?.[0]?.reject();
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
   pendingSets?.[1]?.resolve();
   await waitFor(() => expect(view.settings.theme).toBe("dark"));
-  pendingSets?.[0]?.reject();
   await waitFor(() =>
     expect(screen.getByRole("radio", { name: "Sombre" })).toBeChecked(),
   );
@@ -315,27 +327,32 @@ it("propose le remplissage des vignettes (flou par défaut) et l'enregistre", as
   await waitFor(() => expect(view.settings.thumb_fit).toBe("bandes"));
 });
 
-it("bloque les vignettes pendant l'enregistrement du thème, et inversement", async () => {
+it("thème puis vignettes : enregistrés l'un après l'autre, chacun sur l'état confirmé", async () => {
   await renderScreen();
   const themeGroup = screen.getByRole("group", { name: "Thème" });
   const thumbGroup = screen.getByRole("group", { name: "Vignettes : remplissage" });
   pendingSets = [];
 
   fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
-  await waitFor(() => expect(pendingSets).toHaveLength(1));
-  expect(thumbGroup).toBeDisabled();
-  expect(themeGroup).toBeEnabled();
-  pendingSets?.[0]?.resolve();
-  await waitFor(() => expect(thumbGroup).toBeEnabled());
-
+  // Les groupes restent actifs (le focus n'est pas perdu) et le second choix s'affiche tout de suite.
+  expect(thumbGroup).toBeEnabled();
   fireEvent.click(screen.getByRole("radio", { name: /Rogner/ }));
+  expect(themeGroup).toBeEnabled();
+  expect(screen.getByRole("radio", { name: /Rogner/ })).toBeChecked();
+  await waitFor(() => expect(pendingSets).toHaveLength(1));
+  // Le second enregistrement n'est envoyé qu'après la réponse du premier.
+  await new Promise((r) => setTimeout(r, 20));
+  expect(pendingSets).toHaveLength(1);
+  pendingSets?.[0]?.resolve();
   await waitFor(() => expect(pendingSets).toHaveLength(2));
-  expect(themeGroup).toBeDisabled();
+  expect(callsOf("settings_set")[1]?.args.settings).toMatchObject({
+    theme: "dark",
+    thumb_fit: "rogner",
+  });
   pendingSets?.[1]?.resolve();
-  await waitFor(() => expect(themeGroup).toBeEnabled());
-  // Chaque enregistrement conserve le réglage de l'autre.
+  await waitFor(() => expect(view.settings.thumb_fit).toBe("rogner"));
   expect(view.settings.theme).toBe("dark");
-  expect(view.settings.thumb_fit).toBe("rogner");
+  expect(screen.getByRole("radio", { name: "Sombre" })).toBeChecked();
 });
 
 it("rétablit le remplissage précédent si l'enregistrement échoue", async () => {
@@ -373,6 +390,35 @@ it("vide le cache seulement après confirmation (focus sur Annuler)", async () =
   expect(await screen.findByText("Cache vidé : 2 Ko libérés")).toBeInTheDocument();
   expect(await screen.findByText("Le cache est vide (C:\\cache).")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Vider le cache" })).toBeDisabled();
+});
+
+it("affiche à part la taille du cache des MP3 de podcasts, remise à zéro après le vidage", async () => {
+  await renderScreen();
+  expect(
+    await screen.findByText(
+      "Dont MP3 de podcasts : 1 Ko, gardés pour refaire un pack sans tout retélécharger.",
+    ),
+  ).toBeInTheDocument();
+  expect(callsOf("podcast_mp3_cache_size")).toHaveLength(1);
+
+  fireEvent.click(screen.getByRole("button", { name: "Vider le cache" }));
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Vider le cache",
+    }),
+  );
+  expect(
+    await screen.findByText("Aucun MP3 de podcast n'est gardé en cache."),
+  ).toBeInTheDocument();
+});
+
+it("un échec du calcul de la taille des MP3 n'empêche pas le reste du cache", async () => {
+  failures.podcast_mp3_cache_size = { kind: "io", message: "illisible" };
+  await renderScreen();
+  expect(await screen.findByText("2 Ko occupés dans C:\\cache")).toBeInTheDocument();
+  expect(screen.queryByText(/MP3 de podcast/)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("button", { name: "Vider le cache" })).toBeEnabled();
 });
 
 it("affiche l'erreur si le vidage du cache échoue", async () => {
@@ -502,20 +548,104 @@ it("voix, thème et vignettes ne s'enregistrent pas en même temps (objet comple
   const select = await voiceSelect();
   fireEvent.change(select, { target: { value: PAUL.id } });
   await waitFor(() => expect(pendingSets).toHaveLength(1));
-  expect(screen.getByRole("radio", { name: "Sombre" })).toBeDisabled();
-  expect(screen.getByRole("radio", { name: /^Rogner/ })).toBeDisabled();
-  pendingSets[0]!.resolve();
-  await waitFor(() =>
-    expect(screen.getByRole("radio", { name: "Sombre" })).toBeEnabled(),
-  );
-  // Le thème enregistré ensuite garde la voix choisie.
+  // Ni blocage ni perte de focus : les autres réglages restent utilisables.
+  expect(screen.getByRole("radio", { name: "Sombre" })).toBeEnabled();
+  expect(screen.getByRole("radio", { name: /^Rogner/ })).toBeEnabled();
   fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
+  fireEvent.click(screen.getByRole("radio", { name: /^Rogner/ }));
+  expect(select).toHaveValue(PAUL.id);
+  pendingSets[0]!.resolve();
   await waitFor(() => expect(pendingSets).toHaveLength(2));
-  expect(select).toBeDisabled();
-  expect(pendingSets.length).toBe(2);
   pendingSets[1]!.resolve();
-  await waitFor(() => expect(select).toBeEnabled());
-  expect(view.settings).toMatchObject({ theme: "dark", tts_voice: PAUL.id });
+  await waitFor(() => expect(pendingSets).toHaveLength(3));
+  pendingSets[2]!.resolve();
+  await waitFor(() =>
+    expect(view.settings).toMatchObject({
+      theme: "dark",
+      thumb_fit: "rogner",
+      tts_voice: PAUL.id,
+    }),
+  );
+  // Chaque requête part de l'état confirmé par la précédente : rien n'est perdu.
+  expect(callsOf("settings_set")[2]?.args.settings).toMatchObject({
+    theme: "dark",
+    tts_voice: PAUL.id,
+    thumb_fit: "rogner",
+  });
+});
+
+it("enregistrer les chemins puis changer la voix avant la réponse : ni chemins ni voix perdus", async () => {
+  pendingSets = [];
+  await renderScreen();
+  const select = await voiceSelect();
+  const player = screen.getByRole("textbox", { name: "Chemin de flam-player" });
+  fireEvent.change(player, { target: { value: "C:\\app\\flam-player.exe" } });
+  fireEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
+  await waitFor(() => expect(pendingSets).toHaveLength(1));
+  // La voix change pendant que les chemins sont en cours d'enregistrement.
+  fireEvent.change(select, { target: { value: PAUL.id } });
+  expect(select).toHaveValue(PAUL.id);
+  // Le formulaire n'envoie que les chemins : la voix optimiste n'y est pas.
+  expect(callsOf("settings_set")[0]?.args.settings.tts_voice).toBeUndefined();
+  pendingSets[0]!.resolve();
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+  expect(callsOf("settings_set")[1]?.args.settings).toMatchObject({
+    player_path: "C:\\app\\flam-player.exe",
+    tts_voice: PAUL.id,
+  });
+  pendingSets[1]!.resolve();
+  await waitFor(() => expect(view.settings.tts_voice).toBe(PAUL.id));
+  expect(view.settings.player_path).toBe("C:\\app\\flam-player.exe");
+  expect(select).toHaveValue(PAUL.id);
+});
+
+it("changer la voix puis enregistrer les chemins : la voix en cours est conservée", async () => {
+  pendingSets = [];
+  await renderScreen();
+  const select = await voiceSelect();
+  fireEvent.change(select, { target: { value: PAUL.id } });
+  await waitFor(() => expect(pendingSets).toHaveLength(1));
+  fireEvent.change(screen.getByRole("textbox", { name: "Dossier de cache" }), {
+    target: { value: "D:\\MonCache" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
+  pendingSets[0]!.resolve();
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+  pendingSets[1]!.resolve();
+  await waitFor(() =>
+    expect(view.settings).toMatchObject({
+      cache_dir: "D:\\MonCache",
+      tts_voice: PAUL.id,
+    }),
+  );
+  expect(select).toHaveValue(PAUL.id);
+});
+
+it("un double envoi du formulaire des chemins n'enregistre qu'une fois", async () => {
+  pendingSets = [];
+  await renderScreen();
+  const save = screen.getByRole("button", { name: "Enregistrer" });
+  fireEvent.click(save);
+  fireEvent.click(save);
+  await waitFor(() => expect(pendingSets).toHaveLength(1));
+  pendingSets[0]!.resolve();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(callsOf("settings_set")).toHaveLength(1);
+});
+
+it("voix : un échec ancien suivi d'un choix réussi n'affiche pas d'erreur", async () => {
+  pendingSets = [];
+  await renderScreen();
+  const select = await voiceSelect();
+  fireEvent.change(select, { target: { value: PAUL.id } });
+  fireEvent.change(select, { target: { value: HORTENSE.id } });
+  await waitFor(() => expect(pendingSets).toHaveLength(1));
+  pendingSets[0]!.reject();
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+  pendingSets[1]!.resolve();
+  await waitFor(() => expect(view.settings.tts_voice).toBe(HORTENSE.id));
+  expect(screen.queryByText("La voix n'a pas pu être enregistrée.")).toBeNull();
+  expect(select).toHaveValue(HORTENSE.id);
 });
 
 it("essayer la voix choisie, puis arrêter", async () => {

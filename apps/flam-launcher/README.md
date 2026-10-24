@@ -58,7 +58,8 @@ player ramène à la surcouche. Les histoires installées sont sous « Mes histo
 Disponible dans la prochaine version. Une source **podcast** (adresse d'un flux RSS) fournit des
 épisodes ; l'écran **Podcasts** les liste (raccourci « Cocher les 10 derniers épisodes »,
 les épisodes explicites ne sont jamais cochés d'office), puis **Composer le pack** les range dans un menu
-(catégories, 3 niveaux, 50 options par menu), avec titre, âge, description et couverture. Le
+(catégories, 3 niveaux, 50 options par menu), avec titre, âge, description et couverture. Chaque
+catégorie peut prendre l'image d'un de ses épisodes (« Automatique » : celle du premier). Le
 brouillon est enregistré automatiquement.
 
 **Créer l'histoire** vérifie le pack, puis ajoute sa création à la file d'installation
@@ -128,8 +129,9 @@ Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2, Node 2
 
 Python 3 n'est **pas** nécessaire pour utiliser, construire ou tester le launcher : l'installation
 n'en contient plus (#138). Il ne sert qu'aux outils de campagne et de parité de
-`tools/telmi2flam/` (oracle Python de #135) et aux générateurs de vecteurs de test de
-`crates/telmi2flam/tests/vectors/`. Le convertisseur se développe dans `crates/telmi2flam`.
+`tools/telmi2flam/` (bibliothèque standard et `lupa`, sans Pillow) et au faux convertisseur des
+tests de pack. Le convertisseur se développe dans `crates/telmi2flam` ; l'ancien convertisseur
+Python est supprimé, ses sorties sont figées comme références de test (#140).
 
 Le launcher est membre d'un **workspace Cargo** dont le `Cargo.toml` est à la racine du dépôt (avec
 `crates/telmi2flam`) : `Cargo.lock` et `target/` sont à la racine, pas dans `src-tauri/`. Les commandes
@@ -164,7 +166,7 @@ Le launcher passe son ffmpeg embarqué au convertisseur par la variable `FLAM_FF
 L'application installée ne suppose aucun Python sur la machine et n'en livre aucun (#138) : le
 convertisseur est le binaire Rust `telmi2flam.exe` (crate `crates/telmi2flam`, moteur Lua et
 runtime du projet inclus dans le binaire), sous `<exe>/telmi2flam/` avec `LICENSES.md` et
-`BUILD.txt`. Pas de Python, de Pillow, de `telmi2flam.py` ni de `runtime/` à côté. Le launcher
+`BUILD.txt`. Pas de Python, de Pillow, de script Python du convertisseur ni de `runtime/` à côté. Le launcher
 le lance sans fenêtre, avec `--progress-json` et `--cancel-on-stdin-eof` (annulation par
 fermeture de stdin). Environ 1,5 Mo sur disque.
 
@@ -476,6 +478,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `sources_reorder`             | `ids: string[]`                  | `Source[]` (liste complète)                                | `sources`            |
 | `config_ack_recovery`         | `file?: string`                  | rien                                                       | `storage`            |
 | `cache_usage`                 |                                  | `{ path, bytes }`                                          | `cache`              |
+| `podcast_mp3_cache_size`      |                                  | `{ bytes }` (part des MP3, comprise dans `cache_usage`)    | `podcast::mp3size`   |
 | `cache_clear`                 |                                  | `{ freed_bytes }`                                          | `cache`              |
 | `open_external`               | `url: string`                    | rien                                                       | `external`           |
 | `catalog_refresh`             | `source_id`                      | `CatalogView`                                              | `catalog`            |
@@ -524,9 +527,8 @@ en mémoire). Ni clé, ni `bt`, ni numéro de série, ni empreinte de `.mdf`, ni
 titre ou UUID d'histoire ; profil Windows remplacé par `%USERPROFILE%` et dossier de cache par
 `%CACHE%`, puis tout UUID, toute suite hexadécimale d'au moins 14 caractères (ou d'au moins 8 paires
 séparées par une espace ou `:`) et tout mot de type base64 masqués. Pendant une écriture, index,
-dossiers et fichiers de travail ne sont pas parcourus. Sur le PC, comme pour `device_status`,
-l'évaluation du firmware peut enregistrer une Flam 2.x « vérifiée par la Flam » dans
-`device-trust.json` (dossier de données du launcher) : c'est la seule écriture du diagnostic.
+dossiers et fichiers de travail ne sont pas parcourus. Le diagnostic n'écrit rien sur la Flam,
+ni aucune donnée de confiance sur le PC.
 Titres et vignettes de la Flam (#276, `device::details`, lecture seule stricte) sont chargés
 **après** l'affichage de la liste : titres par lots de 100 (première ligne de `info` déchiffré,
 lecture bornée à 4 Kio ; fw 2.x : clés de `.mdf` ; fw 1.x : clé carrier **déjà conservée** pour
@@ -1112,7 +1114,7 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
   sa taille correspondent (sinon elle est retéléchargée). L'écriture de `install_queue.json` se
   fait hors des verrous, sur un thread bloquant, avec des écritures ordonnées.
 - **Convertisseur** : `<exe>/telmi2flam/telmi2flam.exe` (application installée ; construit par `npm run build:converter`, voir « Convertisseur embarqué »), sinon en
-  développement `telmi2flam.exe` à côté de l'exécutable (même `target/` Cargo, `cargo build -p telmi2flam`). Absent : `converter_unavailable`. Plus de Python ni de `telmi2flam.py` (#138).
+  développement `telmi2flam.exe` à côté de l'exécutable (même `target/` Cargo, `cargo build -p telmi2flam`). Absent : `converter_unavailable`. Plus de Python ni de script Python du convertisseur (#138 ; supprimé du dépôt, #140).
 - **Bibliothèque** : `library.json` = `{ schema_version, stories: LibraryEntry[] }` avec
   `LibraryEntry { uuid, version, title, file, size, installed_at, converter, source: StoryEntry,
 thumb, source_stamp }`.

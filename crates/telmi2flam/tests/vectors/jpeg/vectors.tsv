@@ -232,6 +232,7 @@ fin_prog_ff_seul	unreadable
 fin_prog_moitie_eoi	rgba:33x21
 fin_prog_moitie_dht	unreadable
 fin_prog_eoi_puis_parasites	rgba:33x21
+# Ajoutes par #491 apres le gel (PORT-RUST.md 4.5) : attendus de l oracle fige (Python 3.14.8, Pillow 12.3.0, libjpeg-turbo 3.1.4.1, _open_rgba de l ancien convertisseur a la revision 9cf8542), gen_jpeg_vectors.py etendu lance hors depot ; lignes et membres du ZIP anterieurs inchanges.
 pcd_polyglotte	rgba:768x512
 pcd_polyglotte_court	unreadable
 pcd_erreur_libjpeg	unreadable

@@ -1,4 +1,4 @@
-//! Conversions PNG vers LIF de `tools/telmi2flam/telmi2flam.py` : `png_to_lif`,
+//! Conversions PNG vers LIF de l'ancien convertisseur Python : `png_to_lif`,
 //! `png_to_scene_lif`, `png_to_fit_lif`, `png_to_thumb_lif`, avec `_bound` et
 //! `_avoid_transpose`, et les trois modes de vignette (`flou`, `rogner`, `bandes`, voir
 //! [`ThumbFit`]). Sortie identique à l'octet près à celle de Python 3.14.8 + Pillow 12.3.0
@@ -128,7 +128,7 @@ fn avoid_transpose(im: Rgba, align: Align) -> Result<Rgba> {
 }
 
 /// `_encode` : `lif.encode(im.tobytes(), w, h)`. L'encodeur ne refuse qu'un tampon de taille
-/// fausse (`assert` de `lif.py`, exception rangée dans `image_unreadable` côté Python).
+/// fausse (`assert` de l'ancien `lif.py`, exception rangée dans `image_unreadable` côté Python).
 fn encode(im: &Rgba) -> Result<Vec<u8>> {
     lif::encode(&im.rgba, im.width, im.height)
         .map_err(|_| PngError::Unreadable("encodage LIF impossible"))

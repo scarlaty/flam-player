@@ -121,7 +121,8 @@ Disponible dans la prochaine version : transformez des épisodes de podcasts en 
    « Cocher les 10 derniers épisodes » aide. Les épisodes explicites ne sont jamais cochés
    d'office.
 3. Ouvrez **Composer le pack** : rangez les épisodes en catégories (3 niveaux de menus, 50
-   options par menu), réglez titre, âge et couverture. Votre travail est enregistré
+   options par menu), réglez titre, âge et couverture, et choisissez si vous le souhaitez
+   l'image de chaque catégorie parmi celles de ses épisodes. Votre travail est enregistré
    automatiquement.
 4. **Créer l'histoire** : l'audio est téléchargé et converti, l'histoire arrive dans « Mes
    histoires », puis s'envoie sur la Flam comme les autres. Les épisodes qui échouent sont
@@ -252,7 +253,7 @@ et TypeScript). Il s'appuie sur d'autres briques de ce dépôt :
 |-----------|------|---------------|
 | `flam-player` | Émulateur du firmware de la Flam (C, LVGL, Lua, SDL2) | [docs/player.md](docs/player.md) |
 | `telmi2flam` (Rust) | Convertisseur TELMI vers FLAM livré avec le launcher (version 2.0.0) | [crates/telmi2flam](crates/telmi2flam/) |
-| `tools/telmi2flam` | Version Python d'origine : référence de parité et outils de campagne, plus livrée aux utilisateurs | [tools/telmi2flam](tools/telmi2flam/README.md) |
+| `tools/telmi2flam` | Moteur Lua et runtime embarqués dans le convertisseur, documentation du format, outils de campagne et de parité en Python (la version Python du convertisseur est supprimée, ses sorties servent de références de test) | [tools/telmi2flam](tools/telmi2flam/README.md) |
 | Jeux homebrew | Jeux en Lua pour la Flam | [docs/player.md](docs/player.md#jeux-et-contenus-homebrew) |
 | Skill `flam-homebrew` | Fabriquer un contenu `.plain.pk` avec une IA | [skills/flam-homebrew](skills/flam-homebrew/SKILL.md) |
 | Formats de la Flam | Volume USB, index, chiffrement | [flam-device-format.md](docs/flam-device-format.md), [flam-carrier.md](docs/flam-carrier.md) |

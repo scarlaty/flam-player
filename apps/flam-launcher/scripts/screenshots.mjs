@@ -376,7 +376,6 @@ function installMockBackend({ config, scenario }) {
     layout_standard: true,
     usb_ids: null,
     coherence: { kind: "not_applicable" },
-    trust: "not_applicable",
     write_block: null,
   };
   const device = {
@@ -457,6 +456,7 @@ function installMockBackend({ config, scenario }) {
     tts_preview_stop: () => null,
     sources_list: () => ({ sources, recovery: null }),
     config_ack_recovery: () => null,
+    podcast_mp3_cache_size: () => ({ bytes: 96_000_000 }),
     cache_usage: () => ({
       path: "C:\\Users\\demo\\AppData\\Local\\flam-launcher\\cache",
       bytes: 412_000_000,

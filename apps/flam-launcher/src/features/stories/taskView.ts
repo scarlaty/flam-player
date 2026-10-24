@@ -5,6 +5,7 @@ import type {
 } from "../../api/install";
 import type { Task, TaskKind, TaskState } from "../../components";
 import { t } from "../../i18n";
+import { ownText } from "../../i18n/lookup";
 import type { StoryProgress } from "../library/storyState";
 import { formatBytes } from "../validation";
 
@@ -102,6 +103,8 @@ export function toPanelTask(task: InstallTask, detail?: TaskDetail): Task {
  * Message d'une tâche en échec. Un code du convertisseur connu (`unsupported_format` : format que
  * le launcher ne sait pas convertir, sans repli depuis #138), ou un `kind` connu (titres lus,
  * `tts_*`, #462), est traduit en un texte clair et non technique ; sinon le message du backend.
+ * Le détail du backend d'un échec `tts_failed` (premier titre, plus de la moitié des titres, voix
+ * qui ne répond plus) reste affiché sous le texte traduit, sur une ligne à part.
  */
 export function taskErrorMessage(error: TaskError): string {
   // Le code vient du convertisseur : texte libre, jamais une clé héritée (`constructor`, `__proto__`).
@@ -109,19 +112,24 @@ export function taskErrorMessage(error: TaskError): string {
     error.kind === "conversion" && error.code
       ? conversionText(error.code)
       : errorKindText(error.kind);
-  return text ?? error.message;
+  if (text === undefined) return error.message;
+  const backend = error.message.trim();
+  return DETAILED_KINDS.includes(error.kind) && backend !== ""
+    ? `${text}\n${t.errors.detail(backend)}`
+    : text;
 }
+
+/** `kind` dont le message du backend complète le texte traduit au lieu d'être remplacé. */
+const DETAILED_KINDS: readonly string[] = ["tts_failed"];
 
 /** Texte traduit d'un `kind` d'erreur de tâche, seulement s'il est propre à la table. */
 export function errorKindText(kind: string): string | undefined {
-  const table = t.errors.task;
-  return Object.hasOwn(table, kind) ? table[kind] : undefined;
+  return ownText(t.errors.task, kind);
 }
 
-/** Texte traduit d'un code de conversion, seulement s'il est propre à la table (`Object.hasOwn`). */
+/** Texte traduit d'un code de conversion, seulement s'il est propre à la table. */
 function conversionText(code: string): string | undefined {
-  const table = t.errors.conversion;
-  return Object.hasOwn(table, code) ? table[code] : undefined;
+  return ownText(t.errors.conversion, code);
 }
 
 /** Avertissements des titres lus montrés en entier dans le panneau ; les suivants sont comptés. */

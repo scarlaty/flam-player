@@ -63,10 +63,6 @@ export type Coherence =
     }
   | { kind: "no_evidence"; counts: CoherenceCounts };
 
-/** Confiance accordée à une Flam 2.x (miroir de `Trust`). */
-export type FirmwareTrust =
-  "not_applicable" | "flam_verified" | "confirmed" | "unconfirmed";
-
 /** Refus d'écrire de la garde (miroir de `WriteRefused`). */
 export type WriteRefused =
   | { kind: "device_not_found" }
@@ -76,9 +72,7 @@ export type WriteRefused =
   | { kind: "version_unreadable" }
   | { kind: "unsupported_firmware"; version: string }
   | { kind: "keys_unreadable"; detail: string }
-  | { kind: "keys_trivial"; version: string }
-  | { kind: "keys_contradiction"; version: string }
-  | { kind: "confirmation_required"; version: string; standard: boolean };
+  | { kind: "keys_trivial"; version: string };
 
 /** État du firmware (miroir de `FirmwareStatus` dans `device/guard.rs`). */
 export interface FirmwareStatus {
@@ -92,8 +86,8 @@ export interface FirmwareStatus {
   layout_standard: boolean;
   /** VID:PID USB lus dans `.mdf` (`303a:819e`). */
   usb_ids: string | null;
+  /** Cohérence des clés 2.x (informative : une contradiction est un avertissement). */
   coherence: Coherence;
-  trust: FirmwareTrust;
   /** Raison du refus d'écrire ; `null` : écriture autorisée. */
   write_block: WriteRefused | null;
 }
@@ -106,39 +100,16 @@ export function needsCarrier(device: DeviceSummary | null): boolean {
 }
 
 /**
- * Refus d'envoyer sur la Flam d'après l'état du firmware (`null` : envoi possible, éventuellement
- * après confirmation, voir `needsFirmwareConfirmation`).
+ * Refus d'écrire sur la Flam d'après l'état du firmware (`null` : envoi, reprise, retrait et
+ * ordre possibles). Une contradiction des clés n'en est pas un : c'est un avertissement (#326).
  */
 export function firmwareWriteBlock(device: DeviceSummary | null): WriteRefused | null {
-  const block = device?.firmware_status?.write_block ?? null;
-  return block && block.kind !== "confirmation_required" ? block : null;
+  return device?.firmware_status?.write_block ?? null;
 }
 
-/**
- * Flam 2.x pas encore confirmée : l'utilisateur doit confirmer avant toute écriture. Vrai aussi
- * quand l'envoi est bloqué par une contradiction des clés : la confirmation rend alors le
- * retrait de l'histoire en cause possible.
- */
-export function needsFirmwareConfirmation(device: DeviceSummary | null): boolean {
-  const status = device?.firmware_status;
-  const kind = status?.write_block?.kind;
-  return (
-    kind === "confirmation_required" ||
-    (kind === "keys_contradiction" && status?.trust === "unconfirmed")
-  );
-}
-
-/**
- * Reprise, retrait et ordre possibles : seule une contradiction des clés (qui ne refuse que
- * l'envoi) est tolérée.
- */
+/** Reprise, retrait et ordre possibles : Flam détectée, et la garde du firmware ne refuse rien. */
 export function canMaintain(device: DeviceSummary | null): boolean {
-  if (!device) return false;
-  const status = device.firmware_status;
-  if (!status) return true;
-  if (status.trust === "unconfirmed") return false;
-  const block = status.write_block;
-  return block === null || block.kind === "keys_contradiction";
+  return device !== null && firmwareWriteBlock(device) === null;
 }
 
 /** Réponse de `device_status` (miroir de `DeviceStatus`). */
@@ -470,20 +441,6 @@ export function acceptCarrierWarning(
 /** `device_carrier_forget` : oublie les clés conservées pour la Flam de `root`. */
 export function forgetCarrierKeys(root: string): Promise<number> {
   return invokeCommand<number>("device_carrier_forget", { root });
-}
-
-/**
- * `device_confirm_firmware` : « Firmware 2.x en test : j'ai sauvegardé ma Flam » (`understood` :
- * case cochée), mémorisé sur ce PC pour cette Flam. Rend l'état du firmware à jour.
- */
-export function confirmFirmware(
-  root: string,
-  understood: boolean,
-): Promise<FirmwareStatus> {
-  return invokeCommand<FirmwareStatus>("device_confirm_firmware", {
-    root,
-    understood,
-  });
 }
 
 /** `device_cancel_transfer` : demande l'annulation du transfert en cours (faux : aucun). */

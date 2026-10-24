@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -89,6 +90,7 @@ fn cat(name: &str, entries: Vec<MenuEntry>) -> MenuEntry {
         name: name.to_string(),
         entries,
         audio: None,
+        image: None,
     }
 }
 
@@ -291,6 +293,77 @@ fn sous_menus_sur_trois_niveaux() {
     assert_eq!(nodes.stage(&xo[1])["image"], "e003.png");
 }
 
+/// Image d'un épisode de `menu` (rang `n` dans le parcours en profondeur, depuis 1).
+fn episode_image(menu: &[MenuEntry], n: usize) -> PathBuf {
+    fn walk<'a>(menu: &'a [MenuEntry], out: &mut Vec<&'a PackEpisode>) {
+        for e in menu {
+            match e {
+                MenuEntry::Episode(ep) => out.push(ep),
+                MenuEntry::Category { entries, .. } => walk(entries, out),
+            }
+        }
+    }
+    let mut all = Vec::new();
+    walk(menu, &mut all);
+    all[n - 1].image.clone().unwrap()
+}
+
+/// Remplace l'image choisie de la catégorie `name` (N5 c).
+fn choose_image(menu: &mut [MenuEntry], name: &str, png: Option<PathBuf>) {
+    for e in menu {
+        if let MenuEntry::Category {
+            name: n,
+            entries,
+            image,
+            ..
+        } = e
+        {
+            if n == name {
+                *image = png.clone();
+            }
+            choose_image(entries, name, png.clone());
+        }
+    }
+}
+
+#[test]
+fn image_choisie_d_une_categorie_n5c() {
+    let mut fx = Fixture::new();
+    let mut menu = three_levels(&mut fx);
+    // X contient B, C, D, E (rangs 2 à 5) : on choisit E ; Y contient C, D : on choisit D.
+    let (e, d) = (episode_image(&menu, 5), episode_image(&menu, 4));
+    choose_image(&mut menu, "X", Some(e));
+    choose_image(&mut menu, "Y", Some(d));
+    write_archive(&pack(menu, None), &fx.out(), &never).unwrap();
+    let files = read_zip(&fx.out());
+    let nodes = Nodes::of(&files);
+    let r = nodes.action(&nodes.menu_of_root());
+    assert_eq!(nodes.stage(&r[1])["image"], "e005.png");
+    let (x, _) = nodes.target(&r[1], "ok");
+    let xo = nodes.action(&x);
+    assert_eq!(nodes.stage(&xo[1])["image"], "e004.png");
+    // Les épisodes gardent leur propre image.
+    assert_eq!(nodes.stage(&xo[0])["image"], "e002.png");
+    assert!(files.contains_key("images/e005.png"));
+}
+
+#[test]
+fn image_choisie_hors_de_la_categorie_ou_inconnue_retombe_sur_l_automatique() {
+    let mut fx = Fixture::new();
+    let mut menu = three_levels(&mut fx);
+    // A (rang 1) n'est pas dans X ; un chemin inconnu ne désigne aucun épisode.
+    let a = episode_image(&menu, 1);
+    choose_image(&mut menu, "X", Some(a));
+    choose_image(&mut menu, "Y", Some(PathBuf::from("inconnue.png")));
+    write_archive(&pack(menu, None), &fx.out(), &never).unwrap();
+    let files = read_zip(&fx.out());
+    let nodes = Nodes::of(&files);
+    let r = nodes.action(&nodes.menu_of_root());
+    assert_eq!(nodes.stage(&r[1])["image"], "e002.png");
+    let (x, _) = nodes.target(&r[1], "ok");
+    assert_eq!(nodes.stage(&nodes.action(&x)[1])["image"], "e003.png");
+}
+
 // --- titres lus (§ 12, #462) -------------------------------------------------------------------
 
 /// Donne un titre lu à chaque option de l'arborescence dont le libellé n'est pas dans `mute`.
@@ -306,6 +379,7 @@ fn speak_all(fx: &mut Fixture, menu: &mut [MenuEntry], mute: &[&str]) {
                 name,
                 entries,
                 audio,
+                ..
             } => {
                 if !mute.contains(&name.as_str()) {
                     *audio = Some(fx.title_mp3());
@@ -377,6 +451,7 @@ fn titres_lus_un_audio_par_option_et_title_mp3() {
                         name,
                         entries,
                         audio,
+                        ..
                     } => {
                         out.push((name, audio.as_deref().unwrap()));
                         walk(entries, out);
@@ -837,28 +912,45 @@ fn convertie_par_la_crate_telmi2flam_sans_avertissement() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Outils Python de développement (`tools/telmi2flam/telmi2flam.py`, `validate.py`) : oracle
+// Binaire `telmi2flam.exe` livré et `validate.py` (outil Python de développement) : critère de #216
 // ---------------------------------------------------------------------------------------------
 
-/// Python de développement (Pillow et lupa installés) : `FLAM_TEST_PYTHON`. Le launcher ne livre
-/// plus de Python (#138).
+/// `telmi2flam.exe` livré (`build/telmi2flam`, après `npm run build:converter`) ou
+/// `FLAM_TEST_RUST_CONVERTER`.
+fn converter() -> Option<PathBuf> {
+    let exe = std::env::var_os("FLAM_TEST_RUST_CONVERTER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../build/telmi2flam")
+                .join("telmi2flam.exe")
+        });
+    exe.is_file().then_some(exe)
+}
+
+/// Python de développement pour `validate.py` (bibliothèque standard, `lupa` pour le contrôle
+/// de syntaxe Lua) : `FLAM_TEST_PYTHON`. Le launcher ne livre pas de Python (#138).
 fn python() -> Option<PathBuf> {
     std::env::var_os("FLAM_TEST_PYTHON").map(PathBuf::from)
 }
 
-fn tools_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/telmi2flam")
+fn validate_script() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/telmi2flam/validate.py")
 }
 
-/// Lance un script Python en mode isolé de l'environnement (`-E -s -B -X utf8`).
-fn run_py(python: &Path, cwd: &Path, args: &[&std::ffi::OsStr]) -> (i32, String, String) {
-    let out = Command::new(python)
-        .args(["-E", "-s", "-B", "-X", "utf8"])
+/// Lance `program args` dans `cwd`, sans `FLAM_FFMPEG` (pas de rééchantillonnage) ; `isolated`
+/// : options d'isolement de Python (`-E -s -B -X utf8`) en tête. Renvoie (code, stdout, stderr).
+fn run(program: &Path, isolated: bool, cwd: &Path, args: &[&OsStr]) -> (i32, String, String) {
+    let mut cmd = Command::new(program);
+    if isolated {
+        cmd.args(["-E", "-s", "-B", "-X", "utf8"]);
+    }
+    let out = cmd
         .args(args)
         .current_dir(cwd)
         .env_remove("FLAM_FFMPEG")
         .output()
-        .expect("lancement de Python");
+        .expect("lancement du programme");
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -866,27 +958,23 @@ fn run_py(python: &Path, cwd: &Path, args: &[&std::ffi::OsStr]) -> (i32, String,
     )
 }
 
-/// Critère de #216 : l'archive est lue (`--info`) et convertie par le convertisseur Python de
-/// `tools/` (oracle), sans avertissement, et le paquet passe `validate.py`. Ignoré sans
-/// `FLAM_TEST_PYTHON`, sauf avec `FLAM_TEST_REQUIRE_PYTHON=1` (CI).
+/// Critère de #216 : l'archive est lue (`--info`) et convertie par le binaire `telmi2flam.exe`
+/// livré (processus enfant, comme le launcher), sans avertissement, et le paquet passe
+/// `validate.py`. Ignoré sans binaire ni `FLAM_TEST_PYTHON`, sauf avec
+/// `FLAM_TEST_REQUIRE_CONVERTER=1` (CI, après `npm run build:converter`).
 #[test]
-fn python_convertit_et_valide_l_archive() {
-    let Some(python) = python() else {
+fn binaire_convertit_et_valide_l_archive() {
+    let required = std::env::var_os("FLAM_TEST_REQUIRE_CONVERTER").is_some_and(|v| v == "1");
+    let (Some(exe), Some(python)) = (converter(), python()) else {
         assert!(
-            std::env::var_os("FLAM_TEST_REQUIRE_PYTHON").is_none_or(|v| v != "1"),
-            "FLAM_TEST_REQUIRE_PYTHON=1 : Python du convertisseur introuvable"
+            !required,
+            "FLAM_TEST_REQUIRE_CONVERTER=1 : telmi2flam.exe ou FLAM_TEST_PYTHON introuvable"
         );
-        eprintln!("Python du convertisseur absent : test ignoré");
+        eprintln!("telmi2flam.exe ou Python de validate.py absent : test ignoré");
         return;
     };
-    let tools = tools_dir();
-    let script = tools.join("telmi2flam.py");
-    let validate = tools.join("validate.py");
-    assert!(
-        script.is_file() && validate.is_file(),
-        "{}",
-        tools.display()
-    );
+    let validate = validate_script();
+    assert!(validate.is_file(), "{}", validate.display());
 
     let mut fx = Fixture::new();
     let mut menu = three_levels(&mut fx);
@@ -905,11 +993,7 @@ fn python_convertit_et_valide_l_archive() {
     let work = fx.dir.path();
 
     // --info
-    let (code, stdout, stderr) = run_py(
-        &python,
-        work,
-        &[script.as_os_str(), "--info".as_ref(), archive.as_os_str()],
-    );
+    let (code, stdout, stderr) = run(&exe, false, work, &["--info".as_ref(), archive.as_os_str()]);
     assert_eq!(code, 0, "--info : {stderr}");
     let info: Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(info["uuid"], p.uuid.hyphenated().to_string());
@@ -919,15 +1003,15 @@ fn python_convertit_et_valide_l_archive() {
 
     // conversion, événements machine : aucun avertissement
     let pk = fx.path("pack.plain.pk");
-    let (code, stdout, stderr) = run_py(
-        &python,
+    let (code, stdout, stderr) = run(
+        &exe,
+        false,
         work,
         &[
-            script.as_os_str(),
-            "--progress-json".as_ref(),
             archive.as_os_str(),
             "-o".as_ref(),
             pk.as_os_str(),
+            "--progress-json".as_ref(),
         ],
     );
     assert_eq!(code, 0, "conversion : {stderr}\n{stdout}");
@@ -943,10 +1027,11 @@ fn python_convertit_et_valide_l_archive() {
         "aucun événement done : {stdout}"
     );
 
-    // uuid.bin = MD5 de la chaîne uuid (§ 3.4), calculé par Python
+    // uuid.bin = MD5 de la chaîne uuid (§ 3.4), calculé indépendamment par Python
     let pk_files = read_zip_any(&pk);
-    let (code, md5, stderr) = run_py(
+    let (code, md5, stderr) = run(
         &python,
+        true,
         work,
         &[
             "-c".as_ref(),
@@ -968,7 +1053,7 @@ fn python_convertit_et_valide_l_archive() {
     );
 
     // validate.py
-    let (code, stdout, stderr) = run_py(&python, work, &[validate.as_os_str(), pk.as_os_str()]);
+    let (code, stdout, stderr) = run(&python, true, work, &[validate.as_os_str(), pk.as_os_str()]);
     assert_eq!(code, 0, "validate.py :\n{stdout}\n{stderr}");
     // Aucun `[WARN]` (régression de focus N4 a, de retour…), sauf le contrôle Lua ignoré faute
     // de `lupa` ou d'interpréteur.

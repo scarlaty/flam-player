@@ -29,6 +29,7 @@
 //!   intacte.
 
 use std::collections::{BTreeSet, HashSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -156,8 +157,9 @@ pub struct StoreRead {
     /// Champs inconnus du premier niveau du fichier, réécrits tels quels.
     extra: Map<String, Value>,
     /// Entrées écartées dont la copie n'a pas pu être faite ou gardée (réécriture en échec) :
-    /// la prochaine écriture copie d'abord le fichier d'origine, sinon elle n'a pas lieu.
-    backup_pending: bool,
+    /// la prochaine écriture copie d'abord le fichier d'origine, sinon elle n'a pas lieu. Porte
+    /// le compte et le détail des raisons, pour que le message dise la copie faite ensuite.
+    backup_pending: Option<(usize, String)>,
 }
 
 /// Accès au fichier des compositions de `dir`. L'appelant tient le verrou de configuration.
@@ -238,9 +240,12 @@ fn file_name(path: &Path) -> String {
 }
 
 /// Rang d'une copie `<COMPOSITIONS_FILE>.<AAAAMMJJ-HHMMSS>[-<n>].bak` (horodatage puis
-/// suffixe) ; `None` pour tout autre nom, jamais supprimé.
-fn backup_rank(name: &str) -> Option<(String, u64)> {
+/// suffixe) ; `None` pour tout autre nom, jamais supprimé. Le nom est lu tel quel, sans
+/// conversion avec perte : un nom qui n'est pas de l'Unicode valide n'est jamais une copie
+/// (#489).
+fn backup_rank(name: &OsStr) -> Option<(String, u64)> {
     let middle = name
+        .to_str()?
         .strip_prefix(COMPOSITIONS_FILE)?
         .strip_prefix('.')?
         .strip_suffix(".bak")?;
@@ -263,10 +268,11 @@ fn backup_rank(name: &str) -> Option<(String, u64)> {
     Some((stamp.to_string(), n))
 }
 
-/// Ne garde que [`MAX_BACKUPS`] copies du fichier dans `dir` : `keep` (la copie qui vient
-/// d'être faite, jamais supprimée, même si l'horloge a reculé) et les plus récentes des
-/// autres. Au mieux : un échec est tracé, jamais remonté.
-fn prune_backups(dir: &Path, keep: &Path) {
+/// Ne garde que [`MAX_BACKUPS`] copies du fichier dans `dir` : `keep` (nom de la copie qui
+/// vient d'être faite, jamais supprimée, même si l'horloge a reculé) et les plus récentes des
+/// autres. Noms comparés tels quels (`OsStr`), jamais après une conversion avec perte (#489).
+/// Au mieux : un échec est tracé, jamais remonté.
+fn prune_backups(dir: &Path, keep: &OsStr) {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) => {
@@ -274,13 +280,14 @@ fn prune_backups(dir: &Path, keep: &Path) {
             return;
         }
     };
-    let keep = keep.file_name();
     let mut copies: Vec<((String, u64), PathBuf)> = entries
         .filter_map(Result::ok)
-        .filter(|e| Some(e.file_name().as_os_str()) != keep)
         .filter_map(|e| {
-            let rank = backup_rank(&e.file_name().to_string_lossy())?;
-            Some((rank, e.path()))
+            let name = e.file_name();
+            if name.as_os_str() == keep {
+                return None;
+            }
+            Some((backup_rank(&name)?, e.path()))
         })
         .collect();
     let others = MAX_BACKUPS.saturating_sub(1);
@@ -334,6 +341,14 @@ impl Rejected {
     }
 }
 
+/// Message des entrées écartées, une fois le fichier d'origine copié en `backup`.
+fn copied_notice(total: usize, detail: &str, backup: &Path) -> String {
+    format!(
+        "{total} composition(s) enregistrée(s) écartée(s) ({detail}) ; le fichier d'origine a été copié ({}).",
+        file_name(backup)
+    )
+}
+
 /// Ajoute `notice` au message de `err` : une action en échec ne perd pas le message dit une
 /// fois (fichier mis de côté, entrées écartées). Le genre de l'erreur est inchangé.
 fn with_notice(err: AppError, notice: Option<String>) -> AppError {
@@ -368,7 +383,7 @@ impl<'a> Store<'a> {
             "compositions de pack : fichier {why}, mis de côté en {}",
             backup.display()
         );
-        prune_backups(self.dir, &backup);
+        prune_backups(self.dir, backup.file_name().unwrap_or_default());
         Ok(StoreRead {
             notice: Some(format!(
                 "Le fichier des compositions enregistrées ({why}) a été mis de côté ({}).",
@@ -393,7 +408,9 @@ impl<'a> Store<'a> {
             Ok(Loaded::Missing) => return Ok(StoreRead::default()),
             Ok(Loaded::Found(raw)) => raw,
             Ok(Loaded::Recovered { backup }) => {
-                prune_backups(self.dir, Path::new(&backup));
+                // `backup` : nom rendu en `String` par `load_versioned`, exact ici (nom du
+                // fichier et horodatage en ASCII, voir `storage::backup_path`).
+                prune_backups(self.dir, OsStr::new(&backup));
                 return Ok(StoreRead {
                     notice: Some(format!(
                         "Le fichier des compositions enregistrées était illisible : il a été mis de côté ({backup})."
@@ -440,7 +457,7 @@ impl<'a> Store<'a> {
                 entries,
                 notice: None,
                 extra,
-                backup_pending: false,
+                backup_pending: None,
             });
         }
         let (total, detail) = (rejected.total(), rejected.detail());
@@ -449,18 +466,17 @@ impl<'a> Store<'a> {
             entries,
             notice: None,
             extra,
-            backup_pending: true,
+            backup_pending: Some((total, detail.clone())),
         };
         let notice = match self.write_with_copy(&read) {
             Ok(backup) => {
-                read.backup_pending = false;
-                let backup = backup.map(|b| file_name(&b)).unwrap_or_default();
+                read.backup_pending = None;
+                let backup = backup.unwrap_or_default();
                 tracing::warn!(
-                    "compositions de pack : {total} entrée(s) écartée(s) ({detail}), fichier copié en {backup}"
+                    "compositions de pack : {total} entrée(s) écartée(s) ({detail}), fichier copié en {}",
+                    file_name(&backup)
                 );
-                format!(
-                    "{total} composition(s) enregistrée(s) écartée(s) ({detail}) ; le fichier d'origine a été copié ({backup})."
-                )
+                copied_notice(total, &detail, &backup)
             }
             Err(err) => {
                 // Copie retirée par l'écriture (l'original, intact, en tient lieu) ; elle sera
@@ -478,9 +494,15 @@ impl<'a> Store<'a> {
     }
 
     /// Écrit les entrées de `read` (et ses champs inconnus) de façon atomique, sérialisées une
-    /// fois et bornées.
-    fn write(&self, read: &StoreRead) -> AppResult<()> {
-        self.write_with_copy(read).map(|_| ())
+    /// fois et bornées. Si la copie en attente des entrées écartées (`backup_pending`) vient
+    /// d'être faite, le message de `read` est remplacé : il ne dit plus que le fichier n'a pas pu
+    /// être réécrit, mais nomme la copie (#489).
+    fn write(&self, read: &mut StoreRead) -> AppResult<()> {
+        let copy = self.write_with_copy(read)?;
+        if let (Some((total, detail)), Some(copy)) = (read.backup_pending.take(), copy) {
+            read.notice = Some(copied_notice(total, &detail, &copy));
+        }
+        Ok(())
     }
 
     /// [`Store::write`], précédée d'une copie du fichier d'origine si des entrées écartées
@@ -506,7 +528,7 @@ impl<'a> Store<'a> {
             )));
         }
         let path = self.path();
-        let copy = if read.backup_pending {
+        let copy = if read.backup_pending.is_some() {
             Some(backup_copy(&path)?)
         } else {
             None
@@ -514,7 +536,7 @@ impl<'a> Store<'a> {
         match (self.write)(&path, &bytes) {
             Ok(()) => {
                 if let Some(copy) = &copy {
-                    prune_backups(self.dir, copy);
+                    prune_backups(self.dir, copy.file_name().unwrap_or_default());
                 }
                 Ok(copy)
             }
@@ -543,22 +565,22 @@ impl<'a> Store<'a> {
         now: u64,
     ) -> AppResult<Recorded> {
         let mut read = self.read()?;
-        let notice = read.notice.take();
-        match self.record_in(read, composition, title, now) {
+        match self.record_in(&mut read, composition, title, now) {
             Ok((id, name, new)) => Ok(Recorded {
                 id,
                 name,
                 new,
-                notice,
+                notice: read.notice,
             }),
-            Err(err) => Err(with_notice(err, notice)),
+            Err(err) => Err(with_notice(err, read.notice)),
         }
     }
 
-    /// [`Store::record`] sur des entrées déjà lues : `(id, nom, nouvelle)`.
+    /// [`Store::record`] sur des entrées déjà lues : `(id, nom, nouvelle)`. Le message de
+    /// `read` est mis à jour si l'écriture fait la copie en attente.
     fn record_in(
         &self,
-        mut read: StoreRead,
+        read: &mut StoreRead,
         composition: &PackComposition,
         title: &str,
         now: u64,
@@ -600,7 +622,7 @@ impl<'a> Store<'a> {
             read.entries.push(entry);
             out
         };
-        self.write(&read)?;
+        self.write(read)?;
         Ok(out)
     }
 
@@ -621,7 +643,6 @@ impl<'a> Store<'a> {
             )));
         };
         let mut read = self.read()?;
-        let notice = read.notice.take();
         let result = (|| {
             Self::find(&read.entries, id)?;
             if name_taken(&read.entries, name, Some(id)) {
@@ -635,26 +656,25 @@ impl<'a> Store<'a> {
                 }
                 entry.name = name.to_string();
             }
-            self.write(&read)
+            self.write(&mut read)
         })();
         match result {
-            Ok(()) => Ok(notice),
-            Err(err) => Err(with_notice(err, notice)),
+            Ok(()) => Ok(read.notice),
+            Err(err) => Err(with_notice(err, read.notice)),
         }
     }
 
     /// Supprime une composition ; absente : rien à faire. Renvoie le message de la lecture.
     pub fn delete(&self, id: &str) -> AppResult<Option<String>> {
         let mut read = self.read()?;
-        let notice = read.notice.take();
         let before = read.entries.len();
         read.entries.retain(|e| e.id != id);
         if read.entries.len() == before {
-            return Ok(notice);
+            return Ok(read.notice);
         }
-        match self.write(&read) {
-            Ok(()) => Ok(notice),
-            Err(err) => Err(with_notice(err, notice)),
+        match self.write(&mut read) {
+            Ok(()) => Ok(read.notice),
+            Err(err) => Err(with_notice(err, read.notice)),
         }
     }
 
@@ -743,14 +763,19 @@ pub fn record_after_create(
     composition: &PackComposition,
     title: &str,
 ) -> CompositionRecord {
-    let store = Store::new(dir);
+    record_after_create_in(&Store::new(dir), composition, title)
+}
+
+/// [`record_after_create`] sur un `Store` donné (écrivain injectable dans les tests).
+fn record_after_create_in(
+    store: &Store<'_>,
+    composition: &PackComposition,
+    title: &str,
+) -> CompositionRecord {
     let (notice, result) = match store.read() {
         Ok(mut read) => {
-            let notice = read.notice.take();
-            (
-                notice,
-                store.record_in(read, composition, title, now_secs()),
-            )
+            let result = store.record_in(&mut read, composition, title, now_secs());
+            (read.notice, result)
         }
         Err(err) => (None, Err(err)),
     };

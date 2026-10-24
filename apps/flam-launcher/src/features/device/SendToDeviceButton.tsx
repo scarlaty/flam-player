@@ -17,7 +17,6 @@ const REASON_TEXT: Record<SendBlock, string> = {
   queued: text.reasons.queued,
   no_device: text.reasons.noDevice,
   firmware: text.reasons.firmware,
-  confirm_keys: t.deviceFirmware.confirm.sendFirst,
   checking: text.reasons.checking,
   present: text.reasons.present,
   no_space: text.reasons.noSpace,
@@ -39,8 +38,7 @@ export interface SendToDeviceButtonProps {
 
 /** État de la Flam et de la file, pour les règles d'envoi. */
 function useSendContext(): SendContext {
-  const { device, stories, firmwareBlocked, keysConfirmation, queue, removing } =
-    useDevice();
+  const { device, stories, firmwareBlocked, queue, removing } = useDevice();
   const report = stories.phase === "ready" ? stories.report : null;
   // Seuls les envois en attente ou en cours bloquent : une tâche terminée (réussie, en échec ou
   // annulée) ne bloque jamais un nouvel envoi. Une histoire réussie y figure déjà (« Déjà sur la
@@ -61,7 +59,6 @@ function useSendContext(): SendContext {
     device,
     deviceStories: report,
     firmwareBlocked,
-    keysConfirmation,
     removing,
     queuedOrSent,
   };

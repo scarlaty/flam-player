@@ -1,5 +1,5 @@
 //! Événements de progression (`--progress-json`) : `start`, `step`, `warning`, `done` et
-//! `error`, identiques à ceux de `tools/telmi2flam/telmi2flam.py` (`_emit`, `_Progress`,
+//! `error`, identiques à ceux de l'ancien convertisseur Python (`_emit`, `_Progress`,
 //! `_print_event`, README « Sortie machine »).
 //!
 //! Format : un objet JSON par ligne, compact (`separators=(",", ":")`), ASCII seulement

@@ -1,3 +1,5 @@
+import { ownText } from "./lookup";
+
 const storyCount = (n: number) => (n <= 1 ? `${n} histoire` : `${n} histoires`);
 
 /**
@@ -21,18 +23,21 @@ export const fr = {
   },
   errors: {
     title: (kind: string) =>
-      ({
-        validation: "Valeur refusée",
-        not_found: "Élément introuvable",
-        io: "Erreur d'accès aux fichiers",
-        config_version: "Configuration trop récente",
-        network: "Réseau indisponible",
-        catalog_invalid: "Catalogue illisible",
-        folder_unavailable: "Dossier introuvable",
-        tts_no_voice: "Aucune voix française",
-        tts_unavailable: "Synthèse vocale indisponible",
-        tts_failed: "Titres non lus à voix haute",
-      })[kind] ?? "Une erreur est survenue",
+      ownText(
+        {
+          validation: "Valeur refusée",
+          not_found: "Élément introuvable",
+          io: "Erreur d'accès aux fichiers",
+          config_version: "Configuration trop récente",
+          network: "Réseau indisponible",
+          catalog_invalid: "Catalogue illisible",
+          folder_unavailable: "Dossier introuvable",
+          tts_no_voice: "Aucune voix française",
+          tts_unavailable: "Synthèse vocale indisponible",
+          tts_failed: "Titres non lus à voix haute",
+        },
+        kind,
+      ) ?? "Une erreur est survenue",
     loadFailed: "Impossible de charger les données.",
     retry: "Réessayer",
     /**
@@ -43,6 +48,8 @@ export const fr = {
       unsupported_format:
         "Cette histoire utilise un format que le launcher ne sait pas encore convertir (image non PNG ou archive compressée en bzip2/LZMA).",
     } as Record<string, string>,
+    /** Détail du backend, sous le texte traduit d'un échec `tts_failed` (panneau des tâches). */
+    detail: (message: string) => `Détail : ${message}`,
     /**
      * Message montré pour une tâche (ou une création de pack) en échec, selon son `kind`, à la
      * place du texte du backend. `kind` absent de la table : le message du backend.
@@ -70,6 +77,9 @@ export const fr = {
     voiceOfComposition: (name: string) => `Voix : ${name} (celle de la composition).`,
     voiceGone: (name: string) =>
       `La voix choisie dans les Paramètres n'est plus installée : ${name} sera utilisée.`,
+    preferredLoading: "Lecture de la voix choisie dans les Paramètres…",
+    preferredFailed: (name: string) =>
+      `La voix choisie dans les Paramètres n'a pas pu être lue : ${name} sera utilisée.`,
     listen: "Écouter",
     stop: "Arrêter",
     listenTitle: "Écouter le titre du pack",
@@ -93,10 +103,10 @@ export const fr = {
       trySample: "Bonjour ! Je lirai les titres de vos histoires.",
       failed: "La voix n'a pas pu être enregistrée.",
     },
-    /** Pack terminé : avertissements des titres lus, dans le suivi de la tâche. */
+    /** Pack terminé : avertissements des titres lus (voix de repli, titres muets…), dans le suivi de la tâche. */
     warnings: (shown: string[], more: number) =>
       more > 0
-        ? `${shown.join(" ")} Et ${more} autre${more > 1 ? "s" : ""} titre${more > 1 ? "s" : ""} resté${more > 1 ? "s" : ""} muet${more > 1 ? "s" : ""}.`
+        ? `${shown.join(" ")} Et ${more} autre${more > 1 ? "s" : ""} avertissement${more > 1 ? "s" : ""}.`
         : shown.join(" "),
   },
   recovery: {
@@ -347,6 +357,10 @@ export const fr = {
         removed: (label: string) => `« ${label} » retiré du pack.`,
         added: (label: string, menu: string) => `« ${label} » ajouté à « ${menu} ».`,
         refused: "Déplacement impossible : limite de l'arborescence atteinte.",
+        categoryImage: (category: string, chosen: boolean) =>
+          chosen
+            ? `Image de la catégorie « ${category} » : épisode choisi.`
+            : `Image de la catégorie « ${category} » : automatique.`,
       },
       pool: {
         title: "Épisodes sélectionnés, pas encore placés",
@@ -381,6 +395,11 @@ export const fr = {
         feed: (name: string) => `Image du flux « ${name} »`,
         episode: (title: string) => `Image de l'épisode « ${title} »`,
         missing: "Image indisponible : choisissez-en une autre",
+      },
+      categoryImage: {
+        legend: (category: string) => `Image de la catégorie « ${category} »`,
+        auto: "Automatique",
+        autoHint: "Image du premier épisode de la catégorie.",
       },
       problems: {
         title: "À corriger avant de créer l'histoire",
@@ -494,6 +513,10 @@ export const fr = {
       title: "Cache",
       usage: (size: string, path: string) => `${size} occupés dans ${path}`,
       empty: (path: string) => `Le cache est vide (${path}).`,
+      /** Part du cache occupée par les MP3 de podcasts (déjà comprise dans la taille ci-dessus). */
+      mp3: (size: string) =>
+        `Dont MP3 de podcasts : ${size}, gardés pour refaire un pack sans tout retélécharger.`,
+      mp3Empty: "Aucun MP3 de podcast n'est gardé en cache.",
       clear: "Vider le cache",
       confirmTitle: "Vider le cache ?",
       confirmDescription: (dirs: string, path: string, size: string) =>
@@ -871,7 +894,7 @@ export const fr = {
       edit: "Modifier l'ordre",
       busy: "Ordre non modifiable pendant un envoi.",
       firmware:
-        "Ordre non modifiable : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
+        "Ordre non modifiable : écriture sur cette Flam bloquée (voir l'état du firmware).",
       title: "Ordre des histoires sur la Flam",
       help: "Glissez les histoires, ou utilisez les boutons Tout en haut, Monter, Descendre et Tout en bas (touches Début et Fin au clavier), puis enregistrez. La Flam affiche les histoires dans cet ordre.",
       othersNote:
@@ -1035,7 +1058,7 @@ export const fr = {
       otherWorking: "Un retrait est déjà en cours.",
       ejecting: "Retrait indisponible pendant une éjection.",
       firmware:
-        "Retrait indisponible : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
+        "Retrait indisponible : écriture sur cette Flam bloquée (voir l'état du firmware).",
     },
     eject: {
       button: "Éjecter la Flam",
@@ -1109,15 +1132,15 @@ export const fr = {
     },
     state: {
       v1: "pris en charge (mode carrier)",
-      flamVerified: "en test, vérifié par la Flam",
-      confirmed: "en test, sauvegarde confirmée",
-      unconfirmed: "en test, confirmation à donner",
-      contradiction: "envoi bloqué (clés incohérentes)",
+      v2: "pris en charge",
+      contradiction: "pris en charge, clés à vérifier",
       blocked: "écriture bloquée",
     },
     nonStandard: "fichier .mdf non standard",
+    nonStandardTitle: "Fichier .mdf non standard",
+    nonStandardBody: (size: number, header: string) =>
+      `Le fichier .mdf de cette Flam n'a pas la forme connue (${size} octets, en-tête ${header} ; attendu 126 octets, en-tête 01 00). L'envoi reste possible, mais le risque d'histoire illisible est plus grand : gardez une copie de votre Flam.`,
     blockedTitle: "Écriture sur cette Flam bloquée",
-    sendBlockedTitle: "Envoi sur cette Flam bloqué",
     blocked: {
       device_not_found: "Fichier .mdf absent : la Flam n'est plus détectée.",
       invalid_root: "Ce lecteur n'est pas une Flam détectée.",
@@ -1130,33 +1153,19 @@ export const fr = {
         `Clés illisibles dans le fichier .mdf (${detail}).`,
       keys_trivial: (version: string) =>
         `Firmware ${version} : clé ou IV vide dans le fichier .mdf.`,
-      keys_contradiction: (version: string) =>
-        `Firmware ${version} : une histoire installée par un autre outil sur cette Flam ne se déchiffre pas avec les clés du fichier .mdf. Une histoire envoyée serait illisible. Le retrait et l'ordre restent possibles.`,
-      confirmation_required: (version: string) =>
-        `Firmware ${version} : confirmation de sauvegarde à donner avant tout envoi.`,
     },
     blockedHint:
       "Rien n'est écrit tant que ce blocage dure. Notez la version et l'état affichés ici dans votre retour de test.",
+    contradictionTitle: "Clés de la Flam à vérifier",
+    contradiction: (version: string) =>
+      `Firmware ${version} : une histoire installée par un autre outil sur cette Flam ne se déchiffre pas avec les clés du fichier .mdf.`,
     contradictionStories: (ids: string[], total: number) => {
       const more = total - ids.length;
       const tail = more > 0 ? ` (et ${more} ${more > 1 ? "autres" : "autre"})` : "";
       return `Histoires en cause : ${ids.join(", ")}${tail}.`;
     },
     contradictionHint:
-      "Aucune histoire n'est envoyée tant que ce blocage dure. Le retrait et l'ordre restent possibles (après la confirmation de sauvegarde, si elle est demandée). Notez la version et l'état affichés ici dans votre retour de test.",
-    confirm: {
-      title: "Firmware 2.x en test",
-      body: "L'envoi sur une Flam en firmware 2.x n'a pas encore été vérifié sur un appareil réel. Avant de continuer, copiez tout le contenu de la Flam sur votre ordinateur. Envoyez d'abord une seule petite histoire, puis redémarrez la Flam.",
-      nonStandard: (size: number, header: string) =>
-        `Attention : le fichier .mdf de cette Flam n'a pas la forme connue (${size} octets, en-tête ${header} ; attendu 126 octets, en-tête 01 00). Le risque d'histoire illisible est plus grand : ne continuez que si la sauvegarde est faite.`,
-      understood: "Firmware 2.x en test : j'ai sauvegardé ma Flam",
-      action: "Confirmer",
-      working: "Confirmation…",
-      failed: (message: string) => `Confirmation impossible : ${message}`,
-      sendFirst: "Confirmez d'abord la sauvegarde de la Flam dans « Ma Flam ».",
-    },
-    restartV2:
-      "Firmware 2.x : après le redémarrage, rebranchez la Flam en mode connexion USB. Le launcher vérifie alors que la Flam a bien lu le titre de l'histoire envoyée.",
+      "Simple avertissement : l'envoi, le retrait et l'ordre restent possibles. Ce contrôle peut se tromper (histoire d'un autre outil dont le titre est en Latin-1 ou très court). Si une histoire envoyée ne se lit pas sur la Flam, notez la version et l'état affichés ici dans votre retour de test.",
   },
 };
 

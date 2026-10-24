@@ -1,4 +1,4 @@
-//! Codec LIF (Lunii Image File Format), port de `tools/telmi2flam/lif.py`.
+//! Codec LIF (Lunii Image File Format), port de l'ancien `lif.py` (supprimé, #140).
 //!
 //! Format : magic `liff`, largeur et hauteur (u32 big-endian), un octet de canaux (`0xA2`),
 //! une charge utile d'opcodes (RGB565 + alpha, deltas, cache de 64 couleurs, RLE), puis 8
@@ -39,7 +39,7 @@ pub enum LifError {
     BadDimensions,
     /// Aucun octet entre l'en-tête et le marqueur de fin.
     NoPayload,
-    /// Tampon RGBA dont la taille ne correspond pas aux dimensions (`assert` de `lif.py`).
+    /// Tampon RGBA de taille différente des dimensions (`assert` de l'ancien `lif.py`).
     BadBufferSize,
 }
 

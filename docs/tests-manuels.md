@@ -386,13 +386,16 @@ synchronisation : c'est ici un test voulu, à ne faire qu'avec une copie fraîch
 retour par le modèle « Retour testeur Flam »).
 
 **Étapes.** Suivre le guide testeur en entier (installation, M0, tests 1 à 8, points 1 à 8 de
-« Points à vérifier en 2.x »), puis relever en plus, pour clore #326 :
-1. Format de `usr\0\library.cache` après un envoi et un redémarrage : le titre de l'histoire
-   envoyée y figure-t-il ? (preuve par le cache liée au titre).
-2. Règle « précédé de sa longueur » de `key` (octet de poids faible) : taille et en-tête du
-   `.mdf` 2.x, forme de la version (sans clé ni numéro de série).
-3. Empreinte du `.mdf` : le firmware modifie-t-il les 16 octets à `0x6E` ? Comparer le SHA-256
-   du `.mdf` avant et après un redémarrage (SHA-256 seulement dans le compte rendu).
+« Points à vérifier en 2.x »), puis relever en plus (#326 : garde 2.x retirée, alignement sur
+Lunii.QT) :
+1. **Envoi réel sans confirmation** : sur la Flam 2.x branchée, « Ma Flam » ne demande aucune
+   confirmation ; envoyer une petite histoire depuis « Mes histoires » : l'envoi aboutit.
+2. **Lecture sur l'appareil** : éjecter, débrancher, redémarrer la Flam ; l'histoire envoyée
+   apparaît en fin de liste avec son titre lisible, se lance, images et son compris. La retirer
+   ensuite depuis « Ma Flam » : le retrait aboutit aussi.
+3. Taille et en-tête du `.mdf` 2.x, forme de la version (sans clé ni numéro de série) ; noter si
+   « Ma Flam » affiche l'avertissement « Clés de la Flam à vérifier » et, si oui, les histoires
+   désignées (faux positif possible).
 
 **Résultat attendu.** Réponses aux points T1, T2, T3, T4 et T9 de `flam-device-format.md` § 10
 pour la 2.x ; décision go/no-go de #236 pour sortir de l'expérimental.

@@ -12,6 +12,7 @@ import {
   removeAt,
   removeEpisode,
   renameAt,
+  setCategoryImage,
   shift,
   tryAppend,
   MAX_OPTIONS_PER_MENU,
@@ -103,5 +104,54 @@ describe("arborescence du pack", () => {
     expect(
       episodesOf(removeEpisode(menu, { source_id: "s", episode_id: "a" })),
     ).toHaveLength(1);
+  });
+});
+
+describe("image choisie d'une catégorie (N5 c)", () => {
+  const ref = (id: string) => ({ source_id: "s", episode_id: id });
+  const imageOf = (node: PackNode | null) =>
+    node?.kind === "category" ? node.image : undefined;
+
+  it("choisit puis efface l'image, sans toucher au reste", () => {
+    const menu = [ep("z"), cat("C", ep("a"), ep("b"))];
+    const chosen = setCategoryImage(menu, [1], ref("b"));
+    expect(imageOf(nodeAt(chosen, [1]))).toEqual(ref("b"));
+    expect(ids(chosen)).toEqual(["z", "[C]"]);
+    const auto = setCategoryImage(chosen, [1], null);
+    expect(nodeAt(auto, [1])).toEqual(cat("C", ep("a"), ep("b")));
+    expect("image" in nodeAt(auto, [1])!).toBe(false);
+  });
+
+  it("garde le choix au renommage et au déplacement dans la catégorie", () => {
+    const menu = setCategoryImage([cat("C", ep("a"), ep("b"))], [0], ref("b"));
+    expect(imageOf(nodeAt(renameAt(menu, [0], "Neuf"), [0]))).toEqual(ref("b"));
+    expect(imageOf(nodeAt(shift(menu, [0, 1], -1), [0]))).toEqual(ref("b"));
+  });
+
+  it("retombe silencieusement sur l'automatique si l'épisode est retiré ou déplacé dehors", () => {
+    const menu = setCategoryImage([cat("C", ep("a"), ep("b")), ep("z")], [0], ref("b"));
+    expect(imageOf(nodeAt(removeAt(menu, [0, 1]), [0]))).toBeUndefined();
+    expect(imageOf(nodeAt(move(menu, [0, 1], [])!, [0]))).toBeUndefined();
+    expect(imageOf(nodeAt(removeEpisode(menu, ref("b")), [0]))).toBeUndefined();
+    // Un autre épisode retiré ne change rien.
+    expect(imageOf(nodeAt(removeAt(menu, [0, 0]), [0]))).toEqual(ref("b"));
+  });
+
+  it("garde le choix quand l'épisode reste dans la catégorie après un déplacement", () => {
+    const menu = setCategoryImage([cat("C", ep("a"), ep("b"), cat("S"))], [0], ref("b"));
+    expect(imageOf(nodeAt(move(menu, [0, 1], [0], 0)!, [0]))).toEqual(ref("b"));
+    expect(imageOf(nodeAt(move(menu, [0, 1], [0, 2])!, [0]))).toEqual(ref("b"));
+    const nested = setCategoryImage(
+      [cat("P", cat("S", ep("x")), ep("a"))],
+      [0],
+      ref("x"),
+    );
+    expect(imageOf(nodeAt(move(nested, [0, 0], [0], 2)!, [0]))).toEqual(ref("x"));
+  });
+
+  it("garde le choix d'une catégorie parente si l'épisode reste dans un sous-menu", () => {
+    const menu = setCategoryImage([cat("A", cat("B", ep("x")), ep("y"))], [0], ref("x"));
+    expect(imageOf(nodeAt(removeAt(menu, [0, 1]), [0]))).toEqual(ref("x"));
+    expect(imageOf(nodeAt(removeAt(menu, [0, 0, 0]), [0]))).toBeUndefined();
   });
 });

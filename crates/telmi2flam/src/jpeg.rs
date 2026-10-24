@@ -1,4 +1,4 @@
-//! Décodage JPEG vers RGBA avec la sémantique de `_open_rgba` (`tools/telmi2flam/telmi2flam.py`)
+//! Décodage JPEG vers RGBA avec la sémantique de `_open_rgba` (de l'ancien convertisseur Python)
 //! exécuté avec **Pillow 12.3.0** (libjpeg-turbo 3.1.4.1) : `Image.open`, `load()` puis
 //! `convert("RGBA")` (#459, décision D7 de `PORT-RUST.md`).
 //!
@@ -11,7 +11,7 @@
 //!    quantification absente (arithmétique compris ; pas en sans perte, comme libjpeg),
 //!    composante inconnue, paramètres de progression, échantillonnage hors 1..4 ou non entier,
 //!    côté au-delà de 65 500 px) et fin des données (fichier tronqué : `LOAD_TRUNCATED_IMAGES`
-//!    reste faux dans `telmi2flam.py`). Les erreurs de libjpeg avant le premier `SOS` ne passent
+//!    reste faux dans l'ancien convertisseur). Les erreurs de libjpeg avant le premier `SOS` ne passent
 //!    qu'après toute l'analyse de `_open` (elles surviennent au décodage). Une exception de
 //!    `_open` rattrapée par `Image.open` sur des données qu'un greffon sans `_accept` peut lire
 //!    (SPIDER, ou PCD : `PCD_` à l'octet 2048) est déléguée. Règle de fin, mesurée sur

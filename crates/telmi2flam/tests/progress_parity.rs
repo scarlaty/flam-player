@@ -1,7 +1,7 @@
 //! Parité du protocole du binaire avec Python (#131) : événements `--progress-json`, lignes
 //! `  ! …` de stderr et codes de sortie. Les vecteurs `tests/data/progress_cases.json` sont
-//! produits par `tests/data/gen_progress_cases.py` (CLI `telmi2flam.py`, Python 3.14.8 +
-//! Pillow 12.3.0) sur les archives de `tests/data/package_cases.zip`.
+//! produits par `gen_progress_cases.py` (supprimé) (CLI de l'ancien convertisseur Python, Python
+//! 3.14.8 + Pillow 12.3.0) sur les archives de `tests/data/package_cases.zip`.
 //!
 //! Normalisation commune (horodatages et espacements neutralisés) : `input`, `output`,
 //! `version` remplacés, `message` de `error` retiré, étapes intermédiaires (ni `done == 0` ni

@@ -180,7 +180,7 @@ test_run.bat strict     :: idem, et un échec d'un test isolé compte aussi
 | 2. Moteur/runtime | `tests\engine\test_*.lua` : moteur et modules runtime de telmi2flam |
 | 3. Audio réel | `tests\audio\` avec flam-test-audio (vrai `sdl_audio.c`, pilote SDL dummy) |
 | 4. Tests isolés | `regress_*.lua`, `poc_*.lua`, `fuzz_*.lua`, un processus chacun (timeout 30 s ; 1 = erreur Lua, 3 = timeout, autre = crash) |
-| 5. Convertisseur | `tools\telmi2flam\tests` (python unittest) ; sauté si python ou Pillow absent |
+| 5. Convertisseur | `tools\telmi2flam\tests` (python unittest, binaire `telmi2flam` requis) ; sauté si python absent |
 | 6. Bout en bout | `tests\e2e\e2e_telmi.py` ; sauté si python ou flam-player.exe absent |
 
 - Les échecs de l'étape 4 ne comptent qu'en mode `strict` ; en `strict`, un
@@ -279,9 +279,9 @@ charge : l'archive est refusée avec un message explicite. Les options sont cell
 (`--plain`, `--selector`, `--keep-size`, `--allow-missing`...) : voir
 [tools/telmi2flam/README.md](../tools/telmi2flam/README.md).
 
-Python (3, avec Pillow) ne reste nécessaire que pour les outils de développement de
-`tools/telmi2flam/` : version Python d'origine (référence de parité), `validate.py`, campagne de
-parité sur archives réelles, `explore.py` et tests du convertisseur Python.
+Python 3 (sans Pillow) ne reste nécessaire que pour les outils de développement de
+`tools/telmi2flam/` : `validate.py`, `compat.py`, `explore.py`, parité du binaire avec les
+références figées de l'ancienne version Python (supprimée, #140) et leurs tests.
 
 ## Jeux et contenus homebrew
 

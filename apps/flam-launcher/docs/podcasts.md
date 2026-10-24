@@ -32,6 +32,7 @@ Légende :
 12. [Synthèse vocale des titres (#462)](#12-synthèse-vocale-des-titres-462)
 13. [Cache des MP3 convertis (N8 b, #460)](#13-cache-des-mp3-convertis-n8-b-460)
 14. [Compositions nommées réutilisables (N3 c, #461)](#14-compositions-nommées-réutilisables-n3-c-461)
+15. [Image de catégorie choisie (N5 c, #499)](#15-image-de-catégorie-choisie-n5-c-499)
 
 ## 1. Objectif et périmètre
 
@@ -56,7 +57,7 @@ fonctionnelle du launcher ; elle peut être préparée dès maintenant.
 
 **Hors MVP** (#221, voir § 11) : recherche de podcasts et liste de flux conseillés, synthèse
 vocale des titres, titre incrusté ou pochette générée, compositions nommées réutilisables (N3 c,
-livré par #461, § 14), cache des MP3 convertis (N8 b, livré par #460, § 13), image de catégorie choisie par le parent (N5 c), normalisation du
+livré par #461, § 14), cache des MP3 convertis (N8 b, livré par #460, § 13), image de catégorie choisie par le parent (N5 c, livré par #499, § 15), normalisation du
 volume, chapitres, reprise par épisode, génération directe d'un paquet flam (option B).
 
 ## 2. Décisions prises
@@ -127,7 +128,7 @@ Remarques de cohérence :
 
 ### 3.1 Audio
 
-- Le firmware attend du **MP3 à 44 100 Hz** (`SAMPLERATE` dans `tools/telmi2flam/telmi2flam.py`,
+- Le firmware attend du **MP3 à 44 100 Hz** (`crates/telmi2flam/src/ffmpeg.rs`,
   #46). Le convertisseur ne lit que du MP3 : AAC, Ogg ou WAV doivent être transcodés **par le
   launcher** avant l'archive Telmi (#214).
 - Filet de sécurité : un MP3 qui n'est pas à 44 100 Hz est rééchantillonné par `telmi2flam`
@@ -331,7 +332,7 @@ projet.
   au menu parent (à vérifier sur l'appareil, #219) ;
 - libellés : titres d'épisodes et noms de catégories (40 caractères, translittérés) ;
 - images : P6 puis D13 pour les épisodes ; image d'une catégorie = image du **premier épisode**
-  de la catégorie (N5 a) ; couverture du pack = image du podcast du premier flux utilisé par
+  de la catégorie par défaut (N5 a), ou épisode choisi par le parent (N5 c, § 15) ; couverture du pack = image du podcast du premier flux utilisé par
   défaut, modifiable parmi les images des flux et épisodes du pack (N6 b) ;
 - profondeur : 3 niveaux de menus au plus (racine + 2), 50 options par menu, catégorie vide
   refusée (N2 b).
@@ -458,7 +459,8 @@ sur l'appareil, #219).
 | b. Image unie de repli (`#122e2c`) avec le nom en libellé                              | Distingue les catégories ; visuellement pauvre.                   |
 | c. Image choisie par le parent parmi celles des épisodes de la catégorie, a par défaut | Le plus clair ; un réglage de plus dans l'éditeur.                |
 
-**Recommandation : a** (adoptée le 2026-10-23) au MVP, c en évolution.
+**Recommandation : a** (adoptée le 2026-10-23) au MVP, c en évolution. **c livré le
+2026-10-24** (#499, § 15) : « Automatique » reste le défaut.
 
 ### N6. Couverture du pack (et vignette 104 × 136) — Décidé le 2026-10-23 : b
 
@@ -576,7 +578,7 @@ Changements **appliqués sur GitHub le 2026-10-23**, après adoption de N1 à N1
 | #218  | Fermée, abandonnée (pas de mise à jour).                                                                                                                                                                                                               |
 | #219  | Enchaînement, sous-menus, retour, mono et stéréo mélangés, packs multi-flux, transfert carrier firmware 1.x, capacité de la Flam.                                                                                                                      |
 | #220  | README « Créer un pack », mention d'usage avec la publicité (D9), message « J'ai compris » (D14) ; dépend de #217 et #363.                                                                                                                             |
-| #221  | Évolutions : recherche, synthèse vocale, compositions nommées (N3 c), cache des MP3 convertis (N8 b), image de catégorie choisie (N5 c), pochettes ; dépend de #219.                                                                                   |
+| #221  | Évolutions : recherche, synthèse vocale, compositions nommées (N3 c), cache des MP3 convertis (N8 b), image de catégorie choisie (N5 c, livrée par #499), pochettes ; dépend de #219.                                                                  |
 | #361  | Nouvelle : lecture de `itunes:explicit` (D8) et correction de l'en-tête de `rss.rs`.                                                                                                                                                                   |
 | #362  | Nouvelle : modèle de composition du pack (types, validation N1, N2, N9, D1) et brouillon unique (N3 b).                                                                                                                                                |
 | #363  | Nouvelle : éditeur de pack (arborescence, métadonnées, couverture).                                                                                                                                                                                    |
@@ -947,7 +949,7 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
 
 ### 13.4 Écriture, lecture, concurrence
 
-- **Écriture atomique** : `<id>.json` est supprimé d'abord (l'ancienne entrée n'est plus
+- **Écriture atomique** (sauf pochette seule, voir plus bas) : `<id>.json` est supprimé d'abord (l'ancienne entrée n'est plus
   servie), le MP3 et la pochette sont écrits en `.part` puis renommés, et `<id>.json` est écrit
   **en dernier** (temporaire puis renommage) : il vaut validation de l'entrée. Le MP3 est
   d'abord **lié** (lien physique, aucune place en plus sur le disque) depuis le dossier de
@@ -970,9 +972,15 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
   lisent par blocs de 256 Kio et s'arrêtent au bloc suivant quand la tâche est annulée, ce qui
   libère vite le verrou de la source. Une lecture annulée ne juge ni ne supprime aucune entrée ;
   une écriture annulée ne laisse rien de l'entrée (une écriture annulée avant de commencer garde
-  l'ancienne). Cas accepté : l'annulation pendant la remise en cache d'un épisode servi dont
-  seule la pochette a changé efface aussi son MP3 (l'ancienne entrée est retirée avant
-  l'écriture) ; il sera retéléchargé au pack suivant.
+  l'ancienne). Copie de repli interrompue pendant une lecture (MP3 ou pochette) : l'épisode
+  n'est pas servi, la copie partielle est retirée, l'entrée reste intacte (#489).
+- **Pochette seule** (#489) : un épisode servi dont seule la pochette a changé est remis en
+  cache sans réécrire son entrée : `<id>.json` cesse de citer l'ancienne pochette, la nouvelle
+  passe par un `.part`, puis `<id>.json` est réécrit. Une annulation ou une panne (disque
+  plein) ne supprime que la pochette : le MP3 valide reste en cache et servi, sans
+  retéléchargement. Si l'entrée a changé depuis la lecture (métadonnées absentes, autre
+  empreinte, MP3 d'une autre taille), elle est réécrite en entier depuis le MP3 placé dans le
+  dossier de travail.
 - **Liens et jonctions** (#466) : `podcasts/`, `podcasts/<id>/` et `podcasts/<id>/mp3/` doivent
   être de vrais dossiers (contrôle sans suivre de lien, à chaque accès, dossiers manquants créés
   un par un puis recontrôlés) ; sinon la source est ignorée avec un avertissement : rien n'est
@@ -999,6 +1007,7 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
 | Épisode ou règle de conversion modifiés               | Empreinte différente : entrée remplacée.                                          |
 | Plafond de 2 Gio dépassé                              | Entrées les plus anciennes évincées (jamais celles du pack en cours).             |
 | Tâche annulée pendant le hachage ou la copie          | Arrêt au bloc suivant ; aucune entrée supprimée, écriture en cours effacée.       |
+| Annulation ou panne en remettant la pochette seule    | Pochette seule supprimée ; le MP3 reste en cache et servi (#489).                 |
 | `podcasts/` ou `podcasts/<id>/` remplacé par un lien  | Source ignorée (avertissement) : rien lu, écrit ni supprimé hors du cache.        |
 | Fichier d'extension inconnue dans `mp3/`              | Compté comme reste, supprimé à l'éviction.                                        |
 
@@ -1006,8 +1015,17 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
 
 Aucun écran dédié : la taille du cache des MP3 est comptée dans la taille du cache affichée par
 les paramètres, « Vider le cache » la supprime, et la suppression d'une source purge la sienne.
-Un affichage séparé (taille du cache des MP3, bouton dédié) est une évolution possible, non
-faite dans #466 (suivi : #489).
+
+**Taille affichée à part (#489).** La section « Cache » des paramètres ajoute, sous la taille
+totale, une ligne « Dont MP3 de podcasts : … » (ou « Aucun MP3 de podcast n'est gardé en
+cache. »). Elle vient de la commande `podcast_mp3_cache_size` (`podcast/mp3size.rs`), qui
+renvoie `{ bytes }` : la somme des fichiers de `<cache>/podcasts/<source>/mp3/` (entrées,
+`.part` et restes compris), sans suivre ni lien ni jonction ; un dossier absent ou remplacé par
+un lien compte pour zéro. Cette part est **déjà comprise** dans la taille de `cache_usage` (le
+sous-dossier `podcasts` en fait partie) : elle n'est pas ajoutée. Elle est relue après
+l'ouverture de l'écran, un enregistrement des chemins et « Vider le cache » ; un échec de son
+calcul masque seulement la ligne. Un bouton dédié pour ne vider que les MP3 reste une évolution
+possible, non faite.
 
 ## 14. Compositions nommées réutilisables (N3 c, #461)
 
@@ -1102,11 +1120,15 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
   lieu) : des lectures répétées n'accumulent pas de copies. Toute écriture suivante (conserver,
   renommer, supprimer) **refait d'abord la copie**, et n'a pas lieu si elle échoue : le
   fichier n'est jamais réécrit sans les entrées écartées tant qu'aucune copie ne les garde.
+  Si elle réussit, son message dit le nouvel état et nomme la copie faite (« le fichier
+  d'origine a été copié (…) »), et non plus l'échec de la réécriture (#489).
 - **Fichier illisible** (tronqué, JSON invalide, non UTF-8) ou **trop gros** : mis de côté en
   `*.bak` (jamais écrasé), liste vide, message.
 - **Copies bornées** : 3 copies `pack-compositions.json.*.bak` au plus (`MAX_BACKUPS`) : celle
   qui vient d'être faite, jamais supprimée (même si l'horloge a reculé), et les plus récentes
-  des autres ; un fichier au nom inattendu n'est jamais supprimé. Une copie
+  des autres ; un fichier au nom inattendu n'est jamais supprimé. Les noms sont comparés tels
+  quels, jamais après une conversion avec perte (#489) ; un nom qui n'est pas de l'Unicode
+  valide n'est jamais pris pour une copie (garanti aussi par le motif, tout ASCII). Une copie
   de la même seconde prend un suffixe supérieur à tous les existants
   (`storage::backup_path`) : la plus récente n'est jamais la première supprimée.
 - **Schéma plus récent** : comme `settings.json`, le fichier n'est **ni lu ni modifié**
@@ -1167,26 +1189,26 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
 
 ### 14.8 Pannes
 
-| Étape / panne                                        | État laissé                                  | Reprise ou message                                                            |
-| ---------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------- |
-| Arrêt brutal pendant l'écriture                      | ancien fichier intact (temporaire abandonné) | la composition sera conservée à la prochaine création                         |
-| Disque plein, fichier en lecture seule               | ancien fichier intact, temporaire supprimé   | création du pack poursuivie, message ; renommer ou supprimer : erreur         |
-| Fichier tronqué ou JSON invalide                     | mis de côté en `*.bak`                       | liste vide, message une fois                                                  |
-| Entrée écartée dans un fichier lisible               | copie `*.bak`, entrées lisibles réécrites    | message une fois, raisons distinguées                                         |
-| Entrée écartée, réécriture impossible                | fichier intact, copie retirée                | entrées lisibles servies, message ; écriture suivante précédée d'une copie    |
-| Plus de 3 copies `*.bak`                             | les plus anciennes supprimées                | aucun                                                                         |
-| Fichier trop gros                                    | mis de côté en `*.bak`, jamais écrasé        | liste vide, message                                                           |
-| Fichier d'un schéma plus récent                      | intact, ni lu ni réécrit                     | erreur affichée ; création poursuivie sans conservation, raison dite          |
-| Champs inconnus (version plus récente, même schéma)  | conservés à chaque réécriture                | aucun                                                                         |
-| Sources illisibles pendant la liste                  | inchangé                                     | liste servie, flux supprimés non comptés                                      |
-| Limite de 50 atteinte                                | inchangé                                     | création poursuivie, message (et message de lecture éventuel)                 |
-| Sauvegarde d'un éditeur fermé refusée                | brouillon (composition ouverte) intact       | pas de nouvelle tentative                                                     |
-| Ouvrir : brouillon illisible                         | brouillon mis de côté (`*.bak`, N3 b)        | composition copiée dans un brouillon neuf                                     |
-| Ouvrir : écriture du brouillon impossible            | brouillon inchangé                           | erreur affichée, l'éditeur n'est pas ouvert                                   |
-| Ouvrir, renommer, supprimer une composition disparue | inchangé                                     | « composition introuvable », liste relue                                      |
-| Épisode retiré du flux, flux jamais obtenu           | composition intacte                          | épisode signalé indisponible à l'ouverture, création bloquée tant qu'il y est |
-| Source supprimée                                     | composition intacte                          | marquée dans la liste ; épisodes indisponibles à l'ouverture                  |
-| Couverture disparue                                  | composition intacte                          | « couverture indisponible » à l'ouverture                                     |
+| Étape / panne                                        | État laissé                                  | Reprise ou message                                                                                  |
+| ---------------------------------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Arrêt brutal pendant l'écriture                      | ancien fichier intact (temporaire abandonné) | la composition sera conservée à la prochaine création                                               |
+| Disque plein, fichier en lecture seule               | ancien fichier intact, temporaire supprimé   | création du pack poursuivie, message ; renommer ou supprimer : erreur                               |
+| Fichier tronqué ou JSON invalide                     | mis de côté en `*.bak`                       | liste vide, message une fois                                                                        |
+| Entrée écartée dans un fichier lisible               | copie `*.bak`, entrées lisibles réécrites    | message une fois, raisons distinguées                                                               |
+| Entrée écartée, réécriture impossible                | fichier intact, copie retirée                | entrées lisibles servies, message ; écriture suivante précédée d'une copie, nommée dans son message |
+| Plus de 3 copies `*.bak`                             | les plus anciennes supprimées                | aucun                                                                                               |
+| Fichier trop gros                                    | mis de côté en `*.bak`, jamais écrasé        | liste vide, message                                                                                 |
+| Fichier d'un schéma plus récent                      | intact, ni lu ni réécrit                     | erreur affichée ; création poursuivie sans conservation, raison dite                                |
+| Champs inconnus (version plus récente, même schéma)  | conservés à chaque réécriture                | aucun                                                                                               |
+| Sources illisibles pendant la liste                  | inchangé                                     | liste servie, flux supprimés non comptés                                                            |
+| Limite de 50 atteinte                                | inchangé                                     | création poursuivie, message (et message de lecture éventuel)                                       |
+| Sauvegarde d'un éditeur fermé refusée                | brouillon (composition ouverte) intact       | pas de nouvelle tentative                                                                           |
+| Ouvrir : brouillon illisible                         | brouillon mis de côté (`*.bak`, N3 b)        | composition copiée dans un brouillon neuf                                                           |
+| Ouvrir : écriture du brouillon impossible            | brouillon inchangé                           | erreur affichée, l'éditeur n'est pas ouvert                                                         |
+| Ouvrir, renommer, supprimer une composition disparue | inchangé                                     | « composition introuvable », liste relue                                                            |
+| Épisode retiré du flux, flux jamais obtenu           | composition intacte                          | épisode signalé indisponible à l'ouverture, création bloquée tant qu'il y est                       |
+| Source supprimée                                     | composition intacte                          | marquée dans la liste ; épisodes indisponibles à l'ouverture                                        |
+| Couverture disparue                                  | composition intacte                          | « couverture indisponible » à l'ouverture                                                           |
 
 ### 14.9 Interface
 
@@ -1217,3 +1239,62 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
   JSON indenté, raisons distinguées ; vitest : brouillon non vide sans épisode, indicateur
   d'ouverture, messages des actions, nom en caractères, sauvegarde refusée d'un éditeur
   fermé non réessayée, message de conservation gardé.
+- Suivis #489 : message d'une action réussie après l'échec de la réécriture (nouvel état,
+  copie nommée), copies comparées sur le nom brut (non-régression : nom non Unicode jamais supprimé).
+
+## 15. Image de catégorie choisie (N5 c, #499)
+
+Évolution retenue par le mainteneur le 2026-10-24 (#499, issue de #221) : le parent peut choisir
+l'image d'une catégorie parmi les pochettes des épisodes qu'elle contient. **« Automatique »**
+(image du premier épisode, N5 a) reste le défaut et le comportement des packs existants.
+
+### 15.1 Modèle
+
+- `PackNode::Category` reçoit un champ optionnel `image` : un `EpisodeRef` (source + identifiant
+  d'épisode), jamais d'URL ni de chemin (D11). Absent = automatique ; omis à l'écriture quand il
+  est absent, donc un brouillon ou une composition nommée (§ 14) d'avant #499 se charge sans
+  erreur et se réécrit à l'identique. La composition ne contient aucune image : le choix est une
+  référence, comme la couverture (N6 b).
+- L'épisode choisi doit figurer dans la catégorie, **à toute profondeur** (un sous-menu compte).
+- Limite connue : un launcher d'avant #499 qui relirait puis réécrirait `pack-compositions.json`
+  perdrait le champ `image` des catégories (les champs inconnus ne sont conservés qu'au premier
+  niveau d'une composition).
+- Deux compositions qui ne diffèrent que par ce choix sont différentes (§ 14.1) : « dériver » un
+  pack en changeant seulement l'image crée une nouvelle entrée.
+
+### 15.2 Création
+
+- Même chaîne d'image que l'automatique : la pochette de l'épisode choisi est celle déjà
+  téléchargée et convertie en PNG 640 × 480 pour l'épisode lui-même (D13) ; l'archive ne
+  contient aucun fichier de plus, la scène de la catégorie cite le fichier de cet épisode
+  (`MenuEntry::Category::image`, `archive.rs`).
+- Repli sur l'automatique si l'épisode choisi n'est pas dans la catégorie, a été
+  retiré du pack (échec de téléchargement ou de conversion, P7) ou n'a pas de pochette lisible.
+  La création ne s'arrête pas : un avertissement « Image de la catégorie « X » : l'épisode choisi
+  n'est plus disponible, image automatique utilisée. » est ajouté aux `warnings` du pack
+  (aucun avertissement pour une catégorie entièrement retirée, ni sans choix).
+- Aucun problème de validation (`ProblemCode`) n'est ajouté : un choix périmé n'empêche jamais
+  de créer le pack.
+
+### 15.3 Interface
+
+- Éditeur, sous chaque catégorie qui contient au moins **deux** épisodes avec pochette (ou qui a déjà un choix, pour
+  pouvoir le défaire) : un groupe
+  de boutons radio natifs « Image de la catégorie « X » » (« Automatique » puis un choix par
+  épisode, libellé = titre). Une tabulation, flèches pour changer de choix, annonce vocale du
+  choix. Les pochettes elles-mêmes ne sont **pas** aperçues : le front n'a aucune image des
+  épisodes (D11, pas d'adresse) ; un aperçu demanderait une commande de vignettes à part
+  (suivi).
+- Quand l'épisode choisi est retiré du pack ou déplacé hors de la catégorie, le choix est effacé
+  sans bruit (`pruneImages`, `tree.ts`) : retour à « Automatique ». Un brouillon ancien dont
+  l'épisode a disparu est traité côté backend (15.2).
+
+### 15.4 Tests
+
+- Rust : choix appliqué à la scène de la catégorie (y compris catégorie imbriquée), repli
+  (épisode hors catégorie, chemin inconnu), `build_menu` (choix appliqué, sans choix, épisode
+  retiré, sans pochette, hors catégorie ou inconnu, catégorie vidée), compatibilité JSON
+  (ancien brouillon, aller-retour, brouillon écrit puis relu).
+- vitest : `CategoryImageChoice` (groupe nommé, choix et retour à Automatique, clavier, choix
+  périmé, masqué sans alternative, axe), `PackTree` (enregistrement et annonce), `tree.ts`
+  (choix, effacement silencieux au retrait ou au déplacement, parent conservé).

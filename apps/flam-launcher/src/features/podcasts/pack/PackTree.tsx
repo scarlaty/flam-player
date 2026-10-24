@@ -2,18 +2,21 @@ import { useEffect, useRef, useState, type DragEvent } from "react";
 import type { EpisodeRef, PackNode } from "../../../api/pack";
 import { Badge, Button, IconButton, SelectField, TextField } from "../../../components";
 import { t } from "../../../i18n";
+import { CategoryImageChoice } from "./CategoryImageChoice";
 import {
   MAX_LABEL_CHARS,
   append,
   canPlace,
   categoryNode,
   destinationsFor,
+  episodesOf,
   menuAt,
   move,
   nodeAt,
   pathOf,
   removeAt,
   renameAt,
+  setCategoryImage,
   shift,
   type Menu,
   type Path,
@@ -32,6 +35,8 @@ export interface PackTreeProps {
   /** Titre d'un épisode ; `null` : inconnu (flux indisponible). */
   titleOf: (ref: EpisodeRef) => string | null;
   isUnavailable: (ref: EpisodeRef) => boolean;
+  /** L'épisode a une pochette (choix de l'image d'une catégorie, N5 c) ; absent : aucune. */
+  hasImage?: (ref: EpisodeRef) => boolean;
   /** Reçoit la nouvelle arborescence et le message à annoncer. */
   onChange: (next: PackNode[], announcement: string) => void;
   /** Annonce sans modification (déplacement refusé). */
@@ -324,7 +329,22 @@ export function PackTree(props: PackTreeProps) {
           </div>
         </div>
         {node.kind === "category" && (
-          <div className="fl-pack__children">{renderMenu(node.entries, path)}</div>
+          <div className="fl-pack__children">
+            <CategoryImageChoice
+              categoryLabel={label}
+              candidates={episodesOf(node.entries)
+                .filter((ref) => props.hasImage?.(ref) === true)
+                .map((ref) => ({ ref, title: props.titleOf(ref) ?? text.unknownTitle }))}
+              value={node.image ?? null}
+              onChange={(image) =>
+                props.onChange(
+                  setCategoryImage(menu, path, image),
+                  t.podcasts.pack.announce.categoryImage(label, image !== null),
+                )
+              }
+            />
+            {renderMenu(node.entries, path)}
+          </div>
         )}
       </li>
     );
