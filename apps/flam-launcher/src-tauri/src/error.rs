@@ -21,7 +21,7 @@ use serde::{Serialize, Serializer};
 /// | `FeedInvalid`   | `feed_invalid`  | Flux podcast reçu inexploitable (XML invalide, DTD, trop grand, sans épisode audio) |
 /// | `Cancelled`     | `cancelled`     | Tâche d'installation annulée                            |
 /// | `DownloadInvalid` | `download_invalid` | Téléchargement incomplet, trop gros ou contenu inattendu |
-/// | `ConverterUnavailable` | `converter_unavailable` | Python ou `telmi2flam.py` introuvable |
+/// | `ConverterUnavailable` | `converter_unavailable` | `telmi2flam.exe` introuvable |
 /// | `Conversion`    | `conversion`    | Échec de `telmi2flam` (code du convertisseur dans le message) |
 /// | `PlayerUnavailable` | `player_unavailable` | `flam-player.exe` introuvable ou impossible à lancer |
 /// | `PlayerBusy`    | `player_busy`   | Un player est déjà en cours d'exécution                 |
@@ -89,7 +89,7 @@ pub enum AppError {
     #[error("{0}")]
     DownloadInvalid(String),
 
-    /// Python ou le convertisseur `telmi2flam.py` est introuvable.
+    /// Le convertisseur `telmi2flam.exe` est introuvable.
     #[error("{0}")]
     ConverterUnavailable(String),
 

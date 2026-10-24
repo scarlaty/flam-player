@@ -627,7 +627,7 @@ action n'est plus signalée si elle n'est atteinte que par la chaîne `home` : l
 
 Pour comparer un convertisseur candidat (le port Rust, note de conception de #22, §4) à ce
 convertisseur, qui sert d'oracle (Pillow 12.3.0 et Python épinglés dans
-`.github/workflows/telmi2flam.yml`, identiques à `build-converter.ps1`) :
+`.github/workflows/telmi2flam.yml`, versions dans `ORACLE-VERSIONS.txt`) :
 
 ```bash
 python tools/telmi2flam/tests/parity/make_corpus.py "$TMP/parite"            # rien n'est commité
@@ -678,16 +678,14 @@ Lecture du rapport :
 - Une exception imprévue du harnais pour une archive est un écart `harness` (nom du type
   d'exception seulement), refait à la reprise ; rien n'est écrit sur stderr.
 
-### Distribution avec flam-launcher (Python embarqué)
+### Distribution avec flam-launcher (binaire Rust, sans Python)
 
-Pour l'installateur Windows, `apps/flam-launcher/scripts/build-converter.ps1` assemble
-`apps/flam-launcher/build/telmi2flam/` : `telmi2flam.py`, `lif.py`, `mp3map.py`, `engine/`,
-`runtime/`, plus un Python embarquable officiel (python.org) et Pillow (PyPI), allégés (sans
-sqlite3, ssl, `_avif`, `_imagingft`, `_imagingcms`, inutiles ici). Seule dépendance à
-l'exécution : Pillow ; `lupa` ne sert qu'à `validate.py`, qui n'est pas embarqué. Les
-composants redistribués et leurs licences sont listés dans le `LICENSES.md` produit avec
-l'artefact. Détails (construction, vérification, ressource Tauri) :
-`apps/flam-launcher/README.md`, section « Convertisseur embarqué ».
+L'installateur Windows ne livre plus ni Python, ni Pillow, ni ces scripts (#138) :
+`apps/flam-launcher/scripts/build-converter.ps1` assemble `apps/flam-launcher/build/telmi2flam/`
+avec le seul port Rust `telmi2flam.exe` (moteur et runtime inclus dans le binaire), `LICENSES.md`
+et `BUILD.txt`. Ces scripts Python restent des outils de développement (oracle de parité, #134,
+suppression prévue en #140). Détails : `apps/flam-launcher/README.md`, section « Convertisseur
+embarqué ».
 
 ### Test dans flam-player (GUI)
 

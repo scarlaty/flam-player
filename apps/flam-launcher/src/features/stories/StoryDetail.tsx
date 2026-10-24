@@ -21,6 +21,7 @@ import { useThumbnail } from "../library/useThumbnail";
 import { formatBytes } from "../validation";
 import { isRemote, storyStateOf, useStories } from "./StoriesContext";
 import { RemoveStoryDialog } from "./RemoveStoryDialog";
+import { taskErrorMessage } from "./taskView";
 import "./StoryDetail.css";
 
 export interface StoryDetailProps {
@@ -251,7 +252,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   </Button>
                 }
               >
-                <p>{failed.error.message}</p>
+                <p>{taskErrorMessage(failed.error)}</p>
               </Banner>
             )}
             {playing && !playingThis && !task && (
