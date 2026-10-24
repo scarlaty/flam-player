@@ -30,9 +30,10 @@
 //!   conversions de Pillow (`convert("L")`, `"I"`, `"RGB"`, `convert_transparent`) quel que
 //!   soit le mode réellement décodé.
 //!
-//! Seul cas encore **délégué** à Python ([`PngError::Unsupported`], code 7, décision D4) : un
-//! autre format que PNG que Pillow pourrait lire (voir [`crate::identify`] ; des données
-//! qu'aucun greffon de Pillow n'accepte sont illisibles).
+//! Les JPEG (signature `FF D8 FF`) sont confiés à [`crate::jpeg`] (#459, D7). Seul cas encore
+//! **délégué** ici ([`PngError::Unsupported`], code 7, décision D4) : un autre format que PNG et
+//! JPEG que Pillow pourrait lire (voir [`crate::identify`] ; des données qu'aucun greffon de
+//! Pillow n'accepte sont illisibles).
 
 use std::fmt;
 
@@ -1276,6 +1277,10 @@ impl Converter {
 /// `cancelled` est consulté avant chaque chunk (avant et après l'image) et avant chaque ligne
 /// décodée : [`PngError::Cancelled`] dès qu'il rend `true`.
 pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
+    if data.starts_with(b"\xff\xd8\xff") {
+        // JPEG (#459, D7) : `_accept` de `JpegImagePlugin`
+        return crate::jpeg::decode_rgba(data, cancelled);
+    }
     if data.len() < SIGNATURE.len() || &data[..8] != SIGNATURE {
         // Autre format : délégué si Pillow pourrait le lire, sinon illisible pour Pillow aussi
         // (`UnidentifiedImageError`).
@@ -1542,7 +1547,7 @@ mod tests {
 
     #[test]
     fn autres_formats_delegues() {
-        for data in [&b"GIF89a"[..], b"\xff\xd8\xff\xe0", b"\x89PNG\r\n"] {
+        for data in [&b"GIF89a"[..], b"BM\0\0", b"\x89PNG\r\n"] {
             assert!(matches!(
                 decode_rgba(data, &never),
                 Err(PngError::Unsupported(_))

@@ -68,9 +68,17 @@ TAG_ENCRYPTED = "encrypted_entry"
 TAG_BAD_UTF8_NAME = "invalid_utf8_name"
 TAG_NEGATIVE_OFFSET = "negative_offset"
 TAG_DELEGATED = "delegated"
+TAG_JPEG = "jpeg_bounded"
 
 DELEGATION_CODE = "unsupported_format"
 DELEGATION_EXIT = 7
+
+# D7 (#459) : zune-jpeg decode les JPEG a +-4 pres par composante de libjpeg-turbo (IDCT et
+# surechantillonnage differents). Mesure sur le .lif : composantes RGB565 (pas de 8, 4, 8 une
+# fois decodees) et alpha (pas de 1) ; l'ecart admis est l'ecart minimal avant quantification
+# compatible avec les deux valeurs, au plus 4.
+JPEG_MAX_DEVIATION = 4
+_LIF_STEPS = (8, 4, 8, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -80,22 +88,38 @@ def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def entries_from_pk(path):
+def _wanted(keep):
+    """`keep` : noms d'entrees (collection) ou predicat sur le nom."""
+    if callable(keep):
+        return keep
+    names = frozenset(keep)
+    return lambda name: name in names
+
+
+def entries_from_pk(path, keep=()):
     """Liste ordonnee des entrees d'un `.plain.pk` : nom, methode, drapeau UTF-8, taille,
-    SHA-256 du contenu. Doublons conserves (infolist, pas namelist)."""
+    SHA-256 du contenu. Doublons conserves (infolist, pas namelist). Les entrees designees
+    par `keep` gardent aussi leur contenu (`data`, ecart borne des JPEG, D7)."""
     out = []
+    wanted = _wanted(keep)
     with zipfile.ZipFile(path) as z:
         for zi in z.infolist():
-            out.append({"name": zi.filename, "method": zi.compress_type,
-                        "utf8": bool(zi.flag_bits & 0x800), "size": zi.file_size,
-                        "sha256": _sha(z.read(zi))})
+            data = z.read(zi)
+            entry = {"name": zi.filename, "method": zi.compress_type,
+                     "utf8": bool(zi.flag_bits & 0x800), "size": zi.file_size,
+                     "sha256": _sha(data)}
+            if wanted(zi.filename):
+                entry["data"] = data
+            out.append(entry)
     return out
 
 
-def entries_from_dir(path):
+def entries_from_dir(path, keep=()):
     """Entrees d'un dossier `.plain` : chemins relatifs en `/`, tries ; methode et
     drapeau UTF-8 sans objet (None). Un dossier vide compte comme une entree `nom/`
-    (taille et SHA-256 None) : un moteur qui en laisse un est en ecart."""
+    (taille et SHA-256 None) : un moteur qui en laisse un est en ecart. `keep` : comme
+    `entries_from_pk`."""
+    wanted = _wanted(keep)
     out = []
     for dp, dn, fns in os.walk(path):
         dn.sort()
@@ -106,14 +130,18 @@ def entries_from_dir(path):
             full = os.path.join(dp, fn)
             with open(full, "rb") as f:
                 data = f.read()
-            out.append({"name": os.path.relpath(full, path).replace(os.sep, "/"),
-                        "method": None, "utf8": None, "size": len(data), "sha256": _sha(data)})
+            name = os.path.relpath(full, path).replace(os.sep, "/")
+            entry = {"name": name, "method": None, "utf8": None, "size": len(data),
+                     "sha256": _sha(data)}
+            if wanted(name):
+                entry["data"] = data
+            out.append(entry)
     out.sort(key=lambda e: e["name"])
     return out
 
 
-def entries_from(path):
-    return entries_from_dir(path) if os.path.isdir(path) else entries_from_pk(path)
+def entries_from(path, keep=()):
+    return entries_from_dir(path, keep) if os.path.isdir(path) else entries_from_pk(path, keep)
 
 
 def parse_events(stdout):
@@ -167,12 +195,13 @@ def harness_error(exc):
                        "%s: %s" % (type(exc).__name__, exc), None)
 
 
-def run_converter(cmd, archive, work_dir, args=(), timeout=300):
+def run_converter(cmd, archive, work_dir, args=(), timeout=300, keep=()):
     """Execute `cmd archive -o sortie --progress-json args` puis `cmd archive --info`.
     Retourne la forme normalisee (voir run_to_dict) et le chemin du `.plain.pk` produit (ou
     None). Sortie `out.plain.pk`, sauf si `args` porte `-o NOM` (NOM pris dans `work_dir`,
     par exemple `out.plain` : dossier seul, sans `.plain.pk`). NOM doit commencer par
-    `out.plain` (sortie laissee apres un echec reperee par stray_files)."""
+    `out.plain` (sortie laissee apres un echec reperee par stray_files). `keep` : entrees dont
+    le contenu est garde (voir entries_from_pk)."""
     os.makedirs(work_dir, exist_ok=True)
     args = list(args)
     out_name = "out.plain.pk"
@@ -201,13 +230,13 @@ def run_converter(cmd, archive, work_dir, args=(), timeout=300):
     if r.returncode == 0 and out.endswith(".plain"):
         # -o x.plain : seul le dossier est ecrit (aucun .plain.pk a lire ni a valider)
         if os.path.isdir(out):
-            plain_entries = entries_from_dir(out)
+            plain_entries = entries_from_dir(out, keep)
     elif r.returncode == 0 and os.path.exists(out):
-        entries = entries_from_pk(out)
+        entries = entries_from_pk(out, keep)
         produced = out
         plain_dir = out[:-len(".pk")]            # ".plain.pk" -> ".plain"
         if os.path.isdir(plain_dir):
-            plain_entries = entries_from_dir(plain_dir)
+            plain_entries = entries_from_dir(plain_dir, keep)
     files = work_files(work_dir)
     try:
         ri = subprocess.run(list(cmd) + [archive, "--info"],
@@ -227,18 +256,43 @@ def run_converter(cmd, archive, work_dir, args=(), timeout=300):
 # ---------------------------------------------------------------------------
 class Deviation:
     """Un ecart admis : s'applique seulement aux cas portant `tag` (sauf `tag` None), et
-    seulement si les deux resultats correspondent exactement au scenario decrit."""
+    seulement si les deux resultats correspondent exactement au scenario decrit (`matches`),
+    ou, pour une regle d'entree (`entry`), si chaque entree differente est designee par le
+    cas et que `entry(contenu oracle, contenu candidat)` l'admet, tout le reste etant egal."""
 
-    def __init__(self, rule_id, ref, description, tag, matches):
+    def __init__(self, rule_id, ref, description, tag, matches=None, entry=None):
         self.id = rule_id
         self.ref = ref
         self.description = description
         self.tag = tag
         self.matches = matches
+        self.entry = entry
 
 
 def _pair(run):
     return (run["exit"], run["error_code"])
+
+
+def lif_within_jpeg_bound(a, b, bound=JPEG_MAX_DEVIATION):
+    """Deux `.lif` de meme taille dont chaque composante decodee differe d'au plus un ecart
+    avant quantification de `bound` (D7) : pour un pas de quantification p, un ecart decode
+    d (multiple de p) est compatible avec un ecart source de d - (p - 1) au minimum."""
+    sys.path.insert(0, HERE)
+    try:
+        import lif
+        try:
+            pa, wa, ha = lif.decode(a)
+            pb, wb, hb = lif.decode(b)
+        except Exception:  # LIF illisible : pas d'ecart borne
+            return False
+    finally:
+        sys.path.remove(HERE)
+    if (wa, ha) != (wb, hb) or len(pa) != len(pb):
+        return False
+    for i, (x, y) in enumerate(zip(pa, pb)):
+        if x != y and abs(x - y) - (_LIF_STEPS[i % 4] - 1) > bound:
+            return False
+    return True
 
 
 ALLOWED_DEVIATIONS = (
@@ -268,6 +322,13 @@ ALLOWED_DEVIATIONS = (
         TAG_JSON_LIMIT,
         lambda o, c: _pair(c) == (4, "invalid_content")
         and (o["exit"] == 0 or _pair(o) == (6, "internal_error"))),
+    Deviation(
+        "jpeg_bounded", "§4.4 / D7",
+        "image issue d'un JPEG (entrees `jpeg_entries` du cas) : zune-jpeg decode a +-4 pres "
+        "par composante de libjpeg-turbo ; .lif de meme taille, chaque composante RGB565 et "
+        "l'alpha compatibles avec un ecart source d'au plus 4. Statuts, avertissements et "
+        "autres entrees : identiques",
+        TAG_JPEG, entry=lif_within_jpeg_bound),
 )
 
 
@@ -318,16 +379,28 @@ def stray_files(run):
     return diffs
 
 
-def compare_runs(oracle, candidate, tags=()):
+def _entry_admitted(rule, diff, oracle, candidate, names):
+    """Ecart d'entree (taille ou contenu) admis par une regle d'entree : entree designee par
+    le cas (`names`), contenus gardes des deux cotes (`keep` de run_converter)."""
+    side = {"entry": "entries", "plain_entry": "plain_entries"}.get(diff["kind"])
+    if side is None or diff.get("field") not in ("size", "sha256") or diff["name"] not in names:
+        return False
+    a = oracle[side][diff["index"]].get("data")
+    b = candidate[side][diff["index"]].get("data")
+    return a is not None and b is not None and rule.entry(a, b)
+
+
+def compare_runs(oracle, candidate, tags=(), jpeg_entries=()):
     """Compare deux resultats normalises. Retourne
-    {"verdict": identical|allowed|delegated|diff, "rule": id|None, "diffs": [...]}."""
+    {"verdict": identical|allowed|delegated|diff, "rule": id|None, "diffs": [...]}.
+    `jpeg_entries` : entrees issues d'un JPEG (cas `jpeg_bounded`, D7)."""
     stray = stray_files(candidate)
     if stray:
         return {"verdict": "diff", "rule": None, "diffs": stray}
     if is_delegation(candidate, tags):
         return {"verdict": "delegated", "rule": None, "diffs": []}
     for rule in ALLOWED_DEVIATIONS:
-        if rule.tag in tags and rule.matches(oracle, candidate):
+        if rule.matches is not None and rule.tag in tags and rule.matches(oracle, candidate):
             return {"verdict": "allowed", "rule": rule.id, "diffs": []}
     diffs = []
     for key in ("status", "exit", "error_code", "warnings", "info_exit", "info"):
@@ -341,6 +414,14 @@ def compare_runs(oracle, candidate, tags=()):
                       "candidate": candidate.get("files")})
     if "validation" in candidate and candidate["validation"] not in (None, 0):
         diffs.append({"kind": "validate", "oracle": None, "candidate": candidate["validation"]})
+    for rule in ALLOWED_DEVIATIONS:
+        if rule.entry is None or rule.tag not in tags or not diffs:
+            continue
+        rest = [d for d in diffs
+                if not _entry_admitted(rule, d, oracle, candidate, jpeg_entries)]
+        if not rest:
+            return {"verdict": "allowed", "rule": rule.id, "diffs": []}
+        diffs = rest
     return {"verdict": "diff" if diffs else "identical", "rule": None, "diffs": diffs}
 
 
@@ -435,12 +516,15 @@ def run_corpus(corpus_dir, oracle, candidate, validate=True, keep_work=None, pro
     try:
         for e in entries:
             archive = os.path.join(corpus_dir, e["archive"])
-            o, _ = run_converter(oracle, archive, os.path.join(work, "oracle", e["id"]), e["args"])
+            jpeg = e.get("jpeg_entries", ())
+            o, _ = run_converter(oracle, archive, os.path.join(work, "oracle", e["id"]), e["args"],
+                                 keep=jpeg)
             c, produced = run_converter(candidate, archive,
-                                        os.path.join(work, "candidate", e["id"]), e["args"])
+                                        os.path.join(work, "candidate", e["id"]), e["args"],
+                                        keep=jpeg)
             if validate and produced is not None:
                 c["validation"] = validate_output(produced)
-            res = compare_runs(o, c, e.get("tags", ()))
+            res = compare_runs(o, c, e.get("tags", ()), jpeg)
             res["id"] = e["id"]
             results.append(res)
             if progress:
@@ -497,9 +581,9 @@ def run_compare(a, b):
 # ---------------------------------------------------------------------------
 # Campagne sur les archives reelles (#135, §4.3)
 # ---------------------------------------------------------------------------
-# Archives reelles : aucune etiquette de cas. Seule la delegation D4 est admise ; un ecart
-# de la liste §4.1 (JSON limite, entree chiffree...) n'y est pas presume et reste un ecart,
-# a classer a la main.
+# Archives reelles : aucune etiquette de cas. Seules la delegation D4 et l'ecart borne des
+# JPEG (D7, entrees reconnues par `jpeg_outputs`) sont admis ; un ecart de la liste §4.1 (JSON
+# limite, entree chiffree...) n'y est pas presume et reste un ecart, a classer a la main.
 CAMPAIGN_TAGS = (TAG_DELEGATED,)
 CAMPAIGN_TIMEOUT = 1800
 ZIP_METHODS = {zipfile.ZIP_STORED: "stored", zipfile.ZIP_DEFLATED: "deflate",
@@ -539,6 +623,38 @@ def image_format(head, filename=""):
     return None
 
 
+def jpeg_outputs(path):
+    """Campagne (D7) : predicat des entrees de sortie issues d'un JPEG de l'archive, ou None
+    sans JPEG. Approximation du nommage de telmi2flam.py (`alloc`) : `img/<base>[_inv][_N].lif`
+    pour chaque JPEG (base nettoyee comme `alloc`), et `img/title.lif` / `img/thumbnail.lif`
+    si un JPEG est hors d'un dossier `images/` (couverture : title.png, cover.png ou image de
+    metadata.json). Une image PNG de meme base qu'un JPEG profite aussi de l'ecart borne."""
+    bases, cover = set(), False
+    try:
+        with zipfile.ZipFile(path) as z:
+            for zi in z.infolist():
+                if zi.is_dir():
+                    continue
+                try:
+                    with z.open(zi) as f:
+                        head = f.read(16)
+                except Exception:  # entree illisible : le convertisseur en decidera
+                    continue
+                if image_format(head, zi.filename) != "jpeg":
+                    continue
+                base = os.path.splitext(os.path.basename(zi.filename))[0]
+                bases.add(re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_") or "asset")
+                cover = cover or "images/" not in zi.filename.replace("\\", "/").lower()
+    except Exception:  # archive illisible : pas d'ecart borne
+        return None
+    if not bases:
+        return None
+    pattern = re.compile(r"^img/(?:%s)(?:_inv)?(?:_\d+)?\.lif$"
+                         % "|".join(re.escape(b) for b in sorted(bases)))
+    covers = ("img/title.lif", "img/thumbnail.lif") if cover else ()
+    return lambda name: name in covers or pattern.match(name) is not None
+
+
 def archive_inventory(path):
     """Methodes ZIP et formats d'image (par signature) des entrees d'une archive. Une entree
     a extension d'image sans signature reconnue compte comme `inconnu`. Les noms ne sont pas
@@ -573,8 +689,9 @@ _COMPRESSION_RE = re.compile(
     r"^.* : compression (\d+) \(bzip2/LZMA/Zstandard\) d\u00e9l\u00e9gu\u00e9e \u00e0 Python$", re.S)
 _IMAGE_WHY_RE = re.compile(r"^.* : format non pris en charge : (.+)$", re.S)
 # Raisons du decodeur PNG (`PngError::Unsupported`) : liste fermee, le reste est `autre`.
-# Depuis #459, les PNG atypiques (APNG, IHDR, tRNS) sont decodes : seul un autre format reste.
-IMAGE_REASONS = ("pas un PNG",)
+# Depuis #459, les PNG atypiques (APNG, IHDR, tRNS) et les JPEG sont decodes : restent un autre
+# format, et les JPEG arithmetiques ou sans perte (lus par libjpeg-turbo, pas par zune-jpeg).
+IMAGE_REASONS = ("pas un PNG", "JPEG arithmétique", "JPEG sans perte")
 SUSPECT_CAUSES = ("autre", "metadata")
 
 
@@ -646,12 +763,17 @@ def campaign_case(archive, oracle, candidate, work, timeout=CAMPAIGN_TIMEOUT, va
     """Une archive : oracle puis candidat (jamais en meme temps, pour borner la charge),
     comparaison, inventaire. Le dossier de travail est supprime, sauf en cas d'ecart."""
     shutil.rmtree(work, ignore_errors=True)
-    o, _ = run_converter(oracle, archive, os.path.join(work, "oracle"), timeout=timeout)
+    jpeg = jpeg_outputs(archive)
+    keep = jpeg or ()
+    o, _ = run_converter(oracle, archive, os.path.join(work, "oracle"), timeout=timeout,
+                         keep=keep)
     c, produced = run_converter(candidate, archive, os.path.join(work, "candidate"),
-                                timeout=timeout)
+                                timeout=timeout, keep=keep)
     if validate and produced is not None:
         c["validation"] = validate_subprocess(produced, timeout)
-    res = compare_runs(o, c, CAMPAIGN_TAGS)
+    names = sorted({e["name"] for side in (o, c) for key in ("entries", "plain_entries")
+                    for e in side.get(key) or () if "data" in e})
+    res = compare_runs(o, c, CAMPAIGN_TAGS + ((TAG_JPEG,) if jpeg else ()), names)
     res["oracle"] = {k: o[k] for k in ("exit", "error_code", "error_message", "warnings")}
     res["candidate"] = {k: c[k] for k in ("exit", "error_code", "error_message", "warnings")}
     res["candidate"]["validation"] = c.get("validation")

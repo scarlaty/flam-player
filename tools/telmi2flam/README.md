@@ -641,7 +641,10 @@ rééchantillonnage (modes PNG × tailles impaires ou premières × cibles réel
 `parity.py` compare statut, code de sortie, code d'erreur, multiensemble des codes
 d'avertissement, `--info` et la liste ordonnée des entrées (nom, méthode, drapeau UTF-8,
 contenu). Les écarts admis sont une liste fermée (`ALLOWED_DEVIATIONS`) ; les délégations
-`unsupported_format` (code 7) sont comptées à part. Sans `--candidate`, c'est Python contre
+`unsupported_format` (code 7) sont comptées à part. Les JPEG sont décodés par le port Rust
+avec `zune-jpeg` (#459, décision D7 de `PORT-RUST.md`) : sur un cas étiqueté `jpeg_bounded`,
+les `.lif` nommés par `jpeg_entries` peuvent différer de ±4 par composante avant quantification
+(règle `jpeg_bounded`), tout le reste est comparé à l'identique. Sans `--candidate`, c'est Python contre
 Python : zéro écart. Code de sortie 1 au moindre écart, 0 sinon.
 
 Campagne sur les archives réelles (#135, seuil de bascule §4.3 de `PORT-RUST.md`) :
@@ -655,7 +658,9 @@ Chaque archive est convertie par l'oracle puis par le candidat (`--jobs` archive
 donc au plus autant de conversions simultanées). Un état par archive (`cases/`) permet de
 reprendre une campagne interrompue en relançant la même commande ; un résultat obtenu avec un
 autre moteur (empreinte des fichiers de la commande) ou une exécution impossible (délai,
-commande absente) est refait. Seule la délégation D4 est admise : tout autre écart, même de la
+commande absente) est refait. Seules la délégation D4 et l'écart borné des JPEG (D7 : `.lif`
+dont le nom correspond à un JPEG de l'archive, approximation du nommage de `alloc`) sont
+admis : tout autre écart, même de la
 liste fermée, est à classer à la main (le dossier de travail de l'archive est alors gardé sous
 `work/`). Le rapport compte les délégations par cause, format d'image et méthode ZIP. Le
 journal ne donne que des comptes ; le rapport nomme les archives et reste dans `.cache/`.
@@ -663,8 +668,9 @@ journal ne donne que des comptes ; le rapport nomme les archives et reste dans `
 Lecture du rapport :
 
 - Causes de délégation : `zip:<méthode>` (message `: compression N (bzip2/LZMA/Zstandard)`),
-  `image:<raison>` (liste fermée des raisons du décodeur PNG : depuis #459, seulement
-  `pas un PNG`, les PNG atypiques APNG/IHDR/tRNS étant décodés), `metadata` ou `autre`. Un
+  `image:<raison>` (liste fermée des raisons du décodeur d'image : depuis #459, `pas un PNG`
+  pour un autre format que PNG et JPEG, `JPEG arithmétique` et `JPEG sans perte` pour les
+  JPEG que `zune-jpeg` ne lit pas ; PNG atypiques et autres JPEG décodés), `metadata` ou `autre`. Un
   message hors de ces formes exactes est `autre`. `metadata` et `autre` sont hors D4 strict :
   la ligne `attention : delegations hors D4 strict…` (comptes seulement) les signale et elles
   sont à classer à la main.

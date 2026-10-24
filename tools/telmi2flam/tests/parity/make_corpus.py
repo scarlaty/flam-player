@@ -52,6 +52,9 @@ TAG_ENCRYPTED = "encrypted_entry"      # §3 : entree chiffree (Python 6, Rust 3
 TAG_BAD_UTF8_NAME = "invalid_utf8_name"    # §4.1 : nom UTF-8 invalide, bit 11 (Python 6, Rust 3)
 TAG_NEGATIVE_OFFSET = "negative_offset"    # §4.1 : position d'en-tete locale < 0 (Python 6, Rust 3)
 TAG_DELEGATED = "delegated"            # D4 : bzip2/LZMA, image non PNG (Rust : code 7)
+# D7 (#459) : images issues d'un JPEG, decodees par zune-jpeg a +-4 pres de libjpeg-turbo ; seules
+# les entrees nommees par `jpeg_entries` du cas peuvent differer (ecart borne, parity.py)
+TAG_JPEG = "jpeg_bounded"
 
 
 # ---------------------------------------------------------------------------
@@ -138,11 +141,29 @@ CHOICE_NOTES = {"s0": {"title": "Le chateau", "text": "Il etait une fois " * 20}
 
 
 class Case:
-    def __init__(self, cid, build, args=(), tags=()):
+    """`jpeg_entries` : entrees du .plain.pk produites a partir d'un JPEG (cas `TAG_JPEG`),
+    les seules ou parity.py admet l'ecart borne de D7."""
+
+    def __init__(self, cid, build, args=(), tags=(), jpeg_entries=()):
         self.id = cid
         self.build = build
         self.args = list(args)
         self.tags = list(tags)
+        self.jpeg_entries = list(jpeg_entries)
+
+
+def jpeg_image(w=97, h=61, mode="RGB", **kw):
+    """JPEG ecrit par Pillow (degrade et leger bruit a graine fixe), pour les cas D7."""
+    rng = random.Random(SEED + w * h)
+
+    def c(v):
+        return max(0, min(255, v + rng.randrange(-6, 7)))
+    im = Image.new("RGB", (w, h))
+    im.putdata([(c(x * 255 // max(w - 1, 1)), c(y * 255 // max(h - 1, 1)), c((x + y) * 2 % 256))
+                for y in range(h) for x in range(w)])
+    b = io.BytesIO()
+    im.convert(mode).save(b, "JPEG", **kw)
+    return b.getvalue()
 
 
 def _mp3_variant(b1, b2, n=120):
@@ -314,11 +335,35 @@ def corpus_cases():
         return zip_bytes([(n, data if n == "images/s0.png" else d) for n, d in S()])
     add("img_ihdr_twice", ihdr_twice)
 
-    def jpeg():
+    # JPEG decode par le Rust depuis #459 (D7) : scene et couverture (titre, vignette) issues
+    # de JPEG, ecart borne a +-4 avant quantification (parity.py, `jpeg_bounded`)
+    lifs = ["img/s0.lif", "img/thumbnail.lif", "img/title.lif"]
+
+    def jpeg_story(scene, cover):
+        return lambda: zip_bytes([(n, scene if n == "images/s0.png" else cover if n == "title.png"
+                                   else d) for n, d in S()])
+
+    def add_jpeg(cid, build, args=(), entries=lifs):
+        cases.append(Case(cid, build, args, [TAG_JPEG], entries))
+
+    add_jpeg("img_jpeg", jpeg_story(jpeg_image(quality=75), jpeg_image(150, 230, quality=90)))
+    add_jpeg("img_jpeg_keep_size", jpeg_story(jpeg_image(quality=75), jpeg_image(quality=75)),
+             ["--keep-size"])
+    add_jpeg("img_jpeg_progressive_cmyk", jpeg_story(
+        jpeg_image(400, 260, quality=80, progressive=True, subsampling=1),
+        jpeg_image(70, 50, "CMYK", quality=85)))
+    add_jpeg("img_jpeg_gray_444", jpeg_story(jpeg_image(33, 21, "L", quality=60),
+                                             jpeg_image(120, 30, quality=95, subsampling=0)))
+    # BMP : autre format encore delegue (D4, code 7)
+    def bmp():
         b = io.BytesIO()
-        Image.new("RGB", (64, 48), (10, 20, 30)).save(b, "JPEG")
+        Image.new("RGB", (64, 48), (10, 20, 30)).save(b, "BMP")
         return zip_bytes([(n, b.getvalue() if n == "images/s0.png" else d) for n, d in S()])
-    add("img_jpeg_delegated", jpeg, tags=[TAG_DELEGATED])
+    add("img_bmp_delegated", bmp, tags=[TAG_DELEGATED])
+    # JPEG tronque : illisible des deux cotes (image_unreadable), parite exacte
+    trunc = jpeg_image(quality=75)
+    add_jpeg("img_jpeg_truncated", jpeg_story(trunc[:len(trunc) // 2], trunc),
+             entries=["img/thumbnail.lif", "img/title.lif"])
 
     # --- noms
     def nfd():
@@ -466,7 +511,7 @@ def output_cases():
 
 def write_corpus(out_dir):
     """Ecrit les archives dans out_dir/corpus et l'index out_dir/corpus.json. Retourne
-    la liste des entrees {id, archive, args, tags}."""
+    la liste des entrees {id, archive, args, tags} (et `jpeg_entries` pour un cas D7)."""
     d = os.path.join(out_dir, "corpus")
     os.makedirs(d, exist_ok=True)
     entries = []
@@ -474,7 +519,10 @@ def write_corpus(out_dir):
         name = c.id + ".zip"
         with open(os.path.join(d, name), "wb") as f:
             f.write(c.build())
-        entries.append({"id": c.id, "archive": "corpus/" + name, "args": c.args, "tags": c.tags})
+        entry = {"id": c.id, "archive": "corpus/" + name, "args": c.args, "tags": c.tags}
+        if c.jpeg_entries:
+            entry["jpeg_entries"] = c.jpeg_entries
+        entries.append(entry)
     _dump(os.path.join(out_dir, "corpus.json"), entries)
     return entries
 

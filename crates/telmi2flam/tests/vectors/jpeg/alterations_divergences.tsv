@@ -1,0 +1,8 @@
+# Ecarts de verdict assumes (PORT-RUST.md 4.4), tenus a la main : base	operation	argument	verdict du Rust
+# Lu par tests/jpeg_vectors.rs, qui exige exactement cette liste (ni ecart en plus, ni ligne devenue conforme).
+# Octet 0xFF de EOI inverse : plus de marqueur final. Pillow lit l'image (assez d'octets suivent
+# les dernieres donnees pour l'avance de 25 bits de libjpeg), le Rust la juge tronquee.
+alt_gris	xor	414	unreadable
+alt_sequentiel	xor	755	unreadable
+# Code de Huffman corrompu dans les donnees : libjpeg-turbo avertit et continue, zune-jpeg refuse.
+alt_sequentiel	xor	723	unreadable

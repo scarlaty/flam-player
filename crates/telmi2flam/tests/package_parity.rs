@@ -7,6 +7,10 @@
 //! Pour chaque cas : mêmes entrées dans le même ordre et mêmes octets (SHA-256), mêmes codes
 //! d'avertissement dans le même ordre, ou même code d'erreur. Les écarts assumés du port
 //! (PORT-RUST.md §3 et D4) sont vérifiés à part : le Rust échoue aussi, avec le code prévu.
+//! Cas JPEG (étiquette `jpeg_bounded`, D7, #459) : les entrées issues d'un JPEG
+//! (`jpeg_entries`) peuvent différer, de même taille d'image et à ±4 près avant quantification
+//! par rapport au `.lif` de Python (`jpeg_lif/<id>/<entrée>` des vecteurs) ; le SHA-256 du
+//! `.plain.pk` n'est alors pas comparé.
 //!
 //! Écriture (#130) : le `.plain.pk` écrit par [`write_package`] est identique à l'octet près à
 //! celui de Python (`pk_sha256`, horloge de `zipfile` figée au 1980-01-01 par le générateur),
@@ -112,6 +116,31 @@ fn assumed_divergence(tags: &[&str]) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// Écart JPEG admis (D7, même règle que `parity.py`) avant quantification.
+const JPEG_MAX_DEVIATION: u8 = 4;
+
+/// Écart minimal avant quantification entre deux `.lif` (pas de 8, 4, 8 pour le RGB565
+/// décodé, 1 pour l'alpha : un écart décodé `d` vient au moins de `d - (pas - 1)`), ou `None`
+/// si les tailles diffèrent ou qu'un fichier est illisible.
+fn jpeg_deviation(python: &[u8], rust: &[u8]) -> Option<u8> {
+    const STEPS: [u8; 4] = [8, 4, 8, 1];
+    let (a, b) = (
+        telmi2flam::lif::decode(python).ok()?,
+        telmi2flam::lif::decode(rust).ok()?,
+    );
+    if (a.width, a.height) != (b.width, b.height) {
+        return None;
+    }
+    let mut max = 0;
+    for (i, (x, y)) in a.rgba.iter().zip(&b.rgba).enumerate() {
+        let d = x.abs_diff(*y);
+        if d > 0 {
+            max = max.max(d - (STEPS[i % 4] - 1).min(d));
+        }
+    }
+    Some(max)
 }
 
 /// Écrit le paquet dans `dir` et compare le SHA-256 du `.plain.pk` à celui de Python.
@@ -230,19 +259,44 @@ fn check(case: &Value, data: Vec<u8>, dir: &std::path::Path) -> Result<(), Strin
                 .iter()
                 .map(|(n, d)| (n.clone(), hex(&Sha256::digest(d))))
                 .collect();
+            // D7 (#459) : entrées issues d'un JPEG, comparées à ±4 près avant quantification
+            let jpeg: Vec<&str> = case
+                .get("jpeg_entries")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().map(|n| n.as_str().unwrap()).collect())
+                .unwrap_or_default();
+            let mut bounded = false;
             if want != have {
                 let wn: Vec<&str> = want.iter().map(|e| e.0.as_str()).collect();
                 let hn: Vec<&str> = have.iter().map(|e| e.0.as_str()).collect();
                 if wn != hn {
                     return Err(format!("entrées : Python {wn:?}\nRust {hn:?}"));
                 }
-                let diff: Vec<&str> = want
-                    .iter()
-                    .zip(&have)
-                    .filter(|(w, h)| w != h)
-                    .map(|(w, _)| w.0.as_str())
-                    .collect();
-                return Err(format!("octets différents : {diff:?}"));
+                let mut diff = Vec::new();
+                for ((w, h), (name, data)) in want.iter().zip(&have).zip(&pkg.entries) {
+                    if w == h {
+                        continue;
+                    }
+                    if tags.contains(&"jpeg_bounded") && jpeg.contains(&name.as_str()) {
+                        let id = case["id"].as_str().unwrap();
+                        let python = vectors()
+                            .read(&format!("jpeg_lif/{id}/{name}"))
+                            .unwrap()
+                            .unwrap_or_else(|| panic!("{id} : {name} absent des vecteurs"));
+                        match jpeg_deviation(&python, data) {
+                            Some(d) if d <= JPEG_MAX_DEVIATION => {
+                                bounded = true;
+                                continue;
+                            }
+                            d => diff.push(format!("{name} (écart JPEG {d:?})")),
+                        }
+                    } else {
+                        diff.push(name.clone());
+                    }
+                }
+                if !diff.is_empty() {
+                    return Err(format!("octets différents : {diff:?}"));
+                }
             }
             let want_w: Vec<&str> = case["warnings"]
                 .as_array()
@@ -272,6 +326,9 @@ fn check(case: &Value, data: Vec<u8>, dir: &std::path::Path) -> Result<(), Strin
                 return Err(format!(
                     "messages d'avertissement : Python {want_m:?}, Rust {have_m:?}"
                 ));
+            }
+            if bounded {
+                return Ok(()); // conteneur différent par construction (contenus à ±4)
             }
             check_pk(case, &pkg, dir)
         }
