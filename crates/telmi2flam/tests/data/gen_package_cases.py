@@ -9,7 +9,10 @@ crates/telmi2flam/tests/package_parity.rs. Elle contient :
   .plain.pk complet (`pk_sha256`), les codes d'avertissement (`warnings`) et leurs messages
   (`warning_messages`) dans l'ordre d'emission ;
 - zip_cases.json : SHA-256 du ZIP ecrit par `zipfile.writestr` pour des listes d'entrees
-  synthetiques (noms non ASCII, seuils ZIP64 reduits), relues par output.rs (#130).
+  synthetiques (noms non ASCII, seuils ZIP64 reduits), relues par output.rs (#130) ;
+- jpeg_lif/<id>/<entree> : pour un cas D7 (etiquette `jpeg_bounded`, #459), le .lif de Python
+  de chaque entree issue d'un JPEG (`jpeg_entries` de expected.json), que package_parity.rs
+  compare a +-4 pres avant quantification (le reste du paquet reste compare octet a octet).
 
 L'horloge de `zipfile` est figee au 1980-01-01 00:00:00 : `writestr` horodate chaque entree a
 l'heure locale, le port Rust fixe cette date (PORT-RUST.md 4.1). A horodatage egal, le
@@ -182,12 +185,11 @@ def package_cases():
     add("pkg_title_folded", lambda: zipc(
         without(S(), "title.png") + [("TITLE.PNG", png(40, 40)), ("Title.MP3", MP3)]))
 
-    def cover_jpeg():
-        import io
-        b = io.BytesIO()
-        Image.new("RGB", (64, 48), (10, 20, 30)).save(b, "JPEG")
-        return zipc(replace(S(), "title.png", b.getvalue()))
-    cases.append(mc.Case("pkg_cover_jpeg_delegated", cover_jpeg, (), [mc.TAG_DELEGATED]))
+    # couverture JPEG (#459, D7) : titre et vignette dans les trois modes, ecart borne
+    for mode in ("flou", "rogner", "bandes"):
+        cases.append(mc.Case("pkg_cover_jpeg_%s" % mode, lambda: zipc(
+            replace(S(), "title.png", mc.jpeg_image(180, 120, quality=80))),
+            ["--thumb-fit", mode], [mc.TAG_JPEG], ["img/thumbnail.lif", "img/title.lif"]))
 
     # --- metadonnees : titre, categorie, uuid
     for i, meta in enumerate([
@@ -274,6 +276,8 @@ def run(case, data, tmp):
     warnings = []
     messages = []
     exp = {"id": case.id, "tags": case.tags, **kw}
+    if case.jpeg_entries:
+        exp["jpeg_entries"] = case.jpeg_entries
     if kw["thumb_fit"] == "bandes":
         del exp["thumb_fit"]  # champ absent : les cas existants gardent leur JSON
     try:
@@ -289,6 +293,10 @@ def run(case, data, tmp):
         return exp
     with zipfile.ZipFile(out) as z:
         exp["entries"] = [[n, hashlib.sha256(z.read(n)).hexdigest()] for n in z.namelist()]
+        # D7 : contenu des entrees issues d'un JPEG, compare a +-4 pres par package_parity.rs
+        jpeg_lif = {n: z.read(n) for n in case.jpeg_entries if n in z.namelist()}
+    if jpeg_lif:
+        exp["_jpeg_lif"] = jpeg_lif
     with open(out, "rb") as f:
         exp["pk_sha256"] = hashlib.sha256(f.read()).hexdigest()
     exp["warnings"] = warnings
@@ -321,9 +329,13 @@ def main(check=False):
         with zipfile.ZipFile(OUT + ".part", "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
             for case in builds:
                 data = case.build()
-                expected.append(run(case, data, tmp))
+                exp = run(case, data, tmp)
+                expected.append(exp)
                 z.writestr(zipfile.ZipInfo("cases/%s.zip" % case.id, FIXED_DATE), data,
                            zipfile.ZIP_DEFLATED, 9)
+                for name, lif in exp.pop("_jpeg_lif", {}).items():
+                    z.writestr(zipfile.ZipInfo("jpeg_lif/%s/%s" % (case.id, name), FIXED_DATE),
+                               lif, zipfile.ZIP_DEFLATED, 9)
             body = '{"python": "%d.%d.%d", "pillow": "%s", "cases": [\n%s\n]}\n' % (
                 *sys.version_info[:3], Image.__version__,
                 ",\n".join(json.dumps(c, ensure_ascii=True, separators=(",", ":"))

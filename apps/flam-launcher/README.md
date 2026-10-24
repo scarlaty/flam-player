@@ -244,6 +244,10 @@ Visual Studio **2022** avec les outils C++ x64 (le build Rust doit se faire depu
 « x64 Native Tools » ou après `vcvars64.bat`), CMake et Ninja (`pip install cmake ninja` si
 absents), sous-modules initialisés (`git submodule update --init --recursive`), réseau (NSIS).
 
+**Signature.** Ni l'installateur ni `telmi2flam.exe` (embarqué) ne sont signés (SmartScreen,
+antivirus) : la signature Authenticode attend un certificat de code à fournir par le mainteneur
+(suivi : #443).
+
 **Mise à jour** : avant la copie, le hook NSIS `src-tauri/windows/installer-hooks.nsh`
 (`NSIS_HOOK_PREINSTALL`) lance le désinstallateur de la version précédente (`/S /UPDATE`, sur
 place). Il ne supprime que les fichiers que cette version avait installés : un fichier retiré
