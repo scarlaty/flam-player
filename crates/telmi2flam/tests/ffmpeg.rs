@@ -403,7 +403,8 @@ fn convert(data: Vec<u8>, options: Options) -> Result<Package, ConvError> {
         .unwrap()
 }
 
-/// Écarts assumés du port (voir `package_parity.rs`) : comparés là-bas, ignorés ici.
+/// Écarts assumés du port (voir `package_parity.rs`) : comparés là-bas, ignorés ici. Les cas
+/// JPEG (D7, images à ±4 près) n'ont aucun MP3 à rééchantillonner.
 fn assumed_divergence(run: &Value) -> bool {
     run["tags"].as_array().unwrap().iter().any(|t| {
         matches!(
@@ -413,6 +414,7 @@ fn assumed_divergence(run: &Value) -> bool {
                 | "encrypted_entry"
                 | "invalid_utf8_name"
                 | "negative_offset"
+                | "jpeg_bounded"
         )
     })
 }

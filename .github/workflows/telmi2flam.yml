@@ -67,3 +67,8 @@ jobs:
       # `python crates/telmi2flam/tests/data/gen_package_cases.py` et commiter le résultat.
       - name: Vecteurs de parité du paquet à jour
         run: python crates/telmi2flam/tests/data/gen_package_cases.py --check
+
+      # Vecteurs JPEG (#459, D7) : verdicts et images RGBA de Pillow 12.3.0 (libjpeg-turbo
+      # 3.1.4.1). Sinon : relancer `gen_jpeg_vectors.py` et commiter le résultat.
+      - name: Vecteurs JPEG à jour
+        run: python -I crates/telmi2flam/tests/vectors/jpeg/gen_jpeg_vectors.py --check
