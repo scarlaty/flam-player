@@ -101,7 +101,7 @@ jobs:
 
   # Compilation Unix (#421) : `kill_pid`, les signaux de cancel.rs et les `cfg(unix)` n'étaient
   # jamais compilés (CI Windows seulement). Clippy (`--all-targets` couvre la vérification de type de
-  # toutes les cibles : un `cargo check` séparé serait redondant), sans les tests.
+  # toutes les cibles : un `cargo check` séparé serait redondant), puis les tests (#443).
   unix:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -118,6 +118,9 @@ jobs:
 
       - name: Clippy
         run: cargo clippy -p telmi2flam --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test -p telmi2flam --locked --no-fail-fast
 
   # Parité avec l'oracle Python (PORT-RUST.md §4.3, #134) : corpus synthétique et matrice de
   # rééchantillonnage, générés ici (jamais commités). Échoue à la moindre divergence hors de
