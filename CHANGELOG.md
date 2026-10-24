@@ -36,8 +36,6 @@ Changements depuis `launcher-v0.1.0-beta.1`.
   le contient reste lisible : le champ est simplement ignoré.
 - **Mise à jour** : l'installation d'une version précédente qui livrait Python supprime l'ancien
   dossier du convertisseur Python.
-- **Conversion** : les tâches affichent leur progression, peuvent être annulées, et le fichier
-  final n'est écrit qu'une fois la conversion terminée (pas de fichier à moitié écrit).
 - **Formats lus** : archives TELMI en ZIP sans compression ou deflate, images PNG (y compris
   les PNG atypiques : entrelacés, palettes, 16 bits...). Les images d'autres formats et les ZIP
   compressés autrement sont refusés avec un message explicite.

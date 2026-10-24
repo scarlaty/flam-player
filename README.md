@@ -200,9 +200,9 @@ Détails : [flam-transfert.md](apps/flam-launcher/docs/flam-transfert.md).
 - histoires déjà au format de la Flam : dossiers `.plain` et archives `.plain.pk`, copiées
   telles quelles.
 
-Le format STUdio (`story.json`) n'est pas pris en charge. Pour l'instant, une archive TELMI
-dont les images ne sont pas des PNG (GIF, JPEG) ou qui est compressée autrement (bzip2, LZMA,
-Zstandard) est refusée avec un message explicite. Une source peut être un catalogue en
+Le format STUdio (`story.json`) n'est pas pris en charge. Les images GIF ou JPEG
+et les ZIP compressés en bzip2, LZMA ou Zstandard ne le sont pas non plus : l'archive est
+refusée avec un message explicite. Une source peut être un catalogue en
 ligne au format Telmi Store, ou un dossier local, qui n'est jamais modifié.
 </details>
 
