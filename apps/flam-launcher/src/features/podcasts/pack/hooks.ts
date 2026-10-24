@@ -69,6 +69,9 @@ export function useDraftAutosave(delayMs: number) {
         const outcome = await savePackDraft(latest.current, revision.current + 1);
         revision.current = outcome.revision;
         if (!outcome.saved) {
+          // Éditeur fermé : le brouillon a été remplacé entre-temps (composition ouverte,
+          // éditeur rouvert, #484). Réessayer au-dessus écraserait ce remplacement.
+          if (!mounted.current) return;
           stale += 1;
           if (stale >= MAX_STALE_RETRIES) throw new Error("révision devancée");
           dirty.current = true;

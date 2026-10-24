@@ -12,9 +12,14 @@
 //! - Toute modification est un cycle lecture-modification-écriture fait **sous le verrou de
 //!   configuration** par l'appelant, terminé par une écriture atomique
 //!   ([`storage::write_atomic`]) : un arrêt brutal laisse l'ancien fichier ou le nouveau.
-//! - Rien n'est jamais perdu sans copie : un fichier illisible, trop gros ou d'un schéma plus
-//!   récent est mis de côté (`*.bak`) ; un fichier lisible dont certaines entrées ne le sont
-//!   pas est **copié** en `*.bak` avant d'être réécrit avec les seules entrées lisibles.
+//! - Rien n'est jamais perdu sans copie : un fichier illisible ou trop gros est mis de côté
+//!   (`*.bak`) ; un fichier lisible dont certaines entrées ne le sont pas est **copié** en
+//!   `*.bak` avant d'être réécrit avec les seules entrées lisibles (copie retirée si la
+//!   réécriture échoue : l'original, intact, la remplace). Seules les [`MAX_BACKUPS`] copies
+//!   les plus récentes sont gardées.
+//! - Un fichier d'un schéma plus récent n'est ni lu ni modifié (erreur, comme
+//!   `settings.json`) ; les champs inconnus d'un fichier lisible (premier niveau du fichier,
+//!   d'une entrée ou de sa composition) sont conservés à la réécriture.
 //! - [`MAX_COMPOSITIONS`] entrées au plus, aucune suppression automatique ; noms uniques sans
 //!   tenir compte de la casse, de 1 à [`MAX_NAME_CHARS`] caractères.
 //! - Aucune URL sur le disque ni dans les messages : une composition ne contient que des
@@ -33,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tauri::State;
 
-use super::pack::{self, PackComposition, SaveOutcome, MAX_REVISION};
+use super::pack::{self, PackComposition, MAX_REVISION};
 use crate::sources::{Source, SourcesStore};
 use crate::storage::{self, ConfigState, Loaded};
 use crate::{AppError, AppResult};
@@ -46,8 +51,10 @@ pub const COMPOSITIONS_SCHEMA: u32 = 1;
 pub const MAX_COMPOSITIONS: usize = 50;
 /// Longueur d'un nom, en caractères.
 pub const MAX_NAME_CHARS: usize = 60;
-/// Taille d'une composition sérialisée au plus, en octets.
+/// Taille d'une composition sérialisée au plus, en octets (JSON indenté, comme le fichier).
 pub const MAX_ENTRY_BYTES: usize = 256 * 1024;
+/// Copies `*.bak` du fichier gardées au plus (les plus récentes).
+pub const MAX_BACKUPS: usize = 3;
 /// Taille du fichier au plus, en octets (lecture et écriture).
 pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 /// Longueur d'un identifiant de composition au plus.
@@ -71,13 +78,56 @@ pub struct SavedComposition {
     #[serde(default)]
     pub packs: u32,
     pub composition: PackComposition,
+    /// Champs inconnus de l'entrée (écrits par une version plus récente), conservés tels quels
+    /// à la réécriture.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+    /// Champs inconnus de `composition` (même raison) ; réinsérés par [`Store::write`].
+    #[serde(skip)]
+    pub composition_extra: Map<String, Value>,
+}
+
+impl SavedComposition {
+    /// Valeur écrite : l'entrée, avec les champs inconnus de sa composition réinsérés.
+    fn to_stored(&self) -> AppResult<Value> {
+        let mut value = serde_json::to_value(self)?;
+        if let Some(Value::Object(composition)) = value.get_mut("composition") {
+            for (key, extra) in &self.composition_extra {
+                composition
+                    .entry(key.clone())
+                    .or_insert_with(|| extra.clone());
+            }
+        }
+        Ok(value)
+    }
+
+    /// Lit une entrée en gardant les champs inconnus de sa composition (ceux que
+    /// [`PackComposition`] ne réécrit pas).
+    fn from_stored(value: Value) -> Option<Self> {
+        let raw_composition = value.get("composition").cloned();
+        let mut entry: Self = serde_json::from_value(value).ok()?;
+        if let Some(Value::Object(raw)) = raw_composition {
+            let known = match serde_json::to_value(&entry.composition) {
+                Ok(Value::Object(known)) => known,
+                _ => Map::new(),
+            };
+            entry.composition_extra = raw
+                .into_iter()
+                .filter(|(key, _)| !known.contains_key(key))
+                .collect();
+        }
+        Some(entry)
+    }
 }
 
 /// Contenu écrit de `pack-compositions.json`.
 #[derive(Serialize)]
 struct StoreFile<'a> {
     schema_version: u32,
-    compositions: &'a [SavedComposition],
+    compositions: Vec<Value>,
+    /// Champs inconnus du premier niveau, conservés.
+    #[serde(flatten)]
+    extra: &'a Map<String, Value>,
 }
 
 /// Lecture tolérante : chaque entrée est désérialisée à part (une entrée illisible ne fait pas
@@ -86,6 +136,9 @@ struct StoreFile<'a> {
 struct RawStore {
     #[serde(default)]
     compositions: Vec<Value>,
+    /// Tout le reste, sauf `schema_version` (réécrit) : conservé.
+    #[serde(flatten)]
+    extra: Map<String, Value>,
 }
 
 /// Migration du fichier (aucune : schéma 1 seulement ; version 0 = même forme sans
@@ -100,6 +153,8 @@ pub type Writer = fn(&Path, &[u8]) -> io::Result<()>;
 pub struct StoreRead {
     pub entries: Vec<SavedComposition>,
     pub notice: Option<String>,
+    /// Champs inconnus du premier niveau du fichier, réécrits tels quels.
+    extra: Map<String, Value>,
 }
 
 /// Accès au fichier des compositions de `dir`. L'appelant tient le verrou de configuration.
@@ -168,18 +223,7 @@ fn unique_name(title: &str, entries: &[SavedComposition]) -> String {
 /// Copie `path` en `<nom>.<horodatage>.bak` (suffixe numérique si déjà pris), sans le
 /// toucher.
 fn backup_copy(path: &Path) -> io::Result<PathBuf> {
-    let stamp = storage::utc_stamp(now_secs());
-    let name = path
-        .file_name()
-        .ok_or_else(|| io::Error::other("chemin sans nom de fichier"))?
-        .to_string_lossy()
-        .into_owned();
-    let mut backup = path.with_file_name(format!("{name}.{stamp}.bak"));
-    let mut n = 1;
-    while backup.exists() {
-        backup = path.with_file_name(format!("{name}.{stamp}-{n}.bak"));
-        n += 1;
-    }
+    let backup = storage::backup_path(path)?;
     fs::copy(path, &backup)?;
     Ok(backup)
 }
@@ -188,6 +232,114 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// Rang d'une copie `<COMPOSITIONS_FILE>.<AAAAMMJJ-HHMMSS>[-<n>].bak` (horodatage puis
+/// suffixe) ; `None` pour tout autre nom, jamais supprimé.
+fn backup_rank(name: &str) -> Option<(String, u64)> {
+    let middle = name
+        .strip_prefix(COMPOSITIONS_FILE)?
+        .strip_prefix('.')?
+        .strip_suffix(".bak")?;
+    const STAMP_LEN: usize = "AAAAMMJJ-HHMMSS".len();
+    let stamp = middle.get(..STAMP_LEN)?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !(stamp.is_ascii() && digits(&stamp[..8]) && &stamp[8..9] == "-" && digits(&stamp[9..])) {
+        return None;
+    }
+    let n = match &middle[STAMP_LEN..] {
+        "" => 0,
+        rest => {
+            let n = rest.strip_prefix('-')?;
+            if !digits(n) {
+                return None;
+            }
+            n.parse().ok()?
+        }
+    };
+    Some((stamp.to_string(), n))
+}
+
+/// Ne garde que les [`MAX_BACKUPS`] copies les plus récentes du fichier dans `dir`. Au mieux :
+/// un échec est tracé, jamais remonté.
+fn prune_backups(dir: &Path) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::warn!("compositions de pack : copies non triées : {err}");
+            return;
+        }
+    };
+    let mut copies: Vec<((String, u64), PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let rank = backup_rank(&e.file_name().to_string_lossy())?;
+            Some((rank, e.path()))
+        })
+        .collect();
+    if copies.len() <= MAX_BACKUPS {
+        return;
+    }
+    copies.sort();
+    let excess = copies.len() - MAX_BACKUPS;
+    for (_, path) in copies.into_iter().take(excess) {
+        if let Err(err) = fs::remove_file(&path) {
+            tracing::warn!(
+                "compositions de pack : ancienne copie {} non supprimée : {err}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// Raisons pour lesquelles des entrées ont été écartées à la lecture.
+#[derive(Debug, Default)]
+struct Rejected {
+    /// Désérialisation impossible, identifiant ou nom invalide.
+    unreadable: usize,
+    /// Identifiant ou nom (casse ignorée) déjà pris par une entrée précédente.
+    duplicate: usize,
+    /// Au-delà de [`MAX_COMPOSITIONS`].
+    surplus: usize,
+}
+
+impl Rejected {
+    fn total(&self) -> usize {
+        self.unreadable + self.duplicate + self.surplus
+    }
+
+    /// Détail des raisons, en français : « 1 illisible, 2 en double ».
+    fn detail(&self) -> String {
+        let mut parts = Vec::new();
+        if self.unreadable > 0 {
+            parts.push(format!("{} illisible(s)", self.unreadable));
+        }
+        if self.duplicate > 0 {
+            parts.push(format!(
+                "{} en double (identifiant ou nom déjà pris)",
+                self.duplicate
+            ));
+        }
+        if self.surplus > 0 {
+            parts.push(format!("{} au-delà de {MAX_COMPOSITIONS}", self.surplus));
+        }
+        parts.join(", ")
+    }
+}
+
+/// Ajoute `notice` au message de `err` : une action en échec ne perd pas le message dit une
+/// fois (fichier mis de côté, entrées écartées). Le genre de l'erreur est inchangé.
+fn with_notice(err: AppError, notice: Option<String>) -> AppError {
+    let Some(notice) = notice else { return err };
+    match err {
+        AppError::NotFound(m) => AppError::NotFound(format!("{m}. {notice}")),
+        AppError::Validation(m) => AppError::Validation(format!("{m}. {notice}")),
+        AppError::Io(e) => AppError::Io(io::Error::new(e.kind(), format!("{e}. {notice}"))),
+        other => {
+            tracing::warn!("compositions de pack : message non transmis : {notice}");
+            other
+        }
+    }
 }
 
 impl<'a> Store<'a> {
@@ -209,19 +361,19 @@ impl<'a> Store<'a> {
             "compositions de pack : fichier {why}, mis de côté en {}",
             backup.display()
         );
+        prune_backups(self.dir);
         Ok(StoreRead {
-            entries: Vec::new(),
             notice: Some(format!(
                 "Le fichier des compositions enregistrées ({why}) a été mis de côté ({}).",
                 file_name(&backup)
             )),
+            ..StoreRead::default()
         })
     }
 
-    /// Lit les compositions. Absent : liste vide. Illisible, trop gros ou d'un schéma plus
-    /// récent : mis de côté, liste vide et message. Entrées illisibles : fichier copié puis
-    /// réécrit avec les entrées lisibles, message. Erreur seulement si le disque est
-    /// inaccessible.
+    /// Lit les compositions. Absent : liste vide. Illisible ou trop gros : mis de côté, liste
+    /// vide et message. D'un schéma plus récent : erreur, fichier intact (ni lu ni réécrit).
+    /// Entrées écartées : fichier copié puis réécrit avec les entrées lisibles, message.
     pub fn read(&self) -> AppResult<StoreRead> {
         let path = self.path();
         match fs::metadata(&path) {
@@ -234,70 +386,108 @@ impl<'a> Store<'a> {
             Ok(Loaded::Missing) => return Ok(StoreRead::default()),
             Ok(Loaded::Found(raw)) => raw,
             Ok(Loaded::Recovered { backup }) => {
+                prune_backups(self.dir);
                 return Ok(StoreRead {
-                    entries: Vec::new(),
                     notice: Some(format!(
                         "Le fichier des compositions enregistrées était illisible : il a été mis de côté ({backup})."
                     )),
-                })
+                    ..StoreRead::default()
+                });
             }
-            Err(AppError::ConfigVersion { .. }) => {
-                return self.set_aside("écrit par une version plus récente")
+            // Comme `settings.json` : un fichier d'une version plus récente n'est jamais
+            // modifié ni remplacé (aucun chemin dans le message).
+            Err(AppError::ConfigVersion {
+                found, supported, ..
+            }) => {
+                return Err(AppError::ConfigVersion {
+                    file: COMPOSITIONS_FILE.into(),
+                    found,
+                    supported,
+                })
             }
             Err(err) => return Err(err),
         };
+        let mut extra = raw.extra;
+        extra.remove("schema_version");
         let mut entries: Vec<SavedComposition> = Vec::new();
         let mut ids = HashSet::new();
-        let mut rejected = 0usize;
+        let mut rejected = Rejected::default();
         for value in raw.compositions {
-            let ok = serde_json::from_value::<SavedComposition>(value)
-                .ok()
-                .filter(|e| {
-                    valid_id(&e.id)
-                        && checked_name(&e.name) == Some(e.name.as_str())
-                        && !name_taken(&entries, &e.name, None)
-                        && !ids.contains(&e.id)
-                        && entries.len() < MAX_COMPOSITIONS
-                });
-            match ok {
-                Some(entry) => {
-                    ids.insert(entry.id.clone());
-                    entries.push(entry);
-                }
-                None => rejected += 1,
+            let Some(entry) = SavedComposition::from_stored(value)
+                .filter(|e| valid_id(&e.id) && checked_name(&e.name) == Some(e.name.as_str()))
+            else {
+                rejected.unreadable += 1;
+                continue;
+            };
+            if ids.contains(&entry.id) || name_taken(&entries, &entry.name, None) {
+                rejected.duplicate += 1;
+            } else if entries.len() >= MAX_COMPOSITIONS {
+                rejected.surplus += 1;
+            } else {
+                ids.insert(entry.id.clone());
+                entries.push(entry);
             }
         }
-        if rejected == 0 {
+        if rejected.total() == 0 {
             return Ok(StoreRead {
                 entries,
                 notice: None,
+                extra,
             });
         }
+        let (total, detail) = (rejected.total(), rejected.detail());
         // Copie intégrale d'abord : la réécriture ne perd rien.
         let backup = backup_copy(&path)?;
-        tracing::warn!(
-            "compositions de pack : {rejected} entrée(s) illisible(s) écartée(s), fichier copié en {}",
-            backup.display()
-        );
-        let notice = format!(
-            "{rejected} composition(s) enregistrée(s) illisible(s) écartée(s) ; le fichier d'origine a été copié ({}).",
-            file_name(&backup)
-        );
-        if let Err(err) = self.write(&entries) {
-            // Les entrées lisibles restent servies ; la réécriture sera retentée.
-            tracing::warn!("compositions de pack : réécriture impossible : {err}");
-        }
-        Ok(StoreRead {
+        let read = StoreRead {
             entries,
+            notice: None,
+            extra,
+        };
+        let notice = match self.write(&read) {
+            Ok(()) => {
+                tracing::warn!(
+                    "compositions de pack : {total} entrée(s) écartée(s) ({detail}), fichier copié en {}",
+                    backup.display()
+                );
+                prune_backups(self.dir);
+                format!(
+                    "{total} composition(s) enregistrée(s) écartée(s) ({detail}) ; le fichier d'origine a été copié ({}).",
+                    file_name(&backup)
+                )
+            }
+            Err(err) => {
+                // L'original est intact : la copie ne sert à rien, et la garder en ajouterait
+                // une à chaque lecture tant que le fichier reste verrouillé.
+                tracing::warn!("compositions de pack : réécriture impossible : {err}");
+                if let Err(err) = fs::remove_file(&backup) {
+                    tracing::warn!(
+                        "compositions de pack : copie {} non retirée : {err}",
+                        backup.display()
+                    );
+                }
+                format!(
+                    "{total} composition(s) enregistrée(s) écartée(s) ({detail}) ; le fichier, laissé intact, n'a pas pu être réécrit."
+                )
+            }
+        };
+        Ok(StoreRead {
             notice: Some(notice),
+            ..read
         })
     }
 
-    /// Écrit les entrées de façon atomique, sérialisées une fois et bornées.
-    fn write(&self, entries: &[SavedComposition]) -> AppResult<()> {
+    /// Écrit les entrées de `read` (et ses champs inconnus) de façon atomique, sérialisées une
+    /// fois et bornées.
+    fn write(&self, read: &StoreRead) -> AppResult<()> {
+        let compositions = read
+            .entries
+            .iter()
+            .map(SavedComposition::to_stored)
+            .collect::<AppResult<Vec<_>>>()?;
         let mut bytes = serde_json::to_vec_pretty(&StoreFile {
             schema_version: COMPOSITIONS_SCHEMA,
-            compositions: entries,
+            compositions,
+            extra: &read.extra,
         })?;
         bytes.push(b'\n');
         if bytes.len() as u64 > MAX_FILE_BYTES {
@@ -313,30 +503,50 @@ impl<'a> Store<'a> {
     /// Conserve `composition`, créée sous le titre effectif `title`, à la date `now`. Identique
     /// à une entrée existante : cette entrée est mise à jour. Sinon : nouvelle entrée au nom
     /// libre dérivé du titre. Refusé au-delà de [`MAX_COMPOSITIONS`] ou de
-    /// [`MAX_ENTRY_BYTES`].
+    /// [`MAX_ENTRY_BYTES`] ; le message de la lecture suit alors l'erreur.
     pub fn record(
         &self,
         composition: &PackComposition,
         title: &str,
         now: u64,
     ) -> AppResult<Recorded> {
-        let StoreRead {
-            mut entries,
-            notice,
-        } = self.read()?;
-        let (id, name, new) = if let Some(entry) =
-            entries.iter_mut().find(|e| e.composition == *composition)
+        let mut read = self.read()?;
+        let notice = read.notice.take();
+        match self.record_in(read, composition, title, now) {
+            Ok((id, name, new)) => Ok(Recorded {
+                id,
+                name,
+                new,
+                notice,
+            }),
+            Err(err) => Err(with_notice(err, notice)),
+        }
+    }
+
+    /// [`Store::record`] sur des entrées déjà lues : `(id, nom, nouvelle)`.
+    fn record_in(
+        &self,
+        mut read: StoreRead,
+        composition: &PackComposition,
+        title: &str,
+        now: u64,
+    ) -> AppResult<(String, String, bool)> {
+        let out = if let Some(entry) = read
+            .entries
+            .iter_mut()
+            .find(|e| e.composition == *composition)
         {
             entry.last_used_at = now;
             entry.packs = entry.packs.saturating_add(1);
             (entry.id.clone(), entry.name.clone(), false)
         } else {
-            if entries.len() >= MAX_COMPOSITIONS {
+            if read.entries.len() >= MAX_COMPOSITIONS {
                 return Err(AppError::Validation(format!(
-                        "{MAX_COMPOSITIONS} compositions enregistrées au plus : supprimez-en une pour conserver les suivantes"
-                    )));
+                    "{MAX_COMPOSITIONS} compositions enregistrées au plus : supprimez-en une pour conserver les suivantes"
+                )));
             }
-            let size = serde_json::to_vec(composition)?.len();
+            // Mesurée comme elle sera écrite (JSON indenté).
+            let size = serde_json::to_vec_pretty(composition)?.len();
             if size > MAX_ENTRY_BYTES {
                 return Err(AppError::Validation(format!(
                     "composition trop volumineuse : {size} octets (au plus {MAX_ENTRY_BYTES})"
@@ -344,23 +554,20 @@ impl<'a> Store<'a> {
             }
             let entry = SavedComposition {
                 id: uuid::Uuid::new_v4().to_string(),
-                name: unique_name(title, &entries),
+                name: unique_name(title, &read.entries),
                 created_at: now,
                 last_used_at: now,
                 packs: 1,
                 composition: composition.clone(),
+                extra: Map::new(),
+                composition_extra: Map::new(),
             };
             let out = (entry.id.clone(), entry.name.clone(), true);
-            entries.push(entry);
+            read.entries.push(entry);
             out
         };
-        self.write(&entries)?;
-        Ok(Recorded {
-            id,
-            name,
-            new,
-            notice,
-        })
+        self.write(&read)?;
+        Ok(out)
     }
 
     fn find<'e>(entries: &'e [SavedComposition], id: &str) -> AppResult<&'e SavedComposition> {
@@ -370,52 +577,95 @@ impl<'a> Store<'a> {
             .ok_or_else(|| AppError::NotFound("composition introuvable".into()))
     }
 
-    /// Renomme une composition (nom nettoyé, unique sans tenir compte de la casse).
-    pub fn rename(&self, id: &str, name: &str) -> AppResult<()> {
+    /// Renomme une composition (nom nettoyé, unique sans tenir compte de la casse). Renvoie le
+    /// message de la lecture (fichier mis de côté, entrées écartées), joint à l'erreur en cas
+    /// d'échec.
+    pub fn rename(&self, id: &str, name: &str) -> AppResult<Option<String>> {
         let Some(name) = checked_name(name) else {
             return Err(AppError::Validation(format!(
                 "nom de composition vide ou trop long (1 à {MAX_NAME_CHARS} caractères)"
             )));
         };
-        let mut entries = self.read()?.entries;
-        Self::find(&entries, id)?;
-        if name_taken(&entries, name, Some(id)) {
-            return Err(AppError::Validation(
-                "une autre composition porte déjà ce nom".into(),
-            ));
-        }
-        if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
-            if entry.name == name {
-                return Ok(());
+        let mut read = self.read()?;
+        let notice = read.notice.take();
+        let result = (|| {
+            Self::find(&read.entries, id)?;
+            if name_taken(&read.entries, name, Some(id)) {
+                return Err(AppError::Validation(
+                    "une autre composition porte déjà ce nom".into(),
+                ));
             }
-            entry.name = name.to_string();
+            if let Some(entry) = read.entries.iter_mut().find(|e| e.id == id) {
+                if entry.name == name {
+                    return Ok(());
+                }
+                entry.name = name.to_string();
+            }
+            self.write(&read)
+        })();
+        match result {
+            Ok(()) => Ok(notice),
+            Err(err) => Err(with_notice(err, notice)),
         }
-        self.write(&entries)
     }
 
-    /// Supprime une composition ; absente : rien à faire.
-    pub fn delete(&self, id: &str) -> AppResult<()> {
-        let mut entries = self.read()?.entries;
-        let before = entries.len();
-        entries.retain(|e| e.id != id);
-        if entries.len() == before {
-            return Ok(());
+    /// Supprime une composition ; absente : rien à faire. Renvoie le message de la lecture.
+    pub fn delete(&self, id: &str) -> AppResult<Option<String>> {
+        let mut read = self.read()?;
+        let notice = read.notice.take();
+        let before = read.entries.len();
+        read.entries.retain(|e| e.id != id);
+        if read.entries.len() == before {
+            return Ok(notice);
         }
-        self.write(&entries)
+        match self.write(&read) {
+            Ok(()) => Ok(notice),
+            Err(err) => Err(with_notice(err, notice)),
+        }
     }
 
     /// Copie une composition dans le brouillon unique, à la révision qui suit celle
-    /// enregistrée : une sauvegarde automatique en retard ne peut pas l'écraser.
-    pub fn open(&self, id: &str) -> AppResult<SaveOutcome> {
-        let entries = self.read()?.entries;
-        let entry = Self::find(&entries, id)?;
-        let stored = pack::read_draft(self.dir)?.revision;
-        let revision = stored
-            .checked_add(1)
-            .filter(|r| *r <= MAX_REVISION)
-            .ok_or_else(|| AppError::Validation("révision de brouillon épuisée".into()))?;
-        pack::save_draft(self.dir, &entry.composition, revision)
+    /// enregistrée : une sauvegarde automatique en retard ne peut pas l'écraser. Renvoie aussi
+    /// le message de la lecture.
+    pub fn open(&self, id: &str) -> AppResult<Opened> {
+        let mut read = self.read()?;
+        let notice = read.notice.take();
+        let result = (|| {
+            let entry = Self::find(&read.entries, id)?;
+            let stored = pack::read_draft(self.dir)?.revision;
+            let revision = stored
+                .checked_add(1)
+                .filter(|r| *r <= MAX_REVISION)
+                .ok_or_else(|| AppError::Validation("révision de brouillon épuisée".into()))?;
+            pack::save_draft(self.dir, &entry.composition, revision)
+        })();
+        match result {
+            Ok(outcome) => Ok(Opened {
+                saved: outcome.saved,
+                revision: outcome.revision,
+                notice,
+            }),
+            Err(err) => Err(with_notice(err, notice)),
+        }
     }
+}
+
+/// Résultat de [`Store::open`] (miroir de `CompositionOpened` dans `src/api/pack.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Opened {
+    /// `false` : révision dépassée, rien n'est écrit (voir [`pack::SaveOutcome`]).
+    pub saved: bool,
+    pub revision: u64,
+    /// Message de la lecture du fichier des compositions (mis de côté, entrées écartées).
+    pub notice: Option<String>,
+}
+
+/// Résultat d'un renommage ou d'une suppression (miroir de `CompositionAction` dans
+/// `src/api/pack.ts`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ActionOutcome {
+    /// Message de la lecture du fichier des compositions (mis de côté, entrées écartées).
+    pub notice: Option<String>,
 }
 
 /// Résultat de [`Store::record`].
@@ -444,23 +694,36 @@ pub struct CompositionRecord {
 }
 
 /// Conserve la composition d'un pack dont la tâche vient d'être créée. L'appelant tient le
-/// verrou de configuration. Un échec ne remonte pas : la création du pack continue.
+/// verrou de configuration. Un échec ne remonte pas : la création du pack continue, et le
+/// message de la lecture (fichier mis de côté, entrées écartées) est rapporté même alors.
 pub fn record_after_create(
     dir: &Path,
     composition: &PackComposition,
     title: &str,
 ) -> CompositionRecord {
-    match Store::new(dir).record(composition, title, now_secs()) {
-        Ok(r) => CompositionRecord {
-            name: Some(r.name),
-            new: r.new,
+    let store = Store::new(dir);
+    let (notice, result) = match store.read() {
+        Ok(mut read) => {
+            let notice = read.notice.take();
+            (
+                notice,
+                store.record_in(read, composition, title, now_secs()),
+            )
+        }
+        Err(err) => (None, Err(err)),
+    };
+    match result {
+        Ok((_, name, new)) => CompositionRecord {
+            name: Some(name),
+            new,
             error: None,
-            notice: r.notice,
+            notice,
         },
         Err(err) => {
             tracing::warn!("composition de pack non conservée : {err}");
             CompositionRecord {
                 error: Some(err.to_string()),
+                notice,
                 ..CompositionRecord::default()
             }
         }
@@ -480,7 +743,8 @@ pub struct CompositionSummary {
     pub episodes: usize,
     /// Flux cités (épisodes et couverture).
     pub feeds: usize,
-    /// Flux cités dont la source a été supprimée (composition gardée, § 14.5).
+    /// Flux cités dont la source a été supprimée (composition gardée, § 14.5) ; 0 si les
+    /// sources n'ont pas pu être lues.
     pub missing_feeds: usize,
 }
 
@@ -493,8 +757,9 @@ pub struct CompositionsView {
     pub max: usize,
 }
 
-/// Vue de la liste ; `podcasts` : identifiants des sources podcast existantes.
-pub fn view(read: StoreRead, podcasts: &HashSet<String>) -> CompositionsView {
+/// Vue de la liste ; `podcasts` : identifiants des sources podcast existantes, `None` si les
+/// sources n'ont pas pu être lues (aucun flux marqué supprimé).
+pub fn view(read: StoreRead, podcasts: Option<&HashSet<String>>) -> CompositionsView {
     let mut compositions: Vec<CompositionSummary> = read
         .entries
         .into_iter()
@@ -503,7 +768,8 @@ pub fn view(read: StoreRead, podcasts: &HashSet<String>) -> CompositionsView {
             CompositionSummary {
                 episodes: e.composition.episodes().len(),
                 feeds: sources.len(),
-                missing_feeds: sources.iter().filter(|s| !podcasts.contains(*s)).count(),
+                missing_feeds: podcasts
+                    .map_or(0, |p| sources.iter().filter(|s| !p.contains(*s)).count()),
                 id: e.id,
                 name: e.name,
                 created_at: e.created_at,
@@ -524,6 +790,30 @@ pub fn view(read: StoreRead, podcasts: &HashSet<String>) -> CompositionsView {
     }
 }
 
+/// Liste des compositions de `dir`. L'appelant tient le verrou de configuration. Les sources
+/// sont lues au mieux : un échec ne fait pas perdre la liste ni son message (dit une fois).
+pub fn list_view(dir: &Path) -> AppResult<CompositionsView> {
+    let read = Store::new(dir).read()?;
+    let podcasts = match SourcesStore::new(dir).list() {
+        Ok(sources) => Some(
+            sources
+                .into_iter()
+                .filter_map(|s| match s {
+                    Source::Podcast { id, .. } => Some(id),
+                    _ => None,
+                })
+                .collect::<HashSet<String>>(),
+        ),
+        Err(err) => {
+            tracing::warn!(
+                "compositions de pack : sources illisibles, flux supprimés non comptés : {err}"
+            );
+            None
+        }
+    };
+    Ok(view(read, podcasts.as_ref()))
+}
+
 // ---------------------------------------------------------------------------------------
 // Commandes Tauri
 // ---------------------------------------------------------------------------------------
@@ -532,16 +822,7 @@ pub fn view(read: StoreRead, podcasts: &HashSet<String>) -> CompositionsView {
 #[tauri::command]
 pub async fn pack_compositions_list(config: State<'_, ConfigState>) -> AppResult<CompositionsView> {
     let _guard = config.guard();
-    let read = Store::new(&config.dir).read()?;
-    let podcasts: HashSet<String> = SourcesStore::new(&config.dir)
-        .list()?
-        .into_iter()
-        .filter_map(|s| match s {
-            Source::Podcast { id, .. } => Some(id),
-            _ => None,
-        })
-        .collect();
-    Ok(view(read, &podcasts))
+    list_view(&config.dir)
 }
 
 /// Renomme une composition.
@@ -550,16 +831,21 @@ pub async fn pack_composition_rename(
     config: State<'_, ConfigState>,
     id: String,
     name: String,
-) -> AppResult<()> {
+) -> AppResult<ActionOutcome> {
     let _guard = config.guard();
-    Store::new(&config.dir).rename(&id, &name)
+    let notice = Store::new(&config.dir).rename(&id, &name)?;
+    Ok(ActionOutcome { notice })
 }
 
 /// Supprime une composition (les histoires créées ne sont pas touchées).
 #[tauri::command]
-pub async fn pack_composition_delete(config: State<'_, ConfigState>, id: String) -> AppResult<()> {
+pub async fn pack_composition_delete(
+    config: State<'_, ConfigState>,
+    id: String,
+) -> AppResult<ActionOutcome> {
     let _guard = config.guard();
-    Store::new(&config.dir).delete(&id)
+    let notice = Store::new(&config.dir).delete(&id)?;
+    Ok(ActionOutcome { notice })
 }
 
 /// Copie une composition dans le brouillon (le brouillon en cours est remplacé) ; le front
@@ -568,7 +854,7 @@ pub async fn pack_composition_delete(config: State<'_, ConfigState>, id: String)
 pub async fn pack_composition_open(
     config: State<'_, ConfigState>,
     id: String,
-) -> AppResult<SaveOutcome> {
+) -> AppResult<Opened> {
     let _guard = config.guard();
     Store::new(&config.dir).open(&id)
 }

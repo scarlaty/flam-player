@@ -178,8 +178,11 @@ pub fn utc_stamp(secs: u64) -> String {
     )
 }
 
-/// Renomme un fichier corrompu en `<nom>.<horodatage>.bak` (suffixe numérique si déjà pris).
-pub fn backup_corrupted(path: &Path) -> io::Result<PathBuf> {
+/// Chemin de copie libre pour `path` : `<nom>.<horodatage>.bak`, ou, si une copie porte déjà
+/// cet horodatage, `<nom>.<horodatage>-<n>.bak` avec `n` supérieur à tout suffixe existant.
+/// Une copie plus récente a ainsi toujours un rang plus élevé, même si des copies plus
+/// anciennes de la même seconde ont été supprimées entre-temps (#484 : copies bornées).
+pub fn backup_path(path: &Path) -> io::Result<PathBuf> {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -189,12 +192,41 @@ pub fn backup_corrupted(path: &Path) -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::other("chemin sans nom de fichier"))?
         .to_string_lossy()
         .into_owned();
-    let mut backup = path.with_file_name(format!("{name}.{stamp}.bak"));
-    let mut n = 1;
+    let plain = format!("{name}.{stamp}.bak");
+    let prefix = format!("{name}.{stamp}-");
+    let mut taken: Option<u64> = None;
+    if let Some(Ok(entries)) = path.parent().map(fs::read_dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            let n = if file == plain {
+                Some(0)
+            } else {
+                file.strip_prefix(&prefix)
+                    .and_then(|rest| rest.strip_suffix(".bak"))
+                    .and_then(|n| n.parse::<u64>().ok())
+            };
+            if let Some(n) = n {
+                taken = Some(taken.map_or(n, |t| t.max(n)));
+            }
+        }
+    }
+    let mut backup = match taken {
+        None => path.with_file_name(&plain),
+        Some(n) => path.with_file_name(format!("{prefix}{}.bak", n + 1)),
+    };
+    // Dossier illisible ou création concurrente : jamais écraser.
+    let mut n = taken.map_or(1, |t| t + 2);
     while backup.exists() {
-        backup = path.with_file_name(format!("{name}.{stamp}-{n}.bak"));
+        backup = path.with_file_name(format!("{prefix}{n}.bak"));
         n += 1;
     }
+    Ok(backup)
+}
+
+/// Renomme un fichier corrompu en `<nom>.<horodatage>.bak` (suffixe numérique si déjà pris,
+/// voir [`backup_path`]).
+pub fn backup_corrupted(path: &Path) -> io::Result<PathBuf> {
+    let backup = backup_path(path)?;
     rename_with_retry(path, &backup)?;
     Ok(backup)
 }
@@ -393,6 +425,35 @@ mod tests {
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn chemin_de_copie_toujours_au_dessus_des_existants() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.json");
+        let first = backup_path(&path).unwrap();
+        let name = first.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("x.json.") && name.ends_with(".bak"));
+        let stamp = name
+            .strip_prefix("x.json.")
+            .unwrap()
+            .strip_suffix(".bak")
+            .unwrap()
+            .to_string();
+        // Copies de la même seconde dont les premières ont été supprimées : la suivante prend
+        // un suffixe supérieur au plus grand, jamais une place libérée.
+        fs::write(dir.path().join(format!("x.json.{stamp}-3.bak")), b"").unwrap();
+        fs::write(dir.path().join(format!("x.json.{stamp}-x.bak")), b"").unwrap();
+        fs::write(dir.path().join(format!("y.json.{stamp}-9.bak")), b"").unwrap();
+        let next = backup_path(&path).unwrap();
+        // Même seconde (sinon horodatage plus récent, sans suffixe) : tolérant au changement.
+        let next_name = next.file_name().unwrap().to_string_lossy().into_owned();
+        if next_name.contains(&stamp) {
+            assert_eq!(next_name, format!("x.json.{stamp}-4.bak"));
+        }
+        fs::write(dir.path().join(format!("x.json.{stamp}.bak")), b"").unwrap();
+        let p = backup_path(&path).unwrap();
+        assert!(!p.exists());
     }
 
     fn is_recovered(loaded: AppResult<Loaded<Doc>>) -> bool {
