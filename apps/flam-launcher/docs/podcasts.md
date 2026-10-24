@@ -599,9 +599,10 @@ Pistes sans fichier commun : Rust (#361, #213, #214, #216, #211, #362, #217) et 
 
 ## 12. Synthèse vocale des titres (#462)
 
-> **Statut : note de conception, à valider par le mainteneur** (partie de #207, évolution de
-> #221). Rien n'est codé. Les points à trancher sont en 12.11 ; tant qu'ils ne le sont pas, les
-> choix ci-dessous sont des recommandations.
+> **Statut : décidé le 2026-10-24** (partie de #207, évolution de #221 ; décisions en 12.11,
+> toutes conformes aux recommandations). PR 1 (module `podcast/speech.rs`, commandes
+> `tts_voices` et `tts_preview`) fusionnée ; PR 2 (intégration dans la création du pack, 12.12)
+> faite ; PR 3 (interface) à faire.
 
 ### 12.1 But et état actuel
 
@@ -680,7 +681,7 @@ et la liste de `THIRD-PARTY-NOTICES.txt` (deux licences permissives, déjà auto
 | Situation                                                | Comportement proposé                                                                                                                                                                                                                                                                                        |
 | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Aucune voix française à l'ouverture de l'éditeur         | case **désactivée**, message : « Aucune voix française n'est installée dans Windows (Paramètres > Heure et langue > Voix). » ; le pack reste créable, sans voix                                                                                                                                             |
-| Voix disparue entre le choix et la création              | **repli sur la voix française par défaut**, avec un avertissement au récapitulatif ; `tts_no_voice` (arrêt avant toute écriture) seulement s'il n'y a plus aucune voix française. Tranché par le mainteneur, **à implémenter en PR 2** (`resolve_voice` rend `VoiceGone`, le repli est fait par l'appelant) |
+| Voix disparue entre le choix et la création              | **repli sur la voix française par défaut**, avec un avertissement au récapitulatif ; `tts_no_voice` (arrêt avant toute écriture) seulement s'il n'y a plus aucune voix française. Tranché par le mainteneur, **fait en PR 2** (`resolve_voice` rend `VoiceGone`, `pack_speech::choose_voice` fait le repli) |
 | Échec de synthèse d'un titre                             | ce titre reste **silencieux** (`audio: null`), le pack est créé, un avertissement par titre est ajouté au récapitulatif (comme P7)                                                                                                                                                                          |
 | Plateforme non Windows                                   | case masquée                                                                                                                                                                                                                                                                                                |
 | Le premier titre échoue, ou plus de la moitié des titres | la création **s'arrête avant toute écriture** (`tts_failed`) : jamais de pack entièrement muet sans l'avoir demandé                                                                                                                                                                                         |
@@ -704,16 +705,22 @@ explicite du parent (case décochée par défaut).
   (`MAX_STAGES` = 256 laisse la marge), soit au plus environ 150 options et le titre du pack :
   de 4 à 12 Mo de MP3 au total (24 à 80 Kio par titre). La synthèse est bien plus rapide que le
   temps réel ; le coût dominant est le lancement de ffmpeg par fichier (quelques dizaines de ms) :
-  de l'ordre de 5 à 20 s pour un grand pack, **à mesurer** (PR 2). La progression et l'annulation passent par celles de la création (#217) : une étape « voix »
-  comptée par titre.
+  de l'ordre de 5 à 20 s pour un grand pack, **à mesurer sur un poste réel** (la CI n'a pas de
+  voix française). L'annulation passe par celle de la création (#217) ; la progression affiche
+  une phase « speech » (« lecture des titres à voix haute »), sans pourcentage propre (étape
+  courte).
 - **Cache** : pas de cache persistant en v1 (le coût est faible et le dossier de travail est
-  supprimé après la publication, N8 a). La clé prévue, si #460 (cache des MP3 convertis par
-  source, N8 b) est fusionnée : `sha256(voix, débit, version du format, texte)` ; elle suffit à
-  réutiliser un titre déjà lu lors d'un pack refait. Cette PR ne dépend pas de #460 ; elle
-  réutilisera son cache si celui-ci offre une API de clé générale, sinon on ne l'ajoute pas.
-- Place dans la création : après la conversion des épisodes et avant l'écriture de l'archive (le
-  graphe a besoin de la liste des audios de titres). Un échec de synthèse ne bloque pas les
-  épisodes.
+  supprimé après la publication, N8 a). Le cache de #460 est propre aux épisodes (clé = épisode
+  d'une source, dossier de la source) : il n'offre pas d'API de clé générale, les titres n'y
+  sont donc pas mis. Clé prévue si un cache des titres est ajouté plus tard :
+  `sha256(voix, débit, version du format, texte)`.
+- **Place dans la création (PR 2)** : **avant les téléchargements**, juste après la revalidation
+  et le contrôle d'espace disque (D5). Écart assumé avec la recommandation d'origine (« après la
+  conversion des épisodes ») : une voix inutilisable (premier titre ou plus de la moitié en
+  échec) arrête alors la création **sans rien télécharger**. Les titres sont lus pour toute la
+  composition ; ceux des épisodes retirés ensuite (P7) et des catégories vidées ne vont pas dans
+  l'archive (leurs MP3 restent dans le dossier de travail, supprimé avec lui) et leurs
+  avertissements sont écartés.
 
 ### 12.7 Interface (éditeur de pack, #363)
 
@@ -749,9 +756,12 @@ URL de flux, D11 : ni titre ni voix dans les journaux).
   système. Rien à ajouter dans `LICENSES.md` ; la crate `windows` (MIT OU Apache-2.0) va dans
   `THIRD-PARTY-NOTICES.txt`.
 - Les voix Microsoft appartiennent à Microsoft. Les packs sont déjà réservés à l'usage personnel
-  et familial (A8, D14) ; l'audio produit ne doit pas être partagé. Je n'ai pas lu le contrat de
-  licence des voix : **à confirmer avant la fusion de la PR 2**, qui est celle qui met cet audio
-  dans les packs (Q4).
+  et familial (A8, D14) ; l'audio produit ne doit pas être partagé.
+- **Conclusion du mainteneur (2026-10-24, Q4)** : Microsoft ne publie pas de conditions
+  explicites sur l'audio produit par les voix intégrées à Windows. L'usage est donc limité au
+  cadre personnel et familial, **sans diffusion** des packs ni de leur audio ; cette mention est
+  déjà portée par l'avertissement d'usage des podcasts (A8, D14), rien n'est ajouté à
+  l'interface.
 - piper et espeak-ng restent exclus (GPL-3.0, § 7).
 
 **Tests.**
@@ -771,21 +781,23 @@ URL de flux, D11 : ni titre ni voix dans les journaux).
 
 ### 12.9 Pannes
 
-| Étape / panne                                        | État laissé                    | Reprise ou message                                                                                                                                |
-| ---------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Aucune voix FR à l'ouverture                         | rien                           | case désactivée et explication                                                                                                                    |
-| Voix disparue avant la création                      | rien (contrôle avant écriture) | erreur `tts_no_voice`, retour à l'éditeur                                                                                                         |
-| `SpeechSynthesizer` indisponible (service voix, COM) | rien                           | `tts_unavailable` ; mêmes cas que « aucune voix »                                                                                                 |
-| Échec de synthèse d'un titre                         | pas de WAV                     | titre silencieux, avertissement au récapitulatif                                                                                                  |
-| Premier titre ou plus de la moitié en échec          | rien (contrôle avant écriture) | erreur `tts_failed`, retour à l'éditeur                                                                                                           |
-| Synthèse qui ne rend pas la main                     | thread abandonné, WAV supprimé | délai par titre (10 s) : échec de ce titre ; annulation possible entre deux titres                                                                |
-| Titre vide, sans lettre ou trop long                 | rien                           | silencieux ou coupé, pas d'erreur                                                                                                                 |
-| WAV vide ou corrompu                                 | WAV supprimé                   | comme un échec de synthèse                                                                                                                        |
-| ffmpeg absent, haché faux ou en échec                | temporaires `.part` supprimés  | comme #214 : ce titre silencieux ; ffmpeg absent bloque déjà la création                                                                          |
-| Annulation pendant les titres                        | dossier de travail supprimé    | comme la création (#217)                                                                                                                          |
-| Arrêt brutal de l'application                        | dossier de travail à nettoyer  | reprise N10 a : les titres sont **refaits** avec la voix enregistrée ; si elle a disparu, voix par défaut (avertissement) ou arrêt `tts_no_voice` |
-| Disque plein                                         | temporaires supprimés          | erreur d'écriture de la création                                                                                                                  |
-| Lecture au focus absente sur l'appareil              | pack valide, sans voix audible | corrigé dans le graphe avant la PR 2, sinon fonctionnalité réservée                                                                               |
+| Étape / panne                                                             | État laissé                        | Reprise ou message                                                                                                                                                        |
+| ------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Aucune voix FR à l'ouverture                                              | rien                               | case désactivée et explication                                                                                                                                            |
+| Option demandée sans aucune voix FR (création de la tâche, `pack_create`) | rien, aucune tâche créée           | erreur `tts_no_voice` (`tts_unavailable` si la synthèse est indisponible), retour à l'éditeur                                                                             |
+| Voix disparue avant la préparation                                        | rien                               | repli sur la voix FR par défaut, avertissement au récapitulatif ; `tts_no_voice` (avant tout téléchargement) s'il n'y a plus aucune voix FR                               |
+| Énumération des voix bloquée                                              | rien                               | délai global de 12 s (liste et voix par défaut ensemble, #480) : traité comme `tts_unavailable`                                                                           |
+| `SpeechSynthesizer` indisponible (service voix, COM)                      | rien                               | `tts_unavailable` ; mêmes cas que « aucune voix »                                                                                                                         |
+| Échec de synthèse d'un titre                                              | pas de WAV                         | titre silencieux, avertissement au récapitulatif                                                                                                                          |
+| Premier titre ou plus de la moitié en échec                               | dossier de travail supprimé        | erreur `tts_failed` **avant tout téléchargement**, retour à l'éditeur (« premier titre » : premier titre qui a quelque chose à lire ; la moitié se compte sur ces titres) |
+| Synthèse qui ne rend pas la main                                          | thread abandonné, WAV jamais écrit | délai par titre (10 s) : échec de ce titre ; annulation possible pendant la synthèse, sans attendre la voix                                                               |
+| Titre vide, sans lettre ou trop long                                      | rien                               | silencieux ou coupé, pas d'erreur                                                                                                                                         |
+| WAV vide ou corrompu                                                      | WAV supprimé                       | comme un échec de synthèse                                                                                                                                                |
+| ffmpeg absent, haché faux ou en échec                                     | temporaires `.part` supprimés      | comme un échec de synthèse (titre silencieux, ou arrêt `tts_failed` selon la règle ci-dessus) ; ffmpeg absent au départ bloque déjà la création (prérequis)               |
+| Annulation pendant les titres                                             | dossier de travail supprimé        | comme la création (#217), rien téléchargé                                                                                                                                 |
+| Arrêt brutal de l'application                                             | dossier de travail à nettoyer      | reprise N10 a : les titres sont **refaits** avec la voix enregistrée ; si elle a disparu, voix par défaut (avertissement) ou arrêt `tts_no_voice`                         |
+| Disque plein                                                              | temporaires supprimés              | erreur d'écriture de la création                                                                                                                                          |
+| Lecture au focus absente sur l'appareil                                   | pack valide, sans voix audible     | corrigé dans le graphe avant la PR 2, sinon fonctionnalité réservée                                                                                                       |
 
 ### 12.10 Découpage en PR courtes
 
@@ -814,6 +826,44 @@ faire dès maintenant, avant la PR 1. Les noms d'entrées suivent la convention 
 | Q2  | Sans voix française : bloquer, ou créer un pack silencieux ? Et si un seul titre échoue ?                                                     | Case désactivée avec message, jamais de pack silencieux par surprise ; titre isolé en échec = silencieux et avertissement, mais arrêt si le premier titre ou plus de la moitié échouent (12.5). |
 | Q3  | Réglages : voix seule, voix et débit, voix selon la langue du flux ?                                                                          | Voix choisie par poste (liste des voix françaises), **sans débit** en v1 ; voix selon la langue du flux plus tard.                                                                              |
 | Q4  | API et licence : WinRT seul (crate `windows`) ou WinRT puis SAPI ; accepte-t-on l'usage des voix Microsoft limité au cadre personnel du § 4 ? | **WinRT seul** ; usage personnel et familial déjà imposé (A8, D14), avec une vérification du contrat des voix avant la fusion de la PR 2.                                                       |
+
+### 12.12 Intégration dans la création du pack (PR 2)
+
+- **Composition** (`podcast/pack.rs`) : `titles_audio` (booléen) et `titles_voice` (identifiant
+  de voix, facultatif), tous deux `serde(default)` et omis à l'écriture quand ils valent leur
+  défaut : les brouillons et tâches enregistrés avant restent lisibles, et le JSON d'une
+  composition sans voix est inchangé.
+- **Réglage du poste** (`settings.rs`) : `tts_voice` (identifiant, facultatif, borné à
+  512 caractères sans caractère de contrôle). À la création de la tâche, une composition sans
+  voix reprend celle du poste ; la voix ainsi fixée est enregistrée avec la tâche, la reprise
+  (N10 a) la réutilise.
+- **Création de la tâche** (`pack_create`, `InstallService::start_pack`) : option demandée →
+  identifiant contrôlé, voix françaises énumérées (délai global de 12 s) ; aucune voix
+  française : refus `tts_no_voice`, synthèse indisponible : `tts_unavailable` ; aucune tâche
+  créée. Une voix demandée mais disparue n'est pas une erreur (repli à la préparation).
+- **Préparation** (`install/pack_speech.rs`) : voix résolue (repli avec avertissement), titres
+  dans l'ordre de l'archive (titre du pack, puis options en profondeur), synthèse bornée
+  (10 s par titre), conversion MP3 mono 64 kbit/s par le ffmpeg embarqué
+  (`title-NNNN.mp3` dans le dossier de travail), règles d'arrêt de 12.5 (la moitié se compte
+  sur tous les titres lus, y compris ceux d'épisodes retirés ensuite), plus un arrêt
+  `tts_failed` après deux délais (ou indisponibilités) de synthèse consécutifs : un service de
+  voix figé n'impose pas 10 s d'attente par titre.
+- **Archive** (`podcast/archive.rs`) : `audio` de la scène d'option = `tNNN.mp3` (épisode de
+  rang NNN) ou `cNNN.mp3` (catégorie de rang NNN), entrées `audios/…` ; titre du pack =
+  `title.mp3` à la racine ; titre muet : `"audio": null` (`silent.mp3` à la conversion). Les
+  MP3 de titre suivent les contrôles des épisodes (en-tête MP3, taille, total, fichier jamais
+  utilisé deux fois). Aucune scène ajoutée, aucune annonce avant l'épisode.
+- **Avertissements** : `PackStatus::warnings` (voix remplacée, titres restés muets, cités par
+  leur libellé), joints à la tâche et à `install://done` ; l'affichage est fait en PR 3.
+  Les journaux ne citent que le rang d'un titre, jamais son texte ni la voix.
+- **Tests** : contenu d'archive (un audio par option, `title.mp3`, `"audio": null` sinon, titre
+  lu invalide ou réutilisé refusé sans écriture), injection de pannes sur la préparation (voix
+  en échec sur le premier titre, sur plus de la moitié, ffmpeg absent, annulation pendant la
+  synthèse, voix disparue, plus aucune voix française) : jamais de téléchargement ni de dossier
+  de travail résiduel ; anciens brouillons relus ; délai global de l'énumération des voix.
+- **Reste à vérifier sur un poste et sur l'appareil** (procédure du mainteneur) : pack de
+  10 titres avec une vraie voix, lecture au focus, coupure au défilement, volume comparé aux
+  épisodes, MP3 mono accepté (#219), durée de l'étape pour un grand pack.
 
 ## 13. Cache des MP3 convertis (N8 b, #460)
 

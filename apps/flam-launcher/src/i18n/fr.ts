@@ -703,6 +703,7 @@ export const fr = {
       preparingPhase: (phase: string) => `Préparation du pack : ${phase}`,
       preparePhase: {
         validation: "vérification des épisodes",
+        speech: "lecture des titres à voix haute",
         download: "téléchargement des épisodes",
         audio: "conversion audio",
         images: "pochettes",

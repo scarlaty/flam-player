@@ -28,6 +28,11 @@
 //!   repris du cache (ni téléchargé ni reconverti), un épisode converti y est mis avant la
 //!   suppression du dossier de travail. Le cache est au mieux : ses erreurs ne font jamais
 //!   échouer le pack.
+//! - **Titres lus** (#462, § 12, [`pack_speech`](super::pack_speech)) : si la composition le
+//!   demande, la voix est contrôlée à la création de la tâche (aucune voix française : refus),
+//!   puis les titres sont synthétisés **avant les téléchargements** ; titre isolé en échec :
+//!   muet et avertissement (`PackStatus::warnings`) ; premier titre ou plus de la moitié en
+//!   échec : arrêt `tts_failed`.
 //! - `library.json` n'est jamais touché ici : seule la publication existante l'écrit.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -41,6 +46,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::sync::watch;
 
+use super::pack_speech::{self, SpokenTitles, TitleKey};
 use super::{child_of, converter_engine, is_task_id, lock, InstallService, TaskState, Toolchain};
 use crate::catalog::blocking;
 use crate::podcast::archive::{
@@ -55,6 +61,7 @@ use crate::podcast::pack::{
 };
 use crate::podcast::rss::PodcastEpisode;
 use crate::podcast::source::{episode_id, PodcastService};
+use crate::podcast::speech::{self, Synthesizer, Wav};
 use crate::storage::ConfigState;
 use crate::story::{StoryEntry, StoryKind};
 use crate::{AppError, AppResult};
@@ -96,6 +103,9 @@ pub struct PackStatus {
     pub episodes: usize,
     /// Titres des épisodes retirés du pack (P7), connus après la préparation.
     pub dropped: Vec<String>,
+    /// Avertissements des titres lus (#462) : voix remplacée par la voix par défaut, titres
+    /// restés muets. Vide sans titres lus.
+    pub warnings: Vec<String>,
 }
 
 /// Accès externes de la préparation (production : [`LivePackBackend`] ; tests : injection de
@@ -142,6 +152,27 @@ pub trait PackBackend: Send + Sync {
     /// n'arrête pas le launcher ; l'échec donne l'image de repli (D13).
     fn convert_artwork(&self, bytes: &[u8], kind: ArtworkKind) -> Result<Artwork, ArtworkError> {
         artwork::convert_isolated(bytes, kind, None)
+    }
+    /// Moteur de synthèse des titres lus (#462) : voix Windows par défaut.
+    fn speech(&self) -> Arc<dyn Synthesizer> {
+        speech::system()
+    }
+    /// Voix mémorisée du poste (réglage `tts_voice`), bloquant ; `None` : voix par défaut.
+    fn preferred_voice(&self) -> Option<String> {
+        None
+    }
+    /// Conversion d'un titre synthétisé en MP3 `dest` par le ffmpeg embarqué ; taille du MP3.
+    fn title_mp3<'a>(
+        &'a self,
+        wav: &'a Wav,
+        dest: &'a Path,
+        cancel: &'a watch::Receiver<bool>,
+    ) -> BoxFuture<'a, AppResult<u64>> {
+        Box::pin(async move {
+            let ff = crate::ffmpeg::Ffmpeg::locate(&crate::settings::Environment::current())?;
+            let mut cancel = cancel.clone();
+            speech::wav_to_mp3(&ff, wav, dest, &mut cancel).await
+        })
     }
 }
 
@@ -232,6 +263,16 @@ impl PackBackend for LivePackBackend {
             cache_root,
             sources,
         ))
+    }
+
+    fn preferred_voice(&self) -> Option<String> {
+        use tauri::Manager;
+        let config = self.app.state::<ConfigState>();
+        let _guard = config.guard();
+        crate::settings::SettingsStore::new(&config.dir)
+            .load()
+            .ok()?
+            .tts_voice
     }
 }
 
@@ -490,6 +531,13 @@ impl InstallService {
             (Some(m), true) => m,
             _ => return Err(AppError::Validation(invalid_message(report))),
         };
+        let mut composition = composition;
+        if composition.titles_audio {
+            self.check_speech(&mut composition).await?;
+        } else {
+            // Sans titres lus, la voix ne sert à rien : jamais enregistrée avec la tâche.
+            composition.titles_voice = None;
+        }
         let tc = self.toolchain().await?;
         let id = uuid::Uuid::new_v4().to_string();
         let uuid = archive::new_pack_uuid().hyphenated().to_string();
@@ -501,6 +549,28 @@ impl InstallService {
             draft_revision,
         };
         self.enqueue(id, entry, Some(job), super::now_secs())
+    }
+
+    /// Titres lus demandés (#462) : voix normalisée, voix mémorisée du poste reprise si la
+    /// composition n'en choisit pas (enregistrée avec la tâche : la reprise utilise la même), et
+    /// au moins une voix française présente. Sinon refus, aucune tâche créée.
+    async fn check_speech(&self, composition: &mut PackComposition) -> AppResult<()> {
+        let backend = lock(&self.0.packs).clone().ok_or_else(|| {
+            AppError::ConverterUnavailable("création de pack indisponible".into())
+        })?;
+        let requested = crate::settings::clean_voice_id(composition.titles_voice.take())?;
+        let voice = blocking(move || {
+            let requested = requested.or_else(|| {
+                backend
+                    .preferred_voice()
+                    .and_then(|v| crate::settings::clean_voice_id(Some(v)).ok().flatten())
+            });
+            pack_speech::choose_voice(&backend.speech(), requested.as_deref())?;
+            Ok::<_, AppError>(requested)
+        })
+        .await??;
+        composition.titles_voice = voice;
+        Ok(())
     }
 
     /// Préparation (#217) : revalidation, D5, téléchargements, audio, tailles réelles,
@@ -660,6 +730,15 @@ impl InstallService {
             chosen.push(Chosen { reference, episode });
         }
         self.set_pack_status(id, chosen.len(), Vec::new());
+
+        // Titres lus (#462) : avant tout téléchargement, pour qu'une voix inutilisable arrête
+        // la création sans rien télécharger.
+        let (spoken, mut warnings) = if job.composition.titles_audio {
+            self.speak_titles(id, job, &chosen, &metadata, workdir, backend, cancel)
+                .await?
+        } else {
+            (SpokenTitles::default(), Vec::new())
+        };
 
         // 0. Cache des MP3 convertis (#460) : un épisode servi n'est ni téléchargé ni converti.
         let now = super::now_secs();
@@ -933,6 +1012,7 @@ impl InstallService {
                     title: chosen[n].episode.title.clone(),
                     audio: mp3,
                     image: pngs.get(&n).cloned(),
+                    title_audio: None,
                 },
             );
         }
@@ -941,11 +1021,32 @@ impl InstallService {
             .enumerate()
             .map(|(n, c)| (c.reference, n))
             .collect();
-        let menu = build_menu(&job.composition.menu, &ranks, &mut episodes);
+        let mut used: HashSet<TitleKey> = HashSet::new();
+        let menu = build_menu(
+            &job.composition.menu,
+            &ranks,
+            &mut episodes,
+            &spoken,
+            &mut Vec::new(),
+            &mut used,
+        );
         if menu.is_empty() {
             return Err(AppError::DownloadInvalid(
                 "aucun épisode utilisable dans le pack".into(),
             ));
+        }
+        // Avertissements des seuls titres muets qui restent dans le pack (un épisode retiré
+        // n'en a plus besoin).
+        let title_audio = spoken.audio.get(&TitleKey::Pack).cloned();
+        warnings.extend(
+            spoken
+                .failed
+                .iter()
+                .filter(|(key, _)| *key == TitleKey::Pack || used.contains(key))
+                .map(|(key, text)| pack_speech::failure_warning(key, text)),
+        );
+        if !warnings.is_empty() {
+            self.set_pack_warnings(id, warnings);
         }
         let description = metadata
             .description
@@ -962,6 +1063,7 @@ impl InstallService {
             },
             cover,
             menu,
+            title_audio,
         };
         let archive_path = workdir.path().join(ARCHIVE_NAME);
         let dest = archive_path.clone();
@@ -983,8 +1085,62 @@ impl InstallService {
     fn set_pack_status(&self, id: &str, episodes: usize, dropped: Vec<String>) {
         let mut tasks = lock(&self.0.tasks);
         if let Some(slot) = tasks.iter_mut().find(|s| s.task.id == id) {
-            slot.task.pack = Some(PackStatus { episodes, dropped });
+            let warnings = slot
+                .task
+                .pack
+                .take()
+                .map(|p| p.warnings)
+                .unwrap_or_default();
+            slot.task.pack = Some(PackStatus {
+                episodes,
+                dropped,
+                warnings,
+            });
         }
+    }
+
+    fn set_pack_warnings(&self, id: &str, warnings: Vec<String>) {
+        let mut tasks = lock(&self.0.tasks);
+        if let Some(slot) = tasks.iter_mut().find(|s| s.task.id == id) {
+            slot.task
+                .pack
+                .get_or_insert_with(PackStatus::default)
+                .warnings = warnings;
+        }
+    }
+
+    /// Titres lus (#462) : voix choisie (repli sur la voix par défaut avec un avertissement),
+    /// puis synthèse et conversion de chaque titre dans le dossier de travail. Rend les MP3
+    /// produits et les avertissements de voix ; voir [`pack_speech::speak`] pour les arrêts.
+    #[allow(clippy::too_many_arguments)]
+    async fn speak_titles(
+        &self,
+        id: &str,
+        job: &PackJob,
+        chosen: &[Chosen<'_>],
+        metadata: &ResolvedMetadata,
+        workdir: &Workdir,
+        backend: &Arc<dyn PackBackend>,
+        cancel: &watch::Receiver<bool>,
+    ) -> AppResult<(SpokenTitles, Vec<String>)> {
+        self.emit_phase(id, 0.0, "speech");
+        let synth = backend.speech();
+        let (voice, fallback) = {
+            let (synth, requested) = (synth.clone(), job.composition.titles_voice.clone());
+            blocking(move || pack_speech::choose_voice(&synth, requested.as_deref())).await??
+        };
+        let titles_by_ref: HashMap<&EpisodeRef, &str> = chosen
+            .iter()
+            .map(|c| (c.reference, c.episode.title.as_str()))
+            .collect();
+        let titles = pack_speech::titles(&job.composition, &metadata.title, &|r| {
+            titles_by_ref.get(r).map(|t| (*t).to_string())
+        });
+        // Étape courte (quelques secondes), avant les téléchargements : pas d'avancement propre,
+        // la phase « speech » suffit à l'affichage.
+        let spoken =
+            pack_speech::speak(backend, &synth, &voice, &titles, workdir.path(), cancel).await?;
+        Ok((spoken, fallback.into_iter().collect()))
     }
 }
 
@@ -1056,30 +1212,42 @@ fn read_bounded(path: &Path, max: u64) -> Option<Vec<u8>> {
     (bytes.len() as u64 <= max).then_some(bytes)
 }
 
-/// Arborescence de l'archive : épisodes retirés sautés, catégories vidées retirées (P7).
+/// Arborescence de l'archive : épisodes retirés sautés, catégories vidées retirées (P7) ;
+/// titres lus (#462) repris de `spoken` par position dans la composition (`path`), positions
+/// gardées notées dans `used`.
 fn build_menu(
     menu: &[PackNode],
     ranks: &HashMap<&EpisodeRef, usize>,
     episodes: &mut HashMap<usize, PackEpisode>,
+    spoken: &SpokenTitles,
+    path: &mut Vec<usize>,
+    used: &mut HashSet<TitleKey>,
 ) -> Vec<MenuEntry> {
     let mut out = Vec::new();
-    for node in menu {
+    for (i, node) in menu.iter().enumerate() {
+        path.push(i);
+        let key = TitleKey::Node(path.clone());
         match node {
             PackNode::Episode(e) => {
-                if let Some(ep) = ranks.get(e).and_then(|n| episodes.remove(n)) {
+                if let Some(mut ep) = ranks.get(e).and_then(|n| episodes.remove(n)) {
+                    ep.title_audio = spoken.audio.get(&key).cloned();
                     out.push(MenuEntry::Episode(ep));
+                    used.insert(key);
                 }
             }
             PackNode::Category { name, entries } => {
-                let entries = build_menu(entries, ranks, episodes);
+                let entries = build_menu(entries, ranks, episodes, spoken, path, used);
                 if !entries.is_empty() {
                     out.push(MenuEntry::Category {
                         name: name.trim().to_string(),
                         entries,
+                        audio: spoken.audio.get(&key).cloned(),
                     });
+                    used.insert(key);
                 }
             }
         }
+        path.pop();
     }
     out
 }
@@ -1143,3 +1311,7 @@ pub fn is_pack_uuid(uuid: &str) -> bool {
 #[cfg(test)]
 #[path = "podcast_cache_tests.rs"]
 mod cache_tests;
+
+#[cfg(test)]
+#[path = "podcast_speech_tests.rs"]
+mod speech_tests;
