@@ -13,7 +13,7 @@
 //!
 //! `T2F_FAKE_FFMPEG_LOG` : une ligne ajoutée par lancement (nombre d'appels).
 //!
-//! Le générateur Python `tests/data/gen_ffmpeg_cases.py` utilise le même exécutable : les
+//! Le générateur Python `gen_ffmpeg_cases.py` (supprimé) utilise le même exécutable : les
 //! vecteurs `tests/data/ffmpeg_cases.zip` comparent les paquets de Python et de Rust avec
 //! ffmpeg (sortie opaque, identique des deux côtés) et sans.
 //!

@@ -1,5 +1,5 @@
 //! Parité du décodage JPEG avec `_open_rgba` (Pillow 12.3.0, libjpeg-turbo 3.1.4.1) : vecteurs
-//! produits par `tests/vectors/jpeg/gen_jpeg_vectors.py` (#459, décision D7).
+//! produits par `gen_jpeg_vectors.py` (supprimé) (#459, décision D7).
 //!
 //! Vecteurs lisibles : même taille, alpha identique, chaque composante à ±4 près (écart borné
 //! de D7). Verdicts (lu, illisible, délégué) identiques à Python, sauf les écarts assumés

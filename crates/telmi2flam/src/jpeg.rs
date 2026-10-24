@@ -1,4 +1,4 @@
-//! Décodage JPEG vers RGBA avec la sémantique de `_open_rgba` (`tools/telmi2flam/telmi2flam.py`)
+//! Décodage JPEG vers RGBA avec la sémantique de `_open_rgba` (de l'ancien convertisseur Python)
 //! exécuté avec **Pillow 12.3.0** (libjpeg-turbo 3.1.4.1) : `Image.open`, `load()` puis
 //! `convert("RGBA")` (#459, décision D7 de `PORT-RUST.md`).
 //!
@@ -10,14 +10,15 @@
 //!    validité des tables de Huffman utilisées, table de quantification absente, composante
 //!    inconnue, paramètres de progression, échantillonnage hors 1..4 ou non entier, côté au-delà
 //!    de 65 500 px) et fin des données (fichier tronqué : `LOAD_TRUNCATED_IMAGES` reste faux dans
-//!    `telmi2flam.py`). Règle de fin, mesurée sur l'oracle : une image à un seul balayage est lue
-//!    si un marqueur suit ses données (les blocs manquants sont mis à zéro par libjpeg) ; sans
-//!    marqueur, illisible si des données manquent, lue si au moins 8 octets inutiles terminent
-//!    le flux, déléguée entre les deux (libjpeg demande de 0 à 7 octets au-delà des données
-//!    utiles selon l'image). Une image à plusieurs balayages (progressive, ou composantes en
-//!    balayages séparés) n'est lue que si `EOI` est atteint : `jpeg_start_decompress` consomme
-//!    tout le fichier. En séquentiel, les tables de Huffman 0 et 1 absentes sont les tables
-//!    standard (annexe K de T.81), comme `std_huff_tables` de libjpeg-turbo ; pas en progressif.
+//!    l'ancien convertisseur Python). Règle de fin, mesurée sur l'oracle : une image à un seul
+//!    balayage est lue si un marqueur suit ses données (les blocs manquants sont mis à zéro par
+//!    libjpeg) ; sans marqueur, illisible si des données manquent, lue si au moins 8 octets
+//!    inutiles terminent le flux, déléguée entre les deux (libjpeg demande de 0 à 7 octets au-delà
+//!    des données utiles selon l'image). Une image à plusieurs balayages (progressive, ou
+//!    composantes en balayages séparés) n'est lue que si `EOI` est atteint :
+//!    `jpeg_start_decompress` consomme tout le fichier. En séquentiel, les tables de Huffman 0 et 1
+//!    absentes sont les tables standard (annexe K de T.81), comme `std_huff_tables` de
+//!    libjpeg-turbo ; pas en progressif.
 //! 2. **Pixels** : `zune-jpeg` (scalaire : fonctions `x86` et `neon` non compilées quand la crate
 //!    est construite seule, `-p telmi2flam`, contrôlé par la CI ; `use_unsafe` ne coupe pas
 //!    l'AVX2) décode

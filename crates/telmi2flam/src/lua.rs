@@ -1,4 +1,4 @@
-//! Sérialisation Lua (`lua_repr` de `tools/telmi2flam/telmi2flam.py`) : mêmes octets que
+//! Sérialisation Lua (`lua_repr` de l'ancien convertisseur Python) : mêmes octets que
 //! Python, y compris les flottants au format `repr()` de Python.
 
 use std::fmt;

@@ -1,4 +1,4 @@
-//! Table de recherche `.mp3map` (format Lunii/Flam), port de `tools/telmi2flam/mp3map.py`.
+//! Table de recherche `.mp3map` (format Lunii/Flam), port de l'ancien `mp3map.py` (#140).
 //!
 //! Format (voir `src/formats/mp3map_parser.c`), little-endian :
 //! - en-tête de 12 octets : `total_units` (échantillons × 2, cadence interne 88 200 Hz),

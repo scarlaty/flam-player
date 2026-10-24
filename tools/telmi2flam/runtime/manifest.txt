@@ -1,5 +1,5 @@
 # Runtime du projet copie dans chaque paquet par telmi2flam (manifeste unique, PORT-RUST.md §2.1).
-# Lu par telmi2flam.py et validate.py, et embarque dans le binaire Rust (crates/telmi2flam/build.rs).
+# Lu par validate.py, et embarque dans le binaire Rust (crates/telmi2flam/build.rs).
 # Une ligne par fichier, chemin relatif a runtime/ et identique au nom dans le paquet ;
 # "!" en tete : indispensable au demarrage (main.lua -> require("global"), modules d'ecran
 # du moteur et icones UI qu'ils chargent). Doit lister exactement les .lua de runtime/script

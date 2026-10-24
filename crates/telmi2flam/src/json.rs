@@ -1,5 +1,5 @@
 //! Lecture des JSON TELMI (`metadata.json`, `nodes.json`, `notes.json`) avec la sémantique de
-//! `load_json` et `_expect` de `tools/telmi2flam/telmi2flam.py`.
+//! `load_json` et `_expect` de l'ancien convertisseur Python.
 //!
 //! Comportements de Python reproduits :
 //! - BOM UTF-8 toléré une seule fois en tête (`decode("utf-8-sig")`) ; un second BOM, ou un BOM

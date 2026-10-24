@@ -1,5 +1,5 @@
 //! Parité du décodage GIF avec `_open_rgba` (Python 3.14 + Pillow 12.3.0) : vecteurs produits
-//! par `tests/vectors/gif/gen_gif_vectors.py` (#459).
+//! par `gen_gif_vectors.py` (supprimé) (#459).
 
 use std::path::{Path, PathBuf};
 

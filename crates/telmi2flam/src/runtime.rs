@@ -2,9 +2,9 @@
 //! dans le binaire (PORT-RUST.md §2.1) : plus de dossier de ressources à trouver à l'exécution.
 //!
 //! La liste du runtime vient du manifeste unique `runtime/manifest.txt`, lu aussi par
-//! `telmi2flam.py` (fichiers indispensables) et `validate.py` ; `build.rs` en génère la table.
-//! Les octets sont ceux de la copie de travail : `.gitattributes` force LF sur les `.lua` et
-//! garde les `.lif` en binaire.
+//! l'ancien convertisseur Python (fichiers indispensables) et `validate.py` ; `build.rs` en génère
+//! la table. Les octets sont ceux de la copie de travail : `.gitattributes` force LF sur les `.lua`
+//! et garde les `.lif` en binaire.
 
 /// Fichier du runtime copié tel quel dans chaque paquet.
 #[derive(Debug, Clone, Copy)]

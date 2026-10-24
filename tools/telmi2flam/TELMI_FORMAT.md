@@ -1,7 +1,7 @@
 # Telmi Story
 
 > Spécification du format TELMI (source : `TelmiStory.md`, fournie par l'éditeur
-> Telmi). Versionnée ici comme référence pour le convertisseur `telmi2flam.py`.
+> Telmi). Versionnée ici comme référence pour le convertisseur `telmi2flam` (`crates/telmi2flam`).
 >
 > **Note sur les "chapitres"** : le format TELMI **n'a aucun champ de chapitre**.
 > Le convertisseur considère qu'un "chapitre" = une **scène avec audio**

@@ -1,4 +1,4 @@
-//! Conversion complète d'une archive (`convert` de `tools/telmi2flam/telmi2flam.py`) :
+//! Conversion complète d'une archive (`convert` de l'ancien convertisseur Python) :
 //! événement `start`, assemblage du paquet ([`crate::package`]), écriture ([`crate::output`]),
 //! événement `done`. Les erreurs sont rendues à l'appelant, qui émet l'événement `error`
 //! (le binaire, avec le code de sortie de [`ConvError::exit_code`]).

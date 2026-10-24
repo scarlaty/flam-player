@@ -1,5 +1,5 @@
 //! Erreurs de conversion attendues, avec le même `code` et le même code de sortie que
-//! `ConvError` de `telmi2flam.py` (README, section « Codes de sortie »).
+//! `ConvError` de l'ancien convertisseur Python (README, section « Codes de sortie »).
 
 use std::fmt;
 

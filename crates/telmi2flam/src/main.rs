@@ -1,5 +1,5 @@
 //! Binaire `telmi2flam` : conversion (`<archive> [-o sortie]`), `--info`, `--version`, et
-//! protocole de `telmi2flam.py` (#131) :
+//! protocole de l'ancien convertisseur Python (#131) :
 //! - avec `--progress-json`, **stdout ne contient que les événements JSON**, une ligne chacun,
 //!   vidangée aussitôt ; stdout fermé par le parent : l'émission cesse sans erreur et la
 //!   conversion continue (comme `_print_event`) ;
@@ -20,9 +20,9 @@
 //!
 //! Options (#133) : analyse façon `argparse` dans [`telmi2flam::cli`] (formes `--opt=valeur`,
 //! préfixes, `--`, `-h`, messages et codes de Python). Résumé humain `OK -> …` comme
-//! `telmi2flam.py` : sur stdout, ou sur stderr avec `--progress-json` ; les lignes `  i …`
-//! (rééchantillonnage réussi) et `  ! …` (avertissements) vont toujours sur stderr, au fil de
-//! la conversion. L'événement `done` précède le résumé (Python : après) ; seul un `2>&1`
+//! l'ancien convertisseur Python : sur stdout, ou sur stderr avec `--progress-json` ; les lignes
+//! `  i …` (rééchantillonnage réussi) et `  ! …` (avertissements) vont toujours sur stderr, au
+//! fil de la conversion. L'événement `done` précède le résumé (Python : après) ; seul un `2>&1`
 //! fusionné le voit. `-h` et `--version` écrivent sur stdout ; un tube fermé est ignoré
 //! partout (Python lèverait `BrokenPipeError` hors mode JSON).
 //!
