@@ -947,9 +947,15 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
   lisent par blocs de 256 Kio et s'arrêtent au bloc suivant quand la tâche est annulée, ce qui
   libère vite le verrou de la source. Une lecture annulée ne juge ni ne supprime aucune entrée ;
   une écriture annulée ne laisse rien de l'entrée (une écriture annulée avant de commencer garde
-  l'ancienne). Cas accepté : l'annulation pendant la remise en cache d'un épisode servi dont
-  seule la pochette a changé efface aussi son MP3 (l'ancienne entrée est retirée avant
-  l'écriture) ; il sera retéléchargé au pack suivant.
+  l'ancienne). Copie de repli interrompue pendant une lecture (MP3 ou pochette) : l'épisode
+  n'est pas servi, la copie partielle est retirée, l'entrée reste intacte (#489).
+- **Pochette seule** (#489) : un épisode servi dont seule la pochette a changé est remis en
+  cache sans réécrire son entrée : `<id>.json` cesse de citer l'ancienne pochette, la nouvelle
+  passe par un `.part`, puis `<id>.json` est réécrit. Une annulation ou une panne (disque
+  plein) ne supprime que la pochette : le MP3 valide reste en cache et servi, sans
+  retéléchargement. Si l'entrée a changé depuis la lecture (métadonnées absentes, autre
+  empreinte, MP3 d'une autre taille), elle est réécrite en entier depuis le MP3 placé dans le
+  dossier de travail.
 - **Liens et jonctions** (#466) : `podcasts/`, `podcasts/<id>/` et `podcasts/<id>/mp3/` doivent
   être de vrais dossiers (contrôle sans suivre de lien, à chaque accès, dossiers manquants créés
   un par un puis recontrôlés) ; sinon la source est ignorée avec un avertissement : rien n'est
@@ -976,6 +982,7 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
 | Épisode ou règle de conversion modifiés               | Empreinte différente : entrée remplacée.                                          |
 | Plafond de 2 Gio dépassé                              | Entrées les plus anciennes évincées (jamais celles du pack en cours).             |
 | Tâche annulée pendant le hachage ou la copie          | Arrêt au bloc suivant ; aucune entrée supprimée, écriture en cours effacée.       |
+| Annulation ou panne en remettant la pochette seule    | Pochette seule supprimée ; le MP3 reste en cache et servi (#489).                 |
 | `podcasts/` ou `podcasts/<id>/` remplacé par un lien  | Source ignorée (avertissement) : rien lu, écrit ni supprimé hors du cache.        |
 | Fichier d'extension inconnue dans `mp3/`              | Compté comme reste, supprimé à l'éviction.                                        |
 
@@ -1079,11 +1086,15 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
   lieu) : des lectures répétées n'accumulent pas de copies. Toute écriture suivante (conserver,
   renommer, supprimer) **refait d'abord la copie**, et n'a pas lieu si elle échoue : le
   fichier n'est jamais réécrit sans les entrées écartées tant qu'aucune copie ne les garde.
+  Si elle réussit, son message dit le nouvel état et nomme la copie faite (« le fichier
+  d'origine a été copié (…) »), et non plus l'échec de la réécriture (#489).
 - **Fichier illisible** (tronqué, JSON invalide, non UTF-8) ou **trop gros** : mis de côté en
   `*.bak` (jamais écrasé), liste vide, message.
 - **Copies bornées** : 3 copies `pack-compositions.json.*.bak` au plus (`MAX_BACKUPS`) : celle
   qui vient d'être faite, jamais supprimée (même si l'horloge a reculé), et les plus récentes
-  des autres ; un fichier au nom inattendu n'est jamais supprimé. Une copie
+  des autres ; un fichier au nom inattendu n'est jamais supprimé. Les noms sont comparés tels
+  quels, jamais après une conversion avec perte : un nom qui n'est pas de l'Unicode valide
+  n'est jamais pris pour une copie (#489). Une copie
   de la même seconde prend un suffixe supérieur à tous les existants
   (`storage::backup_path`) : la plus récente n'est jamais la première supprimée.
 - **Schéma plus récent** : comme `settings.json`, le fichier n'est **ni lu ni modifié**
@@ -1144,26 +1155,26 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
 
 ### 14.8 Pannes
 
-| Étape / panne                                        | État laissé                                  | Reprise ou message                                                            |
-| ---------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------- |
-| Arrêt brutal pendant l'écriture                      | ancien fichier intact (temporaire abandonné) | la composition sera conservée à la prochaine création                         |
-| Disque plein, fichier en lecture seule               | ancien fichier intact, temporaire supprimé   | création du pack poursuivie, message ; renommer ou supprimer : erreur         |
-| Fichier tronqué ou JSON invalide                     | mis de côté en `*.bak`                       | liste vide, message une fois                                                  |
-| Entrée écartée dans un fichier lisible               | copie `*.bak`, entrées lisibles réécrites    | message une fois, raisons distinguées                                         |
-| Entrée écartée, réécriture impossible                | fichier intact, copie retirée                | entrées lisibles servies, message ; écriture suivante précédée d'une copie    |
-| Plus de 3 copies `*.bak`                             | les plus anciennes supprimées                | aucun                                                                         |
-| Fichier trop gros                                    | mis de côté en `*.bak`, jamais écrasé        | liste vide, message                                                           |
-| Fichier d'un schéma plus récent                      | intact, ni lu ni réécrit                     | erreur affichée ; création poursuivie sans conservation, raison dite          |
-| Champs inconnus (version plus récente, même schéma)  | conservés à chaque réécriture                | aucun                                                                         |
-| Sources illisibles pendant la liste                  | inchangé                                     | liste servie, flux supprimés non comptés                                      |
-| Limite de 50 atteinte                                | inchangé                                     | création poursuivie, message (et message de lecture éventuel)                 |
-| Sauvegarde d'un éditeur fermé refusée                | brouillon (composition ouverte) intact       | pas de nouvelle tentative                                                     |
-| Ouvrir : brouillon illisible                         | brouillon mis de côté (`*.bak`, N3 b)        | composition copiée dans un brouillon neuf                                     |
-| Ouvrir : écriture du brouillon impossible            | brouillon inchangé                           | erreur affichée, l'éditeur n'est pas ouvert                                   |
-| Ouvrir, renommer, supprimer une composition disparue | inchangé                                     | « composition introuvable », liste relue                                      |
-| Épisode retiré du flux, flux jamais obtenu           | composition intacte                          | épisode signalé indisponible à l'ouverture, création bloquée tant qu'il y est |
-| Source supprimée                                     | composition intacte                          | marquée dans la liste ; épisodes indisponibles à l'ouverture                  |
-| Couverture disparue                                  | composition intacte                          | « couverture indisponible » à l'ouverture                                     |
+| Étape / panne                                        | État laissé                                  | Reprise ou message                                                                                  |
+| ---------------------------------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Arrêt brutal pendant l'écriture                      | ancien fichier intact (temporaire abandonné) | la composition sera conservée à la prochaine création                                               |
+| Disque plein, fichier en lecture seule               | ancien fichier intact, temporaire supprimé   | création du pack poursuivie, message ; renommer ou supprimer : erreur                               |
+| Fichier tronqué ou JSON invalide                     | mis de côté en `*.bak`                       | liste vide, message une fois                                                                        |
+| Entrée écartée dans un fichier lisible               | copie `*.bak`, entrées lisibles réécrites    | message une fois, raisons distinguées                                                               |
+| Entrée écartée, réécriture impossible                | fichier intact, copie retirée                | entrées lisibles servies, message ; écriture suivante précédée d'une copie, nommée dans son message |
+| Plus de 3 copies `*.bak`                             | les plus anciennes supprimées                | aucun                                                                                               |
+| Fichier trop gros                                    | mis de côté en `*.bak`, jamais écrasé        | liste vide, message                                                                                 |
+| Fichier d'un schéma plus récent                      | intact, ni lu ni réécrit                     | erreur affichée ; création poursuivie sans conservation, raison dite                                |
+| Champs inconnus (version plus récente, même schéma)  | conservés à chaque réécriture                | aucun                                                                                               |
+| Sources illisibles pendant la liste                  | inchangé                                     | liste servie, flux supprimés non comptés                                                            |
+| Limite de 50 atteinte                                | inchangé                                     | création poursuivie, message (et message de lecture éventuel)                                       |
+| Sauvegarde d'un éditeur fermé refusée                | brouillon (composition ouverte) intact       | pas de nouvelle tentative                                                                           |
+| Ouvrir : brouillon illisible                         | brouillon mis de côté (`*.bak`, N3 b)        | composition copiée dans un brouillon neuf                                                           |
+| Ouvrir : écriture du brouillon impossible            | brouillon inchangé                           | erreur affichée, l'éditeur n'est pas ouvert                                                         |
+| Ouvrir, renommer, supprimer une composition disparue | inchangé                                     | « composition introuvable », liste relue                                                            |
+| Épisode retiré du flux, flux jamais obtenu           | composition intacte                          | épisode signalé indisponible à l'ouverture, création bloquée tant qu'il y est                       |
+| Source supprimée                                     | composition intacte                          | marquée dans la liste ; épisodes indisponibles à l'ouverture                                        |
+| Couverture disparue                                  | composition intacte                          | « couverture indisponible » à l'ouverture                                                           |
 
 ### 14.9 Interface
 
@@ -1194,3 +1205,5 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
   JSON indenté, raisons distinguées ; vitest : brouillon non vide sans épisode, indicateur
   d'ouverture, messages des actions, nom en caractères, sauvegarde refusée d'un éditeur
   fermé non réessayée, message de conservation gardé.
+- Suivis #489 : message d'une action réussie après l'échec de la réécriture (nouvel état,
+  copie nommée), copies comparées sur le nom brut (nom non Unicode jamais supprimé).

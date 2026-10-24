@@ -28,7 +28,9 @@
 //!   être de vrais dossiers (ni lien symbolique ni jonction), sinon la source est ignorée ; les
 //!   fichiers d'une entrée doivent être de vrais fichiers.
 //! - Annulation (#466) : le hachage et la copie s'arrêtent au bloc suivant ; une lecture
-//!   annulée ne supprime jamais une entrée, une écriture annulée ne laisse rien.
+//!   annulée ne supprime jamais une entrée, une écriture annulée ne laisse rien. La remise en
+//!   cache d'un épisode servi dont seule la pochette a changé ([`Store::image_only`], #489) ne
+//!   touche qu'à la pochette : annulée ou en échec, le MP3 reste en cache et servi.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
@@ -241,6 +243,11 @@ pub struct Store {
     pub mp3: PathBuf,
     /// Pochette d'origine téléchargée (gardée seulement si la clé a une empreinte d'image).
     pub image: Option<PathBuf>,
+    /// Épisode servi par le cache dont seule la pochette a changé (#489) : si l'entrée est
+    /// toujours celle de `key` (empreinte et taille du MP3), seule sa pochette est remplacée ;
+    /// une panne ou une annulation n'efface alors jamais le MP3. Sinon, l'entrée est réécrite
+    /// en entier depuis `mp3`.
+    pub image_only: bool,
 }
 
 /// Place `src` en `dest` : lien physique, sinon copie (système de fichiers sans liens). Une
@@ -465,6 +472,11 @@ fn lookup_one(dir: &Path, w: &Wanted, op: &Op<'_>) -> Option<Hit> {
                 image = Some(w.image_dest.clone());
             } else {
                 let _ = remove_if_exists(&w.image_dest);
+                if op.cancel.is_set() {
+                    // Copie interrompue : rien n'est renouvelé, l'épisode n'est pas servi.
+                    let _ = remove_if_exists(&w.mp3_dest);
+                    return None;
+                }
             }
         }
     }
@@ -528,13 +540,69 @@ fn store_inner(dir: &Path, s: &Store, op: &Op<'_>) -> io::Result<u64> {
     Ok(bytes)
 }
 
+/// Entrée de `s` toujours en place : métadonnées valides, même empreinte, MP3 de la taille
+/// enregistrée (son SHA-256 a été vérifié par la lecture qui l'a servi, sous le même verrou
+/// de source, et l'est de nouveau à chaque lecture).
+fn current_entry(dir: &Path, s: &Store) -> Option<EntryMeta> {
+    let id = s.key.episode_id.as_str();
+    read_meta(dir, id).filter(|meta| {
+        meta.fingerprint == s.key.fingerprint
+            && real_file_len(&file(dir, id, MP3_EXT)) == Some(meta.mp3.bytes)
+    })
+}
+
+/// Remplace la pochette d'une entrée en place sans toucher à son MP3 (#489). Les métadonnées
+/// cessent d'abord de citer l'ancienne pochette ; la nouvelle passe par un `.part`, puis les
+/// métadonnées sont réécrites. En cas d'erreur ou d'annulation, seule la pochette est
+/// supprimée : l'entrée reste servie sans pochette.
+fn refresh_image(dir: &Path, s: &Store, mut meta: EntryMeta, op: &Op<'_>) -> io::Result<u64> {
+    let id = s.key.episode_id.as_str();
+    let meta_path = file(dir, id, META_EXT);
+    let img = file(dir, id, IMG_EXT);
+    let write_meta = |meta: &EntryMeta| {
+        storage::write_json(&meta_path, meta).map_err(|err| io::Error::other(err.to_string()))
+    };
+    if meta.image.take().is_some() {
+        write_meta(&meta)?;
+    }
+    let written = (|| {
+        remove_if_exists(&img)?;
+        let new = match (&s.key.image_fingerprint, &s.image) {
+            (Some(fingerprint), Some(src)) => match write_file(dir, id, IMG_EXT, src, op) {
+                Ok(file) => Some(ImageMeta {
+                    fingerprint: fingerprint.clone(),
+                    file,
+                }),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+                Err(err) => return Err(err),
+            },
+            _ => None,
+        };
+        meta.image = new;
+        meta.used_at = op.now;
+        write_meta(&meta)
+    })();
+    if let Err(err) = written {
+        let _ = remove_if_exists(&img);
+        let _ = remove_if_exists(&part(dir, id, IMG_EXT));
+        return Err(err);
+    }
+    Ok(meta.mp3.bytes + meta.image.as_ref().map_or(0, |i| i.file.bytes))
+}
+
 /// Met un épisode en cache ; en cas d'erreur ou d'annulation, rien de l'entrée ne reste
-/// (annulation demandée avant le début : l'ancienne entrée est gardée).
+/// (annulation demandée avant le début : l'ancienne entrée est gardée), sauf pour une
+/// pochette seule remplacée ([`Store::image_only`]) : le MP3 reste.
 fn store_one(dir: &Path, s: &Store, op: &Op<'_>) -> io::Result<u64> {
     if !valid_id(&s.key.episode_id) {
         return Err(io::Error::other("identifiant d'épisode invalide"));
     }
     op.cancel.check()?;
+    if s.image_only {
+        if let Some(meta) = current_entry(dir, s) {
+            return refresh_image(dir, s, meta, op);
+        }
+    }
     let result = store_inner(dir, s, op);
     if result.is_err() {
         let _ = remove_entry(dir, &s.key.episode_id);
