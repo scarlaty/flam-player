@@ -595,12 +595,13 @@ fn file_with_rejected_entry(dir: &Path) -> String {
 #[test]
 fn rang_des_copies() {
     let f = COMPOSITIONS_FILE;
+    let rank = |name: &str| backup_rank(OsStr::new(name));
     assert_eq!(
-        backup_rank(&format!("{f}.20261024-101500.bak")),
+        rank(&format!("{f}.20261024-101500.bak")),
         Some(("20261024-101500".into(), 0))
     );
     assert_eq!(
-        backup_rank(&format!("{f}.20261024-101500-12.bak")),
+        rank(&format!("{f}.20261024-101500-12.bak")),
         Some(("20261024-101500".into(), 12))
     );
     for other in [
@@ -616,7 +617,7 @@ fn rang_des_copies() {
         format!("{}.20261024-101500.bak", pack::DRAFT_FILE),
         format!("{f}.20261024-101500.bak.txt"),
     ] {
-        assert_eq!(backup_rank(&other), None, "{other}");
+        assert_eq!(rank(&other), None, "{other}");
     }
 }
 
@@ -1002,19 +1003,19 @@ fn reecriture_en_echec_puis_action_reussie_copie_d_abord() {
         let id = file_with_rejected_entry(dir.path());
         let store = Store::with_writer(dir.path(), flaky);
         FAILS_LEFT.with(|f| f.set(1));
-        match action {
-            "rename" => {
-                let notice = store.rename(&id, "Z").unwrap().unwrap();
-                assert!(notice.contains("n'a pas pu être réécrit"), "{notice}");
-            }
-            "delete" => {
-                store.delete(&id).unwrap();
-            }
+        // #489 : le message dit le nouvel état (fichier copié, copie nommée), plus l'échec de
+        // la réécriture faite à la lecture.
+        let notice = match action {
+            "rename" => store.rename(&id, "Z").unwrap(),
+            "delete" => store.delete(&id).unwrap(),
             _ => {
-                let r = store.record(&comp("N", &["7", "8"]), "N", 2).unwrap();
-                assert!(r.notice.unwrap().contains("n'a pas pu être réécrit"));
+                store
+                    .record(&comp("N", &["7", "8"]), "N", 2)
+                    .unwrap()
+                    .notice
             }
         }
+        .unwrap();
         let text = fs::read_to_string(dir.path().join(COMPOSITIONS_FILE)).unwrap();
         assert!(
             !text.contains("\"x\""),
@@ -1024,6 +1025,13 @@ fn reecriture_en_echec_puis_action_reussie_copie_d_abord() {
             copies_with_rejected(dir.path()),
             1,
             "{action} : copie faite"
+        );
+        let copy = backups(dir.path()).pop().unwrap();
+        assert!(
+            notice.contains("1 composition(s) enregistrée(s) écartée(s) (1 illisible(s))")
+                && notice.contains(&format!("copié ({copy})"))
+                && !notice.contains("n'a pas pu"),
+            "{action} : {notice}"
         );
         assert_eq!(leftovers(dir.path()), 0);
     }
@@ -1079,4 +1087,54 @@ fn copie_neuve_gardee_meme_si_l_horloge_a_recule() {
     Store::new(dir.path()).read().unwrap();
     assert_eq!(backups(dir.path()).len(), MAX_BACKUPS);
     assert_eq!(copies_with_rejected(dir.path()), 1);
+}
+
+#[test]
+fn copies_comparees_sur_le_nom_brut() {
+    // #489 : un nom qui n'est pas de l'Unicode valide n'est jamais confondu avec une copie (ni
+    // avec la copie gardée) après une conversion avec perte : jamais supprimé.
+    let dir = tempfile::tempdir().unwrap();
+    for i in 1..=4 {
+        let name = format!("{COMPOSITIONS_FILE}.2020010{i}-000000.bak");
+        fs::write(dir.path().join(name), b"ancien").unwrap();
+    }
+    let keep = format!("{COMPOSITIONS_FILE}.20200105-000000.bak");
+    fs::write(dir.path().join(&keep), b"neuve").unwrap();
+    #[cfg(windows)]
+    let odd = {
+        use std::os::windows::ffi::OsStringExt;
+        // Demi-paire de substitution isolée : U+FFFD une fois converti avec perte.
+        let mut wide: Vec<u16> = format!("{COMPOSITIONS_FILE}.20200101-000000")
+            .encode_utf16()
+            .collect();
+        wide.push(0xD800);
+        wide.extend(".bak".encode_utf16());
+        std::ffi::OsString::from_wide(&wide)
+    };
+    #[cfg(unix)]
+    let odd = {
+        use std::os::unix::ffi::OsStringExt;
+        let mut bytes = format!("{COMPOSITIONS_FILE}.20200101-000000").into_bytes();
+        bytes.push(0xFF);
+        bytes.extend(b".bak");
+        std::ffi::OsString::from_vec(bytes)
+    };
+    assert_eq!(backup_rank(&odd), None);
+    fs::write(dir.path().join(&odd), b"etrange").unwrap();
+    prune_backups(dir.path(), OsStr::new(&keep));
+    assert!(dir.path().join(&keep).exists(), "copie neuve gardée");
+    assert!(
+        dir.path().join(&odd).exists(),
+        "nom non Unicode jamais supprimé"
+    );
+    let saved = backups(dir.path());
+    assert_eq!(saved.len(), MAX_BACKUPS + 1, "{saved:?}");
+    assert!(saved.contains(&format!("{COMPOSITIONS_FILE}.20200104-000000.bak")));
+    assert!(saved.contains(&format!("{COMPOSITIONS_FILE}.20200103-000000.bak")));
+    // `keep` égal à la forme convertie du nom non Unicode : aucun nom brut ne lui est égal,
+    // rien n'est protégé à tort, le nom non Unicode reste.
+    let lossy = odd.to_string_lossy().into_owned();
+    prune_backups(dir.path(), OsStr::new(&lossy));
+    assert!(dir.path().join(&odd).exists());
+    assert_eq!(backups(dir.path()).len(), MAX_BACKUPS);
 }
