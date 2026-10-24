@@ -1137,3 +1137,34 @@ fn copies_comparees_sur_le_nom_brut() {
     assert!(dir.path().join(&odd).exists());
     assert_eq!(backups(dir.path()).len(), MAX_BACKUPS);
 }
+
+#[test]
+fn record_after_create_rapporte_le_message_de_la_lecture() {
+    // Fichier à entrée illisible : la lecture le réécrit (copie faite) ; le message est
+    // rapporté avec la composition conservée, une seule fois.
+    let dir = tempfile::tempdir().unwrap();
+    file_with_rejected_entry(dir.path());
+    let c = comp("N", &["7", "8"]);
+    let r = record_after_create(dir.path(), &c, "N");
+    assert_eq!(
+        (r.name.as_deref(), r.new, r.error.as_deref()),
+        (Some("N"), true, None)
+    );
+    assert!(r.notice.unwrap().contains("écartée"));
+    assert_eq!(record_after_create(dir.path(), &c, "N").notice, None);
+
+    // Réécriture impossible à la lecture, puis réussie à l'enregistrement : le message dit la
+    // copie faite, jamais « n'a pas pu être réécrit ».
+    let dir = tempfile::tempdir().unwrap();
+    file_with_rejected_entry(dir.path());
+    let store = Store::with_writer(dir.path(), flaky);
+    FAILS_LEFT.with(|f| f.set(1));
+    let r = record_after_create_in(&store, &c, "N");
+    assert_eq!((r.name.as_deref(), r.error.as_deref()), (Some("N"), None));
+    let notice = r.notice.unwrap();
+    let copy = backups(dir.path()).pop().unwrap();
+    assert!(
+        notice.contains(&format!("copié ({copy})")) && !notice.contains("n'a pas pu"),
+        "{notice}"
+    );
+}
