@@ -170,7 +170,6 @@ pub fn run() {
             device::reorder::device_reorder_stories,
             device::eject::device_eject,
             device::status::device_status,
-            device::status::device_confirm_firmware,
             device::status::device_list_stories,
             device::details::device_story_titles,
             device::details::device_story_thumbnail,

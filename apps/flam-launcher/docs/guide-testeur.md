@@ -140,12 +140,13 @@ chaque réponse dans votre retour, même si tout va bien.
 
 1. **Ce qu'affiche « Ma Flam ».** Sur la carte « Flam détectée », la ligne **Firmware** donne la
    version, puis un état. Recopiez la ligne entière, par exemple
-   « 2.4.2 (2.x) · en test, confirmation à donner ». Indiquez si la mention « fichier .mdf non
-   standard » apparaît. La version doit être la même que dans les réglages de la Flam.
-2. **La confirmation.** Avant le premier envoi, le launcher demande de cocher « Firmware 2.x en
-   test : j'ai sauvegardé ma Flam ». Ne cochez qu'**après** avoir fait la sauvegarde (section 2).
-   Notez si le texte vous a paru clair. Si un bandeau rouge « Écriture bloquée » ou « Envoi
-   bloqué » s'affiche, recopiez son texte : rien n'est alors écrit sur la Flam.
+   « 2.4.2 (2.x) · pris en charge ». Indiquez si la mention « fichier .mdf non standard »
+   apparaît. La version doit être la même que dans les réglages de la Flam.
+2. **Les bandeaux.** Aucune confirmation n'est demandée : faites la sauvegarde (section 2)
+   **avant** le premier envoi. Si un bandeau rouge « Écriture sur cette Flam bloquée »
+   s'affiche, recopiez son texte : rien n'est alors écrit sur la Flam. Si un bandeau orange
+   « Clés de la Flam à vérifier » s'affiche, recopiez-le aussi : l'envoi reste possible, c'est
+   un simple avertissement.
 3. **Les titres de vos histoires officielles.** Dans la liste de « Ma Flam », vos histoires
    achetées s'affichent-elles avec leur vrai titre, sous un identifiant, ou avec un titre venu
    d'internet ? Indiquez si c'est le cas pour toutes, quelques-unes ou aucune.
@@ -153,10 +154,8 @@ chaque réponse dans votre retour, même si tout va bien.
    débranchez-la, **redémarrez-la** : l'histoire apparaît-elle à la fin de la liste, avec son
    titre lisible ? Se lance-t-elle, avec les images et le son ? Si elle apparaît mais refuse de
    se lancer, notez exactement ce qui se passe (message, écran figé, histoire absente).
-5. **La vérification par la Flam.** Après ce redémarrage, rebranchez la Flam en mode connexion
-   USB et ouvrez « Ma Flam ». La ligne Firmware indique-t-elle « vérifié par la Flam » ? Si elle
-   indique toujours « sauvegarde confirmée », notez-le : ce n'est pas grave, mais c'est une
-   information utile.
+5. **Après le redémarrage.** Rebranchez la Flam en mode connexion USB et ouvrez « Ma Flam ».
+   L'histoire envoyée y figure-t-elle avec son titre ? Recopiez la ligne Firmware.
 6. **Les dossiers de travail du launcher.** Si un envoi ou un retrait a été interrompu
    (débranchement), regardez à la racine de la Flam (fichiers cachés affichés) s'il reste un
    dossier `.flam-transfer` ou `.flam-trash`, ou dans `etc\library` un fichier `list.new` ou

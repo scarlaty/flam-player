@@ -132,6 +132,7 @@ fn composition() -> PackComposition {
                     PackNode::Episode(ep("s2", "g2")),
                     PackNode::Episode(ep("s2", "g3")),
                 ],
+                image: None,
             },
         ],
         ..PackComposition::default()
@@ -530,8 +531,11 @@ async fn composition_invalide_refusee_par_le_backend() {
             entries: vec![PackNode::Category {
                 name: "c".into(),
                 entries: vec![PackNode::Episode(ep("s1", "g1"))],
+                image: None,
             }],
+            image: None,
         }],
+        image: None,
     }];
     let report = packmod::validate(&deep, &feeds(Fault::None));
     assert!(ctx.service.start_pack(deep, &report, None).await.is_err());

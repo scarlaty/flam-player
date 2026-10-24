@@ -867,11 +867,13 @@ impl InstallService {
             }
         }
         for (n, dest) in fetch_images(backend, missing, concurrency, cancel).await? {
-            // Remise en cache avec la nouvelle pochette (le MP3 est relié).
+            // Remise en cache de la nouvelle pochette seule : une panne ou une annulation n'efface
+            // pas le MP3 (#489).
             to_cache.push(mp3cache::Store {
                 key: keys[n].clone(),
                 mp3: hits[&n].mp3.clone(),
                 image: Some(dest.clone()),
+                image_only: true,
             });
             hit_images.insert(n, dest);
         }
@@ -899,18 +901,13 @@ impl InstallService {
         }
         let mut kept: Vec<(usize, PathBuf, Option<PathBuf>)> = Vec::new();
         let mut audio_total = 0u64;
+        // Épisodes servis : le cache ne sert jamais une entrée au-delà de `MAX_AUDIO_BYTES`
+        // (`CacheAccess::lookup` la supprime, #466) ; aucune borne à revérifier ici.
         for &n in &hit_ranks {
             let hit = &hits[&n];
-            if hit.mp3_bytes <= MAX_AUDIO_BYTES {
-                audio_total += hit.mp3_bytes;
-                kept.push((n, hit.mp3.clone(), hit_images.get(&n).cloned()));
-            } else {
-                tracing::warn!(
-                    episode = n,
-                    "épisode retiré du pack : MP3 en cache trop volumineux"
-                );
-                dropped.push(n);
-            }
+            debug_assert!(hit.mp3_bytes <= MAX_AUDIO_BYTES);
+            audio_total += hit.mp3_bytes;
+            kept.push((n, hit.mp3.clone(), hit_images.get(&n).cloned()));
         }
         for ((n, mp3, image), result) in ready.into_iter().zip(results) {
             match result {
@@ -920,6 +917,7 @@ impl InstallService {
                         key: keys[n].clone(),
                         mp3: mp3.clone(),
                         image: image.clone(),
+                        image_only: false,
                     });
                     kept.push((n, mp3, image));
                 }
@@ -1055,6 +1053,7 @@ impl InstallService {
             &spoken,
             &mut Vec::new(),
             &mut used,
+            &mut warnings,
         );
         mute_shifted_categories(&job.composition.menu, &used, &spoken, &mut menu);
         if menu.is_empty() {
@@ -1262,14 +1261,17 @@ fn read_bounded(path: &Path, max: u64) -> Option<Vec<u8>> {
 
 /// Arborescence de l'archive : épisodes retirés sautés, catégories vidées retirées (P7) ;
 /// titres lus (#462) repris de `spoken` par position dans la composition (`path`), positions
-/// gardées notées dans `used`.
-fn build_menu(
+/// gardées notées dans `used`. Image choisie d'une catégorie (N5 c) : le PNG de l'épisode
+/// désigné, pris dans `episodes` avant leur retrait ; épisode hors de la catégorie, retiré du
+/// pack ou sans image : image automatique (N5 a) et avertissement dans `warnings`.
+pub(super) fn build_menu(
     menu: &[PackNode],
     ranks: &HashMap<&EpisodeRef, usize>,
     episodes: &mut HashMap<usize, PackEpisode>,
     spoken: &SpokenTitles,
     path: &mut Vec<usize>,
     used: &mut HashSet<TitleKey>,
+    warnings: &mut Vec<String>,
 ) -> Vec<MenuEntry> {
     let mut out = Vec::new();
     for (i, node) in menu.iter().enumerate() {
@@ -1283,13 +1285,37 @@ fn build_menu(
                     used.insert(key);
                 }
             }
-            PackNode::Category { name, entries } => {
-                let entries = build_menu(entries, ranks, episodes, spoken, path, used);
+            PackNode::Category {
+                name,
+                entries,
+                image,
+            } => {
+                // Avant le retrait des épisodes de la catégorie.
+                let chosen: Option<Option<PathBuf>> = image.as_ref().map(|e| {
+                    PackNode::contains_episode(entries, e)
+                        .then(|| ranks.get(e).and_then(|n| episodes.get(n)))
+                        .flatten()
+                        .and_then(|ep| ep.image.clone())
+                });
+                let entries = build_menu(entries, ranks, episodes, spoken, path, used, warnings);
                 if !entries.is_empty() {
+                    let image = match chosen {
+                        Some(Some(png)) => Some(png),
+                        Some(None) => {
+                            warnings.push(format!(
+                                "Image de la catégorie « {} » : l'épisode choisi n'est plus \
+                                 disponible, image automatique utilisée.",
+                                archive::label(name, "sans nom")
+                            ));
+                            None
+                        }
+                        None => None,
+                    };
                     out.push(MenuEntry::Category {
                         name: name.trim().to_string(),
                         entries,
                         audio: spoken.audio.get(&key).cloned(),
+                        image,
                     });
                     used.insert(key);
                 }
@@ -1414,3 +1440,7 @@ mod cache_tests;
 #[cfg(test)]
 #[path = "podcast_speech_tests.rs"]
 mod speech_tests;
+
+#[cfg(test)]
+#[path = "podcast_category_image_tests.rs"]
+mod category_image_tests;

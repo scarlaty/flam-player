@@ -587,6 +587,9 @@ export function PackEditor({
           menu={current.menu}
           titleOf={titleOf}
           isUnavailable={(ref) => unavailable.has(refKey(ref))}
+          hasImage={(ref) =>
+            feeds.get(ref.source_id)?.episodes.get(ref.episode_id)?.has_image === true
+          }
           onChange={(next, message) => {
             edit({ ...current, menu: next }, message);
           }}

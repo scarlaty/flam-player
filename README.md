@@ -121,7 +121,8 @@ Disponible dans la prochaine version : transformez des épisodes de podcasts en 
    « Cocher les 10 derniers épisodes » aide. Les épisodes explicites ne sont jamais cochés
    d'office.
 3. Ouvrez **Composer le pack** : rangez les épisodes en catégories (3 niveaux de menus, 50
-   options par menu), réglez titre, âge et couverture. Votre travail est enregistré
+   options par menu), réglez titre, âge et couverture, et choisissez si vous le souhaitez
+   l'image de chaque catégorie parmi celles de ses épisodes. Votre travail est enregistré
    automatiquement.
 4. **Créer l'histoire** : l'audio est téléchargé et converti, l'histoire arrive dans « Mes
    histoires », puis s'envoie sur la Flam comme les autres. Les épisodes qui échouent sont
