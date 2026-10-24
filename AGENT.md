@@ -166,7 +166,7 @@ tests/
   audio/                   — Audio reel (flam-test-audio) : seek, pause, reouverture
   e2e/e2e_telmi.py         — Bout en bout TELMI -> telmi2flam -> flam-player
 tools/telmi2flam/
-  telmi2flam.py            — Convertisseur TELMI -> .plain.pk (python 3 + Pillow)
+  telmi2flam.py            — Convertisseur TELMI -> .plain.pk, version Python de reference (python 3 + Pillow) ; le convertisseur livre est crates/telmi2flam (Rust)
   validate.py              — Verification d'un .plain.pk ou d'un dossier .plain
   explore.py               — Exploration automatique d'une histoire dans flam-player sans fenetre
   engine/                  — Moteur d'histoire Lua embarque (story.lua, main.lua)
@@ -336,8 +336,8 @@ CRLF : `git add --renormalize tools/telmi2flam/engine/`. L'ancien `apps/flam-lau
 est ignore mais inutile : le supprimer.
 
 Installateur Windows (NSIS, par utilisateur, non signe) : `npm run build:installer` (dans
-`apps/flam-launcher/`, depuis un environnement VS 2022 x64) = `build:converter` (Python + Pillow +
-telmi2flam dans `build/telmi2flam/`) + `build:player` (`flam-player.exe` Release et `SDL2.dll` dans
+`apps/flam-launcher/`, depuis un environnement VS 2022 x64) = `build:converter` (binaire Rust `telmi2flam.exe`, sans Python,
+dans `build/telmi2flam/`) + `build:player` (`flam-player.exe` Release et `SDL2.dll` dans
 `build/player/`, compiles dans `build/release/` : ne pas confondre avec le `build/` Debug de
 `do_build.bat`) + `tauri build --config src-tauri/tauri.bundle.conf.json`. Test de bout en bout du
 backend reel (catalogue HTTP factice -> installation -> player en pilotes SDL `dummy` -> retour) :

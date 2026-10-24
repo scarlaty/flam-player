@@ -32,8 +32,8 @@ installées de « Mes histoires ») sous `%LOCALAPPDATA%` (« Paramètres » →
 emplacement).
 
 **Désinstallation et données** : la désinstallation retire le dossier d'installation seulement.
-Les données (`%APPDATA%lam-launcher` : sources, paramètres, sauvegardes ; et
-`%LOCALAPPDATA%lam-launcher` : cache et histoires installées) sont **conservées**, y compris si
+Les données (`%APPDATA%\flam-launcher` : sources, paramètres, sauvegardes ; et
+`%LOCALAPPDATA%\flam-launcher` : cache et histoires installées) sont **conservées**, y compris si
 l'on coche « supprimer les données de l'application » du désinstallateur, qui ne les connaît pas :
 pour tout effacer, supprimer ces deux dossiers à la main.
 
@@ -113,6 +113,11 @@ Testeurs de la bêta : [docs/guide-testeur.md](docs/guide-testeur.md). Formats e
 
 Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2, Node 24+ et npm.
 
+Python 3 n'est **pas** nécessaire pour utiliser, construire ou tester le launcher : l'installation
+n'en contient plus (#138). Il ne sert qu'aux outils de campagne et de parité de
+`tools/telmi2flam/` (oracle Python de #135) et aux générateurs de vecteurs de test de
+`crates/telmi2flam/tests/vectors/`. Le convertisseur se développe dans `crates/telmi2flam`.
+
 Le launcher est membre d'un **workspace Cargo** dont le `Cargo.toml` est à la racine du dépôt (avec
 `crates/telmi2flam`) : `Cargo.lock` et `target/` sont à la racine, pas dans `src-tauri/`. Les commandes
 `cargo` se lancent toujours depuis `src-tauri/` (ou avec `-p flam-launcher`) ; le profil `release` est
@@ -190,8 +195,8 @@ fermeture de stdin). Environ 1,5 Mo sur disque.
    ```
 
    L'annulation du test exige un binaire de debug ou la feature `test-hooks`
-   (`TELMI2FLAM_TEST_FAULT=wait:zip:end`). L'archive de test se génère avec `make_story.py`
-   (issue #46) ; ne jamais committer de contenu sous licence.
+   (`TELMI2FLAM_TEST_FAULT=wait:zip:end`). L'archive de test est synthétique, à fabriquer
+   localement (issue #46) ; ne jamais committer de contenu sous licence.
 
 **Plus de Python dans l'installation** : le réglage `python_path` n'existe plus (#139) et
 l'écran Paramètres ne propose plus de chemin de Python. Un ancien `settings.json` qui porte
