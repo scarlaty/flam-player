@@ -643,6 +643,22 @@ contenu). Les écarts admis sont une liste fermée (`ALLOWED_DEVIATIONS`) ; les 
 `unsupported_format` (code 7) sont comptées à part. Sans `--candidate`, c'est Python contre
 Python : zéro écart. Code de sortie 1 au moindre écart, 0 sinon.
 
+Campagne sur les archives réelles (#135, seuil de bascule §4.3 de `PORT-RUST.md`) :
+
+```bash
+python tools/telmi2flam/parity.py campaign .cache/telmi/archives \
+    --candidate target/release/telmi2flam.exe --jobs 4    # rapport .cache/parity/report.json
+```
+
+Chaque archive est convertie par l'oracle puis par le candidat (`--jobs` archives à la fois,
+donc au plus autant de conversions simultanées). Un état par archive (`cases/`) permet de
+reprendre une campagne interrompue en relançant la même commande ; un résultat obtenu avec un
+autre moteur (empreinte des fichiers de la commande) ou une exécution impossible (délai,
+commande absente) est refait. Seule la délégation D4 est admise : tout autre écart, même de la
+liste fermée, est à classer à la main (le dossier de travail de l'archive est alors gardé sous
+`work/`). Le rapport compte les délégations par cause, format d'image et méthode ZIP. Le
+journal ne donne que des comptes ; le rapport nomme les archives et reste dans `.cache/`.
+
 ### Distribution avec flam-launcher (Python embarqué)
 
 Pour l'installateur Windows, `apps/flam-launcher/scripts/build-converter.ps1` assemble
