@@ -671,7 +671,7 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 | `folder_unavailable`    | Dossier d'une source locale absent ou inaccessible (disque débranché…)                              |
 | `cancelled`             | Tâche d'installation annulée                                                                        |
 | `download_invalid`      | Téléchargement incomplet, trop gros (4 Gio), ou qui n'est pas l'archive attendue                    |
-| `converter_unavailable` | Python ou `telmi2flam.py` introuvable                                                               |
+| `converter_unavailable` | `telmi2flam.exe` introuvable (moteur `rust`), ou Python / `telmi2flam.py` (moteur `python`)         |
 | `conversion`            | Échec de `telmi2flam` ; le code du convertisseur (`missing_asset`…) est dans `TaskError.code`       |
 | `player_unavailable`    | `flam-player.exe` introuvable (ni configuré ni détecté) ou impossible à lancer                      |
 | `player_busy`           | Un player tourne déjà (un seul à la fois)                                                           |
@@ -1146,12 +1146,15 @@ thumb, source_stamp }`.
 libre). Absent d'un fichier ancien : `flou` ; une valeur inconnue retombe aussi sur `flou`. Il ne
 s'applique qu'aux prochaines conversions : les histoires déjà converties gardent leur vignette.
 
-`converter_engine` (`python` ou `rust`, `python` par défaut) est un réglage **caché** (#136) : absent
+`converter_engine` (`python` ou `rust`, `rust` par défaut depuis #137) est un réglage **caché** (#136) : absent
 de l'écran Paramètres, il se change à la main dans `settings.json`, et `settings_set` conserve la
 valeur enregistrée. Il est relu au début de chaque tâche : `rust` convertit avec
 `telmi2flam/telmi2flam.exe` (port Rust, sans Python ; annulation par fermeture de stdin,
 `--cancel-on-stdin-eof`), `python` avec `telmi2flam.py`. Valeur absente, inconnue ou mal typée :
-`python`. Moteur `rust` sans binaire : `converter_unavailable`, sans repli sur Python.
+`rust` ; un `settings.json` qui porte explicitement `python` le garde. Moteur `rust` sans binaire :
+`converter_unavailable`, sans repli sur Python (le repli de PORT-RUST.md §5.4 ne couvre que
+l'échec d'un binaire présent ; l'installateur livre toujours `telmi2flam.exe`, et en
+développement il faut `cargo build -p telmi2flam` ou `converter_engine = python`).
 
 Moteur `rust` : repli automatique sur Python (#137, PORT-RUST.md §6), si Python et `telmi2flam.py`
 sont détectés, **seulement** si le binaire signale `unsupported_format` (code 7, délégation
@@ -1160,8 +1163,10 @@ code 0 sans `done`, aucun événement `start`, lancement impossible). Jamais pou
 contenu (3/4/5), `output_error` (disque plein, droits) ni une annulation. Le résultat de
 compatibilité (#20) de la conversion locale porte `engine` (`rust`, `python`, `python_fallback`) et,
 après un repli, `fallback` (`unsupported_format`, `internal_error`, `crash`) ; les journaux n'ont
-que la cause et le code de sortie, jamais le message du convertisseur. Le défaut reste `python`
-(la bascule attend la campagne de parité, #135).
+que la cause et le code de sortie, jamais le message du convertisseur. Le défaut est `rust`
+(campagne de parité #135 conforme au seuil §4.3). Le Rust annonce la version `2.0.0` (décision D6) :
+les résultats de compatibilité enregistrés avec `1.0.0` passent à « obtenus avec une version
+antérieure ».
 
 `max_downloads` (1 à 4, 2 par défaut) borne les téléchargements simultanés du pipeline
 d'installation ; absent d'un fichier ancien, il prend sa valeur par défaut (`#[serde(default)]`).
