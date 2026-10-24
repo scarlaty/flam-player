@@ -1,4 +1,4 @@
-//! Décodage GIF vers RGBA avec la sémantique de `_open_rgba` (`tools/telmi2flam/telmi2flam.py`)
+//! Décodage GIF vers RGBA avec la sémantique de `_open_rgba` (de l'ancien convertisseur Python)
 //! exécuté avec **Pillow 12.3.0** (#459) : première image seulement, mêmes pixels, et image
 //! illisible exactement quand Python lève une exception.
 //!

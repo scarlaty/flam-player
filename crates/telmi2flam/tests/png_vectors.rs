@@ -1,5 +1,5 @@
 //! Parité du décodage PNG avec `_open_rgba` (Python 3.14.8 + Pillow 12.3.0) : vecteurs produits
-//! par `tests/vectors/png/gen_png_vectors.py`.
+//! par `gen_png_vectors.py` (supprimé).
 
 use std::path::{Path, PathBuf};
 

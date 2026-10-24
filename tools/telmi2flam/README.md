@@ -22,6 +22,13 @@ jouable dans le `flam-player` de ce dépôt.
 > **État** : codec LIF ✅ · mp3map ✅ · moteur Lua ✅ · convertisseur ✅ · 1ʳᵉ lecture device ✅
 > · relance device ✅ depuis la correction du Bug C (écran noir à la 2ᵉ ouverture, causé par
 > une sortie `goto_library` depuis une scène active, cf. `DEVICE_VS_SIM.md` §10).
+>
+> **Implémentation** : le convertisseur est le binaire Rust `telmi2flam` 2.0.0
+> (`crates/telmi2flam`, note de conception [`PORT-RUST.md`](PORT-RUST.md)), seul moteur du
+> launcher. L'ancien convertisseur Python (versions 1.x, avec ses codecs et Pillow)
+> est **supprimé** (#140) : ses sorties sont figées comme références de parité (§5, « Outillage
+> de parité »). Ce dossier garde le moteur Lua, le runtime embarqués dans le binaire, et les
+> outils de développement en Python (`validate.py`, `compat.py`, `explore.py`, `parity.py`).
 
 ---
 
@@ -212,51 +219,41 @@ option (les autres options restent accessibles par `←/→`).
 ## 4. Composants
 
 ```
+crates/telmi2flam/       # le convertisseur : bibliothèque et binaire Rust (PORT-RUST.md)
 tools/telmi2flam/
 ├── README.md            # ce fichier
-├── lif.py               # encodeur PNG/RGBA → .lif (+ décodeur de référence pour self-test)
-├── mp3map.py            # générateur de table de seek .mp3map
+├── PORT-RUST.md         # note de conception du port Rust (parité, références figées §4.5)
+├── ORACLE-VERSIONS.txt  # versions de l'ancien oracle Python qui a figé les références
 ├── engine/
 │   ├── main.lua         # bootstrap (setup → title-card → menu Démarrer/Reprendre)
 │   └── story.lua        # BRANCH (logique de scènes ; rejoue nodes.lua via les modules Global)
 ├── runtime/
+│   ├── manifest.txt     # liste unique des fichiers du runtime (embarqués par build.rs)
 │   ├── script/          # runtime Lua du projet (global.lua + deps + modules)
 │   └── img/script/      # icônes UI du runtime (flèches, play/pause, empty…)
-├── telmi2flam.py        # CLI de conversion
 ├── validate.py          # validation hors-GUI d'un .plain.pk généré
+├── compat.py            # campagne de compatibilité (catalogue Telmi)
 ├── explore.py           # exploration automatique sans fenêtre dans flam-player
-├── converter_bin.py     # lance le binaire Rust telmi2flam (compat.py, tests d'explore.py)
-├── tests/               # tests unittest (paquets TELMI synthétiques)
+├── parity.py            # parité du binaire avec les références figées, campagnes
+├── converter_bin.py     # lance le binaire Rust telmi2flam (compat.py, tests, e2e)
+├── tests/               # tests unittest des outils (campaign_fixtures.py : paquets
+│                        # TELMI synthétiques ; parity/make_matrix.py : matrice de parité)
 └── DEVICE_VS_SIM.md     # divergences device ↔ simulateur (dont le bug relance #10)
 ```
 
-### `lif.py`
+### Codecs `.lif` et `.mp3map`
 
-- `encode(rgba, w, h) -> bytes` : encode une image RGBA8888 row-major en `.lif`.
-- `decode(data) -> (rgba, w, h)` : décodeur **miroir exact** du C (pour vérification).
-- `quantize_rgba(rgba, w, h)` : applique la quantification RGB565 (vérité terrain).
+Dans le binaire : `crates/telmi2flam/src/lif.rs` (encodeur QOI-like : RLE + cache 64 + petit
+delta + delta vert étendu + couleur pleine, quantification RGB565, décodeur miroir du C) et
+`crates/telmi2flam/src/mp3map.rs` (frames MPEG 1/2/2.5, couches I/II/III, saut du tag ID3v2 ;
+un sync n'est accepté en resynchronisation que si les 2 frames suivants sont aussi valides ;
+durée et positions cumulées à la fréquence réelle ; refus si le fichier n'est pas du MPEG
+audio). Vecteurs figés : `crates/telmi2flam/tests/vectors/lif/` et `mp3map/`, produits par
+l'ancien `lif.py` / `mp3map.py`. Le `.mp3map` reste **identique octet pour octet** à celui de
+l'histoire officielle *Cluedo*.
 
-Encodeur QOI-like : RLE + cache 64 + petit delta + delta vert étendu + couleur pleine.
-**Validé** par round-trip `decode(encode(x)) == quantize(x)` sur image réelle (ratio ≈ 0,29),
-dégradé+alpha, aplat, blanc, transparent.
-
-### `mp3map.py`
-
-- `build(data, info=None) -> (bytes, duration_s, num_records)` : parse les frames MP3
-  (MPEG 1/2/2.5, Layers I/II/III, saut du tag ID3v2) et produit le `.mp3map`.
-  `info` (dict optionnel) reçoit `samplerates` et `frames`. Lève `ValueError` si le
-  fichier n'est pas du MPEG audio (aucun frame, ou frames couvrant < 50 % du fichier).
-- `build_file(path)` : variante fichier.
-
-Un sync n'est accepté en resynchronisation que si les 2 frames suivants sont aussi
-valides (évite les faux headers dans des données quelconques). Durée et positions sont
-cumulées frame par frame à la fréquence réelle : un MP3 48 kHz ou 32 kHz a une table
-juste (avant : +8,8 % / −27 %). Le convertisseur **avertit** hors 44,1 kHz (firmware
-calibré 44,1 kHz ; rééchantillonner reste conseillé).
-
-**Validé** : sortie **identique octet-pour-octet** au vrai `.mp3map` de l'histoire
-officielle *Cluedo* (`mine == real`) ; en 44,1 kHz la sortie est inchangée (test
-`test_44k_unchanged`).
+Le kit homebrew garde ses propres copies Python (`skills/flam-homebrew/scripts/lif.py`,
+`mp3map.py`), indépendantes du convertisseur.
 
 ### `engine/main.lua` (bootstrap) + `engine/story.lua` (branch)
 
@@ -337,12 +334,18 @@ return {
 ## 5. Utilisation
 
 ```bash
-python telmi2flam.py <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
-                     [--allow-missing] [--selector carousel|image]
-                     [--thumb-fit flou|rogner|bandes]
-                     [--progress-json] [--info]
-python telmi2flam.py --version
+cargo build -p telmi2flam --bin telmi2flam --release    # -> target/release/telmi2flam(.exe)
+telmi2flam <histoire-telmi.zip> [-o sortie] [--plain] [--keep-size]
+           [--allow-missing] [--selector carousel|image]
+           [--thumb-fit flou|rogner|bandes]
+           [--progress-json] [--info]
+telmi2flam --version
 ```
+
+Binaire autonome : moteur Lua et runtime inclus à la compilation (`build.rs`, manifeste
+`runtime/manifest.txt`), aucune dépendance à l'exécution (ffmpeg seulement pour le
+rééchantillonnage audio, facultatif). Le launcher le lance avec en plus
+`--cancel-on-stdin-eof` (voir « Annulation »).
 
 - `-o` : chemin de sortie (défaut : `<Titre>.<UUID8>.plain.pk` dans le dossier courant).
   - se termine par `.plain.pk` → archive ZIP **stored** (format device) ;
@@ -363,14 +366,16 @@ python telmi2flam.py --version
   - `rogner` : image agrandie ou réduite pour couvrir 104×136, rognée au centre ;
   - `bandes` : image entière centrée sur fond transparent.
 
-  La sortie est déterministe (mêmes octets pour la même entrée, le même mode et la même version de Pillow).
+  La sortie est déterministe (mêmes octets pour la même entrée, le même mode et la même
+  version du convertisseur ; aucun code SIMD choisi selon le processeur).
 - `--progress-json` : sortie lisible par machine (voir « Sortie machine » ci-dessous).
 - `--info` : affiche les métadonnées de l'histoire en JSON, **sans convertir**.
-- `--version` : affiche une seule ligne sur stdout, `telmi2flam <version>` (ex.
-  `telmi2flam 1.0.0`), et sort avec le code 0, sans archive et sans autre effet de bord
-  (Pillow n'est pas chargé quand `--version` est seul). La version est la constante
-  `__version__` de `telmi2flam.py` ; la surcouche l'enregistre dans `library.json`. Le
-  numéro est le dernier mot de la ligne.
+- `--version` : affiche une seule ligne sur stdout, `telmi2flam <version>` (`telmi2flam
+  2.0.0`), et sort avec le code 0, sans archive et sans autre effet de bord. La version est
+  celle de la crate (`crates/telmi2flam/Cargo.toml`) ; la surcouche l'enregistre dans
+  `library.json`. Le numéro est le dernier mot de la ligne. L'ancien convertisseur Python
+  annonçait `1.0.0` puis `1.1.0` (rééchantillonnage audio) : les résultats enregistrés avec
+  ces versions sont « obtenus avec une version antérieure » (décision D6 de `PORT-RUST.md`).
 
 En cas de paquet invalide (zip illisible, JSON invalide/BOM mal formé, `NaN`, type
 inattendu, `metadata.json`/`nodes.json` absents, nom d'asset dangereux...), le CLI
@@ -388,13 +393,15 @@ Stables : ils s'appliquent avec ou sans `--progress-json`.
 | 3 | archive d'entrée absente, illisible/corrompue, ou qui n'est pas une histoire Telmi (uniquement la lecture de l'archive d'entrée) | `archive_unreadable`, `not_telmi` |
 | 4 | contenu invalide (JSON invalide, type inattendu, nom d'asset dangereux, `nodes.lua` non sérialisable…) | `invalid_content` |
 | 5 | asset (image/audio) manquant sans `--allow-missing` | `missing_asset` |
-| 6 | erreur interne (dont lecture des fichiers du moteur/runtime embarqués) ou d'écriture de la sortie | `output_error`, `internal_error` |
-| 130 | annulation (Ctrl+C, SIGTERM, Ctrl+Break) | `cancelled` |
+| 6 | erreur interne (dont panique, crochet qui supprime les `.part`) ou d'écriture de la sortie | `output_error`, `internal_error` |
+| 7 | format non pris en charge (image d'un format autre que PNG, GIF, JPEG ; JPEG arithmétique, sans perte…) : erreur finale, sans repli | `unsupported_format` |
+| 130 | annulation (Ctrl+C, SIGTERM, Ctrl+Break, ou fermeture de stdin avec `--cancel-on-stdin-eof`) | `cancelled` |
 
-(L'ancien code unique `1` n'existe plus.) Pour un appelant Python, `telmi2flam.convert()`
-lève `ConvError` (attributs `code` et `exit_code`) ou les exceptions de `zipfile` ; le
-comportement de `convert()` sans `progress` est inchangé (résumé sur stdout,
-avertissements `  ! ...` sur stderr ; `compat.py` ne l'appelle plus, il lance le binaire Rust et lit les événements `--progress-json`).
+(L'ancien code unique `1` n'existe plus.) Sans `--progress-json`, le résumé va sur stdout et
+les avertissements (`  ! ...`) sur stderr. Les outils de développement (`compat.py`,
+`parity.py`) et le launcher lancent le binaire en processus enfant et lisent les événements
+`--progress-json`. La bibliothèque (`telmi2flam::convert`, `read_info`) reste appelable en
+Rust (tests, launcher pour l'archive des podcasts).
 
 ### Sortie machine (`--progress-json`)
 
@@ -405,7 +412,7 @@ reste sur **stderr**. Le champ `event` identifie le type ; un lecteur doit ignor
 champs et événements inconnus (ajouts compatibles).
 
 ```jsonl
-{"event":"start","total":4,"phases":["images","audio","scripts","zip"],"input":"histoire.zip","version":"1.0.0"}
+{"event":"start","total":4,"phases":["images","audio","scripts","zip"],"input":"histoire.zip","version":"2.0.0"}
 {"event":"step","phase":"images","done":0,"total":12}
 {"event":"step","phase":"audio","done":0,"total":12}
 {"event":"warning","code":"audio_missing","message":"audio manquant: s7.mp3 -> silent.mp3"}
@@ -454,11 +461,14 @@ Règles :
 
 Ctrl+C, SIGTERM (POSIX) et Ctrl+Break (Windows) interrompent proprement : les
 temporaires sont supprimés, un événement `error` (`cancelled`) est émis et le code de
-sortie est **130**. Testé sous Windows avec un vrai `CTRL_BREAK_EVENT` (processus lancé
-avec `CREATE_NEW_PROCESS_GROUP`, puis `send_signal(signal.CTRL_BREAK_EVENT)`).
+sortie est **130**. Avec `--cancel-on-stdin-eof` (passé seulement par le launcher), la
+fermeture de stdin annule de la même façon ; sans cette option, stdin est ignoré. Le jeton
+d'annulation est vérifié entre deux assets et par ligne dans le décodage d'image et le
+rééchantillonnage (`crates/telmi2flam/tests/cancel_panic.rs`, dont un vrai
+`CTRL_BREAK_EVENT` sous Windows).
 
 Garanties réelles :
-- **`.plain.pk`** : écrit dans `<sortie>.<pid>.part` puis publié par `os.replace`
+- **`.plain.pk`** : écrit dans `<sortie>.<pid>.part` puis publié par un renommage
   (atomique). Annulé avant la publication, aucun fichier partiel n'existe et une sortie
   précédente reste intacte.
 - **Dossier `.plain`** (`--plain`, ou `-o *.plain`) : écrit dans un dossier temporaire
@@ -468,7 +478,7 @@ Garanties réelles :
   mélange d'anciens et de nouveaux fichiers. Avec `--plain`, le `.plain.pk` est publié
   **avant** le dossier : une annulation pendant la publication du dossier laisse le
   nouveau `.pk` et un dossier éventuellement mixte. Si le dossier n'existait pas, il
-  est publié d'un seul `os.replace` (atomique).
+  est publié d'un seul renommage (atomique).
 - Un arrêt brutal (`TerminateProcess` sous Windows, `kill -9`) n'est pas interceptable
   et peut laisser un `*.part` orphelin (jamais un `.plain.pk` partiel). Au démarrage
   d'une conversion vers une sortie donnée, les `<sortie>.<pid>.part` orphelins de
@@ -479,7 +489,7 @@ Garanties réelles :
 
 ### Métadonnées (`--info`)
 
-`python telmi2flam.py --info histoire.zip` écrit **une ligne JSON** sur stdout et sort
+`telmi2flam --info histoire.zip` écrit **une ligne JSON** sur stdout et sort
 avec le code 0, sans rien convertir ni écrire (`-o` ignoré) :
 
 ```json
@@ -492,9 +502,10 @@ avec le code 0, sans rien convertir ni écrire (`-o` ignoré) :
 `cover.png`). Les erreurs suivent les mêmes codes de sortie ; avec `--progress-json`,
 un événement `error` est aussi émis sur stdout.
 
-Dépendance obligatoire : `pip install "Pillow>=10.0"`. Versions testées : Pillow 10.0.0, 11.0.0 et 12.2.0
-(Python 3.12) ; la transparence `tRNS` des PNG est lue dans les octets du PNG, donc
-indépendante des changements de décodage de Pillow entre versions.
+Images : PNG (tous les modes, `tRNS`, 16 bits, APNG : première image), GIF (première image)
+et JPEG (écart borné à ±4 par composante avec Pillow/libjpeg-turbo, décision D7) sont décodés
+avec la sémantique de l'ancien convertisseur Python (Pillow 12.3.0), redimensionnement
+compris (port de `Resample.c`). Détails et écarts admis : `PORT-RUST.md` §4.
 
 ### Rééchantillonnage audio (ffmpeg, dépendance optionnelle, #46)
 
@@ -513,7 +524,8 @@ Un MP3 déjà à 44 100 Hz est recopié sans changement. ffmpeg est lancé sans 
   est recopié tel quel et l'avertissement `audio_samplerate` indique la fréquence et la raison.
   La conversion ne s'interrompt jamais pour cela.
 - Un fichier rééchantillonné est signalé par une ligne `  i ...` sur stderr (ce n'est pas un
-  avertissement) et dans le résumé ; la version du convertisseur passe à 1.1.0.
+  avertissement) et dans le résumé (`crates/telmi2flam/src/ffmpeg.rs`, mêmes arguments, délai
+  et raisons d'échec que l'ancien convertisseur Python 1.1.0).
 
 Le CLI :
 1. lit `metadata.json` + `nodes.json` dans le zip
@@ -570,12 +582,13 @@ décodeur.
 La clé de transparence `tRNS` est appliquée pour toutes les profondeurs (gris 1/2/4/8/16
 bits, RGB 8/16 bits, palette) : un fond déclaré transparent reste transparent dans le `.lif`.
 
-**Runtime** : `runtime/script/` et `runtime/img/script/` doivent accompagner
-`telmi2flam.py`. S'ils sont absents ou incomplets (`global.lua`, `progressionManager.lua`,
-modules d'écran `audio-player_1_0_0`, `carousel_1_0_0`, `image-choice_1_0_0`,
-`list-choice_1_0_0`, `title-card`, leurs dépendances et icônes UI), la conversion échoue
-au lieu de produire un paquet qui planterait dès `setup()` ; `validate.py` signale aussi
-ces entrées manquantes.
+**Runtime** : `runtime/script/` et `runtime/img/script/` sont inclus dans le binaire à la
+compilation, d'après le manifeste unique `runtime/manifest.txt` (`build.rs` échoue si un
+fichier listé manque ; un test vérifie que le manifeste correspond au dossier). Les entrées
+indispensables (`global.lua`, `progressionManager.lua`, modules d'écran `audio-player_1_0_0`,
+`carousel_1_0_0`, `image-choice_1_0_0`, `list-choice_1_0_0`, `title-card`, leurs dépendances
+et icônes UI) sont marquées `!` dans le manifeste ; `validate.py` signale un paquet où elles
+manquent.
 
 ### Exemple validé
 
@@ -606,15 +619,20 @@ par un parseur Python du sous-ensemble généré ; cohérence des références
 ### Tests du convertisseur
 
 ```bash
-python -m unittest discover -s tools/telmi2flam/tests -v
+cargo test -p telmi2flam                                  # crate : unitaires, vecteurs figés
+cargo build -p telmi2flam --bin telmi2flam --release      # binaire lancé par les outils
+python -m unittest discover -s tools/telmi2flam/tests -v  # outils (bibliothèque standard, lupa)
 ```
 
-Paquets TELMI synthétiques générés à la volée (zip-slip, image corrompue, audio
-manquant/casse, BOM, types inattendus, racine `__MACOSX`, mots réservés Lua, NaN,
-collisions de noms, inventaire, portrait, labels, titre multi-lignes, caractères hors
-police, `totalChapters` sur branches exclusives, UUID, mp3map 44,1/48/32/22,05/24 kHz,
-`validate.py` sur un dossier `.plain`). Définir `FLAM_LUA` (ex. `lua54.exe`) pour vérifier
-aussi le chargement de `nodes.lua` par un vrai Lua 5.4.
+Les tests de la crate comparent le Rust aux sorties figées de l'ancien convertisseur Python
+(`crates/telmi2flam/tests/data`, `tests/vectors` : zip-slip, image corrompue, audio
+manquant/cassé, BOM, types inattendus, racine `__MACOSX`, mots réservés Lua, NaN, collisions
+de noms, inventaire, portrait, labels, caractères hors police, `totalChapters`, UUID, mp3map
+44,1/48/32/22,05/24 kHz, protocole `--progress-json`, annulation…). Les tests Python
+couvrent les outils (`compat.py`, `explore.py`, `parity.py`, `validate.py`) sur des paquets
+TELMI synthétiques (`tests/campaign_fixtures.py`) convertis par le binaire, sans Pillow.
+Définir `FLAM_LUA` (ex. `lua54.exe`) pour vérifier aussi les scripts Lua par un vrai Lua 5.4
+quand `lupa` est absent.
 
 Résultat de `validate.py` sur *Maxicours Anglais - CP / CE1 / CE2* (199 stages, 110
 actions) : **35 OK / 4 warnings / 0 erreur**, en `.plain.pk` comme en dossier `.plain`.
@@ -623,38 +641,54 @@ dans le `nodes.json` source. Depuis #44 (convention de sortie par retour, voir �
 action n'est plus signalée si elle n'est atteinte que par la chaîne `home` : le chiffre
 « 4 warnings » est périmé (archive Maxicours absente du cache, non remesuré).
 
-### Outillage de parité (port Rust, #22)
+### Outillage de parité (références figées, #22, #140)
 
-Pour comparer un convertisseur candidat (le port Rust, note de conception de #22, §4) à ce
-convertisseur, qui sert d'oracle (Pillow 12.3.0 et Python épinglés dans
-`.github/workflows/telmi2flam.yml`, versions dans `ORACLE-VERSIONS.txt`) :
+L'ancien convertisseur Python servait d'oracle au port Rust (note de conception de #22, §4).
+Il est supprimé : ses sorties ont été **figées** une dernière fois (Python 3.14.8 + Pillow
+12.3.0, révision notée dans `ORACLE-VERSIONS.txt`, `PORT-RUST.md` §4.5) et le binaire est
+comparé à ces références :
 
 ```bash
-python tools/telmi2flam/tests/parity/make_corpus.py "$TMP/parite"            # rien n'est commité
-python tools/telmi2flam/parity.py corpus "$TMP/parite" --report "$TMP/rapport.json"
-python tools/telmi2flam/parity.py matrix "$TMP/parite"                       # .lif octet à octet
-python tools/telmi2flam/parity.py compare A.plain.pk B.plain.pk              # deux sorties
+cargo build -p telmi2flam --bin telmi2flam --release
+python tools/telmi2flam/parity.py corpus --candidate target/release/telmi2flam.exe \
+    --report "$TMP/rapport.json"                       # corpus figé (parity_corpus.zip)
+python tools/telmi2flam/tests/parity/make_matrix.py "$TMP/matrice"   # rien n'est commité
+TELMI2FLAM_MATRIX_DIR="$TMP/matrice" \
+    cargo test -p telmi2flam --release --test matrix_render -- --include-ignored
+python tools/telmi2flam/parity.py compare A.plain.pk B.plain.pk     # deux sorties
 ```
 
-`make_corpus.py` génère le corpus synthétique (cas des tests) et la matrice de
-rééchantillonnage (modes PNG × tailles impaires ou premières × cibles réelles).
-`parity.py` compare statut, code de sortie, code d'erreur, multiensemble des codes
-d'avertissement, `--info` et la liste ordonnée des entrées (nom, méthode, drapeau UTF-8,
-contenu). Les écarts admis sont une liste fermée (`ALLOWED_DEVIATIONS`) ; les délégations
-`unsupported_format` (code 7) sont comptées à part. Les JPEG sont décodés par le port Rust
-avec `zune-jpeg` (#459, décision D7 de `PORT-RUST.md`) : sur un cas étiqueté `jpeg_bounded`,
-les `.lif` nommés par `jpeg_entries` peuvent différer de ±4 par composante avant quantification
-(règle `jpeg_bounded`), tout le reste est comparé à l'identique. Sans `--candidate`, c'est Python contre
-Python : zéro écart. Code de sortie 1 au moindre écart, 0 sinon.
+- **Corpus** : `crates/telmi2flam/tests/data/parity_corpus.zip` contient les archives du corpus
+  synthétique (cas des anciens tests Python : modes PNG, `tRNS`, 16 bits, noms NFD/cp437, JSON
+  limites, archives corrompues, MP3 MPEG1/2/2.5, `--plain`, `-o x.plain`…), l'index
+  `corpus.json`, le résultat de l'oracle par cas (`expected.json`) et le contenu des `.lif`
+  issus d'un JPEG (`blobs/`). `parity.py corpus` convertit chaque archive avec le candidat et
+  compare statut, code de sortie, code d'erreur, multiensemble des codes d'avertissement,
+  `--info`, la liste ordonnée des entrées (nom, méthode, drapeau UTF-8, contenu), le dossier
+  `.plain` et l'absence de `.part` ; `validate.py` passe sur la sortie du candidat. Les écarts
+  admis sont une liste fermée (`ALLOWED_DEVIATIONS`) ; les délégations `unsupported_format`
+  (code 7) sont comptées à part. Les JPEG sont décodés par `zune-jpeg` (#459, décision D7) :
+  sur un cas étiqueté `jpeg_bounded`, les `.lif` nommés par `jpeg_entries` peuvent différer de
+  ±4 par composante avant quantification, tout le reste est comparé à l'identique. Code de
+  sortie 1 au moindre écart, 2 si les références sont illisibles ou altérées, 0 sinon.
+- **Matrice de rééchantillonnage** : `make_matrix.py` (sans dépendance, graine fixe) écrit les
+  PNG (13 modes × tailles 1 à 2049 × formes × contenus) ; `matrix_render.rs` vérifie le
+  SHA-256 de chaque PNG puis compare chaque `.lif` du Rust (scène, vignette, inventaire,
+  titre, borne 2047 : 1465 cellules) à celui de l'oracle, figé dans
+  `crates/telmi2flam/tests/data/matrix_expected.json`.
+- Ajouter un cas : voir `PORT-RUST.md` §4.5 (résultat attendu écrit à la main et justifié, ou
+  sortie du binaire relue, jamais régénérée en masse).
 
-Campagne sur les archives réelles (#135, seuil de bascule §4.3 de `PORT-RUST.md`) :
+Campagne sur les archives réelles (#135, seuil §4.3 de `PORT-RUST.md`), entre deux moteurs
+(par exemple une version antérieure du binaire et la version en cours) :
 
 ```bash
 python tools/telmi2flam/parity.py campaign .cache/telmi/archives \
-    --candidate target/release/telmi2flam.exe --jobs 4    # rapport .cache/parity/report.json
+    --oracle ancien/telmi2flam.exe --candidate target/release/telmi2flam.exe \
+    --jobs 4                                             # rapport .cache/parity/report.json
 ```
 
-Chaque archive est convertie par l'oracle puis par le candidat (`--jobs` archives à la fois,
+Chaque archive est convertie par la référence puis par le candidat (`--jobs` archives à la fois,
 donc au plus autant de conversions simultanées). Un état par archive (`cases/`) permet de
 reprendre une campagne interrompue en relançant la même commande ; un résultat obtenu avec un
 autre moteur (empreinte des fichiers de la commande) ou une exécution impossible (délai,
@@ -683,7 +717,9 @@ Lecture du rapport :
   près, décision D7 : `crates/telmi2flam/src/jpeg.rs`, vecteurs `tests/vectors/jpeg/`) sont
   décodés ; les autres formats (BMP…) sont encore délégués (`image:pas un PNG`).
 - `--limit N` écrit le même `report.json` sur les N premières archives seulement, avec
-  `"partial": true` (`false` sinon) ; ce n'est pas un résultat de campagne complet.
+  `"partial": true` (`false` sinon) ; ce n'est pas un résultat de campagne complet : seuil
+  atteint sur une campagne partielle, code de sortie **3** (0 : seuil atteint sur toutes les
+  archives ; 1 : écart ou archives en attente).
 - Formats d'image : détection par signature. `ftyp` exige une marque AVIF/HEIF (`avif`, `avis`,
   `heic`, `heix`, `mif1`), `BM` et `<?xml` ne comptent que pour une entrée à extension
   d'image (un MP4/M4A ou un XML quelconque n'est pas une image).
@@ -695,12 +731,12 @@ Lecture du rapport :
 
 ### Distribution avec flam-launcher (binaire Rust, sans Python)
 
-L'installateur Windows ne livre plus ni Python, ni Pillow, ni ces scripts (#138) :
+L'installateur Windows ne livre ni Python, ni Pillow, ni script (#138) :
 `apps/flam-launcher/scripts/build-converter.ps1` assemble `apps/flam-launcher/build/telmi2flam/`
-avec le seul port Rust `telmi2flam.exe` (moteur et runtime inclus dans le binaire), `LICENSES.md`
-et `BUILD.txt`. Ces scripts Python restent des outils de développement (oracle de parité, #134,
-suppression prévue en #140). Détails : `apps/flam-launcher/README.md`, section « Convertisseur
-embarqué ».
+avec le seul binaire Rust `telmi2flam.exe` (moteur et runtime inclus), `LICENSES.md` et
+`BUILD.txt`. Le convertisseur Python est supprimé du dépôt (#140) ; les outils Python de ce
+dossier restent des outils de développement, jamais livrés. Détails :
+`apps/flam-launcher/README.md`, section « Convertisseur embarqué ».
 
 ### Test dans flam-player (GUI)
 
@@ -844,8 +880,7 @@ trace vs `timeout` en progression, pas de processus orphelin si `until()` lève)
 conversion, validation, exécution, rapport. Tout est écrit sous `.cache/`
 (ignoré par Git) : aucune archive ni histoire convertie n'est versionnée.
 
-**Convertisseur : binaire Rust en processus enfant** (#140). `compat.py` n'importe plus
-`telmi2flam.py` : il lance `telmi2flam(.exe) <archive> -o <sortie> --progress-json`
+**Convertisseur : binaire Rust en processus enfant** (#140). `compat.py` lance `telmi2flam(.exe) <archive> -o <sortie> --progress-json`
 (`converter_bin.py`) et lit le protocole comme le launcher : événements JSON `warning`
 (avertissements), `done`, `error` (`code`, `message`) ; code de sortie 0 accepté seulement si
 l'événement `done` a été émis et si la sortie existe, 130 = annulation, sinon l'événement
@@ -1080,7 +1115,8 @@ synthétiques par le binaire. La CI (`telmi2flam.yml`) le construit avant les te
 - **Images de scène à la taille de la zone d'affichage** (320×212 sous le bandeau de 28 px,
   ratio conservé, bandes transparentes) : le runtime n'applique aucune mise à l'échelle.
 - **Texte ramené à ASCII + Latin-1** (couverture des polices du player, `src/fonts/`).
-- **Convertisseur en Python** (Pillow pour le décodage/redimensionnement PNG).
+- **Convertisseur en Rust** (binaire autonome livré avec le launcher ; d'abord écrit en
+  Python avec Pillow, puis porté avec une parité octet à octet et supprimé, #22, #140).
 - **mp3map généré** (fidèle au format officiel).
 - **UUID réutilisé** depuis `metadata.json` de TELMI (à défaut : hash du contenu de
   `nodes.json`, pour ne pas partager la sauvegarde entre deux histoires de même titre).

@@ -42,6 +42,13 @@ Changements depuis `launcher-v0.1.0-beta.1`.
 - **Vignettes** : les modes « flou » et « rogner » donnent le même rendu que l'ancien
   convertisseur.
 
+### Supprimé
+
+- **Convertisseur Python** : l'ancienne version Python du convertisseur (`telmi2flam.py`,
+  Pillow), qui ne servait plus que de référence de développement, est retirée du dépôt. Ses
+  résultats sont conservés comme références de test du convertisseur Rust, seul convertisseur
+  désormais. Rien ne change pour les utilisateurs du launcher.
+
 ### Corrigé
 
 - `flam-player` ne montre plus de fenêtre de console au lancement depuis le launcher.
@@ -56,6 +63,6 @@ Changements depuis `launcher-v0.1.0-beta.1`.
 
 - README, installation et développement mis à jour : le convertisseur est présenté comme un
   programme intégré. Python 3 reste utile uniquement aux outils de campagne et de parité du
-  dépôt (`tools/telmi2flam/`), pas aux utilisateurs.
+  dépôt (`tools/telmi2flam/`, sans Pillow), pas aux utilisateurs.
 
 [Non publié]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.1...HEAD

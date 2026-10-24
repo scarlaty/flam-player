@@ -80,7 +80,9 @@ fn matrice_identique_aux_references_figees() {
             .entry(pid.to_string())
             .or_insert_with(|| pngs.get(pid) == Some(&hex(&png)));
         if !png_ok {
-            failures.push(format!("{id} : PNG d'entrée différent du PNG figé (générateur modifié ?)"));
+            failures.push(format!(
+                "{id} : PNG d'entrée différent du PNG figé (générateur modifié ?)"
+            ));
             continue;
         }
         let lif = match e["op"].as_str().unwrap() {

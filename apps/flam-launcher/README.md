@@ -128,8 +128,9 @@ Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2, Node 2
 
 Python 3 n'est **pas** nécessaire pour utiliser, construire ou tester le launcher : l'installation
 n'en contient plus (#138). Il ne sert qu'aux outils de campagne et de parité de
-`tools/telmi2flam/` (oracle Python de #135) et aux générateurs de vecteurs de test de
-`crates/telmi2flam/tests/vectors/`. Le convertisseur se développe dans `crates/telmi2flam`.
+`tools/telmi2flam/` (bibliothèque standard et `lupa`, sans Pillow) et au faux convertisseur des
+tests de pack. Le convertisseur se développe dans `crates/telmi2flam` ; l'ancien convertisseur
+Python est supprimé, ses sorties sont figées comme références de test (#140).
 
 Le launcher est membre d'un **workspace Cargo** dont le `Cargo.toml` est à la racine du dépôt (avec
 `crates/telmi2flam`) : `Cargo.lock` et `target/` sont à la racine, pas dans `src-tauri/`. Les commandes
@@ -164,7 +165,7 @@ Le launcher passe son ffmpeg embarqué au convertisseur par la variable `FLAM_FF
 L'application installée ne suppose aucun Python sur la machine et n'en livre aucun (#138) : le
 convertisseur est le binaire Rust `telmi2flam.exe` (crate `crates/telmi2flam`, moteur Lua et
 runtime du projet inclus dans le binaire), sous `<exe>/telmi2flam/` avec `LICENSES.md` et
-`BUILD.txt`. Pas de Python, de Pillow, de `telmi2flam.py` ni de `runtime/` à côté. Le launcher
+`BUILD.txt`. Pas de Python, de Pillow, de script Python du convertisseur ni de `runtime/` à côté. Le launcher
 le lance sans fenêtre, avec `--progress-json` et `--cancel-on-stdin-eof` (annulation par
 fermeture de stdin). Environ 1,5 Mo sur disque.
 
@@ -1112,7 +1113,7 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
   sa taille correspondent (sinon elle est retéléchargée). L'écriture de `install_queue.json` se
   fait hors des verrous, sur un thread bloquant, avec des écritures ordonnées.
 - **Convertisseur** : `<exe>/telmi2flam/telmi2flam.exe` (application installée ; construit par `npm run build:converter`, voir « Convertisseur embarqué »), sinon en
-  développement `telmi2flam.exe` à côté de l'exécutable (même `target/` Cargo, `cargo build -p telmi2flam`). Absent : `converter_unavailable`. Plus de Python ni de `telmi2flam.py` (#138).
+  développement `telmi2flam.exe` à côté de l'exécutable (même `target/` Cargo, `cargo build -p telmi2flam`). Absent : `converter_unavailable`. Plus de Python ni de script Python du convertisseur (#138 ; supprimé du dépôt, #140).
 - **Bibliothèque** : `library.json` = `{ schema_version, stories: LibraryEntry[] }` avec
   `LibraryEntry { uuid, version, title, file, size, installed_at, converter, source: StoryEntry,
 thumb, source_stamp }`.

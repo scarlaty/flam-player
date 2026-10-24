@@ -1,5 +1,5 @@
 //! Parité avec Python de `json`, `text` et `lua` : la table `tests/data/text_cases.json` est
-//! produite par `tests/data/gen_text_cases.py` à partir de `tools/telmi2flam/telmi2flam.py`.
+//! produite par `gen_text_cases.py` (supprimé) à partir de l'ancien convertisseur Python.
 
 use telmi2flam::json::{expect, load_json, Kind, Value};
 use telmi2flam::lua::{lua_repr, py_float_repr, Lua};

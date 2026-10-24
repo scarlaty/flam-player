@@ -1,6 +1,6 @@
 //! Parité avec Python de la conversion du graphe `nodes.json` vers `script/nodes.lua` et de
 //! `main.lua` : la table `tests/data/graph_cases.json` est produite par
-//! `tests/data/gen_graph_cases.py` (conversion complète par `tools/telmi2flam/telmi2flam.py`).
+//! `gen_graph_cases.py` (supprimé) (conversion complète par l'ancien convertisseur Python).
 //!
 //! Pour chaque cas, le test rejoue les étapes de `_convert` qui touchent au graphe, dans
 //! l'ordre de Python : `notes.json`, `stages` / `inventory`, stages, actions, inventaire,

@@ -979,12 +979,7 @@ fn binaire_convertit_et_valide_l_archive() {
     );
 
     // validate.py
-    let (code, stdout, stderr) = run(
-        &python,
-        true,
-        work,
-        &[validate.as_os_str(), pk.as_os_str()],
-    );
+    let (code, stdout, stderr) = run(&python, true, work, &[validate.as_os_str(), pk.as_os_str()]);
     assert_eq!(code, 0, "validate.py :\n{stdout}\n{stderr}");
     // Aucun `[WARN]` (régression de focus N4 a, de retour…), sauf le contrôle Lua ignoré faute
     // de `lupa` ou d'interpréteur.

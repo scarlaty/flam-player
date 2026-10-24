@@ -1,6 +1,6 @@
 //! Parité des conversions PNG vers LIF (redimensionnement porté de Pillow) avec
 //! `png_to_*_lif` de Python 3.14.8 + Pillow 12.3.0 : vecteurs produits par
-//! `tests/vectors/resample/gen_resample_vectors.py`.
+//! `gen_resample_vectors.py` (supprimé).
 
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,7 @@ fn never() -> bool {
     false
 }
 
-/// Opération de la matrice (`make_corpus.python_lif`).
+/// Opération de la matrice (mêmes appels que `matrix_render.rs`).
 fn convert(png: &[u8], op: &str) -> Result<Vec<u8>, PngError> {
     match op {
         "scene" => png_to_scene_lif(png, &never),

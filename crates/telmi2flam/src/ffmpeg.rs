@@ -1,5 +1,5 @@
 //! Rééchantillonnage à 44 100 Hz des MP3 par un ffmpeg **externe** (`_find_ffmpeg` et
-//! `_resample_mp3` de `tools/telmi2flam/telmi2flam.py`, #46, #354). Le port n'embarque ni
+//! `_resample_mp3` de l'ancien convertisseur Python, #46, #354). Le port n'embarque ni
 //! décodeur ni encodeur MP3 : il lance le ffmpeg désigné par `FLAM_FFMPEG` (le launcher y met
 //! le sien), sinon celui du `PATH`, avec les mêmes arguments, le même délai et les mêmes
 //! raisons d'échec que Python. La sortie de ffmpeg est opaque : c'est l'appelant

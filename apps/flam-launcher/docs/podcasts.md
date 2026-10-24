@@ -127,7 +127,7 @@ Remarques de cohérence :
 
 ### 3.1 Audio
 
-- Le firmware attend du **MP3 à 44 100 Hz** (`SAMPLERATE` dans `tools/telmi2flam/telmi2flam.py`,
+- Le firmware attend du **MP3 à 44 100 Hz** (`crates/telmi2flam/src/ffmpeg.rs`,
   #46). Le convertisseur ne lit que du MP3 : AAC, Ogg ou WAV doivent être transcodés **par le
   launcher** avant l'archive Telmi (#214).
 - Filet de sécurité : un MP3 qui n'est pas à 44 100 Hz est rééchantillonné par `telmi2flam`

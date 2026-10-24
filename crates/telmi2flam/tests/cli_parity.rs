@@ -1,8 +1,8 @@
 //! Parité de l'analyse des arguments avec `argparse` (#133). Les vecteurs
-//! `tests/data/cli_cases.json` sont produits par `tests/data/gen_cli_cases.py` : `main()` de
-//! `telmi2flam.py` (Python 3.14.8) joué dans le processus, `convert` et `read_info` remplacés
-//! par des enregistreurs. Pour chaque suite d'arguments : code de sortie, stdout, stderr (usage
-//! et aide, `<usage>` et `<help>` dans le fichier, `<version>` pour la version) et, si une
+//! `tests/data/cli_cases.json` sont produits par `gen_cli_cases.py` (supprimé) : `main()` de
+//! l'ancien convertisseur Python (3.14.8) joué dans le processus, `convert` et `read_info`
+//! remplacés par des enregistreurs. Pour chaque suite d'arguments : code de sortie, stdout, stderr
+//! (usage et aide, `<usage>` et `<help>` dans le fichier, `<version>` pour la version) et, si une
 //! conversion ou `--info` serait lancé, les arguments reçus.
 
 use std::ffi::OsString;
