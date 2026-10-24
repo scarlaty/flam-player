@@ -7,7 +7,7 @@
 //!
 //! 1. `downloading` (archive distante seulement) : `<cache>/archives/<uuid>-<version>.<ext>`
 //!    via un `.part` repris après redémarrage (`download`) ;
-//! 2. `converting` (zip Telmi seulement) : `telmi2flam.py --progress-json` vers
+//! 2. `converting` (zip Telmi seulement) : `telmi2flam.exe --progress-json` vers
 //!    `<cache>/library/.staging/<tâche>.plain.pk` (`convert`) ; un `.plain.pk` est vérifié et
 //!    copié, un dossier `.plain` est empaqueté (`pack`) ;
 //! 3. `installing` : renommage vers `<cache>/library/<uuid>-<version>.plain.pk` et index
@@ -44,13 +44,13 @@ use crate::folder::FolderState;
 use crate::library::{remove_if_exists, Library, LibraryEntry};
 use crate::library_source::{self, SourceStamp};
 use crate::library_thumb;
-use crate::settings::{self, ConverterEngine, Environment, SettingsStore, ThumbFit};
+use crate::settings::{self, Environment, SettingsStore, ThumbFit};
 use crate::sources::{Source, SourcesStore};
 use crate::storage::{self, ConfigState, Loaded};
 use crate::story::{validate_story_id, StoryEntry, StoryKind};
 use crate::{AppError, AppResult};
 
-use self::convert::{Conversion, Engine, EngineTrace, PythonFallback, Step};
+use self::convert::{Conversion, Engine, Step};
 use self::download::{cancelled, Download, Validator};
 use self::podcast::{PackBackend, PackJob, PackStatus};
 
@@ -61,7 +61,7 @@ pub const QUEUE_FILE: &str = "install_queue.json";
 const QUEUE_SCHEMA: u32 = 1;
 /// Taille maximale d'une archive téléchargée.
 const MAX_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-/// Délai laissé au convertisseur après Ctrl+Break avant l'arrêt forcé.
+/// Délai laissé au convertisseur après la fermeture de stdin avant l'arrêt forcé.
 pub const GRACE: Duration = Duration::from_secs(5);
 /// Attente maximale du verrou de la bibliothèque pour une désinstallation, qui tient le créneau
 /// du player : brève, pour renvoyer vite l'erreur « utilisée par une autre instance ».
@@ -197,12 +197,7 @@ impl InstallEvents for TauriEvents {
 #[derive(Debug, Clone)]
 pub struct Toolchain {
     pub cache_root: PathBuf,
-    /// Moteur de conversion (`converter_engine`, réglage caché, #136), relu à chaque tâche.
-    pub engine: ConverterEngine,
-    pub python: Option<PathBuf>,
-    /// `telmi2flam.py` (moteur Python).
-    pub converter: Option<PathBuf>,
-    /// `telmi2flam.exe` (moteur Rust, [`detect_rust_converter`]).
+    /// `telmi2flam.exe` ([`detect_rust_converter`]) ; absent : `converter_unavailable`.
     pub rust_converter: Option<PathBuf>,
     /// ffmpeg embarqué (rééchantillonnage audio, #46).
     pub ffmpeg: Option<PathBuf>,
@@ -213,30 +208,12 @@ pub struct Toolchain {
 
 pub type Resolver = Arc<dyn Fn() -> AppResult<Toolchain> + Send + Sync>;
 
-/// `telmi2flam.py` : `<exe>/telmi2flam/telmi2flam.py` (application installée, #21), sinon en
-/// développement `tools/telmi2flam/telmi2flam.py` d'un dossier ancêtre (racine du dépôt).
-pub fn detect_converter(env: &Environment) -> Option<PathBuf> {
-    let exe_dir = env.exe_dir.as_deref()?;
-    let bundled = exe_dir.join("telmi2flam").join("telmi2flam.py");
-    if bundled.is_file() {
-        return Some(bundled);
-    }
-    if env.search_repo_build {
-        return exe_dir
-            .ancestors()
-            .map(|dir| dir.join("tools").join("telmi2flam").join("telmi2flam.py"))
-            .find(|candidate| candidate.is_file());
-    }
-    None
-}
-
 /// Nom du binaire Rust du convertisseur (#136).
 pub const RUST_CONVERTER_EXE: &str = "telmi2flam.exe";
 
-/// `telmi2flam.exe` (moteur Rust, #136) : `<exe>/telmi2flam/telmi2flam.exe` (application
-/// installée, déposé par `build-converter.ps1` à côté de `telmi2flam.py`), sinon en
-/// développement `<exe>/telmi2flam.exe` : le launcher et le convertisseur partagent le `target/`
-/// du workspace Cargo (`cargo build -p telmi2flam`).
+/// `telmi2flam.exe` : `<exe>/telmi2flam/telmi2flam.exe` (application installée, déposé par
+/// `build-converter.ps1`), sinon en développement `<exe>/telmi2flam.exe` : le launcher et le
+/// convertisseur partagent le `target/` du workspace Cargo (`cargo build -p telmi2flam`).
 pub fn detect_rust_converter(env: &Environment) -> Option<PathBuf> {
     let exe_dir = env.exe_dir.as_deref()?;
     let bundled = exe_dir.join("telmi2flam").join(RUST_CONVERTER_EXE);
@@ -250,8 +227,8 @@ pub fn detect_rust_converter(env: &Environment) -> Option<PathBuf> {
     None
 }
 
-/// Résolution réelle : `settings.json` (cache, Python, téléchargements simultanés, moteur) et
-/// détection des deux convertisseurs.
+/// Résolution réelle : `settings.json` (cache, téléchargements simultanés, vignettes) et
+/// détection du convertisseur.
 pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
     Arc::new(move || {
         let env = Environment::current();
@@ -261,9 +238,6 @@ pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
         std::fs::create_dir_all(&cache_root)?;
         Ok(Toolchain {
             cache_root,
-            engine: saved.converter_engine,
-            python: resolved.python_path.map(PathBuf::from),
-            converter: detect_converter(&env),
             rust_converter: detect_rust_converter(&env),
             ffmpeg: settings::ffmpeg_path(&env),
             max_downloads: saved.max_downloads as usize,
@@ -272,63 +246,22 @@ pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
     })
 }
 
-/// Moteur effectif d'une tâche (#136) : celui du réglage, avec ses chemins détectés. Le moteur
-/// Rust n'exige pas Python, et son binaire absent donne `converter_unavailable` (pas de repli :
-/// le repli Python de #137 ne couvre que l'échec d'un binaire présent, voir
-/// [`convert::convert_with_fallback`]).
-pub(super) enum ChosenEngine {
-    Python { python: PathBuf, script: PathBuf },
-    Rust { exe: PathBuf },
+/// Convertisseur d'une tâche : le binaire détecté. Absent : `converter_unavailable` (aucun
+/// repli, Python n'étant plus livré, #138).
+pub(super) fn converter_engine(tc: &Toolchain) -> AppResult<Engine<'_>> {
+    let exe = tc.rust_converter.as_deref().ok_or_else(|| {
+        AppError::ConverterUnavailable(format!(
+            "convertisseur {RUST_CONVERTER_EXE} introuvable : réinstallez le launcher ou lancez \
+             `cargo build -p telmi2flam` (développement)"
+        ))
+    })?;
+    Ok(Engine::Rust { exe })
 }
 
-impl ChosenEngine {
-    pub(super) fn of(tc: &Toolchain) -> AppResult<Self> {
-        match tc.engine {
-            ConverterEngine::Python => {
-                let python = tc.python.clone().ok_or_else(|| {
-                    AppError::ConverterUnavailable(
-                        "Python introuvable : indiquez le chemin de python.exe dans les paramètres"
-                            .into(),
-                    )
-                })?;
-                let script = tc.converter.clone().ok_or_else(|| {
-                    AppError::ConverterUnavailable("convertisseur telmi2flam.py introuvable".into())
-                })?;
-                Ok(Self::Python { python, script })
-            }
-            ConverterEngine::Rust => {
-                let exe = tc.rust_converter.clone().ok_or_else(|| {
-                    AppError::ConverterUnavailable(format!(
-                        "convertisseur {RUST_CONVERTER_EXE} introuvable : réinstallez le launcher, \
-                         lancez `cargo build -p telmi2flam` (développement) ou mettez \
-                         `converter_engine` à « python » dans settings.json"
-                    ))
-                })?;
-                Ok(Self::Rust { exe })
-            }
-        }
-    }
-
-    fn engine(&self) -> Engine<'_> {
-        match self {
-            Self::Python { python, script } => Engine::Python { python, script },
-            Self::Rust { exe } => Engine::Rust { exe },
-        }
-    }
-}
-
-/// Python disponible pour le repli du moteur Rust (#137) : interpréteur **et** script détectés.
-fn python_fallback(tc: &Toolchain) -> Option<PythonFallback<'_>> {
-    Some(PythonFallback {
-        python: tc.python.as_deref()?,
-        script: tc.converter.as_deref()?,
-    })
-}
-
-/// Repli pour la version du convertisseur : empreinte `sha256:<12 hex>` du script (Python) ou
-/// du binaire (Rust), utilisée seulement si l'événement `start` ne porte pas de champ `version`.
-pub fn converter_fingerprint(script: &Path) -> AppResult<String> {
-    let bytes = std::fs::read(script)?;
+/// Repli pour la version du convertisseur : empreinte `sha256:<12 hex>` du binaire, utilisée
+/// seulement si l'événement `start` ne porte pas de champ `version`.
+pub fn converter_fingerprint(binary: &Path) -> AppResult<String> {
+    let bytes = std::fs::read(binary)?;
     let digest = Sha256::digest(&bytes);
     let hex: String = digest[..6].iter().map(|b| format!("{b:02x}")).collect();
     Ok(format!("sha256:{hex}"))
@@ -1210,9 +1143,7 @@ impl InstallService {
         let kind = entry.kind;
         match kind {
             StoryKind::TelmiZip => {
-                // Moteur choisi par le réglage (relu pour cette tâche). Moteur Rust : repli sur
-                // Python dans les seuls cas de `convert::fallback_reason` (#137).
-                let chosen = ChosenEngine::of(tc)?;
+                let engine = converter_engine(tc)?;
                 if !source.is_file() {
                     return Err(AppError::NotFound(format!(
                         "archive introuvable : {}",
@@ -1247,35 +1178,28 @@ impl InstallService {
                         });
                     }
                 };
-                let (converted, trace) = convert::convert_with_fallback(
+                let converted = convert::convert(
                     &Conversion {
-                        engine: chosen.engine(),
+                        engine,
                         input: &source,
                         output: staged,
                         ffmpeg: tc.ffmpeg.as_deref(),
                         thumb_fit: tc.thumb_fit,
                         grace: self.0.opts.grace,
                     },
-                    python_fallback(tc),
                     cancel,
                     &mut on_step,
                 )
                 .await;
-                // Version annoncée par l'événement `start` ; empreinte du script ou du binaire
-                // en repli (convertisseur plus ancien, sans champ `version`, ou échec avant
-                // `start`). Empreinte impossible (binaire disparu ou illisible) : l'erreur de la
-                // conversion, cause première, l'emporte.
+                // Version annoncée par l'événement `start` ; empreinte du binaire en repli
+                // (convertisseur sans champ `version`, ou échec avant `start`). Empreinte
+                // impossible (binaire disparu ou illisible) : l'erreur de la conversion, cause
+                // première, l'emporte.
                 let announced = converted.as_ref().ok().and_then(|c| c.version.clone());
                 let converter = match announced {
                     Some(version) => version,
                     None => {
-                        // Après un repli, c'est le script Python qui a produit le résultat.
-                        let engine = chosen.engine();
-                        let identity = match (trace, python_fallback(tc)) {
-                            (EngineTrace::PythonFallback(_), Some(py)) => py.script,
-                            _ => engine.identity(),
-                        }
-                        .to_path_buf();
+                        let identity = engine.identity().to_path_buf();
                         match blocking(move || converter_fingerprint(&identity)).await? {
                             Ok(fingerprint) => fingerprint,
                             Err(err) => return Err(converted.err().unwrap_or(err)),
@@ -1285,7 +1209,7 @@ impl InstallService {
                 // Résultat réel de la conversion, pour le statut de compatibilité (#20) ; sans
                 // objet pour un pack (histoire unique, sans source).
                 let outcome = (entry.source_id != podcast::PACK_SOURCE_ID)
-                    .then(|| compat::outcome_of(entry, &converter, &converted, trace, now_secs()))
+                    .then(|| compat::outcome_of(entry, &converter, &converted, now_secs()))
                     .flatten();
                 if let Some(outcome) = outcome {
                     let (root, uuid) = (tc.cache_root.clone(), entry.uuid.clone());

@@ -41,7 +41,7 @@ use serde_json::Value;
 use tauri::State;
 
 use crate::catalog::blocking;
-use crate::install::convert::{Converted, EngineTrace};
+use crate::install::convert::Converted;
 use crate::settings::{Environment, SettingsStore};
 use crate::storage::{self, ConfigState};
 use crate::story::{validate_story_id, StoryEntry};
@@ -106,10 +106,12 @@ pub struct CompatEntry {
     pub origin: CompatOrigin,
     /// Fiche de campagne évaluée avec un autre convertisseur que le courant.
     pub stale: bool,
-    /// Moteur qui a converti l'histoire sur cet ordinateur (`rust`, `python`, `python_fallback`,
-    /// #137) ; `None` pour une fiche de campagne ou un résultat ancien.
+    /// Moteur qui a converti l'histoire sur cet ordinateur : `rust` (seul moteur depuis #138) ;
+    /// `python` ou `python_fallback` pour un résultat enregistré avant le retrait de Python ;
+    /// `None` pour une fiche de campagne ou un résultat très ancien.
     pub engine: Option<String>,
-    /// Cause du repli Python (`unsupported_format`, `internal_error`, `crash`), s'il y en a eu un.
+    /// Cause d'un repli Python d'un résultat ancien (`unsupported_format`, `internal_error`,
+    /// `crash`) ; jamais écrite depuis #138.
     pub fallback: Option<String>,
 }
 
@@ -258,11 +260,12 @@ pub struct LocalResult {
     pub converter: Option<String>,
     /// Date de la conversion (secondes Unix).
     pub at: u64,
-    /// Moteur qui a produit le résultat (`rust`, `python`, `python_fallback`, #137). Absent des
-    /// résultats enregistrés avant #137.
+    /// Moteur qui a produit le résultat : `rust` depuis #138 ; `python` ou `python_fallback`
+    /// (#137) dans les résultats plus anciens, toujours lisibles ; absent avant #137.
     #[serde(default)]
     pub engine: Option<String>,
-    /// Cause du repli Python (`unsupported_format`, `internal_error`, `crash`).
+    /// Cause d'un repli Python (`unsupported_format`, `internal_error`, `crash`) : résultats
+    /// enregistrés avant #138 seulement.
     #[serde(default)]
     pub fallback: Option<String>,
 }
@@ -336,7 +339,6 @@ pub fn outcome_of(
     entry: &StoryEntry,
     converter: &str,
     result: &AppResult<Converted>,
-    trace: EngineTrace,
     now: u64,
 ) -> Option<LocalResult> {
     let base = LocalResult {
@@ -347,8 +349,10 @@ pub fn outcome_of(
         warnings: 0,
         converter: Some(converter.to_string()),
         at: now,
-        engine: Some(trace.engine().to_string()),
-        fallback: trace.fallback().map(str::to_string),
+        // Seul moteur depuis #138 ; `python` et `python_fallback` des résultats plus anciens
+        // restent lisibles (chaînes libres, nettoyées à la lecture).
+        engine: Some("rust".to_string()),
+        fallback: None,
     };
     match result {
         Ok(converted) => Some(LocalResult {
@@ -368,7 +372,7 @@ pub fn outcome_of(
 /// Enregistre le résultat réel d'une conversion de `entry` (succès ou échec du convertisseur).
 /// Le plus récent par `uuid` est conservé. L'appelant sérialise les appels (créneau de
 /// conversion unique). Les erreurs ne bloquent jamais l'installation : elles sont tracées.
-/// Réservé aux tests : l'installateur passe par `outcome_of` avec la vraie trace du moteur.
+/// Réservé aux tests : l'installateur passe par `outcome_of`.
 #[cfg(test)]
 pub fn record_conversion(
     cache_root: &Path,
@@ -377,7 +381,7 @@ pub fn record_conversion(
     result: &AppResult<Converted>,
     now: u64,
 ) {
-    if let Some(outcome) = outcome_of(entry, converter, result, EngineTrace::default(), now) {
+    if let Some(outcome) = outcome_of(entry, converter, result, now) {
         store_outcome(cache_root, &entry.uuid, outcome);
     }
 }
@@ -792,6 +796,40 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         record_conversion(dir.path(), &entry("../x", None), "x", &converted(0), 1);
         assert!(!results_path(dir.path()).exists());
+    }
+
+    /// Résultats enregistrés avant le retrait de Python (#138) : `python`, `python_fallback` et
+    /// sa cause restent lisibles ; une nouvelle conversion s'enregistre avec le moteur `rust`.
+    #[test]
+    fn resultats_enregistres_avec_un_moteur_python_restent_lisibles() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = json!({"schema_version": 1, "stories": {
+            "a": {"version": 1, "ok": true, "warnings": 0, "converter": "sha256:aa", "at": 1,
+                  "engine": "python_fallback", "fallback": "unsupported_format"},
+            "b": {"version": 1, "ok": true, "warnings": 1, "converter": "1.1.0", "at": 2,
+                  "engine": "python"},
+            "c": {"version": 1, "ok": true, "warnings": 0, "converter": "2.0.0", "at": 3,
+                  "engine": "rust"}}});
+        write(
+            &dir.path().join(RESULTS_DIR),
+            RESULTS_FILE,
+            doc.to_string().as_bytes(),
+        );
+        let (stories, future) = load_results(dir.path());
+        assert!(!future, "fichier lisible");
+        assert_eq!(stories.len(), 3);
+        assert_eq!(stories["a"].engine.as_deref(), Some("python_fallback"));
+        assert_eq!(stories["a"].fallback.as_deref(), Some("unsupported_format"));
+        assert_eq!(stories["b"].engine.as_deref(), Some("python"));
+        let entry_a = local_entry("a", &stories["a"]);
+        assert_eq!(entry_a.level, CompatLevel::Compatible);
+        assert_eq!(entry_a.engine.as_deref(), Some("python_fallback"));
+        // Une conversion récente remplace l'ancien résultat et porte `rust`, sans repli.
+        record_conversion(dir.path(), &entry("a", Some(1)), "2.0.0", &converted(0), 9);
+        let (stories, _) = load_results(dir.path());
+        assert_eq!(stories["a"].engine.as_deref(), Some("rust"));
+        assert_eq!(stories["a"].fallback, None);
+        assert_eq!(stories["b"].engine.as_deref(), Some("python"));
     }
 
     #[test]

@@ -114,23 +114,22 @@ fn from_hex(s: &str) -> Vec<u8> {
 }
 
 #[test]
-fn table_produite_par_le_python_de_l_installateur() {
+fn table_produite_par_le_python_de_l_oracle() {
     let t = table();
     assert_eq!(
         str_of(field(&t, "unidata_version")),
         UNIDATA_VERSION,
         "table generee avec un Python d'une autre version d'Unicode : relancer \
-         gen_text_cases.py avec le Python 3.14 de build-converter.ps1"
+         gen_text_cases.py avec le Python de ORACLE-VERSIONS.txt"
     );
-    // Même Python que l'installateur (oracle de la parité) : une montée de version dans
-    // build-converter.ps1 impose de régénérer la table.
-    let script = include_str!("../../../apps/flam-launcher/scripts/build-converter.ps1");
-    let installer = script
+    // Même Python que l'oracle épinglé : une montée de version dans ORACLE-VERSIONS.txt impose
+    // de régénérer la table.
+    let pins = include_str!("../../../tools/telmi2flam/ORACLE-VERSIONS.txt");
+    let oracle = pins
         .lines()
-        .find_map(|l| l.trim().strip_prefix("$PythonVersion = '"))
-        .and_then(|v| v.strip_suffix('\''))
-        .expect("$PythonVersion absent de build-converter.ps1");
-    assert_eq!(str_of(field(&t, "python")), installer);
+        .find_map(|l| l.trim().strip_prefix("python="))
+        .expect("python= absent de ORACLE-VERSIONS.txt");
+    assert_eq!(str_of(field(&t, "python")), oracle);
     assert_eq!(int_of(field(&t, "label_max")), LABEL_MAX as i64);
 }
 

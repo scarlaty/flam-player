@@ -1,0 +1,9 @@
+# Versions de l'oracle Python de la parité (PORT-RUST.md §4.3, point 4).
+#
+# Source unique des versions épinglées de l'oracle : Python et Pillow. Les vecteurs figés du
+# crate `telmi2flam` sont produits avec ces versions (générateurs `gen_*.py`), la CI les
+# installe (`.github/workflows/telmi2flam.yml`, `telmi2flam-rs.yml`, `launcher.yml`) et deux
+# tests le vérifient (`text_parity.rs`, `test_parity.py`). Plus aucun Python n'est livré avec
+# l'installateur du launcher (#138) : ces versions ne concernent que les outils de développement.
+python=3.14.8
+pillow=12.3.0

@@ -23,8 +23,8 @@ et arrivent avec les issues du jalon M3.
    11 et sur Windows 10 à jour).
 
 L'installation contient tout : `flam-launcher.exe`, `flam-player.exe` et `SDL2.dll` (le
-player), le convertisseur `telmi2flam/` avec son Python embarqué (aucun Python à installer) et
-le runtime Lua du projet, ainsi que `LICENSES.md` et `licenses/`. Désinstaller : « Applications
+player), le convertisseur `telmi2flam/` (binaire Rust, aucun Python à installer : le moteur et le
+runtime Lua du projet y sont inclus), ainsi que `LICENSES.md` et `licenses/`. Désinstaller : « Applications
 installées » de Windows, ou `uninstall.exe` du dossier d'installation. Les données vivent hors
 de ce dossier et survivent à une mise à jour ou une désinstallation : sources, paramètres et
 sauvegardes de progression sous `%APPDATA%`, cache (catalogues, téléchargements et histoires
@@ -96,16 +96,16 @@ Testeurs de la bêta : [docs/guide-testeur.md](docs/guide-testeur.md). Formats e
 
 ## Dépannage
 
-| Symptôme                               | Piste                                                                                                                                                                                                                           |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Windows « a protégé votre ordinateur » | Installateur non signé : « Informations complémentaires » → « Exécuter quand même »                                                                                                                                             |
-| La fenêtre reste blanche au démarrage  | Installer ou réparer WebView2 (Microsoft Edge WebView2 Runtime)                                                                                                                                                                 |
-| « flam-player est introuvable »        | Réinstaller ; sinon indiquer `flam-player.exe` dans « Paramètres ». Un antivirus peut avoir mis le fichier en quarantaine                                                                                                       |
-| « Python introuvable »                 | Ne devrait pas arriver avec l'installateur (Python embarqué). Dans une installation partielle ou un build de développement, indiquer `python.exe` dans « Paramètres ». Avec le convertisseur embarqué, ce chemin est **ignoré** |
-| Une conversion échoue                  | Le message cite le code de `telmi2flam` ; l'histoire peut être incompatible (badge sur la fiche)                                                                                                                                |
-| Catalogue « hors ligne »               | Réseau ou serveur indisponible : le cache est affiché. « Actualiser » réessaie                                                                                                                                                  |
-| Disque plein                           | « Paramètres » → « Cache » → « Vider le cache » : supprime aussi les histoires installées (à réinstaller depuis leur source) ; la progression sauvegardée et les sources sont conservées                                        |
-| Paramètres ou sources réinitialisés    | Un fichier de configuration corrompu a été sauvegardé en `*.bak` et remplacé ; un bandeau l'indique                                                                                                                             |
+| Symptôme                                                | Piste                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Windows « a protégé votre ordinateur »                  | Installateur non signé : « Informations complémentaires » → « Exécuter quand même »                                                                                                                                                                          |
+| La fenêtre reste blanche au démarrage                   | Installer ou réparer WebView2 (Microsoft Edge WebView2 Runtime)                                                                                                                                                                                              |
+| « flam-player est introuvable »                         | Réinstaller ; sinon indiquer `flam-player.exe` dans « Paramètres ». Un antivirus peut avoir mis le fichier en quarantaine                                                                                                                                    |
+| « Convertisseur introuvable » (`converter_unavailable`) | Réinstaller : `telmi2flam/telmi2flam.exe` manque (antivirus ?). En développement : `cargo build -p telmi2flam`. Python n'est plus utilisé                                                                                                                    |
+| Une conversion échoue                                   | Le message cite le code de `telmi2flam` ; l'histoire peut être incompatible (badge sur la fiche). « Cette histoire utilise un format que le launcher ne sait pas encore convertir » : image non PNG ou archive compressée en bzip2/LZMA, non prise en charge |
+| Catalogue « hors ligne »                                | Réseau ou serveur indisponible : le cache est affiché. « Actualiser » réessaie                                                                                                                                                                               |
+| Disque plein                                            | « Paramètres » → « Cache » → « Vider le cache » : supprime aussi les histoires installées (à réinstaller depuis leur source) ; la progression sauvegardée et les sources sont conservées                                                                     |
+| Paramètres ou sources réinitialisés                     | Un fichier de configuration corrompu a été sauvegardé en `*.bak` et remplacé ; un bandeau l'indique                                                                                                                                                          |
 
 ## Développement
 
@@ -143,17 +143,17 @@ Dans `src-tauri/` : `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo t
 
 Le launcher passe son ffmpeg embarqué au convertisseur par la variable `FLAM_FFMPEG` (vide s'il n'y en a pas) : les MP3 hors 44 100 Hz sont ainsi rééchantillonnés (#46, voir `tools/telmi2flam/README.md`).
 
-L'application installée ne suppose aucun Python sur la machine : le convertisseur est livré avec
-un Python embarquable officiel (3.14.8, signé PSF) et Pillow 12.3.0, sous `<exe>/telmi2flam/`
-(`python/python.exe`, `telmi2flam.py`, `lif.py`, `mp3map.py`, `engine/`, `runtime/`,
-`LICENSES.md`, `BUILD.txt`). `convert.rs` et l'annulation Ctrl+Break sont inchangés : ils lancent
-`python -E -s -B -u -X utf8 telmi2flam.py`. Environ 20 Mo sur disque, 9 Mo compressés dans
-l'installeur.
+L'application installée ne suppose aucun Python sur la machine et n'en livre aucun (#138) : le
+convertisseur est le binaire Rust `telmi2flam.exe` (crate `crates/telmi2flam`, moteur Lua et
+runtime du projet inclus dans le binaire), sous `<exe>/telmi2flam/` avec `LICENSES.md` et
+`BUILD.txt`. Pas de Python, de Pillow, de `telmi2flam.py` ni de `runtime/` à côté. Le launcher
+le lance sans fenêtre, avec `--progress-json` et `--cancel-on-stdin-eof` (annulation par
+fermeture de stdin). Environ 1,5 Mo sur disque.
 
-1. **Construire l'artefact** (réseau, PowerShell seul, sans Python sur la machine de build) :
-   `npm run build:converter`. Le script télécharge Python et Pillow à des versions épinglées,
-   **vérifie leur SHA-256** (publié par python.org / PyPI), allège le paquet, écrit
-   `build/telmi2flam/` (ignoré par Git) puis le contrôle sans Python dans le `PATH`.
+1. **Construire l'artefact** (PowerShell et `cargo` avec la chaîne MSVC, aucun téléchargement) :
+   `npm run build:converter`. Le script construit `telmi2flam.exe` (`cargo build --release
+--locked`, CRT statique, cible `x86_64-pc-windows-msvc`), écrit `build/telmi2flam/` (ignoré
+   par Git) puis le contrôle avec un `PATH` réduit à `System32` (ni DLL VC++ ni Python requis).
 2. **L'embarquer** : `src-tauri/tauri.bundle.conf.json` déclare la ressource
    `../build/telmi2flam/` vers `telmi2flam/` (voir « Installateur Windows » plus bas pour le
    reste). Il est passé explicitement, car l'ajouter à `tauri.conf.json` ferait échouer tout
@@ -171,41 +171,48 @@ l'installeur.
    argument le script le construit avec **Docker** ; sinon `-ArtifactDir <dossier>` reprend la
    sortie de `tools/ffmpeg/build.sh` (la CI la produit dans le job `ffmpeg`).
 
-   Le convertisseur est toujours lancé avec `-B` (aucun `__pycache__` écrit dans le dossier
-   d'installation : le désinstallateur ne les connaîtrait pas).
-
    Même avec `--no-bundle`, Tauri copie `telmi2flam/` à côté de l'exe dans
-   `target/release/` à la racine du dépôt (workspace Cargo ; vérifié : copie identique à l'artefact). Sans `--config`, le
-   build reste valable mais sans convertisseur (le launcher cherche alors Python dans le `PATH`).
+   `target/release/` à la racine du dépôt (workspace Cargo ; vérifié : copie identique à l'artefact). Sans
+   `--config`, le build reste valable mais sans convertisseur : une conversion donne alors
+   `converter_unavailable` (en développement, le launcher cherche `telmi2flam.exe` à côté de
+   son exe : `cargo build -p telmi2flam`).
 
-3. **Vérifier en réel** (Python absent du `PATH`) : deux tests Rust ignorés par défaut
+3. **Vérifier en réel** : deux tests Rust ignorés par défaut
    (`install::convert::tests::embarque`) pilotent le convertisseur embarqué, conversion puis
    annulation :
 
    ```powershell
    # depuis src-tauri/ ; `cargo test --lib --no-run` affiche le binaire de test
-   $env:FLAM_TEST_CONVERTER_DIR = "<...>\target\release\telmi2flam"
+   $env:FLAM_TEST_RUST_CONVERTER = "<...>\target\release\telmi2flam\telmi2flam.exe"
    $env:FLAM_TEST_ARCHIVE = "<histoire de test>.zip"   # synthétique, hors dépôt
    $env:PATH = "C:\Windows\System32"
    & <binaire-de-test>.exe --ignored --nocapture embarque
    ```
 
-   Port Rust (#131) : avec en plus `$env:FLAM_TEST_RUST_CONVERTER = "<...>\telmi2flam.exe"`
-   (`cargo build -p telmi2flam`), les deux tests visent le binaire Rust, par un script relais
-   lancé avec le Python embarqué ; le launcher garde son convertisseur Python.
+   L'annulation du test exige un binaire de debug ou la feature `test-hooks`
+   (`TELMI2FLAM_TEST_FAULT=wait:zip:end`). L'archive de test se génère avec `make_story.py`
+   (issue #46) ; ne jamais committer de contenu sous licence.
 
-   L'archive de test se génère avec `make_story.py` (issue #46) ; ne jamais committer de
-   contenu sous licence. Pillow embarqué n'a pas FreeType : avec le Python embarqué, retirer
-   `font_size=48` de ce script.
+**Plus de Python dans l'installation** : le chemin de Python des paramètres n'est plus utilisé
+par la conversion (l'écran Paramètres le propose encore : retrait prévu en #139). Un ancien
+`settings.json` qui porte `converter_engine: "python"` reste lisible : le champ est ignoré et
+Rust est utilisé. Une mise à jour depuis une version qui livrait Python supprime l'ancien
+dossier `telmi2flam/python/` : le désinstallateur de la version précédente retire exactement
+les fichiers qu'elle avait installés (voir « Mise à jour »).
 
-**Python configuré ignoré** : quand le convertisseur embarqué est présent, son Python est
-toujours utilisé ; le chemin de Python des paramètres ne sert que de repli (build de
-développement, installation partielle). L'écran Paramètres l'indique.
+**Formats non pris en charge** : le convertisseur Rust refuse (`unsupported_format`, code 7)
+une histoire dont une image n'est pas un PNG, ou dont l'archive utilise la compression bzip2 ou
+LZMA. Il n'y a plus de repli : l'installation échoue avec le message « Cette histoire utilise un
+format que le launcher ne sait pas encore convertir (image non PNG ou archive compressée en
+bzip2/LZMA). » (texte fixe : le message du convertisseur, qui peut citer un fichier de
+l'histoire, n'est ni affiché ni journalisé). La campagne de parité sur 30 archives réelles (#135)
+n'en a trouvé aucune.
 
 **Licences redistribuées** : `telmi2flam/LICENSES.md` (produit par `build-converter.ps1`) liste
-Python (PSF-2.0, libffi, libtommath…), `python.cat`, `vcruntime140*.dll` (redistribuables
-Microsoft), Pillow (renvoi vers `licenses/LICENSE` de la roue, qui regroupe les bibliothèques
-intégrées), le runtime et les scripts du dépôt (GPL v3). `LICENSES.md` à la racine de
+le binaire (GPL v3, et HPND pour le code dérivé de Pillow : `resample.rs`, `blur.rs`), le
+runtime C Microsoft lié statiquement et `vcruntime140.dll`. Python et Pillow ne sont plus livrés ;
+seule la mention du code de Pillow porté en Rust reste (`THIRD-PARTY-NOTICES.txt`, texte intégral
+MIT-CMU). `LICENSES.md` à la racine de
 l'installation couvre le reste (flam-launcher et flam-player GPL v3, SDL2 zlib, Lua MIT, LVGL MIT,
 minimp3 CC0, polices Nunito et Montserrat OFL) ; les textes sont copiés des sous-modules dans
 `licenses/` par `build-player.ps1`.
@@ -216,8 +223,7 @@ Installateur **NSIS**, par utilisateur (`installMode: currentUser`, sans droits
 d'administrateur), **non signé** (SmartScreen avertit). Prérequis de build : Rust, Node 24+,
 Visual Studio **2022** avec les outils C++ x64 (le build Rust doit se faire depuis
 « x64 Native Tools » ou après `vcvars64.bat`), CMake et Ninja (`pip install cmake ninja` si
-absents), sous-modules initialisés (`git submodule update --init --recursive`), réseau (Python,
-Pillow, NSIS).
+absents), sous-modules initialisés (`git submodule update --init --recursive`), réseau (NSIS).
 
 **Mise à jour** : avant la copie, le hook NSIS `src-tauri/windows/installer-hooks.nsh`
 (`NSIS_HOOK_PREINSTALL`) lance le désinstallateur de la version précédente (`/S /UPDATE`, sur
@@ -271,7 +277,7 @@ soit, en détail :
    et dépose les mêmes ressources à côté de `flam-launcher.exe`.
 
 `tauri.bundle.conf.json` (fusionné avec `tauri.conf.json`) restreint les cibles à `nsis` et
-déclare les ressources : `telmi2flam/` (Python, Pillow, scripts, `runtime/`), `flam-player.exe` et
+déclare les ressources : `telmi2flam/` (`telmi2flam.exe`, licences), `flam-player.exe` et
 `SDL2.dll` **à côté de l'exécutable** (c'est là que `settings::detect_player` les cherche),
 `vcruntime140.dll`, `licenses/` et `LICENSES.md`. Le launcher lance le player avec pour dossier courant celui de
 `flam-player.exe` : `SDL2.dll` est ainsi trouvée. Installation sans interaction :
@@ -282,7 +288,7 @@ désinstallation : `<dossier>\uninstall.exe /S _?=<dossier>`.
 
 `src-tauri/tests/e2e.rs` pilote les **services réels** du backend, sans WebView :
 `CatalogService` lit un catalogue servi par un serveur HTTP local factice, `InstallService`
-télécharge l'archive et la convertit avec le vrai `telmi2flam.py` (Python embarqué), `Library`
+télécharge l'archive et la convertit avec le vrai `telmi2flam.exe`, `Library`
 la liste, `PlayerService` lance le vrai `flam-player.exe` (`SDL_VIDEODRIVER=dummy`,
 `SDL_AUDIODRIVER=dummy`, `SDL_RENDER_DRIVER=software`), puis le player est fermé et
 l'événement `exited` est reçu. Le player ne se termine pas seul : sa fin est obtenue par
@@ -304,7 +310,7 @@ npm run test:e2e             # sur target/release (racine du dépôt) ; ou FLAM_
 Sans `FLAM_E2E_REQUIRE=1` et sans `flam-player.exe`, `cargo test` **saute** ce test : il passe au
 vert sans rien vérifier, et le message n'apparaît qu'avec `-- --nocapture` ; `npm run test:e2e` et
 la CI posent `FLAM_E2E_REQUIRE=1` (le test échoue alors si un prérequis manque) ;
-variables : `FLAM_E2E_INSTALL_DIR`, ou `FLAM_E2E_PLAYER` + `FLAM_E2E_CONVERTER_DIR`. La CI
+variables : `FLAM_E2E_INSTALL_DIR`, ou `FLAM_E2E_PLAYER` + `FLAM_E2E_RUST_CONVERTER`. La CI
 (`.github/workflows/launcher.yml`) compile le player, construit l'installateur, l'installe en
 silence, y exécute ce test puis le désinstalle en vérifiant qu'il ne reste aucun fichier.
 
@@ -318,7 +324,7 @@ l'e2e et l'artefact tournent toujours ; sur `push` vers main, tout tourne.
 
 ### À vérifier sur une session Windows propre
 
-Non couvert par la CI ni par le poste de développement (où Python, Visual Studio et WebView2
+Non couvert par la CI ni par le poste de développement (où Visual Studio et WebView2
 sont déjà présents) : à cocher par le mainteneur avant publication.
 
 - [ ] L'installateur s'exécute sans droits d'administrateur ; SmartScreen propose
@@ -330,7 +336,7 @@ sont déjà présents) : à cocher par le mainteneur avant publication.
 - [ ] Fenêtre du player (carte graphique réelle, audio réel) : image et son.
 - [ ] Mise à jour par-dessus une version installée ; désinstallation (données utilisateur
       conservées, dossier d'installation vide).
-- [ ] Antivirus : pas de quarantaine de `flam-player.exe` ni de `python.exe`.
+- [ ] Antivirus : pas de quarantaine de `flam-player.exe` ni de `telmi2flam.exe`.
 
 ## Publier une pré-version
 
@@ -405,7 +411,7 @@ apps/flam-launcher/
       external.rs          Ouverture d'une page du dépôt dans le navigateur (`open_external`, #323)
       error.rs             `AppError` (thiserror), sérialisée en `{ kind, message }`
       storage.rs           Persistance JSON : écriture atomique, `*.bak`, migration de schéma
-      settings.rs          `settings.json`, détection du player et de Python, commandes `settings_*`
+      settings.rs          `settings.json`, détection du player et de Python (réglage obsolète, #139), commandes `settings_*`
       cache.rs             Taille du cache et vidage (sous-dossiers de l'application seulement)
       sources.rs           `sources.json`, source par défaut et implicite, commandes `sources_*`
       story.rs             `StoryEntry` / `StoryKind` : type commun des histoires de toutes les sources
@@ -671,7 +677,7 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 | `folder_unavailable`    | Dossier d'une source locale absent ou inaccessible (disque débranché…)                              |
 | `cancelled`             | Tâche d'installation annulée                                                                        |
 | `download_invalid`      | Téléchargement incomplet, trop gros (4 Gio), ou qui n'est pas l'archive attendue                    |
-| `converter_unavailable` | `telmi2flam.exe` introuvable (moteur `rust`), ou Python / `telmi2flam.py` (moteur `python`)         |
+| `converter_unavailable` | `telmi2flam.exe` introuvable                                                                        |
 | `conversion`            | Échec de `telmi2flam` ; le code du convertisseur (`missing_asset`…) est dans `TaskError.code`       |
 | `player_unavailable`    | `flam-player.exe` introuvable (ni configuré ni détecté) ou impossible à lancer                      |
 | `player_busy`           | Un player tourne déjà (un seul à la fois)                                                           |
@@ -970,10 +976,10 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
    `Content-Length`, une coupure ne passe pas pour un succès), reprise par `Range` + `If-Range` (ETag fort ou
    `Last-Modified`, mémorisé dans la file) ; un `416` ou une réponse `200` repart de zéro. Délai
    de connexion 15 s, 60 s au plus sans données, pas de délai total. Annulation : `.part` supprimé.
-2. **Conversion** (zip Telmi) : `python telmi2flam.py <archive> -o <cache>/library/.staging/<tâche>.plain.pk
---progress-json`, processus sans console (`CREATE_NO_WINDOW` + `CREATE_NEW_PROCESS_GROUP`),
-   interpréteur durci (`-E -s -B -u -X utf8`, lancé depuis `library/.staging/` ; `-I` retirerait
-   le dossier du script de `sys.path`, d'où `telmi2flam` importe ses modules). stdout est lu ligne par ligne (ligne non JSON ou événement inconnu
+2. **Conversion** (zip Telmi) : `telmi2flam.exe <archive> -o <cache>/library/.staging/<tâche>.plain.pk
+--progress-json --thumb-fit <mode> --cancel-on-stdin-eof`, processus sans console
+   (`CREATE_NO_WINDOW` + `CREATE_NEW_PROCESS_GROUP`), lancé depuis `library/.staging/`, stdin en
+   tube gardé ouvert. stdout est lu ligne par ligne (ligne non JSON ou événement inconnu
    ignoré) ; stderr, décodé en tolérant les erreurs, ne sert qu'au message de repli (fin du
    flux, lu par morceaux dans un tampon borné à 4 Kio) si aucun événement `error` n'est reçu
    (`code` = `exit_<n>`). Le convertisseur est lancé **suspendu** (`CREATE_SUSPENDED`), rattaché
@@ -982,10 +988,12 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
    être créé (avertissement tracé), la conversion continue sans lui : l'arrêt forcé se limite alors
    au processus direct. La création du job et la reprise (appels Win32 bloquants) s'exécutent
    hors du runtime (`spawn_blocking`).
-   **Annulation** : `CTRL_BREAK_EVENT` (le convertisseur nettoie et sort avec 130), envoyé par un
-   court assistant Python isolé (`-I`) sans fenêtre qui s'attache à la console cachée du convertisseur (une
-   application graphique n'a pas de console, et `GenerateConsoleCtrlEvent` ne vise que la
-   sienne) ; arrêt forcé après 5 s de grâce ; puis suppression de `<sortie>.<pid>.part`.
+   **Aucun repli** (#138) : un échec du convertisseur est rendu tel quel, y compris
+   `unsupported_format` (code 7 : image non PNG, archive compressée en bzip2/LZMA), erreur finale
+   dont le message est fixe et non technique (voir « Convertisseur embarqué »).
+   **Annulation** : fermeture de stdin (`--cancel-on-stdin-eof` : le convertisseur nettoie et sort
+   avec 130, sans console ni Python) ; arrêt forcé après 5 s de grâce ; puis suppression de
+   `<sortie>.<pid>.part`.
    Un `.plain.pk` est vérifié (`info.plain`, `uuid.bin`, `main.lua`) et copié ; un dossier `.plain`
    est empaqueté en zip « stored » : racine, fichiers requis ou entrées qui sont des liens
    symboliques ou jonctions sont **refusés** (fichiers ouverts sans suivre les liens), taille
@@ -1078,15 +1086,13 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
   une coupure reprend le `.part`, et une archive complète n'est réutilisée que si son lien et
   sa taille correspondent (sinon elle est retéléchargée). L'écriture de `install_queue.json` se
   fait hors des verrous, sur un thread bloquant, avec des écritures ordonnées.
-- **Convertisseur** : `<exe>/telmi2flam/telmi2flam.py` (application installée ; construit par `npm run build:converter`, voir « Convertisseur embarqué »),
-  sinon en développement `tools/telmi2flam/telmi2flam.py` d'un dossier ancêtre. Python : `resolved.python_path`.
-  Moteur Rust (#136, réglage caché `converter_engine`) : `<exe>/telmi2flam/telmi2flam.exe`, sinon en
-  développement `telmi2flam.exe` à côté de l'exécutable (même `target/` Cargo, `cargo build -p telmi2flam`).
+- **Convertisseur** : `<exe>/telmi2flam/telmi2flam.exe` (application installée ; construit par `npm run build:converter`, voir « Convertisseur embarqué »), sinon en
+  développement `telmi2flam.exe` à côté de l'exécutable (même `target/` Cargo, `cargo build -p telmi2flam`). Absent : `converter_unavailable`. Plus de Python ni de `telmi2flam.py` (#138).
 - **Bibliothèque** : `library.json` = `{ schema_version, stories: LibraryEntry[] }` avec
   `LibraryEntry { uuid, version, title, file, size, installed_at, converter, source: StoryEntry,
 thumb, source_stamp }`.
   `converter` est la version de `telmi2flam` lue dans le champ `version` de l'événement `start`
-  (#60), avec en repli l'empreinte `sha256:<12 hex>` de `telmi2flam.py`. **Une installation par `uuid`** : la dernière installée remplace la précédente (autre
+  (#60), avec en repli l'empreinte `sha256:<12 hex>` de `telmi2flam.exe` (`telmi2flam.py` pour une entrée enregistrée avant #138). **Une installation par `uuid`** : la dernière installée remplace la précédente (autre
   version, ou `.plain` / `.plain.pk` de même `uuid` d'un dossier source). Un index corrompu est
   sauvegardé en `*.bak` et repart vide. `library_list` ignore les entrées dont le fichier a
   disparu.
@@ -1146,27 +1152,21 @@ thumb, source_stamp }`.
 libre). Absent d'un fichier ancien : `flou` ; une valeur inconnue retombe aussi sur `flou`. Il ne
 s'applique qu'aux prochaines conversions : les histoires déjà converties gardent leur vignette.
 
-`converter_engine` (`python` ou `rust`, `rust` par défaut depuis #137) est un réglage **caché** (#136) : absent
-de l'écran Paramètres, il se change à la main dans `settings.json`, et `settings_set` conserve la
-valeur enregistrée. Il est relu au début de chaque tâche : `rust` convertit avec
-`telmi2flam/telmi2flam.exe` (port Rust, sans Python ; annulation par fermeture de stdin,
-`--cancel-on-stdin-eof`), `python` avec `telmi2flam.py`. Valeur absente, inconnue ou mal typée :
-`rust` ; un `settings.json` qui porte explicitement `python` le garde. Moteur `rust` sans binaire :
-`converter_unavailable`, sans repli sur Python (le repli de PORT-RUST.md §5.4 ne couvre que
-l'échec d'un binaire présent ; l'installateur livre toujours `telmi2flam.exe`, et en
-développement il faut `cargo build -p telmi2flam` ou `converter_engine = python`).
+`converter_engine` (`python` ou `rust`, réglage caché de #136 et #137) **n'existe plus** (#138) :
+Rust est le seul convertisseur. Un `settings.json` ancien qui le porte, avec n'importe quelle
+valeur (`python` compris), reste lisible : le champ est ignoré, Rust est utilisé, et il disparaît
+du fichier à la prochaine écriture. `telmi2flam.exe` absent : `converter_unavailable`, sans
+repli (l'installateur le livre toujours ; en développement : `cargo build -p telmi2flam`).
 
-Moteur `rust` : repli automatique sur Python (#137, PORT-RUST.md §6), si Python et `telmi2flam.py`
-sont détectés, **seulement** si le binaire signale `unsupported_format` (code 7, délégation
-attendue), `internal_error` (panique), ou plante (code de sortie hors {0, 2, 3, 4, 5, 6, 7, 130},
-code 0 sans `done`, aucun événement `start`, lancement impossible). Jamais pour une erreur de
-contenu (3/4/5), `output_error` (disque plein, droits) ni une annulation. Le résultat de
-compatibilité (#20) de la conversion locale porte `engine` (`rust`, `python`, `python_fallback`) et,
-après un repli, `fallback` (`unsupported_format`, `internal_error`, `crash`) ; les journaux n'ont
-que la cause et le code de sortie, jamais le message du convertisseur. Le défaut est `rust`
-(campagne de parité #135 conforme au seuil §4.3). Le Rust annonce la version `2.0.0` (décision D6) :
-les résultats de compatibilité enregistrés avec `1.0.0` passent à « obtenus avec une version
-antérieure ».
+Le repli sur Python de #137 est supprimé : tout échec du convertisseur est rendu tel quel, y
+compris `unsupported_format` (code 7, erreur finale au message fixe, voir « Convertisseur
+embarqué »). Le résultat de compatibilité (#20) de la conversion locale porte `engine` (`rust`
+désormais). Les résultats enregistrés avant #138 restent lisibles avec leur `engine` (`python`,
+`python_fallback`) et leur `fallback` (`unsupported_format`, `internal_error`, `crash`) ; ils sont
+remplacés par la prochaine conversion de l'histoire. Les journaux n'ont jamais le message du
+convertisseur. Le Rust annonce la version `2.0.0` (décision D6) : les résultats de compatibilité
+enregistrés avec `1.0.0` (Python) ou `1.1.0` (repli Python, dont `telmi2flam.py` annonçait cette
+version) passent à « obtenus avec une version antérieure ».
 
 `max_downloads` (1 à 4, 2 par défaut) borne les téléchargements simultanés du pipeline
 d'installation ; absent d'un fichier ancien, il prend sa valeur par défaut (`#[serde(default)]`).
@@ -1181,8 +1181,7 @@ Un chemin à `null` signifie « automatique » ; `settings_get` renvoie aussi le
 
 - `player_path` : `flam-player.exe` à côté de l'exécutable de l'appli, sinon (build de
   développement) `build/flam-player.exe` dans un dossier ancêtre (racine du dépôt) ;
-- `python_path` : d'abord le Python embarqué `<exe>/telmi2flam/python/python.exe` (présent seulement si
-  `<exe>/telmi2flam/telmi2flam.py` l'est aussi), sinon `python.exe`, `python3.exe` puis `py.exe` (lanceur Windows) trouvés dans le
+- `python_path` (réglage obsolète : plus aucune conversion ne lance Python, retrait de l'écran Paramètres en #139) : d'abord un Python embarqué `<exe>/telmi2flam/python/python.exe` (plus livré depuis #138), sinon `python.exe`, `python3.exe` puis `py.exe` (lanceur Windows) trouvés dans le
   `PATH` (aucun processus ni script n'est exécuté ; les entrées relatives du `PATH` sont ignorées) ;
 - `cache_dir` : `%LOCALAPPDATA%/flam-launcher/cache`.
 
