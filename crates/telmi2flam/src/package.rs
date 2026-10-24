@@ -1,6 +1,6 @@
-//! Assemblage en mémoire du paquet FLAM : la partie de `_convert` (`tools/telmi2flam/telmi2flam.py`)
-//! qui va de la lecture de `metadata.json` à la liste ordonnée des fichiers de sortie. L'écriture
-//! du `.plain.pk` et du dossier `.plain` est dans [`crate::output`].
+//! Assemblage en mémoire du paquet FLAM : la partie de `_convert` (de l'ancien convertisseur
+//! Python) qui va de la lecture de `metadata.json` à la liste ordonnée des fichiers de sortie.
+//! L'écriture du `.plain.pk` et du dossier `.plain` est dans [`crate::output`].
 //!
 //! Ordre des étapes identique à Python, pour que la première erreur et les avertissements
 //! soient les mêmes : `metadata.json`, `nodes.json`, `notes.json`, titre, sous-titre et UUID,
@@ -35,7 +35,7 @@
 //!
 //! Parité avec Python : `tests/package_parity.rs` compare les octets du `.plain.pk`, les codes
 //! et les messages des avertissements, avec `FLAM_FFMPEG` vide des deux côtés (Python :
-//! `tests/data/gen_package_cases.py`) ; `tests/ffmpeg.rs` la vérifie avec un faux ffmpeg.
+//! `gen_package_cases.py` (supprimé)) ; `tests/ffmpeg.rs` la vérifie avec un faux ffmpeg.
 //! Écarts assumés (listés dans `package_parity.rs`, `assumed_divergence`) : formats délégués à
 //! Python (`unsupported_format`, D4), JSON hors limites, entrées chiffrées, noms non UTF-8 et
 //! positions d'en-tête négatives, où le Rust échoue avec un code propre au port. Les lignes

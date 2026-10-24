@@ -12,11 +12,11 @@ Verifie :
   4. en-tetes LIF (img/*.lif) et tables .mp3map (sounds/*.mp3map)
 
 Les donnees de nodes.lua sont lues par un petit parseur Python du sous-ensemble
-Lua genere par telmi2flam.py (aucune dependance requise).
+Lua genere par le convertisseur telmi2flam (aucune dependance requise).
 
 Usage : python validate.py <histoire.plain.pk | dossier .plain>
 
-Un dossier .plain extrait (telmi2flam.py --plain ou -o X.plain) subit les memes
+Un dossier .plain extrait (telmi2flam --plain ou -o X.plain) subit les memes
 controles, sauf la methode STORED (propre a l'archive .pk).
 """
 import os
@@ -37,7 +37,7 @@ LIF_MAGIC = b"liff"
 LIF_END = b"\x00\x00\x00\x00\x00\x00\x00\x01"
 LIF_MAX_DIM = 2047  # 11 bits de lv_img_header_t (LVGL 8.3), cf. lif_decoder.c
 # Runtime du projet indispensable au demarrage : lignes "!" du manifeste unique
-# runtime/manifest.txt (lu aussi par telmi2flam.py, embarque par le port Rust).
+# runtime/manifest.txt (embarque aussi dans le binaire telmi2flam par build.rs).
 RUNTIME_MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime", "manifest.txt")
 
 
@@ -72,7 +72,7 @@ def lua_to_py(v):
 
 
 # ---------------------------------------------------------------------------
-# Parseur du sous-ensemble Lua "donnees" produit par telmi2flam.py
+# Parseur du sous-ensemble Lua "donnees" produit par telmi2flam
 # (return { ... } avec chaines, nombres, booleens, nil, tables)
 # ---------------------------------------------------------------------------
 class LuaDataError(Exception):

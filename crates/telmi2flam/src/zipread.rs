@@ -48,7 +48,7 @@ const MIN_READ_SIZE: usize = 4096;
 /// morceaux de cette taille (Python le lit d'un bloc ; le résultat est le même).
 const CODEC_PIECE: usize = 1 << 20;
 
-/// Échec de lecture, classé selon ce que `telmi2flam.py` en fait.
+/// Échec de lecture, classé selon ce que l'ancien convertisseur Python en faisait.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZipError {
     /// `BadZipFile`, `NotImplementedError`, `EOFError`, `zlib.error` : code 3 en Python.

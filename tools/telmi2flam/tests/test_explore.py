@@ -7,6 +7,7 @@ synthetiques convertis a la volee.
 Necessitent flam-player.exe (variable FLAM_BUILD_DIR, sinon <depot>/build) :
 sautes sinon.
 """
+import contextlib
 import json
 import os
 import shutil
@@ -27,7 +28,7 @@ sys.dont_write_bytecode = True
 
 import explore  # noqa: E402
 import converter_bin  # noqa: E402
-from test_telmi2flam import mp3_frames, png  # noqa: E402
+from campaign_fixtures import mp3_frames, png  # noqa: E402
 
 try:
     CONVERTER = converter_bin.find_converter()
@@ -592,8 +593,10 @@ class TestParentKilled(unittest.TestCase):
 
 
 class FakeProc:
-    def __init__(self, pid=4242, alive=True):
-        self.pid, self.alive, self.calls = pid, alive, []
+    def __init__(self, pid=4242, alive=True, calls=None):
+        self.pid, self.alive = pid, alive
+        self.calls = [] if calls is None else calls
+        self.returncode = None
 
     def poll(self):
         return None if self.alive else 0
@@ -620,7 +623,58 @@ class TestStop(unittest.TestCase):
         proc = FakeProc(alive=False)
         killed, closed = self.stop(proc, nt=False)
         self.assertEqual(killed, [4242])
-        self.assertEqual((proc.calls, closed), ([], []))
+        # le player sorti seul est recolte apres le killpg (zombie garde jusque-la, #456)
+        self.assertEqual((proc.calls, closed), (["wait"], []))
+
+    def posix_waitid(self, exited, calls):
+        """os.waitid factice (absent sous Windows) : le player est sorti (`exited`) ou non ;
+        WNOWAIT exige (le zombie ne doit pas etre recolte par la scrutation)."""
+        consts = {"P_PID": 1, "WEXITED": 4, "WNOHANG": 1, "WNOWAIT": 0x1000000, "CLD_EXITED": 1}
+
+        def waitid(idtype, pid, options):
+            calls.append("waitid")
+            assert options & consts["WNOWAIT"] and options & consts["WNOHANG"]
+            if not exited:
+                return None
+            return mock.Mock(si_code=consts["CLD_EXITED"], si_status=3)
+        patches = [mock.patch.object(explore.os, k, v, create=True) for k, v in consts.items()]
+        return patches + [mock.patch.object(explore.os, "waitid", waitid, create=True)]
+
+    def test_posix_zombie_kept_until_group_killed(self):
+        """#456 : sous POSIX, ni la scrutation ni _stop ne recoltent le player avant le
+        killpg : son PID (identifiant du groupe) ne peut pas avoir ete reutilise."""
+        calls = []
+        proc = FakeProc(alive=False, calls=calls)
+        proc.poll = mock.Mock(side_effect=AssertionError("poll() recolterait le zombie"))
+        with contextlib.ExitStack() as stack:
+            for p in self.posix_waitid(True, calls):
+                stack.enter_context(p)
+            stack.enter_context(mock.patch.object(explore.os, "name", "posix"))
+            stack.enter_context(mock.patch.object(signal, "SIGKILL", 9, create=True))
+            stack.enter_context(mock.patch.object(
+                explore.os, "killpg", lambda pid, sig: calls.append("killpg"), create=True))
+            self.assertEqual(explore._exit_code(proc), 3)
+            explore._stop(proc, None)
+        self.assertEqual(calls, ["waitid", "waitid", "killpg", "wait"])
+
+    def test_posix_exit_code_running_and_signal(self):
+        calls = []
+        proc = FakeProc(calls=calls)
+        with contextlib.ExitStack() as stack:
+            for p in self.posix_waitid(False, calls):
+                stack.enter_context(p)
+            stack.enter_context(mock.patch.object(explore.os, "name", "posix"))
+            self.assertIsNone(explore._exit_code(proc))
+            # tue par un signal : -signal, comme Popen.returncode
+            killed = mock.Mock(si_code=2, si_status=9)
+            stack.enter_context(mock.patch.object(explore.os, "waitid",
+                                                  lambda *a: killed, create=True))
+            self.assertEqual(explore._exit_code(proc), -9)
+            # deja recolte ailleurs : Popen.poll()
+            def gone(*a):
+                raise ChildProcessError()
+            stack.enter_context(mock.patch.object(explore.os, "waitid", gone, create=True))
+            self.assertIsNone(explore._exit_code(proc))
 
     def test_posix_running_player_group_and_process_killed(self):
         proc = FakeProc()

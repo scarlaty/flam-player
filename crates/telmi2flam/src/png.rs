@@ -1,4 +1,4 @@
-//! Décodage PNG vers RGBA avec la sémantique de `_open_rgba` (`tools/telmi2flam/telmi2flam.py`)
+//! Décodage PNG vers RGBA avec la sémantique de `_open_rgba` (de l'ancien convertisseur Python)
 //! exécuté avec **Pillow 12.3.0** : mêmes pixels, et image illisible exactement quand Python lève
 //! une exception (avertissement `image_unreadable`).
 //!
@@ -760,14 +760,14 @@ fn read_header(cur: &mut Cursor, cancelled: &dyn Fn() -> bool) -> Result<(Header
     Ok((h, tile, len))
 }
 
-/// `_png_ihdr` de `telmi2flam.py` : (profondeur, type de couleur) lus à position fixe, si le
-/// premier chunk est un `IHDR`.
+/// `_png_ihdr` de l'ancien convertisseur Python : (profondeur, type de couleur) lus à position
+/// fixe, si le premier chunk est un `IHDR`.
 fn fixed_ihdr(data: &[u8]) -> Option<(u8, u8)> {
     (data.len() >= 26 && &data[12..16] == b"IHDR").then(|| (data[24], data[25]))
 }
 
-/// `_png_trns_key` de `telmi2flam.py` : premier `tRNS` avant `IDAT`/`IEND`, parcouru naïvement
-/// depuis l'octet 8. `Err` : `struct.error` sur un corps tronqué (l'image est illisible).
+/// `_png_trns_key` de l'ancien convertisseur Python : premier `tRNS` avant `IDAT`/`IEND`, parcouru
+/// naïvement depuis l'octet 8. `Err` : `struct.error` sur un corps tronqué (l'image est illisible).
 fn raw_trns_key(data: &[u8]) -> Result<Option<PilTrns>> {
     let mut pos = 8usize;
     while pos.checked_add(8).is_some_and(|e| e <= data.len()) {

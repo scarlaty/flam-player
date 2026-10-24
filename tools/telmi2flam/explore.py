@@ -229,15 +229,38 @@ def _kill(p):
     p.wait()
 
 
+def _exit_code(p):
+    """Code de sortie du player, ou None s'il tourne encore. POSIX (avec os.waitid) : sans
+    recolter le processus (WNOWAIT) : le zombie garde son PID, donc l'identifiant du groupe,
+    jusqu'au killpg de _stop ; un PID recycle entre-temps ne peut pas etre vise (#456).
+    Ailleurs : Popen.poll()."""
+    waitid = getattr(os, "waitid", None)
+    if os.name == "nt" or waitid is None or p.returncode is not None:
+        return p.poll()
+    try:
+        info = waitid(os.P_PID, p.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except ChildProcessError:           # deja recolte ailleurs
+        return p.poll()
+    if info is None:
+        return None
+    # meme convention que Popen.returncode : -signal si le player a ete tue
+    return info.si_status if info.si_code == os.CLD_EXITED else -info.si_status
+
+
 def _stop(p, guard):
     """Fin de `run_player`, toujours : arrete le player s'il tourne encore, et ses
     descendants meme s'il est sorti seul (symetrie Windows/POSIX : le Job Object ferme tue
-    les restes, le groupe de processus POSIX aussi)."""
+    les restes, le groupe de processus POSIX aussi). POSIX : le groupe est tue AVANT de
+    recolter le player (zombie garde par _exit_code), puis le player est recolte."""
     try:
-        if p.poll() is None:
+        if os.name != "nt":
+            running = _exit_code(p) is None
+            _killpg(p)                  # sorti seul ou non : ses descendants du groupe restent
+            if running:
+                p.kill()
+            p.wait()                    # recolte le zombie (PID libere seulement ici)
+        elif p.poll() is None:
             _kill(p)
-        elif os.name != "nt":
-            _killpg(p)                  # sorti seul : ses descendants du groupe restent
     finally:
         if os.name == "nt":
             _close_job(guard)           # tue aussi les descendants restants
@@ -268,12 +291,12 @@ def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
         code = None
         try:
             while time.time() - t0 < timeout:
-                code = p.poll()
+                code = _exit_code(p)
                 if code is not None:
                     break
                 if until is not None and until():
                     time.sleep(grace)   # laisser la suite se faire (retour bibliotheque, crash ?)
-                    code = p.poll()
+                    code = _exit_code(p)
                     break
                 time.sleep(0.2)
         finally:

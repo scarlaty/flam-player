@@ -1,7 +1,8 @@
 //! Runtime du projet embarqué : lit le manifeste unique `tools/telmi2flam/runtime/manifest.txt`
-//! (aussi lu par `telmi2flam.py` et `validate.py`) et génère la table `include_bytes!` de
-//! `src/runtime.rs` (PORT-RUST.md §2.1). Un manifeste mal formé arrête la compilation ; le
-//! test `manifeste_identique_aux_dossiers` vérifie qu'il liste exactement les dossiers.
+//! (aussi lu par l'ancien convertisseur Python et `validate.py`) et génère la table
+//! `include_bytes!` de `src/runtime.rs` (PORT-RUST.md §2.1). Un manifeste mal formé arrête la
+//! compilation ; le test `manifeste_identique_aux_dossiers` vérifie qu'il liste exactement les
+//! dossiers.
 
 use std::collections::HashSet;
 use std::env;

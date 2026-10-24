@@ -60,7 +60,8 @@ Etapes, recapitulatif en fin de sortie (`RESULTAT : OK` si tout passe) :
    (`--timeout 30`), pour qu'un crash ou un blocage ne masque pas les autres ; codes :
    1 = assertion/erreur Lua, 3 = timeout (watchdog), autre = crash. Hors `strict`, leurs
    echecs n'affectent pas le code de sortie.
-5. **Convertisseur** : `tools\telmi2flam\tests` (python unittest) ; saute sans python/Pillow.
+5. **Convertisseur** : `tools\telmi2flam\tests` (python unittest, outils de campagne sur le
+   binaire `telmi2flam`) ; saute sans python.
 6. **Bout en bout** : `tests\e2e\e2e_telmi.py` (paquet TELMI -> telmi2flam -> flam-player
    pilote, pilotes SDL dummy) ; saute sans python ou flam-player.exe.
 
@@ -166,7 +167,8 @@ tests/
   audio/                   — Audio reel (flam-test-audio) : seek, pause, reouverture
   e2e/e2e_telmi.py         — Bout en bout TELMI -> telmi2flam -> flam-player
 tools/telmi2flam/
-  telmi2flam.py            — Convertisseur TELMI -> .plain.pk, version Python de reference (python 3 + Pillow) ; le convertisseur livre est crates/telmi2flam (Rust)
+  (convertisseur)          — crates/telmi2flam (Rust, binaire telmi2flam) ; l'ancienne version Python est supprimee (#140)
+  parity.py                — Parite du binaire avec les references figees (tests/data de la crate)
   validate.py              — Verification d'un .plain.pk ou d'un dossier .plain
   explore.py               — Exploration automatique d'une histoire dans flam-player sans fenetre
   engine/                  — Moteur d'histoire Lua embarque (story.lua, main.lua)
@@ -200,8 +202,8 @@ Le player extrait automatiquement le `.pk` dans un dossier `.plain` adjacent, et
 si le `.pk` a change (taille ou date, temoin `<dossier>/.extracted`). L'extraction refuse les chemins dangereux (`..`, absolus, `C:`,
 `\` ou `/` en tete) et les tailles incoherentes.
 
-Pour une histoire TELMI, ne pas assembler a la main : `python tools/telmi2flam/telmi2flam.py
-histoire.zip -o histoire.plain.pk` puis `python tools/telmi2flam/validate.py histoire.plain.pk`.
+Pour une histoire TELMI, ne pas assembler a la main : `cargo build -p telmi2flam --release` puis
+`target\release\telmi2flam.exe histoire.zip -o histoire.plain.pk` puis `python tools/telmi2flam/validate.py histoire.plain.pk`.
 Les images de scene sont generees en 320x212 (zone sous le bandeau), ajustees sans deformation.
 
 ### Creer un .plain.pk depuis un dossier .plain

@@ -18,7 +18,7 @@ sys.dont_write_bytecode = True
 
 import compat  # noqa: E402
 import converter_bin  # noqa: E402
-from test_telmi2flam import Base, std_files  # noqa: E402
+from campaign_fixtures import Base, std_files  # noqa: E402
 
 
 def setUpModule():

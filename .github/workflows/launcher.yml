@@ -170,15 +170,16 @@ jobs:
           # Workspace Cargo à la racine : un seul `target/` partagé avec crates/telmi2flam.
           workspaces: ". -> target"
 
-      # Python de développement seulement (faux convertisseur des tests, oracle de l'archive des
-      # podcasts) : le launcher ne livre plus de Python (#138). Versions de l'oracle épinglées,
-      # source unique : tools/telmi2flam/ORACLE-VERSIONS.txt (vérifiée par test_parity.py).
+      # Python de développement seulement (faux convertisseur des tests de pack, validate.py sur
+      # l'archive des podcasts) : le launcher ne livre plus de Python (#138) et le convertisseur
+      # Python est supprimé (#140) : ni Pillow ni oracle. `lupa` : contrôle de syntaxe Lua de
+      # validate.py. Version de Python : celle des autres workflows (vérifiée par test_parity.py).
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14.8"
 
-      - name: Installer les dépendances de l'oracle
-        run: pip install "Pillow==12.3.0" "lupa==2.8"
+      - name: Installer les dépendances de validate.py
+        run: pip install "lupa==2.8"
 
       - name: Installer les dépendances
         run: npm ci
@@ -218,20 +219,20 @@ jobs:
       - name: Convertisseur embarqué (telmi2flam.exe, sans Python)
         run: npm run build:converter
 
-      # Archive Telmi d'un pack de podcasts (#216) convertie par le telmi2flam.py de `tools/`
-      # (oracle de développement, Python et Pillow épinglés ci-dessus), puis validate.py : exigé
-      # ici (le test est ignoré sans `FLAM_TEST_PYTHON` dans `cargo test`).
-      - name: Archive Telmi des podcasts convertie par l'oracle Python
+      # Archive Telmi d'un pack de podcasts (#216) convertie par le telmi2flam.exe embarqué
+      # construit ci-dessus (processus enfant, comme le launcher), puis validate.py : exigé ici
+      # (le test est ignoré sans binaire ni `FLAM_TEST_PYTHON` dans `cargo test`).
+      - name: Archive Telmi des podcasts convertie par telmi2flam.exe et validée
         working-directory: apps/flam-launcher/src-tauri
         env:
-          FLAM_TEST_REQUIRE_PYTHON: "1"
+          FLAM_TEST_REQUIRE_CONVERTER: "1"
         run: |
           export FLAM_TEST_PYTHON="$(cygpath -w "$(command -v python)")"
-          out="$(cargo test --lib podcast::archive::tests::python_convertit_et_valide_l_archive -- --exact 2>&1)" || { echo "$out"; exit 1; }
+          out="$(cargo test --lib podcast::archive::tests::binaire_convertit_et_valide_l_archive -- --exact 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
           # Un filtre qui ne correspond plus à aucun test (renommage) donnerait « 0 passed » en vert.
           grep -q "test result: ok. 1 passed" <<< "$out" || {
-            echo "::error::Le test python_convertit_et_valide_l_archive n'a pas été exécuté (0 passed) : filtre ou nom de test à corriger."
+            echo "::error::Le test binaire_convertit_et_valide_l_archive n'a pas été exécuté (0 passed) : filtre ou nom de test à corriger."
             exit 1
           }
 
