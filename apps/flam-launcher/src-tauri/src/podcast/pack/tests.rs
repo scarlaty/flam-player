@@ -50,6 +50,7 @@ fn cat(name: &str, entries: Vec<PackNode>) -> PackNode {
     PackNode::Category {
         name: name.into(),
         entries,
+        image: None,
     }
 }
 
@@ -455,6 +456,47 @@ fn format_json_du_modele_stable() {
     // Champs absents tolérés (front plus ancien).
     let minimal: PackComposition = serde_json::from_str(r#"{"menu":[]}"#).unwrap();
     assert_eq!(minimal, PackComposition::default());
+}
+
+/// N5 c : le choix d'image d'une catégorie est optionnel ; absent des JSON antérieurs (brouillons
+/// et compositions nommées), omis à l'écriture quand il est automatique.
+#[test]
+fn image_de_categorie_optionnelle_et_retrocompatible() {
+    let old = r#"{"menu":[{"kind":"category","name":"Soir","entries":[
+        {"kind":"episode","source_id":"a","episode_id":"x"}]}]}"#;
+    let c: PackComposition = serde_json::from_str(old).unwrap();
+    let PackNode::Category { image, .. } = &c.menu[0] else {
+        panic!("catégorie attendue")
+    };
+    assert_eq!(*image, None);
+    assert!(serde_json::to_value(&c).unwrap()["menu"][0]
+        .get("image")
+        .is_none());
+
+    let chosen = r("a", "g1");
+    let mut c = comp(vec![cat("Soir", vec![e("a", "g1"), e("a", "g2")])]);
+    if let PackNode::Category { image, .. } = &mut c.menu[0] {
+        *image = Some(chosen.clone());
+    }
+    let json = serde_json::to_value(&c).unwrap();
+    assert_eq!(json["menu"][0]["image"]["episode_id"], chosen.episode_id);
+    let back: PackComposition = serde_json::from_value(json).unwrap();
+    assert_eq!(back, c);
+    // Le brouillon le conserve aussi.
+    let dir = tempfile::tempdir().unwrap();
+    assert!(save_draft(dir.path(), &c, 1).unwrap().saved);
+    assert_eq!(read_draft(dir.path()).unwrap().composition, Some(c));
+}
+
+#[test]
+fn contains_episode_cherche_a_toute_profondeur() {
+    let menu = [
+        e("a", "g0"),
+        cat("X", vec![cat("Y", vec![e("a", "g1")]), e("a", "g2")]),
+    ];
+    assert!(PackNode::contains_episode(&menu[1..], &r("a", "g1")));
+    assert!(PackNode::contains_episode(&menu[1..], &r("a", "g2")));
+    assert!(!PackNode::contains_episode(&menu[1..], &r("a", "g0")));
 }
 
 // ----- Brouillon -----

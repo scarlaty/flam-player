@@ -72,8 +72,49 @@ export function append(root: Menu, parent: Path, node: PackNode): PackNode[] {
 }
 
 export function removeAt(root: Menu, path: Path): PackNode[] {
+  return pruneImages(
+    updateMenu(root, path.slice(0, -1), (menu) =>
+      menu.filter((_, i) => i !== path[path.length - 1]),
+    ),
+  );
+}
+
+/**
+ * Efface, sans rien dire, l'image choisie d'une catégorie (N5 c) dont l'épisode n'en fait plus
+ * partie (retiré ou déplacé ailleurs) : retour à l'image automatique. Les nœuds inchangés
+ * gardent leur identité (le focus suit un nœud déplacé par référence).
+ */
+export function pruneImages(menu: Menu): PackNode[] {
+  return menu.map((node) => {
+    if (node.kind !== "category") return node;
+    const entries = pruneImages(node.entries);
+    const changed = entries.some((e, i) => e !== node.entries[i]);
+    const stale = node.image !== undefined && !containsEpisode(entries, node.image);
+    if (!changed && !stale) return node;
+    const { image, ...rest } = node;
+    return stale || image === undefined
+      ? { ...rest, entries }
+      : { ...rest, entries, image };
+  });
+}
+
+/** Choisit l'image de la catégorie à `path` ; `null` : automatique. */
+export function setCategoryImage(
+  root: Menu,
+  path: Path,
+  image: EpisodeRef | null,
+): PackNode[] {
   return updateMenu(root, path.slice(0, -1), (menu) =>
-    menu.filter((_, i) => i !== path[path.length - 1]),
+    menu.map((node, i) => {
+      if (i !== path[path.length - 1] || node.kind !== "category") return node;
+      const base = { kind: node.kind, name: node.name, entries: node.entries };
+      return image === null
+        ? base
+        : {
+            ...base,
+            image: { source_id: image.source_id, episode_id: image.episode_id },
+          };
+    }),
   );
 }
 
@@ -168,11 +209,13 @@ export function move(
       : sameMenu && before > fromIndex
         ? before - 1
         : before;
-  return updateMenu(without, adjusted, (menu) => {
-    const copy = [...menu];
-    copy.splice(insertAt ?? copy.length, 0, node);
-    return copy;
-  });
+  return pruneImages(
+    updateMenu(without, adjusted, (menu) => {
+      const copy = [...menu];
+      copy.splice(insertAt ?? copy.length, 0, node);
+      return copy;
+    }),
+  );
 }
 
 export interface Destination {
@@ -223,11 +266,15 @@ export function containsEpisode(menu: Menu, ref: EpisodeRef): boolean {
 
 /** Retire tout nœud épisode désignant `ref`. */
 export function removeEpisode(menu: Menu, ref: EpisodeRef): PackNode[] {
+  return pruneImages(removeEpisodeNodes(menu, ref));
+}
+
+function removeEpisodeNodes(menu: Menu, ref: EpisodeRef): PackNode[] {
   return menu
     .filter((node) => node.kind !== "episode" || !sameEpisode(node, ref))
     .map((node) =>
       node.kind === "category"
-        ? { ...node, entries: removeEpisode(node.entries, ref) }
+        ? { ...node, entries: removeEpisodeNodes(node.entries, ref) }
         : node,
     );
 }

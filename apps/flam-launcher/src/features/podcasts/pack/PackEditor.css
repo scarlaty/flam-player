@@ -108,6 +108,10 @@
   color: var(--color-text-muted);
 }
 
+.fl-pack__image-choice {
+  align-self: stretch;
+}
+
 .fl-pack__description {
   width: 100%;
   font: inherit;

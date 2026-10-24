@@ -120,6 +120,10 @@ pub enum MenuEntry {
         entries: Vec<MenuEntry>,
         /// MP3 du nom lu (§ 12) ; absent : option muette (`"audio": null`).
         audio: Option<PathBuf>,
+        /// Image choisie (N5 c) : le PNG (même chemin que `PackEpisode::image`) d'un épisode de
+        /// la catégorie. Absente, ou qui ne désigne aucun épisode de la catégorie : image du
+        /// premier épisode (N5 a).
+        image: Option<PathBuf>,
     },
 }
 
@@ -436,6 +440,7 @@ impl<'a> Graph<'a> {
                     name,
                     entries,
                     audio,
+                    image: chosen,
                 } => {
                     self.categories += 1;
                     let k = self.categories;
@@ -451,7 +456,17 @@ impl<'a> Graph<'a> {
                         file
                     });
                     let sub = format!("m{k}");
+                    let first = self.episodes.len();
                     let image = self.menu(entries, &sub, depth + 1, Some((action, i)))?;
+                    // N5 c : le fichier d'un épisode de cette catégorie (rang d'archive).
+                    let image = chosen
+                        .as_ref()
+                        .and_then(|png| {
+                            self.episodes[first..]
+                                .iter()
+                                .position(|ep| ep.image.as_ref() == Some(png))
+                        })
+                        .map_or(image, |p| episode_file(first + p + 1, "png"));
                     (image, trans(&sub, 0), label(name, &fallback), spoken)
                 }
             };

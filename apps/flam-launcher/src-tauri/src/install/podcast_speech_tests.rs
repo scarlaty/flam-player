@@ -160,6 +160,7 @@ fn composition(voice: Option<&str>) -> PackComposition {
             PackNode::Category {
                 name: "Saison".into(),
                 entries: vec![ep("s2", "g2"), ep("s2", "g3")],
+                image: None,
             },
         ],
         titles_audio: true,
@@ -847,10 +848,12 @@ fn emoji_category() -> PackComposition {
         PackNode::Category {
             name: "Hiver".into(),
             entries: vec![un],
+            image: None,
         },
         PackNode::Category {
             name: "🎵🎶".into(),
             entries,
+            image: None,
         },
     ];
     c

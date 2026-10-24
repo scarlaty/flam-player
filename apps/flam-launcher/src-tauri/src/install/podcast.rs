@@ -1055,6 +1055,7 @@ impl InstallService {
             &spoken,
             &mut Vec::new(),
             &mut used,
+            &mut warnings,
         );
         mute_shifted_categories(&job.composition.menu, &used, &spoken, &mut menu);
         if menu.is_empty() {
@@ -1262,14 +1263,17 @@ fn read_bounded(path: &Path, max: u64) -> Option<Vec<u8>> {
 
 /// Arborescence de l'archive : épisodes retirés sautés, catégories vidées retirées (P7) ;
 /// titres lus (#462) repris de `spoken` par position dans la composition (`path`), positions
-/// gardées notées dans `used`.
-fn build_menu(
+/// gardées notées dans `used`. Image choisie d'une catégorie (N5 c) : le PNG de l'épisode
+/// désigné, pris dans `episodes` avant leur retrait ; épisode hors de la catégorie, retiré du
+/// pack ou sans image : image automatique (N5 a) et avertissement dans `warnings`.
+pub(super) fn build_menu(
     menu: &[PackNode],
     ranks: &HashMap<&EpisodeRef, usize>,
     episodes: &mut HashMap<usize, PackEpisode>,
     spoken: &SpokenTitles,
     path: &mut Vec<usize>,
     used: &mut HashSet<TitleKey>,
+    warnings: &mut Vec<String>,
 ) -> Vec<MenuEntry> {
     let mut out = Vec::new();
     for (i, node) in menu.iter().enumerate() {
@@ -1283,13 +1287,37 @@ fn build_menu(
                     used.insert(key);
                 }
             }
-            PackNode::Category { name, entries } => {
-                let entries = build_menu(entries, ranks, episodes, spoken, path, used);
+            PackNode::Category {
+                name,
+                entries,
+                image,
+            } => {
+                // Avant le retrait des épisodes de la catégorie.
+                let chosen: Option<Option<PathBuf>> = image.as_ref().map(|e| {
+                    PackNode::contains_episode(entries, e)
+                        .then(|| ranks.get(e).and_then(|n| episodes.get(n)))
+                        .flatten()
+                        .and_then(|ep| ep.image.clone())
+                });
+                let entries = build_menu(entries, ranks, episodes, spoken, path, used, warnings);
                 if !entries.is_empty() {
+                    let image = match chosen {
+                        Some(Some(png)) => Some(png),
+                        Some(None) => {
+                            warnings.push(format!(
+                                "Image de la catégorie « {} » : l'épisode choisi n'est plus \
+                                 disponible, image automatique utilisée.",
+                                archive::label(name, "?")
+                            ));
+                            None
+                        }
+                        None => None,
+                    };
                     out.push(MenuEntry::Category {
                         name: name.trim().to_string(),
                         entries,
                         audio: spoken.audio.get(&key).cloned(),
+                        image,
                     });
                     used.insert(key);
                 }
@@ -1414,3 +1442,7 @@ mod cache_tests;
 #[cfg(test)]
 #[path = "podcast_speech_tests.rs"]
 mod speech_tests;
+
+#[cfg(test)]
+#[path = "podcast_category_image_tests.rs"]
+mod category_image_tests;
