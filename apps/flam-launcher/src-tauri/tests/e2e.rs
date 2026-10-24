@@ -369,7 +369,7 @@ async fn scenario() {
     let (install_tx, install_rx) = channel();
     let toolchain = Toolchain {
         cache_root: cache_root.clone(),
-        engine: Default::default(),
+        engine: settings::ConverterEngine::Python,
         python: tools.python.clone(),
         ffmpeg: None,
         converter: Some(tools.converter.clone()),

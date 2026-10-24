@@ -299,8 +299,9 @@ impl ChosenEngine {
             ConverterEngine::Rust => {
                 let exe = tc.rust_converter.clone().ok_or_else(|| {
                     AppError::ConverterUnavailable(format!(
-                        "convertisseur {RUST_CONVERTER_EXE} introuvable (moteur « rust » choisi \
-                         dans settings.json)"
+                        "convertisseur {RUST_CONVERTER_EXE} introuvable : réinstallez le launcher, \
+                         lancez `cargo build -p telmi2flam` (développement) ou mettez \
+                         `converter_engine` à « python » dans settings.json"
                     ))
                 })?;
                 Ok(Self::Rust { exe })

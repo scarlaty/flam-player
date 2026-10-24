@@ -94,16 +94,17 @@ impl ThumbFit {
 ///
 /// Réglage **caché** : absent de l'écran Paramètres, et `settings_set` conserve la valeur
 /// enregistrée (voir [`SettingsStore::update`]) ; il se change à la main dans `settings.json`.
-/// Une valeur absente, inconnue ou mal typée retombe sur `Python`, le moteur par défaut.
+/// Une valeur absente, inconnue ou mal typée retombe sur `Rust`, le moteur par défaut depuis la
+/// bascule de #137 ; un `settings.json` qui porte explicitement `python` le garde.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConverterEngine {
-    /// Binaire Rust `telmi2flam.exe`.
-    Rust,
-    /// `telmi2flam.py` (doit rester la dernière variante pour `serde(other)`).
+    /// `telmi2flam.py`, à demander explicitement.
+    Python,
+    /// Binaire Rust `telmi2flam.exe` (doit rester la dernière variante pour `serde(other)`).
     #[default]
     #[serde(other)]
-    Python,
+    Rust,
 }
 
 /// Paramètres enregistrés (miroir de `Settings` dans `src/api/settings.ts`).
@@ -135,8 +136,8 @@ pub struct Settings {
     /// Remplissage des vignettes des histoires converties (#279). Absent des anciens fichiers :
     /// `Flou` (`#[serde(default)]`, sans migration de schéma).
     pub thumb_fit: ThumbFit,
-    /// Moteur de conversion (#136), réglage caché : `Python` par défaut, conservé par
-    /// [`SettingsStore::update`]. Absent des anciens fichiers : `Python`.
+    /// Moteur de conversion (#136), réglage caché : `Rust` par défaut (#137), conservé par
+    /// [`SettingsStore::update`]. Absent des anciens fichiers : `Rust` ; `python` explicite gardé.
     #[serde(deserialize_with = "lenient_engine")]
     pub converter_engine: ConverterEngine,
 }
@@ -147,7 +148,7 @@ fn lenient_engine<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ConverterEng
     let value = serde_json::Value::deserialize(d)?;
     if !value.is_null() && !matches!(value.as_str(), Some("python" | "rust")) {
         // Réglage caché édité à la main : une faute de frappe ne doit pas passer inaperçue.
-        tracing::warn!("converter_engine non reconnu ({value}) : moteur python utilisé");
+        tracing::warn!("converter_engine non reconnu ({value}) : moteur rust utilisé");
     }
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
@@ -902,20 +903,28 @@ mod tests {
     }
 
     #[test]
-    fn moteur_de_conversion_python_par_defaut_et_tolerant() {
+    fn moteur_de_conversion_rust_par_defaut_et_python_explicite_garde() {
+        // Réglage absent (anciens fichiers, #137) : Rust.
         let old: Settings = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
-        assert_eq!(old.converter_engine, ConverterEngine::Python);
-        assert_eq!(
-            Settings::default().converter_engine,
-            ConverterEngine::Python
-        );
+        assert_eq!(old.converter_engine, ConverterEngine::Rust);
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.converter_engine, ConverterEngine::Rust);
+        assert_eq!(Settings::default().converter_engine, ConverterEngine::Rust);
+        // `python` explicite : conservé.
+        let python: Settings =
+            serde_json::from_str(r#"{"schema_version":1,"converter_engine":"python"}"#).unwrap();
+        assert_eq!(python.converter_engine, ConverterEngine::Python);
         let rust: Settings = serde_json::from_str(r#"{"converter_engine":"rust"}"#).unwrap();
         assert_eq!(rust.converter_engine, ConverterEngine::Rust);
         assert_eq!(
             serde_json::to_value(ConverterEngine::Rust).unwrap(),
             serde_json::json!("rust")
         );
-        // Inconnu, mal typé ou nul : Python, sans rejeter le reste du fichier.
+        assert_eq!(
+            serde_json::to_value(ConverterEngine::Python).unwrap(),
+            serde_json::json!("python")
+        );
+        // Inconnu, mal typé ou nul : Rust, sans rejeter le reste du fichier.
         for bad in [
             serde_json::json!("Rust"),
             serde_json::json!("go"),
@@ -927,7 +936,7 @@ mod tests {
                 serde_json::json!({ "converter_engine": bad, "max_downloads": 3 }),
             )
             .unwrap();
-            assert_eq!(s.converter_engine, ConverterEngine::Python, "{bad:?}");
+            assert_eq!(s.converter_engine, ConverterEngine::Rust, "{bad:?}");
             assert_eq!(s.max_downloads, 3, "{bad:?}");
         }
     }
@@ -937,7 +946,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join("settings.json"),
-            r#"{"schema_version":1,"converter_engine":"rust"}"#,
+            r#"{"schema_version":1,"converter_engine":"python"}"#,
         )
         .unwrap();
         let store = SettingsStore::new(dir.path());
@@ -950,10 +959,10 @@ mod tests {
                     ..Settings::default()
                 })
                 .unwrap();
-            assert_eq!(saved.converter_engine, ConverterEngine::Rust);
+            assert_eq!(saved.converter_engine, ConverterEngine::Python);
         }
         let reloaded = store.load().unwrap();
-        assert_eq!(reloaded.converter_engine, ConverterEngine::Rust);
+        assert_eq!(reloaded.converter_engine, ConverterEngine::Python);
         assert_eq!(reloaded.max_downloads, 3);
     }
 

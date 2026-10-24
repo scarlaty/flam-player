@@ -30,7 +30,7 @@ export interface Settings {
    */
   carrier_consent?: CarrierConsent | null;
   /**
-   * Moteur de conversion (réglage caché, `python` par défaut, #136). Lecture seule : modifié à
+   * Moteur de conversion (réglage caché, `rust` par défaut, #136 et #137). Lecture seule : modifié à
    * la main dans `settings.json`, la valeur enregistrée est conservée par `settings_set`.
    */
   converter_engine?: "python" | "rust";
