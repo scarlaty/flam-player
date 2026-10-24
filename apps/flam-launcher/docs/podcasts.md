@@ -667,19 +667,19 @@ et la liste de `THIRD-PARTY-NOTICES.txt` (deux licences permissives, déjà auto
   choisie (v1 : une voix par pack). Choisir la voix d'après `<language>` du flux est une
   évolution (Q3).
 - **Réglages** : la voix (identifiant `VoiceInformation.Id`) est mémorisée par poste dans les
-  réglages du launcher ; si elle n'existe plus, retour au défaut sans erreur. **Pas de réglage de
+  réglages du launcher ; si elle n'existe plus, retour au défaut avec un avertissement (voir 12.5 ; erreur `tts_no_voice` seulement s'il n'y a plus aucune voix française). **Pas de réglage de
   débit en v1** (débit 1,0) : un titre court, lu une fois ; on le règlera si l'aperçu montre
   un besoin. Le volume est celui du MP3 produit, sans normalisation (comme les épisodes).
 
 ### 12.5 Repli si aucune voix française
 
-| Situation                                                | Comportement proposé                                                                                                                                            |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Aucune voix française à l'ouverture de l'éditeur         | case **désactivée**, message : « Aucune voix française n'est installée dans Windows (Paramètres > Heure et langue > Voix). » ; le pack reste créable, sans voix |
-| Voix disparue entre le choix et la création              | la création **s'arrête avant toute écriture** (`tts_no_voice`), message clair ; rien n'est créé en silence                                                      |
-| Échec de synthèse d'un titre                             | ce titre reste **silencieux** (`audio: null`), le pack est créé, un avertissement par titre est ajouté au récapitulatif (comme P7)                              |
-| Plateforme non Windows                                   | case masquée                                                                                                                                                    |
-| Le premier titre échoue, ou plus de la moitié des titres | la création **s'arrête avant toute écriture** (`tts_failed`) : jamais de pack entièrement muet sans l'avoir demandé                                             |
+| Situation                                                | Comportement proposé                                                                                                                                                                                                                                                                                        |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Aucune voix française à l'ouverture de l'éditeur         | case **désactivée**, message : « Aucune voix française n'est installée dans Windows (Paramètres > Heure et langue > Voix). » ; le pack reste créable, sans voix                                                                                                                                             |
+| Voix disparue entre le choix et la création              | **repli sur la voix française par défaut**, avec un avertissement au récapitulatif ; `tts_no_voice` (arrêt avant toute écriture) seulement s'il n'y a plus aucune voix française. Tranché par le mainteneur, **à implémenter en PR 2** (`resolve_voice` rend `VoiceGone`, le repli est fait par l'appelant) |
+| Échec de synthèse d'un titre                             | ce titre reste **silencieux** (`audio: null`), le pack est créé, un avertissement par titre est ajouté au récapitulatif (comme P7)                                                                                                                                                                          |
+| Plateforme non Windows                                   | case masquée                                                                                                                                                                                                                                                                                                |
+| Le premier titre échoue, ou plus de la moitié des titres | la création **s'arrête avant toute écriture** (`tts_failed`) : jamais de pack entièrement muet sans l'avoir demandé                                                                                                                                                                                         |
 
 Le silence actuel reste donc le comportement par défaut ; la voix est toujours un choix
 explicite du parent (case décochée par défaut).
@@ -729,6 +729,11 @@ explicite du parent (case décochée par défaut).
   tâche (N10 a), pour que la reprise reconstruise le même pack.
 
 ### 12.8 Vie privée, licences, tests
+
+**Voix « en ligne ».** L'API WinRT n'indique pas si une voix est locale : `french_voices` écarte
+celles dont le nom ou l'identifiant contient « online » ou « en ligne » (voix « naturelles » de
+Windows 11). C'est une heuristique, **à confirmer à la main sur un poste sans réseau** (test
+`voix_reelle_du_poste`, `#[ignore]`) ; elle reste en l'état d'ici là (suivi #467).
 
 **Vie privée.** Tout est attendu local (voix OneCore, **à confirmer par un test sans réseau**
 dans la PR 1) ; les titres ne sortent jamais du poste, rien n'est journalisé (même règle que les

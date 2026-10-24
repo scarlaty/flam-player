@@ -7,7 +7,7 @@
 //!   ([`NoSpeech`]), voix simulée déterministe pour les tests (`testing`) ;
 //! - le tri des voix : françaises seulement (`fr`, `fr-FR`, `fr-CA`…), voix en ligne exclues,
 //!   ordre stable par nom, défaut = voix par défaut du système si elle est française, sinon la
-//!   première ([`french_voices`], [`resolve_voice`]) ;
+//!   première, un identifiant n'apparaissant qu'une fois ([`french_voices`], [`resolve_voice`]) ;
 //! - la préparation du texte lu ([`prepare_text`]) : première ligne, 120 caractères au plus, les
 //!   titres sans lettre restent muets ;
 //! - la synthèse bornée dans le temps ([`synthesize_wav`]) et le contrôle du WAV obtenu
@@ -50,6 +50,9 @@ pub const MAX_TEXT_CHARS: usize = 120;
 pub const MAX_AUDIO_SECS: f64 = 15.0;
 /// Délai d'une synthèse.
 pub const SYNTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Délai de la liste des voix et de la voix par défaut (WinRT).
+#[cfg(windows)]
+const VOICES_TIMEOUT: Duration = Duration::from_secs(10);
 /// Délai de la conversion d'un titre en MP3.
 pub const MP3_TIMEOUT: Duration = Duration::from_secs(30);
 /// Taille maximale d'un WAV accepté (15 s en 48 kHz stéréo 16 bits font moins de 3 Mio).
@@ -177,13 +180,14 @@ fn is_online(voice: &Voice) -> bool {
 /// Voix françaises locales, triées par nom (puis identifiant) ; défaut = voix par défaut du
 /// système si elle en fait partie, sinon la première. Liste vide : aucune voix française.
 pub fn french_voices(synth: &dyn Synthesizer) -> Result<VoiceList, SpeechError> {
+    // Un identifiant n'apparaît qu'une fois, même sous deux noms (la première voix rendue gagne).
+    let mut seen = std::collections::HashSet::new();
     let mut voices: Vec<Voice> = synth
         .voices()?
         .into_iter()
-        .filter(|v| is_french(v) && !is_online(v))
+        .filter(|v| is_french(v) && !is_online(v) && seen.insert(v.id.clone()))
         .collect();
     voices.sort_by_cached_key(|v| (v.name.to_lowercase(), v.id.clone()));
-    voices.dedup_by(|a, b| a.id == b.id);
     let default_id = synth
         .default_voice_id()
         .filter(|id| voices.iter().any(|v| &v.id == id))
@@ -288,8 +292,16 @@ impl Wav {
                 let channels = le16(&bytes, body + 2);
                 let rate = le32(&bytes, body + 4);
                 let bits = le16(&bytes, body + 14);
-                // 0xFFFE : WAVE_FORMAT_EXTENSIBLE (le sous-format est du PCM pour ce moteur).
-                if !(tag == 1 || tag == 0xFFFE) || bits != 16 {
+                // 0xFFFE : WAVE_FORMAT_EXTENSIBLE, dont le sous-format (GUID à `body + 24`, ses
+                // 4 premiers octets) doit être 1 (PCM).
+                let pcm = match tag {
+                    1 => true,
+                    0xFFFE => {
+                        size >= 40 && body + 28 <= bytes.len() && le32(&bytes, body + 24) == 1
+                    }
+                    _ => false,
+                };
+                if !pcm || bits != 16 {
                     return Err(failed("format audio inattendu (PCM 16 bits requis)"));
                 }
                 if !(1..=2).contains(&channels) || !(8_000..=96_000).contains(&rate) {
@@ -325,8 +337,8 @@ impl Wav {
     }
 }
 
-/// Synthèse d'un titre : texte préparé, moteur appelé dans un thread dédié, WAV contrôlé.
-/// `timeout` dépassé : [`SpeechError::Timeout`] (le thread est abandonné, son résultat jeté).
+/// Synthèse d'un titre : texte préparé, moteur appelé dans un thread dédié ([`run_bounded`]), WAV
+/// contrôlé.
 pub fn synthesize_wav(
     synth: &Arc<dyn Synthesizer>,
     text: &str,
@@ -334,18 +346,28 @@ pub fn synthesize_wav(
     timeout: Duration,
 ) -> Result<Wav, SpeechError> {
     let text = prepare_text(text).ok_or(SpeechError::NothingToSay)?;
-    let (tx, rx) = mpsc::channel();
     let engine = Arc::clone(synth);
     let voice = voice_id.to_owned();
+    let bytes = run_bounded(timeout, move || engine.synthesize(&text, &voice))??;
+    Wav::parse(bytes)
+}
+
+/// Exécute `job` dans un thread dédié ; `timeout` dépassé : [`SpeechError::Timeout`] (le thread est
+/// abandonné, son résultat jeté). Thread interrompu (panique) : échec.
+fn run_bounded<T: Send + 'static>(
+    timeout: Duration,
+    job: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, SpeechError> {
+    let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("tts".into())
         .spawn(move || {
             // Le récepteur peut avoir abandonné (délai) : l'envoi est alors sans effet.
-            let _ = tx.send(engine.synthesize(&text, &voice));
+            let _ = tx.send(job());
         })
         .map_err(|_| failed("thread de synthèse non lancé"))?;
     match rx.recv_timeout(timeout) {
-        Ok(result) => Wav::parse(result?),
+        Ok(result) => Ok(result),
         Err(RecvTimeoutError::Timeout) => Err(SpeechError::Timeout),
         Err(RecvTimeoutError::Disconnected) => Err(failed("synthèse interrompue")),
     }
@@ -439,6 +461,17 @@ pub async fn wav_to_mp3(
     let out = ff
         .run(Tool::Ffmpeg, &args, Limits::new(MP3_TIMEOUT), cancel)
         .await?;
+    finish_mp3(&out, &scratch, output, cancel).await
+}
+
+/// Après ffmpeg : sortie contrôlée, MP3 non vide, annulation vérifiée une dernière fois, puis
+/// renommage vers `output`. Rend la taille du MP3.
+async fn finish_mp3(
+    out: &crate::ffmpeg::Output,
+    scratch: &Scratch,
+    output: &Path,
+    cancel: &watch::Receiver<bool>,
+) -> AppResult<u64> {
     if !out.success() {
         return Err(SpeechError::Failed("conversion MP3 en échec".into()).into());
     }
@@ -463,7 +496,9 @@ mod playback {
     use std::ptr::{null, null_mut};
     use std::sync::{Mutex, PoisonError};
 
-    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+    use windows_sys::Win32::Media::Audio::{
+        PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT, SND_PURGE,
+    };
 
     use super::SpeechError;
 
@@ -471,10 +506,16 @@ mod playback {
     /// donc vivre jusqu'à l'arrêt de la lecture.
     static BUFFER: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
-    pub fn play(wav: Vec<u8>) -> Result<(), SpeechError> {
+    /// Joue `wav` si `is_current()` est encore vrai. Le test est fait sous le verrou de `BUFFER` :
+    /// un `stop` concurrent, qui prend le même verrou, passe donc avant (le test échoue) ou après
+    /// (il coupe ce son). Rend `false` si rien n'a été joué.
+    pub fn play(wav: Vec<u8>, is_current: &dyn Fn() -> bool) -> Result<bool, SpeechError> {
         let mut buffer = BUFFER.lock().unwrap_or_else(PoisonError::into_inner);
-        // SAFETY : appel documenté ; un son nul arrête la lecture en cours.
-        unsafe { PlaySoundW(null(), null_mut(), 0) };
+        if !is_current() {
+            return Ok(false);
+        }
+        // SAFETY : appel documenté ; SND_PURGE arrête la lecture en cours.
+        unsafe { PlaySoundW(null(), null_mut(), SND_PURGE) };
         *buffer = wav;
         // SAFETY : avec SND_MEMORY le premier argument est l'adresse d'un WAV complet ;
         // le tampon reste valide (verrou, `BUFFER` statique) jusqu'au prochain arrêt.
@@ -489,13 +530,13 @@ mod playback {
             buffer.clear();
             return Err(SpeechError::Failed("lecture audio impossible".into()));
         }
-        Ok(())
+        Ok(true)
     }
 
     pub fn stop() {
         let mut buffer = BUFFER.lock().unwrap_or_else(PoisonError::into_inner);
         // SAFETY : voir `play`.
-        unsafe { PlaySoundW(null(), null_mut(), 0) };
+        unsafe { PlaySoundW(null(), null_mut(), SND_PURGE) };
         buffer.clear();
     }
 }
@@ -504,7 +545,7 @@ mod playback {
 mod playback {
     use super::SpeechError;
 
-    pub fn play(_wav: Vec<u8>) -> Result<(), SpeechError> {
+    pub fn play(_wav: Vec<u8>, _is_current: &dyn Fn() -> bool) -> Result<bool, SpeechError> {
         Err(SpeechError::Unavailable)
     }
 
@@ -547,14 +588,15 @@ fn prepare_preview(
 }
 
 /// Aperçu : numéro de génération pris, lecture en cours coupée (`stop`), synthèse, puis lecture
-/// (`play`) si aucun aperçu plus récent n'a été demandé entre-temps.
+/// (`play`) si aucun aperçu plus récent n'a été demandé entre-temps (revérifié par `play` sous le
+/// verrou du tampon audio).
 fn preview_with(
     generation: &AtomicU64,
     synth: &Arc<dyn Synthesizer>,
     text: &str,
     voice: Option<&str>,
     stop: impl FnOnce(),
-    play: impl FnOnce(Vec<u8>) -> Result<(), SpeechError>,
+    play: impl FnOnce(Vec<u8>, &dyn Fn() -> bool) -> Result<bool, SpeechError>,
 ) -> Result<PreviewInfo, SpeechError> {
     let mine = generation.fetch_add(1, Ordering::SeqCst) + 1;
     stop();
@@ -568,10 +610,12 @@ fn preview_with(
     }
     let wav = result?;
     let duration_ms = (wav.duration_secs * 1000.0).round() as u64;
-    play(wav.bytes)?;
+    // Le test de génération est refait par `play` sous son verrou (atomique avec le démarrage du
+    // son) : un `stop` arrivé depuis le test ci-dessus l'emporte.
+    let played = play(wav.bytes, &|| generation.load(Ordering::SeqCst) == mine)?;
     Ok(PreviewInfo {
-        played: true,
-        duration_ms,
+        played,
+        duration_ms: if played { duration_ms } else { 0 },
     })
 }
 
@@ -625,18 +669,33 @@ mod winrt {
     use windows::core::HSTRING;
     use windows::Media::SpeechSynthesis::{SpeechSynthesizer, VoiceInformation};
     use windows::Storage::Streams::DataReader;
-    use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
+    use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 
-    use super::{SpeechError, Synthesizer, Voice, MAX_WAV_BYTES};
+    use super::{run_bounded, SpeechError, Synthesizer, Voice, MAX_WAV_BYTES, VOICES_TIMEOUT};
 
     /// Voix « OneCore » de Windows (Paramètres > Heure et langue > Voix).
     pub struct WinRtSynthesizer;
 
-    /// Apartment multi-thread du thread appelant (sans effet s'il est déjà initialisé, quel que
-    /// soit son mode : l'erreur éventuelle est ignorée).
-    fn init_thread() {
-        // SAFETY : appel documenté, sans pointeur.
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+    /// Apartment multi-thread du thread courant, libéré à la destruction : `RoUninitialize`
+    /// apparie chaque `RoInitialize` réussi (y compris `S_FALSE`, déjà initialisé). Un échec (mode
+    /// déjà fixé autrement) n'est pas apparié. À déclarer avant les objets WinRT du thread, pour
+    /// qu'ils soient détruits avant lui.
+    struct Apartment(bool);
+
+    impl Apartment {
+        fn enter() -> Self {
+            // SAFETY : appel documenté, sans pointeur.
+            Self(unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok())
+        }
+    }
+
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            if self.0 {
+                // SAFETY : apparié au `RoInitialize` réussi de `enter`, sur le même thread.
+                unsafe { RoUninitialize() };
+            }
+        }
     }
 
     fn describe(voice: &VoiceInformation) -> windows::core::Result<Voice> {
@@ -654,23 +713,37 @@ mod winrt {
 
     impl Synthesizer for WinRtSynthesizer {
         fn voices(&self) -> Result<Vec<Voice>, SpeechError> {
-            init_thread();
-            let all = SpeechSynthesizer::AllVoices().map_err(|_| SpeechError::Unavailable)?;
-            let mut voices = Vec::new();
-            for voice in &all {
-                voices.push(describe(&voice).map_err(|_| SpeechError::Unavailable)?);
+            // Thread dédié, borné dans le temps : l'apartment n'est pas laissé au pool bloquant.
+            let listed = run_bounded(VOICES_TIMEOUT, || {
+                let _apartment = Apartment::enter();
+                let all = SpeechSynthesizer::AllVoices().map_err(|_| SpeechError::Unavailable)?;
+                let mut voices = Vec::new();
+                for voice in &all {
+                    voices.push(describe(&voice).map_err(|_| SpeechError::Unavailable)?);
+                }
+                Ok(voices)
+            });
+            match listed {
+                Ok(result) => result,
+                // Service de voix qui ne répond pas : même traitement que « indisponible ».
+                Err(SpeechError::Timeout) => Err(SpeechError::Unavailable),
+                Err(e) => Err(e),
             }
-            Ok(voices)
         }
 
         fn default_voice_id(&self) -> Option<String> {
-            init_thread();
-            let voice = SpeechSynthesizer::DefaultVoice().ok()?;
-            Some(voice.Id().ok()?.to_string())
+            run_bounded(VOICES_TIMEOUT, || {
+                let _apartment = Apartment::enter();
+                let voice = SpeechSynthesizer::DefaultVoice().ok()?;
+                Some(voice.Id().ok()?.to_string())
+            })
+            .ok()
+            .flatten()
         }
 
         fn synthesize(&self, text: &str, voice_id: &str) -> Result<Vec<u8>, SpeechError> {
-            init_thread();
+            // Appelée depuis le thread dédié de `synthesize_wav`.
+            let _apartment = Apartment::enter();
             let all = SpeechSynthesizer::AllVoices().map_err(|_| SpeechError::Unavailable)?;
             let voice = all
                 .into_iter()
