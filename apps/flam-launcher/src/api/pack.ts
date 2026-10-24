@@ -127,15 +127,39 @@ export function clearPackDraft(revision: number): Promise<void> {
   return invokeCommand<void>("pack_draft_clear", { revision });
 }
 
+/** Vignettes déjà obtenues pendant la session (ou en cours d'obtention), par épisode. */
+const thumbnailMemo = new Map<string, Promise<string | null>>();
+
+/** Oublie les vignettes mémorisées (tests). */
+export function clearThumbnailMemo(): void {
+  thumbnailMemo.clear();
+}
+
 /**
- * Aperçu (URL `data:image/png`, 96 px au plus) de la pochette d'un épisode, lu dans le cache
- * du launcher sans accès réseau (#504). `null` : pas d'aperçu (pas de pochette en cache).
+ * Aperçu (URL `data:image/png`, 96 px au plus) de la pochette d'un épisode : cache du launcher,
+ * sinon image téléchargée à la demande par le backend (#508). `null` : pas d'aperçu. Une
+ * vignette obtenue est mémorisée pour la session (réouverture du choix sans nouvel appel) ;
+ * « pas d'aperçu » et les erreurs ne le sont pas (réessai possible, p. ex. une fois en ligne).
  */
 export function episodeThumbnail(episode: EpisodeRef): Promise<string | null> {
-  return invokeCommand<string | null>("pack_episode_thumbnail", {
+  const key = `${episode.source_id}/${episode.episode_id}`;
+  const known = thumbnailMemo.get(key);
+  if (known) return known;
+  const pending = invokeCommand<string | null>("pack_episode_thumbnail", {
     sourceId: episode.source_id,
     episodeId: episode.episode_id,
-  });
+  }).then(
+    (url) => {
+      if (url === null) thumbnailMemo.delete(key);
+      return url;
+    },
+    (error: unknown) => {
+      thumbnailMemo.delete(key);
+      throw error;
+    },
+  );
+  thumbnailMemo.set(key, pending);
+  return pending;
 }
 
 export function validatePack(composition: PackComposition): Promise<ValidationReport> {

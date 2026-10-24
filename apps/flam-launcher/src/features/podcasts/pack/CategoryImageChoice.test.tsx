@@ -9,6 +9,8 @@ import { PackTree } from "./PackTree";
 const PIXEL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 const ref = (id: string): EpisodeRef => ({ source_id: "s", episode_id: id });
+/** Vignettes affichées : décoratives (`alt=""`), donc sans rôle `img`. */
+const thumbs = () => document.querySelectorAll<HTMLImageElement>(".fl-pack__thumb img");
 const candidates = [
   { ref: ref("a"), title: "Premier" },
   { ref: ref("b"), title: "Deuxième" },
@@ -109,7 +111,7 @@ describe("CategoryImageChoice", () => {
         thumbnailOf={() => Promise.resolve(PIXEL)}
       />,
     );
-    await screen.findAllByRole("img");
+    await waitFor(() => expect(thumbs()).toHaveLength(3));
     await expectComponentAccessible(container);
   });
 
@@ -133,7 +135,7 @@ describe("CategoryImageChoice", () => {
   });
 
   describe("aperçus des pochettes", () => {
-    it("affiche la vignette de chaque épisode, texte alternatif = titre", async () => {
+    it("affiche la vignette de chaque épisode, décorative (alt vide)", async () => {
       const load = vi.fn((r: EpisodeRef) =>
         Promise.resolve(r.episode_id === "b" ? null : PIXEL),
       );
@@ -146,14 +148,53 @@ describe("CategoryImageChoice", () => {
           thumbnailOf={load}
         />,
       );
-      const premier = await screen.findByRole("img", { name: "Premier" });
-      expect(premier).toHaveAttribute("src", PIXEL);
-      expect(premier).toHaveAttribute("loading", "lazy");
-      expect(await screen.findByRole("img", { name: "Troisième" })).toBeInTheDocument();
+      await waitFor(() => expect(thumbs()).toHaveLength(2));
+      for (const img of thumbs()) {
+        expect(img).toHaveAttribute("src", PIXEL);
+        // Décorative : le libellé du radio porte le titre (pas de « Premier Premier »).
+        expect(img).toHaveAttribute("alt", "");
+        expect(img).not.toHaveAttribute("loading");
+      }
+      expect(screen.queryByRole("img")).toBeNull();
       // Sans aperçu : le libellé seul, le choix reste possible.
-      expect(screen.queryByRole("img", { name: "Deuxième" })).toBeNull();
-      expect(screen.getByRole("radio", { name: /Deuxième/ })).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Premier" })).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Deuxième" })).toBeInTheDocument();
       expect(load).toHaveBeenCalledTimes(3);
+    });
+
+    it("ne demande aucun aperçu pour un épisode hors écran", async () => {
+      const observed: IntersectionObserverCallback[] = [];
+      class FakeObserver {
+        constructor(callback: IntersectionObserverCallback) {
+          observed.push(callback);
+        }
+        observe() {}
+        disconnect() {}
+      }
+      vi.stubGlobal("IntersectionObserver", FakeObserver);
+      try {
+        const load = vi.fn(() => Promise.resolve(PIXEL));
+        render(
+          <CategoryImageChoice
+            categoryLabel="Saison"
+            candidates={candidates}
+            value={null}
+            onChange={vi.fn()}
+            thumbnailOf={load}
+          />,
+        );
+        await waitFor(() => expect(observed).toHaveLength(3));
+        expect(load).not.toHaveBeenCalled();
+        // Le premier approche de l'écran : seul lui est demandé.
+        observed[0]!(
+          [{ isIntersecting: true } as IntersectionObserverEntry],
+          {} as IntersectionObserver,
+        );
+        await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+        expect(load).toHaveBeenCalledWith(ref("a"));
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
 
     it("replie sur le libellé seul quand la lecture de l'aperçu échoue", async () => {
@@ -186,7 +227,7 @@ describe("CategoryImageChoice", () => {
           thumbnailOf={() => Promise.resolve(PIXEL)}
         />,
       );
-      await screen.findAllByRole("img");
+      await waitFor(() => expect(thumbs()).toHaveLength(3));
       const radios = screen.getAllByRole<HTMLInputElement>("radio");
       expect(radios.every((r) => r.type === "radio")).toBe(true);
       // Une seule tabulation pour le groupe, focus possible sur chaque radio.
@@ -196,7 +237,7 @@ describe("CategoryImageChoice", () => {
       fireEvent.click(radios[1]!);
       expect(onChange).toHaveBeenLastCalledWith(ref("a"));
       // Cliquer sur la vignette (dans le libellé) choisit l'épisode.
-      fireEvent.click(screen.getByRole("img", { name: "Troisième" }));
+      fireEvent.click(thumbs()[2]!);
       expect(onChange).toHaveBeenLastCalledWith(ref("c"));
     });
   });

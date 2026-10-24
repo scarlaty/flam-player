@@ -20,26 +20,19 @@ export interface CategoryImageChoiceProps {
   /** Image choisie ; `null` : automatique (image du premier épisode, N5 a). */
   value: EpisodeRef | null;
   onChange: (value: EpisodeRef | null) => void;
-  /** Lecture d'un aperçu (par défaut : cache du launcher, sans réseau, #504). */
+  /** Lecture d'un aperçu (par défaut : backend, cache puis téléchargement à la demande, #508). */
   thumbnailOf?: ThumbnailLoader;
 }
 
 const AUTO = "auto";
 
 /**
- * Vignette d'un épisode, demandée au backend quand elle approche de l'écran (chargement
- * paresseux). Sans aperçu (pas de pochette en cache, erreur), rien n'est affiché : le libellé
- * du choix suffit. Le libellé nomme le choix : l'image n'est qu'un complément.
+ * Vignette d'un épisode, demandée au backend (qui la télécharge au besoin) quand elle approche
+ * de l'écran : un épisode hors écran ne déclenche aucun téléchargement. Sans aperçu (pas de
+ * pochette, hors ligne, erreur), rien n'est affiché : le libellé du choix suffit. L'image est
+ * décorative (`alt=""`) : le libellé du radio porte déjà le titre.
  */
-function EpisodeThumb({
-  episode,
-  title,
-  load,
-}: {
-  episode: EpisodeRef;
-  title: string;
-  load: ThumbnailLoader;
-}) {
+function EpisodeThumb({ episode, load }: { episode: EpisodeRef; load: ThumbnailLoader }) {
   const holder = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(typeof IntersectionObserver === "undefined");
   const [src, setSrc] = useState<string | null | undefined>(undefined);
@@ -73,7 +66,7 @@ function EpisodeThumb({
   if (src === null) return null;
   return (
     <span ref={holder} className="fl-pack__thumb">
-      {src && <img src={src} alt={title} width={48} height={36} loading="lazy" />}
+      {src && <img src={src} alt="" width={48} height={36} />}
     </span>
   );
 }
@@ -108,7 +101,6 @@ export function CategoryImageChoice({
         <EpisodeThumb
           key={`${c.ref.source_id}/${c.ref.episode_id}`}
           episode={c.ref}
-          title={c.title}
           load={thumbnailOf}
         />
       ),
