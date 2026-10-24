@@ -403,7 +403,7 @@ sont identiques à l'octet près dès la PR 6.
    `parity`) vérifie les PNG puis compare chaque `.lif` du Rust. Au gel : 1465 cellules sur
    353 PNG, 0 écart.
 3. **Campagne (locale)** : les archives réelles de `.cache/telmi/` (ignoré par Git, jamais
-   commité). `compat.py --engine rust`, ou un script dédié, convertit chaque archive avec les
+   commité). `parity.py campaign`, ou un script dédié, convertit chaque archive avec les
    deux moteurs et écrit `.cache/parity/report.json`. **Seuil de bascule** : aucun écart hors
    de la liste §4.1, ni sur les statuts ni sur les entrées (images comprises). Le rapport
    **compte les délégations** `unsupported_format` par format d'image et par méthode ZIP (D4).
