@@ -54,6 +54,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import zipfile
 from collections import Counter
 
@@ -632,34 +633,98 @@ def image_format(head, filename=""):
     return None
 
 
+# Noms reserves par le convertisseur dans img/ (`used` de `_convert`) : une image de meme base
+# prend le suffixe `_2`.
+RESERVED_IMG_BASES = ("title", "thumbnail", "empty")
+
+
+def _story_root(names):
+    """Racine de l'histoire (`find_root` de telmi2flam.py) : dossier le moins profond qui
+    contient metadata.json et nodes.json, hors __MACOSX/ et ._* ; None si absente ou ambigue."""
+    nameset = set(names)
+    roots = [n[:-len("metadata.json")] for n in names
+             if n.split("/")[-1] == "metadata.json" and "__MACOSX" not in n.split("/")
+             and not any(p.startswith("._") for p in n.split("/"))
+             and n[:-len("metadata.json")] + "nodes.json" in nameset]
+    if not roots:
+        return None
+    depth = min(r.count("/") for r in roots)
+    best = [r for r in roots if r.count("/") == depth]
+    return best[0] if len(best) == 1 else None
+
+
+def _fold_name(name):
+    return unicodedata.normalize("NFC", name).lower()
+
+
 def jpeg_outputs(path):
     """Campagne (D7) : predicat des entrees de sortie issues d'un JPEG de l'archive, ou None
-    sans JPEG. Approximation du nommage de telmi2flam.py (`alloc`) : `img/<base>[_inv][_N].lif`
-    pour chaque JPEG (base nettoyee comme `alloc`), et `img/title.lif` / `img/thumbnail.lif`
-    si un JPEG est hors d'un dossier `images/` (couverture : title.png, cover.png ou image de
-    metadata.json). Une image PNG de meme base qu'un JPEG profite aussi de l'ecart borne."""
-    bases, cover = set(), False
+    sans JPEG. Approximation du nommage de telmi2flam.py (`alloc`) :
+    - `img/<base>[_inv].lif` pour chaque JPEG de `images/` (base nettoyee comme `alloc`), avec
+      le suffixe `_N` seulement si une collision est possible (autre image de meme base a la
+      casse pres, base reservee, ou base qui prolonge une autre base de `_inv` ou `_N`) ;
+    - `img/title.lif` et `img/thumbnail.lif` seulement si la couverture retenue (image de
+      metadata.json, sinon title.png, sinon cover.png, a la racine de l'histoire) est un JPEG.
+    Une image PNG de meme nom de sortie qu'un JPEG profite aussi de l'ecart borne."""
     try:
         with zipfile.ZipFile(path) as z:
-            for zi in z.infolist():
-                if zi.is_dir():
-                    continue
+            names = [zi.filename for zi in z.infolist() if not zi.is_dir()]
+            root = _story_root(names)
+            if root is None:
+                return None
+            index = {}
+            for n in names:
+                index.setdefault(_fold_name(n), n)
+
+            def head_of(name):
                 try:
-                    with z.open(zi) as f:
-                        head = f.read(16)
+                    with z.open(name) as f:
+                        return f.read(16)
                 except Exception:  # entree illisible : le convertisseur en decidera
+                    return b""
+
+            def entry(rel):
+                return index.get(_fold_name(root + rel))
+
+            jpegs, others = [], []
+            prefix = _fold_name(root + "images/")
+            for n in names:
+                if not _fold_name(n).startswith(prefix):
                     continue
-                if image_format(head, zi.filename) != "jpeg":
+                base = os.path.splitext(os.path.basename(n))[0]
+                clean = (re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_") or "asset").lower()
+                is_jpeg = image_format(head_of(n), n) == "jpeg"
+                (jpegs if is_jpeg else others).append((n, clean))
+            # couverture : premier candidat present et non vide (`read(...) or ...`)
+            cover = False
+            try:
+                meta = json.loads(z.read(root + "metadata.json"))
+            except Exception:  # metadata.json invalide : le convertisseur echouera
+                meta = {}
+            image = meta.get("image") if isinstance(meta, dict) else None
+            for rel in ([image] if isinstance(image, str) and image else []) + ["title.png",
+                                                                                   "cover.png"]:
+                full = entry(rel)
+                if full is None or z.getinfo(full).file_size == 0:
                     continue
-                base = os.path.splitext(os.path.basename(zi.filename))[0]
-                bases.add(re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_") or "asset")
-                cover = cover or "images/" not in zi.filename.replace("\\", "/").lower()
+                cover = image_format(head_of(full), full) == "jpeg"
+                break
     except Exception:  # archive illisible : pas d'ecart borne
         return None
-    if not bases:
+    if not jpegs and not cover:
         return None
-    pattern = re.compile(r"^img/(?:%s)(?:_inv)?(?:_\d+)?\.lif$"
-                         % "|".join(re.escape(b) for b in sorted(bases)))
+    all_bases = [b for _, b in jpegs + others]
+    plain, numbered = set(), set()
+    for name, base in jpegs:
+        rest = list(all_bases)
+        rest.remove(base)
+        collide = (base in RESERVED_IMG_BASES or base in rest or base + "_inv" in rest
+                   or any(re.fullmatch(re.escape(o) + r"(?:_inv)?(?:_\d+)?", base) for o in rest))
+        (numbered if collide else plain).add(base)
+    pattern = re.compile(
+        r"^img/(?:(?:%s)(?:_inv)?|(?:%s)(?:_inv)?(?:_\d+)?)\.lif$"
+        % ("|".join(re.escape(b) for b in sorted(plain)) or "(?!)",
+           "|".join(re.escape(b) for b in sorted(numbered)) or "(?!)"), re.IGNORECASE)
     covers = ("img/title.lif", "img/thumbnail.lif") if cover else ()
     return lambda name: name in covers or pattern.match(name) is not None
 

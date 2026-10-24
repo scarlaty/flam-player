@@ -19,13 +19,28 @@ const MAX_DEVIATION: u8 = 4;
 const ASSUMED: &[(&str, &str)] = &[
     // codages arithmétique et sans perte : délégués dès que l'en-tête est valide (code 7)
     ("sof_arithmetique", "delegate"),
-    ("sof_arithmetique_progressif", "delegate"),
+    ("sof_arithmetique_table_2", "delegate"),
     ("sof_sans_perte", "delegate"),
+    // erreur de `_open` et `PCD_` à l'octet 2048 : autre format pour Pillow (PCD), délégué
+    // (PORT-RUST.md §4.4), que l'image PCD soit lisible ou non
+    ("pcd_polyglotte", "delegate"),
+    ("pcd_polyglotte_court", "delegate"),
+    ("pcd_libjpeg_puis_pillow", "delegate"),
+    // refus de zune-jpeg (DQT de précision 2, facteur 3, table inutilisée invalide), lus par
+    // libjpeg-turbo : délégués
+    ("dqt_pq_2", "delegate"),
+    ("dqt_pq_2_apres_sos", "delegate"),
+    ("sof_facteur_3", "delegate"),
+    ("dht_inutilisee_invalide", "delegate"),
+    // plus de `MAX_SCANS` balayages : délégué
+    ("prog_balayages_trop", "delegate"),
     // flux de tables seules (EOI) suivi d'une image : non pris en charge, délégué
     ("tables_puis_image", "delegate"),
     // balayage unique sans EOI, données complètes : verdict de libjpeg incertain, délégué
     ("fin_seq_sans_eoi", "delegate"),
     ("fin_seq_ff_seul", "delegate"),
+    // données utiles jusqu'au bout, à bits nuls (zune-jpeg complète par des 0) : délégué
+    ("fin_seq_zeros_sans_eoi", "delegate"),
 ];
 
 /// Données coupées puis terminées par un marqueur : lues des deux côtés, mais libjpeg laisse les

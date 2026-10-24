@@ -294,7 +294,166 @@ def vectors():
             ("fin_%s_moitie_dht" % name, data[:n * 3 // 4] + b"\xff\xc4"),
             ("fin_%s_eoi_puis_parasites" % name, data + b"\x00" * 9),
         ]
+    out += followups_491(base, noise, sof_pos, prog)
     return out
+
+
+# Nombre maximal de balayages lus par le Rust (`MAX_SCANS` de `src/jpeg.rs`) : au-delà, délégué.
+MAX_SCANS = 1000
+
+
+def markers(data):
+    """Marqueurs d'un JPEG sans redémarrage : liste de (position, octet bas), données des
+    balayages sautées (`FF 00` et remplissage `FF FF`)."""
+    out = []
+    pos = 2
+    while pos < len(data) - 1:
+        if data[pos] != 0xFF or data[pos + 1] in (0x00, 0xFF):
+            pos += 1
+            continue
+        m = data[pos + 1]
+        out.append((pos, m))
+        if m in (0xD8, 0xD9) or 0xD0 <= m <= 0xD7 or m == 0x01:
+            pos += 2
+        else:
+            pos += 2 + struct.unpack(">H", data[pos + 2:pos + 4])[0]
+    return out
+
+
+def first_scan_end(data):
+    """Position du marqueur qui suit les données du premier balayage."""
+    ms = markers(data)
+    k = next(i for i, (_, m) in enumerate(ms) if m == 0xDA)
+    return ms[k + 1][0]
+
+
+def ac_first_chunk(data):
+    """(début, fin) d'un balayage AC de premier passage (Ss > 0, Ah = 0) d'un JPEG
+    progressif, `DHT` qui le précèdent compris : le répéter juste après ne change pas l'image
+    (coefficients réaffectés aux mêmes valeurs)."""
+    ms = markers(data)
+    for k, (pos, m) in enumerate(ms):
+        if m != 0xDA:
+            continue
+        n = data[pos + 4]
+        ss, ah = data[pos + 5 + 2 * n], data[pos + 7 + 2 * n] >> 4
+        if ss == 0 or ah != 0:
+            continue
+        start = k
+        while start > 0 and ms[start - 1][1] == 0xC4:
+            start -= 1
+        return ms[start][0], ms[k + 1][0]
+    raise AssertionError("pas de balayage AC de premier passage")
+
+
+def dqt_precision(data, pq):
+    """Tables de quantification réécrites en 16 bits avec la précision `pq` (mêmes valeurs)."""
+    for pos, m, n in reversed(segments(data)):
+        if m != 0xDB:
+            continue
+        body, new = data[pos + 4:pos + n], b""
+        while body:
+            new += bytes([pq << 4 | body[0] & 15]) + b"".join(
+                struct.pack(">H", v) for v in body[1:65])
+            body = body[65:]
+        data = data[:pos] + seg(0xDB, new) + data[pos + n:]
+    return data
+
+
+def minimal_gray(w, h, eoi=True):
+    """JPEG gris uni (niveau 128) écrit à la main : tables de Huffman d'un seul code `0`
+    (DC : différence 0 ; AC : fin de bloc), chaque bloc vaut deux bits nuls ; `w * h / 64`
+    multiple de 4 : données faites d'octets nuls, sans bourrage final."""
+    blocks = (w // 8) * (h // 8)
+    assert w % 8 == 0 and h % 8 == 0 and blocks % 4 == 0
+    one_code = bytes([1] + [0] * 15) + b"\x00"
+    return (b"\xff\xd8" + seg(0xDB, b"\x00" + bytes([1] * 64))
+            + seg(0xC0, b"\x08" + struct.pack(">HH", h, w) + b"\x01\x01\x11\x00")
+            + seg(0xC4, b"\x00" + one_code) + seg(0xC4, b"\x10" + one_code)
+            + seg(0xDA, b"\x01\x01\x00\x00\x3f\x00") + bytes(blocks // 4)
+            + (b"\xff\xd9" if eoi else b""))
+
+
+def followups_491(base, noise, sof_pos, prog):
+    """Suivis de la revue de #459 (#491)."""
+    out = []
+    # m4 : erreur de `_open` (rattrapée par `Image.open`) et `PCD_` à l'octet 2048 : Pillow lit
+    # une image PCD (768 x 512, données à 96 x 2048) ; erreur de libjpeg : illisible ; erreur de
+    # libjpeg puis erreur de `_open` : `_open` passe d'abord (PCD).
+    def pcd(data):
+        return (data.ljust(2048, b"\x00") + b"PCD_").ljust(96 * 2048 + 768 * 512 * 3 // 2,
+                                                            b"\x80")
+    sof = base[sof_pos:sof_pos + 19]
+    out += [
+        ("pcd_polyglotte", pcd(base[:sof_pos] + b"\xff\x01" + base[sof_pos:])),
+        ("pcd_polyglotte_court", (base[:sof_pos] + b"\xff\x01" + base[sof_pos:])
+         .ljust(2048, b"\x00") + b"PCD_"),
+        ("pcd_erreur_libjpeg", pcd(base[:sof_pos] + sof + base[sof_pos:])),
+        ("pcd_libjpeg_puis_pillow", pcd(base[:sof_pos] + sof + b"\xff\x01" + base[sof_pos:])),
+    ]
+    # m6 : DQT après le premier balayage, reste plus court qu'une table (libjpeg lit 64 valeurs
+    # au-delà du segment : JERR_BAD_LENGTH), table entière valide (index 2, inutilisée)
+    end = first_scan_end(prog)
+    ones = bytes([1] * 64)
+    for name, body in (("dqt_reste_apres_sos", b"\x02" + ones + b"\x00"),
+                       ("dqt_16_bits_impair_apres_sos", b"\x12" + bytes(127)),
+                       ("dqt_apres_sos", b"\x02" + ones),
+                       ("dqt_pq_2_apres_sos", b"\x22" + ones * 2)):
+        out.append((name, prog[:end] + seg(0xDB, body) + prog[end:]))
+    # vecteurs de la revue : DQT en 16 bits (précision 1 et 2), facteur 3, table de Huffman
+    # inutilisée invalide, arithmétique (table 2, table de quantification absente)
+    gray = jpeg(flat_rgb(48, 48, (128, 128, 128)), quality=75, subsampling=0)
+
+    def factor(body):
+        body[7] = 0x31
+    sos_pos = segments(base)[-1][0]
+    out += [
+        ("dqt_16_bits", dqt_precision(base, 1)),
+        ("dqt_pq_2", dqt_precision(base, 2)),
+        ("sof_facteur_3", patch_sof(gray, factor)),
+        ("dht_inutilisee_invalide",
+         insert(base, seg(0xC4, b"\x02" + bytes([2] + [0] * 15) + b"\x00\x01"))),
+        ("sof_arithmetique_table_2", set_marker(base[:sos_pos + 6] + b"\x22"
+                                                + base[sos_pos + 7:], 0xC0, 0xC9)),
+        ("sof_arithmetique_sans_dqt", set_marker(drop(base, 0xDB), 0xC0, 0xC9)),
+    ]
+    # DAC (lu par libjpeg quel que soit le codage) : avant le SOS, après le balayage
+    out += [
+        ("dac_avant_sos", insert(base, seg(0xCC, b"\x00\x10\x10\x05"))),
+        ("dac_valeur_invalide", insert(base, seg(0xCC, b"\x00\x01"))),
+        ("dac_index_32", insert(base, seg(0xCC, b"\x20\x05"))),
+        ("dac_longueur_impaire", insert(base, seg(0xCC, b"\x10\x05\x00"))),
+        ("dac_apres_balayage", base[:-2] + seg(0xCC, b"\x10\x05") + b"\xff\xd9"),
+        ("dac_apres_balayage_invalide", base[:-2] + seg(0xCC, b"\x00\x01") + b"\xff\xd9"),
+        ("dac_progressif_index_32", prog[:end] + seg(0xCC, b"\x20\x05") + prog[end:]),
+    ]
+    # copy_entropy : marqueur invalide précédé de remplissage juste avant un RSTn (écarté par
+    # libjpeg en resynchronisant), remplissage avant EOI
+    rst = jpeg(noise, quality=75, restart_marker_blocks=1)
+    at = rst.index(b"\xff\xd0")
+    out += [
+        ("rst_remplissage_marqueur_invalide", rst[:at] + b"\xff\xff\x05" + rst[at:]),
+        ("remplissage_avant_eoi", base[:-2] + b"\xff\xff\xff\xd9"),
+    ]
+    # balayage unique sans EOI : données utiles jusqu'au bout, faites de bits nuls (couper les
+    # 8 derniers octets ne change rien pour zune-jpeg, qui complète par des 0)
+    out += [
+        ("huffman_un_code", minimal_gray(64, 64)),
+        ("fin_seq_zeros_sans_eoi", minimal_gray(64, 64, eoi=False)),
+    ]
+    # m11 : balayages comptés (MAX_SCANS lus, un de plus délégué) : un balayage AC de premier
+    # passage répété, image inchangée
+    small = jpeg(content(17, 9, "noise", 11).convert("L"), quality=75, progressive=True)
+    start, stop = ac_first_chunk(small)
+    count = small.count(b"\xff\xda")
+    for name, total in (("prog_balayages_max", MAX_SCANS), ("prog_balayages_trop", MAX_SCANS + 1)):
+        out.append((name, small[:stop] + small[start:stop] * (total - count) + small[stop:]))
+    return out
+
+
+def flat_rgb(w, h, color):
+    from PIL import Image
+    return Image.new("RGB", (w, h), color)
 
 
 def alteration_bases():

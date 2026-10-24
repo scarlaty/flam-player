@@ -146,13 +146,29 @@ fn jpeg_deviation(python: &[u8], rust: &[u8]) -> Option<u8> {
     Some(max)
 }
 
-/// Écrit le paquet dans `dir` et compare le SHA-256 du `.plain.pk` à celui de Python.
-fn check_pk(case: &Value, pkg: &Package, dir: &std::path::Path) -> Result<(), String> {
+/// Écrit le paquet dans `dir`, le relit (mêmes entrées, dans le même ordre, que `pkg`) et, si
+/// `sha` (conteneur attendu identique à celui de Python), compare son SHA-256.
+fn check_pk(case: &Value, pkg: &Package, dir: &std::path::Path, sha: bool) -> Result<(), String> {
     let out = dir.join(format!("{}.plain.pk", case["id"].as_str().unwrap()));
     let target = Target::new(Some(&out), false, pkg);
     write_package(pkg, &target, &|| false).map_err(|e| format!("écriture : {e}"))?;
     let bytes = std::fs::read(&out).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&out);
+    let mut back = Archive::new(Cursor::new(&bytes[..]), "relu".into())
+        .map_err(|e| format!(".plain.pk relu : {e}"))?;
+    let names = back.names().to_vec();
+    let want_names: Vec<&String> = pkg.entries.iter().map(|(n, _)| n).collect();
+    if names.iter().collect::<Vec<_>>() != want_names {
+        return Err(format!(".plain.pk relu : entrées {names:?}"));
+    }
+    for (name, data) in &pkg.entries {
+        if back.read(name).map_err(|e| e.to_string())?.as_ref() != Some(data) {
+            return Err(format!(".plain.pk relu : {name} différent"));
+        }
+    }
+    if !sha {
+        return Ok(());
+    }
     let want = case["pk_sha256"].as_str().unwrap();
     let have = hex(&Sha256::digest(&bytes));
     if want != have {
@@ -330,10 +346,9 @@ fn check(case: &Value, data: Vec<u8>, dir: &std::path::Path) -> Result<(), Strin
                     "messages d'avertissement : Python {want_m:?}, Rust {have_m:?}"
                 ));
             }
-            if bounded {
-                return Ok(()); // conteneur différent par construction (contenus à ±4)
-            }
-            check_pk(case, &pkg, dir)
+            // conteneur différent par construction (contenus à ±4) : écrit et relu quand même,
+            // sans comparer son SHA-256 à celui de Python
+            check_pk(case, &pkg, dir, !bounded)
         }
     }
 }

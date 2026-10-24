@@ -154,7 +154,11 @@ pub fn pillow_may_open(data: &[u8]) -> bool {
             return true;
         }
     }
-    // PCD : `PCD_` à l'octet 2048.
+    pcd_signature(data)
+}
+
+/// PCD (greffon sans `_accept`) : `PCD_` à l'octet 2048.
+pub(crate) fn pcd_signature(data: &[u8]) -> bool {
     data.get(2048..).is_some_and(|s| s.starts_with(b"PCD_"))
 }
 
