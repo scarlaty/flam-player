@@ -556,6 +556,12 @@ def codec_cases():
                  bytes([((n << 3) | 1) & 0xFF, (n >> 5) & 0xFF, (n >> 13) & 0xFF]) + b"x" * n)
         add("zstd_big_window_%d%s" % (n, "_truncated" if cut else ""), ZS,
             frame[:len(frame) - cut], b"x" * n)
+    # Fenetre annoncee de 3,75 Gio, taille annoncee 256, puis 2000 blocs RLE de 128 Kio : Python
+    # echoue des que la sortie depasse 32 Kio ; le Rust aussi, en memoire bornee.
+    rle = bytes([((131072 << 3) | 2) & 0xFF, (131072 >> 5) & 0xFF, (131072 >> 13) & 0xFF]) + b"r"
+    add("zstd_big_window_rle_flood", ZS, struct.pack("<L", 0xFD2FB528) +
+        bytes([0x40, (21 << 3) | 7]) + struct.pack("<H", 0) + rle * 2000 +
+        bytes([(0 << 3) | 1, 0, 0]), b"r" * 256)
     # Bloc brut plus grand que Block_Maximum_Size (fenetre 1 Kio) : refuse des l'en-tete.
     n = 2000
     add("zstd_block_too_big", ZS, struct.pack("<L", 0xFD2FB528) + bytes([0x00, 0]) +

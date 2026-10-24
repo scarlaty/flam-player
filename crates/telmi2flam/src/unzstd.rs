@@ -168,8 +168,14 @@ impl ZstdDecoder {
         // La somme de contrôle est lue et vérifiée ici : `ruzstd` ne la voit pas.
         let mut header = avail[..size].to_vec();
         header[4] &= !0x04;
+        if self.big_window {
+            // Trame « single-pass » : au plus 32 Kio de sortie, donc des distances sous 2^17.
+            // `ruzstd` reçoit une fenêtre de 2^17 pour ne pas retenir la fenêtre annoncée
+            // (jusqu'à 3,75 Gio) avant la fin de la trame.
+            header[5] = 0x38;
+        }
         let mut frame = Box::new(FrameDecoder::new());
-        frame.set_max_window_size(window.max(MAX_WINDOW));
+        frame.set_max_window_size(MAX_WINDOW);
         frame
             .reset(&header[..])
             .map_err(|e| data(format!("Unable to decompress Zstandard data: {e}")))?;
@@ -185,6 +191,12 @@ impl ZstdDecoder {
         }
         self.hasher.write(bytes);
         self.total += bytes.len() as u64;
+        if self.big_window && self.total > SINGLE_PASS_OUT {
+            // Raccourci « single-pass » : le tampon de sortie de Python (32 Kio) déborde.
+            return Err(data(
+                "Unable to decompress Zstandard data: Destination buffer is too small",
+            ));
+        }
         out(bytes).map_err(|()| Halt::Sink)
     }
 
