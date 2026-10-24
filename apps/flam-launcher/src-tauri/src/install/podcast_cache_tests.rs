@@ -108,6 +108,7 @@ fn composition(cover: CoverChoice) -> PackComposition {
         },
         cover,
         menu: vec![ep("s1", "g1"), ep("s1", "g2"), ep("s2", "g3")],
+        ..PackComposition::default()
     }
 }
 
