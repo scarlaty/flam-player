@@ -29,6 +29,7 @@ Légende :
 9. [Décisions du 2026-10-23 (N1 à N10)](#9-décisions-du-2026-10-23-n1-à-n10)
 10. [Ordres de grandeur](#10-ordres-de-grandeur)
 11. [Impact sur les issues](#11-impact-sur-les-issues)
+12. [Synthèse vocale des titres (#462)](#12-synthèse-vocale-des-titres-462)
 
 ## 1. Objectif et périmètre
 
@@ -352,7 +353,8 @@ l'appareil mesurée en #219 (D1, N2 à revoir après #219).
   dans `THIRD-PARTY-NOTICES.txt` par `npm run build:notices` (liste d'autorisation dans
   `scripts/notices-lib.mjs`) ; `LICENSES.md` couvre ffmpeg et LAME.
 - **Synthèse vocale (évolution)** : piper dépend d'espeak-ng (GPL-3.0) ; pas d'embarquement sans
-  analyse de licence dédiée.
+  analyse de licence dédiée. Voie étudiée pour #462 : voix système Windows, aucune voix
+  embarquée (§ 12).
 - **Contenus** : aucun flux réel, aucune archive Telmi, aucune histoire convertie dans le dépôt ;
   essais réels hors dépôt (`.cache/`).
 
@@ -590,3 +592,204 @@ Le label `plus-tard` est retiré des issues du MVP ; il reste sur #221.
 Pistes sans fichier commun : Rust (#361, #213, #214, #216, #211, #362, #217) et interface (#212,
 #363). Brancher le contrôle D10 sur le téléchargement du flux (#211) dans celle des deux issues,
 #211 ou #213, qui est fusionnée en second.
+
+## 12. Synthèse vocale des titres (#462)
+
+> **Statut : note de conception, à valider par le mainteneur** (partie de #207, évolution de
+> #221). Rien n'est codé. Les points à trancher sont en 12.11 ; tant qu'ils ne le sont pas, les
+> choix ci-dessous sont des recommandations.
+
+### 12.1 But et état actuel
+
+Dans un pack, le carrousel de la Flam affiche le titre de chaque option mais **ne le dit pas** :
+les scènes d'option sont créées avec `"audio": null` (`podcast/archive.rs`, `Graph::menu`) et
+`telmi2flam` met alors une trame silencieuse (`sounds/silent.mp3`, `package.rs`) ; l'archive
+n'a pas de `title.mp3` (§ 6). Un enfant qui ne lit pas ne peut donc pas choisir un épisode. La
+synthèse vocale remplit ces audios avec le titre prononcé, **en local, avec la voix système de
+Windows**, sans licence tierce.
+
+### 12.2 Ce qui est lu, et où cela s'insère
+
+| Élément lu                                | Où dans l'histoire                                        | Recommandation        |
+| ----------------------------------------- | --------------------------------------------------------- | --------------------- |
+| Titre de chaque épisode                   | `audio` de la **scène d'option** de l'épisode (carrousel) | oui                   |
+| Nom de chaque catégorie / sous-menu       | `audio` de la scène d'option de la catégorie              | oui                   |
+| Titre du pack                             | `title.mp3` (carte de titre ; lu par `telmi2flam`, § 6)   | oui                   |
+| Intro avant l'épisode (« Épisode 3 : … ») | ajouterait un audio avant l'épisode                       | non (voir ci-dessous) |
+
+- Le fichier audio d'une option est **joué quand l'option prend le focus** dans le carrousel
+  (scène `autoplay: false` ; comportement attendu du format Telmi, non vérifié ici). **À
+  vérifier sur l'appareil** avant la PR 2 (comme #219) : lecture au focus, coupure au
+  défilement, volume comparé à celui des épisodes.
+- Pas d'intro avant l'épisode : elle allongerait la scène d'épisode (qui est une copie de la
+  source, D6) ou obligerait à une scène de plus par épisode (limite `MAX_STAGES`).
+- Texte lu : le **titre d'origine** (une ligne, 120 caractères au plus, coupé proprement), pas
+  le libellé translittéré de 40 caractères (A6) : la voix prononce mieux les accents. Les
+  titres vides ou sans lettre (« 🎧 », « #12 ») gardent le silence ; les numéros et sigles sont
+  lus tels que la voix les lit (pas de normalisation en v1).
+- Les noms d'entrées de l'archive restent générés (`audios/t<n>.mp3`, `audios/c<n>.mp3`),
+  jamais tirés du titre (invariant « noms d'entrées sûrs »).
+- Une option sans voix (case décochée) garde `audio: null`, comportement actuel inchangé.
+
+### 12.3 API : WinRT ou SAPI 5
+
+| Critère                      | `Windows.Media.SpeechSynthesis` (WinRT)                                                                                      | SAPI 5 (`ISpVoice`, COM)                                    |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Sortie                       | `SynthesizeTextToStreamAsync` : flux WAV PCM en mémoire                                                                      | `SPFileStream` : fichier WAV, ou flux COM à écrire          |
+| Voix                         | voix « OneCore » : celles de Paramètres > Heure et langue > Voix                                                             | voix SAPI classiques (Hortense, Julie, Paul sur Windows 10) |
+| Voix françaises              | présentes avec le pack de langue français (installé par défaut sur un Windows en français)                                   | idem, ensemble plus restreint, voix plus anciennes          |
+| Rendu                        | plus naturel (voix récentes)                                                                                                 | plus robotique                                              |
+| Accès Rust                   | crate `windows` (Microsoft, **MIT OU Apache-2.0**), fonctionnalités `Media_SpeechSynthesis`, `Storage_Streams`, `Foundation` | même crate, `Win32_Media_Speech`, `Win32_System_Com`        |
+| Complexité                   | asynchrone (`.get()` bloquant dans un thread dédié), flux mémoire                                                            | COM à initialiser, gestion des événements                   |
+| Applications non empaquetées | fonctionne (le launcher n'est pas MSIX)                                                                                      | fonctionne                                                  |
+
+**Recommandation : WinRT seul** (meilleur rendu, sortie en mémoire sans fichier temporaire,
+une seule dépendance déjà permissive). Pas de repli SAPI en v1 : il doublerait le code et les
+tests pour des voix que l'on souhaite moins (voir Q4). Le launcher utilise aujourd'hui
+`windows-sys` (`Cargo.toml`, `cfg(windows)`) ; ajouter `windows` augmente le temps de compilation
+et la liste de `THIRD-PARTY-NOTICES.txt` (deux licences permissives, à ajouter dans la liste
+d'autorisation de `scripts/notices-lib.mjs`), à mesurer dans la PR 1. Le code reste derrière
+`#[cfg(windows)]` ; sous les autres systèmes, le module répond « synthèse indisponible ».
+
+**À vérifier sur une machine avant la PR 1** (je n'ai pas pu le faire dans cette note) :
+
+- les noms exacts des voix françaises sur Windows 10 et 11 (attendues : Microsoft Hortense,
+  Julie, Paul, et, sur Windows 11, éventuellement d'autres voix « naturelles » qui sont
+  **réservées au Narrateur** et peuvent ne pas apparaître dans `SpeechSynthesizer.AllVoices`) ;
+- le format WAV réellement produit (fréquence, mono ou stéréo ; 16 bits attendus) ;
+- qu'aucune voix listée n'est « en ligne » (toute voix de `AllVoices` doit rester locale).
+
+### 12.4 Voix, langue, réglages
+
+- **Choix de la voix** : liste de `SpeechSynthesizer.AllVoices` filtrée sur la langue `fr`
+  (`fr-FR`, `fr-CA`, `fr-BE`, `fr-CH`) ; défaut = `DefaultVoice` si elle est française, sinon la
+  première voix française, triée par nom pour que le choix soit stable.
+- Les titres de podcasts peuvent être dans une autre langue ; le texte est lu par la voix
+  choisie (v1 : une voix par pack). Choisir la voix d'après `<language>` du flux est une
+  évolution (Q3).
+- **Réglages** : la voix (identifiant `VoiceInformation.Id`) est mémorisée par poste dans les
+  réglages du launcher ; si elle n'existe plus, retour au défaut sans erreur. **Pas de réglage de
+  débit en v1** (débit 1,0) : un titre court, lu une fois ; on le règlera si l'aperçu montre
+  un besoin. Le volume est celui du MP3 produit, sans normalisation (comme les épisodes).
+
+### 12.5 Repli si aucune voix française
+
+| Situation                                        | Comportement proposé                                                                                                                                            |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Aucune voix française à l'ouverture de l'éditeur | case **désactivée**, message : « Aucune voix française n'est installée dans Windows (Paramètres > Heure et langue > Voix). » ; le pack reste créable, sans voix |
+| Voix disparue entre le choix et la création      | la création **s'arrête avant toute écriture** (`tts_no_voice`), message clair ; rien n'est créé en silence                                                      |
+| Échec de synthèse d'un titre                     | ce titre reste **silencieux** (`audio: null`), le pack est créé, un avertissement par titre est ajouté au récapitulatif (comme P7)                              |
+| Plateforme non Windows                           | case masquée                                                                                                                                                    |
+
+Le silence actuel reste donc le comportement par défaut ; la voix est toujours un choix
+explicite du parent (case décochée par défaut).
+
+### 12.6 Format produit, durée, coût, cache
+
+- Synthèse en mémoire (WAV PCM) → fichier WAV temporaire dans le dossier de travail de la tâche
+  → **MP3 44 100 Hz** par le ffmpeg LGPL embarqué (`ffmpeg.rs`, arguments fixes, `-nostdin`,
+  empreinte vérifiée, annulation, délai) : mêmes précautions que #214. **Mono, 64 kbps**
+  (D6 accepte le mono ; un titre de 3 s pèse environ 24 Kio). Pas de nouvel encodeur : `libmp3lame`
+  est déjà dans le build.
+- Durée d'un titre : 1 à 6 s (120 caractères au plus). Aucun plafond de durée ne s'applique ; un
+  titre plus long que 15 s est coupé à la phrase précédente ou refusé en avertissement.
+- **Ordre de grandeur** : 256 épisodes au plus (`MAX_EPISODES`) et 50 options par menu, soit au
+  plus quelques centaines de titres : 6 à 10 Mo de MP3 au total. La synthèse est bien plus
+  rapide que le temps réel ; le coût dominant est le lancement de ffmpeg par fichier
+  (quelques dizaines de ms) : prévoir de 30 à 90 s pour un grand pack, **à mesurer** (PR 2). La
+  progression et l'annulation passent par celles de la création (#217) : une étape « voix »
+  comptée par titre.
+- **Cache** : pas de cache persistant en v1 (le coût est faible et le dossier de travail est
+  supprimé après la publication, N8 a). La clé prévue, si #460 (cache des MP3 convertis par
+  source, N8 b) est fusionnée : `sha256(voix, débit, version du format, texte)` ; elle suffit à
+  réutiliser un titre déjà lu lors d'un pack refait. Cette PR ne dépend pas de #460 ; elle
+  réutilisera son cache si celui-ci offre une API de clé générale, sinon on ne l'ajoute pas.
+- Place dans la création : après la conversion des épisodes et avant l'écriture de l'archive (le
+  graphe a besoin de la liste des audios de titres). Un échec de synthèse ne bloque pas les
+  épisodes.
+
+### 12.7 Interface (éditeur de pack, #363)
+
+- Case à cocher **« Lire les titres à voix haute »**, sous les métadonnées du pack ; décochée par
+  défaut ; désactivée avec explication si aucune voix (12.5).
+- Si plusieurs voix françaises : liste déroulante « Voix », mémorisée par poste.
+- Bouton **« Écouter »** (aperçu) : lit le titre du pack avec la voix choisie ; même bouton
+  discret à côté d'un titre d'épisode ou de catégorie. Commande `tts_preview(text, voice)` :
+  texte borné comme 12.2, résultat WAV court (quelques centaines de Kio) lu par l'élément audio de
+  l'interface ; un aperçu à la fois, annulé si le texte change. Aucun appel hors de la machine.
+- Textes dans le fichier de textes de l'interface, parcours au clavier, case et liste
+  étiquetées pour les lecteurs d'écran.
+- L'estimation de taille (D5) ajoute la taille des titres (≈ 24 Kio par titre, borne haute).
+- La case et la voix entrent dans le brouillon (N3 b) et dans la composition enregistrée avec la
+  tâche (N10 a), pour que la reprise reconstruise le même pack.
+
+### 12.8 Vie privée, licences, tests
+
+**Vie privée.** Tout est local : `SpeechSynthesizer` ne contacte aucun service pour les voix
+OneCore ; les titres ne sortent jamais du poste, rien n'est journalisé (même règle que les
+URL de flux, D11 : ni titre ni voix dans les journaux).
+
+**Licences.**
+
+- Aucune voix, aucun modèle ni aucune bibliothèque de synthèse n'est embarqué : on appelle le
+  système. Rien à ajouter dans `LICENSES.md` ; la crate `windows` (MIT OU Apache-2.0) va dans
+  `THIRD-PARTY-NOTICES.txt`.
+- Les voix Microsoft appartiennent à Microsoft. Les packs sont déjà réservés à l'usage personnel
+  et familial (D9, D14) ; l'audio produit ne doit pas être partagé. Je n'ai pas lu le contrat de
+  licence des voix : à confirmer avant de promettre davantage que cet usage (Q4).
+- piper et espeak-ng restent exclus (GPL-3.0, § 7).
+
+**Tests.**
+
+- Un trait `Synthesizer` (liste des voix, `synthesize(texte, voix) -> WAV`) ; implémentation
+  WinRT derrière `#[cfg(windows)]` ; **voix simulée en CI** qui produit un WAV déterministe (un
+  sinus dont la durée dépend de la longueur du texte) et des listes de voix configurables
+  (aucune, une, plusieurs, disparue). Les tests de l'archive, de la préparation et de l'interface
+  s'appuient dessus ; les tests existants avec un faux ffmpeg (#214) couvrent la conversion.
+- **Test réel manuel**, hors CI (les exécuteurs GitHub n'ont en général pas de voix française) :
+  un test `#[ignore]` sous Windows qui synthétise « Bonjour » si une voix française existe, et une
+  procédure dans la PR 2 : créer un pack de 10 titres, vérifier sur l'appareil la lecture au
+  focus, la coupure au défilement et le volume.
+- Test d'injection de panne (CONTRIBUTING § 5) pour la PR 2, puisqu'elle écrit dans le dossier de
+  travail de la file d'installation : arrêt ou échec à chaque étape, aucun fichier restant,
+  reprise cohérente.
+
+### 12.9 Pannes
+
+| Étape / panne                                        | État laissé                    | Reprise ou message                                                       |
+| ---------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------ |
+| Aucune voix FR à l'ouverture                         | rien                           | case désactivée et explication                                           |
+| Voix disparue avant la création                      | rien (contrôle avant écriture) | erreur `tts_no_voice`, retour à l'éditeur                                |
+| `SpeechSynthesizer` indisponible (service voix, COM) | rien                           | `tts_unavailable` ; mêmes cas que « aucune voix »                        |
+| Échec de synthèse d'un titre                         | pas de WAV                     | titre silencieux, avertissement au récapitulatif                         |
+| Titre vide, sans lettre ou trop long                 | rien                           | silencieux ou coupé, pas d'erreur                                        |
+| WAV vide ou corrompu                                 | WAV supprimé                   | comme un échec de synthèse                                               |
+| ffmpeg absent, haché faux ou en échec                | temporaires `.part` supprimés  | comme #214 : ce titre silencieux ; ffmpeg absent bloque déjà la création |
+| Annulation pendant les titres                        | dossier de travail supprimé    | comme la création (#217)                                                 |
+| Arrêt brutal de l'application                        | dossier de travail à nettoyer  | reprise N10 a : les titres sont **refaits** (déterministe)               |
+| Disque plein                                         | temporaires supprimés          | erreur d'écriture de la création                                         |
+| Lecture au focus absente sur l'appareil              | pack valide, sans voix audible | corrigé dans le graphe avant la PR 2, sinon fonctionnalité réservée      |
+
+### 12.10 Découpage en PR courtes
+
+1. **PR 1 : module `podcast/speech.rs`** (trait, implémentation WinRT, liste des voix filtrée,
+   synthèse en WAV mémoire, voix simulée, tests) et commandes Tauri `tts_voices` et `tts_preview`.
+   Pas de lien avec l'archive. Mesures : durée par titre, taille de la dépendance.
+2. **PR 2 : intégration dans la création du pack** : option `titles_audio` dans la composition
+   (#362), audios de titre dans `archive.rs` (`audio` des options, `title.mp3`), étape de
+   synthèse et conversion en MP3 dans la préparation (#217), avertissements, reprise ;
+   **note de conception, test d'injection de panne, `modele:opus`** (CONTRIBUTING § 5). Dépend
+   de #217 et de la PR 1 ; test sur appareil.
+3. **PR 3 : interface** : case, voix, aperçu, estimation, textes, README « Créer un pack » (#220).
+   Dépend de #363 et de la PR 1 ; en série avec toute autre PR sur l'éditeur (mêmes fichiers).
+
+La PR 1 peut partir en parallèle de #217 ; les PR 2 et 3 attendent leur fusion.
+
+### 12.11 Questions à trancher par le mainteneur
+
+| #   | Question                                                                                                                                      | Recommandation                                                                                                                    |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Q1  | Que lit-on : seulement les épisodes ? aussi les catégories et le titre du pack ? une intro avant chaque épisode ?                             | Épisodes, catégories **et** titre du pack ; pas d'intro avant l'épisode (12.2).                                                   |
+| Q2  | Sans voix française : bloquer, ou créer un pack silencieux ? Et si un seul titre échoue ?                                                     | Case désactivée avec message, jamais de pack silencieux par surprise ; titre isolé en échec = silencieux et avertissement (12.5). |
+| Q3  | Réglages : voix seule, voix et débit, voix selon la langue du flux ?                                                                          | Voix choisie par poste (liste des voix françaises), **sans débit** en v1 ; voix selon la langue du flux plus tard.                |
+| Q4  | API et licence : WinRT seul (crate `windows`) ou WinRT puis SAPI ; accepte-t-on l'usage des voix Microsoft limité au cadre personnel du § 4 ? | **WinRT seul** ; usage personnel et familial déjà imposé (D9, D14), avec une vérification du contrat des voix avant la PR 3.      |
