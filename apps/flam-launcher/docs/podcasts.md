@@ -31,6 +31,7 @@ Légende :
 11. [Impact sur les issues](#11-impact-sur-les-issues)
 12. [Synthèse vocale des titres (#462)](#12-synthèse-vocale-des-titres-462)
 13. [Cache des MP3 convertis (N8 b, #460)](#13-cache-des-mp3-convertis-n8-b-460)
+14. [Compositions nommées réutilisables (N3 c, #461)](#14-compositions-nommées-réutilisables-n3-c-461)
 
 ## 1. Objectif et périmètre
 
@@ -54,8 +55,8 @@ fonctionnelle du launcher ; elle peut être préparée dès maintenant.
 - erreurs claires ; un épisode en échec est retiré et signalé.
 
 **Hors MVP** (#221, voir § 11) : recherche de podcasts et liste de flux conseillés, synthèse
-vocale des titres, titre incrusté ou pochette générée, compositions nommées réutilisables (N3 c),
-cache des MP3 convertis (N8 b, livré par #460, § 13), image de catégorie choisie par le parent (N5 c), normalisation du
+vocale des titres, titre incrusté ou pochette générée, compositions nommées réutilisables (N3 c,
+livré par #461, § 14), cache des MP3 convertis (N8 b, livré par #460, § 13), image de catégorie choisie par le parent (N5 c), normalisation du
 volume, chapitres, reprise par épisode, génération directe d'un paquet flam (option B).
 
 ## 2. Décisions prises
@@ -908,3 +909,160 @@ Aucun écran dédié : la taille du cache des MP3 est comptée dans la taille du
 les paramètres, « Vider le cache » la supprime, et la suppression d'une source purge la sienne.
 Un affichage séparé (taille du cache des MP3, bouton dédié) est une évolution possible (issue de
 suivi).
+
+## 14. Compositions nommées réutilisables (N3 c, #461)
+
+Évolution retenue par le mainteneur le 2026-10-24 (#461, issue de #221) : après la création
+d'un pack, sa **composition** (épisodes choisis et leurs flux, arborescence, titre, sous-titre,
+âge, description, couverture) est conservée sous un nom. Le parent peut la **rouvrir** pour
+refaire le même pack ou en **dériver** un autre, la **renommer** et la **supprimer**. Le modèle
+pack est inchangé : chaque création donne une **nouvelle histoire** (nouvel uuid, P3), jamais
+une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
+
+### 14.1 Quand une composition est conservée
+
+- **À la création de la tâche** (`pack_create` accepté, composition revalidée), pas à la
+  publication. Une création qui échoue ou qu'on annule (réseau coupé, disque plein) se relance
+  ainsi sans tout ressaisir ; et la file d'installation (#217) n'a pas à connaître les
+  compositions : seule la commande `pack_create` les appelle, après l'ajout de la tâche.
+- **Composition identique** à une composition conservée (même arborescence, mêmes épisodes,
+  mêmes métadonnées saisies, même couverture) : pas de doublon, l'entrée existante est mise à
+  jour (date du dernier pack, nombre de packs). C'est le cas « refaire ».
+- **Composition différente** : nouvelle entrée, nommée d'après le **titre effectif** du pack
+  (titre saisi, sinon titre du flux, N1 b), avec un suffixe « (2) », « (3) »… si ce nom est
+  déjà pris. C'est le cas « dériver » : la composition d'origine reste intacte.
+- Un échec d'enregistrement (fichier illisible, disque plein, limite atteinte) **ne bloque
+  jamais la création** du pack : la tâche est créée, un message dit que la composition n'a pas
+  été conservée et pourquoi.
+
+### 14.2 Rouvrir : refaire ou dériver
+
+- « Ouvrir » **copie** la composition dans le brouillon unique (N3 b), à la révision suivante
+  de celui-ci (une sauvegarde automatique en retard est refusée ; cas limite d'une sauvegarde
+  d'éditeur fermé encore en vol au-delà de 2 s : suivi #484), puis affiche
+  l'éditeur. Si le brouillon contient déjà des épisodes, une confirmation le dit : « Le
+  brouillon en cours sera remplacé. »
+- La composition conservée n'est jamais modifiée par l'éditeur : seul le brouillon l'est.
+  « Créer l'histoire » sans modification la refait (même entrée) ; avec des modifications, une
+  nouvelle entrée est créée (14.1).
+- Épisodes disparus : voir 14.5. La création reste impossible tant qu'ils sont dans
+  l'arborescence (validation existante, N3 b) ; le parent les retire puis crée.
+
+### 14.3 Format et emplacement
+
+- Fichier `pack-compositions.json` du **dossier de configuration**, à côté de
+  `pack-draft.json` : ce sont des données du parent, pas un cache (« Vider le cache » n'y
+  touche pas).
+- JSON versionné (`schema_version` = 1, lu par `storage::load_versioned`) :
+
+  ```json
+  {
+    "schema_version": 1,
+    "compositions": [
+      {
+        "id": "uuid v4 tiré par le launcher",
+        "name": "Contes du soir",
+        "created_at": 1761300000,
+        "last_used_at": 1761300000,
+        "packs": 1,
+        "composition": { "metadata": {}, "cover": {}, "menu": [] }
+      }
+    ]
+  }
+  ```
+
+  `composition` a exactement la forme du brouillon (`PackComposition`, #362) ; dates en
+  secondes Unix ; `packs` : nombre de créations lancées depuis cette composition.
+
+- **Aucune URL** sur le disque (D11) : la composition ne contient que des identifiants
+  (source, épisode) et des textes saisis.
+- **Couverture référencée, jamais copiée** : la composition garde le choix (`CoverChoice` :
+  défaut, flux ou épisode), comme le brouillon. Aucune image à stocker ni à purger ; si l'image
+  a disparu du flux, l'ouverture signale « couverture indisponible » et le parent en choisit
+  une autre (ou le défaut).
+
+### 14.4 Écriture, lecture, concurrence
+
+- Toute modification (conservation, renommage, suppression) est un cycle
+  lecture-modification-écriture **sous le verrou de configuration** (`ConfigState::guard`,
+  celui du brouillon et des sources), terminé par une **écriture atomique**
+  (`storage::write_atomic` : temporaire voisin, `sync_all`, renommage). Un arrêt brutal laisse
+  l'ancien fichier ou le nouveau, jamais un mélange ; un temporaire abandonné est ignoré.
+- Rien n'est gardé en mémoire : chaque commande relit le fichier.
+- **Entrée illisible** dans un fichier lisible (type d'option inconnu, champ manquant,
+  identifiant en double) : le fichier entier est d'abord **copié** en
+  `pack-compositions.json.<horodatage>.bak`, puis réécrit avec les seules entrées lisibles ;
+  un message le dit une fois. Rien n'est perdu : la copie garde tout.
+- **Fichier illisible** (tronqué, JSON invalide, non UTF-8), **trop gros** ou d'un **schéma
+  plus récent** : mis de côté en `*.bak` (jamais écrasé), liste vide, message.
+
+### 14.5 Épisodes disparus, source supprimée
+
+- **Épisode retiré du flux** : la composition est gardée telle quelle. La liste n'analyse pas
+  les flux (coût : un flux relu par source) ; à l'ouverture, la validation de l'éditeur
+  signale l'épisode comme indisponible, sans erreur.
+- **Source supprimée** : la composition est **gardée et marquée** dans la liste (« 1 flux
+  supprimé »). Justification : la suppression d'une source ne touche pas aux histoires créées
+  (P4) ; par analogie, elle ne détruit pas le travail du parent (arborescence, noms de
+  catégories, métadonnées), encore utile pour dériver un pack avec les autres flux. Les
+  identifiants de source sont aléatoires : réajouter le même flux ne reconnecte pas la
+  composition (évolution possible, issue de suivi). Le parent la supprime s'il n'en veut plus.
+
+### 14.6 Limites
+
+- **50 compositions** au plus (`MAX_COMPOSITIONS`). Au-delà, la création du pack continue mais
+  la composition n'est pas conservée, avec un message ; aucune suppression automatique : ce
+  sont les données du parent.
+- Nom : 1 à 60 caractères (`MAX_NAME_CHARS`), espaces de bord retirés, sans caractère de
+  contrôle, **unique** sans tenir compte de la casse.
+- Taille : 256 Kio par composition sérialisée (une composition valide en fait au plus
+  quelques dizaines : 50 épisodes, 16 Kio de description) et 16 Mio pour le fichier ; au-delà,
+  l'entrée n'est pas conservée (message), un fichier trop gros est mis de côté.
+
+### 14.7 Rétrocompatibilité
+
+- Le **brouillon** ne change pas (schéma 1, aucun champ ajouté) : les brouillons existants se
+  lisent comme avant.
+- Fichier des compositions absent (versions précédentes) : liste vide, rien n'est écrit tant
+  qu'aucun pack n'est créé.
+- Champs ajoutés plus tard à `PackComposition` (voix des titres, #462, § 12.10) : en
+  `serde(default)`, une composition conservée avant leur ajout se relit avec la valeur par
+  défaut ; ils entrent dans la comparaison de 14.1.
+
+### 14.8 Pannes
+
+| Étape / panne                                        | État laissé                                  | Reprise ou message                                                            |
+| ---------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------- |
+| Arrêt brutal pendant l'écriture                      | ancien fichier intact (temporaire abandonné) | la composition sera conservée à la prochaine création                         |
+| Disque plein, fichier en lecture seule               | ancien fichier intact, temporaire supprimé   | création du pack poursuivie, message ; renommer ou supprimer : erreur         |
+| Fichier tronqué ou JSON invalide                     | mis de côté en `*.bak`                       | liste vide, message une fois                                                  |
+| Entrée illisible dans un fichier lisible             | copie `*.bak`, entrées lisibles réécrites    | message une fois                                                              |
+| Fichier d'un schéma plus récent ou trop gros         | mis de côté en `*.bak`, jamais écrasé        | liste vide, message                                                           |
+| Limite de 50 atteinte                                | inchangé                                     | création poursuivie, message                                                  |
+| Ouvrir : brouillon illisible                         | brouillon mis de côté (`*.bak`, N3 b)        | composition copiée dans un brouillon neuf                                     |
+| Ouvrir : écriture du brouillon impossible            | brouillon inchangé                           | erreur affichée, l'éditeur n'est pas ouvert                                   |
+| Ouvrir, renommer, supprimer une composition disparue | inchangé                                     | « composition introuvable », liste relue                                      |
+| Épisode retiré du flux, flux jamais obtenu           | composition intacte                          | épisode signalé indisponible à l'ouverture, création bloquée tant qu'il y est |
+| Source supprimée                                     | composition intacte                          | marquée dans la liste ; épisodes indisponibles à l'ouverture                  |
+| Couverture disparue                                  | composition intacte                          | « couverture indisponible » à l'ouverture                                     |
+
+### 14.9 Interface
+
+- Écran Podcasts, section **« Compositions enregistrées »** : nom, nombre d'épisodes, date du
+  dernier pack, flux supprimés éventuels ; boutons « Ouvrir », « Renommer », « Supprimer »
+  (confirmation). Liste vide : une phrase dit que les compositions apparaissent après la
+  création d'un pack.
+- Après « Créer l'histoire », le message de lancement dit sous quel nom la composition est
+  conservée, ou pourquoi elle ne l'a pas été.
+- La mention d'usage (§ 4) est inchangée ; refaire un pack passe par le même message de
+  droits de la première installation (D14, déjà acquitté sur le poste).
+
+### 14.10 Tests
+
+- Unitaires (`compositions.rs`) : conservation, déduplication, noms uniques, limite, renommage,
+  suppression, ouverture dans le brouillon (révision suivante), source supprimée marquée.
+- Injection de panne : fichier tronqué, JSON invalide, entrée illisible, schéma plus récent,
+  fichier trop gros, disque plein simulé à l'écriture (écrivain injecté) : ancien fichier
+  intact, aucune perte, création poursuivie.
+- Interface (vitest) : liste, ouverture avec et sans confirmation, renommage, suppression,
+  erreurs.

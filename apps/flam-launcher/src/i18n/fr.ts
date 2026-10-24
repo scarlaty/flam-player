@@ -358,6 +358,12 @@ export const fr = {
         refused: "Le pack n'a pas été créé : corrigez les points suivants.",
         started: (title: string) =>
           `La création de « ${title} » a démarré : suivez-la dans le panneau des tâches.`,
+        compositionSaved: (name: string, isNew: boolean) =>
+          isNew
+            ? `Composition enregistrée sous « ${name} ».`
+            : `Composition « ${name} » réutilisée.`,
+        compositionNotSaved: (reason: string) =>
+          `La composition n'a pas été enregistrée : ${reason}.`,
       },
       rights: {
         title: "Avant de créer votre premier pack",
@@ -365,6 +371,50 @@ export const fr = {
         accept: "J'ai compris",
         cancel: "Annuler",
       },
+    },
+    /** Compositions nommées réutilisables (#461, spec § 14). */
+    compositions: {
+      title: "Compositions enregistrées",
+      intro:
+        "Chaque pack créé garde sa composition. Rouvrez-la pour refaire le pack ou en dériver un autre : chaque création donne une nouvelle histoire.",
+      loading: "Chargement des compositions…",
+      loadFailed: "Impossible de lire les compositions enregistrées.",
+      empty:
+        "Aucune composition enregistrée : elles apparaissent ici après la création d'un pack.",
+      count: (count: number, max: number) =>
+        count >= max
+          ? `${count} compositions sur ${max} au plus : supprimez-en une pour conserver les suivantes.`
+          : `${count} ${count > 1 ? "compositions" : "composition"} sur ${max} au plus.`,
+      episodes: (count: number) => `${count} ${count > 1 ? "épisodes" : "épisode"}`,
+      lastUsed: (date: string) => `dernier pack le ${date}`,
+      missingFeeds: (count: number) =>
+        count === 1
+          ? "1 flux supprimé : ses épisodes sont indisponibles."
+          : `${count} flux supprimés : leurs épisodes sont indisponibles.`,
+      open: "Ouvrir",
+      openLabel: (name: string) => `Ouvrir « ${name} » dans l'éditeur`,
+      rename: (name: string) => `Renommer « ${name} »`,
+      remove: (name: string) => `Supprimer « ${name} »`,
+      renamed: (name: string) => `Composition renommée en « ${name} ».`,
+      removed: (name: string) => `Composition « ${name} » supprimée.`,
+      replaceDialog: {
+        title: "Remplacer le brouillon ?",
+        description: (name: string) =>
+          `Le brouillon en cours sera remplacé par « ${name} ».`,
+        confirm: "Remplacer",
+      },
+      renameDialog: {
+        title: "Renommer la composition",
+        name: "Nom",
+        submit: "Renommer",
+      },
+      deleteDialog: {
+        title: "Supprimer cette composition ?",
+        description: (name: string) =>
+          `« ${name} » sera retirée de la liste. Les histoires déjà créées ne sont pas touchées.`,
+        confirm: "Supprimer",
+      },
+      nameTooLong: (max: number) => `Le nom ne peut pas dépasser ${max} caractères.`,
     },
   },
   settingsScreen: {
