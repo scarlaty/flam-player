@@ -248,6 +248,9 @@ impl Inflater {
                 self.grow(limit)?;
             }
             let end = limit.min(self.out.len());
+            // Instantané (environ 10 Kio) à chaque appel une fois le tampon à sa taille finale :
+            // mesuré (#473, n1) sur un PNG de 1600 × 1200 en 194 IDAT de 8 Kio, l'écart reste
+            // dans le bruit de la mesure (moins de 2 Mio copiés pour 5,8 Mio décompressés).
             let before = (end == limit).then(|| (self.state.clone(), self.pos));
             let (status, used, written) = decompress(
                 &mut self.state,
@@ -323,7 +326,9 @@ impl Inflater {
         if self.halted {
             return Ok(Some(true));
         }
-        if self.done {
+        if self.done || input.is_empty() {
+            // Sans entrée, rien ne peut être produit : ni arrêté (`halted`) ni fini, le dernier
+            // appel a rendu `NeedsMoreInput`, donc sans copie ni littéral en attente.
             return Ok(Some(false));
         }
         let mut scratch = Vec::new();
@@ -361,7 +366,21 @@ fn safe_zlib_decompress(z: &mut Inflater, input: &[u8]) -> Result<Option<usize>>
         Step::Consumed(n) => n,
     };
     if z.pos == MAX_TEXT_CHUNK && !z.done {
-        // sortie pleine : `unconsumed_tail` non vide si zlib a encore un octet à produire
+        // Sortie pleine : `unconsumed_tail` non vide s'il reste de l'entrée là où zlib s'arrête.
+        // Il lit encore le symbole qui produirait l'octet suivant (littéral, ou copie avec sa
+        // distance, contrôlée seulement à l'écriture), mais pas un octet de bloc stocké. miniz
+        // s'arrête au même point et rend la même consommation (octets entiers de son tampon de
+        // bits restitués ; toute l'entrée si elle finit avant ou sur ce symbole, #473). Écart
+        // connu, dans le sens permissif : si le premier octet d'un bloc stocké était déjà dans
+        // le tampon de bits (lecture anticipée après un bloc dynamique), miniz le garde
+        // (`RawStoreFirstByte`) ; une entrée qui finit sur cet octet est alors lue, où Python
+        // lève `ValueError` (PORT-RUST.md §4.4).
+        if z.halted {
+            if used < input.len() {
+                return unreadable("texte compressé trop grand");
+            }
+            return Ok(Some(MAX_TEXT_CHUNK));
+        }
         match z.probe(&input[used..])? {
             Some(true) => return unreadable("texte compressé trop grand"),
             None => return Ok(None),
@@ -662,7 +681,7 @@ fn read_header(cur: &mut Cursor, cancelled: &dyn Fn() -> bool) -> Result<(Header
         bbox: None,
         default_image: false,
         text_memory: 0,
-        text: Inflater::new(MAX_TEXT_CHUNK + 1),
+        text: Inflater::new(MAX_TEXT_CHUNK),
     };
     let mut data = None;
     loop {
@@ -1118,11 +1137,9 @@ impl Converter {
             return unreadable("transparence en triplet sur du gris");
         }
         let gray_palette = palette.is_some() && matches!(mode, Mode::Gray | Mode::GrayA);
-        let la_mask = matches!(mask, Some(Mask::L(_) | Mask::I(_))) && mode == Mode::GrayA;
-        if gray_palette && ((mask.is_some() && !la_mask) || (mode == Mode::Gray && trns.is_some()))
-        {
+        if gray_palette && mode == Mode::Gray && trns.is_some() {
             // `convert_transparent` refuse un cœur `P` ; `_trns_mask` sur `L` : `illegal image
-            // mode` ; masque RGB sur `LA` non modélisé (rendu illisible, jamais constaté)
+            // mode` (en `LA`, tous les masques passent : voir `pixel`)
             return unreadable("transparence sur un gris à palette");
         }
         Ok(Converter {
@@ -1222,7 +1239,14 @@ impl Converter {
                 // masque de `_trns_mask` : `convert("L")` du cœur `PA` = luminance de la palette
                 PilPixel::La(l, _) if self.mask.is_some() => {
                     let e = self.palette[usize::from(l)];
-                    p = PilPixel::L(luma([e[0], e[1], e[2]]));
+                    let rgb = [e[0], e[1], e[2]];
+                    if let Some(Mask::Rgb(k)) = self.mask {
+                        // masque RGB : `convert("RGB")` du cœur `PA` = couleur de la palette
+                        let l = luma(rgb);
+                        let alpha = if rgb.map(u32::from) == k { 0 } else { 255 };
+                        return [l, l, l, alpha];
+                    }
+                    p = PilPixel::L(luma(rgb));
                 }
                 PilPixel::La(l, a) => {
                     let e = self.palette[usize::from(l)];
