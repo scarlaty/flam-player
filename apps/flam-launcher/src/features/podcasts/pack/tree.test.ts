@@ -142,11 +142,11 @@ describe("image choisie d'une catégorie (N5 c)", () => {
     expect(imageOf(nodeAt(move(menu, [0, 1], [0], 0)!, [0]))).toEqual(ref("b"));
     expect(imageOf(nodeAt(move(menu, [0, 1], [0, 2])!, [0]))).toEqual(ref("b"));
     const nested = setCategoryImage(
-      [cat("P", cat("S", ep("x")), cat("T"))],
+      [cat("P", cat("S", ep("x")), ep("a"))],
       [0],
       ref("x"),
     );
-    expect(imageOf(nodeAt(move(nested, [0, 0], [0, 1])!, [0]))).toEqual(ref("x"));
+    expect(imageOf(nodeAt(move(nested, [0, 0], [0], 2)!, [0]))).toEqual(ref("x"));
   });
 
   it("garde le choix d'une catégorie parente si l'épisode reste dans un sous-menu", () => {
