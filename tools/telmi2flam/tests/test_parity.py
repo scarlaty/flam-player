@@ -629,13 +629,60 @@ class TestCampaign(unittest.TestCase):
         self.assertEqual(doc["delegated_archives"]["zip_methods"], {"bzip2": 1, "stored": 2})
         self.assertTrue(doc["threshold_met"])
 
+    def test_resume_requires_validation_and_redoes_broken_state(self):
+        oracle = parity.default_oracle()
+        parity.run_campaign(self.archives, oracle, oracle, self.out, validate=False)
+        state = os.path.join(self.out, "cases", "a.json")
+        with open(state, encoding="utf-8") as f:
+            res = json.load(f)
+        res["marker"] = True
+        with open(state, "w", encoding="utf-8") as f:
+            json.dump(res, f)
+        with open(os.path.join(self.out, "cases", "b.json"), "w", encoding="utf-8") as f:
+            f.write('{"verdict": "ident')                    # etat tronque
+        # une campagne qui valide ne reprend pas un etat obtenu sans validate.py
+        doc = parity.run_campaign(self.archives, oracle, oracle, self.out, validate=True)
+        self.assertEqual(doc["summary"]["identical"], 2)
+        self.assertNotIn("marker", doc["cases"][0])
+        self.assertEqual(doc["cases"][0]["candidate"]["validation"], 0)
+        # l'inverse est admis : un etat valide sert a une campagne sans validation
+        with open(state, encoding="utf-8") as f:
+            res = json.load(f)
+        res["marker"] = True
+        with open(state, "w", encoding="utf-8") as f:
+            json.dump(res, f)
+        doc = parity.run_campaign(self.archives, oracle, oracle, self.out, validate=False)
+        self.assertTrue(doc["cases"][0]["marker"])
+
+    def test_fingerprint_covers_path_lookup_and_sibling_modules(self):
+        script_dir = os.path.join(self.tmp, "eng")
+        os.makedirs(script_dir)
+        main_py = os.path.join(script_dir, "main.py")
+        helper = os.path.join(script_dir, "helper.py")
+        for p in (main_py, helper):
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("x = 1\n")
+        exe = os.path.basename(sys.executable)
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = os.path.dirname(sys.executable) + os.pathsep + old_path
+        try:
+            a = parity.command_fingerprint([exe, main_py])
+            self.assertEqual(a, parity.command_fingerprint([exe, main_py]))
+            with open(helper, "w", encoding="utf-8") as f:
+                f.write("x = 2\n")                      # module voisin modifie
+            self.assertNotEqual(a, parity.command_fingerprint([exe, main_py]))
+        finally:
+            os.environ["PATH"] = old_path
+        with self.assertRaises(ValueError):
+            parity.command_fingerprint(["commande-inexistante-xyz"])
+
     def test_deviation_keeps_work_and_fails_threshold(self):
         oracle = parity.default_oracle()
         stub = os.path.join(self.tmp, "stub.py")
         with open(stub, "w", encoding="utf-8") as f:
             f.write(STUB)
-        cmd = "%s %s 6 internal_error" % (sys.executable.replace("\\", "/"),
-                                          stub.replace("\\", "/"))
+        cmd = '"%s" "%s" 6 internal_error' % (sys.executable.replace("\\", "/"),
+                                              stub.replace("\\", "/"))
         rc = parity.main(["campaign", self.archives, "--candidate", cmd, "--out", self.out,
                           "--limit", "1", "--no-validate"])
         self.assertEqual(rc, 1)
@@ -644,6 +691,7 @@ class TestCampaign(unittest.TestCase):
         self.assertFalse(doc["threshold_met"])
         self.assertEqual(doc["summary"]["diff"], 1)
         self.assertIn("exit", doc["diff_kinds"])
+        self.assertEqual(doc["cases"][0]["candidate"]["error_code"], "internal_error")
         self.assertEqual(os.listdir(os.path.join(self.out, "work")), ["a"])
 
 

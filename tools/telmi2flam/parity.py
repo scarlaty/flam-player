@@ -581,11 +581,29 @@ def command_fingerprint(cmd):
     """SHA-256 des fichiers nommes dans une commande (interpreteur, script, binaire) : un
     resultat obtenu avec un autre moteur n'est pas repris."""
     h = hashlib.sha256()
-    for token in cmd:
+
+    def add_file(path):
+        with open(path, "rb") as f:
+            h.update(_sha(f.read()).encode("ascii"))
+
+    for i, token in enumerate(cmd):
         h.update(token.encode("utf-8") + b"\0")
-        if os.path.isfile(token):
-            with open(token, "rb") as f:
-                h.update(_sha(f.read()).encode("ascii"))
+        # le programme (jeton 0) est resolu comme le ferait subprocess : par le PATH
+        path = shutil.which(token) if i == 0 else None
+        if path is None and os.path.isfile(token):
+            path = token
+        if i == 0 and path is None:
+            raise ValueError("commande introuvable : %s" % token)
+        if path is None:
+            continue
+        add_file(path)
+        if path.lower().endswith(".py"):
+            # script Python : ses modules voisins (lif.py, mp3map.py...) font partie du moteur
+            folder = os.path.dirname(os.path.abspath(path))
+            for name in sorted(os.listdir(folder)):
+                if name.endswith(".py"):
+                    h.update(name.encode("utf-8") + b"\0")
+                    add_file(os.path.join(folder, name))
     return h.hexdigest()
 
 
@@ -611,6 +629,7 @@ def campaign_case(archive, oracle, candidate, work, timeout=CAMPAIGN_TIMEOUT, va
     res = compare_runs(o, c, CAMPAIGN_TAGS)
     res["oracle"] = {k: o[k] for k in ("exit", "error_code", "error_message", "warnings")}
     res["candidate"] = {k: c[k] for k in ("exit", "error_code", "error_message", "warnings")}
+    res["candidate"]["validation"] = c.get("validation")
     if res["verdict"] == "delegated":
         res["delegation"] = delegation_cause(c["error_message"])
     res["inventory"] = archive_inventory(archive)
@@ -623,7 +642,22 @@ def _harness_failure(res):
     """Execution impossible (delai, commande absente, sortie illisible) : refaite a la reprise."""
     return (any(d.get("kind") == "harness" for d in res.get("diffs", ()))
             or any((res.get(side) or {}).get("error_code") == "harness_error"
-                   for side in ("oracle", "candidate")))
+                   for side in ("oracle", "candidate"))
+            or str((res.get("candidate") or {}).get("validation")).startswith("harness_error"))
+
+
+def _reusable(prev, engines):
+    """Etat repris : meme oracle, meme candidat, validation au moins aussi complete (un etat
+    obtenu sans validate.py n'est pas repris par une campagne qui valide), forme attendue."""
+    if not isinstance(prev, dict) or not all(k in prev for k in ("verdict", "diffs",
+                                                                 "inventory")):
+        return False
+    old = prev.get("engines")
+    if not isinstance(old, dict) or _harness_failure(prev):
+        return False
+    if (old.get("oracle"), old.get("candidate")) != (engines["oracle"], engines["candidate"]):
+        return False
+    return not engines["validate"] or old.get("validate") == engines["validate"]
 
 
 def _write_json_atomic(path, doc):
@@ -683,7 +717,10 @@ def run_campaign(archives_dir, oracle, candidate, out_dir, jobs=1, timeout=CAMPA
     names = sorted(n for n in os.listdir(archives_dir) if n.lower().endswith(".zip"))
     if limit is not None:
         names = names[:limit]
-    engines = {"oracle": command_fingerprint(oracle), "candidate": command_fingerprint(candidate)}
+    engines = {"oracle": command_fingerprint(oracle), "candidate": command_fingerprint(candidate),
+               # empreinte de validate.py, ou None sans validation
+               "validate": command_fingerprint([sys.executable, os.path.join(HERE, "validate.py")])
+               if validate else None}
     cases_dir = os.path.join(out_dir, "cases")
     work_root = os.path.join(out_dir, "work")
     os.makedirs(cases_dir, exist_ok=True)
@@ -695,11 +732,11 @@ def run_campaign(archives_dir, oracle, candidate, out_dir, jobs=1, timeout=CAMPA
             try:
                 with open(state, encoding="utf-8") as f:
                     prev = json.load(f)
-                if prev.get("engines") == engines and not _harness_failure(prev):
+                if _reusable(prev, engines):
                     results[n] = prev
                     continue
-            except ValueError:
-                pass  # etat tronque : refait
+            except (ValueError, OSError):
+                pass  # etat tronque ou illisible : refait
         todo.append(n)
     lock = threading.Lock()
 
@@ -784,7 +821,7 @@ def main(argv=None):
                            limit=args.limit, validate=not args.no_validate, progress=progress)
         s = doc["summary"]
         print("campagne : %d archives, %d identiques, %d deleguees, %d ecarts, %d en attente ; "
-              "seuil §4.3 %s" % (s["total"], s["identical"], s["delegated"], s["diff"],
+              "seuil (par. 4.3) %s" % (s["total"], s["identical"], s["delegated"], s["diff"],
                                  doc["pending"], "atteint" if doc["threshold_met"] else "non atteint"))
         print("delegations par cause : %s" % json.dumps(doc["delegations_by_cause"]))
         return 0 if doc["threshold_met"] and not doc["pending"] else 1
