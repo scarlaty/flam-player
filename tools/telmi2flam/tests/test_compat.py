@@ -17,7 +17,19 @@ sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True
 
 import compat  # noqa: E402
+import converter_bin  # noqa: E402
 from test_telmi2flam import Base, std_files  # noqa: E402
+
+
+def setUpModule():
+    """La conversion lance le binaire Rust : echec clair s'il est absent (#140). Choix assume
+    (#465) : pas de saut silencieux. Seul ce module echoue (les autres tests de la decouverte
+    tournent) ; le rendu du rapport seul, lui, n'exige pas le binaire (--reinterpret) ; son test simule l'absence par un mock (le binaire
+    reel est present sur la machine)."""
+    try:
+        converter_bin.find_converter()
+    except converter_bin.ConverterNotFound as e:
+        raise RuntimeError("test_compat.py exige le binaire telmi2flam : %s" % e)
 
 
 class FakeResp:
@@ -189,32 +201,149 @@ class TestPipeline(CompatBase):
         rec = self.process(self.entry("w", "u"), srv)
         self.assertEqual(rec["status"], "ECHEC_CONVERSION")
 
-    def test_warn_status(self):
-        import telmi2flam
-        real = telmi2flam.convert
+    def fake_exe(self, source):
+        """Faux binaire : .bat/.sh qui lance un script Python (code `source`) sans dependance."""
+        script = os.path.join(self.tmp, "fake_t2f.py")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(source)
+        bat = os.path.join(self.tmp, "fake_t2f.bat" if os.name == "nt" else "fake_t2f.sh")
+        with open(bat, "w", encoding="utf-8", newline="") as f:
+            if os.name == "nt":
+                f.write('@echo off\r\n"%s" -I "%s" %%*\r\n' % (sys.executable, script))
+            else:
+                f.write('#!/bin/sh\nexec "%s" -I "%s" "$@"\n' % (sys.executable, script))
+        os.chmod(bat, 0o755)
+        return bat
 
-        def fake_convert(zip_path, out_path=None, **kw):
-            telmi2flam._warn("caractere remplace")
-            return real(zip_path, out_path)
-        srv = FakeServer({"u": self.zip_bytes(std_files())})
-        with mock.patch.object(telmi2flam, "convert", fake_convert):
-            rec = self.process(self.entry("w", "u"), srv)
-        self.assertEqual(rec["status"], "OK_AVERTISSEMENTS")
-        self.assertEqual(rec["steps"]["convert"]["status"], "warn")
-        self.assertIn("caractere remplace", rec["steps"]["convert"]["messages"])
+    def test_warn_status(self):
+        # evenement `warning` du protocole --progress-json, fabrique par un faux binaire
+        exe = self.fake_exe(
+            "import sys, json\n"
+            "out = sys.argv[sys.argv.index('-o') + 1]\n"
+            "print(json.dumps({'event': 'start'}))\n"
+            "print(json.dumps({'event': 'warning', 'code': 'w', "
+            "'message': 'caractere remplace'}))\n"
+            "open(out, 'wb').write(b'x')\n"
+            "print(json.dumps({'event': 'done', 'warnings': 1}))\n")
+        step = compat.do_convert(self.mkzip(std_files(), "w"),
+                                      os.path.join(self.tmp, "o", "w.plain.pk"), converter=exe)
+        self.assertEqual(step["status"], "warn")
+        self.assertIn("caractere remplace", step["messages"])
+
+    def test_real_binary_missing_audio_fails(self):
+        # sans --allow-missing, un audio manquant est une erreur de contenu
+        files = [f for f in std_files() if f[0] != "audios/s0.mp3"]
+        step = compat.do_convert(self.mkzip(files, "m"), os.path.join(self.tmp, "o", "m.plain.pk"))
+        self.assertEqual(step["status"], "fail")
+
+    def test_converter_absent(self):
+        with mock.patch.object(compat, "CONVERTER", os.path.join(self.tmp, "absent.exe")):
+            step = compat.do_convert(self.mkzip(std_files(), "a"),
+                                     os.path.join(self.tmp, "o", "a.plain.pk"))
+        self.assertEqual(step["status"], "fail")
+        self.assertIn("introuvable", step["messages"][0])
+
+    def test_converter_exit_without_event(self):
+        exe = self.fake_exe("import sys\nsys.stderr.write('boum\\n')\nsys.exit(6)\n")
+        step = compat.do_convert(self.mkzip(std_files(), "c"),
+                                      os.path.join(self.tmp, "o", "c.plain.pk"), converter=exe)
+        self.assertEqual(step["messages"][0], "exit_6 : boum")
+
+    def test_relative_paths(self):
+        # chemins relatifs : le binaire tourne dans le dossier de sortie, les chemins restent
+        # ceux de l'appelant
+        zp = self.mkzip(std_files(), "r")
+        old = os.getcwd()
+        os.chdir(self.tmp)
+        try:
+            step = compat.do_convert(os.path.relpath(zp), os.path.join("rel", "r.plain.pk"))
+        finally:
+            os.chdir(old)
+        self.assertEqual(step["status"], "ok", step)
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "rel", "r.plain.pk")))
+
+    def test_converter_timeout(self):
+        exe = self.fake_exe("import time\ntime.sleep(60)\n")
+        t0 = time.time()
+        warns, err = converter_bin.convert(exe, self.mkzip(std_files(), "t"),
+                                           os.path.join(self.tmp, "o", "t.plain.pk"), timeout=1)
+        self.assertTrue(err.startswith("timeout"), err)
+        self.assertLess(time.time() - t0, 30)
+
+    def test_converter_cancelled(self):
+        exe = self.fake_exe("import sys\nsys.exit(130)\n")
+        step = compat.do_convert(self.mkzip(std_files(), "d"),
+                                      os.path.join(self.tmp, "o", "d.plain.pk"), converter=exe)
+        self.assertEqual(step["status"], "fail")
+        self.assertIn("annule", step["messages"][0])
+
+    def test_converter_invalid_json_output(self):
+        # sortie JSON invalide : lignes ignorees ; code 0 sans `done` = echec, avertissements
+        # valides conserves
+        exe = self.fake_exe("import sys, json\n"
+                            "print('{pas du json')\nprint('[1, 2]')\n"
+                            "sys.stdout.buffer.write(b'\\xff\\xfe\\n')\n"
+                            "print(json.dumps({'event': 'warning', 'message': 'w1'}))\n"
+                            "print('{\"event\": \"error\", \"code\": ')\n"
+                            "sys.exit(0)\n")
+        out = os.path.join(self.tmp, "o", "j.plain.pk")
+        warns, err = converter_bin.convert(exe, self.mkzip(std_files(), "j"), out)
+        self.assertEqual(warns, ["w1"])
+        self.assertTrue(err.startswith("exit_0"), err)
+
+    def test_converter_huge_stdout(self):
+        # ~6 Mio de sortie : pas d'interblocage des tubes, le `done` final est retrouve
+        exe = self.fake_exe(
+            "import sys, json\n"
+            "out = sys.argv[sys.argv.index('-o') + 1]\n"
+            "line = json.dumps({'event': 'step', 'message': 'x' * 1000})\n"
+            "for _ in range(6000):\n    print(line)\n"
+            "sys.stderr.write('e' * 200000)\n"
+            "open(out, 'wb').write(b'x')\n"
+            "print(json.dumps({'event': 'done', 'warnings': 0}))\n")
+        out = os.path.join(self.tmp, "o", "h.plain.pk")
+        warns, err = converter_bin.convert(exe, self.mkzip(std_files(), "h"), out, timeout=120)
+        self.assertIsNone(err)
+        self.assertEqual(warns, [])
+
+    def test_timeout_cleans_child_temporaries(self):
+        # le binaire tue apres le delai ne nettoie pas ses t2f_ff_* : le dossier temporaire
+        # prive du processus enfant est supprime par converter_bin (#465)
+        marker = os.path.join(self.tmp, "seen.txt")
+        exe = self.fake_exe(
+            "import os, tempfile, time\n"
+            "d = tempfile.mkdtemp(prefix='t2f_ff_')\n"
+            "open(os.path.join(d, 'x'), 'w').write('x')\n"
+            "open(%r, 'w').write(d)\n"
+            "time.sleep(60)\n" % marker)
+        _, err = converter_bin.convert(exe, self.mkzip(std_files(), "k"),
+                                       os.path.join(self.tmp, "o", "k.plain.pk"), timeout=6)
+        self.assertTrue(err.startswith("timeout"), err)
+        with open(marker) as f:
+            leftover = f.read()
+        self.assertTrue(leftover)
+        self.assertFalse(os.path.exists(leftover), leftover)
+
+    def test_converter_exit_zero_without_done_is_failure(self):
+        exe = self.fake_exe("import sys\nopen(sys.argv[sys.argv.index('-o') + 1], 'wb')"
+                            ".write(b'x')\n")
+        out = os.path.join(self.tmp, "o", "e.plain.pk")
+        step = compat.do_convert(self.mkzip(std_files(), "e"), out, converter=exe)
+        self.assertEqual(step["status"], "fail")
+        self.assertFalse(os.path.exists(out))
 
     def test_corrupt_archive(self):
         srv = FakeServer({"u": b"ceci n'est pas un zip"})
         rec = self.process(self.entry("bad", "u"), srv)
         self.assertEqual(rec["status"], "ECHEC_CONVERSION")
         self.assertEqual(rec["steps"]["validate"]["status"], "skipped")
-        self.assertIn("BadZipFile", rec["steps"]["convert"]["messages"][0])
+        self.assertIn("archive_unreadable", rec["steps"]["convert"]["messages"][0])
 
     def test_conversion_failure(self):
         srv = FakeServer({"u": self.zip_bytes(std_files(nodes=False))})
         rec = self.process(self.entry("noNodes", "u"), srv)
         self.assertEqual(rec["status"], "ECHEC_CONVERSION")
-        self.assertIn("ConvError", rec["steps"]["convert"]["messages"][0])
+        self.assertIn("not_telmi", rec["steps"]["convert"]["messages"][0])
 
     def test_validation_failure(self):
         import validate
@@ -344,6 +473,45 @@ class TestCampaign(CompatBase):
         self.assertEqual(rc, 1)    # pas d'URL de telechargement : echec attendu
         with open(os.path.join(self.cache, "compat", "report.json")) as f:
             self.assertEqual(json.load(f)["stories"][0]["status"], "ECHEC_TELECHARGEMENT")
+
+    def test_reinterpret_without_binary(self):
+        # rendu du rapport seul : --reinterpret n'exige pas le binaire (#465)
+        self.campaign(self.entries)
+        with open(os.path.join(self.cache, "compat", "report.json"), encoding="utf-8") as f:
+            before = json.load(f)
+        calls = []
+        absent = os.path.join(self.tmp, "absent.exe")
+        with mock.patch.object(compat, "CONVERTER", absent), \
+                mock.patch.dict(os.environ, {converter_bin.ENV_VAR: absent}), \
+                mock.patch.object(compat, "do_convert", lambda *a, **k: calls.append(a)):
+            doc = self.campaign(self.entries, reinterpret=True)
+            # sans --reinterpret, l'absence du binaire reste une erreur
+            with self.assertRaises(converter_bin.ConverterNotFound):
+                self.campaign(self.entries)
+        self.assertEqual(calls, [])
+        self.assertEqual(doc["converter_hash"], before["converter_hash"])
+        self.assertEqual({s["key"]: s["status"] for s in doc["stories"]},
+                         {s["key"]: s["status"] for s in before["stories"]})
+        self.assertFalse(any(s.get("stale") for s in doc["stories"]))
+
+    def test_reinterpret_without_binary_marks_changed_stories_stale(self):
+        self.campaign(self.entries)
+        changed = [dict(e, fingerprint="autre") if e["uuid"] == "good" else e
+                   for e in self.entries]
+        absent = os.path.join(self.tmp, "absent.exe")
+        with mock.patch.object(compat, "CONVERTER", absent),                 mock.patch.dict(os.environ, {converter_bin.ENV_VAR: absent}):
+            doc = self.campaign(changed, reinterpret=True)
+        st = {s["uuid"]: s["stale"] for s in doc["stories"]}
+        self.assertTrue(st["good"])
+        self.assertFalse(st["corrupt"])
+
+    def test_main_reinterpret_without_binary_or_report(self):
+        absent = os.path.join(self.tmp, "absent.exe")
+        with mock.patch.dict(os.environ, {converter_bin.ENV_VAR: absent}),                 contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = compat.main(["--folder", self.tmp, "--cache", self.cache, "--reinterpret",
+                              "--no-run"])
+        self.assertEqual(rc, 2)
+        self.assertIn("introuvable", err.getvalue())
 
     def test_converter_hash_stable(self):
         self.assertEqual(compat.converter_hash(), compat.converter_hash())

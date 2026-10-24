@@ -22,7 +22,7 @@ La vignette est produite en mode `bandes` par defaut ; les cas `pkg_thumb_*` fix
 verifier que `Options.thumb_fit` atteint la vignette. Sans ffmpeg (FLAM_FFMPEG vide ; avec
 ffmpeg : gen_ffmpeg_cases.py, #354).
 
-A lancer avec le Python de l'installateur (build-converter.ps1 : 3.14.8, Pillow 12.3.0),
+A lancer avec le Python de l'oracle (ORACLE-VERSIONS.txt : 3.14.8, Pillow 12.3.0),
 depuis la racine du depot :
     python crates/telmi2flam/tests/data/gen_package_cases.py
 `--check` ne reecrit rien : il echoue si package_cases.zip n'est pas celui que l'oracle produit
@@ -309,11 +309,11 @@ def _same_members(a, b):
 
 def main(check=False):
     # create_system (octet du repertoire central) vaut 0 sous Windows seulement : le port Rust
-    # reproduit le Python de l'installateur, sous Windows.
+    # reproduit le Python de l'oracle, sous Windows.
     if sys.platform != "win32":
         sys.exit("vecteurs a produire sous Windows (create_system = 0 de zipfile)")
     if sys.version_info[:3] != (3, 14, 8) or Image.__version__ != "12.3.0":
-        sys.exit("vecteurs a produire avec Python 3.14.8 + Pillow 12.3.0 (oracle de build-converter.ps1)")
+        sys.exit("vecteurs a produire avec Python 3.14.8 + Pillow 12.3.0 (oracle de ORACLE-VERSIONS.txt)")
     builds = mc.corpus_cases() + package_cases()
     expected = []
     tmp = tempfile.mkdtemp(prefix="package_cases_")

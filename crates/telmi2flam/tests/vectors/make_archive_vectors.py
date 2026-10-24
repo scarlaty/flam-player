@@ -8,7 +8,7 @@ Produit de petites archives synthetiques (aucun contenu sous licence) dans `arch
 implementation a ces resultats.
 
 A lancer sous Windows (comme le launcher) avec Python 3.14.8 et Pillow 12.3.0 (versions de
-build-converter.ps1), depuis la racine du depot :
+ORACLE-VERSIONS.txt), depuis la racine du depot :
     python crates/telmi2flam/tests/vectors/make_archive_vectors.py
 """
 
@@ -777,7 +777,7 @@ def describe(cid, data):
 
 def main():
     if sys.version_info[:3] != (3, 14, 8):
-        sys.exit("vecteurs a produire avec Python 3.14.8 (oracle de build-converter.ps1)")
+        sys.exit("vecteurs a produire avec Python 3.14.8 (oracle de ORACLE-VERSIONS.txt)")
     if os.name != "nt":
         sys.exit("vecteurs a produire sous Windows (noms avec \\ : _sanitize_filename)")
     os.makedirs(OUT, exist_ok=True)

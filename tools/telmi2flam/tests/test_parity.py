@@ -813,7 +813,7 @@ class TestCampaign(unittest.TestCase):
 
 
 class TestPinnedOracle(unittest.TestCase):
-    """Pillow et Python de la CI = ceux de l'installateur (PORT-RUST.md §4.3 point 4)."""
+    """Pillow et Python de la CI = ceux de ORACLE-VERSIONS.txt (PORT-RUST.md §4.3 point 4)."""
 
     ROOT = os.path.dirname(os.path.dirname(TOOL))
 
@@ -821,23 +821,32 @@ class TestPinnedOracle(unittest.TestCase):
         with open(os.path.join(self.ROOT, *parts), encoding="utf-8") as f:
             return f.read()
 
-    def test_ci_pins_match_build_converter(self):
-        ps1 = self.read("apps", "flam-launcher", "scripts", "build-converter.ps1")
-        yml = self.read(".github", "workflows", "telmi2flam.yml")
-        py = re.search(r"\$PythonVersion = '([^']+)'", ps1).group(1)
-        pillow = re.search(r"\$PillowVersion = '([^']+)'", ps1).group(1)
-        # versions lues dans le yml (un assertIn sur le texte brut se contenterait d'un
+    def pins(self):
+        text = self.read("tools", "telmi2flam", "ORACLE-VERSIONS.txt")
+        return dict(
+            line.strip().split("=", 1)
+            for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        )
+
+    def test_ci_pins_match_oracle_versions(self):
+        pins_file = self.pins()
+        self.assertEqual(sorted(pins_file), ["pillow", "python"])
+        py, pillow = pins_file["python"], pins_file["pillow"]
+        # versions lues dans les yml (un assertIn sur le texte brut se contenterait d'un
         # commentaire ou d'une autre ligne)
-        ci_py = re.findall(r'^\s*python-version:\s*"([^"]+)"\s*$', yml, re.M)
-        self.assertEqual(ci_py, [py])
-        installs = re.findall(r"^\s*run:\s*pip install (.+)$", yml, re.M)
-        self.assertEqual(len(installs), 1)
-        pins = dict(re.findall(r'"?([A-Za-z]+)==([^"\s]+)"?', installs[0]))
-        self.assertEqual(pins.get("Pillow"), pillow)
-        # lupa : version exacte (le Lua de l'oracle ne doit pas deriver sans qu'on le voie)
-        self.assertRegex(pins.get("lupa", ""), r"^\d+(\.\d+)+$")
-        self.assertEqual(sorted(pins), ["Pillow", "lupa"])
-        self.assertNotRegex(installs[0], r"[<>~!]=?")
+        for name in ("telmi2flam.yml", "telmi2flam-rs.yml", "launcher.yml"):
+            yml = self.read(".github", "workflows", name)
+            ci_py = re.findall(r'^\s*python-version:\s*"([^"]+)"\s*$', yml, re.M)
+            self.assertEqual(ci_py, [py], name)
+            installs = re.findall(r"^\s*run:\s*pip install (.+)$", yml, re.M)
+            self.assertEqual(len(installs), 1, name)
+            pins = dict(re.findall(r'"?([A-Za-z]+)==([^"\s]+)"?', installs[0]))
+            self.assertEqual(pins.get("Pillow"), pillow, name)
+            # lupa : version exacte (le Lua de l'oracle ne doit pas deriver sans qu'on le voie)
+            self.assertRegex(pins.get("lupa", ""), r"^\d+(\.\d+)+$", name)
+            self.assertEqual(sorted(pins), ["Pillow", "lupa"], name)
+            self.assertNotRegex(installs[0], r"[<>~!]=?", name)
 
 
 if __name__ == "__main__":
