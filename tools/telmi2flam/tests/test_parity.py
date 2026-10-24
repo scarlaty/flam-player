@@ -559,6 +559,15 @@ sys.exit(7)
 """
 
 
+ZIP_DELEGATING_STUB = """
+import json, sys
+print(json.dumps({"event": "error", "code": "unsupported_format", "exit": 7,
+                  "message": "a.zip : \\"audios/s0.mp3\\" : compression 12 (bzip2/LZMA/Zstandard) "
+                             "d\\u00e9l\\u00e9gu\\u00e9e \\u00e0 Python"}))
+sys.exit(7)
+"""
+
+
 class TestCampaign(unittest.TestCase):
     """Campagne sur archives reelles (#135) : reprise, delegations comptees, seuil."""
 
@@ -724,6 +733,21 @@ class TestCampaign(unittest.TestCase):
         self.assertEqual(doc["delegated_archives"]["images"], {"jpeg": 1, "png": 2})
         self.assertEqual(doc["delegated_archives"]["zip_methods"], {"bzip2": 1, "stored": 2})
         self.assertTrue(doc["threshold_met"])
+
+    def test_zip_method_delegation_is_a_diff_since_458(self):
+        """bzip2/LZMA/Zstandard lus par le Rust (#458) : un candidat qui delegue encore une
+        entree ZIP est en ecart (`delegation`), compte hors des delegations admises."""
+        stub = os.path.join(self.tmp, "zipdeleg.py")
+        with open(stub, "w", encoding="utf-8") as f:
+            f.write(ZIP_DELEGATING_STUB)
+        doc = parity.run_campaign(self.archives, parity.default_oracle(), [sys.executable, stub],
+                                  self.out, validate=False)
+        self.assertEqual(doc["summary"]["delegated"], 0)
+        self.assertEqual(doc["summary"]["diff"], 2)
+        self.assertEqual(doc["delegations_by_cause"], {})
+        self.assertEqual(doc["diff_kinds"], {"delegation": 2})
+        self.assertEqual({c["delegation"] for c in doc["cases"]}, {"zip:bzip2"})
+        self.assertFalse(doc["threshold_met"])
 
     def test_resume_requires_validation_and_redoes_broken_state(self):
         oracle = parity.default_oracle()
