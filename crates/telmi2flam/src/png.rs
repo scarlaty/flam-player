@@ -283,21 +283,31 @@ impl Inflater {
 
     /// Rejoue `input` depuis l'état courant dans un tampon jetable dont la position vaut la
     /// fenêtre de deflate : vrai si `n` octets puis un de plus sont produits sans erreur.
+    ///
+    /// Tampon circulaire de 64 Kio (mode « wrapping » de miniz : aucune distance n'y est trop
+    /// lointaine), sans engager la taille de ce qui est produit.
     fn replay(&mut self, input: &[u8], n: usize) -> Result<bool> {
-        let mut scratch = Vec::new();
-        let size = DEFLATE_WINDOW + n + 1;
-        if scratch.try_reserve_exact(size).is_err() {
+        const RING: usize = 2 * DEFLATE_WINDOW;
+        let mut ring = Vec::new();
+        if ring.try_reserve_exact(RING).is_err() {
             return unreadable("mémoire insuffisante");
         }
-        scratch.resize(size, 0);
-        let (_, _, written) = decompress(
-            &mut self.state,
-            input,
-            &mut scratch,
-            DEFLATE_WINDOW,
-            INFLATE_FLAGS,
-        );
-        Ok(written == n + 1)
+        ring.resize(RING, 0);
+        let flags = TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_HAS_MORE_INPUT;
+        let (mut consumed, mut produced, mut pos) = (0usize, 0usize, 0usize);
+        loop {
+            let (status, used, written) =
+                decompress(&mut self.state, &input[consumed..], &mut ring, pos, flags);
+            consumed += used;
+            produced += written;
+            pos = (pos + written) % RING;
+            if produced > n {
+                return Ok(true);
+            }
+            if status != TINFLStatus::HasMoreOutput {
+                return Ok(false);
+            }
+        }
     }
 
     /// Ce que zlib fait encore de `input` une fois la sortie pleine : il traite la fin de bloc
@@ -1049,6 +1059,10 @@ struct Converter {
     palette: Vec<[u8; 4]>,
     native: Native,
     mask: Option<Mask>,
+    /// `PLTE` lu sous un mode palette puis `IHDR` gris (`L`) ou `LA` : `Image.load` pose la
+    /// palette sur le cœur de l'image, que `convert("RGBA")` traverse alors (valeur grise
+    /// utilisée comme index, alpha du canal A en `LA`).
+    gray_palette: bool,
 }
 
 impl Converter {
@@ -1069,7 +1083,9 @@ impl Converter {
                 let key = raw.as_ref().unwrap_or(t);
                 match (fixed_ihdr(data), key) {
                     (Some((bd @ (1 | 2 | 4), 0)), PilTrns::Int(k)) => {
-                        Some(Mask::L(k * 255 / ((1u32 << bd) - 1)))
+                        // `k` peut être un index de palette (non borné) : jamais atteint au-delà
+                        let k = u64::from(*k) * 255 / ((1u64 << bd) - 1);
+                        Some(Mask::L(u32::try_from(k).unwrap_or(u32::MAX)))
                     }
                     (Some((16, 0)), PilTrns::Int(k)) => Some(Mask::I(*k)),
                     (Some((16, 2)), PilTrns::Tuple(k)) => {
@@ -1101,16 +1117,27 @@ impl Converter {
             // (`TypeError`)
             return unreadable("transparence en triplet sur du gris");
         }
+        let gray_palette = palette.is_some() && matches!(mode, Mode::Gray | Mode::GrayA);
+        let la_mask = matches!(mask, Some(Mask::L(_) | Mask::I(_))) && mode == Mode::GrayA;
+        if gray_palette && ((mask.is_some() && !la_mask) || (mode == Mode::Gray && trns.is_some()))
+        {
+            // `convert_transparent` refuse un cœur `P` ; `_trns_mask` sur `L` : `illegal image
+            // mode` ; masque RGB sur `LA` non modélisé (rendu illisible, jamais constaté)
+            return unreadable("transparence sur un gris à palette");
+        }
         Ok(Converter {
             mode,
             depth: format.depth,
             palette: if mode == Mode::Palette {
                 palette_table(palette, alphas)?
+            } else if gray_palette {
+                palette_table(palette, None)?
             } else {
                 Vec::new()
             },
             native,
             mask,
+            gray_palette,
         })
     }
 
@@ -1188,6 +1215,22 @@ impl Converter {
 
     fn pixel(&self, row: &[u8], x: usize) -> [u8; 4] {
         let p = self.pil_pixel(row, x);
+        let mut p = p;
+        if self.gray_palette {
+            match p {
+                PilPixel::L(l) => return self.palette[usize::from(l)],
+                // masque de `_trns_mask` : `convert("L")` du cœur `PA` = luminance de la palette
+                PilPixel::La(l, _) if self.mask.is_some() => {
+                    let e = self.palette[usize::from(l)];
+                    p = PilPixel::L(luma([e[0], e[1], e[2]]));
+                }
+                PilPixel::La(l, a) => {
+                    let e = self.palette[usize::from(l)];
+                    return [e[0], e[1], e[2], a];
+                }
+                _ => {}
+            }
+        }
         if let Some(mask) = self.mask {
             // `_trns_mask` puis `convert("RGB" si RGB, sinon "L")` (après `point(v / 256)`
             // pour `I;16`), `convert("RGBA")` et `putalpha(mask)`
@@ -1245,12 +1288,15 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     // La transparence de `convert("RGBA")` est celle de la fin de `load_end` : un `tRNS` placé
     // après les données la change. Premier passage avec celle de l'en-tête ; s'il diffère, second
     // passage (même lecture, mêmes erreurs) avec la valeur finale.
-    match decode_pass(data, cancelled, None)? {
+    let (img, last) = decode_pass(data, cancelled, None)?;
+    let Some(last) = last else {
+        return Ok(img);
+    };
+    // image du premier passage libérée avant le second (pic de mémoire)
+    drop(img);
+    match decode_pass(data, cancelled, Some(last))? {
         (img, None) => Ok(img),
-        (_, Some(last)) => match decode_pass(data, cancelled, Some(last))? {
-            (img, None) => Ok(img),
-            (_, Some(_)) => unreachable!("transparence finale déjà appliquée"),
-        },
+        (_, Some(_)) => unreadable("transparence finale instable"),
     }
 }
 
@@ -1341,10 +1387,17 @@ fn decode_pass(
             stream.ensure(at + 1 + row, &mut h)?;
             if out.is_empty() {
                 out = alloc_zeroed(size)?;
-                if partial {
-                    let zero = conv.pixel(&[0u8; 8], 0);
-                    for px in out.as_chunks_mut::<4>().0 {
-                        *px = zero;
+                // (comme `Image.core.new`, la taille entière est engagée dès la première ligne
+                // d'une zone partielle, bornée par la garde anti-bombe)
+                let zero = conv.pixel(&[0u8; 8], 0);
+                if partial && zero != [0; 4] {
+                    for line in out.chunks_mut(4 * w as usize) {
+                        if cancelled() {
+                            return Err(PngError::Cancelled);
+                        }
+                        for px in line.as_chunks_mut::<4>().0 {
+                            *px = zero;
+                        }
                     }
                 }
             }
@@ -1372,9 +1425,9 @@ fn decode_pass(
     }
     stream.finish()?;
     stream.load_end(&mut h, animated, cancelled)?;
-    if h.palette.is_some() && format.mode != Mode::Palette {
-        // `PLTE` lu sous un mode palette, puis `IHDR` d'un autre mode : `Image.load` pose la
-        // palette sur l'image (`putpalette`, mode refusé)
+    if h.palette.is_some() && !matches!(format.mode, Mode::Palette | Mode::Gray | Mode::GrayA) {
+        // `PLTE` lu sous un mode palette, puis `IHDR` d'un autre mode que `L`/`LA` :
+        // `Image.load` pose la palette sur l'image (`putpalette`, mode refusé)
         return unreadable("palette sur une image sans palette");
     }
     let img = Rgba {

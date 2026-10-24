@@ -343,7 +343,9 @@ aucun appel dans `telmi2flam.py`), le Rust ne l'applique pas non plus. Ni `draft
    conversion.
 2. Garde anti-bombe de Pillow seulement, pour tous les formats : plus de `2 × MAX_IMAGE_PIXELS`
    pixels annoncés, image illisible (D5). Aucune mémoire engagée sur la seule foi d'un
-   en-tête (tampons alloués quand les données arrivent, `try_reserve`).
+   en-tête (tampons alloués quand les données arrivent, `try_reserve`) ; exception assumée :
+   une zone partielle (cadre APNG, image GIF plus petite que l'écran) engage toute l'image dès
+   ses premières données, comme `Image.core.new` de Pillow, dans la limite de la garde.
 3. Déterminisme : aucun code SIMD choisi à l'exécution dont le résultat dépend du processeur
    (même règle que `fast_image_resize`, §4.2) ; décodeurs utilisés en scalaire ou avec des
    chemins SIMD prouvés identiques au scalaire.
@@ -364,7 +366,7 @@ aucun appel dans `telmi2flam.py`), le Rust ne l'applique pas non plus. Ni `draft
 | GIF entrelacé | lu (ordre des passes) | lu |
 | GIF animé, image partielle, sans palette globale | première image, fond index transparent ou 0 | idem |
 | APNG (PR 1) | première image ; séquence `fcTL`/`fdAT` fausse, `fcTL` court ou hors de l'image : illisible ; zone vide : illisible | idem, testé (`apng_*` de `gen_png_vectors.py`) |
-| `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue (PR 1) | dernier `IHDR` (taille ; mode du dernier couple valide), transparence rangée selon le mode courant, `_trns_mask` sur la clé brute et l'`IHDR` à position fixe | idem, y compris les erreurs (`TypeError` d'un triplet sur du gris, palette sur une image sans palette) : 600 combinaisons dans `combos.tsv` |
+| `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue (PR 1) | dernier `IHDR` (taille ; mode du dernier couple valide), transparence rangée selon le mode courant, `_trns_mask` sur la clé brute et l'`IHDR` à position fixe | idem, y compris les erreurs (`TypeError` d'un triplet sur du gris, palette sur une image d'un autre mode que `L`/`LA`) : 634 combinaisons dans `combos.tsv` |
 
 **Écarts attendus** : aucun pour le PNG et le GIF. JPEG : écart d'IDCT/suréchantillonnage
 borné s'il est inévitable, et pixels des JPEG corrompus (reprise de libjpeg-turbo), chacun
@@ -381,7 +383,9 @@ PNG`). Détails reproduits de Pillow, tous vérifiés contre l'oracle :
   `ZipDecode.c` ignore le décalage du cadre (zone en haut à gauche) ;
 - `IHDR` : taille du dernier lu, mode du dernier couple connu (`KeyError` : mode précédent),
   entrelacement jamais retiré ; un `PLTE` lu sous un mode palette puis un `IHDR` d'un autre
-  mode rend l'image illisible (`putpalette`) ;
+  mode : `Image.load` pose la palette sur le cœur de l'image, accepté pour `L` et `LA` (la
+  valeur grise sert d'index, alpha du canal A ; avec transparence : illisible en `L`, masque
+  sur la luminance de la palette en `LA`), refusé (illisible) pour les autres modes ;
 - transparence : valeur de Pillow typée selon le mode courant à chaque `tRNS` (entier, triplet
   ou octets ; le dernier gagne, même après l'image : second passage de conversion), masque de
   `_trns_mask` sur la clé brute de `_png_trns_key` et l'`IHDR` à position fixe de `_png_ihdr`,

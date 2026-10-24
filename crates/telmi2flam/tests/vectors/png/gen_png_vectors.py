@@ -192,6 +192,59 @@ def zdata(w, h, bd, ct, pixels, interlace=0):
     return zlib.compress(scanlines(w, h, bd, ct, pixels, interlace))
 
 
+def fixed_deflate(symbols):
+    """Flux zlib à blocs Huffman fixes écrit à la main : `('lit', v)`, `('copy', longueur 3,
+    distance)`, `('end',)`. Sert aux distances trop lointaines (#459)."""
+    out = bytearray(b"\x78\x01")
+    acc = nb = 0
+
+    def put(value, n, reverse=False):
+        nonlocal acc, nb
+        if reverse:   # codes de Huffman : bit de poids fort d'abord
+            value = int(format(value, "0%db" % n)[::-1], 2)
+        acc |= value << nb
+        nb += n
+
+    put(1, 1)          # BFINAL
+    put(1, 2)          # BTYPE = 01 (fixe)
+    for s in symbols:
+        if s[0] == "lit":
+            v = s[1]
+            if v < 144:
+                put(0x30 + v, 8, True)
+            else:
+                put(0x190 + v - 144, 9, True)
+        elif s[0] == "copy":
+            put(1, 7, True)                 # code 257 : longueur 3
+            dist = s[1]
+            base = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385]
+            code = max(i for i, b in enumerate(base) if b <= dist)
+            put(code, 5, True)
+            extra = max(0, code // 2 - 1)
+            put(dist - base[code], extra)
+        else:
+            put(0, 7, True)                 # 256 : fin de bloc
+    while nb > 0:
+        out.append(acc & 0xFF)
+        acc >>= 8
+        nb -= 8
+    return bytes(out)
+
+
+def zlib_cases(add):
+    """Sortie pleine : zlib ne contrôle une distance trop lointaine qu'à l'écriture (#459)."""
+    end = chunk(b"IEND", b"")
+    one = SIG + ihdr(1, 1, 8, 0)
+    add("zlib_distance_apres_fin", one + chunk(b"IDAT", fixed_deflate(
+        [("lit", 0), ("lit", 5), ("copy", 100), ("end",)])) + end)
+    add("zlib_distance_avant_fin", SIG + ihdr(1, 2, 8, 0) + chunk(b"IDAT", fixed_deflate(
+        [("lit", 0), ("lit", 5), ("lit", 0), ("copy", 100), ("end",)])) + end)
+    add("zlib_distance_apres_fin_puis_code_faux", one + chunk(b"IDAT", fixed_deflate(
+        [("lit", 0), ("lit", 5), ("copy", 100), ("lit", 7), ("end",)]) + b"\xff\xff") + end)
+    add("zlib_litteral_apres_fin", one + chunk(b"IDAT", fixed_deflate(
+        [("lit", 0), ("lit", 5), ("lit", 200), ("end",)])) + end)
+
+
 def apng_cases(add, _rng, base_px, good):
     """APNG (#459) : Pillow ouvre la première image ; zone `fcTL`, séquences, `fdAT`."""
     rng = random.Random(4591)
@@ -312,6 +365,26 @@ def ihdr_cases(add, _rng):
         + ihdr(6, 4, 8, 3) + chunk(b"IDAT", zp) + end)
     add("plte_palette_puis_rgb", SIG + ihdr(6, 4, 8, 3) + chunk(b"PLTE", palette(4, rng))
         + ihdr(6, 4, 8, 2) + chunk(b"IDAT", z) + end)
+    # palette posée sur un cœur gris ou LA (`putpalette` accepté par le C) : index = gris
+    pal4 = palette(4, rng)
+    gl = [[((x + y) % 4,) for x in range(6)] for y in range(4)]
+    for name, bd, ct, px_, extra in (
+            ("gris8", 8, 0, gl, b""), ("gris2", 2, 0, gl, b""),
+            ("gris8_trns", 8, 0, gl, chunk(b"tRNS", b"\x00\x01")),
+            ("la", 8, 4, [[((x + y) % 4, 50 * x) for x in range(6)] for y in range(4)], b""),
+            ("la_trns", 8, 4, [[((x + y) % 4, 50 * x) for x in range(6)] for y in range(4)],
+             chunk(b"tRNS", b"\x00\x01")),
+            ("gris16", 16, 0, [[(v * 300,) for (v,) in r] for r in gl], b""),
+            ("rgba", 8, 6, [[(1, 2, 3, 4)] * 6] * 4, b"")):
+        add("plte_palette_puis_" + name, SIG + ihdr(6, 4, 8, 3) + chunk(b"PLTE", pal4)
+            + ihdr(6, 4, bd, ct) + extra + chunk(b"IDAT", zdata(6, 4, bd, ct, px_)) + end)
+    add("plte_palette_puis_gris8_masque", SIG + ihdr(6, 4, 1, 0) + chunk(b"tRNS", b"\x00\x01")
+        + ihdr(6, 4, 8, 3) + chunk(b"PLTE", pal4) + ihdr(6, 4, 8, 0)
+        + chunk(b"IDAT", zdata(6, 4, 8, 0, gl)) + end)
+    add("plte_palette_puis_la_masque", SIG + ihdr(6, 4, 2, 0) + chunk(b"tRNS", b"\x00\x01")
+        + ihdr(6, 4, 8, 3) + chunk(b"PLTE", pal4) + ihdr(6, 4, 8, 4)
+        + chunk(b"IDAT", zdata(6, 4, 8, 4, [[((x + y) % 4, 9) for x in range(6)]
+                                              for y in range(4)])) + end)
     add("trns_avant_ihdr", SIG + chunk(b"tRNS", b"\x00\x01") + ihdr(6, 4, 8, 0)
         + chunk(b"IDAT", zdata(6, 4, 8, 0, pxp)) + end)
     add("ihdr_apres_idat_autre_mode", SIG + ihdr(6, 4, 8, 2) + chunk(b"IDAT", z)
@@ -370,6 +443,11 @@ def combo_cases():
                 # IHDR pas en tête : pas de masque de _trns_mask
                 out.append((name + "_texte", SIG + chunk(b"tEXt", b"a\x00b") + first + trns
                             + image + end))
+            if sc == 3 and not same and ec != 3:
+                # PLTE lu sous le mode palette, puis image d'un autre mode (palette posée sur
+                # un cœur gris ou LA, refusée ailleurs)
+                pl = chunk(b"PLTE", bytes((i * 53 + 7) % 256 for i in range(48)))
+                out.append((name + "_plte", SIG + first + pl + trns + second + image + end))
             if pi == 1 and same:
                 out.append((name + "_double", SIG + first + chunk(b"tRNS", b"\x00\x00") + trns
                             + image + chunk(b"tRNS", TRNS_PAYLOADS[2]) + end))
@@ -605,6 +683,7 @@ def cases():
     rgb("fctl_delegue", after=[chunk(b"fcTL", bytes(26))])
     apng_cases(add, rng, base_px, good)
     ihdr_cases(add, rng)
+    zlib_cases(add)
     # autres formats : délégation si Pillow sait peut-être les lire, sinon illisibles comme
     # pour Pillow (src/identify.rs, #129)
     add("pas_png", b"GIF89a" + bytes(20), "delegate")
