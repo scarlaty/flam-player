@@ -943,8 +943,9 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
   après les 2 s d'attente de l'ouverture : elle ne peut pas remplacer la composition ouverte.
 - Si le brouillon contient **une saisie** (épisode, catégorie, titre, sous-titre,
   description, âge ou couverture choisis), une confirmation le dit : « Le brouillon en cours
-  sera remplacé. » Brouillon vide : pas de confirmation ; brouillon illisible : confirmation,
-  par prudence.
+  sera remplacé. » Brouillon vide : pas de confirmation. Brouillon illisible : le backend l'a
+  déjà mis de côté (copie `*.bak`, N3 b), pas de confirmation, son message est affiché ;
+  lecture impossible (erreur) : confirmation, par prudence.
 - Pendant l'ouverture, « Ouverture de … » s'affiche et les boutons de la liste sont inactifs.
 - La composition conservée n'est jamais modifiée par l'éditeur : seul le brouillon l'est.
   « Créer l'histoire » sans modification la refait (même entrée) ; avec des modifications, une
@@ -999,11 +1000,14 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
   réécrit avec les seules entrées gardées ; un message le dit une fois, raisons distinguées
   (« 1 illisible(s), 2 en double »). Rien n'est perdu : la copie garde tout. Si la réécriture
   échoue (fichier verrouillé, disque plein), la copie est retirée (l'original, intact, en tient
-  lieu) : des lectures répétées n'accumulent pas de copies.
+  lieu) : des lectures répétées n'accumulent pas de copies. Toute écriture suivante (conserver,
+  renommer, supprimer) **refait d'abord la copie**, et n'a pas lieu si elle échoue : le
+  fichier n'est jamais réécrit sans les entrées écartées tant qu'aucune copie ne les garde.
 - **Fichier illisible** (tronqué, JSON invalide, non UTF-8) ou **trop gros** : mis de côté en
   `*.bak` (jamais écrasé), liste vide, message.
-- **Copies bornées** : seules les 3 copies `pack-compositions.json.*.bak` les plus récentes
-  (`MAX_BACKUPS`) sont gardées ; un fichier au nom inattendu n'est jamais supprimé. Une copie
+- **Copies bornées** : 3 copies `pack-compositions.json.*.bak` au plus (`MAX_BACKUPS`) : celle
+  qui vient d'être faite, jamais supprimée (même si l'horloge a reculé), et les plus récentes
+  des autres ; un fichier au nom inattendu n'est jamais supprimé. Une copie
   de la même seconde prend un suffixe supérieur à tous les existants
   (`storage::backup_path`) : la plus récente n'est jamais la première supprimée.
 - **Schéma plus récent** : comme `settings.json`, le fichier n'est **ni lu ni modifié**
@@ -1036,7 +1040,7 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
   contrôle, **unique** sans tenir compte de la casse.
 - Nom : compté en caractères (points de code) côté interface comme côté backend ; le champ
   n'a pas de `maxlength` (compté en unités UTF-16, il couperait les émojis).
-- Taille : 256 Kio par composition sérialisée en JSON indenté, comme dans le fichier (une composition valide en fait au plus
+- Taille : 256 Kio par composition sérialisée en JSON indenté (une composition valide en fait au plus
   quelques dizaines : 50 épisodes, 16 Kio de description) et 16 Mio pour le fichier ; au-delà,
   l'entrée n'est pas conservée (message), un fichier trop gros est mis de côté.
 
@@ -1052,8 +1056,9 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
 - **Retour à une version antérieure** (#484) : les champs inconnus du premier niveau du
   fichier, d'une entrée et de sa `composition` sont conservés tels quels à la réécriture
   (`serde(flatten)` d'une table `extra`, réinsertion des champs inconnus de la composition).
-  Ils n'entrent pas dans la comparaison de 14.1 ; « Ouvrir » ne copie dans le brouillon que
-  les champs connus.
+  Une entrée qui en porte n'est jamais jugée identique (14.1) : refaire son pack depuis une
+  version antérieure crée une nouvelle entrée, l'originale reste intacte. « Ouvrir » ne copie
+  dans le brouillon que les champs connus.
 - **Règle d'évolution** : tout ajout qu'une version antérieure ne saurait pas conserver
   tel quel **incrémente `schema_version`** : nouvelle variante (type d'option, de
   couverture), champ ajouté à l'intérieur de `metadata`, `cover` ou d'une option du menu,
@@ -1069,7 +1074,7 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
 | Disque plein, fichier en lecture seule               | ancien fichier intact, temporaire supprimé   | création du pack poursuivie, message ; renommer ou supprimer : erreur         |
 | Fichier tronqué ou JSON invalide                     | mis de côté en `*.bak`                       | liste vide, message une fois                                                  |
 | Entrée écartée dans un fichier lisible               | copie `*.bak`, entrées lisibles réécrites    | message une fois, raisons distinguées                                         |
-| Entrée écartée, réécriture impossible                | fichier intact, copie retirée                | entrées lisibles servies, message à chaque lecture jusqu'à la réécriture      |
+| Entrée écartée, réécriture impossible                | fichier intact, copie retirée                | entrées lisibles servies, message ; écriture suivante précédée d'une copie    |
 | Plus de 3 copies `*.bak`                             | les plus anciennes supprimées                | aucun                                                                         |
 | Fichier trop gros                                    | mis de côté en `*.bak`, jamais écrasé        | liste vide, message                                                           |
 | Fichier d'un schéma plus récent                      | intact, ni lu ni réécrit                     | erreur affichée ; création poursuivie sans conservation, raison dite          |

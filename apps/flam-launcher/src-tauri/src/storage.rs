@@ -186,6 +186,11 @@ pub fn backup_path(path: &Path) -> io::Result<PathBuf> {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
+    backup_path_at(path, secs)
+}
+
+/// [`backup_path`] à la date `secs` (secondes Unix).
+fn backup_path_at(path: &Path, secs: u64) -> io::Result<PathBuf> {
     let stamp = utc_stamp(secs);
     let name = path
         .file_name()
@@ -212,13 +217,22 @@ pub fn backup_path(path: &Path) -> io::Result<PathBuf> {
     }
     let mut backup = match taken {
         None => path.with_file_name(&plain),
-        Some(n) => path.with_file_name(format!("{prefix}{}.bak", n + 1)),
+        Some(n) => path.with_file_name(format!("{prefix}{}.bak", n.saturating_add(1))),
     };
     // Dossier illisible ou création concurrente : jamais écraser.
-    let mut n = taken.map_or(1, |t| t + 2);
+    let mut n = taken.map_or(1, |t| t.saturating_add(2));
+    let mut wrapped = false;
     while backup.exists() {
         backup = path.with_file_name(format!("{prefix}{n}.bak"));
-        n += 1;
+        n = match n.checked_add(1) {
+            Some(next) => next,
+            // Suffixe démesuré : reprise depuis 1 (une place libre existe forcément).
+            None if !wrapped => {
+                wrapped = true;
+                1
+            }
+            None => return Err(io::Error::other("aucun nom de copie libre")),
+        };
     }
     Ok(backup)
 }
@@ -431,28 +445,37 @@ mod tests {
     fn chemin_de_copie_toujours_au_dessus_des_existants() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.json");
-        let first = backup_path(&path).unwrap();
-        let name = first.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(name.starts_with("x.json.") && name.ends_with(".bak"));
-        let stamp = name
-            .strip_prefix("x.json.")
-            .unwrap()
-            .strip_suffix(".bak")
-            .unwrap()
-            .to_string();
+        let secs = 1_790_000_000;
+        let stamp = utc_stamp(secs);
+        let at = |p: &Path| {
+            backup_path_at(p, secs)
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert_eq!(at(&path), format!("x.json.{stamp}.bak"));
         // Copies de la même seconde dont les premières ont été supprimées : la suivante prend
         // un suffixe supérieur au plus grand, jamais une place libérée.
         fs::write(dir.path().join(format!("x.json.{stamp}-3.bak")), b"").unwrap();
         fs::write(dir.path().join(format!("x.json.{stamp}-x.bak")), b"").unwrap();
         fs::write(dir.path().join(format!("y.json.{stamp}-9.bak")), b"").unwrap();
-        let next = backup_path(&path).unwrap();
-        // Même seconde (sinon horodatage plus récent, sans suffixe) : tolérant au changement.
-        let next_name = next.file_name().unwrap().to_string_lossy().into_owned();
-        if next_name.contains(&stamp) {
-            assert_eq!(next_name, format!("x.json.{stamp}-4.bak"));
-        }
-        fs::write(dir.path().join(format!("x.json.{stamp}.bak")), b"").unwrap();
-        let p = backup_path(&path).unwrap();
+        assert_eq!(at(&path), format!("x.json.{stamp}-4.bak"));
+        // Copie sans suffixe seule : -1.
+        let other = tempfile::tempdir().unwrap();
+        let p2 = other.path().join("x.json");
+        fs::write(other.path().join(format!("x.json.{stamp}.bak")), b"").unwrap();
+        assert_eq!(at(&p2), format!("x.json.{stamp}-1.bak"));
+        // Suffixe démesuré : pas de dépassement, jamais d'écrasement.
+        fs::write(
+            other
+                .path()
+                .join(format!("x.json.{stamp}-{}.bak", u64::MAX)),
+            b"",
+        )
+        .unwrap();
+        let p = backup_path_at(&p2, secs).unwrap();
         assert!(!p.exists());
     }
 

@@ -46,14 +46,17 @@ function showEditor() {
  */
 export function isBlankComposition(composition: PackComposition): boolean {
   const { metadata, cover, menu, ...rest } = composition;
+  const { title, subtitle, description, age, ...metadataRest } = metadata;
+  const unset = (value: unknown) => value === null || value === undefined;
   return (
     menu.length === 0 &&
-    metadata.title.trim() === "" &&
-    (metadata.subtitle ?? "").trim() === "" &&
-    (metadata.description ?? "").trim() === "" &&
-    metadata.age === 0 &&
+    title.trim() === "" &&
+    (subtitle ?? "").trim() === "" &&
+    (description ?? "").trim() === "" &&
+    age === 0 &&
     cover.kind === "default" &&
-    Object.values(rest).every((value) => value === null || value === undefined)
+    Object.values(rest).every(unset) &&
+    Object.values(metadataRest).every(unset)
   );
 }
 
@@ -153,9 +156,11 @@ export function CompositionsSection() {
       // Un éditeur fermé à l'instant a pu laisser une sauvegarde en cours.
       await settlePendingSave();
       const draft = await readPackDraft();
+      // Brouillon illisible : déjà mis de côté par le backend (copie), son message est dit.
+      showNotice(draft.notice);
       replace = draft.composition !== null && !isBlankComposition(draft.composition);
     } catch {
-      // Brouillon illisible : la confirmation protège ce qui pourrait s'y trouver.
+      // Lecture impossible : la confirmation protège ce qui pourrait s'y trouver.
       replace = true;
     } finally {
       if (mounted.current) {

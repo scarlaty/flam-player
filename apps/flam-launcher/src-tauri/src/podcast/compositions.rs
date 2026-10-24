@@ -51,7 +51,7 @@ pub const COMPOSITIONS_SCHEMA: u32 = 1;
 pub const MAX_COMPOSITIONS: usize = 50;
 /// Longueur d'un nom, en caractères.
 pub const MAX_NAME_CHARS: usize = 60;
-/// Taille d'une composition sérialisée au plus, en octets (JSON indenté, comme le fichier).
+/// Taille d'une composition sérialisée au plus, en octets (JSON indenté à partir de la racine de la\n/// composition ; dans le fichier, plus profondément indentée, elle est un peu plus grosse).
 pub const MAX_ENTRY_BYTES: usize = 256 * 1024;
 /// Copies `*.bak` du fichier gardées au plus (les plus récentes).
 pub const MAX_BACKUPS: usize = 3;
@@ -155,6 +155,9 @@ pub struct StoreRead {
     pub notice: Option<String>,
     /// Champs inconnus du premier niveau du fichier, réécrits tels quels.
     extra: Map<String, Value>,
+    /// Entrées écartées dont la copie n'a pas pu être faite ou gardée (réécriture en échec) :
+    /// la prochaine écriture copie d'abord le fichier d'origine, sinon elle n'a pas lieu.
+    backup_pending: bool,
 }
 
 /// Accès au fichier des compositions de `dir`. L'appelant tient le verrou de configuration.
@@ -260,9 +263,10 @@ fn backup_rank(name: &str) -> Option<(String, u64)> {
     Some((stamp.to_string(), n))
 }
 
-/// Ne garde que les [`MAX_BACKUPS`] copies les plus récentes du fichier dans `dir`. Au mieux :
-/// un échec est tracé, jamais remonté.
-fn prune_backups(dir: &Path) {
+/// Ne garde que [`MAX_BACKUPS`] copies du fichier dans `dir` : `keep` (la copie qui vient
+/// d'être faite, jamais supprimée, même si l'horloge a reculé) et les plus récentes des
+/// autres. Au mieux : un échec est tracé, jamais remonté.
+fn prune_backups(dir: &Path, keep: &Path) {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) => {
@@ -270,18 +274,21 @@ fn prune_backups(dir: &Path) {
             return;
         }
     };
+    let keep = keep.file_name();
     let mut copies: Vec<((String, u64), PathBuf)> = entries
         .filter_map(Result::ok)
+        .filter(|e| Some(e.file_name().as_os_str()) != keep)
         .filter_map(|e| {
             let rank = backup_rank(&e.file_name().to_string_lossy())?;
             Some((rank, e.path()))
         })
         .collect();
-    if copies.len() <= MAX_BACKUPS {
+    let others = MAX_BACKUPS.saturating_sub(1);
+    if copies.len() <= others {
         return;
     }
     copies.sort();
-    let excess = copies.len() - MAX_BACKUPS;
+    let excess = copies.len() - others;
     for (_, path) in copies.into_iter().take(excess) {
         if let Err(err) = fs::remove_file(&path) {
             tracing::warn!(
@@ -361,7 +368,7 @@ impl<'a> Store<'a> {
             "compositions de pack : fichier {why}, mis de côté en {}",
             backup.display()
         );
-        prune_backups(self.dir);
+        prune_backups(self.dir, &backup);
         Ok(StoreRead {
             notice: Some(format!(
                 "Le fichier des compositions enregistrées ({why}) a été mis de côté ({}).",
@@ -386,7 +393,7 @@ impl<'a> Store<'a> {
             Ok(Loaded::Missing) => return Ok(StoreRead::default()),
             Ok(Loaded::Found(raw)) => raw,
             Ok(Loaded::Recovered { backup }) => {
-                prune_backups(self.dir);
+                prune_backups(self.dir, Path::new(&backup));
                 return Ok(StoreRead {
                     notice: Some(format!(
                         "Le fichier des compositions enregistrées était illisible : il a été mis de côté ({backup})."
@@ -433,38 +440,32 @@ impl<'a> Store<'a> {
                 entries,
                 notice: None,
                 extra,
+                backup_pending: false,
             });
         }
         let (total, detail) = (rejected.total(), rejected.detail());
-        // Copie intégrale d'abord : la réécriture ne perd rien.
-        let backup = backup_copy(&path)?;
-        let read = StoreRead {
+        // Copie intégrale d'abord (faite par l'écriture) : la réécriture ne perd rien.
+        let mut read = StoreRead {
             entries,
             notice: None,
             extra,
+            backup_pending: true,
         };
-        let notice = match self.write(&read) {
-            Ok(()) => {
+        let notice = match self.write_with_copy(&read) {
+            Ok(backup) => {
+                read.backup_pending = false;
+                let backup = backup.map(|b| file_name(&b)).unwrap_or_default();
                 tracing::warn!(
-                    "compositions de pack : {total} entrée(s) écartée(s) ({detail}), fichier copié en {}",
-                    backup.display()
+                    "compositions de pack : {total} entrée(s) écartée(s) ({detail}), fichier copié en {backup}"
                 );
-                prune_backups(self.dir);
                 format!(
-                    "{total} composition(s) enregistrée(s) écartée(s) ({detail}) ; le fichier d'origine a été copié ({}).",
-                    file_name(&backup)
+                    "{total} composition(s) enregistrée(s) écartée(s) ({detail}) ; le fichier d'origine a été copié ({backup})."
                 )
             }
             Err(err) => {
-                // L'original est intact : la copie ne sert à rien, et la garder en ajouterait
-                // une à chaque lecture tant que le fichier reste verrouillé.
+                // Copie retirée par l'écriture (l'original, intact, en tient lieu) ; elle sera
+                // refaite avant toute écriture suivante (`backup_pending`).
                 tracing::warn!("compositions de pack : réécriture impossible : {err}");
-                if let Err(err) = fs::remove_file(&backup) {
-                    tracing::warn!(
-                        "compositions de pack : copie {} non retirée : {err}",
-                        backup.display()
-                    );
-                }
                 format!(
                     "{total} composition(s) enregistrée(s) écartée(s) ({detail}) ; le fichier, laissé intact, n'a pas pu être réécrit."
                 )
@@ -479,6 +480,14 @@ impl<'a> Store<'a> {
     /// Écrit les entrées de `read` (et ses champs inconnus) de façon atomique, sérialisées une
     /// fois et bornées.
     fn write(&self, read: &StoreRead) -> AppResult<()> {
+        self.write_with_copy(read).map(|_| ())
+    }
+
+    /// [`Store::write`], précédée d'une copie du fichier d'origine si des entrées écartées
+    /// n'ont pas encore de copie (`backup_pending`) : rien n'est réécrit sans elles tant que la
+    /// copie n'existe pas. La copie est retirée si l'écriture échoue (l'original est intact),
+    /// gardée sinon (et les plus anciennes élaguées). Renvoie la copie faite.
+    fn write_with_copy(&self, read: &StoreRead) -> AppResult<Option<PathBuf>> {
         let compositions = read
             .entries
             .iter()
@@ -496,8 +505,31 @@ impl<'a> Store<'a> {
                 bytes.len()
             )));
         }
-        (self.write)(&self.path(), &bytes)?;
-        Ok(())
+        let path = self.path();
+        let copy = if read.backup_pending {
+            Some(backup_copy(&path)?)
+        } else {
+            None
+        };
+        match (self.write)(&path, &bytes) {
+            Ok(()) => {
+                if let Some(copy) = &copy {
+                    prune_backups(self.dir, copy);
+                }
+                Ok(copy)
+            }
+            Err(err) => {
+                if let Some(copy) = &copy {
+                    if let Err(err) = fs::remove_file(copy) {
+                        tracing::warn!(
+                            "compositions de pack : copie {} non retirée : {err}",
+                            copy.display()
+                        );
+                    }
+                }
+                Err(err.into())
+            }
+        }
     }
 
     /// Conserve `composition`, créée sous le titre effectif `title`, à la date `now`. Identique
@@ -534,7 +566,9 @@ impl<'a> Store<'a> {
         let out = if let Some(entry) = read
             .entries
             .iter_mut()
-            .find(|e| e.composition == *composition)
+            // Une entrée aux champs inconnus (version plus récente) n'est jamais « identique » :
+            // la refaire lui ferait porter des réglages que ce pack n'avait pas.
+            .find(|e| e.composition_extra.is_empty() && e.composition == *composition)
         {
             entry.last_used_at = now;
             entry.packs = entry.packs.saturating_add(1);
@@ -629,11 +663,19 @@ impl<'a> Store<'a> {
     /// le message de la lecture.
     pub fn open(&self, id: &str) -> AppResult<Opened> {
         let mut read = self.read()?;
-        let notice = read.notice.take();
+        let mut notice = read.notice.take();
         let result = (|| {
             let entry = Self::find(&read.entries, id)?;
-            let stored = pack::read_draft(self.dir)?.revision;
-            let revision = stored
+            let draft = pack::read_draft(self.dir)?;
+            // Brouillon illisible, mis de côté : son message est dit aussi (une fois).
+            if let Some(draft_notice) = draft.notice {
+                notice = Some(match notice.take() {
+                    Some(n) => format!("{n} {draft_notice}"),
+                    None => draft_notice,
+                });
+            }
+            let revision = draft
+                .revision
                 .checked_add(1)
                 .filter(|r| *r <= MAX_REVISION)
                 .ok_or_else(|| AppError::Validation("révision de brouillon épuisée".into()))?;

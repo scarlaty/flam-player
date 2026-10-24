@@ -38,6 +38,8 @@ let calls: { cmd: string; args: Record<string, any> }[];
 let failures: Record<string, { kind: string; message: string }>;
 /** Message rendu par la prochaine action (fichier mis de côté, entrées écartées). */
 let actionNotice: string | null;
+/** Message de lecture du brouillon (brouillon illisible mis de côté). */
+let draftNotice: string | null;
 /** Réponse de `pack_composition_open` retenue jusqu'à `release()`. */
 let holdOpen: Promise<void> | null;
 
@@ -49,6 +51,7 @@ beforeEach(() => {
   calls = [];
   failures = {};
   actionNotice = null;
+  draftNotice = null;
   holdOpen = null;
   mockIPC(async (cmd, args) => {
     const payload = (args ?? {}) as Record<string, any>;
@@ -59,7 +62,7 @@ beforeEach(() => {
       case "pack_compositions_list":
         return { compositions: list, notice, max: 50 };
       case "pack_draft_read":
-        return { composition: draft, revision: 4, notice: null, report: null };
+        return { composition: draft, revision: 4, notice: draftNotice, report: null };
       case "pack_composition_open":
         if (holdOpen) await holdOpen;
         return { saved: true, revision: 5, notice: actionNotice };
@@ -292,6 +295,21 @@ it("brouillon vide : seule une composition sans aucune saisie l'est", () => {
   expect(isBlankComposition({ ...blank, title_voice: null } as PackComposition)).toBe(
     true,
   );
+  const nested = {
+    ...blank,
+    metadata: { ...blank.metadata, narrator: "x" },
+  } as PackComposition;
+  expect(isBlankComposition(nested)).toBe(false);
+});
+
+it("brouillon illisible mis de côté par le backend : son message est dit", async () => {
+  draftNotice = "Le brouillon de pack précédent était illisible : il a été mis de côté.";
+  renderSection();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Ouvrir « Comptines » dans l'éditeur" }),
+  );
+  await waitFor(() => expect(window.location.hash).toBe(PACK_HASH));
+  expect(await screen.findByText(draftNotice)).toBeTruthy();
 });
 
 it("ouvrir avec un brouillon qui n'a qu'un titre : confirmation demandée", async () => {

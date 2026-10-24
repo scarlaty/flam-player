@@ -275,7 +275,10 @@ fn ouvrir_sur_brouillon_illisible_le_met_de_cote() {
     let c = comp("A", &["1", "2"]);
     let a = store.record(&c, "A", 1).unwrap();
     fs::write(dir.path().join(pack::DRAFT_FILE), b"{\"revision\": 3, tron").unwrap();
-    assert!(store.open(&a.id).unwrap().saved);
+    let opened = store.open(&a.id).unwrap();
+    assert!(opened.saved);
+    // Le message de mise de côté du brouillon est rendu (#484, revue).
+    assert!(opened.notice.unwrap().contains("brouillon"));
     assert_eq!(pack::read_draft(dir.path()).unwrap().composition, Some(c));
     let draft_backups = fs::read_dir(dir.path())
         .unwrap()
@@ -838,15 +841,18 @@ fn champs_inconnus_conserves_a_la_reecriture() {
     expected["compositions"][0]["name"] = "Renommée".into();
     let written: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(written, expected);
-    // Refaire la même composition (champ inconnu exclu de la comparaison) : mise à jour,
-    // champs gardés ; une autre conservation ne les perd pas non plus.
+    // La même composition sans le champ inconnu n'est pas « identique » (#484, revue) :
+    // nouvelle entrée, l'entrée aux champs inconnus reste intacte ; une autre conservation ne
+    // les perd pas non plus.
     let mut known_value = original["compositions"][0]["composition"].clone();
     known_value
         .as_object_mut()
         .unwrap()
         .remove("voix_des_titres");
     let known: PackComposition = serde_json::from_value(known_value).unwrap();
-    assert!(!store.record(&known, "T", 9).unwrap().new);
+    let derived = store.record(&known, "T", 9).unwrap();
+    assert!(derived.new);
+    assert_eq!(derived.name, "T");
     store.record(&comp("B", &["1", "2"]), "B", 10).unwrap();
     let written: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(written["reglages_futurs"], original["reglages_futurs"]);
@@ -855,7 +861,11 @@ fn champs_inconnus_conserves_a_la_reecriture() {
         written["compositions"][0]["composition"]["voix_des_titres"],
         original["compositions"][0]["composition"]["voix_des_titres"]
     );
-    assert_eq!(written["compositions"][0]["packs"], 3);
+    assert_eq!(written["compositions"][0]["packs"], 2);
+    assert_eq!(written["compositions"][1]["name"], "T");
+    assert!(written["compositions"][1]["composition"]
+        .get("voix_des_titres")
+        .is_none());
     assert!(written["compositions"][1].get("couleur").is_none());
     assert!(written.get("extra").is_none());
     assert!(written["compositions"][1].get("extra").is_none());
@@ -946,4 +956,125 @@ fn surnombre_et_doublons_distingues_des_illisibles() {
     );
     assert!(notice.contains("1 en double"), "{notice}");
     assert!(!notice.contains("illisible"), "{notice}");
+}
+
+thread_local! {
+    /// Écritures encore à faire échouer par [`flaky`] (par fil : les tests tournent en
+    /// parallèle).
+    static FAILS_LEFT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Écrivain qui échoue (disque plein) `FAILS_LEFT` fois puis écrit normalement : verrou
+/// transitoire, place libérée entre deux écritures.
+fn flaky(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let fail = FAILS_LEFT.with(|f| {
+        let n = f.get();
+        f.set(n.saturating_sub(1));
+        n > 0
+    });
+    if fail {
+        disk_full(path, bytes)
+    } else {
+        storage::write_atomic(path, bytes)
+    }
+}
+
+/// Copies contenant l'entrée écartée `"x"` de [`file_with_rejected_entry`].
+fn copies_with_rejected(dir: &Path) -> usize {
+    backups(dir)
+        .iter()
+        .filter(|n| {
+            fs::read_to_string(dir.join(n))
+                .unwrap()
+                .contains("\"id\":\"x\"")
+        })
+        .count()
+}
+
+#[test]
+fn reecriture_en_echec_puis_action_reussie_copie_d_abord() {
+    // Revue #484 (B1) : la lecture n'a pas pu réécrire (copie retirée), l'action suivante
+    // réussit : elle copie d'abord, l'entrée écartée n'est jamais perdue sans copie.
+    for action in ["rename", "delete", "record"] {
+        let dir = tempfile::tempdir().unwrap();
+        let id = file_with_rejected_entry(dir.path());
+        let store = Store::with_writer(dir.path(), flaky);
+        FAILS_LEFT.with(|f| f.set(1));
+        match action {
+            "rename" => {
+                let notice = store.rename(&id, "Z").unwrap().unwrap();
+                assert!(notice.contains("n'a pas pu être réécrit"), "{notice}");
+            }
+            "delete" => {
+                store.delete(&id).unwrap();
+            }
+            _ => {
+                let r = store.record(&comp("N", &["7", "8"]), "N", 2).unwrap();
+                assert!(r.notice.unwrap().contains("n'a pas pu être réécrit"));
+            }
+        }
+        let text = fs::read_to_string(dir.path().join(COMPOSITIONS_FILE)).unwrap();
+        assert!(
+            !text.contains("\"x\""),
+            "{action} : fichier réécrit sans l'entrée"
+        );
+        assert_eq!(
+            copies_with_rejected(dir.path()),
+            1,
+            "{action} : copie faite"
+        );
+        assert_eq!(leftovers(dir.path()), 0);
+    }
+}
+
+#[test]
+fn reecriture_et_action_en_echec_fichier_intact_sans_copie() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = file_with_rejected_entry(dir.path());
+    let path = dir.path().join(COMPOSITIONS_FILE);
+    let before = fs::read(&path).unwrap();
+    FAILS_LEFT.with(|f| f.set(2));
+    let err = Store::with_writer(dir.path(), flaky)
+        .rename(&id, "Z")
+        .unwrap_err();
+    assert!(matches!(err, AppError::Io(_)));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(backups(dir.path()).is_empty());
+    assert_eq!(leftovers(dir.path()), 0);
+    // Plus tard, le disque revenu : copie puis réécriture.
+    FAILS_LEFT.with(|f| f.set(0));
+    Store::with_writer(dir.path(), flaky)
+        .rename(&id, "Z")
+        .unwrap();
+    assert_eq!(copies_with_rejected(dir.path()), 1);
+}
+
+#[test]
+fn copie_neuve_gardee_meme_si_l_horloge_a_recule() {
+    // Revue #484 (M1) : des copies datées du futur ne font pas supprimer la copie neuve.
+    let dir = tempfile::tempdir().unwrap();
+    let future: Vec<String> = (1..=3)
+        .map(|i| format!("{COMPOSITIONS_FILE}.2099010{i}-000000.bak"))
+        .collect();
+    for name in &future {
+        fs::write(dir.path().join(name), b"futur").unwrap();
+    }
+    fs::write(dir.path().join(COMPOSITIONS_FILE), b"tronque").unwrap();
+    assert!(Store::new(dir.path()).read().unwrap().notice.is_some());
+    let saved = backups(dir.path());
+    assert_eq!(saved.len(), MAX_BACKUPS);
+    let contents: Vec<String> = saved
+        .iter()
+        .map(|n| fs::read_to_string(dir.path().join(n)).unwrap())
+        .collect();
+    assert!(contents.iter().any(|c| c == "tronque"), "{saved:?}");
+    // Entrées écartées : idem.
+    let dir = tempfile::tempdir().unwrap();
+    for name in &future {
+        fs::write(dir.path().join(name), b"futur").unwrap();
+    }
+    file_with_rejected_entry(dir.path());
+    Store::new(dir.path()).read().unwrap();
+    assert_eq!(backups(dir.path()).len(), MAX_BACKUPS);
+    assert_eq!(copies_with_rejected(dir.path()), 1);
 }
