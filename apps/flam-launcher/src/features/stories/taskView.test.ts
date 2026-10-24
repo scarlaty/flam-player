@@ -137,8 +137,35 @@ it("traduit les échecs des titres lus (tts_*) par kind, sans clé héritée", (
   for (const kind of ["constructor", "__proto__", "toString", "task"]) {
     expect(failed(kind, "m")).toBe("m");
   }
-  expect(errorKindText("tts_failed")).toBe(failed("tts_failed"));
+  // Seul `tts_failed` ajoute le texte du backend sous le texte traduit.
+  expect(failed("tts_no_voice")).not.toContain("texte du backend");
+  expect(failed("tts_unavailable")).not.toContain("texte du backend");
+  expect(failed("tts_failed")).toBe(
+    `${errorKindText("tts_failed")}\nDétail : texte du backend`,
+  );
   expect(errorKindText("hasOwnProperty")).toBeUndefined();
+});
+
+it("rétablit le détail du backend sous le texte traduit d'un échec tts_failed", () => {
+  for (const message of [
+    "La voix n'a pas répondu à temps.",
+    "La synthèse vocale a échoué (E_FAIL).",
+    "Plus de la moitié des titres n'ont pas pu être lus.",
+  ]) {
+    const error = { kind: "tts_failed", message, code: null };
+    const [translated, detail, ...rest] = taskErrorMessage(error).split("\n");
+    expect(translated).toBe(errorKindText("tts_failed"));
+    expect(detail).toBe(`Détail : ${message}`);
+    expect(rest).toEqual([]);
+    // Même texte dans le panneau des tâches.
+    expect(toPanelTask(task({ state: "failed", error })).detail).toBe(
+      taskErrorMessage(error),
+    );
+  }
+  // Message vide : pas de ligne de détail vide.
+  expect(taskErrorMessage({ kind: "tts_failed", message: "  ", code: null })).toBe(
+    errorKindText("tts_failed"),
+  );
 });
 
 it("affiche les avertissements des titres lus d'un pack, les suivants comptés", () => {
@@ -149,9 +176,9 @@ it("affiche les avertissements des titres lus d'un pack, les suivants comptés",
     "1 épisode non inclus : Deux « Un » : muet.",
   );
   const many = Array.from({ length: MAX_SHOWN_WARNINGS + 2 }, (_, i) => `W${i}.`);
-  expect(panel([], many)).toBe("W0. W1. W2. Et 2 autres titres restés muets.");
+  expect(panel([], many)).toBe("W0. W1. W2. Et 2 autres avertissements.");
   expect(panel([], many.slice(0, MAX_SHOWN_WARNINGS + 1))).toBe(
-    "W0. W1. W2. Et 1 autre titre resté muet.",
+    "W0. W1. W2. Et 1 autre avertissement.",
   );
   expect(panel([], [])).toBeUndefined();
 });

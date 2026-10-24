@@ -27,7 +27,7 @@
   color: var(--color-on-primary);
 }
 
-.fl-button--primary:hover:not(:disabled) {
+.fl-button--primary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-primary-hover);
 }
 
@@ -37,7 +37,7 @@
   color: var(--color-on-accent);
 }
 
-.fl-button--accent:hover:not(:disabled) {
+.fl-button--accent:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-accent-hover);
 }
 
@@ -47,8 +47,8 @@
   color: var(--color-text);
 }
 
-.fl-button--secondary:hover:not(:disabled),
-.fl-button--ghost:hover:not(:disabled) {
+.fl-button--secondary:hover:not(:disabled):not([aria-disabled="true"]),
+.fl-button--ghost:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-surface-hover);
 }
 
@@ -62,7 +62,7 @@
   color: var(--color-on-danger);
 }
 
-.fl-button--danger:hover:not(:disabled) {
+.fl-button--danger:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-danger-hover);
 }
 
@@ -73,11 +73,12 @@
   color: var(--color-danger);
 }
 
-.fl-button--danger-quiet:hover:not(:disabled) {
+.fl-button--danger-quiet:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-surface-hover);
 }
 
-.fl-button:disabled {
+.fl-button:disabled,
+.fl-button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.55;
 }

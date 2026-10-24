@@ -189,6 +189,7 @@ pub fn run() {
             podcast::pack::pack_draft_save,
             podcast::pack::pack_validate,
             install::podcast::pack_create,
+            podcast::mp3size::podcast_mp3_cache_size,
             podcast::source::podcast_add,
             podcast::source::podcast_feed,
             podcast::source::podcast_refresh,
