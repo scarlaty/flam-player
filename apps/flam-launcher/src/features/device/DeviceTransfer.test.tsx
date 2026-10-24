@@ -662,7 +662,6 @@ it("bloque les envois en amont quand la garde du firmware refuse (état structur
   status.device!.firmware_status = firmwareV2({
     version: "3.0.0",
     family: "unsupported",
-    trust: "not_applicable",
     coherence: { kind: "not_checked" },
     write_block: { kind: "unsupported_firmware", version: "3.0.0" },
   });
@@ -678,43 +677,29 @@ it("bloque les envois en amont quand la garde du firmware refuse (état structur
   expect(count("device_recover_transfers")).toBe(0);
 });
 
-it("Flam 2.x non confirmée : envoi bloqué jusqu'à la confirmation", async () => {
+it("Flam 2.x : envoi et reprise sans confirmation (#326)", async () => {
   acknowledgeWarning();
-  status.device!.firmware_status = firmwareV2({
-    trust: "unconfirmed",
-    write_block: { kind: "confirmation_required", version: "2.4.2", standard: true },
-  });
+  status.device!.firmware_status = firmwareV2();
   render(<Harness />);
   await screen.findByRole("heading", { name: "Histoires sur la Flam (1)" });
-  expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "true");
-  expect(sendButton("Capi")).toHaveAccessibleDescription(
-    "Confirmez d'abord la sauvegarde de la Flam dans « Ma Flam ».",
+  await waitFor(() =>
+    expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "false"),
   );
-  expect(count("device_recover_transfers")).toBe(0);
+  await waitFor(() => expect(count("device_recover_transfers")).toBeGreaterThan(0));
 });
 
-it("Flam 2.x non confirmée : retrait désactivé avec sa raison (#326)", async () => {
+it("écriture refusée par la garde : retrait désactivé avec sa raison (#326)", async () => {
   status.device!.firmware_status = firmwareV2({
-    trust: "unconfirmed",
-    write_block: { kind: "confirmation_required", version: "2.4.2", standard: true },
+    write_block: { kind: "keys_trivial", version: "2.4.2" },
   });
   render(<Harness />);
   const remove = await screen.findByRole("button", { name: "Retirer « Déjà là »" });
   expect(remove).toHaveAttribute("aria-disabled", "true");
   expect(remove).toHaveAccessibleDescription(
-    "Retrait indisponible : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
+    "Retrait indisponible : écriture sur cette Flam bloquée (voir l'état du firmware).",
   );
   fireEvent.click(remove);
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-});
-
-it("Flam 2.x aux clés incohérentes et confirmée : retrait possible (#326)", async () => {
-  status.device!.firmware_status = firmwareV2({
-    write_block: { kind: "keys_contradiction", version: "2.4.2" },
-  });
-  render(<Harness />);
-  const remove = await screen.findByRole("button", { name: "Retirer « Déjà là »" });
-  expect(remove).not.toHaveAttribute("aria-disabled");
 });
 
 const contradictionCounts = {
@@ -726,26 +711,23 @@ const contradictionCounts = {
   clear_info: 0,
 };
 
-it("Flam 2.x aux clés incohérentes non confirmée : retrait désactivé (#345)", async () => {
+it("Flam 2.x aux clés incohérentes : envoi et retrait possibles (#326)", async () => {
+  acknowledgeWarning();
   status.device!.firmware_status = firmwareV2({
-    trust: "unconfirmed",
     coherence: {
       kind: "contradiction",
       counts: contradictionCounts,
       stories: [A],
       total: 1,
     },
-    write_block: { kind: "keys_contradiction", version: "2.4.2" },
   });
   render(<Harness />);
   const remove = await screen.findByRole("button", { name: "Retirer « Déjà là »" });
-  expect(remove).toHaveAttribute("aria-disabled", "true");
-  expect(remove).toHaveAccessibleDescription(
-    "Retrait indisponible : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
+  await waitFor(() => expect(remove).not.toHaveAttribute("aria-disabled"));
+  await waitFor(() =>
+    expect(sendButton("Capi")).toHaveAttribute("aria-disabled", "false"),
   );
-  fireEvent.click(remove);
-  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-  expect(count("device_remove_story")).toBe(0);
+  expect(screen.getByText("Clés de la Flam à vérifier")).toBeInTheDocument();
 });
 
 it("contradiction sans histoire désignée : bandeau sans liste (#345)", async () => {
@@ -756,10 +738,9 @@ it("contradiction sans histoire désignée : bandeau sans liste (#345)", async (
       stories: [],
       total: 0,
     },
-    write_block: { kind: "keys_contradiction", version: "2.4.2" },
   });
   render(<Harness />);
-  expect(await screen.findByText("Envoi sur cette Flam bloqué")).toBeInTheDocument();
+  expect(await screen.findByText("Clés de la Flam à vérifier")).toBeInTheDocument();
   expect(screen.queryByText(/Histoires en cause/)).not.toBeInTheDocument();
 });
 
@@ -771,7 +752,6 @@ it("contradiction : liste complète des histoires en cause, sans « et N autres 
       stories: [A, B],
       total: 2,
     },
-    write_block: { kind: "keys_contradiction", version: "2.4.2" },
   });
   render(<Harness />);
   expect(await screen.findByText(`Histoires en cause : ${A}, ${B}.`)).toBeInTheDocument();
@@ -793,12 +773,12 @@ it("un refus de la garde pendant la file arrête les envois suivants", async () 
   fireEvent.click(sendButton("Les trois ours"));
   const panel = await screen.findByRole("region", { name: "Envoi sur la Flam" });
   await waitFor(() => expect(sends.has(A)).toBe(true));
-  // Une histoire tierce contredit les clés : l'état relu de la Flam le dit, l'envoi est refusé.
+  // La garde refuse désormais l'écriture (clés invalides) : l'état relu de la Flam le dit.
   status.device!.firmware_status = firmwareV2({
-    write_block: { kind: "keys_contradiction", version: "2.4.2" },
+    write_block: { kind: "keys_trivial", version: "2.4.2" },
   });
   const refusal =
-    "les clés lues dans .mdf ne déchiffrent pas une histoire de cette Flam qui devrait l'être (firmware 2.4.2) : rien n'a été envoyé ; voir l'état du firmware dans « Ma Flam »";
+    "clés de la Flam invalides dans .mdf (firmware 2.4.2 : clé ou IV vide) : rien n'a été écrit ; voir l'état du firmware dans « Ma Flam »";
   await act(async () => {
     sends.get(A)?.reject({ kind: "validation", message: refusal });
   });

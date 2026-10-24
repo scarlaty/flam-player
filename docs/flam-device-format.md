@@ -116,7 +116,7 @@ retenue.
 | Matériel de clé dans `.mdf`      | 32 octets bruts à 0x4E, sans séparation clé / IV (supposé [rapport])                                                                                                            | clé 16 octets puis IV 16 octets à 0x4E, en clair (comportement observé de la 2.x) |
 | Histoires officielles            | `bt` (clé et IV du compte) et `key` du compte                                                                                                                                  | `key` du compte, chiffrées avec la clé du compte : **les clés de `.mdf` ne les déchiffrent pas** (comportement observé de la 2.x) |
 | Import « classique »             | produit une histoire illisible (titre illisible, ne se lance pas), constaté sur 1.15.14 d'après [rapport]                                                                       | fonctionne : clés lues dans `.mdf`, `key` déduit du numéro de série (comportement observé, jamais mesuré dans ce dépôt) |
-| Prise en charge dans le launcher | **mode carrier** (#234, livré et validé sur 1.15.14) : clés d'une histoire officielle de la Flam, consentement explicite, contrôle avant copie, relecture après (`docs/flam-carrier.md`) | **en test** : confirmation de sauvegarde avant la première écriture, puis vérification par la Flam (§ 8.0) |
+| Prise en charge dans le launcher | **mode carrier** (#234, livré et validé sur 1.15.14) : clés d'une histoire officielle de la Flam, consentement explicite, contrôle avant copie, relecture après (`docs/flam-carrier.md`) | **en test** : clés de `.mdf`, sans confirmation, comme Lunii.QT (§ 8.0) |
 
 Règle exacte du code ([crypto], `firmware_family`) : la version doit être de forme stricte
 (composantes de chiffres non vides) et sa **première composante** exactement `1` (1.x, mode
@@ -330,29 +330,21 @@ Une taille autre que 126 octets ou un en-tête autre que `01 00` **ne refuse rie
 
 En **1.x**, rien d'autre : les clés restent celles du mode carrier, vérifiées à chaque envoi.
 
-En **2.x** (choix de conception, firmware en test) :
+En **2.x**, rien d'autre (#326). Un audit de conformité avec Lunii.QT (`o-daneel/Lunii.QT`,
+révision `c8afe43`, `pkg/api/device_flam.py`) a montré que clés et IV lus dans `.mdf`, fichier
+`key` déduit du numéro de série, chiffrement, chemins et index sont identiques octet pour octet,
+et que Lunii.QT écrit sur une 2.x sans aucune confirmation. Le launcher ne demande donc ni
+confirmation de sauvegarde, ni preuve par `usr/0/library.cache` ; un ancien fichier
+`device-trust.json` du dossier de données (versions précédentes) est simplement ignoré.
 
-1. **Confirmation** avant la première écriture sur une Flam : « Firmware 2.x en test : j'ai
-   sauvegardé ma Flam », formulée plus fermement si `.mdf` est non standard. Mémorisée sur le PC
-   (`device-trust.json` du dossier de données) par **empreinte** de `.mdf` (SHA-256 préfixé, jamais
-   la clé elle-même), d'une session à l'autre.
-2. **Vérification par la Flam** : le firmware reconstruit `usr/0/library.cache` au redémarrage,
-   avec les titres qu'il a pu déchiffrer (supposé [rapport]). Avant toute écriture (donc avant que
-   le launcher supprime ce cache) et à l'affichage, le launcher y cherche, en UTF-8 puis en
-   UTF-16LE, le titre (4 caractères au moins) d'une histoire qu'il a installée (UUID de sa
-   bibliothèque, `key` déduit, `info` déchiffré avec les clés de `.mdf`). Trouvé : la Flam est
-   « vérifiée par la Flam », mémorisé de même ; la confirmation n'est plus demandée. Le format du
-   cache n'est pas décodé : seule la présence du texte est cherchée (encodage **à vérifier**, T4).
-3. **Cohérence** (informative) : seules comptent les histoires **au format Flam** (`main.lsf`
-   présent, `info` non lisible en clair), non installées par le launcher, au `key` déduit. Une
-   d'elles déchiffrée : cohérent. Aucune déchiffrée mais une au `key` déduit : **contradiction**,
-   qui refuse l'envoi (retrait, ordre et reprise restent possibles). Écartées : les histoires au
-   format Lunii (`ni`, `li`, `ri`, `si` sans `.lsf`), celles dont `info` est en clair, les
-   histoires officielles (autre `key`). Un `info` lisible avec un autre `key` confirme la clé et
-   l'IV sans rien conclure sur le `key`.
-
-Après un envoi en 2.x, l'interface rappelle de redémarrer la Flam puis de la rebrancher, pour que
-la vérification par la Flam ait lieu.
+**Cohérence** (informative, affichée dans « Ma Flam », jamais contrôlée à l'écriture) : seules
+comptent les histoires **au format Flam** (`main.lsf` présent, `info` non lisible en clair), non
+installées par le launcher, au `key` déduit. Une d'elles déchiffrée : cohérent. Aucune déchiffrée
+mais une au `key` déduit : **contradiction**, signalée par un **avertissement** qui désigne les
+histoires en cause, sans rien refuser (faux positifs possibles : `info` en Latin-1 ou de moins de
+4 caractères). Écartées : les histoires au format Lunii (`ni`, `li`, `ri`, `si` sans `.lsf`),
+celles dont `info` est en clair, les histoires officielles (autre `key`). Un `info` lisible avec
+un autre `key` confirme la clé et l'IV sans rien conclure sur le `key`.
 
 ### 8.1 Installation ([transfert], #229, implémentée)
 
@@ -547,5 +539,5 @@ d'histoire officielle :
 Mesures acquises : une Flam 1.15.14 (taille 126, en-tête `01 00`, version nue, index en LF, mode
 carrier). Aucune mesure 2.x. Points à faire relever par les testeurs 2.x (#316) : taille, en-tête
 et forme de la version d'un vrai `.mdf` 2.x (T1) ; `key` et déchiffrement des histoires officielles
-(T2) ; présence du titre d'une histoire envoyée dans `library.cache` après redémarrage (T4) ;
+(T2) ; lecture sur l'appareil d'une histoire envoyée, après redémarrage (T4) ;
 tolérance de `.flam-transfer/`, `.flam-trash/` et `list.new` (T3, T9).

@@ -1,14 +1,11 @@
 //! Diagnostic copiable de l'écran « Ma Flam » (#318) : un texte Markdown à coller dans une issue
 //! « Retour testeur Flam ».
 //!
-//! **Lecture seule** : rien n'est écrit sur la Flam (ni reprise, ni sauvegarde de `.mdf`), aucun
-//! accès réseau. Le texte reste utile sans Flam détectée (version du launcher, système, erreurs
+//! **Lecture seule** : rien n'est écrit sur la Flam (ni reprise, ni sauvegarde de `.mdf`), ni
+//! aucune donnée de confiance sur le PC ; aucun accès réseau. Le texte reste utile sans Flam détectée (version du launcher, système, erreurs
 //! de la session) et quand la garde refuse d'écrire (c'est là qu'il sert le plus).
 //!
-//! **Sur le PC**, l'état du firmware est calculé comme pour `device_status`
-//! ([`guard::firmware_status`]) : s'il trouve la preuve qu'une Flam 2.x est bien reconnue, il
-//! enregistre l'empreinte de son `.mdf` comme « vérifiée par la Flam » dans
-//! [`guard::TRUST_FILE`] (dossier de données du launcher). C'est la seule écriture possible.
+//! L'état du firmware est calculé comme pour `device_status` ([`guard::firmware_status`]).
 //!
 //! Pendant une écriture sur la Flam (verrou tenu), dossiers, index et fichiers de travail ne
 //! sont pas parcourus (état transitoire, fichiers ouverts) : le texte l'indique.
@@ -43,7 +40,7 @@ use std::time::Instant;
 use tauri::State;
 
 use super::detect::{self, Environment, MdfError, Space};
-use super::guard::{self, Coherence, Family, FirmwareStatus, Trust, VersionForm, WriteContext};
+use super::guard::{self, Coherence, Family, FirmwareStatus, VersionForm, WriteContext};
 use super::index::{self, IndexState, StoryId, LIBRARY_CACHE, LIBRARY_DIR, MAX_INDEX_BYTES};
 use super::lock::DEVICE_LOCK;
 use super::remove::TRASH_DIR;
@@ -821,22 +818,13 @@ fn form_text(form: VersionForm) -> &'static str {
     }
 }
 
-fn trust_text(trust: Trust) -> &'static str {
-    match trust {
-        Trust::NotApplicable => "sans objet (not_applicable)",
-        Trust::FlamVerified => "vérifié par la Flam (flam_verified)",
-        Trust::Confirmed => "sauvegarde confirmée (confirmed)",
-        Trust::Unconfirmed => "confirmation à donner (unconfirmed)",
-    }
-}
-
 fn coherence_text(coherence: &Coherence) -> String {
     let (label, counts) = match coherence {
         Coherence::NotApplicable => return "sans objet (not_applicable)".into(),
         Coherence::NotChecked => return "non vérifiée (not_checked)".into(),
         Coherence::Coherent { counts } => ("cohérente (coherent)", counts),
         // Les UUID en cause ne sont jamais repris (des nombres seulement).
-        Coherence::Contradiction { counts, .. } => ("contradiction", counts),
+        Coherence::Contradiction { counts, .. } => ("contradiction (avertissement)", counts),
         Coherence::NoEvidence { counts } => ("aucune preuve (no_evidence)", counts),
     };
     format!(
@@ -889,7 +877,6 @@ fn firmware_section(out: &mut String, status: &FirmwareStatus) {
         "- Cohérence des clés : {}",
         coherence_text(&status.coherence)
     );
-    let _ = writeln!(out, "- Confiance : {}", trust_text(status.trust));
     let _ = writeln!(
         out,
         "- Écriture : {}\n",

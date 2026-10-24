@@ -27,6 +27,15 @@ Changements depuis `launcher-v0.1.0-beta.1`.
 
 ### Modifié
 
+- **Firmware 2.x** : la garde du firmware 2.x est retirée, alignement sur Lunii.QT. Plus de
+  confirmation « j'ai sauvegardé ma Flam » ni de vérification par la Flam : l'envoi, le retrait,
+  l'ordre et la reprise au branchement se font directement, comme avec Lunii.QT (mêmes clés,
+  même fichier `key`, même chiffrement, mêmes chemins, même index). Des clés incohérentes avec
+  une histoire d'un autre outil ne bloquent plus l'envoi : « Ma Flam » affiche un avertissement
+  qui désigne les histoires en cause. Les refus de fond restent (firmware 3.x ou illisible,
+  fichier `.mdf` tronqué ou trop grand, clés invalides). Une entrée `x.lua.plain` d'une archive
+  donne désormais `x.lsf` chiffré, comme dans Lunii.QT.
+
 - **Convertisseur intégré, sans Python** : le convertisseur TELMI vers Flam est maintenant un
   programme Rust autonome (`telmi2flam.exe`, version 2.0.0), livré dans l'installateur. Il est
   plus rapide, n'exige aucune dépendance et donne des résultats vérifiés identiques à
@@ -46,8 +55,6 @@ Changements depuis `launcher-v0.1.0-beta.1`.
 
 - `flam-player` ne montre plus de fenêtre de console au lancement depuis le launcher.
 - L'écran du player se redessine après une réinitialisation du pilote graphique (Direct3D).
-- Sur un firmware 2.x, retirer une histoire ou changer l'ordre est bloqué tant que vous n'avez
-  pas confirmé, et les histoires concernées sont désignées.
 - « Réessayer » rend toujours le focus au titre de l'écran.
 - Divers durcissements du téléchargement et de la lecture de contenus venus d'Internet (adresses
   refusées, tailles bornées).

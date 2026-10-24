@@ -7,7 +7,7 @@ use std::io::Write;
 use super::*;
 use crate::device::crypto::tests::{test_keys, TEST_IV, TEST_KEY};
 use crate::device::crypto::FirmwareFamily;
-use crate::device::guard::tests::{confirmed_ctx, key_v2, mdf_v1_real, mdf_with, story, test_ctx};
+use crate::device::guard::tests::{key_v2, mdf_v1_real, mdf_with, story, test_ctx, wrong_info};
 use crate::device::guard::KNOWN_HEADER;
 use crate::device::index::serialize;
 
@@ -830,8 +830,8 @@ fn envoi_depuis_un_plain_pk() {
     let tmp = tempfile::tempdir().unwrap();
     let root = device(tmp.path(), false);
     write(&root.join(MDF_FILE), &mdf("2.4.2"));
-    // Flam 2.x : sauvegarde confirmée par l'utilisateur.
-    let ctx = confirmed_ctx(&root);
+    // Flam 2.x : aucune confirmation demandée (#326).
+    let ctx = test_ctx();
     let pk = plain_pk(tmp.path());
 
     let work = tmp.path().join("cache").join(WORK_SUBDIR);
@@ -907,8 +907,8 @@ fn remplacement_a_version_egale_contenu_different() {
     let tmp = tempfile::tempdir().unwrap();
     let root = device(tmp.path(), false);
     write(&root.join(MDF_FILE), &mdf("2.4.2"));
-    // Flam 2.x : sauvegarde confirmée par l'utilisateur.
-    let ctx = confirmed_ctx(&root);
+    // Flam 2.x : aucune confirmation demandée (#326).
+    let ctx = test_ctx();
     let work = tmp.path().join("cache").join(WORK_SUBDIR);
     let send_pk = |pk: &Path, replace: bool| {
         send_from_library_with(
@@ -1590,9 +1590,8 @@ fn mdf_de_plus_de_64_kio_refuse_comme_a_la_detection() {
     assert_eq!(read_mdf(&root).unwrap().len() as u64, MDF_MAX_SIZE);
 }
 
-/// Garde commune (#317) à l'envoi : confirmation manquante, contradiction réelle (histoire au
-/// format Flam au fichier `key` déduit mais `info` illisible), firmware refusé : rien n'est
-/// préparé ni écrit, pas même la reprise d'un envoi interrompu.
+/// Garde commune (#317) à l'envoi : firmware refusé, clés 2.x triviales, `.mdf` tronqué : rien
+/// n'est préparé ni écrit, pas même la reprise d'un envoi interrompu.
 #[test]
 fn envoi_refuse_par_la_garde_du_firmware() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1604,51 +1603,21 @@ fn envoi_refuse_par_la_garde_du_firmware() {
         &root.join(TRANSFER_DIR).join(format!("{NEW}.in")).join("x"),
         b"x",
     );
-    let mut long = mdf("2.4.2");
-    long.extend([0u8; 2]);
-    let wrong_info = crate::device::crypto::encrypt_zero_padded(&[3; 16], &[4; 16], b"Faux\n");
+    let mut zero_key = mdf("2.4.2");
+    zero_key[crate::device::crypto::MDF_KEY_OFFSET..crate::device::crypto::MDF_KEY_OFFSET + 16]
+        .fill(0);
     type Expect = fn(&WriteRefused) -> bool;
-    // (mdf, confirmée, contradiction, refus attendu)
-    let cases: [(Vec<u8>, bool, bool, Expect); 5] = [
-        (mdf("2.4.2"), false, false, |e| {
-            matches!(e, WriteRefused::ConfirmationRequired { standard: true, .. })
-        }),
-        (long, false, false, |e| {
-            matches!(
-                e,
-                WriteRefused::ConfirmationRequired {
-                    standard: false,
-                    ..
-                }
-            )
-        }),
-        (mdf_with([0, 0], "2.4.2-nue"), false, false, |e| {
-            matches!(
-                e,
-                WriteRefused::ConfirmationRequired {
-                    standard: false,
-                    ..
-                }
-            )
-        }),
-        (mdf("2.4.2"), true, true, |e| {
-            matches!(e, WriteRefused::KeysContradiction { .. })
-        }),
-        (mdf("3.0.0"), false, false, |e| {
+    let cases: [(Vec<u8>, Expect); 3] = [
+        (mdf("3.0.0"), |e| {
             matches!(e, WriteRefused::UnsupportedFirmware { .. })
         }),
+        (zero_key, |e| matches!(e, WriteRefused::KeysTrivial { .. })),
+        (mdf("2.4.2")[..MDF_MIN_LEN - 1].to_vec(), |e| {
+            matches!(e, WriteRefused::Truncated { .. })
+        }),
     ];
-    for (mdf, confirmed, contradiction, expected) in cases {
+    for (mdf, expected) in cases {
         write(&root.join(MDF_FILE), &mdf);
-        let _ = std::fs::remove_dir_all(root.join("str").join(OFFICIAL_V2));
-        let ctx = if confirmed {
-            confirmed_ctx(&root)
-        } else {
-            test_ctx()
-        };
-        if contradiction {
-            story(&root, OFFICIAL_V2, &key_v2(), &wrong_info);
-        }
         let before = snapshot(&root);
         let err = send_from_library_with(
             &FaultyFs::new(),
@@ -1657,7 +1626,7 @@ fn envoi_refuse_par_la_garde_du_firmware() {
             &work,
             None,
             None,
-            &ctx,
+            &test_ctx(),
             &AtomicBool::new(false),
             &mut |_| {},
         )
@@ -1672,11 +1641,13 @@ fn envoi_refuse_par_la_garde_du_firmware() {
     }
 }
 
-/// 2.x de disposition non standard, version sans « main: » : envoi après confirmation, avec
-/// les clés de `.mdf` et le fichier `key` déduit du numéro de série. Une histoire installée par
-/// un autre outil au format Lunii n'empêche rien.
+/// 2.x de disposition non standard, version sans « main: » : envoi sans confirmation (#326),
+/// avec les clés de `.mdf` et le fichier `key` déduit du numéro de série. Ni une histoire
+/// installée par un autre outil au format Lunii, ni une contradiction de cohérence (histoire au
+/// format Flam au fichier `key` déduit mais `info` illisible : simple avertissement) n'empêchent
+/// l'envoi.
 #[test]
-fn envoi_2x_non_standard_apres_confirmation() {
+fn envoi_2x_non_standard_sans_confirmation_malgre_une_contradiction() {
     let tmp = tempfile::tempdir().unwrap();
     let root = device(tmp.path(), false);
     let mut mdf = mdf_with([0, 0], "2.4.2-nue");
@@ -1686,9 +1657,26 @@ fn envoi_2x_non_standard_apres_confirmation() {
     write(&lunii.join("key"), &key_v2());
     write(&lunii.join("ni"), b"ni");
     write(&lunii.join("info"), &[7u8; 32]);
+    story(
+        &root,
+        "77777777-6666-4555-8444-333333333333",
+        &key_v2(),
+        &wrong_info(),
+    );
     let pk = plain_pk(tmp.path());
     let work = tmp.path().join("cache").join(WORK_SUBDIR);
-    let ctx = confirmed_ctx(&root);
+    let ctx = test_ctx();
+    // La contradiction est bien vue par « Ma Flam » (avertissement), sans refus.
+    let status = crate::device::guard::firmware_status(&root, &mdf, &ctx, false);
+    assert!(
+        matches!(
+            status.coherence,
+            crate::device::guard::Coherence::Contradiction { .. }
+        ),
+        "{:?}",
+        status.coherence
+    );
+    assert_eq!(status.write_block, None);
     let report = send_from_library_with(
         &FaultyFs::new(),
         &root,
@@ -1730,19 +1718,14 @@ fn reprise_refusee_par_la_garde_du_firmware() {
     write(&root.join(MDF_FILE), &mdf_v1_real());
     recover_device(&guard, &root, &test_ctx()).unwrap();
     assert!(!root.join(TRANSFER_DIR).exists());
-    // Flam 2.x non confirmée : refusée aussi.
+    // Flam 2.x : la reprise a lieu sans confirmation (#326).
     write(&root.join(MDF_FILE), &mdf("2.4.2"));
     write(
         &root.join(TRANSFER_DIR).join(format!("{NEW}.in")).join("x"),
         b"x",
     );
-    assert!(matches!(
-        recover_device(&guard, &root, &test_ctx()),
-        Err(TransferError::Refused(
-            WriteRefused::ConfirmationRequired { .. }
-        ))
-    ));
-    recover_device(&guard, &root, &confirmed_ctx(&root)).unwrap();
+    recover_device(&guard, &root, &test_ctx()).unwrap();
+    assert!(!root.join(TRANSFER_DIR).exists());
 }
 
 #[test]
