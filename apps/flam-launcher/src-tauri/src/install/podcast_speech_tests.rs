@@ -18,12 +18,49 @@ use crate::podcast::pack::{CachedFeed, CoverChoice, PackMetadataInput};
 use crate::podcast::rss::PodcastFeed;
 use crate::podcast::speech::testing::{voice, Simulated};
 
-struct NoEvents;
+/// Événements de la file : avancement de l'étape « speech » noté.
+#[derive(Default)]
+struct Events {
+    speech: Mutex<Vec<f64>>,
+}
 
-impl InstallEvents for NoEvents {
-    fn progress(&self, _: &InstallProgress) {}
+impl InstallEvents for Events {
+    fn progress(&self, p: &InstallProgress) {
+        if p.phase.as_deref() == Some("speech") {
+            self.speech.lock().unwrap().push(p.percent.unwrap_or(-1.0));
+        }
+    }
     fn done(&self, _: &InstallDone) {}
     fn failed(&self, _: &InstallFailed) {}
+}
+
+/// Moteur qui note la voix de chaque synthèse et fait attendre certains textes (voix figée),
+/// puis délègue à la voix simulée.
+struct Recording {
+    inner: Arc<dyn Synthesizer>,
+    /// (voix, texte) de chaque synthèse demandée.
+    calls: Arc<Mutex<Vec<(String, String)>>>,
+    slow: Vec<String>,
+    delay: Duration,
+}
+
+impl Synthesizer for Recording {
+    fn voices(&self) -> Result<Vec<crate::podcast::speech::Voice>, speech::SpeechError> {
+        self.inner.voices()
+    }
+    fn default_voice_id(&self) -> Option<String> {
+        self.inner.default_voice_id()
+    }
+    fn synthesize(&self, text: &str, voice_id: &str) -> Result<Vec<u8>, speech::SpeechError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((voice_id.to_string(), text.to_string()));
+        if self.slow.iter().any(|t| t == text) {
+            std::thread::sleep(self.delay);
+        }
+        self.inner.synthesize(text, voice_id)
+    }
 }
 
 /// Trame MP3 silencieuse (MPEG1 Layer III, 128 kbit/s, 44 100 Hz) : MP3 de titre factice.
@@ -46,6 +83,12 @@ struct Fake {
     ffmpeg_missing: bool,
     fetches: AtomicUsize,
     titles_converted: AtomicUsize,
+    /// Préparations du convertisseur des titres (ffmpeg localisé et vérifié).
+    encoders: AtomicUsize,
+    /// Délai de synthèse injecté (défaut : celui de la production).
+    synth_timeout: Mutex<Option<Duration>>,
+    /// Épisodes (rang dans la composition) dont la conversion audio échoue (retirés, P7).
+    failing_audio: Mutex<Vec<usize>>,
     missing_dir: PathBuf,
 }
 
@@ -178,9 +221,19 @@ impl PackBackend for Fake {
         _cancel: &'a watch::Receiver<bool>,
     ) -> BoxFuture<'a, AppResult<Vec<AppResult<u64>>>> {
         Box::pin(async move {
+            let failing = self.failing_audio.lock().unwrap().clone();
             Ok(items
                 .iter()
-                .map(|(from, to)| std::fs::copy(from, to).map_err(AppError::from))
+                .map(|(from, to)| {
+                    let name = from.file_name().unwrap().to_string_lossy().into_owned();
+                    if failing.iter().any(|n| name == format!("ep-{n:04}.audio")) {
+                        return Err(AppError::Conversion {
+                            code: "test".into(),
+                            message: "conversion simulée en échec".into(),
+                        });
+                    }
+                    std::fs::copy(from, to).map_err(AppError::from)
+                })
                 .collect())
         })
     }
@@ -203,19 +256,38 @@ impl PackBackend for Fake {
         self.preferred.lock().unwrap().clone()
     }
 
+    fn synth_timeout(&self) -> Duration {
+        self.synth_timeout
+            .lock()
+            .unwrap()
+            .unwrap_or(speech::SYNTH_TIMEOUT)
+    }
+
+    fn title_encoder<'a>(
+        &'a self,
+        cancel: &'a watch::Receiver<bool>,
+    ) -> BoxFuture<'a, AppResult<crate::ffmpeg::Verified>> {
+        Box::pin(async move {
+            self.encoders.fetch_add(1, Ordering::SeqCst);
+            if self.ffmpeg_missing {
+                // Vrai contrôle d'empreinte, sans exécutable.
+                let ff = crate::ffmpeg::Ffmpeg::in_dir(&self.missing_dir);
+                let mut cancel = cancel.clone();
+                return ff.verify(crate::ffmpeg::Tool::Ffmpeg, &mut cancel).await;
+            }
+            Ok(crate::ffmpeg::Verified::unchecked("ffmpeg-factice"))
+        })
+    }
+
     fn title_mp3<'a>(
         &'a self,
-        wav: &'a Wav,
+        _encoder: &'a crate::ffmpeg::Verified,
+        _wav: &'a Wav,
         dest: &'a Path,
-        cancel: &'a watch::Receiver<bool>,
+        _cancel: &'a watch::Receiver<bool>,
     ) -> BoxFuture<'a, AppResult<u64>> {
         Box::pin(async move {
             self.titles_converted.fetch_add(1, Ordering::SeqCst);
-            if self.ffmpeg_missing {
-                let ff = crate::ffmpeg::Ffmpeg::in_dir(&self.missing_dir);
-                let mut cancel = cancel.clone();
-                return speech::wav_to_mp3(&ff, wav, dest, &mut cancel).await;
-            }
             let bytes = mp3_bytes();
             std::fs::write(dest, &bytes)?;
             Ok(bytes.len() as u64)
@@ -228,6 +300,7 @@ struct Ctx {
     service: InstallService,
     tc: Toolchain,
     fake: Arc<Fake>,
+    events: Arc<Events>,
 }
 
 impl Ctx {
@@ -248,10 +321,11 @@ impl Ctx {
             thumb_fit: crate::settings::ThumbFit::default(),
         };
         let resolved = tc.clone();
+        let events = Arc::new(Events::default());
         let service = InstallService::new(InstallOptions {
             client: super::super::download::build_client().unwrap(),
             resolver: Arc::new(move || Ok(resolved.clone())),
-            events: Arc::new(NoEvents),
+            events: events.clone(),
             queue_path: dir.path().join("config").join(super::super::QUEUE_FILE),
             gate: Arc::default(),
             grace: Duration::from_secs(5),
@@ -262,6 +336,9 @@ impl Ctx {
             ffmpeg_missing,
             fetches: AtomicUsize::new(0),
             titles_converted: AtomicUsize::new(0),
+            encoders: AtomicUsize::new(0),
+            synth_timeout: Mutex::new(None),
+            failing_audio: Mutex::new(Vec::new()),
             missing_dir: dir.path().join("ffmpeg-absent"),
         });
         service.set_pack_backend(fake.clone());
@@ -270,7 +347,25 @@ impl Ctx {
             service,
             tc,
             fake,
+            events,
         }
+    }
+
+    /// Remplace le moteur par un [`Recording`] autour de `inner` ; rend les synthèses notées.
+    fn record(
+        &self,
+        inner: Simulated,
+        slow: &[&str],
+        delay: Duration,
+    ) -> Arc<Mutex<Vec<(String, String)>>> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        *self.fake.synth.lock().unwrap() = Arc::new(Recording {
+            inner: inner.shared(),
+            calls: calls.clone(),
+            slow: slow.iter().map(|s| s.to_string()).collect(),
+            delay,
+        });
+        calls
     }
 
     fn job(composition: PackComposition) -> PackJob {
@@ -485,7 +580,10 @@ async fn ffmpeg_absent_arrete_la_creation_sans_fichier_residuel() {
     let ctx = Ctx::with(Simulated::french(), true);
     let err = ctx.prepare(composition(None)).await.unwrap_err();
     assert_eq!(err.kind(), "tts_failed", "{err:?}");
-    assert_eq!(ctx.fake.titles_converted.load(Ordering::SeqCst), 1);
+    assert!(err.to_string().contains("premier titre"), "{err}");
+    // Empreinte contrôlée une fois (premier titre synthétisé), aucune conversion lancée.
+    assert_eq!(ctx.fake.encoders.load(Ordering::SeqCst), 1);
+    assert_eq!(ctx.fake.titles_converted.load(Ordering::SeqCst), 0);
     assert_eq!(ctx.fake.fetches.load(Ordering::SeqCst), 0);
     ctx.assert_clean();
 }
@@ -580,4 +678,134 @@ async fn la_voix_memorisee_du_poste_est_enregistree_avec_la_tache() {
         ctx.service.check_speech(&mut c).await.unwrap_err().kind(),
         "validation"
     );
+}
+
+// ----- Suivis de la PR 2 (#487) -----
+
+#[tokio::test]
+async fn voix_transmise_convertisseur_prepare_une_fois_et_avancement_par_titre() {
+    let ctx = Ctx::new(two_voices());
+    let calls = ctx.record(two_voices(), &[], Duration::ZERO);
+    ctx.prepare(composition(Some("fr-b"))).await.unwrap();
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 5, "{calls:?}");
+    assert!(calls.iter().all(|(voice, _)| voice == "fr-b"), "{calls:?}");
+    // ffmpeg localisé et empreinte vérifiée une seule fois pour les 5 titres.
+    assert_eq!(ctx.fake.encoders.load(Ordering::SeqCst), 1);
+    assert_eq!(ctx.fake.titles_converted.load(Ordering::SeqCst), 5);
+    assert_eq!(
+        *ctx.events.speech.lock().unwrap(),
+        [0.0, 20.0, 40.0, 60.0, 80.0, 100.0]
+    );
+}
+
+#[tokio::test]
+async fn episode_retire_avec_titre_en_echec_sans_avertissement() {
+    // « Deux » (rang 1) : titre en échec et conversion en échec (retiré, P7).
+    let ctx = Ctx::new(Simulated {
+        failing: vec!["Deux".into()],
+        ..Simulated::french()
+    });
+    ctx.fake.failing_audio.lock().unwrap().push(1);
+    let (files, warnings) = ctx.prepare(composition(None)).await.unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let audios = option_audios(&files);
+    assert!(!audios.contains_key("Deux"), "{audios:?}");
+    // Clés après le retrait : chaque option restante garde son propre titre lu.
+    for label in ["Un", "Saison", "Trois"] {
+        let name = audios[label]
+            .as_str()
+            .unwrap_or_else(|| panic!("{label} muet"));
+        assert!(files.contains_key(&format!("audios/{name}")), "{label}");
+    }
+    assert_eq!(audios["Saison"], "c001.mp3");
+    assert_ne!(audios["Un"], audios["Trois"]);
+    ctx.assert_clean();
+}
+
+#[tokio::test]
+async fn categorie_videe_avec_titre_en_echec_sans_avertissement() {
+    let ctx = Ctx::new(Simulated {
+        failing: vec!["Saison".into()],
+        ..Simulated::french()
+    });
+    ctx.fake.failing_audio.lock().unwrap().extend([1, 2]);
+    let (files, warnings) = ctx.prepare(composition(None)).await.unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let audios = option_audios(&files);
+    assert_eq!(audios.keys().collect::<Vec<_>>(), ["Un"]);
+    assert!(audios["Un"].is_string());
+    ctx.assert_clean();
+}
+
+#[tokio::test]
+async fn deux_delais_de_synthese_consecutifs_arretent_la_creation() {
+    let ctx = Ctx::new(Simulated::french());
+    *ctx.fake.synth_timeout.lock().unwrap() = Some(Duration::from_millis(100));
+    // « Mon pack » est lu ; « Un » puis « Saison » ne rendent pas la main à temps.
+    let calls = ctx.record(
+        Simulated::french(),
+        &["Un", "Saison"],
+        Duration::from_millis(1500),
+    );
+    let started = Instant::now();
+    let err = ctx.prepare(composition(None)).await.unwrap_err();
+    assert_eq!(err.kind(), "tts_failed", "{err:?}");
+    assert!(err.to_string().contains("ne répond plus"), "{err}");
+    assert!(
+        started.elapsed() < Duration::from_millis(1400),
+        "arrêt sans attendre la voix : {:?}",
+        started.elapsed()
+    );
+    // Aucun titre après le second délai.
+    let texts: Vec<String> = calls.lock().unwrap().iter().map(|c| c.1.clone()).collect();
+    assert_eq!(texts, ["Mon pack", "Un", "Saison"]);
+    assert_eq!(ctx.fake.fetches.load(Ordering::SeqCst), 0);
+    ctx.assert_clean();
+}
+
+/// Composition à deux catégories ; la seconde n'a qu'un nom sans rien d'affichable.
+fn emoji_category() -> PackComposition {
+    let mut c = composition(None);
+    let (un, saison) = (c.menu[0].clone(), c.menu[1].clone());
+    let PackNode::Category { entries, .. } = saison else {
+        unreachable!()
+    };
+    c.menu = vec![
+        PackNode::Category {
+            name: "Hiver".into(),
+            entries: vec![un],
+        },
+        PackNode::Category {
+            name: "🎵🎶".into(),
+            entries,
+        },
+    ];
+    c
+}
+
+#[tokio::test]
+async fn categorie_sans_nom_affichable_lit_son_libelle_de_repli() {
+    let ctx = Ctx::new(Simulated::french());
+    let calls = ctx.record(Simulated::french(), &[], Duration::ZERO);
+    let (files, warnings) = ctx.prepare(emoji_category()).await.unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(calls.lock().unwrap().iter().any(|c| c.1 == "Catégorie 2"));
+    let audios = option_audios(&files);
+    assert_eq!(audios["Catégorie 2"], "c002.mp3");
+    assert!(files.contains_key("audios/c002.mp3"));
+}
+
+#[tokio::test]
+async fn libelle_de_repli_decale_par_un_retrait_reste_muet() {
+    // « Hiver » vidée (Un retiré) : la catégorie emoji devient « Catégorie 1 » dans l'archive,
+    // alors que son titre lu dit « Catégorie 2 » : l'option reste muette.
+    let ctx = Ctx::new(Simulated::french());
+    ctx.fake.failing_audio.lock().unwrap().push(0);
+    let (files, warnings) = ctx.prepare(emoji_category()).await.unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let audios = option_audios(&files);
+    assert!(audios["Catégorie 1"].is_null(), "{audios:?}");
+    assert!(audios["Deux"].is_string() && audios["Trois"].is_string());
+    ctx.assert_clean();
 }

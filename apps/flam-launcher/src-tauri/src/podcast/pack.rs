@@ -50,6 +50,9 @@ pub use super::archive::{
 pub const MAX_EPISODE_BYTES: u64 = 200_000_000;
 /// Taille estimée du pack (D1 : 1 Gio).
 pub const MAX_PACK_BYTES: u64 = 1_073_741_824;
+/// Taille comptée par titre lu (#462, § 12.7 : borne haute, environ 10 s de MP3 mono à
+/// 64 kbit/s), ajoutée à l'estimation (D1, D5) quand la composition demande les titres lus.
+pub const TITLE_AUDIO_ESTIMATE_BYTES: u64 = 80 * 1024;
 /// Nom de catégorie, en caractères (A6).
 pub const MAX_LABEL_CHARS: usize = 40;
 /// Description saisie, en octets UTF-8. Réserve sur [`MAX_DESCRIPTION_BYTES`] (64 Kio, refusé
@@ -411,6 +414,16 @@ impl<'a> Walker<'a> {
     }
 }
 
+/// Options (épisodes et catégories) de l'arborescence, à toute profondeur.
+fn count_options(menu: &[PackNode]) -> usize {
+    menu.iter()
+        .map(|node| match node {
+            PackNode::Episode(_) => 1,
+            PackNode::Category { entries, .. } => 1 + count_options(entries),
+        })
+        .sum()
+}
+
 /// Valide une composition à partir des flux en cache (`feeds`, voir [`Feeds`]). Pure.
 pub fn validate(composition: &PackComposition, feeds: &Feeds) -> ValidationReport {
     let mut w = Walker {
@@ -506,6 +519,13 @@ pub fn validate(composition: &PackComposition, feeds: &Feeds) -> ValidationRepor
             }
             None => unknown_size += 1,
         }
+    }
+    // Titres lus (#462, § 12.7) : un MP3 par option et le titre du pack, comptés à leur borne
+    // haute pour qu'un pack à la limite soit refusé ici plutôt qu'après les téléchargements.
+    if composition.titles_audio {
+        let titles = 1 + count_options(&composition.menu);
+        estimated =
+            estimated.saturating_add(TITLE_AUDIO_ESTIMATE_BYTES.saturating_mul(titles as u64));
     }
     if estimated > MAX_PACK_BYTES {
         problems.push(problem(

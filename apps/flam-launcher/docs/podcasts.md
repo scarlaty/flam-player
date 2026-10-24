@@ -631,7 +631,9 @@ Windows**, sans licence tierce.
 - Texte lu : le **titre d'origine** (une ligne, 120 caractères au plus, coupé proprement), pas
   le libellé translittéré de 40 caractères (A6) : la voix prononce mieux les accents. Les
   titres vides ou sans lettre (« 🎧 », « #12 ») gardent le silence ; les numéros et sigles sont
-  lus tels que la voix les lit (pas de normalisation en v1).
+  lus tels que la voix les lit (pas de normalisation en v1). Exception (#487) : une catégorie
+  dont le nom n'a rien d'affichable (emoji seuls) lit le libellé de repli de l'archive,
+  « Catégorie k » ; si un retrait (P7) décale cette numérotation, l'option reste muette.
 - Les noms d'entrées de l'archive restent générés (`audios/t<nnn>.mp3`, `audios/c<nnn>.mp3`),
   jamais tirés du titre (invariant « noms d'entrées sûrs »).
 - Une option sans voix (case décochée) garde `audio: null`, comportement actuel inchangé.
@@ -706,9 +708,11 @@ explicite du parent (case décochée par défaut).
   de 4 à 12 Mo de MP3 au total (24 à 80 Kio par titre). La synthèse est bien plus rapide que le
   temps réel ; le coût dominant est le lancement de ffmpeg par fichier (quelques dizaines de ms) :
   de l'ordre de 5 à 20 s pour un grand pack, **à mesurer sur un poste réel** (la CI n'a pas de
-  voix française). L'annulation passe par celle de la création (#217) ; la progression affiche
-  une phase « speech » (« lecture des titres à voix haute »), sans pourcentage propre (étape
-  courte).
+  voix française ; la durée de l'étape est journalisée, nombre de titres seulement). L'annulation
+  passe par celle de la création (#217) ; la progression affiche une phase « speech » (« lecture
+  des titres à voix haute ») avec un pourcentage par titre (#487). ffmpeg est localisé et son
+  empreinte vérifiée **une fois pour l'étape**, au premier titre synthétisé (`Ffmpeg::verify`),
+  et non à chaque titre.
 - **Cache** : pas de cache persistant en v1 (le coût est faible et le dossier de travail est
   supprimé après la publication, N8 a). Le cache de #460 est propre aux épisodes (clé = épisode
   d'une source, dossier de la source) : il n'offre pas d'API de clé générale, les titres n'y
@@ -861,6 +865,12 @@ faire dès maintenant, avant la PR 1. Les noms d'entrées suivent la convention 
   en échec sur le premier titre, sur plus de la moitié, ffmpeg absent, annulation pendant la
   synthèse, voix disparue, plus aucune voix française) : jamais de téléchargement ni de dossier
   de travail résiduel ; anciens brouillons relus ; délai global de l'énumération des voix.
+- **Suivis (#487)** : avancement par titre et ffmpeg vérifié une fois pour l'étape (12.6) ;
+  taille des titres dans l'estimation D5 (`TITLE_AUDIO_ESTIMATE_BYTES`, 80 Kio par titre : titre
+  du pack et chaque option), pour qu'un pack à la limite soit refusé avant les téléchargements ;
+  libellé de repli lu pour une catégorie sans nom affichable (12.2) ; tests de la voix transmise,
+  d'un épisode retiré ou d'une catégorie vidée dont le titre a échoué, et de l'arrêt après deux
+  délais (délai injectable).
 - **Reste à vérifier sur un poste et sur l'appareil** (procédure du mainteneur) : pack de
   10 titres avec une vraie voix, lecture au focus, coupure au défilement, volume comparé aux
   épisodes, MP3 mono accepté (#219), durée de l'étape pour un grand pack.

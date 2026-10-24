@@ -649,11 +649,14 @@ async fn un_ffmpeg_absent_ne_laisse_aucun_fichier() {
 #[tokio::test]
 async fn un_dossier_de_sortie_absent_est_une_erreur_d_ecriture() {
     let dir = tempfile::tempdir().unwrap();
-    let ff = Ffmpeg::in_dir(dir.path());
+    // Empreinte déjà vérifiée pour l'étape : l'écriture du WAV échoue avant tout lancement.
+    let ff = crate::ffmpeg::Verified::unchecked(dir.path().join("ffmpeg.exe"));
     let wav = Wav::parse(sine_wav(0.5)).unwrap();
     let (_tx, mut rx) = watch::channel(false);
     let output = dir.path().join("absent").join("t001.mp3");
-    let err = wav_to_mp3(&ff, &wav, &output, &mut rx).await.unwrap_err();
+    let err = wav_to_mp3_verified(&ff, &wav, &output, &mut rx)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Io(_)), "{err:?}");
 }
 

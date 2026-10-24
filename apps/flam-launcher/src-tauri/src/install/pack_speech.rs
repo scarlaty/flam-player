@@ -18,7 +18,14 @@
 //!   avec un avertissement ; la création s'arrête (`tts_failed`) si le **premier** titre à lire
 //!   échoue ou si **plus de la moitié** échouent. Un titre sans rien à lire (vide, sans lettre)
 //!   reste muet sans avertissement et ne compte pas. Deux délais (ou indisponibilités) de
-//!   synthèse consécutifs arrêtent aussi la création (service de voix figé).
+//!   synthèse consécutifs arrêtent aussi la création (service de voix figé ; délai fourni par
+//!   [`PackBackend::synth_timeout`], injectable en test).
+//! - **ffmpeg** : localisé et empreinte vérifiée une seule fois pour l'étape, au premier titre
+//!   synthétisé ([`PackBackend::title_encoder`], #487) ; un échec rend ce premier titre muet,
+//!   donc arrête la création.
+//! - **Avancement** : rappel après chaque titre à lire (phase « speech » de 0 à 100 %).
+//! - **Catégorie sans nom affichable** (emoji seuls) : le texte lu est le libellé de repli de
+//!   l'archive, « Catégorie k » ([`TitleText::numbered`]).
 //! - **Annulation** : vérifiée avant chaque titre et pendant la synthèse (le thread de synthèse,
 //!   borné par son délai, est abandonné ; son résultat est jeté) et pendant la conversion.
 //! - **Fichiers** : MP3 aux noms générés (`title-NNNN.mp3`) dans le dossier de travail, supprimé
@@ -29,10 +36,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::watch;
 
 use super::podcast::PackBackend;
+use crate::ffmpeg::Verified;
 use crate::podcast::archive;
 use crate::podcast::pack::{EpisodeRef, PackComposition, PackNode};
 use crate::podcast::speech::{self, SpeechError, Synthesizer, Voice};
@@ -52,6 +61,9 @@ pub struct TitleText {
     pub key: TitleKey,
     /// Texte d'origine (pas le libellé translittéré : la voix prononce mieux les accents).
     pub text: String,
+    /// Catégorie dont le nom n'a rien d'affichable (emoji seuls) : le texte lu est le libellé
+    /// de repli de l'archive, « Catégorie k », et ceci vaut `k` (compté sur la composition).
+    pub numbered: Option<usize>,
 }
 
 /// Résultat de la synthèse des titres.
@@ -61,6 +73,9 @@ pub struct SpokenTitles {
     pub audio: HashMap<TitleKey, PathBuf>,
     /// Titres en échec (restés muets), dans l'ordre : emplacement et texte.
     pub failed: Vec<(TitleKey, String)>,
+    /// MP3 produits qui disent « Catégorie k » : `k` par emplacement (voir
+    /// [`TitleText::numbered`]).
+    pub numbered: HashMap<TitleKey, usize>,
 }
 
 /// Titres de la composition, dans l'ordre de lecture : titre du pack, puis les options en
@@ -74,6 +89,7 @@ pub fn titles(
     fn walk(
         menu: &[PackNode],
         path: &mut Vec<usize>,
+        categories: &mut usize,
         episode_title: &dyn Fn(&EpisodeRef) -> Option<String>,
         out: &mut Vec<TitleText>,
     ) {
@@ -85,15 +101,26 @@ pub fn titles(
                         out.push(TitleText {
                             key: TitleKey::Node(path.clone()),
                             text,
+                            numbered: None,
                         });
                     }
                 }
                 PackNode::Category { name, entries } => {
+                    // Rang dans l'ordre de l'archive (une catégorie avant ses options).
+                    *categories += 1;
+                    let k = *categories;
+                    // Nom sans rien d'affichable : l'archive affiche « Catégorie k », lu tel quel.
+                    let (text, numbered) = if archive::label(name, "").is_empty() {
+                        (format!("Catégorie {k}"), Some(k))
+                    } else {
+                        (name.trim().to_string(), None)
+                    };
                     out.push(TitleText {
                         key: TitleKey::Node(path.clone()),
-                        text: name.trim().to_string(),
+                        text,
+                        numbered,
                     });
-                    walk(entries, path, episode_title, out);
+                    walk(entries, path, categories, episode_title, out);
                 }
             }
             path.pop();
@@ -102,8 +129,15 @@ pub fn titles(
     let mut out = vec![TitleText {
         key: TitleKey::Pack,
         text: pack_title.to_string(),
+        numbered: None,
     }];
-    walk(&composition.menu, &mut Vec::new(), episode_title, &mut out);
+    walk(
+        &composition.menu,
+        &mut Vec::new(),
+        &mut 0,
+        episode_title,
+        &mut out,
+    );
     out
 }
 
@@ -153,11 +187,12 @@ async fn synthesize(
     synth: &Arc<dyn Synthesizer>,
     text: &str,
     voice_id: &str,
+    timeout: Duration,
     cancel: &watch::Receiver<bool>,
 ) -> AppResult<Result<speech::Wav, SpeechError>> {
     let (engine, text, voice) = (Arc::clone(synth), text.to_owned(), voice_id.to_owned());
     let job = tokio::task::spawn_blocking(move || {
-        speech::synthesize_wav(&engine, &text, &voice, speech::SYNTH_TIMEOUT)
+        speech::synthesize_wav(&engine, &text, &voice, timeout)
     });
     let mut cancel = cancel.clone();
     tokio::select! {
@@ -169,8 +204,27 @@ async fn synthesize(
     }
 }
 
+/// Conversion d'un titre en MP3 : le convertisseur de l'étape est préparé au premier appel
+/// (ffmpeg localisé, empreinte vérifiée), puis réutilisé (#487).
+async fn encode(
+    backend: &Arc<dyn PackBackend>,
+    encoder: &mut Option<Verified>,
+    wav: &speech::Wav,
+    dest: &Path,
+    cancel: &watch::Receiver<bool>,
+) -> AppResult<u64> {
+    let ready = match encoder.take() {
+        Some(ready) => ready,
+        None => backend.title_encoder(cancel).await?,
+    };
+    let result = backend.title_mp3(&ready, wav, dest, cancel).await;
+    *encoder = Some(ready);
+    result
+}
+
 /// Synthétise et convertit `titles` dans `dir` avec `voice`. Voir les règles d'échec et
-/// d'annulation dans la documentation du module.
+/// d'annulation dans la documentation du module. `on_progress(fait, total)` est appelé après
+/// chaque titre à lire (réussi ou muet).
 pub async fn speak(
     backend: &Arc<dyn PackBackend>,
     synth: &Arc<dyn Synthesizer>,
@@ -178,11 +232,14 @@ pub async fn speak(
     titles: &[TitleText],
     dir: &Path,
     cancel: &watch::Receiver<bool>,
+    on_progress: &(dyn Fn(usize, usize) + Sync),
 ) -> AppResult<SpokenTitles> {
     let speakable = titles
         .iter()
         .filter(|t| speech::prepare_text(&t.text).is_some())
         .count();
+    let timeout = backend.synth_timeout();
+    let mut encoder: Option<Verified> = None;
     let mut out = SpokenTitles::default();
     let mut attempted = 0usize;
     let mut stalled = 0usize;
@@ -195,10 +252,10 @@ pub async fn speak(
             continue;
         }
         attempted += 1;
-        let result = match synthesize(synth, &title.text, &voice.id, cancel).await? {
+        let result = match synthesize(synth, &title.text, &voice.id, timeout, cancel).await? {
             Ok(wav) => {
                 let dest = dir.join(format!("title-{rank:04}.mp3"));
-                match backend.title_mp3(&wav, &dest, cancel).await {
+                match encode(backend, &mut encoder, &wav, &dest, cancel).await {
                     Ok(_) => Ok(dest),
                     Err(AppError::Cancelled) => return Err(AppError::Cancelled),
                     Err(err) => {
@@ -219,6 +276,9 @@ pub async fn speak(
         }
         match result {
             Ok(path) => {
+                if let Some(k) = title.numbered {
+                    out.numbered.insert(title.key.clone(), k);
+                }
                 out.audio.insert(title.key.clone(), path);
             }
             Err(reason) => {
@@ -252,6 +312,7 @@ pub async fn speak(
                 }
             }
         }
+        on_progress(attempted, speakable);
     }
     Ok(out)
 }
