@@ -149,6 +149,103 @@ pub struct Converted {
     pub version: Option<String>,
 }
 
+/// Cause d'un repli du moteur Rust vers le moteur Python (#137).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackReason {
+    /// Événement `error` `unsupported_format` (code de sortie 7) : délégation **attendue** d'un
+    /// format que le Rust ne convertit pas (décision D4), comptée à part des deux autres.
+    UnsupportedFormat,
+    /// Événement `error` `internal_error` (panique, état impossible).
+    InternalError,
+    /// Le binaire a planté : pas d'événement `start`, code de sortie inattendu ou lancement
+    /// impossible.
+    Crash,
+}
+
+impl FallbackReason {
+    /// Valeur enregistrée dans les résultats de compatibilité.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UnsupportedFormat => "unsupported_format",
+            Self::InternalError => "internal_error",
+            Self::Crash => "crash",
+        }
+    }
+}
+
+/// Moteur qui a réellement produit le résultat d'une conversion (#137), enregistré dans le
+/// résultat de compatibilité (#20). Aucun contenu d'histoire : seulement le moteur et la cause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EngineTrace {
+    Rust,
+    #[default]
+    Python,
+    /// Python, après l'échec du Rust pour la cause indiquée.
+    PythonFallback(FallbackReason),
+}
+
+impl EngineTrace {
+    /// `rust`, `python` ou `python_fallback`.
+    pub fn engine(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::Python => "python",
+            Self::PythonFallback(_) => "python_fallback",
+        }
+    }
+
+    /// Cause du repli, s'il y en a eu un.
+    pub fn fallback(self) -> Option<&'static str> {
+        match self {
+            Self::PythonFallback(reason) => Some(reason.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// Ce que le processus a montré, pour décider d'un repli ([`fallback_reason`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Observed {
+    /// Un événement `start` a été reçu.
+    pub started: bool,
+    /// Code de sortie (`None` : processus terminé sans code, ou jamais lancé).
+    pub exit: Option<i32>,
+    /// Code de l'événement `error` rapporté, s'il y en a un.
+    pub reported: Option<String>,
+    pub pid: Option<u32>,
+}
+
+/// Codes de sortie du protocole (PORT-RUST.md §2.2) : tout autre code est un plantage.
+const PROTOCOL_EXITS: [i32; 8] = [0, 2, 3, 4, 5, 6, 7, 130];
+
+/// Le moteur Rust doit-il être remplacé par Python pour cet échec (#137, PORT-RUST.md §6) ?
+/// Seulement pour `unsupported_format`, `internal_error` ou un plantage. Jamais pour une
+/// annulation, une erreur de contenu (codes 3/4/5) ni `output_error` (disque plein, droits :
+/// rejouer échouerait de la même façon en doublant le délai).
+pub fn fallback_reason(result: &AppResult<Converted>, seen: &Observed) -> Option<FallbackReason> {
+    match result {
+        // Lancement impossible (binaire bloqué, supprimé) : aucun événement `start`.
+        Err(AppError::ConverterUnavailable(_)) => return Some(FallbackReason::Crash),
+        Err(AppError::Conversion { .. }) => {}
+        // Succès, annulation, erreur d'entrée/sortie du launcher.
+        _ => return None,
+    }
+    match seen.reported.as_deref() {
+        Some("output_error") => None,
+        Some("unsupported_format") => Some(FallbackReason::UnsupportedFormat),
+        Some("internal_error") => Some(FallbackReason::InternalError),
+        // Échec sans `done` malgré un code 0 : le binaire ment, c'est aussi un plantage.
+        _ if !seen.started
+            || seen
+                .exit
+                .is_none_or(|c| !PROTOCOL_EXITS.contains(&c) || c == 0) =>
+        {
+            Some(FallbackReason::Crash)
+        }
+        _ => None,
+    }
+}
+
 /// Version lue dans l'événement `start` : texte court, sans caractère de contrôle.
 fn clean_version(raw: &str) -> Option<String> {
     let v = raw.trim();
@@ -459,10 +556,87 @@ fn converter_args(req: &Conversion<'_>) -> Vec<OsString> {
 }
 
 /// Lance la conversion et relaie les événements `step` à `on_step`. Annulation via `cancel`.
-pub async fn convert(
+/// Renvoie aussi ce que le processus a montré ([`Observed`]), pour décider d'un repli.
+pub async fn run(
     req: &Conversion<'_>,
     cancel: &mut watch::Receiver<bool>,
     on_step: &mut (dyn FnMut(&Step) + Send),
+) -> (AppResult<Converted>, Observed) {
+    let mut seen = Observed::default();
+    let result = run_inner(req, cancel, on_step, &mut seen).await;
+    (result, seen)
+}
+
+/// Interpréteur et script du moteur Python, pour le repli.
+#[derive(Debug, Clone, Copy)]
+pub struct PythonFallback<'a> {
+    pub python: &'a Path,
+    pub script: &'a Path,
+}
+
+/// Conversion avec le moteur demandé ; avec le moteur Rust, repli sur Python (si `fallback` est
+/// disponible) dans les seuls cas de [`fallback_reason`]. Renvoie le résultat et le moteur qui
+/// l'a produit. Les journaux ne portent que la cause et le code de sortie, jamais le message du
+/// convertisseur (il peut citer un nom de fichier de l'histoire).
+pub async fn convert_with_fallback(
+    req: &Conversion<'_>,
+    fallback: Option<PythonFallback<'_>>,
+    cancel: &mut watch::Receiver<bool>,
+    on_step: &mut (dyn FnMut(&Step) + Send),
+) -> (AppResult<Converted>, EngineTrace) {
+    let (result, seen) = run(req, cancel, on_step).await;
+    if !matches!(req.engine, Engine::Rust { .. }) {
+        return (result, EngineTrace::Python);
+    }
+    let Some(reason) = fallback_reason(&result, &seen) else {
+        return (result, EngineTrace::Rust);
+    };
+    let Some(python) = fallback else {
+        tracing::warn!(
+            "repli Python impossible (Python indisponible) après {} (sortie {:?})",
+            reason.as_str(),
+            seen.exit
+        );
+        return (result, EngineTrace::Rust);
+    };
+    if *cancel.borrow() {
+        return (Err(AppError::Cancelled), EngineTrace::Rust);
+    }
+    if reason == FallbackReason::UnsupportedFormat {
+        tracing::info!("repli Python attendu : format non pris en charge par le Rust");
+    } else {
+        tracing::warn!(
+            "repli Python après {} (démarré : {}, sortie {:?})",
+            reason.as_str(),
+            seen.started,
+            seen.exit
+        );
+    }
+    // Un binaire planté peut laisser son temporaire (`<sortie>.<pid>.part`).
+    if let Some(pid) = seen.pid {
+        remove_any(&part_of(req.output, pid));
+    }
+    remove_any(req.output);
+    let replay = Conversion {
+        engine: Engine::Python {
+            python: python.python,
+            script: python.script,
+        },
+        input: req.input,
+        output: req.output,
+        ffmpeg: req.ffmpeg,
+        thumb_fit: req.thumb_fit,
+        grace: req.grace,
+    };
+    let (result, _) = run(&replay, cancel, on_step).await;
+    (result, EngineTrace::PythonFallback(reason))
+}
+
+async fn run_inner(
+    req: &Conversion<'_>,
+    cancel: &mut watch::Receiver<bool>,
+    on_step: &mut (dyn FnMut(&Step) + Send),
+    seen: &mut Observed,
 ) -> AppResult<Converted> {
     if *cancel.borrow() {
         return Err(AppError::Cancelled);
@@ -486,6 +660,7 @@ pub async fn convert(
                 req.engine.label()
             ))
         })?;
+    seen.pid = child.id();
     let stdout = child.stdout.take().expect("stdout redirigé");
     let stderr = child.stderr.take().expect("stderr redirigé");
     // Rust : tube de stdin tenu jusqu'à la fin de la conversion (le fermer annule). Python : `None`.
@@ -548,6 +723,7 @@ pub async fn convert(
         let text = |key: &str| event.get(key).and_then(Value::as_str).map(str::to_string);
         match event.get("event").and_then(Value::as_str) {
             Some("start") => {
+                seen.started = true;
                 version = text("version").and_then(|v| clean_version(&v));
                 phases = event
                     .get("phases")
@@ -579,8 +755,10 @@ pub async fn convert(
                 });
             }
             Some("error") => {
+                let code = text("code").unwrap_or_else(|| "unknown".into());
+                seen.reported = Some(code.clone());
                 reported = Some(Reported {
-                    code: text("code").unwrap_or_else(|| "unknown".into()),
+                    code,
                     message: text("message").unwrap_or_default(),
                 });
             }
@@ -599,6 +777,7 @@ pub async fn convert(
     drop(stdin);
     let stderr_tail = stderr_task.await.unwrap_or_default();
     let exit = status.code();
+    seen.exit = exit;
     match (exit, done, reported) {
         (Some(0), Some(converted), _) if req.output.is_file() => Ok(converted),
         (Some(130), _, _) => {
@@ -632,6 +811,15 @@ pub async fn convert(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Conversion sans repli (le résultat seul).
+    async fn convert(
+        req: &Conversion<'_>,
+        cancel: &mut watch::Receiver<bool>,
+        on_step: &mut (dyn FnMut(&Step) + Send),
+    ) -> AppResult<Converted> {
+        run(req, cancel, on_step).await.0
+    }
 
     #[test]
     fn pourcentage_global() {
@@ -843,6 +1031,17 @@ b"
             rust: bool,
             grace: Duration,
         ) -> (AppResult<Converted>, Duration) {
+            let (result, _, took) = self.cancel_when_ready_traced(rust, grace, false).await;
+            (result, took)
+        }
+
+        /// Comme [`Banc::cancel_when_ready`], avec le repli Python disponible si `fallback`.
+        async fn cancel_when_ready_traced(
+            &self,
+            rust: bool,
+            grace: Duration,
+            fallback: bool,
+        ) -> (AppResult<Converted>, EngineTrace, Duration) {
             let (tx, mut rx) = watch::channel(false);
             let req = Conversion {
                 engine: self.engine(rust),
@@ -870,9 +1069,281 @@ b"
                 std::time::Instant::now()
             };
             let mut ignore = |_: &Step| {};
-            let (result, asked) = tokio::join!(convert(&req, &mut rx, &mut ignore), canceller);
-            (result, asked.elapsed())
+            let (traced, asked) = tokio::join!(
+                convert_with_fallback(
+                    &req,
+                    fallback.then(|| self.fallback()),
+                    &mut rx,
+                    &mut ignore
+                ),
+                canceller
+            );
+            (traced.0, traced.1, asked.elapsed())
         }
+
+        /// Python de repli : l'interpréteur et le faux script.
+        fn fallback(&self) -> PythonFallback<'_> {
+            PythonFallback {
+                python: &self.python,
+                script: &self.script,
+            }
+        }
+
+        /// Conversion du moteur Rust avec repli Python disponible (ou non).
+        async fn convert_traced(&self, fallback: bool) -> (AppResult<Converted>, EngineTrace) {
+            let (_tx, mut rx) = watch::channel(false);
+            convert_with_fallback(
+                &Conversion {
+                    engine: self.engine(true),
+                    input: &self.input,
+                    output: &self.output,
+                    ffmpeg: None,
+                    thumb_fit: ThumbFit::default(),
+                    grace: Duration::from_secs(5),
+                },
+                fallback.then(|| self.fallback()),
+                &mut rx,
+                &mut |_| {},
+            )
+            .await
+        }
+    }
+
+    fn conversion_error(code: &str) -> AppResult<Converted> {
+        Err(AppError::Conversion {
+            code: code.into(),
+            message: String::new(),
+        })
+    }
+
+    /// Table de décision du repli (#137, PORT-RUST.md §6).
+    #[test]
+    fn decision_du_repli() {
+        let seen = |reported: Option<&str>, started, exit| Observed {
+            started,
+            exit,
+            reported: reported.map(str::to_string),
+            pid: None,
+        };
+        let decide = |result: AppResult<Converted>, seen: Observed| fallback_reason(&result, &seen);
+        use FallbackReason::{Crash, InternalError, UnsupportedFormat};
+        // Repli : délégation attendue, `internal_error`, plantage.
+        let cases = [
+            (
+                Some("unsupported_format"),
+                true,
+                Some(7),
+                Some(UnsupportedFormat),
+            ),
+            (Some("internal_error"), true, Some(6), Some(InternalError)),
+            (None, true, Some(101), Some(Crash)),
+            (None, true, Some(-1_073_741_819), Some(Crash)), // 0xC0000005
+            (None, true, None, Some(Crash)),                 // tué par un signal
+            (None, false, Some(1), Some(Crash)),             // pas d'événement `start`
+            (None, true, Some(0), Some(Crash)),              // code 0 sans `done`
+            // Jamais : erreurs de contenu (3/4/5), `output_error`, sortie 6 sans événement.
+            (Some("archive_unreadable"), true, Some(3), None),
+            (Some("validation"), true, Some(4), None),
+            (Some("missing_asset"), true, Some(5), None),
+            (Some("output_error"), true, Some(6), None),
+            (Some("output_error"), true, Some(101), None),
+            (None, true, Some(6), None),
+            (None, true, Some(2), None),
+        ];
+        for (reported, started, exit, expected) in cases {
+            assert_eq!(
+                decide(conversion_error("x"), seen(reported, started, exit)),
+                expected,
+                "{reported:?} start={started} sortie={exit:?}"
+            );
+        }
+        // Annulation et succès : jamais de repli, quoi que montre le processus.
+        let crash = seen(None, false, Some(101));
+        assert_eq!(decide(Err(AppError::Cancelled), crash.clone()), None);
+        let ok = Ok(Converted {
+            warnings: 0,
+            version: None,
+        });
+        assert_eq!(decide(ok, crash), None);
+        // Lancement impossible : aucun `start`.
+        assert_eq!(
+            decide(
+                Err(AppError::ConverterUnavailable("bloqué".into())),
+                Observed::default()
+            ),
+            Some(Crash)
+        );
+        assert_eq!(EngineTrace::Rust.engine(), "rust");
+        assert_eq!(EngineTrace::Python.fallback(), None);
+        let traced = EngineTrace::PythonFallback(UnsupportedFormat);
+        assert_eq!(traced.engine(), "python_fallback");
+        assert_eq!(traced.fallback(), Some("unsupported_format"));
+    }
+
+    /// Le Rust échoue de l'une des trois façons prévues, Python réussit : repli, trace de la
+    /// cause, sortie produite par Python, aucun temporaire.
+    #[tokio::test]
+    async fn repli_sur_python_pour_les_trois_causes() {
+        use FallbackReason::{Crash, InternalError, UnsupportedFormat};
+        let logs = crate::testlog::Logs::capture();
+        for (mode, reason) in [
+            // Délégation attendue (D4).
+            ("err:unsupported_format:7|versioned", UnsupportedFormat),
+            // Panique simulée : le crochet du binaire émet `internal_error`.
+            ("err:internal_error:6|versioned", InternalError),
+            // Plantage : code de sortie hors protocole, sans événement `error`.
+            ("abort|versioned", Crash),
+            // Plantage : aucun événement `start`.
+            ("nostart|versioned", Crash),
+            // Code 0 mais ni `done` ni sortie.
+            ("silent|versioned", Crash),
+        ] {
+            let Some(banc) = Banc::new(mode) else {
+                eprintln!("Python introuvable : test ignoré");
+                return;
+            };
+            let (result, trace) = banc.convert_traced(true).await;
+            let converted = result.unwrap_or_else(|e| panic!("{mode} : {e}"));
+            assert_eq!(trace, EngineTrace::PythonFallback(reason), "{mode}");
+            assert_eq!(
+                converted.version.as_deref(),
+                Some("9.9.9-test"),
+                "{mode} : résultat de Python"
+            );
+            // L'option `--cancel-on-stdin-eof` est propre au Rust : Python a bien tourné.
+            let seen = std::fs::read_to_string(banc.dir.path().join("args.txt")).unwrap();
+            assert!(!seen.contains("--cancel-on-stdin-eof"), "{mode} : {seen}");
+            assert!(banc.output.is_file(), "{mode}");
+            let part = std::fs::read_dir(banc.output.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+                .count();
+            assert_eq!(part, 0, "{mode} : temporaire laissé");
+        }
+        // Le journal ne porte jamais le message du convertisseur (peut citer l'histoire). Seuls
+        // les messages des codes qui mènent toujours à un repli réussi sont propres à ce test.
+        let text = logs.text();
+        for code in ["unsupported_format", "internal_error"] {
+            assert!(
+                !text.contains(&format!("msg-{code}")),
+                "message du convertisseur en clair ({code})"
+            );
+        }
+    }
+
+    /// Erreurs de contenu (3/4/5), disque plein (`output_error`) et sortie 6 sans événement :
+    /// jamais rejouées en Python (qui réussirait ici : la faute prouve l'absence de repli).
+    #[tokio::test]
+    async fn pas_de_repli_pour_les_erreurs_de_contenu_et_de_sortie() {
+        for (mode, code) in [
+            ("err:archive_unreadable:3|versioned", "archive_unreadable"),
+            ("err:validation:4|versioned", "validation"),
+            ("err:missing_asset:5|versioned", "missing_asset"),
+            // Disque plein, droits : rejouer échouerait pareil en doublant le délai.
+            ("err:output_error:6|versioned", "output_error"),
+            ("crash|versioned", "exit_6"),
+        ] {
+            let Some(banc) = Banc::new(mode) else {
+                eprintln!("Python introuvable : test ignoré");
+                return;
+            };
+            let (result, trace) = banc.convert_traced(true).await;
+            let Err(AppError::Conversion { code: got, .. }) = result else {
+                panic!("{mode} : {result:?}")
+            };
+            assert_eq!(got, code, "{mode}");
+            assert_eq!(trace, EngineTrace::Rust, "{mode}");
+            assert!(!banc.output.exists(), "{mode}");
+            assert!(
+                !banc.dir.path().join("args.txt").exists(),
+                "{mode} : Python n'a pas dû tourner"
+            );
+        }
+    }
+
+    /// Annulation : jamais de repli, qu'elle vienne du launcher (arrêt poli) ou du binaire
+    /// lui-même (code 130).
+    #[tokio::test]
+    async fn pas_de_repli_sur_annulation() {
+        let Some(banc) = Banc::new("slow|versioned") else {
+            eprintln!("Python introuvable : test ignoré");
+            return;
+        };
+        let (result, trace, _) = banc
+            .cancel_when_ready_traced(true, Duration::from_secs(20), true)
+            .await;
+        assert!(matches!(result, Err(AppError::Cancelled)), "{result:?}");
+        assert_eq!(trace, EngineTrace::Rust);
+        assert!(banc.staging_is_empty());
+        assert!(!banc.dir.path().join("args.txt").exists());
+
+        let banc = Banc::new("err:cancelled:130|versioned").unwrap();
+        let (result, trace) = banc.convert_traced(true).await;
+        assert!(matches!(result, Err(AppError::Cancelled)), "{result:?}");
+        assert_eq!(trace, EngineTrace::Rust);
+        assert!(!banc.dir.path().join("args.txt").exists());
+    }
+
+    /// Sans Python détecté, l'échec du Rust est rendu tel quel (trace `rust`) ; le moteur Python
+    /// ne se replie jamais.
+    #[tokio::test]
+    async fn repli_indisponible_ou_moteur_python() {
+        let Some(banc) = Banc::new("abort|abort") else {
+            eprintln!("Python introuvable : test ignoré");
+            return;
+        };
+        let (result, trace) = banc.convert_traced(false).await;
+        assert!(
+            matches!(&result, Err(AppError::Conversion { code, .. }) if code == "exit_101"),
+            "{result:?}"
+        );
+        assert_eq!(trace, EngineTrace::Rust);
+        let (_tx, mut rx) = watch::channel(false);
+        let (result, trace) = convert_with_fallback(
+            &Conversion {
+                engine: banc.engine(false),
+                input: &banc.input,
+                output: &banc.output,
+                ffmpeg: None,
+                thumb_fit: ThumbFit::default(),
+                grace: Duration::from_secs(5),
+            },
+            Some(banc.fallback()),
+            &mut rx,
+            &mut |_| {},
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(trace, EngineTrace::Python);
+    }
+
+    /// Binaire Rust impossible à lancer (bloqué, supprimé après la détection) : aucun événement
+    /// `start`, donc repli Python.
+    #[tokio::test]
+    async fn repli_si_le_binaire_rust_ne_se_lance_pas() {
+        let Some(banc) = Banc::new("ok") else {
+            eprintln!("Python introuvable : test ignoré");
+            return;
+        };
+        let missing = banc.dir.path().join("absent").join("telmi2flam.exe");
+        let (_tx, mut rx) = watch::channel(false);
+        let (result, trace) = convert_with_fallback(
+            &Conversion {
+                engine: Engine::Rust { exe: &missing },
+                input: &banc.input,
+                output: &banc.output,
+                ffmpeg: None,
+                thumb_fit: ThumbFit::default(),
+                grace: Duration::from_secs(5),
+            },
+            Some(banc.fallback()),
+            &mut rx,
+            &mut |_| {},
+        )
+        .await;
+        result.unwrap();
+        assert_eq!(trace, EngineTrace::PythonFallback(FallbackReason::Crash));
     }
 
     #[tokio::test]
@@ -1152,7 +1623,10 @@ b"
 /// Modes : `ok` (par défaut), `noise` (lignes non JSON, stderr en cp1252), `versioned`
 /// (`start.version`), `fail` (`missing_asset`, 5), `crash` (code 6 sans événement `error`),
 /// `slow` (annulation polie), `stubborn` (sourd à l'annulation), `tree` (sourd, avec un
-/// sous-processus). En mode `versioned`, les options reçues sont écrites dans `args.txt`, deux
+/// sous-processus). Fautes du repli (#137) : `err:<code>:<sortie>` (événement `error` puis
+/// sortie), `abort` (code 101 sans événement `error`), `silent` (code 0 sans `done`), `nostart`
+/// (code 1 sans événement `start`). `<mode rust>|<mode python>` donne un comportement par
+/// moteur (le Rust échoue, Python réussit). En mode `versioned`, les options reçues sont écrites dans `args.txt`, deux
 /// dossiers au-dessus de la sortie.
 #[cfg(test)]
 pub(crate) mod fake {
@@ -1165,6 +1639,8 @@ rust = "--cancel-on-stdin-eof" in args
 src = sys.argv[0] if rust else args[0]
 out = args[args.index("-o") + 1]
 mode = open(src, "rb").read().split(b"mode=")[1].split(b";")[0].decode()
+if "|" in mode:
+    mode = mode.split("|")[0 if rust else 1]
 def ev(**k):
     print(json.dumps(k), flush=True)
 part = "%s.%d.part" % (out, os.getpid())
@@ -1176,12 +1652,22 @@ if mode == "tree":
     import subprocess
     g = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
     open(out + ".gpid", "w").write(str(g.pid))
+if mode == "nostart":
+    sys.stderr.write("Traceback: pas de start\n"); sys.exit(1)
 ev(event="start", total=4, phases=["images", "audio", "scripts", "zip"], input=src, **extra)
 if mode == "fail":
     ev(event="error", code="missing_asset", message="image manquante : s1.png", exit=5)
     sys.exit(5)
 if mode == "crash":
     sys.stderr.write("Traceback: boum\n"); sys.exit(6)
+if mode.startswith("err:"):
+    _, code, status = mode.split(":")
+    ev(event="error", code=code, message="msg-" + code, exit=int(status))
+    sys.exit(int(status))
+if mode == "abort":
+    sys.stderr.write("Traceback: abandon\n"); sys.exit(101)
+if mode == "silent":
+    sys.exit(0)
 if mode in ("slow", "stubborn", "tree"):
     open(part, "wb").write(b"partiel")
     polite = mode == "slow"

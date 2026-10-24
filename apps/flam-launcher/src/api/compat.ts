@@ -20,6 +20,10 @@ export interface CompatEntry {
   origin: CompatOrigin;
   /** Fiche de campagne évaluée avec un autre convertisseur que le courant. */
   stale: boolean;
+  /** Moteur de la conversion faite sur cet ordinateur (#137) ; absent pour une fiche de campagne. */
+  engine?: "rust" | "python" | "python_fallback" | null;
+  /** Cause du repli Python : `unsupported_format` (attendu), `internal_error` ou `crash`. */
+  fallback?: "unsupported_format" | "internal_error" | "crash" | null;
 }
 
 /** Problème de lecture de `status.json` (miroir de `CompatIssue`). */
