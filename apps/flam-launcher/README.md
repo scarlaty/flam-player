@@ -218,7 +218,7 @@ l'histoire, n'est ni affiché ni journalisé). La campagne de parité sur 30 arc
 n'en a trouvé aucune.
 
 **Licences redistribuées** : `telmi2flam/LICENSES.md` (produit par `build-converter.ps1`) liste
-le binaire (GPL v3, et HPND pour le code dérivé de Pillow : `resample.rs`, `blur.rs`), le
+le binaire (GPL v3, et HPND pour le code dérivé de Pillow : `resample.rs`, `blur.rs`, `gif.rs`), le
 runtime C Microsoft lié statiquement et `vcruntime140.dll`. Python et Pillow ne sont plus livrés ;
 seule la mention du code de Pillow porté en Rust reste (`THIRD-PARTY-NOTICES.txt`, texte intégral
 MIT-CMU). `LICENSES.md` à la racine de
