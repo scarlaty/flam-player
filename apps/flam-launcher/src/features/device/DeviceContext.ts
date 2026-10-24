@@ -79,15 +79,12 @@ export interface DeviceApi {
   reloadStories: (options?: { quiet?: boolean }) => void;
   /**
    * Envoi refusé sur cette Flam d'après l'état structuré du firmware (`device_status`, #317) :
-   * firmware non pris en charge, `.mdf` illisible, clés invalides ou contradictoires.
+   * firmware non pris en charge, `.mdf` illisible ou tronqué, clés invalides.
    */
   firmwareBlocked: boolean;
-  /** Flam 2.x pas encore confirmée : sauvegarde à confirmer dans « Ma Flam ». */
-  keysConfirmation: boolean;
   /**
-   * Reprise, retrait et ordre autorisés par la garde du firmware (#326) : faux sur une Flam
-   * 2.x non confirmée ou dont l'écriture est bloquée (une contradiction des clés ne bloque que
-   * l'envoi).
+   * Reprise, retrait et ordre autorisés par la garde du firmware : faux sans Flam ou si
+   * l'écriture est bloquée (une contradiction des clés n'est qu'un avertissement, #326).
    */
   canMaintain: boolean;
   queue: QueueItem[];

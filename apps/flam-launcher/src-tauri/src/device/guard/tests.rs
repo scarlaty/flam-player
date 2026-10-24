@@ -1,7 +1,7 @@
 //! Tests de la garde commune des écritures (#317) : conditions communes, disposition non
-//! standard signalée sans refus, confirmation mémorisée par empreinte, vérification par
-//! `library.cache`, cohérence des clés 2.x, état exposé. Fixtures partagées avec les tests du
-//! retrait, du réordonnancement et du transfert.
+//! standard signalée sans refus, 2.x autorisée sans confirmation (#326), cohérence des clés 2.x
+//! informative, état exposé. Fixtures partagées avec les tests du retrait, du réordonnancement et
+//! du transfert.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -42,23 +42,15 @@ pub(crate) fn mdf_v2_known() -> Vec<u8> {
     mdf_with(KNOWN_HEADER, "main: 2.4.2-test\ncomm: x")
 }
 
-/// Contexte de test : mémoires propres (en mémoire seulement), aucun contrôle de racine,
-/// aucune histoire du launcher.
+/// Contexte de test : mémoire de session propre, aucun contrôle de racine, aucune histoire du
+/// launcher.
 pub(crate) fn test_ctx() -> WriteContext<'static> {
     ctx_with(HashSet::new())
 }
 
 fn ctx_with(launcher: HashSet<String>) -> WriteContext<'static> {
     let session: &'static KeySession = Box::leak(Box::default());
-    let trust: &'static TrustStore = Box::leak(Box::default());
-    WriteContext::new(session, trust, None, launcher)
-}
-
-/// Contexte de test où la Flam de `root` est déjà confirmée (2.x).
-pub(crate) fn confirmed_ctx(root: &Path) -> WriteContext<'static> {
-    let ctx = test_ctx();
-    confirm(root, &ctx).unwrap();
-    ctx
+    WriteContext::new(session, None, launcher)
 }
 
 /// `info` chiffré avec les clés de test.
@@ -217,8 +209,14 @@ fn conditions_communes_refusees() {
             assert!(expected(&err), "{err}");
             assert!(err.to_string().contains("rien n'a été écrit"), "{err}");
         }
-        // La confirmation ne lève aucun de ces refus.
-        assert!(confirm(dev.path(), &test_ctx()).is_err());
+        // L'état affiché dit le même refus (un `.mdf` trop grand n'arrive pas jusqu'ici).
+        if mdf.len() as u64 <= crate::device::detect::MDF_MAX_SIZE {
+            let status = firmware_status(dev.path(), &mdf, &test_ctx(), false);
+            assert!(
+                status.write_block.as_ref().is_some_and(expected),
+                "{status:?}"
+            );
+        }
     }
 }
 
@@ -242,20 +240,13 @@ fn le_numero_de_serie_illisible_n_apparait_pas_dans_le_message() {
 fn une_racine_non_detectee_est_refusee() {
     let dev = device(&mdf_v1_real());
     let session = KeySession::default();
-    let trust = TrustStore::default();
-    let ctx = WriteContext::new(
-        &session,
-        &trust,
-        Some(vec![PathBuf::from("Z:\\")]),
-        HashSet::new(),
-    );
+    let ctx = WriteContext::new(&session, Some(vec![PathBuf::from("Z:\\")]), HashSet::new());
     assert_eq!(
         refused(dev.path(), &ctx, WriteKind::Other),
         WriteRefused::InvalidRoot
     );
     let ctx = WriteContext::new(
         &session,
-        &trust,
         Some(vec![dev.path().to_path_buf()]),
         HashSet::new(),
     );
@@ -263,7 +254,8 @@ fn une_racine_non_detectee_est_refusee() {
 }
 
 #[test]
-fn v2_avec_ou_sans_main_taille_et_en_tete_quelconques_demande_une_confirmation() {
+fn v2_avec_ou_sans_main_taille_et_en_tete_quelconques_est_autorisee_sans_confirmation() {
+    // #326 : aucune confirmation « j'ai sauvegardé ma Flam » (comme Lunii.QT).
     let mut long = mdf_v2_known();
     long.extend([0u8; 74]);
     for (mdf, standard) in [
@@ -277,22 +269,19 @@ fn v2_avec_ou_sans_main_taille_et_en_tete_quelconques_demande_une_confirmation()
         let layout = analyze(&mdf);
         assert_eq!(layout.family, Family::V2);
         assert_eq!(layout.version.as_deref(), Some("2.4.2"));
+        assert_eq!(layout.standard, standard);
         let dev = device(&mdf);
         let ctx = test_ctx();
         for kind in [WriteKind::Send, WriteKind::Other] {
-            let err = refused(dev.path(), &ctx, kind);
-            assert_eq!(
-                err,
-                WriteRefused::ConfirmationRequired {
-                    version: "2.4.2".into(),
-                    standard
-                }
-            );
+            let before = snapshot(dev.path());
+            let permit = check_write(dev.path(), &ctx, kind).unwrap();
+            assert_eq!(permit.family(), FirmwareFamily::V2);
+            assert!(permit.same_mdf(&mdf));
+            assert_eq!(snapshot(dev.path()), before, "la garde n'écrit jamais");
         }
-        let status = confirm(dev.path(), &ctx).unwrap();
-        assert_eq!(status.trust, Trust::Confirmed);
+        let status = firmware_status(dev.path(), &mdf, &ctx, false);
         assert_eq!(status.write_block, None);
-        check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+        assert_eq!(status.layout_standard, standard);
     }
 }
 
@@ -305,60 +294,10 @@ fn comm_avant_main_donne_la_version_de_main() {
 }
 
 #[test]
-fn la_confirmation_est_memorisee_par_empreinte_d_une_session_a_l_autre() {
-    let data = tempfile::tempdir().unwrap();
-    let file = data.path().join(TRUST_FILE);
-    let dev = device(&mdf_v2_known());
-    {
-        let session = KeySession::default();
-        let trust = TrustStore::at(file.clone());
-        let ctx = WriteContext::new(&session, &trust, None, HashSet::new());
-        assert!(check_write(dev.path(), &ctx, WriteKind::Send).is_err());
-        confirm(dev.path(), &ctx).unwrap();
-    }
-    // Nouvelle session (relance du launcher), même PC : la confirmation est relue.
-    let session = KeySession::default();
-    let trust = TrustStore::at(file.clone());
-    let ctx = WriteContext::new(&session, &trust, None, HashSet::new());
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
-    // Le fichier ne contient ni clé, ni numéro de série, ni le `.mdf`.
-    let saved = std::fs::read_to_string(&file).unwrap().to_lowercase();
-    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
-    for secret in [hex(&TEST_KEY), hex(&TEST_IV), "00123456789abc".to_string()] {
-        assert!(!saved.contains(&secret), "{saved}");
-    }
-    assert!(!saved.contains(&hex(&Sha256::digest(mdf_v2_known()))));
-    // Une autre Flam (autre `.mdf`) redemande la confirmation.
-    let mut other = mdf_v2_known();
-    other[0x32] = b'f';
-    let dev2 = device(&other);
-    assert!(matches!(
-        check_write(dev2.path(), &ctx, WriteKind::Send),
-        Err(WriteRefused::ConfirmationRequired { .. })
-    ));
-}
-
-#[test]
-fn une_memoire_illisible_redemande_la_confirmation() {
-    let data = tempfile::tempdir().unwrap();
-    let file = data.path().join(TRUST_FILE);
-    std::fs::write(&file, b"pas du json").unwrap();
-    let dev = device(&mdf_v2_known());
-    let session = KeySession::default();
-    let trust = TrustStore::at(file);
-    let ctx = WriteContext::new(&session, &trust, None, HashSet::new());
-    assert!(matches!(
-        check_write(dev.path(), &ctx, WriteKind::Send),
-        Err(WriteRefused::ConfirmationRequired { .. })
-    ));
-}
-
-#[test]
 fn coherence_histoire_tierce_au_format_flam() {
     let dev = device(&mdf_v2_known());
     story(dev.path(), STORY, &key_v2(), &info_v2("Histoire importée"));
-    let ctx = confirmed_ctx(dev.path());
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+    let ctx = test_ctx();
     let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
     assert!(matches!(
         status.coherence,
@@ -366,17 +305,13 @@ fn coherence_histoire_tierce_au_format_flam() {
     ));
 }
 
+/// #326 : une contradiction est un avertissement (faux positifs possibles : `info` en Latin-1 ou
+/// de moins de 4 caractères) ; ni l'envoi ni le retrait ne sont refusés.
 #[test]
-fn contradiction_reelle_au_format_flam_refuse_l_envoi_pas_le_retrait() {
+fn contradiction_reelle_au_format_flam_avertit_sans_rien_refuser() {
     let dev = device(&mdf_v2_known());
-    let ctx = confirmed_ctx(dev.path());
+    let ctx = test_ctx();
     story(dev.path(), STORY, &key_v2(), &wrong_info());
-    let err = refused(dev.path(), &ctx, WriteKind::Send);
-    assert!(
-        matches!(err, WriteRefused::KeysContradiction { .. }),
-        "{err}"
-    );
-    assert!(err.to_string().contains("« Ma Flam »"), "{err}");
     // L'histoire en cause est désignée (#326).
     let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
     assert!(
@@ -388,12 +323,10 @@ fn contradiction_reelle_au_format_flam_refuse_l_envoi_pas_le_retrait() {
         "{:?}",
         status.coherence
     );
-    // Le retrait reste possible (rien n'est chiffré).
-    check_write(dev.path(), &ctx, WriteKind::Other).unwrap();
-    // La confirmation reste possible sur une Flam non encore confirmée.
-    let fresh = test_ctx();
-    confirm(dev.path(), &fresh).unwrap();
-    check_write(dev.path(), &fresh, WriteKind::Other).unwrap();
+    assert_eq!(status.write_block, None);
+    for kind in [WriteKind::Send, WriteKind::Other] {
+        check_write(dev.path(), &ctx, kind).unwrap();
+    }
 }
 
 #[test]
@@ -428,8 +361,7 @@ fn histoire_au_format_lunii_ni_contradiction_ni_preuve() {
     for name in ["ni", "li", "ri", "si"] {
         write(&dir.join(name), b"x");
     }
-    let ctx = confirmed_ctx(dev.path());
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+    let ctx = test_ctx();
     let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
     assert!(matches!(
         status.coherence,
@@ -446,8 +378,7 @@ fn info_en_clair_ecarte() {
         &key_v2(),
         b"Titre en clair\nSous-titre\n",
     );
-    let ctx = confirmed_ctx(dev.path());
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+    let ctx = test_ctx();
     let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
     assert!(matches!(
         status.coherence,
@@ -459,8 +390,7 @@ fn info_en_clair_ecarte() {
 fn info_lisible_avec_un_autre_key_est_coherent() {
     let dev = device(&mdf_v2_known());
     story(dev.path(), STORY, &[b'z'; 32], &info_v2("Titre"));
-    let ctx = confirmed_ctx(dev.path());
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+    let ctx = test_ctx();
     let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
     assert!(matches!(
         status.coherence,
@@ -473,8 +403,16 @@ fn histoires_officielles_d_un_compte_ne_contredisent_pas() {
     // Comportement observé de la 2.x : `key` du compte, `info` chiffré avec la clé du compte.
     let dev = device(&mdf_v2_known());
     story(dev.path(), STORY, &[b'c'; 32], &wrong_info());
-    let ctx = confirmed_ctx(dev.path());
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+    let ctx = test_ctx();
+    let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
+    assert!(
+        matches!(
+            status.coherence,
+            Coherence::NoEvidence { counts } if counts.examined == 1 && counts.key_matches == 0
+        ),
+        "{:?}",
+        status.coherence
+    );
 }
 
 #[test]
@@ -482,8 +420,16 @@ fn une_histoire_coherente_l_emporte_sur_une_histoire_abimee() {
     let dev = device(&mdf_v2_known());
     story(dev.path(), STORY, &key_v2(), &info_v2("Titre"));
     story(dev.path(), OTHER, &key_v2(), &[0u8; 32]);
-    let ctx = confirmed_ctx(dev.path());
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+    let ctx = test_ctx();
+    let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
+    assert!(
+        matches!(
+            status.coherence,
+            Coherence::Coherent { counts } if counts.decrypted == 1 && counts.key_matches == 2
+        ),
+        "{:?}",
+        status.coherence
+    );
 }
 
 #[test]
@@ -491,92 +437,10 @@ fn les_histoires_du_launcher_n_entrent_pas_dans_la_coherence() {
     let dev = device(&mdf_v2_known());
     story(dev.path(), STORY, &key_v2(), &[0u8; 32]);
     let ctx = ctx_with([STORY.to_string()].into());
-    confirm(dev.path(), &ctx).unwrap();
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
-}
-
-fn put_cache(root: &Path, data: &[u8]) {
-    write(&root.join(LIBRARY_CACHE), data);
-}
-
-#[test]
-fn verification_par_la_flam_via_library_cache() {
-    let data = tempfile::tempdir().unwrap();
-    let file = data.path().join(TRUST_FILE);
-    let dev = device(&mdf_v2_known());
-    story(dev.path(), STORY, &key_v2(), &info_v2("Capi et la rivière"));
-    let launcher: HashSet<String> = [STORY.to_string()].into();
-    // Cache sans le titre (avant le redémarrage de la Flam) : rien n'est prouvé.
-    put_cache(dev.path(), b"\x00\x01ancien cache sans le titre\x00");
-    let session = KeySession::default();
-    let trust = TrustStore::at(file.clone());
-    let ctx = WriteContext::new(&session, &trust, None, launcher.clone());
-    assert!(matches!(
-        check_write(dev.path(), &ctx, WriteKind::Send),
-        Err(WriteRefused::ConfirmationRequired { .. })
-    ));
-    // Cache reconstruit par la Flam avec le titre déchiffré (UTF-8) : vérifié, sans confirmation.
-    let mut cache = b"\x00\x02".to_vec();
-    cache.extend("Capi et la rivière".as_bytes());
-    cache.extend(b"\x00\x00");
-    put_cache(dev.path(), &cache);
-    let before = snapshot(dev.path());
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
-    assert_eq!(
-        snapshot(dev.path()),
-        before,
-        "le cache n'est pas supprimé par la garde"
-    );
     let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
-    assert_eq!(status.trust, Trust::FlamVerified);
-    // Mémorisé : une autre session, cache supprimé depuis, reste vérifiée.
-    std::fs::remove_file(dev.path().join(LIBRARY_CACHE)).unwrap();
-    let session = KeySession::default();
-    let trust = TrustStore::at(file);
-    let ctx = WriteContext::new(&session, &trust, None, launcher);
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
-}
-
-#[test]
-fn verification_par_la_flam_en_utf16() {
-    let dev = device(&mdf_v2_known());
-    story(dev.path(), STORY, &key_v2(), &info_v2("Titre long"));
-    // Titre précédé de sa longueur (10 unités) et suivi d'un nul, en UTF-16LE.
-    let mut cache: Vec<u8> = vec![0x41, 0x00, 10, 0x00];
-    cache.extend("Titre long".encode_utf16().flat_map(u16::to_le_bytes));
-    cache.extend([0, 0, 0x42, 0x00]);
-    put_cache(dev.path(), &cache);
-    assert!(flam_cache_proof(
-        dev.path(),
-        &mdf_v2_known(),
-        &[STORY.to_string()].into()
-    ));
-}
-
-#[test]
-fn le_cache_ne_prouve_rien_pour_une_histoire_hors_launcher_ou_un_titre_court() {
-    let dev = device(&mdf_v2_known());
-    story(dev.path(), STORY, &key_v2(), &info_v2("Titre officiel"));
-    put_cache(dev.path(), "Titre officiel".as_bytes());
-    // Histoire non installée par le launcher.
-    assert!(!flam_cache_proof(
-        dev.path(),
-        &mdf_v2_known(),
-        &HashSet::new()
-    ));
-    assert!(!flam_cache_proof(
-        dev.path(),
-        &mdf_v2_known(),
-        &[OTHER.to_string()].into()
-    ));
-    // Titre trop court pour être distinctif.
-    let dev = device(&mdf_v2_known());
-    story(dev.path(), STORY, &key_v2(), &info_v2("Abc"));
-    put_cache(dev.path(), b"Abc");
-    assert!(!flam_cache_proof(
-        dev.path(),
-        &mdf_v2_known(),
-        &[STORY.to_string()].into()
+    assert!(matches!(
+        status.coherence,
+        Coherence::NoEvidence { counts } if counts.examined == 0
     ));
 }
 
@@ -584,7 +448,7 @@ fn le_cache_ne_prouve_rien_pour_une_histoire_hors_launcher_ou_un_titre_court() {
 fn l_etat_expose_ne_contient_aucun_secret() {
     let dev = device(&mdf_v2_known());
     story(dev.path(), STORY, &key_v2(), &info_v2("Titre"));
-    let ctx = confirmed_ctx(dev.path());
+    let ctx = test_ctx();
     let mdf = mdf_v2_known();
     let status = firmware_status(dev.path(), &mdf, &ctx, false);
     let json = serde_json::to_string(&status).unwrap().to_lowercase();
@@ -603,7 +467,7 @@ fn l_etat_expose_ne_contient_aucun_secret() {
     assert!(json.contains("\"header\":\"01 00\""), "{json}");
     assert!(json.contains("\"family\":\"v2\""), "{json}");
     assert!(json.contains("\"usb_ids\":\"303a:819e\""), "{json}");
-    assert!(json.contains("\"trust\":\"confirmed\""), "{json}");
+    assert!(!json.contains("trust"), "{json}");
     assert!(json.contains("\"kind\":\"coherent\""), "{json}");
 }
 
@@ -621,11 +485,8 @@ fn etat_v1_et_mdf_illisible() {
     let status = firmware_status(dev.path(), &mdf_v1_real(), &test_ctx(), false);
     assert_eq!(status.family, Family::V1);
     assert_eq!(status.coherence, Coherence::NotApplicable);
-    assert_eq!(status.trust, Trust::NotApplicable);
     assert!(status.layout_standard);
     assert_eq!(status.write_block, None);
-    // 1.x : rien à confirmer, l'état est rendu tel quel.
-    assert_eq!(confirm(dev.path(), &test_ctx()).unwrap(), status);
     let status = unreadable_status(70_000, "trop grand".into());
     assert!(matches!(
         status.write_block,
@@ -644,47 +505,6 @@ fn vid_pid_inattendu_signale_sans_refus() {
 }
 
 #[test]
-fn un_titre_inclus_dans_un_autre_ne_prouve_rien() {
-    let dev = device(&mdf_v2_known());
-    story(dev.path(), STORY, &key_v2(), &info_v2("Capi"));
-    let launcher: HashSet<String> = [STORY.to_string()].into();
-    // « Capi » n'apparaît qu'à l'intérieur d'un titre officiel, en UTF-8 puis en UTF-16LE.
-    let mut cache = b"\x00Le Noel de Capi\x00".to_vec();
-    cache.extend("Le Noel de Capi".encode_utf16().flat_map(u16::to_le_bytes));
-    cache.extend([0, 0]);
-    put_cache(dev.path(), &cache);
-    assert!(!flam_cache_proof(dev.path(), &mdf_v2_known(), &launcher));
-    // Le même titre comme champ entier (délimité par des nuls, ou précédé de sa longueur) : oui.
-    put_cache(dev.path(), b"\x10\x00Capi\x00\x01");
-    assert!(flam_cache_proof(dev.path(), &mdf_v2_known(), &launcher));
-    put_cache(dev.path(), b"\x99\x04Capi\x02");
-    assert!(flam_cache_proof(dev.path(), &mdf_v2_known(), &launcher));
-}
-
-#[test]
-fn contradiction_sur_une_flam_non_confirmee_reste_confirmable() {
-    // Premier branchement d'une 2.x avec une histoire tierce incohérente : l'état dit l'envoi
-    // bloqué ET la confiance à donner ; la confirmation rend le retrait possible.
-    let dev = device(&mdf_v2_known());
-    story(dev.path(), STORY, &key_v2(), &wrong_info());
-    let ctx = test_ctx();
-    let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
-    assert!(matches!(
-        status.write_block,
-        Some(WriteRefused::KeysContradiction { .. })
-    ));
-    assert_eq!(status.trust, Trust::Unconfirmed);
-    assert!(matches!(
-        check_write(dev.path(), &ctx, WriteKind::Other),
-        Err(WriteRefused::ConfirmationRequired { .. })
-    ));
-    let status = confirm(dev.path(), &ctx).unwrap();
-    assert_eq!(status.trust, Trust::Confirmed);
-    check_write(dev.path(), &ctx, WriteKind::Other).unwrap();
-    assert!(check_write(dev.path(), &ctx, WriteKind::Send).is_err());
-}
-
-#[test]
 fn un_permis_ne_vaut_que_pour_sa_racine() {
     let dev = device(&mdf_v1_real());
     let other = device(&mdf_v1_real());
@@ -694,22 +514,11 @@ fn un_permis_ne_vaut_que_pour_sa_racine() {
 }
 
 #[test]
-fn la_recherche_dans_le_cache_ne_panique_jamais() {
-    assert_eq!(memchr_all(b"abc", b"").count(), 0);
-    assert_eq!(memchr_all(b"ab", b"abc").count(), 0);
-    assert_eq!(memchr_all(b"", b"a").count(), 0);
-    assert_eq!(memchr_all(b"abab", b"ab").collect::<Vec<_>>(), [0, 2]);
-    assert!(!contains_field(b"", b"Capi"));
-    assert!(!contains_field_utf16(b"", &[0x43]));
-    assert!(!contains_field_utf16(b"x", &[]));
-}
-
-#[test]
 fn apres_un_retrait_l_etat_ne_montre_plus_l_histoire_retiree() {
     // #345 : le contrôle fait par la garde d'un retrait n'est pas réutilisé par « Ma Flam ».
     let dev = device(&mdf_v2_known());
     story(dev.path(), STORY, &key_v2(), &wrong_info());
-    let ctx = confirmed_ctx(dev.path());
+    let ctx = test_ctx();
     let mdf = mdf_v2_known();
     let status = firmware_status(dev.path(), &mdf, &ctx, false);
     assert!(matches!(status.coherence, Coherence::Contradiction { .. }));
@@ -719,7 +528,7 @@ fn apres_un_retrait_l_etat_ne_montre_plus_l_histoire_retiree() {
     let status = firmware_status(dev.path(), &mdf, &ctx, true);
     assert_eq!(status.coherence, Coherence::NotChecked);
     std::fs::remove_dir_all(dev.path().join("str").join(STORY)).unwrap();
-    // Aussitôt après (bien avant `STATUS_REUSE`) : contrôle refait, envoi débloqué.
+    // Aussitôt après (bien avant `STATUS_REUSE`) : contrôle refait.
     let status = firmware_status(dev.path(), &mdf, &ctx, false);
     assert!(
         matches!(status.coherence, Coherence::NoEvidence { .. }),
@@ -730,13 +539,21 @@ fn apres_un_retrait_l_etat_ne_montre_plus_l_histoire_retiree() {
     check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
 }
 
+/// #326 : la cohérence ne sert qu'à l'affichage ; l'écriture ne la contrôle pas, et l'envoi
+/// garde le contrôle de « Ma Flam » (il n'écrit que des histoires du launcher, exclues).
 #[test]
-fn l_envoi_garde_le_controle_pour_l_affichage() {
+fn l_ecriture_ne_controle_pas_la_coherence_et_l_envoi_garde_l_affichage() {
     let dev = device(&mdf_v2_known());
-    let ctx = confirmed_ctx(dev.path());
+    let ctx = test_ctx();
     story(dev.path(), STORY, &key_v2(), &info_v2("Histoire importée"));
     check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
-    // Réutilisé pendant l'écriture (Flam occupée).
+    // Aucun contrôle fait par l'envoi : rien à réutiliser pendant l'écriture.
+    let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, true);
+    assert_eq!(status.coherence, Coherence::NotChecked);
+    // Contrôle de l'affichage, puis envoi : réutilisé pendant l'écriture (Flam occupée).
+    let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
+    assert!(matches!(status.coherence, Coherence::Coherent { .. }));
+    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
     let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, true);
     assert!(matches!(status.coherence, Coherence::Coherent { .. }));
 }
@@ -747,7 +564,7 @@ fn un_info_dechiffre_sans_titre_n_est_pas_une_contradiction() {
     let dev = device(&mdf_v2_known());
     let blank = encrypt_zero_padded(&TEST_KEY, &TEST_IV, b"\n   \n\n");
     story(dev.path(), STORY, &key_v2(), &blank);
-    let ctx = confirmed_ctx(dev.path());
+    let ctx = test_ctx();
     let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
     assert!(
         matches!(
@@ -758,108 +575,6 @@ fn un_info_dechiffre_sans_titre_n_est_pas_une_contradiction() {
         status.coherence
     );
     check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
-}
-
-#[test]
-fn des_cles_invalides_gardent_la_confiance_memorisee() {
-    // #326 (NIT) : une Flam confirmée reste « confirmée » à l'affichage ; le refus tient.
-    let mut zero_key = mdf_v2_known();
-    zero_key[MDF_KEY_OFFSET..MDF_KEY_OFFSET + 16].fill(0);
-    let mut bad_serial = mdf_v2_known();
-    bad_serial[0x32] = b'g';
-    for mdf in [zero_key, bad_serial] {
-        let dev = device(&mdf);
-        let ctx = test_ctx();
-        let status = firmware_status(dev.path(), &mdf, &ctx, false);
-        assert_eq!(status.trust, Trust::Unconfirmed);
-        ctx.trust.record(&mdf, false);
-        let status = firmware_status(dev.path(), &mdf, &ctx, false);
-        assert_eq!(status.trust, Trust::Confirmed);
-        assert!(matches!(
-            status.write_block,
-            Some(WriteRefused::KeysTrivial { .. } | WriteRefused::KeysUnreadable { .. })
-        ));
-        assert!(check_write(dev.path(), &ctx, WriteKind::Other).is_err());
-    }
-}
-
-/// `.mdf` 2.x numéroté `n` (octets de rôle inconnu à 0x6E), donc d'empreinte distincte.
-fn mdf_numbered(n: u32) -> Vec<u8> {
-    let mut mdf = mdf_v2_known();
-    mdf[MDF_IV_OFFSET + 16..MDF_IV_OFFSET + 20].copy_from_slice(&n.to_le_bytes());
-    mdf
-}
-
-#[test]
-fn l_eviction_oublie_l_empreinte_la_plus_ancienne() {
-    let data = tempfile::tempdir().unwrap();
-    let file = data.path().join(TRUST_FILE);
-    let trust = TrustStore::at(file.clone());
-    let total = MAX_TRUST_ENTRIES as u32 + 1;
-    for n in 0..total {
-        trust.record(&mdf_numbered(n), false);
-    }
-    // L'ordre alphabétique des empreintes n'est pas celui d'enregistrement.
-    let first_alpha = (0..total)
-        .min_by_key(|n| fingerprint(&mdf_numbered(*n)))
-        .unwrap();
-    assert_ne!(first_alpha, 0, "fixture : choisir d'autres numéros");
-    for store in [&trust, &TrustStore::at(file)] {
-        assert_eq!(store.trust(&mdf_numbered(0)), Trust::Unconfirmed);
-        assert_eq!(store.trust(&mdf_numbered(1)), Trust::Confirmed);
-        assert_eq!(store.trust(&mdf_numbered(first_alpha)), Trust::Confirmed);
-        assert_eq!(store.trust(&mdf_numbered(total - 1)), Trust::Confirmed);
-    }
-}
-
-#[test]
-fn des_enregistrements_simultanes_sont_tous_ecrits() {
-    let data = tempfile::tempdir().unwrap();
-    let file = data.path().join(TRUST_FILE);
-    let trust = TrustStore::at(file.clone());
-    std::thread::scope(|scope| {
-        for n in 0..16 {
-            let trust = &trust;
-            scope.spawn(move || trust.record(&mdf_numbered(n), n % 2 == 0));
-        }
-    });
-    // Relu d'une autre session : aucun enregistrement perdu.
-    let reread = TrustStore::at(file);
-    for n in 0..16 {
-        let expected = if n % 2 == 0 {
-            Trust::FlamVerified
-        } else {
-            Trust::Confirmed
-        };
-        assert_eq!(reread.trust(&mdf_numbered(n)), expected, "n = {n}");
-    }
-}
-
-#[test]
-fn un_fichier_de_confiance_ancien_reste_lu_et_borne() {
-    let data = tempfile::tempdir().unwrap();
-    let file = data.path().join(TRUST_FILE);
-    // Ancienne forme (ensembles triés), avec un doublon et une liste trop longue.
-    let mut confirmed: Vec<String> = (0..MAX_TRUST_ENTRIES as u32 + 2)
-        .map(|n| fingerprint(&mdf_numbered(n)))
-        .collect();
-    confirmed.push(confirmed[5].clone());
-    let json = serde_json::json!({ "confirmed": confirmed, "flam_verified": [] });
-    std::fs::write(&file, json.to_string()).unwrap();
-    let trust = TrustStore::at(file);
-    // Les deux plus anciennes sont oubliées, les autres relues.
-    assert_eq!(trust.trust(&mdf_numbered(0)), Trust::Unconfirmed);
-    assert_eq!(trust.trust(&mdf_numbered(1)), Trust::Unconfirmed);
-    assert_eq!(trust.trust(&mdf_numbered(5)), Trust::Confirmed);
-    assert_eq!(
-        trust.trust(&mdf_numbered(MAX_TRUST_ENTRIES as u32 + 1)),
-        Trust::Confirmed
-    );
-    trust.with(|data| {
-        assert_eq!(data.confirmed.len(), MAX_TRUST_ENTRIES);
-        let distinct: HashSet<&String> = data.confirmed.iter().collect();
-        assert_eq!(distinct.len(), MAX_TRUST_ENTRIES);
-    });
 }
 
 #[test]
@@ -894,7 +609,7 @@ fn chaque_ecriture_other_change_la_generation() {
     // #345 : une scrutation commencée avant un retrait ne garde pas son contrôle (génération
     // relue au stockage) ; ici, la génération avance à chaque garde `Other`, pas à l'envoi.
     let dev = device(&mdf_v2_known());
-    let ctx = confirmed_ctx(dev.path());
+    let ctx = test_ctx();
     let key = session_key(dev.path(), &mdf_v2_known());
     let before = ctx.session.with(key.clone(), |e| e.generation);
     check_write(dev.path(), &ctx, WriteKind::Other).unwrap();

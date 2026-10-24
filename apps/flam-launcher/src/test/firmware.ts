@@ -1,6 +1,6 @@
 import type { FirmwareStatus } from "../api/device";
 
-/** État du firmware d'une Flam 2.x confirmée par l'utilisateur (écriture autorisée). */
+/** État du firmware d'une Flam 2.x (écriture autorisée, sans contradiction). */
 export function firmwareV2(overrides: Partial<FirmwareStatus> = {}): FirmwareStatus {
   return {
     version: "2.4.2",
@@ -21,7 +21,6 @@ export function firmwareV2(overrides: Partial<FirmwareStatus> = {}): FirmwareSta
         clear_info: 0,
       },
     },
-    trust: "confirmed",
     write_block: null,
     ...overrides,
   };
@@ -38,7 +37,6 @@ export function firmwareV1(): FirmwareStatus {
     layout_standard: true,
     usb_ids: "303a:819e",
     coherence: { kind: "not_applicable" },
-    trust: "not_applicable",
     write_block: null,
   };
 }
