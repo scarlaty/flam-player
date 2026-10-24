@@ -121,7 +121,7 @@ figurer, même avec `OR`.
 | JSON | `serde_json` (déjà), fonction `preserve_order` | MIT OR Apache-2.0 | Fait entrer `indexmap` (Apache-2.0 OR MIT). |
 | Flottants façon Python | `ryu` (ou formatage maison) | Apache-2.0 OR BSL-1.0 | Les deux termes sont autorisés. |
 | Rééchantillonnage | **port de l'algorithme de Pillow** (pas de crate) | Pillow : MIT-CMU (HPND) | Ce n'est pas une dépendance Cargo : `ALLOWED_LICENSES` ne change pas. En-tête de licence et mention dans les notices (D3, §4.2). |
-| Autres formats d'image (JPEG…) | `zune-jpeg` ou `jpeg-decoder` si nécessaire ; GIF : port de Pillow (`gif.rs`, HPND, voir la ligne du rééchantillonnage) | MIT OR Apache-2.0 (OR Zlib) | D4 : délégation à Python (`unsupported_format`, code 7) pendant la transition. Le support devient obligatoire avant #138 pour chaque format que la campagne trouve : en cours (#459, §4.4 ; PNG atypiques et GIF faits, le GIF par un port de `GifDecode.c` sans crate). |
+| Autres formats d'image (JPEG…) | JPEG : `zune-jpeg` (`=0.5.15`, avec `zune-core` `=0.5.3`, sans les fonctions SIMD `x86`/`neon`) ; GIF : port de Pillow (`gif.rs`, HPND, voir la ligne du rééchantillonnage) | MIT OR Apache-2.0 OR Zlib (zune) | D4 : délégation à Python (`unsupported_format`, code 7) pendant la transition. Le support devient obligatoire avant #138 pour chaque format que la campagne trouve : en cours (#459, §4.4 ; PNG atypiques, GIF et JPEG faits, le GIF par un port de `GifDecode.c` sans crate, le JPEG à ±4 près selon D7). |
 | Méthodes ZIP bzip2/LZMA/Zstandard | bzip2 et LZMA écrits à la main (`unbzip2.rs`, `unlzma.rs`) ; Zstandard : `ruzstd` `=0.9.1` (MIT) et `twox-hash` `=2.1.5` (MIT) | MIT (dépendances) | **Fait (#458)**, voir §3.1. `bzip2-sys` et `libbz2-rs-sys` : licence bzip2-1.0.6, non autorisée ; `bzip2-rs` (MIT/Apache-2.0) échoue sur un bloc incompressible ; `lzma-rs` (MIT) exige le marqueur de fin. |
 
 Pas de `image` (crate complète) : trop de dépendances, et ses conversions (16 → 8 bits par
@@ -172,9 +172,10 @@ Invariants (repris de Python, à tester côté Rust) :
    Object plus stricte que l'existant. Le Rust réduit sa consommation sans refuser : MP3 écrits
    en flux dans le `.part` (par tours de 256 Kio, #402) au lieu d'être tous gardés en mémoire, copies d'images libérées au
    plus tôt.
-6. **Délégation des cas non gérés** (décision D4) : face à une image dans un autre format que PNG ou GIF
-   (les PNG atypiques, APNG compris, et le GIF sont décodés depuis #459, §4.4), le Rust ne convertit pas
-   (les entrées ZIP bzip2, LZMA et Zstandard sont lues depuis #458). Il nettoie son `.part`, émet
+6. **Délégation des cas non gérés** (décision D4) : face à une image dans un autre format que PNG,
+   GIF ou JPEG (les PNG atypiques, APNG compris, le GIF et le JPEG sont décodés depuis #459,
+   §4.4 ; restent délégués les JPEG que libjpeg-turbo lit mais pas `zune-jpeg`), le Rust ne
+   convertit pas (les entrées ZIP bzip2, LZMA et Zstandard sont lues depuis #458). Il nettoie son `.part`, émet
    l'événement `error` avec le code `unsupported_format` et sort avec le **code 7**, distinct de
    `internal_error`. Tant que le repli Python existe, le launcher rejoue alors la conversion
    en Python.
@@ -187,7 +188,8 @@ Invariants (repris de Python, à tester côté Rust) :
 | Archive corrompue (CRC, en-tête, troncature) | lecture d'une entrée | rien | `archive_unreadable`, code 3. Le CRC doit être vérifié : lire chaque entrée jusqu'au bout. |
 | Entrée chiffrée, méthode que Python ne lit pas non plus (deflate64…) | lecture | rien | `archive_unreadable`, code 3 (Python : 3 pour une méthode inconnue, mais `internal_error` 6 pour une entrée chiffrée ; divergence volontaire, car Python échoue aussi) |
 | Entrée bzip2, LZMA ou Zstandard | lecture | rien | Lue comme `zipfile` (#458, §3.1). Flux invalide : Python lève `OSError`, `LZMAError` ou `ZstdError` (`internal_error`, code 6), le Rust rend `archive_unreadable` (code 3) : divergence volontaire, Python échoue aussi. Flux tronqué, CRC faux, bombe : voir §3.1. |
-| Image dans un autre format que PNG ou GIF (JPEG…) | image | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6), et non `image_unreadable` : Pillow la lirait. Prise en charge format par format (#459, §4.4) |
+| Image dans un autre format que PNG, GIF ou JPEG (BMP…), JPEG lu par libjpeg mais pas par le Rust (arithmétique, sans perte, refus de `zune-jpeg`…) | image | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6), et non `image_unreadable` : Pillow la lirait. Prise en charge format par format (#459, §4.4) |
+| JPEG | image | — | décodé par `zune-jpeg`, verdict (lu ou illisible) reproduit de Pillow et libjpeg-turbo, pixels à ±4 près (D7, §4.4) |
 | PNG atypique (APNG, `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue) | image | — | décodé comme Pillow, erreurs comprises (#459, §4.4) ; plus de délégation |
 | Noms dupliqués dans l'archive | indexation | rien | même entrée retenue que Python (`ZipFile.getinfo` : la **dernière**). `zip` 4.6.1 retient aussi la dernière (`IndexMap::insert`), mais ne liste le nom qu'une fois : `find_root` et l'index replié (`setdefault`, premier nom rencontré) doivent reproduire `namelist()`. Test dédié. |
 | Pas une histoire Telmi | `find_root` | rien | `not_telmi`, code 3 |
@@ -318,8 +320,9 @@ dans le sens « le Rust refuse ce que Python lit » (D5) ; ils sont acceptés pa
   exception non rattrapée. Ce sont le **nom d'entrée UTF-8 invalide avec le bit 11**
   (`UnicodeDecodeError`, règle `invalid_utf8_name`) et la **position d'en-tête locale
   négative** (`OSError`, règle `negative_offset`). Chaque règle est limitée à une étiquette
-  de cas du corpus et au couple de codes exact (Python 6 / Rust 3). Tout autre écart fait
-  échouer la comparaison.
+  de cas du corpus et au couple de codes exact (Python 6 / Rust 3). Dernière règle, d'entrée
+  et non de statut : `jpeg_bounded` (D7, §4.4), les `.lif` issus d'un JPEG à ±4 près. Tout
+  autre écart fait échouer la comparaison.
 
 ### 4.2 Images : le point dur
 
@@ -413,7 +416,7 @@ aucun appel dans `telmi2flam.py`), le Rust ne l'applique pas non plus. Ni `draft
 | Format | Mode à l'ouverture (Pillow 12.3.0) | Conversion vers RGBA | Décodeur Rust | Parité visée |
 | --- | --- | --- | --- | --- |
 | PNG atypique (PR 1, fait) | modes PNG ; APNG : première image (zone du `fcTL`) | celle des PNG (§4.2, `_trns_mask`) | `png.rs` (fait main) | octet à octet, erreurs comprises |
-| JPEG (PR 2) | `L` (1 composante), `RGB` (3 : YCbCr→RGB par libjpeg-turbo, ou RGB brut selon JFIF/Adobe), `CMYK` (4, rawmode `CMYK;I` : polarité Adobe toujours supposée ; YCCK converti par libjpeg) ; refus (illisible) si précision ≠ 8 bits ou 2/5+ composantes | `L`→gris opaque, `CMYK`→`cmyk2rgb` de Pillow (`255 - k` modulé, entier) | `zune-jpeg` (MIT OR Apache-2.0 OR Zlib) ou `jpeg-decoder` (MIT OR Apache-2.0), licences vérifiées dans `Cargo.lock` | identité visée (libjpeg-turbo : IDCT `JDCT_ISLOW`, suréchantillonnage « fancy », tables YCbCr de `jdcolor.c`) ; écart d'IDCT ou de suréchantillonnage mesuré sur le corpus, borné (par ex. ±1 par composante) et inscrit dans `ALLOWED_DEVIATIONS` |
+| JPEG (PR 2, fait) | `L` (1 composante), `RGB` (3 : YCbCr→RGB par libjpeg-turbo, ou RGB brut selon JFIF/Adobe/identifiants), `CMYK` (4, rawmode `CMYK;I` : polarité Adobe toujours supposée ; YCCK converti en CMYK par libjpeg) ; refus (illisible) si précision ≠ 8 bits ou 2/5+ composantes | `L`→gris opaque, `CMYK`→`cmyk2rgb` de Pillow (`255 - k` modulé, entier) | `jpeg.rs` : verdict fait main, pixels par `zune-jpeg` `=0.5.15` (MIT OR Apache-2.0 OR Zlib) en scalaire | **±4 par composante** (D7), alpha exact ; verdicts identiques ou délégués (D4) |
 | GIF (PR 3, fait) | première image en `P` (palette locale ou globale ; `L` sans palette), `info["transparency"]` = index du GCE ; image plus petite que l'écran : fond rempli de l'index transparent (sinon 0) | palette → RGBA, index transparent à alpha 0 | `gif.rs` (port de `GifImagePlugin.py` et `GifDecode.c`, code dérivé de Pillow, HPND : notices) ; pas de crate `gif` | octet à octet (pas d'arithmétique flottante) |
 | BMP, WebP… | à évaluer : seulement si une histoire réelle en contient (campagne #135) | — | — | issue de suivi sinon |
 
@@ -438,12 +441,21 @@ aucun appel dans `telmi2flam.py`), le Rust ne l'applique pas non plus. Ni `draft
 
 | Panne | Comportement de Pillow (oracle) | Comportement attendu du Rust |
 | --- | --- | --- |
-| Fichier tronqué (JPEG, GIF) | `OSError: image file is truncated` (`LOAD_TRUNCATED_IMAGES` faux) | illisible, sauf si Pillow a déjà toutes les lignes (fin de flux absente tolérée) : mêmes cas, testés par troncature |
-| Données corrompues dans un JPEG (code de Huffman invalide, marqueur `RSTn` manquant) | libjpeg-turbo **avertit et continue** (blocs mis à zéro, resynchronisation) : image lue | reproduire la reprise de libjpeg-turbo est hors de portée d'un décodeur tiers : écart **assumé** (pixels différents, jamais un refus de la conversion), mesuré et listé ; à défaut, image illisible = divergence à signaler |
-| Bombe (dimensions énormes) | `DecompressionBombError` au-delà de `2 × MAX_IMAGE_PIXELS` | illisible, avant toute allocation |
-| JPEG CMYK / YCCK | `CMYK` inversé (Adobe) puis `cmyk2rgb` | même formule entière ; vecteurs CMYK et YCCK |
-| JPEG progressif, arithmétique, 4:1:1, 4:4:0, échantillonnages impairs | lus par libjpeg-turbo | lus ; un décodeur qui n'accepte pas un cas (par ex. codage arithmétique) le **délègue** encore (code 7) tant que Python existe, puis issue de suivi |
-| JPEG 12 bits, sans perte (`SOF3`) | `SyntaxError` (précision ≠ 8) ou erreur libjpeg : illisible | illisible |
+| Fichier tronqué (JPEG, GIF) | `OSError: image file is truncated` (`LOAD_TRUNCATED_IMAGES` faux, vérifié : `telmi2flam.py` ne le pose pas) | illisible, sauf si Pillow a déjà toutes les lignes : mêmes cas, testés par troncature (JPEG : 3 bases, chaque longueur) |
+| JPEG sans `EOI` | un seul balayage : lu si un marqueur suit les données ; sans marqueur, lu seulement si assez d'octets suivent les données utiles (0 à 7 selon l'image, mesuré) ; plusieurs balayages : illisible (`EOI` exigé) | un seul balayage sans marqueur : données manquantes (image changée selon les bits ajoutés après la fin), illisible ; 8 octets inutiles en fin, lu ; sinon délégué |
+| JPEG coupé puis terminé par un marqueur (`EOI`, `DHT`…) | lu, blocs manquants gris uniforme (`insufficient_data`) | lu ; pixels de la partie manquante différents (écart assumé, non borné, vecteurs `fin_*_moitie_*`) |
+| Données après `EOI`, octets parasites entre segments, remplissage `FF` | ignorés | ignorés (le flux remis à `zune-jpeg` est réécrit) |
+| Données corrompues dans un JPEG (code de Huffman invalide, marqueur `RSTn` manquant) | libjpeg-turbo **avertit et continue** (blocs mis à zéro, resynchronisation) : image lue | lu par `zune-jpeg` avec d'autres pixels (écart **assumé**), ou refusé par `zune-jpeg` : **délégué** (code 7) ; marqueur invalide dans une image à redémarrages (libjpeg resynchronise ou refuse selon sa position) : délégué |
+| Bombe (dimensions énormes) | `DecompressionBombError` au-delà de `2 × MAX_IMAGE_PIXELS` ; côté > 65 500 px : `JERR_IMAGE_TOO_BIG` | illisible, avant toute allocation |
+| JPEG CMYK / YCCK | `CMYK` inversé (Adobe) puis `cmyk2rgb` ; Adobe 2 ou inconnu sur 4 composantes : YCCK | même formule entière ; vecteurs CMYK, YCCK, Adobe inconnu ; écart mesuré ±1 |
+| JPEG RGB sans conversion | Adobe 0 sans JFIF, ou identifiants `R`, `G`, `B` sans JFIF ni Adobe | idem (JFIF prime, comme `default_decompress_parms`) |
+| JPEG progressif, restart (`DRI`, `RSTn`), tables optimisées, 4:4:4 / 4:2:2 / 4:2:0 | lus par libjpeg-turbo | lus, à ±4 près |
+| Tables de Huffman absentes ou invalides | séquentiel : tables 0 et 1 standard ; progressif : `JERR_NO_HUFF_TABLE` ; index ≥ 4, code « tout à un », symbole DC > 15 : illisible | idem (contrôles de `jpeg.rs`, puis `AVI1` pour les tables standard de `zune-jpeg`) |
+| JPEG arithmétique (`SOF9`, `SOF10`), sans perte (`SOF3`, `SOF11`) | lus par libjpeg-turbo 3.1 (arithmétique vérifié sur l'oracle) | **délégués** (code 7, `JPEG arithmétique` / `JPEG sans perte`) : `zune-jpeg` ne les lit pas ; avec le repli Python retiré (#138), c'est une erreur de conversion visible |
+| JPEG 12 bits, différentiel (`SOF5`-`7`, `SOF13`-`15`), `DHP`, `EXP`, `JPGn`, `SOF` ou `SOI` répété | `SyntaxError` (précision ≠ 8) ou erreur fatale libjpeg : illisible | illisible |
+| Flux de tables seules (`EOI`) suivi d'une image | lu (deux `jpeg_read_header`) | délégué (`JPEG à tables séparées`) ; `EOI` non suivi de `SOI` : illisible (`JERR_NO_SOI`) |
+| Balayage entrelacé de plus de 10 blocs par MCU | `JERR_BAD_MCU_SIZE` | illisible |
+| EXIF ou MPO malformés | exceptions éventuelles de `getexif` / `_getmp` | non reproduites (écart assumé, aucun cas connu) |
 | GIF entrelacé | lu (ordre des passes) | lu |
 | GIF animé, image partielle, sans palette globale | première image, fond index transparent ou 0 | idem |
 | APNG (PR 1) | première image ; séquence `fcTL`/`fdAT` fausse, `fcTL` court ou hors de l'image : illisible ; zone vide : illisible | idem, testé (`apng_*` de `gen_png_vectors.py`) |
@@ -454,9 +466,70 @@ suivi d'un bloc stocké dont le premier octet, dernier de l'entrée, était déj
 miniz (après un bloc dynamique) : lu par le Rust, `ValueError` pour Pillow (#473). GIF : un
 fichier forgé à la fois GIF et IM/IMT ou PCD (polyglotte) est relu par Pillow avec un greffon
 sans `_accept` après l'échec de l'ouverture GIF (champ tronqué, aucune image) ; le Rust le
-déclare illisible (écart accepté, #473). JPEG : écart d'IDCT/suréchantillonnage
-borné s'il est inévitable, et pixels des JPEG corrompus (reprise de libjpeg-turbo), chacun
-inscrit dans `ALLOWED_DEVIATIONS` avec sa mesure, et signalé dans la PR.
+déclare illisible (écart accepté, #473). JPEG : écart d'IDCT/suréchantillonnage borné à ±4
+(D7, règle `jpeg_bounded` de `ALLOWED_DEVIATIONS`) ; pixels d'un JPEG corrompu, ou coupé puis
+terminé par un marqueur, **non bornés : accepté par le mainteneur** (entrée abîmée ; libjpeg
+met les blocs manquants en gris uniforme, `zune-jpeg` non), hors corpus, vecteurs
+`fin_*_moitie_*` comparés sur le verdict seulement.
+
+**PR 2 (JPEG, faite, D7)** : `crates/telmi2flam/src/jpeg.rs`, appelé par `png::decode_rgba`
+dès la signature `FF D8 FF` (`_accept` de `JpegImagePlugin`).
+- Verdict fait main : analyse Python de `JpegImageFile._open` jusqu'au premier `SOS` (octets
+  parasites, `FF FF`, `FF 00`, marqueur inconnu : `no marker found` ; segment tronqué ; JFIF ou
+  Adobe de moins de 7 octets ; bloc Photoshop tronqué ; profil ICC court avant un `SOF` ; `SOF`
+  incomplet, précision ≠ 8, nombre de composantes) ; garde anti-bombe et taille nulle de
+  `Image.open` ; refus fatals de libjpeg-turbo (tableau ci-dessus) ; fin du flux (règle des
+  marqueurs, mesurée sur l'oracle).
+- Pixels : `zune-jpeg` `=0.5.15` en scalaire : fonctions `x86` et `neon` non compilées
+  (invariant 3 ; `use_unsafe` faux ne suffit pas, l'AVX2 reste choisi à l'exécution quand
+  `x86` est compilée). Le launcher active ces fonctions par la crate `image` : avec le
+  resolver 2, elles ne sont absentes que si `telmi2flam` est construit seul (`-p telmi2flam`,
+  comme `build-converter.ps1`) ; l'étape « zune-jpeg en scalaire » de `telmi2flam-rs.yml` le
+  vérifie (`cargo tree -e features`). Un appel de la bibliothèque depuis le launcher (tests du
+  podcast) décode donc les JPEG avec les chemins SIMD : hors parité, sans effet sur le binaire
+  livré. Sans limite de
+  taille ni de nombre de balayages propre (celles de Pillow s'appliquent avant). `zune-jpeg`
+  n'a pas d'option d'IDCT ni de suréchantillonnage : son IDCT entière et son suréchantillonnage
+  « fancy » sont gardés tels quels. Il reçoit un flux réécrit (`SOF`, `DQT`, `DHT`, `DRI`,
+  `SOS` et données ; `APPn`, `COM`, `DNL` retirés ; paramètres de progression d'un `SOS`
+  séquentiel remis à 0/63/0, que libjpeg ignore ; `APP0` `AVI1` en séquentiel pour les tables
+  standard) et rend les composantes brutes ; la conversion YCbCr→RGB (JFIF, virgule fixe
+  16 bits), YCCK→CMYK et `cmyk2rgb` sont faites dans `jpeg.rs` selon l'espace choisi par
+  libjpeg-turbo.
+- Mesure (`tests/jpeg_vectors.rs`, 229 vecteurs écrits par Pillow, 196 lus) : écart maximal 4
+  en RGB (4:2:0, 4:2:2 et 4:4:4, séquentiel et progressif), 1 en gris et en CMYK, alpha exact ;
+  32 vecteurs identiques à l'octet près. Corpus de parité (cas `img_jpeg*`, `pkg_cover_jpeg_*`) :
+  après redimensionnement Lanczos et quantification RGB565, chaque `.lif` reste dans un pas de
+  quantification (règle `jpeg_bounded` : écart minimal avant quantification compatible ≤ 4,
+  alpha exact). Les lobes négatifs du Lanczos peuvent porter un écart source de 4 à 5 ou 6 : la
+  règle est alors plus stricte que D7 (faux écart possible en campagne, jamais un écart masqué).
+- Verdicts : identiques sur les 233 vecteurs, hors délégations (arithmétique, sans perte, flux
+  de tables seules, balayage unique sans `EOI`) ; sur 3 680 troncatures et octets inversés,
+  10 écarts, tous des délégations là où libjpeg tranche selon des détails non reproduits
+  (`alterations_divergences.tsv`), plus les préfixes qui perdent la signature (délégation
+  prudente d'`identify`). Aucun cas lu par Pillow n'est jugé illisible par le Rust : chaque
+  incertitude est déléguée (D4), dont tout refus de `zune-jpeg` sur une structure que libjpeg
+  accepte (données corrompues, table inutilisée invalide, facteur 3, `DQT` court entre deux
+  balayages…).
+- Mémoire : l'image RGBA est réservée par `try_reserve` ; le flux réécrit est borné par la
+  taille du fichier ; les tampons internes de `zune-jpeg` (coefficients d'une image
+  progressive, sortie brute) sont alloués d'après l'en-tête, comme ceux de libjpeg et de
+  Pillow, dans la limite de la garde anti-bombe ; un manque de mémoire dans `zune-jpeg` arrête
+  le processus (§3, « Mémoire épuisée »). Balayage unique sans `EOI` : jusqu'à trois décodages,
+  deux sorties brutes en mémoire à la fois (plus de 500 Mio près de la garde).
+- Annulation : avant l'analyse, après le parcours du flux, avant et après chaque décodage de
+  `zune-jpeg` (un seul en général, trois pour un balayage unique sans `EOI`), puis à chaque
+  ligne de la conversion ; test d'injection à chaque appel du jeton
+  (`annulation_avant_et_apres_le_decodage_puis_par_ligne`). `zune-jpeg` ne rend pas la main
+  pendant un décodage : pour une image proche de la garde, ou un JPEG progressif fait de très
+  nombreux balayages vides (aucune limite, comme libjpeg), l'annulation attend la fin du
+  décodage (aussi lent côté Python).
+- Parité : `parity.py` admet `jpeg_bounded` seulement sur les cas étiquetés `jpeg_bounded` et
+  les entrées `jpeg_entries` du cas (corpus), ou, en campagne, sur les `.lif` dont le nom
+  correspond à un JPEG de l'archive (`jpeg_outputs`, approximation du nommage de `alloc`) ;
+  statuts, avertissements et autres entrées restent comparés à l'identique.
+  `package_parity.rs` applique la même règle aux `.lif` de Python rangés dans
+  `package_cases.zip` (`jpeg_lif/`).
 
 **PR 1 (PNG atypiques, faite)** : `png.rs` ne délègue plus que les autres formats (`pas un
 PNG`). Détails reproduits de Pillow, tous vérifiés contre l'oracle :
@@ -626,6 +699,13 @@ Décisions du mainteneur du **2026-10-16** :
     **chaque format présent** est une condition préalable du retrait de Python (#138).
 - **D6, validée** : le Rust annonce `2.0.0`. Les résultats de compatibilité enregistrés avec
   `1.0.0` passent au statut « obtenus avec une version antérieure ».
+
+Décision du mainteneur du **2026-10-24** :
+
+- **D7, tranchée** : JPEG décodé par `zune-jpeg` (option (a) du point d'étape de #459), avec un
+  **écart borné à ±4 par composante** par rapport à Pillow/libjpeg-turbo, inscrit dans
+  `ALLOWED_DEVIATIONS` (règle `jpeg_bounded`, §4.4). Pas de décodeur maison reproduisant
+  libjpeg-turbo (option (b), licence IJG écartée).
 
 Points encore ouverts :
 

@@ -3,7 +3,9 @@ import type { InstallTask } from "../../api/install";
 import { makeEntry } from "../../test/entries";
 import {
   describePhase,
+  errorKindText,
   isActiveState,
+  MAX_SHOWN_WARNINGS,
   taskErrorMessage,
   taskProgress,
   toPanelTask,
@@ -123,4 +125,33 @@ it("traduit unsupported_format en un message clair et non technique", () => {
   expect(taskErrorMessage({ kind: "io", message: "x", code: "unsupported_format" })).toBe(
     "x",
   );
+});
+
+it("traduit les échecs des titres lus (tts_*) par kind, sans clé héritée", () => {
+  const failed = (kind: string, message = "texte du backend") =>
+    toPanelTask(task({ state: "failed", error: { kind, message, code: null } })).detail;
+  expect(failed("tts_no_voice")).toMatch(/^Aucune voix française n'est installée/);
+  expect(failed("tts_no_voice")).toContain("Heure et langue > Voix");
+  expect(failed("tts_unavailable")).toMatch(/^La synthèse vocale de Windows/);
+  expect(failed("tts_failed")).toMatch(/^Les titres n'ont pas pu être lus à voix haute/);
+  for (const kind of ["constructor", "__proto__", "toString", "task"]) {
+    expect(failed(kind, "m")).toBe("m");
+  }
+  expect(errorKindText("tts_failed")).toBe(failed("tts_failed"));
+  expect(errorKindText("hasOwnProperty")).toBeUndefined();
+});
+
+it("affiche les avertissements des titres lus d'un pack, les suivants comptés", () => {
+  const panel = (dropped: string[], warnings: string[]) =>
+    toPanelTask(task({ state: "done", pack: { episodes: 9, dropped, warnings } })).detail;
+  expect(panel([], ["Voix remplacée."])).toBe("Voix remplacée.");
+  expect(panel(["Deux"], ["« Un » : muet."])).toBe(
+    "1 épisode non inclus : Deux « Un » : muet.",
+  );
+  const many = Array.from({ length: MAX_SHOWN_WARNINGS + 2 }, (_, i) => `W${i}.`);
+  expect(panel([], many)).toBe("W0. W1. W2. Et 2 autres titres restés muets.");
+  expect(panel([], many.slice(0, MAX_SHOWN_WARNINGS + 1))).toBe(
+    "W0. W1. W2. Et 1 autre titre resté muet.",
+  );
+  expect(panel([], [])).toBeUndefined();
 });
