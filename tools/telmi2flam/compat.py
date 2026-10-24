@@ -8,7 +8,10 @@ Usage :
                      [--only <uuid|motif>] [--limit N] [--jobs N] [--force]
                      [--run|--no-run] [--player flam-player.exe] [--run-timeout S]
                      [--max-steps N] [--seed N] [--seeds N] [--run-jobs N]
-                     [--reinterpret] [--benign-error REGEX]
+                     [--reinterpret] [--benign-error REGEX] [--converter telmi2flam.exe]
+
+Le convertisseur est le binaire Rust `telmi2flam`, lance en processus enfant (voir
+converter_bin.py) : `cargo build -p telmi2flam --release` au prealable.
 
 Sorties (sous --cache) :
     archives/<uuid>-<version>.zip          archives telechargees
@@ -39,6 +42,11 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
+
+import converter_bin  # noqa: E402
+
+# Binaire telmi2flam a lancer (None : FLAM_TELMI2FLAM, sinon target/release ; voir converter_bin)
+CONVERTER = None
 
 DEFAULT_CACHE = os.path.join(".cache", "telmi")
 RETRIES = 3
@@ -320,18 +328,15 @@ def download(entry, archives_dir, opener=_urlopen, retries=RETRIES, timeout=TIME
 # Hash du convertisseur (reprise)
 # ---------------------------------------------------------------------------
 def converter_hash(root=HERE):
-    """Hash des sources du convertisseur (hors tests, compat, explore, docs)."""
+    """Hash du convertisseur : binaire Rust `telmi2flam` (CONVERTER, FLAM_TELMI2FLAM ou chemin
+    par defaut) et `validate.py`, qui juge la sortie. Leve ConverterNotFound si le binaire
+    est absent."""
     h = hashlib.sha256()
-    skip_files = {"compat.py", "explore.py"}
-    for dp, dns, fns in os.walk(root):
-        dns[:] = sorted(d for d in dns if d not in ("tests", "__pycache__"))
-        for fn in sorted(fns):
-            if fn in skip_files or not fn.endswith((".py", ".lua")):
-                continue
-            p = os.path.join(dp, fn)
-            h.update(os.path.relpath(p, root).replace("\\", "/").encode())
-            with open(p, "rb") as f:
-                h.update(f.read())
+    with open(converter_bin.find_converter(CONVERTER), "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    with open(os.path.join(root, "validate.py"), "rb") as f:
+        h.update(f.read())
     return h.hexdigest()[:16]
 
 
@@ -390,23 +395,18 @@ def check_zip_size(path, max_bytes=MAX_UNZIPPED, max_entries=MAX_ZIP_ENTRIES):
                          % (total >> 20, max_bytes >> 20))
 
 
-def do_convert(zip_path, out_path):
-    """Convertit en capturant avertissements et exceptions."""
-    import telmi2flam
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    out, err = io.StringIO(), io.StringIO()
+def do_convert(zip_path, out_path, converter=None):
+    """Convertit avec le binaire Rust (processus enfant) ; avertissements = evenements
+    `warning`, echec = evenement `error` (voir converter_bin.convert)."""
     t0 = time.time()
-    exc = None
     try:
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            telmi2flam.convert(zip_path, out_path)
-    except Exception as e:                 # ConvError, BadZipFile, OSError, bug imprevu...
-        exc = "%s: %s" % (type(e).__name__, e)
+        exe = converter_bin.find_converter(converter or CONVERTER)
+        warns, err = converter_bin.convert(exe, zip_path, out_path)
+    except converter_bin.ConverterNotFound as e:
+        return _step("fail", [str(e)], time.time() - t0)
     dt = time.time() - t0
-    warns = [l.strip().lstrip("!").strip() for l in err.getvalue().splitlines()
-             if l.strip().startswith("!")]
-    if exc:
-        return _step("fail", [exc] + warns, dt)
+    if err:
+        return _step("fail", [err] + warns, dt)
     return _step("warn" if warns else "ok", warns, dt)
 
 
@@ -1277,6 +1277,8 @@ def main(argv=None):
                     help="catalogue Telmi Store (url ou fichier .json), repetable")
     ap.add_argument("--folder", action="append", default=[],
                     help="dossier de .zip locaux, repetable")
+    ap.add_argument("--converter", help="binaire telmi2flam(.exe) (defaut : $FLAM_TELMI2FLAM, "
+                                        "sinon <depot>/target/release/)")
     ap.add_argument("--cache", default=DEFAULT_CACHE, help="racine du cache (defaut %(default)s)")
     ap.add_argument("--only", action="append", default=[],
                     help="uuid, motif (*?) ou sous-chaine du titre, repetable")
@@ -1323,6 +1325,13 @@ def main(argv=None):
             ap.error("--benign-error %r invalide : %s" % (rx, e))
     if not args.catalog and not args.folder:
         ap.error("au moins un --catalog ou --folder est requis")
+    global CONVERTER
+    CONVERTER = args.converter
+    try:
+        converter_bin.find_converter(CONVERTER)
+    except converter_bin.ConverterNotFound as e:
+        print("ERREUR : %s" % e, file=sys.stderr)
+        return 2
     try:
         entries = select(collect(args.catalog, args.folder), args.only, args.limit)
     except (OSError, ValueError) as e:
