@@ -1,6 +1,6 @@
 //! Conversion du graphe `nodes.json` vers Lua (`script/nodes.lua`) et bootstrap `main.lua`,
 //! comme la partie « Stages / Actions / Inventaire / startAction / nodes.lua » de `_convert`
-//! dans `tools/telmi2flam/telmi2flam.py` (`_conv_trans`, `_conv_cond`, `_conv_item`,
+//! dans l'ancien convertisseur Python (`_conv_trans`, `_conv_cond`, `_conv_item`,
 //! `_max_chapters_per_run`).
 //!
 //! Le découpage suit l'ordre de Python, pour que la première erreur soit la même :

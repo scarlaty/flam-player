@@ -16,7 +16,9 @@ REM  6. E2E      : tests\e2e\e2e_telmi.py : paquet TELMI -> telmi2flam ->
 REM               flam-player (pilotes SDL dummy)             [facultatif]
 REM               puis tests\e2e\e2e_embed.py : incrustation dans une
 REM               fenetre hote, sortie par stdin             [facultatif]
-REM  Facultatif : saute si python (ou Pillow) ou flam-player.exe absent.
+REM  Facultatif : saute si python ou flam-player.exe absent. Les etapes 5 et 6
+REM  lancent le binaire telmi2flam (cargo build -p telmi2flam --release, ou
+REM  FLAM_TELMI2FLAM) : le convertisseur Python est supprime (#140).
 REM  Code de sortie : 0 si les etapes 1, 2, 3, 5, 6 passent. Avec "strict",
 REM  les echecs des tests isoles comptent aussi, et un flam-test-audio.exe
 REM  absent est un echec (sinon : saute).
@@ -111,7 +113,7 @@ REM ---------------- Python (etapes 5 et 6) ----------------
 set "PY=python"
 if defined FLAM_PYTHON set "PY=%FLAM_PYTHON%"
 set "HAVE_PY=0"
-"%PY%" -c "import PIL" >nul 2>nul
+"%PY%" -c "import sys" >nul 2>nul
 if "!ERRORLEVEL!"=="0" set "HAVE_PY=1"
 
 REM ---------------- 5. Convertisseur ----------------
@@ -123,7 +125,7 @@ if "!HAVE_PY!"=="1" (
     set "CONV_RC=!ERRORLEVEL!"
     echo EXIT_CODE=!CONV_RC!
 ) else (
-    echo [SKIP] python avec Pillow introuvable : definir FLAM_PYTHON
+    echo [SKIP] python introuvable : definir FLAM_PYTHON
 )
 
 REM ---------------- 6. Bout en bout ----------------
@@ -143,7 +145,7 @@ if "!HAVE_PY!"=="1" (
     if not "!EMBED_RC!"=="0" if not "!EMBED_RC!"=="77" set "E2E_RC=!EMBED_RC!"
     if "!EMBED_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE= (incrustation : SKIP partiel)"
 ) else (
-    echo [SKIP] python avec Pillow introuvable : definir FLAM_PYTHON
+    echo [SKIP] python introuvable : definir FLAM_PYTHON
 )
 
 REM ---------------- Resume ----------------

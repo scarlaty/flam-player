@@ -1,5 +1,5 @@
 //! Archive Telmi : ouverture, index des noms (`_fold`), racine de l'histoire (`find_root`) et
-//! garde des noms d'assets (`check_asset_name`), comme dans `telmi2flam.py`.
+//! garde des noms d'assets (`check_asset_name`), comme dans l'ancien convertisseur Python.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;

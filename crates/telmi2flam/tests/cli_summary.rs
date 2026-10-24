@@ -1,6 +1,6 @@
 //! Résumé humain du binaire (#133) : sur stdout sans `--progress-json`, sur stderr avec ; mêmes
-//! lignes que `telmi2flam.py` (valeurs relevées sur l'oracle ; le reste vérifié à la main sur
-//! les 125 archives de `package_cases.zip`).
+//! lignes que l'ancien convertisseur Python (valeurs relevées sur l'oracle ; le reste vérifié à la
+//! main sur les 125 archives de `package_cases.zip`).
 
 use std::io::Cursor;
 use std::process::Command;

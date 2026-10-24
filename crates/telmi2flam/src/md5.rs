@@ -1,4 +1,4 @@
-//! MD5 (RFC 1321), pour `uuid.bin` : `hashlib.md5(...).digest()` de `telmi2flam.py`.
+//! MD5 (RFC 1321), pour `uuid.bin` : `hashlib.md5(...).digest()` de l'ancien convertisseur Python.
 //!
 //! Écrit ici plutôt que par la crate `md-5` (PORT-RUST.md §2.3) : une vingtaine de lignes,
 //! sans dépendance ni mention de licence supplémentaire. Ce n'est pas un usage

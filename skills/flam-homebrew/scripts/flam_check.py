@@ -33,7 +33,7 @@ for _s in (sys.stdout, sys.stderr):
 
 LIF_END = b"\x00\x00\x00\x00\x00\x00\x00\x01"
 # Copie volontaire (autonomie du skill : ce script est livré seul, sans le dépôt) de la liste
-# de tools/telmi2flam/runtime/manifest.txt, que lisent telmi2flam.py, validate.py et la crate Rust.
+# de tools/telmi2flam/runtime/manifest.txt, que lisent validate.py et la crate Rust.
 # Aucun test ne la compare au manifeste : la mettre à jour à la main si le runtime change.
 RUNTIME_SCRIPTS = ("global.lua", "progressionManager.lua", "button.lua", "button-theme.lua",
                    "button-theme-default.lua", "button-theme-interactive.lua", "v-scroll.lua",

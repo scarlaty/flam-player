@@ -1,6 +1,6 @@
 //! Textes affichés par le player (titre, sous-titre, labels de choix, inventaire) : `_flat`,
 //! `_font_safe`, `_text`, `_choice_label`, `_describe_replaced` et `LABEL_MAX` de
-//! `tools/telmi2flam/telmi2flam.py`.
+//! l'ancien convertisseur Python.
 //!
 //! Les données Unicode sont celles du Python de l'oracle (3.14, Unicode 16.0.0) :
 //! - espaces de `str.split()` / `str.isspace()` (dont `\x1c`-`\x1f` et U+0085, absents de
@@ -220,7 +220,7 @@ pub fn py_ascii(s: &str) -> String {
     py_quote(s, |c| (' '..='~').contains(&c))
 }
 
-/// `repr(s)` de Python pour une `str` (le `%r` des messages de `telmi2flam.py`).
+/// `repr(s)` de Python pour une `str` (le `%r` des messages de l'ancien convertisseur Python).
 pub fn py_repr(s: &str) -> String {
     py_quote(s, is_py_printable)
 }

@@ -45,7 +45,7 @@ pub enum Theme {
 }
 
 /// Remplissage des vignettes de bibliothèque (104 × 136, portrait) par le convertisseur
-/// (#279) : option `--thumb-fit` de `telmi2flam.py`.
+/// (#279) : option `--thumb-fit` du convertisseur.
 ///
 /// Ensemble fermé : l'argument transmis au convertisseur ne vient jamais d'une chaîne libre
 /// ([`ThumbFit::as_arg`]). Une valeur inconnue (fichier édité à la main ou écrit par une autre

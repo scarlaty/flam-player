@@ -147,8 +147,8 @@ impl FlamFiles for DirFiles<'_> {
     }
 }
 
-/// Archive zip avec table des noms normalisés (`\` -> `/`, comme `telmi2flam.py`) vers
-/// les noms d'origine.
+/// Archive zip avec table des noms normalisés (`\` -> `/`, comme l'ancien convertisseur Python)
+/// vers les noms d'origine.
 struct Zip {
     archive: ZipArchive<File>,
     names: HashMap<String, String>,
@@ -279,7 +279,7 @@ fn is_safe_entry_name(name: &str) -> bool {
 }
 
 /// Dossier racine de l'histoire dans l'archive : celui qui contient `metadata.json` et
-/// `nodes.json` (miroir de `find_root` de `telmi2flam.py`). Le moins profond gagne ;
+/// `nodes.json` (miroir de `find_root` de l'ancien convertisseur Python). Le moins profond gagne ;
 /// plusieurs candidats au même niveau est une erreur. `names` est normalisé en `/`.
 fn find_root(names: &[String]) -> Result<String, String> {
     let set: HashSet<&str> = names.iter().map(String::as_str).collect();
