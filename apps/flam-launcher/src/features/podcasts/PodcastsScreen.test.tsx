@@ -264,7 +264,10 @@ it("ajoute un flux et affiche ses épisodes", async () => {
   expect(calls.some((c) => c.cmd === "podcast_feed" || c.cmd === "podcast_refresh")).toBe(
     false,
   );
-  // Le focus va au titre de la liste, et l'ajout est annoncé par un toast.
+  // Le focus va au titre de la liste, et l'ajout est annoncé par un toast. Le focus est donné
+  // dans le rendu même qui montre les cases (effet de mise en page) : vérifié aussitôt. Avec
+  // un effet passif, `findByRole` pouvait rendre la main avant lui (échec isolé en CI sur #486,
+  // #489).
   expect(screen.getByRole("heading", { name: /Épisodes de « Flux »/ })).toHaveFocus();
   expect(screen.getByText("Flux « Mon flux » ajouté.")).toBeInTheDocument();
 });
@@ -391,6 +394,9 @@ it(
     expect(document.querySelectorAll("input[type=checkbox]")).toHaveLength(50);
     const more = screen.getByText(/Afficher plus \(70 restants\)/);
     more.focus();
+    // Clic aussitôt après l'apparition de la liste : l'effet de son montage doit déjà être passé
+    // (effet de mise en page). Passif, il pouvait être encore en attente sous charge et consommer
+    // ce clic : focus perdu (#489).
     fireEvent.click(more);
     await waitFor(() => expect(screen.getByLabelText("Ep 50")).toHaveFocus());
     expect(document.querySelectorAll("input[type=checkbox]")).toHaveLength(100);
