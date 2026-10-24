@@ -332,7 +332,11 @@ sont identiques à l'octet près dès la PR 6.
      `output_error` (disque plein, droits) vaut aussi 6, et rejouer en Python échouerait de la
      même façon, en doublant le délai ;
    - le binaire **plante** : code de sortie hors de {0, 2, 3, 4, 5, 6, 7, 130}, ou aucun
-     événement `start`.
+     événement `start`. Un code 0 sans événement `done` (ou sans fichier de sortie) est aussi un
+     plantage : le binaire annonce un succès qu'il n'a pas produit, donc repli. À l'inverse, une
+     erreur de contenu rapportée (`archive_unreadable`, `not_telmi`, `validation`,
+     `missing_asset`) n'est jamais un plantage, même sans `start` ou avec un code de sortie hors
+     protocole.
 
    Les erreurs de contenu (codes 3/4/5) et `output_error` ne sont **jamais** rejouées en Python,
    pour ne pas masquer une divergence.
