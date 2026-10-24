@@ -844,3 +844,44 @@ fn les_titres_lus_sont_omis_par_defaut_et_relus_quand_ils_sont_choisis() {
     let back: PackComposition = serde_json::from_value(serde_json::to_value(&c).unwrap()).unwrap();
     assert_eq!(back, c);
 }
+
+#[test]
+fn reference_d_image_de_categorie_bornee_par_le_walker() {
+    let long = "x".repeat(MAX_ID_LEN + 1);
+    for bad in [
+        EpisodeRef {
+            source_id: "a".into(),
+            episode_id: long,
+        },
+        EpisodeRef {
+            source_id: String::new(),
+            episode_id: episode_id("g0"),
+        },
+        EpisodeRef {
+            source_id: "a".into(),
+            episode_id: "g\u{0}".into(),
+        },
+    ] {
+        let menu = vec![PackNode::Category {
+            name: "Contes".into(),
+            entries: vec![e("a", "g0")],
+            image: Some(bad),
+        }];
+        let report = validate(&comp(menu), &feeds(2));
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.code == ProblemCode::InvalidId && p.path == Some(vec![0])),
+            "{:?}",
+            report.problems
+        );
+    }
+    let ok = vec![PackNode::Category {
+        name: "Contes".into(),
+        entries: vec![e("a", "g0")],
+        image: Some(r("a", "g0")),
+    }];
+    let report = validate(&comp(ok), &feeds(2));
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+}
