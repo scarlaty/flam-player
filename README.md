@@ -196,14 +196,14 @@ Détails : [flam-transfert.md](apps/flam-launcher/docs/flam-transfert.md).
 <summary><b>Quels formats d'histoires sont acceptés ?</b></summary>
 
 - archives TELMI `.zip` (description `nodes.json`), converties à l'installation par le
-  convertisseur intégré. Il lit les archives ZIP sans compression ou compressées en deflate,
-  bzip2, LZMA ou Zstandard, et les images PNG (y compris entrelacées, à palette ou en 16 bits),
+  convertisseur intégré. Il lit les archives ZIP (sans compression, deflate, bzip2, LZMA ou
+  Zstandard) et les images PNG (y compris entrelacées, à palette ou en 16 bits),
   GIF et JPEG ;
 - histoires déjà au format de la Flam : dossiers `.plain` et archives `.plain.pk`, copiées
   telles quelles.
 
-Le format STUdio (`story.json`) n'est pas pris en charge. Les formats d'image rares (BMP,
-JPEG arithmétique ou sans perte...) ne le sont pas non plus : l'archive est refusée avec un
+Le format STUdio (`story.json`) n'est pas pris en charge. Les autres formats d'image (BMP...)
+et les JPEG arithmétiques ou sans perte ne le sont pas non plus : l'archive est refusée avec un
 message explicite. Une source peut être un catalogue en
 ligne au format Telmi Store, ou un dossier local, qui n'est jamais modifié.
 </details>

@@ -132,7 +132,7 @@ pub const UNSUPPORTED_FORMAT_CODE: &str = "unsupported_format";
 
 /// Message montré pour [`UNSUPPORTED_FORMAT_CODE`] : fixe, clair et non technique. Le message du
 /// convertisseur est écarté : il peut citer un nom de fichier de l'histoire.
-pub const UNSUPPORTED_FORMAT: &str = "Cette histoire utilise un format que le launcher ne sait pas encore convertir (format d'image rare, par exemple BMP ou JPEG sans perte).";
+pub const UNSUPPORTED_FORMAT: &str = "Cette histoire utilise un format que le launcher ne sait pas encore convertir (format d'image non pris en charge, par exemple BMP).";
 
 /// Code d'erreur acceptable : identifiant court (`[a-z0-9_]{1,32}`). Un texte libre (nom de fichier
 /// possible) devient `unknown` : le code est journalisé et affiché (#475).

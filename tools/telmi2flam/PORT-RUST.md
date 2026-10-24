@@ -677,7 +677,7 @@ sortie) et `matrix_render.rs` (matrice régénérée par `make_matrix.py`, sans 
    `ConverterEngine` (le champ `converter_engine` d'un ancien `settings.json` est ignoré, Rust
    est utilisé). `unsupported_format` (code 7) est une **erreur finale** au message fixe et non
    technique (« Cette histoire utilise un format que le launcher ne sait pas encore convertir
-   (image non PNG ou archive compressée en bzip2/LZMA). »), sans nom de fichier de l'histoire
+   (format d'image non pris en charge, par exemple BMP). »), sans nom de fichier de l'histoire
    dans les journaux. Les résultats de compatibilité enregistrés avec `engine: python` ou
    `python_fallback` restent lisibles. Les versions de l'oracle Python (3.14.8, Pillow 12.3.0),
    jusque-là lues dans `build-converter.ps1`, sont dans `tools/telmi2flam/ORACLE-VERSIONS.txt`.

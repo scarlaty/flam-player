@@ -46,7 +46,7 @@ export const fr = {
      */
     conversion: {
       unsupported_format:
-        "Cette histoire utilise un format que le launcher ne sait pas encore convertir (format d'image rare, par exemple BMP ou JPEG sans perte).",
+        "Cette histoire utilise un format que le launcher ne sait pas encore convertir (format d'image non pris en charge, par exemple BMP).",
     } as Record<string, string>,
     /** Détail du backend, sous le texte traduit d'un échec `tts_failed` (panneau des tâches). */
     detail: (message: string) => `Détail : ${message}`,

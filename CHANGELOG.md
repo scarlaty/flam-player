@@ -50,8 +50,8 @@ Changements depuis `launcher-v0.1.0-beta.1`.
   dossier du convertisseur Python.
 - **Formats lus** : archives TELMI en ZIP sans compression, deflate, bzip2, LZMA ou Zstandard ;
   images PNG (y compris entrelacées, à palette ou en 16 bits), GIF et JPEG (écart de couleur
-  d'au plus 4 sur 255 avec l'ancien convertisseur, invisible). Les formats d'image rares (BMP,
-  JPEG arithmétique ou sans perte) sont refusés avec un message explicite.
+  d'au plus 4 sur 255 avec l'ancien convertisseur, invisible). Les autres formats d'image (BMP...)
+  et les JPEG arithmétiques ou sans perte sont refusés avec un message explicite.
 - **Vignettes** : les modes « flou » et « rogner » donnent le même rendu que l'ancien
   convertisseur.
 
