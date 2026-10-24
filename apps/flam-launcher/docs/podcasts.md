@@ -938,7 +938,8 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
 ### 14.2 Rouvrir : refaire ou dériver
 
 - « Ouvrir » **copie** la composition dans le brouillon unique (N3 b), à la révision suivante
-  de celui-ci (une sauvegarde automatique en retard ne peut pas l'écraser), puis affiche
+  de celui-ci (une sauvegarde automatique en retard est refusée ; cas limite d'une sauvegarde
+  d'éditeur fermé encore en vol au-delà de 2 s : suivi #484), puis affiche
   l'éditeur. Si le brouillon contient déjà des épisodes, une confirmation le dit : « Le
   brouillon en cours sera remplacé. »
 - La composition conservée n'est jamais modifiée par l'éditeur : seul le brouillon l'est.
