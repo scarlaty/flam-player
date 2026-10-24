@@ -23,7 +23,7 @@
 //! - **ffmpeg** : localisé et empreinte vérifiée une seule fois pour l'étape, au premier titre
 //!   synthétisé ([`PackBackend::title_encoder`], #487) ; un échec arrête la création
 //!   (`tts_failed`, message propre au composant manquant ou altéré).
-//! - **Avancement** : rappel après chaque titre à lire (phase « speech » de 0 à 100 %).
+//! - **Avancement** : rappel après chaque titre à lire (fait/total transmis à l'appelant, qui l'affiche de 0 à 10 % de la préparation).
 //! - **Catégorie sans nom affichable** (emoji seuls) : le texte lu est le libellé de repli de
 //!   l'archive, « Catégorie k » ([`TitleText::numbered`]).
 //! - **Annulation** : vérifiée avant chaque titre et pendant la synthèse (le thread de synthèse,

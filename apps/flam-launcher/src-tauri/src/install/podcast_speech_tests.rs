@@ -796,8 +796,12 @@ async fn annulation_pendant_la_preparation_du_convertisseur() {
     let id = uuid::Uuid::new_v4().to_string();
     ctx.register(&id);
     let (tx, mut cancel) = watch::channel(false);
+    let fake = ctx.fake.clone();
+    // Annulation envoyée une fois la préparation du convertisseur commencée.
     let canceller = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        while fake.encoders.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         tx.send(true).unwrap();
         tx
     });
