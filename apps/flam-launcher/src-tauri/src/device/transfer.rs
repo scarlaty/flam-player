@@ -3,8 +3,8 @@
 //! # Déroulé
 //!
 //! 0. Garde commune ([`check_write`], #317) : racine détectée, `.mdf` lisible, firmware 1.x ou
-//!    2.x, clés lisibles, confirmation ou vérification d'une 2.x ; sinon rien n'est écrit, pas même une
-//!    reprise. Clés ([`send_from_library`]) : lues dans `.mdf` en firmware 2.x ; en 1.x, couple
+//!    2.x, clés 2.x lisibles et non triviales (sans confirmation, #326) ; sinon rien n'est écrit,
+//!    pas même une reprise. Clés ([`send_from_library`]) : lues dans `.mdf` en firmware 2.x ; en 1.x, couple
 //!    « carrier » d'une histoire officielle, après consentement et contrôle de cohérence avec la
 //!    Flam ([`carrier::resolve`], #234). Rien n'est écrit tant que ce n'est pas passé ; `info`
 //!    est relu après l'installation ([`carrier::readback`]).
@@ -1126,7 +1126,7 @@ fn device_keys(
     }
     let firmware = firmware_from_mdf(&mdf);
     if permit.family() == FirmwareFamily::V2 {
-        // 2.x : clés de `.mdf`, prouvées (ou confirmées) par la garde.
+        // 2.x : clés de `.mdf`, lisibles et non triviales d'après la garde (comme Lunii.QT).
         return Ok((keys_from_mdf(&mdf)?, None));
     }
     let firmware = firmware.unwrap_or_default();
@@ -1474,7 +1474,7 @@ static CACHE_ROOT_MEMO: Mutex<Option<CacheRootMemo>> = Mutex::new(None);
 /// [`launcher_cache_root`] pour la scrutation de `device_status` (#326) : la résolution
 /// (lecture et analyse des réglages, création du dossier) est réutilisée tant que
 /// `settings.json` n'a changé ni de taille ni de date, et au plus [`CACHE_ROOT_REUSE`]. Les
-/// écritures (envoi, retrait, ordre, reprise, confirmation) résolvent toujours à neuf.
+/// écritures (envoi, retrait, ordre, reprise) résolvent toujours à neuf.
 pub(crate) fn polled_cache_root(config: &ConfigState) -> Option<PathBuf> {
     let _guard = config.guard();
     let stamp: SettingsStamp = fs::metadata(config.dir.join(crate::settings::FILE_NAME))

@@ -871,7 +871,7 @@ export const fr = {
       edit: "Modifier l'ordre",
       busy: "Ordre non modifiable pendant un envoi.",
       firmware:
-        "Ordre non modifiable : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
+        "Ordre non modifiable : écriture sur cette Flam bloquée (voir l'état du firmware).",
       title: "Ordre des histoires sur la Flam",
       help: "Glissez les histoires, ou utilisez les boutons Tout en haut, Monter, Descendre et Tout en bas (touches Début et Fin au clavier), puis enregistrez. La Flam affiche les histoires dans cet ordre.",
       othersNote:
@@ -1035,7 +1035,7 @@ export const fr = {
       otherWorking: "Un retrait est déjà en cours.",
       ejecting: "Retrait indisponible pendant une éjection.",
       firmware:
-        "Retrait indisponible : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
+        "Retrait indisponible : écriture sur cette Flam bloquée (voir l'état du firmware).",
     },
     eject: {
       button: "Éjecter la Flam",
@@ -1109,15 +1109,15 @@ export const fr = {
     },
     state: {
       v1: "pris en charge (mode carrier)",
-      flamVerified: "en test, vérifié par la Flam",
-      confirmed: "en test, sauvegarde confirmée",
-      unconfirmed: "en test, confirmation à donner",
-      contradiction: "envoi bloqué (clés incohérentes)",
+      v2: "pris en charge",
+      contradiction: "pris en charge, clés à vérifier",
       blocked: "écriture bloquée",
     },
     nonStandard: "fichier .mdf non standard",
+    nonStandardTitle: "Fichier .mdf non standard",
+    nonStandardBody: (size: number, header: string) =>
+      `Le fichier .mdf de cette Flam n'a pas la forme connue (${size} octets, en-tête ${header} ; attendu 126 octets, en-tête 01 00). L'envoi reste possible, mais le risque d'histoire illisible est plus grand : gardez une copie de votre Flam.`,
     blockedTitle: "Écriture sur cette Flam bloquée",
-    sendBlockedTitle: "Envoi sur cette Flam bloqué",
     blocked: {
       device_not_found: "Fichier .mdf absent : la Flam n'est plus détectée.",
       invalid_root: "Ce lecteur n'est pas une Flam détectée.",
@@ -1130,33 +1130,19 @@ export const fr = {
         `Clés illisibles dans le fichier .mdf (${detail}).`,
       keys_trivial: (version: string) =>
         `Firmware ${version} : clé ou IV vide dans le fichier .mdf.`,
-      keys_contradiction: (version: string) =>
-        `Firmware ${version} : une histoire installée par un autre outil sur cette Flam ne se déchiffre pas avec les clés du fichier .mdf. Une histoire envoyée serait illisible. Le retrait et l'ordre restent possibles.`,
-      confirmation_required: (version: string) =>
-        `Firmware ${version} : confirmation de sauvegarde à donner avant tout envoi.`,
     },
     blockedHint:
       "Rien n'est écrit tant que ce blocage dure. Notez la version et l'état affichés ici dans votre retour de test.",
+    contradictionTitle: "Clés de la Flam à vérifier",
+    contradiction: (version: string) =>
+      `Firmware ${version} : une histoire installée par un autre outil sur cette Flam ne se déchiffre pas avec les clés du fichier .mdf.`,
     contradictionStories: (ids: string[], total: number) => {
       const more = total - ids.length;
       const tail = more > 0 ? ` (et ${more} ${more > 1 ? "autres" : "autre"})` : "";
       return `Histoires en cause : ${ids.join(", ")}${tail}.`;
     },
     contradictionHint:
-      "Aucune histoire n'est envoyée tant que ce blocage dure. Le retrait et l'ordre restent possibles (après la confirmation de sauvegarde, si elle est demandée). Notez la version et l'état affichés ici dans votre retour de test.",
-    confirm: {
-      title: "Firmware 2.x en test",
-      body: "L'envoi sur une Flam en firmware 2.x n'a pas encore été vérifié sur un appareil réel. Avant de continuer, copiez tout le contenu de la Flam sur votre ordinateur. Envoyez d'abord une seule petite histoire, puis redémarrez la Flam.",
-      nonStandard: (size: number, header: string) =>
-        `Attention : le fichier .mdf de cette Flam n'a pas la forme connue (${size} octets, en-tête ${header} ; attendu 126 octets, en-tête 01 00). Le risque d'histoire illisible est plus grand : ne continuez que si la sauvegarde est faite.`,
-      understood: "Firmware 2.x en test : j'ai sauvegardé ma Flam",
-      action: "Confirmer",
-      working: "Confirmation…",
-      failed: (message: string) => `Confirmation impossible : ${message}`,
-      sendFirst: "Confirmez d'abord la sauvegarde de la Flam dans « Ma Flam ».",
-    },
-    restartV2:
-      "Firmware 2.x : après le redémarrage, rebranchez la Flam en mode connexion USB. Le launcher vérifie alors que la Flam a bien lu le titre de l'histoire envoyée.",
+      "Simple avertissement : l'envoi, le retrait et l'ordre restent possibles. Ce contrôle peut se tromper (histoire d'un autre outil dont le titre est en Latin-1 ou très court). Si une histoire envoyée ne se lit pas sur la Flam, notez la version et l'état affichés ici dans votre retour de test.",
   },
 };
 

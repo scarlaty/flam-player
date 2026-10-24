@@ -11,7 +11,7 @@
 //! | `uuid.bin`                  | (aucune)                  | donne le nom du dossier |
 //! | `_metadata.json`, `_thumbnail.png`, `bt` | (aucune)     | ignorées            |
 //! | `info.plain`, `*.plain`     | `info`, nom sans `.plain` | chiffré             |
-//! | `main.lua`, `script/*.lua`  | `main.lsf`, `script/*.lsf`| chiffré             |
+//! | `main.lua`, `script/*.lua`, `*.lua.plain` | `main.lsf`, `script/*.lsf`, `*.lsf` | chiffré |
 //! | tout le reste (`version`, `img/…`, `sounds/…`) | même nom | copié tel quel |
 //! | (aucune)                    | `key`                     | déduit de l'appareil |
 //!
@@ -254,10 +254,16 @@ fn plan_entry(relative: &str) -> Result<Option<(String, Action)>, PrepareError> 
     if EXCLUDED.iter().any(|e| e.eq_ignore_ascii_case(relative)) {
         return Ok(None);
     }
-    let (target, action) = if let Some(stem) = strip_suffix_ci(relative, ".plain") {
-        (stem.to_string(), Action::Encrypt)
-    } else if let Some(stem) = strip_suffix_ci(relative, ".lua") {
+    // Comme Lunii.QT (#326) : `.plain` retiré d'abord, puis `.lua` devient `.lsf` (une entrée
+    // `x.lua.plain` donne `x.lsf` chiffré).
+    let (name, plain) = match strip_suffix_ci(relative, ".plain") {
+        Some(stem) => (stem, true),
+        None => (relative, false),
+    };
+    let (target, action) = if let Some(stem) = strip_suffix_ci(name, ".lua") {
         (format!("{stem}.lsf"), Action::Encrypt)
+    } else if plain {
+        (name.to_string(), Action::Encrypt)
     } else {
         (relative.to_string(), Action::Copy)
     };
@@ -775,6 +781,37 @@ mod tests {
         let mut entries = base_entries();
         entries.push(("Version", b"x".to_vec()));
         expect_invalid(&entries, "double");
+    }
+
+    /// #326 : comme Lunii.QT, `.plain` est retiré avant le passage de `.lua` à `.lsf`.
+    #[test]
+    fn une_entree_lua_plain_donne_un_lsf_chiffre() {
+        for (entry, target, action) in [
+            ("script/x.lua.plain", "script/x.lsf", Action::Encrypt),
+            ("main.LUA.plain", "main.lsf", Action::Encrypt),
+            ("x.lua.PLAIN", "x.lsf", Action::Encrypt),
+            ("main.lua", "main.lsf", Action::Encrypt),
+            ("info.plain", "info", Action::Encrypt),
+            ("img/a.lif.plain", "img/a.lif", Action::Encrypt),
+            ("img/a.lif", "img/a.lif", Action::Copy),
+        ] {
+            assert_eq!(
+                plan_entry(entry).unwrap(),
+                Some((target.to_string(), action)),
+                "{entry}"
+            );
+        }
+        // Bout en bout : `script/y.lua.plain` arrive chiffré sous `script/y.lsf`.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut entries = base_entries();
+        entries.push(("script/y.lua.plain", b"return 2".to_vec()));
+        let prepared = run(&pk_with(tmp.path(), &entries), &tmp.path().join("travail")).unwrap();
+        assert!(prepared.files.iter().any(|f| f == "script/y.lsf"));
+        assert!(!prepared.files.iter().any(|f| f.ends_with(".lua")));
+        // Collision avec `script/nodes.lua` (même cible `script/nodes.lsf`) : refusée.
+        let mut entries = base_entries();
+        entries.push(("script/nodes.lua.plain", b"return 3".to_vec()));
+        expect_invalid(&entries, "donnent");
     }
 
     #[test]

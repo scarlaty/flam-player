@@ -7,7 +7,6 @@ import {
   forgetCarrierKeys,
   listDeviceStories,
   needsCarrier,
-  needsFirmwareConfirmation,
   onTransferProgress,
   recoverDeviceTransfers,
   removeDeviceStory,
@@ -72,9 +71,8 @@ export function DeviceProvider({
   const known = status !== null;
   // Garde des écritures (#317) : l'état structuré du firmware décide, pas le texte des erreurs.
   const firmwareBlocked = firmwareWriteBlock(device) !== null;
-  const keysConfirmation = needsFirmwareConfirmation(device);
-  // Reprise possible : rien ne bloque, sauf une contradiction des clés (qui ne refuse que
-  // l'envoi).
+  // Reprise, retrait et ordre possibles : la garde ne refuse rien (une contradiction des clés
+  // n'est qu'un avertissement, #326).
   const writable = canMaintain(device);
 
   const rootRef = useRef<string | null>(null);
@@ -330,8 +328,7 @@ export function DeviceProvider({
           setAnnouncement(text.panel.announce.cancelled);
         } else if (
           deviceKeyRef.current === keyAtStart &&
-          (firmwareWriteBlock(deviceRef.current) ||
-            needsFirmwareConfirmation(deviceRef.current))
+          firmwareWriteBlock(deviceRef.current)
         ) {
           // Refus de la garde du firmware (état connu de la Flam) : les suivantes échoueraient
           // de la même façon.
@@ -345,7 +342,8 @@ export function DeviceProvider({
         } else {
           setItemState(next.uuid, "failed", failure.message);
           setAnnouncement(text.panel.announce.failed(next.title, failure.message));
-          // Un refus de la garde apparu entre-temps (contradiction) : l'état est relu.
+          // Un refus de la garde apparu entre-temps (clés devenues invalides, Flam changée…) :
+          // l'état est relu.
           if (failure.kind === "validation") retry();
         }
       }
@@ -602,7 +600,6 @@ export function DeviceProvider({
       stories,
       reloadStories,
       firmwareBlocked,
-      keysConfirmation,
       canMaintain: writable,
       queue: exposedQueue,
       progress,
@@ -634,7 +631,6 @@ export function DeviceProvider({
       stories,
       reloadStories,
       firmwareBlocked,
-      keysConfirmation,
       writable,
       exposedQueue,
       progress,

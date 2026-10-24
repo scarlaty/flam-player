@@ -570,17 +570,20 @@ fn dossier_verrouille_devient_orphelin() {
     );
 }
 
-/// Garde commune (#317) : `.mdf` d'une disposition inconnue, firmware non pris en charge ou
-/// clés 2.x non vérifiables : refus, rien n'est touché (ni corbeille, ni index, ni reprise).
+/// Garde commune (#317) : `.mdf` tronqué, firmware non pris en charge ou illisible, clés 2.x
+/// triviales : refus, rien n'est touché (ni corbeille, ni index, ni reprise).
 #[test]
 fn la_garde_du_firmware_refuse_sans_rien_toucher() {
+    use crate::device::crypto::MDF_KEY_OFFSET;
     use crate::device::guard::tests::{mdf_v2_known, mdf_with, snapshot};
     use crate::device::guard::{WriteRefused, KNOWN_HEADER};
+    let mut zero_key = mdf_v2_known();
+    zero_key[MDF_KEY_OFFSET..MDF_KEY_OFFSET + 16].fill(0);
     for mdf in [
         mdf_v1_real()[..100].to_vec(),
         mdf_with(KNOWN_HEADER, "main: 3.0.0-x"),
         mdf_with(KNOWN_HEADER, "illisible"),
-        mdf_v2_known(),
+        zero_key.clone(),
     ] {
         let device = Device::new();
         fs::write(device.root().join(MDF_FILE), &mdf).unwrap();
@@ -593,22 +596,21 @@ fn la_garde_du_firmware_refuse_sans_rien_toucher() {
         assert!(err.to_string().contains("rien n'a été écrit"), "{err}");
         assert_eq!(snapshot(device.root()), before);
         assert_eq!(lock.current(), None);
-        if mdf == mdf_v2_known() {
+        if mdf == zero_key {
             assert!(matches!(
                 err,
-                RemoveError::Refused(WriteRefused::ConfirmationRequired { .. })
+                RemoveError::Refused(WriteRefused::KeysTrivial { .. })
             ));
         }
     }
 }
 
-/// 2.x sans histoire officielle : retrait autorisé après la confirmation de session.
+/// 2.x : retrait autorisé sans confirmation (#326, comme Lunii.QT).
 #[test]
-fn retrait_2x_apres_confirmation() {
-    use crate::device::guard::tests::{confirmed_ctx, mdf_v2_known};
+fn retrait_2x_sans_confirmation() {
+    use crate::device::guard::tests::mdf_v2_known;
     let device = Device::new();
     fs::write(device.root().join(MDF_FILE), mdf_v2_known()).unwrap();
-    let ctx = confirmed_ctx(device.root());
-    remove_story(device.root(), &DeviceLock::new(), B, true, &ctx).unwrap();
+    remove_story(device.root(), &DeviceLock::new(), B, true, &test_ctx()).unwrap();
     assert_eq!(device.index(IndexKind::Visible), [A, C]);
 }
