@@ -445,6 +445,16 @@ function installMockBackend({ config, scenario }) {
       Object.assign(settings, args.settings);
       return settingsView();
     },
+    // Voix des titres lus (#462) : voix fictives, aucun son.
+    tts_voices: () => ({
+      voices: [
+        { id: "voix-hortense", name: "Microsoft Hortense", language: "fr-FR" },
+        { id: "voix-paul", name: "Microsoft Paul", language: "fr-FR" },
+      ],
+      default_id: "voix-hortense",
+    }),
+    tts_preview: () => ({ played: false, duration_ms: 0 }),
+    tts_preview_stop: () => null,
     sources_list: () => ({ sources, recovery: null }),
     config_ack_recovery: () => null,
     cache_usage: () => ({

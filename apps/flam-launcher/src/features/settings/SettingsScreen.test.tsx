@@ -3,6 +3,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SettingsView } from "../../api/settings";
+import type { VoiceList } from "../../api/speech";
 import { ToastProvider } from "../../components";
 import { expectNoAxeViolations } from "../../test/axe";
 import { RecoveryProvider } from "../recovery/RecoveryProvider";
@@ -41,7 +42,12 @@ let failures: Record<string, { kind: string; message: string }>;
 // Réponses différées de `settings_set` (résolues/rejetées par le test, dans l'ordre des appels).
 let pendingSets: { resolve: () => void; reject: () => void }[] | null;
 
+const HORTENSE = { id: "v-hortense", name: "Microsoft Hortense", language: "fr-FR" };
+const PAUL = { id: "v-paul", name: "Microsoft Paul", language: "fr-CA" };
+let voices: VoiceList;
+
 beforeEach(() => {
+  voices = { voices: [HORTENSE, PAUL], default_id: HORTENSE.id };
   view = makeView();
   usageBytes = 2048;
   calls = [];
@@ -86,6 +92,12 @@ beforeEach(() => {
         return { freed_bytes: freed };
       }
       case "config_ack_recovery":
+        return null;
+      case "tts_voices":
+        return voices;
+      case "tts_preview":
+        return { played: true, duration_ms: 60_000 };
+      case "tts_preview_stop":
         return null;
       default:
         throw { kind: "unknown", message: cmd };
@@ -420,6 +432,124 @@ it("réduire la fenêtre pendant la lecture : décoché par défaut, mémorisé 
   expect(getMinimizeDuringPlay()).toBe(false);
   // Aucune écriture dans settings.json : c'est une préférence propre au poste.
   expect(callsOf("settings_set")).toHaveLength(0);
+});
+
+const voiceSelect = () => screen.findByRole("combobox", { name: "Voix" });
+
+it("voix des titres lus : voix par défaut proposée, choix enregistré dans tts_voice", async () => {
+  await renderScreen();
+  const select = await voiceSelect();
+  expect(select).toHaveValue(HORTENSE.id);
+  expect(
+    within(select)
+      .getAllByRole("option")
+      .map((o) => o.textContent),
+  ).toEqual(["Microsoft Hortense (fr-FR)", "Microsoft Paul (fr-CA)"]);
+  // Pas de réglage de débit (v1).
+  expect(screen.queryByText(/débit/i, { selector: "label" })).toBeNull();
+
+  fireEvent.change(select, { target: { value: PAUL.id } });
+  await waitFor(() => expect(callsOf("settings_set")).toHaveLength(1));
+  expect(callsOf("settings_set")[0]!.args.settings).toEqual({
+    ...makeView().settings,
+    tts_voice: PAUL.id,
+  });
+  await waitFor(() => expect(select).toHaveValue(PAUL.id));
+  await expectNoAxeViolations(document.body, ["region", "page-has-heading-one"]);
+});
+
+it("voix mémorisée relue ; voix disparue : la voix par défaut est annoncée", async () => {
+  view = makeView();
+  view.settings.tts_voice = PAUL.id;
+  const { unmount } = await renderScreen();
+  expect(await voiceSelect()).toHaveValue(PAUL.id);
+  unmount();
+
+  view.settings.tts_voice = "v-disparue";
+  await renderScreen();
+  const select = await voiceSelect();
+  expect(select).toHaveValue("");
+  expect(
+    screen.getByText(
+      "La voix choisie n'est plus installée : la voix par défaut sera utilisée.",
+    ),
+  ).toBeInTheDocument();
+  // Choisir la voix de repli l'enregistre et efface le message.
+  fireEvent.change(select, { target: { value: HORTENSE.id } });
+  await waitFor(() =>
+    expect(callsOf("settings_set").at(-1)?.args.settings.tts_voice).toBe(HORTENSE.id),
+  );
+  await waitFor(() =>
+    expect(screen.queryByText(/La voix choisie n'est plus installée/)).toBeNull(),
+  );
+  expect(select).toHaveValue(HORTENSE.id);
+});
+
+it("voix : un échec d'enregistrement rétablit le choix précédent", async () => {
+  await renderScreen();
+  const select = await voiceSelect();
+  failures.settings_set = { kind: "io", message: "disque plein" };
+  fireEvent.change(select, { target: { value: PAUL.id } });
+  expect(
+    await screen.findByText("La voix n'a pas pu être enregistrée."),
+  ).toBeInTheDocument();
+  expect(select).toHaveValue(HORTENSE.id);
+});
+
+it("voix, thème et vignettes ne s'enregistrent pas en même temps (objet complet)", async () => {
+  pendingSets = [];
+  await renderScreen();
+  const select = await voiceSelect();
+  fireEvent.change(select, { target: { value: PAUL.id } });
+  await waitFor(() => expect(pendingSets).toHaveLength(1));
+  expect(screen.getByRole("radio", { name: "Sombre" })).toBeDisabled();
+  expect(screen.getByRole("radio", { name: /^Rogner/ })).toBeDisabled();
+  pendingSets[0]!.resolve();
+  await waitFor(() =>
+    expect(screen.getByRole("radio", { name: "Sombre" })).toBeEnabled(),
+  );
+  // Le thème enregistré ensuite garde la voix choisie.
+  fireEvent.click(screen.getByRole("radio", { name: "Sombre" }));
+  await waitFor(() => expect(pendingSets).toHaveLength(2));
+  expect(select).toBeDisabled();
+  expect(pendingSets.length).toBe(2);
+  pendingSets[1]!.resolve();
+  await waitFor(() => expect(select).toBeEnabled());
+  expect(view.settings).toMatchObject({ theme: "dark", tts_voice: PAUL.id });
+});
+
+it("essayer la voix choisie, puis arrêter", async () => {
+  view = makeView();
+  view.settings.tts_voice = PAUL.id;
+  await renderScreen();
+  await voiceSelect();
+  fireEvent.click(screen.getByRole("button", { name: "Essayer la voix" }));
+  const stop = await screen.findByRole("button", { name: "Arrêter" });
+  expect(callsOf("tts_preview")[0]!.args).toEqual({
+    text: "Bonjour ! Je lirai les titres de vos histoires.",
+    voice: PAUL.id,
+  });
+  fireEvent.click(stop);
+  expect(await screen.findByRole("button", { name: "Essayer la voix" })).toBeEnabled();
+  await waitFor(() => expect(callsOf("tts_preview_stop")).toHaveLength(1));
+});
+
+it("sans voix française : explication, ni liste ni essai", async () => {
+  voices = { voices: [], default_id: null };
+  await renderScreen();
+  const message = await screen.findByText(/Aucune voix française n'est installée/);
+  expect(message.textContent).toContain("Heure et langue > Voix");
+  expect(screen.queryByRole("combobox", { name: "Voix" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Essayer la voix" })).toBeNull();
+});
+
+it("liste des voix en échec : message, le reste de l'écran fonctionne", async () => {
+  failures.tts_voices = { kind: "tts_failed", message: "panne" };
+  await renderScreen();
+  expect(
+    await screen.findByText(/Les voix de Windows n'ont pas pu être listées/),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Enregistrer" })).toBeEnabled();
 });
 
 it("relit la préférence enregistrée", async () => {
