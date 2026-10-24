@@ -24,20 +24,26 @@
 //!   d'entrées seulement) et ne font jamais échouer un pack.
 //! - Taille bornée ([`MAX_CACHE_BYTES`]) : éviction des entrées les moins récemment utilisées,
 //!   jamais de celles protégées (pack en cours).
+//! - Aucun lien suivi (#466) : `podcasts/`, `podcasts/<id>/` et `podcasts/<id>/mp3/` doivent
+//!   être de vrais dossiers (ni lien symbolique ni jonction), sinon la source est ignorée ; les
+//!   fichiers d'une entrée doivent être de vrais fichiers.
+//! - Annulation (#466) : le hachage et la copie s'arrêtent au bloc suivant ; une lecture
+//!   annulée ne supprime jamais une entrée, une écriture annulée ne laisse rien.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::OwnedMutexGuard;
+use tokio::sync::{watch, OwnedMutexGuard};
 
+use super::archive::MAX_AUDIO_BYTES;
 use super::rss::PodcastEpisode;
-use super::source::{episode_id, source_dir, CACHE_SUBDIR};
+use super::source::{episode_id, source_dir, PodcastService, CACHE_SUBDIR};
 use crate::catalog::blocking;
 use crate::storage;
 
@@ -54,6 +60,10 @@ const MP3_EXT: &str = "mp3";
 const IMG_EXT: &str = "img";
 const META_EXT: &str = "json";
 const PART_EXT: &str = "part";
+/// Taille maximale d'un `<id>.json` lu.
+const MAX_META_BYTES: u64 = 64 * 1024;
+/// Taille des blocs lus (hachage) ou copiés : l'annulation est vue entre deux blocs.
+const CHUNK: usize = 256 * 1024;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -70,15 +80,10 @@ pub trait SourceLocks: Send + Sync {
     ) -> BoxFuture<'a, Option<OwnedMutexGuard<()>>>;
 }
 
-/// Verrous réels : ceux du `PodcastService` de l'application.
-pub struct LiveLocks(pub tauri::AppHandle);
-
-impl SourceLocks for LiveLocks {
+/// Verrous et générations du `PodcastService` : ceux des rafraîchissements et de la purge.
+impl SourceLocks for PodcastService {
     fn generation(&self, source_id: &str) -> u64 {
-        use tauri::Manager;
-        self.0
-            .state::<super::source::PodcastService>()
-            .generation(source_id)
+        PodcastService::generation(self, source_id)
     }
 
     fn lock<'a>(
@@ -86,13 +91,54 @@ impl SourceLocks for LiveLocks {
         source_id: &'a str,
         generation: u64,
     ) -> BoxFuture<'a, Option<OwnedMutexGuard<()>>> {
-        Box::pin(async move {
-            use tauri::Manager;
-            self.0
-                .state::<super::source::PodcastService>()
-                .lock_source(source_id, generation)
-                .await
-        })
+        Box::pin(self.lock_source(source_id, generation))
+    }
+}
+
+/// Verrous réels : ceux du `PodcastService` de l'application (état Tauri).
+pub struct LiveLocks(pub tauri::AppHandle);
+
+impl SourceLocks for LiveLocks {
+    fn generation(&self, source_id: &str) -> u64 {
+        use tauri::Manager;
+        SourceLocks::generation(self.0.state::<PodcastService>().inner(), source_id)
+    }
+
+    fn lock<'a>(
+        &'a self,
+        source_id: &'a str,
+        generation: u64,
+    ) -> BoxFuture<'a, Option<OwnedMutexGuard<()>>> {
+        use tauri::Manager;
+        SourceLocks::lock(
+            self.0.state::<PodcastService>().inner(),
+            source_id,
+            generation,
+        )
+    }
+}
+
+/// Drapeau d'annulation de la tâche, lu entre deux blocs par les opérations bloquantes
+/// (hachage, copie) ; par défaut, jamais levé.
+#[derive(Clone, Default)]
+pub struct Cancel(Option<watch::Receiver<bool>>);
+
+impl Cancel {
+    pub fn new(flag: watch::Receiver<bool>) -> Self {
+        Self(Some(flag))
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.0.as_ref().is_some_and(|flag| *flag.borrow())
+    }
+
+    /// `Err(Interrupted)` si l'annulation est demandée.
+    fn check(&self) -> io::Result<()> {
+        if self.is_set() {
+            Err(io::Error::new(io::ErrorKind::Interrupted, "annulé"))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -198,25 +244,38 @@ pub struct Store {
 }
 
 /// Place `src` en `dest` : lien physique, sinon copie (système de fichiers sans liens). Une
-/// copie interrompue est supprimée.
-pub type Placer = dyn Fn(&Path, &Path) -> io::Result<()> + Send + Sync;
+/// copie interrompue (erreur ou annulation) est supprimée.
+pub type Placer = dyn Fn(&Path, &Path, &Cancel) -> io::Result<()> + Send + Sync;
 
 /// [`Placer`] par défaut.
-pub fn link_or_copy(src: &Path, dest: &Path) -> io::Result<()> {
+pub fn link_or_copy(src: &Path, dest: &Path, cancel: &Cancel) -> io::Result<()> {
     if std::fs::hard_link(src, dest).is_ok() {
         return Ok(());
     }
-    let copied = std::fs::copy(src, dest).and_then(|_| {
-        // Copie complète et durable avant d'être déclarée valide.
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(dest)?
-            .sync_all()
-    });
+    copy_file(src, dest, cancel)
+}
+
+/// Copie par blocs, annulable entre deux blocs, durable avant d'être déclarée réussie ; en
+/// cas d'échec, `dest` est supprimé.
+fn copy_file(src: &Path, dest: &Path, cancel: &Cancel) -> io::Result<()> {
+    let copied = (|| {
+        let mut from = std::fs::File::open(src)?;
+        let mut to = std::fs::File::create(dest)?;
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            cancel.check()?;
+            let n = from.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            to.write_all(&buf[..n])?;
+        }
+        to.sync_all()
+    })();
     if copied.is_err() {
         let _ = std::fs::remove_file(dest);
     }
-    copied.map(|_| ())
+    copied
 }
 
 // ---------------------------------------------------------------------------------------
@@ -246,6 +305,42 @@ fn remove_if_exists(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Vrai dossier : ni lien symbolique ni jonction (`symlink_metadata` ne les suit pas, et une
+/// jonction y est vue comme un lien).
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+}
+
+/// `podcasts/<source_id>/mp3/`, si `podcasts/`, `podcasts/<source_id>/` et `mp3/` sont de
+/// vrais dossiers : un lien ou une jonction sur ce chemin pourrait faire lire, écrire ou
+/// supprimer hors du cache (#466). `Ok(None)` : un dossier manque (et `create` est faux).
+/// Avec `create`, les dossiers manquants sont créés un par un puis recontrôlés.
+fn real_mp3_dir(cache_root: &Path, source_id: &str, create: bool) -> io::Result<Option<PathBuf>> {
+    let source =
+        source_dir(cache_root, source_id).map_err(|err| io::Error::other(err.to_string()))?;
+    let mp3 = source.join(CACHE_DIR);
+    if create {
+        std::fs::create_dir_all(cache_root)?;
+    }
+    for dir in [&cache_root.join(CACHE_SUBDIR), &source, &mp3] {
+        match std::fs::symlink_metadata(dir) {
+            Ok(_) if is_real_dir(dir) => continue,
+            Ok(_) => {}
+            Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
+            Err(_) if !create => return Ok(None),
+            Err(_) => match std::fs::create_dir(dir) {
+                Err(err) if err.kind() != io::ErrorKind::AlreadyExists => return Err(err),
+                _ if is_real_dir(dir) => continue,
+                _ => {}
+            },
+        }
+        return Err(io::Error::other(
+            "chemin du cache des MP3 refusé : pas un vrai dossier (lien, jonction ou fichier)",
+        ));
+    }
+    Ok(Some(mp3))
+}
+
 /// Supprime une entrée : `<id>.json` d'abord (elle n'est plus jamais servie), puis le reste.
 fn remove_entry(dir: &Path, id: &str) -> io::Result<()> {
     remove_if_exists(&file(dir, id, META_EXT))?;
@@ -264,18 +359,23 @@ fn remove_entry(dir: &Path, id: &str) -> io::Result<()> {
 }
 
 fn read_meta(dir: &Path, id: &str) -> Option<EntryMeta> {
-    let bytes = std::fs::read(file(dir, id, META_EXT)).ok()?;
+    let path = file(dir, id, META_EXT);
+    // Vrai fichier de taille raisonnable seulement (jamais un lien suivi).
+    real_file_len(&path).filter(|&len| len <= MAX_META_BYTES)?;
+    let bytes = std::fs::read(path).ok()?;
     let meta: EntryMeta = serde_json::from_slice(&bytes).ok()?;
     (meta.format == FORMAT).then_some(meta)
 }
 
-/// Taille et SHA-256 de `path`, lu par blocs.
-fn measure(path: &Path) -> io::Result<FileMeta> {
+/// Taille et SHA-256 de `path`, lu par blocs ; `Err(Interrupted)` si l'annulation est
+/// demandée en cours de lecture.
+fn measure(path: &Path, cancel: &Cancel) -> io::Result<FileMeta> {
     let mut f = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 256 * 1024];
+    let mut buf = vec![0u8; CHUNK];
     let mut bytes = 0u64;
     loop {
+        cancel.check()?;
         let n = f.read(&mut buf)?;
         if n == 0 {
             break;
@@ -289,27 +389,59 @@ fn measure(path: &Path) -> io::Result<FileMeta> {
     })
 }
 
-/// Le fichier a exactement la taille et l'empreinte attendues (taille vérifiée d'abord :
-/// un fichier tronqué n'est pas relu).
-fn intact(path: &Path, expected: &FileMeta) -> bool {
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == expected.bytes)
-        && measure(path).is_ok_and(|m| m == *expected)
+/// Taille d'un vrai fichier (jamais un lien suivi).
+fn real_file_len(path: &Path) -> Option<u64> {
+    std::fs::symlink_metadata(path)
+        .ok()
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
+}
+
+/// Le fichier (vrai fichier, pas un lien) a exactement la taille et l'empreinte attendues
+/// (taille vérifiée d'abord : un fichier tronqué n'est pas relu).
+fn intact(path: &Path, expected: &FileMeta, cancel: &Cancel) -> bool {
+    real_file_len(path) == Some(expected.bytes)
+        && measure(path, cancel).is_ok_and(|m| m == *expected)
+}
+
+/// Paramètres communs des opérations bloquantes d'une préparation.
+struct Op<'a> {
+    now: u64,
+    place: &'a Placer,
+    cancel: &'a Cancel,
+    /// Taille au-delà de laquelle un MP3 en cache n'est plus servi (borne du pack).
+    max_entry_bytes: u64,
 }
 
 /// Cherche un épisode ; s'il est servi, le place en `w.mp3_dest` (et sa pochette en
-/// `w.image_dest`) et renouvelle sa date d'usage. Toute incohérence supprime l'entrée.
-fn lookup_one(dir: &Path, w: &Wanted, now: u64, place: &Placer) -> Option<Hit> {
+/// `w.image_dest`) et renouvelle sa date d'usage. Toute incohérence supprime l'entrée ; une
+/// annulation ne supprime rien.
+fn lookup_one(dir: &Path, w: &Wanted, op: &Op<'_>) -> Option<Hit> {
     let id = w.key.episode_id.as_str();
     if !valid_id(id) {
         return None;
     }
     let mut meta = read_meta(dir, id)?;
-    if meta.fingerprint != w.key.fingerprint || !intact(&file(dir, id, MP3_EXT), &meta.mp3) {
+    if meta.fingerprint == w.key.fingerprint && meta.mp3.bytes > op.max_entry_bytes {
+        // Le pack le refuserait : l'entrée est invalidée (borne abaissée depuis l'écriture).
+        tracing::warn!(
+            "cache des MP3 de la source {} : entrée trop volumineuse supprimée",
+            w.key.source_id
+        );
         let _ = remove_entry(dir, id);
         return None;
     }
+    if meta.fingerprint != w.key.fingerprint
+        || !intact(&file(dir, id, MP3_EXT), &meta.mp3, op.cancel)
+    {
+        // Hachage interrompu : l'entrée n'est pas jugée.
+        if !op.cancel.is_set() {
+            let _ = remove_entry(dir, id);
+        }
+        return None;
+    }
     let _ = remove_if_exists(&w.mp3_dest);
-    if place(&file(dir, id, MP3_EXT), &w.mp3_dest).is_err() {
+    if (op.place)(&file(dir, id, MP3_EXT), &w.mp3_dest, op.cancel).is_err() {
         let _ = remove_if_exists(&w.mp3_dest);
         return None;
     }
@@ -317,21 +449,26 @@ fn lookup_one(dir: &Path, w: &Wanted, now: u64, place: &Placer) -> Option<Hit> {
     if let Some(stored) = &meta.image {
         let img = file(dir, id, IMG_EXT);
         if w.key.image_fingerprint.as_deref() != Some(stored.fingerprint.as_str())
-            || !intact(&img, &stored.file)
+            || !intact(&img, &stored.file, op.cancel)
         {
+            if op.cancel.is_set() {
+                // Rien n'est jugé ni renouvelé : l'épisode n'est pas servi.
+                let _ = remove_if_exists(&w.mp3_dest);
+                return None;
+            }
             // Pochette périmée ou altérée : retirée, le MP3 reste servi.
             meta.image = None;
             let _ = remove_if_exists(&img);
         } else {
             let _ = remove_if_exists(&w.image_dest);
-            if place(&img, &w.image_dest).is_ok() {
+            if (op.place)(&img, &w.image_dest, op.cancel).is_ok() {
                 image = Some(w.image_dest.clone());
             } else {
                 let _ = remove_if_exists(&w.image_dest);
             }
         }
     }
-    meta.used_at = now;
+    meta.used_at = op.now;
     if storage::write_json(&file(dir, id, META_EXT), &meta).is_err() {
         // Date d'usage non renouvelée : sans gravité (l'ancienne entrée reste valide).
         tracing::debug!("cache des MP3 : date d'usage non renouvelée");
@@ -345,29 +482,29 @@ fn lookup_one(dir: &Path, w: &Wanted, now: u64, place: &Placer) -> Option<Hit> {
 }
 
 /// Écrit `src` dans le fichier `ext` de l'entrée via un `.part` ; rend sa mesure.
-fn write_file(dir: &Path, id: &str, ext: &str, src: &Path, place: &Placer) -> io::Result<FileMeta> {
-    let measured = measure(src)?;
+fn write_file(dir: &Path, id: &str, ext: &str, src: &Path, op: &Op<'_>) -> io::Result<FileMeta> {
+    let measured = measure(src, op.cancel)?;
     let tmp = part(dir, id, ext);
     remove_if_exists(&tmp)?;
-    place(src, &tmp)?;
+    (op.place)(src, &tmp, op.cancel)?;
     // Taille seulement : une copie en échec est signalée par `place`, un lien physique est le
     // fichier mesuré lui-même ; l'empreinte complète est vérifiée à chaque lecture.
-    if !std::fs::metadata(&tmp).is_ok_and(|m| m.is_file() && m.len() == measured.bytes) {
+    if real_file_len(&tmp) != Some(measured.bytes) {
         let _ = remove_if_exists(&tmp);
         return Err(io::Error::other("copie incomplète"));
     }
+    op.cancel.check()?;
     storage::rename_with_retry(&tmp, &file(dir, id, ext))?;
     Ok(measured)
 }
 
-fn store_inner(dir: &Path, s: &Store, now: u64, place: &Placer) -> io::Result<u64> {
+fn store_inner(dir: &Path, s: &Store, op: &Op<'_>) -> io::Result<u64> {
     let id = s.key.episode_id.as_str();
-    std::fs::create_dir_all(dir)?;
     // L'ancienne entrée n'est plus servie dès maintenant.
     remove_entry(dir, id)?;
-    let mp3 = write_file(dir, id, MP3_EXT, &s.mp3, place)?;
+    let mp3 = write_file(dir, id, MP3_EXT, &s.mp3, op)?;
     let image = match (&s.key.image_fingerprint, &s.image) {
-        (Some(fingerprint), Some(src)) => match write_file(dir, id, IMG_EXT, src, place) {
+        (Some(fingerprint), Some(src)) => match write_file(dir, id, IMG_EXT, src, op) {
             Ok(file) => Some(ImageMeta {
                 fingerprint: fingerprint.clone(),
                 file,
@@ -383,20 +520,22 @@ fn store_inner(dir: &Path, s: &Store, now: u64, place: &Placer) -> io::Result<u6
         fingerprint: s.key.fingerprint.clone(),
         mp3,
         image,
-        stored_at: now,
-        used_at: now,
+        stored_at: op.now,
+        used_at: op.now,
     };
     storage::write_json(&file(dir, id, META_EXT), &meta)
         .map_err(|err| io::Error::other(err.to_string()))?;
     Ok(bytes)
 }
 
-/// Met un épisode en cache ; en cas d'erreur, rien de l'entrée ne reste.
-fn store_one(dir: &Path, s: &Store, now: u64, place: &Placer) -> io::Result<u64> {
+/// Met un épisode en cache ; en cas d'erreur ou d'annulation, rien de l'entrée ne reste
+/// (annulation demandée avant le début : l'ancienne entrée est gardée).
+fn store_one(dir: &Path, s: &Store, op: &Op<'_>) -> io::Result<u64> {
     if !valid_id(&s.key.episode_id) {
         return Err(io::Error::other("identifiant d'épisode invalide"));
     }
-    let result = store_inner(dir, s, now, place);
+    op.cancel.check()?;
+    let result = store_inner(dir, s, op);
     if result.is_err() {
         let _ = remove_entry(dir, &s.key.episode_id);
     }
@@ -419,21 +558,28 @@ struct Survey {
     junk: BTreeMap<String, Vec<String>>,
 }
 
-/// Parcourt `<cache>/podcasts/*/mp3/` sans suivre de lien. Ce qui disparaît pendant le
-/// parcours est ignoré.
+/// Fichier d'une entrée : `<id>.mp3`, `<id>.img` ou `<id>.json` ; rend `<id>`.
+fn entry_stem(name: &str) -> Option<&str> {
+    let (stem, ext) = name.split_once('.')?;
+    (valid_id(stem) && [MP3_EXT, IMG_EXT, META_EXT].contains(&ext)).then_some(stem)
+}
+
+/// Parcourt `<cache>/podcasts/*/mp3/` sans suivre de lien ni de jonction (voir
+/// [`real_mp3_dir`]). Ce qui disparaît pendant le parcours est ignoré.
 fn scan(cache_root: &Path) -> Survey {
     let mut survey = Survey::default();
-    let Ok(sources) = std::fs::read_dir(cache_root.join(CACHE_SUBDIR)) else {
+    let podcasts = cache_root.join(CACHE_SUBDIR);
+    if !is_real_dir(&podcasts) {
+        return survey;
+    }
+    let Ok(sources) = std::fs::read_dir(&podcasts) else {
         return survey;
     };
     for source in sources.flatten() {
         let source_id = source.file_name().to_string_lossy().into_owned();
-        let Ok(dir) = source_dir(cache_root, &source_id).map(|d| d.join(CACHE_DIR)) else {
+        let Ok(Some(dir)) = real_mp3_dir(cache_root, &source_id, false) else {
             continue;
         };
-        if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir() && !m.is_symlink()) {
-            continue;
-        }
         let Ok(files) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -441,17 +587,18 @@ fn scan(cache_root: &Path) -> Survey {
         let mut junk: Vec<String> = Vec::new();
         for f in files.flatten() {
             let name = f.file_name().to_string_lossy().into_owned();
-            let stem = name.split('.').next().unwrap_or_default();
-            if valid_id(stem) && !name.ends_with(PART_EXT) {
-                ids.insert(stem.to_string());
-            } else {
-                junk.push(name);
+            match entry_stem(&name) {
+                Some(stem) => {
+                    ids.insert(stem.to_string());
+                }
+                // `.part`, temporaires, extension inconnue : restes.
+                None => junk.push(name),
             }
         }
         for id in ids {
             match read_meta(&dir, &id) {
                 Some(meta) => {
-                    let size = |ext| std::fs::metadata(file(&dir, &id, ext)).map_or(0, |m| m.len());
+                    let size = |ext| real_file_len(&file(&dir, &id, ext)).unwrap_or(0);
                     let bytes = size(MP3_EXT) + size(IMG_EXT);
                     survey.entries.push(Scanned {
                         source_id: source_id.clone(),
@@ -530,7 +677,17 @@ pub struct CacheAccess {
     cache_root: PathBuf,
     generations: HashMap<String, u64>,
     max_bytes: u64,
+    max_entry_bytes: u64,
     place: Arc<Placer>,
+    cancel: Cancel,
+}
+
+/// Rangement d'un dossier de source : lecture ou nettoyage (rien n'est créé), écriture (les
+/// dossiers manquants sont créés).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Read,
+    Write,
 }
 
 impl CacheAccess {
@@ -551,7 +708,9 @@ impl CacheAccess {
             cache_root,
             generations,
             max_bytes: MAX_CACHE_BYTES,
+            max_entry_bytes: MAX_AUDIO_BYTES,
             place: Arc::new(link_or_copy),
+            cancel: Cancel::default(),
         }
     }
 
@@ -561,33 +720,55 @@ impl CacheAccess {
         self
     }
 
+    /// Taille au-delà de laquelle une entrée n'est plus servie (tests ; par défaut, la borne
+    /// d'un épisode dans un pack).
+    pub fn with_max_entry_bytes(mut self, max_entry_bytes: u64) -> Self {
+        self.max_entry_bytes = max_entry_bytes;
+        self
+    }
+
     /// Fonction de placement (tests : injection de pannes).
     pub fn with_placer(mut self, place: Arc<Placer>) -> Self {
         self.place = place;
         self
     }
 
-    fn dir(&self, source_id: &str) -> Option<PathBuf> {
-        source_dir(&self.cache_root, source_id)
-            .ok()
-            .map(|d| d.join(CACHE_DIR))
+    /// Drapeau d'annulation de la tâche : hachage et copie s'arrêtent au bloc suivant.
+    pub fn with_cancel(mut self, cancel: watch::Receiver<bool>) -> Self {
+        self.cancel = Cancel::new(cancel);
+        self
     }
 
     /// Exécute `job` sur le dossier de `source_id`, sous son verrou, si la source n'a pas été
-    /// purgée depuis la lecture de sa génération. `None` sinon.
+    /// purgée depuis la lecture de sa génération et si son chemin ne passe par aucun lien
+    /// ([`real_mp3_dir`]). `None` sinon (en lecture : aussi si le dossier n'existe pas).
     async fn under_lock<T: Send + 'static>(
         &self,
         source_id: &str,
         generation: u64,
+        mode: Mode,
         job: impl FnOnce(&Path) -> T + Send + 'static,
     ) -> Option<T> {
-        let dir = self.dir(source_id)?;
         let guard = self.locks.lock(source_id, generation).await;
-        let Some(_guard) = guard else {
+        let Some(guard) = guard else {
             tracing::info!("cache des MP3 : source {source_id} supprimée, cache ignoré");
             return None;
         };
-        blocking(move || job(&dir)).await.ok()
+        let (root, sid) = (self.cache_root.clone(), source_id.to_string());
+        blocking(move || {
+            let _guard = guard;
+            match real_mp3_dir(&root, &sid, mode == Mode::Write) {
+                Ok(Some(dir)) => Some(job(&dir)),
+                Ok(None) => None,
+                Err(err) => {
+                    tracing::warn!("cache des MP3 de la source {sid} ignoré : {err}");
+                    None
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     fn by_source<T>(items: Vec<T>, source: impl Fn(&T) -> &str) -> BTreeMap<String, Vec<T>> {
@@ -605,12 +786,20 @@ impl CacheAccess {
             let Some(&generation) = self.generations.get(&source_id) else {
                 continue;
             };
-            let place = self.place.clone();
+            let (place, cancel) = (self.place.clone(), self.cancel.clone());
+            let max_entry_bytes = self.max_entry_bytes;
             let found = self
-                .under_lock(&source_id, generation, move |dir| {
+                .under_lock(&source_id, generation, Mode::Read, move |dir| {
+                    let op = Op {
+                        now,
+                        place: &*place,
+                        cancel: &cancel,
+                        max_entry_bytes,
+                    };
                     wanted
                         .iter()
-                        .filter_map(|w| lookup_one(dir, w, now, &*place))
+                        .take_while(|_| !cancel.is_set())
+                        .filter_map(|w| lookup_one(dir, w, &op))
                         .collect::<Vec<_>>()
                 })
                 .await
@@ -627,15 +816,27 @@ impl CacheAccess {
             let Some(&generation) = self.generations.get(&source_id) else {
                 continue;
             };
-            let place = self.place.clone();
+            let (place, cancel) = (self.place.clone(), self.cancel.clone());
+            let max_entry_bytes = self.max_entry_bytes;
             let sid = source_id.clone();
             let (ok, failed) = self
-                .under_lock(&source_id, generation, move |dir| {
+                .under_lock(&source_id, generation, Mode::Write, move |dir| {
+                    let op = Op {
+                        now,
+                        place: &*place,
+                        cancel: &cancel,
+                        max_entry_bytes,
+                    };
                     let mut ok = 0usize;
                     let mut failed = 0usize;
                     for s in &items {
-                        match store_one(dir, s, now, &*place) {
+                        if cancel.is_set() {
+                            // Tâche annulée : rien de plus n'est écrit (ni journalisé).
+                            break;
+                        }
+                        match store_one(dir, s, &op) {
                             Ok(_) => ok += 1,
+                            Err(_) if cancel.is_set() => break,
                             Err(err) => {
                                 failed += 1;
                                 tracing::warn!(
@@ -683,7 +884,7 @@ impl CacheAccess {
         for (source_id, (junk, evicted)) in work {
             // Source quelconque (pas forcément du pack) : génération courante.
             let generation = self.locks.generation(&source_id);
-            self.under_lock(&source_id, generation, move |dir| {
+            self.under_lock(&source_id, generation, Mode::Read, move |dir| {
                 remove_in(dir, &junk, &evicted);
             })
             .await;
