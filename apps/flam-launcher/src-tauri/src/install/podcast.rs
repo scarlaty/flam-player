@@ -879,6 +879,7 @@ impl InstallService {
         // (`CacheAccess::lookup` la supprime, #466) ; aucune borne à revérifier ici.
         for &n in &hit_ranks {
             let hit = &hits[&n];
+            debug_assert!(hit.mp3_bytes <= MAX_AUDIO_BYTES);
             audio_total += hit.mp3_bytes;
             kept.push((n, hit.mp3.clone(), hit_images.get(&n).cloned()));
         }

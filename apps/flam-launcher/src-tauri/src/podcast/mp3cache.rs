@@ -17,7 +17,8 @@
 //!   conversion, guid, URL, taille et type de l'enclosure) correspond et si la taille **et** le
 //!   SHA-256 du MP3 correspondent ; sinon elle est supprimée (retéléchargement).
 //! - Écriture : `<id>.json` supprimé, fichiers en `.part` puis renommés, `<id>.json` écrit en
-//!   dernier (temporaire puis renommage). Une erreur (disque plein…) supprime toute l'entrée.
+//!   dernier (temporaire puis renommage). Une erreur (disque plein…) supprime toute l'entrée,
+//!   sauf pour une pochette seule remplacée (voir « Annulation » ci-dessous).
 //! - Toute opération sur une source se fait sous son verrou ([`SourceLocks`]) et seulement si
 //!   sa génération n'a pas changé : une source supprimée n'est jamais recréée.
 //! - Le cache est **au mieux** : ses erreurs sont journalisées (uuid de source et nombre
@@ -541,8 +542,9 @@ fn store_inner(dir: &Path, s: &Store, op: &Op<'_>) -> io::Result<u64> {
 }
 
 /// Entrée de `s` toujours en place : métadonnées valides, même empreinte, MP3 de la taille
-/// enregistrée (son SHA-256 a été vérifié par la lecture qui l'a servi, sous le même verrou
-/// de source, et l'est de nouveau à chaque lecture).
+/// enregistrée. Son SHA-256 a été vérifié par la lecture de cette préparation, verrou relâché
+/// depuis : une altération à taille égale entre-temps n'est pas vue ici, mais la lecture
+/// suivante revérifie le SHA-256 et ne sert jamais l'entrée altérée.
 fn current_entry(dir: &Path, s: &Store) -> Option<EntryMeta> {
     let id = s.key.episode_id.as_str();
     read_meta(dir, id).filter(|meta| {

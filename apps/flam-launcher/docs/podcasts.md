@@ -924,7 +924,7 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
 
 ### 13.4 Écriture, lecture, concurrence
 
-- **Écriture atomique** : `<id>.json` est supprimé d'abord (l'ancienne entrée n'est plus
+- **Écriture atomique** (sauf pochette seule, voir plus bas) : `<id>.json` est supprimé d'abord (l'ancienne entrée n'est plus
   servie), le MP3 et la pochette sont écrits en `.part` puis renommés, et `<id>.json` est écrit
   **en dernier** (temporaire puis renommage) : il vaut validation de l'entrée. Le MP3 est
   d'abord **lié** (lien physique, aucune place en plus sur le disque) depuis le dossier de
@@ -1093,8 +1093,8 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
 - **Copies bornées** : 3 copies `pack-compositions.json.*.bak` au plus (`MAX_BACKUPS`) : celle
   qui vient d'être faite, jamais supprimée (même si l'horloge a reculé), et les plus récentes
   des autres ; un fichier au nom inattendu n'est jamais supprimé. Les noms sont comparés tels
-  quels, jamais après une conversion avec perte : un nom qui n'est pas de l'Unicode valide
-  n'est jamais pris pour une copie (#489). Une copie
+  quels, jamais après une conversion avec perte (#489) ; un nom qui n'est pas de l'Unicode
+  valide n'est jamais pris pour une copie (garanti aussi par le motif, tout ASCII). Une copie
   de la même seconde prend un suffixe supérieur à tous les existants
   (`storage::backup_path`) : la plus récente n'est jamais la première supprimée.
 - **Schéma plus récent** : comme `settings.json`, le fichier n'est **ni lu ni modifié**
@@ -1206,4 +1206,4 @@ une mise à jour. Le code est dans `src-tauri/src/podcast/compositions.rs`.
   d'ouverture, messages des actions, nom en caractères, sauvegarde refusée d'un éditeur
   fermé non réessayée, message de conservation gardé.
 - Suivis #489 : message d'une action réussie après l'échec de la réécriture (nouvel état,
-  copie nommée), copies comparées sur le nom brut (nom non Unicode jamais supprimé).
+  copie nommée), copies comparées sur le nom brut (non-régression : nom non Unicode jamais supprimé).
