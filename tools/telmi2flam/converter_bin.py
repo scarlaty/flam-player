@@ -16,7 +16,9 @@ derniere ligne non vide de stderr.
 """
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -74,8 +76,19 @@ def convert(exe, zip_path, out_path, extra_args=(), timeout=DEFAULT_TIMEOUT):
            "--progress-json"] + list(extra_args)
     flags = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
              else {"start_new_session": True})
+    # Dossier temporaire prive du processus enfant : un binaire tue apres le delai ne nettoie
+    # pas ses `t2f_ff_*` ; on supprime ici tout le dossier, quelle que soit l'issue (#465).
+    scratch = tempfile.mkdtemp(prefix="t2f_run_")
+    env = dict(os.environ, TMP=scratch, TEMP=scratch, TMPDIR=scratch)
     try:
-        child = subprocess.Popen(cmd, cwd=out_dir, stdin=subprocess.DEVNULL,
+        return _run(cmd, out_dir, out_path, exe, timeout, flags, env)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _run(cmd, out_dir, out_path, exe, timeout, flags, env):
+    try:
+        child = subprocess.Popen(cmd, cwd=out_dir, stdin=subprocess.DEVNULL, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, **flags)
     except OSError as e:
         raise ConverterNotFound("impossible de lancer %s : %s" % (exe, e))

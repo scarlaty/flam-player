@@ -917,8 +917,17 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
     compat_dir = os.path.join(cache, "compat")
     os.makedirs(compat_dir, exist_ok=True)
     report_path = os.path.join(compat_dir, "report.json")
-    chash = converter_hash()
     prev_hash, prev_list = _load_previous(report_path)
+    binary_ok = True
+    try:
+        chash = converter_hash()
+    except converter_bin.ConverterNotFound:
+        # --reinterpret sans binaire (rendu du rapport seul, #465) : on garde le hash du
+        # rapport precedent ; rien n'est converti, les fiches non reutilisables restent telles.
+        if not reinterpret or not prev_hash:
+            raise
+        binary_ok, chash = False, prev_hash
+        log("binaire telmi2flam absent : --reinterpret seul, aucune conversion")
     prev_list = _reconcile_provisional(compat_dir, prev_list, log)
     prev = {s["key"]: s for s in prev_list}
     keys = [story_key(e["uuid"], e["version"]) for e in entries]
@@ -980,8 +989,10 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
                     log("~ %s : run reinterprete (%s)" % (k, old["status"]))
             results[k] = old
             log("= %s : deja evalue (%s)" % (k, old["status"]))
-        else:
+        elif binary_ok:
             todo.append(e)
+        else:
+            log("? %s : a reevaluer, binaire absent (fiche precedente conservee)" % k)
 
     lock = threading.Lock()
 
@@ -1331,8 +1342,10 @@ def main(argv=None):
         # exporte pour les processus de --jobs N (spawn : le global CONVERTER n'y est pas)
         os.environ[converter_bin.ENV_VAR] = converter_bin.find_converter(CONVERTER)
     except converter_bin.ConverterNotFound as e:
-        print("ERREUR : %s" % e, file=sys.stderr)
-        return 2
+        if not args.reinterpret:
+            print("ERREUR : %s" % e, file=sys.stderr)
+            return 2
+        print("avertissement : %s (--reinterpret : rapport seul)" % e, file=sys.stderr)
     try:
         entries = select(collect(args.catalog, args.folder), args.only, args.limit)
     except (OSError, ValueError) as e:
