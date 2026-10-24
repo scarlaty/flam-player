@@ -508,25 +508,33 @@ IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff",
               ".heic", ".heif", ".ico", ".svg")
 
 
-def image_format(head):
-    """Format d'image d'apres les premiers octets (None : pas une image reconnue)."""
+HEIF_BRANDS = (b"avif", b"avis", b"heic", b"heix", b"mif1")
+
+
+def image_format(head, filename=""):
+    """Format d'image d'apres les premiers octets (None : pas une image reconnue). Les
+    signatures trop larges (`BM` sur deux octets, `<?xml`, qui est tout XML) ne comptent que
+    si `filename` a une extension d'image ; `ftyp` exige une marque AVIF/HEIF (sinon c'est
+    un MP4/M4A)."""
+    image_ext = filename.lower().endswith(IMAGE_EXTS)
     if head.startswith(b"\x89PNG\r\n\x1a\n"):
         return "png"
     if head.startswith(b"\xff\xd8\xff"):
         return "jpeg"
     if head[:6] in (b"GIF87a", b"GIF89a"):
         return "gif"
-    if head.startswith(b"BM"):
+    if head.startswith(b"BM") and image_ext:
         return "bmp"
     if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return "webp"
     if head[:4] in (b"II*\0", b"MM\0*"):
         return "tiff"
-    if head[4:8] == b"ftyp":
+    if head[4:8] == b"ftyp" and head[8:12] in HEIF_BRANDS:
         return "avif_heif"
     if head[:4] == b"\0\0\x01\0":
         return "ico"
-    if head.lstrip()[:5] in (b"<?xml", b"<svg "):
+    start = head.lstrip()[:5]
+    if start == b"<svg " or (start == b"<?xml" and image_ext):
         return "svg"
     return None
 
@@ -547,7 +555,7 @@ def archive_inventory(path):
                         head = f.read(16)
                 except Exception:  # entree illisible : le convertisseur en decidera
                     head = b""
-                fmt = image_format(head)
+                fmt = image_format(head, zi.filename)
                 if fmt is None and zi.filename.lower().endswith(IMAGE_EXTS):
                     fmt = "inconnu"
                 if fmt:
@@ -558,23 +566,40 @@ def archive_inventory(path):
             "images": dict(sorted(images.items()))}
 
 
-_COMPRESSION_RE = re.compile(r"compression (\d+)")
-_IMAGE_WHY_RE = re.compile(r"format non pris en charge : (.+)$")
+# Expressions ancrees sur la forme exacte des messages du candidat (zipread.rs, png.rs) : un
+# nom d'asset contenant « compression 3 » ou « format non pris en charge » ne doit pas
+# fausser la cause.
+_COMPRESSION_RE = re.compile(
+    r"^.* : compression (\d+) \(bzip2/LZMA/Zstandard\) d\u00e9l\u00e9gu\u00e9e \u00e0 Python$", re.S)
+_IMAGE_WHY_RE = re.compile(r"^.* : format non pris en charge : (.+)$", re.S)
+# Raisons du decodeur PNG (`PngError::Unsupported`) : liste fermee, le reste est `autre`.
+IMAGE_REASONS = ("APNG", "IHDR absent en t\u00eate ou r\u00e9p\u00e9t\u00e9", "pas un PNG",
+                 "tRNS apr\u00e8s l'IDAT", "tRNS de longueur inattendue", "tRNS r\u00e9p\u00e9t\u00e9")
+SUSPECT_CAUSES = ("autre", "metadata")
 
 
 def delegation_cause(message):
     """Cause d'une delegation d'apres le message du candidat, sans nom d'asset :
     `zip:<methode>`, `image:<raison>` (raison fixe du decodeur PNG), `metadata` ou `autre`."""
     message = message or ""
-    m = _COMPRESSION_RE.search(message)
+    m = _COMPRESSION_RE.match(message)
     if m:
         return "zip:" + ZIP_METHODS.get(int(m.group(1)), "methode_" + m.group(1))
-    m = _IMAGE_WHY_RE.search(message)
-    if m:
+    m = _IMAGE_WHY_RE.match(message)
+    if m and m.group(1).strip() in IMAGE_REASONS:
         return "image:" + m.group(1).strip()
     if message.startswith("metadata.json"):
         return "metadata"
     return "autre"
+
+
+def delegation_warning(by_cause):
+    """Avertissement (chiffres seuls) si des delegations sont `autre` ou `metadata` : hors D4
+    strict (zip non lu, PNG non decode), elles sont a classer a la main. None sinon."""
+    parts = ["%d `%s`" % (by_cause[c], c) for c in SUSPECT_CAUSES if by_cause.get(c)]
+    if not parts:
+        return None
+    return "attention : delegations hors D4 strict a classer a la main : " + ", ".join(parts)
 
 
 def command_fingerprint(cmd):
@@ -743,11 +768,20 @@ def run_campaign(archives_dir, oracle, candidate, out_dir, jobs=1, timeout=CAMPA
     def write_report():
         cases = [results[n] for n in names if n in results]
         doc = {"schema": REPORT_SCHEMA, "kind": "campaign", "engines": engines,
-               "pending": len(names) - len(cases)}
+               "pending": len(names) - len(cases),
+               # --limit : sous-ensemble des archives, pas un resultat de campagne complet
+               "partial": limit is not None}
         doc.update(campaign_summary(cases))
         doc["cases"] = cases
         _write_json_atomic(os.path.join(out_dir, "report.json"), doc)
         return doc
+
+    def harness_failure(n, e):
+        # seul le nom du type d'exception : ni message ni chemin
+        return {"verdict": "diff", "rule": None, "id": n[:-4], "engines": engines,
+                "diffs": [{"kind": "harness", "oracle": None,
+                           "candidate": "%s" % type(e).__name__}],
+                "inventory": archive_inventory(os.path.join(archives_dir, n))}
 
     def one(n):
         archive = os.path.join(archives_dir, n)
@@ -771,8 +805,17 @@ def run_campaign(archives_dir, oracle, candidate, out_dir, jobs=1, timeout=CAMPA
 
     write_report()
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, jobs)) as ex:
-        for fut in [ex.submit(one, n) for n in todo]:
-            fut.result()
+        for n, fut in [(n, ex.submit(one, n)) for n in todo]:
+            try:
+                fut.result()
+            except Exception as e:  # echec imprevu du harnais : un ecart, sans trace sur stderr
+                with lock:
+                    # un resultat deja enregistre (echec apres coup, ex. journal) est garde
+                    results.setdefault(n, harness_failure(n, e))
+                    try:
+                        write_report()
+                    except Exception:
+                        pass  # la derniere ecriture du rapport ci-dessous tranche
     return write_report()
 
 
@@ -824,6 +867,11 @@ def main(argv=None):
               "seuil (par. 4.3) %s" % (s["total"], s["identical"], s["delegated"], s["diff"],
                                  doc["pending"], "atteint" if doc["threshold_met"] else "non atteint"))
         print("delegations par cause : %s" % json.dumps(doc["delegations_by_cause"]))
+        warning = delegation_warning(doc["delegations_by_cause"])
+        if warning:
+            print(warning)
+        if doc["partial"]:
+            print("attention : rapport partiel (--limit %d archives)" % args.limit)
         return 0 if doc["threshold_met"] and not doc["pending"] else 1
     if args.mode == "corpus":
         oracle = split_cmd(args.oracle) if args.oracle else default_oracle()
