@@ -261,7 +261,7 @@ Python 3.14.8, comparés octet à octet ; injection de pannes `injection_de_pann
 | Méthode inconnue (deflate64…) | `NotImplementedError`, code 3 | code 3 (inchangé) |
 | Zstandard : fenêtre de plus de `2^27 + 1` octets | refus, sauf raccourci « single-pass » de libzstd : taille annoncée d'au plus 32 Kio (premier tampon de sortie de Python) et trame entière dans le tour | même règle (`zstd_big_window_*`) |
 | Zstandard : taille annoncée `0xFFFF_FFFF_FFFF_FFFF` (8 octets) | « inconnue », non contrôlée | idem (`zstd_fcs_unknown`) |
-| Zstandard : bloc brut ou compressé plus grand que `Block_Maximum_Size` | refus dès l'en-tête de bloc | idem (`zstd_block_too_big`) |
+| Zstandard : bloc brut ou compressé plus grand que `Block_Maximum_Size` | refus dès l'en-tête de bloc | idem (`zstd_block_too_big` ; en « single segment », la taille annoncée sans plancher de 1 Kio : `zstd_single_segment_block_too_big`, #478) |
 | Bombe démesurée (sortie plus grande que la mémoire) | `MemoryError` (tout le tour est décompressé en mémoire), `internal_error` | lecture en mémoire bornée : le Rust lit l'entrée (sens permis par D5) |
 
 Injection de pannes : `injection_de_pannes_bzip2_lzma_zstd` (archives altérées) et
@@ -447,9 +447,11 @@ aucun appel dans `telmi2flam.py`), le Rust ne l'applique pas non plus. Ni `draft
 | GIF entrelacé | lu (ordre des passes) | lu |
 | GIF animé, image partielle, sans palette globale | première image, fond index transparent ou 0 | idem |
 | APNG (PR 1) | première image ; séquence `fcTL`/`fdAT` fausse, `fcTL` court ou hors de l'image : illisible ; zone vide : illisible | idem, testé (`apng_*` de `gen_png_vectors.py`) |
-| `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue (PR 1) | dernier `IHDR` (taille ; mode du dernier couple valide), transparence rangée selon le mode courant, `_trns_mask` sur la clé brute et l'`IHDR` à position fixe | idem, y compris les erreurs (`TypeError` d'un triplet sur du gris, palette sur une image d'un autre mode que `L`/`LA`) : 634 combinaisons dans `combos.tsv` |
+| `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue (PR 1) | dernier `IHDR` (taille ; mode du dernier couple valide), transparence rangée selon le mode courant, `_trns_mask` sur la clé brute et l'`IHDR` à position fixe | idem, y compris les erreurs (`TypeError` d'un triplet sur du gris, palette sur une image d'un autre mode que `L`/`LA`) : 634 combinaisons dans `combos.tsv`, cas `plte_*` du manifeste |
 
-**Écarts attendus** : aucun pour le PNG et le GIF. JPEG : écart d'IDCT/suréchantillonnage
+**Écarts attendus** : aucun pour le PNG. GIF : un fichier forgé à la fois GIF et IM/IMT ou PCD
+(polyglotte) est relu par Pillow avec un greffon sans `_accept` après l'échec de l'ouverture GIF
+(champ tronqué, aucune image) ; le Rust le déclare illisible (écart accepté, #473). JPEG : écart d'IDCT/suréchantillonnage
 borné s'il est inévitable, et pixels des JPEG corrompus (reprise de libjpeg-turbo), chacun
 inscrit dans `ALLOWED_DEVIATIONS` avec sa mesure, et signalé dans la PR.
 
@@ -466,7 +468,8 @@ PNG`). Détails reproduits de Pillow, tous vérifiés contre l'oracle :
   entrelacement jamais retiré ; un `PLTE` lu sous un mode palette puis un `IHDR` d'un autre
   mode : `Image.load` pose la palette sur le cœur de l'image, accepté pour `L` et `LA` (la
   valeur grise sert d'index, alpha du canal A ; avec transparence : illisible en `L`, masque
-  sur la luminance de la palette en `LA`), refusé (illisible) pour les autres modes ;
+  sur la luminance de la palette en `LA`, ou, pour le masque RGB 16 bits, sur sa couleur
+  comparée à l'octet haut de la clé, #473), refusé (illisible) pour les autres modes ;
 - transparence : valeur de Pillow typée selon le mode courant à chaque `tRNS` (entier, triplet
   ou octets ; le dernier gagne, même après l'image : second passage de conversion), masque de
   `_trns_mask` sur la clé brute de `_png_trns_key` et l'`IHDR` à position fixe de `_png_ihdr`,
@@ -475,7 +478,11 @@ PNG`). Détails reproduits de Pillow, tous vérifiés contre l'oracle :
   `(k, 0, 0)`) ; octets sur du gris ou du RGB et triplet sur une palette : illisible ;
 - zlib : sortie pleine, zlib s'arrête au premier octet à écrire sans contrôler une distance trop
   lointaine (miniz la refuse au décodage) : échec rejoué dans un tampon jetable à historique
-  fictif (constaté sur une longueur d'IDAT altérée, `alterations.tsv`).
+  fictif (constaté sur une longueur d'IDAT altérée, `alterations.tsv`) ;
+- textes compressés (`zTXt`, `iTXt`, `iCCP`) de 1 Mio exactement : `ValueError` seulement si
+  `unconsumed_tail` n'est pas vide, c'est-à-dire s'il reste de l'entrée après le symbole en
+  attente (lu par zlib, distance comprise, mais pas un octet de bloc stocké) ; une entrée qui
+  finit sur ce symbole ou au milieu est lue (#473, `ztxt_1mio_*`, `iccp_1mio_*`).
 
 ## 5. Plan de bascule
 

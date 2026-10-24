@@ -53,7 +53,8 @@ pub struct ZstdDecoder {
     frame: Option<Box<FrameDecoder>>,
     checksum: bool,
     content_size: Option<u64>,
-    /// `Block_Maximum_Size` : min(fenêtre, 128 Kio).
+    /// `Block_Maximum_Size` : min(fenêtre, 128 Kio) ; fenêtre = taille annoncée en « single
+    /// segment ».
     block_max: u64,
     /// Fenêtre au-delà de `MAX_WINDOW` admise par le raccourci « single-pass » de libzstd
     /// (taille annoncée d'au plus 32 Kio, le tampon de sortie initial de Python) : la trame
@@ -164,7 +165,9 @@ impl ZstdDecoder {
         if self.big_window && !self.content_size.is_some_and(|n| n <= SINGLE_PASS_OUT) {
             return Err(too_much_memory());
         }
-        self.block_max = window.clamp(1024, 128 * 1024);
+        // `blockSizeMax = MIN(windowSize, ZSTD_BLOCKSIZE_MAX)`, sans plancher : une trame
+        // « single segment » annonçant moins de 1 Kio borne aussi ses blocs (#478).
+        self.block_max = window.min(128 * 1024);
         // La somme de contrôle est lue et vérifiée ici : `ruzstd` ne la voit pas.
         let mut header = avail[..size].to_vec();
         header[4] &= !0x04;
