@@ -89,24 +89,3 @@ fn conversions_identiques_a_pillow() {
         errors.join("\n")
     );
 }
-
-/// Matrice de `make_corpus.py` (#123), produite hors dépôt par
-/// `gen_resample_vectors.py --matrix <dossier> [--big]` :
-/// `TELMI2FLAM_RESAMPLE_MATRIX=<dossier> cargo test --release -p telmi2flam --test
-/// resample_vectors -- --ignored`.
-#[test]
-#[ignore = "matrice générée hors dépôt (TELMI2FLAM_RESAMPLE_MATRIX)"]
-fn matrice_make_corpus() {
-    let dir = PathBuf::from(
-        std::env::var("TELMI2FLAM_RESAMPLE_MATRIX").expect("TELMI2FLAM_RESAMPLE_MATRIX"),
-    );
-    let (n, errors) = check_manifest(&dir);
-    eprintln!("{} cellules identiques sur {n}", n - errors.len());
-    assert!(n > 0);
-    assert!(
-        errors.is_empty(),
-        "{} écarts sur {n} :\n{}",
-        errors.len(),
-        errors.join("\n")
-    );
-}

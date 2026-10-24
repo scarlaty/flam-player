@@ -2,11 +2,11 @@
 #
 # Le convertisseur Python (telmi2flam.py, Pillow) est supprimé (#140). Ses sorties ont été figées
 # une dernière fois avec ces versions, sous Windows, à la révision `revision` : vecteurs et tables
-# de crates/telmi2flam/tests (générateurs gen_*.py relancés, résultats inchangés), corpus de
+# de crates/telmi2flam/tests (générateurs gen_*.py relancés puis supprimés, voir PORT-RUST.md §4.5), corpus de
 # parité (tests/data/parity_corpus.zip) et matrice de rééchantillonnage
 # (tests/data/matrix_expected.json). Les deux derniers fichiers portent les mêmes valeurs
 # (`frozen_with`), vérifiées par test_parity.py ; text_parity.rs et graph_parity.rs relisent
 # `python`. Aucun Python ni Pillow n'est plus installé pour le convertisseur, ni livré.
 python=3.14.8
 pillow=12.3.0
-revision=9cf8542
+revision=fdc09e9

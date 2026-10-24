@@ -552,6 +552,12 @@ def load_references(path):
         with zipfile.ZipFile(path) as z:
             index = json.loads(z.read("corpus.json").decode("utf-8"))
             doc = json.loads(z.read("expected.json").decode("utf-8"))
+            names = set(z.namelist())
+            if not isinstance(index, list) or not all(
+                    isinstance(e, dict) and isinstance(e.get("id"), str)
+                    and isinstance(e.get("archive"), str) and e["archive"] in names
+                    for e in index):
+                raise ReferencesError("corpus.json : entree sans id, ou archive absente du ZIP")
             blobs = {}
             for name in z.namelist():
                 if name.startswith("blobs/"):
@@ -1063,6 +1069,9 @@ def main(argv=None):
               "seuil (par. 4.3) %s" % (s["total"], s["identical"], s["delegated"], s["diff"],
                                  doc["pending"], "atteint" if doc["threshold_met"] else "non atteint"))
         print("delegations par cause : %s" % json.dumps(doc["delegations_by_cause"]))
+        if doc["partial"]:
+            print("attention : rapport partiel (--limit %d archives), code de sortie %d"
+                  % (args.limit, PARTIAL_EXIT))
         warning = delegation_warning(doc["delegations_by_cause"])
         if warning:
             print(warning)

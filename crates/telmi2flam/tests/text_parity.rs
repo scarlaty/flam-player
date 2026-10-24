@@ -119,11 +119,10 @@ fn table_produite_par_le_python_de_l_oracle() {
     assert_eq!(
         str_of(field(&t, "unidata_version")),
         UNIDATA_VERSION,
-        "table generee avec un Python d'une autre version d'Unicode : relancer \
-         gen_text_cases.py avec le Python de ORACLE-VERSIONS.txt"
+        "table figée et crate unicode-normalization de versions d'Unicode différentes \
+         (références figées : PORT-RUST.md §4.5)"
     );
-    // Même Python que l'oracle épinglé : une montée de version dans ORACLE-VERSIONS.txt impose
-    // de régénérer la table.
+    // Même Python que l'oracle qui a figé la table (ORACLE-VERSIONS.txt, §4.5).
     let pins = include_str!("../../../tools/telmi2flam/ORACLE-VERSIONS.txt");
     let oracle = pins
         .lines()

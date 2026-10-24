@@ -7,10 +7,10 @@ Ecrit, dans un dossier choisi par l'appelant (temporaire : rien n'est commite), 
 104x136 en mode `bandes`, inventaire 128x128, titre 89x120, borne 2047).
 
 Les `.lif` attendus sont figes dans `crates/telmi2flam/tests/data/matrix_expected.json`
-(sortie de l'ancien oracle Python, Pillow 12.3.0, PORT-RUST.md §4.5) avec le SHA-256 de chaque
-PNG : ce generateur doit donc rester identique a l'octet pres (graine fixe, PNG ecrits a la
-main, zlib de la bibliotheque standard au niveau 6). `parity.py matrix` refuse un PNG dont
-l'empreinte a change.
+(sortie de l'ancien oracle Python, Pillow 12.3.0, PORT-RUST.md §4.5) avec l'empreinte de chaque
+PNG (`png_fingerprint` : en-tetes et donnees decompressees, independante de zlib) : le contenu
+produit doit donc rester identique (graine fixe, PNG ecrits a la main, filtre 0, palettes
+8 bits). `matrix_render.rs` refuse un PNG dont l'empreinte a change.
 
     python make_matrix.py DOSSIER [--quick]
 """
@@ -193,6 +193,25 @@ def matrix_png(mode, w, h, content, seed=SEED):
         return _png(w, h, 16, 2, _widen(_channels(rgba, 0, 1, 2)),
                     trns=struct.pack(">HHH", *(_wide16(v) for v in _trns_key(rgba, w, h))))
     raise ValueError(mode)
+
+
+def png_fingerprint(data):
+    """Empreinte d'un PNG de la matrice, independante de l'implementation de zlib (zlib,
+    zlib-ng...) : SHA-256 des chunks autres que IDAT/IEND (type, longueur, donnees), puis de
+    `IDAT` et des donnees IDAT decompressees. Meme calcul dans matrix_render.rs."""
+    import hashlib
+    h = hashlib.sha256()
+    idat, pos = [], 8
+    while pos + 8 <= len(data):
+        n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + n]
+        if kind == b"IDAT":
+            idat.append(body)
+        elif kind != b"IEND":
+            h.update(kind + struct.pack(">I", n) + body)
+        pos += 12 + n
+    h.update(b"IDAT" + zlib.decompress(b"".join(idat)))
+    return h.hexdigest()
 
 
 def matrix_cells(sizes=SIZES):

@@ -37,35 +37,6 @@ def png(w, h, color=(200, 10, 10, 255)):
             + _chunk(b"IDAT", zlib.compress(row * h, 6)) + _chunk(b"IEND", b""))
 
 
-def raw_png(w, h, bd, ct, pixels, trns):
-    """PNG minimal (filtre 0) : pixels = liste de lignes d'echantillons
-    (entiers gris, ou tuples RGB), trns = octets bruts du chunk tRNS (None :
-    pas de tRNS)."""
-    raw = b""
-    for row in pixels:
-        raw += b"\x00"
-        samples = [c for px in row for c in (px if isinstance(px, tuple) else (px,))]
-        if bd == 16:
-            raw += b"".join(struct.pack(">H", v) for v in samples)
-        elif bd == 8:
-            raw += bytes(samples)
-        else:
-            acc, n, out = 0, 0, bytearray()
-            for v in samples:
-                acc = (acc << bd) | v
-                n += bd
-                if n == 8:
-                    out.append(acc)
-                    acc, n = 0, 0
-            if n:
-                out.append(acc << (8 - n))
-            raw += bytes(out)
-    ihdr = struct.pack(">IIBBBBB", w, h, bd, ct, 0, 0, 0)
-    trns_chunk = _chunk(b"tRNS", trns) if trns is not None else b""
-    return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + trns_chunk
-            + _chunk(b"IDAT", zlib.compress(raw)) + _chunk(b"IEND", b""))
-
-
 # Tables MPEG audio (debit en kbit/s par indice) : version (3 = MPEG1, 2 = MPEG2,
 # 0 = MPEG2.5), couche (1 = III, 2 = II, 3 = I).
 _BITRATES = {

@@ -394,7 +394,11 @@ sont identiques à l'octet près dès la PR 6.
    100 % était requis pour fusionner la PR 7). **Depuis #140** : les PNG sont écrits sans
    Pillow par `tests/parity/make_matrix.py` (même grille de cellules, PNG faits main) et les
    `.lif` de l'oracle sur ces PNG sont figés par leur SHA-256 dans
-   `crates/telmi2flam/tests/data/matrix_expected.json`, avec celui de chaque PNG.
+   `crates/telmi2flam/tests/data/matrix_expected.json`, avec l'empreinte du contenu de chaque
+   PNG. Couverture un peu réduite par rapport aux PNG de Pillow : palettes en 8 bits seulement
+   (Pillow écrivait aussi des palettes 1 et 4 bits) et filtre 0 partout (Pillow filtrait
+   L, RGB et RGBA de façon adaptative) ; le décodage de ces variantes reste couvert par les
+   vecteurs de `tests/vectors/png`, le rééchantillonnage travaillant sur du RGBA décodé.
    `crates/telmi2flam/tests/matrix_render.rs` (test ignoré, lancé en release par le job
    `parity`) vérifie les PNG puis compare chaque `.lif` du Rust. Au gel : 1465 cellules sur
    353 PNG, 0 écart.
@@ -585,12 +589,18 @@ la fusion des derniers vecteurs ajoutés avec l'oracle). Ce qui a été figé :
 - vecteurs et tables déjà commités de `crates/telmi2flam/tests/data` et `tests/vectors` (JSON,
   ZIP, `.lif`, `.rgba`, TSV) : chaque générateur (`gen_*.py`, `make_archive_vectors.py`) a été
   relancé une dernière fois sur cet arbre, sortie identique à l'octet près aux fichiers du
-  dépôt, puis supprimé ;
+  dépôt, puis supprimé. Deux exceptions : `graph_cases.json` était en retard sur le corpus
+  (11 cas ajoutés depuis sa dernière génération, dont GIF, APNG, JPEG, Zstandard ; un cas
+  retiré du corpus, `img_jpeg_delegated`) : la version régénérée est commitée, les 323 cas
+  communs étant identiques ; `ffmpeg_cases.zip` ne diffère que par des textes non
+  déterministes (adresses mémoire et dossiers temporaires dans les messages
+  d'avertissement, jamais comparés) : la version du dépôt est gardée ;
 - corpus de parité : `tests/data/parity_corpus.zip` (archives de `make_corpus.py`, index
   `corpus.json`, résultat normalisé de l'oracle par cas `expected.json`, au format de
   `parity.run_converter`, contenu des `.lif` issus d'un JPEG sous `blobs/<sha256>` pour la
   règle `jpeg_bounded`) ;
-- matrice : `tests/data/matrix_expected.json` (SHA-256 de chaque PNG de `make_matrix.py` et du
+- matrice : `tests/data/matrix_expected.json` (empreinte du contenu de chaque PNG de `make_matrix.py`, en-têtes et données
+  décompressées, indépendante de zlib, et SHA-256 du
   `.lif` de l'oracle pour chaque cellule).
 
 Les deux derniers fichiers portent la provenance (`frozen_with` : versions et révision),

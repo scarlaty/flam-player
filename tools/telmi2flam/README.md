@@ -673,7 +673,7 @@ python tools/telmi2flam/parity.py compare A.plain.pk B.plain.pk     # deux sorti
   sortie 1 au moindre écart, 2 si les références sont illisibles ou altérées, 0 sinon.
 - **Matrice de rééchantillonnage** : `make_matrix.py` (sans dépendance, graine fixe) écrit les
   PNG (13 modes × tailles 1 à 2049 × formes × contenus) ; `matrix_render.rs` vérifie le
-  SHA-256 de chaque PNG puis compare chaque `.lif` du Rust (scène, vignette, inventaire,
+  contenu de chaque PNG (empreinte indépendante de zlib) puis compare chaque `.lif` du Rust (scène, vignette, inventaire,
   titre, borne 2047 : 1465 cellules) à celui de l'oracle, figé dans
   `crates/telmi2flam/tests/data/matrix_expected.json`.
 - Ajouter un cas : voir `PORT-RUST.md` §4.5 (résultat attendu écrit à la main et justifié, ou

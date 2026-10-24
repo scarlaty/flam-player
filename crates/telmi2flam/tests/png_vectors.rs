@@ -158,21 +158,3 @@ fn troncatures_et_octets_alteres_identiques_a_pillow() {
         "trop de délégations : {delegated}"
     );
 }
-
-/// Matrice de `make_corpus.py` (#123), produite hors dépôt par
-/// `gen_png_vectors.py --matrix <dossier>` : `TELMI2FLAM_PNG_MATRIX=<dossier> cargo test -p
-/// telmi2flam --test png_vectors -- --ignored`.
-#[test]
-#[ignore = "matrice générée hors dépôt (TELMI2FLAM_PNG_MATRIX)"]
-fn matrice_make_corpus() {
-    let dir = PathBuf::from(std::env::var("TELMI2FLAM_PNG_MATRIX").expect("TELMI2FLAM_PNG_MATRIX"));
-    let (n, errors) = check_manifest(&dir);
-    eprintln!("{n} images de la matrice comparées");
-    assert!(n > 0);
-    assert!(
-        errors.is_empty(),
-        "{} écarts :\n{}",
-        errors.len(),
-        errors.join("\n")
-    );
-}

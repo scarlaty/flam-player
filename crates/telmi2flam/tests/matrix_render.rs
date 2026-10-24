@@ -27,6 +27,36 @@ fn hex(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// Empreinte d'un PNG indépendante de l'implémentation de zlib (`png_fingerprint` de
+/// `make_matrix.py`) : SHA-256 des chunks autres que IDAT/IEND (type, longueur, données), puis
+/// de `IDAT` et des données IDAT décompressées.
+fn png_fingerprint(data: &[u8]) -> String {
+    use std::io::Read;
+    let mut h = Sha256::new();
+    let mut idat = Vec::new();
+    let mut pos = 8;
+    while pos + 8 <= data.len() {
+        let n = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+        let kind = &data[pos + 4..pos + 8];
+        let body = &data[pos + 8..(pos + 8 + n).min(data.len())];
+        if kind == b"IDAT" {
+            idat.extend_from_slice(body);
+        } else if kind != b"IEND" {
+            h.update(kind);
+            h.update((n as u32).to_be_bytes());
+            h.update(body);
+        }
+        pos += 12 + n;
+    }
+    let mut raw = Vec::new();
+    flate2::read::ZlibDecoder::new(&idat[..])
+        .read_to_end(&mut raw)
+        .expect("IDAT illisible");
+    h.update(b"IDAT");
+    h.update(&raw);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn expected() -> serde_json::Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/matrix_expected.json");
     serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap()
@@ -78,7 +108,7 @@ fn matrice_identique_aux_references_figees() {
         let pid = Path::new(rel).file_stem().unwrap().to_str().unwrap();
         let png_ok = *checked_png
             .entry(pid.to_string())
-            .or_insert_with(|| pngs.get(pid) == Some(&hex(&png)));
+            .or_insert_with(|| pngs.get(pid) == Some(&png_fingerprint(&png)));
         if !png_ok {
             failures.push(format!(
                 "{id} : PNG d'entrée différent du PNG figé (générateur modifié ?)"

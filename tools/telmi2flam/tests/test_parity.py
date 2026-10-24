@@ -474,10 +474,24 @@ class TestMatrixGenerator(unittest.TestCase):
         self.assertGreater(len(pngs), 100)
         for rel in pngs:
             with open(os.path.join(self.tmp, rel), "rb") as f:
-                sha = hashlib.sha256(f.read()).hexdigest()
-            self.assertEqual(sha, frozen["pngs"][os.path.basename(rel)[:-4]], rel)
+                fp = make_matrix.png_fingerprint(f.read())
+            self.assertEqual(fp, frozen["pngs"][os.path.basename(rel)[:-4]], rel)
         for e in entries:
             self.assertIn(e["id"], frozen["lifs"])
+
+    def test_fingerprint_ignores_zlib_but_not_pixels(self):
+        data = make_matrix.matrix_png("RGBA", 7, 5, "gradient")
+        chunks = png_chunks(data)
+        raw = zlib.decompress(chunks[b"IDAT"])
+
+        def rebuild(idat):
+            return (data[:8] + make_matrix._chunk(b"IHDR", chunks[b"IHDR"])
+                    + make_matrix._chunk(b"IDAT", idat) + make_matrix._chunk(b"IEND", b""))
+        fp = make_matrix.png_fingerprint(data)
+        self.assertEqual(make_matrix.png_fingerprint(rebuild(zlib.compress(raw, 9))), fp)
+        self.assertEqual(make_matrix.png_fingerprint(rebuild(zlib.compress(raw, 0))), fp)
+        altered = raw[:-1] + bytes([raw[-1] ^ 1])
+        self.assertNotEqual(make_matrix.png_fingerprint(rebuild(zlib.compress(altered))), fp)
 
 
 # Faux candidat : repond comme un convertisseur qui echoue toujours avec le code donne.
@@ -538,6 +552,20 @@ class TestFrozenReferences(unittest.TestCase):
             for entry in run["entries"] or ():
                 if entry["name"] in e.get("jpeg_entries", ()):
                     self.assertIn(entry["sha256"], self.blobs, (e["id"], entry["name"]))
+
+    # Contenu fige des references (#140) : un changement d'etiquette (qui active une regle de
+    # ALLOWED_DEVIATIONS) ou d'attendu ne se voit pas dans le diff d'un ZIP ; il doit passer
+    # par la mise a jour visible de ces empreintes, justifiee (PORT-RUST.md §4.5).
+    FROZEN_SHA256 = {
+        "corpus.json": "577e758e5192c471dbda965ac01b3b78cee870c3f092eca24fec6e9a91653a06",
+        "expected.json": "3ce251c276d224eac7e4fe61afae8775863968ee754c3a6983a659c52fd86912",
+    }
+
+    def test_frozen_content_unchanged(self):
+        with zipfile.ZipFile(parity.DEFAULT_REFERENCES) as z:
+            for name, sha in self.FROZEN_SHA256.items():
+                self.assertEqual(hashlib.sha256(z.read(name)).hexdigest(), sha, name)
+        self.assertEqual(len(self.index), 101)
 
     def test_provenance(self):
         self.assertEqual(self.frozen["python"], "3.14.8")
