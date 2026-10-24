@@ -30,14 +30,19 @@ export function TitlesAudioField({
   const id = useId();
   const { list, error: listError } = useVoices();
   const preview = useSpeechPreview();
-  const [preferred, setPreferred] = useState<string | null>(null);
+  // Voix des Paramètres : `undefined` tant que `settings_get` n'a pas répondu.
+  const [preferred, setPreferred] = useState<string | null | undefined>(undefined);
+  const [preferredFailed, setPreferredFailed] = useState(false);
   useEffect(() => {
     let cancelled = false;
     getSettings()
       .then((view) => {
         if (!cancelled) setPreferred(view.settings.tts_voice ?? null);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        // Repli sur la voix par défaut, signalé dans le statut.
+        if (!cancelled) setPreferredFailed(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -51,16 +56,22 @@ export function TitlesAudioField({
   const loading = list === null && listError === null;
   const voices = list?.voices ?? [];
   const hasVoice = voices.length > 0;
-  const wanted = voice ?? preferred;
+  // Voix des Paramètres encore inconnue : l'aperçu attend, pour ne pas jouer la voix par défaut.
+  const preferredPending = voice === null && preferred === undefined && !preferredFailed;
+  const wanted = voice ?? preferred ?? null;
   const used = list ? effectiveVoice(list, wanted) : null;
   const usedName = voices.find((v) => v.id === used)?.name ?? null;
   const gone = wanted !== null && hasVoice && used !== wanted;
 
+  const unavailable = !preview.playing && (trimmed === "" || preferredPending);
   const statusId = `${id}-status`;
   let status: string;
   if (loading) status = text.loading;
   else if (listError) status = text.listFailed;
   else if (!hasVoice) status = text.noVoice;
+  else if (preferredPending) status = text.preferredLoading;
+  else if (voice === null && preferredFailed)
+    status = text.preferredFailed(usedName ?? "");
   else if (gone) status = text.voiceGone(usedName ?? "");
   else if (voice !== null) status = text.voiceOfComposition(usedName ?? "");
   else status = text.voiceUsed(usedName ?? "");
@@ -85,10 +96,14 @@ export function TitlesAudioField({
             variant="secondary"
             size="sm"
             icon={preview.playing ? "close" : "play"}
-            disabled={trimmed === "" && !preview.playing}
+            // aria-disabled, pas disabled : le bouton garde le focus quand il devient inactif.
+            aria-disabled={unavailable || undefined}
             aria-label={preview.playing ? text.stopTitle : text.listenTitle}
             aria-describedby={trimmed === "" ? `${id}-notitle` : undefined}
-            onClick={() => (preview.playing ? stop() : preview.play(trimmed, used))}
+            onClick={() => {
+              if (preview.playing) stop();
+              else if (!unavailable) preview.play(trimmed, used);
+            }}
           >
             {preview.playing ? text.stop : text.listen}
           </Button>

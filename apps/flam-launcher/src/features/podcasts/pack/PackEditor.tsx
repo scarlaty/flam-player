@@ -32,7 +32,7 @@ import { libraryHash, ROUTE_HASHES } from "../../../router";
 import { ErrorBanner } from "../../ErrorBanner";
 import { getPackRightsAck, setPackRightsAck } from "../../settings/preferences";
 import { StoriesContext } from "../../stories/StoriesContext";
-import { errorKindText } from "../../stories/taskView";
+import { taskErrorMessage } from "../../stories/taskView";
 import { formatBytes } from "../../validation";
 import { MAX_EPISODES } from "../selection";
 import { usePodcastSelection } from "../SelectionContext";
@@ -704,7 +704,11 @@ export function PackEditor({
           <ErrorBanner
             error={{
               ...createError,
-              message: errorKindText(createError.kind) ?? createError.message,
+              message: taskErrorMessage({
+                kind: createError.kind,
+                message: createError.message,
+                code: null,
+              }),
             }}
           />
         )}

@@ -74,6 +74,11 @@
   font-size: var(--font-size-xs);
 }
 
+/* Le détail peut porter une seconde ligne (texte traduit, puis détail du backend). */
+.fl-task__detail {
+  white-space: pre-line;
+}
+
 .fl-task__actions {
   display: flex;
   flex: none;

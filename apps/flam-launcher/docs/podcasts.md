@@ -1006,8 +1006,17 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
 
 Aucun écran dédié : la taille du cache des MP3 est comptée dans la taille du cache affichée par
 les paramètres, « Vider le cache » la supprime, et la suppression d'une source purge la sienne.
-Un affichage séparé (taille du cache des MP3, bouton dédié) est une évolution possible, non
-faite dans #466 (suivi : #489).
+
+**Taille affichée à part (#489).** La section « Cache » des paramètres ajoute, sous la taille
+totale, une ligne « Dont MP3 de podcasts : … » (ou « Aucun MP3 de podcast n'est gardé en
+cache. »). Elle vient de la commande `podcast_mp3_cache_size` (`podcast/mp3size.rs`), qui
+renvoie `{ bytes }` : la somme des fichiers de `<cache>/podcasts/<source>/mp3/` (entrées,
+`.part` et restes compris), sans suivre ni lien ni jonction ; un dossier absent ou remplacé par
+un lien compte pour zéro. Cette part est **déjà comprise** dans la taille de `cache_usage` (le
+sous-dossier `podcasts` en fait partie) : elle n'est pas ajoutée. Elle est relue après
+l'ouverture de l'écran, un enregistrement des chemins et « Vider le cache » ; un échec de son
+calcul masque seulement la ligne. Un bouton dédié pour ne vider que les MP3 reste une évolution
+possible, non faite.
 
 ## 14. Compositions nommées réutilisables (N3 c, #461)
 
