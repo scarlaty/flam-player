@@ -9,7 +9,9 @@
 //!   `ffmpeg.sha256` écrit à côté par le script de build (format de `sha256sum`) : un binaire
 //!   absent du fichier, modifié ou tronqué est refusé. Le fichier est livré avec le binaire : il
 //!   garde contre une copie corrompue ou un remplacement partiel, pas contre un attaquant qui
-//!   peut écrire dans le dossier d'installation (qui peut aussi remplacer le launcher) ;
+//!   peut écrire dans le dossier d'installation (qui peut aussi remplacer le launcher). Seule
+//!   exception : une série de lancements courts d'une même étape ([`Ffmpeg::verify`], titres
+//!   lus d'un pack) vérifie l'empreinte une fois, au début de l'étape ;
 //! - **lance sans shell**, avec des arguments fixes fournis par l'appelant (un seul argument par
 //!   élément, jamais une ligne à découper), sans fenêtre de console, stdin fermé, dans un
 //!   environnement réduit à l'essentiel ;
@@ -179,6 +181,18 @@ impl Ffmpeg {
         limits: Limits,
         cancel: &mut watch::Receiver<bool>,
     ) -> AppResult<Output> {
+        let verified = self.verify(tool, cancel).await?;
+        verified.run(args, limits, cancel).await
+    }
+
+    /// Vérifie l'empreinte de `tool` une fois, pour une série de lancements courts d'une même
+    /// étape ([`Verified::run`], par exemple les titres lus d'un pack, #487). Le hachage
+    /// s'interrompt à l'annulation (`AppError::Cancelled`).
+    pub async fn verify(
+        &self,
+        tool: Tool,
+        cancel: &mut watch::Receiver<bool>,
+    ) -> AppResult<Verified> {
         if *cancel.borrow() {
             return Err(AppError::Cancelled);
         }
@@ -197,7 +211,36 @@ impl Ffmpeg {
                 joined.map_err(|e| std::io::Error::other(e.to_string()))??
             }
         };
-        run_program(&path, args, limits, cancel).await
+        Ok(Verified { path })
+    }
+}
+
+/// Exécutable dont l'empreinte a été vérifiée par [`Ffmpeg::verify`]. À garder le temps d'une
+/// étape seulement : le fichier n'est pas revérifié à chaque lancement (même limite TOCTOU que
+/// celle décrite en tête du module, élargie à la durée de l'étape).
+#[derive(Debug, Clone)]
+pub struct Verified {
+    path: PathBuf,
+}
+
+impl Verified {
+    /// Lance l'exécutable vérifié avec `args` (sans shell), mêmes règles que [`Ffmpeg::run`].
+    pub async fn run(
+        &self,
+        args: &[OsString],
+        limits: Limits,
+        cancel: &mut watch::Receiver<bool>,
+    ) -> AppResult<Output> {
+        if *cancel.borrow() {
+            return Err(AppError::Cancelled);
+        }
+        run_program(&self.path, args, limits, cancel).await
+    }
+
+    /// Exécutable non vérifié, pour les tests (faux ffmpeg).
+    #[cfg(test)]
+    pub fn unchecked(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
     }
 }
 
