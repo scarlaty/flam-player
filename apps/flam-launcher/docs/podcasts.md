@@ -29,6 +29,7 @@ Légende :
 9. [Décisions du 2026-10-23 (N1 à N10)](#9-décisions-du-2026-10-23-n1-à-n10)
 10. [Ordres de grandeur](#10-ordres-de-grandeur)
 11. [Impact sur les issues](#11-impact-sur-les-issues)
+12. [Cache des MP3 convertis (N8 b, #460)](#12-cache-des-mp3-convertis-n8-b-460)
 
 ## 1. Objectif et périmètre
 
@@ -53,7 +54,7 @@ fonctionnelle du launcher ; elle peut être préparée dès maintenant.
 
 **Hors MVP** (#221, voir § 11) : recherche de podcasts et liste de flux conseillés, synthèse
 vocale des titres, titre incrusté ou pochette générée, compositions nommées réutilisables (N3 c),
-cache des MP3 convertis (N8 b), image de catégorie choisie par le parent (N5 c), normalisation du
+cache des MP3 convertis (N8 b, livré par #460, § 12), image de catégorie choisie par le parent (N5 c), normalisation du
 volume, chapitres, reprise par épisode, génération directe d'un paquet flam (option B).
 
 ## 2. Décisions prises
@@ -298,7 +299,8 @@ URL du flux ─► téléchargement du flux (cache hors ligne du dernier flux va
   convertis, archive Telmi, `.plain.pk`) ; la génération directe d'un paquet flam (option B) est
   une évolution (#221).
 - **Après la publication** : tout est supprimé (originaux, MP3 convertis, archive Telmi) ; refaire
-  un pack retélécharge tout (N8 a). Le cache des MP3 convertis est une évolution (N8 b, #221).
+  un pack retélécharge tout (N8 a). Depuis #460, les MP3 convertis sont gardés en cache par
+  source (N8 b, § 12) : refaire un pack ne retélécharge que ce qui manque.
 
 ## 6. Histoire générée (archive Telmi synthétique)
 
@@ -489,6 +491,7 @@ Sans mise à jour, rien n'oblige à garder les épisodes téléchargés.
 | b. Garder les MP3 convertis par source, purgés avec la source (D15)         | Refaire un pack est rapide ; coûte jusqu'à la taille des packs sur le disque. |
 
 **Recommandation : a** (adoptée le 2026-10-23) au MVP ; b plus tard si le besoin apparaît.
+**b retenue le 2026-10-24** pour les MP3 convertis seulement (#460, § 12).
 
 ### N9. Même épisode plusieurs fois — Décidé le 2026-10-23 : a
 
@@ -590,3 +593,98 @@ Le label `plus-tard` est retiré des issues du MVP ; il reste sur #221.
 Pistes sans fichier commun : Rust (#361, #213, #214, #216, #211, #362, #217) et interface (#212,
 #363). Brancher le contrôle D10 sur le téléchargement du flux (#211) dans celle des deux issues,
 #211 ou #213, qui est fusionnée en second.
+
+## 12. Cache des MP3 convertis (N8 b, #460)
+
+Évolution retenue par le mainteneur le 2026-10-24 (#460, issue de #221) : **refaire un pack sans
+retélécharger ni reconvertir**. Elle remplace N8 a pour l'audio converti seulement : les
+originaux, l'archive Telmi et le dossier de travail restent supprimés après chaque création.
+Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparation
+(`src-tauri/src/install/podcast.rs`).
+
+### 12.1 Clé, emplacement, contenu
+
+- **Emplacement** : `<cache>/podcasts/<source_id>/mp3/`, sous le dossier de cache de la source
+  (§ 3.5). La suppression de la source purge donc aussi ses MP3 (D15) sans code de plus, et
+  « Vider le cache » les compte et les supprime (sous-dossier `podcasts` déjà listé).
+- **Nom d'une entrée** : identifiant opaque de l'épisode (`episode_id`, empreinte SHA-256 du
+  `guid`, 32 chiffres hexadécimaux). Trois fichiers : `<id>.mp3` (MP3 converti selon D6),
+  `<id>.img` (pochette d'origine de l'épisode, facultative), `<id>.json` (métadonnées).
+- **Empreinte d'entrée** (dans `<id>.json`) : SHA-256 de la version du format, du **profil de
+  conversion** (`AUDIO_PROFILE`), du `guid`, de l'URL, de la taille annoncée et du type de
+  l'enclosure. La pochette a sa propre empreinte (SHA-256 de son URL). **Aucune URL en clair**
+  sur le disque ni dans les journaux (D11) : seules les empreintes sont écrites, les traces ne
+  citent que l'uuid de la source et le rang de l'épisode.
+- **Métadonnées** : taille et SHA-256 du MP3 (et de la pochette), dates d'écriture et de
+  dernier usage.
+
+### 12.2 Invalidation
+
+- **Épisode modifié** (nouvelle URL d'enclosure, taille ou type annoncés différents) :
+  l'empreinte ne correspond plus, l'entrée est supprimée et l'épisode retéléchargé.
+- **Règle de conversion changée** : `AUDIO_PROFILE` est une constante à incrémenter à chaque
+  changement de D6 ou de `podcast/audio.rs` ; toutes les entrées existantes deviennent alors
+  invalides. Il n'existe aucun réglage utilisateur de conversion.
+- **Pochette changée** : seule la pochette est retéléchargée (empreinte d'image différente),
+  le MP3 reste servi.
+- **Publicité** (D9) : l'audio est repris tel quel, publicité comprise ; le cache garde le
+  fichier tel qu'il a été téléchargé la première fois. Avec une publicité insérée
+  dynamiquement par le serveur, un pack refait reprend donc la publicité du premier
+  téléchargement (rien n'est filtré, comportement inchangé sur le fond). Vider le cache ou
+  supprimer la source force un nouveau téléchargement.
+
+### 12.3 Taille maximale et éviction
+
+- **2 Gio au plus** (`MAX_CACHE_BYTES`, soit deux packs au plafond D1), toutes sources
+  confondues, comptés sur les tailles réelles (MP3 et pochettes).
+- **Éviction LRU** après chaque écriture : les entrées les moins récemment utilisées sont
+  supprimées jusqu'à repasser sous le plafond ; les entrées du pack en cours ne sont jamais
+  évincées. Les restes (fichier sans métadonnées valides, `.part`, temporaires) sont supprimés
+  au même passage.
+- D5 (espace disque avant la création) reste calculé comme sans cache : estimation prudente.
+
+### 12.4 Écriture, lecture, concurrence
+
+- **Écriture atomique** : `<id>.json` est supprimé d'abord (l'ancienne entrée n'est plus
+  servie), le MP3 et la pochette sont écrits en `.part` puis renommés, et `<id>.json` est écrit
+  **en dernier** (temporaire puis renommage) : il vaut validation de l'entrée. Le MP3 est
+  d'abord **lié** (lien physique, aucune place en plus sur le disque) depuis le dossier de
+  travail, ou copié si le système de fichiers ne le permet pas (FAT, exFAT).
+- **Lecture** : l'entrée n'est servie que si `<id>.json` est lisible, si l'empreinte correspond
+  et si la taille **et** le SHA-256 du MP3 correspondent ; le fichier est alors lié (ou copié)
+  dans le dossier de travail sous un nom distinct (`cache-<rang>.mp3`) et la date d'usage est
+  renouvelée. Aucun fichier du dossier de travail n'est modifié sur place : un lien physique
+  ne peut pas altérer l'entrée.
+- **Verrou** : toute lecture, écriture ou éviction d'une source se fait sous le **verrou de la
+  source** (celui des rafraîchissements et de la purge, `PodcastService`), avec contrôle du
+  **compteur de génération** lu avant le chargement des flux : une source supprimée pendant la
+  création n'est jamais recréée sur le disque. Le portillon du cache est déjà tenu par la tâche
+  d'installation (« Vider le cache » attend la fin de la création) ; le cache ne le reprend
+  pas (une seconde prise en lecture bloquerait derrière un vidage en attente).
+- **Deux packs simultanés** : les préparations sont déjà sérialisées (une à la fois) ; le
+  verrou par source suffit en plus pour qu'une écriture, une lecture et une éviction de la même
+  source ne se croisent jamais.
+- Le cache est **au mieux** : aucune de ses erreurs ne fait échouer un pack ; une entrée
+  inutilisable donne un retéléchargement.
+
+### 12.5 Tableau des pannes
+
+| Panne                                                 | Effet                                                                             |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------- |
+| MP3 tronqué ou modifié (taille ou SHA-256 différents) | Entrée supprimée, épisode retéléchargé et reconverti, puis remis en cache.        |
+| `<id>.json` absent, illisible ou d'un autre format    | Entrée ignorée (restes supprimés à l'éviction) ; épisode retéléchargé.            |
+| Pochette en cache altérée                             | Pochette retéléchargée ; le MP3 reste servi.                                      |
+| Disque plein pendant l'écriture en cache              | `.part` et entrée supprimés, avertissement journalisé ; le pack continue.         |
+| Disque plein pendant la lecture (copie de repli)      | Copie supprimée, épisode traité comme absent du cache (retéléchargé).             |
+| Arrêt brutal pendant l'écriture                       | Sans `<id>.json` valide, l'entrée n'est jamais servie ; restes supprimés ensuite. |
+| Source supprimée pendant la création                  | Génération changée : rien n'est écrit ; la purge supprime tout le dossier.        |
+| « Vider le cache » pendant la création                | Attend la fin de la tâche (portillon) ; les liens du dossier de travail restent.  |
+| Épisode ou règle de conversion modifiés               | Empreinte différente : entrée remplacée.                                          |
+| Plafond de 2 Gio dépassé                              | Entrées les plus anciennes évincées (jamais celles du pack en cours).             |
+
+### 12.6 Interface
+
+Aucun écran dédié : la taille du cache des MP3 est comptée dans la taille du cache affichée par
+les paramètres, « Vider le cache » la supprime, et la suppression d'une source purge la sienne.
+Un affichage séparé (taille du cache des MP3, bouton dédié) est une évolution possible (issue de
+suivi).

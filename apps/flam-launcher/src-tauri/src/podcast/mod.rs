@@ -10,12 +10,14 @@
 //! - `net` (#213) : contrôle des adresses (D10) et client HTTP gardé, pour tout accès réseau ;
 //! - `fetch` (#213) : téléchargement par lot des épisodes et pochettes d'un pack ;
 //! - `source` (#211) : source « Podcast » (URL du flux, cache hors ligne, commandes).
+//! - `mp3cache` (#460) : cache des MP3 convertis par source, pour refaire un pack ;
 //! - `pack` (#362) : composition d'un pack (modèle, validation, brouillon unique, commandes).
 
 pub mod archive;
 pub mod artwork;
 pub mod audio;
 pub mod fetch;
+pub mod mp3cache;
 pub mod net;
 pub mod pack;
 pub mod rss;
