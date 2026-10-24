@@ -1282,9 +1282,10 @@ l'image d'une catégorie parmi les pochettes des épisodes qu'elle contient. **�
   pouvoir le défaire) : un groupe
   de boutons radio natifs « Image de la catégorie « X » » (« Automatique » puis un choix par
   épisode, libellé = titre). Une tabulation, flèches pour changer de choix, annonce vocale du
-  choix. Les pochettes elles-mêmes ne sont **pas** aperçues : le front n'a aucune image des
-  épisodes (D11, pas d'adresse) ; un aperçu demanderait une commande de vignettes à part
-  (suivi).
+  choix. Deux épisodes de même titre sont distingués par leur rang dans la catégorie
+  (« Titre (n° 3) »).
+- Aperçus (#504, § 15.5) : chaque choix porte la vignette de la pochette de l'épisode (texte
+  alternatif = titre) ; sans aperçu, le libellé seul.
 - Quand l'épisode choisi est retiré du pack ou déplacé hors de la catégorie, le choix est effacé
   sans bruit (`pruneImages`, `tree.ts`) : retour à « Automatique ». Un brouillon ancien dont
   l'épisode a disparu est traité côté backend (15.2).
@@ -1298,3 +1299,28 @@ l'image d'une catégorie parmi les pochettes des épisodes qu'elle contient. **�
 - vitest : `CategoryImageChoice` (groupe nommé, choix et retour à Automatique, clavier, choix
   périmé, masqué sans alternative, axe), `PackTree` (enregistrement et annonce), `tree.ts`
   (choix, effacement silencieux au retrait ou au déplacement, parent conservé).
+
+### 15.5 Aperçu des pochettes (#504)
+
+- **Commande** `pack_episode_thumbnail(sourceId, episodeId)` (`podcast/thumb.rs`) : rend une URL
+  `data:image/png;base64,…` ou `null` (« pas d'aperçu »). Le front n'envoie que des
+  identifiants (D11) ; le backend retrouve l'épisode dans le flux **en cache** de la source.
+- **Aucun accès réseau** : la pochette vient du cache des MP3 (`CacheAccess::cached_image`,
+  pochette d'origine gardée avec l'épisode converti, § 13), en lecture seule (date d'usage non
+  renouvelée, aucune entrée supprimée), sous le verrou de la source. Épisode jamais mis en
+  cache, sans pochette, pochette périmée (adresse changée dans le flux), altérée (taille et
+  SHA-256) ou de plus de 20 Mo : pas d'aperçu, jamais une erreur.
+- **Décodage isolé** (#263) : processus enfant (`artwork::convert_isolated`), puis réduction à
+  96 px au plus de côté et PNG d'au plus 64 Kio ; au-delà, pas d'aperçu.
+- **CSP** inchangée : `img-src` autorise déjà `data:` (utilisé par les vignettes du catalogue).
+- **Front** : `EpisodeThumb` dans chaque option radio (`RadioOption.media`), chargée quand elle
+  approche de l'écran (`IntersectionObserver`, `loading="lazy"`) ; le radio natif et le libellé
+  sont inchangés ; sans aperçu ou en cas d'erreur, l'emplacement disparaît.
+- **Suivis de la revue de #503** : titres identiques distingués par le rang ; la référence
+  `image` d'une catégorie est bornée par `Walker` comme tout identifiant d'épisode
+  (`ProblemCode::InvalidId`).
+- Limite : un épisode jamais téléchargé pour un pack n'a pas d'aperçu (le cache des MP3 se
+  remplit à la création d'un pack, pas à la lecture du flux).
+- Tests : Rust (`thumb/tests.rs` : vignette bornée, image illisible, pochette absente, entrée
+  absente, borne de taille, empreinte périmée, fichier altéré ; `pack/tests.rs` : référence
+  d'image bornée) ; vitest (affichage, repli sans aperçu et sur erreur, clavier, axe, rang).

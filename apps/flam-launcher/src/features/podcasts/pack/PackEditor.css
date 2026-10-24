@@ -112,6 +112,24 @@
   align-self: stretch;
 }
 
+/* Aperçu de pochette : emplacement réservé pendant le chargement, aucun saut de mise en page. */
+.fl-pack__thumb {
+  flex: none;
+  width: 3rem;
+  height: 2.25rem;
+  margin-block: var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.fl-pack__thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .fl-pack__description {
   width: 100%;
   font: inherit;

@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, type ReactNode } from "react";
 import "./RadioGroup.css";
 
 export interface RadioOption<T extends string> {
@@ -6,6 +6,8 @@ export interface RadioOption<T extends string> {
   label: string;
   /** Précision affichée sous le libellé. */
   hint?: string;
+  /** Illustration entre la case et le libellé (le libellé reste le nom du choix). */
+  media?: ReactNode;
 }
 
 export interface RadioGroupProps<T extends string> {
@@ -42,6 +44,7 @@ export function RadioGroup<T extends string>({
               checked={value === option.value}
               onChange={() => onChange(option.value)}
             />
+            {option.media}
             <span className="fl-radio__text">
               <span>{option.label}</span>
               {option.hint && <span className="fl-radio__hint">{option.hint}</span>}

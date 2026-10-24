@@ -398,7 +398,7 @@ ALLOWED_DEVIATIONS = (
 
 def is_delegation(candidate, tags=()):
     """Delegation D4 : comptee a part, jamais un ecart. Admise seulement sur les cas
-    etiquetes `delegated` (image non PNG ; les entrees bzip2/LZMA/Zstandard sont lues
+    etiquetes `delegated` (image d'un format non lu ; les entrees bzip2/LZMA/Zstandard sont lues
     depuis #458) : un candidat qui delegue autre chose est en ecart."""
     return TAG_DELEGATED in tags and _pair(candidate) == (DELEGATION_EXIT, DELEGATION_CODE)
 

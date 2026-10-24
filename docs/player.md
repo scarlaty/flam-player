@@ -273,9 +273,9 @@ cargo run --release -p telmi2flam -- "Mon histoire.zip" -o "Mon_histoire.plain.p
 ```
 
 Seul le format TELMI (`nodes.json`) est pris en charge, pas le format STUdio (`story.json`).
-Il lit les ZIP sans compression ou en deflate et les images PNG, y compris atypiques ; les
-images GIF ou JPEG et les ZIP compressés en bzip2, LZMA ou Zstandard ne sont pas pris en
-charge : l'archive est refusée avec un message explicite. Les options sont celles de l'ancienne version Python
+Il lit les ZIP sans compression, deflate, bzip2, LZMA ou Zstandard, et les images PNG (y
+compris atypiques), GIF et JPEG ; une image d'un autre format (BMP...) ou un JPEG arithmétique
+ou sans perte n'est pas pris en charge : l'archive est refusée avec un message explicite. Les options sont celles de l'ancienne version Python
 (`--plain`, `--selector`, `--keep-size`, `--allow-missing`...) : voir
 [tools/telmi2flam/README.md](../tools/telmi2flam/README.md).
 

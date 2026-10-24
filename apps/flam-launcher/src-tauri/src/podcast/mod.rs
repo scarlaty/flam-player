@@ -14,7 +14,8 @@
 //! - `mp3cache` (#460) : cache des MP3 convertis par source, pour refaire un pack ;
 //! - `mp3size` (#489) : taille du cache des MP3, affichée à part dans les paramètres ;
 //! - `pack` (#362) : composition d'un pack (modèle, validation, brouillon unique, commandes) ;
-//! - `compositions` (#461) : compositions nommées réutilisables (refaire ou dériver un pack).
+//! - `compositions` (#461) : compositions nommées réutilisables (refaire ou dériver un pack) ;
+//! - `thumb` (#504) : aperçu des pochettes d'épisodes pour le choix de l'image de catégorie.
 
 pub mod archive;
 pub mod artwork;
@@ -28,3 +29,4 @@ pub mod pack;
 pub mod rss;
 pub mod source;
 pub mod speech;
+pub mod thumb;

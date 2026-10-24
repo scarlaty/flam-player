@@ -46,7 +46,7 @@ export const fr = {
      */
     conversion: {
       unsupported_format:
-        "Cette histoire utilise un format que le launcher ne sait pas encore convertir (image non PNG ou archive compressée en bzip2/LZMA).",
+        "Cette histoire utilise un format que le launcher ne sait pas encore convertir (format d'image non pris en charge, par exemple BMP).",
     } as Record<string, string>,
     /** Détail du backend, sous le texte traduit d'un échec `tts_failed` (panneau des tâches). */
     detail: (message: string) => `Détail : ${message}`,
@@ -400,6 +400,8 @@ export const fr = {
         legend: (category: string) => `Image de la catégorie « ${category} »`,
         auto: "Automatique",
         autoHint: "Image du premier épisode de la catégorie.",
+        /** Titre porté par plusieurs épisodes : le rang les distingue. */
+        ranked: (title: string, rank: number) => `${title} (n° ${rank})`,
       },
       problems: {
         title: "À corriger avant de créer l'histoire",

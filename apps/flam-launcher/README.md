@@ -116,7 +116,7 @@ Testeurs de la bêta : [docs/guide-testeur.md](docs/guide-testeur.md). Formats e
 | La fenêtre reste blanche au démarrage                   | Installer ou réparer WebView2 (Microsoft Edge WebView2 Runtime)                                                                                                                                                                                              |
 | « flam-player est introuvable »                         | Réinstaller ; sinon indiquer `flam-player.exe` dans « Paramètres ». Un antivirus peut avoir mis le fichier en quarantaine                                                                                                                                    |
 | « Convertisseur introuvable » (`converter_unavailable`) | Réinstaller : `telmi2flam/telmi2flam.exe` manque (antivirus ?). En développement : `cargo build -p telmi2flam`. Python n'est plus utilisé                                                                                                                    |
-| Une conversion échoue                                   | Le message cite le code de `telmi2flam` ; l'histoire peut être incompatible (badge sur la fiche). « Cette histoire utilise un format que le launcher ne sait pas encore convertir » : image non PNG ou archive compressée en bzip2/LZMA, non prise en charge |
+| Une conversion échoue                                   | Le message cite le code de `telmi2flam` ; l'histoire peut être incompatible (badge sur la fiche). « Cette histoire utilise un format que le launcher ne sait pas encore convertir » : format d'image non pris en charge (BMP, JPEG arithmétique ou sans perte...) |
 | Catalogue « hors ligne »                                | Réseau ou serveur indisponible : le cache est affiché. « Actualiser » réessaie                                                                                                                                                                               |
 | Disque plein                                            | « Paramètres » → « Cache » → « Vider le cache » : supprime aussi les histoires installées (à réinstaller depuis leur source) ; la progression sauvegardée et les sources sont conservées                                                                     |
 | Paramètres ou sources réinitialisés                     | Un fichier de configuration corrompu a été sauvegardé en `*.bak` et remplacé ; un bandeau l'indique                                                                                                                                                          |
@@ -220,13 +220,13 @@ disparaissent à la prochaine écriture), les autres réglages sont conservés e
 dossier `telmi2flam/python/` : le désinstallateur de la version précédente retire exactement
 les fichiers qu'elle avait installés (voir « Mise à jour »).
 
-**Formats non pris en charge** : le convertisseur Rust refuse (`unsupported_format`, code 7)
-une histoire dont une image n'est pas un PNG, ou dont l'archive utilise la compression bzip2 ou
-LZMA. Il n'y a plus de repli : l'installation échoue avec le message « Cette histoire utilise un
-format que le launcher ne sait pas encore convertir (image non PNG ou archive compressée en
-bzip2/LZMA). » (texte fixe : le message du convertisseur, qui peut citer un fichier de
-l'histoire, n'est ni affiché ni journalisé). La campagne de parité sur 30 archives réelles (#135)
-n'en a trouvé aucune.
+**Formats non pris en charge** : le convertisseur Rust refuse (`unsupported_format`, code 7) une
+histoire dont une image est dans un format rare (ni PNG, ni GIF, ni JPEG ; ou JPEG arithmétique ou
+sans perte). Les ZIP deflate, bzip2, LZMA et Zstandard sont lus. Il n'y a plus de repli :
+l'installation échoue avec le message « Cette histoire utilise un format que le launcher ne sait
+pas encore convertir (format d'image non pris en charge, par exemple BMP). » (texte fixe : le
+message du convertisseur, qui peut citer un fichier de l'histoire, n'est ni affiché ni
+journalisé). La campagne de parité sur 30 archives réelles (#135) n'en a trouvé aucune.
 
 **Licences redistribuées** : `telmi2flam/LICENSES.md` (produit par `build-converter.ps1`) liste
 le binaire (GPL v3, et HPND pour le code dérivé de Pillow : `resample.rs`, `blur.rs`, `gif.rs`), le
@@ -1016,7 +1016,7 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
    au processus direct. La création du job et la reprise (appels Win32 bloquants) s'exécutent
    hors du runtime (`spawn_blocking`).
    **Aucun repli** (#138) : un échec du convertisseur est rendu tel quel, y compris
-   `unsupported_format` (code 7 : image non PNG, archive compressée en bzip2/LZMA), erreur finale
+   `unsupported_format` (code 7 : format d'image non pris en charge), erreur finale
    dont le message est fixe et non technique (voir « Convertisseur embarqué »).
    **Annulation** : fermeture de stdin (`--cancel-on-stdin-eof` : le convertisseur nettoie et sort
    avec 130, sans console ni Python) ; arrêt forcé après 5 s de grâce ; puis suppression de
