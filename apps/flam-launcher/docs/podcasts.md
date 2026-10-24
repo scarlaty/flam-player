@@ -602,7 +602,8 @@ Pistes sans fichier commun : Rust (#361, #213, #214, #216, #211, #362, #217) et 
 > **Statut : décidé le 2026-10-24** (partie de #207, évolution de #221 ; décisions en 12.11,
 > toutes conformes aux recommandations). PR 1 (module `podcast/speech.rs`, commandes
 > `tts_voices` et `tts_preview`) fusionnée ; PR 2 (intégration dans la création du pack, 12.12)
-> faite ; PR 3 (interface) à faire.
+> fusionnée ; PR 3 (interface, 12.7) faite : case et aperçu dans l'éditeur, choix de la voix
+> dans les Paramètres, avertissements dans le panneau des tâches.
 
 ### 12.1 But et état actuel
 
@@ -631,7 +632,9 @@ Windows**, sans licence tierce.
 - Texte lu : le **titre d'origine** (une ligne, 120 caractères au plus, coupé proprement), pas
   le libellé translittéré de 40 caractères (A6) : la voix prononce mieux les accents. Les
   titres vides ou sans lettre (« 🎧 », « #12 ») gardent le silence ; les numéros et sigles sont
-  lus tels que la voix les lit (pas de normalisation en v1).
+  lus tels que la voix les lit (pas de normalisation en v1). Exception (#487) : une catégorie
+  dont le nom n'a rien d'affichable (emoji seuls) lit le libellé de repli de l'archive,
+  « Catégorie k » ; si un retrait (P7) décale cette numérotation, l'option reste muette.
 - Les noms d'entrées de l'archive restent générés (`audios/t<nnn>.mp3`, `audios/c<nnn>.mp3`),
   jamais tirés du titre (invariant « noms d'entrées sûrs »).
 - Une option sans voix (case décochée) garde `audio: null`, comportement actuel inchangé.
@@ -706,9 +709,13 @@ explicite du parent (case décochée par défaut).
   de 4 à 12 Mo de MP3 au total (24 à 80 Kio par titre). La synthèse est bien plus rapide que le
   temps réel ; le coût dominant est le lancement de ffmpeg par fichier (quelques dizaines de ms) :
   de l'ordre de 5 à 20 s pour un grand pack, **à mesurer sur un poste réel** (la CI n'a pas de
-  voix française). L'annulation passe par celle de la création (#217) ; la progression affiche
-  une phase « speech » (« lecture des titres à voix haute »), sans pourcentage propre (étape
-  courte).
+  voix française ; la durée de l'étape est journalisée, nombre de titres seulement). L'annulation
+  passe par celle de la création (#217) ; la progression affiche une phase « speech » (« lecture
+  des titres à voix haute ») avancée titre par titre de 0 à 10 % de la préparation, les
+  téléchargements suivant de 10 à 60 % (#487 : la barre ne recule jamais). Un ffmpeg absent ou
+  altéré arrête la création avec un message propre (réinstaller le launcher). ffmpeg est localisé et son
+  empreinte vérifiée **une fois pour l'étape**, au premier titre synthétisé (`Ffmpeg::verify`),
+  et non à chaque titre.
 - **Cache** : pas de cache persistant en v1 (le coût est faible et le dossier de travail est
   supprimé après la publication, N8 a). Le cache de #460 est propre aux épisodes (clé = épisode
   d'une source, dossier de la source) : il n'offre pas d'API de clé générale, les titres n'y
@@ -738,6 +745,16 @@ explicite du parent (case décochée par défaut).
 - L'estimation de taille (D5) ajoute la taille des titres (≈ 80 Kio par titre, borne haute pour 10 s).
 - La case et la voix entrent dans le brouillon (N3 b) et dans la composition enregistrée avec la
   tâche (N10 a), pour que la reprise reconstruise le même pack.
+- **Fait en PR 3** : la voix ne se choisit pas dans l'éditeur mais dans les **Paramètres**
+  (« Titres lus à voix haute » : liste des voix françaises mémorisée dans `tts_voice`, bouton
+  « Essayer la voix ») ; l'éditeur affiche la voix utilisée (celle de la composition, sinon
+  celle des Paramètres, sinon la voix par défaut, avec le même repli que le backend si elle a
+  disparu). Aperçu limité au titre du pack (bouton « Écouter » / « Arrêter », coupé si le titre
+  change ou si l'éditeur se ferme), joué côté Rust : CSP inchangée. Case désactivée pendant la
+  recherche des voix et sans voix française (ou synthèse indisponible), mais toujours décochable
+  si un brouillon l'avait cochée. Avertissements (`PackStatus::warnings`) dans le détail de la
+  tâche du panneau (les trois premiers, puis un compte) ; erreurs `tts_*` traduites par code.
+  L'ajout des titres à l'estimation de taille (D5) est suivi dans #487.
 
 ### 12.8 Vie privée, licences, tests
 
@@ -861,6 +878,12 @@ faire dès maintenant, avant la PR 1. Les noms d'entrées suivent la convention 
   en échec sur le premier titre, sur plus de la moitié, ffmpeg absent, annulation pendant la
   synthèse, voix disparue, plus aucune voix française) : jamais de téléchargement ni de dossier
   de travail résiduel ; anciens brouillons relus ; délai global de l'énumération des voix.
+- **Suivis (#487)** : avancement par titre et ffmpeg vérifié une fois pour l'étape (12.6) ;
+  taille des titres dans l'estimation D5 (`TITLE_AUDIO_ESTIMATE_BYTES`, 80 Kio par titre : titre
+  du pack et chaque option), pour qu'un pack à la limite soit refusé avant les téléchargements ;
+  libellé de repli lu pour une catégorie sans nom affichable (12.2) ; tests de la voix transmise,
+  d'un épisode retiré ou d'une catégorie vidée dont le titre a échoué, et de l'arrêt après deux
+  délais (délai injectable).
 - **Reste à vérifier sur un poste et sur l'appareil** (procédure du mainteneur) : pack de
   10 titres avec une vraie voix, lecture au focus, coupure au défilement, volume comparé aux
   épisodes, MP3 mono accepté (#219), durée de l'étape pour un grand pack.

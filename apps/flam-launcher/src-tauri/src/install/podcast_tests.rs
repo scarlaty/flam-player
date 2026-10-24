@@ -923,15 +923,15 @@ impl PackBackend for LocalPacks {
         self.speech.clone()
     }
 
-    fn title_mp3<'a>(
+    fn title_encoder<'a>(
         &'a self,
-        wav: &'a crate::podcast::speech::Wav,
-        dest: &'a Path,
         cancel: &'a watch::Receiver<bool>,
-    ) -> BoxFuture<'a, AppResult<u64>> {
+    ) -> BoxFuture<'a, AppResult<crate::ffmpeg::Verified>> {
         Box::pin(async move {
             let mut cancel = cancel.clone();
-            crate::podcast::speech::wav_to_mp3(&self.ffmpeg, wav, dest, &mut cancel).await
+            self.ffmpeg
+                .verify(crate::ffmpeg::Tool::Ffmpeg, &mut cancel)
+                .await
         })
     }
 }

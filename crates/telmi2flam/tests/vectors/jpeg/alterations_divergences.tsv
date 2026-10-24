@@ -1,0 +1,18 @@
+# Ecarts de verdict assumes (PORT-RUST.md 4.4), tenus a la main : base	operation	argument	verdict du Rust
+# Lu par tests/jpeg_vectors.rs, qui exige exactement cette liste (ni ecart en plus, ni ligne devenue conforme).
+# Balayage unique sans marqueur final, donnees completes : libjpeg-turbo lit l'image ou non
+# selon les octets qui suivent les dernieres donnees utiles (0 a 7 mesures) ; le Rust delegue
+# (D4) quand moins de 8 octets inutiles suivent.
+alt_gris	cut	414	delegate
+alt_gris	cut	415	delegate
+alt_gris	xor	414	delegate
+alt_sequentiel	cut	749	delegate
+alt_sequentiel	cut	755	delegate
+alt_sequentiel	cut	756	delegate
+alt_sequentiel	xor	755	delegate
+# Marqueur invalide dans les donnees d'une image a redemarrages (RST0 altere, FF 00 altere,
+# EOI altere) : libjpeg resynchronise ou refuse selon la position dans l'intervalle ; le Rust
+# delegue (D4).
+alt_sequentiel	xor	723	delegate
+alt_sequentiel	xor	745	delegate
+alt_sequentiel	xor	756	delegate

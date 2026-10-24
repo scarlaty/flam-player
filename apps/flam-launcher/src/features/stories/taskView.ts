@@ -100,14 +100,22 @@ export function toPanelTask(task: InstallTask, detail?: TaskDetail): Task {
 
 /**
  * Message d'une tâche en échec. Un code du convertisseur connu (`unsupported_format` : format que
- * le launcher ne sait pas convertir, sans repli depuis #138) est traduit en un texte clair et non
- * technique ; sinon le message du backend.
+ * le launcher ne sait pas convertir, sans repli depuis #138), ou un `kind` connu (titres lus,
+ * `tts_*`, #462), est traduit en un texte clair et non technique ; sinon le message du backend.
  */
 export function taskErrorMessage(error: TaskError): string {
   // Le code vient du convertisseur : texte libre, jamais une clé héritée (`constructor`, `__proto__`).
   const text =
-    error.kind === "conversion" && error.code ? conversionText(error.code) : undefined;
+    error.kind === "conversion" && error.code
+      ? conversionText(error.code)
+      : errorKindText(error.kind);
   return text ?? error.message;
+}
+
+/** Texte traduit d'un `kind` d'erreur de tâche, seulement s'il est propre à la table. */
+export function errorKindText(kind: string): string | undefined {
+  const table = t.errors.task;
+  return Object.hasOwn(table, kind) ? table[kind] : undefined;
 }
 
 /** Texte traduit d'un code de conversion, seulement s'il est propre à la table (`Object.hasOwn`). */
@@ -116,8 +124,26 @@ function conversionText(code: string): string | undefined {
   return Object.hasOwn(table, code) ? table[code] : undefined;
 }
 
-/** Pack de podcasts : épisodes retirés (P7), signalés dans le panneau des tâches. */
+/** Avertissements des titres lus montrés en entier dans le panneau ; les suivants sont comptés. */
+export const MAX_SHOWN_WARNINGS = 3;
+
+/**
+ * Pack de podcasts : épisodes retirés (P7) et avertissements des titres lus (#462 : voix de
+ * repli, titres restés muets ; textes du backend, sans nom de fichier), signalés dans le panneau
+ * des tâches.
+ */
 function packDetail(task: InstallTask): string | undefined {
   const dropped = task.pack?.dropped ?? [];
-  return dropped.length > 0 ? t.stories.progress.packDropped(dropped) : undefined;
+  const warnings = task.pack?.warnings ?? [];
+  const parts: string[] = [];
+  if (dropped.length > 0) parts.push(t.stories.progress.packDropped(dropped));
+  if (warnings.length > 0) {
+    parts.push(
+      t.speech.warnings(
+        warnings.slice(0, MAX_SHOWN_WARNINGS),
+        Math.max(0, warnings.length - MAX_SHOWN_WARNINGS),
+      ),
+    );
+  }
+  return parts.length > 0 ? parts.join(" ") : undefined;
 }

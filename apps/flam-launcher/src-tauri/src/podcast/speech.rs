@@ -41,7 +41,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tokio::sync::watch;
 
-use crate::ffmpeg::{Ffmpeg, Limits, Tool};
+use crate::ffmpeg::{Ffmpeg, Limits, Tool, Verified};
 use crate::podcast::audio::file_arg;
 use crate::{AppError, AppResult};
 
@@ -474,12 +474,22 @@ pub async fn wav_to_mp3(
     output: &Path,
     cancel: &mut watch::Receiver<bool>,
 ) -> AppResult<u64> {
+    let verified = ff.verify(Tool::Ffmpeg, cancel).await?;
+    wav_to_mp3_verified(&verified, wav, output, cancel).await
+}
+
+/// Comme [`wav_to_mp3`], avec un ffmpeg dont l'empreinte a déjà été vérifiée pour l'étape
+/// ([`Ffmpeg::verify`]) : une série de titres ne recalcule pas le SHA-256 à chaque titre (#487).
+pub async fn wav_to_mp3_verified(
+    ffmpeg: &Verified,
+    wav: &Wav,
+    output: &Path,
+    cancel: &mut watch::Receiver<bool>,
+) -> AppResult<u64> {
     let scratch = Scratch::beside(output);
     tokio::fs::write(&scratch.wav, &wav.bytes).await?;
     let args = mp3_args(&scratch.wav, &scratch.mp3);
-    let out = ff
-        .run(Tool::Ffmpeg, &args, Limits::new(MP3_TIMEOUT), cancel)
-        .await?;
+    let out = ffmpeg.run(&args, Limits::new(MP3_TIMEOUT), cancel).await?;
     finish_mp3(&out, &scratch, output, cancel).await
 }
 

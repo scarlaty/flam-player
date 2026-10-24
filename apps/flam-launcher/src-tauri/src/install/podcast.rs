@@ -49,6 +49,7 @@ use tokio::sync::watch;
 use super::pack_speech::{self, SpokenTitles, TitleKey};
 use super::{child_of, converter_engine, is_task_id, lock, InstallService, TaskState, Toolchain};
 use crate::catalog::blocking;
+use crate::ffmpeg::Verified;
 use crate::podcast::archive::{
     self, MenuEntry, Pack, PackEpisode, PackMetadata, MAX_AUDIO_BYTES, MAX_TOTAL_AUDIO_BYTES,
 };
@@ -80,6 +81,9 @@ const DISK_FACTOR: u64 = 4;
 const UNKNOWN_EPISODE_BYTES: u64 = 50_000_000;
 /// D5 : marge fixe.
 const DISK_MARGIN: u64 = 200_000_000;
+/// Part de la préparation réservée aux titres lus (#487) : 0 à 10 %, les téléchargements
+/// suivent de 10 à 60 %.
+const SPEECH_PERCENT: f64 = 10.0;
 /// Délai du téléchargement de la couverture.
 const COVER_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -161,17 +165,33 @@ pub trait PackBackend: Send + Sync {
     fn preferred_voice(&self) -> Option<String> {
         None
     }
-    /// Conversion d'un titre synthétisé en MP3 `dest` par le ffmpeg embarqué ; taille du MP3.
+    /// Délai de synthèse d'un titre (injectable en test).
+    fn synth_timeout(&self) -> Duration {
+        speech::SYNTH_TIMEOUT
+    }
+    /// Convertisseur des titres lus pour toute l'étape (#487) : ffmpeg embarqué localisé et
+    /// empreinte vérifiée **une seule fois**, au premier titre synthétisé.
+    fn title_encoder<'a>(
+        &'a self,
+        cancel: &'a watch::Receiver<bool>,
+    ) -> BoxFuture<'a, AppResult<Verified>> {
+        Box::pin(async move {
+            let ff = crate::ffmpeg::Ffmpeg::locate(&crate::settings::Environment::current())?;
+            let mut cancel = cancel.clone();
+            ff.verify(crate::ffmpeg::Tool::Ffmpeg, &mut cancel).await
+        })
+    }
+    /// Conversion d'un titre synthétisé en MP3 `dest` par `encoder` ; taille du MP3.
     fn title_mp3<'a>(
         &'a self,
+        encoder: &'a Verified,
         wav: &'a Wav,
         dest: &'a Path,
         cancel: &'a watch::Receiver<bool>,
     ) -> BoxFuture<'a, AppResult<u64>> {
         Box::pin(async move {
-            let ff = crate::ffmpeg::Ffmpeg::locate(&crate::settings::Environment::current())?;
             let mut cancel = cancel.clone();
-            speech::wav_to_mp3(&ff, wav, dest, &mut cancel).await
+            speech::wav_to_mp3_verified(encoder, wav, dest, &mut cancel).await
         })
     }
 }
@@ -769,8 +789,14 @@ impl InstallService {
             })
             .collect();
 
-        // 1. Téléchargements (0 à 60 %).
-        self.emit_phase(id, 0.0, "download");
+        // 1. Téléchargements (jusqu'à 60 % ; à partir de la fin des titres lus s'il y en a, pour
+        // que la barre ne recule jamais).
+        let base = if job.composition.titles_audio {
+            SPEECH_PERCENT
+        } else {
+            0.0
+        };
+        self.emit_phase(id, base, "download");
         let progress: Arc<dyn Fn(Progress) + Send + Sync> = {
             let service = self.clone();
             let id = id.to_string();
@@ -784,7 +810,7 @@ impl InstallService {
                     service.emit(super::InstallProgress {
                         task_id: id.clone(),
                         state: TaskState::Preparing,
-                        percent: Some(part * 60.0),
+                        percent: Some(base + part * (60.0 - base)),
                         received: Some(p.bytes),
                         total: None,
                         phase: Some("download".into()),
@@ -1022,7 +1048,7 @@ impl InstallService {
             .map(|(n, c)| (c.reference, n))
             .collect();
         let mut used: HashSet<TitleKey> = HashSet::new();
-        let menu = build_menu(
+        let mut menu = build_menu(
             &job.composition.menu,
             &ranks,
             &mut episodes,
@@ -1030,6 +1056,7 @@ impl InstallService {
             &mut Vec::new(),
             &mut used,
         );
+        mute_shifted_categories(&job.composition.menu, &used, &spoken, &mut menu);
         if menu.is_empty() {
             return Err(AppError::DownloadInvalid(
                 "aucun épisode utilisable dans le pack".into(),
@@ -1136,10 +1163,31 @@ impl InstallService {
         let titles = pack_speech::titles(&job.composition, &metadata.title, &|r| {
             titles_by_ref.get(r).map(|t| (*t).to_string())
         });
-        // Étape courte (quelques secondes), avant les téléchargements : pas d'avancement propre,
-        // la phase « speech » suffit à l'affichage.
-        let spoken =
-            pack_speech::speak(backend, &synth, &voice, &titles, workdir.path(), cancel).await?;
+        // Avancement par titre (0 à SPEECH_PERCENT, #487) ; durée réelle journalisée (nombres
+        // seulement, jamais de texte ni de voix).
+        let started = std::time::Instant::now();
+        let progress = |done: usize, total: usize| {
+            if total > 0 {
+                let part = done as f64 / total as f64;
+                self.emit_phase(id, part * SPEECH_PERCENT, "speech");
+            }
+        };
+        let spoken = pack_speech::speak(
+            backend,
+            &synth,
+            &voice,
+            &titles,
+            workdir.path(),
+            cancel,
+            &progress,
+        )
+        .await?;
+        tracing::info!(
+            titles = spoken.audio.len(),
+            failed = spoken.failed.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "titres lus : étape terminée"
+        );
         Ok((spoken, fallback.into_iter().collect()))
     }
 }
@@ -1250,6 +1298,57 @@ fn build_menu(
         path.pop();
     }
     out
+}
+
+/// Titres lus « Catégorie k » (nom sans rien d'affichable, #487) : `k` est compté sur la
+/// composition, avant les retraits. Si une catégorie vidée plus haut (P7) décale la numérotation
+/// de l'archive, le titre lu ne dit plus le libellé affiché : l'option reste alors muette.
+fn mute_shifted_categories(
+    composition: &[PackNode],
+    used: &HashSet<TitleKey>,
+    spoken: &SpokenTitles,
+    menu: &mut [MenuEntry],
+) {
+    if spoken.numbered.is_empty() {
+        return;
+    }
+    // Catégories gardées, dans l'ordre de l'archive (une catégorie avant ses options).
+    fn kept(
+        menu: &[PackNode],
+        used: &HashSet<TitleKey>,
+        path: &mut Vec<usize>,
+        out: &mut Vec<TitleKey>,
+    ) {
+        for (i, node) in menu.iter().enumerate() {
+            path.push(i);
+            if let PackNode::Category { entries, .. } = node {
+                let key = TitleKey::Node(path.clone());
+                if used.contains(&key) {
+                    out.push(key);
+                }
+                kept(entries, used, path, out);
+            }
+            path.pop();
+        }
+    }
+    fn audios<'a>(menu: &'a mut [MenuEntry], out: &mut Vec<&'a mut Option<PathBuf>>) {
+        for entry in menu {
+            if let MenuEntry::Category { entries, audio, .. } = entry {
+                out.push(audio);
+                audios(entries, out);
+            }
+        }
+    }
+    let mut keys = Vec::new();
+    kept(composition, used, &mut Vec::new(), &mut keys);
+    let mut slots = Vec::new();
+    audios(menu, &mut slots);
+    debug_assert_eq!(keys.len(), slots.len());
+    for (rank, (key, audio)) in keys.iter().zip(slots).enumerate() {
+        if spoken.numbered.get(key).is_some_and(|&k| k != rank + 1) {
+            *audio = None;
+        }
+    }
 }
 
 /// Résultat de [`pack_create`] (miroir de `PackCreated` dans `src/api/install.ts`).

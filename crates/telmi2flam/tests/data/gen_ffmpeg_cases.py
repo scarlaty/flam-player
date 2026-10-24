@@ -100,6 +100,8 @@ def run(case, data, tmp, ffmpeg, mode, log):
     if os.path.exists(log):
         os.remove(log)
     kw = gp.args_of(case.args)
+    # vignette toujours en `bandes` (tests/ffmpeg.rs) : args_of rend aussi `thumb_fit`
+    kw.pop("thumb_fit")
     exp = {"id": case.id, "tags": case.tags, **kw,
            "archive_sha256": hashlib.sha256(data).hexdigest(),
            "ffmpeg": "fake" if ffmpeg != "absent" else "absent", "mode": mode}
@@ -142,7 +144,10 @@ def main():
         sys.exit("vecteurs a produire avec Python 3.14.8 + Pillow 12.3.0")
     with zipfile.ZipFile(gp.OUT) as z:
         pkg_ids = {n[len("cases/"):-len(".zip")] for n in z.namelist() if n.startswith("cases/")}
-    corpus = mc.corpus_cases() + gp.package_cases()
+    # cas de vignette `flou` ou `rogner` (--thumb-fit) exclus : tests/ffmpeg.rs convertit en
+    # `bandes`, le mode de la vignette est verifie par package_parity.rs
+    corpus = [c for c in mc.corpus_cases() + gp.package_cases()
+              if gp.args_of(c.args)["thumb_fit"] == "bandes"]
     own = ffmpeg_cases()
     runs = []
     tmp = tempfile.mkdtemp(prefix="ffmpeg_cases_")

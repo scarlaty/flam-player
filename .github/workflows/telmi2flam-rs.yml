@@ -73,6 +73,21 @@ jobs:
       - name: Tests
         run: cargo test -p telmi2flam --locked
 
+      # Déterminisme du JPEG (#459, PORT-RUST.md §4.4) : zune-jpeg choisit ses chemins AVX2/NEON
+      # à l'exécution quand ses fonctions `x86`/`neon` sont compilées (`use_unsafe` ne les coupe
+      # pas). Le launcher les active par `image` : le binaire doit être construit seul
+      # (`-p telmi2flam`), et ce contrôle vérifie qu'alors elles sont absentes.
+      - name: zune-jpeg en scalaire
+        shell: pwsh
+        run: |
+          $tree = cargo tree -p telmi2flam -e features -i zune-jpeg --locked | Out-String
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ($tree -notmatch 'zune-jpeg feature "std"' -or
+              $tree -match 'zune-jpeg feature "(x86|neon|default)"') {
+            Write-Output $tree
+            throw "zune-jpeg compilé avec ses fonctions SIMD dans telmi2flam"
+          }
+
       - name: Binaire (release) répond à --version
         run: |
           cargo build -p telmi2flam --bin telmi2flam --release --locked

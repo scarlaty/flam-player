@@ -26,6 +26,7 @@ import { ErrorBanner } from "../ErrorBanner";
 import { getMinimizeDuringPlay, setMinimizeDuringPlay } from "./preferences";
 import { useRecovery } from "../recovery/RecoveryContext";
 import { formatBytes, validateOptionalPath } from "../validation";
+import { VoiceSection } from "./VoiceSection";
 import "./SettingsScreen.css";
 
 type PathField = "player_path" | "cache_dir";
@@ -53,6 +54,8 @@ export function SettingsScreen() {
   const [thumbFitError, setThumbFitError] = useState(false);
   const [thumbFitSaving, setThumbFitSaving] = useState(false);
   const [themeSaving, setThemeSaving] = useState(false);
+  const [voiceError, setVoiceError] = useState(false);
+  const [voiceSaving, setVoiceSaving] = useState(false);
   const [minimizeDuringPlay, setMinimize] = useState(getMinimizeDuringPlay);
   const cancelClearRef = useRef<HTMLButtonElement>(null);
   // Derniers paramètres confirmés par le backend et numéro du dernier changement de thème.
@@ -149,7 +152,7 @@ export function SettingsScreen() {
   async function changeTheme(theme: ThemePreference) {
     const confirmed = confirmedRef.current;
     // Chaque enregistrement renvoie l'objet complet : thème et vignettes ne se chevauchent pas.
-    if (!view || !confirmed || thumbFitSaving) return;
+    if (!view || !confirmed || thumbFitSaving || voiceSaving) return;
     const request = ++themeRequestRef.current;
     const isLatest = () => request === themeRequestRef.current;
     const showConfirmedTheme = () => {
@@ -195,10 +198,59 @@ export function SettingsScreen() {
     }
   }
 
+  /** Enregistre la voix des titres lus (#462) ; un échec rétablit le choix enregistré. */
+  async function changeVoice(tts_voice: string) {
+    const confirmed = confirmedRef.current;
+    if (
+      !view ||
+      !confirmed ||
+      voiceSaving ||
+      thumbFitSaving ||
+      themeInFlightRef.current > 0
+    )
+      return;
+    setVoiceError(false);
+    setVoiceSaving(true);
+    setView((current) =>
+      current ? { ...current, settings: { ...current.settings, tts_voice } } : current,
+    );
+    try {
+      const next = await setSettings({ ...confirmed.settings, tts_voice });
+      confirmedRef.current = next;
+      setView((current) =>
+        current
+          ? {
+              ...current,
+              settings: { ...current.settings, tts_voice: next.settings.tts_voice },
+            }
+          : current,
+      );
+    } catch {
+      setView((current) =>
+        current
+          ? {
+              ...current,
+              settings: { ...current.settings, tts_voice: confirmed.settings.tts_voice },
+            }
+          : current,
+      );
+      setVoiceError(true);
+    } finally {
+      setVoiceSaving(false);
+    }
+  }
+
   /** Enregistre le remplissage des vignettes ; un échec rétablit le choix enregistré. */
   async function changeThumbFit(thumb_fit: ThumbFit) {
     const confirmed = confirmedRef.current;
-    if (!view || !confirmed || thumbFitSaving || themeInFlightRef.current > 0) return;
+    if (
+      !view ||
+      !confirmed ||
+      thumbFitSaving ||
+      voiceSaving ||
+      themeInFlightRef.current > 0
+    )
+      return;
     setThumbFitError(false);
     setThumbFitSaving(true);
     setView((current) =>
@@ -333,7 +385,7 @@ export function SettingsScreen() {
         <RadioGroup
           legend={t.theme.label}
           value={view.settings.theme}
-          disabled={thumbFitSaving}
+          disabled={thumbFitSaving || voiceSaving}
           options={THEME_PREFERENCES.map((value) => ({ value, label: t.theme[value] }))}
           onChange={(theme) => void changeTheme(theme)}
         />
@@ -346,7 +398,7 @@ export function SettingsScreen() {
         <RadioGroup
           legend={text.thumbFit.label}
           value={view.settings.thumb_fit}
-          disabled={thumbFitSaving || themeSaving}
+          disabled={thumbFitSaving || themeSaving || voiceSaving}
           options={THUMB_FITS.map((value) => ({
             value,
             label: text.thumbFit.options[value].label,
@@ -355,6 +407,13 @@ export function SettingsScreen() {
           onChange={(thumbFit) => void changeThumbFit(thumbFit)}
         />
       </section>
+
+      <VoiceSection
+        value={view.settings.tts_voice ?? null}
+        disabled={voiceSaving || thumbFitSaving || themeSaving}
+        failed={voiceError}
+        onChange={(voice) => void changeVoice(voice)}
+      />
 
       <section className="fl-settings__section" aria-labelledby="settings-playback">
         <h2 id="settings-playback">{text.playback.title}</h2>

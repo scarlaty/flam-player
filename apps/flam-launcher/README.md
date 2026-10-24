@@ -66,6 +66,15 @@ brouillon est enregistré automatiquement.
 annulation dans le panneau des tâches). Les épisodes qui échouent sont retirés du pack et listés
 à la fin. Plafonds : 50 épisodes, 200 Mo par épisode, 1 Gio par pack.
 
+**Lire les titres à voix haute** (case de l'éditeur, décochée par défaut) fait dire à la Flam le
+titre du pack, de chaque catégorie et de chaque épisode quand on le choisit dans le carrousel,
+avec une voix française de Windows, sur le PC seulement (rien n'est envoyé en ligne). « Écouter »
+fait entendre le titre du pack ; la voix se choisit dans **Paramètres** → « Titres lus à voix
+haute » (bouton « Essayer la voix »). Sans voix française, la case est grisée : en ajouter une
+dans Windows (Paramètres → Heure et langue → Voix). Un titre qui ne peut pas être lu reste muet
+et est signalé à la fin de la création ; si le premier titre ou plus de la moitié échouent, le
+pack n'est pas créé.
+
 Chaque pack créé garde sa composition sous un nom (**Compositions enregistrées**, écran
 Podcasts, 50 au plus) : « Ouvrir » la recopie dans le brouillon pour refaire le pack ou en
 dériver un autre (chaque création donne une nouvelle histoire) ; elle se renomme et se supprime.
@@ -233,6 +242,10 @@ d'administrateur), **non signé** (SmartScreen avertit). Prérequis de build : R
 Visual Studio **2022** avec les outils C++ x64 (le build Rust doit se faire depuis
 « x64 Native Tools » ou après `vcvars64.bat`), CMake et Ninja (`pip install cmake ninja` si
 absents), sous-modules initialisés (`git submodule update --init --recursive`), réseau (NSIS).
+
+**Signature.** Ni l'installateur ni `telmi2flam.exe` (embarqué) ne sont signés (SmartScreen,
+antivirus) : la signature Authenticode attend un certificat de code à fournir par le mainteneur
+(suivi : #443).
 
 **Mise à jour** : avant la copie, le hook NSIS `src-tauri/windows/installer-hooks.nsh`
 (`NSIS_HOOK_PREINSTALL`) lance le désinstallateur de la version précédente (`/S /UPDATE`, sur

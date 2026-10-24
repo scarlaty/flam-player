@@ -29,6 +29,9 @@ export const fr = {
         network: "Réseau indisponible",
         catalog_invalid: "Catalogue illisible",
         folder_unavailable: "Dossier introuvable",
+        tts_no_voice: "Aucune voix française",
+        tts_unavailable: "Synthèse vocale indisponible",
+        tts_failed: "Titres non lus à voix haute",
       })[kind] ?? "Une erreur est survenue",
     loadFailed: "Impossible de charger les données.",
     retry: "Réessayer",
@@ -40,6 +43,61 @@ export const fr = {
       unsupported_format:
         "Cette histoire utilise un format que le launcher ne sait pas encore convertir (image non PNG ou archive compressée en bzip2/LZMA).",
     } as Record<string, string>,
+    /**
+     * Message montré pour une tâche (ou une création de pack) en échec, selon son `kind`, à la
+     * place du texte du backend. `kind` absent de la table : le message du backend.
+     */
+    task: {
+      tts_no_voice:
+        "Aucune voix française n'est installée sur cet ordinateur : le pack n'a pas été créé. Ajoutez une voix dans Windows (Paramètres > Heure et langue > Voix), ou décochez « Lire les titres à voix haute ».",
+      tts_unavailable:
+        "La synthèse vocale de Windows n'est pas disponible sur cet ordinateur : le pack n'a pas été créé. Réessayez plus tard, ou décochez « Lire les titres à voix haute ».",
+      tts_failed:
+        "Les titres n'ont pas pu être lus à voix haute : le pack n'a pas été créé. Réessayez, vérifiez les voix de Windows (Paramètres > Heure et langue > Voix), ou décochez « Lire les titres à voix haute ».",
+    } as Record<string, string>,
+  },
+  /** Titres lus à voix haute dans les packs de podcasts (#462). */
+  speech: {
+    checkbox: "Lire les titres à voix haute",
+    checkboxHint:
+      "La Flam dira le titre du pack, de chaque catégorie et de chaque épisode quand on le choisit dans le carrousel. Voix de Windows, sur cet ordinateur seulement.",
+    loading: "Recherche des voix françaises…",
+    noVoice:
+      "Aucune voix française n'est installée sur cet ordinateur : les titres ne peuvent pas être lus à voix haute. Pour en ajouter une : Paramètres de Windows > Heure et langue > Voix > Ajouter des voix, puis rouvrez cette page.",
+    listFailed:
+      "Les voix de Windows n'ont pas pu être listées : les titres ne peuvent pas être lus à voix haute pour l'instant.",
+    voiceUsed: (name: string) => `Voix : ${name} (à changer dans les Paramètres).`,
+    voiceOfComposition: (name: string) => `Voix : ${name} (celle de la composition).`,
+    voiceGone: (name: string) =>
+      `La voix choisie dans les Paramètres n'est plus installée : ${name} sera utilisée.`,
+    listen: "Écouter",
+    stop: "Arrêter",
+    listenTitle: "Écouter le titre du pack",
+    stopTitle: "Arrêter la lecture du titre du pack",
+    noTitle: "Saisissez un titre de pack pour l'écouter.",
+    playing: "Lecture en cours…",
+    preview: {
+      tts_no_voice: "Aucune voix française n'est installée sur cet ordinateur.",
+      tts_unavailable:
+        "La synthèse vocale de Windows n'est pas disponible sur cet ordinateur.",
+      tts_failed: "La voix n'a pas pu lire ce texte. Réessayez.",
+    } as Record<string, string>,
+    settings: {
+      title: "Titres lus à voix haute",
+      note: "Voix utilisée pour lire les titres des packs de podcasts (case « Lire les titres à voix haute » de l'éditeur de pack). Le débit est celui de Windows.",
+      voice: "Voix",
+      voiceOption: (name: string, language: string) => `${name} (${language})`,
+      gone: "La voix choisie n'est plus installée : la voix par défaut sera utilisée.",
+      goneOption: "Voix choisie (plus installée)",
+      tryLabel: "Essayer la voix",
+      trySample: "Bonjour ! Je lirai les titres de vos histoires.",
+      failed: "La voix n'a pas pu être enregistrée.",
+    },
+    /** Pack terminé : avertissements des titres lus, dans le suivi de la tâche. */
+    warnings: (shown: string[], more: number) =>
+      more > 0
+        ? `${shown.join(" ")} Et ${more} autre${more > 1 ? "s" : ""} titre${more > 1 ? "s" : ""} resté${more > 1 ? "s" : ""} muet${more > 1 ? "s" : ""}.`
+        : shown.join(" "),
   },
   recovery: {
     title: (file: string) => `Le fichier ${file} était illisible`,
