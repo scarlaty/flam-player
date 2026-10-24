@@ -549,6 +549,152 @@ class TestMatrixPythonAgainstPython(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+DELEGATING_STUB = """
+import json, sys
+print(json.dumps({"event": "error", "code": "unsupported_format", "exit": 7,
+                  "message": "images/x.jpg : format non pris en charge : pas un PNG"}))
+sys.exit(7)
+"""
+
+
+class TestCampaign(unittest.TestCase):
+    """Campagne sur archives reelles (#135) : reprise, delegations comptees, seuil."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="t2f_camp_")
+        self.archives = os.path.join(self.tmp, "archives")
+        os.makedirs(self.archives)
+        jpeg = b"\xff\xd8\xff\xe0" + b"\0" * 32
+        for name, files, compress in (
+                ("a.zip", std_files(), zipfile.ZIP_STORED),
+                ("b.zip", std_files() + [("images/x.jpg", jpeg)],
+                 {"audios/s0.mp3": zipfile.ZIP_BZIP2})):
+            with open(os.path.join(self.archives, name), "wb") as f:
+                f.write(make_corpus.zip_bytes(files, compress))
+        self.stub = os.path.join(self.tmp, "deleg.py")
+        with open(self.stub, "w", encoding="utf-8") as f:
+            f.write(DELEGATING_STUB)
+        self.out = os.path.join(self.tmp, "out")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_helpers(self):
+        self.assertEqual(parity.image_format(b"\x89PNG\r\n\x1a\nxxxx"), "png")
+        self.assertEqual(parity.image_format(b"\xff\xd8\xff\xdb"), "jpeg")
+        self.assertEqual(parity.image_format(b"RIFF\0\0\0\0WEBPVP8 "), "webp")
+        self.assertIsNone(parity.image_format(b"ID3\x04"))
+        self.assertEqual(parity.delegation_cause(
+            "a.zip : \"x\" : compression 12 (bzip2/LZMA/Zstandard) déléguée à Python"), "zip:bzip2")
+        self.assertEqual(parity.delegation_cause("i.png : format non pris en charge : APNG"),
+                         "image:APNG")
+        self.assertEqual(parity.delegation_cause(
+            "metadata.json title : liste ou objet non pris en charge"), "metadata")
+        self.assertEqual(parity.delegation_cause(None), "autre")
+        inv = parity.archive_inventory(os.path.join(self.archives, "b.zip"))
+        self.assertEqual(inv["images"], {"jpeg": 1, "png": 2})
+        self.assertEqual(inv["methods"], {"bzip2": 1, "stored": 5})
+        bad = os.path.join(self.tmp, "bad.zip")
+        with open(bad, "wb") as f:
+            f.write(b"pas une archive")
+        self.assertEqual(parity.archive_inventory(bad)["error"], "BadZipFile")
+
+    def test_python_against_python_then_resume(self):
+        oracle = parity.default_oracle()
+        doc = parity.run_campaign(self.archives, oracle, oracle, self.out, jobs=2,
+                                  validate=False)
+        self.assertEqual(doc["summary"]["identical"], 2)
+        self.assertTrue(doc["threshold_met"])
+        self.assertEqual(doc["pending"], 0)
+        self.assertEqual(doc["corpus_archives"]["images"], {"jpeg": 1, "png": 2})
+        self.assertEqual(doc["corpus_entries"]["zip_methods"], {"bzip2": 1, "stored": 10})
+        # dossiers de travail supprimes quand il n'y a pas d'ecart
+        self.assertEqual(os.listdir(os.path.join(self.out, "work")), [])
+        # reprise : un etat obtenu avec les memes moteurs est repris tel quel
+        state = os.path.join(self.out, "cases", "a.json")
+        with open(state, encoding="utf-8") as f:
+            res = json.load(f)
+        res["marker"] = True
+        with open(state, "w", encoding="utf-8") as f:
+            json.dump(res, f)
+        doc = parity.run_campaign(self.archives, oracle, oracle, self.out, validate=False)
+        self.assertTrue(next(c for c in doc["cases"] if c["id"] == "a")["marker"])
+        # autre candidat : tout est refait, les delegations sont comptees a part
+        cand = [sys.executable, self.stub]
+        doc = parity.run_campaign(self.archives, oracle, cand, self.out, validate=False)
+        self.assertNotIn("marker", doc["cases"][0])
+        self.assertEqual(doc["summary"]["delegated"], 2)
+        self.assertEqual(doc["delegations_by_cause"], {"image:pas un PNG": 2})
+        self.assertEqual(doc["delegated_archives"]["images"], {"jpeg": 1, "png": 2})
+        self.assertEqual(doc["delegated_archives"]["zip_methods"], {"bzip2": 1, "stored": 2})
+        self.assertTrue(doc["threshold_met"])
+
+    def test_resume_requires_validation_and_redoes_broken_state(self):
+        oracle = parity.default_oracle()
+        parity.run_campaign(self.archives, oracle, oracle, self.out, validate=False)
+        state = os.path.join(self.out, "cases", "a.json")
+        with open(state, encoding="utf-8") as f:
+            res = json.load(f)
+        res["marker"] = True
+        with open(state, "w", encoding="utf-8") as f:
+            json.dump(res, f)
+        with open(os.path.join(self.out, "cases", "b.json"), "w", encoding="utf-8") as f:
+            f.write('{"verdict": "ident')                    # etat tronque
+        # une campagne qui valide ne reprend pas un etat obtenu sans validate.py
+        doc = parity.run_campaign(self.archives, oracle, oracle, self.out, validate=True)
+        self.assertEqual(doc["summary"]["identical"], 2)
+        self.assertNotIn("marker", doc["cases"][0])
+        self.assertEqual(doc["cases"][0]["candidate"]["validation"], 0)
+        # l'inverse est admis : un etat valide sert a une campagne sans validation
+        with open(state, encoding="utf-8") as f:
+            res = json.load(f)
+        res["marker"] = True
+        with open(state, "w", encoding="utf-8") as f:
+            json.dump(res, f)
+        doc = parity.run_campaign(self.archives, oracle, oracle, self.out, validate=False)
+        self.assertTrue(doc["cases"][0]["marker"])
+
+    def test_fingerprint_covers_path_lookup_and_sibling_modules(self):
+        script_dir = os.path.join(self.tmp, "eng")
+        os.makedirs(script_dir)
+        main_py = os.path.join(script_dir, "main.py")
+        helper = os.path.join(script_dir, "helper.py")
+        for p in (main_py, helper):
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("x = 1\n")
+        exe = os.path.basename(sys.executable)
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = os.path.dirname(sys.executable) + os.pathsep + old_path
+        try:
+            a = parity.command_fingerprint([exe, main_py])
+            self.assertEqual(a, parity.command_fingerprint([exe, main_py]))
+            with open(helper, "w", encoding="utf-8") as f:
+                f.write("x = 2\n")                      # module voisin modifie
+            self.assertNotEqual(a, parity.command_fingerprint([exe, main_py]))
+        finally:
+            os.environ["PATH"] = old_path
+        with self.assertRaises(ValueError):
+            parity.command_fingerprint(["commande-inexistante-xyz"])
+
+    def test_deviation_keeps_work_and_fails_threshold(self):
+        oracle = parity.default_oracle()
+        stub = os.path.join(self.tmp, "stub.py")
+        with open(stub, "w", encoding="utf-8") as f:
+            f.write(STUB)
+        cmd = '"%s" "%s" 6 internal_error' % (sys.executable.replace("\\", "/"),
+                                              stub.replace("\\", "/"))
+        rc = parity.main(["campaign", self.archives, "--candidate", cmd, "--out", self.out,
+                          "--limit", "1", "--no-validate"])
+        self.assertEqual(rc, 1)
+        with open(os.path.join(self.out, "report.json"), encoding="utf-8") as f:
+            doc = json.load(f)
+        self.assertFalse(doc["threshold_met"])
+        self.assertEqual(doc["summary"]["diff"], 1)
+        self.assertIn("exit", doc["diff_kinds"])
+        self.assertEqual(doc["cases"][0]["candidate"]["error_code"], "internal_error")
+        self.assertEqual(os.listdir(os.path.join(self.out, "work")), ["a"])
+
+
 class TestPinnedOracle(unittest.TestCase):
     """Pillow et Python de la CI = ceux de l'installateur (PORT-RUST.md §4.3 point 4)."""
 

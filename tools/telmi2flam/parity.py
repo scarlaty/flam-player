@@ -22,6 +22,14 @@ ecart fait echouer la comparaison (code de sortie 1). Les delegations
     python parity.py corpus DOSSIER [--oracle CMD] [--candidate CMD] [--report FICHIER]
     python parity.py matrix DOSSIER [--candidate-lif-dir DOSSIER] [--report FICHIER]
     python parity.py compare SORTIE_A SORTIE_B [--report FICHIER]
+    python parity.py campaign ARCHIVES --candidate CMD [--oracle CMD] [--out DOSSIER]
+                              [--jobs N] [--timeout S] [--limit N] [--force]
+
+`campaign` (#135, §4.3) compare les deux moteurs sur les archives reelles, par lots avec
+reprise (un etat par archive sous DOSSIER/cases/, rapport DOSSIER/report.json, defaut
+.cache/parity). Seule la delegation D4 y est admise ; le rapport compte les delegations par
+cause, format d'image et methode ZIP. Le journal ne donne que des comptes : le rapport, lui,
+nomme les archives et reste hors du depot.
 
 `corpus` et `matrix` lisent les index `corpus.json` / `matrix.json` produits par
 tests/parity/make_corpus.py. Sans `--candidate`, le candidat est l'oracle : Python
@@ -141,6 +149,8 @@ def run_to_dict(exit_code, events, info_exit, info_stdout, entries, plain_entrie
         "status": "ok" if exit_code == 0 else "error",
         "exit": exit_code,
         "error_code": err.get("code") if err else None,
+        # texte de l'erreur : jamais compare (§4.1), sert au classement des delegations
+        "error_message": err.get("message") if err else None,
         "warnings": sorted(e.get("code") or "" for e in events if e.get("event") == "warning"),
         "info_exit": info_exit,
         "info": info_stdout,
@@ -484,6 +494,288 @@ def run_compare(a, b):
              "verdict": "diff" if diffs else "identical", "rule": None, "diffs": diffs}]
 
 
+# ---------------------------------------------------------------------------
+# Campagne sur les archives reelles (#135, §4.3)
+# ---------------------------------------------------------------------------
+# Archives reelles : aucune etiquette de cas. Seule la delegation D4 est admise ; un ecart
+# de la liste §4.1 (JSON limite, entree chiffree...) n'y est pas presume et reste un ecart,
+# a classer a la main.
+CAMPAIGN_TAGS = (TAG_DELEGATED,)
+CAMPAIGN_TIMEOUT = 1800
+ZIP_METHODS = {zipfile.ZIP_STORED: "stored", zipfile.ZIP_DEFLATED: "deflate",
+               zipfile.ZIP_BZIP2: "bzip2", zipfile.ZIP_LZMA: "lzma", 93: "zstd"}
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".avif",
+              ".heic", ".heif", ".ico", ".svg")
+
+
+def image_format(head):
+    """Format d'image d'apres les premiers octets (None : pas une image reconnue)."""
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if head.startswith(b"BM"):
+        return "bmp"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    if head[:4] in (b"II*\0", b"MM\0*"):
+        return "tiff"
+    if head[4:8] == b"ftyp":
+        return "avif_heif"
+    if head[:4] == b"\0\0\x01\0":
+        return "ico"
+    if head.lstrip()[:5] in (b"<?xml", b"<svg "):
+        return "svg"
+    return None
+
+
+def archive_inventory(path):
+    """Methodes ZIP et formats d'image (par signature) des entrees d'une archive. Une entree
+    a extension d'image sans signature reconnue compte comme `inconnu`. Les noms ne sont pas
+    gardes : seuls les comptes sortent d'ici."""
+    methods, images = Counter(), Counter()
+    try:
+        with zipfile.ZipFile(path) as z:
+            for zi in z.infolist():
+                if zi.is_dir():
+                    continue
+                methods[ZIP_METHODS.get(zi.compress_type, "methode_%d" % zi.compress_type)] += 1
+                try:
+                    with z.open(zi) as f:
+                        head = f.read(16)
+                except Exception:  # entree illisible : le convertisseur en decidera
+                    head = b""
+                fmt = image_format(head)
+                if fmt is None and zi.filename.lower().endswith(IMAGE_EXTS):
+                    fmt = "inconnu"
+                if fmt:
+                    images[fmt] += 1
+    except Exception as e:  # archive illisible : comptee, sans arreter la campagne
+        return {"error": type(e).__name__, "methods": {}, "images": {}}
+    return {"error": None, "methods": dict(sorted(methods.items())),
+            "images": dict(sorted(images.items()))}
+
+
+_COMPRESSION_RE = re.compile(r"compression (\d+)")
+_IMAGE_WHY_RE = re.compile(r"format non pris en charge : (.+)$")
+
+
+def delegation_cause(message):
+    """Cause d'une delegation d'apres le message du candidat, sans nom d'asset :
+    `zip:<methode>`, `image:<raison>` (raison fixe du decodeur PNG), `metadata` ou `autre`."""
+    message = message or ""
+    m = _COMPRESSION_RE.search(message)
+    if m:
+        return "zip:" + ZIP_METHODS.get(int(m.group(1)), "methode_" + m.group(1))
+    m = _IMAGE_WHY_RE.search(message)
+    if m:
+        return "image:" + m.group(1).strip()
+    if message.startswith("metadata.json"):
+        return "metadata"
+    return "autre"
+
+
+def command_fingerprint(cmd):
+    """SHA-256 des fichiers nommes dans une commande (interpreteur, script, binaire) : un
+    resultat obtenu avec un autre moteur n'est pas repris."""
+    h = hashlib.sha256()
+
+    def add_file(path):
+        with open(path, "rb") as f:
+            h.update(_sha(f.read()).encode("ascii"))
+
+    for i, token in enumerate(cmd):
+        h.update(token.encode("utf-8") + b"\0")
+        # le programme (jeton 0) est resolu comme le ferait subprocess : par le PATH
+        path = shutil.which(token) if i == 0 else None
+        if path is None and os.path.isfile(token):
+            path = token
+        if i == 0 and path is None:
+            raise ValueError("commande introuvable : %s" % token)
+        if path is None:
+            continue
+        add_file(path)
+        if path.lower().endswith(".py"):
+            # script Python : ses modules voisins (lif.py, mp3map.py...) font partie du moteur
+            folder = os.path.dirname(os.path.abspath(path))
+            for name in sorted(os.listdir(folder)):
+                if name.endswith(".py"):
+                    h.update(name.encode("utf-8") + b"\0")
+                    add_file(os.path.join(folder, name))
+    return h.hexdigest()
+
+
+def validate_subprocess(pk_path, timeout):
+    """validate.py dans un processus a part (redirect_stdout n'est pas sur entre threads)."""
+    try:
+        r = subprocess.run([sys.executable, os.path.join(HERE, "validate.py"), pk_path],
+                           capture_output=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return "harness_error: %s" % type(e).__name__
+    return r.returncode
+
+
+def campaign_case(archive, oracle, candidate, work, timeout=CAMPAIGN_TIMEOUT, validate=True):
+    """Une archive : oracle puis candidat (jamais en meme temps, pour borner la charge),
+    comparaison, inventaire. Le dossier de travail est supprime, sauf en cas d'ecart."""
+    shutil.rmtree(work, ignore_errors=True)
+    o, _ = run_converter(oracle, archive, os.path.join(work, "oracle"), timeout=timeout)
+    c, produced = run_converter(candidate, archive, os.path.join(work, "candidate"),
+                                timeout=timeout)
+    if validate and produced is not None:
+        c["validation"] = validate_subprocess(produced, timeout)
+    res = compare_runs(o, c, CAMPAIGN_TAGS)
+    res["oracle"] = {k: o[k] for k in ("exit", "error_code", "error_message", "warnings")}
+    res["candidate"] = {k: c[k] for k in ("exit", "error_code", "error_message", "warnings")}
+    res["candidate"]["validation"] = c.get("validation")
+    if res["verdict"] == "delegated":
+        res["delegation"] = delegation_cause(c["error_message"])
+    res["inventory"] = archive_inventory(archive)
+    if res["verdict"] != "diff":
+        shutil.rmtree(work, ignore_errors=True)
+    return res
+
+
+def _harness_failure(res):
+    """Execution impossible (delai, commande absente, sortie illisible) : refaite a la reprise."""
+    return (any(d.get("kind") == "harness" for d in res.get("diffs", ()))
+            or any((res.get(side) or {}).get("error_code") == "harness_error"
+                   for side in ("oracle", "candidate"))
+            or str((res.get("candidate") or {}).get("validation")).startswith("harness_error"))
+
+
+def _reusable(prev, engines):
+    """Etat repris : meme oracle, meme candidat, validation au moins aussi complete (un etat
+    obtenu sans validate.py n'est pas repris par une campagne qui valide), forme attendue."""
+    if not isinstance(prev, dict) or not all(k in prev for k in ("verdict", "diffs",
+                                                                 "inventory")):
+        return False
+    old = prev.get("engines")
+    if not isinstance(old, dict) or _harness_failure(prev):
+        return False
+    if (old.get("oracle"), old.get("candidate")) != (engines["oracle"], engines["candidate"]):
+        return False
+    return not engines["validate"] or old.get("validate") == engines["validate"]
+
+
+def _write_json_atomic(path, doc):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(doc, f, indent=1, sort_keys=True, ensure_ascii=True)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def campaign_summary(cases):
+    """Comptes seulement (publiables) : verdicts, delegations par cause, formats d'image et
+    methodes ZIP des archives deleguees et de tout le corpus, seuil de bascule §4.3."""
+    s = summarize(cases)
+    delegated = [c for c in cases if c["verdict"] == "delegated"]
+
+    def per_archive(selection, key):
+        n = Counter()
+        for c in selection:
+            n.update(c["inventory"][key].keys())
+        return dict(sorted(n.items()))
+
+    def per_entry(selection, key):
+        n = Counter()
+        for c in selection:
+            n.update(c["inventory"][key])
+        return dict(sorted(n.items()))
+
+    diff_kinds = Counter()
+    for c in cases:
+        if c["verdict"] == "diff":
+            diff_kinds.update({d["kind"] for d in c["diffs"]})
+    return {
+        "summary": s,
+        "delegations_by_cause": dict(sorted(Counter(c["delegation"] for c in delegated).items())),
+        "delegated_archives": {"images": per_archive(delegated, "images"),
+                               "zip_methods": per_archive(delegated, "methods")},
+        "corpus_archives": {"images": per_archive(cases, "images"),
+                            "zip_methods": per_archive(cases, "methods")},
+        "corpus_entries": {"images": per_entry(cases, "images"),
+                           "zip_methods": per_entry(cases, "methods")},
+        "inventory_errors": sum(1 for c in cases if c["inventory"]["error"]),
+        "diff_kinds": dict(sorted(diff_kinds.items())),
+        # §4.3 : aucun ecart hors liste, ni sur les statuts ni sur les entrees
+        "threshold_met": bool(s["total"]) and s["diff"] == 0,
+    }
+
+
+def run_campaign(archives_dir, oracle, candidate, out_dir, jobs=1, timeout=CAMPAIGN_TIMEOUT,
+                 force=False, limit=None, validate=True, progress=None):
+    """Compare chaque `*.zip` de `archives_dir`, par lots avec reprise : un fichier d'etat par
+    archive sous `out_dir/cases/`, repris s'il a ete obtenu avec les memes moteurs (empreintes)
+    sauf `force`. Rapport `out_dir/report.json`, recalcule a chaque archive terminee."""
+    import concurrent.futures
+    import threading
+
+    names = sorted(n for n in os.listdir(archives_dir) if n.lower().endswith(".zip"))
+    if limit is not None:
+        names = names[:limit]
+    engines = {"oracle": command_fingerprint(oracle), "candidate": command_fingerprint(candidate),
+               # empreinte de validate.py, ou None sans validation
+               "validate": command_fingerprint([sys.executable, os.path.join(HERE, "validate.py")])
+               if validate else None}
+    cases_dir = os.path.join(out_dir, "cases")
+    work_root = os.path.join(out_dir, "work")
+    os.makedirs(cases_dir, exist_ok=True)
+    results = {}
+    todo = []
+    for n in names:
+        state = os.path.join(cases_dir, n[:-4] + ".json")
+        if not force and os.path.exists(state):
+            try:
+                with open(state, encoding="utf-8") as f:
+                    prev = json.load(f)
+                if _reusable(prev, engines):
+                    results[n] = prev
+                    continue
+            except (ValueError, OSError):
+                pass  # etat tronque ou illisible : refait
+        todo.append(n)
+    lock = threading.Lock()
+
+    def write_report():
+        cases = [results[n] for n in names if n in results]
+        doc = {"schema": REPORT_SCHEMA, "kind": "campaign", "engines": engines,
+               "pending": len(names) - len(cases)}
+        doc.update(campaign_summary(cases))
+        doc["cases"] = cases
+        _write_json_atomic(os.path.join(out_dir, "report.json"), doc)
+        return doc
+
+    def one(n):
+        archive = os.path.join(archives_dir, n)
+        try:
+            res = campaign_case(archive, oracle, candidate, os.path.join(work_root, n[:-4]),
+                                timeout, validate)
+        except Exception as e:  # sortie illisible, etc. : un ecart, la campagne continue
+            res = {"verdict": "diff", "rule": None,
+                   "diffs": [{"kind": "harness", "oracle": None,
+                              "candidate": "%s: %s" % (type(e).__name__, e)}],
+                   "inventory": archive_inventory(archive)}
+        res["id"] = n[:-4]
+        res["engines"] = engines
+        _write_json_atomic(os.path.join(cases_dir, n[:-4] + ".json"), res)
+        with lock:
+            results[n] = res
+            write_report()
+            if progress:
+                progress(len(results), len(names), res)
+        return res
+
+    write_report()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, jobs)) as ex:
+        for fut in [ex.submit(one, n) for n in todo]:
+            fut.result()
+    return write_report()
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Parite Python / port Rust de telmi2flam")
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -502,8 +794,37 @@ def main(argv=None):
     p.add_argument("a")
     p.add_argument("b")
     p.add_argument("--report", help="rapport JSON")
+    p = sub.add_parser("campaign", help="archives reelles, par lots avec reprise (#135)")
+    p.add_argument("dir", help="dossier des archives *.zip (lu seulement)")
+    p.add_argument("--candidate", required=True, help="commande du candidat")
+    p.add_argument("--oracle", help="commande de l'oracle (defaut : telmi2flam.py)")
+    p.add_argument("--out", default=os.path.join(".cache", "parity"),
+                   help="etat et rapport (defaut %(default)s ; jamais dans le depot)")
+    p.add_argument("--jobs", type=int, default=1,
+                   help="archives en parallele, chacune oracle puis candidat (defaut 1)")
+    p.add_argument("--timeout", type=int, default=CAMPAIGN_TIMEOUT,
+                   help="delai par conversion, en secondes (defaut %(default)s)")
+    p.add_argument("--limit", type=int, help="seulement les N premieres archives")
+    p.add_argument("--force", action="store_true", help="refaire les archives deja comparees")
+    p.add_argument("--no-validate", action="store_true",
+                   help="ne pas passer validate.py sur la sortie du candidat")
     args = ap.parse_args(argv)
 
+    if args.mode == "campaign":
+        oracle = split_cmd(args.oracle) if args.oracle else default_oracle()
+
+        def progress(done, total, res):
+            # comptes seulement : ni nom d'archive ni contenu dans le journal
+            print("%d/%d %s" % (done, total, res["verdict"]), flush=True)
+        doc = run_campaign(args.dir, oracle, split_cmd(args.candidate), args.out,
+                           jobs=args.jobs, timeout=args.timeout, force=args.force,
+                           limit=args.limit, validate=not args.no_validate, progress=progress)
+        s = doc["summary"]
+        print("campagne : %d archives, %d identiques, %d deleguees, %d ecarts, %d en attente ; "
+              "seuil (par. 4.3) %s" % (s["total"], s["identical"], s["delegated"], s["diff"],
+                                 doc["pending"], "atteint" if doc["threshold_met"] else "non atteint"))
+        print("delegations par cause : %s" % json.dumps(doc["delegations_by_cause"]))
+        return 0 if doc["threshold_met"] and not doc["pending"] else 1
     if args.mode == "corpus":
         oracle = split_cmd(args.oracle) if args.oracle else default_oracle()
         candidate = split_cmd(args.candidate) if args.candidate else oracle
