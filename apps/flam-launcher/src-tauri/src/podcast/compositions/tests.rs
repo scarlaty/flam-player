@@ -22,6 +22,7 @@ fn comp(title: &str, ids: &[&str]) -> PackComposition {
             PackNode::Category {
                 name: "Soir".into(),
                 entries: ids[1..].iter().map(|id| ep("b", id)).collect(),
+                image: None,
             },
         ],
         ..PackComposition::default()
