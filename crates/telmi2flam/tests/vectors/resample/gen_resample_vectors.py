@@ -3,7 +3,7 @@
 L'oracle est `png_to_lif`, `png_to_scene_lif`, `png_to_fit_lif` et `png_to_thumb_lif` de
 `tools/telmi2flam/telmi2flam.py` (vignette : `thumb` en mode `bandes`, `thumb_flou` et
 `thumb_rogner`), exécutés avec **Python 3.14.8 et Pillow 12.3.0** exactement
-(versions de `apps/flam-launcher/scripts/build-converter.ps1`) : le script refuse de tourner
+(versions de `tools/telmi2flam/ORACLE-VERSIONS.txt`) : le script refuse de tourner
 avec une autre version. Déterministe (à versions épinglées, zlib compris) : relancer le script ne doit rien changer (`git status`
 propre).
 

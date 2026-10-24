@@ -320,11 +320,17 @@ jobs:
           $p = Start-Process -FilePath $setup[0].FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "installateur : code $($p.ExitCode)" }
           foreach ($f in 'flam-launcher.exe', 'flam-player.exe', 'SDL2.dll', 'LICENSES.md', 'uninstall.exe',
-              'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/telmi2flam.exe', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'telmi2flam/runtime/manifest.txt', 'licenses/SDL2-LICENSE.txt',
+              'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.exe', 'telmi2flam/LICENSES.md', 'telmi2flam/BUILD.txt', 'licenses/SDL2-LICENSE.txt',
               'ffmpeg/ffmpeg.exe', 'ffmpeg/ffprobe.exe', 'ffmpeg/LICENSE', 'ffmpeg/LICENSE-LAME', 'ffmpeg/LICENSE-MINGW-RUNTIME', 'ffmpeg/BUILD.txt', 'ffmpeg/ffmpeg.sha256') {
             if (-not (Test-Path (Join-Path $dest $f))) { throw "fichier absent de l'installation : $f" }
           }
-          $ff = Join-Path $dest 'ffmpeg/ffmpeg.exe'
+          # Installateur sans Python ni Pillow ni scripts du convertisseur (#138).
+          foreach ($f in 'telmi2flam/python', 'telmi2flam/telmi2flam.py', 'telmi2flam/lif.py', 'telmi2flam/mp3map.py', 'telmi2flam/engine', 'telmi2flam/runtime') {
+            if (Test-Path (Join-Path $dest $f)) { throw "fichier retiré toujours présent dans l'installation : $f" }
+          }
+          $extra = @(Get-ChildItem (Join-Path $dest 'telmi2flam') -Recurse -Force | Where-Object { $_.Name -notin @('telmi2flam.exe', 'LICENSES.md', 'BUILD.txt') })
+          if ($extra.Count -gt 0) { throw "fichiers inattendus dans telmi2flam/ : $($extra.FullName -join ', ')" }
+          $ff =Join-Path $dest 'ffmpeg/ffmpeg.exe'
           $conf = (& $ff -hide_banner -buildconf 2>&1 | Out-String)
           if ($LASTEXITCODE -ne 0 -or $conf -match '--enable-(gpl|nonfree)(\s|$)' -or $conf -notmatch '--enable-libmp3lame') { throw "ffmpeg installé : configuration refusée`n$conf" }
           if ((& $ff -hide_banner -encoders 2>&1 | Out-String) -notmatch 'libmp3lame') { throw 'ffmpeg installé : libmp3lame absent' }

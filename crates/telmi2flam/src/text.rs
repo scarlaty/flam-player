@@ -2,7 +2,7 @@
 //! `_font_safe`, `_text`, `_choice_label`, `_describe_replaced` et `LABEL_MAX` de
 //! `tools/telmi2flam/telmi2flam.py`.
 //!
-//! Les données Unicode sont celles du Python de l'installateur (3.14, Unicode 16.0.0) :
+//! Les données Unicode sont celles du Python de l'oracle (3.14, Unicode 16.0.0) :
 //! - espaces de `str.split()` / `str.isspace()` (dont `\x1c`-`\x1f` et U+0085, absents de
 //!   `char::is_whitespace`) et catégories générales L* / N* : tables générées depuis Python
 //!   (`text_tables.rs`) ;

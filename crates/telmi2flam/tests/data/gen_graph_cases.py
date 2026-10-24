@@ -12,7 +12,7 @@ nodes.json lus) et reussit, ou echoue en invalid_content / missing_asset dans le
 Pour chaque cas : nodes.json et notes.json bruts, options, et soit le script/nodes.lua produit
 (avec les noms d'assets et l'en-tete captures dans la table passee a lua_repr), soit l'erreur.
 
-A lancer avec le Python de l'installateur (build-converter.ps1 : 3.14.8, Pillow 12.3.0),
+A lancer avec le Python de l'oracle (ORACLE-VERSIONS.txt : 3.14.8, Pillow 12.3.0),
 depuis la racine du depot :
     python crates/telmi2flam/tests/data/gen_graph_cases.py
 """
@@ -435,7 +435,7 @@ def run(cid, data, argv, tmp):
 
 def main():
     if sys.version_info[:3] != (3, 14, 8):
-        sys.exit("vecteurs a produire avec Python 3.14.8 (oracle de build-converter.ps1)")
+        sys.exit("vecteurs a produire avec Python 3.14.8 (oracle de ORACLE-VERSIONS.txt)")
     builds = [(c.id, c.build, c.args) for c in mc.corpus_cases()
               if mc.TAG_JSON_LIMIT not in c.tags] + graph_cases()
     cases = []

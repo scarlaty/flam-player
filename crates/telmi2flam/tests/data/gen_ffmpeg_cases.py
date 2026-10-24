@@ -18,7 +18,7 @@ tests/ffmpeg.rs. Elle contient :
 Executions : tout le corpus de package_cases avec le faux ffmpeg (mode ok) ; les cas audio
 hors 44 100 Hz avec chaque panne du faux ffmpeg, et avec FLAM_FFMPEG vers un fichier absent.
 
-A lancer avec le Python de l'installateur (3.14.8, Pillow 12.3.0), sous Windows, depuis la
+A lancer avec le Python de l'oracle (3.14.8, Pillow 12.3.0), sous Windows, depuis la
 racine du depot :
     python crates/telmi2flam/tests/data/gen_ffmpeg_cases.py <chemin du faux ffmpeg>
 """

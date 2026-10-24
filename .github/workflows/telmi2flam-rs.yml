@@ -9,8 +9,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/telmi2flam-rs.yml"
-      # La table de parité Unicode est liée à $PythonVersion (test table_produite_par_le_python...).
-      - "apps/flam-launcher/scripts/build-converter.ps1"
+      # La table de parité Unicode est liée au Python de ORACLE-VERSIONS.txt (test table_produite_par_le_python...).
+      - "tools/telmi2flam/ORACLE-VERSIONS.txt"
       # Moteur et runtime embarqués dans le binaire (include_bytes!, build.rs) : #129.
       - "tools/telmi2flam/engine/**"
       - "tools/telmi2flam/runtime/**"
@@ -27,8 +27,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/telmi2flam-rs.yml"
-      # La table de parité Unicode est liée à $PythonVersion (test table_produite_par_le_python...).
-      - "apps/flam-launcher/scripts/build-converter.ps1"
+      # La table de parité Unicode est liée au Python de ORACLE-VERSIONS.txt (test table_produite_par_le_python...).
+      - "tools/telmi2flam/ORACLE-VERSIONS.txt"
       # Moteur et runtime embarqués dans le binaire (include_bytes!, build.rs) : #129.
       - "tools/telmi2flam/engine/**"
       - "tools/telmi2flam/runtime/**"
@@ -137,7 +137,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           # Oracle épinglé (PORT-RUST.md §4.3) : mêmes versions que telmi2flam.yml et que
-          # l'installateur (apps/flam-launcher/scripts/build-converter.ps1).
+          # launcher.yml (source unique : tools/telmi2flam/ORACLE-VERSIONS.txt).
           python-version: "3.14.8"
 
       - name: Installer les dépendances de l'oracle
