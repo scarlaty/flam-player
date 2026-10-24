@@ -659,6 +659,24 @@ liste fermée, est à classer à la main (le dossier de travail de l'archive est
 `work/`). Le rapport compte les délégations par cause, format d'image et méthode ZIP. Le
 journal ne donne que des comptes ; le rapport nomme les archives et reste dans `.cache/`.
 
+Lecture du rapport :
+
+- Causes de délégation : `zip:<méthode>` (message `: compression N (bzip2/LZMA/Zstandard)`),
+  `image:<raison>` (liste fermée des raisons du décodeur PNG), `metadata` ou `autre`. Un
+  message hors de ces formes exactes est `autre`. `metadata` et `autre` sont hors D4 strict :
+  la ligne `attention : delegations hors D4 strict…` (comptes seulement) les signale et elles
+  sont à classer à la main.
+- `--limit N` écrit le même `report.json` sur les N premières archives seulement, avec
+  `"partial": true` (`false` sinon) ; ce n'est pas un résultat de campagne complet.
+- Formats d'image : détection par signature. `ftyp` exige une marque AVIF/HEIF (`avif`, `avis`,
+  `heic`, `heix`, `mif1`), `BM` et `<?xml` ne comptent que pour une entrée à extension
+  d'image (un MP4/M4A ou un XML quelconque n'est pas une image).
+- `delegated_archives.images` compte **toutes** les images des archives déléguées, pas
+  seulement celle qui a causé la délégation (le plus simple : documenté plutôt que filtré) ;
+  la cause exacte est dans `delegations_by_cause`.
+- Une exception imprévue du harnais pour une archive est un écart `harness` (nom du type
+  d'exception seulement), refait à la reprise ; rien n'est écrit sur stderr.
+
 ### Distribution avec flam-launcher (Python embarqué)
 
 Pour l'installateur Windows, `apps/flam-launcher/scripts/build-converter.ps1` assemble
