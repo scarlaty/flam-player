@@ -425,8 +425,9 @@ async fn ancien_reglage_python_utilise_le_moteur_rust() {
 }
 
 #[tokio::test]
-async fn plantage_sans_evenement_error_utilise_stderr() {
+async fn plantage_sans_evenement_error_ne_reprend_pas_stderr() {
     let Some(py) = fake_converter() else { return };
+    let logs = crate::testlog::Logs::capture();
     let ctx = Ctx::new(Some(py));
     let server = serve(zip_bytes("crash")).await;
     let task = ctx
@@ -436,7 +437,14 @@ async fn plantage_sans_evenement_error_utilise_stderr() {
     let error = ctx.finished(&task.id).await.error.unwrap();
     assert_eq!(error.kind, "conversion");
     assert_eq!(error.code.as_deref(), Some("exit_6"));
-    assert!(error.message.contains("boum"), "{}", error.message);
+    // La dernière ligne de stderr (ici un nom de fichier) n'est ni affichée ni journalisée.
+    assert!(
+        !error.message.contains("histoire-secrete"),
+        "{}",
+        error.message
+    );
+    let text = logs.text();
+    assert!(!text.contains("histoire-secrete"), "{text}");
 }
 
 async fn annulation_pendant_la_conversion(mode: &str, grace: Duration) {
@@ -1039,7 +1047,6 @@ fn detection_du_binaire_rust() {
     std::fs::create_dir_all(&exe_dir).unwrap();
     let env = |search| Environment {
         exe_dir: Some(exe_dir.clone()),
-        path_var: None,
         default_cache_dir: dir.path().join("c"),
         search_repo_build: search,
         protected_dirs: Vec::new(),

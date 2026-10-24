@@ -104,11 +104,16 @@ export function toPanelTask(task: InstallTask, detail?: TaskDetail): Task {
  * technique ; sinon le message du backend.
  */
 export function taskErrorMessage(error: TaskError): string {
+  // Le code vient du convertisseur : texte libre, jamais une clé héritée (`constructor`, `__proto__`).
   const text =
-    error.kind === "conversion" && error.code
-      ? t.errors.conversion[error.code]
-      : undefined;
+    error.kind === "conversion" && error.code ? conversionText(error.code) : undefined;
   return text ?? error.message;
+}
+
+/** Texte traduit d'un code de conversion, seulement s'il est propre à la table (`Object.hasOwn`). */
+function conversionText(code: string): string | undefined {
+  const table = t.errors.conversion;
+  return Object.hasOwn(table, code) ? table[code] : undefined;
 }
 
 /** Pack de podcasts : épisodes retirés (P7), signalés dans le panneau des tâches. */

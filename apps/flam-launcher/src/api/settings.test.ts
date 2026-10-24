@@ -7,7 +7,6 @@ afterEach(() => clearMocks());
 const settings: Settings = {
   schema_version: 1,
   player_path: null,
-  python_path: "C:\\Python\\python.exe",
   cache_dir: null,
   default_catalog_url: "https://exemple.org/c.json",
   theme: "dark",
@@ -18,7 +17,6 @@ const view: SettingsView = {
   settings,
   resolved: {
     player_path: "C:\\app\\flam-player.exe",
-    python_path: "C:\\Python\\python.exe",
     cache_dir: "C:\\cache",
   },
   issues: [{ field: "player_path", kind: "not_found", message: "disparu" }],

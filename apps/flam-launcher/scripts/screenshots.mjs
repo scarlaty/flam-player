@@ -349,7 +349,6 @@ function installMockBackend({ config, scenario }) {
   const settings = {
     schema_version: 1,
     player_path: null,
-    python_path: null,
     cache_dir: null,
     default_catalog_url: "https://catalogue.example.org/histoires.json",
     theme: "system",
@@ -362,7 +361,6 @@ function installMockBackend({ config, scenario }) {
     settings,
     resolved: {
       player_path: `${installDir}\\flam-player.exe`,
-      python_path: `${installDir}\\telmi2flam\\python\\python.exe`,
       cache_dir: "C:\\Users\\demo\\AppData\\Local\\flam-launcher\\cache",
     },
     issues: [],
