@@ -601,16 +601,19 @@ fn echec_d_ecriture_reel_laisse_l_ancien_ordre() {
     assert!(dev.cache_present());
 }
 
-/// Garde commune (#317) : disposition inconnue, firmware non pris en charge ou clés 2.x non
-/// vérifiables : refus, rien n'est écrit (pas même la reprise d'un index interrompu).
+/// Garde commune (#317) : version illisible, firmware non pris en charge ou clés 2.x
+/// triviales : refus, rien n'est écrit (pas même la reprise d'un index interrompu).
 #[test]
 fn la_garde_du_firmware_refuse_sans_rien_ecrire() {
+    use crate::device::crypto::MDF_IV_OFFSET;
     use crate::device::guard::tests::{mdf_v2_known, mdf_with, snapshot};
     use crate::device::guard::KNOWN_HEADER;
+    let mut ff_iv = mdf_v2_known();
+    ff_iv[MDF_IV_OFFSET..MDF_IV_OFFSET + 16].fill(0xFF);
     for mdf in [
         mdf_with(KNOWN_HEADER, "illisible"),
         mdf_with(KNOWN_HEADER, "main: 4.1-x"),
-        mdf_v2_known(),
+        ff_iv,
     ] {
         let dev = Device::new();
         fs::write(dev.root().join(MDF_FILE), &mdf).unwrap();
@@ -620,4 +623,14 @@ fn la_garde_du_firmware_refuse_sans_rien_ecrire() {
         assert!(matches!(err, ReorderError::Refused(_)), "{err}");
         assert_eq!(snapshot(dev.root()), before);
     }
+}
+
+/// #326 : sur une Flam 2.x, le réordonnancement n'attend aucune confirmation (comme Lunii.QT).
+#[test]
+fn reordonnancement_2x_sans_confirmation() {
+    use crate::device::guard::tests::mdf_v2_known;
+    let dev = Device::new();
+    fs::write(dev.root().join(MDF_FILE), mdf_v2_known()).unwrap();
+    reorder(&dev, &[B, A, C, D]).unwrap();
+    assert_eq!(dev.get("list").unwrap(), lines(&[B, A, C, D]));
 }

@@ -247,18 +247,17 @@ it(
   SLOW_TEST_MS,
 );
 
-it("Flam 2.x non confirmée : ordre non enregistrable, raison à l'appui (#326)", async () => {
+it("écriture refusée par la garde : ordre non enregistrable, raison à l'appui (#326)", async () => {
   const before = status.device!.firmware_status;
   status.device!.firmware_status = firmwareV2({
-    trust: "unconfirmed",
-    write_block: { kind: "confirmation_required", version: "2.4.2", standard: true },
+    write_block: { kind: "keys_trivial", version: "2.4.2" },
   });
   try {
     renderScreen();
     await openOrder();
     expect(saveButton()).toHaveAttribute("aria-disabled", "true");
     expect(saveButton()).toHaveAccessibleDescription(
-      "Ordre non modifiable : écriture sur cette Flam bloquée ou à confirmer (voir l'état du firmware).",
+      "Ordre non modifiable : écriture sur cette Flam bloquée (voir l'état du firmware).",
     );
     expect(screen.getByRole("button", { name: "Descendre « Capi »" })).toBeDisabled();
     fireEvent.click(saveButton());
@@ -280,13 +279,15 @@ it("Flam 2.x aux clés incohérentes : les histoires en cause sont désignées (
   };
   status.device!.firmware_status = firmwareV2({
     coherence: { kind: "contradiction", counts, stories: [A, B], total: 3 },
-    write_block: { kind: "keys_contradiction", version: "2.4.2" },
   });
   try {
     renderScreen();
     expect(
       await screen.findByText(`Histoires en cause : ${A}, ${B} (et 1 autre).`),
     ).toBeInTheDocument();
+    // Simple avertissement : l'ordre reste modifiable.
+    await openOrder();
+    expect(screen.getByRole("button", { name: "Descendre « Capi »" })).toBeEnabled();
   } finally {
     status.device!.firmware_status = before;
   }

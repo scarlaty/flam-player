@@ -34,12 +34,7 @@ export function TransferPanel() {
     removeFromQueue,
     dismissQueue,
     announcement,
-    device,
   } = useDevice();
-  // Firmware 2.x pas encore vérifié par la Flam : la vérification se fait au rebranchement.
-  const remindV2 =
-    device?.firmware_status?.family === "v2" &&
-    device.firmware_status.trust !== "flam_verified";
   const titleId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -190,7 +185,6 @@ export function TransferPanel() {
                 role={queue.length > 1 ? "none" : "status"}
               >
                 <p>{text.finished.restart}</p>
-                {remindV2 && <p>{t.deviceFirmware.restartV2}</p>}
               </Banner>
             )}
             <div className="fl-transfer__actions">
