@@ -46,6 +46,13 @@ twox-hash = { version = "=2.1.5", default-features = false, features = ["std", "
 # Clé SHA-256 du cache de rééchantillonnage (comme Python) ; aussi empreintes des vecteurs de
 # parité PNG des tests. Déjà dans le Cargo.lock du launcher.
 sha2 = { version = "=0.10.9", default-features = false }
+# Décodage JPEG (#459, décision D7 : écart borné à ±4 par composante avec Pillow). Code scalaire
+# seulement : sans les fonctions `x86` ni `neon`, dont les chemins SIMD sont choisis à
+# l'exécution selon le processeur (invariant de déterminisme, PORT-RUST.md §4.4). Le launcher
+# les active par `image` : le binaire se construit seul (`-p telmi2flam`, contrôlé par la CI
+# `telmi2flam-rs`). Licence MIT OR Apache-2.0 OR Zlib (trois termes dans ALLOWED_LICENSES).
+zune-jpeg = { version = "=0.5.15", default-features = false, features = ["std"] }
+zune-core = { version = "=0.5.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 # Lecture de tests/vectors/archive/expected.json (vecteurs produits par Python).

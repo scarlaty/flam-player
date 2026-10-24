@@ -4337,6 +4337,8 @@ dependencies = [
  "sha2",
  "twox-hash",
  "unicode-normalization",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
