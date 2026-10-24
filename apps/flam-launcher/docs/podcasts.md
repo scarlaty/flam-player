@@ -853,6 +853,14 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
   dynamiquement par le serveur, un pack refait reprend donc la publicité du premier
   téléchargement (rien n'est filtré, comportement inchangé sur le fond). Vider le cache ou
   supprimer la source force un nouveau téléchargement.
+- **Borne d'un épisode abaissée** : une entrée plus grande que `MAX_AUDIO_BYTES` n'est jamais
+  servie ; elle est supprimée avec un avertissement (#466).
+- **À observer sur de vrais flux** (#466) : l'empreinte contient l'URL de l'enclosure, paramètres
+  compris. Un hébergeur qui fait tourner ces paramètres (jeton signé, identifiant de suivi
+  renouvelé à chaque lecture du flux) rend le cache inopérant pour ses épisodes : chaque pack
+  les retélécharge, sans autre gêne (l'entrée est simplement remplacée). Aucun cas constaté à ce
+  jour ; si cela se présente, retirer de l'empreinte les paramètres reconnus comme variables
+  plutôt que toute la requête (une URL d'enclosure changée doit rester une invalidation).
 
 ### 13.3 Taille maximale et éviction
 
@@ -885,6 +893,21 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
 - **Deux packs simultanés** : les préparations sont déjà sérialisées (une à la fois) ; le
   verrou par source suffit en plus pour qu'une écriture, une lecture et une éviction de la même
   source ne se croisent jamais.
+- **Annulation** (#466) : le hachage (SHA-256 complet à chaque lecture) et la copie de repli
+  lisent par blocs de 256 Kio et s'arrêtent au bloc suivant quand la tâche est annulée, ce qui
+  libère vite le verrou de la source. Une lecture annulée ne juge ni ne supprime aucune entrée ;
+  une écriture annulée ne laisse rien de l'entrée (une écriture annulée avant de commencer garde
+  l'ancienne). Cas accepté : l'annulation pendant la remise en cache d'un épisode servi dont
+  seule la pochette a changé efface aussi son MP3 (l'ancienne entrée est retirée avant
+  l'écriture) ; il sera retéléchargé au pack suivant.
+- **Liens et jonctions** (#466) : `podcasts/`, `podcasts/<id>/` et `podcasts/<id>/mp3/` doivent
+  être de vrais dossiers (contrôle sans suivre de lien, à chaque accès, dossiers manquants créés
+  un par un puis recontrôlés) ; sinon la source est ignorée avec un avertissement : rien n'est
+  lu, écrit ni supprimé hors du cache. Les fichiers d'une entrée doivent être de vrais fichiers,
+  et seuls `<id>.mp3`, `<id>.img` et `<id>.json` comptent comme tels (le reste est supprimé à
+  l'éviction).
+- **Pochettes des épisodes servis** : celles à retélécharger (absentes du cache ou périmées) le
+  sont en parallèle, au plus autant à la fois que les épisodes (`max_downloads`, borné à 4).
 - Le cache est **au mieux** : aucune de ses erreurs ne fait échouer un pack ; une entrée
   inutilisable donne un retéléchargement.
 
@@ -902,13 +925,16 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
 | « Vider le cache » pendant la création                | Attend la fin de la tâche (portillon) ; les liens du dossier de travail restent.  |
 | Épisode ou règle de conversion modifiés               | Empreinte différente : entrée remplacée.                                          |
 | Plafond de 2 Gio dépassé                              | Entrées les plus anciennes évincées (jamais celles du pack en cours).             |
+| Tâche annulée pendant le hachage ou la copie          | Arrêt au bloc suivant ; aucune entrée supprimée, écriture en cours effacée.       |
+| `podcasts/` ou `podcasts/<id>/` remplacé par un lien  | Source ignorée (avertissement) : rien lu, écrit ni supprimé hors du cache.        |
+| Fichier d'extension inconnue dans `mp3/`              | Compté comme reste, supprimé à l'éviction.                                        |
 
 ### 13.6 Interface
 
 Aucun écran dédié : la taille du cache des MP3 est comptée dans la taille du cache affichée par
 les paramètres, « Vider le cache » la supprime, et la suppression d'une source purge la sienne.
-Un affichage séparé (taille du cache des MP3, bouton dédié) est une évolution possible (issue de
-suivi).
+Un affichage séparé (taille du cache des MP3, bouton dédié) est une évolution possible, non
+faite dans #466 (suivi : #489).
 
 ## 14. Compositions nommées réutilisables (N3 c, #461)
 
