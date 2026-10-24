@@ -22,7 +22,10 @@ from test_telmi2flam import Base, std_files  # noqa: E402
 
 
 def setUpModule():
-    """La conversion lance le binaire Rust : echec clair s'il est absent (#140)."""
+    """La conversion lance le binaire Rust : echec clair s'il est absent (#140). Choix assume
+    (#465) : pas de saut silencieux. Seul ce module echoue (les autres tests de la decouverte
+    tournent) ; le rendu du rapport seul, lui, n'exige pas le binaire (--reinterpret) ; son test simule l'absence par un mock (le binaire
+    reel est present sur la machine)."""
     try:
         converter_bin.find_converter()
     except converter_bin.ConverterNotFound as e:
@@ -274,6 +277,53 @@ class TestPipeline(CompatBase):
         self.assertEqual(step["status"], "fail")
         self.assertIn("annule", step["messages"][0])
 
+    def test_converter_invalid_json_output(self):
+        # sortie JSON invalide : lignes ignorees ; code 0 sans `done` = echec, avertissements
+        # valides conserves
+        exe = self.fake_exe("import sys, json\n"
+                            "print('{pas du json')\nprint('[1, 2]')\n"
+                            "sys.stdout.buffer.write(b'\\xff\\xfe\\n')\n"
+                            "print(json.dumps({'event': 'warning', 'message': 'w1'}))\n"
+                            "print('{\"event\": \"error\", \"code\": ')\n"
+                            "sys.exit(0)\n")
+        out = os.path.join(self.tmp, "o", "j.plain.pk")
+        warns, err = converter_bin.convert(exe, self.mkzip(std_files(), "j"), out)
+        self.assertEqual(warns, ["w1"])
+        self.assertTrue(err.startswith("exit_0"), err)
+
+    def test_converter_huge_stdout(self):
+        # ~6 Mio de sortie : pas d'interblocage des tubes, le `done` final est retrouve
+        exe = self.fake_exe(
+            "import sys, json\n"
+            "out = sys.argv[sys.argv.index('-o') + 1]\n"
+            "line = json.dumps({'event': 'step', 'message': 'x' * 1000})\n"
+            "for _ in range(6000):\n    print(line)\n"
+            "sys.stderr.write('e' * 200000)\n"
+            "open(out, 'wb').write(b'x')\n"
+            "print(json.dumps({'event': 'done', 'warnings': 0}))\n")
+        out = os.path.join(self.tmp, "o", "h.plain.pk")
+        warns, err = converter_bin.convert(exe, self.mkzip(std_files(), "h"), out, timeout=120)
+        self.assertIsNone(err)
+        self.assertEqual(warns, [])
+
+    def test_timeout_cleans_child_temporaries(self):
+        # le binaire tue apres le delai ne nettoie pas ses t2f_ff_* : le dossier temporaire
+        # prive du processus enfant est supprime par converter_bin (#465)
+        marker = os.path.join(self.tmp, "seen.txt")
+        exe = self.fake_exe(
+            "import os, tempfile, time\n"
+            "d = tempfile.mkdtemp(prefix='t2f_ff_')\n"
+            "open(os.path.join(d, 'x'), 'w').write('x')\n"
+            "open(%r, 'w').write(d)\n"
+            "time.sleep(60)\n" % marker)
+        _, err = converter_bin.convert(exe, self.mkzip(std_files(), "k"),
+                                       os.path.join(self.tmp, "o", "k.plain.pk"), timeout=6)
+        self.assertTrue(err.startswith("timeout"), err)
+        with open(marker) as f:
+            leftover = f.read()
+        self.assertTrue(leftover)
+        self.assertFalse(os.path.exists(leftover), leftover)
+
     def test_converter_exit_zero_without_done_is_failure(self):
         exe = self.fake_exe("import sys\nopen(sys.argv[sys.argv.index('-o') + 1], 'wb')"
                             ".write(b'x')\n")
@@ -423,6 +473,45 @@ class TestCampaign(CompatBase):
         self.assertEqual(rc, 1)    # pas d'URL de telechargement : echec attendu
         with open(os.path.join(self.cache, "compat", "report.json")) as f:
             self.assertEqual(json.load(f)["stories"][0]["status"], "ECHEC_TELECHARGEMENT")
+
+    def test_reinterpret_without_binary(self):
+        # rendu du rapport seul : --reinterpret n'exige pas le binaire (#465)
+        self.campaign(self.entries)
+        with open(os.path.join(self.cache, "compat", "report.json"), encoding="utf-8") as f:
+            before = json.load(f)
+        calls = []
+        absent = os.path.join(self.tmp, "absent.exe")
+        with mock.patch.object(compat, "CONVERTER", absent), \
+                mock.patch.dict(os.environ, {converter_bin.ENV_VAR: absent}), \
+                mock.patch.object(compat, "do_convert", lambda *a, **k: calls.append(a)):
+            doc = self.campaign(self.entries, reinterpret=True)
+            # sans --reinterpret, l'absence du binaire reste une erreur
+            with self.assertRaises(converter_bin.ConverterNotFound):
+                self.campaign(self.entries)
+        self.assertEqual(calls, [])
+        self.assertEqual(doc["converter_hash"], before["converter_hash"])
+        self.assertEqual({s["key"]: s["status"] for s in doc["stories"]},
+                         {s["key"]: s["status"] for s in before["stories"]})
+        self.assertFalse(any(s.get("stale") for s in doc["stories"]))
+
+    def test_reinterpret_without_binary_marks_changed_stories_stale(self):
+        self.campaign(self.entries)
+        changed = [dict(e, fingerprint="autre") if e["uuid"] == "good" else e
+                   for e in self.entries]
+        absent = os.path.join(self.tmp, "absent.exe")
+        with mock.patch.object(compat, "CONVERTER", absent),                 mock.patch.dict(os.environ, {converter_bin.ENV_VAR: absent}):
+            doc = self.campaign(changed, reinterpret=True)
+        st = {s["uuid"]: s["stale"] for s in doc["stories"]}
+        self.assertTrue(st["good"])
+        self.assertFalse(st["corrupt"])
+
+    def test_main_reinterpret_without_binary_or_report(self):
+        absent = os.path.join(self.tmp, "absent.exe")
+        with mock.patch.dict(os.environ, {converter_bin.ENV_VAR: absent}),                 contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = compat.main(["--folder", self.tmp, "--cache", self.cache, "--reinterpret",
+                              "--no-run"])
+        self.assertEqual(rc, 2)
+        self.assertIn("introuvable", err.getvalue())
 
     def test_converter_hash_stable(self):
         self.assertEqual(compat.converter_hash(), compat.converter_hash())
