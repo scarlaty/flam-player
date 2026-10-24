@@ -38,6 +38,8 @@ struct Fake {
     cache_root: PathBuf,
     locks: Arc<TestLocks>,
     fault: Mutex<Fault>,
+    /// Version des URL de pochettes d'épisode (0 : celles de `episode`).
+    image_version: Mutex<u32>,
     /// Identifiants des épisodes demandés au téléchargeur, par lot.
     fetched: Mutex<Vec<Vec<String>>>,
     converted: AtomicUsize,
@@ -50,7 +52,16 @@ fn png() -> Vec<u8> {
         .png
 }
 
-fn feeds() -> Feeds {
+fn feeds(image_version: u32) -> Feeds {
+    let ep = |guid: &str| {
+        let mut e = episode(guid);
+        if image_version > 0 {
+            e.image = Some(format!(
+                "https://img.example.test/{guid}-v{image_version}.png"
+            ));
+        }
+        e
+    };
     let feed = |title: &str, episodes| PodcastFeed {
         title: title.into(),
         description: None,
@@ -64,11 +75,11 @@ fn feeds() -> Feeds {
     Feeds::from([
         (
             "s1".to_string(),
-            CachedFeed::Ready(feed("Flux 1", vec![episode("g1"), episode("g2")])),
+            CachedFeed::Ready(feed("Flux 1", vec![ep("g1"), ep("g2")])),
         ),
         (
             "s2".to_string(),
-            CachedFeed::Ready(feed("Flux 2", vec![episode("g3")])),
+            CachedFeed::Ready(feed("Flux 2", vec![ep("g3")])),
         ),
     ])
 }
@@ -98,7 +109,7 @@ impl PackBackend for Fake {
     }
 
     fn feeds<'a>(&'a self, _c: &'a PackComposition) -> BoxFuture<'a, AppResult<Feeds>> {
-        Box::pin(async move { Ok(feeds()) })
+        Box::pin(async move { Ok(feeds(*self.image_version.lock().unwrap())) })
     }
 
     fn free_space(&self, _dir: &Path) -> Option<u64> {
@@ -230,6 +241,7 @@ impl Ctx {
             cache_root,
             locks: Arc::new(TestLocks::default()),
             fault: Mutex::new(Fault::None),
+            image_version: Mutex::new(0),
             fetched: Mutex::default(),
             converted: AtomicUsize::new(0),
             images: AtomicUsize::new(0),
@@ -353,4 +365,26 @@ async fn purge_pendant_la_creation() {
     ctx.prepare(Fault::PurgeDuringAudio).await;
     assert!(!source_dir(&ctx.tc.cache_root, "s1").unwrap().exists());
     assert_eq!(ctx.entries("s2"), 1);
+}
+
+/// Pochette d'un épisode servi par le cache changée : retéléchargée une fois, puis remise en
+/// cache avec le MP3.
+#[tokio::test]
+async fn pochette_changee_remise_en_cache() {
+    let ctx = Ctx::new();
+    ctx.prepare(Fault::None).await;
+    assert_eq!(
+        ctx.fake.images.load(Ordering::SeqCst),
+        1,
+        "couverture seule"
+    );
+    *ctx.fake.image_version.lock().unwrap() = 1;
+    assert!(ctx.prepare(Fault::None).await.is_empty());
+    // Couverture + trois pochettes d'épisode retéléchargées.
+    assert_eq!(ctx.fake.images.load(Ordering::SeqCst), 5);
+    assert!(ctx.prepare(Fault::None).await.is_empty());
+    // Couverture seule : les pochettes viennent du cache.
+    assert_eq!(ctx.fake.images.load(Ordering::SeqCst), 6);
+    assert_eq!(ctx.fake.converted.load(Ordering::SeqCst), 3);
+    assert_eq!((ctx.entries("s1"), ctx.entries("s2")), (2, 1));
 }

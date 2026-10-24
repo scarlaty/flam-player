@@ -626,7 +626,7 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
   changement de D6 ou de `podcast/audio.rs` ; toutes les entrées existantes deviennent alors
   invalides. Il n'existe aucun réglage utilisateur de conversion.
 - **Pochette changée** : seule la pochette est retéléchargée (empreinte d'image différente),
-  le MP3 reste servi.
+  le MP3 reste servi ; l'entrée est remise en cache avec la nouvelle pochette.
 - **Publicité** (D9) : l'audio est repris tel quel, publicité comprise ; le cache garde le
   fichier tel qu'il a été téléchargé la première fois. Avec une publicité insérée
   dynamiquement par le serveur, un pack refait reprend donc la publicité du premier
@@ -637,7 +637,7 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
 
 - **2 Gio au plus** (`MAX_CACHE_BYTES`, soit deux packs au plafond D1), toutes sources
   confondues, comptés sur les tailles réelles (MP3 et pochettes).
-- **Éviction LRU** après chaque écriture : les entrées les moins récemment utilisées sont
+- **Éviction LRU** à chaque préparation de pack : les entrées les moins récemment utilisées sont
   supprimées jusqu'à repasser sous le plafond ; les entrées du pack en cours ne sont jamais
   évincées. Les restes (fichier sans métadonnées valides, `.part`, temporaires) sont supprimés
   au même passage.

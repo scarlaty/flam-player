@@ -700,6 +700,7 @@ impl InstallService {
         // Pochettes des épisodes servis par le cache qui n'y ont pas la leur (absente ou
         // périmée) : téléchargées seules (D13 : un échec donne l'image de repli).
         let mut hit_images: BTreeMap<usize, PathBuf> = BTreeMap::new();
+        let mut to_cache: Vec<mp3cache::Store> = Vec::new();
         let mut hit_ranks: Vec<usize> = hits.keys().copied().collect();
         hit_ranks.sort_unstable();
         for &n in &hit_ranks {
@@ -710,6 +711,12 @@ impl InstallService {
                 (None, Some(url)) => {
                     let dest = workdir.path().join(format!("cache-{n:04}.img"));
                     if backend.fetch_image(url, &dest, cancel.clone()).await? {
+                        // Remise en cache avec la nouvelle pochette (le MP3 est relié).
+                        to_cache.push(mp3cache::Store {
+                            key: keys[n].clone(),
+                            mp3: hits[&n].mp3.clone(),
+                            image: Some(dest.clone()),
+                        });
                         hit_images.insert(n, dest);
                     }
                 }
@@ -739,7 +746,6 @@ impl InstallService {
             return Err(AppError::Cancelled);
         }
         let mut kept: Vec<(usize, PathBuf, Option<PathBuf>)> = Vec::new();
-        let mut to_cache: Vec<mp3cache::Store> = Vec::new();
         let mut audio_total = 0u64;
         for &n in &hit_ranks {
             let hit = &hits[&n];
