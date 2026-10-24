@@ -135,6 +135,15 @@ pub struct PackComposition {
     /// Menu racine.
     #[serde(default)]
     pub menu: Vec<PackNode>,
+    /// Titres lus à voix haute (synthèse vocale, § 12, #462) : épisodes, catégories et titre du
+    /// pack. Absent des compositions et brouillons antérieurs : `false` (comportement muet
+    /// inchangé) ; omis à l'écriture quand il est faux.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub titles_audio: bool,
+    /// Voix choisie (`VoiceInformation.Id`) ; `None` : voix mémorisée du poste, sinon voix
+    /// française par défaut. Disparue à la création : voix par défaut, avec un avertissement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub titles_voice: Option<String>,
 }
 
 impl PackComposition {

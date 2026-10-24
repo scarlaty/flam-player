@@ -393,6 +393,7 @@ export const fr = {
           : `${count} flux supprimés : leurs épisodes sont indisponibles.`,
       open: "Ouvrir",
       openLabel: (name: string) => `Ouvrir « ${name} » dans l'éditeur`,
+      opening: (name: string) => `Ouverture de « ${name} »…`,
       rename: (name: string) => `Renommer « ${name} »`,
       remove: (name: string) => `Supprimer « ${name} »`,
       renamed: (name: string) => `Composition renommée en « ${name} ».`,
@@ -703,6 +704,7 @@ export const fr = {
       preparingPhase: (phase: string) => `Préparation du pack : ${phase}`,
       preparePhase: {
         validation: "vérification des épisodes",
+        speech: "lecture des titres à voix haute",
         download: "téléchargement des épisodes",
         audio: "conversion audio",
         images: "pochettes",

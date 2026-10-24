@@ -35,6 +35,13 @@ export interface PackComposition {
   cover: CoverChoice;
   /** Menu racine. */
   menu: PackNode[];
+  /**
+   * Titres lus à voix haute (#462) : épisodes, catégories et titre du pack. Absent : `false`
+   * (omis par le backend quand il est faux).
+   */
+  titles_audio?: boolean;
+  /** Voix choisie (`tts_voices`) ; absente : voix mémorisée du poste, sinon voix par défaut. */
+  titles_voice?: string | null;
 }
 
 export type ProblemCode =
@@ -141,15 +148,31 @@ export function listPackCompositions(): Promise<CompositionsView> {
   return invokeCommand<CompositionsView>("pack_compositions_list");
 }
 
-export function renamePackComposition(id: string, name: string): Promise<void> {
-  return invokeCommand<void>("pack_composition_rename", { id, name });
+/**
+ * Renommage ou suppression (miroir de `ActionOutcome`, `podcast/compositions.rs`) : message de
+ * la lecture du fichier (mis de côté, entrées écartées), dit une fois.
+ */
+export interface CompositionAction {
+  notice: string | null;
 }
 
-export function deletePackComposition(id: string): Promise<void> {
-  return invokeCommand<void>("pack_composition_delete", { id });
+/** Ouverture (miroir de `Opened`, `podcast/compositions.rs`). */
+export interface CompositionOpened extends SaveOutcome {
+  notice: string | null;
+}
+
+export function renamePackComposition(
+  id: string,
+  name: string,
+): Promise<CompositionAction> {
+  return invokeCommand<CompositionAction>("pack_composition_rename", { id, name });
+}
+
+export function deletePackComposition(id: string): Promise<CompositionAction> {
+  return invokeCommand<CompositionAction>("pack_composition_delete", { id });
 }
 
 /** Copie la composition dans le brouillon (qui est remplacé) ; l'éditeur la relit ensuite. */
-export function openPackComposition(id: string): Promise<SaveOutcome> {
-  return invokeCommand<SaveOutcome>("pack_composition_open", { id });
+export function openPackComposition(id: string): Promise<CompositionOpened> {
+  return invokeCommand<CompositionOpened>("pack_composition_open", { id });
 }

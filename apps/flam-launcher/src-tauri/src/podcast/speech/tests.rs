@@ -148,11 +148,46 @@ fn le_service_indisponible_est_une_liste_vide_pour_l_interface() {
         ..Simulated::french()
     };
     assert_eq!(french_voices(&synth).unwrap_err(), SpeechError::Unavailable);
-    let list = voices_for_front(&synth).unwrap();
+    let list = voices_for_front(&synth.shared()).unwrap();
     assert!(list.voices.is_empty());
     assert_eq!(list.default_id, None);
-    let none = voices_for_front(&NoSpeech).unwrap();
+    let none = voices_for_front(&(Arc::new(NoSpeech) as Arc<dyn Synthesizer>)).unwrap();
     assert!(none.voices.is_empty());
+}
+
+/// Liste et voix par défaut qui tardent chacune (constat de #480 : deux attentes cumulées).
+struct SlowVoices(Duration);
+
+impl Synthesizer for SlowVoices {
+    fn voices(&self) -> Result<Vec<Voice>, SpeechError> {
+        std::thread::sleep(self.0);
+        Ok(vec![voice("fr-a", "A", "fr-FR")])
+    }
+    fn default_voice_id(&self) -> Option<String> {
+        std::thread::sleep(self.0);
+        None
+    }
+    fn synthesize(&self, _: &str, _: &str) -> Result<Vec<u8>, SpeechError> {
+        Err(SpeechError::Unavailable)
+    }
+}
+
+#[test]
+fn l_enumeration_des_voix_est_bornee_par_un_delai_global() {
+    let slow: Arc<dyn Synthesizer> = Arc::new(SlowVoices(Duration::from_millis(400)));
+    let started = std::time::Instant::now();
+    // Chaque étape tient dans 500 ms, pas leur somme : délai global dépassé.
+    assert_eq!(
+        french_voices_within(&slow, Duration::from_millis(500)).unwrap_err(),
+        SpeechError::Unavailable
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(750),
+        "{:?}",
+        started.elapsed()
+    );
+    let list = french_voices_within(&slow, SHORT).unwrap();
+    assert_eq!(list.default_id.as_deref(), Some("fr-a"));
 }
 
 #[test]

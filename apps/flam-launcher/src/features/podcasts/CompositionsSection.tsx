@@ -8,6 +8,7 @@ import {
   renamePackComposition,
   type CompositionSummary,
   type CompositionsView,
+  type PackComposition,
 } from "../../api/pack";
 import {
   Banner,
@@ -22,7 +23,6 @@ import { PACK_HASH } from "../../router";
 import { ErrorBanner } from "../ErrorBanner";
 import { validateName } from "../validation";
 import { settlePendingSave } from "./pack/hooks";
-import { episodesOf } from "./pack/tree";
 
 /** Longueur d'un nom de composition (miroir de `MAX_NAME_CHARS`, `compositions.rs`). */
 export const MAX_COMPOSITION_NAME_CHARS = 60;
@@ -39,6 +39,28 @@ function showEditor() {
   window.location.hash = PACK_HASH;
 }
 
+/**
+ * Brouillon sans aucune saisie : ni épisode ni catégorie, ni texte, âge ou couverture choisis
+ * (champ ajouté plus tard : vide seulement s'il est absent ou `null`). Seul un brouillon vide
+ * est remplacé sans confirmation (#484).
+ */
+export function isBlankComposition(composition: PackComposition): boolean {
+  const { metadata, cover, menu, ...rest } = composition;
+  const { title, subtitle, description, age, ...metadataRest } = metadata;
+  const unset = (value: unknown) => value === null || value === undefined;
+  return (
+    menu.length === 0 &&
+    title.trim() === "" &&
+    (subtitle ?? "").trim() === "" &&
+    (description ?? "").trim() === "" &&
+    age === 0 &&
+    cover.kind === "default" &&
+    Object.values(rest).every(unset) &&
+    Object.values(metadataRest).every(unset)
+  );
+}
+
+/** Saisie en caractères (points de code), comme `MAX_NAME_CHARS` côté backend. */
 function validateCompositionName(raw: string): string | null {
   const error = validateName(raw);
   if (error) return error;
@@ -49,7 +71,7 @@ function validateCompositionName(raw: string): string | null {
 
 /**
  * Compositions nommées réutilisables (#461, spec § 14) : liste, ouverture dans l'éditeur (le
- * brouillon est remplacé, après confirmation s'il contient des épisodes), renommage,
+ * brouillon est remplacé, après confirmation s'il contient une saisie), renommage,
  * suppression.
  */
 export function CompositionsSection() {
@@ -59,6 +81,8 @@ export function CompositionsSection() {
   const [loadError, setLoadError] = useState<AppError | null>(null);
   const [actionError, setActionError] = useState<AppError | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Composition en cours d'ouverture (indicateur). */
+  const [opening, setOpening] = useState<CompositionSummary | null>(null);
   const [replacing, setReplacing] = useState<CompositionSummary | null>(null);
   const [renaming, setRenaming] = useState<CompositionSummary | null>(null);
   const [deleting, setDeleting] = useState<CompositionSummary | null>(null);
@@ -95,36 +119,54 @@ export function CompositionsSection() {
     void load();
   }
 
+  /**
+   * Message dit une fois par le backend (fichier mis de côté, entrées écartées) : gardé
+   * jusqu'à fermeture, il survit au passage à l'éditeur.
+   */
+  function showNotice(notice: string | null) {
+    if (notice) toast.show({ message: notice, tone: "info", duration: 0 });
+  }
+
   async function open(target: CompositionSummary) {
     setReplacing(null);
     setActionError(null);
     setBusy(true);
+    setOpening(target);
     try {
-      await openPackComposition(target.id);
+      const opened = await openPackComposition(target.id);
+      showNotice(opened.notice);
       showEditor();
     } catch (caught) {
       fail(caught);
     } finally {
-      if (mounted.current) setBusy(false);
+      if (mounted.current) {
+        setBusy(false);
+        setOpening(null);
+      }
     }
   }
 
-  /** Ouvrir : confirmation seulement si le brouillon contient déjà des épisodes. */
+  /** Ouvrir : confirmation dès que le brouillon contient une saisie. */
   async function requestOpen(target: CompositionSummary) {
     setActionError(null);
     setBusy(true);
+    setOpening(target);
     let replace: boolean;
     try {
       // Un éditeur fermé à l'instant a pu laisser une sauvegarde en cours.
       await settlePendingSave();
       const draft = await readPackDraft();
-      replace =
-        draft.composition !== null && episodesOf(draft.composition.menu).length > 0;
+      // Brouillon illisible : déjà mis de côté par le backend (copie), son message est dit.
+      showNotice(draft.notice);
+      replace = draft.composition !== null && !isBlankComposition(draft.composition);
     } catch {
-      // Brouillon illisible : la confirmation protège ce qui pourrait s'y trouver.
+      // Lecture impossible : la confirmation protège ce qui pourrait s'y trouver.
       replace = true;
     } finally {
-      if (mounted.current) setBusy(false);
+      if (mounted.current) {
+        setBusy(false);
+        setOpening(null);
+      }
     }
     if (!mounted.current) return;
     if (replace) setReplacing(target);
@@ -136,12 +178,16 @@ export function CompositionsSection() {
     if (!target) return;
     setDeleting(null);
     setActionError(null);
+    setBusy(true);
     try {
-      await deletePackComposition(target.id);
+      const done = await deletePackComposition(target.id);
       toast.show({ message: text.removed(target.name), tone: "success" });
+      showNotice(done.notice);
       await load();
     } catch (caught) {
       fail(caught);
+    } finally {
+      if (mounted.current) setBusy(false);
     }
   }
 
@@ -172,6 +218,7 @@ export function CompositionsSection() {
         </Banner>
       )}
       {actionError && <ErrorBanner error={actionError} />}
+      {opening && <p role="status">{text.opening(opening.name)}</p>}
       {view !== null && compositions.length === 0 && <p>{text.empty}</p>}
       {compositions.length > 0 && (
         <>
@@ -209,12 +256,14 @@ export function CompositionsSection() {
                       icon="pencil"
                       size="sm"
                       label={text.rename(c.name)}
+                      disabled={busy}
                       onClick={() => setRenaming(c)}
                     />
                     <IconButton
                       icon="trash"
                       size="sm"
                       label={text.remove(c.name)}
+                      disabled={busy}
                       onClick={() => setDeleting(c)}
                     />
                   </div>
@@ -228,9 +277,10 @@ export function CompositionsSection() {
         <RenameCompositionDialog
           composition={renaming}
           onClose={() => setRenaming(null)}
-          onRenamed={(name) => {
+          onRenamed={(name, notice) => {
             setRenaming(null);
             toast.show({ message: text.renamed(name), tone: "success" });
+            showNotice(notice);
             void load();
           }}
           onMissing={(caught) => {
@@ -295,7 +345,7 @@ export function CompositionsSection() {
 interface RenameDialogProps {
   composition: CompositionSummary;
   onClose: () => void;
-  onRenamed: (name: string) => void;
+  onRenamed: (name: string, notice: string | null) => void;
   /** Composition disparue entre-temps : le dialogue se ferme et la liste est relue. */
   onMissing: (error: unknown) => void;
 }
@@ -320,8 +370,8 @@ function RenameCompositionDialog({
     setBusy(true);
     setError(null);
     try {
-      await renamePackComposition(composition.id, name.trim());
-      onRenamed(name.trim());
+      const done = await renamePackComposition(composition.id, name.trim());
+      onRenamed(name.trim(), done.notice);
     } catch (caught) {
       const appError = toAppError(caught);
       if (appError.kind === "not_found") {
@@ -355,7 +405,6 @@ function RenameCompositionDialog({
           label={text.name}
           value={name}
           required
-          maxLength={MAX_COMPOSITION_NAME_CHARS}
           error={nameError}
           onChange={(e) => {
             setName(e.target.value);

@@ -76,7 +76,7 @@ const task: InstallTask = {
   percent: null,
   error: null,
   created_at: 1,
-  pack: { episodes: 1, dropped: [] },
+  pack: { episodes: 1, dropped: [], warnings: [] },
 };
 
 let calls: { cmd: string; args: Record<string, any> }[];
@@ -355,6 +355,8 @@ it("après création : composition non conservée, la raison est dite sans bloqu
     message:
       "La création de « Contes » a démarré : suivez-la dans le panneau des tâches. La composition n'a pas été enregistrée : 50 compositions enregistrées au plus.",
     tone: "info",
+    // Gardé jusqu'à fermeture (#484) : pas seulement un toast éphémère.
+    duration: 0,
   });
 });
 

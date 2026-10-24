@@ -438,9 +438,12 @@ export function PackEditor({
           ? ` ${text.create.compositionNotSaved(record.error)}`
           : "";
       const notice = record?.notice ? ` ${record.notice}` : "";
+      // Composition non conservée ou fichier mis de côté : le message reste jusqu'à
+      // fermeture (#484), il ne disparaît pas pendant le passage à la bibliothèque.
+      const lasting = Boolean(record?.error || record?.notice);
       toast?.show({
         message: `${text.create.started(created.task.entry.title)}${kept}${notice}`,
-        tone: record?.error || record?.notice ? "info" : "success",
+        ...(lasting ? { tone: "info", duration: 0 } : { tone: "success" }),
       });
       window.location.hash = libraryHash();
     } catch (caught) {
