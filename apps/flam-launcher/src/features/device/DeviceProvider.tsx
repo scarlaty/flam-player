@@ -342,7 +342,8 @@ export function DeviceProvider({
         } else {
           setItemState(next.uuid, "failed", failure.message);
           setAnnouncement(text.panel.announce.failed(next.title, failure.message));
-          // Un refus de la garde apparu entre-temps (contradiction) : l'état est relu.
+          // Un refus de la garde apparu entre-temps (clés devenues invalides, Flam changée…) :
+          // l'état est relu.
           if (failure.kind === "validation") retry();
         }
       }

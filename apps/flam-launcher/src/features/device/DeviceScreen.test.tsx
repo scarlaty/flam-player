@@ -1045,6 +1045,9 @@ it("Flam 2.x non standard : écriture sans confirmation (#326)", async () => {
   expect(
     await screen.findByText("2.4.2 (2.x) · pris en charge · fichier .mdf non standard"),
   ).toBeInTheDocument();
+  // Avertissement non bloquant.
+  expect(screen.getByText("Fichier .mdf non standard")).toBeInTheDocument();
+  expect(screen.getByText(/128 octets, en-tête 02 00/)).toBeInTheDocument();
   // Aucune confirmation demandée : la reprise au branchement a lieu aussitôt.
   await waitFor(() => expect(calls).toContain("device_recover_transfers"));
   expect(screen.queryByRole("button", { name: "Confirmer" })).not.toBeInTheDocument();

@@ -1114,6 +1114,9 @@ export const fr = {
       blocked: "écriture bloquée",
     },
     nonStandard: "fichier .mdf non standard",
+    nonStandardTitle: "Fichier .mdf non standard",
+    nonStandardBody: (size: number, header: string) =>
+      `Le fichier .mdf de cette Flam n'a pas la forme connue (${size} octets, en-tête ${header} ; attendu 126 octets, en-tête 01 00). L'envoi reste possible, mais le risque d'histoire illisible est plus grand : gardez une copie de votre Flam.`,
     blockedTitle: "Écriture sur cette Flam bloquée",
     blocked: {
       device_not_found: "Fichier .mdf absent : la Flam n'est plus détectée.",

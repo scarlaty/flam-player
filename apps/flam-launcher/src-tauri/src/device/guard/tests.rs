@@ -298,7 +298,6 @@ fn coherence_histoire_tierce_au_format_flam() {
     let dev = device(&mdf_v2_known());
     story(dev.path(), STORY, &key_v2(), &info_v2("Histoire importée"));
     let ctx = test_ctx();
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
     let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
     assert!(matches!(
         status.coherence,
@@ -363,7 +362,6 @@ fn histoire_au_format_lunii_ni_contradiction_ni_preuve() {
         write(&dir.join(name), b"x");
     }
     let ctx = test_ctx();
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
     let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
     assert!(matches!(
         status.coherence,
@@ -381,7 +379,6 @@ fn info_en_clair_ecarte() {
         b"Titre en clair\nSous-titre\n",
     );
     let ctx = test_ctx();
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
     let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
     assert!(matches!(
         status.coherence,
@@ -394,7 +391,6 @@ fn info_lisible_avec_un_autre_key_est_coherent() {
     let dev = device(&mdf_v2_known());
     story(dev.path(), STORY, &[b'z'; 32], &info_v2("Titre"));
     let ctx = test_ctx();
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
     let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
     assert!(matches!(
         status.coherence,
@@ -408,7 +404,15 @@ fn histoires_officielles_d_un_compte_ne_contredisent_pas() {
     let dev = device(&mdf_v2_known());
     story(dev.path(), STORY, &[b'c'; 32], &wrong_info());
     let ctx = test_ctx();
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+    let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
+    assert!(
+        matches!(
+            status.coherence,
+            Coherence::NoEvidence { counts } if counts.examined == 1 && counts.key_matches == 0
+        ),
+        "{:?}",
+        status.coherence
+    );
 }
 
 #[test]
@@ -417,7 +421,15 @@ fn une_histoire_coherente_l_emporte_sur_une_histoire_abimee() {
     story(dev.path(), STORY, &key_v2(), &info_v2("Titre"));
     story(dev.path(), OTHER, &key_v2(), &[0u8; 32]);
     let ctx = test_ctx();
-    check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+    let status = firmware_status(dev.path(), &mdf_v2_known(), &ctx, false);
+    assert!(
+        matches!(
+            status.coherence,
+            Coherence::Coherent { counts } if counts.decrypted == 1 && counts.key_matches == 2
+        ),
+        "{:?}",
+        status.coherence
+    );
 }
 
 #[test]

@@ -1666,6 +1666,17 @@ fn envoi_2x_non_standard_sans_confirmation_malgre_une_contradiction() {
     let pk = plain_pk(tmp.path());
     let work = tmp.path().join("cache").join(WORK_SUBDIR);
     let ctx = test_ctx();
+    // La contradiction est bien vue par « Ma Flam » (avertissement), sans refus.
+    let status = crate::device::guard::firmware_status(&root, &mdf, &ctx, false);
+    assert!(
+        matches!(
+            status.coherence,
+            crate::device::guard::Coherence::Contradiction { .. }
+        ),
+        "{:?}",
+        status.coherence
+    );
+    assert_eq!(status.write_block, None);
     let report = send_from_library_with(
         &FaultyFs::new(),
         &root,

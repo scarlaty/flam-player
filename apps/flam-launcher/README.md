@@ -524,8 +524,8 @@ en mémoire). Ni clé, ni `bt`, ni numéro de série, ni empreinte de `.mdf`, ni
 titre ou UUID d'histoire ; profil Windows remplacé par `%USERPROFILE%` et dossier de cache par
 `%CACHE%`, puis tout UUID, toute suite hexadécimale d'au moins 14 caractères (ou d'au moins 8 paires
 séparées par une espace ou `:`) et tout mot de type base64 masqués. Pendant une écriture, index,
-dossiers et fichiers de travail ne sont pas parcourus. Le diagnostic n'écrit rien, ni sur la
-Flam, ni sur le PC.
+dossiers et fichiers de travail ne sont pas parcourus. Le diagnostic n'écrit rien sur la Flam,
+ni aucune donnée de confiance sur le PC.
 Titres et vignettes de la Flam (#276, `device::details`, lecture seule stricte) sont chargés
 **après** l'affichage de la liste : titres par lots de 100 (première ligne de `info` déchiffré,
 lecture bornée à 4 Kio ; fw 2.x : clés de `.mdf` ; fw 1.x : clé carrier **déjà conservée** pour

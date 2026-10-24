@@ -1,8 +1,8 @@
 //! Diagnostic copiable de l'écran « Ma Flam » (#318) : un texte Markdown à coller dans une issue
 //! « Retour testeur Flam ».
 //!
-//! **Lecture seule** : rien n'est écrit, ni sur la Flam (ni reprise, ni sauvegarde de `.mdf`),
-//! ni sur le PC ; aucun accès réseau. Le texte reste utile sans Flam détectée (version du launcher, système, erreurs
+//! **Lecture seule** : rien n'est écrit sur la Flam (ni reprise, ni sauvegarde de `.mdf`), ni
+//! aucune donnée de confiance sur le PC ; aucun accès réseau. Le texte reste utile sans Flam détectée (version du launcher, système, erreurs
 //! de la session) et quand la garde refuse d'écrire (c'est là qu'il sert le plus).
 //!
 //! L'état du firmware est calculé comme pour `device_status` ([`guard::firmware_status`]).

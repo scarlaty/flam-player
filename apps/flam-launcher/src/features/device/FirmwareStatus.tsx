@@ -62,12 +62,19 @@ export function FirmwareNotice({ device }: { device: DeviceSummary }) {
   const status = device.firmware_status;
   const coherence = status?.coherence;
   const contradiction = !block && coherence?.kind === "contradiction" ? coherence : null;
+  // `.mdf` 2.x d'une forme jamais mesurée : envoi possible, risque accru d'histoire illisible.
+  const nonStandard = !block && status?.family === "v2" && !status.layout_standard;
   return (
     <>
       {block && (
         <Banner tone="danger" role="status" title={text.blockedTitle}>
           <p>{blockedMessage(block)}</p>
           <p>{text.blockedHint}</p>
+        </Banner>
+      )}
+      {nonStandard && (
+        <Banner tone="warning" role="status" title={text.nonStandardTitle}>
+          <p>{text.nonStandardBody(status.mdf_size, status.header ?? "?")}</p>
         </Banner>
       )}
       {contradiction && (
