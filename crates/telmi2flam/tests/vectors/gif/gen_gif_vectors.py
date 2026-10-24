@@ -93,6 +93,39 @@ def lzw_encode(indices, bits, clear_every=None, end=True, early_change=0):
     return bytes(data)
 
 
+def literal_stream(segments, bits):
+    """Train de bits LZW fait de littéraux seuls : pour chaque segment, clear, littéraux, code
+    de fin, avec la taille de code que suit `GifDecode.c`."""
+    clear = 1 << bits
+    acc = nb = 0
+    data = bytearray()
+    size = bits + 1
+    nxt = clear + 2
+
+    def put(code):
+        nonlocal acc, nb
+        acc |= code << nb
+        nb += size
+        while nb >= 8:
+            data.append(acc & 0xFF)
+            acc >>= 8
+            nb -= 8
+
+    for seg in segments:
+        put(clear)
+        size, nxt = bits + 1, clear + 2
+        for k, v in enumerate(seg):
+            put(v)
+            if k > 0 and nxt < 4096:
+                if nxt == (1 << size) - 1 and size < 12:
+                    size += 1
+                nxt += 1
+        put(clear + 1)
+    if nb:
+        data.append(acc & 0xFF)
+    return bytes(data)
+
+
 def sub_blocks(data, size=255):
     out = bytearray()
     for i in range(0, len(data), size):
@@ -263,6 +296,29 @@ def cases():
     return out
 
 
+def big_cases():
+    """Données de plus de 64 Kio (relance par blocs d'`ImageFile.load`), écrites en fichiers
+    `<nom>.gif` (référencés `@<nom>.gif` dans `vectors.tsv`)."""
+    from PIL import Image
+    rng = random.Random(4596)
+    pal = bytes(rng.randrange(256) for _ in range(48))
+    i = [rng.randrange(16) for _ in range(20)]
+    # deux moitiés séparées par un code de fin, dans un même train de bits : Pillow relance le
+    # décodeur sur le bloc suivant de 64 Kio, qui reprend après le code de fin
+    raw = sub_blocks(literal_stream([i[:10], i[10:]], 4))
+    pad = b";" + bytes(rng.randrange(256) for _ in range(70000))
+    out = [("grand_fin_puis_suite", gif(4, 5, [dict(x=0, y=0, w=4, h=5, indices=i, bits=4,
+                                                     raw=raw)], pal,
+                                         trailer=pad)),
+           ("grand_fin_sans_suite", gif(4, 5, [dict(x=0, y=0, w=4, h=5, indices=i, bits=4,
+                                                     raw=raw)], pal))]
+    im = Image.new("P", (256, 256))
+    im.putpalette(bytes(rng.randrange(256) for _ in range(768)))
+    im.putdata([rng.randrange(256) for _ in range(256 * 256)])
+    out.append(("grand_bruit_256", pillow_gif(im)))
+    return out
+
+
 def alteration_bases():
     rng = random.Random(4595)
     pal = bytes(rng.randrange(256) for _ in range(12))
@@ -295,6 +351,10 @@ def main():
     bases = alteration_bases()
     for name, data in cases() + bases:
         lines.append("%s\t%s\t%s" % (name, data.hex(), oracle(data)))
+    for name, data in big_cases():
+        with open(os.path.join(HERE, name + ".gif"), "wb") as f:
+            f.write(data)
+        lines.append("%s\t@%s.gif\t%s" % (name, name, oracle(data)))
     write_lines(os.path.join(HERE, "vectors.tsv"), lines)
     alt = ["# base\toperation\targument\tattendu (genere par gen_gif_vectors.py)"]
     for name, data in bases:

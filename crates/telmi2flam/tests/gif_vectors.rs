@@ -20,7 +20,11 @@ fn rows(name: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// GIF en hexadécimal, ou `@<fichier>` pour les données de plus de 64 Kio.
 fn unhex(s: &str) -> Vec<u8> {
+    if let Some(name) = s.strip_prefix('@') {
+        return std::fs::read(dir().join(name)).unwrap();
+    }
     (0..s.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
@@ -103,4 +107,34 @@ fn troncatures_et_octets_alteres_identiques_a_pillow() {
         errors.len(),
         errors.join("\n")
     );
+}
+
+#[test]
+fn annulation_avant_chaque_ligne_et_dans_les_codes() {
+    use std::cell::Cell;
+    let rows = rows("vectors.tsv");
+    let data = unhex(&rows.iter().find(|r| r[0] == "grand_bruit_256").unwrap()[1]);
+    let calls = Cell::new(0u32);
+    let count = || {
+        calls.set(calls.get() + 1);
+        false
+    };
+    decode_rgba(&data, &count).unwrap();
+    // au moins une vérification par ligne décodée et par ligne convertie
+    assert!(calls.get() >= 2 * 256, "{}", calls.get());
+    let stop = || true;
+    assert_eq!(decode_rgba(&data, &stop), Err(PngError::Cancelled));
+    // suite de codes de fin sans pixel (1 Mo) : la boucle de chargement reste annulable
+    let mut flood =
+        b"GIF89a\x04\x00\x05\x00\x00\x00\x00,\x00\x00\x00\x00\x04\x00\x05\x00\x00\x02".to_vec();
+    // sous-bloc de 255 octets : codes de 3 bits tous égaux au code de fin (5)
+    let mut block = vec![255u8];
+    block.extend([0x6D, 0xDB, 0xB6].repeat(85));
+    flood.extend(block.repeat(4096));
+    let n = Cell::new(0u32);
+    let later = || {
+        n.set(n.get() + 1);
+        n.get() > 3
+    };
+    assert_eq!(decode_rgba(&flood, &later), Err(PngError::Cancelled));
 }

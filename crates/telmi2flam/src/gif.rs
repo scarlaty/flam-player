@@ -185,6 +185,8 @@ struct Lzw {
     data: Vec<u8>,
     link: Vec<u16>,
     buffer: Vec<u8>,
+    /// Codes lus depuis la dernière vérification de l'annulation (suites de codes sans pixel).
+    ticks: u32,
 }
 
 impl Lzw {
@@ -214,6 +216,7 @@ impl Lzw {
             data: vec![0; GIFTABLE],
             link: vec![0; GIFTABLE],
             buffer: vec![0; GIFBUFFER],
+            ticks: 0,
         }
     }
 
@@ -298,6 +301,13 @@ impl Lzw {
                         }
                         self.blocksize = usize::from(c);
                         ptr += 1;
+                    }
+                }
+                self.ticks += 1;
+                if self.ticks >= 1 << 16 {
+                    self.ticks = 0;
+                    if cancelled() {
+                        return Err(PngError::Cancelled);
                     }
                 }
                 let mut c = (self.bitbuffer as i32) & self.codemask;
@@ -498,21 +508,22 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
         ),
     );
     // boucle d'`ImageFile.load` : lectures de `MAX_BLOCK` octets, reste non consommé gardé
-    let mut pos = offset;
-    let mut pending: Vec<u8> = Vec::new();
+    // (`b = b[n:] + s`) ; ce reste est toujours la tranche `data[start..pos]`, sans copie
+    let mut start = offset.min(data.len());
+    let mut pos = start;
     loop {
-        let chunk = &data[pos.min(data.len())..(pos.saturating_add(MAX_BLOCK)).min(data.len())];
-        if chunk.is_empty() {
+        if cancelled() {
+            return Err(PngError::Cancelled);
+        }
+        let end = pos.saturating_add(MAX_BLOCK).min(data.len());
+        if end == pos {
             return unreadable("image tronquée");
         }
-        pos += chunk.len();
-        pending.extend_from_slice(chunk);
-        match lzw.decode(&pending, &mut canvas, cancelled)? {
+        pos = end;
+        match lzw.decode(&data[start..pos], &mut canvas, cancelled)? {
             Step::Done => break,
             Step::Broken => return unreadable("flux LZW corrompu"),
-            Step::Consumed(n) => {
-                pending.drain(..n);
-            }
+            Step::Consumed(n) => start += n,
         }
     }
     if canvas.pixels.is_empty() {
@@ -544,8 +555,13 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     if rgba.try_reserve_exact(n * 4).is_err() {
         return unreadable("mémoire insuffisante");
     }
-    for &i in &canvas.pixels {
-        rgba.extend_from_slice(&table[usize::from(i)]);
+    for line in canvas.pixels.chunks(canvas.width.max(1)) {
+        if cancelled() {
+            return Err(PngError::Cancelled);
+        }
+        for &i in line {
+            rgba.extend_from_slice(&table[usize::from(i)]);
+        }
     }
     Ok(Rgba {
         width,
