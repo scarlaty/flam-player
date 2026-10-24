@@ -1151,7 +1151,17 @@ de l'écran Paramètres, il se change à la main dans `settings.json`, et `setti
 valeur enregistrée. Il est relu au début de chaque tâche : `rust` convertit avec
 `telmi2flam/telmi2flam.exe` (port Rust, sans Python ; annulation par fermeture de stdin,
 `--cancel-on-stdin-eof`), `python` avec `telmi2flam.py`. Valeur absente, inconnue ou mal typée :
-`python`. Moteur `rust` sans binaire : `converter_unavailable`, sans repli sur Python (#137).
+`python`. Moteur `rust` sans binaire : `converter_unavailable`, sans repli sur Python.
+
+Moteur `rust` : repli automatique sur Python (#137, PORT-RUST.md §6), si Python et `telmi2flam.py`
+sont détectés, **seulement** si le binaire signale `unsupported_format` (code 7, délégation
+attendue), `internal_error` (panique), ou plante (code de sortie hors {0, 2, 3, 4, 5, 6, 7, 130},
+code 0 sans `done`, aucun événement `start`, lancement impossible). Jamais pour une erreur de
+contenu (3/4/5), `output_error` (disque plein, droits) ni une annulation. Le résultat de
+compatibilité (#20) de la conversion locale porte `engine` (`rust`, `python`, `python_fallback`) et,
+après un repli, `fallback` (`unsupported_format`, `internal_error`, `crash`) ; les journaux n'ont
+que la cause et le code de sortie, jamais le message du convertisseur. Le défaut reste `python`
+(la bascule attend la campagne de parité, #135).
 
 `max_downloads` (1 à 4, 2 par défaut) borne les téléchargements simultanés du pipeline
 d'installation ; absent d'un fichier ancien, il prend sa valeur par défaut (`#[serde(default)]`).

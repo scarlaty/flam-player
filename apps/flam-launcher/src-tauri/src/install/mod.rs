@@ -50,7 +50,7 @@ use crate::storage::{self, ConfigState, Loaded};
 use crate::story::{validate_story_id, StoryEntry, StoryKind};
 use crate::{AppError, AppResult};
 
-use self::convert::{Conversion, Engine, Step};
+use self::convert::{Conversion, Engine, EngineTrace, PythonFallback, Step};
 use self::download::{cancelled, Download, Validator};
 use self::podcast::{PackBackend, PackJob, PackStatus};
 
@@ -272,9 +272,10 @@ pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
     })
 }
 
-/// Moteur effectif d'une tâche (#136) : celui du réglage, avec ses chemins détectés. Jamais de
-/// repli implicite sur l'autre moteur (le repli Python est l'objet de #137) : le moteur Rust
-/// n'exige pas Python, et son binaire absent donne `converter_unavailable`.
+/// Moteur effectif d'une tâche (#136) : celui du réglage, avec ses chemins détectés. Le moteur
+/// Rust n'exige pas Python, et son binaire absent donne `converter_unavailable` (pas de repli :
+/// le repli Python de #137 ne couvre que l'échec d'un binaire présent, voir
+/// [`convert::convert_with_fallback`]).
 pub(super) enum ChosenEngine {
     Python { python: PathBuf, script: PathBuf },
     Rust { exe: PathBuf },
@@ -313,6 +314,14 @@ impl ChosenEngine {
             Self::Rust { exe } => Engine::Rust { exe },
         }
     }
+}
+
+/// Python disponible pour le repli du moteur Rust (#137) : interpréteur **et** script détectés.
+fn python_fallback(tc: &Toolchain) -> Option<PythonFallback<'_>> {
+    Some(PythonFallback {
+        python: tc.python.as_deref()?,
+        script: tc.converter.as_deref()?,
+    })
 }
 
 /// Repli pour la version du convertisseur : empreinte `sha256:<12 hex>` du script (Python) ou
@@ -1200,8 +1209,8 @@ impl InstallService {
         let kind = entry.kind;
         match kind {
             StoryKind::TelmiZip => {
-                // Moteur choisi par le réglage (relu pour cette tâche) ; jamais de repli
-                // implicite sur l'autre moteur (le repli Python est l'objet de #137).
+                // Moteur choisi par le réglage (relu pour cette tâche). Moteur Rust : repli sur
+                // Python dans les seuls cas de `convert::fallback_reason` (#137).
                 let chosen = ChosenEngine::of(tc)?;
                 if !source.is_file() {
                     return Err(AppError::NotFound(format!(
@@ -1237,7 +1246,7 @@ impl InstallService {
                         });
                     }
                 };
-                let converted = convert::convert(
+                let (converted, trace) = convert::convert_with_fallback(
                     &Conversion {
                         engine: chosen.engine(),
                         input: &source,
@@ -1246,6 +1255,7 @@ impl InstallService {
                         thumb_fit: tc.thumb_fit,
                         grace: self.0.opts.grace,
                     },
+                    python_fallback(tc),
                     cancel,
                     &mut on_step,
                 )
@@ -1258,7 +1268,13 @@ impl InstallService {
                 let converter = match announced {
                     Some(version) => version,
                     None => {
-                        let identity = chosen.engine().identity().to_path_buf();
+                        // Après un repli, c'est le script Python qui a produit le résultat.
+                        let engine = chosen.engine();
+                        let identity = match (trace, python_fallback(tc)) {
+                            (EngineTrace::PythonFallback(_), Some(py)) => py.script,
+                            _ => engine.identity(),
+                        }
+                        .to_path_buf();
                         match blocking(move || converter_fingerprint(&identity)).await? {
                             Ok(fingerprint) => fingerprint,
                             Err(err) => return Err(converted.err().unwrap_or(err)),
@@ -1268,7 +1284,7 @@ impl InstallService {
                 // Résultat réel de la conversion, pour le statut de compatibilité (#20) ; sans
                 // objet pour un pack (histoire unique, sans source).
                 let outcome = (entry.source_id != podcast::PACK_SOURCE_ID)
-                    .then(|| compat::outcome_of(entry, &converter, &converted, now_secs()))
+                    .then(|| compat::outcome_of(entry, &converter, &converted, trace, now_secs()))
                     .flatten();
                 if let Some(outcome) = outcome {
                     let (root, uuid) = (tc.cache_root.clone(), entry.uuid.clone());
