@@ -89,6 +89,19 @@ fn assert_no_secret(report: &ValidationReport) {
 // ----- Validation -----
 
 #[test]
+fn titres_lus_comptes_dans_l_estimation_d5() {
+    let mut c = comp(vec![e("a", "g0"), cat("Soir", vec![e("a", "g1")])]);
+    c.titles_audio = true;
+    let report = validate(&c, &feeds(2));
+    assert!(report.valid, "{:?}", report.problems);
+    // Titre du pack, deux épisodes et une catégorie : quatre titres lus.
+    assert_eq!(
+        report.estimated_bytes,
+        20_000_000 + 4 * TITLE_AUDIO_ESTIMATE_BYTES
+    );
+}
+
+#[test]
 fn composition_simple_valide_avec_defauts_d16() {
     let c = comp(vec![e("a", "g0"), cat("Soir", vec![e("a", "g1")])]);
     let report = validate(&c, &feeds(2));
