@@ -1328,7 +1328,8 @@ def main(argv=None):
     global CONVERTER
     CONVERTER = args.converter
     try:
-        converter_bin.find_converter(CONVERTER)
+        # exporte pour les processus de --jobs N (spawn : le global CONVERTER n'y est pas)
+        os.environ[converter_bin.ENV_VAR] = converter_bin.find_converter(CONVERTER)
     except converter_bin.ConverterNotFound as e:
         print("ERREUR : %s" % e, file=sys.stderr)
         return 2

@@ -246,6 +246,27 @@ class TestPipeline(CompatBase):
                                       os.path.join(self.tmp, "o", "c.plain.pk"), converter=exe)
         self.assertEqual(step["messages"][0], "exit_6 : boum")
 
+    def test_relative_paths(self):
+        # chemins relatifs : le binaire tourne dans le dossier de sortie, les chemins restent
+        # ceux de l'appelant
+        zp = self.mkzip(std_files(), "r")
+        old = os.getcwd()
+        os.chdir(self.tmp)
+        try:
+            step = compat.do_convert(os.path.relpath(zp), os.path.join("rel", "r.plain.pk"))
+        finally:
+            os.chdir(old)
+        self.assertEqual(step["status"], "ok", step)
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "rel", "r.plain.pk")))
+
+    def test_converter_timeout(self):
+        exe = self.fake_exe("import time\ntime.sleep(60)\n")
+        t0 = time.time()
+        warns, err = converter_bin.convert(exe, self.mkzip(std_files(), "t"),
+                                           os.path.join(self.tmp, "o", "t.plain.pk"), timeout=1)
+        self.assertTrue(err.startswith("timeout"), err)
+        self.assertLess(time.time() - t0, 30)
+
     def test_converter_cancelled(self):
         exe = self.fake_exe("import sys\nsys.exit(130)\n")
         step = compat.do_convert(self.mkzip(std_files(), "d"),

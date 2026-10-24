@@ -68,15 +68,28 @@ def convert(exe, zip_path, out_path, extra_args=(), timeout=DEFAULT_TIMEOUT):
     non lancable)."""
     out_dir = os.path.dirname(os.path.abspath(out_path))
     os.makedirs(out_dir, exist_ok=True)
-    cmd = [exe, zip_path, "-o", out_path, "--progress-json"] + list(extra_args)
+    # Chemins absolus : le processus enfant tourne dans le dossier de sortie (comme le launcher).
+    # Pas de --cancel-on-stdin-eof : stdin est ferme (DEVNULL), l'option annulerait aussitot.
+    cmd = [exe, os.path.abspath(zip_path), "-o", os.path.abspath(out_path),
+           "--progress-json"] + list(extra_args)
+    flags = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+             else {"start_new_session": True})
     try:
-        proc = subprocess.run(cmd, cwd=out_dir, stdin=subprocess.DEVNULL, capture_output=True,
-                              timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _remove(out_path)
-        return [], "timeout : conversion interrompue apres %d s" % timeout
+        child = subprocess.Popen(cmd, cwd=out_dir, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, **flags)
     except OSError as e:
         raise ConverterNotFound("impossible de lancer %s : %s" % (exe, e))
+    try:
+        out_b, err_b = child.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(child)
+        try:
+            child.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        _remove(out_path)
+        return [], "timeout : conversion interrompue apres %d s" % timeout
+    proc = subprocess.CompletedProcess(cmd, child.returncode, out_b, err_b)
     stdout = proc.stdout.decode("utf-8", "replace")
     stderr = proc.stderr.decode("utf-8", "replace")
     events = _parse_events(stdout)
@@ -95,6 +108,20 @@ def convert(exe, zip_path, out_path, extra_args=(), timeout=DEFAULT_TIMEOUT):
     last = next((ln.strip() for ln in reversed(stderr.splitlines()) if ln.strip()),
                 "aucun message")
     return warnings, "exit_%d : %s" % (code, last)
+
+
+def _kill_tree(child):
+    """Tue le processus et ses descendants (ffmpeg, interpreteur d'un faux binaire)."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
+                           capture_output=True, timeout=30)
+        else:
+            import signal
+            os.killpg(child.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    child.kill()
 
 
 def _remove(path):
