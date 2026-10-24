@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::sync::watch;
 
-use super::{child_of, is_task_id, lock, ChosenEngine, InstallService, TaskState, Toolchain};
+use super::{child_of, converter_engine, is_task_id, lock, InstallService, TaskState, Toolchain};
 use crate::catalog::blocking;
 use crate::podcast::archive::{
     self, MenuEntry, Pack, PackEpisode, PackMetadata, MAX_AUDIO_BYTES, MAX_TOTAL_AUDIO_BYTES,
@@ -506,8 +506,8 @@ impl InstallService {
             AppError::ConverterUnavailable("création de pack indisponible".into())
         })?;
         // Prérequis avant tout téléchargement : le pack ne pourrait pas être converti par le
-        // moteur choisi (Python et `telmi2flam.py`, ou `telmi2flam.exe`) (#440).
-        ChosenEngine::of(tc)?;
+        // convertisseur (`telmi2flam.exe` absent) (#440).
+        converter_engine(tc)?;
         {
             let backend = backend.clone();
             blocking(move || backend.ready()).await??;

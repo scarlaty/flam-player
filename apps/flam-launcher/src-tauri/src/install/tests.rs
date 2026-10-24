@@ -1,8 +1,6 @@
 //! Tests du pipeline : serveur HTTP local, faux convertisseur (`convert::fake`) émettant des
-//! événements JSON, pour les deux moteurs (#136), annulations, reprise après redémarrage simulé,
-//! erreurs typées.
+//! événements JSON, annulations, reprise après redémarrage simulé, erreurs typées.
 
-use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -13,13 +11,11 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::*;
 use crate::library::tests::story;
 
-const PYTHON: ConverterEngine = ConverterEngine::Python;
-const RUST: ConverterEngine = ConverterEngine::Rust;
-
-/// Python du PATH. Avec `FLAM_REQUIRE_PATH_PYTHON=1` (CI), son absence fait échouer le test au
+/// Faux `telmi2flam.exe` (lanceur du faux convertisseur, voir `convert::fake`), qui exige Python
+/// dans le `PATH`. Avec `FLAM_REQUIRE_PATH_PYTHON=1` (CI), son absence fait échouer le test au
 /// lieu de le sauter en silence (#426).
-fn python() -> Option<PathBuf> {
-    let found = settings::detect_python(&Environment::current()).path;
+fn fake_converter() -> Option<PathBuf> {
+    let found = convert::fake::exe();
     if found.is_none() {
         assert!(
             std::env::var_os("FLAM_REQUIRE_PATH_PYTHON").is_none_or(|v| v != "1"),
@@ -74,99 +70,32 @@ struct Ctx {
     events: Arc<Recorder>,
     service: InstallService,
     gate: Arc<RwLock<()>>,
-    /// Réglage `converter_engine`, relu par le résolveur au début de chaque tâche.
-    engine: Arc<Mutex<ConverterEngine>>,
 }
 
 impl Ctx {
-    fn new(python: Option<PathBuf>) -> Self {
-        Self::with_engine(python, PYTHON)
+    /// `exe` : faux `telmi2flam.exe` (l'interpréteur Python, voir `convert::fake`) ; `None` :
+    /// binaire absent.
+    fn new(exe: Option<PathBuf>) -> Self {
+        Self::with_dir(tempfile::tempdir().unwrap(), exe, Duration::from_secs(5))
     }
 
-    fn with_engine(python: Option<PathBuf>, engine: ConverterEngine) -> Self {
-        Self::with_dir_engine(
-            tempfile::tempdir().unwrap(),
-            python,
-            Duration::from_secs(5),
-            engine,
-            None,
-        )
-    }
-
-    /// Moteur Python (utilisé aussi par `podcast_tests`).
-    fn with_dir(dir: tempfile::TempDir, python: Option<PathBuf>, grace: Duration) -> Self {
-        Self::with_dir_engine(dir, python, grace, PYTHON, None)
-    }
-
-    /// `real_script` : vrai `telmi2flam.py` (bout en bout) au lieu du faux convertisseur.
-    fn with_converter(
-        dir: tempfile::TempDir,
-        python: Option<PathBuf>,
-        grace: Duration,
-        real_script: Option<PathBuf>,
-    ) -> Self {
-        Self::with_dir_engine(dir, python, grace, PYTHON, real_script)
-    }
-
-    /// `python` : interpréteur des faux convertisseurs. Moteur Python : `python` + le script ;
-    /// moteur Rust : `python` tient lieu de `telmi2flam.exe` (voir `convert::fake`) et **aucun**
-    /// Python n'est résolu, ce qui prouve que le moteur Rust n'en a pas besoin.
-    fn with_dir_engine(
-        dir: tempfile::TempDir,
-        python: Option<PathBuf>,
-        grace: Duration,
-        engine: ConverterEngine,
-        real_script: Option<PathBuf>,
-    ) -> Self {
-        Self::with_dir_engine_fallback(dir, python, grace, engine, real_script, false)
-    }
-
-    /// Moteur Rust avec le repli Python détecté (#137) : `python` sert à la fois de faux
-    /// `telmi2flam.exe` et d'interpréteur du repli.
-    fn with_python_fallback(python: PathBuf) -> Self {
-        Self::with_dir_engine_fallback(
-            tempfile::tempdir().unwrap(),
-            Some(python),
-            Duration::from_secs(5),
-            RUST,
-            None,
-            true,
-        )
-    }
-
-    /// `fallback` : Python résolu aussi avec le moteur Rust (repli possible).
-    fn with_dir_engine_fallback(
-        dir: tempfile::TempDir,
-        python: Option<PathBuf>,
-        grace: Duration,
-        engine: ConverterEngine,
-        real_script: Option<PathBuf>,
-        fallback: bool,
-    ) -> Self {
-        let script = real_script.unwrap_or_else(|| {
-            let script = dir.path().join("fake_telmi2flam.py");
-            std::fs::write(&script, convert::fake::SCRIPT).unwrap();
-            script
-        });
+    fn with_dir(dir: tempfile::TempDir, exe: Option<PathBuf>, grace: Duration) -> Self {
         let cache_root = dir.path().join("cache");
-        let events = Arc::new(Recorder::default());
-        let gate = Arc::new(RwLock::new(()));
-        let engine = Arc::new(Mutex::new(engine));
-        let setting = engine.clone();
         let resolver: Resolver = Arc::new(move || {
-            let engine = *lock(&setting);
-            let rust = engine == ConverterEngine::Rust;
             Ok(Toolchain {
                 cache_root: cache_root.clone(),
-                engine,
-                python: python.clone().filter(|_| !rust || fallback),
-                converter: Some(script.clone()),
-                rust_converter: python.clone().filter(|_| rust),
+                rust_converter: exe.clone(),
                 ffmpeg: None,
                 max_downloads: 2,
                 thumb_fit: crate::settings::ThumbFit::default(),
             })
         });
+        Self::with_resolver(dir, resolver, grace)
+    }
+
+    fn with_resolver(dir: tempfile::TempDir, resolver: Resolver, grace: Duration) -> Self {
+        let events = Arc::new(Recorder::default());
+        let gate = Arc::new(RwLock::new(()));
         let service = InstallService::new(InstallOptions {
             client: download::build_client().unwrap(),
             resolver,
@@ -180,7 +109,6 @@ impl Ctx {
             events,
             service,
             gate,
-            engine,
         }
     }
 
@@ -266,9 +194,10 @@ async fn serve(body: Vec<u8>) -> MockServer {
     server
 }
 
-async fn telechargement_conversion_et_installation(engine: ConverterEngine) {
-    let Some(py) = python() else { return };
-    let ctx = Ctx::with_engine(Some(py), engine);
+#[tokio::test]
+async fn telechargement_conversion_et_installation() {
+    let Some(py) = fake_converter() else { return };
+    let ctx = Ctx::new(Some(py));
     let server = serve(zip_bytes("noise")).await;
     let task = ctx
         .service
@@ -300,7 +229,7 @@ async fn telechargement_conversion_et_installation(engine: ConverterEngine) {
     };
     assert_eq!(event.warnings, 1);
     assert_eq!(event.entry.file, "abc-2.plain.pk");
-    // Sans `start.version` : empreinte du script (Python) ou du binaire (Rust).
+    // Sans `start.version` : empreinte du binaire.
     assert!(event
         .entry
         .converter
@@ -329,6 +258,7 @@ async fn telechargement_conversion_et_installation(engine: ConverterEngine) {
         recorded.contains("\"abc\"") && recorded.contains("\"ok\": true"),
         "{recorded}"
     );
+    assert_eq!(recorded_result(&ctx)["engine"], "rust");
 
     ctx.service.library_remove("abc".into()).await.unwrap();
     assert!(ctx.service.library_list().await.unwrap().is_empty());
@@ -343,18 +273,10 @@ async fn telechargement_conversion_et_installation(engine: ConverterEngine) {
 }
 
 #[tokio::test]
-async fn telechargement_conversion_et_installation_python() {
-    telechargement_conversion_et_installation(PYTHON).await;
-}
-
-#[tokio::test]
-async fn telechargement_conversion_et_installation_rust() {
-    telechargement_conversion_et_installation(RUST).await;
-}
-
-async fn echec_de_conversion_type(engine: ConverterEngine) {
-    let Some(py) = python() else { return };
-    let ctx = Ctx::with_engine(Some(py), engine);
+async fn echec_de_conversion_type() {
+    let Some(py) = fake_converter() else { return };
+    let logs = crate::testlog::Logs::capture();
+    let ctx = Ctx::new(Some(py));
     let server = serve(zip_bytes("fail")).await;
     let task = ctx
         .service
@@ -365,7 +287,16 @@ async fn echec_de_conversion_type(engine: ConverterEngine) {
     let error = failed.error.unwrap();
     assert_eq!(error.kind, "conversion");
     assert_eq!(error.code.as_deref(), Some("missing_asset"));
-    assert!(error.message.contains("s1.png"), "{}", error.message);
+    // Message fixe par code : le nom de fichier du convertisseur n'est ni montré ni journalisé (#475).
+    assert!(!error.message.contains("s1.png"), "{}", error.message);
+    assert!(
+        error.message.contains("absent de l'archive"),
+        "{}",
+        error.message
+    );
+    let text = logs.text();
+    assert!(!text.contains("s1.png"), "{text}");
+    assert!(text.contains("conversion (missing_asset)"), "{text}");
     assert!(matches!(
         ctx.events.all().last(),
         Some(Recorded::Failed(InstallFailed {
@@ -383,16 +314,6 @@ async fn echec_de_conversion_type(engine: ConverterEngine) {
     );
 }
 
-#[tokio::test]
-async fn echec_de_conversion_type_python() {
-    echec_de_conversion_type(PYTHON).await;
-}
-
-#[tokio::test]
-async fn echec_de_conversion_type_rust() {
-    echec_de_conversion_type(RUST).await;
-}
-
 /// Résultat de compatibilité enregistré pour `abc` (`launcher_results.json`).
 fn recorded_result(ctx: &Ctx) -> serde_json::Value {
     let text =
@@ -400,63 +321,59 @@ fn recorded_result(ctx: &Ctx) -> serde_json::Value {
     serde_json::from_str::<serde_json::Value>(&text).unwrap()["stories"]["abc"].clone()
 }
 
-/// Repli Python (#137) : le Rust échoue (délégation attendue, panique simulée, plantage), Python
-/// convertit, et le résultat de compatibilité trace le moteur et la cause.
+/// `unsupported_format` (code 7, D4) : erreur finale (#138), sans repli. Message fixe et clair
+/// montré à l'utilisateur, jamais celui du convertisseur (nom de fichier de l'histoire) ni dans
+/// les journaux ; aucune histoire installée ; résultat de compatibilité en échec, moteur `rust`.
 #[tokio::test]
-async fn repli_python_trace_dans_le_resultat_de_compatibilite() {
-    let Some(py) = python() else { return };
-    for (mode, reason) in [
-        ("err:unsupported_format:7|versioned", "unsupported_format"),
-        ("err:internal_error:6|versioned", "internal_error"),
-        ("abort|versioned", "crash"),
-        ("nostart|versioned", "crash"),
-    ] {
-        let ctx = Ctx::with_python_fallback(py.clone());
-        let server = serve(zip_bytes(mode)).await;
-        let task = ctx
-            .service
-            .start(remote(&format!("{}/a.zip", server.uri()), "abc"))
-            .unwrap();
-        let done = ctx.finished(&task.id).await;
-        assert_eq!(done.state, TaskState::Done, "{mode} : {done:?}");
-        let events = ctx.events.all();
-        let Some(Recorded::Done(event)) = events.last() else {
-            panic!("{mode} : dernier événement : {events:?}")
-        };
-        // Version annoncée par Python (le moteur qui a produit le résultat).
-        assert_eq!(
-            event.entry.converter.as_deref(),
-            Some("9.9.9-test"),
-            "{mode}"
-        );
-        assert!(
-            ctx.cache().join("library/abc-2.plain.pk").is_file(),
-            "{mode}"
-        );
-        assert!(ctx.staging_is_empty(), "{mode}");
-        let result = recorded_result(&ctx);
-        assert_eq!(result["ok"], true, "{mode}");
-        assert_eq!(result["engine"], "python_fallback", "{mode}");
-        assert_eq!(result["fallback"], reason, "{mode}");
-        // Exposé au front par le rapport de compatibilité.
-        let report = crate::compat::report_for(&ctx.cache().join("absent.json"), &ctx.cache());
-        let entry = report.entries.iter().find(|e| e.uuid == "abc").unwrap();
-        assert_eq!(entry.engine.as_deref(), Some("python_fallback"), "{mode}");
-        assert_eq!(entry.fallback.as_deref(), Some(reason), "{mode}");
-    }
+async fn format_non_pris_en_charge_erreur_finale_sans_repli() {
+    let Some(py) = fake_converter() else { return };
+    let logs = crate::testlog::Logs::capture();
+    let ctx = Ctx::new(Some(py));
+    let server = serve(zip_bytes("err:unsupported_format:7")).await;
+    let task = ctx
+        .service
+        .start(remote(&format!("{}/a.zip", server.uri()), "abc"))
+        .unwrap();
+    let failed = ctx.finished(&task.id).await;
+    assert_eq!(failed.state, TaskState::Failed, "{failed:?}");
+    let error = failed.error.unwrap();
+    assert_eq!(error.kind, "conversion");
+    assert_eq!(error.code.as_deref(), Some("unsupported_format"));
+    assert!(
+        error.message.contains(convert::UNSUPPORTED_FORMAT),
+        "{}",
+        error.message
+    );
+    assert!(!error.message.contains("msg-"), "{}", error.message);
+    assert!(ctx.staging_is_empty());
+    assert!(!ctx.cache().join("library/abc-2.plain.pk").exists());
+    assert!(ctx.service.library_list().await.unwrap().is_empty());
+    let result = recorded_result(&ctx);
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["code"], "unsupported_format");
+    assert_eq!(result["engine"], "rust");
+    assert_eq!(result["fallback"], serde_json::Value::Null);
+    assert!(
+        result["message"]
+            .as_str()
+            .is_some_and(|m| m == convert::UNSUPPORTED_FORMAT),
+        "{result}"
+    );
+    let text = logs.text();
+    assert!(!text.contains("msg-unsupported_format"), "{text}");
 }
 
-/// Disque plein, erreur de contenu, annulation : pas de repli, échec rendu tel quel avec la
-/// trace du seul moteur Rust (Python réussirait ici : la faute prouve l'absence de repli).
+/// Disque plein, erreur de contenu, erreur interne : échec rendu tel quel, trace du moteur `rust`.
 #[tokio::test]
-async fn pas_de_repli_python_pour_les_pannes_de_sortie_et_de_contenu() {
-    let Some(py) = python() else { return };
+async fn echecs_du_convertisseur_rendus_tels_quels() {
+    let Some(py) = fake_converter() else { return };
     for (mode, code) in [
-        ("err:output_error:6|ok", "output_error"),
-        ("err:archive_unreadable:3|ok", "archive_unreadable"),
-        ("err:missing_asset:5|ok", "missing_asset"),
+        ("err:output_error:6", "output_error"),
+        ("err:archive_unreadable:3", "archive_unreadable"),
+        ("err:missing_asset:5", "missing_asset"),
+        ("err:internal_error:6", "internal_error"),
     ] {
-        let ctx = Ctx::with_python_fallback(py.clone());
+        let ctx = Ctx::new(Some(py.clone()));
         let server = serve(zip_bytes(mode)).await;
         let task = ctx
             .service
@@ -477,37 +394,51 @@ async fn pas_de_repli_python_pour_les_pannes_de_sortie_et_de_contenu() {
     }
 }
 
-/// Annulation pendant la conversion Rust : pas de repli, tâche annulée, rien d'installé.
+/// Un ancien `settings.json` qui porte `converter_engine: "python"` (réglage caché supprimé,
+/// #138) reste lisible : le champ est ignoré et la conversion se fait avec le binaire Rust.
 #[tokio::test]
-async fn pas_de_repli_python_sur_annulation() {
-    let Some(py) = python() else { return };
-    let ctx = Ctx::with_python_fallback(py);
-    let server = serve(zip_bytes("slow|ok")).await;
+async fn ancien_reglage_python_utilise_le_moteur_rust() {
+    let Some(py) = fake_converter() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let cache = dir.path().join("cache");
+    std::fs::write(
+        config.join("settings.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "converter_engine": "python",
+            "cache_dir": cache.display().to_string(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // Résolution réelle des réglages ; seul le binaire (introuvable dans un `cargo test`) est
+    // remplacé par le faux convertisseur.
+    let real = settings_resolver(config);
+    let resolver: Resolver = Arc::new(move || {
+        let mut tc = real()?;
+        tc.rust_converter = Some(py.clone());
+        Ok(tc)
+    });
+    let ctx = Ctx::with_resolver(dir, resolver, Duration::from_secs(5));
+    let server = serve(zip_bytes("versioned")).await;
     let task = ctx
         .service
         .start(remote(&format!("{}/a.zip", server.uri()), "abc"))
         .unwrap();
-    ctx.wait(&task.id, |t| t.state == TaskState::Converting)
-        .await;
-    // `ready-*` : le faux Rust a écrit son `.part` et armé l'annulation.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !std::fs::read_dir(ctx.cache()).is_ok_and(|d| {
-        d.flatten()
-            .any(|e| e.file_name().to_string_lossy().starts_with("ready-"))
-    }) {
-        assert!(Instant::now() < deadline, "convertisseur jamais prêt");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    ctx.service.cancel(&task.id).unwrap();
-    let end = ctx.finished(&task.id).await;
-    assert_eq!(end.state, TaskState::Cancelled, "{end:?}");
-    assert!(ctx.staging_is_empty());
-    assert!(!ctx.cache().join("library/abc-2.plain.pk").exists());
+    assert_eq!(ctx.finished(&task.id).await.state, TaskState::Done);
+    // Le faux convertisseur rend les options reçues : c'est bien la ligne de commande du Rust.
+    let seen = std::fs::read_to_string(ctx.cache().join("args.txt")).unwrap();
+    assert!(seen.contains("--cancel-on-stdin-eof"), "{seen}");
+    assert_eq!(recorded_result(&ctx)["engine"], "rust");
 }
 
-async fn plantage_sans_evenement_error_utilise_stderr(engine: ConverterEngine) {
-    let Some(py) = python() else { return };
-    let ctx = Ctx::with_engine(Some(py), engine);
+#[tokio::test]
+async fn plantage_sans_evenement_error_ne_reprend_pas_stderr() {
+    let Some(py) = fake_converter() else { return };
+    let logs = crate::testlog::Logs::capture();
+    let ctx = Ctx::new(Some(py));
     let server = serve(zip_bytes("crash")).await;
     let task = ctx
         .service
@@ -516,22 +447,19 @@ async fn plantage_sans_evenement_error_utilise_stderr(engine: ConverterEngine) {
     let error = ctx.finished(&task.id).await.error.unwrap();
     assert_eq!(error.kind, "conversion");
     assert_eq!(error.code.as_deref(), Some("exit_6"));
-    assert!(error.message.contains("boum"), "{}", error.message);
+    // La dernière ligne de stderr (ici un nom de fichier) n'est ni affichée ni journalisée.
+    assert!(
+        !error.message.contains("histoire-secrete"),
+        "{}",
+        error.message
+    );
+    let text = logs.text();
+    assert!(!text.contains("histoire-secrete"), "{text}");
 }
 
-#[tokio::test]
-async fn plantage_sans_evenement_error_utilise_stderr_python() {
-    plantage_sans_evenement_error_utilise_stderr(PYTHON).await;
-}
-
-#[tokio::test]
-async fn plantage_sans_evenement_error_utilise_stderr_rust() {
-    plantage_sans_evenement_error_utilise_stderr(RUST).await;
-}
-
-async fn annulation_pendant_la_conversion(mode: &str, grace: Duration, engine: ConverterEngine) {
-    let Some(py) = python() else { return };
-    let ctx = Ctx::with_dir_engine(tempfile::tempdir().unwrap(), Some(py), grace, engine, None);
+async fn annulation_pendant_la_conversion(mode: &str, grace: Duration) {
+    let Some(py) = fake_converter() else { return };
+    let ctx = Ctx::with_dir(tempfile::tempdir().unwrap(), Some(py), grace);
     let server = serve(zip_bytes(mode)).await;
     let task = ctx
         .service
@@ -570,31 +498,22 @@ async fn annulation_pendant_la_conversion(mode: &str, grace: Duration, engine: C
     assert!(ctx.service.library_list().await.unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn annulation_par_ctrl_break_pendant_la_conversion() {
-    annulation_pendant_la_conversion("slow", Duration::from_secs(20), PYTHON).await;
-}
-
-/// Moteur Rust : la fermeture de stdin suffit (le faux binaire ignore `CTRL_BREAK_EVENT`), bien
-/// avant le délai de grâce de 20 s.
+/// La fermeture de stdin suffit (le faux binaire ignore tout signal), bien avant le délai de
+/// grâce de 20 s. Aucun repli : la tâche est annulée, rien n'est installé.
 #[tokio::test]
 async fn annulation_par_fermeture_de_stdin_pendant_la_conversion() {
-    annulation_pendant_la_conversion("slow", Duration::from_secs(20), RUST).await;
+    annulation_pendant_la_conversion("slow", Duration::from_secs(20)).await;
 }
 
 #[tokio::test]
-async fn arret_force_apres_le_delai_de_grace_python() {
-    annulation_pendant_la_conversion("stubborn", Duration::from_millis(500), PYTHON).await;
+async fn arret_force_apres_le_delai_de_grace() {
+    annulation_pendant_la_conversion("stubborn", Duration::from_millis(500)).await;
 }
 
 #[tokio::test]
-async fn arret_force_apres_le_delai_de_grace_rust() {
-    annulation_pendant_la_conversion("stubborn", Duration::from_millis(500), RUST).await;
-}
-
-async fn une_seule_conversion_a_la_fois(engine: ConverterEngine) {
-    let Some(py) = python() else { return };
-    let ctx = Ctx::with_engine(Some(py), engine);
+async fn une_seule_conversion_a_la_fois() {
+    let Some(py) = fake_converter() else { return };
+    let ctx = Ctx::new(Some(py));
     let server = serve(zip_bytes("slow")).await;
     let a = ctx
         .service
@@ -640,20 +559,10 @@ async fn une_seule_conversion_a_la_fois(engine: ConverterEngine) {
     ctx.finished(&running.id).await;
 }
 
+/// Panne injectée : binaire Rust non livré. Erreur `converter_unavailable` qui nomme le binaire.
 #[tokio::test]
-async fn une_seule_conversion_a_la_fois_python() {
-    une_seule_conversion_a_la_fois(PYTHON).await;
-}
-
-#[tokio::test]
-async fn une_seule_conversion_a_la_fois_rust() {
-    une_seule_conversion_a_la_fois(RUST).await;
-}
-
-/// Panne injectée : convertisseur introuvable (Python absent ; binaire Rust non livré). Erreur
-/// `converter_unavailable`, sans repli sur l'autre moteur.
-async fn convertisseur_absent_donne_converter_unavailable(engine: ConverterEngine) {
-    let ctx = Ctx::with_engine(None, engine);
+async fn binaire_rust_absent_donne_converter_unavailable() {
+    let ctx = Ctx::new(None);
     let server = serve(zip_bytes("ok")).await;
     let task = ctx
         .service
@@ -661,22 +570,13 @@ async fn convertisseur_absent_donne_converter_unavailable(engine: ConverterEngin
         .unwrap();
     let error = ctx.finished(&task.id).await.error.unwrap();
     assert_eq!(error.kind, "converter_unavailable");
-    let expected = match engine {
-        ConverterEngine::Python => "Python",
-        ConverterEngine::Rust => RUST_CONVERTER_EXE,
-    };
-    assert!(error.message.contains(expected), "{}", error.message);
+    assert!(
+        error.message.contains(RUST_CONVERTER_EXE),
+        "{}",
+        error.message
+    );
+    assert!(!error.message.contains("Python"), "{}", error.message);
     assert!(ctx.staging_is_empty());
-}
-
-#[tokio::test]
-async fn python_absent_donne_converter_unavailable() {
-    convertisseur_absent_donne_converter_unavailable(PYTHON).await;
-}
-
-#[tokio::test]
-async fn binaire_rust_absent_donne_converter_unavailable() {
-    convertisseur_absent_donne_converter_unavailable(RUST).await;
 }
 
 /// Panne injectée : binaire Rust détecté puis disparu avant le lancement (supprimé, mis en
@@ -686,35 +586,7 @@ async fn binaire_rust_absent_donne_converter_unavailable() {
 async fn binaire_rust_disparu_avant_le_lancement() {
     let dir = tempfile::tempdir().unwrap();
     let gone = dir.path().join("telmi2flam").join(RUST_CONVERTER_EXE);
-    let cache_root = dir.path().join("cache");
-    let events = Arc::new(Recorder::default());
-    let gate = Arc::new(RwLock::new(()));
-    let service = InstallService::new(InstallOptions {
-        client: download::build_client().unwrap(),
-        resolver: Arc::new(move || {
-            Ok(Toolchain {
-                cache_root: cache_root.clone(),
-                engine: RUST,
-                python: None,
-                converter: None,
-                rust_converter: Some(gone.clone()),
-                ffmpeg: None,
-                max_downloads: 2,
-                thumb_fit: crate::settings::ThumbFit::default(),
-            })
-        }),
-        events: events.clone(),
-        queue_path: dir.path().join("config").join(QUEUE_FILE),
-        gate: gate.clone(),
-        grace: GRACE,
-    });
-    let ctx = Ctx {
-        dir,
-        events,
-        service,
-        gate,
-        engine: Arc::new(Mutex::new(RUST)),
-    };
+    let ctx = Ctx::with_dir(dir, Some(gone), Duration::from_secs(5));
     let server = serve(zip_bytes("ok")).await;
     let task = ctx
         .service
@@ -729,32 +601,6 @@ async fn binaire_rust_disparu_avant_le_lancement() {
     );
     assert!(ctx.staging_is_empty());
     assert!(ctx.queue().is_empty());
-}
-
-/// Le moteur est relu au début de chaque tâche (`Toolchain`) : changer le réglage entre deux
-/// installations change le convertisseur lancé, sans redémarrage.
-#[tokio::test]
-async fn moteur_relu_a_chaque_tache() {
-    let Some(py) = python() else { return };
-    let ctx = Ctx::with_engine(Some(py), PYTHON);
-    let server = serve(zip_bytes("versioned")).await;
-    let args = ctx.cache().join("args.txt");
-    for (engine, uuid) in [(PYTHON, "aaa"), (RUST, "bbb"), (PYTHON, "ccc")] {
-        *lock(&ctx.engine) = engine;
-        let task = ctx
-            .service
-            .start(remote(&format!("{}/a.zip", server.uri()), uuid))
-            .unwrap();
-        assert_eq!(ctx.finished(&task.id).await.state, TaskState::Done);
-        let seen = std::fs::read_to_string(&args).unwrap();
-        assert_eq!(
-            seen.contains("--cancel-on-stdin-eof"),
-            engine == RUST,
-            "{engine:?} : {seen}"
-        );
-        std::fs::remove_file(&args).unwrap();
-    }
-    assert_eq!(ctx.service.library_list().await.unwrap().len(), 3);
 }
 
 #[tokio::test]
@@ -907,7 +753,7 @@ async fn connexion_coupee_taille_incomplete() {
 
 #[tokio::test]
 async fn reprise_apres_redemarrage() {
-    let Some(py) = python() else { return };
+    let Some(py) = fake_converter() else { return };
     let full = zip_padded("ok", 3000);
     let dir = tempfile::tempdir().unwrap();
     // État laissé par une session interrompue : file persistée et `.part` de 1000 octets.
@@ -1193,37 +1039,15 @@ fn limite_de_telechargements_modifiable() {
 }
 
 #[test]
-fn detection_du_convertisseur() {
+fn empreinte_du_convertisseur() {
     let dir = tempfile::tempdir().unwrap();
-    let exe_dir = dir.path().join("apps/x/target/debug");
-    std::fs::create_dir_all(&exe_dir).unwrap();
-    let env = |search| Environment {
-        exe_dir: Some(exe_dir.clone()),
-        path_var: None,
-        default_cache_dir: dir.path().join("c"),
-        search_repo_build: search,
-        protected_dirs: Vec::new(),
-    };
-    assert_eq!(detect_converter(&env(true)), None);
-    let repo = dir.path().join("tools/telmi2flam");
-    std::fs::create_dir_all(&repo).unwrap();
-    let mut f = std::fs::File::create(repo.join("telmi2flam.py")).unwrap();
-    f.write_all(b"print()").unwrap();
-    assert_eq!(
-        detect_converter(&env(true)),
-        Some(repo.join("telmi2flam.py"))
-    );
-    assert_eq!(detect_converter(&env(false)), None);
-    let bundled = exe_dir.join("telmi2flam");
-    std::fs::create_dir_all(&bundled).unwrap();
-    std::fs::write(bundled.join("telmi2flam.py"), b"").unwrap();
-    assert_eq!(
-        detect_converter(&env(false)),
-        Some(bundled.join("telmi2flam.py"))
-    );
-    assert!(converter_fingerprint(&repo.join("telmi2flam.py"))
-        .unwrap()
-        .starts_with("sha256:"));
+    let exe = dir.path().join(RUST_CONVERTER_EXE);
+    std::fs::write(&exe, b"MZ").unwrap();
+    let fingerprint = converter_fingerprint(&exe).unwrap();
+    assert!(fingerprint.starts_with("sha256:"), "{fingerprint}");
+    assert_eq!(fingerprint.len(), "sha256:".len() + 12);
+    assert_eq!(converter_fingerprint(&exe).unwrap(), fingerprint);
+    assert!(converter_fingerprint(&dir.path().join("absent.exe")).is_err());
 }
 
 #[test]
@@ -1233,7 +1057,6 @@ fn detection_du_binaire_rust() {
     std::fs::create_dir_all(&exe_dir).unwrap();
     let env = |search| Environment {
         exe_dir: Some(exe_dir.clone()),
-        path_var: None,
         default_cache_dir: dir.path().join("c"),
         search_repo_build: search,
         protected_dirs: Vec::new(),
@@ -1290,48 +1113,17 @@ fn erreur_de_tache_serialisee() {
 }
 
 /// Installation réelle (ignorée par défaut) : archive Telmi locale servie en HTTP, conversion
-/// par le vrai `tools/telmi2flam/telmi2flam.py`, puis une seconde installation annulée en
-/// pleine conversion. `FLAM_TELMI_ZIP=<archive.zip> cargo test installation_reelle -- --ignored`
+/// par le vrai binaire `telmi2flam.exe`, puis une seconde installation annulée en pleine
+/// conversion. `FLAM_TELMI_ZIP=<archive.zip> FLAM_TEST_RUST_CONVERTER=<telmi2flam.exe>
+/// cargo test installation_reelle -- --ignored`
 #[tokio::test]
-#[ignore = "nécessite FLAM_TELMI_ZIP (archive Telmi hors dépôt) et Pillow"]
+#[ignore = "nécessite FLAM_TELMI_ZIP (archive Telmi hors dépôt) et FLAM_TEST_RUST_CONVERTER"]
 async fn installation_reelle() {
     let zip = PathBuf::from(std::env::var("FLAM_TELMI_ZIP").expect("FLAM_TELMI_ZIP"));
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .map(|d| d.join("tools/telmi2flam/telmi2flam.py"))
-        .find(|p| p.is_file())
-        .expect("telmi2flam.py");
-    let dir = tempfile::tempdir().unwrap();
-    let cache_root = dir.path().join("cache");
-    let events = Arc::new(Recorder::default());
-    let gate = Arc::new(RwLock::new(()));
-    let python = python();
-    let service = InstallService::new(InstallOptions {
-        client: download::build_client().unwrap(),
-        resolver: Arc::new(move || {
-            Ok(Toolchain {
-                cache_root: cache_root.clone(),
-                engine: PYTHON,
-                python: python.clone(),
-                converter: Some(script.clone()),
-                rust_converter: None,
-                ffmpeg: None,
-                max_downloads: 2,
-                thumb_fit: crate::settings::ThumbFit::default(),
-            })
-        }),
-        events: events.clone(),
-        queue_path: dir.path().join("config").join(QUEUE_FILE),
-        gate: gate.clone(),
-        grace: GRACE,
-    });
-    let ctx = Ctx {
-        dir,
-        events,
-        service,
-        gate,
-        engine: Arc::new(Mutex::new(PYTHON)),
-    };
+    let exe = PathBuf::from(
+        std::env::var_os("FLAM_TEST_RUST_CONVERTER").expect("FLAM_TEST_RUST_CONVERTER"),
+    );
+    let ctx = Ctx::with_dir(tempfile::tempdir().unwrap(), Some(exe), GRACE);
     let server = serve(std::fs::read(&zip).unwrap()).await;
     let url = format!("{}/a.zip", server.uri());
 
@@ -1360,7 +1152,10 @@ async fn installation_reelle() {
     let cancelled = ctx.finished(&task.id).await;
     eprintln!("annulation en {:?}", asked.elapsed());
     assert_eq!(cancelled.state, TaskState::Cancelled);
-    assert!(asked.elapsed() < GRACE, "arrêt par Ctrl+Break, pas forcé");
+    assert!(
+        asked.elapsed() < GRACE,
+        "arrêt par fermeture de stdin, pas forcé"
+    );
     assert!(ctx.staging_is_empty());
     assert_eq!(ctx.service.library_list().await.unwrap().len(), 1);
 }
@@ -1510,7 +1305,7 @@ fn pk_entry(url: &str) -> StoryEntry {
 
 #[tokio::test]
 async fn version_du_convertisseur_lue_dans_l_evenement_start() {
-    let Some(py) = python() else { return };
+    let Some(py) = fake_converter() else { return };
     let ctx = Ctx::new(Some(py));
     let server = serve(zip_bytes("versioned")).await;
     let task = ctx
@@ -1524,25 +1319,12 @@ async fn version_du_convertisseur_lue_dans_l_evenement_start() {
 
 #[cfg(windows)]
 #[tokio::test]
-async fn arret_force_termine_aussi_les_sous_processus_python() {
-    arret_force_termine_aussi_les_sous_processus(PYTHON).await;
-}
-
-#[cfg(windows)]
-#[tokio::test]
-async fn arret_force_termine_aussi_les_sous_processus_rust() {
-    arret_force_termine_aussi_les_sous_processus(RUST).await;
-}
-
-#[cfg(windows)]
-async fn arret_force_termine_aussi_les_sous_processus(engine: ConverterEngine) {
-    let Some(py) = python() else { return };
-    let ctx = Ctx::with_dir_engine(
+async fn arret_force_termine_aussi_les_sous_processus() {
+    let Some(py) = fake_converter() else { return };
+    let ctx = Ctx::with_dir(
         tempfile::tempdir().unwrap(),
         Some(py),
         Duration::from_millis(500),
-        engine,
-        None,
     );
     let server = serve(zip_bytes("tree")).await;
     let task = ctx

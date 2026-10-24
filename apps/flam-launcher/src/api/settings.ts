@@ -12,8 +12,6 @@ export interface Settings {
   schema_version: number;
   /** Chemin absolu local de `flam-player.exe` ; `null` : détection automatique. */
   player_path: string | null;
-  /** Chemin absolu local d'un `.exe` Python ; `null` : détection dans le PATH. */
-  python_path: string | null;
   /** Dossier de cache ; `null` : dossier par défaut. */
   cache_dir: string | null;
   /** URL du catalogue proposé par défaut. */
@@ -29,11 +27,6 @@ export interface Settings {
    * `device_carrier_accept`, ignoré par `settings_set`.
    */
   carrier_consent?: CarrierConsent | null;
-  /**
-   * Moteur de conversion (réglage caché, `rust` par défaut, #136 et #137). Lecture seule : modifié à
-   * la main dans `settings.json`, la valeur enregistrée est conservée par `settings_set`.
-   */
-  converter_engine?: "python" | "rust";
 }
 
 /**
@@ -44,21 +37,19 @@ export interface Settings {
  */
 export interface ResolvedSettings {
   player_path: string | null;
-  python_path: string | null;
   cache_dir: string;
 }
 
 /**
  * Problème détecté sur un paramètre :
  * - `invalid_path` : valeur configurée refusée (extension, chemin réseau, relatif…) ;
- * - `not_found` : fichier configuré disparu ;
- * - `store_alias` : seul un alias Python du Microsoft Store a été trouvé (ignoré).
+ * - `not_found` : fichier configuré disparu.
  *
- * Pour les deux premiers, `resolved` utilise la détection automatique à la place.
+ * Dans les deux cas, `resolved` utilise la détection automatique à la place.
  */
 export interface SettingsIssue {
-  field: "player_path" | "python_path" | "cache_dir";
-  kind: "invalid_path" | "not_found" | "store_alias";
+  field: "player_path" | "cache_dir";
+  kind: "invalid_path" | "not_found";
   message: string;
 }
 

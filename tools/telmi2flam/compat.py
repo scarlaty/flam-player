@@ -8,7 +8,10 @@ Usage :
                      [--only <uuid|motif>] [--limit N] [--jobs N] [--force]
                      [--run|--no-run] [--player flam-player.exe] [--run-timeout S]
                      [--max-steps N] [--seed N] [--seeds N] [--run-jobs N]
-                     [--reinterpret] [--benign-error REGEX]
+                     [--reinterpret] [--benign-error REGEX] [--converter telmi2flam.exe]
+
+Le convertisseur est le binaire Rust `telmi2flam`, lance en processus enfant (voir
+converter_bin.py) : `cargo build -p telmi2flam --release` au prealable.
 
 Sorties (sous --cache) :
     archives/<uuid>-<version>.zip          archives telechargees
@@ -39,6 +42,11 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
+
+import converter_bin  # noqa: E402
+
+# Binaire telmi2flam a lancer (None : FLAM_TELMI2FLAM, sinon target/release ; voir converter_bin)
+CONVERTER = None
 
 DEFAULT_CACHE = os.path.join(".cache", "telmi")
 RETRIES = 3
@@ -320,18 +328,15 @@ def download(entry, archives_dir, opener=_urlopen, retries=RETRIES, timeout=TIME
 # Hash du convertisseur (reprise)
 # ---------------------------------------------------------------------------
 def converter_hash(root=HERE):
-    """Hash des sources du convertisseur (hors tests, compat, explore, docs)."""
+    """Hash du convertisseur : binaire Rust `telmi2flam` (CONVERTER, FLAM_TELMI2FLAM ou chemin
+    par defaut) et `validate.py`, qui juge la sortie. Leve ConverterNotFound si le binaire
+    est absent."""
     h = hashlib.sha256()
-    skip_files = {"compat.py", "explore.py"}
-    for dp, dns, fns in os.walk(root):
-        dns[:] = sorted(d for d in dns if d not in ("tests", "__pycache__"))
-        for fn in sorted(fns):
-            if fn in skip_files or not fn.endswith((".py", ".lua")):
-                continue
-            p = os.path.join(dp, fn)
-            h.update(os.path.relpath(p, root).replace("\\", "/").encode())
-            with open(p, "rb") as f:
-                h.update(f.read())
+    with open(converter_bin.find_converter(CONVERTER), "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    with open(os.path.join(root, "validate.py"), "rb") as f:
+        h.update(f.read())
     return h.hexdigest()[:16]
 
 
@@ -390,23 +395,18 @@ def check_zip_size(path, max_bytes=MAX_UNZIPPED, max_entries=MAX_ZIP_ENTRIES):
                          % (total >> 20, max_bytes >> 20))
 
 
-def do_convert(zip_path, out_path):
-    """Convertit en capturant avertissements et exceptions."""
-    import telmi2flam
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    out, err = io.StringIO(), io.StringIO()
+def do_convert(zip_path, out_path, converter=None):
+    """Convertit avec le binaire Rust (processus enfant) ; avertissements = evenements
+    `warning`, echec = evenement `error` (voir converter_bin.convert)."""
     t0 = time.time()
-    exc = None
     try:
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            telmi2flam.convert(zip_path, out_path)
-    except Exception as e:                 # ConvError, BadZipFile, OSError, bug imprevu...
-        exc = "%s: %s" % (type(e).__name__, e)
+        exe = converter_bin.find_converter(converter or CONVERTER)
+        warns, err = converter_bin.convert(exe, zip_path, out_path)
+    except converter_bin.ConverterNotFound as e:
+        return _step("fail", [str(e)], time.time() - t0)
     dt = time.time() - t0
-    warns = [l.strip().lstrip("!").strip() for l in err.getvalue().splitlines()
-             if l.strip().startswith("!")]
-    if exc:
-        return _step("fail", [exc] + warns, dt)
+    if err:
+        return _step("fail", [err] + warns, dt)
     return _step("warn" if warns else "ok", warns, dt)
 
 
@@ -913,12 +913,23 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
     `seeds` : nombre de parcours par histoire (graines seed, seed+1...).
     `run_jobs` : explorations simultanees (threads, un player sans fenetre chacun).
     `reinterpret` : recalcule l'etape run des fiches reutilisees depuis leur resultat brut
-    (fait aussi automatiquement quand la liste benigne a change), sans relancer le player."""
+    (fait aussi automatiquement quand la liste benigne a change), sans relancer le player.
+    Sans binaire, `reinterpret` rend le rapport seul : le `converter_hash` precedent est garde
+    (non recalcule), les fiches non reutilisables sont conservees et marquees `stale`."""
     compat_dir = os.path.join(cache, "compat")
     os.makedirs(compat_dir, exist_ok=True)
     report_path = os.path.join(compat_dir, "report.json")
-    chash = converter_hash()
     prev_hash, prev_list = _load_previous(report_path)
+    binary_ok, unrefreshed = True, set()   # unrefreshed : fiches perimees faute de binaire
+    try:
+        chash = converter_hash()
+    except converter_bin.ConverterNotFound:
+        # --reinterpret sans binaire (rendu du rapport seul, #465) : on garde le hash du
+        # rapport precedent ; rien n'est converti, les fiches non reutilisables restent telles.
+        if not reinterpret or not prev_hash:
+            raise
+        binary_ok, chash = False, prev_hash
+        log("binaire telmi2flam absent : --reinterpret seul, aucune conversion")
     prev_list = _reconcile_provisional(compat_dir, prev_list, log)
     prev = {s["key"]: s for s in prev_list}
     keys = [story_key(e["uuid"], e["version"]) for e in entries]
@@ -928,11 +939,11 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         stories = []
         for s in prev_list:                      # fiches precedentes hors selection
             if s["key"] not in selected:
-                stories.append(dict(s, stale=(s.get("converter_hash") != chash)))
+                stories.append(dict(s, stale=(s.get("converter_hash") != chash or s["key"] in unrefreshed)))
         for k in keys:                           # selection : resultat frais, sinon ancienne fiche
             r = results.get(k) or prev.get(k)
             if r is not None:
-                stories.append(dict(r, stale=(r.get("converter_hash") != chash)))
+                stories.append(dict(r, stale=(r.get("converter_hash") != chash or k in unrefreshed)))
         return {"generated": time.strftime("%Y-%m-%dT%H:%M:%S"), "converter_hash": chash,
                 "stories": stories}
 
@@ -980,8 +991,11 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
                     log("~ %s : run reinterprete (%s)" % (k, old["status"]))
             results[k] = old
             log("= %s : deja evalue (%s)" % (k, old["status"]))
-        else:
+        elif binary_ok:
             todo.append(e)
+        else:
+            unrefreshed.add(k)
+            log("? %s : a reevaluer, binaire absent (fiche precedente conservee)" % k)
 
     lock = threading.Lock()
 
@@ -1277,6 +1291,8 @@ def main(argv=None):
                     help="catalogue Telmi Store (url ou fichier .json), repetable")
     ap.add_argument("--folder", action="append", default=[],
                     help="dossier de .zip locaux, repetable")
+    ap.add_argument("--converter", help="binaire telmi2flam(.exe) (defaut : $FLAM_TELMI2FLAM, "
+                                        "sinon <depot>/target/release/)")
     ap.add_argument("--cache", default=DEFAULT_CACHE, help="racine du cache (defaut %(default)s)")
     ap.add_argument("--only", action="append", default=[],
                     help="uuid, motif (*?) ou sous-chaine du titre, repetable")
@@ -1323,6 +1339,16 @@ def main(argv=None):
             ap.error("--benign-error %r invalide : %s" % (rx, e))
     if not args.catalog and not args.folder:
         ap.error("au moins un --catalog ou --folder est requis")
+    global CONVERTER
+    CONVERTER = args.converter
+    try:
+        # exporte pour les processus de --jobs N (spawn : le global CONVERTER n'y est pas)
+        os.environ[converter_bin.ENV_VAR] = converter_bin.find_converter(CONVERTER)
+    except converter_bin.ConverterNotFound as e:
+        if not args.reinterpret:
+            print("ERREUR : %s" % e, file=sys.stderr)
+            return 2
+        print("avertissement : %s (--reinterpret : rapport seul)" % e, file=sys.stderr)
     try:
         entries = select(collect(args.catalog, args.folder), args.only, args.limit)
     except (OSError, ValueError) as e:
@@ -1344,15 +1370,23 @@ def main(argv=None):
         print("note : --run-timeout %d s est court pour %d actions (~0,6 s par ecran) ; "
               "les grandes histoires finiront en timeout (exploration partielle)"
               % (args.run_timeout, args.max_steps), file=sys.stderr)
-    doc = run_campaign(entries, args.cache, max(1, args.jobs), args.force, explore,
-                       player, args.run_timeout, args.seed, args.max_steps,
-                       seeds=args.seeds, benign=tuple(BENIGN_ERRORS) + tuple(args.benign_error),
-                       max_unzipped=args.max_unzipped_mb << 20, run_jobs=args.run_jobs,
-                       reinterpret=args.reinterpret)
+    try:
+        doc = _campaign_or_exit(entries, args, explore, player)
+    except converter_bin.ConverterNotFound as e:
+        print("ERREUR : %s" % e, file=sys.stderr)
+        return 2
     bad = sum(1 for s in doc["stories"] if s["status"].startswith("ECHEC"))
     print("%d histoire(s), %d echec(s) -> %s" % (
         len(doc["stories"]), bad, os.path.join(args.cache, "compat", "report.md")))
     return 1 if bad else 0
+
+
+def _campaign_or_exit(entries, args, explore, player):
+    return run_campaign(entries, args.cache, max(1, args.jobs), args.force, explore,
+                       player, args.run_timeout, args.seed, args.max_steps,
+                       seeds=args.seeds, benign=tuple(BENIGN_ERRORS) + tuple(args.benign_error),
+                       max_unzipped=args.max_unzipped_mb << 20, run_jobs=args.run_jobs,
+                       reinterpret=args.reinterpret)
 
 
 if __name__ == "__main__":

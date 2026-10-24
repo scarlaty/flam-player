@@ -19,7 +19,7 @@ sont gardees (les intermediaires dependent de l'horloge, espaces de 0,1 s).
 Le CLI est lance comme le launcher : `--progress-json --thumb-fit bandes` (mode des vecteurs
 de package_cases.zip), sans ffmpeg (FLAM_FFMPEG vide).
 
-A lancer avec le Python de l'installateur (3.14.8, Pillow 12.3.0), depuis la racine du depot :
+A lancer avec le Python de l'oracle (3.14.8, Pillow 12.3.0), depuis la racine du depot :
     python crates/telmi2flam/tests/data/gen_progress_cases.py
 """
 
@@ -101,7 +101,7 @@ def run(rid, case_id, data, args, tmp):
 
 def main():
     if sys.version_info[:3] != (3, 14, 8):
-        sys.exit("vecteurs a produire avec Python 3.14.8 (oracle de build-converter.ps1)")
+        sys.exit("vecteurs a produire avec Python 3.14.8 (oracle de ORACLE-VERSIONS.txt)")
     base = ["{in}", "-o", "{out}", "--progress-json", "--thumb-fit", "bandes"]
     runs = []
     tmp = tempfile.mkdtemp(prefix="progress_cases_")

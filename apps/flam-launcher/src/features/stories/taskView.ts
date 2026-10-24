@@ -1,4 +1,8 @@
-import type { InstallTask, TaskState as InstallState } from "../../api/install";
+import type {
+  InstallTask,
+  TaskError,
+  TaskState as InstallState,
+} from "../../api/install";
 import type { Task, TaskKind, TaskState } from "../../components";
 import { t } from "../../i18n";
 import type { StoryProgress } from "../library/storyState";
@@ -90,8 +94,26 @@ export function toPanelTask(task: InstallTask, detail?: TaskDetail): Task {
     state,
     progress: task.percent === null ? undefined : task.percent,
     phase: state === "running" ? describePhase(task.state, detail) : undefined,
-    detail: task.error?.message ?? packDetail(task),
+    detail: task.error ? taskErrorMessage(task.error) : packDetail(task),
   };
+}
+
+/**
+ * Message d'une tâche en échec. Un code du convertisseur connu (`unsupported_format` : format que
+ * le launcher ne sait pas convertir, sans repli depuis #138) est traduit en un texte clair et non
+ * technique ; sinon le message du backend.
+ */
+export function taskErrorMessage(error: TaskError): string {
+  // Le code vient du convertisseur : texte libre, jamais une clé héritée (`constructor`, `__proto__`).
+  const text =
+    error.kind === "conversion" && error.code ? conversionText(error.code) : undefined;
+  return text ?? error.message;
+}
+
+/** Texte traduit d'un code de conversion, seulement s'il est propre à la table (`Object.hasOwn`). */
+function conversionText(code: string): string | undefined {
+  const table = t.errors.conversion;
+  return Object.hasOwn(table, code) ? table[code] : undefined;
 }
 
 /** Pack de podcasts : épisodes retirés (P7), signalés dans le panneau des tâches. */

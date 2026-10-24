@@ -310,7 +310,7 @@ impl Ctx {
 
 #[tokio::test]
 async fn creation_complete_d_un_pack_multi_flux_avec_sous_menu() {
-    let Some(py) = python() else { return };
+    let Some(py) = fake_converter() else { return };
     let ctx = Ctx::new(Some(py));
     let fake = ctx.packs(Fault::DropOne);
     let task = ctx.start_pack().await;
@@ -371,7 +371,7 @@ async fn creation_complete_d_un_pack_multi_flux_avec_sous_menu() {
 /// inchangée (l'histoire déjà installée reste seule et lisible).
 #[tokio::test]
 async fn pannes_a_chaque_etape_sans_residu_et_bibliotheque_coherente() {
-    let Some(py) = python() else { return };
+    let Some(py) = fake_converter() else { return };
     for (fault, expected, kind) in [
         (Fault::FeedChanged, TaskState::Failed, "validation"),
         (Fault::DiskFull, TaskState::Failed, "io"),
@@ -471,7 +471,7 @@ fn queued_pack(ctx_dir: &Path, fault_title: &str) -> (PackJob, String) {
 
 #[tokio::test]
 async fn reprise_apres_arret_brutal_meme_uuid() {
-    let Some(py) = python() else { return };
+    let Some(py) = fake_converter() else { return };
     let dir = tempfile::tempdir().unwrap();
     let (job, orphan) = queued_pack(dir.path(), "Mon pack");
     let ctx = Ctx::with_dir(dir, Some(py), GRACE);
@@ -494,7 +494,7 @@ async fn reprise_apres_arret_brutal_meme_uuid() {
 
 #[tokio::test]
 async fn reprise_avec_episode_disparu_echoue_proprement() {
-    let Some(py) = python() else { return };
+    let Some(py) = fake_converter() else { return };
     let dir = tempfile::tempdir().unwrap();
     queued_pack(dir.path(), "Mon pack");
     let ctx = Ctx::with_dir(dir, Some(py), GRACE);
@@ -538,13 +538,18 @@ async fn composition_invalide_refusee_par_le_backend() {
     assert!(ctx.queue().is_empty());
 }
 
+/// #440 : le pré-contrôle exige `telmi2flam.exe`. Binaire absent : refus avant tout
+/// téléchargement, avec un message qui nomme le binaire (et non Python).
 #[tokio::test]
-async fn sans_python_le_pack_echoue_avant_tout_telechargement() {
+async fn sans_binaire_le_pack_echoue_avant_tout_telechargement() {
     let ctx = Ctx::new(None);
     let fake = ctx.packs(Fault::None);
     let task = ctx.start_pack().await;
     let end = ctx.finished(&task.id).await;
-    assert_eq!(end.error.unwrap().kind, "converter_unavailable");
+    let error = end.error.clone().unwrap();
+    assert_eq!(error.kind, "converter_unavailable");
+    assert!(error.message.contains("telmi2flam.exe"), "{error:?}");
+    assert!(!error.message.contains("Python"), "{error:?}");
     assert!(!fake.entered.load(Ordering::SeqCst), "rien téléchargé");
     // #445 : la tâche échouée ne garde pas le chemin du dossier de travail supprimé.
     assert!(end.entry.download_url.is_empty(), "{:?}", end.entry);
@@ -554,12 +559,12 @@ async fn sans_python_le_pack_echoue_avant_tout_telechargement() {
     ctx.assert_clean();
 }
 
-/// #445 : moteur Rust, `telmi2flam.exe` présent, aucun Python : le pré-contrôle passe, le pack
-/// n'est pas refusé comme « convertisseur indisponible » et la préparation démarre.
+/// #445 : `telmi2flam.exe` présent, aucun Python : le pré-contrôle passe, le pack n'est pas
+/// refusé comme « convertisseur indisponible » et la préparation démarre.
 #[tokio::test]
-async fn moteur_rust_avec_binaire_sans_python_passe_le_precontrole() {
-    let Some(py) = python() else { return };
-    let ctx = Ctx::with_engine(Some(py), ConverterEngine::Rust);
+async fn avec_binaire_le_pack_passe_le_precontrole() {
+    let Some(py) = fake_converter() else { return };
+    let ctx = Ctx::new(Some(py));
     let fake = ctx.packs(Fault::None);
     let task = ctx.start_pack().await;
     let end = ctx.finished(&task.id).await;
@@ -571,21 +576,6 @@ async fn moteur_rust_avec_binaire_sans_python_passe_le_precontrole() {
         "{end:?}"
     );
     assert!(fake.entered.load(Ordering::SeqCst), "préparation lancée");
-    ctx.assert_clean();
-}
-
-/// #440 : le pré-contrôle suit le moteur choisi. Moteur Rust sans `telmi2flam.exe` : refus avant
-/// tout téléchargement, avec un message propre au moteur Rust (et non « Python introuvable »).
-#[tokio::test]
-async fn moteur_rust_sans_binaire_le_pack_echoue_avant_tout_telechargement() {
-    let ctx = Ctx::with_engine(None, ConverterEngine::Rust);
-    let fake = ctx.packs(Fault::None);
-    let task = ctx.start_pack().await;
-    let end = ctx.finished(&task.id).await;
-    let error = end.error.unwrap();
-    assert_eq!(error.kind, "converter_unavailable");
-    assert!(error.message.contains("telmi2flam.exe"), "{error:?}");
-    assert!(!fake.entered.load(Ordering::SeqCst), "rien téléchargé");
     ctx.assert_clean();
 }
 
@@ -608,7 +598,7 @@ fn le_brouillon_n_est_efface_que_s_il_n_a_pas_change() {
 
 #[tokio::test]
 async fn annulation_en_attente_du_convertisseur_sans_residu() {
-    let Some(py) = python() else { return };
+    let Some(py) = fake_converter() else { return };
     let ctx = Ctx::new(Some(py));
     ctx.packs(Fault::None);
     // Convertisseur occupé par une autre tâche : le pack préparé attend son tour.
@@ -646,7 +636,7 @@ async fn reprise_d_un_pack_deja_publie_ne_relance_rien() {
 
 #[tokio::test]
 async fn deux_packs_simultanes_sont_prepares_l_un_apres_l_autre() {
-    let Some(py) = python() else { return };
+    let Some(py) = fake_converter() else { return };
     let ctx = Ctx::new(Some(py));
     let fake = ctx.packs(Fault::None);
     let (a, b) = tokio::join!(ctx.start_pack(), ctx.start_pack());
@@ -684,7 +674,7 @@ fn le_nettoyage_ne_supprime_que_les_orphelins_releves() {
 
 #[tokio::test]
 async fn pochettes_en_echec_dans_l_enfant_donnent_l_image_de_repli() {
-    let Some(py) = python() else { return };
+    let Some(py) = fake_converter() else { return };
     let ctx = Ctx::new(Some(py));
     ctx.packs(Fault::ArtworkChildDies);
     let task = ctx.start_pack().await;
@@ -723,7 +713,7 @@ fn la_preparation_decode_les_pochettes_par_le_decodeur_fourni() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Bout en bout (#426) : serveur HTTP local, vrai ffmpeg embarqué, vrai convertisseur Python
+// Bout en bout (#426) : serveur HTTP local, vrai ffmpeg embarqué, vrai telmi2flam.exe
 // ---------------------------------------------------------------------------------------------
 
 /// Dossier `apps/flam-launcher/build` (sortie de `npm run build:ffmpeg` et `build:converter`).
@@ -750,24 +740,21 @@ fn real_ffmpeg_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
-/// Python embarqué et `telmi2flam.py` voisin (`build/telmi2flam`), sinon `None` ; exigé avec
-/// `FLAM_TEST_REQUIRE_PYTHON=1` (CI, après `npm run build:converter`).
-fn embedded_converter() -> Option<(PathBuf, PathBuf)> {
-    let root = std::env::var_os("FLAM_TEST_PYTHON")
+/// `telmi2flam.exe` livré (`build/telmi2flam`, ou `FLAM_TEST_RUST_CONVERTER`), sinon `None` ;
+/// exigé avec `FLAM_TEST_REQUIRE_CONVERTER=1` (CI, après `npm run build:converter`).
+fn embedded_converter() -> Option<PathBuf> {
+    let exe = std::env::var_os("FLAM_TEST_RUST_CONVERTER")
         .map(PathBuf::from)
-        .and_then(|p| p.parent()?.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| build_dir().join("telmi2flam"));
-    let python = root.join("python").join("python.exe");
-    let script = root.join("telmi2flam.py");
-    if !python.is_file() || !script.is_file() {
+        .unwrap_or_else(|| build_dir().join("telmi2flam").join("telmi2flam.exe"));
+    if !exe.is_file() {
         assert!(
-            std::env::var_os("FLAM_TEST_REQUIRE_PYTHON").is_none_or(|v| v != "1"),
-            "FLAM_TEST_REQUIRE_PYTHON=1 : Python embarqué introuvable"
+            std::env::var_os("FLAM_TEST_REQUIRE_CONVERTER").is_none_or(|v| v != "1"),
+            "FLAM_TEST_REQUIRE_CONVERTER=1 : telmi2flam.exe introuvable"
         );
-        eprintln!("Python embarqué absent : test ignoré");
+        eprintln!("telmi2flam.exe absent : test ignoré");
         return None;
     }
-    Some((python, script))
+    Some(exe)
 }
 
 type Served = HashMap<String, (&'static str, Vec<u8>)>;
@@ -932,14 +919,14 @@ impl PackBackend for LocalPacks {
 
 /// Pack complet, de bout en bout : enclosures et images servies par un serveur HTTP local, vrai
 /// ffmpeg embarqué (MP3 sources de formats différents, un épisode introuvable), vrai
-/// `telmi2flam.py` du Python embarqué, jusqu'à l'histoire publiée dans `library.json`. Ignoré sans
-/// ffmpeg ou sans Python embarqué, sauf `FLAM_REQUIRE_FFMPEG` / `FLAM_TEST_REQUIRE_PYTHON=1` (CI).
+/// `telmi2flam.exe` livré, jusqu'à l'histoire publiée dans `library.json`. Ignoré sans ffmpeg ou
+/// sans convertisseur, sauf `FLAM_REQUIRE_FFMPEG` / `FLAM_TEST_REQUIRE_CONVERTER=1` (CI).
 #[tokio::test]
 async fn bout_en_bout_pack_reel_jusqu_a_la_bibliotheque() {
     let Some(ffmpeg_dir) = real_ffmpeg_dir() else {
         return;
     };
-    let Some((python, script)) = embedded_converter() else {
+    let Some(exe) = embedded_converter() else {
         return;
     };
     let work = tempfile::tempdir().unwrap();
@@ -975,11 +962,10 @@ async fn bout_en_bout_pack_reel_jusqu_a_la_bibliotheque() {
         drafts: Mutex::default(),
     });
 
-    let ctx = Ctx::with_converter(
+    let ctx = Ctx::with_dir(
         tempfile::tempdir().unwrap(),
-        Some(python),
+        Some(exe),
         Duration::from_secs(5),
-        Some(script),
     );
     ctx.service.set_pack_backend(backend.clone());
     let c = composition();
@@ -1031,7 +1017,7 @@ async fn bout_en_bout_pack_reel_jusqu_a_la_bibliotheque() {
 /// la juge inconnue (jamais lue) au lieu de suivre un lien mort.
 #[tokio::test]
 async fn pack_publie_sans_chemin_mort_et_source_inconnue() {
-    let Some(py) = python() else { return };
+    let Some(py) = fake_converter() else { return };
     let ctx = Ctx::new(Some(py));
     ctx.packs(Fault::None);
     let task = ctx.start_pack().await;

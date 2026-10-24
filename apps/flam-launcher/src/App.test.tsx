@@ -13,14 +13,13 @@ const settingsView = {
   settings: {
     schema_version: 1,
     player_path: null,
-    python_path: null,
     cache_dir: null,
     default_catalog_url: "https://exemple.org/c.json",
     theme: "dark",
     max_downloads: 2,
     thumb_fit: "flou",
   },
-  resolved: { player_path: null, python_path: null, cache_dir: "C:\\cache" },
+  resolved: { player_path: null, cache_dir: "C:\\cache" },
   issues: [],
   recovery: null,
 };

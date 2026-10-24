@@ -112,7 +112,7 @@ const lines = [
   "Flam Launcher : licences des composants tiers embarqués dans l'application",
   "",
   "Fichier généré par scripts/build-notices.mjs (Cargo.lock, package-lock.json).",
-  "Les licences des autres composants livrés (flam-player, SDL2, Lua, LVGL, Python, Pillow...)",
+  "Les licences des autres composants livrés (flam-player, SDL2, Lua, LVGL, FFmpeg...)",
   "sont dans LICENSES.md et le dossier licenses/.",
   "",
   `${packages.length} paquets.`,

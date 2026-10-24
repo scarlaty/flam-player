@@ -32,6 +32,14 @@ export const fr = {
       })[kind] ?? "Une erreur est survenue",
     loadFailed: "Impossible de charger les données.",
     retry: "Réessayer",
+    /**
+     * Message montré pour un code d'erreur du convertisseur (`TaskError.code`, `kind` « conversion »),
+     * à la place du texte brut du backend. Code absent de la table : le message du backend.
+     */
+    conversion: {
+      unsupported_format:
+        "Cette histoire utilise un format que le launcher ne sait pas encore convertir (image non PNG ou archive compressée en bzip2/LZMA).",
+    } as Record<string, string>,
   },
   recovery: {
     title: (file: string) => `Le fichier ${file} était illisible`,
@@ -368,12 +376,8 @@ export const fr = {
     autoPlaceholder: "Automatique",
     issuesTitle: "Points à vérifier",
     player: "Chemin de flam-player",
-    python: "Chemin de Python",
-    pythonNote:
-      "Le convertisseur livré avec l'application embarque son propre Python : le chemin de Python ci-dessous n'est utilisé que si ce convertisseur est absent (par exemple en développement).",
     cacheDir: "Dossier de cache",
     pickPlayer: "Choisir flam-player.exe",
-    pickPython: "Choisir python.exe",
     pickCache: "Choisir le dossier de cache",
     used: (path: string) => `Utilisé : ${path}`,
     notFound: "Aucun fichier trouvé : choisissez-le avec « Parcourir… ».",

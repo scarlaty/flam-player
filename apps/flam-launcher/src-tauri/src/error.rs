@@ -21,7 +21,7 @@ use serde::{Serialize, Serializer};
 /// | `FeedInvalid`   | `feed_invalid`  | Flux podcast reçu inexploitable (XML invalide, DTD, trop grand, sans épisode audio) |
 /// | `Cancelled`     | `cancelled`     | Tâche d'installation annulée                            |
 /// | `DownloadInvalid` | `download_invalid` | Téléchargement incomplet, trop gros ou contenu inattendu |
-/// | `ConverterUnavailable` | `converter_unavailable` | Python ou `telmi2flam.py` introuvable |
+/// | `ConverterUnavailable` | `converter_unavailable` | `telmi2flam.exe` introuvable |
 /// | `Conversion`    | `conversion`    | Échec de `telmi2flam` (code du convertisseur dans le message) |
 /// | `PlayerUnavailable` | `player_unavailable` | `flam-player.exe` introuvable ou impossible à lancer |
 /// | `PlayerBusy`    | `player_busy`   | Un player est déjà en cours d'exécution                 |
@@ -89,7 +89,7 @@ pub enum AppError {
     #[error("{0}")]
     DownloadInvalid(String),
 
-    /// Python ou le convertisseur `telmi2flam.py` est introuvable.
+    /// Le convertisseur `telmi2flam.exe` est introuvable.
     #[error("{0}")]
     ConverterUnavailable(String),
 
@@ -109,6 +109,18 @@ pub enum AppError {
     /// Le fichier (`.plain.pk` ou dossier `.plain`) de l'histoire à lancer n'existe plus.
     #[error("{0}")]
     StoryFileMissing(String),
+
+    /// Synthèse vocale impossible sur ce poste (système non Windows, service de voix absent).
+    #[error("{0}")]
+    TtsUnavailable(String),
+
+    /// Aucune voix française installée, ou voix demandée disparue.
+    #[error("{0}")]
+    TtsNoVoice(String),
+
+    /// Échec de synthèse ou de conversion d'un titre (voix muette, délai, audio inexploitable).
+    #[error("{0}")]
+    TtsFailed(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -134,6 +146,9 @@ impl AppError {
             AppError::PlayerUnavailable(_) => "player_unavailable",
             AppError::PlayerBusy(_) => "player_busy",
             AppError::StoryFileMissing(_) => "story_file_missing",
+            AppError::TtsUnavailable(_) => "tts_unavailable",
+            AppError::TtsNoVoice(_) => "tts_no_voice",
+            AppError::TtsFailed(_) => "tts_failed",
         }
     }
 
@@ -224,6 +239,12 @@ mod tests {
             AppError::StoryFileMissing("x".into()).kind(),
             "story_file_missing"
         );
+        assert_eq!(
+            AppError::TtsUnavailable("x".into()).kind(),
+            "tts_unavailable"
+        );
+        assert_eq!(AppError::TtsNoVoice("x".into()).kind(), "tts_no_voice");
+        assert_eq!(AppError::TtsFailed("x".into()).kind(), "tts_failed");
         let conversion = AppError::Conversion {
             code: "missing_asset".into(),
             message: "m".into(),

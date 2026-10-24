@@ -14,7 +14,6 @@ use crate::podcast::mp3cache::{Placer, CACHE_DIR};
 use crate::podcast::pack::{CachedFeed, CoverChoice, PackMetadataInput};
 use crate::podcast::rss::PodcastFeed;
 use crate::podcast::source::source_dir;
-use crate::settings::ConverterEngine;
 
 struct NoEvents;
 
@@ -219,9 +218,6 @@ impl Ctx {
         std::fs::create_dir_all(&cache_root).unwrap();
         let tc = Toolchain {
             cache_root: cache_root.clone(),
-            engine: ConverterEngine::Rust,
-            python: None,
-            converter: None,
             // Jamais lancé : la préparation s'arrête avant la conversion.
             rust_converter: Some(dir.path().join("telmi2flam.exe")),
             ffmpeg: None,

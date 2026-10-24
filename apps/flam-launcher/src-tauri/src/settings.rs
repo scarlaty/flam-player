@@ -1,12 +1,11 @@
 //! Paramètres de l'application : `settings.json`, valeurs par défaut, validation et
-//! détection automatique de `flam-player.exe` et de Python.
+//! détection automatique de `flam-player.exe`.
 //!
-//! Les exécutables configurés (`player_path`, `python_path`) seront lancés par l'application :
-//! ils doivent être des fichiers `.exe` locaux (ni UNC, ni lecteur réseau). `resolved.*` n'est
+//! L'exécutable configuré (`player_path`) sera lancé par l'application :
+//! il doit être un fichier `.exe` local (ni UNC, ni lecteur réseau). `resolved.*` n'est
 //! **pas** une garantie : le fichier peut disparaître après le calcul ; l'appelant (lancement
 //! du player, #16) doit revérifier juste avant d'exécuter.
 
-use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -29,8 +28,6 @@ const DRIVE_REMOTE: u32 = 4;
 pub const ISSUE_INVALID_PATH: &str = "invalid_path";
 /// `kind` d'un [`SettingsIssue`] : fichier configuré disparu.
 pub const ISSUE_NOT_FOUND: &str = "not_found";
-/// `kind` d'un [`SettingsIssue`] : seul un alias Microsoft Store a été trouvé pour Python.
-pub const ISSUE_STORE_ALIAS: &str = "store_alias";
 
 /// Thème de l'interface (miroir de `ThemePreference` dans `src/theme/theme.ts`).
 ///
@@ -89,24 +86,6 @@ impl ThumbFit {
     }
 }
 
-/// Moteur de conversion des archives Telmi (#136, PORT-RUST.md §5) : `telmi2flam.py` avec le
-/// Python embarqué, ou le binaire Rust `telmi2flam.exe` livré à côté.
-///
-/// Réglage **caché** : absent de l'écran Paramètres, et `settings_set` conserve la valeur
-/// enregistrée (voir [`SettingsStore::update`]) ; il se change à la main dans `settings.json`.
-/// Une valeur absente, inconnue ou mal typée retombe sur `Rust`, le moteur par défaut depuis la
-/// bascule de #137 ; un `settings.json` qui porte explicitement `python` le garde.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ConverterEngine {
-    /// `telmi2flam.py`, à demander explicitement.
-    Python,
-    /// Binaire Rust `telmi2flam.exe` (doit rester la dernière variante pour `serde(other)`).
-    #[default]
-    #[serde(other)]
-    Rust,
-}
-
 /// Paramètres enregistrés (miroir de `Settings` dans `src/api/settings.ts`).
 ///
 /// Un chemin à `None` signifie « détection automatique » (voir [`resolve`]).
@@ -116,8 +95,6 @@ pub struct Settings {
     pub schema_version: u32,
     /// Chemin de `flam-player.exe` ; `None` : détection automatique.
     pub player_path: Option<String>,
-    /// Chemin de l'interpréteur Python ; `None` : `python` du PATH.
-    pub python_path: Option<String>,
     /// Dossier de cache (téléchargements, histoires converties) ; `None` : dossier par défaut.
     pub cache_dir: Option<String>,
     /// URL du catalogue proposé par défaut.
@@ -136,21 +113,6 @@ pub struct Settings {
     /// Remplissage des vignettes des histoires converties (#279). Absent des anciens fichiers :
     /// `Flou` (`#[serde(default)]`, sans migration de schéma).
     pub thumb_fit: ThumbFit,
-    /// Moteur de conversion (#136), réglage caché : `Rust` par défaut (#137), conservé par
-    /// [`SettingsStore::update`]. Absent des anciens fichiers : `Rust` ; `python` explicite gardé.
-    #[serde(deserialize_with = "lenient_engine")]
-    pub converter_engine: ConverterEngine,
-}
-
-/// `converter_engine` mal typé (nombre, objet, `null`) : moteur par défaut plutôt que le rejet de
-/// tout `settings.json` (`serde(other)` ne couvre que les chaînes inconnues).
-fn lenient_engine<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ConverterEngine, D::Error> {
-    let value = serde_json::Value::deserialize(d)?;
-    if !value.is_null() && !matches!(value.as_str(), Some("python" | "rust")) {
-        // Réglage caché édité à la main : une faute de frappe ne doit pas passer inaperçue.
-        tracing::warn!("converter_engine non reconnu ({value}) : moteur rust utilisé");
-    }
-    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// Téléchargements simultanés par défaut.
@@ -163,14 +125,12 @@ impl Default for Settings {
         Self {
             schema_version: SCHEMA_VERSION,
             player_path: None,
-            python_path: None,
             cache_dir: None,
             default_catalog_url: TELMI_STORE_URL.into(),
             theme: Theme::default(),
             max_downloads: DEFAULT_MAX_DOWNLOADS,
             carrier_consent: None,
             thumb_fit: ThumbFit::default(),
-            converter_engine: ConverterEngine::default(),
         }
     }
 }
@@ -180,18 +140,15 @@ impl Default for Settings {
 pub struct ResolvedSettings {
     /// `None` si le player n'a été ni configuré (valide) ni trouvé.
     pub player_path: Option<String>,
-    /// Python embarqué s'il est présent ([`detect_bundled_python`]), sinon Python configuré
-    /// (valide), sinon trouvé dans le PATH ; `None` si aucun.
-    pub python_path: Option<String>,
     pub cache_dir: String,
 }
 
 /// Problème détecté en relisant les paramètres (miroir de `SettingsIssue` côté TypeScript).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SettingsIssue {
-    /// Champ concerné : `player_path`, `python_path` ou `cache_dir`.
+    /// Champ concerné : `player_path` ou `cache_dir`.
     pub field: String,
-    /// `invalid_path`, `not_found` ou `store_alias`.
+    /// `invalid_path` ou `not_found`.
     pub kind: String,
     pub message: String,
 }
@@ -214,8 +171,6 @@ pub struct SettingsView {
 pub struct Environment {
     /// Dossier de l'exécutable de l'application.
     pub exe_dir: Option<PathBuf>,
-    /// Valeur de la variable `PATH`.
-    pub path_var: Option<OsString>,
     /// Dossier de cache utilisé quand aucun n'est configuré.
     pub default_cache_dir: PathBuf,
     /// Cherche aussi `<racine du dépôt>/build/flam-player.exe` (développement).
@@ -231,7 +186,6 @@ impl Environment {
             exe_dir: std::env::current_exe()
                 .ok()
                 .and_then(|exe| exe.parent().map(Path::to_path_buf)),
-            path_var: std::env::var_os("PATH"),
             default_cache_dir: storage::default_cache_dir(),
             search_repo_build: cfg!(debug_assertions),
             protected_dirs: protected_dirs(),
@@ -361,21 +315,6 @@ pub fn detect_player(env: &Environment) -> Option<PathBuf> {
     None
 }
 
-/// Dossier du convertisseur embarqué, à côté de l'exécutable (ressource Tauri `telmi2flam/`
-/// produite par `scripts/build-converter.ps1`, #71).
-pub const BUNDLED_CONVERTER_DIR: &str = "telmi2flam";
-
-/// Python embarqué avec le convertisseur : `<exe>/telmi2flam/python/python.exe`. Retenu
-/// seulement si le script embarqué `<exe>/telmi2flam/telmi2flam.py` l'accompagne : la
-/// détection du convertisseur (`install::detect_converter`) prend alors ce même script, et
-/// l'interpréteur embarqué (chemins d'import fixés par son `._pth`) n'est jamais associé à
-/// un autre script.
-pub fn detect_bundled_python(env: &Environment) -> Option<PathBuf> {
-    let dir = env.exe_dir.as_deref()?.join(BUNDLED_CONVERTER_DIR);
-    let python = dir.join("python").join("python.exe");
-    (is_nonempty_file(&python) && dir.join("telmi2flam.py").is_file()).then_some(python)
-}
-
 /// Dossier de ffmpeg embarqué, à côté de l'exécutable (ressource Tauri `ffmpeg/` produite par
 /// `scripts/build-ffmpeg.ps1`, #209) : `ffmpeg.exe`, `ffprobe.exe` (statiques), les licences et `BUILD.txt`.
 pub const BUNDLED_FFMPEG_DIR: &str = "ffmpeg";
@@ -413,54 +352,6 @@ pub fn ffmpeg_path(env: &Environment) -> Option<PathBuf> {
     None
 }
 
-/// Résultat de la recherche de Python.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PythonDetection {
-    pub path: Option<PathBuf>,
-    /// Un alias du Microsoft Store (fichier vide dans `WindowsApps`) a été rencontré et ignoré.
-    pub store_alias_ignored: bool,
-}
-
-fn in_windows_apps(path: &Path) -> bool {
-    path.components()
-        .any(|c| c.as_os_str().eq_ignore_ascii_case("WindowsApps"))
-}
-
-/// Cherche Python dans le PATH (sans exécuter de script ni de processus) : `python.exe`,
-/// `python3.exe`, puis le lanceur Windows `py.exe` (`python3` / `python` hors Windows).
-///
-/// Les entrées relatives du PATH sont ignorées. Les alias du Microsoft Store (fichiers vides
-/// dans `WindowsApps`) sont **ignorés** : savoir s'ils désignent un Python réellement installé
-/// exigerait de les lancer, ce que la détection s'interdit. L'information est remontée
-/// (`store_alias_ignored`) pour que l'interface invite à choisir le chemin de Python.
-pub fn detect_python(env: &Environment) -> PythonDetection {
-    let names: &[&str] = if cfg!(windows) {
-        &["python.exe", "python3.exe", "py.exe"]
-    } else {
-        &["python3", "python"]
-    };
-    let mut detection = PythonDetection {
-        path: None,
-        store_alias_ignored: false,
-    };
-    let Some(path_var) = env.path_var.as_ref() else {
-        return detection;
-    };
-    for dir in std::env::split_paths(path_var).filter(|dir| dir.is_absolute()) {
-        for name in names {
-            let candidate = dir.join(name);
-            if is_nonempty_file(&candidate) {
-                detection.path = Some(candidate);
-                return detection;
-            }
-            if in_windows_apps(&candidate) && std::fs::symlink_metadata(&candidate).is_ok() {
-                detection.store_alias_ignored = true;
-            }
-        }
-    }
-    detection
-}
-
 /// Calcule les valeurs effectives et les problèmes rencontrés. Une valeur configurée qui ne
 /// passe plus la validation (extension, chemin réseau, fichier disparu…) est écartée au
 /// profit de la détection automatique, avec un [`SettingsIssue`].
@@ -486,17 +377,6 @@ pub fn resolve(settings: &Settings, env: &Environment) -> (ResolvedSettings, Vec
                     None
                 }
             });
-    let configured_python =
-        settings
-            .python_path
-            .as_deref()
-            .and_then(|raw| match check_exe("chemin de Python", raw) {
-                Ok(()) => Some(raw.to_string()),
-                Err(err) => {
-                    issue("python_path", err);
-                    None
-                }
-            });
     let configured_cache = settings.cache_dir.as_deref().and_then(|raw| {
         match check_cache_dir(raw, &env.protected_dirs) {
             Ok(()) => Some(raw.to_string()),
@@ -507,30 +387,8 @@ pub fn resolve(settings: &Settings, env: &Environment) -> (ResolvedSettings, Vec
         }
     });
 
-    // Python embarqué (application installée) prioritaire, puis Python configuré, puis PATH.
-    let bundled_python = detect_bundled_python(env).map(as_string);
-    let python = match bundled_python.or(configured_python) {
-        Some(path) => Some(path),
-        None => {
-            let detection = detect_python(env);
-            if detection.path.is_none() && detection.store_alias_ignored {
-                issue(
-                    "python_path",
-                    (
-                        ISSUE_STORE_ALIAS,
-                        "seul un alias Python du Microsoft Store a été trouvé ; il est ignoré, \
-                         indiquez le chemin de python.exe dans les paramètres"
-                            .to_string(),
-                    ),
-                );
-            }
-            detection.path.map(as_string)
-        }
-    };
-
     let resolved = ResolvedSettings {
         player_path: configured_player.or_else(|| detect_player(env).map(as_string)),
-        python_path: python,
         cache_dir: configured_cache.unwrap_or_else(|| as_string(env.default_cache_dir.clone())),
     };
     (resolved, issues)
@@ -555,13 +413,9 @@ pub fn validate(settings: Settings) -> AppResult<Settings> {
 /// Comme [`validate`], avec une liste de dossiers protégés explicite.
 pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Settings> {
     let player_path = clean(settings.player_path);
-    let python_path = clean(settings.python_path);
     let cache_dir = clean(settings.cache_dir);
     if let Some(path) = &player_path {
         check_exe("chemin du player", path).map_err(to_validation)?;
-    }
-    if let Some(path) = &python_path {
-        check_exe("chemin de Python", path).map_err(to_validation)?;
     }
     if let Some(dir) = &cache_dir {
         check_cache_dir(dir, protected).map_err(to_validation)?;
@@ -575,14 +429,12 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
     Ok(Settings {
         schema_version: SCHEMA_VERSION,
         player_path,
-        python_path,
         cache_dir,
         default_catalog_url: validate_catalog_url(&settings.default_catalog_url)?,
         theme: settings.theme,
         max_downloads: settings.max_downloads,
         carrier_consent: settings.carrier_consent,
         thumb_fit: settings.thumb_fit,
-        converter_engine: settings.converter_engine,
     })
 }
 
@@ -610,13 +462,11 @@ impl SettingsStore {
     /// Renvoie les paramètres normalisés.
     ///
     /// Le consentement du mode carrier n'est pas modifiable ici : la valeur enregistrée est
-    /// conservée quelle que soit celle reçue (voir [`Self::record_carrier_consent`]). De même
-    /// pour le moteur de conversion, réglage caché (#136) : l'écran Paramètres ne le connaît pas.
+    /// conservée quelle que soit celle reçue (voir [`Self::record_carrier_consent`]).
     pub fn update(&self, settings: Settings) -> AppResult<Settings> {
         let stored = self.load()?;
         let mut settings = validate(settings)?;
         settings.carrier_consent = stored.carrier_consent;
-        settings.converter_engine = stored.converter_engine;
         storage::write_json(&self.dir.join(FILE_NAME), &settings)?;
         Ok(settings)
     }
@@ -683,7 +533,6 @@ mod tests {
     fn env_in(dir: &Path) -> Environment {
         Environment {
             exe_dir: Some(dir.join("app")),
-            path_var: None,
             default_cache_dir: dir.join("cache-defaut"),
             search_repo_build: false,
             protected_dirs: vec![],
@@ -902,68 +751,68 @@ mod tests {
         }
     }
 
+    /// Le réglage caché `converter_engine` (#136) n'existe plus (#138) : un ancien
+    /// `settings.json` qui le porte (`python`, `rust`, ou une valeur quelconque) reste lisible,
+    /// le champ est ignoré (Rust est le seul convertisseur) et disparaît à la prochaine écriture.
     #[test]
-    fn moteur_de_conversion_rust_par_defaut_et_python_explicite_garde() {
-        // Réglage absent (anciens fichiers, #137) : Rust.
-        let old: Settings = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
-        assert_eq!(old.converter_engine, ConverterEngine::Rust);
-        let empty: Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!(empty.converter_engine, ConverterEngine::Rust);
-        assert_eq!(Settings::default().converter_engine, ConverterEngine::Rust);
-        // `python` explicite : conservé.
-        let python: Settings =
-            serde_json::from_str(r#"{"schema_version":1,"converter_engine":"python"}"#).unwrap();
-        assert_eq!(python.converter_engine, ConverterEngine::Python);
-        let rust: Settings = serde_json::from_str(r#"{"converter_engine":"rust"}"#).unwrap();
-        assert_eq!(rust.converter_engine, ConverterEngine::Rust);
-        assert_eq!(
-            serde_json::to_value(ConverterEngine::Rust).unwrap(),
-            serde_json::json!("rust")
-        );
-        assert_eq!(
-            serde_json::to_value(ConverterEngine::Python).unwrap(),
-            serde_json::json!("python")
-        );
-        // Inconnu, mal typé ou nul : Rust, sans rejeter le reste du fichier.
-        for bad in [
-            serde_json::json!("Rust"),
-            serde_json::json!("go"),
-            serde_json::json!(1),
-            serde_json::json!({ "engine": "rust" }),
-            serde_json::Value::Null,
+    fn ancien_reglage_converter_engine_ignore() {
+        for value in [
+            r#""python""#,
+            r#""rust""#,
+            r#""go""#,
+            "1",
+            "null",
+            r#"{"engine":"python"}"#,
         ] {
-            let s: Settings = serde_json::from_value(
-                serde_json::json!({ "converter_engine": bad, "max_downloads": 3 }),
-            )
-            .unwrap();
-            assert_eq!(s.converter_engine, ConverterEngine::Rust, "{bad:?}");
-            assert_eq!(s.max_downloads, 3, "{bad:?}");
+            let s: Settings = serde_json::from_str(&format!(
+                r#"{{"schema_version":1,"converter_engine":{value},"max_downloads":3}}"#
+            ))
+            .unwrap_or_else(|e| panic!("{value} : {e}"));
+            assert_eq!(s.max_downloads, 3, "{value}");
         }
-    }
-
-    #[test]
-    fn moteur_de_conversion_cache_conserve_par_la_mise_a_jour() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join("settings.json"),
-            r#"{"schema_version":1,"converter_engine":"python"}"#,
+            r#"{"schema_version":1,"converter_engine":"python","max_downloads":3}"#,
         )
         .unwrap();
         let store = SettingsStore::new(dir.path());
-        // L'écran Paramètres renvoie l'objet sans ce champ (ou avec une autre valeur).
-        for sent in [ConverterEngine::Python, ConverterEngine::Rust] {
-            let saved = store
-                .update(Settings {
-                    converter_engine: sent,
-                    max_downloads: 3,
-                    ..Settings::default()
-                })
-                .unwrap();
-            assert_eq!(saved.converter_engine, ConverterEngine::Python);
+        assert_eq!(store.load().unwrap().max_downloads, 3);
+        store.update(store.load().unwrap()).unwrap();
+        let written = fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert!(!written.contains("converter_engine"), "{written}");
+        assert_eq!(store.load().unwrap().max_downloads, 3);
+    }
+
+    /// Le réglage `python_path` n'existe plus (#139) : un `settings.json` écrit par une version
+    /// qui l'avait (valeur quelconque, même invalide) reste lisible, les autres réglages sont
+    /// conservés, le champ est ignoré et disparaît à la prochaine écriture.
+    #[test]
+    fn ancien_reglage_python_path_ignore() {
+        let dir = tempfile::tempdir().unwrap();
+        for value in [
+            r#""C:\\Python312\\python.exe""#,
+            r#""\\\\serveur\\partage\\python.exe""#,
+            r#""python""#,
+            "null",
+            "42",
+        ] {
+            fs::write(
+                dir.path().join("settings.json"),
+                format!(
+                    r#"{{"schema_version":1,"python_path":{value},"max_downloads":3,"theme":"dark"}}"#
+                ),
+            )
+            .unwrap();
+            let store = SettingsStore::new(dir.path());
+            let loaded = store.load().unwrap_or_else(|e| panic!("{value} : {e}"));
+            assert_eq!(loaded.max_downloads, 3, "{value}");
+            assert_eq!(loaded.theme, Theme::Dark, "{value}");
+            store.update(loaded).unwrap();
+            let written = fs::read_to_string(dir.path().join("settings.json")).unwrap();
+            assert!(!written.contains("python_path"), "{value} : {written}");
+            assert_eq!(store.load().unwrap().max_downloads, 3, "{value}");
         }
-        let reloaded = store.load().unwrap();
-        assert_eq!(reloaded.converter_engine, ConverterEngine::Python);
-        assert_eq!(reloaded.max_downloads, 3);
     }
 
     #[test]
@@ -1014,7 +863,6 @@ mod tests {
         let saved = store
             .update(Settings {
                 player_path: Some(format!("  {} ", player.display())),
-                python_path: Some("   ".into()),
                 cache_dir: Some(dir.path().join("cache").display().to_string()),
                 default_catalog_url: " https://exemple.org/c.json ".into(),
                 schema_version: 0,
@@ -1022,12 +870,10 @@ mod tests {
                 max_downloads: 3,
                 carrier_consent: None,
                 thumb_fit: ThumbFit::Rogner,
-                converter_engine: ConverterEngine::Python,
             })
             .unwrap();
         assert_eq!(saved.schema_version, SCHEMA_VERSION);
         assert_eq!(saved.player_path, Some(player.display().to_string()));
-        assert_eq!(saved.python_path, None);
         assert_eq!(saved.thumb_fit, ThumbFit::Rogner);
         assert_eq!(store.load().unwrap(), saved);
     }
@@ -1047,11 +893,7 @@ mod tests {
                 ..Settings::default()
             },
             Settings {
-                python_path: Some("python".into()),
-                ..Settings::default()
-            },
-            Settings {
-                python_path: Some(not_exe.display().to_string()),
+                player_path: Some(not_exe.display().to_string()),
                 ..Settings::default()
             },
             Settings {
@@ -1078,8 +920,8 @@ mod tests {
     #[test]
     fn extension_exe_exigee_sans_tenir_compte_de_la_casse() {
         let dir = tempfile::tempdir().unwrap();
-        let ok = dir.path().join("Python.ExE");
-        let ko = dir.path().join("python.cmd");
+        let ok = dir.path().join("Flam-Player.ExE");
+        let ko = dir.path().join("flam-player.cmd");
         touch(&ok);
         touch(&ko);
         assert!(check_exe("x", &ok.display().to_string()).is_ok());
@@ -1090,9 +932,9 @@ mod tests {
     #[test]
     fn chemins_unc_et_reseau_refuses() {
         for bad in [
-            "\\\\serveur\\partage\\python.exe",
-            "\\\\?\\UNC\\serveur\\partage\\python.exe",
-            "//serveur/partage/python.exe",
+            "\\\\serveur\\partage\\flam-player.exe",
+            "\\\\?\\UNC\\serveur\\partage\\flam-player.exe",
+            "//serveur/partage/flam-player.exe",
         ] {
             assert!(is_network_path(Path::new(bad)), "{bad}");
             let (kind, _) = check_exe("x", bad).unwrap_err();
@@ -1180,133 +1022,6 @@ mod tests {
         assert_eq!(detect_player(&env), Some(beside));
     }
 
-    fn python_name() -> &'static str {
-        if cfg!(windows) {
-            "python.exe"
-        } else {
-            "python3"
-        }
-    }
-
-    fn path_of(dirs: &[&Path]) -> Option<OsString> {
-        Some(std::env::join_paths(dirs).unwrap())
-    }
-
-    #[test]
-    fn detection_de_python_dans_le_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let empty = dir.path().join("vide");
-        let good = dir.path().join("bon");
-        fs::create_dir_all(&empty).unwrap();
-        touch(&good.join(python_name()));
-        let mut env = env_in(dir.path());
-        env.path_var = path_of(&[&empty, &good]);
-        assert_eq!(detect_python(&env).path, Some(good.join(python_name())));
-        env.path_var = path_of(&[&empty]);
-        assert_eq!(detect_python(&env).path, None);
-        env.path_var = None;
-        assert_eq!(detect_python(&env).path, None);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn detection_de_python3_et_du_lanceur_py() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a");
-        let b = dir.path().join("b");
-        touch(&a.join("py.exe"));
-        touch(&b.join("python3.exe"));
-        let mut env = env_in(dir.path());
-        env.path_var = path_of(&[&a]);
-        assert_eq!(detect_python(&env).path, Some(a.join("py.exe")));
-        env.path_var = path_of(&[&b]);
-        assert_eq!(detect_python(&env).path, Some(b.join("python3.exe")));
-        // Dans un même dossier, python.exe prime sur py.exe.
-        touch(&a.join("python.exe"));
-        env.path_var = path_of(&[&a]);
-        assert_eq!(detect_python(&env).path, Some(a.join("python.exe")));
-    }
-
-    #[test]
-    fn les_entrees_relatives_du_path_sont_ignorees() {
-        let dir = tempfile::tempdir().unwrap();
-        let rel = Path::new("relatif");
-        let mut env = env_in(dir.path());
-        env.path_var = Some(std::env::join_paths([rel]).unwrap());
-        // Même si le dossier relatif existe (dans le dossier courant), il est ignoré.
-        let cwd_python = std::env::current_dir().unwrap().join(rel);
-        fs::create_dir_all(&cwd_python).unwrap();
-        touch(&cwd_python.join(python_name()));
-        let detection = detect_python(&env);
-        fs::remove_dir_all(&cwd_python).unwrap();
-        assert_eq!(detection.path, None);
-    }
-
-    #[test]
-    fn un_fichier_vide_n_est_pas_python() {
-        let dir = tempfile::tempdir().unwrap();
-        let alias = dir.path().join("alias");
-        fs::create_dir_all(&alias).unwrap();
-        fs::write(alias.join(python_name()), "").unwrap();
-        let mut env = env_in(dir.path());
-        env.path_var = path_of(&[&alias]);
-        assert_eq!(
-            detect_python(&env),
-            PythonDetection {
-                path: None,
-                store_alias_ignored: false
-            }
-        );
-    }
-
-    #[test]
-    fn un_alias_du_store_est_ignore_et_signale() {
-        let dir = tempfile::tempdir().unwrap();
-        let apps = dir.path().join("Microsoft").join("WindowsApps");
-        fs::create_dir_all(&apps).unwrap();
-        fs::write(apps.join(python_name()), "").unwrap();
-        let mut env = env_in(dir.path());
-        env.path_var = path_of(&[&apps]);
-        let detection = detect_python(&env);
-        assert_eq!(detection.path, None);
-        assert!(detection.store_alias_ignored);
-        let (resolved, issues) = resolve(&Settings::default(), &env);
-        assert_eq!(resolved.python_path, None);
-        assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].field, "python_path");
-        assert_eq!(issues[0].kind, ISSUE_STORE_ALIAS);
-        // Un vrai Python plus loin dans le PATH prime et supprime l'avertissement.
-        let real = dir.path().join("real");
-        touch(&real.join(python_name()));
-        env.path_var = path_of(&[&apps, &real]);
-        let (resolved, issues) = resolve(&Settings::default(), &env);
-        assert_eq!(
-            resolved.python_path,
-            Some(real.join(python_name()).display().to_string())
-        );
-        assert!(issues.is_empty());
-    }
-
-    #[test]
-    fn python_embarque_exige_le_script_embarque() {
-        let dir = tempfile::tempdir().unwrap();
-        let env = env_in(dir.path());
-        let bundled = dir.path().join("app").join(BUNDLED_CONVERTER_DIR);
-        let python = bundled.join("python").join("python.exe");
-        assert_eq!(detect_bundled_python(&env), None);
-        // Interpréteur seul : ignoré (il ne serait associé à aucun script embarqué).
-        touch(&python);
-        assert_eq!(detect_bundled_python(&env), None);
-        touch(&bundled.join("telmi2flam.py"));
-        assert_eq!(detect_bundled_python(&env), Some(python.clone()));
-        // Fichier vide : pas un interpréteur.
-        fs::write(&python, "").unwrap();
-        assert_eq!(detect_bundled_python(&env), None);
-        let mut env = env;
-        env.exe_dir = None;
-        assert_eq!(detect_bundled_python(&env), None);
-    }
-
     #[test]
     fn ffmpeg_embarque_a_cote_de_l_executable() {
         let dir = tempfile::tempdir().unwrap();
@@ -1321,11 +1036,6 @@ mod tests {
         assert_eq!(ffmpeg_path(&env), Some(ffmpeg.clone()));
         // Fichier vide : pas un exécutable.
         fs::write(&ffmpeg, "").unwrap();
-        assert_eq!(ffmpeg_path(&env), None);
-        // Jamais le PATH, même avec un ffmpeg dedans.
-        let in_path = dir.path().join("bin");
-        touch(&in_path.join(FFMPEG_EXE));
-        env.path_var = path_of(&[&in_path]);
         assert_eq!(ffmpeg_path(&env), None);
         env.exe_dir = None;
         assert_eq!(ffmpeg_path(&env), None);
@@ -1371,43 +1081,6 @@ mod tests {
     }
 
     #[test]
-    fn python_embarque_prioritaire_sans_avertissement() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut env = env_in(dir.path());
-        // Seul un alias du Store dans le PATH, et un Python configuré valide.
-        let apps = dir.path().join("Microsoft").join("WindowsApps");
-        fs::create_dir_all(&apps).unwrap();
-        fs::write(apps.join(python_name()), "").unwrap();
-        env.path_var = path_of(&[&apps]);
-        let configured = dir.path().join("autre").join("python.exe");
-        touch(&configured);
-        let settings = Settings {
-            python_path: Some(configured.display().to_string()),
-            ..Settings::default()
-        };
-        let (resolved, _) = resolve(&settings, &env);
-        assert_eq!(resolved.python_path, Some(configured.display().to_string()));
-
-        let bundled = dir.path().join("app").join(BUNDLED_CONVERTER_DIR);
-        touch(&bundled.join("python").join("python.exe"));
-        touch(&bundled.join("telmi2flam.py"));
-        let expected = Some(
-            bundled
-                .join("python")
-                .join("python.exe")
-                .display()
-                .to_string(),
-        );
-        let (resolved, issues) = resolve(&settings, &env);
-        assert_eq!(resolved.python_path, expected);
-        assert!(issues.is_empty());
-        // Sans Python configuré : pas d'avertissement « alias du Store » non plus.
-        let (resolved, issues) = resolve(&Settings::default(), &env);
-        assert_eq!(resolved.python_path, expected);
-        assert!(issues.is_empty());
-    }
-
-    #[test]
     fn resolution_prefere_la_configuration_puis_la_detection() {
         let dir = tempfile::tempdir().unwrap();
         let env = env_in(dir.path());
@@ -1416,7 +1089,6 @@ mod tests {
 
         let (auto, issues) = resolve(&Settings::default(), &env);
         assert_eq!(auto.player_path, Some(detected.display().to_string()));
-        assert_eq!(auto.python_path, None);
         assert_eq!(
             auto.cache_dir,
             dir.path().join("cache-defaut").display().to_string()
@@ -1444,25 +1116,17 @@ mod tests {
     #[test]
     fn valeurs_configurees_invalides_ou_disparues_retombent_sur_la_detection() {
         let dir = tempfile::tempdir().unwrap();
-        let mut env = env_in(dir.path());
+        let env = env_in(dir.path());
         let detected = dir.path().join("app").join(PLAYER_EXE);
         touch(&detected);
-        let py_dir = dir.path().join("py");
-        touch(&py_dir.join(python_name()));
-        env.path_var = path_of(&[&py_dir]);
         let gone = dir.path().join("disparu").join("lecteur.exe");
         let settings = Settings {
             player_path: Some(gone.display().to_string()),
-            python_path: Some("\\\\serveur\\partage\\python.exe".into()),
             cache_dir: Some("relatif".into()),
             ..Settings::default()
         };
         let (resolved, issues) = resolve(&settings, &env);
         assert_eq!(resolved.player_path, Some(detected.display().to_string()));
-        assert_eq!(
-            resolved.python_path,
-            Some(py_dir.join(python_name()).display().to_string())
-        );
         assert_eq!(
             resolved.cache_dir,
             dir.path().join("cache-defaut").display().to_string()
@@ -1475,7 +1139,6 @@ mod tests {
             summary,
             [
                 ("player_path", ISSUE_NOT_FOUND),
-                ("python_path", ISSUE_INVALID_PATH),
                 ("cache_dir", ISSUE_INVALID_PATH)
             ]
         );

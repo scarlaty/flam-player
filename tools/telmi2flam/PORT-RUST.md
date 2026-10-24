@@ -1,10 +1,12 @@
 # Port de telmi2flam en Rust : note de conception (#22)
 
-But : livrer la surcouche flam-launcher **sans Python ni Pillow**. Aujourd'hui, l'installateur
-embarque un Python officiel, Pillow et les scripts (`apps/flam-launcher/scripts/build-converter.ps1`,
-ressource Tauri `telmi2flam/`). Le launcher lance `telmi2flam.py --progress-json` en processus
-enfant (`apps/flam-launcher/src-tauri/src/install/convert.rs`). L'annulation passe par
-`CTRL_BREAK_EVENT`, émis par un petit assistant **Python**.
+But : livrer la surcouche flam-launcher **sans Python ni Pillow**. À l'origine de cette note,
+l'installateur embarquait un Python officiel, Pillow et les scripts
+(`apps/flam-launcher/scripts/build-converter.ps1`, ressource Tauri `telmi2flam/`), le launcher
+lançait `telmi2flam.py --progress-json` en processus enfant
+(`apps/flam-launcher/src-tauri/src/install/convert.rs`) et l'annulation passait par
+`CTRL_BREAK_EVENT`, émis par un petit assistant **Python**. **État (PR 18, #138, faite)** :
+l'installateur ne livre plus que `telmi2flam.exe`, le launcher ne lance plus Python (voir §5.4).
 
 Cette note fixe le périmètre, l'architecture, les invariants, la stratégie de parité, le plan
 de bascule et le découpage en PR. Elle ne contient aucun code.
@@ -119,7 +121,7 @@ figurer, même avec `OR`.
 | JSON | `serde_json` (déjà), fonction `preserve_order` | MIT OR Apache-2.0 | Fait entrer `indexmap` (Apache-2.0 OR MIT). |
 | Flottants façon Python | `ryu` (ou formatage maison) | Apache-2.0 OR BSL-1.0 | Les deux termes sont autorisés. |
 | Rééchantillonnage | **port de l'algorithme de Pillow** (pas de crate) | Pillow : MIT-CMU (HPND) | Ce n'est pas une dépendance Cargo : `ALLOWED_LICENSES` ne change pas. En-tête de licence et mention dans les notices (D3, §4.2). |
-| Autres formats d'image (JPEG…) | `zune-jpeg` ou `jpeg-decoder` si nécessaire | MIT OR Apache-2.0 (OR Zlib) | D4 : délégation à Python (`unsupported_format`, code 7) pendant la transition. Le support devient obligatoire avant #138 pour chaque format que la campagne trouve. |
+| Autres formats d'image (JPEG…) | `zune-jpeg` ou `jpeg-decoder` si nécessaire ; `gif` pour le GIF | MIT OR Apache-2.0 (OR Zlib) | D4 : délégation à Python (`unsupported_format`, code 7) pendant la transition. Le support devient obligatoire avant #138 pour chaque format que la campagne trouve : en cours (#459, §4.4 ; PNG atypiques faits). |
 | Méthodes ZIP bzip2/LZMA | fonctions `zip` (`lzma-rs` MIT ; `bzip2-sys` : licence bzip2, **non autorisée**, un décodeur bzip2 en Rust pur serait à trouver) | — | Même règle (D4) : délégation, puis support obligatoire avant #138 si la campagne en trouve. |
 
 Pas de `image` (crate complète) : trop de dépendances, et ses conversions (16 → 8 bits par
@@ -171,6 +173,7 @@ Invariants (repris de Python, à tester côté Rust) :
    en flux dans le `.part` (par tours de 256 Kio, #402) au lieu d'être tous gardés en mémoire, copies d'images libérées au
    plus tôt.
 6. **Délégation des cas non gérés** (décision D4) : face à une image dans un autre format que PNG
+   (les PNG atypiques, APNG compris, sont décodés depuis #459, §4.4)
    ou à une entrée ZIP en bzip2/LZMA, le Rust ne convertit pas. Il nettoie son `.part`, émet
    l'événement `error` avec le code `unsupported_format` et sort avec le **code 7**, distinct de
    `internal_error`. Tant que le repli Python existe, le launcher rejoue alors la conversion
@@ -184,7 +187,8 @@ Invariants (repris de Python, à tester côté Rust) :
 | Archive corrompue (CRC, en-tête, troncature) | lecture d'une entrée | rien | `archive_unreadable`, code 3. Le CRC doit être vérifié : lire chaque entrée jusqu'au bout. |
 | Entrée chiffrée, méthode que Python ne lit pas non plus (deflate64…) | lecture | rien | `archive_unreadable`, code 3 (Python : 3 pour une méthode inconnue, mais `internal_error` 6 pour une entrée chiffrée ; divergence volontaire, car Python échoue aussi) |
 | Entrée bzip2/LZMA (lue par Python, pas par le Rust) | lecture | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6) |
-| Image dans un autre format que PNG (JPEG, GIF…) | image | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6), et non `image_unreadable` : Pillow la lirait |
+| Image dans un autre format que PNG (JPEG, GIF…) | image | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6), et non `image_unreadable` : Pillow la lirait. Prise en charge format par format (#459, §4.4) |
+| PNG atypique (APNG, `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue) | image | — | décodé comme Pillow, erreurs comprises (#459, §4.4) ; plus de délégation |
 | Noms dupliqués dans l'archive | indexation | rien | même entrée retenue que Python (`ZipFile.getinfo` : la **dernière**). `zip` 4.6.1 retient aussi la dernière (`IndexMap::insert`), mais ne liste le nom qu'une fois : `find_root` et l'index replié (`setdefault`, premier nom rencontré) doivent reproduire `namelist()`. Test dédié. |
 | Pas une histoire Telmi | `find_root` | rien | `not_telmi`, code 3 |
 | JSON invalide / types inattendus | `load_json`, `_expect` | rien | `invalid_content`, code 4 ; `notes.json` illisible : avertissement `notes_ignored` |
@@ -242,7 +246,7 @@ Invariants (repris de Python, à tester côté Rust) :
 ### 4.2 Images : le point dur
 
 La sortie LIF dépend du redimensionnement de **Pillow 12.3.0** (version épinglée dans
-`build-converter.ps1`) :
+`tools/telmi2flam/ORACLE-VERSIONS.txt`) :
 
 - `resize(…, LANCZOS)` sur du RGBA suit cet ordre : `convert("RGBa")` (prémultiplication par
   **tables entières**, `MULDIV255`), puis passage horizontal et passage
@@ -313,6 +317,87 @@ sont identiques à l'octet près dès la PR 6.
    l'oracle ne doit pas changer sans qu'on le voie. Les tables Unicode de `unicodedata` et d'`unicode-normalization`
    doivent aussi correspondre (versions notées dans la PR 5).
 
+### 4.4 Images non PNG et PNG atypiques (#459)
+
+Décision du mainteneur (24/10) : le Rust lit ce que Pillow lisait, pour retirer Python (#138)
+sans perte. Chaque format est livré dans une PR courte et fusionnable seule (PR 1 : PNG
+atypiques, PR 2 : JPEG, PR 3 : GIF, puis BMP/WebP si le coût est faible, sinon issue de suivi
+motivée). Tant qu'un format n'est pas livré, il reste délégué (code 7).
+
+**Chemin Python reproduit** (`_open_rgba` de `telmi2flam.py`) : `Image.open` puis `load()`
+(première image d'une animation), `_trns_mask` (n'agit que sur un PNG : clé `tRNS` brute,
+`IHDR` à position fixe), `point(v / 256).convert("L")` pour `I;16`, puis `convert("RGBA")`.
+**Pas d'`ImageOps.exif_transpose`** : l'orientation EXIF n'est jamais appliquée (vérifié :
+aucun appel dans `telmi2flam.py`), le Rust ne l'applique pas non plus. Ni `draft()` ni
+`reduce` : décodage pleine taille.
+
+| Format | Mode à l'ouverture (Pillow 12.3.0) | Conversion vers RGBA | Décodeur Rust | Parité visée |
+| --- | --- | --- | --- | --- |
+| PNG atypique (PR 1, fait) | modes PNG ; APNG : première image (zone du `fcTL`) | celle des PNG (§4.2, `_trns_mask`) | `png.rs` (fait main) | octet à octet, erreurs comprises |
+| JPEG (PR 2) | `L` (1 composante), `RGB` (3 : YCbCr→RGB par libjpeg-turbo, ou RGB brut selon JFIF/Adobe), `CMYK` (4, rawmode `CMYK;I` : polarité Adobe toujours supposée ; YCCK converti par libjpeg) ; refus (illisible) si précision ≠ 8 bits ou 2/5+ composantes | `L`→gris opaque, `CMYK`→`cmyk2rgb` de Pillow (`255 - k` modulé, entier) | `zune-jpeg` (MIT OR Apache-2.0 OR Zlib) ou `jpeg-decoder` (MIT OR Apache-2.0), licences vérifiées dans `Cargo.lock` | identité visée (libjpeg-turbo : IDCT `JDCT_ISLOW`, suréchantillonnage « fancy », tables YCbCr de `jdcolor.c`) ; écart d'IDCT ou de suréchantillonnage mesuré sur le corpus, borné (par ex. ±1 par composante) et inscrit dans `ALLOWED_DEVIATIONS` |
+| GIF (PR 3) | première image en `P` (palette locale ou globale ; `L` sans palette), `info["transparency"]` = index du GCE ; image plus petite que l'écran : fond rempli de l'index transparent (sinon 0) | palette → RGBA, index transparent à alpha 0 | crate `gif` (MIT OR Apache-2.0, avec `weezl`), sans sa conversion RGBA | octet à octet (pas d'arithmétique flottante) |
+| BMP, WebP… | à évaluer : seulement si une histoire réelle en contient (campagne #135) | — | — | issue de suivi sinon |
+
+**Invariants** (en plus de §3) :
+
+1. Une image que Pillow lit donne les mêmes pixels (ou l'écart borné et listé du JPEG) ; une
+   image que Pillow refuse donne `image_unreadable` (`empty.lif`), jamais un échec de la
+   conversion.
+2. Garde anti-bombe de Pillow seulement, pour tous les formats : plus de `2 × MAX_IMAGE_PIXELS`
+   pixels annoncés, image illisible (D5). Aucune mémoire engagée sur la seule foi d'un
+   en-tête (tampons alloués quand les données arrivent, `try_reserve`) ; exception assumée :
+   une zone partielle (cadre APNG, image GIF plus petite que l'écran) engage toute l'image dès
+   ses premières données, comme `Image.core.new` de Pillow, dans la limite de la garde.
+3. Déterminisme : aucun code SIMD choisi à l'exécution dont le résultat dépend du processeur
+   (même règle que `fast_image_resize`, §4.2) ; décodeurs utilisés en scalaire ou avec des
+   chemins SIMD prouvés identiques au scalaire.
+4. Annulation vérifiée par ligne (ou par bloc de lignes MCU) comme pour le PNG.
+5. Aucune panique sur une entrée non fiable (préfixes, octets inversés : tests de troncature
+   et d'altération contre l'oracle, comme `alterations.tsv`).
+
+**Tableau des pannes** :
+
+| Panne | Comportement de Pillow (oracle) | Comportement attendu du Rust |
+| --- | --- | --- |
+| Fichier tronqué (JPEG, GIF) | `OSError: image file is truncated` (`LOAD_TRUNCATED_IMAGES` faux) | illisible, sauf si Pillow a déjà toutes les lignes (fin de flux absente tolérée) : mêmes cas, testés par troncature |
+| Données corrompues dans un JPEG (code de Huffman invalide, marqueur `RSTn` manquant) | libjpeg-turbo **avertit et continue** (blocs mis à zéro, resynchronisation) : image lue | reproduire la reprise de libjpeg-turbo est hors de portée d'un décodeur tiers : écart **assumé** (pixels différents, jamais un refus de la conversion), mesuré et listé ; à défaut, image illisible = divergence à signaler |
+| Bombe (dimensions énormes) | `DecompressionBombError` au-delà de `2 × MAX_IMAGE_PIXELS` | illisible, avant toute allocation |
+| JPEG CMYK / YCCK | `CMYK` inversé (Adobe) puis `cmyk2rgb` | même formule entière ; vecteurs CMYK et YCCK |
+| JPEG progressif, arithmétique, 4:1:1, 4:4:0, échantillonnages impairs | lus par libjpeg-turbo | lus ; un décodeur qui n'accepte pas un cas (par ex. codage arithmétique) le **délègue** encore (code 7) tant que Python existe, puis issue de suivi |
+| JPEG 12 bits, sans perte (`SOF3`) | `SyntaxError` (précision ≠ 8) ou erreur libjpeg : illisible | illisible |
+| GIF entrelacé | lu (ordre des passes) | lu |
+| GIF animé, image partielle, sans palette globale | première image, fond index transparent ou 0 | idem |
+| APNG (PR 1) | première image ; séquence `fcTL`/`fdAT` fausse, `fcTL` court ou hors de l'image : illisible ; zone vide : illisible | idem, testé (`apng_*` de `gen_png_vectors.py`) |
+| `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue (PR 1) | dernier `IHDR` (taille ; mode du dernier couple valide), transparence rangée selon le mode courant, `_trns_mask` sur la clé brute et l'`IHDR` à position fixe | idem, y compris les erreurs (`TypeError` d'un triplet sur du gris, palette sur une image d'un autre mode que `L`/`LA`) : 634 combinaisons dans `combos.tsv` |
+
+**Écarts attendus** : aucun pour le PNG et le GIF. JPEG : écart d'IDCT/suréchantillonnage
+borné s'il est inévitable, et pixels des JPEG corrompus (reprise de libjpeg-turbo), chacun
+inscrit dans `ALLOWED_DEVIATIONS` avec sa mesure, et signalé dans la PR.
+
+**PR 1 (PNG atypiques, faite)** : `png.rs` ne délègue plus que les autres formats (`pas un
+PNG`). Détails reproduits de Pillow, tous vérifiés contre l'oracle :
+- APNG : `acTL` (court : illisible ; double ou nombre d'images hors bornes : ignoré),
+  `fcTL` (court, séquence, cadre hors de l'image : illisible), `fdAT` (court, séquence :
+  illisible) avant les données (un `fdAT` peut porter la première image), dans les données
+  (suite de l'image) et après (vérifié puis sauté) ; `load_end` d'un APNG animé s'arrête au
+  `fcTL` suivant, celui d'un APNG à une image continue (chunks vérifiés) ; zone décodée = cadre
+  du dernier `fcTL` lu avant les données, reste au pixel nul du mode ; en entrelacé,
+  `ZipDecode.c` ignore le décalage du cadre (zone en haut à gauche) ;
+- `IHDR` : taille du dernier lu, mode du dernier couple connu (`KeyError` : mode précédent),
+  entrelacement jamais retiré ; un `PLTE` lu sous un mode palette puis un `IHDR` d'un autre
+  mode : `Image.load` pose la palette sur le cœur de l'image, accepté pour `L` et `LA` (la
+  valeur grise sert d'index, alpha du canal A ; avec transparence : illisible en `L`, masque
+  sur la luminance de la palette en `LA`), refusé (illisible) pour les autres modes ;
+- transparence : valeur de Pillow typée selon le mode courant à chaque `tRNS` (entier, triplet
+  ou octets ; le dernier gagne, même après l'image : second passage de conversion), masque de
+  `_trns_mask` sur la clé brute de `_png_trns_key` et l'`IHDR` à position fixe de `_png_ihdr`,
+  conversions de Pillow quel que soit le mode réellement décodé (`rgb2l`, `I;16` écrêté à 255,
+  `convert_transparent` : premier élément d'un triplet sur du gris, entier sur du RGB comparé à
+  `(k, 0, 0)`) ; octets sur du gris ou du RGB et triplet sur une palette : illisible ;
+- zlib : sortie pleine, zlib s'arrête au premier octet à écrire sans contrôler une distance trop
+  lointaine (miniz la refuse au décodage) : échec rejoué dans un tampon jetable à historique
+  fictif (constaté sur une longueur d'IDAT altérée, `alterations.tsv`).
+
 ## 5. Plan de bascule
 
 1. **Développement** (PR 1 à 13) : la crate et le binaire existent et sont testés en CI, mais
@@ -320,9 +405,10 @@ sont identiques à l'octet près dès la PR 6.
 2. **Parité** (PR 14, 15) : CI synthétique verte, puis campagne conforme au seuil §4.3.
 3. **Livraison en double** (PR 16) : l'installateur embarque `telmi2flam.exe` **et** le Python
    actuel. Un réglage caché de `settings.json`, `converter_engine: "python" | "rust"`, vaut
-   **`python` par défaut** (jusqu'à la PR 17). Le launcher le relit à chaque tâche (`Toolchain`). `convert.rs`
-   gère **les deux moteurs** : fermeture de stdin pour Rust, `CTRL_BREAK_HELPER` pour Python
-   (conservé jusqu'à la PR 18). Les tests de `convert.rs` et d'`install/tests.rs` sont dédoublés.
+   **`python` par défaut** (jusqu'à #137). Le launcher le relit à chaque tâche (`Toolchain`).
+   `convert.rs` gère **les deux moteurs** : fermeture de stdin pour Rust, `CTRL_BREAK_HELPER`
+   pour Python (retiré en PR 18). Les tests de `convert.rs` et d'`install/tests.rs` sont
+   dédoublés.
 4. **Bascule** (PR 17) : défaut `rust`. Pendant une version publiée, le launcher **repasse
    automatiquement sur Python** dans trois cas seulement, et l'indique dans le résultat de
    compatibilité (#20) :
@@ -345,6 +431,24 @@ sont identiques à l'octet près dès la PR 6.
    un `settings.json` qui porte `python` le garde. La crate annonce `2.0.0` (D6). Un binaire
    `telmi2flam.exe` **absent** reste `converter_unavailable`, sans repli : le repli ci-dessus ne
    couvre que l'échec d'un binaire présent, et l'installateur le livre toujours.
+
+   **État (PR 18, #138, faite)** : décision du mainteneur du 24/10 : Python est retiré tout de
+   suite, **sans version intermédiaire** publiée avec le repli (condition de la PR 18 levée).
+   La campagne #135 (30 archives sur 30 identiques, aucune délégation) ayant laissé la liste des
+   formats à prendre en charge vide, la condition D4 était satisfaite. Retirés : Python,
+   Pillow et les scripts de l'installateur (`build-converter.ps1` ne produit plus que
+   `telmi2flam.exe`, `LICENSES.md` et `BUILD.txt`), les contrôles de `launcher.yml` et
+   `release-launcher.yml` (qui vérifient aussi l'absence de Python), `CTRL_BREAK_HELPER`,
+   `convert_with_fallback`, `EngineTrace::PythonFallback`, `ChosenEngine` et
+   `ConverterEngine` (le champ `converter_engine` d'un ancien `settings.json` est ignoré, Rust
+   est utilisé). `unsupported_format` (code 7) est une **erreur finale** au message fixe et non
+   technique (« Cette histoire utilise un format que le launcher ne sait pas encore convertir
+   (image non PNG ou archive compressée en bzip2/LZMA). »), sans nom de fichier de l'histoire
+   dans les journaux. Les résultats de compatibilité enregistrés avec `engine: python` ou
+   `python_fallback` restent lisibles. Les versions de l'oracle Python (3.14.8, Pillow 12.3.0),
+   jusque-là lues dans `build-converter.ps1`, sont dans `tools/telmi2flam/ORACLE-VERSIONS.txt`.
+   Restent à faire : le réglage `python_path` et l'écran Paramètres (#139), les outils Python
+   de développement (#140).
 5. **Suppression** (PR 18 à 20). Condition préalable : tous les formats délégués que la
    campagne (#135) a comptés sont pris en charge par le Rust, puisque sans Python une
    délégation devient un échec.
@@ -391,9 +495,9 @@ sortie, pipeline d'installation, corrections issues de la campagne.
 | 13 | #133 | CLI complète : options (`-o`, `--plain`, `--keep-size`, `--allow-missing`, `--selector`, `--info`, `--version`), messages humains sur stderr, code 2 | 12 | sonnet | telmi2flam | 0,5 j |
 | 14 | #134 | CI de parité : corpus et matrice, oracle Python contre Rust, `validate.py` sur la sortie Rust | 3, 13 | sonnet | telmi2flam, ci | 0,5 j |
 | 15 | #135 | Campagne de parité sur `.cache/telmi/` (`compat.py --engine rust`, rapport, lots avec reprise, comptage des délégations par format) et corrections des écarts ; liste des formats à prendre en charge avant #138 | 14 | opus | telmi2flam | 1 j + mesures |
-| 16 | #136 | Launcher : construire et livrer `telmi2flam.exe`, réglage `converter_engine` (défaut `python`), `convert.rs` pour les deux moteurs, Job Object sans limite mémoire supplémentaire | 13 | opus | launcher-rust, ci | 1,5 j |
+| 16 | #136 | Launcher : construire et livrer `telmi2flam.exe`, réglage `converter_engine` (défaut `python` jusqu'à #137), `convert.rs` pour les deux moteurs, Job Object sans limite mémoire supplémentaire | 13 | opus | launcher-rust, ci | 1,5 j |
 | 17 | #137 | Bascule : défaut `rust`, repli Python sur `unsupported_format`, `internal_error` ou plantage seulement, trace dans le résultat de compatibilité, version selon D6 | 15, 16 | opus | launcher-rust | 1 j |
-| 18 | #138 | Retrait de Python de l'installateur et du backend : `build-converter.ps1`, ressources, `launcher.yml`, notices, `CTRL_BREAK_HELPER`, repli | 15 (formats délégués pris en charge), 17, puis une version publiée | opus | launcher-rust, ci | 1 j |
+| 18 | #138 | Retrait de Python de l'installateur et du backend : `build-converter.ps1`, ressources, `launcher.yml`, notices, `CTRL_BREAK_HELPER`, repli (**faite**, sans version intermédiaire) | 15 (formats délégués pris en charge), 17 | opus | launcher-rust, ci | 1 j |
 | 19 | #139 | Retrait du réglage `python_path` : backend (ancien champ lu puis ignoré), écran Paramètres, tests | 18 | sonnet | launcher-rust, launcher-ui | 0,5 j |
 | 20 | #140 | Outils de campagne sur le binaire Rust (`compat.py`, `explore.py`), suppression de `telmi2flam.py`, `lif.py`, `mp3map.py` et de leurs tests (cas repris par le corpus) | 18 | sonnet | telmi2flam | 1 j |
 
@@ -424,8 +528,9 @@ Décisions du mainteneur du **2026-10-16** :
     que ce que fait déjà `telmi2flam.py`. Pas de borne de taille décompressée, pas de limite
     mémoire du Job Object plus stricte que l'existant.
   - Formats d'image autres que PNG et entrées ZIP bzip2/LZMA : tant que le repli Python
-    existe, le Rust **délègue à Python** (`unsupported_format`, code 7, distinct de
-    `internal_error` ; invariant 6).
+    existait, le Rust **déléguait à Python** (`unsupported_format`, code 7, distinct de
+    `internal_error` ; invariant 6). Le repli est supprimé (#138) : c'est désormais une erreur
+    finale montrée à l'utilisateur.
   - La campagne de parité (#135) compte ces délégations par format. La prise en charge de
     **chaque format présent** est une condition préalable du retrait de Python (#138).
 - **D6, validée** : le Rust annonce `2.0.0`. Les résultats de compatibilité enregistrés avec
@@ -433,6 +538,6 @@ Décisions du mainteneur du **2026-10-16** :
 
 Points encore ouverts :
 
-- **Durée de la double livraison** : proposition, une version publiée avec le repli Python
-  avant la PR 18.
+- ~~**Durée de la double livraison**~~ : tranchée le 24/10 par le mainteneur, aucune version
+  intermédiaire avec le repli Python (PR 18 faite, #138).
 - **Signature** du binaire `telmi2flam.exe` (SmartScreen, antivirus).
