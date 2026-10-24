@@ -1578,6 +1578,10 @@ mod tests {
     /// Verrou transitoire (antivirus) : le renommage est relancé ; persistant, il échoue
     /// proprement après 6 tentatives, ancienne sortie intacte.
     #[test]
+    #[cfg_attr(
+        not(windows),
+        ignore = "relance du renommage propre à Windows (`is_transient` est faux ailleurs)"
+    )]
     fn renommage_relance() {
         let pkg = sample();
         for failures in [1u32, 5, 6] {

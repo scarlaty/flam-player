@@ -120,7 +120,7 @@ jobs:
         run: cargo clippy -p telmi2flam --all-targets --locked -- -D warnings
 
       - name: Tests
-        run: cargo test -p telmi2flam --locked
+        run: cargo test -p telmi2flam --locked --no-fail-fast
 
   # Parité avec l'oracle Python (PORT-RUST.md §4.3, #134) : corpus synthétique et matrice de
   # rééchantillonnage, générés ici (jamais commités). Échoue à la moindre divergence hors de
