@@ -134,6 +134,30 @@ pub const UNSUPPORTED_FORMAT_CODE: &str = "unsupported_format";
 /// convertisseur est écarté : il peut citer un nom de fichier de l'histoire.
 pub const UNSUPPORTED_FORMAT: &str = "Cette histoire utilise un format que le launcher ne sait pas encore convertir (image non PNG ou archive compressée en bzip2/LZMA).";
 
+/// Code d'erreur acceptable : identifiant court (`[a-z0-9_]{1,32}`). Un texte libre (nom de fichier
+/// possible) devient `unknown` : le code est journalisé et affiché (#475).
+fn clean_code(code: &str) -> bool {
+    (1..=32).contains(&code.len())
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// Message fixe d'une erreur du convertisseur, selon son code : le `message` de l'événement `error`
+/// n'est jamais repris (#475). Un code inconnu donne un texte générique.
+fn fixed_message(code: &str) -> String {
+    match code {
+        UNSUPPORTED_FORMAT_CODE => UNSUPPORTED_FORMAT.to_string(),
+        "archive_unreadable" => "l'archive de l'histoire est illisible".into(),
+        "not_telmi" => "l'archive n'est pas une histoire Telmi".into(),
+        "invalid_content" => "le contenu de l'histoire est invalide".into(),
+        "missing_asset" => "une image ou un son de l'histoire est absent de l'archive".into(),
+        "output_error" => "le fichier converti n'a pas pu être écrit".into(),
+        "internal_error" => "erreur interne du convertisseur".into(),
+        _ => "le convertisseur a signalé une erreur".into(),
+    }
+}
+
 /// Version lue dans l'événement `start` : texte court, sans caractère de contrôle.
 fn clean_version(raw: &str) -> Option<String> {
     let v = raw.trim();
@@ -355,10 +379,10 @@ fn remove_any(path: &Path) {
     }
 }
 
-/// Erreur rapportée par l'événement `error` du convertisseur.
+/// Erreur rapportée par l'événement `error` du convertisseur : seul le code est retenu (le
+/// `message` n'est jamais lu, #475).
 struct Reported {
     code: String,
-    message: String,
 }
 
 /// Arguments du convertisseur : jamais d'interpolation de texte libre (le remplissage vient d'un
@@ -500,8 +524,9 @@ pub async fn convert(
             }
             Some("error") => {
                 reported = Some(Reported {
-                    code: text("code").unwrap_or_else(|| "unknown".into()),
-                    message: text("message").unwrap_or_default(),
+                    code: text("code")
+                        .filter(|c| clean_code(c))
+                        .unwrap_or_else(|| "unknown".into()),
                 });
             }
             _ => {}
@@ -527,13 +552,9 @@ pub async fn convert(
         }
         (_, _, Some(r)) => {
             remove_any(req.output);
-            // Format non pris en charge : message fixe, jamais celui du convertisseur (il peut
-            // citer un nom de fichier de l'histoire).
-            let message = if r.code == UNSUPPORTED_FORMAT_CODE {
-                UNSUPPORTED_FORMAT.to_string()
-            } else {
-                r.message
-            };
+            // Message fixe par code, jamais celui du convertisseur (il peut citer un nom de
+            // fichier de l'histoire) : ni montré, ni journalisé (#475).
+            let message = fixed_message(&r.code);
             Err(AppError::Conversion {
                 code: r.code,
                 message,
@@ -806,6 +827,14 @@ b"
         }
     }
 
+    #[test]
+    fn un_code_libre_n_est_pas_un_code() {
+        assert!(clean_code("missing_asset"));
+        assert!(!clean_code("missing s1.png"));
+        assert!(!clean_code(""));
+        assert!(!clean_code(&"a".repeat(33)));
+    }
+
     /// `unsupported_format` (code 7, D4) : erreur finale au message fixe et non technique, sans
     /// second lancement ; ni le message du convertisseur ni le nom de l'archive ne sont
     /// journalisés.
@@ -1054,7 +1083,7 @@ b"
 /// commande est celle du binaire (`<exe> <entrée> -o <sortie> … --cancel-on-stdin-eof`). Seule la
 /// fin de stdin annule (tout signal est ignoré), comme le binaire avec `--cancel-on-stdin-eof`.
 ///
-/// Modes : `ok` (par défaut), `noise` (lignes non JSON, stderr en cp1252), `versioned`
+/// Modes : `ok` (par défaut), `noise` (lignes non JSON sur stdout), `versioned`
 /// (`start.version`), `fail` (`missing_asset`, 5), `crash` (code 6 sans événement `error`),
 /// `slow` (annulation polie), `stubborn` (sourd à l'annulation), `tree` (sourd, avec un
 /// sous-processus), `err:<code>:<sortie>` (événement `error` puis sortie), `abort` (code 101
@@ -1090,7 +1119,13 @@ def launcher_pid():
                     ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
     k = ctypes.windll.kernel32
     k.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    k.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
     snap = k.CreateToolhelp32Snapshot(2, 0)
+    if snap is None or snap == ctypes.c_void_p(-1).value:
+        return os.getppid()
     procs = {}
     e = PE()
     e.dwSize = ctypes.sizeof(PE)
@@ -1112,7 +1147,6 @@ pid = launcher_pid()
 part = "%s.%d.part" % (out, pid)
 if mode == "noise":
     print("ceci n'est pas du JSON", flush=True)
-    sys.stderr.buffer.write("caf\xe9 en cp1252\n".encode("cp1252")); sys.stderr.flush()
 extra = {"version": "9.9.9-test"} if mode == "versioned" else {}
 if mode == "tree":
     import subprocess
