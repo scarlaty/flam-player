@@ -34,6 +34,8 @@ use crate::AppResult;
 pub const THUMB_DIM: u32 = 96;
 /// Taille maximale du PNG d'une vignette, en octets (avant l'encodage en base 64).
 pub const MAX_THUMB_BYTES: usize = 64 * 1024;
+/// Décodages d'aperçus simultanés au plus.
+const DECODERS: usize = 2;
 
 /// Vignette (URL `data:image/png`) de la pochette `bytes` (JPEG, PNG ou WebP), décodée par
 /// `convert`. `None` si l'image est illisible ou si la vignette dépasse [`MAX_THUMB_BYTES`].
@@ -116,6 +118,12 @@ pub async fn pack_episode_thumbnail(
     let key = EntryKey::of(&episode.source_id, &found);
     let access = CacheAccess::new(Arc::new(LiveLocks(app)), root, [episode.source_id.clone()]);
     let Some(bytes) = access.cached_image(&key, MAX_INPUT_BYTES as u64).await else {
+        return Ok(None);
+    };
+    // Au plus DECODERS décodages à la fois (chaque aperçu lance un processus enfant) : une
+    // catégorie de 40 épisodes ne déclenche pas 40 décodeurs simultanés.
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(DECODERS);
+    let Ok(_permit) = SLOTS.acquire().await else {
         return Ok(None);
     };
     let url = blocking(move || {

@@ -104,7 +104,14 @@ export function CategoryImageChoice({
     ...candidates.map((c, i) => ({
       value: `e${i}`,
       label: (titleCount.get(c.title) ?? 0) > 1 ? text.ranked(c.title, i + 1) : c.title,
-      media: <EpisodeThumb episode={c.ref} title={c.title} load={thumbnailOf} />,
+      media: (
+        <EpisodeThumb
+          key={`${c.ref.source_id}/${c.ref.episode_id}`}
+          episode={c.ref}
+          title={c.title}
+          load={thumbnailOf}
+        />
+      ),
     })),
   ];
   // Choix périmé (épisode qui n'est plus dans la catégorie) : affiché comme automatique.
