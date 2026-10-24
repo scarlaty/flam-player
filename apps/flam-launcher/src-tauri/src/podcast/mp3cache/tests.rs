@@ -1,8 +1,9 @@
 //! Cache des MP3 convertis (#460) : clé, lecture, écriture atomique, invalidation, éviction,
 //! injection de pannes (fichier tronqué ou altéré, métadonnées illisibles, disque plein, purge
-//! de la source pendant une création).
+//! de la source pendant une création, annulation, jonction sur le chemin du cache).
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use super::*;
 
@@ -343,7 +344,7 @@ async fn fichier_tronque_ou_altere_jamais_servi() {
 }
 
 /// Placeur qui écrit un début de fichier puis échoue comme un disque plein.
-fn disk_full(src: &Path, dest: &Path) -> io::Result<()> {
+fn disk_full(src: &Path, dest: &Path, _: &Cancel) -> io::Result<()> {
     let bytes = std::fs::read(src)?;
     std::fs::write(dest, &bytes[..bytes.len() / 2])?;
     Err(io::Error::new(io::ErrorKind::StorageFull, "disque plein"))
@@ -400,8 +401,7 @@ async fn disque_plein_a_la_lecture_donne_un_episode_absent() {
 #[tokio::test]
 async fn copie_sans_lien_physique_fonctionne() {
     let fx = Fixture::new();
-    let copy_only: Arc<Placer> =
-        Arc::new(|src: &Path, dest: &Path| std::fs::copy(src, dest).map(|_| ()));
+    let copy_only: Arc<Placer> = Arc::new(copy_file);
     let access = fx.access().with_placer(copy_only);
     let ep = episode("g1");
     fx.store(&access, "s1", &ep, BODY).await;
@@ -538,4 +538,376 @@ async fn verrou_d_une_source_purgee_refuse() {
         .lock_source("s1", service.generation("s1"))
         .await
         .is_some());
+}
+
+// --- Suivis de la revue (#466) --------------------------------------------------------
+
+/// Lien de dossier sans privilège : jonction (`mklink /J`) sous Windows, lien symbolique
+/// ailleurs.
+fn link_dir(link: &Path, target: &Path) {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link.to_string_lossy().replace('/', "\\"))
+            .arg(target.to_string_lossy().replace('/', "\\"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "mklink /J : {out:?}");
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+/// Noms des fichiers d'un dossier, triés.
+fn names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Panne : `podcasts/<id>/` ou `podcasts/` remplacé par une jonction vers un dossier hors du
+/// cache. Rien n'y est lu, écrit ni supprimé, même au-delà du plafond.
+#[tokio::test]
+async fn jonction_sur_le_chemin_du_cache_jamais_suivie() {
+    for linked in ["source", "podcasts"] {
+        let fx = Fixture::new();
+        let ep = episode("g1");
+        fx.store(&fx.access(), "s1", &ep, BODY).await;
+        // Reste qui serait supprimé dans un vrai dossier.
+        std::fs::write(
+            fx.mp3_dir("s1")
+                .join(format!("{}.mp3.part", episode_id("p"))),
+            b"x",
+        )
+        .unwrap();
+        // Le dossier part hors du cache ; une jonction prend sa place.
+        let outside = fx.dir.path().join("dehors");
+        std::fs::create_dir_all(&outside).unwrap();
+        let moved = match linked {
+            "source" => source_dir(&fx.root(), "s1").unwrap(),
+            _ => fx.root().join(CACHE_SUBDIR),
+        };
+        let target = outside.join("cible");
+        std::fs::rename(&moved, &target).unwrap();
+        link_dir(&moved, &target);
+        let real_mp3 = match linked {
+            "source" => target.join(CACHE_DIR),
+            _ => target.join("s1").join(CACHE_DIR),
+        };
+        let before = names(&real_mp3);
+        assert_eq!(before.len(), 4, "{linked} : {before:?}");
+
+        let access = fx.access().with_max_bytes(0);
+        assert!(
+            access
+                .lookup(vec![fx.wanted(0, "s1", &ep)], 200)
+                .await
+                .is_empty(),
+            "{linked} : servi à travers une jonction"
+        );
+        let (mp3_src, img) = fx.converted("g2", BODY);
+        let n = access
+            .store(
+                vec![Store {
+                    key: EntryKey::of("s1", &episode("g2")),
+                    mp3: mp3_src,
+                    image: Some(img),
+                }],
+                200,
+            )
+            .await;
+        assert_eq!(n, 0, "{linked} : écrit à travers une jonction");
+        access.evict(HashSet::new()).await;
+        assert_eq!(
+            names(&real_mp3),
+            before,
+            "{linked} : dossier extérieur modifié"
+        );
+        // Date d'usage non renouvelée hors du cache.
+        let meta: EntryMeta = serde_json::from_slice(
+            &std::fs::read(real_mp3.join(format!("{}.json", episode_id("g1")))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta.used_at, 100, "{linked}");
+        // L'autre source (vrai dossier) reste utilisable quand seule `s1` est liée.
+        if linked == "source" {
+            fx.store(&fx.access(), "s2", &ep, BODY).await;
+        }
+    }
+}
+
+/// Le contrôle refuse aussi un fichier à la place d'un dossier, et ne crée les dossiers
+/// manquants qu'en écriture.
+#[test]
+fn chemin_du_cache_controle_dossier_par_dossier() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("cache");
+    assert!(real_mp3_dir(&root, "s1", false).unwrap().is_none());
+    assert!(!root.exists(), "rien n'est créé en lecture");
+    let mp3 = real_mp3_dir(&root, "s1", true).unwrap().unwrap();
+    assert!(is_real_dir(&mp3));
+    assert_eq!(real_mp3_dir(&root, "s1", false).unwrap(), Some(mp3));
+    // Un fichier à la place de `podcasts/s2/`.
+    std::fs::write(root.join(CACHE_SUBDIR).join("s2"), b"x").unwrap();
+    assert!(real_mp3_dir(&root, "s2", true).is_err());
+    assert!(real_mp3_dir(&root, "s2", false).is_err());
+    // Identifiant invalide.
+    assert!(real_mp3_dir(&root, "../s1", true).is_err());
+}
+
+/// Placeur qui place le fichier puis lève l'annulation (annulation pendant la copie).
+fn cancel_after_place(tx: Arc<watch::Sender<bool>>) -> Arc<Placer> {
+    Arc::new(move |src: &Path, dest: &Path, cancel: &Cancel| {
+        let placed = link_or_copy(src, dest, cancel);
+        tx.send_replace(true);
+        placed
+    })
+}
+
+/// Panne : annulation pendant la lecture. L'épisode en cours n'est pas servi, les suivants ne
+/// sont pas lus, et aucune entrée n'est supprimée : toutes restent servies ensuite.
+#[tokio::test]
+async fn lecture_annulee_ne_supprime_aucune_entree() {
+    let fx = Fixture::new();
+    let (g1, g2) = (episode("g1"), episode("g2"));
+    fx.store(&fx.access(), "s1", &g1, BODY).await;
+    fx.store(&fx.access(), "s1", &g2, BODY).await;
+    let before = fx.files("s1");
+
+    // Annulation déjà demandée : rien n'est lu.
+    let (tx, rx) = watch::channel(true);
+    let access = fx.access().with_cancel(rx);
+    let wanted = || vec![fx.wanted(0, "s1", &g1), fx.wanted(1, "s1", &g2)];
+    assert!(access.lookup(wanted(), 200).await.is_empty());
+    assert_eq!(fx.files("s1"), before);
+
+    // Annulation levée pendant la copie du premier MP3 : sa pochette n'est pas vérifiée
+    // (hachage interrompu), il n'est pas servi, le second n'est pas lu.
+    tx.send_replace(false);
+    let tx = Arc::new(tx);
+    let access = fx
+        .access()
+        .with_cancel(tx.subscribe())
+        .with_placer(cancel_after_place(tx.clone()));
+    assert!(access.lookup(wanted(), 200).await.is_empty());
+    assert_eq!(fx.files("s1"), before, "entrée supprimée sur annulation");
+    assert!(!fx.work().join("cache-0000.mp3").exists(), "copie laissée");
+
+    // Hachage interrompu dès le premier bloc : entrée non jugée, gardée.
+    tx.send_replace(true);
+    let cancel = Cancel::new(tx.subscribe());
+    let op = Op {
+        now: 300,
+        place: &link_or_copy,
+        cancel: &cancel,
+        max_entry_bytes: u64::MAX,
+    };
+    assert!(lookup_one(&fx.mp3_dir("s1"), &fx.wanted(0, "s1", &g1), &op).is_none());
+    assert_eq!(fx.files("s1"), before);
+
+    // Sans annulation, tout est servi.
+    assert_eq!(fx.access().lookup(wanted(), 400).await.len(), 2);
+}
+
+/// Panne : annulation pendant l'écriture. Rien de l'entrée ne reste (ni `.part`, ni
+/// métadonnées) ; une annulation demandée avant le début garde l'ancienne entrée.
+#[tokio::test]
+async fn ecriture_annulee_ne_laisse_rien() {
+    let fx = Fixture::new();
+    let ep = episode("g1");
+    let tx = Arc::new(watch::channel(false).0);
+    let access = fx
+        .access()
+        .with_cancel(tx.subscribe())
+        .with_placer(cancel_after_place(tx.clone()));
+    let (mp3, img) = fx.converted("g1", BODY);
+    let store = || {
+        vec![Store {
+            key: EntryKey::of("s1", &ep),
+            mp3: mp3.clone(),
+            image: Some(img.clone()),
+        }]
+    };
+    assert_eq!(access.store(store(), 100).await, 0);
+    assert!(fx.files("s1").is_empty(), "{:?}", fx.files("s1"));
+
+    // Ancienne entrée, puis écriture d'une nouvelle version déjà annulée : l'ancienne reste.
+    fx.store(&fx.access(), "s1", &ep, b"ID3 ancien").await;
+    let before = fx.files("s1");
+    let (_tx, rx) = watch::channel(true);
+    assert_eq!(fx.access().with_cancel(rx).store(store(), 200).await, 0);
+    assert_eq!(fx.files("s1"), before);
+    let hits = fx.access().lookup(vec![fx.wanted(0, "s1", &ep)], 300).await;
+    assert_eq!(std::fs::read(&hits[0].mp3).unwrap(), b"ID3 ancien");
+}
+
+/// Copie de repli (sans lien physique) et hachage : interrompus par l'annulation, la copie
+/// partielle est supprimée.
+#[test]
+fn copie_et_hachage_annulables() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src.mp3");
+    std::fs::write(&src, vec![7u8; 3 * CHUNK + 1]).unwrap();
+    let dest = dir.path().join("dest.mp3");
+    let (tx, rx) = watch::channel(true);
+    let cancel = Cancel::new(rx);
+    let err = copy_file(&src, &dest, &cancel).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+    assert!(!dest.exists());
+    let err = measure(&src, &cancel).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+    tx.send_replace(false);
+    copy_file(&src, &dest, &cancel).unwrap();
+    assert_eq!(
+        measure(&dest, &cancel).unwrap(),
+        measure(&src, &Cancel::default()).unwrap()
+    );
+}
+
+/// Panne : entrée plus grande que la borne d'un épisode (borne abaissée depuis l'écriture) :
+/// jamais servie, supprimée.
+#[tokio::test]
+async fn entree_trop_volumineuse_invalidee() {
+    let fx = Fixture::new();
+    let ep = episode("g1");
+    fx.store(&fx.access(), "s1", &ep, BODY).await;
+    let access = fx.access().with_max_entry_bytes(BODY.len() as u64 - 1);
+    assert!(access
+        .lookup(vec![fx.wanted(0, "s1", &ep)], 200)
+        .await
+        .is_empty());
+    assert!(fx.files("s1").is_empty(), "{:?}", fx.files("s1"));
+}
+
+/// Seuls `<id>.mp3`, `<id>.img` et `<id>.json` comptent comme fichiers d'entrée : une autre
+/// extension est un reste, supprimé à l'éviction sans toucher à l'entrée.
+#[tokio::test]
+async fn extension_inconnue_est_un_reste() {
+    let fx = Fixture::new();
+    let ep = episode("g1");
+    fx.store(&fx.access(), "s1", &ep, BODY).await;
+    let before = fx.files("s1");
+    let dir = fx.mp3_dir("s1");
+    let id = episode_id("g1");
+    std::fs::write(dir.join(format!("{id}.exe")), b"x").unwrap();
+    std::fs::write(dir.join(format!("{}.txt", episode_id("seul"))), b"x").unwrap();
+    std::fs::write(dir.join(format!("{id}.mp3.bak")), b"x").unwrap();
+    let survey = scan(&fx.root());
+    assert_eq!(survey.entries.len(), 1);
+    assert_eq!(
+        survey.entries[0].bytes,
+        (BODY.len() + b"\x89PNG image".len()) as u64
+    );
+    fx.access().evict(HashSet::new()).await;
+    assert_eq!(fx.files("s1"), before);
+    assert_eq!(
+        fx.access()
+            .lookup(vec![fx.wanted(0, "s1", &ep)], 200)
+            .await
+            .len(),
+        1
+    );
+}
+
+/// Les constantes de la règle D6 sont figées avec `AUDIO_PROFILE` : en changer une impose
+/// d'incrémenter le profil (toutes les entrées deviennent invalides) et de mettre ce test à
+/// jour.
+#[test]
+fn regle_d6_figee_avec_le_profil() {
+    use crate::podcast::audio::{MAX_KBPS, MIN_KBPS, TARGET_SAMPLE_RATE};
+    assert_eq!(
+        (AUDIO_PROFILE, TARGET_SAMPLE_RATE, MIN_KBPS, MAX_KBPS),
+        ("d6-1", 44_100, 64, 192),
+        "règle D6 changée : incrémenter AUDIO_PROFILE"
+    );
+}
+
+/// Verrous réels : le cache prend le verrou de la source du `PodcastService` (celui des
+/// rafraîchissements) et respecte sa génération (purge).
+#[tokio::test]
+async fn verrous_du_service_partages_avec_le_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("cache");
+    let service = Arc::new(
+        super::super::source::PodcastService::new(
+            super::super::net::NetPolicy::strict(),
+            Arc::default(),
+        )
+        .unwrap(),
+    );
+    let access = CacheAccess::new(service.clone(), root.clone(), ["s1".to_string()]);
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let mp3 = work.join("a.mp3");
+    std::fs::write(&mp3, BODY).unwrap();
+    let ep = episode("g1");
+    let store = || {
+        vec![Store {
+            key: EntryKey::of("s1", &ep),
+            mp3: mp3.clone(),
+            image: None,
+        }]
+    };
+    // Rafraîchissement en cours (verrou tenu) : l'écriture attend.
+    let held = service
+        .lock_source("s1", service.generation("s1"))
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), access.store(store(), 100))
+            .await
+            .is_err(),
+        "écriture faite pendant un rafraîchissement"
+    );
+    drop(held);
+    assert_eq!(access.store(store(), 100).await, 1);
+    // Source purgée : plus rien n'est écrit ni recréé.
+    service.purge_source(&root, "s1").await.unwrap();
+    assert_eq!(access.store(store(), 200).await, 0);
+    assert!(!source_dir(&root, "s1").unwrap().exists());
+}
+
+/// Absence d'interblocage : la tâche d'installation tient le portillon du cache en lecture et
+/// un « Vider le cache » attend l'écriture ; le verrou de la source reste obtenu.
+#[tokio::test]
+async fn verrou_de_source_obtenu_sous_portillon_avec_vidage_en_attente() {
+    let gate: Arc<tokio::sync::RwLock<()>> = Arc::default();
+    let service = super::super::source::PodcastService::new(
+        super::super::net::NetPolicy::strict(),
+        gate.clone(),
+    )
+    .unwrap();
+    let installing = gate.clone().read_owned().await;
+    let clearing = tokio::spawn({
+        let gate = gate.clone();
+        async move {
+            let _write = gate.write().await;
+        }
+    });
+    // Le vidage est en attente : une nouvelle prise en lecture serait bloquée.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), gate.read())
+            .await
+            .is_err(),
+        "vidage pas encore en attente"
+    );
+    let guard = tokio::time::timeout(
+        Duration::from_secs(5),
+        service.lock_source("s1", service.generation("s1")),
+    )
+    .await
+    .expect("interblocage : verrou de source jamais obtenu");
+    assert!(guard.is_some());
+    drop(guard);
+    drop(installing);
+    tokio::time::timeout(Duration::from_secs(5), clearing)
+        .await
+        .unwrap()
+        .unwrap();
 }

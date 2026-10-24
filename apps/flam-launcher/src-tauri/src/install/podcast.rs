@@ -415,6 +415,40 @@ async fn lookup_cache(
         .collect()
 }
 
+/// Télécharge les images `(rang, URL, destination)`, `concurrency` à la fois ; rend celles
+/// obtenues, par rang. La première erreur (disque, annulation) arrête les autres.
+async fn fetch_images(
+    backend: &Arc<dyn PackBackend>,
+    jobs: Vec<(usize, String, PathBuf)>,
+    concurrency: usize,
+    cancel: &watch::Receiver<bool>,
+) -> AppResult<Vec<(usize, PathBuf)>> {
+    let mut jobs = jobs.into_iter();
+    let mut running = tokio::task::JoinSet::new();
+    let mut fetched = Vec::new();
+    loop {
+        while running.len() < concurrency.max(1) {
+            let Some((n, url, dest)) = jobs.next() else {
+                break;
+            };
+            let (backend, cancel) = (backend.clone(), cancel.clone());
+            running.spawn(async move {
+                let ok = backend.fetch_image(&url, &dest, cancel).await?;
+                AppResult::Ok(ok.then_some((n, dest)))
+            });
+        }
+        // `running` abandonné sur erreur : les téléchargements restants sont interrompus.
+        let Some(done) = running.join_next().await else {
+            break;
+        };
+        let done =
+            done.map_err(|_| AppError::Io(std::io::Error::other("téléchargement interrompu")))?;
+        fetched.extend(done?);
+    }
+    fetched.sort_unstable();
+    Ok(fetched)
+}
+
 /// Supprime le dossier de travail (hors du runtime asynchrone : `Workdir::finish`).
 pub(super) async fn finish_workdir(workdir: Workdir) {
     if let Err(err) = workdir.finish().await {
@@ -516,7 +550,9 @@ impl InstallService {
 
         // Cache des MP3 (#460) : générations des sources lues avant le chargement des flux
         // (une source supprimée ensuite n'est jamais recréée sur le disque).
-        let cache = backend.mp3_cache(tc.cache_root.clone(), job.composition.source_ids());
+        let cache = backend
+            .mp3_cache(tc.cache_root.clone(), job.composition.source_ids())
+            .map(|c| c.with_cancel(cancel.clone()));
         // Revalidation complète (reprise : flux changé entre-temps).
         let feeds = backend.feeds(&job.composition).await?;
         let report = pack::validate(&job.composition, &feeds);
@@ -698,11 +734,13 @@ impl InstallService {
         }
 
         // Pochettes des épisodes servis par le cache qui n'y ont pas la leur (absente ou
-        // périmée) : téléchargées seules (D13 : un échec donne l'image de repli).
+        // périmée) : téléchargées `concurrency` à la fois (D13 : un échec donne l'image de
+        // repli).
         let mut hit_images: BTreeMap<usize, PathBuf> = BTreeMap::new();
         let mut to_cache: Vec<mp3cache::Store> = Vec::new();
         let mut hit_ranks: Vec<usize> = hits.keys().copied().collect();
         hit_ranks.sort_unstable();
+        let mut missing: Vec<(usize, String, PathBuf)> = Vec::new();
         for &n in &hit_ranks {
             match (&hits[&n].image, &chosen[n].episode.image) {
                 (Some(path), _) => {
@@ -710,18 +748,19 @@ impl InstallService {
                 }
                 (None, Some(url)) => {
                     let dest = workdir.path().join(format!("cache-{n:04}.img"));
-                    if backend.fetch_image(url, &dest, cancel.clone()).await? {
-                        // Remise en cache avec la nouvelle pochette (le MP3 est relié).
-                        to_cache.push(mp3cache::Store {
-                            key: keys[n].clone(),
-                            mp3: hits[&n].mp3.clone(),
-                            image: Some(dest.clone()),
-                        });
-                        hit_images.insert(n, dest);
-                    }
+                    missing.push((n, url.clone(), dest));
                 }
                 (None, None) => {}
             }
+        }
+        for (n, dest) in fetch_images(backend, missing, concurrency, cancel).await? {
+            // Remise en cache avec la nouvelle pochette (le MP3 est relié).
+            to_cache.push(mp3cache::Store {
+                key: keys[n].clone(),
+                mp3: hits[&n].mp3.clone(),
+                image: Some(dest.clone()),
+            });
+            hit_images.insert(n, dest);
         }
         if *cancel.borrow() {
             return Err(AppError::Cancelled);
@@ -753,6 +792,10 @@ impl InstallService {
                 audio_total += hit.mp3_bytes;
                 kept.push((n, hit.mp3.clone(), hit_images.get(&n).cloned()));
             } else {
+                tracing::warn!(
+                    episode = n,
+                    "épisode retiré du pack : MP3 en cache trop volumineux"
+                );
                 dropped.push(n);
             }
         }
