@@ -51,6 +51,10 @@ pub mod resample;
 pub mod runtime;
 pub mod text;
 mod text_tables;
+mod unbzip2;
+mod unlzma;
+mod unzstd;
+mod zipcodec;
 mod zipread;
 
 /// Version de la crate, affichée par `telmi2flam --version`.
