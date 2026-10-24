@@ -170,6 +170,16 @@ jobs:
           # Workspace Cargo à la racine : un seul `target/` partagé avec crates/telmi2flam.
           workspaces: ". -> target"
 
+      # Python de développement seulement (faux convertisseur des tests, oracle de l'archive des
+      # podcasts) : le launcher ne livre plus de Python (#138). Versions de l'oracle épinglées,
+      # source unique : tools/telmi2flam/ORACLE-VERSIONS.txt (vérifiée par test_parity.py).
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.8"
+
+      - name: Installer les dépendances de l'oracle
+        run: pip install "Pillow==12.3.0" "lupa==2.8"
+
       - name: Installer les dépendances
         run: npm ci
 
@@ -204,17 +214,19 @@ jobs:
           FLAM_REQUIRE_PATH_PYTHON: '1'
         run: cargo test
 
-      - name: Convertisseur embarqué (Python + Pillow, SHA-256 vérifiés)
+      # Convertisseur livré : le seul binaire Rust, sans Python ni Pillow (#138).
+      - name: Convertisseur embarqué (telmi2flam.exe, sans Python)
         run: npm run build:converter
 
-      # Archive Telmi d'un pack de podcasts (#216) convertie par telmi2flam.py avec le Python
-      # embarqué, puis validate.py : exigé ici (le test est ignoré sans Python dans `cargo test`).
-      - name: Archive Telmi des podcasts convertie par le Python embarqué
+      # Archive Telmi d'un pack de podcasts (#216) convertie par le telmi2flam.py de `tools/`
+      # (oracle de développement, Python et Pillow épinglés ci-dessus), puis validate.py : exigé
+      # ici (le test est ignoré sans `FLAM_TEST_PYTHON` dans `cargo test`).
+      - name: Archive Telmi des podcasts convertie par l'oracle Python
         working-directory: apps/flam-launcher/src-tauri
         env:
           FLAM_TEST_REQUIRE_PYTHON: "1"
         run: |
-          export FLAM_TEST_PYTHON="$(cygpath -w "$GITHUB_WORKSPACE/apps/flam-launcher/build/telmi2flam/python/python.exe")"
+          export FLAM_TEST_PYTHON="$(cygpath -w "$(command -v python)")"
           out="$(cargo test --lib podcast::archive::tests::python_convertit_et_valide_l_archive -- --exact 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
           # Un filtre qui ne correspond plus à aucun test (renommage) donnerait « 0 passed » en vert.
@@ -244,14 +256,13 @@ jobs:
         run: 'cargo test --lib -- ffmpeg:: podcast::audio::'
 
       # Pack de podcasts de bout en bout (#426) : serveur HTTP local de test, ffmpeg construit
-      # ci-dessus, Python embarqué et vrai telmi2flam.py, jusqu'à l'histoire publiée.
-      - name: Pack de podcasts de bout en bout (ffmpeg et Python embarqués)
+      # ci-dessus et vrai telmi2flam.exe embarqué, jusqu'à l'histoire publiée.
+      - name: Pack de podcasts de bout en bout (ffmpeg et telmi2flam.exe embarqués)
         working-directory: apps/flam-launcher/src-tauri
         env:
           FLAM_REQUIRE_FFMPEG: '1'
-          FLAM_TEST_REQUIRE_PYTHON: '1'
+          FLAM_TEST_REQUIRE_CONVERTER: '1'
         run: |
-          export FLAM_TEST_PYTHON="$(cygpath -w "$GITHUB_WORKSPACE/apps/flam-launcher/build/telmi2flam/python/python.exe")"
           out="$(cargo test --lib install::tests::pack_tests::bout_en_bout_pack_reel_jusqu_a_la_bibliotheque -- --exact 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
           # Un filtre qui ne correspond plus à aucun test (renommage) donnerait « 0 passed » en vert.
@@ -305,10 +316,17 @@ jobs:
           $p = Start-Process -FilePath $setup.FullName -ArgumentList @('/S', "/D=$dest") -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "installateur : code $($p.ExitCode)" }
           foreach ($f in 'flam-launcher.exe', 'flam-player.exe', 'SDL2.dll', 'LICENSES.md', 'uninstall.exe',
-              'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.py', 'telmi2flam/telmi2flam.exe', 'telmi2flam/python/python.exe', 'telmi2flam/runtime/script', 'telmi2flam/runtime/manifest.txt', 'licenses/SDL2-LICENSE.txt',
+              'vcruntime140.dll', 'THIRD-PARTY-NOTICES.txt', 'licenses/OFL-Nunito.txt', 'licenses/OFL-Montserrat.txt', 'telmi2flam/telmi2flam.exe', 'telmi2flam/LICENSES.md', 'telmi2flam/BUILD.txt', 'licenses/SDL2-LICENSE.txt',
               'ffmpeg/ffmpeg.exe', 'ffmpeg/ffprobe.exe', 'ffmpeg/LICENSE', 'ffmpeg/LICENSE-LAME', 'ffmpeg/LICENSE-MINGW-RUNTIME', 'ffmpeg/BUILD.txt', 'ffmpeg/ffmpeg.sha256') {
             if (-not (Test-Path (Join-Path $dest $f))) { throw "fichier absent de l'installation : $f" }
           }
+          # Installateur sans Python ni Pillow ni scripts du convertisseur (#138) : le dossier
+          # telmi2flam/ ne contient que le binaire Rust, ses licences et BUILD.txt.
+          foreach ($f in 'telmi2flam/python', 'telmi2flam/telmi2flam.py', 'telmi2flam/lif.py', 'telmi2flam/mp3map.py', 'telmi2flam/engine', 'telmi2flam/runtime') {
+            if (Test-Path (Join-Path $dest $f)) { throw "fichier retiré toujours présent dans l'installation : $f" }
+          }
+          $extra = @(Get-ChildItem (Join-Path $dest 'telmi2flam') -Recurse -Force | Where-Object { $_.Name -notin @('telmi2flam.exe', 'LICENSES.md', 'BUILD.txt') })
+          if ($extra.Count -gt 0) { throw "fichiers inattendus dans telmi2flam/ : $($extra.FullName -join ', ')" }
           # ffmpeg installé : ni GPL ni nonfree, libmp3lame présent (le script de build l'a déjà contrôlé,
           # ici on vérifie ce que l'installateur a réellement déposé).
           $ff = Join-Path $dest 'ffmpeg/ffmpeg.exe'

@@ -32,6 +32,14 @@ export const fr = {
       })[kind] ?? "Une erreur est survenue",
     loadFailed: "Impossible de charger les données.",
     retry: "Réessayer",
+    /**
+     * Message montré pour un code d'erreur du convertisseur (`TaskError.code`, `kind` « conversion »),
+     * à la place du texte brut du backend. Code absent de la table : le message du backend.
+     */
+    conversion: {
+      unsupported_format:
+        "Cette histoire utilise un format que le launcher ne sait pas encore convertir (image non PNG ou archive compressée en bzip2/LZMA).",
+    } as Record<string, string>,
   },
   recovery: {
     title: (file: string) => `Le fichier ${file} était illisible`,

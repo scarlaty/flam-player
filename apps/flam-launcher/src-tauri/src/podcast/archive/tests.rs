@@ -646,41 +646,20 @@ fn convertie_par_la_crate_telmi2flam_sans_avertissement() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Convertisseur Python livré (`tools/telmi2flam/telmi2flam.py`) et `validate.py`
+// Outils Python de développement (`tools/telmi2flam/telmi2flam.py`, `validate.py`) : oracle
 // ---------------------------------------------------------------------------------------------
 
-/// Python du convertisseur : `FLAM_TEST_PYTHON`, sinon celui de l'application installée
-/// (`%LOCALAPPDATA%\Flam Launcher\telmi2flam\python\python.exe`).
+/// Python de développement (Pillow et lupa installés) : `FLAM_TEST_PYTHON`. Le launcher ne livre
+/// plus de Python (#138).
 fn python() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("FLAM_TEST_PYTHON") {
-        return Some(PathBuf::from(p));
-    }
-    let local = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
-        .join("Flam Launcher")
-        .join("telmi2flam")
-        .join("python")
-        .join("python.exe");
-    local.is_file().then_some(local)
+    std::env::var_os("FLAM_TEST_PYTHON").map(PathBuf::from)
 }
 
 fn tools_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/telmi2flam")
 }
 
-/// `telmi2flam.py` à lancer : celui voisin du Python embarqué (`<racine>/python/python.exe` et
-/// `<racine>/telmi2flam.py`, comme `install/convert.rs`), car le `._pth` du Python y importe
-/// `lif` et `mp3map` ; la copie de `tools/` ne sert qu'à défaut (mélange de versions sinon).
-/// `validate.py` reste pris dans `tools/`.
-fn converter_script(python: &Path) -> PathBuf {
-    python
-        .parent()
-        .and_then(Path::parent)
-        .map(|root| root.join("telmi2flam.py"))
-        .filter(|p| p.is_file())
-        .unwrap_or_else(|| tools_dir().join("telmi2flam.py"))
-}
-
-/// Lance un script Python comme le launcher (`install/convert.rs` : `-E -s -B -X utf8`).
+/// Lance un script Python en mode isolé de l'environnement (`-E -s -B -X utf8`).
 fn run_py(python: &Path, cwd: &Path, args: &[&std::ffi::OsStr]) -> (i32, String, String) {
     let out = Command::new(python)
         .args(["-E", "-s", "-B", "-X", "utf8"])
@@ -696,9 +675,9 @@ fn run_py(python: &Path, cwd: &Path, args: &[&std::ffi::OsStr]) -> (i32, String,
     )
 }
 
-/// Critère de #216 : l'archive est lue (`--info`) et convertie par le convertisseur Python
-/// livré, sans avertissement, et le paquet passe `validate.py`. Ignoré si Python est absent,
-/// sauf avec `FLAM_TEST_REQUIRE_PYTHON=1` (CI, après `npm run build:converter`).
+/// Critère de #216 : l'archive est lue (`--info`) et convertie par le convertisseur Python de
+/// `tools/` (oracle), sans avertissement, et le paquet passe `validate.py`. Ignoré sans
+/// `FLAM_TEST_PYTHON`, sauf avec `FLAM_TEST_REQUIRE_PYTHON=1` (CI).
 #[test]
 fn python_convertit_et_valide_l_archive() {
     let Some(python) = python() else {
@@ -710,7 +689,7 @@ fn python_convertit_et_valide_l_archive() {
         return;
     };
     let tools = tools_dir();
-    let script = converter_script(&python);
+    let script = tools.join("telmi2flam.py");
     let validate = tools.join("validate.py");
     assert!(
         script.is_file() && validate.is_file(),

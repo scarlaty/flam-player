@@ -1,7 +1,13 @@
 import { expect, it } from "vitest";
 import type { InstallTask } from "../../api/install";
 import { makeEntry } from "../../test/entries";
-import { describePhase, isActiveState, taskProgress, toPanelTask } from "./taskView";
+import {
+  describePhase,
+  isActiveState,
+  taskErrorMessage,
+  taskProgress,
+  toPanelTask,
+} from "./taskView";
 
 function task(over: Partial<InstallTask>): InstallTask {
   return {
@@ -86,4 +92,25 @@ it("décrit la préparation d'un pack et signale les épisodes retirés", () => 
   );
   expect(panel.detail).toBe("1 épisode non inclus : Deux");
   expect(toPanelTask(task({ state: "preparing", percent: 40 })).state).toBe("running");
+});
+
+it("traduit unsupported_format en un message clair et non technique", () => {
+  const error = {
+    kind: "conversion",
+    message: "conversion impossible (unsupported_format) : texte du backend",
+    code: "unsupported_format",
+  };
+  const panel = toPanelTask(task({ state: "failed", error }));
+  expect(panel.detail).toBe(
+    "Cette histoire utilise un format que le launcher ne sait pas encore convertir (image non PNG ou archive compressée en bzip2/LZMA).",
+  );
+  expect(taskErrorMessage(error)).toBe(panel.detail);
+  // Les autres codes (et les autres kinds) gardent le message du backend.
+  expect(
+    taskErrorMessage({ kind: "conversion", message: "m", code: "missing_asset" }),
+  ).toBe("m");
+  expect(taskErrorMessage({ kind: "io", message: "disque", code: null })).toBe("disque");
+  expect(taskErrorMessage({ kind: "io", message: "x", code: "unsupported_format" })).toBe(
+    "x",
+  );
 });

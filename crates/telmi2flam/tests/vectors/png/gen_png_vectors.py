@@ -1,7 +1,7 @@
 """Vecteurs de parité du décodage PNG (port Rust, issue #126).
 
 L'oracle est `_open_rgba` de `tools/telmi2flam/telmi2flam.py`, exécuté avec **Python 3.14.8
-et Pillow 12.3.0** exactement (versions de `apps/flam-launcher/scripts/build-converter.ps1`) :
+et Pillow 12.3.0** exactement (versions de `tools/telmi2flam/ORACLE-VERSIONS.txt`) :
 le script refuse de tourner avec une autre version. Les PNG sont construits à la main
 (filtres, Adam7, chunks altérés), sans contenu sous licence. Déterministe : relancer le
 script ne doit rien changer (`git status` propre).

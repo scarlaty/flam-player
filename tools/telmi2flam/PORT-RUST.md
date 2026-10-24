@@ -1,10 +1,12 @@
 # Port de telmi2flam en Rust : note de conception (#22)
 
-But : livrer la surcouche flam-launcher **sans Python ni Pillow**. Aujourd'hui, l'installateur
-embarque un Python officiel, Pillow et les scripts (`apps/flam-launcher/scripts/build-converter.ps1`,
-ressource Tauri `telmi2flam/`). Le launcher lance `telmi2flam.py --progress-json` en processus
-enfant (`apps/flam-launcher/src-tauri/src/install/convert.rs`). L'annulation passe par
-`CTRL_BREAK_EVENT`, émis par un petit assistant **Python**.
+But : livrer la surcouche flam-launcher **sans Python ni Pillow**. À l'origine de cette note,
+l'installateur embarquait un Python officiel, Pillow et les scripts
+(`apps/flam-launcher/scripts/build-converter.ps1`, ressource Tauri `telmi2flam/`), le launcher
+lançait `telmi2flam.py --progress-json` en processus enfant
+(`apps/flam-launcher/src-tauri/src/install/convert.rs`) et l'annulation passait par
+`CTRL_BREAK_EVENT`, émis par un petit assistant **Python**. **État (PR 18, #138, faite)** :
+l'installateur ne livre plus que `telmi2flam.exe`, le launcher ne lance plus Python (voir §5.4).
 
 Cette note fixe le périmètre, l'architecture, les invariants, la stratégie de parité, le plan
 de bascule et le découpage en PR. Elle ne contient aucun code.
@@ -242,7 +244,7 @@ Invariants (repris de Python, à tester côté Rust) :
 ### 4.2 Images : le point dur
 
 La sortie LIF dépend du redimensionnement de **Pillow 12.3.0** (version épinglée dans
-`build-converter.ps1`) :
+`tools/telmi2flam/ORACLE-VERSIONS.txt`) :
 
 - `resize(…, LANCZOS)` sur du RGBA suit cet ordre : `convert("RGBa")` (prémultiplication par
   **tables entières**, `MULDIV255`), puis passage horizontal et passage
@@ -320,9 +322,10 @@ sont identiques à l'octet près dès la PR 6.
 2. **Parité** (PR 14, 15) : CI synthétique verte, puis campagne conforme au seuil §4.3.
 3. **Livraison en double** (PR 16) : l'installateur embarque `telmi2flam.exe` **et** le Python
    actuel. Un réglage caché de `settings.json`, `converter_engine: "python" | "rust"`, vaut
-   **`python` par défaut** (jusqu'à la PR 17). Le launcher le relit à chaque tâche (`Toolchain`). `convert.rs`
-   gère **les deux moteurs** : fermeture de stdin pour Rust, `CTRL_BREAK_HELPER` pour Python
-   (conservé jusqu'à la PR 18). Les tests de `convert.rs` et d'`install/tests.rs` sont dédoublés.
+   **`python` par défaut** (jusqu'à #137). Le launcher le relit à chaque tâche (`Toolchain`).
+   `convert.rs` gère **les deux moteurs** : fermeture de stdin pour Rust, `CTRL_BREAK_HELPER`
+   pour Python (retiré en PR 18). Les tests de `convert.rs` et d'`install/tests.rs` sont
+   dédoublés.
 4. **Bascule** (PR 17) : défaut `rust`. Pendant une version publiée, le launcher **repasse
    automatiquement sur Python** dans trois cas seulement, et l'indique dans le résultat de
    compatibilité (#20) :
@@ -345,6 +348,24 @@ sont identiques à l'octet près dès la PR 6.
    un `settings.json` qui porte `python` le garde. La crate annonce `2.0.0` (D6). Un binaire
    `telmi2flam.exe` **absent** reste `converter_unavailable`, sans repli : le repli ci-dessus ne
    couvre que l'échec d'un binaire présent, et l'installateur le livre toujours.
+
+   **État (PR 18, #138, faite)** : décision du mainteneur du 24/10 : Python est retiré tout de
+   suite, **sans version intermédiaire** publiée avec le repli (condition de la PR 18 levée).
+   La campagne #135 (30 archives sur 30 identiques, aucune délégation) ayant laissé la liste des
+   formats à prendre en charge vide, la condition D4 était satisfaite. Retirés : Python,
+   Pillow et les scripts de l'installateur (`build-converter.ps1` ne produit plus que
+   `telmi2flam.exe`, `LICENSES.md` et `BUILD.txt`), les contrôles de `launcher.yml` et
+   `release-launcher.yml` (qui vérifient aussi l'absence de Python), `CTRL_BREAK_HELPER`,
+   `convert_with_fallback`, `EngineTrace::PythonFallback`, `ChosenEngine` et
+   `ConverterEngine` (le champ `converter_engine` d'un ancien `settings.json` est ignoré, Rust
+   est utilisé). `unsupported_format` (code 7) est une **erreur finale** au message fixe et non
+   technique (« Cette histoire utilise un format que le launcher ne sait pas encore convertir
+   (image non PNG ou archive compressée en bzip2/LZMA). »), sans nom de fichier de l'histoire
+   dans les journaux. Les résultats de compatibilité enregistrés avec `engine: python` ou
+   `python_fallback` restent lisibles. Les versions de l'oracle Python (3.14.8, Pillow 12.3.0),
+   jusque-là lues dans `build-converter.ps1`, sont dans `tools/telmi2flam/ORACLE-VERSIONS.txt`.
+   Restent à faire : le réglage `python_path` et l'écran Paramètres (#139), les outils Python
+   de développement (#140).
 5. **Suppression** (PR 18 à 20). Condition préalable : tous les formats délégués que la
    campagne (#135) a comptés sont pris en charge par le Rust, puisque sans Python une
    délégation devient un échec.
@@ -391,9 +412,9 @@ sortie, pipeline d'installation, corrections issues de la campagne.
 | 13 | #133 | CLI complète : options (`-o`, `--plain`, `--keep-size`, `--allow-missing`, `--selector`, `--info`, `--version`), messages humains sur stderr, code 2 | 12 | sonnet | telmi2flam | 0,5 j |
 | 14 | #134 | CI de parité : corpus et matrice, oracle Python contre Rust, `validate.py` sur la sortie Rust | 3, 13 | sonnet | telmi2flam, ci | 0,5 j |
 | 15 | #135 | Campagne de parité sur `.cache/telmi/` (`compat.py --engine rust`, rapport, lots avec reprise, comptage des délégations par format) et corrections des écarts ; liste des formats à prendre en charge avant #138 | 14 | opus | telmi2flam | 1 j + mesures |
-| 16 | #136 | Launcher : construire et livrer `telmi2flam.exe`, réglage `converter_engine` (défaut `python`), `convert.rs` pour les deux moteurs, Job Object sans limite mémoire supplémentaire | 13 | opus | launcher-rust, ci | 1,5 j |
+| 16 | #136 | Launcher : construire et livrer `telmi2flam.exe`, réglage `converter_engine` (défaut `python` jusqu'à #137), `convert.rs` pour les deux moteurs, Job Object sans limite mémoire supplémentaire | 13 | opus | launcher-rust, ci | 1,5 j |
 | 17 | #137 | Bascule : défaut `rust`, repli Python sur `unsupported_format`, `internal_error` ou plantage seulement, trace dans le résultat de compatibilité, version selon D6 | 15, 16 | opus | launcher-rust | 1 j |
-| 18 | #138 | Retrait de Python de l'installateur et du backend : `build-converter.ps1`, ressources, `launcher.yml`, notices, `CTRL_BREAK_HELPER`, repli | 15 (formats délégués pris en charge), 17, puis une version publiée | opus | launcher-rust, ci | 1 j |
+| 18 | #138 | Retrait de Python de l'installateur et du backend : `build-converter.ps1`, ressources, `launcher.yml`, notices, `CTRL_BREAK_HELPER`, repli (**faite**, sans version intermédiaire) | 15 (formats délégués pris en charge), 17 | opus | launcher-rust, ci | 1 j |
 | 19 | #139 | Retrait du réglage `python_path` : backend (ancien champ lu puis ignoré), écran Paramètres, tests | 18 | sonnet | launcher-rust, launcher-ui | 0,5 j |
 | 20 | #140 | Outils de campagne sur le binaire Rust (`compat.py`, `explore.py`), suppression de `telmi2flam.py`, `lif.py`, `mp3map.py` et de leurs tests (cas repris par le corpus) | 18 | sonnet | telmi2flam | 1 j |
 
@@ -424,8 +445,9 @@ Décisions du mainteneur du **2026-10-16** :
     que ce que fait déjà `telmi2flam.py`. Pas de borne de taille décompressée, pas de limite
     mémoire du Job Object plus stricte que l'existant.
   - Formats d'image autres que PNG et entrées ZIP bzip2/LZMA : tant que le repli Python
-    existe, le Rust **délègue à Python** (`unsupported_format`, code 7, distinct de
-    `internal_error` ; invariant 6).
+    existait, le Rust **déléguait à Python** (`unsupported_format`, code 7, distinct de
+    `internal_error` ; invariant 6). Le repli est supprimé (#138) : c'est désormais une erreur
+    finale montrée à l'utilisateur.
   - La campagne de parité (#135) compte ces délégations par format. La prise en charge de
     **chaque format présent** est une condition préalable du retrait de Python (#138).
 - **D6, validée** : le Rust annonce `2.0.0`. Les résultats de compatibilité enregistrés avec
@@ -433,6 +455,6 @@ Décisions du mainteneur du **2026-10-16** :
 
 Points encore ouverts :
 
-- **Durée de la double livraison** : proposition, une version publiée avec le repli Python
-  avant la PR 18.
+- ~~**Durée de la double livraison**~~ : tranchée le 24/10 par le mainteneur, aucune version
+  intermédiaire avec le repli Python (PR 18 faite, #138).
 - **Signature** du binaire `telmi2flam.exe` (SmartScreen, antivirus).

@@ -8,7 +8,7 @@ Sorties (commitees) :
     categories L* / N* de unicodedata, non imprimables de str.isprintable) utilisees par le
     Rust.
 
-A lancer avec la version de Python embarquee par l'installateur (build-converter.ps1 :
+A lancer avec la version de Python de l'oracle (ORACLE-VERSIONS.txt :
 3.14.x, Unicode 16.0.0), depuis la racine du depot :
     python crates/telmi2flam/tests/data/gen_text_cases.py
 La version Unicode est ecrite dans les deux sorties ; le test Rust verifie qu'elle est

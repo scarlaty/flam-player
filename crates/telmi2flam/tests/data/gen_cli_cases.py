@@ -14,7 +14,7 @@ n'est pas dans les jeux : tout prefixe de `--c...` est donc exclu.
 Les cas sont : une liste fixe (formes d'argparse notables), puis des suites tirees au hasard
 (graine fixe) dans un lexique d'options, de valeurs et de faux amis.
 
-A lancer avec le Python de l'installateur (3.14.8), depuis la racine du depot :
+A lancer avec le Python de l'oracle (3.14.8), depuis la racine du depot :
     python crates/telmi2flam/tests/data/gen_cli_cases.py
 """
 
