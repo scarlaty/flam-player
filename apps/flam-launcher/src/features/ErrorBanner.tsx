@@ -7,7 +7,8 @@ import { t } from "../i18n";
 export function ErrorBanner({ error, action }: { error: AppError; action?: ReactNode }) {
   return (
     <Banner tone="danger" title={t.errors.title(error.kind)} action={action}>
-      <p>{error.message}</p>
+      {/* Le message peut porter une seconde ligne (détail du backend sous un texte traduit). */}
+      <p style={{ whiteSpace: "pre-line" }}>{error.message}</p>
     </Banner>
   );
 }

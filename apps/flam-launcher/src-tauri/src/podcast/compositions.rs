@@ -763,7 +763,15 @@ pub fn record_after_create(
     composition: &PackComposition,
     title: &str,
 ) -> CompositionRecord {
-    let store = Store::new(dir);
+    record_after_create_in(&Store::new(dir), composition, title)
+}
+
+/// [`record_after_create`] sur un `Store` donné (écrivain injectable dans les tests).
+fn record_after_create_in(
+    store: &Store<'_>,
+    composition: &PackComposition,
+    title: &str,
+) -> CompositionRecord {
     let (notice, result) = match store.read() {
         Ok(mut read) => {
             let result = store.record_in(&mut read, composition, title, now_secs());

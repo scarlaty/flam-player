@@ -8,7 +8,6 @@ export interface VoiceSectionProps {
   value: string | null;
   /** Enregistre la voix choisie (identifiant d'une voix de la liste). */
   onChange: (voice: string) => void;
-  disabled: boolean;
   /** L'enregistrement de la voix a échoué. */
   failed: boolean;
 }
@@ -17,7 +16,7 @@ export interface VoiceSectionProps {
  * Paramètres : voix des titres lus des packs (#462, note § 12.4) parmi les voix françaises du
  * poste, et bouton d'essai. Pas de réglage de débit (v1).
  */
-export function VoiceSection({ value, onChange, disabled, failed }: VoiceSectionProps) {
+export function VoiceSection({ value, onChange, failed }: VoiceSectionProps) {
   const text = t.speech;
   const { list, error } = useVoices();
   const preview = useSpeechPreview();
@@ -43,7 +42,6 @@ export function VoiceSection({ value, onChange, disabled, failed }: VoiceSection
             label={text.settings.voice}
             // Voix mémorisée disparue : choix vide, pour que choisir la voix de repli l'enregistre.
             value={gone ? "" : (used ?? "")}
-            disabled={disabled}
             options={[
               ...(gone ? [{ value: "", label: text.settings.goneOption }] : []),
               ...voices.map((voice) => ({
