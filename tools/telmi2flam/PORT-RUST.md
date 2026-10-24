@@ -256,8 +256,18 @@ Python 3.14.8, comparés octet à octet ; injection de pannes `injection_de_pann
 | Bombe (5 Mo de zéros, `file_size` = 100) | tout le flux décodé, 100 octets gardés | idem, mémoire bornée (`*_bomb`) |
 | Bombe dont la fin du flux est corrompue | erreur (tout est décodé) | erreur (`*_bomb_corrupt_tail`) |
 | Méthode inconnue (deflate64…) | `NotImplementedError`, code 3 | code 3 (inchangé) |
+| Zstandard : fenêtre de plus de `2^27 + 1` octets | refus, sauf raccourci « single-pass » de libzstd : taille annoncée d'au plus 32 Kio (premier tampon de sortie de Python) et trame entière dans le tour | même règle (`zstd_big_window_*`) |
+| Zstandard : taille annoncée `0xFFFF_FFFF_FFFF_FFFF` (8 octets) | « inconnue », non contrôlée | idem (`zstd_fcs_unknown`) |
+| Zstandard : bloc brut ou compressé plus grand que `Block_Maximum_Size` | refus dès l'en-tête de bloc | idem (`zstd_block_too_big`) |
+| Bombe démesurée (sortie plus grande que la mémoire) | `MemoryError` (tout le tour est décompressé en mémoire), `internal_error` | lecture en mémoire bornée : le Rust lit l'entrée (sens permis par D5) |
 
-**Écarts connus**, tous sur des flux que les encodeurs n'écrivent pas :
+Injection de pannes : `injection_de_pannes_bzip2_lzma_zstd` (archives altérées) et
+`decodeurs_sous_mutations` (`zipread.rs`, décodeurs seuls : 500 mutations par flux en CI,
+`TELMI2FLAM_FUZZ_ITER=30000` en release en local, soit 210 000 flux, sans panique).
+
+**Écarts connus**, tous sur des flux que les encodeurs n'écrivent pas. Les trois premiers vont
+dans le sens « le Rust refuse ce que Python lit » (D5) et demandent l'accord explicite du
+mainteneur :
 
 - bzip2 sans marqueur de fin dont le dernier bloc dépasse le tampon de sortie courant de
   Python (32 Kio au départ) : Python s'arrête dès que l'entrée est épuisée et perd la fin du
@@ -265,10 +275,11 @@ Python 3.14.8, comparés octet à octet ; injection de pannes `injection_de_pann
   complet avec le CRC du contenu tronqué (vecteur `bzip2_no_eos_big_block`, `RUST_READ_ERROR`).
 - Blocs bzip2 « randomised » (bzip2 antérieur à 0.9.5, 1999, avant la méthode ZIP 12) :
   refusés (code 3), Python les lit.
+- Table de Huffman bzip2 incomplète menant à un index non rempli : libbzip2 lit une mémoire
+  non initialisée (résultat indéfini, le CRC de bloc échoue en pratique), le Rust refuse
+  (code 3).
 - Dictionnaire LZMA annoncé démesuré (jusqu'à 4 Gio) : liblzma l'alloue d'emblée et peut
   échouer (`MemoryError`), le Rust le fait grandir avec la sortie et lit l'entrée.
-- Table de Huffman bzip2 incomplète menant à un index non rempli : libbzip2 lit une mémoire
-  non initialisée, le Rust refuse (code 3).
 - Entrée de plus de `MAX_N` (2 Gio) d'octets compressés en Zstandard : la fenêtre retenue par
   `ruzstd` n'est rendue qu'à la fin de la trame, le test « `file_size` atteint » en fin de tour
   peut donc décoder un tour de plus que Python (seule différence possible : une erreur que

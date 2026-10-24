@@ -211,6 +211,11 @@ impl Window {
     #[inline]
     fn push(&mut self, b: u8) {
         if self.buf.len() < self.cap {
+            if self.buf.len() == self.buf.capacity() {
+                // Croissance par doublement, plafonnée à la taille du dictionnaire.
+                let more = self.buf.len().max(4096).min(self.cap - self.buf.len());
+                self.buf.reserve_exact(more);
+            }
             self.buf.push(b);
         } else {
             self.buf[self.pos] = b;

@@ -26,6 +26,12 @@ const SKIPPABLE: u32 = 0x184D_2A50;
 const SKIPPABLE_MASK: u32 = 0xFFFF_FFF0;
 /// `ZSTD_MAXWINDOWSIZE_DEFAULT` : `(1 << ZSTD_WINDOWLOG_LIMIT_DEFAULT) + 1`.
 const MAX_WINDOW: u64 = (1 << 27) + 1;
+/// Taille du premier tampon de sortie de `ZstdDecompressor.decompress` (Python 3.14).
+const SINGLE_PASS_OUT: u64 = 32 * 1024;
+
+fn too_much_memory() -> Halt {
+    data("Unable to decompress Zstandard data: Frame requires too much memory for decoding")
+}
 
 fn corruption() -> Halt {
     data("Unable to decompress Zstandard data: Data corruption detected")
@@ -47,6 +53,12 @@ pub struct ZstdDecoder {
     frame: Option<Box<FrameDecoder>>,
     checksum: bool,
     content_size: Option<u64>,
+    /// `Block_Maximum_Size` : min(fenêtre, 128 Kio).
+    block_max: u64,
+    /// Fenêtre au-delà de `MAX_WINDOW` admise par le raccourci « single-pass » de libzstd
+    /// (taille annoncée d'au plus 32 Kio, le tampon de sortie initial de Python) : la trame
+    /// doit alors tenir entière dans le tour, sinon libzstd refuse la fenêtre.
+    big_window: bool,
     hasher: XxHash64,
     total: u64,
 }
@@ -66,6 +78,8 @@ impl ZstdDecoder {
             frame: None,
             checksum: false,
             content_size: None,
+            block_max: 0,
+            big_window: false,
             hasher: XxHash64::with_seed(0),
             total: 0,
         }
@@ -130,11 +144,32 @@ impl ZstdDecoder {
                 v
             }
         });
+        // ZSTD_CONTENTSIZE_UNKNOWN : taille non contrôlée en fin de trame.
+        if self.content_size == Some(u64::MAX) {
+            self.content_size = None;
+        }
+        let window = if single {
+            self.content_size.unwrap_or(0)
+        } else {
+            let log = 10 + u32::from(avail[5] >> 3);
+            if log > 31 {
+                return Err(too_much_memory());
+            }
+            (1u64 << log) + ((1u64 << log) / 8) * u64::from(avail[5] & 7)
+        };
+        // Fenêtre trop grande : refusée (ZSTD_d_windowLogMax), sauf raccourci « single-pass »
+        // de libzstd, qui ne la contrôle pas quand la sortie annoncée tient dans le tampon de
+        // Python (32 Kio) et que la trame est entière dans le tour.
+        self.big_window = window > MAX_WINDOW;
+        if self.big_window && !self.content_size.is_some_and(|n| n <= SINGLE_PASS_OUT) {
+            return Err(too_much_memory());
+        }
+        self.block_max = window.clamp(1024, 128 * 1024);
         // La somme de contrôle est lue et vérifiée ici : `ruzstd` ne la voit pas.
         let mut header = avail[..size].to_vec();
         header[4] &= !0x04;
         let mut frame = Box::new(FrameDecoder::new());
-        frame.set_max_window_size(MAX_WINDOW);
+        frame.set_max_window_size(window.max(MAX_WINDOW));
         frame
             .reset(&header[..])
             .map_err(|e| data(format!("Unable to decompress Zstandard data: {e}")))?;
@@ -163,6 +198,10 @@ impl ZstdDecoder {
         let last = h & 1 != 0;
         let kind = (h >> 1) & 3;
         if kind == 3 {
+            return Err(corruption());
+        }
+        // Bloc brut ou compressé plus grand que `Block_Maximum_Size` : refusé dès l'en-tête.
+        if kind != 1 && u64::from(h >> 3) > self.block_max {
             return Err(corruption());
         }
         let need = 3 + if kind == 1 { 1 } else { (h >> 3) as usize };
@@ -208,6 +247,9 @@ impl StreamDecoder for ZstdDecoder {
     /// fenêtre dans `ruzstd`) et le début d'un bloc brut incomplet. La trame est close par un
     /// bloc brut vide marqué dernier pour vider `ruzstd`, puis le début du bloc brut est rendu.
     fn finish(&mut self, out: &mut Out) -> Result<(), Halt> {
+        if self.big_window && matches!(self.stage, Stage::Block | Stage::Checksum) {
+            return Err(too_much_memory());
+        }
         if !matches!(self.stage, Stage::Block) {
             return Ok(());
         }
@@ -232,7 +274,7 @@ impl StreamDecoder for ZstdDecoder {
         Ok(())
     }
 
-    fn feed(&mut self, input: &[u8], _flush: bool, out: &mut Out) -> Result<bool, Halt> {
+    fn feed(&mut self, input: &[u8], flush: bool, out: &mut Out) -> Result<bool, Halt> {
         if matches!(self.stage, Stage::Done) {
             return Ok(true);
         }
@@ -278,6 +320,12 @@ impl StreamDecoder for ZstdDecoder {
                 }
             };
             if !progressed {
+                if flush && self.big_window && matches!(self.stage, Stage::Block | Stage::Checksum)
+                {
+                    // Trame à grande fenêtre incomplète en fin de tour : libzstd passe en
+                    // mode flux et refuse la fenêtre.
+                    return Err(too_much_memory());
+                }
                 return Ok(false);
             }
         }

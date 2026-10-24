@@ -177,7 +177,9 @@ pub struct Bzip2Decoder {
     level: u32,
     done: bool,
     combined_crc: u32,
-    /// Taille de `buf` à atteindre avant une nouvelle tentative (hors fin de tour).
+    /// Octets de `buf` déjà consommés (compactés quand ils dépassent la moitié).
+    start: usize,
+    /// Octets disponibles à atteindre avant une nouvelle tentative (hors fin de tour).
     retry_at: usize,
     tt: Vec<u32>,
     out: OutBuf,
@@ -197,6 +199,7 @@ impl Bzip2Decoder {
             level: 0,
             done: false,
             combined_crc: 0,
+            start: 0,
             retry_at: 0,
             tt: Vec::new(),
             out: OutBuf::new(),
@@ -231,17 +234,21 @@ impl StreamDecoder for Bzip2Decoder {
         if self.done {
             return Ok(true);
         }
+        if self.start > 0 && self.start >= self.buf.len() / 2 {
+            self.buf.drain(..self.start);
+            self.start = 0;
+        }
         self.buf.extend_from_slice(input);
         if self.level == 0 && !self.header()? {
             return Ok(false);
         }
         loop {
-            let avail = self.buf.len();
+            let avail = self.buf.len() - self.start;
             if !flush && avail < self.retry_at {
                 return Ok(false);
             }
             let mut r = Bits {
-                data: &self.buf,
+                data: &self.buf[self.start..],
                 pos: self.bit,
             };
             let res = block(
@@ -261,8 +268,7 @@ impl StreamDecoder for Bzip2Decoder {
                         self.buf = Vec::new();
                         return Ok(true);
                     }
-                    let bytes = (pos >> 3) as usize;
-                    self.buf.drain(..bytes);
+                    self.start += (pos >> 3) as usize;
                     self.bit = pos & 7;
                     self.retry_at = 0;
                 }

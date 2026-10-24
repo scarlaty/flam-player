@@ -760,6 +760,7 @@ impl<R: Read> ExtFile<'_, R> {
             let n = (round.max(MIN_READ_SIZE) as u64).min(self.compress_left);
             let mut got = 0u64;
             let mut eof;
+            let mut short;
             loop {
                 let want = (CODEC_PIECE as u64).min(n - got);
                 let piece = read_up_to(self.reader, want).map_err(io_corrupt)?;
@@ -769,7 +770,8 @@ impl<R: Read> ExtFile<'_, R> {
                     return Err(corrupt("EOFError : fin de fichier dans une entrée").into());
                 }
                 // Dernier morceau du tour : tour complet, ou fin du fichier.
-                let last = got == n || (piece.len() as u64) < want;
+                short = (piece.len() as u64) < want;
+                let last = got == n || short;
                 let r = codec.feed(&piece, last, &mut |chunk: &[u8]| {
                     deliver(
                         chunk,
@@ -786,8 +788,8 @@ impl<R: Read> ExtFile<'_, R> {
                     break;
                 }
             }
-            if !eof && self.compress_left == 0 && left > 0 {
-                // Plus rien à lire : ce que le décodeur retenait encore est rendu, comme les
+            if !eof && left > 0 && (self.compress_left == 0 || short) {
+                // Plus rien à lire (fin des données ou du fichier) : ce que le décodeur retenait encore est rendu, comme les
                 // bibliothèques C le rendent au fil de l'eau (flux tronqué).
                 let r = codec.finish(&mut |chunk: &[u8]| {
                     deliver(
@@ -1145,6 +1147,81 @@ mod tests {
                 let ext = zr.open_entry(&entry).unwrap();
                 let r = ext.pump_codec(&entry, MAX_N, 1000, &mut |_| Err("stop"));
                 assert!(matches!(r, Err(ChunkStop::Sink("stop"))), "{id}");
+            }
+        }
+    }
+
+    /// Mutations directes des flux bzip2/LZMA/Zstandard (décodeurs seuls, sans le CRC de
+    /// l'entrée) : aucune panique, chaque décodage se termine. `TELMI2FLAM_FUZZ_ITER` règle le
+    /// nombre de mutations par flux (500 par défaut ; davantage en local, en release).
+    #[test]
+    fn decodeurs_sous_mutations() {
+        let iters: usize = std::env::var("TELMI2FLAM_FUZZ_ITER")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(500);
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/archive/");
+        let mut seed: u64 = 0xD1B5_4A32_D192_ED03;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for id in [
+            "bzip2_text",
+            "bzip2_runs",
+            "lzma_text",
+            "lzma_no_eos",
+            "zstd_text",
+            "zstd_checksum",
+            "zstd_level19",
+        ] {
+            let data = std::fs::read(format!("{dir}{id}.zip")).unwrap();
+            let mut zr = ZipReader::new(IoCursor::new(data)).unwrap();
+            let entry = zr.entries[zr.name_to_info["images/c.png"]].clone();
+            let mut ext = zr.open_entry(&entry).unwrap();
+            let comp = read_up_to(ext.reader, entry.compress_size).unwrap();
+            let method = entry.compress_type;
+            drop(ext.codec.take());
+            for _ in 0..iters {
+                let mut v = comp.clone();
+                for _ in 0..1 + next() % 4 {
+                    let i = (next() % v.len() as u64) as usize;
+                    v[i] = (next() & 0xFF) as u8;
+                }
+                if next() % 4 == 0 {
+                    v.truncate((next() % v.len() as u64) as usize);
+                }
+                let mut codec: Box<dyn StreamDecoder> = match method {
+                    ZIP_BZIP2 => Box::new(Bzip2Decoder::new()),
+                    ZIP_LZMA => Box::new(LzmaDecoder::new()),
+                    _ => Box::new(ZstdDecoder::new()),
+                };
+                let mut n = 0usize;
+                let step = 1 + (next() % 5000) as usize;
+                let parts: Vec<&[u8]> = v.chunks(step).collect();
+                let mut ended = false;
+                for (k, p) in parts.iter().enumerate() {
+                    match codec.feed(p, k + 1 == parts.len(), &mut |c: &[u8]| {
+                        n += c.len();
+                        Ok(())
+                    }) {
+                        Ok(true) | Err(_) => {
+                            ended = true;
+                            break;
+                        }
+                        Ok(false) => {}
+                    }
+                }
+                if !ended {
+                    let _ = codec.finish(&mut |c: &[u8]| {
+                        n += c.len();
+                        Ok(())
+                    });
+                }
+                // Borne grossière : aucune expansion démesurée sur ces petits flux.
+                assert!(n < 1 << 28, "{id}");
             }
         }
     }

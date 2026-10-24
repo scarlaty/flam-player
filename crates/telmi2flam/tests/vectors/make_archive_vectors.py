@@ -545,6 +545,21 @@ def codec_cases():
         add("zstd_fcs_%d" % fcs, ZS, struct.pack("<L", 0xFD2FB528) + bytes([0x20, fcs]) + raw3,
             b"abc")
     add("zstd_bad_magic", ZS, b"\x00" * 16, b"")
+    # Taille annoncee sur 8 octets a 0xFF..FF : ZSTD_CONTENTSIZE_UNKNOWN, non controlee.
+    add("zstd_fcs_unknown", ZS, struct.pack("<L", 0xFD2FB528) + bytes([0xC0, 10 << 3]) +
+        b"\xff" * 8 + raw3, b"abc")
+    # Fenetre 2^28 avec taille annoncee : raccourci « single-pass » de libzstd (lu si la sortie
+    # tient dans 32 Kio et la trame est entiere), refus sinon.
+    for n, cut in ((256, 0), (32768, 0), (40000, 0), (256, 1)):
+        frame = (struct.pack("<L", 0xFD2FB528) + bytes([0x40, 18 << 3]) +
+                 struct.pack("<H", n - 256) +
+                 bytes([((n << 3) | 1) & 0xFF, (n >> 5) & 0xFF, (n >> 13) & 0xFF]) + b"x" * n)
+        add("zstd_big_window_%d%s" % (n, "_truncated" if cut else ""), ZS,
+            frame[:len(frame) - cut], b"x" * n)
+    # Bloc brut plus grand que Block_Maximum_Size (fenetre 1 Kio) : refuse des l'en-tete.
+    n = 2000
+    add("zstd_block_too_big", ZS, struct.pack("<L", 0xFD2FB528) + bytes([0x00, 0]) +
+        bytes([((n << 3) | 1) & 0xFF, (n >> 5) & 0xFF, (n >> 13) & 0xFF]) + b"y" * n, b"y" * n)
     lz = bytearray(lzma_zip(text))
     lz[9] = 1                                   # premier octet du decodeur d'intervalle
     add("lzma_rc_first_byte", LZ, bytes(lz), text)
