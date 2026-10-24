@@ -5,8 +5,9 @@
 //!   isoler le convertisseur des événements de console du launcher.
 //! - stdout : un événement JSON par ligne, lu ligne par ligne ; une ligne non JSON (ou un
 //!   événement inconnu) est ignorée. Les messages affichés viennent de ces événements.
-//! - stderr : page de code locale sous Windows, donc décodé en tolérant les erreurs et gardé
-//!   seulement comme repli (fin du flux).
+//! - stderr : lu et jeté (le tube ne doit pas bloquer le convertisseur), jamais gardé, affiché ni
+//!   journalisé : il peut citer un nom de fichier de l'histoire. Sans événement `error`, le
+//!   message est fixe et seul le code `exit_<n>` renseigne.
 //! - Arrêt forcé : le convertisseur est rattaché à un Job Object Windows
 //!   (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) ; l'arrêt forcé termine le job, donc aussi ses
 //!   sous-processus. Pour qu'aucun sous-processus ne puisse échapper au job, le convertisseur
@@ -38,8 +39,6 @@ use crate::{AppError, AppResult};
 
 /// Ligne JSON la plus longue lue (au-delà : tronquée, donc ignorée).
 const MAX_LINE: u64 = 1024 * 1024;
-/// Fin de stderr conservée pour les messages de repli.
-const STDERR_TAIL: usize = 4096;
 
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
@@ -142,24 +141,19 @@ fn clean_version(raw: &str) -> Option<String> {
         .then(|| v.to_string())
 }
 
-/// Lit `reader` jusqu'à la fin par morceaux et ne garde que les `cap` derniers octets
-/// (mémoire bornée quelle que soit la quantité écrite sur stderr).
-async fn read_tail<R: AsyncRead + Unpin>(mut reader: R, cap: usize) -> String {
-    let mut tail: Vec<u8> = Vec::with_capacity(cap.min(8192) * 2);
+/// Lit `reader` jusqu'à la fin et jette tout (le tube ne doit pas se remplir et bloquer le
+/// convertisseur). Retourne le nombre d'octets lus. Le contenu n'est jamais gardé : il peut citer
+/// un nom de fichier de l'histoire (panique Rust par exemple).
+async fn drain<R: AsyncRead + Unpin>(mut reader: R) -> u64 {
+    let mut total = 0u64;
     let mut chunk = [0u8; 8192];
     loop {
         match reader.read(&mut chunk).await {
             Ok(0) | Err(_) => break,
-            Ok(n) => {
-                tail.extend_from_slice(&chunk[..n]);
-                if tail.len() > cap * 2 {
-                    tail.drain(..tail.len() - cap);
-                }
-            }
+            Ok(n) => total += n as u64,
         }
     }
-    let start = tail.len().saturating_sub(cap);
-    String::from_utf8_lossy(&tail[start..]).into_owned()
+    total
 }
 
 /// Job Object Windows et reprise du convertisseur lancé suspendu.
@@ -445,7 +439,7 @@ pub async fn convert(
             req.engine.label()
         )));
     }
-    let stderr_task = tokio::spawn(read_tail(stderr, STDERR_TAIL));
+    let stderr_task = tokio::spawn(drain(stderr));
 
     let mut reader = BufReader::new(stdout);
     let mut phases: Vec<String> = Vec::new();
@@ -523,7 +517,7 @@ pub async fn convert(
     };
     // Processus terminé : le tube de stdin n'annule plus rien.
     drop(stdin);
-    let stderr_tail = stderr_task.await.unwrap_or_default();
+    let _ = stderr_task.await;
     let exit = status.code();
     match (exit, done, reported) {
         (Some(0), Some(converted), _) if req.output.is_file() => Ok(converted),
@@ -547,16 +541,12 @@ pub async fn convert(
         }
         (code, _, None) => {
             remove_any(req.output);
-            let last = stderr_tail
-                .lines()
-                .rev()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("aucun message")
-                .trim()
-                .to_string();
+            // Message fixe : la sortie d'erreur du convertisseur n'est jamais reprise (elle peut
+            // citer un nom de fichier de l'histoire) ; le code de sortie suffit au diagnostic.
+            let code = code.map_or_else(|| "exit_unknown".into(), |c| format!("exit_{c}"));
             Err(AppError::Conversion {
-                code: code.map_or_else(|| "exit_unknown".into(), |c| format!("exit_{c}")),
-                message: last,
+                message: format!("le convertisseur s'est arrêté sans message d'erreur ({code})"),
+                code,
             })
         }
     }
@@ -581,19 +571,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stderr_borne_garde_la_fin() {
-        let mut data = vec![b'a'; 3 * 1024 * 1024];
-        data.extend_from_slice(
-            b"
-dernier message",
-        );
-        let tail = read_tail(std::io::Cursor::new(data), STDERR_TAIL).await;
-        assert!(tail.len() <= STDERR_TAIL);
-        assert!(tail.ends_with("dernier message"));
-        assert_eq!(
-            read_tail(std::io::Cursor::new(b"court".to_vec()), 4096).await,
-            "court"
-        );
+    async fn stderr_est_vide_sans_rien_garder() {
+        let data = vec![b'a'; 3 * 1024 * 1024];
+        assert_eq!(drain(std::io::Cursor::new(data)).await, 3 * 1024 * 1024);
+        assert_eq!(drain(std::io::Cursor::new(Vec::new())).await, 0);
     }
 
     #[test]
@@ -809,11 +790,20 @@ b"
                 eprintln!("Python introuvable : test ignoré");
                 return;
             };
+            let logs = crate::testlog::Logs::capture();
             let result = banc.convert().await;
-            let Err(AppError::Conversion { code: got, .. }) = result else {
+            let Err(AppError::Conversion {
+                code: got, message, ..
+            }) = result
+            else {
                 panic!("{mode} : {result:?}")
             };
             assert_eq!(got, code, "{mode}");
+            // La sortie d'erreur du convertisseur n'est jamais reprise (nom de fichier possible).
+            assert!(!message.contains("histoire-secrete"), "{mode} : {message}");
+            assert!(!message.contains("Traceback"), "{mode} : {message}");
+            let text = logs.text();
+            assert!(!text.contains("histoire-secrete"), "{mode} : {text}");
             assert!(!banc.output.exists(), "{mode}");
             assert!(banc.staging_is_empty(), "{mode} : temporaire laissé");
         }
@@ -1088,8 +1078,40 @@ out = args[args.index("-o") + 1]
 mode = open(src, "rb").read().split(b"mode=")[1].split(b";")[0].decode()
 def ev(**k):
     print(json.dumps(k), flush=True)
-# Nom de temporaire du binaire : son pid, ici celui du lanceur `.cmd` (parent de Python sous Windows).
-pid = os.getppid() if os.name == "nt" else os.getpid()
+# Nom de temporaire du binaire : son pid, ici celui du lanceur `.cmd` : l'ancêtre `cmd.exe` le plus
+# proche (Python d'un venv ou alias du Store : le parent direct n'est pas toujours le lanceur).
+def launcher_pid():
+    if os.name != "nt":
+        return os.getpid()
+    import ctypes
+    from ctypes import wintypes
+    class PE(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+    k = ctypes.windll.kernel32
+    k.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snap = k.CreateToolhelp32Snapshot(2, 0)
+    procs = {}
+    e = PE()
+    e.dwSize = ctypes.sizeof(PE)
+    ok = k.Process32FirstW(snap, ctypes.byref(e))
+    while ok:
+        procs[e.th32ProcessID] = (e.th32ParentProcessID, e.szExeFile.lower())
+        ok = k.Process32NextW(snap, ctypes.byref(e))
+    k.CloseHandle(snap)
+    cur = os.getpid()
+    for _ in range(8):
+        parent = procs.get(cur, (0, ""))[0]
+        if parent not in procs:
+            break
+        if procs[parent][1] == "cmd.exe":
+            return parent
+        cur = parent
+    return os.getppid()
+pid = launcher_pid()
 part = "%s.%d.part" % (out, pid)
 if mode == "noise":
     print("ceci n'est pas du JSON", flush=True)
@@ -1106,7 +1128,7 @@ if mode == "fail":
     ev(event="error", code="missing_asset", message="image manquante : s1.png", exit=5)
     sys.exit(5)
 if mode == "crash":
-    sys.stderr.write("Traceback: boum\n"); sys.exit(6)
+    sys.stderr.write("thread panicked at histoire-secrete-stderr.mp3\n"); sys.exit(6)
 if mode.startswith("err:"):
     _, code, status = mode.split(":")
     ev(event="error", code=code, message="msg-" + code, exit=int(status))
@@ -1173,14 +1195,31 @@ os._exit(0)
         zip.finish().unwrap().into_inner()
     }
 
+    /// Python du `PATH` (tests seulement : le launcher n'en lance plus, #138) : `python.exe`,
+    /// `python3.exe`, puis `py.exe` (`python3` / `python` hors Windows). Entrées relatives du
+    /// `PATH` et fichiers vides (alias du Microsoft Store) ignorés.
+    fn find_python() -> Option<PathBuf> {
+        let names: &[&str] = if cfg!(windows) {
+            &["python.exe", "python3.exe", "py.exe"]
+        } else {
+            &["python3", "python"]
+        };
+        let path_var = std::env::var_os("PATH")?;
+        std::env::split_paths(&path_var)
+            .filter(|dir| dir.is_absolute())
+            .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+            .find(|candidate| {
+                std::fs::metadata(candidate).is_ok_and(|m| m.is_file() && m.len() > 0)
+            })
+    }
+
     /// Faux `telmi2flam.exe` : un lanceur (`.cmd` sous Windows, `sh` ailleurs) qui exécute
     /// [`SCRIPT`] avec le Python du `PATH`. `None` sans Python. Créé une fois par exécution de
     /// test, dans un dossier temporaire qui n'est pas nettoyé (la statique n'est jamais détruite).
     pub fn exe() -> Option<PathBuf> {
         static EXE: OnceLock<Option<(tempfile::TempDir, PathBuf)>> = OnceLock::new();
         EXE.get_or_init(|| {
-            let python =
-                crate::settings::detect_python(&crate::settings::Environment::current()).path?;
+            let python = find_python()?;
             let dir = tempfile::tempdir().ok()?;
             let script = dir.path().join("fake_telmi2flam.py");
             std::fs::write(&script, SCRIPT).ok()?;

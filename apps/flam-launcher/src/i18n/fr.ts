@@ -376,12 +376,8 @@ export const fr = {
     autoPlaceholder: "Automatique",
     issuesTitle: "Points à vérifier",
     player: "Chemin de flam-player",
-    python: "Chemin de Python",
-    pythonNote:
-      "Le convertisseur livré avec l'application embarque son propre Python : le chemin de Python ci-dessous n'est utilisé que si ce convertisseur est absent (par exemple en développement).",
     cacheDir: "Dossier de cache",
     pickPlayer: "Choisir flam-player.exe",
-    pickPython: "Choisir python.exe",
     pickCache: "Choisir le dossier de cache",
     used: (path: string) => `Utilisé : ${path}`,
     notFound: "Aucun fichier trouvé : choisissez-le avec « Parcourir… ».",
