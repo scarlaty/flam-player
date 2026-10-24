@@ -569,8 +569,9 @@ def archive_inventory(path):
 # Expressions ancrees sur la forme exacte des messages du candidat (zipread.rs, png.rs) : un
 # nom d'asset contenant « compression 3 » ou « format non pris en charge » ne doit pas
 # fausser la cause.
-_COMPRESSION_RE = re.compile(r": compression (\d+) \(bzip2/LZMA/Zstandard\)")
-_IMAGE_WHY_RE = re.compile(r"^.* : format non pris en charge : (.+)$")
+_COMPRESSION_RE = re.compile(
+    r"^.* : compression (\d+) \(bzip2/LZMA/Zstandard\) d\u00e9l\u00e9gu\u00e9e \u00e0 Python$", re.S)
+_IMAGE_WHY_RE = re.compile(r"^.* : format non pris en charge : (.+)$", re.S)
 # Raisons du decodeur PNG (`PngError::Unsupported`) : liste fermee, le reste est `autre`.
 IMAGE_REASONS = ("APNG", "IHDR absent en t\u00eate ou r\u00e9p\u00e9t\u00e9", "pas un PNG",
                  "tRNS apr\u00e8s l'IDAT", "tRNS de longueur inattendue", "tRNS r\u00e9p\u00e9t\u00e9")
@@ -581,7 +582,7 @@ def delegation_cause(message):
     """Cause d'une delegation d'apres le message du candidat, sans nom d'asset :
     `zip:<methode>`, `image:<raison>` (raison fixe du decodeur PNG), `metadata` ou `autre`."""
     message = message or ""
-    m = _COMPRESSION_RE.search(message)
+    m = _COMPRESSION_RE.match(message)
     if m:
         return "zip:" + ZIP_METHODS.get(int(m.group(1)), "methode_" + m.group(1))
     m = _IMAGE_WHY_RE.match(message)
@@ -809,8 +810,12 @@ def run_campaign(archives_dir, oracle, candidate, out_dir, jobs=1, timeout=CAMPA
                 fut.result()
             except Exception as e:  # echec imprevu du harnais : un ecart, sans trace sur stderr
                 with lock:
-                    results[n] = harness_failure(n, e)
-                    write_report()
+                    # un resultat deja enregistre (echec apres coup, ex. journal) est garde
+                    results.setdefault(n, harness_failure(n, e))
+                    try:
+                        write_report()
+                    except Exception:
+                        pass  # la derniere ecriture du rapport ci-dessous tranche
     return write_report()
 
 

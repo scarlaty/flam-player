@@ -631,6 +631,12 @@ class TestCampaign(unittest.TestCase):
             "format non pris en charge : APNG.png : compression 93 (bzip2/LZMA/Zstandard) "
             "déléguée à Python"), "zip:zstd")
         self.assertEqual(parity.delegation_cause("compression 12 sans le reste"), "autre")
+        # nom piege cote ZIP : la derniere occurrence (le vrai message) fait foi
+        self.assertEqual(parity.delegation_cause(
+            "a.zip : \"a : compression 3 (bzip2/LZMA/Zstandard) déléguée à Python\" : "
+            "compression 12 (bzip2/LZMA/Zstandard) déléguée à Python"), "zip:bzip2")
+        self.assertEqual(parity.delegation_cause(
+            "a\nb.png : format non pris en charge : APNG"), "image:APNG")
         # raison hors liste fermee, ou message sans ancre : autre
         self.assertEqual(parity.delegation_cause(
             "i.png : format non pris en charge : raison inventee"), "autre")
