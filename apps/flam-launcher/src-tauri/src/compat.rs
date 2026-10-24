@@ -6,7 +6,7 @@
 //!   `{schema_version, generated, converter_hash, stories: {uuid: {...}}}`), lu **en lecture
 //!   seule** (il appartient à l'outil : jamais renommé ni réécrit ici) ;
 //! - le résultat réel de chaque conversion faite par la surcouche, enregistré dans
-//!   `<cache>/compat/launcher_results.json` ([`record_conversion`]).
+//!   `<cache>/compat/launcher_results.json` ([`store_outcome`]).
 //!
 //! Chemin du `status.json` (premier trouvé) : variable d'environnement
 //! `FLAM_COMPAT_STATUS_FILE` (chemin absolu), puis en développement
@@ -368,6 +368,8 @@ pub fn outcome_of(
 /// Enregistre le résultat réel d'une conversion de `entry` (succès ou échec du convertisseur).
 /// Le plus récent par `uuid` est conservé. L'appelant sérialise les appels (créneau de
 /// conversion unique). Les erreurs ne bloquent jamais l'installation : elles sont tracées.
+/// Réservé aux tests : l'installateur passe par `outcome_of` avec la vraie trace du moteur.
+#[cfg(test)]
 pub fn record_conversion(
     cache_root: &Path,
     entry: &StoryEntry,

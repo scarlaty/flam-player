@@ -231,7 +231,12 @@ pub fn fallback_reason(result: &AppResult<Converted>, seen: &Observed) -> Option
         _ => return None,
     }
     match seen.reported.as_deref() {
-        Some("output_error") => None,
+        // Erreurs de contenu (codes 3/4/5) et de sortie : jamais rejouées, même sans `start` ou
+        // avec un code de sortie hors protocole (le plantage ne s'applique pas à une erreur
+        // explicitement rapportée).
+        Some(
+            "output_error" | "archive_unreadable" | "not_telmi" | "validation" | "missing_asset",
+        ) => None,
         Some("unsupported_format") => Some(FallbackReason::UnsupportedFormat),
         Some("internal_error") => Some(FallbackReason::InternalError),
         // Échec sans `done` malgré un code 0 : le binaire ment, c'est aussi un plantage.
@@ -599,6 +604,12 @@ pub async fn convert_with_fallback(
         );
         return (result, EngineTrace::Rust);
     };
+    // Un binaire planté peut laisser son temporaire (`<sortie>.<pid>.part`) : nettoyage avant le
+    // contrôle d'annulation, pour qu'une annulation ne le laisse pas.
+    if let Some(pid) = seen.pid {
+        remove_any(&part_of(req.output, pid));
+    }
+    remove_any(req.output);
     if *cancel.borrow() {
         return (Err(AppError::Cancelled), EngineTrace::Rust);
     }
@@ -612,11 +623,6 @@ pub async fn convert_with_fallback(
             seen.exit
         );
     }
-    // Un binaire planté peut laisser son temporaire (`<sortie>.<pid>.part`).
-    if let Some(pid) = seen.pid {
-        remove_any(&part_of(req.output, pid));
-    }
-    remove_any(req.output);
     let replay = Conversion {
         engine: Engine::Python {
             python: python.python,
@@ -1149,6 +1155,10 @@ b"
             (Some("output_error"), true, Some(101), None),
             (None, true, Some(6), None),
             (None, true, Some(2), None),
+            // Erreur de contenu rapportée : le plantage ne s'applique pas, même sans `start` ou
+            // avec un code de sortie hors protocole.
+            (Some("archive_unreadable"), false, Some(3), None),
+            (Some("validation"), true, Some(101), None),
         ];
         for (reported, started, exit, expected) in cases {
             assert_eq!(
@@ -1180,10 +1190,10 @@ b"
         assert_eq!(traced.fallback(), Some("unsupported_format"));
     }
 
-    /// Le Rust échoue de l'une des trois façons prévues, Python réussit : repli, trace de la
+    /// Le Rust échoue de l'un des cinq modes de panne prévus, Python réussit : repli, trace de la
     /// cause, sortie produite par Python, aucun temporaire.
     #[tokio::test]
-    async fn repli_sur_python_pour_les_trois_causes() {
+    async fn repli_sur_python_pour_les_cinq_modes_de_panne() {
         use FallbackReason::{Crash, InternalError, UnsupportedFormat};
         let logs = crate::testlog::Logs::capture();
         for (mode, reason) in [
