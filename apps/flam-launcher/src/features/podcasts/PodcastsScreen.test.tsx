@@ -76,6 +76,8 @@ beforeEach(() => {
     switch (cmd) {
       case "sources_list":
         return { sources, recovery: null };
+      case "pack_compositions_list":
+        return { compositions: [], notice: null, max: 50 };
       case "podcast_feed":
       case "podcast_refresh":
         return views[payload.sourceId];

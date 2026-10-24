@@ -121,3 +121,42 @@ export function clearPackDraft(revision: number): Promise<void> {
 export function validatePack(composition: PackComposition): Promise<ValidationReport> {
   return invokeCommand<ValidationReport>("pack_validate", { composition });
 }
+
+/** Composition conservée (miroir de `CompositionSummary`, `podcast/compositions.rs`, #461). */
+export interface CompositionSummary {
+  id: string;
+  name: string;
+  /** Secondes Unix. */
+  created_at: number;
+  /** Date de la dernière création lancée depuis cette composition (secondes Unix). */
+  last_used_at: number;
+  packs: number;
+  episodes: number;
+  feeds: number;
+  /** Flux dont la source a été supprimée (composition gardée). */
+  missing_feeds: number;
+}
+
+export interface CompositionsView {
+  /** Dernière utilisée d'abord. */
+  compositions: CompositionSummary[];
+  notice: string | null;
+  max: number;
+}
+
+export function listPackCompositions(): Promise<CompositionsView> {
+  return invokeCommand<CompositionsView>("pack_compositions_list");
+}
+
+export function renamePackComposition(id: string, name: string): Promise<void> {
+  return invokeCommand<void>("pack_composition_rename", { id, name });
+}
+
+export function deletePackComposition(id: string): Promise<void> {
+  return invokeCommand<void>("pack_composition_delete", { id });
+}
+
+/** Copie la composition dans le brouillon (qui est remplacé) ; l'éditeur la relit ensuite. */
+export function openPackComposition(id: string): Promise<SaveOutcome> {
+  return invokeCommand<SaveOutcome>("pack_composition_open", { id });
+}

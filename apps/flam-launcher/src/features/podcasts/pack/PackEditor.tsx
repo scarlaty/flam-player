@@ -430,9 +430,17 @@ export function PackEditor({
           id: e.episode_id,
         })),
       );
+      // Composition conservée sous un nom (#461) : dite dans le même message.
+      const record = created.composition;
+      const kept = record?.name
+        ? ` ${text.create.compositionSaved(record.name, record.new)}`
+        : record?.error
+          ? ` ${text.create.compositionNotSaved(record.error)}`
+          : "";
+      const notice = record?.notice ? ` ${record.notice}` : "";
       toast?.show({
-        message: text.create.started(created.task.entry.title),
-        tone: "success",
+        message: `${text.create.started(created.task.entry.title)}${kept}${notice}`,
+        tone: record?.error || record?.notice ? "info" : "success",
       });
       window.location.hash = libraryHash();
     } catch (caught) {

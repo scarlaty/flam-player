@@ -317,6 +317,47 @@ it("après création : notification de démarrage, seuls les épisodes du pack q
   expect(screen.getByTestId("selection")).toHaveTextContent(/^2$/);
 });
 
+it("après création : le message dit sous quel nom la composition est conservée (#461)", async () => {
+  window.localStorage.setItem(RIGHTS_KEY, "1");
+  created = () => ({
+    task,
+    report: okReport,
+    composition: { name: "Contes (2)", new: true, error: null, notice: null },
+  });
+  renderEditor();
+  fireEvent.click(await readyButton());
+  await waitFor(() => expect(tracked).toHaveLength(1));
+  expect(toasts).toEqual([
+    {
+      message:
+        "La création de « Contes » a démarré : suivez-la dans le panneau des tâches. Composition enregistrée sous « Contes (2) ».",
+      tone: "success",
+    },
+  ]);
+});
+
+it("après création : composition non conservée, la raison est dite sans bloquer (#461)", async () => {
+  window.localStorage.setItem(RIGHTS_KEY, "1");
+  created = () => ({
+    task,
+    report: okReport,
+    composition: {
+      name: null,
+      new: false,
+      error: "50 compositions enregistrées au plus",
+      notice: null,
+    },
+  });
+  renderEditor();
+  fireEvent.click(await readyButton());
+  await waitFor(() => expect(tracked).toHaveLength(1));
+  expect(toasts[0]).toEqual({
+    message:
+      "La création de « Contes » a démarré : suivez-la dans le panneau des tâches. La composition n'a pas été enregistrée : 50 compositions enregistrées au plus.",
+    tone: "info",
+  });
+});
+
 it("double création : éditeur rouvert pendant la tâche, la création est bloquée", async () => {
   window.localStorage.setItem(RIGHTS_KEY, "1");
   const first = renderEditor();

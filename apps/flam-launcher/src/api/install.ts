@@ -58,6 +58,19 @@ export interface PackStatus {
 export interface PackCreated {
   task: InstallTask | null;
   report: ValidationReport;
+  /** Composition conservée après la création de la tâche (#461) ; `null` sans tâche. */
+  composition?: CompositionRecord | null;
+}
+
+/** Conservation de la composition (miroir de `CompositionRecord`, `podcast/compositions.rs`). */
+export interface CompositionRecord {
+  /** Nom de la composition conservée ; `null` : non conservée (voir `error`). */
+  name: string | null;
+  /** `false` : composition déjà conservée (pack refait). */
+  new: boolean;
+  error: string | null;
+  /** Fichier des compositions mis de côté ou entrées écartées. */
+  notice: string | null;
 }
 
 /** Charge de `install://progress` : changement d'état ou avancement d'une tâche. */
