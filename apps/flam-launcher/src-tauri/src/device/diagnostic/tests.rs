@@ -14,7 +14,7 @@ use crate::device::crypto::tests::{TEST_IV, TEST_KEY, TEST_SERIAL};
 use crate::device::crypto::MDF_LEN;
 use crate::device::detect::VolumeInfo;
 use crate::device::guard::tests::{info_v2, key_v2, mdf_with, story, wrong_info, TEST_SERIAL_HEX};
-use crate::device::guard::{KeySession, TrustStore, KNOWN_HEADER};
+use crate::device::guard::{KeySession, KNOWN_HEADER};
 
 /// Titre de l'histoire officielle des fixtures (`INFO_PLAIN`).
 const OFFICIAL_TITLE: &str = "Histoire officielle";
@@ -130,9 +130,8 @@ fn diagnostic(roots: Vec<PathBuf>, errors: Vec<SessionError>) -> String {
 
 fn diagnostic_busy(roots: Vec<PathBuf>, errors: Vec<SessionError>, busy: bool) -> String {
     let session: &'static KeySession = Box::leak(Box::default());
-    let trust: &'static TrustStore = Box::leak(Box::default());
     let launcher = HashSet::from([MINE.to_string()]);
-    let ctx = WriteContext::new(session, trust, None, launcher.clone());
+    let ctx = WriteContext::new(session, None, launcher.clone());
     build(&Inputs {
         env: &env(roots),
         ctx: &ctx,
@@ -304,7 +303,6 @@ fn le_diagnostic_decrit_la_flam_sans_rien_ecrire() {
         "- Version : 2.4.2 (famille 2.x, préfixe « main: »)",
         "- .mdf : 126 octets, en-tête 01 00, disposition standard : oui",
         "- VID:PID : 303a:819e",
-        "- Confiance : vérifié par la Flam (flam_verified)",
         "- Écriture : autorisée",
         "| Entrées | 3 | 1 |",
         "| Fins de ligne | CRLF | LF |",
@@ -423,8 +421,7 @@ fn la_description_du_systeme_n_est_jamais_vide() {
 #[ignore = "lecteurs réels : nécessite Windows, résultat selon le matériel branché (lecture seule)"]
 fn diagnostic_reel() {
     let session: &'static KeySession = Box::leak(Box::default());
-    let trust: &'static TrustStore = Box::leak(Box::default());
-    let ctx = WriteContext::new(session, trust, None, HashSet::new());
+    let ctx = WriteContext::new(session, None, HashSet::new());
     let text = build(&Inputs {
         env: &Environment::current(),
         ctx: &ctx,
@@ -494,7 +491,7 @@ fn une_contradiction_ne_cite_aucun_uuid() {
         .lines()
         .find(|l| l.starts_with("- Cohérence des clés"))
         .unwrap_or_else(|| panic!("ligne de cohérence absente :\n{text}"));
-    assert!(line.contains("contradiction :"), "{line}");
+    assert!(line.contains("contradiction (avertissement) :"), "{line}");
     assert!(!line.contains("<uuid>") && !line.contains(BAD), "{line}");
     assert!(!text.to_lowercase().contains(BAD), "{text}");
 }

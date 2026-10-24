@@ -376,7 +376,6 @@ function installMockBackend({ config, scenario }) {
     layout_standard: true,
     usb_ids: null,
     coherence: { kind: "not_applicable" },
-    trust: "not_applicable",
     write_block: null,
   };
   const device = {
