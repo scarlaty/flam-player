@@ -867,11 +867,13 @@ impl InstallService {
             }
         }
         for (n, dest) in fetch_images(backend, missing, concurrency, cancel).await? {
-            // Remise en cache avec la nouvelle pochette (le MP3 est relié).
+            // Remise en cache de la nouvelle pochette seule : une panne ou une annulation n'efface
+            // pas le MP3 (#489).
             to_cache.push(mp3cache::Store {
                 key: keys[n].clone(),
                 mp3: hits[&n].mp3.clone(),
                 image: Some(dest.clone()),
+                image_only: true,
             });
             hit_images.insert(n, dest);
         }
@@ -899,18 +901,13 @@ impl InstallService {
         }
         let mut kept: Vec<(usize, PathBuf, Option<PathBuf>)> = Vec::new();
         let mut audio_total = 0u64;
+        // Épisodes servis : le cache ne sert jamais une entrée au-delà de `MAX_AUDIO_BYTES`
+        // (`CacheAccess::lookup` la supprime, #466) ; aucune borne à revérifier ici.
         for &n in &hit_ranks {
             let hit = &hits[&n];
-            if hit.mp3_bytes <= MAX_AUDIO_BYTES {
-                audio_total += hit.mp3_bytes;
-                kept.push((n, hit.mp3.clone(), hit_images.get(&n).cloned()));
-            } else {
-                tracing::warn!(
-                    episode = n,
-                    "épisode retiré du pack : MP3 en cache trop volumineux"
-                );
-                dropped.push(n);
-            }
+            debug_assert!(hit.mp3_bytes <= MAX_AUDIO_BYTES);
+            audio_total += hit.mp3_bytes;
+            kept.push((n, hit.mp3.clone(), hit_images.get(&n).cloned()));
         }
         for ((n, mp3, image), result) in ready.into_iter().zip(results) {
             match result {
@@ -920,6 +917,7 @@ impl InstallService {
                         key: keys[n].clone(),
                         mp3: mp3.clone(),
                         image: image.clone(),
+                        image_only: false,
                     });
                     kept.push((n, mp3, image));
                 }

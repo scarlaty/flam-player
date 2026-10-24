@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import { toAppError, type AppError } from "../../api/error";
 import {
   getPodcastFeed,
@@ -116,8 +123,9 @@ export function PodcastsScreen() {
   const chosen = feeds?.find((f) => f.id === chosenId) ?? null;
   const { view, loading, error, refreshError } = useFeed(chosen?.id ?? null, addedView);
 
-  // Après un choix explicite, le focus va au titre de la liste d'épisodes.
-  useEffect(() => {
+  // Après un choix explicite, le focus va au titre de la liste d'épisodes. Effet de mise en page :
+  // le focus est donné dans le rendu même qui montre la liste, jamais après (#489).
+  useLayoutEffect(() => {
     if (focusOnLoad.current && view?.feed) {
       focusOnLoad.current = false;
       episodesHeading.current?.focus();
