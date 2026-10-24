@@ -16,7 +16,7 @@ import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../../test/timeouts";
 import { PodcastSelectionProvider, usePodcastSelection } from "../SelectionContext";
 import type { SelectedEpisode } from "../selection";
 import { PackEditor } from "./PackEditor";
-import { CLOSE_FLUSH_MS } from "./hooks";
+import { CLOSE_FLUSH_MS, settlePendingSave } from "./hooks";
 
 tolerateLoadInAsyncUtils();
 
@@ -627,6 +627,25 @@ it("démontage : la modification en attente est sauvegardée sans attendre le d�
   unmount();
   await waitFor(() => expect(saves().length).toBe(1));
   expect(saves()[0]!.args.composition.metadata.title).toBe("Vite");
+});
+
+it("démontage : une sauvegarde refusée (brouillon remplacé entre-temps) n'est pas réessayée", async () => {
+  // Éditeur fermé, puis composition ouverte (#484) : le brouillon est passé à la révision
+  // suivante ; la sauvegarde de l'éditeur fermé, refusée, ne doit pas l'écraser au-dessus.
+  views.a = feed("a", "Contes", [episode("1")]);
+  draft = { ...draft, composition: composition([ep("a", "1")]), revision: 1 };
+  mockWithSave((payload) =>
+    payload.revision <= 2
+      ? { saved: false, revision: 2 }
+      : { saved: true, revision: payload.revision },
+  );
+  const { unmount } = renderSlowSave();
+  fireEvent.change(await screen.findByLabelText("Titre"), { target: { value: "Vite" } });
+  unmount();
+  await waitFor(() => expect(saves().length).toBe(1));
+  await settlePendingSave();
+  await new Promise((r) => setTimeout(r, 50));
+  expect(saves().map((c) => c.args.revision)).toEqual([2]);
 });
 
 it("fermeture de la fenêtre : le débounce est vidé avant la fermeture", async () => {

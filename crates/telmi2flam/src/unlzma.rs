@@ -443,7 +443,7 @@ impl LzmaDecoder {
 }
 
 impl StreamDecoder for LzmaDecoder {
-    fn feed(&mut self, mut input: &[u8], _flush: bool, out: &mut Out) -> Result<bool, Halt> {
+    fn feed(&mut self, mut input: &[u8], flush: bool, out: &mut Out) -> Result<bool, Halt> {
         if self.eof {
             return Ok(true);
         }
@@ -493,6 +493,14 @@ impl StreamDecoder for LzmaDecoder {
         loop {
             let start = inp.pos;
             let near_end = src.len() - start < SAFE_INPUT;
+            if near_end && !flush {
+                // Sans `flush`, la fin du morceau attend la suite : pas d'instantané de l'état
+                // (environ 26 Kio) pour chacun de ses symboles (#478). Mêmes symboles décodés
+                // dans le même ordre au morceau suivant, donc même sortie et mêmes erreurs.
+                self.pending = src[start..].to_vec();
+                self.out.flush(out)?;
+                return Ok(false);
+            }
             let snapshot = near_end.then(|| core.st.clone());
             match core.symbol(&mut inp) {
                 Ok(Symbol::Literal(b)) => {
@@ -526,6 +534,14 @@ impl StreamDecoder for LzmaDecoder {
                 }
             }
         }
+    }
+
+    /// Fin du flux sans `flush` préalable : les symboles complets mis en attente sont décodés.
+    fn finish(&mut self, out: &mut Out) -> Result<(), Halt> {
+        if !self.eof && self.core.is_some() && !self.pending.is_empty() {
+            self.feed(&[], true, out)?;
+        }
+        Ok(())
     }
 }
 
@@ -567,6 +583,68 @@ mod tests {
         // Avec un octet du flux, les propriétés sont contrôlées.
         bad.push(0);
         assert!(matches!(decode(&[&bad]).0, Err(Halt::Data(_))));
+    }
+
+    /// Données compressées de `images/c.png` d'un vecteur d'archive (en-tête local ZIP).
+    fn entry(id: &str) -> Vec<u8> {
+        let zip = std::fs::read(format!(
+            "{}/tests/vectors/archive/{id}.zip",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let u16at = |o: usize| usize::from(u16::from_le_bytes([zip[o], zip[o + 1]]));
+        let mut o = 0;
+        loop {
+            assert_eq!(&zip[o..o + 4], b"PK\x03\x04", "{id}");
+            let size = u32::from_le_bytes(zip[o + 18..o + 22].try_into().unwrap()) as usize;
+            let (n, m) = (u16at(o + 26), u16at(o + 28));
+            let data = o + 30 + n + m;
+            if &zip[o + 30..o + 30 + n] == b"images/c.png" {
+                return zip[data..data + size].to_vec();
+            }
+            o = data + size;
+        }
+    }
+
+    /// Sans `flush`, la fin de chaque morceau attend la suite (#478) : même sortie, mêmes
+    /// erreurs qu'avec `flush` à chaque morceau, y compris quand `finish` termine le flux.
+    #[test]
+    fn morceaux_sans_flush_comme_avec() {
+        for id in ["lzma_text", "lzma_runs", "lzma_no_eos", "lzma_bad_distance"] {
+            let comp = entry(id);
+            for step in [1, 7, 100] {
+                let parts: Vec<&[u8]> = comp.chunks(step).collect();
+                let (want_res, want) = decode(&parts);
+                for finish_only in [false, true] {
+                    let mut d = LzmaDecoder::new();
+                    let mut got = Vec::new();
+                    let mut res = Ok(false);
+                    for (i, c) in parts.iter().enumerate() {
+                        let flush = !finish_only && i + 1 == parts.len();
+                        res = d.feed(c, flush, &mut |b: &[u8]| {
+                            got.extend_from_slice(b);
+                            Ok(())
+                        });
+                        if res.is_err() {
+                            break;
+                        }
+                    }
+                    if finish_only && matches!(res, Ok(false)) {
+                        res = d
+                            .finish(&mut |b: &[u8]| {
+                                got.extend_from_slice(b);
+                                Ok(())
+                            })
+                            .map(|()| d.eof);
+                    }
+                    assert_eq!(
+                        (format!("{res:?}"), &got),
+                        (format!("{want_res:?}"), &want),
+                        "{id} {step} {finish_only}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

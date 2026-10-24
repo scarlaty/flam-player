@@ -451,6 +451,7 @@ export const fr = {
           : `${count} flux supprimés : leurs épisodes sont indisponibles.`,
       open: "Ouvrir",
       openLabel: (name: string) => `Ouvrir « ${name} » dans l'éditeur`,
+      opening: (name: string) => `Ouverture de « ${name} »…`,
       rename: (name: string) => `Renommer « ${name} »`,
       remove: (name: string) => `Supprimer « ${name} »`,
       renamed: (name: string) => `Composition renommée en « ${name} ».`,

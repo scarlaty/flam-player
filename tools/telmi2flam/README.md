@@ -949,6 +949,8 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
   Windows arrête aussi le player. Sous Linux : groupe de processus + `PR_SET_PDEATHSIG`.
   Limite : sous macOS / BSD, un `SIGKILL` du parent laisse le player vivant (arrêt propre et
   Ctrl+C restent couverts).
+  À la sortie de `run_player`, le groupe de processus est aussi tué quand le player est sorti
+  seul (ses descendants ne survivent pas, comme avec le Job Object).
 - **Réinterprétation sans rejouer** : la fiche conserve le résultat brut borné de chaque
   parcours (`steps.run.raw` : statut, `done_reason`, compteurs, scènes, erreurs **non
   filtrées**, les 100 premières et les 100 dernières, 200 caractères chacune). Quand la
@@ -1007,7 +1009,9 @@ avec 0 même si aucune fin n'a été jouée ou si la couverture est partielle. P
 #### `status.json` (lu par la surcouche)
 
 `.cache/telmi/compat/status.json` (dans `<cache>/compat/`), réécrit atomiquement avec
-`report.json` après chaque histoire. Format **stable et versionné** (enveloppe) ; de
+`report.json` après chaque histoire (sur une grosse campagne, quand une écriture dépasse 0,25 s,
+les suivantes sont espacées de dix fois sa durée ; l'écriture finale est toujours faite, et un
+journal court `report.pending.json` couvre l'intervalle). Format **stable et versionné** (enveloppe) ; de
 nouvelles clés optionnelles pourront être ajoutées, jamais renommées (sinon
 `schema_version` change).
 
