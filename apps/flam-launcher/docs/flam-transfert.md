@@ -34,8 +34,11 @@ une vraie Flam, il est dit « non vérifié ».
 Le firmware est lu dans le fichier `.mdf` de la Flam.
 
 - **Firmware 2.x** : le launcher utilise le matériel de chiffrement lu dans le `.mdf` de la
-  Flam. Cette lecture suppose une disposition du fichier qui n'a **pas** été confirmée sur un
-  appareil 2.x : si elle est fausse, les histoires envoyées pourraient être illisibles.
+  Flam, exactement comme Lunii.QT (clés, fichier `key`, chiffrement, chemins et index
+  identiques), sans confirmation préalable. Cette disposition n'a **pas** encore été vérifiée
+  sur un appareil 2.x par ce projet : gardez une copie de votre Flam. Si une histoire d'un autre
+  outil ne se déchiffre pas avec ces clés, « Ma Flam » affiche un simple avertissement (l'envoi
+  reste possible).
 - **Firmware 1.x (mode carrier)** : le firmware 1.x ne lit pas une histoire chiffrée avec les
   clés du `.mdf`. Le launcher réutilise la clé d'une histoire officielle **déjà présente sur
   votre Flam et achetée sur votre compte** (clé `bt`, que vous saisissez ou fournissez). Aucune

@@ -130,11 +130,6 @@ beforeEach(() => {
           };
         case "device_list_stories":
           return stories;
-        case "device_confirm_firmware": {
-          const confirmed = firmwareV2({ trust: "confirmed", write_block: null });
-          if (status.device) status.device.firmware_status = confirmed;
-          return confirmed;
-        }
         case "device_story_titles": {
           const { uuids } = args as { uuids: string[] };
           titleRequests.push(uuids);
@@ -289,7 +284,6 @@ it("affiche le firmware sur la carte, « illisible » s'il est inconnu", async (
       version: null,
       family: "unreadable",
       version_form: "unreadable",
-      trust: "not_applicable",
       coherence: { kind: "not_checked" },
       write_block: { kind: "version_unreadable" },
     }),
@@ -1016,9 +1010,7 @@ it("signale une liste tronquée", async () => {
 it("affiche la version et l'état du firmware sur la carte de la Flam", async () => {
   status = detected();
   renderScreen();
-  expect(
-    await screen.findByText("2.4.2 (2.x) · en test, sauvegarde confirmée"),
-  ).toBeInTheDocument();
+  expect(await screen.findByText("2.4.2 (2.x) · pris en charge")).toBeInTheDocument();
 });
 
 it("affiche un refus d'écrire avec sa raison et la version", async () => {
@@ -1027,7 +1019,6 @@ it("affiche un refus d'écrire avec sa raison et la version", async () => {
     firmware_status: firmwareV2({
       version: "3.0.0",
       family: "unsupported",
-      trust: "not_applicable",
       coherence: { kind: "not_checked" },
       write_block: { kind: "unsupported_firmware", version: "3.0.0" },
     }),
@@ -1042,72 +1033,53 @@ it("affiche un refus d'écrire avec sa raison et la version", async () => {
   expect(calls).not.toContain("device_recover_transfers");
 });
 
-it("Flam 2.x non standard : confirmation de sauvegarde renforcée, puis écriture", async () => {
+it("Flam 2.x non standard : écriture sans confirmation (#326)", async () => {
   status = detected({
     firmware_status: firmwareV2({
       mdf_size: 128,
       header: "02 00",
       layout_standard: false,
-      trust: "unconfirmed",
-      write_block: { kind: "confirmation_required", version: "2.4.2", standard: false },
     }),
   });
   renderScreen();
   expect(
-    await screen.findByText(
-      "2.4.2 (2.x) · en test, confirmation à donner · fichier .mdf non standard",
-    ),
+    await screen.findByText("2.4.2 (2.x) · pris en charge · fichier .mdf non standard"),
   ).toBeInTheDocument();
+  // Avertissement non bloquant.
+  expect(screen.getByText("Fichier .mdf non standard")).toBeInTheDocument();
   expect(screen.getByText(/128 octets, en-tête 02 00/)).toBeInTheDocument();
-  const confirm = screen.getByRole("button", { name: "Confirmer" });
-  expect(confirm).toBeDisabled();
-  expect(calls).not.toContain("device_recover_transfers");
-  fireEvent.click(
-    screen.getByLabelText("Firmware 2.x en test : j'ai sauvegardé ma Flam"),
-  );
-  expect(confirm).toBeEnabled();
-  fireEvent.click(confirm);
-  expect(
-    await screen.findByText("2.4.2 (2.x) · en test, sauvegarde confirmée"),
-  ).toBeInTheDocument();
-  expect(calls).toContain("device_confirm_firmware");
-  // L'écriture devient possible : la reprise au branchement a lieu, puis la liste est relue.
+  // Aucune confirmation demandée : la reprise au branchement a lieu aussitôt.
   await waitFor(() => expect(calls).toContain("device_recover_transfers"));
-  await waitFor(() =>
-    expect(calls.filter((c) => c === "device_list_stories").length).toBeGreaterThan(1),
-  );
   expect(screen.queryByRole("button", { name: "Confirmer" })).not.toBeInTheDocument();
+  expect(screen.queryByText(/sauvegardé ma Flam/)).not.toBeInTheDocument();
 });
 
-it("Flam 2.x aux clés incohérentes : envoi bloqué, reprise et retrait possibles", async () => {
+it("Flam 2.x aux clés incohérentes : simple avertissement, reprise possible (#326)", async () => {
   status = detected({
     firmware_status: firmwareV2({
-      write_block: { kind: "keys_contradiction", version: "2.4.2" },
+      coherence: {
+        kind: "contradiction",
+        counts: {
+          examined: 1,
+          key_matches: 1,
+          decrypted: 0,
+          decrypted_other_key: 0,
+          lunii_format: 0,
+          clear_info: 0,
+        },
+        stories: [],
+        total: 0,
+      },
     }),
   });
   renderScreen();
   expect(
-    await screen.findByText("2.4.2 (2.x) · envoi bloqué (clés incohérentes)"),
+    await screen.findByText("2.4.2 (2.x) · pris en charge, clés à vérifier"),
   ).toBeInTheDocument();
-  expect(screen.getByText("Envoi sur cette Flam bloqué")).toBeInTheDocument();
+  expect(screen.getByText("Clés de la Flam à vérifier")).toBeInTheDocument();
+  expect(
+    screen.getByText(/l'envoi, le retrait et l'ordre restent possibles/),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("Écriture sur cette Flam bloquée")).not.toBeInTheDocument();
   await waitFor(() => expect(calls).toContain("device_recover_transfers"));
-});
-
-it("Flam 2.x incohérente et non confirmée : la confirmation reste proposée", async () => {
-  status = detected({
-    firmware_status: firmwareV2({
-      trust: "unconfirmed",
-      write_block: { kind: "keys_contradiction", version: "2.4.2" },
-    }),
-  });
-  renderScreen();
-  expect(await screen.findByText("Envoi sur cette Flam bloqué")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Confirmer" })).toBeDisabled();
-  // Rien n'est écrit avant la confirmation, pas même la reprise.
-  expect(calls).not.toContain("device_recover_transfers");
-  fireEvent.click(
-    screen.getByLabelText("Firmware 2.x en test : j'ai sauvegardé ma Flam"),
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Confirmer" }));
-  await waitFor(() => expect(calls).toContain("device_confirm_firmware"));
 });

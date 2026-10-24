@@ -1,16 +1,11 @@
-import { useState } from "react";
 import {
-  confirmFirmware,
   firmwareWriteBlock,
-  needsFirmwareConfirmation,
   type DeviceSummary,
   type FirmwareStatus,
   type WriteRefused,
 } from "../../api/device";
-import { toAppError } from "../../api/error";
-import { Banner, Button, CheckboxField } from "../../components";
+import { Banner } from "../../components";
 import { t } from "../../i18n";
-import { useDevice } from "./DeviceContext";
 
 const text = t.deviceFirmware;
 
@@ -29,13 +24,11 @@ export function blockedMessage(block: WriteRefused): string {
       return messages.truncated(block.size);
     case "unsupported_firmware":
     case "keys_trivial":
-    case "keys_contradiction":
-    case "confirmation_required":
       return messages[block.kind](block.version);
   }
 }
 
-/** Ligne courte « 2.4.2 (2.x) · en test, vérifié par la Flam » de la carte « Flam détectée ». */
+/** Ligne courte « 2.4.2 (2.x) · pris en charge » de la carte « Flam détectée ». */
 export function firmwareSummary(status: FirmwareStatus): string {
   const version = status.version ?? text.unreadable;
   const family = status.family === "unreadable" ? null : text.family[status.family];
@@ -47,99 +40,54 @@ export function firmwareSummary(status: FirmwareStatus): string {
 }
 
 function firmwareState(status: FirmwareStatus): string {
-  const block = status.write_block;
-  if (block?.kind === "keys_contradiction") return text.state.contradiction;
-  if (block && block.kind !== "confirmation_required") return text.state.blocked;
-  switch (status.trust) {
-    case "not_applicable":
+  if (status.write_block) return text.state.blocked;
+  switch (status.family) {
+    case "v1":
       return text.state.v1;
-    case "flam_verified":
-      return text.state.flamVerified;
-    case "confirmed":
-      return text.state.confirmed;
-    case "unconfirmed":
-      return text.state.unconfirmed;
+    case "v2":
+      return status.coherence.kind === "contradiction"
+        ? text.state.contradiction
+        : text.state.v2;
+    default:
+      return text.state.blocked;
   }
 }
 
 /**
- * Bandeaux de l'état du firmware : écriture ou envoi bloqués (raison et version), ou
- * confirmation de sauvegarde demandée pour une Flam 2.x.
+ * Bandeaux de l'état du firmware : écriture bloquée (raison et version), ou avertissement de
+ * clés incohérentes (#326 : l'envoi reste possible, faux positifs possibles).
  */
 export function FirmwareNotice({ device }: { device: DeviceSummary }) {
   const block = firmwareWriteBlock(device);
-  const contradiction = block?.kind === "keys_contradiction";
-  // Histoires en cause (#326) : UUID, pour savoir lesquelles retirer.
-  const coherence = device.firmware_status?.coherence;
-  const culprits =
-    contradiction && coherence?.kind === "contradiction" && coherence.stories.length > 0
-      ? coherence
-      : null;
+  const status = device.firmware_status;
+  const coherence = status?.coherence;
+  const contradiction = !block && coherence?.kind === "contradiction" ? coherence : null;
+  // `.mdf` 2.x d'une forme jamais mesurée : envoi possible, risque accru d'histoire illisible.
+  const nonStandard = !block && status?.family === "v2" && !status.layout_standard;
   return (
     <>
       {block && (
-        <Banner
-          tone="danger"
-          role="status"
-          title={contradiction ? text.sendBlockedTitle : text.blockedTitle}
-        >
+        <Banner tone="danger" role="status" title={text.blockedTitle}>
           <p>{blockedMessage(block)}</p>
-          {culprits && (
-            <p style={{ overflowWrap: "anywhere" }}>
-              {text.contradictionStories(culprits.stories, culprits.total)}
-            </p>
-          )}
-          <p>{contradiction ? text.contradictionHint : text.blockedHint}</p>
+          <p>{text.blockedHint}</p>
         </Banner>
       )}
-      {needsFirmwareConfirmation(device) && <ConfirmFirmware device={device} />}
-    </>
-  );
-}
-
-function ConfirmFirmware({ device }: { device: DeviceSummary }) {
-  const { retry } = useDevice();
-  const [understood, setUnderstood] = useState(false);
-  const [working, setWorking] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-  const status = device.firmware_status;
-
-  async function confirm() {
-    setWorking(true);
-    setFailure(null);
-    try {
-      await confirmFirmware(device.root, true);
-      retry();
-    } catch (caught) {
-      setFailure(text.confirm.failed(toAppError(caught).message));
-    } finally {
-      setWorking(false);
-    }
-  }
-
-  return (
-    <Banner
-      tone={status.layout_standard ? "warning" : "danger"}
-      role="status"
-      title={text.confirm.title}
-    >
-      <p>{text.confirm.body}</p>
-      {!status.layout_standard && (
-        <p>{text.confirm.nonStandard(status.mdf_size, status.header ?? "?")}</p>
+      {nonStandard && (
+        <Banner tone="warning" role="status" title={text.nonStandardTitle}>
+          <p>{text.nonStandardBody(status.mdf_size, status.header ?? "?")}</p>
+        </Banner>
       )}
-      <CheckboxField
-        label={text.confirm.understood}
-        checked={understood}
-        onChange={(event) => setUnderstood(event.target.checked)}
-      />
-      <Button
-        variant="primary"
-        disabled={!understood || working}
-        onClick={() => void confirm()}
-      >
-        {working ? text.confirm.working : text.confirm.action}
-      </Button>
-      {failure && <p role="alert">{failure}</p>}
-    </Banner>
+      {contradiction && (
+        <Banner tone="warning" role="status" title={text.contradictionTitle}>
+          <p>{text.contradiction(status.version ?? text.unreadable)}</p>
+          {contradiction.stories.length > 0 && (
+            <p style={{ overflowWrap: "anywhere" }}>
+              {text.contradictionStories(contradiction.stories, contradiction.total)}
+            </p>
+          )}
+          <p>{text.contradictionHint}</p>
+        </Banner>
+      )}
+    </>
   );
 }
