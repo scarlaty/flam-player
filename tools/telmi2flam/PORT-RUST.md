@@ -320,7 +320,7 @@ sont identiques à l'octet près dès la PR 6.
 2. **Parité** (PR 14, 15) : CI synthétique verte, puis campagne conforme au seuil §4.3.
 3. **Livraison en double** (PR 16) : l'installateur embarque `telmi2flam.exe` **et** le Python
    actuel. Un réglage caché de `settings.json`, `converter_engine: "python" | "rust"`, vaut
-   **`python` par défaut**. Le launcher le relit à chaque tâche (`Toolchain`). `convert.rs`
+   **`python` par défaut** (jusqu'à la PR 17). Le launcher le relit à chaque tâche (`Toolchain`). `convert.rs`
    gère **les deux moteurs** : fermeture de stdin pour Rust, `CTRL_BREAK_HELPER` pour Python
    (conservé jusqu'à la PR 18). Les tests de `convert.rs` et d'`install/tests.rs` sont dédoublés.
 4. **Bascule** (PR 17) : défaut `rust`. Pendant une version publiée, le launcher **repasse
@@ -340,6 +340,11 @@ sont identiques à l'octet près dès la PR 6.
 
    Les erreurs de contenu (codes 3/4/5) et `output_error` ne sont **jamais** rejouées en Python,
    pour ne pas masquer une divergence.
+
+   **État (PR 17, #137, faite)** : le défaut est `rust` (réglage absent, inconnu ou mal typé) ;
+   un `settings.json` qui porte `python` le garde. La crate annonce `2.0.0` (D6). Un binaire
+   `telmi2flam.exe` **absent** reste `converter_unavailable`, sans repli : le repli ci-dessus ne
+   couvre que l'échec d'un binaire présent, et l'installateur le livre toujours.
 5. **Suppression** (PR 18 à 20). Condition préalable : tous les formats délégués que la
    campagne (#135) a comptés sont pris en charge par le Rust, puisque sans Python une
    délégation devient un échec.
