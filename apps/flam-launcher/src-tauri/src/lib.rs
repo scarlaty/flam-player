@@ -188,6 +188,7 @@ pub fn run() {
             podcast::pack::pack_draft_read,
             podcast::pack::pack_draft_save,
             podcast::pack::pack_validate,
+            podcast::thumb::pack_episode_thumbnail,
             install::podcast::pack_create,
             podcast::source::podcast_add,
             podcast::source::podcast_feed,

@@ -390,6 +390,8 @@ export const fr = {
         legend: (category: string) => `Image de la catégorie « ${category} »`,
         auto: "Automatique",
         autoHint: "Image du premier épisode de la catégorie.",
+        /** Titre porté par plusieurs épisodes : le rang les distingue. */
+        ranked: (title: string, rank: number) => `${title} (n° ${rank})`,
       },
       problems: {
         title: "À corriger avant de créer l'histoire",

@@ -127,6 +127,17 @@ export function clearPackDraft(revision: number): Promise<void> {
   return invokeCommand<void>("pack_draft_clear", { revision });
 }
 
+/**
+ * Aperçu (URL `data:image/png`, 96 px au plus) de la pochette d'un épisode, lu dans le cache
+ * du launcher sans accès réseau (#504). `null` : pas d'aperçu (pas de pochette en cache).
+ */
+export function episodeThumbnail(episode: EpisodeRef): Promise<string | null> {
+  return invokeCommand<string | null>("pack_episode_thumbnail", {
+    sourceId: episode.source_id,
+    episodeId: episode.episode_id,
+  });
+}
+
 export function validatePack(composition: PackComposition): Promise<ValidationReport> {
   return invokeCommand<ValidationReport>("pack_validate", { composition });
 }

@@ -20,7 +20,9 @@ Changements depuis `launcher-v0.1.0-beta.1`.
   et familial. Le brouillon du pack est enregistré automatiquement. Chaque catégorie peut
   prendre l'image d'un de ses épisodes (choix dans l'éditeur ; « Automatique », l'image du
   premier épisode, reste le défaut). Si l'épisode choisi disparaît du pack, l'image automatique
-  est utilisée et un avertissement s'affiche à la fin de la création.
+  est utilisée et un avertissement s'affiche à la fin de la création. Le choix montre une
+  vignette de la pochette de chaque épisode (quand elle a déjà été téléchargée pour un pack) ;
+  deux épisodes de même titre se distinguent par leur rang.
 - **Diagnostic copiable** : en cas d'erreur, un panneau permet de copier les informations utiles
   pour un rapport de bogue.
 - **Audio** : les MP3 qui ne sont pas à 44 100 Hz sont rééchantillonnés à la conversion
