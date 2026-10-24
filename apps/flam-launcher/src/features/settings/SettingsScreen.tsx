@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { getAppInfo, type AppInfo } from "../../api/appInfo";
-import { clearCache, getCacheUsage, type CacheUsage } from "../../api/cache";
+import {
+  clearCache,
+  getCacheUsage,
+  getMp3CacheUsage,
+  type CacheUsage,
+} from "../../api/cache";
 import { pickExecutable, pickFolder } from "../../api/dialog";
 import { toAppError, type AppError } from "../../api/error";
 import {
   getSettings,
-  setSettings,
   THUMB_FITS,
+  type Settings,
   type SettingsIssue,
-  type ThumbFit,
   type SettingsView,
 } from "../../api/settings";
 import {
@@ -26,6 +30,7 @@ import { ErrorBanner } from "../ErrorBanner";
 import { getMinimizeDuringPlay, setMinimizeDuringPlay } from "./preferences";
 import { useRecovery } from "../recovery/RecoveryContext";
 import { formatBytes, validateOptionalPath } from "../validation";
+import { useSettingsSaver } from "./useSettingsSaver";
 import { VoiceSection } from "./VoiceSection";
 import "./SettingsScreen.css";
 
@@ -35,7 +40,8 @@ type PathField = "player_path" | "cache_dir";
 export function SettingsScreen() {
   const toast = useToast();
   const { report } = useRecovery();
-  const [view, setView] = useState<SettingsView | null>(null);
+  const saver = useSettingsSaver();
+  const { view, adopt } = saver;
   const [loadError, setLoadError] = useState<AppError | null>(null);
   const [saveError, setSaveError] = useState<AppError | null>(null);
   const [values, setValues] = useState<Record<PathField, string>>({
@@ -48,36 +54,40 @@ export function SettingsScreen() {
   });
   const [usage, setUsage] = useState<CacheUsage | null>(null);
   const [usageError, setUsageError] = useState<AppError | null>(null);
+  // Part des MP3 de podcasts ; `null` : pas encore connue ou illisible (la ligne est alors omise).
+  const [mp3Bytes, setMp3Bytes] = useState<number | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [themeError, setThemeError] = useState(false);
   const [thumbFitError, setThumbFitError] = useState(false);
-  const [thumbFitSaving, setThumbFitSaving] = useState(false);
-  const [themeSaving, setThemeSaving] = useState(false);
   const [voiceError, setVoiceError] = useState(false);
-  const [voiceSaving, setVoiceSaving] = useState(false);
   const [minimizeDuringPlay, setMinimize] = useState(getMinimizeDuringPlay);
+  const usageRequestRef = useRef(0);
   const cancelClearRef = useRef<HTMLButtonElement>(null);
-  // Derniers paramètres confirmés par le backend et numéro du dernier changement de thème.
-  const confirmedRef = useRef<SettingsView | null>(null);
-  const themeRequestRef = useRef(0);
-  // Numéro de la requête dont la réponse est dans `confirmedRef`, et requêtes en vol.
-  const confirmedRequestRef = useRef(0);
-  const themeInFlightRef = useRef(0);
+  // Numéro de la dernière modification demandée, par réglage.
+  const requestsRef = useRef<Record<string, number>>({});
+  // Enregistrement des chemins en cours (un second envoi du formulaire est ignoré).
+  const pathsSavingRef = useRef(false);
 
   const refreshUsage = useCallback(async () => {
-    try {
-      setUsage(await getCacheUsage());
+    // Une réponse d'un relevé plus ancien n'écrase pas celle d'un relevé plus récent.
+    const mine = ++usageRequestRef.current;
+    const isLatest = () => mine === usageRequestRef.current;
+    const [total, mp3] = await Promise.allSettled([getCacheUsage(), getMp3CacheUsage()]);
+    if (!isLatest()) return;
+    if (total.status === "fulfilled") {
+      setUsage(total.value);
       setUsageError(null);
-    } catch (caught) {
-      setUsageError(toAppError(caught));
+    } else {
+      setUsageError(toAppError(total.reason));
     }
+    // Information secondaire : un échec n'empêche ni l'affichage ni le vidage du cache.
+    setMp3Bytes(mp3.status === "fulfilled" ? mp3.value.bytes : null);
   }, []);
 
   const applyView = useCallback(
     (next: SettingsView) => {
-      confirmedRef.current = next;
-      setView(next);
+      adopt(next);
       setValues({
         player_path: next.settings.player_path ?? "",
         cache_dir: next.settings.cache_dir ?? "",
@@ -85,7 +95,7 @@ export function SettingsScreen() {
       setTouched({ player_path: false, cache_dir: false });
       report("settings.json", next.recovery);
     },
-    [report],
+    [adopt, report],
   );
 
   const load = useCallback(async () => {
@@ -133,152 +143,51 @@ export function SettingsScreen() {
   async function save(event: FormEvent) {
     event.preventDefault();
     setTouched({ player_path: true, cache_dir: true });
-    if (!view || Object.values(errors).some(Boolean)) return;
+    if (!view || pathsSavingRef.current || Object.values(errors).some(Boolean)) return;
+    pathsSavingRef.current = true;
     setSaveError(null);
     try {
-      const next = await setSettings({
-        ...view.settings,
-        player_path: values.player_path.trim() || null,
-        cache_dir: values.cache_dir.trim() || null,
-      });
+      // Seuls les chemins sont envoyés : le reste vient de l'état confirmé, pas de l'affichage
+      // (un thème ou une voix en cours d'enregistrement n'est ni écrasé ni anticipé).
+      const next = await saver.save(
+        {
+          player_path: values.player_path.trim() || null,
+          cache_dir: values.cache_dir.trim() || null,
+        },
+        false,
+      );
       applyView(next);
       void refreshUsage();
       toast.show({ message: t.settingsScreen.saved, tone: "success" });
     } catch (caught) {
       setSaveError(toAppError(caught));
+    } finally {
+      pathsSavingRef.current = false;
     }
   }
 
-  async function changeTheme(theme: ThemePreference) {
-    const confirmed = confirmedRef.current;
-    // Chaque enregistrement renvoie l'objet complet : thème et vignettes ne se chevauchent pas.
-    if (!view || !confirmed || thumbFitSaving || voiceSaving) return;
-    const request = ++themeRequestRef.current;
-    const isLatest = () => request === themeRequestRef.current;
-    const showConfirmedTheme = () => {
-      const settled = confirmedRef.current ?? confirmed;
-      setView((current) =>
-        current
-          ? {
-              ...current,
-              settings: { ...current.settings, theme: settled.settings.theme },
-            }
-          : current,
-      );
-      applyTheme(settled.settings.theme);
-    };
-    themeInFlightRef.current += 1;
-    setThemeSaving(true);
-    setThemeError(false);
-    setView((current) =>
-      current ? { ...current, settings: { ...current.settings, theme } } : current,
-    );
-    applyTheme(theme);
+  /**
+   * Enregistre un réglage (thème, vignettes, voix) : affiché tout de suite, puis enregistré à la
+   * suite des autres modifications (file du mécanisme commun). Seul le dernier choix d'un même
+   * réglage signale un échec ; l'affichage revient alors à l'état enregistré.
+   */
+  async function change<K extends "theme" | "thumb_fit" | "tts_voice">(
+    key: K,
+    value: Settings[K],
+    setError: (failed: boolean) => void,
+  ) {
+    if (!saver.current()) return;
+    const request = (requestsRef.current[key] = (requestsRef.current[key] ?? 0) + 1);
+    setError(false);
+    if (key === "theme") applyTheme(value as ThemePreference);
     try {
-      const next = await setSettings({ ...confirmed.settings, theme });
-      // Une réponse plus ancienne n'écrase pas un état confirmé par une requête plus récente.
-      if (request > confirmedRequestRef.current) {
-        confirmedRef.current = next;
-        confirmedRequestRef.current = request;
-      }
-      if (isLatest()) setView(next);
+      await saver.save({ [key]: value }, true);
     } catch {
-      if (isLatest()) {
-        // Retour au dernier état réellement enregistré, pas à celui capturé à l'appel.
-        showConfirmedTheme();
-        setThemeError(true);
-      }
+      if (requestsRef.current[key] === request) setError(true);
     } finally {
-      themeInFlightRef.current -= 1;
-      // Plus rien en vol : l'affichage doit refléter exactement le thème enregistré.
-      if (themeInFlightRef.current === 0) {
-        showConfirmedTheme();
-        setThemeSaving(false);
-      }
-    }
-  }
-
-  /** Enregistre la voix des titres lus (#462) ; un échec rétablit le choix enregistré. */
-  async function changeVoice(tts_voice: string) {
-    const confirmed = confirmedRef.current;
-    if (
-      !view ||
-      !confirmed ||
-      voiceSaving ||
-      thumbFitSaving ||
-      themeInFlightRef.current > 0
-    )
-      return;
-    setVoiceError(false);
-    setVoiceSaving(true);
-    setView((current) =>
-      current ? { ...current, settings: { ...current.settings, tts_voice } } : current,
-    );
-    try {
-      const next = await setSettings({ ...confirmed.settings, tts_voice });
-      confirmedRef.current = next;
-      setView((current) =>
-        current
-          ? {
-              ...current,
-              settings: { ...current.settings, tts_voice: next.settings.tts_voice },
-            }
-          : current,
-      );
-    } catch {
-      setView((current) =>
-        current
-          ? {
-              ...current,
-              settings: { ...current.settings, tts_voice: confirmed.settings.tts_voice },
-            }
-          : current,
-      );
-      setVoiceError(true);
-    } finally {
-      setVoiceSaving(false);
-    }
-  }
-
-  /** Enregistre le remplissage des vignettes ; un échec rétablit le choix enregistré. */
-  async function changeThumbFit(thumb_fit: ThumbFit) {
-    const confirmed = confirmedRef.current;
-    if (
-      !view ||
-      !confirmed ||
-      thumbFitSaving ||
-      voiceSaving ||
-      themeInFlightRef.current > 0
-    )
-      return;
-    setThumbFitError(false);
-    setThumbFitSaving(true);
-    setView((current) =>
-      current ? { ...current, settings: { ...current.settings, thumb_fit } } : current,
-    );
-    try {
-      const next = await setSettings({ ...confirmed.settings, thumb_fit });
-      confirmedRef.current = next;
-      setView((current) =>
-        current
-          ? {
-              ...current,
-              settings: { ...current.settings, thumb_fit: next.settings.thumb_fit },
-            }
-          : current,
-      );
-    } catch {
-      setView((current) =>
-        current
-          ? {
-              ...current,
-              settings: { ...current.settings, thumb_fit: confirmed.settings.thumb_fit },
-            }
-          : current,
-      );
-      setThumbFitError(true);
-    } finally {
-      setThumbFitSaving(false);
+      // L'interface reflète le thème affiché (choix en attente, sinon thème enregistré).
+      const shown = saver.current();
+      if (shown) applyTheme(shown.settings.theme);
     }
   }
 
@@ -367,6 +276,11 @@ export function SettingsScreen() {
               : text.cache.empty(usage.path)}
           </p>
         )}
+        {usage && mp3Bytes !== null && (
+          <p>
+            {mp3Bytes > 0 ? text.cache.mp3(formatBytes(mp3Bytes)) : text.cache.mp3Empty}
+          </p>
+        )}
         <div>
           <Button
             variant="danger"
@@ -385,9 +299,8 @@ export function SettingsScreen() {
         <RadioGroup
           legend={t.theme.label}
           value={view.settings.theme}
-          disabled={thumbFitSaving || voiceSaving}
           options={THEME_PREFERENCES.map((value) => ({ value, label: t.theme[value] }))}
-          onChange={(theme) => void changeTheme(theme)}
+          onChange={(theme) => void change("theme", theme, setThemeError)}
         />
       </section>
 
@@ -398,21 +311,19 @@ export function SettingsScreen() {
         <RadioGroup
           legend={text.thumbFit.label}
           value={view.settings.thumb_fit}
-          disabled={thumbFitSaving || themeSaving || voiceSaving}
           options={THUMB_FITS.map((value) => ({
             value,
             label: text.thumbFit.options[value].label,
             hint: text.thumbFit.options[value].hint,
           }))}
-          onChange={(thumbFit) => void changeThumbFit(thumbFit)}
+          onChange={(thumbFit) => void change("thumb_fit", thumbFit, setThumbFitError)}
         />
       </section>
 
       <VoiceSection
         value={view.settings.tts_voice ?? null}
-        disabled={voiceSaving || thumbFitSaving || themeSaving}
         failed={voiceError}
-        onChange={(voice) => void changeVoice(voice)}
+        onChange={(voice) => void change("tts_voice", voice, setVoiceError)}
       />
 
       <section className="fl-settings__section" aria-labelledby="settings-playback">

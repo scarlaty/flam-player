@@ -477,6 +477,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `sources_reorder`             | `ids: string[]`                  | `Source[]` (liste complète)                                | `sources`            |
 | `config_ack_recovery`         | `file?: string`                  | rien                                                       | `storage`            |
 | `cache_usage`                 |                                  | `{ path, bytes }`                                          | `cache`              |
+| `podcast_mp3_cache_size`      |                                  | `{ bytes }` (part des MP3, comprise dans `cache_usage`)    | `podcast::mp3size`   |
 | `cache_clear`                 |                                  | `{ freed_bytes }`                                          | `cache`              |
 | `open_external`               | `url: string`                    | rien                                                       | `external`           |
 | `catalog_refresh`             | `source_id`                      | `CatalogView`                                              | `catalog`            |

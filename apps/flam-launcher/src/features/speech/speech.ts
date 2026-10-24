@@ -7,6 +7,7 @@ import {
   type VoiceList,
 } from "../../api/speech";
 import { t } from "../../i18n";
+import { ownText } from "../../i18n/lookup";
 
 /** Voix françaises du poste, lues une fois au montage (`tts_voices`). */
 export function useVoices(): { list: VoiceList | null; error: AppError | null } {
@@ -30,8 +31,7 @@ export function useVoices(): { list: VoiceList | null; error: AppError | null } 
 
 /** Texte d'une erreur d'aperçu : table par code (`Object.hasOwn`), sinon le message du backend. */
 export function previewErrorMessage(error: AppError): string {
-  const table = t.speech.preview;
-  return Object.hasOwn(table, error.kind) ? table[error.kind]! : error.message;
+  return ownText(t.speech.preview, error.kind) ?? error.message;
 }
 
 export interface SpeechPreview {

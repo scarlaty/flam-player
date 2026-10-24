@@ -51,6 +51,8 @@ function mockBackend(playing: object | null = null, calls: string[] = []) {
             sources: [{ type: "library", id: "library", name: "Mes histoires" }],
             recovery: null,
           };
+        case "podcast_mp3_cache_size":
+          return { bytes: 0 };
         case "cache_usage":
           return { path: "C:\\cache", bytes: 0, subdirs: [] };
         default:
