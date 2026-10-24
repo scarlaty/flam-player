@@ -588,8 +588,8 @@ class TestCampaign(unittest.TestCase):
         self.assertIsNone(parity.image_format(b"ID3\x04"))
         self.assertEqual(parity.delegation_cause(
             "a.zip : \"x\" : compression 12 (bzip2/LZMA/Zstandard) déléguée à Python"), "zip:bzip2")
-        self.assertEqual(parity.delegation_cause("i.png : format non pris en charge : APNG"),
-                         "image:APNG")
+        self.assertEqual(parity.delegation_cause("i.png : format non pris en charge : pas un PNG"),
+                         "image:pas un PNG")
         self.assertEqual(parity.delegation_cause(
             "metadata.json title : liste ou objet non pris en charge"), "metadata")
         self.assertEqual(parity.delegation_cause(None), "autre")
@@ -626,7 +626,8 @@ class TestCampaign(unittest.TestCase):
     def test_delegation_cause_is_anchored_with_closed_reasons(self):
         # un nom d'asset ne fausse pas la cause
         self.assertEqual(parity.delegation_cause(
-            "compression 3 (x).png : format non pris en charge : APNG"), "image:APNG")
+            "compression 3 (x).png : format non pris en charge : pas un PNG"),
+            "image:pas un PNG")
         self.assertEqual(parity.delegation_cause(
             "format non pris en charge : APNG.png : compression 93 (bzip2/LZMA/Zstandard) "
             "déléguée à Python"), "zip:zstd")
@@ -636,10 +637,13 @@ class TestCampaign(unittest.TestCase):
             "a.zip : \"a : compression 3 (bzip2/LZMA/Zstandard) déléguée à Python\" : "
             "compression 12 (bzip2/LZMA/Zstandard) déléguée à Python"), "zip:bzip2")
         self.assertEqual(parity.delegation_cause(
-            "a\nb.png : format non pris en charge : APNG"), "image:APNG")
+            "a\nb.png : format non pris en charge : pas un PNG"), "image:pas un PNG")
         # raison hors liste fermee, ou message sans ancre : autre
         self.assertEqual(parity.delegation_cause(
             "i.png : format non pris en charge : raison inventee"), "autre")
+        # raison retiree par #459 (PNG atypiques decodes par le Rust) : hors liste
+        self.assertEqual(parity.delegation_cause(
+            "i.png : format non pris en charge : APNG"), "autre")
         self.assertEqual(parity.delegation_cause(
             "format non pris en charge : APNG"), "autre")
         for why in parity.IMAGE_REASONS:

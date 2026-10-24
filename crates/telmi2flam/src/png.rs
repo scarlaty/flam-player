@@ -17,10 +17,22 @@
 //!   illisible (décision D5 de `PORT-RUST.md`) ; un manque de mémoire rend aussi l'image
 //!   illisible, comme le `MemoryError` attrapé par Python.
 //!
-//! Les cas que ce module ne modélise pas sont **délégués** à Python ([`PngError::Unsupported`],
-//! code 7, décision D4) : autre format que PNG que Pillow pourrait lire (voir [`crate::identify`] ;
-//! des données qu'aucun greffon de Pillow n'accepte sont illisibles), APNG (`acTL`, `fcTL`, `fdAT`), `IHDR` absent en
-//! tête ou répété, `tRNS` répété, placé après l'IDAT ou de longueur inattendue.
+//! PNG atypiques (#459), avec le comportement exact de Pillow, erreurs comprises :
+//! - APNG : première image seulement (`acTL`, séquences de `fcTL`/`fdAT`, zone du `fcTL` lu
+//!   avant les données, reste de l'image au pixel nul du mode ; en entrelacé, `ZipDecode.c`
+//!   ignore le décalage de la zone), données continuées en `fdAT`, arrêt de `load_end` au `fcTL`
+//!   suivant d'un APNG animé ;
+//! - `IHDR` absent en tête ou répété : taille du dernier, mode du dernier couple valide,
+//!   entrelacement collant ; `PLTE` gardé seulement sous un mode palette ;
+//! - transparence : valeur de Pillow rangée selon le mode courant à chaque `tRNS` (le dernier
+//!   gagne, y compris après l'image), clé brute de `_png_trns_key` (premier `tRNS` de 2 ou 6
+//!   octets avant l'IDAT) et `IHDR` à position fixe de `_png_ihdr` pour `_trns_mask`, puis
+//!   conversions de Pillow (`convert("L")`, `"I"`, `"RGB"`, `convert_transparent`) quel que
+//!   soit le mode réellement décodé.
+//!
+//! Seul cas encore **délégué** à Python ([`PngError::Unsupported`], code 7, décision D4) : un
+//! autre format que PNG que Pillow pourrait lire (voir [`crate::identify`] ; des données
+//! qu'aucun greffon de Pillow n'accepte sont illisibles).
 
 use std::fmt;
 
@@ -51,7 +63,8 @@ pub struct Rgba {
 /// Échec du décodage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PngError {
-    /// Cas non modélisé (autre format, APNG…) : à déléguer à Python (`unsupported_format`).
+    /// Autre format que PNG que Pillow pourrait lire : à déléguer à Python
+    /// (`unsupported_format`).
     Unsupported(&'static str),
     /// Pillow lève une exception sur ce fichier : avertissement `image_unreadable`.
     Unreadable(&'static str),
@@ -164,6 +177,8 @@ struct Inflater {
     /// Octets produits dans `out`.
     pos: usize,
     done: bool,
+    /// Sortie pleine avec un octet en attente : zlib s'arrête là (rien de plus n'est lu).
+    halted: bool,
     /// Taille maximale de `out`.
     max: usize,
 }
@@ -179,6 +194,11 @@ enum Step {
 
 /// Taille de départ du tampon de sortie.
 const INFLATE_START: usize = 1024;
+/// Distance maximale de deflate.
+const DEFLATE_WINDOW: usize = 32768;
+const INFLATE_FLAGS: u32 = TINFL_FLAG_PARSE_ZLIB_HEADER
+    | TINFL_FLAG_HAS_MORE_INPUT
+    | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
 
 impl Inflater {
     fn new(max: usize) -> Self {
@@ -187,6 +207,7 @@ impl Inflater {
             out: Vec::new(),
             pos: 0,
             done: false,
+            halted: false,
             max,
         }
     }
@@ -198,6 +219,7 @@ impl Inflater {
         self.state.init();
         self.pos = 0;
         self.done = false;
+        self.halted = false;
     }
 
     /// Agrandit `out` (au moins d'un octet, au plus jusqu'à `limit`).
@@ -211,50 +233,110 @@ impl Inflater {
     }
 
     /// Décompresse `input` sans dépasser `limit` octets produits au total.
+    ///
+    /// Sortie pleine, zlib s'arrête au premier octet à écrire : il décode encore les codes
+    /// (un code invalide est une erreur), mais ne contrôle une distance trop lointaine qu'en
+    /// écrivant la copie. miniz la refuse dès son décodage : un échec survenu sortie pleine
+    /// est rejoué depuis l'état d'avant l'appel, dans un tampon jetable à historique fictif
+    /// (le décodage des codes ne dépend pas du contenu produit). S'il produit l'octet suivant,
+    /// zlib se serait arrêté là sans erreur (`halted`).
     fn run(&mut self, input: &[u8], limit: usize) -> Result<Step> {
         let limit = limit.min(self.max);
-        let flags = TINFL_FLAG_PARSE_ZLIB_HEADER
-            | TINFL_FLAG_HAS_MORE_INPUT
-            | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
         let mut consumed = 0;
-        while !self.done {
+        while !self.done && !self.halted {
             if self.out.len() <= self.pos && self.out.len() < limit {
                 self.grow(limit)?;
             }
             let end = limit.min(self.out.len());
+            let before = (end == limit).then(|| (self.state.clone(), self.pos));
             let (status, used, written) = decompress(
                 &mut self.state,
                 &input[consumed..],
                 &mut self.out[..end],
                 self.pos,
-                flags,
+                INFLATE_FLAGS,
             );
-            consumed += used;
             self.pos += written;
             match status {
                 TINFLStatus::Done => self.done = true,
-                TINFLStatus::NeedsMoreInput => break,
+                TINFLStatus::NeedsMoreInput => {}
                 TINFLStatus::HasMoreOutput if self.out.len() < limit => self.grow(limit)?,
-                TINFLStatus::HasMoreOutput => break,
-                _ => return Ok(Step::Broken),
+                TINFLStatus::HasMoreOutput => self.halted = true,
+                _ => match before {
+                    Some((state, pos)) if self.pos == limit => {
+                        self.state = state;
+                        if !self.replay(&input[consumed..], limit - pos)? {
+                            return Ok(Step::Broken);
+                        }
+                        self.halted = true;
+                    }
+                    _ => return Ok(Step::Broken),
+                },
+            }
+            consumed += used;
+            if status == TINFLStatus::NeedsMoreInput {
+                break;
             }
         }
         Ok(Step::Consumed(consumed))
     }
 
+    /// Rejoue `input` depuis l'état courant dans un tampon jetable dont la position vaut la
+    /// fenêtre de deflate : vrai si `n` octets puis un de plus sont produits sans erreur.
+    fn replay(&mut self, input: &[u8], n: usize) -> Result<bool> {
+        let mut scratch = Vec::new();
+        let size = DEFLATE_WINDOW + n + 1;
+        if scratch.try_reserve_exact(size).is_err() {
+            return unreadable("mémoire insuffisante");
+        }
+        scratch.resize(size, 0);
+        let (_, _, written) = decompress(
+            &mut self.state,
+            input,
+            &mut scratch,
+            DEFLATE_WINDOW,
+            INFLATE_FLAGS,
+        );
+        Ok(written == n + 1)
+    }
+
     /// Ce que zlib fait encore de `input` une fois la sortie pleine : il traite la fin de bloc
     /// et vérifie l'Adler-32, mais s'arrête au premier octet à produire. `Ok(Some(true))` : il
     /// reste un octet à produire ; `Ok(None)` : flux invalide.
+    ///
+    /// zlib ne contrôle une distance trop lointaine qu'au moment d'écrire la copie (état
+    /// `MATCH`, après le test de place libre), alors que miniz la refuse dès son décodage : la
+    /// sonde décompresse donc dans un tampon jetable dont la position vaut la fenêtre maximale
+    /// de deflate (32 Kio), où aucune distance n'est trop lointaine. Le décompresseur ne sert
+    /// plus ensuite (fin d'image, ou `reset` avant le texte suivant).
     fn probe(&mut self, input: &[u8]) -> Result<Option<bool>> {
-        let before = self.pos;
-        let step = self.run(input, before + 1)?;
-        if self.pos > before {
+        if self.halted {
+            return Ok(Some(true));
+        }
+        if self.done {
+            return Ok(Some(false));
+        }
+        let mut scratch = Vec::new();
+        if scratch.try_reserve_exact(DEFLATE_WINDOW + 1).is_err() {
+            return unreadable("mémoire insuffisante");
+        }
+        scratch.resize(DEFLATE_WINDOW + 1, 0);
+        let (status, _, written) = decompress(
+            &mut self.state,
+            input,
+            &mut scratch,
+            DEFLATE_WINDOW,
+            INFLATE_FLAGS,
+        );
+        if written > 0 {
             // zlib s'arrête sur cet octet : ce que miniz lit ensuite (Adler-32…) ne compte pas
             return Ok(Some(true));
         }
-        Ok(match step {
-            Step::Broken => None,
-            Step::Consumed(_) => Some(false),
+        Ok(match status {
+            TINFLStatus::Done | TINFLStatus::NeedsMoreInput | TINFLStatus::HasMoreOutput => {
+                Some(false)
+            }
+            _ => None,
         })
     }
 }
@@ -279,33 +361,179 @@ fn safe_zlib_decompress(z: &mut Inflater, input: &[u8]) -> Result<Option<usize>>
     Ok(Some(z.pos.min(MAX_TEXT_CHUNK)))
 }
 
-/// Clé de transparence retenue par Pillow et `_trns_mask`.
+/// Valeur de `info["transparency"]` de Pillow, typée comme `chunk_tRNS` l'a rangée selon le
+/// mode **courant** au moment du chunk (un `IHDR` répété peut changer ce mode ensuite).
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Trns {
-    Gray(u16),
-    Rgb(u16, u16, u16),
-    /// Palette : alpha de chaque entrée (`putpalettealphas`), ou une seule entrée
-    /// transparente (`putpalettealpha`, motif `^\xff*\x00\xff*$`).
-    Alphas(Vec<u8>),
-    Index(usize),
+enum PilTrns {
+    /// Entier : gris (`"1"` : 0 ou 255, `"L"`, `"I;16"` : `i16(s)`), ou index unique d'une
+    /// palette (motif `^\xff*\x00\xff*$`, `putpalettealpha`).
+    Int(u32),
+    /// Triplet RGB (`i16(s)`, `i16(s, 2)`, `i16(s, 4)`).
+    Tuple([u16; 3]),
+    /// Octets : alpha de chaque entrée d'une palette (`putpalettealphas`).
+    Bytes(Vec<u8>),
 }
 
-/// État lu par `PngStream` avant le premier IDAT.
-struct Header {
-    width: u32,
-    height: u32,
+/// `chunk_tRNS` : valeur rangée selon le mode courant ; `Ok(None)` : le mode ignore le chunk
+/// (valeur précédente conservée). Un chunk trop court pour `i16` lève `struct.error`.
+fn pil_trns(mode: Option<Mode>, s: &[u8]) -> Result<Option<PilTrns>> {
+    let i16 = |o: usize| -> Result<u16> {
+        match s.get(o..o + 2) {
+            Some(b) => Ok(u16::from_be_bytes([b[0], b[1]])),
+            None => unreadable("tRNS court"),
+        }
+    };
+    Ok(Some(match mode {
+        Some(Mode::Palette) => {
+            // `_simple_palette = re.compile(b"^\xff*\x00\xff*$")` : un seul zéro entouré de
+            // 0xFF ; le `$` de Python accepte aussi un saut de ligne final
+            let body = s.strip_suffix(b"\n").unwrap_or(s);
+            let simple = body.iter().filter(|&&c| c == 0).count() == 1
+                && body.iter().all(|&c| c == 0 || c == 0xFF);
+            if simple {
+                PilTrns::Int(body.iter().position(|&c| c == 0).unwrap_or(0) as u32)
+            } else {
+                PilTrns::Bytes(s.to_vec())
+            }
+        }
+        Some(Mode::Bit) => PilTrns::Int(if i16(0)? != 0 { 255 } else { 0 }),
+        Some(Mode::Gray | Mode::Gray16) => PilTrns::Int(u32::from(i16(0)?)),
+        Some(Mode::Rgb) => PilTrns::Tuple([i16(0)?, i16(2)?, i16(4)?]),
+        Some(Mode::GrayA | Mode::GrayA16 | Mode::Rgba4) | None => return Ok(None),
+    }))
+}
+
+/// Mode, profondeur et type de couleur retenus par le dernier `IHDR` valide (`_MODES`) :
+/// `chunk_IHDR` garde le mode précédent si le couple est inconnu (`KeyError`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PixFormat {
+    mode: Mode,
     depth: u8,
     color: u8,
-    mode: Option<Mode>,
+}
+
+/// Zone décodée (`tile`) : `bbox` du dernier `fcTL` avant les données, sinon toute l'image.
+type Extent = (u64, u64, u64, u64);
+
+/// État de `PngStream` : lu avant les données d'image, puis complété par `load_end`.
+struct Header {
+    /// `im_size` : taille du dernier `IHDR` lu (même de mode inconnu).
+    size: (u32, u32),
+    format: Option<PixFormat>,
+    /// `im_info["interlace"]` : posé par un `IHDR` entrelacé, jamais retiré.
     interlace: bool,
     palette: Option<Vec<u8>>,
-    trns: Option<Trns>,
+    trns: Option<PilTrns>,
+    /// APNG : `im_n_frames`, `_seq_num`, `im_info["bbox"]` et `im_info["default_image"]`.
+    n_frames: Option<u32>,
+    seq: Option<u64>,
+    bbox: Option<Extent>,
+    default_image: bool,
     text_memory: usize,
     /// Décompresseur des chunks de texte, réutilisé d'un chunk à l'autre.
     text: Inflater,
 }
 
 impl Header {
+    /// `chunk_IHDR` (avant ou après les données).
+    fn ihdr(&mut self, s: &[u8]) -> Result<()> {
+        if s.len() < 13 {
+            return unreadable("IHDR court");
+        }
+        self.size = (
+            u32::from_be_bytes([s[0], s[1], s[2], s[3]]),
+            u32::from_be_bytes([s[4], s[5], s[6], s[7]]),
+        );
+        if let Some(mode) = pillow_mode(s[8], s[9]) {
+            self.format = Some(PixFormat {
+                mode,
+                depth: s[8],
+                color: s[9],
+            });
+        }
+        if s[12] != 0 {
+            self.interlace = true;
+        }
+        if s[11] != 0 {
+            return unreadable("méthode de filtrage inconnue");
+        }
+        Ok(())
+    }
+
+    /// `chunk_tRNS` (avant ou après les données), selon le mode courant.
+    fn trns(&mut self, s: &[u8]) -> Result<()> {
+        if let Some(t) = pil_trns(self.format.map(|f| f.mode), s)? {
+            self.trns = Some(t);
+        }
+        Ok(())
+    }
+
+    /// `chunk_acTL` (la valeur ne sert qu'à `is_animated`, lu avant les données).
+    fn actl(&mut self, s: &[u8]) -> Result<()> {
+        if s.len() < 8 {
+            return unreadable("acTL court");
+        }
+        if self.n_frames.is_some() {
+            self.n_frames = None;
+            return Ok(());
+        }
+        let n = u32::from_be_bytes([s[0], s[1], s[2], s[3]]);
+        if n != 0 && n <= 0x8000_0000 {
+            self.n_frames = Some(n);
+        }
+        Ok(())
+    }
+
+    /// `chunk_fcTL` : numéro de séquence et cadre dans `im_size`.
+    fn fctl(&mut self, s: &[u8]) -> Result<()> {
+        if s.len() < 26 {
+            return unreadable("fcTL court");
+        }
+        let at = |o: usize| u64::from(u32::from_be_bytes([s[o], s[o + 1], s[o + 2], s[o + 3]]));
+        let seq = at(0);
+        let ok = match self.seq {
+            None => seq == 0,
+            Some(n) => n + 1 == seq,
+        };
+        if !ok {
+            return unreadable("séquence APNG");
+        }
+        self.seq = Some(seq);
+        let (w, h, x, y) = (at(4), at(8), at(12), at(16));
+        if x + w > u64::from(self.size.0) || y + h > u64::from(self.size.1) {
+            return unreadable("cadre APNG hors de l'image");
+        }
+        self.bbox = Some((x, y, x + w, y + h));
+        Ok(())
+    }
+
+    /// Début de `chunk_fdAT` : longueur et numéro de séquence (4 octets lus).
+    fn fdat_seq(&mut self, cur: &mut Cursor, len: usize) -> Result<()> {
+        if len < 4 {
+            return unreadable("fdAT court");
+        }
+        let s = cur.safe_read(4)?;
+        let seq = u64::from(u32::from_be_bytes([s[0], s[1], s[2], s[3]]));
+        if self.seq.is_none_or(|n| n + 1 != seq) {
+            return unreadable("séquence APNG");
+        }
+        self.seq = Some(seq);
+        Ok(())
+    }
+
+    /// `chunk_IDAT` : zone à décoder (`im_tile`).
+    fn tile(&mut self) -> Extent {
+        match self.bbox {
+            Some(b) => b,
+            None => {
+                if self.n_frames.is_some() {
+                    self.default_image = true;
+                }
+                (0, 0, u64::from(self.size.0), u64::from(self.size.1))
+            }
+        }
+    }
+
     fn add_text(&mut self, n: usize) -> Result<()> {
         self.text_memory = self.text_memory.saturating_add(n);
         if self.text_memory > MAX_TEXT_MEMORY {
@@ -409,23 +637,24 @@ fn crc_ok(kind: &[u8; 4], data: &[u8], stored: &[u8]) -> bool {
         && crc.finalize() == u32::from_be_bytes([stored[0], stored[1], stored[2], stored[3]])
 }
 
-/// `PngImageFile._open` : chunks jusqu'au premier IDAT. Rend l'en-tête et la longueur de ce
-/// premier IDAT (le curseur est sur ses données).
-fn read_header(cur: &mut Cursor, cancelled: &dyn Fn() -> bool) -> Result<(Header, usize)> {
+/// `PngImageFile._open` : chunks jusqu'aux premières données d'image (`IDAT`, ou `fdAT` d'un
+/// APNG dont le numéro de séquence suit). Rend l'en-tête, la zone à décoder et la longueur des
+/// données restantes du chunk (le curseur est sur ces données).
+fn read_header(cur: &mut Cursor, cancelled: &dyn Fn() -> bool) -> Result<(Header, Extent, usize)> {
     let mut h = Header {
-        width: 0,
-        height: 0,
-        depth: 0,
-        color: 0,
-        mode: None,
+        size: (0, 0),
+        format: None,
         interlace: false,
         palette: None,
         trns: None,
+        n_frames: None,
+        seq: None,
+        bbox: None,
+        default_image: false,
         text_memory: 0,
         text: Inflater::new(MAX_TEXT_CHUNK + 1),
     };
-    let mut first = true;
-    let mut idat = None;
+    let mut data = None;
     loop {
         if cancelled() {
             return Err(PngError::Cancelled);
@@ -435,40 +664,41 @@ fn read_header(cur: &mut Cursor, cancelled: &dyn Fn() -> bool) -> Result<(Header
         };
         let s: &[u8] = match &kind {
             b"IDAT" => {
-                idat = Some(len);
+                data = Some((h.tile(), len));
+                break;
+            }
+            b"fdAT" => {
+                // `chunk_fdAT` : séquence, puis `chunk_IDAT` (fin de l'en-tête, sans CRC)
+                h.fdat_seq(cur, len)?;
+                data = Some((h.tile(), len - 4));
                 break;
             }
             b"IEND" => break,
-            b"acTL" | b"fcTL" | b"fdAT" => return Err(PngError::Unsupported("APNG")),
             b"IHDR" => {
-                if !first {
-                    return Err(PngError::Unsupported("IHDR absent en tête ou répété"));
-                }
                 let s = cur.safe_read(len)?;
-                if s.len() < 13 {
-                    return unreadable("IHDR court");
-                }
-                h.width = u32::from_be_bytes([s[0], s[1], s[2], s[3]]);
-                h.height = u32::from_be_bytes([s[4], s[5], s[6], s[7]]);
-                h.depth = s[8];
-                h.color = s[9];
-                h.mode = pillow_mode(s[8], s[9]);
-                h.interlace = s[12] != 0;
-                if s[11] != 0 {
-                    return unreadable("méthode de filtrage inconnue");
-                }
+                h.ihdr(s)?;
                 s
             }
             b"PLTE" => {
                 let s = cur.safe_read(len)?;
-                if h.mode == Some(Mode::Palette) {
+                if h.format.is_some_and(|f| f.mode == Mode::Palette) {
                     h.palette = Some(s.to_vec());
                 }
                 s
             }
             b"tRNS" => {
                 let s = cur.safe_read(len)?;
-                read_trns(&mut h, s)?;
+                h.trns(s)?;
+                s
+            }
+            b"acTL" => {
+                let s = cur.safe_read(len)?;
+                h.actl(s)?;
+                s
+            }
+            b"fcTL" => {
+                let s = cur.safe_read(len)?;
+                h.fctl(s)?;
                 s
             }
             _ => {
@@ -480,71 +710,72 @@ fn read_header(cur: &mut Cursor, cancelled: &dyn Fn() -> bool) -> Result<(Header
         if !crc_ok(&kind, s, cur.read(4)) {
             return unreadable("CRC faux");
         }
-        first = false;
     }
-    if h.mode.is_none() || h.width == 0 || h.height == 0 {
+    let (w, ht) = h.size;
+    if h.format.is_none() || w == 0 || ht == 0 {
         return unreadable("mode ou taille invalide");
     }
-    if u64::from(h.width) * u64::from(h.height) > 2 * MAX_IMAGE_PIXELS {
+    if u64::from(w) * u64::from(ht) > 2 * MAX_IMAGE_PIXELS {
         return unreadable("bombe de décompression");
     }
-    match idat {
-        Some(len) => Ok((h, len)),
-        None => unreadable("pas d'IDAT"),
+    let Some((tile, len)) = data else {
+        return unreadable("pas d'IDAT");
+    };
+    // `decoder.setimage(im, extents)` : zone non vide, dans l'image (un `IHDR` lu après le
+    // `fcTL` peut avoir réduit l'image)
+    let (x0, y0, x1, y1) = tile;
+    if x1 <= x0 || y1 <= y0 || x1 > u64::from(w) || y1 > u64::from(ht) {
+        return unreadable("zone hors de l'image");
     }
+    Ok((h, tile, len))
 }
 
-/// `chunk_tRNS` de Pillow, et clé brute de `_png_trns_key` pour `_trns_mask`.
-fn read_trns(h: &mut Header, s: &[u8]) -> Result<()> {
-    let Some(mode) = h.mode else {
-        return Ok(());
-    };
-    let i16 = |o: usize| u16::from_be_bytes([s[o], s[o + 1]]);
-    let trns = match mode {
-        Mode::Palette => {
-            // `_simple_palette = re.compile(b"^\xff*\x00\xff*$")` : un seul zéro entouré de
-            // 0xFF ; le `$` de Python accepte aussi un saut de ligne final
-            let body = s.strip_suffix(b"\n").unwrap_or(s);
-            let simple = body.iter().filter(|&&c| c == 0).count() == 1
-                && body.iter().all(|&c| c == 0 || c == 0xFF);
-            if simple {
-                Trns::Index(body.iter().position(|&c| c == 0).unwrap_or(0))
-            } else {
-                Trns::Alphas(s.to_vec())
-            }
-        }
-        Mode::Bit | Mode::Gray | Mode::Gray16 => {
-            if s.len() < 2 {
-                return unreadable("tRNS court");
-            }
-            if s.len() != 2 {
-                return Err(PngError::Unsupported("tRNS de longueur inattendue"));
-            }
-            Trns::Gray(i16(0))
-        }
-        Mode::Rgb => {
-            if s.len() < 6 {
-                return unreadable("tRNS court");
-            }
-            if s.len() != 6 {
-                return Err(PngError::Unsupported("tRNS de longueur inattendue"));
-            }
-            Trns::Rgb(i16(0), i16(2), i16(4))
-        }
-        Mode::GrayA | Mode::GrayA16 | Mode::Rgba4 => return Ok(()),
-    };
-    if h.trns.is_some() {
-        return Err(PngError::Unsupported("tRNS répété"));
-    }
-    h.trns = Some(trns);
-    Ok(())
+/// `_png_ihdr` de `telmi2flam.py` : (profondeur, type de couleur) lus à position fixe, si le
+/// premier chunk est un `IHDR`.
+fn fixed_ihdr(data: &[u8]) -> Option<(u8, u8)> {
+    (data.len() >= 26 && &data[12..16] == b"IHDR").then(|| (data[24], data[25]))
 }
 
-/// Table RGBA de 256 entrées de Pillow : `PLTE` (au plus 256 entrées), complété par du noir
-/// opaque (palette absente comprise), puis les alphas de `tRNS`, même au-delà du `PLTE`.
-fn palette_table(h: &Header) -> Result<Vec<[u8; 4]>> {
+/// `_png_trns_key` de `telmi2flam.py` : premier `tRNS` avant `IDAT`/`IEND`, parcouru naïvement
+/// depuis l'octet 8. `Err` : `struct.error` sur un corps tronqué (l'image est illisible).
+fn raw_trns_key(data: &[u8]) -> Result<Option<PilTrns>> {
+    let mut pos = 8usize;
+    while pos.checked_add(8).is_some_and(|e| e <= data.len()) {
+        let n = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+        let n = n as usize;
+        let kind = &data[pos + 4..pos + 8];
+        let start = pos + 8;
+        let body = &data[start.min(data.len())..start.saturating_add(n).min(data.len())];
+        if kind == b"tRNS" {
+            let i16 = |o: usize| -> Result<u16> {
+                match body.get(o..o + 2) {
+                    Some(b) => Ok(u16::from_be_bytes([b[0], b[1]])),
+                    None => unreadable("tRNS tronqué"),
+                }
+            };
+            return Ok(match n {
+                2 => Some(PilTrns::Int(u32::from(i16(0)?))),
+                6 => Some(PilTrns::Tuple([i16(0)?, i16(2)?, i16(4)?])),
+                _ => None,
+            });
+        }
+        if kind == b"IDAT" || kind == b"IEND" {
+            return Ok(None);
+        }
+        pos = match pos.checked_add(12).and_then(|p| p.checked_add(n)) {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+    }
+    Ok(None)
+}
+
+/// Table RGB(A) de 256 entrées de Pillow : `PLTE` (au plus 256 entrées), complété par du noir
+/// opaque (palette absente comprise). Avec `alphas`, la transparence de `convert("RGBA")`
+/// (`putpalettealphas`, même au-delà du `PLTE`, ou `putpalettealpha` d'un index).
+fn palette_table(palette: Option<&[u8]>, alphas: Option<&PilTrns>) -> Result<Vec<[u8; 4]>> {
     let mut table = vec![[0u8, 0, 0, 255]; 256];
-    if let Some(p) = &h.palette {
+    if let Some(p) = palette {
         if p.len() / 3 > 256 {
             return unreadable("palette trop longue");
         }
@@ -552,8 +783,8 @@ fn palette_table(h: &Header) -> Result<Vec<[u8; 4]>> {
             entry[..3].copy_from_slice(rgb);
         }
     }
-    match &h.trns {
-        Some(Trns::Alphas(a)) => {
+    match alphas {
+        Some(PilTrns::Bytes(a)) => {
             if a.len() > 256 {
                 return unreadable("tRNS plus long que 256");
             }
@@ -561,11 +792,12 @@ fn palette_table(h: &Header) -> Result<Vec<[u8; 4]>> {
                 entry[3] = alpha;
             }
         }
-        Some(Trns::Index(i)) => match table.get_mut(*i) {
+        Some(PilTrns::Int(i)) => match table.get_mut(*i as usize) {
             Some(entry) => entry[3] = 0,
             None => return unreadable("index tRNS hors palette"),
         },
-        _ => {}
+        Some(PilTrns::Tuple(_)) => return unreadable("transparence de palette invalide"),
+        None => {}
     }
     Ok(table)
 }
@@ -586,13 +818,15 @@ struct IdatStream<'a> {
 }
 
 impl<'a> IdatStream<'a> {
-    fn next_block(&mut self) -> Result<()> {
+    fn next_block(&mut self, h: &mut Header) -> Result<()> {
         while self.remaining == 0 {
             self.cur.read(4);
             match self.cur.chunk_header() {
                 Some((kind, len)) if &kind == b"IDAT" || &kind == b"DDAT" => self.remaining = len,
-                Some((kind, _)) if &kind == b"fdAT" => {
-                    return Err(PngError::Unsupported("APNG"));
+                Some((kind, len)) if &kind == b"fdAT" => {
+                    // suite des données d'un APNG : `chunk_fdAT` vérifie la séquence
+                    h.fdat_seq(&mut self.cur, len)?;
+                    self.remaining = len - 4;
                 }
                 _ => return unreadable("données d'image tronquées"),
             }
@@ -608,14 +842,14 @@ impl<'a> IdatStream<'a> {
     }
 
     /// Décompresse jusqu'à disposer des `n` premiers octets bruts.
-    fn ensure(&mut self, n: usize) -> Result<()> {
+    fn ensure(&mut self, n: usize, h: &mut Header) -> Result<()> {
         while self.z.pos < n {
             if self.z.done {
                 // flux terminé avant la dernière ligne : Pillow lit jusqu'au bout et échoue
                 return unreadable("données d'image incomplètes");
             }
             if self.used >= self.block.len() {
-                self.next_block()?;
+                self.next_block(h)?;
             }
             match self.z.run(&self.block[self.used..], self.total)? {
                 Step::Broken => return unreadable("flux zlib corrompu"),
@@ -634,8 +868,14 @@ impl<'a> IdatStream<'a> {
     }
 
     /// `PngImageFile.load_end` : chunks après l'image, sans CRC ; seules les exceptions des
-    /// gestionnaires comptent.
-    fn load_end(mut self, h: &mut Header, cancelled: &dyn Fn() -> bool) -> Result<()> {
+    /// gestionnaires comptent, et la transparence (`tRNS`), que `convert("RGBA")` lit ensuite.
+    /// Un APNG animé s'arrête au `fcTL` de l'image suivante.
+    fn load_end(
+        mut self,
+        h: &mut Header,
+        animated: bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<()> {
         self.cur.read(self.remaining);
         loop {
             if cancelled() {
@@ -647,16 +887,20 @@ impl<'a> IdatStream<'a> {
             };
             match &kind {
                 b"IEND" => return Ok(()),
-                b"acTL" | b"fcTL" | b"fdAT" => return Err(PngError::Unsupported("APNG")),
-                b"tRNS" => return Err(PngError::Unsupported("tRNS après l'IDAT")),
-                b"IHDR" => {
-                    let s = self.cur.safe_read(len)?;
-                    if s.len() < 13 {
-                        return unreadable("IHDR court");
-                    }
-                    if s[11] != 0 {
-                        return unreadable("méthode de filtrage inconnue");
-                    }
+                b"fcTL" if animated => return Ok(()),
+                b"fcTL" => h.fctl(self.cur.safe_read(len)?)?,
+                b"acTL" => h.actl(self.cur.safe_read(len)?)?,
+                b"fdAT" => {
+                    // séquence, puis `chunk_IDAT` : `EOFError`, données sautées
+                    h.fdat_seq(&mut self.cur, len)?;
+                    self.cur.safe_read(len - 4)?;
+                }
+                b"tRNS" => h.trns(self.cur.safe_read(len)?)?,
+                b"IHDR" => h.ihdr(self.cur.safe_read(len)?)?,
+                // la palette de l'image est copiée à l'ouverture : un `PLTE` tardif est sans
+                // effet
+                b"PLTE" => {
+                    self.cur.safe_read(len)?;
                 }
                 _ => {
                     let s = self.cur.safe_read(len)?;
@@ -757,15 +1001,119 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
     }
 }
 
+/// Pixel tel que Pillow le range en mémoire après le décodage (mode de l'image).
+#[derive(Debug, Clone, Copy)]
+enum PilPixel {
+    /// `"1"` (0 ou 255) et `"L"` (remis à l'échelle 8 bits).
+    L(u8),
+    I16(u16),
+    Rgb([u8; 3]),
+    P(u8),
+    La(u8, u8),
+    Rgba([u8; 4]),
+}
+
+/// `rgb2l` de Pillow (`Convert.c`) : luminance ITU-R 601-2 en virgule fixe.
+fn luma(c: [u8; 3]) -> u8 {
+    ((u32::from(c[0]) * 19595 + u32::from(c[1]) * 38470 + u32::from(c[2]) * 7471 + 0x8000) >> 16)
+        as u8
+}
+
+/// Alpha posé par `convert("RGBA")` à partir de `info["transparency"]` (`convert_transparent`
+/// pour les gris et le RGB, palette à part).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Native {
+    None,
+    /// Gris 8 bits égal à l'octet bas de la clé (`rgbT2rgba`).
+    Gray(u8),
+    /// RGB 8 bits égal aux octets bas de la clé.
+    Rgb([u8; 3]),
+}
+
+/// Masque de `_trns_mask` (clé brute de `_png_trns_key`, ou valeur de Pillow).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mask {
+    /// Gris 1/2/4 bits : `convert("L")` égal à `k`.
+    L(u32),
+    /// Gris 16 bits : `convert("I")` égal à `k`.
+    I(u32),
+    /// RGB 16 bits : chaque canal de `convert("RGB")` égal à l'octet haut de la clé.
+    Rgb([u32; 3]),
+}
+
 /// Conversion d'une ligne brute vers RGBA, selon `_open_rgba`.
 struct Converter {
     mode: Mode,
     depth: u8,
-    trns: Option<Trns>,
+    /// Palette RGBA (alpha de `convert("RGBA")` compris si aucun masque ne s'applique).
     palette: Vec<[u8; 4]>,
+    native: Native,
+    mask: Option<Mask>,
 }
 
 impl Converter {
+    /// Règles de `_open_rgba` pour l'image décodée (`format`), la transparence finale de Pillow
+    /// (`trns`, après `load_end`) et le fichier (`data`, relu par `_trns_mask`).
+    fn new(
+        format: PixFormat,
+        palette: Option<&[u8]>,
+        trns: Option<&PilTrns>,
+        data: &[u8],
+    ) -> Result<Self> {
+        let mode = format.mode;
+        // `_trns_mask` : seulement si `info["transparency"]` existe
+        let mask = match trns {
+            None => None,
+            Some(t) => {
+                let raw = raw_trns_key(data)?;
+                let key = raw.as_ref().unwrap_or(t);
+                match (fixed_ihdr(data), key) {
+                    (Some((bd @ (1 | 2 | 4), 0)), PilTrns::Int(k)) => {
+                        Some(Mask::L(k * 255 / ((1u32 << bd) - 1)))
+                    }
+                    (Some((16, 0)), PilTrns::Int(k)) => Some(Mask::I(*k)),
+                    (Some((16, 2)), PilTrns::Tuple(k)) => {
+                        Some(Mask::Rgb(k.map(|v| u32::from(v >> 8))))
+                    }
+                    _ => None,
+                }
+            }
+        };
+        // `convert("RGBA")` sans masque : `convert_transparent` (gris, RGB) ou palette ;
+        // `TypeError` pour des octets hors palette, `ValueError` pour un triplet sur une palette
+        let mut native = Native::None;
+        let mut alphas = None;
+        if mask.is_none() {
+            match (mode, trns) {
+                (_, None) | (Mode::GrayA | Mode::GrayA16 | Mode::Rgba4, _) => {}
+                (Mode::Palette, t) => alphas = t,
+                (_, Some(PilTrns::Bytes(_))) => return unreadable("transparence en octets"),
+                (Mode::Rgb, Some(PilTrns::Int(k))) => native = Native::Rgb([*k as u8, 0, 0]),
+                (Mode::Rgb, Some(PilTrns::Tuple(k))) => native = Native::Rgb(k.map(|v| v as u8)),
+                (_, Some(PilTrns::Int(k))) => native = Native::Gray(*k as u8),
+                (_, Some(PilTrns::Tuple(k))) => native = Native::Gray(k[0] as u8),
+            }
+        } else if matches!(mask, Some(Mask::Rgb(_)))
+            && mode == Mode::Gray
+            && matches!(trns, Some(PilTrns::Tuple(_)))
+        {
+            // `convert("RGB")` d'une image `"L"` : `putpixel` d'un triplet sur un pixel gris
+            // (`TypeError`)
+            return unreadable("transparence en triplet sur du gris");
+        }
+        Ok(Converter {
+            mode,
+            depth: format.depth,
+            palette: if mode == Mode::Palette {
+                palette_table(palette, alphas)?
+            } else {
+                Vec::new()
+            },
+            native,
+            mask,
+        })
+    }
+
     /// Échantillon `i` (de `depth` bits) d'une ligne.
     fn sample(&self, row: &[u8], i: usize) -> u16 {
         match self.depth {
@@ -779,60 +1127,103 @@ impl Converter {
         }
     }
 
-    fn pixel(&self, row: &[u8], x: usize) -> [u8; 4] {
+    /// Pixel `x` d'une ligne brute, rangé comme Pillow le décode.
+    fn pil_pixel(&self, row: &[u8], x: usize) -> PilPixel {
         let hi = |v: u16| (v >> 8) as u8;
+        let s8 = |i: usize| {
+            let v = self.sample(row, i);
+            if self.depth == 16 {
+                hi(v)
+            } else {
+                v as u8
+            }
+        };
         match self.mode {
             Mode::Bit | Mode::Gray => {
-                let v = self.sample(row, x);
-                let max = (1u16 << self.depth) - 1;
-                let l = (u32::from(v) * 255 / u32::from(max)) as u8;
-                let alpha = match self.trns {
-                    // gris 8 bits : `rgbT2rgba`, octet bas de la clé
-                    Some(Trns::Gray(k)) if self.depth == 8 => l != (k & 0xFF) as u8,
-                    // gris 1/2/4 bits : `_trns_mask`, clé brute remise à l'échelle
-                    Some(Trns::Gray(k)) => u32::from(l) != u32::from(k) * 255 / u32::from(max),
-                    _ => true,
-                };
-                [l, l, l, if alpha { 255 } else { 0 }]
+                let max = (1u32 << self.depth) - 1;
+                PilPixel::L((u32::from(self.sample(row, x)) * 255 / max) as u8)
             }
-            Mode::Gray16 => {
-                let v = self.sample(row, x);
-                let opaque = !matches!(self.trns, Some(Trns::Gray(k)) if k == v);
-                [hi(v), hi(v), hi(v), if opaque { 255 } else { 0 }]
-            }
-            Mode::Rgb => {
-                let (r, g, b) = (
-                    self.sample(row, 3 * x),
-                    self.sample(row, 3 * x + 1),
-                    self.sample(row, 3 * x + 2),
-                );
-                if self.depth == 16 {
-                    let opaque = !matches!(self.trns, Some(Trns::Rgb(kr, kg, kb))
-                        if hi(r) == hi(kr) && hi(g) == hi(kg) && hi(b) == hi(kb));
-                    [hi(r), hi(g), hi(b), if opaque { 255 } else { 0 }]
-                } else {
-                    let opaque = !matches!(self.trns, Some(Trns::Rgb(kr, kg, kb))
-                        if r == kr & 0xFF && g == kg & 0xFF && b == kb & 0xFF);
-                    [r as u8, g as u8, b as u8, if opaque { 255 } else { 0 }]
-                }
-            }
-            Mode::Palette => self.palette[usize::from(self.sample(row, x))],
-            Mode::GrayA => {
-                let (l, a) = (row[2 * x], row[2 * x + 1]);
-                [l, l, l, a]
-            }
+            Mode::Gray16 => PilPixel::I16(self.sample(row, x)),
+            Mode::Rgb => PilPixel::Rgb([s8(3 * x), s8(3 * x + 1), s8(3 * x + 2)]),
+            Mode::Palette => PilPixel::P(self.sample(row, x) as u8),
+            Mode::GrayA => PilPixel::La(row[2 * x], row[2 * x + 1]),
             Mode::GrayA16 => {
-                let (l, a) = (hi(self.sample(row, 2 * x)), hi(self.sample(row, 2 * x + 1)));
-                [l, l, l, a]
+                let l = s8(2 * x);
+                PilPixel::Rgba([l, l, l, s8(2 * x + 1)])
             }
-            Mode::Rgba4 => {
-                let mut px = [0u8; 4];
-                for (c, v) in px.iter_mut().enumerate() {
-                    let s = self.sample(row, 4 * x + c);
-                    *v = if self.depth == 16 { hi(s) } else { s as u8 };
+            Mode::Rgba4 => PilPixel::Rgba([s8(4 * x), s8(4 * x + 1), s8(4 * x + 2), s8(4 * x + 3)]),
+        }
+    }
+
+    /// `convert("RGB")` de Pillow (sans transparence).
+    fn to_rgb(&self, p: PilPixel) -> [u8; 3] {
+        match p {
+            PilPixel::L(l) | PilPixel::La(l, _) => [l, l, l],
+            PilPixel::I16(v) => [v.min(255) as u8; 3],
+            PilPixel::Rgb(c) => c,
+            PilPixel::P(i) => {
+                let e = self.palette[usize::from(i)];
+                [e[0], e[1], e[2]]
+            }
+            PilPixel::Rgba(c) => [c[0], c[1], c[2]],
+        }
+    }
+
+    /// `convert("L")` de Pillow (`I;16` écrêté à 255).
+    fn to_l(&self, p: PilPixel) -> u8 {
+        match p {
+            PilPixel::L(l) | PilPixel::La(l, _) => l,
+            PilPixel::I16(v) => v.min(255) as u8,
+            _ => luma(self.to_rgb(p)),
+        }
+    }
+
+    /// `convert("I")` de Pillow.
+    fn to_i(&self, p: PilPixel) -> u32 {
+        match p {
+            PilPixel::I16(v) => u32::from(v),
+            _ => u32::from(self.to_l(p)),
+        }
+    }
+
+    fn pixel(&self, row: &[u8], x: usize) -> [u8; 4] {
+        let p = self.pil_pixel(row, x);
+        if let Some(mask) = self.mask {
+            // `_trns_mask` puis `convert("RGB" si RGB, sinon "L")` (après `point(v / 256)`
+            // pour `I;16`), `convert("RGBA")` et `putalpha(mask)`
+            let hit = match mask {
+                Mask::L(k) => u32::from(self.to_l(p)) == k,
+                Mask::I(k) => self.to_i(p) == k,
+                Mask::Rgb(k) => self.to_rgb(p).map(u32::from) == k,
+            };
+            let alpha = if hit { 0 } else { 255 };
+            return match p {
+                PilPixel::Rgb([r, g, b]) => [r, g, b, alpha],
+                PilPixel::I16(v) => {
+                    let l = (v >> 8) as u8;
+                    [l, l, l, alpha]
                 }
-                px
+                _ => {
+                    let l = self.to_l(p);
+                    [l, l, l, alpha]
+                }
+            };
+        }
+        let gray = |l: u8| {
+            let opaque = self.native != Native::Gray(l);
+            [l, l, l, if opaque { 255 } else { 0 }]
+        };
+        match p {
+            PilPixel::L(l) => gray(l),
+            // `I;16` : `point(v / 256).convert("L")` d'abord
+            PilPixel::I16(v) => gray((v >> 8) as u8),
+            PilPixel::Rgb([r, g, b]) => {
+                let opaque = self.native != Native::Rgb([r, g, b]);
+                [r, g, b, if opaque { 255 } else { 0 }]
             }
+            PilPixel::P(i) => self.palette[usize::from(i)],
+            PilPixel::La(l, a) => [l, l, l, a],
+            PilPixel::Rgba(c) => c,
         }
     }
 }
@@ -851,36 +1242,74 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
             PngError::Unreadable("cannot identify image file")
         });
     }
-    let mut cur = Cursor { data, pos: 8 };
-    let (mut h, first_idat) = read_header(&mut cur, cancelled)?;
-    let mode = h.mode.unwrap_or(Mode::Bit);
-    let conv = Converter {
-        mode,
-        depth: h.depth,
-        trns: h.trns.clone(),
-        palette: if mode == Mode::Palette {
-            palette_table(&h)?
-        } else {
-            Vec::new()
+    // La transparence de `convert("RGBA")` est celle de la fin de `load_end` : un `tRNS` placé
+    // après les données la change. Premier passage avec celle de l'en-tête ; s'il diffère, second
+    // passage (même lecture, mêmes erreurs) avec la valeur finale.
+    match decode_pass(data, cancelled, None)? {
+        (img, None) => Ok(img),
+        (_, Some(last)) => match decode_pass(data, cancelled, Some(last))? {
+            (img, None) => Ok(img),
+            (_, Some(_)) => unreachable!("transparence finale déjà appliquée"),
         },
+    }
+}
+
+/// Un passage de décodage. `final_trns` : transparence à appliquer (sinon celle de l'en-tête).
+/// Rend aussi la transparence finale si elle diffère de celle appliquée.
+#[allow(clippy::type_complexity)]
+fn decode_pass(
+    data: &[u8],
+    cancelled: &dyn Fn() -> bool,
+    final_trns: Option<Option<PilTrns>>,
+) -> Result<(Rgba, Option<Option<PilTrns>>)> {
+    let mut cur = Cursor { data, pos: 8 };
+    let (mut h, tile, first_data) = read_header(&mut cur, cancelled)?;
+    let Some(format) = h.format else {
+        return unreadable("mode invalide");
     };
-    let (w, ht) = (h.width, h.height);
+    // `n_frames` et `is_animated` de `_open`, figés avant le chargement
+    let n_frames =
+        u64::from(h.n_frames.unwrap_or(1)) + u64::from(h.n_frames.is_some() && h.default_image);
+    let animated = n_frames > 1;
+    let applied = final_trns.unwrap_or_else(|| h.trns.clone());
+    // les erreurs de `_open_rgba` liées à la transparence viennent après le chargement : au
+    // premier passage, une transparence d'en-tête invalide peut encore être remplacée
+    let rules = Converter::new(format, h.palette.as_deref(), applied.as_ref(), data);
+    let fallback;
+    let conv = match &rules {
+        Ok(c) => c,
+        Err(_) => {
+            fallback = Converter::new(format, h.palette.as_deref(), None, data)?;
+            &fallback
+        }
+    };
+    let (w, ht) = h.size;
     let size = (w as usize)
         .checked_mul(ht as usize)
         .and_then(|n| n.checked_mul(4))
         .map_or_else(|| unreadable("taille"), Ok)?;
-    let bits = u64::from(channels(h.color)) * u64::from(h.depth);
+    // zone décodée (`fcTL` d'un APNG) ; le reste de l'image garde les zéros de
+    // `Image.core.new`, convertis comme un pixel brut nul
+    // (en entrelacé, `ZipDecode.c` ignore le décalage : la zone part du coin haut gauche)
+    let (ox, oy) = if h.interlace {
+        (0, 0)
+    } else {
+        (tile.0 as u32, tile.1 as u32)
+    };
+    let (tw, th) = ((tile.2 - tile.0) as u32, (tile.3 - tile.1) as u32);
+    let partial = (tw, th) != (w, ht);
+    let bits = u64::from(channels(format.color)) * u64::from(format.depth);
     let bpp = ((bits / 8) as usize).max(1);
     let passes: &[(u32, u32, u32, u32)] = if h.interlace { &ADAM7 } else { &[(0, 0, 1, 1)] };
     // (passe, largeur, hauteur, octets par ligne sans l'octet de filtre)
     let mut layout = Vec::new();
     let mut total: u64 = 0;
     for &(x0, y0, dx, dy) in passes {
-        if x0 >= w || y0 >= ht {
+        if x0 >= tw || y0 >= th {
             continue;
         }
-        let pw = (w - x0).div_ceil(dx);
-        let ph = (ht - y0).div_ceil(dy);
+        let pw = (tw - x0).div_ceil(dx);
+        let ph = (th - y0).div_ceil(dy);
         let row = (u64::from(pw) * bits).div_ceil(8);
         total += (row + 1) * u64::from(ph);
         layout.push(((x0, y0, dx, dy), pw, ph, row as usize));
@@ -888,7 +1317,7 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     let total = usize::try_from(total).map_or_else(|_| unreadable("taille"), Ok)?;
     let mut stream = IdatStream {
         cur,
-        remaining: first_idat,
+        remaining: first_data,
         block: &[],
         used: 0,
         z: Inflater::new(
@@ -909,9 +1338,15 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
             if cancelled() {
                 return Err(PngError::Cancelled);
             }
-            stream.ensure(at + 1 + row)?;
+            stream.ensure(at + 1 + row, &mut h)?;
             if out.is_empty() {
                 out = alloc_zeroed(size)?;
+                if partial {
+                    let zero = conv.pixel(&[0u8; 8], 0);
+                    for px in out.as_chunks_mut::<4>().0 {
+                        *px = zero;
+                    }
+                }
             }
             if r == 0 {
                 line = alloc(row)?;
@@ -925,9 +1360,9 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
                 (r > 0).then_some(&prev[..]),
                 bpp,
             )?;
-            let y = (y0 + r * dy) as usize;
+            let y = (oy + y0 + r * dy) as usize;
             for i in 0..pw as usize {
-                let x = x0 as usize + i * dx as usize;
+                let x = (ox + x0) as usize + i * dx as usize;
                 let o = (y * w as usize + x) * 4;
                 out[o..o + 4].copy_from_slice(&conv.pixel(&line, i));
             }
@@ -936,12 +1371,23 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
         }
     }
     stream.finish()?;
-    stream.load_end(&mut h, cancelled)?;
-    Ok(Rgba {
+    stream.load_end(&mut h, animated, cancelled)?;
+    if h.palette.is_some() && format.mode != Mode::Palette {
+        // `PLTE` lu sous un mode palette, puis `IHDR` d'un autre mode : `Image.load` pose la
+        // palette sur l'image (`putpalette`, mode refusé)
+        return unreadable("palette sur une image sans palette");
+    }
+    let img = Rgba {
         width: w,
         height: ht,
         rgba: out,
-    })
+    };
+    if h.trns == applied {
+        rules?;
+        Ok((img, None))
+    } else {
+        Ok((img, Some(h.trns)))
+    }
 }
 
 #[cfg(test)]
