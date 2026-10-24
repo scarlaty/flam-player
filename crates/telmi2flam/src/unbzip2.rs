@@ -7,7 +7,7 @@
 //! Pourquoi pas une crate : `bzip2-sys` et `libbz2-rs-sys` sont sous licence bzip2-1.0.6 (hors
 //! `ALLOWED_LICENSES`), et `bzip2-rs` (MIT/Apache-2.0) échoue sur un bloc compressé plus grand
 //! que la taille de bloc annoncée, ce qui arrive avec des données incompressibles (MP3) : ce
-//! cas est couvert par le test `donnees_incompressibles`.
+//! cas est couvert par le vecteur `bzip2_multiblock` (`tests/archive_parity.rs`).
 //!
 //! Écarts connus (flux corrompus ou incomplets seulement, voir PORT-RUST.md §3) : les blocs
 //! « randomised » (bzip2 antérieur à 0.9.5, 1999) sont refusés ; un flux sans marqueur de fin
