@@ -93,7 +93,7 @@ class TestCompareRuns(unittest.TestCase):
 class TestAllowedDeviations(unittest.TestCase):
     def test_list_is_closed(self):
         self.assertEqual(sorted(r.id for r in parity.ALLOWED_DEVIATIONS),
-                         ["encrypted_entry", "invalid_utf8_name", "json_limit",
+                         ["encrypted_entry", "invalid_utf8_name", "jpeg_bounded", "json_limit",
                           "negative_offset"])
 
     def test_encrypted_entry(self):
@@ -163,11 +163,103 @@ class TestAllowedDeviations(unittest.TestCase):
                                     "message": "texte Rust"}], 3, None, None)
         self.assertEqual(parity.compare_runs(a, b)["verdict"], "identical")
 
+    def test_jpeg_rule_is_not_a_status_rule(self):
+        # la regle D7 n'admet aucun ecart de statut, meme sur un cas etiquete
+        o, c = error_run(6, "internal_error"), error_run(3, "archive_unreadable")
+        self.assertEqual(parity.compare_runs(o, c, [parity.TAG_JPEG], ["a"])["verdict"], "diff")
+        self.assertEqual(parity.compare_runs(run_dict(), run_dict(warnings=["image_unreadable"]),
+                                             [parity.TAG_JPEG], ["a"])["verdict"], "diff")
+
     def test_harness_error_is_a_diff_and_empty_run_fails(self):
         r = parity.run_converter(["commande-inexistante-xyz"], "a.zip", tempfile.mkdtemp())
         self.assertEqual(r[0]["error_code"], "harness_error")
         self.assertEqual(parity.compare_runs(run_dict(), r[0])["verdict"], "diff")
         self.assertEqual(parity.exit_code(parity.build_report([], "corpus")), 1)
+
+
+def lif_of(pixels, w=2, h=1):
+    """.lif de pixels RGBA donnes sur la grille RGB565 (r, b multiples de 8, g de 4)."""
+    import lif
+    return lif.encode(bytes(v for p in pixels for v in p), w, h)
+
+
+def jpeg_runs(a, b, name="img/s0.lif"):
+    """Deux resultats identiques sauf le contenu de l'entree `name` (.lif a puis b)."""
+    def run(data):
+        return run_dict(entries=[
+            {"name": "info.json", "method": 0, "utf8": False, "size": 1, "sha256": "x"},
+            {"name": name, "method": 0, "utf8": False, "size": len(data),
+             "sha256": parity._sha(data), "data": data}])
+    return run(a), run(b)
+
+
+class TestJpegBounded(unittest.TestCase):
+    """D7 (#459) : ecart de +-4 avant quantification, sur les seules entrees issues d'un JPEG."""
+
+    BASE = [(80, 80, 80, 255), (200, 40, 16, 255)]
+
+    def verdict(self, other, tags=(parity.TAG_JPEG,), names=("img/s0.lif",), **kw):
+        o, c = jpeg_runs(lif_of(self.BASE, **kw), lif_of(other, **kw))
+        r = parity.compare_runs(o, c, list(tags), list(names))
+        return r["verdict"], r["rule"]
+
+    def test_one_quantization_step_is_admitted(self):
+        # un pas de 8 (R, B) ou de 4 (G) : ecart source minimal de 1
+        for other in ([(88, 80, 80, 255), self.BASE[1]], [(80, 84, 72, 255), self.BASE[1]],
+                      [(72, 76, 88, 255), (192, 44, 24, 255)]):
+            self.assertEqual(self.verdict(other), ("allowed", "jpeg_bounded"), other)
+        self.assertEqual(self.verdict(self.BASE), ("identical", None))
+
+    def test_deviation_of_five_is_a_diff(self):
+        # deux pas de G (8) : ecart source minimal 8 - 3 = 5 > 4 ; deux pas de R : 9
+        for other in ([(80, 88, 80, 255), self.BASE[1]], [(96, 80, 80, 255), self.BASE[1]],
+                      [self.BASE[0], (200, 40, 16, 250)]):
+            self.assertEqual(self.verdict(other), ("diff", None), other)
+        # alpha exact (JPEG opaque) : le moindre ecart est refuse
+        self.assertEqual(self.verdict([(80, 80, 80, 254), self.BASE[1]]), ("diff", None))
+        self.assertEqual(self.verdict([(80, 80, 80, 250), self.BASE[1]]), ("diff", None))
+        self.assertEqual(parity.lif_within_jpeg_bound(lif_of(self.BASE), lif_of(self.BASE)), True)
+
+    def test_only_tagged_cases_and_named_entries(self):
+        other = [(88, 80, 80, 255), self.BASE[1]]
+        self.assertEqual(self.verdict(other, tags=()), ("diff", None))
+        self.assertEqual(self.verdict(other, names=("img/title.lif",)), ("diff", None))
+        # autre taille, LIF illisible : ecart
+        o, _ = jpeg_runs(lif_of(self.BASE), lif_of(self.BASE))
+        _, c = jpeg_runs(lif_of(self.BASE), lif_of(self.BASE + self.BASE, w=4))
+        self.assertEqual(parity.compare_runs(o, c, [parity.TAG_JPEG], ["img/s0.lif"])["verdict"],
+                         "diff")
+        _, c = jpeg_runs(lif_of(self.BASE), b"liff garbage")
+        self.assertEqual(parity.compare_runs(o, c, [parity.TAG_JPEG], ["img/s0.lif"])["verdict"],
+                         "diff")
+        # un autre ecart (avertissements) n'est jamais couvert par la regle
+        _, c = jpeg_runs(lif_of(self.BASE), lif_of(other))
+        c["warnings"] = ["image_unreadable"]
+        r = parity.compare_runs(o, c, [parity.TAG_JPEG], ["img/s0.lif"])
+        self.assertEqual(r["verdict"], "diff")
+        self.assertEqual([d["kind"] for d in r["diffs"]], ["warnings"])
+
+    def test_campaign_jpeg_outputs(self):
+        tmp = tempfile.mkdtemp(prefix="t2f_jpeg_")
+        try:
+            path = os.path.join(tmp, "a.zip")
+            jpeg = b"\xff\xd8\xff\xe0" + bytes(12)
+            with open(path, "wb") as f:
+                f.write(make_corpus.zip_bytes([("images/Forêt 1.jpg", jpeg),
+                                               ("images/s0.png", b"\x89PNG\r\n\x1a\n" + bytes(8))]))
+            pred = parity.jpeg_outputs(path)
+            for name in ("img/For_t_1.lif", "img/For_t_1_inv.lif", "img/For_t_1_2.lif"):
+                self.assertTrue(pred(name), name)
+            for name in ("img/s0.lif", "img/title.lif", "img/For_t_1x.lif", "For_t_1.lif"):
+                self.assertFalse(pred(name), name)
+            with open(path, "wb") as f:
+                f.write(make_corpus.zip_bytes([("title.png", jpeg)]))
+            self.assertTrue(parity.jpeg_outputs(path)("img/thumbnail.lif"))
+            with open(path, "wb") as f:
+                f.write(make_corpus.zip_bytes(std_files()))
+            self.assertIsNone(parity.jpeg_outputs(path))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class TestLeftovers(unittest.TestCase):
@@ -324,8 +416,13 @@ class TestCorpusGenerator(unittest.TestCase):
         for cid in ("ok_plain", "missing_audio_plain", "zip_crc_corrupt_plain"):
             self.assertIn("--plain", by_id[cid].args, cid)
         known = {make_corpus.TAG_JSON_LIMIT, make_corpus.TAG_ENCRYPTED, make_corpus.TAG_DELEGATED,
-                 make_corpus.TAG_BAD_UTF8_NAME, make_corpus.TAG_NEGATIVE_OFFSET}
+                 make_corpus.TAG_BAD_UTF8_NAME, make_corpus.TAG_NEGATIVE_OFFSET,
+                 make_corpus.TAG_JPEG}
         self.assertTrue({t for c in cases for t in c.tags} <= known)
+        self.assertEqual(parity.TAG_JPEG, make_corpus.TAG_JPEG)
+        # D7 : un cas JPEG nomme ses entrees issues d'un JPEG, et seulement lui
+        for c in cases:
+            self.assertEqual(bool(c.jpeg_entries), make_corpus.TAG_JPEG in c.tags, c.id)
         # les etiquettes lues par parity.py sont celles du generateur
         self.assertEqual(parity.TAG_JSON_LIMIT, make_corpus.TAG_JSON_LIMIT)
         self.assertEqual(parity.TAG_ENCRYPTED, make_corpus.TAG_ENCRYPTED)
@@ -417,9 +514,10 @@ class TestPythonAgainstPython(unittest.TestCase):
     SAMPLE = ("ok_basic", "ok_plain", "missing_audio_plain", "ok_plain_dir_only",
               "zip_crc_corrupt_plain_dir_only", "img_mode_PT", "names_cp437",
               "mp3_id3_prefix", "missing_audio", "zip_crc_corrupt", "json_deep_nesting",
-              "zip_encrypted_entry", "img_jpeg_delegated", "zip_invalid_utf8_name", "zip_negative_header_offset")
+              "zip_encrypted_entry", "img_bmp_delegated", "zip_invalid_utf8_name", "zip_negative_header_offset",
+              "img_jpeg")
     STUB_SAMPLE = ("ok_basic", "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry",
-                   "img_jpeg_delegated", "zip_invalid_utf8_name", "zip_negative_header_offset")
+                   "img_bmp_delegated", "zip_invalid_utf8_name", "zip_negative_header_offset")
 
     @classmethod
     def setUpClass(cls):
@@ -513,12 +611,12 @@ class TestPythonAgainstPython(unittest.TestCase):
 
     def test_fake_candidate_delegation(self):
         v = self.verdicts(self.candidate(7, "unsupported_format"))
-        self.assertEqual(v["img_jpeg_delegated"]["verdict"], "delegated")
+        self.assertEqual(v["img_bmp_delegated"]["verdict"], "delegated")
         # un candidat qui delegue tout : seul le cas etiquete est admis
         self.assertEqual({k for k, r in v.items() if r["verdict"] == "diff"},
-                         set(self.STUB_SAMPLE) - {"img_jpeg_delegated"})
+                         set(self.STUB_SAMPLE) - {"img_bmp_delegated"})
         report = parity.build_report(list(v.values()), "corpus")
-        self.assertEqual(report["delegations"], ["img_jpeg_delegated"])
+        self.assertEqual(report["delegations"], ["img_bmp_delegated"])
         self.assertEqual(parity.exit_code(report), 1)
 
     def test_cli_exit_code_on_deviation(self):

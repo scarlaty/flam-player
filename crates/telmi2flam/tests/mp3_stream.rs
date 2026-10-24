@@ -140,6 +140,13 @@ fn flux_identique_a_python() {
         let Some(want) = case.get("pk_sha256").and_then(Value::as_str) else {
             continue;
         };
+        // Cas JPEG (D7) : images à ±4 près, comparées par `package_parity.rs` ; MP3 ordinaire.
+        if case["tags"]
+            .as_array()
+            .is_some_and(|t| t.iter().any(|t| t == "jpeg_bounded"))
+        {
+            continue;
+        }
         let id = case["id"].as_str().unwrap().to_owned();
         let data = zip.read(&format!("cases/{id}.zip")).unwrap().unwrap();
         let opts = options(case);

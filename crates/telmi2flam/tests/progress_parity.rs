@@ -13,6 +13,9 @@
 //! l'absence de ffmpeg) et les lignes `  !` de stderr. En plus : stdout ne contient que des
 //! lignes JSON, et aucun `.part` ne reste.
 //!
+//! Cas JPEG (étiquette `jpeg_bounded`, D7) : taille du `.plain.pk` de `done` non comparée
+//! (images à ±4 près, vérifiées par `package_parity.rs`).
+//!
 //! Écarts assumés (comme `package_parity.rs`) : délégation `unsupported_format` (D4), limites
 //! propres au port, exceptions non rattrapées de Python. Le Rust doit alors échouer, avec un
 //! flux bien formé (`start` … `error`, `exit` égal au code de sortie).
@@ -292,11 +295,16 @@ fn check(run: &Value, cases: &[Value], zip: &mut Archive<Cursor<&[u8]>>) -> Resu
         }
         return Ok(());
     };
-    // Texte des avertissements neutralisé là où il cite un message propre au moteur.
+    // Texte des avertissements neutralisé là où il cite un message propre au moteur ; taille
+    // du `.plain.pk` neutralisée pour un cas JPEG (D7 : images à ±4 près, `package_parity.rs`).
+    let jpeg = tags.contains(&"jpeg_bounded");
     let strip = |evs: &[Value]| -> Vec<Value> {
         evs.iter()
             .map(|e| {
                 let mut e = e.clone();
+                if jpeg && e["event"] == "done" {
+                    e["size"] = Value::Null;
+                }
                 if e["event"] == "warning" {
                     let text = comparable(
                         e["code"].as_str().unwrap_or_default(),
