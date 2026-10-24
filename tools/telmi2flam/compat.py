@@ -242,6 +242,17 @@ def _total_size(resp, offset):
     return None
 
 
+def _known_size(entry, final):
+    """Taille attendue de l'archive : catalogue, sinon fichier `.size` ecrit au telechargement."""
+    if entry.get("size"):
+        return entry["size"]
+    try:
+        with open(final + ".size") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
 def download(entry, archives_dir, opener=_urlopen, retries=RETRIES, timeout=TIMEOUT,
              sleep=time.sleep):
     """Telecharge l'archive de `entry` ; retourne (chemin, message). Leve DownloadError.
@@ -258,13 +269,7 @@ def download(entry, archives_dir, opener=_urlopen, retries=RETRIES, timeout=TIME
     sidecar = final + ".size"
 
     def known_size():
-        if entry.get("size"):
-            return entry["size"]
-        try:
-            with open(sidecar) as f:
-                return int(f.read().strip())
-        except (OSError, ValueError):
-            return None
+        return _known_size(entry, final)
 
     if os.path.isfile(final):
         exp = known_size()
@@ -796,16 +801,32 @@ def _archive_path(entry, cache):
     return os.path.join(cache, "archives", story_key(entry["uuid"], entry["version"]) + ".zip")
 
 
+def _cached_archive_size(entry, cache):
+    """Taille de l'archive du cache si elle est utilisable comme le ferait `download` (non
+    vide, conforme a la taille du catalogue ou du fichier `.size` s'il y en a une), sinon
+    None : une archive ancienne ou tronquee n'est pas presentee comme telechargee."""
+    final = _archive_path(entry, cache)
+    try:
+        have = os.path.getsize(final)
+    except OSError:
+        return None
+    exp = _known_size(entry, final)
+    return have if have > 0 and (exp is None or exp == have) else None
+
+
 def failed_record(entry, exc, cache=None):
     """Fiche d'echec pour une histoire dont le traitement a leve une exception imprevue.
     L'etape download reflete ce qui a eu lieu : archive locale, ou archive deja telechargee
     dans `cache` (le fichier final n'existe qu'une fois le telechargement termine)."""
     if entry.get("path"):
         dl = _step("skipped", ["archive locale"])
-    elif cache and os.path.isfile(_archive_path(entry, cache)):
-        dl = _step("ok", ["archive telechargee avant l'interruption du traitement"])
     else:
-        dl = _step("skipped", ["traitement interrompu"])
+        cached = _cached_archive_size(entry, cache) if cache else None
+        if cached is not None:
+            dl = _step("ok", ["archive du cache conforme (%d octets) ; état avant "
+                              "l'interruption du traitement inconnu" % cached])
+        else:
+            dl = _step("skipped", ["traitement interrompu"])
     rec = {k: entry.get(k) for k in ("source", "uuid", "version", "title", "license", "category")}
     rec["key"] = story_key(entry["uuid"], entry["version"])
     rec["fingerprint"] = entry.get("fingerprint")
@@ -846,8 +867,15 @@ def _write_atomic(path, text):
     os.replace(tmp, path)
 
 
+# Cadence des ecritures du rapport apres chaque histoire : au-dela de WRITE_SLOW secondes par
+# ecriture (grosse campagne), on espace les suivantes d'au moins WRITE_RATIO fois leur duree (#194).
+WRITE_SLOW = 0.25
+WRITE_RATIO = 10
+_clock = time.monotonic
+
 PROVISIONAL_REPORT = "report.provisional.json"
 PROVISIONAL_STATUS = "status.provisional.json"
+PENDING_REPORT = "report.pending.json"      # journal court entre deux ecritures espacees
 
 
 def _queued_record(entry, chash):
@@ -881,17 +909,34 @@ def _write_provisional(compat_dir, provisional, chash):
     _write_atomic(sp, json.dumps(build_status(doc), ensure_ascii=False, indent=2))
 
 
+def _write_pending(compat_dir, records, chash):
+    """Journal court (O(histoires en cours + terminees non ecrites)) ecrit quand l'ecriture de
+    report.json est espacee : fiches d'exploration en cours et resultats acheves, repris par
+    `_reconcile_provisional`. Supprime (`records` vide) a chaque ecriture complete."""
+    path = os.path.join(compat_dir, PENDING_REPORT)
+    if not records:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    doc = {"generated": time.strftime("%Y-%m-%dT%H:%M:%S"), "converter_hash": chash,
+           "stories": list(records.values())}
+    _write_atomic(path, json.dumps(doc, ensure_ascii=False, indent=2))
+
+
 def _reconcile_provisional(compat_dir, prev_list, log):
     """Reprise apres un arret brutal : les fiches provisoires laissees par la campagne
     precedente rejoignent `prev_list` seulement pour une histoire qui n'avait AUCUNE fiche
     (une ancienne fiche valide n'est jamais remplacee). Les fichiers provisoires ne sont
     supprimes que par la premiere ecriture de report.json (qui les a absorbees)."""
-    rp = os.path.join(compat_dir, PROVISIONAL_REPORT)
-    try:
-        with open(rp, encoding="utf-8") as f:
-            stories = json.load(f).get("stories", [])
-    except (OSError, ValueError, AttributeError):
-        stories = []
+    stories = []
+    for name in (PENDING_REPORT, PROVISIONAL_REPORT):    # le journal court prime
+        try:
+            with open(os.path.join(compat_dir, name), encoding="utf-8") as f:
+                stories += json.load(f).get("stories", [])
+        except (OSError, ValueError, AttributeError):
+            pass
     have = {s["key"] for s in prev_list}
     merged = list(prev_list)
     for s in stories:
@@ -949,15 +994,36 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
 
     provisional = {}                             # fiches provisoires des histoires en cours
 
-    def write(results, md=False):
+    pace = {"cost": 0.0, "end": 0.0}             # duree et fin de la derniere ecriture
+    pending = {}            # fiches terminees pas encore ecrites dans report.json
+    live = {}               # fiches provisoires des explorations en cours
+
+    def write(results, md=False, urgent=True):
+        """Reecrit report.json / status.json / fiches provisoires. Une ecriture non urgente
+        (apres une histoire) ne reecrit pas report.json / status.json tant que les ecritures
+        precedentes, devenues lentes (grosse campagne : cout O(N) chacune, O(N^2) au total),
+        occuperaient plus d'environ 1/WRITE_RATIO du temps ; la prochaine ecriture ou
+        l'ecriture finale les rattrape. Entre-temps, un journal court (`report.pending.json`,
+        O(histoires en cours + terminees non ecrites)) est ecrit a chaque appel : un arret
+        brutal ne perd ni le diagnostic d'une exploration interrompue ni un resultat acheve
+        (repris a la relance par la reconciliation)."""
+        if (not urgent and pace["cost"] >= WRITE_SLOW
+                and _clock() - pace["end"] < WRITE_RATIO * pace["cost"]):
+            _write_pending(compat_dir, dict(live, **pending), chash)
+            return None
+        t0 = _clock()
         doc = build_doc(results)
         _write_atomic(report_path, json.dumps(doc, ensure_ascii=False, indent=2))
         _write_atomic(os.path.join(compat_dir, STATUS_FILE),
                       json.dumps(build_status(doc), ensure_ascii=False, indent=2))
+        pending.clear()
         # provisoire APRES report.json : un arret entre les deux ne perd aucune fiche
         _write_provisional(compat_dir, provisional, chash)
+        _write_pending(compat_dir, live, chash)
         if md:
             _write_atomic(os.path.join(compat_dir, "report.md"), render_markdown(doc))
+        pace["end"] = _clock()
+        pace["cost"] = pace["end"] - t0
         return doc
 
     params = run_params(run_timeout, seed, max_steps, seeds)
@@ -1004,8 +1070,10 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         rec["evaluated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         with lock:
             provisional.pop(rec["key"], None)
+            live.pop(rec["key"], None)
             results[rec["key"]] = rec
-            write(results)
+            pending[rec["key"]] = rec
+            write(results, urgent=False)
             log("%s %s : %s" % ("+" if rec["status"].startswith("OK") else "!", rec["key"],
                                 rec["status"]))
 
@@ -1022,7 +1090,8 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
             try:
                 with lock:
                     provisional[rec["key"]] = prov
-                    write(results)
+                    live[rec["key"]] = prov
+                    write(results, urgent=False)
             except OSError as e:
                 log("! fiche provisoire non écrite pour %s : %s" % (rec["key"], e))
         t0 = time.time()
@@ -1047,36 +1116,43 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         except OSError as e:
             log("! fiches provisoires non écrites : %s" % e)
 
-    futures = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, run_jobs)) as pool:
-        def finish(rec):
-            if rec.get("output") and rec["steps"]["validate"]["status"] in ("ok", "warn"):
-                if run_jobs > 1:
-                    futures.append(pool.submit(run_step, rec))
+    try:
+        futures = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, run_jobs)) as pool:
+            def finish(rec):
+                if rec.get("output") and rec["steps"]["validate"]["status"] in ("ok", "warn"):
+                    if run_jobs > 1:
+                        futures.append(pool.submit(run_step, rec))
+                    else:
+                        run_step(rec)
                 else:
-                    run_step(rec)
-            else:
-                finalize(rec)
+                    finalize(rec)
 
-        if jobs > 1 and len(todo) > 1:
-            with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as ex:
-                futs = [ex.submit(_worker, (e, cache, max_unzipped)) for e in todo]
-                for e, fut in zip(todo, futs):
+            if jobs > 1 and len(todo) > 1:
+                with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as ex:
+                    futs = [ex.submit(_worker, (e, cache, max_unzipped)) for e in todo]
+                    for e, fut in zip(todo, futs):
+                        try:
+                            rec = fut.result()
+                        except Exception as exc:    # processus de conversion mort, etc.
+                            rec = failed_record(e, exc, cache)
+                        finish(rec)
+            else:
+                for e in todo:
                     try:
-                        rec = fut.result()
-                    except Exception as exc:    # processus de conversion mort, etc.
+                        rec = process_story(e, cache, max_unzipped=max_unzipped)
+                    except Exception as exc:        # filet : jamais d'histoire sans fiche
                         rec = failed_record(e, exc, cache)
                     finish(rec)
-        else:
-            for e in todo:
-                try:
-                    rec = process_story(e, cache, max_unzipped=max_unzipped)
-                except Exception as exc:        # filet : jamais d'histoire sans fiche
-                    rec = failed_record(e, exc, cache)
-                finish(rec)
-        for f in futures:
-            f.result()
-    write(results)
+            for f in futures:
+                f.result()
+    except BaseException:           # arret (Ctrl+C, exception) : les fiches deja finies sont ecrites
+        try:
+            with lock:
+                write(results)
+        except OSError:
+            pass
+        raise
     return write(results, md=True)
 
 
