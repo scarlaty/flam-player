@@ -669,8 +669,10 @@ Lecture du rapport :
 
 - Causes de délégation : `zip:<méthode>` (message `: compression N (bzip2/LZMA/Zstandard)`),
   `image:<raison>` (liste fermée des raisons du décodeur d'image : depuis #459, `pas un PNG`
-  pour un autre format que PNG et JPEG, `JPEG arithmétique` et `JPEG sans perte` pour les
-  JPEG que `zune-jpeg` ne lit pas ; PNG atypiques et autres JPEG décodés), `metadata` ou `autre`. Un
+  pour un autre format que PNG et JPEG ; pour les JPEG que libjpeg-turbo lit, ou peut lire,
+  mais pas le Rust : `JPEG arithmétique`, `JPEG sans perte`, `JPEG refusé par zune-jpeg`,
+  `JPEG à tables séparées`, `JPEG sans marqueur final`, `JPEG corrompu (redémarrage)` ; PNG
+  atypiques et autres JPEG décodés), `metadata` ou `autre`. Un
   message hors de ces formes exactes est `autre`. `metadata` et `autre` sont hors D4 strict :
   la ligne `attention : delegations hors D4 strict…` (comptes seulement) les signale et elles
   sont à classer à la main.

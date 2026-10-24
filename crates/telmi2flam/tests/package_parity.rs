@@ -122,8 +122,8 @@ fn assumed_divergence(tags: &[&str]) -> Option<&'static str> {
 const JPEG_MAX_DEVIATION: u8 = 4;
 
 /// Écart minimal avant quantification entre deux `.lif` (pas de 8, 4, 8 pour le RGB565
-/// décodé, 1 pour l'alpha : un écart décodé `d` vient au moins de `d - (pas - 1)`), ou `None`
-/// si les tailles diffèrent ou qu'un fichier est illisible.
+/// décodé : un écart décodé `d` vient au moins de `d - (pas - 1)`), ou `None` si les tailles
+/// ou l'alpha (exact : JPEG opaque) diffèrent, ou qu'un fichier est illisible.
 fn jpeg_deviation(python: &[u8], rust: &[u8]) -> Option<u8> {
     const STEPS: [u8; 4] = [8, 4, 8, 1];
     let (a, b) = (
@@ -136,6 +136,9 @@ fn jpeg_deviation(python: &[u8], rust: &[u8]) -> Option<u8> {
     let mut max = 0;
     for (i, (x, y)) in a.rgba.iter().zip(&b.rgba).enumerate() {
         let d = x.abs_diff(*y);
+        if d > 0 && i % 4 == 3 {
+            return None;
+        }
         if d > 0 {
             max = max.max(d - (STEPS[i % 4] - 1).min(d));
         }

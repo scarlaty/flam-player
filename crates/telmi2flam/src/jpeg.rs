@@ -12,12 +12,15 @@
 //!    de 65 500 px) et fin des données (fichier tronqué : `LOAD_TRUNCATED_IMAGES` reste faux dans
 //!    `telmi2flam.py`). Règle de fin, mesurée sur l'oracle : une image à un seul balayage est lue
 //!    si un marqueur suit ses données (les blocs manquants sont mis à zéro par libjpeg) ; sans
-//!    marqueur, libjpeg attend des octets qui ne viennent pas et Pillow lève `image file is
-//!    truncated`. Une image à plusieurs balayages (progressive, ou composantes en balayages
-//!    séparés) n'est lue que si `EOI` est atteint : `jpeg_start_decompress` consomme tout le
-//!    fichier. En séquentiel, les tables de Huffman 0 et 1 absentes sont les tables standard
-//!    (annexe K de T.81), comme `std_huff_tables` de libjpeg-turbo ; pas en progressif.
-//! 2. **Pixels** : `zune-jpeg` (scalaire : ni AVX2 ni NEON compilés, `use_unsafe` faux) décode
+//!    marqueur, illisible si des données manquent, lue si au moins 8 octets inutiles terminent
+//!    le flux, déléguée entre les deux (libjpeg demande de 0 à 7 octets au-delà des données
+//!    utiles selon l'image). Une image à plusieurs balayages (progressive, ou composantes en
+//!    balayages séparés) n'est lue que si `EOI` est atteint : `jpeg_start_decompress` consomme
+//!    tout le fichier. En séquentiel, les tables de Huffman 0 et 1 absentes sont les tables
+//!    standard (annexe K de T.81), comme `std_huff_tables` de libjpeg-turbo ; pas en progressif.
+//! 2. **Pixels** : `zune-jpeg` (scalaire : fonctions `x86` et `neon` non compilées quand la crate
+//!    est construite seule, `-p telmi2flam`, contrôlé par la CI ; `use_unsafe` ne coupe pas
+//!    l'AVX2) décode
 //!    un flux réécrit (seulement `SOF`, `DQT`, `DHT`, `DRI`, `SOS` et données, puis `EOI` ;
 //!    paramètres de progression d'un `SOS` séquentiel remis à 0/63/0, que libjpeg ignore) en
 //!    composantes brutes suréchantillonnées. La conversion de couleur suit le choix de
@@ -27,14 +30,15 @@
 //!    libjpeg-turbo : **écart borné à ±4 par composante** (D7, mesuré sur les vecteurs
 //!    `tests/vectors/jpeg/`), seul écart admis par `parity.py` (règle `jpeg_bounded`).
 //!
-//! Écarts assumés (PORT-RUST.md §4.4) : données corrompues ou coupées puis terminées par un
-//! marqueur (libjpeg avertit et continue, ses pixels ne sont pas reproduits ; un refus de
-//! `zune-jpeg` donne une image illisible) ; flux sans marqueur final que libjpeg lit quand
-//! assez d'octets suivent les dernières données ; flux de tables seules suivi d'une image ;
-//! codages arithmétique et sans perte, lus par libjpeg-turbo mais pas par `zune-jpeg`,
-//! **délégués** ([`PngError::Unsupported`], code 7) ; EXIF et MPO malformés (exceptions de
-//! Pillow non reproduites). Annulation consultée avant et après le décodage de `zune-jpeg` (qui
-//! ne rend pas la main pendant le décodage), puis à chaque ligne de la conversion.
+//! **Délégués** ([`PngError::Unsupported`], code 7, D4) : ce que libjpeg-turbo lit (ou peut lire)
+//! mais pas le Rust — codages arithmétique et sans perte, refus de `zune-jpeg` (données
+//! corrompues, table inutilisée invalide, facteur 3…), flux de tables seules suivi d'une image,
+//! balayage unique sans marqueur final au verdict incertain, marqueur invalide dans une image à
+//! redémarrages. Écarts assumés (PORT-RUST.md §4.4) : pixels des données corrompues ou coupées
+//! puis terminées par un marqueur (libjpeg les met en gris, `zune-jpeg` non) ; EXIF et MPO
+//! malformés (exceptions de Pillow non reproduites). Annulation consultée avant et après chaque
+//! décodage de `zune-jpeg` (qui ne rend pas la main pendant le décodage), puis à chaque ligne
+//! de la conversion.
 
 use crate::png::{PngError, Rgba, MAX_IMAGE_PIXELS};
 use zune_core::bytestream::ZCursor;
@@ -254,11 +258,12 @@ fn pillow_app(marker: u8, s: &[u8]) -> Result<()> {
     }
     if marker == 0xED && s.starts_with(b"Photoshop 3.0\0") {
         let mut offset = 14usize;
-        while s.get(offset..offset + 4) == Some(b"8BIM") {
+        while s.get(offset..).and_then(|t| t.get(..4)) == Some(b"8BIM") {
             offset += 4;
-            if s.len() < offset + 2 {
+            let Some(code) = s.get(offset..offset + 2) else {
                 break; // i16 : struct.error rattrapé
-            }
+            };
+            let code = u16::from_be_bytes([code[0], code[1]]);
             offset += 2;
             let Some(&name_len) = s.get(offset) else {
                 return unreadable("bloc Photoshop tronqué"); // IndexError
@@ -269,9 +274,16 @@ fn pillow_app(marker: u8, s: &[u8]) -> Result<()> {
                 break; // i32 : struct.error rattrapé
             };
             let size = u32::from_be_bytes([size[0], size[1], size[2], size[3]]) as usize;
-            // `ResolutionInfo` court : struct.error, rattrapé aussi
-            offset = (offset + 4).saturating_add(size);
-            offset += offset & 1;
+            offset += 4;
+            // `ResolutionInfo` (0x03ED) lu jusqu'à l'octet 14 : court, struct.error rattrapé
+            // par le `try` extérieur, qui arrête la boucle
+            if code == 0x03ED && size.min(s.len().saturating_sub(offset)) < 14 {
+                break;
+            }
+            let Some(next) = offset.checked_add(size) else {
+                break;
+            };
+            offset = next.saturating_add(next & 1);
         }
     }
     Ok(())
@@ -321,6 +333,9 @@ fn scan_header(
         }
         seen.push(k);
         let (dc, ac) = (c[1] >> 4, c[1] & 15);
+        if matches!(h.sof, Some(0xC3 | 0xC9..=0xCB)) {
+            continue; // arithmétique ou sans perte : délégué, tables non vérifiées ici
+        }
         if !progressive {
             h.tables.require(true, dc)?;
             h.tables.require(false, ac)?;
@@ -337,6 +352,14 @@ fn scan_header(
             }
             latched[k] = true;
         }
+    }
+    // `per_scan_setup` : au plus 10 blocs par MCU d'un balayage entrelacé (JERR_BAD_MCU_SIZE)
+    let blocks: usize = seen
+        .iter()
+        .map(|&k| usize::from(h.components[k].h) * usize::from(h.components[k].v))
+        .sum();
+    if n > 1 && blocks > 10 {
+        return unreadable("JERR_BAD_MCU_SIZE");
     }
     out.extend_from_slice(&[0xFF, SOS]);
     out.extend_from_slice(&len.to_be_bytes());
@@ -515,10 +538,14 @@ fn parse_header(data: &[u8], latched: &mut Vec<bool>) -> Result<Header> {
                 return Ok(h);
             }
             // libjpeg : SOI répété (JERR_SOI_DUPLICATE), JPG et JPGn réservés ; EOI avant
-            // l'image (flux de tables seules suivi d'une autre image) : non pris en charge,
-            // illisible.
+            // l'image (flux de tables seules suivi d'une autre image, que libjpeg lit) : non
+            // pris en charge, délégué.
             SOI => return unreadable("JERR_SOI_DUPLICATE"),
-            EOI => return unreadable("EOI avant l'image"),
+            // une nouvelle image doit suivre immédiatement (`first_marker` : JERR_NO_SOI)
+            EOI if data[r.pos..].starts_with(b"\xff\xd8") => {
+                return Err(PngError::Unsupported("JPEG à tables séparées"))
+            }
+            EOI => return unreadable("JERR_NO_SOI"),
             0xC8 | 0xF0..=0xFD => return unreadable("JERR_UNKNOWN_MARKER"),
             // RSTn hors balayage : sans paramètre, ignoré par les deux
             _ => {}
@@ -529,19 +556,53 @@ fn parse_header(data: &[u8], latched: &mut Vec<bool>) -> Result<Header> {
 
 /// Fin des données compressées d'un balayage commençant à `pos` : position du `0xFF` et octet
 /// bas du marqueur qui la termine (`RSTn` sautés si `skip_rst`), ou `None` en fin de données.
-fn entropy_end(data: &[u8], mut pos: usize, skip_rst: bool) -> Option<(usize, u8)> {
+fn entropy_end(data: &[u8], mut pos: usize, skip_rst: bool, resync: bool) -> Option<(usize, u8)> {
+    // Avec redémarrages, un marqueur invalide (< SOF0) est écarté par `jpeg_resync_to_restart`
+    // au redémarrage suivant : il ne termine les données que si aucun `RSTn` ne le suit (il
+    // reste alors à lire après le balayage, et libjpeg le refuse).
+    let mut pending: Option<(usize, u8)> = None;
     loop {
-        let ff = pos + data.get(pos..)?.iter().position(|&b| b == 0xFF)?;
+        let Some(ff) = data
+            .get(pos..)
+            .and_then(|t| t.iter().position(|&b| b == 0xFF))
+            .map(|i| pos + i)
+        else {
+            return pending;
+        };
         let mut q = ff + 1;
-        while *data.get(q)? == 0xFF {
+        while data.get(q) == Some(&0xFF) {
             q += 1; // remplissage
         }
-        let m = data[q];
-        if m == 0x00 || (skip_rst && (0xD0..=0xD7).contains(&m)) {
+        let Some(&m) = data.get(q) else {
+            return pending;
+        };
+        if m == 0x00 {
             pos = q + 1;
+        } else if skip_rst && (0xD0..=0xD7).contains(&m) {
+            pending = None;
+            pos = q + 1;
+        } else if resync && m < 0xC0 {
+            pending = pending.or(Some((q - 1, m)));
+            pos = q + 1;
+        } else {
+            return pending.or(Some((q - 1, m)));
+        }
+    }
+}
+
+/// Recopie des données compressées `data[start..end]` pour `zune-jpeg`, sans les marqueurs
+/// invalides (< SOF0, hors `FF 00`) que libjpeg écarte en resynchronisant et que `zune-jpeg`
+/// refuserait (pixels de ces images corrompues non comparés).
+fn copy_entropy(data: &[u8], start: usize, end: usize, out: &mut Vec<u8>) {
+    let mut i = start;
+    while i < end {
+        let b = data[i];
+        if b == 0xFF && i + 1 < end && (0x01..0xC0).contains(&data[i + 1]) {
+            i += 2;
             continue;
         }
-        return Some((q - 1, m));
+        out.push(b);
+        i += 1;
     }
 }
 
@@ -562,27 +623,33 @@ fn segment_marker(data: &[u8], mut pos: usize) -> Option<(usize, u8)> {
 }
 
 /// Parcours des données après le premier `SOS` : verdict de libjpeg-turbo sur la suite du flux
-/// et flux pour `zune-jpeg` (balayages et tables, sans `APPn` ni `COM`).
-fn walk_scans(data: &[u8], h: &mut Header, latched: &mut [bool], multi_scan: bool) -> Result<()> {
+/// et flux pour `zune-jpeg` (balayages et tables, sans `APPn` ni `COM`). Rend `true` pour un
+/// balayage unique sans aucun marqueur après ses données (recopiées jusqu'à la fin) : libjpeg
+/// ne le lit que si assez d'octets suivent les dernières données utiles (`unterminated`).
+fn walk_scans(data: &[u8], h: &mut Header, latched: &mut [bool], multi_scan: bool) -> Result<bool> {
     let truncated = || unreadable("image file is truncated");
     // premier balayage : données jusqu'au marqueur qui le termine (RSTn attendus sautés)
     let skip_rst = multi_scan || h.restart != 0;
-    let Some((end, mut m)) = entropy_end(data, h.entropy, skip_rst) else {
-        return truncated();
+    let Some((end, mut m)) = entropy_end(data, h.entropy, skip_rst, h.restart != 0) else {
+        if multi_scan {
+            return truncated();
+        }
+        copy_entropy(data, h.entropy, data.len(), &mut h.stream);
+        return Ok(true);
     };
-    h.stream.extend_from_slice(&data[h.entropy..end]);
+    copy_entropy(data, h.entropy, end, &mut h.stream);
     let mut pos = end + 2;
     loop {
         match m {
-            EOI => return Ok(()),
+            EOI => return Ok(false),
             SOS if !multi_scan => return unreadable("JERR_EOI_EXPECTED"),
-            SOS | DHT | DQT | DRI | DNL | COM | 0xE0..=0xEF => {
+            SOS | DHT | DQT | DRI | DNL | COM | 0xCC | 0xE0..=0xEF => {
                 let mut r = Reader { data, pos };
                 let (len, s) = match r.segment() {
                     Ok(seg) => seg,
                     // un seul balayage : toutes les lignes sont lues, libjpeg attend en vain la
                     // fin du fichier et Pillow s'en contente
-                    Err(_) if !multi_scan => return Ok(()),
+                    Err(_) if !multi_scan => return Ok(false),
                     Err(_) => return truncated(),
                 };
                 let copy = multi_scan && matches!(m, DHT | DQT | DRI);
@@ -590,6 +657,7 @@ fn walk_scans(data: &[u8], h: &mut Header, latched: &mut [bool], multi_scan: boo
                     DHT => h.tables.dht(len, s)?,
                     DQT => h.tables.dqt(len, s)?,
                     DRI if len != 4 => return unreadable("JERR_BAD_LENGTH (DRI)"),
+                    DRI => h.restart = u16::from_be_bytes([s[0], s[1]]),
                     _ => {}
                 }
                 if copy {
@@ -601,16 +669,22 @@ fn walk_scans(data: &[u8], h: &mut Header, latched: &mut [bool], multi_scan: boo
                     let scanned = scan_header(h, len, s, latched, &mut stream);
                     h.stream = stream;
                     scanned?;
-                    let Some((end, next)) = entropy_end(data, pos, true) else {
+                    let Some((end, next)) = entropy_end(data, pos, true, h.restart != 0) else {
                         return truncated();
                     };
-                    h.stream.extend_from_slice(&data[pos..end]);
+                    copy_entropy(data, pos, end, &mut h.stream);
                     pos = end + 2;
                     m = next;
                     continue;
                 }
             }
-            0xD0..=0xD7 => {} // sans paramètre : ignoré
+            0xD0..=0xD7 | 0x01 => {} // RSTn et TEM, sans paramètre : ignorés
+            // marqueur invalide après le dernier RSTn : libjpeg le lit comme un redémarrage
+            // (resynchronisation) s'il tombe en fin d'intervalle, sinon le refuse après le
+            // balayage ; sans décodage entropique, seul libjpeg tranche (délégué, D4)
+            0x02..=0xBF if h.restart != 0 => {
+                return Err(PngError::Unsupported("JPEG corrompu (redémarrage)"))
+            }
             _ => return unreadable("marqueur inattendu après le premier balayage"),
         }
         match segment_marker(data, pos) {
@@ -619,7 +693,7 @@ fn walk_scans(data: &[u8], h: &mut Header, latched: &mut [bool], multi_scan: boo
                 m = next;
             }
             None if multi_scan => return truncated(),
-            None => return Ok(()),
+            None => return Ok(false),
         }
     }
 }
@@ -696,12 +770,14 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
         }
     }
     let multi_scan = h.progressive() || h.scan_components < h.components.len();
-    walk_scans(data, &mut h, &mut latched, multi_scan)?;
-    h.stream.extend_from_slice(&[0xFF, EOI]);
+    let mut entropy_start = h.stream.len();
+    let unterminated = walk_scans(data, &mut h, &mut latched, multi_scan)?;
     if !h.progressive() {
         // tables standard de zune-jpeg pour les tables 0 et 1 absentes, juste après SOI
         h.stream.splice(2..2, AVI1.iter().copied());
+        entropy_start += AVI1.len();
     }
+    let stream = std::mem::take(&mut h.stream);
     if cancelled() {
         return Err(PngError::Cancelled);
     }
@@ -709,7 +785,44 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     let space = libjpeg_space(&h);
     let (w, ht) = (h.width as usize, h.height as usize);
     let channels = h.components.len();
-    let raw = decode_raw(&std::mem::take(&mut h.stream), channels, w, ht)?;
+    // flux privé de ses `cut` derniers octets de données, suivi de `fill` puis EOI (`None` :
+    // rien à couper)
+    let decode_with = |cut: usize, fill: &[u8]| -> Option<Result<Vec<u8>>> {
+        let end = stream
+            .len()
+            .checked_sub(cut)
+            .filter(|&e| e >= entropy_start)?;
+        let mut s = Vec::new();
+        if s.try_reserve_exact(end + fill.len() + 2).is_err() {
+            return Some(unreadable("mémoire insuffisante (flux JPEG)"));
+        }
+        s.extend_from_slice(&stream[..end]);
+        s.extend_from_slice(fill);
+        s.extend_from_slice(&[0xFF, EOI]);
+        Some(decode_raw(&s, channels, w, ht))
+    };
+    let raw = decode_with(0, &[]).unwrap_or_else(|| unreadable("flux JPEG vide"))?;
+    let same = |r: Option<Result<Vec<u8>>>| matches!(r, Some(Ok(r)) if r == raw);
+    if unterminated {
+        // Balayage unique sans marqueur final : libjpeg-turbo attend des octets au-delà des
+        // données utiles (0 à 7 mesurés sur l'oracle, selon l'image), sinon Pillow lève « image
+        // file is truncated ». Données manquantes (image changée par des bits 1 au lieu des 0
+        // de zune-jpeg après la fin) : tronqué ; 8 derniers octets inutiles : lu ; entre les
+        // deux, seul libjpeg tranche (délégué, D4).
+        if cancelled() {
+            return Err(PngError::Cancelled);
+        }
+        if !same(decode_with(0, &[0xFF, 0x00].repeat(8))) {
+            return unreadable("image file is truncated");
+        }
+        if cancelled() {
+            return Err(PngError::Cancelled);
+        }
+        if !same(decode_with(8, &[])) {
+            return Err(PngError::Unsupported("JPEG sans marqueur final"));
+        }
+    }
+    drop(stream);
     if cancelled() {
         return Err(PngError::Cancelled);
     }
@@ -750,8 +863,9 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
 }
 
 /// Composantes brutes suréchantillonnées (`channels` octets par pixel) décodées par
-/// `zune-jpeg` en scalaire ; un refus de `zune-jpeg` rend l'image illisible (écart assumé :
-/// libjpeg-turbo poursuit souvent sur des données corrompues).
+/// `zune-jpeg` en scalaire. Un refus de `zune-jpeg` est **délégué** (D4) : la structure a passé
+/// les contrôles de Pillow et de libjpeg, et libjpeg-turbo poursuit souvent là où `zune-jpeg`
+/// s'arrête (données corrompues, table inutilisée invalide, facteur 3…).
 fn decode_raw(stream: &[u8], channels: usize, w: usize, h: usize) -> Result<Vec<u8>> {
     let options = DecoderOptions::default()
         .set_use_unsafe(false)
@@ -761,7 +875,7 @@ fn decode_raw(stream: &[u8], channels: usize, w: usize, h: usize) -> Result<Vec<
         // libjpeg-turbo ne limite pas le nombre de balayages
         .jpeg_set_max_scans(usize::MAX);
     let mut decoder = JpegDecoder::new_with_options(ZCursor::new(stream), options);
-    let refused = |_| PngError::Unreadable("JPEG refusé par zune-jpeg");
+    let refused = |_| PngError::Unsupported("JPEG refusé par zune-jpeg");
     decoder.decode_headers().map_err(refused)?;
     // sortie sans conversion de couleur : l'espace d'entrée de zune-jpeg lui-même
     let raw_space = match (channels, decoder.input_colorspace()) {
@@ -773,7 +887,7 @@ fn decode_raw(stream: &[u8], channels: usize, w: usize, h: usize) -> Result<Vec<
     decoder.set_options(options.jpeg_set_out_colorspace(raw_space));
     let raw = decoder.decode().map_err(refused)?;
     if raw.len() != w * h * channels || decoder.dimensions() != Some((w, h)) {
-        return unreadable("JPEG : sortie de zune-jpeg inattendue");
+        return Err(PngError::Unsupported("JPEG refusé par zune-jpeg"));
     }
     Ok(raw)
 }

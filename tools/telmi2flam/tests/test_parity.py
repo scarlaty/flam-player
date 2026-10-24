@@ -215,9 +215,8 @@ class TestJpegBounded(unittest.TestCase):
         for other in ([(80, 88, 80, 255), self.BASE[1]], [(96, 80, 80, 255), self.BASE[1]],
                       [self.BASE[0], (200, 40, 16, 250)]):
             self.assertEqual(self.verdict(other), ("diff", None), other)
-        # alpha : 4 admis, 5 refuse
-        self.assertEqual(self.verdict([(80, 80, 80, 251), self.BASE[1]]),
-                         ("allowed", "jpeg_bounded"))
+        # alpha exact (JPEG opaque) : le moindre ecart est refuse
+        self.assertEqual(self.verdict([(80, 80, 80, 254), self.BASE[1]]), ("diff", None))
         self.assertEqual(self.verdict([(80, 80, 80, 250), self.BASE[1]]), ("diff", None))
         self.assertEqual(parity.lif_within_jpeg_bound(lif_of(self.BASE), lif_of(self.BASE)), True)
 

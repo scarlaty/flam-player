@@ -40,8 +40,9 @@ unicode-normalization = "=0.1.24"
 sha2 = { version = "=0.10.9", default-features = false }
 # Décodage JPEG (#459, décision D7 : écart borné à ±4 par composante avec Pillow). Code scalaire
 # seulement : sans les fonctions `x86` ni `neon`, dont les chemins SIMD sont choisis à
-# l'exécution selon le processeur (invariant de déterminisme, PORT-RUST.md §4.4). Licence
-# MIT OR Apache-2.0 OR Zlib (les trois termes sont dans ALLOWED_LICENSES).
+# l'exécution selon le processeur (invariant de déterminisme, PORT-RUST.md §4.4). Le launcher
+# les active par `image` : le binaire se construit seul (`-p telmi2flam`, contrôlé par la CI
+# `telmi2flam-rs`). Licence MIT OR Apache-2.0 OR Zlib (trois termes dans ALLOWED_LICENSES).
 zune-jpeg = { version = "=0.5.15", default-features = false, features = ["std"] }
 zune-core = { version = "=0.5.3", default-features = false, features = ["std"] }
 

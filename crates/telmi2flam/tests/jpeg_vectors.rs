@@ -21,8 +21,11 @@ const ASSUMED: &[(&str, &str)] = &[
     ("sof_arithmetique", "delegate"),
     ("sof_arithmetique_progressif", "delegate"),
     ("sof_sans_perte", "delegate"),
-    // flux de tables seules (EOI) suivi d'une image : non pris en charge
-    ("tables_puis_image", "unreadable"),
+    // flux de tables seules (EOI) suivi d'une image : non pris en charge, délégué
+    ("tables_puis_image", "delegate"),
+    // balayage unique sans EOI, données complètes : verdict de libjpeg incertain, délégué
+    ("fin_seq_sans_eoi", "delegate"),
+    ("fin_seq_ff_seul", "delegate"),
 ];
 
 /// Données coupées puis terminées par un marqueur : lues des deux côtés, mais libjpeg laisse les

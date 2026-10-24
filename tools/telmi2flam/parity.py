@@ -75,10 +75,13 @@ DELEGATION_EXIT = 7
 
 # D7 (#459) : zune-jpeg decode les JPEG a +-4 pres par composante de libjpeg-turbo (IDCT et
 # surechantillonnage differents). Mesure sur le .lif : composantes RGB565 (pas de 8, 4, 8 une
-# fois decodees) et alpha (pas de 1) ; l'ecart admis est l'ecart minimal avant quantification
-# compatible avec les deux valeurs, au plus 4.
+# fois decodees), l'ecart admis etant l'ecart minimal avant quantification compatible avec les
+# deux valeurs, au plus 4 ; alpha exact (un JPEG est opaque, l'alpha ne depend pas des
+# couleurs). Apres un redimensionnement Lanczos (lobes negatifs), un ecart source de 4 peut
+# devenir 5 ou 6 : la regle est alors plus stricte que D7 (faux ecart possible, jamais un
+# ecart masque).
 JPEG_MAX_DEVIATION = 4
-_LIF_STEPS = (8, 4, 8, 1)
+_LIF_STEPS = (8, 4, 8)
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +293,9 @@ def lif_within_jpeg_bound(a, b, bound=JPEG_MAX_DEVIATION):
     if (wa, ha) != (wb, hb) or len(pa) != len(pb):
         return False
     for i, (x, y) in enumerate(zip(pa, pb)):
-        if x != y and abs(x - y) - (_LIF_STEPS[i % 4] - 1) > bound:
+        if x == y:
+            continue
+        if i % 4 == 3 or abs(x - y) - (_LIF_STEPS[i % 4] - 1) > bound:
             return False
     return True
 
@@ -326,7 +331,7 @@ ALLOWED_DEVIATIONS = (
         "jpeg_bounded", "§4.4 / D7",
         "image issue d'un JPEG (entrees `jpeg_entries` du cas) : zune-jpeg decode a +-4 pres "
         "par composante de libjpeg-turbo ; .lif de meme taille, chaque composante RGB565 et "
-        "l'alpha compatibles avec un ecart source d'au plus 4. Statuts, avertissements et "
+        "compatibles avec un ecart source d'au plus 4, alpha exact. Statuts, avertissements et "
         "autres entrees : identiques",
         TAG_JPEG, entry=lif_within_jpeg_bound),
 )
@@ -690,8 +695,11 @@ _COMPRESSION_RE = re.compile(
 _IMAGE_WHY_RE = re.compile(r"^.* : format non pris en charge : (.+)$", re.S)
 # Raisons du decodeur PNG (`PngError::Unsupported`) : liste fermee, le reste est `autre`.
 # Depuis #459, les PNG atypiques (APNG, IHDR, tRNS) et les JPEG sont decodes : restent un autre
-# format, et les JPEG arithmetiques ou sans perte (lus par libjpeg-turbo, pas par zune-jpeg).
-IMAGE_REASONS = ("pas un PNG", "JPEG arithmétique", "JPEG sans perte")
+# format, et les JPEG que libjpeg-turbo lit (ou peut lire) mais pas le Rust : arithmetiques,
+# sans perte, refuses par zune-jpeg, tables separees, sans marqueur final, redemarrage corrompu.
+IMAGE_REASONS = ("pas un PNG", "JPEG arithmétique", "JPEG sans perte",
+                 "JPEG refusé par zune-jpeg", "JPEG à tables séparées",
+                 "JPEG sans marqueur final", "JPEG corrompu (redémarrage)")
 SUSPECT_CAUSES = ("autre", "metadata")
 
 

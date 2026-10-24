@@ -222,6 +222,9 @@ def vectors():
         ("photoshop_tronque", insert(base, seg(0xED, b"Photoshop 3.0\x008BIM\x03\xed"))),
         ("photoshop_ok", insert(base, seg(0xED, b"Photoshop 3.0\x008BIM\x04\x04\x00\x00"
                                        + struct.pack(">I", 2) + b"ab"))),
+        # ResolutionInfo vide : struct.error rattrape, boucle arretee avant le bloc tronque
+        ("photoshop_resolution_court", insert(base, seg(0xED, b"Photoshop 3.0\x008BIM\x03\xed"
+                                                     b"\x00\x00" + bytes(4) + b"8BIM\x00\x00"))),
         ("commentaire", insert(base, seg(0xFE, b"bonjour"))),
         ("app15_inconnu", insert(base, seg(0xEF, b"\xff\xd9\xff\xda"))),
         ("app_longueur_1", insert(base, b"\xff\xe3\x00\x01")),
@@ -259,6 +262,7 @@ def vectors():
         ("sof_double", base[:sof_pos] + sof + base[sof_pos:]),
         ("sof_echantillonnage_5", patch_sof(base, body_set(7, 0x51))),
         ("sof_echantillonnage_0", patch_sof(base, body_set(7, 0x01))),
+        ("sof_mcu_18_blocs", patch_sof(base, body_set(7, 0x44))),
         ("sof_sof1", set_marker(base, 0xC0, 0xC1)),
         ("sof_sans_perte", set_marker(base, 0xC0, 0xC3)),
         ("sof_arithmetique", set_marker(base, 0xC0, 0xC9)),
@@ -272,6 +276,13 @@ def vectors():
         ("sans_dht", drop(base, 0xC4)),
         ("dri_longueur_5", base[:sof_pos] + seg(0xDD, b"\x00\x01\x00") + base[sof_pos:]),
     ]
+    # apres le balayage unique : TEM ignore, second SOS refuse (JERR_EOI_EXPECTED)
+    sos_pos, _, sos_n = segments(base)[-1]
+    out += [
+        ("tem_apres_balayage", base[:-2] + b"\xff\x01\xff\xd9"),
+        ("sos_apres_balayage", base[:-2] + base[sos_pos:]),
+    ]
+    assert sos_n
     # fins de flux : EOI absent, coupé dans les données, EOI ajouté après une coupure
     prog = jpeg(noise, quality=75, progressive=True)
     for name, data in (("seq", base), ("prog", prog)):

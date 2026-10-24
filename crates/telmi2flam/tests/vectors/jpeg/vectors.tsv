@@ -183,6 +183,7 @@ icc_court_apres_sof	rgba:33x21
 icc_long	rgba:33x21
 photoshop_tronque	unreadable
 photoshop_ok	rgba:33x21
+photoshop_resolution_court	rgba:33x21
 commentaire	rgba:33x21
 app15_inconnu	rgba:33x21
 app_longueur_1	rgba:33x21
@@ -206,6 +207,7 @@ sof_trop_large	unreadable
 sof_double	unreadable
 sof_echantillonnage_5	unreadable
 sof_echantillonnage_0	unreadable
+sof_mcu_18_blocs	unreadable
 sof_sof1	rgba:33x21
 sof_sans_perte	unreadable
 sof_arithmetique	rgba:33x21
@@ -218,6 +220,8 @@ sans_sof	unreadable
 sans_dqt	unreadable
 sans_dht	rgba:33x21
 dri_longueur_5	unreadable
+tem_apres_balayage	rgba:33x21
+sos_apres_balayage	unreadable
 fin_seq_sans_eoi	unreadable
 fin_seq_ff_seul	unreadable
 fin_seq_moitie_eoi	rgba:33x21
