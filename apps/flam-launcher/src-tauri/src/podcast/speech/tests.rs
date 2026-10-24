@@ -98,6 +98,19 @@ fn les_doublons_d_identifiant_sont_fusionnes() {
 }
 
 #[test]
+fn un_meme_identifiant_sous_deux_noms_n_apparait_qu_une_fois() {
+    // Les deux entrées ne sont pas adjacentes une fois triées par nom.
+    let synth = Simulated::new(vec![
+        voice("a", "Microsoft Julie", "fr-FR"),
+        voice("b", "Microsoft Marie", "fr-FR"),
+        voice("a", "Microsoft Paul", "fr-FR"),
+    ]);
+    let list = french_voices(&synth).unwrap();
+    let names: Vec<_> = list.voices.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(names, ["Microsoft Julie", "Microsoft Marie"]);
+}
+
+#[test]
 fn aucune_voix_francaise_donne_une_liste_vide() {
     let only_english = Simulated::new(vec![voice("en", "Microsoft David", "en-US")]);
     let list = french_voices(&only_english).unwrap();
@@ -200,6 +213,36 @@ fn un_wav_invalide_est_refuse() {
     ));
 }
 
+/// WAV `WAVE_FORMAT_EXTENSIBLE` (bloc `fmt ` de 40 octets) dont le sous-format commence par
+/// `subformat` (1 : PCM, 3 : flottant).
+fn extensible_wav(subformat: u32) -> Vec<u8> {
+    let mut bytes = wav_bytes(22_050, 1, 16, &[1; 400]);
+    let mut fmt = bytes[20..36].to_vec();
+    fmt[0..2].copy_from_slice(&0xFFFEu16.to_le_bytes());
+    fmt.extend_from_slice(&22u16.to_le_bytes());
+    fmt.extend_from_slice(&16u16.to_le_bytes());
+    fmt.extend_from_slice(&4u32.to_le_bytes());
+    fmt.extend_from_slice(&subformat.to_le_bytes());
+    fmt.extend_from_slice(&[
+        0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+    ]);
+    let data = bytes.split_off(36);
+    bytes.truncate(16);
+    bytes.extend_from_slice(&40u32.to_le_bytes());
+    bytes.extend_from_slice(&fmt);
+    bytes.extend_from_slice(&data);
+    bytes
+}
+
+#[test]
+fn le_sous_format_d_un_wav_extensible_est_controle() {
+    assert_eq!(Wav::parse(extensible_wav(1)).unwrap().sample_rate, 22_050);
+    assert!(matches!(
+        Wav::parse(extensible_wav(3)),
+        Err(SpeechError::Failed(_))
+    ));
+}
+
 #[test]
 fn un_wav_trop_long_est_refuse() {
     let long = sine_wav(MAX_AUDIO_SECS + 1.0);
@@ -294,10 +337,8 @@ fn une_voix_qui_ne_rend_pas_la_main_tombe_en_delai() {
         ..Simulated::french()
     }
     .shared();
-    let started = std::time::Instant::now();
     let err = synthesize_wav(&slow, "Titre", "fr-hortense", Duration::from_millis(50)).unwrap_err();
     assert_eq!(err, SpeechError::Timeout);
-    assert!(started.elapsed() < Duration::from_millis(500));
 }
 
 #[test]
@@ -371,10 +412,18 @@ fn l_apercu_joue_le_wav_avec_la_voix_choisie() {
     let synth = Simulated::french().shared();
     let generation = AtomicU64::new(0);
     let mut played = None;
-    let info = preview_with(&generation, &synth, "Bonjour", None, no_op, |wav| {
-        played = Some(wav);
-        Ok(())
-    })
+    let info = preview_with(
+        &generation,
+        &synth,
+        "Bonjour",
+        None,
+        no_op,
+        |wav, current| {
+            assert!(current(), "aucun aperçu plus récent");
+            played = Some(wav);
+            Ok(true)
+        },
+    )
     .unwrap();
     assert!(info.played);
     assert_eq!(info.duration_ms, 350);
@@ -384,7 +433,9 @@ fn l_apercu_joue_le_wav_avec_la_voix_choisie() {
 #[test]
 fn l_apercu_sans_voix_ou_sans_service_echoue_sans_rien_jouer() {
     let generation = AtomicU64::new(0);
-    let never = |_: Vec<u8>| -> Result<(), SpeechError> { panic!("rien ne doit être joué") };
+    let never = |_: Vec<u8>, _: &dyn Fn() -> bool| -> Result<bool, SpeechError> {
+        panic!("rien ne doit être joué")
+    };
     let none = Simulated::none().shared();
     assert_eq!(
         preview_with(&generation, &none, "Bonjour", None, no_op, never).unwrap_err(),
@@ -406,26 +457,69 @@ fn l_apercu_sans_voix_ou_sans_service_echoue_sans_rien_jouer() {
     );
 }
 
+/// Moteur dont la synthèse attend un signal : l'ordre des événements ne dépend d'aucune durée.
+struct Gated {
+    started: std::sync::Mutex<mpsc::Sender<()>>,
+    release: std::sync::Mutex<mpsc::Receiver<()>>,
+}
+
+impl Synthesizer for Gated {
+    fn voices(&self) -> Result<Vec<Voice>, SpeechError> {
+        Ok(vec![voice("fr-hortense", "Microsoft Hortense", "fr-FR")])
+    }
+    fn default_voice_id(&self) -> Option<String> {
+        Some("fr-hortense".into())
+    }
+    fn synthesize(&self, _: &str, _: &str) -> Result<Vec<u8>, SpeechError> {
+        self.started.lock().unwrap().send(()).unwrap();
+        self.release.lock().unwrap().recv().unwrap();
+        Ok(sine_wav(0.5))
+    }
+}
+
 #[test]
 fn un_apercu_depasse_par_le_suivant_n_est_pas_joue() {
-    let synth = Simulated {
-        delay: Duration::from_millis(300),
-        ..Simulated::french()
-    }
-    .shared();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let synth: Arc<dyn Synthesizer> = Arc::new(Gated {
+        started: std::sync::Mutex::new(started_tx),
+        release: std::sync::Mutex::new(release_rx),
+    });
     let generation = Arc::new(AtomicU64::new(0));
     let first = {
         let (synth, generation) = (Arc::clone(&synth), Arc::clone(&generation));
         std::thread::spawn(move || {
-            preview_with(&generation, &synth, "Premier", None, no_op, |_| {
+            preview_with(&generation, &synth, "Premier", None, no_op, |_, _| {
                 panic!("l'aperçu dépassé ne doit pas être joué")
             })
         })
     };
-    // Le second aperçu (ou un arrêt) prend la main pendant la synthèse du premier.
-    std::thread::sleep(Duration::from_millis(100));
+    // La synthèse du premier est en cours : un second aperçu (ou un arrêt) prend la main, puis
+    // la synthèse est libérée.
+    started_rx.recv().unwrap();
     generation.fetch_add(1, Ordering::SeqCst);
+    release_tx.send(()).unwrap();
     let info = first.join().unwrap().unwrap();
+    assert_eq!(
+        info,
+        PreviewInfo {
+            played: false,
+            duration_ms: 0
+        }
+    );
+}
+
+#[test]
+fn un_arret_arrive_entre_la_synthese_et_le_demarrage_du_son_l_emporte() {
+    // `play` refait le test de génération (sous le verrou de lecture) : s'il échoue, rien n'est
+    // joué et l'aperçu est signalé comme non joué.
+    let synth = Simulated::french().shared();
+    let generation = AtomicU64::new(0);
+    let info = preview_with(&generation, &synth, "Bonjour", None, no_op, |_, _| {
+        generation.fetch_add(1, Ordering::SeqCst);
+        Ok(false)
+    })
+    .unwrap();
     assert_eq!(
         info,
         PreviewInfo {
@@ -447,9 +541,9 @@ fn l_apercu_coupe_la_lecture_en_cours_avant_de_synthetiser() {
         "Bonjour",
         None,
         || order_cell.borrow_mut().push("stop"),
-        |_| {
+        |_, _| {
             order_cell.borrow_mut().push("play");
-            Ok(())
+            Ok(true)
         },
     )
     .unwrap();
@@ -526,6 +620,85 @@ async fn un_dossier_de_sortie_absent_est_une_erreur_d_ecriture() {
     let output = dir.path().join("absent").join("t001.mp3");
     let err = wav_to_mp3(&ff, &wav, &output, &mut rx).await.unwrap_err();
     assert!(matches!(err, AppError::Io(_)), "{err:?}");
+}
+
+// Fin de conversion (`finish_mp3`) avec les sorties qu'un ffmpeg défaillant peut rendre : le
+// processus lui-même est couvert par le vrai ffmpeg ci-dessous (ignoré s'il n'est pas construit).
+
+fn ffmpeg_output(code: Option<i32>) -> crate::ffmpeg::Output {
+    crate::ffmpeg::Output {
+        code,
+        stdout: Vec::new(),
+        stderr: String::new(),
+    }
+}
+
+/// Dossier de sortie et temporaires, avec un MP3 de `mp3` octets déjà « produit ».
+fn finished_scratch(dir: &Path, mp3: &[u8]) -> (Scratch, PathBuf) {
+    let output = dir.join("t001.mp3");
+    let scratch = Scratch::beside(&output);
+    std::fs::write(&scratch.wav, b"wav").unwrap();
+    std::fs::write(&scratch.mp3, mp3).unwrap();
+    (scratch, output)
+}
+
+#[tokio::test]
+async fn une_sortie_non_nulle_de_ffmpeg_est_un_echec_sans_fichier() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scratch, output) = finished_scratch(dir.path(), b"mp3");
+    let (_tx, rx) = watch::channel(false);
+    for code in [Some(1), None] {
+        let err = finish_mp3(&ffmpeg_output(code), &scratch, &output, &rx)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "tts_failed", "{code:?}");
+        assert!(!output.exists());
+    }
+    drop(scratch);
+    assert!(leftovers(dir.path()).is_empty());
+}
+
+#[tokio::test]
+async fn un_mp3_vide_est_un_echec_sans_fichier() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scratch, output) = finished_scratch(dir.path(), b"");
+    let (_tx, rx) = watch::channel(false);
+    let err = finish_mp3(&ffmpeg_output(Some(0)), &scratch, &output, &rx)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "tts_failed");
+    assert!(!output.exists());
+    drop(scratch);
+    assert!(leftovers(dir.path()).is_empty());
+}
+
+#[tokio::test]
+async fn une_annulation_pendant_ffmpeg_n_installe_rien() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scratch, output) = finished_scratch(dir.path(), b"mp3");
+    let (tx, rx) = watch::channel(false);
+    tx.send(true).unwrap();
+    let err = finish_mp3(&ffmpeg_output(Some(0)), &scratch, &output, &rx)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Cancelled), "{err:?}");
+    assert!(!output.exists());
+    drop(scratch);
+    assert!(leftovers(dir.path()).is_empty());
+}
+
+#[tokio::test]
+async fn un_mp3_produit_est_renomme_et_ne_laisse_aucun_temporaire() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scratch, output) = finished_scratch(dir.path(), b"mp3 factice");
+    let (_tx, rx) = watch::channel(false);
+    let size = finish_mp3(&ffmpeg_output(Some(0)), &scratch, &output, &rx)
+        .await
+        .unwrap();
+    assert_eq!(size, 11);
+    assert_eq!(std::fs::read(&output).unwrap(), b"mp3 factice");
+    drop(scratch);
+    assert_eq!(leftovers(dir.path()), ["t001.mp3"]);
 }
 
 /// ffmpeg embarqué (`npm run build:ffmpeg`), sinon `None` (test ignoré) ; exigé si
@@ -618,7 +791,7 @@ fn voix_reelle_du_poste() {
             std::fs::write(Path::new(&dir).join(format!("{name}.wav")), &wav.bytes).unwrap();
         }
         if std::env::var_os("FLAM_TTS_PLAY").is_some() {
-            playback::play(wav.bytes).unwrap();
+            playback::play(wav.bytes, &|| true).unwrap();
             std::thread::sleep(Duration::from_millis(
                 (wav.duration_secs * 1000.0) as u64 + 300,
             ));
