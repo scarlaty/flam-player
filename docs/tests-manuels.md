@@ -33,9 +33,9 @@ matériel ou de code qui manquent aujourd'hui.
 
 | Session | Contenu | Ce qui se partage |
 | --- | --- | --- |
-| A, sur le PC, sans Flam | M1, M5, M6 | M5 et M6 utilisent le même poste de développement ; M1 se fait sur la VM |
-| B, une installation, une connexion | M2, M3, M4 (puis M0 avant tout) | **une seule installation** de N (celle de M1, étape 4, ou une installation propre), **une seule connexion** de la Flam : M4 envoie la première histoire, M2 envoie les packs, M3 se fait dans l'éditeur déjà ouvert |
-| C, risqué | M7, M8 | une connexion, après sauvegarde vérifiée ; restauration prévue en fin de test |
+| A, sur le PC, sans Flam | M1, M5, M6 | M5 et M6 utilisent le même poste de développement ; M1 se fait sur la VM ou le compte propre |
+| B, une installation, une connexion | M2, M3, M4 (puis M0 avant tout) | **une seule installation** de N (installation propre, ou celle de M1 si elle n'a pas été désinstallée à l'étape 9), sur une machine qui voit la Flam en USB (PC physique, ou VM avec passage USB) ; **une seule connexion** de la Flam : M4 envoie la première histoire, M2 envoie les packs, M3 se fait dans l'éditeur déjà ouvert ; un redémarrage de vérification, un de nettoyage |
+| C, risqué | M7, M8 | M7 en une connexion, après sauvegarde vérifiée ; M8 avec l'application officielle (autre logiciel, autre connexion) ; restauration prévue en fin de test |
 | D, matériel manquant | M9, M10 | à faire quand le matériel existe |
 | E, après fusion | M11 | après fusion de la PR 2 de #462 (voir M11) |
 
@@ -97,7 +97,8 @@ clé `python_path`.
 2. Lancer N-1, écran **Paramètres** : saisir un `python_path` (n'importe quel `python.exe`), un
    `cache_dir` personnalisé, thème Sombre, vignettes « Rogner », 3 téléchargements simultanés.
    Installer ou importer une histoire. Fermer l'application.
-3. Copier la configuration (`settings.json`, `library`, `sources.json` sous `%APPDATA%\flam-launcher`)
+3. Copier la configuration (`settings.json` et `sources.json` sous `%APPDATA%\flam-launcher`, et
+   `<cache_dir>\library\` avec `library.json`, où `cache_dir` est le dossier personnalisé de l'étape 2)
    vers un dossier de comparaison. Déposer aussi un fichier étranger (`etranger.txt`) dans le
    dossier d'installation.
 4. Lancer l'installateur N **par-dessus**, en interactif. Répéter plus tard sur une copie de la VM
@@ -107,12 +108,13 @@ clé `python_path`.
    `dir /s /b` identique à celui d'une installation propre de N (hors `etranger.txt`).
 6. Lancer N : Paramètres sans champ « chemin de Python » ; thème, vignettes, 3 téléchargements et
    dossier de cache **conservés** ; bibliothèque et sauvegardes intactes ; le catalogue se charge.
-7. Dans un shell avec `set PATH=%SystemRoot%\system32`, lancer `flam-launcher.exe`, installer une
+7. Dans `cmd.exe`, après `set PATH=%SystemRoot%\system32`, lancer `flam-launcher.exe`, installer une
    histoire Telmi : la conversion réussit sans Python sur la machine.
 8. Changer un réglage (par exemple le thème), puis ouvrir `settings.json` : la clé `python_path`
    a disparu, les autres sont inchangées.
 9. Désinstaller depuis « Applications installées », case « supprimer les données » décochée :
-   dossier d'installation vide, données utilisateur conservées.
+   dossier d'installation vide, données utilisateur conservées. (Faire cette étape en dernier,
+   ou sur une copie de la VM, si l'installation doit servir à la session B.)
 
 **Résultat attendu.** Chaque point ci-dessus vrai, en interactif et en silencieux.
 
@@ -120,7 +122,8 @@ clé `python_path`.
 point, écarts, sortie de `dir /s /b` avant et après. **Durée** : 45 minutes (une seule variante :
 30 minutes).
 
-*Conseil : garder l'installation obtenue à l'étape 4 pour la session B.*
+*Conseil : pour la session B, soit réinstaller N après l'étape 9, soit garder l'installation de
+l'étape 4 (sauter l'étape 9) sur une machine qui voit la Flam en USB.*
 
 ---
 
@@ -130,8 +133,11 @@ point, écarts, sortie de `dir /s /b` avant et après. **Durée** : 45 minutes (
 installateur N installé (celui de M1 convient), une histoire officielle du compte sur la Flam
 (source de la clé `bt`, mode carrier : voir
 [flam-carrier.md](flam-carrier.md) § 3 ; le launcher demande la clé et un consentement). Ne
-fermer ni le launcher ni la Flam entre M4, M2 et M3 ; **éjecter et redémarrer la Flam une seule
-fois, à la fin**.
+fermer ni le launcher ni la Flam entre M4, M2 et M3. Séquence unique : M4 étapes 1 à 5, M2
+étapes 1 à 4, M3, puis **éjection et redémarrage de vérification** (M4 étapes 6 et 7, M2
+étape 5), puis rebranchement, retrait des histoires de test et **redémarrage de nettoyage** (M4
+étape 8, M2 étape 6). « Mes histoires » est l'écran de la bibliothèque du launcher (entrée
+« Bibliothèque » de la navigation).
 
 ### M4. Fumée de l'envoi carrier avec le convertisseur Rust (#236)
 
@@ -182,12 +188,14 @@ doit être versionné dans le dépôt.
    - e. pack mêlant **MP3 mono et stéréo** ;
    - f. pack **multi-flux** (épisodes d'au moins deux flux) ;
    - g. pack avec des titres de **40 caractères et plus** ;
-   - h. pack avec **pochettes** JPEG et WebP (couverture du pack et pochettes des épisodes).
+   - h. pack avec **pochettes** JPEG et WebP (couverture du pack et pochettes des épisodes) ;
+   - i. un épisode **AAC/M4A** (converti), si un flux en propose.
    Un même pack peut cumuler plusieurs de ces points (par exemple e, f et g dans le pack d).
 3. Les envoyer sur la Flam depuis **Mes histoires** (chaque envoi : noter durée et taille).
 4. Dans **Ma Flam**, relever l'**espace libre** avant le premier envoi et après le dernier :
    capacité utile de la Flam.
-5. Éjecter, redémarrer la Flam (fin de session B). Pour chaque pack, noter sur l'appareil :
+5. Éjecter, redémarrer la Flam (redémarrage de vérification, commun avec M4). Pour chaque pack,
+   noter sur l'appareil :
    - temps de chargement du menu ; fluidité du carrousel (50 options : saccades ?) ;
    - titres de 40 caractères et plus : coupés ou lisibles ;
    - lecture d'un épisode sans coupure ;
@@ -196,7 +204,8 @@ doit être versionné dans le dépôt.
    - **bouton retour** depuis un sous-menu ;
    - pochettes affichées ;
    - lecture d'un MP3 mono et d'un MP3 stéréo dans le même pack : même volume ? même vitesse ?
-6. Depuis le launcher (avant de redémarrer), **Retirer** les packs devenus inutiles.
+6. Après ces observations, rebrancher la Flam et **Retirer** les packs devenus inutiles (puis
+   redémarrage de nettoyage, commun avec M4 étape 8).
 
 **Résultat attendu.** Packs lisibles de bout en bout ; carrousel fluide à 50 options ;
 enchaînement et retour conformes à la spécification (`podcasts.md` § 4, point 5).
@@ -212,7 +221,8 @@ launcher (critère d'acceptation de #219). **Durée** : 1 h 30.
 `PackTree.tsx`.
 
 **Étapes.**
-1. Écran **Podcasts**, **Composer le pack** avec au moins 5 épisodes et 2 catégories.
+1. Mêmes prérequis que M2 (flux RSS). Écran **Podcasts**, **Composer le pack** avec 50 épisodes
+   (réutiliser le brouillon de M2 c) rangés dans 2 catégories.
 2. Glisser un épisode d'une catégorie vers une autre, vers la racine, puis vers un sous-menu.
 3. Glisser une catégorie entière ; tenter un 4e niveau de menu ; tenter de dépasser 50 options
    dans un menu.
@@ -220,7 +230,9 @@ launcher (critère d'acceptation de #219). **Durée** : 1 h 30.
 5. Fermer et rouvrir l'éditeur : le brouillon est repris dans l'ordre choisi.
 
 **Résultat attendu.** Les déplacements autorisés se font et se voient ; le 4e niveau et le 51e
-élément sont refusés avec un message ; l'ordre est conservé après réouverture.
+élément sont refusés (annonce « Déplacement impossible : limite de l'arborescence atteinte. » au
+glisser-déposer ; les messages de limite détaillés n'apparaissent qu'à la validation, en
+cliquant sur **Créer l'histoire**) ; l'ordre est conservé après réouverture.
 
 **Consigner dans #413** (case « Mainteneur : vérifier le glisser-déposer »). **Durée** : 10 minutes.
 
@@ -253,7 +265,7 @@ du launcher, « Développement »). Fusionné : #469 (module et test `voix_reell
    le test de l'étape 1. Rétablir le réseau ensuite.
 5. Comparer les listes : toute voix dont le nom ou l'identifiant contient « online » ou « en
    ligne » doit figurer dans « voix installées » mais **pas** dans « voix françaises locales ».
-6. Nettoyer : `Remove-Item Env:FLAM_TTS_OUT, Env:FLAM_TTS_PLAY`.
+6. Nettoyer : `Remove-Item Env:FLAM_TTS_OUT, Env:FLAM_TTS_PLAY -ErrorAction SilentlyContinue`.
 
 **Résultat attendu.** Étape 4 : la synthèse réussit sans réseau pour toutes les voix retenues
 (sinon, une voix en ligne a échappé au filtre : noter son nom et son identifiant) ; étape 5 :
@@ -284,14 +296,15 @@ amovible (le `.plain.pk` publié sur la Flam passe par `sync_all`).
    ```
    `T2F_MESURE_FICHIERS` (500 par défaut) règle le nombre de fichiers.
 3. Relever les lignes `MESURE-V <mode> : <n> fichiers : <ms>` pour les quatre modes (« aucun »,
-   « par fichier », « final sequentiel », « final 8 fils »), trois tours chacun. Fermer
-   l'antivirus n'est pas demandé : noter s'il est actif.
+   « par fichier », « final sequentiel », « final 8 fils »), trois tours chacun. Ne pas
+   désactiver l'antivirus ; noter s'il est actif.
 
-**Résultat attendu.** Chiffres comparables à PORT-RUST.md § 3.1 (local : 0,34 à 0,40 s sans
-vidage, 1,6 s par fichier) ; sur clé, le « par fichier » doit rester de l'ordre de quelques
-secondes. Un écart d'un ordre de grandeur justifierait de revoir le vidage par fichier.
+**Résultat attendu.** Information seulement. Référence locale (§ 3,
+[PORT-RUST.md](../tools/telmi2flam/PORT-RUST.md), mesure de #416) : 0,34 à 0,40 s sans vidage,
+1,6 s par fichier. Aucun chiffre n'est établi pour une clé : un écart d'un ordre de grandeur avec
+le disque local justifierait de revoir le vidage par fichier.
 
-**Consigner dans #443** (« Mesure sync_all sur clé USB ») : modèle de clé, système de fichiers,
+**Consigner dans #443** (puce « Mesure sync_all sur clé USB ») : modèle de clé, système de fichiers,
 les quatre moyennes. **Durée** : 15 minutes.
 
 ---
@@ -306,16 +319,21 @@ les quatre moyennes. **Durée** : 15 minutes.
 **But.** Comportement du firmware quand l'index `etc/library/list` est absent ou tronqué ;
 limites observables d'histoires (voir `flam-device-format.md` § 10, T4, T6, T9).
 
-**Prérequis.** Flam 1.x, M0 vérifiée, launcher **fermé** pendant les étapes 2 à 6 (il répare
-l'index à l'ouverture de « Ma Flam »).
+**Prérequis.** Flam 1.x. Envoyer d'abord une petite histoire de test (elle se place en fin de
+liste, guide testeur, test 4), la laisser sur la Flam (M8 la reprend), puis **refaire M0**.
+Launcher **fermé** pendant les étapes 2 à 6 : il ne réécrit jamais un index absent ou illisible
+sans consentement, mais il peut terminer une transaction interrompue (`list.new`, `list.bak`) et
+fausserait l'observation.
 
 **Étapes.**
 1. Copier `etc\library\list` sur le PC (dossier de test, hors dépôt). Noter le nombre de lignes.
-2. *Index tronqué.* Sur la Flam, retirer la dernière ligne de `list` (éditeur qui garde les fins
-   de ligne LF), éjecter, débrancher, **redémarrer**. Observer : la Flam démarre-t-elle ? une
+2. *Index tronqué.* Sur la Flam, retirer **uniquement la dernière ligne** de `list` (celle de
+   l'histoire de test, jamais une histoire officielle ; éditeur qui garde les fins de ligne LF),
+   éjecter, débrancher, **redémarrer**. Observer : la Flam démarre-t-elle ? une
    histoire manque-t-elle ? le dossier de l'histoire retranchée subsiste-t-il ?
 3. Rebrancher, rouvrir le launcher : « Ma Flam » signale-t-elle l'anomalie ? un dossier `str/<uuid>/`
-   sans entrée d'index est-il listé comme orphelin ? Noter les messages. Fermer le launcher.
+   sans entrée d'index est-il listé comme orphelin ? Noter les messages (aucune réparation
+   automatique n'est attendue). Fermer le launcher.
 4. *Index absent.* Renommer `etc\library\list` en `list.test`, éjecter, **redémarrer**. Observer
    (liste vide ? reconstruction ? écran noir ?).
 5. Rebrancher, **restaurer** : remettre la copie de l'étape 1 sous le nom `list`, supprimer
@@ -341,8 +359,8 @@ launcher, qui impose des dossiers à UUID minuscules.*
 **But.** Effet d'une synchronisation officielle sur les histoires envoyées par le launcher
 (suppression des histoires non officielles ? conservation de l'ordre ?).
 
-**Prérequis.** Application officielle installée et compte relié ; une histoire de test déjà
-envoyée et visible sur la Flam ; **M0 vérifiée**. Le guide testeur déconseille cette
+**Prérequis.** Application officielle installée et compte relié ; l'histoire de test laissée
+sur la Flam par M7 (ou une autre, envoyée depuis le launcher) ; **M0 vérifiée**. Le guide testeur déconseille cette
 synchronisation : c'est ici un test voulu, à ne faire qu'avec une copie fraîche.
 
 **Étapes.**
@@ -392,9 +410,13 @@ vérification du launcher (flam-carrier.md § 6, C5, C6).
 1. Sur la Flam A, saisir (ou choisir) la clé d'une histoire de la Flam B : le launcher doit refuser
    (« cette clé ne correspond à aucune histoire officielle de cette Flam »), rien n'est écrit.
 2. Si la clé est acceptée (par erreur d'usage), arrêter : ne pas envoyer.
-3. Retirer sur la Flam B l'histoire officielle dont la clé a été conservée pour elle, envoyer une
-   histoire de test avec le couple conservé : le comportement est-il celui attendu (C5) ?
-4. Noter si l'histoire, une fois retirée la source de la clé, reste lisible.
+3. *Facultatif, destructif* : seulement si le propriétaire accepte de perdre cette histoire
+   officielle (sa resynchronisation est exclue, seule la copie M0 de la Flam B permet de la
+   restaurer : vérifier cette copie d'abord). Retirer sur la Flam B l'histoire officielle dont la
+   clé a été conservée pour elle, envoyer une histoire de test avec le couple conservé : le
+   comportement est-il celui attendu (C5) ?
+4. Noter si l'histoire, une fois retirée la source de la clé, reste lisible. Restaurer ensuite
+   l'histoire officielle depuis la copie M0.
 
 **Consigner dans #236** (point 7). **Durée** : 45 minutes.
 
