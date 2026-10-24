@@ -1039,6 +1039,8 @@ pub struct PackCreated {
     /// Tâche créée ; `None` si la composition est invalide (voir `report`).
     pub task: Option<super::InstallTask>,
     pub report: ValidationReport,
+    /// Composition conservée après la création de la tâche (#461) ; `None` sans tâche.
+    pub composition: Option<crate::podcast::compositions::CompositionRecord>,
 }
 
 /// Crée un pack (N7 a) : revalide la composition à partir des flux en cache et, si elle est
@@ -1060,14 +1062,25 @@ pub async fn pack_create(
     let feeds = pack::load_feeds(&config, &podcasts, &composition).await?;
     let report = pack::validate(&composition, &feeds);
     if !report.valid {
-        return Ok(PackCreated { task: None, report });
+        return Ok(PackCreated {
+            task: None,
+            report,
+            composition: None,
+        });
     }
     let task = service
-        .start_pack(composition, &report, draft_revision)
+        .start_pack(composition.clone(), &report, draft_revision)
         .await?;
+    // Composition conservée sous un nom (#461) ; un échec ne remet pas la tâche en cause.
+    let record = {
+        let title = report.metadata.as_ref().map_or("", |m| m.title.as_str());
+        let _guard = config.guard();
+        crate::podcast::compositions::record_after_create(&config.dir, &composition, title)
+    };
     Ok(PackCreated {
         task: Some(task),
         report,
+        composition: Some(record),
     })
 }
 
