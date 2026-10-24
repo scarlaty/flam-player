@@ -122,7 +122,7 @@ figurer, même avec `OR`.
 | Flottants façon Python | `ryu` (ou formatage maison) | Apache-2.0 OR BSL-1.0 | Les deux termes sont autorisés. |
 | Rééchantillonnage | **port de l'algorithme de Pillow** (pas de crate) | Pillow : MIT-CMU (HPND) | Ce n'est pas une dépendance Cargo : `ALLOWED_LICENSES` ne change pas. En-tête de licence et mention dans les notices (D3, §4.2). |
 | Autres formats d'image (JPEG…) | `zune-jpeg` ou `jpeg-decoder` si nécessaire ; `gif` pour le GIF | MIT OR Apache-2.0 (OR Zlib) | D4 : délégation à Python (`unsupported_format`, code 7) pendant la transition. Le support devient obligatoire avant #138 pour chaque format que la campagne trouve : en cours (#459, §4.4 ; PNG atypiques faits). |
-| Méthodes ZIP bzip2/LZMA | fonctions `zip` (`lzma-rs` MIT ; `bzip2-sys` : licence bzip2, **non autorisée**, un décodeur bzip2 en Rust pur serait à trouver) | — | Même règle (D4) : délégation, puis support obligatoire avant #138 si la campagne en trouve. |
+| Méthodes ZIP bzip2/LZMA/Zstandard | bzip2 et LZMA écrits à la main (`unbzip2.rs`, `unlzma.rs`) ; Zstandard : `ruzstd` `=0.9.1` (MIT) et `twox-hash` `=2.1.5` (MIT) | MIT (dépendances) | **Fait (#458)**, voir §3.1. `bzip2-sys` et `libbz2-rs-sys` : licence bzip2-1.0.6, non autorisée ; `bzip2-rs` (MIT/Apache-2.0) échoue sur un bloc incompressible ; `lzma-rs` (MIT) exige le marqueur de fin. |
 
 Pas de `image` (crate complète) : trop de dépendances, et ses conversions (16 → 8 bits par
 arrondi `/257`, Lanczos propre) ne donnent pas le résultat de Pillow.
@@ -173,8 +173,8 @@ Invariants (repris de Python, à tester côté Rust) :
    en flux dans le `.part` (par tours de 256 Kio, #402) au lieu d'être tous gardés en mémoire, copies d'images libérées au
    plus tôt.
 6. **Délégation des cas non gérés** (décision D4) : face à une image dans un autre format que PNG
-   (les PNG atypiques, APNG compris, sont décodés depuis #459, §4.4)
-   ou à une entrée ZIP en bzip2/LZMA, le Rust ne convertit pas. Il nettoie son `.part`, émet
+   (les PNG atypiques, APNG compris, sont décodés depuis #459, §4.4), le Rust ne convertit pas
+   (les entrées ZIP bzip2, LZMA et Zstandard sont lues depuis #458). Il nettoie son `.part`, émet
    l'événement `error` avec le code `unsupported_format` et sort avec le **code 7**, distinct de
    `internal_error`. Tant que le repli Python existe, le launcher rejoue alors la conversion
    en Python.
@@ -186,7 +186,7 @@ Invariants (repris de Python, à tester côté Rust) :
 | Archive absente ou illisible | ouverture | rien | `archive_unreadable`, code 3 |
 | Archive corrompue (CRC, en-tête, troncature) | lecture d'une entrée | rien | `archive_unreadable`, code 3. Le CRC doit être vérifié : lire chaque entrée jusqu'au bout. |
 | Entrée chiffrée, méthode que Python ne lit pas non plus (deflate64…) | lecture | rien | `archive_unreadable`, code 3 (Python : 3 pour une méthode inconnue, mais `internal_error` 6 pour une entrée chiffrée ; divergence volontaire, car Python échoue aussi) |
-| Entrée bzip2/LZMA (lue par Python, pas par le Rust) | lecture | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6) |
+| Entrée bzip2, LZMA ou Zstandard | lecture | rien | Lue comme `zipfile` (#458, §3.1). Flux invalide : Python lève `OSError`, `LZMAError` ou `ZstdError` (`internal_error`, code 6), le Rust rend `archive_unreadable` (code 3) : divergence volontaire, Python échoue aussi. Flux tronqué, CRC faux, bombe : voir §3.1. |
 | Image dans un autre format que PNG (JPEG, GIF…) | image | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6), et non `image_unreadable` : Pillow la lirait. Prise en charge format par format (#459, §4.4) |
 | PNG atypique (APNG, `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue) | image | — | décodé comme Pillow, erreurs comprises (#459, §4.4) ; plus de délégation |
 | Noms dupliqués dans l'archive | indexation | rien | même entrée retenue que Python (`ZipFile.getinfo` : la **dernière**). `zip` 4.6.1 retient aussi la dernière (`IndexMap::insert`), mais ne liste le nom qu'une fois : `find_root` et l'index replié (`setdefault`, premier nom rencontré) doivent reproduire `namelist()`. Test dédié. |
@@ -209,6 +209,84 @@ Invariants (repris de Python, à tester côté Rust) :
 | Noms d'assets non ASCII dans l'archive | lecture, sortie | — | `_fold` NFC + minuscules. Noms de sortie identiques à Python, avec le drapeau UTF-8 (bit 11) posé seulement si le nom n'est pas ASCII, comme `zipfile`. |
 | Bombe de décompression (entrée ZIP énorme) | lecture | rien | comme Python : pas de borne propre (D5). Les tailles calculées sont vérifiées (`checked_*`), et un manque de mémoire est traité comme ci-dessus. Les décalages et tailles des en-têtes ZIP, entiers non bornés en Python (négatifs possibles avec un préfixe, ZIP64), sont calculés en `i128` : aucun dépassement n'est possible, le `checked_*` ne sert qu'au passage vers `usize`/`u64`. |
 | Décompression deflate : flux que `miniz_oxide` et zlib jugent différemment | lecture | rien | Les vecteurs `deflate_*` (blocs dynamiques, sortie > 64 Kio, flux tronqué, octets après la fin du flux, tables et distances invalides, `file_size` faux) donnent le même verdict, sauf une **divergence assumée** : un bloc dynamique dont la table des longueurs de code est vide (`deflate_code_lengths_empty`, longueurs HCLEN toutes à 0) est refusé tout de suite par `miniz_oxide` (`archive_unreadable`, code 3), alors que zlib attend la suite du flux et que Python, qui ne signale pas un flux tronqué ni ne contrôle `file_size` en fin de lecture, lit un contenu vide si le CRC attendu est celui d'un contenu vide (0). Seuls des flux tronqués en plein en-tête dynamique invalide divergent (Python accepte le préfixe déjà décodé si le CRC attendu est celui de ce préfixe) : aucune archive légitime n'est concernée. |
+
+### 3.1 Méthodes ZIP bzip2, LZMA et Zstandard (#458)
+
+Avant #458, le Rust déléguait ces entrées à Python (D4, code 7). Le retrait de Python (#138)
+impose de les lire avec le même résultat que `zipfile` de Python 3.14.8, qui les lit toutes
+(le Python embarqué contient `bz2`, `lzma` et `compression.zstd`, libzstd 1.5.7).
+
+**Choix des décodeurs** (licences : chaque terme dans `ALLOWED_LICENSES`) :
+
+| Méthode | Décodeur | Raison |
+| --- | --- | --- |
+| bzip2 (12) | `src/unbzip2.rs`, écrit d'après le format public | `bzip2-sys` et `libbz2-rs-sys` : licence bzip2-1.0.6, non autorisée. `bzip2-rs` 0.1.2 (MIT/Apache-2.0) échoue (« huffman bitstream truncated ») dès qu'un bloc compressé dépasse la taille de bloc annoncée, ce qui arrive avec des données incompressibles comme un MP3 (vecteur `bzip2_multiblock`). |
+| LZMA (14) | `src/unlzma.rs`, d'après la spécification LZMA (`LzmaSpec.cpp`, domaine public) | `lzma-rs` 0.3.0 (MIT) exige le marqueur de fin quand la taille est inconnue (Python lit un flux sans marqueur, vecteur `lzma_no_eos`), ne signale pas la fin du flux en mode incrémental et ne fait pas les contrôles de liblzma. |
+| Zstandard (93) | `ruzstd` `=0.9.1` (MIT) pour les blocs, `twox-hash` `=2.1.5` (MIT) pour XXH64, trames et contrôles dans `src/unzstd.rs` | Rust pur ; les contrôles de libzstd absents de `ruzstd` (somme de contrôle, taille annoncée, bit réservé, trame « skippable », fenêtre de `2^27 + 1` au plus) sont faits à côté. |
+
+Licence (décision du mainteneur, revue de #479) : `unbzip2.rs` est écrit d'après le format
+public bzip2 et le comportement observable de libbzip2, sans copie de son code ; il n'est
+donc pas dérivé de libbzip2 et n'a pas d'entrée dans `DERIVED_NOTICES`.
+
+**Invariants** (`zipread.rs`, `pump_codec`, comme `ZipExtFile.read()`) :
+
+1. Tours de `MAX_N` octets compressés (au moins `MIN_READ_SIZE`) ; chaque tour est décodé **en
+   entier**, même au-delà de `file_size` (Python aussi : une erreur du flux y est détectée),
+   et seuls les `file_size` premiers octets sont gardés (`data[:self._left]`).
+2. Les tours s'arrêtent à la fin du flux (`eof`, les octets suivants sont ignorés), à la fin
+   des données compressées ou quand `file_size` octets sont rendus ; le CRC-32 de l'entrée est
+   toujours vérifié ensuite.
+3. Un flux tronqué n'est pas une erreur du décodeur : il rend ce que la bibliothèque C aurait
+   rendu (blocs bzip2 complets, symboles LZMA complets, blocs Zstandard complets et début
+   d'un bloc brut), puis le CRC décide. `EOFError` (code 3) si le fichier s'arrête avant les
+   données annoncées, comme Python.
+4. Mémoire bornée : lecture du tour par morceaux de 1 Mio, sortie par morceaux de 64 Kio,
+   blocs bzip2 de 900 000 symboles au plus, fenêtre LZMA qui grandit avec la sortie jusqu'à la
+   taille du dictionnaire, fenêtre Zstandard de `2^27 + 1` octets au plus (refus au-delà,
+   comme libzstd).
+5. Aucune borne ajoutée (D5) : pas de limite de taille décompressée.
+
+**Tableau des pannes** (vecteurs `tests/vectors/archive/{bzip2,lzma,zstd}_*`, produits par
+Python 3.14.8, comparés octet à octet ; injection de pannes `injection_de_pannes_bzip2_lzma_zstd`) :
+
+| Panne | Python | Rust |
+| --- | --- | --- |
+| Archive tronquée (données compressées absentes du fichier) | `EOFError`, code 3 | code 3 |
+| Flux tronqué, CRC du contenu complet | contenu partiel, `Bad CRC-32`, code 3 | même contenu partiel, code 3 |
+| Flux tronqué, CRC et taille du contenu partiel | lecture réussie | même contenu (`*_truncated_partial`) |
+| CRC de l'entrée faux | code 3 | code 3 |
+| Flux corrompu (CRC de bloc ou de flux bzip2, somme de contrôle ou taille Zstandard, distance LZMA, état final LZMA non nul, propriétés LZMA invalides, nombre magique, bit réservé, fenêtre trop grande) | `OSError` / `LZMAError` / `ZstdError`, code 6 | `archive_unreadable`, code 3 (Python échoue aussi) |
+| Bombe (5 Mo de zéros, `file_size` = 100) | tout le flux décodé, 100 octets gardés | idem, mémoire bornée (`*_bomb`) |
+| Bombe dont la fin du flux est corrompue | erreur (tout est décodé) | erreur (`*_bomb_corrupt_tail`) |
+| Méthode inconnue (deflate64…) | `NotImplementedError`, code 3 | code 3 (inchangé) |
+| Zstandard : fenêtre de plus de `2^27 + 1` octets | refus, sauf raccourci « single-pass » de libzstd : taille annoncée d'au plus 32 Kio (premier tampon de sortie de Python) et trame entière dans le tour | même règle (`zstd_big_window_*`) |
+| Zstandard : taille annoncée `0xFFFF_FFFF_FFFF_FFFF` (8 octets) | « inconnue », non contrôlée | idem (`zstd_fcs_unknown`) |
+| Zstandard : bloc brut ou compressé plus grand que `Block_Maximum_Size` | refus dès l'en-tête de bloc | idem (`zstd_block_too_big`) |
+| Bombe démesurée (sortie plus grande que la mémoire) | `MemoryError` (tout le tour est décompressé en mémoire), `internal_error` | lecture en mémoire bornée : le Rust lit l'entrée (sens permis par D5) |
+
+Injection de pannes : `injection_de_pannes_bzip2_lzma_zstd` (archives altérées) et
+`decodeurs_sous_mutations` (`zipread.rs`, décodeurs seuls : 500 mutations par flux en CI,
+`TELMI2FLAM_FUZZ_ITER=30000` en release en local, soit 210 000 flux, sans panique).
+
+**Écarts connus**, tous sur des flux que les encodeurs n'écrivent pas. Les trois premiers vont
+dans le sens « le Rust refuse ce que Python lit » (D5) ; ils sont acceptés par le mainteneur
+(revue de #479) parce qu'aucun encodeur n'écrit ces flux :
+
+- bzip2 sans marqueur de fin dont le dernier bloc dépasse le tampon de sortie courant de
+  Python (32 Kio au départ) : Python s'arrête dès que l'entrée est épuisée et perd la fin du
+  bloc, le Rust rend le bloc entier. Visible seulement si l'en-tête annonce le contenu
+  complet avec le CRC du contenu tronqué (vecteur `bzip2_no_eos_big_block`, `RUST_READ_ERROR`).
+- Blocs bzip2 « randomised » (bzip2 antérieur à 0.9.5, 1999, avant la méthode ZIP 12) :
+  refusés (code 3), Python les lit.
+- Table de Huffman bzip2 incomplète menant à un index non rempli : libbzip2 lit une mémoire
+  non initialisée (résultat indéfini, le CRC de bloc échoue en pratique), le Rust refuse
+  (code 3).
+- Dictionnaire LZMA annoncé démesuré (jusqu'à 4 Gio) : liblzma l'alloue d'emblée et peut
+  échouer (`MemoryError`), le Rust le fait grandir avec la sortie et lit l'entrée.
+- Entrée de plus de `MAX_N` (2 Gio) d'octets compressés en Zstandard : la fenêtre retenue par
+  `ruzstd` n'est rendue qu'à la fin de la trame, le test « `file_size` atteint » en fin de tour
+  peut donc décoder un tour de plus que Python (seule différence possible : une erreur que
+  Python n'aurait pas vue).
 
 ## 4. Stratégie de parité
 
@@ -288,8 +366,9 @@ sont identiques à l'octet près dès la PR 6.
    `parity.py` ne doit trouver aucun écart hors de la liste §4.1.
    Le job `parity` de `.github/workflows/telmi2flam-rs.yml` (#134, Python 3.14.8, Pillow 12.3.0,
    lupa 2.8) génère le corpus, compare les sorties (`parity.py corpus`, avec `validate.py` sur
-   la sortie Rust) et échoue au premier écart hors liste. Mesure locale : 88 archives, 79
-   identiques, 6 admis, 3 délégués, 0 écart.
+   la sortie Rust) et échoue au premier écart hors liste. Mesure locale (#458) : 92 archives,
+   85 identiques, 6 admis, 1 délégué (JPEG), 0 écart ; les entrées bzip2, LZMA et Zstandard
+   (`zip_*_entry`, `zip_codecs_all`) ne sont plus étiquetées `delegated`.
 2. **Matrice de rééchantillonnage (CI)** : les images des tests sont minuscules et ne prouvent
    rien sur le Lanczos. Le générateur produit donc aussi une matrice :
    - modes PNG × tailles sources impaires ou premières (par ex. 1, 3, 97, 641, 2049) ;
@@ -530,7 +609,9 @@ Décisions du mainteneur du **2026-10-16** :
   - Formats d'image autres que PNG et entrées ZIP bzip2/LZMA : tant que le repli Python
     existait, le Rust **déléguait à Python** (`unsupported_format`, code 7, distinct de
     `internal_error` ; invariant 6). Le repli est supprimé (#138) : c'est désormais une erreur
-    finale montrée à l'utilisateur.
+    finale montrée à l'utilisateur. **Entrées bzip2, LZMA et Zstandard : support fait
+    (#458, §3.1)**, plus de délégation ; `parity.py campaign` compte une délégation de ces
+    méthodes comme un écart.
   - La campagne de parité (#135) compte ces délégations par format. La prise en charge de
     **chaque format présent** est une condition préalable du retrait de Python (#138).
 - **D6, validée** : le Rust annonce `2.0.0`. Les résultats de compatibilité enregistrés avec
