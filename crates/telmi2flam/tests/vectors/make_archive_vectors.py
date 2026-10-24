@@ -566,6 +566,21 @@ def codec_cases():
     n = 2000
     add("zstd_block_too_big", ZS, struct.pack("<L", 0xFD2FB528) + bytes([0x00, 0]) +
         bytes([((n << 3) | 1) & 0xFF, (n >> 5) & 0xFF, (n >> 13) & 0xFF]) + b"y" * n, b"y" * n)
+    # Trame « single segment » : Block_Maximum_Size = taille annoncee (100), sans plancher de
+    # 1 Kio (#478). Bloc compresse de 103 octets (litteraux bruts, aucune sequence) qui rend
+    # bien 100 octets : refuse des l'en-tete du bloc.
+    lit = bytes([(1 << 2) | ((100 & 0xF) << 4), 100 >> 4]) + b"s" * 100 + b"\x00"
+    n = len(lit)
+    add("zstd_single_segment_block_too_big", ZS, struct.pack("<L", 0xFD2FB528) +
+        bytes([0x20, 100]) + bytes([((n << 3) | 5) & 0xFF, (n >> 5) & 0xFF, 0]) + lit,
+        b"s" * 100)
+    # « single segment » de taille inconnue (0xFF..FF) : fenetre = taille annoncee, trop
+    # grande, refusee meme pour une trame reduite a un bloc brut vide final (#478).
+    add("zstd_single_segment_fcs_unknown", ZS, struct.pack("<L", 0xFD2FB528) +
+        bytes([0xE0]) + b"\xff" * 8 + bytes([1, 0, 0]), b"")
+    add("zstd_single_segment_block_fits", ZS, struct.pack("<L", 0xFD2FB528) +
+        bytes([0x20, 100]) + bytes([((100 << 3) | 1) & 0xFF, (100 >> 5) & 0xFF, 0]) +
+        b"s" * 100, b"s" * 100)
     lz = bytearray(lzma_zip(text))
     lz[9] = 1                                   # premier octet du decodeur d'intervalle
     add("lzma_rc_first_byte", LZ, bytes(lz), text)

@@ -231,6 +231,115 @@ def fixed_deflate(symbols):
     return bytes(out)
 
 
+class Bits:
+    """Écriture de bits deflate (poids faible d'abord ; codes de Huffman inversés)."""
+
+    def __init__(self):
+        self.acc = 0
+        self.nb = 0
+
+    def put(self, value, n, reverse=False):
+        if reverse:
+            value = int(format(value, "0%db" % n)[::-1], 2) if n else 0
+        self.acc |= value << self.nb
+        self.nb += n
+
+    def align(self):
+        self.nb = (self.nb + 7) // 8 * 8
+
+    def tobytes(self, nbytes=None):
+        n = (self.nb + 7) // 8 if nbytes is None else nbytes
+        return (self.acc & ((1 << (8 * n)) - 1)).to_bytes(n, "little")
+
+
+LEN_BASE = (3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99,
+            115, 131, 163, 195, 227, 258)
+LEN_EXTRA = (0,) * 8 + (1,) * 4 + (2,) * 4 + (3,) * 4 + (4,) * 4 + (5,) * 4 + (0,)
+DIST_BASE = (1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025,
+             1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577)
+
+
+def fixed_sym(b, sym):
+    """Symbole littéral/longueur `sym` (0 à 287) du code de Huffman fixe."""
+    if sym < 144:
+        b.put(0x30 + sym, 8, True)
+    elif sym < 256:
+        b.put(0x190 + sym - 144, 9, True)
+    elif sym < 280:
+        b.put(sym - 256, 7, True)
+    else:
+        b.put(0xC0 + sym - 280, 8, True)
+
+
+def fixed_copy(b, length, dist):
+    i = max(k for k, v in enumerate(LEN_BASE) if v <= length)
+    fixed_sym(b, 257 + i)
+    b.put(length - LEN_BASE[i], LEN_EXTRA[i])
+    d = max(k for k, v in enumerate(DIST_BASE) if v <= dist)
+    b.put(d, 5, True)
+    b.put(dist - DIST_BASE[d], max(0, d // 2 - 1))
+
+
+def mib_stream(final=True):
+    """Flux zlib (bloc fixe) qui produit exactement `MAX_TEXT_CHUNK` (1 Mio) de zéros, sans fin
+    de bloc : le symbole suivant est celui que zlib trouve sortie pleine (#473, m5)."""
+    b = Bits()
+    b.put(0x78, 8)
+    b.put(0x01, 8)
+    b.put(1 if final else 0, 1)
+    b.put(1, 2)
+    fixed_sym(b, 0)
+    left = 1024 * 1024 - 1
+    while left > 258 + 2:
+        fixed_copy(b, 258, 1)
+        left -= 258
+    fixed_copy(b, left, 1)
+    return b
+
+
+def text_1mio_cases(rgb):
+    """Texte compressé de 1 Mio exactement, suivi d'un symbole en attente (#473, m5).
+
+    `_safe_zlib_decompress` lève `ValueError` seulement si `unconsumed_tail` n'est pas vide :
+    zlib lit le symbole qui produirait l'octet suivant (littéral, ou copie avec sa distance,
+    jamais contrôlée à ce stade) puis s'arrête ; un octet de bloc stocké n'est pas lu. Une
+    entrée qui finit sur ce symbole (ou au milieu) est donc lue sans erreur."""
+    cases = {}
+    b = mib_stream()
+    fixed_sym(b, 65)
+    cases["lit"] = b.tobytes()
+    cases["lit_puis_octet"] = b.tobytes() + b"\x00"
+    b = mib_stream()
+    fixed_copy(b, 3, 1)
+    cases["copie"] = b.tobytes()
+    b = mib_stream()
+    fixed_copy(b, 258, 32768)
+    cases["copie_32k_puis_octet"] = b.tobytes() + b"\x00"
+    b = mib_stream()
+    fixed_sym(b, 200)                       # code de 9 bits : coupé avant son dernier octet
+    cases["code_coupe"] = b.tobytes((b.nb - 1) // 8)
+    b = mib_stream()
+    fixed_sym(b, 257)
+    b.put(30, 5, True)                      # code de distance 30 : invalide (`zlib.error`)
+    cases["distance_30"] = b.tobytes()
+    b = mib_stream()
+    fixed_sym(b, 256)
+    cases["fin_de_bloc_seule"] = b.tobytes()
+    for name, data in (("stocke", b"abcde"), ("stocke_entete", b"")):
+        b = mib_stream(final=False)
+        fixed_sym(b, 256)
+        b.put(1, 1)
+        b.put(0, 2)
+        b.align()
+        b.put(5, 16)
+        b.put(0xFFFF ^ 5, 16)
+        cases[name] = b.tobytes() + data
+    for name, z in cases.items():
+        rgb("ztxt_1mio_" + name, before=[chunk(b"zTXt", b"k\x00\x00" + z)])
+    for name in ("lit", "lit_puis_octet", "stocke"):
+        rgb("iccp_1mio_" + name, before=[chunk(b"iCCP", b"nom\x00\x00" + cases[name])])
+
+
 def zlib_cases(add):
     """Sortie pleine : zlib ne contrôle une distance trop lointaine qu'à l'écriture (#459)."""
     end = chunk(b"IEND", b"")
@@ -385,6 +494,14 @@ def ihdr_cases(add, _rng):
         + ihdr(6, 4, 8, 3) + chunk(b"PLTE", pal4) + ihdr(6, 4, 8, 4)
         + chunk(b"IDAT", zdata(6, 4, 8, 4, [[((x + y) % 4, 9) for x in range(6)]
                                               for y in range(4)])) + end)
+    # masque RGB 16 bits (premier IHDR) sur un `LA` à palette : couleur de la palette comparée
+    # à l'octet haut de la clé, luminance de la palette, alpha du masque (#473)
+    la_px = [[((x + y) % 4, 50 * x) for x in range(6)] for y in range(4)]
+    for name, key in (("rgb", b"\x00\x01\x00\x02\x00\x03"),
+                      ("rgb_touche", bytes((pal4[3], 7, pal4[4], 0, pal4[5], 255)))):
+        add("plte_palette_puis_la_masque_" + name, SIG + ihdr(6, 4, 16, 2)
+            + chunk(b"tRNS", key) + ihdr(6, 4, 8, 3) + chunk(b"PLTE", pal4) + ihdr(6, 4, 8, 4)
+            + chunk(b"IDAT", zdata(6, 4, 8, 4, la_px)) + end)
     add("trns_avant_ihdr", SIG + chunk(b"tRNS", b"\x00\x01") + ihdr(6, 4, 8, 0)
         + chunk(b"IDAT", zdata(6, 4, 8, 0, pxp)) + end)
     add("ihdr_apres_idat_autre_mode", SIG + ihdr(6, 4, 8, 2) + chunk(b"IDAT", z)
@@ -684,6 +801,7 @@ def cases():
     apng_cases(add, rng, base_px, good)
     ihdr_cases(add, rng)
     zlib_cases(add)
+    text_1mio_cases(rgb)
     # autres formats : délégation si Pillow sait peut-être les lire, sinon illisibles comme
     # pour Pillow (src/identify.rs, #129)
     add("pas_png", b"BM" + bytes(24), "delegate")
