@@ -17,7 +17,8 @@
 //! - **Échecs** ([`speak`]) : un titre isolé en échec (synthèse, WAV, conversion MP3) reste muet,
 //!   avec un avertissement ; la création s'arrête (`tts_failed`) si le **premier** titre à lire
 //!   échoue ou si **plus de la moitié** échouent. Un titre sans rien à lire (vide, sans lettre)
-//!   reste muet sans avertissement et ne compte pas.
+//!   reste muet sans avertissement et ne compte pas. Deux délais (ou indisponibilités) de
+//!   synthèse consécutifs arrêtent aussi la création (service de voix figé).
 //! - **Annulation** : vérifiée avant chaque titre et pendant la synthèse (le thread de synthèse,
 //!   borné par son délai, est abandonné ; son résultat est jeté) et pendant la conversion.
 //! - **Fichiers** : MP3 aux noms générés (`title-NNNN.mp3`) dans le dossier de travail, supprimé
@@ -128,7 +129,8 @@ pub fn choose_voice(
     }
 }
 
-/// Avertissement d'un titre resté muet (montré à l'utilisateur, jamais journalisé).
+/// Avertissement d'un titre resté muet (montré à l'utilisateur, jamais journalisé). Le titre du
+/// pack est lu en premier : son échec arrête la création ; sa branche est défensive.
 pub fn failure_warning(key: &TitleKey, text: &str) -> String {
     match key {
         TitleKey::Pack => "Titre du pack non lu à voix haute (synthèse en échec).".to_string(),
@@ -138,6 +140,9 @@ pub fn failure_warning(key: &TitleKey, text: &str) -> String {
         ),
     }
 }
+
+/// Délais (ou indisponibilités) de synthèse consécutifs qui arrêtent la création.
+const MAX_STALLED: usize = 2;
 
 fn stopped(message: String) -> AppError {
     AppError::TtsFailed(message)
@@ -180,6 +185,7 @@ pub async fn speak(
         .count();
     let mut out = SpokenTitles::default();
     let mut attempted = 0usize;
+    let mut stalled = 0usize;
     for (rank, title) in titles.iter().enumerate() {
         if *cancel.borrow() {
             return Err(AppError::Cancelled);
@@ -201,8 +207,16 @@ pub async fn speak(
                     }
                 }
             }
-            Err(err) => Err(format!("{err:?}")),
+            Err(err) => {
+                if matches!(err, SpeechError::Timeout | SpeechError::Unavailable) {
+                    stalled += 1;
+                }
+                Err(format!("{err:?}"))
+            }
         };
+        if result.is_ok() {
+            stalled = 0;
+        }
         match result {
             Ok(path) => {
                 out.audio.insert(title.key.clone(), path);
@@ -210,6 +224,15 @@ pub async fn speak(
             Err(reason) => {
                 // Rang et cause technique seulement (D11, vie privée).
                 tracing::warn!(rank, "titre lu en échec : {reason}");
+                // Service de voix figé : deux délais (ou indisponibilités) de suite arrêtent la
+                // création au lieu d'attendre 10 s par titre jusqu'à la règle de la moitié.
+                if stalled >= MAX_STALLED {
+                    return Err(stopped(
+                        "La voix de Windows ne répond plus : le pack n'a pas été créé. \
+                         Réessayez, ou décochez « Lire les titres à voix haute »."
+                            .into(),
+                    ));
+                }
                 if attempted == 1 {
                     return Err(stopped(
                         "Le premier titre n'a pas pu être lu à voix haute : le pack n'a pas été \

@@ -435,6 +435,12 @@ fn sans_titre_lu_l_archive_est_inchangee() {
     write_archive(&pack(menu, None), &fx.out(), &never).unwrap();
     let files = read_zip(&fx.out());
     assert!(!files.contains_key("title.mp3"));
+    let nodes = Nodes::of(&files);
+    let notes = json_of(&files, "notes.json");
+    let mut audios = Vec::new();
+    option_audios(&nodes, &notes, &nodes.menu_of_root(), &mut audios);
+    assert_eq!(audios.len(), 8);
+    assert!(audios.iter().all(|(_, a)| a.is_null()), "{audios:?}");
     assert!(files
         .keys()
         .filter(|k| k.starts_with("audios/"))

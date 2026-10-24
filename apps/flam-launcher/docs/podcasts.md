@@ -843,7 +843,10 @@ faire dès maintenant, avant la PR 1. Les noms d'entrées suivent la convention 
 - **Préparation** (`install/pack_speech.rs`) : voix résolue (repli avec avertissement), titres
   dans l'ordre de l'archive (titre du pack, puis options en profondeur), synthèse bornée
   (10 s par titre), conversion MP3 mono 64 kbit/s par le ffmpeg embarqué
-  (`title-NNNN.mp3` dans le dossier de travail), règles d'arrêt de 12.5.
+  (`title-NNNN.mp3` dans le dossier de travail), règles d'arrêt de 12.5 (la moitié se compte
+  sur tous les titres lus, y compris ceux d'épisodes retirés ensuite), plus un arrêt
+  `tts_failed` après deux délais (ou indisponibilités) de synthèse consécutifs : un service de
+  voix figé n'impose pas 10 s d'attente par titre.
 - **Archive** (`podcast/archive.rs`) : `audio` de la scène d'option = `tNNN.mp3` (épisode de
   rang NNN) ou `cNNN.mp3` (catégorie de rang NNN), entrées `audios/…` ; titre du pack =
   `title.mp3` à la racine ; titre muet : `"audio": null` (`silent.mp3` à la conversion). Les
