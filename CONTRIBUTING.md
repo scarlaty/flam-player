@@ -181,7 +181,8 @@ Règles propres aux briques sur lesquelles repose le launcher (documentation :
 
 - `test_run.bat` (player, moteur, convertisseur) au vert pour toute modification de code hors
   `apps/flam-launcher/`.
-- `tools/telmi2flam` : `python -m unittest discover -s tools/telmi2flam/tests` au vert ;
+- `tools/telmi2flam` (version Python d'origine, plus livrée : référence de parité et
+  outils de campagne ; Python 3 requis pour ce volet seulement) : `python -m unittest discover -s tools/telmi2flam/tests` au vert ;
   toute correction de compatibilité est accompagnée d'un test de non-régression.
 - `crates/telmi2flam` (port Rust du convertisseur, workspace Cargo à la racine) :
   `cargo test -p telmi2flam`, `cargo fmt --check` et `cargo clippy -p telmi2flam -- -D warnings`.
