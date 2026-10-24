@@ -72,7 +72,6 @@ fn find_tools() -> Option<Tools> {
     if let Some(dir) = env_path("FLAM_E2E_INSTALL_DIR") {
         let env = Environment {
             exe_dir: Some(dir.clone()),
-            path_var: None,
             default_cache_dir: dir.join("cache-inutilise"),
             search_repo_build: false,
             protected_dirs: Vec::new(),

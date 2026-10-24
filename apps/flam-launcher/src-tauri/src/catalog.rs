@@ -1783,7 +1783,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let env = Environment {
             exe_dir: None,
-            path_var: None,
             default_cache_dir: dir.path().join("cache"),
             search_repo_build: false,
             protected_dirs: vec![],
