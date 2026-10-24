@@ -602,7 +602,8 @@ Pistes sans fichier commun : Rust (#361, #213, #214, #216, #211, #362, #217) et 
 > **Statut : décidé le 2026-10-24** (partie de #207, évolution de #221 ; décisions en 12.11,
 > toutes conformes aux recommandations). PR 1 (module `podcast/speech.rs`, commandes
 > `tts_voices` et `tts_preview`) fusionnée ; PR 2 (intégration dans la création du pack, 12.12)
-> faite ; PR 3 (interface) à faire.
+> fusionnée ; PR 3 (interface, 12.7) faite : case et aperçu dans l'éditeur, choix de la voix
+> dans les Paramètres, avertissements dans le panneau des tâches.
 
 ### 12.1 But et état actuel
 
@@ -738,6 +739,16 @@ explicite du parent (case décochée par défaut).
 - L'estimation de taille (D5) ajoute la taille des titres (≈ 80 Kio par titre, borne haute pour 10 s).
 - La case et la voix entrent dans le brouillon (N3 b) et dans la composition enregistrée avec la
   tâche (N10 a), pour que la reprise reconstruise le même pack.
+- **Fait en PR 3** : la voix ne se choisit pas dans l'éditeur mais dans les **Paramètres**
+  (« Titres lus à voix haute » : liste des voix françaises mémorisée dans `tts_voice`, bouton
+  « Essayer la voix ») ; l'éditeur affiche la voix utilisée (celle de la composition, sinon
+  celle des Paramètres, sinon la voix par défaut, avec le même repli que le backend si elle a
+  disparu). Aperçu limité au titre du pack (bouton « Écouter » / « Arrêter », coupé si le titre
+  change ou si l'éditeur se ferme), joué côté Rust : CSP inchangée. Case désactivée pendant la
+  recherche des voix et sans voix française (ou synthèse indisponible), mais toujours décochable
+  si un brouillon l'avait cochée. Avertissements (`PackStatus::warnings`) dans le détail de la
+  tâche du panneau (les trois premiers, puis un compte) ; erreurs `tts_*` traduites par code.
+  L'ajout des titres à l'estimation de taille (D5) est suivi dans #487.
 
 ### 12.8 Vie privée, licences, tests
 

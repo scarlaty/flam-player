@@ -119,6 +119,19 @@
   color: var(--color-text-muted);
 }
 
+.fl-pack__speech {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.fl-pack__speech-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
 .fl-pack__grip {
   align-self: center;
   padding: 0 var(--space-1);
