@@ -449,9 +449,12 @@ aucun appel dans `telmi2flam.py`), le Rust ne l'applique pas non plus. Ni `draft
 | APNG (PR 1) | première image ; séquence `fcTL`/`fdAT` fausse, `fcTL` court ou hors de l'image : illisible ; zone vide : illisible | idem, testé (`apng_*` de `gen_png_vectors.py`) |
 | `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue (PR 1) | dernier `IHDR` (taille ; mode du dernier couple valide), transparence rangée selon le mode courant, `_trns_mask` sur la clé brute et l'`IHDR` à position fixe | idem, y compris les erreurs (`TypeError` d'un triplet sur du gris, palette sur une image d'un autre mode que `L`/`LA`) : 634 combinaisons dans `combos.tsv`, cas `plte_*` du manifeste |
 
-**Écarts attendus** : aucun pour le PNG. GIF : un fichier forgé à la fois GIF et IM/IMT ou PCD
-(polyglotte) est relu par Pillow avec un greffon sans `_accept` après l'échec de l'ouverture GIF
-(champ tronqué, aucune image) ; le Rust le déclare illisible (écart accepté, #473). JPEG : écart d'IDCT/suréchantillonnage
+**Écarts attendus** : PNG, dans le sens permissif seulement : texte compressé de 1 Mio exactement
+suivi d'un bloc stocké dont le premier octet, dernier de l'entrée, était déjà lu d'avance par
+miniz (après un bloc dynamique) : lu par le Rust, `ValueError` pour Pillow (#473). GIF : un
+fichier forgé à la fois GIF et IM/IMT ou PCD (polyglotte) est relu par Pillow avec un greffon
+sans `_accept` après l'échec de l'ouverture GIF (champ tronqué, aucune image) ; le Rust le
+déclare illisible (écart accepté, #473). JPEG : écart d'IDCT/suréchantillonnage
 borné s'il est inévitable, et pixels des JPEG corrompus (reprise de libjpeg-turbo), chacun
 inscrit dans `ALLOWED_DEVIATIONS` avec sa mesure, et signalé dans la PR.
 

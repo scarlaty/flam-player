@@ -145,12 +145,15 @@ impl ZstdDecoder {
                 v
             }
         });
+        // « single segment » : fenêtre = taille annoncée brute (ZSTD_CONTENTSIZE_UNKNOWN compris,
+        // donc fenêtre trop grande et refusée, #478).
+        let raw_size = self.content_size;
         // ZSTD_CONTENTSIZE_UNKNOWN : taille non contrôlée en fin de trame.
         if self.content_size == Some(u64::MAX) {
             self.content_size = None;
         }
         let window = if single {
-            self.content_size.unwrap_or(0)
+            raw_size.unwrap_or(0)
         } else {
             let log = 10 + u32::from(avail[5] >> 3);
             if log > 31 {

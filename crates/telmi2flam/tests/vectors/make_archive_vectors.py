@@ -574,6 +574,10 @@ def codec_cases():
     add("zstd_single_segment_block_too_big", ZS, struct.pack("<L", 0xFD2FB528) +
         bytes([0x20, 100]) + bytes([((n << 3) | 5) & 0xFF, (n >> 5) & 0xFF, 0]) + lit,
         b"s" * 100)
+    # « single segment » de taille inconnue (0xFF..FF) : fenetre = taille annoncee, trop
+    # grande, refusee meme pour une trame reduite a un bloc brut vide final (#478).
+    add("zstd_single_segment_fcs_unknown", ZS, struct.pack("<L", 0xFD2FB528) +
+        bytes([0xE0]) + b"\xff" * 8 + bytes([1, 0, 0]), b"")
     add("zstd_single_segment_block_fits", ZS, struct.pack("<L", 0xFD2FB528) +
         bytes([0x20, 100]) + bytes([((100 << 3) | 1) & 0xFF, (100 >> 5) & 0xFF, 0]) +
         b"s" * 100, b"s" * 100)

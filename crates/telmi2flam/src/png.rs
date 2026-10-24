@@ -370,7 +370,11 @@ fn safe_zlib_decompress(z: &mut Inflater, input: &[u8]) -> Result<Option<usize>>
         // Il lit encore le symbole qui produirait l'octet suivant (littéral, ou copie avec sa
         // distance, contrôlée seulement à l'écriture), mais pas un octet de bloc stocké. miniz
         // s'arrête au même point et rend la même consommation (octets entiers de son tampon de
-        // bits restitués ; toute l'entrée si elle finit avant ou sur ce symbole, #473).
+        // bits restitués ; toute l'entrée si elle finit avant ou sur ce symbole, #473). Écart
+        // connu, dans le sens permissif : si le premier octet d'un bloc stocké était déjà dans
+        // le tampon de bits (lecture anticipée après un bloc dynamique), miniz le garde
+        // (`RawStoreFirstByte`) ; une entrée qui finit sur cet octet est alors lue, où Python
+        // lève `ValueError` (PORT-RUST.md §4.4).
         if z.halted {
             if used < input.len() {
                 return unreadable("texte compressé trop grand");
