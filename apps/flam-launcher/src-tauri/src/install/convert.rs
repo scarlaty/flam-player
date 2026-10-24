@@ -134,6 +134,15 @@ pub const UNSUPPORTED_FORMAT_CODE: &str = "unsupported_format";
 /// convertisseur est écarté : il peut citer un nom de fichier de l'histoire.
 pub const UNSUPPORTED_FORMAT: &str = "Cette histoire utilise un format que le launcher ne sait pas encore convertir (image non PNG ou archive compressée en bzip2/LZMA).";
 
+/// Code d'erreur acceptable : identifiant court (`[a-z0-9_]{1,32}`). Un texte libre (nom de fichier
+/// possible) devient `unknown` : le code est journalisé et affiché (#475).
+fn clean_code(code: &str) -> bool {
+    (1..=32).contains(&code.len())
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
 /// Message fixe d'une erreur du convertisseur, selon son code : le `message` de l'événement `error`
 /// n'est jamais repris (#475). Un code inconnu donne un texte générique.
 fn fixed_message(code: &str) -> String {
@@ -515,7 +524,9 @@ pub async fn convert(
             }
             Some("error") => {
                 reported = Some(Reported {
-                    code: text("code").unwrap_or_else(|| "unknown".into()),
+                    code: text("code")
+                        .filter(|c| clean_code(c))
+                        .unwrap_or_else(|| "unknown".into()),
                 });
             }
             _ => {}
@@ -814,6 +825,14 @@ b"
             assert!(!banc.output.exists(), "{mode}");
             assert!(banc.staging_is_empty(), "{mode} : temporaire laissé");
         }
+    }
+
+    #[test]
+    fn un_code_libre_n_est_pas_un_code() {
+        assert!(clean_code("missing_asset"));
+        assert!(!clean_code("missing s1.png"));
+        assert!(!clean_code(""));
+        assert!(!clean_code(&"a".repeat(33)));
     }
 
     /// `unsupported_format` (code 7, D4) : erreur finale au message fixe et non technique, sans
