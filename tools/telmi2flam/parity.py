@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Outil de parite pour le port Rust de telmi2flam (#123, note PORT-RUST.md §4).
+Outil de parite du convertisseur telmi2flam (#123, note PORT-RUST.md §4).
 
-Compare un convertisseur candidat (le port Rust) a l'oracle (telmi2flam.py, Pillow
-epingle). Ce qui est compare, par archive :
+Compare un convertisseur candidat (le binaire Rust) a une reference : les sorties de l'ancien
+oracle Python (Pillow 12.3.0), figees dans le depot depuis la suppression de ce convertisseur
+(#140, PORT-RUST.md §4.5), ou, en campagne, un autre binaire. Ce qui est compare, par archive :
 
   - le statut et le code de sortie ;
   - le code de l'evenement `error` (--progress-json) ;
@@ -19,31 +20,35 @@ Les ecarts admis forment une liste fermee (`ALLOWED_DEVIATIONS`, §4.1) ; tout a
 ecart fait echouer la comparaison (code de sortie 1). Les delegations
 `unsupported_format` (code 7, decision D4) sont comptees a part.
 
-    python parity.py corpus DOSSIER [--oracle CMD] [--candidate CMD] [--report FICHIER]
-    python parity.py matrix DOSSIER [--candidate-lif-dir DOSSIER] [--report FICHIER]
+    python parity.py corpus --candidate CMD [--references ZIP] [--report FICHIER]
     python parity.py compare SORTIE_A SORTIE_B [--report FICHIER]
-    python parity.py campaign ARCHIVES --candidate CMD [--oracle CMD] [--out DOSSIER]
+    python parity.py campaign ARCHIVES --candidate CMD --oracle CMD [--out DOSSIER]
                               [--jobs N] [--timeout S] [--limit N] [--force]
 
-`campaign` (#135, §4.3) compare les deux moteurs sur les archives reelles, par lots avec
-reprise (un etat par archive sous DOSSIER/cases/, rapport DOSSIER/report.json, defaut
-.cache/parity). Seule la delegation D4 y est admise (image non PNG : une delegation d'entree
-bzip2/LZMA/Zstandard, lues par le Rust depuis #458, est un ecart `delegation`) ; le rapport
-compte les delegations par cause, format d'image et methode ZIP. Le journal ne donne que des comptes : le rapport, lui,
-nomme les archives et reste hors du depot.
+`corpus` convertit chaque archive du corpus synthetique fige
+(`crates/telmi2flam/tests/data/parity_corpus.zip` : archives, index `corpus.json`, resultats
+de l'oracle `expected.json`, contenus des `.lif` issus d'un JPEG sous `blobs/`) avec le
+candidat et compare au resultat fige. La matrice de reechantillonnage est comparee par le
+test Rust `matrix_render.rs` (references `matrix_expected.json`).
 
-`corpus` et `matrix` lisent les index `corpus.json` / `matrix.json` produits par
-tests/parity/make_corpus.py. Sans `--candidate`, le candidat est l'oracle : Python
-contre Python, zero ecart attendu. CMD est une ligne de commande (separee comme un
-shell, chemins avec des /), suivie de `archive.zip -o sortie --progress-json ...`.
+`campaign` (#135, §4.3) compare deux moteurs (par exemple deux versions du binaire) sur les
+archives reelles, par lots avec reprise (un etat par archive sous DOSSIER/cases/, rapport
+DOSSIER/report.json, defaut .cache/parity). Seule la delegation D4 y est admise (image d'un
+format non pris en charge : une delegation d'entree bzip2/LZMA/Zstandard, lues par le Rust
+depuis #458, est un ecart `delegation`) ; le rapport compte les delegations par cause, format
+d'image et methode ZIP. Le journal ne donne que des comptes : le rapport, lui, nomme les
+archives et reste hors du depot. Code de sortie : 0 si le seuil est atteint sur toutes les
+archives, 1 sinon, 3 si le seuil est atteint sur une campagne partielle (`--limit`).
 
-`validate.py` ne s'applique qu'a la sortie du CANDIDAT : la sortie de l'oracle n'y passe
-pas (elle sert de reference, un paquet que `validate.py` refuserait serait un ecart de
-l'oracle a traiter a part, pas un ecart de parite).
+CMD est une ligne de commande (separee comme un shell, chemins avec des /), suivie de
+`archive.zip -o sortie --progress-json ...`.
+
+`validate.py` ne s'applique qu'a la sortie du CANDIDAT : la reference n'y passe pas (un
+paquet de l'oracle que `validate.py` refuserait serait un ecart de l'oracle a traiter a part,
+pas un ecart de parite).
 """
 import argparse
 import contextlib
-import importlib.util
 import hashlib
 import io
 import json
@@ -61,9 +66,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.dont_write_bytecode = True
 
 REPORT_SCHEMA = 1
-ORACLE_SCRIPT = os.path.join(HERE, "telmi2flam.py")
+REFERENCES_SCHEMA = 1
+REPO = os.path.dirname(os.path.dirname(HERE))
+DEFAULT_REFERENCES = os.path.join(REPO, "crates", "telmi2flam", "tests", "data",
+                                  "parity_corpus.zip")
 
-# Etiquettes de cas (voir tests/parity/make_corpus.py)
+# Etiquettes de cas du corpus fige (`tags` de corpus.json)
 TAG_JSON_LIMIT = "json_limit"
 TAG_ENCRYPTED = "encrypted_entry"
 TAG_BAD_UTF8_NAME = "invalid_utf8_name"
@@ -218,7 +226,7 @@ def run_converter(cmd, archive, work_dir, args=(), timeout=300, keep=()):
     if any(a == "--output" or a.startswith("--output=") for a in args):
         raise ValueError("cas de corpus : sortie a donner par -o, pas --output")
     out = os.path.join(work_dir, out_name)
-    # Reechantillonnage MP3 desactive (#46) : l'oracle Python et le candidat Rust doivent
+    # Reechantillonnage MP3 desactive (#46) : la reference et le candidat doivent
     # produire la meme sortie quel que soit le ffmpeg present sur la machine.
     env = {**os.environ, "FLAM_FFMPEG": ""}
     try:
@@ -277,20 +285,69 @@ def _pair(run):
     return (run["exit"], run["error_code"])
 
 
+def lif_decode(data):
+    """Decodeur LIF (miroir de `src/formats/lif_decoder.c` du player, repris de l'ancien
+    lif.py) : retourne (pixels RGBA, largeur, hauteur). Leve une exception sur un LIF
+    tronque ou de signature inconnue."""
+    if data[0:4] not in (b"liff", b"LIFF"):
+        raise ValueError("signature LIF invalide")
+    w = int.from_bytes(data[4:8], "big")
+    h = int.from_bytes(data[8:12], "big")
+    total = w * h
+    payload = data[13:len(data) - 8]
+    rgba = bytearray(total * 4)
+    cr, cg, cb, ca = 0, 0, 0, 255
+    run = 0
+    cache = [(0, 0, 0, 0)] * 64
+    p = px = 0
+    plen = len(payload)
+    while px < total:
+        if run > 0:
+            run -= 1
+        elif p < plen:
+            b1 = payload[p]
+            p += 1
+            if b1 in (0xFE, 0xFF):
+                lo, hi = payload[p], payload[p + 1]
+                if b1 == 0xFF:
+                    ca = payload[p + 2]
+                p += 2 if b1 == 0xFE else 3
+                cb = lo & 0x1F
+                cg = ((lo >> 5) & 0x07) | ((hi << 3) & 0x38)
+                cr = (hi >> 3) & 0x1F
+            elif b1 & 0xC0 == 0x00:
+                cr, cg, cb, ca = cache[b1 & 0x3F]
+            elif b1 & 0xC0 == 0x40:
+                cr = (cr + (b1 & 0x03) - 2) % 32
+                cg = (cg + ((b1 >> 2) & 0x03) - 2) % 64
+                cb = (cb + ((b1 >> 4) & 0x03) - 2) % 32
+            elif b1 & 0xC0 == 0x80:
+                b2 = payload[p]
+                p += 1
+                vg = (b1 & 0x3F) - 32
+                cb = (cb + vg - 8 + ((b2 >> 4) & 0x0F)) % 32
+                cg = (cg + vg) % 64
+                cr = (cr + vg - 8 + (b2 & 0x0F)) % 32
+            else:
+                run = b1 & 0x3F
+        else:
+            break
+        cache[(cr * 7 + cg * 5 + cb * 3) & 0x3F] = (cr, cg, cb, ca)
+        o = px * 4
+        rgba[o:o + 4] = bytes((cr * 256 // 32, cg * 256 // 64, cb * 256 // 32, ca))
+        px += 1
+    return bytes(rgba), w, h
+
+
 def lif_within_jpeg_bound(a, b, bound=JPEG_MAX_DEVIATION):
     """Deux `.lif` de meme taille dont chaque composante decodee differe d'au plus un ecart
     avant quantification de `bound` (D7) : pour un pas de quantification p, un ecart decode
     d (multiple de p) est compatible avec un ecart source de d - (p - 1) au minimum."""
-    sys.path.insert(0, HERE)
     try:
-        import lif
-        try:
-            pa, wa, ha = lif.decode(a)
-            pb, wb, hb = lif.decode(b)
-        except Exception:  # LIF illisible : pas d'ecart borne
-            return False
-    finally:
-        sys.path.remove(HERE)
+        pa, wa, ha = lif_decode(a)
+        pb, wb, hb = lif_decode(b)
+    except Exception:  # LIF illisible : pas d'ecart borne
+        return False
     if (wa, ha) != (wb, hb) or len(pa) != len(pb):
         return False
     for i, (x, y) in enumerate(zip(pa, pb)):
@@ -431,37 +488,6 @@ def compare_runs(oracle, candidate, tags=(), jpeg_entries=()):
     return {"verdict": "diff" if diffs else "identical", "rule": None, "diffs": diffs}
 
 
-def compare_lif_dirs(oracle_dir, candidate_dir):
-    """Compare deux dossiers de `.lif` (matrice de reechantillonnage), octet a octet.
-    Retourne la liste de resultats par fichier (les fichiers sont apparies par nom)."""
-    def names(d):
-        return {n for n in os.listdir(d) if n.endswith(".lif")}
-    a, b = names(oracle_dir), names(candidate_dir)
-    results = []
-    for n in sorted(a | b):
-        if n not in b:
-            results.append({"id": n[:-4], "verdict": "diff", "rule": None, "diffs": [
-                {"kind": "lif", "detail": "absent du candidat"}]})
-            continue
-        if n not in a:
-            results.append({"id": n[:-4], "verdict": "diff", "rule": None, "diffs": [
-                {"kind": "lif", "detail": "absent de l'oracle"}]})
-            continue
-        with open(os.path.join(oracle_dir, n), "rb") as f:
-            x = f.read()
-        with open(os.path.join(candidate_dir, n), "rb") as f:
-            y = f.read()
-        if x == y:
-            results.append({"id": n[:-4], "verdict": "identical", "rule": None, "diffs": []})
-        else:
-            first = next((i for i, (p, q) in enumerate(zip(x, y)) if p != q), min(len(x), len(y)))
-            results.append({"id": n[:-4], "verdict": "diff", "rule": None, "diffs": [
-                {"kind": "lif", "detail": "octets differents", "first_difference": first,
-                 "oracle_size": len(x), "candidate_size": len(y),
-                 "oracle_sha256": _sha(x), "candidate_sha256": _sha(y)}]})
-    return results
-
-
 def validate_output(pk_path):
     """Code de retour de validate.py sur une sortie (0 : valide)."""
     sys.path.insert(0, HERE)
@@ -509,22 +535,76 @@ def split_cmd(text):
     return shlex.split(text, posix=True)
 
 
-def default_oracle():
-    return [sys.executable, ORACLE_SCRIPT]
+class ReferencesError(Exception):
+    """Fichier de references illisible ou incoherent (ce n'est pas un ecart de parite)."""
 
 
-def run_corpus(corpus_dir, oracle, candidate, validate=True, keep_work=None, progress=None):
-    """Compare chaque archive de corpus.json. Retourne la liste des resultats."""
-    with open(os.path.join(corpus_dir, "corpus.json"), encoding="utf-8") as f:
-        entries = json.load(f)
+_BLOB_RE = re.compile(r"^blobs/[0-9a-f]{64}$")
+_ARCHIVE_RE = re.compile(r"^corpus/[A-Za-z0-9_.-]+\.zip$")
+
+
+def load_references(path):
+    """Lit les references figees du corpus. Retourne (index, attendus, blobs, entete) :
+    `index` = corpus.json (liste {id, archive, args, tags, jpeg_entries?}), `attendus` =
+    {id: resultat normalise de l'oracle}, `blobs` = {sha256: contenu} des entrees gardees,
+    `entete` = provenance du gel (`frozen_with`). Les archives restent dans le ZIP."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            index = json.loads(z.read("corpus.json").decode("utf-8"))
+            doc = json.loads(z.read("expected.json").decode("utf-8"))
+            blobs = {}
+            for name in z.namelist():
+                if name.startswith("blobs/"):
+                    if not _BLOB_RE.match(name):
+                        raise ReferencesError("nom de blob inattendu : %s" % name)
+                    data = z.read(name)
+                    if _sha(data) != name[len("blobs/"):]:
+                        raise ReferencesError("blob altere : %s" % name)
+                    blobs[name[len("blobs/"):]] = data
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile) as e:
+        raise ReferencesError("references illisibles (%s) : %s" % (path, e))
+    if doc.get("schema") != REFERENCES_SCHEMA:
+        raise ReferencesError("schema de references inconnu : %r" % doc.get("schema"))
+    expected = doc.get("cases") or {}
+    ids = [e["id"] for e in index]
+    if len(set(ids)) != len(ids) or set(ids) != set(expected):
+        raise ReferencesError("corpus.json et expected.json ne decrivent pas les memes cas")
+    for e in index:
+        if not _ARCHIVE_RE.match(e["archive"]):
+            raise ReferencesError("chemin d'archive inattendu : %s" % e["archive"])
+    return index, expected, blobs, doc.get("frozen_with")
+
+
+def _with_blobs(run, names, blobs):
+    """Resultat fige avec le contenu (`data`) des entrees designees (`names`) repris des
+    blobs, comme `keep` de run_converter cote candidat."""
+    run = dict(run)
+    for key in ("entries", "plain_entries"):
+        if run.get(key) is None:
+            continue
+        run[key] = [dict(e, data=blobs[e["sha256"]])
+                    if e["name"] in names and e.get("sha256") in blobs else e
+                    for e in run[key]]
+    return run
+
+
+def run_corpus(references, candidate, validate=True, keep_work=None, progress=None):
+    """Convertit chaque archive des references figees avec le candidat et compare au
+    resultat de l'oracle. Retourne la liste des resultats."""
+    index, expected, blobs, _ = load_references(references)
     work = keep_work or tempfile.mkdtemp(prefix="t2f_parity_")
     results = []
     try:
-        for e in entries:
-            archive = os.path.join(corpus_dir, e["archive"])
+        archives = os.path.join(work, "archives")
+        os.makedirs(os.path.join(archives, "corpus"), exist_ok=True)
+        with zipfile.ZipFile(references) as z:
+            for e in index:
+                with open(os.path.join(archives, e["archive"]), "wb") as f:
+                    f.write(z.read(e["archive"]))
+        for e in index:
+            archive = os.path.join(archives, e["archive"])
             jpeg = e.get("jpeg_entries", ())
-            o, _ = run_converter(oracle, archive, os.path.join(work, "oracle", e["id"]), e["args"],
-                                 keep=jpeg)
+            o = _with_blobs(expected[e["id"]], frozenset(jpeg), blobs)
             c, produced = run_converter(candidate, archive,
                                         os.path.join(work, "candidate", e["id"]), e["args"],
                                         keep=jpeg)
@@ -539,42 +619,6 @@ def run_corpus(corpus_dir, oracle, candidate, validate=True, keep_work=None, pro
         if keep_work is None:
             shutil.rmtree(work, ignore_errors=True)
     return results
-
-
-def load_make_corpus():
-    """Charge tests/parity/make_corpus.py par son chemin (il tire Pillow et les generateurs
-    des tests : seul le mode `matrix` en a besoin, `corpus` n'importe rien de tout cela)."""
-    path = os.path.join(HERE, "tests", "parity", "make_corpus.py")
-    spec = importlib.util.spec_from_file_location("make_corpus", path)
-    module = importlib.util.module_from_spec(spec)
-    previous = sys.modules.get("make_corpus")
-    sys.modules["make_corpus"] = module
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        # chargement rate : pas de module a moitie initialise laisse dans sys.modules
-        if previous is None:
-            sys.modules.pop("make_corpus", None)
-        else:
-            sys.modules["make_corpus"] = previous
-        raise
-    return module
-
-
-def run_matrix(matrix_dir, candidate_lif_dir=None):
-    """Compare les `.lif` de la matrice : oracle Python contre `candidate_lif_dir`
-    (sans dossier : Python rendu une seconde fois, controle de determinisme)."""
-    make_corpus = load_make_corpus()
-    tmp = tempfile.mkdtemp(prefix="t2f_matrix_")
-    try:
-        oracle_dir = os.path.join(tmp, "oracle")
-        make_corpus.render_matrix_python(matrix_dir, oracle_dir)
-        if candidate_lif_dir is None:
-            candidate_lif_dir = os.path.join(tmp, "candidate")
-            make_corpus.render_matrix_python(matrix_dir, candidate_lif_dir)
-        return compare_lif_dirs(oracle_dir, candidate_lif_dir)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def run_compare(a, b):
@@ -634,7 +678,7 @@ def image_format(head, filename=""):
 
 def jpeg_outputs(path):
     """Campagne (D7) : predicat des entrees de sortie issues d'un JPEG de l'archive, ou None
-    sans JPEG. Approximation du nommage de telmi2flam.py (`alloc`) : `img/<base>[_inv][_N].lif`
+    sans JPEG. Approximation du nommage des assets (`alloc`, assets.rs) : `img/<base>[_inv][_N].lif`
     pour chaque JPEG (base nettoyee comme `alloc`), et `img/title.lif` / `img/thumbnail.lif`
     si un JPEG est hors d'un dossier `images/` (couverture : title.png, cover.png ou image de
     metadata.json). Une image PNG de meme base qu'un JPEG profite aussi de l'ecart borne."""
@@ -752,7 +796,7 @@ def command_fingerprint(cmd):
             continue
         add_file(path)
         if path.lower().endswith(".py"):
-            # script Python : ses modules voisins (lif.py, mp3map.py...) font partie du moteur
+            # script Python (faux moteur des tests...) : ses modules voisins font partie du moteur
             folder = os.path.dirname(os.path.abspath(path))
             for name in sorted(os.listdir(folder)):
                 if name.endswith(".py"):
@@ -871,6 +915,18 @@ def campaign_summary(cases):
     }
 
 
+PARTIAL_EXIT = 3
+
+
+def campaign_exit_code(doc):
+    """0 : seuil atteint sur toute la campagne ; 1 : ecart ou archives en attente ;
+    PARTIAL_EXIT (3) : seuil atteint sur une campagne partielle (`--limit`), qui ne vaut pas
+    un resultat complet (#456)."""
+    if not doc["threshold_met"] or doc["pending"]:
+        return 1
+    return PARTIAL_EXIT if doc["partial"] else 0
+
+
 def run_campaign(archives_dir, oracle, candidate, out_dir, jobs=1, timeout=CAMPAIGN_TIMEOUT,
                  force=False, limit=None, validate=True, progress=None):
     """Compare chaque `*.zip` de `archives_dir`, par lots avec reprise : un fichier d'etat par
@@ -920,7 +976,7 @@ def run_campaign(archives_dir, oracle, candidate, out_dir, jobs=1, timeout=CAMPA
         # seul le nom du type d'exception : ni message ni chemin
         return {"verdict": "diff", "rule": None, "id": n[:-4], "engines": engines,
                 "diffs": [{"kind": "harness", "oracle": None,
-                           "candidate": "%s" % type(e).__name__}],
+                           "candidate": type(e).__name__}],
                 "inventory": archive_inventory(os.path.join(archives_dir, n))}
 
     def one(n):
@@ -929,9 +985,10 @@ def run_campaign(archives_dir, oracle, candidate, out_dir, jobs=1, timeout=CAMPA
             res = campaign_case(archive, oracle, candidate, os.path.join(work_root, n[:-4]),
                                 timeout, validate)
         except Exception as e:  # sortie illisible, etc. : un ecart, la campagne continue
+            # seul le nom du type d'exception, comme harness_failure : ni message ni chemin
             res = {"verdict": "diff", "rule": None,
                    "diffs": [{"kind": "harness", "oracle": None,
-                              "candidate": "%s: %s" % (type(e).__name__, e)}],
+                              "candidate": type(e).__name__}],
                    "inventory": archive_inventory(archive)}
         res["id"] = n[:-4]
         res["engines"] = engines
@@ -960,18 +1017,15 @@ def run_campaign(archives_dir, oracle, candidate, out_dir, jobs=1, timeout=CAMPA
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Parite Python / port Rust de telmi2flam")
+    ap = argparse.ArgumentParser(description="Parite du convertisseur telmi2flam")
     sub = ap.add_subparsers(dest="mode", required=True)
-    p = sub.add_parser("corpus", help="comparer un convertisseur candidat a l'oracle")
-    p.add_argument("dir", help="dossier produit par make_corpus.py")
-    p.add_argument("--oracle", help="commande de l'oracle (defaut : telmi2flam.py)")
-    p.add_argument("--candidate", help="commande du candidat (defaut : l'oracle)")
+    p = sub.add_parser("corpus", help="comparer un convertisseur aux references figees")
+    p.add_argument("--candidate", required=True, help="commande du candidat")
+    p.add_argument("--references", default=DEFAULT_REFERENCES,
+                   help="references figees (defaut : crates/telmi2flam/tests/data/"
+                        "parity_corpus.zip)")
     p.add_argument("--no-validate", action="store_true",
                    help="ne pas passer validate.py sur la sortie du candidat")
-    p.add_argument("--report", help="rapport JSON")
-    p = sub.add_parser("matrix", help="comparer les .lif de la matrice, octet a octet")
-    p.add_argument("dir", help="dossier produit par make_corpus.py")
-    p.add_argument("--candidate-lif-dir", help="dossier des <id>.lif du candidat")
     p.add_argument("--report", help="rapport JSON")
     p = sub.add_parser("compare", help="comparer deux sorties (.plain.pk ou dossiers)")
     p.add_argument("a")
@@ -980,7 +1034,9 @@ def main(argv=None):
     p = sub.add_parser("campaign", help="archives reelles, par lots avec reprise (#135)")
     p.add_argument("dir", help="dossier des archives *.zip (lu seulement)")
     p.add_argument("--candidate", required=True, help="commande du candidat")
-    p.add_argument("--oracle", help="commande de l'oracle (defaut : telmi2flam.py)")
+    p.add_argument("--oracle", required=True,
+                   help="commande de la reference (par exemple une version anterieure du "
+                        "binaire)")
     p.add_argument("--out", default=os.path.join(".cache", "parity"),
                    help="etat et rapport (defaut %(default)s ; jamais dans le depot)")
     p.add_argument("--jobs", type=int, default=1,
@@ -994,7 +1050,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.mode == "campaign":
-        oracle = split_cmd(args.oracle) if args.oracle else default_oracle()
+        oracle = split_cmd(args.oracle)
 
         def progress(done, total, res):
             # comptes seulement : ni nom d'archive ni contenu dans le journal
@@ -1010,15 +1066,14 @@ def main(argv=None):
         warning = delegation_warning(doc["delegations_by_cause"])
         if warning:
             print(warning)
-        if doc["partial"]:
-            print("attention : rapport partiel (--limit %d archives)" % args.limit)
-        return 0 if doc["threshold_met"] and not doc["pending"] else 1
+        return campaign_exit_code(doc)
     if args.mode == "corpus":
-        oracle = split_cmd(args.oracle) if args.oracle else default_oracle()
-        candidate = split_cmd(args.candidate) if args.candidate else oracle
-        cases = run_corpus(args.dir, oracle, candidate, validate=not args.no_validate)
-    elif args.mode == "matrix":
-        cases = run_matrix(args.dir, args.candidate_lif_dir)
+        try:
+            cases = run_corpus(args.references, split_cmd(args.candidate),
+                               validate=not args.no_validate)
+        except ReferencesError as e:
+            print("parite (corpus) : %s" % e, file=sys.stderr)
+            return 2
     else:
         cases = run_compare(args.a, args.b)
     report = build_report(cases, args.mode)

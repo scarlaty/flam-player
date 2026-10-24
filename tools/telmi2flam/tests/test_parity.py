@@ -1,31 +1,46 @@
 """
-Tests de l'outillage de parite (parity.py, tests/parity/make_corpus.py), #123.
+Tests de l'outillage de parite (parity.py, references figees, tests/parity/make_matrix.py),
+#123, #140.
 
     python -m unittest discover -s tools/telmi2flam/tests -v
 
-Python contre Python : zero ecart. Les comparaisons sont aussi verifiees sur des
-resultats fabriques et sur un faux candidat (script) pour prouver que les ecarts sont
-detectes, et que la liste fermee des ecarts admis ne laisse rien passer d'autre.
+Le binaire Rust contre les references figees de l'ancien oracle Python : zero ecart hors de
+la liste fermee. Les comparaisons sont aussi verifiees sur des resultats fabriques et sur un
+faux candidat (script) pour prouver que les ecarts sont detectes, et que la liste fermee des
+ecarts admis ne laisse rien passer d'autre. Exige le binaire telmi2flam (converter_bin.py).
 """
 import contextlib
+import hashlib
 import io
 import json
 import os
 import re
 import shutil
+import struct
 import sys
 import tempfile
 import unittest
 import zipfile
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.dirname(HERE)
+ROOT = os.path.dirname(os.path.dirname(TOOL))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "parity"))
 
-from test_telmi2flam import std_files  # noqa: E402  (ajoute TOOL au sys.path)
-import make_corpus  # noqa: E402
+from campaign_fixtures import std_files, zip_bytes  # noqa: E402  (ajoute TOOL au sys.path)
+import converter_bin  # noqa: E402
+import make_matrix  # noqa: E402
 import parity  # noqa: E402
+
+
+def binary():
+    """Binaire telmi2flam ; echec clair s'il est absent (pas de saut silencieux, #465)."""
+    try:
+        return converter_bin.find_converter()
+    except converter_bin.ConverterNotFound as e:
+        raise RuntimeError("test_parity.py exige le binaire telmi2flam : %s" % e)
 
 
 def run_dict(**kw):
@@ -178,9 +193,14 @@ class TestAllowedDeviations(unittest.TestCase):
 
 
 def lif_of(pixels, w=2, h=1):
-    """.lif de pixels RGBA donnes sur la grille RGB565 (r, b multiples de 8, g de 4)."""
-    import lif
-    return lif.encode(bytes(v for p in pixels for v in p), w, h)
+    """.lif de pixels RGBA donnes sur la grille RGB565 (r, b multiples de 8, g de 4) : un
+    opcode 0xFF (couleur et alpha explicites) par pixel."""
+    body = b""
+    for r, g, b, a in pixels:
+        r5, g6, b5 = r // 8, g // 4, b // 8
+        body += bytes((0xFF, (b5 & 0x1F) | ((g6 & 7) << 5), ((g6 >> 3) & 7) | (r5 << 3), a))
+    return (b"liff" + w.to_bytes(4, "big") + h.to_bytes(4, "big") + b"\xa2" + body
+            + b"\x00" * 7 + b"\x01")
 
 
 def jpeg_runs(a, b, name="img/s0.lif"):
@@ -245,7 +265,7 @@ class TestJpegBounded(unittest.TestCase):
             path = os.path.join(tmp, "a.zip")
             jpeg = b"\xff\xd8\xff\xe0" + bytes(12)
             with open(path, "wb") as f:
-                f.write(make_corpus.zip_bytes([("images/Forêt 1.jpg", jpeg),
+                f.write(zip_bytes([("images/Forêt 1.jpg", jpeg),
                                                ("images/s0.png", b"\x89PNG\r\n\x1a\n" + bytes(8))]))
             pred = parity.jpeg_outputs(path)
             for name in ("img/For_t_1.lif", "img/For_t_1_inv.lif", "img/For_t_1_2.lif"):
@@ -253,10 +273,10 @@ class TestJpegBounded(unittest.TestCase):
             for name in ("img/s0.lif", "img/title.lif", "img/For_t_1x.lif", "For_t_1.lif"):
                 self.assertFalse(pred(name), name)
             with open(path, "wb") as f:
-                f.write(make_corpus.zip_bytes([("title.png", jpeg)]))
+                f.write(zip_bytes([("title.png", jpeg)]))
             self.assertTrue(parity.jpeg_outputs(path)("img/thumbnail.lif"))
             with open(path, "wb") as f:
-                f.write(make_corpus.zip_bytes(std_files()))
+                f.write(zip_bytes(std_files()))
             self.assertIsNone(parity.jpeg_outputs(path))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -322,11 +342,11 @@ class TestEntries(unittest.TestCase):
     def pk(self, name, entries):
         path = os.path.join(self.tmp, name)
         with open(path, "wb") as f:
-            f.write(make_corpus.zip_bytes(entries))
+            f.write(zip_bytes(entries))
         return path
 
     def test_name_method_utf8_content_and_duplicates(self):
-        data = make_corpus.zip_bytes([("a.txt", "x"), ("é.txt", "y")])
+        data = zip_bytes([("a.txt", "x"), ("é.txt", "y")])
         path = os.path.join(self.tmp, "x.pk")
         with open(path, "wb") as f:
             f.write(data)
@@ -334,7 +354,7 @@ class TestEntries(unittest.TestCase):
         self.assertEqual([x["name"] for x in e], ["a.txt", "é.txt"])
         self.assertEqual([x["utf8"] for x in e], [False, True])
         self.assertEqual({x["method"] for x in e}, {zipfile.ZIP_STORED})
-        dup = make_corpus.zip_bytes(std_files())
+        dup = zip_bytes(std_files())
         self.assertEqual(len(parity.entries_from_pk(self._write("d.pk", dup))), len(std_files()))
 
     def _write(self, name, data):
@@ -370,130 +390,94 @@ class TestEntries(unittest.TestCase):
         self.assertEqual(parity.main(["compare", j("p1"), j("p2")]), 1)
 
 
-class TestLifDirs(unittest.TestCase):
+MATRIX_EXPECTED = os.path.join(ROOT, "crates", "telmi2flam", "tests", "data",
+                               "matrix_expected.json")
+
+
+def png_chunks(data):
+    """Chunks d'un PNG (type -> donnees), parcourus en suivant les longueurs."""
+    out, pos = {}, 8
+    while pos + 8 <= len(data):
+        n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        out[kind] = out.get(kind, b"") + data[pos + 8:pos + 8 + n]
+        pos += 12 + n
+    return out
+
+
+class TestMatrixGenerator(unittest.TestCase):
+    """make_matrix.py : matrice complete, deterministe, identique a celle des references."""
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="t2f_lif_")
-        self.a = os.path.join(self.tmp, "a")
-        self.b = os.path.join(self.tmp, "b")
-        os.makedirs(self.a)
-        os.makedirs(self.b)
+        self.tmp = tempfile.mkdtemp(prefix="t2f_mx_")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def put(self, d, name, data):
-        with open(os.path.join(d, name), "wb") as f:
-            f.write(data)
-
-    def test_byte_exact(self):
-        self.put(self.a, "x.lif", b"abcdef")
-        self.put(self.b, "x.lif", b"abcdef")
-        self.put(self.a, "y.lif", b"abcdef")
-        self.put(self.b, "y.lif", b"abcdeg")
-        self.put(self.a, "only_a.lif", b"1")
-        self.put(self.b, "only_b.lif", b"1")
-        res = {r["id"]: r for r in parity.compare_lif_dirs(self.a, self.b)}
-        self.assertEqual(res["x"]["verdict"], "identical")
-        self.assertEqual(res["y"]["verdict"], "diff")
-        self.assertEqual(res["y"]["diffs"][0]["first_difference"], 5)
-        self.assertEqual(res["only_a"]["verdict"], "diff")
-        self.assertEqual(res["only_b"]["verdict"], "diff")
-
-
-class TestCorpusGenerator(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="t2f_corp_")
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def test_ids_unique_and_tags_known(self):
-        cases = make_corpus.corpus_cases() + make_corpus.output_cases()
-        ids = [c.id for c in cases]
-        self.assertEqual(len(ids), len(set(ids)))
-        # cas --plain (nominal et en echec) presents
-        by_id = {c.id: c for c in cases}
-        for cid in ("ok_plain", "missing_audio_plain", "zip_crc_corrupt_plain"):
-            self.assertIn("--plain", by_id[cid].args, cid)
-        known = {make_corpus.TAG_JSON_LIMIT, make_corpus.TAG_ENCRYPTED, make_corpus.TAG_DELEGATED,
-                 make_corpus.TAG_BAD_UTF8_NAME, make_corpus.TAG_NEGATIVE_OFFSET,
-                 make_corpus.TAG_JPEG}
-        self.assertTrue({t for c in cases for t in c.tags} <= known)
-        self.assertEqual(parity.TAG_JPEG, make_corpus.TAG_JPEG)
-        # D7 : un cas JPEG nomme ses entrees issues d'un JPEG, et seulement lui
-        for c in cases:
-            self.assertEqual(bool(c.jpeg_entries), make_corpus.TAG_JPEG in c.tags, c.id)
-        # les etiquettes lues par parity.py sont celles du generateur
-        self.assertEqual(parity.TAG_JSON_LIMIT, make_corpus.TAG_JSON_LIMIT)
-        self.assertEqual(parity.TAG_ENCRYPTED, make_corpus.TAG_ENCRYPTED)
-        self.assertEqual(parity.TAG_BAD_UTF8_NAME, make_corpus.TAG_BAD_UTF8_NAME)
-        self.assertEqual(parity.TAG_NEGATIVE_OFFSET, make_corpus.TAG_NEGATIVE_OFFSET)
-
-    def test_corpus_is_deterministic(self):
-        d1, d2 = os.path.join(self.tmp, "1"), os.path.join(self.tmp, "2")
-        make_corpus.write_corpus(d1)
-        make_corpus.write_corpus(d2)
-        for name in sorted(os.listdir(os.path.join(d1, "corpus"))):
-            with open(os.path.join(d1, "corpus", name), "rb") as f1, \
-                    open(os.path.join(d2, "corpus", name), "rb") as f2:
-                self.assertEqual(f1.read(), f2.read(), name)
 
     def test_matrix_covers_real_targets_and_sizes(self):
-        entries = make_corpus.write_matrix(self.tmp)
-        ops = {e["op"] for e in entries}
-        self.assertEqual(ops, set(make_corpus.OPS))
-        ids = {e["png"] for e in entries}
+        with open(MATRIX_EXPECTED, encoding="utf-8") as f:
+            frozen = json.load(f)
+        ids = set(frozen["lifs"])
+        self.assertEqual({i.split("__")[1] for i in ids}, set(make_matrix.OPS))
         for size in (1, 3, 97, 641, 2049):
             self.assertTrue(any("_%dx" % size in i for i in ids), size)
-        for mode in make_corpus.MODES:
-            self.assertTrue(any(os.path.basename(i).startswith(mode + "_") for i in ids), mode)
+        for mode in make_matrix.MODES:
+            self.assertTrue(any(i.startswith(mode + "_") for i in ids), mode)
         # la borne 2047 n'est exercee que par les sources plus grandes
-        for e in entries:
-            if e["op"] == "bound":
-                self.assertIn("2049", e["png"])
-        # bruit a graine fixe : memes octets a chaque generation
-        a = make_corpus.matrix_png("RGBA", 97, 97, "noise")
-        self.assertEqual(a, make_corpus.matrix_png("RGBA", 97, 97, "noise"))
-        self.assertNotEqual(a, make_corpus.matrix_png("RGBA", 97, 97, "gradient"))
-        self.assertIsNone(make_corpus.matrix_png("RGB", 97, 97, "alpha"))
+        for i in ids:
+            if i.endswith("__bound"):
+                self.assertIn("2049", i)
+        self.assertIn("RGBA_2049x2049_noise", frozen["pngs"])
+        self.assertIn("L_2049x2049_noise", frozen["pngs"])
+
+    def test_cell_rules_and_determinism(self):
+        a = make_matrix.matrix_png("RGBA", 97, 97, "noise")
+        self.assertEqual(a, make_matrix.matrix_png("RGBA", 97, 97, "noise"))
+        self.assertNotEqual(a, make_matrix.matrix_png("RGBA", 97, 97, "gradient"))
+        self.assertIsNone(make_matrix.matrix_png("RGB", 97, 97, "alpha"))
         # bruit a 2049 : carre et seulement RGBA / L (sinon les PNG seraient enormes)
-        self.assertIsNone(make_corpus.matrix_png("RGB", 2049, 2049, "noise"))
-        self.assertIsNone(make_corpus.matrix_png("RGBA", 2049, 1537, "noise"))
-        self.assertIsNone(make_corpus.matrix_png("RGBA", 1025, 1025, "noise"))
-        names = {os.path.basename(e) for e in ids}
-        self.assertIn("RGBA_2049x2049_noise.png", names)
-        self.assertIn("L_2049x2049_noise.png", names)
+        self.assertIsNone(make_matrix.matrix_png("RGB", 2049, 2049, "noise"))
+        self.assertIsNone(make_matrix.matrix_png("RGBA", 2049, 1537, "noise"))
+        self.assertIsNone(make_matrix.matrix_png("RGBA", 1025, 1025, "noise"))
 
-    def test_matrix_new_png_kinds(self):
-        """RGB16 / RGBA16 / tRNS de couleur cle : le PNG a bien la structure annoncee."""
-        import io
-        import struct
-        from PIL import Image
-        want = {"RGB16": (16, 2, False), "RGBA16": (16, 6, False), "LT": (8, 0, True),
-                "RGBT": (8, 2, True), "RGBT16": (16, 2, True)}
-        def chunks(data):
-            """Chunks du PNG (type -> donnees), parcourus en suivant les longueurs."""
-            out, pos = {}, 8
-            while pos + 8 <= len(data):
-                n, kind = struct.unpack(">I4s", data[pos:pos + 8])
-                out[kind] = data[pos + 8:pos + 8 + n]
-                pos += 12 + n
-            return out
-
-        for mode, (depth, ctype, trns) in want.items():
-            data = make_corpus.matrix_png(mode, 7, 5, "gradient")
+    def test_png_structure_per_mode(self):
+        """Profondeur, type de couleur, PLTE / tRNS et taille des donnees de chaque mode."""
+        want = {"L": (8, 0), "LA": (8, 4), "P": (8, 3), "PT": (8, 3), "RGB": (8, 2),
+                "RGBA": (8, 6), "1": (1, 0), "I16": (16, 0), "RGB16": (16, 2),
+                "RGBA16": (16, 6), "LT": (8, 0), "RGBT": (8, 2), "RGBT16": (16, 2)}
+        channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+        self.assertEqual(set(want), set(make_matrix.MODES))
+        for mode, (depth, ctype) in want.items():
+            w, h = 7, 5
+            data = make_matrix.matrix_png(mode, w, h, "gradient")
             ihdr = struct.unpack(">IIBBBBB", data[16:29])
-            self.assertEqual((ihdr[2], ihdr[3]), (depth, ctype), mode)
-            found = chunks(data)
-            self.assertEqual(b"tRNS" in found, trns, mode)
-            if ctype == 2 and trns:
+            self.assertEqual(ihdr[:4], (w, h, depth, ctype), mode)
+            found = png_chunks(data)
+            self.assertEqual(b"PLTE" in found, ctype == 3, mode)
+            self.assertEqual(b"tRNS" in found, mode in ("PT", "LT", "RGBT", "RGBT16"), mode)
+            stride = 1 + (w * channels[ctype] * depth + 7) // 8
+            self.assertEqual(len(zlib.decompress(found[b"IDAT"])), stride * h, mode)
+            if ctype == 2 and b"tRNS" in found:
                 # cle de couleur franchement non grise, canaux distincts (permutation visible)
                 key = struct.unpack(">HHH", found[b"tRNS"])
                 self.assertEqual(len(set(key)), 3, (mode, key))
                 self.assertGreaterEqual(max(key) - min(key), 100 << (depth - 8), (mode, key))
-            Image.open(io.BytesIO(data)).load()
-        self.assertIsNone(make_corpus.matrix_png("RGBT", 7, 5, "alpha"))
-        self.assertIsNotNone(make_corpus.matrix_png("RGBA16", 7, 5, "alpha"))
+        self.assertIsNone(make_matrix.matrix_png("RGBT", 7, 5, "alpha"))
+        self.assertIsNotNone(make_matrix.matrix_png("RGBA16", 7, 5, "alpha"))
+
+    def test_small_cells_match_frozen_pngs(self):
+        """Le generateur n'a pas change depuis le gel : PNG des petites tailles identiques a
+        l'octet pres (la CI de parite verifie toute la matrice, matrix_render.rs)."""
+        with open(MATRIX_EXPECTED, encoding="utf-8") as f:
+            frozen = json.load(f)
+        entries = make_matrix.write_matrix(self.tmp, sizes=(1, 3, 97))
+        pngs = {e["png"] for e in entries}
+        self.assertGreater(len(pngs), 100)
+        for rel in pngs:
+            with open(os.path.join(self.tmp, rel), "rb") as f:
+                sha = hashlib.sha256(f.read()).hexdigest()
+            self.assertEqual(sha, frozen["pngs"][os.path.basename(rel)[:-4]], rel)
+        for e in entries:
+            self.assertIn(e["id"], frozen["lifs"])
 
 
 # Faux candidat : repond comme un convertisseur qui echoue toujours avec le code donne.
@@ -506,35 +490,116 @@ sys.exit(exit_code)
 """
 
 
-class TestPythonAgainstPython(unittest.TestCase):
-    """Le critere de l'issue : Python contre Python, zero ecart."""
+def subset_references(src, dest, ids, mutate=None):
+    """Copie des references figees limitee aux cas `ids` (et a leurs blobs). `mutate(nom,
+    contenu) -> contenu` altere une entree a la copie (tests de references corrompues)."""
+    with zipfile.ZipFile(src) as z:
+        index = [e for e in json.loads(z.read("corpus.json")) if e["id"] in ids]
+        doc = json.loads(z.read("expected.json"))
+        doc["cases"] = {k: v for k, v in doc["cases"].items() if k in ids}
+        files = [("corpus.json", json.dumps(index).encode()),
+                 ("expected.json", json.dumps(doc).encode())]
+        files += [(e["archive"], z.read(e["archive"])) for e in index]
+        files += [(n, z.read(n)) for n in z.namelist() if n.startswith("blobs/")]
+    with zipfile.ZipFile(dest, "w") as out:
+        for name, data in files:
+            out.writestr(name, mutate(name, data) if mutate else data)
+    return dest
 
-    # un cas par famille (nominal, image, noms, MP3, erreurs, delegation) ; le corpus
-    # complet est compare par la CI de parite (#134), trop long pour ce test unitaire
+
+class TestFrozenReferences(unittest.TestCase):
+    """References figees du corpus (#140) : completes, coherentes, provenance notee."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.index, cls.expected, cls.blobs, cls.frozen = parity.load_references(
+            parity.DEFAULT_REFERENCES)
+
+    def test_cases_tags_and_jpeg_entries(self):
+        ids = [e["id"] for e in self.index]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertGreaterEqual(len(ids), 100)
+        by_id = {e["id"]: e for e in self.index}
+        for cid in ("ok_plain", "missing_audio_plain", "zip_crc_corrupt_plain"):
+            self.assertIn("--plain", by_id[cid]["args"], cid)
+        known = {parity.TAG_JSON_LIMIT, parity.TAG_ENCRYPTED, parity.TAG_DELEGATED,
+                 parity.TAG_BAD_UTF8_NAME, parity.TAG_NEGATIVE_OFFSET, parity.TAG_JPEG}
+        self.assertTrue({t for e in self.index for t in e["tags"]} <= known)
+        # chaque regle de la liste fermee est exercee par au moins un cas etiquete
+        self.assertEqual({t for e in self.index for t in e["tags"]}, known)
+        for e in self.index:
+            # D7 : un cas JPEG nomme ses entrees issues d'un JPEG, et seulement lui
+            self.assertEqual(bool(e.get("jpeg_entries")), parity.TAG_JPEG in e["tags"], e["id"])
+            run = self.expected[e["id"]]
+            for key in ("status", "exit", "error_code", "warnings", "info_exit", "info",
+                        "entries", "plain_entries", "files"):
+                self.assertIn(key, run, (e["id"], key))
+            # contenu de chaque entree JPEG produite par l'oracle present (regle jpeg_bounded)
+            for entry in run["entries"] or ():
+                if entry["name"] in e.get("jpeg_entries", ()):
+                    self.assertIn(entry["sha256"], self.blobs, (e["id"], entry["name"]))
+
+    def test_provenance(self):
+        self.assertEqual(self.frozen["python"], "3.14.8")
+        self.assertEqual(self.frozen["pillow"], "12.3.0")
+        self.assertRegex(self.frozen["revision"], r"^[0-9a-f]{7,40}$")
+
+    def test_corrupted_references_are_refused(self):
+        tmp = tempfile.mkdtemp(prefix="t2f_refs_")
+        try:
+            ids = {"ok_basic", "img_jpeg"}
+
+            def bad_blob(name, data):
+                return data[:-1] + bytes([data[-1] ^ 1]) if name.startswith("blobs/") else data
+
+            def missing_case(name, data):
+                if name != "expected.json":
+                    return data
+                doc = json.loads(data)
+                doc["cases"].pop("ok_basic")
+                return json.dumps(doc).encode()
+            for mutate in (bad_blob, missing_case):
+                path = subset_references(parity.DEFAULT_REFERENCES,
+                                         os.path.join(tmp, mutate.__name__ + ".zip"), ids,
+                                         mutate)
+                with self.assertRaises(parity.ReferencesError):
+                    parity.load_references(path)
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    rc = parity.main(["corpus", "--references", path, "--candidate", "x"])
+                self.assertEqual(rc, 2)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TestBinaryAgainstReferences(unittest.TestCase):
+    """Le critere : le binaire Rust contre les references figees, zero ecart hors liste."""
+
+    # un cas par famille (nominal, --plain, -o x.plain, image, noms, MP3, erreurs, regles
+    # admises, delegation, JPEG) ; le corpus complet est compare par la CI de parite (#134)
     SAMPLE = ("ok_basic", "ok_plain", "missing_audio_plain", "ok_plain_dir_only",
               "zip_crc_corrupt_plain_dir_only", "img_mode_PT", "names_cp437",
               "mp3_id3_prefix", "missing_audio", "zip_crc_corrupt", "json_deep_nesting",
-              "zip_encrypted_entry", "img_bmp_delegated", "zip_invalid_utf8_name", "zip_negative_header_offset",
-              "img_jpeg")
+              "zip_encrypted_entry", "img_bmp_delegated", "zip_invalid_utf8_name",
+              "zip_negative_header_offset", "img_jpeg")
     STUB_SAMPLE = ("ok_basic", "zip_crc_corrupt", "json_deep_nesting", "zip_encrypted_entry",
                    "img_bmp_delegated", "zip_invalid_utf8_name", "zip_negative_header_offset")
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="t2f_pp_")
-        entries = make_corpus.write_corpus(cls.tmp)
-        cls.entries = [e for e in entries if e["id"] in cls.SAMPLE]
-        with open(os.path.join(cls.tmp, "corpus.json"), "w", encoding="utf-8") as f:
-            json.dump(cls.entries, f)
-        cls.small = os.path.join(cls.tmp, "small")
-        os.makedirs(cls.small)
-        with open(os.path.join(cls.small, "corpus.json"), "w", encoding="utf-8") as f:
-            # chemins d'archive absolus : os.path.join(dossier, chemin absolu) = chemin absolu
-            json.dump([dict(e, archive=os.path.join(cls.tmp, e["archive"]))
-                       for e in cls.entries if e["id"] in cls.STUB_SAMPLE], f)
+        cls.exe = binary()
+        cls.tmp = tempfile.mkdtemp(prefix="t2f_ref_")
+        cls.refs = subset_references(parity.DEFAULT_REFERENCES,
+                                     os.path.join(cls.tmp, "sample.zip"), set(cls.SAMPLE))
+        cls.small = subset_references(parity.DEFAULT_REFERENCES,
+                                      os.path.join(cls.tmp, "small.zip"), set(cls.STUB_SAMPLE))
         cls.stub = os.path.join(cls.tmp, "stub.py")
         with open(cls.stub, "w", encoding="utf-8") as f:
             f.write(STUB)
+        cls.archives = os.path.join(cls.tmp, "archives")
+        with zipfile.ZipFile(cls.refs) as z:
+            cls.entries = json.loads(z.read("corpus.json"))
+            z.extractall(cls.archives, [e["archive"] for e in cls.entries])
 
     @classmethod
     def tearDownClass(cls):
@@ -545,7 +610,7 @@ class TestPythonAgainstPython(unittest.TestCase):
         for cid, ok in (("ok_plain", True), ("missing_audio_plain", False)):
             work = os.path.join(self.tmp, "w_" + cid)
             run, produced = parity.run_converter(
-                parity.default_oracle(), os.path.join(self.tmp, by_id[cid]["archive"]), work,
+                [self.exe], os.path.join(self.archives, by_id[cid]["archive"]), work,
                 by_id[cid]["args"])
             if ok:
                 self.assertIn("info.plain", [e["name"] for e in run["plain_entries"]])
@@ -561,7 +626,7 @@ class TestPythonAgainstPython(unittest.TestCase):
         for cid, ok in (("ok_plain_dir_only", True), ("zip_crc_corrupt_plain_dir_only", False)):
             work = os.path.join(self.tmp, "w_" + cid)
             run, produced = parity.run_converter(
-                parity.default_oracle(), os.path.join(self.tmp, by_id[cid]["archive"]), work,
+                [self.exe], os.path.join(self.archives, by_id[cid]["archive"]), work,
                 by_id[cid]["args"])
             self.assertIsNone(produced, cid)
             self.assertIsNone(run["entries"], cid)
@@ -577,19 +642,48 @@ class TestPythonAgainstPython(unittest.TestCase):
     def test_zero_deviation(self):
         self.assertEqual(len(self.entries), len(self.SAMPLE))
         report = os.path.join(self.tmp, "report.json")
-        self.assertEqual(parity.main(["corpus", self.tmp, "--report", report]), 0)
+        cmd = '"%s"' % self.exe.replace("\\", "/")
+        self.assertEqual(parity.main(["corpus", "--references", self.refs, "--candidate", cmd,
+                                      "--report", report]), 0)
         with open(report, encoding="utf-8") as f:
             rep = json.load(f)
         self.assertEqual(rep["schema"], parity.REPORT_SCHEMA)
-        self.assertEqual(rep["summary"], {"total": len(self.SAMPLE), "identical": len(self.SAMPLE),
-                                          "allowed": 0, "delegated": 0, "diff": 0})
+        self.assertEqual(rep["summary"]["diff"], 0)
+        self.assertEqual(rep["summary"]["total"], len(self.SAMPLE))
+        self.assertEqual(rep["delegations"], ["img_bmp_delegated"])
+        self.assertEqual(rep["allowed_deviations"],
+                         {"encrypted_entry": 1, "invalid_utf8_name": 1, "jpeg_bounded": 1,
+                          "json_limit": 1, "negative_offset": 1})
         self.assertEqual([c["id"] for c in rep["cases"]], [e["id"] for e in self.entries])
+
+    def test_altered_candidate_output_is_detected(self):
+        """Un candidat dont une entree differe d'un octet (meme une entree JPEG hors borne)
+        est en ecart : les references ne laissent rien passer."""
+        wrapper = os.path.join(self.tmp, "alter.py")
+        with open(wrapper, "w", encoding="utf-8") as f:
+            f.write("import subprocess, sys, zipfile, os\n"
+                    "r = subprocess.run([%r] + sys.argv[1:])\n"
+                    "out = sys.argv[sys.argv.index('-o') + 1] if '-o' in sys.argv else None\n"
+                    "if r.returncode == 0 and out and out.endswith('.pk'):\n"
+                    "    with zipfile.ZipFile(out) as z:\n"
+                    "        items = [(i, z.read(i)) for i in z.infolist()]\n"
+                    "    with zipfile.ZipFile(out, 'w') as z:\n"
+                    "        for i, d in items:\n"
+                    "            if i.filename == 'img/s0.lif':\n"
+                    "                d = d[:13] + bytes([d[13] ^ 0x80]) + d[14:]\n"
+                    "            z.writestr(i, d)\n"
+                    "sys.exit(r.returncode)\n" % self.exe)
+        res = {r["id"]: r for r in parity.run_corpus(
+            self.refs, [sys.executable, wrapper], validate=False)}
+        self.assertEqual(res["ok_basic"]["verdict"], "diff")
+        self.assertEqual(res["img_jpeg"]["verdict"], "diff")
+        self.assertEqual(res["zip_crc_corrupt"]["verdict"], "identical")
 
     def candidate(self, exit_code, code):
         return [sys.executable, self.stub, str(exit_code), code]
 
     def verdicts(self, candidate):
-        res = parity.run_corpus(self.small, parity.default_oracle(), candidate, validate=False)
+        res = parity.run_corpus(self.small, candidate, validate=False)
         return {r["id"]: r for r in res}
 
     def test_fake_candidate_deviations_follow_the_closed_list(self):
@@ -602,8 +696,8 @@ class TestPythonAgainstPython(unittest.TestCase):
         v = self.verdicts(self.candidate(3, "archive_unreadable"))
         self.assertEqual(v["zip_encrypted_entry"]["verdict"], "allowed")
         self.assertEqual(v["zip_encrypted_entry"]["rule"], "encrypted_entry")
-        # chaque regle ne couvre que son cas etiquete : les deux nouveaux cas, meme couple de
-        # codes, sont admis par leur propre regle et par aucune autre
+        # chaque regle ne couvre que son cas etiquete : les deux cas du lecteur ZIP, meme
+        # couple de codes, sont admis par leur propre regle et par aucune autre
         self.assertEqual(v["zip_invalid_utf8_name"]["rule"], "invalid_utf8_name")
         self.assertEqual(v["zip_negative_header_offset"]["rule"], "negative_offset")
         self.assertEqual(v["json_deep_nesting"]["verdict"], "diff")
@@ -622,31 +716,43 @@ class TestPythonAgainstPython(unittest.TestCase):
     def test_cli_exit_code_on_deviation(self):
         cmd = '"%s" "%s" 6 internal_error' % (sys.executable.replace("\\", "/"),
                                               self.stub.replace("\\", "/"))
-        self.assertEqual(parity.main(["corpus", self.small, "--candidate", cmd]), 1)
+        self.assertEqual(parity.main(["corpus", "--references", self.small, "--candidate", cmd]),
+                         1)
 
 
-class TestMatrixPythonAgainstPython(unittest.TestCase):
-    def test_small_matrix_zero_deviation_and_detects_change(self):
-        tmp = tempfile.mkdtemp(prefix="t2f_mx_")
-        try:
-            entries = make_corpus.write_matrix(tmp, sizes=(1, 3))
-            self.assertGreater(len(entries), 100)
-            res = parity.run_matrix(tmp)
-            self.assertEqual({r["verdict"] for r in res}, {"identical"})
-            self.assertEqual(len(res), len(entries))
-            # un .lif candidat modifie d'un octet est detecte
-            cand = os.path.join(tmp, "cand")
-            make_corpus.render_matrix_python(tmp, cand)
-            victim = os.path.join(cand, entries[0]["id"] + ".lif")
-            with open(victim, "rb") as f:
-                data = bytearray(f.read())
-            data[-1] ^= 1
-            with open(victim, "wb") as f:
-                f.write(data)
-            res = parity.run_matrix(tmp, cand)
-            self.assertEqual([r["id"] for r in res if r["verdict"] == "diff"], [entries[0]["id"]])
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+class TestLifDecode(unittest.TestCase):
+    def test_opcodes(self):
+        # 0xFF (couleur + alpha), repetition (0xC0 | n), delta court, index du cache, 0xFE
+        px = lambda r, g, b, a: (r * 256 // 32, g * 256 // 64, b * 256 // 32, a)  # noqa: E731
+        data = (b"liff" + (6).to_bytes(4, "big") + (1).to_bytes(4, "big") + b"\xa2"
+                + bytes((0xFF, 0x0A | (3 << 5), 0x02 | (5 << 3), 200))   # r5 5, g6 19, b5 10
+                + bytes((0xC0 | 1,))                                       # 2 de plus
+                + bytes((0x40 | (3 << 4) | (2 << 2) | 1,))                 # db +1, dg 0, dr -1
+                + bytes(((5 * 7 + 19 * 5 + 10 * 3) & 0x3F,))               # cache : 1re couleur
+                + bytes((0xFE, 0x01, 0x08))                                # r5 1, g6 0, b5 1
+                + b"\x00" * 7 + b"\x01")
+        rgba, w, h = parity.lif_decode(data)
+        self.assertEqual((w, h), (6, 1))
+        want = [px(5, 19, 10, 200)] * 3 + [px(4, 19, 11, 200), px(5, 19, 10, 200),
+                                           px(1, 0, 1, 200)]
+        self.assertEqual(rgba, bytes(v for p in want for v in p))
+        with self.assertRaises(ValueError):
+            parity.lif_decode(b"PNG garbage")
+
+
+class TestImageReasons(unittest.TestCase):
+    """#456 : IMAGE_REASONS (raisons de delegation d'image reconnues par la campagne) suit
+    les raisons `PngError::Unsupported` du decodeur Rust, relues dans les sources."""
+
+    def test_reasons_match_rust_sources(self):
+        src = os.path.join(ROOT, "crates", "telmi2flam", "src")
+        found = set()
+        for name in sorted(os.listdir(src)):
+            if name.endswith(".rs"):
+                with open(os.path.join(src, name), encoding="utf-8") as f:
+                    found |= set(re.findall(r'PngError::Unsupported\("([^"]+)"\)', f.read()))
+        self.assertTrue(found)
+        self.assertEqual(found, set(parity.IMAGE_REASONS))
 
 
 DELEGATING_STUB = """
@@ -679,11 +785,14 @@ class TestCampaign(unittest.TestCase):
                 ("b.zip", std_files() + [("images/x.jpg", jpeg)],
                  {"audios/s0.mp3": zipfile.ZIP_BZIP2})):
             with open(os.path.join(self.archives, name), "wb") as f:
-                f.write(make_corpus.zip_bytes(files, compress))
+                f.write(zip_bytes(files, compress))
         self.stub = os.path.join(self.tmp, "deleg.py")
         with open(self.stub, "w", encoding="utf-8") as f:
             f.write(DELEGATING_STUB)
         self.out = os.path.join(self.tmp, "out")
+        # moteur de reference et candidat identiques : le binaire Rust (l'ancien oracle Python
+        # est supprime, #140)
+        self.engine = [binary()]
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -726,7 +835,7 @@ class TestCampaign(unittest.TestCase):
         # inventaire : une entree MP4 ou XML non image n'est comptee nulle part
         path = os.path.join(self.tmp, "n.zip")
         with open(path, "wb") as f:
-            f.write(make_corpus.zip_bytes([("audios/a.m4a", mp4), ("x/b.xml", b"<?xml v"),
+            f.write(zip_bytes([("audios/a.m4a", mp4), ("x/b.xml", b"<?xml v"),
                                            ("audios/c.mp3", b"BMxxxxxxxx")], zipfile.ZIP_STORED))
         self.assertEqual(parity.archive_inventory(path)["images"], {})
 
@@ -767,19 +876,47 @@ class TestCampaign(unittest.TestCase):
         self.assertIn("1 `metadata`", parity.delegation_warning({"metadata": 1}))
 
     def test_limit_marks_report_partial(self):
-        oracle = parity.default_oracle()
+        oracle = self.engine
         doc = parity.run_campaign(self.archives, oracle, oracle, self.out, validate=False,
                                   limit=1)
         self.assertTrue(doc["partial"])
         self.assertEqual(doc["summary"]["total"], 1)
         with open(os.path.join(self.out, "report.json"), encoding="utf-8") as f:
             self.assertTrue(json.load(f)["partial"])
+        # #456 : seuil atteint sur une campagne partielle : code de sortie distinct
+        self.assertTrue(doc["threshold_met"])
+        self.assertEqual(parity.campaign_exit_code(doc), parity.PARTIAL_EXIT)
         doc = parity.run_campaign(self.archives, oracle, oracle, self.out, validate=False)
         self.assertFalse(doc["partial"])
         self.assertEqual(doc["summary"]["total"], 2)
+        self.assertEqual(parity.campaign_exit_code(doc), 0)
+        self.assertEqual(parity.campaign_exit_code(dict(doc, threshold_met=False)), 1)
+        self.assertEqual(parity.campaign_exit_code(dict(doc, pending=1, partial=True)), 1)
+        cmd = '"%s"' % self.engine[0].replace("\\", "/")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = parity.main(["campaign", self.archives, "--candidate", cmd, "--oracle", cmd,
+                              "--out", self.out, "--limit", "1", "--no-validate"])
+        self.assertEqual(rc, parity.PARTIAL_EXIT)
+
+    def test_exception_in_campaign_case_keeps_only_the_type(self):
+        """#456 : la branche d'exception de one() ne garde que le nom du type d'exception."""
+        real = parity.campaign_case
+
+        def failing(*_a, **_k):
+            raise RuntimeError("secret-path-marker")
+        parity.campaign_case = failing
+        try:
+            doc = parity.run_campaign(self.archives, self.engine, self.engine, self.out,
+                                      validate=False)
+        finally:
+            parity.campaign_case = real
+        self.assertEqual(doc["summary"]["diff"], 2)
+        self.assertEqual({d["candidate"] for c in doc["cases"] for d in c["diffs"]},
+                         {"RuntimeError"})
+        self.assertNotIn("secret-path-marker", json.dumps(doc))
 
     def test_unexpected_exception_in_one_is_a_harness_failure(self):
-        oracle = parity.default_oracle()
+        oracle = self.engine
         real = parity._write_json_atomic
 
         def failing(path, doc):
@@ -801,8 +938,8 @@ class TestCampaign(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
         self.assertNotIn("secret-path-marker", json.dumps(doc))
 
-    def test_python_against_python_then_resume(self):
-        oracle = parity.default_oracle()
+    def test_same_engine_then_resume(self):
+        oracle = self.engine
         doc = parity.run_campaign(self.archives, oracle, oracle, self.out, jobs=2,
                                   validate=False)
         self.assertEqual(doc["summary"]["identical"], 2)
@@ -838,7 +975,7 @@ class TestCampaign(unittest.TestCase):
         stub = os.path.join(self.tmp, "zipdeleg.py")
         with open(stub, "w", encoding="utf-8") as f:
             f.write(ZIP_DELEGATING_STUB)
-        doc = parity.run_campaign(self.archives, parity.default_oracle(), [sys.executable, stub],
+        doc = parity.run_campaign(self.archives, self.engine, [sys.executable, stub],
                                   self.out, validate=False)
         self.assertEqual(doc["summary"]["delegated"], 0)
         self.assertEqual(doc["summary"]["diff"], 2)
@@ -848,7 +985,7 @@ class TestCampaign(unittest.TestCase):
         self.assertFalse(doc["threshold_met"])
 
     def test_resume_requires_validation_and_redoes_broken_state(self):
-        oracle = parity.default_oracle()
+        oracle = self.engine
         parity.run_campaign(self.archives, oracle, oracle, self.out, validate=False)
         state = os.path.join(self.out, "cases", "a.json")
         with open(state, encoding="utf-8") as f:
@@ -895,14 +1032,16 @@ class TestCampaign(unittest.TestCase):
             parity.command_fingerprint(["commande-inexistante-xyz"])
 
     def test_deviation_keeps_work_and_fails_threshold(self):
-        oracle = parity.default_oracle()
+        oracle = self.engine
         stub = os.path.join(self.tmp, "stub.py")
         with open(stub, "w", encoding="utf-8") as f:
             f.write(STUB)
         cmd = '"%s" "%s" 6 internal_error' % (sys.executable.replace("\\", "/"),
                                               stub.replace("\\", "/"))
-        rc = parity.main(["campaign", self.archives, "--candidate", cmd, "--out", self.out,
-                          "--limit", "1", "--no-validate"])
+        ref = '"%s"' % self.engine[0].replace("\\", "/")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = parity.main(["campaign", self.archives, "--candidate", cmd, "--oracle", ref,
+                              "--out", self.out, "--limit", "1", "--no-validate"])
         self.assertEqual(rc, 1)
         with open(os.path.join(self.out, "report.json"), encoding="utf-8") as f:
             doc = json.load(f)
@@ -914,13 +1053,12 @@ class TestCampaign(unittest.TestCase):
         self.assertEqual(os.listdir(os.path.join(self.out, "work")), ["a"])
 
 
-class TestPinnedOracle(unittest.TestCase):
-    """Pillow et Python de la CI = ceux de ORACLE-VERSIONS.txt (PORT-RUST.md §4.3 point 4)."""
-
-    ROOT = os.path.dirname(os.path.dirname(TOOL))
+class TestFrozenOracleVersions(unittest.TestCase):
+    """ORACLE-VERSIONS.txt note l'oracle qui a fige les references (PORT-RUST.md §4.5) ; la CI
+    n'installe plus ni Pillow ni oracle (#140)."""
 
     def read(self, *parts):
-        with open(os.path.join(self.ROOT, *parts), encoding="utf-8") as f:
+        with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
             return f.read()
 
     def pins(self):
@@ -931,24 +1069,33 @@ class TestPinnedOracle(unittest.TestCase):
             if line.strip() and not line.lstrip().startswith("#")
         )
 
-    def test_ci_pins_match_oracle_versions(self):
-        pins_file = self.pins()
-        self.assertEqual(sorted(pins_file), ["pillow", "python"])
-        py, pillow = pins_file["python"], pins_file["pillow"]
-        # versions lues dans les yml (un assertIn sur le texte brut se contenterait d'un
-        # commentaire ou d'une autre ligne)
-        for name in ("telmi2flam.yml", "telmi2flam-rs.yml", "launcher.yml"):
+    def test_references_record_the_oracle_versions(self):
+        pins = self.pins()
+        self.assertEqual(sorted(pins), ["pillow", "python", "revision"])
+        _, _, _, corpus = parity.load_references(parity.DEFAULT_REFERENCES)
+        with open(MATRIX_EXPECTED, encoding="utf-8") as f:
+            matrix = json.load(f)["frozen_with"]
+        for frozen in (corpus, matrix):
+            self.assertEqual(frozen, {"python": pins["python"], "pillow": pins["pillow"],
+                                      "revision": pins["revision"]})
+
+    def test_ci_installs_neither_pillow_nor_oracle(self):
+        versions = set()
+        for name in sorted(os.listdir(os.path.join(ROOT, ".github", "workflows"))):
             yml = self.read(".github", "workflows", name)
-            ci_py = re.findall(r'^\s*python-version:\s*"([^"]+)"\s*$', yml, re.M)
-            self.assertEqual(ci_py, [py], name)
-            installs = re.findall(r"^\s*run:\s*pip install (.+)$", yml, re.M)
-            self.assertEqual(len(installs), 1, name)
-            pins = dict(re.findall(r'"?([A-Za-z]+)==([^"\s]+)"?', installs[0]))
-            self.assertEqual(pins.get("Pillow"), pillow, name)
-            # lupa : version exacte (le Lua de l'oracle ne doit pas deriver sans qu'on le voie)
-            self.assertRegex(pins.get("lupa", ""), r"^\d+(\.\d+)+$", name)
-            self.assertEqual(sorted(pins), ["Pillow", "lupa"], name)
-            self.assertNotRegex(installs[0], r"[<>~!]=?", name)
+            self.assertNotRegex(yml, r"(?i)pip install[^\n]*pillow", name)
+            # aucun oracle lance ni attendu (les controles d'absence de l'installateur citent
+            # encore telmi2flam/telmi2flam.py : chemin livre, pas l'outil)
+            self.assertNotRegex(yml, r"tools/telmi2flam/telmi2flam\.py|gen_\w+\.py", name)
+            versions.update(re.findall(r'^\s*python-version:\s*"([^"]+)"\s*$', yml, re.M))
+            for line in re.findall(r"^\s*run:\s*pip install (.+)$", yml, re.M):
+                pins = dict(re.findall(r'"?([A-Za-z]+)==([^"\s]+)"?', line))
+                # lupa seul, version exacte (le Lua de validate.py ne derive pas sans qu'on le voie)
+                self.assertEqual(sorted(pins), ["lupa"], name)
+                self.assertRegex(pins["lupa"], r"^\d+(\.\d+)+$", name)
+                self.assertNotRegex(line, r"[<>~!]=?", name)
+        # une seule version de Python pour les outils dans toute la CI
+        self.assertEqual(len(versions), 1, versions)
 
 
 if __name__ == "__main__":
