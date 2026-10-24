@@ -22,8 +22,9 @@ name = "ffmpeg"
 harness = false
 
 [dependencies]
-# Lecture ZIP faite à la main (src/zipread.rs, équivalence avec zipfile) : seulement le
-# décompresseur deflate en Rust pur (miniz_oxide) et le CRC-32 (aussi pour les chunks PNG).
+# Lecture ZIP faite à la main (src/zipread.rs, équivalence avec zipfile) : le décompresseur
+# deflate en Rust pur (miniz_oxide) et le CRC-32 (aussi pour les chunks PNG) ; Zstandard plus
+# bas.
 crc32fast = "=1.5.2"
 flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 # Dictionnaire JSON dans l'ordre d'insertion, comme `dict` de Python (clés dupliquées : la
@@ -35,6 +36,13 @@ miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-
 # NFC / NFKD et classe combinatoire de `unicodedata`. Version épinglée : 0.1.24 porte
 # Unicode 16.0.0, celui du Python 3.14 de l'installateur (0.1.25 passe à Unicode 17.0.0).
 unicode-normalization = "=0.1.24"
+# Méthode ZIP Zstandard (93), lue par le `zipfile` de Python 3.14 (#458) : décodeur de blocs
+# en Rust pur ; trames, somme de contrôle XXH64 et contrôles de libzstd dans src/unzstd.rs.
+# bzip2 et LZMA sont décodés à la main (src/unbzip2.rs, src/unlzma.rs) : `bzip2-sys` et
+# `libbz2-rs-sys` sont sous licence bzip2-1.0.6 (non autorisée), `bzip2-rs` échoue sur les
+# blocs incompressibles, `lzma-rs` ne lit pas un flux sans marqueur de fin.
+ruzstd = { version = "=0.9.1", default-features = false, features = ["std"] }
+twox-hash = { version = "=2.1.5", default-features = false, features = ["std", "xxhash64"] }
 # Clé SHA-256 du cache de rééchantillonnage (comme Python) ; aussi empreintes des vecteurs de
 # parité PNG des tests. Déjà dans le Cargo.lock du launcher.
 sha2 = { version = "=0.10.9", default-features = false }

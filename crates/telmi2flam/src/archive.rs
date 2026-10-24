@@ -80,10 +80,9 @@ pub fn check_asset_name<'a>(name: &'a str, what: &str) -> Result<&'a str, ConvEr
     Ok(name)
 }
 
-/// Convertit un échec de lecture en erreur de conversion (code 3, ou 7 pour bzip2/LZMA).
+/// Convertit un échec de lecture en erreur de conversion (`archive_unreadable`, code 3).
 fn conv(source: &str, e: ZipError) -> ConvError {
     match e {
-        ZipError::Unsupported(m) => ConvError::unsupported_format(format!("{source} : {m}")),
         ZipError::Corrupt(m) | ZipError::Encrypted(m) | ZipError::PythonFailsToo(m) => {
             ConvError::archive_unreadable(format!("{source} : {m}"))
         }
