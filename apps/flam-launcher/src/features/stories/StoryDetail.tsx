@@ -252,7 +252,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   </Button>
                 }
               >
-                <p>{taskErrorMessage(failed.error)}</p>
+                <p className="fl-detail__error">{taskErrorMessage(failed.error)}</p>
               </Banner>
             )}
             {playing && !playingThis && !task && (

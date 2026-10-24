@@ -69,7 +69,7 @@ const MAX_DEPTH: usize = 32;
 
 /// Taille cumulée des fichiers sous `dir`, sans suivre les liens symboliques, sur au plus
 /// [`MAX_DEPTH`] niveaux. Ce qui disparaît pendant le calcul (`NotFound`) compte pour zéro.
-fn dir_size(dir: &Path) -> std::io::Result<u64> {
+pub(crate) fn dir_size(dir: &Path) -> std::io::Result<u64> {
     dir_size_at(dir, 0)
 }
 
@@ -127,7 +127,7 @@ pub fn clear_of(root: &Path) -> AppResult<u64> {
     Ok(freed)
 }
 
-fn effective_dir(state: &ConfigState) -> AppResult<PathBuf> {
+pub(crate) fn effective_dir(state: &ConfigState) -> AppResult<PathBuf> {
     let settings = SettingsStore::new(&state.dir).load()?;
     let (resolved, _) = resolve(&settings, &Environment::current());
     Ok(PathBuf::from(resolved.cache_dir))
