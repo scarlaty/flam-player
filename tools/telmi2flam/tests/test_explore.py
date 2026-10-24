@@ -7,8 +7,6 @@ synthetiques convertis a la volee.
 Necessitent flam-player.exe (variable FLAM_BUILD_DIR, sinon <depot>/build) :
 sautes sinon.
 """
-import contextlib
-import io
 import json
 import os
 import shutil
@@ -25,9 +23,13 @@ sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True
 
 import explore  # noqa: E402
-import telmi2flam as T  # noqa: E402
+import converter_bin  # noqa: E402
 from test_telmi2flam import mp3_frames, png  # noqa: E402
 
+try:
+    CONVERTER = converter_bin.find_converter()
+except converter_bin.ConverterNotFound as e:   # echec clair, pas de saut silencieux
+    raise RuntimeError("test_explore.py exige le binaire telmi2flam : %s" % e)
 PLAYER = explore.find_player()
 CTL = {"ok": True, "home": False, "autoplay": True}
 # options d'un choix : non autoplay (sinon TELMI joue la scene sans afficher le choix)
@@ -245,8 +247,8 @@ class TestExplore(unittest.TestCase):
             z.writestr("images/s.png", png(320, 240))
             z.writestr("audios/x.mp3", mp3_frames(n=20))   # ~0,5 s
         pk = os.path.join(self.tmp, name + ".plain.pk")
-        with contextlib.redirect_stdout(io.StringIO()):
-            T.convert(zpath, pk, emit_plain=True)
+        err = converter_bin.convert(CONVERTER, zpath, pk, extra_args=("--plain",))[1]
+        self.assertIsNone(err, "conversion par le binaire telmi2flam")
         return pk
 
     def explain(self, res):

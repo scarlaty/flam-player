@@ -225,6 +225,7 @@ tools/telmi2flam/
 ├── telmi2flam.py        # CLI de conversion
 ├── validate.py          # validation hors-GUI d'un .plain.pk généré
 ├── explore.py           # exploration automatique sans fenêtre dans flam-player
+├── converter_bin.py     # lance le binaire Rust telmi2flam (compat.py, tests d'explore.py)
 ├── tests/               # tests unittest (paquets TELMI synthétiques)
 └── DEVICE_VS_SIM.md     # divergences device ↔ simulateur (dont le bug relance #10)
 ```
@@ -393,7 +394,7 @@ Stables : ils s'appliquent avec ou sans `--progress-json`.
 (L'ancien code unique `1` n'existe plus.) Pour un appelant Python, `telmi2flam.convert()`
 lève `ConvError` (attributs `code` et `exit_code`) ou les exceptions de `zipfile` ; le
 comportement de `convert()` sans `progress` est inchangé (résumé sur stdout,
-avertissements `  ! ...` sur stderr, ce que lit `compat.py`).
+avertissements `  ! ...` sur stderr ; `compat.py` ne l'appelle plus, il lance le binaire Rust et lit les événements `--progress-json`).
 
 ### Sortie machine (`--progress-json`)
 
@@ -830,6 +831,19 @@ trace vs `timeout` en progression, pas de processus orphelin si `until()` lève)
 conversion, validation, exécution, rapport. Tout est écrit sous `.cache/`
 (ignoré par Git) : aucune archive ni histoire convertie n'est versionnée.
 
+**Convertisseur : binaire Rust en processus enfant** (#140). `compat.py` n'importe plus
+`telmi2flam.py` : il lance `telmi2flam(.exe) <archive> -o <sortie> --progress-json`
+(`converter_bin.py`) et lit le protocole comme le launcher : événements JSON `warning`
+(avertissements), `done`, `error` (`code`, `message`) ; code de sortie 0 accepté seulement si
+l'événement `done` a été émis et si la sortie existe, 130 = annulation, sinon l'événement
+`error`, sinon `exit_<N>` et la dernière ligne de stderr. Les messages de l'étape `convert`
+portent donc les codes du protocole (`not_telmi`, `invalid_content`, `archive_unreadable`,
+`unsupported_format`…), plus les exceptions Python d'avant. Le binaire est cherché dans
+l'ordre : `--converter <chemin>`, variable d'environnement `FLAM_TELMI2FLAM`, sinon
+`<dépôt>/target/release/telmi2flam.exe` (`$CARGO_TARGET_DIR/release/...` si cette variable est
+définie). Il se construit avec `cargo build -p telmi2flam --release`. S'il est absent,
+`compat.py` s'arrête (code 2) avec un message qui l'indique ; les tests échouent de même.
+
 ```bash
 python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...]
                                   [--folder <dossier de .zip>] [--cache .cache/telmi]
@@ -838,6 +852,7 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
                                   [--run-timeout 600] [--max-steps 1000] [--seed 0] [--seeds 1]
                                   [--run-jobs 1] [--reinterpret]
                                   [--benign-error REGEX] [--max-unzipped-mb 2048]
+                                  [--converter telmi2flam.exe]
 ```
 
 - **Sources** : `--catalog` (format Telmi Store : `data[]` avec `uuid`, `version`, `title`,
@@ -846,12 +861,13 @@ python tools/telmi2flam/compat.py --catalog <url-ou-fichier.json> [--catalog ...
 - **Fichiers** : `archives/<uuid>-<version>.zip` (reprise d'un `.part` par `Range`, taille
   vérifiée, 3 tentatives, timeout), `converted/<uuid>-<version>.plain.pk`,
   `compat/report.json` et `compat/report.md` (tableau + échecs regroupés par cause).
-- **Étapes** : `download`, `convert` (exceptions et avertissements `_warn` capturés),
+- **Étapes** : `download`, `convert` (binaire Rust : événements `error` et `warning`),
   `validate` (`validate.py`), `run` ; statut par étape `ok|warn|fail|skipped`, statut global
   `OK`, `OK_AVERTISSEMENTS`, `ECHEC_TELECHARGEMENT`, `ECHEC_CONVERSION`, `ECHEC_VALIDATION`,
   `ECHEC_EXECUTION`. Codes de sortie : voir « Codes de sortie de `compat.py` et `explore.py` ».
-- **Reprise** : une histoire déjà évaluée avec les mêmes sources du convertisseur (hash de
-  `tools/telmi2flam` hors tests/`compat.py`/`explore.py`) n'est pas refaite, sauf `--force`.
+- **Reprise** : une histoire déjà évaluée avec le même convertisseur (hash du **binaire**
+  `telmi2flam` et de `validate.py`) n'est pas refaite, sauf `--force`. Reconstruire le binaire
+  rend donc les fiches existantes périmées.
   Un échec de téléchargement est toujours retenté. Pour les archives locales, la taille et la date du zip font partie du critère (zip remplacé = refait) ; pour un catalogue, `updated_at` si présent. Avec `--only`/`--limit`, le rapport conserve les fiches précédentes non sélectionnées ; celles évaluées avec un autre convertisseur sont marquées `stale` (« périmé » dans `report.md`). `report.json` est réécrit (atomiquement) après chaque histoire. `--jobs N` : téléchargement, conversion et validation en parallèle
   (processus) ; **il ne parallélise pas l'exploration** : voir `--run-jobs`.
 - **Étape `run`** (exploration sans fenêtre, `explore.py`) : **activée par défaut si
@@ -981,7 +997,7 @@ avec 0 même si aucune fin n'a été jouée ou si la couverture est partielle. P
 |---:|---|
 | 0 | aucune histoire en `ECHEC_*` : `OK` ou `OK_AVERTISSEMENTS` (dont `warn` : `exhausted`, boucle sans erreur, exploration partielle, erreur bénigne), ou exécution désactivée (`--no-run`, player absent sans `--run`) |
 | 1 | au moins une histoire en `ECHEC_TELECHARGEMENT`, `ECHEC_CONVERSION`, `ECHEC_VALIDATION` ou `ECHEC_EXECUTION` |
-| 2 | arguments invalides (aucun `--catalog` ni `--folder`), catalogue illisible, ou `--run` sans `explore.py` ou sans player |
+| 2 | arguments invalides (aucun `--catalog` ni `--folder`), binaire `telmi2flam` introuvable, catalogue illisible, ou `--run` sans `explore.py` ou sans player |
 
 #### `status.json` (lu par la surcouche)
 
@@ -1035,6 +1051,11 @@ qu'elle ne connaît pas** ; tout changement incompatible incrémentera ce numér
 ```bash
 python -m unittest discover -s tools/telmi2flam/tests -p "test_compat.py"   # sans réseau
 ```
+
+`test_compat.py` et `test_explore.py` exigent le binaire (voir ci-dessus ; `FLAM_TELMI2FLAM`
+pour une copie hors de `target/`) : `explore.py` lui-même ne convertit rien (il joue un
+`.plain` ou `.plain.pk` déjà converti), seuls ses tests convertissent leurs paquets
+synthétiques par le binaire. La CI (`telmi2flam.yml`) le construit avant les tests.
 
 ## 6. Décisions de conception
 
