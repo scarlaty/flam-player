@@ -118,6 +118,31 @@ impl Ctx {
         engine: ConverterEngine,
         real_script: Option<PathBuf>,
     ) -> Self {
+        Self::with_dir_engine_fallback(dir, python, grace, engine, real_script, false)
+    }
+
+    /// Moteur Rust avec le repli Python détecté (#137) : `python` sert à la fois de faux
+    /// `telmi2flam.exe` et d'interpréteur du repli.
+    fn with_python_fallback(python: PathBuf) -> Self {
+        Self::with_dir_engine_fallback(
+            tempfile::tempdir().unwrap(),
+            Some(python),
+            Duration::from_secs(5),
+            RUST,
+            None,
+            true,
+        )
+    }
+
+    /// `fallback` : Python résolu aussi avec le moteur Rust (repli possible).
+    fn with_dir_engine_fallback(
+        dir: tempfile::TempDir,
+        python: Option<PathBuf>,
+        grace: Duration,
+        engine: ConverterEngine,
+        real_script: Option<PathBuf>,
+        fallback: bool,
+    ) -> Self {
         let script = real_script.unwrap_or_else(|| {
             let script = dir.path().join("fake_telmi2flam.py");
             std::fs::write(&script, convert::fake::SCRIPT).unwrap();
@@ -134,7 +159,7 @@ impl Ctx {
             Ok(Toolchain {
                 cache_root: cache_root.clone(),
                 engine,
-                python: python.clone().filter(|_| !rust),
+                python: python.clone().filter(|_| !rust || fallback),
                 converter: Some(script.clone()),
                 rust_converter: python.clone().filter(|_| rust),
                 ffmpeg: None,
@@ -366,6 +391,118 @@ async fn echec_de_conversion_type_python() {
 #[tokio::test]
 async fn echec_de_conversion_type_rust() {
     echec_de_conversion_type(RUST).await;
+}
+
+/// Résultat de compatibilité enregistré pour `abc` (`launcher_results.json`).
+fn recorded_result(ctx: &Ctx) -> serde_json::Value {
+    let text =
+        std::fs::read_to_string(ctx.cache().join("compat-local/launcher_results.json")).unwrap();
+    serde_json::from_str::<serde_json::Value>(&text).unwrap()["stories"]["abc"].clone()
+}
+
+/// Repli Python (#137) : le Rust échoue (délégation attendue, panique simulée, plantage), Python
+/// convertit, et le résultat de compatibilité trace le moteur et la cause.
+#[tokio::test]
+async fn repli_python_trace_dans_le_resultat_de_compatibilite() {
+    let Some(py) = python() else { return };
+    for (mode, reason) in [
+        ("err:unsupported_format:7|versioned", "unsupported_format"),
+        ("err:internal_error:6|versioned", "internal_error"),
+        ("abort|versioned", "crash"),
+        ("nostart|versioned", "crash"),
+    ] {
+        let ctx = Ctx::with_python_fallback(py.clone());
+        let server = serve(zip_bytes(mode)).await;
+        let task = ctx
+            .service
+            .start(remote(&format!("{}/a.zip", server.uri()), "abc"))
+            .unwrap();
+        let done = ctx.finished(&task.id).await;
+        assert_eq!(done.state, TaskState::Done, "{mode} : {done:?}");
+        let events = ctx.events.all();
+        let Some(Recorded::Done(event)) = events.last() else {
+            panic!("{mode} : dernier événement : {events:?}")
+        };
+        // Version annoncée par Python (le moteur qui a produit le résultat).
+        assert_eq!(
+            event.entry.converter.as_deref(),
+            Some("9.9.9-test"),
+            "{mode}"
+        );
+        assert!(
+            ctx.cache().join("library/abc-2.plain.pk").is_file(),
+            "{mode}"
+        );
+        assert!(ctx.staging_is_empty(), "{mode}");
+        let result = recorded_result(&ctx);
+        assert_eq!(result["ok"], true, "{mode}");
+        assert_eq!(result["engine"], "python_fallback", "{mode}");
+        assert_eq!(result["fallback"], reason, "{mode}");
+        // Exposé au front par le rapport de compatibilité.
+        let report = crate::compat::report_for(&ctx.cache().join("absent.json"), &ctx.cache());
+        let entry = report.entries.iter().find(|e| e.uuid == "abc").unwrap();
+        assert_eq!(entry.engine.as_deref(), Some("python_fallback"), "{mode}");
+        assert_eq!(entry.fallback.as_deref(), Some(reason), "{mode}");
+    }
+}
+
+/// Disque plein, erreur de contenu, annulation : pas de repli, échec rendu tel quel avec la
+/// trace du seul moteur Rust (Python réussirait ici : la faute prouve l'absence de repli).
+#[tokio::test]
+async fn pas_de_repli_python_pour_les_pannes_de_sortie_et_de_contenu() {
+    let Some(py) = python() else { return };
+    for (mode, code) in [
+        ("err:output_error:6|ok", "output_error"),
+        ("err:archive_unreadable:3|ok", "archive_unreadable"),
+        ("err:missing_asset:5|ok", "missing_asset"),
+    ] {
+        let ctx = Ctx::with_python_fallback(py.clone());
+        let server = serve(zip_bytes(mode)).await;
+        let task = ctx
+            .service
+            .start(remote(&format!("{}/a.zip", server.uri()), "abc"))
+            .unwrap();
+        let failed = ctx.finished(&task.id).await;
+        assert_eq!(failed.state, TaskState::Failed, "{mode}");
+        assert_eq!(failed.error.unwrap().code.as_deref(), Some(code), "{mode}");
+        assert!(ctx.staging_is_empty(), "{mode}");
+        assert!(
+            !ctx.cache().join("library/abc-2.plain.pk").exists(),
+            "{mode}"
+        );
+        let result = recorded_result(&ctx);
+        assert_eq!(result["ok"], false, "{mode}");
+        assert_eq!(result["engine"], "rust", "{mode}");
+        assert_eq!(result["fallback"], serde_json::Value::Null, "{mode}");
+    }
+}
+
+/// Annulation pendant la conversion Rust : pas de repli, tâche annulée, rien d'installé.
+#[tokio::test]
+async fn pas_de_repli_python_sur_annulation() {
+    let Some(py) = python() else { return };
+    let ctx = Ctx::with_python_fallback(py);
+    let server = serve(zip_bytes("slow|ok")).await;
+    let task = ctx
+        .service
+        .start(remote(&format!("{}/a.zip", server.uri()), "abc"))
+        .unwrap();
+    ctx.wait(&task.id, |t| t.state == TaskState::Converting)
+        .await;
+    // `ready-*` : le faux Rust a écrit son `.part` et armé l'annulation.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !std::fs::read_dir(ctx.cache()).is_ok_and(|d| {
+        d.flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("ready-"))
+    }) {
+        assert!(Instant::now() < deadline, "convertisseur jamais prêt");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    ctx.service.cancel(&task.id).unwrap();
+    let end = ctx.finished(&task.id).await;
+    assert_eq!(end.state, TaskState::Cancelled, "{end:?}");
+    assert!(ctx.staging_is_empty());
+    assert!(!ctx.cache().join("library/abc-2.plain.pk").exists());
 }
 
 async fn plantage_sans_evenement_error_utilise_stderr(engine: ConverterEngine) {

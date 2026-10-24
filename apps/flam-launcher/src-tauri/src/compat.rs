@@ -41,7 +41,7 @@ use serde_json::Value;
 use tauri::State;
 
 use crate::catalog::blocking;
-use crate::install::convert::Converted;
+use crate::install::convert::{Converted, EngineTrace};
 use crate::settings::{Environment, SettingsStore};
 use crate::storage::{self, ConfigState};
 use crate::story::{validate_story_id, StoryEntry};
@@ -106,6 +106,11 @@ pub struct CompatEntry {
     pub origin: CompatOrigin,
     /// Fiche de campagne évaluée avec un autre convertisseur que le courant.
     pub stale: bool,
+    /// Moteur qui a converti l'histoire sur cet ordinateur (`rust`, `python`, `python_fallback`,
+    /// #137) ; `None` pour une fiche de campagne ou un résultat ancien.
+    pub engine: Option<String>,
+    /// Cause du repli Python (`unsupported_format`, `internal_error`, `crash`), s'il y en a eu un.
+    pub fallback: Option<String>,
 }
 
 /// Problème de lecture du `status.json` (le rapport est alors vide).
@@ -182,6 +187,8 @@ fn parse_story(uuid: &str, value: &Value) -> Option<CompatEntry> {
             .get("stale")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        engine: None,
+        fallback: None,
     })
 }
 
@@ -251,6 +258,13 @@ pub struct LocalResult {
     pub converter: Option<String>,
     /// Date de la conversion (secondes Unix).
     pub at: u64,
+    /// Moteur qui a produit le résultat (`rust`, `python`, `python_fallback`, #137). Absent des
+    /// résultats enregistrés avant #137.
+    #[serde(default)]
+    pub engine: Option<String>,
+    /// Cause du repli Python (`unsupported_format`, `internal_error`, `crash`).
+    #[serde(default)]
+    pub fallback: Option<String>,
 }
 
 impl LocalResult {
@@ -260,6 +274,8 @@ impl LocalResult {
             code: self.code.and_then(|c| clean_text(&c, 64)),
             message: self.message.and_then(|m| clean_text(&m, MAX_TEXT_CHARS)),
             converter: self.converter.and_then(|c| clean_text(&c, 64)),
+            engine: self.engine.and_then(|e| clean_text(&e, 64)),
+            fallback: self.fallback.and_then(|f| clean_text(&f, 64)),
             warnings: self.warnings.min(MAX_WARNINGS),
             ..self
         }
@@ -320,6 +336,7 @@ pub fn outcome_of(
     entry: &StoryEntry,
     converter: &str,
     result: &AppResult<Converted>,
+    trace: EngineTrace,
     now: u64,
 ) -> Option<LocalResult> {
     let base = LocalResult {
@@ -330,6 +347,8 @@ pub fn outcome_of(
         warnings: 0,
         converter: Some(converter.to_string()),
         at: now,
+        engine: Some(trace.engine().to_string()),
+        fallback: trace.fallback().map(str::to_string),
     };
     match result {
         Ok(converted) => Some(LocalResult {
@@ -356,7 +375,7 @@ pub fn record_conversion(
     result: &AppResult<Converted>,
     now: u64,
 ) {
-    if let Some(outcome) = outcome_of(entry, converter, result, now) {
+    if let Some(outcome) = outcome_of(entry, converter, result, EngineTrace::default(), now) {
         store_outcome(cache_root, &entry.uuid, outcome);
     }
 }
@@ -416,6 +435,8 @@ fn local_entry(uuid: &str, result: &LocalResult) -> CompatEntry {
         code: result.code.clone(),
         origin: CompatOrigin::Conversion,
         stale: false,
+        engine: result.engine.clone(),
+        fallback: result.fallback.clone(),
     }
 }
 
