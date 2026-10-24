@@ -2,7 +2,7 @@
 //! étape (état final, aucun fichier résiduel, `library.json` cohérent), reprise après un arrêt
 //! brutal (même uuid), composition invalide refusée.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::AtomicBool;
 
 use super::*;
@@ -836,6 +836,8 @@ struct LocalPacks {
     feeds: Feeds,
     ffmpeg: crate::ffmpeg::Ffmpeg,
     drafts: Mutex<Vec<u64>>,
+    /// Titres lus (#462) : voix simulée (les exécuteurs de CI n'ont pas de voix française).
+    speech: Arc<dyn crate::podcast::speech::Synthesizer>,
 }
 
 impl PackBackend for LocalPacks {
@@ -916,6 +918,22 @@ impl PackBackend for LocalPacks {
     ) -> Result<Artwork, crate::podcast::artwork::ArtworkError> {
         Artwork::convert(bytes, kind)
     }
+
+    fn speech(&self) -> Arc<dyn crate::podcast::speech::Synthesizer> {
+        self.speech.clone()
+    }
+
+    fn title_mp3<'a>(
+        &'a self,
+        wav: &'a crate::podcast::speech::Wav,
+        dest: &'a Path,
+        cancel: &'a watch::Receiver<bool>,
+    ) -> BoxFuture<'a, AppResult<u64>> {
+        Box::pin(async move {
+            let mut cancel = cancel.clone();
+            crate::podcast::speech::wav_to_mp3(&self.ffmpeg, wav, dest, &mut cancel).await
+        })
+    }
 }
 
 /// Pack complet, de bout en bout : enclosures et images servies par un serveur HTTP local, vrai
@@ -924,12 +942,23 @@ impl PackBackend for LocalPacks {
 /// sans convertisseur, sauf `FLAM_REQUIRE_FFMPEG` / `FLAM_TEST_REQUIRE_CONVERTER=1` (CI).
 #[tokio::test]
 async fn bout_en_bout_pack_reel_jusqu_a_la_bibliotheque() {
-    let Some(ffmpeg_dir) = real_ffmpeg_dir() else {
+    let Some(without) = real_pack(false).await else {
         return;
     };
-    let Some(exe) = embedded_converter() else {
-        return;
-    };
+    // Titres lus (#462) : voix simulée, MP3 mono par le vrai ffmpeg, acceptés par le vrai
+    // convertisseur (`title.mp3` et un son de plus par option lue).
+    let with = real_pack(true).await.unwrap();
+    assert!(!without.contains("sounds/title.mp3"));
+    assert!(with.contains("sounds/title.mp3"), "{with:?}");
+    let sounds =
+        |names: &BTreeSet<String>| names.iter().filter(|n| n.starts_with("sounds/")).count();
+    assert!(sounds(&with) > sounds(&without), "{with:?}\n{without:?}");
+}
+
+/// Un pack réel (voir ci-dessus), avec ou sans titres lus ; rend les entrées du paquet publié.
+async fn real_pack(titles: bool) -> Option<BTreeSet<String>> {
+    let ffmpeg_dir = real_ffmpeg_dir()?;
+    let exe = embedded_converter()?;
     let work = tempfile::tempdir().unwrap();
     let mut files = Served::new();
     // g1 : mono 22 050 Hz, g2 : stéréo 48 000 Hz ; g3 n'est pas servi (404, P7).
@@ -961,6 +990,7 @@ async fn bout_en_bout_pack_reel_jusqu_a_la_bibliotheque() {
         feeds: feeds.clone(),
         ffmpeg: crate::ffmpeg::Ffmpeg::in_dir(&ffmpeg_dir),
         drafts: Mutex::default(),
+        speech: crate::podcast::speech::testing::Simulated::french().shared(),
     });
 
     let ctx = Ctx::with_dir(
@@ -969,7 +999,8 @@ async fn bout_en_bout_pack_reel_jusqu_a_la_bibliotheque() {
         Duration::from_secs(5),
     );
     ctx.service.set_pack_backend(backend.clone());
-    let c = composition();
+    let mut c = composition();
+    c.titles_audio = titles;
     let report = packmod::validate(&c, &feeds);
     assert!(report.valid, "{report:?}");
     let task = ctx.service.start_pack(c, &report, Some(7)).await.unwrap();
@@ -988,7 +1019,9 @@ async fn bout_en_bout_pack_reel_jusqu_a_la_bibliotheque() {
         ]
     );
     // Épisode introuvable retiré (P7), les deux autres publiés.
-    assert_eq!(done.pack.unwrap().dropped, ["Trois"]);
+    let status = done.pack.unwrap();
+    assert_eq!(status.dropped, ["Trois"]);
+    assert!(status.warnings.is_empty(), "{:?}", status.warnings);
 
     let library = ctx.service.library_list().await.unwrap();
     assert_eq!(library.len(), 1, "{library:?}");
@@ -1012,6 +1045,8 @@ async fn bout_en_bout_pack_reel_jusqu_a_la_bibliotheque() {
 
     ctx.assert_clean();
     assert_eq!(*lock(&backend.drafts), [7]);
+    let pk = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    Some(pk.file_names().map(str::to_string).collect())
 }
 
 /// L'entrée d'un pack ne garde aucun chemin local dans `library.json` : `library_source::check`
