@@ -686,7 +686,8 @@ def cases():
     zlib_cases(add)
     # autres formats : délégation si Pillow sait peut-être les lire, sinon illisibles comme
     # pour Pillow (src/identify.rs, #129)
-    add("pas_png", b"GIF89a" + bytes(20), "delegate")
+    add("pas_png", b"BM" + bytes(24), "delegate")
+    add("gif_vide", b"GIF89a" + bytes(20))   # GIF décodé par gif.rs (#459)
     add("vide", b"")
     add("signature_seule", SIG)
     add("signature_tronquee", SIG[:5])
