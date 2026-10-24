@@ -1,4 +1,5 @@
-//! Données qui ne sont pas un PNG : Pillow 12.3.0 pourrait-il les ouvrir ?
+//! Données qui ne sont ni un PNG ni un JPEG (décodé par [`crate::jpeg`] dès la signature
+//! `FF D8 FF`) : Pillow 12.3.0 pourrait-il les ouvrir ?
 //!
 //! `Image.open` essaie chacun de ses 43 greffons de lecture (45 avec `olefile`) : ceux qui ont une fonction
 //! `_accept` ne voient que les 16 premiers octets, les autres (`IM`, `IMT`, `IPTC`, `PCD`,
