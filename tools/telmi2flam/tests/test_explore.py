@@ -5,16 +5,18 @@ synthetiques convertis a la volee.
     python -m unittest discover -s tools/telmi2flam/tests -v
 
 Necessitent flam-player.exe (variable FLAM_BUILD_DIR, sinon <depot>/build) :
-sautes sinon.
-"""
+sautes sinon.\n"""
 import json
 import os
 import shutil
+import signal
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
 import zipfile
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.dirname(HERE)
@@ -563,7 +565,11 @@ class TestParentKilled(unittest.TestCase):
                         "explore.run_player(sys.executable, [%r], %r, 60)\n"
                         % (os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            child, tmp))
-            p = subprocess.Popen([sys.executable, parent])
+            # Sous venv Windows, `sys.executable` est un redirecteur qui lance le vrai Python
+            # en fils : tuer le redirecteur ne tuerait pas le parent, et le test dependrait du
+            # job du lanceur. On lance l'interpreteur de base, directement (#194).
+            exe = getattr(sys, "_base_executable", sys.executable) if os.name == "nt"                 else sys.executable
+            p = subprocess.Popen([exe, "-I", parent])
             try:
                 t0 = time.time()
                 while not os.path.exists(beat) and time.time() - t0 < 20:
@@ -581,6 +587,106 @@ class TestParentKilled(unittest.TestCase):
                     p.wait()
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class FakeProc:
+    def __init__(self, pid=4242, alive=True):
+        self.pid, self.alive, self.calls = pid, alive, []
+
+    def poll(self):
+        return None if self.alive else 0
+
+    def kill(self):
+        self.calls.append("kill")
+        self.alive = False
+
+    def wait(self):
+        self.calls.append("wait")
+
+
+class TestStop(unittest.TestCase):
+    """#194 : fin de run_player, symetrique Windows/POSIX (descendants d'un player sorti seul)."""
+
+    def stop(self, proc, nt, guard="job"):
+        killed, closed = [], []
+        with mock.patch.object(explore.os, "name", "nt" if nt else "posix"),                 mock.patch.object(explore.os, "killpg", lambda pid, sig: killed.append(pid),
+                                  create=True),                 mock.patch.object(signal, "SIGKILL", 9, create=True),                 mock.patch.object(explore, "_close_job", closed.append):
+            explore._stop(proc, guard)
+        return killed, closed
+
+    def test_posix_player_exited_alone_group_is_killed(self):
+        proc = FakeProc(alive=False)
+        killed, closed = self.stop(proc, nt=False)
+        self.assertEqual(killed, [4242])
+        self.assertEqual((proc.calls, closed), ([], []))
+
+    def test_posix_running_player_group_and_process_killed(self):
+        proc = FakeProc()
+        killed, closed = self.stop(proc, nt=False)
+        self.assertEqual(killed, [4242])
+        self.assertEqual(proc.calls, ["kill", "wait"])
+
+    def test_posix_killpg_on_empty_group_is_harmless(self):
+        def gone(pid, sig):
+            raise ProcessLookupError()
+        with mock.patch.object(explore.os, "name", "posix"),                 mock.patch.object(signal, "SIGKILL", 9, create=True),                 mock.patch.object(explore.os, "killpg", gone, create=True):
+            explore._stop(FakeProc(alive=False), None)
+
+    def test_windows_job_closed_even_if_player_exited(self):
+        proc = FakeProc(alive=False)
+        killed, closed = self.stop(proc, nt=True)
+        self.assertEqual((killed, closed), ([], ["job"]))
+
+    def test_windows_job_closed_even_if_kill_fails(self):
+        proc = FakeProc()
+        proc.kill = mock.Mock(side_effect=OSError("acces refuse"))
+        closed = []
+        with mock.patch.object(explore.os, "name", "nt"),                 mock.patch.object(explore, "_close_job", closed.append):
+            with self.assertRaises(OSError):
+                explore._stop(proc, "job")
+        self.assertEqual(closed, ["job"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "groupe de processus POSIX")
+    def test_posix_grandchild_dies_when_player_exits_alone(self):
+        tmp = tempfile.mkdtemp(prefix="t2f_grand_")
+        try:
+            beat = os.path.join(tmp, "beat.txt")
+            grand = os.path.join(tmp, "grand.py")
+            with open(grand, "w", encoding="utf-8") as f:
+                f.write("import time\n"
+                        "while True:\n"
+                        "    open(%r, 'a').write('.')\n"
+                        "    time.sleep(0.05)\n" % beat)
+            script = os.path.join(tmp, "player.py")
+            with open(script, "w", encoding="utf-8") as f:
+                f.write("import subprocess, sys, time\n"
+                        "subprocess.Popen([sys.executable, %r])\n"
+                        "time.sleep(0.5)\n" % grand)
+            code, _, _, _ = explore.run_player(sys.executable, [script], tmp, 30)
+            self.assertEqual(code, 0)
+            time.sleep(0.5)
+            size = os.path.getsize(beat)
+            time.sleep(0.5)
+            self.assertEqual(os.path.getsize(beat), size, "descendant encore vivant")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @unittest.skipUnless(os.name == "nt", "Job Object Windows")
+    def test_windows_job_assigned_without_private_handle(self):
+        import inspect
+        self.assertNotIn("_handle", inspect.getsource(explore._job_for).replace(
+            "`p._handle`", ""))
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            job = explore._job_for(p)
+            self.assertTrue(job, "Job Object non cree ou processus non rattache")
+            explore._close_job(job)                 # KILL_ON_JOB_CLOSE
+            p.wait(timeout=10)
+            self.assertIsNotNone(p.poll())
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
 
 
 class TestPrepare(unittest.TestCase):

@@ -1265,6 +1265,83 @@ class TestAlwaysAFiche(CompatBase):
         self.assertEqual(compat.failed_record(remote, OSError("x"), self.cache)
                          ["steps"]["download"]["status"], "ok")
 
+    def test_failed_record_old_cached_archive(self):
+        """#194 : une archive du cache tronquee ou de taille inattendue (ancienne) n'est pas
+        presentee comme telechargee ; une archive conforme l'est, sans pretendre qu'elle l'a
+        ete par ce traitement."""
+        arch = os.path.join(self.cache, "archives")
+        os.makedirs(arch)
+        final = os.path.join(arch, compat.story_key("r", "1") + ".zip")
+        with open(final, "wb") as f:
+            f.write(b"PK-incomplet")
+        sized = self.entry("r", "http://x/r.zip", size=1000)
+        dl = compat.failed_record(sized, OSError("x"), self.cache)["steps"]["download"]
+        self.assertEqual(dl["status"], "skipped")
+        with open(final + ".size", "w") as f:          # taille connue par le fichier .size
+            f.write("1000")
+        dl = compat.failed_record(self.entry("r", "http://x/r.zip"), OSError("x"),
+                                  self.cache)["steps"]["download"]
+        self.assertEqual(dl["status"], "skipped")
+        with open(final + ".size", "w") as f:
+            f.write(str(len(b"PK-incomplet")))
+        dl = compat.failed_record(self.entry("r", "http://x/r.zip"), OSError("x"),
+                                  self.cache)["steps"]["download"]
+        self.assertEqual(dl["status"], "ok")
+        self.assertIn("inconnu", dl["messages"][0])
+        with open(final, "wb"):                        # archive vide
+            pass
+        self.assertEqual(compat.failed_record(self.entry("r", "http://x/r.zip"), OSError("x"),
+                                              self.cache)["steps"]["download"]["status"],
+                         "skipped")
+
+    def test_report_writes_are_paced_on_a_big_campaign(self):
+        """#194 : reecrire tout report.json apres chaque histoire coute O(N^2). Sur un grand N
+        simule (disque lent simule par une horloge factice), les ecritures sont espacees ; le
+        rapport final est complet et les fiches provisoires sont absorbees."""
+        n = 1500
+        ents = [self.entry("s%04d" % i, None, path="x.zip", version="local") for i in range(n)]
+        clock, writes = [0.0], []
+        real_write = compat._write_atomic
+
+        def slow_write(path, text):
+            if path.endswith("report.json"):
+                writes.append(clock[0])
+            clock[0] += len(text) * 1e-6              # disque lent simule : 1 Mo/s
+            real_write(path, text)
+
+        def fast_story(entry, cache, **kw):
+            clock[0] += 0.001                         # 1 ms par histoire
+            return compat.failed_record(entry, RuntimeError("simule"))
+
+        with mock.patch.object(compat, "_clock", lambda: clock[0]),                 mock.patch.object(compat, "_write_atomic", slow_write),                 mock.patch.object(compat, "process_story", fast_story):
+            doc = self.campaign(ents)
+        self.assertLess(len(writes), n // 4, "ecritures de report.json non espacees")
+        self.assertEqual(len(doc["stories"]), n)
+        with open(os.path.join(self.cache, "compat", "report.json"), encoding="utf-8") as f:
+            self.assertEqual(len(json.load(f)["stories"]), n)
+        self.assertFalse(os.path.exists(os.path.join(self.cache, "compat",
+                                                     "report.provisional.json")))
+
+    def test_small_campaign_still_writes_after_each_story(self):
+        """Ecritures rapides (sous WRITE_SLOW) : jamais sautees, un arret perd au plus une fiche."""
+        ents = [self.entry(n, None, path=self.mkzip(std_files(), n), version="local")
+                for n in ("a", "b", "c")]
+        seen = []
+        real = compat.process_story
+
+        def spy(entry, cache, **kw):
+            p = os.path.join(cache, "compat", "report.json")
+            if os.path.exists(p):
+                with open(p, encoding="utf-8") as f:
+                    seen.append(len(json.load(f)["stories"]))
+            else:
+                seen.append(0)
+            return real(entry, cache, **kw)
+
+        with mock.patch.object(compat, "_clock", lambda: 0.0),                 mock.patch.object(compat, "process_story", spy):
+            self.campaign(ents)
+        self.assertEqual(seen, [0, 1, 2])
+
     def test_exit_code_message_only_for_crash(self):
         run = {"done_reason": "exit", "exit_code": 1, "errors": ["boum"]}
         _, msgs = compat.interpret_run(dict(run, status="lua_error"))
