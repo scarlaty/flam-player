@@ -80,3 +80,54 @@
 .fl-podcasts__cap p {
   margin: 0;
 }
+
+.fl-podcasts__hint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.fl-podcasts__compositions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fl-podcasts__composition {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.fl-podcasts__composition-text {
+  display: flex;
+  flex: 1 1 14rem;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fl-podcasts__composition-text span {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.fl-podcasts__composition-text .fl-podcasts__composition-warning {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.fl-podcasts__composition-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
