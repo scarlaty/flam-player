@@ -676,6 +676,9 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 | `player_unavailable`    | `flam-player.exe` introuvable (ni configuré ni détecté) ou impossible à lancer                      |
 | `player_busy`           | Un player tourne déjà (un seul à la fois)                                                           |
 | `story_file_missing`    | Le fichier de l'histoire à lancer a disparu                                                         |
+| `tts_unavailable`       | Synthèse vocale indisponible (système non Windows, service de voix absent)                          |
+| `tts_no_voice`          | Aucune voix française installée dans Windows, ou voix choisie disparue                              |
+| `tts_failed`            | Synthèse ou conversion d'un titre en échec (voix muette, délai, audio inexploitable)                |
 | `unknown`               | Côté front uniquement : erreur de forme inattendue                                                  |
 
 Un fichier de configuration **corrompu** n'est pas une erreur : il est renommé en
