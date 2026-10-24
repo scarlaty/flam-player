@@ -26,6 +26,7 @@
 pub mod convert;
 pub mod download;
 pub mod pack;
+pub mod pack_speech;
 pub mod podcast;
 
 use std::path::{Path, PathBuf};
@@ -554,7 +555,7 @@ impl InstallService {
                         created_at: q.created_at,
                         pack: q.pack.as_ref().map(|job| PackStatus {
                             episodes: job.composition.episodes().len(),
-                            dropped: Vec::new(),
+                            ..PackStatus::default()
                         }),
                     },
                     cancel: watch::channel(false).0,
@@ -608,7 +609,7 @@ impl InstallService {
                 created_at,
                 pack: pack.as_ref().map(|job| PackStatus {
                     episodes: job.composition.episodes().len(),
-                    dropped: Vec::new(),
+                    ..PackStatus::default()
                 }),
             };
             tasks.push(Slot {

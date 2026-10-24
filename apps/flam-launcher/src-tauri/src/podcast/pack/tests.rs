@@ -754,3 +754,38 @@ fn problemes_de_metadonnees_designent_leur_champ() {
         ]
     );
 }
+
+// ----- Titres lus (§ 12, #462) -----
+
+#[test]
+fn un_ancien_brouillon_sans_titres_lus_reste_lisible() {
+    let dir = tempfile::tempdir().unwrap();
+    // Brouillon écrit avant #462 : ni `titles_audio` ni `titles_voice`.
+    let old = format!(
+        "{{\"schema_version\": {DRAFT_SCHEMA}, \"revision\": 3, \"composition\": \
+         {{\"metadata\": {{\"title\": \"Ancien\", \"subtitle\": null, \"age\": 0, \
+         \"description\": null}}, \"cover\": {{\"kind\": \"default\"}}, \"menu\": []}}}}"
+    );
+    fs::write(dir.path().join(DRAFT_FILE), old).unwrap();
+    let read = read_draft(dir.path()).unwrap();
+    assert_eq!(read.notice, None);
+    let c = read.composition.expect("brouillon relu");
+    assert_eq!(c.metadata.title, "Ancien");
+    assert!(!c.titles_audio);
+    assert_eq!(c.titles_voice, None);
+}
+
+#[test]
+fn les_titres_lus_sont_omis_par_defaut_et_relus_quand_ils_sont_choisis() {
+    // Valeur par défaut : JSON identique à celui d'avant #462.
+    let json = serde_json::to_value(sample()).unwrap();
+    assert!(json.get("titles_audio").is_none() && json.get("titles_voice").is_none());
+    let mut c = sample();
+    c.titles_audio = true;
+    c.titles_voice = Some("fr-hortense".into());
+    let dir = tempfile::tempdir().unwrap();
+    assert!(save_draft(dir.path(), &c, 1).unwrap().saved);
+    assert_eq!(read_draft(dir.path()).unwrap().composition, Some(c.clone()));
+    let back: PackComposition = serde_json::from_value(serde_json::to_value(&c).unwrap()).unwrap();
+    assert_eq!(back, c);
+}
