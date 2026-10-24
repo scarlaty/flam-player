@@ -14,6 +14,9 @@ Fichiers produits (lus par `tests/png_vectors.rs`) :
   `rgba:<largeur>x<hauteur>:<sha256 de tobytes()>` ou `unreadable` (exception levée par
   `_open_rgba`, donc avertissement `image_unreadable`), et `rust` vaut `same` (même résultat
   exigé) ou `delegate` (cas non modélisé : le Rust délègue à Python, code 7) ;
+- `combos.tsv` : `nom  png  attendu`, PNG en hexadécimal (#459) : `tRNS` rangé sous un mode
+  puis image décodée sous un autre (IHDR répété), `tRNS` répété ou après l'image, IHDR pas en
+  tête ; le Rust doit donner le même résultat ;
 - `alterations.tsv` : `base  opération  argument  attendu`, résultat de `_open_rgba` sur
   chaque troncature (`cut`, longueur) et chaque octet inversé (`xor`, position) des fichiers
   de base listés. Le Rust peut déléguer quelques cas (comptés par le test), jamais diverger.
@@ -173,6 +176,284 @@ MODES = ((1, 0), (2, 0), (4, 0), (8, 0), (16, 0), (8, 2), (16, 2), (1, 3), (2, 3
 SIZES = ((1, 1), (3, 2), (7, 5), (17, 9), (33, 3))
 
 
+def actl(n, loops=0):
+    return chunk(b"acTL", struct.pack(">II", n, loops))
+
+
+def fctl(seq, w, h, x=0, y=0, dispose=0, blend=0):
+    return chunk(b"fcTL", struct.pack(">IIIIIHHBB", seq, w, h, x, y, 1, 10, dispose, blend))
+
+
+def fdat(seq, data):
+    return chunk(b"fdAT", struct.pack(">I", seq) + data)
+
+
+def zdata(w, h, bd, ct, pixels, interlace=0):
+    return zlib.compress(scanlines(w, h, bd, ct, pixels, interlace))
+
+
+def fixed_deflate(symbols):
+    """Flux zlib à blocs Huffman fixes écrit à la main : `('lit', v)`, `('copy', longueur 3,
+    distance)`, `('end',)`. Sert aux distances trop lointaines (#459)."""
+    out = bytearray(b"\x78\x01")
+    acc = nb = 0
+
+    def put(value, n, reverse=False):
+        nonlocal acc, nb
+        if reverse:   # codes de Huffman : bit de poids fort d'abord
+            value = int(format(value, "0%db" % n)[::-1], 2)
+        acc |= value << nb
+        nb += n
+
+    put(1, 1)          # BFINAL
+    put(1, 2)          # BTYPE = 01 (fixe)
+    for s in symbols:
+        if s[0] == "lit":
+            v = s[1]
+            if v < 144:
+                put(0x30 + v, 8, True)
+            else:
+                put(0x190 + v - 144, 9, True)
+        elif s[0] == "copy":
+            put(1, 7, True)                 # code 257 : longueur 3
+            dist = s[1]
+            base = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385]
+            code = max(i for i, b in enumerate(base) if b <= dist)
+            put(code, 5, True)
+            extra = max(0, code // 2 - 1)
+            put(dist - base[code], extra)
+        else:
+            put(0, 7, True)                 # 256 : fin de bloc
+    while nb > 0:
+        out.append(acc & 0xFF)
+        acc >>= 8
+        nb -= 8
+    return bytes(out)
+
+
+def zlib_cases(add):
+    """Sortie pleine : zlib ne contrôle une distance trop lointaine qu'à l'écriture (#459)."""
+    end = chunk(b"IEND", b"")
+    one = SIG + ihdr(1, 1, 8, 0)
+    add("zlib_distance_apres_fin", one + chunk(b"IDAT", fixed_deflate(
+        [("lit", 0), ("lit", 5), ("copy", 100), ("end",)])) + end)
+    add("zlib_distance_avant_fin", SIG + ihdr(1, 2, 8, 0) + chunk(b"IDAT", fixed_deflate(
+        [("lit", 0), ("lit", 5), ("lit", 0), ("copy", 100), ("end",)])) + end)
+    add("zlib_distance_apres_fin_puis_code_faux", one + chunk(b"IDAT", fixed_deflate(
+        [("lit", 0), ("lit", 5), ("copy", 100), ("lit", 7), ("end",)]) + b"\xff\xff") + end)
+    add("zlib_litteral_apres_fin", one + chunk(b"IDAT", fixed_deflate(
+        [("lit", 0), ("lit", 5), ("lit", 200), ("end",)])) + end)
+
+
+def apng_cases(add, _rng, base_px, good):
+    """APNG (#459) : Pillow ouvre la première image ; zone `fcTL`, séquences, `fdAT`."""
+    rng = random.Random(4591)
+    head = SIG + ihdr(9, 7, 8, 2)
+    z = zdata(9, 7, 8, 2, base_px)
+    sub = rand_pixels(rng, 4, 3, 8, 2)
+    zsub = zdata(4, 3, 8, 2, sub)
+    end = chunk(b"IEND", b"")
+    add("apng_deux_images", head + actl(2) + fctl(0, 9, 7) + chunk(b"IDAT", z)
+        + fctl(1, 4, 3, 2, 2) + fdat(2, zsub) + end)
+    add("apng_defaut_hors_animation", head + actl(1) + chunk(b"IDAT", z) + fctl(0, 4, 3)
+        + fdat(1, zsub) + end)
+    add("apng_defaut_hors_animation_2", head + actl(2) + chunk(b"IDAT", z) + fctl(0, 4, 3)
+        + fdat(1, zsub) + fctl(2, 9, 7) + fdat(3, z) + end)
+    add("apng_fdat_premier", head + actl(1) + fctl(0, 9, 7) + fdat(1, z) + end)
+    add("apng_fdat_premier_partiel", head + actl(1) + fctl(0, 4, 3, 5, 4) + fdat(1, zsub) + end)
+    add("apng_fdat_sans_fctl", head + actl(1) + fdat(0, z) + end)
+    add("apng_fdat_seq_faux", head + actl(1) + fctl(0, 9, 7) + fdat(2, z) + end)
+    add("apng_fdat_court", head + actl(1) + fctl(0, 9, 7) + chunk(b"fdAT", b"\x00\x00\x01")
+        + chunk(b"IDAT", z) + end)
+    add("apng_fctl_seq_1", head + actl(1) + fctl(1, 9, 7) + chunk(b"IDAT", z) + end)
+    add("apng_fctl_court", head + actl(1) + chunk(b"fcTL", bytes(25)) + chunk(b"IDAT", z) + end)
+    add("apng_fctl_crc_faux", head + actl(1) + fctl(0, 9, 7)[:-1] + b"\x00"
+        + chunk(b"IDAT", z) + end)
+    add("apng_fctl_hors_image", head + actl(1) + fctl(0, 9, 7, 1, 0) + chunk(b"IDAT", z) + end)
+    add("apng_fctl_vide", head + actl(1) + fctl(0, 0, 7) + chunk(b"IDAT", z) + end)
+    add("apng_fctl_hauteur_nulle", head + actl(1) + fctl(0, 9, 0) + chunk(b"IDAT", z) + end)
+    add("apng_fctl_avant_ihdr", SIG + fctl(0, 0, 0) + ihdr(9, 7, 8, 2) + chunk(b"IDAT", z) + end)
+    add("apng_fctl_sans_actl", head + fctl(0, 9, 7) + chunk(b"IDAT", z) + end)
+    add("apng_actl_court", head + chunk(b"acTL", b"\x00\x00\x00\x01") + chunk(b"IDAT", z) + end)
+    add("apng_actl_double", head + actl(2) + actl(2) + fctl(0, 9, 7) + chunk(b"IDAT", z)
+        + fctl(5, 0, 0) + end)
+    add("apng_actl_zero", head + actl(0) + fctl(0, 9, 7) + chunk(b"IDAT", z) + fctl(9, 1, 1)
+        + end)
+    add("apng_actl_trop", head + actl(0x80000001) + chunk(b"IDAT", z) + end)
+    add("apng_actl_max", head + actl(0x80000000) + chunk(b"IDAT", z) + fctl(0, 1, 1) + end)
+    # zone partielle : le reste garde le pixel nul du mode (palette : entrée 0, tRNS…)
+    for name, bd, ct, extra in (("gris", 8, 0, [chunk(b"tRNS", b"\x00\x00")]),
+                                ("palette", 4, 3, [chunk(b"PLTE", palette(16, rng)),
+                                                   chunk(b"tRNS", b"\x40\x80")]),
+                                ("rgba16", 16, 6, []), ("rgb16", 16, 2, []),
+                                ("gris1", 1, 0, [chunk(b"tRNS", b"\x00\x01")])):
+        for il in (0, 1):
+            px = rand_pixels(rng, 5, 3, bd, ct)
+            add("apng_partiel_%s_i%d" % (name, il),
+                SIG + ihdr(11, 6, bd, ct, il) + b"".join(extra) + actl(1)
+                + fctl(0, 5, 3, 4, 2) + chunk(b"IDAT", zdata(5, 3, bd, ct, px, il)) + end)
+    # suite des données en fdAT
+    add("apng_idat_puis_fdat", head + actl(1) + fctl(0, 9, 7) + chunk(b"IDAT", z[:20])
+        + fdat(1, z[20:]) + end)
+    add("apng_idat_puis_fdat_seq_faux", head + actl(1) + fctl(0, 9, 7) + chunk(b"IDAT", z[:20])
+        + fdat(3, z[20:]) + end)
+    add("apng_idat_puis_fdat_court", head + actl(1) + fctl(0, 9, 7) + chunk(b"IDAT", z[:20])
+        + chunk(b"fdAT", b"\x00\x00") + end)
+    add("apng_idat_puis_fdat_vide", head + actl(1) + fctl(0, 9, 7) + chunk(b"IDAT", z[:20])
+        + fdat(1, b"") + fdat(2, z[20:]) + end)
+    add("apng_idat_puis_fctl", head + actl(1) + fctl(0, 9, 7) + chunk(b"IDAT", z[:20])
+        + fctl(1, 9, 7) + end)
+    # après l'image : animé (arrêt au fcTL suivant) ou non (chunks vérifiés)
+    tail_bad = fctl(1, 99, 7) + fdat(2, zsub) + end
+    add("apng_anime_fctl_suivant_faux", head + actl(2) + fctl(0, 9, 7) + chunk(b"IDAT", z)
+        + tail_bad)
+    add("apng_fixe_fctl_suivant_faux", head + actl(1) + fctl(0, 9, 7) + chunk(b"IDAT", z)
+        + tail_bad)
+    add("apng_fixe_suite_valide", head + actl(1) + fctl(0, 9, 7) + chunk(b"IDAT", z)
+        + fctl(1, 4, 3) + fdat(2, zsub) + end)
+    add("apng_fixe_fdat_seq_faux", head + actl(1) + fctl(0, 9, 7) + chunk(b"IDAT", z)
+        + fdat(7, zsub) + end)
+    add("apng_fixe_fdat_tronque", head + actl(1) + fctl(0, 9, 7) + chunk(b"IDAT", z)
+        + struct.pack(">I", 50) + b"fdAT" + struct.pack(">I", 1) + b"xx")
+    add("apng_fixe_fdat_court", head + actl(1) + fctl(0, 9, 7) + chunk(b"IDAT", z)
+        + chunk(b"fdAT", b"\x01") + end)
+    add("apng_sans_apng_fdat_apres", good[:-12] + fdat(1, zsub) + end)
+    add("apng_actl_apres_court", good[:-12] + chunk(b"acTL", b"\x00") + end)
+    add("apng_actl_apres_ok", good[:-12] + actl(3) + end)
+    add("apng_fctl_apres_court", good[:-12] + chunk(b"fcTL", bytes(10)) + end)
+    add("apng_anime_trns_apres", SIG + ihdr(5, 3, 8, 0) + actl(2) + fctl(0, 5, 3)
+        + chunk(b"IDAT", zdata(5, 3, 8, 0, [[((x + y) % 4,) for x in range(5)] for y in range(3)]))
+        + fctl(1, 5, 3) + chunk(b"tRNS", b"\x00\x01") + fdat(2, b"") + end)
+    add("apng_fixe_trns_apres", SIG + ihdr(5, 3, 8, 0) + actl(1) + fctl(0, 5, 3)
+        + chunk(b"IDAT", zdata(5, 3, 8, 0, [[((x + y) % 4,) for x in range(5)] for y in range(3)]))
+        + chunk(b"tRNS", b"\x00\x01") + fctl(1, 5, 3) + end)
+    # IHDR réduit après le fcTL : zone hors de l'image au chargement
+    add("apng_ihdr_reduit_apres_fctl", head + actl(1) + fctl(0, 9, 7) + ihdr(5, 3, 8, 2)
+        + chunk(b"IDAT", zdata(5, 3, 8, 2, [r[:5] for r in base_px[:3]])) + end)
+    add("apng_ihdr_agrandi_apres_fctl", head + actl(1) + fctl(0, 9, 7) + ihdr(12, 8, 8, 2)
+        + chunk(b"IDAT", z) + end)
+
+
+def ihdr_cases(add, _rng):
+    """IHDR absent en tête, répété, changeant de taille ou de mode (#459)."""
+    rng = random.Random(4592)
+    end = chunk(b"IEND", b"")
+    px = rand_pixels(rng, 6, 4, 8, 2)
+    z = zdata(6, 4, 8, 2, px)
+    add("ihdr_double_identique", SIG + ihdr(6, 4, 8, 2) + ihdr(6, 4, 8, 2) + chunk(b"IDAT", z)
+        + end)
+    add("ihdr_double_taille", SIG + ihdr(9, 9, 8, 2) + ihdr(6, 4, 8, 2) + chunk(b"IDAT", z) + end)
+    add("ihdr_double_mode_inconnu", SIG + ihdr(6, 4, 8, 2) + ihdr(6, 4, 3, 0) + chunk(b"IDAT", z)
+        + end)
+    add("ihdr_double_taille_mode_inconnu", SIG + ihdr(6, 4, 8, 2) + ihdr(3, 2, 3, 0)
+        + chunk(b"IDAT", z) + end)
+    add("ihdr_double_entrelace_collant", SIG + ihdr(6, 4, 8, 2, 1) + ihdr(6, 4, 8, 2)
+        + chunk(b"IDAT", zdata(6, 4, 8, 2, px, 1)) + end)
+    add("ihdr_double_filtre", SIG + ihdr(6, 4, 8, 2) + ihdr(6, 4, 8, 2, filt=1)
+        + chunk(b"IDAT", z) + end)
+    add("ihdr_double_court", SIG + ihdr(6, 4, 8, 2) + chunk(b"IHDR", b"\x00" * 12)
+        + chunk(b"IDAT", z) + end)
+    add("ihdr_premier_invalide", SIG + ihdr(6, 4, 3, 0) + ihdr(6, 4, 8, 2) + chunk(b"IDAT", z)
+        + end)
+    add("ihdr_apres_texte_et_plte", SIG + chunk(b"tEXt", b"a\x00b") + chunk(b"PLTE", bytes(12))
+        + ihdr(6, 4, 8, 2) + chunk(b"IDAT", z) + end)
+    pxp = [[((x + y) % 4,) for x in range(6)] for y in range(4)]
+    zp = zdata(6, 4, 8, 3, pxp)
+    add("plte_avant_ihdr", SIG + chunk(b"PLTE", palette(4, rng)) + ihdr(6, 4, 8, 3)
+        + chunk(b"IDAT", zp) + end)
+    add("plte_sous_rgb_puis_palette", SIG + ihdr(6, 4, 8, 2) + chunk(b"PLTE", palette(4, rng))
+        + ihdr(6, 4, 8, 3) + chunk(b"IDAT", zp) + end)
+    add("plte_palette_puis_rgb", SIG + ihdr(6, 4, 8, 3) + chunk(b"PLTE", palette(4, rng))
+        + ihdr(6, 4, 8, 2) + chunk(b"IDAT", z) + end)
+    # palette posée sur un cœur gris ou LA (`putpalette` accepté par le C) : index = gris
+    pal4 = palette(4, rng)
+    gl = [[((x + y) % 4,) for x in range(6)] for y in range(4)]
+    for name, bd, ct, px_, extra in (
+            ("gris8", 8, 0, gl, b""), ("gris2", 2, 0, gl, b""),
+            ("gris8_trns", 8, 0, gl, chunk(b"tRNS", b"\x00\x01")),
+            ("la", 8, 4, [[((x + y) % 4, 50 * x) for x in range(6)] for y in range(4)], b""),
+            ("la_trns", 8, 4, [[((x + y) % 4, 50 * x) for x in range(6)] for y in range(4)],
+             chunk(b"tRNS", b"\x00\x01")),
+            ("gris16", 16, 0, [[(v * 300,) for (v,) in r] for r in gl], b""),
+            ("rgba", 8, 6, [[(1, 2, 3, 4)] * 6] * 4, b"")):
+        add("plte_palette_puis_" + name, SIG + ihdr(6, 4, 8, 3) + chunk(b"PLTE", pal4)
+            + ihdr(6, 4, bd, ct) + extra + chunk(b"IDAT", zdata(6, 4, bd, ct, px_)) + end)
+    add("plte_palette_puis_gris8_masque", SIG + ihdr(6, 4, 1, 0) + chunk(b"tRNS", b"\x00\x01")
+        + ihdr(6, 4, 8, 3) + chunk(b"PLTE", pal4) + ihdr(6, 4, 8, 0)
+        + chunk(b"IDAT", zdata(6, 4, 8, 0, gl)) + end)
+    add("plte_palette_puis_la_masque", SIG + ihdr(6, 4, 2, 0) + chunk(b"tRNS", b"\x00\x01")
+        + ihdr(6, 4, 8, 3) + chunk(b"PLTE", pal4) + ihdr(6, 4, 8, 4)
+        + chunk(b"IDAT", zdata(6, 4, 8, 4, [[((x + y) % 4, 9) for x in range(6)]
+                                              for y in range(4)])) + end)
+    add("trns_avant_ihdr", SIG + chunk(b"tRNS", b"\x00\x01") + ihdr(6, 4, 8, 0)
+        + chunk(b"IDAT", zdata(6, 4, 8, 0, pxp)) + end)
+    add("ihdr_apres_idat_autre_mode", SIG + ihdr(6, 4, 8, 2) + chunk(b"IDAT", z)
+        + ihdr(6, 4, 8, 0) + chunk(b"tRNS", b"\x00\x01") + end)
+    add("ihdr_apres_idat_court", SIG + ihdr(6, 4, 8, 2) + chunk(b"IDAT", z)
+        + chunk(b"IHDR", b"\x00") + end)
+    add("ihdr_apres_idat_puis_fctl", SIG + ihdr(6, 4, 8, 2) + chunk(b"IDAT", z)
+        + ihdr(2, 2, 8, 2) + fctl(0, 3, 3) + end)
+
+
+# Combinaisons de transparence (#459) : `tRNS` rangé sous un mode, image décodée sous un autre
+# (IHDR répété), clé brute de `_png_trns_key` et masque de `_trns_mask` (premier IHDR).
+TRNS_SET_MODES = MODES
+TRNS_CROSS_SET = ((1, 0), (2, 0), (8, 0), (16, 0), (8, 2), (16, 2), (4, 3), (8, 4), (16, 6))
+TRNS_CROSS_EFF = ((1, 0), (4, 0), (8, 0), (16, 0), (8, 2), (16, 2), (8, 3), (8, 4))
+TRNS_PAYLOADS = (b"\x00\x01", b"\x01\x02", b"\x00\x00\x00\x01\x00\x02", b"\x00\x03" * 2,
+                 b"\x00\x01\x00\x02\x00\x03\x00\x04", b"\x00", b"", b"\xff\x00",
+                 b"\x00\xff\xff")
+
+
+def combo_cases():
+    out = []
+    end = chunk(b"IEND", b"")
+    w, h = 4, 2
+
+    def body(bd, ct):
+        top = min((1 << bd) - 1, 5) if ct != 3 else 4
+        if bd == 16:
+            px = [[tuple(((x + y + c) % 4) * 0x0101 + (x % 2) for c in range(CHANNELS[ct]))
+                   for x in range(w)] for y in range(h)]
+        else:
+            px = [[tuple((x + y + c) % (top + 1) for c in range(CHANNELS[ct]))
+                   for x in range(w)] for y in range(h)]
+        plte = [chunk(b"PLTE", bytes((i * 37 + c * 11) % 256 for i in range(6)
+                                     for c in range(3)))] if ct == 3 else []
+        return plte, zdata(w, h, bd, ct, px)
+
+    pairs = [(s, s) for s in TRNS_SET_MODES]
+    pairs += [(s, e) for s in TRNS_CROSS_SET for e in TRNS_CROSS_EFF if s != e]
+    for (sb, sc), (eb, ec) in pairs:
+        same = (sb, sc) == (eb, ec)
+        plte, zd = body(eb, ec)
+        first = ihdr(w, h, sb, sc)
+        second = b"" if same else ihdr(w, h, eb, ec)
+        image = b"".join(plte) + chunk(b"IDAT", zd)
+        for pi, payload in enumerate(TRNS_PAYLOADS):
+            if not same and pi not in (0, 1, 2, 7):
+                continue
+            trns = chunk(b"tRNS", payload)
+            name = "c_%d_%d_p%d_%d_%d" % (sb, sc, pi, eb, ec)
+            out.append((name, SIG + first + trns + second + image + end))
+            if pi in (0, 2):
+                # tRNS après l'image (lu par load_end, absent de _png_trns_key)
+                out.append((name + "_apres", SIG + first + second + image + trns + end))
+            if pi in (0, 2) and same:
+                # IHDR pas en tête : pas de masque de _trns_mask
+                out.append((name + "_texte", SIG + chunk(b"tEXt", b"a\x00b") + first + trns
+                            + image + end))
+            if sc == 3 and not same and ec != 3:
+                # PLTE lu sous le mode palette, puis image d'un autre mode (palette posée sur
+                # un cœur gris ou LA, refusée ailleurs)
+                pl = chunk(b"PLTE", bytes((i * 53 + 7) % 256 for i in range(48)))
+                out.append((name + "_plte", SIG + first + pl + trns + second + image + end))
+            if pi == 1 and same:
+                out.append((name + "_double", SIG + first + chunk(b"tRNS", b"\x00\x00") + trns
+                            + image + chunk(b"tRNS", TRNS_PAYLOADS[2]) + end))
+    return out
+
+
 def cases():
     rng = random.Random(126)
     out = []
@@ -220,22 +501,20 @@ def cases():
     # tRNS de longueur inattendue
     px8 = [[((x + y) % 4,) for x in range(5)] for y in range(3)]
     add("trns_gris_court", make_png(5, 3, 8, 0, px8, 0, [chunk(b"tRNS", b"\x01")]))
-    add("trns_gris_long", make_png(5, 3, 8, 0, px8, 0, [chunk(b"tRNS", b"\x00\x01\x00\x02")]),
-        "delegate")
+    add("trns_gris_long", make_png(5, 3, 8, 0, px8, 0, [chunk(b"tRNS", b"\x00\x01\x00\x02")]))
     add("trns_gris1_long", make_png(5, 3, 1, 0, [[(x % 2,) for x in range(5)]] * 3, 0,
-                                    [chunk(b"tRNS", b"\x00\x01\x00\x02\x00\x03")]), "delegate")
+                                    [chunk(b"tRNS", b"\x00\x01\x00\x02\x00\x03")]))
     pxrgb = rand_pixels(rng, 4, 3, 8, 2, maxval=2)
     add("trns_rgb_court", make_png(4, 3, 8, 2, pxrgb, 0, [chunk(b"tRNS", b"\x00\x01\x00")]))
-    add("trns_rgb_long", make_png(4, 3, 8, 2, pxrgb, 0, [chunk(b"tRNS", bytes(8))]), "delegate")
+    add("trns_rgb_long", make_png(4, 3, 8, 2, pxrgb, 0, [chunk(b"tRNS", bytes(8))]))
     add("trns_vide_gris", make_png(5, 3, 8, 0, px8, 0, [chunk(b"tRNS", b"")]))
     add("trns_sur_rgba", make_png(4, 3, 8, 6, rand_pixels(rng, 4, 3, 8, 6), 0,
                                   [chunk(b"tRNS", bytes(6))]))
     add("trns_sur_la", make_png(4, 3, 8, 4, rand_pixels(rng, 4, 3, 8, 4), 0,
                                 [chunk(b"tRNS", bytes(2))]))
     add("trns_double", make_png(5, 3, 8, 0, px8, 0, [chunk(b"tRNS", b"\x00\x01"),
-                                                     chunk(b"tRNS", b"\x00\x02")]), "delegate")
-    add("trns_apres_idat", make_png(5, 3, 8, 0, px8, 0, after=[chunk(b"tRNS", b"\x00\x01")]),
-        "delegate")
+                                                     chunk(b"tRNS", b"\x00\x02")]))
+    add("trns_apres_idat", make_png(5, 3, 8, 0, px8, 0, after=[chunk(b"tRNS", b"\x00\x01")]))
 
     # --- palettes
     def pal_png(name, nbits, n_pal, trns=None, idx_max=None, il=0, plte_raw=None,
@@ -306,8 +585,8 @@ def cases():
     add("iend_avant_idat", SIG + ihdr(9, 7, 8, 2) + chunk(b"IEND", b"")
         + good[33:])
     add("sans_ihdr", SIG + good[33:])
-    add("ihdr_pas_premier", SIG + chunk(b"tEXt", b"a\x00b") + good[8:], "delegate")
-    add("ihdr_double", good[:33] + ihdr(9, 7, 8, 0) + good[33:], "delegate")
+    add("ihdr_pas_premier", SIG + chunk(b"tEXt", b"a\x00b") + good[8:])
+    add("ihdr_double", good[:33] + ihdr(9, 7, 8, 0) + good[33:])
     add("ihdr_court", SIG + chunk(b"IHDR", struct.pack(">IIBB", 9, 7, 8, 2)) + good[33:])
     add("ihdr_long", SIG + chunk(b"IHDR", struct.pack(">IIBBBBB", 9, 7, 8, 2, 0, 0, 0) + b"xy")
         + good[33:])
@@ -400,8 +679,11 @@ def cases():
         rgb("anc_apres_" + name, after=[chunk(kind, payload)])
     many = [chunk(b"zTXt", b"k%d\x00\x00" % i + exact) for i in range(65)]
     rgb("text_memoire_epuisee", before=many)
-    rgb("actl_delegue", before=[chunk(b"acTL", struct.pack(">II", 1, 0))], rust="delegate")
-    rgb("fctl_delegue", after=[chunk(b"fcTL", bytes(26))], rust="delegate")
+    rgb("actl_delegue", before=[chunk(b"acTL", struct.pack(">II", 1, 0))])
+    rgb("fctl_delegue", after=[chunk(b"fcTL", bytes(26))])
+    apng_cases(add, rng, base_px, good)
+    ihdr_cases(add, rng)
+    zlib_cases(add)
     # autres formats : délégation si Pillow sait peut-être les lire, sinon illisibles comme
     # pour Pillow (src/identify.rs, #129)
     add("pas_png", b"BM" + bytes(24), "delegate")
@@ -423,7 +705,18 @@ def alteration_bases():
                    [chunk(b"tRNS", b"\x12\x34"), chunk(b"gAMA", struct.pack(">I", 45455))])
     rgba = make_png(6, 5, 8, 6, rand_pixels(rng, 6, 5, 8, 6), 1,
                     [chunk(b"zTXt", b"k\x00\x00" + zlib.compress(b"texte"))])
-    return [("alt_palette", pal), ("alt_gris16", g16), ("alt_rgba", rgba)]
+    # APNG à zone partielle, données continuées en fdAT, tRNS avant et après l'image (#459)
+    rng = random.Random(4594)
+    zg = zdata(3, 2, 8, 0, rand_pixels(rng, 3, 2, 8, 0, maxval=3))
+    apng = (SIG + ihdr(5, 4, 8, 0) + chunk(b"tRNS", b"\x00\x02") + actl(1)
+            + fctl(0, 3, 2, 1, 1) + chunk(b"IDAT", zg[:9]) + fdat(1, zg[9:])
+            + chunk(b"tRNS", b"\x00\x01") + fctl(2, 2, 2) + chunk(b"IEND", b""))
+    # IHDR répété (gris 2 bits puis RGB 16 bits) et tRNS rangé sous le premier mode
+    zr = zdata(3, 2, 16, 2, rand_pixels(rng, 3, 2, 16, 2, maxval=3))
+    double = (SIG + ihdr(3, 2, 2, 0) + chunk(b"tRNS", b"\x00\x01") + ihdr(3, 2, 16, 2)
+              + chunk(b"IDAT", zr) + chunk(b"IEND", b""))
+    return [("alt_palette", pal), ("alt_gris16", g16), ("alt_rgba", rgba), ("alt_apng", apng),
+            ("alt_ihdr_double", double)]
 
 
 def write(path, data):
@@ -449,7 +742,12 @@ def main_vectors():
         lines.append("%s\t%s\tsame" % (name, oracle(data)))
     write_lines(os.path.join(HERE, "manifest.tsv"), lines)
 
-    alt = ["# base\toperation\targument\tattendu (genere par gen_png_vectors.py)"]
+    combos = ["# nom\tpng (hexadecimal)\tattendu (genere par gen_png_vectors.py)"]
+    for name, data in combo_cases():
+        combos.append("%s\t%s\t%s" % (name, data.hex(), oracle(data)))
+    write_lines(os.path.join(HERE, "combos.tsv"), combos)
+
+    alt =["# base\toperation\targument\tattendu (genere par gen_png_vectors.py)"]
     for name, data in alteration_bases():
         for n in range(len(data)):
             alt.append("%s\tcut\t%d\t%s" % (name, n, oracle(data[:n])))

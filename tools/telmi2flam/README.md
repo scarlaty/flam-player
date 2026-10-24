@@ -655,18 +655,22 @@ Chaque archive est convertie par l'oracle puis par le candidat (`--jobs` archive
 donc au plus autant de conversions simultanées). Un état par archive (`cases/`) permet de
 reprendre une campagne interrompue en relançant la même commande ; un résultat obtenu avec un
 autre moteur (empreinte des fichiers de la commande) ou une exécution impossible (délai,
-commande absente) est refait. Seule la délégation D4 est admise : tout autre écart, même de la
+commande absente) est refait. Seule la délégation D4 (image non PNG) est admise : tout autre écart, même de la
 liste fermée, est à classer à la main (le dossier de travail de l'archive est alors gardé sous
 `work/`). Le rapport compte les délégations par cause, format d'image et méthode ZIP. Le
 journal ne donne que des comptes ; le rapport nomme les archives et reste dans `.cache/`.
 
 Lecture du rapport :
 
-- Causes de délégation : `zip:<méthode>` (message `: compression N (bzip2/LZMA/Zstandard)`),
-  `image:<raison>` (liste fermée des raisons du décodeur PNG), `metadata` ou `autre`. Un
-  message hors de ces formes exactes est `autre`. `metadata` et `autre` sont hors D4 strict :
-  la ligne `attention : delegations hors D4 strict…` (comptes seulement) les signale et elles
-  sont à classer à la main.
+- Causes de délégation : `image:<raison>` (liste fermée des raisons du décodeur PNG : depuis
+  #459, seulement `pas un PNG`, les PNG atypiques APNG/IHDR/tRNS étant décodés), `metadata`
+  ou `autre`. Un message hors de ces formes exactes est `autre`. `metadata` et `autre` sont
+  hors D4 strict : la ligne `attention : delegations hors D4 strict…` (comptes seulement) les
+  signale et elles sont à classer à la main.
+- Méthodes ZIP bzip2, LZMA et Zstandard : lues par le Rust depuis #458, plus de délégation.
+  Un candidat antérieur qui délègue encore une entrée (message `: compression N
+  (bzip2/LZMA/Zstandard)`, cause `zip:<méthode>`) est compté en **écart** `delegation`, pas
+  en délégation admise.
 - Formats d'image du convertisseur Rust (#459) : PNG et GIF (première image, comme Pillow :
   `crates/telmi2flam/src/gif.rs`, vecteurs `tests/vectors/gif/`) sont décodés ; les autres
   formats (JPEG…) sont encore délégués (`image:pas un PNG`).

@@ -32,8 +32,8 @@ installées de « Mes histoires ») sous `%LOCALAPPDATA%` (« Paramètres » →
 emplacement).
 
 **Désinstallation et données** : la désinstallation retire le dossier d'installation seulement.
-Les données (`%APPDATA%lam-launcher` : sources, paramètres, sauvegardes ; et
-`%LOCALAPPDATA%lam-launcher` : cache et histoires installées) sont **conservées**, y compris si
+Les données (`%APPDATA%\flam-launcher` : sources, paramètres, sauvegardes ; et
+`%LOCALAPPDATA%\flam-launcher` : cache et histoires installées) sont **conservées**, y compris si
 l'on coche « supprimer les données de l'application » du désinstallateur, qui ne les connaît pas :
 pour tout effacer, supprimer ces deux dossiers à la main.
 
@@ -113,6 +113,11 @@ Testeurs de la bêta : [docs/guide-testeur.md](docs/guide-testeur.md). Formats e
 
 Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2, Node 24+ et npm.
 
+Python 3 n'est **pas** nécessaire pour utiliser, construire ou tester le launcher : l'installation
+n'en contient plus (#138). Il ne sert qu'aux outils de campagne et de parité de
+`tools/telmi2flam/` (oracle Python de #135) et aux générateurs de vecteurs de test de
+`crates/telmi2flam/tests/vectors/`. Le convertisseur se développe dans `crates/telmi2flam`.
+
 Le launcher est membre d'un **workspace Cargo** dont le `Cargo.toml` est à la racine du dépôt (avec
 `crates/telmi2flam`) : `Cargo.lock` et `target/` sont à la racine, pas dans `src-tauri/`. Les commandes
 `cargo` se lancent toujours depuis `src-tauri/` (ou avec `-p flam-launcher`) ; le profil `release` est
@@ -190,13 +195,13 @@ fermeture de stdin). Environ 1,5 Mo sur disque.
    ```
 
    L'annulation du test exige un binaire de debug ou la feature `test-hooks`
-   (`TELMI2FLAM_TEST_FAULT=wait:zip:end`). L'archive de test se génère avec `make_story.py`
-   (issue #46) ; ne jamais committer de contenu sous licence.
+   (`TELMI2FLAM_TEST_FAULT=wait:zip:end`). L'archive de test est synthétique, à fabriquer
+   localement (issue #46) ; ne jamais committer de contenu sous licence.
 
-**Plus de Python dans l'installation** : le chemin de Python des paramètres n'est plus utilisé
-par la conversion (l'écran Paramètres le propose encore : retrait prévu en #139). Un ancien
-`settings.json` qui porte `converter_engine: "python"` reste lisible : le champ est ignoré et
-Rust est utilisé. Une mise à jour depuis une version qui livrait Python supprime l'ancien
+**Plus de Python dans l'installation** : le réglage `python_path` n'existe plus (#139) et
+l'écran Paramètres ne propose plus de chemin de Python. Un ancien `settings.json` qui porte
+`python_path` ou `converter_engine: "python"` reste lisible : ces champs sont ignorés (et
+disparaissent à la prochaine écriture), les autres réglages sont conservés et Rust est utilisé. Une mise à jour depuis une version qui livrait Python supprime l'ancien
 dossier `telmi2flam/python/` : le désinstallateur de la version précédente retire exactement
 les fichiers qu'elle avait installés (voir « Mise à jour »).
 
@@ -209,7 +214,7 @@ l'histoire, n'est ni affiché ni journalisé). La campagne de parité sur 30 arc
 n'en a trouvé aucune.
 
 **Licences redistribuées** : `telmi2flam/LICENSES.md` (produit par `build-converter.ps1`) liste
-le binaire (GPL v3, et HPND pour le code dérivé de Pillow : `resample.rs`, `blur.rs`), le
+le binaire (GPL v3, et HPND pour le code dérivé de Pillow : `resample.rs`, `blur.rs`, `gif.rs`), le
 runtime C Microsoft lié statiquement et `vcruntime140.dll`. Python et Pillow ne sont plus livrés ;
 seule la mention du code de Pillow porté en Rust reste (`THIRD-PARTY-NOTICES.txt`, texte intégral
 MIT-CMU). `LICENSES.md` à la racine de
@@ -411,7 +416,7 @@ apps/flam-launcher/
       external.rs          Ouverture d'une page du dépôt dans le navigateur (`open_external`, #323)
       error.rs             `AppError` (thiserror), sérialisée en `{ kind, message }`
       storage.rs           Persistance JSON : écriture atomique, `*.bak`, migration de schéma
-      settings.rs          `settings.json`, détection du player et de Python (réglage obsolète, #139), commandes `settings_*`
+      settings.rs          `settings.json`, détection du player, commandes `settings_*`
       cache.rs             Taille du cache et vidage (sous-dossiers de l'application seulement)
       sources.rs           `sources.json`, source par défaut et implicite, commandes `sources_*`
       story.rs             `StoryEntry` / `StoryKind` : type commun des histoires de toutes les sources
@@ -682,6 +687,9 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 | `player_unavailable`    | `flam-player.exe` introuvable (ni configuré ni détecté) ou impossible à lancer                      |
 | `player_busy`           | Un player tourne déjà (un seul à la fois)                                                           |
 | `story_file_missing`    | Le fichier de l'histoire à lancer a disparu                                                         |
+| `tts_unavailable`       | Synthèse vocale indisponible (système non Windows, service de voix absent)                          |
+| `tts_no_voice`          | Aucune voix française installée dans Windows, ou voix choisie disparue                              |
+| `tts_failed`            | Synthèse ou conversion d'un titre en échec (voix muette, délai, audio inexploitable)                |
 | `unknown`               | Côté front uniquement : erreur de forme inattendue                                                  |
 
 Un fichier de configuration **corrompu** n'est pas une erreur : il est renommé en
@@ -980,9 +988,9 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
 --progress-json --thumb-fit <mode> --cancel-on-stdin-eof`, processus sans console
    (`CREATE_NO_WINDOW` + `CREATE_NEW_PROCESS_GROUP`), lancé depuis `library/.staging/`, stdin en
    tube gardé ouvert. stdout est lu ligne par ligne (ligne non JSON ou événement inconnu
-   ignoré) ; stderr, décodé en tolérant les erreurs, ne sert qu'au message de repli (fin du
-   flux, lu par morceaux dans un tampon borné à 4 Kio) si aucun événement `error` n'est reçu
-   (`code` = `exit_<n>`). Le convertisseur est lancé **suspendu** (`CREATE_SUSPENDED`), rattaché
+   ignoré) ; stderr est lu et jeté (jamais gardé, affiché ni journalisé : il peut citer un nom
+   de fichier de l'histoire) ; sans événement `error`, le code est `exit_<n>` et le message
+   est fixe. Le convertisseur est lancé **suspendu** (`CREATE_SUSPENDED`), rattaché
    à un Job Object Windows (`KILL_ON_JOB_CLOSE`), puis son thread principal est repris : aucun
    sous-processus ne peut échapper au job, et l'arrêt forcé les termine tous. Si le job ne peut pas
    être créé (avertissement tracé), la conversion continue sans lui : l'arrêt forcé se limite alors
@@ -1137,7 +1145,6 @@ thumb, source_stamp }`.
 {
   "schema_version": 1,
   "player_path": null,
-  "python_path": null,
   "cache_dir": null,
   "default_catalog_url": "https://gist.githubusercontent.com/DantSu/49ed776755f3a01c995e78e3fd1cb79f/raw/telmi-interactive.json",
   "theme": "system",
@@ -1181,18 +1188,11 @@ Un chemin à `null` signifie « automatique » ; `settings_get` renvoie aussi le
 
 - `player_path` : `flam-player.exe` à côté de l'exécutable de l'appli, sinon (build de
   développement) `build/flam-player.exe` dans un dossier ancêtre (racine du dépôt) ;
-- `python_path` (réglage obsolète : plus aucune conversion ne lance Python, retrait de l'écran Paramètres en #139) : d'abord un Python embarqué `<exe>/telmi2flam/python/python.exe` (plus livré depuis #138), sinon `python.exe`, `python3.exe` puis `py.exe` (lanceur Windows) trouvés dans le
-  `PATH` (aucun processus ni script n'est exécuté ; les entrées relatives du `PATH` sont ignorées) ;
 - `cache_dir` : `%LOCALAPPDATA%/flam-launcher/cache`.
-
-**Alias du Microsoft Store** : un fichier vide dans `WindowsApps` est ignoré (savoir s'il désigne
-un Python réellement installé exigerait de le lancer). Si c'est tout ce qui est trouvé,
-`issues` contient `{ field: "python_path", kind: "store_alias" }` : l'interface invite à choisir
-le chemin de `python.exe`.
 
 `settings_set` normalise (espaces, chaîne vide = automatique) puis valide :
 
-- `player_path` et `python_path` : chemin **absolu**, **local** (UNC `\\serveur\…`, `\\?\UNC\…`
+- `player_path` : chemin **absolu**, **local** (UNC `\\serveur\…`, `\\?\UNC\…`
   et lecteurs réseau refusés), extension `.exe` (insensible à la casse), fichier existant ;
 - `cache_dir` : chemin absolu qui n'est pas un fichier, ni racine de disque, ni dossier
   utilisateur, ni dossier Windows. L'application ne supprime **jamais** que les sous-dossiers
@@ -1206,7 +1206,7 @@ fichier, fichier corrompu sauvegardé en `*.bak`.
 
 **Revalidation à la lecture** : à chaque `settings_get`, une valeur configurée devenue invalide
 ou disparue est écartée au profit de la détection automatique dans `resolved`, et signalée dans
-`issues` (`[{ field, kind, message }]`, `kind` = `invalid_path`, `not_found` ou `store_alias`).
+`issues` (`[{ field, kind, message }]`, `kind` = `invalid_path` ou `not_found`).
 La valeur enregistrée dans `settings` n'est pas modifiée. `resolved.*` n'est **pas une
 garantie** : le fichier peut disparaître ensuite, le lancement (#16) revérifie juste avant
 d'exécuter. Accesseurs Rust pour les issues suivantes : `SourcesStore::get(id)` et
@@ -1452,7 +1452,7 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   confirmation. « Mes histoires » reste en tête, intouchable.
   ![Sources, thème clair](docs/screenshots/sources-clair.png)
   ![Sources, thème sombre](docs/screenshots/sources-sombre.png)
-- **Paramètres** : chemins du player, de Python et du cache (sélecteur `.exe`, valeurs utilisées,
+- **Paramètres** : chemins du player et du cache (sélecteur `.exe`, valeurs utilisées,
   problèmes signalés), taille du cache et vidage, thème Système/Clair/Sombre, « Vignettes :
   remplissage » (Flou/Rogner/Bandes, défaut Flou ; bloqué pendant l'enregistrement du thème, et
   inversement), lecture (réduire la fenêtre pendant la lecture), à propos.

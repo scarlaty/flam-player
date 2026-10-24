@@ -14,6 +14,11 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 use flate2::{Decompress, FlushDecompress, Status};
 
+use crate::unbzip2::Bzip2Decoder;
+use crate::unlzma::LzmaDecoder;
+use crate::unzstd::ZstdDecoder;
+use crate::zipcodec::{Halt, StreamDecoder};
+
 const SIZE_END_CENT_DIR: u64 = 22;
 const SIZE_END_CENT_DIR64_LOCATOR: i128 = 20;
 const SIZE_END_CENT_DIR64: i128 = 56;
@@ -29,15 +34,19 @@ const MASK_UTF_FILENAME: u16 = 1 << 11;
 
 const ZIP_STORED: u16 = 0;
 const ZIP_DEFLATED: u16 = 8;
+/// bzip2 (`bz2`), LZMA (`lzma`) et Zstandard (`compression.zstd`) : lus par Python 3.14 et
+/// par le Rust (#458, décodeurs de `zipcodec`).
 const ZIP_BZIP2: u16 = 12;
 const ZIP_LZMA: u16 = 14;
-/// Zstandard : lu par Python 3.14 (`compression.zstd`), délégué par le Rust (D4).
 const ZIP_ZSTANDARD: u16 = 93;
 
 /// `ZipExtFile.MAX_N` (`(1 << 31) - 1` depuis Python 3.14 ; `1 << 30` en 3.12) : taille d'un tour.
 const MAX_N: usize = (1 << 31) - 1;
 /// `ZipExtFile.MIN_READ_SIZE`.
 const MIN_READ_SIZE: usize = 4096;
+/// bzip2, LZMA, Zstandard : un tour de `MAX_N` octets compressés est lu et décodé par
+/// morceaux de cette taille (Python le lit d'un bloc ; le résultat est le même).
+const CODEC_PIECE: usize = 1 << 20;
 
 /// Échec de lecture, classé selon ce que `telmi2flam.py` en fait.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,20 +55,18 @@ pub enum ZipError {
     Corrupt(String),
     /// Bit 0 (chiffrement) : `RuntimeError` en Python (code 6), code 3 en Rust (§3).
     Encrypted(String),
-    /// Nom non décodable (`UnicodeDecodeError`) ou position négative (`OSError`) : Python
-    /// échoue en `internal_error` (code 6) ; le Rust rend code 3, comme pour le chiffrement.
+    /// Nom non décodable (`UnicodeDecodeError`), position négative (`OSError`), flux bzip2,
+    /// LZMA ou Zstandard invalide (`OSError`, `LZMAError`, `ZstdError`) : Python échoue en
+    /// `internal_error` (code 6) ; le Rust rend code 3, comme pour le chiffrement.
     PythonFailsToo(String),
-    /// bzip2, LZMA ou Zstandard : Python les lit, le Rust délègue (décision D4, code 7).
-    Unsupported(String),
 }
 
 impl std::fmt::Display for ZipError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ZipError::Corrupt(m)
-            | ZipError::Encrypted(m)
-            | ZipError::PythonFailsToo(m)
-            | ZipError::Unsupported(m) => f.write_str(m),
+            ZipError::Corrupt(m) | ZipError::Encrypted(m) | ZipError::PythonFailsToo(m) => {
+                f.write_str(m)
+            }
         }
     }
 }
@@ -554,16 +561,14 @@ impl<R: Read + Seek> ZipReader<R> {
                 zinfo.filename
             )));
         }
-        match zinfo.compress_type {
-            ZIP_STORED | ZIP_DEFLATED => {}
-            ZIP_BZIP2 | ZIP_LZMA | ZIP_ZSTANDARD => {
-                return Err(ZipError::Unsupported(format!(
-                    "{:?} : compression {} (bzip2/LZMA/Zstandard) déléguée à Python",
-                    zinfo.filename, zinfo.compress_type
-                )));
-            }
+        // _get_decompressor
+        let codec: Option<Box<dyn StreamDecoder>> = match zinfo.compress_type {
+            ZIP_STORED | ZIP_DEFLATED => None,
+            ZIP_BZIP2 => Some(Box::new(Bzip2Decoder::new())),
+            ZIP_LZMA => Some(Box::new(LzmaDecoder::new())),
+            ZIP_ZSTANDARD => Some(Box::new(ZstdDecoder::new())),
             _ => return Err(corrupt("That compression method is not supported")),
-        }
+        };
         seek_to(r, data_start)?;
         Ok(ExtFile {
             reader: r,
@@ -572,6 +577,7 @@ impl<R: Read + Seek> ZipReader<R> {
             left: zinfo.file_size,
             decompressor: Decompress::new(false),
             tail: Vec::new(),
+            codec,
         })
     }
 }
@@ -598,6 +604,8 @@ struct ExtFile<'a, R> {
     decompressor: Decompress,
     /// `unconsumed_tail` du décompresseur.
     tail: Vec<u8>,
+    /// bzip2, LZMA, Zstandard : décompresseur incrémental (`_get_decompressor`).
+    codec: Option<Box<dyn StreamDecoder>>,
 }
 
 impl<R: Read> ExtFile<'_, R> {
@@ -679,6 +687,9 @@ impl<R: Read> ExtFile<'_, R> {
         max_n: usize,
         sink: &mut dyn FnMut(&[u8]) -> Result<(), E>,
     ) -> Result<(), ChunkStop<E>> {
+        if self.codec.is_some() {
+            return self.pump_codec(zinfo, MAX_N, max_n, sink);
+        }
         let mut crc = crc32fast::Hasher::new();
         let mut eof = false;
         while !eof {
@@ -722,6 +733,125 @@ impl<R: Read> ExtFile<'_, R> {
             return Err(corrupt(format!("Bad CRC-32 for file {:?}", zinfo.filename)).into());
         }
         Ok(())
+    }
+
+    /// bzip2, LZMA, Zstandard : boucle de `ZipExtFile.read()`, où `_read1` se réduit à
+    /// `decompressor.decompress(self._read2(n))`. Chaque tour lit `round` octets compressés
+    /// (`MAX_N`, au moins `MIN_READ_SIZE`, au plus ce qui reste ; `EOFError` si le fichier n'en
+    /// donne aucun) et les décode **tous**, même au-delà de `file_size` (Python aussi : une
+    /// erreur du flux y est détectée), mais seuls les `file_size` premiers octets sont gardés.
+    /// Les tours s'arrêtent à la fin du flux, à la fin des données compressées ou quand
+    /// `file_size` octets sont rendus ; puis le CRC est vérifié. La mémoire reste bornée : le
+    /// tour est lu par morceaux de `CODEC_PIECE` octets et la sortie passée à `sink` par
+    /// morceaux d'au plus `out_chunk` octets.
+    fn pump_codec<E>(
+        mut self,
+        zinfo: &Entry,
+        round: usize,
+        out_chunk: usize,
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), ChunkStop<E>> {
+        let mut codec = self.codec.take().expect("décompresseur présent");
+        let out_chunk = out_chunk.max(1);
+        let mut crc = crc32fast::Hasher::new();
+        let mut left = self.left;
+        let mut sink_err: Option<E> = None;
+        loop {
+            let n = (round.max(MIN_READ_SIZE) as u64).min(self.compress_left);
+            let mut got = 0u64;
+            let mut eof;
+            let mut short;
+            loop {
+                let want = (CODEC_PIECE as u64).min(n - got);
+                let piece = read_up_to(self.reader, want).map_err(io_corrupt)?;
+                got += piece.len() as u64;
+                self.compress_left -= piece.len() as u64;
+                if piece.is_empty() && got == 0 && n > 0 {
+                    return Err(corrupt("EOFError : fin de fichier dans une entrée").into());
+                }
+                // Dernier morceau du tour : tour complet, ou fin du fichier.
+                short = (piece.len() as u64) < want;
+                let last = got == n || short;
+                let r = codec.feed(&piece, last, &mut |chunk: &[u8]| {
+                    deliver(
+                        chunk,
+                        &mut left,
+                        &mut crc,
+                        out_chunk,
+                        &mut *sink,
+                        &mut sink_err,
+                    )
+                });
+                eof = codec_result(r, &mut sink_err, zinfo)?;
+                // Après la fin du flux, le reste du tour est ignoré (`unused_data`).
+                if eof || last {
+                    break;
+                }
+            }
+            if !eof && left > 0 && (self.compress_left == 0 || short) {
+                // Plus rien à lire (fin des données ou du fichier) : ce que le décodeur retenait encore est rendu, comme les
+                // bibliothèques C le rendent au fil de l'eau (flux tronqué).
+                let r = codec.finish(&mut |chunk: &[u8]| {
+                    deliver(
+                        chunk,
+                        &mut left,
+                        &mut crc,
+                        out_chunk,
+                        &mut *sink,
+                        &mut sink_err,
+                    )
+                });
+                codec_result(r, &mut sink_err, zinfo)?;
+            }
+            if eof || self.compress_left == 0 || left == 0 {
+                break;
+            }
+        }
+        if crc.finalize() != zinfo.crc {
+            return Err(corrupt(format!("Bad CRC-32 for file {:?}", zinfo.filename)).into());
+        }
+        Ok(())
+    }
+}
+
+/// Sortie d'un décodeur bzip2/LZMA/Zstandard : `data[:self._left]`, CRC, puis `sink` par
+/// morceaux d'au plus `out_chunk` octets. Un refus de `sink` est noté dans `err`.
+fn deliver<E>(
+    chunk: &[u8],
+    left: &mut u64,
+    crc: &mut crc32fast::Hasher,
+    out_chunk: usize,
+    sink: &mut dyn FnMut(&[u8]) -> Result<(), E>,
+    err: &mut Option<E>,
+) -> Result<(), ()> {
+    let k = (chunk.len() as u64).min(*left) as usize;
+    let kept = &chunk[..k];
+    *left -= k as u64;
+    crc.update(kept);
+    for part in kept.chunks(out_chunk) {
+        if let Err(e) = sink(part) {
+            *err = Some(e);
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+/// Erreur d'un décodeur bzip2/LZMA/Zstandard : flux invalide (Python échoue aussi, code 3 en
+/// Rust) ou refus du destinataire noté par [`deliver`].
+fn codec_result<T, E>(
+    r: Result<T, Halt>,
+    sink_err: &mut Option<E>,
+    zinfo: &Entry,
+) -> Result<T, ChunkStop<E>> {
+    match r {
+        Ok(v) => Ok(v),
+        Err(Halt::Sink) => Err(ChunkStop::Sink(
+            sink_err.take().expect("refus du destinataire noté"),
+        )),
+        Err(Halt::Data(m)) => {
+            Err(ZipError::PythonFailsToo(format!("{:?} : {m}", zinfo.filename)).into())
+        }
     }
 }
 
@@ -855,6 +985,7 @@ mod tests {
                         left: size as u64,
                         decompressor: Decompress::new(false),
                         tail: Vec::new(),
+                        codec: None,
                     };
                     let got = ext
                         .read_all(&entry, TOUR)
@@ -899,6 +1030,7 @@ mod tests {
                         left: content.len() as u64,
                         decompressor: Decompress::new(false),
                         tail: Vec::new(),
+                        codec: None,
                     };
                     let mut got = Vec::new();
                     let r = ext.pump(&entry, chunk, &mut |c: &[u8]| {
@@ -944,6 +1076,154 @@ mod tests {
         assert!(!zr
             .read_chunks("absent", 5000, &mut |_| Ok::<(), ()>(()))
             .unwrap());
+    }
+
+    /// bzip2, LZMA, Zstandard (#458) : même contenu en tours de `MIN_READ_SIZE` octets
+    /// compressés qu'en un seul tour, et décodeur alimenté par petits morceaux (reprise d'un
+    /// bloc ou d'un symbole incomplet) ; refus du destinataire rendu tel quel.
+    #[test]
+    fn bzip2_lzma_zstd_par_tours_et_par_morceaux() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/archive/");
+        for id in [
+            "bzip2_multiblock",
+            "bzip2_runs",
+            "bzip2_empty",
+            "lzma_runs",
+            "lzma_no_eos",
+            "lzma_truncated_partial",
+            "zstd_level19",
+            "zstd_noise",
+            "zstd_checksum",
+            "zstd_raw_truncated_partial",
+            "zstd_multiblock_truncated_partial",
+        ] {
+            let data = std::fs::read(format!("{dir}{id}.zip")).unwrap();
+            let mut zr = ZipReader::new(IoCursor::new(data)).unwrap();
+            let want = zr.read("images/c.png").unwrap().unwrap();
+            let entry = zr.entries[zr.name_to_info["images/c.png"]].clone();
+            let ext = zr.open_entry(&entry).unwrap();
+            let mut got = Vec::new();
+            ext.pump_codec(&entry, MIN_READ_SIZE, 1000, &mut |c: &[u8]| {
+                assert!(!c.is_empty() && c.len() <= 1000);
+                got.extend_from_slice(c);
+                Ok::<(), ()>(())
+            })
+            .unwrap_or_else(|e| panic!("{id} : {e:?}"));
+            assert!(got == want, "{id} : tours de {MIN_READ_SIZE} octets");
+
+            // Décodeur seul, par morceaux, sans `flush` avant le dernier.
+            let mut ext = zr.open_entry(&entry).unwrap();
+            let comp = read_up_to(ext.reader, entry.compress_size).unwrap();
+            let mut codec = ext.codec.take().unwrap();
+            let step = if comp.len() < 5000 { 1 } else { 61 };
+            let mut out = Vec::new();
+            let mut eof = false;
+            let parts: Vec<&[u8]> = comp.chunks(step).collect();
+            for (i, p) in parts.iter().enumerate() {
+                let last = i + 1 == parts.len();
+                eof = codec
+                    .feed(p, last, &mut |c: &[u8]| {
+                        out.extend_from_slice(c);
+                        Ok(())
+                    })
+                    .unwrap_or_else(|e| panic!("{id} : {e:?}"));
+                if eof {
+                    break;
+                }
+            }
+            if !eof {
+                codec
+                    .finish(&mut |c: &[u8]| {
+                        out.extend_from_slice(c);
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            out.truncate(want.len());
+            assert!(out == want, "{id} : morceaux de {step} octets");
+
+            // Refus du destinataire : rendu tel quel, lecture arrêtée.
+            if !want.is_empty() {
+                let ext = zr.open_entry(&entry).unwrap();
+                let r = ext.pump_codec(&entry, MAX_N, 1000, &mut |_| Err("stop"));
+                assert!(matches!(r, Err(ChunkStop::Sink("stop"))), "{id}");
+            }
+        }
+    }
+
+    /// Mutations directes des flux bzip2/LZMA/Zstandard (décodeurs seuls, sans le CRC de
+    /// l'entrée) : aucune panique, chaque décodage se termine. `TELMI2FLAM_FUZZ_ITER` règle le
+    /// nombre de mutations par flux (500 par défaut ; davantage en local, en release).
+    #[test]
+    fn decodeurs_sous_mutations() {
+        let iters: usize = std::env::var("TELMI2FLAM_FUZZ_ITER")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(500);
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/archive/");
+        let mut seed: u64 = 0xD1B5_4A32_D192_ED03;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for id in [
+            "bzip2_text",
+            "bzip2_runs",
+            "lzma_text",
+            "lzma_no_eos",
+            "zstd_text",
+            "zstd_checksum",
+            "zstd_level19",
+        ] {
+            let data = std::fs::read(format!("{dir}{id}.zip")).unwrap();
+            let mut zr = ZipReader::new(IoCursor::new(data)).unwrap();
+            let entry = zr.entries[zr.name_to_info["images/c.png"]].clone();
+            let mut ext = zr.open_entry(&entry).unwrap();
+            let comp = read_up_to(ext.reader, entry.compress_size).unwrap();
+            let method = entry.compress_type;
+            drop(ext.codec.take());
+            for _ in 0..iters {
+                let mut v = comp.clone();
+                for _ in 0..1 + next() % 4 {
+                    let i = (next() % v.len() as u64) as usize;
+                    v[i] = (next() & 0xFF) as u8;
+                }
+                if next() % 4 == 0 {
+                    v.truncate((next() % v.len() as u64) as usize);
+                }
+                let mut codec: Box<dyn StreamDecoder> = match method {
+                    ZIP_BZIP2 => Box::new(Bzip2Decoder::new()),
+                    ZIP_LZMA => Box::new(LzmaDecoder::new()),
+                    _ => Box::new(ZstdDecoder::new()),
+                };
+                let mut n = 0usize;
+                let step = 1 + (next() % 5000) as usize;
+                let parts: Vec<&[u8]> = v.chunks(step).collect();
+                let mut ended = false;
+                for (k, p) in parts.iter().enumerate() {
+                    match codec.feed(p, k + 1 == parts.len(), &mut |c: &[u8]| {
+                        n += c.len();
+                        Ok(())
+                    }) {
+                        Ok(true) | Err(_) => {
+                            ended = true;
+                            break;
+                        }
+                        Ok(false) => {}
+                    }
+                }
+                if !ended {
+                    let _ = codec.finish(&mut |c: &[u8]| {
+                        n += c.len();
+                        Ok(())
+                    });
+                }
+                // Borne grossière : aucune expansion démesurée sur ces petits flux.
+                assert!(n < 1 << 28, "{id}");
+            }
+        }
     }
 
     #[test]

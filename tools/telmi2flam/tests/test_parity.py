@@ -559,6 +559,15 @@ sys.exit(7)
 """
 
 
+ZIP_DELEGATING_STUB = """
+import json, sys
+print(json.dumps({"event": "error", "code": "unsupported_format", "exit": 7,
+                  "message": "a.zip : \\"audios/s0.mp3\\" : compression 12 (bzip2/LZMA/Zstandard) "
+                             "d\\u00e9l\\u00e9gu\\u00e9e \\u00e0 Python"}))
+sys.exit(7)
+"""
+
+
 class TestCampaign(unittest.TestCase):
     """Campagne sur archives reelles (#135) : reprise, delegations comptees, seuil."""
 
@@ -588,8 +597,8 @@ class TestCampaign(unittest.TestCase):
         self.assertIsNone(parity.image_format(b"ID3\x04"))
         self.assertEqual(parity.delegation_cause(
             "a.zip : \"x\" : compression 12 (bzip2/LZMA/Zstandard) déléguée à Python"), "zip:bzip2")
-        self.assertEqual(parity.delegation_cause("i.png : format non pris en charge : APNG"),
-                         "image:APNG")
+        self.assertEqual(parity.delegation_cause("i.png : format non pris en charge : pas un PNG"),
+                         "image:pas un PNG")
         self.assertEqual(parity.delegation_cause(
             "metadata.json title : liste ou objet non pris en charge"), "metadata")
         self.assertEqual(parity.delegation_cause(None), "autre")
@@ -626,7 +635,8 @@ class TestCampaign(unittest.TestCase):
     def test_delegation_cause_is_anchored_with_closed_reasons(self):
         # un nom d'asset ne fausse pas la cause
         self.assertEqual(parity.delegation_cause(
-            "compression 3 (x).png : format non pris en charge : APNG"), "image:APNG")
+            "compression 3 (x).png : format non pris en charge : pas un PNG"),
+            "image:pas un PNG")
         self.assertEqual(parity.delegation_cause(
             "format non pris en charge : APNG.png : compression 93 (bzip2/LZMA/Zstandard) "
             "déléguée à Python"), "zip:zstd")
@@ -636,10 +646,13 @@ class TestCampaign(unittest.TestCase):
             "a.zip : \"a : compression 3 (bzip2/LZMA/Zstandard) déléguée à Python\" : "
             "compression 12 (bzip2/LZMA/Zstandard) déléguée à Python"), "zip:bzip2")
         self.assertEqual(parity.delegation_cause(
-            "a\nb.png : format non pris en charge : APNG"), "image:APNG")
+            "a\nb.png : format non pris en charge : pas un PNG"), "image:pas un PNG")
         # raison hors liste fermee, ou message sans ancre : autre
         self.assertEqual(parity.delegation_cause(
             "i.png : format non pris en charge : raison inventee"), "autre")
+        # raison retiree par #459 (PNG atypiques decodes par le Rust) : hors liste
+        self.assertEqual(parity.delegation_cause(
+            "i.png : format non pris en charge : APNG"), "autre")
         self.assertEqual(parity.delegation_cause(
             "format non pris en charge : APNG"), "autre")
         for why in parity.IMAGE_REASONS:
@@ -720,6 +733,21 @@ class TestCampaign(unittest.TestCase):
         self.assertEqual(doc["delegated_archives"]["images"], {"jpeg": 1, "png": 2})
         self.assertEqual(doc["delegated_archives"]["zip_methods"], {"bzip2": 1, "stored": 2})
         self.assertTrue(doc["threshold_met"])
+
+    def test_zip_method_delegation_is_a_diff_since_458(self):
+        """bzip2/LZMA/Zstandard lus par le Rust (#458) : un candidat qui delegue encore une
+        entree ZIP est en ecart (`delegation`), compte hors des delegations admises."""
+        stub = os.path.join(self.tmp, "zipdeleg.py")
+        with open(stub, "w", encoding="utf-8") as f:
+            f.write(ZIP_DELEGATING_STUB)
+        doc = parity.run_campaign(self.archives, parity.default_oracle(), [sys.executable, stub],
+                                  self.out, validate=False)
+        self.assertEqual(doc["summary"]["delegated"], 0)
+        self.assertEqual(doc["summary"]["diff"], 2)
+        self.assertEqual(doc["delegations_by_cause"], {})
+        self.assertEqual(doc["diff_kinds"], {"delegation": 2})
+        self.assertEqual({c["delegation"] for c in doc["cases"]}, {"zip:bzip2"})
+        self.assertFalse(doc["threshold_met"])
 
     def test_resume_requires_validation_and_redoes_broken_state(self):
         oracle = parity.default_oracle()

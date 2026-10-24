@@ -853,7 +853,14 @@ impl InstallService {
             }),
             Err(err) => {
                 if !matches!(err, AppError::Cancelled) {
-                    tracing::warn!("installation {id} en échec : {err}");
+                    // Conversion : seul le code est journalisé (le message peut venir du
+                    // convertisseur, #475).
+                    match &err {
+                        AppError::Conversion { code, .. } => {
+                            tracing::warn!("installation {id} en échec : conversion ({code})");
+                        }
+                        _ => tracing::warn!("installation {id} en échec : {err}"),
+                    }
                 }
                 self.0.opts.events.failed(&InstallFailed {
                     task_id: id,
