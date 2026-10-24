@@ -62,6 +62,7 @@ export function SettingsScreen() {
   const [thumbFitError, setThumbFitError] = useState(false);
   const [voiceError, setVoiceError] = useState(false);
   const [minimizeDuringPlay, setMinimize] = useState(getMinimizeDuringPlay);
+  const usageRequestRef = useRef(0);
   const cancelClearRef = useRef<HTMLButtonElement>(null);
   // Numéro de la dernière modification demandée, par réglage.
   const requestsRef = useRef<Record<string, number>>({});
@@ -69,18 +70,19 @@ export function SettingsScreen() {
   const pathsSavingRef = useRef(false);
 
   const refreshUsage = useCallback(async () => {
-    try {
-      setUsage(await getCacheUsage());
+    // Une réponse d'un relevé plus ancien n'écrase pas celle d'un relevé plus récent.
+    const mine = ++usageRequestRef.current;
+    const isLatest = () => mine === usageRequestRef.current;
+    const [total, mp3] = await Promise.allSettled([getCacheUsage(), getMp3CacheUsage()]);
+    if (!isLatest()) return;
+    if (total.status === "fulfilled") {
+      setUsage(total.value);
       setUsageError(null);
-    } catch (caught) {
-      setUsageError(toAppError(caught));
+    } else {
+      setUsageError(toAppError(total.reason));
     }
-    try {
-      setMp3Bytes((await getMp3CacheUsage()).bytes);
-    } catch {
-      // Information secondaire : un échec n'empêche ni l'affichage ni le vidage du cache.
-      setMp3Bytes(null);
-    }
+    // Information secondaire : un échec n'empêche ni l'affichage ni le vidage du cache.
+    setMp3Bytes(mp3.status === "fulfilled" ? mp3.value.bytes : null);
   }, []);
 
   const applyView = useCallback(

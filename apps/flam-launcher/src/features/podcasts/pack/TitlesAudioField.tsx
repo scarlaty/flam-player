@@ -99,7 +99,9 @@ export function TitlesAudioField({
             // aria-disabled, pas disabled : le bouton garde le focus quand il devient inactif.
             aria-disabled={unavailable || undefined}
             aria-label={preview.playing ? text.stopTitle : text.listenTitle}
-            aria-describedby={trimmed === "" ? `${id}-notitle` : undefined}
+            aria-describedby={
+              trimmed === "" ? `${id}-notitle` : preferredPending ? statusId : undefined
+            }
             onClick={() => {
               if (preview.playing) stop();
               else if (!unavailable) preview.play(trimmed, used);

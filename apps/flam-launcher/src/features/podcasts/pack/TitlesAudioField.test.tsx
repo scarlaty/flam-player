@@ -257,6 +257,10 @@ it("voix des Paramètres pas encore lue : l'aperçu attend au lieu de jouer la v
   ).toBeInTheDocument();
   const button = screen.getByRole("button", { name: "Écouter le titre du pack" });
   expect(button).toHaveAttribute("aria-disabled", "true");
+  // L'attente est expliquée au clavier et aux lecteurs d'écran.
+  expect(button).toHaveAccessibleDescription(
+    "Lecture de la voix choisie dans les Paramètres…",
+  );
   fireEvent.click(button);
   expect(callsOf("tts_preview")).toHaveLength(0);
 
