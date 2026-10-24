@@ -671,6 +671,9 @@ Lecture du rapport :
   Un candidat antérieur qui délègue encore une entrée (message `: compression N
   (bzip2/LZMA/Zstandard)`, cause `zip:<méthode>`) est compté en **écart** `delegation`, pas
   en délégation admise.
+- Formats d'image du convertisseur Rust (#459) : PNG et GIF (première image, comme Pillow :
+  `crates/telmi2flam/src/gif.rs`, vecteurs `tests/vectors/gif/`) sont décodés ; les autres
+  formats (JPEG…) sont encore délégués (`image:pas un PNG`).
 - `--limit N` écrit le même `report.json` sur les N premières archives seulement, avec
   `"partial": true` (`false` sinon) ; ce n'est pas un résultat de campagne complet.
 - Formats d'image : détection par signature. `ftyp` exige une marque AVIF/HEIF (`avif`, `avis`,
