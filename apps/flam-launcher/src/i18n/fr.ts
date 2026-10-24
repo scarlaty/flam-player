@@ -347,6 +347,10 @@ export const fr = {
         removed: (label: string) => `« ${label} » retiré du pack.`,
         added: (label: string, menu: string) => `« ${label} » ajouté à « ${menu} ».`,
         refused: "Déplacement impossible : limite de l'arborescence atteinte.",
+        categoryImage: (category: string, chosen: boolean) =>
+          chosen
+            ? `Image de la catégorie « ${category} » : épisode choisi.`
+            : `Image de la catégorie « ${category} » : automatique.`,
       },
       pool: {
         title: "Épisodes sélectionnés, pas encore placés",
@@ -381,6 +385,11 @@ export const fr = {
         feed: (name: string) => `Image du flux « ${name} »`,
         episode: (title: string) => `Image de l'épisode « ${title} »`,
         missing: "Image indisponible : choisissez-en une autre",
+      },
+      categoryImage: {
+        legend: (category: string) => `Image de la catégorie « ${category} »`,
+        auto: "Automatique",
+        autoHint: "Image du premier épisode de la catégorie.",
       },
       problems: {
         title: "À corriger avant de créer l'histoire",

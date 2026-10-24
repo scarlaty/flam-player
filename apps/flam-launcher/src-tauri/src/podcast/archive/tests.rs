@@ -89,6 +89,7 @@ fn cat(name: &str, entries: Vec<MenuEntry>) -> MenuEntry {
         name: name.to_string(),
         entries,
         audio: None,
+        image: None,
     }
 }
 
@@ -291,6 +292,77 @@ fn sous_menus_sur_trois_niveaux() {
     assert_eq!(nodes.stage(&xo[1])["image"], "e003.png");
 }
 
+/// Image d'un épisode de `menu` (rang `n` dans le parcours en profondeur, depuis 1).
+fn episode_image(menu: &[MenuEntry], n: usize) -> PathBuf {
+    fn walk<'a>(menu: &'a [MenuEntry], out: &mut Vec<&'a PackEpisode>) {
+        for e in menu {
+            match e {
+                MenuEntry::Episode(ep) => out.push(ep),
+                MenuEntry::Category { entries, .. } => walk(entries, out),
+            }
+        }
+    }
+    let mut all = Vec::new();
+    walk(menu, &mut all);
+    all[n - 1].image.clone().unwrap()
+}
+
+/// Remplace l'image choisie de la catégorie `name` (N5 c).
+fn choose_image(menu: &mut [MenuEntry], name: &str, png: Option<PathBuf>) {
+    for e in menu {
+        if let MenuEntry::Category {
+            name: n,
+            entries,
+            image,
+            ..
+        } = e
+        {
+            if n == name {
+                *image = png.clone();
+            }
+            choose_image(entries, name, png.clone());
+        }
+    }
+}
+
+#[test]
+fn image_choisie_d_une_categorie_n5c() {
+    let mut fx = Fixture::new();
+    let mut menu = three_levels(&mut fx);
+    // X contient B, C, D, E (rangs 2 à 5) : on choisit E ; Y contient C, D : on choisit D.
+    let (e, d) = (episode_image(&menu, 5), episode_image(&menu, 4));
+    choose_image(&mut menu, "X", Some(e));
+    choose_image(&mut menu, "Y", Some(d));
+    write_archive(&pack(menu, None), &fx.out(), &never).unwrap();
+    let files = read_zip(&fx.out());
+    let nodes = Nodes::of(&files);
+    let r = nodes.action(&nodes.menu_of_root());
+    assert_eq!(nodes.stage(&r[1])["image"], "e005.png");
+    let (x, _) = nodes.target(&r[1], "ok");
+    let xo = nodes.action(&x);
+    assert_eq!(nodes.stage(&xo[1])["image"], "e004.png");
+    // Les épisodes gardent leur propre image.
+    assert_eq!(nodes.stage(&xo[0])["image"], "e002.png");
+    assert!(files.contains_key("images/e005.png"));
+}
+
+#[test]
+fn image_choisie_hors_de_la_categorie_ou_inconnue_retombe_sur_l_automatique() {
+    let mut fx = Fixture::new();
+    let mut menu = three_levels(&mut fx);
+    // A (rang 1) n'est pas dans X ; un chemin inconnu ne désigne aucun épisode.
+    let a = episode_image(&menu, 1);
+    choose_image(&mut menu, "X", Some(a));
+    choose_image(&mut menu, "Y", Some(PathBuf::from("inconnue.png")));
+    write_archive(&pack(menu, None), &fx.out(), &never).unwrap();
+    let files = read_zip(&fx.out());
+    let nodes = Nodes::of(&files);
+    let r = nodes.action(&nodes.menu_of_root());
+    assert_eq!(nodes.stage(&r[1])["image"], "e002.png");
+    let (x, _) = nodes.target(&r[1], "ok");
+    assert_eq!(nodes.stage(&nodes.action(&x)[1])["image"], "e003.png");
+}
+
 // --- titres lus (§ 12, #462) -------------------------------------------------------------------
 
 /// Donne un titre lu à chaque option de l'arborescence dont le libellé n'est pas dans `mute`.
@@ -306,6 +378,7 @@ fn speak_all(fx: &mut Fixture, menu: &mut [MenuEntry], mute: &[&str]) {
                 name,
                 entries,
                 audio,
+                ..
             } => {
                 if !mute.contains(&name.as_str()) {
                     *audio = Some(fx.title_mp3());
@@ -377,6 +450,7 @@ fn titres_lus_un_audio_par_option_et_title_mp3() {
                         name,
                         entries,
                         audio,
+                        ..
                     } => {
                         out.push((name, audio.as_deref().unwrap()));
                         walk(entries, out);
