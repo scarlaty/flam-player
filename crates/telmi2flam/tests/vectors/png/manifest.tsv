@@ -325,6 +325,7 @@ text_memoire_epuisee	unreadable	same
 actl_delegue	rgba:9x7:7ee7be0bfb525797e6742c10d9959319f69e05f875a4c7a94c04c8f829a4711e	delegate
 fctl_delegue	rgba:9x7:7ee7be0bfb525797e6742c10d9959319f69e05f875a4c7a94c04c8f829a4711e	delegate
 pas_png	unreadable	delegate
+gif_vide	unreadable	same
 vide	unreadable	same
 signature_seule	unreadable	same
 signature_tronquee	unreadable	same
