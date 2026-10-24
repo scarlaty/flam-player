@@ -20,6 +20,7 @@ Flam, les fait jouer sur le PC et les copie sur l'appareil.
 [**Télécharger**](https://github.com/scarlaty/flam-player/releases?q=launcher) ·
 [Démarrage rapide](#démarrage-rapide) ·
 [FAQ](#faq) ·
+[Nouveautés](CHANGELOG.md) ·
 [Contribuer](#contribuer)
 
 </div>
@@ -51,8 +52,9 @@ badge indique si l'histoire a été testée et fonctionne sur la Flam.
 ### Convertir sans ligne de commande
 
 « Télécharger » récupère l'archive TELMI et la convertit au format de la Flam (`.plain.pk`). Le
-convertisseur et son Python sont fournis : rien d'autre à installer. Les tâches s'affichent à
-droite avec leur avancement, et chacune peut être annulée.
+convertisseur est intégré à l'application : rapide, sans aucun programme à installer à côté (ni
+Python, ni bibliothèque d'images). Les tâches s'affichent à droite avec leur avancement, et
+chacune peut être annulée.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/installation-sombre.png">
@@ -88,8 +90,8 @@ vignettes. Vous pouvez en envoyer depuis « Mes histoires », en retirer, change
 
 ### Sources, réglages et thème sombre
 
-Ajoutez, renommez et ordonnez vos sources. Les paramètres indiquent les programmes utilisés et
-la place occupée par le cache. L'interface suit le thème clair ou sombre de Windows, ou celui
+Ajoutez, renommez et ordonnez vos sources. Les paramètres règlent le chemin de flam-player, le dossier de
+cache (et la place qu'il occupe), le thème et le remplissage des vignettes. L'interface suit le thème clair ou sombre de Windows, ou celui
 que vous choisissez.
 
 <table>
@@ -103,7 +105,7 @@ que vous choisissez.
     <td width="50%">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/parametres-sombre.png">
-        <img src="docs/assets/parametres-clair.png" alt="Écran Paramètres : chemins de flam-player et de Python, dossier de cache">
+        <img src="docs/assets/parametres-clair.png" alt="Écran Paramètres : chemin de flam-player, dossier de cache, thème et vignettes">
       </picture>
     </td>
   </tr>
@@ -151,9 +153,10 @@ Du catalogue à la Flam : choisir une histoire, la télécharger, puis l'envoyer
 > « Exécuter quand même ». Le fichier `SHA256SUMS.txt` de la version permet de vérifier le
 > téléchargement.
 
-Tout est inclus : l'application, `flam-player` et le convertisseur avec son Python. WebView2
-est requis ; il est présent sur Windows 11 et sur Windows 10 à jour. Vos sources, paramètres
-et progressions survivent aux mises à jour. Détails, désinstallation et dépannage :
+Tout est inclus : l'application, `flam-player` et le convertisseur (un programme Rust autonome),
+sans Python à installer. WebView2 est requis ; il est présent sur Windows 11 et sur Windows 10
+à jour. Vos sources, paramètres et progressions survivent aux mises à jour. Détails,
+désinstallation et dépannage :
 [apps/flam-launcher/README.md](apps/flam-launcher/README.md#installation-windows).
 
 ## Démarrage rapide
@@ -191,11 +194,15 @@ Détails : [flam-transfert.md](apps/flam-launcher/docs/flam-transfert.md).
 <details>
 <summary><b>Quels formats d'histoires sont acceptés ?</b></summary>
 
-- archives TELMI `.zip` (description `nodes.json`), converties à l'installation ;
+- archives TELMI `.zip` (description `nodes.json`), converties à l'installation par le
+  convertisseur intégré. Il lit les archives ZIP sans compression ou compressées en deflate, et
+  les images PNG, y compris les PNG atypiques (entrelacés, palettes, 16 bits...) ;
 - histoires déjà au format de la Flam : dossiers `.plain` et archives `.plain.pk`, copiées
   telles quelles.
 
-Le format STUdio (`story.json`) n'est pas pris en charge. Une source peut être un catalogue en
+Le format STUdio (`story.json`) n'est pas pris en charge. Pour l'instant, une archive TELMI
+dont les images ne sont pas des PNG (GIF, JPEG) ou qui est compressée autrement (bzip2, LZMA,
+Zstandard) est refusée avec un message explicite. Une source peut être un catalogue en
 ligne au format Telmi Store, ou un dossier local, qui n'est jamais modifié.
 </details>
 
@@ -244,8 +251,8 @@ et TypeScript). Il s'appuie sur d'autres briques de ce dépôt :
 | Composant | Rôle | Documentation |
 |-----------|------|---------------|
 | `flam-player` | Émulateur du firmware de la Flam (C, LVGL, Lua, SDL2) | [docs/player.md](docs/player.md) |
-| `telmi2flam` | Convertisseur TELMI vers FLAM (Python) | [tools/telmi2flam](tools/telmi2flam/README.md) |
-| `crates/telmi2flam` | Port Rust du convertisseur, en cours | [crates/telmi2flam](crates/telmi2flam/) |
+| `telmi2flam` (Rust) | Convertisseur TELMI vers FLAM livré avec le launcher (version 2.0.0) | [crates/telmi2flam](crates/telmi2flam/) |
+| `tools/telmi2flam` | Version Python d'origine : référence de parité et outils de campagne, plus livrée aux utilisateurs | [tools/telmi2flam](tools/telmi2flam/README.md) |
 | Jeux homebrew | Jeux en Lua pour la Flam | [docs/player.md](docs/player.md#jeux-et-contenus-homebrew) |
 | Skill `flam-homebrew` | Fabriquer un contenu `.plain.pk` avec une IA | [skills/flam-homebrew](skills/flam-homebrew/SKILL.md) |
 | Formats de la Flam | Volume USB, index, chiffrement | [flam-device-format.md](docs/flam-device-format.md), [flam-carrier.md](docs/flam-carrier.md) |

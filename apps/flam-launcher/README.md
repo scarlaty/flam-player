@@ -32,8 +32,8 @@ installées de « Mes histoires ») sous `%LOCALAPPDATA%` (« Paramètres » →
 emplacement).
 
 **Désinstallation et données** : la désinstallation retire le dossier d'installation seulement.
-Les données (`%APPDATA%lam-launcher` : sources, paramètres, sauvegardes ; et
-`%LOCALAPPDATA%lam-launcher` : cache et histoires installées) sont **conservées**, y compris si
+Les données (`%APPDATA%\flam-launcher` : sources, paramètres, sauvegardes ; et
+`%LOCALAPPDATA%\flam-launcher` : cache et histoires installées) sont **conservées**, y compris si
 l'on coche « supprimer les données de l'application » du désinstallateur, qui ne les connaît pas :
 pour tout effacer, supprimer ces deux dossiers à la main.
 
@@ -112,6 +112,11 @@ Testeurs de la bêta : [docs/guide-testeur.md](docs/guide-testeur.md). Formats e
 ### Prérequis
 
 Rust stable (MSVC), Visual Studio 2022 avec les outils C++ x64, WebView2, Node 24+ et npm.
+
+Python 3 n'est **pas** nécessaire pour utiliser, construire ou tester le launcher : l'installation
+n'en contient plus (#138). Il ne sert qu'aux outils de campagne et de parité de
+`tools/telmi2flam/` (oracle Python de #135) et à `make_story.py`, qui génère des archives de
+test. Le convertisseur se développe dans `crates/telmi2flam`.
 
 Le launcher est membre d'un **workspace Cargo** dont le `Cargo.toml` est à la racine du dépôt (avec
 `crates/telmi2flam`) : `Cargo.lock` et `target/` sont à la racine, pas dans `src-tauri/`. Les commandes

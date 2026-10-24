@@ -25,7 +25,7 @@ Pour utiliser Flam Launcher sans rien compiler, voir l'[installation](../README.
 ## Émulateur flam-player
 
 Émulateur de bureau du firmware Flam (Lunii v3), capable d'exécuter les histoires `.plain`
-extraites. Le convertisseur TELMI vers FLAM (`tools/telmi2flam`) a sa
+extraites. Le convertisseur TELMI vers FLAM (`crates/telmi2flam`) a sa
 [propre section](#convertir-une-histoire-telmi).
 
 ### Fonctionnalités
@@ -46,7 +46,7 @@ extraites. Le convertisseur TELMI vers FLAM (`tools/telmi2flam`) a sa
 L'installateur de Flam Launcher (`Flam-Launcher_<version>_x64-setup.exe` dans une pré-version
 publiée, `Flam Launcher_<version>_x64-setup.exe` comme artefact de la CI) installe, **pour
 l'utilisateur courant et sans droits d'administrateur**, l'application, `flam-player.exe` et le
-convertisseur TELMI vers FLAM (Python inclus). Il n'est pas signé : SmartScreen affiche un
+convertisseur TELMI vers FLAM (binaire Rust autonome : ni Python ni Pillow à installer). Il n'est pas signé : SmartScreen affiche un
 avertissement (« Informations complémentaires » puis « Exécuter quand même »). Utilisation,
 sources, dépannage et construction de l'installateur :
 [apps/flam-launcher/README.md](../apps/flam-launcher/README.md).
@@ -56,8 +56,8 @@ sources, dépannage et construction de l'installateur :
 | Dossier | Rôle |
 |---------|------|
 | `src/` | Émulateur (voir [Architecture](#architecture)) |
-| `tools/telmi2flam/` | Convertisseur d'histoires TELMI (`.zip`) vers FLAM (`.plain.pk`) — voir [son README](../tools/telmi2flam/README.md) |
-| `crates/telmi2flam/` | Port Rust du convertisseur (workspace Cargo à la racine) |
+| `crates/telmi2flam/` | Convertisseur d'histoires TELMI (`.zip`) vers FLAM (`.plain.pk`) livré avec le launcher : binaire Rust, version 2.0.0 (workspace Cargo à la racine) |
+| `tools/telmi2flam/` | Version Python d'origine du convertisseur, gardée comme référence de parité, avec ses outils (`validate.py`, `explore.py`, campagne de parité) — voir [son README](../tools/telmi2flam/README.md) |
 | `apps/flam-launcher/` | Surcouche de bureau (Tauri 2 : Rust + React/TypeScript, licence GPL v3) pour parcourir, convertir et lancer des histoires — voir [son README](../apps/flam-launcher/README.md) ; installateur Windows (NSIS, non signé) avec player et convertisseur embarqués |
 | `games/` | Jeux en contenu Lua FLAM (voir [Jeux et contenus homebrew](#jeux-et-contenus-homebrew)) |
 | `skills/flam-homebrew/` | Skill IA pour fabriquer un homebrew `.plain.pk` |
@@ -262,17 +262,26 @@ Format de la Flam elle-même (volume USB, index, chiffrement) :
 
 ## Convertir une histoire TELMI
 
+Flam Launcher embarque le convertisseur : la conversion s'y fait à l'installation d'une
+histoire, sans ligne de commande et sans rien installer d'autre.
+
+Le convertisseur est le binaire Rust `telmi2flam` (`crates/telmi2flam`, version 2.0.0). Pour
+l'utiliser seul, depuis la racine du dépôt (Rust stable requis) :
+
 ```bat
-python tools\telmi2flam\telmi2flam.py "Mon histoire.zip" -o "Mon_histoire.plain.pk"
-python tools\telmi2flam\validate.py "Mon_histoire.plain.pk"
+cargo run --release -p telmi2flam -- "Mon histoire.zip" -o "Mon_histoire.plain.pk"
 ```
 
-Prérequis : python 3 et Pillow. Seul le format TELMI (`nodes.json`) est pris en charge, pas le
-format STUdio (`story.json`). Options (`--plain`, `--selector`, `--keep-size`,
-`--allow-missing`...) et détails : [tools/telmi2flam/README.md](../tools/telmi2flam/README.md).
+Seul le format TELMI (`nodes.json`) est pris en charge, pas le format STUdio (`story.json`).
+Il lit les ZIP sans compression ou en deflate et les images PNG, y compris atypiques ; les
+autres images (GIF, JPEG) et les autres compressions de ZIP (bzip2, LZMA, Zstandard) sont
+refusées avec un message explicite. Les options sont celles de l'ancienne version Python
+(`--plain`, `--selector`, `--keep-size`, `--allow-missing`...) : voir
+[tools/telmi2flam/README.md](../tools/telmi2flam/README.md).
 
-Flam Launcher embarque ce convertisseur (binaire Rust, sans Python) : la conversion s'y fait à
-l'installation d'une histoire, sans ligne de commande.
+Python (3, avec Pillow) ne reste nécessaire que pour les outils de développement de
+`tools/telmi2flam/` : version Python d'origine (référence de parité), `validate.py`, campagne de
+parité sur archives réelles, `explore.py` et tests du convertisseur Python.
 
 ## Jeux et contenus homebrew
 
