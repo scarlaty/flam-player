@@ -913,12 +913,14 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
     `seeds` : nombre de parcours par histoire (graines seed, seed+1...).
     `run_jobs` : explorations simultanees (threads, un player sans fenetre chacun).
     `reinterpret` : recalcule l'etape run des fiches reutilisees depuis leur resultat brut
-    (fait aussi automatiquement quand la liste benigne a change), sans relancer le player."""
+    (fait aussi automatiquement quand la liste benigne a change), sans relancer le player.
+    Sans binaire, `reinterpret` rend le rapport seul : le `converter_hash` precedent est garde
+    (non recalcule), les fiches non reutilisables sont conservees et marquees `stale`."""
     compat_dir = os.path.join(cache, "compat")
     os.makedirs(compat_dir, exist_ok=True)
     report_path = os.path.join(compat_dir, "report.json")
     prev_hash, prev_list = _load_previous(report_path)
-    binary_ok = True
+    binary_ok, unrefreshed = True, set()   # unrefreshed : fiches perimees faute de binaire
     try:
         chash = converter_hash()
     except converter_bin.ConverterNotFound:
@@ -937,11 +939,11 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         stories = []
         for s in prev_list:                      # fiches precedentes hors selection
             if s["key"] not in selected:
-                stories.append(dict(s, stale=(s.get("converter_hash") != chash)))
+                stories.append(dict(s, stale=(s.get("converter_hash") != chash or s["key"] in unrefreshed)))
         for k in keys:                           # selection : resultat frais, sinon ancienne fiche
             r = results.get(k) or prev.get(k)
             if r is not None:
-                stories.append(dict(r, stale=(r.get("converter_hash") != chash)))
+                stories.append(dict(r, stale=(r.get("converter_hash") != chash or k in unrefreshed)))
         return {"generated": time.strftime("%Y-%m-%dT%H:%M:%S"), "converter_hash": chash,
                 "stories": stories}
 
@@ -992,6 +994,7 @@ def run_campaign(entries, cache=DEFAULT_CACHE, jobs=1, force=False, explore=None
         elif binary_ok:
             todo.append(e)
         else:
+            unrefreshed.add(k)
             log("? %s : a reevaluer, binaire absent (fiche precedente conservee)" % k)
 
     lock = threading.Lock()
@@ -1367,15 +1370,23 @@ def main(argv=None):
         print("note : --run-timeout %d s est court pour %d actions (~0,6 s par ecran) ; "
               "les grandes histoires finiront en timeout (exploration partielle)"
               % (args.run_timeout, args.max_steps), file=sys.stderr)
-    doc = run_campaign(entries, args.cache, max(1, args.jobs), args.force, explore,
-                       player, args.run_timeout, args.seed, args.max_steps,
-                       seeds=args.seeds, benign=tuple(BENIGN_ERRORS) + tuple(args.benign_error),
-                       max_unzipped=args.max_unzipped_mb << 20, run_jobs=args.run_jobs,
-                       reinterpret=args.reinterpret)
+    try:
+        doc = _campaign_or_exit(entries, args, explore, player)
+    except converter_bin.ConverterNotFound as e:
+        print("ERREUR : %s" % e, file=sys.stderr)
+        return 2
     bad = sum(1 for s in doc["stories"] if s["status"].startswith("ECHEC"))
     print("%d histoire(s), %d echec(s) -> %s" % (
         len(doc["stories"]), bad, os.path.join(args.cache, "compat", "report.md")))
     return 1 if bad else 0
+
+
+def _campaign_or_exit(entries, args, explore, player):
+    return run_campaign(entries, args.cache, max(1, args.jobs), args.force, explore,
+                       player, args.run_timeout, args.seed, args.max_steps,
+                       seeds=args.seeds, benign=tuple(BENIGN_ERRORS) + tuple(args.benign_error),
+                       max_unzipped=args.max_unzipped_mb << 20, run_jobs=args.run_jobs,
+                       reinterpret=args.reinterpret)
 
 
 if __name__ == "__main__":

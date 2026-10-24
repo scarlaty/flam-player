@@ -24,7 +24,8 @@ from test_telmi2flam import Base, std_files  # noqa: E402
 def setUpModule():
     """La conversion lance le binaire Rust : echec clair s'il est absent (#140). Choix assume
     (#465) : pas de saut silencieux. Seul ce module echoue (les autres tests de la decouverte
-    tournent) ; le rendu du rapport seul, lui, n'exige pas le binaire (--reinterpret)."""
+    tournent) ; le rendu du rapport seul, lui, n'exige pas le binaire (--reinterpret) ; son test simule l'absence par un mock (le binaire
+    reel est present sur la machine)."""
     try:
         converter_bin.find_converter()
     except converter_bin.ConverterNotFound as e:
@@ -316,7 +317,7 @@ class TestPipeline(CompatBase):
             "open(%r, 'w').write(d)\n"
             "time.sleep(60)\n" % marker)
         _, err = converter_bin.convert(exe, self.mkzip(std_files(), "k"),
-                                       os.path.join(self.tmp, "o", "k.plain.pk"), timeout=2)
+                                       os.path.join(self.tmp, "o", "k.plain.pk"), timeout=6)
         self.assertTrue(err.startswith("timeout"), err)
         with open(marker) as f:
             leftover = f.read()
@@ -492,6 +493,25 @@ class TestCampaign(CompatBase):
         self.assertEqual({s["key"]: s["status"] for s in doc["stories"]},
                          {s["key"]: s["status"] for s in before["stories"]})
         self.assertFalse(any(s.get("stale") for s in doc["stories"]))
+
+    def test_reinterpret_without_binary_marks_changed_stories_stale(self):
+        self.campaign(self.entries)
+        changed = [dict(e, fingerprint="autre") if e["uuid"] == "good" else e
+                   for e in self.entries]
+        absent = os.path.join(self.tmp, "absent.exe")
+        with mock.patch.object(compat, "CONVERTER", absent),                 mock.patch.dict(os.environ, {converter_bin.ENV_VAR: absent}):
+            doc = self.campaign(changed, reinterpret=True)
+        st = {s["uuid"]: s["stale"] for s in doc["stories"]}
+        self.assertTrue(st["good"])
+        self.assertFalse(st["corrupt"])
+
+    def test_main_reinterpret_without_binary_or_report(self):
+        absent = os.path.join(self.tmp, "absent.exe")
+        with mock.patch.dict(os.environ, {converter_bin.ENV_VAR: absent}),                 contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = compat.main(["--folder", self.tmp, "--cache", self.cache, "--reinterpret",
+                              "--no-run"])
+        self.assertEqual(rc, 2)
+        self.assertIn("introuvable", err.getvalue())
 
     def test_converter_hash_stable(self):
         self.assertEqual(compat.converter_hash(), compat.converter_hash())

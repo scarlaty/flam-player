@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -78,12 +79,31 @@ def convert(exe, zip_path, out_path, extra_args=(), timeout=DEFAULT_TIMEOUT):
              else {"start_new_session": True})
     # Dossier temporaire prive du processus enfant : un binaire tue apres le delai ne nettoie
     # pas ses `t2f_ff_*` ; on supprime ici tout le dossier, quelle que soit l'issue (#465).
-    scratch = tempfile.mkdtemp(prefix="t2f_run_")
+    try:
+        scratch = tempfile.mkdtemp(prefix="t2f_run_")
+    except OSError as e:
+        return [], "temp : dossier temporaire inutilisable : %s" % e
     env = dict(os.environ, TMP=scratch, TEMP=scratch, TMPDIR=scratch)
     try:
         return _run(cmd, out_dir, out_path, exe, timeout, flags, env)
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        _rmtree(scratch)
+
+
+def _rmtree(path):
+    """Supprime `path` ; reessaie (handles Windows liberes avec retard, fichiers en lecture
+    seule) ; ne leve jamais."""
+    def on_error(func, p, _exc):
+        try:
+            os.chmod(p, 0o700)
+            func(p)
+        except OSError:
+            pass
+    for _ in range(5):
+        shutil.rmtree(path, onerror=on_error)
+        if not os.path.exists(path):
+            return
+        time.sleep(0.3)
 
 
 def _run(cmd, out_dir, out_path, exe, timeout, flags, env):
