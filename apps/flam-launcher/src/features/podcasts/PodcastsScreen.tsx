@@ -12,6 +12,7 @@ import { t } from "../../i18n";
 import { PACK_HASH } from "../../router";
 import { ErrorBanner } from "../ErrorBanner";
 import { AddFeedForm } from "./AddFeedForm";
+import { CompositionsSection } from "./CompositionsSection";
 import { EpisodeList, SelectionSummary } from "./EpisodeList";
 import "./PodcastsScreen.css";
 
@@ -142,6 +143,8 @@ export function PodcastsScreen() {
       <p>
         <a href={PACK_HASH}>{text.pack.link}</a>
       </p>
+
+      <CompositionsSection />
 
       <AddFeedForm onAdded={onAdded} />
 
