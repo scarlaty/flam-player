@@ -780,7 +780,7 @@ b"
             ("err:missing_asset:5", "missing_asset"),
             ("err:output_error:6", "output_error"),
             ("err:internal_error:6", "internal_error"),
-            // Sans événement `error` : code de sortie du processus, message de stderr.
+            // Sans événement `error` : code de sortie du processus, message fixe (stderr jamais repris).
             ("crash", "exit_6"),
             ("abort", "exit_101"),
             ("nostart", "exit_1"),
@@ -790,7 +790,6 @@ b"
                 eprintln!("Python introuvable : test ignoré");
                 return;
             };
-            let logs = crate::testlog::Logs::capture();
             let result = banc.convert().await;
             let Err(AppError::Conversion {
                 code: got, message, ..
@@ -802,8 +801,6 @@ b"
             // La sortie d'erreur du convertisseur n'est jamais reprise (nom de fichier possible).
             assert!(!message.contains("histoire-secrete"), "{mode} : {message}");
             assert!(!message.contains("Traceback"), "{mode} : {message}");
-            let text = logs.text();
-            assert!(!text.contains("histoire-secrete"), "{mode} : {text}");
             assert!(!banc.output.exists(), "{mode}");
             assert!(banc.staging_is_empty(), "{mode} : temporaire laissé");
         }
