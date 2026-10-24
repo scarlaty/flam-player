@@ -7,6 +7,8 @@ publiées sous des étiquettes `launcher-v…` (voir les
 
 ## [Non publié]
 
+## [0.1.0-beta.2] - 2026-10-24
+
 Changements depuis `launcher-v0.1.0-beta.1`.
 
 ### Ajouté
@@ -23,6 +25,15 @@ Changements depuis `launcher-v0.1.0-beta.1`.
   est utilisée et un avertissement s'affiche à la fin de la création. Le choix montre une
   vignette de la pochette de chaque épisode (quand elle a déjà été téléchargée pour un pack) ;
   deux épisodes de même titre se distinguent par leur rang.
+- **Titres lus (podcasts)** : option « Lire les titres à voix haute » dans l'éditeur de pack. Le
+  titre du pack, les catégories et les épisodes sont lus par une voix française de Windows
+  (choix de la voix et essai dans les Paramètres). Sans voix française installée, l'option est
+  grisée et un message indique comment en ajouter une.
+- **Compositions réutilisables (podcasts)** : un pack créé est conservé comme composition
+  nommée, pour le refaire ou en dériver un autre.
+- **Cache des MP3 (podcasts)** : les épisodes déjà convertis sont réutilisés pour refaire un pack
+  sans tout retélécharger ; le cache est purgé avec la source et sa taille est affichée dans les
+  Paramètres.
 - **Diagnostic copiable** : en cas d'erreur, un panneau permet de copier les informations utiles
   pour un rapport de bogue.
 - **Audio** : les MP3 qui ne sont pas à 44 100 Hz sont rééchantillonnés à la conversion
@@ -78,4 +89,5 @@ Changements depuis `launcher-v0.1.0-beta.1`.
   programme intégré. Python 3 reste utile uniquement aux outils de campagne et de parité du
   dépôt (`tools/telmi2flam/`, sans Pillow), pas aux utilisateurs.
 
-[Non publié]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.1...HEAD
+[Non publié]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.2...HEAD
+[0.1.0-beta.2]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.1...launcher-v0.1.0-beta.2
