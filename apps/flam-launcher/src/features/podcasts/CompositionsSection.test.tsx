@@ -7,7 +7,7 @@ import { ToastProvider } from "../../components";
 import { PACK_HASH } from "../../router";
 import { expectNoAxeViolations } from "../../test/axe";
 import { tolerateLoadInAsyncUtils } from "../../test/timeouts";
-import { CompositionsSection } from "./CompositionsSection";
+import { CompositionsSection, isBlankComposition } from "./CompositionsSection";
 
 tolerateLoadInAsyncUtils();
 
@@ -36,6 +36,12 @@ let draft: PackComposition | null;
 let notice: string | null;
 let calls: { cmd: string; args: Record<string, any> }[];
 let failures: Record<string, { kind: string; message: string }>;
+/** Message rendu par la prochaine action (fichier mis de côté, entrées écartées). */
+let actionNotice: string | null;
+/** Message de lecture du brouillon (brouillon illisible mis de côté). */
+let draftNotice: string | null;
+/** Réponse de `pack_composition_open` retenue jusqu'à `release()`. */
+let holdOpen: Promise<void> | null;
 
 beforeEach(() => {
   window.location.hash = "#/podcasts";
@@ -44,7 +50,10 @@ beforeEach(() => {
   notice = null;
   calls = [];
   failures = {};
-  mockIPC((cmd, args) => {
+  actionNotice = null;
+  draftNotice = null;
+  holdOpen = null;
+  mockIPC(async (cmd, args) => {
     const payload = (args ?? {}) as Record<string, any>;
     calls.push({ cmd, args: payload });
     const failure = failures[cmd];
@@ -53,15 +62,16 @@ beforeEach(() => {
       case "pack_compositions_list":
         return { compositions: list, notice, max: 50 };
       case "pack_draft_read":
-        return { composition: draft, revision: 4, notice: null, report: null };
+        return { composition: draft, revision: 4, notice: draftNotice, report: null };
       case "pack_composition_open":
-        return { saved: true, revision: 5 };
+        if (holdOpen) await holdOpen;
+        return { saved: true, revision: 5, notice: actionNotice };
       case "pack_composition_rename":
         list = list.map((c) => (c.id === payload.id ? { ...c, name: payload.name } : c));
-        return null;
+        return { notice: actionNotice };
       case "pack_composition_delete":
         list = list.filter((c) => c.id !== payload.id);
-        return null;
+        return { notice: actionNotice };
     }
     throw new Error(`commande inattendue : ${cmd}`);
   });
@@ -251,4 +261,159 @@ it("limite atteinte : le compteur invite à supprimer", async () => {
       "50 compositions sur 50 au plus : supprimez-en une pour conserver les suivantes.",
     ),
   ).toBeTruthy();
+});
+
+// ----- Suivis de la revue (#484) -----
+
+const blank: PackComposition = {
+  metadata: { title: "", subtitle: null, age: 0, description: null },
+  cover: { kind: "default" },
+  menu: [],
+};
+
+it("brouillon vide : seule une composition sans aucune saisie l'est", () => {
+  expect(isBlankComposition(blank)).toBe(true);
+  expect(
+    isBlankComposition({
+      ...blank,
+      metadata: { title: "  ", subtitle: "", age: 0, description: " " },
+    }),
+  ).toBe(true);
+  const filled: PackComposition[] = [
+    { ...blank, metadata: { ...blank.metadata, title: "Mon pack" } },
+    { ...blank, metadata: { ...blank.metadata, subtitle: "Sous-titre" } },
+    { ...blank, metadata: { ...blank.metadata, description: "Texte" } },
+    { ...blank, metadata: { ...blank.metadata, age: 6 } },
+    { ...blank, cover: { kind: "feed", source_id: "a" } },
+    { ...blank, menu: [{ kind: "category", name: "Soir", entries: [] }] },
+    withEpisodes,
+  ];
+  for (const composition of filled) expect(isBlankComposition(composition)).toBe(false);
+  // Champ ajouté plus tard (voix des titres…) : renseigné, il compte comme une saisie.
+  const later = { ...blank, title_voice: { voice: "fr" } } as PackComposition;
+  expect(isBlankComposition(later)).toBe(false);
+  expect(isBlankComposition({ ...blank, title_voice: null } as PackComposition)).toBe(
+    true,
+  );
+  const nested = {
+    ...blank,
+    metadata: { ...blank.metadata, narrator: "x" },
+  } as PackComposition;
+  expect(isBlankComposition(nested)).toBe(false);
+});
+
+it("brouillon illisible mis de côté par le backend : son message est dit", async () => {
+  draftNotice = "Le brouillon de pack précédent était illisible : il a été mis de côté.";
+  renderSection();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Ouvrir « Comptines » dans l'éditeur" }),
+  );
+  await waitFor(() => expect(window.location.hash).toBe(PACK_HASH));
+  expect(await screen.findByText(draftNotice)).toBeTruthy();
+});
+
+it("ouvrir avec un brouillon qui n'a qu'un titre : confirmation demandée", async () => {
+  draft = { ...blank, metadata: { ...blank.metadata, title: "Pack en cours" } };
+  renderSection();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Ouvrir « Comptines » dans l'éditeur" }),
+  );
+  expect(await screen.findByRole("alertdialog")).toBeTruthy();
+  expect(commands()).not.toContain("pack_composition_open");
+});
+
+it("ouvrir avec un brouillon enregistré mais vide : pas de confirmation", async () => {
+  draft = blank;
+  renderSection();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Ouvrir « Comptines » dans l'éditeur" }),
+  );
+  await waitFor(() => expect(window.location.hash).toBe(PACK_HASH));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+});
+
+it("ouverture : indicateur, et Renommer/Supprimer inactifs pendant ce temps", async () => {
+  let release!: () => void;
+  holdOpen = new Promise((resolve) => {
+    release = resolve;
+  });
+  renderSection();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Ouvrir « Contes du soir » dans l'éditeur",
+    }),
+  );
+  expect(await screen.findByText("Ouverture de « Contes du soir »…")).toBeTruthy();
+  await waitFor(() => expect(commands()).toContain("pack_composition_open"));
+  for (const name of [
+    "Renommer « Comptines »",
+    "Supprimer « Comptines »",
+    "Ouvrir « Comptines » dans l'éditeur",
+  ]) {
+    expect(screen.getByRole("button", { name })).toBeDisabled();
+  }
+  release();
+  await waitFor(() => expect(window.location.hash).toBe(PACK_HASH));
+  await waitFor(() =>
+    expect(screen.queryByText("Ouverture de « Contes du soir »…")).toBeNull(),
+  );
+  expect(screen.getByRole("button", { name: "Renommer « Comptines »" })).toBeEnabled();
+});
+
+it("ouvrir : le message du backend reste affiché après le passage à l'éditeur", async () => {
+  actionNotice = "1 composition(s) enregistrée(s) écartée(s) (1 illisible(s)).";
+  renderSection();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Ouvrir « Contes du soir » dans l'éditeur",
+    }),
+  );
+  await waitFor(() => expect(window.location.hash).toBe(PACK_HASH));
+  expect(await screen.findByText(actionNotice)).toBeTruthy();
+});
+
+it("renommer et supprimer : le message du backend est affiché", async () => {
+  actionNotice = "Le fichier des compositions enregistrées a été mis de côté.";
+  renderSection();
+  fireEvent.click(await screen.findByRole("button", { name: "Renommer « Comptines »" }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.change(within(dialog).getByRole("textbox", { name: /Nom/ }), {
+    target: { value: "Chansons" },
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Renommer" }));
+  expect(await screen.findByText(actionNotice)).toBeTruthy();
+
+  actionNotice = "2 composition(s) enregistrée(s) écartée(s).";
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Supprimer « Contes du soir »" }),
+  );
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Supprimer",
+    }),
+  );
+  expect(await screen.findByText(actionNotice)).toBeTruthy();
+});
+
+it("nom : compté en caractères comme le backend, pas en unités UTF-16", async () => {
+  renderSection();
+  fireEvent.click(await screen.findByRole("button", { name: "Renommer « Comptines »" }));
+  const dialog = await screen.findByRole("dialog");
+  const input = within(dialog).getByRole("textbox", { name: /Nom/ });
+  // Pas de `maxlength` : le navigateur couperait 60 émojis (120 unités UTF-16) à 30.
+  expect(input).not.toHaveAttribute("maxlength");
+  fireEvent.change(input, { target: { value: "🐻".repeat(61) } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Renommer" }));
+  expect(
+    await within(dialog).findByText("Le nom ne peut pas dépasser 60 caractères."),
+  ).toBeTruthy();
+  expect(commands()).not.toContain("pack_composition_rename");
+  fireEvent.change(input, { target: { value: "🐻".repeat(60) } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Renommer" }));
+  await waitFor(() =>
+    expect(calls.find((c) => c.cmd === "pack_composition_rename")?.args).toEqual({
+      id: "c2",
+      name: "🐻".repeat(60),
+    }),
+  );
 });
