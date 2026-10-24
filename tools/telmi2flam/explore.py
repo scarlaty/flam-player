@@ -123,6 +123,8 @@ if os.name == "nt":
                     ("PeakJobMemoryUsed", ctypes.c_size_t)]
 
     _JOB_KILL_ON_CLOSE = 0x2000          # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    _PROCESS_SET_QUOTA = 0x0100          # droits requis par AssignProcessToJobObject
+    _PROCESS_TERMINATE = 0x0001
     _JOB_EXTENDED_LIMITS = 9             # JobObjectExtendedLimitInformation
 
 
@@ -138,15 +140,29 @@ def _job_for(p):
     k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
                                             wintypes.DWORD]
     k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     k32.CloseHandle.argtypes = [wintypes.HANDLE]
     job = k32.CreateJobObjectW(None, None)
     if not job:
         return None
     info = _ExtendedLimits()
     info.BasicLimitInformation.LimitFlags = _JOB_KILL_ON_CLOSE
-    if not (k32.SetInformationJobObject(job, _JOB_EXTENDED_LIMITS, ctypes.byref(info),
-                                        ctypes.sizeof(info))
-            and k32.AssignProcessToJobObject(job, int(p._handle))):
+    if not k32.SetInformationJobObject(job, _JOB_EXTENDED_LIMITS, ctypes.byref(info),
+                                       ctypes.sizeof(info)):
+        k32.CloseHandle(job)
+        return None
+    # Handle ouvert par PID (API publique) plutot que `p._handle`, attribut prive de Popen.
+    # Tant que Popen n'a pas ete attendu, son propre handle garde le PID reserve.
+    proc = k32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, p.pid)
+    if not proc:
+        k32.CloseHandle(job)
+        return None
+    try:
+        assigned = k32.AssignProcessToJobObject(job, proc)
+    finally:
+        k32.CloseHandle(proc)
+    if not assigned:
         k32.CloseHandle(job)
         return None
     return job
@@ -186,7 +202,7 @@ def _spawn(cmd, **kw):
     if os.name == "nt":
         p = subprocess.Popen(cmd, **kw)
         try:
-            return p, _job_for(p)           # `p._handle` : handle Windows du processus
+            return p, _job_for(p)
         except BaseException:
             p.kill()
             p.wait()
@@ -195,16 +211,36 @@ def _spawn(cmd, **kw):
     return subprocess.Popen(cmd, start_new_session=True, preexec_fn=pre, **kw), None
 
 
+def _killpg(p):
+    """POSIX : SIGKILL sur le groupe de processus du player (son PID est celui du groupe,
+    cree par `start_new_session`). Sans effet si le groupe est deja vide."""
+    try:
+        import signal
+        os.killpg(p.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        pass
+
+
 def _kill(p):
     """Arrete le player (et, sous POSIX, tout son groupe de processus)."""
     if os.name != "nt":
-        try:
-            import signal
-            os.killpg(p.pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            pass
+        _killpg(p)
     p.kill()
     p.wait()
+
+
+def _stop(p, guard):
+    """Fin de `run_player`, toujours : arrete le player s'il tourne encore, et ses
+    descendants meme s'il est sorti seul (symetrie Windows/POSIX : le Job Object ferme tue
+    les restes, le groupe de processus POSIX aussi)."""
+    try:
+        if p.poll() is None:
+            _kill(p)
+        elif os.name != "nt":
+            _killpg(p)                  # sorti seul : ses descendants du groupe restent
+    finally:
+        if os.name == "nt":
+            _close_job(guard)           # tue aussi les descendants restants
 
 
 def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
@@ -241,12 +277,7 @@ def run_player(exe, args, cwd, timeout, until=None, grace=2.0):
                     break
                 time.sleep(0.2)
         finally:
-            try:
-                if p.poll() is None:
-                    _kill(p)
-            finally:
-                if os.name == "nt":
-                    _close_job(guard)       # tue aussi les descendants restants
+            _stop(p, guard)
         dt = time.time() - t0
     with open(out_p, "rb") as f:
         out = f.read().decode("utf-8", "replace")
