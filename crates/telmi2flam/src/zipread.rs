@@ -7,7 +7,7 @@
 //! échoue), cherche la fin du répertoire central autrement, ajoute ses propres contrôles
 //! (AES, champs supplémentaires) et ne garde qu'une entrée par nom. Ici, chaque étape suit le
 //! code de `Lib/zipfile/__init__.py` de Python 3.14.8 (version de l'oracle, épinglée dans
-//! `build-converter.ps1`), cité en commentaire.
+//! `ORACLE-VERSIONS.txt`), cité en commentaire.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};

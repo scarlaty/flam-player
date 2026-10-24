@@ -271,7 +271,7 @@ Prérequis : python 3 et Pillow. Seul le format TELMI (`nodes.json`) est pris en
 format STUdio (`story.json`). Options (`--plain`, `--selector`, `--keep-size`,
 `--allow-missing`...) et détails : [tools/telmi2flam/README.md](../tools/telmi2flam/README.md).
 
-Flam Launcher embarque ce convertisseur (avec son propre Python) : la conversion s'y fait à
+Flam Launcher embarque ce convertisseur (binaire Rust, sans Python) : la conversion s'y fait à
 l'installation d'une histoire, sans ligne de commande.
 
 ## Jeux et contenus homebrew
@@ -295,6 +295,6 @@ distribué sous licence GNU GPL v3 ou ultérieure (`GPL-3.0-or-later`), voir
 [`LICENSE`](../LICENSE). Les composants tiers gardent chacun leur licence.
 
 L'installateur Windows de flam-launcher redistribue flam-player, le convertisseur telmi2flam
-(avec un Python embarqué et Pillow) et son runtime Lua (GPL v3, comme le reste du dépôt) ; les
-licences de chaque composant tiers (SDL2, Lua, LVGL, minimp3, Python, Pillow, redistribuables
-Microsoft) sont dans [`apps/flam-launcher/LICENSES.md`](../apps/flam-launcher/LICENSES.md).
+(binaire Rust, sans Python ni Pillow) et son runtime Lua (GPL v3, comme le reste du dépôt) ; les
+licences de chaque composant tiers (SDL2, Lua, LVGL, minimp3, FFmpeg, code dérivé de Pillow,
+redistribuables Microsoft) sont dans [`apps/flam-launcher/LICENSES.md`](../apps/flam-launcher/LICENSES.md).

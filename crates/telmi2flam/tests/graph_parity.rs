@@ -329,7 +329,7 @@ fn graphe_identique_a_python() {
     assert_eq!(
         str_of(field(&t, "python")),
         "3.14.8",
-        "table à régénérer avec le Python 3.14.8 de build-converter.ps1"
+        "table à régénérer avec le Python de ORACLE-VERSIONS.txt (3.14.8)"
     );
     let cases = list(field(&t, "cases"));
     assert!(cases.len() >= 250, "{} cas seulement", cases.len());
