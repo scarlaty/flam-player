@@ -335,7 +335,7 @@ fn real_mp3_dir(cache_root: &Path, source_id: &str, create: bool) -> io::Result<
             },
         }
         return Err(io::Error::other(
-            "lien ou jonction sur le chemin du cache des MP3 : refusé",
+            "chemin du cache des MP3 refusé : pas un vrai dossier (lien, jonction ou fichier)",
         ));
     }
     Ok(Some(mp3))

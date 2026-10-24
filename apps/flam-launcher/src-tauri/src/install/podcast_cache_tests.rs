@@ -166,7 +166,9 @@ impl PackBackend for Fake {
             let running = self.images_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.images_max_in_flight
                 .fetch_max(running, Ordering::SeqCst);
-            tokio::time::sleep(Duration::from_millis(30)).await;
+            // Panne `ImageError` : les autres pochettes sont lentes (doivent être arrêtées).
+            let slow = fault == Fault::ImageError && !url.contains("/g2");
+            tokio::time::sleep(Duration::from_millis(if slow { 2000 } else { 30 })).await;
             self.images_in_flight.fetch_sub(1, Ordering::SeqCst);
             self.images.fetch_add(1, Ordering::SeqCst);
             if fault == Fault::ImageError && url.contains("/g2") {
@@ -476,6 +478,9 @@ async fn erreur_d_une_pochette_du_cache_arrete_les_autres() {
     *ctx.fake.image_version.lock().unwrap() = 1;
     let err = ctx.try_prepare(Fault::ImageError).await.unwrap_err();
     assert!(matches!(err, AppError::Io(_)), "{err:?}");
+    // Couverture du premier pack + pochette de g2 : celle de g1, lancée en même temps, est
+    // arrêtée et celle de g3 jamais lancée.
+    assert_eq!(ctx.fake.images.load(Ordering::SeqCst), 2);
     // Le pack suivant vient toujours du cache.
     assert!(ctx.prepare(Fault::None).await.is_empty());
     assert_eq!(ctx.fake.converted.load(Ordering::SeqCst), 3);

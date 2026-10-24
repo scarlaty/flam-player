@@ -686,8 +686,8 @@ async fn lecture_annulee_ne_supprime_aucune_entree() {
     assert!(access.lookup(wanted(), 200).await.is_empty());
     assert_eq!(fx.files("s1"), before);
 
-    // Annulation levée pendant la copie du premier MP3 : sa pochette n'est pas vérifiée
-    // (hachage interrompu), il n'est pas servi, le second n'est pas lu.
+    // Annulation levée juste après le placement du premier MP3 : le hachage de sa pochette
+    // est interrompu, il n'est pas servi (copie retirée), le second n'est pas lu.
     tx.send_replace(false);
     let tx = Arc::new(tx);
     let access = fx

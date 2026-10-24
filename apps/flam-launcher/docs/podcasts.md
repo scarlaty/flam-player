@@ -896,7 +896,9 @@ Le code est dans `src-tauri/src/podcast/mp3cache.rs`, appelé par la préparatio
   lisent par blocs de 256 Kio et s'arrêtent au bloc suivant quand la tâche est annulée, ce qui
   libère vite le verrou de la source. Une lecture annulée ne juge ni ne supprime aucune entrée ;
   une écriture annulée ne laisse rien de l'entrée (une écriture annulée avant de commencer garde
-  l'ancienne).
+  l'ancienne). Cas accepté : l'annulation pendant la remise en cache d'un épisode servi dont
+  seule la pochette a changé efface aussi son MP3 (l'ancienne entrée est retirée avant
+  l'écriture) ; il sera retéléchargé au pack suivant.
 - **Liens et jonctions** (#466) : `podcasts/`, `podcasts/<id>/` et `podcasts/<id>/mp3/` doivent
   être de vrais dossiers (contrôle sans suivre de lien, à chaque accès, dossiers manquants créés
   un par un puis recontrôlés) ; sinon la source est ignorée avec un avertissement : rien n'est

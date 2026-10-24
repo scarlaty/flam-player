@@ -441,8 +441,16 @@ async fn fetch_images(
         let Some(done) = running.join_next().await else {
             break;
         };
-        let done =
-            done.map_err(|_| AppError::Io(std::io::Error::other("téléchargement interrompu")))?;
+        let done = match done {
+            Ok(done) => done,
+            // Panique d'un téléchargement : propagée comme sans parallélisme.
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(_) => {
+                return Err(AppError::Io(std::io::Error::other(
+                    "téléchargement interrompu",
+                )))
+            }
+        };
         fetched.extend(done?);
     }
     fetched.sort_unstable();
