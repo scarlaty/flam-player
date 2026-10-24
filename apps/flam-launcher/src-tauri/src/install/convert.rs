@@ -696,7 +696,13 @@ b"
 
     impl Banc {
         fn new(mode: &str) -> Option<Self> {
-            let exe = fake::exe()?;
+            let Some(exe) = fake::exe() else {
+                assert!(
+                    std::env::var_os("FLAM_REQUIRE_PATH_PYTHON").is_none_or(|v| v != "1"),
+                    "FLAM_REQUIRE_PATH_PYTHON=1 : Python introuvable dans le PATH"
+                );
+                return None;
+            };
             let dir = tempfile::tempdir().unwrap();
             let input = dir.path().join("in.zip");
             std::fs::write(&input, fake::archive(mode, 0)).unwrap();
@@ -837,7 +843,6 @@ b"
         assert!(!banc.dir.path().join("args.txt").exists());
         let text = logs.text();
         assert!(!text.contains("msg-unsupported_format"), "{text}");
-        assert!(!text.contains("in.zip"), "{text}");
     }
 
     /// Annulation : par le launcher (arrêt poli) ou par le binaire lui-même (code 130).

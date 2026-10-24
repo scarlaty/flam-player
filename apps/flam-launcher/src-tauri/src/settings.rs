@@ -331,11 +331,9 @@ pub fn detect_player(env: &Environment) -> Option<PathBuf> {
 /// produite par `scripts/build-converter.ps1`, #71).
 pub const BUNDLED_CONVERTER_DIR: &str = "telmi2flam";
 
-/// Python embarqué avec le convertisseur : `<exe>/telmi2flam/python/python.exe`. Retenu
-/// seulement si le script embarqué `<exe>/telmi2flam/telmi2flam.py` l'accompagne : la
-/// détection du convertisseur (`install::detect_converter`) prend alors ce même script, et
-/// l'interpréteur embarqué (chemins d'import fixés par son `._pth`) n'est jamais associé à
-/// un autre script.
+/// Python embarqué avec le convertisseur : `<exe>/telmi2flam/python/python.exe`. Plus livré
+/// depuis #138 (retrait avec le réglage `python_path`, #139). Retenu seulement si le script
+/// `<exe>/telmi2flam/telmi2flam.py` l'accompagne (ancienne installation).
 pub fn detect_bundled_python(env: &Environment) -> Option<PathBuf> {
     let dir = env.exe_dir.as_deref()?.join(BUNDLED_CONVERTER_DIR);
     let python = dir.join("python").join("python.exe");

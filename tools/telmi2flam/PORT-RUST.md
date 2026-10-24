@@ -244,7 +244,7 @@ Invariants (repris de Python, à tester côté Rust) :
 ### 4.2 Images : le point dur
 
 La sortie LIF dépend du redimensionnement de **Pillow 12.3.0** (version épinglée dans
-`build-converter.ps1`) :
+`tools/telmi2flam/ORACLE-VERSIONS.txt`) :
 
 - `resize(…, LANCZOS)` sur du RGBA suit cet ordre : `convert("RGBa")` (prémultiplication par
   **tables entières**, `MULDIV255`), puis passage horizontal et passage

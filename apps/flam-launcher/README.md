@@ -310,7 +310,7 @@ npm run test:e2e             # sur target/release (racine du dépôt) ; ou FLAM_
 Sans `FLAM_E2E_REQUIRE=1` et sans `flam-player.exe`, `cargo test` **saute** ce test : il passe au
 vert sans rien vérifier, et le message n'apparaît qu'avec `-- --nocapture` ; `npm run test:e2e` et
 la CI posent `FLAM_E2E_REQUIRE=1` (le test échoue alors si un prérequis manque) ;
-variables : `FLAM_E2E_INSTALL_DIR`, ou `FLAM_E2E_PLAYER` + `FLAM_E2E_CONVERTER_DIR`. La CI
+variables : `FLAM_E2E_INSTALL_DIR`, ou `FLAM_E2E_PLAYER` + `FLAM_E2E_RUST_CONVERTER`. La CI
 (`.github/workflows/launcher.yml`) compile le player, construit l'installateur, l'installe en
 silence, y exécute ce test puis le désinstalle en vérifiant qu'il ne reste aucun fichier.
 

@@ -271,7 +271,7 @@ Prérequis : python 3 et Pillow. Seul le format TELMI (`nodes.json`) est pris en
 format STUdio (`story.json`). Options (`--plain`, `--selector`, `--keep-size`,
 `--allow-missing`...) et détails : [tools/telmi2flam/README.md](../tools/telmi2flam/README.md).
 
-Flam Launcher embarque ce convertisseur (avec son propre Python) : la conversion s'y fait à
+Flam Launcher embarque ce convertisseur (binaire Rust, sans Python) : la conversion s'y fait à
 l'installation d'une histoire, sans ligne de commande.
 
 ## Jeux et contenus homebrew

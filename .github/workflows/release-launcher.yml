@@ -262,7 +262,7 @@ jobs:
       - name: Installer les dépendances
         run: npm ci
 
-      - name: Convertisseur embarqué (Python + Pillow, SHA-256 vérifiés)
+      - name: Convertisseur embarqué (telmi2flam.exe, sans Python)
         run: npm run build:converter
 
       - name: Télécharger ffmpeg (construit par le job ffmpeg)
@@ -330,7 +330,7 @@ jobs:
           }
           $extra = @(Get-ChildItem (Join-Path $dest 'telmi2flam') -Recurse -Force | Where-Object { $_.Name -notin @('telmi2flam.exe', 'LICENSES.md', 'BUILD.txt') })
           if ($extra.Count -gt 0) { throw "fichiers inattendus dans telmi2flam/ : $($extra.FullName -join ', ')" }
-          $ff =Join-Path $dest 'ffmpeg/ffmpeg.exe'
+          $ff = Join-Path $dest 'ffmpeg/ffmpeg.exe'
           $conf = (& $ff -hide_banner -buildconf 2>&1 | Out-String)
           if ($LASTEXITCODE -ne 0 -or $conf -match '--enable-(gpl|nonfree)(\s|$)' -or $conf -notmatch '--enable-libmp3lame') { throw "ffmpeg installé : configuration refusée`n$conf" }
           if ((& $ff -hide_banner -encoders 2>&1 | Out-String) -notmatch 'libmp3lame') { throw 'ffmpeg installé : libmp3lame absent' }
