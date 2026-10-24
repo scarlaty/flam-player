@@ -710,7 +710,9 @@ explicite du parent (case décochée par défaut).
   de l'ordre de 5 à 20 s pour un grand pack, **à mesurer sur un poste réel** (la CI n'a pas de
   voix française ; la durée de l'étape est journalisée, nombre de titres seulement). L'annulation
   passe par celle de la création (#217) ; la progression affiche une phase « speech » (« lecture
-  des titres à voix haute ») avec un pourcentage par titre (#487). ffmpeg est localisé et son
+  des titres à voix haute ») avancée titre par titre de 0 à 10 % de la préparation, les
+  téléchargements suivant de 10 à 60 % (#487 : la barre ne recule jamais). Un ffmpeg absent ou
+  altéré arrête la création avec un message propre (réinstaller le launcher). ffmpeg est localisé et son
   empreinte vérifiée **une fois pour l'étape**, au premier titre synthétisé (`Ffmpeg::verify`),
   et non à chaque titre.
 - **Cache** : pas de cache persistant en v1 (le coût est faible et le dossier de travail est

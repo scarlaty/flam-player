@@ -50,8 +50,10 @@ pub use super::archive::{
 pub const MAX_EPISODE_BYTES: u64 = 200_000_000;
 /// Taille estimée du pack (D1 : 1 Gio).
 pub const MAX_PACK_BYTES: u64 = 1_073_741_824;
-/// Taille comptée par titre lu (#462, § 12.7 : borne haute, environ 10 s de MP3 mono à
-/// 64 kbit/s), ajoutée à l'estimation (D1, D5) quand la composition demande les titres lus.
+/// Taille estimée d'un titre lu (#462, § 12.7 : environ 10 s de MP3 mono à 64 kbit/s), ajoutée
+/// à l'estimation (D1, D5) pour le titre du pack et chaque option quand la composition demande
+/// les titres lus, y compris ceux qui resteront muets (surestimation assumée). Le plafond réel
+/// reste `archive::MAX_TOTAL_AUDIO_BYTES`.
 pub const TITLE_AUDIO_ESTIMATE_BYTES: u64 = 80 * 1024;
 /// Nom de catégorie, en caractères (A6).
 pub const MAX_LABEL_CHARS: usize = 40;

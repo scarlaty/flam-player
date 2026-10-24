@@ -18,16 +18,19 @@ use crate::podcast::pack::{CachedFeed, CoverChoice, PackMetadataInput};
 use crate::podcast::rss::PodcastFeed;
 use crate::podcast::speech::testing::{voice, Simulated};
 
-/// Événements de la file : avancement de l'étape « speech » noté.
+/// Événements de la file : phase et pourcentage de chaque avancement noté.
 #[derive(Default)]
 struct Events {
-    speech: Mutex<Vec<f64>>,
+    phases: Mutex<Vec<(String, f64)>>,
 }
 
 impl InstallEvents for Events {
     fn progress(&self, p: &InstallProgress) {
-        if p.phase.as_deref() == Some("speech") {
-            self.speech.lock().unwrap().push(p.percent.unwrap_or(-1.0));
+        if let Some(phase) = &p.phase {
+            self.phases
+                .lock()
+                .unwrap()
+                .push((phase.clone(), p.percent.unwrap_or(-1.0)));
         }
     }
     fn done(&self, _: &InstallDone) {}
@@ -85,6 +88,8 @@ struct Fake {
     titles_converted: AtomicUsize,
     /// Préparations du convertisseur des titres (ffmpeg localisé et vérifié).
     encoders: AtomicUsize,
+    /// La préparation du convertisseur ne rend la main qu'à l'annulation.
+    encoder_hangs: std::sync::atomic::AtomicBool,
     /// Délai de synthèse injecté (défaut : celui de la production).
     synth_timeout: Mutex<Option<Duration>>,
     /// Épisodes (rang dans la composition) dont la conversion audio échoue (retirés, P7).
@@ -269,6 +274,12 @@ impl PackBackend for Fake {
     ) -> BoxFuture<'a, AppResult<crate::ffmpeg::Verified>> {
         Box::pin(async move {
             self.encoders.fetch_add(1, Ordering::SeqCst);
+            if self.encoder_hangs.load(Ordering::SeqCst) {
+                // Hachage interminable : seule l'annulation y met fin.
+                let mut cancel = cancel.clone();
+                crate::install::download::cancelled(&mut cancel).await;
+                return Err(AppError::Cancelled);
+            }
             if self.ffmpeg_missing {
                 // Vrai contrôle d'empreinte, sans exécutable.
                 let ff = crate::ffmpeg::Ffmpeg::in_dir(&self.missing_dir);
@@ -337,6 +348,7 @@ impl Ctx {
             fetches: AtomicUsize::new(0),
             titles_converted: AtomicUsize::new(0),
             encoders: AtomicUsize::new(0),
+            encoder_hangs: Default::default(),
             synth_timeout: Mutex::new(None),
             failing_audio: Mutex::new(Vec::new()),
             missing_dir: dir.path().join("ffmpeg-absent"),
@@ -580,7 +592,7 @@ async fn ffmpeg_absent_arrete_la_creation_sans_fichier_residuel() {
     let ctx = Ctx::with(Simulated::french(), true);
     let err = ctx.prepare(composition(None)).await.unwrap_err();
     assert_eq!(err.kind(), "tts_failed", "{err:?}");
-    assert!(err.to_string().contains("premier titre"), "{err}");
+    assert!(err.to_string().contains("composant ffmpeg"), "{err}");
     // Empreinte contrôlée une fois (premier titre synthétisé), aucune conversion lancée.
     assert_eq!(ctx.fake.encoders.load(Ordering::SeqCst), 1);
     assert_eq!(ctx.fake.titles_converted.load(Ordering::SeqCst), 0);
@@ -693,10 +705,21 @@ async fn voix_transmise_convertisseur_prepare_une_fois_et_avancement_par_titre()
     // ffmpeg localisé et empreinte vérifiée une seule fois pour les 5 titres.
     assert_eq!(ctx.fake.encoders.load(Ordering::SeqCst), 1);
     assert_eq!(ctx.fake.titles_converted.load(Ordering::SeqCst), 5);
-    assert_eq!(
-        *ctx.events.speech.lock().unwrap(),
-        [0.0, 20.0, 40.0, 60.0, 80.0, 100.0]
+    // Titres lus de 0 à 10 %, puis les téléchargements repartent de 10 % : jamais de recul.
+    let phases = ctx.events.phases.lock().unwrap().clone();
+    let speech: Vec<f64> = phases
+        .iter()
+        .filter(|(p, _)| p == "speech")
+        .map(|(_, v)| *v)
+        .collect();
+    assert_eq!(speech, [0.0, 2.0, 4.0, 6.0, 8.0, 10.0]);
+    let percents: Vec<f64> = phases.iter().map(|(_, v)| *v).collect();
+    let speech_start = phases.iter().position(|(p, _)| p == "speech").unwrap();
+    assert!(
+        percents[speech_start..].windows(2).all(|w| w[0] <= w[1]),
+        "{phases:?}"
     );
+    assert!(phases.iter().any(|(p, v)| p == "download" && *v == 10.0));
 }
 
 #[tokio::test]
@@ -746,14 +769,15 @@ async fn deux_delais_de_synthese_consecutifs_arretent_la_creation() {
     let calls = ctx.record(
         Simulated::french(),
         &["Un", "Saison"],
-        Duration::from_millis(1500),
+        Duration::from_secs(6),
     );
     let started = Instant::now();
     let err = ctx.prepare(composition(None)).await.unwrap_err();
     assert_eq!(err.kind(), "tts_failed", "{err:?}");
     assert!(err.to_string().contains("ne répond plus"), "{err}");
+    // Bien moins que les deux synthèses figées (threads abandonnés, jamais attendus).
     assert!(
-        started.elapsed() < Duration::from_millis(1400),
+        started.elapsed() < Duration::from_secs(4),
         "arrêt sans attendre la voix : {:?}",
         started.elapsed()
     );
@@ -762,6 +786,50 @@ async fn deux_delais_de_synthese_consecutifs_arretent_la_creation() {
     assert_eq!(texts, ["Mon pack", "Un", "Saison"]);
     assert_eq!(ctx.fake.fetches.load(Ordering::SeqCst), 0);
     ctx.assert_clean();
+}
+
+#[tokio::test]
+async fn annulation_pendant_la_preparation_du_convertisseur() {
+    let ctx = Ctx::new(Simulated::french());
+    ctx.fake.encoder_hangs.store(true, Ordering::SeqCst);
+    let job = Ctx::job(composition(None));
+    let id = uuid::Uuid::new_v4().to_string();
+    ctx.register(&id);
+    let (tx, mut cancel) = watch::channel(false);
+    let canceller = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tx.send(true).unwrap();
+        tx
+    });
+    let result = ctx
+        .service
+        .prepare_pack(&id, &job, &ctx.tc, &mut cancel)
+        .await;
+    let _tx = canceller.await.unwrap();
+    assert!(
+        matches!(result, Err(AppError::Cancelled)),
+        "{:?}",
+        result.err()
+    );
+    assert_eq!(ctx.fake.encoders.load(Ordering::SeqCst), 1);
+    assert_eq!(ctx.fake.titles_converted.load(Ordering::SeqCst), 0);
+    assert_eq!(ctx.fake.fetches.load(Ordering::SeqCst), 0);
+    ctx.assert_clean();
+}
+
+#[tokio::test]
+async fn categorie_sans_nom_en_echec_avertissement_sans_rang() {
+    let ctx = Ctx::new(Simulated {
+        failing: vec!["Catégorie 2".into()],
+        ..Simulated::french()
+    });
+    let (files, warnings) = ctx.prepare(emoji_category()).await.unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("« Catégorie sans nom »"),
+        "{warnings:?}"
+    );
+    assert!(option_audios(&files)["Catégorie 2"].is_null());
 }
 
 /// Composition à deux catégories ; la seconde n'a qu'un nom sans rien d'affichable.

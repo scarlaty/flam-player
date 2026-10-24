@@ -21,8 +21,8 @@
 //!   synthèse consécutifs arrêtent aussi la création (service de voix figé ; délai fourni par
 //!   [`PackBackend::synth_timeout`], injectable en test).
 //! - **ffmpeg** : localisé et empreinte vérifiée une seule fois pour l'étape, au premier titre
-//!   synthétisé ([`PackBackend::title_encoder`], #487) ; un échec rend ce premier titre muet,
-//!   donc arrête la création.
+//!   synthétisé ([`PackBackend::title_encoder`], #487) ; un échec arrête la création
+//!   (`tts_failed`, message propre au composant manquant ou altéré).
 //! - **Avancement** : rappel après chaque titre à lire (phase « speech » de 0 à 100 %).
 //! - **Catégorie sans nom affichable** (emoji seuls) : le texte lu est le libellé de repli de
 //!   l'archive, « Catégorie k » ([`TitleText::numbered`]).
@@ -175,6 +175,14 @@ pub fn failure_warning(key: &TitleKey, text: &str) -> String {
     }
 }
 
+/// Libellé cité dans l'avertissement d'une catégorie sans nom affichable restée muette.
+const UNNAMED_CATEGORY: &str = "Catégorie sans nom";
+
+/// Arrêt quand le convertisseur des titres (ffmpeg embarqué) est absent ou refusé.
+const ENCODER_MISSING: &str = "Les titres lus ne peuvent pas être convertis : le composant \
+     ffmpeg du launcher est manquant ou altéré. Le pack n'a pas été créé. Réinstallez Flam \
+     Launcher, ou décochez « Lire les titres à voix haute ».";
+
 /// Délais (ou indisponibilités) de synthèse consécutifs qui arrêtent la création.
 const MAX_STALLED: usize = 2;
 
@@ -202,24 +210,6 @@ async fn synthesize(
         // Le thread de synthèse, borné par son délai, finit seul ; son résultat est jeté.
         _ = super::download::cancelled(&mut cancel) => Err(AppError::Cancelled),
     }
-}
-
-/// Conversion d'un titre en MP3 : le convertisseur de l'étape est préparé au premier appel
-/// (ffmpeg localisé, empreinte vérifiée), puis réutilisé (#487).
-async fn encode(
-    backend: &Arc<dyn PackBackend>,
-    encoder: &mut Option<Verified>,
-    wav: &speech::Wav,
-    dest: &Path,
-    cancel: &watch::Receiver<bool>,
-) -> AppResult<u64> {
-    let ready = match encoder.take() {
-        Some(ready) => ready,
-        None => backend.title_encoder(cancel).await?,
-    };
-    let result = backend.title_mp3(&ready, wav, dest, cancel).await;
-    *encoder = Some(ready);
-    result
 }
 
 /// Synthétise et convertit `titles` dans `dir` avec `voice`. Voir les règles d'échec et
@@ -254,8 +244,23 @@ pub async fn speak(
         attempted += 1;
         let result = match synthesize(synth, &title.text, &voice.id, timeout, cancel).await? {
             Ok(wav) => {
+                // Convertisseur de l'étape préparé au premier titre synthétisé (ffmpeg localisé,
+                // empreinte vérifiée), puis réutilisé (#487).
+                let ready = match encoder.take() {
+                    Some(ready) => ready,
+                    None => match backend.title_encoder(cancel).await {
+                        Ok(ready) => ready,
+                        Err(AppError::Cancelled) => return Err(AppError::Cancelled),
+                        Err(err) => {
+                            tracing::warn!("titres lus : convertisseur indisponible : {err}");
+                            return Err(stopped(ENCODER_MISSING.into()));
+                        }
+                    },
+                };
                 let dest = dir.join(format!("title-{rank:04}.mp3"));
-                match encode(backend, &mut encoder, &wav, &dest, cancel).await {
+                let converted = backend.title_mp3(&ready, &wav, &dest, cancel).await;
+                encoder = Some(ready);
+                match converted {
                     Ok(_) => Ok(dest),
                     Err(AppError::Cancelled) => return Err(AppError::Cancelled),
                     Err(err) => {
@@ -301,7 +306,13 @@ pub async fn speak(
                             .into(),
                     ));
                 }
-                out.failed.push((title.key.clone(), title.text.clone()));
+                // « Catégorie k » peut être renumérotée par un retrait (P7) : l'avertissement
+                // ne cite pas ce rang.
+                let shown = match title.numbered {
+                    Some(_) => UNNAMED_CATEGORY.to_string(),
+                    None => title.text.clone(),
+                };
+                out.failed.push((title.key.clone(), shown));
                 if out.failed.len() * 2 > speakable {
                     return Err(stopped(format!(
                         "Plus de la moitié des titres n'ont pas pu être lus à voix haute ({} sur \

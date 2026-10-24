@@ -81,6 +81,9 @@ const DISK_FACTOR: u64 = 4;
 const UNKNOWN_EPISODE_BYTES: u64 = 50_000_000;
 /// D5 : marge fixe.
 const DISK_MARGIN: u64 = 200_000_000;
+/// Part de la préparation réservée aux titres lus (#487) : 0 à 10 %, les téléchargements
+/// suivent de 10 à 60 %.
+const SPEECH_PERCENT: f64 = 10.0;
 /// Délai du téléchargement de la couverture.
 const COVER_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -786,8 +789,14 @@ impl InstallService {
             })
             .collect();
 
-        // 1. Téléchargements (0 à 60 %).
-        self.emit_phase(id, 0.0, "download");
+        // 1. Téléchargements (jusqu'à 60 % ; à partir de la fin des titres lus s'il y en a, pour
+        // que la barre ne recule jamais).
+        let base = if job.composition.titles_audio {
+            SPEECH_PERCENT
+        } else {
+            0.0
+        };
+        self.emit_phase(id, base, "download");
         let progress: Arc<dyn Fn(Progress) + Send + Sync> = {
             let service = self.clone();
             let id = id.to_string();
@@ -801,7 +810,7 @@ impl InstallService {
                     service.emit(super::InstallProgress {
                         task_id: id.clone(),
                         state: TaskState::Preparing,
-                        percent: Some(part * 60.0),
+                        percent: Some(base + part * (60.0 - base)),
                         received: Some(p.bytes),
                         total: None,
                         phase: Some("download".into()),
@@ -1154,12 +1163,13 @@ impl InstallService {
         let titles = pack_speech::titles(&job.composition, &metadata.title, &|r| {
             titles_by_ref.get(r).map(|t| (*t).to_string())
         });
-        // Avancement par titre (0 à 100 % de l'étape, #487) ; durée réelle journalisée (rang et
-        // nombre seulement, jamais de texte ni de voix).
+        // Avancement par titre (0 à SPEECH_PERCENT, #487) ; durée réelle journalisée (nombres
+        // seulement, jamais de texte ni de voix).
         let started = std::time::Instant::now();
         let progress = |done: usize, total: usize| {
-            if let Some(percent) = (done * 100).checked_div(total) {
-                self.emit_phase(id, percent as f64, "speech");
+            if total > 0 {
+                let part = done as f64 / total as f64;
+                self.emit_phase(id, part * SPEECH_PERCENT, "speech");
             }
         };
         let spoken = pack_speech::speak(
