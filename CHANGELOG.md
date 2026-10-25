@@ -7,6 +7,20 @@ publiées sous des étiquettes `launcher-v…` (voir les
 
 ## [Non publié]
 
+## [0.1.0-beta.3] - 2026-10-25
+
+Changements depuis `launcher-v0.1.0-beta.2`.
+
+### Modifié
+
+- **Podcasts** : dans le choix de l'image d'une catégorie, la vignette de chaque pochette est
+  désormais téléchargée à la demande, dès la première composition, quand elle approche de l'écran
+  (une seule fois : elle est gardée dans le cache de la source et purgée avec elle).
+- **Convertisseur** : lecture des JPEG encore plus fidèle à l'ancienne version sur les fichiers
+  abîmés ou inhabituels (tables lues comme libjpeg, fichiers coupés, octets de remplissage). Un JPEG
+  progressif de plus de 1 000 passes est refusé avec le message habituel au lieu de mobiliser le
+  décodeur trop longtemps.
+
 ## [0.1.0-beta.2] - 2026-10-24
 
 Changements depuis `launcher-v0.1.0-beta.1`.
@@ -23,9 +37,8 @@ Changements depuis `launcher-v0.1.0-beta.1`.
   prendre l'image d'un de ses épisodes (choix dans l'éditeur ; « Automatique », l'image du
   premier épisode, reste le défaut). Si l'épisode choisi disparaît du pack, l'image automatique
   est utilisée et un avertissement s'affiche à la fin de la création. Le choix montre une
-  vignette de la pochette de chaque épisode, téléchargée à la demande quand elle approche de
-  l'écran (une seule fois : la vignette est gardée dans le cache de la source) ; deux épisodes
-  de même titre se distinguent par leur rang.
+  vignette de la pochette de chaque épisode (quand elle a déjà été téléchargée pour un pack) ;
+  deux épisodes de même titre se distinguent par leur rang.
 - **Titres lus (podcasts)** : option « Lire les titres à voix haute » dans l'éditeur de pack. Le
   titre du pack, les catégories et les épisodes sont lus par une voix française de Windows
   (choix de la voix et essai dans les Paramètres). Sans voix française installée, l'option est
@@ -90,5 +103,6 @@ Changements depuis `launcher-v0.1.0-beta.1`.
   programme intégré. Python 3 reste utile uniquement aux outils de campagne et de parité du
   dépôt (`tools/telmi2flam/`, sans Pillow), pas aux utilisateurs.
 
-[Non publié]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.2...HEAD
+[Non publié]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.3...HEAD
+[0.1.0-beta.3]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.2...launcher-v0.1.0-beta.3
 [0.1.0-beta.2]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.1...launcher-v0.1.0-beta.2

@@ -7,6 +7,8 @@
 # (tests/data/matrix_expected.json). Les deux derniers fichiers portent les mêmes valeurs
 # (`frozen_with`), vérifiées par test_parity.py ; text_parity.rs et graph_parity.rs relisent
 # `python`. Aucun Python ni Pillow n'est plus installé pour le convertisseur, ni livré.
+# `revision` est l'identifiant d'avant la réécriture de l'historique du 2026-10-24 (auteurs
+# seulement, contenu identique) ; le commit équivalent de main est 3fd8b0f (#502).
 python=3.14.8
 pillow=12.3.0
 revision=fdc09e9
