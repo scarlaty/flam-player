@@ -23,8 +23,9 @@ Changements depuis `launcher-v0.1.0-beta.1`.
   prendre l'image d'un de ses épisodes (choix dans l'éditeur ; « Automatique », l'image du
   premier épisode, reste le défaut). Si l'épisode choisi disparaît du pack, l'image automatique
   est utilisée et un avertissement s'affiche à la fin de la création. Le choix montre une
-  vignette de la pochette de chaque épisode (quand elle a déjà été téléchargée pour un pack) ;
-  deux épisodes de même titre se distinguent par leur rang.
+  vignette de la pochette de chaque épisode, téléchargée à la demande quand elle approche de
+  l'écran (une seule fois : la vignette est gardée dans le cache de la source) ; deux épisodes
+  de même titre se distinguent par leur rang.
 - **Titres lus (podcasts)** : option « Lire les titres à voix haute » dans l'éditeur de pack. Le
   titre du pack, les catégories et les épisodes sont lus par une voix française de Windows
   (choix de la voix et essai dans les Paramètres). Sans voix française installée, l'option est

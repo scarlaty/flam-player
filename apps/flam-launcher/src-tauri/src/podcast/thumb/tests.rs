@@ -7,6 +7,8 @@ use super::*;
 use crate::podcast::mp3cache::tests::{episode, TestLocks};
 use crate::podcast::mp3cache::Store;
 
+mod demand;
+
 /// PNG `w` × `h` uni.
 fn png(w: u32, h: u32) -> Vec<u8> {
     let img = image::RgbImage::from_pixel(w, h, image::Rgb([200, 30, 30]));

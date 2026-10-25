@@ -324,9 +324,20 @@ fn is_real_dir(path: &Path) -> bool {
 /// supprimer hors du cache (#466). `Ok(None)` : un dossier manque (et `create` est faux).
 /// Avec `create`, les dossiers manquants sont créés un par un puis recontrôlés.
 fn real_mp3_dir(cache_root: &Path, source_id: &str, create: bool) -> io::Result<Option<PathBuf>> {
+    real_subdir(cache_root, source_id, CACHE_DIR, create)
+}
+
+/// `podcasts/<source_id>/<sub>/` (mêmes garanties que [`real_mp3_dir`] : aucun lien sur le
+/// chemin). `sub` est un nom de dossier fixe du code, jamais une donnée externe.
+fn real_subdir(
+    cache_root: &Path,
+    source_id: &str,
+    sub: &str,
+    create: bool,
+) -> io::Result<Option<PathBuf>> {
     let source =
         source_dir(cache_root, source_id).map_err(|err| io::Error::other(err.to_string()))?;
-    let mp3 = source.join(CACHE_DIR);
+    let mp3 = source.join(sub);
     if create {
         std::fs::create_dir_all(cache_root)?;
     }
@@ -781,7 +792,7 @@ pub struct CacheAccess {
 /// Rangement d'un dossier de source : lecture ou nettoyage (rien n'est créé), écriture (les
 /// dossiers manquants sont créés).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
+pub(super) enum Mode {
     Read,
     Write,
 }
@@ -808,6 +819,13 @@ impl CacheAccess {
             place: Arc::new(link_or_copy),
             cancel: Cancel::default(),
         }
+    }
+
+    /// Fixe la génération de `source_id` lue **avant** la résolution de son adresse (#508) :
+    /// une purge intervenue depuis rend le cache inaccessible.
+    pub fn at_generation(mut self, source_id: &str, generation: u64) -> Self {
+        self.generations.insert(source_id.to_string(), generation);
+        self
     }
 
     /// Plafond de taille (tests).
@@ -845,6 +863,32 @@ impl CacheAccess {
         mode: Mode,
         job: impl FnOnce(&Path) -> T + Send + 'static,
     ) -> Option<T> {
+        self.under_dir(CACHE_DIR, source_id, generation, mode, job)
+            .await
+    }
+
+    /// Exécute `job` sur le sous-dossier `sub` de `source_id` (aperçus, #508), sous le verrou
+    /// de la source ; `None` si la source est inconnue de l'accès ou purgée depuis.
+    pub(super) async fn in_subdir<T: Send + 'static>(
+        &self,
+        sub: &'static str,
+        source_id: &str,
+        mode: Mode,
+        job: impl FnOnce(&Path) -> T + Send + 'static,
+    ) -> Option<T> {
+        let generation = *self.generations.get(source_id)?;
+        self.under_dir(sub, source_id, generation, mode, job).await
+    }
+
+    /// Comme [`Self::under_lock`], sur le sous-dossier `sub` de la source (aperçus, #508).
+    async fn under_dir<T: Send + 'static>(
+        &self,
+        sub: &'static str,
+        source_id: &str,
+        generation: u64,
+        mode: Mode,
+        job: impl FnOnce(&Path) -> T + Send + 'static,
+    ) -> Option<T> {
         let guard = self.locks.lock(source_id, generation).await;
         let Some(guard) = guard else {
             tracing::info!("cache des MP3 : source {source_id} supprimée, cache ignoré");
@@ -853,7 +897,7 @@ impl CacheAccess {
         let (root, sid) = (self.cache_root.clone(), source_id.to_string());
         blocking(move || {
             let _guard = guard;
-            match real_mp3_dir(&root, &sid, mode == Mode::Write) {
+            match real_subdir(&root, &sid, sub, mode == Mode::Write) {
                 Ok(Some(dir)) => Some(job(&dir)),
                 Ok(None) => None,
                 Err(err) => {
