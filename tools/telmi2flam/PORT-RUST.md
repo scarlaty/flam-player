@@ -458,7 +458,7 @@ aucun appel dans `telmi2flam.py`), le Rust ne l'applique pas non plus. Ni `draft
 | Panne | Comportement de Pillow (oracle) | Comportement attendu du Rust |
 | --- | --- | --- |
 | Fichier tronqué (JPEG, GIF) | `OSError: image file is truncated` (`LOAD_TRUNCATED_IMAGES` faux, vérifié : `telmi2flam.py` ne le pose pas) | illisible, sauf si Pillow a déjà toutes les lignes : mêmes cas, testés par troncature (JPEG : 3 bases, chaque longueur) |
-| JPEG sans `EOI` | un seul balayage : lu si un marqueur suit les données ; sans marqueur, lu seulement si assez d'octets suivent les données utiles (0 à 7 selon l'image, mesuré) ; plusieurs balayages : illisible (`EOI` exigé) | un seul balayage sans marqueur : données manquantes (image changée selon les bits ajoutés après la fin), illisible ; 8 octets inutiles en fin, lu ; sinon délégué |
+| JPEG sans `EOI` | un seul balayage : lu si un marqueur suit les données ; sans marqueur, lu seulement si assez d'octets suivent les données utiles (0 à 7 selon l'image, mesuré) ; plusieurs balayages : illisible (`EOI` exigé) | un seul balayage sans marqueur : données manquantes (image changée selon les bits ajoutés après la fin), illisible ; 8 octets inutiles en fin (image inchangée qu'on les remplace par des bits 0, ou par des bits 1 en mode strict : des octets utiles à bits nuls sont ainsi repérés), lu ; sinon délégué |
 | JPEG coupé puis terminé par un marqueur (`EOI`, `DHT`…) | lu, blocs manquants gris uniforme (`insufficient_data`) | lu ; pixels de la partie manquante différents (écart assumé, non borné, vecteurs `fin_*_moitie_*`) |
 | Données après `EOI`, octets parasites entre segments, remplissage `FF` | ignorés | ignorés (le flux remis à `zune-jpeg` est réécrit) |
 | Données corrompues dans un JPEG (code de Huffman invalide, marqueur `RSTn` manquant) | libjpeg-turbo **avertit et continue** (blocs mis à zéro, resynchronisation) : image lue | lu par `zune-jpeg` avec d'autres pixels (écart **assumé**), ou refusé par `zune-jpeg` : **délégué** (code 7) ; marqueur invalide dans une image à redémarrages (libjpeg resynchronise ou refuse selon sa position) : délégué |
@@ -467,7 +467,11 @@ aucun appel dans `telmi2flam.py`), le Rust ne l'applique pas non plus. Ni `draft
 | JPEG RGB sans conversion | Adobe 0 sans JFIF, ou identifiants `R`, `G`, `B` sans JFIF ni Adobe | idem (JFIF prime, comme `default_decompress_parms`) |
 | JPEG progressif, restart (`DRI`, `RSTn`), tables optimisées, 4:4:4 / 4:2:2 / 4:2:0 | lus par libjpeg-turbo | lus, à ±4 près |
 | Tables de Huffman absentes ou invalides | séquentiel : tables 0 et 1 standard ; progressif : `JERR_NO_HUFF_TABLE` ; index ≥ 4, code « tout à un », symbole DC > 15 : illisible | idem (contrôles de `jpeg.rs`, puis `AVI1` pour les tables standard de `zune-jpeg`) |
-| JPEG arithmétique (`SOF9`, `SOF10`), sans perte (`SOF3`, `SOF11`) | lus par libjpeg-turbo 3.1 (arithmétique vérifié sur l'oracle) | **délégués** (code 7, `JPEG arithmétique` / `JPEG sans perte`) : `zune-jpeg` ne les lit pas ; avec le repli Python retiré (#138), c'est une erreur de conversion visible |
+| JPEG arithmétique (`SOF9`, `SOF10`), sans perte (`SOF3`, `SOF11`) | lus par libjpeg-turbo 3.1 (arithmétique vérifié sur l'oracle) | **délégués** (code 7, `JPEG arithmétique` / `JPEG sans perte`) : `zune-jpeg` ne les lit pas ; avec le repli Python retiré (#138), c'est une erreur de conversion visible. Arithmétique (`SOF9`, `SOF10`) : délégué après le verdict de la structure (tables de quantification, progression, `DAC`, suite du flux : illisible comme pour libjpeg) ; sans perte : dès l'en-tête |
+| `DAC` invalide (index ≥ 32, borne basse > borne haute, longueur impaire), avant ou après un balayage, quel que soit le codage | `JERR_DAC_INDEX`, `JERR_DAC_VALUE`, `JERR_BAD_LENGTH` : illisible | illisible |
+| `DQT` dont le reste est plus court qu'une table, `DAC` de longueur impaire (après le premier `SOS`, là où Pillow ne lit pas) ; segment de tables coupé par la fin du fichier | libjpeg lit 64 valeurs (ou la valeur de la paire) au-delà du segment : `JERR_BAD_LENGTH` ; la fin du fichier suspend la lecture : image à un balayage lue, sauf erreur dans les octets présents (index, longueur de `DRI`, comptes de `DHT`) | idem (lecture octet par octet de `jpeg.rs`, vecteurs `fin_dqt_*`, `fin_dac_*`) |
+| JPEG progressif de plus de 1 000 balayages | lu (aucune limite) | **délégué** (`MAX_SCANS` de `jpeg.rs`, `JPEG refusé par zune-jpeg`) |
+| Exception de `_open` (rattrapée par `Image.open`) sur des données qu'un greffon sans `_accept` lit : SPIDER, PCD (`PCD_` à l'octet 2048) | greffon essayé (PCD : image 768 × 512) | **délégué** (`pas un PNG`) ; erreur de libjpeg ou garde anti-bombe : illisible (elles ne sont pas rattrapées) |
 | JPEG 12 bits, différentiel (`SOF5`-`7`, `SOF13`-`15`), `DHP`, `EXP`, `JPGn`, `SOF` ou `SOI` répété | `SyntaxError` (précision ≠ 8) ou erreur fatale libjpeg : illisible | illisible |
 | Flux de tables seules (`EOI`) suivi d'une image | lu (deux `jpeg_read_header`) | délégué (`JPEG à tables séparées`) ; `EOI` non suivi de `SOI` : illisible (`JERR_NO_SOI`) |
 | Balayage entrelacé de plus de 10 blocs par MCU | `JERR_BAD_MCU_SIZE` | illisible |
@@ -486,7 +490,9 @@ déclare illisible (écart accepté, #473). JPEG : écart d'IDCT/suréchantillon
 (D7, règle `jpeg_bounded` de `ALLOWED_DEVIATIONS`) ; pixels d'un JPEG corrompu, ou coupé puis
 terminé par un marqueur, **non bornés : accepté par le mainteneur** (entrée abîmée ; libjpeg
 met les blocs manquants en gris uniforme, `zune-jpeg` non), hors corpus, vecteurs
-`fin_*_moitie_*` comparés sur le verdict seulement.
+`fin_*_moitie_*` comparés sur le verdict seulement. Un JPEG polyglotte PCD ou SPIDER dont l'analyse de
+`_open` échoue est délégué (Pillow le relit avec ce greffon), au lieu d'être déclaré illisible comme le
+GIF (#491).
 
 **PR 2 (JPEG, faite, D7)** : `crates/telmi2flam/src/jpeg.rs`, appelé par `png::decode_rgba`
 dès la signature `FF D8 FF` (`_accept` de `JpegImagePlugin`).
@@ -504,7 +510,8 @@ dès la signature `FF D8 FF` (`_accept` de `JpegImagePlugin`).
   vérifie (`cargo tree -e features`). Un appel de la bibliothèque depuis le launcher (tests du
   podcast) décode donc les JPEG avec les chemins SIMD : hors parité, sans effet sur le binaire
   livré. Sans limite de
-  taille ni de nombre de balayages propre (celles de Pillow s'appliquent avant). `zune-jpeg`
+  taille propre (celles de Pillow s'appliquent avant) ; au plus 1 000 balayages (au-delà,
+  délégué : voir « Annulation »). `zune-jpeg`
   n'a pas d'option d'IDCT ni de suréchantillonnage : son IDCT entière et son suréchantillonnage
   « fancy » sont gardés tels quels. Il reçoit un flux réécrit (`SOF`, `DQT`, `DHT`, `DRI`,
   `SOS` et données ; `APPn`, `COM`, `DNL` retirés ; paramètres de progression d'un `SOS`
@@ -512,37 +519,43 @@ dès la signature `FF D8 FF` (`_accept` de `JpegImagePlugin`).
   standard) et rend les composantes brutes ; la conversion YCbCr→RGB (JFIF, virgule fixe
   16 bits), YCCK→CMYK et `cmyk2rgb` sont faites dans `jpeg.rs` selon l'espace choisi par
   libjpeg-turbo.
-- Mesure (`tests/jpeg_vectors.rs`, 229 vecteurs écrits par Pillow, 196 lus) : écart maximal 4
-  en RGB (4:2:0, 4:2:2 et 4:4:4, séquentiel et progressif), 1 en gris et en CMYK, alpha exact ;
-  32 vecteurs identiques à l'octet près. Corpus de parité (cas `img_jpeg*`, `pkg_cover_jpeg_*`) :
+- Mesure (`tests/jpeg_vectors.rs`, 269 vecteurs, écrits par Pillow ou retouchés, 207 lus ; les 36 ajoutés par #491 après le gel, attendus de l'oracle figé (§4.5) calculés hors dépôt) :
+  écart maximal 4 en RGB (4:2:0, 4:2:2 et 4:4:4, séquentiel et progressif), 1 en gris et en
+  CMYK, alpha exact ; 33 vecteurs identiques à l'octet près. Corpus de parité (cas `img_jpeg*`, `pkg_cover_jpeg_*`) :
   après redimensionnement Lanczos et quantification RGB565, chaque `.lif` reste dans un pas de
   quantification (règle `jpeg_bounded` : écart minimal avant quantification compatible ≤ 4,
   alpha exact). Les lobes négatifs du Lanczos peuvent porter un écart source de 4 à 5 ou 6 : la
   règle est alors plus stricte que D7 (faux écart possible en campagne, jamais un écart masqué).
-- Verdicts : identiques sur les 233 vecteurs, hors délégations (arithmétique, sans perte, flux
-  de tables seules, balayage unique sans `EOI`) ; sur 3 680 troncatures et octets inversés,
+- Verdicts : identiques sur les 269 vecteurs, hors délégations (arithmétique, sans perte, flux
+  de tables seules, balayage unique sans `EOI`, refus de `zune-jpeg`, plus de 1 000
+  balayages, polyglotte PCD ou SPIDER) ; sur 3 680 troncatures et octets inversés,
   10 écarts, tous des délégations là où libjpeg tranche selon des détails non reproduits
   (`alterations_divergences.tsv`), plus les préfixes qui perdent la signature (délégation
   prudente d'`identify`). Aucun cas lu par Pillow n'est jugé illisible par le Rust : chaque
   incertitude est déléguée (D4), dont tout refus de `zune-jpeg` sur une structure que libjpeg
-  accepte (données corrompues, table inutilisée invalide, facteur 3, `DQT` court entre deux
-  balayages…).
+  accepte (données corrompues, table inutilisée invalide, facteur 3, `DQT` de précision 2…).
 - Mémoire : l'image RGBA est réservée par `try_reserve` ; le flux réécrit est borné par la
   taille du fichier ; les tampons internes de `zune-jpeg` (coefficients d'une image
   progressive, sortie brute) sont alloués d'après l'en-tête, comme ceux de libjpeg et de
   Pillow, dans la limite de la garde anti-bombe ; un manque de mémoire dans `zune-jpeg` arrête
-  le processus (§3, « Mémoire épuisée »). Balayage unique sans `EOI` : jusqu'à trois décodages,
+  le processus (§3, « Mémoire épuisée »). Balayage unique sans `EOI` : jusqu'à quatre décodages,
   deux sorties brutes en mémoire à la fois (plus de 500 Mio près de la garde).
 - Annulation : avant l'analyse, après le parcours du flux, avant et après chaque décodage de
-  `zune-jpeg` (un seul en général, trois pour un balayage unique sans `EOI`), puis à chaque
+  `zune-jpeg` (un seul en général, quatre pour un balayage unique sans `EOI`), puis à chaque
   ligne de la conversion ; test d'injection à chaque appel du jeton
   (`annulation_avant_et_apres_le_decodage_puis_par_ligne`). `zune-jpeg` ne rend pas la main
   pendant un décodage : pour une image proche de la garde, ou un JPEG progressif fait de très
-  nombreux balayages vides (aucune limite, comme libjpeg), l'annulation attend la fin du
-  décodage (aussi lent côté Python).
+  nombreux balayages vides, l'annulation attend la fin du décodage (aussi lent côté Python).
+  libjpeg ne borne pas le nombre de balayages ; le Rust en lit au plus 1 000 (`MAX_SCANS`,
+  seuil généreux : une dizaine dans un JPEG progressif courant ; seul un script extrême, un
+  balayage par coefficient et par bit, le dépasse) et délègue au-delà (#491).
+  Mesuré (release, 8192 × 8192 gris, 1 000 balayages AC vides de quelques octets) : 2,6 s
+  pour le Rust, 4,1 s pour Pillow ; 5 000 balayages : 12 s et 20 s, d'où la borne.
 - Parité : `parity.py` admet `jpeg_bounded` seulement sur les cas étiquetés `jpeg_bounded` et
   les entrées `jpeg_entries` du cas (corpus), ou, en campagne, sur les `.lif` dont le nom
-  correspond à un JPEG de l'archive (`jpeg_outputs`, approximation du nommage de `alloc`) ;
+  correspond à un JPEG de l'archive (`jpeg_outputs`, approximation du nommage de `alloc` :
+  JPEG de `images/`, suffixe `_N` seulement si une collision de noms est possible ;
+  `img/title.lif` et `img/thumbnail.lif` seulement si la couverture retenue est un JPEG) ;
   statuts, avertissements et autres entrées restent comparés à l'identique.
   `package_parity.rs` applique la même règle aux `.lif` de Python rangés dans
   `package_cases.zip` (`jpeg_lif/`).
@@ -631,6 +644,12 @@ sortie) et `matrix_render.rs` (matrice régénérée par `make_matrix.py`, sans 
    dans son entrée de `corpus.json`.
 4. Matrice : modifier `make_matrix.py` change les PNG et invalide le gel ; ajouter plutôt des
    cellules (nouvelles empreintes relues), jamais modifier celles qui existent.
+5. Exception (#491, dernière) : les 36 vecteurs JPEG ajoutés en fin de `vectors.tsv` ont leurs
+   attendus calculés par l'oracle reconstitué hors dépôt (Python 3.14.8, Pillow 12.3.0,
+   libjpeg-turbo 3.1.4.1, `_open_rgba` de l'ancien convertisseur à la révision `867ce1f (#493)`,
+   identique à celle du gel) avec `gen_jpeg_vectors.py` étendu (joint à la PR de #491) ; les
+   lignes et membres du ZIP antérieurs ont été vérifiés identiques à l'octet près, et
+   l'origine est notée dans `vectors.tsv`.
 
 ## 5. Plan de bascule
 

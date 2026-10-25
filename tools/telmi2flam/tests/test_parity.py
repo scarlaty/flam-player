@@ -29,7 +29,7 @@ ROOT = os.path.dirname(os.path.dirname(TOOL))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "parity"))
 
-from campaign_fixtures import std_files, zip_bytes  # noqa: E402  (ajoute TOOL au sys.path)
+from campaign_fixtures import base_nodes, std_files, zip_bytes  # noqa: E402  (ajoute TOOL au sys.path)
 import converter_bin  # noqa: E402
 import make_matrix  # noqa: E402
 import parity  # noqa: E402
@@ -264,20 +264,56 @@ class TestJpegBounded(unittest.TestCase):
         try:
             path = os.path.join(tmp, "a.zip")
             jpeg = b"\xff\xd8\xff\xe0" + bytes(12)
-            with open(path, "wb") as f:
-                f.write(zip_bytes([("images/Forêt 1.jpg", jpeg),
-                                               ("images/s0.png", b"\x89PNG\r\n\x1a\n" + bytes(8))]))
-            pred = parity.jpeg_outputs(path)
-            for name in ("img/For_t_1.lif", "img/For_t_1_inv.lif", "img/For_t_1_2.lif"):
-                self.assertTrue(pred(name), name)
-            for name in ("img/s0.lif", "img/title.lif", "img/For_t_1x.lif", "For_t_1.lif"):
-                self.assertFalse(pred(name), name)
-            with open(path, "wb") as f:
-                f.write(zip_bytes([("title.png", jpeg)]))
-            self.assertTrue(parity.jpeg_outputs(path)("img/thumbnail.lif"))
-            with open(path, "wb") as f:
-                f.write(zip_bytes(std_files()))
-            self.assertIsNone(parity.jpeg_outputs(path))
+            png_ = b"\x89PNG\r\n\x1a\n" + bytes(8)
+
+            def pred(*files, meta=None, stages=(), inventory=()):
+                """Histoire minimale, images référencées par des étapes et l'inventaire."""
+                nodes = base_nodes()
+                for i, ref in enumerate(stages):
+                    nodes["stages"]["x%d" % i] = dict(nodes["stages"]["s0"], image=ref)
+                if inventory:
+                    nodes["inventory"] = [{"name": "o", "image": ref} for ref in inventory]
+                story = [(n, d) for n, d in std_files(meta, nodes) if n not in dict(files)]
+                with open(path, "wb") as f:
+                    f.write(zip_bytes(story + list(files)))
+                return parity.jpeg_outputs(path)
+
+            p = pred(("images/Forêt 1.jpg", jpeg), stages=["Forêt 1.jpg"],
+                     inventory=["Forêt 1.jpg"])
+            for name in ("img/For_t_1.lif", "img/For_t_1_inv.lif", "img/for_t_1.LIF"):
+                self.assertTrue(p(name), name)
+            # `_N` sans collision possible, image PNG, couverture PNG, hors de img/ : refusés
+            for name in ("img/For_t_1_2.lif", "img/s0.lif", "img/title.lif",
+                         "img/thumbnail.lif", "img/For_t_1x.lif", "For_t_1.lif"):
+                self.assertFalse(p(name), name)
+            # JPEG non référencé : pas de sortie
+            self.assertIsNone(pred(("images/Forêt 1.jpg", jpeg)))
+            # base tirée de la référence (NFC du JSON), entrée trouvée à la NFC et à la casse
+            # près (zip macOS en NFD)
+            p = pred(("images/FORE" + chr(0x302) + "T 1.jpg", jpeg), stages=["Forêt 1.jpg"])
+            self.assertTrue(p("img/For_t_1.lif"))
+            # collisions réelles : même nom à la casse près (deux références, une seule
+            # entrée comprise), nom réservé, nom qui prolonge une autre sortie de `_N`
+            p = pred(("images/Forêt 1.jpg", jpeg), stages=["Forêt 1.jpg", "forêt 1.JPG"])
+            self.assertTrue(p("img/for_t_1_2.lif"))
+            p = pred(("images/a.jpg", jpeg), ("images/a.png", png_),
+                     stages=["a.jpg", "a.png"])
+            self.assertTrue(p("img/a_2.lif"))
+            p = pred(("images/title.jpg", jpeg), stages=["title.jpg"])
+            # couverture PNG : `img/title.lif` reste comparé à l'identique
+            self.assertTrue(p("img/title_2.lif") and not p("img/title.lif"))
+            p = pred(("images/a_2.jpg", jpeg), ("images/a.png", png_), ("images/A.png", png_),
+                     stages=["a.png", "A.png", "a_2.jpg"])
+            self.assertTrue(p("img/a_2_2.lif"))
+            # couverture : la première présente parmi image de metadata.json, title.png,
+            # cover.png, à la racine de l'histoire
+            self.assertTrue(pred(("title.png", jpeg))("img/thumbnail.lif"))
+            p = pred(("c.jpg", jpeg), meta={"title": "T", "uuid": "u1", "image": "c.jpg"})
+            self.assertTrue(p("img/title.lif") and p("img/thumbnail.lif"))
+            self.assertIsNone(pred(("c.png", png_), ("cover.png", jpeg),
+                                   meta={"title": "T", "uuid": "u1", "image": "c.png"}))
+            self.assertIsNone(pred(("extra/x.jpg", jpeg)))
+            self.assertIsNone(pred())
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
