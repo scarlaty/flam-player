@@ -148,13 +148,17 @@ pub fn pillow_may_open(data: &[u8]) -> bool {
     if data.len() >= 18 && data[1] <= 1 {
         return true;
     }
-    // SPIDER : 27 flottants, gros-boutiste puis petit-boutiste.
-    if let Some(h) = data.get(..108) {
-        if spider_header(h, true) || spider_header(h, false) {
-            return true;
-        }
-    }
-    // PCD : `PCD_` à l'octet 2048.
+    spider_signature(data) || pcd_signature(data)
+}
+
+/// SPIDER (greffon sans `_accept`) : 27 flottants, gros-boutiste puis petit-boutiste.
+pub(crate) fn spider_signature(data: &[u8]) -> bool {
+    data.get(..108)
+        .is_some_and(|h| spider_header(h, true) || spider_header(h, false))
+}
+
+/// PCD (greffon sans `_accept`) : `PCD_` à l'octet 2048.
+pub(crate) fn pcd_signature(data: &[u8]) -> bool {
     data.get(2048..).is_some_and(|s| s.starts_with(b"PCD_"))
 }
 

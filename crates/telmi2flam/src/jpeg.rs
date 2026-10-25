@@ -6,19 +6,24 @@
 //! 1. **Verdict** (image lue ou illisible), reproduit à la main : analyse de `JpegImageFile._open`
 //!    (marqueurs lus en Python jusqu'au premier `SOS`, exceptions comprises), garde anti-bombe de
 //!    `Image.open`, refus fatals de libjpeg-turbo sur la structure (`SOF` en double ou non pris en
-//!    charge, marqueur réservé, `SOI` répété, longueurs de `DHT`, `DQT`, `DRI` et `SOS`, index et
-//!    validité des tables de Huffman utilisées, table de quantification absente, composante
-//!    inconnue, paramètres de progression, échantillonnage hors 1..4 ou non entier, côté au-delà
-//!    de 65 500 px) et fin des données (fichier tronqué : `LOAD_TRUNCATED_IMAGES` reste faux dans
-//!    l'ancien convertisseur Python). Règle de fin, mesurée sur l'oracle : une image à un seul
-//!    balayage est lue si un marqueur suit ses données (les blocs manquants sont mis à zéro par
-//!    libjpeg) ; sans marqueur, illisible si des données manquent, lue si au moins 8 octets
-//!    inutiles terminent le flux, déléguée entre les deux (libjpeg demande de 0 à 7 octets au-delà
-//!    des données utiles selon l'image). Une image à plusieurs balayages (progressive, ou
-//!    composantes en balayages séparés) n'est lue que si `EOI` est atteint :
-//!    `jpeg_start_decompress` consomme tout le fichier. En séquentiel, les tables de Huffman 0 et 1
-//!    absentes sont les tables standard (annexe K de T.81), comme `std_huff_tables` de
-//!    libjpeg-turbo ; pas en progressif.
+//!    charge, marqueur réservé, `SOI` répété, longueurs de `DHT`, `DQT`, `DAC`, `DRI` et `SOS`,
+//!    index et valeurs de `DAC`, index et validité des tables de Huffman utilisées, table de
+//!    quantification absente (arithmétique compris ; pas en sans perte, comme libjpeg),
+//!    composante inconnue, paramètres de progression, échantillonnage hors 1..4 ou non entier,
+//!    côté au-delà de 65 500 px) et fin des données (fichier tronqué : `LOAD_TRUNCATED_IMAGES`
+//!    reste faux dans l'ancien convertisseur). Les erreurs de libjpeg avant le premier `SOS` ne passent
+//!    qu'après toute l'analyse de `_open` (elles surviennent au décodage). Une exception de
+//!    `_open` rattrapée par `Image.open` sur des données qu'un greffon sans `_accept` peut lire
+//!    (SPIDER, ou PCD : `PCD_` à l'octet 2048) est déléguée. Règle de fin, mesurée sur
+//!    l'oracle : une image à un seul balayage est lue si un marqueur suit ses données (les blocs
+//!    manquants sont mis à zéro par libjpeg) ; sans marqueur, illisible si des données manquent,
+//!    lue si au moins 8 octets inutiles terminent le flux, déléguée entre les deux (libjpeg
+//!    demande de 0 à 7 octets au-delà des données utiles selon l'image) ; un segment de tables
+//!    coupé par la fin du fichier suspend libjpeg (image lue), sauf erreur dans ses octets
+//!    présents. Une image à plusieurs balayages (progressive, ou composantes en balayages
+//!    séparés) n'est lue que si `EOI` est atteint : `jpeg_start_decompress` consomme tout le
+//!    fichier. En séquentiel, les tables de Huffman 0 et 1 absentes sont les tables
+//!    standard (annexe K de T.81), comme `std_huff_tables` de libjpeg-turbo ; pas en progressif.
 //! 2. **Pixels** : `zune-jpeg` (scalaire : fonctions `x86` et `neon` non compilées quand la crate
 //!    est construite seule, `-p telmi2flam`, contrôlé par la CI ; `use_unsafe` ne coupe pas
 //!    l'AVX2) décode
@@ -32,14 +37,15 @@
 //!    `tests/vectors/jpeg/`), seul écart admis par `parity.py` (règle `jpeg_bounded`).
 //!
 //! **Délégués** ([`PngError::Unsupported`], code 7, D4) : ce que libjpeg-turbo lit (ou peut lire)
-//! mais pas le Rust — codages arithmétique et sans perte, refus de `zune-jpeg` (données
-//! corrompues, table inutilisée invalide, facteur 3…), flux de tables seules suivi d'une image,
+//! mais pas le Rust — codages arithmétique (après le verdict de la structure) et sans perte,
+//! refus de `zune-jpeg` (données corrompues, table inutilisée invalide, facteur 3, `DQT` de
+//! précision 2…), plus de [`MAX_SCANS`] balayages, flux de tables seules suivi d'une image,
 //! balayage unique sans marqueur final au verdict incertain, marqueur invalide dans une image à
-//! redémarrages. Écarts assumés (PORT-RUST.md §4.4) : pixels des données corrompues ou coupées
-//! puis terminées par un marqueur (libjpeg les met en gris, `zune-jpeg` non) ; EXIF et MPO
-//! malformés (exceptions de Pillow non reproduites). Annulation consultée avant et après chaque
-//! décodage de `zune-jpeg` (qui ne rend pas la main pendant le décodage), puis à chaque ligne
-//! de la conversion.
+//! redémarrages, polyglotte PCD ou SPIDER. Écarts assumés (PORT-RUST.md §4.4) : pixels des données
+//! corrompues ou coupées puis terminées par un marqueur (libjpeg les met en gris, `zune-jpeg`
+//! non) ; EXIF et MPO malformés (exceptions de Pillow non reproduites). Annulation consultée
+//! avant et après chaque décodage de `zune-jpeg` (qui ne rend pas la main pendant le
+//! décodage), puis à chaque ligne de la conversion.
 
 use crate::png::{PngError, Rgba, MAX_IMAGE_PIXELS};
 use zune_core::bytestream::ZCursor;
@@ -59,13 +65,42 @@ const DQT: u8 = 0xDB;
 const DHT: u8 = 0xC4;
 const DRI: u8 = 0xDD;
 const DNL: u8 = 0xDC;
+const DAC: u8 = 0xCC;
 const COM: u8 = 0xFE;
 /// `APP0` « AVI1 » : `zune-jpeg` complète alors les tables de Huffman 0 et 1 absentes par les
 /// tables standard (comme libjpeg-turbo en séquentiel).
 const AVI1: &[u8] = b"\xff\xe0\x00\x07AVI1\x00";
 
+/// Balayages au plus (premier compris) : au-delà, délégué (`JPEG refusé par zune-jpeg`, D4).
+/// `zune-jpeg` ne rend pas la main pendant un décodage et libjpeg-turbo ne borne pas le nombre
+/// de balayages : un JPEG progressif fait de milliers de balayages vides tiendrait le décodage
+/// (et l'annulation) en otage. Seuil généreux : un JPEG progressif courant en compte une
+/// dizaine ; seul un script extrême (un balayage par coefficient et par bit, jusqu'à quelque
+/// 3 000 balayages) le dépasse, délégué alors (sens sûr).
+const MAX_SCANS: usize = 1000;
+
 fn unreadable<T>(why: &'static str) -> Result<T> {
     Err(PngError::Unreadable(why))
+}
+
+/// Exception de `JpegImageFile._open` que `Image.open` rattrape (`SyntaxError`, `IndexError`,
+/// `struct.error`) : Pillow essaie alors les autres greffons. Pour des données commençant par
+/// `FF D8 FF`, seuls SPIDER et PCD (sans `_accept` ; IM, IMT, IPTC et TGA rejettent `FF D8`)
+/// peuvent les ouvrir : délégué comme un autre format (D4), sinon illisible.
+fn open_error<T>(data: &[u8], why: &'static str) -> Result<T> {
+    if crate::identify::spider_signature(data) || crate::identify::pcd_signature(data) {
+        Err(PngError::Unsupported("pas un PNG"))
+    } else {
+        unreadable(why)
+    }
+}
+
+/// Erreur fatale de libjpeg-turbo avant le premier `SOS` : elle ne survient qu'au décodage,
+/// après toute l'analyse de `_open` (dont les exceptions priment) ; la première est retenue.
+fn defer(fatal: &mut Option<PngError>, r: Result<()>) {
+    if let Err(e) = r {
+        fatal.get_or_insert(e);
+    }
 }
 
 /// Espace de couleur du flux choisi par libjpeg-turbo (`jpeg_color_space`).
@@ -96,7 +131,7 @@ impl<'a> Reader<'a> {
     /// octets ou `OSError("Truncated File Read")`. Rend la longueur lue et le corps.
     fn segment(&mut self) -> Result<(u16, &'a [u8])> {
         let Some(s) = self.data.get(self.pos..self.pos + 2) else {
-            return unreadable("longueur de segment tronquée");
+            return open_error(self.data, "longueur de segment tronquée");
         };
         self.pos += 2;
         let len = u16::from_be_bytes([s[0], s[1]]);
@@ -138,22 +173,30 @@ struct Tables {
 }
 
 impl Tables {
+    // Les segments de tables sont lus par libjpeg octet par octet dans `avail` (tout ce qui suit
+    // les deux octets de longueur, jusqu'à la fin du fichier) : une erreur trouvée dans ce qui
+    // est présent passe d'abord, puis la fin du fichier suspend la lecture (`Ok(None)` ;
+    // `Ok(Some(()))` quand le segment est complet).
+
     /// `get_dht` : comptes, index, longueur exacte.
-    fn dht(&mut self, len: u16, body: &[u8]) -> Result<()> {
-        if len < 2 {
-            return unreadable("JERR_BAD_LENGTH (DHT)");
-        }
-        let mut s = body;
-        while s.len() > 16 {
-            let index = s[0];
-            let bits = &s[1..17];
+    fn dht(&mut self, len: u16, avail: &[u8]) -> Result<Option<()>> {
+        let mut length = i32::from(len) - 2;
+        let mut s = avail;
+        while length > 16 {
+            let Some(head) = s.get(..17) else {
+                return Ok(None);
+            };
+            let (index, bits) = (head[0], &head[1..]);
             let count: usize = bits.iter().map(|&b| usize::from(b)).sum();
-            s = &s[17..];
-            if count > 256 || count > s.len() {
+            length -= 17;
+            if count > 256 || count as i32 > length {
                 return unreadable("JERR_BAD_HUFF_TABLE");
             }
-            let vals = &s[..count];
-            s = &s[count..];
+            let Some(vals) = s.get(17..17 + count) else {
+                return Ok(None);
+            };
+            s = &s[17 + count..];
+            length -= count as i32;
             let (slots, index) = if index & 0x10 != 0 {
                 (&mut self.ac, index - 0x10)
             } else {
@@ -177,27 +220,70 @@ impl Tables {
                 dc_symbols: vals.iter().all(|&v| v <= 15),
             });
         }
-        if !s.is_empty() {
+        if length != 0 {
             return unreadable("JERR_BAD_LENGTH (DHT)");
         }
-        Ok(())
+        Ok(Some(()))
     }
 
-    /// `get_dqt` : index des tables (longueur négative : `JERR_BAD_LENGTH`).
-    fn dqt(&mut self, len: u16, body: &[u8]) -> Result<()> {
-        if len < 2 {
-            return unreadable("JERR_BAD_LENGTH (DQT)");
-        }
-        let mut s = body;
-        while let Some(&n) = s.first() {
+    /// `get_dqt` : index de la table, puis 64 valeurs toujours lues (2 octets dès que la
+    /// précision n'est pas nulle, `Pq` = 2 compris), au-delà du segment s'il le faut : un reste
+    /// plus court qu'une table donne `JERR_BAD_LENGTH` si le fichier contient ces 64 valeurs.
+    fn dqt(&mut self, len: u16, avail: &[u8]) -> Result<Option<()>> {
+        let mut length = i32::from(len) - 2;
+        let mut s = avail;
+        while length > 0 {
+            let Some(&n) = s.first() else {
+                return Ok(None);
+            };
             if n & 15 >= 4 {
                 return unreadable("JERR_DQT_INDEX");
             }
-            self.quant[usize::from(n & 15)] = true;
             let size = if n >> 4 != 0 { 128 } else { 64 };
-            s = &s[(1 + size).min(s.len())..];
+            let Some(rest) = s.get(1 + size..) else {
+                return Ok(None);
+            };
+            self.quant[usize::from(n & 15)] = true;
+            s = rest;
+            length -= 1 + size as i32;
         }
-        Ok(())
+        if length != 0 {
+            return unreadable("JERR_BAD_LENGTH (DQT)");
+        }
+        Ok(Some(()))
+    }
+
+    /// `get_dac` (lu quel que soit le codage) : paires index, valeur (lues toutes deux avant
+    /// les contrôles, au-delà du segment pour une longueur impaire) ; index < 32 et, pour une
+    /// table DC (index < 16), borne basse ≤ borne haute ; longueur paire.
+    fn dac(len: u16, avail: &[u8]) -> Result<Option<()>> {
+        let mut length = i32::from(len) - 2;
+        let mut s = avail;
+        while length > 0 {
+            let Some(&[index, v]) = s.first_chunk::<2>() else {
+                return Ok(None);
+            };
+            s = &s[2..];
+            length -= 2;
+            if index >= 32 {
+                return unreadable("JERR_DAC_INDEX");
+            }
+            if index < 16 && v & 15 > v >> 4 {
+                return unreadable("JERR_DAC_VALUE");
+            }
+        }
+        if length != 0 {
+            return unreadable("JERR_BAD_LENGTH (DAC)");
+        }
+        Ok(Some(()))
+    }
+
+    /// `get_dri` : longueur 4 exigée avant la lecture de l'intervalle.
+    fn dri(len: u16, avail: &[u8]) -> Result<Option<u16>> {
+        if len != 4 {
+            return unreadable("JERR_BAD_LENGTH (DRI)");
+        }
+        Ok(avail.first_chunk::<2>().map(|&v| u16::from_be_bytes(v)))
     }
 
     /// `std_huff_tables` (séquentiel) : tables 0 et 1 absentes remplacées par celles de T.81.
@@ -241,21 +327,29 @@ struct Header {
     /// Composantes du premier balayage et position des données qui le suivent.
     scan_components: usize,
     entropy: usize,
+    /// Balayages vus (`SOS`), premier compris.
+    scans: usize,
 }
 
 impl Header {
+    /// Progressif, Huffman (`SOF2`) ou arithmétique (`SOF10`) : mêmes contrôles de progression.
     fn progressive(&self) -> bool {
-        self.sof == Some(0xC2)
+        matches!(self.sof, Some(0xC2 | 0xCA))
+    }
+
+    /// Codage de Huffman à DCT (`SOF0` à `SOF2`), seul lu par `zune-jpeg`.
+    fn huffman(&self) -> bool {
+        matches!(self.sof, Some(0xC0..=0xC2))
     }
 }
 
 /// `APP` de Pillow : JFIF et Adobe lisent `i16(s, 5)` (`struct.error` sous 7 octets) ; bloc
 /// Photoshop parcouru (seul `struct.error` y est rattrapé : un `IndexError` remonte).
-fn pillow_app(marker: u8, s: &[u8]) -> Result<()> {
+fn pillow_app(data: &[u8], marker: u8, s: &[u8]) -> Result<()> {
     if (marker == 0xE0 && s.starts_with(b"JFIF") || marker == 0xEE && s.starts_with(b"Adobe"))
         && s.len() < 7
     {
-        return unreadable("segment JFIF ou Adobe trop court");
+        return open_error(data, "segment JFIF ou Adobe trop court");
     }
     if marker == 0xED && s.starts_with(b"Photoshop 3.0\0") {
         let mut offset = 14usize;
@@ -267,7 +361,7 @@ fn pillow_app(marker: u8, s: &[u8]) -> Result<()> {
             let code = u16::from_be_bytes([code[0], code[1]]);
             offset += 2;
             let Some(&name_len) = s.get(offset) else {
-                return unreadable("bloc Photoshop tronqué"); // IndexError
+                return open_error(data, "bloc Photoshop tronqué"); // IndexError
             };
             offset += 1 + usize::from(name_len);
             offset += offset & 1;
@@ -334,16 +428,21 @@ fn scan_header(
         }
         seen.push(k);
         let (dc, ac) = (c[1] >> 4, c[1] & 15);
-        if matches!(h.sof, Some(0xC3 | 0xC9..=0xCB)) {
-            continue; // arithmétique ou sans perte : délégué, tables non vérifiées ici
+        // sans perte (délégué) : ni tables de quantification (`latch_quant_tables` sauté par
+        // libjpeg), ni tables de Huffman vérifiées ici
+        if matches!(h.sof, Some(0xC3 | 0xCB)) {
+            continue;
         }
-        if !progressive {
-            h.tables.require(true, dc)?;
-            h.tables.require(false, ac)?;
-        } else if ss == 0 && ah == 0 {
-            h.tables.require(true, dc)?;
-        } else if ss != 0 {
-            h.tables.require(false, ac)?;
+        // arithmétique : tables 0 à 15 toutes valables (`NUM_ARITH_TBLS`), rien à vérifier
+        if h.huffman() {
+            if !progressive {
+                h.tables.require(true, dc)?;
+                h.tables.require(false, ac)?;
+            } else if ss == 0 && ah == 0 {
+                h.tables.require(true, dc)?;
+            } else if ss != 0 {
+                h.tables.require(false, ac)?;
+            }
         }
         // `latch_quant_tables`
         if !latched[k] {
@@ -380,6 +479,7 @@ fn parse_header(data: &[u8], latched: &mut Vec<bool>) -> Result<Header> {
         return unreadable("not a JPEG file");
     }
     let mut r = Reader { data, pos: 3 };
+    let mut fatal: Option<PngError> = None;
     let mut h = Header::default();
     h.stream.extend_from_slice(&[0xFF, SOI]);
     // Profils ICC vus depuis le dernier SOF (`self.icclist`).
@@ -389,7 +489,7 @@ fn parse_header(data: &[u8], latched: &mut Vec<bool>) -> Result<Header> {
     loop {
         // `s[0]` sur `b""` : IndexError
         let Some(b0) = cur else {
-            return unreadable("fin des données avant SOS");
+            return open_error(data, "fin des données avant SOS");
         };
         if b0 != 0xFF {
             cur = r.byte(); // octets parasites
@@ -397,7 +497,7 @@ fn parse_header(data: &[u8], latched: &mut Vec<bool>) -> Result<Header> {
         }
         // `i16(s + read(1))` : struct.error en fin de données
         let Some(m) = r.byte() else {
-            return unreadable("fin des données dans un marqueur");
+            return open_error(data, "fin des données dans un marqueur");
         };
         match m {
             0xFF => {
@@ -408,7 +508,7 @@ fn parse_header(data: &[u8], latched: &mut Vec<bool>) -> Result<Header> {
                 cur = r.byte();
                 continue;
             }
-            0x01..=0xBF => return unreadable("no marker found"),
+            0x01..=0xBF => return open_error(data, "no marker found"),
             _ => {}
         }
         let start = r.pos - 2;
@@ -417,36 +517,41 @@ fn parse_header(data: &[u8], latched: &mut Vec<bool>) -> Result<Header> {
             0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF | 0xDE => {
                 let (_, s) = r.segment()?;
                 if s.len() < 6 {
-                    return unreadable("SOF trop court"); // struct.error / IndexError
+                    return open_error(data, "SOF trop court"); // struct.error / IndexError
                 }
                 let height = u32::from(u16::from_be_bytes([s[1], s[2]]));
                 let width = u32::from(u16::from_be_bytes([s[3], s[4]]));
                 pillow_size = Some((width, height));
                 if s[0] != 8 {
-                    return unreadable("cannot handle non 8-bit layers");
+                    return open_error(data, "cannot handle non 8-bit layers");
                 }
                 let layers = usize::from(s[5]);
                 if ![1, 3, 4].contains(&layers) {
-                    return unreadable("cannot handle this number of layers");
+                    return open_error(data, "cannot handle this number of layers");
                 }
                 // `self.icclist[0][13]` après tri : IndexError si le plus petit est court
                 if icc.iter().min().is_some_and(|first| first.len() <= 13) {
-                    return unreadable("profil ICC tronqué");
+                    return open_error(data, "profil ICC tronqué");
                 }
                 icc.clear();
                 // `t[1]`, `t[2]` d'un triplet incomplet : IndexError
                 if (s.len() - 6) % 3 != 0 {
-                    return unreadable("composante de SOF incomplète");
+                    return open_error(data, "composante de SOF incomplète");
                 }
                 // libjpeg-turbo : un seul SOF, types pris en charge, longueur exacte
-                if !matches!(m, 0xC0..=0xC3 | 0xC9..=0xCB) {
-                    return unreadable("JERR_SOF_UNSUPPORTED");
-                }
-                if h.sof.is_some() {
-                    return unreadable("JERR_SOF_DUPLICATE");
-                }
-                if s.len() != 6 + 3 * layers {
-                    return unreadable("JERR_BAD_LENGTH (SOF)");
+                let refused = if !matches!(m, 0xC0..=0xC3 | 0xC9..=0xCB) {
+                    unreadable("JERR_SOF_UNSUPPORTED")
+                } else if h.sof.is_some() {
+                    unreadable("JERR_SOF_DUPLICATE")
+                } else if s.len() != 6 + 3 * layers {
+                    unreadable("JERR_BAD_LENGTH (SOF)")
+                } else {
+                    Ok(())
+                };
+                if refused.is_err() {
+                    defer(&mut fatal, refused);
+                    cur = r.byte();
+                    continue;
                 }
                 h.sof = Some(m);
                 h.width = width;
@@ -465,8 +570,11 @@ fn parse_header(data: &[u8], latched: &mut Vec<bool>) -> Result<Header> {
                 h.stream.extend_from_slice(&data[start..r.pos]);
             }
             DHT => {
-                let (len, s) = r.segment()?;
-                h.tables.dht(len, s)?;
+                let (len, _) = r.segment()?;
+                defer(
+                    &mut fatal,
+                    h.tables.dht(len, &data[start + 4..]).map(|_| ()),
+                );
                 h.stream.extend_from_slice(&data[start..r.pos]);
             }
             DQT => {
@@ -476,24 +584,28 @@ fn parse_header(data: &[u8], latched: &mut Vec<bool>) -> Result<Header> {
                 while let Some(&v) = t.first() {
                     let n = 1 + if v >> 4 == 0 { 64 } else { 128 };
                     if t.len() < n {
-                        return unreadable("bad quantization table marker");
+                        return open_error(data, "bad quantization table marker");
                     }
                     t = &t[n..];
                 }
-                h.tables.dqt(len, s)?;
+                defer(
+                    &mut fatal,
+                    h.tables.dqt(len, &data[start + 4..]).map(|_| ()),
+                );
                 h.stream.extend_from_slice(&data[start..r.pos]);
             }
             DRI => {
                 let (len, s) = r.segment()?;
                 if len != 4 {
-                    return unreadable("JERR_BAD_LENGTH (DRI)");
+                    defer(&mut fatal, unreadable("JERR_BAD_LENGTH (DRI)"));
+                } else {
+                    h.restart = u16::from_be_bytes([s[0], s[1]]);
+                    h.stream.extend_from_slice(&data[start..r.pos]);
                 }
-                h.restart = u16::from_be_bytes([s[0], s[1]]);
-                h.stream.extend_from_slice(&data[start..r.pos]);
             }
             0xE0..=0xEF => {
                 let (_, s) = r.segment()?;
-                pillow_app(m, s)?;
+                pillow_app(data, m, s)?;
                 // libjpeg : `examine_app0` (14 octets) et `examine_app14` (12 octets)
                 if m == 0xE0 && s.len() >= 14 && s.starts_with(b"JFIF\0") {
                     h.jfif = true;
@@ -505,25 +617,32 @@ fn parse_header(data: &[u8], latched: &mut Vec<bool>) -> Result<Header> {
                     h.adobe = Some(s[11]);
                 }
             }
-            // DAC n'a de sens qu'en arithmétique (délégué) ; EXP est réservé pour libjpeg
-            COM | DNL | 0xCC => {
+            COM | DNL => {
                 r.segment()?;
             }
+            DAC => {
+                let (len, _) = r.segment()?;
+                defer(&mut fatal, Tables::dac(len, &data[start + 4..]).map(|_| ()));
+            }
+            // EXP : réservé pour libjpeg
             0xDF => {
                 r.segment()?;
-                return unreadable("JERR_UNKNOWN_MARKER");
+                defer(&mut fatal, unreadable("JERR_UNKNOWN_MARKER"));
             }
             SOS => {
                 let (len, s) = r.segment()?;
                 let Some((width, height)) = pillow_size else {
-                    return unreadable("SOS sans SOF");
+                    return open_error(data, "SOS sans SOF");
                 };
                 // `Image.open` : mode vide ou taille nulle, puis garde anti-bombe
                 if width == 0 || height == 0 {
-                    return unreadable("not identified by this driver");
+                    return open_error(data, "not identified by this driver");
                 }
                 if u64::from(width) * u64::from(height) > 2 * MAX_IMAGE_PIXELS {
                     return unreadable("décompression bombe (plus de 2 x MAX_IMAGE_PIXELS)");
+                }
+                if let Some(e) = fatal {
+                    return Err(e);
                 }
                 if h.sof.is_none() {
                     return unreadable("JERR_SOF_BEFORE");
@@ -536,18 +655,20 @@ fn parse_header(data: &[u8], latched: &mut Vec<bool>) -> Result<Header> {
                 h.scan_components = scan_header(&h, len, s, latched, &mut stream)?;
                 h.stream = stream;
                 h.entropy = r.pos;
+                h.scans = 1;
                 return Ok(h);
             }
             // libjpeg : SOI répété (JERR_SOI_DUPLICATE), JPG et JPGn réservés ; EOI avant
             // l'image (flux de tables seules suivi d'une autre image, que libjpeg lit) : non
-            // pris en charge, délégué.
-            SOI => return unreadable("JERR_SOI_DUPLICATE"),
+            // pris en charge, délégué. Pillow passe ces marqueurs sans paramètre.
+            SOI => defer(&mut fatal, unreadable("JERR_SOI_DUPLICATE")),
             // une nouvelle image doit suivre immédiatement (`first_marker` : JERR_NO_SOI)
-            EOI if data[r.pos..].starts_with(b"\xff\xd8") => {
-                return Err(PngError::Unsupported("JPEG à tables séparées"))
-            }
-            EOI => return unreadable("JERR_NO_SOI"),
-            0xC8 | 0xF0..=0xFD => return unreadable("JERR_UNKNOWN_MARKER"),
+            EOI if data[r.pos..].starts_with(b"\xff\xd8") => defer(
+                &mut fatal,
+                Err(PngError::Unsupported("JPEG à tables séparées")),
+            ),
+            EOI => defer(&mut fatal, unreadable("JERR_NO_SOI")),
+            0xC8 | 0xF0..=0xFD => defer(&mut fatal, unreadable("JERR_UNKNOWN_MARKER")),
             // RSTn hors balayage : sans paramètre, ignoré par les deux
             _ => {}
         }
@@ -591,19 +712,31 @@ fn entropy_end(data: &[u8], mut pos: usize, skip_rst: bool, resync: bool) -> Opt
     }
 }
 
-/// Recopie des données compressées `data[start..end]` pour `zune-jpeg`, sans les marqueurs
-/// invalides (< SOF0, hors `FF 00`) que libjpeg écarte en resynchronisant et que `zune-jpeg`
-/// refuserait (pixels de ces images corrompues non comparés).
+/// Recopie des données compressées `data[start..end]` pour `zune-jpeg`, normalisées comme les
+/// lit libjpeg : `FF` de remplissage retirés (`FF FF 00` est l'octet `FF`, `FF FF D0` un
+/// `RST0`, des `FF` en fin de plage précèdent le marqueur final), marqueurs invalides (< SOF0,
+/// hors `FF 00`) retirés avec leurs `FF`, libjpeg les écartant en resynchronisant et
+/// `zune-jpeg` les refusant (pixels de ces images corrompues non comparés).
 fn copy_entropy(data: &[u8], start: usize, end: usize, out: &mut Vec<u8>) {
     let mut i = start;
     while i < end {
         let b = data[i];
-        if b == 0xFF && i + 1 < end && (0x01..0xC0).contains(&data[i + 1]) {
-            i += 2;
+        if b != 0xFF {
+            out.push(b);
+            i += 1;
             continue;
         }
-        out.push(b);
-        i += 1;
+        let mut q = i + 1;
+        while q < end && data[q] == 0xFF {
+            q += 1;
+        }
+        match data[..end].get(q) {
+            // remplissage avant le marqueur final, ou marqueur invalide
+            None | Some(0x01..=0xBF) => {}
+            // FF 00 ou RSTn
+            Some(&m) => out.extend_from_slice(&[0xFF, m]),
+        }
+        i = q + 1;
     }
 }
 
@@ -644,7 +777,33 @@ fn walk_scans(data: &[u8], h: &mut Header, latched: &mut [bool], multi_scan: boo
         match m {
             EOI => return Ok(false),
             SOS if !multi_scan => return unreadable("JERR_EOI_EXPECTED"),
-            SOS | DHT | DQT | DRI | DNL | COM | 0xCC | 0xE0..=0xEF => {
+            // tables : lues par libjpeg octet par octet, erreurs dans ce qui est présent d'abord
+            DHT | DQT | DRI | DAC => {
+                // fin du fichier : un seul balayage, toutes les lignes sont lues, libjpeg attend
+                // en vain la suite et Pillow s'en contente ; sinon tronqué
+                let suspended = || if multi_scan { truncated() } else { Ok(false) };
+                let Some(&l) = data.get(pos..).and_then(|t| t.first_chunk::<2>()) else {
+                    return suspended();
+                };
+                let len = u16::from_be_bytes(l);
+                let avail = &data[pos + 2..];
+                let done = match m {
+                    DHT => h.tables.dht(len, avail)?,
+                    DQT => h.tables.dqt(len, avail)?,
+                    DAC => Tables::dac(len, avail)?,
+                    _ => Tables::dri(len, avail)?.map(|restart| h.restart = restart),
+                };
+                if done.is_none() {
+                    return suspended();
+                }
+                // segment complet : longueur ≥ 2 et tous ses octets présents
+                let end = pos + usize::from(len);
+                if multi_scan && m != DAC {
+                    h.stream.extend_from_slice(&data[pos - 2..end]);
+                }
+                pos = end;
+            }
+            SOS | DNL | COM | 0xE0..=0xEF => {
                 let mut r = Reader { data, pos };
                 let (len, s) = match r.segment() {
                     Ok(seg) => seg,
@@ -653,19 +812,9 @@ fn walk_scans(data: &[u8], h: &mut Header, latched: &mut [bool], multi_scan: boo
                     Err(_) if !multi_scan => return Ok(false),
                     Err(_) => return truncated(),
                 };
-                let copy = multi_scan && matches!(m, DHT | DQT | DRI);
-                match m {
-                    DHT => h.tables.dht(len, s)?,
-                    DQT => h.tables.dqt(len, s)?,
-                    DRI if len != 4 => return unreadable("JERR_BAD_LENGTH (DRI)"),
-                    DRI => h.restart = u16::from_be_bytes([s[0], s[1]]),
-                    _ => {}
-                }
-                if copy {
-                    h.stream.extend_from_slice(&data[pos - 2..r.pos]);
-                }
                 pos = r.pos;
                 if m == SOS {
+                    h.scans += 1;
                     let mut stream = std::mem::take(&mut h.stream);
                     let scanned = scan_header(h, len, s, latched, &mut stream);
                     h.stream = stream;
@@ -749,8 +898,9 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     }
     let mut latched = Vec::new();
     let mut h = parse_header(data, &mut latched)?;
+    // sans perte : délégué dès l'en-tête (contrôles de libjpeg propres à ce mode non reproduits)
     match h.sof {
-        Some(0xC9..=0xCB) => return Err(PngError::Unsupported("JPEG arithmétique")),
+        Some(0xCB) => return Err(PngError::Unsupported("JPEG arithmétique")),
         Some(0xC3) => return Err(PngError::Unsupported("JPEG sans perte")),
         _ => {}
     }
@@ -773,6 +923,13 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     let multi_scan = h.progressive() || h.scan_components < h.components.len();
     let mut entropy_start = h.stream.len();
     let unterminated = walk_scans(data, &mut h, &mut latched, multi_scan)?;
+    // arithmétique : verdict de la structure rendu, pixels hors de portée de `zune-jpeg`
+    if !h.huffman() {
+        return Err(PngError::Unsupported("JPEG arithmétique"));
+    }
+    if h.scans > MAX_SCANS {
+        return Err(PngError::Unsupported("JPEG refusé par zune-jpeg"));
+    }
     if !h.progressive() {
         // tables standard de zune-jpeg pour les tables 0 et 1 absentes, juste après SOI
         h.stream.splice(2..2, AVI1.iter().copied());
@@ -786,9 +943,9 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
     let space = libjpeg_space(&h);
     let (w, ht) = (h.width as usize, h.height as usize);
     let channels = h.components.len();
-    // flux privé de ses `cut` derniers octets de données, suivi de `fill` puis EOI (`None` :
-    // rien à couper)
-    let decode_with = |cut: usize, fill: &[u8]| -> Option<Result<Vec<u8>>> {
+    // flux privé de ses `cut` derniers octets de données, suivi de `fill` puis EOI, décodé en
+    // mode strict ou non (`None` : rien à couper)
+    let decode_with = |cut: usize, fill: &[u8], strict: bool| -> Option<Result<Vec<u8>>> {
         let end = stream
             .len()
             .checked_sub(cut)
@@ -800,27 +957,33 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
         s.extend_from_slice(&stream[..end]);
         s.extend_from_slice(fill);
         s.extend_from_slice(&[0xFF, EOI]);
-        Some(decode_raw(&s, channels, w, ht))
+        Some(decode_raw(&s, channels, w, ht, strict))
     };
-    let raw = decode_with(0, &[]).unwrap_or_else(|| unreadable("flux JPEG vide"))?;
+    let raw = decode_with(0, &[], false).unwrap_or_else(|| unreadable("flux JPEG vide"))?;
     let same = |r: Option<Result<Vec<u8>>>| matches!(r, Some(Ok(r)) if r == raw);
     if unterminated {
         // Balayage unique sans marqueur final : libjpeg-turbo attend des octets au-delà des
         // données utiles (0 à 7 mesurés sur l'oracle, selon l'image), sinon Pillow lève « image
         // file is truncated ». Données manquantes (image changée par des bits 1 au lieu des 0
         // de zune-jpeg après la fin) : tronqué ; 8 derniers octets inutiles : lu ; entre les
-        // deux, seul libjpeg tranche (délégué, D4).
+        // deux, seul libjpeg tranche (délégué, D4). Inutiles : image inchangée qu'on les
+        // remplace par des bits 0, ou par des bits 1 en mode strict (des octets utiles à bits
+        // nuls décodés depuis des bits 1 donnent un code de Huffman invalide, que le mode
+        // tolérant passe en laissant des blocs vides, parfois identiques).
+        let ones = [0xFF, 0x00].repeat(8);
         if cancelled() {
             return Err(PngError::Cancelled);
         }
-        if !same(decode_with(0, &[0xFF, 0x00].repeat(8))) {
+        if !same(decode_with(0, &ones, false)) {
             return unreadable("image file is truncated");
         }
-        if cancelled() {
-            return Err(PngError::Cancelled);
-        }
-        if !same(decode_with(8, &[])) {
-            return Err(PngError::Unsupported("JPEG sans marqueur final"));
+        for (fill, strict) in [(&[][..], false), (&ones[..], true)] {
+            if cancelled() {
+                return Err(PngError::Cancelled);
+            }
+            if !same(decode_with(8, fill, strict)) {
+                return Err(PngError::Unsupported("JPEG sans marqueur final"));
+            }
         }
     }
     drop(stream);
@@ -866,14 +1029,15 @@ pub fn decode_rgba(data: &[u8], cancelled: &dyn Fn() -> bool) -> Result<Rgba> {
 /// Composantes brutes suréchantillonnées (`channels` octets par pixel) décodées par
 /// `zune-jpeg` en scalaire. Un refus de `zune-jpeg` est **délégué** (D4) : la structure a passé
 /// les contrôles de Pillow et de libjpeg, et libjpeg-turbo poursuit souvent là où `zune-jpeg`
-/// s'arrête (données corrompues, table inutilisée invalide, facteur 3…).
-fn decode_raw(stream: &[u8], channels: usize, w: usize, h: usize) -> Result<Vec<u8>> {
+/// s'arrête (données corrompues, table inutilisée invalide, facteur 3…). Mode strict
+/// seulement pour un contrôle de fin de flux (`decode_rgba`).
+fn decode_raw(stream: &[u8], channels: usize, w: usize, h: usize, strict: bool) -> Result<Vec<u8>> {
     let options = DecoderOptions::default()
         .set_use_unsafe(false)
-        .set_strict_mode(false)
+        .set_strict_mode(strict)
         .set_max_width(usize::from(u16::MAX))
         .set_max_height(usize::from(u16::MAX))
-        // libjpeg-turbo ne limite pas le nombre de balayages
+        // nombre de balayages déjà borné par `MAX_SCANS` (compté comme libjpeg)
         .jpeg_set_max_scans(usize::MAX);
     let mut decoder = JpegDecoder::new_with_options(ZCursor::new(stream), options);
     let refused = |_| PngError::Unsupported("JPEG refusé par zune-jpeg");
@@ -948,6 +1112,57 @@ mod tests {
         assert!(t.dht(2 + idx.len() as u16, &idx).is_err()); // index 4
         t.standard();
         assert!(t.require(true, 1).is_ok() && t.require(true, 2).is_err());
+    }
+
+    #[test]
+    fn donnees_normalisees_comme_libjpeg() {
+        let copy = |d: &[u8]| {
+            let mut out = Vec::new();
+            copy_entropy(d, 0, d.len(), &mut out);
+            out
+        };
+        // remplissage et marqueur invalide retirés ensemble, `FF FF 00` = octet FF
+        assert_eq!(copy(b"\x12\xff\xff\x05\x34"), b"\x12\x34");
+        assert_eq!(copy(b"\x12\xff\xff\x00\x34"), b"\x12\xff\x00\x34");
+        assert_eq!(copy(b"\x12\xff\xff\xd0\x34"), b"\x12\xff\xd0\x34");
+        // remplissage en fin de plage (avant le marqueur final)
+        assert_eq!(copy(b"\x12\xff\xff"), b"\x12");
+    }
+
+    #[test]
+    fn dqt_et_dac_comme_libjpeg() {
+        let mut t = Tables::default();
+        let table = |n: u8, size: usize| [vec![n], vec![1; size]].concat();
+        let (complete, suspended) = (Ok(Some(())), Ok(None));
+        assert_eq!(t.dqt(2 + 65, &table(0x00, 64)), complete);
+        // Pq = 2 : 16 bits
+        assert_eq!(t.dqt(2 + 129, &table(0x21, 128)), complete);
+        assert!(t.quant[1]);
+        // reste d'un octet : 64 valeurs lues au-delà du segment, s'il y en a
+        let rest = [table(0x02, 64), vec![0x00]].concat();
+        assert!(t.dqt(2 + 66, &[&rest[..], &[1; 64]].concat()).is_err());
+        assert_eq!(t.dqt(2 + 66, &[&rest[..], &[1; 10]].concat()), suspended);
+        assert!(t
+            .dqt(2 + 66, &[table(0x02, 64), vec![0x04]].concat())
+            .is_err()); // reste : index 4
+        assert!(t
+            .dqt(2 + 128, &[table(0x13, 127), vec![1; 9]].concat())
+            .is_err());
+        assert!(t.dqt(2 + 65, &table(0x04, 64)).is_err());
+        assert!(t.dqt(1, &table(0x00, 64)).is_err());
+        assert_eq!(Tables::dac(2 + 4, b"\x00\x10\x1f\xff"), complete);
+        // borne basse > borne haute, puis index 32
+        assert!(Tables::dac(2 + 2, b"\x00\x01").is_err());
+        assert!(Tables::dac(2 + 2, b"\x20\x00").is_err());
+        // longueur impaire : valeur lue après le segment, puis longueur négative
+        assert!(Tables::dac(2 + 3, b"\x10\x05\x00\xff").is_err());
+        assert_eq!(Tables::dac(2 + 3, b"\x10\x05\x00"), suspended);
+        assert!(Tables::dac(1, b"\x10\x05").is_err());
+        assert!(Tables::dri(5, b"\x00\x01\x00").is_err());
+        assert_eq!(Tables::dri(4, b"\x00"), Ok(None));
+        let mut t = Tables::default();
+        assert_eq!(t.dht(2 + 17, &[0x00; 10]), suspended);
+        assert!(t.dht(2 + 17, &[&[0x00, 5][..], &[0; 15]].concat()).is_err()); // compte > longueur
     }
 
     #[test]
