@@ -147,7 +147,7 @@ fn observe(path: &Path, kind: StoryKind) -> AppResult<Observed> {
                 newest,
             })
         }
-        StoryKind::FlamPk | StoryKind::TelmiZip => {
+        StoryKind::FlamPk | StoryKind::TelmiZip | StoryKind::StudioZip => {
             let meta = std::fs::symlink_metadata(path)?;
             // Un point de réanalyse (OneDrive « à la demande », jonction, lien) est refusé : le
             // lire pourrait déclencher un téléchargement.
@@ -242,7 +242,7 @@ pub fn pk_manifest(pk: &Path) -> AppResult<String> {
 fn source_digest(path: &Path, kind: StoryKind) -> AppResult<String> {
     match kind {
         StoryKind::FlamPlain => dir_manifest(path),
-        StoryKind::FlamPk | StoryKind::TelmiZip => file_digest(path),
+        StoryKind::FlamPk | StoryKind::TelmiZip | StoryKind::StudioZip => file_digest(path),
     }
 }
 
@@ -301,7 +301,7 @@ pub fn stamp_copy(quick: Option<String>, kind: StoryKind, staged: &Path) -> Opti
     let sha256 = match kind {
         StoryKind::FlamPk => file_digest(staged),
         StoryKind::FlamPlain => pk_manifest(staged),
-        StoryKind::TelmiZip => return None,
+        StoryKind::TelmiZip | StoryKind::StudioZip => return None,
     };
     match sha256 {
         Ok(sha256) => Some(SourceStamp { quick, sha256 }),
@@ -405,7 +405,7 @@ fn migrate(
     }
     // Un `.zip` converti n'est pas comparable à sa copie : seule la date compte. Pour un
     // `.plain.pk` ou un `.plain`, les empreintes sont comparées quelle que soit la date.
-    if kind == StoryKind::TelmiZip {
+    if matches!(kind, StoryKind::TelmiZip | StoryKind::StudioZip) {
         return Ok(if observed.newest < entry.installed_at {
             SourceState::Unchanged
         } else {
@@ -419,7 +419,7 @@ fn migrate(
         StoryKind::FlamPk => memoized(&copy, &copy_quick, || file_digest(&copy))?,
         StoryKind::FlamPlain => memoized(&copy, &copy_quick, || pk_manifest(&copy))?,
         // Déjà traité plus haut (comparaison par la date seulement).
-        StoryKind::TelmiZip => return Ok(SourceState::Unknown),
+        StoryKind::TelmiZip | StoryKind::StudioZip => return Ok(SourceState::Unknown),
     };
     let ours = memoized(path, &observed.quick, || source_digest(path, kind))?;
     Ok(if ours == theirs {

@@ -48,7 +48,7 @@ use crate::library_thumb;
 use crate::settings::{self, Environment, SettingsStore, ThumbFit};
 use crate::sources::{Source, SourcesStore};
 use crate::storage::{self, ConfigState, Loaded};
-use crate::story::{validate_story_id, StoryEntry, StoryKind};
+use crate::story::{validate_story_id, StoryEntry, StoryKind, STUDIO_UNSUPPORTED};
 use crate::{AppError, AppResult};
 
 use self::convert::{Conversion, Engine, Step};
@@ -306,6 +306,9 @@ fn is_remote(url: &str) -> bool {
 /// Revalide une entrée avant d'en faire une tâche : `uuid` utilisable comme nom de fichier,
 /// lien http(s) valide ou chemin local absolu, dossier `.plain` jamais distant.
 fn validate_entry(entry: &StoryEntry) -> AppResult<()> {
+    if entry.kind == StoryKind::StudioZip {
+        return Err(AppError::Validation(STUDIO_UNSUPPORTED.into()));
+    }
     if !validate_story_id(&entry.uuid) {
         return Err(AppError::Validation(format!(
             "identifiant d'histoire refusé : {:?}",
@@ -1230,6 +1233,7 @@ impl InstallService {
                     stamp,
                 })
             }
+            StoryKind::StudioZip => Err(AppError::Validation(STUDIO_UNSUPPORTED.into())),
             StoryKind::FlamPk | StoryKind::FlamPlain => {
                 self.emit_state(id, TaskState::Installing, None);
                 let (from, to) = (source.clone(), staged.to_path_buf());
@@ -1270,6 +1274,7 @@ impl InstallService {
         let ext = match entry.kind {
             StoryKind::TelmiZip => "zip",
             StoryKind::FlamPk => "plain.pk",
+            StoryKind::StudioZip => return Err(AppError::Validation(STUDIO_UNSUPPORTED.into())),
             StoryKind::FlamPlain => {
                 return Err(AppError::Validation(
                     "un dossier .plain ne peut pas être téléchargé".into(),

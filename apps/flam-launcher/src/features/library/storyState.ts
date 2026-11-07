@@ -14,6 +14,7 @@ export type StoryState =
   | "to_download"
   | "to_convert"
   | "to_install"
+  | "studio"
   | "installed"
   | "update_available"
   | "in_progress"
@@ -24,6 +25,7 @@ export const STATE_APPEARANCE: Record<StoryState, { tone: BadgeTone; icon: IconN
   to_download: { tone: "info", icon: "download" },
   to_convert: { tone: "info", icon: "install" },
   to_install: { tone: "info", icon: "install" },
+  studio: { tone: "neutral", icon: "info" },
   installed: { tone: "success", icon: "check" },
   update_available: { tone: "warning", icon: "refresh" },
   in_progress: { tone: "info", icon: "refresh" },
@@ -79,5 +81,6 @@ export interface StoryHooks {
 export function defaultStoryState(source: Source, entry: StoryEntry): StoryState {
   if (source.type === "library") return "installed";
   if (source.type === "catalog") return "to_download";
+  if (entry.kind === "studio_zip") return "studio";
   return entry.kind === "telmi_zip" ? "to_convert" : "to_install";
 }
