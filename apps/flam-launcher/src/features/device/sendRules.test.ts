@@ -163,3 +163,20 @@ it("refuse une histoire STUdio sur une Flam en firmware 1.x, avant tout dialogue
   expect(sendBlock(context(), "new", 1 * MB, "lunii")).toBeNull();
   expect(sendBlock(context({ device: null }), "new", 1 * MB, "lunii")).toBe("no_device");
 });
+
+it("STUdio sur Flam 1.x : remplacement refusé aussi, et 1.x reconnue par la seule version texte (#548)", () => {
+  const v1 = {
+    ...device,
+    firmware: "1.15.14",
+    firmware_status: undefined,
+  } as unknown as DeviceSummary;
+  const onV1 = context({
+    device: v1,
+    deviceStories: {
+      ...stories,
+      stories: [{ ...stories.stories[0]!, placement: "visible" }],
+    },
+  });
+  expect(sendBlock(onV1, "new", 1 * MB, "lunii")).toBe("lunii_needs_v2");
+  expect(replaceBlock(onV1, "present", 1 * MB, "lunii")).toBe("lunii_needs_v2");
+});

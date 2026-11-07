@@ -461,10 +461,10 @@ connaissance technique : il suffit de savoir ouvrir le launcher et d'utiliser la
 3. Ouvrir sa fiche, cliquer sur « Installer » et attendre la fin. Elle apparaît dans « Mes
    histoires ». Le bouton « Jouer » est grisé avec la mention « Lecture sur le PC indisponible
    pour une histoire STUdio » : c'est normal.
-4. Brancher la Flam, ouvrir « Ma Flam », cliquer sur « Envoyer sur la Flam » à côté de
-   l'histoire, accepter l'avertissement (fonction expérimentale), attendre la fin de l'envoi.
-5. Cliquer sur « Éjecter », attendre le message qui dit que c'est sûr, **débrancher** la Flam,
-   puis l'allumer et la laisser démarrer.
+4. Brancher la Flam, ouvrir « Ma Flam », puis, dans la liste de « Mes histoires » de cet écran,
+   cliquer sur « Envoyer sur la Flam » à côté de l'histoire (le même bouton existe sur la fiche), accepter l'avertissement (fonction expérimentale), attendre la fin de l'envoi.
+5. Cliquer sur « Éjecter la Flam », attendre la fin de l'éjection (le bouton revient à la
+   normale, sans message d'erreur), **débrancher** la Flam, puis l'allumer et la laisser démarrer.
 
 **Vérifications sur la Flam** (noter « oui », « non » ou « sans objet » pour chacune ; entre
 parenthèses, le point de `studio-lunii.md` § 9) :
@@ -490,7 +490,9 @@ parenthèses, le point de `studio-lunii.md` § 9) :
 14. Si une **histoire officielle** était déjà sur la Flam, elle se lance toujours et la liste est
     complète, sans histoire manquante ni en double (L14).
 15. Branchée à nouveau, « Ma Flam » liste l'histoire avec son titre et le badge « STUdio » (L2,
-    L3 : si le titre est lu, la Flam et le launcher se comprennent).
+    L3 : le chiffrement et la lecture des fichiers sont couverts indirectement par les
+    vérifications 2 à 6 ; L10, les noms de fichiers par rang, l'est aussi : si tout se lit, ils
+    sont bons).
 
 **Vérifications dans le launcher.**
 

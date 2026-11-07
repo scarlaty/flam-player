@@ -61,6 +61,7 @@ export function sendBlock(
   format: LibraryFormat = "flam",
 ): SendBlock | null {
   if (!device) return "no_device";
+  // Avant tout autre motif : la raison la plus utile à lire est que le format est refusé en 1.x.
   if (format === "lunii" && needsCarrier(device)) return "lunii_needs_v2";
   if (removing) return "removing";
   if (findOnDevice(deviceStories, uuid)) return "present";
