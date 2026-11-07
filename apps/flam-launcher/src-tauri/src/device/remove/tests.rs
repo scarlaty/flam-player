@@ -128,6 +128,26 @@ fn retire_une_histoire_visible() {
     device.assert_others_intact(B);
 }
 
+/// #522 : une histoire au format Lunii complet (index, `info` en clair, vignette) se retire comme
+/// une autre : dossier et index seulement.
+#[test]
+fn retire_une_histoire_au_format_lunii() {
+    let device = Device::new();
+    let story = device.root().join(STORIES_DIR).join(B);
+    for name in ["li", "ri", "si", "key", "info"] {
+        fs::write(story.join(name), b"x").unwrap();
+    }
+    fs::create_dir_all(story.join("sf/000")).unwrap();
+    fs::create_dir_all(story.join("img")).unwrap();
+    fs::write(story.join("img/thumbnail.lif"), [1u8; 64]).unwrap();
+    assert!(crate::device::guard::is_lunii_format(&story));
+    let report = remove(&device, B).unwrap();
+    assert!(report.index_updated);
+    assert_eq!(device.index(IndexKind::Visible), [A, C]);
+    assert!(!story.exists());
+    device.assert_others_intact(B);
+}
+
 #[test]
 fn retire_une_histoire_masquee() {
     let device = Device::new();

@@ -92,6 +92,8 @@ let failures: Record<string, { kind: string; message: string } | undefined>;
 let calls: string[];
 /** Titres déchiffrés renvoyés par `device_story_titles` (absent : `null`). */
 let deviceTitles: Record<string, string>;
+/** Histoires au format Lunii pour `device_story_titles`. */
+let deviceLunii: Set<string>;
 /** Vignettes renvoyées par `device_story_thumbnail` (absent : `null`). */
 let deviceThumbs: Record<string, string>;
 let titleRequests: string[][];
@@ -108,6 +110,7 @@ beforeEach(() => {
   failures = {};
   calls = [];
   deviceTitles = {};
+  deviceLunii = new Set();
   deviceThumbs = {};
   titleRequests = [];
   officialTitles = {};
@@ -134,7 +137,11 @@ beforeEach(() => {
           const { uuids } = args as { uuids: string[] };
           titleRequests.push(uuids);
           return {
-            titles: uuids.map((uuid) => ({ uuid, title: deviceTitles[uuid] ?? null })),
+            titles: uuids.map((uuid) => ({
+              uuid,
+              title: deviceTitles[uuid] ?? null,
+              format: deviceLunii.has(uuid) ? "lunii" : "flam",
+            })),
             interrupted: false,
             keys: true,
           };
@@ -713,6 +720,24 @@ it("interrompt le lot de titres en cours quand l'écran est quitté", async () =
   unmount();
   expect(count("device_story_details_cancel")).toBe(1);
   release?.();
+});
+
+it("histoire au format Lunii : titre en clair et badge discret, rien sur les autres", async () => {
+  status = detected();
+  deviceTitles = { [A]: "Le Petit Pirate", [B]: "Capi" };
+  deviceLunii = new Set([A]);
+  stories = report([story(A), story(B)]);
+  renderScreen();
+  const list = await screen.findByRole("list", {
+    name: "Histoires installées sur la Flam",
+  });
+  const rows = within(list).getAllByRole("listitem");
+  await waitFor(() =>
+    expect(within(rows[0]!).getByText("Le Petit Pirate")).toBeInTheDocument(),
+  );
+  expect(within(rows[0]!).getByText("Lunii")).toBeInTheDocument();
+  await waitFor(() => expect(within(rows[1]!).getByText("Capi")).toBeInTheDocument());
+  expect(within(rows[1]!).queryByText("Lunii")).not.toBeInTheDocument();
 });
 
 it("titre : déchiffré, puis catalogue officiel, puis bibliothèque ; l'image du catalogue en repli", async () => {
