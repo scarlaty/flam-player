@@ -1,0 +1,57 @@
+name: studio2lunii
+
+# Crate Rust `crates/studio2lunii` (conversion STUdio vers pack Lunii, épopée #517).
+# Le workspace Cargo contient aussi le launcher : on ne construit ici que `-p studio2lunii`.
+on:
+  pull_request:
+    paths:
+      - "crates/studio2lunii/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/studio2lunii.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/studio2lunii/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/studio2lunii.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Annulation seulement sur les PR : chaque run de main va au bout (#396).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  crate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # tête de la branche stable au 2026-10-16 (pas un tag)
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ". -> target"
+
+      - name: rustfmt
+        run: cargo fmt -p studio2lunii --check
+
+      - name: Clippy
+        run: cargo clippy -p studio2lunii --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test -p studio2lunii --locked --no-fail-fast
