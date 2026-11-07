@@ -29,6 +29,8 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
     }
   }, [installed]);
   if (stories.activeTaskFor(entry)) return null;
+  // Format STUdio : ni installation ni lecture pour l'instant (explication dans la fiche).
+  if (entry.kind === "studio_zip") return null;
   if (installed) {
     const { session } = stories;
     const playingThis =

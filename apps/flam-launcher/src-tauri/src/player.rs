@@ -1311,6 +1311,11 @@ fn folder_target(entry: &StoryEntry, root: &Path) -> AppResult<PathBuf> {
             "cette histoire est une archive Telmi : installez-la d'abord pour la convertir".into(),
         ));
     }
+    if entry.kind == StoryKind::StudioZip {
+        return Err(AppError::Validation(
+            crate::story::STUDIO_UNSUPPORTED.into(),
+        ));
+    }
     let path = PathBuf::from(&entry.download_url);
     if !path.is_absolute() || !path.starts_with(root) {
         return Err(AppError::Validation(format!(
@@ -3324,6 +3329,7 @@ exit 0
             (StoryKind::FlamPlain, url(&pk)),
             (StoryKind::FlamPk, url(&plain)),
             (StoryKind::TelmiZip, url(&pk)),
+            (StoryKind::StudioZip, url(&pk)),
             (StoryKind::FlamPk, url(&dir.path().join("hors.plain.pk"))),
             (StoryKind::FlamPk, "a.plain.pk".to_string()),
         ] {

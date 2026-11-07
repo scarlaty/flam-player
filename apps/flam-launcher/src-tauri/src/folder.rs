@@ -1,5 +1,5 @@
-//! Source « dossier local » : analyse d'un dossier d'histoires (`.zip` Telmi, dossiers
-//! `.plain`, archives `.plain.pk`) et production de `StoryEntry`.
+//! Source « dossier local » : analyse d'un dossier d'histoires (`.zip` Telmi ou STUdio,
+//! dossiers `.plain`, archives `.plain.pk`) et production de `StoryEntry`.
 //!
 //! Les archives sont non fiables : rien n'est extrait sur disque (seules les vignettes
 //! réduites vont dans `<cache>/thumbs/`), les lectures sont bornées, les noms d'entrées
@@ -157,7 +157,9 @@ struct Zip {
 impl Zip {
     fn open(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| format!("ouverture impossible : {e}"))?;
-        let archive = ZipArchive::new(file).map_err(|e| format!("archive zip invalide : {e}"))?;
+        let archive = ZipArchive::new(file).map_err(|e| {
+            format!("fichier illisible : ce n'est pas un vrai zip, ou il est corrompu ({e}). Recréez-le ou copiez-le à nouveau")
+        })?;
         if archive.len() > MAX_ZIP_ENTRIES {
             return Err("archive zip avec trop d'entrées".into());
         }
@@ -166,6 +168,24 @@ impl Zip {
             .map(|n| (n.replace('\\', "/"), n.to_string()))
             .collect();
         Ok(Self { archive, names })
+    }
+
+    /// Nom normalisé du fichier `file` placé directement sous `root` (`""` ou `"dossier/"`),
+    /// sans tenir compte de la casse du nom de fichier (le dossier reste exact). Le nom exact
+    /// gagne, sinon le plus petit dans l'ordre alphabétique (déterministe).
+    fn find_file(&self, root: &str, file: &str) -> Option<String> {
+        let exact = format!("{root}{file}");
+        if self.names.contains_key(&exact) {
+            return Some(exact);
+        }
+        self.names
+            .keys()
+            .filter(|name| {
+                name.strip_prefix(root)
+                    .is_some_and(|rest| !rest.contains('/') && rest.eq_ignore_ascii_case(file))
+            })
+            .min()
+            .cloned()
     }
 
     fn contains(&self, name: &str) -> bool {
@@ -278,33 +298,123 @@ fn is_safe_entry_name(name: &str) -> bool {
             .all(|part| part != ".." && part != "__MACOSX" && !part.starts_with("._"))
 }
 
-/// Dossier racine de l'histoire dans l'archive : celui qui contient `metadata.json` et
-/// `nodes.json` (miroir de `find_root` de l'ancien convertisseur Python). Le moins profond gagne ;
-/// plusieurs candidats au même niveau est une erreur. `names` est normalisé en `/`.
-fn find_root(names: &[String]) -> Result<String, String> {
-    let set: HashSet<&str> = names.iter().map(String::as_str).collect();
-    let mut candidates: Vec<&str> = names
-        .iter()
-        .filter(|n| is_safe_entry_name(n))
-        .filter_map(|n| n.strip_suffix("metadata.json"))
-        .filter(|root| root.is_empty() || root.ends_with('/'))
-        .filter(|root| set.contains(format!("{root}nodes.json").as_str()))
-        .collect();
-    if candidates.is_empty() {
-        return Err("metadata.json et nodes.json introuvables (pas une histoire Telmi ?)".into());
+/// Racines (`""` ou `"dossier/"`) qui contiennent tous les fichiers de `files` (premier = fichier
+/// de référence), sans tenir compte de la casse des noms de fichier. Seules les entrées à nom sûr
+/// comptent. Le moins profond gagne ; `names` est normalisé en `/`.
+fn candidate_roots(names: &[String], files: &[&str], exact: bool) -> Vec<String> {
+    let key = |f: &str| {
+        if exact {
+            f.to_string()
+        } else {
+            f.to_ascii_lowercase()
+        }
+    };
+    let mut seen: HashSet<(&str, String)> = HashSet::new();
+    for name in names.iter().filter(|n| is_safe_entry_name(n)) {
+        let (dir, file) = name.split_at(name.rfind('/').map_or(0, |i| i + 1));
+        seen.insert((dir, key(file)));
     }
-    let depth = candidates
+    let mut candidates: Vec<String> = seen
         .iter()
-        .map(|r| r.matches('/').count())
-        .min()
-        .unwrap_or(0);
-    candidates.retain(|r| r.matches('/').count() == depth);
+        .filter(|(_, file)| *file == key(files[0]))
+        .filter(|(dir, _)| files.iter().all(|f| seen.contains(&(*dir, key(f)))))
+        .map(|(dir, _)| (*dir).to_string())
+        .collect();
+    if let Some(depth) = candidates.iter().map(|r| r.matches('/').count()).min() {
+        candidates.retain(|r| r.matches('/').count() == depth);
+    }
     candidates.sort_unstable();
     candidates.dedup();
-    if candidates.len() > 1 {
-        return Err("plusieurs histoires dans l'archive".into());
+    candidates
+}
+
+/// Racine unique parmi les candidats, `None` s'il n'y en a pas.
+fn single_root(mut candidates: Vec<String>) -> Result<Option<String>, String> {
+    match candidates.len() {
+        0 => Ok(None),
+        1 => Ok(candidates.pop()),
+        _ => Err(
+            "plusieurs histoires dans la même archive : séparez-les, une archive par histoire"
+                .into(),
+        ),
     }
-    Ok(candidates[0].to_string())
+}
+
+/// Nature et dossier racine de l'histoire d'une archive `.zip`.
+#[derive(Debug, PartialEq, Eq)]
+enum ZipRoot {
+    Telmi(String),
+    Studio(String),
+}
+
+/// Dernier élément d'un nom, en minuscules.
+fn last_part_lower(name: &str) -> String {
+    name.rsplit('/').next().unwrap_or(name).to_ascii_lowercase()
+}
+
+/// Explique pourquoi une archive n'est ni Telmi ni STUdio, en mots simples, avec une action.
+fn unrecognized_zip(names: &[String]) -> String {
+    let safe: Vec<&String> = names.iter().filter(|n| is_safe_entry_name(n)).collect();
+    if safe.iter().any(|n| {
+        let lower = n.to_ascii_lowercase();
+        lower == "info.plain" || lower.ends_with("/info.plain")
+    }) {
+        return "ce zip contient une histoire Flam déjà convertie, mais le launcher ne la lit pas dans un zip : décompressez-le dans le dossier de la source, l'histoire apparaîtra à la place du zip".into();
+    }
+    let parts: HashSet<String> = safe.iter().map(|n| last_part_lower(n)).collect();
+    if ["ni", "li", "ri", "si"].iter().all(|f| parts.contains(*f)) {
+        return "pack Lunii reconnu (fichiers ni, li, ri, si) : ce format n'est pas pris en charge pour l'instant, utilisez plutôt une histoire Telmi, STUdio ou Flam"
+            .into();
+    }
+    let mut tops: Vec<String> = safe
+        .iter()
+        .map(|n| clean(n.split('/').next().unwrap_or(n), 60))
+        .filter(|n| !n.is_empty())
+        .collect();
+    tops.sort_unstable();
+    tops.dedup();
+    let seen = if tops.is_empty() {
+        "archive vide".to_string()
+    } else {
+        let more = if tops.len() > 5 { ", …" } else { "" };
+        format!(
+            "contenu vu à la racine : {}{more}",
+            tops.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+        )
+    };
+    format!(
+        "archive non reconnue : ce n'est ni une histoire Telmi (fichiers metadata.json et nodes.json), ni une histoire STUdio (fichier story.json). {seen}. Vérifiez que le zip contient bien une seule histoire"
+    )
+}
+
+/// Reconnaît l'histoire d'une archive : Telmi (`metadata.json` + `nodes.json`, miroir de
+/// `find_root` de l'ancien convertisseur Python) ou, à défaut, STUdio (`story.json`). Telmi gagne
+/// si les deux sont présents. Le moins profond gagne ; plusieurs candidats au même niveau est une
+/// erreur.
+fn classify_zip(names: &[String]) -> Result<ZipRoot, String> {
+    if let Some(root) = single_root(candidate_roots(
+        names,
+        &["metadata.json", "nodes.json"],
+        true,
+    ))? {
+        return Ok(ZipRoot::Telmi(root));
+    }
+    if let Some(root) = single_root(candidate_roots(names, &["story.json"], false))? {
+        return Ok(ZipRoot::Studio(root));
+    }
+    // Le convertisseur exige les noms en minuscules : mieux vaut le dire au scan.
+    if !candidate_roots(names, &["metadata.json", "nodes.json"], false).is_empty() {
+        return Err("histoire Telmi dont les fichiers n'ont pas le bon nom (majuscules) : renommez-les exactement « metadata.json » et « nodes.json » dans l'archive".into());
+    }
+    Err(unrecognized_zip(names))
+}
+
+/// Dossier racine d'une histoire Telmi (erreur pour toute autre archive).
+fn find_root(names: &[String]) -> Result<String, String> {
+    match classify_zip(names)? {
+        ZipRoot::Telmi(root) => Ok(root),
+        ZipRoot::Studio(_) => Err("archive STUdio, pas Telmi".into()),
+    }
 }
 
 /// Nom de la vignette Telmi à lire : `title.png` ou `cover.png` selon `image`, l'autre en
@@ -317,16 +427,24 @@ fn telmi_image_names(meta: &Value) -> [&'static str; 2] {
     }
 }
 
-fn read_telmi_metadata(zip: &mut Zip, root: &str) -> Result<Value, String> {
+/// Lit un JSON objet d'une archive (au plus `MAX_TEXT_BYTES`, BOM toléré), nom insensible à la casse.
+fn read_json_object(zip: &mut Zip, root: &str, file: &str) -> Result<Value, String> {
+    let name = zip
+        .find_file(root, file)
+        .ok_or_else(|| format!("{file} introuvable"))?;
     let raw = zip
-        .read(&format!("{root}metadata.json"), MAX_TEXT_BYTES)?
-        .ok_or("metadata.json introuvable")?;
-    let meta: Value = serde_json::from_str(&utf8_text(&raw, "metadata.json")?)
-        .map_err(|e| format!("metadata.json invalide : {e}"))?;
+        .read(&name, MAX_TEXT_BYTES)?
+        .ok_or_else(|| format!("{file} introuvable"))?;
+    let meta: Value = serde_json::from_str(&utf8_text(&raw, file)?)
+        .map_err(|e| format!("{file} invalide : {e}"))?;
     if !meta.is_object() {
-        return Err("metadata.json invalide : objet attendu".into());
+        return Err(format!("{file} invalide : objet attendu"));
     }
     Ok(meta)
+}
+
+fn read_telmi_metadata(zip: &mut Zip, root: &str) -> Result<Value, String> {
+    read_json_object(zip, root, "metadata.json")
 }
 
 /// Histoire analysée, sans l'identifiant d'entrée (déduit du chemin).
@@ -340,13 +458,100 @@ struct Parsed {
     flam_version: Option<u32>,
 }
 
-fn telmi_entry(source_id: &str, path: &Path, info: &FileInfo) -> Result<Parsed, String> {
+/// Analyse une archive `.zip` : histoire Telmi ou, à défaut, STUdio.
+fn zip_entry(source_id: &str, path: &Path, info: &FileInfo) -> Result<Parsed, String> {
     let mut zip = Zip::open(path)?;
-    let root = find_root(&zip.normalized_names())?;
-    let meta = read_telmi_metadata(&mut zip, &root)?;
-    let title =
-        json_text(&meta, "title", MAX_TITLE_CHARS).ok_or("titre absent de metadata.json")?;
-    let uuid = json_text(&meta, "uuid", 100).ok_or("uuid absent de metadata.json")?;
+    match classify_zip(&zip.normalized_names())? {
+        ZipRoot::Telmi(root) => telmi_entry(source_id, path, info, &mut zip, &root),
+        ZipRoot::Studio(root) => studio_entry(source_id, path, info, &mut zip, &root),
+    }
+}
+
+/// Histoire STUdio : `story.json` (titre, description, version, uuid) et `thumbnail.png`.
+fn studio_entry(
+    source_id: &str,
+    path: &Path,
+    info: &FileInfo,
+    zip: &mut Zip,
+    root: &str,
+) -> Result<Parsed, String> {
+    let story_json = read_json_object(zip, root, "story.json")?;
+    if !story_json.get("stageNodes").is_some_and(Value::is_array) {
+        return Err("story.json n'a pas la forme d'une histoire STUdio (liste « stageNodes » absente) : ce zip n'est pas une histoire STUdio".into());
+    }
+    // L'étape de départ (`squareOne`), sinon la première étape, identifie l'histoire.
+    let start = story_json
+        .get("stageNodes")
+        .and_then(Value::as_array)
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|n| n.get("squareOne").and_then(Value::as_bool) == Some(true))
+                .or_else(|| nodes.first())
+        });
+    let title = json_text(&story_json, "title", MAX_TITLE_CHARS)
+        .or_else(|| start.and_then(|n| json_text(n, "name", MAX_TITLE_CHARS)))
+        .ok_or("titre absent de story.json : ajoutez un champ « title »")?;
+    let uuid = json_text(&story_json, "uuid", 100)
+        .or_else(|| start.and_then(|n| json_text(n, "uuid", 100)))
+        .ok_or("identifiant (uuid) absent de story.json")?;
+    if !validate_story_id(&uuid) {
+        return Err("uuid de story.json refusé (caractères ou nom non autorisés)".into());
+    }
+    let has_thumb = zip.find_file(root, "thumbnail.png").is_some();
+    let story = StoryEntry {
+        entry_id: String::new(),
+        source_id: source_id.to_string(),
+        uuid,
+        version: json_u32(&story_json, "version"),
+        title,
+        description: json_text(&story_json, "description", MAX_FIELD_CHARS),
+        age: None,
+        category: None,
+        author: None,
+        voice: None,
+        license: None,
+        thumb_url: None,
+        download_url: path.to_string_lossy().into_owned(),
+        size: Some(info.size),
+        updated_at: info.updated_at.clone(),
+        download_count: None,
+        kind: StoryKind::StudioZip,
+    };
+    Ok(Parsed {
+        story,
+        has_thumb,
+        warnings: Vec::new(),
+        flam_version: None,
+    })
+}
+
+/// Image source de la vignette d'une archive STUdio (`thumbnail.png` décodé).
+fn studio_thumb_image(path: &Path) -> Result<RgbaImage, String> {
+    let mut zip = Zip::open(path)?;
+    let ZipRoot::Studio(root) = classify_zip(&zip.normalized_names())? else {
+        return Err("archive STUdio introuvable".into());
+    };
+    let name = zip
+        .find_file(&root, "thumbnail.png")
+        .ok_or("aucune vignette dans l'archive")?;
+    let bytes = zip
+        .read(&name, MAX_IMAGE_BYTES)?
+        .ok_or("aucune vignette dans l'archive")?;
+    thumbnail::decode_png(&bytes).map_err(|e| format!("vignette thumbnail.png : {e}"))
+}
+
+fn telmi_entry(
+    source_id: &str,
+    path: &Path,
+    info: &FileInfo,
+    zip: &mut Zip,
+    root: &str,
+) -> Result<Parsed, String> {
+    let meta = read_telmi_metadata(zip, root)?;
+    let title = json_text(&meta, "title", MAX_TITLE_CHARS)
+        .ok_or("titre absent de metadata.json : ajoutez un champ « title »")?;
+    let uuid = json_text(&meta, "uuid", 100).ok_or("identifiant (uuid) absent de metadata.json")?;
     if !validate_story_id(&uuid) {
         return Err("uuid de metadata.json refusé (caractères ou nom non autorisés)".into());
     }
@@ -414,7 +619,7 @@ fn flam_entry(
 ) -> Result<Parsed, String> {
     let raw = files
         .read("info.plain", MAX_TEXT_BYTES)?
-        .ok_or("info.plain introuvable (pas une histoire FLAM ?)")?;
+        .ok_or("info.plain introuvable : ce dossier ou cette archive n'est pas une histoire Flam (info.plain doit être à la racine)")?;
     let text = utf8_text(&raw, "info.plain")?;
     let title = clean(text.lines().next().unwrap_or(""), MAX_TITLE_CHARS);
     if title.is_empty() {
@@ -587,7 +792,7 @@ fn parse_one(
         }
     }
     let parsed = match kind {
-        StoryKind::TelmiZip => telmi_entry(source_id, path, &info),
+        StoryKind::TelmiZip | StoryKind::StudioZip => zip_entry(source_id, path, &info),
         StoryKind::FlamPlain => flam_entry(source_id, path, kind, &info, &mut DirFiles(path)),
         StoryKind::FlamPk => {
             Zip::open(path).and_then(|mut zip| flam_entry(source_id, path, kind, &info, &mut zip))
@@ -629,7 +834,7 @@ fn dedupe_flam(candidates: Vec<Candidate>) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::with_capacity(candidates.len());
     let mut by_uuid: HashMap<String, usize> = HashMap::new();
     for cand in candidates {
-        if cand.kind == StoryKind::TelmiZip {
+        if matches!(cand.kind, StoryKind::TelmiZip | StoryKind::StudioZip) {
             out.push(cand);
             continue;
         }
@@ -686,9 +891,9 @@ fn scan_folder(
                 parsed.story.source_id = source_id.to_string();
                 parsed.story.entry_id = entry_id_of(source_id, root, path);
                 candidates.push(Candidate {
+                    kind: parsed.story.kind,
                     parsed,
                     path: path.clone(),
-                    kind: *kind,
                     shown,
                 });
             }
@@ -749,6 +954,7 @@ fn make_thumbnail(thumb: &ThumbRef, cache_dir: &Path) -> AppResult<String> {
     ThumbCache::new(cache_dir).get_or_make::<AppError>(key, THUMB_DIM, || {
         match thumb.kind {
             StoryKind::TelmiZip => telmi_thumb_image(&thumb.path),
+            StoryKind::StudioZip => studio_thumb_image(&thumb.path),
             StoryKind::FlamPk => {
                 Zip::open(&thumb.path).and_then(|mut zip| lif_thumb_image(&mut zip))
             }
@@ -1380,6 +1586,218 @@ mod tests {
         // Deuxième analyse (métadonnées en cache) : mêmes entrées.
         let second = ctx.state.scan("src", dir.path(), false).unwrap();
         assert_eq!(first.entries, second.entries);
+    }
+
+    const STUDIO: &str = r#"{"format":"v1","title":"Mon STUdio","description":"Une aventure","version":2,
+        "stageNodes":[{"uuid":"aaaaaaaa-0000-0000-0000-000000000001","name":"Départ","squareOne":true}]}"#;
+
+    fn write_studio(path: &Path, prefix: &str, story: &[u8]) {
+        let png = png_bytes([10, 200, 10, 255]);
+        let story_name = format!("{prefix}story.json");
+        let thumb_name = format!("{prefix}thumbnail.png");
+        let asset_name = format!("{prefix}assets/a.png");
+        write_zip(
+            path,
+            CompressionMethod::Deflated,
+            &[
+                (story_name.as_str(), story),
+                (thumb_name.as_str(), &png),
+                (asset_name.as_str(), &png),
+            ],
+        );
+    }
+
+    fn only_warning(files: &[(&str, &[u8])]) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        write_zip(
+            &dir.path().join("a.zip"),
+            CompressionMethod::Deflated,
+            files,
+        );
+        let (scan, _ctx) = scan(dir.path(), false);
+        assert!(scan.entries.is_empty(), "{:?}", scan.entries);
+        assert_eq!(scan.warnings.len(), 1);
+        let message = scan.warnings[0].message.clone();
+        assert!(message.starts_with("ignoré : "), "{message}");
+        message
+    }
+
+    #[test]
+    fn zip_studio_a_la_racine_et_dans_un_dossier() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend_from_slice(STUDIO.as_bytes());
+        write_studio(&dir.path().join("a.zip"), "", &bom);
+        write_studio(&dir.path().join("b.zip"), "Dossier/", STUDIO.as_bytes());
+        let (scan, ctx) = scan(dir.path(), false);
+        assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
+        assert_eq!(scan.entries.len(), 2);
+        for e in &scan.entries {
+            assert_eq!(e.kind, StoryKind::StudioZip);
+            assert_eq!(e.title, "Mon STUdio");
+            assert_eq!(e.uuid, "aaaaaaaa-0000-0000-0000-000000000001");
+            assert_eq!(e.version, Some(2));
+            assert_eq!(e.description.as_deref(), Some("Une aventure"));
+            assert!(e.size.unwrap() > 0);
+            assert_eq!(e.thumb_url.as_deref(), Some(e.entry_id.as_str()));
+            assert!(ctx.thumb(e).unwrap().starts_with("data:image/png;base64,"));
+        }
+    }
+
+    #[test]
+    fn zip_studio_titre_de_l_etape_de_depart_et_sans_vignette() {
+        let dir = tempfile::tempdir().unwrap();
+        let story = r#"{"stageNodes":[{"uuid":"x1","name":"Autre"},
+            {"uuid":"u-depart","name":"Départ","squareOne":true}]}"#
+            .as_bytes();
+        write_zip(
+            &dir.path().join("a.zip"),
+            CompressionMethod::Deflated,
+            &[("story.json", story)],
+        );
+        let (scan, _ctx) = scan(dir.path(), false);
+        let e = &scan.entries[0];
+        assert_eq!((e.title.as_str(), e.uuid.as_str()), ("Départ", "u-depart"));
+        assert_eq!(e.version, None);
+        assert!(e.thumb_url.is_none());
+    }
+
+    #[test]
+    fn zip_studio_invalide_est_ignore_avec_avertissement() {
+        let uuid_refuse = br#"{"title":"t","uuid":"../x","stageNodes":[]}"#;
+        let message = only_warning(&[("story.json", uuid_refuse)]);
+        assert!(message.contains("uuid de story.json refusé"), "{message}");
+        let message = only_warning(&[("story.json", b"{pas du json")]);
+        assert!(message.contains("story.json invalide"), "{message}");
+        let message = only_warning(&[("story.json", br#"{"title":"t","stageNodes":[]}"#)]);
+        assert!(message.contains("uuid"), "{message}");
+        let message = only_warning(&[("story.json", br#"{"uuid":"x","stageNodes":[]}"#)]);
+        assert!(message.contains("titre absent"), "{message}");
+        let message = only_warning(&[("x/story.json", br#"{"title":"t","uuid":"x"}"#)]);
+        assert!(message.contains("stageNodes"), "{message}");
+        let big = vec![b' '; MAX_TEXT_BYTES as usize + 1];
+        let message = only_warning(&[("story.json", &big)]);
+        assert!(message.contains("trop volumineux"), "{message}");
+    }
+
+    #[test]
+    fn zip_telmi_prioritaire_sur_studio() {
+        let dir = tempfile::tempdir().unwrap();
+        write_zip(
+            &dir.path().join("a.zip"),
+            CompressionMethod::Deflated,
+            &[
+                ("metadata.json", META.as_bytes()),
+                ("nodes.json", b"{}"),
+                ("story.json", STUDIO.as_bytes()),
+            ],
+        );
+        let (scan, _ctx) = scan(dir.path(), false);
+        assert_eq!(scan.entries.len(), 1);
+        assert_eq!(scan.entries[0].kind, StoryKind::TelmiZip);
+        assert_eq!(scan.entries[0].title, "Le Petit Chaperon rouge");
+    }
+
+    #[test]
+    fn zip_studio_deux_histoires_est_une_erreur() {
+        let message = only_warning(&[
+            ("A/story.json", STUDIO.as_bytes()),
+            ("B/story.json", STUDIO.as_bytes()),
+        ]);
+        assert!(message.contains("plusieurs histoires"), "{message}");
+        // Le moins profond gagne.
+        let dir = tempfile::tempdir().unwrap();
+        write_zip(
+            &dir.path().join("a.zip"),
+            CompressionMethod::Deflated,
+            &[
+                ("story.json", STUDIO.as_bytes()),
+                ("sous/dossier/story.json", b"pas du json"),
+            ],
+        );
+        let (scan, _ctx) = scan(dir.path(), false);
+        assert_eq!(scan.entries.len(), 1, "{:?}", scan.warnings);
+    }
+
+    #[test]
+    fn zip_nom_de_fichier_insensible_a_la_casse() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = png_bytes([1, 2, 3, 255]);
+        write_zip(
+            &dir.path().join("studio.zip"),
+            CompressionMethod::Deflated,
+            &[
+                ("D/STORY.JSON", STUDIO.as_bytes()),
+                ("D/Thumbnail.PNG", &png),
+            ],
+        );
+        let (scan, ctx) = scan(dir.path(), false);
+        assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
+        assert_eq!(scan.entries.len(), 1);
+        assert_eq!(scan.entries[0].kind, StoryKind::StudioZip);
+        assert!(ctx.thumb(&scan.entries[0]).is_ok());
+        // Telmi : le convertisseur exige les noms exacts, le scan l'explique au lieu de
+        // promettre une installation qui échouerait.
+        let message = only_warning(&[("Metadata.JSON", META.as_bytes()), ("NODES.json", b"{}")]);
+        assert!(message.contains("renommez-les"), "{message}");
+        // Le nom du dossier reste exact : « d/ » et « D/ » sont deux racines différentes.
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(find_root(&names(&["d/metadata.json", "D/nodes.json"])).is_err());
+    }
+
+    #[test]
+    fn message_histoire_flam_compressee() {
+        let message = only_warning(&[
+            ("Histoire.plain/info.plain", b"Titre"),
+            ("Histoire.plain/uuid.bin", b"0123456789abcdef"),
+        ]);
+        assert!(message.contains("histoire Flam"), "{message}");
+        assert!(message.contains("décompressez-le"), "{message}");
+        assert!(!message.contains("renommez"), "{message}");
+        let message = only_warning(&[("info.plain", b"Titre"), ("uuid.bin", b"0123456789abcdef")]);
+        assert!(message.contains("histoire Flam"), "{message}");
+    }
+
+    #[test]
+    fn message_pack_lunii() {
+        let message = only_warning(&[
+            ("ni", b"x"),
+            ("li", b"x"),
+            ("ri", b"x"),
+            ("si", b"x"),
+            ("bt", b"x"),
+        ]);
+        assert!(message.contains("pack Lunii"), "{message}");
+        assert!(message.contains("pas pris en charge"), "{message}");
+    }
+
+    #[test]
+    fn message_archive_non_reconnue_liste_au_plus_cinq_noms() {
+        let message = only_warning(&[
+            ("a.txt", b"x"),
+            ("b.txt", b"x"),
+            ("c.txt", b"x"),
+            ("d.txt", b"x"),
+            ("e.txt", b"x"),
+            ("f.txt", b"x"),
+            ("__MACOSX/z.txt", b"x"),
+        ]);
+        assert!(message.contains("ni une histoire Telmi"), "{message}");
+        assert!(message.contains("metadata.json et nodes.json"), "{message}");
+        assert!(message.contains("story.json"), "{message}");
+        assert!(
+            message.contains("a.txt, b.txt, c.txt, d.txt, e.txt, …"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("f.txt") && !message.contains("MACOSX"),
+            "{message}"
+        );
+        let message = only_warning(&[("sans\u{7}controle/x.txt", b"x")]);
+        assert!(message.contains("sans controle"), "{message}");
+        assert!(!message.contains('\u{7}'), "{message}");
+        let message = only_warning(&[]);
+        assert!(message.contains("archive vide"), "{message}");
     }
 
     #[test]

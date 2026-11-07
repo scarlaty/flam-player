@@ -39,11 +39,17 @@ use serde::{Deserialize, Serialize};
 pub enum StoryKind {
     /// Archive `.zip` au format Telmi (à convertir avec `telmi2flam`).
     TelmiZip,
+    /// Archive `.zip` au format STUdio (`story.json`, `assets/`). Reconnue au scan ; pas encore
+    /// installable ni jouable (#517).
+    StudioZip,
     /// Dossier `.plain` FLAM (déjà converti).
     FlamPlain,
     /// Archive `.plain.pk` FLAM (zip « stored », déjà converti).
     FlamPk,
 }
+
+/// Refus d'installer ou de jouer une archive STUdio, tant que le convertisseur n'existe pas (#517).
+pub const STUDIO_UNSUPPORTED: &str = "Format STUdio : l'envoi vers une Flam 2.x arrive dans une prochaine version ; la lecture sur PC n'est pas disponible.";
 
 /// Une histoire d'une source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +157,7 @@ mod tests {
     fn le_kind_est_serialise_en_snake_case() {
         let json = |k| serde_json::to_value(k).unwrap();
         assert_eq!(json(StoryKind::TelmiZip), "telmi_zip");
+        assert_eq!(json(StoryKind::StudioZip), "studio_zip");
         assert_eq!(json(StoryKind::FlamPlain), "flam_plain");
         assert_eq!(json(StoryKind::FlamPk), "flam_pk");
     }

@@ -47,7 +47,9 @@ pour tout effacer, supprimer ces deux dossiers à la main.
   consultable hors ligne.
 - **Dossier local** : un dossier contenant des archives Telmi `.zip` (converties à
   l'installation) ou des histoires déjà converties `.plain` / `.plain.pk` (copiées telles
-  quelles). Le dossier n'est jamais modifié.
+  quelles). Les archives STUdio `.zip` (`story.json`) sont reconnues et affichées avec le badge
+  « Format STUdio », mais pas encore installables : l'envoi vers une Flam 2.x arrive dans une
+  prochaine version. Le dossier n'est jamais modifié.
 
 Dans la bibliothèque d'une source, « Installer » télécharge et convertit (progression et
 annulation possibles), puis « Jouer » lance l'histoire dans `flam-player` ; la fermeture du
