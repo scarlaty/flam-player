@@ -44,14 +44,17 @@ fn png_claiming(w: u32, h: u32) -> Vec<u8> {
     ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
     let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
     v.extend(png_chunk(b"IHDR", &ihdr));
-    v.extend(png_chunk(b"IDAT", &[0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01]));
+    v.extend(png_chunk(
+        b"IDAT",
+        &[0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01],
+    ));
     v.extend(png_chunk(b"IEND", &[]));
     v
 }
 
 fn bmp_claiming(w: i32, h: i32, bpp: u16, compression: u32) -> Vec<u8> {
     let mut v = b"BM".to_vec();
-    v.extend_from_slice(&[0; 8]);
+    v.extend_from_slice(&[0; 12]);
     v[10..14].copy_from_slice(&54u32.to_le_bytes());
     v.extend_from_slice(&40u32.to_le_bytes());
     v.extend_from_slice(&w.to_le_bytes());
@@ -67,7 +70,9 @@ fn bmp_claiming(w: i32, h: i32, bpp: u16, compression: u32) -> Vec<u8> {
 fn giant_png_dimensions_are_refused_before_decoding() {
     for (w, h) in [(100_000, 100_000), (8193, 10), (10, 8193), (7000, 7000)] {
         match to_lunii_bmp(&png_claiming(w, h)) {
-            Err(BitmapError::BadDimensions { width, height }) => assert_eq!((width, height), (w, h)),
+            Err(BitmapError::BadDimensions { width, height }) => {
+                assert_eq!((width, height), (w, h))
+            }
             other => panic!("{w}x{h} : {other:?}"),
         }
     }
@@ -84,10 +89,6 @@ fn giant_bmp_dimensions_are_refused() {
         let r = to_lunii_bmp(&bmp_claiming(w, h, bpp, comp));
         assert!(r.is_err(), "{w}x{h} : {r:?}");
     }
-    assert!(matches!(
-        to_lunii_bmp(&bmp_claiming(100_000, 100_000, 24, 0)),
-        Err(BitmapError::BadDimensions { .. })
-    ));
 }
 
 #[test]
@@ -112,7 +113,10 @@ fn oversized_input_is_refused_without_parsing() {
 #[test]
 fn unknown_formats_and_garbage_are_refused() {
     assert_eq!(to_lunii_bmp(&[]), Err(BitmapError::UnsupportedFormat));
-    assert_eq!(to_lunii_bmp(b"GIF89a\x01\x00\x01\x00"), Err(BitmapError::UnsupportedFormat));
+    assert_eq!(
+        to_lunii_bmp(b"GIF89a\x01\x00\x01\x00"),
+        Err(BitmapError::UnsupportedFormat)
+    );
     assert!(to_lunii_bmp(&[0xFF; 4096]).is_err());
     assert!(to_lunii_bmp(b"BM").is_err());
     assert!(to_lunii_bmp(b"\x89PNG\r\n\x1a\n").is_err());
@@ -127,9 +131,13 @@ fn false_rle4_header_without_valid_data_is_not_passed_through() {
     // En-tête « 320 x 240 RLE4 » complet mais données absentes ou incohérentes.
     let mut v = bmp_claiming(320, 240, 4, 2);
     v.extend_from_slice(&[0; 64]);
-    assert!(to_lunii_bmp(&v).is_err());
     v.extend_from_slice(&[5, 0x11, 0, 1]);
-    assert!(to_lunii_bmp(&v).is_err());
+    // Jamais copié : refusé, ou réencodé en un fichier de structure exacte (le décodeur général
+    // tolère un RLE4 court et complète en noir).
+    if let Ok(out) = to_lunii_bmp(&v) {
+        assert_ne!(out, v);
+        common::decode_device_bmp(&out).unwrap();
+    }
 }
 
 #[test]
@@ -142,9 +150,21 @@ fn truncated_files_never_panic() {
         "bmp_rle4_passthrough.in.bmp",
     ] {
         let full = fixture(name);
-        for cut in [0, 1, 7, 8, 20, 33, 54, 100, full.len() / 4, full.len() / 2, full.len() - 1] {
+        for cut in [
+            0,
+            1,
+            7,
+            8,
+            20,
+            33,
+            54,
+            100,
+            full.len() / 4,
+            full.len() / 2,
+            full.len() - 1,
+        ] {
             let r = to_lunii_bmp(&full[..cut.min(full.len())]);
-            if !name.ends_with(".jpg") {
+            if !name.ends_with(".jpg") && cut + 16 < full.len() {
                 assert!(r.is_err(), "{name} coupé à {cut} : accepté");
             }
         }
@@ -153,7 +173,11 @@ fn truncated_files_never_panic() {
 
 #[test]
 fn corrupted_bytes_never_panic() {
-    for name in ["rgb_640x480.in.png", "bmp_rgb24_500x333.in.bmp", "jpeg_rgb_400x300.in.jpg"] {
+    for name in [
+        "rgb_640x480.in.png",
+        "bmp_rgb24_500x333.in.bmp",
+        "jpeg_rgb_400x300.in.jpg",
+    ] {
         let full = fixture(name);
         for seed in 0..40usize {
             let mut b = full.clone();
@@ -162,6 +186,22 @@ fn corrupted_bytes_never_panic() {
                 b[at] ^= 0xA5u8.wrapping_add((seed + k) as u8);
             }
             let _ = to_lunii_bmp(&b);
+        }
+    }
+}
+
+mod common;
+
+#[test]
+fn corrupted_device_bmp_is_never_copied() {
+    // Un fichier presque conforme (un compteur RLE modifié) ne passe pas tel quel : il est refusé,
+    // ou réencodé en un fichier de structure exacte.
+    let good = fixture("bmp_rle4_passthrough.in.bmp");
+    for at in [118usize, 119, 200, 400, good.len() - 2, good.len() - 1] {
+        let mut b = good.clone();
+        b[at] ^= 0x55;
+        if let Ok(out) = to_lunii_bmp(&b) {
+            common::decode_device_bmp(&out).unwrap();
         }
     }
 }

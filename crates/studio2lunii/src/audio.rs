@@ -14,10 +14,11 @@
 //! |---|---|---|
 //! | Nom du fichier | se termine par `.mp3` (casse ignorée) | Lunii.QT |
 //! | Première trame | une trame MPEG valide est trouvée (1 Mio explorés, 1499 synchros au plus) | `mutagen` |
-//! | Couche | III | **plus strict** que Lunii.QT (il accepte aussi les couches I et II) |
-//! | Fréquence | `>= 44100 Hz` (donc 44,1 et 48 kHz ; 32 kHz, 24, 22,05, 16… sont transcodés) | Lunii.QT |
+//! | Version et couche | MPEG-1 couche III | **plus strict** que Lunii.QT (il accepte aussi les couches I et II) |
+//! | Fréquence | **exactement** 44100 Hz (32, 48 kHz, 24, 22,05, 16… sont transcodés) | **plus strict** : Lunii.QT accepte `>= 44100` (donc 48 kHz) ; note de conception, Q6 |
 //! | Mode de débit | inconnu (CBR présumé), CBR ou VBR ; **ABR refusé** (en-tête LAME) | Lunii.QT |
 //! | Canaux | mono (mode de canal 3) ; stéréo, joint stéréo, double canal sont transcodés | Lunii.QT |
+//! | Trames | de la première à la fin (étiquettes écartées), en-têtes valides enchaînés exactement, tous MPEG-1 III 44,1 kHz mono ; seule la dernière peut être tronquée | **plus strict** : note de conception § 3.6 |
 //!
 //! Le débit lui-même n'est pas un critère. Un fichier dont aucune trame n'est trouvée (Lunii.QT
 //! lève alors une exception) est déclaré « à transcoder » : ffmpeg tranchera.
@@ -60,8 +61,9 @@ pub const TARGET_SAMPLE_RATE_HZ: u32 = 44_100;
 pub const TARGET_CHANNELS: u8 = 1;
 /// Qualité VBR de `libmp3lame` (`-aq`) : 5, soit environ 130 kb/s. Pas de débit constant.
 pub const TARGET_MP3_VBR_QUALITY: u8 = 5;
-/// Fréquence minimale d'un MP3 accepté sans transcodage (strictement moins : transcodé).
-pub const MIN_ACCEPTED_SAMPLE_RATE_HZ: u32 = 44_100;
+/// Seule fréquence d'un MP3 accepté sans transcodage : 44,1 kHz est la seule connue de la Flam
+/// (note de conception, § 3.6 et Q6). Lunii.QT accepte aussi 48 kHz ; nous le transcodons.
+pub const ACCEPTED_SAMPLE_RATE_HZ: u32 = 44_100;
 
 /// Arguments ffmpeg de sortie du transcodage, à placer entre l'entrée (`-i`) et la sortie
 /// (`pipe:1` ou un fichier). Équivalent de `audio_to_mp3` de Lunii.QT.
@@ -175,13 +177,21 @@ pub fn transcoding_required(filename: &str, bytes: &[u8]) -> bool {
     if !filename.to_ascii_lowercase().ends_with(".mp3") {
         return true;
     }
-    let Ok(info) = probe_mp3(bytes) else {
+    // Les étiquettes sont écartées d'abord : elles seront retirées de toute façon, et un ID3v1 en
+    // fin de fichier ne doit pas faire échouer la lecture des trames de bout en bout.
+    let Ok(range) = mp3_audio_range(bytes) else {
         return true;
     };
-    info.layer != 3
-        || info.sample_rate < MIN_ACCEPTED_SAMPLE_RATE_HZ
+    let data = &bytes[range];
+    let Ok((info, first)) = probe_with_offset(data) else {
+        return true;
+    };
+    info.version != MpegVersion::V1
+        || info.layer != 3
+        || info.sample_rate != ACCEPTED_SAMPLE_RATE_HZ
         || info.bitrate_mode == BitrateMode::Abr
         || info.channels() != TARGET_CHANNELS
+        || !frames_readable_to_the_end(data, first)
 }
 
 /// Le MP3 porte-t-il une étiquette (ID3v2, ID3v1 ou APEv2) à retirer ?
@@ -224,6 +234,11 @@ pub fn mp3_tag_cleanup(bytes: &[u8]) -> Result<Vec<u8>, AudioError> {
 
 /// Lit la première trame d'un MP3 (après les étiquettes ID3v2 de tête).
 pub fn probe_mp3(bytes: &[u8]) -> Result<Mp3Info, AudioError> {
+    probe_with_offset(bytes).map(|(info, _)| info)
+}
+
+/// Comme [`probe_mp3`], avec la position de la synchronisation où la lecture a commencé.
+fn probe_with_offset(bytes: &[u8]) -> Result<(Mp3Info, usize), AudioError> {
     let mut start = 0;
     // « WMP écrit plusieurs ID3 » : `mutagen` en saute autant qu'il en trouve. Une étiquette dont
     // la taille déborde du fichier arrête simplement le saut.
@@ -236,7 +251,7 @@ pub fn probe_mp3(bytes: &[u8]) -> Result<Mp3Info, AudioError> {
     let end = bytes.len().min(start.saturating_add(MAX_SYNC_SCAN));
 
     let mut syncs = MAX_SYNCS;
-    let mut fallback: Option<Frame> = None;
+    let mut fallback: Option<(Frame, usize)> = None;
     let mut i = start;
     while i + 1 < end {
         if !(bytes[i] == 0xFF && bytes[i + 1] & 0xE0 == 0xE0) {
@@ -261,17 +276,40 @@ pub fn probe_mp3(bytes: &[u8]) -> Result<Mp3Info, AudioError> {
             }
         }
         if frames.len() >= MIN_FRAMES && fallback.is_none() {
-            fallback = Some(frames[0]);
+            fallback = Some((frames[0], i));
         }
         if let Some(last) = frames.last().filter(|f| !f.sketchy) {
-            return Ok(last.info(false));
+            return Ok((last.info(false), i));
         }
         if frames.len() >= ENOUGH_FRAMES {
-            return Ok(frames[0].info(false));
+            return Ok((frames[0].info(false), i));
         }
         i += 1;
     }
-    fallback.map(|f| f.info(true)).ok_or(AudioError::NoFrame)
+    fallback
+        .map(|(f, at)| (f.info(true), at))
+        .ok_or(AudioError::NoFrame)
+}
+
+/// Toutes les trames, de la première à la fin des données, sont des en-têtes valides de
+/// MPEG-1 couche III, 44 100 Hz, mono, enchaînées exactement (seule la dernière peut être
+/// tronquée). `data` est le MP3 sans étiquettes ; `first` la position de la première trame.
+fn frames_readable_to_the_end(data: &[u8], first: usize) -> bool {
+    let mut pos = first;
+    while pos < data.len() {
+        let Some(frame) = parse_frame(data, pos) else {
+            return false;
+        };
+        if frame.version != MpegVersion::V1
+            || frame.layer != 3
+            || frame.sample_rate != TARGET_SAMPLE_RATE_HZ
+            || frame.mode != 3
+        {
+            return false;
+        }
+        pos += frame.length;
+    }
+    true
 }
 
 #[derive(Debug, Clone, Copy)]

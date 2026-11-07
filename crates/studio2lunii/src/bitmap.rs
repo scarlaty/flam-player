@@ -4,27 +4,29 @@
 //!
 //! # Chaîne de conversion
 //!
-//! 1. Un BMP 4 bits RLE4 de 320 x 240 est rendu tel quel (après vérification qu'il se décode).
+//! 1. Un BMP déjà exactement au format de l'appareil (voir ci-dessous) est décodé en niveaux puis
+//!    réencodé : jamais copié tel quel, un fichier hostile n'atteint donc pas l'appareil.
 //! 2. Sinon l'image est décodée (dimensions et taille bornées avant décodage, voir [`MAX_SIDE`],
 //!    [`MAX_PIXELS`] et [`MAX_INPUT_BYTES`]) puis, si elle n'a pas déjà 320 x 240, redimensionnée
 //!    **sans conserver le rapport d'aspect** (déformation, comme `Image.resize((320, 240))`) :
 //!    filtre bicubique de Pillow (a = -0,5, support élargi à la réduction, coefficients en virgule
 //!    fixe sur 22 bits, passe horizontale puis verticale, arrondi à 8 bits entre les deux), refait
 //!    à l'octet près ; les images à palette ou en noir et blanc 1 bit sont, comme dans Pillow,
-//!    redimensionnées au plus proche voisin (`floor((x + 0,5) * entrée / sortie)`). Les images avec
-//!    alpha sont redimensionnées en alpha prémultiplié, puis l'alpha est abandonné : un pixel
-//!    transparent donne du noir, pas du blanc.
+//!    redimensionnées au plus proche voisin (`floor((x + 0,5) * entrée / sortie)`). Une image
+//!    avec alpha est d'abord composée sur fond noir (couleur multipliée par l'opacité), à toute
+//!    taille.
 //! 3. Niveau de gris sur 4 bits (0 à 15) :
 //!    - source en niveaux de gris : `v / 16` (division entière) ;
 //!    - source en couleurs : `int((0.299 R + 0.587 G + 0.114 B) / 16)` en `f64`, dans cet ordre
 //!      d'opérations.
 //! 4. Lignes écrites **de bas en haut** (BMP à hauteur positive), RLE4 en mode codé uniquement.
 //!
-//! Écarts volontaires avec Lunii.QT : (a) une source BMP non RLE4 est, chez lui, écrite à
-//! l'envers (il ne la retourne pas, alors que Pillow l'a déjà remise à l'endroit) ; ici toutes les
-//! sources sortent à l'endroit. (b) Le BMP RLE4 déjà conforme est vérifié par un décodage au lieu
-//! d'être rendu sans contrôle. (c) JPEG : le décodeur diffère de libjpeg, d'où des écarts de
-//! quelques niveaux de gris possibles (la structure reste identique). (d) PNG 16 bits : octet de
+//! Écarts choisis avec Lunii.QT (note de conception `docs/studio-lunii.md`, § 3.5) : (a) il copie
+//! tel quel un BMP RLE4 de 320 x 240 ; ici décodé puis réencodé. (b) Il écrit à l'envers une
+//! source BMP de 320 x 240 non RLE4 (il ne la retourne pas) ; ici toutes les sources sortent à
+//! l'endroit. (c) Il ignore l'alpha quand l'image n'est pas redimensionnée ; ici composition sur
+//! noir dans tous les cas. Limites : (d) JPEG, le décodeur diffère de libjpeg, d'où des écarts de
+//! quelques niveaux de gris possibles (la structure reste identique) ; (e) PNG 16 bits, octet de
 //! poids fort.
 //!
 //! # Fichier produit
@@ -109,7 +111,7 @@ pub fn to_lunii_bmp(bytes: &[u8]) -> Result<Vec<u8>, BitmapError> {
             max: MAX_INPUT_BYTES,
         });
     }
-    let format = reader(bytes)?.format();
+    let format = reader(bytes, true)?.format();
     if !matches!(
         format,
         Some(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Bmp)
@@ -119,7 +121,7 @@ pub fn to_lunii_bmp(bytes: &[u8]) -> Result<Vec<u8>, BitmapError> {
     let is_bmp = format == Some(ImageFormat::Bmp);
 
     // Dimensions lues dans l'en-tête, avant de décoder quoi que ce soit.
-    let (w, h) = reader(bytes)?
+    let (w, h) = reader(bytes, false)?
         .into_dimensions()
         .map_err(|e| BitmapError::Decode(e.to_string()))?;
     if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE || u64::from(w) * u64::from(h) > MAX_PIXELS
@@ -130,14 +132,16 @@ pub fn to_lunii_bmp(bytes: &[u8]) -> Result<Vec<u8>, BitmapError> {
         });
     }
 
-    let img = reader(bytes)?
-        .decode()
-        .map_err(|e| BitmapError::Decode(e.to_string()))?;
-    if is_bmp && is_device_bmp(bytes) {
-        // Déjà au bon format : rendu tel quel, comme Lunii.QT.
-        return Ok(bytes.to_vec());
+    // Fichier déjà au format de l'appareil : décodé puis réencodé (donc identique), jamais copié.
+    if is_bmp {
+        if let Some(levels) = decode_device_levels(bytes) {
+            return Ok(encode_rle4_bmp(&levels));
+        }
     }
 
+    let img = reader(bytes, true)?
+        .decode()
+        .map_err(|e| BitmapError::Decode(e.to_string()))?;
     let hints = if is_bmp {
         bmp_hints(bytes)
     } else {
@@ -150,21 +154,24 @@ pub fn to_lunii_bmp(bytes: &[u8]) -> Result<Vec<u8>, BitmapError> {
     if hints.gray {
         raster.keep_first_channel();
     }
+    raster.composite_on_black();
     if (raster.w, raster.h) != (WIDTH as usize, HEIGHT as usize) {
         raster = raster.resize(WIDTH as usize, HEIGHT as usize, hints.nearest);
     }
     Ok(encode_rle4_bmp(&raster.to_levels()))
 }
 
-fn reader(bytes: &[u8]) -> Result<ImageReader<Cursor<&[u8]>>, BitmapError> {
+fn reader(bytes: &[u8], limited: bool) -> Result<ImageReader<Cursor<&[u8]>>, BitmapError> {
     let mut r = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| BitmapError::Decode(e.to_string()))?;
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(MAX_SIDE);
-    limits.max_image_height = Some(MAX_SIDE);
-    limits.max_alloc = Some(512 * 1024 * 1024);
-    r.limits(limits);
+    if limited {
+        let mut limits = Limits::default();
+        limits.max_image_width = Some(MAX_SIDE);
+        limits.max_image_height = Some(MAX_SIDE);
+        limits.max_alloc = Some(512 * 1024 * 1024);
+        r.limits(limits);
+    }
     Ok(r)
 }
 
@@ -176,14 +183,71 @@ fn le32(b: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
 }
 
-/// BMP 4 bits RLE4 de 320 x 240 (hauteur positive) : accepté sans conversion.
-fn is_device_bmp(b: &[u8]) -> bool {
-    b.starts_with(b"BM")
-        && le32(b, 14).is_some_and(|hs| hs >= 40)
+/// Décode un fichier exactement au format de l'appareil (celui que produit
+/// [`encode_rle4_bmp`] : mêmes en-têtes, même palette, séries codées seulement) en niveaux 0 à 15,
+/// lignes de haut en bas. `None` pour tout autre fichier, qui passe alors par le décodeur général.
+/// Les niveaux sont les indices de palette : repasser par les couleurs de la palette ferait
+/// perdre un niveau (le gris 15 de l'entrée 1 donnerait 0).
+fn decode_device_levels(b: &[u8]) -> Option<Vec<u8>> {
+    let (w, h) = (WIDTH as usize, HEIGHT as usize);
+    let header_ok = b.starts_with(b"BM")
+        && b.len() > HEADER_SIZE + PALETTE_SIZE
+        && le32(b, 2) == Some(b.len() as u32)
+        && le32(b, 6) == Some(0)
+        && le32(b, 10) == Some((HEADER_SIZE + PALETTE_SIZE) as u32)
+        && le32(b, 14) == Some(40)
         && le32(b, 18) == Some(WIDTH)
         && le32(b, 22) == Some(HEIGHT)
+        && le16(b, 26) == Some(1)
         && le16(b, 28) == Some(4)
         && le32(b, 30) == Some(BI_RLE4)
+        && le32(b, 34) == Some((b.len() - HEADER_SIZE - PALETTE_SIZE) as u32)
+        && le32(b, 38) == Some(0)
+        && le32(b, 42) == Some(0)
+        && le32(b, 46) == Some(16)
+        && le32(b, 50) == Some(0);
+    if !header_ok {
+        return None;
+    }
+    let palette_ok = (0..16usize).all(|i| {
+        let g = (255 * i / 16) as u8;
+        b[HEADER_SIZE + i * 4..HEADER_SIZE + i * 4 + 4] == [g, g, g, 0]
+    });
+    if !palette_ok {
+        return None;
+    }
+    let mut rows: Vec<Vec<u8>> = Vec::with_capacity(h);
+    let mut row: Vec<u8> = Vec::with_capacity(w);
+    let data = &b[HEADER_SIZE + PALETTE_SIZE..];
+    let mut at = 0;
+    let mut done = false;
+    while at + 2 <= data.len() {
+        let (n, v) = (usize::from(data[at]), data[at + 1]);
+        at += 2;
+        if n == 0 {
+            if row.len() != w {
+                return None;
+            }
+            rows.push(std::mem::take(&mut row));
+            match v {
+                0 if rows.len() < h => {}
+                1 if rows.len() == h => {
+                    done = true;
+                    break;
+                }
+                _ => return None,
+            }
+        } else {
+            if v >> 4 != v & 15 || row.len() + n > w {
+                return None;
+            }
+            row.extend(std::iter::repeat_n(v & 15, n));
+        }
+    }
+    if !done || at != data.len() {
+        return None;
+    }
+    Some(rows.into_iter().rev().flatten().collect())
 }
 
 /// Particularités de la source qui changent la conversion de Pillow.
@@ -306,17 +370,7 @@ impl Raster {
                 data: out,
             };
         }
-        let has_alpha = ch == 2 || ch == 4;
         let mut data = self.data;
-        if has_alpha {
-            for p in data.chunks_exact_mut(ch) {
-                let a = u32::from(p[ch - 1]);
-                for c in &mut p[..ch - 1] {
-                    let t = u32::from(*c) * a + 128;
-                    *c = (((t >> 8) + t) >> 8) as u8;
-                }
-            }
-        }
         let (mut w, mut h) = (self.w, self.h);
         if w != ow {
             data = resample_pass(&data, w, h, ch, ow, true);
@@ -326,17 +380,35 @@ impl Raster {
             data = resample_pass(&data, w, h, ch, oh, false);
             h = oh;
         }
-        if has_alpha {
-            for p in data.chunks_exact_mut(ch) {
-                let a = u32::from(p[ch - 1]);
-                if a != 0 && a != 255 {
-                    for c in &mut p[..ch - 1] {
-                        *c = (255 * u32::from(*c) / a).min(255) as u8;
-                    }
-                }
-            }
-        }
         Raster { w, h, ch, data }
+    }
+
+    /// Composition sur fond noir : chaque couleur est multipliée par l'opacité (arrondi de
+    /// `MULDIV255` de Pillow), puis l'alpha disparaît. Le gris + alpha devient RVB, comme
+    /// `convert("RGB")` de Pillow (il passe alors par la formule de luminance).
+    fn composite_on_black(&mut self) {
+        if self.ch != 2 && self.ch != 4 {
+            return;
+        }
+        let ch = self.ch;
+        let mul = |c: u8, a: u8| {
+            let t = u32::from(c) * u32::from(a) + 128;
+            (((t >> 8) + t) >> 8) as u8
+        };
+        self.data = self
+            .data
+            .chunks_exact(ch)
+            .flat_map(|p| {
+                let a = p[ch - 1];
+                if ch == 2 {
+                    let l = mul(p[0], a);
+                    [l, l, l]
+                } else {
+                    [mul(p[0], a), mul(p[1], a), mul(p[2], a)]
+                }
+            })
+            .collect();
+        self.ch = 3;
     }
 
     /// Niveaux 0 à 15, lignes de haut en bas.
@@ -345,8 +417,6 @@ impl Raster {
             .chunks_exact(self.ch)
             .map(|p| match self.ch {
                 1 => p[0] >> 4,
-                // Gris + alpha : Pillow passe par RVB (`convert("RGB")`), donc par la formule.
-                2 => luma(p[0], p[0], p[0]),
                 _ => luma(p[0], p[1], p[2]),
             })
             .collect()

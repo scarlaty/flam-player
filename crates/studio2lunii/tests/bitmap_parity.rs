@@ -101,7 +101,7 @@ fn every_output_has_the_exact_device_structure() {
 }
 
 #[test]
-fn rle4_bmp_of_the_right_size_is_returned_unchanged() {
+fn device_format_bmp_is_reencoded_identically() {
     let input = fs::read(data_dir().join("bmp_rle4_passthrough.in.bmp")).unwrap();
     assert_eq!(to_lunii_bmp(&input).unwrap(), input);
 }
