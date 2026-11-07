@@ -165,6 +165,30 @@ fn ordre_ecrit_relu_et_cache_supprime() {
     assert_eq!(dev.others(), others);
 }
 
+/// #522 : des histoires au format Lunii (index, `info` en clair) se réordonnent comme les autres.
+#[test]
+fn ordre_avec_une_histoire_au_format_lunii() {
+    let dev = Device::new();
+    let story = dev.root().join("str").join(A);
+    for name in ["ni", "li", "ri", "si"] {
+        fs::write(story.join(name), b"x").unwrap();
+    }
+    fs::write(
+        story.join("info"),
+        b"Titre
+Titre
+0
+Titre
+Auteur",
+    )
+    .unwrap();
+    assert!(crate::device::guard::is_lunii_format(&story));
+    let report = reorder(&dev, &[C, A, D, B]).unwrap();
+    assert!(report.changed);
+    assert_eq!(dev.get("list").unwrap(), lines(&[C, A, D, B]));
+    assert!(story.join("ni").is_file());
+}
+
 #[test]
 fn ordre_identique_n_ecrit_rien() {
     let dev = Device::new();

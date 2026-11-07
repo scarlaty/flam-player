@@ -1,0 +1,82 @@
+{
+  "format": "v1",
+  "title": "Entrée déplacée",
+  "version": 1,
+  "description": "desc",
+  "stageNodes": [
+    {
+      "uuid": "00000065-1111-4222-8333-000000000065",
+      "type": "stage",
+      "name": "n",
+      "image": "0123456789abcdef0123456789abcdef00000065.png",
+      "audio": "0123456789abcdef0123456789abcdef00000065.mp3",
+      "okTransition": null,
+      "homeTransition": {
+        "actionNode": "e",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    },
+    {
+      "uuid": "00000066-1111-4222-8333-000000000066",
+      "type": "stage",
+      "name": "n",
+      "image": null,
+      "audio": "0123456789abcdef0123456789abcdef00000066.mp3",
+      "okTransition": null,
+      "homeTransition": {
+        "actionNode": "e",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    },
+    {
+      "uuid": "00000064-1111-4222-8333-000000000064",
+      "type": "stage",
+      "name": "n",
+      "image": "0123456789abcdef0123456789abcdef00000064.png",
+      "audio": "0123456789abcdef0123456789abcdef00000064.mp3",
+      "okTransition": {
+        "actionNode": "m",
+        "optionIndex": 0
+      },
+      "homeTransition": null,
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": false,
+        "pause": false,
+        "autoplay": false
+      },
+      "squareOne": true
+    }
+  ],
+  "actionNodes": [
+    {
+      "id": "m",
+      "options": [
+        "00000065-1111-4222-8333-000000000065",
+        "00000066-1111-4222-8333-000000000066"
+      ]
+    },
+    {
+      "id": "e",
+      "options": [
+        "00000064-1111-4222-8333-000000000064"
+      ]
+    }
+  ],
+  "nightModeAvailable": false
+}

@@ -1,0 +1,75 @@
+﻿{
+  "format": "v1",
+  "title": "Casse",
+  "version": 1,
+  "description": "desc",
+  "stageNodes": [
+    {
+      "uuid": "00000046-1111-4222-8333-000000000046",
+      "type": "stage",
+      "name": "n",
+      "image": "Couverture.Finale.AbCdEf12.PNG",
+      "audio": "son-de-Couverture.Mp3",
+      "okTransition": {
+        "actionNode": "c",
+        "optionIndex": 0
+      },
+      "homeTransition": null,
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": false,
+        "pause": false,
+        "autoplay": false
+      }
+    },
+    {
+      "uuid": "00000047-1111-4222-8333-000000000047",
+      "type": "stage",
+      "name": "n",
+      "image": "image_tres_longue_ZZzz9999.jpeg",
+      "audio": "AUDIO_MAJUSCULE_ABCDEFGH.MP3",
+      "okTransition": null,
+      "homeTransition": {
+        "actionNode": "c",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    },
+    {
+      "uuid": "00000048-1111-4222-8333-000000000048",
+      "type": "stage",
+      "name": "n",
+      "image": "minuscules_abcdefgh.bmp",
+      "audio": "exactement.mp3",
+      "okTransition": null,
+      "homeTransition": {
+        "actionNode": "c",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    }
+  ],
+  "actionNodes": [
+    {
+      "id": "c",
+      "options": [
+        "00000047-1111-4222-8333-000000000047",
+        "00000048-1111-4222-8333-000000000048"
+      ]
+    }
+  ],
+  "nightModeAvailable": false
+}

@@ -1,0 +1,122 @@
+{
+  "format": "v1",
+  "title": "Linéaire",
+  "version": 1,
+  "description": "desc",
+  "stageNodes": [
+    {
+      "uuid": "00000001-1111-4222-8333-000000000001",
+      "type": "stage",
+      "name": "n",
+      "image": "0123456789abcdef0123456789abcdef00000001.png",
+      "audio": "0123456789abcdef0123456789abcdef00000001.mp3",
+      "okTransition": {
+        "actionNode": "a1",
+        "optionIndex": 0
+      },
+      "homeTransition": null,
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": false,
+        "pause": false,
+        "autoplay": false
+      },
+      "squareOne": true
+    },
+    {
+      "uuid": "00000002-1111-4222-8333-000000000002",
+      "type": "stage",
+      "name": "n",
+      "image": null,
+      "audio": "0123456789abcdef0123456789abcdef00000002.mp3",
+      "okTransition": {
+        "actionNode": "a2",
+        "optionIndex": 0
+      },
+      "homeTransition": {
+        "actionNode": "a0",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    },
+    {
+      "uuid": "00000003-1111-4222-8333-000000000003",
+      "type": "stage",
+      "name": "n",
+      "image": null,
+      "audio": "0123456789abcdef0123456789abcdef00000003.mp3",
+      "okTransition": {
+        "actionNode": "a3",
+        "optionIndex": 0
+      },
+      "homeTransition": {
+        "actionNode": "a0",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    },
+    {
+      "uuid": "00000004-1111-4222-8333-000000000004",
+      "type": "stage",
+      "name": "n",
+      "image": null,
+      "audio": "0123456789abcdef0123456789abcdef00000004.mp3",
+      "okTransition": null,
+      "homeTransition": {
+        "actionNode": "a0",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    }
+  ],
+  "actionNodes": [
+    {
+      "id": "a0",
+      "name": "accueil",
+      "options": [
+        "00000001-1111-4222-8333-000000000001"
+      ]
+    },
+    {
+      "id": "a1",
+      "name": "x",
+      "options": [
+        "00000002-1111-4222-8333-000000000002"
+      ]
+    },
+    {
+      "id": "a2",
+      "name": "x",
+      "options": [
+        "00000003-1111-4222-8333-000000000003"
+      ]
+    },
+    {
+      "id": "a3",
+      "name": "x",
+      "options": [
+        "00000004-1111-4222-8333-000000000004"
+      ]
+    }
+  ],
+  "nightModeAvailable": false
+}

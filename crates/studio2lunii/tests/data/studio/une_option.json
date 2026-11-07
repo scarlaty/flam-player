@@ -1,0 +1,52 @@
+{
+  "format": "v1",
+  "title": "Une option",
+  "version": 1,
+  "description": "desc",
+  "stageNodes": [
+    {
+      "uuid": "0000005a-1111-4222-8333-00000000005a",
+      "type": "stage",
+      "name": "n",
+      "image": "0123456789abcdef0123456789abcdef0000005a.png",
+      "audio": null,
+      "okTransition": {
+        "actionNode": "u",
+        "optionIndex": 0
+      },
+      "homeTransition": null,
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": false,
+        "pause": false,
+        "autoplay": false
+      }
+    },
+    {
+      "uuid": "0000005b-1111-4222-8333-00000000005b",
+      "type": "stage",
+      "name": "n",
+      "image": null,
+      "audio": "0123456789abcdef0123456789abcdef0000005b.mp3",
+      "okTransition": null,
+      "homeTransition": null,
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    }
+  ],
+  "actionNodes": [
+    {
+      "id": "u",
+      "options": [
+        "0000005b-1111-4222-8333-00000000005b"
+      ]
+    }
+  ],
+  "nightModeAvailable": false
+}

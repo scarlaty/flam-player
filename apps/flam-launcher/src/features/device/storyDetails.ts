@@ -26,27 +26,37 @@ function delay(ms: number): Promise<void> {
  * `paused` (envoi ou retrait en cours) suspend les demandes. Le chargement s'arrête au
  * changement de Flam ou au démontage, et le lot en cours est interrompu côté Rust. Un échec
  * n'est pas affiché : les titres se replient.
+ *
+ * `lunii` : histoires au format Lunii/STUdio (`info` en clair, #522). Leur titre est lu sans
+ * clé, donc retenu même quand la Flam n'a pas de clé de titre.
  */
 export function useDeviceStoryTitles(
   root: string | null,
   uuids: string[],
   paused: boolean,
-): ReadonlyMap<string, string | null> {
+): DeviceStoryTitlesState {
   const [titles, setTitles] = useState<{
     root: string | null;
     map: ReadonlyMap<string, string | null>;
-  }>({ root: null, map: EMPTY_TITLES });
+    lunii: ReadonlySet<string>;
+  }>({ root: null, map: EMPTY_TITLES, lunii: EMPTY_LUNII });
   // Réponses déjà reçues pour la Flam en cours (lu et écrit seulement dans l'effet).
-  const known = useRef<{ root: string | null; map: Map<string, string | null> }>({
+  const known = useRef<{
+    root: string | null;
+    map: Map<string, string | null>;
+    lunii: Set<string>;
+  }>({
     root: null,
     map: new Map(),
+    lunii: new Set(),
   });
   const uuidsKey = uuids.join(" ");
 
   useEffect(() => {
     if (!root || paused) return;
-    if (known.current.root !== root) known.current = { root, map: new Map() };
-    const map = known.current.map;
+    if (known.current.root !== root)
+      known.current = { root, map: new Map(), lunii: new Set() };
+    const { map, lunii } = known.current;
     let pending = uuidsKey ? uuidsKey.split(" ").filter((u) => !map.has(u)) : [];
     if (pending.length === 0) return;
     let active = true;
@@ -64,10 +74,21 @@ export function useDeviceStoryTitles(
           inFlight = false;
         }
         if (!active) return;
-        // Sans clé de titre, les réponses ne sont pas définitives (clé carrier conservée ou
-        // consentement donné plus tard) : rien n'est retenu, l'effet suivant (fin d'un envoi,
-        // nouvelle liste) redemandera. L'affichage se replie d'ici là.
-        if (!reply.keys && !reply.interrupted) return;
+        // Histoires Lunii : titre en clair, définitif même sans clé de titre.
+        for (const { uuid, title, format } of reply.titles)
+          if (format === "lunii") {
+            map.set(uuid, title);
+            lunii.add(uuid);
+          }
+        // Sans clé de titre, les autres réponses ne sont pas définitives (clé carrier
+        // conservée ou consentement donné plus tard) : rien n'est retenu, l'effet suivant
+        // (fin d'un envoi, nouvelle liste) redemandera. L'affichage se replie d'ici là.
+        if (!reply.keys && !reply.interrupted) {
+          setTitles({ root, map: new Map(map), lunii: new Set(lunii) });
+          // Lots suivants : les histoires Lunii y ont un titre en clair même sans clé.
+          pending = pending.slice(batch.length);
+          continue;
+        }
         // Lot interrompu sans clé : un titre `null` n'est pas définitif (il ne vient que de
         // l'absence de clé), seuls les titres lus sont retenus.
         for (const { uuid, title } of reply.titles)
@@ -75,7 +96,7 @@ export function useDeviceStoryTitles(
         // Lot complet : une histoire omise (UUID invalide) n'aura pas de titre.
         if (!reply.interrupted)
           for (const uuid of batch) if (!map.has(uuid)) map.set(uuid, null);
-        setTitles({ root, map: new Map(map) });
+        setTitles({ root, map: new Map(map), lunii: new Set(lunii) });
         pending = pending.filter((u) => !map.has(u));
         if (reply.interrupted) await delay(DETAILS_RETRY_MS);
       }
@@ -86,10 +107,18 @@ export function useDeviceStoryTitles(
     };
   }, [root, uuidsKey, paused]);
 
-  return titles.root === root ? titles.map : EMPTY_TITLES;
+  return titles.root === root ? { titles: titles.map, lunii: titles.lunii } : EMPTY_STATE;
+}
+
+/** Titres lus sur la Flam et histoires au format Lunii (voir `useDeviceStoryTitles`). */
+export interface DeviceStoryTitlesState {
+  titles: ReadonlyMap<string, string | null>;
+  lunii: ReadonlySet<string>;
 }
 
 const EMPTY_TITLES: ReadonlyMap<string, string | null> = new Map();
+const EMPTY_LUNII: ReadonlySet<string> = new Set();
+const EMPTY_STATE: DeviceStoryTitlesState = { titles: EMPTY_TITLES, lunii: EMPTY_LUNII };
 
 /** Titre du catalogue officiel d'une histoire dont le titre n'a pas pu être déchiffré. */
 export interface OfficialInfo {

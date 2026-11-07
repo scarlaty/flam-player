@@ -309,7 +309,7 @@ function DeviceStoriesList() {
   );
   // Titres et vignettes de la Flam : chargés après l'affichage de la liste, suspendus pendant
   // un envoi ou un retrait.
-  const titles = useDeviceStoryTitles(root, uuids, busy);
+  const { titles, lunii } = useDeviceStoryTitles(root, uuids, busy);
   // Titre non déchiffrable (clé d'un autre compte) : catalogue officiel en ligne, seulement s'il
   // reste au moins une histoire sans titre.
   const official = useOfficialStoryTitles(titles);
@@ -444,6 +444,7 @@ function DeviceStoriesList() {
                 key={story.uuid}
                 story={story}
                 deviceTitle={titles.get(story.uuid)}
+                lunii={lunii.has(story.uuid)}
                 official={official.get(story.uuid)}
                 loader={story.missing ? null : loader}
                 removing={removing === story.uuid}
@@ -485,6 +486,7 @@ function DeviceStoriesList() {
 function DeviceStoryRow({
   story,
   deviceTitle,
+  lunii = false,
   official,
   loader,
   actions,
@@ -492,6 +494,8 @@ function DeviceStoryRow({
 }: {
   story: DeviceStory;
   deviceTitle?: string | null;
+  /** Histoire au format Lunii/STUdio (badge discret). */
+  lunii?: boolean;
   official?: OfficialInfo;
   loader: ThumbnailLoader | null;
   actions?: ReactNode;
@@ -520,6 +524,7 @@ function DeviceStoryRow({
           </span>
         )}
       </div>
+      {lunii && <Badge tone="secondary">{text.stories.lunii}</Badge>}
       {story.placement === "hidden" && (
         <Badge tone="secondary">{text.stories.hidden}</Badge>
       )}
