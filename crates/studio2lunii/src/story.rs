@@ -49,7 +49,9 @@
 //!
 //! - bornes du § 6.2 de la note : taille du JSON ([`MAX_STORY_JSON_BYTES`]), nœuds
 //!   ([`MAX_STAGE_NODES`], [`MAX_ACTION_NODES`]), entrées de `li` ([`MAX_OPTIONS`]), images et
-//!   sons distincts ([`MAX_ASSETS`] chacun) ; profondeur d'imbrication bornée par `serde_json`
+//!   sons distincts ([`MAX_ASSETS`] chacun) ; les tableaux `stageNodes`, `actionNodes` et
+//!   `options` sont lus avec leur plafond (éléments excédentaires comptés, jamais alloués) ;
+//!   numéros de nœud des erreurs comptés depuis 1 ; profondeur d'imbrication bornée par `serde_json`
 //!   (128) ; clé en double refusée pour les champs lus ;
 //! - plusieurs `squareOne` ;
 //! - UUID de stageNode uniques (comparés sans la casse), identifiants d'actionNode uniques ;
@@ -67,12 +69,23 @@
 //! références sont résolues en indices par tables de hachage, en une passe, donc sans risque de
 //! boucle infinie ni de récursion.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::marker::PhantomData;
 
-use serde::Deserialize;
+use serde::de::{IgnoredAny, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use thiserror::Error;
 
 /// Taille maximale acceptée pour `story.json` (le launcher borne déjà la lecture).
+///
+/// Les tableaux sont lus avec un plafond (voir [`MAX_STAGE_NODES`], [`MAX_ACTION_NODES`],
+/// [`MAX_OPTIONS`]) : au-delà, les éléments sont comptés sans être alloués, donc la mémoire
+/// transitoire reste de l'ordre de quelques fois la taille du JSON (chaînes copiées, au plus
+/// 20 001 stageNodes, 20 001 actionNodes et 100 001 options conservés), et non plus de dizaines
+/// de fois. Hypothèse : une grande histoire STUdio réelle fait quelques centaines de Kio, 16 Mio
+/// laissent une très large marge ; ce plafond n'est donc pas abaissé.
 pub const MAX_STORY_JSON_BYTES: usize = 16 * 1024 * 1024;
 /// Nombre maximal de `stageNodes`.
 pub const MAX_STAGE_NODES: usize = 20_000;
@@ -104,6 +117,7 @@ pub enum StoryError {
         nombre: usize,
         max: usize,
     },
+    /// Numéros de stageNode comptés depuis 1.
     #[error("plusieurs stageNodes portent squareOne (n° {premier} et n° {second})")]
     PlusieursSquareOne { premier: usize, second: usize },
     #[error("stageNode {uuid} : controlSettings absent")]
@@ -254,8 +268,8 @@ struct RawStory {
     description: Option<String>,
     #[serde(default)]
     night_mode_available: Option<bool>,
-    stage_nodes: Vec<RawStage>,
-    action_nodes: Vec<RawAction>,
+    stage_nodes: Capped<RawStage, MAX_STAGE_NODES>,
+    action_nodes: Capped<RawAction, MAX_ACTION_NODES>,
 }
 
 #[derive(Deserialize)]
@@ -286,7 +300,83 @@ struct RawTransition {
 #[derive(Deserialize)]
 struct RawAction {
     id: String,
-    options: Vec<String>,
+    options: Options,
+}
+
+/// Tableau JSON dont on ne garde que les `MAX + 1` premiers éléments : la mémoire reste bornée
+/// quelle que soit la taille du tableau, le reste est parcouru sans rien allouer
+/// ([`IgnoredAny`]) et seulement compté. Un dépassement est signalé ensuite, avec le nombre exact
+/// d'éléments, par [`check_count`].
+struct Capped<T, const MAX: usize> {
+    items: Vec<T>,
+    total: usize,
+}
+
+impl<'de, T: Deserialize<'de>, const MAX: usize> Deserialize<'de> for Capped<T, MAX> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V<T, const MAX: usize>(PhantomData<T>);
+        impl<'de, T: Deserialize<'de>, const MAX: usize> Visitor<'de> for V<T, MAX> {
+            type Value = Capped<T, MAX>;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("un tableau")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut items = Vec::new();
+                let mut total = 0usize;
+                while total <= MAX {
+                    match seq.next_element::<T>()? {
+                        Some(x) => items.push(x),
+                        None => return Ok(Capped { items, total }),
+                    }
+                    total += 1;
+                }
+                while seq.next_element::<IgnoredAny>()?.is_some() {
+                    total += 1;
+                }
+                Ok(Capped { items, total })
+            }
+        }
+        d.deserialize_seq(V::<T, MAX>(PhantomData))
+    }
+}
+
+thread_local! {
+    /// Options d'actionNodes vues pendant la lecture en cours (voir [`Options`]).
+    static OPTIONS_SEEN: Cell<usize> = const { Cell::new(0) };
+}
+
+/// `options[]` d'un actionNode : le plafond [`MAX_OPTIONS`] vaut pour **tous** les actionNodes
+/// ensemble, d'où un compteur partagé (remis à zéro par [`parse_story`]) ; au-delà, les options
+/// sont comptées mais plus gardées.
+struct Options {
+    items: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for Options {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Options;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("un tableau de chaînes")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Options, A::Error> {
+                let mut items = Vec::new();
+                while OPTIONS_SEEN.get() <= MAX_OPTIONS {
+                    match seq.next_element::<String>()? {
+                        Some(x) => items.push(x),
+                        None => return Ok(Options { items }),
+                    }
+                    OPTIONS_SEEN.set(OPTIONS_SEEN.get() + 1);
+                }
+                while seq.next_element::<IgnoredAny>()?.is_some() {
+                    OPTIONS_SEEN.set(OPTIONS_SEEN.get() + 1);
+                }
+                Ok(Options { items })
+            }
+        }
+        d.deserialize_seq(V)
+    }
 }
 
 // --- Lecture ---------------------------------------------------------------------------------
@@ -300,33 +390,34 @@ pub fn parse_story(bytes: &[u8]) -> Result<Story, StoryError> {
         });
     }
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    let mut raw: RawStory =
-        serde_json::from_slice(bytes).map_err(|e| StoryError::Json(e.to_string()))?;
+    OPTIONS_SEEN.set(0);
+    let parsed = serde_json::from_slice::<RawStory>(bytes);
+    let options_seen = OPTIONS_SEEN.replace(0);
+    let mut raw = parsed.map_err(|e| StoryError::Json(e.to_string()))?;
 
     let format_version = parse_format(&raw.format)?;
     let pack_version = u16::try_from(raw.version).map_err(|_| StoryError::Version(raw.version))?;
 
-    if raw.stage_nodes.is_empty() {
+    if raw.stage_nodes.total == 0 {
         return Err(StoryError::AucunStageNode);
     }
-    check_count("stageNodes", raw.stage_nodes.len(), MAX_STAGE_NODES)?;
-    check_count("actionNodes", raw.action_nodes.len(), MAX_ACTION_NODES)?;
-    let total_options = raw.action_nodes.iter().map(|a| a.options.len()).sum();
-    check_count("options d'actionNodes", total_options, MAX_OPTIONS)?;
+    check_count("stageNodes", raw.stage_nodes.total, MAX_STAGE_NODES)?;
+    check_count("actionNodes", raw.action_nodes.total, MAX_ACTION_NODES)?;
+    check_count("options d'actionNodes", options_seen, MAX_OPTIONS)?;
 
     // UUID des stageNodes : forme canonique, uniques sans la casse ; les options sont résolues
     // par égalité exacte des chaînes, comme Lunii.QT.
-    let mut seen_uuid = HashSet::with_capacity(raw.stage_nodes.len());
-    for (i, s) in raw.stage_nodes.iter().enumerate() {
+    let mut seen_uuid = HashSet::with_capacity(raw.stage_nodes.items.len());
+    for (i, s) in raw.stage_nodes.items.iter().enumerate() {
         if !is_canonical_uuid(&s.uuid) {
             return Err(StoryError::UuidInvalide {
-                noeud: i,
+                noeud: i + 1,
                 uuid: s.uuid.clone(),
             });
         }
         if !seen_uuid.insert(s.uuid.to_ascii_lowercase()) {
             return Err(StoryError::UuidDuplique {
-                noeud: i,
+                noeud: i + 1,
                 uuid: s.uuid.clone(),
             });
         }
@@ -334,37 +425,43 @@ pub fn parse_story(bytes: &[u8]) -> Result<Story, StoryError> {
 
     // Nœud d'entrée : squareOne unique, déplacé en tête.
     let mut square_one = None;
-    for (i, s) in raw.stage_nodes.iter().enumerate() {
+    for (i, s) in raw.stage_nodes.items.iter().enumerate() {
         if s.square_one == Some(true) {
             if let Some(premier) = square_one {
-                return Err(StoryError::PlusieursSquareOne { premier, second: i });
+                return Err(StoryError::PlusieursSquareOne {
+                    premier: premier + 1,
+                    second: i + 1,
+                });
             }
             square_one = Some(i);
         }
     }
     if let Some(k) = square_one.filter(|&k| k > 0) {
-        let entry = raw.stage_nodes.remove(k);
-        raw.stage_nodes.insert(0, entry);
+        let entry = raw.stage_nodes.items.remove(k);
+        raw.stage_nodes.items.insert(0, entry);
     }
-    let mut stage_by_uuid: HashMap<&str, usize> = HashMap::with_capacity(raw.stage_nodes.len());
-    for (i, s) in raw.stage_nodes.iter().enumerate() {
+    let mut stage_by_uuid: HashMap<&str, usize> =
+        HashMap::with_capacity(raw.stage_nodes.items.len());
+    for (i, s) in raw.stage_nodes.items.iter().enumerate() {
         stage_by_uuid.insert(&s.uuid, i);
     }
 
-    let mut action_by_id: HashMap<&str, usize> = HashMap::with_capacity(raw.action_nodes.len());
-    let mut action_nodes = Vec::with_capacity(raw.action_nodes.len());
-    for (i, a) in raw.action_nodes.iter().enumerate() {
+    let mut action_by_id: HashMap<&str, usize> =
+        HashMap::with_capacity(raw.action_nodes.items.len());
+    let mut action_nodes = Vec::with_capacity(raw.action_nodes.items.len());
+    for (i, a) in raw.action_nodes.items.iter().enumerate() {
         if action_by_id.insert(&a.id, i).is_some() {
             return Err(StoryError::ActionDupliquee {
-                action: i,
+                action: i + 1,
                 id: a.id.clone(),
             });
         }
-        if a.options.is_empty() {
+        if a.options.items.is_empty() {
             return Err(StoryError::ActionSansOption { id: a.id.clone() });
         }
         let options =
             a.options
+                .items
                 .iter()
                 .map(|o| {
                     stage_by_uuid.get(o.as_str()).copied().ok_or_else(|| {
@@ -383,8 +480,8 @@ pub fn parse_story(bytes: &[u8]) -> Result<Story, StoryError> {
 
     let mut image_names: HashSet<&str> = HashSet::new();
     let mut audio_names: HashSet<&str> = HashSet::new();
-    let mut stage_nodes = Vec::with_capacity(raw.stage_nodes.len());
-    for s in &raw.stage_nodes {
+    let mut stage_nodes = Vec::with_capacity(raw.stage_nodes.items.len());
+    for s in &raw.stage_nodes.items {
         let image = asset_name(&s.uuid, s.image.as_deref())?;
         let audio = asset_name(&s.uuid, s.audio.as_deref())?;
         if let Some(n) = image {

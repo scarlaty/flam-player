@@ -81,8 +81,8 @@ fn square_one_place_en_tete() {
     assert_eq!(
         err(&v),
         StoryError::PlusieursSquareOne {
-            premier: 0,
-            second: 1
+            premier: 1,
+            second: 2
         }
     );
 }
@@ -207,6 +207,72 @@ fn aucun_ou_trop_de_noeuds() {
     assert!(matches!(err(&v), StoryError::TropDeNoeuds { .. }));
 }
 
+/// Les éléments au-delà du plafond ne sont jamais désérialisés : ici des valeurs qui ne sont
+/// pas des stageNodes (ni même des objets) après les `MAX + 1` premiers, et le nombre exact
+/// d'éléments est quand même rapporté.
+#[test]
+fn tableaux_geants_comptes_sans_etre_materialises() {
+    let node = |i: usize| format!(r#"{{"uuid":"00000000-0000-4000-8000-{i:012x}"}}"#);
+    let mut json = String::from(r#"{"format":"v1","version":1,"stageNodes":["#);
+    for i in 0..=MAX_STAGE_NODES {
+        json.push_str(&node(i));
+        json.push(',');
+    }
+    json.push_str(&"7,".repeat(100_000));
+    json.push_str(r#"7],"actionNodes":[]}"#);
+    assert_eq!(
+        parse_story(json.as_bytes()),
+        Err(StoryError::TropDeNoeuds {
+            quoi: "stageNodes",
+            nombre: MAX_STAGE_NODES + 1 + 100_001,
+            max: MAX_STAGE_NODES
+        })
+    );
+
+    let mut json = format!(
+        r#"{{"format":"v1","version":1,"stageNodes":[{}],"actionNodes":[{{"id":"a","options":["#,
+        node(0)
+    );
+    json.push_str(&format!(r#""{U0}","#).repeat(MAX_OPTIONS / 2 + 1));
+    json.push_str(&format!(r#""{U0}","#).repeat(MAX_OPTIONS / 2));
+    json.push_str(&"7,".repeat(5_000));
+    json.push_str(r#"7]}]}"#);
+    assert_eq!(
+        parse_story(json.as_bytes()),
+        Err(StoryError::TropDeNoeuds {
+            quoi: "options d'actionNodes",
+            nombre: MAX_OPTIONS + 1 + 5_001,
+            max: MAX_OPTIONS
+        })
+    );
+}
+
+#[test]
+fn numeros_de_noeud_comptes_depuis_un() {
+    let mut v = base();
+    v["stageNodes"][0]["squareOne"] = json!(true);
+    v["stageNodes"][1]["squareOne"] = json!(true);
+    let e = err(&v);
+    assert_eq!(
+        e,
+        StoryError::PlusieursSquareOne {
+            premier: 1,
+            second: 2
+        }
+    );
+    assert!(e.to_string().contains("n° 1 et n° 2"), "{e}");
+
+    let mut v = base();
+    v["stageNodes"][0]["uuid"] = json!("pas-un-uuid");
+    let e = err(&v);
+    assert!(e.to_string().contains("stageNode n° 1 :"), "{e}");
+
+    let mut v = base();
+    v["actionNodes"][1]["id"] = json!("a");
+    let e = err(&v);
+    assert!(e.to_string().contains("actionNode n° 2 :"), "{e}");
+}
+
 #[test]
 fn uuid_invalides_ou_dupliques() {
     for bad in [
@@ -218,14 +284,14 @@ fn uuid_invalides_ou_dupliques() {
         let mut v = base();
         v["stageNodes"][1]["uuid"] = json!(bad);
         assert!(
-            matches!(err(&v), StoryError::UuidInvalide { noeud: 1, .. }),
+            matches!(err(&v), StoryError::UuidInvalide { noeud: 2, .. }),
             "{bad}"
         );
     }
     let mut v = base();
     v["stageNodes"][0]["uuid"] = json!("abcdef00-0000-4000-8000-000000000000");
     v["stageNodes"][1]["uuid"] = json!("ABCDEF00-0000-4000-8000-000000000000");
-    assert!(matches!(err(&v), StoryError::UuidDuplique { noeud: 1, .. }));
+    assert!(matches!(err(&v), StoryError::UuidDuplique { noeud: 2, .. }));
 }
 
 #[test]
@@ -264,7 +330,7 @@ fn references_inexistantes() {
     v["actionNodes"][1]["id"] = json!("a");
     assert!(matches!(
         err(&v),
-        StoryError::ActionDupliquee { action: 1, .. }
+        StoryError::ActionDupliquee { action: 2, .. }
     ));
 
     let mut v = base();
@@ -421,4 +487,20 @@ fn rang_au_dela_de_255_assets() {
     assert_eq!(index.ri.len(), 300 * 12);
     assert_eq!(&index.ri[299 * 12..], b"000\\0000012B");
     assert_eq!(index.assets[299].pack_path, "rf/000/0000012B");
+}
+
+/// Le compteur d'options (partagé par thread) est remis à zéro même après une erreur de lecture.
+#[test]
+fn compteur_d_options_remis_a_zero_entre_deux_lectures() {
+    let opts = format!(r#""{U0}","#).repeat(MAX_OPTIONS - 10);
+    let broken = format!(
+        r#"{{"format":"v1","version":1,"stageNodes":[],"actionNodes":[{{"id":"a","options":[{opts}"#
+    );
+    assert!(matches!(
+        parse_story(broken.as_bytes()),
+        Err(StoryError::Json(_))
+    ));
+    let mut v = base();
+    v["actionNodes"][0]["options"] = json!(vec![U1; 50]);
+    assert!(parse(&v).is_ok());
 }
