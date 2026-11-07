@@ -38,11 +38,11 @@ fetch() { # url sha256 fichier
   for attempt in 1 2 3 4; do
     rm -f "$3"
     if curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o "$3" "$1" \
-      && echo "$2  $3" | sha256sum -c - >/dev/null 2>&1; then
+      && echo "$2  $3" | sha256sum -c - >/dev/null; then
       return 0
     fi
     echo "téléchargement ou empreinte en échec (tentative $attempt/4) : $1" >&2
-    sleep 5
+    [ "$attempt" -lt 4 ] && sleep 5
   done
   rm -f "$3"
   echo "empreinte inattendue ou téléchargement impossible : $1" >&2
