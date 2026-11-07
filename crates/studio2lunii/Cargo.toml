@@ -1,0 +1,16 @@
+[package]
+name = "studio2lunii"
+version = "0.1.0"
+description = "Conversion des histoires STUdio en pack Lunii pour la Flam en firmware 2.x (épopée #517)"
+license = "GPL-3.0-or-later"
+edition = "2021"
+rust-version = "1.89"
+publish = false
+
+# Dépendances fixées dès le squelette pour que les modules soient développés en parallèle sans
+# toucher à ce fichier ni à Cargo.lock (voir #517).
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "=1.0.154"
+thiserror = "2"
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "bmp"] }
