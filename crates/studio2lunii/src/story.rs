@@ -98,7 +98,7 @@ pub enum StoryError {
     Version(i64),
     #[error("l'histoire ne contient aucun stageNode")]
     AucunStageNode,
-    #[error("trop de {quoi} : {nombre} (maximum {max})")]
+    #[error("{quoi} : {nombre}, au-delà du maximum de {max}")]
     TropDeNoeuds {
         quoi: &'static str,
         nombre: usize,
@@ -108,7 +108,7 @@ pub enum StoryError {
     PlusieursSquareOne { premier: usize, second: usize },
     #[error("stageNode {uuid} : controlSettings absent")]
     ControlesAbsents { uuid: String },
-    #[error("trop de {quoi} distincts : plus de {max}")]
+    #[error("{quoi} : plus que le maximum de {max}")]
     TropDAssets { quoi: &'static str, max: usize },
     #[error("stageNode n° {noeud} : UUID invalide {uuid:?}")]
     UuidInvalide { noeud: usize, uuid: String },
@@ -421,7 +421,10 @@ pub fn parse_story(bytes: &[u8]) -> Result<Story, StoryError> {
             controls,
         });
     }
-    for (quoi, names) in [("images", &image_names), ("sons", &audio_names)] {
+    for (quoi, names) in [
+        ("images distinctes", &image_names),
+        ("sons distincts", &audio_names),
+    ] {
         if names.len() > MAX_ASSETS {
             return Err(StoryError::TropDAssets {
                 quoi,

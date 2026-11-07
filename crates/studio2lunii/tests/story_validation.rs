@@ -349,7 +349,7 @@ fn trop_d_assets() {
     assert_eq!(
         err(&v),
         StoryError::TropDAssets {
-            quoi: "images",
+            quoi: "images distinctes",
             max: MAX_ASSETS
         }
     );
