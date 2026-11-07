@@ -28,6 +28,7 @@ pub mod download;
 pub mod pack;
 pub mod pack_speech;
 pub mod podcast;
+pub mod studio;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
