@@ -8,10 +8,10 @@
 //!
 //! - [`story`] : lecture et validation de `story.json` ;
 //! - [`index`] : production des index binaires `ni`, `li`, `ri`, `si` ;
-//! - [`image`] : images au format attendu par l'appareil (BMP 4 bits RLE) ;
+//! - [`bitmap`] : images au format attendu par l'appareil (BMP 4 bits RLE) ;
 //! - [`audio`] : contrôle des MP3 et retrait des étiquettes.
 
 pub mod audio;
-pub mod image;
+pub mod bitmap;
 pub mod index;
 pub mod story;

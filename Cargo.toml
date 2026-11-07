@@ -1,5 +1,5 @@
 # Workspace Cargo du dépôt (décision D1 de tools/telmi2flam/PORT-RUST.md) : un seul Cargo.lock,
-# un seul `target/` et un seul inventaire de licences pour le launcher et la crate telmi2flam.
+# un seul `target/` et un seul inventaire de licences pour le launcher et les crates telmi2flam et studio2lunii.
 [workspace]
 resolver = "2"
 members = ["apps/flam-launcher/src-tauri", "crates/telmi2flam", "crates/studio2lunii"]
