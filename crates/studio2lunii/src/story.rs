@@ -7,47 +7,60 @@
 //!
 //! # Champs lus
 //!
-//! Référence : `StudioStory.load` de Lunii.QT (commit c8afe43). Les autres champs de STUdio
-//! (`name`, `type`, `position`, `squareOne`, `groupId`…) sont ignorés, comme chez Lunii.QT.
+//! Références : note de conception `docs/studio-lunii.md` (§ 2.2, § 6) et `StudioStory.load` de
+//! Lunii.QT (commit c8afe43). Les autres champs de STUdio (`name`, `type`, `position`,
+//! `groupId`…) sont ignorés, comme chez Lunii.QT.
 //!
 //! | Champ JSON                          | Type attendu                         | Devient                                 |
 //! |-------------------------------------|--------------------------------------|-----------------------------------------|
-//! | `format`                            | chaîne `v<entier>`                   | [`Story::format_version`] (`u16`)       |
+//! | `format`                            | `"v1"` seulement                     | [`Story::format_version`] (1)           |
 //! | `version`                           | entier 0..=65535                     | [`Story::pack_version`] (`u16`)         |
 //! | `title`, `description`              | chaîne, `null` ou absent             | chaîne (vide si absent)                 |
 //! | `nightModeAvailable`                | booléen, `null` ou absent            | [`Story::night_mode`] (faux si absent)  |
 //! | `stageNodes[]`                      | tableau non vide                     | [`StageNode`], dans l'ordre             |
 //! | `stageNodes[].uuid`                 | UUID canonique (36 caractères)       | [`StageNode::uuid`]                     |
+//! | `stageNodes[].squareOne`            | booléen, `null` ou absent            | nœud d'entrée, placé en tête            |
 //! | `stageNodes[].image` / `.audio`     | chaîne, `""`, `null` ou absent       | `Some(nom)`, ou `None` si vide/absent   |
 //! | `stageNodes[].okTransition`         | objet, `null` ou absent              | [`Transition`] ou `None`                |
 //! | `stageNodes[].homeTransition`       | objet, `null` ou absent              | [`Transition`] ou `None`                |
 //! | `…Transition.actionNode`            | `id` d'un actionNode                 | [`Transition::action_node`] (indice)    |
-//! | `…Transition.optionIndex`           | entier de -1 à options - 1           | [`Transition::option_index`]            |
-//! | `stageNodes[].controlSettings`      | 5 booléens, `null` ou absent         | [`Controls`] ou `None`                  |
+//! | `…Transition.optionIndex`           | entier de 0 à options - 1            | [`Transition::option_index`]            |
+//! | `stageNodes[].controlSettings`      | objet de 5 booléens, obligatoire     | [`StageNode::controls`]                 |
 //! | `actionNodes[]`                     | tableau (peut être vide)             | [`ActionNode`], dans l'ordre            |
 //! | `actionNodes[].id`                  | chaîne unique                        | [`ActionNode::id`]                      |
 //! | `actionNodes[].options[]`           | UUID de stageNodes, au moins un      | [`ActionNode::options`] (indices)       |
 //!
-//! L'UUID de l'histoire est celui du premier `stageNode` (le nœud de couverture), en minuscules,
-//! comme `StudioStory.uuid` de Lunii.QT.
+//! Nœud d'entrée (note § 2.2) : au plus un `stageNode` porte `squareOne: true` ; s'il n'est pas
+//! en tête, il y est déplacé (les autres gardent leur ordre, tous les indices sont calculés
+//! après ce déplacement) ; sans `squareOne`, le premier nœud est l'entrée, comme Lunii.QT.
+//! L'UUID de l'histoire est celui du nœud d'entrée, en minuscules, comme `StudioStory.uuid`.
+//!
+//! # Écarts choisis avec Lunii.QT (note § 2.4, § 3.2, § 6.3, Q5)
+//!
+//! - `format` autre que `"v1"` refusé (Lunii.QT recopie n'importe quel nombre) ;
+//! - `controlSettings` obligatoire (Lunii.QT remplit le nœud de `0xAA`) ;
+//! - `optionIndex` à `-1` refusé tant que son effet sur la Flam n'est pas mesuré (L11) ;
+//! - nœud `squareOne` placé en tête (Lunii.QT prend toujours le premier nœud) ;
+//! - toute référence inconnue refusée (Lunii.QT écrit `-1` dans `li` ou lève une exception).
 //!
 //! # Garde-fous contre une archive hostile
 //!
-//! Lunii.QT ne valide presque rien (une référence inconnue y donne `-1` dans `li` ou une
-//! exception). Ici, toute incohérence est une [`StoryError`] :
+//! Toute incohérence est une [`StoryError`], avant toute production d'octets :
 //!
-//! - taille du JSON ≤ [`MAX_STORY_JSON_BYTES`] ; nombres de nœuds et d'options bornés
-//!   ([`MAX_STAGE_NODES`], [`MAX_ACTION_NODES`], [`MAX_OPTIONS`]) ; profondeur d'imbrication
-//!   bornée par `serde_json` (128) ; clés en double refusées ;
+//! - bornes du § 6.2 de la note : taille du JSON ([`MAX_STORY_JSON_BYTES`]), nœuds
+//!   ([`MAX_STAGE_NODES`], [`MAX_ACTION_NODES`]), entrées de `li` ([`MAX_OPTIONS`]), images et
+//!   sons distincts ([`MAX_ASSETS`] chacun) ; profondeur d'imbrication bornée par `serde_json`
+//!   (128) ; clé en double refusée pour les champs lus ;
+//! - plusieurs `squareOne` ;
 //! - UUID de stageNode uniques (comparés sans la casse), identifiants d'actionNode uniques ;
 //! - transition vers un actionNode inexistant, option vers un stageNode inexistant (comparaison
 //!   exacte des chaînes, comme Lunii.QT), actionNode sans option ;
-//! - `optionIndex` hors de `-1..options` (`-1` : option tirée au hasard par l'appareil) ;
-//! - `format` et `version` hors des 16 bits de leur champ dans `ni` ;
+//! - `optionIndex` hors de `0..options`, `controlSettings` absent ;
+//! - `format` autre que `"v1"`, `version` hors des 16 bits de son champ dans `ni` ;
 //! - noms d'assets dangereux : blanc, plus de [`MAX_ASSET_NAME_BYTES`] octets, `..`, `/`, `\`,
 //!   `:`, caractère de contrôle ; un même nom employé comme image et comme son (Lunii.QT n'en
-//!   copierait que l'image). Les contraintes propres au nom cible (8 derniers caractères) sont
-//!   vérifiées par [`crate::index`].
+//!   copierait que l'image). Aucun nom d'asset ne devient un chemin de sortie : les noms du
+//!   pack sont produits par [`crate::index`].
 //!
 //! Les cycles du graphe sont permis : STUdio en produit pour tout retour au menu ou à l'accueil,
 //! et l'appareil les suit à l'exécution. Ni Lunii.QT ni ce module ne parcourent le graphe : les
@@ -60,13 +73,15 @@ use serde::Deserialize;
 use thiserror::Error;
 
 /// Taille maximale acceptée pour `story.json` (le launcher borne déjà la lecture).
-pub const MAX_STORY_JSON_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_STORY_JSON_BYTES: usize = 16 * 1024 * 1024;
 /// Nombre maximal de `stageNodes`.
 pub const MAX_STAGE_NODES: usize = 20_000;
 /// Nombre maximal d'`actionNodes`.
 pub const MAX_ACTION_NODES: usize = 20_000;
 /// Nombre maximal d'options, tous `actionNodes` confondus (entrées de `li`).
-pub const MAX_OPTIONS: usize = 200_000;
+pub const MAX_OPTIONS: usize = 100_000;
+/// Nombre maximal d'images distinctes, et de sons distincts.
+pub const MAX_ASSETS: usize = 10_000;
 /// Longueur maximale d'un nom d'asset, en octets.
 pub const MAX_ASSET_NAME_BYTES: usize = 255;
 
@@ -77,7 +92,7 @@ pub enum StoryError {
     TropVolumineux { taille: usize, max: usize },
     #[error("story.json n'est pas un JSON STUdio valide : {0}")]
     Json(String),
-    #[error("champ « format » invalide : {0:?} (attendu « v » suivi d'un entier de 0 à 65535)")]
+    #[error("format STUdio {0:?} non pris en charge (seul « v1 » l'est)")]
     Format(String),
     #[error("champ « version » hors bornes : {0} (attendu 0 à 65535)")]
     Version(i64),
@@ -89,6 +104,12 @@ pub enum StoryError {
         nombre: usize,
         max: usize,
     },
+    #[error("plusieurs stageNodes portent squareOne (n° {premier} et n° {second})")]
+    PlusieursSquareOne { premier: usize, second: usize },
+    #[error("stageNode {uuid} : controlSettings absent")]
+    ControlesAbsents { uuid: String },
+    #[error("trop de {quoi} distincts : plus de {max}")]
+    TropDAssets { quoi: &'static str, max: usize },
     #[error("stageNode n° {noeud} : UUID invalide {uuid:?}")]
     UuidInvalide { noeud: usize, uuid: String },
     #[error("stageNode n° {noeud} : UUID {uuid} déjà employé par un autre stageNode")]
@@ -109,7 +130,7 @@ pub enum StoryError {
     },
     #[error(
         "stageNode {uuid} : la transition {transition} a un optionIndex {index} hors bornes \
-         (actionNode à {options} option(s), -1 pour le hasard)"
+         (actionNode à {options} option(s))"
     )]
     OptionIndexHorsBornes {
         uuid: String,
@@ -153,8 +174,8 @@ pub struct StageNode {
     pub ok_transition: Option<Transition>,
     /// Transition sur le bouton maison.
     pub home_transition: Option<Transition>,
-    /// Contrôles ; `None` si `controlSettings` est absent (Lunii.QT remplit alors de `0xAA`).
-    pub controls: Option<Controls>,
+    /// Contrôles (`controlSettings`, obligatoire).
+    pub controls: Controls,
 }
 
 /// Transition vers une option d'un actionNode.
@@ -162,8 +183,8 @@ pub struct StageNode {
 pub struct Transition {
     /// Indice de l'actionNode dans [`Story::action_nodes`].
     pub action_node: usize,
-    /// Option choisie, `-1` pour une option au hasard ; toujours `< options.len()`.
-    pub option_index: i32,
+    /// Option choisie, toujours `< options.len()`.
+    pub option_index: u32,
 }
 
 /// Nœud d'action : liste ordonnée de stageNodes proposés.
@@ -186,7 +207,7 @@ pub struct Controls {
 }
 
 impl Story {
-    /// UUID de l'histoire (celui du premier stageNode), forme canonique en minuscules.
+    /// UUID de l'histoire (celui du nœud d'entrée), forme canonique en minuscules.
     pub fn uuid(&self) -> &str {
         &self.uuid
     }
@@ -198,7 +219,7 @@ impl Story {
     pub fn description(&self) -> &str {
         &self.description
     }
-    /// Version de format (`v1` donne 1).
+    /// Version de format : toujours 1 (`"v1"`).
     pub fn format_version(&self) -> u16 {
         self.format_version
     }
@@ -210,7 +231,7 @@ impl Story {
     pub fn night_mode(&self) -> bool {
         self.night_mode
     }
-    /// stageNodes, dans l'ordre de `story.json` ; le premier est l'entrée de l'histoire.
+    /// stageNodes, dans l'ordre de `story.json`, le nœud d'entrée en tête.
     pub fn stage_nodes(&self) -> &[StageNode] {
         &self.stage_nodes
     }
@@ -251,6 +272,8 @@ struct RawStage {
     home_transition: Option<RawTransition>,
     #[serde(default)]
     control_settings: Option<Controls>,
+    #[serde(default)]
+    square_one: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -277,7 +300,7 @@ pub fn parse_story(bytes: &[u8]) -> Result<Story, StoryError> {
         });
     }
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    let raw: RawStory =
+    let mut raw: RawStory =
         serde_json::from_slice(bytes).map_err(|e| StoryError::Json(e.to_string()))?;
 
     let format_version = parse_format(&raw.format)?;
@@ -294,7 +317,6 @@ pub fn parse_story(bytes: &[u8]) -> Result<Story, StoryError> {
     // UUID des stageNodes : forme canonique, uniques sans la casse ; les options sont résolues
     // par égalité exacte des chaînes, comme Lunii.QT.
     let mut seen_uuid = HashSet::with_capacity(raw.stage_nodes.len());
-    let mut stage_by_uuid: HashMap<&str, usize> = HashMap::with_capacity(raw.stage_nodes.len());
     for (i, s) in raw.stage_nodes.iter().enumerate() {
         if !is_canonical_uuid(&s.uuid) {
             return Err(StoryError::UuidInvalide {
@@ -308,6 +330,24 @@ pub fn parse_story(bytes: &[u8]) -> Result<Story, StoryError> {
                 uuid: s.uuid.clone(),
             });
         }
+    }
+
+    // Nœud d'entrée : squareOne unique, déplacé en tête.
+    let mut square_one = None;
+    for (i, s) in raw.stage_nodes.iter().enumerate() {
+        if s.square_one == Some(true) {
+            if let Some(premier) = square_one {
+                return Err(StoryError::PlusieursSquareOne { premier, second: i });
+            }
+            square_one = Some(i);
+        }
+    }
+    if let Some(k) = square_one.filter(|&k| k > 0) {
+        let entry = raw.stage_nodes.remove(k);
+        raw.stage_nodes.insert(0, entry);
+    }
+    let mut stage_by_uuid: HashMap<&str, usize> = HashMap::with_capacity(raw.stage_nodes.len());
+    for (i, s) in raw.stage_nodes.iter().enumerate() {
         stage_by_uuid.insert(&s.uuid, i);
     }
 
@@ -341,14 +381,23 @@ pub fn parse_story(bytes: &[u8]) -> Result<Story, StoryError> {
         });
     }
 
+    let mut image_names: HashSet<&str> = HashSet::new();
     let mut audio_names: HashSet<&str> = HashSet::new();
     let mut stage_nodes = Vec::with_capacity(raw.stage_nodes.len());
     for s in &raw.stage_nodes {
         let image = asset_name(&s.uuid, s.image.as_deref())?;
         let audio = asset_name(&s.uuid, s.audio.as_deref())?;
+        if let Some(n) = image {
+            image_names.insert(n);
+        }
         if let Some(n) = audio {
             audio_names.insert(n);
         }
+        let controls = s
+            .control_settings
+            .ok_or_else(|| StoryError::ControlesAbsents {
+                uuid: s.uuid.clone(),
+            })?;
         let ok_transition = transition(
             &s.uuid,
             "okTransition",
@@ -369,8 +418,16 @@ pub fn parse_story(bytes: &[u8]) -> Result<Story, StoryError> {
             audio: audio.map(str::to_owned),
             ok_transition,
             home_transition,
-            controls: s.control_settings,
+            controls,
         });
+    }
+    for (quoi, names) in [("images", &image_names), ("sons", &audio_names)] {
+        if names.len() > MAX_ASSETS {
+            return Err(StoryError::TropDAssets {
+                quoi,
+                max: MAX_ASSETS,
+            });
+        }
     }
     // Parcours dans l'ordre des stageNodes : message d'erreur stable.
     if let Some(n) = stage_nodes
@@ -400,14 +457,13 @@ fn check_count(quoi: &'static str, nombre: usize, max: usize) -> Result<(), Stor
     Ok(())
 }
 
-/// `v<entier>` ; Lunii.QT fait `int(format[1:])` puis l'écrit sur 2 octets.
+/// Seul `"v1"` est pris en charge (note § 2.4) ; Lunii.QT écrit `int(format[1:])` dans `ni`.
 fn parse_format(format: &str) -> Result<u16, StoryError> {
-    let err = || StoryError::Format(format.to_owned());
-    let digits = format.strip_prefix('v').ok_or_else(err)?;
-    if digits.is_empty() || digits.len() > 5 || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(err());
+    if format == "v1" {
+        Ok(1)
+    } else {
+        Err(StoryError::Format(format.to_owned()))
     }
-    digits.parse::<u16>().map_err(|_| err())
 }
 
 /// UUID `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, chiffres hexadécimaux de casse quelconque.
@@ -475,11 +531,11 @@ fn transition(
         index: raw.option_index,
         options,
     };
-    if raw.option_index < -1 || usize::try_from(raw.option_index).is_ok_and(|i| i >= options) {
-        return Err(out_of_range());
-    }
-    // Borné par -1..options ≤ MAX_OPTIONS : tient dans un i32.
-    let option_index = i32::try_from(raw.option_index).map_err(|_| out_of_range())?;
+    // -1 (hasard ?) refusé tant que son effet n'est pas mesuré (note, Q5 et L11).
+    let option_index = u32::try_from(raw.option_index)
+        .ok()
+        .filter(|&i| (i as usize) < options)
+        .ok_or_else(out_of_range)?;
     Ok(Some(Transition {
         action_node: action,
         option_index,
@@ -491,12 +547,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_accepte_v_entier() {
+    fn format_v1_seulement() {
         assert_eq!(parse_format("v1"), Ok(1));
-        assert_eq!(parse_format("v65535"), Ok(65535));
-        for bad in [
-            "1", "v", "v65536", "v-1", "v+1", "V1", "v1.0", "v 1", "v000001", "v١",
-        ] {
+        for bad in ["1", "v", "v2", "v01", "V1", "v1.0", "v 1", " v1", "v١"] {
             assert!(parse_format(bad).is_err(), "{bad}");
         }
     }

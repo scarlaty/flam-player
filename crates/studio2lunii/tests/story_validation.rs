@@ -1,9 +1,9 @@
 //! Validation de `story.json` face à une archive hostile ou incohérente, et cas limites admis.
 
 use serde_json::{json, Value};
-use studio2lunii::index::{build_index, IndexError};
+use studio2lunii::index::{build_index, IndexError, Naming};
 use studio2lunii::story::{
-    parse_story, StoryError, MAX_ASSET_NAME_BYTES, MAX_OPTIONS, MAX_STAGE_NODES,
+    parse_story, StoryError, MAX_ASSETS, MAX_ASSET_NAME_BYTES, MAX_OPTIONS, MAX_STAGE_NODES,
     MAX_STORY_JSON_BYTES,
 };
 
@@ -27,7 +27,9 @@ fn base() -> Value {
             {
                 "uuid": U1, "audio": "sonhist1.mp3",
                 "okTransition": {"actionNode": "retour", "optionIndex": 0},
-                "homeTransition": {"actionNode": "retour", "optionIndex": 0}
+                "homeTransition": {"actionNode": "retour", "optionIndex": 0},
+                "controlSettings": {"wheel": false, "ok": true, "home": true,
+                                    "pause": true, "autoplay": true}
             }
         ],
         "actionNodes": [
@@ -54,10 +56,60 @@ fn base_valide_avec_cycle() {
     assert!(!story.night_mode());
     let n1 = &story.stage_nodes()[1];
     assert_eq!(n1.image, None);
-    assert_eq!(n1.controls, None);
+    assert!(n1.controls.autoplay && !n1.controls.wheel);
     assert_eq!(n1.ok_transition.unwrap().action_node, 1);
     assert_eq!(story.action_nodes()[1].options, vec![0]);
-    build_index(&story).unwrap();
+    assert_eq!(build_index(&story).naming, Naming::LuniiQt);
+}
+
+#[test]
+fn square_one_place_en_tete() {
+    let mut v = base();
+    v["stageNodes"][1]["squareOne"] = json!(true);
+    v["stageNodes"][0]["squareOne"] = json!(false);
+    let story = parse(&v).unwrap();
+    assert_eq!(story.uuid(), U1);
+    assert_eq!(story.stage_nodes()[0].uuid, U1);
+    assert_eq!(story.stage_nodes()[1].uuid, U0);
+    // Indices recalculés : l'option de « a » (U1) est maintenant le nœud 0.
+    assert_eq!(story.action_nodes()[0].options, vec![0]);
+    assert_eq!(story.action_nodes()[1].options, vec![1]);
+
+    let mut v = base();
+    v["stageNodes"][0]["squareOne"] = json!(true);
+    v["stageNodes"][1]["squareOne"] = json!(true);
+    assert_eq!(
+        err(&v),
+        StoryError::PlusieursSquareOne {
+            premier: 0,
+            second: 1
+        }
+    );
+}
+
+#[test]
+fn controles_obligatoires() {
+    for absent in [None, Some(Value::Null)] {
+        let mut v = base();
+        match absent {
+            None => {
+                v["stageNodes"][1]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("controlSettings");
+            }
+            Some(n) => v["stageNodes"][1]["controlSettings"] = n,
+        }
+        assert_eq!(
+            err(&v),
+            StoryError::ControlesAbsents {
+                uuid: U1.to_owned()
+            }
+        );
+    }
+    let mut v = base();
+    v["stageNodes"][1]["controlSettings"] = json!({});
+    assert!(matches!(err(&v), StoryError::Json(_)));
 }
 
 #[test]
@@ -114,7 +166,7 @@ fn taille_maximale() {
 
 #[test]
 fn format_et_version_hors_bornes() {
-    for f in ["1", "v", "v70000", "v-1", "x1"] {
+    for f in ["1", "v", "v2", "v70000", "v-1", "x1", "V1"] {
         let mut v = base();
         v["format"] = json!(f);
         assert_eq!(err(&v), StoryError::Format(f.to_owned()));
@@ -222,16 +274,8 @@ fn references_inexistantes() {
 
 #[test]
 fn option_index() {
-    let mut v = base();
-    v["stageNodes"][0]["okTransition"]["optionIndex"] = json!(-1);
-    assert_eq!(
-        parse(&v).unwrap().stage_nodes()[0]
-            .ok_transition
-            .unwrap()
-            .option_index,
-        -1
-    );
-    for bad in [1i64, -2, i64::from(i32::MAX) + 1, i64::MIN] {
+    // -1 (hasard ?) refusé tant que son effet n'est pas mesuré (note, Q5).
+    for bad in [1i64, -1, -2, i64::from(u32::MAX) + 1, i64::MIN, i64::MAX] {
         let mut v = base();
         v["stageNodes"][0]["okTransition"]["optionIndex"] = json!(bad);
         assert!(
@@ -288,32 +332,93 @@ fn asset_image_et_son() {
 }
 
 #[test]
-fn noms_cibles_refuses_par_l_index() {
-    let index_err = |field: &str, name: &str| {
+fn trop_d_assets() {
+    let nodes: Vec<Value> = (0..=MAX_ASSETS)
+        .map(|i| {
+            json!({
+                "uuid": format!("00000000-0000-4000-8000-{i:012x}"),
+                "image": format!("{i:08}.png"),
+                "controlSettings": {"wheel": true, "ok": true, "home": true,
+                                    "pause": true, "autoplay": true}
+            })
+        })
+        .collect();
+    let mut v = base();
+    v["stageNodes"] = Value::Array(nodes);
+    v["actionNodes"] = json!([]);
+    assert_eq!(
+        err(&v),
+        StoryError::TropDAssets {
+            quoi: "images",
+            max: MAX_ASSETS
+        }
+    );
+}
+
+#[test]
+fn nommage_par_rang_si_regle_lunii_non_sure() {
+    let rank = |field: &str, name: &str| {
         let mut v = base();
         v["stageNodes"][1][field] = json!(name);
-        build_index(&parse(&v).unwrap()).expect_err(name)
+        let index = build_index(&parse(&v).unwrap());
+        match index.naming.clone() {
+            Naming::Rank(raison) => (raison, index),
+            Naming::LuniiQt => panic!("{name} : règle de Lunii.QT gardée"),
+        }
     };
-    assert!(matches!(
-        index_err("audio", "court.mp3"),
-        IndexError::NomCourt { .. }
-    ));
-    assert!(matches!(
-        index_err("image", "accentué.png"),
-        IndexError::NomInvalide { .. }
-    ));
-    // Même nom cible pour deux images distinctes : Lunii.QT écraserait la première.
+    let (raison, index) = rank("audio", "court.mp3");
+    assert!(matches!(raison, IndexError::NomCourt { .. }));
+    // Tout le pack passe au rang, images comprises.
+    assert_eq!(index.ri, b"000\\00000000");
+    assert_eq!(index.si, b"000\\00000000000\\00000001");
+    let paths: Vec<_> = index.assets.iter().map(|a| a.pack_path.as_str()).collect();
     assert_eq!(
-        index_err("image", "autre_IMGCOUV1.jpg"),
+        paths,
+        ["rf/000/00000000", "sf/000/00000000", "sf/000/00000001"]
+    );
+
+    for bad in ["accentué.png", "image_ab-cdefg.png"] {
+        assert!(matches!(
+            rank("image", bad).0,
+            IndexError::NomInvalide { .. }
+        ));
+    }
+    // Même nom cible pour deux images distinctes (à la casse près) : Lunii.QT écraserait la
+    // première.
+    assert_eq!(
+        rank("image", "autre_IMGCOUV1.jpg").0,
         IndexError::Collision {
             premier: "imgcouv1.png".to_owned(),
             second: "autre_IMGCOUV1.jpg".to_owned(),
             cible: "rf/000/IMGCOUV1".to_owned()
         }
     );
-    // Image et son au même nom cible : répertoires distincts, admis.
+    // Image et son au même nom cible : répertoires distincts, règle de Lunii.QT gardée.
     let mut v = base();
     v["stageNodes"][1]["image"] = json!("soncouv1.png");
-    let index = build_index(&parse(&v).unwrap()).unwrap();
+    let index = build_index(&parse(&v).unwrap());
+    assert_eq!(index.naming, Naming::LuniiQt);
     assert_eq!(index.ri, b"000\\IMGCOUV1000\\SONCOUV1");
+}
+
+#[test]
+fn rang_au_dela_de_255_assets() {
+    // 300 images aux noms courts : rangs hexadécimaux sur 8 chiffres, entrées de 12 octets.
+    let nodes: Vec<Value> = (0..300)
+        .map(|i| {
+            json!({
+                "uuid": format!("00000000-0000-4000-8000-{i:012x}"),
+                "image": format!("i{i}.png"),
+                "controlSettings": {"wheel": true, "ok": true, "home": true,
+                                    "pause": true, "autoplay": true}
+            })
+        })
+        .collect();
+    let mut v = base();
+    v["stageNodes"] = Value::Array(nodes);
+    v["actionNodes"] = json!([]);
+    let index = build_index(&parse(&v).unwrap());
+    assert_eq!(index.ri.len(), 300 * 12);
+    assert_eq!(&index.ri[299 * 12..], b"000\\0000012B");
+    assert_eq!(index.assets[299].pack_path, "rf/000/0000012B");
 }

@@ -12,7 +12,7 @@
       "audio": "0123456789abcdef0123456789abcdef00000028.mp3",
       "okTransition": {
         "actionNode": "hasard",
-        "optionIndex": -1
+        "optionIndex": 1
       },
       "homeTransition": null,
       "controlSettings": {

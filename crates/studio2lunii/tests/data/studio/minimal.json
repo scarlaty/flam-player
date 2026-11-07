@@ -1,0 +1,25 @@
+{
+  "format": "v1",
+  "title": "Minimal",
+  "version": 1,
+  "description": null,
+  "stageNodes": [
+    {
+      "uuid": "00000050-1111-4222-8333-000000000050",
+      "type": "stage",
+      "name": "n",
+      "image": null,
+      "audio": null,
+      "okTransition": null,
+      "homeTransition": null,
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": false,
+        "pause": false,
+        "autoplay": false
+      }
+    }
+  ],
+  "actionNodes": []
+}

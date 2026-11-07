@@ -10,9 +10,15 @@
 //! `get_ni_data()`, `get_li_data()`, `get_ri_data()`, `get_si_data()` en hexadécimal, `uuid`,
 //! `nm`, et pour chaque entrée de `ri` puis de `si` le triplet
 //! (`assets/<nom>`, nom cible avec `/`, nature). Aucune histoire du commerce n'est employée.
+//!
+//! Deux cas suivent une règle de la note de conception (`docs/studio-lunii.md`) au lieu de
+//! Lunii.QT seul : `square_one` (nœud `squareOne` en 3e position) a pour attendus la sortie de
+//! Lunii.QT sur le même JSON dont ce nœud est déplacé en tête (§ 2.2) ; `noms_par_rang` (noms
+//! courts) a `ni`/`li` de Lunii.QT et `ri`/`si`/noms cibles calculés par la règle du rang
+//! (§ 3.4), Lunii.QT y produisant des entrées de moins de 12 octets.
 
 use serde_json::Value;
-use studio2lunii::index::{build_index, AssetKind};
+use studio2lunii::index::{build_index, AssetKind, Naming};
 use studio2lunii::story::parse_story;
 
 const CASES: &[(&str, &[u8])] = &[
@@ -28,6 +34,13 @@ const CASES: &[(&str, &[u8])] = &[
         include_bytes!("data/studio/assets_partages.json"),
     ),
     ("casse", include_bytes!("data/studio/casse.json")),
+    ("minimal", include_bytes!("data/studio/minimal.json")),
+    ("une_option", include_bytes!("data/studio/une_option.json")),
+    ("square_one", include_bytes!("data/studio/square_one.json")),
+    (
+        "noms_par_rang",
+        include_bytes!("data/studio/noms_par_rang.json"),
+    ),
 ];
 
 fn hex(s: &str) -> Vec<u8> {
@@ -47,7 +60,12 @@ fn parite_lunii_qt() {
     for (name, json) in CASES {
         let exp = &table[*name];
         let story = parse_story(json).unwrap_or_else(|e| panic!("{name} : {e}"));
-        let index = build_index(&story).unwrap_or_else(|e| panic!("{name} : {e}"));
+        let index = build_index(&story);
+        let naming = match index.naming {
+            Naming::LuniiQt => "lunii",
+            Naming::Rank(_) => "rank",
+        };
+        assert_eq!(naming, exp["naming"].as_str().unwrap(), "{name} : nommage");
         assert_eq!(story.uuid(), exp["uuid"].as_str().unwrap(), "{name} : uuid");
         assert_eq!(
             index.night_mode,
@@ -98,7 +116,7 @@ fn parite_lunii_qt() {
 fn disposition_ni_lisible() {
     // Contrôle indépendant de l'oracle sur le cas linéaire : en-tête et premier nœud.
     let story = parse_story(include_bytes!("data/studio/lineaire.json")).unwrap();
-    let ni = build_index(&story).unwrap().ni;
+    let ni = build_index(&story).ni;
     assert_eq!(ni.len(), 0x200 + 4 * 0x2C);
     assert_eq!(&ni[0..4], &[1, 0, 1, 0]); // format v1, version 1
     assert_eq!(&ni[4..8], &0x200u32.to_le_bytes());

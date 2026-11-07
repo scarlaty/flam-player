@@ -71,6 +71,13 @@
       "homeTransition": {
         "actionNode": "p",
         "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
       }
     }
   ],
