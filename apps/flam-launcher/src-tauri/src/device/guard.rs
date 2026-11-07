@@ -201,11 +201,20 @@ fn is_flam_format(dir: &Path) -> bool {
     dir.join("main.lsf").is_file()
 }
 
-/// Histoire au format Lunii (STUdio) : au moins un des fichiers `ni`, `li`, `ri`, `si` et pas de
-/// script `main.lsf`. Critère : ces index n'existent que dans ce format, et `main.lsf` est le
+/// Fichier ordinaire (un lien symbolique n'en est pas un : il pourrait pointer hors de la Flam).
+fn is_regular_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
+/// Histoire au format Lunii (STUdio) : au moins un des fichiers ordinaires `ni`, `li`, `ri`,
+/// `si` (les liens symboliques ne comptent pas) et pas de script `main.lsf`. Critère : ces index
+/// n'existent que dans ce format, et `main.lsf` est le
 /// script d'entrée de toute histoire Flam ; l'`info` d'une histoire Lunii est en clair.
 pub(crate) fn is_lunii_format(dir: &Path) -> bool {
-    !is_flam_format(dir) && LUNII_FILES.iter().any(|name| dir.join(name).is_file())
+    !is_flam_format(dir)
+        && LUNII_FILES
+            .iter()
+            .any(|name| is_regular_file(&dir.join(name)))
 }
 
 /// Contrôle de cohérence des clés 2.x de `mdf` avec les histoires de la Flam de `root`, hors

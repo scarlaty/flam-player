@@ -7,6 +7,7 @@ import {
   THUMB_CONCURRENCY,
   ThumbnailLoader,
   useDeviceStoryTitles,
+  useOfficialStoryTitles,
 } from "./storyDetails";
 
 afterEach(() => {
@@ -202,4 +203,54 @@ it("lit d'abord la vignette demandée en dernier (celle qui est visible)", async
   pending[0]!.answer({ thumb: null, busy: false });
   await flush();
   expect(pending.map((p) => p.uuid)).toEqual(["a", "b", "d"]);
+});
+
+it("un UUID retiré puis revenu dans un autre format est relu (pas de badge périmé)", async () => {
+  const replies = [
+    {
+      titles: [{ uuid: "a", title: "Capi", format: "lunii" }],
+      interrupted: false,
+      keys: true,
+    },
+    {
+      titles: [{ uuid: "a", title: "Loup", format: "flam" }],
+      interrupted: false,
+      keys: true,
+    },
+  ];
+  const requests: string[][] = [];
+  mockIPC((cmd, args) => {
+    if (cmd !== "device_story_titles") return null;
+    requests.push((args as { uuids: string[] }).uuids);
+    return replies[requests.length - 1];
+  });
+  const { result, rerender } = renderHook(
+    ({ uuids }) => useDeviceStoryTitles("E:\\", uuids, false),
+    { initialProps: { uuids: ["a"] } },
+  );
+  await waitFor(() => expect(result.current.lunii.has("a")).toBe(true));
+  rerender({ uuids: [] });
+  await waitFor(() => expect(result.current.lunii.has("a")).toBe(false));
+  rerender({ uuids: ["a"] });
+  await waitFor(() => expect(result.current.titles.get("a")).toBe("Loup"));
+  expect(result.current.lunii.has("a")).toBe(false);
+  expect(requests).toEqual([["a"], ["a"]]);
+  clearMocks();
+});
+
+it("le catalogue en ligne n'est pas interrogé pour une histoire Lunii", async () => {
+  const asked: string[][] = [];
+  mockIPC((cmd, args) => {
+    if (cmd !== "device_official_titles") return { titles: [] };
+    asked.push((args as { uuids: string[] }).uuids);
+    return { titles: [] };
+  });
+  const titles = new Map<string, string | null>([
+    ["a", null],
+    ["b", null],
+  ]);
+  renderHook(() => useOfficialStoryTitles(titles, new Set(["a"])));
+  await waitFor(() => expect(asked).toHaveLength(1));
+  expect(asked[0]).toEqual(["b"]);
+  clearMocks();
 });
