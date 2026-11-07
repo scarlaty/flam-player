@@ -123,7 +123,6 @@ fn trailing_bytes_after_end_of_rle_are_dropped() {
 fn malformed_rle4_of_device_size_is_refused_not_degraded() {
     let good = rle_data(true);
     let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
-    cases.push(("sans fin de fichier", rle_data(false)));
     let mut delta = good.clone();
     delta.splice(0..0, [0, 2, 1, 1]);
     cases.push(("saut (delta)", delta));
@@ -133,7 +132,9 @@ fn malformed_rle4_of_device_size_is_refused_not_degraded() {
     let mut long_row = good.clone();
     long_row.splice(0..0, [2, 0x11]);
     cases.push(("ligne trop longue", long_row));
-    let cut = good.len() - 2 - 2 - 160 * 2; // une ligne de moins
+    // Dernière ligne (y = 0, paire) : 3 blocs absolus de 5, 255 et 60 pixels, puis `00 01`.
+    let last_row = 2 + 4 + 2 + 128 + 2 + 30;
+    let cut = good.len() - 2 - last_row - 2; // sans la dernière ligne ni son `00 00`
     let mut fewer = good[..cut].to_vec();
     fewer.extend_from_slice(&[0, 1]);
     cases.push(("239 lignes", fewer));
@@ -148,11 +149,28 @@ fn malformed_rle4_of_device_size_is_refused_not_degraded() {
 #[test]
 fn rle4_data_offset_outside_the_file_is_refused() {
     let mut b = bmp_with(&rle_data(true), ramp);
-    for off in [0u32, 20, 117, u32::MAX, b.len() as u32 + 1] {
+    for off in [0u32, 20, u32::MAX, b.len() as u32 + 1] {
         b[10..14].copy_from_slice(&off.to_le_bytes());
         assert!(
             matches!(to_lunii_bmp(&b), Err(BitmapError::Decode(_))),
             "offset {off}"
         );
     }
+}
+
+#[test]
+fn tolerated_endings_of_the_rle_stream() {
+    let want = expected_levels();
+    // `00 00` avant `00 01` après la dernière ligne, ou fin des données sans `00 01`.
+    let mut with_eol = rle_data(false);
+    with_eol.extend_from_slice(&[0, 0, 0, 1]);
+    let without_eob = rle_data(false);
+    for (name, data) in [("00 00 puis 00 01", with_eol), ("sans 00 01", without_eob)] {
+        let out = to_lunii_bmp(&bmp_with(&data, ramp)).unwrap_or_else(|e| panic!("{name} : {e}"));
+        assert_eq!(common::decode_device_bmp(&out).unwrap(), want, "{name}");
+    }
+    // Mais pas de ligne en trop après la dernière.
+    let mut extra = rle_data(false);
+    extra.extend_from_slice(&[0, 0, 1, 0x11, 0, 1]);
+    assert!(to_lunii_bmp(&bmp_with(&extra, ramp)).is_err());
 }

@@ -26,8 +26,7 @@
 //!
 //! Écarts choisis avec Lunii.QT (note de conception `docs/studio-lunii.md`, § 3.5) : (a) il copie
 //! tel quel un BMP RLE4 de 320 x 240 ; ici décodé en indices puis réencodé (même niveaux, octets
-//! normalisés). (b) Il écrit à l'envers une
-//! source BMP de 320 x 240 non RLE4 (il ne la retourne pas) ; ici toutes les sources sortent à
+//! normalisés). (b) Il écrit à l'envers une source BMP de 320 x 240 non RLE4 (il ne la retourne pas) ; ici toutes les sources sortent à
 //! l'endroit. (c) Il ignore l'alpha (Pillow redimensionne en alpha prémultiplié, puis `convert("RGB")`
 //! jette l'alpha : les couleurs reviennent telles quelles) ; ici composition sur noir, à toute
 //! taille. Les fixtures avec alpha sont donc attendues sur l'image déjà composée. Limites : (d) JPEG, le décodeur diffère de libjpeg, d'où des écarts de
@@ -218,7 +217,7 @@ fn is_rle4_device_size(b: &[u8]) -> bool {
 /// La palette du fichier est ignorée, comme le fait l'appareil pour ses propres fichiers
 /// (hypothèse : un fichier à palette inhabituelle est rare ; la copie de Lunii.QT la
 /// conserverait, ici elle est normalisée). Sont acceptés : séries codées, mode absolu, fins de
-/// ligne et de fichier, en-tête et champs de taille quelconques ; octets après la fin du fichier
+/// ligne et de fichier (`00 01` final facultatif, `00 00` avant lui toléré), en-tête de 40 octets ou plus, champs de taille quelconques ; octets après la fin du fichier
 /// RLE ignorés. Refusés (`None`) : sauts (delta), ligne incomplète ou trop longue, nombre de
 /// lignes différent de 240, données sans fin.
 fn decode_rle4_levels(b: &[u8]) -> Option<Vec<u8>> {
@@ -232,12 +231,20 @@ fn decode_rle4_levels(b: &[u8]) -> Option<Vec<u8>> {
     let mut levels = Vec::with_capacity(w * h);
     let mut col = 0usize;
     let mut at = 0usize;
+    let finish = |levels: Vec<u8>| -> Option<Vec<u8>> {
+        // Le fichier va de la dernière ligne à la première.
+        (levels.len() == w * h).then(|| levels.chunks(w).rev().flatten().copied().collect())
+    };
     loop {
-        let (n, v) = (usize::from(*data.get(at)?), *data.get(at + 1)?);
+        // Fin des données sans `00 01` : tolérée si les 240 lignes sont complètes.
+        let (Some(&n), Some(&v)) = (data.get(at), data.get(at + 1)) else {
+            return if col == w { finish(levels) } else { None };
+        };
+        let n = usize::from(n);
         at += 2;
         if n > 0 {
             // Série codée : les deux demi-octets alternent.
-            if col + n > w {
+            if col + n > w || levels.len() + n > w * h {
                 return None;
             }
             levels.extend((0..n).map(|i| if i % 2 == 0 { v >> 4 } else { v & 15 }));
@@ -245,25 +252,25 @@ fn decode_rle4_levels(b: &[u8]) -> Option<Vec<u8>> {
             continue;
         }
         match v {
+            // Fin de ligne ou de fichier ; `00 00` après la dernière ligne est toléré (des
+            // encodeurs courants l'écrivent avant `00 01`).
             0 | 1 => {
+                if col == 0 && levels.len() == w * h && v == 1 {
+                    return finish(levels);
+                }
                 if col != w {
                     return None;
                 }
                 col = 0;
                 if v == 1 {
-                    // Le fichier va de la dernière ligne à la première.
-                    return (levels.len() == w * h)
-                        .then(|| levels.chunks(w).rev().flatten().copied().collect());
-                }
-                if levels.len() >= w * h {
-                    return None;
+                    return finish(levels);
                 }
             }
             2 => return None,
             count => {
                 // Mode absolu : `count` demi-octets, rembourrés à un nombre pair d'octets.
                 let count = usize::from(count);
-                if col + count > w {
+                if col + count > w || levels.len() + count > w * h {
                     return None;
                 }
                 let bytes = data.get(at..at + count.div_ceil(2))?;

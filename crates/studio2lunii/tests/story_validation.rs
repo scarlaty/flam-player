@@ -488,3 +488,19 @@ fn rang_au_dela_de_255_assets() {
     assert_eq!(&index.ri[299 * 12..], b"000\\0000012B");
     assert_eq!(index.assets[299].pack_path, "rf/000/0000012B");
 }
+
+/// Le compteur d'options (partagé par thread) est remis à zéro même après une erreur de lecture.
+#[test]
+fn compteur_d_options_remis_a_zero_entre_deux_lectures() {
+    let opts = format!(r#""{U0}","#).repeat(MAX_OPTIONS - 10);
+    let broken = format!(
+        r#"{{"format":"v1","version":1,"stageNodes":[],"actionNodes":[{{"id":"a","options":[{opts}"#
+    );
+    assert!(matches!(
+        parse_story(broken.as_bytes()),
+        Err(StoryError::Json(_))
+    ));
+    let mut v = base();
+    v["actionNodes"][0]["options"] = json!(vec![U1; 50]);
+    assert!(parse(&v).is_ok());
+}
