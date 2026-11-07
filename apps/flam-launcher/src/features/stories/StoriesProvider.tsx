@@ -446,12 +446,24 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   // Après l'avertissement d'incompatibilité (ou sans lui) : confirmation du changement de
   // format si la même histoire est installée dans l'autre format, puis installation.
   const proceed = useCallback(
-    (entry: StoryEntry, options: InstallOptions) => {
-      if (!options.replaceFormat && otherFormatIn(installedRef.current, entry)) {
-        setPending({ entry, options, reason: "format" });
-        return;
+    async (entry: StoryEntry, options: InstallOptions) => {
+      if (!options.replaceFormat) {
+        // Liste relue juste avant de décider : une liste périmée (histoire installée depuis
+        // le dernier chargement) ferait contourner le dialogue, et le backend refuserait.
+        let installedNow = installedRef.current;
+        try {
+          installedNow = await listLibrary();
+          setInstalled(installedNow);
+          setInstalledRevision((n) => n + 1);
+        } catch {
+          // Sans relecture, la liste connue sert ; le refus du backend reste signalé.
+        }
+        if (otherFormatIn(installedNow, entry)) {
+          setPending({ entry, options, reason: "format" });
+          return;
+        }
       }
-      void start(entry, options);
+      await start(entry, options);
     },
     [start],
   );
@@ -461,7 +473,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         setPending({ entry, options, reason: "incompatible" });
         return;
       }
-      proceed(entry, options);
+      void proceed(entry, options);
     },
     [compatFor, proceed],
   );
@@ -682,7 +694,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           onConfirm={() => {
             const { entry, options } = pending;
             setPending(null);
-            proceed(entry, options);
+            void proceed(entry, options);
           }}
         />
       )}

@@ -1669,4 +1669,22 @@ describe("suppression depuis la liste", () => {
       replaceFormat: true,
     });
   });
+
+  it("Q11 : liste installée périmée, la liste est relue et le dialogue de changement de format s'affiche", async () => {
+    scanEntries = [studioEntry({ uuid: "ours" })];
+    installed = [];
+    window.location.hash = "#/library/dossier";
+    renderLibrary();
+    const button = await screen.findByRole("button", {
+      name: "Installer « Conte STUdio »",
+    });
+    // Histoire Telmi installée depuis le dernier chargement de la liste (autre fenêtre, autre tâche).
+    installed = [installedEntry(ours())];
+    fireEvent.click(button);
+    const confirm = await screen.findByRole("alertdialog");
+    expect(
+      within(confirm).getByText(/au format Flam \(histoire Telmi\)/),
+    ).toBeInTheDocument();
+    expect(callsOf("install_start")).toHaveLength(0);
+  });
 });
