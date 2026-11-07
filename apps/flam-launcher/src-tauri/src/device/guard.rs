@@ -207,7 +207,8 @@ fn is_regular_file(path: &Path) -> bool {
 }
 
 /// Histoire au format Lunii (STUdio) : au moins un des fichiers ordinaires `ni`, `li`, `ri`,
-/// `si` (les liens symboliques ne comptent pas) et pas de script `main.lsf`. Critère : ces index n'existent que dans ce format, et `main.lsf` est le
+/// `si` (les liens symboliques ne comptent pas) et pas de script `main.lsf`. Critère : ces index
+/// n'existent que dans ce format, et `main.lsf` est le
 /// script d'entrée de toute histoire Flam ; l'`info` d'une histoire Lunii est en clair.
 pub(crate) fn is_lunii_format(dir: &Path) -> bool {
     !is_flam_format(dir)
