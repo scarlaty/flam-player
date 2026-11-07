@@ -4,8 +4,8 @@ Issue : #518, épopée : #517. Crate : `crates/studio2lunii` (squelette #524, CI
 #519 (détection au scan), #520 (`story.json` et index), #521 (images et sons).
 
 **Avancement** (voir le découpage du § 8) : fusionnés #524 et #525 (crate et CI), #526 (E),
-#527 (#519), #531 (F), #534 (A et B), #537 (C et D), #539 (H) ; en cours G1 (issue #541) et I (issue #542) ;
-restent G2 et J. Les paragraphes qui suivent décrivent le comportement du code fusionné quand
+#527 (#519), #531 (F), #534 (A et B), #537 (C et D), #539 (H), #543, #544, #545 et #546 (I) ; en cours G1
+(issue #541) ; restent G2 et J. Les paragraphes qui suivent décrivent le comportement du code fusionné quand
 il diffère de la conception initiale (écarts signalés).
 
 Ce document fixe, **avant tout code de données**, les formats en jeu, le périmètre, les
@@ -223,6 +223,12 @@ l'octet** à celui de Lunii.QT, sauf pour une source JPEG (le décodeur diffère
 l'en-tête et la structure RLE sont identiques et les niveaux égaux à ± 1 sur au moins 97 % des
 pixels (§ 7). Palette couleur possible sur Flam : à confirmer (L7), hors périmètre.
 
+BMP déjà RLE4 de 320 × 240 (comportement du code fusionné, #544) : il est décodé en **indices
+de palette** (16 niveaux préservés) puis réencodé. Sont refusés un saut (delta), une ligne
+incomplète et un nombre de lignes différent de 240, là où Lunii.QT recopierait le fichier. La
+palette du fichier est ignorée (hypothèse : l'appareil lit les indices comme des niveaux de
+gris ; à mesurer, L7).
+
 ### 3.6 Sons (MP3)
 
 Observé (Lunii.QT, `convert_audio.py`) :
@@ -395,7 +401,9 @@ version, format)`, `Library::checked` (accepter `.plain.pk` et `.lunii.pk` ; il 
 2. contrôle la cohérence, **plus strictement que la conception initiale** (toute la structure est
    contrôlée avant la moindre écriture ; le contenu des assets et de la vignette l'est à la copie,
    dans le chantier, supprimé en cas d'échec) :
-   - `ni` : en-tête (début `0x200`, nœuds de `0x2C` octets), de 1 à 20 000 nœuds, taille exacte,
+   - `ni` : en-tête (version de format 1 à `0x00`, début `0x200`, nœuds de `0x2C` octets ; octet
+     `0x18` **exigé à 1** et octets `0x19` à `0x1FF` nuls : le sens de `0x18` est inconnu, un
+     pack tiers à 0 serait donc refusé), de 1 à 20 000 nœuds, taille exacte,
      nombres d'images et de sons égaux aux entrées de `ri` et `si`, indices d'image et de son
      dans leur plage, transitions cohérentes avec `li`, commandes bien formées ;
    - `li` : entiers de 4 octets, chacun indice d'un nœud (au plus 100 000 entrées) ; `ri` et
@@ -404,6 +412,7 @@ version, format)`, `Library::checked` (accepter `.plain.pk` et `.lunii.pk` ; il 
      dossiers absent de `ri` ou `si` (refus) ;
    - `nm` : s'il est présent, **vide** ; `info` : ASCII imprimable, lignes séparées par LF,
      titre non vide, au plus 64 Kio (variantes UTF-8 non essayées : § 8, « plus tard ») ;
+   - entrée zip chiffrée (mot de passe) : refusée (`LuniiInvalid`) avant toute écriture ;
    - dépassement d'une borne (entrées de `li`, `ri`, `si`, tailles déclarées ou lues) :
      `LuniiTooLarge` ; tout autre défaut, y compris un nombre de nœuds hors de 1 à 20 000 :
      `LuniiInvalid` ;
@@ -416,15 +425,18 @@ Le `PreparedStory` passe **tel quel** par `transfer::send_with` : dossier tempor
 `.flam-transfer/`, relecture SHA-256, promotion par renommage, index, cache. Aucune ligne de
 `send_with` ne change.
 
-`send_from_library` choisit la préparation selon l'extension du fichier de bibliothèque.
+`send_from_library` choisit la préparation selon le suffixe `.lunii.pk` du nom du fichier de
+bibliothèque (casse indifférente) : `prepare_lunii::prepare` pour un pack Lunii,
+`prepare::prepare_story` sinon.
 
 ### 5.5 Contrôle du firmware
 
 Ordre, pour une histoire Lunii, dans `send_from_library` :
 
 1. `check_write` (lecture seule, inchangé) ;
-2. **`permit.family() == V2`, sinon `TransferError::LuniiNeedsV2`** : aucune écriture, pas même
-   la reprise d'un transfert interrompu, aucune demande de clé carrier ;
+2. **`permit.family() == V2`, sinon `TransferError::LuniiNeedsV2`** (erreur `lunii_needs_v2`,
+   avec son message) : refus juste après `check_write`, avant les clés carrier, la préparation et
+   toute écriture, donc pas même la reprise d'un transfert interrompu ;
 3. clés de `.mdf`, préparation, `send_with`.
 
 Le front grise « Envoyer » pour une histoire Lunii quand la Flam branchée est en 1.x, avec le
@@ -505,6 +517,10 @@ suffit.
 | Son source                           | 512 Mio                                              |
 | Délai ffmpeg par fichier             | 120 s (comme `telmi2flam`)                           |
 
+Les tableaux `stageNodes` et `actionNodes` et les `options` sont lus avec un plafond de
+`MAX + 1` éléments (le surplus est compté sans être alloué : mémoire bornée) ; les numéros de
+nœud et d'action des messages d'erreur sont comptés à partir de 1.
+
 ### 6.3 Tableau des pannes
 
 | Situation                                                                                 | Détection                         | Comportement                                                      |
@@ -537,6 +553,8 @@ suffit.
   de 44 octets, `li` avec plusieurs actions, `ri` et `si`, nommage des deux règles, BMP RLE4 d'une
   image unie et d'un damier, ligne de 255 pixels et plus, MP3 avec ID3v2, ID3v1 et APE, trames
   stéréo ou 48 kHz → « transcoder »). Tous les cas du tableau des pannes ont leur test.
+- **Poids des fixtures** : les fichiers sous `crates/studio2lunii/tests/data` pèsent environ
+  1,6 Mo ; ce poids est à surveiller.
 - **Fixtures STUdio synthétiques** générées par les tests (graphe, PNG et MP3 produits en
   mémoire) ; **aucune histoire du commerce ni pack STUdio tiers dans le dépôt**.
 - **Chiffrement** : vecteurs NIST pour AES, vecteurs inventés pour l'inversion par mots,
@@ -564,19 +582,19 @@ format ou de transfert ; **sonnet** ailleurs. #519 (détection au scan, `folder.
 est fait en parallèle (fusionné, #527) et n'est pas repris ici. Colonne « État » : situation au
 7 novembre 2026.
 
-| PR  | État                  | Thème                                                                                                                                                          | Fichiers                                                                                              | Dépend de      | Modèle                                                                                         |
-| --- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------- |
-| A   | fusionnée (#534)      | `story` : lecture et validation de `story.json` (#520)                                                                                                         | `crates/studio2lunii/src/story.rs`                                                                    | #524           | opus                                                                                           |
-| B   | fusionnée (#534)      | `index` : `ni`, `li`, `ri`, `si`, nommage (#520)                                                                                                               | `crates/studio2lunii/src/index.rs`                                                                    | A (types)      | opus                                                                                           |
-| C   | fusionnée (#537)      | `bitmap` : décodage, 320 × 240, gris, RLE4 (#521)                                                                                                              | `crates/studio2lunii/src/bitmap.rs`                                                                   | #524           | opus                                                                                           |
-| D   | fusionnée (#537)      | `audio` : analyse MP3, étiquettes, décision (#521)                                                                                                             | `crates/studio2lunii/src/audio.rs`                                                                    | #524           | opus                                                                                           |
-| E   | fusionnée (#526)      | Chiffrement Lunii : inversion par mots, 512 octets, refus carrier                                                                                              | `apps/.../device/crypto.rs`                                                                           | aucune         | opus                                                                                           |
-| F   | fusionnée (#531)      | « Ma Flam » : titre en clair, champ `format`                                                                                                                   | `device/details.rs`, `device/status.rs`, `src/features/device/` (badge)                               | aucune         | sonnet                                                                                         |
-| G1  | en cours (issue #541) | Installation (1/2) : conversion, ffmpeg, vignette, écriture du pack clair `.lunii.pk`                                                                          | `install/studio.rs` (nouveau)                                                                         | A, B, C, D     | opus                                                                                           |
-| G2  | à faire               | Installation (2/2) : bibliothèque et branchement                                                                                                               | `install/mod.rs`, `library.rs`, `library_thumb.rs`, `library_source.rs`, `folder.rs` (levée du refus) | G1, #519       | opus                                                                                           |
-| H   | fusionnée (#539)      | Préparation Lunii                                                                                                                                              | `device/prepare_lunii.rs` (nouveau), `device/prepare.rs` (fonctions partagées), `device/mod.rs`       | E, G1 (format) | opus                                                                                           |
-| I   | en cours (issue #542) | Envoi : choix de la préparation, refus 1.x, erreurs                                                                                                            | `device/transfer.rs`, `error.rs`, messages du front                                                   | H              | opus                                                                                           |
-| J   | à faire               | Interface et documentation : « Lire » désactivé, envoi grisé en 1.x, README, `apps/flam-launcher/docs/flam-transfert.md`, § 10 de `docs/flam-device-format.md` | `player.rs` (garde), `src/features/library/`, `src/features/device/`, docs                            | G2, I          | sonnet (garde de `player.rs` : exception justifiée dans la PR, aucune écriture ni suppression) |
+| PR  | État                    | Thème                                                                                                                                                          | Fichiers                                                                                              | Dépend de      | Modèle                                                                                         |
+| --- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------- |
+| A   | fusionnée (#534)        | `story` : lecture et validation de `story.json` (#520)                                                                                                         | `crates/studio2lunii/src/story.rs`                                                                    | #524           | opus                                                                                           |
+| B   | fusionnée (#534)        | `index` : `ni`, `li`, `ri`, `si`, nommage (#520)                                                                                                               | `crates/studio2lunii/src/index.rs`                                                                    | A (types)      | opus                                                                                           |
+| C   | fusionnée (#537)        | `bitmap` : décodage, 320 × 240, gris, RLE4 (#521)                                                                                                              | `crates/studio2lunii/src/bitmap.rs`                                                                   | #524           | opus                                                                                           |
+| D   | fusionnée (#537)        | `audio` : analyse MP3, étiquettes, décision (#521)                                                                                                             | `crates/studio2lunii/src/audio.rs`                                                                    | #524           | opus                                                                                           |
+| E   | fusionnée (#526)        | Chiffrement Lunii : inversion par mots, 512 octets, refus carrier                                                                                              | `apps/.../device/crypto.rs`                                                                           | aucune         | opus                                                                                           |
+| F   | fusionnée (#531)        | « Ma Flam » : titre en clair, champ `format`                                                                                                                   | `device/details.rs`, `device/status.rs`, `src/features/device/` (badge)                               | aucune         | sonnet                                                                                         |
+| G1  | en cours (issue #541)   | Installation (1/2) : conversion, ffmpeg, vignette, écriture du pack clair `.lunii.pk`                                                                          | `install/studio.rs` (nouveau)                                                                         | A, B, C, D     | opus                                                                                           |
+| G2  | à faire                 | Installation (2/2) : bibliothèque et branchement                                                                                                               | `install/mod.rs`, `library.rs`, `library_thumb.rs`, `library_source.rs`, `folder.rs` (levée du refus) | G1, #519       | opus                                                                                           |
+| H   | fusionnée (#539)        | Préparation Lunii                                                                                                                                              | `device/prepare_lunii.rs` (nouveau), `device/prepare.rs` (fonctions partagées), `device/mod.rs`       | E, G1 (format) | opus                                                                                           |
+| I   | fusionnée (#543 à #546) | Envoi : choix de la préparation, refus 1.x, erreurs                                                                                                            | `device/transfer.rs`, `error.rs`, messages du front                                                   | H              | opus                                                                                           |
+| J   | à faire                 | Interface et documentation : « Lire » désactivé, envoi grisé en 1.x, README, `apps/flam-launcher/docs/flam-transfert.md`, § 10 de `docs/flam-device-format.md` | `player.rs` (garde), `src/features/library/`, `src/features/device/`, docs                            | G2, I          | sonnet (garde de `player.rs` : exception justifiée dans la PR, aucune écriture ni suppression) |
 
 Parallélisme : A, C, D, E, F tout de suite (fichiers disjoints) ; B après A ; G1 après A à D ;
 G2 après G1 et #519 ; H après E et G1 ; I puis J. G1 et H peuvent se recouvrir si le format du
