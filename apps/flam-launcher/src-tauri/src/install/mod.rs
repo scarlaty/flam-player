@@ -867,6 +867,21 @@ impl InstallService {
                 replace_format,
             )
             .await;
+        // Invariant (#560) : une tâche dont l'annulation a été demandée avant la fin du
+        // pipeline et qui n'a rien publié se termine « annulée », jamais sur l'erreur qu'une
+        // étape a pu rencontrer entre la demande et le contrôle suivant (convertisseur absent,
+        // archive introuvable, précontrôle…) : l'utilisateur a annulé, il voit « annulé ». Une
+        // installation menée à bien reste « terminée » (la bibliothèque a changé).
+        let result = match result {
+            Err(err) if !matches!(err, AppError::Cancelled) && *cancel.borrow() => {
+                tracing::debug!(
+                    "installation {id} annulée (erreur ignorée : {})",
+                    err.kind()
+                );
+                Err(AppError::Cancelled)
+            }
+            other => other,
+        };
         // Pack publié : brouillon effacé s'il n'a pas changé depuis la création (#362).
         if let (Ok(_), Some(revision)) = (&result, pack.as_ref().and_then(|p| p.draft_revision)) {
             let backend = lock(&self.0.packs).clone();
@@ -945,9 +960,12 @@ impl InstallService {
         }
         let tc = (self.0.opts.resolver)()?;
         self.0.downloads.set_limit(tc.max_downloads);
+        // `biased` : une annulation déjà demandée l'emporte sur un portillon libre (sans lui,
+        // `select!` tire la branche au hasard et la tâche poursuit après l'annulation, #560).
         let _gate = tokio::select! {
-            g = self.0.opts.gate.clone().read_owned() => g,
+            biased;
             _ = cancelled(cancel) => return Err(AppError::Cancelled),
+            g = self.0.opts.gate.clone().read_owned() => g,
         };
         let library = Library::new(&tc.cache_root);
         let format = StoryFormat::of_kind(entry.kind);
@@ -1263,9 +1281,11 @@ impl InstallService {
                 } else {
                     None
                 };
+                // Annulation prioritaire sur un créneau libre (voir le portillon, #560).
                 let _slot = tokio::select! {
-                    s = self.0.conversions.acquire() => s.map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?,
+                    biased;
                     _ = cancelled(cancel) => return Err(AppError::Cancelled),
+                    s = self.0.conversions.acquire() => s.map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?,
                 };
                 self.emit_state(id, TaskState::Converting, Some(0.0));
                 let mut last = Instant::now();
