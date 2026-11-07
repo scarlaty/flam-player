@@ -955,7 +955,7 @@ export const fr = {
       noSpace: "Espace insuffisant sur la Flam",
       firmware: "Écriture bloquée sur cette Flam (voir « Ma Flam »)",
       luniiNeedsV2:
-        "Les histoires STUdio demandent une Flam en firmware 2.x. Cette Flam est en 1.x : mettez-la à jour avec l'application officielle.",
+        "Les histoires STUdio demandent une Flam en firmware 2.x. Cette Flam est en 1.x : elle ne peut pas les lire.",
       queued: "Dans la file d'envoi",
       checking: "Lecture de la Flam…",
       removing: "Retrait en cours sur la Flam",
@@ -1012,7 +1012,7 @@ export const fr = {
         "Histoire copiée, mais son titre relu sur la Flam ne se déchiffre pas avec les clés choisies : elle risque d'être illisible. Retirez-la et choisissez une autre histoire officielle.",
       /** Erreur `lunii_needs_v2` : histoire STUdio (format Lunii) et Flam en firmware 1.x. */
       luniiNeedsV2:
-        "Les histoires STUdio demandent une Flam en firmware 2.x. Mettez la Flam à jour avec l'application officielle, puis réessayez. Rien n'a été écrit sur la Flam.",
+        "Les histoires STUdio demandent une Flam en firmware 2.x : cette Flam ne peut pas les lire. Rien n'a été écrit sur la Flam.",
     },
     carrier: {
       title: "Flam en firmware 1.x : mode carrier",

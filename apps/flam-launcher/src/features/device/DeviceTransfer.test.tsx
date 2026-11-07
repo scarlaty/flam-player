@@ -1357,7 +1357,7 @@ it("Flam 1.x : histoire STUdio refusée, message clair, clés gardées pour la s
   const panel = await screen.findByRole("region", { name: "Envoi sur la Flam" });
   expect(
     await within(panel).findByText(
-      /Les histoires STUdio demandent une Flam en firmware 2\.x\. Mettez la Flam à jour/,
+      /Les histoires STUdio demandent une Flam en firmware 2\.x : cette Flam ne peut pas les lire/,
     ),
   ).toBeInTheDocument();
   expect(within(panel).queryByText(/texte du backend/)).toBeNull();
