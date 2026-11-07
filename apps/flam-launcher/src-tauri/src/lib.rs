@@ -105,6 +105,7 @@ pub fn run() {
         )
         .setup(|app| {
             let config_dir = storage::config_dir()?;
+            let saves_root = config_dir.join(player::SAVES_ROOT);
             let catalog = catalog::CatalogService::new()?;
             let install = install::InstallService::new(install::InstallOptions {
                 client: install::download::build_client()?,
@@ -134,6 +135,8 @@ pub fn run() {
             // Sous Windows, le player est incrusté dans la fenêtre du launcher (#201).
             #[cfg(windows)]
             let player = player.with_embed(Arc::new(embed::TauriEmbed::new(app.handle().clone())));
+            // Changement de format d'une histoire installée : copie de travail purgée (#556).
+            install.set_play_purger(install::play_purger(player.clone(), saves_root));
             app.manage(player);
             // Purge des vignettes périmées de `<cache>/thumbs/` (#37), hors du démarrage.
             let handle = app.handle().clone();

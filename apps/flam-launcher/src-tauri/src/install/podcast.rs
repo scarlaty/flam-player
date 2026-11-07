@@ -605,9 +605,12 @@ impl InstallService {
     ) -> AppResult<Prepared> {
         // Une préparation à la fois (attente annulable) : D5 n'est pas compté deux fois, le
         // réseau et ffmpeg restent bornés.
+        // `biased` : une annulation déjà demandée l'emporte sur un créneau libre (sans lui, la
+        // préparation pouvait démarrer après l'annulation, #562).
         let _slot = tokio::select! {
-            s = self.0.preparations.acquire() => s.map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?,
+            biased;
             _ = super::download::cancelled(cancel) => return Err(AppError::Cancelled),
+            s = self.0.preparations.acquire() => s.map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?,
         };
         // Dossier de travail d'abord (vidé s'il reste d'un arrêt brutal) : toute erreur qui
         // suit passe par sa suppression.

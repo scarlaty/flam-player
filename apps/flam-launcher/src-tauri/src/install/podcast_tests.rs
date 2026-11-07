@@ -1079,3 +1079,33 @@ async fn pack_publie_sans_chemin_mort_et_source_inconnue() {
     let state = crate::library_source::check(&library[0], &lib, &HashMap::new());
     assert_eq!(state, crate::library_source::SourceState::Unknown);
 }
+
+/// Annulation déjà demandée, créneau de préparation libre : la préparation du pack ne démarre
+/// pas, `select!` biaisé (#562). Sans `biased`, la préparation partirait et échouerait
+/// autrement (`Ctx::new` n'a pas de `PackBackend` : `converter_unavailable`) ; le dossier de
+/// travail étant supprimé sur erreur, c'est le résultat `Cancelled` qui discrimine.
+#[tokio::test]
+async fn annulation_prioritaire_au_creneau_de_preparation() {
+    let ctx = Ctx::new(None);
+    let job = PackJob {
+        uuid: crate::podcast::archive::new_pack_uuid()
+            .hyphenated()
+            .to_string(),
+        composition: composition(),
+        draft_revision: None,
+    };
+    let tc = ctx.service.toolchain().await.unwrap();
+    for _ in 0..super::PRIORITY_TRIES {
+        let (_tx, mut cancel) = watch::channel(true);
+        let result = ctx
+            .service
+            .prepare_pack(TASK_ID, &job, &tc, &mut cancel)
+            .await;
+        assert!(
+            matches!(result, Err(AppError::Cancelled)),
+            "{:?}",
+            result.err()
+        );
+    }
+    assert!(!ctx.cache().join(WORK_DIR).join(TASK_ID).exists());
+}

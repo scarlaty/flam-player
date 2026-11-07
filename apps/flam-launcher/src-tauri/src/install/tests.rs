@@ -1708,6 +1708,57 @@ async fn library_list_ne_se_fige_pas_quand_une_autre_instance_tient_le_verrou() 
     );
 }
 
+/// Essais des tests d'annulation prioritaire : sans `biased`, `select!` choisirait au hasard
+/// entre l'annulation et le créneau libre (une chance sur deux par essai).
+const PRIORITY_TRIES: usize = 20;
+
+/// Annulation déjà demandée, créneau de téléchargement libre : le téléchargement ne démarre
+/// pas (aucune requête, pas d'état « downloading »), `select!` biaisé (#562).
+#[tokio::test]
+async fn annulation_prioritaire_au_creneau_de_telechargement() {
+    let ctx = Ctx::new(None);
+    let server = serve(b"zip".to_vec()).await;
+    let entry = remote(&format!("{}/a.zip", server.uri()), "abc");
+    let tc = ctx.service.toolchain().await.unwrap();
+    for _ in 0..PRIORITY_TRIES {
+        let (_tx, mut cancel) = watch::channel(true);
+        let result = ctx
+            .service
+            .fetch(TASK_ID, &entry, &tc, &mut cancel, Validator::default())
+            .await;
+        assert!(matches!(result, Err(AppError::Cancelled)), "{result:?}");
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(!ctx.events.states(TASK_ID).contains(&TaskState::Downloading));
+}
+
+/// Annulation déjà demandée, créneau de conversion libre : la conversion STUdio ne démarre
+/// pas (pas d'état « converting », aucune sortie), `select!` biaisé (#562).
+#[tokio::test]
+async fn annulation_prioritaire_au_creneau_de_conversion_studio() {
+    let ctx = Ctx::new(None);
+    let mut entry = story("abc", Some(1));
+    entry.kind = StoryKind::StudioZip;
+    let source = ctx.dir.path().join("conte.zip");
+    std::fs::write(&source, b"pas un zip").unwrap();
+    let staged = ctx.dir.path().join("sortie.lunii.pk");
+    let tc = ctx.service.toolchain().await.unwrap();
+    for _ in 0..PRIORITY_TRIES {
+        let (_tx, mut cancel) = watch::channel(true);
+        let result = ctx
+            .service
+            .transform_studio(TASK_ID, &entry, &tc, &source, &staged, false, &mut cancel)
+            .await;
+        assert!(
+            matches!(result, Err(AppError::Cancelled)),
+            "{:?}",
+            result.err()
+        );
+    }
+    assert!(!ctx.events.states(TASK_ID).contains(&TaskState::Converting));
+    assert!(!staged.exists());
+}
+
 #[path = "podcast_tests.rs"]
 mod pack_tests;
 

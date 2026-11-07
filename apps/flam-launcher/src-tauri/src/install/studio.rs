@@ -106,6 +106,8 @@ use crate::ffmpeg::{self, Ffmpeg, Tool, Verified};
 use crate::podcast::audio::file_arg;
 use crate::settings::ThumbFit;
 use crate::{AppError, AppResult};
+// Longueur maximale du titre (caractères) : constante unique, celle du scan des dossiers.
+use crate::story::MAX_TITLE_CHARS;
 
 /// Entrées maximales de l'archive (note § 6.2).
 pub const MAX_ENTRIES: usize = 100_000;
@@ -139,8 +141,6 @@ pub const FFMPEG_FAILED: &str = "ffmpeg_failed";
 
 const STORY_JSON: &str = "story.json";
 const THUMBNAIL_PNG: &str = "thumbnail.png";
-/// Longueur maximale du titre (caractères), comme le scan des dossiers.
-const MAX_TITLE_CHARS: usize = 200;
 const MAX_DESCRIPTION_CHARS: usize = 2_000;
 /// Ligne d'auteur de `info`, comme Lunii.QT (note § 3.8, Q4).
 const NO_AUTHORS: &str = "No authors.";

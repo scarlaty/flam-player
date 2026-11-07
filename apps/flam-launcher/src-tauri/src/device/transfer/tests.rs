@@ -1,4 +1,8 @@
 //! Tests du transfert sur faux appareil (dossier temporaire) avec injection de panne.
+//!
+//! Les aides `pub(crate)` (faux appareil [`device`], `.mdf` synthétique [`mdf`], instantané
+//! [`snapshot`], index [`listed`]) servent aussi aux tests d'envoi depuis la bibliothèque des
+//! autres modules (#556).
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -12,11 +16,11 @@ use crate::device::guard::KNOWN_HEADER;
 use crate::device::index::serialize;
 
 const NEW: &str = "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9";
-const OTHER: &str = "11111111-2222-3333-4444-555555555555";
+pub(crate) const OTHER: &str = "11111111-2222-3333-4444-555555555555";
 const BIG: usize = 2 * CHUNK + 12_345;
 const PLENTY: u64 = 1 << 40;
 
-fn id(s: &str) -> StoryId {
+pub(crate) fn id(s: &str) -> StoryId {
     StoryId::parse(s).unwrap()
 }
 
@@ -30,7 +34,7 @@ fn permit() -> WritePermit {
 const OFFICIAL_V2: &str = "abababab-cdcd-4efe-8a8a-121212121212";
 
 /// Arborescence complète (fichiers et dossiers vides) avec contenu, relative à `root`.
-fn snapshot(root: &Path) -> BTreeMap<String, Option<Vec<u8>>> {
+pub(crate) fn snapshot(root: &Path) -> BTreeMap<String, Option<Vec<u8>>> {
     fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, Option<Vec<u8>>>) {
         for e in std::fs::read_dir(dir).unwrap() {
             let p = e.unwrap().path();
@@ -62,7 +66,7 @@ fn files_of(dir: &Path) -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
-fn write(path: &Path, data: &[u8]) {
+pub(crate) fn write(path: &Path, data: &[u8]) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, data).unwrap();
 }
@@ -95,7 +99,7 @@ fn prepared(base: &Path, seed: u8) -> PreparedStory {
 
 /// Faux appareil : `.mdf`, une autre histoire listée, cache du firmware ; `old` : ancienne
 /// version de `NEW` listée.
-fn device(base: &Path, old: bool) -> PathBuf {
+pub(crate) fn device(base: &Path, old: bool) -> PathBuf {
     let root = base.join("flam");
     write(&root.join(MDF_FILE), &mdf_v1_real());
     write(&root.join("str").join(OTHER).join("info"), b"autre");
@@ -314,7 +318,7 @@ fn restart(root: &Path) {
     }
 }
 
-fn listed(root: &Path) -> Vec<StoryId> {
+pub(crate) fn listed(root: &Path) -> Vec<StoryId> {
     let read = read_index(root, IndexKind::Visible);
     assert_eq!(read.state, IndexState::Valid);
     read.entries
@@ -715,7 +719,7 @@ fn reprise_des_etats_partiels() {
 }
 
 /// `.mdf` synthétique (clés de test inventées).
-fn mdf(version: &str) -> Vec<u8> {
+pub(crate) fn mdf(version: &str) -> Vec<u8> {
     // En-tête `01 00` : seule valeur mesurée (Flam 1.15.14), reprise pour la 2.x supposée.
     let mut m = KNOWN_HEADER.to_vec();
     let mut text = format!("main: {version}-test\ncomm: x").into_bytes();
@@ -1932,29 +1936,34 @@ mod lunii {
         )
     }
 
+    /// Règle unique de la bibliothèque (#556) : suffixe exact, sensible à la casse, d'après le
+    /// seul nom du fichier ; un nom inconnu (`None`) est envoyé comme une histoire Flam.
     #[test]
     fn format_choisi_d_apres_le_nom_du_fichier() {
+        use crate::library::StoryFormat;
         for (name, expected) in [
-            ("abc-1.lunii.pk", LibraryFormat::Lunii),
-            ("ABC-1.LUNII.PK", LibraryFormat::Lunii),
-            ("é.lunii.pk", LibraryFormat::Lunii),
-            ("abc-1.plain.pk", LibraryFormat::Flam),
-            ("abc-1.lunii.pk.plain.pk", LibraryFormat::Flam),
-            (".lunii.pk", LibraryFormat::Flam),
-            ("histoire.pk", LibraryFormat::Flam),
-            ("éé", LibraryFormat::Flam),
+            ("abc-1.lunii.pk", Some(StoryFormat::Lunii)),
+            ("é.lunii.pk", Some(StoryFormat::Lunii)),
+            ("abc-1.plain.pk", Some(StoryFormat::Flam)),
+            ("abc-1.lunii.pk.plain.pk", Some(StoryFormat::Flam)),
+            ("ABC-1.LUNII.PK", None),
+            ("abc-1.Lunii.pk", None),
+            (".lunii.pk", None),
+            ("histoire.pk", None),
+            ("éé", None),
         ] {
             assert_eq!(
-                LibraryFormat::of(&Path::new("bib").join(name)),
+                StoryFormat::of_path(&Path::new("bib").join(name)),
                 expected,
                 "{name}"
             );
         }
         // Seul le nom du fichier compte, pas le dossier.
         assert_eq!(
-            LibraryFormat::of(&Path::new("x.lunii.pk").join("a.plain.pk")),
-            LibraryFormat::Flam
+            StoryFormat::of_path(&Path::new("x.lunii.pk").join("a.plain.pk")),
+            Some(StoryFormat::Flam)
         );
+        assert_eq!(StoryFormat::of_path(Path::new("x.lunii.pk/..")), None);
     }
 
     #[test]
