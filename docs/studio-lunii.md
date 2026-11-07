@@ -75,7 +75,8 @@ scène, ordre significatif) ; `name`, `position` ignorés.
 UUID du pack : Lunii.QT prend celui du **premier** nœud de scène. **Choix de conception** : le
 nœud `squareOne` doit être unique ; s'il n'est pas en tête, il est placé en tête (indices
 recalculés) ; sans `squareOne`, le premier nœud est l'entrée, comme Lunii.QT. Le firmware
-démarre au nœud 0 (observé (Lunii.QT) : rien d'autre ne désigne l'entrée dans `ni`).
+démarre au nœud 0 (déduit : `ni` ne désigne aucune entrée ; à confirmer, L1). Effet des
+commandes (`controlSettings`) sur les boutons de la Flam : à confirmer (L15).
 
 ### 2.3 Assets acceptés
 
@@ -118,27 +119,28 @@ str/<uuid>/
 └── sf/000/XXXXXXXX    sons MP3 (chiffrés, 512 premiers octets)
 ```
 
-Statut : observé (Lunii.QT) ; lecture par le firmware à confirmer (L1). Pas de `version`, pas
-de `main.lsf` : c'est ce qui distingue une histoire au format Lunii (le launcher le sait déjà :
-`guard.rs`, `is_lunii_format`).
+Statut : observé (Lunii.QT) ; lecture par le firmware à confirmer (L1). Le launcher reconnaît
+déjà ce format (`guard.rs`, `is_lunii_format`) : absence de `main.lsf` et présence d'un de `ni`,
+`li`, `ri`, `si`. Lunii.QT n'écrit pas de fichier `version`.
 
-Tous les entiers sont **petit-boutistes**.
+Tous les entiers de `ni`, `li` et du BMP sont **petit-boutistes** (l'en-tête LIF, lui, est
+gros-boutiste).
 
 ### 3.2 `ni` : index des nœuds (en clair)
 
 En-tête de `0x200` octets :
 
-| Offset | Taille | Contenu                                              | Statut                           |
-| ------ | ------ | ---------------------------------------------------- | -------------------------------- |
-| `0x00` | 2      | version du format (`1` pour `"v1"`)                  | observé (Lunii.QT)               |
-| `0x02` | 2      | version du pack (`version` de `story.json`)          | observé (Lunii.QT)               |
-| `0x04` | 4      | début de la liste des nœuds : `0x200`                | observé (Lunii.QT)               |
-| `0x08` | 4      | taille d'un nœud : `0x2C` (44)                       | observé (Lunii.QT)               |
-| `0x0C` | 4      | nombre de nœuds de scène                             | observé (Lunii.QT)               |
-| `0x10` | 4      | nombre d'images (entrées de `ri`)                    | observé (Lunii.QT)               |
-| `0x14` | 4      | nombre de sons (entrées de `si`)                     | observé (Lunii.QT)               |
-| `0x18` | 1      | `1` : drapeau « pack non usine » (convention STUdio) | observé (Lunii.QT), sens supposé |
-| `0x19` | reste  | octets nuls jusqu'à `0x200`                          | observé (Lunii.QT)               |
+| Offset | Taille | Contenu                                                                        | Statut             |
+| ------ | ------ | ------------------------------------------------------------------------------ | ------------------ |
+| `0x00` | 2      | version du format (`1` pour `"v1"`)                                            | observé (Lunii.QT) |
+| `0x02` | 2      | version du pack (`version` de `story.json`)                                    | observé (Lunii.QT) |
+| `0x04` | 4      | début de la liste des nœuds : `0x200`                                          | observé (Lunii.QT) |
+| `0x08` | 4      | taille d'un nœud : `0x2C` (44)                                                 | observé (Lunii.QT) |
+| `0x0C` | 4      | nombre de nœuds de scène                                                       | observé (Lunii.QT) |
+| `0x10` | 4      | nombre d'images (entrées de `ri`)                                              | observé (Lunii.QT) |
+| `0x14` | 4      | nombre de sons (entrées de `si`)                                               | observé (Lunii.QT) |
+| `0x18` | 1      | `1` : constante de Lunii.QT (attribut `factory_pack`) ; sens inconnu, recopiée | observé (Lunii.QT) |
+| `0x19` | reste  | octets nuls jusqu'à `0x200`                                                    | observé (Lunii.QT) |
 
 Puis un enregistrement de 44 octets par nœud de scène, dans l'ordre de `stageNodes` :
 
@@ -165,7 +167,8 @@ Taille de `ni` : `0x200 + 44 × nombre de nœuds`. Lunii.QT complète par des `A
 | `si`    | idem pour les sons et `sf/000/`                                                                                                                                                                                                                                                            |
 
 Ordre des entrées de `ri` et `si` : ordre de **première apparition** dans `stageNodes` ; un
-asset utilisé par plusieurs nœuds n'a qu'une entrée. Statut : observé (Lunii.QT).
+asset utilisé par plusieurs nœuds n'a qu'une entrée. Statut : observé (Lunii.QT). Histoire sans image ou
+sans son (`ri` ou `si` vide) : à confirmer (L12).
 
 ### 3.4 Nommage `rf/000/XXXXXXXX`, `sf/000/XXXXXXXX`
 
@@ -183,25 +186,28 @@ donne une entrée de `ri` de moins de 12 octets (index décalé).
   hexadécimaux majuscules), dans l'ordre de `ri` (et de `si`).
 
 Les noms produits sont toujours des noms courts 8.3 valides, sans extension. Aucun nom de
-l'archive ne sert de chemin de sortie.
+l'archive ne sert de chemin de sortie. Lecture des deux règles par le firmware : à confirmer
+(L10). Détail de Lunii.QT : un nom de moins de 8 caractères est écrit en minuscules sur le
+disque, en majuscules dans `ri` (sans effet sur FAT).
 
 ### 3.5 Images (BMP 4 bits RLE)
 
 Observé (Lunii.QT, `image_to_bitmap_rle4`) :
 
-| Propriété  | Valeur                                                                                                                                                                   |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Dimensions | 320 × 240, image étirée sans garder les proportions                                                                                                                      |
-| Couleurs   | 16 niveaux de gris : `(0,299 R + 0,587 G + 0,114 B) / 16`, tronqué ; palette `i × 255 / 16` (0 à 239)                                                                    |
-| En-têtes   | `BITMAPFILEHEADER` (14) + `BITMAPINFOHEADER` (40) : hauteur positive (lignes de bas en haut), 1 plan, 4 bits, compression 2 (RLE4), 16 couleurs ; données à l'offset 118 |
-| Codage     | par ligne, paires (nombre de pixels 1 à 255, couleur répétée dans les deux quartets) ; `00 00` en fin de ligne sauf la dernière ; `00 01` en fin d'image                 |
+| Propriété  | Valeur                                                                                                                                                                                             |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dimensions | 320 × 240, image étirée sans garder les proportions                                                                                                                                                |
+| Couleurs   | 16 niveaux de gris : `(0,299 R + 0,587 G + 0,114 B) / 16`, tronqué ; palette `i × 255 / 16` (0 à 239) ; `biSizeImage` = taille des données RLE ; résolutions, `biClrImportant` et `bfReserved` à 0 |
+| En-têtes   | `BITMAPFILEHEADER` (14) + `BITMAPINFOHEADER` (40) : hauteur positive (lignes de bas en haut), 1 plan, 4 bits, compression 2 (RLE4), 16 couleurs ; données à l'offset 118                           |
+| Codage     | par ligne, paires (nombre de pixels 1 à 255, couleur répétée dans les deux quartets) ; `00 00` en fin de ligne sauf la dernière ; `00 01` en fin d'image                                           |
 
 Écarts **choisis** avec Lunii.QT :
 
 - Lunii.QT garde tel quel un BMP déjà RLE4 de 320 × 240 ; nous le décodons et le réencodons
   toujours (un BMP hostile n'atteint jamais l'appareil) ;
-- Lunii.QT ne retourne pas verticalement une source BMP non conforme (image à l'envers,
-  probablement un défaut) ; nous écrivons toujours les lignes de bas en haut ;
+- Lunii.QT ne retourne pas une source BMP déjà en 320 × 240 mais pas en RLE4 (image à
+  l'envers, probablement un défaut ; une BMP redimensionnée, elle, est retournée) ; nous
+  écrivons toujours les lignes de bas en haut ;
 - transparence : composition sur fond noir (Lunii.QT ignore l'alpha).
 
 Le redimensionnement de Lunii.QT est le bicubique de Pillow ; le nôtre (crate `image`) n'est
@@ -213,8 +219,8 @@ couleur possible sur Flam : à confirmer (L7), hors périmètre.
 Observé (Lunii.QT, `convert_audio.py`) :
 
 - un fichier dont l'extension n'est pas `.mp3` est transcodé ;
-- un MP3 est transcodé s'il est échantillonné **sous** 44 100 Hz ou s'il n'est pas **mono** ;
-  sinon il est gardé ;
+- un MP3 est transcodé s'il est échantillonné **sous** 44 100 Hz, s'il n'est pas **mono** ou
+  si son mode de débit est ABR ; sinon il est gardé ;
 - transcodage : `libmp3lame`, 44 100 Hz, mono, qualité VBR 5, sans métadonnées, **sans en-tête
   Xing**, sans ID3v2 ;
 - les étiquettes (ID3v1, ID3v2) d'un MP3 gardé sont retirées.
@@ -265,8 +271,8 @@ Comparaison avec notre `crypto.rs` (format Flam, implémenté) :
 
 La clé « inversée » ne doit jamais sortir de `device/` : elle est calculée dans `crypto.rs` au
 moment du chiffrement et effacée (`zeroize`) comme les autres. Les clés carrier (1.x) ne
-servent **jamais** au format Lunii : la fonction refuse des clés construites par
-`with_carrier`. Le tout est à confirmer sur appareil (L2, L3).
+servent **jamais** au format Lunii : `DeviceKeys` mémorise sa famille (champ à ajouter, PR E)
+et la fonction Lunii refuse `V1` (`UnsupportedFirmware`). Le tout est à confirmer sur appareil (L2, L3).
 
 Un pack Lunii « v2 » est chiffré autrement (XXTEA avec une clé générique publiée par
 Lunii.QT) : ce format n'est pas repris (§ 4).
@@ -285,7 +291,7 @@ Lunii.QT) : ce format n'est pas repris (§ 4).
 - `info` : fins de ligne LF ; contenu de Lunii.QT pour le premier essai sur appareil (titre de
   `story.json` translittéré en ASCII, ligne d'auteur `No authors.` comme Lunii.QT). Les
   variantes (UTF-8, sans ligne d'auteur) seront essayées ensuite (question Q4) ;
-- vignette : notre encodeur LIF (`telmi2flam::lif`, validé sur appareil) au format des
+- vignette : notre encodeur LIF (`telmi2flam::lif`, utilisé sur une Flam 1.15.14) au format des
   vignettes Flam, 104 × 136 (`telmi2flam::image`, même remplissage que les histoires Telmi).
   Source : `thumbnail.png`, sinon l'image du nœud d'entrée, sinon pas de vignette (Lunii.QT
   échoue sans `thumbnail.png`). Taille à confirmer (L5).
@@ -295,7 +301,8 @@ Lunii.QT) : ce format n'est pas repris (§ 4).
 Lunii.QT réécrit `etc/library/list` et `list.hidden` en entier (UUID en minuscules, LF) et
 supprime `usr/0/library.cache`. Le launcher fait déjà mieux : ajout en fin de `list` par
 `write_index` (écriture sûre, reprise), puis suppression du cache (`docs/flam-device-format.md`,
-§ 5 et § 8.1). **Rien à changer** pour le format Lunii : `list` ne distingue pas les formats.
+§ 5 et § 8.1). **Rien à changer** pour le format Lunii : `list` ne distingue pas les formats. Reconstruction de `library.cache` avec des histoires des
+deux formats : à confirmer (L14).
 
 ## 4. Périmètre recommandé
 
@@ -339,15 +346,15 @@ images, ffmpeg), chiffrement **à chaque envoi** (propre à l'appareil, rapide).
 
 Format de la bibliothèque : `library/<uuid>-<version>.lunii.pk`, zip « stored » :
 
-| Entrée                      | Contenu                                                     |
-| --------------------------- | ----------------------------------------------------------- |
-| `uuid.bin`                  | UUID du pack, 16 octets (lu par `status.rs`, `uuid_bin_of`) |
-| `_metadata.json`            | titre, description, version, format source                  |
-| `_thumbnail.png`            | vignette d'origine (si présente)                            |
-| `ni`, `nm` (si nuit)        | comme sur l'appareil                                        |
-| `li`, `ri`, `si`            | **en clair**                                                |
-| `rf/000/*`, `sf/000/*`      | **en clair**                                                |
-| `info`, `img/thumbnail.lif` | comme sur l'appareil (en clair)                             |
+| Entrée                      | Contenu                                                                                  |
+| --------------------------- | ---------------------------------------------------------------------------------------- |
+| `uuid.bin`                  | UUID du pack, 16 octets (`status.rs`, `uuid_bin_of`, une fois `Library::checked` étendu) |
+| `_metadata.json`            | titre, description, version, format source                                               |
+| `_thumbnail.png`            | vignette d'origine (si présente)                                                         |
+| `ni`, `nm` (si nuit)        | comme sur l'appareil                                                                     |
+| `li`, `ri`, `si`            | **en clair**                                                                             |
+| `rf/000/*`, `sf/000/*`      | **en clair**                                                                             |
+| `info`, `img/thumbnail.lif` | comme sur l'appareil (en clair)                                                          |
 
 L'extension `.lunii.pk` (et non `.plain.pk`) garantit qu'aucun code qui attend une histoire Flam
 (player, `prepare.rs`, scan) ne prend ce fichier pour une histoire Flam.
@@ -358,8 +365,12 @@ L'extension `.lunii.pk` (et non `.plain.pk`) garantit qu'aucun code qui attend u
 
 - `install/mod.rs` : branche `StudioZip` de `transform` (appel de `install/studio.rs`) et de
   `fetch` (extension `zip`) ;
-- `library.rs` : nom de fichier selon le format (`.plain.pk` ou `.lunii.pk`) ; un champ dérivé
-  « format sur l'appareil » (`flam` ou `lunii`) exposé au front ;
+- `library.rs` : `.plain.pk` y est codé en dur à plusieurs endroits : `file_name_for(uuid,
+version, format)`, `Library::checked` (accepter `.plain.pk` et `.lunii.pk` ; il sert à
+  `final_path`, à l'envoi, à `archive_uuid` de `status.rs` et au player), réconciliation (UUID
+  déduit selon l'extension) ; un champ dérivé « format sur l'appareil » (`flam` ou `lunii`)
+  exposé au front ;
+- `library_thumb.rs` : suffixe du nom de la vignette ;
 - `library_source.rs` : empreinte de la source (`file_digest`, comme `TelmiZip`) ;
 - `folder.rs` : lever le refus d'installation posé par #519.
 
@@ -421,9 +432,12 @@ Des histoires au format Lunii existent déjà sur des Flam 2.x (installées par 
   sa version Lunii visent le même `str/<uuid>/`. « Remplacer » change alors de format : le front
   le dit (« remplace la version au format Flam »). Les progressions `usr/0/<uuid>.*` ne sont pas
   touchées (inchangé) ; leur compatibilité entre formats est inconnue (L13).
-- Dans la bibliothèque : **une entrée par UUID** (règle actuelle de `library.rs`). Installer la
-  version STUdio d'une histoire dont la version Telmi est installée sous le même UUID la remplace
-  (et inversement) : le front le demande avant l'installation (Q10).
+- Dans la bibliothèque : **une entrée par identifiant** (règle actuelle de `library.rs`).
+  L'identifiant d'un pack Lunii est l'UUID du pack en 32 hexadécimaux minuscules (comme un
+  `.plain.pk`) ; celui d'une histoire Telmi est son champ `uuid`, souvent d'une autre forme. Le
+  remplacement dans la bibliothèque n'a lieu que si les deux identifiants coïncident : le front
+  le demande avant l'installation (Q10). Sinon les deux entrées coexistent et la collision
+  apparaît à l'envoi (`AlreadyInstalled`, même `str/<uuid>/`).
 
 ### 5.9 Retrait et ordre
 
@@ -505,7 +519,9 @@ suffit.
   pycryptodome dans un environnement virtuel jetable. Il produit `ni`, `li`, `ri`, `si`, les BMP
   et le chiffrement pour les mêmes fixtures synthétiques. Attendus : `ni`, `li`, `ri`, `si`
   identiques à l'octet (règle de nommage de Lunii.QT) ; BMP à ± 1 niveau de gris ; chiffrement
-  identique à l'octet. Les résultats sont donnés dans la PR, pas les sources de l'oracle.
+  identique à l'octet. Fixtures MP3 seulement, ou ffmpeg dans le `PATH` de l'oracle (sinon
+  `StudioStory` déclare l'histoire incompatible). Les résultats sont donnés dans la PR, pas les
+  sources de l'oracle.
 - **Launcher** : préparation Lunii sur faux appareil, injection de panne à chaque étape (comme
   `prepare.rs` et `transfer.rs`), refus 1.x sans aucune écriture (arborescence comparée avant et
   après), titre en clair dans « Ma Flam », retrait d'un pack complet.
@@ -517,24 +533,28 @@ Chaque PR : un thème, cinq changements au plus. Modèle : **opus** pour le code
 format ou de transfert ; **sonnet** ailleurs. #519 (détection au scan, `folder.rs`, `story.rs`)
 est fait en parallèle et n'est pas repris ici.
 
-| PR  | Thème                                                                                                                             | Fichiers                                                                                                         | Dépend de        | Modèle |
-| --- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------- | ------ |
-| A   | `story` : lecture et validation de `story.json` (#520)                                                                            | `crates/studio2lunii/src/story.rs`                                                                               | #524             | opus   |
-| B   | `index` : `ni`, `li`, `ri`, `si`, nommage (#520)                                                                                  | `crates/studio2lunii/src/index.rs`                                                                               | A (types)        | opus   |
-| C   | `bitmap` : décodage, 320 × 240, gris, RLE4 (#521)                                                                                 | `crates/studio2lunii/src/bitmap.rs`                                                                              | #524             | opus   |
-| D   | `audio` : analyse MP3, étiquettes, décision (#521)                                                                                | `crates/studio2lunii/src/audio.rs`                                                                               | #524             | opus   |
-| E   | Chiffrement Lunii : inversion par mots, 512 octets, refus carrier                                                                 | `apps/.../device/crypto.rs`                                                                                      | aucune           | opus   |
-| F   | « Ma Flam » : titre en clair, champ `format`                                                                                      | `device/details.rs`, `device/status.rs`, `src/features/device/` (badge)                                          | aucune           | sonnet |
-| G   | Installation : pack clair `.lunii.pk`, ffmpeg, vignette                                                                           | `install/studio.rs` (nouveau), `install/mod.rs`, `library.rs`, `library_source.rs`, `folder.rs` (levée du refus) | A, B, C, D, #519 | opus   |
-| H   | Préparation Lunii                                                                                                                 | `device/prepare_lunii.rs` (nouveau), `device/prepare.rs` (fonctions partagées), `device/mod.rs`                  | E, G (format)    | opus   |
-| I   | Envoi : choix de la préparation, refus 1.x, erreurs                                                                               | `device/transfer.rs`, `error.rs`, messages du front                                                              | H                | opus   |
-| J   | Interface et documentation : « Lire » désactivé, envoi grisé en 1.x, README, `flam-transfert.md`, § 10 de `flam-device-format.md` | `player.rs` (garde), `src/features/library/`, `src/features/device/`, docs                                       | G, I             | sonnet |
+| PR  | Thème                                                                                                                                                          | Fichiers                                                                                              | Dépend de      | Modèle                                                                                         |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------- |
+| A   | `story` : lecture et validation de `story.json` (#520)                                                                                                         | `crates/studio2lunii/src/story.rs`                                                                    | #524           | opus                                                                                           |
+| B   | `index` : `ni`, `li`, `ri`, `si`, nommage (#520)                                                                                                               | `crates/studio2lunii/src/index.rs`                                                                    | A (types)      | opus                                                                                           |
+| C   | `bitmap` : décodage, 320 × 240, gris, RLE4 (#521)                                                                                                              | `crates/studio2lunii/src/bitmap.rs`                                                                   | #524           | opus                                                                                           |
+| D   | `audio` : analyse MP3, étiquettes, décision (#521)                                                                                                             | `crates/studio2lunii/src/audio.rs`                                                                    | #524           | opus                                                                                           |
+| E   | Chiffrement Lunii : inversion par mots, 512 octets, refus carrier                                                                                              | `apps/.../device/crypto.rs`                                                                           | aucune         | opus                                                                                           |
+| F   | « Ma Flam » : titre en clair, champ `format`                                                                                                                   | `device/details.rs`, `device/status.rs`, `src/features/device/` (badge)                               | aucune         | sonnet                                                                                         |
+| G1  | Installation (1/2) : conversion, ffmpeg, vignette, écriture du pack clair `.lunii.pk`                                                                          | `install/studio.rs` (nouveau)                                                                         | A, B, C, D     | opus                                                                                           |
+| G2  | Installation (2/2) : bibliothèque et branchement                                                                                                               | `install/mod.rs`, `library.rs`, `library_thumb.rs`, `library_source.rs`, `folder.rs` (levée du refus) | G1, #519       | opus                                                                                           |
+| H   | Préparation Lunii                                                                                                                                              | `device/prepare_lunii.rs` (nouveau), `device/prepare.rs` (fonctions partagées), `device/mod.rs`       | E, G1 (format) | opus                                                                                           |
+| I   | Envoi : choix de la préparation, refus 1.x, erreurs                                                                                                            | `device/transfer.rs`, `error.rs`, messages du front                                                   | H              | opus                                                                                           |
+| J   | Interface et documentation : « Lire » désactivé, envoi grisé en 1.x, README, `apps/flam-launcher/docs/flam-transfert.md`, § 10 de `docs/flam-device-format.md` | `player.rs` (garde), `src/features/library/`, `src/features/device/`, docs                            | G2, I          | sonnet (garde de `player.rs` : exception justifiée dans la PR, aucune écriture ni suppression) |
 
-Parallélisme : A, C, D, E, F tout de suite (fichiers disjoints) ; B après A ; G après A à D ;
-H après E et G ; I puis J. G et H peuvent se recouvrir si le format du § 5.2 est pris comme
-contrat (H teste avec des packs construits à la main). G touche les données de l'utilisateur
-(bibliothèque) : note de conception dans la PR et test d'injection de panne obligatoires
-(CONTRIBUTING § 5).
+Parallélisme : A, C, D, E, F tout de suite (fichiers disjoints) ; B après A ; G1 après A à D ;
+G2 après G1 et #519 ; H après E et G1 ; I puis J. G1 et H peuvent se recouvrir si le format du
+§ 5.2 est pris comme contrat (H teste avec des packs construits à la main). G2 touche les
+données de l'utilisateur (bibliothèque) : note de conception dans la PR et test d'injection de
+panne obligatoires (CONTRIBUTING § 5).
+
+#519 ajoute une variante à `StoryKind` : les `match` exhaustifs (`install/mod.rs`,
+`library_source.rs`, `folder.rs`) y reçoivent une branche de refus ; G2 la remplace.
 
 Plus tard (issues à ouvrir si besoin) : preuve de clé par `ri` dans `guard.rs` ; essai des
 variantes de `info` ; STUdio 7z.
