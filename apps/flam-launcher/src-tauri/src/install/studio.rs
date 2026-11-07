@@ -650,18 +650,22 @@ impl Source {
 // ---------------------------------------------------------------------------------------
 
 /// Caractère Unicode de format invisible (catégorie `Cf` et assimilés) : contrôles
-/// bidirectionnels (U+061C, U+200E/F, U+202A–U+202E, U+2066–U+2069), espaces et liants sans
-/// chasse (U+200B–U+200D, U+2060–U+2064, U+FEFF), trait d'union conditionnel, séparateur
-/// vocalique mongol, formats déconseillés (U+206A–U+206F), annotations interlinéaires
-/// (U+FFF9–U+FFFB), étiquettes (U+E0001, U+E0020–U+E007F). Ils retourneraient ou masqueraient
-/// le texte affiché (« Trojan Source »).
+/// bidirectionnels (U+061C, U+200E/F, U+202A–U+202E, U+2066–U+2069), espace et liants sans
+/// chasse (U+200B, U+2060–U+2064, U+FEFF), trait d'union conditionnel, séparateur vocalique
+/// mongol, formats déconseillés (U+206A–U+206F), annotations interlinéaires (U+FFF9–U+FFFB),
+/// étiquettes (U+E0001, U+E0020–U+E007F). Ils retourneraient ou masqueraient le texte affiché
+/// (« Trojan Source »). ZWNJ et ZWJ (U+200C, U+200D) sont gardés dans le texte UTF-8 : ils
+/// servent à l'écriture (persan, langues indiennes) et aux émojis composés ; la
+/// translittération ASCII les retire ([`ascii_text`]).
 fn is_format_char(c: char) -> bool {
     matches!(
         c,
         '\u{00AD}'
             | '\u{061C}'
             | '\u{180E}'
-            | '\u{200B}'..='\u{200F}'
+            | '\u{200B}'
+            | '\u{200E}'
+            | '\u{200F}'
             | '\u{202A}'..='\u{202E}'
             | '\u{2060}'..='\u{2064}'
             | '\u{2066}'..='\u{206F}'
@@ -694,7 +698,10 @@ pub(crate) fn ascii_text(text: &str) -> String {
             out.push(if c.is_ascii_control() { ' ' } else { c });
             continue;
         }
-        if canonical_combining_class(c) != 0 || is_format_char(c) {
+        if canonical_combining_class(c) != 0
+            || is_format_char(c)
+            || matches!(c, '\u{200C}' | '\u{200D}')
+        {
             continue;
         }
         let replacement = match c {
@@ -798,6 +805,11 @@ fn first_to_transcode(
     for (asset, &at) in sounds() {
         check_cancel(cancel)?;
         let head = source.prefix(at, PROBE_BYTES);
+        if id3v2_overflows(&head) {
+            // Étiquette (pochette) plus longue que le préfixe : les octets lus après seraient
+            // ceux de l'image, où une fausse synchronisation pourrait passer pour une trame.
+            continue;
+        }
         let Ok(info) = probe_mp3(&head) else {
             continue;
         };
@@ -810,6 +822,19 @@ fn first_to_transcode(
         }
     }
     Ok(None)
+}
+
+/// Le préfixe commence-t-il par une étiquette ID3v2 qui le déborde (taille « synchsafe » de
+/// l'en-tête, pied de page éventuel compris) ?
+fn id3v2_overflows(head: &[u8]) -> bool {
+    let Some(header) = head.get(..10).filter(|h| h.starts_with(b"ID3")) else {
+        return false;
+    };
+    let size = header[6..10]
+        .iter()
+        .fold(0usize, |acc, &b| (acc << 7) | usize::from(b & 0x7f));
+    let footer = if header[5] & 0x10 != 0 { 10 } else { 0 };
+    10 + size + footer >= head.len()
 }
 
 fn plan(source: &mut Source, fit: ThumbFit, cancel: &watch::Receiver<bool>) -> AppResult<Plan> {

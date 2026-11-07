@@ -901,6 +901,20 @@ fn caracteres_de_format_retires() {
     // Seul : titre vide, donc repli.
     assert_eq!(clean_line("\u{202E}\u{2067}", 100), "");
     assert_eq!(ascii_text("L\u{202E}éa\u{200D}"), "Lea");
+    // ZWNJ et ZWJ gardés dans le texte UTF-8 (écriture, émojis composés).
+    assert_eq!(clean_line("می\u{200C}خواهم", 100), "می\u{200C}خواهم");
+}
+
+#[test]
+fn pre_analyse_prudente_sur_une_longue_etiquette() {
+    // ID3v2 de 100 000 octets : déborde du préfixe, aucune conclusion.
+    let mut head = b"ID3\x03\x00\x00".to_vec();
+    let size = 100_000u32;
+    head.extend([21, 14, 7, 0].iter().map(|s| ((size >> s) & 0x7f) as u8));
+    head.resize(PROBE_BYTES as usize, 0xFF);
+    assert!(id3v2_overflows(&head));
+    assert!(!id3v2_overflows(&mp3_tagged()));
+    assert!(!id3v2_overflows(&mp3_mono()));
 }
 
 #[tokio::test]
