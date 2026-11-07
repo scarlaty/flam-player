@@ -882,3 +882,113 @@ fn bornes_de_la_note_sur_les_index() {
         Err(PrepareError::Invalid(m)) if m.contains("nœuds")
     ));
 }
+
+/// Marque l'entrée `name` comme chiffrée par mot de passe (bit 0 des drapeaux, en-tête local
+/// et répertoire central) sans toucher aux données : `zip` n'écrit pas de ZipCrypto.
+fn mark_password_protected(pk: &Path, name: &str) {
+    let mut bytes = std::fs::read(pk).unwrap();
+    let needle = name.as_bytes();
+    let mut marked = 0;
+    for p in 0..bytes.len().saturating_sub(needle.len()) {
+        if &bytes[p..p + needle.len()] != needle {
+            continue;
+        }
+        if p >= 30 && bytes[p - 30..p - 26] == [0x50, 0x4b, 0x03, 0x04] {
+            bytes[p - 30 + 6] |= 1;
+            marked += 1;
+        } else if p >= 46 && bytes[p - 46..p - 42] == [0x50, 0x4b, 0x01, 0x02] {
+            bytes[p - 46 + 8] |= 1;
+            marked += 1;
+        }
+    }
+    assert_eq!(marked, 2, "{name} : en-tête local et central");
+    std::fs::write(pk, bytes).unwrap();
+}
+
+#[test]
+fn entree_chiffree_par_mot_de_passe_refusee_avant_toute_ecriture() {
+    // #540 : vignette et assets compris (avant, refusés seulement dans le chantier).
+    for name in [
+        "img/thumbnail.lif",
+        "rf/000/AAAAAAAA",
+        "sf/000/CCCCCCCC",
+        "ni",
+        "info",
+        "uuid.bin",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let pk = pk_with(tmp.path(), &base_entries());
+        mark_password_protected(&pk, name);
+        let work = tmp.path().join("travail");
+        match run(&pk, &work) {
+            Err(PrepareError::LuniiInvalid(m)) => {
+                assert!(m.contains(name) && m.contains("mot de passe"), "{m}")
+            }
+            other => panic!("{name} : attendu LuniiInvalid, obtenu {other:?}"),
+        }
+        assert!(!work.exists(), "rien d'écrit ({name})");
+    }
+    // Une entrée ignorée n'est jamais lue : son chiffrement ne gêne pas.
+    let tmp = tempfile::tempdir().unwrap();
+    let pk = pk_with(tmp.path(), &base_entries());
+    mark_password_protected(&pk, "_thumbnail.png");
+    run(&pk, &tmp.path().join("travail")).unwrap();
+}
+
+#[test]
+fn en_tete_de_ni_controle_entierement() {
+    let with_ni = |f: &dyn Fn(&mut Vec<u8>)| {
+        let mut ni = ni_bytes(&nodes(), 2, 1);
+        f(&mut ni);
+        let mut e = base_entries();
+        set(&mut e, "ni", ni);
+        e
+    };
+    // En-tête documenté (note § 3.2, `studio2lunii::index::build_index`) : accepté, quelle
+    // que soit la version du pack en 0x02.
+    let tmp = tempfile::tempdir().unwrap();
+    let entries = with_ni(&|ni| ni[2..4].copy_from_slice(&0xFFFFu16.to_le_bytes()));
+    run(&pk_with(tmp.path(), &entries), &tmp.path().join("travail")).unwrap();
+    // Version de format autre que 1.
+    for v in [0u16, 2, 0x0100] {
+        expect_invalid(
+            &with_ni(&|ni| ni[0..2].copy_from_slice(&v.to_le_bytes())),
+            "version de format",
+        );
+    }
+    // Octet 0x18 autre que 1, octets non nuls de 0x19 à 0x1FF.
+    for (at, value) in [(0x18, 0u8), (0x18, 2), (0x19, 1), (0x100, 0xAA), (0x1FF, 1)] {
+        expect_invalid(&with_ni(&|ni| ni[at] = value), "octet 0x18");
+    }
+}
+
+#[test]
+fn li_vide_accepte_sans_transition_qui_le_reference() {
+    // Comportement figé en attendant la mesure sur l'appareil (L12, #540) : un `li` vide passe
+    // si toutes les transitions sont absentes, et est refusé dès qu'une le référence.
+    let node = |ok| Node {
+        image: 0,
+        sound: 0,
+        ok,
+        home: NONE,
+        controls: [1, 1, 0, 0, 0],
+    };
+    let entries = |ok| {
+        let mut e: Entries = base_entries()
+            .into_iter()
+            .filter(|(n, _)| n != "rf/000/0000000b")
+            .collect();
+        set(&mut e, "ni", ni_bytes(&[node(ok)], 1, 1));
+        set(&mut e, "li", Vec::new());
+        set(&mut e, "ri", asset_index(&["AAAAAAAA"]));
+        e
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let prepared = run(
+        &pk_with(tmp.path(), &entries(NONE)),
+        &tmp.path().join("travail"),
+    )
+    .unwrap();
+    assert!(prepared.files.iter().any(|f| f == "li"));
+    expect_invalid(&entries((0, 1, 0)), "transition OK");
+}
