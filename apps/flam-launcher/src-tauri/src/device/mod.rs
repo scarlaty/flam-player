@@ -19,6 +19,7 @@ pub mod index;
 pub mod lock;
 pub mod official;
 pub mod prepare;
+pub mod prepare_lunii;
 pub mod remove;
 pub mod reorder;
 pub mod status;

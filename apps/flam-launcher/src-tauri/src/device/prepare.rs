@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use zip::ZipArchive;
 
-use super::crypto::DeviceKeys;
+use super::crypto::{CryptoError, DeviceKeys};
 
 /// Dossier des histoires préparées, sous le dossier de travail (même nom que sur la Flam).
 pub const STORIES_DIR: &str = "str";
@@ -49,7 +49,7 @@ pub const REQUIRED: [&str; 4] = ["uuid.bin", "info.plain", "main.lua", "version"
 /// de `.mdf`, en 1.x avec celles du mode carrier ; il n'est jamais recopié (#317).
 pub const EXCLUDED: [&str; 4] = ["uuid.bin", "_metadata.json", "_thumbnail.png", "bt"];
 
-const UUID_ENTRY: &str = "uuid.bin";
+pub(crate) const UUID_ENTRY: &str = "uuid.bin";
 const COPY_CHUNK: usize = 64 * 1024;
 /// Longueur maximale d'un nom de fichier ou de dossier sur FAT (unités UTF-16).
 const MAX_COMPONENT_UTF16: usize = 255;
@@ -90,6 +90,16 @@ pub enum PrepareError {
     /// Annulation demandée.
     #[error("préparation annulée")]
     Cancelled,
+    /// Pack au format Lunii (`.lunii.pk`) illisible, incomplet ou incohérent (#530).
+    #[error("pack .lunii.pk invalide : {0}")]
+    LuniiInvalid(String),
+    /// Pack au format Lunii : une borne de [`Limits`] est dépassée (#530).
+    #[error("pack .lunii.pk trop volumineux : {0}")]
+    LuniiTooLarge(String),
+    /// Pack au format Lunii pour une Flam qui n'est pas en firmware 2.x (#530) : refusé avant
+    /// toute écriture.
+    #[error("{}", CryptoError::LuniiFormatNeedsV2)]
+    LuniiNeedsV2,
 }
 
 /// Histoire préparée, prête à copier sur la Flam.
@@ -177,11 +187,11 @@ pub fn cleanup_stale(work_dir: &Path) -> io::Result<usize> {
     Ok(removed)
 }
 
-fn invalid(msg: impl Into<String>) -> PrepareError {
+pub(crate) fn invalid(msg: impl Into<String>) -> PrepareError {
     PrepareError::Invalid(msg.into())
 }
 
-fn check_cancel(cancel: &AtomicBool) -> Result<(), PrepareError> {
+pub(crate) fn check_cancel(cancel: &AtomicBool) -> Result<(), PrepareError> {
     if cancel.load(Ordering::Relaxed) {
         Err(PrepareError::Cancelled)
     } else {
@@ -204,7 +214,7 @@ fn is_reserved_windows_name(component: &str) -> bool {
 
 /// Majuscules caractère par caractère, comme la table de FAT : une correspondance Unicode à
 /// plusieurs caractères (`ß` → `SS`, `ﬁ` → `FI`) laisse le caractère tel quel.
-fn fat_upper(name: &str) -> String {
+pub(crate) fn fat_upper(name: &str) -> String {
     name.chars()
         .map(|c| {
             let mut upper = c.to_uppercase();
@@ -277,18 +287,13 @@ fn new_staging_name(uuid: &str) -> String {
     format!("{STAGING_PREFIX}{uuid}-{}", uuid::Uuid::new_v4().simple())
 }
 
-pub(crate) fn prepare_with(
-    sink: &dyn Sink,
-    plain_pk: &Path,
-    keys: &DeviceKeys,
-    work_dir: &Path,
-    limits: &Limits,
-    cancel: &AtomicBool,
-) -> Result<PreparedStory, PrepareError> {
-    check_cancel(cancel)?;
-    let file = File::open(plain_pk)?;
-    let mut zip =
-        ZipArchive::new(BufReader::new(file)).map_err(|e| invalid(format!("zip : {e}")))?;
+/// Archive zip ouverte en lecture.
+pub(crate) type Archive = ZipArchive<BufReader<File>>;
+
+/// Ouvre l'archive `path` et contrôle son nombre d'entrées ([`Limits::max_entries`]).
+pub(crate) fn open_archive(path: &Path, limits: &Limits) -> Result<Archive, PrepareError> {
+    let file = File::open(path)?;
+    let zip = ZipArchive::new(BufReader::new(file)).map_err(|e| invalid(format!("zip : {e}")))?;
     if zip.len() > limits.max_entries {
         return Err(PrepareError::TooLarge(format!(
             "{} entrées (au plus {})",
@@ -296,18 +301,21 @@ pub(crate) fn prepare_with(
             limits.max_entries
         )));
     }
+    Ok(zip)
+}
 
-    // 1. Plan : noms, doublons, entrées obligatoires, UUID. Rien n'est écrit.
-    let mut planned = Vec::new();
+/// Parcourt les fichiers de l'archive dans l'ordre de l'annuaire, sans rien décompresser :
+/// dossiers ignorés, liens symboliques refusés, noms contrôlés ([`safe_relative`]), doublons
+/// à la casse près refusés. `visit` reçoit l'indice, le chemin relatif sûr (en `/`) et la
+/// taille déclarée de chaque fichier.
+pub(crate) fn for_each_entry(
+    zip: &mut Archive,
+    mut visit: impl FnMut(usize, String, u64) -> Result<(), PrepareError>,
+) -> Result<(), PrepareError> {
     // Noms comparés en minuscules et en majuscules : la table de majuscules de FAT ne suit pas
     // exactement `to_lowercase` (`ſ` et `s`, `ı` et `i` ne se confondent qu'en majuscules).
     let mut seen_sources = HashSet::new();
     let mut seen_sources_upper = HashSet::new();
-    let mut exact_names = HashSet::new();
-    let mut seen_targets = HashSet::new();
-    let mut seen_targets_upper = HashSet::new();
-    let mut uuid_index = None;
-    let mut declared = 0u64;
     for index in 0..zip.len() {
         let entry = zip
             .by_index_raw(index)
@@ -327,6 +335,84 @@ pub(crate) fn prepare_with(
         if !(new_lower && new_upper) {
             return Err(invalid(format!("entrée en double : {relative:?}")));
         }
+        let size = entry.size();
+        drop(entry);
+        visit(index, relative, size)?;
+    }
+    Ok(())
+}
+
+/// Construit une histoire dans un dossier de chantier `<travail>/.partiel-<uuid>-<aléa>` puis
+/// la publie en `<travail>/str/<uuid>` : `build` remplit le chantier et rend le nombre
+/// d'octets écrits. Une préparation précédente est écartée par renommage (jamais supprimée en
+/// place) et remise en place si la publication échoue. En cas d'erreur ou d'annulation, le
+/// chantier est supprimé (au mieux) ; un chantier laissé par un arrêt brutal l'est par
+/// [`cleanup_stale`].
+pub(crate) fn build_in_staging(
+    sink: &dyn Sink,
+    work_dir: &Path,
+    uuid: &str,
+    cancel: &AtomicBool,
+    build: impl FnOnce(&Path) -> Result<u64, PrepareError>,
+) -> Result<(PathBuf, u64), PrepareError> {
+    let staging = work_dir.join(new_staging_name(uuid));
+    let result = (|| {
+        sink.create_dir_all(&staging)?;
+        let total = build(&staging)?;
+        check_cancel(cancel)?;
+        let stories = work_dir.join(STORIES_DIR);
+        sink.create_dir_all(&stories)?;
+        let dir = stories.join(uuid);
+        let previous = if dir.exists() {
+            let old = work_dir.join(new_staging_name(&format!("ancien-{uuid}")));
+            sink.rename(&dir, &old)?;
+            Some(old)
+        } else {
+            None
+        };
+        if let Err(e) = sink.rename(&staging, &dir) {
+            if let Some(old) = &previous {
+                if let Err(back) = sink.rename(old, &dir) {
+                    tracing::warn!(ancien = %old.display(), "restauration impossible : {back}");
+                }
+            }
+            return Err(e.into());
+        }
+        if let Some(old) = previous {
+            if let Err(e) = sink.remove_dir_all(&old) {
+                // Laissé à `cleanup_stale` (préfixe de chantier).
+                tracing::warn!(ancien = %old.display(), "suppression différée : {e}");
+            }
+        }
+        Ok::<_, PrepareError>((dir, total))
+    })();
+    if result.is_err() && staging.exists() {
+        if let Err(clean) = std::fs::remove_dir_all(&staging) {
+            tracing::warn!(chantier = %staging.display(), "nettoyage impossible : {clean}");
+        }
+    }
+    result
+}
+
+pub(crate) fn prepare_with(
+    sink: &dyn Sink,
+    plain_pk: &Path,
+    keys: &DeviceKeys,
+    work_dir: &Path,
+    limits: &Limits,
+    cancel: &AtomicBool,
+) -> Result<PreparedStory, PrepareError> {
+    check_cancel(cancel)?;
+    let mut zip = open_archive(plain_pk, limits)?;
+
+    // 1. Plan : noms, doublons, entrées obligatoires, UUID. Rien n'est écrit.
+    let mut planned = Vec::new();
+    let mut exact_names = HashSet::new();
+    let mut seen_targets = HashSet::new();
+    let mut seen_targets_upper = HashSet::new();
+    let mut uuid_index = None;
+    let mut declared = 0u64;
+    for_each_entry(&mut zip, |index, relative, size| {
         exact_names.insert(relative.clone());
         if relative == UUID_ENTRY {
             uuid_index = Some(index);
@@ -343,14 +429,15 @@ pub(crate) fn prepare_with(
             {
                 return Err(invalid(format!("nom trop long pour FAT : {target:?}")));
             }
-            declared = declared.saturating_add(entry.size());
+            declared = declared.saturating_add(size);
             planned.push(Planned {
                 index,
                 target,
                 action,
             });
         }
-    }
+        Ok(())
+    })?;
     // Un fichier et un dossier de même nom (`a` et `a/b`) : refusé dès le plan, avant toute
     // écriture, plutôt que par une erreur d'E/S en cours de chantier.
     for (targets, target) in [&seen_targets, &seen_targets_upper]
@@ -385,54 +472,13 @@ pub(crate) fn prepare_with(
     let uuid = read_uuid(&mut zip, uuid_index.expect("uuid.bin présent"))?;
 
     // 2. Chantier, puis 3. renommage en dossier final.
-    let staging = work_dir.join(new_staging_name(&uuid));
-    let result = (|| {
-        sink.create_dir_all(&staging)?;
-        let total = write_entries(sink, &mut zip, &planned, keys, &staging, limits, cancel)?;
+    let (dir, total_bytes) = build_in_staging(sink, work_dir, &uuid, cancel, |staging| {
+        let total = write_entries(sink, &mut zip, &planned, keys, staging, limits, cancel)?;
         check_cancel(cancel)?;
         let key = keys.key_file();
         write_all_to(sink, &staging.join(KEY_FILE), &key[..])?;
-        let total = total + key.len() as u64;
-        check_cancel(cancel)?;
-        let stories = work_dir.join(STORIES_DIR);
-        sink.create_dir_all(&stories)?;
-        let dir = stories.join(&uuid);
-        // Une préparation précédente est écartée par renommage (jamais supprimée en place) :
-        // le dossier final reste complet, et elle est remise en place si le renommage échoue.
-        let previous = if dir.exists() {
-            let old = work_dir.join(new_staging_name(&format!("ancien-{uuid}")));
-            sink.rename(&dir, &old)?;
-            Some(old)
-        } else {
-            None
-        };
-        if let Err(e) = sink.rename(&staging, &dir) {
-            if let Some(old) = &previous {
-                if let Err(back) = sink.rename(old, &dir) {
-                    tracing::warn!(ancien = %old.display(), "restauration impossible : {back}");
-                }
-            }
-            return Err(e.into());
-        }
-        if let Some(old) = previous {
-            if let Err(e) = sink.remove_dir_all(&old) {
-                // Laissé à `cleanup_stale` (préfixe de chantier).
-                tracing::warn!(ancien = %old.display(), "suppression différée : {e}");
-            }
-        }
-        Ok::<_, PrepareError>((dir, total))
-    })();
-    let (dir, total_bytes) = match result {
-        Ok(ok) => ok,
-        Err(e) => {
-            if staging.exists() {
-                if let Err(clean) = std::fs::remove_dir_all(&staging) {
-                    tracing::warn!(chantier = %staging.display(), "nettoyage impossible : {clean}");
-                }
-            }
-            return Err(e);
-        }
-    };
+        Ok(total + key.len() as u64)
+    })?;
     let mut files: Vec<String> = planned.iter().map(|p| p.target.clone()).collect();
     files.push(KEY_FILE.to_string());
     files.sort();
@@ -445,7 +491,7 @@ pub(crate) fn prepare_with(
     })
 }
 
-fn read_uuid<R: Read + io::Seek>(
+pub(crate) fn read_uuid<R: Read + io::Seek>(
     zip: &mut ZipArchive<R>,
     index: usize,
 ) -> Result<String, PrepareError> {
@@ -462,7 +508,7 @@ fn read_uuid<R: Read + io::Seek>(
     Ok(uuid.hyphenated().to_string())
 }
 
-fn write_all_to(sink: &dyn Sink, path: &Path, data: &[u8]) -> io::Result<()> {
+pub(crate) fn write_all_to(sink: &dyn Sink, path: &Path, data: &[u8]) -> io::Result<()> {
     let mut out = sink.create(path)?;
     out.write_all(data)?;
     out.flush()
@@ -512,27 +558,43 @@ fn write_entries<R: Read + io::Seek>(
             }
             Action::Copy => {
                 let mut out = sink.create(&target)?;
-                let mut buf = vec![0u8; COPY_CHUNK];
-                loop {
-                    check_cancel(cancel)?;
-                    let n = entry.read(&mut buf).map_err(read_err)?;
-                    if n == 0 {
-                        break;
-                    }
-                    total += n as u64;
-                    if total > limits.max_total_bytes {
-                        return Err(too_large(format!(
-                            "plus de {} octets",
-                            limits.max_total_bytes
-                        )));
-                    }
-                    out.write_all(&buf[..n])?;
-                }
+                copy_chunks(&mut entry, &mut out, &p.target, &mut total, limits, cancel)?;
                 out.flush()?;
             }
         }
     }
     Ok(total)
+}
+
+/// Recopie `reader` jusqu'à sa fin dans `out` par blocs, en ajoutant les octets écrits à
+/// `total` (borné par [`Limits::max_total_bytes`]) ; `cancel` est consulté avant chaque bloc.
+/// `name` (nom produit) sert aux messages d'erreur de lecture.
+pub(crate) fn copy_chunks(
+    reader: &mut dyn Read,
+    out: &mut dyn Write,
+    name: &str,
+    total: &mut u64,
+    limits: &Limits,
+    cancel: &AtomicBool,
+) -> Result<(), PrepareError> {
+    let mut buf = vec![0u8; COPY_CHUNK];
+    loop {
+        check_cancel(cancel)?;
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| invalid(format!("{name} : {e}")))?;
+        if n == 0 {
+            return Ok(());
+        }
+        *total += n as u64;
+        if *total > limits.max_total_bytes {
+            return Err(PrepareError::TooLarge(format!(
+                "plus de {} octets",
+                limits.max_total_bytes
+            )));
+        }
+        out.write_all(&buf[..n])?;
+    }
 }
 
 #[cfg(test)]
