@@ -5,7 +5,7 @@ import { sendErrorMessage } from "./sendError";
 it("histoire STUdio sur une Flam 1.x : message du front, pas celui du backend", () => {
   const message = sendErrorMessage({ kind: LUNII_NEEDS_V2, message: "texte du backend" });
   expect(message).toBe(
-    "Les histoires STUdio demandent une Flam en firmware 2.x. Mettez la Flam à jour avec l'application officielle, puis réessayez. Rien n'a été écrit sur la Flam.",
+    "Les histoires STUdio demandent une Flam en firmware 2.x : cette Flam ne peut pas les lire. Rien n'a été écrit sur la Flam.",
   );
   expect(LUNII_NEEDS_V2).toBe("lunii_needs_v2");
 });

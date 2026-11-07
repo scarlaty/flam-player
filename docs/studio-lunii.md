@@ -344,7 +344,7 @@ deux formats : à confirmer (L14).
 
 Messages (idée) : « Pack Lunii non pris en charge : seules les histoires STUdio (story.json)
 peuvent être installées » ; « Les histoires STUdio demandent une Flam en firmware 2.x :
-mettez-la à jour avec l'application officielle ».
+cette Flam ne peut pas les lire » (sans inviter à mettre à jour le firmware pendant la bêta).
 
 ## 5. Intégration dans le launcher
 

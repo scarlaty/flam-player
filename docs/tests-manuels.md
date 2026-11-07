@@ -451,7 +451,7 @@ connaissance technique : il suffit de savoir ouvrir le launcher et d'utiliser la
 - **M0** faite (sauvegarde de la Flam).
 - Une ou deux petites histoires STUdio au format `.zip` (une archive créée avec l'éditeur STUdio,
   contenant `story.json`). Idéal : une histoire avec des choix à la molette, une autre avec le
-  mode nuit. Aucun `.7z`, aucun pack Lunii du commerce : ils sont refusés (c'est voulu).
+  mode nuit. Aucun `.7z`, aucun pack Lunii du commerce : ils ne sont pas pris en charge (c'est voulu).
 
 **Étapes.**
 
