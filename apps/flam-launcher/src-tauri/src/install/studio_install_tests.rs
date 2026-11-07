@@ -14,7 +14,6 @@ use super::*;
 use crate::device::crypto::tests::test_keys;
 use crate::device::prepare::Limits as PrepareLimits;
 use crate::device::prepare_lunii;
-use crate::device::transfer::LibraryFormat;
 use crate::folder::FolderState;
 use crate::library::{LibraryItem, StoryFormat};
 
@@ -154,7 +153,7 @@ async fn installation_studio_de_bout_en_bout() {
     // De la bibliothèque à l'envoi : fichier choisi par `playable`, préparation Lunii 2.x.
     let (path, title) = Library::new(&ctx.cache()).playable(UUID).unwrap();
     assert_eq!(title, entry.title);
-    assert_eq!(LibraryFormat::of(&path), LibraryFormat::Lunii);
+    assert_eq!(StoryFormat::of_path(&path), Some(StoryFormat::Lunii));
     let work = ctx.dir.path().join("travail");
     let prepared = prepare_lunii::prepare(
         &path,
@@ -327,6 +326,32 @@ async fn reprise_au_demarrage_et_balayage_des_dossiers_temporaires() {
         ".22222222-2222-4333-8444-555555555555.lunii.pk.{hex}.tmp"
     ));
     std::fs::write(&kept_file, b"fichier, pas dossier").unwrap();
+    // Sorties préparées laissées par l'arrêt (#556) : supprimées (tâche inconnue ou relancée).
+    let staged_orphans = [
+        staging.join(format!("{OTHER_TASK}.lunii.pk")),
+        staging.join(format!("{OTHER_TASK}.plain.pk")),
+        staging.join(format!("{OTHER_TASK}.plain.pk.4242.part")),
+        staging.join(format!("{TASK_ID}.lunii.pk")),
+    ];
+    for f in &staged_orphans {
+        std::fs::write(f, b"partiel").unwrap();
+    }
+    // Conservés : sauvegarde et marqueur de la bibliothèque, autres noms, UUID non canonique.
+    let kept_staged = [
+        staging.join(format!("{UUID}-3.plain.pk.bak")),
+        staging.join(format!("{UUID}-3.lunii.pk.pending")),
+        staging.join("t.plain.pk"),
+        staging.join(format!("{OTHER_TASK}.plain.pk.part")),
+        staging.join(format!("{OTHER_TASK}.plain.pk.x1.part")),
+        staging.join(format!("{OTHER_TASK}.lunii.pk.4242.part")),
+        staging.join("33333333-AAAA-4333-8444-555555555555.plain.pk"),
+    ];
+    for f in &kept_staged {
+        std::fs::write(f, b"garder").unwrap();
+    }
+    // Dossier au nom d'une sortie (un fichier est attendu) : conservé.
+    let staged_dir = staging.join("44444444-2222-4333-8444-555555555555.plain.pk");
+    std::fs::create_dir_all(staged_dir.join("x")).unwrap();
 
     storage::write_json(
         &dir.path().join("config").join(QUEUE_FILE),
@@ -356,6 +381,20 @@ async fn reprise_au_demarrage_et_balayage_des_dossiers_temporaires() {
         "dossier de la tâche relancée (repart de zéro) supprimé"
     );
     assert!(kept_dir.is_dir() && upper.is_dir() && kept_file.is_file());
+    for f in &staged_orphans {
+        assert!(
+            !f.exists(),
+            "sortie préparée orpheline supprimée : {}",
+            f.display()
+        );
+    }
+    for f in &kept_staged {
+        assert!(f.is_file(), "conservé : {}", f.display());
+    }
+    assert!(
+        staged_dir.join("x").is_dir(),
+        "dossier au nom d'une sortie conservé"
+    );
 
     let task = ctx.finished(TASK_ID).await;
     assert_eq!(task.state, TaskState::Done, "{:?}", task.error);
@@ -367,4 +406,165 @@ async fn reprise_au_demarrage_et_balayage_des_dossiers_temporaires() {
         "confirmation reprise"
     );
     assert!(ctx.queue().is_empty());
+}
+
+#[test]
+fn noms_des_sorties_preparees() {
+    assert_eq!(staged_task(&format!("{TASK_ID}.plain.pk")), Some(TASK_ID));
+    assert_eq!(staged_task(&format!("{TASK_ID}.lunii.pk")), Some(TASK_ID));
+    assert_eq!(
+        staged_task(&format!("{TASK_ID}.plain.pk.1.part")),
+        Some(TASK_ID)
+    );
+    assert_eq!(
+        staged_task(&format!("{TASK_ID}.plain.pk.4294967295.part")),
+        Some(TASK_ID)
+    );
+    for name in [
+        format!("{TASK_ID}.plain.pk.12345678901.part"),
+        format!("{TASK_ID}.plain.pk..part"),
+        format!("{TASK_ID}.plain.pk.-1.part"),
+        format!("{TASK_ID}.lunii.pk.1.part"),
+        format!("{TASK_ID}.plain.pk.part"),
+        format!("{TASK_ID}.plain.pk.bak"),
+        format!("{TASK_ID}.plain.pk.pending"),
+        format!("{TASK_ID}.PLAIN.PK"),
+        format!("{}.plain.pk", TASK_ID.to_uppercase()),
+        format!("{UUID}-3.plain.pk"),
+        format!(".{TASK_ID}.plain.pk"),
+        format!("../{TASK_ID}.plain.pk"),
+        ".plain.pk".to_string(),
+        String::new(),
+    ] {
+        assert_eq!(staged_task(&name), None, "{name}");
+    }
+    let hex = "0123456789abcdef0123456789abcdef";
+    assert_eq!(
+        staging_leftover(&format!(".{TASK_ID}.lunii.pk.{hex}.tmp")),
+        Some((TASK_ID, true))
+    );
+    assert_eq!(
+        staging_leftover(&format!("{TASK_ID}.lunii.pk")),
+        Some((TASK_ID, false))
+    );
+}
+
+/// Message exact du refus d'un pack qui ne correspond pas à l'entrée analysée (#556).
+#[test]
+fn refus_d_un_pack_different_de_l_analyse() {
+    let mut entry = story(UUID, Some(3));
+    assert_eq!(studio_mismatch(&entry, UUID, 3), None);
+    let other = studio_mismatch(&entry, OTHER_UUID, 3).unwrap();
+    assert!(
+        other.contains("a changé") && other.contains("identifiant"),
+        "{other}"
+    );
+    let version = studio_mismatch(&entry, UUID, 4).unwrap();
+    assert!(
+        version.contains("a changé") && version.contains("version 4 au lieu de 3"),
+        "{version}"
+    );
+    entry.version = None;
+    let unknown = studio_mismatch(&entry, UUID, 3).unwrap();
+    assert!(!unknown.contains("a changé"), "{unknown}");
+    assert!(unknown.contains("pas été reconnue"), "{unknown}");
+}
+
+/// Remplacement confirmé de l'histoire Flam par sa version STUdio : la copie de travail du
+/// player (`<cache>/play/…`) de l'ancienne version est purgée, la progression conservée (#556).
+#[tokio::test]
+async fn changement_de_format_purge_la_copie_de_travail() {
+    use crate::player::{purge_library_story, Workspace, PLAY_DIR};
+    let ctx = Ctx::new(None);
+    let (_src, entry) = source(ctx.dir.path());
+    install_flam_twin(&ctx.cache());
+    let saves = ctx.dir.path().join("config").join("saves");
+    let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+    {
+        let (saves, calls) = (saves.clone(), calls.clone());
+        ctx.service
+            .set_play_purger(Arc::new(move |cache: &Path, uuid: &str| {
+                lock(&calls).push(uuid.to_string());
+                purge_library_story(cache, &saves, uuid, false)
+            }));
+    }
+    // Copie de travail de l'histoire Flam, avec une partie en cours dans `saves/`.
+    let (flam, _) = Library::new(&ctx.cache()).playable(UUID).unwrap();
+    let ws = Workspace::new(
+        &ctx.cache().join(PLAY_DIR),
+        &saves,
+        &format!("library:{UUID}"),
+    );
+    let copy = ws.stage(&flam).unwrap();
+    let work = copy.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(work.join("saves")).unwrap();
+    std::fs::write(work.join("saves").join("etat"), b"niveau 4").unwrap();
+
+    let t = ctx.service.start_with(entry, true).unwrap();
+    let task = ctx.finished(&t.id).await;
+    assert_eq!(task.state, TaskState::Done, "{:?}", task.error);
+    assert_eq!(*lock(&calls), vec![UUID.to_string()]);
+    assert!(!work.exists(), "copie de travail purgée");
+    let kept = std::fs::read_dir(&saves)
+        .unwrap()
+        .flatten()
+        .any(|d| d.path().join("etat").is_file());
+    assert!(kept, "progression rapatriée et conservée");
+}
+
+/// De la bibliothèque à la Flam (#556) : le pack STUdio installé est envoyé par
+/// `send_from_library_with` sur un faux appareil en firmware 2.x ; une Flam 1.x le refuse avant
+/// toute écriture.
+#[tokio::test]
+async fn envoi_complet_bibliotheque_vers_un_faux_appareil() {
+    use crate::device::detect::MDF_FILE;
+    use crate::device::guard::tests::{mdf_v1_real, test_ctx};
+    use crate::device::transfer::tests::{device, listed, mdf, snapshot, write, OTHER};
+    use crate::device::transfer::{send_from_library_with, RealFs, TransferError, WORK_SUBDIR};
+
+    let ctx = Ctx::new(None);
+    let (_src, entry) = source(ctx.dir.path());
+    let t = ctx.service.start(entry).unwrap();
+    assert_eq!(ctx.finished(&t.id).await.state, TaskState::Done);
+    let (pk, _) = Library::new(&ctx.cache()).playable(UUID).unwrap();
+    let work = ctx.cache().join(WORK_SUBDIR);
+    let send = |root: &Path| {
+        send_from_library_with(
+            &RealFs::default(),
+            root,
+            &pk,
+            &work,
+            None,
+            None,
+            &test_ctx(),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+    };
+
+    // Flam 1.x : refus, rien d'écrit ni de préparé.
+    let root1 = device(&ctx.dir.path().join("flam1"), false);
+    write(&root1.join(MDF_FILE), &mdf_v1_real());
+    let before = snapshot(&root1);
+    let err = send(&root1).unwrap_err();
+    assert!(matches!(err, TransferError::LuniiNeedsV2), "{err:?}");
+    assert_eq!(snapshot(&root1), before, "Flam 1.x inchangée");
+    assert!(!work.join("str").join(UUID).exists(), "rien de préparé");
+
+    // Flam 2.x : envoi complet, l'histoire est listée sous l'uuid du scan.
+    let root2 = device(&ctx.dir.path().join("flam2"), false);
+    write(&root2.join(MDF_FILE), &mdf("2.4.2"));
+    let report = send(&root2).unwrap();
+    assert_eq!(report.id, UUID);
+    assert!(report.index_updated && !report.replaced);
+    let story_dir = root2.join("str").join(UUID);
+    for name in ["ni", "li", "ri", "si", "info", "key", "img/thumbnail.lif"] {
+        assert!(story_dir.join(name).is_file(), "{name}");
+    }
+    let ids: Vec<String> = listed(&root2).iter().map(|i| i.to_string()).collect();
+    assert_eq!(ids, vec![OTHER.to_string(), UUID.to_string()]);
+    assert!(
+        !work.join("str").join(UUID).exists(),
+        "préparation supprimée"
+    );
 }

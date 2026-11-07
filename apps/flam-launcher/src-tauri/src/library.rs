@@ -140,6 +140,15 @@ impl StoryFormat {
         }
     }
 
+    /// Format du fichier `path` de la bibliothèque, d'après son **seul nom** (jamais le dossier)
+    /// et la même règle que [`Self::of_file`] (suffixe exact, sensible à la casse) : règle
+    /// unique de la bibliothèque, de la vignette, du player et de l'envoi sur la Flam (#556).
+    pub fn of_path(path: &Path) -> Option<Self> {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .and_then(Self::of_file)
+    }
+
     pub fn suffix(self) -> &'static str {
         match self {
             Self::Flam => FLAM_SUFFIX,

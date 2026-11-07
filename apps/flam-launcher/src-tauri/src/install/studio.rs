@@ -139,8 +139,8 @@ pub const FFMPEG_FAILED: &str = "ffmpeg_failed";
 
 const STORY_JSON: &str = "story.json";
 const THUMBNAIL_PNG: &str = "thumbnail.png";
-/// Longueur maximale du titre (caractères), comme le scan des dossiers.
-const MAX_TITLE_CHARS: usize = 200;
+// Longueur maximale du titre (caractères) : constante unique, celle du scan des dossiers.
+use crate::story::MAX_TITLE_CHARS;
 const MAX_DESCRIPTION_CHARS: usize = 2_000;
 /// Ligne d'auteur de `info`, comme Lunii.QT (note § 3.8, Q4).
 const NO_AUTHORS: &str = "No authors.";

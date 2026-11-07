@@ -470,6 +470,26 @@ struct Inner {
     queue_written: Mutex<u64>,
     /// Préparation des packs de podcasts (#217) ; `None` : création de pack indisponible.
     packs: Mutex<Option<Arc<dyn PackBackend>>>,
+    /// Purge de la copie de travail du player après un changement de format (#556) ; `None` :
+    /// aucune purge (tests sans player).
+    play_purger: Mutex<Option<PlayPurger>>,
+}
+
+/// Purge de la copie de travail `<cache>/play/<empreinte>/` de l'histoire de bibliothèque
+/// `uuid` (arguments : racine du cache, `uuid`), sans toucher à sa progression. Voir
+/// [`play_purger`].
+pub type PlayPurger = Arc<dyn Fn(&Path, &str) -> AppResult<()> + Send + Sync>;
+
+/// Purge réelle, branchée au démarrage : sous le créneau du player
+/// ([`crate::player::PlayerService::while_not_playing`], `player_busy` si le player lit cette histoire : rien
+/// n'est supprimé sous lui), progression rapatriée puis conservée
+/// ([`crate::player::purge_library_story`] sans `purge_saves`).
+pub fn play_purger(players: crate::player::PlayerService, saves_root: PathBuf) -> PlayPurger {
+    Arc::new(move |cache_root: &Path, uuid: &str| {
+        players.while_not_playing(uuid, || {
+            crate::player::purge_library_story(cache_root, &saves_root, uuid, false)
+        })?
+    })
 }
 
 /// Service d'installation (état Tauri).
@@ -488,7 +508,42 @@ impl InstallService {
             queue_requested: AtomicU64::new(0),
             queue_written: Mutex::new(0),
             packs: Mutex::new(None),
+            play_purger: Mutex::new(None),
         }))
+    }
+
+    /// Branche la purge de la copie de travail du player (#556).
+    pub fn set_play_purger(&self, purger: PlayPurger) {
+        *lock(&self.0.play_purger) = Some(purger);
+    }
+
+    /// Après la publication de `uuid` au format `format` : purge sa copie de travail du player
+    /// si elle ne peut plus servir (#556), c'est-à-dire après un remplacement confirmé de
+    /// l'autre format (`replace_format`, histoire Flam remplacée par sa version STUdio ou
+    /// l'inverse) ou pour toute histoire au format Lunii (jamais jouable sur le PC ; sans copie,
+    /// la purge ne fait rien). Jamais bloquante : un échec (player en train de lire l'ancienne
+    /// version, E/S) est journalisé, la copie est alors retirée à la désinstallation ou
+    /// remplacée au prochain lancement.
+    async fn purge_play_copy(
+        &self,
+        cache_root: &Path,
+        uuid: &str,
+        format: StoryFormat,
+        replace_format: bool,
+    ) {
+        if format != StoryFormat::Lunii && !replace_format {
+            return;
+        }
+        let Some(purger) = lock(&self.0.play_purger).clone() else {
+            return;
+        };
+        let (cache_root, owned) = (cache_root.to_path_buf(), uuid.to_string());
+        if let Err(err) = blocking(move || purger(&cache_root, &owned))
+            .await
+            .and_then(|r| r)
+        {
+            tracing::warn!("copie de travail du player de {uuid} non purgée : {err}");
+        }
     }
 
     /// Branche la préparation des packs de podcasts (#217).
@@ -591,7 +646,7 @@ impl InstallService {
         };
         self.write_queue(snap).await;
         self.sweep_workdirs().await;
-        self.sweep_studio_tmp(restored).await;
+        self.sweep_staging(restored).await;
         for id in ids {
             self.spawn(id);
         }
@@ -1048,6 +1103,8 @@ impl InstallService {
         if let Some(archive) = downloaded {
             let _ = blocking(move || remove_archive(&archive)).await;
         }
+        self.purge_play_copy(&tc.cache_root, &installed.uuid, format, replace_format)
+            .await;
         Ok((installed, warnings))
     }
 
@@ -1162,13 +1219,16 @@ impl InstallService {
         .await;
     }
 
-    /// Supprime les dossiers temporaires de conversion STUdio laissés dans `library/.staging/`
-    /// par un arrêt brutal (#553) : seulement les **dossiers** au nom exact
-    /// `.<tâche>.lunii.pk.<32 hex>.tmp` ([`studio_tmp_task`]) dont la tâche est inconnue
-    /// (relevé sous le verrou des tâches, comme [`Self::sweep_workdirs`]) ou fait partie de
-    /// `restored` (relue de la file, pas encore relancée : sa conversion repartira de zéro dans
-    /// un nouveau dossier). Rien d'autre n'est touché (ni fichier, ni lien, ni autre nom).
-    async fn sweep_studio_tmp(&self, restored: Vec<String>) {
+    /// Supprime les restes d'installation laissés dans `library/.staging/` par un arrêt brutal
+    /// ([`staging_leftover`]) : dossiers temporaires de conversion STUdio
+    /// `.<tâche>.lunii.pk.<32 hex>.tmp` (#553), sorties préparées `<tâche>.plain.pk` /
+    /// `<tâche>.lunii.pk` et temporaires `<tâche>.plain.pk.<pid>.part` du convertisseur Telmi
+    /// (#556), dont la tâche est inconnue (relevé sous le verrou des tâches, comme
+    /// [`Self::sweep_workdirs`]) ou fait partie de `restored` (relue de la file, pas encore
+    /// relancée : sa conversion repartira de zéro). Rien d'autre n'est touché (ni autre nom, ni
+    /// lien, ni dossier à la place d'un fichier ou l'inverse) : les sauvegardes et marqueurs de
+    /// la bibliothèque (`<uuid>-<version>.plain.pk.bak`, `.pending`…) restent à `Library`.
+    async fn sweep_staging(&self, restored: Vec<String>) {
         let Ok(tc) = self.toolchain().await else {
             return;
         };
@@ -1177,12 +1237,12 @@ impl InstallService {
             .root()
             .join(crate::library::STAGING_DIR);
         let _ = blocking(move || {
-            sweep_studio_tmp_in(&staging, &|names: Vec<String>| {
+            sweep_staging_in(&staging, &|names: Vec<String>| {
                 let tasks = lock(&inner.tasks);
                 names
                     .into_iter()
                     .filter(|name| {
-                        studio_tmp_task(name).is_some_and(|id| {
+                        staging_leftover(name).is_some_and(|(id, _)| {
                             restored.iter().any(|r| r == id)
                                 || !tasks.iter().any(|s| s.task.id == id)
                         })
@@ -1408,9 +1468,11 @@ impl InstallService {
         } else {
             None
         };
+        // `biased` : une annulation déjà demandée l'emporte sur un créneau libre (#562).
         let _slot = tokio::select! {
-            s = self.0.conversions.acquire() => s.map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?,
+            biased;
             _ = cancelled(cancel) => return Err(AppError::Cancelled),
+            s = self.0.conversions.acquire() => s.map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?,
         };
         self.emit_state(id, TaskState::Converting, Some(0.0));
         let mut last = Instant::now();
@@ -1446,7 +1508,7 @@ impl InstallService {
             &mut on_step,
         )
         .await?;
-        if pack.uuid != entry.uuid || Some(u32::from(pack.version)) != entry.version {
+        if let Some(message) = studio_mismatch(entry, &pack.uuid, pack.version) {
             tracing::warn!(
                 "installation {id} : pack STUdio {} v{} au lieu de {} v{:?}",
                 pack.uuid,
@@ -1454,11 +1516,7 @@ impl InstallService {
                 entry.uuid,
                 entry.version
             );
-            return Err(AppError::Validation(
-                "l'archive STUdio a changé depuis l'analyse du dossier (identifiant ou version \
-                 différents) : actualisez la source puis réessayez"
-                    .into(),
-            ));
+            return Err(AppError::Validation(message));
         }
         for warning in &pack.warnings {
             tracing::info!("installation {id} : {warning}");
@@ -1506,9 +1564,12 @@ impl InstallService {
             Prepared::Download(known) if validator == Validator::default() => known,
             Prepared::Download(_) => validator,
         };
+        // `biased` : une annulation déjà demandée l'emporte sur un créneau libre (sans lui, le
+        // téléchargement pouvait démarrer après l'annulation, #562).
         let _slot = tokio::select! {
-            s = self.0.downloads.acquire() => s,
+            biased;
             _ = cancelled(cancel) => return Err(AppError::Cancelled),
+            s = self.0.downloads.acquire() => s,
         };
         self.emit_state(id, TaskState::Downloading, Some(0.0));
         let mut last: Option<Instant> = None;
@@ -1695,6 +1756,31 @@ fn remove_archive(dest: &Path) {
     let _ = remove_if_exists(&meta_path(dest));
 }
 
+/// Message de refus d'un pack STUdio qui ne porte pas l'`uuid` et la version de l'entrée
+/// analysée (`None` s'ils concordent). Il dit ce qui diffère : identifiant, version, ou version
+/// **non reconnue à l'analyse** (champ `version` de `story.json` absent ou invalide au moment du
+/// scan) : ce dernier cas n'implique pas que l'archive ait changé (#556).
+fn studio_mismatch(entry: &StoryEntry, pack_uuid: &str, pack_version: u16) -> Option<String> {
+    const RETRY: &str = "actualisez la source puis réessayez";
+    if pack_uuid != entry.uuid {
+        return Some(format!(
+            "l'archive STUdio a changé depuis l'analyse du dossier (identifiant d'histoire \
+             différent) : {RETRY}"
+        ));
+    }
+    match entry.version {
+        Some(version) if version == u32::from(pack_version) => None,
+        Some(version) => Some(format!(
+            "l'archive STUdio a changé depuis l'analyse du dossier (version {pack_version} au lieu \
+             de {version}) : {RETRY}"
+        )),
+        None => Some(format!(
+            "la version de l'histoire STUdio n'a pas été reconnue à l'analyse du dossier (champ \
+             « version » de story.json absent ou invalide à ce moment-là) : {RETRY}"
+        )),
+    }
+}
+
 /// Tâche d'un dossier temporaire de [`studio::convert`] pour la sortie
 /// `library/.staging/<tâche>.lunii.pk` : nom exact `.<tâche>.lunii.pk.<32 hex minuscules>.tmp`,
 /// `<tâche>` UUID canonique ([`is_task_id`]). `None` pour tout autre nom.
@@ -1709,11 +1795,43 @@ fn studio_tmp_task(name: &str) -> Option<&str> {
     (hex && is_task_id(id)).then_some(id)
 }
 
+/// Tâche d'une sortie préparée laissée dans `library/.staging/` : nom exact `<tâche>.plain.pk`
+/// ou `<tâche>.lunii.pk` (sortie de la conversion, avant publication), ou
+/// `<tâche>.plain.pk.<pid>.part` (temporaire du convertisseur Telmi, voir `convert`), `<tâche>`
+/// UUID canonique ([`is_task_id`]), `<pid>` de 1 à 10 chiffres. `None` pour tout autre nom,
+/// dont les sauvegardes et marqueurs de la bibliothèque (`<uuid>-<version>.plain.pk.bak`…).
+fn staged_task(name: &str) -> Option<&str> {
+    let id = match name.strip_suffix(".part") {
+        Some(rest) => {
+            let (output, pid) = rest.rsplit_once('.')?;
+            let pid_ok = (1..=10).contains(&pid.len()) && pid.bytes().all(|b| b.is_ascii_digit());
+            if !pid_ok {
+                return None;
+            }
+            output.strip_suffix(crate::library::FLAM_SUFFIX)?
+        }
+        None => name
+            .strip_suffix(crate::library::FLAM_SUFFIX)
+            .or_else(|| name.strip_suffix(crate::library::LUNII_SUFFIX))?,
+    };
+    is_task_id(id).then_some(id)
+}
+
+/// Reste d'une tâche dans `library/.staging/` : sa tâche, et vrai s'il doit être un **dossier**
+/// (dossier temporaire STUdio, [`studio_tmp_task`]), faux s'il doit être un **fichier**
+/// ([`staged_task`]). `None` pour tout autre nom.
+fn staging_leftover(name: &str) -> Option<(&str, bool)> {
+    studio_tmp_task(name)
+        .map(|id| (id, true))
+        .or_else(|| staged_task(name).map(|id| (id, false)))
+}
+
 /// Balayage de `staging` (bloquant) : le dossier est lu d'abord, `orphans` (appelé une fois)
-/// garde les noms à supprimer, puis chacun est revérifié (enfant direct, **dossier** réel, pas
-/// un lien ni une jonction) avant `remove_dir_all`. Échecs : avertissement, retenté au prochain
-/// démarrage.
-fn sweep_studio_tmp_in(staging: &Path, orphans: &dyn Fn(Vec<String>) -> Vec<String>) {
+/// garde les noms à supprimer, puis chacun est revérifié (nom de [`staging_leftover`], enfant
+/// direct, **dossier** réel ou **fichier** ordinaire selon le nom, jamais un lien ni une
+/// jonction) avant `remove_dir_all` ou `remove_file`. Échecs : avertissement, retenté au
+/// prochain démarrage.
+fn sweep_staging_in(staging: &Path, orphans: &dyn Fn(Vec<String>) -> Vec<String>) {
     let Ok(entries) = std::fs::read_dir(staging) else {
         return;
     };
@@ -1722,20 +1840,27 @@ fn sweep_studio_tmp_in(staging: &Path, orphans: &dyn Fn(Vec<String>) -> Vec<Stri
         .filter_map(|e| e.file_name().to_str().map(str::to_string))
         .collect();
     for name in orphans(names) {
-        if studio_tmp_task(&name).is_none() {
+        let Some((_, want_dir)) = staging_leftover(&name) else {
             continue;
-        }
+        };
         let Ok(path) = child_of(staging, &name) else {
             continue;
         };
-        let is_dir = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_dir());
-        if !is_dir {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
             continue;
-        }
-        match std::fs::remove_dir_all(&path) {
-            Ok(()) => tracing::info!("dossier temporaire STUdio orphelin supprimé : {name}"),
+        };
+        let kind = meta.file_type();
+        let removed = if want_dir && kind.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else if !want_dir && kind.is_file() {
+            std::fs::remove_file(&path)
+        } else {
+            continue;
+        };
+        match removed {
+            Ok(()) => tracing::info!("reste d'installation orphelin supprimé : .staging/{name}"),
             Err(err) => {
-                tracing::warn!("dossier temporaire STUdio orphelin {name} non supprimé : {err}")
+                tracing::warn!("reste d'installation orphelin .staging/{name} non supprimé : {err}")
             }
         }
     }

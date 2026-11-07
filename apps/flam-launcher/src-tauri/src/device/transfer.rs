@@ -10,7 +10,7 @@
 //!    est relu après l'installation ([`carrier::readback`]).
 //!
 //!    Histoire au format Lunii (STUdio, #542) : le fichier de bibliothèque est un pack
-//!    [`prepare_lunii::PACK_SUFFIX`] (`.lunii.pk`), reconnu à son nom ([`LibraryFormat::of`]) et
+//!    [`prepare_lunii::PACK_SUFFIX`] (`.lunii.pk`), reconnu à son nom ([`StoryFormat::of_path`]) et
 //!    non à une indication du front. Juste après la garde, une Flam qui n'est pas en 2.x est
 //!    refusée ([`TransferError::LuniiNeedsV2`]) : rien n'est écrit, pas même la reprise d'un
 //!    transfert interrompu, et le mode carrier n'est jamais consulté (ni consentement, ni
@@ -115,7 +115,7 @@ use super::lock::{Busy, OpGuard, Operation, DEVICE_LOCK};
 use super::prepare::{self, Limits, PrepareError, PreparedStory};
 use super::prepare_lunii;
 use crate::catalog::{blocking, CatalogService};
-use crate::library::Library;
+use crate::library::{Library, StoryFormat};
 use crate::settings::{Environment, SettingsStore};
 use crate::storage::{retry_transient, ConfigState};
 use crate::{AppError, AppResult};
@@ -266,35 +266,6 @@ const LUNII_INVALID_MESSAGE: &str = "histoire STUdio illisible ou incohérente d
 /// Message d'un pack `.lunii.pk` qui dépasse une borne de la préparation.
 const LUNII_TOO_LARGE_MESSAGE: &str = "histoire STUdio trop volumineuse pour être envoyée sur la \
      Flam : rien n'a été écrit";
-
-/// Format du fichier de bibliothèque d'une histoire, d'après son nom.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LibraryFormat {
-    /// Histoire Flam (`.plain.pk`) : [`prepare::prepare_story`].
-    Flam,
-    /// Pack au format Lunii (`.lunii.pk`, histoire STUdio) : [`prepare_lunii::prepare`].
-    Lunii,
-}
-
-impl LibraryFormat {
-    /// Format du fichier `path` de la bibliothèque : `Lunii` si son nom se termine par
-    /// [`prepare_lunii::PACK_SUFFIX`] (casse indifférente), `Flam` sinon. Seul le nom du fichier
-    /// choisi par la bibliothèque compte, jamais une indication du front.
-    pub(crate) fn of(path: &Path) -> Self {
-        let lunii = path.file_name().is_some_and(|name| {
-            let name = name.to_string_lossy();
-            let suffix = prepare_lunii::PACK_SUFFIX;
-            name.len() > suffix.len()
-                && name.is_char_boundary(name.len() - suffix.len())
-                && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
-        });
-        if lunii {
-            LibraryFormat::Lunii
-        } else {
-            LibraryFormat::Flam
-        }
-    }
-}
 
 fn hidden_note(hidden: &bool) -> &'static str {
     if *hidden {
@@ -1213,7 +1184,7 @@ fn device_keys(
 /// Prépare `plain_pk` dans `work_dir` pour la Flam de `root`, la transfère, puis supprime la
 /// préparation. Le verrou de l'appareil est tenu par l'appelant pendant tout l'appel.
 /// `plain_pk` : fichier de la bibliothèque, histoire Flam (`.plain.pk`) ou pack au format Lunii
-/// (`.lunii.pk`, choisi par [`LibraryFormat::of`]) ; un pack Lunii exige une Flam en 2.x
+/// (`.lunii.pk`, choisi par [`StoryFormat::of_path`]) ; un pack Lunii exige une Flam en 2.x
 /// ([`TransferError::LuniiNeedsV2`] sinon, avant toute écriture).
 /// `carrier` : demande du mode carrier, obligatoire pour une histoire Flam sur une Flam en
 /// firmware 1.x (ignorée sinon, jamais consultée pour un pack Lunii).
@@ -1258,8 +1229,10 @@ pub(crate) fn send_from_library_with(
     let permit = check_write(root, ctx, WriteKind::Send)?;
     // Histoire au format Lunii : Flam 2.x exigée avant toute écriture (reprise comprise) et
     // avant le mode carrier (`device_keys` ne le consulte pas en 2.x).
-    let format = LibraryFormat::of(plain_pk);
-    if format == LibraryFormat::Lunii && permit.family() != FirmwareFamily::V2 {
+    // Format d'après le seul nom du fichier, règle de la bibliothèque ([`StoryFormat::of_path`]) ;
+    // un nom inconnu est traité comme une histoire Flam (la préparation le refusera).
+    let format = StoryFormat::of_path(plain_pk).unwrap_or(StoryFormat::Flam);
+    if format == StoryFormat::Lunii && permit.family() != FirmwareFamily::V2 {
         tracing::info!("histoire STUdio refusée : la Flam n'est pas en firmware 2.x");
         return Err(TransferError::LuniiNeedsV2);
     }
@@ -1269,8 +1242,8 @@ pub(crate) fn send_from_library_with(
     }
     let limits = Limits::default();
     let prepared = match format {
-        LibraryFormat::Flam => prepare::prepare_story(plain_pk, &keys, work_dir, &limits, cancel),
-        LibraryFormat::Lunii => prepare_lunii::prepare(plain_pk, &keys, work_dir, &limits, cancel),
+        StoryFormat::Flam => prepare::prepare_story(plain_pk, &keys, work_dir, &limits, cancel),
+        StoryFormat::Lunii => prepare_lunii::prepare(plain_pk, &keys, work_dir, &limits, cancel),
     }
     .map_err(|e| match e {
         PrepareError::Cancelled => TransferError::Cancelled,
@@ -1609,4 +1582,4 @@ pub async fn device_cancel_transfer() -> AppResult<bool> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
