@@ -901,3 +901,135 @@ mod ffmpeg {
         assert_nothing_left(&d);
     }
 }
+
+// --- Suivis de revue -----------------------------------------------------------------------------
+
+/// CRC-32 (PNG) écrit à la main pour les PNG forgés.
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// PNG forgé : en-tête d'une image `w` × `h` sans données (bombe de surface).
+fn png_header_only(w: u32, h: u32) -> Vec<u8> {
+    let mut out = PNG_SIGNATURE.to_vec();
+    let mut chunk = |kind: &[u8], data: &[u8]| {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let body = [kind, data].concat();
+        out.extend_from_slice(&body);
+        out.extend_from_slice(&crc32(&body).to_be_bytes());
+    };
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&w.to_be_bytes());
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    chunk(b"IHDR", &ihdr);
+    chunk(b"IEND", &[]);
+    out
+}
+
+#[tokio::test]
+async fn vignette_bombe_de_surface_ou_deguisee_ignoree() {
+    // 13000 × 13000 annoncés : refusée avant décodage, repli sur l'image de départ.
+    let mut entries = base_entries();
+    set(
+        &mut entries,
+        "thumbnail.png",
+        png_header_only(13_000, 13_000),
+    );
+    let d = dirs(&entries);
+    let pack = convert_dirs(&d, Some(&good_transcoder()))
+        .await
+        .result
+        .unwrap();
+    assert!(pack.thumbnail);
+    assert_eq!(pack.warnings.len(), 1, "{:?}", pack.warnings);
+    assert!(
+        pack.warnings[0].contains("thumbnail.png"),
+        "{:?}",
+        pack.warnings
+    );
+    assert!(!read_pack(&d.output)
+        .iter()
+        .any(|(n, _)| n == "_thumbnail.png"));
+
+    // JPEG nommé thumbnail.png : vignette produite, mais pas de `_thumbnail.png` (pas un PNG).
+    let mut entries = base_entries();
+    set(&mut entries, "thumbnail.png", jpeg(200, 260));
+    let d = dirs(&entries);
+    let pack = convert_dirs(&d, Some(&good_transcoder()))
+        .await
+        .result
+        .unwrap();
+    assert!(
+        pack.thumbnail && pack.warnings.is_empty(),
+        "{:?}",
+        pack.warnings
+    );
+    assert!(!read_pack(&d.output)
+        .iter()
+        .any(|(n, _)| n == "_thumbnail.png"));
+
+    // Vignette trop lourde : avertissement, pas un refus.
+    let mut entries = base_entries();
+    set(
+        &mut entries,
+        "thumbnail.png",
+        vec![0u8; MAX_IMAGE_BYTES + 1],
+    );
+    let d = dirs(&entries);
+    let pack = convert_dirs(&d, Some(&good_transcoder()))
+        .await
+        .result
+        .unwrap();
+    assert!(pack.thumbnail);
+    assert_eq!(pack.warnings.len(), 1, "{:?}", pack.warnings);
+}
+
+#[tokio::test]
+async fn sortie_identique_a_la_source_refusee() {
+    let d = dirs(&base_entries());
+    let before = std::fs::read(&d.input).unwrap();
+    let (_tx, rx) = watch::channel(false);
+    let err = convert_with(
+        &d.input,
+        &d.input,
+        ThumbFit::default(),
+        Some(&good_transcoder()),
+        &rx,
+        &mut |_: &Step| {},
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+    assert_eq!(std::fs::read(&d.input).unwrap(), before);
+    assert_eq!(
+        names_in(d.input.parent().unwrap()),
+        vec!["histoire.zip".to_string()]
+    );
+}
+
+#[test]
+fn le_futur_de_conversion_est_send() {
+    fn assert_send<T: Send>(_: &T) {}
+    let (_tx, rx) = watch::channel(false);
+    let mut on_step = |_: &Step| {};
+    let job = StudioJob {
+        input: Path::new("a.zip"),
+        output: Path::new("b.lunii.pk"),
+        ffmpeg: None,
+        thumb_fit: ThumbFit::default(),
+    };
+    let future = convert(&job, &rx, &mut on_step);
+    assert_send(&future);
+}

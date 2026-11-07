@@ -9,7 +9,7 @@
 //! |---------------------|---------------------------------------------------------------------------|
 //! | `uuid.bin`          | UUID du pack (celui du nœud d'entrée), 16 octets                          |
 //! | `_metadata.json`    | `title`, `description` (assainis, UTF-8), `version`, `uuid`, `source_format` = `studio` |
-//! | `_thumbnail.png`    | `thumbnail.png` d'origine, s'il a pu servir de vignette                   |
+//! | `_thumbnail.png`    | `thumbnail.png` d'origine, s'il a servi de vignette et est bien un PNG    |
 //! | `ni`, `nm`          | index des nœuds ; `nm` vide si `nightModeAvailable`                       |
 //! | `li`, `ri`, `si`    | index en clair (`studio2lunii::index`)                                    |
 //! | `info`              | ASCII, LF, 5 lignes : titre, titre, `0`, titre, `No authors.` (§ 3.8, Q4) |
@@ -24,7 +24,9 @@
 //! ffmpeg n'est exigé que si un son doit être transcodé.
 //!
 //! Vignette : `thumbnail.png`, sinon l'image du nœud d'entrée (PNG, JPEG ou BMP), sinon aucune
-//! (`prepare_lunii` l'accepte). Une source de vignette illisible est un **avertissement**
+//! (`prepare_lunii` l'accepte). Dimensions lues et bornées avant tout décodage (bornes de
+//! `studio2lunii::bitmap`). Une source de vignette illisible, trop lourde ou trop grande est un
+//! **avertissement**
 //! ([`StudioPack::warnings`]), jamais un refus : la vignette n'est pas une scène de l'histoire.
 //!
 //! # Invariants
@@ -236,6 +238,9 @@ impl Transcoder for EmbeddedFfmpeg {
             .to_vec();
             args.push(file_arg(input));
             args.extend(FFMPEG_TRANSCODE_ARGS.iter().map(OsString::from));
+            // Sortie bornée sur le disque (relue ensuite avec la même borne).
+            args.push("-fs".into());
+            args.push(MAX_SOUND_BYTES.to_string().into());
             args.push(file_arg(output));
             let mut cancel = cancel.clone();
             let out = verified
@@ -289,13 +294,29 @@ pub(crate) async fn convert_with(
 ) -> AppResult<StudioPack> {
     check_cancel(cancel)?;
     let tmp = {
-        let output = output.to_path_buf();
-        blocking(move || TempDir::create(&output)).await??
+        let (input, output) = (input.to_path_buf(), output.to_path_buf());
+        blocking(move || {
+            refuse_same_file(&input, &output)?;
+            TempDir::create(&output)
+        })
+        .await??
     };
     let result = run(input, output, &tmp.0, fit, transcoder, cancel, on_step).await;
     // Suppression hors du runtime ; `Drop` la refait (sans effet) si elle a échoué.
     let _ = blocking(move || drop(tmp)).await;
     result
+}
+
+/// La sortie ne doit jamais remplacer l'archive source (invariant : source jamais modifiée).
+fn refuse_same_file(input: &Path, output: &Path) -> AppResult<()> {
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(input), std::fs::canonicalize(output)) {
+        if a == b {
+            return Err(AppError::Validation(
+                "la sortie de la conversion STUdio ne peut pas être l'archive source".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn check_cancel(cancel: &watch::Receiver<bool>) -> AppResult<()> {
@@ -655,7 +676,8 @@ fn plan(source: &mut Source, fit: ThumbFit, cancel: &watch::Receiver<bool>) -> A
     })
 }
 
-/// Vignette : `thumbnail.png`, sinon l'image du nœud d'entrée, sinon aucune.
+/// Vignette : `thumbnail.png`, sinon l'image du nœud d'entrée, sinon aucune. Une source
+/// illisible, trop lourde ou trop grande est un avertissement (sauf erreur d'E/S, annulation).
 fn thumbnail(
     source: &mut Source,
     story: &Story,
@@ -665,17 +687,18 @@ fn thumbnail(
     cancel: &watch::Receiver<bool>,
     warnings: &mut Vec<String>,
 ) -> AppResult<Option<Thumbnail>> {
-    let cancelled = || *cancel.borrow();
     if let Some(at) = source.find(THUMBNAIL_PNG) {
-        let png = source.read(at, MAX_IMAGE_BYTES as u64, THUMBNAIL_PNG)?;
-        match telmi2flam::image::png_to_thumb_lif(&png, fit.into(), &cancelled) {
-            Ok(lif) => {
-                return Ok(Some(Thumbnail {
-                    lif,
-                    png: Some(png),
-                }))
-            }
-            Err(e) => warnings.push(format!("thumbnail.png illisible, ignorée : {e}")),
+        match source.read(at, MAX_IMAGE_BYTES as u64, THUMBNAIL_PNG) {
+            Ok(bytes) => match thumb_lif(&bytes, fit, cancel) {
+                // `_thumbnail.png` : l'original, seulement si c'est vraiment un PNG.
+                Ok(lif) => {
+                    let png = bytes.starts_with(PNG_SIGNATURE).then_some(bytes);
+                    return Ok(Some(Thumbnail { lif, png }));
+                }
+                Err(e) => warnings.push(format!("thumbnail.png illisible, ignorée : {e}")),
+            },
+            Err(e @ (AppError::Io(_) | AppError::Cancelled)) => return Err(e),
+            Err(e) => warnings.push(format!("thumbnail.png ignorée : {e}")),
         }
         check_cancel(cancel)?;
     }
@@ -690,11 +713,9 @@ fn thumbnail(
     else {
         return Ok(None);
     };
+    // Une image de scène illisible ou trop lourde sera refusée par la conversion des images.
     let bytes = source.read(sources[position], MAX_IMAGE_BYTES as u64, name)?;
-    let lif = as_png(&bytes).and_then(|png| {
-        telmi2flam::image::png_to_thumb_lif(&png, fit.into(), &cancelled).map_err(|e| e.to_string())
-    });
-    match lif {
+    match thumb_lif(&bytes, fit, cancel) {
         Ok(lif) => Ok(Some(Thumbnail { lif, png: None })),
         Err(e) => {
             check_cancel(cancel)?;
@@ -706,34 +727,57 @@ fn thumbnail(
     }
 }
 
-/// PNG tel quel, ou JPEG/BMP décodé (bornes de `studio2lunii::bitmap`) puis réencodé en PNG.
-fn as_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    if bytes.starts_with(PNG_SIGNATURE) {
-        return Ok(bytes.to_vec());
-    }
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    if !matches!(
-        reader.format(),
-        Some(image::ImageFormat::Jpeg | image::ImageFormat::Bmp)
-    ) {
-        return Err("format d'image non pris en charge".into());
-    }
+/// Vignette LIF 104 × 136 d'une image PNG, JPEG ou BMP (dimensions bornées avant décodage).
+fn thumb_lif(
+    bytes: &[u8],
+    fit: ThumbFit,
+    cancel: &watch::Receiver<bool>,
+) -> Result<Vec<u8>, String> {
+    let png = as_png(bytes)?;
+    let cancelled = || *cancel.borrow();
+    telmi2flam::image::png_to_thumb_lif(&png, fit.into(), &cancelled).map_err(|e| e.to_string())
+}
+
+/// Bornes de décodage des vignettes : celles de `studio2lunii::bitmap`.
+fn image_limits() -> image::Limits {
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(studio2lunii::bitmap::MAX_SIDE);
     limits.max_image_height = Some(studio2lunii::bitmap::MAX_SIDE);
     limits.max_alloc = Some(256 * 1024 * 1024);
-    reader.limits(limits.clone());
-    let (w, h) = reader.into_dimensions().map_err(|e| e.to_string())?;
-    if u64::from(w) * u64::from(h) > studio2lunii::bitmap::MAX_PIXELS {
-        return Err(format!("image trop grande : {w} x {h}"));
+    limits
+}
+
+/// PNG, JPEG ou BMP dont les dimensions (lues dans l'en-tête, avant tout décodage) respectent
+/// les bornes de `studio2lunii::bitmap` : un PNG est rendu tel quel, un JPEG ou un BMP est
+/// décodé puis réencodé en PNG.
+fn as_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let reader = || {
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|e| e.to_string())?;
+        reader.limits(image_limits());
+        Ok::<_, String>(reader)
+    };
+    let format = reader()?.format();
+    if !matches!(
+        format,
+        Some(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Bmp)
+    ) {
+        return Err("format d'image non pris en charge (PNG, JPEG ou BMP)".into());
     }
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    reader.limits(limits);
-    let decoded = reader.decode().map_err(|e| e.to_string())?;
+    let (w, h) = reader()?.into_dimensions().map_err(|e| e.to_string())?;
+    if w == 0
+        || h == 0
+        || w > studio2lunii::bitmap::MAX_SIDE
+        || h > studio2lunii::bitmap::MAX_SIDE
+        || u64::from(w) * u64::from(h) > studio2lunii::bitmap::MAX_PIXELS
+    {
+        return Err(format!("dimensions d'image refusées : {w} x {h}"));
+    }
+    if format == Some(image::ImageFormat::Png) {
+        return Ok(bytes.to_vec());
+    }
+    let decoded = reader()?.decode().map_err(|e| e.to_string())?;
     let mut png = Vec::new();
     decoded
         .to_rgba8()
