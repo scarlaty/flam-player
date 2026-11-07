@@ -1,5 +1,5 @@
 /** Nature de l'archive d'une histoire (miroir de `StoryKind` dans `src-tauri/src/story.rs`). */
-export type StoryKind = "telmi_zip" | "flam_plain" | "flam_pk";
+export type StoryKind = "telmi_zip" | "studio_zip" | "flam_plain" | "flam_pk";
 
 /**
  * Histoire proposée par une source, catalogue ou dossier local (miroir de `StoryEntry`

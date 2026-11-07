@@ -23,6 +23,7 @@ function badgeFor(state: StoryState): StoryBadge {
     label: t.library.state[state],
     ...STATE_APPEARANCE[state],
     ...(state === "update_available" && { description: t.stories.actions.updateHelp }),
+    ...(state === "studio" && { description: t.stories.studioNotice }),
   };
 }
 

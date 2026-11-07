@@ -34,7 +34,13 @@ const scan: FolderScan = {
       kind: "telmi_zip",
     },
   ],
-  warnings: [{ path: "C:\\Histoires\\b.zip", message: "ignoré : archive zip invalide" }],
+  warnings: [
+    {
+      path: "C:\\Histoires\\b.zip",
+      message:
+        "ignoré : fichier illisible : ce n'est pas un vrai zip, ou il est corrompu",
+    },
+  ],
 };
 
 it("scanFolder appelle folder_scan, non récursif par défaut", async () => {

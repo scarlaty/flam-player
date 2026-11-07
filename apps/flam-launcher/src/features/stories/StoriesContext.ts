@@ -90,6 +90,8 @@ export function storyStateOf(
   stories: StoriesApi,
   entry: StoryEntry,
 ): StoryState | undefined {
+  // Une archive STUdio n'est jamais installée : un uuid identique à une autre histoire est ignoré.
+  if (entry.kind === "studio_zip") return "studio";
   if (stories.activeTaskFor(entry)) return "in_progress";
   if (!stories.installedFor(entry)) return undefined;
   return stories.updateAvailable(entry) ? "update_available" : "installed";

@@ -585,7 +585,8 @@ export const fr = {
     problemTitle: "Le dernier rafraîchissement a échoué",
     warningsTitle: (n: number) =>
       n <= 1 ? `${n} élément ignoré` : `${n} éléments ignorés`,
-    warningsHint: "Ces éléments sont illisibles ou invalides.",
+    warningsHint:
+      "Ces éléments ont été ignorés (illisibles, invalides ou dans un format non reconnu). Formats acceptés : histoires Telmi (.zip) et Flam (.plain, .plain.pk) ; le format STUdio (.zip) est reconnu mais pas encore installable.",
     filtersLabel: "Recherche et filtres",
     search: "Rechercher une histoire",
     searchPlaceholder: "Titre, auteur, catégorie…",
@@ -634,6 +635,7 @@ export const fr = {
       to_download: "À télécharger",
       to_convert: "À convertir",
       to_install: "À installer",
+      studio: "Format STUdio",
       installed: "Installée",
       update_available: "Mise à jour disponible",
       in_progress: "En cours",
@@ -798,6 +800,8 @@ export const fr = {
         `${titles.length} épisode${titles.length > 1 ? "s" : ""} non inclus : ${titles.join(", ")}`,
     },
     playing: "En cours de lecture dans flam-player",
+    studioNotice:
+      "Format STUdio : l'envoi vers une Flam 2.x arrive dans une prochaine version ; la lecture sur PC n'est pas disponible.",
     playerBusy:
       "Une histoire est déjà en cours de lecture : fermez flam-player pour jouer.",
     removeDialog: {
