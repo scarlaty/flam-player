@@ -6,6 +6,7 @@ import {
   firmwareWriteBlock,
   forgetCarrierKeys,
   listDeviceStories,
+  LUNII_NEEDS_V2,
   needsCarrier,
   onTransferProgress,
   recoverDeviceTransfers,
@@ -29,6 +30,7 @@ import {
   type TransferProgressView,
 } from "./DeviceContext";
 import { CarrierDialog } from "./CarrierDialog";
+import { sendErrorMessage } from "./sendError";
 import { useDeviceStatus } from "./useDeviceStatus";
 
 const text = t.deviceTransfer;
@@ -320,9 +322,16 @@ export function DeviceProvider({
           );
         }
       } catch (caught) {
-        const failure = toAppError(caught);
-        // Clés refusées ou introuvables : elles seront redemandées au prochain envoi.
-        if (next.carrier && failure.kind !== "cancelled") carrierSession.current = null;
+        const caughtError = toAppError(caught);
+        const failure = { ...caughtError, message: sendErrorMessage(caughtError) };
+        // Clés refusées ou introuvables : elles seront redemandées au prochain envoi. Une
+        // histoire STUdio refusée en 1.x n'a pas consulté les clés : elles restent valables.
+        if (
+          next.carrier &&
+          failure.kind !== "cancelled" &&
+          failure.kind !== LUNII_NEEDS_V2
+        )
+          carrierSession.current = null;
         if (failure.kind === "cancelled") {
           setItemState(next.uuid, "cancelled");
           setAnnouncement(text.panel.announce.cancelled);

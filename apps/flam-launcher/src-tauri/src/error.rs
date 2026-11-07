@@ -26,6 +26,7 @@ use serde::{Serialize, Serializer};
 /// | `PlayerUnavailable` | `player_unavailable` | `flam-player.exe` introuvable ou impossible à lancer |
 /// | `PlayerBusy`    | `player_busy`   | Un player est déjà en cours d'exécution                 |
 /// | `StoryFileMissing` | `story_file_missing` | Le fichier de l'histoire à lancer a disparu      |
+/// | `LuniiNeedsV2`  | `lunii_needs_v2` | Histoire STUdio (format Lunii) refusée : Flam pas en firmware 2.x |
 ///
 /// Un fichier de configuration corrompu n'est pas une erreur : il est sauvegardé en
 /// `*.bak` et remplacé par les valeurs par défaut (avertissement tracé).
@@ -121,6 +122,11 @@ pub enum AppError {
     /// Échec de synthèse ou de conversion d'un titre (voix muette, délai, audio inexploitable).
     #[error("{0}")]
     TtsFailed(String),
+
+    /// Histoire STUdio (format Lunii) à envoyer sur une Flam qui n'est pas en firmware 2.x :
+    /// refusée avant toute écriture (#542).
+    #[error("{0}")]
+    LuniiNeedsV2(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -149,6 +155,7 @@ impl AppError {
             AppError::TtsUnavailable(_) => "tts_unavailable",
             AppError::TtsNoVoice(_) => "tts_no_voice",
             AppError::TtsFailed(_) => "tts_failed",
+            AppError::LuniiNeedsV2(_) => "lunii_needs_v2",
         }
     }
 
@@ -245,6 +252,7 @@ mod tests {
         );
         assert_eq!(AppError::TtsNoVoice("x".into()).kind(), "tts_no_voice");
         assert_eq!(AppError::TtsFailed("x".into()).kind(), "tts_failed");
+        assert_eq!(AppError::LuniiNeedsV2("x".into()).kind(), "lunii_needs_v2");
         let conversion = AppError::Conversion {
             code: "missing_asset".into(),
             message: "m".into(),
