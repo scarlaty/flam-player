@@ -79,8 +79,8 @@ const MAX_ENTRIES: usize = 12_000;
 /// UUID pris en compte par demande.
 pub const MAX_QUERY: usize = 1000;
 /// Longueur maximale d'un titre conservé (en caractères), aussi celle d'un titre Lunii en
-/// clair (`details`).
-pub(super) const MAX_TITLE_CHARS: usize = 200;
+/// clair (`details`) : la constante partagée des histoires (#551).
+pub(super) use crate::story::MAX_TITLE_CHARS;
 /// Côté maximal de l'image réduite (comme les vignettes de la Flam).
 const THUMB_DIM: u32 = 96;
 /// Images téléchargées en même temps.

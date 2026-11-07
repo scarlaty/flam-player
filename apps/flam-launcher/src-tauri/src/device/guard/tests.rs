@@ -413,6 +413,31 @@ fn format_lunii_ignore_les_liens_symboliques() {
 }
 
 #[test]
+fn format_flam_ignore_un_main_lsf_lien_symbolique() {
+    let dev = device(&mdf_v2_known());
+    let base = dev.path().join("str");
+    let target = base.join("cible");
+    write(&target, b"x");
+    let dir = base.join("lien-main");
+    std::fs::create_dir_all(&dir).unwrap();
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&target, dir.join("main.lsf"));
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_file(&target, dir.join("main.lsf"));
+    if let Err(e) = linked {
+        eprintln!("test ignore : lien symbolique impossible ({e})");
+        return;
+    }
+    assert!(!is_flam_format(&dir));
+    write(&dir.join("ni"), b"x");
+    assert!(is_lunii_format(&dir));
+    // Un vrai fichier `main.lsf` fait de nouveau une histoire Flam.
+    let flam = base.join("vrai-main");
+    write(&flam.join("main.lsf"), b"x");
+    assert!(is_flam_format(&flam));
+}
+
+#[test]
 fn info_en_clair_ecarte() {
     let dev = device(&mdf_v2_known());
     story(
