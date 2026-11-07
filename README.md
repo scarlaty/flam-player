@@ -200,12 +200,18 @@ Détails : [flam-transfert.md](apps/flam-launcher/docs/flam-transfert.md).
   Zstandard) et les images PNG (y compris entrelacées, à palette ou en 16 bits),
   GIF et JPEG ;
 - histoires déjà au format de la Flam : dossiers `.plain` et archives `.plain.pk`, copiées
-  telles quelles.
+  telles quelles ;
+- archives STUdio `.zip` (`story.json`, dossier `assets/`, `thumbnail.png`) : elles sont
+  reconnues et affichées avec le badge « Format STUdio » dans un dossier local, mais ne
+  peuvent pas encore être installées, envoyées ni jouées (l'envoi vers une Flam 2.x est
+  prévu, voir #517).
 
-Le format STUdio (`story.json`) n'est pas pris en charge. Les autres formats d'image (BMP...)
-et les JPEG arithmétiques ou sans perte ne le sont pas non plus : l'archive est refusée avec un
-message explicite. Une source peut être un catalogue en
-ligne au format Telmi Store, ou un dossier local, qui n'est jamais modifié.
+Les autres formats d'image (BMP...) et les JPEG arithmétiques ou sans perte ne sont pas pris en
+charge : l'archive est refusée avec un message explicite. Un `.zip` non reconnu (pack Lunii,
+histoire Flam compressée dans un `.zip`, archive sans `metadata.json` ni `story.json`...) est
+signalé dans le bandeau « éléments ignorés » de la source, avec ce qu'il faut faire. Une source
+peut être un catalogue en ligne au format Telmi Store, ou un dossier local, qui n'est jamais
+modifié.
 </details>
 
 <details>

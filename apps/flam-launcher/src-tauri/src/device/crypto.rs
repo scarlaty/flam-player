@@ -41,6 +41,37 @@
 //! suivants n'ont jamais été observés : ils sont refusés explicitement plutôt que de produire
 //! un fichier `key` douteux (à confirmer sur appareil, #236).
 //!
+//! # Fichiers au format Lunii sur une Flam 2.x (#523)
+//!
+//! Une histoire au format Lunii (STUdio, packs Lunii) installée sur une Flam en firmware 2.x
+//! est chiffrée autrement qu'une histoire Flam. Observé dans Lunii.QT (lecture de son code,
+//! pas d'essai), **à confirmer sur appareil (#236)** :
+//!
+//! | Élément                | Traitement                                                         |
+//! |------------------------|--------------------------------------------------------------------|
+//! | clé AES-128            | clé des histoires de `.mdf` (`0x4E`), mots de 4 octets inversés    |
+//! | IV                     | IV des histoires de `.mdf` (`0x5E`), mots de 4 octets inversés     |
+//! | fichiers `ni` et `nm`  | en clair, copiés tels quels                                        |
+//! | autre fichier vide     | vide                                                               |
+//! | autre, < 512 octets    | zéros jusqu'au multiple de 16 suivant, puis tout en AES-CBC (¹)    |
+//! | autre, ≥ 512 octets    | 512 premiers octets en AES-CBC, suite en clair, taille inchangée   |
+//!
+//! (¹) Un petit fichier non aligné grandit donc de 1 à 15 octets.
+//!
+//! « Mots de 4 octets inversés » ([`reverse_words`]) : l'ordre des octets est inversé **dans
+//! chaque mot de 4 octets**, l'ordre des mots est conservé (`a0 a1 a2 a3 a4 a5 …` devient
+//! `a3 a2 a1 a0 a7 a6 …`) ; ce n'est pas une inversion de tout le tableau.
+//!
+//! Le nom est comparé sans tenir compte de la casse (FAT32) et seul son dernier composant
+//! compte (`ni`, `rf/../ni`). Lunii.QT teste plutôt la fin du chemin (`endswith("ni")`) ; les
+//! autres fichiers d'un pack ont des noms hexadécimaux, qui ne finissent jamais par `ni` ni
+//! `nm`.
+//!
+//! Le format Lunii n'est pris en charge qu'en firmware 2.x : les clés « carrier » du 1.x ne
+//! servent qu'aux histoires Flam (refus [`CryptoError::LuniiFormatNeedsV2`]). Le
+//! déchiffrement ([`DeviceKeys::decrypt_lunii_file`]) ne peut pas retirer le bourrage d'un
+//! petit fichier : la longueur d'origine n'est écrite nulle part.
+//!
 //! Les clés ne sont jamais journalisées : `Debug` les masque, et elles sont effacées de la
 //! mémoire à la destruction (`zeroize`, y compris la clé étendue d'AES).
 
@@ -69,9 +100,15 @@ pub const KEY_FILE_LEN: usize = 32;
 const KEY_FILE_GAP: usize = 10;
 /// Nombre de caractères hexadécimaux du numéro de série répétés en fin de fichier `key`.
 const KEY_FILE_TAIL: usize = 8;
+/// Nombre d'octets chiffrés en tête d'un fichier au format Lunii (#523).
+pub const LUNII_CIPHERED_LEN: usize = 0x200;
+/// Fichiers d'une histoire au format Lunii laissés en clair (#523).
+pub const LUNII_PLAIN_FILES: [&str; 2] = ["ni", "nm"];
 
 type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
+/// Bloc de clé ou d'IV effacé de la mémoire à la destruction.
+type SecretBlock = Zeroizing<[u8; BLOCK_SIZE]>;
 
 /// Erreur de chiffrement ou de clés d'appareil.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -93,6 +130,13 @@ pub enum CryptoError {
     /// message : c'est une donnée propre à l'appareil.
     #[error("numéro de série de la Flam illisible dans .mdf : {0}")]
     MalformedSerialField(&'static str),
+    /// Histoire au format Lunii demandée pour une Flam qui n'est pas en firmware 2.x (clés
+    /// « carrier » du 1.x) : seul le 2.x lit ce format (#523).
+    #[error(
+        "les histoires au format Lunii demandent une Flam en firmware 2.x ; le firmware 1.x ne \
+         lit que les histoires Flam"
+    )]
+    LuniiFormatNeedsV2,
 }
 
 fn check_aligned(data: &[u8]) -> Result<(), CryptoError> {
@@ -136,6 +180,27 @@ pub fn encrypt_zero_padded(key: &[u8; 16], iv: &[u8; 16], plain: &[u8]) -> Vec<u
     out.resize(zero_padded_len(plain.len()), 0);
     encrypt_blocks(key, iv, &mut out).expect("longueur alignée par construction");
     out
+}
+
+/// Inverse l'ordre des octets dans chaque mot de 4 octets de `bytes`, sans changer l'ordre des
+/// mots (`a0 a1 a2 a3 a4 …` → `a3 a2 a1 a0 a7 …`). Sert à dériver la clé et l'IV du format
+/// Lunii (#523). Le résultat est effacé de la mémoire à la destruction.
+pub fn reverse_words(bytes: &[u8; 16]) -> Zeroizing<[u8; 16]> {
+    let mut out = Zeroizing::new(*bytes);
+    for word in out.as_chunks_mut::<4>().0 {
+        word.reverse();
+    }
+    out
+}
+
+/// Vrai si le fichier `name` d'une histoire au format Lunii reste en clair (`ni`, `nm`). Seul
+/// le dernier composant du chemin compte (séparateurs `/` et `\`), sans tenir compte de la
+/// casse.
+pub fn is_lunii_plain_file(name: &str) -> bool {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    LUNII_PLAIN_FILES
+        .iter()
+        .any(|plain| base.eq_ignore_ascii_case(plain))
 }
 
 /// Famille de firmware reconnue d'après le champ « main » de `.mdf`.
@@ -221,6 +286,8 @@ pub struct DeviceKeys {
     key_file: Zeroizing<[u8; KEY_FILE_LEN]>,
     story_key: Zeroizing<[u8; 16]>,
     story_iv: Zeroizing<[u8; 16]>,
+    /// Source des clés : `.mdf` (2.x) ou « carrier » (1.x). Seul le 2.x lit le format Lunii.
+    family: FirmwareFamily,
 }
 
 impl DeviceKeys {
@@ -245,6 +312,7 @@ impl DeviceKeys {
             key_file: key_file_from_serial(&serial),
             story_key,
             story_iv,
+            family: FirmwareFamily::V2,
         })
     }
 
@@ -268,12 +336,65 @@ impl DeviceKeys {
             key_file,
             story_key,
             story_iv,
+            family: FirmwareFamily::V1,
         })
     }
 
     /// Chiffre un script ou le fichier `info` d'une histoire pour cet appareil.
     pub fn encrypt(&self, plain: &[u8]) -> Vec<u8> {
         encrypt_zero_padded(&self.story_key, &self.story_iv, plain)
+    }
+
+    /// Clé et IV du format Lunii (mots de 4 octets inversés), en firmware 2.x seulement.
+    fn lunii_key_iv(&self) -> Result<(SecretBlock, SecretBlock), CryptoError> {
+        if self.family != FirmwareFamily::V2 {
+            return Err(CryptoError::LuniiFormatNeedsV2);
+        }
+        Ok((
+            reverse_words(&self.story_key),
+            reverse_words(&self.story_iv),
+        ))
+    }
+
+    /// Chiffre le fichier `name` (nom ou chemin relatif dans l'histoire) d'une histoire au
+    /// format Lunii pour cette Flam (règles dans la documentation du module, #523) : `ni` et
+    /// `nm` sont rendus tels quels ; un fichier de moins de 512 octets est complété par des
+    /// zéros jusqu'au multiple de 16 suivant puis entièrement chiffré ; au-delà, seuls les
+    /// 512 premiers octets sont chiffrés.
+    ///
+    /// Erreur [`CryptoError::LuniiFormatNeedsV2`] si ces clés ne sont pas celles d'un firmware
+    /// 2.x (même pour `ni` et `nm` : l'histoire entière serait illisible).
+    pub fn encrypt_lunii_file(&self, name: &str, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        let (key, iv) = self.lunii_key_iv()?;
+        if is_lunii_plain_file(name) {
+            return Ok(data.to_vec());
+        }
+        let mut out = data.to_vec();
+        if out.len() < LUNII_CIPHERED_LEN {
+            out.resize(zero_padded_len(out.len()), 0);
+        }
+        let head = out.len().min(LUNII_CIPHERED_LEN);
+        encrypt_blocks(&key, &iv, &mut out[..head])?;
+        Ok(out)
+    }
+
+    /// Inverse de [`Self::encrypt_lunii_file`] : déchiffre la tête du fichier `name` d'une
+    /// histoire au format Lunii (`ni` et `nm` rendus tels quels). Le bourrage nul d'un fichier
+    /// de moins de 512 octets reste en place (la longueur d'origine n'est pas connue).
+    ///
+    /// Erreurs : [`CryptoError::LuniiFormatNeedsV2`] hors firmware 2.x ;
+    /// [`CryptoError::UnalignedLength`] pour un fichier chiffré de moins de 512 octets dont la
+    /// longueur n'est pas un multiple de 16 (il ne peut pas venir de ce chiffrement).
+    pub fn decrypt_lunii_file(&self, name: &str, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        let (key, iv) = self.lunii_key_iv()?;
+        if is_lunii_plain_file(name) {
+            return Ok(data.to_vec());
+        }
+        let head = data.len().min(LUNII_CIPHERED_LEN);
+        check_aligned(&data[..head])?;
+        let mut out = data.to_vec();
+        decrypt_blocks(&key, &iv, &mut out[..head])?;
+        Ok(out)
     }
 
     /// Vrai si le fichier `info` chiffré `info` se déchiffre avec ces clés en texte lisible
@@ -572,10 +693,166 @@ pub(crate) mod tests {
         );
     }
 
+    /// Données de test des vecteurs Lunii : octet `i` = `(7 i + 3) mod 256`.
+    fn lunii_plain(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 7 + 3) as u8).collect()
+    }
+
+    /// Tête chiffrée attendue d'un fichier Lunii de 512 octets ou plus ([`lunii_plain`]), avec
+    /// les clés de test.
+    const LUNII_HEAD_512: &str = concat!(
+        "a12b7e26f19d00e20505e8f56df89b71bfab43da545d2255033df3675dd23739",
+        "8ab044926246c371c9dd26b33bc4ffd03eb1771101e8383f8d4f3f7eaab52816",
+        "5b6f0d27919b8508c29535323c64a00dee82a341f97817587b1760bbdd8aebbe",
+        "a383aa7ae682d27d97e192da514d0b0c38f552b4013107e185774894ad23a41f",
+        "6c3d08d2673a76d594b28bb555fdde4b8656478318cebebfa35299699bc74851",
+        "be28a4dc6ec07c7f3b2c7b66e0d46623c37afb0e5b0449750d9e6ef93a520310",
+        "299cd940677d65993ec09ef295570ff87afcfb79c84fc53b7d244e9087abd4f0",
+        "ca6e870779bb48bd583de4344c47a3a586bcb4661050cbf27266d8afddbef7ab",
+        "bac277c77df8ad0f7223cdf12c44ee8f5a0eaf651178ac88951ae04091834916",
+        "e979a7a14db1f98afc2592aefacd066531a82e33c6b4e96cf72a0aeddbba00fa",
+        "719702024fe98df06892108420515f3e2967d92bd24b87c9fc445fbc59e1004c",
+        "78725746219689cd3a73bd3a48ac0885c027150d62eaf5e60eda146c4fe2d09c",
+        "9e90afe108742ec313b074452f343c8f976213c402c1128265958046ddefd483",
+        "1c55d2631b3c98feb2e0f20921b435c3eb91d6ccd1cc1b96c884e459946874b0",
+        "f0525c1fd11cc7917745f3efe649e91fedc3f4acfa4daf5c7c1dcbccbcf918ed",
+        "25000a7f384b96fd3a5ad0bfd345426860aa1ecbcc0636db2254b5f9f71a62f7",
+    );
+
+    #[test]
+    fn mots_de_4_octets_inverses() {
+        assert_eq!(
+            *reverse_words(&TEST_KEY),
+            arr16("a3a2a1a0a7a6a5a4abaaa9a8afaeadac")
+        );
+        assert_eq!(
+            *reverse_words(&TEST_IV),
+            arr16("53525150575655545b5a59585f5e5d5c")
+        );
+        assert_eq!(*reverse_words(&reverse_words(&TEST_KEY)), TEST_KEY);
+    }
+
+    /// Références produites par les fonctions `reverse_bytes` et `aes_cipher` de Lunii.QT
+    /// (Python, pycryptodome) avec les clés de test, appliquées comme pour un fichier Lunii
+    /// (clé et IV inversés, 0x200 octets).
+    #[test]
+    fn chiffrement_lunii_conforme_a_lunii_qt() {
+        let keys = test_keys();
+        let short: [(usize, &str); 4] = [
+            (0, ""),
+            (1, "ce986c252d800f52245aad6559bea622"),
+            (15, "7a39b5eb160710c40044d6696c4cbd57"),
+            (16, "a12b7e26f19d00e20505e8f56df89b71"),
+        ];
+        for (len, expected) in short {
+            assert_eq!(
+                keys.encrypt_lunii_file("rf/000/0A1B2C3D", &lunii_plain(len))
+                    .unwrap(),
+                hex(expected),
+                "longueur {len}"
+            );
+        }
+        let head = hex(LUNII_HEAD_512);
+        // 511 octets : complétés d'un zéro, seul le dernier bloc diffère du cas 512.
+        let c511 = keys.encrypt_lunii_file("li", &lunii_plain(511)).unwrap();
+        assert_eq!(c511.len(), 512);
+        assert_eq!(&c511[..496], &head[..496]);
+        assert_eq!(c511[496..], hex("43951500ff3ffb60d8d1818eb20b1bcd"));
+        // 512 octets et plus : tête chiffrée, suite en clair, taille inchangée.
+        for len in [512, 513, 4096] {
+            let plain = lunii_plain(len);
+            let out = keys.encrypt_lunii_file("sf/000/0A1B2C3D", &plain).unwrap();
+            assert_eq!(out.len(), len);
+            assert_eq!(&out[..512], &head[..], "longueur {len}");
+            assert_eq!(&out[512..], &plain[512..], "longueur {len}");
+        }
+    }
+
+    #[test]
+    fn aller_retour_lunii() {
+        let keys = test_keys();
+        for len in [0, 1, 15, 16, 17, 500, 511, 512, 513, 528, 4096] {
+            let plain = lunii_plain(len);
+            let ciphered = keys.encrypt_lunii_file("ri", &plain).unwrap();
+            if len > 0 {
+                let n = len.min(16);
+                assert_ne!(ciphered[..n], plain[..n], "longueur {len}");
+            }
+            let back = keys.decrypt_lunii_file("ri", &ciphered).unwrap();
+            assert_eq!(back.len(), ciphered.len());
+            assert_eq!(&back[..len], &plain[..], "longueur {len}");
+            assert!(back[len..].iter().all(|&b| b == 0), "longueur {len}");
+        }
+    }
+
+    #[test]
+    fn dechiffrement_lunii_court_non_aligne_refuse() {
+        assert_eq!(
+            test_keys().decrypt_lunii_file("ri", &[0u8; 17]),
+            Err(CryptoError::UnalignedLength(17))
+        );
+        // Au-delà de 512 octets, seule la tête compte : 513 octets se déchiffrent.
+        assert!(test_keys().decrypt_lunii_file("ri", &[0u8; 513]).is_ok());
+    }
+
+    #[test]
+    fn fichiers_ni_et_nm_en_clair() {
+        let keys = test_keys();
+        let plain = lunii_plain(700);
+        for name in ["ni", "nm", "NI", "Nm", "pack/ni", "pack\\nm", "a/b/ni"] {
+            assert_eq!(
+                keys.encrypt_lunii_file(name, &plain).unwrap(),
+                plain,
+                "{name}"
+            );
+            assert_eq!(
+                keys.decrypt_lunii_file(name, &plain).unwrap(),
+                plain,
+                "{name}"
+            );
+        }
+        // `omni` : écart assumé avec le `endswith("ni")` de Lunii.QT (dernier composant exact).
+        for name in ["li", "ri", "si", "bt", "omni", "ni/li", "nix", "ni.txt", ""] {
+            assert!(!is_lunii_plain_file(name), "{name}");
+            assert_ne!(
+                keys.encrypt_lunii_file(name, &plain).unwrap(),
+                plain,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_lunii_refuse_hors_2x() {
+        let carrier = CarrierKeys::from_parts(&[0x33; 32], &[0x44; 32]).unwrap();
+        let keys = DeviceKeys::with_carrier("1.15.14", &carrier).unwrap();
+        for name in ["ri", "ni", "nm"] {
+            assert_eq!(
+                keys.encrypt_lunii_file(name, b"abc"),
+                Err(CryptoError::LuniiFormatNeedsV2)
+            );
+            assert_eq!(
+                keys.decrypt_lunii_file(name, &[0u8; 16]),
+                Err(CryptoError::LuniiFormatNeedsV2)
+            );
+        }
+        // Le format Flam reste disponible en 1.x.
+        assert_eq!(keys.encrypt(b"x").len(), 16);
+    }
+
     #[test]
     fn debug_ne_montre_aucune_cle() {
         let shown = format!("{:?} {:#?}", test_keys(), test_keys());
-        for secret in [&TEST_KEY[..], &TEST_IV[..], &TEST_SERIAL[..]] {
+        // Y compris la clé et l'IV dérivés du format Lunii (#523).
+        let lunii_key = reverse_words(&TEST_KEY);
+        let lunii_iv = reverse_words(&TEST_IV);
+        for secret in [
+            &TEST_KEY[..],
+            &TEST_IV[..],
+            &TEST_SERIAL[..],
+            &lunii_key[..],
+            &lunii_iv[..],
+        ] {
             let as_hex: String = secret.iter().map(|b| format!("{b:02x}")).collect();
             assert!(!shown.to_lowercase().contains(&as_hex), "{shown}");
             assert!(!shown.contains(&format!("{:?}", secret)), "{shown}");

@@ -184,11 +184,16 @@ export function listDeviceStories(): Promise<DeviceStories | null> {
   return invokeCommand<DeviceStories | null>("device_list_stories");
 }
 
+/** Format d'une histoire de la Flam (miroir de `StoryFormat`). */
+export type DeviceStoryFormat = "flam" | "lunii";
+
 /** Titre déchiffré d'une histoire de la Flam (miroir de `StoryTitle` dans `device/details.rs`). */
 export interface DeviceStoryTitle {
   uuid: string;
   /** `null` : pas de clé pour cette Flam, ou `info` illisible (repli de l'interface). */
   title: string | null;
+  /** `lunii` : `info` en clair (histoire Lunii/STUdio), titre lu sans clé et définitif. */
+  format: DeviceStoryFormat;
 }
 
 /** Réponse de `device_story_titles` (miroir de `StoryTitles`). */

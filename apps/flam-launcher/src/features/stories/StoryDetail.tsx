@@ -64,7 +64,9 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const playingThis =
     session !== null &&
     session.uuid === (session.origin === "library" ? entry.uuid : entry.entry_id);
-  const canPlayFromFolder = source.type === "folder" && entry.kind !== "telmi_zip";
+  const studio = entry.kind === "studio_zip";
+  const canPlayFromFolder =
+    source.type === "folder" && entry.kind !== "telmi_zip" && !studio;
   const text = t.stories.actions;
   const fromCatalog = isRemote(entry);
   const showCover = url !== undefined && url !== failedUrl;
@@ -137,7 +139,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                 </Button>
               </>
             )}
-            {!task && !installed && (
+            {!task && !installed && !studio && (
               <>
                 {canPlayFromFolder && (
                   <Button
@@ -194,7 +196,13 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                 <Badge
                   tone={tone}
                   icon={STATE_APPEARANCE[state].icon}
-                  description={state === "update_available" ? text.updateHelp : undefined}
+                  description={
+                    state === "update_available"
+                      ? text.updateHelp
+                      : state === "studio"
+                        ? t.stories.studioNotice
+                        : undefined
+                  }
                 >
                   {t.library.state[state]}
                 </Badge>
@@ -255,6 +263,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                 <p className="fl-detail__error">{taskErrorMessage(failed.error)}</p>
               </Banner>
             )}
+            {studio && <p className="fl-detail__hint">{t.stories.studioNotice}</p>}
             {playing && !playingThis && !task && (
               <p className="fl-detail__hint">{t.stories.playerBusy}</p>
             )}

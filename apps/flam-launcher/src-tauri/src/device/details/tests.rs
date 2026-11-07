@@ -351,6 +351,153 @@ fn uuid_en_majuscules_normalise() {
     );
 }
 
+// --- Histoires au format Lunii (#522) ------------------------------------------------------
+
+const L: &str = "44444444-4444-4444-8444-444444444444";
+const M: &str = "55555555-5555-4555-8555-555555555555";
+
+/// Histoire au format Lunii : index `ni`/`li`/`ri`/`si`, `info` en clair, pas de `main.lsf`.
+fn lunii_story(root: &Path, sub: &str, uuid: &str, info: &[u8]) {
+    let dir = root.join(sub).join(uuid);
+    for name in ["ni", "li", "ri", "si", "key"] {
+        write(&dir.join(name), &[7u8; 32]);
+    }
+    write(&dir.join("rf/000/ABCD1234"), &[1u8; 64]);
+    write(&dir.join("sf/000/ABCD1234"), &[2u8; 64]);
+    write(&dir.join("info"), info);
+}
+
+const LUNII_INFO: &[u8] = b"Le Petit Pirate\nLe Petit Pirate\n0\nLe Petit Pirate\nAuteur";
+
+fn format_of(root: &Path, keys: Option<&DeviceKeys>, uuid: &str) -> (Option<String>, StoryFormat) {
+    let t = read_titles(root, &[uuid.to_string()], keys, &never)
+        .titles
+        .remove(0);
+    (t.title, t.format)
+}
+
+#[test]
+fn titre_lunii_lu_en_clair_avec_cles_2x_et_flam_inchangee() {
+    let dev = device_v2();
+    lunii_story(dev.path(), "str", L, LUNII_INFO);
+    lunii_story(dev.path(), "str.hidden", M, "Été\nÉté\n0\nÉté\n".as_bytes());
+    let store_dir = tempfile::tempdir().unwrap();
+    let keys = title_keys(dev.path(), None, &fake_store(store_dir.path())).unwrap();
+    assert_eq!(
+        format_of(dev.path(), Some(&keys), L),
+        (Some("Le Petit Pirate".into()), StoryFormat::Lunii)
+    );
+    assert_eq!(
+        format_of(dev.path(), Some(&keys), M),
+        (Some("Été".into()), StoryFormat::Lunii)
+    );
+    // Une histoire Flam voisine reste déchiffrée et classée Flam.
+    assert_eq!(
+        format_of(dev.path(), Some(&keys), A),
+        (Some("Capi et la rivière".into()), StoryFormat::Flam)
+    );
+    // Un `info` en clair ne devient jamais un titre pour une histoire Flam (pas de main.lsf
+    // requis ici : sans index Lunii, l'histoire reste Flam et le clair est refusé).
+    write(&dev.path().join(format!("str/{B}/info")), LUNII_INFO);
+    assert_eq!(
+        format_of(dev.path(), Some(&keys), B),
+        (None, StoryFormat::Flam)
+    );
+}
+
+#[test]
+fn titre_lunii_lu_sans_cle() {
+    let dev = device_v1();
+    lunii_story(dev.path(), "str", L, LUNII_INFO);
+    let report = read_titles(dev.path(), &[L.to_string(), A.to_string()], None, &never);
+    assert!(!report.keys);
+    assert_eq!(report.titles[0].title.as_deref(), Some("Le Petit Pirate"));
+    assert_eq!(report.titles[0].format, StoryFormat::Lunii);
+    assert_eq!(report.titles[1].title, None);
+    assert_eq!(report.titles[1].format, StoryFormat::Flam);
+}
+
+#[test]
+fn main_lsf_l_emporte_sur_les_index_lunii() {
+    let dev = device_v2();
+    lunii_story(dev.path(), "str", L, LUNII_INFO);
+    write(&dev.path().join(format!("str/{L}/main.lsf")), &[0u8; 16]);
+    let store_dir = tempfile::tempdir().unwrap();
+    let keys = title_keys(dev.path(), None, &fake_store(store_dir.path())).unwrap();
+    assert_eq!(
+        format_of(dev.path(), Some(&keys), L),
+        (None, StoryFormat::Flam)
+    );
+}
+
+#[test]
+fn dossier_lunii_a_info_chiffre_sans_titre_illisible() {
+    let dev = device_v2();
+    lunii_story(dev.path(), "str", L, &info_v2("Titre chiffré"));
+    assert_eq!(format_of(dev.path(), None, L), (None, StoryFormat::Lunii));
+}
+
+#[test]
+fn info_lunii_latin1_controles_et_longueur() {
+    assert_eq!(
+        plain_title_of_info(b"Caf\xe9 du \t port\r\nautre").as_deref(),
+        Some("Café du port")
+    );
+    // Contrôles : pas du texte (info chiffré ou abîmé).
+    assert_eq!(plain_title_of_info(b"Caf\xe9 \x01du"), None);
+    assert_eq!(
+        plain_title_of_info(&[0x9f, 0x02, 0xd4, 0x00, 0x13, 0x8a, 0x77]),
+        None
+    );
+    // Coupure de la lecture bornée au milieu d'un caractère UTF-8.
+    assert_eq!(
+        plain_title_of_info(&"Été".as_bytes()[..4]).as_deref(),
+        Some("Ét")
+    );
+    assert_eq!(
+        plain_title_of_info(b"\xef\xbb\xbf\n\n  Titre  \n").as_deref(),
+        Some("Titre")
+    );
+    assert_eq!(plain_title_of_info(b"\x00\x01\n \n"), None);
+    assert_eq!(plain_title_of_info(b""), None);
+    let long = "a".repeat(5000);
+    assert_eq!(
+        plain_title_of_info(long.as_bytes())
+            .unwrap()
+            .chars()
+            .count(),
+        MAX_PLAIN_TITLE_CHARS
+    );
+}
+
+#[test]
+fn info_lunii_demesure_borne_et_lien_refuse() {
+    let dev = device_v2();
+    let mut big = b"Titre\n".to_vec();
+    big.resize(MAX_INFO as usize * 4, b'x');
+    lunii_story(dev.path(), "str", L, &big);
+    let (title, format) = format_of(dev.path(), None, L);
+    assert_eq!(format, StoryFormat::Lunii);
+    assert_eq!(title.as_deref(), Some("Titre"));
+    // `info` dossier : pas de titre, pas de panique.
+    lunii_story(dev.path(), "str", M, b"");
+    fs::remove_file(dev.path().join(format!("str/{M}/info"))).unwrap();
+    fs::create_dir_all(dev.path().join(format!("str/{M}/info"))).unwrap();
+    assert_eq!(format_of(dev.path(), None, M), (None, StoryFormat::Lunii));
+}
+
+#[test]
+fn vignette_lunii_lue_et_lecture_seule() {
+    let dev = device_v2();
+    lunii_story(dev.path(), "str", L, LUNII_INFO);
+    put_thumb(dev.path(), "str", L, &lif(128, 96));
+    let cache = tempfile::tempdir().unwrap();
+    let before = fingerprint(dev.path());
+    assert!(story_thumbnail(dev.path(), L, cache.path()).is_some());
+    let _ = format_of(dev.path(), None, L);
+    assert_eq!(fingerprint(dev.path()), before);
+}
+
 // --- Vignettes ------------------------------------------------------------------------------
 
 #[test]
@@ -502,7 +649,7 @@ fn aucune_cle_dans_les_reponses_ni_le_debug() {
     let value = serde_json::to_value(&titles).unwrap();
     let mut keys_json: Vec<_> = value["titles"][0].as_object().unwrap().keys().collect();
     keys_json.sort();
-    assert_eq!(keys_json, ["title", "uuid"]);
+    assert_eq!(keys_json, ["format", "title", "uuid"]);
     // Clés 2.x de `.mdf` non plus.
     let dev = device_v2();
     let keys = title_keys(dev.path(), None, &store).unwrap();
