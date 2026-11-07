@@ -434,6 +434,41 @@ async fn ancien_reglage_python_utilise_le_moteur_rust() {
     assert_eq!(recorded_result(&ctx)["engine"], "rust");
 }
 
+/// Annulation l'emporte sur une erreur survenue après sa demande (#560) : la résolution des
+/// outils annule la tâche puis échoue (« convertisseur indisponible »). L'ordre est fixé par
+/// construction (annulation, puis erreur, dans le même appel) : la tâche finit « annulée »,
+/// état et événement final compris, jamais sur l'erreur.
+#[tokio::test]
+async fn annulation_prioritaire_sur_une_erreur_posterieure() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("a.zip");
+    let service: Arc<std::sync::OnceLock<InstallService>> = Arc::default();
+    let cell = service.clone();
+    let resolver: Resolver = Arc::new(move || {
+        let service = cell.get().expect("service branché avant le démarrage");
+        for task in service.list() {
+            service.cancel(&task.id).unwrap();
+        }
+        Err(AppError::ConverterUnavailable("absent".into()))
+    });
+    let ctx = Ctx::with_resolver(dir, resolver, Duration::from_secs(5));
+    assert!(service.set(ctx.service.clone()).is_ok());
+    let mut entry = story("abc", Some(2));
+    entry.download_url = archive.to_string_lossy().into();
+    let task = ctx.service.start(entry).unwrap();
+    let done = ctx.finished(&task.id).await;
+    assert_eq!(done.state, TaskState::Cancelled, "{:?}", done.error);
+    assert_eq!(done.error.unwrap().kind, "cancelled");
+    assert!(matches!(
+        ctx.events.all().last(),
+        Some(Recorded::Failed(InstallFailed {
+            state: TaskState::Cancelled,
+            error: TaskError { ref kind, .. },
+            ..
+        })) if kind == "cancelled"
+    ));
+}
+
 #[tokio::test]
 async fn plantage_sans_evenement_error_ne_reprend_pas_stderr() {
     let Some(py) = fake_converter() else { return };

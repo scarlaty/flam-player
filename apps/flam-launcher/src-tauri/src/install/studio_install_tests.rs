@@ -268,9 +268,12 @@ async fn installation_de_l_autre_format_en_cours_refusee() {
     let err = ctx.service.start_with(entry, true).unwrap_err();
     assert_eq!(err.kind(), "validation");
     assert!(err.to_string().contains("autre format"), "{err}");
+    // Annulée avant que le portillon se libère : la tâche (sans convertisseur) finit « annulée »
+    // quel que soit l'instant où elle est ordonnancée (annulation prioritaire, #560).
     ctx.service.cancel(&first.id).unwrap();
     drop(gate);
-    assert_eq!(ctx.finished(&first.id).await.state, TaskState::Cancelled);
+    let task = ctx.finished(&first.id).await;
+    assert_eq!(task.state, TaskState::Cancelled, "{:?}", task.error);
 }
 
 #[test]
