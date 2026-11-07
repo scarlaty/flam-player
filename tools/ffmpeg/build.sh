@@ -29,9 +29,24 @@ prefix=/tmp/ffbuild-prefix
 rm -rf "$prefix"
 mkdir -p "$prefix"
 
+# Téléchargement avec réessais bornés (#533) : --retry-all-errors couvre les coupures de connexion
+# (curl 35 « Connection reset by peer ») que --retry seul ne rejoue pas. Chaque tentative repart
+# d'un fichier supprimé et l'empreinte SHA-256 est vérifiée à chaque fois : un fichier partiel ou
+# corrompu est rejeté (puis retéléchargé), jamais accepté. Échec définitif après 4 tentatives.
 fetch() { # url sha256 fichier
-  curl -fsSL --retry 3 --retry-delay 5 -o "$3" "$1"
-  echo "$2  $3" | sha256sum -c - >/dev/null || { echo "empreinte inattendue : $1" >&2; exit 1; }
+  local attempt
+  for attempt in 1 2 3 4; do
+    rm -f "$3"
+    if curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors --connect-timeout 30 -o "$3" "$1" \
+      && echo "$2  $3" | sha256sum -c - >/dev/null; then
+      return 0
+    fi
+    echo "téléchargement ou empreinte en échec (tentative $attempt/4) : $1" >&2
+    [ "$attempt" -lt 4 ] && sleep 5
+  done
+  rm -f "$3"
+  echo "empreinte inattendue ou téléchargement impossible : $1" >&2
+  exit 1
 }
 
 fetch "$LAME_URL" "$LAME_SHA256" "$work/lame.tar.gz"
