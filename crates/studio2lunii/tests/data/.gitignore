@@ -1,0 +1,3 @@
+# Images de test (le .gitignore racine ignore *.bmp et *.png, prévus pour les captures).
+!*.bmp
+!*.png
