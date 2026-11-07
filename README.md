@@ -259,15 +259,15 @@ documentation.
 Flam Launcher est une application [Tauri 2](https://tauri.app/) (backend Rust, interface React
 et TypeScript). Il s'appuie sur d'autres briques de ce dépôt :
 
-| Composant             | Rôle                                                                                                                                                                                                                    | Documentation                                                                                |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `flam-player`         | Émulateur du firmware de la Flam (C, LVGL, Lua, SDL2)                                                                                                                                                                   | [docs/player.md](docs/player.md)                                                             |
-| `telmi2flam` (Rust)   | Convertisseur TELMI vers FLAM livré avec le launcher (version 2.0.0)                                                                                                                                                    | [crates/telmi2flam](crates/telmi2flam/)                                                      |
-| `tools/telmi2flam`    | Moteur Lua et runtime embarqués dans le convertisseur, documentation du format, outils de campagne et de parité en Python (la version Python du convertisseur est supprimée, ses sorties servent de références de test) | [tools/telmi2flam](tools/telmi2flam/README.md)                                               |
-| Jeux homebrew         | Jeux en Lua pour la Flam                                                                                                                                                                                                | [docs/player.md](docs/player.md#jeux-et-contenus-homebrew)                                   |
-| Skill `flam-homebrew` | Fabriquer un contenu `.plain.pk` avec une IA                                                                                                                                                                            | [skills/flam-homebrew](skills/flam-homebrew/SKILL.md)                                        |
-| Formats de la Flam    | Volume USB, index, chiffrement                                                                                                                                                                                          | [flam-device-format.md](docs/flam-device-format.md), [flam-carrier.md](docs/flam-carrier.md) |
-| Sécurité              | Audit et inventaire d'un appareil                                                                                                                                                                                       | [docs/security/](docs/security/)                                                             |
+| Composant | Rôle | Documentation |
+|-----------|------|---------------|
+| `flam-player` | Émulateur du firmware de la Flam (C, LVGL, Lua, SDL2) | [docs/player.md](docs/player.md) |
+| `telmi2flam` (Rust) | Convertisseur TELMI vers FLAM livré avec le launcher (version 2.0.0) | [crates/telmi2flam](crates/telmi2flam/) |
+| `tools/telmi2flam` | Moteur Lua et runtime embarqués dans le convertisseur, documentation du format, outils de campagne et de parité en Python (la version Python du convertisseur est supprimée, ses sorties servent de références de test) | [tools/telmi2flam](tools/telmi2flam/README.md) |
+| Jeux homebrew | Jeux en Lua pour la Flam | [docs/player.md](docs/player.md#jeux-et-contenus-homebrew) |
+| Skill `flam-homebrew` | Fabriquer un contenu `.plain.pk` avec une IA | [skills/flam-homebrew](skills/flam-homebrew/SKILL.md) |
+| Formats de la Flam | Volume USB, index, chiffrement | [flam-device-format.md](docs/flam-device-format.md), [flam-carrier.md](docs/flam-carrier.md) |
+| Sécurité | Audit et inventaire d'un appareil | [docs/security/](docs/security/) |
 
 ## Licence
 
