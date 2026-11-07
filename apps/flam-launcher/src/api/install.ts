@@ -88,7 +88,8 @@ export interface InstallProgress {
 /** Charge de `install://done`. */
 export interface InstallDone {
   task_id: string;
-  entry: LibraryEntry;
+  /** Entrée publiée (sans `format` : relire `library_list` pour l'avoir). */
+  entry: Omit<LibraryEntry, "format">;
   /** Avertissements de la conversion. */
   warnings: number;
   /** Pack de podcasts : épisodes retirés (P7) ; `null` pour une histoire d'une source. */
@@ -110,17 +111,22 @@ export const INSTALL_ERROR_EVENT = "install://error";
  * `install_start` : installe l'histoire `entryId` de la source `sourceId` (catalogue : entrée du
  * catalogue en cache ; dossier : entrée du dernier `scanFolder`, le dossier étant analysé s'il
  * ne l'a pas encore été). Une tâche déjà active pour le même `uuid` est renvoyée telle quelle.
- * `uuid` : histoire attendue (`not_found` si l'entrée en propose une autre).
+ * `uuid` : histoire attendue (`not_found` si l'entrée en propose une autre). `replaceFormat` :
+ * l'utilisateur a confirmé le remplacement de la même histoire installée dans l'autre format
+ * (Telmi ↔ STUdio) ; sans lui, ce remplacement est refusé par le backend.
  */
 export function startInstall(
   sourceId: string,
   entryId: string,
   uuid?: string,
+  replaceFormat?: boolean,
 ): Promise<InstallTask> {
-  return invokeCommand<InstallTask>(
-    "install_start",
-    uuid === undefined ? { sourceId, entryId } : { sourceId, entryId, uuid },
-  );
+  return invokeCommand<InstallTask>("install_start", {
+    sourceId,
+    entryId,
+    ...(uuid !== undefined && { uuid }),
+    ...(replaceFormat && { replaceFormat: true }),
+  });
 }
 
 /**

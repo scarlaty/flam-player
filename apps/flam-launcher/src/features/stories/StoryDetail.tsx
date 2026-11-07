@@ -65,6 +65,8 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
     session !== null &&
     session.uuid === (session.origin === "library" ? entry.uuid : entry.entry_id);
   const studio = entry.kind === "studio_zip";
+  // Histoire STUdio installée (pack Lunii) : jamais jouable sur le PC (Q1).
+  const lunii = installed?.format === "lunii";
   const canPlayFromFolder =
     source.type === "folder" && entry.kind !== "telmi_zip" && !studio;
   const text = t.stories.actions;
@@ -132,12 +134,18 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   size="sm"
                   variant="accent"
                   icon="play"
-                  disabled={playing}
+                  disabled={playing || lunii}
+                  title={lunii ? text.playUnavailable : undefined}
                   onClick={() => stories.play(entry, source.id)}
                 >
                   {text.play}
                 </Button>
               </>
+            )}
+            {!task && !installed && studio && (
+              <Button size="sm" icon="download" onClick={() => stories.install(entry)}>
+                {text.install}
+              </Button>
             )}
             {!task && !installed && !studio && (
               <>
@@ -264,7 +272,8 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
               </Banner>
             )}
             {studio && <p className="fl-detail__hint">{t.stories.studioNotice}</p>}
-            {playing && !playingThis && !task && (
+            {lunii && <p className="fl-detail__hint">{text.playUnavailable}</p>}
+            {playing && !playingThis && !task && !lunii && (
               <p className="fl-detail__hint">{t.stories.playerBusy}</p>
             )}
           </div>

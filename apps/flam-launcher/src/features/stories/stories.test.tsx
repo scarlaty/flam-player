@@ -73,7 +73,8 @@ function installedEntry(entry: StoryEntry): LibraryEntry {
     uuid: entry.uuid,
     version: entry.version,
     title: entry.title,
-    file: `${entry.uuid}-${entry.version}.plain.pk`,
+    file: `${entry.uuid}-${entry.version}.${entry.kind === "studio_zip" ? "lunii" : "plain"}.pk`,
+    format: entry.kind === "studio_zip" ? "lunii" : "flam",
     size: 1000,
     installed_at: 1_700_000_000,
     converter: null,
@@ -1566,18 +1567,18 @@ describe("suppression depuis la liste", () => {
     expect(screen.queryByRole("button", { name: /Supprimer/ })).toBeNull();
   });
 
-  it("affiche une entrée STUdio avec son badge, sans bouton d'installation ni de lecture", async () => {
-    scanEntries = [
-      makeEntry({
-        source_id: "dossier",
-        entry_id: "dossier:studio",
-        uuid: "studio",
-        title: "Conte STUdio",
-        kind: "studio_zip",
-        download_url: "C:\\Contes\\studio.zip",
-      }),
-    ];
-    window.location.hash = "#/library/dossier";
+  const studioEntry = (over: Partial<StoryEntry> = {}) =>
+    makeEntry({
+      source_id: "dossier",
+      entry_id: "dossier:studio",
+      uuid: "studio",
+      title: "Conte STUdio",
+      kind: "studio_zip",
+      download_url: "C:\\Contes\\studio.zip",
+      ...over,
+    });
+
+  function renderLibrary() {
     render(
       <ToastProvider>
         <LibraryProvider>
@@ -1593,17 +1594,81 @@ describe("suppression depuis la liste", () => {
         </LibraryProvider>
       </ToastProvider>,
     );
+  }
+
+  it("installe une entrée STUdio (badge, explication, sans « Jouer ») (#554)", async () => {
+    scanEntries = [studioEntry()];
+    window.location.hash = "#/library/dossier";
+    renderLibrary();
     expect(await screen.findByText("Format STUdio")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /Installer|Télécharger|Jouer/ }),
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: /Jouer|Télécharger/ })).toBeNull();
     fireEvent.click(screen.getByText("Conte STUdio"));
     const dialog = await screen.findByRole("dialog");
     expect(
-      within(dialog).getByText(/l'envoi vers une Flam 2\.x arrive/),
+      within(dialog).getByText(
+        /s'installe pour être envoyée sur une Flam en firmware 2\.x/,
+      ),
     ).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /Jouer|et jouer/ })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Installer" }));
+    await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+    expect(callsOf("install_start")[0]?.args).toEqual({
+      sourceId: "dossier",
+      entryId: "dossier:studio",
+      uuid: "studio",
+    });
+  });
+
+  it("histoire STUdio installée : « Jouer » désactivé avec sa raison, badge STUdio", async () => {
+    const entry = studioEntry();
+    scanEntries = [entry];
+    installed = [installedEntry(entry)];
+    window.location.hash = "#/library/library";
+    renderLibrary();
+    const play = await screen.findByRole("button", { name: "Jouer « Conte STUdio »" });
+    expect(play).toBeDisabled();
+    expect(play).toHaveAccessibleDescription(
+      "Lecture sur le PC indisponible pour une histoire STUdio",
+    );
+    expect(screen.getByText("STUdio")).toBeInTheDocument();
     expect(
-      within(dialog).queryByRole("button", { name: /Installer|Télécharger|Jouer/ }),
-    ).toBeNull();
+      screen.getByRole("button", { name: "Supprimer « Conte STUdio »" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Conte STUdio"));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: "Jouer" })).toBeDisabled();
+    expect(
+      within(dialog).getByText("Lecture sur le PC indisponible pour une histoire STUdio"),
+    ).toBeInTheDocument();
+    expect(callsOf("player_launch")).toHaveLength(0);
+  });
+
+  it("Q10 : même histoire déjà installée au format Flam, remplacement après confirmation", async () => {
+    scanEntries = [studioEntry({ uuid: "ours" })];
+    installed = [installedEntry(ours())];
+    window.location.hash = "#/library/dossier";
+    renderLibrary();
+    // L'histoire Telmi installée n'est pas « la même installation » : bouton Installer.
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Installer « Conte STUdio »" }),
+    );
+    let confirm = await screen.findByRole("alertdialog");
+    expect(
+      within(confirm).getByText(/au format Flam \(histoire Telmi\)/),
+    ).toBeInTheDocument();
+    fireEvent.click(within(confirm).getByRole("button", { name: "Annuler" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(callsOf("install_start")).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Installer « Conte STUdio »" }));
+    confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Remplacer" }));
+    await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+    expect(callsOf("install_start")[0]?.args).toEqual({
+      sourceId: "dossier",
+      entryId: "dossier:studio",
+      uuid: "ours",
+      replaceFormat: true,
+    });
   });
 });

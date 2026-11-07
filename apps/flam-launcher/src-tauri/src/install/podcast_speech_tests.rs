@@ -434,6 +434,7 @@ impl Ctx {
             cancel: watch::channel(false).0,
             validator: Default::default(),
             pack: None,
+            replace_format: false,
         });
     }
 

@@ -568,7 +568,7 @@ impl InstallService {
             composition,
             draft_revision,
         };
-        self.enqueue(id, entry, Some(job), super::now_secs())
+        self.enqueue(id, entry, Some(job), super::now_secs(), false)
     }
 
     /// Titres lus demandés (#462) : voix normalisée, voix mémorisée du poste reprise si la

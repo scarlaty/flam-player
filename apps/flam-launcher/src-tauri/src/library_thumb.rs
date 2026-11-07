@@ -6,8 +6,10 @@
 //! en échec ; le front affiche alors l'illustration par défaut.
 //!
 //! - **Préparation** ([`prepare`], hors verrou, sans réseau) : vignette déjà téléchargée dans le
-//!   cache du catalogue d'origine, sinon `img/thumbnail.lif` du `.plain.pk` produit, réencodée en
-//!   PNG. Octets reconnus par leur signature (PNG, JPEG, GIF, WebP), [`MAX_BYTES`] au plus.
+//!   cache du catalogue d'origine, sinon, pour un pack Lunii `.lunii.pk` (histoire STUdio, #554),
+//!   son `_thumbnail.png` d'origine, sinon `img/thumbnail.lif` du pack produit (`.plain.pk` ou
+//!   `.lunii.pk`), réencodée en PNG. Octets reconnus par leur signature (PNG, JPEG, GIF, WebP),
+//!   [`MAX_BYTES`] au plus.
 //! - **Écriture** ([`store`], sous le verrou `library/.lock`, après les refus de l'installation
 //!   et avant l'index) : nom unique par publication (`<uuid>-<version>.<installed_at>.<ext>`),
 //!   écriture atomique ; la vignette d'une installation précédente n'est jamais écrasée.
@@ -20,7 +22,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::catalog::{cached_thumb_path, sniff_image};
-use crate::library::{remove_if_exists, LibraryEntry};
+use crate::library::{file_stem, remove_if_exists, LibraryEntry, StoryFormat};
 use crate::story::StoryEntry;
 use crate::thumbnail;
 use crate::{storage, AppError, AppResult};
@@ -35,6 +37,10 @@ const THUMB_DIM: u32 = 192;
 const LIF_NAME: &str = "img/thumbnail.lif";
 /// Taille maximale du `img/thumbnail.lif` lu dans le `.plain.pk`.
 const MAX_LIF_BYTES: u64 = 4 * 1024 * 1024;
+/// Vignette d'origine d'un pack Lunii (`install::studio`).
+const PACK_PNG_NAME: &str = "_thumbnail.png";
+/// Taille maximale du `_thumbnail.png` lu dans le `.lunii.pk`.
+const MAX_PACK_PNG_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Vignette prête à écrire : octets d'image reconnus et extension correspondante.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,11 +67,26 @@ impl Prepared {
 }
 
 /// Vignette de l'histoire `source` qui vient d'être produite dans `staged` : celle du cache du
-/// catalogue si elle y est, sinon celle du `.plain.pk`. `None` (avertissement) si aucune n'est
-/// exploitable. Ne fait jamais d'accès réseau.
+/// catalogue si elle y est, sinon celle du pack (`_thumbnail.png` d'un `.lunii.pk`, puis
+/// `img/thumbnail.lif`). `None` (avertissement) si aucune n'est exploitable. Ne fait jamais
+/// d'accès réseau.
 pub fn prepare(cache_root: &Path, source: &StoryEntry, staged: &Path) -> Option<Prepared> {
     if let Some(prepared) = from_catalog_cache(cache_root, source) {
         return Some(prepared);
+    }
+    let lunii = staged
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(StoryFormat::of_file)
+        == Some(StoryFormat::Lunii);
+    if lunii {
+        match from_pack_png(staged) {
+            Ok(prepared) => return Some(prepared),
+            Err(reason) => tracing::info!(
+                "histoire {} : vignette d'origine inutilisable ({reason}), essai de {LIF_NAME}",
+                source.uuid
+            ),
+        }
     }
     match from_plain_pk(staged) {
         Ok(prepared) => Some(prepared),
@@ -94,25 +115,39 @@ fn from_catalog_cache(cache_root: &Path, source: &StoryEntry) -> Option<Prepared
     Prepared::from_bytes(bytes)
 }
 
-/// `img/thumbnail.lif` du `.plain.pk`, décodé, réduit et encodé en PNG.
-fn from_plain_pk(path: &Path) -> Result<Prepared, String> {
+/// Entrée `name` d'un pack (zip), lue avec la borne `max` (déclarée puis lue).
+fn read_pack_entry(path: &Path, name: &str, max: u64) -> Result<Vec<u8>, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("ouverture impossible : {e}"))?;
     let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file))
         .map_err(|e| format!("archive invalide : {e}"))?;
-    let entry = zip
-        .by_name(LIF_NAME)
-        .map_err(|_| format!("pas de {LIF_NAME}"))?;
-    if entry.size() > MAX_LIF_BYTES {
-        return Err(format!("{LIF_NAME} trop volumineux"));
+    let entry = zip.by_name(name).map_err(|_| format!("pas de {name}"))?;
+    if entry.size() > max {
+        return Err(format!("{name} trop volumineux"));
     }
-    let mut lif = Vec::new();
+    let mut bytes = Vec::new();
     entry
-        .take(MAX_LIF_BYTES + 1)
-        .read_to_end(&mut lif)
-        .map_err(|e| format!("lecture de {LIF_NAME} impossible : {e}"))?;
-    if lif.len() as u64 > MAX_LIF_BYTES {
-        return Err(format!("{LIF_NAME} trop volumineux"));
+        .take(max + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("lecture de {name} impossible : {e}"))?;
+    if bytes.len() as u64 > max {
+        return Err(format!("{name} trop volumineux"));
     }
+    Ok(bytes)
+}
+
+/// `_thumbnail.png` d'un `.lunii.pk`, décodé (bornes de `thumbnail::decode_png`), réduit et
+/// réencodé en PNG.
+fn from_pack_png(path: &Path) -> Result<Prepared, String> {
+    let png = read_pack_entry(path, PACK_PNG_NAME, MAX_PACK_PNG_BYTES)?;
+    let image = thumbnail::decode_png(&png).map_err(|e| format!("{PACK_PNG_NAME} : {e}"))?;
+    let png =
+        thumbnail::encode_png(&thumbnail::fit(image, THUMB_DIM)).map_err(|e| e.to_string())?;
+    Prepared::from_bytes(png).ok_or_else(|| "vignette réencodée trop volumineuse".into())
+}
+
+/// `img/thumbnail.lif` du pack (`.plain.pk` ou `.lunii.pk`), décodé, réduit et encodé en PNG.
+fn from_plain_pk(path: &Path) -> Result<Prepared, String> {
+    let lif = read_pack_entry(path, LIF_NAME, MAX_LIF_BYTES)?;
     let image = telmi2flam::lif::decode(&lif).map_err(|e| format!("{LIF_NAME} : {e}"))?;
     let png =
         thumbnail::encode_png(&thumbnail::fit(image, THUMB_DIM)).map_err(|e| e.to_string())?;
@@ -130,9 +165,14 @@ fn read_bounded(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Nom de la vignette de la publication `file` (`<uuid>-<version>.plain.pk`) faite à `now`.
+/// Nom de la vignette de la publication `file` faite à `now` : `<uuid>-<version>.<now>.<ext>`
+/// pour un `.plain.pk`, `<uuid>-<version>.lunii.<now>.<ext>` pour un `.lunii.pk` (deux
+/// publications de formats différents dans la même seconde n'écrivent jamais le même fichier).
 fn thumb_name(file: &str, now: u64, ext: &str) -> String {
-    let stem = file.strip_suffix(".plain.pk").unwrap_or(file);
+    let stem = match StoryFormat::of_file(file) {
+        Some(StoryFormat::Lunii) => file.strip_suffix(".pk").unwrap_or(file),
+        _ => file_stem(file).unwrap_or(file),
+    };
     format!("{stem}.{now}.{ext}")
 }
 
@@ -287,6 +327,72 @@ mod tests {
             .unwrap_or_default();
         names.sort();
         names
+    }
+
+    /// Pack Lunii `.lunii.pk` préparé dans `.staging/` (#554), avec `_thumbnail.png` et
+    /// `img/thumbnail.lif` s'ils sont donnés.
+    fn staged_lunii(lib: &Library, name: &str, png: Option<&[u8]>, lif: Option<&[u8]>) -> PathBuf {
+        let path = lib.staging_dir().unwrap().join(name);
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("ni", options).unwrap();
+        zip.write_all(b"ni").unwrap();
+        for (file, data) in [(PACK_PNG_NAME, png), (LIF_NAME, lif)] {
+            if let Some(data) = data {
+                zip.start_file(file, options).unwrap();
+                zip.write_all(data).unwrap();
+            }
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    fn studio(uuid: &str, version: Option<u32>) -> StoryEntry {
+        let mut s = story(uuid, version);
+        s.kind = crate::story::StoryKind::StudioZip;
+        s
+    }
+
+    /// Pack Lunii : vignette d'origine `_thumbnail.png`, sinon `img/thumbnail.lif` ; une
+    /// vignette illisible n'empêche jamais l'installation (#529).
+    #[test]
+    fn vignette_d_un_pack_lunii_png_puis_lif_puis_aucune() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let s = staged_lunii(&lib, "t.lunii.pk", Some(&png()), Some(&lif()));
+        let entry = install(&lib, dir.path(), &studio("abc", Some(3)), &s, 7);
+        assert_eq!(entry.thumb.as_deref(), Some("abc-3.lunii.7.png"));
+        assert!(lib
+            .thumbnail("abc")
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+
+        // `_thumbnail.png` illisible : repli sur le LIF.
+        let s = staged_lunii(
+            &lib,
+            "u.lunii.pk",
+            Some(b"\x89PNG pas une image"),
+            Some(&lif()),
+        );
+        let entry = install(&lib, dir.path(), &studio("def", Some(1)), &s, 8);
+        assert_eq!(entry.thumb.as_deref(), Some("def-1.lunii.8.png"));
+
+        // Aucune vignette exploitable : installée sans vignette.
+        let s = staged_lunii(&lib, "v.lunii.pk", Some(b"illisible"), Some(b"pas un lif"));
+        let entry = install(&lib, dir.path(), &studio("ghi", Some(1)), &s, 9);
+        assert_eq!(entry.thumb, None);
+        assert_eq!(lib.thumbnail("ghi").unwrap_err().kind(), "not_found");
+        assert_eq!(
+            thumbs(dir.path()),
+            ["abc-3.lunii.7.png", "def-1.lunii.8.png"]
+        );
+    }
+
+    #[test]
+    fn noms_de_vignettes_distincts_selon_le_format() {
+        assert_eq!(thumb_name("abc-2.plain.pk", 5, "png"), "abc-2.5.png");
+        assert_eq!(thumb_name("abc-2.lunii.pk", 5, "png"), "abc-2.lunii.5.png");
     }
 
     /// Installe comme le pipeline : préparation puis publication.

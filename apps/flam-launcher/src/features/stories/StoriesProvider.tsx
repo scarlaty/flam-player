@@ -14,6 +14,7 @@ import {
 } from "../../api/install";
 import { onFolderChanged } from "../../api/folder";
 import {
+  formatOfKind,
   hasUpdate,
   librarySourceStatus,
   listLibrary,
@@ -38,6 +39,7 @@ import {
   needsInstallWarning,
 } from "../compat/IncompatibleInstallDialog";
 import { EarlyEvents } from "./earlyEvents";
+import { FormatReplaceDialog } from "./FormatReplaceDialog";
 import { StoriesContext, type InstallOptions, type StoriesApi } from "./StoriesContext";
 import {
   isActiveState,
@@ -87,12 +89,25 @@ const SOURCE_CHECK_DEBOUNCE_MS = 300;
 interface PendingInstall {
   entry: StoryEntry;
   options: InstallOptions;
+  /** Confirmation demandée : histoire incompatible, ou remplacement de l'autre format (Q10). */
+  reason: "incompatible" | "format";
+}
+
+/** Même histoire (même `uuid`) installée dans l'autre format que celui que `entry` produirait. */
+function otherFormatIn(
+  installed: LibraryEntry[],
+  entry: StoryEntry,
+): LibraryEntry | undefined {
+  const format = formatOfKind(entry.kind);
+  return installed.find((item) => item.uuid === entry.uuid && item.format !== format);
 }
 
 /**
  * Tient les installations (file de tâches, progression), les histoires installées et le player
  * en cours, et expose les actions Installer / Jouer / Mettre à jour / Supprimer / Annuler /
- * Réessayer. L'installation d'une histoire incompatible passe par `IncompatibleInstallDialog`.
+ * Réessayer. L'installation d'une histoire incompatible passe par `IncompatibleInstallDialog`,
+ * celle qui remplace la même histoire dans l'autre format (Telmi ↔ STUdio) par
+ * `FormatReplaceDialog`.
  */
 export function StoriesProvider({ children }: { children: ReactNode }) {
   const toast = useToast();
@@ -125,6 +140,10 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   const tasksRef = useRef(tasks);
   useEffect(() => {
     tasksRef.current = tasks;
+  });
+  const installedRef = useRef(installed);
+  useEffect(() => {
+    installedRef.current = installed;
   });
   const compatReload = compat.reload;
 
@@ -378,7 +397,12 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         returnTo.current.delete(entry.uuid);
       }
       try {
-        const task = await startInstall(entry.source_id, entry.entry_id, entry.uuid);
+        const task = await startInstall(
+          entry.source_id,
+          entry.entry_id,
+          entry.uuid,
+          options.replaceFormat,
+        );
         // La nouvelle tâche remplace les tâches inactives (échec, annulation) de la même histoire.
         const stale = tasksRef.current
           .filter(
@@ -419,15 +443,27 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   );
 
   const compatFor = compat.compatFor;
-  const install = useCallback(
-    (entry: StoryEntry, options: InstallOptions = {}) => {
-      if (needsInstallWarning(compatFor(entry))) {
-        setPending({ entry, options });
+  // Après l'avertissement d'incompatibilité (ou sans lui) : confirmation du changement de
+  // format si la même histoire est installée dans l'autre format, puis installation.
+  const proceed = useCallback(
+    (entry: StoryEntry, options: InstallOptions) => {
+      if (!options.replaceFormat && otherFormatIn(installedRef.current, entry)) {
+        setPending({ entry, options, reason: "format" });
         return;
       }
       void start(entry, options);
     },
-    [compatFor, start],
+    [start],
+  );
+  const install = useCallback(
+    (entry: StoryEntry, options: InstallOptions = {}) => {
+      if (needsInstallWarning(compatFor(entry))) {
+        setPending({ entry, options, reason: "incompatible" });
+        return;
+      }
+      proceed(entry, options);
+    },
+    [compatFor, proceed],
   );
 
   const cancel = useCallback(
@@ -543,7 +579,9 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     const activeFor = (entry: StoryEntry) =>
       tasks.find((task) => task.entry.uuid === entry.uuid && isActiveState(task.state));
     const installedFor = (entry: StoryEntry) =>
-      installed.find((item) => item.uuid === entry.uuid);
+      installed.find(
+        (item) => item.uuid === entry.uuid && item.format === formatOfKind(entry.kind),
+      );
     // Seule l'entrée d'où vient l'installation la met à jour (pas un doublon d'un autre format).
     const fromChangedSource = (entry: StoryEntry) => {
       const item = installedFor(entry);
@@ -623,7 +661,15 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     pending,
   ]);
 
-  const info = pending ? compatFor(pending.entry) : undefined;
+  const info = pending?.reason === "incompatible" ? compatFor(pending.entry) : undefined;
+  // Format installé à remplacer : l'autre que celui de l'entrée (même si la liste a changé
+  // depuis la demande, la confirmation reste cohérente).
+  const replaced =
+    pending?.reason === "format"
+      ? formatOfKind(pending.entry.kind) === "lunii"
+        ? "flam"
+        : "lunii"
+      : undefined;
   return (
     <StoriesContext.Provider value={api}>
       {children}
@@ -636,7 +682,20 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           onConfirm={() => {
             const { entry, options } = pending;
             setPending(null);
-            void start(entry, options);
+            proceed(entry, options);
+          }}
+        />
+      )}
+      {pending && replaced && (
+        <FormatReplaceDialog
+          open
+          story={pending.entry.title}
+          installed={replaced}
+          onCancel={() => setPending(null)}
+          onConfirm={() => {
+            const { entry, options } = pending;
+            setPending(null);
+            void start(entry, { ...options, replaceFormat: true });
           }}
         />
       )}

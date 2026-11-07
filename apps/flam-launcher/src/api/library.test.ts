@@ -36,6 +36,7 @@ const installed: LibraryEntry = {
   version: 2,
   title: "Histoire",
   file: "abc-2.plain.pk",
+  format: "flam",
   size: 10,
   installed_at: 1,
   converter: "sha256:0123456789ab",

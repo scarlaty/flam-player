@@ -9,7 +9,9 @@ import { RemoveStoryDialog } from "./RemoveStoryDialog";
 /**
  * Actions rapides d'une carte : « Jouer », « Envoyer sur la Flam » et « Supprimer » (bouton icône
  * compact, libellé et info-bulle) si l'histoire est installée, sinon « Télécharger » ou
- * « Installer » ; rien pendant qu'une tâche est active (la carte montre sa progression).
+ * « Installer » ; rien pendant qu'une tâche est active (la carte montre sa progression). Une
+ * histoire STUdio installée (format Lunii) ne se joue pas sur le PC : « Jouer » reste visible,
+ * désactivé, avec sa raison.
  */
 export function StoryActions({ entry }: { entry: StoryEntry }) {
   const stories = useStories();
@@ -18,6 +20,7 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
   const [removing, setRemoving] = useState(false);
   const installRef = useRef<HTMLButtonElement>(null);
   const removeReasonId = useId();
+  const playReasonId = useId();
   // Après une suppression réussie, le bouton disparaît : le focus passe au bouton de
   // réinstallation dès qu'il est affiché.
   const focusAfterRemove = useRef(false);
@@ -29,25 +32,31 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
     }
   }, [installed]);
   if (stories.activeTaskFor(entry)) return null;
-  // Format STUdio : ni installation ni lecture pour l'instant (explication dans la fiche).
-  if (entry.kind === "studio_zip") return null;
   if (installed) {
     const { session } = stories;
     const playingThis =
       session !== null &&
       session.uuid === (session.origin === "library" ? entry.uuid : entry.entry_id);
+    const lunii = installed.format === "lunii";
     return (
       <>
         <Button
           size="sm"
           variant="accent"
           icon="play"
-          disabled={stories.session !== null}
+          disabled={stories.session !== null || lunii}
+          title={lunii ? text.playUnavailable : undefined}
           aria-label={text.forStory(text.play, entry.title)}
+          aria-describedby={lunii ? playReasonId : undefined}
           onClick={() => stories.play(entry)}
         >
           {text.play}
         </Button>
+        {lunii && (
+          <span id={playReasonId} className="fl-visually-hidden">
+            {text.playUnavailable}
+          </span>
+        )}
         <SendToDeviceButton
           uuid={installed.uuid}
           title={entry.title}

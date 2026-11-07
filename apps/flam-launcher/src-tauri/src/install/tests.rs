@@ -655,20 +655,6 @@ async fn entrees_refusees() {
     );
 }
 
-#[tokio::test]
-async fn entree_studio_refusee_avec_un_message_clair() {
-    let ctx = Ctx::new(None);
-    for url in ["https://h.example.test/a.zip", r"C:\histoires\a.zip"] {
-        let mut entry = remote(url, "abc");
-        entry.kind = StoryKind::StudioZip;
-        let err = ctx.service.start(entry).unwrap_err();
-        assert_eq!(err.kind(), "validation", "{url}");
-        assert!(err.to_string().contains("Format STUdio"), "{err}");
-        assert!(err.to_string().contains("Flam 2.x"), "{err}");
-    }
-    assert!(ctx.service.list().is_empty());
-}
-
 // --- Serveur HTTP minimal : coupures, blocages, reprise ------------------------------------
 
 /// Réponse du serveur minimal à une requête (en-tête `Range` éventuel en argument).
@@ -812,6 +798,7 @@ async fn reprise_apres_redemarrage() {
     let queued = QueueFile {
         schema_version: QUEUE_SCHEMA,
         tasks: vec![QueuedTask {
+            replace_format: false,
             id: TASK_ID.into(),
             entry: remote(&url, "abc"),
             created_at: 1,
@@ -1191,6 +1178,7 @@ async fn reprise_ignore_les_identifiants_malveillants_et_re_resout_les_entrees()
     ]
     .iter()
     .map(|id| QueuedTask {
+        replace_format: false,
         id: (*id).into(),
         entry: evil.clone(),
         created_at: 1,
@@ -1199,6 +1187,7 @@ async fn reprise_ignore_les_identifiants_malveillants_et_re_resout_les_entrees()
     })
     .chain([
         QueuedTask {
+            replace_format: false,
             id: "11111111-2222-4333-8444-555555555555".into(),
             entry: gone,
             created_at: 1,
@@ -1206,6 +1195,7 @@ async fn reprise_ignore_les_identifiants_malveillants_et_re_resout_les_entrees()
             validator: Validator::default(),
         },
         QueuedTask {
+            replace_format: false,
             id: TASK_ID.into(),
             entry: evil.clone(),
             created_at: 1,
@@ -1685,3 +1675,7 @@ async fn library_list_ne_se_fige_pas_quand_une_autre_instance_tient_le_verrou() 
 
 #[path = "podcast_tests.rs"]
 mod pack_tests;
+
+/// Histoires STUdio (#554).
+#[path = "studio_install_tests.rs"]
+mod studio;

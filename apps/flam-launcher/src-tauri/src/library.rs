@@ -1,11 +1,43 @@
-//! Bibliothèque des histoires installées : `<cache>/library/<uuid>-<version>.plain.pk` et son
-//! index `<cache>/library/library.json`.
+//! Bibliothèque des histoires installées : `<cache>/library/<uuid>-<version>.plain.pk` (format
+//! Flam) ou `<cache>/library/<uuid>-<version>.lunii.pk` (pack Lunii clair d'une histoire STUdio,
+//! #554), et son index `<cache>/library/library.json`.
+//!
+//! **Deux formats** ([`StoryFormat`]), reconnus au **suffixe exact** du nom du fichier
+//! (`.plain.pk`, [`LUNII_SUFFIX`]) ; le format d'une entrée est toujours **dérivé** de son nom de
+//! fichier, jamais lu de l'index. Tout le reste (marqueurs, sauvegardes, réconciliation,
+//! vignettes, retrait) est commun aux deux formats.
 //!
 //! **Une installation par `uuid`** : installer une histoire dont l'`uuid` est déjà présent
 //! remplace l'installation précédente (autre version, ou autre archive de même `uuid`). C'est
 //! la règle des doublons : un `.plain` et un `.plain.pk` de même `uuid` dans une source dossier
 //! donnent deux entrées côté source, mais **la dernière installée** est celle de la
 //! bibliothèque.
+//!
+//! **Doublons entre formats** (`docs/studio-lunii.md`, § 5.8, Q10) : la règle est la même (une
+//! entrée par `uuid`), mais remplacer une installation d'un format par une installation de
+//! l'autre format (histoire Telmi par son pack STUdio, ou l'inverse) n'a lieu **que sur
+//! confirmation explicite** (`replace_format`, demandée par le front) ; sinon l'installation est
+//! refusée sous le verrou, avant toute écriture.
+//!
+//! # Invariants des deux formats (#554)
+//!
+//! 1. Un fichier publié est directement sous `library/` et se termine par `.plain.pk` ou
+//!    `.lunii.pk` ([`Library::checked`]) ; toute autre entrée d'index est ignorée.
+//! 2. Une entrée par `uuid`, quel que soit le format ; une entrée d'un format n'en remplace une
+//!    de l'autre format qu'avec `replace_format`.
+//! 3. Le format d'une entrée est celui de son nom de fichier (jamais une valeur de l'index).
+//! 4. Publication, réconciliation et nettoyage sont identiques pour les deux formats : un arrêt
+//!    à toute étape laisse l'ancienne installation (de l'un ou l'autre format) ou la nouvelle,
+//!    jamais aucune ; l'ancienne version de l'autre format n'est supprimée qu'une fois l'index
+//!    écrit (`old_files` du marqueur).
+//!
+//! | Panne (changement de format)                            | Comportement                                       |
+//! |---------------------------------------------------------|----------------------------------------------------|
+//! | Même `uuid` dans l'autre format, sans confirmation      | refus `validation`, rien d'écrit                   |
+//! | Arrêt après le renommage, avant l'index                 | réconciliation : nouveau pack retiré, ancien gardé |
+//! | Échec d'écriture de l'index                             | restauration immédiate, ancien format intact       |
+//! | Arrêt après l'index, avant la suppression de l'ancien   | marqueur : suppression reprise à la réconciliation |
+//! | Entrée d'index au suffixe inconnu (modifiée à la main)  | ignorée (`checked`), fichier jamais touché         |
 //!
 //! `uuid` et `version` proviennent d'archives et de catalogues non fiables : ils sont
 //! **revalidés** ici ([`validate_story_id`]) avant de construire un chemin, et le chemin final
@@ -38,6 +70,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::catalog::{blocking, CatalogService};
+pub use crate::device::prepare_lunii::PACK_SUFFIX as LUNII_SUFFIX;
 use crate::install::podcast::PACK_SOURCE_ID;
 use crate::install::InstallService;
 use crate::library_source::SourceStamp;
@@ -45,7 +78,7 @@ use crate::library_thumb::{self, Prepared};
 use crate::player::{purge_library_story, PlayerService, SAVES_ROOT};
 use crate::settings::{Environment, SettingsStore};
 use crate::storage::{self, ConfigState, Loaded};
-use crate::story::{validate_story_id, StoryEntry};
+use crate::story::{validate_story_id, StoryEntry, StoryKind};
 use crate::{AppError, AppResult};
 
 /// Sous-dossier du cache (listé dans `cache::APP_CACHE_SUBDIRS`).
@@ -71,6 +104,62 @@ const LOCK_POLL: Duration = Duration::from_millis(50);
 const UNLOCKED_READ_ATTEMPTS: u32 = 3;
 /// Version du schéma de `library.json`.
 pub const SCHEMA_VERSION: u32 = 1;
+/// Suffixe des histoires au format Flam.
+pub const FLAM_SUFFIX: &str = ".plain.pk";
+
+/// Format d'une histoire de la bibliothèque (miroir de `LibraryFormat` dans
+/// `src/api/library.ts`) : `flam` (`.plain.pk`, jouable sur le PC) ou `lunii` (`.lunii.pk`, pack
+/// d'une histoire STUdio, Flam 2.x seulement, jamais jouable sur le PC).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoryFormat {
+    #[default]
+    Flam,
+    Lunii,
+}
+
+impl StoryFormat {
+    /// Format produit par l'installation d'une archive de nature `kind`.
+    pub fn of_kind(kind: StoryKind) -> Self {
+        if kind == StoryKind::StudioZip {
+            Self::Lunii
+        } else {
+            Self::Flam
+        }
+    }
+
+    /// Format d'un nom de fichier de la bibliothèque, au suffixe exact (sensible à la casse :
+    /// les noms sont produits par [`file_name_for`]) ; `None` pour tout autre nom.
+    pub fn of_file(name: &str) -> Option<Self> {
+        if name.len() > FLAM_SUFFIX.len() && name.ends_with(FLAM_SUFFIX) {
+            Some(Self::Flam)
+        } else if name.len() > LUNII_SUFFIX.len() && name.ends_with(LUNII_SUFFIX) {
+            Some(Self::Lunii)
+        } else {
+            None
+        }
+    }
+
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Self::Flam => FLAM_SUFFIX,
+            Self::Lunii => LUNII_SUFFIX,
+        }
+    }
+
+    /// Nom du format dans les messages.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Flam => "Flam",
+            Self::Lunii => "Lunii (histoire STUdio)",
+        }
+    }
+}
+
+/// Partie `<uuid>-<version>` d'un nom de fichier de la bibliothèque (sans suffixe de format).
+pub fn file_stem(name: &str) -> Option<&str> {
+    name.strip_suffix(StoryFormat::of_file(name)?.suffix())
+}
 
 /// Histoire installée (miroir de `LibraryEntry` dans `src/api/library.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,9 +169,10 @@ pub struct LibraryEntry {
     /// Version installée (`None` : inconnue, fichier `<uuid>-0.plain.pk`).
     pub version: Option<u32>,
     pub title: String,
-    /// Nom du fichier sous `library/` (`<uuid>-<version>.plain.pk`).
+    /// Nom du fichier sous `library/` (`<uuid>-<version>.plain.pk` ou `.lunii.pk`) ; il donne le
+    /// format ([`LibraryEntry::format`]).
     pub file: String,
-    /// Taille du `.plain.pk` en octets.
+    /// Taille du fichier en octets.
     pub size: u64,
     /// Date d'installation (secondes Unix).
     pub installed_at: u64,
@@ -103,7 +193,29 @@ pub struct LibraryEntry {
     pub source_stamp: Option<SourceStamp>,
 }
 
+/// Histoire installée telle que listée pour le front (`library_list`) : l'entrée de l'index et
+/// son format, dérivé du nom du fichier (miroir de `LibraryEntry` dans `src/api/library.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LibraryItem {
+    #[serde(flatten)]
+    pub entry: LibraryEntry,
+    pub format: StoryFormat,
+}
+
+impl From<LibraryEntry> for LibraryItem {
+    fn from(entry: LibraryEntry) -> Self {
+        let format = entry.format();
+        Self { entry, format }
+    }
+}
+
 impl LibraryEntry {
+    /// Format, dérivé du nom du fichier (jamais d'une valeur de l'index) ; `flam` pour un nom
+    /// invalide (entrée ignorée par ailleurs, voir [`Library::checked`]).
+    pub fn format(&self) -> StoryFormat {
+        StoryFormat::of_file(&self.file).unwrap_or_default()
+    }
+
     /// Vrai si `candidate` (même `uuid`) propose une autre version que celle installée.
     /// Une version inconnue d'un côté ou de l'autre n'est jamais une mise à jour.
     pub fn is_outdated_by(&self, candidate: &StoryEntry) -> bool {
@@ -224,15 +336,46 @@ struct IndexFile {
     stories: Vec<LibraryEntry>,
 }
 
-/// Nom de fichier `<uuid>-<version>.plain.pk` après revalidation de l'`uuid` (motif
-/// `^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`, sans `..`, hors noms réservés Windows).
-pub fn file_name_for(uuid: &str, version: Option<u32>) -> AppResult<String> {
+/// Nom de fichier `<uuid>-<version>.plain.pk` (ou `.lunii.pk`) après revalidation de l'`uuid`
+/// (motif `^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`, sans `..`, hors noms réservés Windows).
+pub fn file_name_for(uuid: &str, version: Option<u32>, format: StoryFormat) -> AppResult<String> {
     if !validate_story_id(uuid) {
         return Err(AppError::Validation(format!(
             "identifiant d'histoire refusé : {uuid:?}"
         )));
     }
-    Ok(format!("{uuid}-{}.plain.pk", version.unwrap_or(0)))
+    Ok(format!(
+        "{uuid}-{}{}",
+        version.unwrap_or(0),
+        format.suffix()
+    ))
+}
+
+/// Refus de remplacer `installed` (autre format, même `uuid`) sans confirmation (Q10).
+fn format_change_refused(installed: &LibraryEntry, format: StoryFormat) -> AppError {
+    AppError::Validation(format!(
+        "« {} » est déjà dans la bibliothèque au format {} : confirmez son remplacement par la \
+         version au format {} pour l'installer",
+        installed.title,
+        installed.format().label(),
+        format.label()
+    ))
+}
+
+/// Installation de l'autre format que `format` pour `uuid` dans `stories`, s'il y en a une
+/// dont le fichier existe : une entrée dont le fichier a disparu n'est pas listée (le front ne
+/// peut donc pas demander la confirmation) et se remplace sans elle.
+fn other_format<'a>(
+    library: &Library,
+    stories: &'a [LibraryEntry],
+    uuid: &str,
+    format: StoryFormat,
+) -> Option<&'a LibraryEntry> {
+    stories.iter().find(|e| {
+        e.uuid == uuid
+            && e.format() != format
+            && library.checked(&e.file).is_ok_and(|p| p.is_file())
+    })
 }
 
 /// Accès à la bibliothèque d'un dossier de cache.
@@ -277,18 +420,12 @@ impl Library {
         Ok(dir)
     }
 
-    /// Chemin final d'une histoire, vérifié : directement sous `library/`.
-    fn final_path(&self, uuid: &str, version: Option<u32>) -> AppResult<PathBuf> {
-        let name = file_name_for(uuid, version)?;
-        self.checked(&name)
-    }
-
-    /// `name` doit être un simple nom de fichier `.plain.pk` sous `library/`.
+    /// `name` doit être un simple nom de fichier `.plain.pk` ou `.lunii.pk` sous `library/`.
     pub(crate) fn checked(&self, name: &str) -> AppResult<PathBuf> {
         let path = self.root.join(name);
         let direct = path.parent() == Some(self.root.as_path())
             && path.file_name().and_then(|n| n.to_str()) == Some(name)
-            && name.ends_with(".plain.pk");
+            && StoryFormat::of_file(name).is_some();
         if !direct {
             return Err(AppError::Validation(format!(
                 "chemin hors de la bibliothèque : {name:?}"
@@ -538,9 +675,9 @@ impl Library {
             let marker = match marker {
                 Some(m) if self.published_intact(marked, &m) => m,
                 other => {
-                    // `<uuid>-<version>.plain.pk` : l'uuid se déduit du nom si le marqueur est muet.
-                    let named_uuid = marked
-                        .strip_suffix(".plain.pk")
+                    // `<uuid>-<version>.plain.pk` (ou `.lunii.pk`) : l'uuid se déduit du nom si
+                    // le marqueur est muet.
+                    let named_uuid = file_stem(marked)
                         .and_then(|stem| stem.rsplit_once('-'))
                         .map(|(u, _)| u);
                     let entry_uuid = other
@@ -620,13 +757,27 @@ impl Library {
     /// neutraliser ni installer (au plus, comme `list`, la mise de côté d'un index corrompu).
     /// Sans effet si une autre instance tient le verrou (le contrôle de l'installation reste la
     /// référence).
-    pub fn precheck_install(&self, uuid: &str, version: Option<u32>) -> AppResult<()> {
-        let file = file_name_for(uuid, version)?;
+    ///
+    /// Refuse aussi, avec le message de l'installation, le remplacement non confirmé d'une
+    /// installation de l'autre format (`replace_format` faux, Q10).
+    pub fn precheck_install(
+        &self,
+        uuid: &str,
+        version: Option<u32>,
+        format: StoryFormat,
+        replace_format: bool,
+    ) -> AppResult<()> {
+        let file = file_name_for(uuid, version, format)?;
         let Some(_lock) = self.lock_file(false)? else {
             return Ok(());
         };
-        if self.load_state()?.1 {
+        let (stories, untrusted) = self.load_state()?;
+        if untrusted {
             self.adopt_unjudged(&file, uuid)?;
+        }
+        if let Some(other) = other_format(self, &stories, uuid, format).filter(|_| !replace_format)
+        {
+            return Err(format_change_refused(other, format));
         }
         Ok(())
     }
@@ -700,9 +851,33 @@ impl Library {
         thumb: Option<&Prepared>,
         stamp: Option<SourceStamp>,
     ) -> AppResult<LibraryEntry> {
-        self.install_with(staged, source, converter, now, thumb, stamp, &|stories| {
-            self.save(stories)
-        })
+        self.install_replacing(staged, source, converter, now, thumb, stamp, false)
+    }
+
+    /// [`Library::install_thumbed`] ; `replace_format` : remplacement confirmé d'une
+    /// installation de l'autre format (même `uuid`, Q10), refusé sinon. Le format publié est
+    /// celui de `source.kind` ([`StoryFormat::of_kind`]) : `staged` doit être de ce format.
+    #[allow(clippy::too_many_arguments)]
+    pub fn install_replacing(
+        &self,
+        staged: &Path,
+        source: &StoryEntry,
+        converter: Option<String>,
+        now: u64,
+        thumb: Option<&Prepared>,
+        stamp: Option<SourceStamp>,
+        replace_format: bool,
+    ) -> AppResult<LibraryEntry> {
+        self.install_with(
+            staged,
+            source,
+            converter,
+            now,
+            thumb,
+            stamp,
+            replace_format,
+            &|stories| self.save(stories),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -714,10 +889,12 @@ impl Library {
         now: u64,
         thumb: Option<&Prepared>,
         stamp: Option<SourceStamp>,
+        replace_format: bool,
         save: &dyn Fn(Vec<LibraryEntry>) -> AppResult<()>,
     ) -> AppResult<LibraryEntry> {
-        let target = self.final_path(&source.uuid, source.version)?;
-        let file = file_name_for(&source.uuid, source.version)?;
+        let format = StoryFormat::of_kind(source.kind);
+        let file = file_name_for(&source.uuid, source.version, format)?;
+        let target = self.checked(&file)?;
         let _lock = self.lock_file(true)?;
         let (mut stories, untrusted) = self.reconcile_state()?;
         let staging = self.staging_dir()?;
@@ -772,6 +949,12 @@ impl Library {
                 stories.retain(|e| e.uuid != kept.uuid && e.file != kept.file);
                 stories.push(kept.clone());
             }
+        }
+        // Doublon de l'autre format (Q10) : refus sans confirmation, avant toute écriture.
+        if let Some(other) =
+            other_format(self, &stories, &source.uuid, format).filter(|_| !replace_format)
+        {
+            return Err(format_change_refused(other, format));
         }
         let had_previous = target.is_file();
         let staged_size = std::fs::metadata(staged)?.len();
@@ -986,10 +1169,15 @@ pub fn remove_if_exists(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Histoires installées (triées par titre).
+/// Histoires installées (triées par titre), avec leur format.
 #[tauri::command]
-pub async fn library_list(service: State<'_, InstallService>) -> AppResult<Vec<LibraryEntry>> {
-    service.library_list().await
+pub async fn library_list(service: State<'_, InstallService>) -> AppResult<Vec<LibraryItem>> {
+    Ok(service
+        .library_list()
+        .await?
+        .into_iter()
+        .map(LibraryItem::from)
+        .collect())
 }
 
 /// Désinstalle l'histoire `uuid` : fichier, entrée d'index et copie de travail
@@ -1191,7 +1379,7 @@ pub(crate) mod tests {
             let err = lib.install(&s, &story(uuid, Some(1)), None, 0).unwrap_err();
             assert_eq!(err.kind(), "validation", "{uuid:?}");
         }
-        assert!(file_name_for("abc", None).unwrap() == "abc-0.plain.pk");
+        assert!(file_name_for("abc", None, StoryFormat::Flam).unwrap() == "abc-0.plain.pk");
     }
 
     #[test]
@@ -1240,7 +1428,16 @@ pub(crate) mod tests {
         let fail = |_: Vec<LibraryEntry>| Err(AppError::Io(std::io::Error::other("disque plein")));
         let b = staged(&lib, "b.plain.pk", b"nouveau!");
         let err = lib
-            .install_with(&b, &story("abc", Some(2)), None, 2, None, None, &fail)
+            .install_with(
+                &b,
+                &story("abc", Some(2)),
+                None,
+                2,
+                None,
+                None,
+                false,
+                &fail,
+            )
             .unwrap_err();
         assert_eq!(err.kind(), "io");
         let path = dir.path().join("library/abc-2.plain.pk");
@@ -1249,8 +1446,17 @@ pub(crate) mod tests {
         assert_eq!((list.len(), list[0].size), (1, 6));
         // Nouvelle histoire : rien ne reste publié.
         let c = staged(&lib, "c.plain.pk", b"x");
-        lib.install_with(&c, &story("neuf", Some(1)), None, 3, None, None, &fail)
-            .unwrap_err();
+        lib.install_with(
+            &c,
+            &story("neuf", Some(1)),
+            None,
+            3,
+            None,
+            None,
+            false,
+            &fail,
+        )
+        .unwrap_err();
         assert!(!dir.path().join("library/neuf-1.plain.pk").exists());
     }
 
@@ -1282,6 +1488,7 @@ pub(crate) mod tests {
             2,
             Some(&thumb),
             None,
+            false,
             &fail,
         )
         .unwrap_err();
@@ -1430,6 +1637,7 @@ pub(crate) mod tests {
             2,
             None,
             Some(stamp("b")),
+            false,
             &crash,
         )
         .unwrap();
@@ -1459,6 +1667,7 @@ pub(crate) mod tests {
             3,
             None,
             Some(stamp("c")),
+            false,
             &fail,
         )
         .unwrap_err();
@@ -1488,8 +1697,17 @@ pub(crate) mod tests {
             Err(AppError::Io(std::io::Error::other("disque plein")))
         };
         let b = staged(&lib, "b.plain.pk", b"nouveau!");
-        lib.install_with(&b, &story("abc", Some(2)), None, 2, None, None, &blocked)
-            .unwrap_err();
+        lib.install_with(
+            &b,
+            &story("abc", Some(2)),
+            None,
+            2,
+            None,
+            None,
+            false,
+            &blocked,
+        )
+        .unwrap_err();
         assert!(pending.exists() && backup.is_file(), "journal conservé");
         // Une nouvelle installation du même fichier est refusée, sans rien toucher.
         let c = staged(&lib, "c.plain.pk", b"autre");
@@ -1528,8 +1746,17 @@ pub(crate) mod tests {
             Ok(())
         };
         let b = staged(&lib, "b.plain.pk", b"nouveau!");
-        lib.install_with(&b, &story("abc", Some(2)), None, 2, None, None, &block)
-            .unwrap();
+        lib.install_with(
+            &b,
+            &story("abc", Some(2)),
+            None,
+            2,
+            None,
+            None,
+            false,
+            &block,
+        )
+        .unwrap();
         assert!(pending.exists() && backup.exists(), "marqueur conservé");
         assert_eq!(lib.list().unwrap().len(), 1);
         assert!(pending.exists(), "obstacle toujours là");
@@ -1686,8 +1913,17 @@ pub(crate) mod tests {
             Ok(())
         };
         let b = staged(&lib, "b.plain.pk", b"v2!");
-        lib.install_with(&b, &story("abc", Some(2)), None, 2, None, None, &block)
-            .unwrap();
+        lib.install_with(
+            &b,
+            &story("abc", Some(2)),
+            None,
+            2,
+            None,
+            None,
+            false,
+            &block,
+        )
+        .unwrap();
         let marker: PendingMarker =
             serde_json::from_slice(&std::fs::read(&pending).unwrap()).unwrap();
         assert_eq!(marker.old_files, ["abc-1.plain.pk"], "marqueur conservé");
@@ -1962,17 +2198,22 @@ pub(crate) mod tests {
         lib.list().unwrap();
         lib.staging_dir().unwrap();
         // Index sain : rien à contrôler.
-        lib.precheck_install("abc", Some(1)).unwrap();
+        lib.precheck_install("abc", Some(1), StoryFormat::Flam, false)
+            .unwrap();
         marker(&root, "abc-1.plain.pk", 2, false);
-        lib.precheck_install("abc", Some(1)).unwrap();
+        lib.precheck_install("abc", Some(1), StoryFormat::Flam, false)
+            .unwrap();
         std::fs::write(root.join(INDEX_FILE), b"{pas du json").unwrap();
         assert!(lib.list().unwrap().is_empty());
         // Même uuid : refus immédiat, marqueur intact.
-        let err = lib.precheck_install("abc", Some(2)).unwrap_err();
+        let err = lib
+            .precheck_install("abc", Some(2), StoryFormat::Flam, false)
+            .unwrap_err();
         assert_eq!(err.kind(), "validation");
         assert!(root.join(".staging/abc-1.plain.pk.pending").exists());
         // Autre histoire : accepté, et rien n'est neutralisé par un simple précontrôle.
-        lib.precheck_install("xyz", Some(1)).unwrap();
+        lib.precheck_install("xyz", Some(1), StoryFormat::Flam, false)
+            .unwrap();
         assert!(root.join(".staging/abc-1.plain.pk.pending").exists());
     }
 
@@ -2344,5 +2585,286 @@ pub(crate) mod tests {
         lib.scan_fails.store(false, Ordering::SeqCst);
         lib.remove("abc").unwrap();
         assert!(!orphan.exists());
+    }
+}
+
+/// Deux formats dans la bibliothèque (#554) : noms, doublons entre formats (Q10), pannes.
+#[cfg(test)]
+mod format_tests {
+    use super::tests::story;
+    use super::*;
+
+    fn studio(uuid: &str, version: Option<u32>) -> StoryEntry {
+        let mut s = story(uuid, version);
+        s.kind = StoryKind::StudioZip;
+        s.title = format!("STUdio {uuid}");
+        s
+    }
+
+    fn staged(lib: &Library, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = lib.staging_dir().unwrap().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn fail(_: Vec<LibraryEntry>) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::other("disque plein (test)")))
+    }
+
+    #[test]
+    fn formats_et_noms_de_fichiers() {
+        assert_eq!(
+            StoryFormat::of_file("a-1.plain.pk"),
+            Some(StoryFormat::Flam)
+        );
+        assert_eq!(
+            StoryFormat::of_file("a-1.lunii.pk"),
+            Some(StoryFormat::Lunii)
+        );
+        for name in [
+            ".plain.pk",
+            ".lunii.pk",
+            "a-1.LUNII.PK",
+            "a-1.pk",
+            "a-1.zip",
+            "",
+        ] {
+            assert_eq!(StoryFormat::of_file(name), None, "{name:?}");
+        }
+        assert_eq!(
+            StoryFormat::of_kind(StoryKind::StudioZip),
+            StoryFormat::Lunii
+        );
+        for kind in [StoryKind::TelmiZip, StoryKind::FlamPk, StoryKind::FlamPlain] {
+            assert_eq!(StoryFormat::of_kind(kind), StoryFormat::Flam);
+        }
+        assert_eq!(
+            file_name_for("abc", Some(2), StoryFormat::Lunii).unwrap(),
+            "abc-2.lunii.pk"
+        );
+        assert!(file_name_for("../x", Some(2), StoryFormat::Lunii).is_err());
+        assert_eq!(file_stem("abc-2.lunii.pk"), Some("abc-2"));
+        assert_eq!(file_stem("abc-2.plain.pk"), Some("abc-2"));
+        assert_eq!(file_stem("abc-2.pk"), None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        assert!(lib.checked("abc-2.lunii.pk").is_ok());
+        assert!(lib.checked("abc-2.plain.pk").is_ok());
+        for name in [
+            "abc.zip",
+            "../abc-2.lunii.pk",
+            "x/abc-2.lunii.pk",
+            ".lunii.pk",
+        ] {
+            assert!(lib.checked(name).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn installation_studio_listee_au_format_lunii() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let s = staged(&lib, "t.lunii.pk", b"PK lunii");
+        let entry = lib.install(&s, &studio("abc", Some(3)), None, 7).unwrap();
+        assert_eq!(entry.file, "abc-3.lunii.pk");
+        assert_eq!(entry.format(), StoryFormat::Lunii);
+        assert!(dir.path().join("library/abc-3.lunii.pk").is_file());
+        let (path, title) = lib.playable("abc").unwrap();
+        assert_eq!(path, dir.path().join("library").join("abc-3.lunii.pk"));
+        assert_eq!(title, "STUdio abc");
+        let item = LibraryItem::from(lib.list().unwrap().remove(0));
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["format"], "lunii");
+        assert_eq!(json["file"], "abc-3.lunii.pk");
+        // Le format n'est jamais lu de l'index : il vient du nom du fichier.
+        let flam = LibraryItem::from(LibraryEntry {
+            file: "abc-3.plain.pk".into(),
+            ..entry.clone()
+        });
+        assert_eq!(flam.format, StoryFormat::Flam);
+        lib.remove("abc").unwrap();
+        assert!(!dir.path().join("library/abc-3.lunii.pk").exists());
+    }
+
+    /// Q10 : une entrée par `uuid` ; changer de format exige la confirmation, dans les deux sens.
+    #[test]
+    fn doublon_d_un_autre_format_remplace_seulement_sur_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let root = dir.path().join("library");
+        let a = staged(&lib, "a.plain.pk", b"telmi");
+        lib.install(&a, &story("abc", Some(2)), Some("v".into()), 1)
+            .unwrap();
+
+        // Sans confirmation : refus avant toute écriture (précontrôle et installation).
+        let err = lib
+            .precheck_install("abc", Some(2), StoryFormat::Lunii, false)
+            .unwrap_err();
+        assert_eq!(err.kind(), "validation");
+        assert!(err.to_string().contains("confirmez"), "{err}");
+        lib.precheck_install("abc", Some(2), StoryFormat::Lunii, true)
+            .unwrap();
+        lib.precheck_install("abc", Some(3), StoryFormat::Flam, false)
+            .unwrap();
+        let b = staged(&lib, "b.lunii.pk", b"lunii!");
+        let err = lib
+            .install(&b, &studio("abc", Some(2)), None, 2)
+            .unwrap_err();
+        assert!(err.to_string().contains("format Flam"), "{err}");
+        assert!(b.is_file(), "pack préparé non consommé");
+        assert!(!root.join("abc-2.lunii.pk").exists());
+        assert_eq!(
+            std::fs::read(root.join("abc-2.plain.pk")).unwrap(),
+            b"telmi"
+        );
+        assert!(!root.join(".staging/abc-2.lunii.pk.pending").exists());
+        let list = lib.list().unwrap();
+        assert_eq!((list.len(), list[0].format()), (1, StoryFormat::Flam));
+
+        // Avec confirmation : le pack Lunii remplace l'histoire Flam (une seule entrée).
+        lib.install_replacing(&b, &studio("abc", Some(2)), None, 3, None, None, true)
+            .unwrap();
+        let list = lib.list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].format(), StoryFormat::Lunii);
+        assert_eq!(list[0].file, "abc-2.lunii.pk");
+        assert!(
+            !root.join("abc-2.plain.pk").exists(),
+            "ancien format supprimé"
+        );
+        let staging: Vec<_> = std::fs::read_dir(root.join(STAGING_DIR)).unwrap().collect();
+        assert!(staging.is_empty(), "{staging:?}");
+
+        // Retour au format Flam : même règle.
+        let c = staged(&lib, "c.plain.pk", b"telmi 2");
+        assert!(lib.install(&c, &story("abc", Some(2)), None, 4).is_err());
+        assert!(root.join("abc-2.lunii.pk").is_file());
+        lib.install_replacing(&c, &story("abc", Some(2)), None, 5, None, None, true)
+            .unwrap();
+        let list = lib.list().unwrap();
+        assert_eq!((list.len(), list[0].format()), (1, StoryFormat::Flam));
+        assert!(!root.join("abc-2.lunii.pk").exists());
+
+        // Même format : la mise à jour habituelle ne demande rien.
+        let d = staged(&lib, "d.plain.pk", b"telmi 3");
+        lib.install(&d, &story("abc", Some(3)), None, 6).unwrap();
+        assert_eq!(lib.list().unwrap()[0].file, "abc-3.plain.pk");
+    }
+
+    /// Injection de panne : l'index ne s'écrit pas pendant un changement de format confirmé.
+    #[test]
+    fn changement_de_format_echec_de_l_index_garde_l_ancien_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let root = dir.path().join("library");
+        let a = staged(&lib, "a.plain.pk", b"telmi");
+        lib.install(&a, &story("abc", Some(2)), None, 1).unwrap();
+        let b = staged(&lib, "b.lunii.pk", b"lunii!");
+        lib.install_with(
+            &b,
+            &studio("abc", Some(2)),
+            None,
+            2,
+            None,
+            None,
+            true,
+            &fail,
+        )
+        .unwrap_err();
+        assert!(!root.join("abc-2.lunii.pk").exists(), "publication défaite");
+        assert_eq!(
+            std::fs::read(root.join("abc-2.plain.pk")).unwrap(),
+            b"telmi"
+        );
+        assert!(!root.join(".staging/abc-2.lunii.pk.pending").exists());
+        let list = lib.list().unwrap();
+        assert_eq!((list.len(), list[0].format()), (1, StoryFormat::Flam));
+    }
+
+    /// Arrêts brutaux pendant un changement de format : avant l'index, la réconciliation retire
+    /// le pack Lunii et garde l'histoire Flam ; après l'index, elle termine le nettoyage de
+    /// l'ancien format (marqueur d'intention).
+    #[test]
+    fn changement_de_format_interrompu_puis_reconcilie() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let root = dir.path().join("library");
+        let a = staged(&lib, "a.plain.pk", b"telmi");
+        lib.install(&a, &story("abc", Some(2)), None, 1).unwrap();
+        let marker = |installed_at: u64| {
+            storage::write_json(
+                &root.join(".staging/abc-2.lunii.pk.pending"),
+                &PendingMarker {
+                    installed_at,
+                    had_previous: false,
+                    size: Some(6),
+                    old_files: vec!["abc-2.plain.pk".into()],
+                    entry: None,
+                },
+            )
+            .unwrap();
+        };
+        marker(2);
+        std::fs::write(root.join("abc-2.lunii.pk"), b"lunii!").unwrap();
+        let list = lib.list().unwrap();
+        assert_eq!((list.len(), list[0].format()), (1, StoryFormat::Flam));
+        assert!(!root.join("abc-2.lunii.pk").exists());
+        assert!(
+            root.join("abc-2.plain.pk").is_file(),
+            "ancien format jamais supprimé"
+        );
+        assert!(!root.join(".staging/abc-2.lunii.pk.pending").exists());
+
+        let b = staged(&lib, "b.lunii.pk", b"lunii!");
+        lib.install_replacing(&b, &studio("abc", Some(2)), None, 3, None, None, true)
+            .unwrap();
+        std::fs::write(root.join("abc-2.plain.pk"), b"reste").unwrap();
+        marker(3);
+        let list = lib.list().unwrap();
+        assert_eq!((list.len(), list[0].format()), (1, StoryFormat::Lunii));
+        assert!(
+            !root.join("abc-2.plain.pk").exists(),
+            "ancien format nettoyé"
+        );
+        assert!(root.join("abc-2.lunii.pk").is_file());
+        assert!(!root.join(".staging/abc-2.lunii.pk.pending").exists());
+    }
+
+    /// Entrée de l'autre format dont le fichier a disparu (non listée, donc impossible à
+    /// confirmer côté front) : elle ne bloque pas l'installation et se remplace sans confirmation.
+    #[test]
+    fn entree_fantome_de_l_autre_format_ne_bloque_pas() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let root = dir.path().join("library");
+        let a = staged(&lib, "a.plain.pk", b"telmi");
+        lib.install(&a, &story("abc", Some(2)), None, 1).unwrap();
+        std::fs::remove_file(root.join("abc-2.plain.pk")).unwrap();
+        assert!(lib.list().unwrap().is_empty());
+        lib.precheck_install("abc", Some(2), StoryFormat::Lunii, false)
+            .unwrap();
+        let b = staged(&lib, "b.lunii.pk", b"lunii!");
+        lib.install(&b, &studio("abc", Some(2)), None, 2).unwrap();
+        let list = lib.list().unwrap();
+        assert_eq!((list.len(), list[0].format()), (1, StoryFormat::Lunii));
+    }
+
+    /// Une entrée d'index au suffixe inconnu (index modifié à la main) est ignorée et son
+    /// fichier n'est jamais touché.
+    #[test]
+    fn entree_au_suffixe_inconnu_ignoree() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let root = dir.path().join("library");
+        let a = staged(&lib, "a.lunii.pk", b"x");
+        let mut entry = lib.install(&a, &studio("abc", Some(1)), None, 1).unwrap();
+        std::fs::write(root.join("abc-1.zip"), b"precieux").unwrap();
+        entry.file = "abc-1.zip".into();
+        lib.save(vec![entry]).unwrap();
+        assert!(lib.list().unwrap().is_empty());
+        assert!(lib.playable("abc").is_err());
+        lib.remove("abc").unwrap();
+        assert_eq!(std::fs::read(root.join("abc-1.zip")).unwrap(), b"precieux");
     }
 }

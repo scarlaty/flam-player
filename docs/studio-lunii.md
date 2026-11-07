@@ -473,11 +473,14 @@ implémenté (#522, #531) ; écarts avec la conception initiale signalés ci-des
   le dit (« remplace la version au format Flam »). Les progressions `usr/0/<uuid>.*` ne sont pas
   touchées (inchangé) ; leur compatibilité entre formats est inconnue (L13).
 - Dans la bibliothèque : **une entrée par identifiant** (règle actuelle de `library.rs`).
-  L'identifiant d'un pack Lunii est l'UUID du pack en 32 hexadécimaux minuscules (comme un
-  `.plain.pk`) ; celui d'une histoire Telmi est son champ `uuid`, souvent d'une autre forme. Le
-  remplacement dans la bibliothèque n'a lieu que si les deux identifiants coïncident : le front
-  le demande avant l'installation (Q10). Sinon les deux entrées coexistent et la collision
-  apparaît à l'envoi (`AlreadyInstalled`, même `str/<uuid>/`).
+  L'identifiant d'une histoire STUdio est l'UUID de son nœud d'entrée sous sa forme canonique
+  en minuscules (`8-4-4-4-12`, règle de `studio2lunii`, #553), le même au scan, dans la
+  bibliothèque et sur la Flam (`str/<uuid>/`) ; celui d'une histoire Telmi est son champ
+  `uuid`, souvent de la même forme quand elle vient d'un pack STUdio. Le remplacement dans la
+  bibliothèque n'a lieu que si les deux identifiants coïncident, et seulement après
+  confirmation : le front la demande avant l'installation (Q10), le backend refuse un
+  changement de format non confirmé (`replace_format`, #554). Sinon les deux entrées
+  coexistent et la collision apparaît à l'envoi (`AlreadyInstalled`, même `str/<uuid>/`).
 
 ### 5.9 Retrait et ordre
 
@@ -591,7 +594,7 @@ est fait en parallèle (fusionné, #527) et n'est pas repris ici. Colonne « Ét
 | E   | fusionnée (#526)      | Chiffrement Lunii : inversion par mots, 512 octets, refus carrier                                                                                              | `apps/.../device/crypto.rs`                                                                           | aucune         | opus                                                                                           |
 | F   | fusionnée (#531)      | « Ma Flam » : titre en clair, champ `format`                                                                                                                   | `device/details.rs`, `device/status.rs`, `src/features/device/` (badge)                               | aucune         | sonnet                                                                                         |
 | G1  | en cours (issue #541) | Installation (1/2) : conversion, ffmpeg, vignette, écriture du pack clair `.lunii.pk`                                                                          | `install/studio.rs` (nouveau)                                                                         | A, B, C, D     | opus                                                                                           |
-| G2  | à faire               | Installation (2/2) : bibliothèque et branchement                                                                                                               | `install/mod.rs`, `library.rs`, `library_thumb.rs`, `library_source.rs`, `folder.rs` (levée du refus) | G1, #519       | opus                                                                                           |
+| G2  | en revue (#554)       | Installation (2/2) : bibliothèque et branchement                                                                                                               | `install/mod.rs`, `library.rs`, `library_thumb.rs`, `library_source.rs`, `folder.rs` (levée du refus) | G1, #519       | opus                                                                                           |
 | H   | fusionnée (#539)      | Préparation Lunii                                                                                                                                              | `device/prepare_lunii.rs` (nouveau), `device/prepare.rs` (fonctions partagées), `device/mod.rs`       | E, G1 (format) | opus                                                                                           |
 | I   | fusionnée (#546)      | Envoi : choix de la préparation, refus 1.x, erreurs                                                                                                            | `device/transfer.rs`, `error.rs`, messages du front                                                   | H              | opus                                                                                           |
 | J   | à faire               | Interface et documentation : « Lire » désactivé, envoi grisé en 1.x, README, `apps/flam-launcher/docs/flam-transfert.md`, § 10 de `docs/flam-device-format.md` | `player.rs` (garde), `src/features/library/`, `src/features/device/`, docs                            | G2, I          | sonnet (garde de `player.rs` : exception justifiée dans la PR, aucune écriture ni suppression) |

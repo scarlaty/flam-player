@@ -651,6 +651,7 @@ function installStoryA() {
       version: source.version,
       title: source.title,
       file: `${source.uuid}-1.plain.pk`,
+      format: "flam",
       size: 1,
       installed_at: 1,
       converter: null,

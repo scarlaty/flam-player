@@ -25,10 +25,11 @@ use tauri::State;
 use zip::result::ZipError;
 use zip::ZipArchive;
 
+use crate::install::studio::clean_line;
 use crate::settings::{Environment, SettingsStore};
 use crate::sources::{Source, SourcesStore};
 use crate::storage::ConfigState;
-use crate::story::{validate_story_id, StoryEntry, StoryKind};
+use crate::story::{validate_story_id, StoryEntry, StoryKind, MAX_TITLE_CHARS};
 use crate::thumbnail::{self, RgbaImage, ThumbCache, ThumbError};
 use crate::{AppError, AppResult};
 use telmi2flam::lif;
@@ -44,8 +45,10 @@ const MAX_ZIP_ENTRIES: usize = 100_000;
 const MAX_DEPTH: usize = 8;
 /// Histoires maximum par analyse.
 const MAX_STORIES: usize = 5_000;
-const MAX_TITLE_CHARS: usize = 200;
 const MAX_FIELD_CHARS: usize = 2_000;
+/// Titre de repli d'une histoire STUdio sans titre exploitable : celui du pack
+/// (`install::studio`, `_metadata.json`), pour que scan et bibliothèque concordent.
+const STUDIO_UNTITLED: &str = "Sans titre";
 /// Côté maximal des vignettes servies.
 const THUMB_DIM: u32 = 160;
 
@@ -413,7 +416,7 @@ fn classify_zip(names: &[String]) -> Result<ZipRoot, String> {
 fn find_root(names: &[String]) -> Result<String, String> {
     match classify_zip(names)? {
         ZipRoot::Telmi(root) => Ok(root),
-        ZipRoot::Studio(_) => Err("archive STUdio, pas Telmi".into()),
+        ZipRoot::Studio(_) => Err("l'archive est maintenant une histoire STUdio, plus une histoire Telmi : actualisez la source".into()),
     }
 }
 
@@ -467,7 +470,26 @@ fn zip_entry(source_id: &str, path: &Path, info: &FileInfo) -> Result<Parsed, St
     }
 }
 
+/// UUID `8-4-4-4-12` (chiffres hexadécimaux de casse quelconque), règle de `studio2lunii`.
+fn is_canonical_uuid(text: &str) -> bool {
+    let b = text.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, &c)| match i {
+            8 | 13 | 18 | 23 => c == b'-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
 /// Histoire STUdio : `story.json` (titre, description, version, uuid) et `thumbnail.png`.
+///
+/// Identifiant, titre et version suivent **la règle du pack** (`studio2lunii::story` et
+/// `install::studio`, #553) : une même histoire a le même `uuid` au scan, dans la bibliothèque
+/// et sur la Flam (`str/<uuid>/`) :
+/// - `uuid` : celui du nœud d'entrée (`squareOne`, sinon le premier `stageNode`), UUID
+///   canonique mis en minuscules ; le champ `uuid` racine de `story.json` est ignoré ;
+/// - titre : champ `title` assaini comme dans le pack (`clean_line`), sinon « Sans titre » (le
+///   nom du nœud d'entrée n'est pas repris) ;
+/// - version : entier JSON de 0 à 65535 seulement (sinon inconnue : le pack refusera).
 fn studio_entry(
     source_id: &str,
     path: &Path,
@@ -489,21 +511,29 @@ fn studio_entry(
                 .find(|n| n.get("squareOne").and_then(Value::as_bool) == Some(true))
                 .or_else(|| nodes.first())
         });
-    let title = json_text(&story_json, "title", MAX_TITLE_CHARS)
-        .or_else(|| start.and_then(|n| json_text(n, "name", MAX_TITLE_CHARS)))
-        .ok_or("titre absent de story.json : ajoutez un champ « title »")?;
-    let uuid = json_text(&story_json, "uuid", 100)
-        .or_else(|| start.and_then(|n| json_text(n, "uuid", 100)))
-        .ok_or("identifiant (uuid) absent de story.json")?;
-    if !validate_story_id(&uuid) {
-        return Err("uuid de story.json refusé (caractères ou nom non autorisés)".into());
-    }
+    let title = story_json
+        .get("title")
+        .and_then(Value::as_str)
+        .map(|t| clean_line(t, MAX_TITLE_CHARS))
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| STUDIO_UNTITLED.to_string());
+    let uuid = start
+        .and_then(|n| n.get("uuid"))
+        .and_then(Value::as_str)
+        .filter(|u| is_canonical_uuid(u))
+        .map(str::to_ascii_lowercase)
+        .ok_or("story.json : l'étape de départ n'a pas d'identifiant (uuid) valide")?;
+    let version = story_json
+        .get("version")
+        .and_then(Value::as_u64)
+        .filter(|v| *v <= u64::from(u16::MAX))
+        .and_then(|v| u32::try_from(v).ok());
     let has_thumb = zip.find_file(root, "thumbnail.png").is_some();
     let story = StoryEntry {
         entry_id: String::new(),
         source_id: source_id.to_string(),
         uuid,
-        version: json_u32(&story_json, "version"),
+        version,
         title,
         description: json_text(&story_json, "description", MAX_FIELD_CHARS),
         age: None,
@@ -530,7 +560,7 @@ fn studio_entry(
 fn studio_thumb_image(path: &Path) -> Result<RgbaImage, String> {
     let mut zip = Zip::open(path)?;
     let ZipRoot::Studio(root) = classify_zip(&zip.normalized_names())? else {
-        return Err("archive STUdio introuvable".into());
+        return Err("l'archive n'est plus une histoire STUdio : actualisez la source".into());
     };
     let name = zip
         .find_file(&root, "thumbnail.png")
@@ -1644,12 +1674,33 @@ mod tests {
         }
     }
 
+    /// #553 : uuid, titre et version suivent la règle du pack (`studio2lunii`) : uuid du nœud
+    /// d'entrée en minuscules (champ racine ignoré), titre assaini sinon « Sans titre » (jamais
+    /// le nom d'un nœud), version entière de 16 bits seulement.
     #[test]
-    fn zip_studio_titre_de_l_etape_de_depart_et_sans_vignette() {
+    fn zip_studio_identite_alignee_sur_le_pack_et_sans_vignette() {
         let dir = tempfile::tempdir().unwrap();
-        let story = r#"{"stageNodes":[{"uuid":"x1","name":"Autre"},
-            {"uuid":"u-depart","name":"Départ","squareOne":true}]}"#
+        let story = r#"{"uuid":"racine-ignoree","version":"3","stageNodes":[
+            {"uuid":"aaaaaaaa-0000-0000-0000-000000000002","name":"Autre"},
+            {"uuid":"AAAAAAAA-0000-0000-0000-00000000000F","name":"Départ","squareOne":true}]}"#
             .as_bytes();
+        write_zip(
+            &dir.path().join("a.zip"),
+            CompressionMethod::Deflated,
+            &[("story.json", story)],
+        );
+        let (first, _ctx) = scan(dir.path(), false);
+        let e = &first.entries[0];
+        assert_eq!(
+            (e.title.as_str(), e.uuid.as_str()),
+            ("Sans titre", "aaaaaaaa-0000-0000-0000-00000000000f")
+        );
+        assert_eq!(e.version, None, "version en texte : refusée par le pack");
+        assert!(e.thumb_url.is_none());
+
+        // Sans `squareOne` : le premier nœud ; titre assaini comme dans le pack.
+        let story = br#"{"title":"  Le\tconte \u0007 du soir ","version":65535,"stageNodes":[
+            {"uuid":"bbbbbbbb-0000-0000-0000-000000000001"}]}"#;
         write_zip(
             &dir.path().join("a.zip"),
             CompressionMethod::Deflated,
@@ -1657,22 +1708,47 @@ mod tests {
         );
         let (scan, _ctx) = scan(dir.path(), false);
         let e = &scan.entries[0];
-        assert_eq!((e.title.as_str(), e.uuid.as_str()), ("Départ", "u-depart"));
-        assert_eq!(e.version, None);
-        assert!(e.thumb_url.is_none());
+        assert_eq!(
+            e.title,
+            crate::install::studio::clean_line(" Le\tconte \u{7} du soir ", 200)
+        );
+        assert_eq!(e.title, "Le conte du soir");
+        assert_eq!(e.uuid, "bbbbbbbb-0000-0000-0000-000000000001");
+        assert_eq!(e.version, Some(65535));
+    }
+
+    /// #529 : une `thumbnail.png` illisible n'écarte pas l'histoire, seule la vignette manque.
+    #[test]
+    fn zip_studio_vignette_illisible() {
+        let dir = tempfile::tempdir().unwrap();
+        write_zip(
+            &dir.path().join("a.zip"),
+            CompressionMethod::Deflated,
+            &[
+                ("story.json", STUDIO.as_bytes()),
+                ("thumbnail.png", b"\x89PNG\r\n\x1a\npas une image"),
+            ],
+        );
+        let (scan, ctx) = scan(dir.path(), false);
+        assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
+        let e = &scan.entries[0];
+        assert_eq!(e.kind, StoryKind::StudioZip);
+        assert!(ctx.thumb(e).is_err());
     }
 
     #[test]
     fn zip_studio_invalide_est_ignore_avec_avertissement() {
-        let uuid_refuse = br#"{"title":"t","uuid":"../x","stageNodes":[]}"#;
+        let uuid_refuse = br#"{"title":"t","stageNodes":[{"uuid":"../x","squareOne":true}]}"#;
         let message = only_warning(&[("story.json", uuid_refuse)]);
-        assert!(message.contains("uuid de story.json refusé"), "{message}");
+        assert!(message.contains("identifiant (uuid) valide"), "{message}");
         let message = only_warning(&[("story.json", b"{pas du json")]);
         assert!(message.contains("story.json invalide"), "{message}");
         let message = only_warning(&[("story.json", br#"{"title":"t","stageNodes":[]}"#)]);
         assert!(message.contains("uuid"), "{message}");
-        let message = only_warning(&[("story.json", br#"{"uuid":"x","stageNodes":[]}"#)]);
-        assert!(message.contains("titre absent"), "{message}");
+        // Le champ `uuid` racine ne remplace pas celui du nœud d'entrée.
+        let racine = br#"{"uuid":"aaaaaaaa-0000-0000-0000-000000000001","stageNodes":[{}]}"#;
+        let message = only_warning(&[("story.json", racine)]);
+        assert!(message.contains("uuid"), "{message}");
         let message = only_warning(&[("x/story.json", br#"{"title":"t","uuid":"x"}"#)]);
         assert!(message.contains("stageNodes"), "{message}");
         let big = vec![b' '; MAX_TEXT_BYTES as usize + 1];
