@@ -875,6 +875,7 @@ export const fr = {
       untitled: (shortId: string) => `Histoire ${shortId}`,
       idDetail: (shortId: string) => `Identifiant ${shortId}`,
       hidden: "Masquée",
+      lunii: "Lunii",
       unlisted: "Non listée",
       missing: "Dossier manquant",
       emptyTitle: "Aucune histoire sur la Flam",

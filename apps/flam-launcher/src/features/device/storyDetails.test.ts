@@ -122,12 +122,37 @@ it("ne retient pas les titres d'une réponse sans clé et redemande ensuite", as
   );
   await waitFor(() => expect(requests).toHaveLength(1));
   await flush();
-  expect(result.current.get("a")).toBeUndefined();
+  expect(result.current.titles.get("a")).toBeUndefined();
   // Fin d'un envoi (la clé carrier vient peut-être d'être conservée) : nouvelle demande.
   rerender({ paused: true });
   rerender({ paused: false });
-  await waitFor(() => expect(result.current.get("a")).toBe("Capi"));
+  await waitFor(() => expect(result.current.titles.get("a")).toBe("Capi"));
   expect(requests).toHaveLength(2);
+  clearMocks();
+});
+
+it("un titre Lunii (en clair) est retenu sans clé de titre, pas celui d'une histoire Flam", async () => {
+  const replies = [
+    {
+      titles: [
+        { uuid: "a", title: "Le Petit Pirate", format: "lunii" },
+        { uuid: "b", title: null, format: "flam" },
+      ],
+      interrupted: false,
+      keys: false,
+    },
+  ];
+  const requests: string[][] = [];
+  mockIPC((cmd, args) => {
+    if (cmd !== "device_story_titles") return null;
+    requests.push((args as { uuids: string[] }).uuids);
+    return replies[requests.length - 1];
+  });
+  const { result } = renderHook(() => useDeviceStoryTitles("E:\\", ["a", "b"], false));
+  await waitFor(() => expect(result.current.titles.get("a")).toBe("Le Petit Pirate"));
+  expect(result.current.lunii.has("a")).toBe(true);
+  expect(result.current.lunii.has("b")).toBe(false);
+  expect(result.current.titles.has("b")).toBe(false);
   clearMocks();
 });
 
@@ -158,14 +183,14 @@ it("un lot interrompu sans clé ne retient pas les titres null", async () => {
     return replies[requests.length - 1];
   });
   const { result } = renderHook(() => useDeviceStoryTitles("E:\\", ["a", "b"], false));
-  await waitFor(() => expect(result.current.get("b")).toBe("Capi"));
+  await waitFor(() => expect(result.current.titles.get("b")).toBe("Capi"));
   expect(requests).toEqual([["a", "b"]]);
   // « a » (null faute de clé) n'est pas retenu et est redemandé après le délai.
-  expect(result.current.has("a")).toBe(false);
+  expect(result.current.titles.has("a")).toBe(false);
   await act(async () => {
     await vi.advanceTimersByTimeAsync(DETAILS_RETRY_MS + 10);
   });
-  await waitFor(() => expect(result.current.get("a")).toBe("Loup"));
+  await waitFor(() => expect(result.current.titles.get("a")).toBe("Loup"));
   expect(requests).toEqual([["a", "b"], ["a"]]);
   clearMocks();
 });

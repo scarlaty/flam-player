@@ -7,6 +7,11 @@
 //!   n'est demandée ni lue ailleurs (pas de `bt`). Un `info` illisible (mauvaise clé, fichier
 //!   abîmé) donne `None` : l'interface se replie sur le titre de la bibliothèque, puis sur l'UUID
 //!   court. Contrôle de lisibilité : celui du mode carrier ([`super::carrier::info_text`]).
+//! - **Format Lunii** (#522) : une histoire au format Lunii/STUdio (voir
+//!   [`super::guard::is_lunii_format`]) a un `info` **en clair** (titre, titre, `0`, titre,
+//!   auteur). Son titre en est lu directement, sans clé (donc aussi en 1.x sans clé carrier) :
+//!   UTF-8 ou Latin-1, lecture bornée, caractères de contrôle retirés. Ce fichier n'est jamais
+//!   présenté à un déchiffrement.
 //! - **Vignette** : `img/thumbnail.lif` de `str/<uuid>/` (ou `str.hidden/<uuid>/`), non
 //!   chiffrée, au plus [`MAX_LIF_BYTES`], décodée par le décodeur LIF du launcher, réduite et
 //!   réencodée en PNG, puis mise en cache sur le PC (`<cache>/thumbs/`, clé : empreinte de
@@ -36,6 +41,7 @@ use super::carrier::{
 };
 use super::crypto::{firmware_family, DeviceKeys, FirmwareFamily};
 use super::detect::MDF_FILE;
+use super::guard::is_lunii_format;
 use super::index::{StoryId, STORIES_DIR};
 use super::lock::DEVICE_LOCK;
 use super::transfer::{firmware_from_mdf, keys_from_mdf, read_mdf};
@@ -58,11 +64,23 @@ const LIF_PATH: [&str; 2] = ["img", "thumbnail.lif"];
 /// le lot de titres en cours.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
+/// Format d'une histoire de la Flam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoryFormat {
+    /// Histoire Flam native (`info` chiffré).
+    Flam,
+    /// Histoire au format Lunii/STUdio (`info` en clair).
+    Lunii,
+}
+
 /// Titre d'une histoire de la Flam (`None` : clé absente ou `info` illisible).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StoryTitle {
     pub uuid: String,
     pub title: Option<String>,
+    /// Format de l'histoire. `Lunii` : le titre (ou son absence) est définitif, même sans clé.
+    pub format: StoryFormat,
 }
 
 /// Réponse de `device_story_titles`.
@@ -178,9 +196,46 @@ fn read_bounded(file: File, max: u64) -> Option<Vec<u8>> {
     (data.len() as u64 <= max).then_some(data)
 }
 
-/// Titre de l'histoire `id` avec `keys` : début de `info` (au plus [`MAX_INFO`] octets).
-fn story_title(root: &Path, id: &StoryId, keys: &DeviceKeys) -> Option<String> {
-    let (file, _) = open_regular(&story_dir(root, id)?.join(INFO_FILE))?;
+/// Longueur maximale (en caractères) d'un titre en clair.
+const MAX_PLAIN_TITLE_CHARS: usize = 200;
+
+/// Titre d'un `info` en clair (format Lunii) : première ligne non vide, UTF-8 ou, à défaut,
+/// Latin-1 ; espaces réduits, longueur bornée. Une ligne contenant un caractère de contrôle
+/// (autre que la tabulation) n'est pas du texte : `info` chiffré ou abîmé, dossier hybride. Le
+/// titre est alors `None` (repli de l'interface) plutôt qu'un texte illisible.
+fn plain_title_of_info(info: &[u8]) -> Option<String> {
+    // Lecture bornée : une coupure au milieu d'un caractère UTF-8 n'invalide pas le reste.
+    let info = match std::str::from_utf8(info) {
+        Err(e) if e.error_len().is_none() => &info[..e.valid_up_to()],
+        _ => info,
+    };
+    let text: String = match std::str::from_utf8(info) {
+        Ok(text) => text.to_string(),
+        Err(_) => info.iter().map(|&b| char::from(b)).collect(),
+    };
+    let line = text
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .find(|line| !line.trim().is_empty())?;
+    if line.chars().any(|c| c.is_control() && c != char::from(9)) {
+        return None;
+    }
+    let title = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    Some(title.chars().take(MAX_PLAIN_TITLE_CHARS).collect())
+}
+
+/// Titre en clair de l'histoire au format Lunii de dossier `dir` (au plus [`MAX_INFO`] octets).
+fn plain_story_title(dir: &Path) -> Option<String> {
+    let (file, _) = open_regular(&dir.join(INFO_FILE))?;
+    let mut info = Vec::new();
+    file.take(MAX_INFO).read_to_end(&mut info).ok()?;
+    plain_title_of_info(&info)
+}
+
+/// Titre de l'histoire de dossier `dir` avec `keys` : début de `info` (au plus [`MAX_INFO`]
+/// octets).
+fn story_title(dir: &Path, keys: &DeviceKeys) -> Option<String> {
+    let (file, _) = open_regular(&dir.join(INFO_FILE))?;
     let mut info = zeroize::Zeroizing::new(Vec::new());
     file.take(MAX_INFO).read_to_end(&mut info).ok()?;
     keys.title_of_info(&info)
@@ -188,7 +243,8 @@ fn story_title(root: &Path, id: &StoryId, keys: &DeviceKeys) -> Option<String> {
 
 /// Titres des histoires `uuids` (au plus [`MAX_BATCH`] premiers) de la Flam de `root`.
 /// `stop` est consulté avant chaque histoire : vrai, le lot s'arrête (`interrupted`). Sans clé,
-/// aucun `info` n'est lu. Lecture seule.
+/// aucun `info` chiffré n'est lu (celui d'une histoire Lunii, en clair, l'est toujours).
+/// Lecture seule.
 pub fn read_titles(
     root: &Path,
     uuids: &[String],
@@ -208,10 +264,21 @@ pub fn read_titles(
         let Some(id) = StoryId::parse(uuid) else {
             continue;
         };
-        let title = keys.and_then(|keys| story_title(root, &id, keys));
+        let dir = story_dir(root, &id);
+        let lunii = dir.as_deref().is_some_and(is_lunii_format);
+        let title = match &dir {
+            Some(dir) if lunii => plain_story_title(dir),
+            Some(dir) => keys.and_then(|keys| story_title(dir, keys)),
+            None => None,
+        };
         titles.push(StoryTitle {
             uuid: id.to_string(),
             title,
+            format: if lunii {
+                StoryFormat::Lunii
+            } else {
+                StoryFormat::Flam
+            },
         });
     }
     StoryTitles {
