@@ -47,11 +47,6 @@ export interface StoriesApi {
    */
   installedFor: (entry: StoryEntry) => LibraryEntry | undefined;
   /**
-   * Même histoire (même `uuid`) installée dans l'**autre** format : l'installer la remplacera,
-   * après confirmation (Q10).
-   */
-  otherFormatFor: (entry: StoryEntry) => LibraryEntry | undefined;
-  /**
    * `entry` propose une autre version que celle installée, ou c'est la source dossier de
    * l'histoire installée et elle a changé depuis l'installation (même à version égale, #288).
    */

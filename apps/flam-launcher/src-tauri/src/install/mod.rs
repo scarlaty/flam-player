@@ -555,6 +555,7 @@ impl InstallService {
                     continue;
                 }
                 restored.push(q.id.clone());
+                let entry_kind = entry.kind;
                 // Le validateur ne vaut que pour la même archive (même lien, même version).
                 let validator = if entry.download_url == q.entry.download_url
                     && entry.version == q.entry.version
@@ -579,7 +580,10 @@ impl InstallService {
                     cancel: watch::channel(false).0,
                     validator,
                     pack: q.pack,
-                    replace_format: q.replace_format,
+                    // La confirmation ne vaut que pour le même sens de changement de format :
+                    // une archive devenue d'une autre nature depuis la confirmation la perd.
+                    replace_format: q.replace_format
+                        && StoryFormat::of_kind(entry_kind) == StoryFormat::of_kind(q.entry.kind),
                 });
             }
             let snap = self.snapshot(&tasks);
@@ -631,6 +635,15 @@ impl InstallService {
             {
                 if pack.is_some() {
                     return Err(AppError::Validation("uuid de pack déjà utilisé".into()));
+                }
+                // Installation de la même histoire dans l'autre format en cours (Q10) : la
+                // renvoyer ferait croire que celle demandée est lancée.
+                if StoryFormat::of_kind(slot.task.entry.kind) != StoryFormat::of_kind(entry.kind) {
+                    return Err(AppError::Validation(
+                        "la même histoire est déjà en cours d'installation dans l'autre format : \
+                         attendez la fin ou annulez-la, puis réessayez"
+                            .into(),
+                    ));
                 }
                 return Ok(slot.task.clone());
             }

@@ -362,15 +362,20 @@ fn format_change_refused(installed: &LibraryEntry, format: StoryFormat) -> AppEr
     ))
 }
 
-/// Installation de l'autre format que `format` pour `uuid` dans `stories`, s'il y en a une.
+/// Installation de l'autre format que `format` pour `uuid` dans `stories`, s'il y en a une
+/// dont le fichier existe : une entrée dont le fichier a disparu n'est pas listée (le front ne
+/// peut donc pas demander la confirmation) et se remplace sans elle.
 fn other_format<'a>(
+    library: &Library,
     stories: &'a [LibraryEntry],
     uuid: &str,
     format: StoryFormat,
 ) -> Option<&'a LibraryEntry> {
-    stories
-        .iter()
-        .find(|e| e.uuid == uuid && e.format() != format)
+    stories.iter().find(|e| {
+        e.uuid == uuid
+            && e.format() != format
+            && library.checked(&e.file).is_ok_and(|p| p.is_file())
+    })
 }
 
 /// Accès à la bibliothèque d'un dossier de cache.
@@ -770,7 +775,8 @@ impl Library {
         if untrusted {
             self.adopt_unjudged(&file, uuid)?;
         }
-        if let Some(other) = other_format(&stories, uuid, format).filter(|_| !replace_format) {
+        if let Some(other) = other_format(self, &stories, uuid, format).filter(|_| !replace_format)
+        {
             return Err(format_change_refused(other, format));
         }
         Ok(())
@@ -946,7 +952,7 @@ impl Library {
         }
         // Doublon de l'autre format (Q10) : refus sans confirmation, avant toute écriture.
         if let Some(other) =
-            other_format(&stories, &source.uuid, format).filter(|_| !replace_format)
+            other_format(self, &stories, &source.uuid, format).filter(|_| !replace_format)
         {
             return Err(format_change_refused(other, format));
         }
@@ -2823,6 +2829,25 @@ mod format_tests {
         );
         assert!(root.join("abc-2.lunii.pk").is_file());
         assert!(!root.join(".staging/abc-2.lunii.pk.pending").exists());
+    }
+
+    /// Entrée de l'autre format dont le fichier a disparu (non listée, donc impossible à
+    /// confirmer côté front) : elle ne bloque pas l'installation et se remplace sans confirmation.
+    #[test]
+    fn entree_fantome_de_l_autre_format_ne_bloque_pas() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let root = dir.path().join("library");
+        let a = staged(&lib, "a.plain.pk", b"telmi");
+        lib.install(&a, &story("abc", Some(2)), None, 1).unwrap();
+        std::fs::remove_file(root.join("abc-2.plain.pk")).unwrap();
+        assert!(lib.list().unwrap().is_empty());
+        lib.precheck_install("abc", Some(2), StoryFormat::Lunii, false)
+            .unwrap();
+        let b = staged(&lib, "b.lunii.pk", b"lunii!");
+        lib.install(&b, &studio("abc", Some(2)), None, 2).unwrap();
+        let list = lib.list().unwrap();
+        assert_eq!((list.len(), list[0].format()), (1, StoryFormat::Lunii));
     }
 
     /// Une entrée d'index au suffixe inconnu (index modifié à la main) est ignorée et son

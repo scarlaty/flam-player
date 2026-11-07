@@ -239,8 +239,7 @@ async fn annulation_d_une_installation_studio() {
     let (_src, entry) = source(ctx.dir.path());
     let slot = ctx.service.0.conversions.acquire().await.unwrap();
     let t = ctx.service.start(entry).unwrap();
-    // L'empreinte de la source est calculée avant l'attente du créneau.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Annulation à tout moment avant le créneau (portillon, précontrôle, empreinte, créneau).
     ctx.service.cancel(&t.id).unwrap();
     let task = ctx.finished(&t.id).await;
     drop(slot);
@@ -248,6 +247,30 @@ async fn annulation_d_une_installation_studio() {
     assert!(ctx.service.library_list().await.unwrap().is_empty());
     assert!(ctx.staging_is_empty());
     assert!(ctx.queue().is_empty());
+}
+
+/// Une installation active de la même histoire dans l'autre format n'est pas renvoyée comme si
+/// c'était celle demandée : refus explicite.
+#[tokio::test]
+async fn installation_de_l_autre_format_en_cours_refusee() {
+    let ctx = Ctx::new(None);
+    let (_src, entry) = source(ctx.dir.path());
+    let gate = ctx.gate.clone().write_owned().await;
+    let mut telmi = story(UUID, Some(3));
+    telmi.download_url = ctx
+        .dir
+        .path()
+        .join("src")
+        .join("telmi.zip")
+        .to_string_lossy()
+        .into();
+    let first = ctx.service.start(telmi).unwrap();
+    let err = ctx.service.start_with(entry, true).unwrap_err();
+    assert_eq!(err.kind(), "validation");
+    assert!(err.to_string().contains("autre format"), "{err}");
+    ctx.service.cancel(&first.id).unwrap();
+    drop(gate);
+    assert_eq!(ctx.finished(&first.id).await.state, TaskState::Cancelled);
 }
 
 #[test]

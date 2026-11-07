@@ -611,7 +611,6 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         return task ? taskProgress(task, details[task.id] ?? NO_DETAIL) : undefined;
       },
       installedFor,
-      otherFormatFor: (entry) => otherFormatIn(installed, entry),
       updateAvailable: (entry) =>
         hasUpdate(installedFor(entry), entry) || fromChangedSource(entry),
       sourceChanged: (uuid) => changedSources.has(uuid),
