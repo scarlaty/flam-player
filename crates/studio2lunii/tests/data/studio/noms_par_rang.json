@@ -1,0 +1,55 @@
+{
+  "format": "v1",
+  "title": "Rang",
+  "version": 1,
+  "description": "desc",
+  "stageNodes": [
+    {
+      "uuid": "0000006e-1111-4222-8333-00000000006e",
+      "type": "stage",
+      "name": "n",
+      "image": "couv.png",
+      "audio": "a-long-name-ok12.mp3",
+      "okTransition": {
+        "actionNode": "r",
+        "optionIndex": 0
+      },
+      "homeTransition": null,
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": false,
+        "pause": false,
+        "autoplay": false
+      }
+    },
+    {
+      "uuid": "0000006f-1111-4222-8333-00000000006f",
+      "type": "stage",
+      "name": "n",
+      "image": "fin_image_longue1.png",
+      "audio": "s.mp3",
+      "okTransition": null,
+      "homeTransition": {
+        "actionNode": "r",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    }
+  ],
+  "actionNodes": [
+    {
+      "id": "r",
+      "options": [
+        "0000006f-1111-4222-8333-00000000006f"
+      ]
+    }
+  ],
+  "nightModeAvailable": false
+}
