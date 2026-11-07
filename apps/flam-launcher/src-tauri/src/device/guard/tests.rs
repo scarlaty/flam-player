@@ -370,6 +370,49 @@ fn histoire_au_format_lunii_ni_contradiction_ni_preuve() {
 }
 
 #[test]
+fn format_lunii_dossiers_ordinaires_inchanges() {
+    let dev = device(&mdf_v2_known());
+    let base = dev.path().join("str");
+    let empty = base.join("vide");
+    std::fs::create_dir_all(&empty).unwrap();
+    assert!(!is_lunii_format(&empty));
+    for name in ["ni", "li", "ri", "si"] {
+        let dir = base.join(format!("seul-{name}"));
+        write(&dir.join(name), b"x");
+        assert!(is_lunii_format(&dir), "{name} seul");
+    }
+    let hybrid = base.join("hybride");
+    write(&hybrid.join("main.lsf"), b"x");
+    write(&hybrid.join("ni"), b"x");
+    assert!(!is_lunii_format(&hybrid));
+    let flam = base.join("flam");
+    write(&flam.join("main.lsf"), b"x");
+    assert!(!is_lunii_format(&flam));
+}
+
+#[test]
+fn format_lunii_ignore_les_liens_symboliques() {
+    let dev = device(&mdf_v2_known());
+    let base = dev.path().join("str");
+    let target = base.join("cible");
+    write(&target, b"x");
+    let dir = base.join("liens");
+    std::fs::create_dir_all(&dir).unwrap();
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&target, dir.join("ni"));
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_file(&target, dir.join("ni"));
+    if let Err(e) = linked {
+        eprintln!("test ignore : lien symbolique impossible ({e})");
+        return;
+    }
+    assert!(!is_lunii_format(&dir));
+    // Un fichier ordinaire à côté du lien suffit : le dossier reste Lunii.
+    write(&dir.join("li"), b"x");
+    assert!(is_lunii_format(&dir));
+}
+
+#[test]
 fn info_en_clair_ecarte() {
     let dev = device(&mdf_v2_known());
     story(

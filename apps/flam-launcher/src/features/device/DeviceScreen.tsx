@@ -312,7 +312,7 @@ function DeviceStoriesList() {
   const { titles, lunii } = useDeviceStoryTitles(root, uuids, busy);
   // Titre non déchiffrable (clé d'un autre compte) : catalogue officiel en ligne, seulement s'il
   // reste au moins une histoire sans titre.
-  const official = useOfficialStoryTitles(titles);
+  const official = useOfficialStoryTitles(titles, lunii);
   const loader = useMemo(() => (root ? new ThumbnailLoader(root) : null), [root]);
   useEffect(() => () => loader?.dispose(), [loader]);
   useEffect(() => loader?.setPaused(busy), [loader, busy]);
@@ -445,7 +445,7 @@ function DeviceStoriesList() {
                 story={story}
                 deviceTitle={titles.get(story.uuid)}
                 lunii={lunii.has(story.uuid)}
-                official={official.get(story.uuid)}
+                official={lunii.has(story.uuid) ? undefined : official.get(story.uuid)}
                 loader={story.missing ? null : loader}
                 removing={removing === story.uuid}
                 actions={

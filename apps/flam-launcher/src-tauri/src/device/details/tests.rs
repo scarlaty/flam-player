@@ -466,7 +466,7 @@ fn info_lunii_latin1_controles_et_longueur() {
             .unwrap()
             .chars()
             .count(),
-        MAX_PLAIN_TITLE_CHARS
+        MAX_TITLE_CHARS
     );
 }
 

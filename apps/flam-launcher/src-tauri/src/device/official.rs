@@ -78,8 +78,9 @@ const MAX_CACHE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ENTRIES: usize = 12_000;
 /// UUID pris en compte par demande.
 pub const MAX_QUERY: usize = 1000;
-/// Longueur maximale d'un titre conservé (en caractères).
-const MAX_TITLE_CHARS: usize = 200;
+/// Longueur maximale d'un titre conservé (en caractères), aussi celle d'un titre Lunii en
+/// clair (`details`).
+pub(super) const MAX_TITLE_CHARS: usize = 200;
 /// Côté maximal de l'image réduite (comme les vignettes de la Flam).
 const THUMB_DIM: u32 = 96;
 /// Images téléchargées en même temps.

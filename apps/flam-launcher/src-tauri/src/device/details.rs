@@ -44,6 +44,7 @@ use super::detect::MDF_FILE;
 use super::guard::is_lunii_format;
 use super::index::{StoryId, STORIES_DIR};
 use super::lock::DEVICE_LOCK;
+use super::official::MAX_TITLE_CHARS;
 use super::transfer::{firmware_from_mdf, keys_from_mdf, read_mdf};
 use crate::catalog::blocking;
 use crate::settings::{Environment, SettingsStore};
@@ -196,9 +197,6 @@ fn read_bounded(file: File, max: u64) -> Option<Vec<u8>> {
     (data.len() as u64 <= max).then_some(data)
 }
 
-/// Longueur maximale (en caractères) d'un titre en clair.
-const MAX_PLAIN_TITLE_CHARS: usize = 200;
-
 /// Titre d'un `info` en clair (format Lunii) : première ligne non vide, UTF-8 ou, à défaut,
 /// Latin-1 ; espaces réduits, longueur bornée. Une ligne contenant un caractère de contrôle
 /// (autre que la tabulation) n'est pas du texte : `info` chiffré ou abîmé, dossier hybride. Le
@@ -221,7 +219,7 @@ fn plain_title_of_info(info: &[u8]) -> Option<String> {
         return None;
     }
     let title = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    Some(title.chars().take(MAX_PLAIN_TITLE_CHARS).collect())
+    Some(title.chars().take(MAX_TITLE_CHARS).collect())
 }
 
 /// Titre en clair de l'histoire au format Lunii de dossier `dir` (au plus [`MAX_INFO`] octets).

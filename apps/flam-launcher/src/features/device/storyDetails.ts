@@ -53,10 +53,23 @@ export function useDeviceStoryTitles(
   const uuidsKey = uuids.join(" ");
 
   useEffect(() => {
-    if (!root || paused) return;
+    if (!root) return;
     if (known.current.root !== root)
       known.current = { root, map: new Map(), lunii: new Set() };
     const { map, lunii } = known.current;
+    // Histoire retirée de la liste : sa réponse (titre, format) est oubliée. Un même UUID
+    // réinstallé dans un autre format (Lunii puis Flam, ou l'inverse) est donc relu, sans
+    // badge ni titre périmés.
+    const current = new Set(uuidsKey ? uuidsKey.split(" ") : []);
+    let pruned = false;
+    for (const uuid of [...map.keys()])
+      if (!current.has(uuid)) {
+        map.delete(uuid);
+        lunii.delete(uuid);
+        pruned = true;
+      }
+    if (pruned) setTitles({ root, map: new Map(map), lunii: new Set(lunii) });
+    if (paused) return;
     let pending = uuidsKey ? uuidsKey.split(" ").filter((u) => !map.has(u)) : [];
     if (pending.length === 0) return;
     let active = true;
@@ -133,17 +146,19 @@ const EMPTY_OFFICIAL: ReadonlyMap<string, OfficialInfo> = new Map();
  * Titres du catalogue officiel en ligne, demandés **seulement** pour les histoires dont le titre
  * a été définitivement refusé par le déchiffrement (`null` dans `deviceTitles`) : si tous les
  * titres sont connus, rien n'est demandé et le réseau n'est pas utilisé. Chaque histoire n'est
- * demandée qu'une fois ; l'affichage n'attend jamais cette réponse, et un échec n'est pas
+ * demandée qu'une fois ; les histoires `lunii` (tierces, absentes du catalogue) ne sont jamais
+ * demandées ; l'affichage n'attend jamais cette réponse, et un échec n'est pas
  * affiché (repli sur la bibliothèque, puis l'UUID court).
  */
 export function useOfficialStoryTitles(
   deviceTitles: ReadonlyMap<string, string | null>,
+  lunii: ReadonlySet<string> = EMPTY_LUNII,
 ): ReadonlyMap<string, OfficialInfo> {
   const [official, setOfficial] =
     useState<ReadonlyMap<string, OfficialInfo>>(EMPTY_OFFICIAL);
   const asked = useRef(new Set<string>());
   const unresolved = [...deviceTitles]
-    .filter(([, title]) => title === null)
+    .filter(([uuid, title]) => title === null && !lunii.has(uuid))
     .map(([uuid]) => uuid)
     .sort()
     .join(" ");
