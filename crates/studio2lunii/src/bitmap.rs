@@ -4,8 +4,11 @@
 //!
 //! # Chaîne de conversion
 //!
-//! 1. Un BMP déjà exactement au format de l'appareil (voir ci-dessous) est décodé en niveaux puis
-//!    réencodé : jamais copié tel quel, un fichier hostile n'atteint donc pas l'appareil.
+//! 1. Un BMP RLE4 de 320 x 240 (le critère de Lunii.QT pour recopier le fichier) est décodé en
+//!    **indices de palette** (la palette du fichier est ignorée), contrôlé de bout en bout, puis
+//!    réencodé au format ci-dessous : jamais copié tel quel, un fichier hostile n'atteint donc pas
+//!    l'appareil, et les 16 niveaux d'origine sont conservés exactement. Un RLE4 de cette taille
+//!    illisible (saut, ligne incomplète, données tronquées) est refusé.
 //! 2. Sinon l'image est décodée (dimensions et taille bornées avant décodage, voir [`MAX_SIDE`],
 //!    [`MAX_PIXELS`] et [`MAX_INPUT_BYTES`]) puis, si elle n'a pas déjà 320 x 240, redimensionnée
 //!    **sans conserver le rapport d'aspect** (déformation, comme `Image.resize((320, 240))`) :
@@ -22,7 +25,8 @@
 //! 4. Lignes écrites **de bas en haut** (BMP à hauteur positive), RLE4 en mode codé uniquement.
 //!
 //! Écarts choisis avec Lunii.QT (note de conception `docs/studio-lunii.md`, § 3.5) : (a) il copie
-//! tel quel un BMP RLE4 de 320 x 240 ; ici décodé puis réencodé. (b) Il écrit à l'envers une
+//! tel quel un BMP RLE4 de 320 x 240 ; ici décodé en indices puis réencodé (même niveaux, octets
+//! normalisés). (b) Il écrit à l'envers une
 //! source BMP de 320 x 240 non RLE4 (il ne la retourne pas) ; ici toutes les sources sortent à
 //! l'endroit. (c) Il ignore l'alpha (Pillow redimensionne en alpha prémultiplié, puis `convert("RGB")`
 //! jette l'alpha : les couleurs reviennent telles quelles) ; ici composition sur noir, à toute
@@ -134,11 +138,19 @@ pub fn to_lunii_bmp(bytes: &[u8]) -> Result<Vec<u8>, BitmapError> {
         });
     }
 
-    // Fichier déjà au format de l'appareil : décodé puis réencodé (donc identique), jamais copié.
-    if is_bmp {
-        if let Some(levels) = decode_device_levels(bytes) {
-            return Ok(encode_rle4_bmp(&levels));
-        }
+    // BMP RLE4 de 320 x 240 : Lunii.QT le recopie, les niveaux sont ses indices de palette. Ici
+    // il est décodé en indices (contrôlé de bout en bout) puis réencodé, jamais copié ; un RLE4
+    // de cette taille mais illisible est refusé plutôt que passé au décodeur général, qui
+    // passerait par les couleurs de la palette et perdrait un niveau.
+    if is_bmp && is_rle4_device_size(bytes) {
+        return decode_rle4_levels(bytes)
+            .map(|levels| encode_rle4_bmp(&levels))
+            .ok_or_else(|| {
+                BitmapError::Decode(
+                    "BMP RLE4 320 x 240 invalide ou non pris en charge (saut, ligne incomplète, données tronquées)"
+                        .to_owned(),
+                )
+            });
     }
 
     let img = reader(bytes, true)?
@@ -185,71 +197,84 @@ fn le32(b: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
 }
 
-/// Décode un fichier exactement au format de l'appareil (celui que produit
-/// [`encode_rle4_bmp`] : mêmes en-têtes, même palette, séries codées seulement) en niveaux 0 à 15,
-/// lignes de haut en bas. `None` pour tout autre fichier, qui passe alors par le décodeur général.
-/// Les niveaux sont les indices de palette : repasser par les couleurs de la palette ferait
-/// perdre un niveau (le gris 15 de l'entrée 1 donnerait 0).
-fn decode_device_levels(b: &[u8]) -> Option<Vec<u8>> {
-    let (w, h) = (WIDTH as usize, HEIGHT as usize);
-    let header_ok = b.starts_with(b"BM")
-        && b.len() > HEADER_SIZE + PALETTE_SIZE
-        && le32(b, 2) == Some(b.len() as u32)
-        && le32(b, 6) == Some(0)
-        && le32(b, 10) == Some((HEADER_SIZE + PALETTE_SIZE) as u32)
-        && le32(b, 14) == Some(40)
+/// `true` si l'en-tête annonce un BMP 4 bits RLE4 de 320 x 240 à hauteur positive : le critère
+/// de Lunii.QT (`compression == RLE4 and size == (320, 240)`) pour recopier le fichier.
+fn is_rle4_device_size(b: &[u8]) -> bool {
+    b.starts_with(b"BM")
+        && le32(b, 14).is_some_and(|hs| hs >= 40)
         && le32(b, 18) == Some(WIDTH)
         && le32(b, 22) == Some(HEIGHT)
         && le16(b, 26) == Some(1)
         && le16(b, 28) == Some(4)
         && le32(b, 30) == Some(BI_RLE4)
-        && le32(b, 34) == Some((b.len() - HEADER_SIZE - PALETTE_SIZE) as u32)
-        && le32(b, 38) == Some(0)
-        && le32(b, 42) == Some(0)
-        && le32(b, 46) == Some(16)
-        && le32(b, 50) == Some(0);
-    if !header_ok {
+}
+
+/// Décode les données RLE4 d'un BMP 320 x 240 en niveaux 0 à 15, lignes de haut en bas ; le
+/// fichier n'est jamais recopié, il est lu en entier puis réécrit par [`encode_rle4_bmp`].
+///
+/// Lunii.QT recopie tel quel tout BMP RLE4 de cette taille, quelle que soit sa palette : les
+/// niveaux sont donc les **indices** de palette, jamais les couleurs (repasser par les couleurs
+/// de la palette de l'appareil ferait perdre un niveau : le gris 15 de l'entrée 1 donnerait 0).
+/// La palette du fichier est ignorée, comme le fait l'appareil pour ses propres fichiers
+/// (hypothèse : un fichier à palette inhabituelle est rare ; la copie de Lunii.QT la
+/// conserverait, ici elle est normalisée). Sont acceptés : séries codées, mode absolu, fins de
+/// ligne et de fichier, en-tête et champs de taille quelconques ; octets après la fin du fichier
+/// RLE ignorés. Refusés (`None`) : sauts (delta), ligne incomplète ou trop longue, nombre de
+/// lignes différent de 240, données sans fin.
+fn decode_rle4_levels(b: &[u8]) -> Option<Vec<u8>> {
+    let (w, h) = (WIDTH as usize, HEIGHT as usize);
+    let hs = le32(b, 14)? as usize;
+    let offset = le32(b, 10)? as usize;
+    if offset < 14usize.checked_add(hs)? || offset > b.len() {
         return None;
     }
-    let palette_ok = (0..16usize).all(|i| {
-        let g = (255 * i / 16) as u8;
-        b[HEADER_SIZE + i * 4..HEADER_SIZE + i * 4 + 4] == [g, g, g, 0]
-    });
-    if !palette_ok {
-        return None;
-    }
-    let mut rows: Vec<Vec<u8>> = Vec::with_capacity(h);
-    let mut row: Vec<u8> = Vec::with_capacity(w);
-    let data = &b[HEADER_SIZE + PALETTE_SIZE..];
-    let mut at = 0;
-    let mut done = false;
-    while at + 2 <= data.len() {
-        let (n, v) = (usize::from(data[at]), data[at + 1]);
+    let data = &b[offset..];
+    let mut levels = Vec::with_capacity(w * h);
+    let mut col = 0usize;
+    let mut at = 0usize;
+    loop {
+        let (n, v) = (usize::from(*data.get(at)?), *data.get(at + 1)?);
         at += 2;
-        if n == 0 {
-            if row.len() != w {
+        if n > 0 {
+            // Série codée : les deux demi-octets alternent.
+            if col + n > w {
                 return None;
             }
-            rows.push(std::mem::take(&mut row));
-            match v {
-                0 if rows.len() < h => {}
-                1 if rows.len() == h => {
-                    done = true;
-                    break;
+            levels.extend((0..n).map(|i| if i % 2 == 0 { v >> 4 } else { v & 15 }));
+            col += n;
+            continue;
+        }
+        match v {
+            0 | 1 => {
+                if col != w {
+                    return None;
                 }
-                _ => return None,
+                col = 0;
+                if v == 1 {
+                    // Le fichier va de la dernière ligne à la première.
+                    return (levels.len() == w * h)
+                        .then(|| levels.chunks(w).rev().flatten().copied().collect());
+                }
+                if levels.len() >= w * h {
+                    return None;
+                }
             }
-        } else {
-            if v >> 4 != v & 15 || row.len() + n > w {
-                return None;
+            2 => return None,
+            count => {
+                // Mode absolu : `count` demi-octets, rembourrés à un nombre pair d'octets.
+                let count = usize::from(count);
+                if col + count > w {
+                    return None;
+                }
+                let bytes = data.get(at..at + count.div_ceil(2))?;
+                levels.extend(
+                    (0..count).map(|i| (bytes[i / 2] >> (if i % 2 == 0 { 4 } else { 0 })) & 15),
+                );
+                col += count;
+                at += (count.div_ceil(2) + 1) & !1;
             }
-            row.extend(std::iter::repeat_n(v & 15, n));
         }
     }
-    if !done || at != data.len() {
-        return None;
-    }
-    Some(rows.into_iter().rev().flatten().collect())
 }
 
 /// Particularités de la source qui changent la conversion de Pillow.
