@@ -303,10 +303,22 @@ function DeviceStoriesList() {
   const { stories: state, reloadStories, busy, device } = useDevice();
   const root = device?.root ?? null;
   const report = state.phase === "ready" ? state.report : null;
-  const uuids = useMemo(
+  const readyUuids = useMemo(
     () => report?.stories.filter((s) => !s.missing).map((s) => s.uuid) ?? [],
     [report],
   );
+  // Relecture de la liste (phase `loading`) : la liste d'UUID ne passe pas par un état vide,
+  // qui ferait oublier les titres déjà lus (clignotement). Elle est conservée tant que la
+  // même Flam est branchée ; une liste prête (même vide) la remplace.
+  const [lastUuids, setLastUuids] = useState<{ root: string | null; uuids: string[] }>({
+    root,
+    uuids: readyUuids,
+  });
+  const loading = state.phase === "loading";
+  if (state.phase === "ready" && lastUuids.uuids !== readyUuids)
+    setLastUuids({ root, uuids: readyUuids });
+  if (lastUuids.root !== root) setLastUuids({ root, uuids: readyUuids });
+  const uuids = loading && lastUuids.root === root ? lastUuids.uuids : readyUuids;
   // Titres et vignettes de la Flam : chargés après l'affichage de la liste, suspendus pendant
   // un envoi ou un retrait.
   const { titles, lunii } = useDeviceStoryTitles(root, uuids, busy);

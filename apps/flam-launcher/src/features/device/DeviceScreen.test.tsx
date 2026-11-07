@@ -435,6 +435,21 @@ it("actualise la liste à la demande", async () => {
   expect(count("device_list_stories")).toBe(2);
 });
 
+it("relire la liste ne fait pas oublier les titres déjà lus (#551)", async () => {
+  status = detected();
+  deviceTitles = { [A]: "Titre de la Flam" };
+  stories = report([story(A)]);
+  renderScreen();
+  expect(await screen.findByText("Titre de la Flam")).toBeInTheDocument();
+  expect(titleRequests).toEqual([[A]]);
+  // La relecture passe par l'état « chargement » (liste absente) puis revient à la même liste.
+  fireEvent.click(screen.getByRole("button", { name: "Actualiser la liste" }));
+  expect(await screen.findByText("Titre de la Flam")).toBeInTheDocument();
+  await waitFor(() => expect(count("device_list_stories")).toBe(2));
+  // Titre conservé, aucune relecture du titre : pas de clignotement vers le titre de repli.
+  expect(titleRequests).toEqual([[A]]);
+});
+
 /** Retient les appels `device_status` jusqu'à `answer(index, valeur)` ; `statusGate = null` les libère. */
 function holdStatusCalls() {
   const held: ((value: DeviceStatus) => void)[] = [];
