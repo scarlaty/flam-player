@@ -196,9 +196,10 @@ pub enum Coherence {
 /// Marqueurs d'une histoire au format Lunii (sans scripts `.lsf`).
 const LUNII_FILES: [&str; 4] = ["ni", "li", "ri", "si"];
 
-/// Format d'un dossier d'histoire.
+/// Format Flam : `main.lsf` est un fichier ordinaire (comme pour [`is_lunii_format`], un lien
+/// symbolique n'en est pas un).
 fn is_flam_format(dir: &Path) -> bool {
-    dir.join("main.lsf").is_file()
+    is_regular_file(&dir.join("main.lsf"))
 }
 
 /// Fichier ordinaire (un lien symbolique n'en est pas un : il pourrait pointer hors de la Flam).
