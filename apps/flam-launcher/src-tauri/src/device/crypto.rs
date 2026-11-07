@@ -775,7 +775,8 @@ pub(crate) mod tests {
             let plain = lunii_plain(len);
             let ciphered = keys.encrypt_lunii_file("ri", &plain).unwrap();
             if len > 0 {
-                assert_ne!(ciphered[..16], plain[..len.min(16)], "longueur {len}");
+                let n = len.min(16);
+                assert_ne!(ciphered[..n], plain[..n], "longueur {len}");
             }
             let back = keys.decrypt_lunii_file("ri", &ciphered).unwrap();
             assert_eq!(back.len(), ciphered.len());
@@ -810,6 +811,7 @@ pub(crate) mod tests {
                 "{name}"
             );
         }
+        // `omni` : écart assumé avec le `endswith("ni")` de Lunii.QT (dernier composant exact).
         for name in ["li", "ri", "si", "bt", "omni", "ni/li", "nix", "ni.txt", ""] {
             assert!(!is_lunii_plain_file(name), "{name}");
             assert_ne!(
