@@ -27,6 +27,7 @@ concurrency:
 
 jobs:
   crate:
+    name: studio2lunii (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
