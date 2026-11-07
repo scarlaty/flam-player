@@ -27,8 +27,9 @@
 //!
 //! 1. Firmware 1.x (clés « carrier ») : refus [`PrepareError::LuniiNeedsV2`] **avant toute
 //!    lecture ou écriture** (pas même le dossier de travail).
-//! 2. Tout est contrôlé avant d'écrire : noms, entrées attendues, cohérence de `ni`, `li`,
-//!    `ri`, `si` et des fichiers de `rf/000/`, `sf/000/`, `info`, `nm`, UUID.
+//! 2. Tout est contrôlé avant d'écrire : noms, entrées attendues, entrées non chiffrées par
+//!    mot de passe, en-tête et cohérence de `ni`, `li`, `ri`, `si` et des fichiers de
+//!    `rf/000/`, `sf/000/`, `info`, `nm`, UUID.
 //! 3. Aucun nom de l'archive ne devient un chemin de sortie : les noms produits sont des
 //!    constantes, ou un nom de `ri`/`si` contrôlé (8 caractères ASCII alphanumériques, mis en
 //!    majuscules).
@@ -45,7 +46,7 @@
 //! |---------------------------------------------------------------|---------------------------------------------|
 //! | Firmware 1.x                                                  | `LuniiNeedsV2`, rien d'écrit                |
 //! | Chemin hostile (`..`, absolu, `\`, nom réservé, doublon de casse), lien symbolique | `LuniiInvalid`, rien d'écrit |
-//! | Entrée zip chiffrée (mot de passe) | `LuniiInvalid` ; détectée à la lecture : avant toute écriture pour les index, `info`, `nm`, dans le chantier (supprimé) pour la vignette et les assets |
+//! | Entrée zip chiffrée (mot de passe)                            | `LuniiInvalid`, rien d'écrit                |
 //! | Entrée inattendue ou obligatoire absente                      | `LuniiInvalid`, rien d'écrit                |
 //! | `ni`, `li`, `ri`, `si` incohérents (tailles, compteurs, indices, transitions) | `LuniiInvalid`, rien d'écrit |
 //! | Asset de `ri`/`si` absent, ou fichier de `rf/`/`sf/` non référencé | `LuniiInvalid`, rien d'écrit           |
@@ -88,6 +89,12 @@ const IGNORED: [&str; 2] = ["_metadata.json", "_thumbnail.png"];
 
 /// Taille de l'en-tête de `ni`.
 const NI_HEADER_LEN: usize = 0x200;
+/// Version de format en tête de `ni` (`u16` en 0x00) : 1 pour `"v1"` (note, § 3.2).
+const NI_FORMAT_VERSION: u16 = 1;
+/// Octet 0x18 de l'en-tête de `ni` : constante de Lunii.QT (note, § 3.2), suivie de zéros.
+/// Sens inconnu : exigée telle que `studio2lunii` l'écrit ; un pack tiers qui l'aurait à 0
+/// serait refusé (écart voulu, à revoir si l'appareil l'accepte, #540).
+const NI_FACTORY_BYTE: u8 = 1;
 /// Taille d'un nœud de `ni`.
 const NI_NODE_LEN: usize = 0x2C;
 /// Taille d'une entrée de `ri` ou `si` : `000\` puis 8 caractères.
@@ -227,6 +234,10 @@ fn read_entry(
     Ok(data)
 }
 
+fn u16_at(data: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes(data[at..at + 2].try_into().expect("2 octets"))
+}
+
 fn u32_at(data: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(data[at..at + 4].try_into().expect("4 octets"))
 }
@@ -268,6 +279,10 @@ fn asset_names(data: &[u8], file: &str) -> Result<Vec<String>, PrepareError> {
 
 /// Contrôle `li` : entiers signés 32 bits, chacun indice d'un nœud de scène. Rend le nombre
 /// d'entrées.
+///
+/// Un `li` vide est accepté si aucune transition ne le référence (toutes à `-1`) : ce que fait
+/// l'appareil d'un `li` vide reste à mesurer (L12, #540) ; `studio2lunii` en produit au moins
+/// 8 octets. Ne pas durcir ni assouplir avant la mesure.
 fn check_li(li: &[u8], nodes: usize) -> Result<usize, PrepareError> {
     if !li.len().is_multiple_of(4) {
         return Err(invalid(format!(
@@ -338,9 +353,21 @@ fn check_ni(ni: &[u8], li: &[u8], images: usize, sounds: usize) -> Result<(), Pr
             ni.len()
         )));
     }
+    let format = u16_at(ni, 0x00);
+    if format != NI_FORMAT_VERSION {
+        return Err(invalid(format!(
+            "ni : en-tête inattendu (version de format {format}, attendu {NI_FORMAT_VERSION})"
+        )));
+    }
     if u32_at(ni, 0x04) as usize != NI_HEADER_LEN || u32_at(ni, 0x08) as usize != NI_NODE_LEN {
         return Err(invalid(
             "ni : en-tête inattendu (début ou taille des nœuds)",
+        ));
+    }
+    // 0x02 (version du pack) est libre ; 0x18 vaut 1, puis des zéros jusqu'à 0x200.
+    if ni[0x18] != NI_FACTORY_BYTE || ni[0x19..NI_HEADER_LEN].iter().any(|&b| b != 0) {
+        return Err(invalid(
+            "ni : en-tête inattendu (octet 0x18 différent de 1 ou octets non nuls après 0x18)",
         ));
     }
     let nodes = u32_at(ni, 0x0C) as usize;
@@ -385,6 +412,9 @@ fn check_ni(ni: &[u8], li: &[u8], images: usize, sounds: usize) -> Result<(), Pr
 
 /// `info` : texte ASCII imprimable, lignes séparées par LF, titre (première ligne) non vide
 /// (note, § 3.8 et Q4).
+///
+/// Volontairement strict : à assouplir (UTF-8, CRLF) seulement quand les variantes auront été
+/// essayées sur l'appareil (L4, #540).
 fn check_info(info: &[u8]) -> Result<(), PrepareError> {
     let printable = info
         .iter()
@@ -443,14 +473,37 @@ struct Checked {
     assets: Vec<(String, usize)>,
 }
 
+/// Refuse toute entrée chiffrée par mot de passe parmi `entries` (indice, nom contrôlé), avant
+/// toute écriture : sans ce contrôle, la vignette et les assets ne seraient refusés qu'à la
+/// lecture, dans le chantier (#540). Les entrées ignorées ne sont jamais lues.
+fn check_not_password_protected(
+    zip: &mut Archive,
+    entries: &[(usize, String)],
+) -> Result<(), PrepareError> {
+    for (index, name) in entries {
+        let encrypted = zip
+            .by_index_raw(*index)
+            .map_err(|e| invalid(format!("{name} : {e}")))?
+            .encrypted();
+        if encrypted {
+            return Err(invalid(format!(
+                "{name} : entrée chiffrée par mot de passe, refusée"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Plan et contrôles : rien n'est écrit.
 fn check_pack(zip: &mut Archive, limits: &Limits) -> Result<Checked, PrepareError> {
     let mut entries = Entries::default();
+    let mut kept = Vec::new();
     for_each_entry(zip, |index, relative, size| {
         if IGNORED.iter().any(|i| i.eq_ignore_ascii_case(&relative)) {
             return Ok(());
         }
         classify(&mut entries, index, &relative)?;
+        kept.push((index, relative.clone()));
         if relative != UUID_ENTRY {
             entries.declared = entries.declared.saturating_add(size);
         }
@@ -463,6 +516,7 @@ fn check_pack(zip: &mut Archive, limits: &Limits) -> Result<Checked, PrepareErro
             limits.max_total_bytes
         )));
     }
+    check_not_password_protected(zip, &kept)?;
     let required =
         |slot: Option<usize>, name: &str| slot.ok_or_else(|| invalid(format!("{name} absent")));
     let uuid_index = required(entries.uuid, UUID_ENTRY)?;
