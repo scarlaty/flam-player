@@ -1,4 +1,5 @@
 import { useId, useMemo } from "react";
+import type { LibraryFormat } from "../../api/library";
 import { Button, type ButtonVariant } from "../../components";
 import { t } from "../../i18n";
 import { useDevice } from "./DeviceContext";
@@ -17,6 +18,7 @@ const REASON_TEXT: Record<SendBlock, string> = {
   queued: text.reasons.queued,
   no_device: text.reasons.noDevice,
   firmware: text.reasons.firmware,
+  lunii_needs_v2: text.reasons.luniiNeedsV2,
   checking: text.reasons.checking,
   present: text.reasons.present,
   no_space: text.reasons.noSpace,
@@ -28,6 +30,8 @@ export interface SendToDeviceButtonProps {
   title: string;
   /** Taille du `.plain.pk` en octets (`null` : inconnue). */
   size: number | null;
+  /** Format de l'histoire installée : `lunii` (STUdio) exige une Flam en firmware 2.x. */
+  format?: LibraryFormat;
   variant?: ButtonVariant;
   /**
    * La copie de bibliothèque est plus ancienne que sa source dossier (#288) : signalé à côté du
@@ -65,8 +69,12 @@ function useSendContext(): SendContext {
 }
 
 /** Raison de blocage de l'envoi de `uuid` d'après l'état de la Flam et de la file. */
-export function useSendBlock(uuid: string, size: number | null): SendBlock | null {
-  return sendBlock(useSendContext(), uuid, size);
+export function useSendBlock(
+  uuid: string,
+  size: number | null,
+  format: LibraryFormat = "flam",
+): SendBlock | null {
+  return sendBlock(useSendContext(), uuid, size, format);
 }
 
 /** Identifiants non vides séparés par des espaces (`aria-describedby`), `undefined` sinon. */
@@ -84,13 +92,15 @@ export function SendToDeviceButton({
   uuid,
   title,
   size,
+  format = "flam",
   variant = "secondary",
   stale = false,
 }: SendToDeviceButtonProps) {
   const { requestSend } = useDevice();
   const context = useSendContext();
-  const block = sendBlock(context, uuid, size);
-  const replace = block === "present" ? replaceBlock(context, uuid, size) : "absent";
+  const block = sendBlock(context, uuid, size, format);
+  const replace =
+    block === "present" ? replaceBlock(context, uuid, size, format) : "absent";
   // UUID réel de l'histoire sur la Flam (celui de `uuid.bin`, pas celui de la bibliothèque).
   const target = findOnDevice(context.deviceStories, uuid)?.uuid;
   const reasonId = useId();

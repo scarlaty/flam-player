@@ -31,6 +31,7 @@ export function DeviceLibrarySend() {
                   uuid={entry.uuid}
                   title={entry.title}
                   size={entry.size}
+                  format={entry.format}
                   stale={sourceChanged(entry.uuid)}
                 />
               </div>

@@ -1336,6 +1336,10 @@ it("Flam 1.x : conservation échouée, les clés sont redemandées", async () =>
   expect(count("device_send_story")).toBe(1);
 });
 
+// Ce test simule le refus du backend (`reject`) : il ne prouve que le message affiché et la
+// conservation des clés carrier. L'absence d'écriture sur la Flam est prouvée par les tests Rust
+// de `device/transfer.rs`. Depuis #548 le bouton est grisé avant d'en arriver là (test suivant) ;
+// ce chemin reste le filet de sécurité si le front se trompe de format.
 it("Flam 1.x : histoire STUdio refusée, message clair, clés gardées pour la suite (#542)", async () => {
   acknowledgeWarning();
   status = detectedV1();
@@ -1361,6 +1365,32 @@ it("Flam 1.x : histoire STUdio refusée, message clair, clés gardées pour la s
   fireEvent.click(sendButton("Les trois ours"));
   await waitFor(() => expect(count("device_send_story")).toBe(2));
   expect(screen.queryByRole("alertdialog")).toBeNull();
+});
+
+it("Flam 1.x : envoi d'une histoire STUdio grisé avec explication, sans dialogue carrier (#548)", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  carrierConsent = { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" };
+  render(
+    <ToastProvider>
+      <DeviceProvider>
+        <SendToDeviceButton {...library[0]!} format="lunii" />
+      </DeviceProvider>
+    </ToastProvider>,
+  );
+  const button = await screen.findByRole("button", {
+    name: "Envoyer sur la Flam « Capi »",
+  });
+  await waitFor(() =>
+    expect(button).toHaveAccessibleDescription(
+      /Les histoires STUdio demandent une Flam en firmware 2\.x/,
+    ),
+  );
+  expect(button).toHaveAttribute("aria-disabled", "true");
+  fireEvent.click(button);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(count("device_send_story")).toBe(0);
+  expect(count("device_carrier_preview")).toBe(0);
 });
 
 it("Flam 1.x : histoires sans bt proposées avec la clé conservée", async () => {

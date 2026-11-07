@@ -1605,9 +1605,7 @@ describe("suppression depuis la liste", () => {
     fireEvent.click(screen.getByText("Conte STUdio"));
     const dialog = await screen.findByRole("dialog");
     expect(
-      within(dialog).getByText(
-        /s'installe pour être envoyée sur une Flam en firmware 2\.x/,
-      ),
+      within(dialog).getByText(/s'envoie uniquement sur une Flam en firmware 2\.x/),
     ).toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: /Jouer|et jouer/ })).toBeNull();
     fireEvent.click(within(dialog).getByRole("button", { name: "Installer" }));

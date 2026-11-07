@@ -61,6 +61,7 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
           uuid={installed.uuid}
           title={entry.title}
           size={installed.size}
+          format={installed.format}
           stale={stories.sourceChanged(installed.uuid)}
         />
         <IconButton

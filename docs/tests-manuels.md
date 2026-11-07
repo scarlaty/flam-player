@@ -10,20 +10,21 @@
 
 Cocher la case une fois le résultat consigné dans l'issue indiquée.
 
-| Fait | N° | Test | Session | Matériel | Durée | Consigner dans |
-| :-: | --- | --- | --- | --- | --- | --- |
-| [ ] | M0 | Sauvegarde complète de la Flam et préparation | tous | Flam 1.x ou 2.x | 20 min | (aucun) |
-| [ ] | M1 | Mise à jour NSIS depuis `launcher-v0.1.0-beta.1` (sans Python) | A | VM ou compte Windows propre | 45 min | #236 |
-| [ ] | M2 | Packs de podcasts sur la Flam : carrousel, enchaînement, retour, capacité | B | Flam 1.x | 1 h 30 | #219 |
-| [ ] | M3 | Glisser-déposer de l'arborescence du pack (WebView2) | B | installation de M1 ou de B | 10 min | #413 |
-| [ ] | M4 | Fumée de l'envoi carrier avec le convertisseur Rust (installateur N) | B | Flam 1.x | 30 min | #236 |
-| [ ] | M5 | Voix Windows : test réel, voix « en ligne », sans réseau | A | poste de dev, voix FR | 20 min | #462 |
-| [ ] | M6 | Mesure `sync_all` sur clé USB | A | clé USB, poste de dev | 15 min | #443 |
-| [ ] | M7 | Index absent ou tronqué, limites d'histoires (#236 points 4 et 6) | C | Flam 1.x, **sauvegarde faite** | 1 h | #236 |
-| [ ] | M8 | Application Lunii officielle : synchronisation (#236 point 8) | C | Flam 1.x, **sauvegarde faite** | 30 min | #236 |
-| [ ] | M9 | Flam firmware 2.x (#236 points 1 et 2, restes de #326) | D | Flam 2.x | 1 h | #236, #326 |
-| [ ] | M10 | Deuxième Flam d'un autre compte (#236 point 7, #234) | D | 2 Flam, 2 comptes | 45 min | #236 |
-| [ ] | M11 | Titres lus à voix haute dans un pack, sur la Flam | E | Flam 1.x | 45 min | #462 |
+| Fait | N°  | Test                                                                      | Session | Matériel                       | Durée  | Consigner dans |
+| :--: | --- | ------------------------------------------------------------------------- | ------- | ------------------------------ | ------ | -------------- |
+| [ ]  | M0  | Sauvegarde complète de la Flam et préparation                             | tous    | Flam 1.x ou 2.x                | 20 min | (aucun)        |
+| [ ]  | M1  | Mise à jour NSIS depuis `launcher-v0.1.0-beta.1` (sans Python)            | A       | VM ou compte Windows propre    | 45 min | #236           |
+| [ ]  | M2  | Packs de podcasts sur la Flam : carrousel, enchaînement, retour, capacité | B       | Flam 1.x                       | 1 h 30 | #219           |
+| [ ]  | M3  | Glisser-déposer de l'arborescence du pack (WebView2)                      | B       | installation de M1 ou de B     | 10 min | #413           |
+| [ ]  | M4  | Fumée de l'envoi carrier avec le convertisseur Rust (installateur N)      | B       | Flam 1.x                       | 30 min | #236           |
+| [ ]  | M5  | Voix Windows : test réel, voix « en ligne », sans réseau                  | A       | poste de dev, voix FR          | 20 min | #462           |
+| [ ]  | M6  | Mesure `sync_all` sur clé USB                                             | A       | clé USB, poste de dev          | 15 min | #443           |
+| [ ]  | M7  | Index absent ou tronqué, limites d'histoires (#236 points 4 et 6)         | C       | Flam 1.x, **sauvegarde faite** | 1 h    | #236           |
+| [ ]  | M8  | Application Lunii officielle : synchronisation (#236 point 8)             | C       | Flam 1.x, **sauvegarde faite** | 30 min | #236           |
+| [ ]  | M9  | Flam firmware 2.x (#236 points 1 et 2, restes de #326)                    | D       | Flam 2.x                       | 1 h    | #236, #326     |
+| [ ]  | M10 | Deuxième Flam d'un autre compte (#236 point 7, #234)                      | D       | 2 Flam, 2 comptes              | 45 min | #236           |
+| [ ]  | M11 | Titres lus à voix haute dans un pack, sur la Flam                         | E       | Flam 1.x                       | 45 min | #462           |
+| [ ]  | M12 | Histoires STUdio sur Flam 2.x (#517, L1 à L15)                            | D       | Flam 2.x                       | 1 h 30 | #236           |
 
 Ordre conseillé : A (PC seul, sans risque pour la Flam), puis B (une installation, une connexion
 de la Flam), puis C (risqué, seulement après B et une sauvegarde vérifiée). D et E dépendent de
@@ -31,13 +32,13 @@ matériel ou de code qui manquent aujourd'hui.
 
 ## Sessions
 
-| Session | Contenu | Ce qui se partage |
-| --- | --- | --- |
-| A, sur le PC, sans Flam | M1, M5, M6 | M5 et M6 utilisent le même poste de développement ; M1 se fait sur la VM ou le compte propre |
+| Session                            | Contenu                         | Ce qui se partage                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A, sur le PC, sans Flam            | M1, M5, M6                      | M5 et M6 utilisent le même poste de développement ; M1 se fait sur la VM ou le compte propre                                                                                                                                                                                                                                                                                          |
 | B, une installation, une connexion | M2, M3, M4 (puis M0 avant tout) | **une seule installation** de N (installation propre, ou celle de M1 si elle n'a pas été désinstallée à l'étape 9), sur une machine qui voit la Flam en USB (PC physique, ou VM avec passage USB) ; **une seule connexion** de la Flam : M4 envoie la première histoire, M2 envoie les packs, M3 se fait dans l'éditeur déjà ouvert ; un redémarrage de vérification, un de nettoyage |
-| C, risqué | M7, M8 | M7 en une connexion, après sauvegarde vérifiée ; M8 avec l'application officielle (autre logiciel, autre connexion) ; restauration prévue en fin de test |
-| D, matériel manquant | M9, M10 | à faire quand le matériel existe |
-| E, après fusion | M11 | après fusion de la PR 2 de #462 (voir M11) |
+| C, risqué                          | M7, M8                          | M7 en une connexion, après sauvegarde vérifiée ; M8 avec l'application officielle (autre logiciel, autre connexion) ; restauration prévue en fin de test                                                                                                                                                                                                                              |
+| D, matériel manquant               | M9, M10, M12                    | à faire quand le matériel existe ; M12 peut suivre M9 dans la même connexion                                                                                                                                                                                                                                                                                                          |
+| E, après fusion                    | M11                             | après fusion de la PR 2 de #462 (voir M11)                                                                                                                                                                                                                                                                                                                                            |
 
 ## Règles communes
 
@@ -86,12 +87,14 @@ clé `python_path`.
 (02d76f3).
 
 **Préparation.**
+
 1. Récupérer N-1 : `gh release download launcher-v0.1.0-beta.1 -p "*.exe" -p "SHA256SUMS*" -D <dossier N-1>`.
 2. Construire N depuis `main` (README du launcher, « Installateur Windows » : `npm run build:installer`
    depuis `apps/flam-launcher/`) ou prendre l'artefact NSIS de la CI de `main`. Vérifier le SHA-256
    avec `Get-FileHash -Algorithm SHA256`.
 
 **Étapes.**
+
 1. Installer N-1 (par utilisateur, dossier par défaut `%LOCALAPPDATA%\Flam Launcher`). Constater
    `telmi2flam\python\python.exe`.
 2. Lancer N-1, écran **Paramètres** : saisir un `python_path` (n'importe quel `python.exe`), un
@@ -122,8 +125,8 @@ clé `python_path`.
 point, écarts, sortie de `dir /s /b` avant et après. **Durée** : 45 minutes (une seule variante :
 30 minutes).
 
-*Conseil : pour la session B, soit réinstaller N après l'étape 9, soit garder l'installation de
-l'étape 4 (sauter l'étape 9) sur une machine qui voit la Flam en USB.*
+_Conseil : pour la session B, soit réinstaller N après l'étape 9, soit garder l'installation de
+l'étape 4 (sauter l'étape 9) sur une machine qui voit la Flam en USB._
 
 ---
 
@@ -146,6 +149,7 @@ Rust (D6, 1337bab) et l'installateur sans Python : vérifier que le chemin compl
 encore avec l'installateur N.
 
 **Étapes.**
+
 1. Ouvrir **Ma Flam** : la carte « Flam détectée » indique le firmware (noter la ligne entière) ;
    titres et vignettes s'affichent.
 2. **Mes histoires** : installer une petite histoire Telmi (catalogue ou dossier local).
@@ -177,6 +181,7 @@ le message de droits s'affiche à la première création (« J'ai compris »). A
 doit être versionné dans le dépôt.
 
 **Étapes.**
+
 1. Écran **Sources** : ajouter chaque flux (source podcast), puis **Podcasts** : cocher des
    épisodes (« Cocher les 10 derniers épisodes » aide).
 2. **Composer le pack** et créer, chaque fois depuis la file d'installation (progression et
@@ -190,7 +195,7 @@ doit être versionné dans le dépôt.
    - g. pack avec des titres de **40 caractères et plus** ;
    - h. pack avec **pochettes** JPEG et WebP (couverture du pack et pochettes des épisodes) ;
    - i. un épisode **AAC/M4A** (converti), si un flux en propose.
-   Un même pack peut cumuler plusieurs de ces points (par exemple e, f et g dans le pack d).
+     Un même pack peut cumuler plusieurs de ces points (par exemple e, f et g dans le pack d).
 3. Les envoyer sur la Flam depuis **Mes histoires** (chaque envoi : noter durée et taille).
 4. Dans **Ma Flam**, relever l'**espace libre** avant le premier envoi et après le dernier :
    capacité utile de la Flam.
@@ -221,6 +226,7 @@ launcher (critère d'acceptation de #219). **Durée** : 1 h 30.
 `PackTree.tsx`.
 
 **Étapes.**
+
 1. Mêmes prérequis que M2 (flux RSS). Écran **Podcasts**, **Composer le pack** avec 50 épisodes
    (réutiliser le brouillon de M2 c) rangés dans 2 catégories.
 2. Glisser un épisode d'une catégorie vers une autre, vers la racine, puis vers un sous-menu.
@@ -251,6 +257,7 @@ idéalement une voix « naturelle » en ligne installée en plus. Rust et Visual
 du launcher, « Développement »). Fusionné : #469 (module et test `voix_reelle_du_poste`).
 
 **Étapes.** Depuis `apps/flam-launcher/src-tauri/` :
+
 1. Test de base, réseau actif :
    ```powershell
    cargo test --lib -- --ignored --nocapture voix_reelle
@@ -284,6 +291,7 @@ amovible (le `.plain.pk` publié sur la Flam passe par `sync_all`).
 **Prérequis.** Une clé USB (idéalement FAT32, comme la Flam), 100 Mo libres, Rust stable.
 
 **Étapes.** Depuis la racine du dépôt :
+
 1. Disque local de référence :
    ```powershell
    cargo test -p telmi2flam --release mesure_sync_all -- --ignored --nocapture
@@ -326,21 +334,22 @@ sans consentement, mais il peut terminer une transaction interrompue (`list.new`
 fausserait l'observation.
 
 **Étapes.**
+
 1. Copier `etc\library\list` sur le PC (dossier de test, hors dépôt). Noter le nombre de lignes.
-2. *Index tronqué.* Sur la Flam, retirer **uniquement la dernière ligne** de `list` (celle de
+2. _Index tronqué._ Sur la Flam, retirer **uniquement la dernière ligne** de `list` (celle de
    l'histoire de test, jamais une histoire officielle ; éditeur qui garde les fins de ligne LF),
    éjecter, débrancher, **redémarrer**. Observer : la Flam démarre-t-elle ? une
    histoire manque-t-elle ? le dossier de l'histoire retranchée subsiste-t-il ?
 3. Rebrancher, rouvrir le launcher : « Ma Flam » signale-t-elle l'anomalie ? un dossier `str/<uuid>/`
    sans entrée d'index est-il listé comme orphelin ? Noter les messages (aucune réparation
    automatique n'est attendue). Fermer le launcher.
-4. *Index absent.* Renommer `etc\library\list` en `list.test`, éjecter, **redémarrer**. Observer
+4. _Index absent._ Renommer `etc\library\list` en `list.test`, éjecter, **redémarrer**. Observer
    (liste vide ? reconstruction ? écran noir ?).
 5. Rebrancher, **restaurer** : remettre la copie de l'étape 1 sous le nom `list`, supprimer
    `list.test`, supprimer `usr\0\library.cache`, éjecter, redémarrer : les histoires sont toutes
    revenues. Si ce n'est pas le cas, restauration ciblée du guide testeur.
 6. Ouvrir le launcher : plus aucune anomalie.
-7. *Limites* (facultatif, long) : envoyer des histoires de test minuscules l'une après l'autre
+7. _Limites_ (facultatif, long) : envoyer des histoires de test minuscules l'une après l'autre
    jusqu'à un refus ou une anomalie (liste de la Flam, démarrage), en notant le nombre
    d'histoires atteint et l'espace libre. Retirer ensuite toutes les histoires de test.
 
@@ -351,8 +360,8 @@ après restauration, l'index est identique à la copie (comparer les SHA-256).
 `flam-device-format.md` (§ 10) lors de la mise à jour des docs. **Durée** : 1 heure (sans
 l'étape 7).
 
-*Hors périmètre : la longueur des noms et la casse (FAT) du point 6 ne sont pas testables avec le
-launcher, qui impose des dossiers à UUID minuscules.*
+_Hors périmètre : la longueur des noms et la casse (FAT) du point 6 ne sont pas testables avec le
+launcher, qui impose des dossiers à UUID minuscules._
 
 ### M8. Application Lunii officielle (#236, point 8)
 
@@ -364,6 +373,7 @@ sur la Flam par M7 (ou une autre, envoyée depuis le launcher) ; **M0 vérifiée
 synchronisation : c'est ici un test voulu, à ne faire qu'avec une copie fraîche.
 
 **Étapes.**
+
 1. Noter l'état : nombre d'histoires, ordre, SHA-256 de `etc\library\list` (pas du `.mdf`).
 2. Ouvrir l'application officielle, laisser synchroniser la Flam. Noter chaque message.
 3. Quitter l'application officielle, rouvrir « Ma Flam » : l'histoire de test est-elle
@@ -388,6 +398,7 @@ retour par le modèle « Retour testeur Flam »).
 **Étapes.** Suivre le guide testeur en entier (installation, M0, tests 1 à 8, points 1 à 8 de
 « Points à vérifier en 2.x »), puis relever en plus (#326 : garde 2.x retirée, alignement sur
 Lunii.QT) :
+
 1. **Envoi réel sans confirmation** : sur la Flam 2.x branchée, « Ma Flam » ne demande aucune
    confirmation ; envoyer une petite histoire depuis « Mes histoires » : l'envoi aboutit.
 2. **Lecture sur l'appareil** : éjecter, débrancher, redémarrer la Flam ; l'histoire envoyée
@@ -410,10 +421,11 @@ vérification du launcher (flam-carrier.md § 6, C5, C6).
 **Prérequis.** Deux Flam de comptes différents, **M0 de chacune**.
 
 **Étapes.**
+
 1. Sur la Flam A, saisir (ou choisir) la clé d'une histoire de la Flam B : le launcher doit refuser
    (« cette clé ne correspond à aucune histoire officielle de cette Flam »), rien n'est écrit.
 2. Si la clé est acceptée (par erreur d'usage), arrêter : ne pas envoyer.
-3. *Facultatif, destructif* : seulement si le propriétaire accepte de perdre cette histoire
+3. _Facultatif, destructif_ : seulement si le propriétaire accepte de perdre cette histoire
    officielle (sa resynchronisation est exclue, seule la copie M0 de la Flam B permet de la
    restaurer : vérifier cette copie d'abord). Retirer sur la Flam B l'histoire officielle dont la
    clé a été conservée pour elle, envoyer une histoire de test avec le couple conservé : le
@@ -422,6 +434,90 @@ vérification du launcher (flam-carrier.md § 6, C5, C6).
    l'histoire officielle depuis la copie M0.
 
 **Consigner dans #236** (point 7). **Durée** : 45 minutes.
+
+### M12. Histoires STUdio sur Flam 2.x (#517, #557 ; points L1 à L15 de `studio-lunii.md` § 9)
+
+**But.** Vérifier sur une vraie Flam 2.x qu'une histoire créée avec l'éditeur STUdio, installée
+puis envoyée par le launcher, se lit comme n'importe quelle histoire. Ce test ne demande aucune
+connaissance technique : il suffit de savoir ouvrir le launcher et d'utiliser la Flam.
+
+**Prérequis.**
+
+- Une Flam en **firmware 2.x**. Ouvrir « Ma Flam » dans le launcher, branché sur la Flam : la
+  ligne « Firmware » doit commencer par 2 (par exemple 2.4.2). Si elle commence par 1, ce test
+  ne peut pas se faire : le bouton « Envoyer sur la Flam » doit alors être grisé pour une
+  histoire STUdio, avec l'explication « Les histoires STUdio demandent une Flam en firmware 2.x ».
+  Le noter, c'est déjà un résultat.
+- **M0** faite (sauvegarde de la Flam).
+- Une ou deux petites histoires STUdio au format `.zip` (une archive créée avec l'éditeur STUdio,
+  contenant `story.json`). Idéal : une histoire avec des choix à la molette, une autre avec le
+  mode nuit. Aucun `.7z`, aucun pack Lunii du commerce : ils sont refusés (c'est voulu).
+
+**Étapes.**
+
+1. Mettre le ou les `.zip` dans un dossier vide de votre ordinateur.
+2. Dans le launcher, écran « Sources » : « Ajouter une source », « Ajouter un dossier », choisir
+   ce dossier. L'histoire apparaît avec le badge « Format STUdio ».
+3. Ouvrir sa fiche, cliquer sur « Installer » et attendre la fin. Elle apparaît dans « Mes
+   histoires ». Le bouton « Jouer » est grisé avec la mention « Lecture sur le PC indisponible
+   pour une histoire STUdio » : c'est normal.
+4. Brancher la Flam, ouvrir « Ma Flam », puis, dans la liste de « Mes histoires » de cet écran,
+   cliquer sur « Envoyer sur la Flam » à côté de l'histoire (le même bouton existe sur la fiche), accepter l'avertissement (fonction expérimentale), attendre la fin de l'envoi.
+5. Cliquer sur « Éjecter la Flam », attendre la fin de l'éjection (le bouton revient à la
+   normale, sans message d'erreur), **débrancher** la Flam, puis l'allumer et la laisser démarrer.
+
+**Vérifications sur la Flam** (noter « oui », « non » ou « sans objet » pour chacune ; entre
+parenthèses, le point de `studio-lunii.md` § 9) :
+
+1. La Flam démarre normalement, sans message d'erreur ni redémarrage en boucle (L1).
+2. L'histoire apparaît dans la liste, en fin de liste, avec son **titre lisible**, accents
+   compris (L4).
+3. Sa **vignette** (petite image) s'affiche (L5).
+4. L'histoire se lance avec OK (L1).
+5. Les **images** s'affichent, en niveaux de gris, sans déformation ni image noire (L7).
+6. Les **sons** se jouent : voix claire, bonne durée, enchaînement correct, pas de coupure au
+   début ou à la fin (L6).
+7. À un choix, la **molette** fait défiler les options et **OK** valide la bonne (L15).
+8. Le bouton **Maison** ramène où l'histoire le prévoit (menu ou liste), et **pause** met le
+   son en pause, si l'histoire a prévu ces commandes (L15).
+9. Si l'histoire enchaîne seule (sans appuyer sur OK), le passage à l'écran suivant se fait à la
+   fin du son (L15).
+10. Une histoire dont un écran n'a pas d'image, ou pas de son, ne bloque pas la Flam (L12).
+    Sans objet si vous n'en avez pas.
+11. Un choix « au hasard », s'il y en a un, tire bien une option (L11). Sans objet sinon.
+12. Si l'histoire propose le **mode nuit**, il est proposé sur la Flam (L8). Sans objet sinon.
+13. Éteindre puis rallumer la Flam : l'histoire est toujours là et se lance encore (L1).
+14. Si une **histoire officielle** était déjà sur la Flam, elle se lance toujours et la liste est
+    complète, sans histoire manquante ni en double (L14).
+15. Branchée à nouveau, « Ma Flam » liste l'histoire avec son titre et le badge « STUdio » (L2,
+    L3 : le chiffrement et la lecture des fichiers sont couverts indirectement par les
+    vérifications 2 à 6 ; L10, les noms de fichiers par rang, l'est aussi : si tout se lit, ils
+    sont bons).
+
+**Vérifications dans le launcher.**
+
+1. **Retrait** : dans « Ma Flam », retirer l'histoire, éjecter, débrancher. La Flam redémarre
+   normalement et l'histoire a disparu de sa liste.
+2. **Même histoire dans les deux formats** (L13), si vous avez la version Telmi de la même
+   histoire : l'installer en remplacement de la version STUdio, la renvoyer ; la progression de
+   l'enfant (où il en était) est-elle conservée ? Sans objet sinon.
+3. Sur une **autre version 2.x** de firmware, si vous en avez une (L9) : noter la version et si
+   tout ce qui précède fonctionne.
+
+**En cas d'échec, renvoyer** (dans #236, sans clé ni numéro de série) :
+
+- le **diagnostic copiable** du launcher (« Ma Flam », bouton « Copier le diagnostic ») ;
+- la **version du firmware** lue dans « Ma Flam » et la version du launcher (« Paramètres », « À
+  propos ») ;
+- le **nom de l'histoire** (celui du fichier `.zip`) et, si possible, ce qui a été observé
+  (par exemple « écran noir au deuxième écran », « la Flam redémarre quand on appuie sur OK »)
+  avec le numéro de la vérification ci-dessus ;
+- ne pas renvoyer l'histoire elle-même si elle n'est pas de vous.
+
+**Si la Flam ne redémarre plus normalement** : ne rien faire de plus, la débrancher, la
+rebrancher sans le launcher, et restaurer la copie de M0 (voir **M0**).
+
+**Consigner dans #236.** **Durée** : 1 h 30.
 
 ---
 
@@ -435,6 +531,7 @@ création du pack avec les audios) : **après fusion de la PR 2 de #462** (non e
 vérification du contrat des voix Microsoft** (décision 4 de #462, avant cette fusion).
 
 **Étapes** (d'après `podcasts.md` § 12.8) :
+
 1. Éditeur de pack : cocher « Lire les titres à voix haute », choisir la voix.
 2. Créer un pack de 10 titres, l'envoyer sur la Flam (session B), redémarrer.
 3. Sur l'appareil : titre lu **au focus** de chaque option, **coupure au défilement**, volume
