@@ -27,6 +27,23 @@ function badgeFor(state: StoryState): StoryBadge {
   };
 }
 
+/**
+ * Badge de format d'une histoire STUdio dont l'état n'est pas déjà « Format STUdio » (installée,
+ * en cours…) : elle ne se lit pas sur le PC et ne part que sur une Flam 2.x.
+ */
+function formatBadge(entry: ListedEntry, state: StoryState): StoryBadge[] {
+  if (entry.kind !== "studio_zip" || state === "studio") return [];
+  return [
+    {
+      id: "format",
+      label: t.stories.luniiFormat,
+      tone: "neutral",
+      icon: "info",
+      description: t.stories.studioNotice,
+    },
+  ];
+}
+
 /** Carte d'une histoire : vignette chargée à la demande, âge et état dans la source. */
 export const StoryTile = memo(function StoryTile({
   source,
@@ -51,7 +68,11 @@ export const StoryTile = memo(function StoryTile({
         title={entry.title}
         coverUrl={url}
         ageMin={entry.age ?? undefined}
-        badges={compat ? [badgeFor(state), compatBadge(compat)] : [badgeFor(state)]}
+        badges={[
+          badgeFor(state),
+          ...formatBadge(entry, state),
+          ...(compat ? [compatBadge(compat)] : []),
+        ]}
         selected={selectedEntryId === entry.entry_id}
         onOpen={onOpenStory ? () => onOpenStory(entry) : undefined}
         progress={progress?.value}

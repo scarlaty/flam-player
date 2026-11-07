@@ -586,7 +586,7 @@ export const fr = {
     warningsTitle: (n: number) =>
       n <= 1 ? `${n} élément ignoré` : `${n} éléments ignorés`,
     warningsHint:
-      "Ces éléments ont été ignorés (illisibles, invalides ou dans un format non reconnu). Formats acceptés : histoires Telmi (.zip) et Flam (.plain, .plain.pk) ; le format STUdio (.zip) est reconnu mais pas encore installable.",
+      "Ces éléments ont été ignorés (illisibles, invalides ou dans un format non reconnu). Formats acceptés : histoires Telmi (.zip), STUdio (.zip, pour une Flam en firmware 2.x) et Flam (.plain, .plain.pk).",
     filtersLabel: "Recherche et filtres",
     search: "Rechercher une histoire",
     searchPlaceholder: "Titre, auteur, catégorie…",
@@ -764,6 +764,8 @@ export const fr = {
       /** Info-bulle et texte accessible du badge « Mise à jour disponible » et du bouton. */
       updateHelp:
         "Le fichier de cette histoire a changé dans sa source depuis l'installation. « Mettre à jour » recopie la nouvelle version dans la bibliothèque ; le cas échéant, renvoyez-la ensuite sur la Flam.",
+      /** Raison du bouton « Jouer » désactivé d'une histoire STUdio installée (Q1). */
+      playUnavailable: "Lecture sur le PC indisponible pour une histoire STUdio",
       remove: "Supprimer",
       removing: "Suppression en cours.",
       removePlaying: "Suppression impossible : cette histoire est en cours de lecture.",
@@ -801,7 +803,22 @@ export const fr = {
     },
     playing: "En cours de lecture dans flam-player",
     studioNotice:
-      "Format STUdio : l'envoi vers une Flam 2.x arrive dans une prochaine version ; la lecture sur PC n'est pas disponible.",
+      "Format STUdio : s'installe pour être envoyée sur une Flam en firmware 2.x ; la lecture sur le PC n'est pas disponible.",
+    /** Badge de format d'une histoire STUdio installée (pack Lunii). */
+    luniiFormat: "STUdio",
+    formatReplace: {
+      title: (story: string) => `Remplacer « ${story} » ?`,
+      description: (installed: "flam" | "lunii") =>
+        installed === "flam"
+          ? "Cette histoire est déjà dans « Mes histoires » au format Flam (histoire Telmi)."
+          : "Cette histoire est déjà dans « Mes histoires » au format STUdio.",
+      toLunii:
+        "La version STUdio remplacera la version Telmi : « Mes histoires » n'en garde qu'une. Elle ne se lit pas sur le PC et ne s'envoie que sur une Flam en firmware 2.x. La progression de l'enfant est conservée.",
+      toFlam:
+        "La version Telmi remplacera la version STUdio : « Mes histoires » n'en garde qu'une. La progression de l'enfant est conservée.",
+      confirm: "Remplacer",
+      cancel: "Annuler",
+    },
     playerBusy:
       "Une histoire est déjà en cours de lecture : fermez flam-player pour jouer.",
     removeDialog: {

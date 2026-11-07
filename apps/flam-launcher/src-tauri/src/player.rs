@@ -48,7 +48,7 @@ use tauri::State;
 use crate::catalog::{blocking, CatalogService};
 use crate::embed::{self, CssRect, EmbedHost, NoEmbed};
 use crate::folder::{resolve_folder, FolderState};
-use crate::library::Library;
+use crate::library::{Library, StoryFormat};
 use crate::settings::{self, Environment, SettingsStore};
 use crate::storage::ConfigState;
 use crate::story::{StoryEntry, StoryKind};
@@ -1313,7 +1313,7 @@ fn folder_target(entry: &StoryEntry, root: &Path) -> AppResult<PathBuf> {
     }
     if entry.kind == StoryKind::StudioZip {
         return Err(AppError::Validation(
-            crate::story::STUDIO_UNSUPPORTED.into(),
+            crate::story::STUDIO_NOT_PLAYABLE.into(),
         ));
     }
     let path = PathBuf::from(&entry.download_url);
@@ -1327,7 +1327,22 @@ fn folder_target(entry: &StoryEntry, root: &Path) -> AppResult<PathBuf> {
     Ok(path)
 }
 
-/// Lance l'histoire installée `uuid` dans `flam-player` (depuis une copie de travail).
+/// Le player ne lit que le format Flam : refus explicite de tout fichier de la bibliothèque qui
+/// n'est pas un `.plain.pk`, dont un pack Lunii `.lunii.pk` d'une histoire STUdio
+/// (`docs/studio-lunii.md`, § 5.6, Q1), avant toute copie de travail.
+fn check_flam_format(path: &Path) -> AppResult<()> {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if StoryFormat::of_file(name) == Some(StoryFormat::Flam) {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            crate::story::STUDIO_NOT_PLAYABLE.into(),
+        ))
+    }
+}
+
+/// Lance l'histoire installée `uuid` dans `flam-player` (depuis une copie de travail). Une
+/// histoire STUdio (pack Lunii) est refusée ([`check_flam_format`]).
 #[tauri::command]
 pub async fn player_launch(
     config: State<'_, ConfigState>,
@@ -1344,31 +1359,42 @@ pub async fn player_launch(
     // Le vidage du cache attend la fin de la copie.
     let _gate = catalog.cache_gate().read_owned().await;
     let service = player.inner().clone();
-    blocking(move || {
-        let (path, title) = Library::new(&cache_root).playable(&uuid)?;
-        check_source(&path, StoryKind::FlamPk)?;
-        let ws = Workspace::new(&cache_root.join(PLAY_DIR), &saves_root, &library_key(&uuid));
-        let (staging, saving, failed) = (ws.clone(), ws.clone(), ws);
-        let library = Library::new(&cache_root);
-        service
-            .launch(
-                &exe,
-                || {
-                    // Relu sous le créneau : une désinstallation qui vient de passer (elle tient le
-                    // même créneau) fait échouer le lancement (`not_found`) au lieu de lancer un
-                    // fichier supprimé ou de recréer une copie de travail.
-                    let (current, _) = library.playable(&uuid)?;
-                    check_source(&current, StoryKind::FlamPk)?;
-                    staging.stage(&current)
-                },
-                move || saving.persist_saves_logged(),
-                "library",
-                &uuid,
-                &title,
-            )
-            .map_err(|err| failed.launch_failure(err))
-    })
-    .await?
+    blocking(move || launch_installed(&service, &exe, &cache_root, &saves_root, &uuid)).await?
+}
+
+/// Corps bloquant de [`player_launch`] : histoire installée relue de la bibliothèque, format
+/// Flam exigé ([`check_flam_format`]) avant toute copie de travail.
+fn launch_installed(
+    service: &PlayerService,
+    exe: &Path,
+    cache_root: &Path,
+    saves_root: &Path,
+    uuid: &str,
+) -> AppResult<PlayerSession> {
+    let (path, title) = Library::new(cache_root).playable(uuid)?;
+    check_flam_format(&path)?;
+    check_source(&path, StoryKind::FlamPk)?;
+    let ws = Workspace::new(&cache_root.join(PLAY_DIR), saves_root, &library_key(uuid));
+    let (staging, saving, failed) = (ws.clone(), ws.clone(), ws);
+    let library = Library::new(cache_root);
+    service
+        .launch(
+            exe,
+            || {
+                // Relu sous le créneau : une désinstallation qui vient de passer (elle tient le
+                // même créneau) fait échouer le lancement (`not_found`) au lieu de lancer un
+                // fichier supprimé ou de recréer une copie de travail.
+                let (current, _) = library.playable(uuid)?;
+                check_flam_format(&current)?;
+                check_source(&current, StoryKind::FlamPk)?;
+                staging.stage(&current)
+            },
+            move || saving.persist_saves_logged(),
+            "library",
+            uuid,
+            &title,
+        )
+        .map_err(|err| failed.launch_failure(err))
 }
 
 /// Lance une histoire `.plain` / `.plain.pk` du dernier scan d'une source dossier, depuis une
@@ -3339,5 +3365,33 @@ exit 0
         let missing = url(&root.join("z.plain.pk"));
         let gone = folder_target(&entry(StoryKind::FlamPk, &missing), &root);
         assert_eq!(gone.unwrap_err().kind(), "story_file_missing");
+        let studio = folder_target(&entry(StoryKind::StudioZip, &url(&pk)), &root).unwrap_err();
+        assert_eq!(studio.to_string(), crate::story::STUDIO_NOT_PLAYABLE);
+    }
+
+    /// #529, Q1 : une histoire STUdio installée (pack Lunii) n'est jamais lancée sur le PC :
+    /// refus clair, aucune copie de travail, aucun processus ; une histoire Flam se lance.
+    #[test]
+    fn lecture_d_une_histoire_studio_installee_refusee() {
+        let c = ctx();
+        let cache = c.dir.path().join("cache");
+        let saves = c.dir.path().join("saves");
+        let library = Library::new(&cache);
+        let staged = library.staging_dir().unwrap().join("t.lunii.pk");
+        std::fs::write(&staged, b"pack lunii").unwrap();
+        let mut studio = entry(StoryKind::StudioZip, "C:\\x.zip");
+        studio.uuid = "aaaaaaaa-0000-0000-0000-000000000001".into();
+        studio.version = Some(1);
+        library.install(&staged, &studio, None, 1).unwrap();
+
+        let err = launch_installed(&c.service, &c.fake, &cache, &saves, &studio.uuid).unwrap_err();
+        assert_eq!(err.kind(), "validation");
+        assert_eq!(err.to_string(), crate::story::STUDIO_NOT_PLAYABLE);
+        assert!(!cache.join(PLAY_DIR).exists(), "aucune copie de travail");
+        assert_eq!(c.service.status(), None, "aucun processus");
+        assert!(check_flam_format(Path::new("a-1.plain.pk")).is_ok());
+        for name in ["a-1.lunii.pk", "a-1.zip", "a-1.PLAIN.PK"] {
+            assert!(check_flam_format(Path::new(name)).is_err(), "{name}");
+        }
     }
 }

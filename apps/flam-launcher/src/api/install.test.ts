@@ -32,6 +32,22 @@ it("startInstall appelle install_start avec la source et l'entrée", async () =>
   expect(task.id).toBe("t1");
 });
 
+it("startInstall transmet l'uuid attendu et la confirmation de changement de format", async () => {
+  const calls: unknown[] = [];
+  mockIPC((_cmd, args) => {
+    calls.push(args);
+    return { id: "t1", state: "queued" };
+  });
+  await startInstall("dossier", "dossier:a", "abc");
+  await startInstall("dossier", "dossier:a", "abc", false);
+  await startInstall("dossier", "dossier:a", "abc", true);
+  expect(calls).toEqual([
+    { sourceId: "dossier", entryId: "dossier:a", uuid: "abc" },
+    { sourceId: "dossier", entryId: "dossier:a", uuid: "abc" },
+    { sourceId: "dossier", entryId: "dossier:a", uuid: "abc", replaceFormat: true },
+  ]);
+});
+
 it("cancelInstall et listInstalls appellent leurs commandes", async () => {
   const calls: { cmd: string; args: unknown }[] = [];
   mockIPC((cmd, args) => {

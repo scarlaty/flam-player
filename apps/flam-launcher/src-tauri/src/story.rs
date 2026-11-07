@@ -39,8 +39,8 @@ use serde::{Deserialize, Serialize};
 pub enum StoryKind {
     /// Archive `.zip` au format Telmi (à convertir avec `telmi2flam`).
     TelmiZip,
-    /// Archive `.zip` au format STUdio (`story.json`, `assets/`). Reconnue au scan ; pas encore
-    /// installable ni jouable (#517).
+    /// Archive `.zip` au format STUdio (`story.json`, `assets/`). Installée en pack Lunii
+    /// `.lunii.pk` (`install::studio`) pour une Flam 2.x ; jamais jouable sur le PC (#517, Q1).
     StudioZip,
     /// Dossier `.plain` FLAM (déjà converti).
     FlamPlain,
@@ -48,8 +48,13 @@ pub enum StoryKind {
     FlamPk,
 }
 
-/// Refus d'installer ou de jouer une archive STUdio, tant que le convertisseur n'existe pas (#517).
-pub const STUDIO_UNSUPPORTED: &str = "Format STUdio : l'envoi vers une Flam 2.x arrive dans une prochaine version ; la lecture sur PC n'est pas disponible.";
+/// Refus de jouer sur le PC une histoire STUdio (archive d'une source ou pack Lunii installé) :
+/// flam-player ne lit que le format Flam (`docs/studio-lunii.md`, § 5.6, Q1).
+pub const STUDIO_NOT_PLAYABLE: &str = "Lecture sur le PC indisponible pour une histoire STUdio : installez-la, puis envoyez-la sur une Flam en firmware 2.x.";
+
+/// Longueur maximale d'un titre d'histoire lu au scan (caractères), partagée par les sources et
+/// la conversion STUdio (#551).
+pub const MAX_TITLE_CHARS: usize = 200;
 
 /// Une histoire d'une source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

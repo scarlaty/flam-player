@@ -1,15 +1,29 @@
 import { invokeCommand } from "./error";
-import type { StoryEntry } from "./story";
+import type { StoryEntry, StoryKind } from "./story";
 
-/** Histoire installée (miroir de `LibraryEntry` dans `src-tauri/src/library.rs`). */
+/**
+ * Format d'une histoire installée (miroir de `StoryFormat` dans `src-tauri/src/library.rs`) :
+ * `flam` (`.plain.pk`, jouable sur le PC) ou `lunii` (`.lunii.pk`, histoire STUdio pour une
+ * Flam 2.x, jamais jouable sur le PC).
+ */
+export type LibraryFormat = "flam" | "lunii";
+
+/** Format produit par l'installation d'une archive de nature `kind`. */
+export function formatOfKind(kind: StoryKind): LibraryFormat {
+  return kind === "studio_zip" ? "lunii" : "flam";
+}
+
+/** Histoire installée (miroir de `LibraryItem` dans `src-tauri/src/library.rs`). */
 export interface LibraryEntry {
   uuid: string;
   /** Version installée (`null` : inconnue). */
   version: number | null;
   title: string;
-  /** Nom du fichier sous `<cache>/library/` (`<uuid>-<version>.plain.pk`). */
+  /** Nom du fichier sous `<cache>/library/` (`<uuid>-<version>.plain.pk` ou `.lunii.pk`). */
   file: string;
-  /** Taille du `.plain.pk` en octets. */
+  /** Format, déduit du nom du fichier par le backend. */
+  format: LibraryFormat;
+  /** Taille du fichier en octets. */
   size: number;
   /** Date d'installation (secondes Unix). */
   installed_at: number;

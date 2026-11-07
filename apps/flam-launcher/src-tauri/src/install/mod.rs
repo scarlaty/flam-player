@@ -7,11 +7,21 @@
 //!
 //! 1. `downloading` (archive distante seulement) : `<cache>/archives/<uuid>-<version>.<ext>`
 //!    via un `.part` repris après redémarrage (`download`) ;
-//! 2. `converting` (zip Telmi seulement) : `telmi2flam.exe --progress-json` vers
-//!    `<cache>/library/.staging/<tâche>.plain.pk` (`convert`) ; un `.plain.pk` est vérifié et
-//!    copié, un dossier `.plain` est empaqueté (`pack`) ;
-//! 3. `installing` : renommage vers `<cache>/library/<uuid>-<version>.plain.pk` et index
-//!    `library.json` (`library`), puis suppression de l'archive téléchargée.
+//! 2. `converting` : zip Telmi par `telmi2flam.exe --progress-json` vers
+//!    `<cache>/library/.staging/<tâche>.plain.pk` (`convert`) ; zip STUdio par
+//!    [`studio::convert`] vers `<cache>/library/.staging/<tâche>.lunii.pk` (#554) ; un
+//!    `.plain.pk` est vérifié et copié, un dossier `.plain` est empaqueté (`pack`) ;
+//! 3. `installing` : renommage vers `<cache>/library/<uuid>-<version>.plain.pk` (ou
+//!    `.lunii.pk`) et index `library.json` (`library`), puis suppression de l'archive
+//!    téléchargée.
+//!
+//! **Histoire STUdio** (`StoryKind::StudioZip`, `docs/studio-lunii.md`, § 5.1 à 5.3) : même
+//! file, même créneau de conversion (une à la fois), même annulation et même reprise au
+//! démarrage que Telmi. Le pack produit doit porter l'`uuid` et la version de l'entrée (ceux du
+//! scan, alignés sur la règle de `studio2lunii`) : sinon l'archive a changé depuis l'analyse et
+//! l'installation est refusée, rien n'est publié. Le titre publié est celui du pack. Remplacer
+//! une installation de l'autre format (même `uuid`, Q10) exige `replace_format`, conservé dans
+//! la file persistée.
 //!
 //! Concurrence : `max_downloads` téléchargements (paramètre, 2 par défaut), **une** conversion
 //! à la fois. Chaque tâche tient le portillon du cache (`CatalogService::cache_gate`) en
@@ -43,13 +53,13 @@ use tokio::sync::{watch, Notify, RwLock, Semaphore};
 use crate::catalog::{blocking, CatalogService};
 use crate::compat;
 use crate::folder::FolderState;
-use crate::library::{remove_if_exists, Library, LibraryEntry};
+use crate::library::{remove_if_exists, Library, LibraryEntry, StoryFormat};
 use crate::library_source::{self, SourceStamp};
 use crate::library_thumb;
 use crate::settings::{self, Environment, SettingsStore, ThumbFit};
 use crate::sources::{Source, SourcesStore};
 use crate::storage::{self, ConfigState, Loaded};
-use crate::story::{validate_story_id, StoryEntry, StoryKind, STUDIO_UNSUPPORTED};
+use crate::story::{validate_story_id, StoryEntry, StoryKind};
 use crate::{AppError, AppResult};
 
 use self::convert::{Conversion, Engine, Step};
@@ -307,9 +317,6 @@ fn is_remote(url: &str) -> bool {
 /// Revalide une entrée avant d'en faire une tâche : `uuid` utilisable comme nom de fichier,
 /// lien http(s) valide ou chemin local absolu, dossier `.plain` jamais distant.
 fn validate_entry(entry: &StoryEntry) -> AppResult<()> {
-    if entry.kind == StoryKind::StudioZip {
-        return Err(AppError::Validation(STUDIO_UNSUPPORTED.into()));
-    }
     if !validate_story_id(&entry.uuid) {
         return Err(AppError::Validation(format!(
             "identifiant d'histoire refusé : {:?}",
@@ -395,6 +402,9 @@ struct QueuedTask {
     /// Pack de podcasts : composition et uuid (N10 a). Absent pour une histoire d'une source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pack: Option<PackJob>,
+    /// Remplacement confirmé d'une installation de l'autre format (Q10, #554).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    replace_format: bool,
 }
 
 /// Contenu de la file à écrire, avec son numéro d'ordre.
@@ -429,6 +439,8 @@ struct Slot {
     cancel: watch::Sender<bool>,
     validator: Validator,
     pack: Option<PackJob>,
+    /// Remplacement confirmé d'une installation de l'autre format (Q10).
+    replace_format: bool,
 }
 
 /// Paramètres du service (injectés pour les tests).
@@ -535,12 +547,14 @@ impl InstallService {
                 ),
             }
         }
+        let mut restored = Vec::new();
         let (ids, snap): (Vec<String>, QueueSnapshot) = {
             let mut tasks = lock(&self.0.tasks);
             for (q, entry) in accepted {
                 if tasks.iter().any(|s| s.task.id == q.id) {
                     continue;
                 }
+                restored.push(q.id.clone());
                 // Le validateur ne vaut que pour la même archive (même lien, même version).
                 let validator = if entry.download_url == q.entry.download_url
                     && entry.version == q.entry.version
@@ -565,6 +579,7 @@ impl InstallService {
                     cancel: watch::channel(false).0,
                     validator,
                     pack: q.pack,
+                    replace_format: q.replace_format,
                 });
             }
             let snap = self.snapshot(&tasks);
@@ -572,6 +587,7 @@ impl InstallService {
         };
         self.write_queue(snap).await;
         self.sweep_workdirs().await;
+        self.sweep_studio_tmp(restored).await;
         for id in ids {
             self.spawn(id);
         }
@@ -580,7 +596,20 @@ impl InstallService {
     /// Ajoute une tâche pour `entry` (déjà résolue par le backend). Une tâche active pour le
     /// même `uuid` est renvoyée telle quelle au lieu d'en créer une seconde.
     pub fn start(&self, entry: StoryEntry) -> AppResult<InstallTask> {
-        self.enqueue(uuid::Uuid::new_v4().to_string(), entry, None, now_secs())
+        self.start_with(entry, false)
+    }
+
+    /// [`Self::start`] ; `replace_format` : l'utilisateur a confirmé le remplacement d'une
+    /// installation de l'autre format (même `uuid`, Q10). Sans confirmation, ce remplacement est
+    /// refusé (avant toute conversion, puis sous le verrou de la bibliothèque).
+    pub fn start_with(&self, entry: StoryEntry, replace_format: bool) -> AppResult<InstallTask> {
+        self.enqueue(
+            uuid::Uuid::new_v4().to_string(),
+            entry,
+            None,
+            now_secs(),
+            replace_format,
+        )
     }
 
     /// Ajoute la tâche `id`. Hors pack, une tâche active pour le même `uuid` est renvoyée telle
@@ -591,6 +620,7 @@ impl InstallService {
         entry: StoryEntry,
         pack: Option<PackJob>,
         created_at: u64,
+        replace_format: bool,
     ) -> AppResult<InstallTask> {
         validate_entry(&entry)?;
         let (task, snap) = {
@@ -621,6 +651,7 @@ impl InstallService {
                 cancel: watch::channel(false).0,
                 validator: Validator::default(),
                 pack,
+                replace_format,
             });
             let snap = self.snapshot(&tasks);
             (task, snap)
@@ -710,6 +741,7 @@ impl InstallService {
                     created_at: s.task.created_at,
                     validator: s.validator.clone(),
                     pack: s.pack.clone(),
+                    replace_format: s.replace_format,
                 })
                 .collect(),
         };
@@ -797,7 +829,7 @@ impl InstallService {
     }
 
     async fn run(self, id: String) {
-        let Some((entry, mut cancel, validator, pack)) = lock(&self.0.tasks)
+        let Some((entry, mut cancel, validator, pack, replace_format)) = lock(&self.0.tasks)
             .iter()
             .find(|s| s.task.id == id)
             .map(|s| {
@@ -806,13 +838,21 @@ impl InstallService {
                     s.cancel.subscribe(),
                     s.validator.clone(),
                     s.pack.clone(),
+                    s.replace_format,
                 )
             })
         else {
             return;
         };
         let result = self
-            .pipeline(&id, &entry, &mut cancel, validator, pack.as_ref())
+            .pipeline(
+                &id,
+                &entry,
+                &mut cancel,
+                validator,
+                pack.as_ref(),
+                replace_format,
+            )
             .await;
         // Pack publié : brouillon effacé s'il n'a pas changé depuis la création (#362).
         if let (Ok(_), Some(revision)) = (&result, pack.as_ref().and_then(|p| p.draft_revision)) {
@@ -883,6 +923,7 @@ impl InstallService {
         cancel: &mut watch::Receiver<bool>,
         validator: Validator,
         pack: Option<&PackJob>,
+        replace_format: bool,
     ) -> AppResult<(LibraryEntry, u32)> {
         if !is_task_id(id) {
             return Err(AppError::Validation(format!(
@@ -896,18 +937,20 @@ impl InstallService {
             _ = cancelled(cancel) => return Err(AppError::Cancelled),
         };
         let library = Library::new(&tc.cache_root);
+        let format = StoryFormat::of_kind(entry.kind);
         let staging = {
             let library = Library::new(&tc.cache_root);
             let (uuid, version) = (entry.uuid.clone(), entry.version);
             // Précontrôle avant tout téléchargement : un marqueur non jugeable de cette histoire
-            // (index perdu) refuserait l'installation en fin de course.
+            // (index perdu), ou une installation de l'autre format non confirmée (Q10),
+            // refuserait l'installation en fin de course.
             blocking(move || {
-                library.precheck_install(&uuid, version)?;
+                library.precheck_install(&uuid, version, format, replace_format)?;
                 library.staging_dir()
             })
             .await??
         };
-        let staged = child_of(&staging, &format!("{id}.plain.pk"))?;
+        let staged = child_of(&staging, &format!("{id}{}", format.suffix()))?;
         let (entry, result) = match pack {
             None => (
                 entry.clone(),
@@ -926,6 +969,7 @@ impl InstallService {
                 converter,
                 warnings,
                 stamp,
+                title,
             },
         ) = match result {
             Ok(produced) => produced,
@@ -947,17 +991,22 @@ impl InstallService {
             // la juge `Unknown`) et `player::folder_target` ne sert qu'aux sources dossier.
             source.download_url.clear();
         }
+        if let Some(title) = title {
+            // Histoire STUdio : titre du pack (celui de `_metadata.json`).
+            source.title = title;
+        }
         let cache_root = tc.cache_root.clone();
         let installed = blocking(move || {
             // Vignette conservée (#80) : préparée hors verrou, jamais bloquante.
             let thumb = library_thumb::prepare(&cache_root, &source, &staged);
-            let result = library.install_thumbed(
+            let result = library.install_replacing(
                 &staged,
                 &source,
                 converter,
                 now_secs(),
                 thumb.as_ref(),
                 stamp,
+                replace_format,
             );
             if result.is_err() {
                 let _ = remove_if_exists(&staged);
@@ -1076,6 +1125,37 @@ impl InstallService {
                 names
                     .into_iter()
                     .filter(|name| !tasks.iter().any(|s| &s.task.id == name))
+                    .collect()
+            })
+        })
+        .await;
+    }
+
+    /// Supprime les dossiers temporaires de conversion STUdio laissés dans `library/.staging/`
+    /// par un arrêt brutal (#553) : seulement les **dossiers** au nom exact
+    /// `.<tâche>.lunii.pk.<32 hex>.tmp` ([`studio_tmp_task`]) dont la tâche est inconnue
+    /// (relevé sous le verrou des tâches, comme [`Self::sweep_workdirs`]) ou fait partie de
+    /// `restored` (relue de la file, pas encore relancée : sa conversion repartira de zéro dans
+    /// un nouveau dossier). Rien d'autre n'est touché (ni fichier, ni lien, ni autre nom).
+    async fn sweep_studio_tmp(&self, restored: Vec<String>) {
+        let Ok(tc) = self.toolchain().await else {
+            return;
+        };
+        let inner = self.0.clone();
+        let staging = Library::new(&tc.cache_root)
+            .root()
+            .join(crate::library::STAGING_DIR);
+        let _ = blocking(move || {
+            sweep_studio_tmp_in(&staging, &|names: Vec<String>| {
+                let tasks = lock(&inner.tasks);
+                names
+                    .into_iter()
+                    .filter(|name| {
+                        studio_tmp_task(name).is_some_and(|id| {
+                            restored.iter().any(|r| r == id)
+                                || !tasks.iter().any(|s| s.task.id == id)
+                        })
+                    })
                     .collect()
             })
         })
@@ -1232,9 +1312,13 @@ impl InstallService {
                     converter: Some(converter),
                     warnings: converted?.warnings,
                     stamp,
+                    title: None,
                 })
             }
-            StoryKind::StudioZip => Err(AppError::Validation(STUDIO_UNSUPPORTED.into())),
+            StoryKind::StudioZip => {
+                self.transform_studio(id, entry, tc, &source, staged, local, cancel)
+                    .await
+            }
             StoryKind::FlamPk | StoryKind::FlamPlain => {
                 self.emit_state(id, TaskState::Installing, None);
                 let (from, to) = (source.clone(), staged.to_path_buf());
@@ -1258,9 +1342,100 @@ impl InstallService {
                     converter: None,
                     warnings: 0,
                     stamp,
+                    title: None,
                 })
             }
         }
+    }
+
+    /// Histoire STUdio : conversion en pack Lunii clair `staged` ([`studio::convert`]), dans le
+    /// créneau de conversion, avec progression et annulation comme pour Telmi. Refus si le pack
+    /// ne porte pas l'`uuid` et la version de l'entrée (archive modifiée depuis le scan) : le
+    /// pack est alors supprimé par l'appelant, rien n'est publié.
+    #[allow(clippy::too_many_arguments)]
+    async fn transform_studio(
+        &self,
+        id: &str,
+        entry: &StoryEntry,
+        tc: &Toolchain,
+        source: &Path,
+        staged: &Path,
+        local: bool,
+        cancel: &mut watch::Receiver<bool>,
+    ) -> AppResult<Produced> {
+        if !source.is_file() {
+            return Err(AppError::NotFound(format!(
+                "archive introuvable : {}",
+                source.display()
+            )));
+        }
+        let stamp = if local {
+            let from = source.to_path_buf();
+            blocking(move || library_source::stamp_source(&from, StoryKind::StudioZip)).await?
+        } else {
+            None
+        };
+        let _slot = tokio::select! {
+            s = self.0.conversions.acquire() => s.map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?,
+            _ = cancelled(cancel) => return Err(AppError::Cancelled),
+        };
+        self.emit_state(id, TaskState::Converting, Some(0.0));
+        let mut last = Instant::now();
+        let mut on_step = |step: &Step| {
+            let end = step.done >= step.total;
+            if end || last.elapsed() >= PROGRESS_INTERVAL {
+                last = Instant::now();
+                self.emit(InstallProgress {
+                    task_id: id.to_string(),
+                    state: TaskState::Converting,
+                    percent: Some(step.percent()),
+                    received: None,
+                    total: None,
+                    phase: Some(step.phase.clone()),
+                });
+            }
+        };
+        // ffmpeg embarqué, même résolution que Telmi et les podcasts ; absent : refus seulement
+        // si un son doit être transcodé.
+        let ffmpeg = tc
+            .ffmpeg
+            .as_deref()
+            .and_then(Path::parent)
+            .map(crate::ffmpeg::Ffmpeg::in_dir);
+        let pack = studio::convert(
+            &studio::StudioJob {
+                input: source,
+                output: staged,
+                ffmpeg: ffmpeg.as_ref(),
+                thumb_fit: tc.thumb_fit,
+            },
+            cancel,
+            &mut on_step,
+        )
+        .await?;
+        if pack.uuid != entry.uuid || Some(u32::from(pack.version)) != entry.version {
+            tracing::warn!(
+                "installation {id} : pack STUdio {} v{} au lieu de {} v{:?}",
+                pack.uuid,
+                pack.version,
+                entry.uuid,
+                entry.version
+            );
+            return Err(AppError::Validation(
+                "l'archive STUdio a changé depuis l'analyse du dossier (identifiant ou version \
+                 différents) : actualisez la source puis réessayez"
+                    .into(),
+            ));
+        }
+        for warning in &pack.warnings {
+            tracing::info!("installation {id} : {warning}");
+        }
+        Ok(Produced {
+            converter: None,
+            warnings: u32::try_from(pack.warnings.len()).unwrap_or(u32::MAX),
+            stamp,
+            title: Some(pack.title),
+        })
     }
 
     /// Télécharge l'archive distante (ou réutilise une archive complète déjà téléchargée).
@@ -1273,9 +1448,8 @@ impl InstallService {
         validator: Validator,
     ) -> AppResult<PathBuf> {
         let ext = match entry.kind {
-            StoryKind::TelmiZip => "zip",
+            StoryKind::TelmiZip | StoryKind::StudioZip => "zip",
             StoryKind::FlamPk => "plain.pk",
-            StoryKind::StudioZip => return Err(AppError::Validation(STUDIO_UNSUPPORTED.into())),
             StoryKind::FlamPlain => {
                 return Err(AppError::Validation(
                     "un dossier .plain ne peut pas être téléchargé".into(),
@@ -1488,6 +1662,52 @@ fn remove_archive(dest: &Path) {
     let _ = remove_if_exists(&meta_path(dest));
 }
 
+/// Tâche d'un dossier temporaire de [`studio::convert`] pour la sortie
+/// `library/.staging/<tâche>.lunii.pk` : nom exact `.<tâche>.lunii.pk.<32 hex minuscules>.tmp`,
+/// `<tâche>` UUID canonique ([`is_task_id`]). `None` pour tout autre nom.
+fn studio_tmp_task(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix('.')?.strip_suffix(".tmp")?;
+    let (output, random) = rest.rsplit_once('.')?;
+    let hex = random.len() == 32
+        && random
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let id = output.strip_suffix(crate::library::LUNII_SUFFIX)?;
+    (hex && is_task_id(id)).then_some(id)
+}
+
+/// Balayage de `staging` (bloquant) : le dossier est lu d'abord, `orphans` (appelé une fois)
+/// garde les noms à supprimer, puis chacun est revérifié (enfant direct, **dossier** réel, pas
+/// un lien ni une jonction) avant `remove_dir_all`. Échecs : avertissement, retenté au prochain
+/// démarrage.
+fn sweep_studio_tmp_in(staging: &Path, orphans: &dyn Fn(Vec<String>) -> Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(staging) else {
+        return;
+    };
+    let names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .collect();
+    for name in orphans(names) {
+        if studio_tmp_task(&name).is_none() {
+            continue;
+        }
+        let Ok(path) = child_of(staging, &name) else {
+            continue;
+        };
+        let is_dir = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_dir());
+        if !is_dir {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => tracing::info!("dossier temporaire STUdio orphelin supprimé : {name}"),
+            Err(err) => {
+                tracing::warn!("dossier temporaire STUdio orphelin {name} non supprimé : {err}")
+            }
+        }
+    }
+}
+
 /// Supprime un fichier hors du runtime (erreurs ignorées).
 async fn discard(path: PathBuf) {
     let _ = tokio::fs::remove_file(path).await;
@@ -1570,6 +1790,8 @@ struct Produced {
     warnings: u32,
     /// Empreinte de la source locale (#288), `None` pour une source distante.
     stamp: Option<SourceStamp>,
+    /// Titre à publier à la place de celui de l'entrée (histoire STUdio : titre du pack).
+    title: Option<String>,
 }
 
 /// Ré-résolution d'une entrée de la file persistée au démarrage (voir [`InstallService::restore`]).
@@ -1597,6 +1819,9 @@ pub async fn resolve_for_restore(
 /// périmée ; sans `uuid`, une entrée absente du dernier scan fait analyser le dossier.
 /// `uuid` (facultatif) : histoire attendue ; si l'entrée retrouvée en propose une autre (fichier
 /// remplacé par une autre histoire au même chemin), `not_found` sans rien installer.
+/// `replace_format` (faux par défaut) : remplacement confirmé par l'utilisateur d'une
+/// installation de l'autre format (même `uuid`, histoire Telmi et son pack STUdio, Q10).
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn install_start(
     config: State<'_, ConfigState>,
@@ -1606,6 +1831,7 @@ pub async fn install_start(
     source_id: String,
     entry_id: String,
     uuid: Option<String>,
+    replace_format: Option<bool>,
 ) -> AppResult<InstallTask> {
     let entry = resolve_entry(
         &config,
@@ -1617,7 +1843,7 @@ pub async fn install_start(
     )
     .await?;
     check_expected_uuid(&entry, uuid.as_deref())?;
-    service.start(entry)
+    service.start_with(entry, replace_format.unwrap_or(false))
 }
 
 /// `not_found` si `entry` ne propose pas l'histoire `expected` (quand elle est donnée).

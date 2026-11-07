@@ -452,6 +452,7 @@ fn queued_pack(ctx_dir: &Path, fault_title: &str) -> (PackJob, String) {
         &QueueFile {
             schema_version: QUEUE_SCHEMA,
             tasks: vec![QueuedTask {
+                replace_format: false,
                 id: TASK_ID.into(),
                 entry,
                 created_at: 1,

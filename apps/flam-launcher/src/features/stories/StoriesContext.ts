@@ -13,6 +13,11 @@ export interface InstallOptions {
   replaces?: string;
   /** Source de la fiche d'où l'action est lancée : on y revient à la fin de la lecture. */
   fromSourceId?: string;
+  /**
+   * Remplacement déjà confirmé de la même histoire installée dans l'autre format (Telmi ↔
+   * STUdio, Q10) : sans lui, `install` demande d'abord confirmation.
+   */
+  replaceFormat?: boolean;
 }
 
 export interface StoriesApi {
@@ -36,8 +41,16 @@ export interface StoriesApi {
   failedTaskFor: (entry: StoryEntry) => InstallTask | undefined;
   /** Avancement de la tâche active de cette histoire. */
   progressFor: (entry: StoryEntry) => StoryProgress | undefined;
-  /** Version installée de cette histoire (même `uuid`). */
+  /**
+   * Version installée de cette histoire : même `uuid` **et** même format (une histoire Telmi
+   * et son pack STUdio de même `uuid` ne sont pas « la même installation »).
+   */
   installedFor: (entry: StoryEntry) => LibraryEntry | undefined;
+  /**
+   * Même histoire (même `uuid`) installée dans l'**autre** format : l'installer la remplacera,
+   * après confirmation (Q10).
+   */
+  otherFormatFor: (entry: StoryEntry) => LibraryEntry | undefined;
   /**
    * `entry` propose une autre version que celle installée, ou c'est la source dossier de
    * l'histoire installée et elle a changé depuis l'installation (même à version égale, #288).
@@ -49,8 +62,9 @@ export interface StoriesApi {
    */
   sourceChanged: (uuid: string) => boolean;
   /**
-   * Installe l'histoire ; si elle est marquée incompatible, demande d'abord confirmation
-   * (`IncompatibleInstallDialog`). Les erreurs sont signalées par une notification.
+   * Installe l'histoire ; si elle est marquée incompatible (`IncompatibleInstallDialog`) ou
+   * si elle remplace la même histoire dans l'autre format (`FormatReplaceDialog`), demande
+   * d'abord confirmation. Les erreurs sont signalées par une notification.
    */
   install: (entry: StoryEntry, options?: InstallOptions) => void;
   /** Lance une histoire installée. */
@@ -76,7 +90,7 @@ export interface StoriesApi {
    * sans attendre son premier événement.
    */
   trackTask: (task: InstallTask) => void;
-  /** Une confirmation d'installation (histoire incompatible) est affichée. */
+  /** Une confirmation d'installation (incompatible, changement de format) est affichée. */
   confirming: boolean;
 }
 
@@ -90,8 +104,6 @@ export function storyStateOf(
   stories: StoriesApi,
   entry: StoryEntry,
 ): StoryState | undefined {
-  // Une archive STUdio n'est jamais installée : un uuid identique à une autre histoire est ignoré.
-  if (entry.kind === "studio_zip") return "studio";
   if (stories.activeTaskFor(entry)) return "in_progress";
   if (!stories.installedFor(entry)) return undefined;
   return stories.updateAvailable(entry) ? "update_available" : "installed";
