@@ -431,10 +431,28 @@ fn main_lsf_l_emporte_sur_les_index_lunii() {
 }
 
 #[test]
+fn dossier_lunii_a_info_chiffre_sans_titre_illisible() {
+    let dev = device_v2();
+    lunii_story(dev.path(), "str", L, &info_v2("Titre chiffré"));
+    assert_eq!(format_of(dev.path(), None, L), (None, StoryFormat::Lunii));
+}
+
+#[test]
 fn info_lunii_latin1_controles_et_longueur() {
     assert_eq!(
-        plain_title_of_info(b"Caf\xe9 \x01du\x00 \t port\r\nautre").as_deref(),
+        plain_title_of_info(b"Caf\xe9 du \t port\r\nautre").as_deref(),
         Some("Café du port")
+    );
+    // Contrôles : pas du texte (info chiffré ou abîmé).
+    assert_eq!(plain_title_of_info(b"Caf\xe9 \x01du"), None);
+    assert_eq!(
+        plain_title_of_info(&[0x9f, 0x02, 0xd4, 0x00, 0x13, 0x8a, 0x77]),
+        None
+    );
+    // Coupure de la lecture bornée au milieu d'un caractère UTF-8.
+    assert_eq!(
+        plain_title_of_info(&"Été".as_bytes()[..4]).as_deref(),
+        Some("Ét")
     );
     assert_eq!(
         plain_title_of_info(b"\xef\xbb\xbf\n\n  Titre  \n").as_deref(),

@@ -85,7 +85,9 @@ export function useDeviceStoryTitles(
         // (fin d'un envoi, nouvelle liste) redemandera. L'affichage se replie d'ici là.
         if (!reply.keys && !reply.interrupted) {
           setTitles({ root, map: new Map(map), lunii: new Set(lunii) });
-          return;
+          // Lots suivants : les histoires Lunii y ont un titre en clair même sans clé.
+          pending = pending.slice(batch.length);
+          continue;
         }
         // Lot interrompu sans clé : un titre `null` n'est pas définitif (il ne vient que de
         // l'absence de clé), seuls les titres lus sont retenus.

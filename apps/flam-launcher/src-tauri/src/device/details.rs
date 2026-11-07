@@ -200,25 +200,28 @@ fn read_bounded(file: File, max: u64) -> Option<Vec<u8>> {
 const MAX_PLAIN_TITLE_CHARS: usize = 200;
 
 /// Titre d'un `info` en clair (format Lunii) : première ligne non vide, UTF-8 ou, à défaut,
-/// Latin-1 ; caractères de contrôle retirés, espaces réduits, longueur bornée.
+/// Latin-1 ; espaces réduits, longueur bornée. Une ligne contenant un caractère de contrôle
+/// (autre que la tabulation) n'est pas du texte : `info` chiffré ou abîmé, dossier hybride. Le
+/// titre est alors `None` (repli de l'interface) plutôt qu'un texte illisible.
 fn plain_title_of_info(info: &[u8]) -> Option<String> {
+    // Lecture bornée : une coupure au milieu d'un caractère UTF-8 n'invalide pas le reste.
+    let info = match std::str::from_utf8(info) {
+        Err(e) if e.error_len().is_none() => &info[..e.valid_up_to()],
+        _ => info,
+    };
     let text: String = match std::str::from_utf8(info) {
         Ok(text) => text.to_string(),
         Err(_) => info.iter().map(|&b| char::from(b)).collect(),
     };
-    text.trim_start_matches('\u{feff}')
+    let line = text
+        .trim_start_matches('\u{feff}')
         .lines()
-        .map(|line| {
-            line.chars()
-                .map(|c| if c == char::from(9) { ' ' } else { c })
-                .filter(|c| !c.is_control())
-                .collect::<String>()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .find(|line| !line.is_empty())
-        .map(|line| line.chars().take(MAX_PLAIN_TITLE_CHARS).collect())
+        .find(|line| !line.trim().is_empty())?;
+    if line.chars().any(|c| c.is_control() && c != char::from(9)) {
+        return None;
+    }
+    let title = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    Some(title.chars().take(MAX_PLAIN_TITLE_CHARS).collect())
 }
 
 /// Titre en clair de l'histoire au format Lunii de dossier `dir` (au plus [`MAX_INFO`] octets).
