@@ -1336,6 +1336,33 @@ it("Flam 1.x : conservation échouée, les clés sont redemandées", async () =>
   expect(count("device_send_story")).toBe(1);
 });
 
+it("Flam 1.x : histoire STUdio refusée, message clair, clés gardées pour la suite (#542)", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  carrierConsent = { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" };
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  const dialog = await screen.findByRole("alertdialog");
+  await within(dialog).findByRole("radio", { name: /Histoire officielle/ });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Vérifier et envoyer" }));
+  await waitFor(() => expect(sends.has(A)).toBe(true));
+  await act(async () => {
+    sends.get(A)?.reject({ kind: "lunii_needs_v2", message: "texte du backend" });
+  });
+  const panel = await screen.findByRole("region", { name: "Envoi sur la Flam" });
+  expect(
+    await within(panel).findByText(
+      /Les histoires STUdio demandent une Flam en firmware 2\.x\. Mettez la Flam à jour/,
+    ),
+  ).toBeInTheDocument();
+  expect(within(panel).queryByText(/texte du backend/)).toBeNull();
+  // Les clés n'ont pas été consultées : l'histoire suivante part sans les redemander.
+  fireEvent.click(sendButton("Les trois ours"));
+  await waitFor(() => expect(count("device_send_story")).toBe(2));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+});
+
 it("Flam 1.x : histoires sans bt proposées avec la clé conservée", async () => {
   acknowledgeWarning();
   status = detectedV1();

@@ -991,6 +991,9 @@ export const fr = {
       noDevice: "La Flam n'est plus détectée : rien n'a été envoyé.",
       readback:
         "Histoire copiée, mais son titre relu sur la Flam ne se déchiffre pas avec les clés choisies : elle risque d'être illisible. Retirez-la et choisissez une autre histoire officielle.",
+      /** Erreur `lunii_needs_v2` : histoire STUdio (format Lunii) et Flam en firmware 1.x. */
+      luniiNeedsV2:
+        "Les histoires STUdio demandent une Flam en firmware 2.x. Mettez la Flam à jour avec l'application officielle, puis réessayez. Rien n'a été écrit sur la Flam.",
     },
     carrier: {
       title: "Flam en firmware 1.x : mode carrier",

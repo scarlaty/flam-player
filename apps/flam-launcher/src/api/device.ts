@@ -405,11 +405,19 @@ export type EjectOutcome =
 export const TRANSFER_PROGRESS_EVENT = "device://transfer-progress";
 
 /**
+ * `kind` de l'erreur d'envoi d'une histoire STUdio (format Lunii) sur une Flam qui n'est pas en
+ * firmware 2.x (miroir de `AppError::LuniiNeedsV2`) : rien n'a été écrit, mode carrier compris.
+ */
+export const LUNII_NEEDS_V2 = "lunii_needs_v2";
+
+/**
  * `device_send_story` : envoie l'histoire `uuid` de la bibliothèque sur la Flam de racine
  * `root` (`validation` si déjà présente sans `replace`, espace insuffisant, firmware non pris
- * en charge ou Flam occupée ; `cancelled` si annulé). `replace` : UUID de l'histoire de la Flam
- * à remplacer (même à version égale), l'ancienne n'étant retirée qu'une fois la nouvelle en
- * place ; refusé (`validation`) s'il ne désigne pas l'histoire de l'archive.
+ * en charge, Flam occupée ou histoire STUdio illisible ; `cancelled` si annulé ;
+ * {@link LUNII_NEEDS_V2} pour une histoire STUdio sur une Flam 1.x). `replace` : UUID de
+ * l'histoire de la Flam à remplacer (même à version égale), l'ancienne n'étant retirée qu'une
+ * fois la nouvelle en place ; refusé (`validation`) s'il ne désigne pas l'histoire de
+ * l'archive.
  */
 export function sendStoryToDevice(
   root: string,

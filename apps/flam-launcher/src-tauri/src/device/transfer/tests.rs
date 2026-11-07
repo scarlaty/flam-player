@@ -1791,3 +1791,377 @@ fn le_dossier_de_cache_scrute_suit_les_reglages() {
     assert_eq!(polled_cache_root(&config), Some(second.clone()));
     assert_eq!(launcher_cache_root(&config), Some(second));
 }
+
+// --- Histoires STUdio au format Lunii (#542) ---------------------------------------------------
+
+mod lunii {
+    use super::*;
+    use crate::device::carrier::tests::{fake_store, official_story, OFFICIAL};
+    use crate::device::carrier::{CarrierConsent, WARNING_VERSION};
+    use crate::device::prepare_lunii::PACK_SUFFIX;
+
+    const INFO_TEXT: &[u8] =
+        b"Histoire inventee\nHistoire inventee\n0\nHistoire inventee\nNo authors.";
+
+    /// Nœud de `ni` : image, son, transitions « ok » et « home », commandes.
+    type Node = (i32, i32, [i32; 3], [i32; 3], [u16; 5]);
+
+    /// `ni` : en-tête de 512 octets puis les nœuds (note, § 3.2).
+    fn ni_bytes(nodes: &[Node], images: u32, sounds: u32) -> Vec<u8> {
+        let mut out = vec![0u8; 0x200];
+        out[0..2].copy_from_slice(&1u16.to_le_bytes());
+        out[2..4].copy_from_slice(&3u16.to_le_bytes());
+        out[4..8].copy_from_slice(&0x200u32.to_le_bytes());
+        out[8..12].copy_from_slice(&0x2Cu32.to_le_bytes());
+        out[12..16].copy_from_slice(&(nodes.len() as u32).to_le_bytes());
+        out[16..20].copy_from_slice(&images.to_le_bytes());
+        out[20..24].copy_from_slice(&sounds.to_le_bytes());
+        out[0x18] = 1;
+        for (image, sound, ok, home, controls) in nodes {
+            for v in [*image, *sound].iter().chain(ok).chain(home) {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            for c in controls {
+                out.extend_from_slice(&c.to_le_bytes());
+            }
+            out.extend_from_slice(&[0, 0]);
+        }
+        out
+    }
+
+    fn asset_index(names: &[&str]) -> Vec<u8> {
+        names
+            .iter()
+            .flat_map(|n| [b"000\\".as_slice(), n.as_bytes()].concat())
+            .collect()
+    }
+
+    fn sound() -> Vec<u8> {
+        (0..200_000u32).map(|i| (i * 7 % 253) as u8).collect()
+    }
+
+    /// Entrées d'un pack clair inventé de l'histoire `NEW` : 3 nœuds, 2 images, 1 son.
+    fn entries() -> Vec<(&'static str, Vec<u8>)> {
+        let none = [-1, -1, -1];
+        let nodes: [Node; 3] = [
+            (0, 0, [0, 2, 0], none, [1, 1, 0, 0, 0]),
+            (1, -1, [2, 1, 0], [0, 2, 1], [0, 1, 1, 1, 0]),
+            (-1, 0, none, [2, 1, 0], [0, 0, 1, 1, 1]),
+        ];
+        let li: Vec<u8> = [1i32, 2, 0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        vec![
+            (
+                "uuid.bin",
+                uuid::Uuid::parse_str(NEW).unwrap().into_bytes().to_vec(),
+            ),
+            ("_metadata.json", b"{\"title\":\"x\"}".to_vec()),
+            ("_thumbnail.png", b"png".to_vec()),
+            ("ni", ni_bytes(&nodes, 2, 1)),
+            ("nm", Vec::new()),
+            ("li", li),
+            ("ri", asset_index(&["AAAAAAAA", "0000000B"])),
+            ("si", asset_index(&["CCCCCCCC"])),
+            ("info", INFO_TEXT.to_vec()),
+            ("img/thumbnail.lif", vec![7u8; 700]),
+            (
+                "rf/000/AAAAAAAA",
+                (0..600u32).map(|i| (i * 3 % 251) as u8).collect(),
+            ),
+            ("rf/000/0000000B", vec![0x42; 100]),
+            ("sf/000/CCCCCCCC", sound()),
+        ]
+    }
+
+    /// Pack `<NEW>-1.lunii.pk` dans `dir`, sans les entrées `skip`.
+    fn lunii_pk(dir: &Path, skip: &[&str]) -> PathBuf {
+        use zip::write::SimpleFileOptions;
+        use zip::{CompressionMethod, ZipWriter};
+
+        let pk = dir.join(format!("{}-1{PACK_SUFFIX}", id(NEW)));
+        let mut zip = ZipWriter::new(File::create(&pk).unwrap());
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        for (name, data) in entries() {
+            if skip.contains(&name) {
+                continue;
+            }
+            zip.start_file(name, options).unwrap();
+            zip.write_all(&data).unwrap();
+        }
+        zip.finish().unwrap();
+        pk
+    }
+
+    const EXPECTED: [&str; 11] = [
+        "img/thumbnail.lif",
+        "info",
+        "key",
+        "li",
+        "ni",
+        "nm",
+        "rf/000/0000000B",
+        "rf/000/AAAAAAAA",
+        "ri",
+        "sf/000/CCCCCCCC",
+        "si",
+    ];
+
+    fn consent() -> CarrierConsent {
+        CarrierConsent {
+            text_version: WARNING_VERSION,
+            accepted_at: "2026-11-07T10:00:00Z".into(),
+        }
+    }
+
+    fn send(
+        root: &Path,
+        pk: &Path,
+        work: &Path,
+        replace: Option<&str>,
+        carrier: Option<&CarrierRequest<'_>>,
+    ) -> Result<TransferReport, TransferError> {
+        send_from_library_with(
+            &FaultyFs::new(),
+            root,
+            pk,
+            work,
+            replace,
+            carrier,
+            &test_ctx(),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+    }
+
+    #[test]
+    fn format_choisi_d_apres_le_nom_du_fichier() {
+        for (name, expected) in [
+            ("abc-1.lunii.pk", LibraryFormat::Lunii),
+            ("ABC-1.LUNII.PK", LibraryFormat::Lunii),
+            ("é.lunii.pk", LibraryFormat::Lunii),
+            ("abc-1.plain.pk", LibraryFormat::Flam),
+            ("abc-1.lunii.pk.plain.pk", LibraryFormat::Flam),
+            (".lunii.pk", LibraryFormat::Flam),
+            ("histoire.pk", LibraryFormat::Flam),
+            ("éé", LibraryFormat::Flam),
+        ] {
+            assert_eq!(
+                LibraryFormat::of(&Path::new("bib").join(name)),
+                expected,
+                "{name}"
+            );
+        }
+        // Seul le nom du fichier compte, pas le dossier.
+        assert_eq!(
+            LibraryFormat::of(&Path::new("x.lunii.pk").join("a.plain.pk")),
+            LibraryFormat::Flam
+        );
+    }
+
+    #[test]
+    fn envoi_d_un_pack_lunii_sur_une_flam_2x() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = device(tmp.path(), false);
+        write(&root.join(MDF_FILE), &mdf("2.4.2"));
+        // Copie interrompue d'un envoi précédent : reprise faite avant l'envoi (2.x).
+        write(
+            &incoming_dir(&root, &id(NEW)).join("ni"),
+            b"copie interrompue",
+        );
+        let pk = lunii_pk(tmp.path(), &[]);
+        let work = tmp.path().join("cache").join(WORK_SUBDIR);
+
+        let report = send(&root, &pk, &work, None, None).unwrap();
+        assert_eq!(report.id, NEW);
+        assert_eq!(report.files, EXPECTED.len());
+        assert_eq!(report.carrier_readback, None);
+        assert_eq!(report.carrier_stored, None);
+        assert!(report.index_updated && report.cache_removed && !report.replaced);
+        assert!(report.recovery_failures.is_empty());
+
+        let installed = files_of(&root.join("str").join(NEW));
+        let names: Vec<&str> = installed.keys().map(String::as_str).collect();
+        assert_eq!(names, EXPECTED);
+        let source: BTreeMap<&str, Vec<u8>> = entries().into_iter().collect();
+        for name in ["ni", "nm", "info", "img/thumbnail.lif"] {
+            assert_eq!(installed[name], source[name], "{name} en clair");
+        }
+        let keys = test_keys();
+        assert_eq!(installed["key"], keys.key_file().to_vec());
+        for name in ["li", "ri", "si", "rf/000/AAAAAAAA", "rf/000/0000000B"] {
+            let plain = &source[name];
+            let n = plain.len().min(16);
+            assert_ne!(installed[name][..n], plain[..n], "{name} chiffré");
+            let clear = keys.decrypt_lunii_file(name, &installed[name]).unwrap();
+            assert_eq!(&clear[..plain.len()], &plain[..], "{name}");
+        }
+        let clear = keys
+            .decrypt_lunii_file("sf/000/CCCCCCCC", &installed["sf/000/CCCCCCCC"])
+            .unwrap();
+        assert_eq!(clear, sound());
+
+        assert_eq!(listed(&root), vec![id(OTHER), id(NEW)]);
+        assert!(!root.join(LIBRARY_CACHE).exists(), "cache supprimé");
+        assert!(
+            !root.join(TRANSFER_DIR).exists(),
+            "reprise et nettoyage faits"
+        );
+        assert!(
+            !work.join("str").join(NEW).exists(),
+            "préparation supprimée"
+        );
+        assert_eq!(
+            files_of(&root.join("str").join(OTHER))["info"],
+            b"autre".to_vec(),
+            "autre histoire intacte"
+        );
+    }
+
+    /// § 5.8 : la version Lunii d'une histoire remplace sa version Flam (même UUID) seulement
+    /// par « Remplacer ».
+    #[test]
+    fn la_version_lunii_remplace_la_version_flam_sur_demande() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = device(tmp.path(), true);
+        write(&root.join(MDF_FILE), &mdf("2.4.2"));
+        let pk = lunii_pk(tmp.path(), &[]);
+        let work = tmp.path().join("cache").join(WORK_SUBDIR);
+
+        let before = snapshot(&root);
+        let err = send(&root, &pk, &work, None, None).unwrap_err();
+        assert!(
+            matches!(err, TransferError::AlreadyInstalled { hidden: false, .. }),
+            "{err:?}"
+        );
+        assert_eq!(snapshot(&root), before, "rien n'est écrit");
+
+        let report = send(&root, &pk, &work, Some(NEW), None).unwrap();
+        assert!(report.replaced && !report.index_updated);
+        let installed = files_of(&root.join("str").join(NEW));
+        let names: Vec<&str> = installed.keys().map(String::as_str).collect();
+        assert_eq!(names, EXPECTED, "ancienne version Flam retirée");
+        assert_eq!(listed(&root), vec![id(OTHER), id(NEW)]);
+        assert!(!root.join(TRANSFER_DIR).exists());
+    }
+
+    /// Flam 1.x : refus avant toute écriture, reprise comprise, sans jamais consulter le mode
+    /// carrier, même avec un consentement et une histoire officielle utilisables.
+    #[test]
+    fn refus_en_firmware_1x_sans_ecriture_ni_carrier() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("flam");
+        write(&root.join(MDF_FILE), &mdf_v1_real());
+        official_story(&root, "str", OFFICIAL, true);
+        write(&root.join(LIBRARY_CACHE), b"cache");
+        write(&root.join("etc/library/list"), &serialize(&[id(OFFICIAL)]));
+        write(&root.join("etc/library/list.hidden"), b"");
+        // Résidus de transferts interrompus : la reprise ne doit pas y toucher.
+        write(
+            &incoming_dir(&root, &id(NEW)).join("ni"),
+            b"copie interrompue",
+        );
+        write(
+            &previous_dir(&root, &id(OTHER)).join("info"),
+            b"ancienne version",
+        );
+        let pk = lunii_pk(tmp.path(), &[]);
+        let work = tmp.path().join("cache").join(WORK_SUBDIR);
+        let keys_dir = tmp.path().join("cles");
+        let store = fake_store(&keys_dir);
+        let c = consent();
+        let before = snapshot(&root);
+
+        let choices = [
+            None,
+            Some(CarrierChoice::Device {
+                uuid: OFFICIAL.into(),
+            }),
+            Some(CarrierChoice::Stored),
+        ];
+        for choice in choices {
+            let request = choice.map(|choice| CarrierRequest {
+                consent: Some(&c),
+                choice,
+                remember: true,
+                store: &store,
+            });
+            for replace in [None, Some(NEW)] {
+                let err = send(&root, &pk, &work, replace, request.as_ref()).unwrap_err();
+                assert!(matches!(err, TransferError::LuniiNeedsV2), "{err:?}");
+                let app = AppError::from(err);
+                assert_eq!(app.kind(), "lunii_needs_v2");
+                assert_eq!(app.to_string(), LUNII_NEEDS_V2_MESSAGE);
+                assert_eq!(snapshot(&root), before, "Flam inchangée, reprise comprise");
+                assert!(!work.exists(), "rien de préparé");
+                assert!(!keys_dir.exists(), "aucun couple carrier conservé");
+            }
+        }
+
+        // Une histoire Flam sur la même Flam passe toujours par le mode carrier (non-régression).
+        let flam_pk = plain_pk(tmp.path());
+        let err = send(&root, &flam_pk, &work, None, None).unwrap_err();
+        assert!(
+            matches!(err, TransferError::Carrier(CarrierError::CarrierRequired)),
+            "{err:?}"
+        );
+    }
+
+    /// Firmware non pris en charge (3.x) : la garde commune refuse d'abord, comme pour une
+    /// histoire Flam.
+    #[test]
+    fn firmware_3x_refuse_par_la_garde() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = device(tmp.path(), false);
+        write(&root.join(MDF_FILE), &mdf("3.0.0"));
+        let pk = lunii_pk(tmp.path(), &[]);
+        let work = tmp.path().join("cache").join(WORK_SUBDIR);
+        let before = snapshot(&root);
+        let err = send(&root, &pk, &work, None, None).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TransferError::Refused(WriteRefused::UnsupportedFirmware { .. })
+            ),
+            "{err:?}"
+        );
+        assert_eq!(snapshot(&root), before);
+    }
+
+    /// Pack de la bibliothèque abîmé : refus à la préparation, message fixe vers l'interface
+    /// (sans nom d'entrée), Flam inchangée, reprise non faite.
+    #[test]
+    fn pack_lunii_invalide_rien_n_est_ecrit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = device(tmp.path(), false);
+        write(&root.join(MDF_FILE), &mdf("2.4.2"));
+        write(
+            &incoming_dir(&root, &id(NEW)).join("ni"),
+            b"copie interrompue",
+        );
+        let pk = lunii_pk(tmp.path(), &["sf/000/CCCCCCCC"]);
+        let work = tmp.path().join("cache").join(WORK_SUBDIR);
+        let before = snapshot(&root);
+        let err = send(&root, &pk, &work, None, None).unwrap_err();
+        assert!(
+            matches!(err, TransferError::Prepare(PrepareError::LuniiInvalid(_))),
+            "{err:?}"
+        );
+        let app = AppError::from(err);
+        assert_eq!(app.kind(), "validation");
+        let message = app.to_string();
+        assert!(message.contains("histoire STUdio"), "{message}");
+        assert!(!message.contains("CCCCCCCC"), "{message}");
+        assert_eq!(snapshot(&root), before);
+        assert!(!work.join("str").join(NEW).exists());
+
+        let too_large = AppError::from(TransferError::Prepare(PrepareError::LuniiTooLarge(
+            "rf/000/AAAAAAAA".into(),
+        )));
+        assert_eq!(too_large.kind(), "validation");
+        assert!(!too_large.to_string().contains("AAAAAAAA"));
+        // Défense en profondeur : un refus 1.x venu de la préparation garde son type.
+        assert_eq!(
+            AppError::from(TransferError::Prepare(PrepareError::LuniiNeedsV2)).kind(),
+            "lunii_needs_v2"
+        );
+    }
+}
