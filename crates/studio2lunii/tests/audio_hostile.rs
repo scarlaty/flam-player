@@ -56,7 +56,7 @@ fn ape_footer_claiming_more_than_the_file_is_ignored() {
     foot.extend_from_slice(&0x8000_0000u32.to_le_bytes());
     foot.extend_from_slice(&[0; 8]);
     v.extend(foot);
-    assert!(mp3_tag_cleanup(&v).is_ok());
+    assert_eq!(mp3_tag_cleanup(&v).unwrap(), v);
 }
 
 #[test]
@@ -64,7 +64,11 @@ fn stacked_id3v2_bomb_is_bounded() {
     // 10 000 étiquettes ID3v2 vides empilées : au plus 16 sont retirées, sans boucle longue.
     let v: Vec<u8> = b"ID3\x04\x00\x00\x00\x00\x00\x00".repeat(10_000);
     let t = Instant::now();
-    let _ = mp3_tag_cleanup(&v);
+    let cleaned = mp3_tag_cleanup(&v).unwrap();
+    assert!(
+        cleaned.is_empty(),
+        "toutes les étiquettes empilées sont retirées"
+    );
     let _ = transcoding_required("a.mp3", &v);
     assert!(t.elapsed() < Duration::from_secs(2));
 }

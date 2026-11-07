@@ -116,7 +116,8 @@ fn conversion_is_idempotent() {
 
 #[test]
 fn transparent_pixels_become_black_not_white() {
-    // Blanc totalement transparent : Pillow prémultiplie, donc noir (le niveau 0, pas 15).
+    // Choix de conception (§ 3.5) : composition sur noir, donc un blanc totalement transparent
+    // donne le niveau 0 (Lunii.QT, qui ignore l'alpha, donnerait 15).
     let encode = |alpha: u8| {
         let img = image::RgbaImage::from_pixel(40, 30, image::Rgba([255, 255, 255, alpha]));
         let mut png = Vec::new();

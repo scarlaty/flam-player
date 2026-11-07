@@ -24,8 +24,9 @@
 //! Écarts choisis avec Lunii.QT (note de conception `docs/studio-lunii.md`, § 3.5) : (a) il copie
 //! tel quel un BMP RLE4 de 320 x 240 ; ici décodé puis réencodé. (b) Il écrit à l'envers une
 //! source BMP de 320 x 240 non RLE4 (il ne la retourne pas) ; ici toutes les sources sortent à
-//! l'endroit. (c) Il ignore l'alpha quand l'image n'est pas redimensionnée ; ici composition sur
-//! noir dans tous les cas. Limites : (d) JPEG, le décodeur diffère de libjpeg, d'où des écarts de
+//! l'endroit. (c) Il ignore l'alpha (Pillow redimensionne en alpha prémultiplié, puis `convert("RGB")`
+//! jette l'alpha : les couleurs reviennent telles quelles) ; ici composition sur noir, à toute
+//! taille. Les fixtures avec alpha sont donc attendues sur l'image déjà composée. Limites : (d) JPEG, le décodeur diffère de libjpeg, d'où des écarts de
 //! quelques niveaux de gris possibles (la structure reste identique) ; (e) PNG 16 bits, octet de
 //! poids fort.
 //!
@@ -67,8 +68,9 @@ pub const HEIGHT: u32 = 240;
 pub const MAX_INPUT_BYTES: usize = 32 * 1024 * 1024;
 /// Largeur ou hauteur maximale d'une image d'entrée, en pixels.
 pub const MAX_SIDE: u32 = 8192;
-/// Nombre maximal de pixels d'une image d'entrée (40 Mpx, environ 160 Mo en RGBA décodé).
-pub const MAX_PIXELS: u64 = 40_000_000;
+/// Nombre maximal de pixels d'une image d'entrée (16 Mpx : au plus 128 Mo décodés en RGBA 16 bits,
+/// largement assez pour une image affichée en 320 x 240).
+pub const MAX_PIXELS: u64 = 16_000_000;
 
 const HEADER_SIZE: usize = 54;
 const PALETTE_SIZE: usize = 64;
@@ -354,11 +356,22 @@ impl Raster {
         let ch = self.ch;
         if nearest {
             let (sx, sy) = (self.w as f64 / ow as f64, self.h as f64 / oh as f64);
+            // Pillow accumule (0,5 * pas, puis + pas) au lieu de calculer (x + 0,5) * pas : aux
+            // bords exacts les deux formes diffèrent d'un pixel.
+            let axis = |n_in: usize, n_out: usize, step: f64| {
+                let mut f = 0.5 * step;
+                (0..n_out)
+                    .map(|_| {
+                        let i = (f as usize).min(n_in - 1);
+                        f += step;
+                        i
+                    })
+                    .collect::<Vec<usize>>()
+            };
+            let (xs, ys) = (axis(self.w, ow, sx), axis(self.h, oh, sy));
             let mut out = Vec::with_capacity(ow * oh * ch);
-            for y in 0..oh {
-                let yi = (((y as f64 + 0.5) * sy) as usize).min(self.h - 1);
-                for x in 0..ow {
-                    let xi = (((x as f64 + 0.5) * sx) as usize).min(self.w - 1);
+            for &yi in &ys {
+                for &xi in &xs {
                     let i = (yi * self.w + xi) * ch;
                     out.extend_from_slice(&self.data[i..i + ch]);
                 }

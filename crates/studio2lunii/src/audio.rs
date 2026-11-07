@@ -44,7 +44,7 @@
 //!
 //! | Étiquette | Emplacement | Retrait |
 //! |---|---|---|
-//! | ID3v2.2 / 2.3 / 2.4 | début, `ID3`, 10 octets d'en-tête + taille synchsafe (+ 10 si pied `3DI`, drapeau `0x10`) | oui, répétée si plusieurs étiquettes sont empilées (16 au plus) |
+//! | ID3v2.2 / 2.3 / 2.4 | début, `ID3`, 10 octets d'en-tête + taille synchsafe (+ 10 si pied `3DI`, drapeau `0x10`) | oui, répétée si plusieurs étiquettes sont empilées |
 //! | ID3v1 / v1.1 | 128 derniers octets, `TAG` | oui |
 //! | APEv2 | pied `APETAGEX` de 32 octets en fin de fichier (avant l'ID3v1), en-tête éventuel | oui |
 //!
@@ -96,8 +96,6 @@ const MAX_SYNCS: u32 = 1500;
 const ENOUGH_FRAMES: usize = 4;
 /// Trames consécutives minimales pour retenir une synchronisation « douteuse ».
 const MIN_FRAMES: usize = 2;
-/// Nombre maximal d'étiquettes ID3v2 empilées retirées.
-const MAX_STACKED_ID3V2: usize = 16;
 const ID3V1_LEN: usize = 128;
 const APE_FOOTER_LEN: usize = 32;
 
@@ -203,10 +201,8 @@ pub fn tags_removal_required(bytes: &[u8]) -> bool {
 /// peut travailler sur une tranche.
 pub fn mp3_audio_range(bytes: &[u8]) -> Result<Range<usize>, AudioError> {
     let mut start = 0;
-    for _ in 0..MAX_STACKED_ID3V2 {
-        let Some(len) = id3v2_len_at(&bytes[start..], 0) else {
-            break;
-        };
+    // Chaque étiquette avance d'au moins 10 octets : la boucle est bornée par la taille.
+    while let Some(len) = id3v2_len_at(&bytes[start..], 0) {
         if start + len > bytes.len() {
             return Err(AudioError::TruncatedTag {
                 kind: "ID3v2",
