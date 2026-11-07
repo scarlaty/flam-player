@@ -18,10 +18,18 @@
 //! | `sf/000/<NOM>`      | sons MP3 MPEG-1 couche III, 44,1 kHz, mono, sans étiquette                |
 //!
 //! Sons : un MP3 conforme (`studio2lunii::audio::transcoding_required` faux) est gardé, ses
-//! étiquettes retirées ; tout autre son est transcodé par le ffmpeg embarqué
-//! ([`crate::ffmpeg`], arguments `FFMPEG_TRANSCODE_ARGS`, empreinte vérifiée une fois par
-//! conversion), puis la sortie est recontrôlée (refus si elle n'est pas conforme) et nettoyée.
-//! ffmpeg n'est exigé que si un son doit être transcodé.
+//! étiquettes retirées (seule la plage audio, `mp3_audio_range`, est copiée : aucune seconde
+//! copie du son) ; tout autre son est transcodé par le ffmpeg embarqué ([`crate::ffmpeg`],
+//! démuxeurs limités à [`FFMPEG_INPUT_FORMATS`], arguments `FFMPEG_TRANSCODE_ARGS`, empreinte
+//! vérifiée une fois par conversion), puis la sortie est recontrôlée (refus si elle n'est pas
+//! conforme) et nettoyée. Un son dont le nom n'est pas en `.mp3` est copié du zip vers le
+//! dossier temporaire en flux, sans passer par la mémoire.
+//!
+//! ffmpeg n'est exigé que si un son doit être transcodé. Une pré-analyse bon marché (extension,
+//! puis en-tête des [`PROBE_BYTES`] premiers octets de chaque MP3) repère avant toute
+//! conversion un son qui devra l'être : ffmpeg absent est alors refusé d'emblée, et son
+//! empreinte vérifiée avant les images. Un son que seule la lecture complète déclare non
+//! conforme (trames illisibles plus loin) n'est découvert qu'à son tour.
 //!
 //! Vignette : `thumbnail.png`, sinon l'image du nœud d'entrée (PNG, JPEG ou BMP), sinon aucune
 //! (`prepare_lunii` l'accepte). Dimensions lues et bornées avant tout décodage (bornes de
@@ -43,7 +51,9 @@
 //!    sortie n'est ni créée ni modifiée.
 //! 4. Coût borné et linéaire (note § 6.2) : entrées du zip, tailles déclarées **puis lues**,
 //!    `story.json`, images (32 Mio), sons (512 Mio), total lu et total écrit (4 Gio), délai de
-//!    ffmpeg (120 s par son). Aucun parcours du graphe.
+//!    ffmpeg (120 s par son, [`FFMPEG_TOTAL_BUDGET`] pour tous les sons d'une conversion),
+//!    pré-analyse ([`PROBE_BYTES`] par son). Aucun parcours du graphe. Mémoire : un son au
+//!    plus (512 Mio) est tenu en mémoire à la fois, sans copie.
 //! 5. Conversion déterministe : mêmes entrées (et même ffmpeg), mêmes octets.
 //! 6. Aucune clé : le pack est en clair, indépendant de l'appareil.
 //!
@@ -59,7 +69,7 @@
 //! | MP3 aux étiquettes incohérentes                               | `conversion` `unreadable_audio`                   |
 //! | ffmpeg en échec, sortie non conforme                          | `conversion` `ffmpeg_failed`                      |
 //! | ffmpeg absent, empreinte fausse                               | `converter_unavailable`                           |
-//! | Délai de ffmpeg dépassé                                       | `io` (`TimedOut`)                                 |
+//! | Délai de ffmpeg dépassé (par son ou budget global)            | `io` (`TimedOut`)                                 |
 //! | Annulation                                                    | `cancelled`                                       |
 //! | Écriture impossible (disque plein, sortie inaccessible)       | `io`                                              |
 //!
@@ -71,11 +81,13 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use studio2lunii::audio::{
-    mp3_tag_cleanup, tags_removal_required, transcoding_required, FFMPEG_TRANSCODE_ARGS,
+    mp3_audio_range, probe_mp3, transcoding_required, MpegVersion, ACCEPTED_SAMPLE_RATE_HZ,
+    FFMPEG_TRANSCODE_ARGS, TARGET_CHANNELS,
 };
 use studio2lunii::bitmap::{to_lunii_bmp, MAX_INPUT_BYTES as MAX_IMAGE_BYTES};
 use studio2lunii::index::{build_index, AssetKind, PackIndex};
@@ -103,6 +115,16 @@ pub const MAX_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub const MAX_SOUND_BYTES: u64 = 512 * 1024 * 1024;
 /// Délai de ffmpeg par son (note § 6.2, comme `telmi2flam`).
 pub const FFMPEG_TIMEOUT: Duration = Duration::from_secs(120);
+/// Budget de temps de ffmpeg pour l'ensemble des sons d'une conversion (note § 6.2) : au-delà,
+/// le transcodage en cours est tué et la conversion échoue (`TimedOut`). Une heure laisse
+/// largement passer une histoire réelle (quelques secondes par son) et arrête une archive
+/// forgée de milliers de sons lents.
+pub const FFMPEG_TOTAL_BUDGET: Duration = Duration::from_secs(60 * 60);
+/// Démuxeurs autorisés en entrée de ffmpeg (`-format_whitelist`) : les formats de son acceptés
+/// par STUdio (note § 2.3) — MP3, OGG (Vorbis, Opus), WAV, FLAC, AAC (ADTS), M4A (`mov`).
+pub const FFMPEG_INPUT_FORMATS: &str = "mp3,ogg,wav,flac,aac,mov";
+/// Octets lus en tête de chaque MP3 par la pré-analyse (note § 6.2).
+pub const PROBE_BYTES: u64 = 64 * 1024;
 /// Phases annoncées par la progression : `images`, `audio`, `zip`.
 pub const PHASES: usize = 3;
 
@@ -177,6 +199,13 @@ pub trait Transcoder: Send + Sync {
         output: &'a Path,
         cancel: &'a watch::Receiver<bool>,
     ) -> BoxFuture<'a, AppResult<()>>;
+
+    /// Contrôle anticipé, avant toute conversion, quand la pré-analyse a trouvé un son à
+    /// transcoder (ffmpeg embarqué : vérification de l'empreinte). Par défaut, rien.
+    fn prepare<'a>(&'a self, cancel: &'a watch::Receiver<bool>) -> BoxFuture<'a, AppResult<()>> {
+        let _ = cancel;
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// ffmpeg embarqué : empreinte vérifiée au premier son transcodé, une fois par conversion.
@@ -203,7 +232,45 @@ fn last_line(stderr: &str) -> String {
     line.chars().take(200).collect()
 }
 
+impl EmbeddedFfmpeg {
+    /// Exécutable vérifié (empreinte calculée au premier appel seulement).
+    async fn verified(&self, cancel: &watch::Receiver<bool>) -> AppResult<&Verified> {
+        self.verified
+            .get_or_try_init(|| async {
+                let mut cancel = cancel.clone();
+                self.ffmpeg
+                    .verify(Tool::Ffmpeg, &mut cancel)
+                    .await
+                    .map_err(|e| match e {
+                        AppError::ConverterUnavailable(m) => ffmpeg_unavailable(m),
+                        other => other,
+                    })
+            })
+            .await
+    }
+}
+
+/// Arguments d'entrée de ffmpeg, avant le fichier source : aucun protocole hors `file`, et
+/// seulement les démuxeurs des formats de son attendus (le format reste détecté au contenu ;
+/// un autre est refusé, « Format not on whitelist »).
+const FFMPEG_INPUT_ARGS: &[&str] = &[
+    "-hide_banner",
+    "-nostdin",
+    "-v",
+    "error",
+    "-y",
+    "-protocol_whitelist",
+    "file",
+    "-format_whitelist",
+    FFMPEG_INPUT_FORMATS,
+    "-i",
+];
+
 impl Transcoder for EmbeddedFfmpeg {
+    fn prepare<'a>(&'a self, cancel: &'a watch::Receiver<bool>) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async move { self.verified(cancel).await.map(|_| ()) })
+    }
+
     fn transcode<'a>(
         &'a self,
         input: &'a Path,
@@ -211,31 +278,8 @@ impl Transcoder for EmbeddedFfmpeg {
         cancel: &'a watch::Receiver<bool>,
     ) -> BoxFuture<'a, AppResult<()>> {
         Box::pin(async move {
-            let verified = self
-                .verified
-                .get_or_try_init(|| async {
-                    let mut cancel = cancel.clone();
-                    self.ffmpeg
-                        .verify(Tool::Ffmpeg, &mut cancel)
-                        .await
-                        .map_err(|e| match e {
-                            AppError::ConverterUnavailable(m) => ffmpeg_unavailable(m),
-                            other => other,
-                        })
-                })
-                .await?;
-            let mut args: Vec<OsString> = [
-                "-hide_banner",
-                "-nostdin",
-                "-v",
-                "error",
-                "-y",
-                "-protocol_whitelist",
-                "file",
-                "-i",
-            ]
-            .map(OsString::from)
-            .to_vec();
+            let verified = self.verified(cancel).await?;
+            let mut args: Vec<OsString> = FFMPEG_INPUT_ARGS.iter().map(OsString::from).collect();
             args.push(file_arg(input));
             args.extend(FFMPEG_TRANSCODE_ARGS.iter().map(OsString::from));
             // Sortie bornée sur le disque (relue ensuite avec la même borne).
@@ -277,18 +321,21 @@ pub async fn convert(
         job.output,
         job.thumb_fit,
         transcoder.as_ref().map(|t| t as &dyn Transcoder),
+        FFMPEG_TOTAL_BUDGET,
         cancel,
         on_step,
     )
     .await
 }
 
-/// [`convert`] avec un transcodeur injecté (`None` : ffmpeg absent).
+/// [`convert`] avec un transcodeur injecté (`None` : ffmpeg absent) et le budget de temps
+/// global des transcodages (`budget`, [`FFMPEG_TOTAL_BUDGET`] en production).
 pub(crate) async fn convert_with(
     input: &Path,
     output: &Path,
     fit: ThumbFit,
     transcoder: Option<&dyn Transcoder>,
+    budget: Duration,
     cancel: &watch::Receiver<bool>,
     on_step: &mut (dyn FnMut(&Step) + Send),
 ) -> AppResult<StudioPack> {
@@ -301,7 +348,12 @@ pub(crate) async fn convert_with(
         })
         .await??
     };
-    let result = run(input, output, &tmp.0, fit, transcoder, cancel, on_step).await;
+    let options = RunOptions {
+        fit,
+        transcoder,
+        budget,
+    };
+    let result = run(input, output, &tmp.0, &options, cancel, on_step).await;
     // Suppression hors du runtime ; `Drop` la refait (sans effet) si elle a échoué.
     let _ = blocking(move || drop(tmp)).await;
     result
@@ -531,13 +583,65 @@ impl Source {
         if data.len() as u64 > max {
             return Err(too_large(format!("{what} dépasse {max} octets")));
         }
-        self.read = self.read.saturating_add(data.len() as u64);
+        drop(entry);
+        self.count(data.len() as u64)?;
+        Ok(data)
+    }
+
+    /// Ajoute `n` octets lus au total décompressé, borné.
+    fn count(&mut self, n: u64) -> AppResult<()> {
+        self.read = self.read.saturating_add(n);
         if self.read > MAX_TOTAL_BYTES {
             return Err(too_large(format!(
                 "plus de {MAX_TOTAL_BYTES} octets décompressés"
             )));
         }
-        Ok(data)
+        Ok(())
+    }
+
+    /// Copie l'entrée `index` dans le fichier `path` (créé) en flux, au plus `max` octets
+    /// (taille déclarée puis lue) : rien n'est tenu en mémoire au-delà d'un tampon.
+    fn copy_to(&mut self, index: usize, max: u64, what: &str, path: &Path) -> AppResult<()> {
+        let mut entry = self
+            .zip
+            .by_index(index)
+            .map_err(|e| invalid_archive(format!("{what} illisible : {e}")))?;
+        if entry.size() > max {
+            return Err(too_large(format!(
+                "{what} : {} octets annoncés (au plus {max})",
+                entry.size()
+            )));
+        }
+        let mut out = BufWriter::new(File::create_new(path)?);
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut copied = 0u64;
+        loop {
+            let n = entry
+                .read(&mut buf)
+                .map_err(|e| invalid_archive(format!("{what} illisible : {e}")))?;
+            if n == 0 {
+                break;
+            }
+            copied += n as u64;
+            if copied > max {
+                return Err(too_large(format!("{what} dépasse {max} octets")));
+            }
+            out.write_all(&buf[..n])?;
+        }
+        out.into_inner().map_err(|e| e.into_error())?;
+        drop(entry);
+        self.count(copied)
+    }
+
+    /// Les `max` premiers octets de l'entrée `index`, pour la pré-analyse (hors du total lu :
+    /// [`PROBE_BYTES`] par son au plus). Une entrée illisible rend ce qui a pu être lu : la
+    /// lecture complète la refusera à son tour.
+    fn prefix(&mut self, index: usize, max: u64) -> Vec<u8> {
+        let mut data = Vec::new();
+        if let Ok(entry) = self.zip.by_index(index) {
+            let _ = entry.take(max).read_to_end(&mut data);
+        }
+        data
     }
 }
 
@@ -545,11 +649,39 @@ impl Source {
 // Textes : titre, description, `info`
 // ---------------------------------------------------------------------------------------
 
-/// Texte sur une ligne : contrôles et blancs consécutifs réduits à une espace, bords rognés,
-/// longueur bornée (#535).
+/// Caractère Unicode de format invisible (catégorie `Cf` et assimilés) : contrôles
+/// bidirectionnels (U+061C, U+200E/F, U+202A–U+202E, U+2066–U+2069), espace et liants sans
+/// chasse (U+200B, U+2060–U+2064, U+FEFF), trait d'union conditionnel, séparateur vocalique
+/// mongol, formats déconseillés (U+206A–U+206F), annotations interlinéaires (U+FFF9–U+FFFB),
+/// étiquettes (U+E0001, U+E0020–U+E007F). Ils retourneraient ou masqueraient le texte affiché
+/// (« Trojan Source »). ZWNJ et ZWJ (U+200C, U+200D) sont gardés dans le texte UTF-8 : ils
+/// servent à l'écriture (persan, langues indiennes) et aux émojis composés ; la
+/// translittération ASCII les retire ([`ascii_text`]).
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
+/// Texte sur une ligne : caractères de format retirés, contrôles et blancs consécutifs réduits
+/// à une espace, bords rognés, longueur bornée (#535, #553).
 pub(crate) fn clean_line(text: &str, max_chars: usize) -> String {
     let flat: String = text
         .chars()
+        .filter(|&c| !is_format_char(c))
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
     let joined = flat.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -566,7 +698,10 @@ pub(crate) fn ascii_text(text: &str) -> String {
             out.push(if c.is_ascii_control() { ' ' } else { c });
             continue;
         }
-        if canonical_combining_class(c) != 0 {
+        if canonical_combining_class(c) != 0
+            || is_format_char(c)
+            || matches!(c, '\u{200C}' | '\u{200D}')
+        {
             continue;
         }
         let replacement = match c {
@@ -637,6 +772,69 @@ struct Plan {
     warnings: Vec<String>,
     title: String,
     description: String,
+    /// Premier son que la pré-analyse sait déjà devoir transcoder.
+    first_to_transcode: Option<String>,
+}
+
+/// Un son au nom autre que `.mp3` est toujours transcodé (règle de
+/// `studio2lunii::audio::transcoding_required`, qui ne lit alors pas ses octets).
+fn transcoded_by_name(name: &str) -> bool {
+    !name.to_ascii_lowercase().ends_with(".mp3")
+}
+
+/// Pré-analyse bon marché : premier son qui devra **certainement** être transcodé, d'après son
+/// extension, sinon d'après la première trame (confirmée) lue dans ses [`PROBE_BYTES`] premiers
+/// octets. Un doute (en-tête illisible dans ce préfixe, étiquette plus longue) ne conclut rien :
+/// la lecture complète tranchera à son tour.
+fn first_to_transcode(
+    source: &mut Source,
+    index: &PackIndex,
+    sources: &[usize],
+    cancel: &watch::Receiver<bool>,
+) -> AppResult<Option<String>> {
+    let sounds = || {
+        index
+            .assets
+            .iter()
+            .zip(sources)
+            .filter(|(a, _)| a.kind == AssetKind::Audio)
+    };
+    if let Some((asset, _)) = sounds().find(|(a, _)| transcoded_by_name(&a.name)) {
+        return Ok(Some(asset.name.clone()));
+    }
+    for (asset, &at) in sounds() {
+        check_cancel(cancel)?;
+        let head = source.prefix(at, PROBE_BYTES);
+        if id3v2_overflows(&head) {
+            // Étiquette (pochette) plus longue que le préfixe : les octets lus après seraient
+            // ceux de l'image, où une fausse synchronisation pourrait passer pour une trame.
+            continue;
+        }
+        let Ok(info) = probe_mp3(&head) else {
+            continue;
+        };
+        let non_conforming = info.version != MpegVersion::V1
+            || info.layer != 3
+            || info.sample_rate != ACCEPTED_SAMPLE_RATE_HZ
+            || info.channels() != TARGET_CHANNELS;
+        if !info.sketchy && non_conforming {
+            return Ok(Some(asset.name.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// Le préfixe commence-t-il par une étiquette ID3v2 qui le déborde (taille « synchsafe » de
+/// l'en-tête, pied de page éventuel compris) ?
+fn id3v2_overflows(head: &[u8]) -> bool {
+    let Some(header) = head.get(..10).filter(|h| h.starts_with(b"ID3")) else {
+        return false;
+    };
+    let size = header[6..10]
+        .iter()
+        .fold(0usize, |acc, &b| (acc << 7) | usize::from(b & 0x7f));
+    let footer = if header[5] & 0x10 != 0 { 10 } else { 0 };
+    10 + size + footer >= head.len()
 }
 
 fn plan(source: &mut Source, fit: ThumbFit, cancel: &watch::Receiver<bool>) -> AppResult<Plan> {
@@ -663,9 +861,12 @@ fn plan(source: &mut Source, fit: ThumbFit, cancel: &watch::Receiver<bool>) -> A
         sources.push(found);
     }
     check_cancel(cancel)?;
+    let first_to_transcode = first_to_transcode(source, &index, &sources, cancel)?;
+    check_cancel(cancel)?;
     let mut warnings = Vec::new();
     let thumbnail = thumbnail(source, &story, &index, &sources, fit, cancel, &mut warnings)?;
     Ok(Plan {
+        first_to_transcode,
         title: display_title(&story),
         description: clean_line(story.description(), MAX_DESCRIPTION_CHARS),
         story,
@@ -865,12 +1066,10 @@ fn write_header(pack: &mut Pack, plan: &Plan) -> AppResult<()> {
     Ok(())
 }
 
-/// MP3 gardé : étiquettes retirées.
-fn clean_mp3(bytes: Vec<u8>, name: &str) -> AppResult<Vec<u8>> {
-    if !tags_removal_required(&bytes) {
-        return Ok(bytes);
-    }
-    mp3_tag_cleanup(&bytes).map_err(|e| conversion(UNREADABLE_AUDIO, format!("son {name:?} : {e}")))
+/// MP3 gardé : plage des octets audio, étiquettes écartées (le pack reçoit la tranche, sans
+/// copie du son).
+fn audio_range(bytes: &[u8], name: &str) -> AppResult<Range<usize>> {
+    mp3_audio_range(bytes).map_err(|e| conversion(UNREADABLE_AUDIO, format!("son {name:?} : {e}")))
 }
 
 /// Son lu : gardé (déjà ajouté au pack), ou écrit dans le dossier temporaire pour ffmpeg.
@@ -895,22 +1094,69 @@ fn step(on_step: &mut (dyn FnMut(&Step) + Send), phase: &str, index: usize, done
     });
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Réglages d'une conversion.
+struct RunOptions<'a> {
+    fit: ThumbFit,
+    transcoder: Option<&'a dyn Transcoder>,
+    /// Budget de temps cumulé des transcodages.
+    budget: Duration,
+}
+
+/// Transcode un son dans le budget restant (`spent` : temps déjà consommé). Au-delà, le futur
+/// du transcodeur est abandonné (ffmpeg tué : `kill_on_drop`) et l'erreur est `TimedOut`.
+async fn transcode_within(
+    transcoder: &dyn Transcoder,
+    (input, output): (&Path, &Path),
+    budget: Duration,
+    spent: &mut Duration,
+    cancel: &watch::Receiver<bool>,
+) -> AppResult<()> {
+    let over = || {
+        AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "ffmpeg : budget de {} s pour les sons de l'histoire dépassé",
+                budget.as_secs()
+            ),
+        ))
+    };
+    let remaining = budget.checked_sub(*spent).filter(|r| !r.is_zero());
+    let remaining = remaining.ok_or_else(over)?;
+    let started = Instant::now();
+    let result = tokio::time::timeout(remaining, transcoder.transcode(input, output, cancel)).await;
+    *spent = spent.saturating_add(started.elapsed());
+    result.map_err(|_| over())?
+}
+
 async fn run(
     input: &Path,
     output: &Path,
     tmp: &Path,
-    fit: ThumbFit,
-    transcoder: Option<&dyn Transcoder>,
+    options: &RunOptions<'_>,
     cancel: &watch::Receiver<bool>,
     on_step: &mut (dyn FnMut(&Step) + Send),
 ) -> AppResult<StudioPack> {
-    let (input, part) = (input.to_path_buf(), tmp.join(PACK_PART));
-    let rx = cancel.clone();
-    let (mut work, plan) = blocking(move || -> AppResult<(Work, Plan)> {
+    let (input, fit, rx) = (input.to_path_buf(), options.fit, cancel.clone());
+    let (source, plan) = blocking(move || -> AppResult<(Source, Plan)> {
         let mut source = Source::open(&input)?;
         let plan = plan(&mut source, fit, &rx)?;
-        check_cancel(&rx)?;
+        Ok((source, plan))
+    })
+    .await??;
+    // ffmpeg exigé : contrôlé avant toute conversion (#553).
+    if let Some(name) = &plan.first_to_transcode {
+        match options.transcoder {
+            None => {
+                return Err(ffmpeg_unavailable(format!(
+                    "le son {name:?} n'est pas un MP3 44,1 kHz mono"
+                )))
+            }
+            Some(t) => t.prepare(cancel).await?,
+        }
+    }
+    check_cancel(cancel)?;
+    let part = tmp.join(PACK_PART);
+    let (mut work, plan) = blocking(move || -> AppResult<(Work, Plan)> {
         let mut pack = Pack::create(&part)?;
         write_header(&mut pack, &plan)?;
         Ok((Work { source, pack }, plan))
@@ -950,6 +1196,7 @@ async fn run(
 
     step(on_step, "audio", 1, 0, sounds as u64);
     let mut transcoded = 0;
+    let mut spent = Duration::ZERO;
     let (sound_in, sound_out) = (tmp.join(SOUND_IN), tmp.join(SOUND_OUT));
     for (done, (at, asset)) in targets
         .iter()
@@ -960,25 +1207,37 @@ async fn run(
         let (at, name, target) = (*at, asset.name.clone(), asset.pack_path.clone());
         let staged = sound_in.clone();
         let (back, sound) = blocking(move || -> AppResult<(Work, Sound)> {
+            if transcoded_by_name(&name) {
+                // Ni lu en mémoire ni analysé : copié en flux pour ffmpeg.
+                work.source.copy_to(at, MAX_SOUND_BYTES, &name, &staged)?;
+                return Ok((work, Sound::Transcode));
+            }
             let bytes = work.source.read(at, MAX_SOUND_BYTES, &name)?;
             if transcoding_required(&name, &bytes) {
                 std::fs::write(&staged, &bytes)?;
                 return Ok((work, Sound::Transcode));
             }
-            let mp3 = clean_mp3(bytes, &name)?;
-            work.pack.add(&target, &mp3)?;
+            let range = audio_range(&bytes, &name)?;
+            work.pack.add(&target, &bytes[range])?;
             Ok((work, Sound::Kept))
         })
         .await??;
         work = back;
         if let Sound::Transcode = sound {
-            let transcoder = transcoder.ok_or_else(|| {
+            let transcoder = options.transcoder.ok_or_else(|| {
                 ffmpeg_unavailable(format!(
                     "le son {:?} n'est pas un MP3 44,1 kHz mono",
                     asset.name
                 ))
             })?;
-            transcoder.transcode(&sound_in, &sound_out, cancel).await?;
+            transcode_within(
+                transcoder,
+                (&sound_in, &sound_out),
+                options.budget,
+                &mut spent,
+                cancel,
+            )
+            .await?;
             check_cancel(cancel)?;
             transcoded += 1;
             let (name, target) = (asset.name.clone(), asset.pack_path.clone());
@@ -991,8 +1250,8 @@ async fn run(
                         format!("son {name:?} : le MP3 produit par ffmpeg n'est pas conforme"),
                     ));
                 }
-                let mp3 = clean_mp3(mp3, &name)?;
-                work.pack.add(&target, &mp3)?;
+                let range = audio_range(&mp3, &name)?;
+                work.pack.add(&target, &mp3[range])?;
                 std::fs::remove_file(&staged)?;
                 std::fs::remove_file(&produced)?;
                 Ok(work)

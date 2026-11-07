@@ -309,11 +309,19 @@ Lunii.QT) : ce format n'est pas repris (§ 4).
 
 - `info` : fins de ligne LF ; contenu de Lunii.QT pour le premier essai sur appareil (titre de
   `story.json` translittéré en ASCII, ligne d'auteur `No authors.` comme Lunii.QT). Les
-  variantes (UTF-8, sans ligne d'auteur) seront essayées ensuite (question Q4) ;
+  variantes (UTF-8, sans ligne d'auteur) seront essayées ensuite (question Q4). Titre et
+  description sont d'abord assainis (contrôles et blancs réduits, caractères Unicode de format
+  invisibles retirés : contrôles bidirectionnels U+202A–U+202E, U+2066–U+2069, U+200E/F,
+  espaces sans chasse, BOM, #553) ; un titre absent ou sans lettre ni chiffre une fois
+  translittéré devient « Sans titre » (écart avec Lunii.QT, qui écrirait une ligne vide) ;
 - vignette : notre encodeur LIF (`telmi2flam::lif`, utilisé sur une Flam 1.15.14) au format des
   vignettes Flam, 104 × 136 (`telmi2flam::image`, même remplissage que les histoires Telmi).
   Source : `thumbnail.png`, sinon l'image du nœud d'entrée, sinon pas de vignette (Lunii.QT
-  échoue sans `thumbnail.png`). Taille à confirmer (L5).
+  échoue sans `thumbnail.png`). Taille à confirmer (L5). Écarts avec Lunii.QT (#552) : la
+  source peut être un PNG, un JPEG ou un BMP (reconnu au contenu, dimensions bornées avant
+  décodage) ; un JPEG ou un BMP est décodé puis réencodé en PNG avant la réduction. Une source
+  illisible, trop lourde ou trop grande est un **avertissement** (repli sur l'image du nœud
+  d'entrée, puis aucune vignette), jamais un refus de l'histoire.
 
 ### 3.9 Index de la bibliothèque
 
@@ -369,7 +377,7 @@ Format de la bibliothèque : `library/<uuid>-<version>.lunii.pk`, zip « stored 
 | --------------------------- | ---------------------------------------------------------------------------------------- |
 | `uuid.bin`                  | UUID du pack, 16 octets (`status.rs`, `uuid_bin_of`, une fois `Library::checked` étendu) |
 | `_metadata.json`            | titre, description, version, format source                                               |
-| `_thumbnail.png`            | vignette d'origine (si présente)                                                         |
+| `_thumbnail.png`            | `thumbnail.png` d'origine, seulement s'il a servi de vignette et est un vrai PNG         |
 | `ni`, `nm` (si nuit)        | comme sur l'appareil                                                                     |
 | `li`, `ri`, `si`            | **en clair**                                                                             |
 | `rf/000/*`, `sf/000/*`      | **en clair**                                                                             |
@@ -521,10 +529,17 @@ suffit.
 | Image source                         | 32 Mio, 40 mégapixels décodés                        |
 | Son source                           | 512 Mio                                              |
 | Délai ffmpeg par fichier             | 120 s (comme `telmi2flam`)                           |
+| Délai ffmpeg cumulé, tous les sons   | 1 h (`FFMPEG_TOTAL_BUDGET`)                          |
+| Pré-analyse des sons                 | 64 Kio lus en tête de chaque MP3                     |
+| Sons tenus en mémoire                | un à la fois, sans copie ; non-MP3 copié en flux     |
 
 Les tableaux `stageNodes` et `actionNodes` et les `options` sont lus avec un plafond de
 `MAX + 1` éléments (le surplus est compté sans être alloué : mémoire bornée) ; les numéros de
 nœud et d'action des messages d'erreur sont comptés à partir de 1.
+
+ffmpeg ne reçoit que le protocole `file` (`-protocol_whitelist`) et les démuxeurs des formats du
+§ 2.3 (`-format_whitelist mp3,ogg,wav,flac,aac,mov`) : le format reste détecté au contenu, un
+autre (Matroska, par exemple, présent dans notre build pour les podcasts) est refusé.
 
 ### 6.3 Tableau des pannes
 
@@ -541,7 +556,9 @@ nœud et d'action des messages d'erreur sont comptés à partir de 1.
 | Plusieurs `squareOne`                                                                     | idem                              | refus                                                             |
 | Cycles                                                                                    | aucune                            | acceptés (normaux)                                                |
 | Asset non décodable, son refusé par ffmpeg                                                | décodage                          | refus (jamais d'asset sauté en silence)                           |
-| ffmpeg absent, empreinte fausse, délai dépassé                                            | `ffmpeg.rs`                       | refus de l'installation, message                                  |
+| ffmpeg absent, empreinte fausse                                                           | pré-analyse, avant la conversion  | refus de l'installation, message                                  |
+| Délai de ffmpeg dépassé (par son ou budget cumulé)                                        | `ffmpeg.rs`, `install/studio.rs`  | refus de l'installation (`TimedOut`)                              |
+| Vignette illisible, trop lourde ou trop grande                                            | en-tête lu avant décodage         | avertissement, repli (§ 3.8)                                      |
 | Arrêt pendant l'installation                                                              | chantier `library/.staging/`      | réconciliation existante de `library.rs` ; bibliothèque inchangée |
 | Arrêt pendant la préparation                                                              | chantier `.partiel-`              | supprimé au prochain envoi (`cleanup_stale`)                      |
 | Arrêt pendant le transfert                                                                | `.flam-transfer/`                 | reprise existante (`docs/flam-device-format.md`, § 8.1)           |
