@@ -655,6 +655,20 @@ async fn entrees_refusees() {
     );
 }
 
+#[tokio::test]
+async fn entree_studio_refusee_avec_un_message_clair() {
+    let ctx = Ctx::new(None);
+    for url in ["https://h.example.test/a.zip", r"C:\histoires\a.zip"] {
+        let mut entry = remote(url, "abc");
+        entry.kind = StoryKind::StudioZip;
+        let err = ctx.service.start(entry).unwrap_err();
+        assert_eq!(err.kind(), "validation", "{url}");
+        assert!(err.to_string().contains("Format STUdio"), "{err}");
+        assert!(err.to_string().contains("Flam 2.x"), "{err}");
+    }
+    assert!(ctx.service.list().is_empty());
+}
+
 // --- Serveur HTTP minimal : coupures, blocages, reprise ------------------------------------
 
 /// Réponse du serveur minimal à une requête (en-tête `Range` éventuel en argument).

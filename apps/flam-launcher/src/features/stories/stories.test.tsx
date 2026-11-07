@@ -1565,4 +1565,45 @@ describe("suppression depuis la liste", () => {
     await screen.findByRole("button", { name: "Installer « Conte local »" });
     expect(screen.queryByRole("button", { name: /Supprimer/ })).toBeNull();
   });
+
+  it("affiche une entrée STUdio avec son badge, sans bouton d'installation ni de lecture", async () => {
+    scanEntries = [
+      makeEntry({
+        source_id: "dossier",
+        entry_id: "dossier:studio",
+        uuid: "studio",
+        title: "Conte STUdio",
+        kind: "studio_zip",
+        download_url: "C:\\Contes\\studio.zip",
+      }),
+    ];
+    window.location.hash = "#/library/dossier";
+    render(
+      <ToastProvider>
+        <LibraryProvider>
+          <CompatProvider>
+            <StoriesProvider>
+              <DeviceProvider>
+                <main>
+                  <StoriesLibrary />
+                </main>
+              </DeviceProvider>
+            </StoriesProvider>
+          </CompatProvider>
+        </LibraryProvider>
+      </ToastProvider>,
+    );
+    expect(await screen.findByText("Format STUdio")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Installer|Télécharger|Jouer/ }),
+    ).toBeNull();
+    fireEvent.click(screen.getByText("Conte STUdio"));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText(/l'envoi vers une Flam 2\.x arrive/),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole("button", { name: /Installer|Télécharger|Jouer/ }),
+    ).toBeNull();
+  });
 });
