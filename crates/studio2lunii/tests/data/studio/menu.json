@@ -1,0 +1,194 @@
+{
+  "format": "v1",
+  "title": "Menu",
+  "version": 1,
+  "description": "desc",
+  "stageNodes": [
+    {
+      "uuid": "0000000a-1111-4222-8333-00000000000a",
+      "type": "stage",
+      "name": "n",
+      "image": "0123456789abcdef0123456789abcdef0000000a.png",
+      "audio": "0123456789abcdef0123456789abcdef0000000a.mp3",
+      "okTransition": {
+        "actionNode": "menu",
+        "optionIndex": 0
+      },
+      "homeTransition": null,
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": false,
+        "pause": false,
+        "autoplay": false
+      }
+    },
+    {
+      "uuid": "00000014-1111-4222-8333-000000000014",
+      "type": "stage",
+      "name": "n",
+      "image": "0123456789abcdef0123456789abcdef00000014.jpg",
+      "audio": "0123456789abcdef0123456789abcdef00000014.mp3",
+      "okTransition": {
+        "actionNode": "h0",
+        "optionIndex": 0
+      },
+      "homeTransition": {
+        "actionNode": "cover",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": true,
+        "pause": false,
+        "autoplay": false
+      }
+    },
+    {
+      "uuid": "00000015-1111-4222-8333-000000000015",
+      "type": "stage",
+      "name": "n",
+      "image": "0123456789abcdef0123456789abcdef00000015.jpg",
+      "audio": "0123456789abcdef0123456789abcdef00000015.mp3",
+      "okTransition": {
+        "actionNode": "h1",
+        "optionIndex": 0
+      },
+      "homeTransition": {
+        "actionNode": "cover",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": true,
+        "pause": false,
+        "autoplay": false
+      }
+    },
+    {
+      "uuid": "00000016-1111-4222-8333-000000000016",
+      "type": "stage",
+      "name": "n",
+      "image": "0123456789abcdef0123456789abcdef00000016.jpg",
+      "audio": "0123456789abcdef0123456789abcdef00000016.mp3",
+      "okTransition": {
+        "actionNode": "h2",
+        "optionIndex": 0
+      },
+      "homeTransition": {
+        "actionNode": "cover",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": true,
+        "pause": false,
+        "autoplay": false
+      }
+    },
+    {
+      "uuid": "0000001e-1111-4222-8333-00000000001e",
+      "type": "stage",
+      "name": "n",
+      "image": null,
+      "audio": "0123456789abcdef0123456789abcdef0000001e.mp3",
+      "okTransition": {
+        "actionNode": "menu",
+        "optionIndex": 0
+      },
+      "homeTransition": {
+        "actionNode": "menu",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    },
+    {
+      "uuid": "0000001f-1111-4222-8333-00000000001f",
+      "type": "stage",
+      "name": "n",
+      "image": null,
+      "audio": "0123456789abcdef0123456789abcdef0000001f.mp3",
+      "okTransition": {
+        "actionNode": "menu",
+        "optionIndex": 1
+      },
+      "homeTransition": {
+        "actionNode": "menu",
+        "optionIndex": 1
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    },
+    {
+      "uuid": "00000020-1111-4222-8333-000000000020",
+      "type": "stage",
+      "name": "n",
+      "image": null,
+      "audio": "0123456789abcdef0123456789abcdef00000020.mp3",
+      "okTransition": {
+        "actionNode": "menu",
+        "optionIndex": 2
+      },
+      "homeTransition": {
+        "actionNode": "menu",
+        "optionIndex": 2
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    }
+  ],
+  "actionNodes": [
+    {
+      "id": "cover",
+      "options": [
+        "0000000a-1111-4222-8333-00000000000a"
+      ]
+    },
+    {
+      "id": "menu",
+      "options": [
+        "00000014-1111-4222-8333-000000000014",
+        "00000015-1111-4222-8333-000000000015",
+        "00000016-1111-4222-8333-000000000016"
+      ]
+    },
+    {
+      "id": "h0",
+      "options": [
+        "0000001e-1111-4222-8333-00000000001e"
+      ]
+    },
+    {
+      "id": "h1",
+      "options": [
+        "0000001f-1111-4222-8333-00000000001f"
+      ]
+    },
+    {
+      "id": "h2",
+      "options": [
+        "00000020-1111-4222-8333-000000000020"
+      ]
+    }
+  ],
+  "nightModeAvailable": false
+}

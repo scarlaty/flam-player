@@ -1,0 +1,75 @@
+{
+  "format": "v513",
+  "title": "Nuit",
+  "version": 258,
+  "description": "desc",
+  "stageNodes": [
+    {
+      "uuid": "00000032-1111-4222-8333-000000000032",
+      "type": "stage",
+      "name": "n",
+      "image": "0123456789abcdef0123456789abcdef00000032.png",
+      "audio": "0123456789abcdef0123456789abcdef00000032.mp3",
+      "okTransition": {
+        "actionNode": "b",
+        "optionIndex": 1
+      },
+      "homeTransition": null,
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": false,
+        "pause": false,
+        "autoplay": false
+      }
+    },
+    {
+      "uuid": "00000033-1111-4222-8333-000000000033",
+      "type": "stage",
+      "name": "n",
+      "image": null,
+      "audio": "0123456789abcdef0123456789abcdef00000033.mp3",
+      "okTransition": null,
+      "homeTransition": {
+        "actionNode": "b",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    },
+    {
+      "uuid": "00000034-1111-4222-8333-000000000034",
+      "type": "stage",
+      "name": "n",
+      "image": null,
+      "audio": "0123456789abcdef0123456789abcdef00000034.mp3",
+      "okTransition": null,
+      "homeTransition": {
+        "actionNode": "b",
+        "optionIndex": 0
+      },
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    }
+  ],
+  "actionNodes": [
+    {
+      "id": "b",
+      "options": [
+        "00000033-1111-4222-8333-000000000033",
+        "00000034-1111-4222-8333-000000000034"
+      ]
+    }
+  ],
+  "nightModeAvailable": true
+}

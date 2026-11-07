@@ -1,0 +1,95 @@
+{
+  "format": "v1",
+  "title": "Partagés",
+  "version": 1,
+  "description": "desc",
+  "stageNodes": [
+    {
+      "uuid": "0000003c-1111-4222-8333-00000000003c",
+      "type": "stage",
+      "name": "n",
+      "image": "0123456789abcdef0123456789abcdef0000003c.png",
+      "audio": "0123456789abcdef0123456789abcdef0000003c.mp3",
+      "okTransition": {
+        "actionNode": "p",
+        "optionIndex": 0
+      },
+      "homeTransition": null,
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": false,
+        "pause": false,
+        "autoplay": false
+      }
+    },
+    {
+      "uuid": "0000003d-1111-4222-8333-00000000003d",
+      "type": "stage",
+      "name": "n",
+      "image": "0123456789abcdef0123456789abcdef0000003c.png",
+      "audio": "0123456789abcdef0123456789abcdef0000003d.mp3",
+      "okTransition": {
+        "actionNode": "p",
+        "optionIndex": 1
+      },
+      "homeTransition": null,
+      "controlSettings": {
+        "wheel": true,
+        "ok": true,
+        "home": true,
+        "pause": false,
+        "autoplay": false
+      }
+    },
+    {
+      "uuid": "0000003e-1111-4222-8333-00000000003e",
+      "type": "stage",
+      "name": "n",
+      "image": "",
+      "audio": null,
+      "okTransition": {
+        "actionNode": "p",
+        "optionIndex": 2
+      },
+      "homeTransition": null,
+      "controlSettings": {
+        "wheel": false,
+        "ok": false,
+        "home": true,
+        "pause": true,
+        "autoplay": true
+      }
+    },
+    {
+      "uuid": "0000003f-1111-4222-8333-00000000003f",
+      "type": "stage",
+      "name": "n",
+      "image": "0123456789abcdef0123456789abcdef0000003c.png",
+      "audio": "0123456789abcdef0123456789abcdef0000003c.mp3",
+      "okTransition": null,
+      "homeTransition": {
+        "actionNode": "p",
+        "optionIndex": 0
+      }
+    }
+  ],
+  "actionNodes": [
+    {
+      "id": "p",
+      "options": [
+        "0000003d-1111-4222-8333-00000000003d",
+        "0000003e-1111-4222-8333-00000000003e",
+        "0000003f-1111-4222-8333-00000000003f"
+      ]
+    },
+    {
+      "id": "inutile",
+      "options": [
+        "0000003c-1111-4222-8333-00000000003c",
+        "0000003f-1111-4222-8333-00000000003f"
+      ]
+    }
+  ],
+  "nightModeAvailable": false
+}
