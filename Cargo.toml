@@ -2,7 +2,7 @@
 # un seul `target/` et un seul inventaire de licences pour le launcher et la crate telmi2flam.
 [workspace]
 resolver = "2"
-members = ["apps/flam-launcher/src-tauri", "crates/telmi2flam"]
+members = ["apps/flam-launcher/src-tauri", "crates/telmi2flam", "crates/studio2lunii"]
 
 # Seul le Cargo.toml racine fixe les profils : ce profil release est celui du launcher, et le
 # binaire telmi2flam en hérite (sauf `opt-level`, voir plus bas).
