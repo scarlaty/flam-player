@@ -203,11 +203,16 @@ enum Fake {
     Fail,
     /// Demande l'annulation pendant le transcodage.
     Cancel(Arc<watch::Sender<bool>>),
+    /// Ne rend jamais la main (ffmpeg bloqué).
+    Slow,
+    /// Contrôle anticipé en échec (ffmpeg absent ou empreinte fausse).
+    Unavailable,
 }
 
 struct FakeTranscoder {
     mode: Fake,
     calls: AtomicUsize,
+    prepares: AtomicUsize,
     inputs: Mutex<Vec<Vec<u8>>>,
 }
 
@@ -216,12 +221,23 @@ impl FakeTranscoder {
         Self {
             mode,
             calls: AtomicUsize::new(0),
+            prepares: AtomicUsize::new(0),
             inputs: Mutex::default(),
         }
     }
 }
 
 impl Transcoder for FakeTranscoder {
+    fn prepare<'a>(&'a self, _cancel: &'a watch::Receiver<bool>) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async move {
+            self.prepares.fetch_add(1, Ordering::SeqCst);
+            match self.mode {
+                Fake::Unavailable => Err(ffmpeg_unavailable("absent (simulé)")),
+                _ => Ok(()),
+            }
+        })
+    }
+
     fn transcode<'a>(
         &'a self,
         input: &'a Path,
@@ -241,6 +257,11 @@ impl Transcoder for FakeTranscoder {
                     tx.send_replace(true);
                     Err(AppError::Cancelled)
                 }
+                Fake::Slow => {
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                    Ok(())
+                }
+                Fake::Unavailable => unreachable!("contrôle anticipé en échec"),
             }
         })
     }
@@ -265,6 +286,15 @@ async fn convert_rx(
     transcoder: Option<&dyn Transcoder>,
     rx: &watch::Receiver<bool>,
 ) -> Run {
+    convert_budget(d, transcoder, FFMPEG_TOTAL_BUDGET, rx).await
+}
+
+async fn convert_budget(
+    d: &Dirs,
+    transcoder: Option<&dyn Transcoder>,
+    budget: Duration,
+    rx: &watch::Receiver<bool>,
+) -> Run {
     let mut steps = Vec::new();
     let mut on_step = |s: &Step| steps.push((s.phase.clone(), s.done, s.total, s.percent()));
     let result = convert_with(
@@ -272,6 +302,7 @@ async fn convert_rx(
         &d.output,
         ThumbFit::default(),
         transcoder,
+        budget,
         rx,
         &mut on_step,
     )
@@ -325,6 +356,7 @@ async fn pack_conforme_au_contrat_et_relu_par_prepare_lunii() {
     assert_eq!((pack.images, pack.sounds, pack.transcoded), (2, 3, 1));
     assert!(pack.warnings.is_empty(), "{:?}", pack.warnings);
     assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.prepares.load(Ordering::SeqCst), 1);
     assert_eq!(fake.inputs.lock().unwrap()[0], mp3_stereo());
     assert_eq!(pack.bytes, std::fs::metadata(&d.output).unwrap().len());
 
@@ -665,11 +697,103 @@ async fn bombe_zip_et_image_illisible_refusees() {
 
 #[tokio::test]
 async fn ffmpeg_absent_refuse_seulement_si_un_son_doit_etre_transcode() {
+    // Détecté par la pré-analyse (MP3 stéréo), avant la conversion des images.
     let d = dirs(&base_entries());
-    let err = convert_dirs(&d, None).await.result.unwrap_err();
+    let run = convert_dirs(&d, None).await;
+    let err = run.result.unwrap_err();
     assert!(matches!(err, AppError::ConverterUnavailable(_)), "{err:?}");
     assert!(err.to_string().contains(SND_C), "{err}");
+    assert!(run.steps.is_empty(), "{:?}", run.steps);
     assert_nothing_left(&d);
+
+    // Son au nom autre que `.mp3` : détecté à l'extension.
+    let mut s = story("Titre", false);
+    s["stageNodes"][0]["audio"] = json!("son.ogg");
+    s["stageNodes"][2]["audio"] = json!(SND_A);
+    let mut entries = story_entries(&s);
+    entries.push(entry("assets/son.ogg", b"OggS factice".to_vec()));
+    let d = dirs(&entries);
+    let run = convert_dirs(&d, None).await;
+    let err = run.result.unwrap_err();
+    assert!(err.to_string().contains("son.ogg"), "{err}");
+    assert!(run.steps.is_empty(), "{:?}", run.steps);
+    assert_nothing_left(&d);
+
+    // ffmpeg présent mais inutilisable : refusé avant toute conversion, jamais lancé.
+    let d = dirs(&base_entries());
+    let fake = FakeTranscoder::new(Fake::Unavailable);
+    let run = convert_dirs(&d, Some(&fake)).await;
+    let err = run.result.unwrap_err();
+    assert!(matches!(err, AppError::ConverterUnavailable(_)), "{err:?}");
+    assert!(run.steps.is_empty(), "{:?}", run.steps);
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    assert_nothing_left(&d);
+}
+
+#[tokio::test]
+async fn son_non_mp3_copie_en_flux_pour_ffmpeg() {
+    let mut s = story("Titre", false);
+    s["stageNodes"][2]["audio"] = json!("son.wav");
+    let mut entries = without(&story_entries(&s), &format!("assets/{SND_C}"));
+    let wav: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    entries.push(entry("assets/son.wav", wav.clone()));
+    let d = dirs(&entries);
+    let fake = good_transcoder();
+    let pack = convert_dirs(&d, Some(&fake)).await.result.unwrap();
+    assert_eq!((pack.sounds, pack.transcoded), (3, 1));
+    assert_eq!(fake.prepares.load(Ordering::SeqCst), 1);
+    assert_eq!(*fake.inputs.lock().unwrap(), vec![wav]);
+}
+
+#[tokio::test]
+async fn histoire_sans_son_a_transcoder_ne_controle_pas_ffmpeg() {
+    let mut s = story("Titre", false);
+    s["stageNodes"][2]["audio"] = json!(SND_A);
+    let entries = without(&story_entries(&s), &format!("assets/{SND_C}"));
+    let d = dirs(&entries);
+    let fake = FakeTranscoder::new(Fake::Unavailable);
+    let pack = convert_dirs(&d, Some(&fake)).await.result.unwrap();
+    assert_eq!(pack.transcoded, 0);
+    assert_eq!(fake.prepares.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn budget_global_de_ffmpeg_depasse() {
+    // Faux transcodeur bloqué : arrêté au bout du budget, rien ne reste.
+    let d = dirs(&base_entries());
+    let fake = FakeTranscoder::new(Fake::Slow);
+    let (_tx, rx) = watch::channel(false);
+    let started = Instant::now();
+    let run = convert_budget(&d, Some(&fake), Duration::from_millis(200), &rx).await;
+    assert!(started.elapsed() < Duration::from_secs(60));
+    let err = run.result.unwrap_err();
+    match &err {
+        AppError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::TimedOut, "{e}"),
+        other => panic!("délai attendu : {other:?}"),
+    }
+    assert!(err.to_string().contains("budget"), "{err}");
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+    assert_nothing_left(&d);
+
+    // Budget épuisé : le transcodeur n'est même pas lancé.
+    let fake = good_transcoder();
+    let run = convert_budget(&d, Some(&fake), Duration::ZERO, &rx).await;
+    assert!(matches!(run.result, Err(AppError::Io(_))));
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    assert_nothing_left(&d);
+}
+
+#[test]
+fn ffmpeg_limite_ses_demuxeurs_en_entree() {
+    let at = |arg: &str| FFMPEG_INPUT_ARGS.iter().position(|a| *a == arg).unwrap();
+    assert_eq!(FFMPEG_INPUT_ARGS.last(), Some(&"-i"));
+    assert_eq!(
+        FFMPEG_INPUT_ARGS[at("-format_whitelist") + 1],
+        FFMPEG_INPUT_FORMATS
+    );
+    assert_eq!(FFMPEG_INPUT_ARGS[at("-protocol_whitelist") + 1], "file");
+    let formats: Vec<&str> = FFMPEG_INPUT_FORMATS.split(',').collect();
+    assert_eq!(formats, ["mp3", "ogg", "wav", "flac", "aac", "mov"]);
 }
 
 #[tokio::test]
@@ -758,6 +882,49 @@ fn titre_et_description_assainis() {
             .all(|&b| b == b'\n' || (0x20..0x7f).contains(&b)));
         assert_eq!(info.iter().filter(|&&b| b == b'\n').count(), 4);
     }
+}
+
+#[test]
+fn caracteres_de_format_retires() {
+    // Retournement bidi (« Trojan Source »), espaces sans chasse, BOM, étiquettes.
+    assert_eq!(
+        clean_line(
+            "\u{202E}Conte\u{202C} \u{2066}du\u{2069}\u{200B} soir\u{FEFF}",
+            100
+        ),
+        "Conte du soir"
+    );
+    assert_eq!(
+        clean_line("a\u{200E}\u{200F}\u{061C}b\u{00AD}c\u{E0041}", 100),
+        "abc"
+    );
+    // Seul : titre vide, donc repli.
+    assert_eq!(clean_line("\u{202E}\u{2067}", 100), "");
+    assert_eq!(ascii_text("L\u{202E}éa\u{200D}"), "Lea");
+}
+
+#[tokio::test]
+async fn titre_et_description_sans_caracteres_bidi() {
+    let mut s = story("\u{202E}Le loup\u{202C}", false);
+    s["description"] = json!("Une \u{2066}histoire\u{2069}\u{200B}.");
+    let d = dirs(&story_entries(&s));
+    let pack = convert_dirs(&d, Some(&good_transcoder()))
+        .await
+        .result
+        .unwrap();
+    assert_eq!(pack.title, "Le loup");
+    assert_eq!(pack.description, "Une histoire.");
+    let files = read_pack(&d.output);
+    let info = &files.iter().find(|(n, _)| n == "info").unwrap().1;
+    assert!(info.starts_with(b"Le loup\n"), "{info:?}");
+
+    let s = story("\u{202E}\u{200B}", false);
+    let d = dirs(&story_entries(&s));
+    let pack = convert_dirs(&d, Some(&good_transcoder()))
+        .await
+        .result
+        .unwrap();
+    assert_eq!(pack.title, "Sans titre");
 }
 
 #[tokio::test]
@@ -1006,6 +1173,7 @@ async fn sortie_identique_a_la_source_refusee() {
         &d.input,
         ThumbFit::default(),
         Some(&good_transcoder()),
+        FFMPEG_TOTAL_BUDGET,
         &rx,
         &mut |_: &Step| {},
     )
@@ -1032,4 +1200,114 @@ fn le_futur_de_conversion_est_send() {
     };
     let future = convert(&job, &rx, &mut on_step);
     assert_send(&future);
+}
+
+// --- Archives forgées (#553) ---------------------------------------------------------------------
+
+/// Modifie l'entrée `name` d'un zip écrit : `patch` reçoit les octets du fichier, la position de
+/// son en-tête central et celle de son en-tête local.
+fn patch_entry(path: &Path, name: &str, patch: impl FnOnce(&mut [u8], usize, usize)) {
+    let mut bytes = std::fs::read(path).unwrap();
+    let u16_at = |b: &[u8], i: usize| usize::from(u16::from_le_bytes([b[i], b[i + 1]]));
+    let mut at = 0;
+    let (central, local) = loop {
+        let pos = bytes[at..]
+            .windows(4)
+            .position(|w| w == b"PK\x01\x02")
+            .map(|p| p + at)
+            .expect("entrée absente de l'annuaire");
+        let len = u16_at(&bytes, pos + 28);
+        if &bytes[pos + 46..pos + 46 + len] == name.as_bytes() {
+            let local = u32::from_le_bytes(bytes[pos + 42..pos + 46].try_into().unwrap());
+            break (pos, local as usize);
+        }
+        at = pos + 4;
+    };
+    assert_eq!(&bytes[local..local + 4], b"PK\x03\x04");
+    patch(&mut bytes, central, local);
+    std::fs::write(path, bytes).unwrap();
+}
+
+fn set_u32(bytes: &mut [u8], at: usize, value: u32) {
+    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+#[tokio::test]
+async fn entree_chiffree_refusee() {
+    let d = dirs(&base_entries());
+    // Drapeau « chiffré » (bit 0) dans l'en-tête central et l'en-tête local.
+    patch_entry(&d.input, &format!("assets/{IMG_A}"), |b, central, local| {
+        b[central + 8] |= 1;
+        b[local + 6] |= 1;
+    });
+    let fake = good_transcoder();
+    let msg = expect_code(convert_dirs(&d, Some(&fake)).await, INVALID_ARCHIVE);
+    assert!(msg.contains("mot de passe"), "{msg}");
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    assert_nothing_left(&d);
+}
+
+#[tokio::test]
+async fn lien_symbolique_refuse() {
+    let d = dirs(&base_entries());
+    let mut zip = ZipWriter::new(File::create(&d.input).unwrap());
+    let options = SimpleFileOptions::default();
+    for (name, data) in base_entries() {
+        zip.start_file(name.as_str(), options).unwrap();
+        zip.write_all(&data).unwrap();
+    }
+    zip.add_symlink("assets/lien.png", "../../secret.png", options)
+        .unwrap();
+    zip.finish().unwrap();
+    let msg = expect_code(
+        convert_dirs(&d, Some(&good_transcoder())).await,
+        INVALID_ARCHIVE,
+    );
+    assert!(msg.contains("lien symbolique"), "{msg}");
+    assert_nothing_left(&d);
+}
+
+#[tokio::test]
+async fn trop_d_entrees_refusees() {
+    let d = dirs(&base_entries());
+    let mut zip = ZipWriter::new(std::io::BufWriter::new(File::create(&d.input).unwrap()));
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    for (name, data) in base_entries() {
+        zip.start_file(name.as_str(), options).unwrap();
+        zip.write_all(&data).unwrap();
+    }
+    for i in 0..=MAX_ENTRIES - base_entries().len() {
+        zip.start_file(format!("assets/v{i}"), options).unwrap();
+    }
+    zip.finish().unwrap();
+    let msg = expect_code(convert_dirs(&d, Some(&good_transcoder())).await, TOO_LARGE);
+    assert!(msg.contains(&MAX_ENTRIES.to_string()), "{msg}");
+    assert_nothing_left(&d);
+}
+
+#[tokio::test]
+async fn taille_declaree_mensongere_refusee() {
+    // Annoncée minuscule, lue au-delà de la borne des images : arrêt de la lecture.
+    let mut entries = base_entries();
+    let big = format!("assets/{IMG_A}");
+    set(&mut entries, &big, vec![0u8; MAX_IMAGE_BYTES + 1024 * 1024]);
+    let d = dirs(&entries);
+    patch_entry(&d.input, &big, |b, central, local| {
+        set_u32(b, central + 24, 1000);
+        set_u32(b, local + 22, 1000);
+    });
+    expect_code(convert_dirs(&d, Some(&good_transcoder())).await, TOO_LARGE);
+    assert_nothing_left(&d);
+
+    // Annoncée énorme : total déclaré au-delà de 4 Gio, refus avant toute lecture.
+    let d = dirs(&base_entries());
+    for name in [format!("assets/{SND_A}"), format!("assets/{SND_B}")] {
+        patch_entry(&d.input, &name, |b, central, local| {
+            set_u32(b, central + 24, 0xF000_0000);
+            set_u32(b, local + 22, 0xF000_0000);
+        });
+    }
+    let msg = expect_code(convert_dirs(&d, Some(&good_transcoder())).await, TOO_LARGE);
+    assert!(msg.contains("annoncés"), "{msg}");
+    assert_nothing_left(&d);
 }
