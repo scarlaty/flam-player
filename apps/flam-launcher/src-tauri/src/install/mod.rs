@@ -521,9 +521,11 @@ impl InstallService {
     /// si elle ne peut plus servir (#556), c'est-à-dire après un remplacement confirmé de
     /// l'autre format (`replace_format`, histoire Flam remplacée par sa version STUdio ou
     /// l'inverse) ou pour toute histoire au format Lunii (jamais jouable sur le PC ; sans copie,
-    /// la purge ne fait rien). Jamais bloquante : un échec (player en train de lire l'ancienne
-    /// version, E/S) est journalisé, la copie est alors retirée à la désinstallation ou
-    /// remplacée au prochain lancement.
+    /// la purge ne fait rien). Jamais bloquante : un échec est journalisé et l'installation
+    /// reste réussie. Limite connue : si le player lit l'ancienne version Flam au moment du
+    /// remplacement (`player_busy`), la copie reste jusqu'à la désinstallation de l'histoire ou
+    /// au vidage du cache (une histoire Lunii n'est jamais relancée sur le PC) ; la progression
+    /// n'est pas perdue (rapatriée à la sortie du player).
     async fn purge_play_copy(
         &self,
         cache_root: &Path,

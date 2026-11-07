@@ -1081,7 +1081,9 @@ async fn pack_publie_sans_chemin_mort_et_source_inconnue() {
 }
 
 /// Annulation déjà demandée, créneau de préparation libre : la préparation du pack ne démarre
-/// pas (aucun dossier de travail), `select!` biaisé (#562).
+/// pas, `select!` biaisé (#562). Sans `biased`, la préparation partirait et échouerait
+/// autrement (`Ctx::new` n'a pas de `PackBackend` : `converter_unavailable`) ; le dossier de
+/// travail étant supprimé sur erreur, c'est le résultat `Cancelled` qui discrimine.
 #[tokio::test]
 async fn annulation_prioritaire_au_creneau_de_preparation() {
     let ctx = Ctx::new(None);

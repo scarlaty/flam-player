@@ -352,6 +352,27 @@ async fn reprise_au_demarrage_et_balayage_des_dossiers_temporaires() {
     // Dossier au nom d'une sortie (un fichier est attendu) : conservé.
     let staged_dir = staging.join("44444444-2222-4333-8444-555555555555.plain.pk");
     std::fs::create_dir_all(staged_dir.join("x")).unwrap();
+    // Jonctions (Windows, sans privilège) aux noms exacts d'un reste : jamais suivies ni
+    // supprimées, leur cible reste intacte.
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("precieux.txt"), b"precieux").unwrap();
+    let links = [
+        staging.join("55555555-2222-4333-8444-555555555555.plain.pk"),
+        staging.join(format!(
+            ".55555555-2222-4333-8444-555555555555.lunii.pk.{hex}.tmp"
+        )),
+    ];
+    if cfg!(windows) {
+        for link in &links {
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(outside.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "mklink /J : {out:?}");
+        }
+    }
 
     storage::write_json(
         &dir.path().join("config").join(QUEUE_FILE),
@@ -394,6 +415,19 @@ async fn reprise_au_demarrage_et_balayage_des_dossiers_temporaires() {
     assert!(
         staged_dir.join("x").is_dir(),
         "dossier au nom d'une sortie conservé"
+    );
+    if cfg!(windows) {
+        for link in &links {
+            assert!(
+                std::fs::symlink_metadata(link).is_ok(),
+                "jonction conservée"
+            );
+        }
+    }
+    assert_eq!(
+        std::fs::read(outside.path().join("precieux.txt")).unwrap(),
+        b"precieux",
+        "cible des jonctions intacte"
     );
 
     let task = ctx.finished(TASK_ID).await;
@@ -543,13 +577,14 @@ async fn envoi_complet_bibliotheque_vers_un_faux_appareil() {
     };
 
     // Flam 1.x : refus, rien d'écrit ni de préparé.
+    // `device` écrit un `.mdf` de Flam 1.x réelle (firmware 1.x).
     let root1 = device(&ctx.dir.path().join("flam1"), false);
-    write(&root1.join(MDF_FILE), &mdf_v1_real());
+    assert_eq!(std::fs::read(root1.join(MDF_FILE)).unwrap(), mdf_v1_real());
     let before = snapshot(&root1);
     let err = send(&root1).unwrap_err();
     assert!(matches!(err, TransferError::LuniiNeedsV2), "{err:?}");
     assert_eq!(snapshot(&root1), before, "Flam 1.x inchangée");
-    assert!(!work.join("str").join(UUID).exists(), "rien de préparé");
+    assert!(!work.exists(), "préparation jamais lancée");
 
     // Flam 2.x : envoi complet, l'histoire est listée sous l'uuid du scan.
     let root2 = device(&ctx.dir.path().join("flam2"), false);
@@ -567,4 +602,28 @@ async fn envoi_complet_bibliotheque_vers_un_faux_appareil() {
         !work.join("str").join(UUID).exists(),
         "préparation supprimée"
     );
+}
+
+/// Purge refusée (`player_busy` : le player lit l'ancienne version) : rien n'est supprimé et
+/// l'installation reste réussie (#556).
+#[tokio::test]
+async fn purge_refusee_n_empeche_pas_l_installation() {
+    let ctx = Ctx::new(None);
+    let (_src, entry) = source(ctx.dir.path());
+    install_flam_twin(&ctx.cache());
+    let calls = Arc::new(AtomicUsize::new(0));
+    {
+        let calls = calls.clone();
+        ctx.service
+            .set_play_purger(Arc::new(move |_: &Path, _: &str| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err(AppError::PlayerBusy("en cours de lecture".into()))
+            }));
+    }
+    let t = ctx.service.start_with(entry, true).unwrap();
+    let task = ctx.finished(&t.id).await;
+    assert_eq!(task.state, TaskState::Done, "{:?}", task.error);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let library = ctx.service.library_list().await.unwrap();
+    assert_eq!(library[0].file, format!("{UUID}-3.lunii.pk"));
 }
