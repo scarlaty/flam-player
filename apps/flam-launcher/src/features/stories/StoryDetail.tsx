@@ -112,6 +112,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   uuid={installed.uuid}
                   title={entry.title}
                   size={installed.size}
+                  format={installed.format}
                   stale={stories.sourceChanged(installed.uuid)}
                 />
                 {stories.updateAvailable(entry) && (

@@ -202,13 +202,16 @@ Détails : [flam-transfert.md](apps/flam-launcher/docs/flam-transfert.md).
 - histoires déjà au format de la Flam : dossiers `.plain` et archives `.plain.pk`, copiées
   telles quelles ;
 - archives STUdio `.zip` (`story.json`, dossier `assets/`, `thumbnail.png`) : elles sont
-  reconnues et affichées avec le badge « Format STUdio » dans un dossier local, mais ne
-  peuvent pas encore être installées, envoyées ni jouées (l'envoi vers une Flam 2.x est
-  prévu, voir #517).
+  installables (images et sons convertis à l'installation) et portent le badge « Format
+  STUdio ». Elles ne s'envoient que sur une **Flam en firmware 2.x** (version visible dans
+  « Ma Flam ») : sur une Flam 1.x, le bouton d'envoi est grisé avec l'explication. Leur
+  lecture sur l'ordinateur n'est pas disponible. Détails : [studio-lunii.md](docs/studio-lunii.md).
 
 Les autres formats d'image (BMP...) et les JPEG arithmétiques ou sans perte ne sont pas pris en
-charge : l'archive est refusée avec un message explicite. Un `.zip` non reconnu (pack Lunii,
-histoire Flam compressée dans un `.zip`, archive sans `metadata.json` ni `story.json`...) est
+charge : l'archive est refusée avec un message explicite. Les archives STUdio en `.7z` et les
+packs Lunii du commerce (déchiffrés ou non) sont refusés : pour un `.7z`, recompressez-le en
+`.zip` (voir [studio-lunii.md](docs/studio-lunii.md), § 4). Un `.zip` non reconnu (histoire
+Flam compressée dans un `.zip`, archive sans `metadata.json` ni `story.json`...) est
 signalé dans le bandeau « éléments ignorés » de la source, avec ce qu'il faut faire. Une source
 peut être un catalogue en ligne au format Telmi Store, ou un dossier local, qui n'est jamais
 modifié.
@@ -256,15 +259,15 @@ documentation.
 Flam Launcher est une application [Tauri 2](https://tauri.app/) (backend Rust, interface React
 et TypeScript). Il s'appuie sur d'autres briques de ce dépôt :
 
-| Composant | Rôle | Documentation |
-|-----------|------|---------------|
-| `flam-player` | Émulateur du firmware de la Flam (C, LVGL, Lua, SDL2) | [docs/player.md](docs/player.md) |
-| `telmi2flam` (Rust) | Convertisseur TELMI vers FLAM livré avec le launcher (version 2.0.0) | [crates/telmi2flam](crates/telmi2flam/) |
-| `tools/telmi2flam` | Moteur Lua et runtime embarqués dans le convertisseur, documentation du format, outils de campagne et de parité en Python (la version Python du convertisseur est supprimée, ses sorties servent de références de test) | [tools/telmi2flam](tools/telmi2flam/README.md) |
-| Jeux homebrew | Jeux en Lua pour la Flam | [docs/player.md](docs/player.md#jeux-et-contenus-homebrew) |
-| Skill `flam-homebrew` | Fabriquer un contenu `.plain.pk` avec une IA | [skills/flam-homebrew](skills/flam-homebrew/SKILL.md) |
-| Formats de la Flam | Volume USB, index, chiffrement | [flam-device-format.md](docs/flam-device-format.md), [flam-carrier.md](docs/flam-carrier.md) |
-| Sécurité | Audit et inventaire d'un appareil | [docs/security/](docs/security/) |
+| Composant             | Rôle                                                                                                                                                                                                                    | Documentation                                                                                |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `flam-player`         | Émulateur du firmware de la Flam (C, LVGL, Lua, SDL2)                                                                                                                                                                   | [docs/player.md](docs/player.md)                                                             |
+| `telmi2flam` (Rust)   | Convertisseur TELMI vers FLAM livré avec le launcher (version 2.0.0)                                                                                                                                                    | [crates/telmi2flam](crates/telmi2flam/)                                                      |
+| `tools/telmi2flam`    | Moteur Lua et runtime embarqués dans le convertisseur, documentation du format, outils de campagne et de parité en Python (la version Python du convertisseur est supprimée, ses sorties servent de références de test) | [tools/telmi2flam](tools/telmi2flam/README.md)                                               |
+| Jeux homebrew         | Jeux en Lua pour la Flam                                                                                                                                                                                                | [docs/player.md](docs/player.md#jeux-et-contenus-homebrew)                                   |
+| Skill `flam-homebrew` | Fabriquer un contenu `.plain.pk` avec une IA                                                                                                                                                                            | [skills/flam-homebrew](skills/flam-homebrew/SKILL.md)                                        |
+| Formats de la Flam    | Volume USB, index, chiffrement                                                                                                                                                                                          | [flam-device-format.md](docs/flam-device-format.md), [flam-carrier.md](docs/flam-carrier.md) |
+| Sécurité              | Audit et inventaire d'un appareil                                                                                                                                                                                       | [docs/security/](docs/security/)                                                             |
 
 ## Licence
 

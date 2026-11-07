@@ -47,9 +47,11 @@ pour tout effacer, supprimer ces deux dossiers à la main.
   consultable hors ligne.
 - **Dossier local** : un dossier contenant des archives Telmi `.zip` (converties à
   l'installation) ou des histoires déjà converties `.plain` / `.plain.pk` (copiées telles
-  quelles). Les archives STUdio `.zip` (`story.json`) sont reconnues et affichées avec le badge
-  « Format STUdio », mais pas encore installables : l'envoi vers une Flam 2.x arrive dans une
-  prochaine version. Le dossier n'est jamais modifié.
+  quelles). Les archives STUdio `.zip` (`story.json`) sont installables et portent le badge
+  « Format STUdio » : elles ne s'envoient que sur une Flam en firmware 2.x (version visible dans
+  « Ma Flam ») et ne se lisent pas sur l'ordinateur. Les `.7z` STUdio et les packs Lunii du
+  commerce sont refusés ([note de conception](../../docs/studio-lunii.md), § 4). Le dossier
+  n'est jamais modifié.
 
 Dans la bibliothèque d'une source, « Installer » télécharge et convertit (progression et
 annulation possibles), puis « Jouer » lance l'histoire dans `flam-player` ; la fermeture du

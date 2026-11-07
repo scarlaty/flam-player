@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { firmwareV2 } from "../../test/firmware";
+import { firmwareV1, firmwareV2 } from "../../test/firmware";
 import type { DeviceStories, DeviceSummary } from "../../api/device";
 import {
   estimateMinutes,
@@ -147,4 +147,19 @@ it("estime environ 4 minutes pour 80 Mo, au moins une minute", () => {
   expect(estimateMinutes(160 * MB)).toBe(8);
   expect(estimateMinutes(1)).toBe(1);
   expect(estimateMinutes(null)).toBeNull();
+});
+
+it("refuse une histoire STUdio sur une Flam en firmware 1.x, avant tout dialogue carrier (#548)", () => {
+  const v1: DeviceSummary = {
+    ...device,
+    firmware: "1.15.14",
+    firmware_status: firmwareV1(),
+  };
+  const onV1 = context({ device: v1 });
+  expect(sendBlock(onV1, "new", 1 * MB, "lunii")).toBe("lunii_needs_v2");
+  // Une histoire Flam ordinaire reste envoyable en 1.x (mode carrier) ; STUdio l'est en 2.x.
+  expect(sendBlock(onV1, "new", 1 * MB, "flam")).toBeNull();
+  expect(sendBlock(onV1, "new", 1 * MB)).toBeNull();
+  expect(sendBlock(context(), "new", 1 * MB, "lunii")).toBeNull();
+  expect(sendBlock(context({ device: null }), "new", 1 * MB, "lunii")).toBe("no_device");
 });

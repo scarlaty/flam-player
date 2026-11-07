@@ -586,7 +586,7 @@ export const fr = {
     warningsTitle: (n: number) =>
       n <= 1 ? `${n} élément ignoré` : `${n} éléments ignorés`,
     warningsHint:
-      "Ces éléments ont été ignorés (illisibles, invalides ou dans un format non reconnu). Formats acceptés : histoires Telmi (.zip), STUdio (.zip, pour une Flam en firmware 2.x) et Flam (.plain, .plain.pk).",
+      "Ces éléments ont été ignorés (illisibles, invalides ou dans un format non reconnu). Formats acceptés : histoires Telmi (.zip), STUdio (.zip) et Flam (.plain, .plain.pk). Les histoires STUdio s'installent, mais elles ne s'envoient que sur une Flam en firmware 2.x et ne se lisent pas sur l'ordinateur.",
     filtersLabel: "Recherche et filtres",
     search: "Rechercher une histoire",
     searchPlaceholder: "Titre, auteur, catégorie…",
@@ -803,7 +803,7 @@ export const fr = {
     },
     playing: "En cours de lecture dans flam-player",
     studioNotice:
-      "Format STUdio : s'installe pour être envoyée sur une Flam en firmware 2.x ; la lecture sur le PC n'est pas disponible.",
+      "Format STUdio : cette histoire s'installe, puis s'envoie uniquement sur une Flam en firmware 2.x (version visible dans « Ma Flam »). Elle ne se lit pas sur l'ordinateur.",
     /** Badge de format d'une histoire STUdio installée (pack Lunii). */
     luniiFormat: "STUdio",
     formatReplace: {
@@ -954,6 +954,8 @@ export const fr = {
       present: "Déjà sur la Flam",
       noSpace: "Espace insuffisant sur la Flam",
       firmware: "Écriture bloquée sur cette Flam (voir « Ma Flam »)",
+      luniiNeedsV2:
+        "Les histoires STUdio demandent une Flam en firmware 2.x. Cette Flam est en 1.x : mettez-la à jour avec l'application officielle.",
       queued: "Dans la file d'envoi",
       checking: "Lecture de la Flam…",
       removing: "Retrait en cours sur la Flam",

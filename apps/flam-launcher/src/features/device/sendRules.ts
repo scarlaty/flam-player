@@ -1,4 +1,10 @@
-import type { DeviceStories, DeviceStory, DeviceSummary } from "../../api/device";
+import {
+  needsCarrier,
+  type DeviceStories,
+  type DeviceStory,
+  type DeviceSummary,
+} from "../../api/device";
+import type { LibraryFormat } from "../../api/library";
 
 /** Marge d'espace libre exigée par le backend après le transfert (`SPACE_MARGIN`). */
 export const SPACE_MARGIN_BYTES = 32 * 1024 * 1024;
@@ -8,7 +14,14 @@ export const BYTES_PER_MINUTE = (80 * 1024 * 1024) / 4;
 
 /** Raison pour laquelle une histoire ne peut pas être envoyée maintenant. */
 export type SendBlock =
-  "queued" | "no_device" | "firmware" | "checking" | "present" | "no_space" | "removing";
+  | "queued"
+  | "no_device"
+  | "firmware"
+  | "lunii_needs_v2"
+  | "checking"
+  | "present"
+  | "no_space"
+  | "removing";
 
 export interface SendContext {
   device: DeviceSummary | null;
@@ -38,14 +51,17 @@ export function findOnDevice(
 /**
  * Première raison qui interdit l'envoi de l'histoire `uuid` (taille `size` en octets, `null` :
  * inconnue), ou `null` si elle peut partir. Le backend revérifie tout : ces règles ne servent
- * qu'à désactiver le bouton avec une raison lisible.
+ * qu'à désactiver le bouton avec une raison lisible. `format` : une histoire STUdio (`lunii`)
+ * est refusée sur une Flam en firmware 1.x (#548) avant tout dialogue carrier.
  */
 export function sendBlock(
   { device, deviceStories, firmwareBlocked, removing, queuedOrSent }: SendContext,
   uuid: string,
   size: number | null,
+  format: LibraryFormat = "flam",
 ): SendBlock | null {
   if (!device) return "no_device";
+  if (format === "lunii" && needsCarrier(device)) return "lunii_needs_v2";
   if (removing) return "removing";
   if (findOnDevice(deviceStories, uuid)) return "present";
   if (queuedOrSent.has(uuid)) return "queued";
@@ -68,6 +84,7 @@ export function replaceBlock(
   context: SendContext,
   uuid: string,
   size: number | null,
+  format: LibraryFormat = "flam",
 ): SendBlock | "absent" | null {
   const stories = context.deviceStories;
   const present = findOnDevice(stories, uuid);
@@ -78,7 +95,7 @@ export function replaceBlock(
       (s) => s.uuid !== present.uuid && !s.library_uuids.includes(uuid),
     ),
   };
-  return sendBlock({ ...context, deviceStories: others }, uuid, size);
+  return sendBlock({ ...context, deviceStories: others }, uuid, size, format);
 }
 
 /** Minutes restantes (arrondies au-dessus), `null` si une taille manque. */
