@@ -202,13 +202,16 @@ Détails : [flam-transfert.md](apps/flam-launcher/docs/flam-transfert.md).
 - histoires déjà au format de la Flam : dossiers `.plain` et archives `.plain.pk`, copiées
   telles quelles ;
 - archives STUdio `.zip` (`story.json`, dossier `assets/`, `thumbnail.png`) : elles sont
-  reconnues et affichées avec le badge « Format STUdio » dans un dossier local, mais ne
-  peuvent pas encore être installées, envoyées ni jouées (l'envoi vers une Flam 2.x est
-  prévu, voir #517).
+  installables (images et sons convertis à l'installation) et portent le badge « Format
+  STUdio ». Elles ne s'envoient que sur une **Flam en firmware 2.x** (version visible dans
+  « Ma Flam ») : sur une Flam 1.x, le bouton d'envoi est grisé avec l'explication. Leur
+  lecture sur l'ordinateur n'est pas disponible. Détails : [studio-lunii.md](docs/studio-lunii.md).
 
 Les autres formats d'image (BMP...) et les JPEG arithmétiques ou sans perte ne sont pas pris en
-charge : l'archive est refusée avec un message explicite. Un `.zip` non reconnu (pack Lunii,
-histoire Flam compressée dans un `.zip`, archive sans `metadata.json` ni `story.json`...) est
+charge : l'archive est refusée avec un message explicite. Les archives STUdio en `.7z` et les
+packs Lunii du commerce (déchiffrés ou non) sont refusés : pour un `.7z`, recompressez-le en
+`.zip` (voir [studio-lunii.md](docs/studio-lunii.md), § 4). Un `.zip` non reconnu (histoire
+Flam compressée dans un `.zip`, archive sans `metadata.json` ni `story.json`...) est
 signalé dans le bandeau « éléments ignorés » de la source, avec ce qu'il faut faire. Une source
 peut être un catalogue en ligne au format Telmi Store, ou un dossier local, qui n'est jamais
 modifié.
