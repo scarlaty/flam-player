@@ -44,7 +44,8 @@
 //! | Situation                                                     | Comportement                                |
 //! |---------------------------------------------------------------|---------------------------------------------|
 //! | Firmware 1.x                                                  | `LuniiNeedsV2`, rien d'écrit                |
-//! | Chemin hostile (`..`, absolu, `\`, nom réservé, doublon de casse), lien symbolique, entrée chiffrée | `LuniiInvalid`, rien d'écrit |
+//! | Chemin hostile (`..`, absolu, `\`, nom réservé, doublon de casse), lien symbolique | `LuniiInvalid`, rien d'écrit |
+//! | Entrée zip chiffrée (mot de passe) | `LuniiInvalid` ; détectée à la lecture : avant toute écriture pour les index, `info`, `nm`, dans le chantier (supprimé) pour la vignette et les assets |
 //! | Entrée inattendue ou obligatoire absente                      | `LuniiInvalid`, rien d'écrit                |
 //! | `ni`, `li`, `ri`, `si` incohérents (tailles, compteurs, indices, transitions) | `LuniiInvalid`, rien d'écrit |
 //! | Asset de `ri`/`si` absent, ou fichier de `rf/`/`sf/` non référencé | `LuniiInvalid`, rien d'écrit           |
@@ -245,7 +246,7 @@ fn asset_names(data: &[u8], file: &str) -> Result<Vec<String>, PrepareError> {
     }
     let count = data.len() / ASSET_ENTRY_LEN;
     if count > MAX_ASSETS {
-        return Err(invalid(format!(
+        return Err(PrepareError::TooLarge(format!(
             "{file} : {count} entrées (au plus {MAX_ASSETS})"
         )));
     }
@@ -276,7 +277,7 @@ fn check_li(li: &[u8], nodes: usize) -> Result<usize, PrepareError> {
     }
     let count = li.len() / 4;
     if count > MAX_LI_ENTRIES {
-        return Err(invalid(format!(
+        return Err(PrepareError::TooLarge(format!(
             "li : {count} entrées (au plus {MAX_LI_ENTRIES})"
         )));
     }
@@ -413,7 +414,11 @@ fn match_assets(
         out.push((format!("{dir}/{name}"), *index));
     }
     if files.len() != names.len() {
-        let mut extra: Vec<&String> = files.keys().filter(|f| !names.contains(f)).collect();
+        let referenced: HashSet<&str> = names.iter().map(String::as_str).collect();
+        let mut extra: Vec<&String> = files
+            .keys()
+            .filter(|f| !referenced.contains(f.as_str()))
+            .collect();
         extra.sort();
         return Err(invalid(format!(
             "entrée inattendue : {dir}/{} non référencé par {index_file}",

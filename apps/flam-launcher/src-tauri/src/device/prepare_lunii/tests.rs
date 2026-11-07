@@ -843,3 +843,42 @@ fn envoi_tel_quel_par_send_with() {
     let list = crate::device::index::read_index(&root, crate::device::index::IndexKind::Visible);
     assert_eq!(list.entries, vec![StoryId::parse(UUID_STR).unwrap()]);
 }
+
+#[test]
+fn asset_de_512_octets_exactement_et_asset_vide() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut entries = base_entries();
+    let exact: Vec<u8> = (0..512u32).map(|i| (i * 5 % 241) as u8).collect();
+    set(&mut entries, "rf/000/0000000b", exact.clone());
+    set(&mut entries, "sf/000/CCCCCCCC", Vec::new());
+    let prepared = run(&pk_with(tmp.path(), &entries), &tmp.path().join("travail")).unwrap();
+    let keys = test_keys();
+    let image = std::fs::read(prepared.dir.join("rf/000/0000000B")).unwrap();
+    assert_eq!(image.len(), 512);
+    assert_ne!(image, exact);
+    assert_eq!(
+        keys.decrypt_lunii_file("rf/000/0000000B", &image).unwrap(),
+        exact
+    );
+    assert_eq!(
+        std::fs::read(prepared.dir.join("sf/000/CCCCCCCC")).unwrap(),
+        b""
+    );
+}
+
+#[test]
+fn bornes_de_la_note_sur_les_index() {
+    let ri = asset_index(&["AAAAAAAA"]).repeat(MAX_ASSETS + 1);
+    assert!(matches!(
+        asset_names(&ri, RI),
+        Err(PrepareError::TooLarge(_))
+    ));
+    let li = vec![0u8; 4 * (MAX_LI_ENTRIES + 1)];
+    assert!(matches!(check_li(&li, 1), Err(PrepareError::TooLarge(_))));
+    let mut ni = ni_bytes(&nodes(), 2, 1);
+    ni[12..16].copy_from_slice(&((MAX_NODES + 1) as u32).to_le_bytes());
+    assert!(matches!(
+        check_ni(&ni, &li_bytes(&[1, 2, 0]), 2, 1),
+        Err(PrepareError::Invalid(m)) if m.contains("nœuds")
+    ));
+}
