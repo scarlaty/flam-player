@@ -6,6 +6,7 @@ import type { Source } from "../../api/sources";
 import { ToastProvider } from "../../components";
 import { expectNoAxeViolations } from "../../test/axe";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
+import { LibraryContext, type LibraryApi } from "../library/LibraryContext";
 
 tolerateLoadInAsyncUtils();
 import { RecoveryProvider } from "../recovery/RecoveryProvider";
@@ -26,11 +27,21 @@ const folder: Source = { type: "folder", id: "f1", name: "Contes", path: "C:\\Co
 let sources: Source[];
 let calls: { cmd: string; args: Record<string, unknown> }[];
 let failures: Record<string, { kind: string; message: string }>;
+/** Rechargement de la barre latérale des sources (#581). */
+const reload = vi.fn();
+const libraryApi: LibraryApi = {
+  sources: null,
+  error: null,
+  summaries: {},
+  report: vi.fn(),
+  reload,
+};
 
 beforeEach(() => {
   sources = [library, store, folder];
   calls = [];
   failures = {};
+  reload.mockReset();
   pickFolder.mockReset();
   mockIPC((cmd, args) => {
     const payload = (args ?? {}) as Record<string, any>;
@@ -68,11 +79,13 @@ afterEach(() => clearMocks());
 
 async function renderScreen() {
   const view = render(
-    <ToastProvider>
-      <RecoveryProvider>
-        <SourcesScreen />
-      </RecoveryProvider>
-    </ToastProvider>,
+    <LibraryContext.Provider value={libraryApi}>
+      <ToastProvider>
+        <RecoveryProvider>
+          <SourcesScreen />
+        </RecoveryProvider>
+      </ToastProvider>
+    </LibraryContext.Provider>,
   );
   await screen.findByText("Telmi Store");
   return view;
@@ -98,11 +111,13 @@ it("liste les sources ; « Mes histoires » n'a aucune action", async () => {
 it("affiche l'erreur de chargement avec un bouton Réessayer", async () => {
   failures.sources_list = { kind: "io", message: "disque illisible" };
   render(
-    <ToastProvider>
-      <RecoveryProvider>
-        <SourcesScreen />
-      </RecoveryProvider>
-    </ToastProvider>,
+    <LibraryContext.Provider value={libraryApi}>
+      <ToastProvider>
+        <RecoveryProvider>
+          <SourcesScreen />
+        </RecoveryProvider>
+      </ToastProvider>
+    </LibraryContext.Provider>,
   );
 
   const alert = await screen.findByRole("alert");
@@ -166,6 +181,8 @@ it("affiche l'erreur du backend dans le formulaire puis ajoute le catalogue", as
   });
   expect(screen.getByText("Mon catalogue")).toBeInTheDocument();
   expect(screen.getByText("Source « Mon catalogue » ajoutée")).toBeInTheDocument();
+  // Les deux premiers essais ont échoué : un seul rechargement de la barre latérale.
+  expect(reload).toHaveBeenCalledTimes(1);
 });
 
 it("ajoute un dossier choisi dans le sélecteur natif", async () => {
@@ -175,6 +192,7 @@ it("ajoute un dossier choisi dans le sélecteur natif", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Ajouter un dossier" }));
 
   expect(await screen.findByText("Histoires du soir")).toBeInTheDocument();
+  expect(reload).toHaveBeenCalledTimes(1);
   expect(callsOf("sources_add")[0]?.args.input).toEqual({
     type: "folder",
     name: "Histoires du soir",
@@ -193,6 +211,7 @@ it("n'ajoute rien si le sélecteur est annulé, et affiche l'erreur du backend",
   failures.sources_add = { kind: "validation", message: "le dossier n'existe pas" };
   fireEvent.click(screen.getByRole("button", { name: "Ajouter un dossier" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("le dossier n'existe pas");
+  expect(reload).not.toHaveBeenCalled();
 });
 
 it("renomme une source en conservant son adresse", async () => {
@@ -215,6 +234,7 @@ it("renomme une source en conservant son adresse", async () => {
     id: "telmi-store",
     input: { type: "catalog", name: "Boutique", url: "https://exemple.org/telmi.json" },
   });
+  expect(reload).toHaveBeenCalledTimes(1);
 });
 
 it("demande confirmation avant de supprimer, focus sur Annuler", async () => {
@@ -239,6 +259,7 @@ it("demande confirmation avant de supprimer, focus sur Annuler", async () => {
   );
   await waitFor(() => expect(screen.queryByText("Contes")).not.toBeInTheDocument());
   expect(callsOf("sources_remove")[0]?.args).toEqual({ id: "f1" });
+  expect(reload).toHaveBeenCalledTimes(1);
 });
 
 it("réordonne au clavier avec les boutons et garde le focus", async () => {
@@ -264,6 +285,7 @@ it("réordonne au clavier avec les boutons et garde le focus", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Monter « Telmi Store »" }));
   await waitFor(() => expect(callsOf("sources_reorder")).toHaveLength(2));
   expect(callsOf("sources_reorder")[1]?.args).toEqual({ ids: ["telmi-store", "f1"] });
+  await waitFor(() => expect(reload).toHaveBeenCalledTimes(2));
 });
 
 // Course corrigée par #84/#92 : le focus est rendu par un effet de layout. Avec un effet passif
@@ -279,11 +301,13 @@ it(
       sources = [library, store, folder];
       calls = [];
       const view = render(
-        <ToastProvider>
-          <RecoveryProvider>
-            <SourcesScreen />
-          </RecoveryProvider>
-        </ToastProvider>,
+        <LibraryContext.Provider value={libraryApi}>
+          <ToastProvider>
+            <RecoveryProvider>
+              <SourcesScreen />
+            </RecoveryProvider>
+          </ToastProvider>
+        </LibraryContext.Provider>,
       );
       // Sans `findBy` : on observe l'affichage de la liste au plus tôt, avant tout vidage des effets.
       const find = () =>
@@ -335,6 +359,7 @@ it("rétablit l'ordre et affiche l'erreur si le réordonnancement échoue", asyn
     .getAllByRole("listitem")
     .map((li) => li.querySelector(".fl-source-row__name")?.textContent);
   expect(names).toEqual(["Mes histoires", "Telmi Store", "Contes"]);
+  expect(reload).not.toHaveBeenCalled();
 });
 
 it("n'a aucune violation axe, y compris avec un dialogue ouvert", async () => {

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { t } from "../i18n";
 
 /**
  * Erreur renvoyée par le backend (miroir de `AppError` dans `src-tauri/src/error.rs`).
@@ -20,7 +21,7 @@ export function toAppError(error: unknown): AppError {
   if (isAppError(error)) return error;
   if (typeof error === "string") return { kind: "unknown", message: error };
   if (error instanceof Error) return { kind: "unknown", message: error.message };
-  return { kind: "unknown", message: "Erreur inconnue" };
+  return { kind: "unknown", message: t.errors.unknown };
 }
 
 /** Appelle une commande Tauri ; toute erreur est normalisée en `AppError`. */

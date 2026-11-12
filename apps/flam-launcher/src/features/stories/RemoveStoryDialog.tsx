@@ -5,6 +5,8 @@ import { t } from "../../i18n";
 export interface RemoveStoryDialogProps {
   open: boolean;
   title: string;
+  /** Suppression en cours : « Supprimer » est refusé (pas de second appel). */
+  busy?: boolean;
   onCancel: () => void;
   /** Appelé à la confirmation, avec le choix « Supprimer aussi la progression ». */
   onConfirm: (purgeSaves: boolean) => void;
@@ -14,6 +16,7 @@ export interface RemoveStoryDialogProps {
 export function RemoveStoryDialog({
   open,
   title,
+  busy = false,
   onCancel,
   onConfirm,
 }: RemoveStoryDialogProps) {
@@ -35,7 +38,14 @@ export function RemoveStoryDialog({
           <Button ref={cancelRef} onClick={onCancel}>
             {t.common.cancel}
           </Button>
-          <Button variant="danger" onClick={() => onConfirm(purgeSaves)}>
+          <Button
+            variant="danger"
+            aria-disabled={busy || undefined}
+            aria-busy={busy || undefined}
+            onClick={() => {
+              if (!busy) onConfirm(purgeSaves);
+            }}
+          >
             {text.confirm}
           </Button>
         </>

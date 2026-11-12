@@ -162,15 +162,27 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Les relectures de la liste installée se succèdent (fin d'installation, suppression, avant
+  // une décision) : seule la réponse de la plus récente est écrite, une ancienne ne l'écrase pas.
+  const installedRead = useRef(0);
+  const readInstalled = useCallback(async (): Promise<LibraryEntry[]> => {
+    const id = ++installedRead.current;
+    const list = await listLibrary();
+    if (id === installedRead.current) {
+      setInstalled(list);
+      setInstalledRevision((n) => n + 1);
+    }
+    return list;
+  }, []);
+
   const refreshInstalled = useCallback(async () => {
     try {
-      setInstalled(await listLibrary());
-      setInstalledRevision((n) => n + 1);
+      await readInstalled();
     } catch (caught) {
       toast.show({ message: toAppError(caught).message, tone: "danger" });
     }
     void refreshSources();
-  }, [toast, refreshSources]);
+  }, [toast, refreshSources, readInstalled]);
 
   // Sources revérifiées à chaque changement d'écran (une source dossier vient peut-être d'être
   // reconstruite) et quand un dossier surveillé change. Les demandes rapprochées (navigation,
@@ -452,9 +464,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         // le dernier chargement) ferait contourner le dialogue, et le backend refuserait.
         let installedNow = installedRef.current;
         try {
-          installedNow = await listLibrary();
-          setInstalled(installedNow);
-          setInstalledRevision((n) => n + 1);
+          installedNow = await readInstalled();
         } catch {
           // Sans relecture, la liste connue sert ; le refus du backend reste signalé.
         }
@@ -465,7 +475,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
       }
       await start(entry, options);
     },
-    [start],
+    [start, readInstalled],
   );
   const install = useCallback(
     (entry: StoryEntry, options: InstallOptions = {}) => {

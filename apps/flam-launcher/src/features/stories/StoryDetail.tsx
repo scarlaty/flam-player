@@ -50,6 +50,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const { compatFor } = useCompat();
   const { url } = useThumbnail(source, entry, { eager: true });
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [failedUrl, setFailedUrl] = useState<string>();
   const updateHelpId = useId();
 
@@ -75,9 +76,17 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const tone: BadgeTone = STATE_APPEARANCE[state].tone;
 
   async function confirmedRemove(purgeSaves: boolean) {
-    const removed = await stories.remove(entry.uuid, entry.title, purgeSaves);
-    setConfirmRemove(false);
-    if (removed && source.type === "library") onClose();
+    // Verrou pendant l'appel : le dialogue reste ouvert jusqu'à la fin, un second clic ne
+    // relance pas la suppression.
+    if (removing) return;
+    setRemoving(true);
+    try {
+      const removed = await stories.remove(entry.uuid, entry.title, purgeSaves);
+      setConfirmRemove(false);
+      if (removed && source.type === "library") onClose();
+    } finally {
+      setRemoving(false);
+    }
   }
 
   return (
@@ -283,6 +292,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
       <RemoveStoryDialog
         open={confirmRemove}
         title={entry.title}
+        busy={removing}
         onCancel={() => setConfirmRemove(false)}
         onConfirm={(purge) => void confirmedRemove(purge)}
       />
