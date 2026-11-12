@@ -194,7 +194,22 @@ export function CarrierDialog({ root, onCancel, onConfirm }: CarrierDialogProps)
     : [];
 
   const footer =
-    state && !consented ? (
+    load.phase === "error" ? (
+      <>
+        <Button ref={cancelButton} onClick={onCancel}>
+          {t.common.cancel}
+        </Button>
+        <Button
+          icon="refresh"
+          onClick={() => {
+            setLoad({ phase: "loading" });
+            setReload((n) => n + 1);
+          }}
+        >
+          {t.errors.retry}
+        </Button>
+      </>
+    ) : state && !consented ? (
       <>
         <Button ref={cancelButton} onClick={onCancel}>
           {t.common.cancel}

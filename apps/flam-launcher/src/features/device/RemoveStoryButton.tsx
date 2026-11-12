@@ -11,6 +11,12 @@ const text = t.deviceTransfer.remove;
 
 export interface RemoveStoryButtonProps {
   story: DeviceStory;
+  /**
+   * Nom affiché par la ligne de l'histoire (titre déchiffré de la Flam, sinon catalogue
+   * officiel, sinon bibliothèque, sinon « Histoire xxxxxxxx ») : bouton, confirmation et
+   * notification le reprennent.
+   */
+  name: string;
   /** Un envoi est en cours : le retrait est refusé (raison écrite à côté). */
   busy: boolean;
   /** Un autre retrait est en cours : celui-ci est refusé (raison écrite à côté). */
@@ -24,6 +30,7 @@ export interface RemoveStoryButtonProps {
 /** « Retirer » une histoire de la Flam, après confirmation. */
 export function RemoveStoryButton({
   story,
+  name,
   busy,
   locked = false,
   onWorkingChange,
@@ -39,7 +46,6 @@ export function RemoveStoryButton({
   // Garde du firmware (#326) : Flam 2.x non confirmée ou écriture bloquée.
   const firmware = !canMaintain;
   const blocked = busy || working || locked || ejecting || firmware;
-  const name = story.title ?? t.deviceScreen.stories.untitled(story.short_id);
 
   async function confirmRemove() {
     // Le dialogue se ferme aussitôt : le retrait dure plusieurs secondes, l'état est sur la ligne.

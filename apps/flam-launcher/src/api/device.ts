@@ -204,6 +204,11 @@ export interface DeviceStoryTitles {
   interrupted: boolean;
   /** Des clés de titre étaient disponibles ; faux : les `null` ne sont pas définitifs. */
   keys: boolean;
+  /**
+   * Firmware 2.x : les clés de `.mdf` n'ont pas pu être lues (message sans donnée de
+   * l'appareil, #317). Les titres se replient alors sur la bibliothèque ou le catalogue.
+   */
+  keys_problem: string | null;
 }
 
 /** Réponse de `device_story_thumbnail` (miroir de `StoryThumbnail`). */

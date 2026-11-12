@@ -98,6 +98,8 @@ let ejectGate: Promise<void> | null;
 let recoverFailure: { kind: string; message: string } | null;
 let carrierConsent: { text_version: number; accepted_at: string } | null;
 let storedKeys: boolean;
+/** Échec de `device_carrier_state` (lecture de l'état du mode carrier). */
+let carrierStateFailure: { kind: string; message: string } | null;
 let previewResult:
   | { uuid: string; title: string; hidden: boolean }
   | {
@@ -132,6 +134,7 @@ beforeEach(() => {
   recoverFailure = null;
   carrierConsent = null;
   storedKeys = false;
+  carrierStateFailure = null;
   carrierCandidates = [
     { uuid: OFFICIAL, title: "Histoire officielle", hidden: false, with_stored: false },
   ];
@@ -178,6 +181,7 @@ beforeEach(() => {
         case "library_thumbnail":
           return "data:image/png;base64,AAAA";
         case "device_carrier_state":
+          if (carrierStateFailure) throw carrierStateFailure;
           return {
             warning_text: WARNING,
             warning_version: 1,
@@ -1155,6 +1159,26 @@ it("Flam 1.x : aucun envoi sans consentement ni choix des clés", async () => {
     remember: false,
   });
   expect(screen.queryByRole("alertdialog")).toBeNull();
+});
+
+it("Flam 1.x : « Réessayer » relit l'état du mode carrier après un échec (#581)", async () => {
+  acknowledgeWarning();
+  status = detectedV1();
+  carrierStateFailure = { kind: "io", message: "disque illisible" };
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  const dialog = await screen.findByRole("alertdialog", {
+    name: "Flam en firmware 1.x : mode carrier",
+  });
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("disque illisible");
+  expect(count("device_carrier_state")).toBe(1);
+
+  carrierStateFailure = null;
+  fireEvent.click(within(dialog).getByRole("button", { name: "Réessayer" }));
+  expect(await within(dialog).findByText(WARNING)).toBeInTheDocument();
+  expect(count("device_carrier_state")).toBe(2);
+  expect(within(dialog).queryByRole("button", { name: "Réessayer" })).toBeNull();
 });
 
 it("Flam 1.x : clés choisies dans un fichier, sans conservation", async () => {

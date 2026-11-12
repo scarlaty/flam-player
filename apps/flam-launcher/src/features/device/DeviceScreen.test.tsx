@@ -94,6 +94,8 @@ let calls: string[];
 let deviceTitles: Record<string, string>;
 /** Histoires au format Lunii pour `device_story_titles`. */
 let deviceLunii: Set<string>;
+/** `keys_problem` renvoyé par `device_story_titles` (clés de `.mdf` 2.x illisibles). */
+let keysProblem: string | null;
 /** Vignettes renvoyées par `device_story_thumbnail` (absent : `null`). */
 let deviceThumbs: Record<string, string>;
 let titleRequests: string[][];
@@ -111,6 +113,7 @@ beforeEach(() => {
   calls = [];
   deviceTitles = {};
   deviceLunii = new Set();
+  keysProblem = null;
   deviceThumbs = {};
   titleRequests = [];
   officialTitles = {};
@@ -143,7 +146,8 @@ beforeEach(() => {
               format: deviceLunii.has(uuid) ? "lunii" : "flam",
             })),
             interrupted: false,
-            keys: true,
+            keys: keysProblem === null,
+            keys_problem: keysProblem,
           };
         }
         case "device_story_thumbnail": {
@@ -165,6 +169,14 @@ beforeEach(() => {
         }
         case "device_story_details_cancel":
           return null;
+        case "device_remove_story": {
+          const { id } = args as { id: string };
+          stories = stories && {
+            ...stories,
+            stories: stories.stories.filter((s) => s.uuid !== id),
+          };
+          return { id, index_updated: true, folders_removed: 1, cleanup_pending: false };
+        }
         default:
           throw { kind: "unknown", message: cmd };
       }
@@ -586,6 +598,81 @@ it("affiche le panneau d'envoi fourni sous la liste", async () => {
     await screen.findByRole("button", { name: "Retirer « Capi »" }),
   ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Éjecter la Flam" })).toBeInTheDocument();
+});
+
+it("le retrait nomme l'histoire comme sa ligne : titre de la Flam, catalogue, bibliothèque, UUID court (#581)", async () => {
+  status = detected();
+  deviceTitles = { [A]: "Titre de la Flam" };
+  officialTitles = { [B]: { title: "Titre du catalogue", has_image: false } };
+  stories = report([
+    story(A, { title: "Titre de la bibliothèque", in_library: true }),
+    story(B, { title: "Capi (bibliothèque)", in_library: true }),
+    story(C),
+  ]);
+  renderScreen();
+  // Une ligne et son bouton « Retirer » portent le même nom.
+  const first = await screen.findByRole("button", {
+    name: "Retirer « Titre de la Flam »",
+  });
+  expect(first).toBeInTheDocument();
+  // Le catalogue officiel prime sur le titre de la bibliothèque, comme sur la ligne.
+  expect(
+    await screen.findByRole("button", { name: "Retirer « Titre du catalogue »" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Retirer « Capi (bibliothèque) »" }),
+  ).toBeNull();
+  expect(
+    screen.getByRole("button", { name: "Retirer « Histoire 33333333 »" }),
+  ).toBeInTheDocument();
+
+  // Le dialogue et la notification de fin reprennent ce nom.
+  fireEvent.click(screen.getByRole("button", { name: "Retirer « Titre du catalogue »" }));
+  const dialog = await screen.findByRole("alertdialog", {
+    name: "Retirer « Titre du catalogue » de la Flam ?",
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Retirer de la Flam" }));
+  expect(
+    await screen.findByText("« Titre du catalogue » retirée de la Flam."),
+  ).toBeInTheDocument();
+});
+
+it("avertit quand les clés de titre de la Flam 2.x sont illisibles (#317, #581)", async () => {
+  status = detected();
+  keysProblem = "en-tête de .mdf invalide";
+  stories = report([story(A, { title: "Capi", in_library: true })]);
+  renderScreen();
+  const banner = await screen.findByText(
+    /Les clés du fichier \.mdf n'ont pas pu être lues/,
+  );
+  expect(banner).toHaveTextContent("en-tête de .mdf invalide");
+  expect(screen.getByText("Titres des histoires illisibles")).toBeInTheDocument();
+  // Les titres se replient sur la bibliothèque.
+  expect(screen.getByText("Capi")).toBeInTheDocument();
+});
+
+it("pas d'avertissement de titres sans problème, ni en double du blocage du firmware", async () => {
+  status = detected();
+  stories = report([story(A, { title: "Capi", in_library: true })]);
+  const { unmount } = renderScreen();
+  await screen.findByText("Capi");
+  await waitFor(() => expect(count("device_story_titles")).toBe(1));
+  expect(screen.queryByText("Titres des histoires illisibles")).toBeNull();
+  unmount();
+
+  // Écriture bloquée pour clés illisibles : le bandeau du firmware donne déjà la raison.
+  titleRequests = [];
+  calls = [];
+  keysProblem = "clé illisible";
+  status = detected({
+    firmware_status: firmwareV2({
+      write_block: { kind: "keys_unreadable", detail: "clé illisible" },
+    }),
+  });
+  renderScreen();
+  await screen.findByText("Écriture sur cette Flam bloquée");
+  await waitFor(() => expect(count("device_story_titles")).toBe(1));
+  expect(screen.queryByText("Titres des histoires illisibles")).toBeNull();
 });
 
 it("affiche le titre déchiffré et la vignette de la Flam, avec repli", async () => {
