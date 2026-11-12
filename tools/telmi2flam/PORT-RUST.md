@@ -184,8 +184,12 @@ Invariants (repris de Python, à tester côté Rust) :
    §4.4 ; restent délégués les JPEG que libjpeg-turbo lit mais pas `zune-jpeg`), le Rust ne
    convertit pas (les entrées ZIP bzip2, LZMA et Zstandard sont lues depuis #458). Il nettoie son `.part`, émet
    l'événement `error` avec le code `unsupported_format` et sort avec le **code 7**, distinct de
-   `internal_error`. Tant que le repli Python existe, le launcher rejoue alors la conversion
-   en Python.
+   `internal_error`. Depuis le retrait du repli Python (#138), c'est une erreur finale qui arrête toute
+   la conversion : `identify.rs` ne doit donc répondre « Pillow pourrait l'ouvrir » que pour les
+   données qu'un greffon de Pillow ouvrirait vraiment. Les données qu'aucun greffon n'ouvre
+   (fichier de zéros, texte, SVG, page HTML, octet `0x1C` suivi de déchets : `UnidentifiedImageError`)
+   sont `image_unreadable` et `empty.lif`, sans échec ; les greffons `TGA`, `IM`, `IMT` et `IPTC`,
+   qui acceptaient trop, reproduisent les contrôles de leur `_open` (#574).
 7. **Annulation propre** : après une annulation, il ne reste ni `.part` ni sortie, et le code
    de sortie est 130.
 
@@ -196,6 +200,7 @@ Invariants (repris de Python, à tester côté Rust) :
 | Entrée chiffrée, méthode que Python ne lit pas non plus (deflate64…) | lecture | rien | `archive_unreadable`, code 3 (Python : 3 pour une méthode inconnue, mais `internal_error` 6 pour une entrée chiffrée ; divergence volontaire, car Python échoue aussi) |
 | Entrée bzip2, LZMA ou Zstandard | lecture | rien | Lue comme `zipfile` (#458, §3.1). Flux invalide : Python lève `OSError`, `LZMAError` ou `ZstdError` (`internal_error`, code 6), le Rust rend `archive_unreadable` (code 3) : divergence volontaire, Python échoue aussi. Flux tronqué, CRC faux, bombe : voir §3.1. |
 | Image dans un autre format que PNG, GIF ou JPEG (BMP…), JPEG lu par libjpeg mais pas par le Rust (arithmétique, sans perte, refus de `zune-jpeg`…) | image | `.part` supprimé | `unsupported_format`, code 7 : délégation à Python (invariant 6), et non `image_unreadable` : Pillow la lirait. Prise en charge format par format (#459, §4.4) |
+| Données qu'aucun greffon de Pillow n'ouvre (fichier de zéros, texte, SVG, HTML, `0x1C` et déchets) | image | — | `image_unreadable` + `empty.lif`, la conversion continue (#574) : `TGA`, `IM`, `IMT` et `IPTC` n'acceptent que les en-têtes que leur `_open` et `ImageFile.__init__` ouvrent (voir `identify.rs`) |
 | JPEG | image | — | décodé par `zune-jpeg`, verdict (lu ou illisible) reproduit de Pillow et libjpeg-turbo, pixels à ±4 près (D7, §4.4) |
 | PNG atypique (APNG, `IHDR` absent en tête ou répété, `tRNS` répété, après l'IDAT ou de longueur inattendue) | image | — | décodé comme Pillow, erreurs comprises (#459, §4.4) ; plus de délégation |
 | Noms dupliqués dans l'archive | indexation | rien | même entrée retenue que Python (`ZipFile.getinfo` : la **dernière**). `zip` 4.6.1 retient aussi la dernière (`IndexMap::insert`), mais ne liste le nom qu'une fois : `find_root` et l'index replié (`setdefault`, premier nom rencontré) doivent reproduire `namelist()`. Test dédié. |
@@ -534,6 +539,12 @@ dès la signature `FF D8 FF` (`_accept` de `JpegImagePlugin`).
   prudente d'`identify`). Aucun cas lu par Pillow n'est jugé illisible par le Rust : chaque
   incertitude est déléguée (D4), dont tout refus de `zune-jpeg` sur une structure que libjpeg
   accepte (données corrompues, table inutilisée invalide, facteur 3, `DQT` de précision 2…).
+  Exception depuis #574 : `identify.rs` rejette (`image_unreadable`) les données qu'aucun greffon
+  n'ouvre, car la délégation est devenue une erreur finale ; `TGA`, `IM`, `IMT` et `IPTC`
+  reproduisent les contrôles de leur `_open` (vérifiés contre Pillow 12.0.0 sur 30 000 en-têtes
+  forgés, aucun écart). Reste délégué : une signature `_accept` qui concorde (`00 00 02 00`,
+  CUR…) même si le greffon refuserait la suite, une valeur numérique d'`IM` que Python lirait
+  peut-être autrement, un `IM` de trois nombres ou plus pour la taille.
 - Mémoire : l'image RGBA est réservée par `try_reserve` ; le flux réécrit est borné par la
   taille du fichier ; les tampons internes de `zune-jpeg` (coefficients d'une image
   progressive, sortie brute) sont alloués d'après l'en-tête, comme ceux de libjpeg et de
