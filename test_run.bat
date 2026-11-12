@@ -22,6 +22,8 @@ REM  FLAM_TELMI2FLAM) : le convertisseur Python est supprime (#140).
 REM  Code de sortie : 0 si les etapes 1, 2, 3, 5, 6 passent. Avec "strict",
 REM  les echecs des tests isoles comptent aussi, et un flam-test-audio.exe
 REM  absent est un echec (sinon : saute).
+REM  FLAM_NO_SKIP=1 : un SKIP (etapes 3, 5, 6, y compris l'incrustation) donne
+REM  ECHEC au lieu de OK ; pose par la CI (.github/workflows/player.yml).
 REM  Usage : test_run.bat [strict]
 REM  Dossier de build : build\ ou %%FLAM_BUILD_DIR%% s'il est defini.
 REM  Python : %%FLAM_PYTHON%% sinon python du PATH. Lua 5.4 autonome
@@ -166,5 +168,10 @@ for %%r in (!SUITE_RC! !ENGINE_RC! !AUDIO_RC! !CONV_RC! !E2E_RC!) do (
     if not "%%r"=="0" if not "%%r"=="SKIP" set "FINAL_RC=1"
 )
 if "!STRICT!"=="1" if not "!ISO_FAIL!"=="0" set "FINAL_RC=1"
+REM FLAM_NO_SKIP=1 (CI) : une etape sautee (SKIP) ou partielle est un echec.
+if "%FLAM_NO_SKIP%"=="1" (
+    for %%r in (!CONV_RC! !E2E_RC! !AUDIO_RC!) do if "%%r"=="SKIP" set "FINAL_RC=1"
+    if defined E2E_NOTE set "FINAL_RC=1"
+)
 if "!FINAL_RC!"=="0" (echo RESULTAT : OK) else (echo RESULTAT : ECHEC)
 endlocal & exit /b %FINAL_RC%
