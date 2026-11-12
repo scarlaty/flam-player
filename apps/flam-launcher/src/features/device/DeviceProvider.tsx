@@ -104,6 +104,10 @@ export function DeviceProvider({
   }, []);
   const [ejectNote, setEjectNote] = useState<EjectNote | null>(null);
 
+  // Mode carrier (Flam 1.x) : demande en attente du choix des clés (déclarée ici, la remise à
+  // zéro ci-dessous la lit).
+  const [pendingCarrier, setPendingCarrier] = useState<SendRequest | null>(null);
+
   // Nouvelle Flam, retour après une absence ou perte : l'état lié à la détection repart de zéro
   // (ajustement pendant le rendu, sans effet).
   const [seenKey, setSeenKey] = useState<string | null>(null);
@@ -112,6 +116,9 @@ export function DeviceProvider({
     setRecoveredKey(null);
     setRecoveryNote(null);
     setStories({ phase: "loading" });
+    // Le dialogue des clés se démonte avec la Flam : une demande laissée en attente bloquerait
+    // les fiches d'histoire (`confirmingSend`) et resurgirait au rebranchement (#572).
+    setPendingCarrier(null);
     if (deviceKey !== null) setEjectNote(null);
   }
 
@@ -214,9 +221,7 @@ export function DeviceProvider({
   const running = useRef(false);
   const sendingUuid = useRef<string | null>(null);
   const [pendingAck, setPendingAck] = useState<SendRequest | null>(null);
-  // Mode carrier (Flam 1.x) : demande en attente du choix des clés, et choix retenu pour la
-  // Flam branchée pendant cette session.
-  const [pendingCarrier, setPendingCarrier] = useState<SendRequest | null>(null);
+  // Choix retenu pour la Flam branchée pendant cette session (mode carrier).
   const carrierSession = useRef<{ key: string | null; carrier: CarrierSend } | null>(
     null,
   );

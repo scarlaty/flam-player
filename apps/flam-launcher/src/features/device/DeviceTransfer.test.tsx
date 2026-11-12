@@ -1597,3 +1597,43 @@ it("signale une reprise en échec dans un envoi réussi (#309)", async () => {
       .join(" "),
   ).toContain("n'a pas pu être repris");
 });
+
+/** Ce que lisent les fiches d'histoire : tant qu'il est vrai, elles restent fermées. */
+function ConfirmingProbe() {
+  const { confirmingSend } = useDevice();
+  return <output data-testid="confirming">{String(confirmingSend)}</output>;
+}
+
+it("Flam 1.x débranchée pendant le choix des clés : les fiches s'ouvrent de nouveau, et le dialogue ne resurgit pas au rebranchement (#572)", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  acknowledgeWarning();
+  status = detectedV1();
+  render(
+    <Harness>
+      <ConfirmingProbe />
+    </Harness>,
+  );
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  await screen.findByRole("alertdialog", { name: "Flam en firmware 1.x : mode carrier" });
+  expect(screen.getByTestId("confirming")).toHaveTextContent("true");
+
+  // Débranchée : le dialogue disparaît, et les fiches ne sont plus bloquées.
+  status = absent;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + 50);
+  });
+  await screen.findByRole("heading", { name: "Aucune Flam détectée" });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(screen.getByTestId("confirming")).toHaveTextContent("false");
+
+  // Rebranchée (même une 2.x) : l'ancienne demande ne resurgit pas.
+  status = detected();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + 50);
+  });
+  await ready();
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(screen.getByTestId("confirming")).toHaveTextContent("false");
+  expect(count("device_send_story")).toBe(0);
+});
