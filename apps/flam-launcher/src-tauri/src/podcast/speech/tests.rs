@@ -603,8 +603,8 @@ fn les_arguments_ffmpeg_sont_fixes_mono_et_prefixes() {
     assert_eq!(args.last().map(String::as_str), Some("file:-out.mp3"));
     assert_eq!(args[args.len() - 2], "mp3");
     // Sortie bornée : `-fs borne + 1` juste avant le format.
-    assert_eq!(args[args.len() - 4], "-fs");
-    assert_eq!(args[args.len() - 3], (MAX_MP3_BYTES + 1).to_string());
+    assert_eq!(args[args.len() - 5], "-fs");
+    assert_eq!(args[args.len() - 4], (MAX_MP3_BYTES + 1).to_string());
 }
 
 fn leftovers(dir: &Path) -> Vec<String> {
