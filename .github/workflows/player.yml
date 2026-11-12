@@ -1,18 +1,25 @@
 name: player
 
 # Tests du player C et du moteur (#568) : `flam-test`, `flam-test-audio`, les `regress_/poc_/fuzz_*.lua`,
-# le convertisseur Python d'outils et les e2e `e2e_telmi.py` / `e2e_embed.py`, via `test_run.bat strict`.
-# Sans ce workflow, une PR sur `src/**` ne déclenchait que `launcher.yml` (build Release, e2e du launcher).
+# les tests Python du convertisseur d'outils et les e2e `e2e_telmi.py` / `e2e_embed.py`, via
+# `test_run.bat strict`. Ce workflow est le seul à les exécuter : ses déclencheurs couvrent tout ce dont
+# ils dépendent (player, moteur, sous-modules, binaire `telmi2flam`, outils Python).
 on:
   pull_request:
     paths:
       - "src/**"
       - "tests/**"
-      - "libs/lv_conf.h"
+      - "libs/**"
+      - ".gitmodules"
       - "CMakeLists.txt"
       - "patches/**"
       - "tools/telmi2flam/engine/**"
       - "tools/telmi2flam/runtime/**"
+      - "tools/telmi2flam/*.py"
+      - "tools/telmi2flam/tests/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
       - "test_run.bat"
       - "do_build.bat"
       - ".github/workflows/player.yml"
@@ -21,11 +28,17 @@ on:
     paths:
       - "src/**"
       - "tests/**"
-      - "libs/lv_conf.h"
+      - "libs/**"
+      - ".gitmodules"
       - "CMakeLists.txt"
       - "patches/**"
       - "tools/telmi2flam/engine/**"
       - "tools/telmi2flam/runtime/**"
+      - "tools/telmi2flam/*.py"
+      - "tools/telmi2flam/tests/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
       - "test_run.bat"
       - "do_build.bat"
       - ".github/workflows/player.yml"
@@ -44,9 +57,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      # Audio factice et rendu logiciel (runner sans carte son). Pas de SDL_VIDEODRIVER=dummy : e2e_embed.py
-      # incruste la fenêtre du player dans une fenêtre hôte (HWND), ce qui exige le pilote vidéo windows ;
-      # les tests qui n'ont pas besoin de fenêtre forcent eux-mêmes le pilote dummy.
+      # Pilotes SDL sans écran ni carte son. e2e_embed.py impose lui-même le pilote windows (HWND)
+      # pour ses cas d'incrustation.
+      SDL_VIDEODRIVER: dummy
       SDL_AUDIODRIVER: dummy
       SDL_RENDER_DRIVER: software
     steps:
