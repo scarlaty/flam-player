@@ -138,7 +138,8 @@ def client_size(hwnd):
 class Player:
     def __init__(self, exe, args, env_extra):
         env = dict(os.environ)
-        env.update({"SDL_AUDIODRIVER": "dummy", "SDL_RENDER_DRIVER": "software",
+        env.update({"SDL_VIDEODRIVER": "windows", "SDL_AUDIODRIVER": "dummy",
+                    "SDL_RENDER_DRIVER": "software",
                     "FLAM_SCREENSHOT_AUTO_MS": "0"})
         env.update(env_extra)
         for key in [k for k, v in env.items() if v is None]:
