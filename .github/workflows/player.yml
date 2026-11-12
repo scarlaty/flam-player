@@ -1,0 +1,86 @@
+name: player
+
+# Tests du player C et du moteur (#568) : `flam-test`, `flam-test-audio`, les `regress_/poc_/fuzz_*.lua`,
+# le convertisseur Python d'outils et les e2e `e2e_telmi.py` / `e2e_embed.py`, via `test_run.bat strict`.
+# Sans ce workflow, une PR sur `src/**` ne déclenchait que `launcher.yml` (build Release, e2e du launcher).
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "libs/lv_conf.h"
+      - "CMakeLists.txt"
+      - "patches/**"
+      - "tools/telmi2flam/engine/**"
+      - "tools/telmi2flam/runtime/**"
+      - "test_run.bat"
+      - "do_build.bat"
+      - ".github/workflows/player.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "libs/lv_conf.h"
+      - "CMakeLists.txt"
+      - "patches/**"
+      - "tools/telmi2flam/engine/**"
+      - "tools/telmi2flam/runtime/**"
+      - "test_run.bat"
+      - "do_build.bat"
+      - ".github/workflows/player.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Sur main (push), aucune annulation : sinon chaque fusion annule la CI de la précédente et main n'a
+  # plus de run complet. Un run en attente du groupe est remplacé par le plus récent.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  player:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      # Pilotes SDL sans écran ni carte son (runner sans session interactive).
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+      SDL_RENDER_DRIVER: software
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # SDL2, Lua, LVGL et minimp3 : sources de flam-player.exe.
+          submodules: recursive
+          persist-credentials: false
+
+      # Python pour les étapes 5 (tests du convertisseur d'outils) et 6 (e2e) de test_run.bat. `lupa` :
+      # Lua de validate.py et de l'explorateur. Même version que les autres workflows (test_parity.py).
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.8"
+
+      - name: Installer les dépendances
+        run: pip install "lupa==2.8"
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # tête de la branche stable au 2026-10-16 (pas un tag)
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ". -> target"
+
+      # Les étapes 5 et 6 lancent le binaire Rust en processus enfant : <depot>/target/release/telmi2flam.exe,
+      # chemin par défaut de converter_bin.py.
+      - name: Convertisseur telmi2flam (release)
+        run: cargo build -p telmi2flam --bin telmi2flam --release --locked
+
+      # do_build.bat localise Visual Studio (vswhere), charge l'environnement x64 puis configure
+      # `cmake -G Ninja -DBUILD_TESTS=ON` et compile flam-test, flam-test-audio et flam-player dans build\.
+      - name: Player et tests (CMake, Ninja, BUILD_TESTS=ON)
+        shell: cmd
+        run: do_build.bat tests
+
+      - name: test_run.bat strict
+        shell: cmd
+        run: test_run.bat strict
