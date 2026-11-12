@@ -1575,14 +1575,14 @@ mod tests {
 
     #[test]
     fn autres_formats_delegues() {
-        for data in [&b"BM\0\0"[..], b"\x89PNG\r\n"] {
-            assert!(matches!(
-                decode_rgba(data, &never),
-                Err(PngError::Unsupported(_))
-            ));
-        }
-        // Aucun greffon de Pillow ne les accepte : illisibles, comme pour Python.
-        for data in [&b""[..], b"garbage", b"\x89PNGgarbage"] {
+        assert!(matches!(
+            decode_rgba(b"BM\0\0", &never),
+            Err(PngError::Unsupported(_))
+        ));
+        // Aucun greffon de Pillow ne les accepte : illisibles, comme pour Python. Signature PNG
+        // coupée (`\x89PNG\r\n`, 6 octets) : elle passait pour un en-tête `IM` (un `\n` dans les
+        // 100 premiers octets) avant #574 ; ni `PngImagePlugin._accept`, ni `IM` ne l'ouvrent.
+        for data in [&b""[..], b"garbage", b"\x89PNGgarbage", b"\x89PNG\r\n"] {
             assert!(matches!(
                 decode_rgba(data, &never),
                 Err(PngError::Unreadable(_))
