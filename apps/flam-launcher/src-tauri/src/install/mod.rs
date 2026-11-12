@@ -563,8 +563,9 @@ impl InstallService {
     /// pas un UUID canonique est ignorée, et l'entrée n'est **pas** reprise du fichier : elle
     /// est ré-résolue par `lookup(source_id, entry_id)` (cache du catalogue, scan du dossier).
     /// Une entrée introuvable ou invalide abandonne la tâche (journal, pas de reprise).
-    /// Une tâche relue dont l'`uuid` a déjà une tâche active est écartée, et seules les tâches
-    /// relues sont lancées (#569) : une exécution par tâche, une tâche active par `uuid`.
+    /// Une tâche relue dont l'`uuid` a déjà une tâche connue (quel que soit son état) est
+    /// écartée, et seules les tâches relues sont lancées (#569) : une exécution par tâche, et
+    /// une tâche demandée pendant la reprise l'emporte toujours sur la tâche relue.
     pub async fn restore<F, Fut>(&self, lookup: F)
     where
         F: Fn(String, String) -> Fut,
@@ -617,15 +618,14 @@ impl InstallService {
                 if tasks.iter().any(|s| s.task.id == q.id) {
                     continue;
                 }
-                // Une tâche active par `uuid` (#569, même règle qu'`enqueue`) : une tâche créée
-                // pendant la ré-résolution, ou un doublon du fichier, l'emporte ; la tâche
-                // restaurée est écartée (retirée de la file à la réécriture).
-                if tasks
-                    .iter()
-                    .any(|s| s.task.state.is_active() && s.task.entry.uuid == entry.uuid)
-                {
+                // Une tâche par `uuid` (#569) : une tâche connue de même `uuid` (créée pendant la
+                // ré-résolution, ou doublon du fichier) l'emporte **quel que soit son état** ;
+                // la tâche restaurée est écartée (retirée de la file à la réécriture). Une tâche
+                // déjà terminée compte aussi : relancer la relue réinstallerait l'ancien choix
+                // (format, version) par-dessus le nouveau, ou malgré une annulation.
+                if tasks.iter().any(|s| s.task.entry.uuid == entry.uuid) {
                     tracing::warn!(
-                        "tâche d'installation {} écartée : {} déjà en cours d'installation",
+                        "tâche d'installation {} écartée : {} déjà demandée dans cette session",
                         q.id,
                         entry.uuid
                     );

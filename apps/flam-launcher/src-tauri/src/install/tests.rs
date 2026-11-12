@@ -1917,6 +1917,79 @@ async fn reprise_ecarte_les_doublons_d_uuid() {
     assert!(ctx.queue().is_empty(), "doublons retirés de la file");
 }
 
+/// Une tâche de même uuid demandée pendant la reprise et **déjà terminée** (installée, ou
+/// annulée) l'emporte aussi : la tâche relue n'est jamais exécutée (elle réinstallerait l'ancien
+/// choix, ou malgré l'annulation).
+#[tokio::test]
+async fn reprise_ecarte_une_tache_relue_deja_terminee_dans_la_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let done = local_pk(&src, 1);
+    let cancelled = local_pk(&src, 2);
+    const RESTORED_DONE: &str = "11111111-2222-4333-8444-555555555555";
+    const RESTORED_CANCELLED: &str = "22222222-3333-4444-8555-666666666666";
+    write_queue_file(
+        dir.path(),
+        vec![
+            queued(RESTORED_DONE, &done),
+            queued(RESTORED_CANCELLED, &cancelled),
+        ],
+    );
+    let ctx = Ctx::with_dir(dir, None, GRACE);
+
+    let added = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (service, gate, seen) = (ctx.service.clone(), ctx.gate.clone(), added.clone());
+    ctx.service
+        .restore(|_, entry_id| {
+            let (service, gate, seen) = (service.clone(), gate.clone(), seen.clone());
+            let cancel = entry_id == cancelled.entry_id;
+            let entry = if cancel {
+                cancelled.clone()
+            } else {
+                done.clone()
+            };
+            async move {
+                // Portillon tenu pendant l'annulation : la tâche s'arrête « annulée ».
+                let hold = gate.write_owned().await;
+                let id = service.start(entry.clone()).unwrap().id;
+                if cancel {
+                    service.cancel(&id).unwrap();
+                }
+                drop(hold);
+                let deadline = Instant::now() + Duration::from_secs(60);
+                while service
+                    .list()
+                    .iter()
+                    .any(|t| t.id == id && t.state.is_active())
+                {
+                    assert!(Instant::now() < deadline, "tâche {id} non terminée");
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                lock(&seen).push(id);
+                Ok(entry)
+            }
+        })
+        .await;
+    let added = lock(&added).clone();
+    assert_eq!(added.len(), 2);
+    assert_eq!(ctx.task(&added[0]).state, TaskState::Done);
+    assert_eq!(ctx.task(&added[1]).state, TaskState::Cancelled);
+    let ids: Vec<String> = ctx.service.list().into_iter().map(|t| t.id).collect();
+    assert_eq!(ids, added, "tâches relues écartées");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    ctx.service.flush_queue().await;
+    assert_eq!(
+        ctx.endings(RESTORED_DONE) + ctx.endings(RESTORED_CANCELLED),
+        0
+    );
+    assert!(ctx.events.states(RESTORED_DONE).is_empty());
+    assert!(ctx.events.states(RESTORED_CANCELLED).is_empty());
+    let library = ctx.service.library_list().await.unwrap();
+    assert_eq!(library.len(), 1, "l'annulation n'est pas contournée");
+    assert_eq!(library[0].uuid, done.uuid);
+    assert!(ctx.queue().is_empty());
+}
+
 /// Arrêt pendant la ré-résolution (future abandonnée) : rien n'est lancé ni réécrit, la file
 /// reste intacte ; la reprise suivante exécute la tâche une seule fois.
 #[tokio::test]
