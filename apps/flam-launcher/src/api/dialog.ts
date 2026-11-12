@@ -1,4 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
+import { t } from "../i18n";
 import { toAppError } from "./error";
 
 /**
@@ -20,7 +21,7 @@ export async function pickExecutable(title?: string): Promise<string | null> {
       directory: false,
       multiple: false,
       title,
-      filters: [{ name: "Exécutable (.exe)", extensions: ["exe"] }],
+      filters: [{ name: t.common.executableFilter, extensions: ["exe"] }],
     });
   } catch (error) {
     throw toAppError(error);

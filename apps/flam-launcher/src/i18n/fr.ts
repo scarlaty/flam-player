@@ -40,6 +40,8 @@ export const fr = {
         kind,
       ) ?? "Une erreur est survenue",
     loadFailed: "Impossible de charger les données.",
+    /** Erreur de forme inattendue (ni texte ni `Error`). */
+    unknown: "Erreur inconnue",
     retry: "Réessayer",
     /**
      * Message montré pour un code d'erreur du convertisseur (`TaskError.code`, `kind` « conversion »),
@@ -686,6 +688,8 @@ export const fr = {
     close: "Fermer",
     cancel: "Annuler",
     loading: "Chargement…",
+    /** Nom du filtre du sélecteur de fichier exécutable. */
+    executableFilter: "Exécutable (.exe)",
   },
   sources: {
     kind: {

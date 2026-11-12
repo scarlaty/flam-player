@@ -9,6 +9,7 @@ import { ToastProvider } from "../../components";
 import { routeFromHash } from "../../router";
 import { expectNoAxeViolations } from "../../test/axe";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
+import { LibraryContext, type LibraryApi } from "../library/LibraryContext";
 import { PodcastsScreen } from "./PodcastsScreen";
 import { PodcastSelectionProvider, usePodcastSelection } from "./SelectionContext";
 
@@ -62,12 +63,22 @@ let sources: Source[];
 let views: Record<string, PodcastView>;
 let calls: { cmd: string; args: Record<string, any> }[];
 let failures: Record<string, { kind: string; message: string }>;
+/** Rechargement de la barre latérale des sources (#581). */
+const reload = vi.fn();
+const libraryApi: LibraryApi = {
+  sources: null,
+  error: null,
+  summaries: {},
+  report: vi.fn(),
+  reload,
+};
 
 beforeEach(() => {
   sources = [library];
   views = {};
   calls = [];
   failures = {};
+  reload.mockReset();
   mockIPC((cmd, args) => {
     const payload = (args ?? {}) as Record<string, any>;
     calls.push({ cmd, args: payload });
@@ -119,13 +130,15 @@ function Prefill({ count }: { count: number }) {
 
 function renderScreen(prefill = 0) {
   return render(
-    <ToastProvider>
-      <PodcastSelectionProvider>
-        <PodcastsScreen />
-        {prefill > 0 && <Prefill count={prefill} />}
-        <Probe />
-      </PodcastSelectionProvider>
-    </ToastProvider>,
+    <LibraryContext.Provider value={libraryApi}>
+      <ToastProvider>
+        <PodcastSelectionProvider>
+          <PodcastsScreen />
+          {prefill > 0 && <Prefill count={prefill} />}
+          <Probe />
+        </PodcastSelectionProvider>
+      </ToastProvider>
+    </LibraryContext.Provider>,
   );
 }
 
@@ -270,6 +283,8 @@ it("ajoute un flux et affiche ses épisodes", async () => {
   // #489).
   expect(screen.getByRole("heading", { name: /Épisodes de « Flux »/ })).toHaveFocus();
   expect(screen.getByText("Flux « Mon flux » ajouté.")).toBeInTheDocument();
+  // La source ajoutée apparaît dans la barre latérale (#581).
+  expect(reload).toHaveBeenCalledTimes(1);
 });
 
 it("refuse une adresse invalide sans appeler le backend", async () => {
@@ -277,6 +292,7 @@ it("refuse une adresse invalide sans appeler le backend", async () => {
   await fillAndSubmit("pas une adresse");
   expect(await screen.findByText(/doit commencer par http/)).toBeInTheDocument();
   expect(calls.some((c) => c.cmd === "podcast_add")).toBe(false);
+  expect(reload).not.toHaveBeenCalled();
 });
 
 it.each([

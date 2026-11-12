@@ -120,6 +120,10 @@ let failures: Record<string, { kind: string; message: string }>;
 // Retient la réponse d'une commande pour tester l'ordre des événements.
 let installGate: Promise<void> | null;
 let launchGate: Promise<void> | null;
+// Retient la réponse de `library_remove` (suppression en cours).
+let removeGate: Promise<void> | null;
+// Une barrière par appel de `library_list` (dans l'ordre) : la réponse reste celle de l'instant de l'appel.
+let listGates: Promise<void>[];
 let calls: { cmd: string; args: Record<string, any> }[];
 
 const callsOf = (cmd: string) => calls.filter((c) => c.cmd === cmd);
@@ -143,6 +147,8 @@ beforeEach(() => {
   calls = [];
   installGate = null;
   launchGate = null;
+  removeGate = null;
+  listGates = [];
   windowApi.minimizeWindow.mockClear();
   windowApi.restoreWindow.mockClear();
   window.localStorage.clear();
@@ -171,13 +177,20 @@ beforeEach(() => {
           return "data:image/png;base64,AAAA";
         case "compat_statuses":
           return report;
-        case "library_list":
-          return installed;
+        case "library_list": {
+          const snapshot = installed;
+          const gate = listGates.shift();
+          return gate ? gate.then(() => snapshot) : snapshot;
+        }
         case "library_source_status":
           return sourceChecks;
-        case "library_remove":
-          installed = installed.filter((item) => item.uuid !== payload.uuid);
-          return null;
+        case "library_remove": {
+          const remove = () => {
+            installed = installed.filter((item) => item.uuid !== payload.uuid);
+            return null;
+          };
+          return removeGate ? removeGate.then(remove) : remove();
+        }
         case "install_list":
           return started;
         case "install_start": {
@@ -1400,6 +1413,54 @@ it("démonter le provider annule les minuteries de retrait en attente", async ()
   expect(vi.getTimerCount()).toBeGreaterThan(0);
   view.unmount();
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("la fiche ne lance la suppression qu'une fois, même cliquée deux fois (#581)", async () => {
+  let release!: () => void;
+  removeGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  installed = [installedEntry(ours())];
+  window.location.hash = "#/library/library";
+  await renderApp();
+  const dialog = await openFiche();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Supprimer" }));
+  const confirm = await screen.findByRole("alertdialog");
+  const button = within(confirm).getByRole("button", { name: "Supprimer" });
+  fireEvent.click(button);
+  fireEvent.click(button);
+  await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
+  expect(button).toHaveAttribute("aria-disabled", "true");
+  await act(async () => {
+    release();
+  });
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(callsOf("library_remove")).toHaveLength(1);
+});
+
+it("une réponse ancienne de la liste installée n'écrase pas une plus récente (#581)", async () => {
+  let releaseFirst!: () => void;
+  // Premier appel (chargement initial) : la bibliothèque est vide, mais la réponse tarde.
+  listGates = [
+    new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    }),
+  ];
+  await renderApp();
+  await waitFor(() => expect(callsOf("library_list")).toHaveLength(1));
+  // Une installation se termine : seconde lecture, qui voit l'histoire et revient aussitôt.
+  installed = [installedEntry(ours())];
+  await send("install://done", { task_id: "t1", entry: installed[0], warnings: 0 });
+  await waitFor(() => expect(callsOf("library_list")).toHaveLength(2));
+  // La réponse ancienne (liste vide) arrive en dernier : elle est ignorée.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releaseFirst();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  // La fiche voit l'histoire installée : « Supprimer » est proposé.
+  const dialog = await openFiche();
+  expect(within(dialog).getByRole("button", { name: "Supprimer" })).toBeVisible();
 });
 
 it("la case de purge prévient que l'action est irréversible", async () => {

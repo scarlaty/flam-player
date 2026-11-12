@@ -11,6 +11,7 @@ import {
 import { Badge, Button, Dialog, Icon, IconButton, useToast } from "../../components";
 import { t } from "../../i18n";
 import { ErrorBanner } from "../ErrorBanner";
+import { useLibrary } from "../library/LibraryContext";
 import { useRecovery } from "../recovery/RecoveryContext";
 import { MAX_NAME_LEN } from "../validation";
 import { AddCatalogDialog, RenameSourceDialog } from "./SourceDialogs";
@@ -40,6 +41,8 @@ export function moveItem<T>(list: readonly T[], from: number, to: number): T[] {
 export function SourcesScreen() {
   const toast = useToast();
   const { report } = useRecovery();
+  // La barre latérale tient sa propre liste : elle est relue après chaque changement (#581).
+  const { reload: reloadSidebar } = useLibrary();
   const [sources, setSources] = useState<Source[] | null>(null);
   const [loadError, setLoadError] = useState<AppError | null>(null);
   const [actionError, setActionError] = useState<AppError | null>(null);
@@ -103,6 +106,7 @@ export function SourcesScreen() {
     try {
       const result = await reorderSources(next.map((s) => s.id));
       setSources(result);
+      reloadSidebar();
       const position = result.filter(isEditable).findIndex((s) => s.id === movedId) + 1;
       const moved = result.find((s) => s.id === movedId);
       if (moved) {
@@ -156,6 +160,7 @@ export function SourcesScreen() {
   function onAdded(source: Source) {
     setAdding(false);
     setSources((list) => (list ? [...list, source] : list));
+    reloadSidebar();
     toast.show({ message: t.sourcesScreen.added(source.name), tone: "success" });
   }
 
@@ -167,6 +172,7 @@ export function SourcesScreen() {
     try {
       await removeSource(target.id);
       setSources((list) => list?.filter((s) => s.id !== target.id) ?? null);
+      reloadSidebar();
       toast.show({ message: t.sourcesScreen.removed(target.name), tone: "success" });
     } catch (caught) {
       setActionError(toAppError(caught));
@@ -293,6 +299,7 @@ export function SourcesScreen() {
             setSources(
               (list) => list?.map((s) => (s.id === updated.id ? updated : s)) ?? null,
             );
+            reloadSidebar();
             toast.show({
               message: t.sourcesScreen.renamed(updated.name),
               tone: "success",

@@ -18,6 +18,7 @@ import { Banner, Button, EmptyState, useToast } from "../../components";
 import { t } from "../../i18n";
 import { PACK_HASH } from "../../router";
 import { ErrorBanner } from "../ErrorBanner";
+import { useLibrary } from "../library/LibraryContext";
 import { AddFeedForm } from "./AddFeedForm";
 import { CompositionsSection } from "./CompositionsSection";
 import { EpisodeList, SelectionSummary } from "./EpisodeList";
@@ -95,6 +96,8 @@ function useFeed(sourceId: string | null, seedRef: RefObject<PodcastView | null>
  */
 export function PodcastsScreen() {
   const toast = useToast();
+  // La barre latérale tient sa propre liste de sources : relue après un ajout (#581).
+  const { reload: reloadSidebar } = useLibrary();
   const [feeds, setFeeds] = useState<PodcastSource[] | null>(null);
   const [loadError, setLoadError] = useState<AppError | null>(null);
   const [chosenId, setChosenId] = useState<string | null>(null);
@@ -134,6 +137,7 @@ export function PodcastsScreen() {
 
   function onAdded(added: PodcastAdded) {
     const source = added.source;
+    reloadSidebar();
     if (!isPodcast(source)) return;
     setFeeds((list) => [...(list ?? []).filter((f) => f.id !== source.id), source]);
     if (source.id !== chosenId) {
