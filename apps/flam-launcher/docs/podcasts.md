@@ -123,8 +123,10 @@ Remarques de cohérence :
   (`-fs`), un titre réel pèse environ 120 Kio.
 - **Panne du convertisseur** (#582) : ffmpeg **et** ffprobe sont vérifiés (présence, empreinte) une
   fois avant tout téléchargement. Pendant la conversion, une panne du convertisseur ou une erreur
-  disque (hors délai d'un épisode) arrête le pack avec un message clair au lieu de retirer chaque
-  épisode ; seuls les échecs propres à un épisode (fichier illisible, trop long, délai) le retirent.
+  disque générale (dossier de sortie absent) arrête le pack avec un message clair au lieu de
+  retirer chaque épisode. Les échecs propres à un épisode le retirent seul : fichier illisible, trop
+  long, délai, ou erreur disque sur ce fichier (source verrouillée, renommage refusé : code
+  `io_failed`).
 - **D6 et `telmi2flam`** : la règle est plus stricte que celle du convertisseur, qui copie tout
   MP3 à 44 100 Hz quel que soit son débit (§ 3.1). Pas d'incohérence : le launcher livre des
   fichiers déjà conformes.

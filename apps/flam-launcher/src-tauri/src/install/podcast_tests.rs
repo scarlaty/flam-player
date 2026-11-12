@@ -35,6 +35,8 @@ enum Fault {
     AudioConverterGone,
     /// Erreur disque pendant la conversion.
     AudioDiskError,
+    /// Un seul épisode (le deuxième) a une erreur disque propre à son fichier (`io_failed`).
+    AudioOneIoFailed,
     /// Délai de conversion dépassé pour chaque épisode (échec d'épisode, pas du pack).
     AudioTimedOut,
     CancelFetch,
@@ -260,7 +262,14 @@ impl PackBackend for FakePacks {
             }
             Ok(items
                 .iter()
-                .map(|(from, to)| {
+                .enumerate()
+                .map(|(n, (from, to))| {
+                    if self.fault == Fault::AudioOneIoFailed && n == 1 {
+                        return Err(AppError::Conversion {
+                            code: "io_failed".into(),
+                            message: "fichier de l'épisode inaccessible (permission denied)".into(),
+                        });
+                    }
                     if self.fault == Fault::AudioAllFail {
                         return Err(AppError::Conversion {
                             code: "ffmpeg_failed".into(),
@@ -1224,4 +1233,16 @@ fn verifie_ffmpeg_et_ffprobe_avant_de_telecharger() {
     // Les deux conformes : accepté.
     std::fs::write(dir.path().join(Tool::Ffprobe.file_name()), b"ffprobe").unwrap();
     verify_converter(&ff).unwrap();
+}
+
+/// Une erreur disque propre à un seul épisode le retire seul : le pack aboutit avec les autres.
+#[tokio::test]
+async fn erreur_disque_d_un_seul_episode_ne_fait_pas_echouer_le_pack() {
+    let Some(py) = fake_converter() else { return };
+    let ctx = Ctx::new(Some(py));
+    ctx.packs(Fault::AudioOneIoFailed);
+    let task = ctx.start_pack().await;
+    let done = ctx.finished(&task.id).await;
+    assert_eq!(done.state, TaskState::Done, "{done:?}");
+    assert_eq!(done.pack.unwrap().dropped, ["Deux"]);
 }

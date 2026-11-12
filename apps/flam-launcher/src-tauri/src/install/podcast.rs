@@ -323,7 +323,8 @@ pub(super) fn verify_converter(ff: &crate::ffmpeg::Ffmpeg) -> AppResult<()> {
 }
 
 /// Erreur de conversion qui arrête tout le pack au lieu de retirer l'épisode : convertisseur
-/// indisponible, ou erreur disque (hors délai d'un épisode, `TimedOut`).
+/// indisponible, ou erreur disque générale (hors délai d'un épisode, `TimedOut`). Les erreurs
+/// disque propres à un épisode arrivent ici en `Conversion` (`io_failed`) et retirent l'épisode.
 fn is_fatal_conversion(err: &AppError) -> bool {
     match err {
         AppError::ConverterUnavailable(_) => true,
@@ -971,6 +972,8 @@ impl InstallService {
                     });
                     kept.push((n, mp3, image));
                 }
+                // Filet : `audio::convert` refuse déjà toute sortie au-delà de la borne
+                // (`audio_too_large`), cette branche est inatteignable avec le convertisseur réel.
                 Ok(_) => {
                     tracing::warn!(episode = n, "épisode retiré du pack : MP3 trop volumineux");
                     dropped.push(n);

@@ -28,7 +28,8 @@
 //! (`audio_too_large`), sans publier la sortie tronquée.
 //!
 //! Erreurs par épisode : `AppError::Conversion` avec un code stable (`unreadable_audio`,
-//! `no_audio`, `ffmpeg_failed`, `duplicate_output`, `audio_too_large`), `AppError::Cancelled`,
+//! `no_audio`, `ffmpeg_failed`, `duplicate_output`, `audio_too_large`, `io_failed` pour une erreur
+//! disque propre à l'épisode : source ou temporaire illisible, renommage refusé), `AppError::Cancelled`,
 //! ou `AppError::Io` de genre `TimedOut` ou `NotFound` (dossier de sortie absent).
 
 use std::ffi::OsString;
@@ -401,6 +402,16 @@ fn convert_timeout(duration_secs: Option<f64>) -> Duration {
     }
 }
 
+/// Erreur disque propre à un épisode (source verrouillée ou mise en quarantaine, renommage du
+/// temporaire refusé) : un échec d'épisode (`io_failed`), pas une panne du pack. Message sans
+/// chemin. `Io` reste réservé au dossier de sortie absent et au délai (`TimedOut`).
+fn episode_io(err: std::io::Error) -> AppError {
+    AppError::Conversion {
+        code: "io_failed".into(),
+        message: format!("fichier de l'épisode inaccessible ({})", err.kind()),
+    }
+}
+
 fn failed(why: &str) -> AppError {
     AppError::Conversion {
         code: "ffmpeg_failed".into(),
@@ -461,7 +472,7 @@ async fn convert_with(
             )));
         }
     }
-    let input_bytes = tokio::fs::metadata(input).await?.len();
+    let input_bytes = tokio::fs::metadata(input).await.map_err(episode_io)?.len();
     let info = probe(ff, input, cancel).await?;
     let plan = decide(&info);
     ensure_fits(plan, info.duration_secs, max_bytes)?;
@@ -472,7 +483,10 @@ async fn convert_with(
     if !out.success() {
         return Err(failed(&last_line(&out.stderr)));
     }
-    let output_bytes = tokio::fs::metadata(&temp.path).await?.len();
+    let output_bytes = tokio::fs::metadata(&temp.path)
+        .await
+        .map_err(episode_io)?
+        .len();
     if output_bytes == 0 {
         return Err(failed("fichier de sortie vide"));
     }
@@ -489,7 +503,7 @@ async fn convert_with(
         return Err(AppError::Cancelled);
     }
     // Une sortie existante est remplacée.
-    temp.commit(output).await?;
+    temp.commit(output).await.map_err(episode_io)?;
     Ok(Converted {
         plan,
         input_bytes,
@@ -908,6 +922,29 @@ mod tests {
         }
         assert!(!dst.exists());
         no_part_files(dir.path());
+    }
+
+    #[tokio::test]
+    async fn source_inaccessible_est_un_echec_d_episode_sans_chemin() {
+        let dir = tempfile::tempdir().unwrap();
+        let ff = Ffmpeg::in_dir(dir.path());
+        let (_tx, mut rx) = watch::channel(false);
+        let err = convert(
+            &ff,
+            &dir.path().join("absente.mp3"),
+            &dir.path().join("b.mp3"),
+            TEST_MAX,
+            &mut rx,
+        )
+        .await
+        .unwrap_err();
+        match err {
+            AppError::Conversion { code, message } => {
+                assert_eq!(code, "io_failed");
+                assert!(!message.contains("absente"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[tokio::test]
