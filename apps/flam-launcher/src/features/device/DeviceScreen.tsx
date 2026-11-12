@@ -8,6 +8,7 @@ import {
   type RefObject,
 } from "react";
 import {
+  firmwareWriteBlock,
   type DeviceStories,
   type DeviceStory,
   type DeviceSummary,
@@ -27,6 +28,7 @@ import { ForgetCarrierKeysButton } from "./ForgetCarrierKeysButton";
 import { RemoveStoryButton } from "./RemoveStoryButton";
 import {
   ThumbnailLoader,
+  sentStamps,
   useDeviceStoryTitles,
   useDeviceThumbnail,
   useOfficialStoryTitles,
@@ -300,7 +302,7 @@ function canReorder(report: DeviceStories | null): report is DeviceStories {
  * modification de l'ordre.
  */
 function DeviceStoriesList() {
-  const { stories: state, reloadStories, busy, device } = useDevice();
+  const { stories: state, reloadStories, busy, device, queue } = useDevice();
   const root = device?.root ?? null;
   const report = state.phase === "ready" ? state.report : null;
   const readyUuids = useMemo(
@@ -321,11 +323,17 @@ function DeviceStoriesList() {
   const uuids = loading && lastUuids.root === root ? lastUuids.uuids : readyUuids;
   // Titres et vignettes de la Flam : chargés après l'affichage de la liste, suspendus pendant
   // un envoi ou un retrait.
-  const { titles, lunii } = useDeviceStoryTitles(root, uuids, busy);
+  // Un envoi terminé pour un UUID (« Remplacer sur la Flam » le garde) : titre et vignette lus
+  // avant l'envoi sont oubliés et relus.
+  const sent = useMemo(() => sentStamps(queue), [queue]);
+  const { titles, lunii, keysProblem } = useDeviceStoryTitles(root, uuids, busy, sent);
   // Titre non déchiffrable (clé d'un autre compte) : catalogue officiel en ligne, seulement s'il
   // reste au moins une histoire sans titre.
   const official = useOfficialStoryTitles(titles, lunii);
   const loader = useMemo(() => (root ? new ThumbnailLoader(root) : null), [root]);
+  // Vignette lue avant un envoi terminé : oubliée avant le rendu des lignes (leur clé change
+  // avec l'envoi), qui la redemandent. Idempotent : un second rendu ne fait rien de plus.
+  loader?.forgetSent(sent);
   useEffect(() => () => loader?.dispose(), [loader]);
   useEffect(() => loader?.setPaused(busy), [loader, busy]);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -360,8 +368,13 @@ function DeviceStoriesList() {
     setOrdering(false);
   }
 
+  // Même nom que la ligne : titre déchiffré, catalogue officiel (sauf Lunii), bibliothèque, UUID court.
   const nameOf = (story: DeviceStory) =>
-    titles.get(story.uuid) ?? story.title ?? text.stories.untitled(story.short_id);
+    storyName(
+      story,
+      titles.get(story.uuid),
+      lunii.has(story.uuid) ? undefined : official.get(story.uuid),
+    );
 
   function refresh() {
     // Le bouton cliqué disparaît pendant le chargement : le focus passe à un élément stable.
@@ -429,6 +442,13 @@ function DeviceStoriesList() {
             {t.deviceTransfer.remove.workingNamed(nameOf(removingStory))}
           </p>
         )}
+        {keysProblem && !firmwareWriteBlock(device) && (
+          // Doublon évité : si la garde du firmware bloque l'écriture (clés illisibles
+          // comprises), le bandeau du firmware donne déjà la raison.
+          <Banner tone="warning" role="status" title={text.stories.keysProblemTitle}>
+            {text.stories.keysProblem(keysProblem)}
+          </Banner>
+        )}
         {indexNotices(report).map(({ tone, message }) => (
           <Banner key={message} tone={tone} role="status">
             {message}
@@ -453,8 +473,9 @@ function DeviceStoriesList() {
           <ul className="fl-device-rows" aria-label={text.stories.listLabel}>
             {report.stories.map((story) => (
               <DeviceStoryRow
-                key={story.uuid}
+                key={`${story.uuid}:${sent.get(story.uuid) ?? 0}`}
                 story={story}
+                name={nameOf(story)}
                 deviceTitle={titles.get(story.uuid)}
                 lunii={lunii.has(story.uuid)}
                 official={lunii.has(story.uuid) ? undefined : official.get(story.uuid)}
@@ -463,6 +484,7 @@ function DeviceStoriesList() {
                 actions={
                   <RemoveStoryButton
                     story={story}
+                    name={nameOf(story)}
                     busy={busy}
                     locked={removing !== null && removing !== story.uuid}
                     onWorkingChange={(working) =>
@@ -491,12 +513,28 @@ function DeviceStoriesList() {
 }
 
 /**
+ * Nom d'une histoire de la Flam : titre déchiffré (`deviceTitle`), sinon celui du catalogue
+ * officiel (`official`), sinon celui de la bibliothèque, sinon l'UUID court. Commun à la ligne,
+ * au bouton « Retirer » et à l'édition de l'ordre.
+ */
+function storyName(
+  story: DeviceStory,
+  deviceTitle: string | null | undefined,
+  official: OfficialInfo | undefined,
+): string {
+  return (
+    deviceTitle ?? official?.title ?? story.title ?? text.stories.untitled(story.short_id)
+  );
+}
+
+/**
  * Ligne d'une histoire. Titre : celui déchiffré sur la Flam (`deviceTitle`), sinon celui du
  * catalogue officiel (`official`), sinon celui de la bibliothèque, sinon l'UUID court. Vignette :
  * celle de la Flam, sinon l'image du catalogue, sinon l'illustration par défaut.
  */
 function DeviceStoryRow({
   story,
+  name,
   deviceTitle,
   lunii = false,
   official,
@@ -505,6 +543,8 @@ function DeviceStoryRow({
   removing = false,
 }: {
   story: DeviceStory;
+  /** Nom affiché (`storyName`), repris par le bouton de retrait. */
+  name: string;
   deviceTitle?: string | null;
   /** Histoire au format Lunii/STUdio (badge discret). */
   lunii?: boolean;
@@ -522,7 +562,6 @@ function DeviceStoryRow({
   );
   const thumb = deviceThumb ?? catalogThumb;
   const title = deviceTitle ?? official?.title ?? story.title;
-  const name = title ?? text.stories.untitled(story.short_id);
   return (
     <li ref={rowRef} className="fl-device-row" aria-busy={removing || undefined}>
       <span className="fl-device-row__thumb">

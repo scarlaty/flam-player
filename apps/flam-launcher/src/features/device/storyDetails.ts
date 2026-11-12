@@ -8,6 +8,7 @@ import {
   getOfficialStoryTitles,
   type DeviceStoryThumbnail,
 } from "../../api/device";
+import type { QueueItem } from "./DeviceContext";
 
 /** Délai avant de redemander ce qu'une opération en cours sur la Flam a interrompu. */
 export const DETAILS_RETRY_MS = 2000;
@@ -29,34 +30,63 @@ function delay(ms: number): Promise<void> {
  *
  * `lunii` : histoires au format Lunii/STUdio (`info` en clair, #522). Leur titre est lu sans
  * clé, donc retenu même quand la Flam n'a pas de clé de titre.
+ *
+ * `sent` (voir `sentStamps`) : envois terminés, UUID et numéro de relecture. Le titre d'un UUID
+ * dont un envoi vient de se terminer (« Remplacer sur la Flam » garde l'UUID) est oublié, donc
+ * relu, une fois par envoi.
+ *
+ * `keysProblem` : les clés de titre d'une Flam 2.x n'ont pas pu être lues (#317) ; les titres
+ * se replient alors sur la bibliothèque ou le catalogue.
  */
 export function useDeviceStoryTitles(
   root: string | null,
   uuids: string[],
   paused: boolean,
+  sent: ReadonlyMap<string, number> = EMPTY_SENT,
 ): DeviceStoryTitlesState {
   const [titles, setTitles] = useState<{
     root: string | null;
     map: ReadonlyMap<string, string | null>;
     lunii: ReadonlySet<string>;
-  }>({ root: null, map: EMPTY_TITLES, lunii: EMPTY_LUNII });
+    keysProblem: string | null;
+  }>({ root: null, map: EMPTY_TITLES, lunii: EMPTY_LUNII, keysProblem: null });
   // Réponses déjà reçues pour la Flam en cours (lu et écrit seulement dans l'effet).
   const known = useRef<{
     root: string | null;
     map: Map<string, string | null>;
     lunii: Set<string>;
+    /** Dernier envoi terminé pris en compte, par UUID. */
+    sent: Map<string, number>;
+    keysProblem: string | null;
   }>({
     root: null,
     map: new Map(),
     lunii: new Set(),
+    sent: new Map(),
+    keysProblem: null,
   });
   const uuidsKey = uuids.join(" ");
+  const sentKey = [...sent].map(([uuid, gen]) => `${uuid}:${gen}`).join(" ");
 
   useEffect(() => {
     if (!root) return;
     if (known.current.root !== root)
-      known.current = { root, map: new Map(), lunii: new Set() };
-    const { map, lunii } = known.current;
+      known.current = {
+        root,
+        map: new Map(),
+        lunii: new Set(),
+        sent: new Map(),
+        keysProblem: null,
+      };
+    const state = known.current;
+    const { map, lunii } = state;
+    const publish = () =>
+      setTitles({
+        root,
+        map: new Map(map),
+        lunii: new Set(lunii),
+        keysProblem: state.keysProblem,
+      });
     // Histoire retirée de la liste : sa réponse (titre, format) est oubliée. Un même UUID
     // réinstallé dans un autre format (Lunii puis Flam, ou l'inverse) est donc relu, sans
     // badge ni titre périmés.
@@ -68,7 +98,17 @@ export function useDeviceStoryTitles(
         lunii.delete(uuid);
         pruned = true;
       }
-    if (pruned) setTitles({ root, map: new Map(map), lunii: new Set(lunii) });
+    // Envoi terminé pour cet UUID : le titre lu avant l'envoi n'est plus fiable.
+    for (const entry of sentKey ? sentKey.split(" ") : []) {
+      const cut = entry.lastIndexOf(":");
+      const uuid = entry.slice(0, cut);
+      const gen = Number(entry.slice(cut + 1));
+      if (state.sent.get(uuid) === gen) continue;
+      state.sent.set(uuid, gen);
+      if (map.delete(uuid)) pruned = true;
+      lunii.delete(uuid);
+    }
+    if (pruned) publish();
     if (paused) return;
     let pending = uuidsKey ? uuidsKey.split(" ").filter((u) => !map.has(u)) : [];
     if (pending.length === 0) return;
@@ -87,6 +127,10 @@ export function useDeviceStoryTitles(
           inFlight = false;
         }
         if (!active) return;
+        // Échec de lecture des clés 2.x : signalé tant qu'il dure ; une réponse interrompue
+        // sans cause (opération en cours) ne dit rien de plus.
+        if (reply.keys_problem) state.keysProblem = reply.keys_problem;
+        else if (!reply.interrupted) state.keysProblem = null;
         // Histoires Lunii : titre en clair, définitif même sans clé de titre.
         for (const { uuid, title, format } of reply.titles)
           if (format === "lunii") {
@@ -97,7 +141,7 @@ export function useDeviceStoryTitles(
         // conservée ou consentement donné plus tard) : rien n'est retenu, l'effet suivant
         // (fin d'un envoi, nouvelle liste) redemandera. L'affichage se replie d'ici là.
         if (!reply.keys && !reply.interrupted) {
-          setTitles({ root, map: new Map(map), lunii: new Set(lunii) });
+          publish();
           // Lots suivants : les histoires Lunii y ont un titre en clair même sans clé.
           pending = pending.slice(batch.length);
           continue;
@@ -109,7 +153,7 @@ export function useDeviceStoryTitles(
         // Lot complet : une histoire omise (UUID invalide) n'aura pas de titre.
         if (!reply.interrupted)
           for (const uuid of batch) if (!map.has(uuid)) map.set(uuid, null);
-        setTitles({ root, map: new Map(map), lunii: new Set(lunii) });
+        publish();
         pending = pending.filter((u) => !map.has(u));
         if (reply.interrupted) await delay(DETAILS_RETRY_MS);
       }
@@ -118,20 +162,44 @@ export function useDeviceStoryTitles(
       active = false;
       if (inFlight) void cancelDeviceStoryDetails().catch(() => undefined);
     };
-  }, [root, uuidsKey, paused]);
+  }, [root, uuidsKey, paused, sentKey]);
 
-  return titles.root === root ? { titles: titles.map, lunii: titles.lunii } : EMPTY_STATE;
+  return titles.root === root
+    ? { titles: titles.map, lunii: titles.lunii, keysProblem: titles.keysProblem }
+    : EMPTY_STATE;
 }
 
 /** Titres lus sur la Flam et histoires au format Lunii (voir `useDeviceStoryTitles`). */
 export interface DeviceStoryTitlesState {
   titles: ReadonlyMap<string, string | null>;
   lunii: ReadonlySet<string>;
+  /** Clés de titre 2.x illisibles (message sans donnée de l'appareil), sinon `null`. */
+  keysProblem: string | null;
 }
 
 const EMPTY_TITLES: ReadonlyMap<string, string | null> = new Map();
 const EMPTY_LUNII: ReadonlySet<string> = new Set();
-const EMPTY_STATE: DeviceStoryTitlesState = { titles: EMPTY_TITLES, lunii: EMPTY_LUNII };
+const EMPTY_SENT: ReadonlyMap<string, number> = new Map();
+const EMPTY_STATE: DeviceStoryTitlesState = {
+  titles: EMPTY_TITLES,
+  lunii: EMPTY_LUNII,
+  keysProblem: null,
+};
+
+/**
+ * Envois terminés de la file : UUID envoyé et UUID remplacé, avec le numéro de relecture de la
+ * Flam qui suit l'envoi (différent à chaque envoi réussi). Sert à oublier titre et vignette
+ * lus avant l'envoi.
+ */
+export function sentStamps(queue: readonly QueueItem[]): ReadonlyMap<string, number> {
+  const stamps = new Map<string, number>();
+  for (const item of queue) {
+    if (item.state !== "done" || item.reloadGen === undefined) continue;
+    for (const uuid of [item.uuid, item.replace])
+      if (uuid) stamps.set(uuid, Math.max(stamps.get(uuid) ?? 0, item.reloadGen));
+  }
+  return stamps;
+}
 
 /** Titre du catalogue officiel d'une histoire dont le titre n'a pas pu être déchiffré. */
 export interface OfficialInfo {
@@ -243,6 +311,8 @@ type Fetcher = (root: string, uuid: string) => Promise<DeviceStoryThumbnail>;
  */
 export class ThumbnailLoader {
   private readonly done = new Map<string, string | null>();
+  /** Dernier envoi terminé pris en compte, par UUID (voir `forgetSent`). */
+  private readonly sent = new Map<string, number>();
   private readonly waiting = new Map<string, Array<(url: string | null) => void>>();
   private readonly queue: string[] = [];
   private running = 0;
@@ -258,6 +328,18 @@ export class ThumbnailLoader {
   /** Vignette déjà connue (`undefined` : pas encore lue). */
   peek(uuid: string): string | null | undefined {
     return this.done.get(uuid);
+  }
+
+  /**
+   * Oublie les vignettes des histoires dont un envoi vient de se terminer (`sentStamps`) : elles
+   * seront relues. Un même envoi n'est pris en compte qu'une fois.
+   */
+  forgetSent(stamps: ReadonlyMap<string, number>): void {
+    for (const [uuid, gen] of stamps) {
+      if (this.sent.get(uuid) === gen) continue;
+      this.sent.set(uuid, gen);
+      this.done.delete(uuid);
+    }
   }
 
   /** Demande la vignette `uuid` ; `null` si absente, invalide ou abandonnée. */
@@ -289,8 +371,9 @@ export class ThumbnailLoader {
     this.waiting.clear();
   }
 
-  private finish(uuid: string, url: string | null): void {
-    this.done.set(uuid, url);
+  /** `remember` faux : l'échec est rendu aux demandeurs sans être gardé (relu ensuite). */
+  private finish(uuid: string, url: string | null, remember = true): void {
+    if (remember) this.done.set(uuid, url);
     for (const resolve of this.waiting.get(uuid) ?? []) resolve(url);
     this.waiting.delete(uuid);
   }
@@ -318,7 +401,8 @@ export class ThumbnailLoader {
         this.finish(uuid, url);
       }
     } catch {
-      this.finish(uuid, null);
+      // Accroc ponctuel (clé USB) : pas de vignette pour cette demande, pas pour la session.
+      this.finish(uuid, null, false);
     } finally {
       this.running -= 1;
     }

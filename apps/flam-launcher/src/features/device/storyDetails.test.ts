@@ -62,6 +62,40 @@ it("refuse une réponse qui n'est pas une image et traite l'échec comme absente
   );
   expect(await loader.request("x")).toBeNull();
   expect(await loader.request("y")).toBeNull();
+  // Une réponse qui n'est pas une image est définitive ; un échec de lecture ne l'est pas.
+  expect(loader.peek("x")).toBeNull();
+  expect(loader.peek("y")).toBeUndefined();
+});
+
+it("relit une vignette dont la lecture a échoué (l'échec n'est pas mémorisé, #581)", async () => {
+  let calls = 0;
+  const loader = new ThumbnailLoader("E:\\", () => {
+    calls += 1;
+    return calls === 1
+      ? Promise.reject(new Error("accroc USB"))
+      : Promise.resolve({ thumb: PNG, busy: false });
+  });
+  expect(await loader.request("a")).toBeNull();
+  expect(await loader.request("a")).toBe(PNG);
+  expect(calls).toBe(2);
+});
+
+it("oublie une vignette lue pour qu'elle soit relue (histoire remplacée, #581)", async () => {
+  let thumb = PNG;
+  let calls = 0;
+  const loader = new ThumbnailLoader("E:\\", () => {
+    calls += 1;
+    return Promise.resolve({ thumb, busy: false });
+  });
+  expect(await loader.request("a")).toBe(PNG);
+  thumb = "data:image/png;base64,Tk9VVkVMTEU=";
+  loader.forgetSent(new Map([["a", 1]]));
+  expect(loader.peek("a")).toBeUndefined();
+  expect(await loader.request("a")).toBe(thumb);
+  expect(calls).toBe(2);
+  // Le même envoi n'est oublié qu'une fois.
+  loader.forgetSent(new Map([["a", 1]]));
+  expect(loader.peek("a")).toBe(thumb);
 });
 
 it("redemande plus tard quand la Flam est occupée", async () => {
@@ -235,6 +269,80 @@ it("un UUID retiré puis revenu dans un autre format est relu (pas de badge pér
   await waitFor(() => expect(result.current.titles.get("a")).toBe("Loup"));
   expect(result.current.lunii.has("a")).toBe(false);
   expect(requests).toEqual([["a"], ["a"]]);
+  clearMocks();
+});
+
+it("oublie le titre d'une histoire dont l'envoi vient de se terminer et le relit (#581)", async () => {
+  const replies = [
+    {
+      titles: [{ uuid: "a", title: "Ancien", format: "flam" }],
+      interrupted: false,
+      keys: true,
+    },
+    {
+      titles: [{ uuid: "a", title: "Nouveau", format: "flam" }],
+      interrupted: false,
+      keys: true,
+    },
+    {
+      titles: [{ uuid: "a", title: "Encore", format: "flam" }],
+      interrupted: false,
+      keys: true,
+    },
+  ];
+  const requests: string[][] = [];
+  mockIPC((cmd, args) => {
+    if (cmd !== "device_story_titles") return null;
+    requests.push((args as { uuids: string[] }).uuids);
+    return replies[requests.length - 1];
+  });
+  const { result, rerender } = renderHook(
+    ({ sent }) => useDeviceStoryTitles("E:\\", ["a"], false, sent),
+    { initialProps: { sent: new Map<string, number>() } },
+  );
+  await waitFor(() => expect(result.current.titles.get("a")).toBe("Ancien"));
+  // Envoi terminé (même UUID, « Remplacer sur la Flam ») : le titre est relu.
+  rerender({ sent: new Map([["a", 1]]) });
+  await waitFor(() => expect(result.current.titles.get("a")).toBe("Nouveau"));
+  expect(requests).toEqual([["a"], ["a"]]);
+  // Même envoi, nouveau rendu : rien de plus.
+  rerender({ sent: new Map([["a", 1]]) });
+  await flush();
+  expect(requests).toHaveLength(2);
+  // Autre envoi terminé du même UUID : relu encore.
+  rerender({ sent: new Map([["a", 2]]) });
+  await waitFor(() => expect(result.current.titles.get("a")).toBe("Encore"));
+  expect(requests).toHaveLength(3);
+  clearMocks();
+});
+
+it("remonte le problème de lecture des clés du firmware 2.x (#317)", async () => {
+  const replies = [
+    {
+      titles: [{ uuid: "a", title: null, format: "flam" }],
+      interrupted: false,
+      keys: false,
+      keys_problem: "clé illisible",
+    },
+    {
+      titles: [{ uuid: "a", title: "Capi", format: "flam" }],
+      interrupted: false,
+      keys: true,
+      keys_problem: null,
+    },
+  ];
+  let n = 0;
+  mockIPC((cmd) => (cmd === "device_story_titles" ? replies[n++] : null));
+  const { result, rerender } = renderHook(
+    ({ paused }) => useDeviceStoryTitles("E:\\", ["a"], paused),
+    { initialProps: { paused: false } },
+  );
+  await waitFor(() => expect(result.current.keysProblem).toBe("clé illisible"));
+  // Les clés redeviennent lisibles à la relecture : l'avertissement disparaît.
+  rerender({ paused: true });
+  rerender({ paused: false });
+  await waitFor(() => expect(result.current.titles.get("a")).toBe("Capi"));
+  expect(result.current.keysProblem).toBeNull();
   clearMocks();
 });
 
