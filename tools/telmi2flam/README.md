@@ -515,7 +515,9 @@ Le convertisseur rééchantillonne donc **tout MP3 dont la fréquence n'est pas 
 44 100 Hz, avec **ffmpeg** (encodeur `libmp3lame`) : même nombre de canaux, MP3 CBR, débit proche
 de celui de la source, borné à 64-192 kbps. Le `.mp3map` est généré sur le fichier rééchantillonné.
 Un MP3 déjà à 44 100 Hz est recopié sans changement. ffmpeg est lancé sans shell ni stdin, protocole
-`file` seul, dans un dossier temporaire, avec un délai maximal de 120 s.
+`file` seul et format d'entrée MP3 imposé (`-f mp3` avant `-i`, pas de sondage : un fichier
+renommé `.mp3` qui n'est pas du MP3 est refusé par ffmpeg, donc recopié avec l'avertissement),
+dans un dossier temporaire, avec un délai maximal de 120 s.
 
 - Découverte de ffmpeg : variable d'environnement `FLAM_FFMPEG` (chemin de l'exécutable ; **vide =
   rééchantillonnage désactivé**), sinon `ffmpeg` du `PATH`. Le launcher renseigne `FLAM_FFMPEG` avec
@@ -524,7 +526,7 @@ Un MP3 déjà à 44 100 Hz est recopié sans changement. ffmpeg est lancé sans 
   est recopié tel quel et l'avertissement `audio_samplerate` indique la fréquence et la raison.
   La conversion ne s'interrompt jamais pour cela.
 - Un fichier rééchantillonné est signalé par une ligne `  i ...` sur stderr (ce n'est pas un
-  avertissement) et dans le résumé (`crates/telmi2flam/src/ffmpeg.rs`, mêmes arguments, délai
+  avertissement) et dans le résumé (`crates/telmi2flam/src/ffmpeg.rs`, mêmes arguments (sauf `-f mp3` d'entrée, #573), délai
   et raisons d'échec que l'ancien convertisseur Python 1.1.0).
 
 Le CLI :
