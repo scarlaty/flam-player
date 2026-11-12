@@ -41,17 +41,25 @@ int pk_extract_all(const char *pk_path, const char *out_dir);
  */
 int pk_extract_all_ex(const char *pk_path, const char *out_dir, int *complete);
 
-/**
- * 1 si out_dir contient main.lua et un temoin .extracted correspondant a
- * la taille et a la date de modification actuelles de pk_path, 0 sinon.
- */
-int pk_extract_is_current(const char *pk_path, const char *out_dir);
+/* Etat d'un dossier d'extraction vis-a-vis de son .pk (pk_extract_state). */
+#define PK_EXTRACT_STALE   0   /* a (re)extraire */
+#define PK_EXTRACT_CURRENT 1   /* extraction du player, a jour */
+#define PK_EXTRACT_AUTHOR  2   /* dossier d'auteur : a jouer tel quel */
 
 /**
- * Extrait pk_path dans out_dir sauf si le dossier est deja a jour
- * (pk_extract_is_current). Ecrit le temoin .extracted apres une
- * extraction complete uniquement.
- * @return 0 si deja a jour, nombre d'entrees extraites, ou -1 si erreur.
+ * PK_EXTRACT_STALE si main.lua manque, si le temoin .extracting est present
+ * (extraction interrompue) ou si .extracted existe et differe de la taille
+ * et de la date de pk_path. PK_EXTRACT_CURRENT si .extracted correspond.
+ * PK_EXTRACT_AUTHOR si main.lua est present sans aucun temoin : dossier ecrit
+ * a la main, jamais ecrase par le .pk.
+ */
+int pk_extract_state(const char *pk_path, const char *out_dir);
+
+/**
+ * Extrait pk_path dans out_dir seulement si l'etat est PK_EXTRACT_STALE.
+ * Pose .extracting au debut, le remplace par .extracted apres une
+ * extraction complete (une extraction incomplete laisse .extracting).
+ * @return 0 si rien a faire, nombre d'entrees extraites, ou -1 si erreur.
  */
 int pk_extract_if_stale(const char *pk_path, const char *out_dir);
 

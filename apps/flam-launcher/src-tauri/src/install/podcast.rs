@@ -260,11 +260,13 @@ impl PackBackend for LivePackBackend {
     ) -> BoxFuture<'a, AppResult<Vec<AppResult<u64>>>> {
         Box::pin(async move {
             let ff = crate::ffmpeg::Ffmpeg::locate(&crate::settings::Environment::current())?;
-            Ok(crate::podcast::audio::convert_all(&ff, items, cancel)
-                .await
-                .into_iter()
-                .map(|r| r.map(|c| c.output_bytes))
-                .collect())
+            Ok(
+                crate::podcast::audio::convert_all(&ff, items, MAX_AUDIO_BYTES, cancel)
+                    .await
+                    .into_iter()
+                    .map(|r| r.map(|c| c.output_bytes))
+                    .collect(),
+            )
         })
     }
 

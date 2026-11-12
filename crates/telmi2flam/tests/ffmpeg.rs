@@ -74,21 +74,21 @@ fn strip_file(arg: &OsString) -> Option<PathBuf> {
 /// Faux ffmpeg ; rend le code de sortie.
 fn fake(args: &[OsString]) -> i32 {
     let mut err = std::io::stderr();
-    if args.len() != 29 {
+    if args.len() != 31 {
         let _ = writeln!(err, "faux ffmpeg : {} arguments", args.len());
         return 9;
     }
-    let (Some(src), Some(dst)) = (strip_file(&args[8]), strip_file(&args[28])) else {
+    let (Some(src), Some(dst)) = (strip_file(&args[10]), strip_file(&args[30])) else {
         let _ = writeln!(err, "faux ffmpeg : entree ou sortie sans file:");
         return 9;
     };
-    let kbps = args[21]
+    let kbps = args[23]
         .to_str()
         .and_then(|s| s.strip_suffix('k'))
         .and_then(|s| s.parse::<u32>().ok())
         .filter(|k| MP3_BITRATES.contains(k));
     let Some(kbps) = kbps else {
-        let _ = writeln!(err, "faux ffmpeg : debit {:?}", args[21]);
+        let _ = writeln!(err, "faux ffmpeg : debit {:?}", args[23]);
         return 9;
     };
     if args != ffmpeg_args(&src, &dst, kbps).as_slice() {

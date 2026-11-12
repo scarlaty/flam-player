@@ -16,6 +16,8 @@ REM  6. E2E      : tests\e2e\e2e_telmi.py : paquet TELMI -> telmi2flam ->
 REM               flam-player (pilotes SDL dummy)             [facultatif]
 REM               puis tests\e2e\e2e_embed.py : incrustation dans une
 REM               fenetre hote, sortie par stdin             [facultatif]
+REM               puis tests\e2e\e2e_pk_extract.py : extraction .plain.pk,
+REM               dossier .plain d'auteur non ecrase (#567)  [facultatif]
 REM  Facultatif : saute si python ou flam-player.exe absent. Les etapes 5 et 6
 REM  lancent le binaire telmi2flam (cargo build -p telmi2flam --release, ou
 REM  FLAM_TELMI2FLAM) : le convertisseur Python est supprime (#140).
@@ -146,6 +148,11 @@ if "!HAVE_PY!"=="1" (
     echo EXIT_CODE=!EMBED_RC!
     if not "!EMBED_RC!"=="0" if not "!EMBED_RC!"=="77" set "E2E_RC=!EMBED_RC!"
     if "!EMBED_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE= (incrustation : SKIP partiel)"
+    REM Extraction des .plain.pk et dossier .plain d'auteur (#567)
+    "%PY%" "%ROOT%tests\e2e\e2e_pk_extract.py" --build "%BUILD%"
+    set "PKX_RC=!ERRORLEVEL!"
+    echo EXIT_CODE=!PKX_RC!
+    if not "!PKX_RC!"=="0" if not "!PKX_RC!"=="77" set "E2E_RC=!PKX_RC!"
 ) else (
     echo [SKIP] python introuvable : definir FLAM_PYTHON
 )
