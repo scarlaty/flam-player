@@ -198,8 +198,12 @@ Un dossier `nom.plain/` contenant :
 - `sounds/` — fichiers audio .mp3
 
 Le format `.plain.pk` est un ZIP store (compression=0) contenant les memes fichiers.
-Le player extrait automatiquement le `.pk` dans un dossier `.plain` adjacent, et le re-extrait
-si le `.pk` a change (taille ou date, temoin `<dossier>/.extracted`). L'extraction refuse les chemins dangereux (`..`, absolus, `C:`,
+Le player extrait automatiquement le `.pk` dans un dossier `.plain` adjacent. Temoins dans ce
+dossier : `.extracting` pose au debut, remplace par `.extracted` (taille et date du `.pk`) a la fin.
+Re-extraction si `main.lua` manque, si `.extracting` reste, ou si `.extracted` differe du `.pk`.
+`main.lua` present et aucun temoin = dossier d'auteur : joue tel quel, jamais ecrase (meme regle
+dans `add_story_entry` et sur les trois chemins : navigateur, clic, ligne de commande ;
+`pk_extract_state`, test `tests/e2e/e2e_pk_extract.py`). L'extraction refuse les chemins dangereux (`..`, absolus, `C:`,
 `\` ou `/` en tete) et les tailles incoherentes.
 
 Pour une histoire TELMI, ne pas assembler a la main : `cargo build -p telmi2flam --release` puis

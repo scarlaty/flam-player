@@ -337,11 +337,17 @@ int pk_extract_all_ex(const char *pk_path, const char *out_dir, int *complete)
 }
 
 /* ------------------------------------------------------------------ */
-/* Temoin d'extraction : <out_dir>/.extracted = "taille mtime" du .pk,  */
-/* ecrit seulement apres une extraction complete.                       */
+/* Temoins d'extraction (poses par le player, absents d'un dossier      */
+/* ecrit a la main) :                                                   */
+/*  - <out_dir>/.extracting : extraction en cours ou interrompue ;      */
+/*  - <out_dir>/.extracted  : "taille mtime" du .pk, ecrit seulement    */
+/*    apres une extraction complete (il remplace .extracting).          */
+/* Un dossier avec main.lua et aucun temoin est un dossier d'auteur :   */
+/* il n'est jamais ecrase par le .pk voisin.                            */
 /* ------------------------------------------------------------------ */
 
 #define PK_STAMP_NAME ".extracted"
+#define PK_BUSY_NAME  ".extracting"
 
 /* Empreinte du .pk (taille + date de modification). 0 si ok, -1 sinon. */
 static int pk_stamp(const char *pk_path, char *out, size_t out_sz)
@@ -362,37 +368,57 @@ static int pk_stamp(const char *pk_path, char *out, size_t out_sz)
     return 0;
 }
 
-int pk_extract_is_current(const char *pk_path, const char *out_dir)
+static int pk_file_exists(const char *dir, const char *name)
 {
-    if (!pk_path || !out_dir || !out_dir[0]) return 0;
-
     char path[1024];
     struct stat st;
-    snprintf(path, sizeof(path), "%s/main.lua", out_dir);
-    if (stat(path, &st) != 0) return 0;
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    return stat(path, &st) == 0;
+}
 
-    char want[64];
-    if (pk_stamp(pk_path, want, sizeof(want)) != 0) return 0;
+int pk_extract_state(const char *pk_path, const char *out_dir)
+{
+    if (!pk_path || !out_dir || !out_dir[0]) return PK_EXTRACT_STALE;
 
+    if (!pk_file_exists(out_dir, "main.lua")) return PK_EXTRACT_STALE;
+    if (pk_file_exists(out_dir, PK_BUSY_NAME)) return PK_EXTRACT_STALE;
+
+    char path[1024];
     snprintf(path, sizeof(path), "%s/" PK_STAMP_NAME, out_dir);
     FILE *f = fopen(path, "rb");
-    if (!f) return 0;
+    if (!f) return PK_EXTRACT_AUTHOR;   /* aucun temoin : dossier d'auteur */
+
+    char want[64];
+    if (pk_stamp(pk_path, want, sizeof(want)) != 0) {
+        fclose(f);
+        return PK_EXTRACT_STALE;
+    }
     char got[64];
     size_t n = fread(got, 1, sizeof(got) - 1, f);
     fclose(f);
     got[n] = '\0';
     while (n > 0 && (got[n - 1] == '\n' || got[n - 1] == '\r')) got[--n] = '\0';
-    return strcmp(got, want) == 0;
+    return strcmp(got, want) == 0 ? PK_EXTRACT_CURRENT : PK_EXTRACT_STALE;
 }
 
 int pk_extract_if_stale(const char *pk_path, const char *out_dir)
 {
     if (!pk_path || !out_dir || !out_dir[0]) return -1;
-    if (pk_extract_is_current(pk_path, out_dir)) return 0;
+    if (pk_extract_state(pk_path, out_dir) != PK_EXTRACT_STALE) return 0;
 
-    /* Retirer l'ancien temoin d'abord : une extraction interrompue ne
-       doit pas laisser croire que le dossier est a jour */
+    /* Poser .extracting avant tout, puis retirer l'ancien temoin : une
+       extraction interrompue ne doit pas laisser croire que le dossier
+       est a jour, ni passer pour un dossier d'auteur */
     char path[1024];
+    char busy[1024];
+    snprintf(busy, sizeof(busy), "%s/" PK_BUSY_NAME, out_dir);
+    ensure_parent_dirs(busy);
+    FILE *bf = fopen(busy, "wb");
+    if (!bf) {
+        fprintf(stderr, "[PK] extraction annulee : %s non inscriptible\n", out_dir);
+        return -1;
+    }
+    fclose(bf);
     snprintf(path, sizeof(path), "%s/" PK_STAMP_NAME, out_dir);
     remove(path);
 
@@ -412,5 +438,6 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir)
             fclose(f);
         }
     }
+    remove(busy);   /* .extracted remplace .extracting */
     return n;
 }

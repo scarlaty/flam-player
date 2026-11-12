@@ -223,7 +223,13 @@ Options :
 
 Le navigateur détecte les dossiers `.plain` et les archives `.plain.pk`, affiche les vignettes et
 les titres, et offre un bouton « Choisir un dossier... » pour changer le répertoire de recherche.
-Les archives `.plain.pk` sont extraites automatiquement au premier lancement.
+Les archives `.plain.pk` sont extraites automatiquement au premier lancement, dans le dossier
+`.plain` voisin. Le player y pose des témoins : `.extracting` pendant l'extraction, remplacé par
+`.extracted` (taille et date du `.pk`) quand elle est complète. Il ré-extrait si `main.lua` manque,
+si `.extracting` reste (extraction interrompue) ou si `.extracted` ne correspond plus au `.pk`.
+Un dossier `.plain` avec `main.lua` et sans aucun témoin est un dossier d'auteur : il est joué tel
+quel, jamais écrasé par le `.pk` voisin (trace sur stderr). Pour forcer une nouvelle extraction,
+supprimer le dossier.
 
 ### Contrôles clavier
 
