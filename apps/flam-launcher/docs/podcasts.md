@@ -1327,10 +1327,13 @@ l'image d'une catégorie parmi les pochettes des épisodes qu'elle contient. **�
   3. le **téléchargement à la demande** de l'image de l'épisode (#508).
 - **Téléchargement** : `install::podcast::download_image`, la chaîne des couvertures — client
   gardé D10 (adresses locales ou privées refusées, y compris après redirection), taille bornée
-  à 20 Mo, `.part` supprimé — avec un délai de 20 s ; **3 téléchargements simultanés au plus**
-  (sémaphore). Le fichier est écrit dans `thumbs/<épisode>.<uuid>.dl` (nom unique), relu puis
-  supprimé ; les restes de plus d'une heure (arrêt brutal) sont balayés à la prochaine écriture
-  d'une vignette. Le format est contrôlé par la **signature** à la conversion (PNG, JPEG, WebP) :
+  à 20 Mo, `.part` supprimé par la chaîne elle-même — avec un délai de 20 s, au-delà duquel le
+  futur est abandonné sans pouvoir nettoyer : `thumb.rs` supprime alors le `.part` ; **3
+  téléchargements simultanés au plus** (sémaphore). Le fichier est écrit dans
+  `thumbs/<épisode>.<uuid>.dl` (nom unique), relu puis supprimé ; les restes de plus d'une heure
+  (arrêt brutal) sont balayés au prochain téléchargement et à la prochaine écriture d'une
+  vignette. La commande tient le portillon du cache en lecture pendant le chargement, comme les
+  autres écrivains du cache : « Vider le cache » (écriture) attend sa fin. Le format est contrôlé par la **signature** à la conversion (PNG, JPEG, WebP) :
   SVG, GIF et tout autre contenu donnent « pas d'aperçu ». Aucune adresse n'est journalisée
   (D11). Les échecs (réseau, refus, image illisible) ne sont **pas** mis en cache : un nouvel
   essai a lieu à la prochaine demande, que le front limite par la mémoïsation ci-dessous
