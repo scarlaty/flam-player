@@ -113,6 +113,13 @@ Remarques de cohérence :
 - **D6 et le mono** : un MP3 mono conforme est **copié** tel quel (mono), alors qu'un fichier
   réencodé devient stéréo. Les deux cas peuvent coexister dans un même pack ; le MP3 mono reste à
   vérifier sur l'appareil (#219).
+- **D6 et la borne de sortie** (#571) : la taille du MP3 produit est bornée par `MAX_AUDIO_BYTES`
+  avant et pendant le réencodage, pas seulement après. Un réencodage dont la durée annoncée ×
+  le débit de sortie dépasse la borne est refusé avant de lancer ffmpeg (`audio_too_large`) ;
+  sinon ffmpeg reçoit `-fs <borne + 1>` et s'arrête dès que la sortie dépasse la borne (durée
+  absente ou fausse, par exemple un Opus à très bas débit sur des dizaines d'heures). Dans les deux
+  cas l'épisode est retiré du pack. Les titres lus ont la même protection : MP3 limité à 1 Mio
+  (`-fs`), un titre réel pèse environ 120 Kio.
 - **D6 et `telmi2flam`** : la règle est plus stricte que celle du convertisseur, qui copie tout
   MP3 à 44 100 Hz quel que soit son débit (§ 3.1). Pas d'incohérence : le launcher livre des
   fichiers déjà conformes.

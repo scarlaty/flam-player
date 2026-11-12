@@ -602,6 +602,9 @@ fn les_arguments_ffmpeg_sont_fixes_mono_et_prefixes() {
     // Sortie préfixée : un nom commençant par « - » n'est jamais une option.
     assert_eq!(args.last().map(String::as_str), Some("file:-out.mp3"));
     assert_eq!(args[args.len() - 2], "mp3");
+    // Sortie bornée : `-fs borne + 1` juste avant le format.
+    assert_eq!(args[args.len() - 5], "-fs");
+    assert_eq!(args[args.len() - 4], (MAX_MP3_BYTES + 1).to_string());
 }
 
 fn leftovers(dir: &Path) -> Vec<String> {
@@ -700,6 +703,21 @@ async fn une_sortie_non_nulle_de_ffmpeg_est_un_echec_sans_fichier() {
 async fn un_mp3_vide_est_un_echec_sans_fichier() {
     let dir = tempfile::tempdir().unwrap();
     let (scratch, output) = finished_scratch(dir.path(), b"");
+    let (_tx, rx) = watch::channel(false);
+    let err = finish_mp3(&ffmpeg_output(Some(0)), &scratch, &output, &rx)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "tts_failed");
+    assert!(!output.exists());
+    drop(scratch);
+    assert!(leftovers(dir.path()).is_empty());
+}
+
+#[tokio::test]
+async fn un_mp3_au_dela_de_la_borne_est_un_echec_sans_fichier() {
+    let dir = tempfile::tempdir().unwrap();
+    let big = vec![0u8; usize::try_from(MAX_MP3_BYTES).unwrap() + 1];
+    let (scratch, output) = finished_scratch(dir.path(), &big);
     let (_tx, rx) = watch::channel(false);
     let err = finish_mp3(&ffmpeg_output(Some(0)), &scratch, &output, &rx)
         .await

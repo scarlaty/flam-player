@@ -900,13 +900,16 @@ impl PackBackend for LocalPacks {
         cancel: &'a watch::Receiver<bool>,
     ) -> BoxFuture<'a, AppResult<Vec<AppResult<u64>>>> {
         Box::pin(async move {
-            Ok(
-                crate::podcast::audio::convert_all(&self.ffmpeg, items, cancel)
-                    .await
-                    .into_iter()
-                    .map(|r| r.map(|c| c.output_bytes))
-                    .collect(),
+            Ok(crate::podcast::audio::convert_all(
+                &self.ffmpeg,
+                items,
+                crate::podcast::archive::MAX_AUDIO_BYTES,
+                cancel,
             )
+            .await
+            .into_iter()
+            .map(|r| r.map(|c| c.output_bytes))
+            .collect())
         })
     }
 

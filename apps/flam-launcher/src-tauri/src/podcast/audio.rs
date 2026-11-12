@@ -21,8 +21,13 @@
 //! sorties en double (`duplicate_output`). Après conversion, la sortie est sondée : une durée
 //! nulle ou inconnue (MP3 réduit à son en-tête) est refusée (`ffmpeg_failed`).
 //!
+//! Sortie bornée (#571) : `convert` reçoit la taille maximale du MP3. Un réencodage dont la durée
+//! annoncée × le débit de sortie la dépasse est refusé avant ffmpeg (`audio_too_large`) ; sinon
+//! ffmpeg reçoit `-fs borne + 1` et s'arrête dès que la sortie dépasse la borne (durée absente ou
+//! mensongère), ce que l'appelant détecte en relisant la taille.
+//!
 //! Erreurs par épisode : `AppError::Conversion` avec un code stable (`unreadable_audio`,
-//! `no_audio`, `ffmpeg_failed`, `duplicate_output`), `AppError::Cancelled`, ou `AppError::Io`
+//! `no_audio`, `ffmpeg_failed`, `duplicate_output`, `audio_too_large`), `AppError::Cancelled`, ou `AppError::Io`
 //! de genre `TimedOut` ou `NotFound` (dossier de sortie absent).
 
 use std::ffi::OsString;
@@ -325,7 +330,10 @@ fn base_args(input: &Path) -> Vec<OsString> {
 }
 
 /// Arguments de ffmpeg pour un plan avec ffmpeg (`Copy` ou `Transcode`).
-fn ffmpeg_args(plan: Plan, input: &Path, temp: &Path) -> Vec<OsString> {
+///
+/// `max_bytes` borne la sortie sur le disque (`-fs max_bytes + 1`) : ffmpeg s'arrête dès qu'elle
+/// dépasse la borne, que le débit de la source soit mal annoncé ou que la durée soit énorme.
+fn ffmpeg_args(plan: Plan, input: &Path, temp: &Path, max_bytes: u64) -> Vec<OsString> {
     let mut args = base_args(input);
     // Premier flux audio seul ; ni vidéo, ni sous-titres, ni données, ni métadonnées, ni
     // chapitres ; `bitexact` évite l'étiquette d'encodeur.
@@ -354,9 +362,30 @@ fn ffmpeg_args(plan: Plan, input: &Path, temp: &Path) -> Vec<OsString> {
         }
         _ => args.extend(["-c:a", "copy"].map(OsString::from)),
     }
+    args.extend(["-fs".into(), max_bytes.saturating_add(1).to_string().into()]);
     args.extend(["-f", "mp3"].map(OsString::from));
     args.push(file_arg(temp));
     args
+}
+
+/// Refus avant ffmpeg d'un réencodage dont la sortie dépasserait `max_bytes` : durée annoncée ×
+/// débit de sortie. La copie n'est pas concernée (sa sortie ne dépasse pas l'entrée). Une durée
+/// inconnue ou non finie n'est pas refusée ici : `-fs` borne alors la sortie.
+fn ensure_fits(plan: Plan, duration_secs: Option<f64>, max_bytes: u64) -> AppResult<()> {
+    let (Plan::Transcode { kbps }, Some(d)) = (plan, duration_secs) else {
+        return Ok(());
+    };
+    // Octets par seconde = kbps × 1000 / 8.
+    let expected = d * f64::from(kbps) * 125.0;
+    if expected.is_finite() && expected <= max_bytes as f64 {
+        return Ok(());
+    }
+    Err(AppError::Conversion {
+        code: "audio_too_large".into(),
+        message: format!(
+            "épisode trop long : {d:.0} s à {kbps} kbps dépasseraient {max_bytes} octets"
+        ),
+    })
 }
 
 fn convert_timeout(duration_secs: Option<f64>) -> Duration {
@@ -390,20 +419,23 @@ fn ensure_audible(written: &SourceInfo) -> AppResult<()> {
 }
 
 /// Convertit `input` en MP3 conforme dans `output` (règle D6). `output` n'existe qu'en cas de
-/// succès ; en cas d'échec, d'annulation ou de délai, aucun fichier partiel ne reste.
+/// succès ; en cas d'échec, d'annulation ou de délai, aucun fichier partiel ne reste. `max_bytes`
+/// borne la sortie (refus préalable si durée × débit la dépasse, puis `-fs` pendant l'encodage).
 pub async fn convert(
     ff: &Ffmpeg,
     input: &Path,
     output: &Path,
+    max_bytes: u64,
     cancel: &mut watch::Receiver<bool>,
 ) -> AppResult<Converted> {
-    convert_with(ff, input, output, cancel, None).await
+    convert_with(ff, input, output, max_bytes, cancel, None).await
 }
 
 async fn convert_with(
     ff: &Ffmpeg,
     input: &Path,
     output: &Path,
+    max_bytes: u64,
     cancel: &mut watch::Receiver<bool>,
     timeout: Option<Duration>,
 ) -> AppResult<Converted> {
@@ -419,8 +451,9 @@ async fn convert_with(
     let input_bytes = tokio::fs::metadata(input).await?.len();
     let info = probe(ff, input, cancel).await?;
     let plan = decide(&info);
+    ensure_fits(plan, info.duration_secs, max_bytes)?;
     let mut temp = TempOutput::beside(output).await;
-    let args = ffmpeg_args(plan, input, &temp.path);
+    let args = ffmpeg_args(plan, input, &temp.path, max_bytes);
     let limits = Limits::new(timeout.unwrap_or_else(|| convert_timeout(info.duration_secs)));
     let out = ff.run(Tool::Ffmpeg, &args, limits, cancel).await?;
     if !out.success() {
@@ -478,6 +511,7 @@ async fn output_key(output: &Path) -> PathBuf {
 pub async fn convert_all(
     ff: &Ffmpeg,
     items: Vec<(PathBuf, PathBuf)>,
+    max_bytes: u64,
     cancel: &watch::Receiver<bool>,
 ) -> Vec<AppResult<Converted>> {
     let gate = Arc::new(Semaphore::new(MAX_PARALLEL));
@@ -497,7 +531,7 @@ pub async fn convert_all(
         let (ff, gate, mut cancel) = (ff.clone(), gate.clone(), cancel.clone());
         set.spawn(async move {
             let result = match gate.acquire().await {
-                Ok(_permit) => convert(&ff, &input, &output, &mut cancel).await,
+                Ok(_permit) => convert(&ff, &input, &output, max_bytes, &mut cancel).await,
                 Err(_) => Err(AppError::Cancelled),
             };
             (index, result)
@@ -523,6 +557,9 @@ mod tests {
     use super::*;
     use crate::ffmpeg::MANIFEST_FILE;
     use std::fs;
+
+    /// Borne de sortie des tests : très au-dessus de tout fichier de test.
+    const TEST_MAX: u64 = 250_000_000;
 
     fn mp3(rate: u32, channels: u32, bit_rate: Option<u64>) -> SourceInfo {
         SourceInfo {
@@ -646,6 +683,7 @@ mod tests {
             Plan::Transcode { kbps: 112 },
             Path::new("-evil.m4a"),
             Path::new("out.mp3.part"),
+            1000,
         )
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
@@ -653,6 +691,9 @@ mod tests {
         let at = |needle: &str| args.iter().position(|a| a == needle).unwrap();
         assert_eq!(args[at("-i") + 1], "file:-evil.m4a");
         assert_eq!(args.last().unwrap(), "file:out.mp3.part");
+        // Sortie bornée : `-fs borne + 1`, juste avant le format et la sortie.
+        assert_eq!(args[at("-fs") + 1], "1001");
+        assert_eq!(at("-fs") + 2, at("-f"));
         assert!(at("-protocol_whitelist") < at("-i"));
         assert_eq!(args[at("-protocol_whitelist") + 1], "file");
         assert_eq!(args[at("-b:a") + 1], "112k");
@@ -661,9 +702,28 @@ mod tests {
         for flag in ["-nostdin", "-vn", "-sn", "-dn"] {
             assert!(args.iter().any(|a| a == flag), "{flag}");
         }
-        let stripped = ffmpeg_args(Plan::Copy, Path::new("a"), Path::new("b"));
+        let stripped = ffmpeg_args(Plan::Copy, Path::new("a"), Path::new("b"), 1000);
         assert!(stripped.iter().any(|a| a == "copy"));
         assert!(!stripped.iter().any(|a| a == "libmp3lame"));
+    }
+
+    #[test]
+    fn refus_prealable_quand_duree_fois_debit_depasse_la_borne() {
+        let plan = Plan::Transcode { kbps: 64 };
+        // 64 kbps = 8 000 octets par seconde : 1 000 s tiennent exactement dans 8 Mo.
+        assert!(ensure_fits(plan, Some(1000.0), 8_000_000).is_ok());
+        let err = ensure_fits(plan, Some(1000.1), 8_000_000).unwrap_err();
+        match err {
+            AppError::Conversion { code, .. } => assert_eq!(code, "audio_too_large"),
+            other => panic!("{other:?}"),
+        }
+        // Durées absurdes (annoncées par un fichier non fiable) : refusées, sans panique.
+        assert!(ensure_fits(plan, Some(1e300), TEST_MAX).is_err());
+        assert!(ensure_fits(plan, Some(f64::INFINITY), TEST_MAX).is_err());
+        assert!(ensure_fits(plan, Some(f64::NAN), TEST_MAX).is_err());
+        // Sans durée connue ou en copie : pas de refus préalable (`-fs` borne la sortie).
+        assert!(ensure_fits(plan, None, 1).is_ok());
+        assert!(ensure_fits(Plan::Copy, Some(1e9), 1).is_ok());
     }
 
     #[test]
@@ -785,11 +845,28 @@ mod tests {
             (dir.path().join("b.mp3"), out),
         ];
         let (_tx, rx) = watch::channel(false);
-        let results = convert_all(&ff, items, &rx).await;
+        let results = convert_all(&ff, items, TEST_MAX, &rx).await;
         assert_eq!(results.len(), 2);
         assert!(is_duplicate(&results[1]), "{:?}", results[1]);
         // La première n'est pas refusée comme doublon (ici : entrée absente).
         assert!(!is_duplicate(&results[0]));
+    }
+
+    #[tokio::test]
+    async fn reel_reencodage_trop_long_pour_la_borne_est_refuse_sans_sortie() {
+        let Some(ff) = real_ffmpeg() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dst) = (dir.path().join("a.mp3"), dir.path().join("b.mp3"));
+        // 1 s de MP3 22 050 Hz : réencodé à 64 kbps, soit environ 8 000 octets > 4 000.
+        gen_mp3(&ff, &src, 22_050, 1, 64).await;
+        let (_tx, mut rx) = watch::channel(false);
+        let err = convert(&ff, &src, &dst, 4_000, &mut rx).await.unwrap_err();
+        match err {
+            AppError::Conversion { code, .. } => assert_eq!(code, "audio_too_large"),
+            other => panic!("{other:?}"),
+        }
+        assert!(!dst.exists());
+        no_part_files(dir.path());
     }
 
     #[tokio::test]
@@ -801,6 +878,7 @@ mod tests {
             &ff,
             &dir.path().join("a.mp3"),
             &dir.path().join("absent").join("b.mp3"),
+            TEST_MAX,
             &mut rx,
         )
         .await
@@ -1026,7 +1104,7 @@ mod tests {
             "étiquette source"
         );
         let (_tx, mut rx) = watch::channel(false);
-        let done = convert(&ff, &src, &dst, &mut rx).await.unwrap();
+        let done = convert(&ff, &src, &dst, TEST_MAX, &mut rx).await.unwrap();
         assert_eq!(done.plan, Plan::Copy);
         assert_eq!(frames_of(&ff, &src).await, frames_of(&ff, &dst).await);
         assert!(
@@ -1046,7 +1124,7 @@ mod tests {
         let (src, dst) = (dir.path().join("a.mp3"), dir.path().join("b.mp3"));
         gen_mp3(&ff, &src, 44_100, 2, 256).await;
         let (_tx, mut rx) = watch::channel(false);
-        let done = convert(&ff, &src, &dst, &mut rx).await.unwrap();
+        let done = convert(&ff, &src, &dst, TEST_MAX, &mut rx).await.unwrap();
         assert_eq!(done.plan, Plan::Transcode { kbps: 192 });
         let info = probe_of(&ff, &dst).await;
         assert_eq!((info.sample_rate, info.channels), (Some(44_100), Some(2)));
@@ -1062,7 +1140,7 @@ mod tests {
         let (src, dst) = (dir.path().join("a.mp3"), dir.path().join("b.mp3"));
         gen_mp3(&ff, &src, 22_050, 1, 64).await;
         let (_tx, mut rx) = watch::channel(false);
-        let done = convert(&ff, &src, &dst, &mut rx).await.unwrap();
+        let done = convert(&ff, &src, &dst, TEST_MAX, &mut rx).await.unwrap();
         assert!(matches!(done.plan, Plan::Transcode { .. }), "{done:?}");
         let info = probe_of(&ff, &dst).await;
         assert_eq!((info.sample_rate, info.channels), (Some(44_100), Some(2)));
@@ -1075,7 +1153,7 @@ mod tests {
         let (src, dst) = (dir.path().join("a.wav"), dir.path().join("b.mp3"));
         gen_wav(&ff, &src).await;
         let (_tx, mut rx) = watch::channel(false);
-        let done = convert(&ff, &src, &dst, &mut rx).await.unwrap();
+        let done = convert(&ff, &src, &dst, TEST_MAX, &mut rx).await.unwrap();
         assert_eq!(done.plan, Plan::Transcode { kbps: 192 });
         assert_eq!(probe_of(&ff, &dst).await.codec, "mp3");
     }
@@ -1092,7 +1170,9 @@ mod tests {
         let (_tx, mut rx) = watch::channel(false);
         // Conforme : recopié sans l'image.
         let dst = dir.path().join("out1.mp3");
-        let done = convert(&ff, &covered, &dst, &mut rx).await.unwrap();
+        let done = convert(&ff, &covered, &dst, TEST_MAX, &mut rx)
+            .await
+            .unwrap();
         assert_eq!(done.plan, Plan::Copy);
         assert!(!probe_of(&ff, &dst).await.has_video);
         // Réencodé (22 050 Hz) : sans l'image non plus.
@@ -1101,7 +1181,9 @@ mod tests {
         let low_cover = dir.path().join("low_cover.mp3");
         fs::write(&low_cover, with_cover(&fs::read(&low).unwrap())).unwrap();
         let dst = dir.path().join("out2.mp3");
-        let done = convert(&ff, &low_cover, &dst, &mut rx).await.unwrap();
+        let done = convert(&ff, &low_cover, &dst, TEST_MAX, &mut rx)
+            .await
+            .unwrap();
         assert!(matches!(done.plan, Plan::Transcode { .. }));
         assert!(!probe_of(&ff, &dst).await.has_video);
         no_part_files(dir.path());
@@ -1114,7 +1196,9 @@ mod tests {
         let (src, dst) = (dir.path().join("a.mp3"), dir.path().join("b.mp3"));
         fs::write(&src, vec![0x5au8; 4096]).unwrap();
         let (_tx, mut rx) = watch::channel(false);
-        let err = convert(&ff, &src, &dst, &mut rx).await.unwrap_err();
+        let err = convert(&ff, &src, &dst, TEST_MAX, &mut rx)
+            .await
+            .unwrap_err();
         assert!(
             matches!(&err, AppError::Conversion { code, .. } if code == "unreadable_audio"),
             "{err:?}"
@@ -1188,7 +1272,7 @@ mod tests {
         wav.resize(len + data as usize, 0);
         fs::write(&src, wav).unwrap();
         let (_tx, mut rx) = watch::channel(false);
-        convert(&ff, &src, &dst, &mut rx).await.unwrap();
+        convert(&ff, &src, &dst, TEST_MAX, &mut rx).await.unwrap();
         let info = probe_of(&ff, &dst).await;
         assert!(info.duration_secs.is_some_and(|d| d > 0.0), "{info:?}");
         no_part_files(dir.path());
@@ -1201,7 +1285,9 @@ mod tests {
         let (src, dst) = (dir.path().join("vide.wav"), dir.path().join("out.mp3"));
         fs::write(&src, empty_wav()).unwrap();
         let (_tx, mut rx) = watch::channel(false);
-        let err = convert(&ff, &src, &dst, &mut rx).await.unwrap_err();
+        let err = convert(&ff, &src, &dst, TEST_MAX, &mut rx)
+            .await
+            .unwrap_err();
         assert!(
             matches!(&err, AppError::Conversion { code, message }
                 if code == "ffmpeg_failed"
@@ -1223,7 +1309,7 @@ mod tests {
         gen_mp3(&ff, &src, 22_050, 1, 64).await;
         // Chemin relatif : le préfixe `file:` le protège aussi.
         let (_tx, mut rx) = watch::channel(false);
-        convert(&ff, &src, &dst, &mut rx).await.unwrap();
+        convert(&ff, &src, &dst, TEST_MAX, &mut rx).await.unwrap();
         assert!(dst.is_file());
         no_part_files(dir.path());
     }
@@ -1257,7 +1343,8 @@ mod tests {
         run_ff(&ff, args).await;
         let (tx, mut rx) = watch::channel(false);
         let (ff2, src2, dst2) = (ff.clone(), src.clone(), dst.clone());
-        let task = tokio::spawn(async move { convert(&ff2, &src2, &dst2, &mut rx).await });
+        let task =
+            tokio::spawn(async move { convert(&ff2, &src2, &dst2, TEST_MAX, &mut rx).await });
         tokio::time::sleep(Duration::from_millis(200)).await;
         tx.send(true).unwrap();
         let err = task.await.unwrap().unwrap_err();
@@ -1273,9 +1360,16 @@ mod tests {
         let (src, dst) = (dir.path().join("a.mp3"), dir.path().join("b.mp3"));
         gen_mp3(&ff, &src, 22_050, 1, 64).await;
         let (_tx, mut rx) = watch::channel(false);
-        let err = convert_with(&ff, &src, &dst, &mut rx, Some(Duration::from_millis(1)))
-            .await
-            .unwrap_err();
+        let err = convert_with(
+            &ff,
+            &src,
+            &dst,
+            TEST_MAX,
+            &mut rx,
+            Some(Duration::from_millis(1)),
+        )
+        .await
+        .unwrap_err();
         match err {
             AppError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::TimedOut),
             other => panic!("{other:?}"),
@@ -1299,7 +1393,7 @@ mod tests {
             items.push((src, dir.path().join(format!("out{i}.mp3"))));
         }
         let (_tx, rx) = watch::channel(false);
-        let results = convert_all(&ff, items, &rx).await;
+        let results = convert_all(&ff, items, TEST_MAX, &rx).await;
         assert_eq!(results.len(), 4);
         for (i, r) in results.iter().enumerate() {
             assert_eq!(r.is_ok(), i != 2, "{i}: {r:?}");
