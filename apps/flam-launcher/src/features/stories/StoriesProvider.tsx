@@ -607,6 +607,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     return {
       installed,
       installedRevision,
+      refreshInstalled,
       session,
       forgetSession: (pid) =>
         setSession((current) => (current && current.pid === pid ? null : current)),
@@ -659,6 +660,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     details,
     installed,
     installedRevision,
+    refreshInstalled,
     changedSources,
     session,
     reopen,

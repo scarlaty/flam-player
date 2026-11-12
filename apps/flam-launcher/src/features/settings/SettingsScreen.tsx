@@ -27,6 +27,7 @@ import {
 import { t } from "../../i18n";
 import { applyTheme, THEME_PREFERENCES, type ThemePreference } from "../../theme/theme";
 import { ErrorBanner } from "../ErrorBanner";
+import { useStories } from "../stories/StoriesContext";
 import { getMinimizeDuringPlay, setMinimizeDuringPlay } from "./preferences";
 import { useRecovery } from "../recovery/RecoveryContext";
 import { formatBytes, validateOptionalPath } from "../validation";
@@ -40,6 +41,7 @@ type PathField = "player_path" | "cache_dir";
 export function SettingsScreen() {
   const toast = useToast();
   const { report } = useRecovery();
+  const { refreshInstalled } = useStories();
   const saver = useSettingsSaver();
   const { view, adopt } = saver;
   const [loadError, setLoadError] = useState<AppError | null>(null);
@@ -158,6 +160,8 @@ export function SettingsScreen() {
       );
       applyView(next);
       void refreshUsage();
+      // Le dossier de cache a pu changer : la bibliothèque affichée n'est plus la bonne (#570).
+      void refreshInstalled();
       toast.show({ message: t.settingsScreen.saved, tone: "success" });
     } catch (caught) {
       setSaveError(toAppError(caught));
@@ -196,6 +200,8 @@ export function SettingsScreen() {
     try {
       const { freed_bytes } = await clearCache();
       toast.show({ message: t.settingsScreen.cache.cleared(formatBytes(freed_bytes)) });
+      // `library/` vient d'être vidé : les histoires ne sont plus installées (#570).
+      void refreshInstalled();
       await refreshUsage();
     } catch (caught) {
       setUsageError(toAppError(caught));

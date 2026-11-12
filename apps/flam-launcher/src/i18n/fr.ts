@@ -29,6 +29,7 @@ export const fr = {
           not_found: "Élément introuvable",
           io: "Erreur d'accès aux fichiers",
           config_version: "Configuration trop récente",
+          cache_dir_in_use: "Dossier de cache déjà utilisé",
           network: "Réseau indisponible",
           catalog_invalid: "Catalogue illisible",
           folder_unavailable: "Dossier introuvable",
@@ -522,7 +523,7 @@ export const fr = {
       clear: "Vider le cache",
       confirmTitle: "Vider le cache ?",
       confirmDescription: (dirs: string, path: string, size: string) =>
-        `Seuls les dossiers créés par Flam Launcher (${dirs}) seront supprimés dans « ${path} ». Le reste de ce dossier n'est pas touché. Espace libéré : ${size}.`,
+        `Les histoires installées seront supprimées : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. Seuls les dossiers créés par Flam Launcher (${dirs}) seront vidés dans « ${path} ». Le reste de ce dossier n'est pas touché. Espace libéré : ${size}.`,
       cleared: (size: string) => `Cache vidé : ${size} libérés`,
     },
     appearance: "Apparence",

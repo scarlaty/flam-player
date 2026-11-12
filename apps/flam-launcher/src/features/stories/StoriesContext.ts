@@ -25,6 +25,11 @@ export interface StoriesApi {
   installed: LibraryEntry[];
   /** Change à chaque relecture de la bibliothèque (pour recharger « Mes histoires »). */
   installedRevision: number;
+  /**
+   * Relit la liste des histoires installées (`library_list`). À appeler quand la bibliothèque
+   * change hors des installations : cache vidé, dossier de cache modifié (#570).
+   */
+  refreshInstalled: () => Promise<void>;
   /** Player en cours d'exécution, ou `null`. */
   session: PlayerSession | null;
   /**
