@@ -116,10 +116,17 @@ Remarques de cohérence :
 - **D6 et la borne de sortie** (#571) : la taille du MP3 produit est bornée par `MAX_AUDIO_BYTES`
   avant et pendant le réencodage, pas seulement après. Un réencodage dont la durée annoncée ×
   le débit de sortie dépasse la borne est refusé avant de lancer ffmpeg (`audio_too_large`) ;
-  sinon ffmpeg reçoit `-fs <borne + 1>` et s'arrête dès que la sortie dépasse la borne (durée
-  absente ou fausse, par exemple un Opus à très bas débit sur des dizaines d'heures). Dans les deux
-  cas l'épisode est retiré du pack. Les titres lus ont la même protection : MP3 limité à 1 Mio
+  sinon ffmpeg reçoit `-fs <borne + 1>` et s'arrête dès que la sortie dépasse la borne. Cela
+  arrive quand la durée est absente ou fausse (un Opus à très bas débit sur des dizaines d'heures) :
+  `convert` relit la taille et refuse lui-même (`audio_too_large`), sans publier la sortie. Dans les
+  deux cas l'épisode est retiré du pack. Les titres lus ont la même protection : MP3 limité à 1 Mio
   (`-fs`), un titre réel pèse environ 120 Kio.
+- **Panne du convertisseur** (#582) : ffmpeg **et** ffprobe sont vérifiés (présence, empreinte) une
+  fois avant tout téléchargement. Pendant la conversion, une panne du convertisseur ou une erreur
+  disque générale (dossier de sortie absent) arrête le pack avec un message clair au lieu de
+  retirer chaque épisode. Les échecs propres à un épisode le retirent seul : fichier illisible, trop
+  long, délai, ou erreur disque sur ce fichier (source verrouillée, renommage refusé : code
+  `io_failed`).
 - **D6 et `telmi2flam`** : la règle est plus stricte que celle du convertisseur, qui copie tout
   MP3 à 44 100 Hz quel que soit son débit (§ 3.1). Pas d'incohérence : le launcher livre des
   fichiers déjà conformes.

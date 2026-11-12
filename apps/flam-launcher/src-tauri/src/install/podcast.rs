@@ -203,7 +203,9 @@ pub struct LivePackBackend {
 
 impl PackBackend for LivePackBackend {
     fn ready(&self) -> AppResult<()> {
-        crate::ffmpeg::Ffmpeg::locate(&crate::settings::Environment::current()).map(|_| ())
+        let ff = crate::ffmpeg::Ffmpeg::locate(&crate::settings::Environment::current())
+            .map_err(converter_unavailable)?;
+        verify_converter(&ff)
     }
 
     fn feeds<'a>(&'a self, composition: &'a PackComposition) -> BoxFuture<'a, AppResult<Feeds>> {
@@ -295,6 +297,48 @@ impl PackBackend for LivePackBackend {
             .load()
             .ok()?
             .tts_voice
+    }
+}
+
+/// Panne du convertisseur audio : ffmpeg ou ffprobe absent, ou empreinte fausse. Fatale pour le
+/// pack entier (aucun épisode ne pourrait être converti), jamais comptée comme un échec d'épisode.
+fn converter_unavailable(err: AppError) -> AppError {
+    match err {
+        AppError::ConverterUnavailable(why) => AppError::ConverterUnavailable(format!(
+            "ffmpeg embarqué indisponible, nécessaire pour convertir les épisodes du pack \
+             (réinstallez Flam Launcher) : {why}"
+        )),
+        other => other,
+    }
+}
+
+/// Vérifie une fois l'empreinte de ffmpeg **et** de ffprobe (calcul bloquant), avant tout
+/// téléchargement : la conversion des épisodes lance les deux.
+pub(super) fn verify_converter(ff: &crate::ffmpeg::Ffmpeg) -> AppResult<()> {
+    use crate::ffmpeg::Tool;
+    for tool in [Tool::Ffmpeg, Tool::Ffprobe] {
+        ff.verified_path(tool).map_err(converter_unavailable)?;
+    }
+    Ok(())
+}
+
+/// Erreur de conversion qui arrête tout le pack au lieu de retirer l'épisode : convertisseur
+/// indisponible, ou erreur disque générale (hors délai d'un épisode, `TimedOut`). Les erreurs
+/// disque propres à un épisode arrivent ici en `Conversion` (`io_failed`) et retirent l'épisode.
+fn is_fatal_conversion(err: &AppError) -> bool {
+    match err {
+        AppError::ConverterUnavailable(_) => true,
+        AppError::Io(e) => e.kind() != std::io::ErrorKind::TimedOut,
+        _ => false,
+    }
+}
+
+/// Motif journalisé d'un épisode retiré : genre de l'erreur et, pour une conversion, son code
+/// stable. Ni URL ni titre.
+pub(super) fn drop_reason(err: &AppError) -> String {
+    match err {
+        AppError::Conversion { code, .. } => format!("{} ({code})", err.kind()),
+        _ => err.kind().to_string(),
     }
 }
 
@@ -928,13 +972,20 @@ impl InstallService {
                     });
                     kept.push((n, mp3, image));
                 }
+                // Filet : `audio::convert` refuse déjà toute sortie au-delà de la borne
+                // (`audio_too_large`), cette branche est inatteignable avec le convertisseur réel.
                 Ok(_) => {
                     tracing::warn!(episode = n, "épisode retiré du pack : MP3 trop volumineux");
                     dropped.push(n);
                 }
                 Err(AppError::Cancelled) => return Err(AppError::Cancelled),
+                Err(err) if is_fatal_conversion(&err) => return Err(converter_unavailable(err)),
                 Err(err) => {
-                    tracing::warn!(episode = n, "épisode retiré du pack : {}", err.kind());
+                    tracing::warn!(
+                        episode = n,
+                        "épisode retiré du pack : {}",
+                        drop_reason(&err)
+                    );
                     dropped.push(n);
                 }
             }
