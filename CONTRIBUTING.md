@@ -179,8 +179,9 @@ en **squash** dans `main` par le mainteneur. La branche est supprimée après fu
 Règles propres aux briques sur lesquelles repose le launcher (documentation :
 [docs/player.md](docs/player.md)). Elles s'ajoutent à celles du §5.
 
-- `test_run.bat` (player, moteur, convertisseur) au vert pour toute modification de code hors
-  `apps/flam-launcher/`.
+- `test_run.bat strict` (player, moteur, convertisseur) au vert pour toute modification de code hors
+  `apps/flam-launcher/`. La CI le lance désormais (`.github/workflows/player.yml`, sur `src/**`, `tests/**`, `CMakeLists.txt`,
+  moteur et runtime du convertisseur, etc.) ; en local : `do_build.bat tests` puis `test_run.bat strict`.
 - `tools/telmi2flam` (version Python d'origine, plus livrée : référence de parité et
   outils de campagne ; Python 3 requis pour ce volet seulement) : `python -m unittest discover -s tools/telmi2flam/tests` au vert ;
   toute correction de compatibilité est accompagnée d'un test de non-régression.
