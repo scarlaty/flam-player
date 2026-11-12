@@ -563,6 +563,8 @@ impl InstallService {
     /// pas un UUID canonique est ignorée, et l'entrée n'est **pas** reprise du fichier : elle
     /// est ré-résolue par `lookup(source_id, entry_id)` (cache du catalogue, scan du dossier).
     /// Une entrée introuvable ou invalide abandonne la tâche (journal, pas de reprise).
+    /// Une tâche relue dont l'`uuid` a déjà une tâche active est écartée, et seules les tâches
+    /// relues sont lancées (#569) : une exécution par tâche, une tâche active par `uuid`.
     pub async fn restore<F, Fut>(&self, lookup: F)
     where
         F: Fn(String, String) -> Fut,
@@ -929,7 +931,7 @@ impl InstallService {
             .and_then(|s| {
                 if s.started || s.task.state != TaskState::Queued {
                     tracing::debug!(
-                        "tâche {id} déjà lancée ({:?}) : exécution en double ignorée",
+                        "tâche {id} déjà prise en charge ({:?}) : exécution en double ignorée",
                         s.task.state
                     );
                     return None;

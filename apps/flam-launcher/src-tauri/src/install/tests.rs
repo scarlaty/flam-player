@@ -1881,6 +1881,11 @@ async fn reprise_ecarte_les_doublons_d_uuid() {
         ],
     );
     let ctx = Ctx::with_dir(dir, None, GRACE);
+    // Reste d'une sortie préparée d'une tâche qui sera écartée : balayé (tâche inconnue).
+    let staging = ctx.cache().join("library").join(".staging");
+    std::fs::create_dir_all(&staging).unwrap();
+    let leftover = staging.join(format!("{DUP_A}.plain.pk"));
+    std::fs::write(&leftover, b"reste").unwrap();
 
     // Portillon tenu : la tâche créée pendant la reprise est encore active à l'insertion.
     let hold = ctx.gate.clone().write_owned().await;
@@ -1904,6 +1909,7 @@ async fn reprise_ecarte_les_doublons_d_uuid() {
     let mut expected = vec![TASK_ID.to_string(), added_id.clone()];
     expected.sort();
     assert_eq!(ids, expected, "doublons écartés");
+    assert!(!leftover.exists(), "reste de la tâche écartée balayé");
     drop(hold);
     ctx.assert_single_runs(&[TASK_ID, &added_id]).await;
     assert_eq!(ctx.endings(DUP_A) + ctx.endings(RESTORED_B), 0);
