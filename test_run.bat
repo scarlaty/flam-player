@@ -153,6 +153,7 @@ if "!HAVE_PY!"=="1" (
     set "PKX_RC=!ERRORLEVEL!"
     echo EXIT_CODE=!PKX_RC!
     if not "!PKX_RC!"=="0" if not "!PKX_RC!"=="77" set "E2E_RC=!PKX_RC!"
+    if "!PKX_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE=!E2E_NOTE! (extraction pk : SKIP)"
 ) else (
     echo [SKIP] python introuvable : definir FLAM_PYTHON
 )
