@@ -164,10 +164,16 @@ Invariants (repris de Python, à tester côté Rust) :
    d'#357 n'est pas une API) ; une panique qui se déroule supprime et désinscrit les `.part`
    (garde RAII), `discard_pending` ne servant qu'à `panic = "abort"`.
 2. **Aucune écriture hors de la destination** : les noms de sortie sont relatifs, sans `..`,
-   sans `\`, sans `:`, sans composant vide (garde zip-slip). Le dossier `.plain` est vérifié
-   par chemin canonique. Les entrées de l'archive d'entrée ne sont **jamais extraites** sur
+   sans `\`, sans `:`, sans composant vide (garde zip-slip). Dans le `.part`, un composant de dossier
+   existant du `.plain` doit être un vrai dossier (ni lien symbolique ni jonction, `symlink_metadata`) ;
+   à la publication sur un `.plain` existant, chaque dossier de destination fusionné doit l'être aussi
+   (refus avant le premier renommage). Aucun chemin canonique n'est calculé pour cela : les composants
+   de `-o` au-dessus du `.plain` sont ceux de l'utilisateur et ne sont pas contrôlés. Les entrées de l'archive d'entrée ne sont **jamais extraites** sur
    disque, seulement lues en mémoire.
-3. **L'archive d'entrée n'est jamais modifiée.**
+3. **L'archive d'entrée n'est jamais modifiée.** Une sortie (`-o`, dossier `.plain`, nom par défaut)
+   qui désigne l'entrée (même chemin canonique : casse, chemin relatif, lien ou jonction ; sous POSIX,
+   même fichier) est refusée en `output_error` avant toute écriture (`convert.rs`). Les liens
+   physiques ne sont pas détectés sous Windows.
 4. **Sortie déterministe** : mêmes octets d'entrée et mêmes options donnent la même liste
    ordonnée d'entrées, avec les mêmes contenus. L'horodatage des entrées ZIP est fixé (voir
    §4.1).

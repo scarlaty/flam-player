@@ -7,6 +7,8 @@
 //! - uniques sans tenir compte de la casse (FAT, Windows), noms réservés compris
 //!   (`img/title.lif`, `img/thumbnail.lif`, `img/empty.lif`, `sounds/title.mp3`,
 //!   `sounds/silent.mp3`) : mêmes suffixes `_2`, `_3`… que Python ;
+//!   écart voulu avec Python : une base réservée par Windows (`con`, `prn`, `aux`, `nul`,
+//!   `com1`-`com9`, `lpt1`-`lpt9`, casse et extension sans effet) reçoit le même suffixe ;
 //! - coût linéaire : la recherche du premier suffixe libre reprend où la précédente s'est
 //!   arrêtée pour la même base (Python repart de `_2`, avec le même résultat) ;
 //! - aucune panique ; le jeton d'annulation est consulté avant chaque asset, pendant le
@@ -44,6 +46,23 @@ const RESERVED: [&str; 5] = [
     "sounds/title.mp3",
     "sounds/silent.mp3",
 ];
+
+/// Base de nom réservée par Windows (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`),
+/// sans tenir compte de la casse : un fichier `con.lif` y désigne le périphérique, jamais un
+/// fichier, quelle que soit l'extension. `base` a passé [`sanitize`] (`[A-Za-z0-9_-]+`).
+fn is_windows_device(base: &str) -> bool {
+    let b = base.as_bytes();
+    match b.len() {
+        3 => ["con", "prn", "aux", "nul"]
+            .iter()
+            .any(|d| base.eq_ignore_ascii_case(d)),
+        4 => {
+            (b[..3].eq_ignore_ascii_case(b"com") || b[..3].eq_ignore_ascii_case(b"lpt"))
+                && (b'1'..=b'9').contains(&b[3])
+        }
+        _ => false,
+    }
+}
 
 /// `os.path.splitext(os.path.basename(name))[0]` (le nom a passé `check_asset_name` : ni `\`
 /// ni `:`, donc `ntpath` et `posixpath` coïncident). Les points de tête ne marquent pas une
@@ -101,13 +120,18 @@ impl Names {
         // Noms ASCII : `str.lower()` de Python est `to_ascii_lowercase`.
         let lower = |cand: &str| format!("{prefix}{cand}{ext}").to_ascii_lowercase();
         let mut cand = b.clone();
-        if self.used.contains(&lower(&cand)) {
+        // Écart voulu avec Python : un nom de périphérique Windows reçoit un suffixe (`_2`…)
+        // au lieu de produire une écriture impossible (`output_error`) sous Windows.
+        let taken = |used: &HashSet<String>, cand: &str| {
+            is_windows_device(cand) || used.contains(&lower(cand))
+        };
+        if taken(&self.used, &cand) {
             let key = (prefix.to_owned(), b.to_ascii_lowercase(), ext.to_owned());
             let i = self.next.entry(key).or_insert(2);
             loop {
                 cand = format!("{b}_{i}");
                 *i += 1;
-                if !self.used.contains(&lower(&cand)) {
+                if !taken(&self.used, &cand) {
                     break;
                 }
             }
@@ -490,6 +514,30 @@ mod tests {
         assert_eq!(n.alloc("sounds/", "silent", ".mp3"), "silent_2.mp3");
         assert_eq!(n.alloc("img/", "S0", ".lif"), "S0_5.lif");
         assert_eq!(n.alloc("img/", "s0_2", ".lif"), "s0_2_2.lif");
+    }
+
+    /// Noms de périphériques Windows (#580) : suffixés, casse et extension sans effet ; les noms
+    /// voisins (`com0`, `com10`, `console`, `lpt`) restent tels quels.
+    #[test]
+    fn noms_de_peripheriques_windows_suffixes() {
+        let mut n = Names::default();
+        for dev in [
+            "con", "PRN", "Aux", "nUL", "com1", "COM9", "lpt1", "LPT9", "CON",
+        ] {
+            let got = n.alloc("img/", dev, ".lif");
+            assert!(
+                got.ends_with("_2.lif") || got.ends_with("_3.lif"),
+                "{dev} -> {got}"
+            );
+            assert!(!is_windows_device(got.trim_end_matches(".lif")), "{got}");
+        }
+        assert_eq!(n.alloc("sounds/", "con", ".mp3"), "con_2.mp3");
+        assert_eq!(n.alloc("sounds/", "con", ".mp3"), "con_3.mp3");
+        // Le nom passe par `sanitize` avant la comparaison.
+        assert_eq!(n.alloc("img/", "nul.txt!", ".lif"), "nul_txt.lif");
+        for ok in ["com0", "com10", "console", "lpt", "lpt0", "co", "auxx"] {
+            assert_eq!(n.alloc("img/", ok, ".lif"), format!("{ok}.lif"));
+        }
     }
 
     /// Même résultat que la boucle de Python (`while … in used`), qui repart de `_2`.
