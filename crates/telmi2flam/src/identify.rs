@@ -1,5 +1,5 @@
 //! Données qui ne sont ni un PNG ni un JPEG (décodé par [`crate::jpeg`] dès la signature
-//! `FF D8 FF`) : Pillow 12.3.0 pourrait-il les ouvrir ?
+//! `FF D8 FF`) : Pillow pourrait-il les ouvrir ?
 //!
 //! `Image.open` essaie chacun de ses 43 greffons de lecture (45 avec `olefile`) : ceux qui ont une fonction
 //! `_accept` ne voient que les 16 premiers octets, les autres (`IM`, `IMT`, `IPTC`, `PCD`,
@@ -14,15 +14,18 @@
 //! `IM`, `IMT`, `IPTC` et `TGA`, qui accepteraient sinon n'importe quel déchet (un fichier de
 //! zéros, du texte, un SVG, une page HTML), reproduisent les contrôles de leur `_open` et ceux
 //! d'`ImageFile.__init__` (mode vide, largeur ou hauteur nulle ou négative : « not identified
-//! by this driver »), lus dans Pillow 12.0.0 (#574). Pour les autres greffons, chaque condition
+//! by this driver »), lus dans Pillow 12.0.0, `_open` identique en 12.3.0 (#574). Pour les
+//! autres greffons, chaque condition
 //! reprend `_accept` ou, pour quelques `_accept` qui rendent un message et pour `SPIDER`, une
 //! condition plus large que le vrai contrôle. Un faux « peut-être » est une conversion qui
 //! échoue alors que Pillow aurait rendu `image_unreadable` ; un faux « illisible » casserait
 //! la parité (une image que Pillow lit remplacée par `empty.lif`), il n'y en a donc pas.
 //!
 //! Cas laissés du côté « peut-être » dans ces quatre greffons : valeur numérique d'un champ
-//! `IM` ou `IMT` que Python lirait peut-être autrement qu'ici (chiffres Unicode, soulignés,
-//! octets de contrôle : réputée valide) ; taille `IM` de trois nombres ou plus (le greffon
+//! `IM` ou `IMT` que Python lirait peut-être autrement qu'ici (soulignés `_` ; pour `IM`, dont
+//! les valeurs sont décodées en Latin-1, aussi `\x1c`-`\x1f`, `\x85` et `\xa0`, que `str.strip()`
+//! retire : réputée valide). Tout autre octet de contrôle ou d'au moins 0x80 rend la valeur
+//! invalide (`ValueError`, #580) ; taille `IM` de trois nombres ou plus (le greffon
 //! l'ouvre, le chargement échouerait plus tard). La garde anti-bombe de `Image.open`
 //! (`2 × MAX_IMAGE_PIXELS`) est rejouée, comme les exceptions qu'elle ne rattrape pas
 //! (`ValueError`, `OSError`) : elles rendent `image_unreadable` côté Python (`except Exception`).
@@ -145,13 +148,36 @@ fn spider_header(header: &[u8], big_endian: bool) -> bool {
         && [1.0, 3.0, -11.0, -12.0, -21.0, -22.0].contains(&t(4))
 }
 
+/// Façon dont Python lit la valeur d'un champ : `IM` décode la ligne en Latin-1 (`str`), `IMT`
+/// passe les octets à `int()` (`bytes`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Text {
+    /// `str` : `strip()` retire aussi `\x1c`-`\x1f`, `\x85` et `\xa0` ; `_` sépare des chiffres.
+    Latin1,
+    /// `bytes` : seuls les espaces ASCII sont retirés ; `_` sépare des chiffres.
+    Bytes,
+}
+
+impl Text {
+    /// Octet que Python lirait peut-être comme faisant partie d'un nombre valide.
+    fn unsure(self, b: u8) -> bool {
+        b == b'_' || (self == Text::Latin1 && matches!(b, 0x1c..=0x1f | 0x85 | 0xa0))
+    }
+
+    /// Octet qui rend la valeur invalide (`ValueError`) sans exception possible : tout octet de
+    /// contrôle hors espaces, `\x7f` et tout octet d'au moins 0x80, hormis ceux d'[`unsure`].
+    fn invalid(self, b: u8) -> bool {
+        !self.unsure(b) && (b >= 0x7f || (b < 0x20 && !PY_SPACE.contains(&b)))
+    }
+}
+
 /// Résultat de la lecture d'un nombre comme le fait Python (`int` ou `float` sur un champ).
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Num {
     Val(f64),
     /// `ValueError` certaine.
     Bad,
-    /// Octets que Python lirait peut-être (Unicode, soulignés, contrôles) : on ne tranche pas.
+    /// Octets que Python lirait peut-être (soulignés, espaces Latin-1) : on ne tranche pas.
     Unsure,
 }
 
@@ -171,11 +197,12 @@ fn py_trim(t: &[u8]) -> &[u8] {
 }
 
 /// `int(t)` : signe facultatif puis chiffres ASCII.
-fn py_int(t: &[u8]) -> Num {
+fn py_int(t: &[u8], text: Text) -> Num {
     let t = py_trim(t);
-    if t.iter()
-        .any(|&b| b == b'_' || b >= 0x80 || (b < 0x20 && !PY_SPACE.contains(&b)))
-    {
+    if t.iter().any(|&b| text.invalid(b)) {
+        return Num::Bad;
+    }
+    if t.iter().any(|&b| text.unsure(b)) {
         return Num::Unsure;
     }
     let digits = t
@@ -192,8 +219,8 @@ fn py_int(t: &[u8]) -> Num {
 }
 
 /// `number(s)` d'`ImImagePlugin` : `int(s)`, sinon `float(s)`.
-fn py_number(t: &[u8]) -> Num {
-    match py_int(t) {
+fn py_number(t: &[u8], text: Text) -> Num {
+    match py_int(t, text) {
         Num::Bad => {}
         other => return other,
     }
@@ -212,7 +239,7 @@ fn py_number(t: &[u8]) -> Num {
 fn im_numbers(v: &[u8]) -> Result<Vec<f64>, bool> {
     let mut out = Vec::new();
     for tok in v.split(|&b| b == b'*' || b == b',') {
-        match py_number(tok) {
+        match py_number(tok, Text::Latin1) {
             Num::Val(x) => out.push(x),
             Num::Bad => return Err(false),
             Num::Unsure => return Err(true),
@@ -410,7 +437,7 @@ fn imt_opens(d: &[u8]) -> bool {
             .unwrap_or(v.len())];
         let key = &s[..k_len];
         if key == b"width" || key == b"height" {
-            let x = match py_int(v) {
+            let x = match py_int(v, Text::Bytes) {
                 Num::Val(x) => x,
                 Num::Bad => return false, // `ValueError`
                 Num::Unsure => 1.0,       // Python lit peut-être la valeur : réputée valide
@@ -686,6 +713,74 @@ mod tests {
             iptc(&[3, 1], 1, 1, 5),
         ] {
             assert!(pillow_may_open(&d), "{:?}", &d[..d.len().min(60)]);
+        }
+    }
+
+    /// Garde anti-bombe de `Image.open` : plus de `2 × MAX_IMAGE_PIXELS` (178 956 970) pixels
+    /// est illisible (`DecompressionBombError`), au plus est possible ; NaN ne passe pas la
+    /// comparaison de Python (`nan * 5` : pas de bombe).
+    #[test]
+    fn garde_anti_bombe() {
+        let im = |size: &str| format!("Name: x\nImage size (x*y): {size}\n\x1a").into_bytes();
+        let imt = |w: u32, h: u32| format!("width {w}\nheight {h}\npixel n8\n\x0c").into_bytes();
+        assert!(pillow_may_open(&im("10000*10000")));
+        assert!(!pillow_may_open(&im("20000*20000")));
+        assert!(pillow_may_open(&im("nan*5")));
+        assert!(pillow_may_open(&imt(10_000, 10_000)));
+        assert!(!pillow_may_open(&imt(20_000, 20_000)));
+        assert!(pillow_may_open(&tga(0, 2, 13_000, 13_000, 24)));
+        assert!(!pillow_may_open(&tga(0, 2, 13_500, 13_500, 24)));
+    }
+
+    /// #580 : valeurs numériques que Pillow rejette (`ValueError`), jusque-là réputées valides.
+    #[test]
+    fn valeurs_numeriques_invalides() {
+        const SPACES: &[u8] = b" \t\n\r\x0b\x0c";
+        let imt = |w: &[u8]| [&b"width "[..], w, b"\nheight 3\npixel n8\n\x0c"].concat();
+        let im = |v: &[u8]| [&b"Name: x\nImage size (x*y): "[..], v, b"\n\x1a"].concat();
+        // IMT : octets de contrôle (hors espaces) et octets >= 0x80 : `int(bytes)` lève
+        // `ValueError`.
+        let mut bad_imt: Vec<Vec<u8>> = vec![b"4\x1a".to_vec(), b"4\x1f".to_vec()];
+        for b in (0u8..0x20).filter(|b| !SPACES.contains(b)) {
+            bad_imt.push(vec![b'4', b]);
+        }
+        bad_imt.extend([
+            b"4\x7f".to_vec(),
+            vec![b'4', 0x80],
+            vec![0xff, b'4'],
+            vec![b'4', 0x85],
+            vec![b'4', 0xa0],
+        ]);
+        for w in &bad_imt {
+            assert!(!pillow_may_open(&imt(w)), "IMT {w:?}");
+        }
+        // `_` sépare des chiffres (`int(b"4_0")` = 40) : reste possible.
+        for w in [&b"4_0"[..], b"40", b"+4"] {
+            assert!(pillow_may_open(&imt(w)), "IMT {w:?}");
+        }
+        // IM : valeur décodée en Latin-1. Contrôles hors espaces et octets >= 0x80 invalides,
+        // sauf `_`, `\x1c`-`\x1f`, `\x85` et `\xa0`.
+        let mut bad_im: Vec<Vec<u8>> = vec![b"1\x005*2".to_vec(), b"5*2\x01".to_vec()];
+        for b in (0u8..0x20).filter(|b| !SPACES.contains(b) && !(0x1c..=0x1f).contains(b)) {
+            bad_im.push(vec![b'5', b, b'*', b'5']);
+        }
+        for b in (0x7fu8..=0xff).filter(|b| ![0x85, 0xa0].contains(b)) {
+            bad_im.push(vec![b'5', b, b'*', b'5']);
+        }
+        for v in &bad_im {
+            assert!(!pillow_may_open(&im(v)), "IM {v:?}");
+        }
+        for v in [
+            &b"1_0*5"[..],
+            b"\x1c5*5",
+            b"5\x1d*5",
+            b"\x1e5*\x1f5",
+            b"\x855*5",
+            b"\xa05*5",
+            b"5*5\xa0",
+            b"640*480",
+        ] {
+            assert!(pillow_may_open(&im(v)), "IM {v:?}");
         }
     }
 
