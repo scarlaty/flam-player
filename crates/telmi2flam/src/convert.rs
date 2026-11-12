@@ -56,6 +56,7 @@ pub fn convert(
     // MP3 recopiés tels quels relus dans l'archive à l'écriture (#355).
     let package = build_package_streamed(&mut archive, &req.options, cancelled, reporter)?;
     let target = Target::new(req.output, req.emit_plain, &package);
+    refuse_input_as_output(req.input, &target)?;
     // L'archive est rendue à l'écriture, qui la ferme avant de publier (#402).
     let published = write_package_from(&package, archive, &target, cancelled, reporter)?;
     let size = if target.dir_only {
@@ -77,4 +78,38 @@ pub fn convert(
         size,
         warnings: reporter.warnings(),
     })
+}
+
+/// Même fichier sur le disque ? Chemin canonique (casse, chemin relatif, lien symbolique ou
+/// jonction résolus), et sous POSIX identité du fichier (liens physiques). Une cible absente
+/// n'est pas l'entrée, qui existe.
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    if let (Ok(x), Ok(y)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+        use std::os::unix::fs::MetadataExt;
+        if x.dev() == y.dev() && x.ino() == y.ino() {
+            return true;
+        }
+    }
+    matches!(
+        (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+        (Ok(x), Ok(y)) if x == y
+    )
+}
+
+/// Invariant 3 de PORT-RUST.md : l'archive d'entrée n'est jamais modifiée. Une cible (`-o` ou
+/// dossier `.plain`) qui est l'entrée elle-même la remplacerait au renommage : refus
+/// (`output_error`) avant toute écriture.
+fn refuse_input_as_output(input: &Path, target: &Target) -> Result<(), ConvError> {
+    for out in std::iter::once(&target.out_path).chain(target.plain_dir.as_ref()) {
+        if same_file(input, out) {
+            return Err(ConvError::output_error(format!(
+                "la sortie {} est l'archive d'entree {} : elle ne serait plus lisible, \
+                 choisissez une autre sortie",
+                out.display(),
+                input.display()
+            )));
+        }
+    }
+    Ok(())
 }

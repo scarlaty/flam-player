@@ -136,6 +136,35 @@ fn trailing_garbage_or_a_foreign_frame_forces_transcoding() {
     assert!(transcoding_required("a.mp3", &w));
 }
 
+/// Symétrique de la fin de fichier : des octets arbitraires avant la première trame (zéros de
+/// bourrage, déchets), avec ou sans ID3v2 devant, forcent le transcodage ; la copie gardée ne
+/// contiendrait sinon pas que des trames.
+#[test]
+fn leading_garbage_before_the_first_frame_forces_transcoding() {
+    const EMPTY_ID3V2: &[u8] = b"ID3\x03\x00\x00\x00\x00\x00\x00";
+    let clean = fixture("mono_44100_cbr");
+    assert!(!transcoding_required("a.mp3", &clean));
+    for junk in [&b"\0"[..], &[0u8; 64][..], &b"not an mp3 frame at all"[..]] {
+        let mut v = junk.to_vec();
+        v.extend_from_slice(&clean);
+        assert!(transcoding_required("a.mp3", &v), "{} octets", junk.len());
+        // Après une étiquette ID3v2 vide : toujours des octets avant la première trame une
+        // fois l'étiquette retirée.
+        let mut t = EMPTY_ID3V2.to_vec();
+        t.extend_from_slice(junk);
+        t.extend_from_slice(&clean);
+        assert!(
+            transcoding_required("a.mp3", &t),
+            "ID3 + {} octets",
+            junk.len()
+        );
+    }
+    // Une étiquette ID3v2 seule devant la première trame ne force rien.
+    let mut tagged = EMPTY_ID3V2.to_vec();
+    tagged.extend_from_slice(&clean);
+    assert!(!transcoding_required("a.mp3", &tagged));
+}
+
 #[test]
 fn transcoding_target_is_documented_and_consistent() {
     assert_eq!(TARGET_SAMPLE_RATE_HZ, 44_100);

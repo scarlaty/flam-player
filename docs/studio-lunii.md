@@ -243,7 +243,9 @@ Observé (Lunii.QT, `convert_audio.py`) :
 - les étiquettes (ID3v1, ID3v2) d'un MP3 gardé sont retirées.
 
 **Choix de conception** (#521) : un MP3 est gardé seulement s'il est MPEG-1 couche III, à
-44 100 Hz exactement, mono, et que ses trames se lisent de bout en bout ; sinon il est transcodé
+44 100 Hz exactement, mono, que sa première trame commence à l'octet 0 une fois les étiquettes
+retirées (des octets quelconques avant elle, par exemple des zéros de bourrage, forcent le
+transcodage, comme des octets en fin de fichier) et que ses trames se lisent de bout en bout ; sinon il est transcodé
 avec les réglages ci-dessus. Écarts voulus avec Lunii.QT, qui accepte `>= 44 100 Hz` et toute
 couche : un MP3 à 48 kHz est transcodé, et un MP3 de couche I ou II aussi ; 44,1 kHz est la seule
 fréquence connue de la Flam (`telmi2flam`, `SAMPLERATE`). Étiquettes retirées : ID3v2 en tête

@@ -18,6 +18,7 @@
 //! | Fréquence | **exactement** 44100 Hz (32, 48 kHz, 24, 22,05, 16… sont transcodés) | **plus strict** : Lunii.QT accepte `>= 44100` (donc 48 kHz) ; note de conception, Q6 |
 //! | Mode de débit | inconnu (CBR présumé), CBR ou VBR ; **ABR refusé** (en-tête LAME) | Lunii.QT |
 //! | Canaux | mono (mode de canal 3) ; stéréo, joint stéréo, double canal sont transcodés | Lunii.QT |
+//! | Début | la première trame commence à l'octet 0 une fois les étiquettes écartées : des octets quelconques avant elle forcent le transcodage (la copie ne contient alors que des trames) | **plus strict** : note de conception § 3.6 |
 //! | Trames | de la première à la fin (étiquettes écartées), en-têtes valides enchaînés exactement, tous MPEG-1 III 44,1 kHz mono ; seule la dernière peut être tronquée | **plus strict** : note de conception § 3.6 |
 //!
 //! Le débit lui-même n'est pas un critère. Un fichier dont aucune trame n'est trouvée (Lunii.QT
@@ -189,6 +190,9 @@ pub fn transcoding_required(filename: &str, bytes: &[u8]) -> bool {
         || info.sample_rate != ACCEPTED_SAMPLE_RATE_HZ
         || info.bitrate_mode == BitrateMode::Abr
         || info.channels() != TARGET_CHANNELS
+        // Des octets avant la première trame (bourrage, déchets) ne seraient pas retirés par
+        // `mp3_audio_range` : le fichier gardé serait copié avec eux.
+        || first != 0
         || !frames_readable_to_the_end(data, first)
 }
 

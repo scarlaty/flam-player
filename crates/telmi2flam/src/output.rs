@@ -15,8 +15,12 @@
 //!   annulation), les `.part` sont supprimés et l'ancienne sortie reste intacte ; les types des
 //!   cibles (fichier, dossier) sont vérifiés avant la première publication ;
 //! - **aucune écriture hors de la destination** : garde zip-slip de Python sur les noms
-//!   ([`check_names`]), et chaque dossier du `.plain` est créé composant par composant, un
-//!   composant existant devant être un vrai dossier (ni lien ni jonction) ;
+//!   ([`check_names`]) ; dans le `.part`, chaque dossier du `.plain` est créé composant par
+//!   composant, un composant existant devant être un vrai dossier (ni lien ni jonction) ; à la
+//!   publication sur un `.plain` existant, chaque dossier de destination fusionné ne doit être
+//!   ni un lien ni une jonction (`symlink_metadata`, contrôlé avant le premier renommage). Pas
+//!   de chemin canonique : les composants de `-o` au-dessus du `.plain` sont ceux de
+//!   l'utilisateur et ne sont pas contrôlés ;
 //! - **octets du ZIP identiques à `zipfile.writestr`** (Python 3.14 sous Windows) à horodatage
 //!   égal : méthode *stored*, versions 20 (45 en ZIP64), système créateur 0 (MS-DOS),
 //!   attributs externes `0o600 << 16`, bit 11 (UTF-8) seulement pour un nom non ASCII, ZIP64
@@ -1030,6 +1034,9 @@ fn commit(tmp: &Path, fin: &Path, hook: Hook<'_>) -> io::Result<()> {
     check_target(tmp, fin)?;
     let tmp_is_dir = fs::symlink_metadata(tmp)?.is_dir();
     if tmp_is_dir && fs::metadata(fin).is_ok_and(|m| m.is_dir()) {
+        // Avant le premier renommage : un lien trouvé en cours de fusion laisserait un `.plain`
+        // à moitié mis à jour.
+        check_merge_links(tmp, fin)?;
         merge_dir(tmp, fin, hook)?;
         let _ = fs::remove_dir_all(tmp);
         return Ok(());
@@ -1037,8 +1044,40 @@ fn commit(tmp: &Path, fin: &Path, hook: Hook<'_>) -> io::Result<()> {
     rename_retry(tmp, fin, hook)
 }
 
-/// `os.walk(tmp)` puis `os.replace` de chaque fichier vers le dossier final.
+/// Refuse `dest` s'il existe et que c'est un lien symbolique ou une jonction (jugé sur le lien
+/// lui-même, `symlink_metadata`) : la fusion y écrirait en suivant le lien, hors du dossier
+/// `.plain`. Ne vérifie que `dest` : les composants au-dessus sont ceux de `-o`, choisis par
+/// l'utilisateur, et ne sont pas contrôlés.
+fn refuse_link(dest: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(dest) {
+        Ok(m) if m.file_type().is_symlink() => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "ecriture hors du dossier .plain refusee : {} est un lien",
+                dest.display()
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// [`refuse_link`] sur `fin` et sur chaque dossier de `tmp` rapporté sous `fin`.
+fn check_merge_links(tmp: &Path, fin: &Path) -> io::Result<()> {
+    refuse_link(fin)?;
+    for e in fs::read_dir(tmp)? {
+        let e = e?;
+        if e.file_type()?.is_dir() {
+            check_merge_links(&e.path(), &fin.join(e.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+/// `os.walk(tmp)` puis `os.replace` de chaque fichier vers le dossier final. Un dossier de
+/// destination existant qui est un lien est refusé ([`refuse_link`]) ; un fichier de
+/// destination, lui, est remplacé (le renommage remplace le lien, il ne le suit pas).
 fn merge_dir(tmp: &Path, fin: &Path, hook: Hook<'_>) -> io::Result<()> {
+    refuse_link(fin)?;
     fs::create_dir_all(fin)?;
     let mut entries: Vec<_> = fs::read_dir(tmp)?.collect::<Result<_, _>>()?;
     entries.sort_by_key(|e| e.file_name());
@@ -2224,6 +2263,66 @@ mod tests {
         }
     }
 
+    /// Lien symbolique (POSIX) ou jonction (Windows) `link` vers le dossier `target` ; `false`
+    /// si la plate-forme ou les droits ne le permettent pas.
+    fn make_dir_link(link: &Path, target: &Path) -> bool {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(target, link).is_ok();
+        #[cfg(windows)]
+        return std::process::Command::new("cmd")
+            .arg("/c")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        #[cfg(not(any(unix, windows)))]
+        return false;
+    }
+
+    /// `.plain` existant dont la racine, ou un sous-dossier, est un lien ou une jonction : la
+    /// publication est refusée (`output_error`) avant le premier renommage, rien n'est écrit
+    /// derrière le lien, l'ancien contenu et le lien restent, aucun `.part`.
+    #[test]
+    fn publication_refusee_sur_un_dossier_lien() {
+        let pkg = sample();
+        for nested in [false, true] {
+            let d = scratch(&format!("merge-lien-{nested}"));
+            let outside = d.join("dehors");
+            fs::create_dir(&outside).unwrap();
+            fs::write(outside.join("garde"), b"g").unwrap();
+            let plain = d.join("o.plain");
+            let link = if nested {
+                fs::create_dir(&plain).unwrap();
+                plain.join("img")
+            } else {
+                plain.clone()
+            };
+            if !make_dir_link(&link, &outside) {
+                continue;
+            }
+            let t = Target::new(Some(&plain), false, &pkg);
+            let e = write_package(&pkg, &t, &never).unwrap_err();
+            assert_eq!(e.code, "output_error", "nested = {nested}");
+            let left: Vec<_> = fs::read_dir(&outside)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(left, [OsString::from("garde")], "écrit derrière le lien");
+            assert!(fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            if nested {
+                assert!(!plain.join("version").exists(), "fusion partielle");
+            }
+            assert_no_part(&d);
+            discard(&[link]);
+        }
+    }
+
     /// Dossiers créés composant par composant (#357) : la racine (le `.part`) n'est jamais
     /// recréée, `.` est ignoré, un fichier ou un lien à la place d'un dossier est refusé.
     #[test]
@@ -2244,21 +2343,7 @@ mod tests {
         let outside = d.join("dehors");
         fs::create_dir(&outside).unwrap();
         let link = root.join("lien");
-        #[cfg(unix)]
-        let made = std::os::unix::fs::symlink(&outside, &link).is_ok();
-        #[cfg(windows)]
-        let made = std::process::Command::new("cmd")
-            .arg("/c")
-            .arg("mklink")
-            .arg("/J")
-            .arg(&link)
-            .arg(&outside)
-            .stdout(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
-        #[cfg(not(any(unix, windows)))]
-        let made = false;
-        if made {
+        if make_dir_link(&link, &outside) {
             match make_dirs(&root, &["lien", "x"]) {
                 Err(Fail::Conv(e)) => assert_eq!(e.code, "invalid_content"),
                 _ => panic!("lien suivi"),
