@@ -1261,8 +1261,11 @@ sous-dossiers déjà présents dans le dossier de cache configuré (et dans le d
 sont marqués, une seule fois (témoin `cache-markers.done` dans le dossier de configuration). Elle
 est reportée, sans témoin, si le dossier configuré est absent ou si les réglages retombent sur le
 dossier par défaut. Un ancien cache du launcher choisi plus tard (`library/` contenant l'index
-`library.json` lisible ou son `.lock`) est accepté par `settings_set` et marqué de la même façon ;
-les autres homonymes sans marqueur sont refusés.
+`library.json`, fichier réel d'au plus 4 Mio lisible au schéma de la bibliothèque ; le `.lock`
+seul ne suffit pas) est accepté par `settings_set` : seul `library/` y est marqué, ses autres
+homonymes sans marqueur ne sont ni marqués ni refusés (l'application les utilise comme avant,
+sans jamais les compter ni les vider). Sans bibliothèque reconnue, un homonyme sans marqueur fait
+refuser le dossier.
 Limites : un homonyme de l'utilisateur déjà présent dans le dossier configuré à ce moment est
 marqué aussi ; après un retour à une version antérieure (qui ignore le marqueur), les
 sous-dossiers qu'elle recrée ne sont plus comptés ni vidés par cette version : créer un fichier

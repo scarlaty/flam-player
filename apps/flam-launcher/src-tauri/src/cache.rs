@@ -256,10 +256,11 @@ pub fn migrate_configured(config_dir: &Path, env: &Environment) -> AppResult<Mig
 }
 
 /// Ancien cache du launcher (version sans marqueur) : `library/` est un dossier réel qui contient
-/// l'index de la bibliothèque ou son verrou, et les autres homonymes sans marqueur sont des
-/// dossiers réels marquables. Il est alors adopté : ses sous-dossiers reçoivent le marqueur
-/// (comme à la migration) et `true` est renvoyé. Idempotente : un échec en cours laisse une
-/// partie des marqueurs, qu'un nouvel appel complète. Sinon rien n'est écrit, `false`.
+/// l'index de la bibliothèque, lisible ([`crate::library::is_legacy_library`]). Il est alors
+/// adopté : **seul** `library/` reçoit le marqueur (s'il ne l'a pas déjà) et `true` est renvoyé.
+/// Les autres homonymes sans marqueur (dossiers, fichiers, liens) ne sont ni marqués ni bloquants :
+/// l'application les utilise comme avant, sans jamais les compter ni les vider. Idempotente.
+/// Sinon rien n'est écrit, `false`.
 pub fn adopt_legacy_cache(root: &Path) -> io::Result<bool> {
     adopt_legacy_cache_with(root, &no_fault)
 }
@@ -269,14 +270,19 @@ fn adopt_legacy_cache_with(root: &Path, fault: Fault) -> io::Result<bool> {
     if !is_real_dir(&library) || !crate::library::is_legacy_library(&library) {
         return Ok(false);
     }
-    let markable = foreign_entries(root).iter().all(|name| {
-        let dir = root.join(name);
-        is_real_dir(&dir) && fs::symlink_metadata(dir.join(MARKER)).is_err()
-    });
-    if !markable {
+    if is_owned(&library) {
+        return Ok(true);
+    }
+    if fs::symlink_metadata(library.join(MARKER)).is_ok() {
+        // Lien ou dossier à la place du marqueur : rien n'est prouvé, rien n'est écrit.
         return Ok(false);
     }
-    mark_existing(root, fault)?;
+    fault("marker")?;
+    // `create_new` : n'ouvre jamais un élément existant (ni lien, ni fichier).
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(library.join(MARKER))?;
     Ok(true)
 }
 
@@ -780,25 +786,55 @@ mod tests {
     }
 
     #[test]
-    fn un_ancien_cache_est_adopte_et_marque_de_facon_idempotente() {
+    fn un_ancien_cache_est_adopte_et_seule_la_bibliotheque_est_marquee() {
         let dir = tempfile::tempdir().unwrap();
         legacy_cache(dir.path());
-        // Adoption interrompue au deuxième marqueur : rien de supprimé, reprise complète.
-        assert!(adopt_legacy_cache_with(dir.path(), &fail_at("marker", 2)).is_err());
+        // Adoption interrompue avant le marqueur : rien d'écrit ni de supprimé, reprise complète.
+        assert!(adopt_legacy_cache_with(dir.path(), &fail_at("marker", 1)).is_err());
+        assert!(!is_owned(&dir.path().join("library")));
         assert!(adopt_legacy_cache(dir.path()).unwrap());
         assert!(adopt_legacy_cache(dir.path()).unwrap(), "idempotente");
         assert!(is_owned(&dir.path().join("library")));
-        assert!(is_owned(&dir.path().join("archives")));
+        assert!(!is_owned(&dir.path().join("archives")), "seul library est marqué");
         assert!(dir.path().join("library/abc-1.plain.pk").is_file());
-        assert!(foreign_entries(dir.path()).is_empty());
+        assert_eq!(foreign_entries(dir.path()), ["archives"]);
     }
 
     #[test]
-    fn un_verrou_de_bibliotheque_suffit_a_reconnaitre_un_ancien_cache() {
+    fn un_verrou_sans_index_ne_suffit_pas() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("library/.lock"), 0);
+        write(&dir.path().join("library/roman.epub"), 3);
+        assert!(!adopt_legacy_cache(dir.path()).unwrap());
+        assert!(!is_owned(&dir.path().join("library")));
+    }
+
+    #[test]
+    fn un_index_au_dela_de_la_borne_n_est_pas_reconnu() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = br#"{"schema_version":1,"stories":[]}"#.to_vec();
+        index.resize(4 * 1024 * 1024 + 1, b' ');
+        write(&dir.path().join("library/x"), 1);
+        fs::write(dir.path().join("library/library.json"), index).unwrap();
+        assert!(!adopt_legacy_cache(dir.path()).unwrap());
+        assert!(!is_owned(&dir.path().join("library")));
+    }
+
+    #[test]
+    fn un_ancien_cache_avec_des_homonymes_personnels_est_accepte_sans_les_toucher() {
+        let dir = tempfile::tempdir().unwrap();
+        legacy_cache(dir.path());
+        write(&dir.path().join("podcasts/mon-emission.mp3"), 300);
+        write(&dir.path().join("thumbs"), 1);
         assert!(adopt_legacy_cache(dir.path()).unwrap());
         assert!(is_owned(&dir.path().join("library")));
+        assert!(!is_owned(&dir.path().join("podcasts")));
+        assert!(dir.path().join("thumbs").is_file());
+        // Le vidage vide la bibliothèque marquée, jamais `podcasts/` personnel.
+        clear_of(dir.path()).unwrap();
+        assert!(dir.path().join("podcasts/mon-emission.mp3").is_file());
+        assert!(!dir.path().join("podcasts").join(MARKER).exists());
+        assert_eq!(names_in(&dir.path().join("library")), [MARKER]);
     }
 
     #[test]
@@ -820,12 +856,6 @@ mod tests {
             assert!(!adopt_legacy_cache(dir.path()).unwrap(), "{index}");
             assert!(!is_owned(&dir.path().join("library")));
         }
-        // Ancien cache, mais un homonyme non marquable (fichier) : refusé, rien marqué.
-        let dir = tempfile::tempdir().unwrap();
-        legacy_cache(dir.path());
-        write(&dir.path().join("thumbs"), 1);
-        assert!(!adopt_legacy_cache(dir.path()).unwrap());
-        assert!(!is_owned(&dir.path().join("library")));
     }
 
     #[test]

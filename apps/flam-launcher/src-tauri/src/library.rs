@@ -338,17 +338,20 @@ struct Adoption {
     unjudged: Vec<PathBuf>,
 }
 
+/// Taille maximale de l'index lu pour reconnaître une bibliothèque d'une version antérieure
+/// (même ordre que les autres bornes de lecture de la bibliothèque, 4 Mio).
+const MAX_LEGACY_INDEX_BYTES: u64 = 4 * 1024 * 1024;
+
 /// `dir` (un `library/` sans marqueur) est la bibliothèque d'une version antérieure du launcher :
-/// son verrou `.lock` est un fichier, ou son index `library.json` est un fichier lisible au
-/// schéma de la bibliothèque (objet avec `schema_version` connu et liste `stories`). Lecture
-/// seule : rien n'est mis de côté ni réécrit (#570).
+/// son index `library.json` est un fichier réel (ni lien ni dossier) d'au plus
+/// [`MAX_LEGACY_INDEX_BYTES`], lisible au schéma de la bibliothèque (objet avec `schema_version`
+/// connu et liste `stories`). Le verrou `.lock` seul ne suffit pas. Lecture seule : rien n'est
+/// mis de côté ni réécrit (#570).
 pub fn is_legacy_library(dir: &Path) -> bool {
-    let is_file = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
-    if is_file(&dir.join(LOCK_FILE)) {
-        return true;
-    }
     let index = dir.join(INDEX_FILE);
-    if !is_file(&index) {
+    let bounded = std::fs::symlink_metadata(&index)
+        .is_ok_and(|m| m.is_file() && m.len() <= MAX_LEGACY_INDEX_BYTES);
+    if !bounded {
         return false;
     }
     let Ok(text) = std::fs::read_to_string(&index) else {

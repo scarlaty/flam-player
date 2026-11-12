@@ -339,10 +339,11 @@ fn check_cache_dir(raw: &str, protected: &[PathBuf]) -> Result<(), (&'static str
 /// `cache::APP_CACHE_SUBDIRS`, un élément qui n'a pas le marqueur de l'application (#570) : le
 /// vidage l'ignorerait, mais l'application y écrirait au milieu de données qui ne sont pas à elle.
 ///
-/// Exception : un ancien cache du launcher (bibliothèque d'une version sans marqueur) est
-/// accepté et marqué comme à la migration, **avant** l'enregistrement des réglages. Le marquage
-/// est idempotent : si l'enregistrement échoue ensuite, le dossier reste un cache du launcher
-/// marqué, et un nouvel essai réussit.
+/// Exception : un ancien cache du launcher (`library/` avec l'index lisible d'une version sans
+/// marqueur) est accepté ; seul `library/` est marqué, **avant** l'enregistrement des réglages.
+/// Ses autres homonymes non marqués ne sont ni marqués ni bloquants (jamais comptés ni vidés).
+/// Le marquage est idempotent : si l'enregistrement échoue ensuite, `library/` reste marqué, et
+/// un nouvel essai réussit.
 fn check_cache_dir_free(raw: &str) -> AppResult<()> {
     let root = Path::new(raw);
     let foreign = crate::cache::foreign_entries(root);
@@ -1024,7 +1025,8 @@ mod tests {
             .unwrap();
         assert_eq!(saved.cache_dir, Some(old.display().to_string()));
         assert!(crate::cache::is_owned(&old.join("library")));
-        assert!(crate::cache::is_owned(&old.join("podcasts")));
+        assert!(!crate::cache::is_owned(&old.join("podcasts")), "seul library est marqué");
+        assert!(old.join("podcasts/src/feed.xml").is_file());
         assert!(
             old.join("library/abc-1.plain.pk").is_file(),
             "rien supprimé"
