@@ -58,8 +58,14 @@ fn cases() -> Vec<Case> {
         .collect()
 }
 
-/// Cas où notre décision est volontairement plus stricte que celle de Lunii.QT.
-const STRICTER_TRANSCODE: &[&str] = &["mono_48000_cbr", "layer2_mono_44100"];
+/// Cas où notre décision est volontairement plus stricte que celle de Lunii.QT : fréquence et
+/// couche, et octets avant la première trame (#580 : la copie gardée ne doit contenir que des trames).
+const STRICTER_TRANSCODE: &[&str] = &[
+    "mono_48000_cbr",
+    "layer2_mono_44100",
+    "junk_then_frames",
+    "false_sync_then_frames",
+];
 /// Étiquettes que `mutagen` ne compte pas (aucune trame / APEv2) mais que nous retirons.
 const EXTRA_TAGS: &[&str] = &["tag_v2_empty_no_frames", "tag_v1_all_empty", "tag_ape_tail"];
 /// Nettoyages où nous retirons plus que `mutagen`.
