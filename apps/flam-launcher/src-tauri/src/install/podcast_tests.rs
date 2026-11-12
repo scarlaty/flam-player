@@ -7,7 +7,8 @@ use std::sync::atomic::AtomicBool;
 
 use super::*;
 use crate::install::podcast::{
-    archive_path, clear_draft_if_unchanged, pack_entry, BoxFuture, PackBackend, PackJob, WORK_DIR,
+    archive_path, clear_draft_if_unchanged, drop_reason, pack_entry, verify_converter, BoxFuture,
+    PackBackend, PackJob, WORK_DIR,
 };
 use crate::podcast::artwork::{Artwork, ArtworkKind};
 use crate::podcast::fetch::{DropReason, Dropped, Fetched, Item, Progress, Report, Workdir};
@@ -30,6 +31,12 @@ enum Fault {
     FetchFatal,
     AllDropped,
     AudioAllFail,
+    /// ffmpeg ou ffprobe indisponible pendant la conversion (panne du convertisseur).
+    AudioConverterGone,
+    /// Erreur disque pendant la conversion.
+    AudioDiskError,
+    /// Délai de conversion dépassé pour chaque épisode (échec d'épisode, pas du pack).
+    AudioTimedOut,
     CancelFetch,
     CancelAudio,
     /// Le convertisseur (faux telmi2flam) échoue.
@@ -260,6 +267,21 @@ impl PackBackend for FakePacks {
                             message: "échec".into(),
                         });
                     }
+                    match self.fault {
+                        Fault::AudioConverterGone => {
+                            return Err(AppError::ConverterUnavailable("ffprobe.exe absent".into()))
+                        }
+                        Fault::AudioDiskError => {
+                            return Err(AppError::Io(std::io::Error::other("disque")))
+                        }
+                        Fault::AudioTimedOut => {
+                            return Err(AppError::Io(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "délai",
+                            )))
+                        }
+                        _ => {}
+                    }
                     std::fs::copy(from, to).map_err(AppError::from)
                 })
                 .collect())
@@ -380,6 +402,15 @@ async fn pannes_a_chaque_etape_sans_residu_et_bibliotheque_coherente() {
         (Fault::FetchFatal, TaskState::Failed, "io"),
         (Fault::AllDropped, TaskState::Failed, "download_invalid"),
         (Fault::AudioAllFail, TaskState::Failed, "download_invalid"),
+        // Panne du convertisseur ou du disque : fatale pour le pack, pas un échec d'épisode.
+        (
+            Fault::AudioConverterGone,
+            TaskState::Failed,
+            "converter_unavailable",
+        ),
+        (Fault::AudioDiskError, TaskState::Failed, "io"),
+        // Délai d'un épisode : l'épisode est retiré (ici tous : aucun épisode utilisable).
+        (Fault::AudioTimedOut, TaskState::Failed, "download_invalid"),
         (Fault::CancelFetch, TaskState::Cancelled, "cancelled"),
         (Fault::CancelAudio, TaskState::Cancelled, "cancelled"),
         (Fault::ConvertFail, TaskState::Failed, "conversion"),
@@ -1111,4 +1142,86 @@ async fn annulation_prioritaire_au_creneau_de_preparation() {
         );
     }
     assert!(!ctx.cache().join(WORK_DIR).join(TASK_ID).exists());
+}
+
+/// Une panne du convertisseur est annoncée en clair, sans qu'aucun épisode ne soit « retiré ».
+#[tokio::test]
+async fn panne_du_convertisseur_est_annoncee_en_clair() {
+    let Some(py) = fake_converter() else { return };
+    let ctx = Ctx::new(Some(py));
+    ctx.packs(Fault::AudioConverterGone);
+    let task = ctx.start_pack().await;
+    let end = ctx.finished(&task.id).await;
+    let message = end.error.unwrap().message;
+    assert!(
+        message.contains("ffmpeg embarqué indisponible")
+            && message.contains("réinstallez Flam Launcher")
+            && message.contains("ffprobe.exe absent"),
+        "{message}"
+    );
+    assert!(
+        end.pack.is_none_or(|p| p.dropped.is_empty()),
+        "aucun épisode retiré"
+    );
+}
+
+#[test]
+fn motif_d_un_episode_retire_porte_le_code_sans_url() {
+    let err = AppError::Conversion {
+        code: "audio_too_large".into(),
+        message: "https://audio.example.test/x.mp3".into(),
+    };
+    assert_eq!(drop_reason(&err), "conversion (audio_too_large)");
+    assert_eq!(drop_reason(&AppError::Io(std::io::Error::other("x"))), "io");
+}
+
+/// ffmpeg et ffprobe sont tous deux vérifiés avant tout téléchargement.
+#[test]
+fn verifie_ffmpeg_et_ffprobe_avant_de_telecharger() {
+    use crate::ffmpeg::{Ffmpeg, Tool, MANIFEST_FILE};
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let ff = Ffmpeg::in_dir(dir.path());
+    // Rien : refus, message de pack.
+    let err = verify_converter(&ff).unwrap_err();
+    assert!(
+        matches!(&err, AppError::ConverterUnavailable(m) if m.contains("réinstallez")),
+        "{err:?}"
+    );
+    // ffmpeg valide, ffprobe absent du dossier : refus nommant ffprobe.
+    std::fs::write(dir.path().join(Tool::Ffmpeg.file_name()), b"ffmpeg").unwrap();
+    let hash = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+    let manifest = |entries: &[(&str, &[u8])]| {
+        let text: String = entries
+            .iter()
+            .map(|(name, bytes)| {
+                format!(
+                    "{}  {name}
+",
+                    hash(bytes)
+                )
+            })
+            .collect();
+        std::fs::write(dir.path().join(MANIFEST_FILE), text).unwrap();
+    };
+    manifest(&[(Tool::Ffmpeg.file_name(), b"ffmpeg")]);
+    let err = verify_converter(&ff).unwrap_err();
+    assert!(
+        matches!(&err, AppError::ConverterUnavailable(m) if m.contains(Tool::Ffprobe.file_name())),
+        "{err:?}"
+    );
+    // ffprobe à l'empreinte fausse : refus.
+    std::fs::write(dir.path().join(Tool::Ffprobe.file_name()), b"autre").unwrap();
+    manifest(&[
+        (Tool::Ffmpeg.file_name(), b"ffmpeg"),
+        (Tool::Ffprobe.file_name(), b"ffprobe"),
+    ]);
+    let err = verify_converter(&ff).unwrap_err();
+    assert!(
+        matches!(&err, AppError::ConverterUnavailable(m) if m.contains("empreinte")),
+        "{err:?}"
+    );
+    // Les deux conformes : accepté.
+    std::fs::write(dir.path().join(Tool::Ffprobe.file_name()), b"ffprobe").unwrap();
+    verify_converter(&ff).unwrap();
 }
