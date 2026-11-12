@@ -435,6 +435,7 @@ impl Ctx {
             validator: Default::default(),
             pack: None,
             replace_format: false,
+            started: true,
         });
     }
 

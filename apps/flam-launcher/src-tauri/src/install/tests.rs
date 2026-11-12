@@ -1759,6 +1759,229 @@ async fn annulation_prioritaire_au_creneau_de_conversion_studio() {
     assert!(!staged.exists());
 }
 
+// ---------------------------------------------------------------------------------------
+// Reprise de la file : une exécution par tâche, une tâche active par uuid (#569)
+// ---------------------------------------------------------------------------------------
+
+/// Source locale `.plain.pk` valide d'uuid `<byte>` répété (sans convertisseur ni réseau).
+fn local_pk(dir: &Path, byte: u8) -> StoryEntry {
+    let uuid = format!("{byte:02x}").repeat(16);
+    let plain = dir.join(format!("{uuid}.plain"));
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(plain.join("info.plain"), format!("Histoire {byte}\n")).unwrap();
+    std::fs::write(plain.join("uuid.bin"), [byte; 16]).unwrap();
+    std::fs::write(plain.join("main.lua"), "-- x").unwrap();
+    let pk = dir.join(format!("{uuid}.plain.pk"));
+    pack::pack_plain_dir(&plain, &pk).unwrap();
+    let mut entry = story(&uuid, None);
+    entry.kind = StoryKind::FlamPk;
+    entry.download_url = pk.to_string_lossy().into_owned();
+    entry
+}
+
+fn queued(id: &str, entry: &StoryEntry) -> QueuedTask {
+    QueuedTask {
+        id: id.into(),
+        entry: entry.clone(),
+        created_at: 1,
+        validator: Validator::default(),
+        pack: None,
+        replace_format: false,
+    }
+}
+
+fn write_queue_file(dir: &Path, tasks: Vec<QueuedTask>) {
+    storage::write_json(
+        &dir.join("config").join(QUEUE_FILE),
+        &QueueFile {
+            schema_version: QUEUE_SCHEMA,
+            tasks,
+        },
+    )
+    .unwrap();
+}
+
+impl Ctx {
+    /// Événements de fin (`done` ou `error`) de la tâche `id`.
+    fn endings(&self, id: &str) -> usize {
+        self.events
+            .all()
+            .iter()
+            .filter(|e| match e {
+                Recorded::Done(d) => d.task_id == id,
+                Recorded::Failed(f) => f.task_id == id,
+                Recorded::Progress(_) => false,
+            })
+            .count()
+    }
+
+    /// Attend la fin des tâches `ids`, puis laisse à une éventuelle exécution en double le temps
+    /// de se manifester avant de compter les fins.
+    async fn assert_single_runs(&self, ids: &[&str]) {
+        for id in ids {
+            assert_eq!(self.finished(id).await.state, TaskState::Done, "{id}");
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        self.service.flush_queue().await;
+        for id in ids {
+            assert_eq!(self.endings(id), 1, "une seule exécution de {id}");
+        }
+    }
+}
+
+/// Tâche créée par `enqueue` pendant la ré-résolution de la file (analyse d'un dossier) :
+/// `restore` ne la relance pas ; chaque tâche s'exécute une fois.
+#[tokio::test]
+async fn tache_ajoutee_pendant_la_reprise_executee_une_seule_fois() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let restored = local_pk(&src, 1);
+    let added = local_pk(&src, 2);
+    write_queue_file(dir.path(), vec![queued(TASK_ID, &restored)]);
+    let ctx = Ctx::with_dir(dir, None, GRACE);
+
+    // Portillon du cache tenu : la tâche ajoutée reste en cours pendant toute la reprise.
+    let hold = ctx.gate.clone().write_owned().await;
+    let added_id = Arc::new(Mutex::new(None::<String>));
+    let (service, slot) = (ctx.service.clone(), added_id.clone());
+    ctx.service
+        .restore(|_, _| {
+            // L'utilisateur clique « Installer » pendant l'analyse du dossier.
+            let task = service.start(added.clone()).unwrap();
+            *lock(&slot) = Some(task.id);
+            let fresh = restored.clone();
+            async move { Ok(fresh) }
+        })
+        .await;
+    let added_id = lock(&added_id).clone().expect("tâche ajoutée");
+    assert_eq!(ctx.service.list().len(), 2);
+    drop(hold);
+    ctx.assert_single_runs(&[TASK_ID, &added_id]).await;
+    assert_eq!(ctx.service.library_list().await.unwrap().len(), 2);
+    assert!(ctx.queue().is_empty());
+    assert!(ctx.staging_is_empty());
+}
+
+/// Une tâche active par uuid : une tâche restaurée est écartée si le même uuid a déjà une
+/// tâche active, qu'elle ait été créée pendant la reprise ou qu'elle précède dans le fichier.
+#[tokio::test]
+async fn reprise_ecarte_les_doublons_d_uuid() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let a = local_pk(&src, 1);
+    let b = local_pk(&src, 2);
+    const DUP_A: &str = "11111111-2222-4333-8444-555555555555";
+    const RESTORED_B: &str = "22222222-3333-4444-8555-666666666666";
+    write_queue_file(
+        dir.path(),
+        vec![
+            queued(TASK_ID, &a),
+            queued(DUP_A, &a),
+            queued(RESTORED_B, &b),
+        ],
+    );
+    let ctx = Ctx::with_dir(dir, None, GRACE);
+
+    // Portillon tenu : la tâche créée pendant la reprise est encore active à l'insertion.
+    let hold = ctx.gate.clone().write_owned().await;
+    let added_id = Arc::new(Mutex::new(None::<String>));
+    let (service, slot) = (ctx.service.clone(), added_id.clone());
+    ctx.service
+        .restore(|_, entry_id| {
+            let fresh = if entry_id == b.entry_id {
+                // Même histoire que `RESTORED_B`, demandée pendant sa ré-résolution.
+                *lock(&slot) = Some(service.start(b.clone()).unwrap().id);
+                b.clone()
+            } else {
+                a.clone()
+            };
+            async move { Ok(fresh) }
+        })
+        .await;
+    let added_id = lock(&added_id).clone().expect("tâche ajoutée");
+    let mut ids: Vec<String> = ctx.service.list().into_iter().map(|t| t.id).collect();
+    ids.sort();
+    let mut expected = vec![TASK_ID.to_string(), added_id.clone()];
+    expected.sort();
+    assert_eq!(ids, expected, "doublons écartés");
+    drop(hold);
+    ctx.assert_single_runs(&[TASK_ID, &added_id]).await;
+    assert_eq!(ctx.endings(DUP_A) + ctx.endings(RESTORED_B), 0);
+    assert_eq!(ctx.service.library_list().await.unwrap().len(), 2);
+    assert!(ctx.queue().is_empty(), "doublons retirés de la file");
+}
+
+/// Arrêt pendant la ré-résolution (future abandonnée) : rien n'est lancé ni réécrit, la file
+/// reste intacte ; la reprise suivante exécute la tâche une seule fois.
+#[tokio::test]
+async fn reprise_interrompue_pendant_la_re_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    let entry = local_pk(&dir.path().join("src"), 1);
+    write_queue_file(dir.path(), vec![queued(TASK_ID, &entry)]);
+    let ctx = Ctx::with_dir(dir, None, GRACE);
+
+    let interrupted = tokio::time::timeout(
+        Duration::from_millis(100),
+        ctx.service
+            .restore(|_, _| std::future::pending::<AppResult<StoryEntry>>()),
+    )
+    .await;
+    assert!(interrupted.is_err(), "restore interrompu");
+    assert!(ctx.service.list().is_empty());
+    assert!(ctx.events.all().is_empty());
+    let kept: Vec<String> = ctx.queue().into_iter().map(|q| q.id).collect();
+    assert_eq!(kept, [TASK_ID], "file intacte");
+
+    ctx.service
+        .restore(|_, _| {
+            let fresh = entry.clone();
+            async move { Ok(fresh) }
+        })
+        .await;
+    ctx.assert_single_runs(&[TASK_ID]).await;
+    assert!(ctx.queue().is_empty());
+}
+
+/// Défense de `run` : deux appels concurrents pour la même tâche n'en exécutent qu'un ; un appel
+/// après la fin est sans effet.
+#[tokio::test]
+async fn run_appele_deux_fois_n_execute_qu_une_fois() {
+    let ctx = Ctx::new(None);
+    let entry = local_pk(&ctx.dir.path().join("src"), 1);
+    lock(&ctx.service.0.tasks).push(Slot {
+        task: InstallTask {
+            id: TASK_ID.into(),
+            entry,
+            state: TaskState::Queued,
+            percent: None,
+            error: None,
+            created_at: 1,
+            pack: None,
+        },
+        cancel: watch::channel(false).0,
+        validator: Validator::default(),
+        pack: None,
+        replace_format: false,
+        started: false,
+    });
+    let service = ctx.service.clone();
+    tokio::join!(
+        service.clone().run(TASK_ID.into()),
+        service.clone().run(TASK_ID.into())
+    );
+    ctx.assert_single_runs(&[TASK_ID]).await;
+    let events = ctx.events.all().len();
+
+    service.run(TASK_ID.into()).await;
+    assert_eq!(
+        ctx.events.all().len(),
+        events,
+        "tâche terminée non relancée"
+    );
+    assert_eq!(ctx.task(TASK_ID).state, TaskState::Done);
+    assert_eq!(ctx.service.library_list().await.unwrap().len(), 1);
+}
+
 #[path = "podcast_tests.rs"]
 mod pack_tests;
 
