@@ -534,7 +534,8 @@ static story_entry_t *add_story_entry(const char *search_dir, const char *filena
         }
         for (int i = 0; dir[0] && i < g_story_count; i++) {
             if (g_stories[i].is_pk || strcmp(g_stories[i].path, dir) != 0) continue;
-            if (pk_extract_is_current(full, dir)) return NULL;
+            /* Dossier a jour ou dossier d'auteur : on garde le dossier */
+            if (pk_extract_state(full, dir) != PK_EXTRACT_STALE) return NULL;
             story_entry_t *old_e = &g_stories[i];
             if (old_e->thumbnail) lif_free(old_e->thumbnail);
             strncpy(old_e->path, full, sizeof(old_e->path) - 1);
@@ -672,11 +673,18 @@ static void scan_for_stories(const char *search_dir)
 static char g_pk_extract_dir[1024] = "";
 
 /* Extrait un .plain.pk dans out_dir si le dossier est absent, perime
-   (.pk modifie depuis) ou issu d'une extraction interrompue.
+   (.pk modifie depuis) ou issu d'une extraction interrompue. Un dossier
+   d'auteur (main.lua, aucun temoin) n'est jamais ecrase.
    Partage par la ligne de commande et le navigateur d'histoires. */
 static void extract_pk_if_needed(const char *pk_path, const char *out_dir)
 {
-    if (pk_extract_is_current(pk_path, out_dir)) return;
+    int state = pk_extract_state(pk_path, out_dir);
+    if (state == PK_EXTRACT_CURRENT) return;
+    if (state == PK_EXTRACT_AUTHOR) {
+        fprintf(stderr, "%s : dossier d'auteur (sans temoin d'extraction), "
+                        "joue tel quel, %s ignore\n", out_dir, pk_path);
+        return;
+    }
     if (is_story_dir(out_dir)) {
         fprintf(stderr, "%s perime ou incomplet : nouvelle extraction\n", out_dir);
     }
