@@ -47,6 +47,9 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ". -> target"
+          # La clé automatique ne contient pas le nom du workflow : sans cette clé, le job `crate` de chaque
+          # workflow partagerait le même cache.
+          key: studio2lunii
 
       - name: rustfmt
         run: cargo fmt -p studio2lunii --check
