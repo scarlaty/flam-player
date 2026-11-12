@@ -1107,7 +1107,11 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
   leur validateur HTTP). Au démarrage, le fichier est relu comme une donnée non fiable : une tâche
   dont l'identifiant n'est pas un UUID canonique est ignorée, et l'entrée est **ré-résolue depuis
   sa source** (`source_id`, `entry_id` : cache du catalogue, ou analyse récursive du dossier)
-  au lieu d'être reprise du fichier ; introuvable, la tâche est abandonnée (journal). Les
+  au lieu d'être reprise du fichier ; introuvable, la tâche est abandonnée (journal). Une tâche
+  relue dont l'`uuid` a déjà une tâche connue, quel que soit son état (demandée pendant la
+  ré-résolution, même terminée ou annulée, ou doublon du fichier), est écartée, et seules les
+  tâches relues sont lancées : une exécution par tâche, et la demande la plus récente l'emporte
+  (#569). Les
   téléchargements reprennent si le lien et la version n'ont pas changé. Tout chemin dérivé
   (`.staging/<tâche>.plain.pk`, `archives/<uuid>-<version>.<ext>`) est vérifié directement sous
   son dossier. Une tâche annulée (y compris en attente du créneau de conversion) supprime son

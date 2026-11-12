@@ -441,6 +441,10 @@ struct Slot {
     pack: Option<PackJob>,
     /// Remplacement confirmé d'une installation de l'autre format (Q10).
     replace_format: bool,
+    /// `run` a pris la tâche en charge (#569) : posé sous le verrou `tasks`, il garantit une
+    /// seule exécution par tâche. Interne : ni persisté, ni exposé (l'état visible reste
+    /// `queued` jusqu'au premier événement du pipeline).
+    started: bool,
 }
 
 /// Paramètres du service (injectés pour les tests).
@@ -559,6 +563,9 @@ impl InstallService {
     /// pas un UUID canonique est ignorée, et l'entrée n'est **pas** reprise du fichier : elle
     /// est ré-résolue par `lookup(source_id, entry_id)` (cache du catalogue, scan du dossier).
     /// Une entrée introuvable ou invalide abandonne la tâche (journal, pas de reprise).
+    /// Une tâche relue dont l'`uuid` a déjà une tâche connue (quel que soit son état) est
+    /// écartée, et seules les tâches relues sont lancées (#569) : une exécution par tâche, et
+    /// une tâche demandée pendant la reprise l'emporte toujours sur la tâche relue.
     pub async fn restore<F, Fut>(&self, lookup: F)
     where
         F: Fn(String, String) -> Fut,
@@ -605,10 +612,23 @@ impl InstallService {
             }
         }
         let mut restored = Vec::new();
-        let (ids, snap): (Vec<String>, QueueSnapshot) = {
+        let snap = {
             let mut tasks = lock(&self.0.tasks);
             for (q, entry) in accepted {
                 if tasks.iter().any(|s| s.task.id == q.id) {
+                    continue;
+                }
+                // Une tâche par `uuid` (#569) : une tâche connue de même `uuid` (créée pendant la
+                // ré-résolution, ou doublon du fichier) l'emporte **quel que soit son état** ;
+                // la tâche restaurée est écartée (retirée de la file à la réécriture). Une tâche
+                // déjà terminée compte aussi : relancer la relue réinstallerait l'ancien choix
+                // (format, version) par-dessus le nouveau, ou malgré une annulation.
+                if tasks.iter().any(|s| s.task.entry.uuid == entry.uuid) {
+                    tracing::warn!(
+                        "tâche d'installation {} écartée : {} déjà demandée dans cette session",
+                        q.id,
+                        entry.uuid
+                    );
                     continue;
                 }
                 restored.push(q.id.clone());
@@ -641,15 +661,17 @@ impl InstallService {
                     // une archive devenue d'une autre nature depuis la confirmation la perd.
                     replace_format: q.replace_format
                         && StoryFormat::of_kind(entry_kind) == StoryFormat::of_kind(q.entry.kind),
+                    started: false,
                 });
             }
-            let snap = self.snapshot(&tasks);
-            (tasks.iter().map(|s| s.task.id.clone()).collect(), snap)
+            self.snapshot(&tasks)
         };
         self.write_queue(snap).await;
         self.sweep_workdirs().await;
-        self.sweep_staging(restored).await;
-        for id in ids {
+        self.sweep_staging(restored.clone()).await;
+        // Seules les tâches restaurées ici : celles créées entre-temps (`enqueue`) sont déjà
+        // lancées (#569).
+        for id in restored {
             self.spawn(id);
         }
     }
@@ -722,6 +744,7 @@ impl InstallService {
                 validator: Validator::default(),
                 pack,
                 replace_format,
+                started: false,
             });
             let snap = self.snapshot(&tasks);
             (task, snap)
@@ -898,18 +921,29 @@ impl InstallService {
         self.write_queue_detached(snap);
     }
 
+    /// Déroule la tâche `id`. Une seule exécution par tâche (#569) : sous le verrou `tasks`,
+    /// seule une tâche `queued` pas encore prise en charge démarre, et elle est marquée prise en
+    /// charge dans la même section critique ; tout autre appel est sans effet.
     async fn run(self, id: String) {
         let Some((entry, mut cancel, validator, pack, replace_format)) = lock(&self.0.tasks)
-            .iter()
+            .iter_mut()
             .find(|s| s.task.id == id)
-            .map(|s| {
-                (
+            .and_then(|s| {
+                if s.started || s.task.state != TaskState::Queued {
+                    tracing::debug!(
+                        "tâche {id} déjà prise en charge ({:?}) : exécution en double ignorée",
+                        s.task.state
+                    );
+                    return None;
+                }
+                s.started = true;
+                Some((
                     s.task.entry.clone(),
                     s.cancel.subscribe(),
                     s.validator.clone(),
                     s.pack.clone(),
                     s.replace_format,
-                )
+                ))
             })
         else {
             return;
