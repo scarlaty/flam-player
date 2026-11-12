@@ -1509,16 +1509,20 @@ mod tests {
     /// Le faux player est l'exemple `fake_player`, construit par `cargo test`.
     fn fake_player() -> PathBuf {
         let exe = std::env::current_exe().unwrap();
+        let name = format!("fake_player{}", std::env::consts::EXE_SUFFIX);
+        // Le binaire de test est dans `deps/` (disposition historique) ou dans `build/<crate>/<hash>/out/`
+        // (disposition de Rust 1.100) : l'exemple est dans `examples/` du dossier de profil, que l'on
+        // trouve en remontant les ancêtres.
         let path = exe
-            .parent()
-            .and_then(Path::parent)
-            .unwrap()
-            .join("examples")
-            .join(format!("fake_player{}", std::env::consts::EXE_SUFFIX));
+            .ancestors()
+            .skip(1)
+            .map(|dir| dir.join("examples").join(&name))
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| exe.clone());
         assert!(
             path.is_file(),
-            "faux player absent ({}) : lancer `cargo test` sans filtre de cible",
-            path.display()
+            "faux player absent (binaire de test : {}) : lancer `cargo test` sans filtre de cible",
+            exe.display()
         );
         path
     }
