@@ -795,7 +795,10 @@ mod tests {
         assert!(adopt_legacy_cache(dir.path()).unwrap());
         assert!(adopt_legacy_cache(dir.path()).unwrap(), "idempotente");
         assert!(is_owned(&dir.path().join("library")));
-        assert!(!is_owned(&dir.path().join("archives")), "seul library est marqué");
+        assert!(
+            !is_owned(&dir.path().join("archives")),
+            "seul library est marqué"
+        );
         assert!(dir.path().join("library/abc-1.plain.pk").is_file());
         assert_eq!(foreign_entries(dir.path()), ["archives"]);
     }

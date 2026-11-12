@@ -1025,7 +1025,10 @@ mod tests {
             .unwrap();
         assert_eq!(saved.cache_dir, Some(old.display().to_string()));
         assert!(crate::cache::is_owned(&old.join("library")));
-        assert!(!crate::cache::is_owned(&old.join("podcasts")), "seul library est marqué");
+        assert!(
+            !crate::cache::is_owned(&old.join("podcasts")),
+            "seul library est marqué"
+        );
         assert!(old.join("podcasts/src/feed.xml").is_file());
         assert!(
             old.join("library/abc-1.plain.pk").is_file(),
