@@ -197,11 +197,21 @@ fn migrate_markers_with(witness: &Path, roots: &[PathBuf], fault: Fault) -> io::
     for root in roots {
         for name in APP_CACHE_SUBDIRS {
             let dir = root.join(name);
-            if is_real_dir(&dir) && !is_owned(&dir) {
-                fault("marker")?;
-                fs::write(dir.join(MARKER), b"")?;
-                marked += 1;
+            if !is_real_dir(&dir) || is_owned(&dir) {
+                continue;
             }
+            if fs::symlink_metadata(dir.join(MARKER)).is_ok() {
+                // Lien ou dossier à la place du marqueur : laissé tel quel, sans marquer.
+                tracing::warn!("cache : marqueur de « {name} » inattendu, non migré");
+                continue;
+            }
+            fault("marker")?;
+            // `create_new` : n'ouvre jamais un élément existant (ni lien, ni fichier).
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(dir.join(MARKER))?;
+            marked += 1;
         }
     }
     fault("witness")?;
@@ -551,6 +561,54 @@ mod tests {
             assert!(names_in(dir.path()).is_empty(), "{step}");
             assert!(is_owned(&ensure_subdir(dir.path(), "library").unwrap()));
         }
+    }
+
+    #[test]
+    fn creation_concurrente_garde_le_dossier_d_un_tiers_sans_le_marquer() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        // Un tiers crée `library/` avec des données entre la vérification et le renommage.
+        let race = |step: &'static str| {
+            if step == "rename" {
+                write(&root.join("library/perso.txt"), 3);
+            }
+            Ok(())
+        };
+        assert_eq!(
+            ensure_subdir_with(&root, "library", &race).unwrap(),
+            root.join("library")
+        );
+        assert!(root.join("library/perso.txt").is_file());
+        assert!(!is_owned(&root.join("library")));
+        assert_eq!(names_in(&root), ["library"], "aucun temporaire ne reste");
+    }
+
+    #[test]
+    fn le_balayage_des_dossiers_de_travail_garde_le_marqueur() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_subdirs(dir.path());
+        write(&dir.path().join("podcast-work/orpheline/x"), 1);
+        // Tous les noms lus sont déclarés orphelins : seul le marqueur doit survivre.
+        crate::install::podcast::sweep_workdirs(dir.path(), &|names| names);
+        assert!(is_owned(&dir.path().join("podcast-work")));
+        assert_eq!(names_in(&dir.path().join("podcast-work")), [MARKER]);
+    }
+
+    #[test]
+    fn la_migration_saute_un_marqueur_anormal_sans_bloquer() {
+        let config = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let witness = config.path().join(MIGRATION_WITNESS);
+        // `.flam-launcher` est un dossier dans `archives/` : ni écrit, ni bloquant.
+        write(&cache.path().join("archives").join(MARKER).join("x"), 1);
+        write(&cache.path().join("library/h"), 1);
+        let roots = [cache.path().to_path_buf()];
+        assert_eq!(
+            migrate_markers(&witness, &roots).unwrap(),
+            Migration::Done { marked: 1 }
+        );
+        assert!(!is_owned(&cache.path().join("archives")));
+        assert!(is_owned(&cache.path().join("library")));
     }
 
     #[test]

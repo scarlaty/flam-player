@@ -248,6 +248,8 @@ pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
         let (resolved, _) = settings::resolve(&saved, &env);
         let cache_root = PathBuf::from(resolved.cache_dir);
         std::fs::create_dir_all(&cache_root)?;
+        // `archives/` et `podcast-work/` créés marqués avant usage (#570).
+        crate::cache::ensure_subdirs(&cache_root);
         Ok(Toolchain {
             cache_root,
             rust_converter: detect_rust_converter(&env),

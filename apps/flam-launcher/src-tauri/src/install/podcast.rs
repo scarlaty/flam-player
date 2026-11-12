@@ -412,6 +412,8 @@ pub fn sweep_workdirs(cache_root: &Path, orphans: &dyn Fn(Vec<String>) -> Vec<St
     let names: Vec<String> = entries
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
+        // Le marqueur d'appartenance du sous-dossier n'est jamais un orphelin (#570).
+        .filter(|name| name != crate::cache::MARKER)
         .collect();
     for name in orphans(names) {
         let Ok(path) = child_of(&work, &name) else {
