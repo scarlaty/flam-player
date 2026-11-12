@@ -62,3 +62,5 @@ apps/flam-launcher/src-tauri/gen/
 !apps/flam-launcher/scripts/screenshots.mjs
 # Sorties de vitest (rapport JSON local)
 apps/flam-launcher/.vitest/
+# Sorties de l'outil Playwright MCP (captures, journaux)
+.playwright-mcp/

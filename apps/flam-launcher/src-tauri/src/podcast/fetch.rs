@@ -234,10 +234,9 @@ impl Drop for Workdir {
         if self.armed {
             let path = std::mem::take(&mut self.path);
             // Suppression hors du thread appelant (souvent un thread asynchrone) si possible.
-            // TODO(#217) : à l'arrêt du runtime cette tâche peut ne jamais s'exécuter, et un
-            // arrêt brutal ne passe pas ici : le dossier `podcast-*` reste orphelin. Le
-            // nettoyage au démarrage de #217 (N10 a) doit supprimer ces dossiers ; à vérifier
-            // dans #217.
+            // À l'arrêt du runtime cette tâche peut ne jamais s'exécuter, et un arrêt brutal ne
+            // passe pas ici : le dossier reste orphelin. Il est supprimé au démarrage suivant
+            // (`install::podcast::sweep_workdirs`).
             match tokio::runtime::Handle::try_current() {
                 Ok(handle) => {
                     drop(handle.spawn_blocking(move || {

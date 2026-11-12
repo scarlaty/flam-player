@@ -10,6 +10,8 @@ name: launcher
 # de build + le scénario) sont conditionnés à l'étape « Empaquetage modifié ? » : ils tournent si la
 # PR touche l'empaquetage (liste ci-dessous) ou porte le label `ci-installeur`. Poser ce label
 # relance la CI (type `labeled`) ; les autres labels ne l'annulent pas (voir `concurrency`).
+# Un autre label crée quand même un run dont les jobs sont sautés (affichage seulement) : GitHub n'offre
+# pas de filtre par label sur `pull_request`, et retirer `labeled` supprimerait le déclencheur documenté.
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
@@ -59,6 +61,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # La clé de cache porte la version de la distribution du runner (`ImageOS`, ex. ubuntu24),
       # donc la génération de la chaîne MinGW-w64 : le binaire n'est pas reproductible d'une
@@ -108,6 +112,7 @@ jobs:
           # Deux commits : sur une PR, HEAD est la fusion (base, PR) et HEAD^1 la tête de la base ;
           # `git diff HEAD^1 HEAD` donne exactement ce que la PR apporte (étape « Empaquetage modifié ? »).
           fetch-depth: 2
+          persist-credentials: false
 
       # Faut-il construire N-1 et rejouer le test de mise à jour ? Oui sur tout événement autre que
       # `pull_request` (push sur main) ; sur une PR, oui si le label `ci-installeur` est posé ou si le
@@ -205,7 +210,7 @@ jobs:
 
       - name: Clippy
         working-directory: apps/flam-launcher/src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       # Les tests de pack (`install::tests::pack_tests`) lancent le faux convertisseur avec le Python
       # du PATH : sans cette exigence ils se sautent en silence quand il est absent (#426).
@@ -213,7 +218,7 @@ jobs:
         working-directory: apps/flam-launcher/src-tauri
         env:
           FLAM_REQUIRE_PATH_PYTHON: '1'
-        run: cargo test
+        run: cargo test --locked
 
       # Convertisseur livré : le seul binaire Rust, sans Python ni Pillow (#138).
       - name: Convertisseur embarqué (telmi2flam.exe, sans Python)

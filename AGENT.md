@@ -68,6 +68,9 @@ Etapes, recapitulatif en fin de sortie (`RESULTAT : OK` si tout passe) :
 Variables : `FLAM_BUILD_DIR` (dossier de build, defaut `build\`), `FLAM_PYTHON` (python),
 `FLAM_LUA` (Lua 5.4 autonome pour verifier les `nodes.lua` generes). `test_run.bat` fixe
 `FLAM_SCREENSHOT_AUTO_MS=0` (pas de capture auto pendant les tests).
+`FLAM_NO_SKIP=1` (CI, pose par `.github/workflows/player.yml`) : une etape sautee (SKIP, y compris
+l'incrustation de l'etape 6) fait echouer `test_run.bat` au lieu de laisser `RESULTAT : OK` ; sans
+la variable, le comportement local est inchange.
 Usage direct : `flam-test.exe [--timeout sec] test1.lua [test2.lua ...]` (60 s par defaut).
 Un fichier sans aucune assertion, ou dont le chargement/`setup()` echoue, compte en erreur.
 

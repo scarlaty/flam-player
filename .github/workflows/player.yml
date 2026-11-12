@@ -62,6 +62,9 @@ jobs:
       SDL_VIDEODRIVER: dummy
       SDL_AUDIODRIVER: dummy
       SDL_RENDER_DRIVER: software
+      # Un SKIP des etapes 3, 5 ou 6 de test_run.bat (python, telmi2flam, flam-player ou D3D11 absents)
+      # est un echec en CI, pas un OK.
+      FLAM_NO_SKIP: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
