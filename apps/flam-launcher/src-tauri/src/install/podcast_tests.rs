@@ -901,7 +901,7 @@ impl PackBackend for LocalPacks {
     ) -> BoxFuture<'a, AppResult<Vec<AppResult<u64>>>> {
         Box::pin(async move {
             Ok(
-                crate::podcast::audio::convert_all(&self.ffmpeg, items, cancel)
+                crate::podcast::audio::convert_all(&self.ffmpeg, items, MAX_AUDIO_BYTES, cancel)
                     .await
                     .into_iter()
                     .map(|r| r.map(|c| c.output_bytes))

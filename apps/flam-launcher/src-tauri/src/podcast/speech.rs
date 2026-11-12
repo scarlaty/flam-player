@@ -64,6 +64,9 @@ pub const MP3_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_WAV_BYTES: usize = 8 * 1024 * 1024;
 /// Débit du MP3 de titre (mono).
 const MP3_KBPS: u32 = 64;
+/// Taille maximale du MP3 d'un titre (15 s à 64 kbit/s font environ 120 Kio) : bornée sur le
+/// disque pendant l'encodage (`-fs`) et contrôlée ensuite (#571).
+const MAX_MP3_BYTES: u64 = 1024 * 1024;
 
 /// Voix installée sur le poste.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -434,6 +437,7 @@ fn mp3_args(wav: &Path, mp3: &Path) -> Vec<OsString> {
         .map(OsString::from),
     );
     args.push(format!("{MP3_KBPS}k").into());
+    args.extend(["-fs".into(), (MAX_MP3_BYTES + 1).to_string().into()]);
     args.extend(["-f", "mp3"].map(OsString::from));
     args.push(file_arg(mp3));
     args
@@ -507,6 +511,9 @@ async fn finish_mp3(
     let size = tokio::fs::metadata(&scratch.mp3).await?.len();
     if size == 0 {
         return Err(SpeechError::Failed("MP3 vide".into()).into());
+    }
+    if size > MAX_MP3_BYTES {
+        return Err(SpeechError::Failed("MP3 trop volumineux".into()).into());
     }
     if *cancel.borrow() {
         return Err(AppError::Cancelled);
