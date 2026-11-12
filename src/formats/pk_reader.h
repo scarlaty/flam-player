@@ -55,9 +55,6 @@ int pk_extract_all_ex(const char *pk_path, const char *out_dir, int *complete);
  */
 int pk_extract_state(const char *pk_path, const char *out_dir);
 
-/** 1 si pk_extract_state() rend PK_EXTRACT_CURRENT, 0 sinon. */
-int pk_extract_is_current(const char *pk_path, const char *out_dir);
-
 /**
  * Extrait pk_path dans out_dir seulement si l'etat est PK_EXTRACT_STALE.
  * Pose .extracting au debut, le remplace par .extracted apres une

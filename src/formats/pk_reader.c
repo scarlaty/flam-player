@@ -396,15 +396,9 @@ int pk_extract_state(const char *pk_path, const char *out_dir)
     char got[64];
     size_t n = fread(got, 1, sizeof(got) - 1, f);
     fclose(f);
-    got[n] = ' ';
-    while (n > 0 && (got[n - 1] == '
-' || got[n - 1] == '')) got[--n] = ' ';
+    got[n] = '\0';
+    while (n > 0 && (got[n - 1] == '\n' || got[n - 1] == '\r')) got[--n] = '\0';
     return strcmp(got, want) == 0 ? PK_EXTRACT_CURRENT : PK_EXTRACT_STALE;
-}
-
-int pk_extract_is_current(const char *pk_path, const char *out_dir)
-{
-    return pk_extract_state(pk_path, out_dir) == PK_EXTRACT_CURRENT;
 }
 
 int pk_extract_if_stale(const char *pk_path, const char *out_dir)
@@ -421,8 +415,7 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir)
     ensure_parent_dirs(busy);
     FILE *bf = fopen(busy, "wb");
     if (!bf) {
-        fprintf(stderr, "[PK] extraction annulee : %s non inscriptible
-", out_dir);
+        fprintf(stderr, "[PK] extraction annulee : %s non inscriptible\n", out_dir);
         return -1;
     }
     fclose(bf);
@@ -445,5 +438,6 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir)
             fclose(f);
         }
     }
+    remove(busy);   /* .extracted remplace .extracting */
     return n;
 }
