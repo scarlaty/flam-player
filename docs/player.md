@@ -225,11 +225,23 @@ Le navigateur détecte les dossiers `.plain` et les archives `.plain.pk`, affich
 les titres, et offre un bouton « Choisir un dossier... » pour changer le répertoire de recherche.
 Les archives `.plain.pk` sont extraites automatiquement au premier lancement, dans le dossier
 `.plain` voisin. Le player y pose des témoins : `.extracting` pendant l'extraction, remplacé par
-`.extracted` (taille et date du `.pk`) quand elle est complète. Il ré-extrait si `main.lua` manque,
-si `.extracting` reste (extraction interrompue) ou si `.extracted` ne correspond plus au `.pk`.
+`.extracted` (taille et date du `.pk`, puis la liste des fichiers extraits) quand elle est complète.
+L'extraction n'est complète que si l'archive va jusqu'à son répertoire central : une signature
+inconnue, une archive tronquée ou une entrée à data descriptor la laissent incomplète (trace
+`[PK]` sur stderr, `.extracting` conservé, donc nouvelle tentative au lancement suivant), de même
+qu'un `.extracted` qui n'a pas pu être écrit. Le player ré-extrait si `main.lua` manque, si
+`.extracting` reste (extraction interrompue) ou si `.extracted` ne correspond plus au `.pk`.
+Avant de ré-extraire un dossier qui porte un témoin, il supprime les fichiers de l'ancienne
+extraction (liste du témoin) pour qu'un fichier disparu du `.pk` ne survive pas ; les fichiers
+ajoutés à la main restent, rien n'est supprimé à travers un lien ou une jonction, et un dossier
+extrait par une version plus ancienne (témoin sans liste) n'est pas purgé.
 Un dossier `.plain` avec `main.lua` et sans aucun témoin est un dossier d'auteur : il est joué tel
-quel, jamais écrasé par le `.pk` voisin (trace sur stderr). Pour forcer une nouvelle extraction,
-supprimer le dossier.
+quel, jamais écrasé ni purgé par le `.pk` voisin (trace sur stderr, y compris quand le navigateur
+masque le `.pk`). Cas d'une extraction interrompue par une version plus ancienne, qui laissait un
+dossier partiel avec `main.lua` et sans témoin : il passe pour un dossier d'auteur ; supprimer le
+dossier pour forcer la ré-extraction. Si l'extraction est impossible, le dossier est joué tel quel
+(trace « extraction impossible »). Le navigateur affiche au plus 32 histoires ; les suivantes sont
+comptées (« N histoires non affichées », à l'écran et sur stderr).
 
 ### Contrôles clavier
 

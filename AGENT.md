@@ -202,12 +202,23 @@ Un dossier `nom.plain/` contenant :
 
 Le format `.plain.pk` est un ZIP store (compression=0) contenant les memes fichiers.
 Le player extrait automatiquement le `.pk` dans un dossier `.plain` adjacent. Temoins dans ce
-dossier : `.extracting` pose au debut, remplace par `.extracted` (taille et date du `.pk`) a la fin.
-Re-extraction si `main.lua` manque, si `.extracting` reste, ou si `.extracted` differe du `.pk`.
+dossier : `.extracting` pose au debut (il liste les fichiers extraits), remplace par `.extracted`
+(taille et date du `.pk`, puis la liste des fichiers) a la fin, et retire seulement si `.extracted`
+a vraiment ete ecrit. Re-extraction si `main.lua` manque, si `.extracting` reste, ou si `.extracted`
+differe du `.pk`. L'extraction n'est complete que si le `.pk` va jusqu'au repertoire central
+(`0x02014b50`) ou a la fin d'archive (`0x06054b50`) : signature inconnue, archive tronquee ou
+entree a data descriptor (`flags & 0x0008`) = incomplete (trace `[PK]`, `.extracting` conserve).
+Avant de re-extraire un dossier qui porte un temoin, `pk_extract_if_stale` supprime les fichiers
+de l'ancienne extraction (liste du temoin) : jamais dans un dossier d'auteur, jamais a travers un
+lien ou une jonction, jamais hors du dossier ; un temoin sans liste (ancienne version) = pas de
+purge.
 `main.lua` present et aucun temoin = dossier d'auteur : joue tel quel, jamais ecrase (meme regle
 dans `add_story_entry` et sur les trois chemins : navigateur, clic, ligne de commande ;
-`pk_extract_state`, test `tests/e2e/e2e_pk_extract.py`). L'extraction refuse les chemins dangereux (`..`, absolus, `C:`,
-`\` ou `/` en tete) et les tailles incoherentes.
+`pk_extract_state`, test `tests/e2e/e2e_pk_extract.py`) ; la trace indique le remede (supprimer
+le dossier pour forcer la re-extraction). L'extraction refuse les chemins dangereux (`..`,
+absolus, `C:`, `\` ou `/` en tete), les noms de temoins et les tailles incoherentes. Le
+navigateur est limite a `MAX_STORIES` (32) histoires ; les autres sont comptees et signalees
+(stderr et liste a l'ecran).
 
 Pour une histoire TELMI, ne pas assembler a la main : `cargo build -p telmi2flam --release` puis
 `target\release\telmi2flam.exe histoire.zip -o histoire.plain.pk` puis `python tools/telmi2flam/validate.py histoire.plain.pk`.
