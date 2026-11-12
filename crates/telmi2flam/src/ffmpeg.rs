@@ -268,7 +268,9 @@ fn file_url(path: &Path) -> OsString {
     s
 }
 
-/// Arguments de ffmpeg (sans l'exécutable), identiques à Python.
+/// Arguments de ffmpeg (sans l'exécutable). Depuis #573, `-f mp3` est imposé **avant** `-i` (option
+/// d'entrée) : ffmpeg ne sonde plus le format d'un fichier venu d'une archive tierce et refuse tout
+/// ce qui n'est pas du MP3. Seul écart avec la liste de l'ancien convertisseur Python 1.1.0.
 pub fn ffmpeg_args(src: &Path, dst: &Path, kbps: u32) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "-nostdin",
@@ -278,6 +280,8 @@ pub fn ffmpeg_args(src: &Path, dst: &Path, kbps: u32) -> Vec<OsString> {
         "-y",
         "-protocol_whitelist",
         "file",
+        "-f",
+        "mp3",
         "-i",
     ]
     .iter()
@@ -785,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn arguments_identiques_a_python() {
+    fn arguments_ffmpeg() {
         let args = ffmpeg_args(Path::new("w/in.mp3"), Path::new("w/out.mp3"), 96);
         let got: Vec<String> = args
             .iter()
@@ -801,6 +805,8 @@ mod tests {
             "-y",
             "-protocol_whitelist",
             "file",
+            "-f",
+            "mp3",
             "-i",
             &src,
             "-map",
