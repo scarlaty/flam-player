@@ -239,8 +239,13 @@ Un dossier `.plain` avec `main.lua` et sans aucun témoin est un dossier d'auteu
 quel, jamais écrasé ni purgé par le `.pk` voisin (trace sur stderr, y compris quand le navigateur
 masque le `.pk`). Cas d'une extraction interrompue par une version plus ancienne, qui laissait un
 dossier partiel avec `main.lua` et sans témoin : il passe pour un dossier d'auteur ; supprimer le
-dossier pour forcer la ré-extraction. Si l'extraction est impossible, le dossier est joué tel quel
-(trace « extraction impossible »). Le navigateur affiche au plus 32 histoires ; les suivantes sont
+dossier pour forcer la ré-extraction. Pour adopter un dossier extrait comme dossier d'auteur,
+supprimer ses deux témoins (`.extracted` et `.extracting`). Si l'extraction est impossible (`.pk`
+supprimé, illisible, sans `main.lua` ou remplacé par un fichier qui n'est pas un ZIP), rien n'est
+lu ni supprimé dans le dossier : il est joué tel quel (trace « extraction impossible » ou
+« à jour, non extrait »). Un `.pk` ne peut ni écrire ni forger les témoins (noms `.extracted` /
+`.extracting` refusés sans tenir compte de la casse, des points et espaces finaux), et les
+composants `.` des noms d'entrée sont refusés comme `..`. Le navigateur affiche au plus 32 histoires ; les suivantes sont
 comptées (« N histoires non affichées », à l'écran et sur stderr).
 
 ### Contrôles clavier

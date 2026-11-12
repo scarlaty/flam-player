@@ -211,7 +211,11 @@ entree a data descriptor (`flags & 0x0008`) = incomplete (trace `[PK]`, `.extrac
 Avant de re-extraire un dossier qui porte un temoin, `pk_extract_if_stale` supprime les fichiers
 de l'ancienne extraction (liste du temoin) : jamais dans un dossier d'auteur, jamais a travers un
 lien ou une jonction, jamais hors du dossier ; un temoin sans liste (ancienne version) = pas de
-purge.
+purge. Avant toute ecriture ou purge, le `.pk` doit s'ouvrir et contenir `main.lua`, sinon
+`pk_extract_if_stale` rend -1 sans rien toucher ; `.pk` absent, le dossier extrait est « a jour ».
+Un `.pk` ne peut pas ecrire les temoins (dernier composant sans points ni espaces finaux, sans
+casse) et les composants `.` sont refuses comme `..`. Adopter un dossier extrait comme dossier
+d'auteur = supprimer `.extracted` et `.extracting`.
 `main.lua` present et aucun temoin = dossier d'auteur : joue tel quel, jamais ecrase (meme regle
 dans `add_story_entry` et sur les trois chemins : navigateur, clic, ligne de commande ;
 `pk_extract_state`, test `tests/e2e/e2e_pk_extract.py`) ; la trace indique le remede (supprimer

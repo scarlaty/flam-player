@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -185,6 +186,7 @@ int pk_name_is_safe(const char *name)
             size_t len = (size_t)(p - comp);
             if (len == 0 && c != '\0') return 0;              /* "a//b" */
             if (len == 2 && comp[0] == '.' && comp[1] == '.') return 0;
+            if (len == 1 && comp[0] == '.') return 0;         /* "./x", "a/./b" */
             if (c == '\0') break;
             comp = p + 1;
             continue;
@@ -250,20 +252,69 @@ int pk_extract_all(const char *pk_path, const char *out_dir)
 #define PK_STAMP_NAME ".extracted"
 #define PK_BUSY_NAME  ".extracting"
 
-/* Nom reserve aux temoins (un .pk ne doit pas pouvoir les ecrire) */
-static int pk_name_is_witness(const char *name)
+static int pk_ieq(const char *a, size_t alen, const char *b)
 {
-#ifdef _WIN32
-    return _stricmp(name, PK_STAMP_NAME) == 0 || _stricmp(name, PK_BUSY_NAME) == 0;
-#else
-    return strcmp(name, PK_STAMP_NAME) == 0 || strcmp(name, PK_BUSY_NAME) == 0;
-#endif
+    if (alen != strlen(b)) return 0;
+    for (size_t i = 0; i < alen; i++) {
+        if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) return 0;
+    }
+    return 1;
 }
 
-/* Extraction ; si manifest != NULL, chaque fichier ecrit y est ajoute
-   (un nom par ligne, '/' comme separateur) et vide sur disque aussitot. */
+/* Nom reserve aux temoins (un .pk ne doit pas pouvoir les ecrire ni les
+   forger). Dernier composant, prive de ses points et espaces finaux (que
+   Windows retire), compare sans tenir compte de la casse, sur toutes les
+   plateformes : ".extracted.", ".EXTRACTED ", "sub/.extracting"... */
+static int pk_name_is_witness(const char *name)
+{
+    const char *last = name;
+    for (const char *p = name; *p; p++) {
+        if (*p == '/' || *p == '\\') last = p + 1;
+    }
+    size_t len = strlen(last);
+    while (len > 0 && (last[len - 1] == '.' || last[len - 1] == ' ')) len--;
+    return pk_ieq(last, len, PK_STAMP_NAME) || pk_ieq(last, len, PK_BUSY_NAME);
+}
+
+#define PK_MANIFEST_MAX (8u * 1024u * 1024u)
+
+/* Liste des fichiers extraits : ecrite au fil de l'eau dans .extracting
+   (pour reprendre une purge apres interruption) ET gardee en memoire (c'est
+   elle, et non une relecture du disque, qui alimente .extracted). */
+typedef struct {
+    FILE *f;
+    char *buf;
+    size_t len, cap;
+    int overflow;     /* liste trop grosse : non conservee en memoire */
+} pk_list_t;
+
+static void pk_list_add(pk_list_t *l, const char *name)
+{
+    if (l->f) {
+        fprintf(l->f, "%s\n", name);
+        fflush(l->f);
+    }
+    if (l->overflow) return;
+    size_t n = strlen(name) + 1;
+    if (l->len + n + 1 > PK_MANIFEST_MAX) { l->overflow = 1; return; }
+    if (l->len + n + 1 > l->cap) {
+        size_t cap = l->cap ? l->cap * 2 : 4096;
+        while (cap < l->len + n + 1) cap *= 2;
+        char *nb = (char *)realloc(l->buf, cap);
+        if (!nb) { l->overflow = 1; return; }
+        l->buf = nb;
+        l->cap = cap;
+    }
+    memcpy(l->buf + l->len, name, n - 1);
+    l->buf[l->len + n - 1] = '\n';
+    l->len += n;
+    l->buf[l->len] = '\0';
+}
+
+/* Extraction ; si list != NULL, chaque fichier ecrit y est ajoute
+   (un nom par ligne, '/' comme separateur). */
 static int pk_extract_core(const char *pk_path, const char *out_dir,
-                           int *complete, FILE *manifest)
+                           int *complete, pk_list_t *list)
 {
     if (complete) *complete = 0;
     if (!pk_path || !out_dir || !out_dir[0]) return -1;
@@ -387,10 +438,9 @@ static int pk_extract_core(const char *pk_path, const char *out_dir,
                 break;
             }
             count++;
-            if (manifest) {
+            if (list) {
                 /* nom relatif normalise ('/'), apres "out_dir/" */
-                fprintf(manifest, "%s\n", out_path + strlen(out_dir) + 1);
-                fflush(manifest);
+                pk_list_add(list, out_path + strlen(out_dir) + 1);
             }
         } else {
             failed = 1;
@@ -449,8 +499,10 @@ int pk_extract_state(const char *pk_path, const char *out_dir)
 
     char want[64];
     if (pk_stamp(pk_path, want, sizeof(want)) != 0) {
+        /* .pk absent ou illisible : l'extraction existante reste jouable,
+           rien a re-extraire (et surtout rien a purger) */
         fclose(f);
-        return PK_EXTRACT_STALE;
+        return PK_EXTRACT_CURRENT;
     }
     /* Premiere ligne seulement : la suite est la liste des fichiers extraits */
     char got[64];
@@ -465,8 +517,6 @@ int pk_extract_state(const char *pk_path, const char *out_dir)
 /* ------------------------------------------------------------------ */
 /* Purge de l'ancienne extraction                                       */
 /* ------------------------------------------------------------------ */
-
-#define PK_MANIFEST_MAX (8u * 1024u * 1024u)
 
 /* Contenu d'un petit fichier texte (malloc, NUL final), NULL si absent. */
 static char *pk_read_text(const char *dir, const char *name)
@@ -521,6 +571,9 @@ static void pk_purge_one(const char *out_dir, const char *name)
     char path[1280];
     int n = snprintf(path, sizeof(path), "%s/%s", out_dir, name);
     if (n < 0 || (size_t)n >= sizeof(path)) return;
+    for (char *q = path; *q; q++) {
+        if (*q == '\\') *q = '/';
+    }
 
     /* Chaque composant intermediaire doit etre un dossier ordinaire */
     size_t base = strlen(out_dir);
@@ -533,6 +586,7 @@ static void pk_purge_one(const char *out_dir, const char *name)
         if (k != 2) return;
     }
     if (pk_classify(path) != 1) return;
+    if (!pk_path_is_inside(out_dir, path)) return;   /* meme regle qu'a l'extraction */
     if (remove(path) != 0) return;
 
     /* Retirer les dossiers devenus vides (rmdir echoue s'ils ne le sont pas) */
@@ -565,6 +619,16 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir)
 {
     if (!pk_path || !out_dir || !out_dir[0]) return -1;
     if (pk_extract_state(pk_path, out_dir) != PK_EXTRACT_STALE) return 0;
+
+    /* Avant toute lecture ou ecriture des temoins et avant la purge : le .pk
+       doit s'ouvrir et contenir main.lua. Sinon rien n'est touche (le dossier
+       existant reste jouable tel quel). */
+    char stamp[64];
+    if (pk_stamp(pk_path, stamp, sizeof(stamp)) != 0 || !pk_has_entry(pk_path, "main.lua")) {
+        fprintf(stderr, "[PK] %s illisible ou sans main.lua : %s laisse tel quel\n",
+                pk_path, out_dir);
+        return -1;
+    }
 
     char path[1024];
     char busy[1024];
@@ -612,10 +676,12 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir)
     }
 
     int complete = 0;
-    int n = pk_extract_core(pk_path, out_dir, &complete, bf);
+    pk_list_t list = { bf, NULL, 0, 0, 0 };
+    int n = pk_extract_core(pk_path, out_dir, &complete, &list);
     fclose(bf);
-    if (n <= 0) return -1;
+    if (n <= 0) { free(list.buf); return -1; }
     if (!complete) {
+        free(list.buf);
         fprintf(stderr, "[PK] extraction incomplete : %s\n", pk_path);
         return n;
     }
@@ -623,18 +689,14 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir)
     /* .extracted : empreinte puis liste des fichiers. .extracting n'est
        retire que si .extracted a vraiment ete ecrit. */
     int ok = 0;
-    char stamp[64];
-    char *list = pk_read_text(out_dir, PK_BUSY_NAME);
-    if (pk_stamp(pk_path, stamp, sizeof(stamp)) == 0) {
-        FILE *f = fopen(path, "wb");
-        if (f) {
-            int w = fprintf(f, "%s\n", stamp);
-            if (w >= 0 && list && fputs(list, f) < 0) w = -1;
-            if (fclose(f) == 0 && w >= 0) ok = 1;
-            else remove(path);
-        }
+    FILE *f = fopen(path, "wb");
+    if (f) {
+        int w = fprintf(f, "%s\n", stamp);
+        if (w >= 0 && list.buf && !list.overflow && fputs(list.buf, f) < 0) w = -1;
+        if (fclose(f) == 0 && w >= 0) ok = 1;
+        else remove(path);
     }
-    free(list);
+    free(list.buf);
     if (!ok) {
         fprintf(stderr, "[PK] temoin %s non ecrit dans %s : %s laisse en place, "
                         "extraction a refaire\n", PK_STAMP_NAME, out_dir, PK_BUSY_NAME);

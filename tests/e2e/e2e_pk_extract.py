@@ -17,7 +17,13 @@ flam-player est lance sur un .plain.pk (pilotes SDL dummy, --stdin-control) :
      extraction incomplete, pas de temoin .extracted, .extracting laisse ;
   9. re-extraction : un fichier disparu du .pk disparait du dossier extrait, un
      fichier ajoute a la main reste, rien n'est supprime a travers un lien ou
-     une jonction.
+     une jonction ;
+ 10. .pk supprime ou remplace par un fichier non ZIP apres extraction : le
+     dossier extrait reste intact et l'histoire est jouee ;
+ 11. temoins forges (noms . / casse / point ou espace final dans le .pk, liste
+     hostile dans .extracted) : rien n'est ecrit ni supprime hors du dossier ;
+     purge reprise depuis le .extracting d'une extraction interrompue.
+Code 77 aussi si la jonction / le lien de test ne peut pas etre cree.
 Code de sortie : 0 OK, 1 echec, 77 prerequis absents (flam-player).
 """
 import argparse
@@ -165,6 +171,7 @@ def main():
         print("[SKIP] e2e_pk_extract : %s introuvable" % exe)
         return SKIP
     tmp = tempfile.mkdtemp(prefix="flam-pkx-")
+    link_skipped = False
     try:
         # 1. dossier d'auteur
         root, pk, d = fresh(tmp, "auteur")
@@ -302,8 +309,88 @@ def main():
                 drop_link(d + "/sub")
         else:
             print("[SKIP] purge a travers un lien : creation du lien impossible")
+            link_skipped = True
+
+        # 10a. .pk supprime apres extraction : dossier intact, histoire jouee
+        root, pk, d = fresh(tmp, "pk-supprime", {"data/a.txt": "A"})
+        err = run_player(exe, pk, tmp, "Extracted")
+        check(os.path.isfile(d + "/.extracted"), ".pk supprime : extraction initiale", err)
+        os.remove(pk)
+        err = run_player(exe, pk, tmp, "a jour, non extrait")
+        check("Loading story" in err, ".pk supprime : l'histoire est jouee", err)
+        check(read(d + "/main.lua") == LUA % "PK" and read(d + "/data/a.txt") == "A",
+              ".pk supprime : dossier extrait intact", err)
+        check(os.path.isfile(d + "/.extracted"), ".pk supprime : temoin conserve", err)
+
+        # 10b. .pk remplace par un fichier non ZIP : dossier intact, histoire jouee
+        root, pk, d = fresh(tmp, "pk-non-zip", {"data/a.txt": "A"})
+        err = run_player(exe, pk, tmp, "Extracted")
+        with open(pk, "wb") as f:
+            f.write(b"ceci n'est pas une archive ZIP" * 7)
+        err = run_player(exe, pk, tmp, "extraction impossible")
+        check("illisible ou sans main.lua" in err, ".pk non ZIP : trace", err)
+        check("Loading story" in err, ".pk non ZIP : l'histoire est jouee", err)
+        check(read(d + "/main.lua") == LUA % "PK" and read(d + "/data/a.txt") == "A",
+              ".pk non ZIP : dossier extrait intact", err)
+        check(os.path.isfile(d + "/.extracted"), ".pk non ZIP : temoin conserve", err)
+
+        # 11a. noms de temoins forges et chemins hostiles dans le .pk
+        root, pk, d = fresh(tmp, "temoins-forges")
+        sentinel = os.path.join(root, "sentinelle.txt")
+        write(sentinel, "S")
+        hostile = ["./.extracting", ".extracted.", ".EXTRACTED ", "sub/.extracting",
+                   "sub/.Extracted...", "../sentinelle.txt", "../x", "C:/x", "/abs",
+                   "sub\\..\\..\\x", "./ok.txt", "a/./b.txt"]
+        with zipfile.ZipFile(pk, "w", zipfile.ZIP_STORED) as z:
+            z.writestr("main.lua", LUA % "PK")
+            z.writestr("keep.txt", "k")
+            for name in hostile:
+                z.writestr(zipfile.ZipInfo(name), "FORGE")
+        err = run_player(exe, pk, tmp, "Extracted")
+        check(read(sentinel) == "S", "temoins forges : sentinelle hors dossier intacte", err)
+        check(not os.path.exists(os.path.join(root, "x")), "temoins forges : pas de ../x", err)
+        check(not os.path.exists(d + "/ok.txt") and not os.path.exists(d + "/a"),
+              "temoins forges : composants '.' refuses", err)
+        check(os.path.isfile(d + "/.extracted") and not os.path.exists(d + "/.extracting"),
+              "temoins forges : temoins du player seuls", err)
+        stamp_lines = read(d + "/.extracted").split("\n")
+        check(stamp_lines[1:] == ["main.lua", "keep.txt", ""],
+              "temoins forges : liste = fichiers reellement extraits", err)
+        check(not os.path.exists(d + "/sub"), "temoins forges : aucun dossier sub", err)
+
+        # 11b. temoin hostile deja present : la purge ne sort pas du dossier
+        root, pk, d = fresh(tmp, "temoin-hostile")
+        sentinel = os.path.join(root, "sentinelle.txt")
+        sentinel2 = os.path.join(tmp, "sentinelle2.txt")
+        write(sentinel, "S")
+        write(sentinel2, "S2")
+        write(d + "/main.lua", LUA % "ANCIEN")
+        write(d + "/mine.txt", "a moi")
+        write(d + "/.extracted", "0 0\n../sentinelle.txt\nC:/x\n/abs\n"
+              + sentinel2 + "\nsub\\..\\..\\sentinelle.txt\n./mine.txt\nmain.lua\n")
+        err = run_player(exe, pk, tmp, "Extracted")
+        check(read(sentinel) == "S" and read(sentinel2) == "S2",
+              "temoin hostile : sentinelles hors dossier intactes", err)
+        check(read(d + "/mine.txt") == "a moi", "temoin hostile : './mine.txt' non suivi", err)
+        check(read(d + "/main.lua") == LUA % "PK", "temoin hostile : re-extraction", err)
+
+        # 11c. purge depuis le .extracting d'une extraction interrompue
+        root, pk, d = fresh(tmp, "interrompu-purge")
+        write(d + "/main.lua", LUA % "PARTIEL")
+        write(d + "/old.txt", "v1")
+        write(d + "/mine.txt", "a moi")
+        write(d + "/.extracting", "main.lua\nold.txt\n")
+        err = run_player(exe, pk, tmp, "Extracted")
+        check(read(d + "/main.lua") == LUA % "PK", "interrompu : re-extraction", err)
+        check(not os.path.exists(d + "/old.txt"), "interrompu : fichier de la liste purge", err)
+        check(read(d + "/mine.txt") == "a moi", "interrompu : fichier hors liste conserve", err)
+        check(os.path.isfile(d + "/.extracted") and not os.path.exists(d + "/.extracting"),
+              "interrompu : temoins apres reprise", err)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    if link_skipped:
+        print("e2e_pk_extract : OK, mais le test de lien n'a pas pu tourner (SKIP)")
+        return SKIP
     print("e2e_pk_extract : OK")
     return 0
 

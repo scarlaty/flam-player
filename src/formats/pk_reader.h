@@ -41,7 +41,8 @@ int pk_extract_all(const char *pk_path, const char *out_dir);
  * Fin normale = repertoire central (0x02014b50) ou fin d'archive (0x06054b50) ;
  * une signature inconnue, une archive tronquee ou une entree a data
  * descriptor (flags & 0x0008) rendent l'extraction incomplete.
- * Les entrees nommees .extracted / .extracting sont refusees (temoins).
+ * Les entrees dont le dernier composant (sans points ni espaces finaux, sans
+ * tenir compte de la casse) est .extracted / .extracting sont refusees (temoins).
  */
 int pk_extract_all_ex(const char *pk_path, const char *out_dir, int *complete);
 
@@ -67,6 +68,7 @@ int pk_extract_state(const char *pk_path, const char *out_dir);
  * extraits : avant de re-extraire un dossier qui porte un temoin, les fichiers
  * de l'ancienne extraction sont supprimes (jamais sans temoin, jamais a
  * travers un lien ou une jonction, jamais hors du dossier).
+ * Le .pk doit s'ouvrir et contenir main.lua, sinon -1 sans rien toucher.
  * @return 0 si rien a faire, nombre d'entrees extraites, ou -1 si erreur.
  */
 int pk_extract_if_stale(const char *pk_path, const char *out_dir);
@@ -74,7 +76,7 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir);
 /**
  * Verifie qu'un nom d'entree ZIP est un chemin relatif sur.
  * Refuse : nom vide, '/' ou '\' en tete, ':' (lecteur ou flux NTFS),
- * caracteres de controle, composant "..", composant vide ("a//b").
+ * caracteres de controle, composants "." et "..", composant vide ("a//b").
  * @return 1 si le nom est acceptable, 0 sinon.
  */
 int pk_name_is_safe(const char *name);
