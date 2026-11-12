@@ -433,6 +433,7 @@ typedef struct {
 
 static story_entry_t g_stories[MAX_STORIES];
 static int g_story_count = 0;
+static int g_story_hidden = 0;   /* histoires valides au-dela de MAX_STORIES */
 static int g_story_browser_active = 0;
 static char g_current_scan_dir[1024] = ".";
 
@@ -507,8 +508,6 @@ static void free_thumbnails(void)
 static story_entry_t *add_story_entry(const char *search_dir, const char *filename,
                                       int is_pk, const char *pk_dirname)
 {
-    if (g_story_count >= MAX_STORIES) return NULL;
-
     char full[1024];
     snprintf(full, sizeof(full), "%s/%s", search_dir, filename);
 
@@ -535,7 +534,13 @@ static story_entry_t *add_story_entry(const char *search_dir, const char *filena
         for (int i = 0; dir[0] && i < g_story_count; i++) {
             if (g_stories[i].is_pk || strcmp(g_stories[i].path, dir) != 0) continue;
             /* Dossier a jour ou dossier d'auteur : on garde le dossier */
-            if (pk_extract_state(full, dir) != PK_EXTRACT_STALE) return NULL;
+            int st = pk_extract_state(full, dir);
+            if (st == PK_EXTRACT_AUTHOR) {
+                fprintf(stderr, "%s : dossier d'auteur (sans temoin d'extraction) "
+                                "masque %s ; supprimer le dossier pour forcer "
+                                "la re-extraction\n", dir, full);
+            }
+            if (st != PK_EXTRACT_STALE) return NULL;
             story_entry_t *old_e = &g_stories[i];
             if (old_e->thumbnail) lif_free(old_e->thumbnail);
             strncpy(old_e->path, full, sizeof(old_e->path) - 1);
@@ -555,6 +560,13 @@ static story_entry_t *add_story_entry(const char *search_dir, const char *filena
            porter le meme titre (versions V1/V2, titre par defaut). Le seul
            vrai doublon (.pk + son dossier d'extraction) est traite ci-dessus
            par comparaison de chemins. */
+    }
+
+    if (g_story_count >= MAX_STORIES) {
+        g_story_hidden++;
+        fprintf(stderr, "Histoire non affichee (limite de %d atteinte) : %s\n",
+                MAX_STORIES, full);
+        return NULL;
     }
 
     story_entry_t *e = &g_stories[g_story_count];
@@ -661,7 +673,7 @@ static void scan_for_stories(const char *search_dir)
                     e->pk_wdir[0] = L'\0';
                 }
             }
-        } while (FindNextFileW(h, &fd) && g_story_count < MAX_STORIES);
+        } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
 #else
@@ -679,10 +691,14 @@ static char g_pk_extract_dir[1024] = "";
 static void extract_pk_if_needed(const char *pk_path, const char *out_dir)
 {
     int state = pk_extract_state(pk_path, out_dir);
-    if (state == PK_EXTRACT_CURRENT) return;
+    if (state == PK_EXTRACT_CURRENT) {
+        fprintf(stderr, "%s a jour, non extrait\n", out_dir);
+        return;
+    }
     if (state == PK_EXTRACT_AUTHOR) {
         fprintf(stderr, "%s : dossier d'auteur (sans temoin d'extraction), "
-                        "joue tel quel, %s ignore\n", out_dir, pk_path);
+                        "joue tel quel, %s ignore ; supprimer le dossier "
+                        "pour forcer la re-extraction\n", out_dir, pk_path);
         return;
     }
     if (is_story_dir(out_dir)) {
@@ -690,7 +706,11 @@ static void extract_pk_if_needed(const char *pk_path, const char *out_dir)
     }
     fprintf(stderr, "Extracting %s ...\n", pk_path);
     int n = pk_extract_if_stale(pk_path, out_dir);
-    fprintf(stderr, "Extracted %d files to %s\n", n, out_dir);
+    if (n < 0) {
+        fprintf(stderr, "%s : extraction impossible, dossier joue tel quel\n", out_dir);
+    } else {
+        fprintf(stderr, "Extracted %d files to %s\n", n, out_dir);
+    }
 }
 
 /* Callback when a story button is clicked */
@@ -894,7 +914,12 @@ static void create_story_browser(const char *scan_dir)
 
     free_thumbnails();
     g_story_count = 0;
+    g_story_hidden = 0;
     scan_for_stories(scan_dir);
+    if (g_story_hidden > 0) {
+        fprintf(stderr, "%d histoires non affichees (limite de %d)\n",
+                g_story_hidden, MAX_STORIES);
+    }
 
     if (g_header_title) {
         lv_label_set_text(g_header_title, "Flam Player");
@@ -934,6 +959,19 @@ static void create_story_browser(const char *scan_dir)
         lv_obj_t *btn = create_story_card(list, &g_stories[i]);
         lv_obj_add_event_cb(btn, story_btn_clicked, LV_EVENT_CLICKED,
                             (void *)(intptr_t)i);
+    }
+
+    if (g_story_hidden > 0) {
+        char more[96];
+        snprintf(more, sizeof(more), "%d histoire%s non affichee%s (limite de %d)",
+                 g_story_hidden, g_story_hidden > 1 ? "s" : "",
+                 g_story_hidden > 1 ? "s" : "", MAX_STORIES);
+        lv_obj_t *msg = lv_label_create(list);
+        lv_label_set_text(msg, more);
+        lv_obj_set_style_text_color(msg, lv_color_hex(0xFBBD2A), LV_PART_MAIN);
+        lv_obj_set_style_text_font(msg, &nunito_bold_12, LV_PART_MAIN);
+        lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_obj_set_width(msg, 280);
     }
 
     /* "Choisir un dossier..." button */

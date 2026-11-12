@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -23,6 +24,7 @@
 #include <windows.h> /* GetFileAttributesExA (mtime a 100 ns) */
 #else
 #include <limits.h>  /* PATH_MAX */
+#include <unistd.h>  /* rmdir */
 #endif
 
 /* ZIP local file header signature */
@@ -184,6 +186,7 @@ int pk_name_is_safe(const char *name)
             size_t len = (size_t)(p - comp);
             if (len == 0 && c != '\0') return 0;              /* "a//b" */
             if (len == 2 && comp[0] == '.' && comp[1] == '.') return 0;
+            if (len == 1 && comp[0] == '.') return 0;         /* "./x", "a/./b" */
             if (c == '\0') break;
             comp = p + 1;
             continue;
@@ -229,7 +232,89 @@ int pk_extract_all(const char *pk_path, const char *out_dir)
     return pk_extract_all_ex(pk_path, out_dir, NULL);
 }
 
-int pk_extract_all_ex(const char *pk_path, const char *out_dir, int *complete)
+/* Signatures ZIP marquant la fin normale de la suite d'entrees locales */
+#define ZIP_CENTRAL_SIG  0x02014b50   /* repertoire central */
+#define ZIP_END_SIG      0x06054b50   /* fin d'archive */
+#define ZIP_FLAG_DESCRIPTOR 0x0008    /* tailles apres les donnees (data descriptor) */
+
+/* ------------------------------------------------------------------ */
+/* Temoins d'extraction (poses par le player, absents d'un dossier      */
+/* ecrit a la main) :                                                   */
+/*  - <out_dir>/.extracting : extraction en cours ou interrompue ; il   */
+/*    liste (un nom par ligne) les fichiers deja extraits ;             */
+/*  - <out_dir>/.extracted  : "taille mtime" du .pk, puis la liste des  */
+/*    fichiers extraits ; ecrit seulement apres une extraction          */
+/*    complete (il remplace .extracting).                               */
+/* Un dossier avec main.lua et aucun temoin est un dossier d'auteur :   */
+/* il n'est jamais ecrase par le .pk voisin, ni purge.                  */
+/* ------------------------------------------------------------------ */
+
+#define PK_STAMP_NAME ".extracted"
+#define PK_BUSY_NAME  ".extracting"
+
+static int pk_ieq(const char *a, size_t alen, const char *b)
+{
+    if (alen != strlen(b)) return 0;
+    for (size_t i = 0; i < alen; i++) {
+        if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) return 0;
+    }
+    return 1;
+}
+
+/* Nom reserve aux temoins (un .pk ne doit pas pouvoir les ecrire ni les
+   forger). Dernier composant, prive de ses points et espaces finaux (que
+   Windows retire), compare sans tenir compte de la casse, sur toutes les
+   plateformes : ".extracted.", ".EXTRACTED ", "sub/.extracting"... */
+static int pk_name_is_witness(const char *name)
+{
+    const char *last = name;
+    for (const char *p = name; *p; p++) {
+        if (*p == '/' || *p == '\\') last = p + 1;
+    }
+    size_t len = strlen(last);
+    while (len > 0 && (last[len - 1] == '.' || last[len - 1] == ' ')) len--;
+    return pk_ieq(last, len, PK_STAMP_NAME) || pk_ieq(last, len, PK_BUSY_NAME);
+}
+
+#define PK_MANIFEST_MAX (8u * 1024u * 1024u)
+
+/* Liste des fichiers extraits : ecrite au fil de l'eau dans .extracting
+   (pour reprendre une purge apres interruption) ET gardee en memoire (c'est
+   elle, et non une relecture du disque, qui alimente .extracted). */
+typedef struct {
+    FILE *f;
+    char *buf;
+    size_t len, cap;
+    int overflow;     /* liste trop grosse : non conservee en memoire */
+} pk_list_t;
+
+static void pk_list_add(pk_list_t *l, const char *name)
+{
+    if (l->f) {
+        fprintf(l->f, "%s\n", name);
+        fflush(l->f);
+    }
+    if (l->overflow) return;
+    size_t n = strlen(name) + 1;
+    if (l->len + n + 1 > PK_MANIFEST_MAX) { l->overflow = 1; return; }
+    if (l->len + n + 1 > l->cap) {
+        size_t cap = l->cap ? l->cap * 2 : 4096;
+        while (cap < l->len + n + 1) cap *= 2;
+        char *nb = (char *)realloc(l->buf, cap);
+        if (!nb) { l->overflow = 1; return; }
+        l->buf = nb;
+        l->cap = cap;
+    }
+    memcpy(l->buf + l->len, name, n - 1);
+    l->buf[l->len + n - 1] = '\n';
+    l->len += n;
+    l->buf[l->len] = '\0';
+}
+
+/* Extraction ; si list != NULL, chaque fichier ecrit y est ajoute
+   (un nom par ligne, '/' comme separateur). */
+static int pk_extract_core(const char *pk_path, const char *out_dir,
+                           int *complete, pk_list_t *list)
 {
     if (complete) *complete = 0;
     if (!pk_path || !out_dir || !out_dir[0]) return -1;
@@ -242,16 +327,39 @@ int pk_extract_all_ex(const char *pk_path, const char *out_dir, int *complete)
 
     char name_buf[512];
     int count = 0;
-    int done = 0;      /* 1 : fin normale (repertoire central ou fin de fichier) */
+    int done = 0;      /* 1 : fin normale (repertoire central ou fin d'archive) */
     int failed = 0;    /* 1 : une entree valide n'a pas pu etre ecrite */
 
     while (1) {
         zip_local_header_t hdr;
-        if (ftell(f) == file_size) { done = 1; break; }   /* fin exacte */
-        if (fread(&hdr, sizeof(hdr), 1, f) != 1) break;   /* en-tete tronque */
-        if (hdr.signature != ZIP_LOCAL_SIG) { done = 1; break; }
+        uint32_t sig;
+        if (fread(&sig, sizeof(sig), 1, f) != 1) {
+            fprintf(stderr, "[PK] archive tronquee (pas de repertoire central) : %s\n",
+                    pk_path);
+            break;
+        }
+        if (sig == ZIP_CENTRAL_SIG || sig == ZIP_END_SIG) { done = 1; break; }
+        if (sig != ZIP_LOCAL_SIG) {
+            /* Signature inconnue : ce n'est pas une fin normale */
+            fprintf(stderr, "[PK] signature inconnue 0x%08lx : extraction incomplete (%s)\n",
+                    (unsigned long)sig, pk_path);
+            break;
+        }
+        hdr.signature = sig;
+        if (fread((char *)&hdr + sizeof(sig), sizeof(hdr) - sizeof(sig), 1, f) != 1) {
+            fprintf(stderr, "[PK] en-tete tronque : extraction incomplete (%s)\n", pk_path);
+            break;
+        }
 
         size_t name_len = hdr.name_len;
+        if (hdr.flags & ZIP_FLAG_DESCRIPTOR) {
+            /* Les tailles de l'en-tete ne sont pas fiables (data descriptor) :
+               impossible de delimiter l'entree, donc extraction incomplete */
+            fprintf(stderr, "[PK] entree a data descriptor non prise en charge : "
+                            "extraction incomplete (%s)\n", pk_path);
+            failed = 1;
+            break;
+        }
         if (name_len >= sizeof(name_buf)) {
             if (pk_skip(f, (uint64_t)name_len + hdr.extra_len + hdr.compressed_size,
                         file_size) != 0) break;
@@ -280,6 +388,11 @@ int pk_extract_all_ex(const char *pk_path, const char *out_dir, int *complete)
         /* Zip-slip : refuser les noms qui sortiraient du dossier cible */
         if (!pk_name_is_safe(name_buf)) {
             fprintf(stderr, "[PK] entree refusee (chemin dangereux) : '%s'\n", name_buf);
+            if (pk_skip(f, hdr.compressed_size, file_size) != 0) break;
+            continue;
+        }
+        if (pk_name_is_witness(name_buf)) {
+            fprintf(stderr, "[PK] entree refusee (nom reserve) : '%s'\n", name_buf);
             if (pk_skip(f, hdr.compressed_size, file_size) != 0) break;
             continue;
         }
@@ -325,6 +438,10 @@ int pk_extract_all_ex(const char *pk_path, const char *out_dir, int *complete)
                 break;
             }
             count++;
+            if (list) {
+                /* nom relatif normalise ('/'), apres "out_dir/" */
+                pk_list_add(list, out_path + strlen(out_dir) + 1);
+            }
         } else {
             failed = 1;
             if (pk_skip(f, hdr.compressed_size, file_size) != 0) break;
@@ -336,18 +453,10 @@ int pk_extract_all_ex(const char *pk_path, const char *out_dir, int *complete)
     return count;
 }
 
-/* ------------------------------------------------------------------ */
-/* Temoins d'extraction (poses par le player, absents d'un dossier      */
-/* ecrit a la main) :                                                   */
-/*  - <out_dir>/.extracting : extraction en cours ou interrompue ;      */
-/*  - <out_dir>/.extracted  : "taille mtime" du .pk, ecrit seulement    */
-/*    apres une extraction complete (il remplace .extracting).          */
-/* Un dossier avec main.lua et aucun temoin est un dossier d'auteur :   */
-/* il n'est jamais ecrase par le .pk voisin.                            */
-/* ------------------------------------------------------------------ */
-
-#define PK_STAMP_NAME ".extracted"
-#define PK_BUSY_NAME  ".extracting"
+int pk_extract_all_ex(const char *pk_path, const char *out_dir, int *complete)
+{
+    return pk_extract_core(pk_path, out_dir, complete, NULL);
+}
 
 /* Empreinte du .pk (taille + date de modification). 0 si ok, -1 sinon. */
 static int pk_stamp(const char *pk_path, char *out, size_t out_sz)
@@ -390,15 +499,120 @@ int pk_extract_state(const char *pk_path, const char *out_dir)
 
     char want[64];
     if (pk_stamp(pk_path, want, sizeof(want)) != 0) {
+        /* .pk absent ou illisible : l'extraction existante reste jouable,
+           rien a re-extraire (et surtout rien a purger) */
         fclose(f);
-        return PK_EXTRACT_STALE;
+        return PK_EXTRACT_CURRENT;
     }
+    /* Premiere ligne seulement : la suite est la liste des fichiers extraits */
     char got[64];
     size_t n = fread(got, 1, sizeof(got) - 1, f);
     fclose(f);
     got[n] = '\0';
-    while (n > 0 && (got[n - 1] == '\n' || got[n - 1] == '\r')) got[--n] = '\0';
+    char *eol = strpbrk(got, "\r\n");
+    if (eol) *eol = '\0';
     return strcmp(got, want) == 0 ? PK_EXTRACT_CURRENT : PK_EXTRACT_STALE;
+}
+
+/* ------------------------------------------------------------------ */
+/* Purge de l'ancienne extraction                                       */
+/* ------------------------------------------------------------------ */
+
+/* Contenu d'un petit fichier texte (malloc, NUL final), NULL si absent. */
+static char *pk_read_text(const char *dir, const char *name)
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    long sz = pk_file_size(f);
+    if (sz < 0 || (unsigned long)sz > PK_MANIFEST_MAX) { fclose(f); return NULL; }
+    char *buf = (char *)malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[got] = '\0';
+    return buf;
+}
+
+/* Classe un chemin sans suivre les liens : 0 absent, 1 fichier ordinaire,
+   2 dossier ordinaire, -1 lien symbolique / jonction / autre. */
+static int pk_classify(const char *path)
+{
+#ifdef _WIN32
+    DWORD a = GetFileAttributesA(path);
+    if (a == INVALID_FILE_ATTRIBUTES) return 0;
+    if (a & FILE_ATTRIBUTE_REPARSE_POINT) return -1;
+    return (a & FILE_ATTRIBUTE_DIRECTORY) ? 2 : 1;
+#else
+    struct stat st;
+    if (lstat(path, &st) != 0) return 0;
+    if (S_ISLNK(st.st_mode)) return -1;
+    if (S_ISDIR(st.st_mode)) return 2;
+    return S_ISREG(st.st_mode) ? 1 : -1;
+#endif
+}
+
+static int pk_rmdir(const char *path)
+{
+#ifdef _WIN32
+    return _rmdir(path);
+#else
+    return rmdir(path);
+#endif
+}
+
+/* Supprime un fichier de l'ancienne extraction. Refuse tout ce qui n'est pas
+   un fichier ordinaire atteint par des dossiers ordinaires sous out_dir. */
+static void pk_purge_one(const char *out_dir, const char *name)
+{
+    if (!pk_name_is_safe(name) || pk_name_is_witness(name)) return;
+
+    char path[1280];
+    int n = snprintf(path, sizeof(path), "%s/%s", out_dir, name);
+    if (n < 0 || (size_t)n >= sizeof(path)) return;
+    for (char *q = path; *q; q++) {
+        if (*q == '\\') *q = '/';
+    }
+
+    /* Chaque composant intermediaire doit etre un dossier ordinaire */
+    size_t base = strlen(out_dir);
+    for (size_t i = base + 1; path[i]; i++) {
+        if (path[i] != '/' && path[i] != '\\') continue;
+        char c = path[i];
+        path[i] = '\0';
+        int k = pk_classify(path);
+        path[i] = c;
+        if (k != 2) return;
+    }
+    if (pk_classify(path) != 1) return;
+    if (!pk_path_is_inside(out_dir, path)) return;   /* meme regle qu'a l'extraction */
+    if (remove(path) != 0) return;
+
+    /* Retirer les dossiers devenus vides (rmdir echoue s'ils ne le sont pas) */
+    for (size_t i = strlen(path); i > base + 1; i--) {
+        if (path[i] != '/' && path[i] != '\\') continue;
+        path[i] = '\0';
+        if (pk_rmdir(path) != 0) break;
+    }
+}
+
+/* Supprime les fichiers listes dans text (un nom par ligne). */
+static void pk_purge_listed(const char *out_dir, char *text)
+{
+    /* out_dir lui-meme ne doit pas etre un lien */
+    if (pk_classify(out_dir) != 2) return;
+    char *line = text;
+    while (line && *line) {
+        char *eol = strpbrk(line, "\r\n");
+        char *next = NULL;
+        if (eol) {
+            next = eol + 1;
+            *eol = '\0';
+        }
+        if (line[0]) pk_purge_one(out_dir, line);
+        line = next;
+    }
 }
 
 int pk_extract_if_stale(const char *pk_path, const char *out_dir)
@@ -406,37 +620,87 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir)
     if (!pk_path || !out_dir || !out_dir[0]) return -1;
     if (pk_extract_state(pk_path, out_dir) != PK_EXTRACT_STALE) return 0;
 
-    /* Poser .extracting avant tout, puis retirer l'ancien temoin : une
-       extraction interrompue ne doit pas laisser croire que le dossier
-       est a jour, ni passer pour un dossier d'auteur */
+    /* Avant toute lecture ou ecriture des temoins et avant la purge : le .pk
+       doit s'ouvrir et contenir main.lua. Sinon rien n'est touche (le dossier
+       existant reste jouable tel quel). */
+    char stamp[64];
+    if (pk_stamp(pk_path, stamp, sizeof(stamp)) != 0 || !pk_has_entry(pk_path, "main.lua")) {
+        fprintf(stderr, "[PK] %s illisible ou sans main.lua : %s laisse tel quel\n",
+                pk_path, out_dir);
+        return -1;
+    }
+
     char path[1024];
     char busy[1024];
     snprintf(busy, sizeof(busy), "%s/" PK_BUSY_NAME, out_dir);
+    snprintf(path, sizeof(path), "%s/" PK_STAMP_NAME, out_dir);
+
+    /* Dossier reconnu comme extraction du player (temoin present) : lire la
+       liste de l'ancienne extraction avant de toucher aux temoins. Sans
+       temoin (dossier absent, dossier d'auteur incomplet) : rien a purger,
+       jamais. */
+    char *old_stamp = pk_read_text(out_dir, PK_STAMP_NAME);
+    char *old_busy = pk_read_text(out_dir, PK_BUSY_NAME);
+    int recognized = pk_file_exists(out_dir, PK_STAMP_NAME) ||
+                     pk_file_exists(out_dir, PK_BUSY_NAME);
+
+    /* Poser .extracting avant tout (sans le vider : il garde la liste de
+       l'ancienne extraction tant qu'elle n'est pas purgee), puis retirer
+       l'ancien temoin : une extraction interrompue ne doit pas laisser
+       croire que le dossier est a jour, ni passer pour un dossier d'auteur */
     ensure_parent_dirs(busy);
-    FILE *bf = fopen(busy, "wb");
+    FILE *bf = fopen(busy, "ab");
+    if (!bf) {
+        fprintf(stderr, "[PK] extraction annulee : %s non inscriptible\n", out_dir);
+        free(old_stamp);
+        free(old_busy);
+        return -1;
+    }
+    fclose(bf);
+
+    if (recognized) {
+        if (old_stamp) {
+            char *rest = strchr(old_stamp, '\n');   /* apres la ligne d'empreinte */
+            if (rest) pk_purge_listed(out_dir, rest + 1);
+        }
+        if (old_busy) pk_purge_listed(out_dir, old_busy);
+    }
+    free(old_stamp);
+    free(old_busy);
+
+    remove(path);
+    bf = fopen(busy, "wb");   /* repart d'une liste vide pour cette extraction */
     if (!bf) {
         fprintf(stderr, "[PK] extraction annulee : %s non inscriptible\n", out_dir);
         return -1;
     }
-    fclose(bf);
-    snprintf(path, sizeof(path), "%s/" PK_STAMP_NAME, out_dir);
-    remove(path);
 
     int complete = 0;
-    int n = pk_extract_all_ex(pk_path, out_dir, &complete);
-    if (n <= 0) return -1;
+    pk_list_t list = { bf, NULL, 0, 0, 0 };
+    int n = pk_extract_core(pk_path, out_dir, &complete, &list);
+    fclose(bf);
+    if (n <= 0) { free(list.buf); return -1; }
     if (!complete) {
+        free(list.buf);
         fprintf(stderr, "[PK] extraction incomplete : %s\n", pk_path);
         return n;
     }
 
-    char stamp[64];
-    if (pk_stamp(pk_path, stamp, sizeof(stamp)) == 0) {
-        FILE *f = fopen(path, "wb");
-        if (f) {
-            fprintf(f, "%s\n", stamp);
-            fclose(f);
-        }
+    /* .extracted : empreinte puis liste des fichiers. .extracting n'est
+       retire que si .extracted a vraiment ete ecrit. */
+    int ok = 0;
+    FILE *f = fopen(path, "wb");
+    if (f) {
+        int w = fprintf(f, "%s\n", stamp);
+        if (w >= 0 && list.buf && !list.overflow && fputs(list.buf, f) < 0) w = -1;
+        if (fclose(f) == 0 && w >= 0) ok = 1;
+        else remove(path);
+    }
+    free(list.buf);
+    if (!ok) {
+        fprintf(stderr, "[PK] temoin %s non ecrit dans %s : %s laisse en place, "
+                        "extraction a refaire\n", PK_STAMP_NAME, out_dir, PK_BUSY_NAME);
+        return n;
     }
     remove(busy);   /* .extracted remplace .extracting */
     return n;
