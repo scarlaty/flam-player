@@ -109,6 +109,8 @@ mod tests {
     #[test]
     fn la_part_des_mp3_est_comprise_dans_l_usage_du_cache() {
         let dir = tempfile::tempdir().unwrap();
+        // Sous-dossiers créés par l'application (marqués, #570).
+        crate::cache::ensure_subdirs(dir.path());
         write(&dir.path().join("podcasts/source-a/mp3/0a.mp3"), 100);
         write(&dir.path().join("podcasts/source-a/feed.xml"), 10);
         write(&dir.path().join("archives/a.zip"), 5);

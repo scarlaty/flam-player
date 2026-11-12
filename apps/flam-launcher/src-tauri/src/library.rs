@@ -338,6 +338,29 @@ struct Adoption {
     unjudged: Vec<PathBuf>,
 }
 
+/// Taille maximale de l'index lu pour reconnaître une bibliothèque d'une version antérieure
+/// (même ordre que les autres bornes de lecture de la bibliothèque, 4 Mio).
+const MAX_LEGACY_INDEX_BYTES: u64 = 4 * 1024 * 1024;
+
+/// `dir` (un `library/` sans marqueur) est la bibliothèque d'une version antérieure du launcher :
+/// son index `library.json` est un fichier réel (ni lien ni dossier) d'au plus
+/// [`MAX_LEGACY_INDEX_BYTES`], lisible au schéma de la bibliothèque (objet avec `schema_version`
+/// connu et liste `stories`). Le verrou `.lock` seul ne suffit pas. Lecture seule : rien n'est
+/// mis de côté ni réécrit (#570).
+pub fn is_legacy_library(dir: &Path) -> bool {
+    let index = dir.join(INDEX_FILE);
+    let bounded = std::fs::symlink_metadata(&index)
+        .is_ok_and(|m| m.is_file() && m.len() <= MAX_LEGACY_INDEX_BYTES);
+    if !bounded {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(&index) else {
+        return false;
+    };
+    serde_json::from_str::<IndexFile>(&text)
+        .is_ok_and(|file| (1..=SCHEMA_VERSION).contains(&file.schema_version))
+}
+
 /// Contenu de `library.json`.
 #[derive(Debug, Serialize, Deserialize)]
 struct IndexFile {
@@ -422,8 +445,19 @@ impl Library {
         &self.root
     }
 
+    /// Crée `library/` s'il a disparu, avec le marqueur de l'application (#570), comme le fait
+    /// `resolved_cache_dir` : sans marqueur, le vidage et le balayage des vignettes l'ignorent.
+    fn ensure_root(&self) -> AppResult<()> {
+        if let Some(cache_root) = self.root.parent() {
+            crate::cache::ensure_subdir(cache_root, LIBRARY_DIR)?;
+        }
+        std::fs::create_dir_all(&self.root)?;
+        Ok(())
+    }
+
     /// Dossier de préparation, créé si besoin.
     pub fn staging_dir(&self) -> AppResult<PathBuf> {
+        self.ensure_root()?;
         let dir = self.root.join(STAGING_DIR);
         std::fs::create_dir_all(&dir)?;
         Ok(dir)
@@ -526,7 +560,7 @@ impl Library {
     }
 
     fn lock_core(&self, wait: Option<Duration>) -> AppResult<Option<File>> {
-        std::fs::create_dir_all(&self.root)?;
+        self.ensure_root()?;
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)

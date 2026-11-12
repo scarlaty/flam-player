@@ -1222,7 +1222,9 @@ Un chemin à `null` signifie « automatique » ; `settings_get` renvoie aussi le
 - `player_path` : chemin **absolu**, **local** (UNC `\\serveur\…`, `\\?\UNC\…`
   et lecteurs réseau refusés), extension `.exe` (insensible à la casse), fichier existant ;
 - `cache_dir` : chemin absolu qui n'est pas un fichier, ni racine de disque, ni dossier
-  utilisateur, ni dossier Windows. L'application ne supprime **jamais** que les sous-dossiers
+  utilisateur, ni dossier Windows. Un **nouveau** dossier qui contient déjà, sous un nom de
+  `APP_CACHE_SUBDIRS`, un élément sans le marqueur de l'application est refusé
+  (`cache_dir_in_use`). L'application ne supprime **jamais** que les sous-dossiers
   qu'elle a elle-même créés dans le cache, jamais le dossier configuré lui-même (voir
   « Cache » ci-dessous) ;
 - `default_catalog_url` : URL http(s) avec hôte, 2048 caractères max, sans identifiants
@@ -1242,12 +1244,34 @@ d'exécuter. Accesseurs Rust pour les issues suivantes : `SourcesStore::get(id)`
 #### Cache
 
 `cache_usage` renvoie le dossier de cache effectif et les octets occupés ; `cache_clear`
-supprime et renvoie les octets libérés. Le dossier de cache pouvant être choisi par
-l'utilisateur, ces deux commandes ne comptent et ne suppriment **que** les sous-dossiers créés
+vide et renvoie les octets libérés. Le dossier de cache pouvant être choisi par
+l'utilisateur, ces deux commandes ne comptent et ne vident **que** les sous-dossiers créés
 par l'application, listés dans `APP_CACHE_SUBDIRS` (`cache.rs`) : `archives`, `catalogs`, `compat-local`,
-`library`, `play`, `podcasts`, `thumbs`. Le reste du dossier et le dossier lui-même ne sont jamais touchés ; les
-liens symboliques et jonctions ne sont ni suivis ni supprimés. `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
-sous-dossier de cache doit l'ajouter à cette liste.** L'interface demande une confirmation
+`library`, `official`, `play`, `podcast-work`, `podcasts`, `thumbs`. Le reste du dossier et le dossier lui-même ne sont jamais touchés ; les
+liens symboliques et jonctions ne sont pas suivis.
+
+**Marqueur d'appartenance (#570)** : l'application prouve qu'elle a créé un sous-dossier par un
+fichier vide `.flam-launcher` à sa racine. `SettingsStore::resolved_cache_dir` crée les
+sous-dossiers de la liste absents, marqués (`cache::ensure_subdir` : dossier temporaire, marqueur,
+puis renommage) ; un élément déjà présent sous ce nom n'est jamais marqué. Le comptage, le vidage
+et le balayage des vignettes de la bibliothèque (`library_thumb::sweep`) ignorent un homonyme sans
+marqueur (journalisé). Le vidage supprime le contenu et garde chaque sous-dossier avec son
+marqueur. Migration : au premier démarrage de la version qui introduit le marqueur, les
+sous-dossiers déjà présents dans le dossier de cache configuré (et dans le dossier par défaut)
+sont marqués, une seule fois (témoin `cache-markers.done` dans le dossier de configuration). Elle
+est reportée, sans témoin, si le dossier configuré est absent ou si les réglages retombent sur le
+dossier par défaut. Un ancien cache du launcher choisi plus tard (`library/` contenant l'index
+`library.json`, fichier réel d'au plus 4 Mio lisible au schéma de la bibliothèque ; le `.lock`
+seul ne suffit pas) est accepté par `settings_set` : seul `library/` y est marqué, ses autres
+homonymes sans marqueur ne sont ni marqués ni refusés (l'application les utilise comme avant,
+sans jamais les compter ni les vider). Sans bibliothèque reconnue, un homonyme sans marqueur fait
+refuser le dossier.
+Limites : un homonyme de l'utilisateur déjà présent dans le dossier configuré à ce moment est
+marqué aussi ; après un retour à une version antérieure (qui ignore le marqueur), les
+sous-dossiers qu'elle recrée ne sont plus comptés ni vidés par cette version : créer un fichier
+vide `.flam-launcher` dans le sous-dossier concerné pour qu'il soit de nouveau reconnu (ne pas le
+supprimer : `library/` contient les histoires installées). `flam-transfer` n'est pas dans la liste (#577). `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
+sous-dossier de cache doit l'ajouter à cette liste** (il sera alors créé marqué). L'interface demande une confirmation
 (boîte `alertdialog`, focus sur « Annuler ») qui rappelle les dossiers concernés et la taille
 libérée. `cache_clear` est refusé avec `player_busy` tant qu'un player tourne (sa copie de
 travail est dans `play/`) ; le créneau du player est tenu pendant le vidage

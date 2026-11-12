@@ -1786,8 +1786,9 @@ fn le_dossier_de_cache_scrute_suit_les_reglages() {
     let config = ConfigState::new(config_dir.path().to_path_buf());
     assert_eq!(polled_cache_root(&config), Some(first.clone()));
     assert!(first.is_dir());
-    // Réglages inchangés : résolution réutilisée (le dossier supprimé n'est pas recréé).
-    fs::remove_dir(&first).unwrap();
+    // Réglages inchangés : résolution réutilisée (le dossier supprimé n'est pas recréé). Il
+    // contient les sous-dossiers marqués créés par `resolved_cache_dir` (#570).
+    fs::remove_dir_all(&first).unwrap();
     assert_eq!(polled_cache_root(&config), Some(first.clone()));
     assert!(!first.exists());
     // Réglages enregistrés : résolu à neuf.

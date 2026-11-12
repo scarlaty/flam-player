@@ -68,6 +68,23 @@ fn purge_stale_thumbs(app: &tauri::AppHandle) {
     }
 }
 
+/// Migration des marqueurs du cache (#570), une seule fois, puis nettoyage des dossiers
+/// temporaires d'une création interrompue. Appelée au démarrage **avant** tout traitement qui
+/// compte, vide ou balaie le cache. Un échec n'est que journalisé : la migration est rejouée au
+/// démarrage suivant.
+fn migrate_cache_markers(config_dir: &std::path::Path) {
+    match cache::migrate_configured(config_dir, &settings::Environment::current()) {
+        Ok(cache::Migration::Done { marked }) => {
+            tracing::info!("cache : {marked} sous-dossier(s) existant(s) marqué(s)")
+        }
+        Ok(cache::Migration::Deferred) => tracing::info!(
+            "cache : dossier configuré absent ou non retenu, marquage reporté au prochain démarrage"
+        ),
+        Ok(cache::Migration::AlreadyDone) => {}
+        Err(err) => tracing::warn!("migration des marqueurs du cache interrompue : {err}"),
+    }
+}
+
 /// Filtre des traces : `spec` (équivalent de `RUST_LOG`) ou, à défaut, `info`. En `debug`,
 /// `reqwest` journalise les URL (redirections, réponses) : celle d'un flux podcast est un
 /// secret (D11, #211), d'où la directive `reqwest=info`. Elle ne couvre pas une directive plus
@@ -105,6 +122,8 @@ pub fn run() {
         )
         .setup(|app| {
             let config_dir = storage::config_dir()?;
+            // Avant toute purge, reprise ou commande qui dépend du marqueur (#570).
+            migrate_cache_markers(&config_dir);
             let saves_root = config_dir.join(player::SAVES_ROOT);
             let catalog = catalog::CatalogService::new()?;
             let install = install::InstallService::new(install::InstallOptions {
