@@ -38,6 +38,10 @@ int pk_extract_all(const char *pk_path, const char *out_dir);
  * Comme pk_extract_all ; si complete != NULL, *complete vaut 1 quand
  * l'archive a ete parcourue jusqu'au bout sans erreur d'ecriture (les
  * entrees refusees ou compressees ne rendent pas l'extraction incomplete).
+ * Fin normale = repertoire central (0x02014b50) ou fin d'archive (0x06054b50) ;
+ * une signature inconnue, une archive tronquee ou une entree a data
+ * descriptor (flags & 0x0008) rendent l'extraction incomplete.
+ * Les entrees nommees .extracted / .extracting sont refusees (temoins).
  */
 int pk_extract_all_ex(const char *pk_path, const char *out_dir, int *complete);
 
@@ -58,7 +62,11 @@ int pk_extract_state(const char *pk_path, const char *out_dir);
 /**
  * Extrait pk_path dans out_dir seulement si l'etat est PK_EXTRACT_STALE.
  * Pose .extracting au debut, le remplace par .extracted apres une
- * extraction complete (une extraction incomplete laisse .extracting).
+ * extraction complete (une extraction incomplete, ou un .extracted qui n'a
+ * pas pu etre ecrit, laisse .extracting). Les temoins listent les fichiers
+ * extraits : avant de re-extraire un dossier qui porte un temoin, les fichiers
+ * de l'ancienne extraction sont supprimes (jamais sans temoin, jamais a
+ * travers un lien ou une jonction, jamais hors du dossier).
  * @return 0 si rien a faire, nombre d'entrees extraites, ou -1 si erreur.
  */
 int pk_extract_if_stale(const char *pk_path, const char *out_dir);
