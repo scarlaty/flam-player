@@ -44,8 +44,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      # Pilotes SDL sans écran ni carte son (runner sans session interactive).
-      SDL_VIDEODRIVER: dummy
+      # Audio factice et rendu logiciel (runner sans carte son). Pas de SDL_VIDEODRIVER=dummy : e2e_embed.py
+      # incruste la fenêtre du player dans une fenêtre hôte (HWND), ce qui exige le pilote vidéo windows ;
+      # les tests qui n'ont pas besoin de fenêtre forcent eux-mêmes le pilote dummy.
       SDL_AUDIODRIVER: dummy
       SDL_RENDER_DRIVER: software
     steps:
