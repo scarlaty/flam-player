@@ -7,11 +7,15 @@ import type { VoiceList } from "../../api/speech";
 import { ToastProvider } from "../../components";
 import { expectNoAxeViolations } from "../../test/axe";
 import { RecoveryProvider } from "../recovery/RecoveryProvider";
+import { StoriesContext, type StoriesApi } from "../stories/StoriesContext";
 import { getMinimizeDuringPlay, setMinimizeDuringPlay } from "./preferences";
 import { SettingsScreen } from "./SettingsScreen";
 
 const pickExecutable = vi.hoisted(() => vi.fn());
 const pickFolder = vi.hoisted(() => vi.fn());
+// Relecture des histoires installées (`StoriesApi.refreshInstalled`, #570).
+const refreshInstalled = vi.fn(() => Promise.resolve());
+const stories = { refreshInstalled } as unknown as StoriesApi;
 vi.mock("../../api/dialog", () => ({ pickExecutable, pickFolder }));
 
 function makeView(overrides: Partial<SettingsView> = {}): SettingsView {
@@ -57,6 +61,7 @@ beforeEach(() => {
   pendingSets = null;
   pickExecutable.mockReset();
   pickFolder.mockReset();
+  refreshInstalled.mockClear();
   mockIPC((cmd, args) => {
     const payload = (args ?? {}) as Record<string, any>;
     calls.push({ cmd, args: payload });
@@ -119,7 +124,9 @@ async function renderScreen() {
   const result = render(
     <ToastProvider>
       <RecoveryProvider>
-        <SettingsScreen />
+        <StoriesContext.Provider value={stories}>
+          <SettingsScreen />
+        </StoriesContext.Provider>
       </RecoveryProvider>
     </ToastProvider>,
   );
@@ -183,6 +190,8 @@ it("enregistre l'objet complet avec les chemins choisis (sélecteurs natifs)", a
   fireEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
 
   expect(await screen.findByText("Paramètres enregistrés")).toBeInTheDocument();
+  // Le dossier de cache a changé : la liste des histoires installées est relue (#570).
+  expect(refreshInstalled).toHaveBeenCalledTimes(1);
   expect(callsOf("settings_set")[0]?.args.settings).toEqual({
     schema_version: 1,
     player_path: "C:\\app\\flam-player.exe",
@@ -374,11 +383,12 @@ it("vide le cache seulement après confirmation (focus sur Annuler)", async () =
   const dialog = await screen.findByRole("alertdialog", { name: "Vider le cache ?" });
   expect(within(dialog).getByRole("button", { name: "Annuler" })).toHaveFocus();
   expect(dialog).toHaveAccessibleDescription(
-    /archives, catalogs, library, thumbs.*C:\\cache.*2 Ko/,
+    /histoires installées seront supprimées.*archives, catalogs, library, thumbs.*C:\\cache.*2 Ko/,
   );
 
   fireEvent.click(within(dialog).getByRole("button", { name: "Annuler" }));
   expect(callsOf("cache_clear")).toHaveLength(0);
+  expect(refreshInstalled).not.toHaveBeenCalled();
 
   fireEvent.click(screen.getByRole("button", { name: "Vider le cache" }));
   fireEvent.click(
@@ -390,6 +400,37 @@ it("vide le cache seulement après confirmation (focus sur Annuler)", async () =
   expect(await screen.findByText("Cache vidé : 2 Ko libérés")).toBeInTheDocument();
   expect(await screen.findByText("Le cache est vide (C:\\cache).")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Vider le cache" })).toBeDisabled();
+});
+
+it("relit la liste des histoires installées après le vidage du cache (#570)", async () => {
+  await renderScreen();
+  fireEvent.click(screen.getByRole("button", { name: "Vider le cache" }));
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Vider le cache",
+    }),
+  );
+
+  await waitFor(() => expect(refreshInstalled).toHaveBeenCalledTimes(1));
+  expect(callsOf("cache_clear")).toHaveLength(1);
+});
+
+it("affiche le refus d'un dossier de cache qui contient déjà des homonymes (#570)", async () => {
+  await renderScreen();
+  fireEvent.change(screen.getByRole("textbox", { name: "Dossier de cache" }), {
+    target: { value: "D:\\Media" },
+  });
+  failures.settings_set = {
+    kind: "cache_dir_in_use",
+    message: "dossier de cache : contient déjà « podcasts »",
+  };
+
+  fireEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
+
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("Dossier de cache déjà utilisé");
+  expect(alert).toHaveTextContent("contient déjà « podcasts »");
+  expect(refreshInstalled).not.toHaveBeenCalled();
 });
 
 it("affiche à part la taille du cache des MP3 de podcasts, remise à zéro après le vidage", async () => {
@@ -432,6 +473,7 @@ it("affiche l'erreur si le vidage du cache échoue", async () => {
   );
 
   expect(await screen.findByRole("alert")).toHaveTextContent("fichier verrouillé");
+  expect(refreshInstalled).not.toHaveBeenCalled();
 });
 
 it("affiche l'erreur de chargement avec un bouton Réessayer", async () => {
@@ -439,7 +481,9 @@ it("affiche l'erreur de chargement avec un bouton Réessayer", async () => {
   render(
     <ToastProvider>
       <RecoveryProvider>
-        <SettingsScreen />
+        <StoriesContext.Provider value={stories}>
+          <SettingsScreen />
+        </StoriesContext.Provider>
       </RecoveryProvider>
     </ToastProvider>,
   );
