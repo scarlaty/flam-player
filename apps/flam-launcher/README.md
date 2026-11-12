@@ -1258,11 +1258,16 @@ et le balayage des vignettes de la bibliothèque (`library_thumb::sweep`) ignore
 marqueur (journalisé). Le vidage supprime le contenu et garde chaque sous-dossier avec son
 marqueur. Migration : au premier démarrage de la version qui introduit le marqueur, les
 sous-dossiers déjà présents dans le dossier de cache configuré (et dans le dossier par défaut)
-sont marqués, une seule fois (témoin `cache-markers.done` dans le dossier de configuration).
+sont marqués, une seule fois (témoin `cache-markers.done` dans le dossier de configuration). Elle
+est reportée, sans témoin, si le dossier configuré est absent ou si les réglages retombent sur le
+dossier par défaut. Un ancien cache du launcher choisi plus tard (`library/` contenant l'index
+`library.json` lisible ou son `.lock`) est accepté par `settings_set` et marqué de la même façon ;
+les autres homonymes sans marqueur sont refusés.
 Limites : un homonyme de l'utilisateur déjà présent dans le dossier configuré à ce moment est
 marqué aussi ; après un retour à une version antérieure (qui ignore le marqueur), les
-sous-dossiers qu'elle recrée ne sont plus comptés ni vidés par cette version (les supprimer à la
-main pour qu'ils soient recréés marqués). `flam-transfer` n'est pas dans la liste (#577). `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
+sous-dossiers qu'elle recrée ne sont plus comptés ni vidés par cette version : créer un fichier
+vide `.flam-launcher` dans le sous-dossier concerné pour qu'il soit de nouveau reconnu (ne pas le
+supprimer : `library/` contient les histoires installées). `flam-transfer` n'est pas dans la liste (#577). `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
 sous-dossier de cache doit l'ajouter à cette liste** (il sera alors créé marqué). L'interface demande une confirmation
 (boîte `alertdialog`, focus sur « Annuler ») qui rappelle les dossiers concernés et la taille
 libérée. `cache_clear` est refusé avec `player_busy` tant qu'un player tourne (sa copie de

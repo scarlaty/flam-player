@@ -73,31 +73,15 @@ fn purge_stale_thumbs(app: &tauri::AppHandle) {
 /// compte, vide ou balaie le cache. Un échec n'est que journalisé : la migration est rejouée au
 /// démarrage suivant.
 fn migrate_cache_markers(config_dir: &std::path::Path) {
-    let env = settings::Environment::current();
-    let effective = match settings::SettingsStore::new(config_dir).cache_dir(&env) {
-        Ok(dir) => dir,
-        Err(err) => {
-            tracing::warn!("migration des marqueurs du cache impossible : {err}");
-            return;
-        }
-    };
-    let mut roots = vec![effective.clone()];
-    // Le dossier par défaut (données de l'application) sert aussi s'il est repris plus tard.
-    if env.default_cache_dir != effective && env.default_cache_dir.is_dir() {
-        roots.push(env.default_cache_dir.clone());
-    }
-    match cache::migrate_markers(&config_dir.join(cache::MIGRATION_WITNESS), &roots) {
+    match cache::migrate_configured(config_dir, &settings::Environment::current()) {
         Ok(cache::Migration::Done { marked }) => {
             tracing::info!("cache : {marked} sous-dossier(s) existant(s) marqué(s)")
         }
-        Ok(cache::Migration::Deferred) => {
-            tracing::info!("cache : dossier absent, marquage reporté au prochain démarrage")
-        }
+        Ok(cache::Migration::Deferred) => tracing::info!(
+            "cache : dossier configuré absent ou non retenu, marquage reporté au prochain démarrage"
+        ),
         Ok(cache::Migration::AlreadyDone) => {}
         Err(err) => tracing::warn!("migration des marqueurs du cache interrompue : {err}"),
-    }
-    for root in &roots {
-        cache::remove_stale_tmp(root);
     }
 }
 

@@ -195,24 +195,7 @@ fn migrate_markers_with(witness: &Path, roots: &[PathBuf], fault: Fault) -> io::
     }
     let mut marked = 0;
     for root in roots {
-        for name in APP_CACHE_SUBDIRS {
-            let dir = root.join(name);
-            if !is_real_dir(&dir) || is_owned(&dir) {
-                continue;
-            }
-            if fs::symlink_metadata(dir.join(MARKER)).is_ok() {
-                // Lien ou dossier à la place du marqueur : laissé tel quel, sans marquer.
-                tracing::warn!("cache : marqueur de « {name} » inattendu, non migré");
-                continue;
-            }
-            fault("marker")?;
-            // `create_new` : n'ouvre jamais un élément existant (ni lien, ni fichier).
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(dir.join(MARKER))?;
-            marked += 1;
-        }
+        marked += mark_existing(root, fault)?;
     }
     fault("witness")?;
     if let Some(parent) = witness.parent() {
@@ -220,6 +203,81 @@ fn migrate_markers_with(witness: &Path, roots: &[PathBuf], fault: Fault) -> io::
     }
     fs::write(witness, b"")?;
     Ok(Migration::Done { marked })
+}
+
+/// Marque les sous-dossiers de [`APP_CACHE_SUBDIRS`] présents dans `root` (dossiers réels sans
+/// marqueur) et renvoie leur nombre. Idempotente. Un marqueur anormal (lien, dossier) est laissé
+/// tel quel, sans marquer ce sous-dossier.
+fn mark_existing(root: &Path, fault: Fault) -> io::Result<usize> {
+    let mut marked = 0;
+    for name in APP_CACHE_SUBDIRS {
+        let dir = root.join(name);
+        if !is_real_dir(&dir) || is_owned(&dir) {
+            continue;
+        }
+        if fs::symlink_metadata(dir.join(MARKER)).is_ok() {
+            tracing::warn!("cache : marqueur de « {name} » inattendu, non migré");
+            continue;
+        }
+        fault("marker")?;
+        // `create_new` : n'ouvre jamais un élément existant (ni lien, ni fichier).
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dir.join(MARKER))?;
+        marked += 1;
+    }
+    Ok(marked)
+}
+
+/// Migration au démarrage pour le dossier de configuration `config_dir` : dossier de cache
+/// effectif, plus le dossier par défaut s'il existe. Reportée (`Deferred`, sans témoin) quand le
+/// dossier résolu n'est pas celui des réglages (valeur configurée refusée, repli sur le défaut) :
+/// le dossier configuré n'aurait jamais été migré.
+pub fn migrate_configured(config_dir: &Path, env: &Environment) -> AppResult<Migration> {
+    let settings = SettingsStore::new(config_dir).load()?;
+    let (resolved, _) = resolve(&settings, env);
+    let effective = PathBuf::from(resolved.cache_dir);
+    if let Some(configured) = &settings.cache_dir {
+        if !crate::settings::same_path(Path::new(configured), &effective) {
+            return Ok(Migration::Deferred);
+        }
+    }
+    let mut roots = vec![effective.clone()];
+    // Le dossier par défaut (données de l'application) sert aussi s'il est repris plus tard.
+    if env.default_cache_dir != effective && env.default_cache_dir.is_dir() {
+        roots.push(env.default_cache_dir.clone());
+    }
+    let migration = migrate_markers(&config_dir.join(MIGRATION_WITNESS), &roots)?;
+    for root in &roots {
+        remove_stale_tmp(root);
+    }
+    Ok(migration)
+}
+
+/// Ancien cache du launcher (version sans marqueur) : `library/` est un dossier réel qui contient
+/// l'index de la bibliothèque ou son verrou, et les autres homonymes sans marqueur sont des
+/// dossiers réels marquables. Il est alors adopté : ses sous-dossiers reçoivent le marqueur
+/// (comme à la migration) et `true` est renvoyé. Idempotente : un échec en cours laisse une
+/// partie des marqueurs, qu'un nouvel appel complète. Sinon rien n'est écrit, `false`.
+pub fn adopt_legacy_cache(root: &Path) -> io::Result<bool> {
+    adopt_legacy_cache_with(root, &no_fault)
+}
+
+fn adopt_legacy_cache_with(root: &Path, fault: Fault) -> io::Result<bool> {
+    let library = root.join(crate::library::LIBRARY_DIR);
+    if !is_real_dir(&library) || !crate::library::is_legacy_library(&library) {
+        return Ok(false);
+    }
+    let markable = foreign_entries(root).iter().all(|name| {
+        let dir = root.join(name);
+        is_real_dir(&dir) && fs::symlink_metadata(dir.join(MARKER)).is_err()
+    });
+    if !markable {
+        return Ok(false);
+    }
+    mark_existing(root, fault)?;
+    Ok(true)
 }
 
 /// Supprime les dossiers temporaires laissés par une [`ensure_subdir`] interrompue : seulement
@@ -707,6 +765,104 @@ mod tests {
             assert!(is_owned(&cache.path().join(name)));
             assert!(cache.path().join(name).join("x").is_file(), "rien supprimé");
         }
+    }
+
+    /// Cache rempli par une version antérieure : bibliothèque avec son index, sans marqueur.
+    fn legacy_cache(root: &Path) {
+        fs::create_dir_all(root.join("library")).unwrap();
+        fs::write(
+            root.join("library/library.json"),
+            r#"{"schema_version":1,"stories":[]}"#,
+        )
+        .unwrap();
+        write(&root.join("library/abc-1.plain.pk"), 10);
+        write(&root.join("archives/a.zip"), 5);
+    }
+
+    #[test]
+    fn un_ancien_cache_est_adopte_et_marque_de_facon_idempotente() {
+        let dir = tempfile::tempdir().unwrap();
+        legacy_cache(dir.path());
+        // Adoption interrompue au deuxième marqueur : rien de supprimé, reprise complète.
+        assert!(adopt_legacy_cache_with(dir.path(), &fail_at("marker", 2)).is_err());
+        assert!(adopt_legacy_cache(dir.path()).unwrap());
+        assert!(adopt_legacy_cache(dir.path()).unwrap(), "idempotente");
+        assert!(is_owned(&dir.path().join("library")));
+        assert!(is_owned(&dir.path().join("archives")));
+        assert!(dir.path().join("library/abc-1.plain.pk").is_file());
+        assert!(foreign_entries(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn un_verrou_de_bibliotheque_suffit_a_reconnaitre_un_ancien_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("library/.lock"), 0);
+        assert!(adopt_legacy_cache(dir.path()).unwrap());
+        assert!(is_owned(&dir.path().join("library")));
+    }
+
+    #[test]
+    fn sans_bibliotheque_reconnue_rien_n_est_adopte_ni_marque() {
+        // `podcasts/` personnel seul.
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("podcasts/a.mp3"), 3);
+        assert!(!adopt_legacy_cache(dir.path()).unwrap());
+        assert!(!is_owned(&dir.path().join("podcasts")));
+        // `library/` personnel : index illisible ou d'un autre schéma.
+        for index in [
+            "pas du json",
+            r#"{"schema_version":99,"stories":[]}"#,
+            r#"{"livres":[]}"#,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            write(&dir.path().join("library/x.epub"), 3);
+            fs::write(dir.path().join("library/library.json"), index).unwrap();
+            assert!(!adopt_legacy_cache(dir.path()).unwrap(), "{index}");
+            assert!(!is_owned(&dir.path().join("library")));
+        }
+        // Ancien cache, mais un homonyme non marquable (fichier) : refusé, rien marqué.
+        let dir = tempfile::tempdir().unwrap();
+        legacy_cache(dir.path());
+        write(&dir.path().join("thumbs"), 1);
+        assert!(!adopt_legacy_cache(dir.path()).unwrap());
+        assert!(!is_owned(&dir.path().join("library")));
+    }
+
+    #[test]
+    fn pas_de_temoin_quand_le_dossier_resolu_n_est_pas_celui_des_reglages() {
+        let config = tempfile::tempdir().unwrap();
+        let default = config.path().join("cache-defaut");
+        fs::create_dir_all(&default).unwrap();
+        let env = Environment {
+            exe_dir: None,
+            default_cache_dir: default.clone(),
+            search_repo_build: false,
+            protected_dirs: vec![config.path().join("protege")],
+        };
+        // Dossier configuré refusé à la relecture (dossier protégé) : repli sur le défaut.
+        let configured = config.path().join("protege");
+        fs::write(
+            config.path().join("settings.json"),
+            serde_json::json!({ "schema_version": 1, "cache_dir": configured }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::Deferred
+        );
+        assert!(!config.path().join(MIGRATION_WITNESS).exists());
+
+        // Sans dossier configuré : migration faite sur le défaut, témoin écrit.
+        fs::write(
+            config.path().join("settings.json"),
+            r#"{"schema_version":1}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::Done { .. }
+        ));
+        assert!(config.path().join(MIGRATION_WITNESS).is_file());
     }
 
     #[test]

@@ -338,6 +338,26 @@ struct Adoption {
     unjudged: Vec<PathBuf>,
 }
 
+/// `dir` (un `library/` sans marqueur) est la bibliothèque d'une version antérieure du launcher :
+/// son verrou `.lock` est un fichier, ou son index `library.json` est un fichier lisible au
+/// schéma de la bibliothèque (objet avec `schema_version` connu et liste `stories`). Lecture
+/// seule : rien n'est mis de côté ni réécrit (#570).
+pub fn is_legacy_library(dir: &Path) -> bool {
+    let is_file = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
+    if is_file(&dir.join(LOCK_FILE)) {
+        return true;
+    }
+    let index = dir.join(INDEX_FILE);
+    if !is_file(&index) {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(&index) else {
+        return false;
+    };
+    serde_json::from_str::<IndexFile>(&text)
+        .is_ok_and(|file| (1..=SCHEMA_VERSION).contains(&file.schema_version))
+}
+
 /// Contenu de `library.json`.
 #[derive(Debug, Serialize, Deserialize)]
 struct IndexFile {

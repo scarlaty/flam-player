@@ -338,9 +338,15 @@ fn check_cache_dir(raw: &str, protected: &[PathBuf]) -> Result<(), (&'static str
 /// Refuse un **nouveau** dossier de cache qui contient déjà, sous un nom de
 /// `cache::APP_CACHE_SUBDIRS`, un élément qui n'a pas le marqueur de l'application (#570) : le
 /// vidage l'ignorerait, mais l'application y écrirait au milieu de données qui ne sont pas à elle.
+///
+/// Exception : un ancien cache du launcher (bibliothèque d'une version sans marqueur) est
+/// accepté et marqué comme à la migration, **avant** l'enregistrement des réglages. Le marquage
+/// est idempotent : si l'enregistrement échoue ensuite, le dossier reste un cache du launcher
+/// marqué, et un nouvel essai réussit.
 fn check_cache_dir_free(raw: &str) -> AppResult<()> {
-    let foreign = crate::cache::foreign_entries(Path::new(raw));
-    if foreign.is_empty() {
+    let root = Path::new(raw);
+    let foreign = crate::cache::foreign_entries(root);
+    if foreign.is_empty() || crate::cache::adopt_legacy_cache(root)? {
         return Ok(());
     }
     let names = foreign
@@ -349,14 +355,14 @@ fn check_cache_dir_free(raw: &str) -> AppResult<()> {
         .collect::<Vec<_>>()
         .join(", ");
     Err(AppError::CacheDirInUse(format!(
-        "dossier de cache : « {raw} » contient déjà {names}, qui n'ont pas été créés par Flam \
-         Launcher. Choisissez un dossier vide ou réservé au launcher."
+        "dossier de cache : « {raw} » contient déjà {names} sans le marqueur de Flam Launcher. \
+         Choisissez un dossier vide ou réservé au launcher."
     )))
 }
 
 /// Compare deux chemins composant par composant, sans tenir compte de la casse ni des `/` ou
 /// `\` finaux.
-fn same_path(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     let parts = |path: &Path| -> Vec<String> {
         path.components()
             .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
@@ -979,6 +985,14 @@ mod tests {
         assert!(media.join("podcasts/emission.mp3").is_file());
         assert!(!media.join("library").exists(), "aucun dossier créé");
 
+        // `podcasts/` personnel seul : toujours refusé, même avec un `library/` vide à côté.
+        std::fs::create_dir_all(media.join("library")).unwrap();
+        assert_eq!(
+            store.update(with_cache(&media)).unwrap_err().kind(),
+            "cache_dir_in_use"
+        );
+        assert!(!crate::cache::is_owned(&media.join("library")));
+
         // Un dossier dont les sous-dossiers sont ceux de l'application est accepté…
         let ours = dir.path().join("ours");
         crate::cache::ensure_subdirs(&ours);
@@ -987,6 +1001,34 @@ mod tests {
         std::fs::remove_dir_all(ours.join("thumbs")).unwrap();
         touch(&ours.join("thumbs/perso.png"));
         store.update(with_cache(&ours)).unwrap();
+    }
+
+    #[test]
+    fn un_ancien_cache_du_launcher_est_accepte_puis_marque() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path());
+        let old = dir.path().join("ancien-cache");
+        touch(&old.join("library/abc-1.plain.pk"));
+        fs::write(
+            old.join("library/library.json"),
+            r#"{"schema_version":1,"stories":[]}"#,
+        )
+        .unwrap();
+        touch(&old.join("podcasts/src/feed.xml"));
+
+        let saved = store
+            .update(Settings {
+                cache_dir: Some(old.display().to_string()),
+                ..Settings::default()
+            })
+            .unwrap();
+        assert_eq!(saved.cache_dir, Some(old.display().to_string()));
+        assert!(crate::cache::is_owned(&old.join("library")));
+        assert!(crate::cache::is_owned(&old.join("podcasts")));
+        assert!(
+            old.join("library/abc-1.plain.pk").is_file(),
+            "rien supprimé"
+        );
     }
 
     #[test]
