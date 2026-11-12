@@ -127,6 +127,11 @@ pub enum AppError {
     /// refusée avant toute écriture (#542).
     #[error("{0}")]
     LuniiNeedsV2(String),
+
+    /// Nouveau dossier de cache refusé : il contient déjà, sous un nom de sous-dossier de
+    /// l'application, un élément qu'elle n'a pas créé (pas de marqueur, #570).
+    #[error("{0}")]
+    CacheDirInUse(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -156,6 +161,7 @@ impl AppError {
             AppError::TtsNoVoice(_) => "tts_no_voice",
             AppError::TtsFailed(_) => "tts_failed",
             AppError::LuniiNeedsV2(_) => "lunii_needs_v2",
+            AppError::CacheDirInUse(_) => "cache_dir_in_use",
         }
     }
 
@@ -253,6 +259,10 @@ mod tests {
         assert_eq!(AppError::TtsNoVoice("x".into()).kind(), "tts_no_voice");
         assert_eq!(AppError::TtsFailed("x".into()).kind(), "tts_failed");
         assert_eq!(AppError::LuniiNeedsV2("x".into()).kind(), "lunii_needs_v2");
+        assert_eq!(
+            AppError::CacheDirInUse("x".into()).kind(),
+            "cache_dir_in_use"
+        );
         let conversion = AppError::Conversion {
             code: "missing_asset".into(),
             message: "m".into(),

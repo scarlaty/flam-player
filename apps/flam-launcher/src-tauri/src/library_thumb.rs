@@ -230,6 +230,11 @@ pub(crate) fn store_with(
 /// référencée et part ici ; l'histoire retombe sur la vignette de sa source d'origine, puis sur
 /// l'illustration par défaut.
 pub fn sweep(library_root: &Path, stories: &[LibraryEntry]) {
+    // Seul un `library/` marqué comme créé par l'application est balayé (#570).
+    if !crate::cache::is_owned(library_root) {
+        tracing::warn!("bibliothèque sans marqueur de l'application : vignettes non balayées");
+        return;
+    }
     let Ok(read) = std::fs::read_dir(library_root.join(THUMBS_DIR)) else {
         return;
     };
@@ -511,6 +516,24 @@ mod tests {
         let s = staged_pk(&lib, "b.plain.pk", Some(&lif()));
         let entry = install(&lib, dir.path(), &story("abc", Some(2)), &s, 3);
         assert_eq!(thumbs(dir.path()), [entry.thumb.unwrap()]);
+    }
+
+    #[test]
+    fn le_balayage_ne_touche_pas_a_une_bibliotheque_sans_marqueur() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("library");
+        let thumbs_dir = library.join(THUMBS_DIR);
+        std::fs::create_dir_all(&thumbs_dir).unwrap();
+        std::fs::write(thumbs_dir.join("photo.png"), png()).unwrap();
+
+        // Homonyme sans marqueur (#570) : rien n'est supprimé.
+        sweep(&library, &[]);
+        assert_eq!(thumbs(dir.path()), ["photo.png"]);
+
+        // Le même dossier marqué par l'application : l'orpheline part.
+        std::fs::write(library.join(crate::cache::MARKER), b"").unwrap();
+        sweep(&library, &[]);
+        assert!(thumbs(dir.path()).is_empty());
     }
 
     #[test]

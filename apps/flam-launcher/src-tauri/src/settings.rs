@@ -335,6 +335,25 @@ fn check_cache_dir(raw: &str, protected: &[PathBuf]) -> Result<(), (&'static str
     Ok(())
 }
 
+/// Refuse un **nouveau** dossier de cache qui contient déjà, sous un nom de
+/// `cache::APP_CACHE_SUBDIRS`, un élément qui n'a pas le marqueur de l'application (#570) : le
+/// vidage l'ignorerait, mais l'application y écrirait au milieu de données qui ne sont pas à elle.
+fn check_cache_dir_free(raw: &str) -> AppResult<()> {
+    let foreign = crate::cache::foreign_entries(Path::new(raw));
+    if foreign.is_empty() {
+        return Ok(());
+    }
+    let names = foreign
+        .iter()
+        .map(|name| format!("« {name} »"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(AppError::CacheDirInUse(format!(
+        "dossier de cache : « {raw} » contient déjà {names}, qui n'ont pas été créés par Flam \
+         Launcher. Choisissez un dossier vide ou réservé au launcher."
+    )))
+}
+
 /// Compare deux chemins composant par composant, sans tenir compte de la casse ni des `/` ou
 /// `\` finaux.
 fn same_path(a: &Path, b: &Path) -> bool {
@@ -515,6 +534,15 @@ impl SettingsStore {
     pub fn update(&self, settings: Settings) -> AppResult<Settings> {
         let stored = self.load()?;
         let mut settings = validate(settings)?;
+        if let Some(dir) = &settings.cache_dir {
+            let unchanged = stored
+                .cache_dir
+                .as_deref()
+                .is_some_and(|old| same_path(Path::new(old), Path::new(dir)));
+            if !unchanged {
+                check_cache_dir_free(dir)?;
+            }
+        }
         settings.carrier_consent = stored.carrier_consent;
         storage::write_json(&self.dir.join(FILE_NAME), &settings)?;
         Ok(settings)
@@ -547,10 +575,13 @@ impl SettingsStore {
         Ok(PathBuf::from(resolved.cache_dir))
     }
 
-    /// Dossier de cache effectif, créé s'il n'existe pas.
+    /// Dossier de cache effectif, créé s'il n'existe pas, avec les sous-dossiers de
+    /// `cache::APP_CACHE_SUBDIRS` absents (créés marqués, #570) : tout module qui passe par ici
+    /// écrit ensuite dans un sous-dossier que le vidage reconnaît comme le sien.
     pub fn resolved_cache_dir(&self, env: &Environment) -> AppResult<PathBuf> {
         let dir = self.cache_dir(env)?;
         std::fs::create_dir_all(&dir)?;
+        crate::cache::ensure_subdirs(&dir);
         Ok(dir)
     }
 }
@@ -927,6 +958,47 @@ mod tests {
         assert_eq!(saved.thumb_fit, ThumbFit::Rogner);
         assert_eq!(saved.tts_voice.as_deref(), Some("fr-hortense"));
         assert_eq!(store.load().unwrap(), saved);
+    }
+
+    #[test]
+    fn un_nouveau_cache_avec_un_homonyme_sans_marqueur_est_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path());
+        let media = dir.path().join("media");
+        touch(&media.join("podcasts/emission.mp3"));
+        let with_cache = |path: &Path| Settings {
+            cache_dir: Some(path.display().to_string()),
+            ..Settings::default()
+        };
+        let before = store.load().unwrap();
+
+        let err = store.update(with_cache(&media)).unwrap_err();
+        assert_eq!(err.kind(), "cache_dir_in_use");
+        assert!(err.to_string().contains("« podcasts »"), "{err}");
+        assert_eq!(store.load().unwrap(), before, "rien d'enregistré");
+        assert!(media.join("podcasts/emission.mp3").is_file());
+        assert!(!media.join("library").exists(), "aucun dossier créé");
+
+        // Un dossier dont les sous-dossiers sont ceux de l'application est accepté…
+        let ours = dir.path().join("ours");
+        crate::cache::ensure_subdirs(&ours);
+        store.update(with_cache(&ours)).unwrap();
+        // … et le réenregistrer reste possible même si un homonyme y est apparu depuis.
+        std::fs::remove_dir_all(ours.join("thumbs")).unwrap();
+        touch(&ours.join("thumbs/perso.png"));
+        store.update(with_cache(&ours)).unwrap();
+    }
+
+    #[test]
+    fn resolved_cache_dir_cree_les_sous_dossiers_marques() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = env_in(dir.path());
+        let cache = SettingsStore::new(dir.path())
+            .resolved_cache_dir(&env)
+            .unwrap();
+        for name in crate::cache::APP_CACHE_SUBDIRS {
+            assert!(crate::cache::is_owned(&cache.join(name)), "{name}");
+        }
     }
 
     #[test]

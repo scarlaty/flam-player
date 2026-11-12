@@ -422,8 +422,19 @@ impl Library {
         &self.root
     }
 
+    /// Crée `library/` s'il a disparu, avec le marqueur de l'application (#570), comme le fait
+    /// `resolved_cache_dir` : sans marqueur, le vidage et le balayage des vignettes l'ignorent.
+    fn ensure_root(&self) -> AppResult<()> {
+        if let Some(cache_root) = self.root.parent() {
+            crate::cache::ensure_subdir(cache_root, LIBRARY_DIR)?;
+        }
+        std::fs::create_dir_all(&self.root)?;
+        Ok(())
+    }
+
     /// Dossier de préparation, créé si besoin.
     pub fn staging_dir(&self) -> AppResult<PathBuf> {
+        self.ensure_root()?;
         let dir = self.root.join(STAGING_DIR);
         std::fs::create_dir_all(&dir)?;
         Ok(dir)
@@ -526,7 +537,7 @@ impl Library {
     }
 
     fn lock_core(&self, wait: Option<Duration>) -> AppResult<Option<File>> {
-        std::fs::create_dir_all(&self.root)?;
+        self.ensure_root()?;
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
