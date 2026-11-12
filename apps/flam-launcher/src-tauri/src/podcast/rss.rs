@@ -168,6 +168,18 @@ fn clean_line(s: &str, max: usize) -> String {
     truncate_chars(&joined, max)
 }
 
+/// Longueur maximale (caractères) du message de quick-xml recopié dans `InvalidFeed` : il peut
+/// citer un nom de balise de la taille du flux.
+const MAX_XML_ERROR_CHARS: usize = 200;
+
+/// Erreur d'analyse XML pour l'utilisateur : le message de quick-xml, sur une ligne et borné.
+fn xml_error(err: &dyn std::fmt::Display) -> RssError {
+    RssError::InvalidFeed(format!(
+        "XML mal formé : {}",
+        clean_line(&err.to_string(), MAX_XML_ERROR_CHARS)
+    ))
+}
+
 /// URI d'espace de noms comparable : sans espaces, schéma ni `/` final, en minuscules.
 fn ns_key(uri: &str) -> String {
     let lower = uri.trim().to_ascii_lowercase();
@@ -1209,9 +1221,7 @@ pub fn parse_feed(bytes: &[u8]) -> Result<PodcastFeed, RssError> {
         skipped_warnings: 0,
     };
     loop {
-        let event = reader
-            .read_event()
-            .map_err(|err| RssError::InvalidFeed(format!("XML mal formé : {err}")))?;
+        let event = reader.read_event().map_err(|err| xml_error(&err))?;
         match event {
             Event::Eof => break,
             Event::DocType(_) => return Err(RssError::DtdRefused),

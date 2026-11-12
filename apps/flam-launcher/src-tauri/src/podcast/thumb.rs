@@ -35,7 +35,7 @@ use super::mp3cache::{CacheAccess, EntryKey, LiveLocks, Mode};
 use super::pack::EpisodeRef;
 use super::rss::PodcastEpisode;
 use super::source::{episode_id, PodcastService};
-use crate::catalog::blocking;
+use crate::catalog::{blocking, CatalogService};
 use crate::install::podcast::download_image;
 use crate::settings::{Environment, SettingsStore};
 use crate::sources::{Source, SourcesStore};
@@ -246,6 +246,9 @@ where
     static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(DOWNLOADS);
     let dir = access
         .in_subdir(THUMBS_DIR, &key.source_id, Mode::Write, |dir| {
+            // Restes d'anciens téléchargements abandonnés (arrêt brutal) : balayés ici aussi,
+            // pas seulement à l'écriture d'une vignette.
+            sweep_stale(dir);
             dir.to_path_buf()
         })
         .await?;
@@ -271,14 +274,28 @@ where
 async fn download_from_web(url: String, dest: PathBuf) -> bool {
     let (_keep, cancel) = watch::channel(false);
     let policy = super::net::NetPolicy::strict();
-    matches!(
-        tokio::time::timeout(
-            DOWNLOAD_TIMEOUT,
-            download_image(policy, &url, &dest, cancel)
-        )
-        .await,
-        Ok(Ok(true))
+    bounded_download(
+        &dest,
+        DOWNLOAD_TIMEOUT,
+        download_image(policy, &url, &dest, cancel),
     )
+    .await
+}
+
+/// Exécute `download` (qui écrit `dest`) en `limit` au plus. Au-delà, le futur est abandonné sans
+/// avoir pu nettoyer : le fichier partiel (`<dest>.part`) est supprimé ici.
+async fn bounded_download(
+    dest: &Path,
+    limit: Duration,
+    download: impl Future<Output = AppResult<bool>>,
+) -> bool {
+    match tokio::time::timeout(limit, download).await {
+        Ok(result) => matches!(result, Ok(true)),
+        Err(_) => {
+            let _ = tokio::fs::remove_file(crate::install::download::part_path(dest)).await;
+            false
+        }
+    }
 }
 
 /// Épisode `episode` du flux en cache de la source, avec la racine du cache. `None` : source
@@ -329,6 +346,7 @@ pub async fn pack_episode_thumbnail(
     app: AppHandle,
     config: State<'_, ConfigState>,
     service: State<'_, PodcastService>,
+    catalog: State<'_, CatalogService>,
     source_id: String,
     episode_id: String,
 ) -> AppResult<Option<String>> {
@@ -339,6 +357,11 @@ pub async fn pack_episode_thumbnail(
     if !super::pack::valid_id(&episode.source_id) || !super::pack::valid_id(&episode.episode_id) {
         return Ok(None);
     }
+    // Portillon du cache en lecture, comme les autres écrivains du cache : « Vider le cache »
+    // (écriture) attend la fin du chargement. Rien de ce qui suit ne reprend ce portillon
+    // (`find_episode`, `CacheAccess` et `load` n'y touchent pas : une relecture pendant qu'un
+    // vidage attend s'interbloquerait), et l'appelant n'en tient aucun.
+    let _gate = catalog.cache_gate().read_owned().await;
     // Génération lue **avant** de résoudre l'adresse du flux : une purge ensuite rend le cache
     // inaccessible (voir `CacheAccess::new`).
     let generation = service.generation(&episode.source_id);

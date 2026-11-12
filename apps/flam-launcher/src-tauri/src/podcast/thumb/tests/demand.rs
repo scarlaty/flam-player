@@ -417,3 +417,58 @@ async fn find_episode_retrouve_l_episode_du_flux_en_cache() {
         assert!(find_episode(&config, &service, &r).await.unwrap().is_none());
     }
 }
+
+#[tokio::test]
+async fn delai_depasse_supprime_le_fichier_partiel() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("e1.x.dl");
+    let part = crate::install::download::part_path(&dest);
+    let started = part.clone();
+    // Faux téléchargement qui écrit son `.part` puis ne termine jamais.
+    let never = async move {
+        std::fs::write(&started, b"partiel").unwrap();
+        std::future::pending::<AppResult<bool>>().await
+    };
+    let ok = bounded_download(&dest, Duration::from_millis(50), never).await;
+    assert!(!ok);
+    assert!(names(dir.path()).is_empty(), "{:?}", names(dir.path()));
+}
+
+#[tokio::test]
+async fn telechargement_termine_dans_le_delai_garde_son_resultat() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("e1.x.dl");
+    assert!(bounded_download(&dest, Duration::from_secs(5), async { Ok(true) }).await);
+    assert!(!bounded_download(&dest, Duration::from_secs(5), async { Ok(false) }).await);
+}
+
+#[tokio::test]
+async fn un_telechargement_balaye_les_restes_anciens() {
+    let f = Fixture::new();
+    let dir = thumbs_dir(&f);
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = dir.join("vieux.0123.dl.part");
+    let recent = dir.join("recent.4567.dl");
+    for p in [&old, &recent] {
+        std::fs::write(p, b"x").unwrap();
+    }
+    let long_ago = std::time::SystemTime::now() - STALE_AFTER - Duration::from_secs(60);
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(long_ago)
+        .unwrap();
+    let calls = AtomicUsize::new(0);
+    let key = EntryKey::of("s1", &episode("e1"));
+    let out = load(
+        &f.access(),
+        &key,
+        |dest| fake_download(&calls, None, dest),
+        in_process,
+    )
+    .await;
+    assert_eq!(out, None);
+    assert!(!old.exists(), "reste ancien balayé au téléchargement");
+    assert!(recent.exists());
+}

@@ -988,3 +988,21 @@ fn variantes_courantes_de_l_uri_itunes_et_zones_nommees() {
     let feed = parse(&wrap(&item("v", desc))).unwrap();
     assert!(feed.episodes[0].description.is_some());
 }
+
+#[test]
+fn message_xml_reduit_a_une_ligne_et_borne() {
+    // Nom de balise fermante géant : le message de quick-xml le cite, il est tronqué.
+    let giant = "z".repeat(100_000);
+    let xml = format!("<rss><channel><title>t</title></{giant}></channel></rss>");
+    let Err(RssError::InvalidFeed(message)) = parse(&xml) else {
+        panic!("flux refusé attendu");
+    };
+    assert!(message.starts_with("XML mal formé : "), "{message}");
+    assert!(message.chars().count() <= "XML mal formé : ".chars().count() + MAX_XML_ERROR_CHARS);
+    assert!(!message.contains(&giant));
+    // Saut de ligne et caractères de contrôle dans le message : une seule ligne.
+    let RssError::InvalidFeed(message) = xml_error(&"nom\navec\r\nsaut\tet\u{7}contrôle") else {
+        unreachable!()
+    };
+    assert_eq!(message, "XML mal formé : nom avec saut et contrôle");
+}
