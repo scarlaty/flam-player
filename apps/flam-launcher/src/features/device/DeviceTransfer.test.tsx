@@ -1663,3 +1663,53 @@ it("Flam 1.x débranchée pendant le choix des clés : les fiches s'ouvrent de n
   expect(screen.getByTestId("confirming")).toHaveTextContent("false");
   expect(count("device_send_story")).toBe(0);
 });
+
+it(
+  "envoi long fenêtre en arrière-plan : « Éjecter la Flam » utilisable dès la fin, sans autre action (#625)",
+  async () => {
+    acknowledgeWarning();
+    render(<Harness />);
+    await ready();
+    fireEvent.click(sendButton("Capi"));
+    await waitFor(() => expect(sends.has(A)).toBe(true));
+    const hidden = vi.spyOn(document, "hidden", "get");
+    const state = vi.spyOn(document, "visibilityState", "get");
+    try {
+      // La fenêtre perd le focus puis est masquée pendant l'envoi : progression reçue, scrutation
+      // suspendue.
+      fireEvent.blur(window);
+      hidden.mockReturnValue(true);
+      state.mockReturnValue("hidden");
+      fireEvent(document, new Event("visibilitychange"));
+      await act(async () => {
+        await emit("device://transfer-progress", {
+          uuid: A,
+          progress: { phase: "copy", done: 200, total: 400 },
+        });
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS + 300));
+      });
+      // Fin de l'envoi, fenêtre toujours en arrière-plan et sans focus : aucun événement de
+      // focus ni de visibilité n'arrive.
+      await resolveSend(A);
+      await waitFor(() =>
+        expect(screen.getAllByRole("button", { name: "Éjecter la Flam" })).toHaveLength(
+          2,
+        ),
+      );
+      const ejects = screen.getAllByRole("button", { name: "Éjecter la Flam" });
+      for (const eject of ejects) expect(eject).not.toHaveAttribute("aria-disabled");
+      expect(screen.queryByRole("button", { name: "Annuler l'envoi" })).toBeNull();
+      fireEvent.click(ejects[1]!);
+      expect(
+        await screen.findByText("Vous pouvez débrancher la Flam."),
+      ).toBeInTheDocument();
+      expect(count("device_eject")).toBe(1);
+    } finally {
+      hidden.mockRestore();
+      state.mockRestore();
+    }
+  },
+  SLOW_TEST_MS,
+);
