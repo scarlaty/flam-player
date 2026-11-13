@@ -1,6 +1,8 @@
 -- test_carousel_memory.lua — carrousel du runtime telmi2flam (#620) : sources
 -- d'images retenues par le module, sur le VRAI LVGL de flam-test.
 -- Lancement : flam-test tests\engine\test_carousel_memory.lua (suite test_run.bat).
+-- test_run.bat le relance sur la copie du skill flam-homebrew (FLAM_RUNTIME_DIR =
+-- skills\flam-homebrew\assets\runtime\script\).
 --
 -- Sur la Flam, lv.img.set_src ne retient pas la source : seule la reference Lua
 -- du module la garde en vie, et le firmware n'a de place que pour peu d'images

@@ -5,7 +5,9 @@ REM  test_run.bat - Lance toutes les suites de tests
 REM  1. Suite    : tests\lua\test_*.lua (hors test_helpers.lua), flam-test,
 REM               un seul processus.
 REM  2. Moteur   : tests\engine\test_*.lua (moteur story.lua/main.lua et
-REM               modules runtime telmi2flam), flam-test.
+REM               modules runtime telmi2flam), flam-test ; puis
+REM               test_carousel_memory.lua sur le carrousel du skill
+REM               flam-homebrew (FLAM_RUNTIME_DIR).
 REM  3. Audio    : tests\audio\test_*.lua puis reopen_1/reopen_2 (meme
 REM               processus : fermeture/reouverture du lua_State, issue #1),
 REM               flam-test-audio = vrai sdl_audio.c, pilote SDL dummy.
@@ -75,6 +77,18 @@ if defined ENG_ARGS (
     set "ENGINE_RC=1"
 )
 echo EXIT_CODE=!ENGINE_RC!
+REM Copie du carrousel embarquee par le skill flam-homebrew (#620) : meme test
+REM memoire, sur le runtime du skill (FLAM_RUNTIME_DIR). Le reste de ce runtime
+REM differe de celui de telmi2flam : seul ce test lui est applique.
+echo --- carrousel du skill flam-homebrew : test_carousel_memory ---
+set "SAVED_RUNTIME_DIR=!FLAM_RUNTIME_DIR!"
+set "FLAM_RUNTIME_DIR=%ROOT%skills\flam-homebrew\assets\runtime\script\"
+"%BUILD%\flam-test.exe" --timeout 60 "%ROOT%tests\engine\test_carousel_memory.lua"
+set "SKILL_CAR_RC=!ERRORLEVEL!"
+set "FLAM_RUNTIME_DIR=!SAVED_RUNTIME_DIR!"
+set "SAVED_RUNTIME_DIR="
+echo EXIT_CODE=!SKILL_CAR_RC!
+if "!ENGINE_RC!"=="0" set "ENGINE_RC=!SKILL_CAR_RC!"
 
 REM ---------------- 3. Audio reel ----------------
 echo.

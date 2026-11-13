@@ -19,16 +19,30 @@ carousel.counter = nil
 carousel.label = nil
 carousel.arrowL = nil
 carousel.arrowR = nil
+-- sources LIF des fleches : gardees ici tant que les objets image les affichent
+-- (lv.img.set_src ne retient pas la source, le __gc liberait les pixels)
+carousel.arrowLData = nil
+carousel.arrowRData = nil
+-- Sources des vignettes AFFICHEES, et d'elles seules (#620) : chemin -> source.
+-- Meme contrainte que les fleches : la reference Lua vit tant qu'un objet image
+-- affiche la source ; une source qui n'est plus affichee est relachee aussitot
+-- (un cache de toutes les images vues epuisait la memoire de la Flam au 5e choix).
+carousel.sources = {}
+-- Chemin affiche par chaque vignette ("C", "L", "R"), nil si masquee.
+carousel.slotPath = {}
 carousel.keyEvent = nil
 carousel.inputProcessTimer = nil
 carousel.tick = 0
+carousel.rowDy = 0         -- decalage vertical des images (ROW_DY si label, 0 sinon)
+carousel.hasLabel = false
 
--- Geometrie (zoom LVGL : 256 = 1x). Images sources = 320x240.
-local ZOOM_CENTER = 160      -- ~200x150 (image principale)
-local ZOOM_SIDE   = 64       -- ~80x60
+-- Geometrie (zoom LVGL : 256 = 1x). Images sources = 320x212 (zone sous le bandeau).
+local ZOOM_CENTER = 160      -- ~200x132 (image principale)
+local ZOOM_SIDE   = 64       -- ~80x53
 local SIDE_OPA    = 90        -- opacite des voisins (0..255)
 local SIDE_DX     = 112       -- decalage horizontal des voisins
-local ROW_DY      = -14       -- centre vertical sur la zone sans texte (au-dessus du label)
+local ROW_DY      = -14       -- centre vertical sur la zone sans texte (au-dessus du label) ;
+                             -- 0 si aucun choix n'a de label (barre masquee)
 local ARROW_ON    = 255       -- fleche active
 local ARROW_DIM   = 60        -- fleche cote "mort" (2 choix : pas de wrap)
 local PH_W, PH_H  = 150, 112  -- carte de repli
@@ -92,6 +106,10 @@ function carousel.clean()
     carousel.label = nil
     carousel.arrowL = nil
     carousel.arrowR = nil
+    carousel.arrowLData = nil  -- apres lv.obj.clean : plus aucun objet ne les affiche
+    carousel.arrowRData = nil
+    carousel.sources = {}      -- idem : les vignettes sont detruites par lv.obj.clean
+    carousel.slotPath = {}
     carousel.keyEvent = nil
     carousel.styles = {}
     carousel.events = {}
@@ -106,15 +124,13 @@ local function wrap(i, n)
     return i
 end
 
--- Charge (et met en cache) la source image d'un choix. Renvoie data,w,h ou nil.
-local function loadImg(ans)
+-- Chemin de l'image d'un choix ; nil sans image (empty.lif : carte de repli au
+-- centre, vignette masquee sur les cotes).
+local function imgPath(ans)
     if ans == nil or ans.img == nil or ans.img == "empty.lif" then
         return nil
     end
-    if ans.data == nil then
-        ans.data, ans.width, ans.height = Global.load_image(ans.img)
-    end
-    return ans.data
+    return ans.img
 end
 
 -- Navigation : circulaire si >=3 choix, lineaire (clamp) si 2 (pas de wrap
@@ -129,24 +145,80 @@ local function navigate(cur, delta, n)
     return nx
 end
 
--- Affiche une vignette voisine (arriere-plan attenue). dx = decalage horizontal.
--- Re-aligne APRES set_src : l'auto-size change la taille de l'objet, donc la
--- position calculee a la creation (taille 0) serait fausse (cf. image-choice).
-local function showSide(imgObj, idx, dx)
-    local data = loadImg(carousel.answers[idx])
-    if data == nil then
-        lv.obj.add_flag(imgObj, lv.OBJ_FLAG_HIDDEN)
-        return
-    end
-    lv.obj.clear_flag(imgObj, lv.OBJ_FLAG_HIDDEN)
-    lv.img.set_src(imgObj, data)
-    lv.img.set_zoom(imgObj, ZOOM_SIDE)
-    lv.obj.set_style_img_opa(imgObj, SIDE_OPA, lv.STATE_DEFAULT)
-    lv.obj.align(imgObj, lv.ALIGN_CENTER, dx, ROW_DY)
+-- Vignettes : centre d'abord (ordre de chargement).
+local SLOTS = { "C", "L", "R" }
+
+local function slotObj(slot)
+    if slot == "C" then return carousel.imgC end
+    if slot == "L" then return carousel.imgL end
+    return carousel.imgR
 end
 
-local function hideSide(imgObj)
-    lv.obj.add_flag(imgObj, lv.OBJ_FLAG_HIDDEN)
+-- Voisins affiches (index, nil = masque) : circulaires si >=3 choix ; si 2,
+-- l'autre choix du cote naturel seulement ; aucun si 1.
+local function neighbours(n, it)
+    if n >= 3 then return wrap(it - 1, n), wrap(it + 1, n) end
+    if n == 2 then
+        if it == 1 then return nil, 2 end
+        return 1, nil
+    end
+    return nil, nil
+end
+
+-- Met les sources en conformite avec le plan `want` (vignette -> chemin ou nil)
+-- sans jamais retenir plus que les sources du plan, soit 3 au plus (#620) :
+--  1. une vignette dont le chemin change est masquee : plus aucun rendu ne lit
+--     son ancienne source (le rendu LVGL n'a lieu qu'apres ce rafraichissement) ;
+--  2. les sources hors plan sont relachees puis un GC complet libere leurs
+--     pixels AVANT tout chargement ;
+--  3. seules les sources du plan absentes sont chargees : celles qui restent
+--     affichees (2 sur 3 a chaque cran) ne sont pas rechargees, un fichier commun
+--     a plusieurs choix n'est charge qu'une fois.
+-- Seuls des chemins passent par des variables locales : aucune source relachee
+-- ne reste sur la pile Lua (donc atteignable) pendant le GC.
+local function syncSources(want)
+    for _, slot in ipairs(SLOTS) do
+        if carousel.slotPath[slot] ~= nil and carousel.slotPath[slot] ~= want[slot] then
+            lv.obj.add_flag(slotObj(slot), lv.OBJ_FLAG_HIDDEN)
+            carousel.slotPath[slot] = nil
+        end
+    end
+    local dropped = false
+    for path in pairs(carousel.sources) do
+        if path ~= want.C and path ~= want.L and path ~= want.R then
+            carousel.sources[path] = nil   -- effacer pendant pairs : permis en Lua
+            dropped = true
+        end
+    end
+    if dropped then
+        collectgarbage("collect")
+    end
+    for _, slot in ipairs(SLOTS) do
+        local path = want[slot]
+        if path ~= nil and carousel.sources[path] == nil then
+            carousel.sources[path] = Global.load_image(path)   -- nil si illisible
+        end
+    end
+end
+
+-- Affiche une vignette avec la source retenue de `path`, ou la masque s'il n'y
+-- en a pas. Re-aligne APRES set_src : l'auto-size change la taille de l'objet,
+-- donc la position calculee a la creation (taille 0) serait fausse.
+local function showSlot(slot, path, zoom, opa, dx)
+    local obj = slotObj(slot)
+    local data = path and carousel.sources[path]
+    if not data then
+        lv.obj.add_flag(obj, lv.OBJ_FLAG_HIDDEN)
+        carousel.slotPath[slot] = nil
+        return false
+    end
+    lv.img.set_src(obj, data)
+    lv.img.set_zoom(obj, zoom)
+    lv.obj.set_style_img_opa(obj, opa, lv.STATE_DEFAULT)
+    lv.obj.align(obj, lv.ALIGN_CENTER, dx, carousel.rowDy)
+    lv.obj.clear_flag(obj, lv.OBJ_FLAG_HIDDEN)
+    carousel.slotPath[slot] = path
+    return true
 end
 
 -- Fleche active (opaque) ou "morte" (grisee).
@@ -154,53 +226,41 @@ local function setArrow(arrowObj, active)
     lv.obj.set_style_img_opa(arrowObj, active and ARROW_ON or ARROW_DIM, lv.STATE_DEFAULT)
 end
 
--- Met a jour compteur + 3 vignettes + label (SANS audio).
+-- Met a jour les 3 vignettes, les fleches et le label (SANS audio).
 function carousel.refreshVisual()
     local n = #carousel.answers
     local it = carousel.answerIterator
+    local center = carousel.answers[it]
+    local li, ri = neighbours(n, it)
+    local want = {
+        C = imgPath(center),
+        L = li and imgPath(carousel.answers[li]) or nil,
+        R = ri and imgPath(carousel.answers[ri]) or nil,
+    }
+    syncSources(want)
 
     -- Centre : image ou carte de repli.
-    local center = carousel.answers[it]
-    local data = loadImg(center)
-    if data ~= nil then
-        lv.obj.clear_flag(carousel.imgC, lv.OBJ_FLAG_HIDDEN)
+    if showSlot("C", want.C, ZOOM_CENTER, lv.OPA_COVER, 0) then
         lv.obj.add_flag(carousel.placeholder, lv.OBJ_FLAG_HIDDEN)
-        lv.img.set_src(carousel.imgC, data)
-        lv.img.set_zoom(carousel.imgC, ZOOM_CENTER)
-        lv.obj.set_style_img_opa(carousel.imgC, lv.OPA_COVER, lv.STATE_DEFAULT)
-        lv.obj.align(carousel.imgC, lv.ALIGN_CENTER, 0, ROW_DY)  -- re-align apres auto-size
     else
-        lv.obj.add_flag(carousel.imgC, lv.OBJ_FLAG_HIDDEN)
         lv.obj.clear_flag(carousel.placeholder, lv.OBJ_FLAG_HIDDEN)
         lv.label.set_text(carousel.placeholderNum, tostring(it))
         lv.obj.align(carousel.placeholderNum, lv.ALIGN_CENTER, 0, 0)
     end
 
-    -- Voisins + fleches.
+    -- Voisins (attenues, en arriere-plan).
+    showSlot("L", want.L, ZOOM_SIDE, SIDE_OPA, -SIDE_DX)
+    showSlot("R", want.R, ZOOM_SIDE, SIDE_OPA, SIDE_DX)
+
+    -- Fleches : actives si >=3 choix ; si 2, celle du cote sans suite est
+    -- grisee (pas de wrap) ; aucune si 1 choix.
     if n >= 3 then
-        -- Circulaire : 2 voisins, 2 fleches actives.
-        showSide(carousel.imgL, wrap(it - 1, n), -SIDE_DX)
-        showSide(carousel.imgR, wrap(it + 1, n), SIDE_DX)
         setArrow(carousel.arrowL, true)
         setArrow(carousel.arrowR, true)
     elseif n == 2 then
-        -- Lineaire : l'autre choix s'affiche du cote naturel, la fleche du cote
-        -- sans suite est grisee (pas de wrap).
-        if it == 1 then
-            hideSide(carousel.imgL)
-            showSide(carousel.imgR, 2, SIDE_DX)
-            setArrow(carousel.arrowL, false)
-            setArrow(carousel.arrowR, true)
-        else
-            showSide(carousel.imgL, 1, -SIDE_DX)
-            hideSide(carousel.imgR)
-            setArrow(carousel.arrowL, true)
-            setArrow(carousel.arrowR, false)
-        end
+        setArrow(carousel.arrowL, it ~= 1)
+        setArrow(carousel.arrowR, it == 1)
     else
-        -- 1 choix : ni voisin ni fleche.
-        hideSide(carousel.imgL)
-        hideSide(carousel.imgR)
         lv.obj.add_flag(carousel.arrowL, lv.OBJ_FLAG_HIDDEN)
         lv.obj.add_flag(carousel.arrowR, lv.OBJ_FLAG_HIDDEN)
     end
@@ -209,17 +269,19 @@ function carousel.refreshVisual()
     lv.label.set_text(carousel.label, (center and center.label) or " ")
 end
 
-function carousel.playFocus()
+-- stopNow : changement de focus => l'audio de l'option quittee est coupe tout
+-- de suite, seul le chargement du nouvel audio reste differe (B6).
+function carousel.playFocus(stopNow)
     local ans = carousel.answers[carousel.answerIterator]
     if ans == nil then return end
     local priority = true
     if ans.priority ~= nil then priority = ans.priority end
-    Global.requestAudioPlay({ path = ans.audio, priority = priority })
+    Global.requestAudioPlay({ path = ans.audio, priority = priority, stopNow = stopNow })
 end
 
 function carousel.refresh()
     carousel.refreshVisual()
-    carousel.playFocus()
+    carousel.playFocus(true)
 end
 
 function carousel.audioFeedback(state, second)
@@ -247,14 +309,33 @@ function carousel.processKeyEvent()
             carousel.answerIterator = navigate(carousel.answerIterator, delta, n)
         end
         if (b == 10) then
-            if (carousel.answers[carousel.answerIterator].cb ~= nil) then
-                carousel.answers[carousel.answerIterator].cb()
+            -- ENTER consomme AVANT le callback : sinon cb() est rappele a chaque
+            -- tick (100 ms) tant que le module suivant n'a pas supprime ce timer.
+            local cb = carousel.answers[carousel.answerIterator].cb
+            carousel.keyEvent = nil
+            if (cb ~= nil) then
+                cb()
             end
         else
             carousel.refresh()
             carousel.keyEvent = nil
         end
     end
+end
+
+-- B7 : appele par Global.flushPendingKey avant un retour (Home/ESC) : un ENTER
+-- en attente (hors fenetre anti-rebond) est traite tout de suite au lieu d'etre
+-- perdu au nettoyage du module. Les autres touches en attente sont ignorees
+-- (le retour porte sur l'option affichee). Renvoie true si un ENTER est traite.
+function carousel.flushPendingKey()
+    if (carousel.keyEvent == nil or carousel.tick <= 1) then
+        return false
+    end
+    if (string.byte(carousel.keyEvent) ~= 10) then
+        return false
+    end
+    carousel.processKeyEvent()
+    return true
 end
 
 function carousel.keyPressed(e)
@@ -266,7 +347,7 @@ end
 local function newVignette(parent, dx, dy)
     local img = lv.img.new(parent)
     lv.obj.remove_style_all(img)
-    -- FLOATING : les boites image (320x240) debordent du conteneur ; sans ce
+    -- FLOATING : les boites image (320x212) debordent du conteneur ; sans ce
     -- flag, le conteneur scrollable (garde pour ENTER) auto-scrolle vers un
     -- voisin qui deborde => tout l'ecran se decale (cf. bug pos2). FLOATING =
     -- objet ignore par scroll/layout, positionne uniquement par align.
@@ -303,6 +384,14 @@ function carousel.create(args)
         end
     end
 
+    -- Barre de label seulement si au moins un choix a un label (notes.json) :
+    -- sinon (cas frequent, texte deja dans l'image) images centrees, pas de barre vide.
+    carousel.hasLabel = false
+    for _, v in ipairs(carousel.answers) do
+        if type(v.label) == "string" and v.label ~= "" then carousel.hasLabel = true; break end
+    end
+    carousel.rowDy = carousel.hasLabel and ROW_DY or 0
+
     if (#carousel.answers == 0) then
         return args.exitCb()
     elseif #carousel.answers == 1 and lastCb ~= nil and args.skipIfLastChoice == true then
@@ -310,16 +399,16 @@ function carousel.create(args)
     end
 
     -- Vignettes (voisins derriere, centre devant) + carte de repli.
-    carousel.imgL = newVignette(carousel.parentContainer, -SIDE_DX, ROW_DY)
-    carousel.imgR = newVignette(carousel.parentContainer, SIDE_DX, ROW_DY)
-    carousel.imgC = newVignette(carousel.parentContainer, 0, ROW_DY)
+    carousel.imgL = newVignette(carousel.parentContainer, -SIDE_DX, carousel.rowDy)
+    carousel.imgR = newVignette(carousel.parentContainer, SIDE_DX, carousel.rowDy)
+    carousel.imgC = newVignette(carousel.parentContainer, 0, carousel.rowDy)
 
     carousel.placeholder = lv.obj.new(carousel.parentContainer)
     lv.obj.remove_style_all(carousel.placeholder)
     lv.obj.set_size(carousel.placeholder, PH_W, PH_H)
     lv.obj.add_style(carousel.placeholder, carousel.styles.placeholder, lv.STATE_DEFAULT)
     lv.obj.clear_flag(carousel.placeholder, lv.OBJ_FLAG_SCROLLABLE)
-    lv.obj.align(carousel.placeholder, lv.ALIGN_CENTER, 0, ROW_DY)
+    lv.obj.align(carousel.placeholder, lv.ALIGN_CENTER, 0, carousel.rowDy)
     lv.obj.add_flag(carousel.placeholder, lv.OBJ_FLAG_HIDDEN)
     carousel.placeholderNum = lv.label.new(carousel.placeholder)
     lv.obj.remove_style_all(carousel.placeholderNum)
@@ -328,19 +417,21 @@ function carousel.create(args)
     lv.obj.align(carousel.placeholderNum, lv.ALIGN_CENTER, 0, 0)
 
     -- Fleches (devant les vignettes). Masquees s'il n'y a qu'un choix.
-    local al, aw, ah = Global.load_image(ARROW_L)
+    local aw, ah
+    carousel.arrowLData, aw, ah = Global.load_image(ARROW_L)
     carousel.arrowL = lv.img.new(carousel.parentContainer)
     lv.obj.remove_style_all(carousel.arrowL)
-    lv.img.set_src(carousel.arrowL, al)
+    lv.img.set_src(carousel.arrowL, carousel.arrowLData)
     lv.obj.set_size(carousel.arrowL, aw, ah)
-    lv.obj.align(carousel.arrowL, lv.ALIGN_LEFT_MID, 6, ROW_DY)
+    lv.obj.align(carousel.arrowL, lv.ALIGN_LEFT_MID, 6, carousel.rowDy)
 
-    local ar, arw, arh = Global.load_image(ARROW_R)
+    local arw, arh
+    carousel.arrowRData, arw, arh = Global.load_image(ARROW_R)
     carousel.arrowR = lv.img.new(carousel.parentContainer)
     lv.obj.remove_style_all(carousel.arrowR)
-    lv.img.set_src(carousel.arrowR, ar)
+    lv.img.set_src(carousel.arrowR, carousel.arrowRData)
     lv.obj.set_size(carousel.arrowR, arw, arh)
-    lv.obj.align(carousel.arrowR, lv.ALIGN_RIGHT_MID, -6, ROW_DY)
+    lv.obj.align(carousel.arrowR, lv.ALIGN_RIGHT_MID, -6, carousel.rowDy)
 
     if (#carousel.answers < 2) then
         lv.obj.add_flag(carousel.arrowL, lv.OBJ_FLAG_HIDDEN)
@@ -357,6 +448,9 @@ function carousel.create(args)
     lv.obj.add_style(carousel.label, carousel.styles.label, lv.STATE_DEFAULT)
     lv.obj.set_style_text_align(carousel.label, lv.TEXT_ALIGN_CENTER, 0)
     lv.obj.align(carousel.label, lv.ALIGN_BOTTOM_MID, 0, -4)
+    if not carousel.hasLabel then
+        lv.obj.add_flag(carousel.label, lv.OBJ_FLAG_HIDDEN)
+    end
 
     lv.group.add_obj(document, carousel.parentContainer)
 
