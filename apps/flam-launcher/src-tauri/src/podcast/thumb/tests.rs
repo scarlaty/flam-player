@@ -69,9 +69,17 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// Cache dont `podcasts/` porte le marqueur, comme le crée `resolved_cache_dir` : les
+    /// balayages des vignettes peuvent agir (#582).
     fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        crate::cache::ensure_subdir(
+            &dir.path().join("cache"),
+            crate::podcast::source::CACHE_SUBDIR,
+        )
+        .unwrap();
         Self {
-            dir: tempfile::tempdir().unwrap(),
+            dir,
             locks: Arc::new(TestLocks::default()),
         }
     }

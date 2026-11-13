@@ -78,9 +78,13 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// Cache dont `podcasts/` porte le marqueur, comme le crée `resolved_cache_dir` : l'éviction
+    /// peut agir (#582).
     fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        crate::cache::ensure_subdir(&dir.path().join("cache"), CACHE_SUBDIR).unwrap();
         Self {
-            dir: tempfile::tempdir().unwrap(),
+            dir,
             locks: Arc::new(TestLocks::default()),
         }
     }
@@ -603,6 +607,13 @@ async fn jonction_sur_le_chemin_du_cache_jamais_suivie() {
             "source" => target.join(CACHE_DIR),
             _ => target.join("s1").join(CACHE_DIR),
         };
+        // Le `podcasts/` vu (réel, ou cible de la jonction) porte le marqueur : seule la
+        // jonction peut arrêter l'éviction, pas l'absence de marqueur (#582).
+        let owned = match linked {
+            "source" => fx.root().join(CACHE_SUBDIR),
+            _ => target.clone(),
+        };
+        assert!(crate::cache::is_owned(&owned), "{linked} : marqueur absent");
         let before = names(&real_mp3);
         assert_eq!(before.len(), 4, "{linked} : {before:?}");
 
@@ -644,6 +655,61 @@ async fn jonction_sur_le_chemin_du_cache_jamais_suivie() {
             fx.store(&fx.access(), "s2", &ep, BODY).await;
         }
     }
+}
+
+/// Cache des MP3 au plafond nul, avec, à côté d'une entrée valide de `s1`, des fichiers que
+/// l'éviction supprimerait : MP3 d'un autre programme dans `podcasts/mon-emission/mp3/`, reste
+/// `.part` et MP3 sans métadonnées dans `s1`. Rend ces chemins, entrée comprise.
+async fn eviction_candidates(fx: &Fixture) -> Vec<PathBuf> {
+    let ep = episode("g1");
+    fx.store(&fx.access(), "s1", &ep, BODY).await;
+    let dir = fx.mp3_dir("s1");
+    let foreign = source_dir(&fx.root(), "mon-emission")
+        .unwrap()
+        .join(CACHE_DIR);
+    std::fs::create_dir_all(&foreign).unwrap();
+    let mut paths = vec![
+        foreign.join("episode-01.mp3"),
+        dir.join(format!("{}.mp3.part", episode_id("p"))),
+        dir.join(format!("{}.mp3", episode_id("orphelin"))),
+    ];
+    for path in &paths {
+        std::fs::write(path, b"x").unwrap();
+    }
+    let id = episode_id("g1");
+    paths.extend(["mp3", "img", "json"].map(|ext| dir.join(format!("{id}.{ext}"))));
+    paths
+}
+
+/// #582 : `podcasts/` sans marqueur de l'application (homonyme refusé par la migration, ou
+/// ancien cache adopté) : l'éviction ne supprime rien, ni reste ni entrée, même au-delà du
+/// plafond.
+#[tokio::test]
+async fn eviction_ne_touche_pas_un_podcasts_sans_marqueur() {
+    let fx = Fixture::new();
+    let paths = eviction_candidates(&fx).await;
+    let podcasts = fx.root().join(CACHE_SUBDIR);
+    std::fs::remove_file(podcasts.join(crate::cache::MARKER)).unwrap();
+    assert!(!crate::cache::is_owned(&podcasts));
+
+    assert!(scan(&fx.root()).entries.is_empty());
+    fx.access().with_max_bytes(0).evict(HashSet::new()).await;
+    for path in &paths {
+        assert!(path.is_file(), "{} supprimé", path.display());
+    }
+}
+
+/// #582 : `podcasts/` marqué : restes, fichiers étrangers d'une source et entrées au-delà du
+/// plafond partent comme avant.
+#[tokio::test]
+async fn eviction_nettoie_un_podcasts_marque() {
+    let fx = Fixture::new();
+    let paths = eviction_candidates(&fx).await;
+    fx.access().with_max_bytes(0).evict(HashSet::new()).await;
+    for path in &paths {
+        assert!(!path.exists(), "{} gardé", path.display());
+    }
+    assert!(crate::cache::is_owned(&fx.root().join(CACHE_SUBDIR)));
 }
 
 /// Le contrôle refuse aussi un fichier à la place d'un dossier, et ne crée les dossiers
