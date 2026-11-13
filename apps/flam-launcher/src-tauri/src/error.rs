@@ -25,6 +25,7 @@ use serde::{Serialize, Serializer};
 /// | `Conversion`    | `conversion`    | Échec de `telmi2flam` (code du convertisseur dans le message) |
 /// | `PlayerUnavailable` | `player_unavailable` | `flam-player.exe` introuvable ou impossible à lancer |
 /// | `PlayerBusy`    | `player_busy`   | Un player est déjà en cours d'exécution                 |
+/// | `CacheBusy`     | `cache_busy`    | « Vider le cache » refusé : une installation, un envoi ou un lancement utilise le cache (#578) |
 /// | `StoryFileMissing` | `story_file_missing` | Le fichier de l'histoire à lancer a disparu      |
 /// | `LuniiNeedsV2`  | `lunii_needs_v2` | Histoire STUdio (format Lunii) refusée : Flam pas en firmware 2.x |
 /// | `NotRemovable`  | `not_removable` | « Retirer du PC » refusé pour de bon : autre Flam, histoire plus sur la Flam ou changée (#609) |
@@ -109,6 +110,11 @@ pub enum AppError {
     #[error("{0}")]
     PlayerBusy(String),
 
+    /// Le cache est utilisé (installation, envoi vers la Flam, lancement) : le vidage n'attend
+    /// pas indéfiniment, il est refusé et peut être redemandé (#578).
+    #[error("{0}")]
+    CacheBusy(String),
+
     /// Le fichier (`.plain.pk` ou dossier `.plain`) de l'histoire à lancer n'existe plus.
     #[error("{0}")]
     StoryFileMissing(String),
@@ -171,6 +177,7 @@ impl AppError {
             AppError::Conversion { .. } => "conversion",
             AppError::PlayerUnavailable(_) => "player_unavailable",
             AppError::PlayerBusy(_) => "player_busy",
+            AppError::CacheBusy(_) => "cache_busy",
             AppError::StoryFileMissing(_) => "story_file_missing",
             AppError::TtsUnavailable(_) => "tts_unavailable",
             AppError::TtsNoVoice(_) => "tts_no_voice",
@@ -265,6 +272,7 @@ mod tests {
             "player_unavailable"
         );
         assert_eq!(AppError::PlayerBusy("x".into()).kind(), "player_busy");
+        assert_eq!(AppError::CacheBusy("x".into()).kind(), "cache_busy");
         assert_eq!(
             AppError::StoryFileMissing("x".into()).kind(),
             "story_file_missing"

@@ -765,6 +765,7 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 | `conversion`            | Échec de `telmi2flam` ; le code du convertisseur (`missing_asset`…) est dans `TaskError.code`       |
 | `player_unavailable`    | `flam-player.exe` introuvable (ni configuré ni détecté) ou impossible à lancer                      |
 | `player_busy`           | Un player tourne déjà (un seul à la fois)                                                           |
+| `cache_busy`            | « Vider le cache » refusé : le cache est utilisé (installation, envoi, lancement)                   |
 | `story_file_missing`    | Le fichier de l'histoire à lancer a disparu                                                         |
 | `tts_unavailable`       | Synthèse vocale indisponible (système non Windows, service de voix absent)                          |
 | `tts_no_voice`          | Aucune voix française installée dans Windows, ou voix choisie disparue                              |
@@ -1469,7 +1470,7 @@ sous-dossier de cache doit l'ajouter à cette liste** (il sera alors créé marq
 libérée. Les rafraîchissements de catalogue et les téléchargements de vignettes de catalogue
 relâchent ce portillon pendant l'attente réseau (`CatalogService::cache_gate`, compteur de vidages) : « Vider le
 cache » n'attend que leurs sections qui lisent ou écrivent le disque, et un vidage passé pendant le téléchargement
-fait abandonner l'écriture finale (rien n'est recréé derrière le vidage). `cache_clear` est refusé avec `player_busy` tant qu'un player tourne (sa copie de
+fait abandonner l'écriture finale (rien n'est recréé derrière le vidage). Une installation ou un envoi, eux, tiennent le portillon pendant toute l'opération : « Vider le cache » n'attend que 3 s (`CatalogService::pause_refreshes_within`) puis est refusé avec `cache_busy`, sans rester en file (un vidage en attente bloquerait lancement, désinstallation et nouvelles installations) ; l'utilisateur annule ou attend la fin des opérations, puis réessaie. `cache_clear` est refusé avec `player_busy` tant qu'un player tourne (sa copie de
 travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
 (`PlayerService::while_idle`), aucun lancement ne peut démarrer entre-temps.
 
