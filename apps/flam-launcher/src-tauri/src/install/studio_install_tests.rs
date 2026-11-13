@@ -627,3 +627,123 @@ async fn purge_refusee_n_empeche_pas_l_installation() {
     let library = ctx.service.library_list().await.unwrap();
     assert_eq!(library[0].file, format!("{UUID}-3.lunii.pk"));
 }
+
+/// Archive STUdio **téléchargée** (#578) : mise en cause par la conversion (`invalid_archive` :
+/// zip lisible sans `story.json`), elle est supprimée avec sa mémoire, comme pour `telmi2flam` ;
+/// panne étrangère à l'archive (pack d'un autre `uuid` que l'entrée : `validation`), elle est
+/// gardée et sera réutilisée sans réseau.
+#[tokio::test]
+async fn archive_studio_telechargee_mise_en_cause_supprimee() {
+    let mut without_story = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(Cursor::new(&mut without_story));
+        zip.start_file("lisez-moi.txt", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"pas une histoire").unwrap();
+        zip.finish().unwrap();
+    }
+    let valid = {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conte.zip");
+        studio_zip(&path, NODE_UUID);
+        std::fs::read(&path).unwrap()
+    };
+    for (what, bytes, kind, removed) in [
+        ("invalid_archive", without_story, "conversion", true),
+        ("autre uuid", valid, "validation", false),
+    ] {
+        let ctx = Ctx::new(None);
+        let server = serve(bytes).await;
+        let mut entry = remote(&format!("{}/a.zip", server.uri()), OTHER_UUID);
+        entry.kind = StoryKind::StudioZip;
+        let t = ctx.service.start(entry).unwrap();
+        let task = ctx.finished(&t.id).await;
+        assert_eq!(task.state, TaskState::Failed, "{what}");
+        let error = task.error.unwrap();
+        assert_eq!(error.kind, kind, "{what} : {}", error.message);
+        if removed {
+            assert_eq!(error.code.as_deref(), Some(what), "{what}");
+        }
+        let archive = ctx
+            .cache()
+            .join("archives")
+            .join(format!("{OTHER_UUID}-2.zip"));
+        assert_eq!(!archive.exists(), removed, "{what} : archive");
+        assert_eq!(!meta_path(&archive).exists(), removed, "{what} : mémoire");
+        assert!(!download::part_path(&archive).exists(), "{what}");
+        assert!(
+            ctx.service.library_list().await.unwrap().is_empty(),
+            "{what}"
+        );
+        assert!(ctx.staging_is_empty(), "{what}");
+    }
+}
+
+/// #578 : une erreur d'entrée/sortie **du système** (code de l'OS : antivirus, volume retiré) en
+/// lisant l'archive STUdio rend `io` et ne met pas l'archive en cause ; une erreur construite par
+/// le lecteur zip (CRC faux, troncature, en-tête invalide) rend `invalid_archive` et la met en
+/// cause.
+#[test]
+fn erreur_systeme_a_la_lecture_ne_met_pas_l_archive_en_cause() {
+    use crate::install::studio::{read_error, zip_read_error};
+    use std::io::{Error, ErrorKind};
+    use zip::result::ZipError;
+
+    // 32 : `ERROR_SHARING_VIOLATION` sous Windows (fichier verrouillé par un autre processus),
+    // `EPIPE` sous Unix. 5 : `ERROR_ACCESS_DENIED` sous Windows (antivirus), `EIO` sous Unix
+    // (limite connue : gardée).
+    let system = [
+        read_error("son illisible", Error::from_raw_os_error(32)),
+        zip_read_error("zip", ZipError::Io(Error::from_raw_os_error(32))),
+        zip_read_error("entrée 0", ZipError::Io(Error::from_raw_os_error(5))),
+    ];
+    for err in system {
+        assert_eq!(err.kind(), "io", "{err}");
+        assert!(!crate::install::archive_at_fault(&err), "{err}");
+    }
+    let mut corrupt = vec![
+        read_error(
+            "son illisible",
+            Error::new(ErrorKind::InvalidData, "Invalid checksum"),
+        ),
+        // Vraie erreur de l'OS d'un positionnement absurde : `ERROR_INVALID_PARAMETER` (87,
+        // rendu par Windows pour un zip64 forgé), `EINVAL` (22) sous Unix.
+        zip_read_error(
+            "entrée 0",
+            ZipError::Io(Error::from_raw_os_error(if cfg!(windows) {
+                87
+            } else {
+                22
+            })),
+        ),
+        read_error("image illisible", Error::from(ErrorKind::UnexpectedEof)),
+        zip_read_error(
+            "zip",
+            ZipError::InvalidArchive("pas de répertoire central".into()),
+        ),
+        zip_read_error(
+            "entrée 0",
+            ZipError::Io(Error::from(ErrorKind::UnexpectedEof)),
+        ),
+        // Positionnement absurde (décalage forgé d'un zip64) refusé par le système.
+        zip_read_error(
+            "entrée 0",
+            ZipError::Io(Error::new(ErrorKind::InvalidInput, "seek")),
+        ),
+    ];
+    // Windows : contenu stocké illisible (`ERROR_CRC`, `ERROR_FILE_CORRUPT`,
+    // `ERROR_DISK_CORRUPT`) : retéléchargé.
+    if cfg!(windows) {
+        for code in [23, 1392, 1393] {
+            corrupt.push(read_error("son illisible", Error::from_raw_os_error(code)));
+        }
+    }
+    for err in corrupt {
+        assert_eq!(err.kind(), "conversion", "{err}");
+        assert!(crate::install::archive_at_fault(&err), "{err}");
+        assert!(
+            matches!(&err, AppError::Conversion { code, .. } if code == "invalid_archive"),
+            "{err}"
+        );
+    }
+}
