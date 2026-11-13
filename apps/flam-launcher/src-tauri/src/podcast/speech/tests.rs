@@ -296,6 +296,22 @@ fn la_taille_de_donnees_annoncee_trop_grande_est_ramenee_au_contenu() {
 }
 
 #[test]
+fn les_tailles_d_en_tete_sont_remises_au_contenu_reel() {
+    let canonical = wav_bytes(22_050, 1, 16, &[1; 2_000]);
+    // Un WAV déjà cohérent reste identique, octet pour octet.
+    assert_eq!(Wav::parse(canonical.clone()).unwrap().bytes, canonical);
+    // Tailles `RIFF` et `data` de flux (0xFFFFFFFF) : remises au contenu.
+    let mut streamed = canonical.clone();
+    streamed[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+    streamed[40..44].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(Wav::parse(streamed).unwrap().bytes, canonical);
+    // Octets après le bloc `data` : retirés, `RIFF` recalculé.
+    let mut trailing = canonical.clone();
+    trailing.extend_from_slice(b"LIST   abcd");
+    assert_eq!(Wav::parse(trailing).unwrap().bytes, canonical);
+}
+
+#[test]
 fn un_bloc_inconnu_avant_les_donnees_est_saute() {
     let canonical = wav_bytes(22_050, 1, 16, &[1; 400]);
     let mut bytes = canonical[..36].to_vec();

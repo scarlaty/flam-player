@@ -472,3 +472,11 @@ async fn un_telechargement_balaye_les_restes_anciens() {
     assert!(!old.exists(), "reste ancien balayé au téléchargement");
     assert!(recent.exists());
 }
+
+#[test]
+fn le_balayage_au_telechargement_n_a_lieu_qu_une_fois_par_source() {
+    let (a, b) = (Path::new("balayage/s1"), Path::new("balayage/s2"));
+    assert!(first_fetch(a));
+    assert!(!first_fetch(a));
+    assert!(first_fetch(b));
+}

@@ -236,6 +236,17 @@ where
     Some(thumbnail::data_uri(&png))
 }
 
+/// Vrai la première fois de la session que `dir` (dossier des vignettes d'une source) reçoit un
+/// téléchargement : le balayage des restes ne se refait pas à chaque téléchargement.
+fn first_fetch(dir: &Path) -> bool {
+    static SWEPT: std::sync::Mutex<Option<std::collections::HashSet<PathBuf>>> =
+        std::sync::Mutex::new(None);
+    let mut swept = SWEPT.lock().unwrap_or_else(|e| e.into_inner());
+    swept
+        .get_or_insert_with(Default::default)
+        .insert(dir.to_path_buf())
+}
+
 /// Télécharge l'image de l'épisode dans le dossier des vignettes de sa source (créé sous le
 /// verrou de la source : une source purgée n'en récupère rien), au plus [`DOWNLOADS`] à la fois.
 async fn fetch_bytes<D, Fut>(access: &CacheAccess, key: &EntryKey, download: D) -> Option<Vec<u8>>
@@ -247,8 +258,11 @@ where
     let dir = access
         .in_subdir(THUMBS_DIR, &key.source_id, Mode::Write, |dir| {
             // Restes d'anciens téléchargements abandonnés (arrêt brutal) : balayés ici aussi,
-            // pas seulement à l'écriture d'une vignette.
-            sweep_stale(dir);
+            // pas seulement à l'écriture d'une vignette, mais une fois par source et par session
+            // (le dossier est lu en entier, sous le verrou de la source).
+            if first_fetch(dir) {
+                sweep_stale(dir);
+            }
             dir.to_path_buf()
         })
         .await?;
@@ -361,6 +375,13 @@ pub async fn pack_episode_thumbnail(
     // (écriture) attend la fin du chargement. Rien de ce qui suit ne reprend ce portillon
     // (`find_episode`, `CacheAccess` et `load` n'y touchent pas : une relecture pendant qu'un
     // vidage attend s'interbloquerait), et l'appelant n'en tient aucun.
+    //
+    // Pire cas connu : le portillon reste tenu pendant l'attente d'un créneau et le téléchargement
+    // (jusqu'à `DOWNLOAD_TIMEOUT` par créneau, `DOWNLOADS` créneaux), soit environ 40 s : un
+    // « Vider le cache » attend ces aperçus, et les nouvelles lectures derrière lui. Ne pas le
+    // réduire en le relâchant pendant le téléchargement : le fichier `.dl` est écrit dans le
+    // dossier du cache, et un vidage pourrait alors le supprimer sous l'écriture en cours (ou la
+    // laisser recréer un dossier purgé). Le réduire demande de télécharger hors du cache.
     let _gate = catalog.cache_gate().read_owned().await;
     // Génération lue **avant** de résoudre l'adresse du flux : une purge ensuite rend le cache
     // inaccessible (voir `CacheAccess::new`).
