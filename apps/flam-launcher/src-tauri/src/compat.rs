@@ -6,7 +6,7 @@
 //!   `{schema_version, generated, converter_hash, stories: {uuid: {...}}}`), lu **en lecture
 //!   seule** (il appartient à l'outil : jamais renommé ni réécrit ici) ;
 //! - le résultat réel de chaque conversion faite par la surcouche, enregistré dans
-//!   `<cache>/compat/launcher_results.json` ([`store_outcome`]).
+//!   `<cache>/compat-local/launcher_results.json` ([`store_outcome`]).
 //!
 //! Chemin du `status.json` (premier trouvé) : variable d'environnement
 //! `FLAM_COMPAT_STATUS_FILE` (chemin absolu), puis en développement
@@ -47,7 +47,8 @@ use crate::storage::{self, ConfigState};
 use crate::story::{validate_story_id, StoryEntry};
 use crate::{AppError, AppResult};
 
-/// Sous-dossier du cache (listé dans `cache::APP_CACHE_SUBDIRS`).
+/// Sous-dossier du cache où peut se trouver le `status.json` de la campagne (absent de
+/// `cache::APP_CACHE_SUBDIRS` : jamais vidé).
 pub const COMPAT_DIR: &str = "compat";
 /// Sous-dossier du cache propre à l'application (listé dans `cache::APP_CACHE_SUBDIRS`) :
 /// il ne contient que `launcher_results.json`. `compat/` (où peut se trouver un `status.json`
@@ -55,7 +56,7 @@ pub const COMPAT_DIR: &str = "compat";
 pub const RESULTS_DIR: &str = "compat-local";
 /// Fichier de la campagne, produit par `telmi2flam`.
 pub const STATUS_FILE: &str = "status.json";
-/// Résultats des conversions faites par la surcouche, dans `compat/`.
+/// Résultats des conversions faites par la surcouche, dans `compat-local/` ([`RESULTS_DIR`]).
 pub const RESULTS_FILE: &str = "launcher_results.json";
 /// Variable d'environnement qui remplace le chemin du `status.json`.
 pub const ENV_STATUS_FILE: &str = "FLAM_COMPAT_STATUS_FILE";
