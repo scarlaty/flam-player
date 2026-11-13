@@ -86,8 +86,8 @@ const THUMB_DIM: u32 = 96;
 /// Images téléchargées en même temps.
 const IMAGE_CONCURRENCY: usize = 3;
 const CACHE_VERSION: u32 = 1;
-const CACHE_DIR: &str = "official";
-const CACHE_FILE: &str = "catalog.json";
+pub(crate) const CACHE_DIR: &str = "official";
+pub(crate) const CACHE_FILE: &str = "catalog.json";
 
 /// Entrée du catalogue : titre et chemin de l'image (`/public/images/…`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

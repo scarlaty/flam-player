@@ -122,7 +122,7 @@ Testeurs de la bêta : [docs/guide-testeur.md](docs/guide-testeur.md). Formats e
 | « Convertisseur introuvable » (`converter_unavailable`) | Réinstaller : `telmi2flam/telmi2flam.exe` manque (antivirus ?). En développement : `cargo build -p telmi2flam`. Python n'est plus utilisé                                                                                                                         |
 | Une conversion échoue                                   | Le message cite le code de `telmi2flam` ; l'histoire peut être incompatible (badge sur la fiche). « Cette histoire utilise un format que le launcher ne sait pas encore convertir » : format d'image non pris en charge (BMP, JPEG arithmétique ou sans perte...) |
 | Catalogue « hors ligne »                                | Réseau ou serveur indisponible : le cache est affiché. « Actualiser » réessaie                                                                                                                                                                                    |
-| Disque plein                                            | « Paramètres » → « Cache » → « Vider le cache » : supprime aussi les histoires installées (à réinstaller depuis leur source) ; la progression sauvegardée et les sources sont conservées                                                                          |
+| Disque plein                                            | « Paramètres » → « Cache » → « Vider le cache » : supprime aussi les histoires installées (à réinstaller depuis leur source) ; la progression sauvegardée et les sources sont conservées. Seuls les sous-dossiers reconnus comme ceux de l'application sont vidés (voir « Marqueur d'appartenance ») |
 | Paramètres ou sources réinitialisés                     | Un fichier de configuration corrompu a été sauvegardé en `*.bak` et remplacé ; un bandeau l'indique                                                                                                                                                               |
 
 ## Développement
@@ -733,7 +733,8 @@ L'image (PNG, ou LIF via `telmi2flam::lif`) est réduite à 160 px et gardée da
 **Cache de métadonnées** : en mémoire, par archive (chemin, taille, date de modification), pour ne
 pas rouvrir chaque zip à chaque scan ; les dossiers `.plain` sont relus à chaque scan.
 
-`thumbs/` est enregistré dans `APP_CACHE_SUBDIRS` (`cache.rs`) : « Vider le cache » le nettoie.
+`thumbs/` est enregistré dans `APP_CACHE_SUBDIRS` (`cache.rs`) : « Vider le cache » le nettoie
+(s'il porte le marqueur de l'application, voir « Marqueur d'appartenance »).
 
 **Purge de `thumbs/`** : au démarrage, en arrière-plan et sans jamais bloquer ni échouer le lancement, `thumbnail::purge_thumbs` supprime les vignettes de plus de 30 jours (clé périmée : archive modifiée ou disparue), les restes d'écriture `*.tmp-<pid>` de plus d'une heure, puis les plus anciennes vignettes tant que le total dépasse 128 Mio. Seuls les fichiers réguliers nommés exactement comme ceux de `ThumbCache` (`<16 chiffres hexadécimaux minuscules>.png` ou `.tmp-<pid>`) sont touchés : `thumbs/` lien ou jonction refusé (jamais parcouru), liens, sous-dossiers et fichiers étrangers ignorés. Une suppression refusée (fichier ouvert, droits) est journalisée et la purge continue ; le fichier est réessayé au démarrage suivant.
 
@@ -1180,7 +1181,8 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
   interne, convertisseur absent, E/S) la garde, et une archive locale (source dossier) n'est
   jamais supprimée. Une lecture de l'archive refusée par le système (antivirus, volume retiré)
   rend `io` et garde l'archive pour la conversion STUdio et le `.plain.pk` (si l'erreur persiste,
-  « Vider le cache » la supprime) ; sous Windows, un contenu stocké illisible (`ERROR_CRC`,
+  « Vider le cache » la supprime, une fois `archives/` marqué : voir « Marqueur
+  d'appartenance ») ; sous Windows, un contenu stocké illisible (`ERROR_CRC`,
   `ERROR_FILE_CORRUPT`, `ERROR_DISK_CORRUPT`) la met en cause, elle est retéléchargée ; sous
   Unix, `EIO` (secteur défectueux ou volume retiré, indiscernables) la garde. `telmi2flam` ne
   la distingue pas encore d'une archive corrompue (`archive_unreadable` : archive retéléchargée).
@@ -1359,20 +1361,35 @@ temporaires `.<archive>.meta.json.<pid>-<n>.tmp` étant acceptés (un `vacances-
 n'est jamais une preuve ; une archive ou un `.part` resté sans mémoire après un arrêt brutal
 non plus) ; `catalogs/` seulement si chaque élément est un dossier nommé comme un identifiant de
 source ne contenant que `catalog.json`, `meta.json`, leurs temporaires et `thumbs/`
-(`<32 chiffres hexadécimaux>.img`, `.meta.json` et leurs temporaires) ; `compat-local/`
-seulement avec `launcher_results.json` et son temporaire ; `official/` seulement avec
-`catalog.json` et son temporaire ; `thumbs/` seulement avec des vignettes `<16 chiffres
-hexadécimaux>.png` et leurs temporaires `.tmp-<pid>` (même règle qu'à l'adoption). Partout, la
-casse des noms est respectée et un sous-dossier vide est accepté.
+(`<32 chiffres hexadécimaux minuscules>.img`, `.meta.json` et leurs temporaires) ;
+`compat-local/` seulement avec `launcher_results.json` et son temporaire ; `official/` seulement
+avec `catalog.json` et son temporaire ; `thumbs/` seulement avec des vignettes `<16 chiffres
+hexadécimaux minuscules>.png` et leurs temporaires `.tmp-<pid>` (même règle qu'à l'adoption).
+Partout, la casse des noms est respectée et un sous-dossier vide est accepté. Limites connues :
+pour `catalogs/`, `compat-local/` et `official/`, seuls les noms sont vérifiés (pas le contenu
+des fichiers), et un dossier de source vide est accepté.
 Ces trois fichiers de l'explorateur (fichiers ordinaires seulement, ni dossier ni lien) sont aussi
 ignorés à la racine de chaque sous-dossier soumis à preuve (et à chaque niveau de `catalogs/`),
 sans valoir preuve : un sous-dossier qui ne contient qu'eux est jugé comme un sous-dossier vide.
 Un sous-dossier non prouvé n'est pas marqué (journalisé, la migration réussit quand même) :
-utilisé comme avant, jamais compté ni vidé (fuite de place, jamais de perte). La racine du cache peut être une jonction ou
+utilisé comme avant, ni compté ni vidé tant qu'il n'est pas prouvé (fuite de place, jamais de
+perte). **Rattrapage** : la migration inscrit chaque sous-dossier refusé faute de preuve (racine
+et nom) dans le témoin `cache-markers.done` (JSON `{"pending":[{"root":…,"name":…}]}`, écrit de
+façon atomique ; vide s'il n'y a rien en attente). À chaque démarrage suivant, sous la même porte
+de démarrage, ces sous-dossiers sont réévalués avec la même preuve et marqués dès qu'ils sont
+prouvés : par exemple, après une installation interrompue juste avant la mise à jour (`.part`
+sans mémoire), `archives/` n'est compté et vidé qu'à partir du démarrage qui suit son retour à un
+contenu reconnu (installation reprise et terminée). Une entrée sort de la liste quand le
+sous-dossier est marqué, absent (il sera créé marqué) ou que sa racine n'existe plus ; un contenu
+personnel reste en attente indéfiniment, jamais marqué. Seuls les sous-dossiers refusés par la
+migration sont réévalués, jamais ceux d'un dossier choisi ensuite. Témoin illisible : rien en
+attente. Échec d'écriture du témoin à la migration : elle est rejouée au démarrage suivant ;
+échec de sa réécriture au rattrapage : journalisé, la liste précédente est relue au démarrage
+suivant. Une version antérieure ignore ce témoin. La racine du cache peut être une jonction ou
 un lien ; un sous-dossier en lien n'est jamais marqué. La migration est faite hors du fil de la
 fenêtre : celle-ci s'affiche aussitôt, et toute commande (verrou de configuration) ainsi que la
 reprise de la file d'installation attendent sa fin (`storage::StartupGate`) ; une fois le témoin
-écrit, le démarrage ne lit plus le cache pour elle. Elle est reportée, sans témoin, si le dossier
+écrit, le démarrage ne lit plus le cache que pour les sous-dossiers en attente du rattrapage. Elle est reportée, sans témoin, si le dossier
 configuré est absent ou si les réglages retombent sur le dossier par défaut (le dossier par défaut,
 alors en usage, est migré quand même). Si `settings_set` enregistre un nouveau dossier alors
 qu'elle est encore reportée, le témoin est écrit : seul le dossier configuré au moment de la mise
@@ -1395,8 +1412,9 @@ marqués ni bloquants (l'application les utilise comme avant, sans jamais les co
 vider). Sans bibliothèque reconnue, rien n'est marqué et un homonyme sans marqueur fait refuser
 le dossier.
 Limites : un sous-dossier réellement écrit par l'application mais non prouvé à la migration
-(archive ou `.part` sans mémoire laissé par un arrêt brutal, fichier ajouté à la main) reste non
-marqué, jamais nettoyé par « Vider le cache » (à supprimer à la main) ; l'usage du cache (`cache_usage.subdirs`) n'annonce que les sous-dossiers
+(archive ou `.part` sans mémoire laissé par un arrêt brutal, fichier ajouté à la main) n'est
+nettoyé par « Vider le cache » qu'après son marquage par le rattrapage (sinon, à supprimer à la
+main) ; l'usage du cache (`cache_usage.subdirs`) n'annonce que les sous-dossiers
 marqués, ceux que le vidage videra ; après un retour à une version antérieure (qui ignore le marqueur), les
 sous-dossiers qu'elle recrée ne sont plus comptés ni vidés par cette version : créer un fichier
 vide `.flam-launcher` dans le sous-dossier concerné pour qu'il soit de nouveau reconnu (ne pas le

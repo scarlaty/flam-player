@@ -178,11 +178,14 @@ pub struct ThumbCache {
     dir: PathBuf,
 }
 
+/// Sous-dossier du cache de [`ThumbCache`] (listé dans `cache::APP_CACHE_SUBDIRS`).
+pub(crate) const THUMBS_DIR: &str = "thumbs";
+
 impl ThumbCache {
     /// `cache_dir` est le dossier de cache de l'application ; `thumbs/` est créé à la demande.
     pub fn new(cache_dir: &Path) -> Self {
         Self {
-            dir: cache_dir.join("thumbs"),
+            dir: cache_dir.join(THUMBS_DIR),
         }
     }
 
@@ -305,7 +308,7 @@ pub fn purge_thumbs_with(
     now: SystemTime,
     remove: &mut dyn FnMut(&Path) -> std::io::Result<()>,
 ) -> std::io::Result<PurgeReport> {
-    let dir = cache_dir.join("thumbs");
+    let dir = cache_dir.join(THUMBS_DIR);
     if !crate::cache::is_owned(&dir) {
         return Ok(PurgeReport::default());
     }

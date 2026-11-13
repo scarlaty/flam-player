@@ -92,12 +92,16 @@ fn startup_cache_tasks(
     purge_stale_thumbs(app);
 }
 
-/// Migration des marqueurs du cache (#570), une seule fois. Un échec n'est que journalisé : la
-/// migration est rejouée au démarrage suivant.
+/// Migration des marqueurs du cache (#570), une seule fois, puis à chaque démarrage rattrapage
+/// des sous-dossiers qu'elle a refusés faute de preuve (#591). Un échec n'est que journalisé :
+/// la migration est rejouée au démarrage suivant.
 fn migrate_cache_markers(config_dir: &std::path::Path, env: &settings::Environment) {
     match cache::migrate_configured(config_dir, env) {
         Ok(cache::Migration::Done { marked }) => {
             tracing::info!("cache : {marked} sous-dossier(s) existant(s) marqué(s)")
+        }
+        Ok(cache::Migration::CaughtUp { marked }) => {
+            tracing::info!("cache : {marked} sous-dossier(s) en attente prouvé(s) et marqué(s)")
         }
         Ok(cache::Migration::Deferred) => tracing::info!(
             "cache : dossier configuré absent ou non retenu, marquage reporté au prochain démarrage"

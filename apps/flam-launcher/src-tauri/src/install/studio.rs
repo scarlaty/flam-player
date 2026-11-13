@@ -72,7 +72,7 @@
 //! | Délai de ffmpeg dépassé (par son ou budget global)            | `io` (`TimedOut`)                                 |
 //! | Annulation                                                    | `cancelled`                                       |
 //! | Écriture impossible (disque plein, sortie inaccessible)       | `io`                                              |
-//! | Lecture de l'archive refusée par le système (antivirus, fichier verrouillé, volume retiré : erreur portant un code de l'OS ; `EIO` compris sous Unix) | `io` (archive non mise en cause, #578 ; erreur persistante : « Vider le cache ») |
+//! | Lecture de l'archive refusée par le système (antivirus, fichier verrouillé, volume retiré : erreur portant un code de l'OS ; `EIO` compris sous Unix) | `io` (archive non mise en cause, #578 ; erreur persistante : « Vider le cache », si `archives/` est marqué, voir `install::system_io`) |
 //! | Contenu stocké illisible sous Windows (`ERROR_CRC`, `ERROR_FILE_CORRUPT`, `ERROR_DISK_CORRUPT`), positionnement refusé (`InvalidInput`) | `conversion` `invalid_archive` |
 //!
 //! Dans tous ces cas, rien ne reste du côté de la sortie, sauf si le futur est abandonné

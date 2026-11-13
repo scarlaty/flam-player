@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::catalog::{blocking, CatalogService};
@@ -172,12 +172,133 @@ pub fn foreign_entries(root: &Path) -> Vec<&'static str> {
 /// Résultat de [`migrate_markers`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Migration {
-    /// Témoin déjà présent : rien n'a été fait.
+    /// Témoin déjà présent, aucun sous-dossier en attente marqué par le rattrapage.
     AlreadyDone,
+    /// Témoin déjà présent : le rattrapage ([`catch_up`]) a marqué `marked` sous-dossiers en
+    /// attente, devenus prouvés.
+    CaughtUp { marked: usize },
     /// Marqueurs posés (`marked` nouveaux) puis témoin écrit.
     Done { marked: usize },
     /// Un dossier de cache est absent : rejouée au prochain démarrage.
     Deferred,
+}
+
+/// Sous-dossier `name` de la racine `root` vu et refusé faute de preuve par la migration, en
+/// attente du rattrapage ([`catch_up`]). Persisté dans le témoin de migration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Pending {
+    root: String,
+    name: String,
+}
+
+/// Contenu du témoin de migration : vide (aucun sous-dossier en attente, forme écrite aussi par
+/// `SettingsStore::update`) ou JSON `{"pending":[{"root":…,"name":…}]}`.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct WitnessFile {
+    #[serde(default)]
+    pending: Vec<Pending>,
+}
+
+/// Taille maximale du témoin lu (au-delà : rien en attente).
+const MAX_WITNESS_BYTES: u64 = 1024 * 1024;
+
+/// Sous-dossiers en attente d'après le témoin. Témoin vide, illisible, trop gros ou de forme
+/// inattendue : rien en attente (aucun marquage possible par le rattrapage). Une entrée dont le
+/// nom n'est pas dans [`APP_CACHE_SUBDIRS`] ou dont la racine n'est pas absolue est ignorée.
+fn read_pending(witness: &Path) -> Vec<Pending> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    let read = fs::File::open(witness).and_then(|file| {
+        file.take(MAX_WITNESS_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map(drop)
+    });
+    if read.is_err() || bytes.len() as u64 > MAX_WITNESS_BYTES || bytes.is_empty() {
+        return Vec::new();
+    }
+    match serde_json::from_slice::<WitnessFile>(&bytes) {
+        Ok(file) => file
+            .pending
+            .into_iter()
+            .filter(|p| {
+                APP_CACHE_SUBDIRS.contains(&p.name.as_str()) && Path::new(&p.root).is_absolute()
+            })
+            .collect(),
+        Err(err) => {
+            tracing::warn!("cache : témoin de migration illisible, rien en attente : {err}");
+            Vec::new()
+        }
+    }
+}
+
+/// Écrit le témoin (écriture atomique) : vide sans sous-dossier en attente, JSON sinon.
+fn write_witness(witness: &Path, pending: &[Pending]) -> io::Result<()> {
+    let bytes = if pending.is_empty() {
+        Vec::new()
+    } else {
+        let file = WitnessFile {
+            pending: pending.to_vec(),
+        };
+        serde_json::to_vec_pretty(&file).map_err(io::Error::other)?
+    };
+    if let Some(parent) = witness.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    crate::storage::write_atomic(witness, &bytes)
+}
+
+/// Rattrapage à chaque démarrage où le témoin existe (#591) : chaque sous-dossier refusé par la
+/// migration faute de preuve (liste du témoin, [`read_pending`]) est réévalué avec la même
+/// preuve ([`proven_by_content`]) et le même chemin de marquage que la migration. Un
+/// sous-dossier redevenu prouvé (par exemple `archives/` vidé par une installation reprise après
+/// un `.part` sans mémoire) est marqué et sort de la liste. Sortent aussi de la liste : un
+/// sous-dossier déjà marqué, un sous-dossier absent (il sera créé marqué par [`ensure_subdir`]),
+/// une racine qui n'est plus un dossier. Restent en attente, sans rien écrire : contenu non
+/// prouvé, élément qui n'est pas un dossier réel, marqueur anormal, erreur d'écriture du
+/// marqueur. Seuls les couples (racine, nom) refusés par la migration sont concernés : un
+/// dossier de cache choisi ensuite n'est jamais réévalué ici. Ne renvoie jamais d'erreur : un
+/// échec de réécriture du témoin est journalisé, la liste précédente est relue au démarrage
+/// suivant (les entrées marquées entre-temps en sortent alors ; rien n'est marqué sans preuve).
+fn catch_up(witness: &Path, fault: Fault) -> Migration {
+    let pending = read_pending(witness);
+    if pending.is_empty() {
+        return Migration::AlreadyDone;
+    }
+    let mut marked = 0;
+    let mut kept = Vec::new();
+    for entry in &pending {
+        let root = Path::new(&entry.root);
+        let Some(name) = APP_CACHE_SUBDIRS.iter().find(|n| **n == entry.name) else {
+            continue;
+        };
+        if !root.is_dir() {
+            continue;
+        }
+        let dir = root.join(name);
+        match fs::symlink_metadata(&dir) {
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
+            _ if is_owned(&dir) => continue,
+            _ => {}
+        }
+        match mark_one(root, name, Marking::Migration, fault) {
+            Ok(MarkOutcome::Marked) => marked += 1,
+            Ok(_) => kept.push(entry.clone()),
+            Err(err) => {
+                tracing::warn!("cache : marqueur de « {name} » non écrit au rattrapage : {err}");
+                kept.push(entry.clone());
+            }
+        }
+    }
+    if kept.len() != pending.len() {
+        if let Err(err) = fault("pending").and_then(|()| write_witness(witness, &kept)) {
+            tracing::warn!("cache : liste des sous-dossiers en attente non mise à jour : {err}");
+        }
+    }
+    if marked > 0 {
+        Migration::CaughtUp { marked }
+    } else {
+        Migration::AlreadyDone
+    }
 }
 
 /// Migration unique (#570) : les sous-dossiers de [`APP_CACHE_SUBDIRS`] déjà présents dans les
@@ -185,30 +306,43 @@ pub enum Migration {
 /// l'application ; ils reçoivent le marqueur seulement si leur contenu prouve cet usage (voir
 /// [`proven_by_content`], #591). Un sous-dossier non prouvé (homonyme de l'utilisateur, ou reste
 /// d'un arrêt brutal de forme ambiguë) n'est pas marqué, journalisé, et ne fait pas échouer la
-/// migration : il n'est jamais compté ni vidé (fuite de place, jamais de perte). Le témoin
-/// `witness` est écrit en dernier : interrompue, la migration est rejouée (elle est
-/// idempotente). Une racine est un dossier choisi par l'utilisateur : elle peut être une
-/// jonction ou un lien (#591), seul le premier niveau doit être un dossier réel.
+/// migration : il n'est pas compté ni vidé tant qu'il n'est pas prouvé (fuite de place, jamais
+/// de perte). Il est inscrit dans le témoin `witness` et réévalué à chaque démarrage suivant
+/// ([`catch_up`]) jusqu'à être prouvé. Le témoin est écrit en dernier, de façon atomique, avec
+/// cette liste : interrompue (ou en échec d'écriture du témoin), la migration est rejouée au
+/// démarrage suivant (elle est idempotente) ; témoin présent, seul le rattrapage est fait. Une
+/// racine est un dossier choisi par l'utilisateur : elle peut être une jonction ou un lien
+/// (#591), seul le premier niveau doit être un dossier réel. Un sous-dossier absent n'est pas
+/// inscrit : `ensure_subdir` le créera marqué.
 pub fn migrate_markers(witness: &Path, roots: &[PathBuf]) -> io::Result<Migration> {
     migrate_markers_with(witness, roots, &no_fault)
 }
 
 fn migrate_markers_with(witness: &Path, roots: &[PathBuf], fault: Fault) -> io::Result<Migration> {
     if fs::symlink_metadata(witness).is_ok() {
-        return Ok(Migration::AlreadyDone);
+        return Ok(catch_up(witness, fault));
     }
     if roots.iter().any(|root| !root.is_dir()) {
         return Ok(Migration::Deferred);
     }
     let mut marked = 0;
+    let mut pending = Vec::new();
     for root in roots {
-        marked += mark_existing(root, Marking::Migration, fault)?;
+        let (count, unproven) = mark_existing(root, Marking::Migration, fault)?;
+        marked += count;
+        match root.to_str() {
+            Some(text) => pending.extend(unproven.into_iter().map(|name| Pending {
+                root: text.to_string(),
+                name: name.to_string(),
+            })),
+            None if !unproven.is_empty() => tracing::warn!(
+                "cache : racine au nom non UTF-8, sous-dossiers non prouvés jamais réévalués"
+            ),
+            None => {}
+        }
     }
     fault("witness")?;
-    if let Some(parent) = witness.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(witness, b"")?;
+    write_witness(witness, &pending)?;
     Ok(Migration::Done { marked })
 }
 
@@ -223,41 +357,34 @@ enum Marking {
     Adoption,
 }
 
+/// Résultat de [`mark_one`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkOutcome {
+    /// Marqueur écrit.
+    Marked,
+    /// Rien à faire ou refus sans rapport avec la preuve : absent, pas un dossier réel (fichier,
+    /// lien, jonction), déjà marqué, marqueur anormal (laissé tel quel).
+    Skipped,
+    /// Dossier réel sans marqueur dont le contenu ne prouve pas l'usage par l'application.
+    Unproven,
+}
+
 /// Marque les sous-dossiers de [`APP_CACHE_SUBDIRS`] présents dans `root` (dossiers réels sans
-/// marqueur, dont le contenu prouve l'usage par l'application, selon `marking`) et renvoie leur
-/// nombre. Idempotente. Un marqueur anormal (lien, dossier) est laissé tel quel, sans marquer ce
-/// sous-dossier.
-fn mark_existing(root: &Path, marking: Marking, fault: Fault) -> io::Result<usize> {
+/// marqueur, dont le contenu prouve l'usage par l'application, selon `marking`). Renvoie leur
+/// nombre et les noms refusés faute de preuve ([`MarkOutcome::Unproven`]). Idempotente. Un
+/// marqueur anormal (lien, dossier) est laissé tel quel, sans marquer ce sous-dossier.
+fn mark_existing(
+    root: &Path,
+    marking: Marking,
+    fault: Fault,
+) -> io::Result<(usize, Vec<&'static str>)> {
     let mut marked = 0;
+    let mut unproven = Vec::new();
     for name in APP_CACHE_SUBDIRS {
-        let dir = root.join(name);
-        if !is_real_dir(&dir) || is_owned(&dir) {
-            continue;
-        }
-        if fs::symlink_metadata(dir.join(MARKER)).is_ok() {
-            tracing::warn!("cache : marqueur de « {name} » inattendu, non marqué");
-            continue;
-        }
-        let proven = match marking {
-            Marking::Migration => proven_by_content(name, &dir),
-            Marking::Adoption => proven_at_adoption(name, &dir),
-        };
-        if !proven {
-            tracing::warn!(
-                "cache : contenu de « {name} » non reconnu, non marqué (ni compté ni vidé)"
-            );
-            continue;
-        }
-        // `create_new` : n'ouvre jamais un élément existant (ni lien, ni fichier).
-        let written = fault("marker").and_then(|()| {
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(dir.join(MARKER))
-                .map(drop)
-        });
-        match written {
-            Ok(()) => marked += 1,
+        match mark_one(root, name, marking, fault) {
+            Ok(MarkOutcome::Marked) => marked += 1,
+            Ok(MarkOutcome::Unproven) => unproven.push(*name),
+            Ok(MarkOutcome::Skipped) => {}
             // Adoption : un sous-dossier non marqué ne fait que fuir, le changement de dossier
             // de cache n'échoue pas pour lui (#591).
             Err(err) if marking == Marking::Adoption => {
@@ -266,7 +393,47 @@ fn mark_existing(root: &Path, marking: Marking, fault: Fault) -> io::Result<usiz
             Err(err) => return Err(err),
         }
     }
-    Ok(marked)
+    Ok((marked, unproven))
+}
+
+/// Marque `root/name` s'il est un dossier réel sans marqueur dont le contenu prouve l'usage par
+/// l'application, selon `marking` (voir [`MarkOutcome`]). Une erreur d'écriture du marqueur est
+/// renvoyée.
+fn mark_one(
+    root: &Path,
+    name: &'static str,
+    marking: Marking,
+    fault: Fault,
+) -> io::Result<MarkOutcome> {
+    let dir = root.join(name);
+    if !is_real_dir(&dir) || is_owned(&dir) {
+        return Ok(MarkOutcome::Skipped);
+    }
+    if fs::symlink_metadata(dir.join(MARKER)).is_ok() {
+        tracing::warn!("cache : marqueur de « {name} » inattendu, non marqué");
+        return Ok(MarkOutcome::Skipped);
+    }
+    let proven = match marking {
+        Marking::Migration => proven_by_content(name, &dir),
+        Marking::Adoption => proven_at_adoption(name, &dir),
+    };
+    if !proven {
+        tracing::warn!("cache : contenu de « {name} » non reconnu, non marqué (ni compté ni vidé)");
+        return Ok(MarkOutcome::Unproven);
+    }
+    // Course preuve/marquage : migration et rattrapage s'exécutent porte de démarrage fermée
+    // (aucune commande ni installation de l'application n'écrit pendant ce temps) ; seule une
+    // écriture extérieure simultanée (autre programme, utilisateur) entre la preuve et le
+    // marqueur pourrait faire marquer un contenu non prouvé : risque accepté. `archives/` relit
+    // en outre son dossier deux fois (noms, puis parcours) : un changement entre les deux
+    // relèverait du même cas.
+    // `create_new` : n'ouvre jamais un élément existant (ni lien, ni fichier).
+    fault("marker")?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(MARKER))?;
+    Ok(MarkOutcome::Marked)
 }
 
 /// Preuve d'usage exigée à l'adoption d'un ancien cache (#591), au moins aussi stricte que celle
@@ -284,7 +451,7 @@ fn proven_at_adoption(name: &str, dir: &Path) -> bool {
         crate::podcast::source::CACHE_SUBDIR
         | crate::install::podcast::WORK_DIR
         | crate::player::PLAY_DIR => proven_by_content(name, dir),
-        "thumbs" => thumbs_children_known(dir),
+        crate::thumbnail::THUMBS_DIR => thumbs_children_known(dir),
         _ => false,
     }
 }
@@ -337,11 +504,6 @@ fn files_known(dir: &Path, file: &dyn Fn(&str) -> bool) -> bool {
 fn is_file_or_its_tmp(name: &str, file: &str) -> bool {
     name == file || crate::storage::atomic_tmp_target(name) == Some(file)
 }
-
-/// Catalogue officiel en cache (`device::official` : `<cache>/official/catalog.json`, constantes
-/// privées à ce module).
-const OFFICIAL_DIR: &str = "official";
-const OFFICIAL_FILE: &str = "catalog.json";
 
 /// `archives/` ([`crate::install::ARCHIVES_DIR`]) : chaque élément est un fichier ordinaire (ou
 /// un fichier de l'explorateur) parmi :
@@ -424,6 +586,11 @@ fn catalogs_children_known(dir: &Path) -> bool {
 /// `Thumbs.db` (casse indifférente) et `.DS_Store` sont ignorés s'ils sont des fichiers
 /// ordinaires ([`is_os_junk`]) ; ils ne prouvent rien (un sous-dossier qui ne contient qu'eux est
 /// jugé comme un sous-dossier vide). Un nom inconnu n'est jamais prouvé.
+///
+/// Limites connues (#591) : la preuve de `catalogs`, `official` et `compat-local` porte sur les
+/// noms seulement (le contenu de `catalog.json`, `meta.json`, des vignettes n'est pas lu) ; un
+/// dossier de source vide (`catalogs/<id>/`, `podcasts/<id>/`) est accepté. Un dossier
+/// personnel qui imiterait exactement ces noms serait marqué.
 fn proven_by_content(name: &str, dir: &Path) -> bool {
     let child_shape: fn(&str) -> bool = match name {
         crate::library::LIBRARY_DIR => {
@@ -434,8 +601,12 @@ fn proven_by_content(name: &str, dir: &Path) -> bool {
         crate::compat::RESULTS_DIR => {
             return files_known(dir, &|n| is_file_or_its_tmp(n, crate::compat::RESULTS_FILE));
         }
-        OFFICIAL_DIR => return files_known(dir, &|n| is_file_or_its_tmp(n, OFFICIAL_FILE)),
-        "thumbs" => return thumbs_children_known(dir),
+        crate::device::official::CACHE_DIR => {
+            return files_known(dir, &|n| {
+                is_file_or_its_tmp(n, crate::device::official::CACHE_FILE)
+            });
+        }
+        crate::thumbnail::THUMBS_DIR => return thumbs_children_known(dir),
         crate::podcast::source::CACHE_SUBDIR => |child| {
             !child.is_empty()
                 && child.len() <= 64
@@ -578,8 +749,9 @@ fn library_children_known(dir: &Path) -> bool {
 }
 
 /// Migration au démarrage pour le dossier de configuration `config_dir` : dossier de cache
-/// effectif, plus le dossier par défaut s'il existe. Témoin présent : rien n'est lu (ni réglages
-/// ni cache), le démarrage n'attend aucun accès au cache (#591). Quand le dossier résolu n'est pas
+/// effectif, plus le dossier par défaut s'il existe. Témoin présent : les réglages ne sont pas
+/// lus, seul le rattrapage ([`catch_up`]) est fait ; il ne lit le cache que pour les
+/// sous-dossiers en attente (témoin vide : aucun accès au cache, #591). Quand le dossier résolu n'est pas
 /// celui des réglages (valeur configurée refusée, repli sur le défaut), la migration reste
 /// reportée (`Deferred`, sans témoin) pour le dossier configuré, mais le dossier par défaut, alors
 /// en usage, est migré quand même (#591).
@@ -594,7 +766,7 @@ fn migrate_configured_with(
 ) -> AppResult<Migration> {
     let witness = config_dir.join(MIGRATION_WITNESS);
     if fs::symlink_metadata(&witness).is_ok() {
-        return Ok(Migration::AlreadyDone);
+        return Ok(catch_up(&witness, fault));
     }
     let settings = SettingsStore::new(config_dir).load()?;
     let (resolved, _) = resolve(&settings, env);
@@ -1632,6 +1804,291 @@ mod tests {
                 !marked_after_migration(subdir, &|d| fs::create_dir_all(d.join(file)).unwrap()),
                 "{subdir}/{file} dossier"
             );
+        }
+    }
+
+    /// Configuration sans dossier de cache choisi : le cache effectif est `default`.
+    fn config_with_default(default: &Path) -> (tempfile::TempDir, Environment) {
+        let config = tempfile::tempdir().unwrap();
+        fs::write(
+            config.path().join("settings.json"),
+            r#"{"schema_version":1}"#,
+        )
+        .unwrap();
+        (config, env_with(default, vec![]))
+    }
+
+    /// Scénario M1 (#591) : arrêt pendant un premier téléchargement (`.part` sans mémoire),
+    /// mise à jour, migration (refus, témoin écrit) ; l'installation reprise vide `archives/`,
+    /// le démarrage suivant le marque, « Vider le cache » le vide ensuite.
+    #[test]
+    fn le_rattrapage_marque_archives_redevenu_prouve() {
+        let cache = tempfile::tempdir().unwrap();
+        legacy_cache(cache.path());
+        fs::remove_file(cache.path().join("archives/a.zip")).unwrap();
+        let part = cache.path().join("archives/abc-3.zip.part");
+        write(&part, 7);
+        let (config, env) = config_with_default(cache.path());
+        let witness = config.path().join(MIGRATION_WITNESS);
+
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::Done { marked: 1 }
+        );
+        assert!(!is_owned(&cache.path().join("archives")));
+        assert_eq!(
+            read_pending(&witness),
+            [Pending {
+                root: cache.path().to_str().unwrap().to_string(),
+                name: "archives".into()
+            }]
+        );
+        // Redémarrage sans changement : toujours en attente, rien d'écrit.
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert!(!is_owned(&cache.path().join("archives")));
+
+        // L'installation reprise réussit : archive publiée, `archives/` redevient vide.
+        fs::remove_file(&part).unwrap();
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+        assert!(is_owned(&cache.path().join("archives")));
+        assert!(read_pending(&witness).is_empty(), "sorti de la liste");
+        assert_eq!(fs::read(&witness).unwrap(), b"", "témoin vide");
+        // Idempotent : plus rien en attente.
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::AlreadyDone
+        );
+        // Désormais compté et vidé.
+        write(&cache.path().join("archives/abc-4.zip"), 5);
+        write(&cache.path().join("archives/abc-4.zip.meta.json"), 2);
+        assert!(usage_report(cache.path())
+            .unwrap()
+            .1
+            .contains(&"archives".to_string()));
+        clear_of(cache.path()).unwrap();
+        assert_eq!(names_in(&cache.path().join("archives")), [MARKER]);
+    }
+
+    #[test]
+    fn un_contenu_personnel_n_est_jamais_marque_par_le_rattrapage() {
+        let cache = tempfile::tempdir().unwrap();
+        write(&cache.path().join("archives/perso.zip"), 4);
+        write(&cache.path().join("official/photo.jpg"), 4);
+        let (config, env) = config_with_default(cache.path());
+        let witness = config.path().join(MIGRATION_WITNESS);
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::Done { marked: 0 }
+        );
+        for _ in 0..5 {
+            assert_eq!(
+                migrate_configured(config.path(), &env).unwrap(),
+                Migration::AlreadyDone
+            );
+            assert_eq!(owned_names(cache.path()), Vec::<&str>::new());
+            assert_eq!(read_pending(&witness).len(), 2, "toujours en attente");
+        }
+        clear_of(cache.path()).unwrap();
+        assert!(cache.path().join("archives/perso.zip").is_file());
+        assert!(cache.path().join("official/photo.jpg").is_file());
+    }
+
+    /// Un dossier de cache choisi après la mise à jour n'est jamais réévalué par le rattrapage,
+    /// même si son `archives/` est vide ou de forme réelle : seule la racine refusée par la
+    /// migration l'est.
+    #[test]
+    fn un_cache_choisi_apres_coup_n_est_jamais_rattrape() {
+        let old = tempfile::tempdir().unwrap();
+        write(&old.path().join("archives/perso.zip"), 4);
+        let (config, env) = config_with_default(old.path());
+        let witness = config.path().join(MIGRATION_WITNESS);
+        migrate_configured(config.path(), &env).unwrap();
+        assert_eq!(read_pending(&witness).len(), 1);
+
+        let shapes: [&dyn Fn(&Path); 2] = [&|_| {}, &|d| {
+            write(&d.join("abc-1.zip"), 3);
+            write(&d.join("abc-1.zip.meta.json"), 3);
+        }];
+        for setup in shapes {
+            let chosen = tempfile::tempdir().unwrap();
+            fs::create_dir_all(chosen.path().join("archives")).unwrap();
+            setup(&chosen.path().join("archives"));
+            fs::write(
+                config.path().join("settings.json"),
+                serde_json::json!({ "schema_version": 1, "cache_dir": chosen.path() }).to_string(),
+            )
+            .unwrap();
+            for _ in 0..2 {
+                assert_eq!(
+                    migrate_configured(config.path(), &env).unwrap(),
+                    Migration::AlreadyDone
+                );
+            }
+            assert!(!is_owned(&chosen.path().join("archives")));
+            // Témoin vide (écrit par `SettingsStore::update`) : rien en attente non plus.
+            let empty = tempfile::tempdir().unwrap();
+            fs::write(empty.path().join(MIGRATION_WITNESS), b"").unwrap();
+            assert_eq!(
+                migrate_markers(
+                    &empty.path().join(MIGRATION_WITNESS),
+                    &[chosen.path().to_path_buf()]
+                )
+                .unwrap(),
+                Migration::AlreadyDone
+            );
+            assert!(!is_owned(&chosen.path().join("archives")));
+        }
+        assert!(!is_owned(&old.path().join("archives")));
+    }
+
+    /// Témoin illisible, trop gros ou aux entrées invalides : rien en attente, rien marqué
+    /// (même un `archives/` vide, prouvable).
+    #[test]
+    fn un_temoin_illisible_ne_met_rien_en_attente() {
+        let cache = tempfile::tempdir().unwrap();
+        fs::create_dir_all(cache.path().join("archives")).unwrap();
+        let root = cache.path().to_str().unwrap();
+        let entry = |root: &str, name: &str| {
+            serde_json::json!({ "pending": [{ "root": root, "name": name }] }).to_string()
+        };
+        let mut big = entry(root, "archives").into_bytes();
+        big.resize(MAX_WITNESS_BYTES as usize + 1, b' ');
+        for contents in [
+            b"pas du json".to_vec(),
+            b"{\"pending\":42}".to_vec(),
+            big,
+            entry(root, "documents").into_bytes(),
+            entry(root, "ARCHIVES").into_bytes(),
+            entry("relatif", "archives").into_bytes(),
+        ] {
+            let config = tempfile::tempdir().unwrap();
+            let witness = config.path().join(MIGRATION_WITNESS);
+            fs::write(&witness, &contents).unwrap();
+            assert_eq!(
+                migrate_markers(&witness, &[]).unwrap(),
+                Migration::AlreadyDone
+            );
+            assert!(!is_owned(&cache.path().join("archives")));
+            assert_eq!(fs::read(&witness).unwrap(), contents, "témoin non réécrit");
+        }
+        // Témoin valide : marqué (contrôle du jeu de test).
+        let config = tempfile::tempdir().unwrap();
+        let witness = config.path().join(MIGRATION_WITNESS);
+        fs::write(&witness, entry(root, "archives")).unwrap();
+        assert_eq!(
+            migrate_markers(&witness, &[]).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+    }
+
+    #[test]
+    fn pannes_d_ecriture_du_temoin_et_de_la_liste() {
+        let cache = tempfile::tempdir().unwrap();
+        write(&cache.path().join("archives/abc-1.zip.part"), 3);
+        let roots = [cache.path().to_path_buf()];
+        let config = tempfile::tempdir().unwrap();
+        let witness = config.path().join(MIGRATION_WITNESS);
+        // Panne à l'écriture du témoin (et de sa liste) : migration non close, rien de marqué
+        // sans preuve ; rejouée ensuite.
+        assert!(migrate_markers_with(&witness, &roots, &fail_at("witness", 1)).is_err());
+        assert!(!witness.exists());
+        assert!(!is_owned(&cache.path().join("archives")));
+        assert_eq!(
+            migrate_markers(&witness, &roots).unwrap(),
+            Migration::Done { marked: 0 }
+        );
+        assert_eq!(read_pending(&witness).len(), 1);
+
+        fs::remove_file(cache.path().join("archives/abc-1.zip.part")).unwrap();
+        // Panne au marqueur pendant le rattrapage : reste en attente, démarrage non bloqué.
+        assert_eq!(
+            migrate_markers_with(&witness, &roots, &fail_at("marker", 1)).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert!(!is_owned(&cache.path().join("archives")));
+        assert_eq!(read_pending(&witness).len(), 1);
+        // Panne à la réécriture de la liste : marqué (prouvé), liste inchangée…
+        assert_eq!(
+            migrate_markers_with(&witness, &roots, &fail_at("pending", 1)).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+        assert!(is_owned(&cache.path().join("archives")));
+        assert_eq!(read_pending(&witness).len(), 1);
+        // …puis retirée au démarrage suivant (déjà marqué), sans rien marquer d'autre.
+        assert_eq!(
+            migrate_markers(&witness, &roots).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert!(read_pending(&witness).is_empty());
+    }
+
+    #[test]
+    fn le_rattrapage_retire_les_racines_et_sous_dossiers_disparus() {
+        let config = tempfile::tempdir().unwrap();
+        let witness = config.path().join(MIGRATION_WITNESS);
+        let gone = tempfile::tempdir().unwrap();
+        let without = tempfile::tempdir().unwrap();
+        let odd = tempfile::tempdir().unwrap();
+        for root in [gone.path(), without.path(), odd.path()] {
+            write(&root.join("archives/perso.zip"), 1);
+        }
+        let roots = [
+            gone.path().to_path_buf(),
+            without.path().to_path_buf(),
+            odd.path().to_path_buf(),
+        ];
+        migrate_markers(&witness, &roots).unwrap();
+        assert_eq!(read_pending(&witness).len(), 3);
+        // Racine disparue ; sous-dossier supprimé (recréé marqué par `ensure_subdirs`) ;
+        // contenu prouvé mais marqueur anormal (dossier) : reste en attente, rien d'écrit.
+        let gone_path = gone.path().to_path_buf();
+        drop(gone);
+        fs::remove_dir_all(without.path().join("archives")).unwrap();
+        fs::remove_file(odd.path().join("archives/perso.zip")).unwrap();
+        fs::create_dir_all(odd.path().join("archives").join(MARKER)).unwrap();
+        assert_eq!(
+            migrate_markers(&witness, &roots).unwrap(),
+            Migration::AlreadyDone
+        );
+        let left = read_pending(&witness);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].root, odd.path().to_str().unwrap());
+        assert!(!gone_path.exists());
+        assert!(!without.path().join("archives").exists());
+        assert_eq!(names_in(&odd.path().join("archives")), [MARKER]);
+        assert!(odd.path().join("archives").join(MARKER).is_dir());
+        ensure_subdirs(without.path());
+        assert!(is_owned(&without.path().join("archives")));
+    }
+
+    /// Garde des constantes (#591) : chaque nom de [`APP_CACHE_SUBDIRS`] a une règle de preuve
+    /// (vide : prouvé ; un nom sans règle ne l'est jamais), et les constantes des modules qui
+    /// écrivent le cache sont bien des noms de la liste.
+    #[test]
+    fn chaque_sous_dossier_a_une_regle_de_preuve() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in APP_CACHE_SUBDIRS {
+            assert!(proven_by_content(name, dir.path()), "{name}");
+        }
+        assert!(!proven_by_content("documents", dir.path()));
+        for name in [
+            crate::install::ARCHIVES_DIR,
+            crate::catalog::CATALOGS_DIR,
+            crate::compat::RESULTS_DIR,
+            crate::device::official::CACHE_DIR,
+            crate::thumbnail::THUMBS_DIR,
+            crate::library::LIBRARY_DIR,
+            crate::player::PLAY_DIR,
+            crate::install::podcast::WORK_DIR,
+            crate::podcast::source::CACHE_SUBDIR,
+        ] {
+            assert!(APP_CACHE_SUBDIRS.contains(&name), "{name}");
         }
     }
 

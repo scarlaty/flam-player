@@ -1909,7 +1909,8 @@ const ARCHIVE_FAULT_CODES: &[&str] = &[
 ///
 /// Erreur d'entrée/sortie du système en lisant l'archive ([`system_io`]) : la conversion STUdio
 /// et [`pack::check_plain_pk`] rendent `io`, l'archive est gardée (exceptions et limites :
-/// [`system_io`] ; erreur `io` persistante : « Vider le cache »). Limite connue : `telmi2flam`
+/// [`system_io`] ; erreur `io` persistante : « Vider le cache », si `archives/` est marqué).
+/// Limite connue : `telmi2flam`
 /// (processus séparé) rend `archive_unreadable` pour une archive corrompue **comme** pour une
 /// archive que le système refuse de lire (antivirus, volume retiré) ; l'archive est alors
 /// supprimée et retéléchargée à la tentative suivante (coût réseau, aucune perte de données :
@@ -1926,7 +1927,11 @@ fn archive_at_fault(err: &AppError) -> bool {
 /// antivirus, fichier verrouillé, volume retiré) : le support local est en cause, pas le contenu
 /// de l'archive, qui est gardée. Une archive corrompue (CRC faux, en-tête invalide, troncature,
 /// flux compressé invalide) rend des erreurs construites par le lecteur zip, sans code de l'OS
-/// (#578). Si l'erreur `io` persiste à chaque tentative, « Vider le cache » supprime l'archive.
+/// (#578). Si l'erreur `io` persiste à chaque tentative, « Vider le cache » supprime l'archive,
+/// à condition que `archives/` porte le marqueur de l'application : après une installation
+/// interrompue juste avant la mise à jour (`.part` ou archive sans mémoire, #591), `archives/`
+/// n'est compté et vidé qu'à partir du démarrage qui suit son retour à un contenu reconnu
+/// (rattrapage de `cache::migrate_markers`) ; d'ici là, supprimer l'archive à la main.
 ///
 /// Exceptions, l'archive reste en cause (supprimée, retéléchargée) :
 /// - positionnement refusé par le système (`InvalidInput` : `EINVAL`,
