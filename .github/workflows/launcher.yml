@@ -394,12 +394,30 @@ jobs:
               throw "dossier d'installation toujours présent après 10 tentatives (dernière erreur : $(if ($err) { $err } else { 'aucune, suppression en attente ?' })). Restant : $($left -join ', ')"
             }
           }
+          function Invoke-Uninstall($label) {
+            # Désinstallation de préparation du scénario (remise à zéro de la machine, pas l'objet du test :
+            # la désinstallation elle-même est vérifiée, sans nouvelle tentative, à l'étape « Désinstaller,
+            # vérifier qu'il ne reste rien »). Le désinstallateur a déjà rendu 2 (abandon par son script) sans
+            # cause visible, une seule fois (#576) : chaque échec est journalisé en avertissement avec les
+            # processus qui peuvent le provoquer, puis rejoué (3 tentatives, 5 s d'écart). Ce n'est pas un
+            # masque : l'avertissement reste affiché sur le run, et un troisième échec fait échouer l'étape.
+            $code = $null
+            for ($i = 1; $i -le 3; $i++) {
+              $u = Start-Process -FilePath (Join-Path $dest 'uninstall.exe') -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
+              $code = $u.ExitCode
+              if ($code -eq 0) { return }
+              $procs = @(Get-Process | Where-Object { $_.Name -match '^(flam-launcher|flam-player|telmi2flam|ffmpeg|ffprobe|uninstall|msedgewebview2)$' } |
+                ForEach-Object { "$($_.Name) (pid $($_.Id))" })
+              Write-Host "::warning::$label : code $code à la tentative $i/3. Processus encore ouverts : $(if ($procs) { $procs -join ', ' } else { 'aucun' })"
+              if ($i -lt 3) { Start-Sleep -Seconds 5 }
+            }
+            throw "$label : code $code après 3 tentatives"
+          }
           $ref = Get-Content (Join-Path $env:RUNNER_TEMP 'arbre-installation-N.txt')
           if (-not $ref) { throw 'arbre de référence de N vide' }
 
           # Repartir d'une machine propre : on retire l'installation de N faite à l'étape précédente.
-          $u = Start-Process -FilePath (Join-Path $dest 'uninstall.exe') -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
-          if ($u.ExitCode -ne 0) { throw "désinstallation préalable : code $($u.ExitCode)" }
+          Invoke-Uninstall 'désinstallation préalable'
           Remove-InstallDir
 
           # 1. Installer N-1 et le vérifier.
@@ -473,8 +491,7 @@ jobs:
           # bloquer sur une boîte de dialogue invisible (CheckIfAppIsRunning de Tauri, désinstallateur de
           # N-1), ni laisser N-1 en cours d'exécution. Délai borné : au-delà, l'installateur (lancé par
           # ce script, tout comme N-1) est arrêté et l'étape échoue.
-          $u = Start-Process -FilePath (Join-Path $dest 'uninstall.exe') -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
-          if ($u.ExitCode -ne 0) { throw "désinstallation avant le scénario application ouverte : code $($u.ExitCode)" }
+          Invoke-Uninstall 'désinstallation avant le scénario application ouverte'
           Remove-InstallDir
           Invoke-Setup $env:FLAM_PREV_SETUP 'installation N-1 (application ouverte)'
           $app = Start-Process -FilePath (Join-Path $dest 'flam-launcher.exe') -PassThru
