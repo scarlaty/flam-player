@@ -1176,6 +1176,8 @@ it("Flam 1.x : « Réessayer » relit l'état du mode carrier après un échec (
 
   carrierStateFailure = null;
   fireEvent.click(within(dialog).getByRole("button", { name: "Réessayer" }));
+  // « Réessayer » disparaît pendant le chargement : le focus reste dans le dialogue.
+  expect(within(dialog).getByRole("button", { name: "Annuler" })).toHaveFocus();
   expect(await within(dialog).findByText(WARNING)).toBeInTheDocument();
   expect(count("device_carrier_state")).toBe(2);
   expect(within(dialog).queryByRole("button", { name: "Réessayer" })).toBeNull();

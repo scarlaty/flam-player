@@ -146,3 +146,39 @@ it("`wide` élargit le panneau (fiche détaillée)", () => {
   render(<Dialog wide open onClose={() => {}} title="Fiche" />);
   expect(screen.getByRole("dialog")).toHaveClass("fl-dialog", "fl-dialog--wide");
 });
+
+it("Maj+Tab depuis le panneau lui-même va au dernier élément", () => {
+  render(<Harness />);
+  open();
+  const panel = screen.getByRole("dialog");
+  panel.focus();
+  fireEvent.keyDown(panel, { key: "Tab", shiftKey: true });
+  expect(screen.getByRole("button", { name: "Installer" })).toHaveFocus();
+});
+
+it("Tab ramène dans le dialogue quand le focus est tombé sur body", () => {
+  render(<Harness />);
+  open();
+  (document.activeElement as HTMLElement).blur();
+  expect(document.body).toHaveFocus();
+  fireEvent.keyDown(document.body, { key: "Tab" });
+  expect(screen.getByRole("button", { name: "Fermer" })).toHaveFocus();
+
+  (document.activeElement as HTMLElement).blur();
+  fireEvent.keyDown(document.body, { key: "Tab", shiftKey: true });
+  expect(screen.getByRole("button", { name: "Installer" })).toHaveFocus();
+});
+
+it("Tab hors du dialogue y revient, et Tab au milieu reste au navigateur", () => {
+  render(<Harness />);
+  open();
+  const outside = screen.getByRole("button", { name: "Dehors", hidden: true });
+  outside.focus();
+  fireEvent.keyDown(outside, { key: "Tab" });
+  expect(screen.getByRole("button", { name: "Fermer" })).toHaveFocus();
+
+  const cancel = screen.getByRole("button", { name: "Annuler" });
+  cancel.focus();
+  const notPrevented = fireEvent.keyDown(cancel, { key: "Tab" });
+  expect(notPrevented).toBe(true);
+});

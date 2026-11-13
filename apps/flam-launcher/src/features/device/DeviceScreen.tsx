@@ -326,7 +326,20 @@ function DeviceStoriesList() {
   // Un envoi terminé pour un UUID (« Remplacer sur la Flam » le garde) : titre et vignette lus
   // avant l'envoi sont oubliés et relus.
   const sent = useMemo(() => sentStamps(queue), [queue]);
-  const { titles, lunii, keysProblem } = useDeviceStoryTitles(root, uuids, busy, sent);
+  // Relecture de la liste, même identique : relance la lecture des titres restés sans réponse
+  // (clés illisibles), sinon « Actualiser » laisserait le bandeau en place.
+  const [reads, setReads] = useState<{ report: DeviceStories | null; count: number }>({
+    report: null,
+    count: 0,
+  });
+  if (report && reads.report !== report) setReads({ report, count: reads.count + 1 });
+  const { titles, lunii, keysProblem } = useDeviceStoryTitles(
+    root,
+    uuids,
+    busy,
+    sent,
+    reads.count,
+  );
   // Titre non déchiffrable (clé d'un autre compte) : catalogue officiel en ligne, seulement s'il
   // reste au moins une histoire sans titre.
   const official = useOfficialStoryTitles(titles, lunii);
@@ -442,9 +455,9 @@ function DeviceStoriesList() {
             {t.deviceTransfer.remove.workingNamed(nameOf(removingStory))}
           </p>
         )}
-        {keysProblem && !firmwareWriteBlock(device) && (
-          // Doublon évité : si la garde du firmware bloque l'écriture (clés illisibles
-          // comprises), le bandeau du firmware donne déjà la raison.
+        {keysProblem && firmwareWriteBlock(device)?.kind !== "keys_unreadable" && (
+          // Doublon évité seulement quand le bandeau du firmware donne déjà cette raison
+          // (clés illisibles) ; un autre blocage d'écriture ne dit rien des titres.
           <Banner tone="warning" role="status" title={text.stories.keysProblemTitle}>
             {text.stories.keysProblem(keysProblem)}
           </Banner>

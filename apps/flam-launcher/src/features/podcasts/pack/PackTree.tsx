@@ -309,7 +309,10 @@ export function PackTree(props: PackTreeProps) {
             <MoveControl
               label={label}
               dataPath={key}
-              destinations={destinations.map((d) => d.label)}
+              destinations={destinations.map((d) => ({
+                key: d.path.join("/"),
+                label: d.label,
+              }))}
               onMove={(i) => {
                 const chosen = destinations[i];
                 if (chosen) moveTo(path, chosen.path);
@@ -360,14 +363,23 @@ export function PackTree(props: PackTreeProps) {
 interface MoveControlProps {
   label: string;
   dataPath: string;
-  destinations: readonly string[];
+  destinations: readonly { key: string; label: string }[];
   onMove: (index: number) => void;
 }
 
-/** Choix d'un menu puis validation explicite : parcourir la liste au clavier ne déplace rien. */
+/**
+ * Choix d'un menu puis validation explicite : parcourir la liste au clavier ne déplace rien.
+ * Le choix en attente est gardé par destination (chemin et libellé), pas par position dans la
+ * liste : si le menu visé disparaît ou change de nom, le choix est abandonné.
+ */
 function MoveControl({ label, dataPath, destinations, onMove }: MoveControlProps) {
   const text = t.podcasts.pack.tree;
-  const [choice, setChoice] = useState("");
+  const [chosen, setChosen] = useState<{ key: string; label: string } | null>(null);
+  const index =
+    chosen === null
+      ? -1
+      : destinations.findIndex((d) => d.key === chosen.key && d.label === chosen.label);
+  const choice = index < 0 ? "" : String(index);
   return (
     <div className="fl-pack__move">
       <SelectField
@@ -378,9 +390,12 @@ function MoveControl({ label, dataPath, destinations, onMove }: MoveControlProps
         data-action="move"
         options={[
           { value: "", label: text.movePlaceholder },
-          ...destinations.map((d, i) => ({ value: String(i), label: d })),
+          ...destinations.map((d, i) => ({ value: String(i), label: d.label })),
         ]}
-        onChange={(event) => setChoice(event.target.value)}
+        onChange={(event) => {
+          const picked = destinations[Number(event.target.value)];
+          setChosen(event.target.value === "" || !picked ? null : picked);
+        }}
       />
       <Button
         variant="secondary"
@@ -389,7 +404,7 @@ function MoveControl({ label, dataPath, destinations, onMove }: MoveControlProps
         aria-label={text.moveConfirm(label)}
         onClick={() => {
           onMove(Number(choice));
-          setChoice("");
+          setChosen(null);
         }}
       >
         {text.moveButton}

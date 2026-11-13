@@ -37,12 +37,16 @@ function delay(ms: number): Promise<void> {
  *
  * `keysProblem` : les clés de titre d'une Flam 2.x n'ont pas pu être lues (#317) ; les titres
  * se replient alors sur la bibliothèque ou le catalogue.
+ *
+ * `reread` : compteur de relectures de la liste (« Actualiser »). Après une réponse sans clé,
+ * rien n'est retenu : une relecture à liste identique relance donc la lecture des titres.
  */
 export function useDeviceStoryTitles(
   root: string | null,
   uuids: string[],
   paused: boolean,
   sent: ReadonlyMap<string, number> = EMPTY_SENT,
+  reread = 0,
 ): DeviceStoryTitlesState {
   const [titles, setTitles] = useState<{
     root: string | null;
@@ -162,7 +166,7 @@ export function useDeviceStoryTitles(
       active = false;
       if (inFlight) void cancelDeviceStoryDetails().catch(() => undefined);
     };
-  }, [root, uuidsKey, paused, sentKey]);
+  }, [root, uuidsKey, paused, sentKey, reread]);
 
   return titles.root === root
     ? { titles: titles.map, lunii: titles.lunii, keysProblem: titles.keysProblem }

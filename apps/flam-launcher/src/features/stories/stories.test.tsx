@@ -30,6 +30,11 @@ import { slowIt, tolerateLoadInAsyncUtils } from "../../test/timeouts";
 
 tolerateLoadInAsyncUtils();
 
+/** Laisse les promesses déjà résolues enchaîner leurs suites (sans délai réel). */
+const flushPromises = async () => {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+};
+
 const windowApi = vi.hoisted(() => ({
   minimizeWindow: vi.fn(() => Promise.resolve(true)),
   restoreWindow: vi.fn(() => Promise.resolve()),
@@ -1454,11 +1459,34 @@ it("une réponse ancienne de la liste installée n'écrase pas une plus récente
   await waitFor(() => expect(callsOf("library_list")).toHaveLength(2));
   // La réponse ancienne (liste vide) arrive en dernier : elle est ignorée.
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 20));
     releaseFirst();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await flushPromises();
   });
   // La fiche voit l'histoire installée : « Supprimer » est proposé.
+  const dialog = await openFiche();
+  expect(within(dialog).getByRole("button", { name: "Supprimer" })).toBeVisible();
+});
+
+it("une réponse ancienne valide sert quand la plus récente échoue (#581)", async () => {
+  let releaseFirst!: () => void;
+  installed = [installedEntry(ours())];
+  listGates = [
+    new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    }),
+  ];
+  await renderApp();
+  await waitFor(() => expect(callsOf("library_list")).toHaveLength(1));
+  // Seconde lecture (fin d'une installation) : elle échoue.
+  failures.library_list = { kind: "io", message: "disque illisible" };
+  await send("install://done", { task_id: "t1", entry: installed[0], warnings: 0 });
+  await waitFor(() => expect(callsOf("library_list")).toHaveLength(2));
+  delete failures.library_list;
+  // La première réponse (valide) arrive ensuite : elle n'est pas perdue.
+  await act(async () => {
+    releaseFirst();
+    await flushPromises();
+  });
   const dialog = await openFiche();
   expect(within(dialog).getByRole("button", { name: "Supprimer" })).toBeVisible();
 });

@@ -755,3 +755,30 @@ it("déplacement vers un autre menu : le focus suit l'élément déplacé", asyn
     expect(screen.getByLabelText("Déplacer « Épisode 1 » vers")).toHaveFocus(),
   );
 });
+
+it("abandonne le choix « Déplacer vers » quand la destination n'est plus proposée (#581)", async () => {
+  views.a = feed("a", "Contes", [episode("1")]);
+  draft = {
+    ...draft,
+    composition: composition([ep("a", "1"), cat("Hiver"), cat("Été")]),
+  };
+  renderEditor();
+  const select = await screen.findByLabelText("Déplacer « Épisode 1 » vers");
+  const confirm = screen.getByRole("button", {
+    name: "Déplacer « Épisode 1 » vers le menu choisi",
+  });
+  fireEvent.change(select, { target: { value: "1" } });
+  expect(confirm).toBeEnabled();
+
+  // « Hiver » supprimée : « Été » prend sa place dans la liste, le choix ne la désigne plus.
+  fireEvent.click(
+    screen.getByRole("button", { name: "Supprimer la catégorie « Hiver »" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: /catégorie « Hiver »/ })).toBeNull(),
+  );
+  expect(screen.getByLabelText("Déplacer « Épisode 1 » vers")).toHaveValue("");
+  expect(
+    screen.getByRole("button", { name: "Déplacer « Épisode 1 » vers le menu choisi" }),
+  ).toBeDisabled();
+});
