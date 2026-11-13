@@ -40,7 +40,7 @@ jobs:
       # Outils de campagne en Python (compat.py, explore.py, parity.py, validate.py) : bibliothèque
       # standard, plus `lupa` (Lua de validate.py et de l'explorateur). Ni Pillow ni oracle : le
       # convertisseur Python est supprimé, ses sorties sont figées (#140, PORT-RUST.md §4.5).
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           # Même version dans les trois workflows (vérifié par test_parity.py).
           python-version: "3.14.8"
