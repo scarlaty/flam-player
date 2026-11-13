@@ -48,6 +48,42 @@ SCEN_C = _lua("local function spawn()",
               "end",
               "pcall(spawn())",
               "while true do pcall(function() pcall(spawn()) end) end")
+# D : des coroutines preparees avant le declenchement : leur reprise (fonction
+# rendue par wrap) ne doit pas s'executer (ran reste a 0)
+SCEN_D = _lua("ran = 0",
+              "local leaves = {}",
+              "for i = 1, 2000 do",
+              "  leaves[i] = coroutine.wrap(function()",
+              "    ran = ran + 1",
+              "    while true do pcall(function() while true do end end) end",
+              "  end)",
+              "end",
+              "local root = coroutine.wrap(function()",
+              "  pcall(coroutine.wrap(function() while true do end end))",
+              "  for i = 1, #leaves do pcall(leaves[i]) end",
+              "  print('LEAVES_RAN', ran)",
+              "end)",
+              "root()")
+# E : idem avec coroutine.close et des variables a fermer en attente (__close)
+SCEN_E = _lua("ran = 0",
+              "local cos = {}",
+              "for i = 1, 2000 do",
+              "  local co = coroutine.create(function()",
+              "    local x <close> = setmetatable({}, {__close = function()",
+              "      ran = ran + 1",
+              "      while true do pcall(function() while true do end end) end",
+              "    end})",
+              "    coroutine.yield()",
+              "  end)",
+              "  coroutine.resume(co)",
+              "  cos[i] = co",
+              "end",
+              "local root = coroutine.wrap(function()",
+              "  pcall(coroutine.wrap(function() while true do end end))",
+              "  for i = 1, #cos do pcall(coroutine.close, cos[i]) end",
+              "  print('CLOSERS_RAN', ran)",
+              "end)",
+              "root()")
 LEGIT = ('local ok, err = pcall(error, "attendue")\n'
          'local ok2 = pcall(function() return 1 end)\n'
          'print("LEGIT_DONE", ok, ok2)\n')
@@ -88,12 +124,13 @@ def run(exe, script, tmp, wait_for):
         while (time.monotonic() < deadline and proc.poll() is None
                and not any(wait_for in x for x in lines)):
             time.sleep(0.05)
-        time.sleep(0.5)
-        try:
-            proc.stdin.write(b"quit\n")
-            proc.stdin.flush()
-        except OSError:
-            pass
+        if proc.poll() is None:
+            time.sleep(0.5)
+            try:
+                proc.stdin.write(b"quit\n")
+                proc.stdin.flush()
+            except OSError:
+                pass
         try:
             rc = proc.wait(8)
         except subprocess.TimeoutExpired:
@@ -134,6 +171,16 @@ def main():
             check("Erreur Lua" in out and "watchdog" in out,
                   "coroutines %s : script interrompu par le watchdog" % tag, out)
             check(rc == 0, "coroutines %s : le player quitte (code %r)" % (tag, rc), out)
+
+        for tag, src, trace in (("D", SCEN_D, "LEAVES_RAN"), ("E", SCEN_E, "CLOSERS_RAN")):
+            sc = os.path.join(tmp, "coro_%s.lua" % tag)
+            with open(sc, "w", newline="") as f:
+                f.write(src)
+            t0 = time.monotonic()
+            out, rc = run(exe, sc, tmp, "Erreur Lua")
+            check("watchdog" in out and (trace + "\t0") in out,
+                  "coroutines %s : aucune coroutine preparee ne s'execute apres le declenchement" % tag, out)
+            check(rc == 0, "coroutines %s : le player quitte (code %r, %.1f s)" % (tag, rc, time.monotonic() - t0), out)
 
         s2 = os.path.join(tmp, "legit.lua")
         with open(s2, "w", newline="") as f:

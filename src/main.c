@@ -127,7 +127,7 @@ static void watchdog_hook(lua_State *L, lua_Debug *ar)
     }
 }
 
-/* coroutine.create / wrap / resume : tant que le watchdog est declenche, ils
+/* coroutine.create / wrap / resume / close : tant que le watchdog est declenche, ils
    levent son erreur (sinon chaque coroutine neuve disposerait d'un quota
    d'instructions pour en creer d'autres sous pcall). Installes par
    watchdog_guard_coroutines ; la fonction d'origine est la 1re valeur amont. */
@@ -143,15 +143,27 @@ static int wd_guard_call(lua_State *L)
     return lua_gettop(L);
 }
 
+/* coroutine.wrap : la fonction rendue (fermeture C d'origine) est elle aussi
+   enveloppee, sinon sa reprise echapperait a la garde. */
+static int wd_guard_wrap(lua_State *L)
+{
+    int n = wd_guard_call(L);
+    if (n >= 1 && lua_isfunction(L, -1)) {
+        lua_pushcclosure(L, wd_guard_call, 1);
+    }
+    return n;
+}
+
 static void watchdog_guard_coroutines(lua_State *L)
 {
-    static const char *const names[] = { "create", "wrap", "resume" };
+    static const char *const names[] = { "create", "wrap", "resume", "close" };
     lua_getglobal(L, "coroutine");
     if (lua_istable(L, -1)) {
         for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
             lua_getfield(L, -1, names[i]);
             if (lua_isfunction(L, -1)) {
-                lua_pushcclosure(L, wd_guard_call, 1);
+                lua_pushcclosure(L, strcmp(names[i], "wrap") == 0 ? wd_guard_wrap
+                                                                    : wd_guard_call, 1);
                 lua_setfield(L, -2, names[i]);
             } else {
                 lua_pop(L, 1);
