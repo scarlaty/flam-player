@@ -535,17 +535,45 @@ fn balises_inconnues_et_casse() {
     assert_eq!(parse(&xml).unwrap().title, "Vrai");
 }
 
+/// Délai de garde des tests géants : très large, il ne mesure rien (horloge réelle, instable sous
+/// charge) ; il transforme seulement un blocage (coût non borné) en échec qui nomme le test.
+const GIANT_GUARD: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Exécute `test` sur un fil dédié, en échouant au bout de [`GIANT_GUARD`] au lieu de bloquer.
+/// Un échec de `test` est propagé tel quel.
+fn guarded(name: &str, test: impl FnOnce() + Send + 'static) {
+    let (done, finished) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        test();
+        let _ = done.send(());
+    });
+    match finished.recv_timeout(GIANT_GUARD) {
+        Ok(()) => worker.join().unwrap(),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            if let Err(panic) = worker.join() {
+                std::panic::resume_unwind(panic);
+            }
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("{name} : pas terminé en {GIANT_GUARD:?} (coût non borné ?)")
+        }
+    }
+}
+
 #[test]
 fn script_en_majuscules_et_nombreux_restent_rapides() {
-    assert_eq!(strip_html("a<SCRIPT>x</Script>b<STYLE>y</STYLE>c"), "abc");
-    let many = "<script>x</script>".repeat(20_000);
-    assert_eq!(strip_html(&format!("{many}fin")), "fin");
+    guarded("script_en_majuscules_et_nombreux_restent_rapides", || {
+        assert_eq!(strip_html("a<SCRIPT>x</Script>b<STYLE>y</STYLE>c"), "abc");
+        let many = "<script>x</script>".repeat(20_000);
+        assert_eq!(strip_html(&format!("{many}fin")), "fin");
+    });
 }
 
 /// Flux de ~15 Mio dont le canal porte `body` dans une description CDATA : l'analyse doit
-/// rester bornée (bornes de texte et d'entrée HTML). Aucune durée n'est mesurée (horloge réelle,
-/// instable sous charge) : la borne est celle de l'entrée du nettoyage, vérifiée à part
-/// (`entree_du_nettoyage_html_bornee`) ; un coût non borné ferait échouer le test par blocage.
+/// rester bornée (bornes de texte et d'entrée HTML). Aucune durée fine n'est mesurée (horloge
+/// réelle, instable sous charge) : la borne est celle de l'entrée du nettoyage, vérifiée sur le
+/// chemin réel (`description_coupee_avant_le_nettoyage_html`) ; un coût non borné fait échouer
+/// le test au bout de [`GIANT_GUARD`] ([`guarded`]).
 fn hostile_description(body: &str) -> PodcastFeed {
     let reps = 15 * 1024 * 1024 / body.len();
     let xml = wrap(&format!(
@@ -571,27 +599,62 @@ fn entree_du_nettoyage_html_bornee() {
     assert!(cut.chars().all(|c| c == 'é'));
 }
 
+/// Le chemin réel de la description (`parse` puis `description_text`) coupe l'entrée du
+/// nettoyage HTML à [`MAX_HTML_INPUT_BYTES`] : un marqueur placé juste après n'apparaît pas. Le
+/// préfixe est un commentaire HTML (aucun texte rendu) : sans la coupure, il serait sauté et le
+/// marqueur, seul texte, apparaîtrait ; avec elle, le commentaire n'est pas fermé et rien ne
+/// reste. (Un préfixe de texte ne prouverait rien : la borne de longueur de la description
+/// couperait le marqueur de toute façon.)
+#[test]
+fn description_coupee_avant_le_nettoyage_html() {
+    const MARKER: &str = "MarqueurAuDelaDeLaBorne";
+    let prefix = format!("<!--{}-->", "x".repeat(MAX_HTML_INPUT_BYTES - 7));
+    assert_eq!(prefix.len(), MAX_HTML_INPUT_BYTES);
+    let channel = |description: &str| {
+        wrap(&format!(
+            "<title>T</title><description><![CDATA[{description}]]></description>{}",
+            item("a", "")
+        ))
+    };
+    // Témoin : même construction sous la borne, le marqueur est bien rendu.
+    let short = format!("<!--{}-->{MARKER}", "x".repeat(16));
+    let feed = parse(&channel(&short)).unwrap();
+    assert_eq!(feed.description.as_deref(), Some(MARKER));
+    let feed = parse(&channel(&format!("{prefix}{MARKER}"))).unwrap();
+    assert!(
+        !feed.description.as_deref().unwrap_or("").contains(MARKER),
+        "entrée du nettoyage HTML non bornée : {:?}",
+        feed.description
+    );
+}
+
 #[test]
 fn cdata_geant_d_esperluettes_reste_rapide() {
-    let feed = hostile_description("&");
-    assert!(feed.description.is_some());
+    guarded("cdata_geant_d_esperluettes_reste_rapide", || {
+        let feed = hostile_description("&");
+        assert!(feed.description.is_some());
+    });
 }
 
 #[test]
 fn cdata_geant_de_balises_script_reste_rapide() {
-    let feed = hostile_description("<script></script>");
-    assert!(feed.description.as_deref().unwrap_or("").len() <= 1);
+    guarded("cdata_geant_de_balises_script_reste_rapide", || {
+        let feed = hostile_description("<script></script>");
+        assert!(feed.description.as_deref().unwrap_or("").len() <= 1);
+    });
 }
 
 #[test]
 fn titre_geant_reste_rapide_et_borne() {
-    let huge = "mot ".repeat(3 * 1024 * 1024);
-    let xml = wrap(&format!(
-        "<title><![CDATA[{huge}]]></title>{}",
-        item("a", "")
-    ));
-    let feed = parse(&xml).unwrap();
-    assert_eq!(feed.title.chars().count(), MAX_TITLE_CHARS);
+    guarded("titre_geant_reste_rapide_et_borne", || {
+        let huge = "mot ".repeat(3 * 1024 * 1024);
+        let xml = wrap(&format!(
+            "<title><![CDATA[{huge}]]></title>{}",
+            item("a", "")
+        ));
+        let feed = parse(&xml).unwrap();
+        assert_eq!(feed.title.chars().count(), MAX_TITLE_CHARS);
+    });
 }
 
 #[test]
