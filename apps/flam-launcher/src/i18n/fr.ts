@@ -524,8 +524,18 @@ export const fr = {
       mp3Empty: "Aucun MP3 de podcast n'est gardé en cache.",
       clear: "Vider le cache",
       confirmTitle: "Vider le cache ?",
-      confirmDescription: (dirs: string, path: string, size: string) =>
-        `Les histoires installées seront supprimées : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. Seuls les dossiers créés par Flam Launcher (${dirs}) seront vidés dans « ${path} ». Le reste de ce dossier n'est pas touché. Espace libéré : ${size}.`,
+      /**
+       * `dirs` : sous-dossiers marqués que le vidage videra (`cache_usage.subdirs`). La phrase
+       * sur les histoires installées n'apparaît que si `library` en fait partie (#591).
+       */
+      confirmDescription: (dirs: readonly string[], path: string, size: string) =>
+        dirs.length === 0
+          ? `Aucun dossier créé par Flam Launcher n'est à vider dans « ${path} ». Rien ne sera supprimé.`
+          : `${
+              dirs.includes("library")
+                ? "Les histoires installées seront supprimées : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. "
+                : ""
+            }Seuls les dossiers créés par Flam Launcher (${dirs.join(", ")}) seront vidés dans « ${path} ». Le reste de ce dossier n'est pas touché. Espace libéré : ${size}.`,
       cleared: (size: string) => `Cache vidé : ${size} libérés`,
     },
     appearance: "Apparence",

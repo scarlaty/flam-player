@@ -359,7 +359,7 @@ export function SettingsScreen() {
         description={
           usage
             ? text.cache.confirmDescription(
-                usage.subdirs.join(", "),
+                usage.subdirs,
                 usage.path,
                 formatBytes(usage.bytes),
               )

@@ -247,7 +247,8 @@ fn mark_existing(root: &Path, fault: Fault) -> io::Result<usize> {
 /// connaît la forme du contenu ; en cas de doute, rien n'est marqué (fuite, jamais de perte) :
 /// - `library` : index reconnu ([`crate::library::is_legacy_library`]) ou dossier vide ;
 /// - `podcasts` : chaque enfant est un dossier réel nommé comme un identifiant de source
-///   (règle de `podcast::source::source_dir`) ;
+///   (règle de `podcast::source::source_dir`) dont le contenu a la forme écrite par l'application
+///   (voir [`podcast_source_children_known`]) ;
 /// - `podcast-work` : chaque enfant est un dossier réel nommé par un identifiant de tâche
 ///   (`install::is_task_id`) ;
 /// - `play` : chaque enfant est un dossier réel nommé par l'empreinte de `player::Workspace`
@@ -284,7 +285,48 @@ fn proven_by_content(name: &str, dir: &Path) -> bool {
                 .file_type()
                 .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
                 && entry.file_name().to_str().is_some_and(child_shape)
+                && (name != crate::podcast::source::CACHE_SUBDIR
+                    || podcast_source_children_known(&entry.path()))
         })
+    })
+}
+
+/// Tous les éléments du dossier d'une source podcast (`podcasts/<source_id>/`) ont une forme que
+/// l'application y écrit (vide compris), relevée dans le code des versions publiées bêta.2 à
+/// bêta.4 (aucun cache de podcast en bêta.1) et dans la version courante : flux `feed.xml` et
+/// métadonnées `meta.json` (`podcast::source`), leurs temporaires d'écriture atomique
+/// `.feed.xml.<pid>-<n>.tmp` et `.meta.json.<pid>-<n>.tmp` (`storage::write_atomic`), dossiers
+/// `mp3` (`podcast::mp3cache`) et `thumbs` (`podcast::thumb`, depuis la bêta.3). Un autre nom, un
+/// lien ou un type inattendu : refus (#591). Le contenu de `mp3/` et `thumbs/` n'est pas examiné.
+fn podcast_source_children_known(dir: &Path) -> bool {
+    const FILES: [&str; 2] = ["feed.xml", "meta.json"];
+    const DIRS: [&str; 2] = ["mp3", "thumbs"];
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.into_iter().all(|entry| {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let (Ok(kind), Some(name)) = (
+            entry.file_type(),
+            entry.file_name().to_str().map(str::to_owned),
+        ) else {
+            return false;
+        };
+        if kind.is_symlink() {
+            return false;
+        }
+        if kind.is_dir() {
+            return DIRS.contains(&name.as_str());
+        }
+        kind.is_file()
+            && (FILES.contains(&name.as_str())
+                || FILES.iter().any(|file| {
+                    name.strip_prefix('.')
+                        .and_then(|rest| rest.strip_prefix(file))
+                        .is_some_and(|rest| rest.starts_with('.') && rest.ends_with(".tmp"))
+                }))
     })
 }
 
@@ -1283,6 +1325,50 @@ mod tests {
         }));
         assert!(!marked(&|l| write(&l.join("thumbs"), 3)), "thumbs fichier");
         assert!(!marked(&|l| fs::create_dir_all(l.join(".lock")).unwrap()));
+    }
+
+    /// `podcasts/` : chaque dossier de source doit avoir la forme écrite par les versions publiées
+    /// (flux, métadonnées, leurs temporaires, `mp3/`, `thumbs/`) ; un `podcasts/` personnel aux
+    /// sous-dossiers bien nommés n'est plus marqué (#591).
+    #[test]
+    fn un_dossier_de_source_podcast_est_reconnu_a_sa_forme() {
+        let marked = |setup: &dyn Fn(&Path)| {
+            let config = tempfile::tempdir().unwrap();
+            let cache = tempfile::tempdir().unwrap();
+            let source = cache
+                .path()
+                .join("podcasts/4f1c2a9e-0b7d-4c3e-9a51-2d6e8f0a1b3c");
+            fs::create_dir_all(&source).unwrap();
+            setup(&source);
+            let roots = [cache.path().to_path_buf()];
+            migrate_markers(&config.path().join(MIGRATION_WITNESS), &roots).unwrap();
+            is_owned(&cache.path().join("podcasts"))
+        };
+        assert!(marked(&|s| {
+            write(&s.join("feed.xml"), 3);
+            write(&s.join("meta.json"), 3);
+            write(&s.join(".feed.xml.42-0.tmp"), 3);
+            write(&s.join(".meta.json.42-1.tmp"), 3);
+            write(&s.join("mp3/0123456789abcdef0123456789abcdef.mp3"), 3);
+            write(&s.join("thumbs/vignette.png"), 3);
+        }));
+        assert!(
+            marked(&|s| fs::create_dir_all(s.join("mp3")).unwrap()),
+            "mp3 seul"
+        );
+        assert!(marked(&|_| {}), "dossier de source vide");
+        // Un `podcasts/` personnel aux sous-dossiers bien nommés : refus.
+        assert!(!marked(&|s| write(&s.join("episode-12.mp3"), 3)));
+        assert!(!marked(&|s| {
+            write(&s.join("feed.xml"), 3);
+            fs::create_dir_all(s.join("2024")).unwrap();
+        }));
+        assert!(
+            !marked(&|s| fs::create_dir_all(s.join("feed.xml")).unwrap()),
+            "flux dossier"
+        );
+        assert!(!marked(&|s| write(&s.join("mp3"), 3)), "mp3 fichier");
+        assert!(!marked(&|s| write(&s.join(".feed.xmlx.tmp"), 3)));
     }
 
     #[test]
