@@ -56,6 +56,7 @@ function imageChoice.clean()
     lv.obj.clean(window)
 
     imageChoice.answerIterator = 1
+    imageChoice.tick = 0
     imageChoice.parentContainer = nil
     imageChoice.renderedImage = nil
     imageChoice.renderedLabel = nil
@@ -110,9 +111,13 @@ function imageChoice.audioFeedback(state, second)
 end
 
 function imageChoice.processKeyEvent()
-    if (imageChoice.tick <= 1 and imageChoice.keyEvent ~= nil) then
-        imageChoice.keyEvent = nil
+    -- Fenetre anti-rebond a l'entree (~200 ms, comme le carrousel) : on avance
+    -- sur le TEMPS (a chaque tick), pas sur le nb d'appuis (sinon les 2 premieres
+    -- touches de chaque ecran etaient avalees).
+    if (imageChoice.tick <= 1) then
         imageChoice.tick = imageChoice.tick + 1
+        imageChoice.keyEvent = nil
+        return
     end
     if (imageChoice.keyEvent ~= nil) then
         if (string.byte(imageChoice.keyEvent) == 20 or string.byte(imageChoice.keyEvent) == 19) then
@@ -129,8 +134,12 @@ function imageChoice.processKeyEvent()
             end
         end
         if (string.byte(imageChoice.keyEvent) == 10) then
-            if (imageChoice.answers[imageChoice.answerIterator].cb ~= nil) then
-                imageChoice.answers[imageChoice.answerIterator].cb()
+            -- ENTER consomme AVANT le callback : sinon cb() est rappele a chaque
+            -- tick (100 ms) tant que le module suivant n'a pas supprime ce timer.
+            local cb = imageChoice.answers[imageChoice.answerIterator].cb
+            imageChoice.keyEvent = nil
+            if (cb ~= nil) then
+                cb()
             end
         else
             if (imageChoice.answers[imageChoice.answerIterator].data ~= nil) then
@@ -160,10 +169,28 @@ function imageChoice.processKeyEvent()
             if (imageChoice.answers[imageChoice.answerIterator].priority ~= nil) then
                 priority = imageChoice.answers[imageChoice.answerIterator].priority
             end
-            Global.requestAudioPlay({ path = imageChoice.answers[imageChoice.answerIterator].audio, priority = priority })
+            -- stopNow : l'audio de l'option quittee est coupe des le changement
+            -- de focus, seul le chargement du nouvel audio reste differe (B6)
+            Global.requestAudioPlay({ path = imageChoice.answers[imageChoice.answerIterator].audio, priority = priority,
+                stopNow = true })
             imageChoice.keyEvent = nil
         end
     end
+end
+
+-- B7 : appele par Global.flushPendingKey avant un retour (Home/ESC) : un ENTER
+-- en attente (hors fenetre anti-rebond) est traite tout de suite au lieu d'etre
+-- perdu au nettoyage du module. Les autres touches en attente sont ignorees.
+-- Renvoie true si un ENTER est traite.
+function imageChoice.flushPendingKey()
+    if (imageChoice.keyEvent == nil or imageChoice.tick <= 1) then
+        return false
+    end
+    if (string.byte(imageChoice.keyEvent) ~= 10) then
+        return false
+    end
+    imageChoice.processKeyEvent()
+    return true
 end
 
 function imageChoice.keyPressed(e)

@@ -25,7 +25,7 @@ firmware, pas d'import de contenus d'un autre compte.
 | `scripts/flam_build.py` | assemble le `.plain.pk` (+ dossier `.plain` pour le simulateur) et lance le check |
 | `scripts/flam_check.py` | valide un `.plain.pk` (structure, Lua, assets, pièges device) |
 | `scripts/lif.py`, `scripts/mp3map.py` | encodeurs image et table audio (utilisés par le build) |
-| `assets/runtime/` | runtime Lua du projet à embarquer (copié par le build, ne pas modifier ni remplacer par une autre version), éprouvé sur device avec les jeux du skill, qui n'utilisent pas le carrousel. `script/carousel_1_0_0.lua` a été corrigé depuis (mémoire et sources d'images retenues, pièges 25 et 26) : correctif vérifié par test au simulateur, pas encore revalidé sur device |
+| `assets/runtime/` | runtime Lua du projet à embarquer (copié par le build, ne pas modifier à la main) : copie octet pour octet du runtime du convertisseur `tools/telmi2flam/runtime` du dépôt, gardée identique par un test (piège 18). Les jeux validés sur device (Capi et la rivière, construit par `flam_build.py`) l'ont été avec l'**ancien** runtime du skill ; avec celui-ci, ils ne sont vérifiés qu'au simulateur et sont **à revalider sur device** |
 | `assets/template/` | gabarits de `main.lua` et du module |
 | `references/lua-api.md` | **à lire avant d'écrire du Lua** : contrat de module, molette, dessin, timers, images, audio, polices, liste blanche d'API |
 | `references/device-pitfalls.md` | pièges device vs simulateur, protocole de test |
@@ -93,9 +93,10 @@ complet. Les règles qui comptent le plus :
 - Images via `Global.load_image("x.lif")` (relatif à `img/`), audio via
   `Global.requestAudioPlay({path="x.mp3"})` (relatif à `sounds/`).
 - Images : ranger chaque source dans une table du module tant qu'elle est affichée
-  (`lv.img.set_src` ne la retient pas sur device) et ne garder que les images
-  affichées, pas un cache de toutes celles déjà vues (redémarrage de la Flam) :
-  `lua-api.md` §7, pièges 25 et 26.
+  (d'après le runtime, `lv.img.set_src` ne la retient pas sur device ; non mesuré
+  isolément sur l'appareil, piège 25 suspecté) et ne garder que les images affichées,
+  pas un cache de toutes celles déjà vues (redémarrage de la Flam constaté, piège 26) :
+  `lua-api.md` §7.
 - Plusieurs écrans : un module par écran, ou un module avec des phases internes.
 - Fichiers `.lua` en UTF-8 sans BOM, dans `script/`, à plat.
 
@@ -189,7 +190,7 @@ Ne jamais présenter un homebrew comme « fonctionnel sur la Flam » sans test d
 | image figée un instant à chaque bruitage | `audio.stop`/`pause` d'une piste en cours (piège 20) |
 | console gelée, redémarrage obligatoire | `audio.load` pendant une lecture (piège 21) ou `audio.seek` en lecture (piège 9) |
 | la Flam redémarre en parcourant des images | trop d'images décodées retenues (piège 26) |
-| image corrompue ou plantage après un moment, OK au simulateur | source d'image tenue par une variable locale (piège 25) |
+| image corrompue ou plantage après un moment, OK au simulateur | suspecté : source d'image tenue par une seule variable locale (piège 25) |
 | rectangles à la place de lettres | caractère hors ASCII/Latin-1 |
 | la molette ne fait rien | `set_editing(document, true)` ou `lv.group.add_obj` manquant |
 | image en mosaïque / tournée | objet plus grand que l'image / PNG portrait > 64 px |
