@@ -39,7 +39,9 @@ export function RemoveStoryButton({
   const { removeFromDevice, deviceKey, ejecting, canMaintain } = useDevice();
   const keyAtOpen = useRef<string | null>(null);
   const toast = useToast();
-  const [confirming, setConfirming] = useState(false);
+  // Nom figé à l'ouverture : les titres de la Flam ou du catalogue peuvent arriver pendant que
+  // le dialogue est ouvert, la question et la notification gardent celui que l'utilisateur a lu.
+  const [confirming, setConfirming] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const hintId = useId();
@@ -49,13 +51,14 @@ export function RemoveStoryButton({
 
   async function confirmRemove() {
     // Le dialogue se ferme aussitôt : le retrait dure plusieurs secondes, l'état est sur la ligne.
-    setConfirming(false);
+    const confirmedName = confirming ?? name;
+    setConfirming(null);
     setWorking(true);
     onWorkingChange?.(true);
     try {
       const { cleanupPending } = await removeFromDevice(story.uuid, keyAtOpen.current);
       toast.show({
-        message: text.done(name) + (cleanupPending ? text.cleanupPending : ""),
+        message: text.done(confirmedName) + (cleanupPending ? text.cleanupPending : ""),
         tone: "success",
       });
       onRemoved();
@@ -82,7 +85,7 @@ export function RemoveStoryButton({
           onClick={() => {
             if (blocked) return;
             keyAtOpen.current = deviceKey;
-            setConfirming(true);
+            setConfirming(name);
           }}
         >
           {working ? text.working : text.button}
@@ -108,15 +111,15 @@ export function RemoveStoryButton({
         )}
       </span>
       <Dialog
-        open={confirming}
-        onClose={() => setConfirming(false)}
+        open={confirming !== null}
+        onClose={() => setConfirming(null)}
         role="alertdialog"
-        title={text.title(name)}
+        title={text.title(confirming ?? name)}
         description={text.description}
         initialFocus={cancelRef}
         footer={
           <>
-            <Button ref={cancelRef} onClick={() => setConfirming(false)}>
+            <Button ref={cancelRef} onClick={() => setConfirming(null)}>
               {t.common.cancel}
             </Button>
             <Button

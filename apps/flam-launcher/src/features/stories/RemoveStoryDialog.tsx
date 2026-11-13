@@ -5,7 +5,10 @@ import { t } from "../../i18n";
 export interface RemoveStoryDialogProps {
   open: boolean;
   title: string;
-  /** Suppression en cours : « Supprimer » est refusé (pas de second appel). */
+  /**
+   * Suppression en cours : « Supprimer » est refusé (pas de second appel) et la fermeture
+   * (Annuler, Échap, fond, Fermer) est ignorée : la suppression continue, le dialogue reste.
+   */
   busy?: boolean;
   onCancel: () => void;
   /** Appelé à la confirmation, avec le choix « Supprimer aussi la progression ». */
@@ -25,17 +28,20 @@ export function RemoveStoryDialog({
   const text = t.stories.removeDialog;
   // Remise à zéro à la fermeture (pas à la confirmation : la fiche reste ouverte pendant l'appel).
   if (!open && purgeSaves) setPurgeSaves(false);
+  const cancel = () => {
+    if (!busy) onCancel();
+  };
   return (
     <Dialog
       open={open}
-      onClose={onCancel}
+      onClose={cancel}
       role="alertdialog"
       title={text.title(title)}
       description={text.description}
       initialFocus={cancelRef}
       footer={
         <>
-          <Button ref={cancelRef} onClick={onCancel}>
+          <Button ref={cancelRef} aria-disabled={busy || undefined} onClick={cancel}>
             {t.common.cancel}
           </Button>
           <Button

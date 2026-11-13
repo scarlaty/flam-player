@@ -3,7 +3,6 @@ import {
   useId,
   useLayoutEffect,
   useRef,
-  type KeyboardEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -38,10 +37,38 @@ const FOCUSABLE =
   'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 /**
+ * Boucle Tab et Maj+Tab dans `panel`. Seul le dialogue le plus récent (dernier panneau du
+ * document) piège le focus. Focus hors du panneau, ou sur le panneau lui-même : on y entre
+ * par le premier (Tab) ou le dernier (Maj+Tab) élément.
+ */
+function trapTab(event: globalThis.KeyboardEvent, panel: HTMLElement | null) {
+  if (!panel) return;
+  const panels = document.querySelectorAll(".fl-dialog");
+  if (panels[panels.length - 1] !== panel) return;
+  const focusable = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!first || !last) {
+    event.preventDefault();
+    panel.focus();
+    return;
+  }
+  const active = document.activeElement;
+  const inside = active !== null && panel.contains(active) && active !== panel;
+  if (event.shiftKey && (!inside || active === first)) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (!inside || active === last)) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+/**
  * Dialogue modal rendu dans `document.body`.
  * - Focus à l'ouverture : `initialFocus`, sinon premier élément actif du contenu, puis
  *   des actions, sinon le panneau lui-même ; rendu à l'élément d'origine à la fermeture.
- * - Tab et Maj+Tab bouclent dans le panneau.
+ * - Tab et Maj+Tab bouclent dans le panneau, focus tombé sur `body` compris.
  * - Échap ferme, écouté sur tout le document tant que le dialogue est ouvert.
  * - Le défilement de la page est bloqué tant que le dialogue est ouvert.
  */
@@ -75,13 +102,17 @@ export function Dialog({
     return () => previous?.focus();
   }, [open, initialFocus]);
 
-  // Échap au niveau du document, même si le focus a quitté le panneau.
+  // Échap et Tab au niveau du document, même si le focus a quitté le panneau (un bouton devenu
+  // `disabled` rend le focus à `body`) : Tab ramène alors dans le dialogue au lieu de laisser le
+  // focus partir derrière.
   useEffect(() => {
     if (!open) return;
     function onKeyDown(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") {
         event.stopPropagation();
         onClose();
+      } else if (event.key === "Tab") {
+        trapTab(event, panelRef.current);
       }
     }
     document.addEventListener("keydown", onKeyDown);
@@ -101,23 +132,6 @@ export function Dialog({
 
   if (!open) return null;
 
-  function trapTab(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== "Tab" || !panelRef.current) return;
-    const focusable = Array.from(
-      panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE),
-    );
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (!first || !last) return;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
   return createPortal(
     <div
       className="fl-dialog__backdrop"
@@ -133,7 +147,6 @@ export function Dialog({
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
-        onKeyDown={trapTab}
       >
         <div className="fl-dialog__header">
           <h2 id={titleId} className="fl-dialog__title">

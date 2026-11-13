@@ -675,6 +675,34 @@ it("pas d'avertissement de titres sans problème, ni en double du blocage du fir
   expect(screen.queryByText("Titres des histoires illisibles")).toBeNull();
 });
 
+it("garde l'avertissement des titres sous un autre blocage d'écriture (#581)", async () => {
+  status = detected({
+    firmware_status: firmwareV2({ write_block: { kind: "version_unreadable" } }),
+  });
+  keysProblem = "clé illisible";
+  stories = report([story(A, { title: "Capi", in_library: true })]);
+  renderScreen();
+  expect(await screen.findByText("Titres des histoires illisibles")).toBeInTheDocument();
+});
+
+it("« Actualiser » relit les titres même si la liste est identique (#581)", async () => {
+  status = detected();
+  keysProblem = "clé illisible";
+  stories = report([story(A, { title: "Capi", in_library: true })]);
+  renderScreen();
+  expect(await screen.findByText("Titres des histoires illisibles")).toBeInTheDocument();
+  await waitFor(() => expect(count("device_story_titles")).toBe(1));
+
+  keysProblem = null;
+  // Le backend renvoie une nouvelle réponse (même contenu).
+  stories = stories && { ...stories };
+  fireEvent.click(screen.getByRole("button", { name: "Actualiser la liste" }));
+  await waitFor(() => expect(count("device_story_titles")).toBe(2));
+  await waitFor(() =>
+    expect(screen.queryByText("Titres des histoires illisibles")).toBeNull(),
+  );
+});
+
 it("affiche le titre déchiffré et la vignette de la Flam, avec repli", async () => {
   status = detected();
   deviceTitles = { [A]: "Titre de la Flam" };

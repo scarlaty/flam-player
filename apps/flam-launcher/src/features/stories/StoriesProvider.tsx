@@ -163,12 +163,15 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Les relectures de la liste installée se succèdent (fin d'installation, suppression, avant
-  // une décision) : seule la réponse de la plus récente est écrite, une ancienne ne l'écrase pas.
+  // une décision) : une réponse n'est écrite que si aucune plus récente ne l'a déjà été (une
+  // ancienne ne l'écrase pas). Une ancienne réponse valide reste utile si la plus récente échoue.
   const installedRead = useRef(0);
+  const installedApplied = useRef(0);
   const readInstalled = useCallback(async (): Promise<LibraryEntry[]> => {
     const id = ++installedRead.current;
     const list = await listLibrary();
-    if (id === installedRead.current) {
+    if (id > installedApplied.current) {
+      installedApplied.current = id;
       setInstalled(list);
       setInstalledRevision((n) => n + 1);
     }

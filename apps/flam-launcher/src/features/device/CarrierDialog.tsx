@@ -202,6 +202,8 @@ export function CarrierDialog({ root, onCancel, onConfirm }: CarrierDialogProps)
         <Button
           icon="refresh"
           onClick={() => {
+            // « Réessayer » disparaît pendant le chargement : le focus passe à « Annuler ».
+            cancelButton.current?.focus();
             setLoad({ phase: "loading" });
             setReload((n) => n + 1);
           }}
