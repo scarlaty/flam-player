@@ -1379,13 +1379,22 @@ façon atomique ; vide s'il n'y a rien en attente). À chaque démarrage suivant
 de démarrage, ces sous-dossiers sont réévalués avec la même preuve et marqués dès qu'ils sont
 prouvés : par exemple, après une installation interrompue juste avant la mise à jour (`.part`
 sans mémoire), `archives/` n'est compté et vidé qu'à partir du démarrage qui suit son retour à un
-contenu reconnu (installation reprise et terminée). Une entrée sort de la liste quand le
-sous-dossier est marqué, absent (il sera créé marqué) ou que sa racine n'existe plus ; un contenu
-personnel reste en attente indéfiniment, jamais marqué. Seuls les sous-dossiers refusés par la
+contenu reconnu (installation reprise et terminée). Seules les entrées dont la racine est le
+dossier de cache effectif ou le dossier par défaut sont réévaluées (réglages lus sans effet de
+bord, et seulement si la liste n'est pas vide) ; celles d'un dossier configuré mais non retenu
+sont gardées sans évaluation ; celles d'un dossier de cache quitté sont retirées au démarrage
+suivant, sans évaluation (le rattrapage ne tourne qu'au démarrage) : un retour sur ce dossier
+passe par l'adoption, et elle seule. Une entrée sort aussi de la liste quand le sous-dossier est
+marqué ou absent (il sera créé marqué) ; elle reste si sa racine est absente (disque débranché,
+partage hors ligne) ; un contenu personnel reste en attente indéfiniment, jamais marqué.
+Réglages illisibles : rien n'est évalué ni retiré. Seuls les sous-dossiers refusés par la
 migration sont réévalués, jamais ceux d'un dossier choisi ensuite. Témoin illisible : rien en
 attente. Échec d'écriture du témoin à la migration : elle est rejouée au démarrage suivant ;
 échec de sa réécriture au rattrapage : journalisé, la liste précédente est relue au démarrage
-suivant. Une version antérieure ignore ce témoin. La racine du cache peut être une jonction ou
+suivant. Une version antérieure ignore ce témoin. Migration reportée : les refus du dossier par
+défaut ne sont pas inscrits (pas encore de témoin), mais il est réévalué à chaque démarrage du
+report et ses refus sont inscrits par la migration complète ; limite : si un nouveau dossier est
+enregistré pendant le report (témoin écrit vide), ils ne sont jamais rattrapés. La racine du cache peut être une jonction ou
 un lien ; un sous-dossier en lien n'est jamais marqué. La migration est faite hors du fil de la
 fenêtre : celle-ci s'affiche aussitôt, et toute commande (verrou de configuration) ainsi que la
 reprise de la file d'installation attendent sa fin (`storage::StartupGate`) ; une fois le témoin

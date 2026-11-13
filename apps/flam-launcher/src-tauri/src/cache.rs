@@ -247,23 +247,73 @@ fn write_witness(witness: &Path, pending: &[Pending]) -> io::Result<()> {
     crate::storage::write_atomic(witness, &bytes)
 }
 
-/// Rattrapage à chaque démarrage où le témoin existe (#591) : chaque sous-dossier refusé par la
-/// migration faute de preuve (liste du témoin, [`read_pending`]) est réévalué avec la même
-/// preuve ([`proven_by_content`]) et le même chemin de marquage que la migration. Un
-/// sous-dossier redevenu prouvé (par exemple `archives/` vidé par une installation reprise après
-/// un `.part` sans mémoire) est marqué et sort de la liste. Sortent aussi de la liste : un
-/// sous-dossier déjà marqué, un sous-dossier absent (il sera créé marqué par [`ensure_subdir`]),
-/// une racine qui n'est plus un dossier. Restent en attente, sans rien écrire : contenu non
-/// prouvé, élément qui n'est pas un dossier réel, marqueur anormal, erreur d'écriture du
-/// marqueur. Seuls les couples (racine, nom) refusés par la migration sont concernés : un
-/// dossier de cache choisi ensuite n'est jamais réévalué ici. Ne renvoie jamais d'erreur : un
-/// échec de réécriture du témoin est journalisé, la liste précédente est relue au démarrage
+/// Racines du cache au démarrage, pour le rattrapage ([`catch_up`]).
+#[derive(Debug, Default)]
+struct CurrentRoots {
+    /// Dossier de cache effectif et dossier par défaut : leurs entrées sont réévaluées.
+    eval: Vec<PathBuf>,
+    /// Dossier configuré mais non retenu par la résolution des réglages (repli sur le défaut) :
+    /// ses entrées sont gardées sans être évaluées (il peut redevenir le cache effectif).
+    keep: Vec<PathBuf>,
+}
+
+/// Racines courantes d'après les réglages de `config_dir`, lus **sans effet de bord**
+/// ([`SettingsStore::peek_readable`]). Réglages illisibles, d'une version future, ou erreur de
+/// lecture : `None` (rien n'est évalué ni retiré).
+fn current_roots(config_dir: &Path, env: &Environment) -> Option<CurrentRoots> {
+    let settings = match SettingsStore::new(config_dir).peek_readable() {
+        Ok(Some(settings)) => settings,
+        Ok(None) => return None,
+        Err(err) => {
+            tracing::warn!("cache : réglages illisibles pour le rattrapage : {err}");
+            return None;
+        }
+    };
+    let effective = PathBuf::from(resolve(&settings, env).0.cache_dir);
+    let mut roots = CurrentRoots {
+        eval: vec![effective.clone(), env.default_cache_dir.clone()],
+        keep: Vec::new(),
+    };
+    if let Some(configured) = settings.cache_dir {
+        if !crate::settings::same_path(Path::new(&configured), &effective) {
+            roots.keep.push(PathBuf::from(configured));
+        }
+    }
+    Some(roots)
+}
+
+/// Rattrapage à chaque démarrage où le témoin existe (#591), et seulement au démarrage (porte de
+/// démarrage fermée) : chaque sous-dossier refusé par la migration faute de preuve (liste du
+/// témoin, [`read_pending`]) est réévalué avec la même preuve ([`proven_by_content`]) et le même
+/// chemin de marquage que la migration, **si sa racine est le dossier de cache effectif ou le
+/// dossier par défaut** (`current`, comparés par `same_path`). Un sous-dossier redevenu prouvé
+/// (par exemple `archives/` vidé par une installation reprise après un `.part` sans mémoire) est
+/// marqué et sort de la liste.
+///
+/// Sortent aussi de la liste : un sous-dossier déjà marqué ou absent (il sera créé marqué par
+/// [`ensure_subdir`]) d'une racine existante ; toute entrée d'une racine qui n'est plus ni le
+/// dossier effectif, ni le dossier par défaut, ni le dossier configuré non retenu (dossier de
+/// cache quitté : un retour ultérieur sur cette racine passe par l'adoption, [`adopt_legacy_cache`],
+/// et elle seule). Restent en attente, sans rien écrire : racine absente ou qui n'est pas un
+/// dossier (disque débranché, partage hors ligne), contenu non prouvé, élément qui n'est pas un
+/// dossier réel, marqueur anormal, erreur d'écriture du marqueur, dossier configuré non retenu.
+///
+/// La liste vide, rien n'est lu (ni réglages ni cache). `current` est appelé seulement si la
+/// liste n'est pas vide ; `None` (réglages illisibles) : rien n'est évalué ni retiré. Un dossier
+/// de cache choisi après la mise à jour n'est jamais réévalué ici. Ne renvoie jamais d'erreur :
+/// un échec de réécriture du témoin est journalisé, la liste précédente est relue au démarrage
 /// suivant (les entrées marquées entre-temps en sortent alors ; rien n'est marqué sans preuve).
-fn catch_up(witness: &Path, fault: Fault) -> Migration {
+fn catch_up(witness: &Path, current: &dyn Fn() -> Option<CurrentRoots>, fault: Fault) -> Migration {
     let pending = read_pending(witness);
     if pending.is_empty() {
         return Migration::AlreadyDone;
     }
+    let Some(current) = current() else {
+        tracing::warn!("cache : dossier de cache effectif inconnu, rattrapage reporté");
+        return Migration::AlreadyDone;
+    };
+    let among =
+        |roots: &[PathBuf], root: &Path| roots.iter().any(|r| crate::settings::same_path(r, root));
     let mut marked = 0;
     let mut kept = Vec::new();
     for entry in &pending {
@@ -271,7 +321,16 @@ fn catch_up(witness: &Path, fault: Fault) -> Migration {
         let Some(name) = APP_CACHE_SUBDIRS.iter().find(|n| **n == entry.name) else {
             continue;
         };
+        if !among(&current.eval, root) {
+            if among(&current.keep, root) {
+                kept.push(entry.clone());
+            } else {
+                tracing::info!("cache : « {name} » d'un ancien dossier de cache, plus en attente");
+            }
+            continue;
+        }
         if !root.is_dir() {
+            kept.push(entry.clone());
             continue;
         }
         let dir = root.join(name);
@@ -320,7 +379,14 @@ pub fn migrate_markers(witness: &Path, roots: &[PathBuf]) -> io::Result<Migratio
 
 fn migrate_markers_with(witness: &Path, roots: &[PathBuf], fault: Fault) -> io::Result<Migration> {
     if fs::symlink_metadata(witness).is_ok() {
-        return Ok(catch_up(witness, fault));
+        // Racines courantes : celles passées par l'appelant.
+        let current = || {
+            Some(CurrentRoots {
+                eval: roots.to_vec(),
+                keep: Vec::new(),
+            })
+        };
+        return Ok(catch_up(witness, &current, fault));
     }
     if roots.iter().any(|root| !root.is_dir()) {
         return Ok(Migration::Deferred);
@@ -754,7 +820,10 @@ fn library_children_known(dir: &Path) -> bool {
 /// sous-dossiers en attente (témoin vide : aucun accès au cache, #591). Quand le dossier résolu n'est pas
 /// celui des réglages (valeur configurée refusée, repli sur le défaut), la migration reste
 /// reportée (`Deferred`, sans témoin) pour le dossier configuré, mais le dossier par défaut, alors
-/// en usage, est migré quand même (#591).
+/// en usage, est migré quand même (#591). Ses refus ne sont pas inscrits (il n'y a pas encore de
+/// témoin) : il est réévalué à chaque démarrage tant que la migration est reportée, et ses refus
+/// sont inscrits par la migration complète. Limite : si `settings_set` écrit le témoin (vide)
+/// pendant ce report, les refus du dossier par défaut ne sont jamais rattrapés.
 pub fn migrate_configured(config_dir: &Path, env: &Environment) -> AppResult<Migration> {
     migrate_configured_with(config_dir, env, &no_fault)
 }
@@ -766,7 +835,11 @@ fn migrate_configured_with(
 ) -> AppResult<Migration> {
     let witness = config_dir.join(MIGRATION_WITNESS);
     if fs::symlink_metadata(&witness).is_ok() {
-        return Ok(catch_up(&witness, fault));
+        return Ok(catch_up(
+            &witness,
+            &|| current_roots(config_dir, env),
+            fault,
+        ));
     }
     let settings = SettingsStore::new(config_dir).load()?;
     let (resolved, _) = resolve(&settings, env);
@@ -1971,7 +2044,7 @@ mod tests {
             let witness = config.path().join(MIGRATION_WITNESS);
             fs::write(&witness, &contents).unwrap();
             assert_eq!(
-                migrate_markers(&witness, &[]).unwrap(),
+                migrate_markers(&witness, &[cache.path().to_path_buf()]).unwrap(),
                 Migration::AlreadyDone
             );
             assert!(!is_owned(&cache.path().join("archives")));
@@ -1982,7 +2055,7 @@ mod tests {
         let witness = config.path().join(MIGRATION_WITNESS);
         fs::write(&witness, entry(root, "archives")).unwrap();
         assert_eq!(
-            migrate_markers(&witness, &[]).unwrap(),
+            migrate_markers(&witness, &[cache.path().to_path_buf()]).unwrap(),
             Migration::CaughtUp { marked: 1 }
         );
     }
@@ -2029,7 +2102,7 @@ mod tests {
     }
 
     #[test]
-    fn le_rattrapage_retire_les_racines_et_sous_dossiers_disparus() {
+    fn le_rattrapage_garde_les_racines_absentes_et_retire_les_sous_dossiers_disparus() {
         let config = tempfile::tempdir().unwrap();
         let witness = config.path().join(MIGRATION_WITNESS);
         let gone = tempfile::tempdir().unwrap();
@@ -2045,8 +2118,9 @@ mod tests {
         ];
         migrate_markers(&witness, &roots).unwrap();
         assert_eq!(read_pending(&witness).len(), 3);
-        // Racine disparue ; sous-dossier supprimé (recréé marqué par `ensure_subdirs`) ;
-        // contenu prouvé mais marqueur anormal (dossier) : reste en attente, rien d'écrit.
+        // Racine absente (disque débranché) : reste en attente ; sous-dossier supprimé d'une
+        // racine présente (recréé marqué par `ensure_subdirs`) : retiré ; contenu prouvé mais
+        // marqueur anormal (dossier) : reste en attente, rien d'écrit.
         let gone_path = gone.path().to_path_buf();
         drop(gone);
         fs::remove_dir_all(without.path().join("archives")).unwrap();
@@ -2056,15 +2130,177 @@ mod tests {
             migrate_markers(&witness, &roots).unwrap(),
             Migration::AlreadyDone
         );
-        let left = read_pending(&witness);
-        assert_eq!(left.len(), 1);
-        assert_eq!(left[0].root, odd.path().to_str().unwrap());
+        let left: Vec<String> = read_pending(&witness).into_iter().map(|p| p.root).collect();
+        assert_eq!(
+            left,
+            [gone_path.to_str().unwrap(), odd.path().to_str().unwrap()]
+        );
         assert!(!gone_path.exists());
         assert!(!without.path().join("archives").exists());
         assert_eq!(names_in(&odd.path().join("archives")), [MARKER]);
         assert!(odd.path().join("archives").join(MARKER).is_dir());
         ensure_subdirs(without.path());
         assert!(is_owned(&without.path().join("archives")));
+    }
+
+    /// Écrit `settings.json` avec `cache_dir` (ou sans, `None`).
+    fn set_cache_dir(config: &Path, cache_dir: Option<&Path>) {
+        let value = match cache_dir {
+            Some(dir) => serde_json::json!({ "schema_version": 1, "cache_dir": dir }),
+            None => serde_json::json!({ "schema_version": 1 }),
+        };
+        fs::write(config.join("settings.json"), value.to_string()).unwrap();
+    }
+
+    /// N-m1 (#591) : une entrée d'un dossier de cache quitté n'est jamais réévaluée, elle est
+    /// retirée au démarrage suivant ; un retour sur ce dossier passe par l'adoption seule.
+    #[test]
+    fn le_rattrapage_abandonne_un_dossier_de_cache_quitte() {
+        let base = tempfile::tempdir().unwrap();
+        let config = base.path().join("config");
+        let default = base.path().join("defaut");
+        let old = base.path().join("ancien");
+        let other = base.path().join("autre");
+        for dir in [&config, &default, &other] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        legacy_cache(&old);
+        fs::remove_file(old.join("archives/a.zip")).unwrap();
+        write(&old.join("archives/perso.zip"), 4);
+        let env = env_with(&default, vec![]);
+        set_cache_dir(&config, Some(&old));
+        let witness = config.join(MIGRATION_WITNESS);
+        assert_eq!(
+            migrate_configured(&config, &env).unwrap(),
+            Migration::Done { marked: 1 }
+        );
+        assert_eq!(read_pending(&witness).len(), 1);
+
+        // Changement de dossier (pendant la session : aucun rattrapage avant le démarrage
+        // suivant), puis `ancien/archives` vidé par l'utilisateur.
+        set_cache_dir(&config, Some(&other));
+        fs::remove_file(old.join("archives/perso.zip")).unwrap();
+        assert_eq!(
+            migrate_configured(&config, &env).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert!(!is_owned(&old.join("archives")), "jamais réévalué");
+        assert!(read_pending(&witness).is_empty(), "entrée retirée");
+
+        // Fichiers personnels remis, puis retour sur l'ancien dossier : adoption seule.
+        write(&old.join("archives/vacances.zip"), 4);
+        let store = SettingsStore::new(&config);
+        store
+            .update(crate::settings::Settings {
+                cache_dir: Some(old.display().to_string()),
+                ..crate::settings::Settings::default()
+            })
+            .unwrap();
+        assert_eq!(
+            migrate_configured(&config, &env).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert!(!is_owned(&old.join("archives")));
+        clear_of(&old).unwrap();
+        assert!(old.join("archives/vacances.zip").is_file());
+    }
+
+    /// N-m2 (#591) : racine effective absente pendant un démarrage (disque débranché) : l'entrée
+    /// reste, et le sous-dossier est marqué au démarrage de son retour, une fois prouvé.
+    #[test]
+    fn une_racine_absente_un_demarrage_est_rattrapee_a_son_retour() {
+        let base = tempfile::tempdir().unwrap();
+        let config = base.path().join("config");
+        let default = base.path().join("defaut");
+        let disk = base.path().join("disque");
+        let away = base.path().join("debranche");
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&default).unwrap();
+        write(&disk.join("archives/abc-1.zip.part"), 3);
+        let env = env_with(&default, vec![]);
+        set_cache_dir(&config, Some(&disk));
+        let witness = config.join(MIGRATION_WITNESS);
+        assert_eq!(
+            migrate_configured(&config, &env).unwrap(),
+            Migration::Done { marked: 0 }
+        );
+        fs::rename(&disk, &away).unwrap();
+        assert_eq!(
+            migrate_configured(&config, &env).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert_eq!(read_pending(&witness).len(), 1, "gardée");
+        fs::rename(&away, &disk).unwrap();
+        fs::remove_file(disk.join("archives/abc-1.zip.part")).unwrap();
+        assert_eq!(
+            migrate_configured(&config, &env).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+        assert!(is_owned(&disk.join("archives")));
+        assert!(read_pending(&witness).is_empty());
+    }
+
+    /// Réglages illisibles avec une liste non vide : rien n'est évalué ni retiré, ni le témoin
+    /// ni les réglages ne sont réécrits.
+    #[test]
+    fn des_reglages_illisibles_suspendent_le_rattrapage() {
+        let cache = tempfile::tempdir().unwrap();
+        write(&cache.path().join("archives/perso.zip"), 4);
+        let (config, env) = config_with_default(cache.path());
+        let witness = config.path().join(MIGRATION_WITNESS);
+        migrate_configured(config.path(), &env).unwrap();
+        fs::remove_file(cache.path().join("archives/perso.zip")).unwrap();
+        let before = fs::read(&witness).unwrap();
+        for corrupt in [&b"{corrompu"[..], br#"{"schema_version":99}"#] {
+            fs::write(config.path().join("settings.json"), corrupt).unwrap();
+            assert_eq!(
+                migrate_configured(config.path(), &env).unwrap(),
+                Migration::AlreadyDone
+            );
+            assert!(!is_owned(&cache.path().join("archives")));
+            assert_eq!(fs::read(&witness).unwrap(), before, "liste intacte");
+            assert_eq!(
+                names_in(config.path()),
+                [MIGRATION_WITNESS, "settings.json"],
+                "rien mis de côté"
+            );
+        }
+        // Réglages de nouveau lisibles : rattrapé.
+        set_cache_dir(config.path(), None);
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+    }
+
+    /// Une entrée du dossier par défaut est rattrapée même si un autre dossier est configuré
+    /// (la migration traite les deux).
+    #[test]
+    fn le_dossier_par_defaut_est_rattrape_meme_si_un_autre_est_configure() {
+        let base = tempfile::tempdir().unwrap();
+        let config = base.path().join("config");
+        let default = base.path().join("defaut");
+        let chosen = base.path().join("choisi");
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&chosen).unwrap();
+        write(&default.join("archives/abc-1.zip.part"), 3);
+        let env = env_with(&default, vec![]);
+        set_cache_dir(&config, Some(&chosen));
+        let witness = config.join(MIGRATION_WITNESS);
+        migrate_configured(&config, &env).unwrap();
+        assert_eq!(
+            read_pending(&witness)
+                .into_iter()
+                .map(|p| p.root)
+                .collect::<Vec<_>>(),
+            [default.to_str().unwrap()]
+        );
+        fs::remove_file(default.join("archives/abc-1.zip.part")).unwrap();
+        assert_eq!(
+            migrate_configured(&config, &env).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+        assert!(is_owned(&default.join("archives")));
     }
 
     /// Garde des constantes (#591) : chaque nom de [`APP_CACHE_SUBDIRS`] a une règle de preuve

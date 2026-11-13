@@ -560,6 +560,19 @@ impl SettingsStore {
         )
     }
 
+    /// Comme [`Self::peek`] (rien n'est écrit ni mis de côté), mais un fichier présent et
+    /// illisible (corrompu) donne `None` au lieu des valeurs par défaut ; absent : valeurs par
+    /// défaut. Pour un lecteur qui ne doit rien décider sur des réglages inconnus
+    /// (`cache::catch_up`, #591). Version future : erreur.
+    pub(crate) fn peek_readable(&self) -> AppResult<Option<Settings>> {
+        let path = self.dir.join(FILE_NAME);
+        match storage::peek_versioned(&path, SCHEMA_VERSION, MIGRATE)? {
+            Some(settings) => Ok(Some(settings)),
+            None if std::fs::symlink_metadata(&path).is_ok() => Ok(None),
+            None => Ok(Some(Settings::default())),
+        }
+    }
+
     /// Remplace **l'objet complet** après validation (pas de fusion : un champ à `None` repasse
     /// en automatique). Le fichier existant est d'abord relu par le même chemin que `load` :
     /// version future -> refus sans le toucher ; fichier corrompu -> sauvegardé en `*.bak`.
