@@ -1871,12 +1871,35 @@ const ARCHIVE_FAULT_CODES: &[&str] = &[
 /// [`ARCHIVE_FAULT_CODES`], ou `.plain.pk` refusé par [`pack::check_plain_pk`]
 /// (`download_invalid`). Toute autre panne (convertisseur absent, E/S, disque plein,
 /// validation…) la laisse réutilisable (note de conception de #578).
+///
+/// Erreur d'entrée/sortie du système en lisant l'archive ([`system_io`]) : la conversion STUdio
+/// et [`pack::check_plain_pk`] rendent `io`, l'archive est gardée. Limite connue : `telmi2flam`
+/// (processus séparé) rend `archive_unreadable` pour une archive corrompue **comme** pour une
+/// archive que le système refuse de lire (antivirus, volume retiré) ; l'archive est alors
+/// supprimée et retéléchargée à la tentative suivante (coût réseau, aucune perte de données :
+/// l'archive téléchargée est une copie). Les distinguer demande un code dédié dans la crate.
 fn archive_at_fault(err: &AppError) -> bool {
     match err {
         AppError::Conversion { code, .. } => ARCHIVE_FAULT_CODES.contains(&code.as_str()),
         AppError::DownloadInvalid(_) => true,
         _ => false,
     }
+}
+
+/// Erreur d'entrée/sortie **du système** (elle porte un code de l'OS : accès refusé par un
+/// antivirus, volume retiré, secteur illisible) : le support local est en cause, pas le contenu
+/// de l'archive. Une archive corrompue (CRC faux, en-tête invalide, troncature, flux compressé
+/// invalide) rend des erreurs construites par le lecteur zip, sans code de l'OS (#578).
+///
+/// Exception : un positionnement refusé par le système (`InvalidInput` : `EINVAL`,
+/// `ERROR_INVALID_PARAMETER` ; `ERROR_NEGATIVE_SEEK` sous Windows) vient d'un décalage absurde
+/// lu dans l'archive (zip64 forgé) : l'archive reste en cause.
+pub(super) fn system_io(err: &std::io::Error) -> bool {
+    /// `ERROR_NEGATIVE_SEEK` (Windows).
+    const NEGATIVE_SEEK: i32 = 131;
+    err.raw_os_error()
+        .is_some_and(|code| !(cfg!(windows) && code == NEGATIVE_SEEK))
+        && err.kind() != std::io::ErrorKind::InvalidInput
 }
 
 /// Supprime l'archive téléchargée, son `.part` et sa mémoire.

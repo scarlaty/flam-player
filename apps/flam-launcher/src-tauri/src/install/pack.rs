@@ -23,7 +23,7 @@ const REQUIRED: [&str; 3] = ["info.plain", "uuid.bin", "main.lua"];
 pub fn check_plain_pk(path: &Path) -> AppResult<()> {
     let invalid = |m: String| AppError::DownloadInvalid(format!("archive FLAM invalide : {m}"));
     let file = File::open(path)?;
-    let zip = ZipArchive::new(io::BufReader::new(file)).map_err(|e| invalid(e.to_string()))?;
+    let zip = ZipArchive::new(io::BufReader::new(file)).map_err(|e| open_error(e, &invalid))?;
     let names: Vec<&str> = zip.file_names().collect();
     for required in REQUIRED {
         if !names.contains(&required) {
@@ -31,6 +31,16 @@ pub fn check_plain_pk(path: &Path) -> AppResult<()> {
         }
     }
     Ok(())
+}
+
+/// Échec d'ouverture du zip d'un `.plain.pk`. Erreur d'entrée/sortie du système (antivirus,
+/// volume retiré) : `io`, l'archive n'est pas mise en cause et n'est donc pas supprimée (#578,
+/// [`super::system_io`]) ; sinon `invalid` (`download_invalid` : archive supprimée).
+fn open_error(err: zip::result::ZipError, invalid: &dyn Fn(String) -> AppError) -> AppError {
+    match err {
+        zip::result::ZipError::Io(e) if super::system_io(&e) => AppError::Io(e),
+        e => invalid(e.to_string()),
+    }
 }
 
 fn refused(what: &Path) -> AppError {
@@ -275,6 +285,31 @@ mod tests {
         assert_eq!(pack_plain_dir(&dir, &out).unwrap_err().kind(), "validation");
         std::fs::write(&out, b"pas un zip").unwrap();
         assert_eq!(check_plain_pk(&out).unwrap_err().kind(), "download_invalid");
+    }
+
+    /// #578 : ouverture du zip refusée par le système (code de l'OS) : `io`, l'archive n'est
+    /// pas mise en cause ; erreur construite par le lecteur zip (troncature, positionnement
+    /// absurde d'un zip forgé) : `download_invalid`.
+    #[test]
+    fn erreur_systeme_a_l_ouverture_n_est_pas_download_invalid() {
+        use std::io::{Error, ErrorKind};
+        use zip::result::ZipError;
+        let invalid = |m: String| AppError::DownloadInvalid(m);
+        let err = open_error(ZipError::Io(Error::from_raw_os_error(32)), &invalid);
+        assert_eq!(err.kind(), "io");
+        for err in [
+            ZipError::Io(Error::from(ErrorKind::UnexpectedEof)),
+            ZipError::Io(Error::new(ErrorKind::InvalidInput, "seek")),
+            ZipError::InvalidArchive("répertoire central".into()),
+        ] {
+            assert_eq!(open_error(err, &invalid).kind(), "download_invalid");
+        }
+        #[cfg(windows)]
+        assert_eq!(
+            open_error(ZipError::Io(Error::from_raw_os_error(131)), &invalid).kind(),
+            "download_invalid",
+            "ERROR_NEGATIVE_SEEK"
+        );
     }
 
     #[test]

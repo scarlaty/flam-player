@@ -1122,7 +1122,9 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
   `unreadable_audio` de la conversion STUdio ; `.plain.pk` refusé, `download_invalid`) : la
   tentative suivante la retélécharge. Toute autre panne (`unsupported_format`, sortie, erreur
   interne, convertisseur absent, E/S) la garde, et une archive locale (source dossier) n'est
-  jamais supprimée.
+  jamais supprimée. Une lecture de l'archive refusée par le système (antivirus, volume retiré)
+  rend `io` et garde l'archive pour la conversion STUdio et le `.plain.pk` ; `telmi2flam` ne
+  la distingue pas encore d'une archive corrompue (`archive_unreadable` : archive retéléchargée).
   Les tâches terminées ne sont gardées qu'en mémoire (100 au plus). Le lien et le validateur
   d'une archive sont mémorisés dans `archives/<archive>.meta.json` (4 Kio au plus, validateur revalidé) : une nouvelle demande après
   une coupure reprend le `.part`, et une archive complète n'est réutilisée que si son lien et

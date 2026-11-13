@@ -72,6 +72,7 @@
 //! | Délai de ffmpeg dépassé (par son ou budget global)            | `io` (`TimedOut`)                                 |
 //! | Annulation                                                    | `cancelled`                                       |
 //! | Écriture impossible (disque plein, sortie inaccessible)       | `io`                                              |
+//! | Lecture de l'archive refusée par le système (antivirus, volume retiré, secteur illisible : erreur portant un code de l'OS) | `io` (archive non mise en cause, #578) |
 //!
 //! Dans tous ces cas, rien ne reste du côté de la sortie, sauf si le futur est abandonné
 //! pendant une étape bloquante (fichier encore ouvert sous Windows) : le dossier temporaire
@@ -80,7 +81,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -101,7 +102,7 @@ use zip::{CompressionMethod, ZipWriter};
 use super::convert::Step;
 use super::podcast::BoxFuture;
 use crate::catalog::blocking;
-use crate::device::prepare::{for_each_entry, open_archive, Archive, Limits, PrepareError};
+use crate::device::prepare::{for_each_entry, Archive, PrepareError};
 use crate::ffmpeg::{self, Ffmpeg, Tool, Verified};
 use crate::podcast::audio::file_arg;
 use crate::settings::ThumbFit;
@@ -411,6 +412,28 @@ fn archive_error(err: PrepareError) -> AppError {
     }
 }
 
+/// Échec de lecture de l'archive (`context` : ce qui était lu). Erreur d'entrée/sortie du
+/// système ([`super::system_io`] : antivirus, volume retiré, secteur illisible) : `io`, l'archive
+/// n'est pas mise en cause et reste réutilisable ; sinon (CRC, en-tête, troncature, flux
+/// compressé invalide) : `invalid_archive` (#578).
+pub(super) fn read_error(context: &str, err: std::io::Error) -> AppError {
+    if super::system_io(&err) {
+        // Erreur d'origine gardée telle quelle (code de l'OS compris) ; contexte journalisé.
+        tracing::warn!("lecture de l'archive STUdio refusée par le système ({context}) : {err}");
+        AppError::Io(err)
+    } else {
+        invalid_archive(format!("{context} : {err}"))
+    }
+}
+
+/// [`read_error`] pour une erreur du lecteur zip.
+pub(super) fn zip_read_error(context: &str, err: zip::result::ZipError) -> AppError {
+    match err {
+        zip::result::ZipError::Io(e) => read_error(context, e),
+        other => invalid_archive(format!("{context} : {other}")),
+    }
+}
+
 fn zip_error(err: zip::result::ZipError) -> AppError {
     match err {
         zip::result::ZipError::Io(e) => AppError::Io(e),
@@ -501,11 +524,31 @@ fn story_root(names: &[&str]) -> AppResult<String> {
 
 impl Source {
     fn open(input: &Path) -> AppResult<Self> {
-        let limits = Limits {
-            max_entries: MAX_ENTRIES,
-            ..Limits::default()
-        };
-        let mut zip = open_archive(input, &limits).map_err(archive_error)?;
+        // Ouverture faite ici plutôt que par `device::prepare::open_archive`, qui classe toute
+        // erreur du répertoire central en archive invalide : une erreur d'entrée/sortie du
+        // système n'y met pas l'archive en cause (#578, [`read_error`]).
+        let mut zip: Archive = zip::ZipArchive::new(BufReader::new(File::open(input)?))
+            .map_err(|e| zip_read_error("zip", e))?;
+        if zip.len() > MAX_ENTRIES {
+            return Err(too_large(format!(
+                "{} entrées (au plus {MAX_ENTRIES})",
+                zip.len()
+            )));
+        }
+        // En-têtes locaux lus (et chiffrement refusé) **avant** `for_each_entry`, qui classe
+        // toute erreur de lecture en archive invalide : la position d'un en-tête lu est mémorisée
+        // par le lecteur zip, `for_each_entry` ne fait donc plus qu'un `seek`, sans lecture.
+        for index in 0..zip.len() {
+            let entry = zip
+                .by_index_raw(index)
+                .map_err(|e| zip_read_error(&format!("entrée {index}"), e))?;
+            if entry.encrypted() {
+                return Err(invalid_archive(
+                    "archive protégée par mot de passe : décompressez-la puis recompressez-la \
+                     sans mot de passe",
+                ));
+            }
+        }
         let mut entries = Vec::new();
         let mut declared = 0u64;
         for_each_entry(&mut zip, |index, relative, size| {
@@ -518,17 +561,6 @@ impl Source {
             return Err(too_large(format!(
                 "{declared} octets annoncés (au plus {MAX_TOTAL_BYTES})"
             )));
-        }
-        for index in 0..zip.len() {
-            let entry = zip
-                .by_index_raw(index)
-                .map_err(|e| invalid_archive(format!("entrée {index} : {e}")))?;
-            if entry.encrypted() {
-                return Err(invalid_archive(
-                    "archive protégée par mot de passe : décompressez-la puis recompressez-la \
-                     sans mot de passe",
-                ));
-            }
         }
         entries.retain(|(name, _)| !is_ignored(name));
         let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
@@ -568,7 +600,7 @@ impl Source {
         let mut entry = self
             .zip
             .by_index(index)
-            .map_err(|e| invalid_archive(format!("{what} illisible : {e}")))?;
+            .map_err(|e| zip_read_error(&format!("{what} illisible"), e))?;
         if entry.size() > max {
             return Err(too_large(format!(
                 "{what} : {} octets annoncés (au plus {max})",
@@ -579,7 +611,7 @@ impl Source {
         (&mut entry)
             .take(max.saturating_add(1))
             .read_to_end(&mut data)
-            .map_err(|e| invalid_archive(format!("{what} illisible : {e}")))?;
+            .map_err(|e| read_error(&format!("{what} illisible"), e))?;
         if data.len() as u64 > max {
             return Err(too_large(format!("{what} dépasse {max} octets")));
         }
@@ -605,7 +637,7 @@ impl Source {
         let mut entry = self
             .zip
             .by_index(index)
-            .map_err(|e| invalid_archive(format!("{what} illisible : {e}")))?;
+            .map_err(|e| zip_read_error(&format!("{what} illisible"), e))?;
         if entry.size() > max {
             return Err(too_large(format!(
                 "{what} : {} octets annoncés (au plus {max})",
@@ -618,7 +650,7 @@ impl Source {
         loop {
             let n = entry
                 .read(&mut buf)
-                .map_err(|e| invalid_archive(format!("{what} illisible : {e}")))?;
+                .map_err(|e| read_error(&format!("{what} illisible"), e))?;
             if n == 0 {
                 break;
             }
