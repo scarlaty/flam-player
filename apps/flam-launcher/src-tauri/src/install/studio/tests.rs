@@ -1325,3 +1325,24 @@ async fn taille_declaree_mensongere_refusee() {
     assert!(msg.contains("annoncés"), "{msg}");
     assert_nothing_left(&d);
 }
+
+/// #578 : zip64 forgé dont l'en-tête local est annoncé à `0x7FFF_FFFF_FFFF_FFFF` : le
+/// positionnement est refusé par le système (`os error 87` sous Windows) ou la lecture s'arrête
+/// en fin de fichier ; `Source::open` met l'archive en cause (`invalid_archive`), elle n'est
+/// jamais gardée comme une erreur du support.
+#[test]
+fn zip64_au_decalage_forge_mis_en_cause() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forge.zip");
+    std::fs::write(
+        &path,
+        crate::install::pack::tests::forged_zip64(b"story.json"),
+    )
+    .unwrap();
+    let err = Source::open(&path).err().expect("archive forgée refusée");
+    assert!(
+        matches!(&err, AppError::Conversion { code, .. } if code == INVALID_ARCHIVE),
+        "{err:?}"
+    );
+    assert!(crate::install::archive_at_fault(&err), "{err:?}");
+}

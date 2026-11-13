@@ -1123,7 +1123,10 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
   tentative suivante la retélécharge. Toute autre panne (`unsupported_format`, sortie, erreur
   interne, convertisseur absent, E/S) la garde, et une archive locale (source dossier) n'est
   jamais supprimée. Une lecture de l'archive refusée par le système (antivirus, volume retiré)
-  rend `io` et garde l'archive pour la conversion STUdio et le `.plain.pk` ; `telmi2flam` ne
+  rend `io` et garde l'archive pour la conversion STUdio et le `.plain.pk` (si l'erreur persiste,
+  « Vider le cache » la supprime) ; sous Windows, un contenu stocké illisible (`ERROR_CRC`,
+  `ERROR_FILE_CORRUPT`, `ERROR_DISK_CORRUPT`) la met en cause, elle est retéléchargée ; sous
+  Unix, `EIO` (secteur défectueux ou volume retiré, indiscernables) la garde. `telmi2flam` ne
   la distingue pas encore d'une archive corrompue (`archive_unreadable` : archive retéléchargée).
   Les tâches terminées ne sont gardées qu'en mémoire (100 au plus). Le lien et le validateur
   d'une archive sont mémorisés dans `archives/<archive>.meta.json` (4 Kio au plus, validateur revalidé) : une nouvelle demande après

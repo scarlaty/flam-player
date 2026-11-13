@@ -72,7 +72,8 @@
 //! | Délai de ffmpeg dépassé (par son ou budget global)            | `io` (`TimedOut`)                                 |
 //! | Annulation                                                    | `cancelled`                                       |
 //! | Écriture impossible (disque plein, sortie inaccessible)       | `io`                                              |
-//! | Lecture de l'archive refusée par le système (antivirus, volume retiré, secteur illisible : erreur portant un code de l'OS) | `io` (archive non mise en cause, #578) |
+//! | Lecture de l'archive refusée par le système (antivirus, fichier verrouillé, volume retiré : erreur portant un code de l'OS ; `EIO` compris sous Unix) | `io` (archive non mise en cause, #578 ; erreur persistante : « Vider le cache ») |
+//! | Contenu stocké illisible sous Windows (`ERROR_CRC`, `ERROR_FILE_CORRUPT`, `ERROR_DISK_CORRUPT`), positionnement refusé (`InvalidInput`) | `conversion` `invalid_archive` |
 //!
 //! Dans tous ces cas, rien ne reste du côté de la sortie, sauf si le futur est abandonné
 //! pendant une étape bloquante (fichier encore ouvert sous Windows) : le dossier temporaire
@@ -413,7 +414,7 @@ fn archive_error(err: PrepareError) -> AppError {
 }
 
 /// Échec de lecture de l'archive (`context` : ce qui était lu). Erreur d'entrée/sortie du
-/// système ([`super::system_io`] : antivirus, volume retiré, secteur illisible) : `io`, l'archive
+/// système ([`super::system_io`] : antivirus, fichier verrouillé, volume retiré) : `io`, l'archive
 /// n'est pas mise en cause et reste réutilisable ; sinon (CRC, en-tête, troncature, flux
 /// compressé invalide) : `invalid_archive` (#578).
 pub(super) fn read_error(context: &str, err: std::io::Error) -> AppError {

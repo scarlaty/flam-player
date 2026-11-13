@@ -224,7 +224,7 @@ fn collect(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn plain_dir(root: &Path) -> PathBuf {
@@ -295,21 +295,106 @@ mod tests {
         use std::io::{Error, ErrorKind};
         use zip::result::ZipError;
         let invalid = |m: String| AppError::DownloadInvalid(m);
-        let err = open_error(ZipError::Io(Error::from_raw_os_error(32)), &invalid);
-        assert_eq!(err.kind(), "io");
-        for err in [
+        // 32 : fichier verrouillé (Windows) / `EPIPE` (Unix) ; 5 : `ERROR_ACCESS_DENIED`
+        // (Windows) / `EIO` (Unix, limite connue : gardée).
+        for code in [32, 5] {
+            let err = open_error(ZipError::Io(Error::from_raw_os_error(code)), &invalid);
+            assert_eq!(err.kind(), "io", "{code}");
+        }
+        let mut faults = vec![
             ZipError::Io(Error::from(ErrorKind::UnexpectedEof)),
             ZipError::Io(Error::new(ErrorKind::InvalidInput, "seek")),
+            // Vraie erreur de l'OS d'un positionnement absurde (zip64 forgé) :
+            // `ERROR_INVALID_PARAMETER` (87) sous Windows, `EINVAL` (22) sous Unix.
+            ZipError::Io(Error::from_raw_os_error(if cfg!(windows) {
+                87
+            } else {
+                22
+            })),
             ZipError::InvalidArchive("répertoire central".into()),
-        ] {
-            assert_eq!(open_error(err, &invalid).kind(), "download_invalid");
+        ];
+        if cfg!(windows) {
+            // `ERROR_NEGATIVE_SEEK` (classé `InvalidInput` par std), `ERROR_CRC`,
+            // `ERROR_FILE_CORRUPT`, `ERROR_DISK_CORRUPT`.
+            for code in [131, 23, 1392, 1393] {
+                faults.push(ZipError::Io(Error::from_raw_os_error(code)));
+            }
         }
-        #[cfg(windows)]
+        for err in faults {
+            let shown = format!("{err:?}");
+            assert_eq!(
+                open_error(err, &invalid).kind(),
+                "download_invalid",
+                "{shown}"
+            );
+        }
+    }
+
+    /// #578 : zip64 forgé dont l'en-tête local est annoncé à `0x7FFF_FFFF_FFFF_FFFF` : le
+    /// positionnement est refusé par le système (ou la lecture s'arrête en fin de fichier) ;
+    /// l'archive est mise en cause, jamais gardée comme une erreur du support.
+    #[test]
+    fn zip64_au_decalage_forge_mis_en_cause() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("forge.zip");
+        std::fs::write(&path, forged_zip64(b"main.lua")).unwrap();
+        let file = File::open(&path).unwrap();
+        let mut zip = match ZipArchive::new(io::BufReader::new(file)) {
+            Ok(zip) => zip,
+            Err(e) => {
+                let err = open_error(e, &|m| AppError::DownloadInvalid(m));
+                assert_eq!(err.kind(), "download_invalid", "{err}");
+                return;
+            }
+        };
+        let err = zip.by_index_raw(0).map(|_| ()).unwrap_err();
+        let shown = format!("{err:?}");
         assert_eq!(
-            open_error(ZipError::Io(Error::from_raw_os_error(131)), &invalid).kind(),
+            open_error(err, &|m| AppError::DownloadInvalid(m)).kind(),
             "download_invalid",
-            "ERROR_NEGATIVE_SEEK"
+            "{shown}"
         );
+    }
+
+    /// Zip d'une entrée `name` (vide, « stored ») dont l'en-tête central porte un extra zip64
+    /// annonçant l'en-tête local à `0x7FFF_FFFF_FFFF_FFFF`.
+    pub(crate) fn forged_zip64(name: &[u8]) -> Vec<u8> {
+        let n = u16::try_from(name.len()).unwrap();
+        let mut out = Vec::new();
+        // En-tête local (jamais atteint).
+        out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        out.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        out.extend_from_slice(&[0; 12]); // crc, tailles
+        out.extend_from_slice(&n.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name);
+        let central = u32::try_from(out.len()).unwrap();
+        // Extra zip64 : seul le décalage de l'en-tête local (le champ central vaut 0xFFFFFFFF).
+        let mut extra = Vec::new();
+        extra.extend_from_slice(&0x0001u16.to_le_bytes());
+        extra.extend_from_slice(&8u16.to_le_bytes());
+        extra.extend_from_slice(&0x7FFF_FFFF_FFFF_FFFFu64.to_le_bytes());
+        let mut cd = Vec::new();
+        cd.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        cd.extend_from_slice(&[45, 0, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        cd.extend_from_slice(&[0; 12]); // crc, tailles
+        cd.extend_from_slice(&n.to_le_bytes());
+        cd.extend_from_slice(&u16::try_from(extra.len()).unwrap().to_le_bytes());
+        cd.extend_from_slice(&[0; 6]); // commentaire, disque, attributs internes
+        cd.extend_from_slice(&0u32.to_le_bytes()); // attributs externes
+        cd.extend_from_slice(&u32::MAX.to_le_bytes()); // décalage : dans l'extra zip64
+        cd.extend_from_slice(name);
+        cd.extend_from_slice(&extra);
+        out.extend_from_slice(&cd);
+        // Fin du répertoire central.
+        out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&u32::try_from(cd.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(&central.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
     }
 
     #[test]

@@ -1873,7 +1873,8 @@ const ARCHIVE_FAULT_CODES: &[&str] = &[
 /// validation…) la laisse réutilisable (note de conception de #578).
 ///
 /// Erreur d'entrée/sortie du système en lisant l'archive ([`system_io`]) : la conversion STUdio
-/// et [`pack::check_plain_pk`] rendent `io`, l'archive est gardée. Limite connue : `telmi2flam`
+/// et [`pack::check_plain_pk`] rendent `io`, l'archive est gardée (exceptions et limites :
+/// [`system_io`] ; erreur `io` persistante : « Vider le cache »). Limite connue : `telmi2flam`
 /// (processus séparé) rend `archive_unreadable` pour une archive corrompue **comme** pour une
 /// archive que le système refuse de lire (antivirus, volume retiré) ; l'archive est alors
 /// supprimée et retéléchargée à la tentative suivante (coût réseau, aucune perte de données :
@@ -1887,18 +1888,25 @@ fn archive_at_fault(err: &AppError) -> bool {
 }
 
 /// Erreur d'entrée/sortie **du système** (elle porte un code de l'OS : accès refusé par un
-/// antivirus, volume retiré, secteur illisible) : le support local est en cause, pas le contenu
-/// de l'archive. Une archive corrompue (CRC faux, en-tête invalide, troncature, flux compressé
-/// invalide) rend des erreurs construites par le lecteur zip, sans code de l'OS (#578).
+/// antivirus, fichier verrouillé, volume retiré) : le support local est en cause, pas le contenu
+/// de l'archive, qui est gardée. Une archive corrompue (CRC faux, en-tête invalide, troncature,
+/// flux compressé invalide) rend des erreurs construites par le lecteur zip, sans code de l'OS
+/// (#578). Si l'erreur `io` persiste à chaque tentative, « Vider le cache » supprime l'archive.
 ///
-/// Exception : un positionnement refusé par le système (`InvalidInput` : `EINVAL`,
-/// `ERROR_INVALID_PARAMETER` ; `ERROR_NEGATIVE_SEEK` sous Windows) vient d'un décalage absurde
-/// lu dans l'archive (zip64 forgé) : l'archive reste en cause.
+/// Exceptions, l'archive reste en cause (supprimée, retéléchargée) :
+/// - positionnement refusé par le système (`InvalidInput` : `EINVAL`,
+///   `ERROR_INVALID_PARAMETER`, `ERROR_NEGATIVE_SEEK`, tous classés `InvalidInput` par std) :
+///   décalage absurde lu dans l'archive (zip64 forgé) ;
+/// - sous Windows, contenu stocké illisible (`ERROR_CRC`, `ERROR_FILE_CORRUPT`,
+///   `ERROR_DISK_CORRUPT`) : le retéléchargement réécrit le fichier ailleurs sur le disque.
+///
+/// Limite connue : sous Unix, `EIO` reste une erreur du système (ambigu : secteur défectueux
+/// ou volume amovible retiré) ; l'archive est gardée.
 pub(super) fn system_io(err: &std::io::Error) -> bool {
-    /// `ERROR_NEGATIVE_SEEK` (Windows).
-    const NEGATIVE_SEEK: i32 = 131;
+    /// `ERROR_CRC`, `ERROR_FILE_CORRUPT`, `ERROR_DISK_CORRUPT` (Windows).
+    const STORED_CONTENT_UNREADABLE: [i32; 3] = [23, 1392, 1393];
     err.raw_os_error()
-        .is_some_and(|code| !(cfg!(windows) && code == NEGATIVE_SEEK))
+        .is_some_and(|code| !(cfg!(windows) && STORED_CONTENT_UNREADABLE.contains(&code)))
         && err.kind() != std::io::ErrorKind::InvalidInput
 }
 

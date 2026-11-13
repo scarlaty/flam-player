@@ -689,7 +689,9 @@ fn erreur_systeme_a_la_lecture_ne_met_pas_l_archive_en_cause() {
     use std::io::{Error, ErrorKind};
     use zip::result::ZipError;
 
-    // ERROR_SHARING_VIOLATION (32) : fichier verrouillé par un autre processus.
+    // 32 : `ERROR_SHARING_VIOLATION` sous Windows (fichier verrouillé par un autre processus),
+    // `EPIPE` sous Unix. 5 : `ERROR_ACCESS_DENIED` sous Windows (antivirus), `EIO` sous Unix
+    // (limite connue : gardée).
     let system = [
         read_error("son illisible", Error::from_raw_os_error(32)),
         zip_read_error("zip", ZipError::Io(Error::from_raw_os_error(32))),
@@ -699,10 +701,20 @@ fn erreur_systeme_a_la_lecture_ne_met_pas_l_archive_en_cause() {
         assert_eq!(err.kind(), "io", "{err}");
         assert!(!crate::install::archive_at_fault(&err), "{err}");
     }
-    let corrupt = [
+    let mut corrupt = vec![
         read_error(
             "son illisible",
             Error::new(ErrorKind::InvalidData, "Invalid checksum"),
+        ),
+        // Vraie erreur de l'OS d'un positionnement absurde : `ERROR_INVALID_PARAMETER` (87,
+        // rendu par Windows pour un zip64 forgé), `EINVAL` (22) sous Unix.
+        zip_read_error(
+            "entrée 0",
+            ZipError::Io(Error::from_raw_os_error(if cfg!(windows) {
+                87
+            } else {
+                22
+            })),
         ),
         read_error("image illisible", Error::from(ErrorKind::UnexpectedEof)),
         zip_read_error(
@@ -719,6 +731,13 @@ fn erreur_systeme_a_la_lecture_ne_met_pas_l_archive_en_cause() {
             ZipError::Io(Error::new(ErrorKind::InvalidInput, "seek")),
         ),
     ];
+    // Windows : contenu stocké illisible (`ERROR_CRC`, `ERROR_FILE_CORRUPT`,
+    // `ERROR_DISK_CORRUPT`) : retéléchargé.
+    if cfg!(windows) {
+        for code in [23, 1392, 1393] {
+            corrupt.push(read_error("son illisible", Error::from_raw_os_error(code)));
+        }
+    }
     for err in corrupt {
         assert_eq!(err.kind(), "conversion", "{err}");
         assert!(crate::install::archive_at_fault(&err), "{err}");
