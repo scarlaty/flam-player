@@ -347,7 +347,11 @@ impl Wav {
         let (Some((channels, rate)), Some(data_len)) = (fmt, data_len) else {
             return Err(failed("WAV sans format ou sans données"));
         };
-        let frames = data_len / (usize::from(channels) * 2);
+        let frame_bytes = usize::from(channels) * 2;
+        let frames = data_len / frame_bytes;
+        // Données arrondies à une trame entière : un reste (bloc de longueur impaire ou coupé en
+        // cours de trame) n'est pas remis à `PlaySoundW`.
+        let data_len = frames * frame_bytes;
         if frames == 0 {
             return Err(failed("audio vide"));
         }

@@ -115,8 +115,9 @@ pub struct PackStatus {
 /// Accès externes de la préparation (production : [`LivePackBackend`] ; tests : injection de
 /// pannes).
 pub trait PackBackend: Send + Sync {
-    /// Prérequis (ffmpeg) : vérifiés avant tout téléchargement.
-    fn ready(&self) -> AppResult<()>;
+    /// Prérequis (ffmpeg) : vérifiés avant tout téléchargement ; le hachage s'interrompt à
+    /// l'annulation (`AppError::Cancelled`).
+    fn ready<'a>(&'a self, cancel: &'a mut watch::Receiver<bool>) -> BoxFuture<'a, AppResult<()>>;
     /// Flux en cache des sources citées par la composition (sans réseau).
     fn feeds<'a>(&'a self, composition: &'a PackComposition) -> BoxFuture<'a, AppResult<Feeds>>;
     /// Espace libre du volume de `dir` (`None` : inconnu, non bloquant).
@@ -202,10 +203,12 @@ pub struct LivePackBackend {
 }
 
 impl PackBackend for LivePackBackend {
-    fn ready(&self) -> AppResult<()> {
-        let ff = crate::ffmpeg::Ffmpeg::locate(&crate::settings::Environment::current())
-            .map_err(converter_unavailable)?;
-        verify_converter(&ff)
+    fn ready<'a>(&'a self, cancel: &'a mut watch::Receiver<bool>) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async move {
+            let ff = crate::ffmpeg::Ffmpeg::locate(&crate::settings::Environment::current())
+                .map_err(converter_unavailable)?;
+            verify_converter(&ff, cancel).await
+        })
     }
 
     fn feeds<'a>(&'a self, composition: &'a PackComposition) -> BoxFuture<'a, AppResult<Feeds>> {
@@ -312,12 +315,18 @@ fn converter_unavailable(err: AppError) -> AppError {
     }
 }
 
-/// Vérifie une fois l'empreinte de ffmpeg **et** de ffprobe (calcul bloquant), avant tout
-/// téléchargement : la conversion des épisodes lance les deux.
-pub(super) fn verify_converter(ff: &crate::ffmpeg::Ffmpeg) -> AppResult<()> {
+/// Vérifie une fois l'empreinte de ffmpeg **et** de ffprobe, avant tout téléchargement : la
+/// conversion des épisodes lance les deux. Le hachage s'interrompt à l'annulation
+/// (`AppError::Cancelled`).
+pub(super) async fn verify_converter(
+    ff: &crate::ffmpeg::Ffmpeg,
+    cancel: &mut watch::Receiver<bool>,
+) -> AppResult<()> {
     use crate::ffmpeg::Tool;
     for tool in [Tool::Ffmpeg, Tool::Ffprobe] {
-        ff.verified_path(tool).map_err(converter_unavailable)?;
+        ff.verify(tool, cancel)
+            .await
+            .map_err(converter_unavailable)?;
     }
     Ok(())
 }
@@ -697,10 +706,7 @@ impl InstallService {
         // Prérequis avant tout téléchargement : le pack ne pourrait pas être converti par le
         // convertisseur (`telmi2flam.exe` absent) (#440).
         converter_engine(tc)?;
-        {
-            let backend = backend.clone();
-            blocking(move || backend.ready()).await??;
-        }
+        backend.ready(cancel).await?;
         self.emit_phase(id, 0.0, "validation");
 
         // Cache des MP3 (#460) : générations des sources lues avant le chargement des flux

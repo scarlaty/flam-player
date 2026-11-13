@@ -312,6 +312,21 @@ fn les_tailles_d_en_tete_sont_remises_au_contenu_reel() {
 }
 
 #[test]
+fn des_donnees_de_longueur_impaire_ou_coupees_en_cours_de_trame_sont_arrondies() {
+    for (channels, extra) in [(1u16, 1usize), (2, 1), (2, 2), (2, 3)] {
+        let frame = usize::from(channels) * 2;
+        let canonical = wav_bytes(22_050, channels, 16, &vec![1; 40 * frame]);
+        let mut cut = canonical.clone();
+        cut.extend_from_slice(&vec![7; extra]);
+        // Taille `data` annoncée avec le reste, comme un bloc de longueur impaire.
+        let announced = (40 * frame + extra) as u32;
+        cut[40..44].copy_from_slice(&announced.to_le_bytes());
+        let wav = Wav::parse(cut).unwrap();
+        assert_eq!(wav.bytes, canonical, "{channels} canaux, reste de {extra}");
+    }
+}
+
+#[test]
 fn un_bloc_inconnu_avant_les_donnees_est_saute() {
     let canonical = wav_bytes(22_050, 1, 16, &[1; 400]);
     let mut bytes = canonical[..36].to_vec();

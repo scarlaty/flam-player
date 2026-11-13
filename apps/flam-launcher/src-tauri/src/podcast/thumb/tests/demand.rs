@@ -14,6 +14,37 @@ async fn fake_download(calls: &AtomicUsize, body: Option<Vec<u8>>, dest: PathBuf
     }
 }
 
+/// Destinations reçues par les téléchargements simulés (hors du cache).
+type Seen = std::sync::Mutex<Vec<PathBuf>>;
+
+/// Comme [`fake_download`], en notant la destination et en y laissant un `<dest>.part` (reste
+/// d'un téléchargement interrompu) : les deux doivent disparaître après l'appel (#582).
+async fn recorded_download(
+    seen: &Seen,
+    calls: &AtomicUsize,
+    body: Option<Vec<u8>>,
+    dest: PathBuf,
+) -> bool {
+    seen.lock().unwrap().push(dest.clone());
+    std::fs::write(crate::install::download::part_path(&dest), b"partiel").unwrap();
+    fake_download(calls, body, dest).await
+}
+
+/// Aucune destination notée ne subsiste, ni son `.part`.
+fn assert_downloads_removed(seen: &Seen, expected: usize) {
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), expected);
+    for dest in seen.iter() {
+        assert!(
+            !dest.exists(),
+            "fichier temporaire resté : {}",
+            dest.display()
+        );
+        let part = crate::install::download::part_path(dest);
+        assert!(!part.exists(), "reste partiel resté : {}", part.display());
+    }
+}
+
 fn thumbs_dir(f: &Fixture) -> PathBuf {
     crate::podcast::source::source_dir(&f.root(), "s1")
         .unwrap()
@@ -36,16 +67,18 @@ async fn pochette_telechargee_mise_en_cache_puis_relue_sans_reseau() {
     let ep = episode("d1");
     let key = EntryKey::of("s1", &ep);
     let calls = AtomicUsize::new(0);
+    let seen = Seen::default();
     let first = load(
         &f.access(),
         &key,
-        |dest| fake_download(&calls, Some(png(500, 500)), dest),
+        |dest| recorded_download(&seen, &calls, Some(png(500, 500)), dest),
         in_process,
     )
     .await
     .expect("vignette");
     assert!(first.starts_with("data:image/png;base64,"));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_downloads_removed(&seen, 1);
     // Seule la vignette reste : ni téléchargement ni fichier temporaire.
     let kept = names(&thumbs_dir(&f));
     assert_eq!(kept.len(), 1, "{kept:?}");
@@ -67,15 +100,31 @@ async fn cache_des_mp3_prioritaire_sur_le_telechargement() {
     let f = Fixture::new();
     let ep = episode("d2");
     f.store(&ep, Some(&png(300, 200))).await;
+    let key = EntryKey::of("s1", &ep);
     let calls = AtomicUsize::new(0);
     let url = load(
         &f.access(),
-        &EntryKey::of("s1", &ep),
+        &key,
         |dest| fake_download(&calls, None, dest),
         in_process,
     )
     .await;
     assert!(url.is_some());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    // #582 : la vignette tirée du cache des MP3 est mise en cache (`thumbs/` créé au besoin)…
+    assert!(
+        read_thumb(&thumbs_dir(&f), &thumb_name(&key).unwrap()).is_some(),
+        "vignette du cache des MP3 non mise en cache"
+    );
+    // … et la demande suivante est servie sans décodage ni téléchargement.
+    let again = load(
+        &f.access(),
+        &key,
+        |dest| fake_download(&calls, None, dest),
+        |_, _| Err(ArtworkError::Decode("décodage inattendu".into())),
+    )
+    .await;
+    assert_eq!(again, url);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
@@ -91,18 +140,21 @@ async fn echec_reseau_ou_image_refusee_pas_d_apercu_ni_reste() {
         ("e3", Some(gif)),
         ("e4", Some(Vec::new())),
     ];
+    let seen = Seen::default();
     for (guid, body) in cas {
         let key = EntryKey::of("s1", &episode(guid));
         let out = load(
             &f.access(),
             &key,
-            |dest| fake_download(&calls, body, dest),
+            |dest| recorded_download(&seen, &calls, body, dest),
             in_process,
         )
         .await;
         assert_eq!(out, None, "{guid}");
     }
     assert_eq!(calls.load(Ordering::SeqCst), 4);
+    // Ni le fichier téléchargé ni son `.part` ne restent hors du cache (#582).
+    assert_downloads_removed(&seen, 4);
     // Aucun échec n'est mis en cache et rien ne traîne dans le dossier.
     assert!(names(&thumbs_dir(&f)).is_empty());
 }
@@ -113,15 +165,48 @@ async fn image_trop_grosse_refusee_et_supprimee() {
     let key = EntryKey::of("s1", &episode("big"));
     let big = vec![0u8; MAX_INPUT_BYTES + 1];
     let calls = AtomicUsize::new(0);
+    let seen = Seen::default();
     let out = load(
         &f.access(),
         &key,
-        |dest| fake_download(&calls, Some(big), dest),
+        |dest| recorded_download(&seen, &calls, Some(big), dest),
         in_process,
     )
     .await;
     assert_eq!(out, None);
     assert!(names(&thumbs_dir(&f)).is_empty());
+    assert_downloads_removed(&seen, 1);
+}
+
+/// #582 (revue) : demande abandonnée pendant le téléchargement (futur de la commande lâché) :
+/// le fichier temporaire et son `.part`, hors du cache, sont supprimés quand même.
+#[tokio::test]
+async fn demande_abandonnee_pendant_le_telechargement_ne_laisse_rien() {
+    let f = Fixture::new();
+    let key = EntryKey::of("s1", &episode("ab1"));
+    let seen = Seen::default();
+    let (started, wait_started) = tokio::sync::oneshot::channel::<()>();
+    let started = std::sync::Mutex::new(Some(started));
+    let access = f.access();
+    let pending = load(
+        &access,
+        &key,
+        |dest| {
+            seen.lock().unwrap().push(dest.clone());
+            std::fs::write(&dest, b"en cours").unwrap();
+            std::fs::write(crate::install::download::part_path(&dest), b"partiel").unwrap();
+            if let Some(tx) = started.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            std::future::pending::<bool>()
+        },
+        in_process,
+    );
+    tokio::select! {
+        _ = pending => panic!("le téléchargement simulé ne termine jamais"),
+        _ = wait_started => {}
+    }
+    assert_downloads_removed(&seen, 1);
 }
 
 #[tokio::test]
@@ -566,6 +651,64 @@ async fn un_telechargement_balaye_les_restes_anciens() {
 }
 
 #[test]
+fn noms_de_telechargement_reconnus_strictement() {
+    let id = "0123456789abcdef0123456789abcdef";
+    let dest = download_dest(Path::new("tmp"));
+    let made = dest.file_name().unwrap().to_str().unwrap();
+    assert!(is_download_name(made), "{made}");
+    assert!(is_download_name(&format!("flam-thumb-{id}.dl")));
+    assert!(is_download_name(&format!("flam-thumb-{id}.dl.part")));
+    for other in [
+        format!("flam-thumb-{}.dl", id.to_uppercase()),
+        format!("flam-thumb-{}.dl", &id[1..]),
+        format!("flam-thumb-{id}0.dl"),
+        format!("flam-thumb-{id}.dl.bak"),
+        format!("flam-thumb-{id}.part"),
+        format!("flam-thumb-{id}"),
+        format!("autre-{id}.dl"),
+        "flam-thumb-.dl".to_string(),
+        "flam-thumb-../x.dl".to_string(),
+    ] {
+        assert!(!is_download_name(&other), "{other}");
+    }
+}
+
+/// #582 (revue) : le dossier temporaire du système n'est nettoyé que des restes anciens de
+/// l'application (vrais fichiers, noms exacts).
+#[test]
+fn balayage_du_dossier_temporaire_restes_anciens_de_l_application_seulement() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = "0123456789abcdef0123456789abcdef";
+    let other_id = "fedcba9876543210fedcba9876543210";
+    let file = |name: &str, old: bool| {
+        let p = dir.path().join(name);
+        std::fs::write(&p, b"x").unwrap();
+        if old {
+            age(&p);
+        }
+        p
+    };
+    let removed = [
+        file(&format!("flam-thumb-{id}.dl"), true),
+        file(&format!("flam-thumb-{id}.dl.part"), true),
+    ];
+    let kept = [
+        file(&format!("flam-thumb-{other_id}.dl"), false),
+        file(&format!("flam-thumb-{other_id}.dl.part"), false),
+        file(&format!("flam-thumb-{id}.dl.bak"), true),
+        file(&format!("autre-{id}.dl"), true),
+        file("flam-thumb-x.dl", true),
+    ];
+    sweep_stale_downloads(dir.path());
+    for p in &removed {
+        assert!(!p.exists(), "{} gardé", p.display());
+    }
+    for p in &kept {
+        assert!(p.is_file(), "{} supprimé", p.display());
+    }
+}
+
+#[test]
 fn le_balayage_au_telechargement_n_a_lieu_qu_une_fois_par_source() {
     let (a, b) = (Path::new("balayage/s1"), Path::new("balayage/s2"));
     assert!(first_fetch(a));
@@ -581,7 +724,8 @@ async fn un_second_telechargement_ne_refait_pas_le_balayage() {
     let key = EntryKey::of("s1", &episode("e1"));
     let access = f.access();
     // Premier téléchargement : crée le dossier et fait le balayage (dossier encore vide).
-    fetch_bytes(&access, &key, |dest| fake_download(&calls, None, dest)).await;
+    prepare_dir(&access, &key).await;
+    fetch_bytes(|dest| fake_download(&calls, None, dest)).await;
     // Reste ancien déposé ensuite : un second téléchargement ne le balaye pas.
     let old = dir.join("vieux.0123.dl.part");
     std::fs::write(&old, b"x").unwrap();
@@ -592,7 +736,147 @@ async fn un_second_telechargement_ne_refait_pas_le_balayage() {
         .unwrap()
         .set_modified(long_ago)
         .unwrap();
-    fetch_bytes(&access, &key, |dest| fake_download(&calls, None, dest)).await;
+    prepare_dir(&access, &key).await;
+    fetch_bytes(|dest| fake_download(&calls, None, dest)).await;
     assert!(old.exists(), "balayage non refait au second téléchargement");
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+/// Portillon de lecture déjà pris, comme le fait la commande.
+async fn gate_of(lock: &Arc<tokio::sync::RwLock<()>>) -> Gate {
+    Gate::acquire(lock.clone()).await
+}
+
+#[tokio::test]
+async fn portillon_relache_pendant_le_telechargement_et_fichier_hors_du_cache() {
+    let f = Fixture::new();
+    let key = EntryKey::of("s1", &episode("p1"));
+    let lock = Arc::new(tokio::sync::RwLock::new(()));
+    let root = f.root();
+    let free_during_download = std::sync::atomic::AtomicBool::new(false);
+    let outside = std::sync::atomic::AtomicBool::new(false);
+    let url = load_gated(
+        &f.access(),
+        &key,
+        Some(gate_of(&lock).await),
+        |dest| {
+            // « Vider le cache » (écriture) doit pouvoir passer pendant l'attente réseau.
+            free_during_download.store(lock.try_write().is_ok(), Ordering::SeqCst);
+            outside.store(!dest.starts_with(&root), Ordering::SeqCst);
+            let write = std::fs::write(dest, png(300, 300)).is_ok();
+            async move { write }
+        },
+        in_process,
+    )
+    .await;
+    assert!(url.is_some());
+    assert!(
+        free_during_download.load(Ordering::SeqCst),
+        "portillon tenu"
+    );
+    assert!(outside.load(Ordering::SeqCst), "destination dans le cache");
+    // La vignette est écrite, et le portillon est rendu à la fin.
+    assert!(read_thumb(&thumbs_dir(&f), &thumb_name(&key).unwrap()).is_some());
+    assert!(lock.try_write().is_ok());
+}
+
+/// « Vider le cache » tel que la commande le fait : portillon pris en écriture **sans attendre**
+/// (un portillon resté tenu fait échouer le test au lieu de le bloquer), puis
+/// [`crate::cache::clear_of`]. Vrai si le vidage a pu passer.
+fn clear_cache_now(lock: &tokio::sync::RwLock<()>, root: &Path) -> bool {
+    let Ok(write_gate) = lock.try_write() else {
+        return false;
+    };
+    crate::cache::clear_of(root).unwrap();
+    drop(write_gate);
+    true
+}
+
+/// Après un vidage : `podcasts/` reste (avec son marqueur), le dossier de la source est parti et
+/// rien n'y a été recréé.
+fn assert_cleared_and_not_recreated(f: &Fixture) {
+    let podcasts = f.root().join(crate::podcast::source::CACHE_SUBDIR);
+    assert!(podcasts.is_dir(), "podcasts/ supprimé par le vidage");
+    assert!(crate::cache::is_owned(&podcasts), "marqueur perdu");
+    let source = crate::podcast::source::source_dir(&f.root(), "s1").unwrap();
+    assert!(
+        !source.exists(),
+        "dossier de la source recréé après le vidage"
+    );
+}
+
+#[tokio::test]
+async fn vidage_pendant_le_telechargement_ne_recree_rien() {
+    let f = Fixture::new();
+    let key = EntryKey::of("s1", &episode("p2"));
+    let lock = Arc::new(tokio::sync::RwLock::new(()));
+    let root = f.root();
+    let cleared = std::sync::atomic::AtomicBool::new(false);
+    let url = load_gated(
+        &f.access(),
+        &key,
+        Some(gate_of(&lock).await),
+        |dest| {
+            // Le dossier de la source existe à ce stade : le vidage le supprime.
+            assert!(crate::podcast::source::source_dir(&root, "s1")
+                .unwrap()
+                .is_dir());
+            cleared.store(clear_cache_now(&lock, &root), Ordering::SeqCst);
+            let write = std::fs::write(dest, png(300, 300)).is_ok();
+            async move { write }
+        },
+        in_process,
+    )
+    .await;
+    assert!(
+        cleared.load(Ordering::SeqCst),
+        "portillon tenu : vidage impossible"
+    );
+    // L'aperçu est rendu, mais rien n'est recréé dans le cache vidé.
+    assert!(url.is_some());
+    assert_cleared_and_not_recreated(&f);
+}
+
+/// Vidage à faire par le convertisseur (pointeur de fonction : pas de capture) du test suivant.
+static CLEAR_DURING_DECODE: std::sync::Mutex<Option<(Arc<tokio::sync::RwLock<()>>, PathBuf)>> =
+    std::sync::Mutex::new(None);
+static CLEARED_DURING_DECODE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn clearing_convert(bytes: &[u8], kind: ArtworkKind) -> Result<Artwork, ArtworkError> {
+    let job = CLEAR_DURING_DECODE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some((lock, root)) = job {
+        CLEARED_DURING_DECODE.store(clear_cache_now(&lock, &root), Ordering::SeqCst);
+    }
+    in_process(bytes, kind)
+}
+
+/// #582 (revue) : pochette tirée du cache des MP3, vidage pendant le décodage : le dossier des
+/// vignettes préparé avant n'est pas recréé par l'écriture finale.
+#[tokio::test]
+async fn vidage_pendant_le_decodage_d_une_pochette_du_cache_ne_recree_rien() {
+    let f = Fixture::new();
+    let ep = episode("p3");
+    f.store(&ep, Some(&png(300, 200))).await;
+    let lock = Arc::new(tokio::sync::RwLock::new(()));
+    *CLEAR_DURING_DECODE.lock().unwrap() = Some((lock.clone(), f.root()));
+    let calls = AtomicUsize::new(0);
+    let url = load_gated(
+        &f.access(),
+        &EntryKey::of("s1", &ep),
+        Some(gate_of(&lock).await),
+        |dest| fake_download(&calls, None, dest),
+        clearing_convert,
+    )
+    .await;
+    assert!(
+        CLEARED_DURING_DECODE.load(Ordering::SeqCst),
+        "portillon tenu pendant le décodage : vidage impossible"
+    );
+    assert!(url.is_some());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_cleared_and_not_recreated(&f);
 }

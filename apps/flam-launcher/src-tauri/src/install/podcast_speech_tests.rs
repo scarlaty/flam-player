@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::time::Instant;
 
 use serde_json::Value;
 
@@ -169,8 +168,8 @@ fn composition(voice: Option<&str>) -> PackComposition {
 }
 
 impl PackBackend for Fake {
-    fn ready(&self) -> AppResult<()> {
-        Ok(())
+    fn ready<'a>(&'a self, _c: &'a mut watch::Receiver<bool>) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async { Ok(()) })
     }
 
     fn feeds<'a>(&'a self, _c: &'a PackComposition) -> BoxFuture<'a, AppResult<Feeds>> {
@@ -605,37 +604,67 @@ async fn ffmpeg_absent_arrete_la_creation_sans_fichier_residuel() {
 
 #[tokio::test]
 async fn annulation_pendant_la_synthese_sans_attendre_la_voix() {
-    let ctx = Ctx::new(Simulated {
-        delay: Duration::from_secs(3),
-        ..Simulated::french()
+    // Voix figée jusqu'à la fin du test : la préparation ne peut se terminer qu'en abandonnant
+    // la synthèse. Aucune durée n'est mesurée (horloge réelle, instable sous charge) : un délai
+    // de garde large transforme seulement un blocage en échec nommé.
+    let ctx = Ctx::new(Simulated::french());
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (started_tx, started) = tokio::sync::oneshot::channel::<()>();
+    *ctx.fake.synth.lock().unwrap() = Arc::new(Stuck {
+        inner: Simulated::french().shared(),
+        started: Mutex::new(Some(started_tx)),
+        released: Mutex::new(released),
     });
     let job = Ctx::job(composition(None));
     let id = uuid::Uuid::new_v4().to_string();
     ctx.register(&id);
     let (tx, mut cancel) = watch::channel(false);
-    let started = Instant::now();
+    // Annulation dès que la synthèse a commencé.
     let canceller = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        let _ = started.await;
         tx.send(true).unwrap();
         tx
     });
-    let result = ctx
-        .service
-        .prepare_pack(&id, &job, &ctx.tc, &mut cancel)
-        .await;
-    let _tx = canceller.await.unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(60),
+        ctx.service.prepare_pack(&id, &job, &ctx.tc, &mut cancel),
+    )
+    .await
+    .expect("annulation qui attend la fin de la synthèse (voix figée)");
+    // Sans synthèse commencée, l'annulation n'a jamais été envoyée : l'assertion suivante échoue.
+    canceller.abort();
     assert!(
         matches!(result, Err(AppError::Cancelled)),
         "{:?}",
         result.err()
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "annulation sans attendre la fin de la synthèse : {:?}",
-        started.elapsed()
-    );
     assert_eq!(ctx.fake.fetches.load(Ordering::SeqCst), 0);
     ctx.assert_clean();
+    drop(release);
+}
+
+/// Voix qui signale le début de sa première synthèse, puis ne rend la main qu'une fois
+/// `released` fermé (fin du test).
+struct Stuck {
+    inner: Arc<dyn Synthesizer>,
+    started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    released: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl Synthesizer for Stuck {
+    fn voices(&self) -> Result<Vec<crate::podcast::speech::Voice>, speech::SpeechError> {
+        self.inner.voices()
+    }
+    fn default_voice_id(&self) -> Option<String> {
+        self.inner.default_voice_id()
+    }
+    fn synthesize(&self, text: &str, voice_id: &str) -> Result<Vec<u8>, speech::SpeechError> {
+        if let Some(tx) = self.started.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+        let _ = self.released.lock().unwrap().recv();
+        self.inner.synthesize(text, voice_id)
+    }
 }
 
 #[tokio::test]
@@ -767,23 +796,23 @@ async fn categorie_videe_avec_titre_en_echec_sans_avertissement() {
 #[tokio::test]
 async fn deux_delais_de_synthese_consecutifs_arretent_la_creation() {
     let ctx = Ctx::new(Simulated::french());
-    *ctx.fake.synth_timeout.lock().unwrap() = Some(Duration::from_millis(100));
+    // Délai court mais large devant une synthèse normale, même sur une machine chargée ; les
+    // synthèses figées durent bien au-delà (aucune mesure de durée : voir la borne ci-dessous).
+    *ctx.fake.synth_timeout.lock().unwrap() = Some(Duration::from_secs(1));
     // « Mon pack » est lu ; « Un » puis « Saison » ne rendent pas la main à temps.
     let calls = ctx.record(
         Simulated::french(),
         &["Un", "Saison"],
-        Duration::from_secs(6),
+        Duration::from_secs(300),
     );
-    let started = Instant::now();
-    let err = ctx.prepare(composition(None)).await.unwrap_err();
+    // Les threads de synthèse figés sont abandonnés, jamais attendus : attendre l'un d'eux
+    // dépasserait cette borne (très large devant les deux délais d'une seconde).
+    let result = tokio::time::timeout(Duration::from_secs(120), ctx.prepare(composition(None)))
+        .await
+        .expect("arrêt sans attendre la voix");
+    let err = result.unwrap_err();
     assert_eq!(err.kind(), "tts_failed", "{err:?}");
     assert!(err.to_string().contains("ne répond plus"), "{err}");
-    // Bien moins que les deux synthèses figées (threads abandonnés, jamais attendus).
-    assert!(
-        started.elapsed() < Duration::from_secs(4),
-        "arrêt sans attendre la voix : {:?}",
-        started.elapsed()
-    );
     // Aucun titre après le second délai.
     let texts: Vec<String> = calls.lock().unwrap().iter().map(|c| c.1.clone()).collect();
     assert_eq!(texts, ["Mon pack", "Un", "Saison"]);

@@ -57,9 +57,11 @@ const DOWNLOADS: usize = 3;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20);
 /// Sous-dossier des vignettes dans le dossier de cache d'une source.
 const THUMBS_DIR: &str = "thumbs";
-/// Extension des téléchargements en cours et des écritures temporaires.
+/// Extensions des restes balayés dans `thumbs/` : `part` (vignette en cours d'écriture,
+/// [`write_thumb`]) et `dl` (téléchargements des versions antérieures, faits dans ce dossier).
+/// Les téléchargements actuels sont hors du cache ([`download_dest`]).
 const TEMP_EXTS: [&str; 2] = ["dl", "part"];
-/// Âge au-delà duquel un reste de téléchargement (arrêt brutal) est supprimé.
+/// Âge au-delà duquel un reste d'écriture ou de téléchargement (arrêt brutal) est supprimé.
 const STALE_AFTER: Duration = Duration::from_secs(3600);
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
@@ -157,7 +159,7 @@ fn remove_outdated(dir: &Path, name: &str) {
     }
 }
 
-/// Supprime les restes de téléchargements (`*.dl`, `*.part`) de plus de [`STALE_AFTER`]. Rien
+/// Supprime les restes d'écritures interrompues ([`TEMP_EXTS`]) de plus de [`STALE_AFTER`]. Rien
 /// n'est lu ni supprimé hors d'un `podcasts/` marqué ([`in_owned_podcasts`]).
 fn sweep_stale(dir: &Path) {
     if !in_owned_podcasts(dir) {
@@ -200,12 +202,32 @@ fn take_download(path: &Path) -> Option<Vec<u8>> {
     bytes
 }
 
-/// Vignette (URL `data:`) de l'épisode `key` : cache des vignettes, sinon pochette du cache
-/// des MP3, sinon `download` (appelé avec le fichier de destination, rend `true` si l'image y a
-/// été écrite). La vignette obtenue est mise en cache. `None` : pas d'aperçu.
+/// [`load_gated`] sans portillon du cache (tests).
+#[cfg(test)]
 pub(super) async fn load<D, Fut>(
     access: &CacheAccess,
     key: &EntryKey,
+    download: D,
+    convert: Convert,
+) -> Option<String>
+where
+    D: FnOnce(PathBuf) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    load_gated(access, key, None, download, convert).await
+}
+
+/// Vignette (URL `data:`) de l'épisode `key` : cache des vignettes, sinon pochette du cache
+/// des MP3, sinon `download` (appelé avec le fichier de destination, hors du cache, rend `true`
+/// si l'image y a été écrite). La vignette obtenue est mise en cache. `None` : pas d'aperçu.
+///
+/// `gate` (tenu en lecture à l'appel) couvre les seules lectures et écritures du cache : relâché
+/// avant le téléchargement et le décodage, repris pour écrire la vignette (#582). L'écriture ne
+/// crée aucun dossier : si un vidage est passé entre-temps, la vignette n'est pas mise en cache.
+pub(super) async fn load_gated<D, Fut>(
+    access: &CacheAccess,
+    key: &EntryKey,
+    mut gate: Option<Gate>,
     download: D,
     convert: Convert,
 ) -> Option<String>
@@ -225,9 +247,20 @@ where
     if let Some(png) = cached {
         return Some(thumbnail::data_uri(&png));
     }
-    let bytes = match access.cached_image(key, MAX_INPUT_BYTES as u64).await {
+    let from_cache = access.cached_image(key, MAX_INPUT_BYTES as u64).await;
+    // Dossier des vignettes préparé dans tous les cas, portillon tenu : l'écriture finale ne crée
+    // aucun dossier, une vignette tirée du cache des MP3 ne serait sinon jamais mise en cache
+    // (#582). Sans dossier, la pochette du cache des MP3 donne quand même un aperçu.
+    let prepared = prepare_dir(access, key).await;
+    if from_cache.is_none() {
+        prepared?;
+    }
+    if let Some(gate) = gate.as_mut() {
+        gate.release();
+    }
+    let bytes = match from_cache {
         Some(bytes) => bytes,
-        None => fetch_bytes(access, key, download).await?,
+        None => fetch_bytes(download).await?,
     };
     // Au plus DECODERS décodages à la fois (chaque aperçu lance un processus enfant) : une
     // catégorie de 40 épisodes ne déclenche pas 40 décodeurs simultanés.
@@ -241,12 +274,16 @@ where
         }
     };
     drop(_permit);
+    if let Some(gate) = gate.as_mut() {
+        gate.reacquire().await;
+    }
     let (stored, to_write) = (name, png.clone());
     let written = access
-        .in_subdir(THUMBS_DIR, source_id, Mode::Write, move |dir| {
+        .in_subdir(THUMBS_DIR, source_id, Mode::Read, move |dir| {
             write_thumb(dir, &stored, &to_write)
         })
         .await;
+    drop(gate);
     if let Some(Err(err)) = written {
         tracing::warn!("aperçu de pochette : vignette non mise en cache : {err}");
     }
@@ -264,40 +301,156 @@ fn first_fetch(dir: &Path) -> bool {
         .insert(dir.to_path_buf())
 }
 
-/// Télécharge l'image de l'épisode dans le dossier des vignettes de sa source (créé sous le
-/// verrou de la source : une source purgée n'en récupère rien), au plus [`DOWNLOADS`] à la fois.
-async fn fetch_bytes<D, Fut>(access: &CacheAccess, key: &EntryKey, download: D) -> Option<Vec<u8>>
+/// Portillon du cache ([`crate::catalog::CatalogService::cache_gate`]) tenu en lecture par
+/// l'aperçu, relâchable : « Vider le cache » (écriture) n'attend ainsi que les sections qui lisent
+/// ou écrivent le cache, jamais une attente réseau (#582).
+pub(super) struct Gate {
+    lock: Arc<tokio::sync::RwLock<()>>,
+    held: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+}
+
+impl Gate {
+    /// Prend le portillon `lock` en lecture (en attendant la fin d'un vidage en cours).
+    pub(super) async fn acquire(lock: Arc<tokio::sync::RwLock<()>>) -> Self {
+        let held = lock.clone().read_owned().await;
+        Self {
+            lock,
+            held: Some(held),
+        }
+    }
+
+    fn release(&mut self) {
+        self.held = None;
+    }
+
+    /// Reprend le portillon (en attendant la fin d'un vidage en cours). Rien d'autre ne doit être
+    /// tenu pendant l'attente.
+    async fn reacquire(&mut self) {
+        self.held = Some(self.lock.clone().read_owned().await);
+    }
+}
+
+/// Fichier de destination d'un téléchargement : **hors du cache** (dossier temporaire du
+/// système, nom `flam-thumb-<uuid>.dl`, voir [`is_download_name`]). Le portillon du cache est
+/// relâché pendant le téléchargement : un vidage ne peut ni le supprimer sous l'écriture en cours
+/// ni le voir recréer un dossier purgé.
+fn download_dest(dir: &Path) -> PathBuf {
+    dir.join(format!(
+        "{DOWNLOAD_PREFIX}{}.dl",
+        uuid::Uuid::new_v4().simple()
+    ))
+}
+
+/// Préfixe des fichiers de téléchargement d'aperçus dans le dossier temporaire du système.
+const DOWNLOAD_PREFIX: &str = "flam-thumb-";
+
+/// Nom produit par [`download_dest`] (`flam-thumb-<32 chiffres hexadécimaux minuscules>.dl`) ou
+/// son fichier partiel (`….dl.part`), et rien d'autre : le balayage du dossier temporaire du
+/// système ne touche à aucun autre fichier.
+fn is_download_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(DOWNLOAD_PREFIX) else {
+        return false;
+    };
+    let Some(id) = rest
+        .strip_suffix(".dl.part")
+        .or_else(|| rest.strip_suffix(".dl"))
+    else {
+        return false;
+    };
+    id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Supprime de `dir` (dossier temporaire du système) les restes de téléchargements d'aperçus de
+/// plus de [`STALE_AFTER`] (arrêt brutal pendant un téléchargement) : vrais fichiers seulement
+/// (jamais un lien ni un dossier), noms de [`is_download_name`] seulement. Bloquant.
+fn sweep_stale_downloads(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(is_download_name) {
+            continue;
+        }
+        let path = entry.path();
+        let old = std::fs::symlink_metadata(&path)
+            .ok()
+            .filter(|m| m.file_type().is_file())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > STALE_AFTER);
+        if old {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Vrai la première fois de la session : le dossier temporaire du système n'est balayé qu'une
+/// fois ([`sweep_stale_downloads`]).
+fn first_download_of_session() -> bool {
+    static SWEPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    !SWEPT.swap(true, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Fichier de téléchargement (hors du cache) supprimé, avec son `<dest>.part`, quand le garde est
+/// lâché : succès, échec, image refusée, tâche de lecture interrompue ou demande abandonnée en
+/// cours de route (#582). Seuls un arrêt brutal du processus ou une opération disque déjà lancée
+/// au moment de l'abandon laissent un reste, balayé par [`sweep_stale_downloads`] à une session
+/// suivante.
+struct TempDownload(PathBuf);
+
+impl Drop for TempDownload {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(crate::install::download::part_path(&self.0));
+    }
+}
+
+/// Prépare le dossier des vignettes de la source, sous le verrou de la source (mode écriture :
+/// le dossier est créé au besoin) : une source déjà purgée n'obtient rien (`None`). Les restes
+/// d'écritures de vignettes interrompues (arrêt brutal, voir [`TEMP_EXTS`]) y sont balayés une
+/// fois par source et par session (le dossier est lu en entier). Les téléchargements, eux, sont
+/// faits hors du cache ([`download_dest`]) et balayés par [`sweep_stale_downloads`].
+async fn prepare_dir(access: &CacheAccess, key: &EntryKey) -> Option<()> {
+    access
+        .in_subdir(THUMBS_DIR, &key.source_id, Mode::Write, |dir| {
+            if first_fetch(dir) {
+                sweep_stale(dir);
+            }
+        })
+        .await
+}
+
+/// Télécharge l'image de l'épisode (hors du cache, voir [`download_dest`]), au plus
+/// [`DOWNLOADS`] à la fois. Le fichier temporaire est toujours supprimé ([`TempDownload`]) ; le
+/// premier téléchargement de la session balaye les restes anciens ([`sweep_stale_downloads`]).
+async fn fetch_bytes<D, Fut>(download: D) -> Option<Vec<u8>>
 where
     D: FnOnce(PathBuf) -> Fut,
     Fut: Future<Output = bool>,
 {
     static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(DOWNLOADS);
-    let dir = access
-        .in_subdir(THUMBS_DIR, &key.source_id, Mode::Write, |dir| {
-            // Restes d'anciens téléchargements abandonnés (arrêt brutal) : balayés ici aussi,
-            // pas seulement à l'écriture d'une vignette, mais une fois par source et par session
-            // (le dossier est lu en entier, sous le verrou de la source).
-            if first_fetch(dir) {
-                sweep_stale(dir);
-            }
-            dir.to_path_buf()
-        })
-        .await?;
-    // Nom unique : deux demandes simultanées pour le même épisode ne s'écrasent pas.
-    let dest = dir.join(format!(
-        "{}.{}.dl",
-        key.episode_id,
-        uuid::Uuid::new_v4().simple()
-    ));
-    let _permit = SLOTS.acquire().await.ok()?;
-    let ok = download(dest.clone()).await;
-    drop(_permit);
-    let read = blocking(move || take_download(&dest)).await.ok().flatten();
-    if ok {
-        read
-    } else {
-        None
+    let temp = std::env::temp_dir();
+    if first_download_of_session() {
+        let dir = temp.clone();
+        let _ = blocking(move || sweep_stale_downloads(&dir)).await;
     }
+    // Garde créé avant tout `await` : le fichier part quel que soit le chemin de sortie.
+    let dest = TempDownload(download_dest(&temp));
+    let _permit = SLOTS.acquire().await.ok()?;
+    let ok = download(dest.0.clone()).await;
+    drop(_permit);
+    if !ok {
+        return None;
+    }
+    // Le garde suit la lecture : supprimé à la fin de la tâche, ou à son abandon.
+    blocking(move || {
+        let dest = dest;
+        take_download(&dest.0)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Téléchargement réel : chaîne des couvertures ([`download_image`]), délai de
@@ -389,17 +542,13 @@ pub async fn pack_episode_thumbnail(
         return Ok(None);
     }
     // Portillon du cache en lecture, comme les autres écrivains du cache : « Vider le cache »
-    // (écriture) attend la fin du chargement. Rien de ce qui suit ne reprend ce portillon
-    // (`find_episode`, `CacheAccess` et `load` n'y touchent pas : une relecture pendant qu'un
-    // vidage attend s'interbloquerait), et l'appelant n'en tient aucun.
-    //
-    // Pire cas connu : le portillon reste tenu pendant l'attente d'un créneau et le téléchargement
-    // (jusqu'à `DOWNLOAD_TIMEOUT` par créneau, `DOWNLOADS` créneaux), soit environ 40 s : un
-    // « Vider le cache » attend ces aperçus, et les nouvelles lectures derrière lui. Ne pas le
-    // réduire en le relâchant pendant le téléchargement : le fichier `.dl` est écrit dans le
-    // dossier du cache, et un vidage pourrait alors le supprimer sous l'écriture en cours (ou la
-    // laisser recréer un dossier purgé). Le réduire demande de télécharger hors du cache.
-    let _gate = catalog.cache_gate().read_owned().await;
+    // (écriture) attend la fin des sections qui lisent ou écrivent le cache. Il est relâché par
+    // `load_gated` pendant l'attente d'un créneau, le téléchargement (écrit hors du cache) et le
+    // décodage, puis repris pour l'écriture : le pire cas n'est plus de l'ordre de 40 s (#582).
+    // Rien de ce qui suit ne reprend ce portillon en le tenant déjà (`find_episode`,
+    // `CacheAccess` et `load_gated` : une relecture imbriquée pendant qu'un vidage attend
+    // s'interbloquerait), et l'appelant n'en tient aucun.
+    let gate = Gate::acquire(catalog.cache_gate()).await;
     // Génération lue **avant** de résoudre l'adresse du flux : une purge ensuite rend le cache
     // inaccessible (voir `CacheAccess::new`).
     let generation = service.generation(&episode.source_id);
@@ -412,9 +561,10 @@ pub async fn pack_episode_thumbnail(
     let key = EntryKey::of(&episode.source_id, &found);
     let access = CacheAccess::new(Arc::new(LiveLocks(app)), root, [episode.source_id.clone()])
         .at_generation(&episode.source_id, generation);
-    Ok(load(
+    Ok(load_gated(
         &access,
         &key,
+        Some(gate),
         |dest| download_from_web(image, dest),
         |b, kind| artwork::convert_isolated(b, kind, None),
     )
