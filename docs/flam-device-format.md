@@ -457,11 +457,16 @@ supprime des deux index.
 
 Éjection logicielle sans jamais forcer (Windows) :
 
-1. **Préparation du volume** : vidage des tampons, verrouillage (échoue si un autre processus a un
-   fichier ouvert : arrêt, sans forcer), démontage, puis autorisation du retrait. Sans droit
-   d'ouvrir le volume en écriture, l'étape est sautée.
-2. **Demande d'éjection** (`CM_Request_Device_EjectW`) sur le parent USB du disque ; un refus
-   (« veto ») du gestionnaire Plug and Play est respecté.
+1. **Préparation du volume** : vidage des tampons, verrouillage, démontage, puis autorisation du
+   retrait. Sans droit d'ouvrir le volume en écriture, l'étape est sautée. Si le verrouillage est
+   refusé (une poignée est ouverte : antivirus, indexation, fenêtre de l'Explorateur…), rien
+   n'est démonté et on passe quand même à l'étape 2 (#619) : contrairement au verrouillage, la
+   demande d'éjection prévient les processus, qui peuvent fermer leurs poignées.
+2. **Demande d'éjection** (`CM_Request_Device_EjectW`, sans option de force) sur le parent USB du
+   disque ; un refus (« veto ») du gestionnaire Plug and Play est respecté (repli). Sans
+   démontage préalable, la réussite n'est annoncée qu'une fois le volume disparu (`.mdf`
+   inaccessible, attente bornée à 2 s). Le motif du refus est journalisé, jamais le nom du
+   programme ni un chemin.
 
 Tout échec (fichier ouvert, refus, appareil introuvable, autre système) donne un **repli** : message
 invitant à éjecter depuis l'Explorateur. Une éjection est **refusée** si la racine n'a pas de

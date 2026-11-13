@@ -3,11 +3,16 @@
 //! # Méthode (Windows)
 //!
 //! 1. **Préparation du volume** (`\\.\E:`) : `FlushFileBuffers` (toutes les écritures en
-//!    attente du volume vont sur la clé), `FSCTL_LOCK_VOLUME` (échoue si un autre processus a
-//!    un fichier ouvert : on s'arrête là, sans forcer), `FSCTL_DISMOUNT_VOLUME`, puis
+//!    attente du volume vont sur la clé), `FSCTL_LOCK_VOLUME`, `FSCTL_DISMOUNT_VOLUME`, puis
 //!    `IOCTL_STORAGE_MEDIA_REMOVAL` (autorise le retrait). Le verrou est rendu à la fermeture.
 //!    Sans droit d'ouvrir le volume en écriture, l'étape est sautée : la demande suivante
 //!    vide les caches et vérifie les fichiers ouverts d'elle-même.
+//!    **Volume occupé** (verrouillage refusé : une poignée est ouverte, par exemple par un
+//!    antivirus, l'indexation ou une fenêtre de l'Explorateur) : rien n'est démonté, et la
+//!    demande d'éjection est tentée quand même (#619). Contrairement au verrouillage, elle
+//!    prévient les processus, qui peuvent fermer leurs poignées ; leur refus est respecté.
+//!    Sans démontage préalable, la réussite n'est annoncée qu'une fois le volume disparu
+//!    ([`EjectSystem::volume_gone`]).
 //! 2. **Demande d'éjection** `CM_Request_Device_EjectW` sur le parent USB du disque (le
 //!    périphérique que retire « Retirer le périphérique en toute sécurité »). Le disque est
 //!    trouvé par son numéro (`IOCTL_STORAGE_GET_DEVICE_NUMBER`) parmi les interfaces
@@ -88,10 +93,35 @@ pub enum PrepareError {
     /// Pas le droit d'ouvrir le volume en écriture : étape sautée, la demande d'éjection
     /// vérifie elle-même les fichiers ouverts.
     NoAccess,
-    /// Volume occupé (fichier ouvert par un autre processus) : aucune éjection.
-    InUse(String),
+    /// Volume occupé : le verrouillage est refusé (une poignée est ouverte sur le volume, par
+    /// ce processus ou un autre). `flushed` : les caches du volume ont été vidés avant. Rien
+    /// n'est démonté ; la demande d'éjection de Windows est tentée quand même (#619) : elle
+    /// prévient les processus, qui peuvent fermer leurs poignées, et respecte leur refus.
+    InUse { reason: String, flushed: bool },
     /// Autre échec : aucune éjection.
     Failed(String),
+}
+
+/// Refus ou échec de la demande d'éjection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    /// Raison du refus, rendue dans `reason` du repli (l'interface n'affiche que `message`). Peut
+    /// nommer le programme qui refuse : jamais journalisée.
+    pub reason: String,
+    /// Motif du refus de Windows (`PNP_VETO_TYPE`), s'il y en a un.
+    pub veto: Option<i32>,
+}
+
+impl From<String> for Refusal {
+    fn from(reason: String) -> Self {
+        Refusal { reason, veto: None }
+    }
+}
+
+impl From<&str> for Refusal {
+    fn from(reason: &str) -> Self {
+        reason.to_string().into()
+    }
 }
 
 /// Appels système de l'éjection, injectables pour les tests.
@@ -99,7 +129,64 @@ pub trait EjectSystem {
     /// Vide les caches, verrouille et démonte le volume de `root`.
     fn prepare(&self, root: &Path) -> Result<(), PrepareError>;
     /// Demande l'arrêt du périphérique de `root`. `Err` : raison du refus ou de l'échec.
-    fn request_eject(&self, root: &Path) -> Result<(), String>;
+    fn request_eject(&self, root: &Path) -> Result<(), Refusal>;
+    /// Après une demande acceptée sans démontage préalable : vrai si le volume de `root` a
+    /// bien disparu (attente bornée). Faux : la réussite n'est pas annoncée.
+    fn volume_gone(&self, root: &Path) -> bool;
+}
+
+/// `reason` du repli (champ `reason`, non affiché) quand Windows a accepté la demande mais que
+/// la Flam est encore visible.
+pub const STILL_PRESENT: &str =
+    "Windows a accepté la demande, mais la Flam est encore visible : elle n'a pas encore disparu";
+
+/// Codes Windows d'un volume disparu : fichier ou chemin introuvable, lecteur invalide, non
+/// prêt, volume non reconnu, appareil non connecté.
+const GONE_OS_ERRORS: [i32; 6] = [2, 3, 15, 21, 1005, 1167];
+
+/// Vrai si `err` (accès au `.mdf`) prouve que le volume a disparu. Toute autre erreur (accès
+/// refusé, violation de partage, erreur d'entrée/sortie) peut être passagère : pas une preuve.
+pub fn means_gone(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::NotFound
+        || (cfg!(windows)
+            && err
+                .raw_os_error()
+                .is_some_and(|c| GONE_OS_ERRORS.contains(&c)))
+}
+
+/// Attend (au plus `attempts` essais espacés de `delay`) que le `.mdf` de `root` ne soit plus
+/// accessible : le volume a disparu ([`means_gone`]). Encore présent, ou autre erreur, au
+/// dernier essai : faux.
+pub fn wait_until_gone(
+    root: &Path,
+    attempts: u32,
+    delay: std::time::Duration,
+    sleep: impl Fn(std::time::Duration),
+) -> bool {
+    wait_until_gone_with(
+        || fs::symlink_metadata(root.join(MDF_FILE)).map(drop),
+        attempts,
+        delay,
+        sleep,
+    )
+}
+
+/// [`wait_until_gone`] avec la sonde d'accès au `.mdf` injectée.
+pub fn wait_until_gone_with(
+    probe: impl Fn() -> std::io::Result<()>,
+    attempts: u32,
+    delay: std::time::Duration,
+    sleep: impl Fn(std::time::Duration),
+) -> bool {
+    for attempt in 0..attempts {
+        if attempt > 0 {
+            sleep(delay);
+        }
+        if probe().is_err_and(|err| means_gone(&err)) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Éjecte la Flam montée en `root`. Refuse si `root` n'est pas une Flam ou si une autre
@@ -115,14 +202,27 @@ pub fn eject(
     }
     // Verrou gardé jusqu'à la fin : aucun transfert ne peut démarrer pendant l'éjection.
     let _guard = lock.try_begin(Operation::Eject)?;
-    let dismounted = match system.prepare(root) {
-        Ok(()) => true,
-        Err(PrepareError::NoAccess) => false,
-        Err(PrepareError::InUse(reason)) => {
-            tracing::info!("éjection : volume occupé ({reason})");
-            return Ok(EjectOutcome::fallback(format!(
-                "un fichier de la Flam est ouvert par un autre programme ({reason})"
-            )));
+    // `busy` : raison du verrouillage refusé, rendue telle quelle si Windows refuse aussi.
+    let (dismounted, busy) = match system.prepare(root) {
+        Ok(()) => (true, None),
+        Err(PrepareError::NoAccess) => (false, None),
+        Err(PrepareError::InUse { reason, flushed }) => {
+            // Diagnostic #619 (sans chemin). Hypothèse à vérifier : un dossier courant du
+            // processus sur la Flam tient une poignée et bloque le verrouillage.
+            let cwd_on_device = match std::env::current_dir() {
+                Ok(dir) => on_volume(root, &dir),
+                Err(_) => None,
+            };
+            tracing::info!(
+                dossier_courant_sur_la_flam = match cwd_on_device {
+                    Some(true) => "oui",
+                    Some(false) => "non",
+                    None => "inconnu",
+                },
+                caches_vides = if flushed { "oui" } else { "non" },
+                "éjection : volume occupé ({reason}), demande de retrait à Windows"
+            );
+            (false, Some(reason))
         }
         Err(PrepareError::Failed(reason)) => {
             tracing::warn!("éjection : préparation impossible ({reason})");
@@ -130,14 +230,38 @@ pub fn eject(
         }
     };
     Ok(match system.request_eject(root) {
-        Ok(()) => EjectOutcome::ejected(),
-        Err(reason) => {
-            tracing::warn!("éjection refusée : {reason}");
-            if dismounted {
+        Ok(()) if dismounted => EjectOutcome::ejected(),
+        // Sans démontage préalable, la réussite n'est annoncée qu'une fois le volume disparu.
+        Ok(()) if system.volume_gone(root) => EjectOutcome::ejected(),
+        Ok(()) => {
+            tracing::warn!("éjection acceptée par Windows mais volume encore présent");
+            EjectOutcome::fallback(STILL_PRESENT)
+        }
+        Err(refusal) => {
+            // Le nom donné par Windows (programme, chemin) n'est jamais journalisé.
+            match refusal.veto {
+                Some(veto) => tracing::warn!(
+                    veto,
+                    motif = veto_label(veto),
+                    "éjection refusée par Windows"
+                ),
+                None => tracing::warn!("éjection refusée : {}", refusal.reason),
+            }
+            match busy {
+                // Verrou refusé puis veto de Windows : un programme tient bien la Flam.
+                Some(busy) if refusal.veto.is_some() => EjectOutcome::fallback(format!(
+                    "un fichier de la Flam est ouvert par un autre programme ({busy}) ; {}",
+                    refusal.reason
+                )),
+                // Autre échec de la demande (périphérique introuvable…) : raison de Windows.
+                Some(busy) => {
+                    EjectOutcome::fallback(format!("{} (volume occupé : {busy})", refusal.reason))
+                }
                 // Volume démonté avant le refus : il se remonte au prochain accès, sans perte.
-                EjectOutcome::fallback(format!("{reason}{DISMOUNTED_NOTE}"))
-            } else {
-                EjectOutcome::fallback(reason)
+                None if dismounted => {
+                    EjectOutcome::fallback(format!("{}{DISMOUNTED_NOTE}", refusal.reason))
+                }
+                None => EjectOutcome::fallback(refusal.reason),
             }
         }
     })
@@ -197,6 +321,20 @@ pub fn drive_letter(root: &Path) -> Option<char> {
     }
 }
 
+/// `path` est-il sur le lecteur de la racine `root` (`E:\`), d'après la lettre de lecteur ?
+/// `None` : indéterminable (`root` sans lettre de lecteur, chemin non Unicode).
+pub fn on_volume(root: &Path, path: &Path) -> Option<bool> {
+    let letter = drive_letter(root)?;
+    let text = path.to_str()?;
+    let mut chars = text.strip_prefix(r"\\?\").unwrap_or(text).chars();
+    Some(
+        chars
+            .next()
+            .is_some_and(|c| c.eq_ignore_ascii_case(&letter))
+            && chars.next() == Some(':'),
+    )
+}
+
 /// Découpe une liste `MULTI_SZ` (chaînes terminées par un nul, liste terminée par un nul).
 pub fn split_multi_sz(buf: &[u16]) -> Vec<String> {
     buf.split(|&c| c == 0)
@@ -219,8 +357,12 @@ mod other {
             ))
         }
 
-        fn request_eject(&self, _root: &Path) -> Result<(), String> {
+        fn request_eject(&self, _root: &Path) -> Result<(), Refusal> {
             Err("éjection logicielle disponible sous Windows seulement".into())
+        }
+
+        fn volume_gone(&self, _root: &Path) -> bool {
+            false
         }
     }
 }
@@ -255,7 +397,9 @@ mod sys {
     };
     use windows_sys::Win32::System::IO::DeviceIoControl;
 
-    use super::{drive_letter, split_multi_sz, EjectSystem, PrepareError};
+    use super::{
+        drive_letter, split_multi_sz, wait_until_gone, EjectSystem, PrepareError, Refusal,
+    };
 
     /// Essais du verrouillage : un explorateur ou un antivirus peut garder le volume ouvert
     /// un court instant.
@@ -265,6 +409,9 @@ mod sys {
     const EJECT_ATTEMPTS: u32 = 3;
     const EJECT_DELAY: Duration = Duration::from_millis(500);
     const VETO_NAME_LEN: usize = 260;
+    /// Attente de la disparition du volume après une demande acceptée sans démontage préalable.
+    const GONE_ATTEMPTS: u32 = 10;
+    const GONE_DELAY: Duration = Duration::from_millis(200);
 
     /// Éjection réelle (voir le module).
     pub struct WindowsEject;
@@ -335,7 +482,8 @@ mod sys {
     /// l'interface).
     fn volume_path(root: &Path) -> Result<String, String> {
         let letter = drive_letter(root)
-            .ok_or_else(|| format!("{} n'est pas la racine d'un lecteur", root.display()))?;
+            // Sans le chemin : la raison est journalisée.
+            .ok_or_else(|| "le dossier choisi n'est pas la racine d'un lecteur".to_string())?;
         let system = std::env::var("SystemDrive")
             .ok()
             .and_then(|drive| drive_letter(Path::new(&drive)))
@@ -448,7 +596,10 @@ mod sys {
                 }
                 // Volume ouvert sans partage par un autre processus : occupé, pas en échec.
                 Err(err) if err.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => {
-                    return Err(PrepareError::InUse(err.to_string()))
+                    return Err(PrepareError::InUse {
+                        reason: err.to_string(),
+                        flushed: false,
+                    })
                 }
                 Err(err) => return Err(PrepareError::Failed(format!("volume : {err}"))),
             };
@@ -465,8 +616,13 @@ mod sys {
                         attempt += 1;
                         std::thread::sleep(LOCK_DELAY);
                     }
+                    // Caches déjà vidés ; la poignée du volume est fermée au retour, avant la
+                    // demande d'éjection (elle la ferait refuser).
                     Err(err) if is_in_use(&err) => {
-                        return Err(PrepareError::InUse(err.to_string()));
+                        return Err(PrepareError::InUse {
+                            reason: err.to_string(),
+                            flushed: true,
+                        });
                     }
                     Err(err) => return Err(PrepareError::Failed(format!("verrouillage : {err}"))),
                 }
@@ -494,15 +650,15 @@ mod sys {
             Ok(())
         }
 
-        fn request_eject(&self, root: &Path) -> Result<(), String> {
+        fn request_eject(&self, root: &Path) -> Result<(), Refusal> {
             let disk = disk_devinst(root)?;
             let mut parent = 0u32;
             // SAFETY : pointeur de sortie valide.
             let cr = unsafe { CM_Get_Parent(&mut parent, disk, 0) };
             if cr != CR_SUCCESS {
-                return Err(format!("périphérique USB introuvable (code {cr})"));
+                return Err(format!("périphérique USB introuvable (code {cr})").into());
             }
-            let mut last = String::new();
+            let mut last = Refusal::from(String::new());
             for attempt in 0..EJECT_ATTEMPTS {
                 if attempt > 0 {
                     std::thread::sleep(EJECT_DELAY);
@@ -525,7 +681,7 @@ mod sys {
                 }
                 let end = name.iter().position(|&c| c == 0).unwrap_or(name.len());
                 let who = String::from_utf16_lossy(&name[..end]);
-                last = if cr != CR_SUCCESS {
+                let reason = if cr != CR_SUCCESS {
                     format!("demande refusée (code {cr})")
                 } else if who.is_empty() {
                     format!("éjection refusée par Windows : {}", super::veto_label(veto))
@@ -535,8 +691,16 @@ mod sys {
                         super::veto_label(veto)
                     )
                 };
+                last = Refusal {
+                    reason,
+                    veto: (veto != PNP_VetoTypeUnknown).then_some(veto),
+                };
             }
             Err(last)
+        }
+
+        fn volume_gone(&self, root: &Path) -> bool {
+            wait_until_gone(root, GONE_ATTEMPTS, GONE_DELAY, std::thread::sleep)
         }
     }
 }
