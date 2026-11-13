@@ -102,8 +102,16 @@ const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCK_POLL: Duration = Duration::from_millis(50);
 /// Essais d'une lecture de l'index sans verrou (erreur d'E/S passagère, voir `load_unlocked`).
 const UNLOCKED_READ_ATTEMPTS: u32 = 3;
-/// Version du schéma de `library.json`.
-pub const SCHEMA_VERSION: u32 = 1;
+/// Version courante du schéma de `library.json` (lecture des versions 0 à `SCHEMA_VERSION`,
+/// sans migration de données).
+///
+/// - v1 : histoires Telmi et Flam ;
+/// - v2 (#578) : ajout de `source.kind = "studio_zip"` (bêta.4). La donnée ne change pas, mais
+///   un index qui contient une histoire STUdio est écrit en v2 : une version antérieure le refuse
+///   alors intact (`config_version`) au lieu de le mettre en quarantaine faute de connaître la
+///   variante. Sans histoire STUdio, il reste écrit en v1 ([`crate::story::schema_for`]). Un
+///   index v1 qui contient déjà `studio_zip` (écrit par la bêta.4) reste lu.
+pub const SCHEMA_VERSION: u32 = 2;
 /// Suffixe des histoires au format Flam.
 pub const FLAM_SUFFIX: &str = ".plain.pk";
 
@@ -368,6 +376,11 @@ struct IndexFile {
     stories: Vec<LibraryEntry>,
 }
 
+/// Version écrite d'un index de `stories` : la plus basse qui connaît toutes leurs natures.
+fn index_schema(stories: &[LibraryEntry]) -> u32 {
+    crate::story::schema_for(stories.iter().map(|s| s.source.kind))
+}
+
 /// Nom de fichier `<uuid>-<version>.plain.pk` (ou `.lunii.pk`) après revalidation de l'`uuid`
 /// (motif `^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`, sans `..`, hors noms réservés Windows).
 pub fn file_name_for(uuid: &str, version: Option<u32>, format: StoryFormat) -> AppResult<String> {
@@ -533,11 +546,12 @@ impl Library {
         )
     }
 
+    /// Écrit l'index à la plus basse version qui décrit son contenu (voir [`SCHEMA_VERSION`]).
     fn save(&self, stories: Vec<LibraryEntry>) -> AppResult<()> {
         storage::write_json(
             &self.root.join(INDEX_FILE),
             &IndexFile {
-                schema_version: SCHEMA_VERSION,
+                schema_version: index_schema(&stories),
                 stories,
             },
         )
@@ -1369,6 +1383,98 @@ pub(crate) mod tests {
         let s2 = staged(&lib, "ot.plain.pk", b"PK1234");
         lib.install(&s2, &story("ot", Some(1)), None, 8).unwrap();
         assert!(!std::fs::read_to_string(&path).unwrap().contains("pack.zip"));
+    }
+
+    fn indexed(uuid: &str, kind: StoryKind) -> LibraryEntry {
+        let mut source = story(uuid, Some(1));
+        source.kind = kind;
+        LibraryEntry {
+            uuid: uuid.into(),
+            version: Some(1),
+            title: uuid.into(),
+            file: file_name_for(uuid, Some(1), StoryFormat::of_kind(kind)).unwrap(),
+            size: 6,
+            installed_at: 7,
+            converter: None,
+            source,
+            thumb: None,
+            source_stamp: None,
+        }
+    }
+
+    fn written_schema(lib: &Library) -> u64 {
+        let text = std::fs::read_to_string(lib.root().join(INDEX_FILE)).unwrap();
+        serde_json::from_str::<serde_json::Value>(&text).unwrap()["schema_version"]
+            .as_u64()
+            .unwrap()
+    }
+
+    /// #578 : l'index est écrit en v1 sans histoire STUdio (retour à une version antérieure
+    /// possible), en v2 avec ; la version courante relit les deux.
+    #[test]
+    fn index_ecrit_en_v1_sans_studio_et_en_v2_avec() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        std::fs::create_dir_all(lib.root()).unwrap();
+        let telmi = indexed("aaa", StoryKind::TelmiZip);
+        let flam = indexed("bbb", StoryKind::FlamPk);
+        lib.save(vec![telmi.clone(), flam.clone()]).unwrap();
+        assert_eq!(written_schema(&lib), 1);
+        assert_eq!(lib.load().unwrap(), vec![telmi.clone(), flam.clone()]);
+
+        let studio = indexed("ccc", StoryKind::StudioZip);
+        lib.save(vec![telmi.clone(), studio.clone()]).unwrap();
+        assert_eq!(written_schema(&lib), 2);
+        assert_eq!(lib.load().unwrap(), vec![telmi.clone(), studio]);
+
+        // Histoire STUdio désinstallée : retour en v1.
+        lib.save(vec![telmi]).unwrap();
+        assert_eq!(written_schema(&lib), 1);
+    }
+
+    /// #578 : un index v1 qui contient déjà `studio_zip` (écrit par la bêta.4) reste lu, sans
+    /// quarantaine, et repasse en v2 à l'écriture suivante.
+    #[test]
+    fn index_v1_de_la_beta4_avec_studio_toujours_lu() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        std::fs::create_dir_all(lib.root()).unwrap();
+        let studio = indexed("ccc", StoryKind::StudioZip);
+        storage::write_json(
+            &lib.root().join(INDEX_FILE),
+            &IndexFile {
+                schema_version: 1,
+                stories: vec![studio.clone()],
+            },
+        )
+        .unwrap();
+        let (stories, untrusted) = lib.load_state().unwrap();
+        assert_eq!(stories, vec![studio.clone()]);
+        assert!(!untrusted);
+        assert!(!lib.index_quarantined());
+        lib.save(stories).unwrap();
+        assert_eq!(written_schema(&lib), 2);
+    }
+
+    /// #578 : un index v2 relu par le chargeur d'une version qui ne connaît que la v1 (bêta.3 et
+    /// bêta.4 : `load_versioned` à 1) est refusé (`config_version`), intact, sans `.bak`.
+    #[test]
+    fn index_v2_refuse_intact_par_une_version_v1() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        std::fs::create_dir_all(lib.root()).unwrap();
+        lib.save(vec![indexed("ccc", StoryKind::StudioZip)])
+            .unwrap();
+        let path = lib.root().join(INDEX_FILE);
+        let before = std::fs::read(&path).unwrap();
+        let err = storage::load_versioned::<serde_json::Value>(&path, 1, |_, _| {}).unwrap_err();
+        assert_eq!(err.kind(), "config_version");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "fichier intact");
+        assert!(!lib.index_quarantined(), "aucune quarantaine");
+        assert!(
+            is_legacy_library(lib.root()),
+            "v2 reconnu comme bibliothèque"
+        );
     }
 
     #[test]

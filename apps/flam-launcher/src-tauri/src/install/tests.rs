@@ -394,6 +394,97 @@ async fn echecs_du_convertisseur_rendus_tels_quels() {
     }
 }
 
+/// #578 : une archive téléchargée que la conversion met en cause est supprimée (la tentative
+/// suivante la retélécharge) ; une panne étrangère à l'archive la conserve (réutilisée sans
+/// réseau). Injection de chaque code du tableau de la note de conception.
+#[tokio::test]
+async fn archive_mise_en_cause_par_la_conversion_supprimee() {
+    let Some(py) = fake_converter() else { return };
+    for (mode, removed) in [
+        ("err:archive_unreadable:3", true),
+        ("err:not_telmi:3", true),
+        ("err:invalid_content:4", true),
+        ("err:missing_asset:5", true),
+        ("err:unsupported_format:7", false),
+        ("err:output_error:6", false),
+        ("err:internal_error:6", false),
+        ("crash", false),
+    ] {
+        let ctx = Ctx::new(Some(py.clone()));
+        let server = serve(zip_bytes(mode)).await;
+        let task = ctx
+            .service
+            .start(remote(&format!("{}/a.zip", server.uri()), "abc"))
+            .unwrap();
+        let failed = ctx.finished(&task.id).await;
+        assert_eq!(failed.state, TaskState::Failed, "{mode}");
+        let archive = ctx.cache().join("archives").join("abc-2.zip");
+        assert_eq!(!archive.exists(), removed, "{mode} : archive");
+        assert_eq!(!meta_path(&archive).exists(), removed, "{mode} : mémoire");
+        assert!(!download::part_path(&archive).exists(), "{mode}");
+        assert!(ctx.staging_is_empty(), "{mode}");
+    }
+}
+
+/// #578 : convertisseur absent (panne étrangère à l'archive) : l'archive téléchargée est gardée.
+#[tokio::test]
+async fn archive_gardee_si_le_convertisseur_manque() {
+    let ctx = Ctx::new(None);
+    let server = serve(zip_bytes("noise")).await;
+    let task = ctx
+        .service
+        .start(remote(&format!("{}/a.zip", server.uri()), "abc"))
+        .unwrap();
+    let failed = ctx.finished(&task.id).await;
+    assert_eq!(failed.error.unwrap().kind, "converter_unavailable");
+    assert!(ctx.cache().join("archives/abc-2.zip").is_file());
+}
+
+/// #578 : `.plain.pk` téléchargé refusé à la vérification (`download_invalid`) : supprimé.
+#[tokio::test]
+async fn plain_pk_telecharge_invalide_supprime() {
+    let ctx = Ctx::new(None);
+    // Zip lisible sans `main.lua` : répertoire central valide, contenu refusé.
+    let mut bytes = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+        let options = zip::write::SimpleFileOptions::default();
+        for name in ["info.plain", "uuid.bin"] {
+            zip.start_file(name, options).unwrap();
+            std::io::Write::write_all(&mut zip, b"x").unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    let server = serve(bytes).await;
+    let mut entry = remote(&format!("{}/a.zip", server.uri()), "abc");
+    entry.kind = StoryKind::FlamPk;
+    let task = ctx.service.start(entry).unwrap();
+    let failed = ctx.finished(&task.id).await;
+    assert_eq!(failed.error.unwrap().kind, "download_invalid");
+    let archive = ctx.cache().join("archives/abc-2.plain.pk");
+    assert!(!archive.exists());
+    assert!(!meta_path(&archive).exists());
+}
+
+/// #578 : une archive **locale** (dossier source) mise en cause n'est jamais supprimée.
+#[tokio::test]
+async fn archive_locale_jamais_supprimee() {
+    let Some(py) = fake_converter() else { return };
+    let ctx = Ctx::new(Some(py));
+    let local = ctx.dir.path().join("src").join("histoire.zip");
+    std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+    std::fs::write(&local, zip_bytes("err:invalid_content:4")).unwrap();
+    let mut entry = story("abc", Some(2));
+    entry.download_url = local.to_string_lossy().into_owned();
+    let task = ctx.service.start(entry).unwrap();
+    let failed = ctx.finished(&task.id).await;
+    assert_eq!(
+        failed.error.unwrap().code.as_deref(),
+        Some("invalid_content")
+    );
+    assert!(local.is_file(), "fichier de l'utilisateur intact");
+}
+
 /// Un ancien `settings.json` qui porte `converter_engine: "python"` (réglage caché supprimé,
 /// #138) reste lisible : le champ est ignoré et la conversion se fait avec le binaire Rust.
 #[tokio::test]
@@ -1815,14 +1906,23 @@ impl Ctx {
             .count()
     }
 
-    /// Attend la fin des tâches `ids`, puis laisse à une éventuelle exécution en double le temps
-    /// de se manifester avant de compter les fins.
+    /// Attend la fin de toutes les exécutions lancées (`spawn`) : une exécution en double, même
+    /// plus lente que la première, a alors émis sa fin (#578 : plus d'attente fixe).
+    async fn quiesce(&self) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while self.service.0.spawned_runs.load(Ordering::SeqCst) > 0 {
+            assert!(Instant::now() < deadline, "exécutions toujours en cours");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        self.service.flush_queue().await;
+    }
+
+    /// Attend la fin des tâches `ids` et de toute exécution lancée, puis compte les fins.
     async fn assert_single_runs(&self, ids: &[&str]) {
         for id in ids {
             assert_eq!(self.finished(id).await.state, TaskState::Done, "{id}");
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        self.service.flush_queue().await;
+        self.quiesce().await;
         for id in ids {
             assert_eq!(self.endings(id), 1, "une seule exécution de {id}");
         }
@@ -1863,7 +1963,8 @@ async fn tache_ajoutee_pendant_la_reprise_executee_une_seule_fois() {
 }
 
 /// Une tâche active par uuid : une tâche restaurée est écartée si le même uuid a déjà une
-/// tâche active, qu'elle ait été créée pendant la reprise ou qu'elle précède dans le fichier.
+/// tâche active créée pendant la reprise, ou une tâche relue plus récente (à `created_at` égal,
+/// la suivante dans le fichier).
 #[tokio::test]
 async fn reprise_ecarte_les_doublons_d_uuid() {
     let dir = tempfile::tempdir().unwrap();
@@ -1872,11 +1973,12 @@ async fn reprise_ecarte_les_doublons_d_uuid() {
     let b = local_pk(&src, 2);
     const DUP_A: &str = "11111111-2222-4333-8444-555555555555";
     const RESTORED_B: &str = "22222222-3333-4444-8555-666666666666";
+    // Doublon de même `created_at` : le dernier du fichier (ajouté après) l'emporte (#578).
     write_queue_file(
         dir.path(),
         vec![
-            queued(TASK_ID, &a),
             queued(DUP_A, &a),
+            queued(TASK_ID, &a),
             queued(RESTORED_B, &b),
         ],
     );
@@ -1915,6 +2017,120 @@ async fn reprise_ecarte_les_doublons_d_uuid() {
     assert_eq!(ctx.endings(DUP_A) + ctx.endings(RESTORED_B), 0);
     assert_eq!(ctx.service.library_list().await.unwrap().len(), 2);
     assert!(ctx.queue().is_empty(), "doublons retirés de la file");
+}
+
+/// #578 : deux tâches relues de même uuid (doublon du fichier) : la plus récente
+/// (`created_at` maximal) est gardée, qu'elle précède ou suive l'autre dans le fichier.
+#[tokio::test]
+async fn reprise_garde_la_tache_la_plus_recente_d_un_doublon() {
+    const OLD: &str = "11111111-2222-4333-8444-555555555555";
+    const NEW: &str = "22222222-3333-4444-8555-666666666666";
+    for newest_first in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let a = local_pk(&dir.path().join("src"), 1);
+        let old = QueuedTask {
+            created_at: 10,
+            ..queued(OLD, &a)
+        };
+        let new = QueuedTask {
+            created_at: 20,
+            ..queued(NEW, &a)
+        };
+        let tasks = if newest_first {
+            vec![new, old]
+        } else {
+            vec![old, new]
+        };
+        write_queue_file(dir.path(), tasks);
+        let ctx = Ctx::with_dir(dir, None, GRACE);
+        ctx.service
+            .restore(|_, _| {
+                let fresh = a.clone();
+                async move { Ok(fresh) }
+            })
+            .await;
+        let ids: Vec<String> = ctx.service.list().into_iter().map(|t| t.id).collect();
+        assert_eq!(ids, [NEW], "plus récente gardée (en tête : {newest_first})");
+        assert_eq!(ctx.task(NEW).created_at, 20);
+        ctx.assert_single_runs(&[NEW]).await;
+        assert_eq!(ctx.endings(OLD), 0);
+        assert!(ctx.queue().is_empty());
+    }
+}
+
+/// #578 : la file est écrite en v1 sans tâche STUdio (lisible par une version antérieure), en v2
+/// avec ; la version courante relit les deux, et une file v1 qui contient déjà `studio_zip`
+/// (écrite par la bêta.4) reste lue. Une version v1 (`load_versioned` à 1) refuse une file v2
+/// intacte, sans `.bak`.
+#[tokio::test]
+async fn file_ecrite_en_v1_sans_studio_et_en_v2_avec() {
+    let ctx = Ctx::new(None);
+    let path = ctx.dir.path().join("config").join(QUEUE_FILE);
+    let written = || {
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&path).unwrap()).unwrap()
+            ["schema_version"]
+            .as_u64()
+            .unwrap()
+    };
+    let slot = |id: &str, kind: StoryKind| {
+        let mut entry = story(id, Some(1));
+        entry.kind = kind;
+        Slot {
+            task: InstallTask {
+                id: id.into(),
+                entry,
+                state: TaskState::Queued,
+                percent: None,
+                error: None,
+                created_at: 1,
+                pack: None,
+            },
+            cancel: watch::channel(false).0,
+            validator: Validator::default(),
+            pack: None,
+            replace_format: false,
+            started: false,
+        }
+    };
+    let telmi = slot(TASK_ID, StoryKind::TelmiZip);
+    let studio = slot("11111111-2222-4333-8444-555555555555", StoryKind::StudioZip);
+
+    let snap = ctx.service.snapshot(std::slice::from_ref(&telmi));
+    ctx.service.write_queue(snap).await;
+    assert_eq!(written(), 1);
+    assert_eq!(ctx.queue().len(), 1);
+
+    let snap = ctx.service.snapshot(&[telmi, studio]);
+    ctx.service.write_queue(snap).await;
+    assert_eq!(written(), 2);
+    let kinds: Vec<StoryKind> = ctx.queue().into_iter().map(|q| q.entry.kind).collect();
+    assert_eq!(kinds, [StoryKind::TelmiZip, StoryKind::StudioZip]);
+
+    let before = std::fs::read(&path).unwrap();
+    let err = storage::load_versioned::<serde_json::Value>(&path, 1, |_, _| {}).unwrap_err();
+    assert_eq!(err.kind(), "config_version");
+    assert_eq!(std::fs::read(&path).unwrap(), before, "file intacte");
+    let config = std::fs::read_dir(path.parent().unwrap()).unwrap();
+    assert!(
+        config
+            .filter_map(Result::ok)
+            .all(|e| !e.file_name().to_string_lossy().ends_with(".bak")),
+        "aucune quarantaine"
+    );
+
+    // File v1 de la bêta.4 avec une tâche STUdio : toujours lue.
+    let mut entry = story("ccc", Some(1));
+    entry.kind = StoryKind::StudioZip;
+    storage::write_json(
+        &path,
+        &QueueFile {
+            schema_version: 1,
+            tasks: vec![queued(TASK_ID, &entry)],
+        },
+    )
+    .unwrap();
+    let kinds: Vec<StoryKind> = ctx.queue().into_iter().map(|q| q.entry.kind).collect();
+    assert_eq!(kinds, [StoryKind::StudioZip]);
 }
 
 /// Une tâche de même uuid demandée pendant la reprise et **déjà terminée** (installée, ou
@@ -1976,8 +2192,7 @@ async fn reprise_ecarte_une_tache_relue_deja_terminee_dans_la_session() {
     assert_eq!(ctx.task(&added[1]).state, TaskState::Cancelled);
     let ids: Vec<String> = ctx.service.list().into_iter().map(|t| t.id).collect();
     assert_eq!(ids, added, "tâches relues écartées");
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    ctx.service.flush_queue().await;
+    ctx.quiesce().await;
     assert_eq!(
         ctx.endings(RESTORED_DONE) + ctx.endings(RESTORED_CANCELLED),
         0

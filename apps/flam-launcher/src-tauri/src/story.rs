@@ -34,6 +34,20 @@ pub fn validate_story_id(id: &str) -> bool {
 use serde::{Deserialize, Serialize};
 
 /// Nature de l'archive d'une histoire.
+///
+/// **Variante persistée** : `kind` est écrit dans `library.json` et `install_queue.json`. Une
+/// version antérieure du launcher qui lit une variante qu'elle ne connaît pas échoue à la
+/// désérialisation et met **tout** le fichier en quarantaine (`*.bak`), alors qu'elle refuse
+/// intact un fichier de version de schéma supérieure (`config_version`, voir
+/// `storage::load_versioned`). Règle pour toute nouvelle variante (#578) :
+///
+/// 1. la déclarer dans [`StoryKind::min_schema`] avec une **nouvelle** version de schéma (la
+///    plus haute existante + 1) si une version publiée du launcher ne la connaît pas ;
+/// 2. monter `library::SCHEMA_VERSION` et `install::QUEUE_SCHEMA` à cette version (lecture sans
+///    migration : aucune donnée ne change) ;
+/// 3. les fichiers restent écrits à la plus basse version qui décrit leur contenu (maximum des
+///    `min_schema` de leurs entrées, 1 au moins), comme `SourcesStore::save` : sans la nouvelle
+///    variante, revenir à une version antérieure reste possible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StoryKind {
@@ -46,6 +60,28 @@ pub enum StoryKind {
     FlamPlain,
     /// Archive `.plain.pk` FLAM (zip « stored », déjà converti).
     FlamPk,
+}
+
+impl StoryKind {
+    /// Première version de schéma de `library.json` et `install_queue.json` qui connaît cette
+    /// variante (voir la règle ci-dessus) : 1 pour les variantes de la bêta.3, 2 pour
+    /// `studio_zip` (bêta.4, inconnue de la bêta.3).
+    pub fn min_schema(self) -> u32 {
+        match self {
+            Self::TelmiZip | Self::FlamPlain | Self::FlamPk => 1,
+            Self::StudioZip => 2,
+        }
+    }
+}
+
+/// Plus basse version de schéma qui décrit des entrées de natures `kinds` (1 au moins).
+pub fn schema_for(kinds: impl IntoIterator<Item = StoryKind>) -> u32 {
+    kinds
+        .into_iter()
+        .map(StoryKind::min_schema)
+        .max()
+        .unwrap_or(1)
+        .max(1)
 }
 
 /// Refus de jouer sur le PC une histoire STUdio (archive d'une source ou pack Lunii installé) :
@@ -165,5 +201,16 @@ mod tests {
         assert_eq!(json(StoryKind::StudioZip), "studio_zip");
         assert_eq!(json(StoryKind::FlamPlain), "flam_plain");
         assert_eq!(json(StoryKind::FlamPk), "flam_pk");
+    }
+
+    /// #578 : seule une variante inconnue de la bêta.3 fait monter la version écrite.
+    #[test]
+    fn version_de_schema_selon_les_variantes() {
+        assert_eq!(schema_for([]), 1);
+        assert_eq!(
+            schema_for([StoryKind::TelmiZip, StoryKind::FlamPlain, StoryKind::FlamPk]),
+            1
+        );
+        assert_eq!(schema_for([StoryKind::FlamPk, StoryKind::StudioZip]), 2);
     }
 }
