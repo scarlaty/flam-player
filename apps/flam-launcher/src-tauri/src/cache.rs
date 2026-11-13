@@ -187,8 +187,8 @@ pub enum Migration {
 /// interrompue, la migration est rejouée (elle est idempotente). Une racine est un dossier choisi
 /// par l'utilisateur : elle peut être une jonction ou un lien (#591), seul le premier niveau doit
 /// être un dossier réel. Limite : un homonyme de l'utilisateur sans preuve d'usage exigée
-/// (`archives`, `catalogs`…) déjà présent dans le dossier configuré est marqué lui aussi (de même
-/// dans un ancien cache adopté par [`adopt_legacy_cache`]).
+/// (`archives`, `catalogs`…) déjà présent dans le dossier configuré est marqué lui aussi
+/// (l'adoption d'un ancien cache, [`adopt_legacy_cache`], ne marque jamais ces noms).
 pub fn migrate_markers(witness: &Path, roots: &[PathBuf]) -> io::Result<Migration> {
     migrate_markers_with(witness, roots, &no_fault)
 }
@@ -202,7 +202,7 @@ fn migrate_markers_with(witness: &Path, roots: &[PathBuf], fault: Fault) -> io::
     }
     let mut marked = 0;
     for root in roots {
-        marked += mark_existing(root, fault)?;
+        marked += mark_existing(root, Marking::Migration, fault)?;
     }
     fault("witness")?;
     if let Some(parent) = witness.parent() {
@@ -212,12 +212,22 @@ fn migrate_markers_with(witness: &Path, roots: &[PathBuf], fault: Fault) -> io::
     Ok(Migration::Done { marked })
 }
 
+/// Origine d'un marquage de sous-dossiers existants : [`mark_existing`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Marking {
+    /// Migration de démarrage ([`migrate_markers`]) : preuve [`proven_by_content`], une erreur
+    /// d'écriture interrompt la migration.
+    Migration,
+    /// Adoption d'un ancien cache ([`adopt_legacy_cache`]) : preuve [`proven_at_adoption`], une
+    /// erreur d'écriture est journalisée et le sous-dossier reste non marqué.
+    Adoption,
+}
+
 /// Marque les sous-dossiers de [`APP_CACHE_SUBDIRS`] présents dans `root` (dossiers réels sans
-/// marqueur, dont le contenu prouve l'usage par l'application) et renvoie leur nombre.
-/// Idempotente. Un marqueur anormal (lien, dossier) est laissé tel quel, sans marquer ce
-/// sous-dossier. Règle commune à la migration et à l'adoption d'un ancien cache
-/// ([`adopt_legacy_cache`]).
-fn mark_existing(root: &Path, fault: Fault) -> io::Result<usize> {
+/// marqueur, dont le contenu prouve l'usage par l'application, selon `marking`) et renvoie leur
+/// nombre. Idempotente. Un marqueur anormal (lien, dossier) est laissé tel quel, sans marquer ce
+/// sous-dossier.
+fn mark_existing(root: &Path, marking: Marking, fault: Fault) -> io::Result<usize> {
     let mut marked = 0;
     for name in APP_CACHE_SUBDIRS {
         let dir = root.join(name);
@@ -228,21 +238,73 @@ fn mark_existing(root: &Path, fault: Fault) -> io::Result<usize> {
             tracing::warn!("cache : marqueur de « {name} » inattendu, non migré");
             continue;
         }
-        if !proven_by_content(name, &dir) {
+        let proven = match marking {
+            Marking::Migration => proven_by_content(name, &dir),
+            Marking::Adoption => proven_at_adoption(name, &dir),
+        };
+        if !proven {
             tracing::warn!(
                 "cache : contenu de « {name} » non reconnu, non migré (ni compté ni vidé)"
             );
             continue;
         }
-        fault("marker")?;
         // `create_new` : n'ouvre jamais un élément existant (ni lien, ni fichier).
-        fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(dir.join(MARKER))?;
-        marked += 1;
+        let written = fault("marker").and_then(|()| {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(dir.join(MARKER))
+                .map(drop)
+        });
+        match written {
+            Ok(()) => marked += 1,
+            // Adoption : un sous-dossier non marqué ne fait que fuir, le changement de dossier
+            // de cache n'échoue pas pour lui (#591).
+            Err(err) if marking == Marking::Adoption => {
+                tracing::warn!("cache : marqueur de « {name} » non écrit à l'adoption : {err}");
+            }
+            Err(err) => return Err(err),
+        }
     }
     Ok(marked)
+}
+
+/// Preuve d'usage exigée à l'adoption d'un ancien cache (#591), plus stricte que celle de la
+/// migration : le dossier a été choisi par l'utilisateur et peut contenir ses propres dossiers.
+/// - `podcasts`, `podcast-work`, `play` : règle de la migration ([`proven_by_content`]) ;
+/// - `thumbs` : chaque élément de la racine est un fichier ordinaire nommé comme ceux de
+///   `ThumbCache` ([`crate::thumbnail::is_own_file`]) ou un fichier de l'explorateur
+///   ([`is_os_junk`], ignoré sans valoir preuve) ; vide : accepté, comme `podcasts` ou `play` ;
+/// - `archives`, `catalogs`, `compat-local`, `official` : jamais (aucune preuve par le contenu) ;
+/// - `library` : jamais ici (marqué par [`adopt_legacy_cache`] sur l'index reconnu).
+fn proven_at_adoption(name: &str, dir: &Path) -> bool {
+    match name {
+        crate::podcast::source::CACHE_SUBDIR
+        | crate::install::podcast::WORK_DIR
+        | crate::player::PLAY_DIR => proven_by_content(name, dir),
+        "thumbs" => thumbs_children_known(dir),
+        _ => false,
+    }
+}
+
+/// Tous les éléments de `thumbs/` sont des fichiers ordinaires écrits par `ThumbCache`, ou des
+/// fichiers de l'explorateur. Un autre nom, un dossier ou un lien : refus.
+fn thumbs_children_known(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.into_iter().all(|entry| {
+        entry.is_ok_and(|entry| {
+            entry.file_type().is_ok_and(|kind| {
+                kind.is_file()
+                    && !kind.is_symlink()
+                    && entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| is_os_junk(name) || crate::thumbnail::is_own_file(name))
+            })
+        })
+    })
 }
 
 /// Preuve d'usage exigée par la migration (#591) pour les sous-dossiers dont l'application
@@ -431,7 +493,7 @@ fn migrate_configured_with(
     if let Some(configured) = &settings.cache_dir {
         if !crate::settings::same_path(Path::new(configured), &effective) {
             if env.default_cache_dir.is_dir() {
-                mark_existing(&env.default_cache_dir, fault)?;
+                mark_existing(&env.default_cache_dir, Marking::Migration, fault)?;
             }
             return Ok(Migration::Deferred);
         }
@@ -466,14 +528,16 @@ pub fn remove_stale_tmp_configured(state: &ConfigState, env: &Environment) {
 /// Ancien cache du launcher (version sans marqueur) : `library/` est un dossier réel qui contient
 /// l'index de la bibliothèque, lisible ([`crate::library::is_legacy_library`]). Il est alors
 /// adopté et `true` est renvoyé : `library/` reçoit le marqueur (s'il ne l'a pas déjà), **puis**
-/// les autres sous-dossiers de [`APP_CACHE_SUBDIRS`] présents reçoivent le leur selon la règle de
-/// la migration ([`mark_existing`] : dossier réel, preuve d'usage [`proven_by_content`] pour ceux
-/// qui y sont soumis), sans quoi ils ne seraient plus jamais marqués (#591) : la migration ne
-/// repasse plus et [`ensure_subdir`] ne marque pas un dossier existant. Un homonyme que la
-/// migration refuserait (contenu non reconnu, fichier, lien, marqueur anormal) n'est ni marqué ni
-/// bloquant : l'application l'utilise comme avant, sans jamais le compter ni le vider. Une erreur
-/// d'écriture d'un marqueur est renvoyée, comme par la migration (les marqueurs déjà posés
-/// restent ; un nouvel essai reprend, idempotent). Sinon rien n'est écrit, `false`.
+/// les autres sous-dossiers de [`APP_CACHE_SUBDIRS`] présents dont le contenu prouve l'usage par
+/// l'application reçoivent le leur ([`mark_existing`] avec la preuve [`proven_at_adoption`] :
+/// `podcasts`, `podcast-work`, `play` et `thumbs` seulement), sans quoi ils ne seraient plus
+/// jamais marqués (#591) : la migration ne repasse plus et [`ensure_subdir`] ne marque pas un
+/// dossier existant. `archives`, `catalogs`, `compat-local` et `official` ne sont jamais marqués
+/// ici (aucune preuve par le contenu ; fuite de place, jamais de perte). Un homonyme refusé
+/// (contenu non reconnu, fichier, lien, marqueur anormal) n'est ni marqué ni bloquant :
+/// l'application l'utilise comme avant, sans jamais le compter ni le vider. Une erreur
+/// d'écriture du marqueur de `library/` est renvoyée ; celle d'un autre sous-dossier est
+/// journalisée (nom du sous-dossier) et l'adoption continue. Sinon rien n'est écrit, `false`.
 pub fn adopt_legacy_cache(root: &Path) -> io::Result<bool> {
     adopt_legacy_cache_with(root, &no_fault)
 }
@@ -495,8 +559,8 @@ fn adopt_legacy_cache_with(root: &Path, fault: Fault) -> io::Result<bool> {
             .create_new(true)
             .open(library.join(MARKER))?;
     }
-    // Bibliothèque reconnue et marquée : les autres sous-dossiers suivent la règle de la migration.
-    mark_existing(root, fault)?;
+    // Bibliothèque reconnue et marquée : les autres sous-dossiers, sur preuve par le contenu.
+    mark_existing(root, Marking::Adoption, fault)?;
     Ok(true)
 }
 
@@ -1086,105 +1150,103 @@ mod tests {
     }
 
     #[test]
-    fn un_ancien_cache_est_adopte_et_ses_sous_dossiers_marques_comme_par_la_migration() {
+    fn un_ancien_cache_est_adopte_sans_marquer_les_noms_sans_preuve() {
         let dir = tempfile::tempdir().unwrap();
+        // `archives/a.zip` : nom que le launcher n'écrit jamais, ici dossier personnel.
         legacy_cache(dir.path());
-        // Adoption interrompue avant le marqueur : rien d'écrit ni de supprimé.
+        // Adoption interrompue avant le marqueur de `library/` : erreur, rien d'écrit.
         assert!(adopt_legacy_cache_with(dir.path(), &fail_at("marker", 1)).is_err());
         assert!(!is_owned(&dir.path().join("library")));
-        // Interrompue après celui de `library/` : erreur renvoyée, comme par la migration ; le
-        // marqueur posé reste.
-        assert!(adopt_legacy_cache_with(dir.path(), &fail_at("marker", 2)).is_err());
-        assert!(is_owned(&dir.path().join("library")));
-        assert!(!is_owned(&dir.path().join("archives")));
-        // Reprise complète, idempotente.
         assert!(adopt_legacy_cache(dir.path()).unwrap());
         assert!(adopt_legacy_cache(dir.path()).unwrap(), "idempotente");
         assert!(is_owned(&dir.path().join("library")));
-        // `archives` n'est soumis à aucune preuve d'usage : marqué, comme par la migration.
-        assert!(is_owned(&dir.path().join("archives")));
-        assert!(dir.path().join("library/abc-1.plain.pk").is_file());
-        assert!(dir.path().join("archives/a.zip").is_file());
-        assert!(foreign_entries(dir.path()).is_empty());
+        assert!(
+            !is_owned(&dir.path().join("archives")),
+            "aucune preuve par le contenu : jamais marqué à l'adoption"
+        );
+        assert_eq!(foreign_entries(dir.path()), ["archives"]);
+        clear_of(dir.path()).unwrap();
+        assert!(dir.path().join("archives/a.zip").is_file(), "jamais vidé");
+        assert_eq!(names_in(&dir.path().join("library")), [MARKER]);
     }
 
-    /// Ancien cache complet : bibliothèque reconnue et un sous-dossier de chaque sorte, au
-    /// contenu de la forme écrite par l'application.
+    /// Ancien cache complet : bibliothèque reconnue (avec un `archives/` personnel, voir
+    /// [`legacy_cache`]), `play/`, `podcast-work/`, `podcasts/` et `thumbs/` au contenu de la forme
+    /// écrite par l'application, et `catalogs/`, `compat-local/`, `official/` au contenu
+    /// quelconque (ces noms ne sont jamais marqués à l'adoption).
     fn complete_legacy_cache(root: &Path) {
         legacy_cache(root);
-        write(&root.join("catalogs/src/catalog.json"), 4);
-        write(&root.join("compat-local/x.json"), 2);
-        write(&root.join("official/catalog.json"), 2);
+        write(&root.join("catalogs/perso.txt"), 4);
+        write(&root.join("compat-local/perso.txt"), 2);
+        write(&root.join("official/perso.txt"), 2);
         write(&root.join("play/0123456789abcdef/story/x.bin"), 3);
         fs::create_dir_all(root.join("podcast-work/0b9f6c1e-2d3a-4b5c-8d7e-9f0a1b2c3d4e")).unwrap();
         write(&root.join("podcasts/source-a/feed.xml"), 6);
         write(&root.join("podcasts/source-a/mp3/0a.mp3"), 7);
         write(&root.join("thumbs/0000000000000001.png"), 8);
+        write(&root.join("thumbs/0000000000000002.tmp-42"), 1);
     }
 
-    /// Marqueurs posés par l'adoption et par la migration du même contenu, sous-dossier par
-    /// sous-dossier.
-    fn adoption_and_migration(setup: &dyn Fn(&Path)) -> (Vec<bool>, Vec<bool>) {
-        let owned_names = |root: &Path| {
-            APP_CACHE_SUBDIRS
-                .iter()
-                .map(|name| is_owned(&root.join(name)))
-                .collect::<Vec<_>>()
-        };
-        let adopted = tempfile::tempdir().unwrap();
-        setup(adopted.path());
-        assert!(adopt_legacy_cache(adopted.path()).unwrap());
-        let migrated = tempfile::tempdir().unwrap();
-        let config = tempfile::tempdir().unwrap();
-        setup(migrated.path());
-        migrate_markers(
-            &config.path().join(MIGRATION_WITNESS),
-            &[migrated.path().to_path_buf()],
-        )
-        .unwrap();
-        (owned_names(adopted.path()), owned_names(migrated.path()))
+    /// Noms des sous-dossiers marqués dans `root`, dans l'ordre de [`APP_CACHE_SUBDIRS`].
+    fn owned_names(root: &Path) -> Vec<&'static str> {
+        APP_CACHE_SUBDIRS
+            .iter()
+            .copied()
+            .filter(|name| is_owned(&root.join(name)))
+            .collect()
     }
+
+    const NEVER_ADOPTED: [&str; 4] = ["archives", "catalogs", "compat-local", "official"];
 
     #[test]
-    fn l_adoption_d_un_ancien_cache_complet_marque_tout_comme_la_migration() {
-        let (adopted, migrated) = adoption_and_migration(&complete_legacy_cache);
-        assert_eq!(adopted, migrated, "même règle que la migration");
-        assert!(adopted.iter().all(|owned| *owned), "{adopted:?}");
-        // Désormais compté et vidé par « Vider le cache », bibliothèque comprise.
+    fn l_adoption_d_un_ancien_cache_complet_ne_marque_que_les_contenus_prouves() {
         let dir = tempfile::tempdir().unwrap();
         complete_legacy_cache(dir.path());
         assert!(adopt_legacy_cache(dir.path()).unwrap());
-        assert_eq!(usage_report(dir.path()).unwrap().1, APP_CACHE_SUBDIRS);
+        let adopted = ["library", "play", "podcast-work", "podcasts", "thumbs"];
+        assert_eq!(owned_names(dir.path()), adopted);
+        assert_eq!(foreign_entries(dir.path()), NEVER_ADOPTED);
+        // Comptés et vidés : les seuls sous-dossiers marqués.
+        assert_eq!(usage_report(dir.path()).unwrap().1, adopted);
         assert_eq!(
             crate::podcast::mp3size::mp3_cache_bytes(dir.path()).unwrap(),
             7
         );
         clear_of(dir.path()).unwrap();
-        for name in APP_CACHE_SUBDIRS {
+        for name in adopted {
             assert_eq!(names_in(&dir.path().join(name)), [MARKER], "{name}");
         }
+        for path in [
+            "archives/a.zip",
+            "catalogs/perso.txt",
+            "compat-local/perso.txt",
+            "official/perso.txt",
+        ] {
+            assert!(dir.path().join(path).is_file(), "{path} supprimé");
+        }
+
+        // La migration de démarrage, elle, est inchangée : tout est marqué.
+        let migrated = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        complete_legacy_cache(migrated.path());
+        migrate_markers(
+            &config.path().join(MIGRATION_WITNESS),
+            &[migrated.path().to_path_buf()],
+        )
+        .unwrap();
+        assert_eq!(owned_names(migrated.path()), APP_CACHE_SUBDIRS);
     }
 
     #[test]
     fn un_podcasts_non_conforme_n_est_pas_marque_le_reste_est_adopte() {
-        let setup = |root: &Path| {
-            complete_legacy_cache(root);
-            // MP3 personnel à la racine de `podcasts/` : refusé par la preuve d'usage.
-            write(&root.join("podcasts/mon-emission.mp3"), 300);
-            // `podcast-work/` personnel : refusé aussi.
-            write(&root.join("podcast-work/notes.txt"), 3);
-        };
-        let (adopted, migrated) = adoption_and_migration(&setup);
-        assert_eq!(adopted, migrated, "même règle que la migration");
         let dir = tempfile::tempdir().unwrap();
-        setup(dir.path());
+        complete_legacy_cache(dir.path());
+        // MP3 personnel à la racine de `podcasts/` : refusé par la preuve d'usage.
+        write(&dir.path().join("podcasts/mon-emission.mp3"), 300);
+        // `podcast-work/` personnel : refusé aussi.
+        write(&dir.path().join("podcast-work/notes.txt"), 3);
         assert!(adopt_legacy_cache(dir.path()).unwrap());
-        for name in APP_CACHE_SUBDIRS {
-            let refused = matches!(*name, "podcasts" | "podcast-work");
-            assert_eq!(is_owned(&dir.path().join(name)), !refused, "{name}");
-        }
-        assert_eq!(foreign_entries(dir.path()), ["podcast-work", "podcasts"]);
-        // Ni compté ni vidé.
+        assert_eq!(owned_names(dir.path()), ["library", "play", "thumbs"]);
         assert_eq!(
             crate::podcast::mp3size::mp3_cache_bytes(dir.path()).unwrap(),
             0
@@ -1193,6 +1255,65 @@ mod tests {
         assert!(dir.path().join("podcasts/mon-emission.mp3").is_file());
         assert!(dir.path().join("podcasts/source-a/mp3/0a.mp3").is_file());
         assert!(dir.path().join("podcast-work/notes.txt").is_file());
+    }
+
+    #[test]
+    fn thumbs_n_est_marque_a_l_adoption_que_s_il_ne_contient_que_des_vignettes() {
+        let adopted = |setup: &dyn Fn(&Path)| {
+            let dir = tempfile::tempdir().unwrap();
+            legacy_cache(dir.path());
+            fs::create_dir_all(dir.path().join("thumbs")).unwrap();
+            setup(&dir.path().join("thumbs"));
+            assert!(adopt_legacy_cache(dir.path()).unwrap());
+            (is_owned(&dir.path().join("thumbs")), dir)
+        };
+        assert!(adopted(&|_| {}).0, "vide : accepté, comme podcasts ou play");
+        assert!(adopted(&|t| write(&t.join("0123456789abcdef.png"), 3)).0);
+        assert!(adopted(&|t| write(&t.join("0123456789abcdef.tmp-7"), 3)).0);
+        assert!(
+            adopted(&|t| {
+                write(&t.join("0123456789abcdef.png"), 3);
+                write(&t.join("desktop.ini"), 1);
+                write(&t.join("Thumbs.db"), 1);
+            })
+            .0,
+            "fichiers de l'explorateur ignorés"
+        );
+        for refused in [
+            "photo.png",
+            "FEDCBA9876543210.png",
+            "0123456789abcdef.jpg",
+            "0123456789abcdef.tmp-",
+        ] {
+            let (owned, dir) = adopted(&|t| {
+                write(&t.join("0123456789abcdef.png"), 3);
+                write(&t.join(refused), 5);
+            });
+            assert!(!owned, "{refused}");
+            clear_of(dir.path()).unwrap();
+            assert!(
+                dir.path().join("thumbs").join(refused).is_file(),
+                "{refused}"
+            );
+        }
+        let (owned, _dir) =
+            adopted(&|t| fs::create_dir_all(t.join("0123456789abcdef.png")).unwrap());
+        assert!(!owned, "dossier nommé comme une vignette");
+    }
+
+    #[test]
+    fn un_marqueur_impossible_a_ecrire_hors_library_n_empeche_pas_l_adoption() {
+        let dir = tempfile::tempdir().unwrap();
+        complete_legacy_cache(dir.path());
+        // Marqueur n° 1 : `library` ; n° 2 : `play`, premier sous-dossier prouvé.
+        assert!(adopt_legacy_cache_with(dir.path(), &fail_at("marker", 2)).unwrap());
+        assert_eq!(
+            owned_names(dir.path()),
+            ["library", "podcast-work", "podcasts", "thumbs"]
+        );
+        // Un nouvel essai reprend.
+        assert!(adopt_legacy_cache(dir.path()).unwrap());
+        assert!(is_owned(&dir.path().join("play")));
     }
 
     #[test]
@@ -1238,13 +1359,11 @@ mod tests {
             linked.push((link, target));
         }
         assert!(adopt_legacy_cache(&cache).unwrap());
-        assert!(is_owned(&cache.join("library")));
-        assert!(is_owned(&cache.join("archives")));
+        assert_eq!(owned_names(&cache), ["library", "play", "podcast-work"]);
         for (link, target) in &linked {
             assert!(!is_owned(link), "{}", link.display());
             assert!(!target.join(MARKER).exists(), "cible jamais marquée");
         }
-        assert_eq!(foreign_entries(&cache), ["podcasts", "thumbs"]);
     }
 
     #[test]

@@ -340,11 +340,12 @@ fn check_cache_dir(raw: &str, protected: &[PathBuf]) -> Result<(), (&'static str
 /// vidage l'ignorerait, mais l'application y écrirait au milieu de données qui ne sont pas à elle.
 ///
 /// Exception : un ancien cache du launcher (`library/` avec l'index lisible d'une version sans
-/// marqueur) est accepté ; `library/` puis ses autres sous-dossiers de l'application sont marqués
-/// selon la règle de la migration (`cache::adopt_legacy_cache`), **avant** l'enregistrement des
-/// réglages. Les homonymes que cette règle refuse ne sont ni marqués ni bloquants (jamais comptés
-/// ni vidés). Le marquage est idempotent : si l'enregistrement échoue ensuite, les marqueurs
-/// posés restent, et un nouvel essai réussit.
+/// marqueur) est accepté ; `library/` est marqué, puis `podcasts/`, `podcast-work/`, `play/` et
+/// `thumbs/` sur preuve par leur contenu (`cache::adopt_legacy_cache`), **avant** l'enregistrement
+/// des réglages. Les autres homonymes (dont `archives/`, `catalogs/`, `compat-local/`,
+/// `official/`, jamais marqués ici) ne sont ni marqués ni bloquants (jamais comptés ni vidés). Le
+/// marquage est idempotent : si l'enregistrement échoue ensuite, les marqueurs posés restent, et
+/// un nouvel essai réussit.
 fn check_cache_dir_free(raw: &str) -> AppResult<()> {
     let root = Path::new(raw);
     let foreign = crate::cache::foreign_entries(root);
@@ -1083,8 +1084,10 @@ mod tests {
         .unwrap();
         touch(&old.join("podcasts/src/feed.xml"));
         touch(&old.join("thumbs/0000000000000001.png"));
-        // `play/` personnel : refusé par la preuve d'usage de la migration.
+        // `play/` personnel : refusé par la preuve d'usage.
         touch(&old.join("play/film.mkv"));
+        // `archives/` : aucune preuve par le contenu, jamais marqué à l'adoption.
+        touch(&old.join("archives/perso.zip"));
 
         let saved = store
             .update(Settings {
@@ -1093,11 +1096,12 @@ mod tests {
             })
             .unwrap();
         assert_eq!(saved.cache_dir, Some(old.display().to_string()));
-        // Sous-dossiers marqués selon la règle de la migration (#591).
+        // Sous-dossiers marqués sur preuve par le contenu (#591).
         assert!(crate::cache::is_owned(&old.join("library")));
         assert!(crate::cache::is_owned(&old.join("podcasts")));
         assert!(crate::cache::is_owned(&old.join("thumbs")));
         assert!(!crate::cache::is_owned(&old.join("play")));
+        assert!(!crate::cache::is_owned(&old.join("archives")));
         assert!(old.join("podcasts/src/feed.xml").is_file());
         assert!(old.join("play/film.mkv").is_file());
         assert!(
@@ -1115,7 +1119,7 @@ mod tests {
         let env = env_in(dir.path());
         let witness = dir.path().join(crate::cache::MIGRATION_WITNESS);
         // Ancien cache choisi alors que la migration est reportée (témoin absent) ; son
-        // `podcasts/` n'est pas prouvé « à l'application » par son contenu (refusé à l'adoption).
+        // `archives/` n'est pas prouvé « à l'application » par son contenu.
         let old = dir.path().join("ancien-cache");
         touch(&old.join("library/abc-1.plain.pk"));
         fs::write(
@@ -1123,7 +1127,7 @@ mod tests {
             r#"{"schema_version":1,"stories":[]}"#,
         )
         .unwrap();
-        touch(&old.join("podcasts/perso.mp3"));
+        touch(&old.join("archives/perso.zip"));
         assert!(!witness.exists());
         store
             .update(Settings {
@@ -1136,8 +1140,8 @@ mod tests {
             crate::cache::migrate_configured(dir.path(), &env).unwrap(),
             crate::cache::Migration::AlreadyDone
         );
-        assert!(!crate::cache::is_owned(&old.join("podcasts")));
-        assert!(old.join("podcasts/perso.mp3").is_file());
+        assert!(!crate::cache::is_owned(&old.join("archives")));
+        assert!(old.join("archives/perso.zip").is_file());
     }
 
     #[test]
