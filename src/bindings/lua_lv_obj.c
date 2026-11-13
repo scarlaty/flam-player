@@ -1182,7 +1182,9 @@ static int l_img_src_load(lua_State *L) {
 
     /* Construire le chemin complet */
     char full_path[1024];
-    if (g_img_base_path[0] && path[0] != '/' && path[1] != ':') {
+    /* path[1] n'est lu que si path n'est pas vide */
+    if (g_img_base_path[0] && path[0] != '/' &&
+        (path[0] == '\0' || path[1] != ':')) {
         snprintf(full_path, sizeof(full_path), "%s/%s", g_img_base_path, path);
     } else {
         strncpy(full_path, path, sizeof(full_path) - 1);

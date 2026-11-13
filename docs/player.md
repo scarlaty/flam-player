@@ -217,7 +217,7 @@ Options :
 |--------|-------|
 | `--scan-dir <dossier>` | Dossier scanné par le navigateur |
 | `--strict` | Plus proche de l'appareil : `require()` limité à `script/`, image `.lif` absente = erreur |
-| `--watchdog <ms>` | Interrompt un script Lua qui ne rend pas la main (défaut 10000, `0` = désactivé) |
+| `--watchdog <ms>` | Interrompt un script Lua qui ne rend pas la main, même s'il est enveloppé dans `pcall` (défaut 10000, `0` = désactivé) |
 | `--screenshot <chemin>` | Fichier BMP des captures (prioritaire sur `FLAM_SCREENSHOT`) |
 | `--img-dir`, `--sounds-dir`, `--save-dir` | Dossiers images, sons et sauvegardes (mode script `.lua` direct) |
 

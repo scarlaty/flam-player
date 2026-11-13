@@ -71,20 +71,45 @@ static int g_strict = 0;
 
 static uint32_t g_watchdog_ms    = WATCHDOG_DEFAULT_MS;  /* 0 = desactive */
 static uint32_t g_watchdog_start = 0;
+/* 1 : le watchdog a declenche et la boucle principale n'a pas encore rearme.
+   Tant qu'il est leve, le hook s'execute a chaque instruction et leve une
+   erreur : un pcall() qui avale la premiere ne sauve pas une boucle (#575). */
+static int g_watchdog_fired = 0;
+
+static void watchdog_hook(lua_State *L, lua_Debug *ar);
 
 static void watchdog_rearm(void)
 {
     g_watchdog_start = SDL_GetTicks();
+    if (g_watchdog_fired) {
+        g_watchdog_fired = 0;
+        if (g_lua && g_watchdog_ms > 0) {
+            lua_sethook(g_lua, watchdog_hook, LUA_MASKCOUNT, WATCHDOG_HOOK_COUNT);
+        }
+    }
 }
 
 static void watchdog_hook(lua_State *L, lua_Debug *ar)
 {
     (void)ar;
     if (g_watchdog_ms == 0) return;
+    if (g_watchdog_fired) {
+        /* Deja declenche : l'erreur precedente a ete avalee (pcall) */
+        luaL_error(L, "watchdog: script Lua bloque (boucle infinie ?). "
+                      "Option --watchdog 0 pour desactiver.");
+        return;
+    }
+    /* Coroutine restee en mode instruction par instruction apres un
+       rearmement (le rearmement ne vise que g_lua) : retour au rythme normal */
+    if (lua_gethookcount(L) == 1)
+        lua_sethook(L, watchdog_hook, LUA_MASKCOUNT, WATCHDOG_HOOK_COUNT);
     uint32_t elapsed = SDL_GetTicks() - g_watchdog_start;
     if (elapsed > g_watchdog_ms) {
-        /* Rearmer pour ne pas tuer aussi le code qui gere l'erreur */
-        watchdog_rearm();
+        /* Hook a chaque instruction jusqu'au rearmement de la boucle
+           principale (sur cet etat, coroutines comprises). Le gestionnaire
+           d'erreur (traceback) est en C : il ne passe pas par le hook. */
+        g_watchdog_fired = 1;
+        lua_sethook(L, watchdog_hook, LUA_MASKCOUNT, 1);
         luaL_error(L, "watchdog: script Lua bloque depuis plus de %d ms "
                       "(boucle infinie ?). Option --watchdog 0 pour desactiver.",
                    (int)elapsed);

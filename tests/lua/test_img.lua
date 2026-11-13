@@ -26,6 +26,13 @@ test("img_src.load returns nil for missing file", function()
     expect_nil(dsc, "should be nil for missing file")
 end)
 
+test("img_src.load avec un chemin vide ne plante pas (#575)", function()
+    -- chemin vide : path[1] ne doit pas etre lu au-dela du NUL final
+    local ok, dsc = pcall(lv.img_src.load, "")
+    expect_true(ok, "pas d'erreur Lua")
+    expect_nil(dsc, "rien a decoder")
+end)
+
 -- Note: img_src.load with a real file can't be tested without a .lif file
 -- img_src.get_width and get_height require a valid img_dsc
 
