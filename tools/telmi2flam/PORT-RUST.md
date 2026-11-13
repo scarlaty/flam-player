@@ -670,6 +670,20 @@ sortie) et `matrix_render.rs` (matrice régénérée par `make_matrix.py`, sans 
    lignes et membres du ZIP antérieurs ont été vérifiés identiques à l'octet près, et
    l'origine est notée dans `vectors.tsv`.
 
+**Modifier le runtime** (`runtime/script`, `runtime/img/script`, copiés tels quels dans chaque
+paquet, donc présents dans les références) : les références ne sont pas régénérées. Le fichier
+modifié rejoint une liste fermée, tenue à deux endroits : `UPDATED` de
+`crates/telmi2flam/tests/common/mod.rs` (contenu au gel copié sous
+`crates/telmi2flam/tests/data/runtime_frozen/<nom dans le paquet>`, depuis la révision d'avant
+la modification) et `RUNTIME_UPDATES` de `parity.py` (taille et SHA-256 au gel). Les tests Rust
+remplacent l'entrée produite, vérifiée identique au runtime embarqué, par son contenu au gel
+avant de comparer le paquet entier (entrées et `.plain.pk` à l'octet près) ; la taille de
+`done` (`progress_parity.rs`) est corrigée de l'écart de taille. `parity.py` ne ramène l'entrée
+à l'état au gel que si la référence porte exactement l'état au gel et le candidat exactement le
+runtime du dépôt. `test_parity.py` vérifie que les deux listes concordent ; un fichier redevenu
+identique au gel doit quitter la liste (les tests échouent sinon). Première entrée : le
+carrousel (#620).
+
 ## 5. Plan de bascule
 
 1. **Développement** (PR 1 à 13) : la crate et le binaire existent et sont testés en CI, mais

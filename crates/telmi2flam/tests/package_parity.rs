@@ -30,6 +30,8 @@ use telmi2flam::image::ThumbFit;
 use telmi2flam::output::{write_package, write_zip, Target, ZipLimits};
 use telmi2flam::package::{build_package, Options, Package, Selector};
 
+mod common;
+
 const VECTORS: &[u8] = include_bytes!("data/package_cases.zip");
 
 fn vectors() -> Archive<Cursor<&'static [u8]>> {
@@ -261,7 +263,9 @@ fn check(case: &Value, data: Vec<u8>, dir: &std::path::Path) -> Result<(), Strin
         (Some(py), Err(e)) => Err(format!("erreur Python {py}, Rust {} ({e})", e.code)),
         (Some(py), Ok(_)) => Err(format!("erreur Python {py}, le Rust réussit")),
         (None, Err(e)) => Err(format!("Python réussit, Rust {e}")),
-        (None, Ok(pkg)) => {
+        (None, Ok(mut pkg)) => {
+            // Runtime modifié depuis le gel des vecteurs : contenu au gel (voir `common`).
+            common::freeze_bytes(&mut pkg.entries);
             let want: Vec<(String, String)> = case["entries"]
                 .as_array()
                 .unwrap()

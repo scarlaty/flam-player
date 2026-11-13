@@ -426,6 +426,54 @@ class TestEntries(unittest.TestCase):
         self.assertEqual(parity.main(["compare", j("p1"), j("p2")]), 1)
 
 
+RUNTIME_FROZEN = os.path.join(ROOT, "crates", "telmi2flam", "tests", "data", "runtime_frozen")
+
+
+class TestRuntimeUpdates(unittest.TestCase):
+    """Fichiers du runtime modifies depuis le gel (#620) : liste fermee, ramenes a l'etat au
+    gel seulement entre l'etat au gel exact (reference) et le runtime du depot exact
+    (candidat)."""
+
+    def entry(self, name, data):
+        return {"name": name, "method": 0, "utf8": False, "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest()}
+
+    def files(self, name):
+        with open(os.path.join(RUNTIME_FROZEN, *name.split("/")), "rb") as f:
+            old = f.read()
+        with open(os.path.join(parity.RUNTIME_DIR, *name.split("/")), "rb") as f:
+            now = f.read()
+        return old, now
+
+    def test_list_matches_rust_frozen_copies(self):
+        # meme liste que UPDATED (tests Rust) : copie au gel presente, empreinte notee ici,
+        # runtime du depot different (sinon la ligne est a retirer)
+        listed = sorted(os.path.relpath(os.path.join(dp, f), RUNTIME_FROZEN).replace(os.sep, "/")
+                        for dp, _, fs in os.walk(RUNTIME_FROZEN) for f in fs)
+        self.assertEqual(listed, sorted(parity.RUNTIME_UPDATES))
+        for name, (size, sha) in parity.RUNTIME_UPDATES.items():
+            old, now = self.files(name)
+            self.assertEqual((len(old), hashlib.sha256(old).hexdigest()), (size, sha), name)
+            self.assertNotEqual(old, now, name)
+
+    def test_only_frozen_reference_against_current_runtime(self):
+        for name in parity.RUNTIME_UPDATES:
+            old, now = self.files(name)
+            ref = [self.entry("a", b"1"), self.entry(name, old)]
+            self.assertEqual(parity.compare_entries(ref, [self.entry("a", b"1"),
+                                                          self.entry(name, now)]), [])
+            # autre contenu du candidat, ou reference qui n'est pas l'etat au gel : ecart
+            other = now + b"\n"
+            diffs = parity.compare_entries(ref, [self.entry("a", b"1"), self.entry(name, other)])
+            self.assertEqual({d["field"] for d in diffs}, {"size", "sha256"})
+            diffs = parity.compare_entries([self.entry("a", b"1"), self.entry(name, other)],
+                                           [self.entry("a", b"1"), self.entry(name, now)])
+            self.assertEqual({d["field"] for d in diffs}, {"size", "sha256"})
+            # meme contenu sous un autre nom : ecart
+            diffs = parity.compare_entries([self.entry("x.lua", old)], [self.entry("x.lua", now)])
+            self.assertEqual({d["field"] for d in diffs}, {"size", "sha256"})
+
+
 MATRIX_EXPECTED = os.path.join(ROOT, "crates", "telmi2flam", "tests", "data",
                                "matrix_expected.json")
 

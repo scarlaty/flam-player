@@ -19,6 +19,8 @@ use telmi2flam::image::ThumbFit;
 use telmi2flam::output::{write_package, write_package_from, write_zip, Target, ZipLimits};
 use telmi2flam::package::{build_package_streamed, build_package_with, Data, Options, Selector};
 
+mod common;
+
 /// Allocateur qui mesure le pic d'octets alloués.
 struct Counting;
 
@@ -112,8 +114,10 @@ fn options(case: &Value) -> Options {
 fn convert_streamed(data: &[u8], opts: &Options, out: &Path) -> Result<usize, String> {
     let mut archive =
         Archive::new(Cursor::new(data), "in.zip".into()).map_err(|e| e.code.to_owned())?;
-    let pkg = build_package_streamed(&mut archive, opts, &never, &mut ())
+    let mut pkg = build_package_streamed(&mut archive, opts, &never, &mut ())
         .map_err(|e| e.code.to_owned())?;
+    // Runtime modifié depuis le gel des vecteurs : contenu au gel (voir `common`).
+    common::freeze_data(&mut pkg.entries);
     let refs = pkg
         .entries
         .iter()

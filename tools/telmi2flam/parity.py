@@ -18,7 +18,8 @@ oracle Python (Pillow 12.3.0), figees dans le depot depuis la suppression de ce 
 
 Les ecarts admis forment une liste fermee (`ALLOWED_DEVIATIONS`, §4.1) ; tout autre
 ecart fait echouer la comparaison (code de sortie 1). Les delegations
-`unsupported_format` (code 7, decision D4) sont comptees a part.
+`unsupported_format` (code 7, decision D4) sont comptees a part. Les fichiers du runtime
+modifies volontairement depuis le gel forment une autre liste fermee (`RUNTIME_UPDATES`).
 
     python parity.py corpus --candidate CMD [--references ZIP] [--report FICHIER]
     python parity.py compare SORTIE_A SORTIE_B [--report FICHIER]
@@ -92,6 +93,21 @@ DELEGATION_EXIT = 7
 # ecart masque).
 JPEG_MAX_DEVIATION = 4
 _LIF_STEPS = (8, 4, 8)
+
+# Fichiers du runtime (copies tels quels dans chaque paquet) modifies volontairement depuis le
+# gel des references (#140) : nom dans le paquet -> (taille, SHA-256) au gel. Liste fermee,
+# une ligne par evolution, avec son issue ; meme liste que `UPDATED` des tests Rust
+# (crates/telmi2flam/tests/common/mod.rs). Les references ne sont pas regenerees : une entree
+# de ce nom est ramenee a son etat au gel seulement si la reference porte exactement l'etat
+# au gel ET le candidat exactement le runtime du depot (`runtime/`) ; tout autre contenu,
+# d'un cote ou de l'autre, reste un ecart.
+RUNTIME_DIR = os.path.join(HERE, "runtime")
+RUNTIME_UPDATES = {
+    # #620 : le carrousel ne retient plus que les sources des vignettes affichees
+    "script/carousel_1_0_0.lua":
+        (16961, "839f3f0fa4c56d8c94696caffd3fcfa551575f55ad67007d546f54082e6bd8c8"),
+}
+_runtime_now_cache = {}
 
 
 # ---------------------------------------------------------------------------
@@ -406,8 +422,32 @@ def is_delegation(candidate, tags=()):
 # ---------------------------------------------------------------------------
 # Comparaison
 # ---------------------------------------------------------------------------
+def _runtime_now(name):
+    """(taille, SHA-256) du fichier `name` du runtime du depot."""
+    if name not in _runtime_now_cache:
+        with open(os.path.join(RUNTIME_DIR, *name.split("/")), "rb") as f:
+            data = f.read()
+        _runtime_now_cache[name] = (len(data), _sha(data))
+    return _runtime_now_cache[name]
+
+
+def _as_frozen(ref, cand):
+    """Entree `cand` ramenee a l'etat au gel si c'est un fichier de `RUNTIME_UPDATES`, que
+    `ref` porte exactement l'etat au gel et `cand` exactement le runtime du depot ; sinon
+    `cand` tel quel."""
+    frozen = RUNTIME_UPDATES.get(cand["name"])
+    if frozen is None or ref["name"] != cand["name"]:
+        return cand
+    if (ref["size"], ref["sha256"]) != frozen:
+        return cand
+    if (cand["size"], cand["sha256"]) != _runtime_now(cand["name"]):
+        return cand
+    return dict(cand, size=frozen[0], sha256=frozen[1])
+
+
 def compare_entries(a, b):
-    """Ecarts entre deux listes d'entrees (None : pas de sortie)."""
+    """Ecarts entre deux listes d'entrees (None : pas de sortie). Les fichiers du runtime
+    modifies depuis le gel sont compares a leur etat au gel (`RUNTIME_UPDATES`)."""
     if a is None and b is None:
         return []
     if a is None or b is None:
@@ -419,6 +459,7 @@ def compare_entries(a, b):
         diffs.append({"kind": "entries", "detail": "noms ou ordre differents",
                       "oracle": [e["name"] for e in a], "candidate": [e["name"] for e in b]})
     for i, (x, y) in enumerate(zip(a, b)):
+        y = _as_frozen(x, y)
         for field in ("name", "method", "utf8", "size", "sha256"):
             if x[field] != y[field]:
                 diffs.append({"kind": "entry", "index": i, "name": x["name"], "field": field,
