@@ -641,7 +641,11 @@ fn transition(
         index: raw.option_index,
         options,
     };
-    // -1 est le choix au hasard des packs STUdio. Avec une seule option, il ne peut désigner que
+    // -1 est le port « Random option » de l'éditeur STUdio : writer.js l'écrit quand la
+    // transition vise ce port, reader.js le relit comme ce port, et le simulateur
+    // (ActionNodeModel.js) tire alors l'option au hasard, uniformément. Établi pour STUdio ;
+    // le comportement de la Flam devant un -1 dans `ni` reste inconnu (L11).
+    // Avec une seule option, il ne peut désigner que
     // l'option 0, quel que soit le comportement de la Flam : on le convertit en 0. On n'écrit
     // jamais -1 dans `ni` pour une transition présente (-1 y signifie « sans transition »).
     // Avec plusieurs options, son effet sur la Flam n'est pas mesuré : refusé (note, Q5 et L11).
