@@ -24,7 +24,7 @@
 //! | `stageNodes[].okTransition`         | objet, `null` ou absent              | [`Transition`] ou `None`                |
 //! | `stageNodes[].homeTransition`       | objet, `null` ou absent              | [`Transition`] ou `None`                |
 //! | `…Transition.actionNode`            | `id` d'un actionNode                 | [`Transition::action_node`] (indice)    |
-//! | `…Transition.optionIndex`           | entier de 0 à options - 1            | [`Transition::option_index`]            |
+//! | `…Transition.optionIndex`           | entier de 0 à options - 1 (`-1` si 1 option) | [`Transition::option_index`]    |
 //! | `stageNodes[].controlSettings`      | objet de 5 booléens, obligatoire     | [`StageNode::controls`]                 |
 //! | `actionNodes[]`                     | tableau (peut être vide)             | [`ActionNode`], dans l'ordre            |
 //! | `actionNodes[].id`                  | chaîne unique                        | [`ActionNode::id`]                      |
@@ -39,7 +39,8 @@
 //!
 //! - `format` autre que `"v1"` refusé (Lunii.QT recopie n'importe quel nombre) ;
 //! - `controlSettings` obligatoire (Lunii.QT remplit le nœud de `0xAA`) ;
-//! - `optionIndex` à `-1` refusé tant que son effet sur la Flam n'est pas mesuré (L11) ;
+//! - `optionIndex` à `-1` : accepté (converti en `0`) si l'actionNode n'a qu'une option, refusé
+//!   sinon tant que son effet sur la Flam n'est pas mesuré (L11) ;
 //! - nœud `squareOne` placé en tête (Lunii.QT prend toujours le premier nœud) ;
 //! - toute référence inconnue refusée (Lunii.QT écrit `-1` dans `li` ou lève une exception).
 //!
@@ -57,7 +58,8 @@
 //! - UUID de stageNode uniques (comparés sans la casse), identifiants d'actionNode uniques ;
 //! - transition vers un actionNode inexistant, option vers un stageNode inexistant (comparaison
 //!   exacte des chaînes, comme Lunii.QT), actionNode sans option ;
-//! - `optionIndex` hors de `0..options`, `controlSettings` absent ;
+//! - `optionIndex` hors de `0..options` (`-1` toléré avec une seule option), `controlSettings`
+//!   absent ;
 //! - `format` autre que `"v1"`, `version` hors des 16 bits de son champ dans `ni` ;
 //! - noms d'assets dangereux : blanc, plus de [`MAX_ASSET_NAME_BYTES`] octets, `..`, `/`, `\`,
 //!   `:`, caractère de contrôle ; un même nom employé comme image et comme son (Lunii.QT n'en
@@ -150,6 +152,14 @@ pub enum StoryError {
         uuid: String,
         transition: &'static str,
         index: i64,
+        options: usize,
+    },
+    #[error(
+        "stageNode {uuid} : la transition {transition} demande un choix au hasard parmi {options} options (optionIndex -1) ; ce n'est pas encore pris en charge sur la Flam"
+    )]
+    OptionIndexAleatoire {
+        uuid: String,
+        transition: &'static str,
         options: usize,
     },
     #[error("stageNode {uuid} : nom d'asset refusé {nom:?} ({raison})")]
@@ -631,7 +641,23 @@ fn transition(
         index: raw.option_index,
         options,
     };
-    // -1 (hasard ?) refusé tant que son effet n'est pas mesuré (note, Q5 et L11).
+    // -1 est le choix au hasard des packs STUdio. Avec une seule option, il ne peut désigner que
+    // l'option 0, quel que soit le comportement de la Flam : on le convertit en 0. On n'écrit
+    // jamais -1 dans `ni` pour une transition présente (-1 y signifie « sans transition »).
+    // Avec plusieurs options, son effet sur la Flam n'est pas mesuré : refusé (note, Q5 et L11).
+    if raw.option_index == -1 {
+        if options == 1 {
+            return Ok(Some(Transition {
+                action_node: action,
+                option_index: 0,
+            }));
+        }
+        return Err(StoryError::OptionIndexAleatoire {
+            uuid: uuid.to_owned(),
+            transition: which,
+            options,
+        });
+    }
     let option_index = u32::try_from(raw.option_index)
         .ok()
         .filter(|&i| (i as usize) < options)
