@@ -231,6 +231,19 @@ impl CatalogService {
         }
     }
 
+    /// Comme [`Self::pause_refreshes`], mais renonce (`None`) si le portillon n'est pas pris en
+    /// écriture au bout de `wait` (#578). Un vidage en attente bloque tous les nouveaux lecteurs
+    /// du portillon (lancement, désinstallation, nouvelles installations, rafraîchissements : le
+    /// `RwLock` de tokio est équitable) tant que les lecteurs en cours ne l'ont pas rendu, et une
+    /// installation ou un envoi le tiennent pendant des minutes. Abandonner l'attente retire
+    /// l'écrivain de la file : les lecteurs repartent aussitôt. Un refus ne touche pas au
+    /// compteur de vidages : aucun vidage n'a eu lieu, les écritures en cours restent valables.
+    pub async fn pause_refreshes_within(&self, wait: Duration) -> Option<PauseGuard<'_>> {
+        tokio::time::timeout(wait, self.pause_refreshes())
+            .await
+            .ok()
+    }
+
     /// Valeur du compteur de vidages (voir le champ `clear_epoch`). Lue portillon tenu (le
     /// rafraîchissement, toujours paire) ou sans portillon (`thumbnail`, pour ne pas attendre
     /// un vidage en file derrière un envoi).
@@ -3219,6 +3232,48 @@ mod tests {
         .await
         .expect("interblocage entre rafraîchissement, purge et vidage");
         refreshed.unwrap().ok();
+    }
+
+    /// Un vidage qui renonce (`pause_refreshes_within`) ne compte pas comme un vidage : le
+    /// compteur reste inchangé (les écritures en cours restent valables, #578) ; un vidage qui
+    /// aboutit le fait avancer. Délai nul : déterministe.
+    #[tokio::test]
+    async fn un_vidage_refuse_n_invalide_pas_les_ecritures_en_cours() {
+        let service = svc_with(long_client());
+        let before = service.clear_epoch();
+        let reading = service.cache_gate().read_owned().await;
+        let refused = tokio::time::timeout(
+            Duration::from_secs(30),
+            service.pause_refreshes_within(Duration::ZERO),
+        )
+        .await
+        .expect("le vidage attend le lecteur");
+        assert!(refused.is_none());
+        assert_eq!(service.clear_epoch(), before);
+        drop(reading);
+        let done = service.pause_refreshes_within(Duration::ZERO).await;
+        assert!(done.is_some());
+        drop(done);
+        assert!(service.clear_epoch() > before);
+    }
+
+    /// Cas qui justifie l'attente bornée : le lecteur rend le portillon pendant l'attente, le
+    /// vidage aboutit sans refus. Le lecteur est relâché après la première interrogation du
+    /// vidage (déjà en file) ; le délai (30 s) n'est qu'une garde large, jamais une horloge. Le
+    /// compteur de vidages est impair tant que le garde est tenu, pair après (#578).
+    #[tokio::test]
+    async fn un_lecteur_relache_pendant_l_attente_laisse_aboutir_le_vidage() {
+        let service = svc_with(long_client());
+        let reading = service.cache_gate().read_owned().await;
+        let mut pause = std::pin::pin!(service.pause_refreshes_within(Duration::from_secs(30)));
+        assert!(poll_once(&mut pause).await.is_pending());
+        drop(reading);
+        let guard = pause
+            .await
+            .expect("le vidage aboutit une fois le lecteur parti");
+        assert_eq!(service.clear_epoch() % 2, 1, "vidage en cours : impair");
+        drop(guard);
+        assert_eq!(service.clear_epoch() % 2, 0, "vidage terminé : pair");
     }
 
     /// Une vignette déjà fraîche sur le disque est servie tout de suite, même quand un vidage

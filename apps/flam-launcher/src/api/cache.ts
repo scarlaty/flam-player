@@ -34,7 +34,8 @@ export function getMp3CacheUsage(): Promise<Mp3CacheUsage> {
 /**
  * `cache_clear` : supprime uniquement les sous-dossiers créés par l'application (jamais le
  * reste du dossier configuré). À appeler après confirmation de l'utilisateur. Refusé avec
- * `player_busy` tant qu'un player tourne.
+ * `player_busy` tant qu'un player tourne, et avec `cache_busy` si le cache reste utilisé
+ * (installation, envoi, lancement, autre vidage) au bout de 3 s.
  */
 export function clearCache(): Promise<CacheCleared> {
   return invokeCommand<CacheCleared>("cache_clear");

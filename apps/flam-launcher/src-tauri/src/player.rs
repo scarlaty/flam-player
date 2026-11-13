@@ -1356,7 +1356,7 @@ pub async fn player_launch(
         SettingsStore::new(&config.dir).resolved_cache_dir(&Environment::current())?
     };
     let saves_root = config.dir.join(SAVES_ROOT);
-    // Le vidage du cache attend la fin de la copie.
+    // Le vidage du cache n'attend que 3 s la fin de la copie, puis est refusé (`cache_busy`).
     let _gate = catalog.cache_gate().read_owned().await;
     let service = player.inner().clone();
     blocking(move || launch_installed(&service, &exe, &cache_root, &saves_root, &uuid)).await?

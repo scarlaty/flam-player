@@ -25,7 +25,7 @@
 //!
 //! Concurrence : `max_downloads` téléchargements (paramètre, 2 par défaut), **une** conversion
 //! à la fois. Chaque tâche tient le portillon du cache (`CatalogService::cache_gate`) en
-//! lecture : « Vider le cache » attend la fin des tâches en cours.
+//! lecture : « Vider le cache » n'attend que 3 s puis est refusé (`cache_busy`, #578).
 //!
 //! File persistée dans `<config>/install_queue.json` (tâches non terminées) : au démarrage,
 //! elles sont relancées et les téléchargements reprennent (`Range` + `If-Range`).

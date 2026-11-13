@@ -223,7 +223,7 @@ pub fn cleanup_stale_older(work_dir: &Path, min_age: Duration) -> io::Result<usi
 /// préparation et sa suppression après l'envoi) ; renvoie leur nombre. Seuls les vrais dossiers
 /// enfants directs de `str/` modifiés il y a au moins `min_age` sont supprimés (jamais un lien,
 /// une jonction ni un fichier), et `str/` lui-même doit être un vrai dossier. Un envoi à la fois
-/// par session (verrou de l'appareil) et le vidage du cache attend la fin de l'envoi ; l'âge
+/// par session (verrou de l'appareil) et le vidage du cache n'attend que 3 s puis est refusé (`cache_busy`) ; l'âge
 /// protège la préparation d'une autre session qui partagerait le dossier ([`LEFTOVER_MIN_AGE`]).
 pub fn cleanup_prepared(work_dir: &Path, min_age: Duration) -> io::Result<usize> {
     let stories = work_dir.join(STORIES_DIR);

@@ -24,7 +24,8 @@ use crate::storage::ConfigState;
 use crate::AppResult;
 
 /// Sous-dossiers du cache créés par l'application (et eux seuls) : archives téléchargées, catalogues mis en cache,
-/// histoires converties, catalogue officiel en ligne (`official`), copies de travail des
+/// histoires converties, résultats de conversion de la surcouche de compatibilité
+/// (`compat-local`), catalogue officiel en ligne (`official`), copies de travail des
 /// histoires lancées (`play`), flux podcast mis en cache (`podcasts`, #211), vignettes, travail
 /// de préparation d'un envoi vers la Flam (`flam-transfer`, #591).
 pub const APP_CACHE_SUBDIRS: &[&str] = &[
@@ -1376,8 +1377,35 @@ pub async fn cache_usage(state: State<'_, ConfigState>) -> AppResult<CacheUsage>
     })
 }
 
+/// Attente maximale du portillon du cache par « Vider le cache » (#578). Assez longue pour les
+/// sections courtes qui écrivent sur le disque (catalogue, vignettes), assez courte pour qu'une
+/// installation ou un envoi en cours ne fasse pas attendre tout le reste de l'application
+/// derrière un vidage en file.
+const CLEAR_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Prend le portillon du cache en écriture pour un vidage, ou refuse (`cache_busy`) au bout de
+/// `wait` : le vidage n'attend jamais la fin d'une installation ou d'un envoi (voir
+/// [`CatalogService::pause_refreshes_within`]).
+async fn pause_or_busy(
+    catalog: &CatalogService,
+    wait: std::time::Duration,
+) -> AppResult<crate::catalog::PauseGuard<'_>> {
+    catalog.pause_refreshes_within(wait).await.ok_or_else(|| {
+        crate::AppError::CacheBusy(
+            concat!(
+                "le cache est utilisé (installation, envoi vers la Flam, lancement ou vidage ",
+                "en cours) : attendez la fin des opérations en cours, ou annulez-les, ",
+                "puis réessayez"
+            )
+            .into(),
+        )
+    })
+}
+
 /// Vide le cache : vide uniquement les sous-dossiers marqués de l'application. Attend
-/// les rafraîchissements de catalogue en cours et bloque les nouveaux pendant le vidage.
+/// brièvement les rafraîchissements de catalogue en cours et bloque les nouveaux pendant le
+/// vidage ; refusé (`cache_busy`) si le cache reste utilisé (installation, envoi, lancement), au
+/// lieu de geler le reste de l'application derrière une attente sans fin (#578).
 /// Refusé (`player_busy`) tant qu'un player tourne : sa copie de travail est dans `play/`. Le
 /// créneau du player est tenu pendant le vidage, aucun lancement ne peut démarrer entre-temps.
 #[tauri::command]
@@ -1386,7 +1414,7 @@ pub async fn cache_clear(
     catalog: State<'_, CatalogService>,
     player: State<'_, PlayerService>,
 ) -> AppResult<CacheCleared> {
-    let _pause = catalog.pause_refreshes().await;
+    let _pause = pause_or_busy(&catalog, CLEAR_WAIT).await?;
     let root = {
         let _guard = state.guard();
         effective_dir(&state)?
@@ -3438,6 +3466,58 @@ mod tests {
         .await;
         assert!(blocked.is_err(), "le rafraîchissement doit attendre");
         drop(pause);
+    }
+
+    /// Une installation tient le portillon en lecture : le vidage est refusé (`cache_busy`) au
+    /// lieu d'attendre, et il ne reste pas en file (#578) : sans cela, un écrivain en attente
+    /// bloquait tous les nouveaux lecteurs (lancement, désinstallation, installations). Le délai
+    /// nul rend le test déterministe ; le délai de 30 s ne sert qu'à nommer un échec.
+    #[tokio::test]
+    async fn le_vidage_est_refuse_sans_rester_en_file_derriere_une_installation() {
+        let service = CatalogService::with_client(reqwest::Client::new());
+        let installing = service.cache_gate().read_owned().await;
+        let refused = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            pause_or_busy(&service, std::time::Duration::ZERO),
+        )
+        .await
+        .expect("le vidage attend la fin de l'installation");
+        let err = refused.err().expect("refus");
+        assert_eq!(err.kind(), "cache_busy");
+        assert!(
+            !err.to_string().contains("  "),
+            "message sans double espace : {err}"
+        );
+        // Aucun écrivain en file : un nouveau lecteur passe tout de suite.
+        assert!(
+            service.cache_gate().try_read_owned().is_ok(),
+            "un vidage refusé ne doit pas bloquer les nouveaux lecteurs"
+        );
+        drop(installing);
+        // Portillon libre : le vidage démarre.
+        assert!(pause_or_busy(&service, std::time::Duration::ZERO)
+            .await
+            .is_ok());
+    }
+
+    /// Le lecteur (une installation qui se termine) rend le portillon pendant l'attente : le
+    /// vidage aboutit au lieu d'être refusé. Relâché après la première interrogation, sans
+    /// `sleep` ; le délai (30 s) n'est qu'une garde large.
+    #[tokio::test]
+    async fn le_vidage_aboutit_si_le_lecteur_rend_le_portillon_pendant_l_attente() {
+        let service = CatalogService::with_client(reqwest::Client::new());
+        let installing = service.cache_gate().read_owned().await;
+        let mut pause = std::pin::pin!(pause_or_busy(&service, std::time::Duration::from_secs(30)));
+        let pending = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(std::future::Future::poll(pause.as_mut(), cx).is_pending())
+        })
+        .await;
+        assert!(
+            pending,
+            "le vidage attend tant que le lecteur tient le portillon"
+        );
+        drop(installing);
+        assert!(pause.await.is_ok());
     }
 
     // -----------------------------------------------------------------------------------------
