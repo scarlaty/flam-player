@@ -474,7 +474,7 @@ class TestRuntimeUpdates(unittest.TestCase):
             self.assertEqual({d["field"] for d in diffs}, {"size", "sha256"})
 
 
-MATRIX_EXPECTED =os.path.join(ROOT, "crates", "telmi2flam", "tests", "data",
+MATRIX_EXPECTED = os.path.join(ROOT, "crates", "telmi2flam", "tests", "data",
                                "matrix_expected.json")
 
 

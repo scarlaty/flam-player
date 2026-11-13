@@ -48,7 +48,7 @@ Global.init()
 local live = setmetatable({}, { __mode = "k" })   -- source vivante -> chemin
 local shown = setmetatable({}, { __mode = "v" })  -- objet image -> source affichee
 local hidden = {}                                 -- objet image -> masque ?
-local M = { loads = 0, peak = 0 }
+local M = { loads = 0, peak = 0, failed = 0, unreadable = {} }   -- unreadable : chemins illisibles
 
 local function isArrow(p) return p:find("arrow", 1, true) ~= nil end
 
@@ -79,6 +79,23 @@ Global.load_image = function(p)
         local n = retained()
         if n + 1 > M.peak then M.peak = n + 1 end
         M.loads = M.loads + 1
+        -- apres le GC, au moment ou une source relachee serait fatale sur la Flam :
+        -- toute vignette non masquee doit afficher une source vivante
+        local car = M.car
+        if car and car.imgC and M.bad == nil then
+            for slot, obj in pairs({ C = car.imgC, L = car.imgL, R = car.imgR }) do
+                if hidden[obj] == false then
+                    local s = shown[obj]
+                    if s == nil or live[s] == nil then
+                        M.bad = "vignette " .. slot .. " visible sur une source liberee (chargement de " .. p .. ")"
+                    end
+                end
+            end
+        end
+        if M.unreadable[p] then
+            M.failed = M.failed + 1
+            return nil, 0, 0               -- image illisible (lv.img_src.load -> nil)
+        end
     end
     local s = { path = p }
     live[s] = p
@@ -110,7 +127,7 @@ end
 local function expectedSlots(imgs, n, it)
     local function path(i)
         local p = i and imgs[i]
-        if p == nil or p == "empty.lif" then return nil end
+        if p == nil or p == "empty.lif" or M.unreadable[p] then return nil end
         return p
     end
     local li, ri
@@ -124,6 +141,7 @@ end
 local function check(car, imgs, where)
     local n = #imgs
     local want = expectedSlots(imgs, n, car.answerIterator)
+    expect_nil(M.bad, where .. " : pendant le chargement")
     local count, paths = retained()
     expect_true(count <= 3, where .. " : " .. count .. " sources retenues (> 3) : " .. table.concat(paths, ","))
     expect_true(M.peak <= 3, where .. " : pic de " .. M.peak .. " sources (> 3)")
@@ -153,8 +171,9 @@ end
 
 -- Ouvre le carrousel sur `imgs` (focus initial `sel`) ; renvoie le module.
 local function open(imgs, sel)
-    M.loads, M.peak = 0, 0
+    M.loads, M.peak, M.failed, M.bad = 0, 0, 0, nil
     local car = Global.load_module("carousel", "1_0_0")
+    M.car = car
     if sel then car.answerIterator = sel end
     local choices = {}
     for i = 1, #imgs do
@@ -174,6 +193,7 @@ end
 
 local function close()
     Global.cleanCurrentModule()
+    M.car, M.unreadable = nil, {}
     local count, paths = retained()
     expect_eq(count, 0, "clean : plus aucune source retenue (" .. table.concat(paths, ",") .. ")")
     test_tick(2)
@@ -281,6 +301,24 @@ test("#620 carrousel : choix sans image et fichier partage par plusieurs choix",
     car = open(imgs)
     for i = 1, 5 do step(car, KEY_NEXT); check(car, imgs, "sans image " .. i) end
     expect_eq(M.loads, 0, "sans image : aucun chargement")
+    close()
+end)
+
+test("#620 carrousel : image illisible -> masquee ou carte de repli, reessayee au cran suivant", function()
+    M.unreadable = { ["img02.lif"] = true }
+    local imgs = numbered(6)
+    local car = open(imgs)                 -- 6, 1, 2 : 2 illisible a droite
+    check(car, imgs, "ouverture")
+    expect_eq(M.failed, 1, "ouverture : 1 essai sur l'image illisible")
+    step(car, KEY_NEXT)                    -- focus 2 : carte de repli
+    check(car, imgs, "illisible au centre")
+    expect_eq(M.failed, 2, "nouvel essai au cran suivant")
+    step(car, KEY_NEXT)                    -- 2 a gauche
+    check(car, imgs, "illisible a gauche")
+    expect_eq(M.failed, 3, "nouvel essai au cran suivant")
+    step(car, KEY_NEXT)                    -- 2 n'est plus affichee
+    check(car, imgs, "illisible hors affichage")
+    expect_eq(M.failed, 3, "plus d'essai hors affichage")
     close()
 end)
 
