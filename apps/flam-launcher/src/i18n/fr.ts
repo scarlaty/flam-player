@@ -30,6 +30,7 @@ export const fr = {
           io: "Erreur d'accès aux fichiers",
           config_version: "Configuration trop récente",
           cache_dir_in_use: "Dossier de cache déjà utilisé",
+          cache_busy: "Cache occupé",
           network: "Réseau indisponible",
           catalog_invalid: "Catalogue illisible",
           folder_unavailable: "Dossier introuvable",
@@ -523,6 +524,8 @@ export const fr = {
         `Dont MP3 de podcasts : ${size}, gardés pour refaire un pack sans tout retélécharger.`,
       mp3Empty: "Aucun MP3 de podcast n'est gardé en cache.",
       clear: "Vider le cache",
+      /** Annoncé pendant le vidage (le bouton est verrouillé, #578). */
+      clearing: "Vidage du cache en cours…",
       confirmTitle: "Vider le cache ?",
       /**
        * `dirs` : sous-dossiers marqués que le vidage videra (`cache_usage.subdirs`). La phrase

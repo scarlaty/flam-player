@@ -47,6 +47,8 @@ let calls: { cmd: string; args: Record<string, any> }[];
 let failures: Record<string, { kind: string; message: string }>;
 // Réponses différées de `settings_set` (résolues/rejetées par le test, dans l'ordre des appels).
 let pendingSets: { resolve: () => void; reject: () => void }[] | null;
+// Réponse différée de `cache_clear` (résolue par le test), `null` : réponse immédiate.
+let pendingClear: { resolve: () => void } | null;
 
 const HORTENSE = { id: "v-hortense", name: "Microsoft Hortense", language: "fr-FR" };
 const PAUL = { id: "v-paul", name: "Microsoft Paul", language: "fr-CA" };
@@ -61,6 +63,7 @@ beforeEach(() => {
   calls = [];
   failures = {};
   pendingSets = null;
+  pendingClear = null;
   pickExecutable.mockReset();
   pickFolder.mockReset();
   refreshInstalled.mockClear();
@@ -99,9 +102,15 @@ beforeEach(() => {
         return { bytes: mp3Bytes };
       case "cache_clear": {
         const freed = usageBytes;
-        usageBytes = 0;
-        mp3Bytes = 0;
-        return { freed_bytes: freed };
+        const finish = () => {
+          usageBytes = 0;
+          mp3Bytes = 0;
+          return { freed_bytes: freed };
+        };
+        if (pendingClear === null) return finish();
+        return new Promise((resolve) => {
+          pendingClear = { resolve: () => resolve(finish()) };
+        });
       }
       case "config_ack_recovery":
         return null;
@@ -525,6 +534,50 @@ it("affiche l'erreur si le vidage du cache échoue", async () => {
 
   expect(await screen.findByRole("alert")).toHaveTextContent("fichier verrouillé");
   expect(refreshInstalled).not.toHaveBeenCalled();
+});
+
+async function confirmClear() {
+  fireEvent.click(screen.getByRole("button", { name: "Vider le cache" }));
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Vider le cache",
+    }),
+  );
+}
+
+it("verrouille « Vider le cache » pendant le vidage : un seul cache_clear pour deux clics (#578)", async () => {
+  await renderScreen();
+  pendingClear = { resolve: () => undefined };
+  await confirmClear();
+
+  await waitFor(() => expect(callsOf("cache_clear")).toHaveLength(1));
+  const button = screen.getByRole("button", { name: "Vider le cache" });
+  expect(button).toHaveAttribute("aria-disabled", "true");
+  expect(button).toHaveAttribute("aria-busy", "true");
+  expect(screen.getByText("Vidage du cache en cours…")).toBeInTheDocument();
+
+  // Second clic pendant l'appel : ni boîte de confirmation, ni second appel.
+  fireEvent.click(button);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(callsOf("cache_clear")).toHaveLength(1);
+
+  pendingClear?.resolve();
+  expect(await screen.findByText("Cache vidé : 2 Ko libérés")).toBeInTheDocument();
+  expect(callsOf("cache_clear")).toHaveLength(1);
+  expect(screen.queryByText("Vidage du cache en cours…")).toBeNull();
+});
+
+it("un vidage refusé (cache_busy) a son titre d'erreur (#578)", async () => {
+  await renderScreen();
+  failures.cache_clear = { kind: "cache_busy", message: "le cache est utilisé" };
+  await confirmClear();
+
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("Cache occupé");
+  expect(alert).toHaveTextContent("le cache est utilisé");
+  expect(screen.getByRole("button", { name: "Vider le cache" })).not.toHaveAttribute(
+    "aria-disabled",
+  );
 });
 
 it("affiche l'erreur de chargement avec un bouton Réessayer", async () => {

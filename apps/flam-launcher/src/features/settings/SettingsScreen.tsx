@@ -59,6 +59,8 @@ export function SettingsScreen() {
   // Part des MP3 de podcasts ; `null` : pas encore connue ou illisible (la ligne est alors omise).
   const [mp3Bytes, setMp3Bytes] = useState<number | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  // Vidage en cours : un second clic serait refusé (`cache_busy`) par le backend (#578).
+  const [clearing, setClearing] = useState(false);
   // Relevé relu à l'ouverture de la confirmation ; `null` : relecture en échec, le texte annonce
   // alors le pire (histoires installées supprimées), jamais moins que ce que le vidage fera (#591).
   const [confirmUsage, setConfirmUsage] = useState<CacheUsage | null>(null);
@@ -205,12 +207,16 @@ export function SettingsScreen() {
    * installation a pu recréer `library/` depuis, #591).
    */
   async function openClearConfirm() {
+    if (clearing) return;
     setConfirmUsage(await refreshUsage());
     setConfirmClear(true);
   }
 
   async function confirmClearCache() {
     setConfirmClear(false);
+    if (clearing) return;
+    setClearing(true);
+    setUsageError(null);
     try {
       const { freed_bytes } = await clearCache();
       toast.show({ message: t.settingsScreen.cache.cleared(formatBytes(freed_bytes)) });
@@ -219,6 +225,8 @@ export function SettingsScreen() {
       await refreshUsage();
     } catch (caught) {
       setUsageError(toAppError(caught));
+    } finally {
+      setClearing(false);
     }
   }
 
@@ -306,10 +314,13 @@ export function SettingsScreen() {
             variant="danger"
             icon="trash"
             disabled={!usage || usage.bytes === 0}
+            aria-disabled={clearing || undefined}
+            aria-busy={clearing || undefined}
             onClick={() => void openClearConfirm()}
           >
             {text.cache.clear}
           </Button>
+          <p role="status">{clearing ? text.cache.clearing : ""}</p>
         </div>
       </section>
 

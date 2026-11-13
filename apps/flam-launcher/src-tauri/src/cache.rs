@@ -1392,8 +1392,12 @@ async fn pause_or_busy(
 ) -> AppResult<crate::catalog::PauseGuard<'_>> {
     catalog.pause_refreshes_within(wait).await.ok_or_else(|| {
         crate::AppError::CacheBusy(
-            "le cache est utilisé (installation, envoi vers la Flam ou lancement en cours) :              attendez la fin des opérations en cours, ou annulez-les, puis réessayez"
-                .into(),
+            concat!(
+                "le cache est utilisé (installation, envoi vers la Flam, lancement ou vidage ",
+                "en cours) : attendez la fin des opérations en cours, ou annulez-les, ",
+                "puis réessayez"
+            )
+            .into(),
         )
     })
 }
@@ -3478,7 +3482,12 @@ mod tests {
         )
         .await
         .expect("le vidage attend la fin de l'installation");
-        assert_eq!(refused.err().map(|e| e.kind()), Some("cache_busy"));
+        let err = refused.err().expect("refus");
+        assert_eq!(err.kind(), "cache_busy");
+        assert!(
+            !err.to_string().contains("  "),
+            "message sans double espace : {err}"
+        );
         // Aucun écrivain en file : un nouveau lecteur passe tout de suite.
         assert!(
             service.cache_gate().try_read_owned().is_ok(),
@@ -3489,6 +3498,26 @@ mod tests {
         assert!(pause_or_busy(&service, std::time::Duration::ZERO)
             .await
             .is_ok());
+    }
+
+    /// Le lecteur (une installation qui se termine) rend le portillon pendant l'attente : le
+    /// vidage aboutit au lieu d'être refusé. Relâché après la première interrogation, sans
+    /// `sleep` ; le délai (30 s) n'est qu'une garde large.
+    #[tokio::test]
+    async fn le_vidage_aboutit_si_le_lecteur_rend_le_portillon_pendant_l_attente() {
+        let service = CatalogService::with_client(reqwest::Client::new());
+        let installing = service.cache_gate().read_owned().await;
+        let mut pause = std::pin::pin!(pause_or_busy(&service, std::time::Duration::from_secs(30)));
+        let pending = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(std::future::Future::poll(pause.as_mut(), cx).is_pending())
+        })
+        .await;
+        assert!(
+            pending,
+            "le vidage attend tant que le lecteur tient le portillon"
+        );
+        drop(installing);
+        assert!(pause.await.is_ok());
     }
 
     // -----------------------------------------------------------------------------------------

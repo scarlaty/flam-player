@@ -3257,6 +3257,25 @@ mod tests {
         assert!(service.clear_epoch() > before);
     }
 
+    /// Cas qui justifie l'attente bornée : le lecteur rend le portillon pendant l'attente, le
+    /// vidage aboutit sans refus. Le lecteur est relâché après la première interrogation du
+    /// vidage (déjà en file) ; le délai (30 s) n'est qu'une garde large, jamais une horloge. Le
+    /// compteur de vidages est impair tant que le garde est tenu, pair après (#578).
+    #[tokio::test]
+    async fn un_lecteur_relache_pendant_l_attente_laisse_aboutir_le_vidage() {
+        let service = svc_with(long_client());
+        let reading = service.cache_gate().read_owned().await;
+        let mut pause = std::pin::pin!(service.pause_refreshes_within(Duration::from_secs(30)));
+        assert!(poll_once(&mut pause).await.is_pending());
+        drop(reading);
+        let guard = pause
+            .await
+            .expect("le vidage aboutit une fois le lecteur parti");
+        assert_eq!(service.clear_epoch() % 2, 1, "vidage en cours : impair");
+        drop(guard);
+        assert_eq!(service.clear_epoch() % 2, 0, "vidage terminé : pair");
+    }
+
     /// Une vignette déjà fraîche sur le disque est servie tout de suite, même quand un vidage
     /// attend derrière un lecteur du portillon (envoi de plusieurs minutes) : un écrivain en
     /// attente bloque les nouveaux lecteurs, la lecture du compteur de vidages n'en prend donc

@@ -1160,7 +1160,7 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
 - **Concurrence** : `max_downloads` téléchargements simultanés (`settings.json`, 1 à 4, 2 par
   défaut, relu à chaque tâche), **une** conversion à la fois.
 - **Cache** : chaque tâche tient le portillon du cache (`CatalogService::cache_gate`) en lecture :
-  « Vider le cache » attend la fin des tâches en cours et bloque les nouvelles.
+  « Vider le cache » n'attend que 3 s puis est refusé (`cache_busy`), sans bloquer les nouvelles.
 - **File persistée** : `<config>/install_queue.json` (`schema_version`, tâches non terminées avec
   leur validateur HTTP). Au démarrage, le fichier est relu comme une donnée non fiable : une tâche
   dont l'identifiant n'est pas un UUID canonique est ignorée, et l'entrée est **ré-résolue depuis
@@ -1464,7 +1464,7 @@ l'une supprime la préparation en cours de l'autre, comme pour les autres sous-d
 antérieure qui réécrit la liste en attente du témoin principal, une entrée `flam-transfer` en attente en disparaît
 alors que le témoin tardif reste : ce dossier non prouvé ne sera plus réévalué (fuite de place, jamais de perte ;
 créer un fichier vide `.flam-launcher` dedans pour le reconnaître). « Vider le cache » ne casse jamais un envoi : `device_send_story` tient le
-portillon du cache en lecture pendant tout l'envoi, le vidage (écriture) attend sa fin. `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
+portillon du cache en lecture pendant tout l'envoi, le vidage (écriture) n'attend que 3 s puis est refusé (`cache_busy`). `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
 sous-dossier de cache doit l'ajouter à cette liste** (il sera alors créé marqué). L'interface demande une confirmation
 (boîte `alertdialog`, focus sur « Annuler ») qui rappelle les dossiers concernés et la taille
 libérée. Les rafraîchissements de catalogue et les téléchargements de vignettes de catalogue

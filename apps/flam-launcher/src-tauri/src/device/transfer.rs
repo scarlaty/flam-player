@@ -1361,7 +1361,7 @@ fn device_keys(
 /// n'est supprimé si `work_dir` ne porte pas le marqueur de l'application (#591) : un homonyme
 /// refusé par la migration (dossier de l'utilisateur) est utilisé comme avant, jamais nettoyé.
 /// Le verrou de l'appareil est tenu par l'appelant (aucune autre préparation de cette session) et
-/// le vidage du cache, qui prend le portillon en écriture, attend la fin de l'envoi ; l'âge
+/// le vidage du cache, qui prend le portillon en écriture, n'attend que 3 s puis est refusé (`cache_busy`) ; l'âge
 /// minimal protège la préparation d'une autre session qui partagerait le dossier de cache. Chaque
 /// échec est journalisé sans empêcher l'autre nettoyage ni l'envoi.
 fn clean_work_dir(work_dir: &Path, min_age: std::time::Duration) {
