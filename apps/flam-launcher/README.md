@@ -1308,7 +1308,7 @@ jamais cassée). Un ancien cache du launcher choisi plus tard (`library/` conten
 seul ne suffit pas) est accepté par `settings_set`, avant l'enregistrement des réglages :
 `library/` y est marqué (par l'index) ; `podcasts/`, `podcast-work/` et `play/` le sont sur la
 preuve d'usage de la migration, et `thumbs/` s'il ne contient que des fichiers nommés comme ceux
-du cache des vignettes (`<16 chiffres hexadécimaux>.png` ou `.tmp-<pid>`, fichiers de
+du cache des vignettes (`<16 chiffres hexadécimaux minuscules>.png` ou `.tmp-<pid>`, fichiers de
 l'explorateur ignorés ; vide : accepté) ; `archives/`, `catalogs/`, `compat-local/` et `official/`
 ne sont jamais marqués à l'adoption (aucune preuve par leur contenu) : dans un ancien cache
 réadopté, ils ne sont donc ni nettoyés, ni comptés, ni vidés (fuite de place, jamais de perte).

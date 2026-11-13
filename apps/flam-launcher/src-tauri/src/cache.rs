@@ -235,7 +235,7 @@ fn mark_existing(root: &Path, marking: Marking, fault: Fault) -> io::Result<usiz
             continue;
         }
         if fs::symlink_metadata(dir.join(MARKER)).is_ok() {
-            tracing::warn!("cache : marqueur de « {name} » inattendu, non migré");
+            tracing::warn!("cache : marqueur de « {name} » inattendu, non marqué");
             continue;
         }
         let proven = match marking {
@@ -244,7 +244,7 @@ fn mark_existing(root: &Path, marking: Marking, fault: Fault) -> io::Result<usiz
         };
         if !proven {
             tracing::warn!(
-                "cache : contenu de « {name} » non reconnu, non migré (ni compté ni vidé)"
+                "cache : contenu de « {name} » non reconnu, non marqué (ni compté ni vidé)"
             );
             continue;
         }
@@ -1279,9 +1279,19 @@ mod tests {
             .0,
             "fichiers de l'explorateur ignorés"
         );
+        assert!(
+            adopted(&|t| {
+                write(&t.join("desktop.ini"), 1);
+                write(&t.join("Thumbs.db"), 1);
+            })
+            .0,
+            "fichiers de l'explorateur seuls : comme un dossier vide"
+        );
         for refused in [
             "photo.png",
             "FEDCBA9876543210.png",
+            // Radical valide, extension en majuscules : la comparaison est sensible à la casse.
+            "fedcba9876543210.PNG",
             "0123456789abcdef.jpg",
             "0123456789abcdef.tmp-",
         ] {
