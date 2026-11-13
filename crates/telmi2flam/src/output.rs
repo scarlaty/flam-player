@@ -192,18 +192,24 @@ impl<R: Read + Seek> Source for Archive<R> {
         };
         let mut seen = 0u64;
         let mut hasher = crc32fast::Hasher::new();
-        let found = self.read_chunks(name, COPY_CHUNK, &mut |chunk: &[u8]| {
-            if seen > 0 && cancelled() {
-                return Err(ZipStop::Cancelled);
-            }
-            seen += chunk.len() as u64;
-            // Entrée devenue plus grande : arrêt avant d'écrire au-delà de la taille annoncée.
-            if seen > size {
-                return Err(changed());
-            }
-            hasher.update(chunk);
-            sink(chunk)
-        })?;
+        let found = self.read_chunks(
+            name,
+            COPY_CHUNK,
+            cancelled,
+            &|| ZipStop::Cancelled,
+            &mut |chunk: &[u8]| {
+                if seen > 0 && cancelled() {
+                    return Err(ZipStop::Cancelled);
+                }
+                seen += chunk.len() as u64;
+                // Entrée devenue plus grande : arrêt avant d'écrire au-delà de la taille annoncée.
+                if seen > size {
+                    return Err(changed());
+                }
+                hasher.update(chunk);
+                sink(chunk)
+            },
+        )?;
         if !found || seen != size || hasher.finalize() != crc {
             return Err(changed());
         }
@@ -545,6 +551,12 @@ impl Target {
             Some(p) => p.to_owned(),
             None => PathBuf::from(default_name(&package.title, &package.uuid)),
         };
+        Self::for_path(out_path, emit_plain)
+    }
+
+    /// Cible dont le chemin `-o` est connu sans le paquet (le nom par défaut, lui, dépend du
+    /// titre et de l'UUID).
+    pub fn for_path(out_path: PathBuf, emit_plain: bool) -> Target {
         let dir_only = ends_with(&out_path, ".plain");
         let plain_dir = if dir_only {
             Some(out_path.clone())
@@ -937,8 +949,10 @@ fn write_and_commit<D: Body, S: Source>(
     }
     // Types des cibles vérifiés avant la première publication : un `.plain` qui est un fichier
     // ne laisse pas un `.plain.pk` publié seul.
+    // Idem pour un lien dans un `.plain` existant (`--plain`) : rien n'est publié, pas même le
+    // `.plain.pk`, si la fusion du dossier doit échouer.
     for (tmp, fin) in &commits {
-        check_target(tmp, fin)?;
+        check_commit(tmp, fin)?;
     }
     for (tmp, fin) in &commits {
         commit(tmp, fin, &mut |s| fire(&hook, s))?;
@@ -1028,15 +1042,23 @@ fn check_target(tmp: &Path, fin: &Path) -> io::Result<()> {
     }
 }
 
+/// Tout ce que [`commit`] refuse avant son premier renommage : type de cible différent, lien
+/// ou jonction dans un dossier existant que le temporaire doit fusionner.
+fn check_commit(tmp: &Path, fin: &Path) -> io::Result<()> {
+    check_target(tmp, fin)?;
+    if fs::symlink_metadata(tmp)?.is_dir() && fs::metadata(fin).is_ok_and(|m| m.is_dir()) {
+        check_merge_links(tmp, fin)?;
+    }
+    Ok(())
+}
+
 /// `_commit` : publie un temporaire. Dossier vers dossier existant : fichiers remplacés un à
 /// un sans supprimer le reste (comportement historique), puis temporaire supprimé.
 fn commit(tmp: &Path, fin: &Path, hook: Hook<'_>) -> io::Result<()> {
-    check_target(tmp, fin)?;
+    check_commit(tmp, fin)?;
     let tmp_is_dir = fs::symlink_metadata(tmp)?.is_dir();
     if tmp_is_dir && fs::metadata(fin).is_ok_and(|m| m.is_dir()) {
-        // Avant le premier renommage : un lien trouvé en cours de fusion laisserait un `.plain`
-        // à moitié mis à jour.
-        check_merge_links(tmp, fin)?;
+        // `check_commit` a déjà refusé tout lien avant le premier renommage.
         merge_dir(tmp, fin, hook)?;
         let _ = fs::remove_dir_all(tmp);
         return Ok(());
@@ -2288,24 +2310,33 @@ mod tests {
     #[test]
     fn publication_refusee_sur_un_dossier_lien() {
         let pkg = sample();
-        for nested in [false, true] {
-            let d = scratch(&format!("merge-lien-{nested}"));
+        // (lien sur un sous-dossier, `--plain` avec un `.plain.pk` à côté)
+        for (nested, with_pk) in [(false, false), (true, false), (false, true), (true, true)] {
+            let d = scratch(&format!("merge-lien-{nested}-{with_pk}"));
             let outside = d.join("dehors");
             fs::create_dir(&outside).unwrap();
             fs::write(outside.join("garde"), b"g").unwrap();
             let plain = d.join("o.plain");
             let link = if nested {
                 fs::create_dir(&plain).unwrap();
-                plain.join("img")
+                // Dernière entrée triée : tout le reste serait fusionné avant le refus si le
+                // contrôle n'avait pas lieu avant le premier renommage.
+                plain.join("sounds")
             } else {
                 plain.clone()
             };
             if !make_dir_link(&link, &outside) {
+                eprintln!("SKIP nested = {nested}, pk = {with_pk} : lien impossible à créer");
                 continue;
             }
-            let t = Target::new(Some(&plain), false, &pkg);
+            let pk = d.join("o.plain.pk");
+            let t = if with_pk {
+                Target::new(Some(&pk), true, &pkg)
+            } else {
+                Target::new(Some(&plain), false, &pkg)
+            };
             let e = write_package(&pkg, &t, &never).unwrap_err();
-            assert_eq!(e.code, "output_error", "nested = {nested}");
+            assert_eq!(e.code, "output_error", "nested = {nested}, pk = {with_pk}");
             let left: Vec<_> = fs::read_dir(&outside)
                 .unwrap()
                 .map(|e| e.unwrap().file_name())
@@ -2316,8 +2347,14 @@ mod tests {
                 .file_type()
                 .is_symlink());
             if nested {
-                assert!(!plain.join("version").exists(), "fusion partielle");
+                for f in ["info.plain", "version", "img", "script", "uuid.bin"] {
+                    assert!(
+                        !plain.join(f).exists(),
+                        "fusion partielle : {f} (pk = {with_pk})"
+                    );
+                }
             }
+            assert!(!pk.exists(), ".plain.pk publié seul (nested = {nested})");
             assert_no_part(&d);
             discard(&[link]);
         }

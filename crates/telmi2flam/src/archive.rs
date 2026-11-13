@@ -155,17 +155,22 @@ impl<R: Read + Seek> Archive<R> {
     /// [`Archive::read`] par tours d'au plus `chunk` octets passés à `sink` (CRC vérifié après
     /// le dernier). `Ok(false)` si le nom est absent ; une erreur de `sink` est rendue telle
     /// quelle, une erreur de lecture convertie comme pour `read`.
+    /// `cancelled` est consulté pendant le décodage (voir `ZipReader::read_chunks`) ; s'il
+    /// est levé, `stopped()` est rendu.
     pub fn read_chunks<E: From<ConvError>>(
         &mut self,
         name: &str,
         chunk: usize,
+        cancelled: &dyn Fn() -> bool,
+        stopped: &dyn Fn() -> E,
         sink: &mut dyn FnMut(&[u8]) -> Result<(), E>,
     ) -> Result<bool, E> {
         self.zip
-            .read_chunks(name, chunk, sink)
+            .read_chunks(name, chunk, cancelled, sink)
             .map_err(|e| match e {
                 ChunkStop::Zip(e) => E::from(conv(&self.source, e)),
                 ChunkStop::Sink(e) => e,
+                ChunkStop::Cancelled => stopped(),
             })
     }
 }

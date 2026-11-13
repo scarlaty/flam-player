@@ -23,8 +23,8 @@
 //!
 //! Cas laissés du côté « peut-être » dans ces quatre greffons : valeur numérique d'un champ
 //! `IM` ou `IMT` que Python lirait peut-être autrement qu'ici (soulignés `_` ; pour `IM`, dont
-//! les valeurs sont décodées en Latin-1, aussi `\x1c`-`\x1f`, `\x85` et `\xa0`, que `str.strip()`
-//! retire : réputée valide). Tout autre octet de contrôle ou d'au moins 0x80 rend la valeur
+//! les valeurs sont décodées en Latin-1, aussi `\x85` et `\xa0`, que `int()` et `float()`
+//! retirent : réputée valide ; `\x1c`-`\x1f` sont rejetés). Tout autre octet de contrôle ou d'au moins 0x80 rend la valeur
 //! invalide (`ValueError`, #580) ; taille `IM` de trois nombres ou plus (le greffon
 //! l'ouvre, le chargement échouerait plus tard). La garde anti-bombe de `Image.open`
 //! (`2 × MAX_IMAGE_PIXELS`) est rejouée, comme les exceptions qu'elle ne rattrape pas
@@ -152,7 +152,8 @@ fn spider_header(header: &[u8], big_endian: bool) -> bool {
 /// passe les octets à `int()` (`bytes`).
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Text {
-    /// `str` : `strip()` retire aussi `\x1c`-`\x1f`, `\x85` et `\xa0` ; `_` sépare des chiffres.
+    /// `str` : `int()` et `float()` retirent aussi `\x85` et `\xa0` (pas `\x1c`-`\x1f`, rejetés :
+    /// `ValueError`, vérifié sur Python 3.12) ; `_` sépare des chiffres.
     Latin1,
     /// `bytes` : seuls les espaces ASCII sont retirés ; `_` sépare des chiffres.
     Bytes,
@@ -161,7 +162,7 @@ enum Text {
 impl Text {
     /// Octet que Python lirait peut-être comme faisant partie d'un nombre valide.
     fn unsure(self, b: u8) -> bool {
-        b == b'_' || (self == Text::Latin1 && matches!(b, 0x1c..=0x1f | 0x85 | 0xa0))
+        b == b'_' || (self == Text::Latin1 && matches!(b, 0x85 | 0xa0))
     }
 
     /// Octet qui rend la valeur invalide (`ValueError`) sans exception possible : tout octet de
@@ -726,6 +727,14 @@ mod tests {
         assert!(pillow_may_open(&im("10000*10000")));
         assert!(!pillow_may_open(&im("20000*20000")));
         assert!(pillow_may_open(&im("nan*5")));
+        // Bornes exactes : 2 × MAX_IMAGE_PIXELS = 178 956 970 pixels possibles, un de plus
+        // illisible ; largeur ou hauteur seule (l'autre vaut 1, `max(1)` de la garde).
+        assert!(pillow_may_open(&im("178956970*1")));
+        assert!(!pillow_may_open(&im("178956971*1")));
+        assert!(pillow_may_open(&im("1*178956970")));
+        assert!(!pillow_may_open(&im("1*178956971")));
+        assert!(pillow_may_open(&imt(178_956_970, 1)));
+        assert!(!pillow_may_open(&imt(178_956_971, 1)));
         assert!(pillow_may_open(&imt(10_000, 10_000)));
         assert!(!pillow_may_open(&imt(20_000, 20_000)));
         assert!(pillow_may_open(&tga(0, 2, 13_000, 13_000, 24)));
@@ -759,9 +768,10 @@ mod tests {
             assert!(pillow_may_open(&imt(w)), "IMT {w:?}");
         }
         // IM : valeur décodée en Latin-1. Contrôles hors espaces et octets >= 0x80 invalides,
-        // sauf `_`, `\x1c`-`\x1f`, `\x85` et `\xa0`.
+        // sauf `_`, `\x85` et `\xa0` (`\x1c`-`\x1f` rejetés : `int()` et `float()` ne les
+        // retirent pas, vérifié sur Python 3.12).
         let mut bad_im: Vec<Vec<u8>> = vec![b"1\x005*2".to_vec(), b"5*2\x01".to_vec()];
-        for b in (0u8..0x20).filter(|b| !SPACES.contains(b) && !(0x1c..=0x1f).contains(b)) {
+        for b in (0u8..0x20).filter(|b| !SPACES.contains(b)) {
             bad_im.push(vec![b'5', b, b'*', b'5']);
         }
         for b in (0x7fu8..=0xff).filter(|b| ![0x85, 0xa0].contains(b)) {
@@ -772,9 +782,6 @@ mod tests {
         }
         for v in [
             &b"1_0*5"[..],
-            b"\x1c5*5",
-            b"5\x1d*5",
-            b"\x1e5*\x1f5",
             b"\x855*5",
             b"\xa05*5",
             b"5*5\xa0",

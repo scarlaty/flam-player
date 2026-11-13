@@ -492,18 +492,23 @@ impl<R: Read + Seek> ZipReader<R> {
     /// [`ZipReader::read`] par tours d'au plus `chunk` octets décompressés, passés à `sink` un
     /// à un (la mémoire reste bornée par `chunk`) ; le CRC est vérifié après le dernier tour,
     /// donc **après** que `sink` a reçu toutes les données. `Ok(false)` si le nom n'existe pas.
+    /// `cancelled` est consulté avant chaque lecture de données compressées, y compris pendant
+    /// un décodage bzip2/LZMA/Zstandard dont la sortie est entièrement écartée (au-delà de la
+    /// taille annoncée) et n'atteint donc jamais `sink` : [`ChunkStop::Cancelled`].
     /// Mêmes contrôles d'en-tête que `read` ; seule la taille des tours diffère.
     pub fn read_chunks<E>(
         &mut self,
         name: &str,
         chunk: usize,
+        cancelled: &dyn Fn() -> bool,
         sink: &mut dyn FnMut(&[u8]) -> Result<(), E>,
     ) -> Result<bool, ChunkStop<E>> {
         let Some(&index) = self.name_to_info.get(name) else {
             return Ok(false);
         };
         let entry = self.entries[index].clone();
-        self.open_entry(&entry)?.pump(&entry, chunk.max(1), sink)?;
+        self.open_entry(&entry)?
+            .pump(&entry, chunk.max(1), cancelled, sink)?;
         Ok(true)
     }
 
@@ -587,6 +592,8 @@ impl<R: Read + Seek> ZipReader<R> {
 pub enum ChunkStop<E> {
     Zip(ZipError),
     Sink(E),
+    /// L'annulation a été demandée pendant la lecture.
+    Cancelled,
 }
 
 impl<E> From<ZipError> for ChunkStop<E> {
@@ -669,12 +676,13 @@ impl<R: Read> ExtFile<'_, R> {
     /// sans produire 2 Gio).
     fn read_all(self, zinfo: &Entry, max_n: usize) -> Result<Vec<u8>, ZipError> {
         let mut out = Vec::new();
-        self.pump(zinfo, max_n, &mut |chunk: &[u8]| {
+        self.pump(zinfo, max_n, &|| false, &mut |chunk: &[u8]| {
             out.extend_from_slice(chunk);
             Ok::<(), ZipError>(())
         })
         .map_err(|e| match e {
             ChunkStop::Zip(e) | ChunkStop::Sink(e) => e,
+            ChunkStop::Cancelled => unreachable!("lecture sans annulation"),
         })?;
         Ok(out)
     }
@@ -685,10 +693,11 @@ impl<R: Read> ExtFile<'_, R> {
         mut self,
         zinfo: &Entry,
         max_n: usize,
+        cancelled: &dyn Fn() -> bool,
         sink: &mut dyn FnMut(&[u8]) -> Result<(), E>,
     ) -> Result<(), ChunkStop<E>> {
         if self.codec.is_some() {
-            return self.pump_codec(zinfo, MAX_N, max_n, sink);
+            return self.pump_codec(zinfo, MAX_N, max_n, cancelled, sink);
         }
         let mut crc = crc32fast::Hasher::new();
         let mut eof = false;
@@ -749,6 +758,7 @@ impl<R: Read> ExtFile<'_, R> {
         zinfo: &Entry,
         round: usize,
         out_chunk: usize,
+        cancelled: &dyn Fn() -> bool,
         sink: &mut dyn FnMut(&[u8]) -> Result<(), E>,
     ) -> Result<(), ChunkStop<E>> {
         let mut codec = self.codec.take().expect("décompresseur présent");
@@ -762,6 +772,11 @@ impl<R: Read> ExtFile<'_, R> {
             let mut eof;
             let mut short;
             loop {
+                // Un flux piégé peut décoder des Gio sans rien rendre à `sink` (sortie au-delà
+                // de `file_size` écartée) : l'annulation est consultée à chaque morceau.
+                if cancelled() {
+                    return Err(ChunkStop::Cancelled);
+                }
                 let want = (CODEC_PIECE as u64).min(n - got);
                 let piece = read_up_to(self.reader, want).map_err(io_corrupt)?;
                 got += piece.len() as u64;
@@ -1033,7 +1048,7 @@ mod tests {
                         codec: None,
                     };
                     let mut got = Vec::new();
-                    let r = ext.pump(&entry, chunk, &mut |c: &[u8]| {
+                    let r = ext.pump(&entry, chunk, &|| false, &mut |c: &[u8]| {
                         assert!(!c.is_empty() && c.len() <= chunk.max(MIN_READ_SIZE));
                         got.extend_from_slice(c);
                         Ok::<(), ()>(())
@@ -1055,7 +1070,7 @@ mod tests {
         // Refus du destinataire au deuxième tour : rendu tel quel, lecture arrêtée.
         let mut zr = ZipReader::new(IoCursor::new(zip64(&content, b""))).unwrap();
         let mut calls = 0;
-        let r = zr.read_chunks("metadata.json", 5000, &mut |_| {
+        let r = zr.read_chunks("metadata.json", 5000, &|| false, &mut |_| {
             calls += 1;
             if calls == 2 {
                 Err("stop")
@@ -1067,14 +1082,14 @@ mod tests {
         assert_eq!(calls, 2);
         let mut all = Vec::new();
         let found = zr
-            .read_chunks("metadata.json", 5000, &mut |c: &[u8]| {
+            .read_chunks("metadata.json", 5000, &|| false, &mut |c: &[u8]| {
                 all.extend_from_slice(c);
                 Ok::<(), ()>(())
             })
             .unwrap();
         assert!(found && all == content);
         assert!(!zr
-            .read_chunks("absent", 5000, &mut |_| Ok::<(), ()>(()))
+            .read_chunks("absent", 5000, &|| false, &mut |_| Ok::<(), ()>(()))
             .unwrap());
     }
 
@@ -1103,7 +1118,7 @@ mod tests {
             let entry = zr.entries[zr.name_to_info["images/c.png"]].clone();
             let ext = zr.open_entry(&entry).unwrap();
             let mut got = Vec::new();
-            ext.pump_codec(&entry, MIN_READ_SIZE, 1000, &mut |c: &[u8]| {
+            ext.pump_codec(&entry, MIN_READ_SIZE, 1000, &|| false, &mut |c: &[u8]| {
                 assert!(!c.is_empty() && c.len() <= 1000);
                 got.extend_from_slice(c);
                 Ok::<(), ()>(())
@@ -1145,9 +1160,42 @@ mod tests {
             // Refus du destinataire : rendu tel quel, lecture arrêtée.
             if !want.is_empty() {
                 let ext = zr.open_entry(&entry).unwrap();
-                let r = ext.pump_codec(&entry, MAX_N, 1000, &mut |_| Err("stop"));
+                let r = ext.pump_codec(&entry, MAX_N, 1000, &|| false, &mut |_| Err("stop"));
                 assert!(matches!(r, Err(ChunkStop::Sink("stop"))), "{id}");
             }
+        }
+    }
+
+    /// #580 : l'annulation est consultée pendant le décodage bzip2/LZMA/Zstandard, même quand
+    /// la sortie est entièrement écartée (taille annoncée à 0) et ne parvient jamais au `sink`.
+    #[test]
+    fn annulation_pendant_le_decodage_des_codecs() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/archive/");
+        for id in ["bzip2_multiblock", "lzma_runs", "zstd_level19"] {
+            let data = std::fs::read(format!("{dir}{id}.zip")).unwrap();
+            let mut zr = ZipReader::new(IoCursor::new(data)).unwrap();
+            let name = "images/c.png";
+            let i = zr.name_to_info[name];
+            // Sans annulation : la lecture aboutit.
+            let ok = zr.read_chunks(name, 4096, &|| false, &mut |_| Ok::<(), ()>(()));
+            assert!(matches!(ok, Ok(true)), "{id}");
+            // Annulation levée : arrêt avant tout octet rendu.
+            let mut sunk = 0usize;
+            let r = zr.read_chunks(name, 4096, &|| true, &mut |c: &[u8]| {
+                sunk += c.len();
+                Ok::<(), ()>(())
+            });
+            assert!(matches!(r, Err(ChunkStop::Cancelled)), "{id} : {r:?}");
+            assert_eq!(sunk, 0, "{id}");
+            // Taille annoncée 0 : rien n'atteint `sink`, l'annulation doit quand même arrêter.
+            zr.entries[i].file_size = 0;
+            let mut sunk = 0usize;
+            let r = zr.read_chunks(name, 4096, &|| true, &mut |c: &[u8]| {
+                sunk += c.len();
+                Ok::<(), ()>(())
+            });
+            assert!(matches!(r, Err(ChunkStop::Cancelled)), "{id} : {r:?}");
+            assert_eq!(sunk, 0, "{id}");
         }
     }
 
