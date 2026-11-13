@@ -8,16 +8,26 @@ use super::*;
 /// Système simulé : résultats programmés, appels enregistrés.
 struct Fake {
     prepare: Result<(), PrepareError>,
-    eject: Result<(), String>,
+    eject: Result<(), Refusal>,
+    /// Réponse de `volume_gone`.
+    gone: bool,
     calls: RefCell<Vec<&'static str>>,
 }
 
 impl Fake {
-    fn new(prepare: Result<(), PrepareError>, eject: Result<(), String>) -> Self {
+    fn new(prepare: Result<(), PrepareError>, eject: Result<(), Refusal>) -> Self {
         Self {
             prepare,
             eject,
+            gone: true,
             calls: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn still_present(self) -> Self {
+        Self {
+            gone: false,
+            ..self
         }
     }
 
@@ -32,9 +42,22 @@ impl EjectSystem for Fake {
         self.prepare.clone()
     }
 
-    fn request_eject(&self, _root: &Path) -> Result<(), String> {
+    fn request_eject(&self, _root: &Path) -> Result<(), Refusal> {
         self.calls.borrow_mut().push("eject");
         self.eject.clone()
+    }
+
+    fn volume_gone(&self, _root: &Path) -> bool {
+        self.calls.borrow_mut().push("gone");
+        self.gone
+    }
+}
+
+/// Verrouillage refusé après vidage des caches (cas mesuré sur la Flam, #619).
+fn in_use() -> PrepareError {
+    PrepareError::InUse {
+        reason: "Accès refusé. (os error 5)".into(),
+        flushed: true,
     }
 }
 
@@ -48,7 +71,8 @@ fn device() -> tempfile::TempDir {
 fn ejection_reussie() {
     let dir = device();
     let lock = DeviceLock::new();
-    let fake = Fake::new(Ok(()), Ok(()));
+    // Chemin nominal inchangé : volume démonté, aucune attente de disparition.
+    let fake = Fake::new(Ok(()), Ok(())).still_present();
     let outcome = eject(dir.path(), &lock, &fake).unwrap();
     assert_eq!(outcome, EjectOutcome::ejected());
     assert_eq!(fake.calls(), ["prepare", "eject"]);
@@ -88,8 +112,11 @@ fn le_verrou_bloque_un_transfert_pendant_l_ejection() {
             );
             Ok(())
         }
-        fn request_eject(&self, _root: &Path) -> Result<(), String> {
+        fn request_eject(&self, _root: &Path) -> Result<(), Refusal> {
             Ok(())
+        }
+        fn volume_gone(&self, _root: &Path) -> bool {
+            unreachable!("volume démonté : aucune attente")
         }
     }
     let dir = device();
@@ -98,26 +125,91 @@ fn le_verrou_bloque_un_transfert_pendant_l_ejection() {
     assert_eq!(lock.current(), None);
 }
 
+/// #619 : verrouillage refusé (antivirus, Explorateur…) mais Windows accepte la demande de
+/// retrait et le volume disparaît : éjectée.
 #[test]
-fn volume_occupe_donne_le_repli_sans_demande_d_ejection() {
+fn volume_occupe_puis_retrait_accepte_par_windows() {
     let dir = device();
     let lock = DeviceLock::new();
-    let fake = Fake::new(Err(PrepareError::InUse("accès refusé".into())), Ok(()));
+    let fake = Fake::new(Err(in_use()), Ok(()));
+    let outcome = eject(dir.path(), &lock, &fake).unwrap();
+    assert_eq!(outcome, EjectOutcome::ejected());
+    assert_eq!(fake.calls(), ["prepare", "eject", "gone"]);
+    assert_eq!(lock.current(), None);
+}
+
+/// #619 : verrouillage refusé puis refus (veto) de Windows : repli avec le message actuel ; le
+/// nom donné par Windows (programme, chemin) n'est pas journalisé.
+#[test]
+fn volume_occupe_puis_refus_de_windows_donne_le_repli() {
+    let dir = device();
+    let lock = DeviceLock::new();
+    let secret = dir.path().join("programme-qui-refuse.exe");
+    let who = secret.to_string_lossy().into_owned();
+    let fake = Fake::new(
+        Err(in_use()),
+        Err(Refusal {
+            reason: format!("éjection refusée par Windows : {} ({who})", veto_label(5)),
+            veto: Some(5),
+        }),
+    );
     let mut outcome = None;
     let logs = crate::device::carrier::tests::capture_logs(|| {
         outcome = Some(eject(dir.path(), &lock, &fake).unwrap());
     });
-    // Diagnostic #619 : aucun chemin de la Flam dans le journal (journal partagé entre tests :
-    // seule l'absence d'un chemin propre à ce test est vérifiable, voir `testlog`).
+    // Aucun chemin propre à ce test dans le journal (journal partagé entre tests : seule
+    // l'absence est vérifiable, voir `testlog`).
     assert!(!logs.contains(&*dir.path().to_string_lossy()), "{logs}");
     let EjectOutcome::Fallback { reason, message } = outcome.unwrap() else {
         panic!("repli attendu");
     };
-    assert!(reason.contains("ouvert par un autre programme"), "{reason}");
+    assert_eq!(
+        reason,
+        "un fichier de la Flam est ouvert par un autre programme (Accès refusé. (os error 5))"
+    );
+    assert!(!reason.contains(DISMOUNTED_NOTE), "rien n'a été démonté");
     assert_eq!(message, FALLBACK_MESSAGE);
-    assert!(message.contains("Retirez la Flam en toute sécurité"));
-    assert_eq!(fake.calls(), ["prepare"]);
+    assert_eq!(fake.calls(), ["prepare", "eject"]);
     assert_eq!(lock.current(), None);
+}
+
+/// Demande acceptée sans démontage préalable mais volume encore présent : pas de réussite
+/// annoncée.
+#[test]
+fn retrait_accepte_mais_volume_present_n_annonce_pas_la_reussite() {
+    for prepare in [Err(in_use()), Err(PrepareError::NoAccess)] {
+        let dir = device();
+        let fake = Fake::new(prepare, Ok(())).still_present();
+        let outcome = eject(dir.path(), &DeviceLock::new(), &fake).unwrap();
+        assert_eq!(outcome, EjectOutcome::fallback(STILL_PRESENT));
+        assert_eq!(fake.calls(), ["prepare", "eject", "gone"]);
+    }
+}
+
+#[test]
+fn attente_de_la_disparition_du_volume() {
+    let dir = device();
+    let slept = std::cell::Cell::new(0);
+    let sleep = |_| slept.set(slept.get() + 1);
+    let delay = std::time::Duration::from_millis(1);
+    // `.mdf` toujours là : faux après tous les essais.
+    assert!(!wait_until_gone(dir.path(), 3, delay, sleep));
+    assert_eq!(slept.get(), 2);
+    // `.mdf` disparu au deuxième essai.
+    slept.set(0);
+    let gone_after_first = |_| {
+        slept.set(slept.get() + 1);
+        let _ = fs::remove_file(dir.path().join(MDF_FILE));
+    };
+    assert!(wait_until_gone(dir.path(), 3, delay, gone_after_first));
+    assert_eq!(slept.get(), 1);
+    // Racine absente : disparue aussitôt.
+    assert!(wait_until_gone(
+        &dir.path().join("absente"),
+        3,
+        delay,
+        |_| unreachable!()
+    ));
 }
 
 #[test]
@@ -151,7 +243,8 @@ fn sans_droit_sur_le_volume_la_demande_est_faite_quand_meme() {
     let fake = Fake::new(Err(PrepareError::NoAccess), Ok(()));
     let outcome = eject(dir.path(), &DeviceLock::new(), &fake).unwrap();
     assert_eq!(outcome, EjectOutcome::ejected());
-    assert_eq!(fake.calls(), ["prepare", "eject"]);
+    // Rien de démonté : la disparition du volume est vérifiée avant d'annoncer la réussite.
+    assert_eq!(fake.calls(), ["prepare", "eject", "gone"]);
 }
 
 #[test]
@@ -300,6 +393,7 @@ fn systeme_reel_refuse_le_lecteur_systeme() {
         matches!(&outcome, PrepareError::Failed(reason) if reason.contains("lecteur système")),
         "{outcome:?}"
     );
-    let reason = CurrentSystem.request_eject(Path::new(&root)).unwrap_err();
-    assert!(reason.contains("lecteur système"), "{reason}");
+    let refusal = CurrentSystem.request_eject(Path::new(&root)).unwrap_err();
+    assert!(refusal.reason.contains("lecteur système"), "{refusal:?}");
+    assert_eq!(refusal.veto, None);
 }

@@ -75,9 +75,11 @@ Le firmware est lu dans le fichier `.mdf` de la Flam.
 - **Éjectez la Flam** avec le bouton « Éjecter la Flam » du launcher, ou depuis l'Explorateur
   (clic droit sur le lecteur, puis « Éjecter »), **avant** de la débrancher. Ne la débranchez
   jamais pendant un envoi.
-- Le launcher ne force jamais l'éjection : si un programme utilise encore la Flam (une fenêtre
-  de l'Explorateur ouverte dessus, par exemple), l'éjection est refusée et un message vous
-  invite à éjecter depuis l'Explorateur.
+- Le launcher ne force jamais l'éjection. Si un programme utilise encore la Flam (une fenêtre
+  de l'Explorateur ouverte dessus, un antivirus qui analyse les fichiers tout juste envoyés…),
+  le launcher demande quand même à Windows de la retirer, comme le fait l'Explorateur : Windows
+  prévient ces programmes, qui peuvent la libérer. Si l'un d'eux refuse, l'éjection est
+  refusée et un message vous invite à éjecter depuis l'Explorateur.
 
 <a id="risques"></a>
 
