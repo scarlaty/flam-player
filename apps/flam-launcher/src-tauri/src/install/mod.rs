@@ -71,9 +71,9 @@ pub const ARCHIVES_DIR: &str = "archives";
 /// File persistée, dans le dossier de configuration.
 pub const QUEUE_FILE: &str = "install_queue.json";
 /// Version courante du schéma de la file (lecture des versions 0 à `QUEUE_SCHEMA`, sans
-/// migration). v2 (#578) : une tâche d'histoire STUdio (`entry.kind = "studio_zip"`). La file
-/// est écrite à la plus basse version qui décrit son contenu ([`crate::story::schema_for`]) :
-/// une version antérieure ignore alors une file v2 intacte au lieu de la mettre en quarantaine.
+/// migration). v2 (#578) : réservée à la première variante que la dernière version publiée ne
+/// saura pas lire (règle : [`crate::story::StoryKind::min_schema`]) ; la file est écrite à la
+/// plus basse version qui décrit son contenu ([`crate::story::schema_for`]), v1 aujourd'hui.
 const QUEUE_SCHEMA: u32 = 2;
 /// Taille maximale d'une archive téléchargée.
 const MAX_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;

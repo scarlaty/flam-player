@@ -1127,10 +1127,8 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
   d'une archive sont mémorisés dans `archives/<archive>.meta.json` (4 Kio au plus, validateur revalidé) : une nouvelle demande après
   une coupure reprend le `.part`, et une archive complète n'est réutilisée que si son lien et
   sa taille correspondent (sinon elle est retéléchargée). L'écriture de `install_queue.json` se
-  fait hors des verrous, sur un thread bloquant, avec des écritures ordonnées. Schéma v2 (#578) :
-  la file est écrite en v2 si une tâche porte une histoire STUdio (`studio_zip`, inconnue de la
-  bêta.3), en v1 sinon ; une version antérieure ignore une file v2 intacte (`config_version`)
-  au lieu de la mettre en quarantaine.
+  fait hors des verrous, sur un thread bloquant, avec des écritures ordonnées. Versions de
+  schéma : comme l'index de la bibliothèque (ci-dessous), lue en v0 à v2, écrite en v1.
 - **Convertisseur** : `<exe>/telmi2flam/telmi2flam.exe` (application installée ; construit par `npm run build:converter`, voir « Convertisseur embarqué »), sinon en
   développement `telmi2flam.exe` à côté de l'exécutable (même `target/` Cargo, `cargo build -p telmi2flam`). Absent : `converter_unavailable`. Plus de Python ni de script Python du convertisseur (#138 ; supprimé du dépôt, #140).
 - **Bibliothèque** : `library.json` = `{ schema_version, stories: LibraryEntry[] }` avec
@@ -1140,12 +1138,15 @@ thumb, source_stamp }`.
   (#60), avec en repli l'empreinte `sha256:<12 hex>` de `telmi2flam.exe` (`telmi2flam.py` pour une entrée enregistrée avant #138). **Une installation par `uuid`** : la dernière installée remplace la précédente (autre
   version, ou `.plain` / `.plain.pk` de même `uuid` d'un dossier source). Un index corrompu est
   sauvegardé en `*.bak` et repart vide. `library_list` ignore les entrées dont le fichier a
-  disparu. Schéma v2 (#578) : l'index est écrit en v2 s'il contient une histoire STUdio
-  (`source.kind = "studio_zip"`), en v1 sinon (retour à une version antérieure possible) ; la
-  bêta.3 et la bêta.4 refusent alors un index v2 intact (`config_version`) au lieu de le mettre
-  en quarantaine. Les versions 0 à 2 sont lues sans migration (un index v1 contenant déjà
-  `studio_zip`, écrit par la bêta.4, reste lu). Règle pour toute nouvelle variante persistée :
-  `StoryKind::min_schema` (`src-tauri/src/story.rs`).
+  disparu. Versions de schéma (#578) : les versions 0 à 2 sont lues sans migration ;
+  l'index est écrit à la plus basse version qui décrit son contenu, **v1 aujourd'hui**, histoires
+  STUdio (`source.kind = "studio_zip"`) comprises, car la bêta.4, dernière version publiée, les
+  lit. La v2 est réservée à la première variante que la dernière version publiée ne saura pas
+  lire : cette version refusera alors l'index intact (`config_version`) au lieu de le mettre en
+  quarantaine. On ne monte jamais la version pour une variante déjà lue par la dernière version
+  publiée (règle et énumérations concernées : `StoryKind::min_schema`,
+  `src-tauri/src/story.rs`). Limite connue : revenir à la bêta.3, qui ne connaît pas
+  `studio_zip`, met de côté (`*.bak`) un index qui contient une histoire STUdio (inchangé).
 - **Mises à jour** : `hasUpdate(installed, entry)` (front) et `LibraryEntry::is_outdated_by`
   (Rust) : même `uuid`, versions connues et différentes.
 - **Source dossier modifiée à version égale** (#288, `library_source`) : une histoire d'une source

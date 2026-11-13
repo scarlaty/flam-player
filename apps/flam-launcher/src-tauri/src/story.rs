@@ -35,19 +35,8 @@ use serde::{Deserialize, Serialize};
 
 /// Nature de l'archive d'une histoire.
 ///
-/// **Variante persistée** : `kind` est écrit dans `library.json` et `install_queue.json`. Une
-/// version antérieure du launcher qui lit une variante qu'elle ne connaît pas échoue à la
-/// désérialisation et met **tout** le fichier en quarantaine (`*.bak`), alors qu'elle refuse
-/// intact un fichier de version de schéma supérieure (`config_version`, voir
-/// `storage::load_versioned`). Règle pour toute nouvelle variante (#578) :
-///
-/// 1. la déclarer dans [`StoryKind::min_schema`] avec une **nouvelle** version de schéma (la
-///    plus haute existante + 1) si une version publiée du launcher ne la connaît pas ;
-/// 2. monter `library::SCHEMA_VERSION` et `install::QUEUE_SCHEMA` à cette version (lecture sans
-///    migration : aucune donnée ne change) ;
-/// 3. les fichiers restent écrits à la plus basse version qui décrit leur contenu (maximum des
-///    `min_schema` de leurs entrées, 1 au moins), comme `SourcesStore::save` : sans la nouvelle
-///    variante, revenir à une version antérieure reste possible.
+/// **Variante persistée** : `kind` est écrit dans `library.json`, `install_queue.json` et les
+/// marqueurs `.staging/*.pending`. Règle de version : voir [`StoryKind::min_schema`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StoryKind {
@@ -63,25 +52,47 @@ pub enum StoryKind {
 }
 
 impl StoryKind {
-    /// Première version de schéma de `library.json` et `install_queue.json` qui connaît cette
-    /// variante (voir la règle ci-dessus) : 1 pour les variantes de la bêta.3, 2 pour
-    /// `studio_zip` (bêta.4, inconnue de la bêta.3).
+    /// Première version de schéma de `library.json` et `install_queue.json` dont l'écriture est
+    /// exigée par cette variante (#578).
+    ///
+    /// Une version antérieure du launcher qui lit une variante qu'elle ne connaît pas échoue à
+    /// la désérialisation et met **tout** le fichier en quarantaine (`*.bak`) ; elle refuse en
+    /// revanche intact un fichier de version de schéma supérieure (`config_version`, voir
+    /// `storage::load_versioned`). D'où la règle :
+    ///
+    /// - une variante prend la version suivante (la plus haute existante + 1, avec
+    ///   `library::SCHEMA_VERSION` et `install::QUEUE_SCHEMA` montés d'autant, lecture sans
+    ///   migration) **seulement si la dernière version publiée ne sait pas la lire** ;
+    /// - on ne monte **jamais** la version pour une variante déjà lue par la dernière version
+    ///   publiée : monter la version ferait refuser le fichier par cette version, qui le lisait.
+    ///   Toutes les variantes actuelles, `studio_zip` comprise (lue depuis la bêta.4), rendent
+    ///   donc 1 : l'index et la file restent écrits en v1. Limite connue : la bêta.3 (qui ne
+    ///   connaît pas `studio_zip`) met toujours de côté un index qui contient une histoire STUdio ;
+    /// - les fichiers sont écrits à la plus basse version qui décrit leur contenu
+    ///   ([`schema_for`], comme `SourcesStore::save`).
+    ///
+    /// La même règle vaut pour toute énumération persistée dans ces fichiers ou dans les
+    /// marqueurs `.staging/*.pending` (`library::PendingMarker`, qui porte une `LibraryEntry`) :
+    /// les variantes de `podcast::pack::PackNode` et `podcast::pack::CoverChoice` (composition
+    /// d'un pack, dans `PackJob` de la file). Celles-ci n'ont pas encore de garde exhaustive :
+    /// une nouvelle variante doit y recevoir la même décision avant d'être écrite.
+    ///
+    /// `match` exhaustif sans joker : une nouvelle variante ne compile pas sans cette décision.
     pub fn min_schema(self) -> u32 {
         match self {
-            Self::TelmiZip | Self::FlamPlain | Self::FlamPk => 1,
-            Self::StudioZip => 2,
+            Self::TelmiZip | Self::StudioZip | Self::FlamPlain | Self::FlamPk => 1,
         }
     }
 }
 
 /// Plus basse version de schéma qui décrit des entrées de natures `kinds` (1 au moins).
 pub fn schema_for(kinds: impl IntoIterator<Item = StoryKind>) -> u32 {
-    kinds
-        .into_iter()
-        .map(StoryKind::min_schema)
-        .max()
-        .unwrap_or(1)
-        .max(1)
+    schema_with(kinds, StoryKind::min_schema)
+}
+
+/// [`schema_for`] avec la version minimale de chaque nature injectée (tests).
+fn schema_with(kinds: impl IntoIterator<Item = StoryKind>, min: impl Fn(StoryKind) -> u32) -> u32 {
+    kinds.into_iter().map(min).max().unwrap_or(1).max(1)
 }
 
 /// Refus de jouer sur le PC une histoire STUdio (archive d'une source ou pack Lunii installé) :
@@ -203,14 +214,32 @@ mod tests {
         assert_eq!(json(StoryKind::FlamPk), "flam_pk");
     }
 
-    /// #578 : seule une variante inconnue de la bêta.3 fait monter la version écrite.
+    /// #578 : toutes les variantes actuelles, `studio_zip` comprise, s'écrivent en v1.
     #[test]
-    fn version_de_schema_selon_les_variantes() {
+    fn variantes_actuelles_ecrites_en_v1() {
         assert_eq!(schema_for([]), 1);
         assert_eq!(
-            schema_for([StoryKind::TelmiZip, StoryKind::FlamPlain, StoryKind::FlamPk]),
+            schema_for([
+                StoryKind::TelmiZip,
+                StoryKind::StudioZip,
+                StoryKind::FlamPlain,
+                StoryKind::FlamPk
+            ]),
             1
         );
-        assert_eq!(schema_for([StoryKind::FlamPk, StoryKind::StudioZip]), 2);
+    }
+
+    /// #578 : choix de version avec un minimum injecté (variante future simulée sans l'ajouter
+    /// à l'énumération) : maximum des minimums, 1 au moins.
+    #[test]
+    fn version_ecrite_selon_un_minimum_injecte() {
+        let future = |k| if k == StoryKind::StudioZip { 2 } else { 1 };
+        assert_eq!(schema_with([], future), 1);
+        assert_eq!(schema_with([StoryKind::TelmiZip], future), 1);
+        assert_eq!(
+            schema_with([StoryKind::TelmiZip, StoryKind::StudioZip], future),
+            2
+        );
+        assert_eq!(schema_with([StoryKind::FlamPk], |_| 0), 1);
     }
 }

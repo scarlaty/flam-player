@@ -2058,12 +2058,10 @@ async fn reprise_garde_la_tache_la_plus_recente_d_un_doublon() {
     }
 }
 
-/// #578 : la file est écrite en v1 sans tâche STUdio (lisible par une version antérieure), en v2
-/// avec ; la version courante relit les deux, et une file v1 qui contient déjà `studio_zip`
-/// (écrite par la bêta.4) reste lue. Une version v1 (`load_versioned` à 1) refuse une file v2
-/// intacte, sans `.bak`.
+/// #578 : une file qui contient une tâche STUdio s'écrit en v1 (lue par la bêta.4, dernière
+/// version publiée) ; une file v2 (version future) se lit.
 #[tokio::test]
-async fn file_ecrite_en_v1_sans_studio_et_en_v2_avec() {
+async fn file_avec_studio_ecrite_en_v1_et_file_v2_lue() {
     let ctx = Ctx::new(None);
     let path = ctx.dir.path().join("config").join(QUEUE_FILE);
     let written = || {
@@ -2094,37 +2092,18 @@ async fn file_ecrite_en_v1_sans_studio_et_en_v2_avec() {
     };
     let telmi = slot(TASK_ID, StoryKind::TelmiZip);
     let studio = slot("11111111-2222-4333-8444-555555555555", StoryKind::StudioZip);
-
-    let snap = ctx.service.snapshot(std::slice::from_ref(&telmi));
-    ctx.service.write_queue(snap).await;
-    assert_eq!(written(), 1);
-    assert_eq!(ctx.queue().len(), 1);
-
     let snap = ctx.service.snapshot(&[telmi, studio]);
     ctx.service.write_queue(snap).await;
-    assert_eq!(written(), 2);
+    assert_eq!(written(), 1);
     let kinds: Vec<StoryKind> = ctx.queue().into_iter().map(|q| q.entry.kind).collect();
     assert_eq!(kinds, [StoryKind::TelmiZip, StoryKind::StudioZip]);
 
-    let before = std::fs::read(&path).unwrap();
-    let err = storage::load_versioned::<serde_json::Value>(&path, 1, |_, _| {}).unwrap_err();
-    assert_eq!(err.kind(), "config_version");
-    assert_eq!(std::fs::read(&path).unwrap(), before, "file intacte");
-    let config = std::fs::read_dir(path.parent().unwrap()).unwrap();
-    assert!(
-        config
-            .filter_map(Result::ok)
-            .all(|e| !e.file_name().to_string_lossy().ends_with(".bak")),
-        "aucune quarantaine"
-    );
-
-    // File v1 de la bêta.4 avec une tâche STUdio : toujours lue.
     let mut entry = story("ccc", Some(1));
     entry.kind = StoryKind::StudioZip;
     storage::write_json(
         &path,
         &QueueFile {
-            schema_version: 1,
+            schema_version: 2,
             tasks: vec![queued(TASK_ID, &entry)],
         },
     )
