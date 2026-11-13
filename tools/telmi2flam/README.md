@@ -680,6 +680,10 @@ python tools/telmi2flam/parity.py compare A.plain.pk B.plain.pk     # deux sorti
   `crates/telmi2flam/tests/data/matrix_expected.json`.
 - Ajouter un cas : voir `PORT-RUST.md` §4.5 (résultat attendu écrit à la main et justifié, ou
   sortie du binaire relue, jamais régénérée en masse).
+- Modifier un fichier du runtime : les références restent celles du gel ; le fichier rejoint la
+  liste fermée des fichiers modifiés depuis le gel (`UPDATED` des tests Rust, `RUNTIME_UPDATES`
+  de `parity.py`, contenu au gel sous `crates/telmi2flam/tests/data/runtime_frozen/`), voir
+  `PORT-RUST.md` §4.5.
 
 Campagne sur les archives réelles (#135, seuil §4.3 de `PORT-RUST.md`), entre deux moteurs
 (par exemple une version antérieure du binaire et la version en cours) :

@@ -38,6 +38,8 @@ use telmi2flam::package::{
     build_package, build_package_streamed, Data, Options, Package, Selector,
 };
 
+mod common;
+
 const MODE: &str = "T2F_FAKE_FFMPEG_MODE";
 const LOG: &str = "T2F_FAKE_FFMPEG_LOG";
 const MARK: &str = "T2F_FAKE_FFMPEG_MARK";
@@ -424,7 +426,7 @@ fn check_run(run: &Value, data: Vec<u8>, dir: &Path) -> Result<(), String> {
     if assumed_divergence(run) {
         return Ok(());
     }
-    let pkg = match (run.get("error").and_then(Value::as_str), got) {
+    let mut pkg = match (run.get("error").and_then(Value::as_str), got) {
         (Some(py), Err(_)) if py.starts_with("python_crash:") => return Ok(()),
         (Some(py), Err(e)) if e.code == py => return Ok(()),
         (Some(py), Err(e)) => return Err(format!("erreur Python {py}, Rust {}", e.code)),
@@ -432,6 +434,8 @@ fn check_run(run: &Value, data: Vec<u8>, dir: &Path) -> Result<(), String> {
         (None, Err(e)) => return Err(format!("Python réussit, Rust {e}")),
         (None, Ok(pkg)) => pkg,
     };
+    // Runtime modifié depuis le gel des vecteurs : contenu au gel (voir `common`).
+    common::freeze_bytes(&mut pkg.entries);
     let want: Vec<(String, String)> = run["entries"]
         .as_array()
         .unwrap()
@@ -510,7 +514,8 @@ fn check_streamed(run: &Value, data: &[u8], dir: &Path) -> Result<usize, String>
         .stack_size(8 << 20)
         .spawn(move || -> Result<usize, ConvError> {
             let mut archive = Archive::new(Cursor::new(data), "in.zip".into())?;
-            let pkg = build_package_streamed(&mut archive, &options, &|| false, &mut ())?;
+            let mut pkg = build_package_streamed(&mut archive, &options, &|| false, &mut ())?;
+            common::freeze_data(&mut pkg.entries);
             let refs = pkg
                 .entries
                 .iter()

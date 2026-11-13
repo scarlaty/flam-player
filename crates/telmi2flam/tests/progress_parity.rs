@@ -27,6 +27,8 @@ use std::process::Command;
 use serde_json::{Map, Value};
 use telmi2flam::archive::Archive;
 
+mod common;
+
 const VECTORS: &[u8] = include_bytes!("data/package_cases.zip");
 const RUNS: &str = include_str!("data/progress_cases.json");
 
@@ -316,7 +318,14 @@ fn check(run: &Value, cases: &[Value], zip: &mut Archive<Cursor<&[u8]>>) -> Resu
             })
             .collect()
     };
-    let want = strip(run["events"].as_array().unwrap());
+    let mut want = strip(run["events"].as_array().unwrap());
+    // Runtime modifié depuis le gel des vecteurs (voir `common`) : la sortie (entrées
+    // *stored*, ou fichiers du dossier `.plain`) grandit de l'écart de taille du runtime.
+    for e in want.iter_mut().filter(|e| e["event"] == "done") {
+        if let Some(size) = e["size"].as_i64() {
+            e["size"] = (size + common::size_delta()).into();
+        }
+    }
     let have = strip(events);
     if want != have {
         let show = |v: &[Value]| {
