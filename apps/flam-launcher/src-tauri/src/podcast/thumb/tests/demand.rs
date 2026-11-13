@@ -581,7 +581,8 @@ async fn un_second_telechargement_ne_refait_pas_le_balayage() {
     let key = EntryKey::of("s1", &episode("e1"));
     let access = f.access();
     // Premier téléchargement : crée le dossier et fait le balayage (dossier encore vide).
-    fetch_bytes(&access, &key, |dest| fake_download(&calls, None, dest)).await;
+    prepare_dir(&access, &key).await;
+    fetch_bytes(|dest| fake_download(&calls, None, dest)).await;
     // Reste ancien déposé ensuite : un second téléchargement ne le balaye pas.
     let old = dir.join("vieux.0123.dl.part");
     std::fs::write(&old, b"x").unwrap();
@@ -592,7 +593,71 @@ async fn un_second_telechargement_ne_refait_pas_le_balayage() {
         .unwrap()
         .set_modified(long_ago)
         .unwrap();
-    fetch_bytes(&access, &key, |dest| fake_download(&calls, None, dest)).await;
+    prepare_dir(&access, &key).await;
+    fetch_bytes(|dest| fake_download(&calls, None, dest)).await;
     assert!(old.exists(), "balayage non refait au second téléchargement");
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+/// Portillon de lecture déjà pris, comme le fait la commande.
+async fn gate_of(lock: &Arc<tokio::sync::RwLock<()>>) -> Gate {
+    Gate::new(lock.clone(), lock.clone().read_owned().await)
+}
+
+#[tokio::test]
+async fn portillon_relache_pendant_le_telechargement_et_fichier_hors_du_cache() {
+    let f = Fixture::new();
+    let key = EntryKey::of("s1", &episode("p1"));
+    let lock = Arc::new(tokio::sync::RwLock::new(()));
+    let root = f.root();
+    let free_during_download = std::sync::atomic::AtomicBool::new(false);
+    let outside = std::sync::atomic::AtomicBool::new(false);
+    let url = load_gated(
+        &f.access(),
+        &key,
+        Some(gate_of(&lock).await),
+        |dest| {
+            // « Vider le cache » (écriture) doit pouvoir passer pendant l'attente réseau.
+            free_during_download.store(lock.try_write().is_ok(), Ordering::SeqCst);
+            outside.store(!dest.starts_with(&root), Ordering::SeqCst);
+            let write = std::fs::write(dest, png(300, 300)).is_ok();
+            async move { write }
+        },
+        in_process,
+    )
+    .await;
+    assert!(url.is_some());
+    assert!(
+        free_during_download.load(Ordering::SeqCst),
+        "portillon tenu"
+    );
+    assert!(outside.load(Ordering::SeqCst), "destination dans le cache");
+    // La vignette est écrite, et le portillon est rendu à la fin.
+    assert!(read_thumb(&thumbs_dir(&f), &thumb_name(&key).unwrap()).is_some());
+    assert!(lock.try_write().is_ok());
+}
+
+#[tokio::test]
+async fn vidage_pendant_le_telechargement_ne_recree_rien() {
+    let f = Fixture::new();
+    let key = EntryKey::of("s1", &episode("p2"));
+    let lock = Arc::new(tokio::sync::RwLock::new(()));
+    let podcasts = f.root().join(crate::podcast::source::CACHE_SUBDIR);
+    let url = load_gated(
+        &f.access(),
+        &key,
+        Some(gate_of(&lock).await),
+        |dest| async {
+            // Le vidage prend le portillon, supprime `podcasts/`, puis le rend.
+            let write_gate = lock.write().await;
+            std::fs::remove_dir_all(&podcasts).unwrap();
+            drop(write_gate);
+            std::fs::write(dest, png(300, 300)).is_ok()
+        },
+        in_process,
+    )
+    .await;
+    // L'aperçu est rendu, mais rien n'est recréé dans le cache vidé.
+    assert!(url.is_some());
+    assert!(!podcasts.exists(), "dossier recréé après le vidage");
 }

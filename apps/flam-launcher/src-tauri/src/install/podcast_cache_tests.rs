@@ -113,8 +113,8 @@ fn composition(cover: CoverChoice) -> PackComposition {
 }
 
 impl PackBackend for Fake {
-    fn ready(&self) -> AppResult<()> {
-        Ok(())
+    fn ready<'a>(&'a self, _c: &'a mut watch::Receiver<bool>) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async { Ok(()) })
     }
 
     fn feeds<'a>(&'a self, _c: &'a PackComposition) -> BoxFuture<'a, AppResult<Feeds>> {

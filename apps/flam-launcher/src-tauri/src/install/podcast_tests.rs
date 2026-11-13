@@ -155,8 +155,8 @@ fn png() -> Vec<u8> {
 }
 
 impl PackBackend for FakePacks {
-    fn ready(&self) -> AppResult<()> {
-        Ok(())
+    fn ready<'a>(&'a self, _c: &'a mut watch::Receiver<bool>) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async { Ok(()) })
     }
 
     fn feeds<'a>(&'a self, _c: &'a PackComposition) -> BoxFuture<'a, AppResult<Feeds>> {
@@ -913,8 +913,8 @@ struct LocalPacks {
 }
 
 impl PackBackend for LocalPacks {
-    fn ready(&self) -> AppResult<()> {
-        Ok(())
+    fn ready<'a>(&'a self, _c: &'a mut watch::Receiver<bool>) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async { Ok(()) })
     }
 
     fn feeds<'a>(&'a self, _c: &'a PackComposition) -> BoxFuture<'a, AppResult<Feeds>> {
@@ -1212,14 +1212,15 @@ fn motif_d_un_episode_retire_porte_le_code_sans_url() {
 }
 
 /// ffmpeg et ffprobe sont tous deux vérifiés avant tout téléchargement.
-#[test]
-fn verifie_ffmpeg_et_ffprobe_avant_de_telecharger() {
+#[tokio::test]
+async fn verifie_ffmpeg_et_ffprobe_avant_de_telecharger() {
     use crate::ffmpeg::{Ffmpeg, Tool, MANIFEST_FILE};
     use sha2::{Digest, Sha256};
     let dir = tempfile::tempdir().unwrap();
     let ff = Ffmpeg::in_dir(dir.path());
+    let (_keep, mut cancel) = tokio::sync::watch::channel(false);
     // Rien : refus, message de pack.
-    let err = verify_converter(&ff).unwrap_err();
+    let err = verify_converter(&ff, &mut cancel).await.unwrap_err();
     assert!(
         matches!(&err, AppError::ConverterUnavailable(m) if m.contains("réinstallez")),
         "{err:?}"
@@ -1241,7 +1242,7 @@ fn verifie_ffmpeg_et_ffprobe_avant_de_telecharger() {
         std::fs::write(dir.path().join(MANIFEST_FILE), text).unwrap();
     };
     manifest(&[(Tool::Ffmpeg.file_name(), b"ffmpeg")]);
-    let err = verify_converter(&ff).unwrap_err();
+    let err = verify_converter(&ff, &mut cancel).await.unwrap_err();
     assert!(
         matches!(&err, AppError::ConverterUnavailable(m) if m.contains(Tool::Ffprobe.file_name())),
         "{err:?}"
@@ -1252,14 +1253,19 @@ fn verifie_ffmpeg_et_ffprobe_avant_de_telecharger() {
         (Tool::Ffmpeg.file_name(), b"ffmpeg"),
         (Tool::Ffprobe.file_name(), b"ffprobe"),
     ]);
-    let err = verify_converter(&ff).unwrap_err();
+    let err = verify_converter(&ff, &mut cancel).await.unwrap_err();
     assert!(
         matches!(&err, AppError::ConverterUnavailable(m) if m.contains("empreinte")),
         "{err:?}"
     );
     // Les deux conformes : accepté.
     std::fs::write(dir.path().join(Tool::Ffprobe.file_name()), b"ffprobe").unwrap();
-    verify_converter(&ff).unwrap();
+    verify_converter(&ff, &mut cancel).await.unwrap();
+    // Annulée d'avance : le contrôle s'arrête sans verdict sur le convertisseur (#582).
+    let (stop, mut cancelled) = tokio::sync::watch::channel(false);
+    stop.send(true).unwrap();
+    let err = verify_converter(&ff, &mut cancelled).await.unwrap_err();
+    assert!(matches!(err, AppError::Cancelled), "{err:?}");
 }
 
 /// Une erreur disque propre à un seul épisode le retire seul : le pack aboutit avec les autres.

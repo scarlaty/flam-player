@@ -174,10 +174,14 @@ const MAX_XML_ERROR_CHARS: usize = 200;
 
 /// Erreur d'analyse XML pour l'utilisateur : le message de quick-xml, sur une ligne et borné.
 fn xml_error(err: &dyn std::fmt::Display) -> RssError {
-    RssError::InvalidFeed(format!(
-        "XML mal formé : {}",
-        clean_line(&err.to_string(), MAX_XML_ERROR_CHARS)
-    ))
+    let line = clean_line(&err.to_string(), usize::MAX);
+    // Message coupé : marque « … » (la borne totale reste MAX_XML_ERROR_CHARS caractères).
+    let shown = if line.chars().count() > MAX_XML_ERROR_CHARS {
+        format!("{}…", truncate_chars(&line, MAX_XML_ERROR_CHARS - 1))
+    } else {
+        line
+    };
+    RssError::InvalidFeed(format!("XML mal formé : {shown}"))
 }
 
 /// URI d'espace de noms comparable : sans espaces, schéma ni `/` final, en minuscules.

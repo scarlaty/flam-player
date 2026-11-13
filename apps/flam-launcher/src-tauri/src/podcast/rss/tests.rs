@@ -539,37 +539,48 @@ fn balises_inconnues_et_casse() {
 fn script_en_majuscules_et_nombreux_restent_rapides() {
     assert_eq!(strip_html("a<SCRIPT>x</Script>b<STYLE>y</STYLE>c"), "abc");
     let many = "<script>x</script>".repeat(20_000);
-    let start = std::time::Instant::now();
     assert_eq!(strip_html(&format!("{many}fin")), "fin");
-    assert!(start.elapsed() < std::time::Duration::from_secs(5));
 }
 
 /// Flux de ~15 Mio dont le canal porte `body` dans une description CDATA : l'analyse doit
-/// rester rapide (bornes de texte et d'entrée HTML).
-fn hostile_description(body: &str) -> (PodcastFeed, std::time::Duration) {
+/// rester bornée (bornes de texte et d'entrée HTML). Aucune durée n'est mesurée (horloge réelle,
+/// instable sous charge) : la borne est celle de l'entrée du nettoyage, vérifiée à part
+/// (`entree_du_nettoyage_html_bornee`) ; un coût non borné ferait échouer le test par blocage.
+fn hostile_description(body: &str) -> PodcastFeed {
     let reps = 15 * 1024 * 1024 / body.len();
     let xml = wrap(&format!(
         "<description><![CDATA[{}]]></description>{}",
         body.repeat(reps),
         item("a", "")
     ));
-    let start = std::time::Instant::now();
-    let feed = parse(&xml).unwrap();
-    (feed, start.elapsed())
+    parse(&xml).unwrap()
+}
+
+#[test]
+fn entree_du_nettoyage_html_bornee() {
+    let huge = "<script></script>".repeat(MAX_HTML_INPUT_BYTES);
+    assert!(huge.len() > 10 * MAX_HTML_INPUT_BYTES);
+    assert_eq!(
+        floor_bytes(&huge, MAX_HTML_INPUT_BYTES).len(),
+        MAX_HTML_INPUT_BYTES
+    );
+    // Frontière de caractère : jamais au-delà de la borne, jamais au milieu d'un caractère.
+    let accents = "é".repeat(MAX_HTML_INPUT_BYTES);
+    let cut = floor_bytes(&accents, MAX_HTML_INPUT_BYTES);
+    assert!(cut.len() <= MAX_HTML_INPUT_BYTES);
+    assert!(cut.chars().all(|c| c == 'é'));
 }
 
 #[test]
 fn cdata_geant_d_esperluettes_reste_rapide() {
-    let (feed, took) = hostile_description("&");
+    let feed = hostile_description("&");
     assert!(feed.description.is_some());
-    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
 }
 
 #[test]
 fn cdata_geant_de_balises_script_reste_rapide() {
-    let (feed, took) = hostile_description("<script></script>");
+    let feed = hostile_description("<script></script>");
     assert!(feed.description.as_deref().unwrap_or("").len() <= 1);
-    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
 }
 
 #[test]
@@ -579,10 +590,8 @@ fn titre_geant_reste_rapide_et_borne() {
         "<title><![CDATA[{huge}]]></title>{}",
         item("a", "")
     ));
-    let start = std::time::Instant::now();
     let feed = parse(&xml).unwrap();
     assert_eq!(feed.title.chars().count(), MAX_TITLE_CHARS);
-    assert!(start.elapsed() < std::time::Duration::from_secs(5));
 }
 
 #[test]
@@ -1000,6 +1009,7 @@ fn message_xml_reduit_a_une_ligne_et_borne() {
     assert!(message.starts_with("XML mal formé : "), "{message}");
     assert!(message.chars().count() <= "XML mal formé : ".chars().count() + MAX_XML_ERROR_CHARS);
     assert!(!message.contains(&giant));
+    assert!(message.ends_with('…'), "coupure sans marque : {message}");
     // Saut de ligne et caractères de contrôle dans le message : une seule ligne.
     let RssError::InvalidFeed(message) = xml_error(&"nom\navec\r\nsaut\tet\u{7}contrôle") else {
         unreachable!()

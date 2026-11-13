@@ -200,12 +200,32 @@ fn take_download(path: &Path) -> Option<Vec<u8>> {
     bytes
 }
 
-/// Vignette (URL `data:`) de l'épisode `key` : cache des vignettes, sinon pochette du cache
-/// des MP3, sinon `download` (appelé avec le fichier de destination, rend `true` si l'image y a
-/// été écrite). La vignette obtenue est mise en cache. `None` : pas d'aperçu.
+/// [`load_gated`] sans portillon du cache (tests).
+#[cfg(test)]
 pub(super) async fn load<D, Fut>(
     access: &CacheAccess,
     key: &EntryKey,
+    download: D,
+    convert: Convert,
+) -> Option<String>
+where
+    D: FnOnce(PathBuf) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    load_gated(access, key, None, download, convert).await
+}
+
+/// Vignette (URL `data:`) de l'épisode `key` : cache des vignettes, sinon pochette du cache
+/// des MP3, sinon `download` (appelé avec le fichier de destination, hors du cache, rend `true`
+/// si l'image y a été écrite). La vignette obtenue est mise en cache. `None` : pas d'aperçu.
+///
+/// `gate` (tenu en lecture à l'appel) couvre les seules lectures et écritures du cache : relâché
+/// avant le téléchargement et le décodage, repris pour écrire la vignette (#582). L'écriture ne
+/// crée aucun dossier : si un vidage est passé entre-temps, la vignette n'est pas mise en cache.
+pub(super) async fn load_gated<D, Fut>(
+    access: &CacheAccess,
+    key: &EntryKey,
+    mut gate: Option<Gate>,
     download: D,
     convert: Convert,
 ) -> Option<String>
@@ -225,9 +245,16 @@ where
     if let Some(png) = cached {
         return Some(thumbnail::data_uri(&png));
     }
-    let bytes = match access.cached_image(key, MAX_INPUT_BYTES as u64).await {
+    let from_cache = access.cached_image(key, MAX_INPUT_BYTES as u64).await;
+    if from_cache.is_none() {
+        prepare_dir(access, key).await?;
+    }
+    if let Some(gate) = gate.as_mut() {
+        gate.release();
+    }
+    let bytes = match from_cache {
         Some(bytes) => bytes,
-        None => fetch_bytes(access, key, download).await?,
+        None => fetch_bytes(download).await?,
     };
     // Au plus DECODERS décodages à la fois (chaque aperçu lance un processus enfant) : une
     // catégorie de 40 épisodes ne déclenche pas 40 décodeurs simultanés.
@@ -241,12 +268,16 @@ where
         }
     };
     drop(_permit);
+    if let Some(gate) = gate.as_mut() {
+        gate.reacquire().await;
+    }
     let (stored, to_write) = (name, png.clone());
     let written = access
-        .in_subdir(THUMBS_DIR, source_id, Mode::Write, move |dir| {
+        .in_subdir(THUMBS_DIR, source_id, Mode::Read, move |dir| {
             write_thumb(dir, &stored, &to_write)
         })
         .await;
+    drop(gate);
     if let Some(Err(err)) = written {
         tracing::warn!("aperçu de pochette : vignette non mise en cache : {err}");
     }
@@ -264,31 +295,66 @@ fn first_fetch(dir: &Path) -> bool {
         .insert(dir.to_path_buf())
 }
 
-/// Télécharge l'image de l'épisode dans le dossier des vignettes de sa source (créé sous le
-/// verrou de la source : une source purgée n'en récupère rien), au plus [`DOWNLOADS`] à la fois.
-async fn fetch_bytes<D, Fut>(access: &CacheAccess, key: &EntryKey, download: D) -> Option<Vec<u8>>
+/// Portillon du cache ([`crate::catalog::CatalogService::cache_gate`]) tenu en lecture par
+/// l'aperçu, relâchable : « Vider le cache » (écriture) n'attend ainsi que les sections qui lisent
+/// ou écrivent le cache, jamais une attente réseau (#582).
+pub(super) struct Gate {
+    lock: Arc<tokio::sync::RwLock<()>>,
+    held: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+}
+
+impl Gate {
+    /// `held` : garde de lecture déjà pris sur `lock`.
+    pub(super) fn new(
+        lock: Arc<tokio::sync::RwLock<()>>,
+        held: tokio::sync::OwnedRwLockReadGuard<()>,
+    ) -> Self {
+        Self {
+            lock,
+            held: Some(held),
+        }
+    }
+
+    fn release(&mut self) {
+        self.held = None;
+    }
+
+    /// Reprend le portillon (en attendant la fin d'un vidage en cours). Rien d'autre ne doit être
+    /// tenu pendant l'attente.
+    async fn reacquire(&mut self) {
+        self.held = Some(self.lock.clone().read_owned().await);
+    }
+}
+
+/// Fichier de destination d'un téléchargement : **hors du cache** (dossier temporaire du
+/// système, nom aléatoire). Le portillon du cache est relâché pendant le téléchargement : un
+/// vidage ne peut ni le supprimer sous l'écriture en cours ni le voir recréer un dossier purgé.
+fn download_dest() -> PathBuf {
+    std::env::temp_dir().join(format!("flam-thumb-{}.dl", uuid::Uuid::new_v4().simple()))
+}
+
+/// Prépare le dossier des vignettes de la source, sous le verrou de la source : une source déjà
+/// purgée n'obtient rien (`None`), et les restes d'anciens téléchargements abandonnés (arrêt
+/// brutal) sont balayés une fois par source et par session (le dossier est lu en entier).
+async fn prepare_dir(access: &CacheAccess, key: &EntryKey) -> Option<()> {
+    access
+        .in_subdir(THUMBS_DIR, &key.source_id, Mode::Write, |dir| {
+            if first_fetch(dir) {
+                sweep_stale(dir);
+            }
+        })
+        .await
+}
+
+/// Télécharge l'image de l'épisode (hors du cache, voir [`download_dest`]), au plus
+/// [`DOWNLOADS`] à la fois.
+async fn fetch_bytes<D, Fut>(download: D) -> Option<Vec<u8>>
 where
     D: FnOnce(PathBuf) -> Fut,
     Fut: Future<Output = bool>,
 {
     static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(DOWNLOADS);
-    let dir = access
-        .in_subdir(THUMBS_DIR, &key.source_id, Mode::Write, |dir| {
-            // Restes d'anciens téléchargements abandonnés (arrêt brutal) : balayés ici aussi,
-            // pas seulement à l'écriture d'une vignette, mais une fois par source et par session
-            // (le dossier est lu en entier, sous le verrou de la source).
-            if first_fetch(dir) {
-                sweep_stale(dir);
-            }
-            dir.to_path_buf()
-        })
-        .await?;
-    // Nom unique : deux demandes simultanées pour le même épisode ne s'écrasent pas.
-    let dest = dir.join(format!(
-        "{}.{}.dl",
-        key.episode_id,
-        uuid::Uuid::new_v4().simple()
-    ));
+    let dest = download_dest();
     let _permit = SLOTS.acquire().await.ok()?;
     let ok = download(dest.clone()).await;
     drop(_permit);
@@ -389,17 +455,16 @@ pub async fn pack_episode_thumbnail(
         return Ok(None);
     }
     // Portillon du cache en lecture, comme les autres écrivains du cache : « Vider le cache »
-    // (écriture) attend la fin du chargement. Rien de ce qui suit ne reprend ce portillon
-    // (`find_episode`, `CacheAccess` et `load` n'y touchent pas : une relecture pendant qu'un
-    // vidage attend s'interbloquerait), et l'appelant n'en tient aucun.
-    //
-    // Pire cas connu : le portillon reste tenu pendant l'attente d'un créneau et le téléchargement
-    // (jusqu'à `DOWNLOAD_TIMEOUT` par créneau, `DOWNLOADS` créneaux), soit environ 40 s : un
-    // « Vider le cache » attend ces aperçus, et les nouvelles lectures derrière lui. Ne pas le
-    // réduire en le relâchant pendant le téléchargement : le fichier `.dl` est écrit dans le
-    // dossier du cache, et un vidage pourrait alors le supprimer sous l'écriture en cours (ou la
-    // laisser recréer un dossier purgé). Le réduire demande de télécharger hors du cache.
-    let _gate = catalog.cache_gate().read_owned().await;
+    // (écriture) attend la fin des sections qui lisent ou écrivent le cache. Il est relâché par
+    // `load_gated` pendant l'attente d'un créneau, le téléchargement (écrit hors du cache) et le
+    // décodage, puis repris pour l'écriture : le pire cas n'est plus de l'ordre de 40 s (#582).
+    // Rien de ce qui suit ne reprend ce portillon en le tenant déjà (`find_episode`,
+    // `CacheAccess` et `load_gated` : une relecture imbriquée pendant qu'un vidage attend
+    // s'interbloquerait), et l'appelant n'en tient aucun.
+    let gate = Gate::new(
+        catalog.cache_gate(),
+        catalog.cache_gate().read_owned().await,
+    );
     // Génération lue **avant** de résoudre l'adresse du flux : une purge ensuite rend le cache
     // inaccessible (voir `CacheAccess::new`).
     let generation = service.generation(&episode.source_id);
@@ -412,9 +477,10 @@ pub async fn pack_episode_thumbnail(
     let key = EntryKey::of(&episode.source_id, &found);
     let access = CacheAccess::new(Arc::new(LiveLocks(app)), root, [episode.source_id.clone()])
         .at_generation(&episode.source_id, generation);
-    Ok(load(
+    Ok(load_gated(
         &access,
         &key,
+        Some(gate),
         |dest| download_from_web(image, dest),
         |b, kind| artwork::convert_isolated(b, kind, None),
     )

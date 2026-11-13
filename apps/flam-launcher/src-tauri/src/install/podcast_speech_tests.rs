@@ -169,8 +169,8 @@ fn composition(voice: Option<&str>) -> PackComposition {
 }
 
 impl PackBackend for Fake {
-    fn ready(&self) -> AppResult<()> {
-        Ok(())
+    fn ready<'a>(&'a self, _c: &'a mut watch::Receiver<bool>) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async { Ok(()) })
     }
 
     fn feeds<'a>(&'a self, _c: &'a PackComposition) -> BoxFuture<'a, AppResult<Feeds>> {
@@ -767,23 +767,23 @@ async fn categorie_videe_avec_titre_en_echec_sans_avertissement() {
 #[tokio::test]
 async fn deux_delais_de_synthese_consecutifs_arretent_la_creation() {
     let ctx = Ctx::new(Simulated::french());
-    *ctx.fake.synth_timeout.lock().unwrap() = Some(Duration::from_millis(100));
+    // Délai court mais large devant une synthèse normale, même sur une machine chargée ; les
+    // synthèses figées durent bien au-delà (aucune mesure de durée : voir la borne ci-dessous).
+    *ctx.fake.synth_timeout.lock().unwrap() = Some(Duration::from_secs(1));
     // « Mon pack » est lu ; « Un » puis « Saison » ne rendent pas la main à temps.
     let calls = ctx.record(
         Simulated::french(),
         &["Un", "Saison"],
-        Duration::from_secs(6),
+        Duration::from_secs(300),
     );
-    let started = Instant::now();
-    let err = ctx.prepare(composition(None)).await.unwrap_err();
+    // Les threads de synthèse figés sont abandonnés, jamais attendus : attendre l'un d'eux
+    // dépasserait cette borne (très large devant les deux délais d'une seconde).
+    let result = tokio::time::timeout(Duration::from_secs(120), ctx.prepare(composition(None)))
+        .await
+        .expect("arrêt sans attendre la voix");
+    let err = result.unwrap_err();
     assert_eq!(err.kind(), "tts_failed", "{err:?}");
     assert!(err.to_string().contains("ne répond plus"), "{err}");
-    // Bien moins que les deux synthèses figées (threads abandonnés, jamais attendus).
-    assert!(
-        started.elapsed() < Duration::from_secs(4),
-        "arrêt sans attendre la voix : {:?}",
-        started.elapsed()
-    );
     // Aucun titre après le second délai.
     let texts: Vec<String> = calls.lock().unwrap().iter().map(|c| c.1.clone()).collect();
     assert_eq!(texts, ["Mon pack", "Un", "Saison"]);
