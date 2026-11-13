@@ -419,7 +419,7 @@ fn option_index_moins_un_maison_plusieurs_options_aleatoire() {
 
 #[test]
 fn option_index_negatif_ou_hors_bornes_avec_plusieurs_options() {
-    for bad in [-2i64, 2, i64::MIN] {
+    for bad in [-2i64, 2, 2_147_483_648, 4_294_967_295, i64::MIN] {
         let mut v = base();
         v["actionNodes"][0]["options"] = json!([U1, U0]);
         v["stageNodes"][0]["okTransition"]["optionIndex"] = json!(bad);
@@ -427,6 +427,17 @@ fn option_index_negatif_ou_hors_bornes_avec_plusieurs_options() {
             matches!(err(&v), StoryError::OptionIndexHorsBornes { index, options: 2, .. } if index == bad),
             "{bad}"
         );
+    }
+}
+
+#[test]
+fn option_index_moins_un_mal_type() {
+    // -1.0 et "-1" ne sont pas des entiers : erreur de lecture du JSON.
+    for bad in [json!(-1.0), json!("-1")] {
+        let mut v = base();
+        v["actionNodes"][0]["options"] = json!([U1, U0]);
+        v["stageNodes"][0]["okTransition"]["optionIndex"] = bad.clone();
+        assert!(matches!(err(&v), StoryError::Json(_)), "{bad}");
     }
 }
 
@@ -457,13 +468,21 @@ fn centaines_de_transitions_aleatoires() {
     let story = parse(&v).unwrap();
     let ni = build_index(&story).ni;
     assert_eq!(ni.len(), 0x200 + NODES * 0x2C);
+    let li_pos: Vec<usize> = (0..NODES)
+        .map(|i| (0..i).map(|j| 2 + j % 49).sum())
+        .collect();
     for (n, s) in story.stage_nodes().iter().enumerate() {
         assert_eq!(s.ok_transition.unwrap().option, OptionChoice::Aleatoire);
         assert_eq!(s.home_transition.unwrap().option, OptionChoice::Aleatoire);
         assert_eq!(champ_option(&ni, n, false), [0xFF; 4], "nœud {n}");
         assert_eq!(champ_option(&ni, n, true), [0xFF; 4], "nœud {n}");
-        let count = i32::from_le_bytes(ni[0x200 + n * 0x2C + 0x0C..][..4].try_into().unwrap());
-        assert_eq!(count as usize, 2 + n % 49);
+        let field =
+            |at: usize| i32::from_le_bytes(ni[0x200 + n * 0x2C + at..][..4].try_into().unwrap());
+        assert_eq!(field(0x0C) as usize, 2 + n % 49);
+        assert_eq!(field(0x18) as usize, 2 + (n + 1) % NODES % 49);
+        // Position dans `li` : somme des options des actionNodes précédents, calculée ici.
+        assert_eq!(field(0x08) as usize, li_pos[n], "nœud {n}");
+        assert_eq!(field(0x14) as usize, li_pos[(n + 1) % NODES], "nœud {n}");
     }
 }
 

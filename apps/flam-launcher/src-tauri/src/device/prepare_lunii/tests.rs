@@ -520,6 +520,15 @@ fn ni_li_ri_si_incoherents_refuses() {
         with("ni", node_with(&|n| n.home = (-1, 2, -1))),
         "transition Maison",
     ));
+    // Transition partiellement absente : refusée.
+    cases.push((
+        with("ni", node_with(&|n| n.ok = (0, -1, -1))),
+        "transition OK",
+    ));
+    cases.push((
+        with("ni", node_with(&|n| n.ok = (-1, -1, 0))),
+        "transition OK",
+    ));
     cases.push((
         with("ni", node_with(&|n| n.ok = (-1, 2, 0))),
         "transition OK",
@@ -570,6 +579,20 @@ fn tirage_au_hasard_accepte() {
     let mut n = nodes();
     n[0].ok = (0, 2, -1);
     n[1].home = (0, 2, -1);
+    let ni = ni_bytes(&n, 2, 1);
+    let mut entries = base_entries();
+    set(&mut entries, "ni", ni.clone());
+    let prepared = run(&pk_with(tmp.path(), &entries), &tmp.path().join("travail")).unwrap();
+    assert_eq!(std::fs::read(prepared.dir.join("ni")).unwrap(), ni);
+}
+
+#[test]
+fn tirage_au_hasard_a_une_option_accepte() {
+    // `(0, 1, -1)` : jamais écrit par `studio2lunii` (un -1 vers une seule option y devient 0),
+    // mais inoffensif (la seule option possible) ; accepté plutôt que de durcir sans mesure.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut n = nodes();
+    n[0].ok = (0, 1, -1);
     let ni = ni_bytes(&n, 2, 1);
     let mut entries = base_entries();
     set(&mut entries, "ni", ni.clone());

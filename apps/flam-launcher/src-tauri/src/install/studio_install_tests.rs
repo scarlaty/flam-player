@@ -248,8 +248,14 @@ async fn installation_studio_avec_tirages_au_hasard() {
     let ni = std::fs::read(prepared.dir.join("ni")).unwrap();
     assert_eq!(ni.len(), 0x200 + NODES * 0x2C);
     let field = |at: usize| i32::from_le_bytes(ni[at..at + 4].try_into().unwrap());
+    // Position de « a<i> » dans `li` : somme des options des actionNodes précédents.
+    let li_pos: Vec<i32> = (0..NODES)
+        .map(|i| (0..i).map(options).sum::<usize>() as i32)
+        .collect();
     for n in 0..NODES {
         let node = 0x200 + n * 0x2C;
+        assert_eq!(field(node + 0x08), li_pos[n], "nœud {n}");
+        assert_eq!(field(node + 0x14), li_pos[(n + 1) % NODES], "nœud {n}");
         // OK : nombre d'options de « a<n> », puis -1 ; maison : celui de « a<n+1> », puis -1.
         assert_eq!(field(node + 0x0C), options(n) as i32, "nœud {n}");
         assert_eq!(field(node + 0x10), -1, "nœud {n}");

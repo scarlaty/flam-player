@@ -68,12 +68,13 @@
 //! | 0x20     | 2 × 5  | contrôles `wheel`, `ok`, `home`, `pause`, `autoplay` (0 ou 1)     |
 //! | 0x2A     | 2      | zéros                                                             |
 //!
-//! Sans transition, ses trois champs valent `FF FF FF FF`. Un tirage au hasard
-//! ([`OptionChoice::Aleatoire`], actionNode d'au moins deux options) ne met `FF FF FF FF` que
-//! dans le champ d'option, les deux autres restant renseignés : c'est l'encodage de Lunii.QT
-//! (`optionIndex` recopié en entier signé de 32 bits). Son effet sur la Flam 2.x n'est pas
-//! mesuré (L11 de la note). `controlSettings` étant obligatoire
+//! Sans transition, ses trois champs valent `FF FF FF FF`. `controlSettings` étant obligatoire
 //! ([`crate::story`]), le remplissage `0xAA` de Lunii.QT n'apparaît jamais.
+//!
+//! Un tirage au hasard ([`OptionChoice::Aleatoire`], actionNode d'au moins deux options) ne met
+//! `FF FF FF FF` que dans le champ d'option, les deux autres restant renseignés : c'est
+//! l'encodage de Lunii.QT (`optionIndex` recopié en entier signé de 32 bits). Son effet sur la
+//! Flam 2.x n'est pas mesuré (L11 de la note).
 //!
 //! # `li` : options des actionNodes
 //!
