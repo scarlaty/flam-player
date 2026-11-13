@@ -105,7 +105,8 @@ pub enum PrepareError {
 /// Refus ou échec de la demande d'éjection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
-    /// Raison montrée à l'utilisateur (peut nommer le programme qui refuse : jamais journalisée).
+    /// Raison du refus, rendue dans `reason` du repli (l'interface n'affiche que `message`). Peut
+    /// nommer le programme qui refuse : jamais journalisée.
     pub reason: String,
     /// Motif du refus de Windows (`PNP_VETO_TYPE`), s'il y en a un.
     pub veto: Option<i32>,
@@ -134,15 +135,45 @@ pub trait EjectSystem {
     fn volume_gone(&self, root: &Path) -> bool;
 }
 
-/// Raison du repli quand Windows a accepté la demande mais que la Flam est encore visible.
+/// `reason` du repli (champ `reason`, non affiché) quand Windows a accepté la demande mais que
+/// la Flam est encore visible.
 pub const STILL_PRESENT: &str =
-    "Windows a accepté la demande, mais la Flam est encore visible : elle n'a pas été arrêtée";
+    "Windows a accepté la demande, mais la Flam est encore visible : elle n'a pas encore disparu";
+
+/// Codes Windows d'un volume disparu : fichier ou chemin introuvable, lecteur invalide, non
+/// prêt, volume non reconnu, appareil non connecté.
+const GONE_OS_ERRORS: [i32; 6] = [2, 3, 15, 21, 1005, 1167];
+
+/// Vrai si `err` (accès au `.mdf`) prouve que le volume a disparu. Toute autre erreur (accès
+/// refusé, violation de partage, erreur d'entrée/sortie) peut être passagère : pas une preuve.
+pub fn means_gone(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::NotFound
+        || (cfg!(windows)
+            && err
+                .raw_os_error()
+                .is_some_and(|c| GONE_OS_ERRORS.contains(&c)))
+}
 
 /// Attend (au plus `attempts` essais espacés de `delay`) que le `.mdf` de `root` ne soit plus
-/// accessible : le volume a disparu. Toute erreur d'accès vaut disparition (lecteur absent ou
-/// non prêt) ; un `.mdf` encore lisible au dernier essai rend faux.
+/// accessible : le volume a disparu ([`means_gone`]). Encore présent, ou autre erreur, au
+/// dernier essai : faux.
 pub fn wait_until_gone(
     root: &Path,
+    attempts: u32,
+    delay: std::time::Duration,
+    sleep: impl Fn(std::time::Duration),
+) -> bool {
+    wait_until_gone_with(
+        || fs::symlink_metadata(root.join(MDF_FILE)).map(drop),
+        attempts,
+        delay,
+        sleep,
+    )
+}
+
+/// [`wait_until_gone`] avec la sonde d'accès au `.mdf` injectée.
+pub fn wait_until_gone_with(
+    probe: impl Fn() -> std::io::Result<()>,
     attempts: u32,
     delay: std::time::Duration,
     sleep: impl Fn(std::time::Duration),
@@ -151,7 +182,7 @@ pub fn wait_until_gone(
         if attempt > 0 {
             sleep(delay);
         }
-        if fs::symlink_metadata(root.join(MDF_FILE)).is_err() {
+        if probe().is_err_and(|err| means_gone(&err)) {
             return true;
         }
     }
@@ -217,9 +248,15 @@ pub fn eject(
                 None => tracing::warn!("éjection refusée : {}", refusal.reason),
             }
             match busy {
-                Some(reason) => EjectOutcome::fallback(format!(
-                    "un fichier de la Flam est ouvert par un autre programme ({reason})"
+                // Verrou refusé puis veto de Windows : un programme tient bien la Flam.
+                Some(busy) if refusal.veto.is_some() => EjectOutcome::fallback(format!(
+                    "un fichier de la Flam est ouvert par un autre programme ({busy}) ; {}",
+                    refusal.reason
                 )),
+                // Autre échec de la demande (périphérique introuvable…) : raison de Windows.
+                Some(busy) => {
+                    EjectOutcome::fallback(format!("{} (volume occupé : {busy})", refusal.reason))
+                }
                 // Volume démonté avant le refus : il se remonte au prochain accès, sans perte.
                 None if dismounted => {
                     EjectOutcome::fallback(format!("{}{DISMOUNTED_NOTE}", refusal.reason))
@@ -445,7 +482,8 @@ mod sys {
     /// l'interface).
     fn volume_path(root: &Path) -> Result<String, String> {
         let letter = drive_letter(root)
-            .ok_or_else(|| format!("{} n'est pas la racine d'un lecteur", root.display()))?;
+            // Sans le chemin : la raison est journalisée.
+            .ok_or_else(|| "le dossier choisi n'est pas la racine d'un lecteur".to_string())?;
         let system = std::env::var("SystemDrive")
             .ok()
             .and_then(|drive| drive_letter(Path::new(&drive)))

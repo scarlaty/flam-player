@@ -163,14 +163,136 @@ fn volume_occupe_puis_refus_de_windows_donne_le_repli() {
     let EjectOutcome::Fallback { reason, message } = outcome.unwrap() else {
         panic!("repli attendu");
     };
-    assert_eq!(
-        reason,
-        "un fichier de la Flam est ouvert par un autre programme (Accès refusé. (os error 5))"
+    assert!(
+        reason.starts_with(
+            "un fichier de la Flam est ouvert par un autre programme (Accès refusé. (os error 5)) ; "
+        ),
+        "{reason}"
     );
+    // Raison de Windows gardée dans `reason` (non affichée), jamais journalisée.
+    assert!(reason.ends_with(&format!("({who})")), "{reason}");
+    assert!(!logs.contains(&who), "{logs}");
     assert!(!reason.contains(DISMOUNTED_NOTE), "rien n'a été démonté");
     assert_eq!(message, FALLBACK_MESSAGE);
     assert_eq!(fake.calls(), ["prepare", "eject"]);
     assert_eq!(lock.current(), None);
+}
+
+/// Volume occupé puis échec de la demande sans veto (périphérique introuvable) : la raison de
+/// Windows est rendue, sans affirmer qu'un fichier est ouvert.
+#[test]
+fn volume_occupe_puis_echec_sans_veto_garde_la_raison_de_windows() {
+    let dir = device();
+    let fake = Fake::new(
+        Err(in_use()),
+        Err("périphérique USB introuvable (code 13)".into()),
+    );
+    let outcome = eject(dir.path(), &DeviceLock::new(), &fake).unwrap();
+    let EjectOutcome::Fallback { reason, message } = outcome else {
+        panic!("repli attendu");
+    };
+    assert_eq!(
+        reason,
+        "périphérique USB introuvable (code 13) (volume occupé : Accès refusé. (os error 5))"
+    );
+    assert!(
+        !reason.contains("ouvert par un autre programme"),
+        "{reason}"
+    );
+    assert_eq!(message, FALLBACK_MESSAGE);
+}
+
+/// Ouverture du volume refusée (caches non vidés) : la demande de retrait est faite quand même,
+/// Windows vidant les caches en verrouillant le volume.
+#[test]
+fn volume_ouvert_en_exclusif_demande_aussi_le_retrait() {
+    let dir = device();
+    let fake = Fake::new(
+        Err(PrepareError::InUse {
+            reason: "violation de partage".into(),
+            flushed: false,
+        }),
+        Ok(()),
+    );
+    let outcome = eject(dir.path(), &DeviceLock::new(), &fake).unwrap();
+    assert_eq!(outcome, EjectOutcome::ejected());
+    assert_eq!(fake.calls(), ["prepare", "eject", "gone"]);
+}
+
+/// Le verrou de la Flam est tenu pendant l'attente de la disparition du volume.
+#[test]
+fn le_verrou_est_tenu_pendant_l_attente_de_disparition() {
+    struct Probe<'a>(&'a DeviceLock, std::cell::Cell<bool>);
+    impl EjectSystem for Probe<'_> {
+        fn prepare(&self, _root: &Path) -> Result<(), PrepareError> {
+            Err(in_use())
+        }
+        fn request_eject(&self, _root: &Path) -> Result<(), Refusal> {
+            Ok(())
+        }
+        fn volume_gone(&self, _root: &Path) -> bool {
+            assert_eq!(
+                self.0.try_begin(Operation::Transfer).unwrap_err(),
+                Busy(Operation::Eject)
+            );
+            self.1.set(true);
+            true
+        }
+    }
+    let dir = device();
+    let lock = DeviceLock::new();
+    let probe = Probe(&lock, std::cell::Cell::new(false));
+    assert_eq!(
+        eject(dir.path(), &lock, &probe).unwrap(),
+        EjectOutcome::ejected()
+    );
+    assert!(probe.1.get(), "attente de disparition faite");
+    assert_eq!(lock.current(), None);
+}
+
+#[test]
+fn seules_les_erreurs_d_absence_valent_disparition() {
+    use std::io::{Error, ErrorKind};
+    assert!(means_gone(&Error::from(ErrorKind::NotFound)));
+    for kind in [
+        ErrorKind::PermissionDenied,
+        ErrorKind::Interrupted,
+        ErrorKind::Other,
+        ErrorKind::TimedOut,
+    ] {
+        assert!(!means_gone(&Error::from(kind)), "{kind:?}");
+    }
+    #[cfg(windows)]
+    {
+        for code in [2, 3, 15, 21, 1005, 1167] {
+            assert!(means_gone(&Error::from_raw_os_error(code)), "{code}");
+        }
+        // Accès refusé, violation de partage, erreur d'E/S du périphérique, verrou.
+        for code in [5, 32, 1117, 33] {
+            assert!(!means_gone(&Error::from_raw_os_error(code)), "{code}");
+        }
+    }
+}
+
+#[test]
+fn une_erreur_passagere_ne_vaut_pas_disparition() {
+    use std::io::{Error, ErrorKind};
+    let delay = std::time::Duration::from_millis(1);
+    // Accès refusé à chaque essai : encore présent.
+    let probe = || Err(Error::from(ErrorKind::PermissionDenied));
+    assert!(!wait_until_gone_with(probe, 3, delay, |_| {}));
+    // Accès refusé puis absence : disparu.
+    let calls = std::cell::Cell::new(0);
+    let probe = || {
+        calls.set(calls.get() + 1);
+        if calls.get() == 1 {
+            Err(Error::from(ErrorKind::PermissionDenied))
+        } else {
+            Err(Error::from(ErrorKind::NotFound))
+        }
+    };
+    assert!(wait_until_gone_with(probe, 3, delay, |_| {}));
+    assert_eq!(calls.get(), 2);
 }
 
 /// Demande acceptée sans démontage préalable mais volume encore présent : pas de réussite
@@ -359,6 +481,8 @@ fn systeme_reel_refuse_une_racine_qui_n_est_pas_un_lecteur() {
     let EjectOutcome::Fallback { reason, .. } = outcome else {
         panic!("repli attendu");
     };
+    // Raison journalisée : sans le chemin.
+    assert!(!reason.contains(&*dir.path().to_string_lossy()), "{reason}");
     assert!(
         reason.contains("n'est pas la racine d'un lecteur"),
         "{reason}"

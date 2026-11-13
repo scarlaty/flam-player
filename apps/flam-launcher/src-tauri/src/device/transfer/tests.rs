@@ -1451,10 +1451,20 @@ mod carrier_flow {
         let _ = carrier::list_candidates(&e.root, None);
         let _ = read_mdf(&e.root).unwrap();
 
-        // Nouveaux essais : un antivirus peut ouvrir un instant un fichier tout juste écrit ; une
-        // poignée oubliée par le launcher, elle, tient au-delà.
-        crate::storage::rename_with_retry(&e.root, &renamed)
-            .expect("une poignée sur la Flam est restée ouverte après l'envoi ou les lectures");
+        // Nouveaux essais pendant environ 5 s : un antivirus peut ouvrir un instant un fichier
+        // tout juste écrit ; une poignée oubliée par le launcher, elle, tient au-delà.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match std::fs::rename(&e.root, &renamed) {
+                Ok(()) => break,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(err) => panic!(
+                    "une poignée sur la Flam est restée ouverte après l'envoi ou les lectures : {err}"
+                ),
+            }
+        }
         std::fs::rename(&renamed, &e.root).unwrap();
     }
 }
