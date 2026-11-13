@@ -868,6 +868,17 @@ impl Library {
         Ok((path, entry.title))
     }
 
+    /// Entrée installée `uuid` et chemin de son fichier (`None` : non installée ou nom de fichier
+    /// refusé), relus de l'index comme [`Self::playable`] ; sert à l'empreinte d'un envoi (#609).
+    pub(crate) fn installed_entry(&self, uuid: &str) -> AppResult<Option<(LibraryEntry, PathBuf)>> {
+        Ok(self
+            .load()?
+            .into_iter()
+            .find(|e| e.uuid == uuid)
+            .and_then(|entry| Some((self.checked(&entry.file).ok()?, entry)))
+            .map(|(path, entry)| (entry, path)))
+    }
+
     /// Vérifie que `uuid` est dans l'index (`not_found` sinon), sans toucher au fichier.
     pub fn playable_entry(&self, uuid: &str) -> AppResult<()> {
         self.load()?
@@ -1149,6 +1160,25 @@ impl Library {
         wait: Duration,
         before: impl FnOnce() -> AppResult<()>,
     ) -> AppResult<()> {
+        self.remove_checked(
+            uuid,
+            wait,
+            |_: &LibraryEntry, _: Option<&Path>| Ok(()),
+            before,
+        )
+    }
+
+    /// [`Self::remove_with`], avec `check` appelé sous le verrou, avant `before`, sur l'entrée
+    /// installée et le chemin de son fichier (`None` : nom de fichier refusé) : un refus laisse
+    /// tout en place (retrait après un envoi sur la Flam, #609 : l'entrée doit être celle qui a
+    /// été envoyée).
+    pub fn remove_checked(
+        &self,
+        uuid: &str,
+        wait: Duration,
+        check: impl FnOnce(&LibraryEntry, Option<&Path>) -> AppResult<()>,
+        before: impl FnOnce() -> AppResult<()>,
+    ) -> AppResult<()> {
         let _lock = self.lock_within(wait)?;
         let mut stories = self.reconcile()?;
         let Some(pos) = stories.iter().position(|e| e.uuid == uuid) else {
@@ -1156,6 +1186,8 @@ impl Library {
                 "histoire non installée : {uuid}"
             )));
         };
+        let path = self.checked(&stories[pos].file).ok();
+        check(&stories[pos], path.as_deref())?;
         before()?;
         let entry = stories.remove(pos);
         if let Ok(path) = self.checked(&entry.file) {
@@ -1260,21 +1292,46 @@ pub async fn library_remove(
     // Même portillon que le lancement : pas de purge pendant une copie de travail.
     let _gate = catalog.cache_gate().read_owned().await;
     let players = player.inner().clone();
-    // Tout sous le créneau du player (refus `player_busy` si le player lit cette histoire, et
-    // aucun lancement ne peut s'intercaler) : vérification de l'installation, purge, puis retrait.
-    // La purge précède le retrait : un échec laisse l'histoire installée (à retenter) au lieu
-    // d'une progression impossible à purger. Les purges sont idempotentes.
     let installs = service.inner().clone();
     blocking(move || {
-        players.while_not_playing(&uuid, || {
-            installs.library_remove_with(&uuid, || {
-                purge_library_story(&cache_root, &saves_root, &uuid, purge_saves)
-            })
-        })
+        remove_story(
+            &installs,
+            &players,
+            &cache_root,
+            &saves_root,
+            &uuid,
+            purge_saves,
+            |_: &LibraryEntry, _: Option<&Path>| Ok(()),
+        )
     })
-    .await???;
+    .await??;
     drop(_gate);
     Ok(())
+}
+
+/// Désinstallation de [`library_remove`] (appel **bloquant**, sous le portillon du cache), aussi
+/// utilisée pour retirer une histoire après son envoi sur la Flam (#609). `check` est appelé
+/// sous le verrou de la bibliothèque, avant toute purge, sur l'entrée installée et le chemin de
+/// son fichier ; un refus laisse tout en place.
+///
+/// Tout sous le créneau du player (refus `player_busy` si le player lit cette histoire, et aucun
+/// lancement ne peut s'intercaler) : vérification de l'installation, purge, puis retrait. La purge
+/// précède le retrait : un échec laisse l'histoire installée (à retenter) au lieu d'une
+/// progression impossible à purger. Les purges sont idempotentes.
+pub(crate) fn remove_story(
+    installs: &InstallService,
+    players: &PlayerService,
+    cache_root: &Path,
+    saves_root: &Path,
+    uuid: &str,
+    purge_saves: bool,
+    check: impl FnOnce(&LibraryEntry, Option<&Path>) -> AppResult<()>,
+) -> AppResult<()> {
+    players.while_not_playing(uuid, || {
+        installs.library_remove_checked(uuid, check, || {
+            purge_library_story(cache_root, saves_root, uuid, purge_saves)
+        })
+    })?
 }
 
 #[cfg(test)]

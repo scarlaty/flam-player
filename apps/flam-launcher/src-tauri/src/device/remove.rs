@@ -433,6 +433,9 @@ pub async fn device_remove_story(
     confirmed: bool,
 ) -> AppResult<RemoveReport> {
     let cache_root = super::transfer::launcher_cache_root(&config);
+    // « Retirer du PC » ne vaut plus pour une histoire qu'on retire de la Flam (#609) : oublié
+    // avant le retrait, quelle qu'en soit l'issue.
+    super::after_send::SENT.forget_story(&id);
     blocking(move || -> AppResult<RemoveReport> {
         // Racine reçue de l'interface : contrôlée par la garde (lecteur détecté seulement).
         let ctx = WriteContext::current(cache_root);

@@ -460,7 +460,7 @@ apps/flam-launcher/
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `library_source` (empreinte de la source dossier d'une histoire installée, #288), `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status` ; titres déchiffrés et vignettes des histoires #276, `device::details` ; transfert sûr #229, `device::transfer`, commandes `device_send_story`, `device_cancel_transfer` et `device_recover_transfers` (reprise au branchement), événement `device://transfer-progress` ; retrait #231, `device::remove` ; ordre des histoires #233, `device::reorder`, commande `device_reorder_stories` ; éjection #232, `device::eject` ; verrou des opérations, `device::lock`), `podcast` (`rss`).
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `library_source` (empreinte de la source dossier d'une histoire installée, #288), `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status` ; titres déchiffrés et vignettes des histoires #276, `device::details` ; transfert sûr #229, `device::transfer`, commandes `device_send_story`, `device_cancel_transfer` et `device_recover_transfers` (reprise au branchement), événement `device://transfer-progress` ; retrait de « Mes histoires » après l'envoi #609, `device::after_send`, commande `library_remove_sent` ; retrait #231, `device::remove` ; ordre des histoires #233, `device::reorder`, commande `device_reorder_stories` ; éjection #232, `device::eject` ; verrou des opérations, `device::lock`), `podcast` (`rss`).
 
 ### Commandes Tauri
 
@@ -499,6 +499,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `install_list`                |                                  | `InstallTask[]`                                            | `install`            |
 | `library_list`                |                                  | `LibraryEntry[]`                                           | `library`            |
 | `library_remove`              | `uuid`, `purge_saves?`           | rien                                                       | `library`            |
+| `library_remove_sent`         | `root`, `uuid`                   | rien (voir « Retrait du PC après l'envoi »)                | `device::after_send` |
 | `library_thumbnail`           | `uuid`                           | URL `data:` (`not_found` sans vignette)                    | `library_thumb`      |
 | `library_source_status`       |                                  | `SourceCheck[]` (`{ uuid, state }`)                        | `library_source`     |
 | `player_launch`               | `uuid`                           | `PlayerSession`                                            | `player`             |
@@ -570,6 +571,60 @@ bibliothèque sont retirés de la file (`libraryUuids`, #299) ;
 l'avertissement « fonction expérimentale, non officielle » est mémorisé dans le stockage local
 (`preferences.ts`). Le firmware n'étant pas exposé par `device_status`, « non pris en charge »
 n'est connu qu'après un refus du backend.
+
+**Retrait du PC après l'envoi** (#609, `device::after_send`) : une histoire envoyée garde sa copie
+dans « Mes histoires » (dossier de cache). Après un envoi **réussi**, le rapport de
+`device_send_story` porte `library_copy` : `kept` (la ligne de la file propose « Retirer du PC » ;
+`unconfirmed` : écriture non confirmée sur le support, voir plus bas ; `auto` : retrait
+automatique demandé), `removed`
+(réglage `remove_after_send` actif : retirée aussitôt), `remove_failed` (`message` : retrait
+impossible, l'envoi reste réussi, le bouton est reproposé), ou rien (aucune proposition). Le
+texte dit que l'histoire reste sur la Flam, que la renvoyer plus tard demandera de la
+réinstaller, et qu'il faut « Éjecter la Flam » avant de la débrancher ; une notification annonce
+le retrait, son échec, ou (réglage actif seulement) une copie gardée par prudence. Écriture non
+confirmée, réglage actif ou non : la ligne dit que l'histoire est bien sur la Flam, que sa copie
+est gardée par prudence, et qu'après l'avoir retirée il faut éjecter la Flam avant de la
+débrancher. Un refus **définitif** de « Retirer du PC » (`not_removable` : autre Flam, histoire
+plus sur la Flam ou changée ; `not_found` : envoi inconnu) retire le bouton et laisse le message
+sur la ligne ; un refus **passager** (`player_busy`, installation en cours ou Flam occupée en
+`validation`, `io`) garde le bouton avec le message. Le bouton disparaît aussi quand l'histoire
+est retirée de la Flam (« Ma Flam ») ou quand la Flam détectée change.
+
+- Succès = `send_from_library` rend `Ok` (copie, relecture de chaque fichier sur la Flam avec
+  taille et SHA-256, renommage en `str/<uuid>/`, index à jour) **et** la relecture carrier n'est
+  pas illisible (`carrier_readback` différent de `false`). Échec, annulation, Flam débranchée,
+  « déjà sur la Flam » : rien n'est retiré ni proposé.
+- **Retrait automatique seulement si l'écriture est confirmée sur le support** : la relecture a
+  lieu dans `.flam-transfer/<uuid>.in/` avant le renommage en `str/<uuid>/`, renommage forcé sur
+  le support au mieux (`sync_dir`). Le rapport interne porte `dir_synced` (les trois `sync_dir`
+  ont réussi ; toujours faux hors Windows) et `verified_uncached` (aucune relecture n'est retombée
+  sur le cache du système ; toujours faux hors Windows). Le retrait automatique exige les deux,
+  sous Windows ; sinon `kept` avec `unconfirmed` (aussi quand le réglage est désactivé, pour la
+  consigne d'éjection). Chaque envoi réussi journalise, au niveau
+  `info`, la ligne `durabilité de l'envoi renommage_force="oui|non" relecture_sans_cache="oui|non"`
+  (cible `flam_launcher_lib::device::transfer`, sur la sortie standard du processus : pas de
+  fichier de journal, voir `lib.rs`).
+- Le retrait automatique a lieu dans `device_send_story`, verrou de la Flam toujours tenu (aucun
+  autre envoi ne s'intercale) ; il peut attendre le créneau du player (lancement en préparation),
+  et l'annulation de l'envoi est sans effet pendant cette phase ; « Retirer du PC » (`library_remove_sent`) prend ce verrou (refus
+  `busy` pendant un envoi). Les deux passent par le chemin de « Supprimer » (`remove_story` :
+  créneau du player, verrou de la bibliothèque, purge de la copie de travail), **sans** purger la
+  progression de l'enfant.
+- Même génération : l'empreinte de l'entrée (fichier, taille, `installed_at`, taille et date du
+  fichier) est prise avant la préparation, revérifiée après l'envoi, puis sous le verrou de la
+  bibliothèque juste avant le retrait (`Library::remove_checked`). Une histoire réinstallée ou mise
+  à jour entre-temps n'est pas retirée (`not_removable`). Refus aussi pendant sa lecture
+  (`player_busy`) ou son installation (`validation`).
+- `library_remove_sent(root, uuid)` ne retire que ce qu'un envoi réussi de la session a enregistré
+  (registre en mémoire) ; sinon `not_found`. Avant tout retrait (manuel ou automatique), verrou
+  de la Flam tenu, la Flam est relue (lecture seule) : même racine et même `.mdf` (empreinte
+  SHA-256), histoire (identifiant sur la Flam, `report.id`) listée dans l'index visible, chaque
+  fichier de l'envoi présent dans `str/<id>/` avec sa taille. Sinon refus (`not_removable`) et
+  l'entrée est oubliée. L'entrée est aussi oubliée au début de tout nouvel envoi de l'histoire
+  (même s'il échoue), dès qu'un envoi réussi réécrit la même histoire de la Flam (même relu
+  illisible en mode carrier), et par
+  `device_remove_story`. Jamais le fichier source de l'utilisateur ni l'archive d'origine :
+  seul le fichier de `library/` de l'entrée envoyée.
 
 **Ordre des histoires** (#233, `device::reorder`, `DeviceStoryOrder.tsx`) : « Modifier l'ordre »
 (proposé quand `list` est valide, `list.hidden` valide ou absent, la liste non tronquée et au
@@ -713,6 +768,7 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 | `tts_unavailable`       | Synthèse vocale indisponible (système non Windows, service de voix absent)                          |
 | `tts_no_voice`          | Aucune voix française installée dans Windows, ou voix choisie disparue                              |
 | `tts_failed`            | Synthèse ou conversion d'un titre en échec (voix muette, délai, audio inexploitable)                |
+| `not_removable`         | « Retirer du PC » refusé pour de bon : autre Flam, histoire plus sur la Flam ou changée (#609)      |
 | `unknown`               | Côté front uniquement : erreur de forme inattendue                                                  |
 
 Un fichier de configuration **corrompu** n'est pas une erreur : il est renommé en
@@ -1197,9 +1253,16 @@ thumb, source_stamp }`.
   "default_catalog_url": "https://gist.githubusercontent.com/DantSu/49ed776755f3a01c995e78e3fd1cb79f/raw/telmi-interactive.json",
   "theme": "system",
   "max_downloads": 2,
-  "thumb_fit": "flou"
+  "thumb_fit": "flou",
+  "remove_after_send": false
 }
 ```
+
+`remove_after_send` (#609, `false` par défaut) : retirer l'histoire de « Mes histoires » après son
+envoi réussi sur la Flam (voir « Retrait du PC après l'envoi »). Absent d'un fichier ancien :
+`false`, sans migration de schéma (`schema_version` reste 1) ; une valeur qui n'est pas un booléen
+est lue `false`. La bêta.4 (`Settings` sans `deny_unknown_fields`) ignore ce champ à la lecture et
+l'efface en réécrivant le fichier : après un retour à la bêta.4, le réglage revient à désactivé.
 
 `thumb_fit` (`flou`, `rogner` ou `bandes`, `flou` par défaut) est le remplissage des vignettes
 104×136 des histoires converties (#279) : le launcher le transmet au convertisseur par

@@ -8,6 +8,7 @@
 //! l'appareil est toujours passée en paramètre, ce qui permet de tester sur un faux appareil
 //! (dossier temporaire).
 
+pub mod after_send;
 pub mod carrier;
 pub mod crypto;
 pub mod details;

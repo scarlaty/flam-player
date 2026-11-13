@@ -862,6 +862,19 @@ impl InstallService {
         self.library_remove_within(uuid, REMOVE_LOCK_WAIT, before)
     }
 
+    /// [`Self::library_remove_with`], avec `check` appelé sous le verrou de la bibliothèque, avant
+    /// `before`, sur l'entrée installée et le chemin de son fichier ([`Library::remove_checked`],
+    /// #609) : un refus laisse tout en place.
+    pub fn library_remove_checked(
+        &self,
+        uuid: &str,
+        check: impl FnOnce(&LibraryEntry, Option<&Path>) -> AppResult<()>,
+        before: impl FnOnce() -> AppResult<()>,
+    ) -> AppResult<()> {
+        let tc = (self.0.opts.resolver)()?;
+        Library::new(&tc.cache_root).remove_checked(uuid, REMOVE_LOCK_WAIT, check, before)
+    }
+
     fn library_remove_within(
         &self,
         uuid: &str,

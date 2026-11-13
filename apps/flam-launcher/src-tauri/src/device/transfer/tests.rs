@@ -15,7 +15,7 @@ use crate::device::guard::tests::{key_v2, mdf_v1_real, mdf_with, story, test_ctx
 use crate::device::guard::KNOWN_HEADER;
 use crate::device::index::serialize;
 
-const NEW: &str = "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9";
+pub(crate) const NEW: &str = "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9";
 pub(crate) const OTHER: &str = "11111111-2222-3333-4444-555555555555";
 const BIG: usize = 2 * CHUNK + 12_345;
 const PLENTY: u64 = 1 << 40;
@@ -120,22 +120,26 @@ pub(crate) fn device(base: &Path, old: bool) -> PathBuf {
 
 /// Opérations de l'appareil avec pannes injectées. À partir de l'opération `crash_at`,
 /// toutes échouent : l'appareil a disparu (débranchement, coupure).
-struct FaultyFs {
+pub(crate) struct FaultyFs {
     free: u64,
     ops: Cell<usize>,
     crash_at: usize,
     /// Octets encore inscriptibles avant « disque plein ».
     budget: Cell<Option<u64>>,
     /// Fichier dont le premier octet écrit est altéré.
-    corrupt: Option<&'static str>,
+    pub(crate) corrupt: Option<&'static str>,
     /// Réponse forcée de `same_directory`.
     same_dir: bool,
     /// Dossier dont la suppression échoue (verrouillé) : le chemin contient ce texte.
     locked: Option<&'static str>,
+    /// `sync_dir` échoue (renommage non forcé sur le support, #609).
+    pub(crate) sync_dir_fails: bool,
+    /// La relecture est retombée sur le cache du système (#609).
+    pub(crate) cached_verify: bool,
 }
 
 impl FaultyFs {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             free: PLENTY,
             ops: Cell::new(0),
@@ -144,9 +148,11 @@ impl FaultyFs {
             corrupt: None,
             same_dir: false,
             locked: None,
+            sync_dir_fails: false,
+            cached_verify: false,
         }
     }
-    fn crash_at(n: usize) -> Self {
+    pub(crate) fn crash_at(n: usize) -> Self {
         Self {
             crash_at: n,
             ..Self::new()
@@ -164,6 +170,7 @@ impl FaultyFs {
     fn real(&self) -> RealFs {
         RealFs {
             free_space: |_| Some(PLENTY),
+            ..RealFs::default()
         }
     }
 }
@@ -280,6 +287,16 @@ impl DeviceFs for FaultyFs {
             source,
         })?;
         self.real().write_index(root, entries)
+    }
+    fn sync_dir(&self, _path: &Path) -> io::Result<()> {
+        if self.sync_dir_fails {
+            Err(io::Error::other("synchronisation refusée (test)"))
+        } else {
+            Ok(())
+        }
+    }
+    fn verified_uncached(&self) -> bool {
+        !self.cached_verify
     }
 }
 
@@ -401,6 +418,14 @@ fn chemin_nominal_de_bout_en_bout() {
             carrier_readback: None,
             carrier_stored: None,
             recovery_failures: Vec::new(),
+            library_copy: None,
+            dir_synced: cfg!(windows),
+            verified_uncached: true,
+            installed_files: p
+                .files
+                .iter()
+                .map(|f| (f.clone(), std::fs::metadata(p.dir.join(f)).unwrap().len()))
+                .collect(),
         }
     );
 
@@ -807,7 +832,7 @@ fn plain_pk(dir: &Path) -> PathBuf {
 }
 
 /// `.plain.pk` de l'histoire `NEW` (version 1) dont le son `sounds/a.mp3` vaut `sound`.
-fn plain_pk_with(dir: &Path, sound: &[u8]) -> PathBuf {
+pub(crate) fn plain_pk_with(dir: &Path, sound: &[u8]) -> PathBuf {
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipWriter};
 

@@ -826,6 +826,7 @@ fn envoi_tel_quel_par_send_with() {
     std::fs::write(root.join("etc/library/list.hidden"), b"").unwrap();
     let fs = RealFs {
         free_space: |_| Some(1 << 40),
+        ..RealFs::default()
     };
     let report = send_with(
         &fs,

@@ -120,6 +120,20 @@ pub struct Settings {
     /// échouer `load` ni `settings_set`.
     #[serde(deserialize_with = "lenient_voice")]
     pub tts_voice: Option<String>,
+    /// Retirer l'histoire de « Mes histoires » après son envoi réussi sur la Flam (#609).
+    /// Désactivé par défaut. Absent des anciens fichiers : `false`, sans migration de schéma (la
+    /// bêta.4 ignore ce champ à la lecture et l'efface en réécrivant le fichier : retour à `false`).
+    /// Une valeur qui n'est pas un booléen est lue `false` (jamais d'échec de `load`).
+    #[serde(deserialize_with = "lenient_flag")]
+    pub remove_after_send: bool,
+}
+
+/// Lecture tolérante d'un réglage booléen : seul `true` l'active.
+fn lenient_flag<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(matches!(
+        serde_json::Value::deserialize(d)?,
+        serde_json::Value::Bool(true)
+    ))
 }
 
 /// Lecture tolérante de `tts_voice` : toute valeur JSON est acceptée, seule une chaîne valide
@@ -179,6 +193,7 @@ impl Default for Settings {
             carrier_consent: None,
             thumb_fit: ThumbFit::default(),
             tts_voice: None,
+            remove_after_send: false,
         }
     }
 }
@@ -510,6 +525,7 @@ pub fn validate_with(settings: Settings, protected: &[PathBuf]) -> AppResult<Set
         carrier_consent: settings.carrier_consent,
         thumb_fit: settings.thumb_fit,
         tts_voice: lenient_voice_id(settings.tts_voice),
+        remove_after_send: settings.remove_after_send,
     })
 }
 
@@ -1023,12 +1039,14 @@ mod tests {
                 carrier_consent: None,
                 thumb_fit: ThumbFit::Rogner,
                 tts_voice: Some("  fr-hortense ".into()),
+                remove_after_send: true,
             })
             .unwrap();
         assert_eq!(saved.schema_version, SCHEMA_VERSION);
         assert_eq!(saved.player_path, Some(player.display().to_string()));
         assert_eq!(saved.thumb_fit, ThumbFit::Rogner);
         assert_eq!(saved.tts_voice.as_deref(), Some("fr-hortense"));
+        assert!(saved.remove_after_send);
         assert_eq!(store.load().unwrap(), saved);
     }
 
@@ -1568,5 +1586,48 @@ mod tests {
         for bad in ["a\u{0}b".to_string(), "v".repeat(MAX_VOICE_ID_CHARS + 1)] {
             assert_eq!(clean_voice_id(Some(bad)).unwrap_err().kind(), "validation");
         }
+    }
+
+    /// #609 : « Retirer de Mes histoires après l'envoi » est désactivé par défaut, absent des
+    /// anciens fichiers (bêta.4 comprise) sans migration de schéma, et une valeur qui n'est pas
+    /// un booléen ne l'active jamais ni ne fait échouer la lecture.
+    #[test]
+    fn retrait_apres_envoi_desactive_par_defaut_et_tolerant() {
+        assert!(!Settings::default().remove_after_send);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::new(dir.path());
+        // Fichier écrit par la bêta.4 : pas de champ.
+        fs::write(
+            &path,
+            r#"{"schema_version":1,"max_downloads":3,"theme":"dark","thumb_fit":"rogner"}"#,
+        )
+        .unwrap();
+        let old = store.load().unwrap();
+        assert!(!old.remove_after_send);
+        assert_eq!(old.max_downloads, 3);
+        for bad in [r#""true""#, "1", "null", "{}"] {
+            fs::write(
+                &path,
+                format!(r#"{{"schema_version":1,"max_downloads":3,"remove_after_send":{bad}}}"#),
+            )
+            .unwrap();
+            let loaded = store.load().unwrap_or_else(|e| panic!("{bad} : {e}"));
+            assert!(!loaded.remove_after_send, "{bad}");
+            assert_eq!(loaded.max_downloads, 3, "{bad} : fichier non restauré");
+        }
+        // Activé puis relu ; le schéma ne change pas.
+        let saved = store
+            .update(Settings {
+                remove_after_send: true,
+                ..store.load().unwrap()
+            })
+            .unwrap();
+        assert!(saved.remove_after_send);
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json["remove_after_send"], true);
+        assert_eq!(json["schema_version"], 1);
+        assert!(store.load().unwrap().remove_after_send);
     }
 }
