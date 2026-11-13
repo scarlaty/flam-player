@@ -783,6 +783,16 @@ export const fr = {
       downloadAndPlay: "Télécharger et jouer",
       download: "Télécharger",
       installAndPlay: "Installer et jouer",
+      /** Installation suivie de l'envoi sur la Flam branchée (#609). */
+      installAndSend: "Installer et envoyer",
+      downloadAndSend: "Télécharger et envoyer",
+      /** Info-bulle et texte accessible de « Installer et envoyer ». */
+      installAndSendHelp:
+        "Installe l'histoire dans Mes histoires, puis l'envoie sur la Flam branchée. Si la Flam est débranchée ou remplacée pendant l'installation, l'histoire reste installée et rien n'est envoyé.",
+      /** Fiche d'une histoire en cours d'installation par « Installer et envoyer ». */
+      sendPlanned: "Elle sera envoyée sur la Flam à la fin de l'installation.",
+      sendPlanLost:
+        "La Flam a été débranchée ou a changé : l'histoire sera installée, mais pas envoyée.",
       install: "Installer",
       play: "Jouer",
       playFromFolder: "Jouer depuis le dossier",
@@ -1056,6 +1066,34 @@ export const fr = {
         unconfirmed:
           "L'histoire est bien sur la Flam. Sa copie est gardée sur ce PC par prudence : si vous la retirez, éjectez ensuite la Flam avec « Éjecter la Flam » avant de la débrancher.",
         noDevice: "la Flam n'est plus détectée",
+      },
+    },
+    /** Envois prévus à la fin d'une installation (« Installer et envoyer », #609). */
+    planned: {
+      title: "Envoi prévu après l'installation",
+      listLabel: "Histoires à envoyer après leur installation",
+      state: {
+        installing: "Installation…",
+        ready: "Installée, envoi en attente",
+        lost: "Ne sera pas envoyée",
+      },
+      lostHint:
+        "La Flam a été débranchée ou a changé depuis la demande. L'histoire sera installée dans Mes histoires ; envoyez-la ensuite avec « Envoyer sur la Flam ».",
+      /** Retire l'envoi prévu ; l'installation continue. */
+      drop: (title: string) => `Ne pas envoyer « ${title} » après l'installation`,
+      /** Ligne en échec : Flam débranchée, remplacée ou rebranchée pendant l'installation. */
+      deviceChanged:
+        "L'histoire est installée dans Mes histoires, mais elle n'a pas été envoyée : la Flam a été débranchée ou a changé pendant l'installation. Vérifiez la Flam branchée, puis utilisez « Envoyer sur la Flam ».",
+      /** Ligne en échec : envoi refusé par les règles de « Envoyer sur la Flam » (`reason`). */
+      notSent: (reason: string) =>
+        `L'histoire est installée dans Mes histoires, mais elle n'a pas été envoyée : ${reason}`,
+      announce: {
+        planned: (title: string) =>
+          `« ${title} » sera envoyée sur la Flam à la fin de son installation`,
+        lost: (count: number) =>
+          count > 1
+            ? "La Flam a été débranchée ou a changé : les histoires en cours d'installation ne seront pas envoyées"
+            : "La Flam a été débranchée ou a changé : l'histoire en cours d'installation ne sera pas envoyée",
       },
     },
     finished: {

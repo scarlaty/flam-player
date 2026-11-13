@@ -5,11 +5,13 @@ import { t } from "../../i18n";
 import { SendToDeviceButton } from "../device/SendToDeviceButton";
 import { isRemote, useStories } from "./StoriesContext";
 import { RemoveStoryDialog } from "./RemoveStoryDialog";
+import { useInstallAndSend } from "./useInstallAndSend";
 
 /**
  * Actions rapides d'une carte : « Jouer », « Envoyer sur la Flam » et « Supprimer » (bouton icône
  * compact, libellé et info-bulle) si l'histoire est installée, sinon « Télécharger » ou
- * « Installer » ; rien pendant qu'une tâche est active (la carte montre sa progression). Une
+ * « Installer », plus « Installer et envoyer » quand l'envoi sur la Flam branchée est possible ;
+ * rien pendant qu'une tâche est active (la carte montre sa progression). Une
  * histoire STUdio installée (format Lunii) ne se joue pas sur le PC : « Jouer » reste visible,
  * désactivé, avec sa raison.
  */
@@ -21,6 +23,8 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
   const installRef = useRef<HTMLButtonElement>(null);
   const removeReasonId = useId();
   const playReasonId = useId();
+  const sendHelpId = useId();
+  const installAndSend = useInstallAndSend(entry);
   // Après une suppression réussie, le bouton disparaît : le focus passe au bouton de
   // réinstallation dès qu'il est affiché.
   const focusAfterRemove = useRef(false);
@@ -106,16 +110,37 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
       </>
     );
   }
-  const label = isRemote(entry) ? text.download : text.install;
+  const remote = isRemote(entry);
+  const label = remote ? text.download : text.install;
+  const sendLabel = remote ? text.downloadAndSend : text.installAndSend;
   return (
-    <Button
-      ref={installRef}
-      size="sm"
-      icon="download"
-      aria-label={text.forStory(label, entry.title)}
-      onClick={() => stories.install(entry)}
-    >
-      {label}
-    </Button>
+    <>
+      <Button
+        ref={installRef}
+        size="sm"
+        icon="download"
+        aria-label={text.forStory(label, entry.title)}
+        onClick={() => stories.install(entry)}
+      >
+        {label}
+      </Button>
+      {installAndSend && (
+        <>
+          <Button
+            size="sm"
+            icon="device"
+            title={text.installAndSendHelp}
+            aria-label={text.forStory(sendLabel, entry.title)}
+            aria-describedby={sendHelpId}
+            onClick={installAndSend}
+          >
+            {sendLabel}
+          </Button>
+          <span id={sendHelpId} className="fl-visually-hidden">
+            {text.installAndSendHelp}
+          </span>
+        </>
+      )}
+    </>
   );
 }

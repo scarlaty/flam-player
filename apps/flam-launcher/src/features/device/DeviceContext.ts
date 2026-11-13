@@ -8,6 +8,7 @@ import type {
   TransferPhase,
 } from "../../api/device";
 import type { AppError } from "../../api/error";
+import type { LibraryFormat } from "../../api/library";
 
 export type QueueState = "waiting" | "sending" | "done" | "failed" | "cancelled";
 
@@ -43,6 +44,38 @@ export interface QueueItem {
   deviceId?: string;
   /** Retrait automatique demandé mais non fait : écriture sur la Flam non confirmée. */
   pcCopyUnconfirmed?: boolean;
+  /**
+   * Envoi demandé par « Installer et envoyer » (#609), parti ou non. Ces envois arrivent seuls,
+   * au fil des installations : ils ne remplacent pas une file terminée, et leurs lignes en échec
+   * (envoi non parti : Flam changée, déjà présente, espace insuffisant…) restent affichées
+   * jusqu'à la fermeture de la liste.
+   */
+  planned?: boolean;
+}
+
+/**
+ * Envoi prévu à la fin d'une installation (« Installer et envoyer », #609). Il ne part que sur
+ * la Flam branchée au moment du clic (`deviceKey`), et seulement si elle n'a jamais cessé d'être
+ * vue entre-temps.
+ */
+export interface PlannedSend {
+  uuid: string;
+  title: string;
+  format: LibraryFormat;
+  /** Identité de la Flam au moment du clic (volume et libellé). */
+  deviceKey: string;
+  /** `installing` : installation en cours ; `ready` : installée, envoi sur le point de partir. */
+  state: "installing" | "ready";
+  /** Taille du `.plain.pk` installé (`ready`), `null` : inconnue. */
+  size: number | null;
+  /** La Flam du clic a été débranchée ou remplacée depuis : l'envoi ne partira pas. */
+  lost: boolean;
+}
+
+export interface PlannedSendRequest {
+  uuid: string;
+  title: string;
+  format: LibraryFormat;
 }
 
 /**
@@ -66,6 +99,8 @@ export interface SendRequest {
    * si l'archive envoyée en désigne une autre.
    */
   replace?: string;
+  /** Envoi demandé par « Installer et envoyer » (voir `QueueItem.planned`). */
+  planned?: boolean;
 }
 
 export type StoriesState =
@@ -124,7 +159,27 @@ export interface DeviceApi {
   confirmingSend: boolean;
   /** Flam 1.x : oublie les clés carrier conservées pour la Flam branchée (nombre supprimé). */
   forgetCarrier: () => Promise<number>;
-  /** Annule l'envoi en cours et vide la file d'attente. */
+  /**
+   * Envois prévus à la fin d'une installation (« Installer et envoyer », #609), dans l'ordre des
+   * demandes : ils partent dans cet ordre, par la file d'envoi.
+   */
+  plannedSends: PlannedSend[];
+  /**
+   * « Installer et envoyer » : prévoit l'envoi de l'histoire sur la Flam branchée, puis appelle
+   * `start` (qui lance l'installation). L'avertissement « expérimentale » est demandé d'abord :
+   * s'il est refusé, rien n'est prévu ni lancé. Sans Flam, ne fait rien. La fin de
+   * l'installation est signalée par `fulfilPlannedSend` ou `dropPlannedSend`.
+   */
+  planSend: (request: PlannedSendRequest, start: () => void) => void;
+  /**
+   * L'installation de l'histoire a réussi (`size` : taille installée) : son envoi prévu part par
+   * la file d'envoi, à son tour, si la Flam est restée celle du clic et si les règles d'envoi
+   * l'acceptent ; sinon une ligne en échec dit pourquoi. Sans envoi prévu, ne fait rien.
+   */
+  fulfilPlannedSend: (uuid: string, size: number | null) => void;
+  /** Installation en échec, annulée ou abandonnée, ou envoi prévu retiré : rien ne partira. */
+  dropPlannedSend: (uuid: string) => void;
+  /** Annule l'envoi en cours, vide la file d'attente et oublie les envois prévus. */
   cancelQueue: () => void;
   removeFromQueue: (uuid: string) => void;
   /** Ferme la liste terminée de la file. */

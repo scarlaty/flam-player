@@ -2,7 +2,12 @@ import { useEffect, useId, useLayoutEffect, useRef } from "react";
 import { Badge, Banner, Button, IconButton, ProgressBar } from "../../components";
 import type { BadgeTone } from "../../components";
 import { t } from "../../i18n";
-import { useDevice, type QueueItem, type QueueState } from "./DeviceContext";
+import {
+  useDevice,
+  type PlannedSend,
+  type QueueItem,
+  type QueueState,
+} from "./DeviceContext";
 import { EjectButton } from "./EjectButton";
 import { estimateMinutes } from "./sendRules";
 import "./TransferPanel.css";
@@ -23,7 +28,10 @@ function weights(queue: QueueItem[]): number[] {
   return queue.map((item) => (known ? Math.max(item.size ?? 1, 1) : 1));
 }
 
-/** Panneau d'envoi sur la Flam : progression globale et courante, annulation, fin de file. */
+/**
+ * Panneau d'envoi sur la Flam : envois prévus à la fin d'une installation (« Installer et
+ * envoyer »), progression globale et courante, annulation, fin de file.
+ */
 export function TransferPanel() {
   const {
     queue,
@@ -34,6 +42,8 @@ export function TransferPanel() {
     removeFromQueue,
     dismissQueue,
     removeFromPc,
+    plannedSends,
+    dropPlannedSend,
     announcement,
   } = useDevice();
   const titleId = useId();
@@ -45,6 +55,8 @@ export function TransferPanel() {
   const focusAfterRemoval = useRef(0);
   // Histoire dont « Retirer du PC » a été cliqué : son bouton disparaît une fois retirée.
   const focusPcNote = useRef<string | null>(null);
+  // « Ne pas envoyer » cliqué : la ligne de l'envoi prévu disparaît avec son bouton.
+  const focusAfterPlanDrop = useRef(false);
 
   // Fin de file : le bouton Annuler disparaît, le focus passe au titre du panneau.
   useEffect(() => {
@@ -85,13 +97,21 @@ export function TransferPanel() {
     }
   }, [queue]);
 
+  // Envoi prévu retiré : le focus passe au titre du panneau, ou au contenu principal si le
+  // panneau n'a plus rien à montrer.
+  useLayoutEffect(() => {
+    if (!focusAfterPlanDrop.current) return;
+    focusAfterPlanDrop.current = false;
+    (headingRef.current ?? document.getElementById("fl-main"))?.focus();
+  }, [plannedSends]);
+
   // Annonces de la file (début, fin, échec), sans pourcentage : région vivante toujours présente.
   const live = (
     <p role="status" className="fl-visually-hidden">
       {announcement}
     </p>
   );
-  if (queue.length === 0) return live;
+  if (queue.length === 0 && plannedSends.length === 0) return live;
 
   const weight = weights(queue);
   const total = weight.reduce((a, b) => a + b, 0);
@@ -167,7 +187,29 @@ export function TransferPanel() {
             </Button>
           </div>
         )}
-        <ul ref={listRef} className="fl-transfer__list" aria-label={text.panel.listLabel}>
+        {plannedSends.length > 0 && (
+          <>
+            <p className="fl-transfer__line">{text.planned.title}</p>
+            <ul className="fl-transfer__list" aria-label={text.planned.listLabel}>
+              {plannedSends.map((plan) => (
+                <PlannedLine
+                  key={plan.uuid}
+                  plan={plan}
+                  onDrop={() => {
+                    focusAfterPlanDrop.current = true;
+                    dropPlannedSend(plan.uuid);
+                  }}
+                />
+              ))}
+            </ul>
+          </>
+        )}
+        <ul
+          ref={listRef}
+          className="fl-transfer__list"
+          aria-label={text.panel.listLabel}
+          hidden={queue.length === 0}
+        >
           {queue.map((item) => (
             <li key={item.uuid} className="fl-transfer__item">
               <div className="fl-transfer__item-head">
@@ -206,7 +248,7 @@ export function TransferPanel() {
             </li>
           ))}
         </ul>
-        {!busy && (
+        {!busy && queue.length > 0 && (
           <>
             {anyDone && (
               <Banner
@@ -234,6 +276,34 @@ export function TransferPanel() {
         )}
       </section>
     </>
+  );
+}
+
+/**
+ * Envoi prévu à la fin d'une installation : état (installation, envoi en attente, abandonné parce
+ * que la Flam a changé) et bouton pour y renoncer (l'installation continue).
+ */
+function PlannedLine({ plan, onDrop }: { plan: PlannedSend; onDrop: () => void }) {
+  const planned = text.planned;
+  return (
+    <li className="fl-transfer__item">
+      <div className="fl-transfer__item-head">
+        <span className="fl-transfer__name">{plan.title}</span>
+        <IconButton
+          icon="close"
+          size="sm"
+          label={planned.drop(plan.title)}
+          onClick={onDrop}
+        />
+      </div>
+      <Badge
+        tone={plan.lost ? "danger" : "neutral"}
+        icon={plan.lost ? "alert" : undefined}
+      >
+        {plan.lost ? planned.state.lost : planned.state[plan.state]}
+      </Badge>
+      {plan.lost && <p className="fl-transfer__error">{planned.lostHint}</p>}
+    </li>
   );
 }
 

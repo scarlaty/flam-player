@@ -29,6 +29,8 @@ import {
   type EjectNote,
   type PcCopyNotice,
   type PcCopyState,
+  type PlannedSend,
+  type PlannedSendRequest,
   type QueueItem,
   type SendRequest,
   type StoriesState,
@@ -36,6 +38,8 @@ import {
 } from "./DeviceContext";
 import { CarrierDialog } from "./CarrierDialog";
 import { sendErrorMessage } from "./sendError";
+import { REASON_TEXT } from "./sendReasons";
+import { sendBlock } from "./sendRules";
 import { useDeviceStatus } from "./useDeviceStatus";
 
 const text = t.deviceTransfer;
@@ -264,8 +268,11 @@ export function DeviceProvider({
   const [cancelling, setCancelling] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const running = useRef(false);
+  // Un retrait d'histoire de la Flam est en cours.
+  const [removing, setRemoving] = useState(false);
   const sendingUuid = useRef<string | null>(null);
-  const [pendingAck, setPendingAck] = useState<SendRequest | null>(null);
+  // Action en attente de l'avertissement « expérimentale » (envoi, ou « Installer et envoyer »).
+  const [pendingAck, setPendingAck] = useState<{ run: () => void } | null>(null);
   // Choix retenu pour la Flam branchée pendant cette session (mode carrier).
   const carrierSession = useRef<{ key: string | null; carrier: CarrierSend } | null>(
     null,
@@ -546,7 +553,11 @@ export function DeviceProvider({
         const busy = items.some(
           (item) => item.state === "waiting" || item.state === "sending",
         );
-        const base = busy ? items.filter((item) => item.uuid !== request.uuid) : [];
+        // Un envoi venu de « Installer et envoyer » s'ajoute à la liste affichée, et un envoi
+        // prévu resté en échec y reste lisible jusqu'à sa fermeture.
+        const keeps = (item: QueueItem) =>
+          busy || request.planned === true || (item.planned && item.state === "failed");
+        const base = items.filter((item) => keeps(item) && item.uuid !== request.uuid);
         return [...base, { ...request, state: "waiting" }];
       });
       void pump();
@@ -571,21 +582,197 @@ export function DeviceProvider({
     [enqueue],
   );
 
+  /** Exécute `run` une fois l'avertissement « expérimentale » accepté (demandé une seule fois). */
+  const withSendWarning = useCallback((run: () => void) => {
+    if (getFlamSendWarningAck()) run();
+    else setPendingAck({ run });
+  }, []);
+
   const requestSend = useCallback(
-    (request: SendRequest) => {
-      if (getFlamSendWarningAck()) proceed(request);
-      else setPendingAck(request);
-    },
-    [proceed],
+    (request: SendRequest) => withSendWarning(() => proceed(request)),
+    [withSendWarning, proceed],
   );
 
   function confirmAck() {
     if (!pendingAck) return;
     setFlamSendWarningAck();
-    const request = pendingAck;
+    const { run } = pendingAck;
     setPendingAck(null);
-    proceed(request);
+    run();
   }
+
+  // --- Envois prévus à la fin d'une installation (« Installer et envoyer », #609) -----------
+  // Rien n'est conservé hors de la mémoire de la fenêtre : après une fermeture ou un
+  // rechargement, une installation reprise par le backend ne déclenche aucun envoi.
+  const plansRef = useRef<PlannedSend[]>([]);
+  const [plans, setPlans] = useState<PlannedSend[]>([]);
+  const updatePlans = useCallback((change: (items: PlannedSend[]) => PlannedSend[]) => {
+    const next = change(plansRef.current);
+    if (next === plansRef.current) return;
+    plansRef.current = next;
+    setPlans(next);
+  }, []);
+
+  const planSend = useCallback(
+    (request: PlannedSendRequest, start: () => void) => {
+      // Flam du clic : l'avertissement peut rester affiché, et la Flam changer entre-temps.
+      const key = deviceKeyRef.current;
+      if (key === null) return;
+      withSendWarning(() => {
+        updatePlans((items) => [
+          ...items.filter((item) => item.uuid !== request.uuid),
+          {
+            ...request,
+            deviceKey: key,
+            state: "installing",
+            size: null,
+            lost: deviceKeyRef.current !== key,
+          },
+        ]);
+        setAnnouncement(text.planned.announce.planned(request.title));
+        start();
+      });
+    },
+    [withSendWarning, updatePlans],
+  );
+
+  const fulfilPlannedSend = useCallback(
+    (uuid: string, size: number | null) =>
+      updatePlans((items) =>
+        items.some((item) => item.uuid === uuid && item.state === "installing")
+          ? items.map((item) =>
+              item.uuid === uuid ? { ...item, state: "ready", size } : item,
+            )
+          : items,
+      ),
+    [updatePlans],
+  );
+
+  const dropPlannedSend = useCallback(
+    (uuid: string) =>
+      updatePlans((items) =>
+        items.some((item) => item.uuid === uuid)
+          ? items.filter((item) => item.uuid !== uuid)
+          : items,
+      ),
+    [updatePlans],
+  );
+
+  // Flam débranchée, remplacée ou rebranchée depuis le clic : l'envoi prévu ne partira pas, même
+  // si une Flam de même volume et de même libellé revient (ce peut être une autre : la clé
+  // d'appareil ne les distingue pas, #577). L'utilisateur choisira lui-même avec « Envoyer ».
+  const plansKey = useRef(deviceKey);
+  useEffect(() => {
+    if (plansKey.current === deviceKey) return;
+    plansKey.current = deviceKey;
+    const lost = plansRef.current.filter(
+      (item) => !item.lost && item.deviceKey !== deviceKey,
+    ).length;
+    if (lost === 0) return;
+    updatePlans((items) =>
+      items.map((item) =>
+        !item.lost && item.deviceKey !== deviceKey ? { ...item, lost: true } : item,
+      ),
+    );
+    setAnnouncement(text.planned.announce.lost(lost));
+  }, [deviceKey, updatePlans]);
+
+  /** L'envoi prévu ne part pas : ligne en échec dans la file, avec la raison. */
+  const refusePlan = useCallback(
+    (plan: PlannedSend, message: string) => {
+      dropPlannedSend(plan.uuid);
+      updateQueue((items) => [
+        ...items.filter((item) => item.uuid !== plan.uuid),
+        {
+          uuid: plan.uuid,
+          title: plan.title,
+          size: plan.size,
+          state: "failed",
+          error: message,
+          planned: true,
+        },
+      ]);
+      setAnnouncement(text.panel.announce.failed(plan.title, message));
+    },
+    [dropPlannedSend, updateQueue],
+  );
+
+  // Histoires installées : leurs envois partent dans l'ordre des demandes (une histoire installée
+  // attend celles demandées avant elle), un par passage, par le chemin de « Envoyer sur la Flam »
+  // (mêmes règles, mêmes dialogues, même file). Un dialogue d'envoi affiché suspend la suite : il
+  // ne porte qu'une demande à la fois.
+  const confirmingSend = pendingAck !== null || pendingCarrier !== null;
+  const deviceStories = stories.phase === "ready" ? stories.report : null;
+  const storiesError = stories.phase === "error" ? stories.error.message : null;
+  useEffect(() => {
+    // Une histoire dont l'envoi est déjà abandonné (Flam changée) ne retient pas les suivantes.
+    const plan = plans.find((item) => !(item.lost && item.state === "installing"));
+    if (!plan || plan.state !== "ready" || confirmingSend) return;
+    const block = sendBlock(
+      {
+        device,
+        deviceStories,
+        firmwareBlocked,
+        removing,
+        // Comme le bouton « Envoyer » : en attente, en cours, ou réussi et pas encore relu.
+        queuedOrSent: new Set(
+          exposedQueue
+            .filter(
+              (item) =>
+                item.state === "waiting" || item.state === "sending" || item.awaitingList,
+            )
+            .map((item) => item.uuid),
+        ),
+      },
+      plan.uuid,
+      plan.size,
+      plan.format,
+    );
+    const changed = plan.lost || device === null || deviceKey !== plan.deviceKey;
+    // Retrait en cours sur la Flam, ou liste en cours de lecture : l'envoi attend.
+    const waits = block === "removing" || (block === "checking" && storiesError === null);
+    if (!changed && waits) return;
+    // Décision appliquée hors du corps de l'effet, et seulement si rien n'a changé entre-temps.
+    let current = true;
+    void Promise.resolve().then(() => {
+      if (!current || !plansRef.current.includes(plan)) return;
+      if (changed || block === "no_device") {
+        refusePlan(plan, text.planned.deviceChanged);
+      } else if (block === "checking") {
+        // Liste de la Flam illisible : l'envoi ne serait jamais proposé, il n'attend pas.
+        refusePlan(plan, text.planned.notSent(storiesError ?? REASON_TEXT.checking));
+      } else if (block === "queued") {
+        // Déjà dans la file d'envoi (demande faite entre-temps) : rien à ajouter.
+        dropPlannedSend(plan.uuid);
+      } else if (block !== null) {
+        refusePlan(plan, text.planned.notSent(REASON_TEXT[block]));
+      } else {
+        dropPlannedSend(plan.uuid);
+        requestSend({
+          uuid: plan.uuid,
+          title: plan.title,
+          size: plan.size,
+          planned: true,
+        });
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, [
+    plans,
+    confirmingSend,
+    device,
+    deviceKey,
+    deviceStories,
+    storiesError,
+    firmwareBlocked,
+    removing,
+    exposedQueue,
+    refusePlan,
+    dropPlannedSend,
+    requestSend,
+  ]);
 
   function confirmCarrier(carrier: CarrierSend) {
     if (!pendingCarrier) return;
@@ -612,6 +799,9 @@ export function DeviceProvider({
   }, []);
 
   const cancelQueue = useCallback(() => {
+    // Les envois prévus sont oubliés aussi (les installations continuent) : rien ne repart seul
+    // après une annulation.
+    updatePlans((items) => (items.length > 0 ? [] : items));
     updateQueue((items) =>
       items.map((item) =>
         item.state === "waiting" ? { ...item, state: "cancelled" } : item,
@@ -630,7 +820,7 @@ export function DeviceProvider({
         await new Promise((resolve) => setTimeout(resolve, CANCEL_RETRY_MS));
       }
     })();
-  }, [updateQueue]);
+  }, [updateQueue, updatePlans]);
 
   const removeFromQueue = useCallback(
     (uuid: string) =>
@@ -737,7 +927,6 @@ export function DeviceProvider({
   }, []);
 
   // --- Retrait et éjection -----------------------------------------------------------------
-  const [removing, setRemoving] = useState(false);
   const removeFromDevice = useCallback(
     async (uuid: string, expectedKey: string | null) => {
       const rootNow = rootRef.current;
@@ -816,7 +1005,11 @@ export function DeviceProvider({
       cancelling,
       busy,
       requestSend,
-      confirmingSend: pendingAck !== null || pendingCarrier !== null,
+      confirmingSend,
+      plannedSends: plans,
+      planSend,
+      fulfilPlannedSend,
+      dropPlannedSend,
       forgetCarrier,
       cancelQueue,
       removeFromQueue,
@@ -848,8 +1041,11 @@ export function DeviceProvider({
       cancelling,
       busy,
       requestSend,
-      pendingAck,
-      pendingCarrier,
+      confirmingSend,
+      plans,
+      planSend,
+      fulfilPlannedSend,
+      dropPlannedSend,
       forgetCarrier,
       cancelQueue,
       removeFromQueue,

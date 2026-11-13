@@ -626,6 +626,50 @@ est retirée de la Flam (« Ma Flam ») ou quand la Flam détectée change.
   `device_remove_story`. Jamais le fichier source de l'utilisateur ni l'archive d'origine :
   seul le fichier de `library/` de l'entrée envoyée.
 
+**Installer et envoyer** (#609, `useInstallAndSend.ts`, `DeviceProvider`) : à côté de
+« Installer » / « Télécharger » (carte et fiche d'une histoire non installée), l'action
+« Installer et envoyer » / « Télécharger et envoyer » enchaîne les étapes existantes, sans
+nouveau chemin de conversion ni de transfert : installation habituelle (`install_start`), puis
+envoi par la file d'envoi (`device_send_story`), puis retrait de « Mes histoires » si le réglage
+`remove_after_send` est actif (par `device::after_send`, inchangé). Aucune commande ni aucun
+réglage n'est ajouté.
+
+- **Proposée seulement si l'envoi est possible maintenant** : mêmes règles que « Envoyer sur la
+  Flam » (`sendBlock`), d'après la taille annoncée de l'histoire : Flam détectée et lue, firmware
+  accepté, histoire STUdio seulement sur une Flam 2.x, histoire absente de la Flam, espace
+  suffisant. Sinon seul « Installer » est affiché. Une histoire déjà installée garde « Envoyer
+  sur la Flam » : rien n'est réinstallé.
+- **Au clic** : l'avertissement « fonction expérimentale » est demandé d'abord s'il n'a jamais
+  été accepté (refusé : rien n'est installé), puis l'envoi est **prévu** (`plannedSends`,
+  `planSend`) et l'installation démarre. Le panneau d'envoi liste les envois prévus
+  (« Installation… », « Installée, envoi en attente », « Ne sera pas envoyée ») avec, pour
+  chacun, « Ne pas envoyer … après l'installation » (l'installation continue) ; la fiche le
+  rappelle.
+- **À la fin de l'installation** (`InstallOptions.onSettled`) : réussie, l'envoi part par
+  `requestSend` (mêmes dialogues, mode carrier compris, même file, mêmes refus du backend) ;
+  en échec, annulée (même si elle se termine avant d'avoir vu l'annulation) ou refusée à un
+  dialogue de confirmation, l'envoi prévu est oublié et l'échec s'affiche comme d'habitude.
+  « Réessayer » relance une installation simple, sans envoi.
+- **Même Flam qu'au clic** : l'envoi prévu retient la clé d'appareil du clic (volume et libellé).
+  Dès que la scrutation voit une autre clé, **ou plus de Flam**, il est abandonné pour de bon,
+  même si une Flam revient sous la même lettre (ce peut être une autre). L'histoire reste
+  installée et une ligne en échec de la file le dit (« … n'a pas été envoyée : la Flam a été
+  débranchée ou a changé pendant l'installation… ») ; l'envoi reste possible à la main.
+  **Limite connue** : la clé ne distingue pas deux Flam de même lettre et de même libellé
+  échangées sans que la scrutation voie d'absence (entre deux scrutations de 2 s ou 6 s, fenêtre
+  masquée, lecture incrustée) ; à partir de l'envoi, les garde-fous du backend s'appliquent
+  (`device_changed`, #577).
+- **Règles d'envoi revérifiées** à la fin de l'installation, avec la taille installée : déjà sur
+  la Flam, espace insuffisant, écriture bloquée, STUdio sur une Flam 1.x donnent une ligne en
+  échec avec la raison du bouton « Envoyer » ; lecture de la Flam ou retrait en cours : l'envoi
+  attend.
+- **Plusieurs demandes** : les envois partent dans l'ordre des clics (une histoire installée
+  attend celles demandées avant elle), une demande à la fois quand un dialogue d'envoi est
+  affiché ; ils s'ajoutent à la liste affichée au lieu de remplacer une file terminée.
+  « Annuler l'envoi » oublie aussi les envois prévus (les installations continuent).
+- **Rien n'est conservé** hors de la mémoire de la fenêtre : après une fermeture ou un
+  rechargement, une installation reprise par le backend n'envoie rien.
+
 **Ordre des histoires** (#233, `device::reorder`, `DeviceStoryOrder.tsx`) : « Modifier l'ordre »
 (proposé quand `list` est valide, `list.hidden` valide ou absent, la liste non tronquée et au
 moins deux histoires visibles) ouvre l'édition des histoires visibles : glisser-déposer, ou
@@ -1652,7 +1696,8 @@ Routage par hash (`src/router.ts`), sans bibliothèque : `#/` accueil, `#/source
   ouvre la **fiche** (`StoryDetail`, dialogue) : grande vignette, titre, description, âge,
   catégorie, auteur, voix, licence, taille, source, état, badge de compatibilité avec sa raison et
   actions selon l'état : _Télécharger et jouer_ / _Télécharger_ (catalogue ; _Installer…_ pour un
-  dossier), _Jouer_, _Mettre à jour_ (le catalogue propose une autre version que celle
+  dossier), _Télécharger et envoyer_ / _Installer et envoyer_ (Flam branchée et prête, #609, voir
+  « Installer et envoyer »), _Jouer_, _Mettre à jour_ (le catalogue propose une autre version que celle
   installée, ou la source dossier a changé depuis l'installation, même à version égale, #288),
   _Supprimer_ (avec confirmation), _Annuler_ (tâche active) ; un `.plain` /
   `.plain.pk` d'un dossier peut aussi être joué sans installation (_Jouer depuis le dossier_,

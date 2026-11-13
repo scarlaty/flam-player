@@ -22,6 +22,7 @@ import { formatBytes } from "../validation";
 import { isRemote, storyStateOf, useStories } from "./StoriesContext";
 import { RemoveStoryDialog } from "./RemoveStoryDialog";
 import { taskErrorMessage } from "./taskView";
+import { useInstallAndSend } from "./useInstallAndSend";
 import "./StoryDetail.css";
 
 export interface StoryDetailProps {
@@ -41,18 +42,23 @@ function Fact({ label, value }: { label: string; value: string | null | undefine
 
 /**
  * Fiche d'une histoire : vignette, description, métadonnées, état, compatibilité et actions
- * (Télécharger et jouer, Jouer, Mettre à jour, Supprimer, Annuler). Les dialogues de
+ * (Télécharger et jouer, Installer et envoyer, Jouer, Mettre à jour, Supprimer, Annuler). Les
+ * dialogues de
  * confirmation prennent la place de la fiche le temps de la réponse (un seul modal à la fois).
  */
 export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const stories = useStories();
-  const { confirmingSend } = useDevice();
+  const { confirmingSend, plannedSends } = useDevice();
   const { compatFor } = useCompat();
   const { url } = useThumbnail(source, entry, { eager: true });
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [failedUrl, setFailedUrl] = useState<string>();
   const updateHelpId = useId();
+  const sendHelpId = useId();
+  const installAndSend = useInstallAndSend(entry);
+  // Envoi prévu à la fin de l'installation en cours (« Installer et envoyer »).
+  const plan = plannedSends.find((item) => item.uuid === entry.uuid);
 
   const state = storyStateOf(stories, entry) ?? defaultStoryState(source, entry);
   const compat = compatFor(entry);
@@ -153,9 +159,27 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
               </>
             )}
             {!task && !installed && studio && (
-              <Button size="sm" icon="download" onClick={() => stories.install(entry)}>
-                {text.install}
-              </Button>
+              <>
+                <Button size="sm" icon="download" onClick={() => stories.install(entry)}>
+                  {text.install}
+                </Button>
+                {installAndSend && (
+                  <>
+                    <Button
+                      size="sm"
+                      icon="device"
+                      title={text.installAndSendHelp}
+                      aria-describedby={sendHelpId}
+                      onClick={installAndSend}
+                    >
+                      {fromCatalog ? text.downloadAndSend : text.installAndSend}
+                    </Button>
+                    <span id={sendHelpId} className="fl-visually-hidden">
+                      {text.installAndSendHelp}
+                    </span>
+                  </>
+                )}
+              </>
             )}
             {!task && !installed && !studio && (
               <>
@@ -172,6 +196,22 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                 <Button size="sm" icon="download" onClick={() => stories.install(entry)}>
                   {fromCatalog ? text.download : text.install}
                 </Button>
+                {installAndSend && (
+                  <>
+                    <Button
+                      size="sm"
+                      icon="device"
+                      title={text.installAndSendHelp}
+                      aria-describedby={sendHelpId}
+                      onClick={installAndSend}
+                    >
+                      {fromCatalog ? text.downloadAndSend : text.installAndSend}
+                    </Button>
+                    <span id={sendHelpId} className="fl-visually-hidden">
+                      {text.installAndSendHelp}
+                    </span>
+                  </>
+                )}
                 <Button
                   size="sm"
                   variant="accent"
@@ -268,6 +308,11 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                 />
                 <p aria-live="polite">{progress.text}</p>
               </div>
+            )}
+            {task && plan && (
+              <p className="fl-detail__hint">
+                {plan.lost ? text.sendPlanLost : text.sendPlanned}
+              </p>
             )}
             {failed?.error && (
               <Banner

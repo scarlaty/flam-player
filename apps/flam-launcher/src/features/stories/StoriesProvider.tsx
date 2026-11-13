@@ -40,7 +40,12 @@ import {
 } from "../compat/IncompatibleInstallDialog";
 import { EarlyEvents } from "./earlyEvents";
 import { FormatReplaceDialog } from "./FormatReplaceDialog";
-import { StoriesContext, type InstallOptions, type StoriesApi } from "./StoriesContext";
+import {
+  StoriesContext,
+  type InstallOptions,
+  type InstallOutcome,
+  type StoriesApi,
+} from "./StoriesContext";
 import {
   isActiveState,
   NO_DETAIL,
@@ -85,6 +90,13 @@ export const DONE_TASK_TTL_MS = 8000;
 
 /** Regroupe les vérifications des sources dossier demandées à moins de ce délai. */
 const SOURCE_CHECK_DEBOUNCE_MS = 300;
+
+/** Suite demandée à la fin d'une installation (`InstallOptions.onSettled`). */
+interface SettleWaiting {
+  notify: (outcome: InstallOutcome) => void;
+  /** Tâche d'installation, une fois créée. */
+  taskId?: string;
+}
 
 interface PendingInstall {
   entry: StoryEntry;
@@ -134,6 +146,15 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   // `uuid` des histoires à lancer à la fin de leur installation ; conservé après un échec pour
   // que « Réessayer » reprenne « Télécharger et jouer ».
   const playAfter = useRef(new Set<string>());
+  // Suites demandées à la fin d'une installation (`onSettled`), par `uuid` ; `taskId` une fois la
+  // tâche créée. Chacune est appelée une seule fois, puis oubliée.
+  const settleAfter = useRef(new Map<string, SettleWaiting>());
+  const settle = useCallback((uuid: string, outcome: InstallOutcome) => {
+    const waiting = settleAfter.current.get(uuid);
+    if (!waiting) return;
+    settleAfter.current.delete(uuid);
+    waiting.notify(outcome);
+  }, []);
   // Événements reçus pour une tâche pas encore connue (avant le retour de `install_start`) :
   // appliqués dès que la tâche est ajoutée à la liste.
   const early = useRef(new EarlyEvents());
@@ -145,6 +166,17 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     installedRef.current = installed;
   });
+  // Abandonne la suite de la tâche `taskId`, retrouvée par la liste des tâches ou, si la tâche
+  // n'y figure pas encore, par l'identifiant noté à sa création.
+  const abandonTask = useCallback(
+    (taskId: string) => {
+      const uuid =
+        tasksRef.current.find((task) => task.id === taskId)?.entry.uuid ??
+        [...settleAfter.current].find(([, waiting]) => waiting.taskId === taskId)?.[0];
+      if (uuid !== undefined) settle(uuid, { status: "abandoned" });
+    },
+    [settle],
+  );
   const compatReload = compat.reload;
 
   // Les vérifications se succèdent : seule la réponse de la plus récente est retenue.
@@ -319,6 +351,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
               : t.stories.toast.installed(title),
           tone: "success",
         });
+        settle(uuid, { status: "installed", entry: event.entry });
         if (playAfter.current.delete(uuid)) {
           void launch(
             () => launchPlayer(uuid),
@@ -326,7 +359,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           );
         }
       },
-      [patchTask, compatReload, refreshInstalled, toast, launch],
+      [patchTask, compatReload, refreshInstalled, toast, launch, settle],
     ),
   );
   useListener(
@@ -334,10 +367,12 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     useCallback(
       (event) => {
         patchTask(event.task_id, { state: event.state, error: event.error });
+        // Échec ou annulation : la suite demandée (`onSettled`) est abandonnée.
+        abandonTask(event.task_id);
         // Une conversion en échec est enregistrée dans le rapport de compatibilité local.
         compatReload();
       },
-      [patchTask, compatReload],
+      [patchTask, compatReload, abandonTask],
     ),
   );
   useListener(
@@ -411,6 +446,16 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         playAfter.current.delete(entry.uuid);
         returnTo.current.delete(entry.uuid);
       }
+      // Une nouvelle demande pour la même histoire abandonne la suite de la précédente.
+      settle(entry.uuid, { status: "abandoned" });
+      const waiting: SettleWaiting | undefined = options.onSettled
+        ? { notify: options.onSettled }
+        : undefined;
+      if (waiting) settleAfter.current.set(entry.uuid, waiting);
+      const abandon = () => {
+        if (waiting && settleAfter.current.get(entry.uuid) === waiting)
+          settle(entry.uuid, { status: "abandoned" });
+      };
       try {
         const task = await startInstall(
           entry.source_id,
@@ -430,6 +475,9 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         if (options.replaces) stale.push(options.replaces);
         // Une tâche déjà connue (événement arrivé avant ce retour) garde son état le plus récent.
         const added = early.current.take(task);
+        // Échec ou annulation déjà reçus avant ce retour : la suite demandée est abandonnée.
+        if (added.state === "failed" || added.state === "cancelled") abandon();
+        else if (waiting) waiting.taskId = task.id;
         setTasks((current) =>
           current.some((other) => other.id === task.id) ? current : [added, ...current],
         );
@@ -444,6 +492,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         // Relance d'une tâche dont l'entrée a disparu du catalogue ou du dernier scan : la
         // tâche en échec reste affichée, « Réessayer » pourra servir après un rafraîchissement.
         const gone = error.kind === "not_found";
+        abandon();
         if (!options.replaces) {
           playAfter.current.delete(entry.uuid);
           returnTo.current.delete(entry.uuid);
@@ -454,7 +503,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         });
       }
     },
-    [toast],
+    [toast, settle],
   );
 
   const compatFor = compat.compatFor;
@@ -498,11 +547,14 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         playAfter.current.delete(task.entry.uuid);
         returnTo.current.delete(task.entry.uuid);
       }
+      // Annulation demandée : la suite est abandonnée tout de suite, même si l'installation se
+      // termine avant d'avoir vu l'annulation.
+      abandonTask(taskId);
       cancelInstall(taskId).catch((caught: unknown) =>
         toast.show({ message: toAppError(caught).message, tone: "danger" }),
       );
     },
-    [toast],
+    [toast, abandonTask],
   );
 
   const trackTask = useCallback((task: InstallTask) => {
@@ -688,6 +740,11 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     pending,
   ]);
 
+  // Confirmation refusée : rien n'est installé, la suite demandée est abandonnée.
+  const abandonPending = () => {
+    pending?.options.onSettled?.({ status: "abandoned" });
+    setPending(null);
+  };
   const info = pending?.reason === "incompatible" ? compatFor(pending.entry) : undefined;
   // Format installé à remplacer : l'autre que celui de l'entrée (même si la liste a changé
   // depuis la demande, la confirmation reste cohérente).
@@ -705,7 +762,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           open
           story={pending.entry.title}
           info={info}
-          onCancel={() => setPending(null)}
+          onCancel={abandonPending}
           onConfirm={() => {
             const { entry, options } = pending;
             setPending(null);
@@ -718,7 +775,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           open
           story={pending.entry.title}
           installed={replaced}
-          onCancel={() => setPending(null)}
+          onCancel={abandonPending}
           onConfirm={() => {
             const { entry, options } = pending;
             setPending(null);

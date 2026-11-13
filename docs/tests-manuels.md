@@ -25,6 +25,7 @@ Cocher la case une fois le résultat consigné dans l'issue indiquée.
 | [ ]  | M10 | Deuxième Flam d'un autre compte (#236 point 7, #234)                      | D       | 2 Flam, 2 comptes              | 45 min | #236           |
 | [ ]  | M11 | Titres lus à voix haute dans un pack, sur la Flam                         | E       | Flam 1.x                       | 45 min | #462           |
 | [ ]  | M12 | Histoires STUdio sur Flam 2.x (#517, L1 à L15)                            | D       | Flam 2.x                       | 1 h 30 | #236           |
+| [ ]  | M13 | « Installer et envoyer » : enchaînement, Flam débranchée ou changée       | B       | Flam 1.x ou 2.x                | 40 min | #609           |
 
 Ordre conseillé : A (PC seul, sans risque pour la Flam), puis B (une installation, une connexion
 de la Flam), puis C (risqué, seulement après B et une sauvegarde vérifiée). D et E dépendent de
@@ -35,7 +36,7 @@ matériel ou de code qui manquent aujourd'hui.
 | Session                            | Contenu                         | Ce qui se partage                                                                                                                                                                                                                                                                                                                                                                     |
 | ---------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | A, sur le PC, sans Flam            | M1, M5, M6                      | M5 et M6 utilisent le même poste de développement ; M1 se fait sur la VM ou le compte propre                                                                                                                                                                                                                                                                                          |
-| B, une installation, une connexion | M2, M3, M4 (puis M0 avant tout) | **une seule installation** de N (installation propre, ou celle de M1 si elle n'a pas été désinstallée à l'étape 9), sur une machine qui voit la Flam en USB (PC physique, ou VM avec passage USB) ; **une seule connexion** de la Flam : M4 envoie la première histoire, M2 envoie les packs, M3 se fait dans l'éditeur déjà ouvert ; un redémarrage de vérification, un de nettoyage |
+| B, une installation, une connexion | M2, M3, M4, M13 (M0 avant tout) | **une seule installation** de N (installation propre, ou celle de M1 si elle n'a pas été désinstallée à l'étape 9), sur une machine qui voit la Flam en USB (PC physique, ou VM avec passage USB) ; **une seule connexion** de la Flam : M4 envoie la première histoire, M2 envoie les packs, M3 se fait dans l'éditeur déjà ouvert ; un redémarrage de vérification, un de nettoyage |
 | C, risqué                          | M7, M8                          | M7 en une connexion, après sauvegarde vérifiée ; M8 avec l'application officielle (autre logiciel, autre connexion) ; restauration prévue en fin de test                                                                                                                                                                                                                              |
 | D, matériel manquant               | M9, M10, M12                    | à faire quand le matériel existe ; M12 peut suivre M9 dans la même connexion                                                                                                                                                                                                                                                                                                          |
 | E, après fusion                    | M11                             | après fusion de la PR 2 de #462 (voir M11)                                                                                                                                                                                                                                                                                                                                            |
@@ -241,6 +242,61 @@ glisser-déposer ; les messages de limite détaillés n'apparaissent qu'à la va
 cliquant sur **Créer l'histoire**) ; l'ordre est conservé après réouverture.
 
 **Consigner dans #413** (case « Mainteneur : vérifier le glisser-déposer »). **Durée** : 10 minutes.
+
+### M13. « Installer et envoyer » (#609, second lot)
+
+**But.** Vérifier sur une vraie Flam que l'action enchaîne installation, envoi et, si le réglage
+est actif, retrait de « Mes histoires », et que rien ne part si la Flam est débranchée ou changée
+pendant l'installation. Se fait en session B, dans la même connexion que M4 (**M0** faite).
+
+**Prérequis.** Un catalogue ou un dossier avec au moins quatre petites histoires **non
+installées** ; une histoire déjà installée ; une histoire déjà sur la Flam ; réglage « Retirer de
+Mes histoires après l'envoi sur la Flam » désactivé au départ.
+
+**Étapes.**
+
+1. **Sans Flam** : cartes et fiche ne proposent que « Télécharger » / « Installer » (et « … et
+   jouer »). Brancher la Flam : « Télécharger et envoyer » / « Installer et envoyer » apparaît
+   sur les histoires non installées, une fois la Flam lue. Il n'apparaît pas sur l'histoire déjà
+   sur la Flam ; l'histoire déjà installée garde « Envoyer sur la Flam ».
+2. **Enchaînement** : cliquer « Installer et envoyer » sur une histoire. Le panneau d'envoi
+   affiche « Envoi prévu après l'installation » avec « Installation… » ; à la fin de
+   l'installation, l'envoi démarre seul (« Envoi en cours »), puis « Envoyée » avec « Retirer du
+   PC ». En mode carrier (Flam 1.x), le choix des clés est demandé à la fin de l'installation.
+   Éjecter, redémarrer la Flam : l'histoire se lance.
+3. **Ordre** : cliquer l'action sur trois histoires à la suite (une plus grosse en premier).
+   Noter l'ordre des envois (celui des clics), l'absence de doublon, et l'ordre final sur la
+   Flam. Noter aussi si un envoi prévu passe à « Ne sera pas envoyée » **sans** que la Flam ait
+   été touchée (absence passagère vue par la scrutation pendant un envoi) : c'est un défaut à
+   rapporter.
+4. **Flam débranchée** : cliquer l'action, puis débrancher la Flam pendant l'installation. Le
+   panneau affiche « Ne sera pas envoyée ». Rebrancher la **même** Flam avant la fin de
+   l'installation : l'état ne change pas. À la fin : ligne en échec « … n'a pas été envoyée : la
+   Flam a été débranchée ou a changé pendant l'installation… », l'histoire est dans « Mes
+   histoires », rien n'a été écrit sur la Flam (contenu de `str/` inchangé). « Envoyer sur la
+   Flam » l'envoie ensuite normalement.
+5. **Annulation** : cliquer l'action, puis « Annuler » sur la tâche d'installation : rien n'est
+   envoyé. Recommencer et cliquer « Ne pas envoyer … après l'installation » dans le panneau :
+   l'histoire s'installe, rien n'est envoyé.
+6. **Fermeture** : cliquer l'action sur une histoire longue à installer, fermer le launcher
+   pendant l'installation, le rouvrir : l'installation reprend et se termine, **aucun envoi** ne
+   part.
+7. **Espace insuffisant** (si la Flam est presque pleine, sinon noter « non fait ») : l'action
+   n'est pas proposée pour une histoire plus grosse que l'espace libre.
+8. **Réglage actif** : activer « Retirer de Mes histoires après l'envoi sur la Flam », cliquer
+   l'action sur une histoire : après l'envoi, elle est retirée de « Mes histoires » (ou gardée
+   « par prudence » si l'écriture n'est pas confirmée), la notification rappelle qu'elle reste
+   sur la Flam. Désactiver le réglage ensuite.
+9. _Facultatif, avec deux Flam_ (session D) : cliquer l'action, débrancher la Flam A et brancher
+   la Flam B pendant l'installation, en laissant passer au moins 10 secondes entre les deux :
+   rien n'est envoyé sur B. Refaire en échangeant les deux Flam le plus vite possible et noter le
+   résultat : c'est la limite connue de la clé d'appareil (même lettre, même libellé).
+
+**Résultat attendu.** Étapes 1 à 8 conformes ; aucun envoi sans Flam inchangée depuis le clic ;
+aucun fichier laissé dans `.flam-transfer/` après les étapes 4 à 6.
+
+**Consigner dans #609.** Firmware de la Flam, résultat de chaque étape, ordre observé à
+l'étape 3, résultat de l'étape 9 si elle est faite. **Durée** : 40 minutes.
 
 ---
 
