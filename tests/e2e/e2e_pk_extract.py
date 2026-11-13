@@ -349,7 +349,8 @@ def main():
                    "sub\\..\\..\\x", "./ok.txt", "a/./b.txt",
                    "CON", "nul.txt", "COM1", "lpt9.log", "sub/aux", "Prn .txt",
                    "dot./c.txt", "d.txt ", "e.txt.", ".extracted/x", "EXTRAC~1",
-                   "extrac~12.x", "EXTRAC~2"]
+                   "extrac~12.x", "EXTRAC~2", "a?b.txt", "x<y.txt", 'q"r.txt', "p|q.txt",
+                   "s*t.txt", "u>v.txt", "COM¹", "lpt².txt", "Com³"]
         with zipfile.ZipFile(pk, "w", zipfile.ZIP_STORED) as z:
             z.writestr("main.lua", LUA % "PK")
             z.writestr("keep.txt", "k")
@@ -367,7 +368,7 @@ def main():
               "temoins forges : liste = fichiers reellement extraits", err)
         check(not os.path.exists(d + "/sub"), "temoins forges : aucun dossier sub", err)
         for bad in ("CON", "nul.txt", "COM1", "lpt9.log", "dot.", "d.txt", "e.txt",
-                    "extrac~12.x", "Prn .txt"):   # EXTRAC~N : alias reel des temoins
+                    "extrac~12.x", "Prn .txt", "a?b.txt", "x<y.txt", "s*t.txt"):   # EXTRAC~N : alias reel des temoins
             check(not os.path.exists(d + "/" + bad),
                   "temoins forges : '%s' non extrait" % bad, err)
 
@@ -432,15 +433,33 @@ def main():
               and read(d + "/.extracted") == stamp_before,
               "passe a blanc : ancienne extraction intacte (descriptor)", err)
 
-        # 12c. main.lua compresse : rien n'aurait ete extrait
+        # 12c. main.lua stocke de taille 0 (passait pk_has_entry) puis compresse
+        with zipfile.ZipFile(pk, "w", zipfile.ZIP_STORED) as z:
+            z.writestr("main.lua", "")
+            z.writestr("data.bin", "y" * 100)
+        err = run_player(exe, pk, tmp, "extraction impossible")
+        check("illisible, incomplet ou sans main.lua" in err,
+              "passe a blanc : main.lua de taille 0 refuse", err)
+        check(read(d + "/main.lua") == LUA % "PK" and read(d + "/old.txt") == "v1"
+              and read(d + "/.extracted") == stamp_before,
+              "passe a blanc : ancienne extraction intacte (taille 0)", err)
         with zipfile.ZipFile(pk, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("main.lua", (LUA % "V2") * 50)
         err = run_player(exe, pk, tmp, "extraction impossible")
         check("illisible, incomplet ou sans main.lua" in err,
               "passe a blanc : main.lua compresse refuse", err)
-        check(read(d + "/main.lua") == LUA % "PK" and read(d + "/old.txt") == "v1"
-              and read(d + "/.extracted") == stamp_before,
+        check(read(d + "/main.lua") == LUA % "PK" and read(d + "/.extracted") == stamp_before,
               "passe a blanc : ancienne extraction intacte (compresse)", err)
+
+        # 12e. v2 avec un nom que Windows ne peut pas ecrire : refuse avant la purge de v1
+        make_pk(pk, "V2", {"a?b.txt": "x", "k.txt": "k"})
+        err = run_player(exe, pk, tmp, "Extracted")
+        check(read(d + "/main.lua") == (LUA % "V2") and not os.path.exists(d + "/old.txt"),
+              "nom interdit : v2 extraite (nom refuse, extraction complete)", err)
+        check(os.path.isfile(d + "/.extracted") and not os.path.exists(d + "/.extracting"),
+              "nom interdit : temoins complets, pas de re-extraction a chaque lancement", err)
+        check(read(d + "/k.txt") == "k" and not os.path.exists(d + "/a?b.txt"),
+              "nom interdit : entree saine extraite, entree interdite non extraite", err)
 
         # 12d. alias 8.3 du temoin puis signature inconnue : .extracting non ecrase
         root, pk, d = fresh(tmp, "alias-court", {"EXTRAC~1": "FORGE", "EXTRAC~2": "FORGE",

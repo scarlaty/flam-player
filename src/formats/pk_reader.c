@@ -188,11 +188,22 @@ static int pk_is_device_name(const char *comp, size_t len)
     for (size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
         if (pk_ieq(comp, base, fixed[i])) return 1;
     }
-    if (base == 4 && comp[3] >= '1' && comp[3] <= '9') {
-        char head[4] = { (char)tolower((unsigned char)comp[0]),
-                         (char)tolower((unsigned char)comp[1]),
-                         (char)tolower((unsigned char)comp[2]), '\0' };
-        if (strcmp(head, "com") == 0 || strcmp(head, "lpt") == 0) return 1;
+    /* COM1-9 / LPT1-9, aussi avec un chiffre en exposant (1, 2, 3 de cp1252 /
+       Latin-1 : octet 0xB9, 0xB2, 0xB3 ; ou leur forme UTF-8 : 0xC2 puis cet
+       octet). fopen recoit les octets du nom tels quels (page de code ANSI) ;
+       les deux formes sont couvertes. */
+    int c3 = tolower((unsigned char)comp[0]) == 'c' && tolower((unsigned char)comp[1]) == 'o' &&
+             tolower((unsigned char)comp[2]) == 'm';
+    int l3 = tolower((unsigned char)comp[0]) == 'l' && tolower((unsigned char)comp[1]) == 'p' &&
+             tolower((unsigned char)comp[2]) == 't';
+    if (base >= 4 && (c3 || l3)) {
+        unsigned char d = (unsigned char)comp[3];
+        if (base == 4 && ((d >= '1' && d <= '9') || d == 0xB9 || d == 0xB2 || d == 0xB3))
+            return 1;
+        if (base == 5 && d == 0xC2) {
+            unsigned char e = (unsigned char)comp[4];
+            if (e == 0xB9 || e == 0xB2 || e == 0xB3) return 1;
+        }
     }
     return 0;
 }
@@ -218,7 +229,11 @@ int pk_name_is_safe(const char *name)
             comp = p + 1;
             continue;
         }
-        if (c == ':' || c < 0x20) return 0;
+        /* ':' (lecteur, flux NTFS), controles et caracteres que Windows ne
+           peut pas ecrire dans un nom : sinon l'extraction echouerait apres
+           la purge */
+        if (c == ':' || c < 0x20 || c == '<' || c == '>' || c == '"' || c == '|' ||
+            c == '?' || c == '*') return 0;
     }
     return 1;
 }
@@ -364,8 +379,12 @@ static void pk_list_add(pk_list_t *l, const char *name)
 
 /* Extraction ; si list != NULL, chaque fichier ecrit y est ajoute
    (un nom par ligne, '/' comme separateur).
-   dry != 0 : passe a blanc, meme parcours et memes refus mais rien n'est ecrit
-   (ni dossier, ni fichier) ; count = entrees qui auraient ete extraites.
+   dry != 0 : passe a blanc, meme parcours et memes refus de noms et de
+   tailles mais rien n'est ecrit (ni dossier, ni fichier) ; count = entrees
+   qui auraient ete extraites. Elle ne peut PAS verifier : la longueur du
+   chemin final, pk_path_is_inside (le dossier n'existe pas encore) ni
+   l'ouverture reelle des fichiers (disque plein, droits, nom refuse par le
+   systeme de fichiers).
    *has_main = 1 si "main.lua" aurait ete extrait (stocke, taille > 0). */
 static int pk_extract_core(const char *pk_path, const char *out_dir,
                            int *complete, pk_list_t *list,
@@ -506,6 +525,8 @@ static int pk_extract_core(const char *pk_path, const char *out_dir,
                 pk_list_add(list, out_path + strlen(out_dir) + 1);
             }
         } else {
+            fprintf(stderr, "[PK] entree '%s' : ouverture impossible, extraction incomplete (%s)%s",
+                    name_buf, pk_path, "\n");
             failed = 1;
             if (pk_skip(f, hdr.compressed_size, file_size) != 0) break;
         }
