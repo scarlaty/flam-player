@@ -21,6 +21,11 @@ export interface DeviceStatusState {
    * déjà en vol au moment du clic porte un numéro plus ancien : elle ne répond pas à « Réessayer ».
    */
   answered: number;
+  /**
+   * Rang (voir `statusFetchCount`) de la lecture `device_status` dont `status` est la réponse ;
+   * 0 avant la première. Sert à savoir si l'état affiché a été relu depuis un instant donné.
+   */
+  fetched: number;
 }
 
 /**
@@ -29,12 +34,25 @@ export interface DeviceStatusState {
  * second sur la même Flam.
  */
 let shared: Promise<DeviceStatus> | null = null;
+/** Nombre de lectures `device_status` réellement lancées (une lecture rejointe ne compte pas). */
+let fetches = 0;
 
 function fetchStatus(): Promise<DeviceStatus> {
-  shared ??= getDeviceStatus().finally(() => {
-    shared = null;
-  });
+  if (!shared) {
+    fetches += 1;
+    shared = getDeviceStatus().finally(() => {
+      shared = null;
+    });
+  }
   return shared;
+}
+
+/**
+ * Rang de la dernière lecture `device_status` lancée. Une réponse de rang supérieur (`fetched`)
+ * vient forcément d'une lecture lancée après cet appel.
+ */
+export function statusFetchCount(): number {
+  return fetches;
 }
 
 /**
@@ -58,6 +76,7 @@ export function useDeviceStatus(
   const [status, setStatus] = useState<DeviceStatus | null>(null);
   const [error, setError] = useState<AppError | null>(null);
   const [answered, setAnswered] = useState(0);
+  const [fetched, setFetched] = useState(0);
   const pollNow = useRef<() => void>(() => undefined);
   const requests = useRef(0);
   const isEnabled = useRef(enabled);
@@ -85,8 +104,12 @@ export function useDeviceStatus(
           // Pas d'appel : la demande est tout de même close, sans quoi elle resterait en attente.
           if (active) setAnswered(served);
         } else {
-          const next = await fetchStatus();
+          const reading = fetchStatus();
+          // Rang de la lecture attendue : lancée ici, ou déjà en vol et rejointe.
+          const rank = fetches;
+          const next = await reading;
           if (active) {
+            setFetched(rank);
             setStatus(next);
             setError(null);
             setAnswered(served);
@@ -129,5 +152,5 @@ export function useDeviceStatus(
     if (!isEnabled.current) setAnswered(request);
     return request;
   }, []);
-  return { status, error, retry, answered };
+  return { status, error, retry, answered, fetched };
 }

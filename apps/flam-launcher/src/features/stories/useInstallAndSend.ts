@@ -16,7 +16,8 @@ import { useStories } from "./StoriesContext";
  */
 export function useInstallAndSend(entry: StoryEntry): (() => void) | null {
   const stories = useStories();
-  const { planSend, fulfilPlannedSend, dropPlannedSend, plannedSends } = useDevice();
+  const { planSend, startPlannedSend, fulfilPlannedSend, dropPlannedSend, plannedSends } =
+    useDevice();
   const format = formatOfKind(entry.kind);
   const block = useSendBlock(entry.uuid, entry.size, format);
   if (block !== null || plannedSends.some((plan) => plan.uuid === entry.uuid))
@@ -24,6 +25,7 @@ export function useInstallAndSend(entry: StoryEntry): (() => void) | null {
   return () =>
     planSend({ uuid: entry.uuid, title: entry.title, format }, () =>
       stories.install(entry, {
+        onStarted: () => startPlannedSend(entry.uuid),
         onSettled: (outcome) => {
           if (outcome.status === "installed")
             fulfilPlannedSend(entry.uuid, outcome.entry.size);

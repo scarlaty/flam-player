@@ -9,6 +9,7 @@ import {
   type QueueState,
 } from "./DeviceContext";
 import { EjectButton } from "./EjectButton";
+import { SendToDeviceButton } from "./SendToDeviceButton";
 import { estimateMinutes } from "./sendRules";
 import "./TransferPanel.css";
 
@@ -42,10 +43,12 @@ export function TransferPanel() {
     removeFromQueue,
     dismissQueue,
     removeFromPc,
-    plannedSends,
+    plannedSends: allPlanned,
     dropPlannedSend,
     announcement,
   } = useDevice();
+  // Une demande dont l'installation n'a pas démarré (confirmation en attente) n'est pas montrée.
+  const plannedSends = allPlanned.filter((plan) => plan.state !== "pending");
   const titleId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -103,7 +106,7 @@ export function TransferPanel() {
     if (!focusAfterPlanDrop.current) return;
     focusAfterPlanDrop.current = false;
     (headingRef.current ?? document.getElementById("fl-main"))?.focus();
-  }, [plannedSends]);
+  }, [allPlanned]);
 
   // Annonces de la file (début, fin, échec), sans pourcentage : région vivante toujours présente.
   const live = (
@@ -281,10 +284,13 @@ export function TransferPanel() {
 
 /**
  * Envoi prévu à la fin d'une installation : état (installation, envoi en attente, abandonné parce
- * que la Flam a changé) et bouton pour y renoncer (l'installation continue).
+ * que la Flam a changé, à confirmer parce que la Flam n'a pas été surveillée sans interruption)
+ * et bouton pour y renoncer (l'installation continue). À confirmer : « Envoyer sur la Flam »,
+ * le bouton d'envoi habituel, avec ses raisons de refus.
  */
 function PlannedLine({ plan, onDrop }: { plan: PlannedSend; onDrop: () => void }) {
   const planned = text.planned;
+  const toConfirm = plan.unwatched && plan.state === "ready" && !plan.lost;
   return (
     <li className="fl-transfer__item">
       <div className="fl-transfer__item-head">
@@ -300,9 +306,26 @@ function PlannedLine({ plan, onDrop }: { plan: PlannedSend; onDrop: () => void }
         tone={plan.lost ? "danger" : "neutral"}
         icon={plan.lost ? "alert" : undefined}
       >
-        {plan.lost ? planned.state.lost : planned.state[plan.state]}
+        {plan.lost
+          ? planned.state.lost
+          : toConfirm
+            ? planned.state.confirm
+            : planned.state[plan.state === "ready" ? "ready" : "installing"]}
       </Badge>
       {plan.lost && <p className="fl-transfer__error">{planned.lostHint}</p>}
+      {!plan.lost && plan.unwatched && (
+        <p className="fl-transfer__line">
+          {toConfirm ? planned.confirmHint : planned.unwatchedHint}
+        </p>
+      )}
+      {toConfirm && (
+        <SendToDeviceButton
+          uuid={plan.uuid}
+          title={plan.title}
+          size={plan.size}
+          format={plan.format}
+        />
+      )}
     </li>
   );
 }

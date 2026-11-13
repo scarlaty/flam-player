@@ -54,9 +54,9 @@ export interface QueueItem {
 }
 
 /**
- * Envoi prévu à la fin d'une installation (« Installer et envoyer », #609). Il ne part que sur
- * la Flam branchée au moment du clic (`deviceKey`), et seulement si elle n'a jamais cessé d'être
- * vue entre-temps.
+ * Envoi prévu à la fin d'une installation (« Installer et envoyer », #609). Il ne part seul que
+ * sur la Flam branchée au moment du clic (`deviceKey`), si elle n'a jamais cessé d'être vue
+ * entre-temps et si la scrutation n'a jamais été suspendue (`unwatched`).
  */
 export interface PlannedSend {
   uuid: string;
@@ -64,12 +64,24 @@ export interface PlannedSend {
   format: LibraryFormat;
   /** Identité de la Flam au moment du clic (volume et libellé). */
   deviceKey: string;
-  /** `installing` : installation en cours ; `ready` : installée, envoi sur le point de partir. */
-  state: "installing" | "ready";
+  /**
+   * `pending` : demandé, installation pas encore démarrée (confirmation en attente : rien n'est
+   * affiché) ; `installing` : installation en cours ; `ready` : installée, envoi sur le point de
+   * partir, ou à confirmer (`unwatched`).
+   */
+  state: "pending" | "installing" | "ready";
   /** Taille du `.plain.pk` installé (`ready`), `null` : inconnue. */
   size: number | null;
   /** La Flam du clic a été débranchée ou remplacée depuis : l'envoi ne partira pas. */
   lost: boolean;
+  /**
+   * La scrutation de la Flam a été suspendue depuis le clic (fenêtre masquée, lecture
+   * incrustée) : rien ne prouve que la Flam branchée est celle du clic. L'envoi ne part pas
+   * seul : une fois l'histoire installée, il est à confirmer par « Envoyer sur la Flam ».
+   */
+  unwatched: boolean;
+  /** L'histoire installée a été vue dans « Mes histoires » (`ready`) : sa disparition l'oublie. */
+  inLibrary?: boolean;
 }
 
 export interface PlannedSendRequest {
@@ -153,7 +165,10 @@ export interface DeviceApi {
   cancelling: boolean;
   /** Un envoi est en attente ou en cours : retrait et éjection sont refusés. */
   busy: boolean;
-  /** Demande l'envoi ; l'avertissement « expérimentale » est affiché au premier envoi. */
+  /**
+   * Demande l'envoi ; l'avertissement « expérimentale » est affiché au premier envoi. Une
+   * demande faite par l'utilisateur oublie l'envoi prévu de la même histoire.
+   */
   requestSend: (request: SendRequest) => void;
   /** L'avertissement « expérimentale » ou le choix des clés carrier est affiché. */
   confirmingSend: boolean;
@@ -167,14 +182,18 @@ export interface DeviceApi {
   /**
    * « Installer et envoyer » : prévoit l'envoi de l'histoire sur la Flam branchée, puis appelle
    * `start` (qui lance l'installation). L'avertissement « expérimentale » est demandé d'abord :
-   * s'il est refusé, rien n'est prévu ni lancé. Sans Flam, ne fait rien. La fin de
-   * l'installation est signalée par `fulfilPlannedSend` ou `dropPlannedSend`.
+   * s'il est refusé, rien n'est prévu ni lancé. Sans Flam, ne fait rien. Le démarrage réel de
+   * l'installation est signalé par `startPlannedSend`, sa fin par `fulfilPlannedSend` ou
+   * `dropPlannedSend`.
    */
   planSend: (request: PlannedSendRequest, start: () => void) => void;
+  /** L'installation a réellement démarré (confirmations passées) : l'envoi prévu est affiché. */
+  startPlannedSend: (uuid: string) => void;
   /**
    * L'installation de l'histoire a réussi (`size` : taille installée) : son envoi prévu part par
    * la file d'envoi, à son tour, si la Flam est restée celle du clic et si les règles d'envoi
-   * l'acceptent ; sinon une ligne en échec dit pourquoi. Sans envoi prévu, ne fait rien.
+   * l'acceptent ; sinon une ligne en échec dit pourquoi. Si la scrutation a été suspendue depuis
+   * le clic, il attend d'être confirmé. Sans envoi prévu, ne fait rien.
    */
   fulfilPlannedSend: (uuid: string, size: number | null) => void;
   /** Installation en échec, annulée ou abandonnée, ou envoi prévu retiré : rien ne partira. */

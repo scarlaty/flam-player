@@ -133,6 +133,15 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
   const [session, setSession] = useState<PlayerSession | null>(null);
   const [pending, setPending] = useState<PendingInstall | null>(null);
+  // Confirmation affichée. Une autre demande peut la remplacer (sa relecture de la bibliothèque
+  // s'est terminée entre-temps) : la demande remplacée est alors abandonnée, suite comprise.
+  const pendingRef = useRef<PendingInstall | null>(null);
+  const showPending = useCallback((next: PendingInstall | null) => {
+    const replaced = next ? pendingRef.current : null;
+    pendingRef.current = next;
+    setPending(next);
+    replaced?.options.onSettled?.({ status: "abandoned" });
+  }, []);
   // Fiche à rouvrir à la fin de la lecture (voir `returnTo`).
   const [reopen, setReopen] = useState<FicheTarget | null>(null);
   // Fiche d'où une lecture a été demandée, par identifiant de session (`uuid` d'une histoire
@@ -477,7 +486,10 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         const added = early.current.take(task);
         // Échec ou annulation déjà reçus avant ce retour : la suite demandée est abandonnée.
         if (added.state === "failed" || added.state === "cancelled") abandon();
-        else if (waiting) waiting.taskId = task.id;
+        else {
+          if (waiting) waiting.taskId = task.id;
+          options.onStarted?.();
+        }
         setTasks((current) =>
           current.some((other) => other.id === task.id) ? current : [added, ...current],
         );
@@ -521,23 +533,23 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           // Sans relecture, la liste connue sert ; le refus du backend reste signalé.
         }
         if (otherFormatIn(installedNow, entry)) {
-          setPending({ entry, options, reason: "format" });
+          showPending({ entry, options, reason: "format" });
           return;
         }
       }
       await start(entry, options);
     },
-    [start, readInstalled],
+    [start, readInstalled, showPending],
   );
   const install = useCallback(
     (entry: StoryEntry, options: InstallOptions = {}) => {
       if (needsInstallWarning(compatFor(entry))) {
-        setPending({ entry, options, reason: "incompatible" });
+        showPending({ entry, options, reason: "incompatible" });
         return;
       }
       void proceed(entry, options);
     },
-    [compatFor, proceed],
+    [compatFor, proceed, showPending],
   );
 
   const cancel = useCallback(
@@ -743,7 +755,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   // Confirmation refusée : rien n'est installé, la suite demandée est abandonnée.
   const abandonPending = () => {
     pending?.options.onSettled?.({ status: "abandoned" });
-    setPending(null);
+    showPending(null);
   };
   const info = pending?.reason === "incompatible" ? compatFor(pending.entry) : undefined;
   // Format installé à remplacer : l'autre que celui de l'entrée (même si la liste a changé
@@ -765,7 +777,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           onCancel={abandonPending}
           onConfirm={() => {
             const { entry, options } = pending;
-            setPending(null);
+            showPending(null);
             void proceed(entry, options);
           }}
         />
@@ -778,7 +790,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
           onCancel={abandonPending}
           onConfirm={() => {
             const { entry, options } = pending;
-            setPending(null);
+            showPending(null);
             void start(entry, { ...options, replaceFormat: true });
           }}
         />

@@ -10,6 +10,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { CompatReport } from "../../api/compat";
 import type { DeviceStatus, DeviceStory, LibraryCopy } from "../../api/device";
@@ -26,6 +27,7 @@ import { CompatProvider } from "../compat/CompatProvider";
 import { DeviceProvider } from "../device/DeviceProvider";
 import { TransferPanel } from "../device/TransferPanel";
 import { LibraryProvider } from "../library/LibraryProvider";
+import { useStories } from "./StoriesContext";
 import { StoriesLibrary } from "./StoriesLibrary";
 import { StoriesProvider } from "./StoriesProvider";
 import { StoriesTaskPanel } from "./StoriesTaskPanel";
@@ -139,6 +141,22 @@ let status: DeviceStatus;
 let deviceStories: DeviceStory[];
 let libraryCopy: LibraryCopy | null;
 let sendGate: Promise<void> | null;
+// Issue forcée d'un envoi, par histoire : erreur du backend, ou champs ajoutés au rapport.
+let sendOutcomes: Map<
+  string,
+  { error: { kind: string; message: string } } | { report: object }
+>;
+// L'histoire envoyée figure ensuite dans la liste de la Flam.
+let sendAddsToFlam: boolean;
+// Retient les réponses de `device_status`.
+let statusGate: Promise<void> | null;
+// Retient la prochaine réponse de `library_list`.
+let listGate: Promise<void> | null;
+// Fenêtre masquée (`document.hidden`) et lecture incrustée (scrutation en pause).
+let windowHidden: boolean;
+const PAUSE_EVENT = "test:pause";
+const setPaused = (paused: boolean) =>
+  window.dispatchEvent(new CustomEvent(PAUSE_EVENT, { detail: paused }));
 let calls: { cmd: string; args: Record<string, any> }[];
 
 const callsOf = (cmd: string) => calls.filter((c) => c.cmd === cmd);
@@ -160,6 +178,15 @@ beforeEach(() => {
   deviceStories = [];
   libraryCopy = { status: "kept" };
   sendGate = null;
+  sendOutcomes = new Map();
+  sendAddsToFlam = false;
+  listGate = null;
+  statusGate = null;
+  windowHidden = false;
+  Object.defineProperty(document, "hidden", {
+    configurable: true,
+    get: () => windowHidden,
+  });
   calls = [];
   window.localStorage.clear();
   window.localStorage.setItem("flam-launcher.flamSendWarningAck", "1");
@@ -186,8 +213,15 @@ beforeEach(() => {
           return "data:image/png;base64,AAAA";
         case "compat_statuses":
           return report;
-        case "library_list":
-          return installed;
+        case "library_list": {
+          const snapshot = installed;
+          const gate = listGate;
+          listGate = null;
+          return gate ? gate.then(() => snapshot) : snapshot;
+        }
+        case "library_remove":
+          installed = installed.filter((item) => item.uuid !== payload.uuid);
+          return null;
         case "library_source_status":
           return [];
         case "install_list":
@@ -213,7 +247,7 @@ beforeEach(() => {
         case "player_status":
           return null;
         case "device_status":
-          return status;
+          return statusGate ? statusGate.then(() => status) : status;
         case "device_recover_transfers":
           return {
             incomplete_removed: 0,
@@ -241,18 +275,24 @@ beforeEach(() => {
             candidates: [],
           };
         case "device_send_story":
-          return (sendGate ?? Promise.resolve()).then(() => ({
-            id: payload.uuid,
-            bytes: 1,
-            files: 1,
-            replaced: false,
-            index_updated: true,
-            cache_removed: true,
-            carrier_readback: null,
-            carrier_stored: null,
-            recovery_failures: [],
-            library_copy: libraryCopy,
-          }));
+          return (sendGate ?? Promise.resolve()).then(() => {
+            const forced = sendOutcomes.get(payload.uuid);
+            if (forced && "error" in forced) throw forced.error;
+            if (sendAddsToFlam) deviceStories = [...deviceStories, onFlam(payload.uuid)];
+            return {
+              ...(forced?.report ?? {}),
+              id: payload.uuid,
+              bytes: 1,
+              files: 1,
+              replaced: false,
+              index_updated: true,
+              cache_removed: true,
+              carrier_readback: null,
+              carrier_stored: null,
+              recovery_failures: [],
+              library_copy: libraryCopy,
+            };
+          });
         default:
           throw { kind: "unknown", message: cmd };
       }
@@ -268,7 +308,34 @@ afterEach(() => {
   vi.unstubAllGlobals();
   window.localStorage.clear();
   window.location.hash = "";
+  delete (document as { hidden?: boolean }).hidden;
 });
+
+/** Comme `DeviceBoundary` : bibliothèque connue du `DeviceProvider`, pause de la scrutation. */
+function Boundary({ children }: { children: ReactNode }) {
+  const { installed: stories, installedRevision } = useStories();
+  const [paused, setPausedState] = useState(false);
+  useEffect(() => {
+    const onPause = (event: Event) =>
+      setPausedState((event as CustomEvent).detail === true);
+    window.addEventListener(PAUSE_EVENT, onPause);
+    return () => window.removeEventListener(PAUSE_EVENT, onPause);
+  }, []);
+  const libraryUuids = useMemo(
+    () => new Set(stories.map((item) => item.uuid)),
+    [stories],
+  );
+  return (
+    <DeviceProvider
+      intervalMs={20}
+      paused={paused}
+      libraryUuids={installedRevision > 0 ? libraryUuids : undefined}
+      onPcCopyChange={onPcCopyChange}
+    >
+      {children}
+    </DeviceProvider>
+  );
+}
 
 const onPcCopyChange = vi.fn();
 
@@ -279,7 +346,7 @@ async function renderApp(first = "Les trois ours") {
       <LibraryProvider>
         <CompatProvider>
           <StoriesProvider>
-            <DeviceProvider intervalMs={20} onPcCopyChange={onPcCopyChange}>
+            <Boundary>
               <main>
                 <StoriesLibrary />
               </main>
@@ -287,7 +354,7 @@ async function renderApp(first = "Les trois ours") {
                 <StoriesTaskPanel />
                 <TransferPanel />
               </aside>
-            </DeviceProvider>
+            </Boundary>
           </StoriesProvider>
         </CompatProvider>
       </LibraryProvider>
@@ -647,7 +714,7 @@ it("avertissement « expérimentale » demandé au clic : refusé, rien n'est in
   fireEvent.click(await sendButton("Les trois ours"));
   fireEvent.click(
     within(await screen.findByRole("alertdialog")).getByRole("button", {
-      name: "J'ai compris, envoyer",
+      name: "J'ai compris, installer et envoyer",
     }),
   );
   await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
@@ -689,10 +756,12 @@ it("installation d'une histoire incompatible refusée au dialogue : aucun envoi 
   await renderApp();
   fireEvent.click(await sendButton("Les trois ours"));
   const dialog = await screen.findByRole("alertdialog");
-  await waitFor(() => expect(planned()).not.toBeNull());
   fireEvent.click(within(dialog).getByRole("button", { name: "Annuler" }));
-  await waitFor(() => expect(planned()).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   expect(callsOf("install_start")).toHaveLength(0);
+  expect(planned()).toBeNull();
+  // La demande est oubliée : l'action est de nouveau proposée.
+  expect(await sendButton("Les trois ours")).toBeVisible();
 });
 
 it("« Annuler l'envoi » oublie aussi les envois prévus", async () => {
@@ -776,4 +845,388 @@ it("Flam 1.x : les clés sont demandées une histoire à la fois, aucune demande
   await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   await settle();
   expect(sent()).toEqual([]);
+});
+
+// --- Revue adversariale (#636) ------------------------------------------------------------
+
+/** La fenêtre est masquée ou réaffichée (`visibilitychange`). */
+async function setWindowHidden(hidden: boolean) {
+  windowHidden = hidden;
+  await act(async () => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+}
+
+const MANUAL = (title: string) => `Envoyer sur la Flam « ${title} »`;
+
+/** Deux demandes ; « Capi » est installée et envoyée, « Les trois ours » s'installe encore. */
+async function capiSentWhileOursInstalls() {
+  await renderApp();
+  fireEvent.click(await sendButton("Capi"));
+  fireEvent.click(await sendButton("Les trois ours"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(2));
+  await installDone(capi);
+  await waitFor(() => expect(sent()).toEqual(["capi"]));
+}
+
+it("Flam changée pendant un envoi (refus `device_changed`) : les envois prévus sont abandonnés", async () => {
+  sendOutcomes.set("capi", {
+    error: { kind: "device_changed", message: "la Flam a été débranchée ou remplacée" },
+  });
+  await capiSentWhileOursInstalls();
+  // Même lettre, même libellé : la clé d'appareil du front n'a rien vu.
+  await waitFor(() =>
+    expect(
+      within(planned() as HTMLElement).getByText("Ne sera pas envoyée"),
+    ).toBeVisible(),
+  );
+  await installDone(ours);
+  await waitFor(() =>
+    expect(within(queueRow("Les trois ours")).getByText(CHANGED)).toBeVisible(),
+  );
+  await settle();
+  expect(sent()).toEqual(["capi"]);
+});
+
+it("Flam changée juste après un envoi (rapport `device_changed`) : les envois prévus sont abandonnés", async () => {
+  sendOutcomes.set("capi", { report: { device_changed: true } });
+  await capiSentWhileOursInstalls();
+  await waitFor(() =>
+    expect(
+      within(planned() as HTMLElement).getByText("Ne sera pas envoyée"),
+    ).toBeVisible(),
+  );
+  await installDone(ours);
+  await waitFor(() =>
+    expect(within(queueRow("Les trois ours")).getByText(CHANGED)).toBeVisible(),
+  );
+  await settle();
+  expect(sent()).toEqual(["capi"]);
+});
+
+it("histoire envoyée à la main pendant l'attente, puis retirée de la Flam : elle n'est pas renvoyée", async () => {
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  fireEvent.click(await sendButton("Capi"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(2));
+  await installDone(capi);
+  await waitFor(() =>
+    expect(
+      within(planned() as HTMLElement).getByText("Installée, envoi en attente"),
+    ).toBeVisible(),
+  );
+  // L'utilisateur n'attend pas : il envoie « Capi » lui-même.
+  const manual = await screen.findByRole("button", { name: MANUAL("Capi") });
+  await waitFor(() => expect(manual).toHaveAttribute("aria-disabled", "false"));
+  fireEvent.click(manual);
+  await waitFor(() => expect(sent()).toEqual(["capi"]));
+  await waitFor(() =>
+    expect(within(queueRow("Capi")).getByText("Envoyée")).toBeVisible(),
+  );
+  // Son envoi prévu est oublié ; la liste de la Flam ne la contient pas (retirée depuis).
+  expect(within(planned() as HTMLElement).queryByText("Capi")).toBeNull();
+  await settle();
+
+  await installDone(ours);
+  await waitFor(() => expect(sent()).toEqual(["capi", "ours"]));
+  await settle();
+  expect(sent()).toEqual(["capi", "ours"]);
+});
+
+it("histoire envoyée à la main pendant l'attente : sa ligne « Envoyée » et « Retirer du PC » restent", async () => {
+  sendAddsToFlam = true;
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  fireEvent.click(await sendButton("Capi"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(2));
+  await installDone(capi);
+  const manual = await screen.findByRole("button", { name: MANUAL("Capi") });
+  await waitFor(() => expect(manual).toHaveAttribute("aria-disabled", "false"));
+  fireEvent.click(manual);
+  await waitFor(() => expect(sent()).toEqual(["capi"]));
+  await screen.findByRole("button", { name: "Retirer du PC : « Capi »" });
+
+  await installDone(ours);
+  await waitFor(() => expect(sent()).toEqual(["capi", "ours"]));
+  await settle();
+  expect(within(queueRow("Capi")).getByText("Envoyée")).toBeVisible();
+  expect(within(queueRow("Capi")).queryByText("Échec")).toBeNull();
+  expect(screen.getByRole("button", { name: "Retirer du PC : « Capi »" })).toBeVisible();
+});
+
+it("histoire supprimée de « Mes histoires » pendant l'attente : son envoi prévu est oublié", async () => {
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  fireEvent.click(await sendButton("Capi"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(2));
+  await installDone(capi);
+  fireEvent.click(await screen.findByRole("button", { name: "Supprimer « Capi »" }));
+  const dialog = await screen.findByRole("alertdialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Supprimer" }));
+  await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
+  await waitFor(() =>
+    expect(within(planned() as HTMLElement).queryByText("Capi")).toBeNull(),
+  );
+
+  await installDone(ours);
+  await waitFor(() => expect(sent()).toEqual(["ours"]));
+  await settle();
+  expect(sent()).toEqual(["ours"]);
+  expect(queueRow("Capi")).toBeUndefined();
+});
+
+const TO_CONFIRM = "Installée, envoi à confirmer";
+
+it("installation terminée fenêtre masquée : rien ne part seul, l'envoi est à confirmer", async () => {
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  // Fenêtre réduite : la Flam n'est plus surveillée, une autre peut prendre sa lettre.
+  await setWindowHidden(true);
+  await installDone(ours);
+  await settle();
+  expect(sent()).toEqual([]);
+
+  await setWindowHidden(false);
+  await settle();
+  expect(sent()).toEqual([]);
+  const list = planned() as HTMLElement;
+  expect(within(list).getByText(TO_CONFIRM)).toBeVisible();
+  await expectNoAxeViolations(document.body, PAGE_LEVEL_RULES);
+  // L'utilisateur confirme : l'envoi part, par le bouton d'envoi habituel.
+  const confirm = within(list).getByRole("button", { name: MANUAL("Les trois ours") });
+  await waitFor(() => expect(confirm).toHaveAttribute("aria-disabled", "false"));
+  fireEvent.click(confirm);
+  await waitFor(() => expect(sent()).toEqual(["ours"]));
+  await waitFor(() => expect(planned()).toBeNull());
+});
+
+it("installation terminée pendant la lecture incrustée (scrutation en pause) : envoi à confirmer", async () => {
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  act(() => setPaused(true));
+  await installDone(ours);
+  await settle();
+  expect(sent()).toEqual([]);
+  act(() => setPaused(false));
+  await settle();
+  expect(sent()).toEqual([]);
+  const list = planned() as HTMLElement;
+  expect(within(list).getByText(TO_CONFIRM)).toBeVisible();
+  // « Ne pas envoyer » : l'histoire reste installée, rien n'est envoyé.
+  fireEvent.click(
+    within(list).getByRole("button", {
+      name: "Ne pas envoyer « Les trois ours » après l'installation",
+    }),
+  );
+  await waitFor(() => expect(planned()).toBeNull());
+  await settle();
+  expect(sent()).toEqual([]);
+});
+
+it("fenêtre masquée puis réaffichée avant la fin de l'installation : envoi à confirmer, les demandes suivantes partent", async () => {
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  await setWindowHidden(true);
+  await setWindowHidden(false);
+  await settle();
+  // Demande faite après la reprise : la Flam a été surveillée sans interruption depuis.
+  fireEvent.click(await sendButton("Capi"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(2));
+
+  await installDone(ours);
+  await settle();
+  expect(sent()).toEqual([]);
+  expect(within(planned() as HTMLElement).getByText(TO_CONFIRM)).toBeVisible();
+  // L'envoi à confirmer ne retient pas la demande suivante.
+  await installDone(capi);
+  await waitFor(() => expect(sent()).toEqual(["capi"]));
+  expect(within(planned() as HTMLElement).getByText("Les trois ours")).toBeVisible();
+});
+
+it("demande faite à la reprise, avant un relevé neuf de la Flam : envoi à confirmer", async () => {
+  await renderApp();
+  await sendButton("Les trois ours");
+  await setWindowHidden(true);
+  // Au retour, le relevé demandé ne répond pas encore : l'écran montre l'état d'avant.
+  let release: () => void = () => undefined;
+  statusGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await setWindowHidden(false);
+  fireEvent.click(await sendButton("Les trois ours"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  statusGate = null;
+  await act(async () => {
+    release();
+  });
+  await installDone(ours);
+  await settle();
+  expect(sent()).toEqual([]);
+  expect(within(planned() as HTMLElement).getByText(TO_CONFIRM)).toBeVisible();
+});
+
+it("confirmation d'installation remplacée par une autre : la première demande est abandonnée", async () => {
+  // « Capi » est installée dans l'autre format : confirmation demandée après relecture.
+  installed = [{ ...installedEntry(capi), format: "lunii" }];
+  report = {
+    issue: null,
+    entries: [
+      {
+        uuid: "ours",
+        version: null,
+        level: "incompatible",
+        reason: "Format non pris en charge",
+        code: "KO",
+        origin: "campaign",
+        stale: false,
+      },
+    ],
+  };
+  await renderApp();
+  await sendButton("Les trois ours");
+  let release: () => void = () => undefined;
+  listGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // « Capi » : relecture de la bibliothèque retenue ; « Les trois ours » : dialogue aussitôt.
+  fireEvent.click(await sendButton("Capi"));
+  fireEvent.click(await sendButton("Les trois ours"));
+  await screen.findByRole("alertdialog", { name: /Les trois ours/ });
+  await act(async () => {
+    release();
+  });
+  // Le dialogue de « Capi » remplace celui de « Les trois ours ».
+  const dialog = await screen.findByRole("alertdialog", { name: /Capi/ });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Annuler" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(callsOf("install_start")).toHaveLength(0);
+  // Rien n'est resté prévu : l'action est de nouveau proposée pour les deux histoires.
+  expect(await sendButton("Les trois ours")).toBeVisible();
+  expect(await sendButton("Capi")).toBeVisible();
+  expect(planned()).toBeNull();
+});
+
+it("rien n'est affiché comme « Installation… » tant qu'un dialogue de confirmation est ouvert", async () => {
+  report = {
+    issue: null,
+    entries: [
+      {
+        uuid: "ours",
+        version: null,
+        level: "incompatible",
+        reason: "Format non pris en charge",
+        code: "KO",
+        origin: "campaign",
+        stale: false,
+      },
+    ],
+  };
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  const dialog = await screen.findByRole("alertdialog");
+  await settle();
+  expect(planned()).toBeNull();
+  // Confirmé : l'installation démarre, l'envoi prévu apparaît.
+  const buttons = within(dialog).getAllByRole("button");
+  fireEvent.click(buttons[buttons.length - 1] as HTMLElement);
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  await waitFor(() =>
+    expect(within(planned() as HTMLElement).getByText("Installation…")).toBeVisible(),
+  );
+});
+
+it("demande de tête qui n'aboutit jamais : « Ne pas envoyer » débloque la suivante", async () => {
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  fireEvent.click(await sendButton("Capi"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(2));
+  await installDone(capi);
+  await settle();
+  expect(sent()).toEqual([]);
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Ne pas envoyer « Les trois ours » après l'installation",
+    }),
+  );
+  await waitFor(() => expect(sent()).toEqual(["capi"]));
+});
+
+it("la liste ne garde que les lignes utiles quand un envoi prévu s'ajoute", async () => {
+  // Aucune suite proposée par le backend : la ligne « Envoyée » n'a plus d'action.
+  libraryCopy = null;
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  await installDone(ours);
+  await waitFor(() =>
+    expect(within(queueRow("Les trois ours")).getByText("Envoyée")).toBeVisible(),
+  );
+  await settle();
+  fireEvent.click(await sendButton("Capi"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(2));
+  await installDone(capi);
+  await waitFor(() =>
+    expect(within(queueRow("Capi")).getByText("Envoyée")).toBeVisible(),
+  );
+  expect(queueRow("Les trois ours")).toBeUndefined();
+});
+
+it("avertissement ouvert par « Installer et envoyer » : le bouton dit que l'installation vient d'abord", async () => {
+  window.localStorage.removeItem("flam-launcher.flamSendWarningAck");
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  const dialog = await screen.findByRole("alertdialog");
+  expect(
+    within(dialog).getByRole("button", { name: "J'ai compris, installer et envoyer" }),
+  ).toBeVisible();
+});
+
+/** Installe « Les trois ours » avec une suite (`onSettled`) et compte ses appels. */
+function SettleProbe({ onSettled }: { onSettled: (status: string) => void }) {
+  const stories = useStories();
+  return (
+    <button
+      type="button"
+      onClick={() =>
+        stories.install(ours, { onSettled: (outcome) => onSettled(outcome.status) })
+      }
+    >
+      Sonde
+    </button>
+  );
+}
+
+it("la suite d'une installation n'est appelée qu'une fois, même si la fin est signalée deux fois", async () => {
+  const onSettled = vi.fn();
+  render(
+    <ToastProvider>
+      <LibraryProvider>
+        <CompatProvider>
+          <StoriesProvider>
+            <SettleProbe onSettled={onSettled} />
+          </StoriesProvider>
+        </CompatProvider>
+      </LibraryProvider>
+    </ToastProvider>,
+  );
+  const before = callsOf("install_list").length;
+  await waitFor(async () => {
+    await emit("install://progress", {
+      task_id: "sonde",
+      state: "queued",
+      percent: null,
+      received: null,
+      total: null,
+      phase: null,
+    });
+    expect(callsOf("install_list").length).toBeGreaterThan(before);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Sonde" }));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  await installDone(ours);
+  await installDone(ours);
+  expect(onSettled.mock.calls).toEqual([["installed"]]);
 });

@@ -58,7 +58,9 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const sendHelpId = useId();
   const installAndSend = useInstallAndSend(entry);
   // Envoi prévu à la fin de l'installation en cours (« Installer et envoyer »).
-  const plan = plannedSends.find((item) => item.uuid === entry.uuid);
+  const plan = plannedSends.find(
+    (item) => item.uuid === entry.uuid && item.state !== "pending",
+  );
 
   const state = storyStateOf(stories, entry) ?? defaultStoryState(source, entry);
   const compat = compatFor(entry);
@@ -311,7 +313,11 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
             )}
             {task && plan && (
               <p className="fl-detail__hint">
-                {plan.lost ? text.sendPlanLost : text.sendPlanned}
+                {plan.lost
+                  ? text.sendPlanLost
+                  : plan.unwatched
+                    ? text.sendPlanUnwatched
+                    : text.sendPlanned}
               </p>
             )}
             {failed?.error && (

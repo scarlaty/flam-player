@@ -25,7 +25,7 @@ Cocher la case une fois le résultat consigné dans l'issue indiquée.
 | [ ]  | M10 | Deuxième Flam d'un autre compte (#236 point 7, #234)                      | D       | 2 Flam, 2 comptes              | 45 min | #236           |
 | [ ]  | M11 | Titres lus à voix haute dans un pack, sur la Flam                         | E       | Flam 1.x                       | 45 min | #462           |
 | [ ]  | M12 | Histoires STUdio sur Flam 2.x (#517, L1 à L15)                            | D       | Flam 2.x                       | 1 h 30 | #236           |
-| [ ]  | M13 | « Installer et envoyer » : enchaînement, Flam débranchée ou changée       | B       | Flam 1.x ou 2.x                | 40 min | #609           |
+| [ ]  | M13 | « Installer et envoyer » : enchaînement, Flam débranchée, fenêtre réduite | B       | Flam 1.x ou 2.x                | 1 h    | #609           |
 
 Ordre conseillé : A (PC seul, sans risque pour la Flam), puis B (une installation, une connexion
 de la Flam), puis C (risqué, seulement après B et une sauvegarde vérifiée). D et E dépendent de
@@ -262,7 +262,8 @@ Mes histoires après l'envoi sur la Flam » désactivé au départ.
 2. **Enchaînement** : cliquer « Installer et envoyer » sur une histoire. Le panneau d'envoi
    affiche « Envoi prévu après l'installation » avec « Installation… » ; à la fin de
    l'installation, l'envoi démarre seul (« Envoi en cours »), puis « Envoyée » avec « Retirer du
-   PC ». En mode carrier (Flam 1.x), le choix des clés est demandé à la fin de l'installation.
+   PC ». **Garder la fenêtre du launcher visible** pendant les étapes 2 à 9 (fenêtre réduite :
+   étape 10). En mode carrier (Flam 1.x), le choix des clés est demandé à la fin de l'installation.
    Éjecter, redémarrer la Flam : l'histoire se lance.
 3. **Ordre** : cliquer l'action sur trois histoires à la suite (une plus grosse en premier).
    Noter l'ordre des envois (celui des clics), l'absence de doublon, et l'ordre final sur la
@@ -287,16 +288,37 @@ Mes histoires après l'envoi sur la Flam » désactivé au départ.
    l'action sur une histoire : après l'envoi, elle est retirée de « Mes histoires » (ou gardée
    « par prudence » si l'écriture n'est pas confirmée), la notification rappelle qu'elle reste
    sur la Flam. Désactiver le réglage ensuite.
-9. _Facultatif, avec deux Flam_ (session D) : cliquer l'action, débrancher la Flam A et brancher
-   la Flam B pendant l'installation, en laissant passer au moins 10 secondes entre les deux :
-   rien n'est envoyé sur B. Refaire en échangeant les deux Flam le plus vite possible et noter le
-   résultat : c'est la limite connue de la clé d'appareil (même lettre, même libellé).
+9. **Dialogue de confirmation** (si une histoire marquée incompatible est disponible, sinon
+   noter « non fait ») : cliquer l'action sur elle ; tant que le dialogue est ouvert, le panneau
+   d'envoi n'affiche rien pour elle ; « Annuler » : rien n'est installé ni prévu.
+10. **Fenêtre réduite** : cliquer l'action sur une histoire longue à installer, **réduire** la
+    fenêtre du launcher, attendre la fin de l'installation (notification, ou 2 minutes), puis
+    la rétablir. Attendu : aucun envoi n'est parti ; la ligne affiche « Installée, envoi à
+    confirmer » avec « Envoyer sur la Flam », qui envoie normalement. Noter précisément ce qui
+    est observé : si l'envoi est parti seul pendant que la fenêtre était réduite, WebView2 ne
+    déclare pas la fenêtre réduite comme masquée (noter alors si « Ma Flam » continuait de
+    réagir à un débranchement fenêtre réduite). Refaire en lançant une histoire sur le PC
+    pendant l'installation (lecture incrustée, et lecture dans une fenêtre séparée avec
+    « Réduire pendant la lecture ») : même attendu.
+11. **Envoi à la main pendant l'attente** : cliquer l'action sur une grosse histoire puis sur une
+    petite ; dès que la petite est « Installée, envoi en attente », l'envoyer avec « Envoyer sur
+    la Flam », puis la retirer depuis « Ma Flam ». À la fin de l'installation de la grosse :
+    seule la grosse est envoyée, la petite n'est pas réécrite sur la Flam.
+12. _Facultatif, avec deux Flam_ (session D) : cliquer l'action, débrancher la Flam A et brancher
+    la Flam B pendant l'installation, en laissant passer au moins 10 secondes entre les deux :
+    rien n'est envoyé sur B. Refaire en échangeant les deux Flam le plus vite possible, fenêtre
+    visible, et noter le résultat : c'est la limite restante (une autre Flam reprend la même
+    lettre de lecteur entre deux relevés, sans absence vue ; toutes les Flam ont le même libellé
+    de volume). Refaire l'échange **pendant l'envoi** d'une première histoire alors qu'une
+    seconde s'installe encore : l'envoi en cours est refusé (« Flam débranchée ou remplacée »)
+    et la seconde passe à « Ne sera pas envoyée ».
 
-**Résultat attendu.** Étapes 1 à 8 conformes ; aucun envoi sans Flam inchangée depuis le clic ;
-aucun fichier laissé dans `.flam-transfer/` après les étapes 4 à 6.
+**Résultat attendu.** Étapes 1 à 11 conformes ; aucun envoi sans Flam inchangée et surveillée
+depuis le clic ; aucun fichier laissé dans `.flam-transfer/` après les étapes 4 à 6.
 
 **Consigner dans #609.** Firmware de la Flam, résultat de chaque étape, ordre observé à
-l'étape 3, résultat de l'étape 9 si elle est faite. **Durée** : 40 minutes.
+l'étape 3, comportement de la fenêtre réduite à l'étape 10, résultat de l'étape 12 si elle est
+faite. **Durée** : 1 heure.
 
 ---
 

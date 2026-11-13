@@ -640,35 +640,61 @@ réglage n'est ajouté.
   suffisant. Sinon seul « Installer » est affiché. Une histoire déjà installée garde « Envoyer
   sur la Flam » : rien n'est réinstallé.
 - **Au clic** : l'avertissement « fonction expérimentale » est demandé d'abord s'il n'a jamais
-  été accepté (refusé : rien n'est installé), puis l'envoi est **prévu** (`plannedSends`,
-  `planSend`) et l'installation démarre. Le panneau d'envoi liste les envois prévus
-  (« Installation… », « Installée, envoi en attente », « Ne sera pas envoyée ») avec, pour
-  chacun, « Ne pas envoyer … après l'installation » (l'installation continue) ; la fiche le
-  rappelle.
-- **À la fin de l'installation** (`InstallOptions.onSettled`) : réussie, l'envoi part par
-  `requestSend` (mêmes dialogues, mode carrier compris, même file, mêmes refus du backend) ;
-  en échec, annulée (même si elle se termine avant d'avoir vu l'annulation) ou refusée à un
-  dialogue de confirmation, l'envoi prévu est oublié et l'échec s'affiche comme d'habitude.
-  « Réessayer » relance une installation simple, sans envoi.
-- **Même Flam qu'au clic** : l'envoi prévu retient la clé d'appareil du clic (volume et libellé).
-  Dès que la scrutation voit une autre clé, **ou plus de Flam**, il est abandonné pour de bon,
-  même si une Flam revient sous la même lettre (ce peut être une autre). L'histoire reste
-  installée et une ligne en échec de la file le dit (« … n'a pas été envoyée : la Flam a été
-  débranchée ou a changé pendant l'installation… ») ; l'envoi reste possible à la main.
-  **Limite connue** : la clé ne distingue pas deux Flam de même lettre et de même libellé
-  échangées sans que la scrutation voie d'absence (entre deux scrutations de 2 s ou 6 s, fenêtre
-  masquée, lecture incrustée) ; à partir de l'envoi, les garde-fous du backend s'appliquent
-  (`device_changed`, #577).
+  été accepté (bouton « J'ai compris, installer et envoyer » ; refusé : rien n'est installé),
+  puis l'envoi est **prévu** (`plannedSends`, `planSend`) et l'installation est demandée. L'envoi
+  prévu n'est affiché qu'une fois l'installation réellement démarrée (`onStarted`, après les
+  dialogues « incompatible » et « changement de format »). Le panneau d'envoi liste les envois
+  prévus (« Installation… », « Installée, envoi en attente », « Installée, envoi à confirmer »,
+  « Ne sera pas envoyée ») avec, pour chacun, « Ne pas envoyer … après l'installation »
+  (l'installation continue) ; la fiche le rappelle.
+- **À la fin de l'installation** (`InstallOptions.onSettled`, appelé une seule fois) : réussie,
+  l'envoi part par `requestSend` (mêmes dialogues, mode carrier compris, même file, mêmes refus
+  du backend) ; en échec, annulée (même si elle se termine avant d'avoir vu l'annulation),
+  refusée à un dialogue de confirmation ou dont le dialogue est remplacé par celui d'une autre
+  demande, l'envoi prévu est oublié et l'échec s'affiche comme d'habitude. « Réessayer » relance
+  une installation simple, sans envoi.
+- **Même Flam qu'au clic** : l'envoi prévu retient la clé d'appareil du clic. Le libellé de
+  volume étant le même sur toutes les Flam, cette clé se réduit à la **lettre du lecteur**. Il
+  est abandonné pour de bon, même si une Flam revient sous la même lettre, dès que : la
+  scrutation voit une autre lettre **ou plus de Flam** ; ou le backend signale que la Flam a
+  changé pendant ou juste après un envoi (erreur `device_changed` ou champ `device_changed` du
+  rapport, #577), cas où la lettre peut être restée la même. L'histoire reste installée et une
+  ligne en échec de la file le dit (« … n'a pas été envoyée : la Flam a été débranchée ou a
+  changé pendant l'installation… ») ; l'envoi reste possible à la main.
+- **Scrutation suspendue : envoi à confirmer.** La Flam n'est pas scrutée fenêtre masquée
+  (`document.hidden`, `visibilitychange`) ni pendant la lecture incrustée (`paused`). Si l'un de
+  ces états a eu lieu entre le clic et la fin de l'installation, ou si la demande est faite à la
+  reprise avant qu'un relevé neuf soit revenu (lecture `device_status` lancée après la
+  suspension, celle de la reprise : `fetched` de `useDeviceStatus`), rien ne prouve que la
+  Flam branchée est celle du clic : l'envoi ne part **pas** seul. Une fois l'histoire installée,
+  la ligne passe à « Installée, envoi à confirmer », avec le bouton « Envoyer sur la Flam »
+  habituel (mêmes raisons de refus) et « Ne pas envoyer ». Aucun envoi prévu n'est lancé tant
+  que la scrutation est suspendue ou qu'un relevé neuf n'est pas revenu ; un envoi à confirmer
+  ne retient pas les demandes suivantes.
+- **Envoi ou retrait fait à la main** : « Envoyer sur la Flam » (ou « Remplacer ») sur une
+  histoire oublie son envoi prévu, qui ne repart donc pas seul si elle est ensuite retirée de la
+  Flam ; un retrait de l'histoire depuis « Ma Flam » ou sa suppression de « Mes histoires »
+  pendant l'attente l'oublie aussi. Une ligne « Envoyée » n'est jamais remplacée par un refus.
 - **Règles d'envoi revérifiées** à la fin de l'installation, avec la taille installée : déjà sur
   la Flam, espace insuffisant, écriture bloquée, STUdio sur une Flam 1.x donnent une ligne en
   échec avec la raison du bouton « Envoyer » ; lecture de la Flam ou retrait en cours : l'envoi
   attend.
 - **Plusieurs demandes** : les envois partent dans l'ordre des clics (une histoire installée
   attend celles demandées avant elle), une demande à la fois quand un dialogue d'envoi est
-  affiché ; ils s'ajoutent à la liste affichée au lieu de remplacer une file terminée.
+  affiché. Un envoi prévu qui démarre sur une file terminée garde les lignes encore utiles
+  (« Retirer du PC » proposé ou en cours, échecs d'envois prévus) et retire les autres.
   « Annuler l'envoi » oublie aussi les envois prévus (les installations continuent).
 - **Rien n'est conservé** hors de la mémoire de la fenêtre : après une fermeture ou un
   rechargement, une installation reprise par le backend n'envoie rien.
+- **Limite restante** : le front ne peut pas reconnaître une autre Flam qui reprend la même
+  lettre de lecteur sans qu'une absence soit vue. Après les garde-fous ci-dessus, il reste
+  l'échange fait **entre deux relevés** (2 s sur « Ma Flam », 6 s ailleurs), fenêtre visible :
+  l'envoi prévu part alors sur la Flam branchée ; à partir de l'envoi, les garde-fous du backend
+  s'appliquent (`device_changed`). La fermer demande une empreinte opaque de l'appareil prise au
+  clic et vérifiée par `device_send_story` (suivi backend, hors de ce lot, consigné dans #609).
+  Le comportement de WebView2 pour une fenêtre réduite (`document.hidden` vrai ou non) n'a pas
+  été vérifié sur l'application réelle : si la fenêtre réduite n'est pas déclarée masquée, la
+  scrutation continue et une absence reste vue ; fiche M13, étape 10.
 
 **Ordre des histoires** (#233, `device::reorder`, `DeviceStoryOrder.tsx`) : « Modifier l'ordre »
 (proposé quand `list` est valide, `list.hidden` valide ou absent, la liste non tronquée et au

@@ -32,6 +32,11 @@ export interface InstallOptions {
    * « Réessayer » après un échec relance une installation simple, sans lui.
    */
   onSettled?: (outcome: InstallOutcome) => void;
+  /**
+   * Appelé quand la tâche d'installation est créée (confirmations passées, demande acceptée par
+   * le backend) ; jamais si elle est refusée ou abandonnée avant.
+   */
+  onStarted?: () => void;
 }
 
 export interface StoriesApi {
