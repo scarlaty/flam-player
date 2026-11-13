@@ -111,7 +111,10 @@ l'écarter :
   `.mdf` de la Flam est enregistrée dans `%LOCALAPPDATA%\flam-launcher\device-backups`. **Ce
   n'est pas une sauvegarde de vos histoires** : le launcher ne sauvegarde ni les histoires, ni
   l'index, ni vos progressions. C'est pourquoi le guide testeur demande de copier **tout le
-  contenu de la Flam à la main avant le premier envoi**.
+  contenu de la Flam à la main avant le premier envoi**. Cette copie est un fichier ordinaire,
+  non chiffré, pour pouvoir être remise à la main sur la Flam si son `.mdf` est abîmé. Sur une
+  Flam en firmware 2.x, elle contient les clés et le numéro de série de votre Flam : ne la
+  partagez pas, ne la publiez pas, et gardez ce dossier hors d'un dossier synchronisé ou partagé.
 - Un index illisible, abîmé ou absent n'est jamais réécrit par un envoi, un retrait ou un
   changement d'ordre : l'opération est refusée.
 
