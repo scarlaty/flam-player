@@ -122,8 +122,8 @@ impl OnDevice {
     /// histoire listée dans l'index visible, dossier `str/<id>/` avec chaque fichier envoyé à sa
     /// taille (sinon [`NOT_ON_DEVICE_MESSAGE`]). Lecture seule.
     pub(crate) fn verify(&self, root: &Path) -> AppResult<()> {
-        let other = || AppError::Validation(OTHER_DEVICE_MESSAGE.into());
-        let missing = || AppError::Validation(NOT_ON_DEVICE_MESSAGE.into());
+        let other = || AppError::NotRemovable(OTHER_DEVICE_MESSAGE.into());
+        let missing = || AppError::NotRemovable(NOT_ON_DEVICE_MESSAGE.into());
         if root_key(root) != self.root {
             return Err(other());
         }
@@ -253,9 +253,12 @@ pub(crate) static SENT: SentRegistry = SentRegistry::new();
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum LibraryCopy {
-    /// Gardée ; « Retirer du PC » est possible. `unconfirmed` : le retrait automatique était
-    /// demandé, mais l'écriture sur la Flam n'a pas pu être confirmée ([`durable`]).
-    Kept { unconfirmed: bool },
+    /// Gardée ; « Retirer du PC » est possible. `unconfirmed` : l'écriture sur la Flam n'a pas
+    /// pu être confirmée sur le support ([`durable`]) ; l'interface rappelle d'éjecter la Flam
+    /// avant de retirer la copie (et, si le retrait automatique était demandé, dit pourquoi il
+    /// n'a pas eu lieu).
+    /// `auto` : le retrait automatique était demandé (réglage), seul cas notifié.
+    Kept { unconfirmed: bool, auto: bool },
     /// Retirée automatiquement (réglage `remove_after_send`).
     Removed,
     /// Retrait automatique impossible : l'envoi reste réussi, l'histoire reste sur le PC.
@@ -293,7 +296,7 @@ pub(crate) fn remove_sent(
         }
         if !sent.stamp.matches(entry, path) {
             changed.set(true);
-            return Err(AppError::Validation(CHANGED_MESSAGE.into()));
+            return Err(AppError::NotRemovable(CHANGED_MESSAGE.into()));
         }
         Ok(())
     };
@@ -370,6 +373,9 @@ fn settle(
     installing: &dyn Fn() -> bool,
     remove: impl FnOnce(Check<'_>) -> AppResult<()>,
 ) -> Option<LibraryCopy> {
+    // L'histoire de la Flam vient d'être (ré)écrite, même illisible ou sans suite ici : un envoi
+    // plus ancien qui la désignait ne vaut plus.
+    registry.forget_story(&report.id);
     // `info` illisible sur la Flam avec les clés carrier : affiché en échec, rien n'est proposé.
     if report.carrier_readback == Some(false) {
         return None;
@@ -385,9 +391,6 @@ fn settle(
         tracing::warn!(%uuid, "histoire envoyée, mais .mdf illisible : « Retirer du PC » indisponible");
         return None;
     };
-    // L'histoire de la Flam vient d'être (ré)écrite : un envoi plus ancien qui la désignait ne
-    // vaut plus.
-    registry.forget_story(&device.story);
     registry.record(
         uuid,
         Sent {
@@ -396,11 +399,18 @@ fn settle(
         },
     );
     if !auto {
-        return Some(LibraryCopy::Kept { unconfirmed: false });
+        // Pas de retrait demandé : l'interface rappelle seulement d'éjecter avant de retirer.
+        return Some(LibraryCopy::Kept {
+            unconfirmed: !durable,
+            auto: false,
+        });
     }
     if !durable {
         tracing::info!(%uuid, "écriture sur la Flam non confirmée : pas de retrait automatique");
-        return Some(LibraryCopy::Kept { unconfirmed: true });
+        return Some(LibraryCopy::Kept {
+            unconfirmed: true,
+            auto: true,
+        });
     }
     Some(
         match remove_sent(registry, root, uuid, installing, remove) {
@@ -428,11 +438,14 @@ pub(crate) fn installing(installs: &InstallService, uuid: &str) -> bool {
 
 /// « Retirer du PC » après un envoi réussi de cette session : retire l'histoire `uuid` de « Mes
 /// histoires » (elle reste sur la Flam), par le chemin du bouton « Supprimer », sans toucher à la
-/// progression. Verrou de la Flam tenu (refus `busy` pendant une opération sur la Flam),
-/// l'histoire doit d'abord être retrouvée telle qu'envoyée sur la Flam de `root`
-/// ([`OnDevice::verify`], lecture seule) ; `player_busy` pendant sa lecture, `validation`
-/// pendant son installation, si elle a changé depuis l'envoi ou n'est plus sur la Flam,
-/// `not_found` si aucun envoi réussi n'est connu.
+/// progression. Verrou de la Flam tenu, l'histoire doit d'abord être retrouvée telle qu'envoyée
+/// sur la Flam de `root` ([`OnDevice::verify`], lecture seule).
+///
+/// Refus passagers (l'envoi reste enregistré, un nouvel essai peut réussir) : Flam occupée
+/// (`validation`, message « la Flam est occupée »), lecture en cours (`player_busy`),
+/// installation en cours (`validation`), bibliothèque tenue par une autre instance (`io`).
+/// Refus définitifs (envoi oublié) : `not_removable` (autre Flam ou Flam débranchée, histoire
+/// plus sur la Flam, entrée changée), `not_found` (aucun envoi réussi connu).
 #[tauri::command]
 pub async fn library_remove_sent(
     service: State<'_, InstallService>,

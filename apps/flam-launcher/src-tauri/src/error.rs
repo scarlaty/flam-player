@@ -27,6 +27,7 @@ use serde::{Serialize, Serializer};
 /// | `PlayerBusy`    | `player_busy`   | Un player est déjà en cours d'exécution                 |
 /// | `StoryFileMissing` | `story_file_missing` | Le fichier de l'histoire à lancer a disparu      |
 /// | `LuniiNeedsV2`  | `lunii_needs_v2` | Histoire STUdio (format Lunii) refusée : Flam pas en firmware 2.x |
+/// | `NotRemovable`  | `not_removable` | « Retirer du PC » refusé pour de bon : autre Flam, histoire plus sur la Flam ou changée (#609) |
 ///
 /// Un fichier de configuration corrompu n'est pas une erreur : il est sauvegardé en
 /// `*.bak` et remplacé par les valeurs par défaut (avertissement tracé).
@@ -132,6 +133,13 @@ pub enum AppError {
     /// l'application, un élément qu'elle n'a pas créé (pas de marqueur, #570).
     #[error("{0}")]
     CacheDirInUse(String),
+
+    /// « Retirer du PC » refusé définitivement (#609) : la Flam de l'envoi n'est pas branchée,
+    /// l'histoire n'y est plus telle qu'envoyée, ou son entrée de bibliothèque a changé. Un
+    /// nouvel essai ne réussira pas (à distinguer des refus passagers : lecture, installation,
+    /// Flam occupée).
+    #[error("{0}")]
+    NotRemovable(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -162,6 +170,7 @@ impl AppError {
             AppError::TtsFailed(_) => "tts_failed",
             AppError::LuniiNeedsV2(_) => "lunii_needs_v2",
             AppError::CacheDirInUse(_) => "cache_dir_in_use",
+            AppError::NotRemovable(_) => "not_removable",
         }
     }
 
@@ -263,6 +272,7 @@ mod tests {
             AppError::CacheDirInUse("x".into()).kind(),
             "cache_dir_in_use"
         );
+        assert_eq!(AppError::NotRemovable("x".into()).kind(), "not_removable");
         let conversion = AppError::Conversion {
             code: "missing_asset".into(),
             message: "m".into(),

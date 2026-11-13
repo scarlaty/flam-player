@@ -575,14 +575,20 @@ n'est connu qu'après un refus du backend.
 **Retrait du PC après l'envoi** (#609, `device::after_send`) : une histoire envoyée garde sa copie
 dans « Mes histoires » (dossier de cache). Après un envoi **réussi**, le rapport de
 `device_send_story` porte `library_copy` : `kept` (la ligne de la file propose « Retirer du PC » ;
-`unconfirmed` : retrait automatique demandé mais écriture non confirmée, voir plus bas), `removed`
+`unconfirmed` : écriture non confirmée sur le support, voir plus bas ; `auto` : retrait
+automatique demandé), `removed`
 (réglage `remove_after_send` actif : retirée aussitôt), `remove_failed` (`message` : retrait
 impossible, l'envoi reste réussi, le bouton est reproposé), ou rien (aucune proposition). Le
 texte dit que l'histoire reste sur la Flam, que la renvoyer plus tard demandera de la
 réinstaller, et qu'il faut « Éjecter la Flam » avant de la débrancher ; une notification annonce
-le retrait, son échec, ou l'écriture non confirmée. Un refus de « Retirer du PC » retire le
-bouton et laisse le message sur la ligne ; le bouton disparaît aussi quand l'histoire est retirée
-de la Flam (« Ma Flam ») ou quand la Flam détectée change.
+le retrait, son échec, ou (réglage actif seulement) une copie gardée par prudence. Écriture non
+confirmée, réglage actif ou non : la ligne dit que l'histoire est bien sur la Flam, que sa copie
+est gardée par prudence, et qu'après l'avoir retirée il faut éjecter la Flam avant de la
+débrancher. Un refus **définitif** de « Retirer du PC » (`not_removable` : autre Flam, histoire
+plus sur la Flam ou changée ; `not_found` : envoi inconnu) retire le bouton et laisse le message
+sur la ligne ; un refus **passager** (`player_busy`, installation en cours ou Flam occupée en
+`validation`, `io`) garde le bouton avec le message. Le bouton disparaît aussi quand l'histoire
+est retirée de la Flam (« Ma Flam ») ou quand la Flam détectée change.
 
 - Succès = `send_from_library` rend `Ok` (copie, relecture de chaque fichier sur la Flam avec
   taille et SHA-256, renommage en `str/<uuid>/`, index à jour) **et** la relecture carrier n'est
@@ -593,7 +599,8 @@ de la Flam (« Ma Flam ») ou quand la Flam détectée change.
   le support au mieux (`sync_dir`). Le rapport interne porte `dir_synced` (les trois `sync_dir`
   ont réussi ; toujours faux hors Windows) et `verified_uncached` (aucune relecture n'est retombée
   sur le cache du système ; toujours faux hors Windows). Le retrait automatique exige les deux,
-  sous Windows ; sinon `kept` avec `unconfirmed`. Chaque envoi réussi journalise, au niveau
+  sous Windows ; sinon `kept` avec `unconfirmed` (aussi quand le réglage est désactivé, pour la
+  consigne d'éjection). Chaque envoi réussi journalise, au niveau
   `info`, la ligne `durabilité de l'envoi renommage_force="oui|non" relecture_sans_cache="oui|non"`
   (cible `flam_launcher_lib::device::transfer`, sur la sortie standard du processus : pas de
   fichier de journal, voir `lib.rs`).
@@ -606,15 +613,16 @@ de la Flam (« Ma Flam ») ou quand la Flam détectée change.
 - Même génération : l'empreinte de l'entrée (fichier, taille, `installed_at`, taille et date du
   fichier) est prise avant la préparation, revérifiée après l'envoi, puis sous le verrou de la
   bibliothèque juste avant le retrait (`Library::remove_checked`). Une histoire réinstallée ou mise
-  à jour entre-temps n'est pas retirée (`validation`). Refus aussi pendant sa lecture
+  à jour entre-temps n'est pas retirée (`not_removable`). Refus aussi pendant sa lecture
   (`player_busy`) ou son installation (`validation`).
 - `library_remove_sent(root, uuid)` ne retire que ce qu'un envoi réussi de la session a enregistré
   (registre en mémoire) ; sinon `not_found`. Avant tout retrait (manuel ou automatique), verrou
   de la Flam tenu, la Flam est relue (lecture seule) : même racine et même `.mdf` (empreinte
   SHA-256), histoire (identifiant sur la Flam, `report.id`) listée dans l'index visible, chaque
-  fichier de l'envoi présent dans `str/<id>/` avec sa taille. Sinon refus (`validation`) et
+  fichier de l'envoi présent dans `str/<id>/` avec sa taille. Sinon refus (`not_removable`) et
   l'entrée est oubliée. L'entrée est aussi oubliée au début de tout nouvel envoi de l'histoire
-  (même s'il échoue), quand un autre envoi réécrit la même histoire de la Flam, et par
+  (même s'il échoue), dès qu'un envoi réussi réécrit la même histoire de la Flam (même relu
+  illisible en mode carrier), et par
   `device_remove_story`. Jamais le fichier source de l'utilisateur ni l'archive d'origine :
   seul le fichier de `library/` de l'entrée envoyée.
 
@@ -760,6 +768,7 @@ Le miroir front est `src/api/error.ts` (type `AppError`, garde `isAppError`) ; l
 | `tts_unavailable`       | Synthèse vocale indisponible (système non Windows, service de voix absent)                          |
 | `tts_no_voice`          | Aucune voix française installée dans Windows, ou voix choisie disparue                              |
 | `tts_failed`            | Synthèse ou conversion d'un titre en échec (voix muette, délai, audio inexploitable)                |
+| `not_removable`         | « Retirer du PC » refusé pour de bon : autre Flam, histoire plus sur la Flam ou changée (#609)      |
 | `unknown`               | Côté front uniquement : erreur de forme inattendue                                                  |
 
 Un fichier de configuration **corrompu** n'est pas une erreur : il est renommé en

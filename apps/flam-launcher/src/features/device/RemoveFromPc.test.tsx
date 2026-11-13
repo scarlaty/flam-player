@@ -282,7 +282,7 @@ it("retrait automatique impossible, puis refus du backend : plus de bouton, mess
   // Nouvel essai refusé (histoire plus sur la Flam) : le bouton disparaît, le message reste et
   // prend le focus.
   removeSent = {
-    kind: "validation",
+    kind: "not_removable",
     message:
       "l'histoire n'a pas été retrouvée sur la Flam : elle n'a pas été retirée du PC",
   };
@@ -305,13 +305,13 @@ it("retrait automatique impossible, puis refus du backend : plus de bouton, mess
 });
 
 it("écriture non confirmée : gardée, bouton proposé, l'application prévenue", async () => {
-  outcomes.set(A, { ok: { status: "kept", unconfirmed: true } });
+  outcomes.set(A, { ok: { status: "kept", unconfirmed: true, auto: true } });
   renderPanel();
   await send("Capi");
   expect(await screen.findByRole("button", { name: PC })).toBeVisible();
   expect(
     screen.getByText(
-      "Elle n'a pas été retirée du PC automatiquement, car son écriture sur la Flam n'a pas pu être confirmée.",
+      "L'histoire est bien sur la Flam. Sa copie est gardée sur ce PC par prudence : si vous la retirez, éjectez ensuite la Flam avec « Éjecter la Flam » avant de la débrancher.",
     ),
   ).toBeVisible();
   expect(onPcCopyChange).toHaveBeenCalledWith("Capi", { status: "kept_unconfirmed" });
@@ -339,4 +339,67 @@ it("autre Flam branchée : « Retirer du PC » n'est plus proposé", async () =>
   status = other;
   await waitFor(() => expect(screen.queryByRole("button", { name: PC })).toBeNull());
   expect(count("library_remove_sent")).toBe(0);
+});
+
+it("refus passager (lecture, installation, Flam occupée) : bouton reproposé avec le message", async () => {
+  outcomes.set(A, { ok: { status: "kept" } });
+  renderPanel();
+  await send("Capi");
+  for (const [kind, message] of [
+    [
+      "player_busy",
+      "« Capi » est en cours de lecture : fermez flam-player avant de la désinstaller",
+    ],
+    [
+      "validation",
+      "une installation de cette histoire est en cours : elle n'a pas été retirée du PC",
+    ],
+    [
+      "validation",
+      "la Flam est occupée (un transfert) : réessayez quand l'opération est terminée",
+    ],
+  ] as const) {
+    removeSent = { kind, message };
+    const button = await screen.findByRole("button", { name: PC });
+    button.focus();
+    fireEvent.click(button);
+    expect(
+      await screen.findByText(
+        `L'histoire est envoyée, mais n'a pas pu être retirée du PC : ${message}`,
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: PC })).toHaveFocus();
+  }
+  // Une fois la lecture finie, le retrait réussit.
+  removeSent = null;
+  fireEvent.click(screen.getByRole("button", { name: PC }));
+  expect(await screen.findByText(REMOVED)).toBeVisible();
+  expect(count("library_remove_sent")).toBe(4);
+});
+
+it("refus définitif (autre Flam, envoi inconnu) : plus de bouton", async () => {
+  for (const kind of ["not_removable", "not_found"]) {
+    outcomes.set(A, { ok: { status: "kept" } });
+    const { unmount } = renderPanel();
+    await send("Capi");
+    removeSent = { kind, message: "refus définitif" };
+    fireEvent.click(await screen.findByRole("button", { name: PC }));
+    expect(
+      await screen.findByText("L'histoire n'a pas été retirée du PC : refus définitif"),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: PC })).toBeNull();
+    unmount();
+  }
+});
+
+it("réglage désactivé, écriture non confirmée : consigne d'éjection sur la ligne", async () => {
+  outcomes.set(A, { ok: { status: "kept", unconfirmed: true } });
+  renderPanel();
+  await send("Capi");
+  expect(await screen.findByRole("button", { name: PC })).toBeVisible();
+  expect(
+    within(row("Capi")).getByText(/si vous la retirez, éjectez ensuite la Flam/),
+  ).toBeVisible();
+  // Réglage désactivé : pas de notification.
+  expect(onPcCopyChange).not.toHaveBeenCalled();
 });

@@ -312,8 +312,11 @@ export interface TransferReport {
 
 /** Copie de l'histoire dans « Mes histoires » après l'envoi (miroir de `LibraryCopy`). */
 export type LibraryCopy =
-  /** `unconfirmed` : retrait automatique demandé, écriture sur la Flam non confirmée. */
-  | { status: "kept"; unconfirmed?: boolean }
+  /**
+   * `unconfirmed` : écriture sur la Flam non confirmée sur le support (consigne d'éjection) ;
+   * `auto` : le retrait automatique était demandé (notification seulement dans ce cas).
+   */
+  | { status: "kept"; unconfirmed?: boolean; auto?: boolean }
   | { status: "removed" }
   | { status: "remove_failed"; message: string };
 

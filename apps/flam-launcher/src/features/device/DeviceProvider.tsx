@@ -61,6 +61,9 @@ export interface DeviceProviderProps {
   onPcCopyChange?: (title: string, notice: PcCopyNotice) => void;
 }
 
+/** `kind` des refus définitifs de `library_remove_sent` (les autres sont passagers). */
+const DEFINITIVE_REFUSALS: ReadonlySet<string> = new Set(["not_removable", "not_found"]);
+
 /** Même histoire de la Flam (UUID avec ou sans tirets, casse indifférente). */
 function sameStory(a: string | undefined, b: string): boolean {
   const norm = (id: string) => id.replace(/-/g, "").toLowerCase();
@@ -392,7 +395,8 @@ export function DeviceProvider({
           const done = text.panel.announce.done(next.title);
           setAnnouncement(warning ? `${done}. ${warning}` : done);
           if (copy?.status === "kept") {
-            if (copy.unconfirmed)
+            // Réglage désactivé : la ligne suffit (rien d'automatique n'était demandé).
+            if (copy.unconfirmed && copy.auto)
               onPcCopyChangeRef.current?.(next.title, { status: "kept_unconfirmed" });
           } else if (copy) {
             onPcCopyChangeRef.current?.(next.title, copy);
@@ -632,10 +636,16 @@ export function DeviceProvider({
         setPcCopy(uuid, "removed");
         onPcCopyChangeRef.current?.(item.title, { status: "removed" });
       } catch (caught) {
-        // Refus du backend (histoire plus sur la Flam, autre Flam, lecture…) : le bouton n'est
-        // plus proposé, le message reste sur la ligne.
-        const message = toAppError(caught).message;
-        setPcCopy(uuid, "refused", message);
+        // Refus définitif (autre Flam, histoire plus sur la Flam ou changée, envoi inconnu) : le
+        // bouton n'est plus proposé. Refus passager (lecture, installation, Flam occupée…) : le
+        // bouton reste, avec le message.
+        const error = toAppError(caught);
+        const message = error.message;
+        setPcCopy(
+          uuid,
+          DEFINITIVE_REFUSALS.has(error.kind) ? "refused" : "failed",
+          message,
+        );
         onPcCopyChangeRef.current?.(item.title, { status: "remove_failed", message });
       }
     },

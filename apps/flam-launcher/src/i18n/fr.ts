@@ -1033,7 +1033,7 @@ export const fr = {
         removeFromPcFailed: (title: string, message: string) =>
           `« ${title} » n'a pas pu être retirée du PC : ${message}`,
         keptUnconfirmed: (title: string) =>
-          `« ${title} » envoyée. Elle n'a pas été retirée du PC automatiquement, car son écriture sur la Flam n'a pas pu être confirmée.`,
+          `« ${title} » est bien sur la Flam. Sa copie est gardée sur ce PC par prudence : vous pouvez la retirer avec « Retirer du PC », puis éjectez la Flam avec « Éjecter la Flam » avant de la débrancher.`,
       },
       /** Après un envoi réussi : retrait de la copie gardée dans « Mes histoires » (#609). */
       pcCopy: {
@@ -1049,8 +1049,9 @@ export const fr = {
         /** « Retirer du PC » refusé : le bouton n'est plus proposé. */
         refused: (message: string) => `L'histoire n'a pas été retirée du PC : ${message}`,
         /** Retrait automatique demandé, écriture sur la Flam non confirmée. */
+        /** Écriture non confirmée sur le support (réglage actif ou non). */
         unconfirmed:
-          "Elle n'a pas été retirée du PC automatiquement, car son écriture sur la Flam n'a pas pu être confirmée.",
+          "L'histoire est bien sur la Flam. Sa copie est gardée sur ce PC par prudence : si vous la retirez, éjectez ensuite la Flam avec « Éjecter la Flam » avant de la débrancher.",
         noDevice: "la Flam n'est plus détectée",
       },
     },

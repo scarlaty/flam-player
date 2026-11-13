@@ -166,7 +166,10 @@ fn reglage_desactive_rien_n_est_retire_et_le_retrait_manuel_reste_possible() {
     let report = env.send(A, &FaultyFs::new(), false).unwrap();
     assert_eq!(
         report.library_copy,
-        Some(LibraryCopy::Kept { unconfirmed: false })
+        Some(LibraryCopy::Kept {
+            unconfirmed: !cfg!(windows),
+            auto: false,
+        })
     );
     assert!(on_device(&env.root));
     assert!(env.installed(A), "gardée");
@@ -301,7 +304,10 @@ fn histoire_reinstallee_pendant_l_envoi_jamais_retiree() {
     let report = env.send(A, &FaultyFs::new(), false).unwrap();
     assert_eq!(
         report.library_copy,
-        Some(LibraryCopy::Kept { unconfirmed: false })
+        Some(LibraryCopy::Kept {
+            unconfirmed: !cfg!(windows),
+            auto: false,
+        })
     );
     env.install(A, 30, &[4u8; 3000]);
     let err = remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap_err();
@@ -466,7 +472,10 @@ fn kept(env: &Env) {
     let report = env.send(A, &FaultyFs::new(), false).unwrap();
     assert_eq!(
         report.library_copy,
-        Some(LibraryCopy::Kept { unconfirmed: false })
+        Some(LibraryCopy::Kept {
+            unconfirmed: !cfg!(windows),
+            auto: false,
+        })
     );
     assert!(env.registry.knows(A));
 }
@@ -591,7 +600,10 @@ fn ecriture_non_confirmee_pas_de_retrait_automatique() {
         let report = env.send(A, &fs, true).unwrap();
         assert_eq!(
             report.library_copy,
-            Some(LibraryCopy::Kept { unconfirmed: true }),
+            Some(LibraryCopy::Kept {
+                unconfirmed: true,
+                auto: true,
+            }),
             "{sync_fails} {cached}"
         );
         assert!(!report.dir_synced || !report.verified_uncached);
@@ -651,7 +663,79 @@ fn jamais_de_retrait_automatique_hors_windows() {
             Ok(())
         },
     );
-    assert_eq!(copy, Some(LibraryCopy::Kept { unconfirmed: true }));
+    assert_eq!(
+        copy,
+        Some(LibraryCopy::Kept {
+            unconfirmed: true,
+            auto: true,
+        })
+    );
     assert!(!removed.get());
     assert!(env.installed(A));
+}
+
+#[test]
+fn un_renvoi_illisible_de_la_meme_histoire_oublie_l_ancien_envoi() {
+    // A est envoyée et gardée ; B, autre entrée de la bibliothèque qui désigne la même histoire
+    // de la Flam, est envoyée ensuite et relue illisible (carrier) : l'envoi de A ne vaut plus.
+    let env = Env::new();
+    env.install(A, 10, &[1u8; 3000]);
+    env.install(B, 11, &[1u8; 3000]);
+    kept(&env);
+    let report = env.send(B, &FaultyFs::new(), false).unwrap_err();
+    // Sans `replace`, le vrai renvoi est refusé (« déjà sur la Flam ») : on rejoue la suite d'un
+    // remplacement réussi mais illisible.
+    assert!(report.to_string().contains("déjà sur la Flam"));
+    let unreadable = TransferReport {
+        id: NEW.into(),
+        bytes: 1,
+        files: 1,
+        replaced: true,
+        index_updated: false,
+        cache_removed: true,
+        carrier_readback: Some(false),
+        carrier_stored: Some(false),
+        recovery_failures: Vec::new(),
+        library_copy: None,
+        dir_synced: true,
+        verified_uncached: true,
+        installed_files: vec![("info".into(), 1)],
+    };
+    let copy = settle(
+        &env.registry,
+        &env.cache,
+        &env.root,
+        B,
+        SentStamp::capture(&env.cache, B),
+        &unreadable,
+        false,
+        true,
+        &|| false,
+        |_| Ok(()),
+    );
+    assert_eq!(copy, None);
+    assert!(!env.registry.knows(A), "l'envoi de A est oublié");
+    let err = remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap_err();
+    assert_eq!(err.kind(), "not_found");
+    assert!(env.installed(A));
+}
+
+#[test]
+fn reglage_desactive_ecriture_non_confirmee_signalee() {
+    let env = Env::new();
+    env.install(A, 10, &[1u8; 3000]);
+    let mut fs = FaultyFs::new();
+    fs.sync_dir_fails = true;
+    let report = env.send(A, &fs, false).unwrap();
+    assert_eq!(
+        report.library_copy,
+        Some(LibraryCopy::Kept {
+            unconfirmed: true,
+            auto: false,
+        })
+    );
+    assert!(env.installed(A), "rien de retiré sans demande");
+    // Le retrait manuel reste possible (après revérification sur la Flam).
+    remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap();
+    assert!(!env.installed(A));
 }
