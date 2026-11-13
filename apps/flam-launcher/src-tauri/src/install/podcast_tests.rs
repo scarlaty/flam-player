@@ -332,8 +332,14 @@ impl Ctx {
     /// Aucun fichier de travail ni de publication en cours ne reste.
     fn assert_clean(&self) {
         let work = self.cache().join(WORK_DIR);
+        // Le marqueur d'appartenance du sous-dossier n'est pas un reste (#570).
         let left: Vec<_> = std::fs::read_dir(&work)
-            .map(|d| d.flatten().map(|e| e.path()).collect())
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| e.file_name() != crate::cache::MARKER)
+                    .map(|e| e.path())
+                    .collect()
+            })
             .unwrap_or_default();
         assert!(left.is_empty(), "dossiers de travail résiduels : {left:?}");
         assert!(self.staging_is_empty());
@@ -502,8 +508,9 @@ fn queued_pack(ctx_dir: &Path, fault_title: &str) -> (PackJob, String) {
         },
     )
     .unwrap();
-    // Arrêt brutal : dossier de travail de la tâche et dossier orphelin laissés.
-    let work = cache.join(WORK_DIR);
+    // Arrêt brutal : dossier de travail de la tâche et dossier orphelin laissés, dans un
+    // `podcast-work/` marqué comme le crée le résolveur réel (`cache::ensure_subdirs`, #591).
+    let work = crate::cache::ensure_subdir(&cache, WORK_DIR).unwrap();
     std::fs::create_dir_all(work.join(TASK_ID)).unwrap();
     std::fs::write(work.join(TASK_ID).join("ep-0000.audio.part"), b"partiel").unwrap();
     let orphan = work.join("11111111-2222-4333-8444-555555555555");
@@ -704,7 +711,8 @@ async fn deux_packs_simultanes_sont_prepares_l_un_apres_l_autre() {
 #[test]
 fn le_nettoyage_ne_supprime_que_les_orphelins_releves() {
     let dir = tempfile::tempdir().unwrap();
-    let work = dir.path().join(WORK_DIR);
+    // Sous-dossier marqué, comme le crée `cache::ensure_subdirs` (#570).
+    let work = crate::cache::ensure_subdir(dir.path(), WORK_DIR).unwrap();
     for name in ["garde", "orphelin"] {
         std::fs::create_dir_all(work.join(name)).unwrap();
         std::fs::write(work.join(name).join("f"), b"x").unwrap();
@@ -716,6 +724,25 @@ fn le_nettoyage_ne_supprime_que_les_orphelins_releves() {
     assert!(work.join("garde/f").is_file());
     assert!(!work.join("orphelin").exists());
     assert!(!work.join("fichier").exists());
+    assert!(crate::cache::is_owned(&work), "marqueur gardé");
+}
+
+#[test]
+fn le_nettoyage_ne_touche_pas_un_podcast_work_sans_marqueur() {
+    let dir = tempfile::tempdir().unwrap();
+    // Homonyme étranger : refusé par la migration, donc non marqué (#591).
+    let work = dir.path().join(WORK_DIR);
+    std::fs::create_dir_all(work.join("orphelin")).unwrap();
+    std::fs::write(work.join("orphelin").join("f"), b"x").unwrap();
+    std::fs::write(work.join("fichier"), b"x").unwrap();
+    let read = std::cell::Cell::new(false);
+    crate::install::podcast::sweep_workdirs(dir.path(), &|names| {
+        read.set(true);
+        names
+    });
+    assert!(!read.get(), "contenu jamais relevé");
+    assert!(work.join("orphelin/f").is_file());
+    assert!(work.join("fichier").is_file());
 }
 
 #[tokio::test]

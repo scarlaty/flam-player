@@ -287,8 +287,9 @@ fn own_file(name: &str) -> Option<OwnFile> {
 /// anciennes que `policy.max_age`, puis les plus anciennes restantes tant que le total dépasse
 /// `policy.max_bytes`.
 ///
-/// Garde-fous : `thumbs/` doit être un vrai dossier (un lien ou une jonction est refusé, sa
-/// cible n'est jamais parcourue) ; seuls les fichiers réguliers dont le nom est exactement celui
+/// Garde-fous : `thumbs/` doit être un vrai dossier qui porte le marqueur de l'application (un
+/// lien ou une jonction est refusé, sa cible n'est jamais parcourue ; un homonyme non marqué
+/// n'est ni lu ni purgé, #591) ; seuls les fichiers réguliers dont le nom est exactement celui
 /// d'un fichier de [`ThumbCache`] sont touchés (ni lien, ni sous-dossier, ni fichier d'un autre
 /// programme) ; une suppression en échec est comptée puis ignorée, la purge continue.
 /// `remove` fait la suppression (injectable pour les tests de panne).
@@ -299,9 +300,8 @@ pub fn purge_thumbs_with(
     remove: &mut dyn FnMut(&Path) -> std::io::Result<()>,
 ) -> std::io::Result<PurgeReport> {
     let dir = cache_dir.join("thumbs");
-    match std::fs::symlink_metadata(&dir) {
-        Ok(meta) if meta.is_dir() => {}
-        _ => return Ok(PurgeReport::default()),
+    if !crate::cache::is_owned(&dir) {
+        return Ok(PurgeReport::default());
     }
     let age_of = |modified: SystemTime| now.duration_since(modified).unwrap_or_default();
     let mut report = PurgeReport::default();
@@ -498,7 +498,18 @@ mod tests {
 
     const DAY: Duration = Duration::from_secs(24 * 3600);
 
+    /// Pose le marqueur de l'application dans `dir`, comme `cache::ensure_subdir` (#591).
+    fn mark(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(crate::cache::MARKER), b"").unwrap();
+    }
+
+    /// Fichier `name` de `len` octets daté de `now - age` ; un dossier `thumbs` créé ici est
+    /// marqué (sous-dossier de l'application).
     fn put(dir: &Path, name: &str, len: usize, age: Duration, now: SystemTime) -> PathBuf {
+        if dir.file_name().is_some_and(|n| n == "thumbs") && !dir.exists() {
+            mark(dir);
+        }
         std::fs::create_dir_all(dir).unwrap();
         let path = dir.join(name);
         let file = std::fs::File::create(&path).unwrap();
@@ -645,6 +656,27 @@ mod tests {
     }
 
     #[test]
+    fn un_thumbs_sans_marqueur_n_est_pas_purge() {
+        let cache = tempfile::tempdir().unwrap();
+        let dir = cache.path().join("thumbs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = SystemTime::now();
+        let old = put(&dir, "0000000000000001.png", 10, 400 * DAY, now);
+        let stale_tmp = put(&dir, "0000000000000002.tmp-99", 5, 400 * DAY, now);
+
+        let report = purge_thumbs(cache.path(), &policy(0), now).unwrap();
+        assert_eq!(report, PurgeReport::default());
+        assert!(old.exists() && stale_tmp.exists());
+
+        // Le même dossier, marqué : la purge reprend comme avant.
+        mark(&dir);
+        let report = purge_thumbs(cache.path(), &policy(0), now).unwrap();
+        assert_eq!(report.removed, 2);
+        assert!(!old.exists() && !stale_tmp.exists());
+        assert!(dir.join(crate::cache::MARKER).is_file(), "marqueur gardé");
+    }
+
+    #[test]
     fn un_thumbs_lien_ou_jonction_n_est_ni_suivi_ni_supprime() {
         let root = tempfile::tempdir().unwrap();
         let outside = root.path().join("ailleurs");
@@ -667,7 +699,7 @@ mod tests {
         let now = SystemTime::now();
         let target = put(root.path(), "cible", 50, 400 * DAY, now);
         let dir = root.path().join("thumbs");
-        std::fs::create_dir_all(&dir).unwrap();
+        mark(&dir);
         let link = dir.join("0000000000000001.png");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let report = purge_thumbs(root.path(), &policy(0), now).unwrap();

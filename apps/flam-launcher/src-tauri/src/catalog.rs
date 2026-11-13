@@ -684,8 +684,13 @@ async fn read_thumb_meta(path: &Path) -> Option<ThumbMeta> {
 }
 
 /// Supprime de `thumbs/` les vignettes (et leur suivi) qui ne correspondent à aucune
-/// `thumb_url` de `known`. Seuls les fichiers `*.img` et `*.meta.json` sont concernés.
+/// `thumb_url` de `known`. Seuls les fichiers `*.img` et `*.meta.json` sont concernés. `dir`
+/// (`<cache>/catalogs/<id>`) vit dans `catalogs/` : rien n'est lu ni supprimé si `catalogs/` ne
+/// porte pas le marqueur de l'application (#591).
 fn prune_thumbs(dir: &Path, known: &HashSet<String>) -> std::io::Result<()> {
+    if !dir.parent().is_some_and(crate::cache::is_owned) {
+        return Ok(());
+    }
     let thumbs = dir.join("thumbs");
     match std::fs::symlink_metadata(&thumbs) {
         Ok(meta) if meta.is_dir() => {}
@@ -2233,6 +2238,8 @@ mod tests {
         let doc = thumb_catalog(&server, &["a", "b"], Duration::ZERO).await;
         serve(&server, catalog_response(&doc), Some(1)).await;
         let cache = tempfile::tempdir().unwrap();
+        // `catalogs/` marqué, comme le crée `resolved_cache_dir` : le nettoyage peut agir (#591).
+        crate::cache::ensure_subdir(cache.path(), "catalogs").unwrap();
         let url = url_of(&server);
         let service = svc();
         let view = service.refresh(cache.path(), "src", &url, 1).await.unwrap();
@@ -2508,6 +2515,8 @@ mod tests {
         let doc = thumb_catalog(&server, &["a", "b"], Duration::ZERO).await;
         serve(&server, catalog_response(&doc), Some(1)).await;
         let cache = tempfile::tempdir().unwrap();
+        // `catalogs/` marqué, comme le crée `resolved_cache_dir` : le nettoyage peut agir (#591).
+        crate::cache::ensure_subdir(cache.path(), "catalogs").unwrap();
         let url = url_of(&server);
         let service = svc();
         let view = service.refresh(cache.path(), "src", &url, 1).await.unwrap();
@@ -2653,6 +2662,8 @@ mod tests {
             let doc = thumb_catalog(&server, &["a", "b"], Duration::ZERO).await;
             serve(&server, catalog_response(&doc), Some(1)).await;
             let cache = tempfile::tempdir().unwrap();
+            // `catalogs/` marqué : seule la garde « meta illisible » peut épargner les vignettes.
+            crate::cache::ensure_subdir(cache.path(), "catalogs").unwrap();
             let url = url_of(&server);
             let service = svc();
             let view = service.refresh(cache.path(), "src", &url, 1).await.unwrap();
@@ -2713,7 +2724,9 @@ mod tests {
         std::fs::create_dir(&target).unwrap();
         std::fs::write(target.join("precieux.img"), b"x").unwrap();
         std::fs::write(target.join("precieux.meta.json"), b"{}").unwrap();
-        let dir = root.path().join("src");
+        // `catalogs/` marqué : seul le lien peut arrêter le nettoyage.
+        let catalogs = crate::cache::ensure_subdir(root.path(), "catalogs").unwrap();
+        let dir = catalogs.join("src");
         std::fs::create_dir(&dir).unwrap();
         link_dir(&dir.join("thumbs"), &target);
 
@@ -2721,6 +2734,45 @@ mod tests {
 
         assert!(target.join("precieux.img").is_file());
         assert!(target.join("precieux.meta.json").is_file());
+    }
+
+    /// Vignettes inconnues dans `<root>/catalogs/src/thumbs/`, renvoyées avec ce dossier source.
+    fn unknown_thumbs(root: &Path) -> (PathBuf, [PathBuf; 2]) {
+        let dir = root.join("catalogs").join("src");
+        let thumbs = dir.join("thumbs");
+        std::fs::create_dir_all(&thumbs).unwrap();
+        let files = [
+            thumbs.join("inconnue.img"),
+            thumbs.join("inconnue.meta.json"),
+        ];
+        for file in &files {
+            std::fs::write(file, b"x").unwrap();
+        }
+        (dir, files)
+    }
+
+    /// #591 : `catalogs/` sans marqueur de l'application : rien n'est supprimé.
+    #[test]
+    fn prune_thumbs_ne_touche_pas_un_catalogs_sans_marqueur() {
+        let root = tempfile::tempdir().unwrap();
+        let (dir, files) = unknown_thumbs(root.path());
+        prune_thumbs(&dir, &HashSet::new()).unwrap();
+        for file in &files {
+            assert!(file.is_file(), "{} supprimé", file.display());
+        }
+    }
+
+    /// #591 : `catalogs/` marqué : les vignettes inconnues partent comme avant.
+    #[test]
+    fn prune_thumbs_nettoie_un_catalogs_marque() {
+        let root = tempfile::tempdir().unwrap();
+        crate::cache::ensure_subdir(root.path(), "catalogs").unwrap();
+        let (dir, files) = unknown_thumbs(root.path());
+        prune_thumbs(&dir, &HashSet::new()).unwrap();
+        for file in &files {
+            assert!(!file.exists(), "{} gardé", file.display());
+        }
+        assert!(crate::cache::is_owned(&root.path().join("catalogs")));
     }
 
     #[tokio::test]
