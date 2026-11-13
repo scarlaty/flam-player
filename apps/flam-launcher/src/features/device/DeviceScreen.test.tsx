@@ -703,6 +703,37 @@ it("« Actualiser » relit les titres même si la liste est identique (#581)", a
   );
 });
 
+it("un rechargement silencieux ne relance pas la lecture des titres, seul « Actualiser » le fait (#581)", async () => {
+  status = detected();
+  keysProblem = "clé illisible";
+  stories = report([
+    story(A, { title: "Capi", in_library: true }),
+    story(C, { missing: true }),
+  ]);
+  renderScreen();
+  expect(await screen.findByText("Titres des histoires illisibles")).toBeInTheDocument();
+  await waitFor(() => expect(count("device_story_titles")).toBe(1));
+
+  // Retrait d'une entrée manquante : la liste est relue sans passer par « chargement », et la
+  // liste des histoires lisibles ne change pas.
+  fireEvent.click(screen.getByRole("button", { name: "Retirer « Histoire 33333333 »" }));
+  const dialog = await screen.findByRole("alertdialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Retirer de la Flam" }));
+  // Le mock retire C : on attend la disparition de sa ligne (liste relue et rendue).
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: "Retirer « Histoire 33333333 »" }),
+    ).toBeNull(),
+  );
+  await waitFor(() => expect(count("device_list_stories")).toBe(2));
+  await screen.findByText("Titres des histoires illisibles");
+  expect(count("device_story_titles")).toBe(1);
+
+  stories = stories && { ...stories };
+  fireEvent.click(screen.getByRole("button", { name: "Actualiser la liste" }));
+  await waitFor(() => expect(count("device_story_titles")).toBe(2));
+});
+
 it("affiche le titre déchiffré et la vignette de la Flam, avec repli", async () => {
   status = detected();
   deviceTitles = { [A]: "Titre de la Flam" };

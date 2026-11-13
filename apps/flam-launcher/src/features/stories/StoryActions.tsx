@@ -19,7 +19,6 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
   const stories = useStories();
   const text = t.stories.actions;
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const [removing, setRemoving] = useState(false);
   const installRef = useRef<HTMLButtonElement>(null);
   const removeReasonId = useId();
   const playReasonId = useId();
@@ -29,6 +28,8 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
   // réinstallation dès qu'il est affiché.
   const focusAfterRemove = useRef(false);
   const installed = stories.installedFor(entry);
+  // Suppression en cours (partagée avec la fiche) : un second appel n'est pas lancé.
+  const removing = installed ? stories.removing(installed.uuid) : false;
   useEffect(() => {
     if (focusAfterRemove.current && !installed) {
       focusAfterRemove.current = false;
@@ -51,8 +52,11 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
           disabled={stories.session !== null || lunii}
           title={lunii ? text.playUnavailable : undefined}
           aria-label={text.forStory(text.play, entry.title)}
-          aria-describedby={lunii ? playReasonId : undefined}
-          onClick={() => stories.play(entry)}
+          aria-disabled={removing || undefined}
+          aria-describedby={lunii ? playReasonId : removing ? removeReasonId : undefined}
+          onClick={() => {
+            if (!removing) stories.play(entry);
+          }}
         >
           {text.play}
         </Button>
@@ -67,6 +71,7 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
           size={installed.size}
           format={installed.format}
           stale={stories.sourceChanged(installed.uuid)}
+          locked={removing}
         />
         <IconButton
           size="sm"
@@ -92,19 +97,15 @@ export function StoryActions({ entry }: { entry: StoryEntry }) {
           onCancel={() => setConfirmRemove(false)}
           onConfirm={(purge) => {
             setConfirmRemove(false);
-            setRemoving(true);
             focusAfterRemove.current = true;
-            void stories
-              .remove(installed.uuid, entry.title, purge)
-              .then(
-                (removed) => {
-                  if (!removed) focusAfterRemove.current = false;
-                },
-                () => {
-                  focusAfterRemove.current = false;
-                },
-              )
-              .finally(() => setRemoving(false));
+            void stories.remove(installed.uuid, entry.title, purge).then(
+              (removed) => {
+                if (!removed) focusAfterRemove.current = false;
+              },
+              () => {
+                focusAfterRemove.current = false;
+              },
+            );
           }}
         />
       </>

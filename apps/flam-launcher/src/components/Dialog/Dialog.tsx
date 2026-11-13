@@ -36,18 +36,39 @@ export interface DialogProps {
 const FOCUSABLE =
   'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
+/** Élément atteignable : ni `hidden`, `inert`, `display: none` (lui ou un parent) ni `visibility: hidden`. */
+function isReachable(element: HTMLElement, panel: HTMLElement): boolean {
+  if (getComputedStyle(element).visibility === "hidden") return false;
+  for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+    if (node.hidden || node.hasAttribute("inert")) return false;
+    if (getComputedStyle(node).display === "none") return false;
+    if (node === panel) break;
+  }
+  return true;
+}
+
+function firstReachable(zone: Element | null | undefined, panel: HTMLElement) {
+  if (!zone) return undefined;
+  return Array.from(zone.querySelectorAll<HTMLElement>(FOCUSABLE)).find((element) =>
+    isReachable(element, panel),
+  );
+}
+
 /**
- * Boucle Tab et Maj+Tab dans `panel`. Seul le dialogue le plus récent (dernier panneau du
+ * Boucle Tab et Maj+Tab dans `panel` (les éléments masqués sont ignorés ; Ctrl, Alt et Méta+Tab
+ * restent au navigateur ou au système). Seul le dialogue le plus récent (dernier panneau du
  * document) piège le focus. Focus hors du panneau, ou sur le panneau lui-même : on y entre
  * par le premier (Tab) ou le dernier (Maj+Tab) élément.
  */
 function trapTab(event: globalThis.KeyboardEvent, panel: HTMLElement | null) {
-  if (!panel) return;
+  if (!panel || event.ctrlKey || event.altKey || event.metaKey) return;
   const panels = document.querySelectorAll(".fl-dialog");
   if (panels[panels.length - 1] !== panel) return;
-  const focusable = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
+  // Premier et dernier atteignables, cherchés depuis chaque bout (sans tout évaluer).
+  const candidates = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
+  const reachable = (element: HTMLElement) => isReachable(element, panel);
+  const first = candidates.find(reachable);
+  const last = [...candidates].reverse().find(reachable);
   if (!first || !last) {
     event.preventDefault();
     panel.focus();
@@ -86,6 +107,12 @@ export function Dialog({
   const titleId = useId();
   const descriptionId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
+  // Dernier `onClose` : les écouteurs du document ne sont pas ré-enregistrés quand l'appelant
+  // passe une fonction en ligne (nouvelle à chaque rendu).
+  const onCloseRef = useRef(onClose);
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   // Focus initial et restitution du focus. `useLayoutEffect` : le focus est posé pendant le
   // commit, avant que le dialogue soit observable (`findBy…`) ; un effet passif le poserait
@@ -96,8 +123,9 @@ export function Dialog({
     const panel = panelRef.current;
     const first =
       initialFocus?.current ??
-      panel?.querySelector(".fl-dialog__body")?.querySelector<HTMLElement>(FOCUSABLE) ??
-      panel?.querySelector(".fl-dialog__footer")?.querySelector<HTMLElement>(FOCUSABLE);
+      (panel &&
+        (firstReachable(panel.querySelector(".fl-dialog__body"), panel) ??
+          firstReachable(panel.querySelector(".fl-dialog__footer"), panel)));
     (first ?? panel)?.focus();
     return () => previous?.focus();
   }, [open, initialFocus]);
@@ -110,14 +138,14 @@ export function Dialog({
     function onKeyDown(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") {
         event.stopPropagation();
-        onClose();
+        onCloseRef.current();
       } else if (event.key === "Tab") {
         trapTab(event, panelRef.current);
       }
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose]);
+  }, [open]);
 
   // Blocage du défilement de l'arrière-plan.
   useEffect(() => {

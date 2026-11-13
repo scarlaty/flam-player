@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { Source } from "../../api/sources";
 import type { ListedEntry } from "../library/sourceData";
 import {
@@ -52,7 +52,27 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const { compatFor } = useCompat();
   const { url } = useThumbnail(source, entry, { eager: true });
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const [removing, setRemoving] = useState(false);
+  // Suppression de cette histoire en cours (commune à la fiche, à la carte et aux relances).
+  const removing = stories.removing(entry.uuid);
+  const removeStatusId = useId();
+  // Suppression lancée depuis cette fiche : au retour, la fiche ne se ferme que si elle est
+  // toujours montée sur cette histoire (sinon `onClose` fermerait la fiche d'une autre
+  // histoire). Le jeton change au démontage et au changement d'histoire ; fermer la
+  // confirmation pendant l'appel ne l'invalide pas.
+  const viewToken = useRef(0);
+  const entryUuid = useRef(entry.uuid);
+  useEffect(() => {
+    if (entryUuid.current !== entry.uuid) {
+      entryUuid.current = entry.uuid;
+      viewToken.current += 1;
+    }
+  }, [entry.uuid]);
+  useEffect(
+    () => () => {
+      viewToken.current += 1;
+    },
+    [],
+  );
   const [failedUrl, setFailedUrl] = useState<string>();
   const updateHelpId = useId();
   const sendHelpId = useId();
@@ -84,17 +104,13 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const tone: BadgeTone = STATE_APPEARANCE[state].tone;
 
   async function confirmedRemove(purgeSaves: boolean) {
-    // Verrou pendant l'appel : le dialogue reste ouvert jusqu'à la fin, un second clic ne
-    // relance pas la suppression.
+    // Verrou pendant l'appel (partagé : une seconde instance reçoit la même promesse).
     if (removing) return;
-    setRemoving(true);
-    try {
-      const removed = await stories.remove(entry.uuid, entry.title, purgeSaves);
-      setConfirmRemove(false);
-      if (removed && source.type === "library") onClose();
-    } finally {
-      setRemoving(false);
-    }
+    const token = viewToken.current;
+    const removed = await stories.remove(entry.uuid, entry.title, purgeSaves);
+    if (viewToken.current !== token) return;
+    setConfirmRemove(false);
+    if (removed && source.type === "library") onClose();
   }
 
   return (
@@ -119,18 +135,28 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   icon="trash"
                   className="fl-detail__remove"
                   disabled={playingThis}
+                  // `aria-disabled` : le bouton garde le focus et sa raison est lue.
+                  aria-disabled={removing || undefined}
+                  aria-busy={removing || undefined}
+                  aria-describedby={removing ? removeStatusId : undefined}
                   onClick={() => {
-                    setConfirmRemove(true);
+                    if (!removing) setConfirmRemove(true);
                   }}
                 >
                   {text.remove}
                 </Button>
+                {removing && (
+                  <span id={removeStatusId} className="fl-visually-hidden">
+                    {text.removing}
+                  </span>
+                )}
                 <SendToDeviceButton
                   uuid={installed.uuid}
                   title={entry.title}
                   size={installed.size}
                   format={installed.format}
                   stale={stories.sourceChanged(installed.uuid)}
+                  locked={removing}
                 />
                 {stories.updateAvailable(entry) && (
                   <>
@@ -138,8 +164,13 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                       size="sm"
                       icon="refresh"
                       title={text.updateHelp}
-                      aria-describedby={updateHelpId}
-                      onClick={() => stories.install(entry)}
+                      aria-disabled={removing || undefined}
+                      aria-describedby={
+                        removing ? `${updateHelpId} ${removeStatusId}` : updateHelpId
+                      }
+                      onClick={() => {
+                        if (!removing) stories.install(entry);
+                      }}
                     >
                       {text.update}
                     </Button>
@@ -153,8 +184,12 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   variant="accent"
                   icon="play"
                   disabled={playing || lunii}
+                  aria-disabled={removing || undefined}
+                  aria-describedby={removing ? removeStatusId : undefined}
                   title={lunii ? text.playUnavailable : undefined}
-                  onClick={() => stories.play(entry, source.id)}
+                  onClick={() => {
+                    if (!removing) stories.play(entry, source.id);
+                  }}
                 >
                   {text.play}
                 </Button>
@@ -324,7 +359,12 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
               <Banner
                 tone="danger"
                 action={
-                  <Button onClick={() => stories.retry(failed.id)}>
+                  <Button
+                    aria-disabled={removing || undefined}
+                    onClick={() => {
+                      if (!removing) stories.retry(failed.id);
+                    }}
+                  >
                     {t.errors.retry}
                   </Button>
                 }

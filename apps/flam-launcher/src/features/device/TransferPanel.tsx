@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef } from "react";
+import { useContext, useEffect, useId, useLayoutEffect, useRef } from "react";
 import { Badge, Banner, Button, IconButton, ProgressBar } from "../../components";
 import type { BadgeTone } from "../../components";
 import { t } from "../../i18n";
@@ -8,6 +8,7 @@ import {
   type QueueItem,
   type QueueState,
 } from "./DeviceContext";
+import { StoriesContext } from "../stories/StoriesContext";
 import { EjectButton } from "./EjectButton";
 import { SendToDeviceButton } from "./SendToDeviceButton";
 import { estimateMinutes } from "./sendRules";
@@ -312,7 +313,7 @@ export function TransferPanel() {
  * et bouton pour y renoncer (l'installation continue). À confirmer : « Envoyer sur la Flam »,
  * le bouton d'envoi habituel, avec ses raisons de refus.
  */
-function PlannedLine({
+export function PlannedLine({
   plan,
   onDrop,
   onConfirm,
@@ -324,6 +325,8 @@ function PlannedLine({
 }) {
   const planned = text.planned;
   const toConfirm = plan.unwatched && plan.state === "ready" && !plan.lost;
+  // Suppression de cette histoire en cours (sans fournisseur d'histoires : jamais).
+  const removing = useContext(StoriesContext)?.removing(plan.uuid) ?? false;
   return (
     <li className="fl-transfer__item">
       <div className="fl-transfer__item-head">
@@ -364,6 +367,7 @@ function PlannedLine({
             title={plan.title}
             size={plan.size}
             format={plan.format}
+            locked={removing}
           />
         </span>
       )}
