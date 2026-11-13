@@ -340,8 +340,8 @@ fn references_inexistantes() {
 
 #[test]
 fn option_index() {
-    // -1 (hasard ?) refusé tant que son effet n'est pas mesuré (note, Q5).
-    for bad in [1i64, -1, -2, i64::from(u32::MAX) + 1, i64::MIN, i64::MAX] {
+    // -2 et tout indice hors de 0..options restent « hors bornes » ; -1 a ses propres cas.
+    for bad in [1i64, -2, i64::from(u32::MAX) + 1, i64::MIN, i64::MAX] {
         let mut v = base();
         v["stageNodes"][0]["okTransition"]["optionIndex"] = json!(bad);
         assert!(
@@ -349,6 +349,56 @@ fn option_index() {
             "{bad}"
         );
     }
+}
+
+#[test]
+fn option_index_moins_un_une_option_devient_zero() {
+    let mut v = base();
+    v["stageNodes"][0]["okTransition"]["optionIndex"] = json!(-1);
+    let story = parse(&v).expect("-1 avec une seule option est accepté");
+    let t = story.stage_nodes()[0].ok_transition.expect("transition");
+    assert_eq!(t.option_index, 0);
+    // Jamais -1 dans `ni` : le champ vaut 0 (nœud 0 : transition OK à 0x200 + 8, indice à +8).
+    let ni = build_index(&story).ni;
+    assert_eq!(&ni[0x210..0x214], &0u32.to_le_bytes());
+}
+
+#[test]
+fn option_index_moins_un_plusieurs_options_refuse() {
+    let mut v = base();
+    v["actionNodes"][0]["options"] = json!([U1, U0]);
+    v["stageNodes"][0]["okTransition"]["optionIndex"] = json!(-1);
+    let e = err(&v);
+    assert!(
+        matches!(e, StoryError::OptionIndexAleatoire { options: 2, .. }),
+        "{e}"
+    );
+    assert!(e.to_string().contains("choix au hasard parmi 2 options"));
+}
+
+#[test]
+fn option_index_moins_un_maison_une_option_devient_zero() {
+    let mut v = base();
+    v["stageNodes"][0]["homeTransition"] = json!({"actionNode": "a", "optionIndex": -1});
+    let story = parse(&v).expect("-1 avec une seule option est accepté");
+    let t = story.stage_nodes()[0].home_transition.expect("transition");
+    assert_eq!(t.option_index, 0);
+    // Nœud 0 à 0x200 ; Maison à +0x14, son optionIndex à +8 : 0x21C.
+    let ni = build_index(&story).ni;
+    assert_eq!(&ni[0x21C..0x220], &0u32.to_le_bytes());
+}
+
+#[test]
+fn option_index_moins_un_maison_plusieurs_options_refuse() {
+    let mut v = base();
+    v["actionNodes"][0]["options"] = json!([U1, U0]);
+    v["stageNodes"][0]["homeTransition"] = json!({"actionNode": "a", "optionIndex": -1});
+    let e = err(&v);
+    assert!(
+        matches!(e, StoryError::OptionIndexAleatoire { options: 2, .. }),
+        "{e}"
+    );
+    assert!(e.to_string().contains("homeTransition"), "{e}");
 }
 
 #[test]
