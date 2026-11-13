@@ -41,6 +41,7 @@ function makeView(overrides: Partial<SettingsView> = {}): SettingsView {
 
 let view: SettingsView;
 let usageBytes: number;
+let usageSubdirs: string[];
 let mp3Bytes: number;
 let calls: { cmd: string; args: Record<string, any> }[];
 let failures: Record<string, { kind: string; message: string }>;
@@ -55,6 +56,7 @@ beforeEach(() => {
   voices = { voices: [HORTENSE, PAUL], default_id: HORTENSE.id };
   view = makeView();
   usageBytes = 2048;
+  usageSubdirs = ["archives", "catalogs", "library", "thumbs"];
   mp3Bytes = 1024;
   calls = [];
   failures = {};
@@ -91,7 +93,7 @@ beforeEach(() => {
         return {
           path: "C:\\cache",
           bytes: usageBytes,
-          subdirs: ["archives", "catalogs", "library", "thumbs"],
+          subdirs: usageSubdirs,
         };
       case "podcast_mp3_cache_size":
         return { bytes: mp3Bytes };
@@ -400,6 +402,55 @@ it("vide le cache seulement après confirmation (focus sur Annuler)", async () =
   expect(await screen.findByText("Cache vidé : 2 Ko libérés")).toBeInTheDocument();
   expect(await screen.findByText("Le cache est vide (C:\\cache).")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Vider le cache" })).toBeDisabled();
+});
+
+it("n'annonce la suppression des histoires que si la bibliothèque est vidée (#591)", async () => {
+  usageSubdirs = ["archives", "thumbs"];
+  await renderScreen();
+  fireEvent.click(screen.getByRole("button", { name: "Vider le cache" }));
+
+  const dialog = await screen.findByRole("alertdialog", { name: "Vider le cache ?" });
+  expect(dialog).toHaveAccessibleDescription(
+    /^Seuls les dossiers créés par Flam Launcher \(archives, thumbs\) seront vidés.*2 Ko/,
+  );
+  expect(dialog).not.toHaveAccessibleDescription(/histoires installées/);
+});
+
+it("relit le relevé à l'ouverture de la confirmation : library recréée entre-temps (#591)", async () => {
+  usageSubdirs = ["archives", "thumbs"];
+  await renderScreen();
+  // Une installation recrée `library/` après l'affichage de l'écran.
+  usageSubdirs = ["archives", "library", "thumbs"];
+  fireEvent.click(screen.getByRole("button", { name: "Vider le cache" }));
+
+  const dialog = await screen.findByRole("alertdialog", { name: "Vider le cache ?" });
+  expect(dialog).toHaveAccessibleDescription(
+    /histoires installées seront supprimées.*archives, library, thumbs/,
+  );
+});
+
+it("annonce la suppression des histoires si le relevé ne peut pas être relu (#591)", async () => {
+  usageSubdirs = ["archives", "thumbs"];
+  await renderScreen();
+  failures.cache_usage = { kind: "io", message: "lecteur absent" };
+  fireEvent.click(screen.getByRole("button", { name: "Vider le cache" }));
+
+  const dialog = await screen.findByRole("alertdialog", { name: "Vider le cache ?" });
+  expect(dialog).toHaveAccessibleDescription(
+    /^Les histoires installées seront supprimées.*Seuls les dossiers créés par Flam Launcher seront vidés dans « C:\\cache »/,
+  );
+  expect(dialog).not.toHaveAccessibleDescription(/archives, thumbs/);
+});
+
+it("n'affiche pas de liste vide « () » quand aucun sous-dossier n'est marqué (#591)", async () => {
+  usageSubdirs = [];
+  await renderScreen();
+  fireEvent.click(screen.getByRole("button", { name: "Vider le cache" }));
+
+  const dialog = await screen.findByRole("alertdialog", { name: "Vider le cache ?" });
+  expect(dialog).toHaveAccessibleDescription(
+    /^Aucun dossier créé par Flam Launcher n'est à vider dans « C:\\cache »\. Rien ne sera supprimé\.$/,
+  );
 });
 
 it("relit la liste des histoires installées après le vidage du cache (#570)", async () => {

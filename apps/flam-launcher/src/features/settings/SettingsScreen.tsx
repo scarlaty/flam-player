@@ -59,6 +59,9 @@ export function SettingsScreen() {
   // Part des MP3 de podcasts ; `null` : pas encore connue ou illisible (la ligne est alors omise).
   const [mp3Bytes, setMp3Bytes] = useState<number | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  // Relevé relu à l'ouverture de la confirmation ; `null` : relecture en échec, le texte annonce
+  // alors le pire (histoires installées supprimées), jamais moins que ce que le vidage fera (#591).
+  const [confirmUsage, setConfirmUsage] = useState<CacheUsage | null>(null);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [themeError, setThemeError] = useState(false);
   const [thumbFitError, setThumbFitError] = useState(false);
@@ -71,12 +74,14 @@ export function SettingsScreen() {
   // Enregistrement des chemins en cours (un second envoi du formulaire est ignoré).
   const pathsSavingRef = useRef(false);
 
-  const refreshUsage = useCallback(async () => {
+  /** Relit le relevé du cache ; rend le relevé lu, ou `null` si la lecture a échoué. */
+  const refreshUsage = useCallback(async (): Promise<CacheUsage | null> => {
     // Une réponse d'un relevé plus ancien n'écrase pas celle d'un relevé plus récent.
     const mine = ++usageRequestRef.current;
     const isLatest = () => mine === usageRequestRef.current;
     const [total, mp3] = await Promise.allSettled([getCacheUsage(), getMp3CacheUsage()]);
-    if (!isLatest()) return;
+    const read = total.status === "fulfilled" ? total.value : null;
+    if (!isLatest()) return read;
     if (total.status === "fulfilled") {
       setUsage(total.value);
       setUsageError(null);
@@ -85,6 +90,7 @@ export function SettingsScreen() {
     }
     // Information secondaire : un échec n'empêche ni l'affichage ni le vidage du cache.
     setMp3Bytes(mp3.status === "fulfilled" ? mp3.value.bytes : null);
+    return read;
   }, []);
 
   const applyView = useCallback(
@@ -195,6 +201,15 @@ export function SettingsScreen() {
     }
   }
 
+  /**
+   * Ouvre la confirmation sur un relevé relu à l'instant : celui de l'écran peut être périmé (une
+   * installation a pu recréer `library/` depuis, #591).
+   */
+  async function openClearConfirm() {
+    setConfirmUsage(await refreshUsage());
+    setConfirmClear(true);
+  }
+
   async function confirmClearCache() {
     setConfirmClear(false);
     try {
@@ -292,7 +307,7 @@ export function SettingsScreen() {
             variant="danger"
             icon="trash"
             disabled={!usage || usage.bytes === 0}
-            onClick={() => setConfirmClear(true)}
+            onClick={() => void openClearConfirm()}
           >
             {text.cache.clear}
           </Button>
@@ -357,13 +372,15 @@ export function SettingsScreen() {
         role="alertdialog"
         title={text.cache.confirmTitle}
         description={
-          usage
+          confirmUsage
             ? text.cache.confirmDescription(
-                usage.subdirs.join(", "),
-                usage.path,
-                formatBytes(usage.bytes),
+                confirmUsage.subdirs,
+                confirmUsage.path,
+                formatBytes(confirmUsage.bytes),
               )
-            : ""
+            : usage
+              ? text.cache.confirmDescriptionUnknown(usage.path)
+              : ""
         }
         initialFocus={cancelClearRef}
         footer={

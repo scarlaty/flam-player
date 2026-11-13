@@ -247,7 +247,8 @@ fn mark_existing(root: &Path, fault: Fault) -> io::Result<usize> {
 /// connaît la forme du contenu ; en cas de doute, rien n'est marqué (fuite, jamais de perte) :
 /// - `library` : index reconnu ([`crate::library::is_legacy_library`]) ou dossier vide ;
 /// - `podcasts` : chaque enfant est un dossier réel nommé comme un identifiant de source
-///   (règle de `podcast::source::source_dir`) ;
+///   (règle de `podcast::source::source_dir`) dont le contenu a la forme écrite par l'application
+///   (voir [`podcast_source_children_known`]) ;
 /// - `podcast-work` : chaque enfant est un dossier réel nommé par un identifiant de tâche
 ///   (`install::is_task_id`) ;
 /// - `play` : chaque enfant est un dossier réel nommé par l'empreinte de `player::Workspace`
@@ -284,8 +285,64 @@ fn proven_by_content(name: &str, dir: &Path) -> bool {
                 .file_type()
                 .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
                 && entry.file_name().to_str().is_some_and(child_shape)
+                && (name != crate::podcast::source::CACHE_SUBDIR
+                    || podcast_source_children_known(&entry.path()))
         })
     })
+}
+
+/// Tous les éléments du dossier d'une source podcast (`podcasts/<source_id>/`) ont une forme que
+/// l'application y écrit (vide compris), relevée dans le code des versions publiées bêta.2 à
+/// bêta.4 (aucun cache de podcast en bêta.1) et dans la version courante : flux `feed.xml` et
+/// métadonnées `meta.json` (`podcast::source`), leurs temporaires d'écriture atomique
+/// `.feed.xml.<pid>-<n>.tmp` et `.meta.json.<pid>-<n>.tmp` (`storage::write_atomic`), dossiers
+/// `mp3` (`podcast::mp3cache`) et `thumbs` (`podcast::thumb`, depuis la bêta.3). Un autre nom, un
+/// lien ou un type inattendu : refus (#591). Le contenu de `mp3/` et `thumbs/` n'est pas examiné.
+/// Exception : `desktop.ini`, `Thumbs.db` (casse indifférente) et `.DS_Store`, s'ils sont des
+/// fichiers ordinaires, sont ignorés ; ils ne prouvent rien (un dossier de source qui ne contient
+/// qu'eux est jugé comme un dossier vide).
+fn podcast_source_children_known(dir: &Path) -> bool {
+    const FILES: [&str; 2] = ["feed.xml", "meta.json"];
+    const DIRS: [&str; 2] = ["mp3", "thumbs"];
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.into_iter().all(|entry| {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let (Ok(kind), Some(name)) = (
+            entry.file_type(),
+            entry.file_name().to_str().map(str::to_owned),
+        ) else {
+            return false;
+        };
+        if kind.is_symlink() {
+            return false;
+        }
+        if kind.is_dir() {
+            return DIRS.contains(&name.as_str());
+        }
+        // Fichiers déposés par l'explorateur (Windows, macOS) : ignorés, sans valoir preuve.
+        if kind.is_file() && is_os_junk(&name) {
+            return true;
+        }
+        kind.is_file()
+            && (FILES.contains(&name.as_str())
+                || FILES.iter().any(|file| {
+                    name.strip_prefix('.')
+                        .and_then(|rest| rest.strip_prefix(file))
+                        .is_some_and(|rest| rest.starts_with('.') && rest.ends_with(".tmp"))
+                }))
+    })
+}
+
+/// Fichier que l'explorateur de Windows (`desktop.ini`, `Thumbs.db`, casse indifférente) ou le
+/// Finder de macOS (`.DS_Store`) dépose dans un dossier ouvert.
+fn is_os_junk(name: &str) -> bool {
+    name.eq_ignore_ascii_case("desktop.ini")
+        || name.eq_ignore_ascii_case("Thumbs.db")
+        || name == ".DS_Store"
 }
 
 /// Tous les éléments de `library/` ont une forme que l'application écrit à sa racine (vide
@@ -1285,6 +1342,80 @@ mod tests {
         assert!(!marked(&|l| fs::create_dir_all(l.join(".lock")).unwrap()));
     }
 
+    /// `podcasts/` : chaque dossier de source doit avoir la forme écrite par les versions publiées
+    /// (flux, métadonnées, leurs temporaires, `mp3/`, `thumbs/`) ; un `podcasts/` personnel aux
+    /// sous-dossiers bien nommés n'est plus marqué (#591).
+    #[test]
+    fn un_dossier_de_source_podcast_est_reconnu_a_sa_forme() {
+        let marked = |setup: &dyn Fn(&Path)| {
+            let config = tempfile::tempdir().unwrap();
+            let cache = tempfile::tempdir().unwrap();
+            let source = cache
+                .path()
+                .join("podcasts/4f1c2a9e-0b7d-4c3e-9a51-2d6e8f0a1b3c");
+            fs::create_dir_all(&source).unwrap();
+            setup(&source);
+            let roots = [cache.path().to_path_buf()];
+            migrate_markers(&config.path().join(MIGRATION_WITNESS), &roots).unwrap();
+            is_owned(&cache.path().join("podcasts"))
+        };
+        assert!(marked(&|s| {
+            write(&s.join("feed.xml"), 3);
+            write(&s.join("meta.json"), 3);
+            write(&s.join(".feed.xml.42-0.tmp"), 3);
+            write(&s.join(".meta.json.42-1.tmp"), 3);
+            write(&s.join("mp3/0123456789abcdef0123456789abcdef.mp3"), 3);
+            write(&s.join("thumbs/vignette.png"), 3);
+        }));
+        assert!(
+            marked(&|s| fs::create_dir_all(s.join("mp3")).unwrap()),
+            "mp3 seul"
+        );
+        assert!(marked(&|_| {}), "dossier de source vide");
+        // Un `podcasts/` personnel aux sous-dossiers bien nommés : refus.
+        assert!(!marked(&|s| write(&s.join("episode-12.mp3"), 3)));
+        assert!(!marked(&|s| {
+            write(&s.join("feed.xml"), 3);
+            fs::create_dir_all(s.join("2024")).unwrap();
+        }));
+        assert!(
+            !marked(&|s| fs::create_dir_all(s.join("feed.xml")).unwrap()),
+            "flux dossier"
+        );
+        assert!(!marked(&|s| write(&s.join("mp3"), 3)), "mp3 fichier");
+        assert!(!marked(&|s| write(&s.join(".feed.xmlx.tmp"), 3)));
+        // Fichiers de l'explorateur : ignorés à côté d'une forme valide, ou seuls (dossier vide).
+        for junk in [
+            "desktop.ini",
+            "DESKTOP.INI",
+            "Thumbs.db",
+            "thumbs.db",
+            ".DS_Store",
+        ] {
+            assert!(
+                marked(&|s| {
+                    write(&s.join("feed.xml"), 3);
+                    write(&s.join(junk), 3);
+                }),
+                "{junk}"
+            );
+            assert!(marked(&|s| write(&s.join(junk), 3)), "{junk} seul");
+        }
+        // Seulement en fichier ordinaire, et seulement ces noms-là.
+        assert!(
+            !marked(&|s| {
+                write(&s.join("feed.xml"), 3);
+                fs::create_dir_all(s.join("desktop.ini")).unwrap();
+            }),
+            "desktop.ini dossier"
+        );
+        assert!(!marked(&|s| {
+            write(&s.join("feed.xml"), 3);
+            write(&s.join("notes.txt"), 3);
+        }));
+        assert!(!marked(&|s| write(&s.join(".ds_store"), 3)), "casse exacte");
+    }
+
     #[test]
     fn un_seul_enfant_inconnu_empeche_le_marquage() {
         for (name, good, bad) in [
@@ -1325,6 +1456,34 @@ mod tests {
             usage_report(dir.path()).unwrap(),
             (4, vec!["archives".to_string(), "library".to_string()])
         );
+    }
+
+    /// `podcasts/` : un lien ou une jonction dans un dossier de source (`mp3`, `thumbs`, ou un nom
+    /// de fichier de l'explorateur) empêche le marquage (#591).
+    #[cfg(windows)]
+    #[test]
+    fn une_jonction_dans_un_dossier_de_source_podcast_empeche_le_marquage() {
+        let outside = tempfile::tempdir().unwrap();
+        for name in ["mp3", "thumbs", "desktop.ini"] {
+            let config = tempfile::tempdir().unwrap();
+            let cache = tempfile::tempdir().unwrap();
+            // Séparateurs Windows : `mklink` lirait `/src` comme une option.
+            let source = cache.path().join("podcasts").join("src");
+            write(&source.join("feed.xml"), 3);
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(source.join(name))
+                .arg(outside.path())
+                .output()
+                .unwrap();
+            assert!(status.status.success(), "mklink /J a échoué");
+            let roots = [cache.path().to_path_buf()];
+            migrate_markers(&config.path().join(MIGRATION_WITNESS), &roots).unwrap();
+            assert!(
+                !is_owned(&cache.path().join("podcasts")),
+                "{name} en jonction"
+            );
+        }
     }
 
     #[cfg(windows)]

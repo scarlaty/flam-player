@@ -67,8 +67,38 @@ impl StartupGate {
         (gate.clone(), GateOpener(gate))
     }
 
-    /// Attend l'ouverture de la porte.
+    /// Attend l'ouverture de la porte. Porte fermée et appel depuis un fil de travail du runtime
+    /// tokio multi-fils (commande `async` de Tauri, tâche d'installation) : l'attente est
+    /// déclarée bloquante (`block_in_place`), le runtime confie les autres tâches de ce fil à un
+    /// autre fil. Sans cela, quelques commandes en attente pendant une migration lente gelaient
+    /// tout le runtime asynchrone, y compris les commandes qui ne lisent pas le cache (#591).
+    /// L'appelant attend toujours la fin de la migration : seule la façon d'attendre change.
+    ///
+    /// À ne pas appeler depuis un `LocalSet` (par exemple `LocalSet::block_on` sur un runtime
+    /// multi-fils) : porte fermée, `block_in_place` y panique. Dans un runtime à un seul fil, même
+    /// imbriqué dans un contexte multi-fils, le runtime courant est celui à un seul fil : attente
+    /// simple, sans `block_in_place`.
     pub fn wait(&self) {
+        if self.is_open() {
+            return;
+        }
+        let multi_thread = tokio::runtime::Handle::try_current()
+            .is_ok_and(|rt| rt.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+        if multi_thread {
+            // Hors d'un fil de travail (pool bloquant, `block_on`), `block_in_place` exécute
+            // simplement l'attente.
+            tokio::task::block_in_place(|| self.wait_blocking());
+        } else {
+            // Hors runtime, ou runtime à un seul fil (tests) : attente simple, comme avant.
+            self.wait_blocking();
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        *self.0 .0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn wait_blocking(&self) {
         let (open, changed) = &*self.0;
         let mut open = open.lock().unwrap_or_else(PoisonError::into_inner);
         while !*open {
@@ -113,7 +143,8 @@ impl ConfigState {
     }
 
     /// Attend la porte de démarrage, puis prend le verrou (un verrou empoisonné reste
-    /// utilisable : les fichiers sont atomiques).
+    /// utilisable : les fichiers sont atomiques). Comme [`StartupGate::wait`] : à ne pas appeler
+    /// depuis un `LocalSet` (`block_in_place` y panique tant que la porte est fermée).
     pub fn guard(&self) -> MutexGuard<'_, ()> {
         self.gate.wait();
         self.lock.lock().unwrap_or_else(PoisonError::into_inner)
@@ -531,6 +562,40 @@ mod tests {
         // Ouverte une fois pour toutes ; un état ordinaire n'attend jamais.
         drop(state.guard());
         drop(ConfigState::new(PathBuf::from("config")).guard());
+    }
+
+    /// Une commande `async` qui attend la porte fermée ne gèle pas le runtime (#591) : avec un
+    /// seul fil de travail occupé par l'attente, une autre tâche est quand même servie, et
+    /// l'attente ne rend la main qu'à l'ouverture de la porte. Sans `block_in_place`, l'autre
+    /// tâche n'avance qu'après l'ouverture.
+    #[test]
+    fn la_porte_fermee_ne_gele_pas_le_runtime_asynchrone() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let (gate, opener) = StartupGate::closed();
+        let state = Arc::new(ConfigState::with_gate(PathBuf::from("config"), gate));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let waiter = {
+            let state = Arc::clone(&state);
+            rt.spawn(async move {
+                entered_tx.send(()).unwrap();
+                drop(state.guard());
+            })
+        };
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("tâche en attente démarrée");
+        // Canal synchrone : le délai ne dépend pas du pilote de temps du runtime.
+        let (served_tx, served_rx) = std::sync::mpsc::channel();
+        rt.spawn(async move { served_tx.send(()).unwrap() });
+        let served = served_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        let still_waiting = !waiter.is_finished();
+        drop(opener);
+        rt.block_on(waiter).unwrap();
+        assert!(served, "runtime gelé par l'attente de la porte");
+        assert!(still_waiting, "verrou pris avant l'ouverture de la porte");
     }
 
     #[derive(Debug, PartialEq, Deserialize, Serialize)]
