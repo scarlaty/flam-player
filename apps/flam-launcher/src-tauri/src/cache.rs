@@ -381,10 +381,7 @@ const STALE_TMP_AGE: Duration = Duration::from_secs(60);
 /// s'ils sont vides ou ne contiennent que le marqueur (`remove_dir` échoue sinon), et modifiés il
 /// y a au moins [`STALE_TMP_AGE`] (date illisible ou dans le futur : gardé).
 pub fn remove_stale_tmp(root: &Path) {
-    remove_stale_tmp_at(root, SystemTime::now());
-}
-
-fn remove_stale_tmp_at(root: &Path, now: SystemTime) {
+    let now = SystemTime::now();
     let Ok(entries) = fs::read_dir(root) else {
         return;
     };
