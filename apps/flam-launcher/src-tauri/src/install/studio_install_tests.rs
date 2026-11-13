@@ -483,6 +483,52 @@ fn noms_des_sorties_preparees() {
     );
 }
 
+/// Restes d'installation dans `staging` : un dossier temporaire STUdio et une sortie préparée
+/// de `OTHER_TASK`.
+fn staging_leftovers(staging: &Path) -> [PathBuf; 2] {
+    let hex = "0123456789abcdef0123456789abcdef";
+    let tmp = staging.join(format!(".{OTHER_TASK}.lunii.pk.{hex}.tmp"));
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("pack.part"), b"partiel").unwrap();
+    let staged = staging.join(format!("{OTHER_TASK}.plain.pk"));
+    std::fs::write(&staged, b"partiel").unwrap();
+    [tmp, staged]
+}
+
+/// #591 : `library/` sans marqueur de l'application (homonyme étranger) : `.staging/` n'est ni
+/// lu ni balayé.
+#[test]
+fn le_balayage_de_staging_ne_touche_pas_une_bibliotheque_sans_marqueur() {
+    let dir = tempfile::tempdir().unwrap();
+    let staging = dir.path().join("library").join(crate::library::STAGING_DIR);
+    std::fs::create_dir_all(&staging).unwrap();
+    let leftovers = staging_leftovers(&staging);
+    let read = std::cell::Cell::new(false);
+    sweep_staging_in(&staging, &|names| {
+        read.set(true);
+        names
+    });
+    assert!(!read.get(), "contenu jamais relevé");
+    for path in &leftovers {
+        assert!(path.exists(), "{} supprimé", path.display());
+    }
+}
+
+/// #591 : `library/` marqué : les restes orphelins sont balayés comme avant.
+#[test]
+fn le_balayage_de_staging_supprime_les_orphelins_d_une_bibliotheque_marquee() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = crate::cache::ensure_subdir(dir.path(), "library").unwrap();
+    let staging = library.join(crate::library::STAGING_DIR);
+    std::fs::create_dir_all(&staging).unwrap();
+    let leftovers = staging_leftovers(&staging);
+    sweep_staging_in(&staging, &|names| names);
+    for path in &leftovers {
+        assert!(!path.exists(), "{} gardé", path.display());
+    }
+    assert!(crate::cache::is_owned(&library), "marqueur gardé");
+}
+
 /// Message exact du refus d'un pack qui ne correspond pas à l'entrée analysée (#556).
 #[test]
 fn refus_d_un_pack_different_de_l_analyse() {

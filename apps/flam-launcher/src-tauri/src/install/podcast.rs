@@ -448,8 +448,14 @@ pub fn archive_path(cache_root: &Path, id: &str) -> AppResult<PathBuf> {
 /// verrou. Le dossier d'une tâche n'est créé qu'après son insertion dans la liste : un nom lu
 /// avant le relevé appartient soit à une tâche déjà listée (gardé), soit à aucune (une tâche
 /// créée ensuite a un identifiant neuf).
+///
+/// Seul un `podcast-work/` qui porte le marqueur de l'application est balayé (#591) : un homonyme
+/// étranger (refusé par la migration, donc non marqué) n'est ni lu ni vidé.
 pub fn sweep_workdirs(cache_root: &Path, orphans: &dyn Fn(Vec<String>) -> Vec<String>) {
     let work = cache_root.join(WORK_DIR);
+    if !crate::cache::is_owned(&work) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(&work) else {
         return;
     };

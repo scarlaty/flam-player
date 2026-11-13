@@ -1984,7 +1984,9 @@ async fn reprise_ecarte_les_doublons_d_uuid() {
     );
     let ctx = Ctx::with_dir(dir, None, GRACE);
     // Reste d'une sortie préparée d'une tâche qui sera écartée : balayé (tâche inconnue).
-    let staging = ctx.cache().join("library").join(".staging");
+    // `library/` marqué, comme le crée le résolveur réel (`cache::ensure_subdirs`, #591).
+    let library = crate::cache::ensure_subdir(&ctx.cache(), "library").unwrap();
+    let staging = library.join(".staging");
     std::fs::create_dir_all(&staging).unwrap();
     let leftover = staging.join(format!("{DUP_A}.plain.pk"));
     std::fs::write(&leftover, b"reste").unwrap();
