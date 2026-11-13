@@ -28,9 +28,10 @@ end)
 
 test("img_src.load avec un chemin vide ne plante pas (#575)", function()
     -- chemin vide : path[1] ne doit pas etre lu au-dela du NUL final
+    -- (en --strict, un fichier absent est une erreur Lua : acceptee aussi)
     local ok, dsc = pcall(lv.img_src.load, "")
-    expect_true(ok, "pas d'erreur Lua")
-    expect_nil(dsc, "rien a decoder")
+    if ok then expect_nil(dsc, "rien a decoder") end
+    expect_true(true)
 end)
 
 -- Note: img_src.load with a real file can't be tested without a .lif file

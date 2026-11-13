@@ -417,10 +417,15 @@ static void test_dry_run_refusals(void)
     free(after);
     free(before);
 
+    /* Sans extraction existante : sans fin normale, extraite mais incomplete */
+    int complete = 1;
+    CHECK(pk_extract_all_ex(pk, path_of("d/neuf"), &complete) == 1 && complete == 0);
+    CHECK(pk_extract_if_stale(pk, path_of("d/neuf2")) == 1);
+    CHECK(exists(path_of("d/neuf2/.extracting")) && !exists(path_of("d/neuf2/.extracted")));
+
     /* Signature inconnue apres la derniere entree (archive corrompue) : ni
        fin normale ni extraction marquee complete, avec ou sans extraction
        existante (#575) */
-    int complete = 1;
     zent_t v7[] = { { "main.lua", "-- v7 corrompu", 0, 0 } };
     make_zip(pk, v7, 1, 1);
     {
@@ -428,7 +433,7 @@ static void test_dry_run_refusals(void)
         CHECK(pf != NULL);
         if (pf) {
             fseek(pf, -46, SEEK_END);
-            fwrite("", 1, 4, pf);
+            fwrite("\x01\x02\x03\x04", 1, 4, pf);
             fclose(pf);
         }
     }
@@ -439,12 +444,6 @@ static void test_dry_run_refusals(void)
     CHECK(pk_extract_if_stale(pk, path_of("d/corrompu2")) == 1);
     CHECK(exists(path_of("d/corrompu2/.extracting")) && !exists(path_of("d/corrompu2/.extracted")));
     CHECK(pk_extract_state(pk, path_of("d/corrompu2")) == PK_EXTRACT_STALE);
-
-    /* Sans extraction existante : sans fin normale, extraite mais incomplete */
-    complete = 1;
-    CHECK(pk_extract_all_ex(pk, path_of("d/neuf"), &complete) == 1 && complete == 0);
-    CHECK(pk_extract_if_stale(pk, path_of("d/neuf2")) == 1);
-    CHECK(exists(path_of("d/neuf2/.extracting")) && !exists(path_of("d/neuf2/.extracted")));
 }
 
 #ifndef _WIN32

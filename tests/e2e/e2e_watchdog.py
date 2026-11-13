@@ -10,7 +10,12 @@ flam-player est lance sur un script .lua (pilotes SDL dummy, --stdin-control,
      repond a "quit" (avant la correction : la boucle repartait apres chaque
      erreur avalee, le player ne rendait jamais la main) ;
   2. script legitime qui utilise pcall (erreur attrapee) : termine sans
-     declenchement du watchdog.
+     declenchement du watchdog ;
+  3. boucles infinies reparties sur plusieurs coroutines (le hook est propre a
+     chaque lua_State) : A) coroutine bloquee puis boucle pcall dans l'etat
+     principal ; B) gestionnaire d'erreur de xpcall qui est une coroutine en
+     boucle pcall ; C) coroutines neuves creees en boucle sous pcall apres le
+     declenchement. Chaque scenario doit etre interrompu et le player quitter.
 Code de sortie : 0 OK, 1 echec, 77 prerequis absents (flam-player).
 """
 import argparse
@@ -24,6 +29,25 @@ import time
 SKIP = 77
 
 LOOP_IN_PCALL = "while true do pcall(function() while true do end end) end\n"
+def _lua(*lines):
+    return "\n".join(lines) + "\n"
+
+
+# A : le declenchement a lieu dans la coroutine, la boucle pcall est dans l'etat principal
+SCEN_A = _lua("pcall(coroutine.wrap(function() while true do end end))",
+              "while true do pcall(function() while true do end end) end")
+# B : le gestionnaire d'erreur est une coroutine qui boucle sous pcall
+SCEN_B = _lua("local B = coroutine.wrap(function()",
+              "  while true do pcall(function() while true do end end) end",
+              "end)",
+              "xpcall(function() while true do end end, B)",
+              "while true do end")
+# C : apres le declenchement, des coroutines neuves sont creees en boucle sous pcall
+SCEN_C = _lua("local function spawn()",
+              "  return coroutine.wrap(function() while true do pcall(function() while true do end end) end end)",
+              "end",
+              "pcall(spawn())",
+              "while true do pcall(function() pcall(spawn()) end) end")
 LEGIT = ('local ok, err = pcall(error, "attendue")\n'
          'local ok2 = pcall(function() return 1 end)\n'
          'print("LEGIT_DONE", ok, ok2)\n')
@@ -101,6 +125,15 @@ def main():
         check("watchdog" in out, "boucle dans pcall : watchdog declenche", out)
         check(rc == 0, "boucle dans pcall : le player rend la main et quitte (code %r)" % rc, out)
         check("Erreur Lua" in out, "boucle dans pcall : le script est interrompu", out)
+
+        for tag, src in (("A", SCEN_A), ("B", SCEN_B), ("C", SCEN_C)):
+            sc = os.path.join(tmp, "coro_%s.lua" % tag)
+            with open(sc, "w", newline="") as f:
+                f.write(src)
+            out, rc = run(exe, sc, tmp, "Erreur Lua")
+            check("Erreur Lua" in out and "watchdog" in out,
+                  "coroutines %s : script interrompu par le watchdog" % tag, out)
+            check(rc == 0, "coroutines %s : le player quitte (code %r)" % (tag, rc), out)
 
         s2 = os.path.join(tmp, "legit.lua")
         with open(s2, "w", newline="") as f:
