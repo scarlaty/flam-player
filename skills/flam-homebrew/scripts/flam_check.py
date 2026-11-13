@@ -13,7 +13,10 @@ Controles (ERR = bloque le device a coup sur ou presque, WARN = a verifier) :
             top-level de main.lua, setup() defini, Global non local, modules
             Global.load_module(...) et require(...) resolus dans script/,
             module : create/clean presents, bibliotheques absentes du device
-            (io, os, debug), audio.seek, texte hors police
+            (io, os, debug), audio.seek, texte hors police, source d'image
+            passee a lv.img.set_src sans reference Lua durable (heuristique,
+            piege 25 : appel direct a Global.load_image, ou local de fonction
+            jamais rangee dans une table)
   assets    en-tetes LIF (magic, 1..2047 px, canal, fin), portrait > 64 px,
             images/audios references en litteral presents, .mp3map coherents
 """
@@ -240,6 +243,64 @@ def check_mp3map(mm, mp3):
     return None
 
 
+# Piege 25 (suspecte) : d'apres le runtime, lv.img.set_src ne retient pas la source
+# sur device ; seule la reference Lua la garde en vie. Heuristique, sans portee
+# lexicale : on prefere rater un cas que d'avertir a tort.
+_LOAD_LOCAL = re.compile(r"\blocal\s+([A-Za-z_]\w*)((?:\s*,\s*[A-Za-z_]\w*)*)\s*=\s*"
+                         r"(pcall\s*\(\s*)?Global\s*\.\s*load_image\b")
+_SET_SRC_VAR = re.compile(r"\blv\s*\.\s*img\s*\.\s*set_src\s*\(\s*[^,()]+,\s*([A-Za-z_]\w*)\s*\)")
+_SET_SRC_CALL = re.compile(r"\blv\s*\.\s*img\s*\.\s*set_src\s*\(\s*[^,()]+,\s*"
+                           r"(Global\s*\.\s*load_image|pcall\s*\(\s*Global\s*\.\s*load_image)\b")
+
+
+def img_source_warnings(name, code):
+    """Avertissements du piege 25 pour un fichier Lua lexe (commentaires retires).
+
+    - set_src(obj, Global.load_image(...)) : source jamais referencee, toujours signale ;
+    - local d = Global.load_image(...) (ou local ok, d = pcall(Global.load_image, ...))
+      dans une fonction, puis set_src(obj, d), sans que d soit range nulle part :
+      champ ou index (t.x = d, t[k] = d), constructeur ({d}, {src = d}),
+      table.insert(t, d). Une local de niveau module (profondeur 0) est une
+      upvalue des fonctions du module : non signalee. Un avertissement par variable.
+    """
+    out = []
+    depth = depth_at(code)
+    for m in _SET_SRC_CALL.finditer(code):
+        out.append("%s:%d : (heuristique) image passee a lv.img.set_src sans reference Lua : "
+                   "d'apres le runtime, set_src ne retient pas la source sur device (pixels "
+                   "liberables par le GC) -> ranger la source dans une table du module "
+                   "(device-pitfalls.md, piege 25)" % (name, line_of(code, m.start())))
+    loaded = set()
+    for m in _LOAD_LOCAL.finditer(code):
+        if depth(m.start()) == 0:
+            continue
+        names = [m.group(1)] + re.findall(r"[A-Za-z_]\w*", m.group(2))
+        if m.group(3):                      # pcall : 1er resultat = statut
+            names = names[1:2]
+        else:
+            names = names[:1]
+        loaded.update(names)
+    seen = set()
+    for m in _SET_SRC_VAR.finditer(code):
+        v = m.group(1)
+        if v not in loaded or v in seen:
+            continue
+        ev = re.escape(v)
+        stored = (re.search(r"[.\]]\s*\w*\s*=\s*%s\b(?!\s*[.\[:(])" % ev, code)
+                  or re.search(r"[{,;]\s*(?:[A-Za-z_]\w*\s*=\s*|\[[^\]]*\]\s*=\s*)?%s\s*[,;}]" % ev, code)
+                  or re.search(r"\{\s*%s\s*\}" % ev, code)
+                  or re.search(r"table\s*\.\s*insert\s*\([^()]*,\s*%s\s*\)" % ev, code))
+        if stored:
+            continue
+        seen.add(v)
+        out.append("%s:%d : (heuristique) source d'image '%s' gardee seulement par une variable "
+                   "locale : d'apres le runtime, lv.img.set_src ne la retient pas sur device "
+                   "(pixels liberables par le GC) -> la ranger dans une table du module tant "
+                   "qu'elle est affichee (device-pitfalls.md, piege 25)"
+                   % (name, line_of(code, m.start()), v))
+    return out
+
+
 # ---------------------------------------------------------------------------
 def check(pk_path):
     errs, warns, oks = [], [], []
@@ -398,20 +459,7 @@ def check(pk_path):
         if re.search(r"\baudio\s*\.\s*seek\s*\(", code):
             warns.append("%s : audio.seek pendant la lecture gele le device -> "
                          "audio.pause() ; audio.seek(s) ; audio.play()" % n)
-        # piege 25 : source d'image tenue par une seule variable locale. Sur device,
-        # lv.img.set_src ne retient pas la source : a la sortie de la fonction, le
-        # GC peut liberer les pixels encore affiches. Heuristique : local = load_image
-        # passee a set_src et jamais rangee dans un champ de table.
-        loaded = set(re.findall(r"\blocal\s+([A-Za-z_]\w*)(?:\s*,\s*[A-Za-z_]\w*)*\s*=\s*"
-                                r"Global\s*\.\s*load_image\s*\(", code))
-        for m in re.finditer(r"\blv\s*\.\s*img\s*\.\s*set_src\s*\(\s*[^,()]+,\s*([A-Za-z_]\w*)\s*\)", code):
-            v = m.group(1)
-            if v in loaded and not re.search(
-                    r"([.\]]\s*[A-Za-z_]?\w*\s*=|table\s*\.\s*insert\s*\([^,()]+,)\s*%s\b" % re.escape(v), code):
-                warns.append("%s:%d : source d'image '%s' gardee par une variable locale : "
-                             "lv.img.set_src ne la retient pas sur device (pixels liberes par "
-                             "le GC) -> la ranger dans une table du module tant qu'elle est "
-                             "affichee (device-pitfalls.md, piege 25)" % (n, line_of(code, m.start()), v))
+        warns.extend(img_source_warnings(n, code))
         for ln, s in lits:
             bad_chars = sorted(set(c for c in s if ord(c) > 0xFF or 0x7F <= ord(c) < 0xA0))
             if bad_chars:
