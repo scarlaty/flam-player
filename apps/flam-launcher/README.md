@@ -460,7 +460,7 @@ apps/flam-launcher/
 
 ### Modules Rust
 
-Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `library_source` (empreinte de la source dossier d'une histoire installée, #288), `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status` ; titres déchiffrés et vignettes des histoires #276, `device::details` ; transfert sûr #229, `device::transfer`, commandes `device_send_story`, `device_cancel_transfer` et `device_recover_transfers` (reprise au branchement), événement `device://transfer-progress` ; retrait #231, `device::remove` ; ordre des histoires #233, `device::reorder`, commande `device_reorder_stories` ; éjection #232, `device::eject` ; verrou des opérations, `device::lock`), `podcast` (`rss`).
+Présents : `app` (commandes générales), `error`, `storage`, `settings`, `cache`, `sources`, `story`, `catalog`, `folder`, `lif`, `thumbnail`, `install`, `library`, `library_thumb`, `library_source` (empreinte de la source dossier d'une histoire installée, #288), `compat`, `player`, `device` (Flam branchée en USB : détection #225, `device::detect` ; index #226, `device::index` ; chiffrement et préparation #228, `device::crypto`, `device::prepare` ; état et histoires en lecture seule pour l'écran « Ma Flam » #227, `device::status` ; titres déchiffrés et vignettes des histoires #276, `device::details` ; transfert sûr #229, `device::transfer`, commandes `device_send_story`, `device_cancel_transfer` et `device_recover_transfers` (reprise au branchement), événement `device://transfer-progress` ; retrait de « Mes histoires » après l'envoi #609, `device::after_send`, commande `library_remove_sent` ; retrait #231, `device::remove` ; ordre des histoires #233, `device::reorder`, commande `device_reorder_stories` ; éjection #232, `device::eject` ; verrou des opérations, `device::lock`), `podcast` (`rss`).
 
 ### Commandes Tauri
 
@@ -499,6 +499,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `install_list`                |                                  | `InstallTask[]`                                            | `install`            |
 | `library_list`                |                                  | `LibraryEntry[]`                                           | `library`            |
 | `library_remove`              | `uuid`, `purge_saves?`           | rien                                                       | `library`            |
+| `library_remove_sent`         | `uuid`                           | rien (voir « Retrait du PC après l'envoi »)                | `device::after_send` |
 | `library_thumbnail`           | `uuid`                           | URL `data:` (`not_found` sans vignette)                    | `library_thumb`      |
 | `library_source_status`       |                                  | `SourceCheck[]` (`{ uuid, state }`)                        | `library_source`     |
 | `player_launch`               | `uuid`                           | `PlayerSession`                                            | `player`             |
@@ -570,6 +571,32 @@ bibliothèque sont retirés de la file (`libraryUuids`, #299) ;
 l'avertissement « fonction expérimentale, non officielle » est mémorisé dans le stockage local
 (`preferences.ts`). Le firmware n'étant pas exposé par `device_status`, « non pris en charge »
 n'est connu qu'après un refus du backend.
+
+**Retrait du PC après l'envoi** (#609, `device::after_send`) : une histoire envoyée garde sa copie
+dans « Mes histoires » (dossier de cache). Après un envoi **réussi**, le rapport de
+`device_send_story` porte `library_copy` : `kept` (la ligne de la file propose « Retirer du PC »),
+`removed` (réglage `remove_after_send` actif : retirée aussitôt), `remove_failed` (`message` :
+retrait impossible, l'envoi reste réussi, le bouton est reproposé), ou rien (aucune proposition).
+Le texte dit que l'histoire reste sur la Flam et que la renvoyer plus tard demandera de la
+réinstaller ; une notification annonce le retrait ou son échec.
+
+- Succès = `send_from_library` rend `Ok` (copie, relecture de chaque fichier sur la Flam avec
+  taille et SHA-256, renommage en `str/<uuid>/`, index à jour) **et** la relecture carrier n'est
+  pas illisible (`carrier_readback` différent de `false`). Échec, annulation, Flam débranchée,
+  « déjà sur la Flam » : rien n'est retiré ni proposé.
+- Le retrait automatique a lieu dans `device_send_story`, verrou de la Flam toujours tenu (aucun
+  autre envoi ne s'intercale) ; « Retirer du PC » (`library_remove_sent`) prend ce verrou (refus
+  `busy` pendant un envoi). Les deux passent par le chemin de « Supprimer » (`remove_story` :
+  créneau du player, verrou de la bibliothèque, purge de la copie de travail), **sans** purger la
+  progression de l'enfant.
+- Même génération : l'empreinte de l'entrée (fichier, taille, `installed_at`, taille et date du
+  fichier) est prise avant la préparation, revérifiée après l'envoi, puis sous le verrou de la
+  bibliothèque juste avant le retrait (`Library::remove_checked`). Une histoire réinstallée ou mise
+  à jour entre-temps n'est pas retirée (`validation`). Refus aussi pendant sa lecture
+  (`player_busy`) ou son installation (`validation`).
+- `library_remove_sent` ne retire que ce qu'un envoi réussi de la session a enregistré (registre
+  en mémoire) ; sinon `not_found`. Jamais le fichier source de l'utilisateur ni l'archive d'origine :
+  seul le fichier de `library/` de l'entrée envoyée.
 
 **Ordre des histoires** (#233, `device::reorder`, `DeviceStoryOrder.tsx`) : « Modifier l'ordre »
 (proposé quand `list` est valide, `list.hidden` valide ou absent, la liste non tronquée et au
@@ -1197,9 +1224,16 @@ thumb, source_stamp }`.
   "default_catalog_url": "https://gist.githubusercontent.com/DantSu/49ed776755f3a01c995e78e3fd1cb79f/raw/telmi-interactive.json",
   "theme": "system",
   "max_downloads": 2,
-  "thumb_fit": "flou"
+  "thumb_fit": "flou",
+  "remove_after_send": false
 }
 ```
+
+`remove_after_send` (#609, `false` par défaut) : retirer l'histoire de « Mes histoires » après son
+envoi réussi sur la Flam (voir « Retrait du PC après l'envoi »). Absent d'un fichier ancien :
+`false`, sans migration de schéma (`schema_version` reste 1) ; une valeur qui n'est pas un booléen
+est lue `false`. La bêta.4 (`Settings` sans `deny_unknown_fields`) ignore ce champ à la lecture et
+l'efface en réécrivant le fichier : après un retour à la bêta.4, le réglage revient à désactivé.
 
 `thumb_fit` (`flou`, `rogner` ou `bandes`, `flou` par défaut) est le remplissage des vignettes
 104×136 des histoires converties (#279) : le launcher le transmet au convertisseur par

@@ -785,3 +785,35 @@ it("relit la préférence enregistrée", async () => {
   ).toBeChecked();
   window.localStorage.clear();
 });
+
+it("retirer de Mes histoires après l'envoi : décoché par défaut, enregistré dans settings.json (#609)", async () => {
+  await renderScreen();
+  const box = screen.getByRole("checkbox", {
+    name: "Retirer de Mes histoires après l'envoi sur la Flam",
+  });
+  // Absent d'un ancien settings.json : désactivé.
+  expect(box).not.toBeChecked();
+  expect(box).toHaveAccessibleDescription(/L'histoire reste sur la Flam/);
+  expect(box).toHaveAccessibleDescription(/il faudra la réinstaller/);
+
+  fireEvent.click(box);
+  await waitFor(() => expect(callsOf("settings_set")).toHaveLength(1));
+  expect(callsOf("settings_set")[0]?.args.settings.remove_after_send).toBe(true);
+  await waitFor(() => expect(view.settings.remove_after_send).toBe(true));
+  expect(box).toBeChecked();
+
+  fireEvent.click(box);
+  await waitFor(() => expect(view.settings.remove_after_send).toBe(false));
+  expect(box).not.toBeChecked();
+});
+
+it("retirer après l'envoi : un échec d'enregistrement est signalé et la case revient (#609)", async () => {
+  failures.settings_set = { kind: "io", message: "disque plein" };
+  await renderScreen();
+  const box = screen.getByRole("checkbox", {
+    name: "Retirer de Mes histoires après l'envoi sur la Flam",
+  });
+  fireEvent.click(box);
+  expect(await screen.findByText("Ce réglage n'a pas pu être enregistré.")).toBeVisible();
+  await waitFor(() => expect(box).not.toBeChecked());
+});

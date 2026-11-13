@@ -30,7 +30,18 @@ export interface QueueItem {
   reloadGen?: number;
   /** Envoi réussi dont la relecture de la Flam n'est pas encore revenue : bloque un renvoi. */
   awaitingList?: boolean;
+  /**
+   * Envoi réussi : copie de l'histoire dans « Mes histoires » (#609). `kept` : « Retirer du PC »
+   * proposé ; `removing` : retrait en cours ; `removed` : retirée (l'histoire reste sur la Flam) ;
+   * `failed` : retrait impossible (`pcCopyError`), « Retirer du PC » reproposé. Absent : rien
+   * n'est proposé.
+   */
+  pcCopy?: PcCopyState;
+  /** Message du retrait impossible (`pcCopy === "failed"`). */
+  pcCopyError?: string;
 }
+
+export type PcCopyState = "kept" | "removing" | "removed" | "failed";
 
 export interface SendRequest {
   uuid: string;
@@ -104,6 +115,11 @@ export interface DeviceApi {
   removeFromQueue: (uuid: string) => void;
   /** Ferme la liste terminée de la file. */
   dismissQueue: () => void;
+  /**
+   * « Retirer du PC » (#609) : retire de « Mes histoires » une histoire envoyée avec succès
+   * (`pcCopy` `kept` ou `failed`) ; elle reste sur la Flam. Le résultat est porté par `pcCopy`.
+   */
+  removeFromPc: (uuid: string) => Promise<void>;
   /** Identité de la Flam détectée (volume et libellé), `null` sans Flam. */
   deviceKey: string | null;
   removeFromDevice: (

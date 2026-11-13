@@ -95,6 +95,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::State;
 
+use super::after_send::{self, SENT};
 use super::carrier::{
     self, CarrierChoice, CarrierError, CarrierRequest, CarrierStore, EnteredBt, EnteredPreview,
     Resolved,
@@ -115,7 +116,9 @@ use super::lock::{Busy, OpGuard, Operation, DEVICE_LOCK};
 use super::prepare::{self, Limits, PrepareError, PreparedStory};
 use super::prepare_lunii;
 use crate::catalog::{blocking, CatalogService};
-use crate::library::{Library, StoryFormat};
+use crate::install::InstallService;
+use crate::library::StoryFormat;
+use crate::player::{PlayerService, SAVES_ROOT};
 use crate::settings::{Environment, SettingsStore};
 use crate::storage::{retry_transient, ConfigState};
 use crate::{AppError, AppResult};
@@ -188,6 +191,9 @@ pub struct TransferReport {
     /// (« entrée : erreur »), par exemple un dossier verrouillé : l'envoi a réussi, mais une
     /// autre histoire peut rester incomplète jusqu'à la prochaine reprise. Vide d'ordinaire.
     pub recovery_failures: Vec<String>,
+    /// Copie de l'histoire dans « Mes histoires » après l'envoi (#609) : rempli par
+    /// [`device_send_story`] seulement ([`after_send::send_then_settle`]), `None` sinon.
+    pub library_copy: Option<after_send::LibraryCopy>,
 }
 
 /// Bilan d'une reprise.
@@ -818,6 +824,7 @@ pub(crate) fn send_with(
         carrier_readback: None,
         carrier_stored: None,
         recovery_failures,
+        library_copy: None,
     })
 }
 
@@ -1330,26 +1337,38 @@ struct ProgressEvent<'a> {
 /// `replace` : UUID de l'histoire de la Flam à remplacer (refusé s'il ne désigne pas celle de
 /// l'archive ; absent : pas de remplacement). `carrier` : source des clés pour une Flam en
 /// firmware 1.x (mode carrier, consentement préalable obligatoire) ; `remember` : conserver le couple sur ce PC, chiffré (faux par défaut).
+///
+/// Après un envoi réussi (#609), verrou de la Flam toujours tenu : l'histoire est retirée de
+/// « Mes histoires » si le réglage `remove_after_send` est actif, sinon « Retirer du PC » devient
+/// possible ([`after_send`], champ `library_copy` du rapport). Un retrait en échec ne fait pas
+/// échouer l'envoi.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn device_send_story(
     app: tauri::AppHandle,
     config: State<'_, ConfigState>,
     catalog: State<'_, CatalogService>,
+    installs: State<'_, InstallService>,
+    player: State<'_, PlayerService>,
     root: String,
     uuid: String,
     replace: Option<String>,
     carrier: Option<CarrierChoice>,
     remember: Option<bool>,
 ) -> AppResult<TransferReport> {
-    let (cache_root, consent) = {
+    let (cache_root, consent, remove_after_send) = {
         let _guard = config.guard();
         let store = SettingsStore::new(&config.dir);
+        let cache_root = store.resolved_cache_dir(&Environment::current())?;
+        let settings = store.load()?;
         (
-            store.resolved_cache_dir(&Environment::current())?,
-            store.load()?.carrier_consent,
+            cache_root,
+            settings.carrier_consent,
+            settings.remove_after_send,
         )
     };
+    let saves_root = config.dir.join(SAVES_ROOT);
+    let (installs, players) = (installs.inner().clone(), player.inner().clone());
     let error_cache_root = cache_root.clone();
     // Pas de vidage du cache pendant la préparation.
     let _gate = catalog.cache_gate().read_owned().await;
@@ -1369,7 +1388,6 @@ pub async fn device_send_story(
         }
         let _clear = ClearCancel;
         let ctx = WriteContext::current(Some(cache_root.clone()));
-        let (plain_pk, _) = Library::new(&cache_root).playable(&uuid)?;
         let mut emit = |progress: Progress| {
             use tauri::Emitter;
             let _ = app.emit(
@@ -1387,18 +1405,40 @@ pub async fn device_send_story(
             remember: remember.unwrap_or(false),
             store: &carrier_store,
         });
-        let result = send_from_library(
-            &guard,
-            Path::new(&root),
-            &plain_pk,
-            &cache_root.join(WORK_SUBDIR),
-            replace.as_deref(),
-            request.as_ref(),
-            &ctx,
-            &cancel,
-            &mut emit,
-        );
-        Ok(result?)
+        // Envoi, puis (succès seulement, verrou de la Flam toujours tenu : aucun autre envoi ne
+        // s'intercale) suite donnée à la copie de « Mes histoires » (#609).
+        let report = after_send::send_then_settle(
+            &SENT,
+            &cache_root,
+            &uuid,
+            remove_after_send,
+            &|| after_send::installing(&installs, &uuid),
+            |plain_pk| {
+                Ok(send_from_library(
+                    &guard,
+                    Path::new(&root),
+                    plain_pk,
+                    &cache_root.join(WORK_SUBDIR),
+                    replace.as_deref(),
+                    request.as_ref(),
+                    &ctx,
+                    &cancel,
+                    &mut emit,
+                )?)
+            },
+            |check| {
+                crate::library::remove_story(
+                    &installs,
+                    &players,
+                    &cache_root,
+                    &saves_root,
+                    &uuid,
+                    false,
+                    check,
+                )
+            },
+        )?;
+        Ok(report)
     })
     .await?;
     // Diagnostic copiable (#318) : erreurs de la session, sans les annulations.

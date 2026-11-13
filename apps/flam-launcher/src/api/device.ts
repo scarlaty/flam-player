@@ -302,7 +302,19 @@ export interface TransferReport {
    * l'envoi a réussi, mais une autre histoire peut rester incomplète. Vide d'ordinaire.
    */
   recovery_failures: string[];
+  /**
+   * Copie de l'histoire dans « Mes histoires » après l'envoi (#609) : `kept` (« Retirer du PC »
+   * possible), `removed` (retirée par le réglage), `remove_failed` (retrait automatique
+   * impossible, l'envoi reste réussi) ; `null`/absent : rien n'est proposé.
+   */
+  library_copy?: LibraryCopy | null;
 }
+
+/** Copie de l'histoire dans « Mes histoires » après l'envoi (miroir de `LibraryCopy`). */
+export type LibraryCopy =
+  | { status: "kept" }
+  | { status: "removed" }
+  | { status: "remove_failed"; message: string };
 
 /** Consentement à l'avertissement du mode carrier (miroir de `CarrierConsent`). */
 export interface CarrierConsent {
@@ -435,6 +447,16 @@ export function sendStoryToDevice(
     : { root, uuid };
   if (replace) args.replace = replace;
   return invokeCommand<TransferReport>("device_send_story", args);
+}
+
+/**
+ * `library_remove_sent` : retire de « Mes histoires » l'histoire `uuid` envoyée avec succès sur
+ * la Flam pendant cette session (elle reste sur la Flam). Refusé si une opération sur la Flam est
+ * en cours, si l'histoire est lue, en cours d'installation ou a changé depuis l'envoi, ou si
+ * aucun envoi réussi n'est connu (`not_found`).
+ */
+export function removeSentFromLibrary(uuid: string): Promise<void> {
+  return invokeCommand<void>("library_remove_sent", { uuid });
 }
 
 /**

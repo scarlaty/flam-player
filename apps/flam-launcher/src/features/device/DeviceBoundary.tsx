@@ -1,4 +1,7 @@
-import { useMemo, type ReactNode } from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
+import type { LibraryCopy } from "../../api/device";
+import { useToast } from "../../components";
+import { t } from "../../i18n";
 import { useRoute } from "../../router";
 import { useStories } from "../stories/StoriesContext";
 import { DeviceProvider } from "./DeviceProvider";
@@ -12,10 +15,27 @@ export const BACKGROUND_POLL_MS = 6000;
  */
 export function DeviceBoundary({ children }: { children: ReactNode }) {
   const route = useRoute();
-  const { session, installed, installedRevision } = useStories();
+  const toast = useToast();
+  const { session, installed, installedRevision, refreshInstalled } = useStories();
   const libraryUuids = useMemo(
     () => new Set(installed.map((item) => item.uuid)),
     [installed],
+  );
+  // Histoire envoyée retirée de « Mes histoires », ou retrait impossible (#609).
+  const onPcCopyChange = useCallback(
+    (title: string, outcome: Exclude<LibraryCopy, { status: "kept" }>) => {
+      const announce = t.deviceTransfer.panel.announce;
+      if (outcome.status === "removed") {
+        toast.show({ message: announce.removedFromPc(title), tone: "success" });
+        void refreshInstalled();
+      } else {
+        toast.show({
+          message: announce.removeFromPcFailed(title, outcome.message),
+          tone: "danger",
+        });
+      }
+    },
+    [toast, refreshInstalled],
   );
   return (
     <DeviceProvider
@@ -23,6 +43,7 @@ export function DeviceBoundary({ children }: { children: ReactNode }) {
       intervalMs={route === "device" ? undefined : BACKGROUND_POLL_MS}
       // Tant que la bibliothèque n'a pas été lue, rien n'est retiré de la file.
       libraryUuids={installedRevision > 0 ? libraryUuids : undefined}
+      onPcCopyChange={onPcCopyChange}
     >
       {children}
     </DeviceProvider>

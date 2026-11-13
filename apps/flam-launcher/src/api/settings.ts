@@ -29,6 +29,11 @@ export interface Settings {
   carrier_consent?: CarrierConsent | null;
   /** Voix des titres lus des packs (#462), mémorisée par poste ; `null` : voix par défaut. */
   tts_voice?: string | null;
+  /**
+   * Retirer l'histoire de « Mes histoires » après son envoi réussi sur la Flam (#609) ; désactivé
+   * par défaut (absent : `false`).
+   */
+  remove_after_send?: boolean;
 }
 
 /**

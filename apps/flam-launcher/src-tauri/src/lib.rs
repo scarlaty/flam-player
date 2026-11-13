@@ -263,6 +263,7 @@ pub fn run() {
             install::install_list,
             library::library_list,
             library::library_remove,
+            device::after_send::library_remove_sent,
             library_source::library_source_status,
             library_thumb::library_thumbnail,
             player::player_launch,

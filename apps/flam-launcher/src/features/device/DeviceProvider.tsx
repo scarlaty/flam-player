@@ -11,10 +11,12 @@ import {
   onTransferProgress,
   recoverDeviceTransfers,
   removeDeviceStory,
+  removeSentFromLibrary,
   reorderDeviceStories,
   sendStoryToDevice,
   type CarrierSend,
   type DeviceSummary,
+  type LibraryCopy,
 } from "../../api/device";
 import { toAppError } from "../../api/error";
 import { Banner, Button, Dialog } from "../../components";
@@ -24,6 +26,7 @@ import {
   DeviceContext,
   type DeviceApi,
   type EjectNote,
+  type PcCopyState,
   type QueueItem,
   type SendRequest,
   type StoriesState,
@@ -50,6 +53,31 @@ export interface DeviceProviderProps {
    * histoire qui n'y figure plus (supprimée) sont retirés de la file affichée.
    */
   libraryUuids?: ReadonlySet<string>;
+  /**
+   * Une histoire envoyée a été retirée de « Mes histoires » (réglage ou « Retirer du PC »), ou
+   * son retrait a échoué (#609) : la bibliothèque est à relire, l'utilisateur à prévenir.
+   */
+  onPcCopyChange?: (
+    title: string,
+    outcome: Exclude<LibraryCopy, { status: "kept" }>,
+  ) => void;
+}
+
+/** État affiché de la copie « Mes histoires » d'après le rapport d'envoi (#609). */
+function pcCopyOf(copy: LibraryCopy | null | undefined): {
+  pcCopy?: PcCopyState;
+  pcCopyError?: string;
+} {
+  switch (copy?.status) {
+    case "kept":
+      return { pcCopy: "kept" };
+    case "removed":
+      return { pcCopy: "removed" };
+    case "remove_failed":
+      return { pcCopy: "failed", pcCopyError: copy.message };
+    default:
+      return {};
+  }
 }
 
 /**
@@ -62,6 +90,7 @@ export function DeviceProvider({
   paused = false,
   intervalMs,
   libraryUuids,
+  onPcCopyChange,
 }: DeviceProviderProps) {
   const { status, error, retry, answered } = useDeviceStatus({
     enabled: !paused,
@@ -80,10 +109,12 @@ export function DeviceProvider({
   const rootRef = useRef<string | null>(null);
   const deviceKeyRef = useRef<string | null>(null);
   const deviceRef = useRef<DeviceSummary | null>(null);
+  const onPcCopyChangeRef = useRef(onPcCopyChange);
   useEffect(() => {
     rootRef.current = root;
     deviceKeyRef.current = deviceKey;
     deviceRef.current = device;
+    onPcCopyChangeRef.current = onPcCopyChange;
   });
 
   // Reprise : une fois par branchement (changement de volume ou retour après une absence).
@@ -305,15 +336,27 @@ export function DeviceProvider({
           const warning = sent.recovery_failures?.length
             ? text.panel.recoveryFailures(sent.recovery_failures)
             : undefined;
+          // Copie de « Mes histoires » (#609) : décidée par le backend, envoi réussi seulement.
+          const copy = sent.library_copy ?? null;
           updateQueue((items) =>
             items.map((item) =>
               item.uuid === next.uuid
-                ? { ...item, state: "done", error: undefined, warning }
+                ? {
+                    ...item,
+                    state: "done",
+                    error: undefined,
+                    warning,
+                    pcCopy: undefined,
+                    pcCopyError: undefined,
+                    ...pcCopyOf(copy),
+                  }
                 : item,
             ),
           );
           const done = text.panel.announce.done(next.title);
           setAnnouncement(warning ? `${done}. ${warning}` : done);
+          if (copy && copy.status !== "kept")
+            onPcCopyChangeRef.current?.(next.title, copy);
         }
         bumpReload();
         const gen = reloadGen.current;
@@ -501,16 +544,56 @@ export function DeviceProvider({
   );
 
   // Histoire supprimée de la bibliothèque : sa ligne d'envoi réussie n'a plus d'objet. Les échecs
-  // et annulations restent (message). Sans effet tant que `libraryUuids` n'est pas connu.
+  // et annulations restent (message), comme les envois retirés du PC par cette file (#609 : la
+  // ligne dit que l'histoire reste sur la Flam). Sans effet tant que `libraryUuids` n'est pas
+  // connu.
   useEffect(() => {
     if (!libraryUuids) return;
     updateQueue((items) => {
       const kept = items.filter(
-        (item) => item.state !== "done" || libraryUuids.has(item.uuid),
+        (item) =>
+          item.state !== "done" ||
+          item.pcCopy === "removed" ||
+          item.pcCopy === "removing" ||
+          libraryUuids.has(item.uuid),
       );
       return kept.length === items.length ? items : kept;
     });
   }, [libraryUuids, updateQueue]);
+
+  const setPcCopy = useCallback(
+    (uuid: string, pcCopy: PcCopyState, pcCopyError?: string) =>
+      updateQueue((items) =>
+        items.map((item) =>
+          item.uuid === uuid && item.state === "done"
+            ? { ...item, pcCopy, pcCopyError }
+            : item,
+        ),
+      ),
+    [updateQueue],
+  );
+
+  const removeFromPc = useCallback(
+    async (uuid: string) => {
+      const item = queueRef.current.find(
+        (entry) => entry.uuid === uuid && entry.state === "done",
+      );
+      if (!item || (item.pcCopy !== "kept" && item.pcCopy !== "failed")) return;
+      // Le backend refuse pendant un envoi (verrou de la Flam) : pas d'appel inutile.
+      if (running.current) return;
+      setPcCopy(uuid, "removing");
+      try {
+        await removeSentFromLibrary(uuid);
+        setPcCopy(uuid, "removed");
+        onPcCopyChangeRef.current?.(item.title, { status: "removed" });
+      } catch (caught) {
+        const message = toAppError(caught).message;
+        setPcCopy(uuid, "failed", message);
+        onPcCopyChangeRef.current?.(item.title, { status: "remove_failed", message });
+      }
+    },
+    [setPcCopy],
+  );
 
   const dismissQueue = useCallback(() => {
     if (running.current) return;
@@ -625,6 +708,7 @@ export function DeviceProvider({
       cancelQueue,
       removeFromQueue,
       dismissQueue,
+      removeFromPc,
       removeFromDevice,
       reorderOnDevice,
       eject,
@@ -657,6 +741,7 @@ export function DeviceProvider({
       cancelQueue,
       removeFromQueue,
       dismissQueue,
+      removeFromPc,
       removeFromDevice,
       reorderOnDevice,
       eject,

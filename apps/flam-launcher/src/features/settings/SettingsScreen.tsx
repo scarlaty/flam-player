@@ -66,6 +66,7 @@ export function SettingsScreen() {
   const [themeError, setThemeError] = useState(false);
   const [thumbFitError, setThumbFitError] = useState(false);
   const [voiceError, setVoiceError] = useState(false);
+  const [removeAfterSendError, setRemoveAfterSendError] = useState(false);
   const [minimizeDuringPlay, setMinimize] = useState(getMinimizeDuringPlay);
   const usageRequestRef = useRef(0);
   const cancelClearRef = useRef<HTMLButtonElement>(null);
@@ -181,11 +182,9 @@ export function SettingsScreen() {
    * suite des autres modifications (file du mécanisme commun). Seul le dernier choix d'un même
    * réglage signale un échec ; l'affichage revient alors à l'état enregistré.
    */
-  async function change<K extends "theme" | "thumb_fit" | "tts_voice">(
-    key: K,
-    value: Settings[K],
-    setError: (failed: boolean) => void,
-  ) {
+  async function change<
+    K extends "theme" | "thumb_fit" | "tts_voice" | "remove_after_send",
+  >(key: K, value: Settings[K], setError: (failed: boolean) => void) {
     if (!saver.current()) return;
     const request = (requestsRef.current[key] = (requestsRef.current[key] ?? 0) + 1);
     setError(false);
@@ -346,6 +345,23 @@ export function SettingsScreen() {
         failed={voiceError}
         onChange={(voice) => void change("tts_voice", voice, setVoiceError)}
       />
+
+      <section className="fl-settings__section" aria-labelledby="settings-send">
+        <h2 id="settings-send">{text.send.title}</h2>
+        {removeAfterSendError && <Banner tone="danger">{text.send.failed}</Banner>}
+        <CheckboxField
+          label={text.send.removeAfterSend}
+          hint={text.send.removeAfterSendHint}
+          checked={view.settings.remove_after_send === true}
+          onChange={(event) =>
+            void change(
+              "remove_after_send",
+              event.target.checked,
+              setRemoveAfterSendError,
+            )
+          }
+        />
+      </section>
 
       <section className="fl-settings__section" aria-labelledby="settings-playback">
         <h2 id="settings-playback">{text.playback.title}</h2>

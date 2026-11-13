@@ -33,6 +33,7 @@ export function TransferPanel() {
     cancelQueue,
     removeFromQueue,
     dismissQueue,
+    removeFromPc,
     announcement,
   } = useDevice();
   const titleId = useId();
@@ -42,6 +43,8 @@ export function TransferPanel() {
   const listRef = useRef<HTMLUListElement>(null);
   // Longueur de la file au clic sur « Retirer » (0 : aucun retrait attendu).
   const focusAfterRemoval = useRef(0);
+  // Histoire dont « Retirer du PC » a été cliqué : son bouton disparaît une fois retirée.
+  const focusPcNote = useRef<string | null>(null);
 
   // Fin de file : le bouton Annuler disparaît, le focus passe au titre du panneau.
   useEffect(() => {
@@ -62,6 +65,24 @@ export function TransferPanel() {
     const buttons = listRef.current?.querySelectorAll<HTMLElement>("[data-queue-remove]");
     const target = buttons?.[0] ?? headingRef.current;
     target?.focus();
+  }, [queue]);
+
+  // « Retirer du PC » réussi : le bouton laisse place au texte de la ligne, qui prend le focus.
+  // Échec : le bouton reste (avec le message), le focus aussi.
+  useLayoutEffect(() => {
+    const uuid = focusPcNote.current;
+    if (!uuid) return;
+    const item = queue.find((entry) => entry.uuid === uuid);
+    if (item?.pcCopy === "removing") return;
+    focusPcNote.current = null;
+    if (item?.pcCopy === "removed") {
+      const note = listRef.current?.querySelector<HTMLElement>(
+        `[data-pc-note="${CSS.escape(uuid)}"]`,
+      );
+      (note ?? headingRef.current)?.focus();
+    } else if (!item) {
+      headingRef.current?.focus();
+    }
   }, [queue]);
 
   // Annonces de la file (début, fin, échec), sans pourcentage : région vivante toujours présente.
@@ -172,6 +193,16 @@ export function TransferPanel() {
               </Badge>
               {item.error && <p className="fl-transfer__error">{item.error}</p>}
               {item.warning && <p className="fl-transfer__line">{item.warning}</p>}
+              {item.state === "done" && (
+                <PcCopyLine
+                  item={item}
+                  busy={busy}
+                  onRemove={() => {
+                    focusPcNote.current = item.uuid;
+                    void removeFromPc(item.uuid);
+                  }}
+                />
+              )}
             </li>
           ))}
         </ul>
@@ -202,6 +233,56 @@ export function TransferPanel() {
           </>
         )}
       </section>
+    </>
+  );
+}
+
+/**
+ * Envoi réussi : « Retirer du PC » (copie gardée dans « Mes histoires », #609), ou ce qu'il en
+ * est advenu. Rien si le backend ne propose rien (relecture carrier illisible…).
+ */
+function PcCopyLine({
+  item,
+  busy,
+  onRemove,
+}: {
+  item: QueueItem;
+  busy: boolean;
+  onRemove: () => void;
+}) {
+  const hintId = useId();
+  const copy = text.panel.pcCopy;
+  if (item.pcCopy === "removed") {
+    return (
+      <p className="fl-transfer__line" tabIndex={-1} data-pc-note={item.uuid}>
+        {copy.removed}
+      </p>
+    );
+  }
+  if (!item.pcCopy) return null;
+  const removing = item.pcCopy === "removing";
+  // Un envoi en cours tient la Flam : le retrait attend la fin de la file.
+  const blocked = removing || busy;
+  return (
+    <>
+      {item.pcCopy === "failed" && item.pcCopyError && (
+        <p className="fl-transfer__error">{copy.failed(item.pcCopyError)}</p>
+      )}
+      <Button
+        size="sm"
+        icon="trash"
+        aria-describedby={hintId}
+        aria-disabled={blocked || undefined}
+        aria-busy={removing || undefined}
+        onClick={() => {
+          if (!blocked) onRemove();
+        }}
+      >
+        {removing ? copy.removing : copy.remove}
+      </Button>
+      <p id={hintId} className="fl-transfer__hint">
+        {copy.hint}
+      </p>
     </>
   );
 }
