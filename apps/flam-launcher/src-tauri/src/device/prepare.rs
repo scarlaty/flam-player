@@ -19,7 +19,8 @@
 //! - le dossier final `<travail>/str/<uuid>/` est soit absent, soit complet : tout est écrit
 //!   dans un dossier de chantier `<travail>/.partiel-<uuid>-<aléa>`, renommé à la fin ;
 //! - en cas d'erreur ou d'annulation, le chantier est supprimé (au mieux) ; un chantier laissé
-//!   par un arrêt brutal est supprimé par [`cleanup_stale`] ;
+//!   par un arrêt brutal est supprimé par [`cleanup_stale`], une préparation terminée restée dans
+//!   `str/` par [`cleanup_prepared`] ;
 //! - l'archive source n'est jamais modifiée ; tailles et nombre d'entrées sont bornés
 //!   ([`Limits`]) d'après les tailles **réellement lues**, pas seulement déclarées ;
 //! - les noms d'entrées sont contrôlés (pas de remontée `..`, pas de chemin absolu, pas de
@@ -180,6 +181,31 @@ pub fn cleanup_stale(work_dir: &Path) -> io::Result<usize> {
         let entry = entry?;
         let name = entry.file_name();
         if name.to_string_lossy().starts_with(STAGING_PREFIX) && entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Supprime les préparations terminées restées dans `<travail>/str/` (arrêt brutal entre la
+/// préparation et sa suppression après l'envoi) ; renvoie leur nombre. Seuls les vrais dossiers
+/// enfants directs de `str/` sont supprimés (jamais un lien, une jonction ni un fichier), et
+/// `str/` lui-même doit être un vrai dossier. À n'appeler que lorsqu'aucune préparation n'est en
+/// cours dans `work_dir` : un envoi à la fois (verrou de l'appareil) et le vidage du cache attend
+/// la fin de l'envoi.
+pub fn cleanup_prepared(work_dir: &Path) -> io::Result<usize> {
+    let stories = work_dir.join(STORIES_DIR);
+    let is_real_dir = |path: &Path| {
+        std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir() && !meta.is_symlink())
+    };
+    if !is_real_dir(&stories) {
+        return Ok(0);
+    }
+    let mut removed = 0;
+    for entry in std::fs::read_dir(&stories)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
             std::fs::remove_dir_all(entry.path())?;
             removed += 1;
         }
@@ -1195,6 +1221,32 @@ mod tests {
         let err = prepare_story(&pk, &test_keys(), &work, &Limits::default(), &cancel).unwrap_err();
         assert!(matches!(err, PrepareError::Cancelled));
         assert!(!work.exists());
+    }
+
+    #[test]
+    fn preparations_terminees_orphelines_nettoyees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        assert_eq!(cleanup_prepared(&work.join("absent")).unwrap(), 0);
+        assert_eq!(cleanup_prepared(work).unwrap(), 0, "pas de str/");
+        std::fs::create_dir_all(work.join("str").join(UUID_STR).join("img")).unwrap();
+        std::fs::write(work.join("str").join(UUID_STR).join("key"), b"k").unwrap();
+        std::fs::create_dir_all(work.join("str").join("autre")).unwrap();
+        // Un fichier dans `str/` n'est pas une préparation : gardé.
+        std::fs::write(work.join("str").join("fichier"), b"x").unwrap();
+        // Un chantier n'est pas du ressort de cette fonction.
+        std::fs::create_dir_all(work.join(".partiel-abc")).unwrap();
+        assert_eq!(cleanup_prepared(work).unwrap(), 2);
+        assert!(!work.join("str").join(UUID_STR).exists());
+        assert!(!work.join("str").join("autre").exists());
+        assert!(work.join("str").join("fichier").is_file());
+        assert!(work.join(".partiel-abc").is_dir());
+        // `str` qui n'est pas un dossier : rien n'est fait.
+        let other = tmp.path().join("autre-travail");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("str"), b"x").unwrap();
+        assert_eq!(cleanup_prepared(&other).unwrap(), 0);
+        assert!(other.join("str").is_file());
     }
 
     #[test]

@@ -1355,6 +1355,20 @@ fn device_keys(
     Ok((keys, Some(resolved)))
 }
 
+/// Supprime les restes d'un envoi interrompu par un arrêt brutal dans `work_dir` (chantiers
+/// `.partiel-*` et préparations terminées de `str/`, voir [`prepare::cleanup_stale`] et
+/// [`prepare::cleanup_prepared`]), avant une nouvelle préparation. Rien n'est supprimé si
+/// `work_dir` ne porte pas le marqueur de l'application (#591) : un homonyme refusé par la
+/// migration (dossier de l'utilisateur) est utilisé comme avant, jamais nettoyé. Le verrou de
+/// l'appareil est tenu par l'appelant (aucune autre préparation) et le vidage du cache, qui prend
+/// le portillon en écriture, attend la fin de l'envoi.
+fn clean_work_dir(work_dir: &Path) -> std::io::Result<usize> {
+    if !crate::cache::is_owned(work_dir) {
+        return Ok(0);
+    }
+    Ok(prepare::cleanup_stale(work_dir)? + prepare::cleanup_prepared(work_dir)?)
+}
+
 /// Prépare `plain_pk` dans `work_dir` pour la Flam de `root`, la transfère, puis supprime la
 /// préparation. Le verrou de l'appareil est tenu par l'appelant pendant tout l'appel.
 /// `plain_pk` : fichier de la bibliothèque, histoire Flam (`.plain.pk`) ou pack au format Lunii
@@ -1411,7 +1425,7 @@ pub(crate) fn send_from_library_with(
         return Err(TransferError::LuniiNeedsV2);
     }
     let (keys, resolved) = device_keys(root, &permit, carrier, cancel)?;
-    if let Err(err) = prepare::cleanup_stale(work_dir) {
+    if let Err(err) = clean_work_dir(work_dir) {
         tracing::warn!("préparations abandonnées non supprimées : {err}");
     }
     let limits = Limits::default();

@@ -30,6 +30,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -152,6 +153,11 @@ pub struct CatalogService {
     /// restent parallèles entre sources), le vidage du cache en écriture. Partagé avec le
     /// pipeline d'installation (`install`), qui le tient en lecture pendant chaque tâche.
     cache_gate: Arc<tokio::sync::RwLock<()>>,
+    /// Compteur incrémenté à chaque prise du portillon en écriture (vidage du cache,
+    /// [`CatalogService::pause_refreshes`]). Un travail qui relâche le portillon pendant une
+    /// attente réseau lit le compteur sous le portillon, et le compare en le reprenant : s'il a
+    /// changé, un vidage est passé entre-temps et rien n'est écrit (un vidage ne recrée rien).
+    clear_epoch: AtomicU64,
     /// Génération de chaque source, incrémentée par `purge_source` : un travail qui a lu la
     /// génération avant d'attendre un verrou la compare avant d'écrire.
     source_gen: Mutex<HashMap<String, u64>>,
@@ -177,6 +183,7 @@ impl CatalogService {
             thumb_ttl: THUMB_TTL,
             net_failures: Mutex::default(),
             cache_gate: Arc::default(),
+            clear_epoch: AtomicU64::new(0),
             source_gen: Mutex::default(),
             thumb_locks: Mutex::default(),
         }
@@ -190,9 +197,11 @@ impl CatalogService {
     /// suivre de lien ; absent : rien à faire.
     pub async fn purge_source(&self, cache_root: &Path, source_id: &str) -> AppResult<()> {
         let dir = source_dir(cache_root, source_id)?;
-        let _gate = self.cache_gate.read().await;
+        // Verrou de la source avant le portillon, comme `refresh_since` (qui reprend le
+        // portillon en tenant ce verrou) : jamais d'attente croisée.
         let source_lock = self.source_lock(source_id);
         let _held = source_lock.lock().await;
+        let _gate = self.cache_gate.read().await;
         let thumb_lock = self.thumb_lock(source_id);
         let _writing = thumb_lock.write().await;
         *lock(&self.source_gen)
@@ -204,10 +213,27 @@ impl CatalogService {
         Ok(())
     }
 
-    /// Attend la fin des rafraîchissements en cours et empêche d'en démarrer (ou d'en écrire
-    /// le résultat) tant que le garde renvoyé est conservé. Sert au vidage du cache.
+    /// Attend la fin des écritures du cache en cours (rafraîchissements et vignettes : leurs
+    /// seules sections qui lisent ou écrivent le disque, jamais leur attente réseau) et empêche
+    /// d'en démarrer tant que le garde renvoyé est conservé. Un travail resté en attente du
+    /// réseau pendant le vidage n'écrit plus rien ensuite (`clear_epoch`). Sert au vidage du
+    /// cache.
     pub async fn pause_refreshes(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
-        self.cache_gate.write().await
+        let guard = self.cache_gate.write().await;
+        self.clear_epoch.fetch_add(1, Ordering::SeqCst);
+        guard
+    }
+
+    /// Valeur du compteur de vidages (voir le champ `clear_epoch`) ; à lire portillon tenu.
+    fn clear_epoch(&self) -> u64 {
+        self.clear_epoch.load(Ordering::SeqCst)
+    }
+
+    /// Reprend le portillon relâché pendant une attente réseau ; vrai si aucun vidage du cache
+    /// n'est passé depuis `epoch` (l'écriture peut avoir lieu), faux sinon (rien à écrire).
+    async fn resume(&self, gate: &mut ReadGate, epoch: u64) -> bool {
+        gate.ensure().await;
+        self.clear_epoch() == epoch
     }
 
     /// Portillon d'écriture dans le cache, à prendre en lecture par tout module qui écrit dans
@@ -321,16 +347,22 @@ impl CatalogService {
         now: u64,
     ) -> AppResult<CatalogView> {
         let dir = source_dir(cache_root, source_id)?;
-        let _gate = self.cache_gate.read().await;
+        // Verrou de la source d'abord : le portillon est relâché pendant l'attente réseau puis
+        // repris en tenant ce verrou (voir `purge_source`, même ordre).
         let source_lock = self.source_lock(source_id);
         let _held = source_lock.lock().await;
+        let mut gate = ReadGate::acquire(self.cache_gate.clone()).await;
         if self.generation(source_id) != generation {
             return Err(AppError::NotFound(
                 "source supprimée ou modifiée pendant le rafraîchissement".into(),
             ));
         }
         let previous = self.known_thumbs(&dir, source_id, url).await;
-        let view = self.refresh_locked(&dir, source_id, url, now).await?;
+        let view = self
+            .refresh_locked(&dir, source_id, url, now, &mut gate)
+            .await?;
+        // Portillon repris si `refresh_locked` l'a relâché sans le reprendre (échec réseau).
+        gate.ensure().await;
         let known = self.set_known_thumbs(source_id, url, &view.entries);
         // Le catalogue vient d'être confirmé : les vignettes qu'il n'utilise plus sont inutiles.
         // Aucune vignette connue alors que le cache précédent en avait : on ne nettoie rien (même
@@ -351,14 +383,22 @@ impl CatalogService {
         Ok(view)
     }
 
+    /// Rafraîchissement d'une source (verrou de la source tenu). `gate` est tenu à l'appel et
+    /// **relâché pendant l'attente réseau** : « Vider le cache » n'attend que les sections qui
+    /// lisent ou écrivent le disque. Il est repris avant toute écriture ; si un vidage est passé
+    /// entre-temps, rien n'est écrit (le résultat est rendu sans être mis en cache). À la sortie,
+    /// il peut être relâché : l'appelant le reprend (`ReadGate::ensure`).
     async fn refresh_locked(
         &self,
         dir: &Path,
         source_id: &str,
         url: &str,
         now: u64,
+        gate: &mut ReadGate,
     ) -> AppResult<CatalogView> {
         let cached = load_cache_blocking(dir, source_id, url).await;
+        let epoch = self.clear_epoch();
+        gate.release();
 
         let mut request = self.client.get(url);
         if let Some(c) = cached.as_ref().filter(|c| c.trusted) {
@@ -408,10 +448,12 @@ impl CatalogService {
         if status == StatusCode::NOT_MODIFIED {
             if let Some(mut c) = cached {
                 c.meta.fetched_at = now;
-                let (meta_path, meta) = (dir.join(META_FILE), c.meta.clone());
-                let written = blocking(move || storage::write_json(&meta_path, &meta)).await?;
-                if let Err(err) = written {
-                    tracing::warn!("mise à jour du cache impossible ({source_id}) : {err}");
+                if self.resume(gate, epoch).await {
+                    let (meta_path, meta) = (dir.join(META_FILE), c.meta.clone());
+                    let written = blocking(move || storage::write_json(&meta_path, &meta)).await?;
+                    if let Err(err) = written {
+                        tracing::warn!("mise à jour du cache impossible ({source_id}) : {err}");
+                    }
                 }
                 return Ok(view_from(source_id, Some(c), false, None));
             }
@@ -461,10 +503,13 @@ impl CatalogService {
             fetched_at: now,
         };
         // Un cache non écrit ne doit pas masquer un catalogue valide fraîchement reçu.
-        let (dir_owned, meta_owned) = (dir.to_path_buf(), meta.clone());
-        let stored = blocking(move || store_cache(&dir_owned, &body, &meta_owned)).await?;
-        if let Err(err) = stored {
-            tracing::warn!("écriture du cache impossible ({source_id}) : {err}");
+        // Un vidage passé pendant l'attente réseau : le catalogue est rendu sans être écrit.
+        if self.resume(gate, epoch).await {
+            let (dir_owned, meta_owned) = (dir.to_path_buf(), meta.clone());
+            let stored = blocking(move || store_cache(&dir_owned, &body, &meta_owned)).await?;
+            if let Err(err) = stored {
+                tracing::warn!("écriture du cache impossible ({source_id}) : {err}");
+            }
         }
         Ok(view_from(
             source_id,
@@ -510,6 +555,12 @@ impl CatalogService {
             ));
         }
 
+        // Compteur de vidages lu portillon tenu : la lecture du cache et l'écriture finale ne
+        // sont séparées que par le réseau (portillon relâché), voir `store_thumb`.
+        let epoch = {
+            let _gate = self.cache_gate.read().await;
+            self.clear_epoch()
+        };
         let path = thumb_path(&dir, thumb_url);
         let meta_path = thumb_meta_path(&dir, thumb_url);
         let ttl = self.thumb_ttl.as_secs();
@@ -609,8 +660,15 @@ impl CatalogService {
                 };
                 let body = downloaded.map(|(body, _)| body);
                 lock(&self.net_failures).remove(source_id);
-                self.store_thumb(source_id, generation, path, meta_path, body, new_meta)
-                    .await;
+                self.store_thumb(
+                    source_id,
+                    (generation, epoch),
+                    path,
+                    meta_path,
+                    body,
+                    new_meta,
+                )
+                .await;
                 Ok(served)
             }
             Err(err) => match stale {
@@ -628,11 +686,13 @@ impl CatalogService {
 
     /// Écrit une vignette (si `body`) et son suivi, sous le portillon d'écriture du cache : un
     /// vidage du cache en cours attend la fin de l'écriture. Rien n'est écrit si la source a été
-    /// purgée depuis `generation` : la purge ne doit pas laisser de `thumbs/` recréé.
+    /// purgée depuis `generation` (la purge ne doit pas laisser de `thumbs/` recréé), ni si un
+    /// vidage du cache est passé depuis `epoch` pendant le téléchargement (le portillon n'est pas
+    /// tenu pendant le réseau : un vidage ne doit rien voir recréé derrière lui).
     async fn store_thumb(
         &self,
         source_id: &str,
-        generation: u64,
+        (generation, epoch): (u64, u64),
         path: PathBuf,
         meta_path: PathBuf,
         body: Option<Vec<u8>>,
@@ -641,7 +701,7 @@ impl CatalogService {
         let _gate = self.cache_gate.read().await;
         let thumb_lock = self.thumb_lock(source_id);
         let _reading = thumb_lock.read().await;
-        if self.generation(source_id) != generation {
+        if self.generation(source_id) != generation || self.clear_epoch() != epoch {
             return;
         }
         let written = blocking(move || {
@@ -655,6 +715,36 @@ impl CatalogService {
             Ok(Ok(())) => {}
             Ok(Err(err)) => tracing::warn!("écriture de la vignette impossible : {err}"),
             Err(err) => tracing::warn!("écriture de la vignette impossible : {err}"),
+        }
+    }
+}
+
+/// Portillon du cache tenu en lecture, relâchable pendant une attente réseau.
+struct ReadGate {
+    lock: Arc<tokio::sync::RwLock<()>>,
+    held: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+}
+
+impl ReadGate {
+    /// Prend le portillon en lecture (en attendant la fin d'un vidage en cours).
+    async fn acquire(lock: Arc<tokio::sync::RwLock<()>>) -> Self {
+        let held = lock.clone().read_owned().await;
+        Self {
+            lock,
+            held: Some(held),
+        }
+    }
+
+    fn release(&mut self) {
+        self.held = None;
+    }
+
+    /// Reprend le portillon s'il est relâché (en attendant la fin d'un vidage en cours). Jamais
+    /// de seconde lecture imbriquée : elle pourrait attendre un vidage lui-même en attente de
+    /// celle-ci.
+    async fn ensure(&mut self) {
+        if self.held.is_none() {
+            self.held = Some(self.lock.clone().read_owned().await);
         }
     }
 }
@@ -2876,5 +2966,213 @@ mod tests {
             .unwrap();
         assert_eq!(first, second);
         assert!(thumb_path(&dir, &thumb).is_file());
+    }
+
+    // --- Vidage du cache pendant une attente réseau (#591) -------------------------------
+
+    /// Serveur HTTP minimal dont la route `hold` ne répond qu'après `release` : la requête est
+    /// signalée sur `requested` dès qu'elle est lue, la réponse attend le feu vert. Aucune durée
+    /// n'intervient : le test avance sur ces deux signaux.
+    struct HeldServer {
+        base: String,
+        requested: tokio::sync::mpsc::UnboundedReceiver<()>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    /// `routes` : (chemin, corps, type de contenu) servis tels quels.
+    async fn held_server(
+        routes: Vec<(&'static str, Vec<u8>, &'static str)>,
+        hold: &str,
+    ) -> HeldServer {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (sender, requested) = tokio::sync::mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (routes, hold, gate) = (Arc::new(routes), hold.to_string(), release.clone());
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let (routes, hold, gate, sender) =
+                    (routes.clone(), hold.clone(), gate.clone(), sender.clone());
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match stream.read(&mut chunk).await {
+                            Ok(n) if n > 0 => head.extend_from_slice(&chunk[..n]),
+                            _ => return,
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&head).into_owned();
+                    let target = head.split_whitespace().nth(1).unwrap_or_default();
+                    let Some((_, body, kind)) = routes.iter().find(|(p, _, _)| *p == target) else {
+                        let _ = stream
+                            .write_all(
+                                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await;
+                        return;
+                    };
+                    if target == hold {
+                        let _ = sender.send(());
+                        gate.notified().await;
+                    }
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes()).await;
+                    let _ = stream.write_all(body).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        HeldServer {
+            base,
+            requested,
+            release,
+        }
+    }
+
+    /// Prend le portillon en écriture **sans attendre** (une seule interrogation) : `None` si
+    /// quelqu'un le tient en lecture.
+    async fn pause_now(service: &CatalogService) -> Option<tokio::sync::RwLockWriteGuard<'_, ()>> {
+        use std::future::Future;
+        let mut pause = std::pin::pin!(service.pause_refreshes());
+        std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(match pause.as_mut().poll(cx) {
+                std::task::Poll::Ready(guard) => Some(guard),
+                std::task::Poll::Pending => None,
+            })
+        })
+        .await
+    }
+
+    fn long_client() -> reqwest::Client {
+        build_client(Duration::from_secs(60), Duration::from_secs(60)).unwrap()
+    }
+
+    fn one_story_catalog() -> Vec<u8> {
+        json!({ "data": [{
+            "uuid": "u", "download": "/u.zip", "thumbs": { "medium": "/t/u.png" }
+        }]})
+        .to_string()
+        .into_bytes()
+    }
+
+    #[tokio::test]
+    async fn le_vidage_n_attend_pas_le_reseau_d_un_rafraichissement_et_rien_n_est_recree() {
+        let mut server = held_server(
+            vec![("/catalog.json", one_story_catalog(), "application/json")],
+            "/catalog.json",
+        )
+        .await;
+        let cache = tempfile::tempdir().unwrap();
+        crate::cache::ensure_subdir(cache.path(), "catalogs").unwrap();
+        // Cache d'un rafraîchissement précédent : le vidage le supprime.
+        std::fs::create_dir_all(cache.path().join("catalogs/src")).unwrap();
+        std::fs::write(cache.path().join("catalogs/src/catalog.json"), "{}").unwrap();
+        let url = format!("{}/catalog.json", server.base);
+        let service = Arc::new(svc_with(long_client()));
+        let task = {
+            let (service, root, url) = (service.clone(), cache.path().to_path_buf(), url.clone());
+            tokio::spawn(async move { service.refresh(&root, "src", &url, 1).await })
+        };
+        // La requête est en vol : le portillon n'est plus tenu.
+        server.requested.recv().await.unwrap();
+        let pause = pause_now(&service)
+            .await
+            .expect("le vidage attend l'attente réseau d'un rafraîchissement");
+        crate::cache::clear_of(cache.path()).unwrap();
+        assert!(!cache.path().join("catalogs/src").exists());
+        drop(pause);
+        server.release.notify_one();
+
+        // Le catalogue est rendu, mais rien n'est écrit derrière le vidage.
+        let view = task.await.unwrap().unwrap();
+        assert_eq!(view.entries.len(), 1);
+        assert!(!cache.path().join("catalogs/src").exists());
+        // Un rafraîchissement lancé ensuite écrit de nouveau (ce n'est pas un blocage durable).
+        server.release.notify_one();
+        service.refresh(cache.path(), "src", &url, 2).await.unwrap();
+        assert!(cache.path().join("catalogs/src/catalog.json").is_file());
+    }
+
+    #[tokio::test]
+    async fn le_vidage_pendant_le_telechargement_d_une_vignette_ne_recree_rien() {
+        let mut server = held_server(
+            vec![
+                ("/catalog.json", one_story_catalog(), "application/json"),
+                ("/t/u.png", PNG.to_vec(), "image/png"),
+            ],
+            "/t/u.png",
+        )
+        .await;
+        let cache = tempfile::tempdir().unwrap();
+        crate::cache::ensure_subdir(cache.path(), "catalogs").unwrap();
+        let url = format!("{}/catalog.json", server.base);
+        let service = Arc::new(svc_with(long_client()));
+        let view = service.refresh(cache.path(), "src", &url, 1).await.unwrap();
+        let thumb = view.entries[0].thumb_url.clone().unwrap();
+        assert!(cache.path().join("catalogs/src/catalog.json").is_file());
+        let task = {
+            let (service, root, url) = (service.clone(), cache.path().to_path_buf(), url.clone());
+            let thumb = thumb.clone();
+            tokio::spawn(async move { service.thumbnail(&root, "src", &url, &thumb).await })
+        };
+        server.requested.recv().await.unwrap();
+        let pause = pause_now(&service)
+            .await
+            .expect("le vidage attend le téléchargement d'une vignette");
+        crate::cache::clear_of(cache.path()).unwrap();
+        drop(pause);
+        server.release.notify_one();
+
+        // La vignette est servie, mais ni elle ni son dossier ne sont recréés.
+        let served = task.await.unwrap().unwrap();
+        assert!(served.starts_with("data:image/png;base64,"));
+        assert!(!cache.path().join("catalogs/src").exists());
+        // Une demande ultérieure la met en cache normalement.
+        server.release.notify_one();
+        service
+            .thumbnail(cache.path(), "src", &url, &thumb)
+            .await
+            .unwrap();
+        assert!(thumb_path(&cache.path().join("catalogs/src"), &thumb).is_file());
+    }
+
+    /// Purge de la source et vidage demandés pendant l'attente réseau d'un rafraîchissement :
+    /// aucun interblocage (verrou de la source, puis portillon, dans le même ordre partout).
+    #[tokio::test]
+    async fn purge_et_vidage_pendant_un_rafraichissement_ne_se_bloquent_pas() {
+        let mut server = held_server(
+            vec![("/catalog.json", one_story_catalog(), "application/json")],
+            "/catalog.json",
+        )
+        .await;
+        let cache = tempfile::tempdir().unwrap();
+        let url = format!("{}/catalog.json", server.base);
+        let service = Arc::new(svc_with(long_client()));
+        let refreshing = {
+            let (service, root, url) = (service.clone(), cache.path().to_path_buf(), url.clone());
+            tokio::spawn(async move { service.refresh(&root, "src", &url, 1).await })
+        };
+        server.requested.recv().await.unwrap();
+        // Purge en attente du verrou de la source (tenu par le rafraîchissement), puis vidage.
+        let purging = {
+            let (service, root) = (service.clone(), cache.path().to_path_buf());
+            tokio::spawn(async move { service.purge_source(&root, "src").await })
+        };
+        let clearing = {
+            let service = service.clone();
+            tokio::spawn(async move {
+                drop(service.pause_refreshes().await);
+            })
+        };
+        server.release.notify_one();
+        // Aucun interblocage : les trois travaux se terminent (ordre indifférent).
+        refreshing.await.unwrap().ok();
+        purging.await.unwrap().unwrap();
+        clearing.await.unwrap();
     }
 }
