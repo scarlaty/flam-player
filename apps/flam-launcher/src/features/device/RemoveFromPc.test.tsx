@@ -6,6 +6,7 @@ import { ToastProvider } from "../../components";
 import { expectNoAxeViolations } from "../../test/axe";
 import { firmwareV2 } from "../../test/firmware";
 import { tolerateLoadInAsyncUtils } from "../../test/timeouts";
+import { useDevice } from "./DeviceContext";
 import { DeviceProvider } from "./DeviceProvider";
 import { SendToDeviceButton } from "./SendToDeviceButton";
 import { TransferPanel } from "./TransferPanel";
@@ -24,7 +25,9 @@ const library = [
 ];
 
 const HINT =
-  "L'histoire reste sur la Flam. Pour la renvoyer plus tard, il faudra la réinstaller.";
+  "L'histoire reste sur la Flam. Pour la renvoyer plus tard, il faudra la réinstaller. Avant de débrancher la Flam, utilisez « Éjecter la Flam ».";
+/** Bouton « Retirer du PC » (nom propre à l'histoire). */
+const PC = /^Retirer du PC/;
 const REMOVED =
   "Retirée de Mes histoires : l'histoire reste sur la Flam. Pour la renvoyer plus tard, il faudra la réinstaller.";
 
@@ -56,6 +59,7 @@ let removeSent: { kind: string; message: string } | null;
 let removeGate: Promise<void> | null;
 let sendGate: Promise<void> | null;
 let calls: { cmd: string; args: Record<string, unknown> }[];
+let status: DeviceStatus;
 const count = (cmd: string) => calls.filter((c) => c.cmd === cmd).length;
 
 beforeEach(() => {
@@ -65,13 +69,14 @@ beforeEach(() => {
   removeGate = null;
   sendGate = null;
   calls = [];
+  status = detected();
   mockIPC(
     (cmd, payload) => {
       const args = (payload ?? {}) as Record<string, unknown>;
       calls.push({ cmd, args });
       switch (cmd) {
         case "device_status":
-          return detected();
+          return status;
         case "device_recover_transfers":
           return {
             incomplete_removed: 0,
@@ -106,6 +111,13 @@ beforeEach(() => {
               library_copy: outcome.ok,
             };
           });
+        case "device_remove_story":
+          return {
+            id: args.id,
+            index_updated: true,
+            folders_removed: 1,
+            cleanup_pending: false,
+          };
         case "library_remove_sent":
           return (removeGate ?? Promise.resolve()).then(() => {
             if (removeSent) throw removeSent;
@@ -126,12 +138,23 @@ afterEach(() => {
 
 const onPcCopyChange = vi.fn();
 
+/** Retrait de la Flam (« Ma Flam »), sans dialogue. */
+function RemoveFromFlam({ uuid }: { uuid: string }) {
+  const { removeFromDevice, deviceKey } = useDevice();
+  return (
+    <button type="button" onClick={() => void removeFromDevice(uuid, deviceKey)}>
+      Retirer de la Flam
+    </button>
+  );
+}
+
 function renderPanel() {
   onPcCopyChange.mockClear();
   return render(
     <ToastProvider>
-      <DeviceProvider onPcCopyChange={onPcCopyChange}>
+      <DeviceProvider onPcCopyChange={onPcCopyChange} intervalMs={50}>
         <main>
+          <RemoveFromFlam uuid={A} />
           <ul aria-label="Bibliothèque">
             {library.map((story) => (
               <li key={story.uuid}>
@@ -165,8 +188,10 @@ it("après un envoi réussi : « Retirer du PC », puis l'histoire reste sur la 
   outcomes.set(A, { ok: { status: "kept" } });
   renderPanel();
   await send("Capi");
-  const button = await screen.findByRole("button", { name: "Retirer du PC" });
+  const button = await screen.findByRole("button", { name: PC });
   expect(button).toHaveAccessibleDescription(HINT);
+  // Nom propre à l'histoire, distinct du retrait de la file.
+  expect(button).toHaveAccessibleName("Retirer du PC : « Capi »");
   expect(within(row("Capi")).getByText("Envoyée")).toBeVisible();
   // Rien n'est retiré sans clic (réglage désactivé).
   expect(count("library_remove_sent")).toBe(0);
@@ -174,9 +199,12 @@ it("après un envoi réussi : « Retirer du PC », puis l'histoire reste sur la 
   button.focus();
   fireEvent.click(button);
   await waitFor(() => expect(count("library_remove_sent")).toBe(1));
-  expect(calls.find((c) => c.cmd === "library_remove_sent")?.args).toEqual({ uuid: A });
+  expect(calls.find((c) => c.cmd === "library_remove_sent")?.args).toEqual({
+    root: "E:\\",
+    uuid: A,
+  });
   const note = await screen.findByText(REMOVED);
-  expect(screen.queryByRole("button", { name: "Retirer du PC" })).toBeNull();
+  expect(screen.queryByRole("button", { name: PC })).toBeNull();
   // Le bouton a disparu : le focus passe au texte de la ligne, pas au corps du document.
   await waitFor(() => expect(note).toHaveFocus());
   expect(onPcCopyChange).toHaveBeenCalledWith("Capi", { status: "removed" });
@@ -192,13 +220,13 @@ it("pas de « Retirer du PC » après un échec, une annulation, ou sans proposi
   await waitFor(() =>
     expect(within(row("Les trois ours")).getByText("Envoyée")).toBeVisible(),
   );
-  expect(screen.queryByRole("button", { name: "Retirer du PC" })).toBeNull();
+  expect(screen.queryByRole("button", { name: PC })).toBeNull();
 
   // Annulation.
   outcomes.set(A, { error: { kind: "cancelled", message: "annulé" } });
   await send("Capi");
   await waitFor(() => expect(within(row("Capi")).getByText("Annulée")).toBeVisible());
-  expect(screen.queryByRole("button", { name: "Retirer du PC" })).toBeNull();
+  expect(screen.queryByRole("button", { name: PC })).toBeNull();
   expect(onPcCopyChange).not.toHaveBeenCalled();
 });
 
@@ -207,7 +235,7 @@ it("relecture carrier illisible : échec affiché, rien n'est proposé", async (
   renderPanel();
   await send("Capi");
   await waitFor(() => expect(within(row("Capi")).getByText("Échec")).toBeVisible());
-  expect(screen.queryByRole("button", { name: "Retirer du PC" })).toBeNull();
+  expect(screen.queryByRole("button", { name: PC })).toBeNull();
 });
 
 it("deux envois : chaque histoire a son propre état", async () => {
@@ -220,8 +248,8 @@ it("deux envois : chaque histoire a son propre état", async () => {
   await send("Capi");
   await send("Les trois ours");
   await act(async () => release());
-  await within(row("Les trois ours")).findByRole("button", { name: "Retirer du PC" });
-  expect(within(row("Capi")).queryByRole("button", { name: "Retirer du PC" })).toBeNull();
+  await within(row("Les trois ours")).findByRole("button", { name: PC });
+  expect(within(row("Capi")).queryByRole("button", { name: PC })).toBeNull();
   await expectNoAxeViolations(document.body);
 });
 
@@ -230,12 +258,12 @@ it("retrait automatique (réglage) : la ligne le dit, l'application est prévenu
   renderPanel();
   await send("Capi");
   expect(await screen.findByText(REMOVED)).toBeVisible();
-  expect(screen.queryByRole("button", { name: "Retirer du PC" })).toBeNull();
+  expect(screen.queryByRole("button", { name: PC })).toBeNull();
   expect(onPcCopyChange).toHaveBeenCalledWith("Capi", { status: "removed" });
   expect(count("library_remove_sent")).toBe(0);
 });
 
-it("retrait automatique impossible : envoi réussi, erreur affichée, bouton reproposé", async () => {
+it("retrait automatique impossible, puis refus du backend : plus de bouton, message gardé", async () => {
   const failure = {
     status: "remove_failed",
     message: "« Capi » est en cours de lecture",
@@ -251,11 +279,16 @@ it("retrait automatique impossible : envoi réussi, erreur affichée, bouton rep
   expect(within(row("Capi")).getByText("Envoyée")).toBeVisible();
   expect(onPcCopyChange).toHaveBeenCalledWith("Capi", failure);
 
-  // Nouvel essai en échec : le bouton reste et garde le focus.
-  removeSent = { kind: "validation", message: "installation en cours" };
+  // Nouvel essai refusé (histoire plus sur la Flam) : le bouton disparaît, le message reste et
+  // prend le focus.
+  removeSent = {
+    kind: "validation",
+    message:
+      "l'histoire n'a pas été retrouvée sur la Flam : elle n'a pas été retirée du PC",
+  };
   let release!: () => void;
   removeGate = new Promise((resolve) => (release = resolve));
-  const button = screen.getByRole("button", { name: "Retirer du PC" });
+  const button = screen.getByRole("button", { name: PC });
   button.focus();
   fireEvent.click(button);
   const busy = await screen.findByRole("button", { name: "Retrait du PC…" });
@@ -263,11 +296,47 @@ it("retrait automatique impossible : envoi réussi, erreur affichée, bouton rep
   // Second clic pendant le retrait : ignoré.
   fireEvent.click(busy);
   await act(async () => release());
+  const note = await screen.findByText(
+    "L'histoire n'a pas été retirée du PC : l'histoire n'a pas été retrouvée sur la Flam : elle n'a pas été retirée du PC",
+  );
+  expect(count("library_remove_sent")).toBe(1);
+  expect(screen.queryByRole("button", { name: PC })).toBeNull();
+  await waitFor(() => expect(note).toHaveFocus());
+});
+
+it("écriture non confirmée : gardée, bouton proposé, l'application prévenue", async () => {
+  outcomes.set(A, { ok: { status: "kept", unconfirmed: true } });
+  renderPanel();
+  await send("Capi");
+  expect(await screen.findByRole("button", { name: PC })).toBeVisible();
   expect(
-    await screen.findByText(
-      "L'histoire est envoyée, mais n'a pas pu être retirée du PC : installation en cours",
+    screen.getByText(
+      "Elle n'a pas été retirée du PC automatiquement, car son écriture sur la Flam n'a pas pu être confirmée.",
     ),
   ).toBeVisible();
-  expect(count("library_remove_sent")).toBe(1);
-  expect(screen.getByRole("button", { name: "Retirer du PC" })).toHaveFocus();
+  expect(onPcCopyChange).toHaveBeenCalledWith("Capi", { status: "kept_unconfirmed" });
+});
+
+it("histoire retirée de la Flam : « Retirer du PC » n'est plus proposé", async () => {
+  outcomes.set(A, { ok: { status: "kept" } });
+  renderPanel();
+  await send("Capi");
+  await screen.findByRole("button", { name: PC });
+  fireEvent.click(screen.getByRole("button", { name: "Retirer de la Flam" }));
+  await waitFor(() => expect(count("device_remove_story")).toBe(1));
+  await waitFor(() => expect(screen.queryByRole("button", { name: PC })).toBeNull());
+  expect(within(row("Capi")).getByText("Envoyée")).toBeVisible();
+  expect(count("library_remove_sent")).toBe(0);
+});
+
+it("autre Flam branchée : « Retirer du PC » n'est plus proposé", async () => {
+  outcomes.set(A, { ok: { status: "kept" } });
+  renderPanel();
+  await send("Capi");
+  await screen.findByRole("button", { name: PC });
+  const other = detected();
+  if (other.device) other.device.volume_label = "AUTRE";
+  status = other;
+  await waitFor(() => expect(screen.queryByRole("button", { name: PC })).toBeNull());
+  expect(count("library_remove_sent")).toBe(0);
 });

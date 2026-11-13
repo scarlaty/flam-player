@@ -91,6 +91,7 @@ impl Env {
         send_then_settle(
             &self.registry,
             &self.cache,
+            &self.root,
             uuid,
             auto,
             &|| installing,
@@ -141,6 +142,7 @@ fn id(s: &str) -> crate::device::index::StoryId {
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "retrait automatique : Windows seulement")]
 fn retrait_automatique_apres_un_envoi_reussi() {
     let env = Env::new();
     env.install(A, 10, &[1u8; 3000]);
@@ -162,17 +164,20 @@ fn reglage_desactive_rien_n_est_retire_et_le_retrait_manuel_reste_possible() {
     env.install(A, 10, &[1u8; 3000]);
 
     let report = env.send(A, &FaultyFs::new(), false).unwrap();
-    assert_eq!(report.library_copy, Some(LibraryCopy::Kept));
+    assert_eq!(
+        report.library_copy,
+        Some(LibraryCopy::Kept { unconfirmed: false })
+    );
     assert!(on_device(&env.root));
     assert!(env.installed(A), "gardée");
     assert!(env.registry.knows(A));
 
     // « Retirer du PC » : même vérification, puis retrait.
-    remove_sent(&env.registry, A, &|| false, env.remover(A)).unwrap();
+    remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap();
     assert!(!env.installed(A));
     assert!(on_device(&env.root), "toujours sur la Flam");
     // Second clic : plus rien d'enregistré.
-    let err = remove_sent(&env.registry, A, &|| false, env.remover(A)).unwrap_err();
+    let err = remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap_err();
     assert_eq!(err.kind(), "not_found");
 }
 
@@ -230,6 +235,7 @@ fn aucun_retrait_ni_enregistrement_apres_un_echec_une_annulation_ou_un_envoi_par
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "retrait automatique : Windows seulement")]
 fn deux_histoires_chacune_jugee_a_part() {
     let env = Env::new();
     env.install(A, 10, &[1u8; 3000]);
@@ -293,15 +299,19 @@ fn histoire_reinstallee_pendant_l_envoi_jamais_retiree() {
     let env = Env::new();
     env.install(A, 10, &[1u8; 3000]);
     let report = env.send(A, &FaultyFs::new(), false).unwrap();
-    assert_eq!(report.library_copy, Some(LibraryCopy::Kept));
+    assert_eq!(
+        report.library_copy,
+        Some(LibraryCopy::Kept { unconfirmed: false })
+    );
     env.install(A, 30, &[4u8; 3000]);
-    let err = remove_sent(&env.registry, A, &|| false, env.remover(A)).unwrap_err();
+    let err = remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap_err();
     assert_eq!(err.to_string(), CHANGED_MESSAGE);
     assert!(env.installed(A));
     assert!(!env.registry.knows(A), "empreinte périmée oubliée");
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "retrait automatique : Windows seulement")]
 fn echec_du_retrait_rapporte_sans_faire_echouer_l_envoi() {
     // Installation de la même histoire en cours : refus vérifié sous le verrou.
     let env = Env::new();
@@ -336,6 +346,7 @@ fn echec_du_retrait_rapporte_sans_faire_echouer_l_envoi() {
     let report = send_then_settle(
         &env.registry,
         &env.cache,
+        &env.root,
         A,
         true,
         &|| false,
@@ -362,7 +373,7 @@ fn echec_du_retrait_rapporte_sans_faire_echouer_l_envoi() {
         })
     );
     assert!(env.installed(A));
-    remove_sent(&env.registry, A, &|| false, env.remover(A)).unwrap();
+    remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap();
     assert!(!env.installed(A));
 }
 
@@ -383,14 +394,19 @@ fn relecture_carrier_illisible_ou_empreinte_absente_rien_n_est_propose() {
         carrier_stored: Some(false),
         recovery_failures: Vec::new(),
         library_copy: None,
+        dir_synced: true,
+        verified_uncached: true,
+        installed_files: vec![("info".into(), 1)],
     };
     let removed = std::cell::Cell::new(false);
     let copy = settle(
         &env.registry,
         &env.cache,
+        &env.root,
         A,
         stamp,
         &report,
+        true,
         true,
         &|| false,
         |_| {
@@ -408,12 +424,14 @@ fn relecture_carrier_illisible_ou_empreinte_absente_rien_n_est_propose() {
     let copy = settle(
         &env.registry,
         &env.cache,
+        &env.root,
         "inconnue",
         None,
         &TransferReport {
             carrier_readback: None,
             ..report
         },
+        true,
         true,
         &|| false,
         |_| {
@@ -426,6 +444,7 @@ fn relecture_carrier_illisible_ou_empreinte_absente_rien_n_est_propose() {
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "retrait automatique : Windows seulement")]
 fn le_retrait_ne_touche_que_l_entree_envoyee() {
     let env = Env::new();
     env.install(A, 10, &[1u8; 3000]);
@@ -440,4 +459,199 @@ fn le_retrait_ne_touche_que_l_entree_envoyee() {
     assert!(env.installed(B), "l'autre histoire reste");
     assert!(b_file.is_file());
     assert_eq!(std::fs::read(&source).unwrap(), b"source");
+}
+
+/// Envoi gardé (réglage désactivé) : « Retirer du PC » est enregistré.
+fn kept(env: &Env) {
+    let report = env.send(A, &FaultyFs::new(), false).unwrap();
+    assert_eq!(
+        report.library_copy,
+        Some(LibraryCopy::Kept { unconfirmed: false })
+    );
+    assert!(env.registry.knows(A));
+}
+
+#[test]
+fn retirer_du_pc_refuse_si_l_histoire_a_quitte_la_flam() {
+    // Retirée de la Flam hors du launcher (dossier et index) : refus, rien n'est retiré.
+    let env = Env::new();
+    env.install(A, 10, &[1u8; 3000]);
+    kept(&env);
+    std::fs::remove_dir_all(env.root.join("str").join(NEW)).unwrap();
+    write(
+        &env.root.join("etc/library/list"),
+        &crate::device::index::serialize(&[id(OTHER)]),
+    );
+    let err = remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap_err();
+    assert_eq!(err.to_string(), NOT_ON_DEVICE_MESSAGE);
+    assert!(env.installed(A), "toujours dans Mes histoires");
+    assert!(!env.registry.knows(A), "entrée oubliée");
+
+    // Encore listée, mais un fichier manque ou n'a plus sa taille : refus.
+    for damage in ["manque", "taille"] {
+        let env = Env::new();
+        env.install(A, 10, &[1u8; 3000]);
+        kept(&env);
+        let sound = env.root.join("str").join(NEW).join("sounds/a.mp3");
+        if damage == "manque" {
+            std::fs::remove_file(&sound).unwrap();
+        } else {
+            write(&sound, b"court");
+        }
+        let err = remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap_err();
+        assert_eq!(err.to_string(), NOT_ON_DEVICE_MESSAGE, "{damage}");
+        assert!(env.installed(A), "{damage}");
+    }
+
+    // Retirée par « Ma Flam » (`device_remove_story` oublie l'histoire de la Flam) : plus rien
+    // d'enregistré, quelle que soit la forme de l'identifiant.
+    let env = Env::new();
+    env.install(A, 10, &[1u8; 3000]);
+    kept(&env);
+    env.registry
+        .forget_story(&NEW.replace('-', "").to_uppercase());
+    assert!(!env.registry.knows(A));
+    let err = remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap_err();
+    assert_eq!(err.kind(), "not_found");
+    assert!(env.installed(A));
+}
+
+#[test]
+fn retirer_du_pc_refuse_flam_debranchee_ou_autre_flam() {
+    // Débranchée : plus de `.mdf` à cette racine.
+    let env = Env::new();
+    env.install(A, 10, &[1u8; 3000]);
+    kept(&env);
+    std::fs::remove_file(env.root.join(MDF_FILE)).unwrap();
+    let err = remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap_err();
+    assert_eq!(err.to_string(), OTHER_DEVICE_MESSAGE);
+    assert!(env.installed(A));
+    assert!(!env.registry.knows(A));
+
+    // Autre Flam à la même racine (autre `.mdf`), ou Flam à une autre racine : refus, même si
+    // elle porte la même histoire.
+    for other_root in [false, true] {
+        let env = Env::new();
+        env.install(A, 10, &[1u8; 3000]);
+        kept(&env);
+        let root = if other_root {
+            let copy = env.tmp.path().join("autre");
+            for (rel, data) in snapshot(&env.root) {
+                if let Some(data) = data {
+                    write(&copy.join("flam").join(&rel), &data);
+                }
+            }
+            copy.join("flam")
+        } else {
+            write(&env.root.join(MDF_FILE), &mdf("2.4.3"));
+            env.root.clone()
+        };
+        let err = remove_sent(&env.registry, &root, A, &|| false, env.remover(A)).unwrap_err();
+        assert_eq!(err.to_string(), OTHER_DEVICE_MESSAGE, "{other_root}");
+        assert!(env.installed(A), "{other_root}");
+        assert!(!env.registry.knows(A), "{other_root}");
+    }
+}
+
+#[test]
+fn un_nouvel_envoi_oublie_l_ancien_meme_s_il_echoue() {
+    let env = Env::new();
+    env.install(A, 10, &[1u8; 3000]);
+    kept(&env);
+    // Renvoi (remplacement refusé faute de `replace` : « déjà sur la Flam ») : en échec, l'ancien
+    // envoi n'est plus utilisable.
+    assert!(env.send(A, &FaultyFs::new(), false).is_err());
+    assert!(!env.registry.knows(A));
+    let err = remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap_err();
+    assert_eq!(err.kind(), "not_found");
+    assert!(env.installed(A));
+
+    // Renvoi en échec (coupure) d'une histoire gardée.
+    let env = Env::new();
+    env.install(A, 10, &[1u8; 3000]);
+    kept(&env);
+    std::fs::remove_dir_all(env.root.join("str").join(NEW)).unwrap();
+    write(
+        &env.root.join("etc/library/list"),
+        &crate::device::index::serialize(&[id(OTHER)]),
+    );
+    assert!(env.send(A, &FaultyFs::crash_at(8), false).is_err());
+    assert!(!env.registry.knows(A));
+    assert!(env.installed(A));
+}
+
+#[test]
+fn ecriture_non_confirmee_pas_de_retrait_automatique() {
+    for (sync_fails, cached) in [(true, false), (false, true), (true, true)] {
+        let env = Env::new();
+        env.install(A, 10, &[1u8; 3000]);
+        let mut fs = FaultyFs::new();
+        fs.sync_dir_fails = sync_fails;
+        fs.cached_verify = cached;
+        let report = env.send(A, &fs, true).unwrap();
+        assert_eq!(
+            report.library_copy,
+            Some(LibraryCopy::Kept { unconfirmed: true }),
+            "{sync_fails} {cached}"
+        );
+        assert!(!report.dir_synced || !report.verified_uncached);
+        assert!(on_device(&env.root));
+        assert!(env.installed(A), "gardée");
+        // « Retirer du PC » reste possible, après revérification sur la Flam.
+        remove_sent(&env.registry, &env.root, A, &|| false, env.remover(A)).unwrap();
+        assert!(!env.installed(A));
+    }
+}
+
+#[test]
+#[cfg_attr(not(windows), ignore = "retrait automatique : Windows seulement")]
+fn ecriture_confirmee_retrait_automatique() {
+    let env = Env::new();
+    env.install(A, 10, &[1u8; 3000]);
+    let report = env.send(A, &FaultyFs::new(), true).unwrap();
+    assert!(report.dir_synced && report.verified_uncached);
+    assert_eq!(report.library_copy, Some(LibraryCopy::Removed));
+    assert!(!env.installed(A));
+}
+
+#[test]
+fn jamais_de_retrait_automatique_hors_windows() {
+    let env = Env::new();
+    env.install(A, 10, &[1u8; 3000]);
+    let report = env.send(A, &FaultyFs::new(), false).unwrap();
+    let confirmed = TransferReport {
+        dir_synced: true,
+        verified_uncached: true,
+        ..report.clone()
+    };
+    assert!(durable_on(&confirmed, true));
+    assert!(!durable_on(&confirmed, false), "hors Windows");
+    for (dir_synced, verified_uncached) in [(false, true), (true, false)] {
+        let partial = TransferReport {
+            dir_synced,
+            verified_uncached,
+            ..report.clone()
+        };
+        assert!(!durable_on(&partial, true));
+    }
+    // Rapport hors Windows (`dir_synced` toujours faux) : jamais de retrait automatique.
+    let removed = std::cell::Cell::new(false);
+    let copy = settle(
+        &env.registry,
+        &env.cache,
+        &env.root,
+        A,
+        SentStamp::capture(&env.cache, A),
+        &report,
+        true,
+        durable_on(&confirmed, false),
+        &|| false,
+        |_| {
+            removed.set(true);
+            Ok(())
+        },
+    );
+    assert_eq!(copy, Some(LibraryCopy::Kept { unconfirmed: true }));
+    assert!(!removed.get());
+    assert!(env.installed(A));
 }

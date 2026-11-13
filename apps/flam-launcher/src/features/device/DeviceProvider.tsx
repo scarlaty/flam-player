@@ -26,6 +26,7 @@ import {
   DeviceContext,
   type DeviceApi,
   type EjectNote,
+  type PcCopyNotice,
   type PcCopyState,
   type QueueItem,
   type SendRequest,
@@ -57,20 +58,29 @@ export interface DeviceProviderProps {
    * Une histoire envoyée a été retirée de « Mes histoires » (réglage ou « Retirer du PC »), ou
    * son retrait a échoué (#609) : la bibliothèque est à relire, l'utilisateur à prévenir.
    */
-  onPcCopyChange?: (
-    title: string,
-    outcome: Exclude<LibraryCopy, { status: "kept" }>,
-  ) => void;
+  onPcCopyChange?: (title: string, notice: PcCopyNotice) => void;
+}
+
+/** Même histoire de la Flam (UUID avec ou sans tirets, casse indifférente). */
+function sameStory(a: string | undefined, b: string): boolean {
+  const norm = (id: string) => id.replace(/-/g, "").toLowerCase();
+  return a !== undefined && norm(a) === norm(b);
+}
+
+/** « Retirer du PC » encore proposé (ou en cours) pour cette ligne. */
+function offersPcRemoval(item: QueueItem): boolean {
+  return item.pcCopy === "kept" || item.pcCopy === "failed";
 }
 
 /** État affiché de la copie « Mes histoires » d'après le rapport d'envoi (#609). */
 function pcCopyOf(copy: LibraryCopy | null | undefined): {
   pcCopy?: PcCopyState;
   pcCopyError?: string;
+  pcCopyUnconfirmed?: boolean;
 } {
   switch (copy?.status) {
     case "kept":
-      return { pcCopy: "kept" };
+      return { pcCopy: "kept", pcCopyUnconfirmed: copy.unconfirmed === true };
     case "removed":
       return { pcCopy: "removed" };
     case "remove_failed":
@@ -281,6 +291,30 @@ export function DeviceProvider({
     [updateQueue],
   );
 
+  /** Retire « Retirer du PC » des lignes choisies (histoire retirée de la Flam, autre Flam). */
+  const clearPcCopy = useCallback(
+    (which: (item: QueueItem) => boolean) =>
+      updateQueue((items) =>
+        items.some((item) => offersPcRemoval(item) && which(item))
+          ? items.map((item) =>
+              offersPcRemoval(item) && which(item)
+                ? { ...item, pcCopy: undefined, pcCopyError: undefined }
+                : item,
+            )
+          : items,
+      ),
+    [updateQueue],
+  );
+
+  // Flam changée, débranchée ou rebranchée : « Retirer du PC » n'est plus proposé (le backend
+  // revérifierait de toute façon que l'histoire est sur la même Flam).
+  const pcCopyKey = useRef(deviceKey);
+  useEffect(() => {
+    if (pcCopyKey.current === deviceKey) return;
+    pcCopyKey.current = deviceKey;
+    clearPcCopy(() => true);
+  }, [deviceKey, clearPcCopy]);
+
   const pump = useCallback(async () => {
     if (running.current) return;
     running.current = true;
@@ -348,6 +382,8 @@ export function DeviceProvider({
                     warning,
                     pcCopy: undefined,
                     pcCopyError: undefined,
+                    pcCopyUnconfirmed: undefined,
+                    deviceId: sent.id,
                     ...pcCopyOf(copy),
                   }
                 : item,
@@ -355,8 +391,12 @@ export function DeviceProvider({
           );
           const done = text.panel.announce.done(next.title);
           setAnnouncement(warning ? `${done}. ${warning}` : done);
-          if (copy && copy.status !== "kept")
+          if (copy?.status === "kept") {
+            if (copy.unconfirmed)
+              onPcCopyChangeRef.current?.(next.title, { status: "kept_unconfirmed" });
+          } else if (copy) {
             onPcCopyChangeRef.current?.(next.title, copy);
+          }
         }
         bumpReload();
         const gen = reloadGen.current;
@@ -581,14 +621,21 @@ export function DeviceProvider({
       if (!item || (item.pcCopy !== "kept" && item.pcCopy !== "failed")) return;
       // Le backend refuse pendant un envoi (verrou de la Flam) : pas d'appel inutile.
       if (running.current) return;
+      const rootNow = rootRef.current;
+      if (!rootNow) {
+        setPcCopy(uuid, "refused", text.panel.pcCopy.noDevice);
+        return;
+      }
       setPcCopy(uuid, "removing");
       try {
-        await removeSentFromLibrary(uuid);
+        await removeSentFromLibrary(rootNow, uuid);
         setPcCopy(uuid, "removed");
         onPcCopyChangeRef.current?.(item.title, { status: "removed" });
       } catch (caught) {
+        // Refus du backend (histoire plus sur la Flam, autre Flam, lecture…) : le bouton n'est
+        // plus proposé, le message reste sur la ligne.
         const message = toAppError(caught).message;
-        setPcCopy(uuid, "failed", message);
+        setPcCopy(uuid, "refused", message);
         onPcCopyChangeRef.current?.(item.title, { status: "remove_failed", message });
       }
     },
@@ -634,6 +681,9 @@ export function DeviceProvider({
       if (!rootNow || deviceKeyRef.current !== expectedKey)
         throw { kind: "not_found", message: text.errors.noDevice };
       setRemoving(true);
+      // Histoire retirée de la Flam : « Retirer du PC » ne vaut plus pour elle, quelle que soit
+      // l'issue du retrait (le backend l'oublie aussi, #609).
+      clearPcCopy((item) => sameStory(item.deviceId, uuid));
       try {
         const report = await removeDeviceStory(rootNow, uuid, true);
         bumpReload();
@@ -642,7 +692,7 @@ export function DeviceProvider({
         setRemoving(false);
       }
     },
-    [bumpReload],
+    [bumpReload, clearPcCopy],
   );
 
   const reorderOnDevice = useCallback(

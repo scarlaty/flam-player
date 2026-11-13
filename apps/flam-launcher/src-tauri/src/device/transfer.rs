@@ -194,6 +194,19 @@ pub struct TransferReport {
     /// Copie de l'histoire dans « Mes histoires » après l'envoi (#609) : rempli par
     /// [`device_send_story`] seulement ([`after_send::send_then_settle`]), `None` sinon.
     pub library_copy: Option<after_send::LibraryCopy>,
+    /// Les renommages de dossier ont été forcés sur le support (`sync_dir` réussi pour la
+    /// nouvelle histoire, `str/` et `.flam-transfer/`) ; faux si l'un a échoué, et toujours hors
+    /// Windows (#609 : condition du retrait automatique). Interne.
+    #[serde(skip)]
+    pub(crate) dir_synced: bool,
+    /// Chaque fichier a été relu sans le cache du système ([`DeviceFs::verified_uncached`]) ;
+    /// faux hors Windows ou après un repli sur le cache (#609). Interne.
+    #[serde(skip)]
+    pub(crate) verified_uncached: bool,
+    /// Fichiers installés dans `str/<uuid>/` (chemin relatif `/`, taille), pour retrouver
+    /// l'histoire sur la Flam avant « Retirer du PC » (#609). Interne.
+    #[serde(skip)]
+    pub(crate) installed_files: Vec<(String, u64)>,
 }
 
 /// Bilan d'une reprise.
@@ -366,9 +379,15 @@ pub(crate) trait DeviceFs {
     fn same_directory(&self, a: &Path, b: &Path) -> io::Result<bool>;
     /// Remplace `list` par `entries` ([`index::write_index`], sans accord : index valide requis).
     fn write_index(&self, root: &Path, entries: &[StoryId]) -> Result<WriteOutcome, IndexError>;
-    /// Force sur le disque les entrées d'un dossier (renommages). Sans effet par défaut.
+    /// Force sur le disque les entrées d'un dossier (renommages). Sans effet par défaut (hors
+    /// Windows : le renommage n'est alors pas réputé forcé, voir `dir_synced`).
     fn sync_dir(&self, _path: &Path) -> io::Result<()> {
         Ok(())
+    }
+    /// Vrai si toutes les relectures faites par [`Self::open_verify`] ont évité le cache du
+    /// système. Faux par défaut (#609 : condition du retrait automatique).
+    fn verified_uncached(&self) -> bool {
+        false
     }
 }
 
@@ -376,12 +395,15 @@ pub(crate) trait DeviceFs {
 pub(crate) struct RealFs {
     /// Espace libre d'un volume (injectable : `None` hors Windows).
     pub free_space: fn(&Path) -> Option<u64>,
+    /// Une relecture est retombée sur le cache du système (ouverture sans cache refusée).
+    pub verify_fell_back: AtomicBool,
 }
 
 impl Default for RealFs {
     fn default() -> Self {
         Self {
             free_space: super::detect::free_space,
+            verify_fell_back: AtomicBool::new(false),
         }
     }
 }
@@ -409,12 +431,16 @@ impl DeviceFs for RealFs {
         match unbuffered::open(path) {
             Ok(reader) => return Ok(Box::new(reader)),
             Err(err) => {
+                self.verify_fell_back.store(true, Ordering::Relaxed);
                 tracing::warn!(
                     "relecture sans cache impossible ({err}) : relecture avec le cache du système"
                 );
             }
         }
         Ok(Box::new(File::open(path)?))
+    }
+    fn verified_uncached(&self) -> bool {
+        cfg!(windows) && !self.verify_fell_back.load(Ordering::Relaxed)
     }
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         retry_transient(|| fs::rename(from, to), std::thread::sleep)
@@ -767,12 +793,16 @@ pub(crate) fn send_with(
 
     // Les renommages de dossier sont forcés sur le disque avant d'aller plus loin (au mieux) :
     // sans écriture d'index (mise à jour d'une histoire déjà listée), rien d'autre ne le ferait.
+    // Le résultat est seulement rapporté (#609), il ne change pas la suite de l'envoi.
+    // Hors Windows, `sync_dir` ne fait rien : jamais réputé forcé.
+    let mut dir_synced = cfg!(windows);
     for dir in [
         target.as_path(),
         &root.join(STORIES_DIR),
         &root.join(TRANSFER_DIR),
     ] {
         if let Err(err) = fs.sync_dir(dir) {
+            dir_synced = false;
             // FAT peut refuser à chaque envoi : un seul avertissement, puis du débogage.
             if SYNC_DIR_WARNED.swap(true, Ordering::Relaxed) {
                 tracing::debug!(%id, dossier = %dir.display(), "synchronisation du dossier impossible : {err}");
@@ -814,6 +844,13 @@ pub(crate) fn send_with(
     }
     let _ = fs.remove_empty_dir(&root.join(TRANSFER_DIR));
     tracing::info!(%id, fichiers = files.len(), octets = total, mise_a_jour = present, "histoire transférée sur la Flam");
+    let verified_uncached = fs.verified_uncached();
+    // Ligne mesurée sur une vraie Flam (#609) : « durabilité de l'envoi ».
+    tracing::info!(
+        renommage_force = if dir_synced { "oui" } else { "non" },
+        relecture_sans_cache = if verified_uncached { "oui" } else { "non" },
+        "durabilité de l'envoi"
+    );
     Ok(TransferReport {
         id: id.to_string(),
         bytes: total,
@@ -825,6 +862,9 @@ pub(crate) fn send_with(
         carrier_stored: None,
         recovery_failures,
         library_copy: None,
+        dir_synced,
+        verified_uncached,
+        installed_files: files.iter().map(|f| (f.relative.clone(), f.size)).collect(),
     })
 }
 
@@ -1410,6 +1450,7 @@ pub async fn device_send_story(
         let report = after_send::send_then_settle(
             &SENT,
             &cache_root,
+            Path::new(&root),
             &uuid,
             remove_after_send,
             &|| after_send::installing(&installs, &uuid),

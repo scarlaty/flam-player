@@ -547,7 +547,7 @@ export const fr = {
       title: "Envoi sur la Flam",
       removeAfterSend: "Retirer de Mes histoires après l'envoi sur la Flam",
       removeAfterSendHint:
-        "Une fois l'histoire envoyée et vérifiée sur la Flam, sa copie est retirée de ce PC pour libérer de la place. L'histoire reste sur la Flam ; pour la renvoyer plus tard, il faudra la réinstaller. La progression de l'enfant est conservée.",
+        "Une fois l'histoire envoyée et son écriture confirmée sur la Flam, sa copie est retirée de ce PC pour libérer de la place. L'histoire reste sur la Flam ; pour la renvoyer plus tard, il faudra la réinstaller. La progression de l'enfant est conservée. Avant de débrancher la Flam, utilisez « Éjecter la Flam ».",
       failed: "Ce réglage n'a pas pu être enregistré.",
     },
     playback: {
@@ -1032,17 +1032,26 @@ export const fr = {
           `« ${title} » retirée de Mes histoires : elle reste sur la Flam`,
         removeFromPcFailed: (title: string, message: string) =>
           `« ${title} » n'a pas pu être retirée du PC : ${message}`,
+        keptUnconfirmed: (title: string) =>
+          `« ${title} » envoyée. Elle n'a pas été retirée du PC automatiquement, car son écriture sur la Flam n'a pas pu être confirmée.`,
       },
       /** Après un envoi réussi : retrait de la copie gardée dans « Mes histoires » (#609). */
       pcCopy: {
         remove: "Retirer du PC",
-        removeLabel: (title: string) => `Retirer « ${title} » du PC`,
+        /** Nom accessible : contient le libellé visible, distinct de « Retirer … de la file ». */
+        removeLabel: (title: string) => `Retirer du PC : « ${title} »`,
         removing: "Retrait du PC…",
-        hint: "L'histoire reste sur la Flam. Pour la renvoyer plus tard, il faudra la réinstaller.",
+        hint: "L'histoire reste sur la Flam. Pour la renvoyer plus tard, il faudra la réinstaller. Avant de débrancher la Flam, utilisez « Éjecter la Flam ».",
         removed:
           "Retirée de Mes histoires : l'histoire reste sur la Flam. Pour la renvoyer plus tard, il faudra la réinstaller.",
         failed: (message: string) =>
           `L'histoire est envoyée, mais n'a pas pu être retirée du PC : ${message}`,
+        /** « Retirer du PC » refusé : le bouton n'est plus proposé. */
+        refused: (message: string) => `L'histoire n'a pas été retirée du PC : ${message}`,
+        /** Retrait automatique demandé, écriture sur la Flam non confirmée. */
+        unconfirmed:
+          "Elle n'a pas été retirée du PC automatiquement, car son écriture sur la Flam n'a pas pu être confirmée.",
+        noDevice: "la Flam n'est plus détectée",
       },
     },
     finished: {

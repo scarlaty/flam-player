@@ -14,6 +14,17 @@
 //! (Flam 1.x), un `info` relu illisible (`carrier_readback == Some(false)`) n'est pas un succès :
 //! l'interface l'affiche en échec, et rien n'est retiré.
 //!
+//! # Retrait automatique : écriture confirmée sur le support
+//!
+//! La relecture a lieu dans `.flam-transfer/<uuid>.in/`, avant le renommage en `str/<uuid>/`, et
+//! le renommage n'est forcé sur le support qu'au mieux. Le retrait automatique n'a donc lieu que
+//! si, en plus, le renommage a été forcé (`dir_synced`) et la relecture a évité le cache du
+//! système (`verified_uncached`), et seulement sous Windows ([`durable`]). Sinon la copie est
+//! gardée (`kept`, `unconfirmed`) : « Retirer du PC » reste proposé.
+//!
+//! Le retrait automatique se fait verrou de la Flam tenu, après l'envoi : il peut attendre le
+//! créneau du player (lancement en préparation), et l'annulation de l'envoi est alors sans effet.
+//!
 //! # Même génération
 //!
 //! L'empreinte de l'entrée envoyée ([`SentStamp`] : fichier, taille et date d'installation de
@@ -21,11 +32,15 @@
 //! l'envoi, puis une dernière fois sous le verrou de la bibliothèque juste avant le retrait. Une
 //! histoire réinstallée ou mise à jour entre-temps n'est jamais retirée.
 //!
-//! # Retrait manuel
+//! # Toujours sur la Flam
 //!
-//! Un envoi réussi enregistre l'empreinte dans [`SENT`] (mémoire du processus) : « Retirer du
-//! PC » ([`library_remove_sent`]) ne retire que ce qui y figure, et seulement si l'entrée n'a pas
-//! changé depuis. Il prend le verrou de la Flam : refusé pendant un envoi.
+//! Un envoi réussi enregistre dans [`SENT`] (mémoire du processus) l'empreinte et l'histoire
+//! telle qu'installée ([`OnDevice`] : racine, empreinte du `.mdf`, identifiant sur la Flam,
+//! fichiers et tailles). Avant tout retrait, verrou de la Flam tenu, [`OnDevice::verify`] relit
+//! la Flam : même racine et même `.mdf`, histoire listée dans l'index visible, chaque fichier
+//! envoyé présent dans `str/<id>/` avec sa taille. Sinon refus, et l'entrée est oubliée.
+//! L'entrée est aussi oubliée au début de tout nouvel envoi de l'histoire, et quand l'histoire
+//! est retirée de la Flam (`device_remove_story`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -33,10 +48,12 @@ use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tauri::State;
 
+use super::index::{read_index, IndexKind, IndexState, StoryId, STORIES_DIR};
 use super::lock::{Operation, DEVICE_LOCK};
-use super::transfer::{TransferError, TransferReport};
+use super::transfer::{read_mdf, TransferError, TransferReport};
 use crate::catalog::{blocking, CatalogService};
 use crate::install::InstallService;
 use crate::library::{Library, LibraryEntry};
@@ -54,6 +71,84 @@ pub const INSTALLING_MESSAGE: &str = "une installation de cette histoire est en 
 /// Aucun envoi réussi de cette histoire n'est enregistré.
 pub const NOT_SENT_MESSAGE: &str = "aucun envoi réussi de cette histoire n'est connu : pour la \
      retirer du PC, utilisez « Supprimer » dans Mes histoires";
+/// La Flam de l'envoi n'est pas branchée (débranchée, ou une autre Flam).
+pub const OTHER_DEVICE_MESSAGE: &str = "la Flam de l'envoi n'est pas branchée : l'histoire n'a \
+     pas été retirée du PC";
+/// L'histoire n'est plus sur la Flam telle qu'elle a été envoyée.
+pub const NOT_ON_DEVICE_MESSAGE: &str = "l'histoire n'a pas été retrouvée sur la Flam : elle n'a \
+     pas été retirée du PC";
+
+/// Racine d'une Flam, sans séparateur final ni casse (comme la garde des écritures).
+fn root_key(root: &Path) -> String {
+    root.to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .to_ascii_lowercase()
+}
+
+/// Deux écritures du même UUID (formes à tirets ou non, casse indifférente).
+fn same_story(a: &str, b: &str) -> bool {
+    matches!(
+        (uuid::Uuid::try_parse(a), uuid::Uuid::try_parse(b)),
+        (Ok(x), Ok(y)) if x == y
+    )
+}
+
+/// Histoire envoyée, telle qu'installée sur la Flam.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OnDevice {
+    root: String,
+    mdf_digest: [u8; 32],
+    story: String,
+    files: Vec<(String, u64)>,
+}
+
+impl OnDevice {
+    /// Relevé juste après un envoi réussi : `.mdf` relu ; `None` s'il est illisible ou si le
+    /// rapport ne cite aucun fichier (aucun retrait possible).
+    fn capture(root: &Path, report: &TransferReport) -> Option<Self> {
+        if report.installed_files.is_empty() {
+            return None;
+        }
+        let mdf = read_mdf(root).ok()?;
+        Some(Self {
+            root: root_key(root),
+            mdf_digest: Sha256::digest(&*mdf).into(),
+            story: report.id.clone(),
+            files: report.installed_files.clone(),
+        })
+    }
+
+    /// Relit la Flam de `root` : même racine et même `.mdf` (sinon [`OTHER_DEVICE_MESSAGE`]),
+    /// histoire listée dans l'index visible, dossier `str/<id>/` avec chaque fichier envoyé à sa
+    /// taille (sinon [`NOT_ON_DEVICE_MESSAGE`]). Lecture seule.
+    pub(crate) fn verify(&self, root: &Path) -> AppResult<()> {
+        let other = || AppError::Validation(OTHER_DEVICE_MESSAGE.into());
+        let missing = || AppError::Validation(NOT_ON_DEVICE_MESSAGE.into());
+        if root_key(root) != self.root {
+            return Err(other());
+        }
+        let mdf = read_mdf(root).map_err(|_| other())?;
+        if <[u8; 32]>::from(Sha256::digest(&*mdf)) != self.mdf_digest {
+            return Err(other());
+        }
+        let id = StoryId::parse(&self.story).ok_or_else(missing)?;
+        let list = read_index(root, IndexKind::Visible);
+        if list.state != IndexState::Valid || !list.entries.contains(&id) {
+            return Err(missing());
+        }
+        let dir = root.join(STORIES_DIR).join(id.as_str());
+        let intact = !self.files.is_empty()
+            && self.files.iter().all(|(relative, size)| {
+                std::fs::symlink_metadata(dir.join(relative))
+                    .is_ok_and(|m| m.is_file() && m.len() == *size)
+            });
+        if intact {
+            Ok(())
+        } else {
+            Err(missing())
+        }
+    }
+}
 
 /// Empreinte de l'entrée de bibliothèque envoyée.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,33 +190,52 @@ impl SentStamp {
     }
 }
 
-/// Envois réussis de la session : histoire de la bibliothèque -> empreinte envoyée.
+/// Envoi réussi enregistré : entrée de bibliothèque et histoire sur la Flam.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Sent {
+    stamp: SentStamp,
+    device: OnDevice,
+}
+
+/// Envois réussis de la session : histoire de la bibliothèque -> envoi enregistré.
 #[derive(Debug, Default)]
-pub(crate) struct SentRegistry(Mutex<BTreeMap<String, SentStamp>>);
+pub(crate) struct SentRegistry(Mutex<BTreeMap<String, Sent>>);
 
 impl SentRegistry {
     pub(crate) const fn new() -> Self {
         Self(Mutex::new(BTreeMap::new()))
     }
 
-    fn map(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, SentStamp>> {
+    fn map(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Sent>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn record(&self, uuid: &str, stamp: SentStamp) {
-        self.map().insert(uuid.to_string(), stamp);
+    fn record(&self, uuid: &str, sent: Sent) {
+        self.map().insert(uuid.to_string(), sent);
     }
 
-    fn get(&self, uuid: &str) -> Option<SentStamp> {
+    fn get(&self, uuid: &str) -> Option<Sent> {
         self.map().get(uuid).cloned()
     }
 
-    /// Oublie `uuid` s'il est toujours associé à `stamp` (un envoi plus récent est gardé).
-    fn forget(&self, uuid: &str, stamp: &SentStamp) {
+    /// Oublie `uuid` s'il est toujours associé à `sent` (un envoi plus récent est gardé).
+    fn forget(&self, uuid: &str, sent: &Sent) {
         let mut map = self.map();
-        if map.get(uuid) == Some(stamp) {
+        if map.get(uuid) == Some(sent) {
             map.remove(uuid);
         }
+    }
+
+    /// Oublie l'envoi de l'histoire `uuid` de la bibliothèque (nouvel envoi qui commence).
+    pub(crate) fn forget_uuid(&self, uuid: &str) {
+        self.map().remove(uuid);
+    }
+
+    /// Oublie les envois dont l'histoire sur la Flam est `story` (retirée de la Flam, ou
+    /// remplacée par un autre envoi).
+    pub(crate) fn forget_story(&self, story: &str) {
+        self.map()
+            .retain(|_, sent| !same_story(&sent.device.story, story));
     }
 
     /// Un envoi réussi de `uuid` est enregistré.
@@ -139,8 +253,9 @@ pub(crate) static SENT: SentRegistry = SentRegistry::new();
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum LibraryCopy {
-    /// Gardée ; « Retirer du PC » est possible.
-    Kept,
+    /// Gardée ; « Retirer du PC » est possible. `unconfirmed` : le retrait automatique était
+    /// demandé, mais l'écriture sur la Flam n'a pas pu être confirmée ([`durable`]).
+    Kept { unconfirmed: bool },
     /// Retirée automatiquement (réglage `remove_after_send`).
     Removed,
     /// Retrait automatique impossible : l'envoi reste réussi, l'histoire reste sur le PC.
@@ -151,25 +266,32 @@ pub enum LibraryCopy {
 /// et chemin de son fichier.
 pub(crate) type Check<'a> = &'a dyn Fn(&LibraryEntry, Option<&Path>) -> AppResult<()>;
 
-/// Retire l'histoire `uuid` envoyée (empreinte de `registry`) par `remove`, qui reçoit la
-/// vérification à faire sous le verrou : pas d'installation en cours (`installing`), entrée
-/// identique à celle envoyée. L'empreinte est oubliée une fois l'histoire retirée, ou si elle ne
-/// peut plus l'être (absente, changée).
+/// Retire l'histoire `uuid` envoyée (enregistrée dans `registry`) par `remove`, à appeler verrou
+/// de la Flam tenu. D'abord, l'histoire doit être retrouvée telle qu'envoyée sur la Flam de
+/// `root` ([`OnDevice::verify`]) ; puis `remove` reçoit la vérification à faire sous le verrou de
+/// la bibliothèque : pas d'installation en cours (`installing`), entrée identique à celle
+/// envoyée. L'envoi enregistré est oublié une fois l'histoire retirée, ou s'il ne peut plus
+/// servir (histoire absente de la Flam ou de la bibliothèque, entrée changée).
 pub(crate) fn remove_sent(
     registry: &SentRegistry,
+    root: &Path,
     uuid: &str,
     installing: &dyn Fn() -> bool,
     remove: impl FnOnce(Check<'_>) -> AppResult<()>,
 ) -> AppResult<()> {
-    let stamp = registry
+    let sent = registry
         .get(uuid)
         .ok_or_else(|| AppError::NotFound(NOT_SENT_MESSAGE.into()))?;
+    if let Err(err) = sent.device.verify(root) {
+        registry.forget(uuid, &sent);
+        return Err(err);
+    }
     let changed = std::cell::Cell::new(false);
     let check = |entry: &LibraryEntry, path: Option<&Path>| -> AppResult<()> {
         if installing() {
             return Err(AppError::Validation(INSTALLING_MESSAGE.into()));
         }
-        if !stamp.matches(entry, path) {
+        if !sent.stamp.matches(entry, path) {
             changed.set(true);
             return Err(AppError::Validation(CHANGED_MESSAGE.into()));
         }
@@ -177,47 +299,74 @@ pub(crate) fn remove_sent(
     };
     let result = remove(&check);
     if result.is_ok() || changed.get() || matches!(result, Err(AppError::NotFound(_))) {
-        registry.forget(uuid, &stamp);
+        registry.forget(uuid, &sent);
     }
     result
 }
 
-/// Envoi de l'histoire `uuid` de la bibliothèque de `cache_root` par `send` (qui reçoit le
-/// chemin de son fichier), puis suite donnée à sa copie dans « Mes histoires » si l'envoi a
-/// réussi ([`settle`]) : retrait si `auto`, sinon « Retirer du PC » possible. Une erreur de
-/// `send` est rendue telle quelle, sans rien retirer ni enregistrer. À appeler sous le verrou de
-/// la Flam (aucun autre envoi ne doit s'intercaler).
+/// Écriture confirmée sur le support, condition du retrait automatique : renommage forcé et
+/// relecture sans cache, et seulement sous Windows (`windows`).
+fn durable_on(report: &TransferReport, windows: bool) -> bool {
+    windows && report.dir_synced && report.verified_uncached
+}
+
+/// [`durable_on`] pour la plate-forme courante.
+fn durable(report: &TransferReport) -> bool {
+    durable_on(report, cfg!(windows))
+}
+
+/// Envoi de l'histoire `uuid` de la bibliothèque de `cache_root` sur la Flam de `root` par
+/// `send` (qui reçoit le chemin de son fichier), puis suite donnée à sa copie dans « Mes
+/// histoires » si l'envoi a réussi ([`settle`]). L'envoi enregistré précédent de cette histoire
+/// est oublié avant l'envoi (un échec ne le laisse pas). Une erreur de `send` est rendue telle
+/// quelle, sans rien retirer ni enregistrer. À appeler sous le verrou de la Flam.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn send_then_settle(
     registry: &SentRegistry,
     cache_root: &Path,
+    root: &Path,
     uuid: &str,
     auto: bool,
     installing: &dyn Fn() -> bool,
     send: impl FnOnce(&Path) -> AppResult<TransferReport>,
     remove: impl FnOnce(Check<'_>) -> AppResult<()>,
 ) -> AppResult<TransferReport> {
+    registry.forget_uuid(uuid);
     // Empreinte prise avant de lire le fichier envoyé.
     let before = SentStamp::capture(cache_root, uuid);
     let (plain_pk, _) = Library::new(cache_root).playable(uuid)?;
     let mut report = send(&plain_pk)?;
     report.library_copy = settle(
-        registry, cache_root, uuid, before, &report, auto, installing, remove,
+        registry,
+        cache_root,
+        root,
+        uuid,
+        before,
+        &report,
+        auto,
+        durable(&report),
+        installing,
+        remove,
     );
     Ok(report)
 }
 
-/// Suite d'un envoi réussi de l'histoire `uuid` de la bibliothèque de `cache_root` : `before`
-/// est son empreinte prise avant la préparation. Rend `None` si rien n'est proposé (relecture
-/// carrier illisible, empreinte absente, ou entrée changée sans retrait automatique demandé).
-/// L'envoi est réussi quoi qu'il arrive : un retrait en échec est rapporté, jamais propagé.
+/// Suite d'un envoi réussi de l'histoire `uuid` de la bibliothèque de `cache_root` sur la Flam
+/// de `root` : `before` est son empreinte prise avant la préparation, `durable` vrai si
+/// l'écriture est confirmée sur le support. Rend `None` si rien n'est proposé (relecture carrier
+/// illisible, empreinte absente, `.mdf` illisible, ou entrée changée sans retrait automatique
+/// demandé). L'envoi est réussi quoi qu'il arrive : un retrait en échec est rapporté, jamais
+/// propagé.
 #[allow(clippy::too_many_arguments)]
 fn settle(
     registry: &SentRegistry,
     cache_root: &Path,
+    root: &Path,
     uuid: &str,
     before: Option<SentStamp>,
     report: &TransferReport,
     auto: bool,
+    durable: bool,
     installing: &dyn Fn() -> bool,
     remove: impl FnOnce(Check<'_>) -> AppResult<()>,
 ) -> Option<LibraryCopy> {
@@ -232,22 +381,41 @@ fn settle(
             message: CHANGED_MESSAGE.into(),
         });
     }
-    registry.record(uuid, before);
+    let Some(device) = OnDevice::capture(root, report) else {
+        tracing::warn!(%uuid, "histoire envoyée, mais .mdf illisible : « Retirer du PC » indisponible");
+        return None;
+    };
+    // L'histoire de la Flam vient d'être (ré)écrite : un envoi plus ancien qui la désignait ne
+    // vaut plus.
+    registry.forget_story(&device.story);
+    registry.record(
+        uuid,
+        Sent {
+            stamp: before,
+            device,
+        },
+    );
     if !auto {
-        return Some(LibraryCopy::Kept);
+        return Some(LibraryCopy::Kept { unconfirmed: false });
     }
-    Some(match remove_sent(registry, uuid, installing, remove) {
-        Ok(()) => {
-            tracing::info!(%uuid, "histoire retirée de la bibliothèque après l'envoi");
-            LibraryCopy::Removed
-        }
-        Err(err) => {
-            tracing::warn!(%uuid, "retrait après l'envoi impossible : {err}");
-            LibraryCopy::RemoveFailed {
-                message: err.to_string(),
+    if !durable {
+        tracing::info!(%uuid, "écriture sur la Flam non confirmée : pas de retrait automatique");
+        return Some(LibraryCopy::Kept { unconfirmed: true });
+    }
+    Some(
+        match remove_sent(registry, root, uuid, installing, remove) {
+            Ok(()) => {
+                tracing::info!(%uuid, "histoire retirée de la bibliothèque après l'envoi");
+                LibraryCopy::Removed
             }
-        }
-    })
+            Err(err) => {
+                tracing::warn!(%uuid, "retrait après l'envoi impossible : {err}");
+                LibraryCopy::RemoveFailed {
+                    message: err.to_string(),
+                }
+            }
+        },
+    )
 }
 
 /// Une installation de `uuid` est en attente ou en cours.
@@ -260,8 +428,10 @@ pub(crate) fn installing(installs: &InstallService, uuid: &str) -> bool {
 
 /// « Retirer du PC » après un envoi réussi de cette session : retire l'histoire `uuid` de « Mes
 /// histoires » (elle reste sur la Flam), par le chemin du bouton « Supprimer », sans toucher à la
-/// progression. Refusé (`busy`) pendant une opération sur la Flam, `player_busy` pendant sa
-/// lecture, `validation` pendant son installation ou si elle a changé depuis l'envoi,
+/// progression. Verrou de la Flam tenu (refus `busy` pendant une opération sur la Flam),
+/// l'histoire doit d'abord être retrouvée telle qu'envoyée sur la Flam de `root`
+/// ([`OnDevice::verify`], lecture seule) ; `player_busy` pendant sa lecture, `validation`
+/// pendant son installation, si elle a changé depuis l'envoi ou n'est plus sur la Flam,
 /// `not_found` si aucun envoi réussi n'est connu.
 #[tauri::command]
 pub async fn library_remove_sent(
@@ -269,6 +439,7 @@ pub async fn library_remove_sent(
     config: State<'_, ConfigState>,
     catalog: State<'_, CatalogService>,
     player: State<'_, PlayerService>,
+    root: String,
     uuid: String,
 ) -> AppResult<()> {
     let cache_root = {
@@ -284,17 +455,23 @@ pub async fn library_remove_sent(
         let _device = DEVICE_LOCK
             .try_begin(Operation::Transfer)
             .map_err(TransferError::from)?;
-        remove_sent(&SENT, &uuid, &|| installing(&installs, &uuid), |check| {
-            crate::library::remove_story(
-                &installs,
-                &players,
-                &cache_root,
-                &saves_root,
-                &uuid,
-                false,
-                check,
-            )
-        })
+        remove_sent(
+            &SENT,
+            Path::new(&root),
+            &uuid,
+            &|| installing(&installs, &uuid),
+            |check| {
+                crate::library::remove_story(
+                    &installs,
+                    &players,
+                    &cache_root,
+                    &saves_root,
+                    &uuid,
+                    false,
+                    check,
+                )
+            },
+        )
     })
     .await?
 }

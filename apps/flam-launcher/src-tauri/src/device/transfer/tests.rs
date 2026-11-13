@@ -132,6 +132,10 @@ pub(crate) struct FaultyFs {
     same_dir: bool,
     /// Dossier dont la suppression échoue (verrouillé) : le chemin contient ce texte.
     locked: Option<&'static str>,
+    /// `sync_dir` échoue (renommage non forcé sur le support, #609).
+    pub(crate) sync_dir_fails: bool,
+    /// La relecture est retombée sur le cache du système (#609).
+    pub(crate) cached_verify: bool,
 }
 
 impl FaultyFs {
@@ -144,6 +148,8 @@ impl FaultyFs {
             corrupt: None,
             same_dir: false,
             locked: None,
+            sync_dir_fails: false,
+            cached_verify: false,
         }
     }
     pub(crate) fn crash_at(n: usize) -> Self {
@@ -164,6 +170,7 @@ impl FaultyFs {
     fn real(&self) -> RealFs {
         RealFs {
             free_space: |_| Some(PLENTY),
+            ..RealFs::default()
         }
     }
 }
@@ -280,6 +287,16 @@ impl DeviceFs for FaultyFs {
             source,
         })?;
         self.real().write_index(root, entries)
+    }
+    fn sync_dir(&self, _path: &Path) -> io::Result<()> {
+        if self.sync_dir_fails {
+            Err(io::Error::other("synchronisation refusée (test)"))
+        } else {
+            Ok(())
+        }
+    }
+    fn verified_uncached(&self) -> bool {
+        !self.cached_verify
     }
 }
 
@@ -402,6 +419,13 @@ fn chemin_nominal_de_bout_en_bout() {
             carrier_stored: None,
             recovery_failures: Vec::new(),
             library_copy: None,
+            dir_synced: cfg!(windows),
+            verified_uncached: true,
+            installed_files: p
+                .files
+                .iter()
+                .map(|f| (f.clone(), std::fs::metadata(p.dir.join(f)).unwrap().len()))
+                .collect(),
         }
     );
 

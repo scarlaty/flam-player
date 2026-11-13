@@ -37,11 +37,25 @@ export interface QueueItem {
    * n'est proposé.
    */
   pcCopy?: PcCopyState;
-  /** Message du retrait impossible (`pcCopy === "failed"`). */
+  /** Message du retrait impossible (`failed`) ou refusé (`refused`). */
   pcCopyError?: string;
+  /** Identifiant de l'histoire sur la Flam (rapport d'envoi), pour suivre son retrait. */
+  deviceId?: string;
+  /** Retrait automatique demandé mais non fait : écriture sur la Flam non confirmée. */
+  pcCopyUnconfirmed?: boolean;
 }
 
-export type PcCopyState = "kept" | "removing" | "removed" | "failed";
+/**
+ * `refused` : « Retirer du PC » refusé par le backend (histoire plus sur la Flam, autre Flam…) :
+ * le bouton n'est plus proposé.
+ */
+export type PcCopyState = "kept" | "removing" | "removed" | "failed" | "refused";
+
+/** Ce dont l'application est prévenue pour la copie « Mes histoires » d'un envoi (#609). */
+export type PcCopyNotice =
+  | { status: "removed" }
+  | { status: "remove_failed"; message: string }
+  | { status: "kept_unconfirmed" };
 
 export interface SendRequest {
   uuid: string;

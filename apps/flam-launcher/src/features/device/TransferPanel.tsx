@@ -67,20 +67,20 @@ export function TransferPanel() {
     target?.focus();
   }, [queue]);
 
-  // « Retirer du PC » réussi : le bouton laisse place au texte de la ligne, qui prend le focus.
-  // Échec : le bouton reste (avec le message), le focus aussi.
+  // « Retirer du PC » réussi ou refusé : le bouton laisse place au texte de la ligne, qui prend
+  // le focus. Sans texte (état effacé), le focus passe au titre du panneau.
   useLayoutEffect(() => {
     const uuid = focusPcNote.current;
     if (!uuid) return;
     const item = queue.find((entry) => entry.uuid === uuid);
     if (item?.pcCopy === "removing") return;
     focusPcNote.current = null;
-    if (item?.pcCopy === "removed") {
+    if (item?.pcCopy === "removed" || item?.pcCopy === "refused") {
       const note = listRef.current?.querySelector<HTMLElement>(
         `[data-pc-note="${CSS.escape(uuid)}"]`,
       );
       (note ?? headingRef.current)?.focus();
-    } else if (!item) {
+    } else if (!item || document.activeElement === document.body) {
       headingRef.current?.focus();
     }
   }, [queue]);
@@ -259,6 +259,13 @@ function PcCopyLine({
       </p>
     );
   }
+  if (item.pcCopy === "refused") {
+    return (
+      <p className="fl-transfer__error" tabIndex={-1} data-pc-note={item.uuid}>
+        {copy.refused(item.pcCopyError ?? "")}
+      </p>
+    );
+  }
   if (!item.pcCopy) return null;
   const removing = item.pcCopy === "removing";
   // Un envoi en cours tient la Flam : le retrait attend la fin de la file.
@@ -268,9 +275,11 @@ function PcCopyLine({
       {item.pcCopy === "failed" && item.pcCopyError && (
         <p className="fl-transfer__error">{copy.failed(item.pcCopyError)}</p>
       )}
+      {item.pcCopyUnconfirmed && <p className="fl-transfer__line">{copy.unconfirmed}</p>}
       <Button
         size="sm"
         icon="trash"
+        aria-label={removing ? undefined : copy.removeLabel(item.title)}
         aria-describedby={hintId}
         aria-disabled={blocked || undefined}
         aria-busy={removing || undefined}

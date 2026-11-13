@@ -312,7 +312,8 @@ export interface TransferReport {
 
 /** Copie de l'histoire dans « Mes histoires » après l'envoi (miroir de `LibraryCopy`). */
 export type LibraryCopy =
-  | { status: "kept" }
+  /** `unconfirmed` : retrait automatique demandé, écriture sur la Flam non confirmée. */
+  | { status: "kept"; unconfirmed?: boolean }
   | { status: "removed" }
   | { status: "remove_failed"; message: string };
 
@@ -451,12 +452,13 @@ export function sendStoryToDevice(
 
 /**
  * `library_remove_sent` : retire de « Mes histoires » l'histoire `uuid` envoyée avec succès sur
- * la Flam pendant cette session (elle reste sur la Flam). Refusé si une opération sur la Flam est
- * en cours, si l'histoire est lue, en cours d'installation ou a changé depuis l'envoi, ou si
- * aucun envoi réussi n'est connu (`not_found`).
+ * la Flam de racine `root` pendant cette session (elle reste sur la Flam). L'histoire est d'abord
+ * relue sur cette Flam (même Flam, listée, fichiers de l'envoi présents). Refusé si une
+ * opération sur la Flam est en cours, si l'histoire n'est plus sur la Flam, est lue, en cours
+ * d'installation ou a changé depuis l'envoi, ou si aucun envoi réussi n'est connu (`not_found`).
  */
-export function removeSentFromLibrary(uuid: string): Promise<void> {
-  return invokeCommand<void>("library_remove_sent", { uuid });
+export function removeSentFromLibrary(root: string, uuid: string): Promise<void> {
+  return invokeCommand<void>("library_remove_sent", { root, uuid });
 }
 
 /**

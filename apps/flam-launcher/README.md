@@ -499,7 +499,7 @@ Les commandes sont asynchrones (`tokio`), renvoient `AppResult<T>` et sont enreg
 | `install_list`                |                                  | `InstallTask[]`                                            | `install`            |
 | `library_list`                |                                  | `LibraryEntry[]`                                           | `library`            |
 | `library_remove`              | `uuid`, `purge_saves?`           | rien                                                       | `library`            |
-| `library_remove_sent`         | `uuid`                           | rien (voir « Retrait du PC après l'envoi »)                | `device::after_send` |
+| `library_remove_sent`         | `root`, `uuid`                   | rien (voir « Retrait du PC après l'envoi »)                | `device::after_send` |
 | `library_thumbnail`           | `uuid`                           | URL `data:` (`not_found` sans vignette)                    | `library_thumb`      |
 | `library_source_status`       |                                  | `SourceCheck[]` (`{ uuid, state }`)                        | `library_source`     |
 | `player_launch`               | `uuid`                           | `PlayerSession`                                            | `player`             |
@@ -574,18 +574,32 @@ n'est connu qu'après un refus du backend.
 
 **Retrait du PC après l'envoi** (#609, `device::after_send`) : une histoire envoyée garde sa copie
 dans « Mes histoires » (dossier de cache). Après un envoi **réussi**, le rapport de
-`device_send_story` porte `library_copy` : `kept` (la ligne de la file propose « Retirer du PC »),
-`removed` (réglage `remove_after_send` actif : retirée aussitôt), `remove_failed` (`message` :
-retrait impossible, l'envoi reste réussi, le bouton est reproposé), ou rien (aucune proposition).
-Le texte dit que l'histoire reste sur la Flam et que la renvoyer plus tard demandera de la
-réinstaller ; une notification annonce le retrait ou son échec.
+`device_send_story` porte `library_copy` : `kept` (la ligne de la file propose « Retirer du PC » ;
+`unconfirmed` : retrait automatique demandé mais écriture non confirmée, voir plus bas), `removed`
+(réglage `remove_after_send` actif : retirée aussitôt), `remove_failed` (`message` : retrait
+impossible, l'envoi reste réussi, le bouton est reproposé), ou rien (aucune proposition). Le
+texte dit que l'histoire reste sur la Flam, que la renvoyer plus tard demandera de la
+réinstaller, et qu'il faut « Éjecter la Flam » avant de la débrancher ; une notification annonce
+le retrait, son échec, ou l'écriture non confirmée. Un refus de « Retirer du PC » retire le
+bouton et laisse le message sur la ligne ; le bouton disparaît aussi quand l'histoire est retirée
+de la Flam (« Ma Flam ») ou quand la Flam détectée change.
 
 - Succès = `send_from_library` rend `Ok` (copie, relecture de chaque fichier sur la Flam avec
   taille et SHA-256, renommage en `str/<uuid>/`, index à jour) **et** la relecture carrier n'est
   pas illisible (`carrier_readback` différent de `false`). Échec, annulation, Flam débranchée,
   « déjà sur la Flam » : rien n'est retiré ni proposé.
+- **Retrait automatique seulement si l'écriture est confirmée sur le support** : la relecture a
+  lieu dans `.flam-transfer/<uuid>.in/` avant le renommage en `str/<uuid>/`, renommage forcé sur
+  le support au mieux (`sync_dir`). Le rapport interne porte `dir_synced` (les trois `sync_dir`
+  ont réussi ; toujours faux hors Windows) et `verified_uncached` (aucune relecture n'est retombée
+  sur le cache du système ; toujours faux hors Windows). Le retrait automatique exige les deux,
+  sous Windows ; sinon `kept` avec `unconfirmed`. Chaque envoi réussi journalise, au niveau
+  `info`, la ligne `durabilité de l'envoi renommage_force="oui|non" relecture_sans_cache="oui|non"`
+  (cible `flam_launcher_lib::device::transfer`, sur la sortie standard du processus : pas de
+  fichier de journal, voir `lib.rs`).
 - Le retrait automatique a lieu dans `device_send_story`, verrou de la Flam toujours tenu (aucun
-  autre envoi ne s'intercale) ; « Retirer du PC » (`library_remove_sent`) prend ce verrou (refus
+  autre envoi ne s'intercale) ; il peut attendre le créneau du player (lancement en préparation),
+  et l'annulation de l'envoi est sans effet pendant cette phase ; « Retirer du PC » (`library_remove_sent`) prend ce verrou (refus
   `busy` pendant un envoi). Les deux passent par le chemin de « Supprimer » (`remove_story` :
   créneau du player, verrou de la bibliothèque, purge de la copie de travail), **sans** purger la
   progression de l'enfant.
@@ -594,8 +608,14 @@ réinstaller ; une notification annonce le retrait ou son échec.
   bibliothèque juste avant le retrait (`Library::remove_checked`). Une histoire réinstallée ou mise
   à jour entre-temps n'est pas retirée (`validation`). Refus aussi pendant sa lecture
   (`player_busy`) ou son installation (`validation`).
-- `library_remove_sent` ne retire que ce qu'un envoi réussi de la session a enregistré (registre
-  en mémoire) ; sinon `not_found`. Jamais le fichier source de l'utilisateur ni l'archive d'origine :
+- `library_remove_sent(root, uuid)` ne retire que ce qu'un envoi réussi de la session a enregistré
+  (registre en mémoire) ; sinon `not_found`. Avant tout retrait (manuel ou automatique), verrou
+  de la Flam tenu, la Flam est relue (lecture seule) : même racine et même `.mdf` (empreinte
+  SHA-256), histoire (identifiant sur la Flam, `report.id`) listée dans l'index visible, chaque
+  fichier de l'envoi présent dans `str/<id>/` avec sa taille. Sinon refus (`validation`) et
+  l'entrée est oubliée. L'entrée est aussi oubliée au début de tout nouvel envoi de l'histoire
+  (même s'il échoue), quand un autre envoi réécrit la même histoire de la Flam, et par
+  `device_remove_story`. Jamais le fichier source de l'utilisateur ni l'archive d'origine :
   seul le fichier de `library/` de l'entrée envoyée.
 
 **Ordre des histoires** (#233, `device::reorder`, `DeviceStoryOrder.tsx`) : « Modifier l'ordre »
