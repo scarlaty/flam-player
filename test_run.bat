@@ -170,6 +170,12 @@ if "!HAVE_PY!"=="1" (
     echo EXIT_CODE=!PKX_RC!
     if not "!PKX_RC!"=="0" if not "!PKX_RC!"=="77" set "E2E_RC=!PKX_RC!"
     if "!PKX_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE=!E2E_NOTE! (extraction pk : SKIP)"
+    REM Watchdog Lua : pcall ne doit pas avaler le declenchement (#575)
+    "%PY%" "%ROOT%tests\e2e\e2e_watchdog.py" --build "%BUILD%"
+    set "WDG_RC=!ERRORLEVEL!"
+    echo EXIT_CODE=!WDG_RC!
+    if not "!WDG_RC!"=="0" if not "!WDG_RC!"=="77" set "E2E_RC=!WDG_RC!"
+    if "!WDG_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE=!E2E_NOTE! (watchdog : SKIP)"
 ) else (
     echo [SKIP] python introuvable : definir FLAM_PYTHON
 )

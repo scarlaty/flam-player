@@ -71,24 +71,106 @@ static int g_strict = 0;
 
 static uint32_t g_watchdog_ms    = WATCHDOG_DEFAULT_MS;  /* 0 = desactive */
 static uint32_t g_watchdog_start = 0;
+/* 1 : le watchdog a declenche et la boucle principale n'a pas encore rearme.
+   Tant qu'il est leve, le hook s'execute a chaque instruction et leve une
+   erreur : un pcall() qui avale la premiere ne sauve pas une boucle (#575). */
+static int g_watchdog_fired = 0;
+
+static void watchdog_hook(lua_State *L, lua_Debug *ar);
 
 static void watchdog_rearm(void)
 {
     g_watchdog_start = SDL_GetTicks();
+    if (g_watchdog_fired) {
+        g_watchdog_fired = 0;
+        if (g_lua && g_watchdog_ms > 0) {
+            lua_sethook(g_lua, watchdog_hook, LUA_MASKCOUNT, WATCHDOG_HOOK_COUNT);
+        }
+    }
 }
 
 static void watchdog_hook(lua_State *L, lua_Debug *ar)
 {
     (void)ar;
     if (g_watchdog_ms == 0) return;
+    if (g_watchdog_fired) {
+        /* Deja declenche : l'erreur precedente a ete avalee (pcall). Le hook
+           est propre a chaque lua_State : cet etat passe lui aussi a une
+           execution par instruction (coroutine restee au rythme normal). */
+        if (lua_gethookcount(L) != 1)
+            lua_sethook(L, watchdog_hook, LUA_MASKCOUNT, 1);
+        luaL_error(L, "watchdog: script Lua bloque (boucle infinie ?). "
+                      "Option --watchdog 0 pour desactiver.");
+        return;
+    }
+    /* Etat reste en mode instruction par instruction apres un rearmement
+       (le rearmement ne vise que g_lua) : retour au rythme normal */
+    if (lua_gethookcount(L) == 1)
+        lua_sethook(L, watchdog_hook, LUA_MASKCOUNT, WATCHDOG_HOOK_COUNT);
     uint32_t elapsed = SDL_GetTicks() - g_watchdog_start;
     if (elapsed > g_watchdog_ms) {
-        /* Rearmer pour ne pas tuer aussi le code qui gere l'erreur */
-        watchdog_rearm();
+        /* Hook a chaque instruction jusqu'au rearmement de la boucle
+           principale, sur l'etat qui declenche ET sur l'etat principal : un
+           pcall qui avale l'erreur ici ne sauve pas une boucle dans l'autre.
+           Les autres etats (coroutines) basculent a leur prochain hook, au
+           plus WATCHDOG_HOOK_COUNT instructions plus tard, et la creation ou
+           la reprise d'une coroutine leve l'erreur (wd_guard_*). Le
+           gestionnaire d'erreur (traceback) est en C : il ne passe pas par
+           le hook. */
+        g_watchdog_fired = 1;
+        lua_sethook(L, watchdog_hook, LUA_MASKCOUNT, 1);
+        if (g_lua && L != g_lua)
+            lua_sethook(g_lua, watchdog_hook, LUA_MASKCOUNT, 1);
         luaL_error(L, "watchdog: script Lua bloque depuis plus de %d ms "
                       "(boucle infinie ?). Option --watchdog 0 pour desactiver.",
                    (int)elapsed);
     }
+}
+
+/* coroutine.create / wrap / resume / close : tant que le watchdog est declenche, ils
+   levent son erreur (sinon chaque coroutine neuve disposerait d'un quota
+   d'instructions pour en creer d'autres sous pcall). Installes par
+   watchdog_guard_coroutines ; la fonction d'origine est la 1re valeur amont. */
+static int wd_guard_call(lua_State *L)
+{
+    if (g_watchdog_fired)
+        return luaL_error(L, "watchdog: script Lua bloque (boucle infinie ?). "
+                             "Option --watchdog 0 pour desactiver.");
+    int n = lua_gettop(L);
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_insert(L, 1);
+    lua_call(L, n, LUA_MULTRET);
+    return lua_gettop(L);
+}
+
+/* coroutine.wrap : la fonction rendue (fermeture C d'origine) est elle aussi
+   enveloppee, sinon sa reprise echapperait a la garde. */
+static int wd_guard_wrap(lua_State *L)
+{
+    int n = wd_guard_call(L);
+    if (n >= 1 && lua_isfunction(L, -1)) {
+        lua_pushcclosure(L, wd_guard_call, 1);
+    }
+    return n;
+}
+
+static void watchdog_guard_coroutines(lua_State *L)
+{
+    static const char *const names[] = { "create", "wrap", "resume", "close" };
+    lua_getglobal(L, "coroutine");
+    if (lua_istable(L, -1)) {
+        for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            lua_getfield(L, -1, names[i]);
+            if (lua_isfunction(L, -1)) {
+                lua_pushcclosure(L, strcmp(names[i], "wrap") == 0 ? wd_guard_wrap
+                                                                    : wd_guard_call, 1);
+                lua_setfield(L, -2, names[i]);
+            } else {
+                lua_pop(L, 1);
+            }
+        }
+    }
+    lua_pop(L, 1);
 }
 
 /* Gestionnaire d'erreur commun : ajoute la pile d'appels Lua au message */
@@ -161,6 +243,7 @@ static int init_lua(void)
     watchdog_rearm();
     if (g_watchdog_ms > 0) {
         lua_sethook(g_lua, watchdog_hook, LUA_MASKCOUNT, WATCHDOG_HOOK_COUNT);
+        watchdog_guard_coroutines(g_lua);
     }
 
     /* Enregistrer les bindings lv.* */

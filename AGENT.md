@@ -100,6 +100,13 @@ Options du player :
 - `--strict` : plus proche du device (`require()` limite a `script/`, `lv.img_src.load` sur
   un `.lif` absent = erreur Lua au lieu de `nil`).
 - `--watchdog <ms>` : interrompt un script Lua qui ne rend pas la main (defaut 10000, `0` = off).
+  Une fois declenche, le hook s'execute a chaque instruction (etat principal et etat declencheur ;
+  les autres coroutines basculent a leur prochain hook, et `coroutine.create/wrap/resume/close` et les
+  fonctions rendues par `wrap` levent l'erreur) jusqu'au rearmement de la boucle principale : un `pcall` qui avale l'erreur ne sauve
+  pas la boucle (test : `tests/e2e/e2e_watchdog.py`). Limites connues : le rearmement n'a lieu qu'a
+  chaque tour de boucle principale, donc les callbacks qui suivent un callback tue dans le meme tour
+  (timer a un coup, fin d'audio, back_callback) echouent aussi jusqu'au tour suivant ; `debug.sethook`
+  du script, `__gc` et les fonctions C longues ne sont pas interruptibles.
 - `--screenshot <chemin>` : fichier BMP des captures (sinon `FLAM_SCREENSHOT`, sinon
   `C:/temp/flam-player/screenshot.bmp` code en dur). Capture auto 12 s apres le demarrage :
   `FLAM_SCREENSHOT_AUTO_MS=<ms>`, `0` = desactivee.
