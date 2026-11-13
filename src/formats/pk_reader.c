@@ -562,8 +562,9 @@ static int pk_stamp(const char *pk_path, char *out, size_t out_sz)
 }
 
 /* "dir/name" dans buf ; -1 si le resultat serait tronque (un chemin tronque
-   designerait un autre fichier : on abandonne au lieu de s'en servir). Ne peut
-   arriver que sous POSIX (PATH_MAX > 1024) : sous Windows, MAX_PATH est de 260. */
+   designerait un autre fichier : on abandonne au lieu de s'en servir). Courant sous
+   POSIX (PATH_MAX > 1024), improbable sous Windows (MAX_PATH de 260, sauf chemins
+   prefixes par "\\?\"). */
 static int pk_join(char *buf, size_t sz, const char *dir, const char *name)
 {
     int n = snprintf(buf, sz, "%s/%s", dir, name);
@@ -582,11 +583,16 @@ int pk_extract_state(const char *pk_path, const char *out_dir)
 {
     if (!pk_path || !out_dir || !out_dir[0]) return PK_EXTRACT_STALE;
 
+    /* Chemins de tous les fichiers consultes : si l'un deborde, l'etat est inconnu et
+       "absent" serait faux (un .extracting illisible passerait pour un dossier
+       d'auteur) : a (re)extraire, ce que pk_extract_if_stale refusera proprement. */
+    char path[1024], probe[1024];
+    if (pk_join(probe, sizeof(probe), out_dir, "main.lua") != 0 ||
+        pk_join(probe, sizeof(probe), out_dir, PK_BUSY_NAME) != 0 ||
+        pk_join(path, sizeof(path), out_dir, PK_STAMP_NAME) != 0) return PK_EXTRACT_STALE;
+
     if (!pk_file_exists(out_dir, "main.lua")) return PK_EXTRACT_STALE;
     if (pk_file_exists(out_dir, PK_BUSY_NAME)) return PK_EXTRACT_STALE;
-
-    char path[1024];
-    if (pk_join(path, sizeof(path), out_dir, PK_STAMP_NAME) != 0) return PK_EXTRACT_STALE;
     FILE *f = fopen(path, "rb");
     if (!f) return PK_EXTRACT_AUTHOR;   /* aucun temoin : dossier d'auteur */
 

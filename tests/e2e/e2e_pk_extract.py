@@ -30,10 +30,10 @@ flam-player est lance sur un .plain.pk (pilotes SDL dummy, --stdin-control) :
      ou dont main.lua est compresse, apres une extraction valide : l'ancienne
      extraction reste intacte (fichiers, .extracted) et l'histoire est jouee ;
      alias 8.3 du temoin suivi d'une signature inconnue : .extracting non ecrase ;
-    alias 8.3 HACHE du temoin (EX577D~1, quand EXTRAC~1 a ~4 sont pris) : ecriture
-    refusee par le verrou, .extracting non ecrase (saute si les noms courts sont
-    desactives ou hors Windows).
-Code 77 aussi si la jonction / le lien de test ne peut pas etre cree.
+ 13. alias 8.3 HACHE du temoin (EX577D~1, quand EXTRAC~1 a ~4 sont pris) : ecriture
+     refusee par le verrou, .extracting non ecrase.
+Code 77 aussi si la jonction / le lien de test ne peut pas etre cree, ou si les noms
+courts sont desactives sur le volume (cas 13 saute : FLAM_NO_SKIP=1 le voit).
 Code de sortie : 0 OK, 1 echec, 77 prerequis absents (flam-player).
 """
 import argparse
@@ -210,6 +210,7 @@ def main():
         return SKIP
     tmp = tempfile.mkdtemp(prefix="flam-pkx-")
     link_skipped = False
+    alias_skipped = False
     try:
         # 1. dossier d'auteur
         root, pk, d = fresh(tmp, "auteur")
@@ -514,6 +515,7 @@ def main():
         alias = hashed_busy_alias(tmp)
         if alias is None:
             print("[SKIP] alias 8.3 hache : noms courts desactives ou alias non hache")
+            alias_skipped = True
         else:
             root, pk, d = fresh(tmp, "alias-hache")
             for i in range(FOREIGN):
@@ -530,8 +532,9 @@ def main():
             check(read(d + "/k.txt") == "k", "alias hache : entree saine extraite", err)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    if link_skipped:
-        print("e2e_pk_extract : OK, mais le test de lien n'a pas pu tourner (SKIP)")
+    if link_skipped or alias_skipped:
+        print("e2e_pk_extract : OK, mais un cas a ete saute (SKIP) : %s"
+              % ", ".join(n for n, f in (("lien", link_skipped), ("alias 8.3 hache", alias_skipped)) if f))
         return SKIP
     print("e2e_pk_extract : OK")
     return 0

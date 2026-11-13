@@ -231,7 +231,8 @@ navigateur est limite a `MAX_STORIES` (32) histoires ; les autres sont comptees 
 `pk_reader.c` a un test C autonome, `tests/test_pk_reader.c` (noms, zip-slip, etats, purge, liens
 symboliques, chemins longs), compile et execute sous Linux (gcc, ASan, UBSan) par le job
 `pk-reader-posix` de `player.yml` : c'est la seule compilation du code POSIX du module. Sous
-Windows : `cl /I src\formats tests\test_pk_reader.c src\formats\pk_reader.c`.
+Windows : `mkdir build`, puis `cl /Fobuild\ /Febuild\test_pk_reader.exe /I src\formats tests\test_pk_reader.c src\formats\pk_reader.c`
+(sorties sous `build/`, ignore par git ; Linux : `cc ... -o build/test_pk_reader`).
 
 Pour une histoire TELMI, ne pas assembler a la main : `cargo build -p telmi2flam --release` puis
 `target\release\telmi2flam.exe histoire.zip -o histoire.plain.pk` puis `python tools/telmi2flam/validate.py histoire.plain.pk`.

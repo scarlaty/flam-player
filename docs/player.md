@@ -255,7 +255,9 @@ finissent par un point ou une espace, les caractères `: < > " | ? *` et de cont
 périphériques Windows (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`9`, `LPT1`-`9`, exposants compris, avec ou
 sans extension). Refuser `con.txt` ou `nul.txt` est un choix conservateur : ce sont des fichiers
 ordinaires sous Windows 11, mais des périphériques sous les versions antérieures. Limites connues : un `.pk` produit par le `tar.exe` de Windows (« data descriptor » sur chaque entrée)
-n'a jamais été extractible et reste refusé (extraction incomplète) ; les fichiers « à la demande »
+n'a jamais été extractible et reste refusé (trace « illisible, incomplet ou sans main.lua ») ;
+un `.pk` verrouillé par un autre programme (ouverture impossible) mais à jour est traité comme
+absent ou illisible (trace « .pk absent ou illisible ») ; les fichiers « à la demande »
 d'un dossier OneDrive (attribut de point d'analyse) ne sont pas supprimés lors d'une purge (fuite
 sans danger) ; un nom court 8.3 haché (`EX577D~1`, quand `EXTRAC~1` à `~4` sont pris par d'autres
 fichiers) ne peut pas écraser `.extracting` (verrou d'écriture), mais l'extraction reste incomplète et

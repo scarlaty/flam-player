@@ -1,8 +1,11 @@
 /**
  * Tests de src/formats/pk_reader.c (#575) : programme autonome, sans SDL ni Lua.
  *
- *   cc -std=gnu11 -Wall -Wextra -Isrc/formats tests/test_pk_reader.c src/formats/pk_reader.c
- *   (Windows : cl /I src\formats tests\test_pk_reader.c src\formats\pk_reader.c)
+ *   mkdir -p build && cc -std=gnu11 -Wall -Wextra -Isrc/formats tests/test_pk_reader.c
+ *       src/formats/pk_reader.c -o build/test_pk_reader && build/test_pk_reader
+ *   (Windows : mkdir build, puis
+ *    cl /Fobuild\ /Febuild\test_pk_reader.exe /I src\formats tests\test_pk_reader.c src\formats\pk_reader.c)
+ * Les sorties vont sous build/ (ignore par git) : rien a la racine du depot.
  *
  * Compile et execute sous Linux par le job `pk-reader-posix` de
  * .github/workflows/player.yml : c'est la seule compilation du code POSIX de
@@ -478,21 +481,69 @@ static void test_long_path_posix(void)
     }
     zent_t z[] = { { "main.lua", MAIN_V1, 0, 0 } };
     make_zip(path_of("long/a.pk"), z, 1, 1);
-    char dir[1100];
-    snprintf(dir, sizeof(dir), "%s/%s", g_root, rel);   /* > 1024 octets */
-    CHECK(strlen(dir) > 1024);
+    char dir[1700];
+    int dn = snprintf(dir, sizeof(dir), "%s/%s", g_root, rel);   /* > 1024 octets */
+    CHECK(dn > 1024 && dn < (int)sizeof(dir));
     CHECK(pk_extract_if_stale(path_of("long/a.pk"), dir) == -1);
-    char probe[1300];
+    char probe[1800];
     snprintf(probe, sizeof(probe), "%s/main.lua", dir);
     CHECK(!exists(probe));
     snprintf(probe, sizeof(probe), "%s/.extracting", dir);
     CHECK(!exists(probe));
     snprintf(probe, sizeof(probe), "%s/.extracted", dir);
     CHECK(!exists(probe));
-    /* aucun fichier parasite (nom de temoin tronque) dans le dossier */
-    char cmd[1400];
+    /* Aucun fichier parasite : ni dans le dossier, ni dans son parent, qui ne doit contenir
+       que le sous-dossier attendu (l'ancien code y creait un temoin au nom tronque). */
+    char cmd[1900], parent[1700];
     snprintf(cmd, sizeof(cmd), "test -z \"$(ls -A '%s')\"", dir);
     CHECK(system(cmd) == 0);
+    snprintf(parent, sizeof(parent), "%s", dir);
+    char *slash = strrchr(parent, '/');
+    CHECK(slash != NULL);
+    if (slash) {
+        *slash = '\0';
+        snprintf(cmd, sizeof(cmd), "test \"$(ls -A '%s')\" = '%s'", parent, comp);
+        CHECK(system(cmd) == 0);
+    }
+}
+
+/* Dossier de sortie de longueur exacte len, sous g_root (composants de 200 octets au plus). */
+static void make_dir_of_len(char *out, size_t sz, int tag, size_t len)
+{
+    snprintf(out, sz, "%s/lg%d", g_root, tag);
+    make_dir(out);
+    while (strlen(out) < len) {
+        size_t r = len - strlen(out);          /* r >= 2 : "/" et au moins une lettre */
+        size_t chunk = r - 1 > 200 ? 200 : r - 1;
+        if (r - 1 > 200 && r - 1 - 200 < 2) chunk = 199;   /* ne pas laisser 1 octet */
+        size_t at = strlen(out);
+        out[at] = '/';
+        memset(out + at + 1, 'b', chunk);
+        out[at + 1 + chunk] = '\0';
+        make_dir(out);
+    }
+}
+
+static void test_state_near_limit_posix(void)
+{
+    puts("-- etat : un temoin consulte dont le chemin deborde n'est pas 'absent' (POSIX)");
+    zent_t z[] = { { "main.lua", MAIN_V1, 0, 0 } };
+    char pk[1100];
+    snprintf(pk, sizeof(pk), "%s/near.pk", g_root);
+    make_zip(pk, z, 1, 1);
+    /* ".extracting" deborde des 1012 octets (1024 - 12), ".extracted" des 1013 : a 1012
+       exactement, seul .extracting deborde et .extracted tient. */
+    for (size_t len = 1006; len <= 1018; len++) {
+        char dir[1700], f[1800];
+        make_dir_of_len(dir, sizeof(dir), (int)len, len);
+        CHECK(strlen(dir) == len);
+        snprintf(f, sizeof(f), "%s/main.lua", dir);
+        write_text(f, "PARTIEL");
+        snprintf(f, sizeof(f), "%s/.extracting", dir);
+        write_text(f, "");
+        /* extraction interrompue : jamais un dossier d'auteur, quelle que soit la longueur */
+        CHECK(pk_extract_state(pk, dir) == PK_EXTRACT_STALE);
+    }
 }
 #endif
 
@@ -509,6 +560,7 @@ int main(void)
 #ifndef _WIN32
     test_links_posix();
     test_long_path_posix();
+    test_state_near_limit_posix();
 #endif
     drop_root();
     printf("test_pk_reader : %d verifications, %d echec(s)\n", g_checks, g_fail);
