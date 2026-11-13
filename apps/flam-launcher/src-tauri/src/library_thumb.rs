@@ -20,6 +20,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::catalog::{cached_thumb_path, sniff_image};
 use crate::library::{file_stem, remove_if_exists, LibraryEntry, StoryFormat};
@@ -230,9 +231,13 @@ pub(crate) fn store_with(
 /// référencée et part ici ; l'histoire retombe sur la vignette de sa source d'origine, puis sur
 /// l'illustration par défaut.
 pub fn sweep(library_root: &Path, stories: &[LibraryEntry]) {
-    // Seul un `library/` marqué comme créé par l'application est balayé (#570).
+    // Seul un `library/` marqué comme créé par l'application est balayé (#570). Avertissement une
+    // seule fois par session : `sweep` suit chaque réconciliation (#591).
+    static WARNED: AtomicBool = AtomicBool::new(false);
     if !crate::cache::is_owned(library_root) {
-        tracing::warn!("bibliothèque sans marqueur de l'application : vignettes non balayées");
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            tracing::warn!("bibliothèque sans marqueur de l'application : vignettes non balayées");
+        }
         return;
     }
     let Ok(read) = std::fs::read_dir(library_root.join(THUMBS_DIR)) else {
@@ -534,6 +539,43 @@ mod tests {
         std::fs::write(library.join(crate::cache::MARKER), b"").unwrap();
         sweep(&library, &[]);
         assert!(thumbs(dir.path()).is_empty());
+    }
+
+    /// Bibliothèque non marquée : l'avertissement n'est journalisé qu'une fois par session (#591),
+    /// pas à chaque réconciliation.
+    #[test]
+    fn la_bibliotheque_non_marquee_n_avertit_qu_une_fois() {
+        #[derive(Clone, Default)]
+        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("library");
+        std::fs::create_dir_all(library.join(THUMBS_DIR)).unwrap();
+        let capture = Capture::default();
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            for _ in 0..3 {
+                sweep(&library, &[]);
+            }
+        });
+        let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        // Au plus une fois (un autre test de la session a pu l'émettre avant).
+        assert!(
+            logs.matches("vignettes non balayées").count() <= 1,
+            "{logs}"
+        );
     }
 
     #[test]

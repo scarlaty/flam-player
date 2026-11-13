@@ -7,7 +7,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -49,23 +49,72 @@ pub fn default_cache_dir() -> PathBuf {
         .join("cache")
 }
 
+/// Porte de démarrage (#591) : fermée tant que la migration des marqueurs du cache n'est pas
+/// terminée. Tout accès au dossier de cache l'attend (via [`ConfigState::guard`] ou le résolveur
+/// des tâches d'installation) ; la migration elle-même ne l'attend jamais.
+#[derive(Clone)]
+pub struct StartupGate(Arc<(Mutex<bool>, Condvar)>);
+
+impl StartupGate {
+    /// Porte déjà ouverte (tests, outils) : `wait` rend la main aussitôt.
+    pub fn open() -> Self {
+        Self(Arc::new((Mutex::new(true), Condvar::new())))
+    }
+
+    /// Porte fermée et son unique ouvreur.
+    pub fn closed() -> (Self, GateOpener) {
+        let gate = Self(Arc::new((Mutex::new(false), Condvar::new())));
+        (gate.clone(), GateOpener(gate))
+    }
+
+    /// Attend l'ouverture de la porte.
+    pub fn wait(&self) {
+        let (open, changed) = &*self.0;
+        let mut open = open.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*open {
+            open = changed.wait(open).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+/// Ouvre la porte à sa destruction, y compris pendant une panique : une migration qui échoue ne
+/// bloque jamais les commandes (les sous-dossiers non marqués sont alors seulement ignorés).
+pub struct GateOpener(StartupGate);
+
+impl Drop for GateOpener {
+    fn drop(&mut self) {
+        let (open, changed) = &*(self.0).0;
+        *open.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        changed.notify_all();
+    }
+}
+
 /// État Tauri partagé : dossier de configuration et verrou sérialisant les
 /// cycles lecture-modification-écriture des commandes.
 pub struct ConfigState {
     pub dir: PathBuf,
     lock: Mutex<()>,
+    gate: StartupGate,
 }
 
 impl ConfigState {
     pub fn new(dir: PathBuf) -> Self {
+        Self::with_gate(dir, StartupGate::open())
+    }
+
+    /// État dont le verrou attend la porte de démarrage `gate` (voir [`StartupGate`]).
+    pub fn with_gate(dir: PathBuf, gate: StartupGate) -> Self {
         Self {
             dir,
             lock: Mutex::new(()),
+            gate,
         }
     }
 
-    /// Prend le verrou (un verrou empoisonné reste utilisable : les fichiers sont atomiques).
+    /// Attend la porte de démarrage, puis prend le verrou (un verrou empoisonné reste
+    /// utilisable : les fichiers sont atomiques).
     pub fn guard(&self) -> MutexGuard<'_, ()> {
+        self.gate.wait();
         self.lock.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -407,6 +456,38 @@ pub async fn config_ack_recovery(
 mod tests {
     use super::*;
     use serde::Deserialize;
+
+    /// Le verrou de configuration attend la porte de démarrage (#591) : aucune commande ne lit
+    /// le cache avant la fin de la migration, et une panique de la migration ouvre la porte.
+    #[test]
+    fn le_verrou_attend_la_porte_de_demarrage_meme_apres_une_panique() {
+        let (gate, opener) = StartupGate::closed();
+        let state = Arc::new(ConfigState::with_gate(PathBuf::from("config"), gate));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiting = {
+            let state = Arc::clone(&state);
+            thread::spawn(move || {
+                let _guard = state.guard();
+                tx.send(()).unwrap();
+            })
+        };
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "verrou pris avant l'ouverture de la porte"
+        );
+        // Migration qui panique : l'ouvreur est détruit pendant le déroulement de la pile.
+        let migration = thread::spawn(move || {
+            let _opener = opener;
+            panic!("panne simulée de la migration");
+        });
+        assert!(migration.join().is_err());
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("porte ouverte après la panique");
+        waiting.join().unwrap();
+        // Ouverte une fois pour toutes ; un état ordinaire n'attend jamais.
+        drop(state.guard());
+        drop(ConfigState::new(PathBuf::from("config")).guard());
+    }
 
     #[derive(Debug, PartialEq, Deserialize, Serialize)]
     struct Doc {

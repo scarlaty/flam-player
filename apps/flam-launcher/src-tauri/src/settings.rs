@@ -548,6 +548,15 @@ impl SettingsStore {
                 .is_some_and(|old| same_path(Path::new(old), Path::new(dir)));
             if !unchanged {
                 check_cache_dir_free(dir)?;
+                // Migration des marqueurs encore en attente (#591) : elle ne vaut que pour le
+                // dossier configuré au moment de la mise à jour. Le nouveau dossier, contrôlé
+                // ci-dessus, ne doit jamais être migré à l'aveugle : témoin écrit avant le réglage
+                // (arrêt entre les deux : l'ancien dossier reste non marqué, fuite sans perte).
+                let witness = self.dir.join(crate::cache::MIGRATION_WITNESS);
+                if std::fs::symlink_metadata(&witness).is_err() {
+                    std::fs::create_dir_all(&self.dir)?;
+                    std::fs::write(&witness, b"")?;
+                }
             }
         }
         settings.carrier_consent = stored.carrier_consent;
@@ -1034,6 +1043,57 @@ mod tests {
             old.join("library/abc-1.plain.pk").is_file(),
             "rien supprimé"
         );
+    }
+
+    /// Migration encore en attente (#591) : elle ne vaut que pour le dossier configuré au moment
+    /// de la mise à jour, jamais pour un dossier choisi ensuite.
+    #[test]
+    fn un_cache_choisi_apres_la_mise_a_jour_n_est_jamais_migre() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path());
+        let env = env_in(dir.path());
+        let witness = dir.path().join(crate::cache::MIGRATION_WITNESS);
+        // Ancien cache choisi alors que la migration est reportée (témoin absent) ; son
+        // `archives/` n'est pas prouvé « à l'application » par son contenu.
+        let old = dir.path().join("ancien-cache");
+        touch(&old.join("library/abc-1.plain.pk"));
+        fs::write(
+            old.join("library/library.json"),
+            r#"{"schema_version":1,"stories":[]}"#,
+        )
+        .unwrap();
+        touch(&old.join("archives/perso.zip"));
+        assert!(!witness.exists());
+        store
+            .update(Settings {
+                cache_dir: Some(old.display().to_string()),
+                ..Settings::default()
+            })
+            .unwrap();
+        assert!(witness.is_file(), "témoin écrit avec le nouveau réglage");
+        assert_eq!(
+            crate::cache::migrate_configured(dir.path(), &env).unwrap(),
+            crate::cache::Migration::AlreadyDone
+        );
+        assert!(!crate::cache::is_owned(&old.join("archives")));
+        assert!(old.join("archives/perso.zip").is_file());
+    }
+
+    #[test]
+    fn reenregistrer_le_meme_cache_ne_clot_pas_la_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path());
+        let cache = dir.path().join("cache");
+        crate::cache::ensure_subdirs(&cache);
+        let with_cache = Settings {
+            cache_dir: Some(cache.display().to_string()),
+            ..Settings::default()
+        };
+        store.update(with_cache.clone()).unwrap();
+        fs::remove_file(dir.path().join(crate::cache::MIGRATION_WITNESS)).unwrap();
+        // Même dossier : rien de neuf, la migration de ce dossier reste à faire.
+        store.update(with_cache).unwrap();
+        assert!(!dir.path().join(crate::cache::MIGRATION_WITNESS).exists());
     }
 
     #[test]

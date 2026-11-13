@@ -6,7 +6,7 @@ export interface CacheUsage {
   path: string;
   /** Octets occupés par les sous-dossiers créés par l'application. */
   bytes: number;
-  /** Sous-dossiers que l'application compte et supprime. */
+  /** Sous-dossiers que l'application compte et vide : présents et marqués (#591). */
   subdirs: string[];
 }
 

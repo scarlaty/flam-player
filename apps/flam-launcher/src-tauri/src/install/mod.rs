@@ -240,9 +240,11 @@ pub fn detect_rust_converter(env: &Environment) -> Option<PathBuf> {
 }
 
 /// Résolution réelle : `settings.json` (cache, téléchargements simultanés, vignettes) et
-/// détection du convertisseur.
-pub fn settings_resolver(config_dir: PathBuf) -> Resolver {
+/// détection du convertisseur. Attend d'abord la porte de démarrage `gate` (migration des
+/// marqueurs du cache terminée, #591).
+pub fn settings_resolver(config_dir: PathBuf, gate: crate::storage::StartupGate) -> Resolver {
     Arc::new(move || {
+        gate.wait();
         let env = Environment::current();
         let saved = SettingsStore::new(&config_dir).load()?;
         let (resolved, _) = settings::resolve(&saved, &env);
@@ -293,7 +295,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Identifiant de tâche : UUID v4 sous sa forme canonique (minuscules, avec tirets). Il sert
 /// de nom de fichier dans `library/.staging/`, donc il est revérifié à la relecture de la file.
-fn is_task_id(id: &str) -> bool {
+pub(crate) fn is_task_id(id: &str) -> bool {
     uuid::Uuid::parse_str(id).is_ok_and(|u| u.hyphenated().to_string() == id)
 }
 

@@ -12,6 +12,7 @@ use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 use tauri::State;
@@ -44,7 +45,8 @@ pub struct CacheUsage {
     pub path: String,
     /// Octets occupés par les sous-dossiers de l'application.
     pub bytes: u64,
-    /// Sous-dossiers que l'application compte et supprime (`APP_CACHE_SUBDIRS`).
+    /// Sous-dossiers que l'application compte et vide : ceux de `APP_CACHE_SUBDIRS` présents et
+    /// marqués (un homonyme non marqué, épargné par le vidage, n'est pas annoncé).
     pub subdirs: Vec<String>,
 }
 
@@ -132,15 +134,16 @@ pub fn ensure_subdirs(root: &Path) {
     }
 }
 
-/// Sous-dossiers de l'application existant réellement **et** marqués. Un homonyme sans
-/// marqueur est ignoré (et journalisé, par son nom seulement).
-fn app_dirs(root: &Path) -> Vec<PathBuf> {
+/// Sous-dossiers de l'application existant réellement **et** marqués (nom et chemin, dans
+/// l'ordre de [`APP_CACHE_SUBDIRS`]). Un homonyme sans marqueur est ignoré (et journalisé, par
+/// son nom seulement).
+fn app_dirs(root: &Path) -> Vec<(&'static str, PathBuf)> {
     APP_CACHE_SUBDIRS
         .iter()
         .filter_map(|name| {
             let path = root.join(name);
             if is_owned(&path) {
-                Some(path)
+                Some((*name, path))
             } else {
                 if fs::symlink_metadata(&path).is_ok() {
                     tracing::warn!(
@@ -179,9 +182,12 @@ pub enum Migration {
 
 /// Migration unique (#570) : les sous-dossiers de [`APP_CACHE_SUBDIRS`] déjà présents dans les
 /// dossiers de cache `roots` (celui déjà configuré, et le dossier par défaut) servaient déjà à
-/// l'application ; ils reçoivent le marqueur. Le témoin `witness` est écrit en dernier :
-/// interrompue, la migration est rejouée (elle est idempotente). Limite : un homonyme de
-/// l'utilisateur déjà présent dans le dossier configuré est marqué lui aussi.
+/// l'application ; ils reçoivent le marqueur, avec une preuve d'usage pour ceux dont la forme du
+/// contenu est connue (voir [`proven_by_content`]). Le témoin `witness` est écrit en dernier :
+/// interrompue, la migration est rejouée (elle est idempotente). Une racine est un dossier choisi
+/// par l'utilisateur : elle peut être une jonction ou un lien (#591), seul le premier niveau doit
+/// être un dossier réel. Limite : un homonyme de l'utilisateur sans preuve d'usage exigée
+/// (`archives`, `catalogs`…) déjà présent dans le dossier configuré est marqué lui aussi.
 pub fn migrate_markers(witness: &Path, roots: &[PathBuf]) -> io::Result<Migration> {
     migrate_markers_with(witness, roots, &no_fault)
 }
@@ -190,7 +196,7 @@ fn migrate_markers_with(witness: &Path, roots: &[PathBuf], fault: Fault) -> io::
     if fs::symlink_metadata(witness).is_ok() {
         return Ok(Migration::AlreadyDone);
     }
-    if roots.iter().any(|root| !is_real_dir(root)) {
+    if roots.iter().any(|root| !root.is_dir()) {
         return Ok(Migration::Deferred);
     }
     let mut marked = 0;
@@ -206,8 +212,9 @@ fn migrate_markers_with(witness: &Path, roots: &[PathBuf], fault: Fault) -> io::
 }
 
 /// Marque les sous-dossiers de [`APP_CACHE_SUBDIRS`] présents dans `root` (dossiers réels sans
-/// marqueur) et renvoie leur nombre. Idempotente. Un marqueur anormal (lien, dossier) est laissé
-/// tel quel, sans marquer ce sous-dossier.
+/// marqueur, dont le contenu prouve l'usage par l'application) et renvoie leur nombre.
+/// Idempotente. Un marqueur anormal (lien, dossier) est laissé tel quel, sans marquer ce
+/// sous-dossier.
 fn mark_existing(root: &Path, fault: Fault) -> io::Result<usize> {
     let mut marked = 0;
     for name in APP_CACHE_SUBDIRS {
@@ -217,6 +224,12 @@ fn mark_existing(root: &Path, fault: Fault) -> io::Result<usize> {
         }
         if fs::symlink_metadata(dir.join(MARKER)).is_ok() {
             tracing::warn!("cache : marqueur de « {name} » inattendu, non migré");
+            continue;
+        }
+        if !proven_by_content(name, &dir) {
+            tracing::warn!(
+                "cache : contenu de « {name} » non reconnu, non migré (ni compté ni vidé)"
+            );
             continue;
         }
         fault("marker")?;
@@ -230,16 +243,79 @@ fn mark_existing(root: &Path, fault: Fault) -> io::Result<usize> {
     Ok(marked)
 }
 
+/// Preuve d'usage exigée par la migration (#591) pour les sous-dossiers dont l'application
+/// connaît la forme du contenu ; en cas de doute, rien n'est marqué (fuite, jamais de perte) :
+/// - `library` : index reconnu ([`crate::library::is_legacy_library`]) ou dossier vide ;
+/// - `podcasts` : chaque enfant est un dossier réel nommé comme un identifiant de source
+///   (règle de `podcast::source::source_dir`) ;
+/// - `podcast-work` : chaque enfant est un dossier réel nommé par un identifiant de tâche
+///   (`install::is_task_id`) ;
+/// - `play` : chaque enfant est un dossier réel nommé par l'empreinte de `player::Workspace`
+///   (16 chiffres hexadécimaux minuscules).
+///
+/// Les autres sous-dossiers n'exigent pas de preuve.
+fn proven_by_content(name: &str, dir: &Path) -> bool {
+    let child_shape: fn(&str) -> bool = match name {
+        crate::library::LIBRARY_DIR => {
+            return crate::library::is_legacy_library(dir)
+                || fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none());
+        }
+        crate::podcast::source::CACHE_SUBDIR => |child| {
+            !child.is_empty()
+                && child.len() <= 64
+                && child
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        },
+        crate::install::podcast::WORK_DIR => crate::install::is_task_id,
+        crate::player::PLAY_DIR => |child| {
+            child.len() == 16
+                && child
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'))
+        },
+        _ => return true,
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.into_iter().all(|entry| {
+        entry.is_ok_and(|entry| {
+            entry
+                .file_type()
+                .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
+                && entry.file_name().to_str().is_some_and(child_shape)
+        })
+    })
+}
+
 /// Migration au démarrage pour le dossier de configuration `config_dir` : dossier de cache
-/// effectif, plus le dossier par défaut s'il existe. Reportée (`Deferred`, sans témoin) quand le
-/// dossier résolu n'est pas celui des réglages (valeur configurée refusée, repli sur le défaut) :
-/// le dossier configuré n'aurait jamais été migré.
+/// effectif, plus le dossier par défaut s'il existe. Témoin présent : rien n'est lu (ni réglages
+/// ni cache), le démarrage n'attend aucun accès au cache (#591). Quand le dossier résolu n'est pas
+/// celui des réglages (valeur configurée refusée, repli sur le défaut), la migration reste
+/// reportée (`Deferred`, sans témoin) pour le dossier configuré, mais le dossier par défaut, alors
+/// en usage, est migré quand même (#591).
 pub fn migrate_configured(config_dir: &Path, env: &Environment) -> AppResult<Migration> {
+    migrate_configured_with(config_dir, env, &no_fault)
+}
+
+fn migrate_configured_with(
+    config_dir: &Path,
+    env: &Environment,
+    fault: Fault,
+) -> AppResult<Migration> {
+    let witness = config_dir.join(MIGRATION_WITNESS);
+    if fs::symlink_metadata(&witness).is_ok() {
+        return Ok(Migration::AlreadyDone);
+    }
     let settings = SettingsStore::new(config_dir).load()?;
     let (resolved, _) = resolve(&settings, env);
     let effective = PathBuf::from(resolved.cache_dir);
     if let Some(configured) = &settings.cache_dir {
         if !crate::settings::same_path(Path::new(configured), &effective) {
+            if env.default_cache_dir.is_dir() {
+                mark_existing(&env.default_cache_dir, fault)?;
+            }
             return Ok(Migration::Deferred);
         }
     }
@@ -248,11 +324,22 @@ pub fn migrate_configured(config_dir: &Path, env: &Environment) -> AppResult<Mig
     if env.default_cache_dir != effective && env.default_cache_dir.is_dir() {
         roots.push(env.default_cache_dir.clone());
     }
-    let migration = migrate_markers(&config_dir.join(MIGRATION_WITNESS), &roots)?;
-    for root in &roots {
-        remove_stale_tmp(root);
+    Ok(migrate_markers_with(&witness, &roots, fault)?)
+}
+
+/// Nettoyage des dossiers temporaires d'une création interrompue dans le dossier de cache
+/// effectif et dans le dossier par défaut, à chaque démarrage, **après** l'ouverture de la porte
+/// de démarrage (il ne dépend pas du marqueur ; les temporaires récents sont gardés).
+pub fn remove_stale_tmp_configured(config_dir: &Path, env: &Environment) {
+    let effective = SettingsStore::new(config_dir)
+        .load()
+        .map(|settings| PathBuf::from(resolve(&settings, env).0.cache_dir));
+    if let Ok(effective) = &effective {
+        remove_stale_tmp(effective);
     }
-    Ok(migration)
+    if !effective.is_ok_and(|dir| crate::settings::same_path(&dir, &env.default_cache_dir)) {
+        remove_stale_tmp(&env.default_cache_dir);
+    }
 }
 
 /// Ancien cache du launcher (version sans marqueur) : `library/` est un dossier réel qui contient
@@ -286,9 +373,18 @@ fn adopt_legacy_cache_with(root: &Path, fault: Fault) -> io::Result<bool> {
     Ok(true)
 }
 
+/// Âge minimal d'un dossier temporaire de création avant sa suppression : en deçà, une création
+/// peut être en cours (autre commande, seconde instance), #591.
+const STALE_TMP_AGE: Duration = Duration::from_secs(60);
+
 /// Supprime les dossiers temporaires laissés par une [`ensure_subdir`] interrompue : seulement
-/// s'ils sont vides ou ne contiennent que le marqueur (`remove_dir` échoue sinon).
+/// s'ils sont vides ou ne contiennent que le marqueur (`remove_dir` échoue sinon), et modifiés il
+/// y a au moins [`STALE_TMP_AGE`] (date illisible ou dans le futur : gardé).
 pub fn remove_stale_tmp(root: &Path) {
+    remove_stale_tmp_at(root, SystemTime::now());
+}
+
+fn remove_stale_tmp_at(root: &Path, now: SystemTime) {
     let Ok(entries) = fs::read_dir(root) else {
         return;
     };
@@ -296,6 +392,15 @@ pub fn remove_stale_tmp(root: &Path) {
         let name = entry.file_name();
         let path = entry.path();
         if !name.to_string_lossy().starts_with(TMP_PREFIX) || !is_real_dir(&path) {
+            continue;
+        }
+        let old_enough = fs::symlink_metadata(&path)
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|modified| {
+                now.duration_since(modified)
+                    .is_ok_and(|age| age >= STALE_TMP_AGE)
+            });
+        if !old_enough {
             continue;
         }
         let only_marker = fs::read_dir(&path).is_ok_and(|inner| {
@@ -354,11 +459,18 @@ fn dir_size_at(dir: &Path, depth: usize) -> std::io::Result<u64> {
 
 /// Octets occupés par les sous-dossiers de l'application dans `root`.
 pub fn usage_of(root: &Path) -> AppResult<u64> {
+    Ok(usage_report(root)?.0)
+}
+
+/// Octets occupés et noms des sous-dossiers comptés (ceux que le vidage videra : marqués).
+fn usage_report(root: &Path) -> AppResult<(u64, Vec<String>)> {
     let mut total = 0;
-    for dir in app_dirs(root) {
+    let mut names = Vec::new();
+    for (name, dir) in app_dirs(root) {
         total += dir_size(&dir)?;
+        names.push(name.to_string());
     }
-    Ok(total)
+    Ok((total, names))
 }
 
 /// Vide les sous-dossiers marqués de l'application dans `root` et renvoie les octets libérés.
@@ -371,7 +483,7 @@ pub fn clear_of(root: &Path) -> AppResult<u64> {
 
 fn clear_of_with(root: &Path, fault: Fault) -> AppResult<u64> {
     let mut freed = 0;
-    for dir in app_dirs(root) {
+    for (_, dir) in app_dirs(root) {
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(err) if err.kind() == ErrorKind::NotFound => continue,
@@ -437,11 +549,11 @@ pub async fn cache_usage(state: State<'_, ConfigState>) -> AppResult<CacheUsage>
         effective_dir(&state)?
     };
     let scanned = root.clone();
-    let bytes = blocking(move || usage_of(&scanned)).await??;
+    let (bytes, subdirs) = blocking(move || usage_report(&scanned)).await??;
     Ok(CacheUsage {
         bytes,
         path: root.to_string_lossy().into_owned(),
-        subdirs: APP_CACHE_SUBDIRS.iter().map(|s| (*s).to_string()).collect(),
+        subdirs,
     })
 }
 
@@ -665,14 +777,14 @@ mod tests {
         let witness = config.path().join(MIGRATION_WITNESS);
         // `.flam-launcher` est un dossier dans `archives/` : ni écrit, ni bloquant.
         write(&cache.path().join("archives").join(MARKER).join("x"), 1);
-        write(&cache.path().join("library/h"), 1);
+        write(&cache.path().join("catalogs/h"), 1);
         let roots = [cache.path().to_path_buf()];
         assert_eq!(
             migrate_markers(&witness, &roots).unwrap(),
             Migration::Done { marked: 1 }
         );
         assert!(!is_owned(&cache.path().join("archives")));
-        assert!(is_owned(&cache.path().join("library")));
+        assert!(is_owned(&cache.path().join("catalogs")));
     }
 
     #[test]
@@ -691,9 +803,73 @@ mod tests {
         let other = dir.path().join(format!("{TMP_PREFIX}autre"));
         write(&other.join("garder.txt"), 3);
         write(&other.join(MARKER), 0);
+        for name in names_in(dir.path()) {
+            backdate(&dir.path().join(name));
+        }
         remove_stale_tmp(dir.path());
         assert_eq!(names_in(dir.path()), [format!("{TMP_PREFIX}autre")]);
         assert_eq!(names_in(&other), [MARKER, "garder.txt"]);
+    }
+
+    /// Recule d'au moins [`STALE_TMP_AGE`] la date de modification de `path` (fichier ou dossier).
+    fn backdate(path: &Path) {
+        let mut options = fs::OpenOptions::new();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_WRITE_ATTRIBUTES suffit pour changer les dates ; FILE_FLAG_BACKUP_SEMANTICS
+            // permet d'ouvrir un dossier.
+            options.access_mode(0x100).custom_flags(0x0200_0000);
+        }
+        #[cfg(not(windows))]
+        options.read(true);
+        options
+            .open(path)
+            .unwrap()
+            .set_modified(SystemTime::now() - 2 * STALE_TMP_AGE)
+            .unwrap();
+    }
+
+    #[test]
+    fn un_temporaire_recent_d_une_autre_creation_n_est_pas_supprime() {
+        let dir = tempfile::tempdir().unwrap();
+        // Création en cours ailleurs (autre commande, seconde instance) : marqueur écrit, pas
+        // encore renommé.
+        let busy = dir.path().join(format!("{TMP_PREFIX}library-999-0"));
+        write(&busy.join(MARKER), 0);
+        remove_stale_tmp(dir.path());
+        assert!(busy.join(MARKER).is_file(), "temporaire récent gardé");
+        // Une fois vieux d'une minute, c'est un orphelin : supprimé.
+        backdate(&busy);
+        remove_stale_tmp(dir.path());
+        assert!(names_in(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn les_temporaires_du_dossier_par_defaut_sont_nettoyes_meme_si_la_migration_est_reportee() {
+        let config = tempfile::tempdir().unwrap();
+        let default = config.path().join("cache-defaut");
+        let configured = config.path().join("protege");
+        let env = Environment {
+            exe_dir: None,
+            default_cache_dir: default.clone(),
+            search_repo_build: false,
+            protected_dirs: vec![configured.clone()],
+        };
+        fs::write(
+            config.path().join("settings.json"),
+            serde_json::json!({ "schema_version": 1, "cache_dir": configured }).to_string(),
+        )
+        .unwrap();
+        let stale = default.join(format!("{TMP_PREFIX}play-1-0"));
+        fs::create_dir_all(&stale).unwrap();
+        backdate(&stale);
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::Deferred
+        );
+        remove_stale_tmp_configured(config.path(), &env);
+        assert!(!stale.exists());
     }
 
     #[test]
@@ -723,8 +899,7 @@ mod tests {
         let config = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         let witness = config.path().join(MIGRATION_WITNESS);
-        write(&cache.path().join("library/h.plain.pk"), 5);
-        write(&cache.path().join("archives/a.zip"), 5);
+        legacy_cache(cache.path());
         write(&cache.path().join("thumbs"), 1);
         let roots = [cache.path().to_path_buf()];
 
@@ -751,7 +926,8 @@ mod tests {
         let config = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         let witness = config.path().join(MIGRATION_WITNESS);
-        for name in ["archives", "library", "play"] {
+        let names = ["archives", "catalogs", "official"];
+        for name in names {
             write(&cache.path().join(name).join("x"), 1);
         }
         let roots = [cache.path().to_path_buf()];
@@ -759,7 +935,7 @@ mod tests {
         assert!(migrate_markers_with(&witness, &roots, &fail_at("marker", 2)).is_err());
         assert!(!witness.exists());
         assert!(is_owned(&cache.path().join("archives")));
-        assert!(!is_owned(&cache.path().join("library")));
+        assert!(!is_owned(&cache.path().join("catalogs")));
         assert!(migrate_markers_with(&witness, &roots, &fail_at("witness", 1)).is_err());
         assert!(!witness.exists());
         // Reprise : termine, sans rien marquer deux fois.
@@ -767,7 +943,7 @@ mod tests {
             migrate_markers(&witness, &roots).unwrap(),
             Migration::Done { marked: 0 }
         );
-        for name in ["archives", "library", "play"] {
+        for name in names {
             assert!(is_owned(&cache.path().join(name)));
             assert!(cache.path().join(name).join("x").is_file(), "rien supprimé");
         }
@@ -908,6 +1084,188 @@ mod tests {
             Migration::Deferred
         );
         assert!(!witness.exists());
+    }
+
+    fn env_with(default: &Path, protected: Vec<PathBuf>) -> Environment {
+        Environment {
+            exe_dir: None,
+            default_cache_dir: default.to_path_buf(),
+            search_repo_build: false,
+            protected_dirs: protected,
+        }
+    }
+
+    #[test]
+    fn valeur_configuree_refusee_le_dossier_par_defaut_est_migre_sans_temoin() {
+        let config = tempfile::tempdir().unwrap();
+        let default = config.path().join("cache-defaut");
+        let configured = config.path().join("protege");
+        let env = env_with(&default, vec![configured.clone()]);
+        fs::write(
+            config.path().join("settings.json"),
+            serde_json::json!({ "schema_version": 1, "cache_dir": configured }).to_string(),
+        )
+        .unwrap();
+        // Le dossier par défaut, en usage pendant le repli, contient un ancien cache.
+        legacy_cache(&default);
+        // Panne au premier marqueur : rien d'écrit d'autre, pas de témoin, reprise complète.
+        assert!(migrate_configured_with(config.path(), &env, &fail_at("marker", 1)).is_err());
+        assert!(!config.path().join(MIGRATION_WITNESS).exists());
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::Deferred
+        );
+        assert!(is_owned(&default.join("library")));
+        assert!(is_owned(&default.join("archives")));
+        assert!(
+            default.join("library/abc-1.plain.pk").is_file(),
+            "rien supprimé"
+        );
+        assert!(
+            !config.path().join(MIGRATION_WITNESS).exists(),
+            "dossier configuré toujours à migrer"
+        );
+    }
+
+    #[test]
+    fn migration_faite_le_demarrage_ne_relit_ni_reglages_ni_cache() {
+        let config = tempfile::tempdir().unwrap();
+        fs::write(config.path().join(MIGRATION_WITNESS), b"").unwrap();
+        // Réglages illisibles : un `load` les mettrait de côté en `*.bak`.
+        fs::write(config.path().join("settings.json"), b"{corrompu").unwrap();
+        let env = env_with(&config.path().join("absent"), vec![]);
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert_eq!(
+            names_in(config.path()),
+            [MIGRATION_WITNESS, "settings.json"]
+        );
+    }
+
+    #[test]
+    fn la_migration_exige_une_preuve_d_usage() {
+        let config = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = cache.path();
+        // Homonymes de l'utilisateur : contenu d'une autre forme que celle de l'application.
+        write(&root.join("library/livres/roman.epub"), 3);
+        write(&root.join("library/.lock"), 0);
+        write(&root.join("podcasts/mon-emission.mp3"), 3);
+        write(&root.join("podcast-work/projet/notes.txt"), 3);
+        write(&root.join("play/Partie 1/sauvegarde.bin"), 3);
+        let roots = [root.to_path_buf()];
+        assert_eq!(
+            migrate_markers(&config.path().join(MIGRATION_WITNESS), &roots).unwrap(),
+            Migration::Done { marked: 0 }
+        );
+        for name in ["library", "podcasts", "podcast-work", "play"] {
+            assert!(!is_owned(&root.join(name)), "{name} non prouvé");
+        }
+        // Le vidage les épargne tous, et l'interface ne les annonce pas.
+        assert_eq!(clear_of(root).unwrap(), 0);
+        assert!(root.join("podcasts/mon-emission.mp3").is_file());
+        assert!(root.join("library/livres/roman.epub").is_file());
+        assert_eq!(usage_report(root).unwrap(), (0, vec![]));
+    }
+
+    #[test]
+    fn la_migration_marque_les_contenus_de_la_forme_de_l_application() {
+        let config = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = cache.path();
+        legacy_cache(root);
+        write(
+            &root.join("podcasts/4f1c2a9e-0b7d-4c3e-9a51-2d6e8f0a1b3c/feed.xml"),
+            3,
+        );
+        write(&root.join("podcasts/src_2/meta.json"), 3);
+        write(
+            &root.join("podcast-work/4f1c2a9e-0b7d-4c3e-9a51-2d6e8f0a1b3c/pack.zip"),
+            3,
+        );
+        write(&root.join("play/0123456789abcdef/story/x.bin"), 3);
+        // Vides : rien à perdre, marqués.
+        let empty = tempfile::tempdir().unwrap();
+        fs::create_dir_all(empty.path().join("library")).unwrap();
+        fs::create_dir_all(empty.path().join("podcasts")).unwrap();
+        let roots = [root.to_path_buf(), empty.path().to_path_buf()];
+        assert_eq!(
+            migrate_markers(&config.path().join(MIGRATION_WITNESS), &roots).unwrap(),
+            Migration::Done { marked: 7 }
+        );
+        for name in ["library", "archives", "podcasts", "podcast-work", "play"] {
+            assert!(is_owned(&root.join(name)), "{name}");
+        }
+        assert!(is_owned(&empty.path().join("library")));
+        assert!(is_owned(&empty.path().join("podcasts")));
+    }
+
+    #[test]
+    fn un_seul_enfant_inconnu_empeche_le_marquage() {
+        for (name, good, bad) in [
+            ("podcasts", "src", "Mes Podcasts"),
+            (
+                "podcast-work",
+                "4f1c2a9e-0b7d-4c3e-9a51-2d6e8f0a1b3c",
+                "4f1c2a9e0b7d4c3e9a512d6e8f0a1b3c",
+            ),
+            ("play", "0123456789abcdef", "0123456789abcdeg"),
+        ] {
+            let config = tempfile::tempdir().unwrap();
+            let cache = tempfile::tempdir().unwrap();
+            fs::create_dir_all(cache.path().join(name).join(good)).unwrap();
+            fs::create_dir_all(cache.path().join(name).join(bad)).unwrap();
+            let roots = [cache.path().to_path_buf()];
+            migrate_markers(&config.path().join(MIGRATION_WITNESS), &roots).unwrap();
+            assert!(!is_owned(&cache.path().join(name)), "{name}/{bad}");
+            // Un fichier à la place d'un dossier ne prouve rien non plus.
+            let cache = tempfile::tempdir().unwrap();
+            write(&cache.path().join(name).join(good), 1);
+            let config = tempfile::tempdir().unwrap();
+            let roots = [cache.path().to_path_buf()];
+            migrate_markers(&config.path().join(MIGRATION_WITNESS), &roots).unwrap();
+            assert!(!is_owned(&cache.path().join(name)), "{name}/{good} fichier");
+        }
+    }
+
+    #[test]
+    fn l_usage_n_annonce_que_les_sous_dossiers_marques() {
+        let dir = tempfile::tempdir().unwrap();
+        owned(dir.path(), "library");
+        owned(dir.path(), "archives");
+        write(&dir.path().join("archives/a.zip"), 4);
+        // Homonyme non marqué : ni compté, ni vidé, ni annoncé.
+        write(&dir.path().join("podcasts/a.mp3"), 9);
+        assert_eq!(
+            usage_report(dir.path()).unwrap(),
+            (4, vec!["archives".to_string(), "library".to_string()])
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn une_racine_en_jonction_est_migree() {
+        let config = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        legacy_cache(target.path());
+        let link = config.path().join("cache-lien");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(target.path())
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "mklink /J a échoué");
+        let witness = config.path().join(MIGRATION_WITNESS);
+        assert_eq!(
+            migrate_markers(&witness, std::slice::from_ref(&link)).unwrap(),
+            Migration::Done { marked: 2 }
+        );
+        assert!(witness.is_file(), "plus reportée à chaque démarrage");
+        assert!(is_owned(&link.join("library")));
+        assert_eq!(usage_of(&link).unwrap(), 15 + 33);
     }
 
     #[cfg(windows)]
