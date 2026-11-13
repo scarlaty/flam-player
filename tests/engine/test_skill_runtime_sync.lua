@@ -8,8 +8,9 @@
 -- .lif de img/script/), la copie du skill doit exister et avoir les MEMES OCTETS
 -- (fins de ligne comprises : LF des deux cotes). Aucune exception aujourd'hui ;
 -- toute divergence voulue doit etre declaree dans EXCEPTIONS, avec sa raison.
--- Limite : un fichier present seulement dans le skill n'est pas detecte (pas de
--- listage de dossier en Lua) ; flam_build.py l'embarquerait quand meme.
+-- Un fichier present seulement dans le skill (pas de listage de dossier en Lua)
+-- est detecte par tools/telmi2flam/tests/test_validate.py
+-- (test_skill_runtime_lists_same_files, etape 5 de test_run.bat).
 
 local src = debug.getinfo(1, "S").source
 local HERE = src:sub(1, 1) == "@" and src:sub(2):match("^(.*)[/\\]") or "."

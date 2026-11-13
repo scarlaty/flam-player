@@ -213,7 +213,9 @@ game.images = game.images or {}; game.images.hero = data   -- garder la référe
   a fait redémarrer la Flam à la septième image retenue ; le seuil dépend du reste de la
   mémoire occupée (piège 26). Pour une galerie ou un menu à images, ne garder que celles
   affichées, relâcher les autres puis `collectgarbage("collect")` avant de charger la
-  suivante (modèle : `syncSources` dans `carousel_1_0_0.lua` du runtime). Le module
+  suivante (modèle : `syncSources` dans `carousel_1_0_0.lua` du runtime, validé sur device
+  le 13/11/2026 avec des menus de 18 et 30 images dans une histoire convertie par
+  telmi2flam ; le reste du runtime n'est vérifié qu'au simulateur). Le module
   `image-choice` du runtime ne garde que l'image affichée, sauf avec `preload = true`,
   qui charge **toutes** les images des choix d'un coup : à éviter au-delà de 2 ou 3.
 - Chemin relatif à `img/` (sous-dossiers permis : `"sprites/a.lif"`). Image absente :

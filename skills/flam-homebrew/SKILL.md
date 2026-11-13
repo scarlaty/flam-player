@@ -25,7 +25,7 @@ firmware, pas d'import de contenus d'un autre compte.
 | `scripts/flam_build.py` | assemble le `.plain.pk` (+ dossier `.plain` pour le simulateur) et lance le check |
 | `scripts/flam_check.py` | valide un `.plain.pk` (structure, Lua, assets, pièges device) |
 | `scripts/lif.py`, `scripts/mp3map.py` | encodeurs image et table audio (utilisés par le build) |
-| `assets/runtime/` | runtime Lua du projet à embarquer (copié par le build, ne pas modifier à la main) : copie octet pour octet du runtime du convertisseur `tools/telmi2flam/runtime` du dépôt, gardée identique par un test (piège 18). Les jeux validés sur device (Capi et la rivière, construit par `flam_build.py`) l'ont été avec l'**ancien** runtime du skill ; avec celui-ci, ils ne sont vérifiés qu'au simulateur et sont **à revalider sur device** |
+| `assets/runtime/` | runtime Lua du projet à embarquer (copié par le build, ne pas modifier à la main) : copie octet pour octet du runtime du convertisseur `tools/telmi2flam/runtime` du dépôt, gardée identique par un test (piège 18). Les jeux validés sur device (Capi et la rivière, construit par `flam_build.py`) l'ont été avec l'**ancien** runtime du skill ; avec celui-ci, ils ne sont vérifiés qu'au simulateur et sont **à revalider sur device**. Seul le carrousel de ce runtime a été validé sur device (13/11/2026, via une histoire convertie par telmi2flam, pas via un jeu du skill) |
 | `assets/template/` | gabarits de `main.lua` et du module |
 | `references/lua-api.md` | **à lire avant d'écrire du Lua** : contrat de module, molette, dessin, timers, images, audio, polices, liste blanche d'API |
 | `references/device-pitfalls.md` | pièges device vs simulateur, protocole de test |
