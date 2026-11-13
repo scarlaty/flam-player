@@ -539,8 +539,20 @@ impl SettingsStore {
     /// Le consentement du mode carrier n'est pas modifiable ici : la valeur enregistrée est
     /// conservée quelle que soit celle reçue (voir [`Self::record_carrier_consent`]).
     pub fn update(&self, settings: Settings) -> AppResult<Settings> {
+        self.update_with(settings, &|path, settings| {
+            storage::write_json(path, settings)
+        })
+    }
+
+    /// Comme [`Self::update`], avec l'écriture de `settings.json` injectable (tests de panne).
+    fn update_with(
+        &self,
+        settings: Settings,
+        write: &dyn Fn(&Path, &Settings) -> AppResult<()>,
+    ) -> AppResult<Settings> {
         let stored = self.load()?;
         let mut settings = validate(settings)?;
+        let mut new_witness = None;
         if let Some(dir) = &settings.cache_dir {
             let unchanged = stored
                 .cache_dir
@@ -548,10 +560,26 @@ impl SettingsStore {
                 .is_some_and(|old| same_path(Path::new(old), Path::new(dir)));
             if !unchanged {
                 check_cache_dir_free(dir)?;
+                // Migration des marqueurs encore en attente (#591) : elle ne vaut que pour le
+                // dossier configuré au moment de la mise à jour. Le nouveau dossier, contrôlé
+                // ci-dessus, ne doit jamais être migré à l'aveugle : témoin écrit avant le réglage
+                // (arrêt entre les deux : l'ancien dossier reste non marqué, fuite sans perte).
+                let witness = self.dir.join(crate::cache::MIGRATION_WITNESS);
+                if std::fs::symlink_metadata(&witness).is_err() {
+                    std::fs::create_dir_all(&self.dir)?;
+                    std::fs::write(&witness, b"")?;
+                    new_witness = Some(witness);
+                }
             }
         }
         settings.carrier_consent = stored.carrier_consent;
-        storage::write_json(&self.dir.join(FILE_NAME), &settings)?;
+        if let Err(err) = write(&self.dir.join(FILE_NAME), &settings) {
+            // Réglage inchangé : la migration de l'ancien dossier reste à faire.
+            if let Some(witness) = new_witness {
+                let _ = std::fs::remove_file(witness);
+            }
+            return Err(err);
+        }
         Ok(settings)
     }
 
@@ -1034,6 +1062,87 @@ mod tests {
             old.join("library/abc-1.plain.pk").is_file(),
             "rien supprimé"
         );
+    }
+
+    /// Migration encore en attente (#591) : elle ne vaut que pour le dossier configuré au moment
+    /// de la mise à jour, jamais pour un dossier choisi ensuite.
+    #[test]
+    fn un_cache_choisi_apres_la_mise_a_jour_n_est_jamais_migre() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path());
+        let env = env_in(dir.path());
+        let witness = dir.path().join(crate::cache::MIGRATION_WITNESS);
+        // Ancien cache choisi alors que la migration est reportée (témoin absent) ; son
+        // `archives/` n'est pas prouvé « à l'application » par son contenu.
+        let old = dir.path().join("ancien-cache");
+        touch(&old.join("library/abc-1.plain.pk"));
+        fs::write(
+            old.join("library/library.json"),
+            r#"{"schema_version":1,"stories":[]}"#,
+        )
+        .unwrap();
+        touch(&old.join("archives/perso.zip"));
+        assert!(!witness.exists());
+        store
+            .update(Settings {
+                cache_dir: Some(old.display().to_string()),
+                ..Settings::default()
+            })
+            .unwrap();
+        assert!(witness.is_file(), "témoin écrit avec le nouveau réglage");
+        assert_eq!(
+            crate::cache::migrate_configured(dir.path(), &env).unwrap(),
+            crate::cache::Migration::AlreadyDone
+        );
+        assert!(!crate::cache::is_owned(&old.join("archives")));
+        assert!(old.join("archives/perso.zip").is_file());
+    }
+
+    #[test]
+    fn echec_d_ecriture_des_reglages_retire_le_temoin_cree_par_l_appel() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path());
+        let witness = dir.path().join(crate::cache::MIGRATION_WITNESS);
+        let cache = dir.path().join("nouveau");
+        let with_cache = Settings {
+            cache_dir: Some(cache.display().to_string()),
+            ..Settings::default()
+        };
+        let before = store.load().unwrap();
+        let fail = |_: &Path, _: &Settings| -> AppResult<()> {
+            Err(AppError::Io(std::io::Error::other(
+                "panne simulée : settings.json",
+            )))
+        };
+        assert!(store.update_with(with_cache.clone(), &fail).is_err());
+        assert!(
+            !witness.exists(),
+            "témoin retiré : migration toujours à faire"
+        );
+        assert_eq!(store.load().unwrap(), before);
+        // Témoin déjà présent avant l'appel : jamais retiré.
+        fs::write(&witness, b"").unwrap();
+        assert!(store.update_with(with_cache.clone(), &fail).is_err());
+        assert!(witness.is_file());
+        // Reprise : enregistré.
+        store.update(with_cache).unwrap();
+    }
+
+    #[test]
+    fn reenregistrer_le_meme_cache_ne_clot_pas_la_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path());
+        let cache = dir.path().join("cache");
+        crate::cache::ensure_subdirs(&cache);
+        let with_cache = Settings {
+            cache_dir: Some(cache.display().to_string()),
+            ..Settings::default()
+        };
+        store.update(with_cache.clone()).unwrap();
+        fs::remove_file(dir.path().join(crate::cache::MIGRATION_WITNESS)).unwrap();
+        // Même dossier : rien de neuf, la migration de ce dossier reste à faire.
+        store.update(with_cache).unwrap();
+        assert!(!dir.path().join(crate::cache::MIGRATION_WITNESS).exists());
     }
 
     #[test]

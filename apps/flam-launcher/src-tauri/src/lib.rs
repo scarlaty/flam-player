@@ -68,12 +68,34 @@ fn purge_stale_thumbs(app: &tauri::AppHandle) {
     }
 }
 
-/// Migration des marqueurs du cache (#570), une seule fois, puis nettoyage des dossiers
-/// temporaires d'une création interrompue. Appelée au démarrage **avant** tout traitement qui
-/// compte, vide ou balaie le cache. Un échec n'est que journalisé : la migration est rejouée au
-/// démarrage suivant.
-fn migrate_cache_markers(config_dir: &std::path::Path) {
-    match cache::migrate_configured(config_dir, &settings::Environment::current()) {
+/// Tâche de démarrage du cache, hors du fil de la fenêtre (#591), dans cet ordre : migration des
+/// marqueurs (#570), ouverture de la porte de démarrage (`opener` détruit : les commandes en
+/// attente reprennent), lancement de la reprise de la file d'installation (`resume`, aussitôt :
+/// une installation lancée ensuite ne réécrit pas la file avant sa relecture), puis nettoyage des
+/// dossiers temporaires d'une création interrompue et purge des vignettes périmées (#37). Une
+/// panique de la migration n'est rattrapée qu'en test et en développement : la version publiée
+/// compile en `panic = "abort"`, le processus s'arrête alors. Le garde `Drop` de `opener` ouvre
+/// aussi la porte si cette tâche n'est jamais exécutée.
+fn startup_cache_tasks(
+    config_dir: &std::path::Path,
+    opener: storage::GateOpener,
+    app: &tauri::AppHandle,
+    resume: impl FnOnce(),
+) {
+    let env = settings::Environment::current();
+    if std::panic::catch_unwind(|| migrate_cache_markers(config_dir, &env)).is_err() {
+        tracing::warn!("migration des marqueurs du cache interrompue (panique)");
+    }
+    drop(opener);
+    resume();
+    cache::remove_stale_tmp_configured(&app.state::<storage::ConfigState>(), &env);
+    purge_stale_thumbs(app);
+}
+
+/// Migration des marqueurs du cache (#570), une seule fois. Un échec n'est que journalisé : la
+/// migration est rejouée au démarrage suivant.
+fn migrate_cache_markers(config_dir: &std::path::Path, env: &settings::Environment) {
+    match cache::migrate_configured(config_dir, env) {
         Ok(cache::Migration::Done { marked }) => {
             tracing::info!("cache : {marked} sous-dossier(s) existant(s) marqué(s)")
         }
@@ -122,13 +144,15 @@ pub fn run() {
         )
         .setup(|app| {
             let config_dir = storage::config_dir()?;
-            // Avant toute purge, reprise ou commande qui dépend du marqueur (#570).
-            migrate_cache_markers(&config_dir);
+            // Porte de démarrage (#591) : toute commande (verrou de configuration) et toute tâche
+            // d'installation attendent la fin de la migration des marqueurs du cache (#570),
+            // faite hors du fil de la fenêtre (voir `startup_cache_tasks`).
+            let (gate, opener) = storage::StartupGate::closed();
             let saves_root = config_dir.join(player::SAVES_ROOT);
             let catalog = catalog::CatalogService::new()?;
             let install = install::InstallService::new(install::InstallOptions {
                 client: install::download::build_client()?,
-                resolver: install::settings_resolver(config_dir.clone()),
+                resolver: install::settings_resolver(config_dir.clone(), gate.clone()),
                 events: Arc::new(install::TauriEvents(app.handle().clone())),
                 queue_path: config_dir.join(install::QUEUE_FILE),
                 gate: catalog.cache_gate(),
@@ -138,7 +162,7 @@ pub fn run() {
                 podcast::net::NetPolicy::strict(),
                 catalog.cache_gate(),
             )?;
-            app.manage(storage::ConfigState::new(config_dir));
+            app.manage(storage::ConfigState::with_gate(config_dir.clone(), gate));
             app.manage(folder::FolderState::default());
             app.manage(watch::WatchState::default());
             app.manage(catalog);
@@ -157,20 +181,24 @@ pub fn run() {
             // Changement de format d'une histoire installée : copie de travail purgée (#556).
             install.set_play_purger(install::play_purger(player.clone(), saves_root));
             app.manage(player);
-            // Purge des vignettes périmées de `<cache>/thumbs/` (#37), hors du démarrage.
             let handle = app.handle().clone();
-            tauri::async_runtime::spawn_blocking(move || purge_stale_thumbs(&handle));
-            // Reprise de la file persistée : chaque entrée est ré-résolue depuis sa source.
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                install
-                    .restore(|source_id, entry_id| {
-                        let handle = handle.clone();
-                        async move {
-                            install::resolve_for_restore(&handle, &source_id, &entry_id).await
-                        }
-                    })
-                    .await;
+            tauri::async_runtime::spawn_blocking(move || {
+                let app = handle.clone();
+                // Reprise de la file persistée : chaque entrée est ré-résolue depuis sa source.
+                let resume = move || {
+                    tauri::async_runtime::spawn(async move {
+                        install
+                            .restore(|source_id, entry_id| {
+                                let handle = handle.clone();
+                                async move {
+                                    install::resolve_for_restore(&handle, &source_id, &entry_id)
+                                        .await
+                                }
+                            })
+                            .await;
+                    });
+                };
+                startup_cache_tasks(&config_dir, opener, &app, resume);
             });
             Ok(())
         })

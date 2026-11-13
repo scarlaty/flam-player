@@ -415,7 +415,7 @@ async fn ancien_reglage_python_utilise_le_moteur_rust() {
     .unwrap();
     // Résolution réelle des réglages ; seul le binaire (introuvable dans un `cargo test`) est
     // remplacé par le faux convertisseur.
-    let real = settings_resolver(config);
+    let real = settings_resolver(config, crate::storage::StartupGate::open());
     let resolver: Resolver = Arc::new(move || {
         let mut tc = real()?;
         tc.rust_converter = Some(py.clone());

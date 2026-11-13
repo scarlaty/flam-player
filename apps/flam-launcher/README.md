@@ -1255,19 +1255,37 @@ fichier vide `.flam-launcher` à sa racine. `SettingsStore::resolved_cache_dir` 
 sous-dossiers de la liste absents, marqués (`cache::ensure_subdir` : dossier temporaire, marqueur,
 puis renommage) ; un élément déjà présent sous ce nom n'est jamais marqué. Le comptage, le vidage
 et le balayage des vignettes de la bibliothèque (`library_thumb::sweep`) ignorent un homonyme sans
-marqueur (journalisé). Le vidage supprime le contenu et garde chaque sous-dossier avec son
+marqueur (journalisé ; une fois par session pour le balayage). Le vidage supprime le contenu et garde chaque sous-dossier avec son
 marqueur. Migration : au premier démarrage de la version qui introduit le marqueur, les
 sous-dossiers déjà présents dans le dossier de cache configuré (et dans le dossier par défaut)
-sont marqués, une seule fois (témoin `cache-markers.done` dans le dossier de configuration). Elle
-est reportée, sans témoin, si le dossier configuré est absent ou si les réglages retombent sur le
-dossier par défaut. Un ancien cache du launcher choisi plus tard (`library/` contenant l'index
+sont marqués, une seule fois (témoin `cache-markers.done` dans le dossier de configuration), s'ils
+prouvent leur usage par l'application (#591) : `library/` seulement s'il contient l'index reconnu
+(voir ci-dessous) ou si tous ses éléments ont une forme que l'application y écrit (`.lock`,
+`.staging/`, `thumbs/`, `library.json`, `library.json.*.bak`, `.library.json.*.tmp`,
+`*.plain.pk`, `*.lunii.pk`) ; `podcasts/`, `podcast-work/` et `play/` seulement si tous
+leurs éléments sont des dossiers nommés comme ceux de l'application (identifiant de source,
+identifiant de tâche, empreinte de 16 chiffres hexadécimaux). Un sous-dossier non prouvé n'est pas
+marqué : utilisé comme avant, jamais compté ni vidé. La racine du cache peut être une jonction ou
+un lien ; un sous-dossier en lien n'est jamais marqué. La migration est faite hors du fil de la
+fenêtre : celle-ci s'affiche aussitôt, et toute commande (verrou de configuration) ainsi que la
+reprise de la file d'installation attendent sa fin (`storage::StartupGate`) ; une fois le témoin
+écrit, le démarrage ne lit plus le cache pour elle. Elle est reportée, sans témoin, si le dossier
+configuré est absent ou si les réglages retombent sur le dossier par défaut (le dossier par défaut,
+alors en usage, est migré quand même). Si `settings_set` enregistre un nouveau dossier alors
+qu'elle est encore reportée, le témoin est écrit : seul le dossier configuré au moment de la mise
+à jour est migré, jamais un dossier choisi ensuite. Les dossiers temporaires d'une création
+interrompue (`.flam-launcher-new-…`, vides ou ne contenant que le marqueur) sont supprimés au
+démarrage, après la migration, s'ils datent d'au moins une minute (une création en cours n'est
+jamais cassée). Un ancien cache du launcher choisi plus tard (`library/` contenant l'index
 `library.json`, fichier réel d'au plus 4 Mio lisible au schéma de la bibliothèque ; le `.lock`
 seul ne suffit pas) est accepté par `settings_set` : seul `library/` y est marqué, ses autres
 homonymes sans marqueur ne sont ni marqués ni refusés (l'application les utilise comme avant,
 sans jamais les compter ni les vider). Sans bibliothèque reconnue, un homonyme sans marqueur fait
 refuser le dossier.
-Limites : un homonyme de l'utilisateur déjà présent dans le dossier configuré à ce moment est
-marqué aussi ; après un retour à une version antérieure (qui ignore le marqueur), les
+Limites : un homonyme de l'utilisateur déjà présent dans le dossier configuré à ce moment sous
+un nom sans preuve d'usage exigée (`archives`, `catalogs`, `compat-local`, `official`, `thumbs`)
+est marqué aussi ; l'usage du cache (`cache_usage.subdirs`) n'annonce que les sous-dossiers
+marqués, ceux que le vidage videra ; après un retour à une version antérieure (qui ignore le marqueur), les
 sous-dossiers qu'elle recrée ne sont plus comptés ni vidés par cette version : créer un fichier
 vide `.flam-launcher` dans le sous-dossier concerné pour qu'il soit de nouveau reconnu (ne pas le
 supprimer : `library/` contient les histoires installées). `flam-transfer` n'est pas dans la liste (#577). `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
