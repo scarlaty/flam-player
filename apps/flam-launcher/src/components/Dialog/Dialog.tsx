@@ -64,11 +64,11 @@ function trapTab(event: globalThis.KeyboardEvent, panel: HTMLElement | null) {
   if (!panel || event.ctrlKey || event.altKey || event.metaKey) return;
   const panels = document.querySelectorAll(".fl-dialog");
   if (panels[panels.length - 1] !== panel) return;
-  const focusable = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-    (element) => isReachable(element, panel),
-  );
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
+  // Premier et dernier atteignables, cherchés depuis chaque bout (sans tout évaluer).
+  const candidates = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
+  const reachable = (element: HTMLElement) => isReachable(element, panel);
+  const first = candidates.find(reachable);
+  const last = [...candidates].reverse().find(reachable);
   if (!first || !last) {
     event.preventDefault();
     panel.focus();

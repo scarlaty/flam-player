@@ -23,6 +23,8 @@ import { makeEntry } from "../../test/entries";
 import { CompatProvider } from "../compat/CompatProvider";
 import { DeviceProvider } from "../device/DeviceProvider";
 import { LibraryProvider } from "../library/LibraryProvider";
+import type { ReactNode } from "react";
+import { useStories } from "./StoriesContext";
 import { StoriesLibrary } from "./StoriesLibrary";
 import { DONE_TASK_TTL_MS, StoriesProvider } from "./StoriesProvider";
 import { StoriesTaskPanel } from "./StoriesTaskPanel";
@@ -244,7 +246,7 @@ function fiche(over: Partial<CompatEntry> & { uuid: string }): CompatEntry {
   };
 }
 
-async function renderApp() {
+async function renderApp(extra?: ReactNode) {
   const view = render(
     <ToastProvider>
       <LibraryProvider>
@@ -253,6 +255,7 @@ async function renderApp() {
             <DeviceProvider>
               <main>
                 <StoriesLibrary />
+                {extra}
               </main>
               <aside>
                 <StoriesTaskPanel />
@@ -1443,31 +1446,136 @@ it("la fiche ne lance la suppression qu'une fois, même cliquée deux fois (#581
   expect(callsOf("library_remove")).toHaveLength(1);
 });
 
-it("la suppression qui ne répond pas ne piège pas le dialogue : Annuler le ferme (#581)", async () => {
+const second = () =>
+  makeEntry({
+    source_id: "store",
+    entry_id: "store:chaperon",
+    uuid: "chaperon",
+    version: 1,
+    title: "Le petit chaperon",
+    size: 2 * 1024 * 1024,
+  });
+
+// Suppression de « Les trois ours » lancée depuis sa fiche, qui ne répond pas.
+async function startPendingRemoval(extra?: ReactNode) {
   let release!: () => void;
   removeGate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  installed = [installedEntry(ours())];
+  installed = [installedEntry(ours()), installedEntry(second())];
   window.location.hash = "#/library/library";
-  await renderApp();
+  await renderApp(extra);
   const dialog = await openFiche();
   fireEvent.click(within(dialog).getByRole("button", { name: "Supprimer" }));
   const confirm = await screen.findByRole("alertdialog");
   fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
   await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
-  // Sans réponse : Échap ferme la confirmation et rend la fiche ; un second clic reste refusé.
+  return release;
+}
+
+it("la suppression qui ne répond pas ne piège pas le dialogue : Échap le ferme et la fiche garde l'état (#581)", async () => {
+  const release = await startPendingRemoval();
+  // Pendant l'appel : « Annuler » devient « Fermer », le statut est annoncé.
+  const confirm = screen.getByRole("alertdialog");
+  expect(within(confirm).queryByRole("button", { name: "Annuler" })).toBeNull();
+  expect(within(confirm).getByRole("status")).toHaveTextContent("Suppression en cours.");
   fireEvent.keyDown(document, { key: "Escape" });
-  await screen.findByRole("dialog", { name: "Les trois ours" });
+  const dialog = await screen.findByRole("dialog", { name: "Les trois ours" });
   expect(screen.queryByRole("alertdialog")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Supprimer" }));
-  const again = await screen.findByRole("alertdialog");
-  fireEvent.click(within(again).getByRole("button", { name: "Supprimer" }));
+  // La fiche revenue : « Supprimer », « Jouer » et « Envoyer sur la Flam » sont verrouillés.
+  const remove = within(dialog).getByRole("button", { name: "Supprimer" });
+  expect(remove).toHaveAttribute("aria-disabled", "true");
+  expect(remove).toHaveAttribute("aria-busy", "true");
+  expect(remove).toHaveAccessibleDescription("Suppression en cours.");
+  fireEvent.click(remove);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Jouer" }));
+  const send = within(dialog).getByRole("button", {
+    name: "Envoyer sur la Flam « Les trois ours »",
+  });
+  expect(send).toHaveAttribute("aria-disabled", "true");
+  expect(send).toHaveAccessibleDescription(/Suppression en cours\./);
+  fireEvent.click(send);
+  expect(callsOf("player_launch")).toHaveLength(0);
   expect(callsOf("library_remove")).toHaveLength(1);
   await act(async () => {
     release();
   });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+it("la suppression qui revient ne ferme pas la fiche d'une autre histoire (#581)", async () => {
+  const release = await startPendingRemoval();
+  // Échap ferme la confirmation, puis la fiche de « Les trois ours ».
+  fireEvent.keyDown(document, { key: "Escape" });
+  await screen.findByRole("dialog", { name: "Les trois ours" });
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  // Fiche d'une autre histoire, avec sa propre confirmation ouverte.
+  const other = await openFiche("Le petit chaperon");
+  fireEvent.click(within(other).getByRole("button", { name: "Supprimer" }));
+  await screen.findByRole("alertdialog");
+  const lists = callsOf("library_list").length;
+  await act(async () => {
+    release();
+    await flushPromises();
+  });
+  await waitFor(() => expect(callsOf("library_list").length).toBeGreaterThan(lists));
+  // La première suppression est revenue : la confirmation de l'autre histoire reste.
+  expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  expect(callsOf("library_remove")).toHaveLength(1);
+});
+
+it("une suppression en attente n'est pas relancée par la carte ni par une fiche rouverte (#581)", async () => {
+  const release = await startPendingRemoval();
+  fireEvent.keyDown(document, { key: "Escape" });
+  await screen.findByRole("dialog", { name: "Les trois ours" });
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  // Fiche rouverte : « Supprimer » reste verrouillé.
+  const again = await openFiche();
+  const remove = within(again).getByRole("button", { name: "Supprimer" });
+  expect(remove).toHaveAttribute("aria-disabled", "true");
+  fireEvent.click(remove);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  // Corbeille de la carte : même verrou.
+  const trash = screen.getByRole("button", { name: "Supprimer « Les trois ours »" });
+  expect(trash).toHaveAttribute("aria-disabled", "true");
+  fireEvent.click(trash);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(callsOf("library_remove")).toHaveLength(1);
+  await act(async () => {
+    release();
+  });
+});
+
+function RemoveTwice() {
+  const stories = useStories();
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void stories.remove("ours", "Les trois ours");
+        void stories.remove("ours", "Les trois ours");
+      }}
+    >
+      Supprimer deux fois
+    </button>
+  );
+}
+
+it("`remove` rend la même promesse pour une suppression en cours (#581)", async () => {
+  removeGate = Promise.resolve();
+  installed = [installedEntry(ours())];
+  await renderApp(<RemoveTwice />);
+  fireEvent.click(screen.getByRole("button", { name: "Supprimer deux fois" }));
+  await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
+  await act(async () => {
+    await flushPromises();
+  });
+  expect(callsOf("library_remove")).toHaveLength(1);
 });
 
 it("une lecture lancée avant un changement n'affiche pas brièvement la liste périmée (#581)", async () => {
@@ -1529,6 +1637,35 @@ it("une réponse ancienne de la liste installée n'écrase pas une plus récente
   // La fiche voit l'histoire installée : « Supprimer » est proposé.
   const dialog = await openFiche();
   expect(within(dialog).getByRole("button", { name: "Supprimer" })).toBeVisible();
+});
+
+it("une réponse mise de côté est écrite après un délai si la lecture plus récente ne répond pas (#581)", async () => {
+  installed = [installedEntry(ours())];
+  let releaseFirst!: () => void;
+  listGates = [
+    new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    }),
+    // La seconde lecture ne répond jamais.
+    new Promise<void>(() => {}),
+  ];
+  await renderApp();
+  await waitFor(() => expect(callsOf("library_list")).toHaveLength(1));
+  await send("install://done", { task_id: "t1", entry: installed[0], warnings: 0 });
+  await waitFor(() => expect(callsOf("library_list")).toHaveLength(2));
+  const before = await openFiche();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  await act(async () => {
+    releaseFirst();
+    await flushPromises();
+  });
+  // Mise de côté : pas encore écrite.
+  expect(within(before).queryByRole("button", { name: "Supprimer" })).toBeNull();
+  await act(async () => {
+    vi.advanceTimersByTime(60_000);
+    await flushPromises();
+  });
+  expect(within(before).getByRole("button", { name: "Supprimer" })).toBeVisible();
 });
 
 it("une réponse ancienne valide sert quand la plus récente échoue (#581)", async () => {

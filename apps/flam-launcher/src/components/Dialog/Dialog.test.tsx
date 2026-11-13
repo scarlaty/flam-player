@@ -300,3 +300,59 @@ it("avec deux dialogues empilés, seul le dernier piège le focus (#581)", () =>
     within(top).getByRole("button", { name: "Fermer" }),
   );
 });
+
+// React 18 ne connaît pas `inert` : l'attribut est posé à la main.
+const makeInert = (element: HTMLElement | null) => element?.setAttribute("inert", "");
+
+it("ignore un élément `inert` ou dans un parent `inert` dans la boucle de Tab (#581)", () => {
+  render(
+    <Dialog
+      open
+      onClose={() => {}}
+      title="Réglages"
+      footer={
+        <>
+          <button type="button">Utile</button>
+          <button type="button" ref={makeInert}>
+            Inerte
+          </button>
+          <div ref={makeInert}>
+            <button type="button">Dans un parent inerte</button>
+          </div>
+        </>
+      }
+    />,
+  );
+  const useful = screen.getByRole("button", { name: "Utile" });
+  useful.focus();
+  fireEvent.keyDown(useful, { key: "Tab" });
+  expect(screen.getByRole("button", { name: "Fermer" })).toHaveFocus();
+  fireEvent.keyDown(document.activeElement!, { key: "Tab", shiftKey: true });
+  expect(useful).toHaveFocus();
+});
+
+it("le focus initial saute un élément masqué (#581)", () => {
+  render(
+    <Dialog
+      open
+      onClose={() => {}}
+      title="Réglages"
+      footer={
+        <>
+          <button type="button" hidden>
+            Caché
+          </button>
+          <button type="button" style={{ display: "none" }}>
+            Absent
+          </button>
+          <button type="button">Visible</button>
+        </>
+      }
+    >
+      <button type="button" style={{ visibility: "hidden" }}>
+        Invisible
+      </button>
+    </Dialog>,
+  );
+  expect(screen.getByRole("button", { name: "Visible" })).toHaveFocus();
+});

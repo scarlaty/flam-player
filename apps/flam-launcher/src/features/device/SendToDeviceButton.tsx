@@ -28,6 +28,11 @@ export interface SendToDeviceButtonProps {
    * bouton, sans bloquer l'envoi.
    */
   stale?: boolean;
+  /**
+   * Action en cours sur l'histoire côté PC (suppression) : l'envoi ne part pas, le bouton garde
+   * le focus et la raison est annoncée.
+   */
+  locked?: boolean;
 }
 
 /** État de la Flam et de la file, pour les règles d'envoi. */
@@ -85,6 +90,7 @@ export function SendToDeviceButton({
   format = "flam",
   variant = "secondary",
   stale = false,
+  locked = false,
 }: SendToDeviceButtonProps) {
   const { requestSend } = useDevice();
   const context = useSendContext();
@@ -95,6 +101,7 @@ export function SendToDeviceButton({
   const target = findOnDevice(context.deviceStories, uuid)?.uuid;
   const reasonId = useId();
   const staleId = useId();
+  const lockedId = useId();
   const replaceReasonId = useId();
   return (
     <span className="fl-send">
@@ -103,15 +110,24 @@ export function SendToDeviceButton({
         variant={variant}
         icon="device"
         className="fl-send__button"
-        aria-disabled={block !== null}
-        aria-describedby={describedBy(block !== null && reasonId, stale && staleId)}
+        aria-disabled={block !== null || locked}
+        aria-describedby={describedBy(
+          block !== null && reasonId,
+          stale && staleId,
+          locked && lockedId,
+        )}
         aria-label={text.forStory(text.send, title)}
         onClick={() => {
-          if (block === null) requestSend({ uuid, title, size });
+          if (block === null && !locked) requestSend({ uuid, title, size });
         }}
       >
         {text.send}
       </Button>
+      {locked && (
+        <span id={lockedId} className="fl-visually-hidden">
+          {t.stories.actions.removing}
+        </span>
+      )}
       {block && (
         <span id={reasonId} className="fl-send__reason">
           {REASON_TEXT[block]}
@@ -124,14 +140,15 @@ export function SendToDeviceButton({
             variant={variant}
             icon="refresh"
             className="fl-send__button"
-            aria-disabled={replace !== null}
+            aria-disabled={replace !== null || locked}
             aria-describedby={describedBy(
               replace !== null && replaceReasonId,
               stale && staleId,
+              locked && lockedId,
             )}
             aria-label={text.forStory(text.replace, title)}
             onClick={() => {
-              if (replace === null && target)
+              if (replace === null && !locked && target)
                 requestSend({ uuid, title, size, replace: target });
             }}
           >

@@ -114,6 +114,9 @@ function otherFormatIn(
   return installed.find((item) => item.uuid === entry.uuid && item.format !== format);
 }
 
+/** Durée maximale pendant laquelle une réponse de lecture est retenue derrière une plus récente. */
+const STALE_READ_HOLD_MS = 4000;
+
 /**
  * Tient les installations (file de tâches, progression), les histoires installées et le player
  * en cours, et expose les actions Installer / Jouer / Mettre à jour / Supprimer / Annuler /
@@ -207,34 +210,47 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
   // une décision) : une réponse n'est écrite que si aucune plus récente ne l'a déjà été (une
   // ancienne ne l'écrase pas). Tant qu'une lecture plus récente est en cours, une réponse plus
   // ancienne est seulement mise de côté (elle montrerait brièvement une liste périmée) : elle
-  // n'est écrite que si plus aucune lecture n'est en cours et qu'aucune plus récente n'a réussi
-  // (la plus récente a échoué).
+  // est écrite dès que plus aucune lecture n'est en cours sans qu'une plus récente ait réussi
+  // (la plus récente a échoué), ou après `STALE_READ_HOLD_MS` si la plus récente ne répond
+  // toujours pas (une réponse plus récente arrivant ensuite la remplace).
   const installedRead = useRef(0);
   const installedApplied = useRef(0);
   const installedPending = useRef(0);
   const installedFallback = useRef<{ id: number; list: LibraryEntry[] } | null>(null);
+  const fallbackTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(fallbackTimer.current), []);
   const readInstalled = useCallback(async (): Promise<LibraryEntry[]> => {
     const id = ++installedRead.current;
     installedPending.current += 1;
-    const apply = (read: number, list: LibraryEntry[]) => {
-      installedApplied.current = read;
+    const applyFallback = () => {
+      clearTimeout(fallbackTimer.current);
+      const spare = installedFallback.current;
+      if (spare && spare.id > installedApplied.current) {
+        installedApplied.current = spare.id;
+        setInstalled(spare.list);
+        setInstalledRevision((n) => n + 1);
+      }
       installedFallback.current = null;
-      setInstalled(list);
-      setInstalledRevision((n) => n + 1);
     };
     try {
       const list = await listLibrary();
       if (id > installedApplied.current) {
-        if (id === installedRead.current) apply(id, list);
-        else if (!installedFallback.current || installedFallback.current.id < id)
+        if (id === installedRead.current) {
+          clearTimeout(fallbackTimer.current);
+          installedFallback.current = null;
+          installedApplied.current = id;
+          setInstalled(list);
+          setInstalledRevision((n) => n + 1);
+        } else if (!installedFallback.current || installedFallback.current.id < id) {
           installedFallback.current = { id, list };
+          clearTimeout(fallbackTimer.current);
+          fallbackTimer.current = setTimeout(applyFallback, STALE_READ_HOLD_MS);
+        }
       }
       return list;
     } finally {
       installedPending.current -= 1;
-      const spare = installedFallback.current;
-      if (installedPending.current === 0 && spare && spare.id > installedApplied.current)
-        apply(spare.id, spare.list);
+      if (installedPending.current === 0) applyFallback();
     }
   }, []);
 
@@ -659,25 +675,44 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     [install],
   );
 
+  // Suppressions en cours, par histoire : un second appel pour la même histoire rend la même
+  // promesse (pas de second `library_remove`), et l'état est lisible par la fiche et la carte.
+  const removals = useRef(new Map<string, Promise<boolean>>());
+  const [removingUuids, setRemovingUuids] = useState<ReadonlySet<string>>(new Set());
   const remove = useCallback(
-    async (uuid: string, title: string, purgeSaves = false) => {
-      try {
-        await removeFromLibrary(uuid, purgeSaves);
-      } catch (caught) {
-        toast.show({ message: toAppError(caught).message, tone: "danger" });
-        return false;
-      }
-      toast.show({ message: t.stories.toast.removed(title) });
-      // Les lignes d'installation réussies de cette histoire n'ont plus d'objet : on les retire
-      // (les échecs et annulations restent, avec « Réessayer »).
-      const finished = tasksRef.current
-        .filter((task) => task.entry.uuid === uuid && task.state === "done")
-        .map((task) => task.id);
-      if (finished.length > 0) {
-        setDismissed((all) => new Set([...all, ...finished]));
-      }
-      await refreshInstalled();
-      return true;
+    (uuid: string, title: string, purgeSaves = false) => {
+      const running = removals.current.get(uuid);
+      if (running) return running;
+      const run = async () => {
+        try {
+          await removeFromLibrary(uuid, purgeSaves);
+        } catch (caught) {
+          toast.show({ message: toAppError(caught).message, tone: "danger" });
+          return false;
+        }
+        toast.show({ message: t.stories.toast.removed(title) });
+        // Les lignes d'installation réussies de cette histoire n'ont plus d'objet : on les retire
+        // (les échecs et annulations restent, avec « Réessayer »).
+        const finished = tasksRef.current
+          .filter((task) => task.entry.uuid === uuid && task.state === "done")
+          .map((task) => task.id);
+        if (finished.length > 0) {
+          setDismissed((all) => new Set([...all, ...finished]));
+        }
+        await refreshInstalled();
+        return true;
+      };
+      const promise = run().finally(() => {
+        removals.current.delete(uuid);
+        setRemovingUuids((all) => {
+          const next = new Set(all);
+          next.delete(uuid);
+          return next;
+        });
+      });
+      removals.current.set(uuid, promise);
+      setRemovingUuids((all) => new Set(all).add(uuid));
+      return promise;
     },
     [toast, refreshInstalled],
   );
@@ -744,6 +779,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
       reopen,
       consumeReopen: () => setReopen(null),
       remove,
+      removing: (uuid) => removingUuids.has(uuid),
       cancel,
       retry,
       dismiss,
@@ -764,6 +800,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     launch,
     claimReturn,
     remove,
+    removingUuids,
     cancel,
     retry,
     dismiss,

@@ -95,6 +95,8 @@ export interface StoriesApi {
    * progression de l'enfant (conservée par défaut).
    */
   remove: (uuid: string, title: string, purgeSaves?: boolean) => Promise<boolean>;
+  /** Une suppression de cette histoire (par UUID) est en cours. */
+  removing: (uuid: string) => boolean;
   /**
    * Fiche à rouvrir (fin d'une lecture lancée depuis cette fiche), ou `null`. La vue de la
    * source concernée l'ouvre puis appelle `consumeReopen`.

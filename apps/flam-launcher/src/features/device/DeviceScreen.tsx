@@ -326,18 +326,23 @@ function DeviceStoriesList() {
   // Un envoi terminé pour un UUID (« Remplacer sur la Flam » le garde) : titre et vignette lus
   // avant l'envoi sont oubliés et relus.
   const sent = useMemo(() => sentStamps(queue), [queue]);
-  // « Actualiser » demandé : à l'arrivée de la liste relue, même identique, le compteur avance et
-  // relance la lecture des titres restés sans réponse (clés illisibles), sinon le bandeau
-  // resterait en place. Les rechargements silencieux (après un envoi ou un retrait) n'y touchent
-  // pas : `device_story_titles` n'est pas rappelé à chacun quand les clés sont illisibles.
-  const [rereadAsked, setRereadAsked] = useState(false);
+  // « Actualiser » demandé (pour la Flam `root`) : à l'arrivée de la liste relue, même identique,
+  // le compteur avance et relance la lecture des titres restés sans réponse (clés illisibles),
+  // sinon le bandeau resterait en place. Les rechargements silencieux (après un envoi ou un
+  // retrait) n'y touchent pas : à liste identique, `device_story_titles` n'est pas rappelé (une
+  // liste qui change relance la lecture de toute façon). La demande est abandonnée si la
+  // relecture échoue ou si la Flam change, pour ne pas servir au rapport suivant.
+  const [rereadAsked, setRereadAsked] = useState<{ root: string | null } | null>(null);
   const [reads, setReads] = useState<{ report: DeviceStories | null; count: number }>({
     report: null,
     count: 0,
   });
+  const askedHere = rereadAsked?.root === root && state.phase !== "error";
   if (report && reads.report !== report) {
-    setReads({ report, count: reads.count + (rereadAsked ? 1 : 0) });
-    if (rereadAsked) setRereadAsked(false);
+    setReads({ report, count: reads.count + (askedHere ? 1 : 0) });
+    if (rereadAsked) setRereadAsked(null);
+  } else if (rereadAsked && !askedHere) {
+    setRereadAsked(null);
   }
   const { titles, lunii, keysProblem } = useDeviceStoryTitles(
     root,
@@ -398,7 +403,7 @@ function DeviceStoriesList() {
   function refresh() {
     // Le bouton cliqué disparaît pendant le chargement : le focus passe à un élément stable.
     wrapperRef.current?.focus();
-    setRereadAsked(true);
+    setRereadAsked({ root });
     reloadStories();
   }
 

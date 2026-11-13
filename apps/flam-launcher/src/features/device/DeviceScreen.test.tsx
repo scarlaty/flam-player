@@ -719,7 +719,12 @@ it("un rechargement silencieux ne relance pas la lecture des titres, seul « Act
   fireEvent.click(screen.getByRole("button", { name: "Retirer « Histoire 33333333 »" }));
   const dialog = await screen.findByRole("alertdialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "Retirer de la Flam" }));
-  await waitFor(() => expect(count("device_remove_story")).toBe(1));
+  // Le mock retire C : on attend la disparition de sa ligne (liste relue et rendue).
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: "Retirer « Histoire 33333333 »" }),
+    ).toBeNull(),
+  );
   await waitFor(() => expect(count("device_list_stories")).toBe(2));
   await screen.findByText("Titres des histoires illisibles");
   expect(count("device_story_titles")).toBe(1);
