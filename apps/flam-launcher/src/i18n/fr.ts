@@ -1010,6 +1010,9 @@ export const fr = {
       cancel: "Annuler l'envoi",
       cancelling: "Annulation en cours…",
       removeFromQueue: (title: string) => `Retirer « ${title} » de la file`,
+      /** Envoi réussi, mais la Flam a changé juste après (#577, `device_changed`). */
+      deviceChangedAfterSend:
+        "La Flam a été débranchée, remplacée ou momentanément illisible juste après cet envoi : les histoires suivantes ne sont pas envoyées. Rebranchez la Flam d'origine pour vérifier.",
       recoveryFailures: (failures: string[]) =>
         `Attention : un transfert interrompu n'a pas pu être repris sur la Flam (${failures.join(" ; ")}). Fermez ce qui utilise la Flam, puis débranchez-la et rebranchez-la.`,
       dismiss: "Fermer la liste",

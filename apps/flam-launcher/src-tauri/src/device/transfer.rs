@@ -17,7 +17,8 @@
 //!    clés, ni conservation). En 2.x, préparation par [`prepare_lunii::prepare`] au lieu de
 //!    [`prepare::prepare_story`] ; les étapes suivantes sont identiques (`send_with` ne
 //!    distingue pas les formats).
-//! 1. Vérifications, sans rien écrire : appareil (`.mdf`), UUID, verrou de l'appareil
+//! 1. Vérifications, sans rien écrire : appareil (`.mdf` relu, identique à celui de la garde,
+//!    sinon [`TransferError::DeviceChanged`], #577), UUID, verrou de l'appareil
 //!    ([`DeviceLock`](super::lock::DeviceLock)), reprise d'un transfert interrompu ([`recover`]) et des index
 //!    ([`index::recover`]), index lisibles, histoire ni masquée ni déjà présente (sauf mise à
 //!    jour demandée), espace libre suffisant (taille arrondie aux clusters, plus
@@ -27,12 +28,26 @@
 //!    la source.
 //! 3. Vérification : chaque fichier est relu sur l'appareil (sous Windows sans le cache du
 //!    système, `FILE_FLAG_NO_BUFFERING`) ; taille et empreinte comparées.
-//! 4. Dernier point d'annulation. Mise à jour : l'ancien `str/<uuid>/` est mis de côté par
+//! 4. Dernier point d'annulation, puis `.mdf` relu une dernière fois (#577 : différent ou
+//!    illisible, [`TransferError::DeviceChangedDuringSend`], rien n'est installé et `<uuid>.in/`
+//!    est laissé à la reprise). Mise à jour : l'ancien `str/<uuid>/` est mis de côté par
 //!    renommage en `.flam-transfer/<uuid>.old/` (rien n'est supprimé).
 //! 5. Renommage de `<uuid>.in/` en `str/<uuid>/`. En cas d'échec, l'ancienne version est remise
 //!    en place.
-//! 6. Ajout de l'UUID à la fin de `etc/library/list` par [`index::write_index`] (écriture sûre),
-//!    s'il n'y figure pas déjà.
+//! 6. `.mdf` relu une troisième fois (#577) : différent, absent ou illisible, l'index n'est pas
+//!    écrit. Nouvelle histoire : [`TransferError::DeviceChangedBeforeIndex`]. Mise à jour déjà
+//!    listée : réussie seulement si les renommages ont été forcés sur le support (`dir_synced`),
+//!    et alors signalée (`device_changed` : le front arrête la file ; ni relecture carrier, ni
+//!    suite « Mes histoires ») avec les étapes 7 et 8 laissées à la reprise ; sinon
+//!    [`TransferError::DeviceChangedAfterUpdate`] (mise à jour peut-être faite). Puis ajout de
+//!    l'UUID à la fin de `etc/library/list` par [`index::write_index`] (écriture sûre), s'il n'y
+//!    figure pas déjà.
+//!
+//!    Chaque relecture de `.mdf` (entrée, étapes 4 et 6) réessaie un verrou passager
+//!    ([`retry_transient`], environ 1 s) : seul un `.mdf` différent, absent ou encore illisible
+//!    fait refuser. Une histoire installée et listée n'est jamais présentée comme un échec ; une
+//!    histoire installée hors index l'est toujours. Fenêtre résiduelle : un changement d'appareil
+//!    entre la dernière relecture et `write_index` (quelques millisecondes) n'est pas vu.
 //! 7. Suppression de `usr/0/library.cache` (le firmware le reconstruit), même si l'index n'a pas
 //!    changé : le contenu de l'histoire, donc peut-être son titre, a changé.
 //! 8. Suppression de l'ancienne version, puis du dossier `.flam-transfer/` s'il est vide.
@@ -66,11 +81,15 @@
 //! |--------------------------------|-----------------------------------------------|-------------------------------------------|
 //! | (Lunii) le refus du firmware 1.x | rien de modifié, reprise comprise           | aucune                                    |
 //! | (Lunii) une préparation refusée (pack invalide, trop gros) | rien de modifié sur la Flam | aucune                |
+//! | (refus) `.mdf` changé depuis la garde, à l'entrée de l'envoi | rien de modifié, reprise comprise | aucune             |
 //! | les vérifications              | rien de modifié                               | aucune                                    |
 //! | une copie partielle            | `<uuid>.in/` incomplet ; index, `str/` intacts | `<uuid>.in/` supprimé                     |
 //! | la vérification                | `<uuid>.in/` complet mais non promu            | `<uuid>.in/` supprimé (copie à refaire)   |
+//! | (refus) `.mdf` changé avant la promotion | `<uuid>.in/` complet, non promu, laissé tel quel | `<uuid>.in/` supprimé              |
 //! | la mise de côté (mise à jour)  | `<uuid>.old/`, `<uuid>.in/`, pas de `str/<uuid>` | `<uuid>.old/` remis en `str/<uuid>/`, `.in` supprimé |
 //! | le renommage final             | `str/<uuid>/` complet, peut-être `<uuid>.old/` | `<uuid>.old/` supprimé, cache supprimé   |
+//! | (refus) `.mdf` changé avant l'index (nouvelle histoire) | `str/<uuid>/` complet hors index, peut-être `<uuid>.old/`, cache intact | `<uuid>.old/` supprimé, cache supprimé ; un nouvel envoi l'ajoute à l'index |
+//! | (signalé ou refusé) `.mdf` changé avant l'index (mise à jour listée) | `str/<uuid>/` nouvelle version listée, `<uuid>.old/`, cache intact (ou, renommage non écrit sur FAT : `<uuid>.in/` et `<uuid>.old/`) | `<uuid>.old/` supprimé, cache supprimé (ou ancienne version remise en place) |
 //! | (installation) avant l'index   | `str/<uuid>/` complet hors index (orphelin)   | aucune ; un nouvel envoi le remplace      |
 //! | une étape de l'index           | ancien ou nouvel index (voir `index`)          | `index::recover`                          |
 //! | l'index, avant le cache        | `library.cache` périmé                         | supprimé si `<uuid>.old/` reste ; sinon reconstruit au prochain envoi ou redémarrage |
@@ -203,6 +222,12 @@ pub struct TransferReport {
     /// faux hors Windows ou après un repli sur le cache (#609). Interne.
     #[serde(skip)]
     pub(crate) verified_uncached: bool,
+    /// La Flam a été débranchée, remplacée ou momentanément illisible juste après une mise à jour
+    /// réussie d'une histoire déjà listée (#577) : `.mdf` relu différent, absent ou illisible
+    /// après la promotion, renommages forcés sur le support. Le front arrête alors la file
+    /// d'envoi ; ni relecture carrier ni suite « Mes histoires » (elles se feraient peut-être sur
+    /// une autre Flam).
+    pub device_changed: bool,
     /// Fichiers installés dans `str/<uuid>/` (chemin relatif `/`, taille), pour retrouver
     /// l'histoire sur la Flam avant « Retirer du PC » (#609). Interne.
     #[serde(skip)]
@@ -255,6 +280,26 @@ pub enum TransferError {
     /// Refus de la garde commune des écritures ([`super::guard`]).
     #[error(transparent)]
     Refused(#[from] WriteRefused),
+    /// `.mdf` relu à l'entrée de l'envoi différent de celui contrôlé par la garde avant la
+    /// préparation (#577) : une autre Flam a pu prendre la même lettre de lecteur. Refus avant
+    /// toute écriture, reprise comprise.
+    #[error("la Flam branchée n'est plus celle vérifiée avant la préparation (fichier .mdf différent) : rien n'a été écrit ; rebranchez la Flam choisie puis réessayez")]
+    DeviceChanged,
+    /// `.mdf` illisible ou différent juste avant la promotion (#577) : rien n'est installé ; la
+    /// copie temporaire reste dans `.flam-transfer/`, supprimée par la prochaine reprise.
+    #[error("la Flam a été débranchée, remplacée ou momentanément illisible pendant l'envoi : l'histoire n'a pas été installée ; sa copie temporaire sera supprimée au prochain branchement de la Flam ou au prochain envoi")]
+    DeviceChangedDuringSend,
+    /// `.mdf` illisible ou différent entre la promotion et l'écriture de l'index (#577) : l'index
+    /// n'est pas écrit (la liste lue sur la Flam d'origine ne doit jamais remplacer celle d'une
+    /// autre). L'histoire est complète sur la Flam d'origine, hors index ; un nouvel envoi l'y
+    /// ajoute.
+    #[error("la Flam a été débranchée, remplacée ou momentanément illisible pendant l'envoi : l'histoire est copiée sur la Flam d'origine mais pas encore dans sa liste ; rebranchez cette Flam et renvoyez l'histoire pour l'y ajouter")]
+    DeviceChangedBeforeIndex,
+    /// Mise à jour d'une histoire déjà listée : `.mdf` illisible ou différent après la promotion
+    /// et renommages non confirmés sur le support (#577) : la mise à jour a pu ne pas atteindre
+    /// la Flam d'origine (la reprise y remettrait l'ancienne version).
+    #[error("la Flam a été débranchée, remplacée ou momentanément illisible juste après la mise à jour : elle est peut-être faite ; rebranchez la Flam d'origine pour vérifier")]
+    DeviceChangedAfterUpdate,
     #[error("transfert annulé : la Flam est inchangée")]
     Cancelled,
     #[error("vérification échouée ({0}) : la copie relue sur la Flam diffère de l'original ; rien n'a été installé")]
@@ -315,6 +360,12 @@ impl From<TransferError> for AppError {
             TransferError::Prepare(PrepareError::LuniiTooLarge(_)) => {
                 AppError::Validation(LUNII_TOO_LARGE_MESSAGE.to_string())
             }
+            // Autre Flam sous la même lettre (#577) : `kind` propre, la file d'envoi du front
+            // s'arrête au lieu d'envoyer la suite sur une Flam que l'utilisateur n'a pas choisie.
+            TransferError::DeviceChanged
+            | TransferError::DeviceChangedDuringSend
+            | TransferError::DeviceChangedBeforeIndex
+            | TransferError::DeviceChangedAfterUpdate => AppError::DeviceChanged(err.to_string()),
             TransferError::DeviceNotFound
             | TransferError::InvalidId
             | TransferError::InvalidRoot
@@ -388,6 +439,14 @@ pub(crate) trait DeviceFs {
     /// système. Faux par défaut (#609 : condition du retrait automatique).
     fn verified_uncached(&self) -> bool {
         false
+    }
+    /// Lit `.mdf` de `root` (une tentative, voir [`same_device`]).
+    fn read_mdf_once(&self, root: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>, TransferError> {
+        read_mdf(root)
+    }
+    /// Attente entre deux essais de [`same_device`].
+    fn retry_sleep(&self, delay: Duration) {
+        std::thread::sleep(delay);
     }
 }
 
@@ -666,6 +725,15 @@ pub(crate) fn send_with(
     if !root.join(MDF_FILE).is_file() {
         return Err(TransferError::DeviceNotFound);
     }
+    // La Flam doit être celle que la garde a contrôlée avant la préparation (#577) : débranchée
+    // pendant la préparation, elle a pu être remplacée par une autre sous la même lettre de
+    // lecteur. Relu avant toute écriture, reprise comprise (126 octets, sans coût mesurable).
+    if !same_device(fs, permit, root)? {
+        tracing::warn!(
+            "autre Flam sous la même lettre de lecteur : envoi refusé, rien n'est écrit"
+        );
+        return Err(TransferError::DeviceChanged);
+    }
     let id = StoryId::parse(&prepared.uuid)
         .filter(|id| id.as_str() == prepared.uuid)
         .ok_or(TransferError::InvalidId)?;
@@ -763,6 +831,15 @@ pub(crate) fn send_with(
         });
     }
 
+    // Dernier contrôle avant la promotion (#577) : `.mdf` relu, toujours celui de la garde. Sinon
+    // rien n'est installé (ni `str/`, ni index, ni cache touchés) et la copie temporaire n'est
+    // pas supprimée : elle peut être sur l'autre Flam ou à cheval sur les deux ; la reprise du
+    // prochain branchement s'en charge.
+    if !matches!(same_device(fs, permit, root), Ok(true)) {
+        tracing::warn!(%id, "Flam débranchée ou remplacée avant l'installation : copie temporaire laissée à la reprise");
+        return Err(TransferError::DeviceChangedDuringSend);
+    }
+
     // 4 et 5. Promotion : plus d'annulation possible à partir d'ici.
     let previous = previous_dir(root, &id);
     let promoted = (|| {
@@ -812,6 +889,28 @@ pub(crate) fn send_with(
         }
     }
 
+    // Changement d'appareil après la promotion (#577) : `.mdf` relu (réessayé) avant d'écrire
+    // l'index, qui serait sinon la liste lue sur cette Flam écrite sur une autre. Nouvelle
+    // histoire : refus, l'index n'est pas écrit ; sur la Flam d'origine l'histoire est complète
+    // hors index (et `<uuid>.old` d'un orphelin remplacé reste à la reprise) ; un nouvel envoi
+    // l'ajoute. Mise à jour d'une histoire listée : réussie seulement si les renommages ont été
+    // forcés sur le support (`dir_synced`) ; elle est alors signalée (`device_changed` : le front
+    // arrête la file, pas de suite « Mes histoires »), et le cache et la mise de côté (étapes 7
+    // et 8) sont laissés à la reprise de la Flam d'origine. Sans renommage forcé, la mise à jour
+    // a pu ne pas atteindre cette Flam (FAT sans journal) : refus `DeviceChangedAfterUpdate`.
+    // Ainsi une histoire installée et listée n'est jamais présentée comme un échec, une histoire
+    // installée hors index l'est toujours. Fenêtre résiduelle : un changement d'appareil entre
+    // cette relecture et `write_index` (quelques millisecondes) n'est pas vu.
+    let same_after = matches!(same_device(fs, permit, root), Ok(true));
+    if !same_after && !listed {
+        tracing::warn!(%id, "Flam débranchée ou remplacée avant l'écriture de l'index : histoire en place hors index");
+        return Err(TransferError::DeviceChangedBeforeIndex);
+    }
+    if !same_after && !dir_synced {
+        tracing::warn!(%id, "Flam débranchée ou remplacée juste après la mise à jour, renommages non confirmés : mise à jour peut-être faite");
+        return Err(TransferError::DeviceChangedAfterUpdate);
+    }
+
     // 6. Index.
     let index_updated = if listed {
         false
@@ -827,22 +926,29 @@ pub(crate) fn send_with(
         }
     };
 
+    if !same_after {
+        tracing::warn!(%id, "Flam débranchée ou remplacée après la mise à jour : cache et ancienne version laissés à la reprise");
+    }
+
     // 7. Cache du firmware.
-    let cache_removed = match fs.remove_file(&root.join(LIBRARY_CACHE)) {
-        Ok(()) => true,
-        Err(err) => {
-            tracing::warn!(%id, "library.cache non supprimé : {err}");
-            false
-        }
-    };
+    let cache_removed = same_after
+        && match fs.remove_file(&root.join(LIBRARY_CACHE)) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(%id, "library.cache non supprimé : {err}");
+                false
+            }
+        };
 
     // 8. Ancienne version et dossier de travail.
-    if present {
+    if present && same_after {
         if let Err(err) = fs.remove_dir_all(&previous) {
             tracing::warn!(%id, "ancienne version à supprimer à la prochaine reprise : {err}");
         }
     }
-    let _ = fs.remove_empty_dir(&root.join(TRANSFER_DIR));
+    if same_after {
+        let _ = fs.remove_empty_dir(&root.join(TRANSFER_DIR));
+    }
     tracing::info!(%id, fichiers = files.len(), octets = total, mise_a_jour = present, "histoire transférée sur la Flam");
     let verified_uncached = fs.verified_uncached();
     // Ligne mesurée sur une vraie Flam (#609) : « durabilité de l'envoi ».
@@ -864,8 +970,29 @@ pub(crate) fn send_with(
         library_copy: None,
         dir_synced,
         verified_uncached,
+        device_changed: !same_after,
         installed_files: files.iter().map(|f| (f.relative.clone(), f.size)).collect(),
     })
+}
+
+/// Vrai si le `.mdf` de `root`, relu, est celui contrôlé par la garde (`permit`). Un verrou
+/// passager (antivirus, indexeur) est réessayé comme les autres accès à l'appareil
+/// ([`retry_transient`], environ 1 s) : seul un `.mdf` différent, absent ou encore illisible
+/// après ces essais fait refuser (#577).
+fn same_device(
+    fs: &dyn DeviceFs,
+    permit: &WritePermit,
+    root: &Path,
+) -> Result<bool, TransferError> {
+    let read = retry_transient(
+        || match fs.read_mdf_once(root) {
+            Err(TransferError::Io(err)) => Err(err),
+            other => Ok(other),
+        },
+        |delay| fs.retry_sleep(delay),
+    );
+    let mdf = read??;
+    Ok(permit.same_mdf(&mdf))
 }
 
 /// Vrai si `target` (forme simple de 32 caractères ou forme à tirets, casse indifférente)
@@ -1311,17 +1438,36 @@ pub(crate) fn send_from_library_with(
         tracing::warn!(dossier = %prepared.dir.display(), "préparation non supprimée : {err}");
     }
     let mut report = result?;
-    if let Some(resolved) = &resolved {
-        // Relecture de `info` sur la Flam : se déchiffre-t-il avec le couple ?
-        let ok = StoryId::parse(&report.id)
-            .is_some_and(|id| carrier::readback(root, &id, &resolved.keys));
-        if !ok {
-            tracing::warn!(id = %report.id, "relecture de info après écriture : illisible avec les clés carrier");
-        }
-        report.carrier_readback = Some(ok);
-        report.carrier_stored = Some(resolved.stored);
-    }
+    carrier_outcome(&mut report, resolved.as_ref(), |id, keys| {
+        carrier::readback(root, id, keys)
+    });
     Ok(report)
+}
+
+/// Mode carrier : relecture de `info` sur la Flam après l'envoi (se déchiffre-t-il avec le
+/// couple ?) par `readback`, et conservation du couple, reportées dans `report`. Sans effet hors
+/// mode carrier ; pas de relecture si la Flam a changé après l'envoi (`device_changed`,
+/// `carrier_readback` reste `None`).
+fn carrier_outcome(
+    report: &mut TransferReport,
+    resolved: Option<&Resolved>,
+    readback: impl FnOnce(&StoryId, &carrier::CarrierKeys) -> bool,
+) {
+    let Some(resolved) = resolved else {
+        return;
+    };
+    report.carrier_stored = Some(resolved.stored);
+    if report.device_changed {
+        // La Flam branchée n'est peut-être plus celle de l'envoi (#577) : relire `info` avec les
+        // clés de l'autre afficherait à tort l'envoi en échec. Pas de relecture.
+        tracing::warn!(id = %report.id, "Flam changée après l'envoi : relecture carrier non faite");
+        return;
+    }
+    let ok = StoryId::parse(&report.id).is_some_and(|id| readback(&id, &resolved.keys));
+    if !ok {
+        tracing::warn!(id = %report.id, "relecture de info après écriture : illisible avec les clés carrier");
+    }
+    report.carrier_readback = Some(ok);
 }
 
 /// Refuse une racine qui n'est pas un lecteur détecté (amovible, ou FAT fixe) : le front ne
@@ -1340,7 +1486,10 @@ pub(crate) fn ensure_detected_root(root: &Path) -> Result<(), TransferError> {
 }
 
 /// Contrôle de [`ensure_detected_root`] sur une liste de racines : comparaison sans tenir
-/// compte de la casse ni du séparateur final (`d:`, `D:\`, `D:/`).
+/// compte de la casse ni de la forme du séparateur final (`D:\`, `d:/`). Une lettre de lecteur
+/// sans séparateur (`D:`) est refusée (#577) : sous Windows elle désigne le dossier courant du
+/// lecteur, pas sa racine (`D:` joint à `.mdf` donne `D:.mdf`). La détection rend toujours
+/// `D:\` ([`super::detect`]) ; l'éjection, qui n'en garde que la lettre, n'est pas concernée.
 pub(crate) fn ensure_root_among(root: &Path, roots: &[PathBuf]) -> Result<(), TransferError> {
     let norm = |p: &Path| {
         p.to_string_lossy()
@@ -1348,11 +1497,21 @@ pub(crate) fn ensure_root_among(root: &Path, roots: &[PathBuf]) -> Result<(), Tr
             .to_ascii_lowercase()
     };
     let wanted = norm(root);
-    if !wanted.is_empty() && roots.iter().any(|r| norm(r) == wanted) {
+    if !wanted.is_empty()
+        && !drive_relative(&root.to_string_lossy())
+        && roots.iter().any(|r| norm(r) == wanted)
+    {
         Ok(())
     } else {
         Err(TransferError::InvalidRoot)
     }
+}
+
+/// Lettre de lecteur sans séparateur (`E:`, `\\?\E:`) : chemin relatif au dossier courant de ce
+/// lecteur.
+fn drive_relative(text: &str) -> bool {
+    let text = text.strip_prefix(r"\\?\").unwrap_or(text);
+    matches!(text.as_bytes(), [letter, b':'] if letter.is_ascii_alphabetic())
 }
 
 /// Drapeau d'annulation du transfert en cours (un seul à la fois, sous le verrou).
@@ -1549,15 +1708,35 @@ pub async fn device_carrier_preview(
 /// interrompus (voir le tableau du module). À appeler à chaque détection de l'appareil, avant
 /// de lire son contenu ; refusé (`Busy`) pendant une autre opération.
 pub fn recover_device(
-    guard: &OpGuard<'_>,
+    _guard: &OpGuard<'_>,
     root: &Path,
     ctx: &WriteContext<'_>,
 ) -> Result<TransferRecovery, TransferError> {
     let permit = check_write(root, ctx, WriteKind::Other)?;
-    let report = recover(guard, &permit, root)?;
-    for kind in IndexKind::ALL {
-        index::recover(root, kind)?;
+    recover_device_with(&RealFs::default(), &permit, root)
+}
+
+/// Corps de [`recover_device`] (opérations injectables pour les tests). La reprise des index
+/// a lieu même si celle d'une entrée de [`TRANSFER_DIR`] échoue (dossier verrouillé, #577) :
+/// elle n'en dépend pas. La première erreur est rendue ensuite (celle des transferts d'abord).
+/// Seul un permis qui ne couvre pas `root` empêche toute reprise.
+pub(crate) fn recover_device_with(
+    fs: &dyn DeviceFs,
+    permit: &WritePermit,
+    root: &Path,
+) -> Result<TransferRecovery, TransferError> {
+    let transfers = recover_with(fs, permit, root);
+    if matches!(transfers, Err(TransferError::InvalidRoot)) {
+        return transfers;
     }
+    let indexes = IndexKind::ALL
+        .into_iter()
+        .try_for_each(|kind| index::recover(root, kind).map(drop));
+    if let (Err(_), Err(err)) = (&transfers, &indexes) {
+        tracing::warn!("reprise des index de la Flam impossible : {err}");
+    }
+    let report = transfers?;
+    indexes?;
     Ok(report)
 }
 

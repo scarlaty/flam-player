@@ -310,7 +310,7 @@ fn jonction_dans_la_corbeille_n_est_pas_suivie() {
         eprintln!("jonction impossible : test sans objet");
         return;
     }
-    let _ = purge_trash(device.root());
+    let _ = purge_trash(device.root(), &RealTrashFs);
     assert!(outside.path().join("precieux").is_file(), "cible suivie");
 }
 
@@ -328,6 +328,7 @@ fn corbeille_cachee_si_la_suppression_echoue() {
         B,
         true,
         &test_ctx(),
+        &RealTrashFs,
         &mut |step| {
             calls += 1;
             if step == Step::MovedToTrash {
@@ -398,9 +399,9 @@ fn corbeille_videe_au_debut_d_une_operation() {
     let leftover = trash.join(format!("{A}-{}", "0123456789abcdef0123456789abcdef"));
     fs::create_dir_all(leftover.join("rf")).unwrap();
     fs::write(leftover.join("rf/x"), b"x").unwrap();
-    assert_eq!(purge_trash(device.root()).unwrap(), 1);
+    assert_eq!(purge_trash(device.root(), &RealTrashFs).unwrap(), 1);
     assert!(!trash.exists());
-    assert_eq!(purge_trash(device.root()).unwrap(), 0);
+    assert_eq!(purge_trash(device.root(), &RealTrashFs).unwrap(), 0);
 }
 
 #[test]
@@ -409,7 +410,7 @@ fn entree_inconnue_de_la_corbeille_conservee() {
     let trash = device.root().join(TRASH_DIR);
     fs::create_dir_all(trash.join("photos")).unwrap();
     fs::write(trash.join(format!("{A}-reste")), b"x").unwrap();
-    assert_eq!(purge_trash(device.root()).unwrap(), 0);
+    assert_eq!(purge_trash(device.root(), &RealTrashFs).unwrap(), 0);
     assert!(trash.join("photos").is_dir());
     assert!(trash.join(format!("{A}-reste")).is_file());
 }
@@ -478,7 +479,15 @@ fn coupure_a_chaque_etape_puis_reprise() {
                 }
             };
             let lock = DeviceLock::new();
-            let result = remove_with(device.root(), &lock, uuid, true, &test_ctx(), &mut hook);
+            let result = remove_with(
+                device.root(),
+                &lock,
+                uuid,
+                true,
+                &test_ctx(),
+                &RealTrashFs,
+                &mut hook,
+            );
             let finished = result.is_ok();
             assert_eq!(lock.current(), None);
 
@@ -486,7 +495,7 @@ fn coupure_a_chaque_etape_puis_reprise() {
             for kind in IndexKind::ALL {
                 recover(device.root(), kind).unwrap();
             }
-            purge_trash(device.root()).unwrap();
+            purge_trash(device.root(), &RealTrashFs).unwrap();
             let visible = device.index(IndexKind::Visible);
             let hidden = device.index(IndexKind::Hidden);
             let indexed = visible.iter().chain(&hidden).any(|e| e == uuid);
@@ -554,7 +563,16 @@ fn suppression_partielle_reprise_depuis_la_corbeille() {
         }
         Ok(())
     };
-    remove_with(device.root(), &lock, B, true, &test_ctx(), &mut hook).unwrap_err();
+    remove_with(
+        device.root(),
+        &lock,
+        B,
+        true,
+        &test_ctx(),
+        &RealTrashFs,
+        &mut hook,
+    )
+    .unwrap_err();
     assert!(!device.root().join(STORIES_DIR).join(B).exists());
     assert_eq!(device.trash_entries(), 1);
     assert!(find_orphans(device.root()).unwrap().is_empty());
@@ -588,6 +606,152 @@ fn dossier_verrouille_devient_orphelin() {
             hidden: false
         }]
     );
+}
+
+/// Opérations réelles précédées de `fails` refus passagers (antivirus, indexeur) pour chaque
+/// opération ; les attentes entre essais sont comptées, pas faites.
+struct FlakyTrashFs {
+    fails: usize,
+    renames: Cell<usize>,
+    removals: Cell<usize>,
+    sleeps: Cell<usize>,
+}
+
+impl FlakyTrashFs {
+    fn new(fails: usize) -> Self {
+        Self {
+            fails,
+            renames: Cell::new(0),
+            removals: Cell::new(0),
+            sleeps: Cell::new(0),
+        }
+    }
+
+    fn flaky(&self, calls: &Cell<usize>) -> io::Result<()> {
+        let n = calls.get();
+        calls.set(n + 1);
+        if n % (self.fails + 1) < self.fails {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "verrou passager (test)",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl TrashFs for FlakyTrashFs {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.flaky(&self.renames)?;
+        RealTrashFs.rename(from, to)
+    }
+    fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+        self.flaky(&self.removals)?;
+        RealTrashFs.remove_dir_all(path)
+    }
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        self.flaky(&self.removals)?;
+        RealTrashFs.remove_file(path)
+    }
+    fn sleep(&self, _delay: Duration) {
+        self.sleeps.set(self.sleeps.get() + 1);
+    }
+}
+
+/// #577 : un verrou passager sur le dossier (antivirus) au renommage vers la corbeille puis à
+/// la suppression ne laisse ni orphelin ni reste : chaque opération est réessayée.
+#[test]
+fn verrou_passager_reessaye_sans_orphelin() {
+    let device = Device::new();
+    let ops = FlakyTrashFs::new(2);
+    let report = remove_with(
+        device.root(),
+        &DeviceLock::new(),
+        B,
+        true,
+        &test_ctx(),
+        &ops,
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(report.folders_removed, 1);
+    assert!(!report.cleanup_pending, "{report:?}");
+    assert!(!device.root().join(STORIES_DIR).join(B).exists());
+    assert!(!device.root().join(TRASH_DIR).exists());
+    assert!(find_orphans(device.root()).unwrap().is_empty());
+    assert_eq!(ops.renames.get(), 3);
+    assert_eq!(ops.sleeps.get(), 4);
+    device.assert_others_intact(B);
+}
+
+/// Renommage fait par le système mais signalé en échec passager (verrou relâché trop tard) : le
+/// nouvel essai ne trouve plus la source.
+struct MovedButRefused {
+    refused: Cell<bool>,
+}
+
+impl TrashFs for MovedButRefused {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        RealTrashFs.rename(from, to)?;
+        if self.refused.replace(true) {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "verrou passager (test)",
+            ))
+        }
+    }
+    fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+        RealTrashFs.remove_dir_all(path)
+    }
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        RealTrashFs.remove_file(path)
+    }
+    fn sleep(&self, _delay: Duration) {}
+}
+
+/// #577 : source absente au nouvel essai du renommage alors que la cible est en place : le
+/// déplacement a eu lieu, c'est un succès (pas `FolderLeft`).
+#[test]
+fn renommage_fait_malgre_l_erreur_compte_comme_reussi() {
+    let device = Device::new();
+    let ops = MovedButRefused {
+        refused: Cell::new(false),
+    };
+    let report = remove_with(
+        device.root(),
+        &DeviceLock::new(),
+        B,
+        true,
+        &test_ctx(),
+        &ops,
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(report.folders_removed, 1);
+    assert!(!report.cleanup_pending, "{report:?}");
+    assert!(!device.root().join(STORIES_DIR).join(B).exists());
+    assert!(!device.root().join(TRASH_DIR).exists());
+    device.assert_others_intact(B);
+}
+
+/// #577 : la corbeille laissée par un retrait précédent est vidée malgré un verrou passager.
+#[test]
+fn corbeille_videe_malgre_un_verrou_passager() {
+    let device = Device::new();
+    let trash = device.root().join(TRASH_DIR);
+    fs::create_dir_all(
+        trash
+            .join(format!("{B}-0123456789abcdef0123456789abcdef"))
+            .join("x"),
+    )
+    .unwrap();
+    let ops = FlakyTrashFs::new(1);
+    assert_eq!(purge_trash(device.root(), &ops).unwrap(), 1);
+    assert!(!trash.exists());
+    assert_eq!(ops.sleeps.get(), 1);
 }
 
 /// Garde commune (#317) : `.mdf` tronqué, firmware non pris en charge ou illisible, clés 2.x

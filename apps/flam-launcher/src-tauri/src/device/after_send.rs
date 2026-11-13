@@ -339,6 +339,14 @@ pub(crate) fn send_then_settle(
     let before = SentStamp::capture(cache_root, uuid);
     let (plain_pk, _) = Library::new(cache_root).playable(uuid)?;
     let mut report = send(&plain_pk)?;
+    if report.device_changed {
+        // Flam changée juste après l'envoi (#577) : la vérification se ferait peut-être sur une
+        // autre Flam. Ni retrait automatique ni « Retirer du PC » ; un envoi plus ancien de la
+        // même histoire ne vaut plus.
+        registry.forget_story(&report.id);
+        report.library_copy = None;
+        return Ok(report);
+    }
     report.library_copy = settle(
         registry,
         cache_root,

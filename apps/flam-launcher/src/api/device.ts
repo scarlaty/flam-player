@@ -308,6 +308,12 @@ export interface TransferReport {
    * impossible, l'envoi reste réussi) ; `null`/absent : rien n'est proposé.
    */
   library_copy?: LibraryCopy | null;
+  /**
+   * La Flam a été débranchée, remplacée ou momentanément illisible juste après cette mise à jour
+   * réussie (#577) : la file d'envoi s'arrête, comme pour {@link DEVICE_CHANGED} ; ni relecture
+   * carrier ni suite « Mes histoires » (`library_copy` absent).
+   */
+  device_changed?: boolean;
 }
 
 /** Copie de l'histoire dans « Mes histoires » après l'envoi (miroir de `LibraryCopy`). */
@@ -430,6 +436,13 @@ export const TRANSFER_PROGRESS_EVENT = "device://transfer-progress";
  * firmware 2.x (miroir de `AppError::LuniiNeedsV2`) : rien n'a été écrit, mode carrier compris.
  */
 export const LUNII_NEEDS_V2 = "lunii_needs_v2";
+
+/**
+ * `kind` d'un envoi refusé parce que la Flam a été débranchée ou remplacée pendant l'envoi
+ * (miroir de `AppError::DeviceChanged`, #577) : une autre Flam a pu prendre la même lettre de
+ * lecteur. Le message dit ce qui a été écrit ; la file d'envoi s'arrête.
+ */
+export const DEVICE_CHANGED = "device_changed";
 
 /**
  * `device_send_story` : envoie l'histoire `uuid` de la bibliothèque sur la Flam de racine
