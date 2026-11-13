@@ -119,7 +119,20 @@ pub fn eject(
         Ok(()) => true,
         Err(PrepareError::NoAccess) => false,
         Err(PrepareError::InUse(reason)) => {
-            tracing::info!("éjection : volume occupé ({reason})");
+            // Diagnostic #619 (sans chemin). Hypothèse à vérifier : un dossier courant du
+            // processus sur la Flam tient une poignée et bloque le verrouillage.
+            let cwd_on_device = match std::env::current_dir() {
+                Ok(dir) => on_volume(root, &dir),
+                Err(_) => None,
+            };
+            tracing::info!(
+                dossier_courant_sur_la_flam = match cwd_on_device {
+                    Some(true) => "oui",
+                    Some(false) => "non",
+                    None => "inconnu",
+                },
+                "éjection : volume occupé ({reason})"
+            );
             return Ok(EjectOutcome::fallback(format!(
                 "un fichier de la Flam est ouvert par un autre programme ({reason})"
             )));
@@ -195,6 +208,20 @@ pub fn drive_letter(root: &Path) -> Option<char> {
         "" | "\\" | "/" => Some(letter.to_ascii_uppercase()),
         _ => None,
     }
+}
+
+/// `path` est-il sur le lecteur de la racine `root` (`E:\`), d'après la lettre de lecteur ?
+/// `None` : indéterminable (`root` sans lettre de lecteur, chemin non Unicode).
+pub fn on_volume(root: &Path, path: &Path) -> Option<bool> {
+    let letter = drive_letter(root)?;
+    let text = path.to_str()?;
+    let mut chars = text.strip_prefix(r"\\?\").unwrap_or(text).chars();
+    Some(
+        chars
+            .next()
+            .is_some_and(|c| c.eq_ignore_ascii_case(&letter))
+            && chars.next() == Some(':'),
+    )
 }
 
 /// Découpe une liste `MULTI_SZ` (chaînes terminées par un nul, liste terminée par un nul).

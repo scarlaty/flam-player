@@ -103,8 +103,14 @@ fn volume_occupe_donne_le_repli_sans_demande_d_ejection() {
     let dir = device();
     let lock = DeviceLock::new();
     let fake = Fake::new(Err(PrepareError::InUse("accès refusé".into())), Ok(()));
-    let outcome = eject(dir.path(), &lock, &fake).unwrap();
-    let EjectOutcome::Fallback { reason, message } = outcome else {
+    let mut outcome = None;
+    let logs = crate::device::carrier::tests::capture_logs(|| {
+        outcome = Some(eject(dir.path(), &lock, &fake).unwrap());
+    });
+    // Diagnostic #619 : aucun chemin de la Flam dans le journal (journal partagé entre tests :
+    // seule l'absence d'un chemin propre à ce test est vérifiable, voir `testlog`).
+    assert!(!logs.contains(&*dir.path().to_string_lossy()), "{logs}");
+    let EjectOutcome::Fallback { reason, message } = outcome.unwrap() else {
         panic!("repli attendu");
     };
     assert!(reason.contains("ouvert par un autre programme"), "{reason}");
@@ -200,6 +206,27 @@ fn resultat_serialise_pour_l_interface() {
     let json = serde_json::to_value(EjectOutcome::ejected()).unwrap();
     assert_eq!(json["status"], "ejected");
     assert_eq!(json["message"], EJECTED_MESSAGE);
+}
+
+#[test]
+fn chemin_sur_le_lecteur_de_la_flam() {
+    let root = Path::new(r"E:\");
+    for on in [r"E:\", r"e:\str\abc", "E:", r"\\?\E:\str", "e:/str"] {
+        assert_eq!(on_volume(root, Path::new(on)), Some(true), "{on}");
+    }
+    for off in [
+        r"C:\Temp",
+        r"F:\str",
+        "",
+        r"\\serveur\E:",
+        r"\\?\UNC\E:\x",
+        "/mnt/e",
+        "E",
+    ] {
+        assert_eq!(on_volume(root, Path::new(off)), Some(false), "{off}");
+    }
+    // Racine sans lettre de lecteur : indéterminable.
+    assert_eq!(on_volume(Path::new(r"E:\str"), Path::new(r"E:\str")), None);
 }
 
 #[test]

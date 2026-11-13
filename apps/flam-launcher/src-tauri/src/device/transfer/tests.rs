@@ -1374,6 +1374,89 @@ mod carrier_flow {
         assert!(!e.work.join("str").exists(), "rien de préparé");
         assert!(!e.keys_dir.exists(), "rien conservé sur le PC");
     }
+
+    /// #619 : après un envoi carrier réel (copie, relecture sans cache, renommage forcé, index,
+    /// relecture de `info`), une mise à jour, puis les lectures de « Ma Flam » (liste, titres,
+    /// vignettes, carriers), le launcher ne garde aucune poignée sur la Flam. Sonde : Windows
+    /// refuse de renommer un dossier dont un fichier ou un sous-dossier est encore ouvert.
+    /// Portée : poignées ouvertes par ce code Rust, chemin de succès, sur NTFS ; ni poignée de
+    /// volume, ni dossier courant du processus, ni WebView2, ni surveillance `notify`.
+    #[cfg(windows)]
+    #[test]
+    fn aucune_poignee_ne_reste_ouverte_sur_la_flam_apres_envoi_et_lectures() {
+        use crate::device::details::{read_titles, story_thumbnail};
+        use crate::device::index::scan_stories;
+
+        let e = env();
+        let renamed = e.root.with_file_name("flam-renommee");
+        // La sonde détecte bien une poignée de fichier ou de dossier restée ouverte.
+        {
+            let _open = File::open(e.root.join(MDF_FILE)).unwrap();
+            assert!(
+                std::fs::rename(&e.root, &renamed).is_err(),
+                "sonde (fichier)"
+            );
+        }
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+            let _dir = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(e.root.join("str"))
+                .unwrap();
+            assert!(
+                std::fs::rename(&e.root, &renamed).is_err(),
+                "sonde (dossier)"
+            );
+        }
+
+        let fs = FaultyFs::new().real();
+        let c = consent();
+        let report = send_carrier(&fs, &e, Some(&c), device_choice(), true).unwrap();
+        assert_eq!(report.carrier_readback, Some(true));
+        assert!(report.dir_synced && report.verified_uncached, "{report:?}");
+        // Mise à jour (ancienne version mise de côté puis supprimée).
+        let request = CarrierRequest {
+            consent: Some(&c),
+            choice: CarrierChoice::Stored,
+            remember: false,
+            store: &e.store,
+        };
+        let again = send_from_library_with(
+            &fs,
+            &e.root,
+            &e.pk,
+            &e.work,
+            Some(NEW),
+            Some(&request),
+            &test_ctx(),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(again.replaced, "{again:?}");
+
+        // Lectures de « Ma Flam ».
+        let visible = read_index(&e.root, IndexKind::Visible);
+        let _ = read_index(&e.root, IndexKind::Hidden);
+        let _ = index::missing_stories(&e.root, &visible.entries);
+        let _ = scan_stories(&e.root).unwrap();
+        let uuids: Vec<String> = visible.entries.iter().map(ToString::to_string).collect();
+        let _ = read_titles(&e.root, &uuids, None, &|| false);
+        let thumbs = e._tmp.path().join("vignettes");
+        for uuid in &uuids {
+            let _ = story_thumbnail(&e.root, uuid, &thumbs);
+        }
+        let _ = carrier::list_candidates(&e.root, None);
+        let _ = read_mdf(&e.root).unwrap();
+
+        // Nouveaux essais : un antivirus peut ouvrir un instant un fichier tout juste écrit ; une
+        // poignée oubliée par le launcher, elle, tient au-delà.
+        crate::storage::rename_with_retry(&e.root, &renamed)
+            .expect("une poignée sur la Flam est restée ouverte après l'envoi ou les lectures");
+        std::fs::rename(&renamed, &e.root).unwrap();
+    }
 }
 
 #[test]
