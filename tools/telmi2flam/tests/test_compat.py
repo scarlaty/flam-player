@@ -597,8 +597,11 @@ class TestReview(CompatBase):
             except OSError:
                 seen.append(0)
             return real(pk)
+        # espacement des ecritures lentes neutralise : sur une machine chargee, une ecriture de
+        # plus de WRITE_SLOW reportait les suivantes et le test voyait [0, 0, 0]
         with mock.patch.object(compat, "do_validate", spy):
-            self.campaign(self.entries)
+            with mock.patch.object(compat, "WRITE_SLOW", float("inf")):
+                self.campaign(self.entries)
         self.assertEqual(seen, [0, 1, 2])           # report.json ecrit apres chaque histoire
         self.assertFalse(os.path.exists(os.path.join(self.cache, "compat", "report.json.tmp")))
 
