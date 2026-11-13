@@ -1355,6 +1355,27 @@ fn device_keys(
     Ok((keys, Some(resolved)))
 }
 
+/// Supprime les restes d'un envoi interrompu par un arrêt brutal dans `work_dir` (chantiers
+/// `.partiel-*` et préparations terminées de `str/`, voir [`prepare::cleanup_stale_older`] et
+/// [`prepare::cleanup_prepared`]) d'au moins `min_age`, avant une nouvelle préparation. Rien
+/// n'est supprimé si `work_dir` ne porte pas le marqueur de l'application (#591) : un homonyme
+/// refusé par la migration (dossier de l'utilisateur) est utilisé comme avant, jamais nettoyé.
+/// Le verrou de l'appareil est tenu par l'appelant (aucune autre préparation de cette session) et
+/// le vidage du cache, qui prend le portillon en écriture, attend la fin de l'envoi ; l'âge
+/// minimal protège la préparation d'une autre session qui partagerait le dossier de cache. Chaque
+/// échec est journalisé sans empêcher l'autre nettoyage ni l'envoi.
+fn clean_work_dir(work_dir: &Path, min_age: std::time::Duration) {
+    if !crate::cache::is_owned(work_dir) {
+        return;
+    }
+    if let Err(err) = prepare::cleanup_stale_older(work_dir, min_age) {
+        tracing::warn!("chantiers abandonnés non supprimés : {err}");
+    }
+    if let Err(err) = prepare::cleanup_prepared(work_dir, min_age) {
+        tracing::warn!("préparations abandonnées non supprimées : {err}");
+    }
+}
+
 /// Prépare `plain_pk` dans `work_dir` pour la Flam de `root`, la transfère, puis supprime la
 /// préparation. Le verrou de l'appareil est tenu par l'appelant pendant tout l'appel.
 /// `plain_pk` : fichier de la bibliothèque, histoire Flam (`.plain.pk`) ou pack au format Lunii
@@ -1411,9 +1432,7 @@ pub(crate) fn send_from_library_with(
         return Err(TransferError::LuniiNeedsV2);
     }
     let (keys, resolved) = device_keys(root, &permit, carrier, cancel)?;
-    if let Err(err) = prepare::cleanup_stale(work_dir) {
-        tracing::warn!("préparations abandonnées non supprimées : {err}");
-    }
+    clean_work_dir(work_dir, prepare::LEFTOVER_MIN_AGE);
     let limits = Limits::default();
     let prepared = match format {
         StoryFormat::Flam => prepare::prepare_story(plain_pk, &keys, work_dir, &limits, cancel),

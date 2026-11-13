@@ -1333,7 +1333,7 @@ d'exécuter. Accesseurs Rust pour les issues suivantes : `SourcesStore::get(id)`
 vide et renvoie les octets libérés. Le dossier de cache pouvant être choisi par
 l'utilisateur, ces deux commandes ne comptent et ne vident **que** les sous-dossiers créés
 par l'application, listés dans `APP_CACHE_SUBDIRS` (`cache.rs`) : `archives`, `catalogs`, `compat-local`,
-`library`, `official`, `play`, `podcast-work`, `podcasts`, `thumbs`. Le reste du dossier et le dossier lui-même ne sont jamais touchés ; les
+`flam-transfer`, `library`, `official`, `play`, `podcast-work`, `podcasts`, `thumbs`. Le reste du dossier et le dossier lui-même ne sont jamais touchés ; les
 liens symboliques et jonctions ne sont pas suivis.
 
 **Marqueur d'appartenance (#570)** : l'application prouve qu'elle a créé un sous-dossier par un
@@ -1348,7 +1348,15 @@ sont marqués, une seule fois (témoin `cache-markers.done` dans le dossier de c
 prouvent leur usage par l'application (#591) : `library/` seulement s'il contient l'index reconnu
 (voir ci-dessous) ou si tous ses éléments ont une forme que l'application y écrit (`.lock`,
 `.staging/`, `thumbs/`, `library.json`, `library.json.*.bak`, `.library.json.*.tmp`,
-`*.plain.pk`, `*.lunii.pk`) ; `podcasts/`, `podcast-work/` et `play/` seulement si tous
+`*.plain.pk`, `*.lunii.pk`) ; `flam-transfer/` (travail de préparation d'un envoi vers la Flam)
+seulement si chaque élément est `str/` (dont chaque enfant est un dossier nommé par un UUID
+d'histoire en minuscules avec tirets, vide, contenant le fichier `key`, ou reste d'une suppression
+interrompue dont tous les éléments de premier niveau ont un nom écrit par la préparation : fichiers
+`key`, `info`, `main.lsf`, `version`, `ni`, `nm`, `li`, `ri`, `si`, dossiers `img`, `sounds`, `script`,
+`rf`, `sf`, casse et type exacts) ou un chantier
+`.partiel-<uuid>-<32 chiffres hexadécimaux>` (éventuellement `.partiel-ancien-…`), le contenu d'un
+chantier n'étant pas examiné ; un fichier, un lien ou tout autre nom suffit à refuser ;
+`podcasts/`, `podcast-work/` et `play/` seulement si tous
 leurs éléments sont des dossiers nommés comme ceux de l'application (identifiant de source,
 identifiant de tâche, empreinte de 16 chiffres hexadécimaux), et pour `podcasts/` si chaque
 dossier de source ne contient que ce que l'application y écrit (`feed.xml`, `meta.json`, leurs
@@ -1408,7 +1416,7 @@ démarrage, après la migration, s'ils datent d'au moins une minute (une créati
 jamais cassée). Un ancien cache du launcher choisi plus tard (`library/` contenant l'index
 `library.json`, fichier réel d'au plus 4 Mio lisible au schéma de la bibliothèque ; le `.lock`
 seul ne suffit pas) est accepté par `settings_set`, avant l'enregistrement des réglages :
-`library/` y est marqué (par l'index) ; `podcasts/`, `podcast-work/` et `play/` le sont sur la
+`library/` y est marqué (par l'index) ; `podcasts/`, `podcast-work/`, `play/` et `flam-transfer/` le sont sur la
 preuve d'usage de la migration, et `thumbs/` s'il ne contient que des fichiers nommés comme ceux
 du cache des vignettes (`<16 chiffres hexadécimaux minuscules>.png` ou `.tmp-<pid>`, fichiers de
 l'explorateur ignorés ; vide : accepté) ; `archives/`, `catalogs/`, `compat-local/` et `official/`
@@ -1427,10 +1435,38 @@ main) ; l'usage du cache (`cache_usage.subdirs`) n'annonce que les sous-dossiers
 marqués, ceux que le vidage videra ; après un retour à une version antérieure (qui ignore le marqueur), les
 sous-dossiers qu'elle recrée ne sont plus comptés ni vidés par cette version : créer un fichier
 vide `.flam-launcher` dans le sous-dossier concerné pour qu'il soit de nouveau reconnu (ne pas le
-supprimer : `library/` contient les histoires installées). `flam-transfer` n'est pas dans la liste (#577). `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
+supprimer : `library/` contient les histoires installées). `flam-transfer/` est dans la liste (#591) : créé marqué, compté et vidé comme les autres. Pour un cache déjà migré
+avant son ajout (témoin `cache-markers.done` présent), une migration tardive unique (témoin
+`cache-markers-transfer.done` dans le dossier de configuration) évalue ce seul sous-dossier dans le dossier de cache
+effectif et dans le dossier par défaut, avec la même preuve ; un refus est inscrit dans la liste en attente du témoin
+principal et réévalué à chaque démarrage (un dossier personnel homonyme n'est jamais marqué ni vidé ; l'envoi l'utilise
+comme avant, sans le nettoyer). Les restes d'un envoi interrompu par un arrêt brutal (chantiers `.partiel-*` et
+préparations terminées de `str/`) sont supprimés au début du prochain envoi, seulement s'ils datent d'au moins
+douze heures (`LEFTOVER_MIN_AGE` : un envoi de 432 Mio a pris 24 min, le plafond de 4 Gio en donnerait environ
+4 h ; deux sessions Windows partageant le même dossier de cache ne se suppriment pas leur préparation en cours ;
+limite : une copie de plus de douze heures n'est pas protégée) et seulement si `flam-transfer/` est marqué ;
+« Vider le cache » les supprime aussi. `flam-transfer/` n'est jamais marqué (migration, rattrapage, adoption, choix d'un nouveau dossier) dans un dossier
+qui ne porte aucune autre trace de l'application (aucun autre sous-dossier de la liste déjà marqué) : ses noms
+(`str/<uuid>/` avec `key`, `info`, `main.lsf`, `img/`, `sounds/`) sont aussi ceux d'une copie des histoires de la Flam,
+qu'un utilisateur peut avoir rangée sous ce nom ; un nouveau dossier de cache dans ce cas est refusé comme avant.
+Un nouveau dossier de cache choisi dont `library.json` n'est pas reconnu mais qui porte une autre trace de
+l'application et dont `flam-transfer/` est non vide et prouvé voit ce sous-dossier marqué, seulement une fois le
+dossier accepté (sinon il serait refusé comme homonyme ; aucun marqueur n'est laissé dans un dossier refusé). Dans un
+dossier qui sert réellement de cache, une copie de la Flam rangée sous `flam-transfer/` reste indiscernable de la
+préparation de l'application (limite connue). Un reste récent (moins de douze heures) d'un envoi interrompu n'est plus
+supprimé au début de l'envoi suivant : sur un disque presque plein, la nouvelle préparation peut manquer de place ;
+« Vider le cache » le libère. Deux sessions Windows qui partagent le même dossier de cache : « Vider le cache » dans
+l'une supprime la préparation en cours de l'autre, comme pour les autres sous-dossiers du cache. Limite : après un retour à une version
+antérieure qui réécrit la liste en attente du témoin principal, une entrée `flam-transfer` en attente en disparaît
+alors que le témoin tardif reste : ce dossier non prouvé ne sera plus réévalué (fuite de place, jamais de perte ;
+créer un fichier vide `.flam-launcher` dedans pour le reconnaître). « Vider le cache » ne casse jamais un envoi : `device_send_story` tient le
+portillon du cache en lecture pendant tout l'envoi, le vidage (écriture) attend sa fin. `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
 sous-dossier de cache doit l'ajouter à cette liste** (il sera alors créé marqué). L'interface demande une confirmation
 (boîte `alertdialog`, focus sur « Annuler ») qui rappelle les dossiers concernés et la taille
-libérée. `cache_clear` est refusé avec `player_busy` tant qu'un player tourne (sa copie de
+libérée. Les rafraîchissements de catalogue et les téléchargements de vignettes de catalogue
+relâchent ce portillon pendant l'attente réseau (`CatalogService::cache_gate`, compteur de vidages) : « Vider le
+cache » n'attend que leurs sections qui lisent ou écrivent le disque, et un vidage passé pendant le téléchargement
+fait abandonner l'écriture finale (rien n'est recréé derrière le vidage). `cache_clear` est refusé avec `player_busy` tant qu'un player tourne (sa copie de
 travail est dans `play/`) ; le créneau du player est tenu pendant le vidage
 (`PlayerService::while_idle`), aucun lancement ne peut démarrer entre-temps.
 

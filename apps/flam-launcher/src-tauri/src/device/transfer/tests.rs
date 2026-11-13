@@ -2712,3 +2712,55 @@ mod lunii {
         );
     }
 }
+
+/// #591 : les restes d'un envoi interrompu par un arrêt brutal (chantier `.partiel-*` et
+/// préparation terminée de `str/`) sont supprimés au prochain envoi, mais seulement dans un
+/// dossier de travail que l'application possède (marqueur) ; un homonyme sans marqueur n'est pas
+/// nettoyé.
+#[test]
+fn les_restes_d_un_arret_brutal_sont_nettoyes_au_prochain_envoi_si_le_dossier_est_marque() {
+    for owned in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = device(tmp.path(), false);
+        write(&root.join(MDF_FILE), &mdf("2.4.2"));
+        let pk = plain_pk(tmp.path());
+        let cache = tmp.path().join("cache");
+        let work = if owned {
+            crate::cache::ensure_subdir(&cache, WORK_SUBDIR).unwrap()
+        } else {
+            cache.join(WORK_SUBDIR)
+        };
+        let staging = work.join(".partiel-abandonne");
+        let prepared = work
+            .join("str")
+            .join("11111111-2222-3333-4444-555555555555");
+        write(&staging.join("info"), b"x");
+        write(&prepared.join("key"), b"k");
+        // Restes d'un arrêt brutal, anciens ; un autre, récent, peut être celui d'une autre
+        // session qui prépare dans le même dossier de cache : jamais touché.
+        let aged = crate::device::prepare::LEFTOVER_MIN_AGE + std::time::Duration::from_secs(60);
+        let young = work.join(".partiel-en-cours");
+        write(&young.join("info"), b"x");
+        crate::device::prepare::backdate(&staging, aged);
+        crate::device::prepare::backdate(&prepared, aged);
+
+        send_from_library_with(
+            &FaultyFs::new(),
+            &root,
+            &pk,
+            &work,
+            None,
+            None,
+            &test_ctx(),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(staging.exists(), !owned, "chantier, marqué = {owned}");
+        assert_eq!(prepared.exists(), !owned, "préparation, marqué = {owned}");
+        assert!(young.is_dir(), "reste récent gardé");
+        assert!(!work.join("str").join(NEW).exists(), "envoi nettoyé");
+        assert_eq!(crate::cache::is_owned(&work), owned);
+    }
+}

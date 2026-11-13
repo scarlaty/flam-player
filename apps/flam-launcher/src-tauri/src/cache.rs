@@ -25,11 +25,13 @@ use crate::AppResult;
 
 /// Sous-dossiers du cache créés par l'application (et eux seuls) : archives téléchargées, catalogues mis en cache,
 /// histoires converties, catalogue officiel en ligne (`official`), copies de travail des
-/// histoires lancées (`play`), flux podcast mis en cache (`podcasts`, #211), vignettes.
+/// histoires lancées (`play`), flux podcast mis en cache (`podcasts`, #211), vignettes, travail
+/// de préparation d'un envoi vers la Flam (`flam-transfer`, #591).
 pub const APP_CACHE_SUBDIRS: &[&str] = &[
     "archives",
     "catalogs",
     "compat-local",
+    "flam-transfer",
     "library",
     "official",
     "play",
@@ -66,6 +68,14 @@ const TMP_PREFIX: &str = ".flam-launcher-new-";
 
 /// Témoin de la migration des marqueurs, dans le dossier de configuration (pas dans le cache).
 pub const MIGRATION_WITNESS: &str = "cache-markers.done";
+
+/// Sous-dossiers ajoutés à [`APP_CACHE_SUBDIRS`] après la première migration : un cache déjà
+/// migré (témoin [`MIGRATION_WITNESS`] présent) ne les a jamais évalués.
+const LATE_SUBDIRS: &[&str] = &[crate::device::transfer::WORK_SUBDIR];
+
+/// Témoin de la migration tardive de [`LATE_SUBDIRS`] (`migrate_late`), dans le dossier de
+/// configuration : écrit une fois ces sous-dossiers évalués, ou par la migration complète.
+const LATE_WITNESS: &str = "cache-markers-transfer.done";
 
 /// Point d'injection de panne : appelé avant chaque étape qui écrit ou supprime (tests).
 type Fault<'a> = &'a dyn Fn(&'static str) -> io::Result<()>;
@@ -446,7 +456,13 @@ fn mark_existing(
 ) -> io::Result<(usize, Vec<&'static str>)> {
     let mut marked = 0;
     let mut unproven = Vec::new();
-    for name in APP_CACHE_SUBDIRS {
+    // Les sous-dossiers de [`LATE_SUBDIRS`] en dernier : leur marquage exige qu'un autre
+    // sous-dossier de l'application soit déjà marqué ([`has_app_trace`]).
+    let ordered = APP_CACHE_SUBDIRS
+        .iter()
+        .filter(|name| !LATE_SUBDIRS.contains(*name))
+        .chain(LATE_SUBDIRS);
+    for name in ordered {
         match mark_one(root, name, marking, fault) {
             Ok(MarkOutcome::Marked) => marked += 1,
             Ok(MarkOutcome::Unproven) => unproven.push(*name),
@@ -479,6 +495,10 @@ fn mark_one(
         tracing::warn!("cache : marqueur de « {name} » inattendu, non marqué");
         return Ok(MarkOutcome::Skipped);
     }
+    if LATE_SUBDIRS.contains(&name) && !has_app_trace(root) {
+        tracing::warn!("cache : « {name} » sans autre sous-dossier de l'application, non marqué");
+        return Ok(MarkOutcome::Unproven);
+    }
     let proven = match marking {
         Marking::Migration => proven_by_content(name, &dir),
         Marking::Adoption => proven_at_adoption(name, &dir),
@@ -502,10 +522,24 @@ fn mark_one(
     Ok(MarkOutcome::Marked)
 }
 
+/// `root` porte une trace d'usage par l'application : au moins un sous-dossier de
+/// [`APP_CACHE_SUBDIRS`] autre que [`LATE_SUBDIRS`] déjà marqué (vrai dossier avec marqueur).
+/// Exigée avant de marquer `flam-transfer` : ses noms (`str/<uuid>/` avec `key`, `info`,
+/// `main.lsf`, `img/`, `sounds/`) sont aussi ceux d'une copie des histoires de la Flam (format de
+/// l'appareil), qu'un utilisateur peut avoir rangée sous ce nom dans un dossier qui n'a jamais
+/// servi de cache : la preuve par les noms ne suffit pas à elle seule.
+fn has_app_trace(root: &Path) -> bool {
+    APP_CACHE_SUBDIRS
+        .iter()
+        .filter(|name| !LATE_SUBDIRS.contains(*name))
+        .any(|name| is_owned(&root.join(name)))
+}
+
 /// Preuve d'usage exigée à l'adoption d'un ancien cache (#591), au moins aussi stricte que celle
 /// de la migration : le dossier a été choisi par l'utilisateur et peut contenir ses propres
 /// dossiers.
-/// - `podcasts`, `podcast-work`, `play` : règle de la migration ([`proven_by_content`]) ;
+/// - `podcasts`, `podcast-work`, `play`, `flam-transfer` : règle de la migration
+///   ([`proven_by_content`]) ;
 /// - `thumbs` : chaque élément de la racine est un fichier ordinaire nommé comme ceux de
 ///   `ThumbCache` ([`crate::thumbnail::is_own_file`]) ou un fichier de l'explorateur
 ///   ([`is_os_junk`], ignoré sans valoir preuve) ; vide : accepté, comme `podcasts` ou `play` ;
@@ -516,7 +550,8 @@ fn proven_at_adoption(name: &str, dir: &Path) -> bool {
     match name {
         crate::podcast::source::CACHE_SUBDIR
         | crate::install::podcast::WORK_DIR
-        | crate::player::PLAY_DIR => proven_by_content(name, dir),
+        | crate::player::PLAY_DIR
+        | crate::device::transfer::WORK_SUBDIR => proven_by_content(name, dir),
         crate::thumbnail::THUMBS_DIR => thumbs_children_known(dir),
         _ => false,
     }
@@ -645,7 +680,8 @@ fn catalogs_children_known(dir: &Path) -> bool {
 /// - `podcast-work` : chaque enfant est un dossier réel nommé par un identifiant de tâche
 ///   (`install::is_task_id`) ;
 /// - `play` : chaque enfant est un dossier réel nommé par l'empreinte de `player::Workspace`
-///   (16 chiffres hexadécimaux minuscules).
+///   (16 chiffres hexadécimaux minuscules) ;
+/// - `flam-transfer` : voir [`transfer_children_known`].
 ///
 /// Partout, un sous-dossier vide est accepté (rien à perdre), les noms sont comparés en
 /// respectant la casse, aucun lien ni jonction n'est suivi (refus), et `desktop.ini`,
@@ -673,6 +709,7 @@ fn proven_by_content(name: &str, dir: &Path) -> bool {
             });
         }
         crate::thumbnail::THUMBS_DIR => return thumbs_children_known(dir),
+        crate::device::transfer::WORK_SUBDIR => return transfer_children_known(dir),
         crate::podcast::source::CACHE_SUBDIR => |child| {
             !child.is_empty()
                 && child.len() <= 64
@@ -710,6 +747,103 @@ fn proven_by_content(name: &str, dir: &Path) -> bool {
                 && (name != crate::podcast::source::CACHE_SUBDIR
                     || podcast_source_children_known(&entry.path()))
         })
+    })
+}
+
+/// Identifiant d'histoire tel que l'écrit `prepare::read_uuid` : UUID en minuscules avec ses
+/// tirets (`8-4-4-4-12` chiffres hexadécimaux).
+fn is_story_uuid(name: &str) -> bool {
+    name.len() == 36
+        && name.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => matches!(b, b'0'..=b'9' | b'a'..=b'f'),
+        })
+}
+
+/// Fichiers de premier niveau d'une préparation (`str/<uuid>/`), relevés dans le code : `prepare`
+/// (`info`, `main.lsf`, `version`, la clé `key`) et `prepare_lunii` (`ni`, `nm`, `li`, `ri`,
+/// `si`, `info`, `key`).
+const PREPARED_FILES: &[&str] = &[
+    "key", "info", "main.lsf", "version", "ni", "nm", "li", "ri", "si",
+];
+
+/// Dossiers de premier niveau d'une préparation : `img`, `sounds`, `script` (histoire Flam) et
+/// `rf`, `sf` (pack Lunii). Le contenu n'est pas examiné.
+const PREPARED_DIRS: &[&str] = &["img", "sounds", "script", "rf", "sf"];
+
+/// Nom d'un dossier de chantier de `prepare::build_in_staging` :
+/// `.partiel-<uuid>-<aléa>` ou `.partiel-ancien-<uuid>-<aléa>` (préparation écartée), l'aléa étant
+/// 32 chiffres hexadécimaux minuscules.
+fn is_staging_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(crate::device::prepare::STAGING_PREFIX) else {
+        return false;
+    };
+    let rest = rest.strip_prefix("ancien-").unwrap_or(rest);
+    let Some((uuid, random)) = rest.split_at_checked(36) else {
+        return false;
+    };
+    is_story_uuid(uuid)
+        && random.strip_prefix('-').is_some_and(|random| {
+            random.len() == 32
+                && random
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+}
+
+/// `flam-transfer/` ([`crate::device::transfer::WORK_SUBDIR`]) : chaque élément est un dossier
+/// réel (ou un fichier de l'explorateur, ignoré sans valoir preuve) parmi :
+/// - `str/` ([`crate::device::prepare::STORIES_DIR`]), dont chaque enfant est un dossier réel
+///   nommé par un UUID d'histoire ([`is_story_uuid`]) qui est vide, contient le fichier `key`
+///   (écrit par `prepare` dans la préparation, publiée en `str/<uuid>/` une fois construite),
+///   ou est le reste d'une suppression interrompue : tous ses éléments de premier niveau portent
+///   un nom de [`PREPARED_FILES`] (fichier) ou de [`PREPARED_DIRS`] (dossier réel), `key` et
+///   `info` ayant pu disparaître avant `rf/` et `sf/` ;
+/// - un chantier de préparation ([`is_staging_name`]), dont le contenu n'est pas examiné (il est
+///   partiel par nature).
+///
+/// Tout autre nom, un fichier, un lien ou une jonction : refus. Un dossier personnel qui
+/// imiterait ces noms exacts serait reconnu (limite connue, comme pour `podcasts/`).
+fn transfer_children_known(dir: &Path) -> bool {
+    use crate::device::prepare::{KEY_FILE, STORIES_DIR};
+    let story = |path: &Path| {
+        let Ok(entries) = fs::read_dir(path) else {
+            return false;
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                return false;
+            };
+            if is_os_junk(&name) && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                continue;
+            }
+            names.push((name, entry.file_type()));
+        }
+        // Reste d'une suppression interrompue : liste fermée, noms exacts, type exact ; un seul
+        // nom inconnu (ou un lien) refuse tout.
+        let known = |name: &str, kind: &io::Result<fs::FileType>| {
+            kind.as_ref().is_ok_and(|k| {
+                (k.is_file() && PREPARED_FILES.contains(&name))
+                    || (k.is_dir() && PREPARED_DIRS.contains(&name))
+            })
+        };
+        names.is_empty()
+            || names
+                .iter()
+                .any(|(name, kind)| name == KEY_FILE && kind.as_ref().is_ok_and(|k| k.is_file()))
+            || names.iter().all(|(name, kind)| known(name, kind))
+    };
+    let stories = |path: &Path| {
+        entries_known(path, &|_| false, &|name, child| {
+            is_story_uuid(name) && story(child)
+        })
+    };
+    entries_known(dir, &|_| false, &|name, path| {
+        (name == STORIES_DIR && stories(path)) || is_staging_name(name)
     })
 }
 
@@ -835,11 +969,15 @@ fn migrate_configured_with(
 ) -> AppResult<Migration> {
     let witness = config_dir.join(MIGRATION_WITNESS);
     if fs::symlink_metadata(&witness).is_ok() {
-        return Ok(catch_up(
-            &witness,
-            &|| current_roots(config_dir, env),
-            fault,
-        ));
+        let outcome = catch_up(&witness, &|| current_roots(config_dir, env), fault);
+        let late = migrate_late(config_dir, env, fault);
+        return Ok(match (outcome, late) {
+            (outcome, 0) => outcome,
+            (Migration::CaughtUp { marked }, late) => Migration::CaughtUp {
+                marked: marked + late,
+            },
+            (_, late) => Migration::CaughtUp { marked: late },
+        });
     }
     let settings = SettingsStore::new(config_dir).load()?;
     let (resolved, _) = resolve(&settings, env);
@@ -857,7 +995,104 @@ fn migrate_configured_with(
     if env.default_cache_dir != effective && env.default_cache_dir.is_dir() {
         roots.push(env.default_cache_dir.clone());
     }
-    Ok(migrate_markers_with(&witness, &roots, fault)?)
+    let outcome = migrate_markers_with(&witness, &roots, fault)?;
+    if matches!(outcome, Migration::Done { .. }) {
+        // La migration complète a évalué tous les sous-dossiers, [`LATE_SUBDIRS`] compris.
+        write_late_witness(config_dir);
+    }
+    Ok(outcome)
+}
+
+/// Écrit le témoin de la migration tardive ; un échec est journalisé, la migration tardive sera
+/// rejouée au démarrage suivant (elle est idempotente).
+fn write_late_witness(config_dir: &Path) {
+    let written = fs::create_dir_all(config_dir)
+        .and_then(|()| crate::storage::write_atomic(&config_dir.join(LATE_WITNESS), b""));
+    if let Err(err) = written {
+        tracing::warn!("cache : témoin de la migration tardive non écrit : {err}");
+    }
+}
+
+/// Migration tardive (#591), une seule fois pour un cache déjà migré avant l'ajout de
+/// [`LATE_SUBDIRS`] à [`APP_CACHE_SUBDIRS`] (la migration ne repasse plus : témoin présent) :
+/// ces sous-dossiers, présents sans marqueur dans le dossier de cache effectif ou dans le dossier
+/// par défaut, reçoivent le marqueur seulement si leur contenu le prouve ([`proven_by_content`]).
+/// Un refus est inscrit dans le témoin de migration et réévalué par [`catch_up`] à chaque
+/// démarrage. Les réglages sont lus sans effet de bord ; illisibles, ou dossier de cache effectif
+/// absent (disque débranché) : rien n'est fait et le témoin tardif n'est pas écrit (reporté au
+/// démarrage suivant). Une erreur d'écriture reporte aussi. Porte de démarrage fermée, comme le
+/// rattrapage. Renvoie le nombre de sous-dossiers marqués.
+fn migrate_late(config_dir: &Path, env: &Environment, fault: Fault) -> usize {
+    let late_witness = config_dir.join(LATE_WITNESS);
+    if fs::symlink_metadata(&late_witness).is_ok() {
+        return 0;
+    }
+    let Some(current) = current_roots(config_dir, env) else {
+        return 0;
+    };
+    if !current
+        .eval
+        .first()
+        .is_some_and(|effective| effective.is_dir())
+    {
+        return 0;
+    }
+    let mut roots: Vec<&PathBuf> = Vec::new();
+    for root in &current.eval {
+        if root.is_dir() && !roots.iter().any(|r| crate::settings::same_path(r, root)) {
+            roots.push(root);
+        }
+    }
+    let mut marked = 0;
+    let mut refused = Vec::new();
+    for root in roots {
+        for name in LATE_SUBDIRS.iter().copied() {
+            match mark_one(root, name, Marking::Migration, fault) {
+                Ok(MarkOutcome::Marked) => marked += 1,
+                Ok(MarkOutcome::Unproven) => match root.to_str() {
+                    Some(text) => refused.push(Pending {
+                        root: text.to_string(),
+                        name: name.to_string(),
+                    }),
+                    None => tracing::warn!(
+                        "cache : racine au nom non UTF-8, « {name} » non prouvé jamais réévalué"
+                    ),
+                },
+                Ok(MarkOutcome::Skipped) => {}
+                Err(err) => {
+                    tracing::warn!("cache : marqueur de « {name} » non écrit (tardif) : {err}");
+                    return marked;
+                }
+            }
+        }
+    }
+    // Dossier configuré mais non retenu (il peut redevenir le cache effectif) : inscrit sans être
+    // évalué, le rattrapage le garde tant qu'il n'est ni effectif ni quitté.
+    for root in &current.keep {
+        for name in LATE_SUBDIRS {
+            if let Some(text) = root.to_str() {
+                refused.push(Pending {
+                    root: text.to_string(),
+                    name: name.to_string(),
+                });
+            }
+        }
+    }
+    if !refused.is_empty() {
+        let witness = config_dir.join(MIGRATION_WITNESS);
+        let mut pending = read_pending(&witness);
+        for entry in refused {
+            if !pending.contains(&entry) {
+                pending.push(entry);
+            }
+        }
+        if let Err(err) = write_witness(&witness, &pending) {
+            tracing::warn!("cache : liste des sous-dossiers en attente non écrite : {err}");
+            return marked;
+        }
+    }
+    write_late_witness(config_dir);
+    marked
 }
 
 /// Nettoyage des dossiers temporaires d'une création interrompue dans le dossier de cache
@@ -884,7 +1119,7 @@ pub fn remove_stale_tmp_configured(state: &ConfigState, env: &Environment) {
 /// adopté et `true` est renvoyé : `library/` reçoit le marqueur (s'il ne l'a pas déjà), **puis**
 /// les autres sous-dossiers de [`APP_CACHE_SUBDIRS`] présents dont le contenu prouve l'usage par
 /// l'application reçoivent le leur ([`mark_existing`] avec la preuve [`proven_at_adoption`] :
-/// `podcasts`, `podcast-work`, `play` et `thumbs` seulement), sans quoi ils ne seraient plus
+/// `podcasts`, `podcast-work`, `play`, `flam-transfer` et `thumbs` seulement), sans quoi ils ne seraient plus
 /// jamais marqués (#591) : la migration ne repasse plus et [`ensure_subdir`] ne marque pas un
 /// dossier existant. `archives`, `catalogs`, `compat-local` et `official` ne sont jamais marqués
 /// ici (fuite de place, jamais de perte). Un homonyme refusé
@@ -916,6 +1151,48 @@ fn adopt_legacy_cache_with(root: &Path, fault: Fault) -> io::Result<bool> {
     // Bibliothèque reconnue et marquée : les autres sous-dossiers, sur preuve par le contenu.
     mark_existing(root, Marking::Adoption, fault)?;
     Ok(true)
+}
+
+/// Sous-dossiers de [`LATE_SUBDIRS`] de `root` (nouveau dossier de cache choisi, hors adoption
+/// d'un ancien cache, [`adopt_legacy_cache`]) qui seraient marqués : non marqués, **non vides**,
+/// dont le contenu prouve l'usage par l'application ([`proven_at_adoption`]), **et** `root` porte
+/// une autre trace de l'application ([`has_app_trace`], un ancien cache de l'ère des marqueurs a
+/// ses autres sous-dossiers marqués). Sans cela, un ancien cache quitté puis repris (dont
+/// `library.json` dépasse la taille lisible, donc sans adoption) serait refusé pour ce seul
+/// sous-dossier, alors que ses restes sont ceux de l'application. Un dossier vide n'est pas
+/// retenu : il peut être un dossier de l'utilisateur, le refus d'un homonyme reste la règle. Ne
+/// modifie rien : l'appelant décide du marquage ([`adopt_late_subdirs`]) une fois le dossier
+/// accepté.
+pub fn late_adoptable(root: &Path) -> Vec<&'static str> {
+    if !has_app_trace(root) {
+        return Vec::new();
+    }
+    LATE_SUBDIRS
+        .iter()
+        .copied()
+        .filter(|name| {
+            let dir = root.join(name);
+            is_real_dir(&dir)
+                && !is_owned(&dir)
+                && fs::symlink_metadata(dir.join(MARKER)).is_err()
+                && fs::read_dir(&dir).is_ok_and(|entries| {
+                    entries
+                        .flatten()
+                        .any(|entry| !entry.file_name().to_str().is_some_and(is_os_junk))
+                })
+                && proven_at_adoption(name, &dir)
+        })
+        .collect()
+}
+
+/// Marque `names` (résultat de [`late_adoptable`]), seulement une fois le dossier accepté. Une
+/// erreur d'écriture est journalisée, le sous-dossier reste non marqué (utilisé comme avant).
+pub fn adopt_late_subdirs(root: &Path, names: &[&'static str]) {
+    for name in names.iter().copied() {
+        if let Err(err) = mark_one(root, name, Marking::Adoption, &no_fault) {
+            tracing::warn!("cache : marqueur de « {name} » non écrit à l'adoption : {err}");
+        }
+    }
 }
 
 /// Âge minimal d'un dossier temporaire de création avant sa suppression : en deçà, une création
@@ -1128,6 +1405,11 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, vec![b'x'; bytes]).unwrap();
     }
+
+    /// Identifiant d'histoire et nom de chantier de la forme écrite par `prepare`.
+    const STORY: &str = "0b9f6c1e-2d3a-4b5c-8d7e-9f0a1b2c3d4e";
+    const STAGING: &str =
+        ".partiel-0b9f6c1e-2d3a-4b5c-8d7e-9f0a1b2c3d4e-0123456789abcdef0123456789abcdef";
 
     /// Crée `root/name` comme le ferait l'application (marqué).
     fn owned(root: &Path, name: &str) -> PathBuf {
@@ -1655,6 +1937,10 @@ mod tests {
         write(&root.join("podcasts/source-a/mp3/0a.mp3"), 7);
         write(&root.join("thumbs/0000000000000001.png"), 8);
         write(&root.join("thumbs/0000000000000002.tmp-42"), 1);
+        // `flam-transfer` : préparation terminée (avec `key`) et chantier interrompu.
+        write(&root.join(format!("flam-transfer/str/{STORY}/key")), 16);
+        write(&root.join(format!("flam-transfer/str/{STORY}/info")), 5);
+        write(&root.join(format!("flam-transfer/{STAGING}/info")), 5);
     }
 
     /// Migre `root` (seule racine) avec un nouveau témoin et renvoie le résultat.
@@ -2261,7 +2547,7 @@ mod tests {
             assert_eq!(fs::read(&witness).unwrap(), before, "liste intacte");
             assert_eq!(
                 names_in(config.path()),
-                [MIGRATION_WITNESS, "settings.json"],
+                [LATE_WITNESS, MIGRATION_WITNESS, "settings.json"],
                 "rien mis de côté"
             );
         }
@@ -3128,6 +3414,7 @@ mod tests {
                 "archives",
                 "catalogs",
                 "compat-local",
+                "flam-transfer",
                 "library",
                 "official",
                 "play",
@@ -3151,5 +3438,474 @@ mod tests {
         .await;
         assert!(blocked.is_err(), "le rafraîchissement doit attendre");
         drop(pause);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // `flam-transfer` (#591) : travail de préparation d'un envoi vers la Flam
+    // -----------------------------------------------------------------------------------------
+
+    /// `root/flam-transfer` de la forme écrite par `prepare` (préparation terminée et chantier
+    /// interrompu), sans marqueur : un cache d'avant l'ajout du sous-dossier à la liste.
+    fn unmarked_transfer(root: &Path) {
+        // Trace d'usage par l'application exigée pour marquer `flam-transfer` ([`has_app_trace`]).
+        ensure_subdir(root, "archives").unwrap();
+        write(&root.join(format!("flam-transfer/str/{STORY}/key")), 16);
+        write(&root.join(format!("flam-transfer/str/{STORY}/info")), 5);
+        write(&root.join(format!("flam-transfer/{STAGING}/info")), 5);
+    }
+
+    #[test]
+    fn flam_transfer_est_cree_marque_compte_et_vide_comme_les_autres() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_subdirs(dir.path());
+        let work = dir.path().join("flam-transfer");
+        assert!(is_owned(&work), "créé marqué");
+        write(&work.join(format!("str/{STORY}/key")), 16);
+        write(&work.join(format!("str/{STORY}/info")), 4);
+        write(&work.join(format!("{STAGING}/info")), 5);
+        let (bytes, names) = usage_report(dir.path()).unwrap();
+        assert_eq!(bytes, 25);
+        assert!(names.contains(&"flam-transfer".to_string()));
+        // Un arrêt brutal a laissé ces restes : « Vider le cache » les supprime.
+        assert_eq!(clear_of(dir.path()).unwrap(), 25);
+        assert_eq!(names_in(&work), [MARKER]);
+        assert!(is_owned(&work));
+    }
+
+    /// `proven_by_content("flam-transfer", …)` pour un dossier rempli par `fill`.
+    fn transfer_proven(fill: impl Fn(&Path)) -> bool {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("flam-transfer");
+        fs::create_dir_all(&work).unwrap();
+        fill(&work);
+        proven_by_content("flam-transfer", &work)
+    }
+
+    #[test]
+    fn la_preuve_de_flam_transfer_est_celle_des_noms_ecrits_par_prepare() {
+        // Vide, préparation terminée, répertoire de préparation vide (suppression
+        // interrompue), chantiers (dont l'ancienne préparation écartée), fichiers de l'explorateur.
+        assert!(transfer_proven(|_| {}));
+        assert!(transfer_proven(|w| unmarked_transfer(w.parent().unwrap())));
+        assert!(transfer_proven(|w| {
+            fs::create_dir_all(w.join(format!("str/{STORY}"))).unwrap();
+        }));
+        assert!(transfer_proven(|w| {
+            fs::create_dir_all(w.join(format!(
+                ".partiel-ancien-{STORY}-fedcba9876543210fedcba9876543210"
+            )))
+            .unwrap();
+            fs::create_dir_all(w.join("str")).unwrap();
+            write(&w.join("desktop.ini"), 1);
+            write(&w.join(format!("str/{STORY}/Thumbs.db")), 1);
+        }));
+        // Doute : refus.
+        type Fill<'a> = &'a dyn Fn(&Path);
+        let refused: [(&str, Fill); 12] = [
+            ("fichier perso", &|w| write(&w.join("notes.txt"), 1)),
+            ("dossier perso", &|w| {
+                write(&w.join("Mes documents/a.txt"), 1)
+            }),
+            ("fichier dans str", &|w| write(&w.join("str/notes.txt"), 1)),
+            ("nom perso dans str", &|w| {
+                write(&w.join("str/vacances/key"), 1)
+            }),
+            ("histoire sans key", &|w| {
+                write(&w.join(format!("str/{STORY}/photo.jpg")), 1);
+            }),
+            ("uuid en majuscules", &|w| {
+                let upper = STORY.to_uppercase();
+                write(&w.join(format!("str/{upper}/key")), 1);
+            }),
+            ("uuid sans tirets", &|w| {
+                write(&w.join(format!("str/{}/key", STORY.replace('-', ""))), 1);
+            }),
+            ("chantier sans aléa", &|w| {
+                write(&w.join(format!(".partiel-{STORY}/info")), 1);
+            }),
+            ("chantier au nom libre", &|w| {
+                write(&w.join(".partiel-perso/a"), 1)
+            }),
+            ("chantier fichier", &|w| {
+                write(&w.join(format!("{STAGING}.txt")), 1);
+            }),
+            ("str est un fichier", &|w| write(&w.join("str"), 1)),
+            ("chantier est un fichier", &|w| write(&w.join(STAGING), 1)),
+        ];
+        for (what, fill) in refused {
+            assert!(!transfer_proven(fill), "{what}");
+        }
+        assert!(is_story_uuid(STORY));
+        assert!(!is_story_uuid("0b9f6c1e-2d3a-4b5c-8d7e-9f0a1b2c3d4"));
+        assert!(!is_story_uuid("0b9f6c1e_2d3a_4b5c_8d7e_9f0a1b2c3d4e"));
+        assert!(is_staging_name(STAGING));
+        assert!(!is_staging_name(&format!("{STAGING}0")));
+    }
+
+    /// Lien de dossier sans privilège : jonction (`mklink /J`) sous Windows, lien symbolique
+    /// ailleurs.
+    fn link_dir(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Chemins entre guillemets : un dossier temporaire peut contenir des espaces.
+            let quoted = |p: &Path| format!("\"{}\"", p.to_string_lossy().replace('/', "\\"));
+            let out = std::process::Command::new("cmd")
+                .arg("/C")
+                .raw_arg(format!("\"mklink /J {} {}\"", quoted(link), quoted(target)))
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "mklink /J : {out:?}");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[test]
+    fn un_lien_dans_flam_transfer_ne_prouve_rien() {
+        let outside = tempfile::tempdir().unwrap();
+        write(&outside.path().join("a.txt"), 1);
+        // Lien à la place de `str/`, d'une préparation, d'un chantier, d'un dossier de
+        // préparation (`img`) : chaque cas est refusé, sans suivre le lien.
+        type Place = fn(&Path) -> PathBuf;
+        let places: [(&str, Place); 4] = [
+            ("str", |w| w.join("str")),
+            ("préparation", |w| w.join(format!("str/{STORY}"))),
+            ("chantier", |w| w.join(STAGING)),
+            ("img", |w| w.join(format!("str/{STORY}/img"))),
+        ];
+        for (what, place) in places {
+            let dir = tempfile::tempdir().unwrap();
+            let work = dir.path().join("flam-transfer");
+            fs::create_dir_all(work.join("str")).unwrap();
+            if what == "img" {
+                // Reste partiel (sans `key`) dont `img` est un lien : l'élément n'est pas un
+                // dossier réel.
+                fs::create_dir_all(work.join(format!("str/{STORY}"))).unwrap();
+            } else if what == "str" {
+                fs::remove_dir(work.join("str")).unwrap();
+            }
+            link_dir(&place(&work), outside.path());
+            assert!(!proven_by_content("flam-transfer", &work), "{what}");
+        }
+        assert!(outside.path().join("a.txt").is_file());
+    }
+
+    #[test]
+    fn un_reste_de_suppression_interrompue_est_prouve_a_noms_exacts() {
+        let leftover = |names: &[(&str, bool)]| {
+            transfer_proven(|w| {
+                for (name, is_dir) in names {
+                    let path = w.join(format!("str/{STORY}")).join(name);
+                    if *is_dir {
+                        fs::create_dir_all(path.join("x")).unwrap();
+                    } else {
+                        write(&path, 1);
+                    }
+                }
+                fs::create_dir_all(w.join(format!("str/{STORY}"))).unwrap();
+            })
+        };
+        // `key` et `info` ont disparu avant `rf/` et `sf/` : reste d'un pack Lunii ou Flam.
+        assert!(leftover(&[
+            ("ri", false),
+            ("si", false),
+            ("rf", true),
+            ("sf", true)
+        ]));
+        assert!(leftover(&[
+            ("main.lsf", false),
+            ("version", false),
+            ("img", true)
+        ]));
+        assert!(leftover(&[("script", true), ("sounds", true)]));
+        // Un seul nom inconnu, un mauvais type, une autre casse : refus.
+        assert!(!leftover(&[
+            ("ri", false),
+            ("photo.jpg", false),
+            ("rf", true)
+        ]));
+        assert!(!leftover(&[("ri", true)]));
+        assert!(!leftover(&[("rf", false)]));
+        assert!(!leftover(&[("RI", false)]));
+        assert!(!leftover(&[("img", true), ("Mes documents", true)]));
+        // Fichier étranger au milieu d'un reste connu.
+        assert!(!leftover(&[
+            ("si", false),
+            ("notes.txt", false),
+            ("sf", true)
+        ]));
+    }
+
+    #[test]
+    fn un_flam_transfer_personnel_n_est_jamais_marque_ni_vide() {
+        for personal in [
+            "notes.txt",
+            "str/notes.txt",
+            "Mes documents/a.txt",
+            "str/vacances/key",
+        ] {
+            // Migration de démarrage.
+            let dir = tempfile::tempdir().unwrap();
+            write(&dir.path().join("flam-transfer").join(personal), 9);
+            unmarked_transfer(dir.path());
+            assert_eq!(
+                migrate_once(dir.path()),
+                Migration::Done { marked: 0 },
+                "{personal}"
+            );
+            assert!(!is_owned(&dir.path().join("flam-transfer")), "{personal}");
+            assert_eq!(usage_of(dir.path()).unwrap(), 0, "{personal}");
+            assert_eq!(clear_of(dir.path()).unwrap(), 0, "{personal}");
+            assert!(dir.path().join("flam-transfer").join(personal).is_file());
+            assert_eq!(foreign_entries(dir.path()), ["flam-transfer"]);
+
+            // Adoption d'un ancien cache.
+            let legacy = tempfile::tempdir().unwrap();
+            complete_legacy_cache(legacy.path());
+            write(&legacy.path().join("flam-transfer").join(personal), 9);
+            assert!(adopt_legacy_cache(legacy.path()).unwrap());
+            assert!(
+                !is_owned(&legacy.path().join("flam-transfer")),
+                "{personal}"
+            );
+            clear_of(legacy.path()).unwrap();
+            assert!(legacy.path().join("flam-transfer").join(personal).is_file());
+        }
+    }
+
+    #[test]
+    fn flam_transfer_de_forme_reelle_est_adopte_avec_un_ancien_cache() {
+        let legacy = tempfile::tempdir().unwrap();
+        complete_legacy_cache(legacy.path());
+        unmarked_transfer(legacy.path());
+        assert!(adopt_legacy_cache(legacy.path()).unwrap());
+        assert!(is_owned(&legacy.path().join("flam-transfer")));
+        assert!(usage_report(legacy.path())
+            .unwrap()
+            .1
+            .contains(&"flam-transfer".to_string()));
+    }
+
+    #[test]
+    fn la_migration_tardive_marque_flam_transfer_d_un_cache_deja_migre() {
+        let cache = tempfile::tempdir().unwrap();
+        unmarked_transfer(cache.path());
+        let (config, env) = config_with_default(cache.path());
+        // Migration faite par une version d'avant l'ajout de `flam-transfer` : témoin vide.
+        fs::write(config.path().join(MIGRATION_WITNESS), b"").unwrap();
+        let late = config.path().join(LATE_WITNESS);
+        assert!(!late.exists());
+
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+        assert!(is_owned(&cache.path().join("flam-transfer")));
+        assert!(late.is_file(), "migration tardive faite une seule fois");
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::AlreadyDone
+        );
+        // Marqué : compté et vidé.
+        assert_eq!(
+            usage_report(cache.path()).unwrap().1,
+            ["archives", "flam-transfer"]
+        );
+        clear_of(cache.path()).unwrap();
+        assert_eq!(names_in(&cache.path().join("flam-transfer")), [MARKER]);
+    }
+
+    #[test]
+    fn la_migration_tardive_ne_marque_pas_un_dossier_personnel_et_le_met_en_attente() {
+        let cache = tempfile::tempdir().unwrap();
+        ensure_subdir(cache.path(), "archives").unwrap();
+        write(&cache.path().join("flam-transfer/Mes documents/a.txt"), 3);
+        let (config, env) = config_with_default(cache.path());
+        let witness = config.path().join(MIGRATION_WITNESS);
+        fs::write(&witness, b"").unwrap();
+
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert!(!is_owned(&cache.path().join("flam-transfer")));
+        assert_eq!(
+            read_pending(&witness),
+            [Pending {
+                root: cache.path().to_str().unwrap().to_string(),
+                name: "flam-transfer".into()
+            }]
+        );
+        assert!(config.path().join(LATE_WITNESS).is_file());
+        // Réévalué à chaque démarrage par le rattrapage, jamais marqué tant que le contenu
+        // personnel y est.
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert!(!is_owned(&cache.path().join("flam-transfer")));
+        assert!(cache
+            .path()
+            .join("flam-transfer/Mes documents/a.txt")
+            .is_file());
+        // Le contenu personnel retiré par l'utilisateur : prouvé (vide), marqué.
+        fs::remove_dir_all(cache.path().join("flam-transfer/Mes documents")).unwrap();
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+        assert!(is_owned(&cache.path().join("flam-transfer")));
+        assert!(read_pending(&witness).is_empty());
+    }
+
+    /// Dossier configuré mais non retenu (valeur refusée, repli sur le défaut) : son
+    /// `flam-transfer` est inscrit en attente sans être évalué ; quand ce dossier redevient le
+    /// cache effectif, le rattrapage le marque s'il est prouvé.
+    #[test]
+    fn la_migration_tardive_garde_le_dossier_configure_non_retenu() {
+        let base = tempfile::tempdir().unwrap();
+        let default = base.path().join("defaut");
+        let configured = base.path().join("configure");
+        fs::create_dir_all(&default).unwrap();
+        unmarked_transfer(&configured);
+        let config = base.path().join("config");
+        fs::create_dir_all(&config).unwrap();
+        set_cache_dir(&config, Some(&configured));
+        let witness = config.join(MIGRATION_WITNESS);
+        fs::write(&witness, b"").unwrap();
+
+        // `configure` est protégé : refusé, repli sur `defaut`.
+        let refusing = env_with(&default, vec![configured.clone()]);
+        assert_eq!(
+            migrate_configured(&config, &refusing).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert!(!is_owned(&configured.join("flam-transfer")), "pas évalué");
+        assert!(config.join(LATE_WITNESS).is_file());
+        assert_eq!(
+            read_pending(&witness),
+            [Pending {
+                root: configured.to_str().unwrap().to_string(),
+                name: "flam-transfer".into()
+            }]
+        );
+        // Encore non retenu au démarrage suivant : toujours en attente.
+        assert_eq!(
+            migrate_configured(&config, &refusing).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert_eq!(read_pending(&witness).len(), 1);
+        // Il redevient le cache effectif : prouvé, marqué.
+        let accepting = env_with(&default, vec![]);
+        assert_eq!(
+            migrate_configured(&config, &accepting).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+        assert!(is_owned(&configured.join("flam-transfer")));
+        assert!(read_pending(&witness).is_empty());
+    }
+
+    #[test]
+    fn la_migration_tardive_attend_des_reglages_lisibles_et_un_cache_present() {
+        let base = tempfile::tempdir().unwrap();
+        let cache = base.path().join("cache");
+        let (config, env) = config_with_default(&cache);
+        fs::write(config.path().join(MIGRATION_WITNESS), b"").unwrap();
+        let late = config.path().join(LATE_WITNESS);
+
+        // Dossier de cache absent (disque débranché) : reporté, rien d'écrit.
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert!(!late.exists());
+        assert!(!cache.exists());
+
+        // Réglages illisibles : rien n'est évalué, rien n'est marqué.
+        unmarked_transfer(&cache);
+        let good = fs::read(config.path().join("settings.json")).unwrap();
+        fs::write(config.path().join("settings.json"), b"{corrompu").unwrap();
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert!(!late.exists());
+        assert!(!is_owned(&cache.join("flam-transfer")));
+
+        // Cache présent et réglages lisibles : migré.
+        fs::write(config.path().join("settings.json"), good).unwrap();
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+        assert!(is_owned(&cache.join("flam-transfer")));
+        assert!(late.is_file());
+    }
+
+    /// Copie des histoires de la Flam (`str/<uuid>/{key,info,main.lsf,img/,sounds/}`), rangée
+    /// par l'utilisateur sous `flam-transfer` : mêmes noms que la préparation de l'application.
+    fn device_copy(root: &Path) {
+        let story = root.join(format!("flam-transfer/str/{STORY}"));
+        for file in ["key", "info", "main.lsf"] {
+            write(&story.join(file), 8);
+        }
+        write(&story.join("img/a.png"), 8);
+        write(&story.join("sounds/a.mp3"), 8);
+    }
+
+    /// Sans autre sous-dossier marqué (le dossier n'a jamais servi de cache), une copie façon
+    /// appareil n'est marquée par aucun chemin : migration tardive, rattrapage, migration
+    /// complète ; elle reste en attente, jamais comptée ni vidée.
+    #[test]
+    fn une_copie_de_la_flam_sans_autre_trace_n_est_jamais_marquee() {
+        // Migration tardive (cache déjà migré), puis rattrapage à chaque démarrage.
+        let cache = tempfile::tempdir().unwrap();
+        device_copy(cache.path());
+        let (config, env) = config_with_default(cache.path());
+        let witness = config.path().join(MIGRATION_WITNESS);
+        fs::write(&witness, b"").unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                migrate_configured(config.path(), &env).unwrap(),
+                Migration::AlreadyDone
+            );
+            assert!(!is_owned(&cache.path().join("flam-transfer")));
+        }
+        assert_eq!(read_pending(&witness).len(), 1, "en attente");
+        assert_eq!(usage_of(cache.path()).unwrap(), 0);
+        assert_eq!(clear_of(cache.path()).unwrap(), 0);
+
+        // Migration complète.
+        let fresh = tempfile::tempdir().unwrap();
+        device_copy(fresh.path());
+        assert_eq!(migrate_once(fresh.path()), Migration::Done { marked: 0 });
+        assert!(!is_owned(&fresh.path().join("flam-transfer")));
+
+        // Un autre sous-dossier marqué : trace d'usage, la même copie devient prouvée au
+        // rattrapage suivant (limite documentée : indiscernable de la préparation de
+        // l'application dans un dossier qui sert réellement de cache).
+        ensure_subdir(cache.path(), "archives").unwrap();
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+        assert!(cache
+            .path()
+            .join(format!("flam-transfer/str/{STORY}/key"))
+            .is_file());
+    }
+
+    #[test]
+    fn la_migration_complete_ecrit_aussi_le_temoin_tardif() {
+        let cache = tempfile::tempdir().unwrap();
+        unmarked_transfer(cache.path());
+        let (config, env) = config_with_default(cache.path());
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::Done { marked: 1 }
+        );
+        assert!(is_owned(&cache.path().join("flam-transfer")));
+        assert!(config.path().join(LATE_WITNESS).is_file());
     }
 }

@@ -289,9 +289,11 @@ travail du launcher : tout est écrit dans `<travail>/.partiel-<uuid>-<aléa>/`,
 `<travail>/str/<uuid>/` à la fin ; le dossier final est donc absent ou complet. Une préparation
 précédente de la même histoire est écartée par renommage (jamais supprimée en place) puis
 supprimée. En cas d'erreur ou d'annulation, le chantier est supprimé ; ceux qu'un arrêt brutal a
-laissés (préfixe `.partiel-`) sont supprimés au début du prochain envoi. Pour un envoi, le dossier
-de travail est le sous-dossier `flam-transfer` du dossier de cache du launcher, et la préparation y
-est supprimée après l'envoi, réussi ou non.
+laissés (préfixe `.partiel-`), comme les préparations terminées restées dans `str/`, sont supprimés
+au début du prochain envoi. Pour un envoi, le dossier de travail est le sous-dossier `flam-transfer`
+du dossier de cache du launcher (sous-dossier de l'application, marqué : « Vider le cache » le compte
+et le vide, et le nettoyage des restes n'agit que s'il est marqué), et la préparation y est supprimée
+après l'envoi, réussi ou non.
 
 ## 7. Chiffrement
 

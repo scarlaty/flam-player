@@ -19,7 +19,8 @@
 //! - le dossier final `<travail>/str/<uuid>/` est soit absent, soit complet : tout est écrit
 //!   dans un dossier de chantier `<travail>/.partiel-<uuid>-<aléa>`, renommé à la fin ;
 //! - en cas d'erreur ou d'annulation, le chantier est supprimé (au mieux) ; un chantier laissé
-//!   par un arrêt brutal est supprimé par [`cleanup_stale`] ;
+//!   par un arrêt brutal est supprimé par [`cleanup_stale`] (au prochain envoi, s'il date d'au moins
+//!   [`LEFTOVER_MIN_AGE`]), une préparation terminée restée dans `str/` par [`cleanup_prepared`] ;
 //! - l'archive source n'est jamais modifiée ; tailles et nombre d'entrées sont bornés
 //!   ([`Limits`]) d'après les tailles **réellement lues**, pas seulement déclarées ;
 //! - les noms d'entrées sont contrôlés (pas de remontée `..`, pas de chemin absolu, pas de
@@ -31,6 +32,7 @@ use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime};
 
 use zip::ZipArchive;
 
@@ -168,8 +170,35 @@ pub fn prepare_story(
     prepare_with(&RealSink, plain_pk, keys, work_dir, limits, cancel)
 }
 
+/// Âge minimal d'un chantier ou d'une préparation terminée pour être supprimé comme reste d'un
+/// arrêt brutal ([`cleanup_stale_older`], [`cleanup_prepared`]) : le dossier de cache peut être
+/// partagé par deux sessions Windows, dont l'une prépare ou copie encore. Douze heures : un envoi
+/// de 432 Mio a pris 24 min sur l'appareil réel, et le plafond de [`Limits`] (4 Gio) donnerait
+/// environ 4 h au même débit ; la préparation précède la copie, et la date retenue est celle du
+/// dossier (création de ses entrées), jamais renouvelée par la copie. Un reste plus récent attend
+/// un envoi ultérieur ou « Vider le cache ». Limite : une copie de plus de douze heures par une
+/// autre session ne serait pas protégée.
+pub const LEFTOVER_MIN_AGE: Duration = Duration::from_secs(12 * 3600);
+
+/// `path` a été modifié il y a au moins `min_age` (date illisible ou dans le futur : non).
+fn is_old(path: &Path, min_age: Duration) -> bool {
+    min_age.is_zero()
+        || std::fs::symlink_metadata(path)
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|modified| {
+                SystemTime::now()
+                    .duration_since(modified)
+                    .is_ok_and(|age| age >= min_age)
+            })
+}
+
 /// Supprime les dossiers de chantier laissés par un arrêt brutal ; renvoie leur nombre.
 pub fn cleanup_stale(work_dir: &Path) -> io::Result<usize> {
+    cleanup_stale_older(work_dir, Duration::ZERO)
+}
+
+/// [`cleanup_stale`] limité aux chantiers modifiés il y a au moins `min_age`.
+pub fn cleanup_stale_older(work_dir: &Path, min_age: Duration) -> io::Result<usize> {
     let entries = match std::fs::read_dir(work_dir) {
         Ok(e) => e,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
@@ -179,12 +208,60 @@ pub fn cleanup_stale(work_dir: &Path) -> io::Result<usize> {
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
-        if name.to_string_lossy().starts_with(STAGING_PREFIX) && entry.file_type()?.is_dir() {
+        if name.to_string_lossy().starts_with(STAGING_PREFIX)
+            && entry.file_type()?.is_dir()
+            && is_old(&entry.path(), min_age)
+        {
             std::fs::remove_dir_all(entry.path())?;
             removed += 1;
         }
     }
     Ok(removed)
+}
+
+/// Supprime les préparations terminées restées dans `<travail>/str/` (arrêt brutal entre la
+/// préparation et sa suppression après l'envoi) ; renvoie leur nombre. Seuls les vrais dossiers
+/// enfants directs de `str/` modifiés il y a au moins `min_age` sont supprimés (jamais un lien,
+/// une jonction ni un fichier), et `str/` lui-même doit être un vrai dossier. Un envoi à la fois
+/// par session (verrou de l'appareil) et le vidage du cache attend la fin de l'envoi ; l'âge
+/// protège la préparation d'une autre session qui partagerait le dossier ([`LEFTOVER_MIN_AGE`]).
+pub fn cleanup_prepared(work_dir: &Path, min_age: Duration) -> io::Result<usize> {
+    let stories = work_dir.join(STORIES_DIR);
+    let is_real_dir = |path: &Path| {
+        std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir() && !meta.is_symlink())
+    };
+    if !is_real_dir(&stories) {
+        return Ok(0);
+    }
+    let mut removed = 0;
+    for entry in std::fs::read_dir(&stories)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() && is_old(&entry.path(), min_age) {
+            std::fs::remove_dir_all(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Recule d'au moins `age` la date de modification de `path` (fichier ou dossier), pour les
+/// tests des restes d'un arrêt brutal.
+#[cfg(test)]
+pub(crate) fn backdate(path: &Path, age: Duration) {
+    let mut options = std::fs::OpenOptions::new();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_WRITE_ATTRIBUTES suffit ; FILE_FLAG_BACKUP_SEMANTICS permet d'ouvrir un dossier.
+        options.access_mode(0x100).custom_flags(0x0200_0000);
+    }
+    #[cfg(not(windows))]
+    options.read(true);
+    options
+        .open(path)
+        .unwrap()
+        .set_modified(SystemTime::now() - age)
+        .unwrap();
 }
 
 pub(crate) fn invalid(msg: impl Into<String>) -> PrepareError {
@@ -347,7 +424,7 @@ pub(crate) fn for_each_entry(
 /// d'octets écrits. Une préparation précédente est écartée par renommage (jamais supprimée en
 /// place) et remise en place si la publication échoue. En cas d'erreur ou d'annulation, le
 /// chantier est supprimé (au mieux) ; un chantier laissé par un arrêt brutal l'est par
-/// [`cleanup_stale`].
+/// [`cleanup_stale_older`], au prochain envoi (voir [`LEFTOVER_MIN_AGE`]).
 pub(crate) fn build_in_staging(
     sink: &dyn Sink,
     work_dir: &Path,
@@ -1195,6 +1272,67 @@ mod tests {
         let err = prepare_story(&pk, &test_keys(), &work, &Limits::default(), &cancel).unwrap_err();
         assert!(matches!(err, PrepareError::Cancelled));
         assert!(!work.exists());
+    }
+
+    #[test]
+    fn preparations_terminees_orphelines_nettoyees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        assert_eq!(
+            cleanup_prepared(&work.join("absent"), Duration::ZERO).unwrap(),
+            0
+        );
+        assert_eq!(
+            cleanup_prepared(work, Duration::ZERO).unwrap(),
+            0,
+            "pas de str/"
+        );
+        std::fs::create_dir_all(work.join("str").join(UUID_STR).join("img")).unwrap();
+        std::fs::write(work.join("str").join(UUID_STR).join("key"), b"k").unwrap();
+        std::fs::create_dir_all(work.join("str").join("autre")).unwrap();
+        // Un fichier dans `str/` n'est pas une préparation : gardé.
+        std::fs::write(work.join("str").join("fichier"), b"x").unwrap();
+        // Un chantier n'est pas du ressort de cette fonction.
+        std::fs::create_dir_all(work.join(".partiel-abc")).unwrap();
+        assert_eq!(cleanup_prepared(work, Duration::ZERO).unwrap(), 2);
+        assert!(!work.join("str").join(UUID_STR).exists());
+        assert!(!work.join("str").join("autre").exists());
+        assert!(work.join("str").join("fichier").is_file());
+        assert!(work.join(".partiel-abc").is_dir());
+        // `str` qui n'est pas un dossier : rien n'est fait.
+        let other = tmp.path().join("autre-travail");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("str"), b"x").unwrap();
+        assert_eq!(cleanup_prepared(&other, Duration::ZERO).unwrap(), 0);
+        assert!(other.join("str").is_file());
+    }
+
+    /// Une autre session peut préparer ou copier dans le même dossier : seuls les restes d'au
+    /// moins l'âge minimal sont supprimés, chantiers comme préparations terminées.
+    #[test]
+    fn seuls_les_restes_anciens_sont_supprimes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        let old_story = work.join("str").join(UUID_STR);
+        let young_story = work.join("str").join("autre");
+        let old_staging = work.join(".partiel-ancien-abc");
+        let young_staging = work.join(".partiel-jeune");
+        for dir in [&old_story, &young_story, &old_staging, &young_staging] {
+            std::fs::create_dir_all(dir.join("img")).unwrap();
+        }
+        let aged = LEFTOVER_MIN_AGE + Duration::from_secs(60);
+        backdate(&old_story, aged);
+        backdate(&old_staging, aged);
+        // Un reste juste en deçà de l'âge minimal est gardé.
+        backdate(&young_story, LEFTOVER_MIN_AGE - Duration::from_secs(600));
+        assert_eq!(
+            cleanup_stale_older(work, LEFTOVER_MIN_AGE).unwrap(),
+            1,
+            "chantier ancien"
+        );
+        assert_eq!(cleanup_prepared(work, LEFTOVER_MIN_AGE).unwrap(), 1);
+        assert!(!old_story.exists() && !old_staging.exists());
+        assert!(young_story.is_dir() && young_staging.is_dir());
     }
 
     #[test]

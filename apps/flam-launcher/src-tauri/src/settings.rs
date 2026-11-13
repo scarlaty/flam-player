@@ -355,16 +355,31 @@ fn check_cache_dir(raw: &str, protected: &[PathBuf]) -> Result<(), (&'static str
 /// vidage l'ignorerait, mais l'application y écrirait au milieu de données qui ne sont pas à elle.
 ///
 /// Exception : un ancien cache du launcher (`library/` avec l'index lisible d'une version sans
-/// marqueur) est accepté ; `library/` est marqué, puis `podcasts/`, `podcast-work/`, `play/` et
-/// `thumbs/` sur preuve par leur contenu (`cache::adopt_legacy_cache`), **avant** l'enregistrement
-/// des réglages. Les autres homonymes (dont `archives/`, `catalogs/`, `compat-local/`,
+/// marqueur) est accepté ; `library/` est marqué, puis `podcasts/`, `podcast-work/`, `play/`,
+/// `flam-transfer/` et `thumbs/` sur preuve par leur contenu (`cache::adopt_legacy_cache`),
+/// **avant** l'enregistrement des réglages. Sans bibliothèque reconnue, un `flam-transfer/` non
+/// vide dont le contenu est prouvé, dans un dossier qui porte une autre trace de l'application
+/// (un autre sous-dossier de la liste déjà marqué), n'est pas un homonyme : il est marqué
+/// (`cache::late_adoptable`, `cache::adopt_late_subdirs`) seulement si le dossier est accepté.
+/// Une copie des histoires de la Flam rangée sous ce nom dans un dossier sans autre trace reste
+/// refusée. Les autres homonymes (dont `archives/`, `catalogs/`, `compat-local/`,
 /// `official/`, jamais marqués ici) ne sont ni marqués ni bloquants (jamais comptés ni vidés). Le
 /// marquage est idempotent : si l'enregistrement échoue ensuite, les marqueurs posés restent, et
 /// un nouvel essai réussit.
 fn check_cache_dir_free(raw: &str) -> AppResult<()> {
     let root = Path::new(raw);
-    let foreign = crate::cache::foreign_entries(root);
-    if foreign.is_empty() || crate::cache::adopt_legacy_cache(root)? {
+    // `flam-transfer` prouvé, dans un dossier qui porte une autre trace de l'application : pas un
+    // homonyme. Marqué seulement si le dossier est accepté (aucun marqueur dans un dossier refusé).
+    let late = crate::cache::late_adoptable(root);
+    let foreign: Vec<&str> = crate::cache::foreign_entries(root)
+        .into_iter()
+        .filter(|name| !late.contains(name))
+        .collect();
+    if foreign.is_empty() {
+        crate::cache::adopt_late_subdirs(root, &late);
+        return Ok(());
+    }
+    if crate::cache::adopt_legacy_cache(root)? {
         return Ok(());
     }
     let names = foreign
@@ -1100,6 +1115,84 @@ mod tests {
         std::fs::remove_dir_all(ours.join("thumbs")).unwrap();
         touch(&ours.join("thumbs/perso.png"));
         store.update(with_cache(&ours)).unwrap();
+    }
+
+    /// Un ancien cache dont `library.json` n'est pas reconnu (pas d'adoption) mais qui porte une
+    /// trace de l'application (un autre sous-dossier marqué) et dont `flam-transfer` a la forme
+    /// écrite par l'application est accepté, `flam-transfer` marqué. Sans trace, un vide, un
+    /// contenu personnel, ou un autre homonyme refusé : refus, aucun marqueur laissé. Une copie
+    /// des histoires de la Flam rangée sous ce nom dans un dossier sans autre trace est refusée.
+    #[test]
+    fn un_flam_transfer_prouve_est_marque_seulement_dans_un_cache_de_l_application() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path());
+        let with_cache = |path: &Path| Settings {
+            cache_dir: Some(path.display().to_string()),
+            ..Settings::default()
+        };
+        let story = "0b9f6c1e-2d3a-4b5c-8d7e-9f0a1b2c3d4e";
+        let device_copy = |root: &Path| {
+            for file in ["key", "info", "main.lsf", "img/a.png", "sounds/a.mp3"] {
+                touch(&root.join(format!("flam-transfer/str/{story}/{file}")));
+            }
+        };
+
+        // Trace d'usage : accepté et marqué.
+        let old = dir.path().join("ancien");
+        crate::cache::ensure_subdir(&old, "archives").unwrap();
+        device_copy(&old);
+        store.update(with_cache(&old)).unwrap();
+        assert!(crate::cache::is_owned(&old.join("flam-transfer")));
+
+        // Copie façon appareil sans autre trace : refusée, rien de marqué ni supprimé.
+        let backup = dir.path().join("sauvegarde");
+        device_copy(&backup);
+        let err = store.update(with_cache(&backup)).unwrap_err();
+        assert_eq!(err.kind(), "cache_dir_in_use");
+        assert!(err.to_string().contains("« flam-transfer »"), "{err}");
+        assert!(!crate::cache::is_owned(&backup.join("flam-transfer")));
+        assert!(backup
+            .join(format!("flam-transfer/str/{story}/key"))
+            .is_file());
+
+        // Même copie avec un `podcasts/` personnel à côté : refusée, aucun marqueur laissé.
+        let mixed = dir.path().join("mixte");
+        device_copy(&mixed);
+        touch(&mixed.join("podcasts/emission.mp3"));
+        assert_eq!(
+            store.update(with_cache(&mixed)).unwrap_err().kind(),
+            "cache_dir_in_use"
+        );
+        assert!(!crate::cache::is_owned(&mixed.join("flam-transfer")));
+        assert!(!mixed.join("podcasts").join(crate::cache::MARKER).exists());
+
+        // Avec une trace mais un autre homonyme personnel : refus, `flam-transfer` non marqué
+        // (le marquage attend l'acceptation du dossier).
+        let traced = dir.path().join("trace-et-homonyme");
+        crate::cache::ensure_subdir(&traced, "archives").unwrap();
+        device_copy(&traced);
+        touch(&traced.join("podcasts/emission.mp3"));
+        assert_eq!(
+            store.update(with_cache(&traced)).unwrap_err().kind(),
+            "cache_dir_in_use"
+        );
+        assert!(!crate::cache::is_owned(&traced.join("flam-transfer")));
+
+        // Vide, fichiers de l'explorateur seuls ou contenu personnel : refusés comme tout homonyme.
+        for (name, file) in [
+            ("perso", "flam-transfer/notes.txt"),
+            ("vide", "flam-transfer/desktop.ini"),
+        ] {
+            let other = dir.path().join(name);
+            crate::cache::ensure_subdir(&other, "archives").unwrap();
+            touch(&other.join(file));
+            let err = store.update(with_cache(&other)).unwrap_err();
+            assert_eq!(err.kind(), "cache_dir_in_use", "{name}");
+            assert!(
+                !crate::cache::is_owned(&other.join("flam-transfer")),
+                "{name}"
+            );
+        }
     }
 
     #[test]
