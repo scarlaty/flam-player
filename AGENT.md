@@ -228,6 +228,10 @@ le dossier pour forcer la re-extraction). L'extraction refuse les chemins danger
 absolus, `C:`, `\` ou `/` en tete), les noms de temoins et les tailles incoherentes. Le
 navigateur est limite a `MAX_STORIES` (32) histoires ; les autres sont comptees et signalees
 (stderr et liste a l'ecran).
+`pk_reader.c` a un test C autonome, `tests/test_pk_reader.c` (noms, zip-slip, etats, purge, liens
+symboliques, chemins longs), compile et execute sous Linux (gcc, ASan, UBSan) par le job
+`pk-reader-posix` de `player.yml` : c'est la seule compilation du code POSIX du module. Sous
+Windows : `cl /I src\formats tests\test_pk_reader.c src\formats\pk_reader.c`.
 
 Pour une histoire TELMI, ne pas assembler a la main : `cargo build -p telmi2flam --release` puis
 `target\release\telmi2flam.exe histoire.zip -o histoire.plain.pk` puis `python tools/telmi2flam/validate.py histoire.plain.pk`.
