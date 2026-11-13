@@ -140,6 +140,8 @@ export function useDeviceStatus(
     void poll();
     return () => {
       active = false;
+      // Scrutation arrêtée : « Réessayer » ne relance pas l'ancien tour (aucune lecture en pause).
+      pollNow.current = () => undefined;
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };

@@ -605,6 +605,11 @@ export function DeviceProvider({
 
   const enqueue = useCallback(
     (request: SendRequest & { carrier?: CarrierSend }) => {
+      // Envoi demandé par l'utilisateur et réellement mis en file (dialogues passés) : l'envoi
+      // prévu de la même histoire n'a plus d'objet. Il ne repartira pas seul, même si
+      // l'histoire est ensuite retirée de la Flam. Tant qu'un dialogue d'envoi est ouvert ou
+      // s'il est annulé, l'envoi prévu reste (ligne « à confirmer » comprise).
+      if (!request.planned) dropPlannedSend(request.uuid);
       const active = queueRef.current.some(
         (item) =>
           item.uuid === request.uuid &&
@@ -617,19 +622,21 @@ export function DeviceProvider({
           (item) => item.state === "waiting" || item.state === "sending",
         );
         // Un envoi prévu resté en échec reste lisible jusqu'à la fermeture de la liste. Un envoi
-        // venu de « Installer et envoyer » arrive seul : il ne retire pas non plus une ligne qui
-        // propose encore une action (« Retirer du PC »).
+        // venu de « Installer et envoyer » arrive seul, sans action de l'utilisateur : il ne
+        // retire que les lignes « Envoyée » qui n'ont plus rien à dire ni à proposer. Restent
+        // les échecs et annulations (message), « Retirer du PC » proposé ou en cours, et
+        // l'histoire retirée du PC (« il faudra la réinstaller »).
         const keeps = (item: QueueItem) =>
           busy ||
           (item.planned === true && item.state === "failed") ||
           (request.planned === true &&
-            (offersPcRemoval(item) || item.pcCopy === "removing"));
+            (item.state !== "done" || item.pcCopy !== undefined));
         const base = items.filter((item) => keeps(item) && item.uuid !== request.uuid);
         return [...base, { ...request, state: "waiting" }];
       });
       void pump();
     },
-    [pump, updateQueue],
+    [pump, updateQueue, dropPlannedSend],
   );
 
   /** Flam 1.x : les clés carrier sont choisies (et l'avertissement accepté) avant l'envoi. */
@@ -659,13 +666,8 @@ export function DeviceProvider({
   );
 
   const requestSend = useCallback(
-    (request: SendRequest) => {
-      // Envoi demandé par l'utilisateur : l'envoi prévu de la même histoire n'a plus d'objet (il
-      // ne repartira pas seul, même si l'histoire est ensuite retirée de la Flam).
-      if (!request.planned) dropPlannedSend(request.uuid);
-      withSendWarning(() => proceed(request));
-    },
-    [withSendWarning, proceed, dropPlannedSend],
+    (request: SendRequest) => withSendWarning(() => proceed(request)),
+    [withSendWarning, proceed],
   );
 
   function confirmAck() {

@@ -672,8 +672,9 @@ réglage n'est ajouté.
   que la scrutation est suspendue ou qu'un relevé neuf n'est pas revenu ; un envoi à confirmer
   ne retient pas les demandes suivantes.
 - **Envoi ou retrait fait à la main** : « Envoyer sur la Flam » (ou « Remplacer ») sur une
-  histoire oublie son envoi prévu, qui ne repart donc pas seul si elle est ensuite retirée de la
-  Flam ; un retrait de l'histoire depuis « Ma Flam » ou sa suppression de « Mes histoires »
+  histoire oublie son envoi prévu dès que l'envoi entre réellement dans la file (dialogue d'envoi
+  annulé : l'envoi prévu reste, ligne « à confirmer » comprise) ; il ne repart donc pas seul si
+  elle est ensuite retirée de la Flam ; un retrait de l'histoire depuis « Ma Flam » ou sa suppression de « Mes histoires »
   pendant l'attente l'oublie aussi. Une ligne « Envoyée » n'est jamais remplacée par un refus.
 - **Règles d'envoi revérifiées** à la fin de l'installation, avec la taille installée : déjà sur
   la Flam, espace insuffisant, écriture bloquée, STUdio sur une Flam 1.x donnent une ligne en
@@ -681,8 +682,9 @@ réglage n'est ajouté.
   attend.
 - **Plusieurs demandes** : les envois partent dans l'ordre des clics (une histoire installée
   attend celles demandées avant elle), une demande à la fois quand un dialogue d'envoi est
-  affiché. Un envoi prévu qui démarre sur une file terminée garde les lignes encore utiles
-  (« Retirer du PC » proposé ou en cours, échecs d'envois prévus) et retire les autres.
+  affiché. Un envoi prévu qui démarre sur une file terminée, sans action de
+  l'utilisateur, n'en retire que les lignes « Envoyée » sans suite à proposer : échecs,
+  annulations, « Retirer du PC » et « Retirée de Mes histoires » restent affichés.
   « Annuler l'envoi » oublie aussi les envois prévus (les installations continuent).
 - **Rien n'est conservé** hors de la mémoire de la fenêtre : après une fermeture ou un
   rechargement, une installation reprise par le backend n'envoie rien.

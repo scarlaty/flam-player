@@ -45,6 +45,7 @@ export function TransferPanel() {
     removeFromPc,
     plannedSends: allPlanned,
     dropPlannedSend,
+    confirmingSend,
     announcement,
   } = useDevice();
   // Une demande dont l'installation n'a pas démarré (confirmation en attente) n'est pas montrée.
@@ -60,6 +61,10 @@ export function TransferPanel() {
   const focusPcNote = useRef<string | null>(null);
   // « Ne pas envoyer » cliqué : la ligne de l'envoi prévu disparaît avec son bouton.
   const focusAfterPlanDrop = useRef(false);
+  // Envoi « à confirmer » dont « Envoyer sur la Flam » a été cliqué : sa ligne disparaît quand
+  // l'envoi entre dans la file (après les dialogues d'envoi éventuels).
+  const confirmedPlan = useRef<string | null>(null);
+  const wasConfirming = useRef(false);
 
   // Fin de file : le bouton Annuler disparaît, le focus passe au titre du panneau.
   useEffect(() => {
@@ -107,6 +112,22 @@ export function TransferPanel() {
     focusAfterPlanDrop.current = false;
     (headingRef.current ?? document.getElementById("fl-main"))?.focus();
   }, [allPlanned]);
+
+  // Envoi confirmé entré dans la file : sa ligne « à confirmer » a disparu avec le bouton cliqué,
+  // le focus passe au titre du panneau (la ligne de l'envoi est juste en dessous). Dialogue
+  // d'envoi annulé : la ligne reste, le dialogue rend le focus au bouton, rien n'est à faire.
+  useLayoutEffect(() => {
+    const cancelled = wasConfirming.current && !confirmingSend;
+    wasConfirming.current = confirmingSend;
+    const uuid = confirmedPlan.current;
+    if (uuid === null) return;
+    if (!allPlanned.some((plan) => plan.uuid === uuid)) {
+      confirmedPlan.current = null;
+      headingRef.current?.focus();
+    } else if (cancelled) {
+      confirmedPlan.current = null;
+    }
+  }, [allPlanned, confirmingSend]);
 
   // Annonces de la file (début, fin, échec), sans pourcentage : région vivante toujours présente.
   const live = (
@@ -202,6 +223,9 @@ export function TransferPanel() {
                     focusAfterPlanDrop.current = true;
                     dropPlannedSend(plan.uuid);
                   }}
+                  onConfirm={() => {
+                    confirmedPlan.current = plan.uuid;
+                  }}
                 />
               ))}
             </ul>
@@ -288,7 +312,16 @@ export function TransferPanel() {
  * et bouton pour y renoncer (l'installation continue). À confirmer : « Envoyer sur la Flam »,
  * le bouton d'envoi habituel, avec ses raisons de refus.
  */
-function PlannedLine({ plan, onDrop }: { plan: PlannedSend; onDrop: () => void }) {
+function PlannedLine({
+  plan,
+  onDrop,
+  onConfirm,
+}: {
+  plan: PlannedSend;
+  onDrop: () => void;
+  /** « Envoyer sur la Flam » cliqué alors que l'envoi est possible. */
+  onConfirm: () => void;
+}) {
   const planned = text.planned;
   const toConfirm = plan.unwatched && plan.state === "ready" && !plan.lost;
   return (
@@ -319,12 +352,20 @@ function PlannedLine({ plan, onDrop }: { plan: PlannedSend; onDrop: () => void }
         </p>
       )}
       {toConfirm && (
-        <SendToDeviceButton
-          uuid={plan.uuid}
-          title={plan.title}
-          size={plan.size}
-          format={plan.format}
-        />
+        // Clic relevé avant le bouton : un bouton refusé (`aria-disabled`) ne fait rien.
+        <span
+          onClickCapture={(event) => {
+            const button = (event.target as Element).closest("button");
+            if (button && button.getAttribute("aria-disabled") !== "true") onConfirm();
+          }}
+        >
+          <SendToDeviceButton
+            uuid={plan.uuid}
+            title={plan.title}
+            size={plan.size}
+            format={plan.format}
+          />
+        </span>
       )}
     </li>
   );

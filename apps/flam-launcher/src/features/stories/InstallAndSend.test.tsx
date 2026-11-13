@@ -1230,3 +1230,110 @@ it("la suite d'une installation n'est appelée qu'une fois, même si la fin est 
   await installDone(ours);
   expect(onSettled.mock.calls).toEqual([["installed"]]);
 });
+
+// --- Second tour de revue (#636) ------------------------------------------------------------
+
+it("un envoi prévu qui démarre garde l'échec non lu d'un envoi manuel", async () => {
+  installed = [installedEntry(pack)];
+  sendOutcomes.set("pack", {
+    error: { kind: "io", message: "écriture impossible sur la Flam" },
+  });
+  await renderApp();
+  // Envoi manuel d'une histoire installée, en échec.
+  window.location.hash = "#/library/dossier";
+  const manual = await screen.findByRole("button", { name: MANUAL("Pack STUdio") });
+  await waitFor(() => expect(manual).toHaveAttribute("aria-disabled", "false"));
+  fireEvent.click(manual);
+  await waitFor(() =>
+    expect(
+      within(queueRow("Pack STUdio")).getByText("écriture impossible sur la Flam"),
+    ).toBeVisible(),
+  );
+  // La file est terminée ; un nouvel envoi prévu arrive seul.
+  window.location.hash = "#/library/store";
+  fireEvent.click(await sendButton("Capi"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  await installDone(capi);
+  await waitFor(() => expect(sent()).toEqual(["pack", "capi"]));
+  await waitFor(() => expect(queueRow("Capi")).toBeDefined());
+  // L'échec de l'envoi manuel reste lisible.
+  expect(
+    within(queueRow("Pack STUdio")).getByText("écriture impossible sur la Flam"),
+  ).toBeVisible();
+});
+
+it("un envoi prévu qui démarre garde la ligne d'une histoire retirée du PC", async () => {
+  libraryCopy = { status: "removed" };
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  await installDone(ours);
+  const REMOVED =
+    "Retirée de Mes histoires : l'histoire reste sur la Flam. Pour la renvoyer plus tard, il faudra la réinstaller.";
+  await waitFor(() =>
+    expect(within(queueRow("Les trois ours")).getByText(REMOVED)).toBeVisible(),
+  );
+  await settle();
+  fireEvent.click(await sendButton("Capi"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(2));
+  await installDone(capi);
+  await waitFor(() => expect(sent()).toEqual(["ours", "capi"]));
+  await waitFor(() => expect(queueRow("Capi")).toBeDefined());
+  expect(within(queueRow("Les trois ours")).getByText(REMOVED)).toBeVisible();
+});
+
+/** « Les trois ours » installée fenêtre masquée : sa ligne est « à confirmer ». */
+async function oursToConfirm() {
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(1));
+  await setWindowHidden(true);
+  await installDone(ours);
+  await setWindowHidden(false);
+  const list = await waitFor(() => {
+    const found = planned() as HTMLElement;
+    expect(within(found).getByText(TO_CONFIRM)).toBeVisible();
+    return found;
+  });
+  const confirm = within(list).getByRole("button", { name: MANUAL("Les trois ours") });
+  await waitFor(() => expect(confirm).toHaveAttribute("aria-disabled", "false"));
+  return confirm;
+}
+
+it("envoi à confirmer, Flam 1.x : dialogue des clés annulé, la ligne « à confirmer » reste", async () => {
+  status = detected({ firmware: "1.15.14", firmware_status: firmwareV1() });
+  const confirm = await oursToConfirm();
+  confirm.focus();
+  fireEvent.click(confirm);
+  const dialog = await screen.findByRole("alertdialog", {
+    name: "Flam en firmware 1.x : mode carrier",
+  });
+  // Tant que rien n'est mis en file, la ligne reste.
+  expect(within(planned() as HTMLElement).getByText(TO_CONFIRM)).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Annuler" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  await settle();
+  const list = planned() as HTMLElement;
+  expect(within(list).getByText(TO_CONFIRM)).toBeVisible();
+  expect(
+    within(list).getByRole("button", { name: MANUAL("Les trois ours") }),
+  ).toBeVisible();
+  expect(sent()).toEqual([]);
+});
+
+it("envoi à confirmer envoyé : la ligne disparaît, le focus passe au titre du panneau", async () => {
+  // L'envoi reste en cours : le focus ne doit pas attendre la fin de la file.
+  let release: () => void = () => undefined;
+  sendGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const confirm = await oursToConfirm();
+  confirm.focus();
+  fireEvent.click(confirm);
+  await waitFor(() => expect(sent()).toEqual(["ours"]));
+  await waitFor(() => expect(planned()).toBeNull());
+  expect(screen.getByRole("heading", { name: "Envoi sur la Flam" })).toHaveFocus();
+  await act(async () => {
+    release();
+  });
+});

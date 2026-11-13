@@ -167,7 +167,8 @@ export interface DeviceApi {
   busy: boolean;
   /**
    * Demande l'envoi ; l'avertissement « expérimentale » est affiché au premier envoi. Une
-   * demande faite par l'utilisateur oublie l'envoi prévu de la même histoire.
+   * demande faite par l'utilisateur oublie l'envoi prévu de la même histoire, une fois l'envoi
+   * réellement mis en file (pas si un dialogue d'envoi est annulé).
    */
   requestSend: (request: SendRequest) => void;
   /** L'avertissement « expérimentale » ou le choix des clés carrier est affiché. */
