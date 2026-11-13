@@ -28,6 +28,7 @@ use serde::{Serialize, Serializer};
 /// | `StoryFileMissing` | `story_file_missing` | Le fichier de l'histoire à lancer a disparu      |
 /// | `LuniiNeedsV2`  | `lunii_needs_v2` | Histoire STUdio (format Lunii) refusée : Flam pas en firmware 2.x |
 /// | `NotRemovable`  | `not_removable` | « Retirer du PC » refusé pour de bon : autre Flam, histoire plus sur la Flam ou changée (#609) |
+/// | `DeviceChanged` | `device_changed` | Envoi refusé : la Flam a été débranchée ou remplacée pendant l'envoi (#577) |
 ///
 /// Un fichier de configuration corrompu n'est pas une erreur : il est sauvegardé en
 /// `*.bak` et remplacé par les valeurs par défaut (avertissement tracé).
@@ -140,6 +141,12 @@ pub enum AppError {
     /// Flam occupée).
     #[error("{0}")]
     NotRemovable(String),
+
+    /// Envoi refusé parce que la Flam branchée n'est plus celle contrôlée au début (`.mdf`
+    /// différent, absent ou illisible, #577) : une autre Flam a pu prendre la même lettre de
+    /// lecteur. Le message dit ce qui a été écrit ; la file d'envoi s'arrête.
+    #[error("{0}")]
+    DeviceChanged(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -171,6 +178,7 @@ impl AppError {
             AppError::LuniiNeedsV2(_) => "lunii_needs_v2",
             AppError::CacheDirInUse(_) => "cache_dir_in_use",
             AppError::NotRemovable(_) => "not_removable",
+            AppError::DeviceChanged(_) => "device_changed",
         }
     }
 
@@ -273,6 +281,7 @@ mod tests {
             "cache_dir_in_use"
         );
         assert_eq!(AppError::NotRemovable("x".into()).kind(), "not_removable");
+        assert_eq!(AppError::DeviceChanged("x".into()).kind(), "device_changed");
         let conversion = AppError::Conversion {
             code: "missing_asset".into(),
             message: "m".into(),

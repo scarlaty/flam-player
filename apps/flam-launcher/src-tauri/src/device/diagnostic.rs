@@ -110,7 +110,11 @@ pub fn record_error(operation: &'static str, cache_root: Option<&Path>, message:
 /// l'histoire) ne donne que son code.
 pub fn session_message(err: &AppError) -> String {
     match err {
-        AppError::Validation(_) | AppError::Io(_) | AppError::NotFound(_) => err.to_string(),
+        // `DeviceChanged` : messages fixes (#577), sans nom d'histoire ni chemin.
+        AppError::Validation(_)
+        | AppError::Io(_)
+        | AppError::NotFound(_)
+        | AppError::DeviceChanged(_) => err.to_string(),
         AppError::StoryFileMissing(_) => {
             "fichier de l'histoire absent de la bibliothèque du launcher".to_string()
         }

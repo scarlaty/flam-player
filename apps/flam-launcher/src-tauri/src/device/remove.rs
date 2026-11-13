@@ -444,8 +444,25 @@ fn remove_with(
     for folder in &folders {
         fs::create_dir_all(&trash).map_err(RemoveError::FolderLeft)?;
         let target = trash.join(format!("{id}-{}", uuid::Uuid::new_v4().simple()));
-        // Un verrou passager ne doit pas laisser l'histoire en orphelin (#577).
-        retried(ops, || ops.rename(folder, &target)).map_err(RemoveError::FolderLeft)?;
+        // Un verrou passager ne doit pas laisser l'histoire en orphelin (#577). Source absente à un
+        // nouvel essai alors que la cible est en place : le renommage signalé en échec avait eu
+        // lieu, c'est un succès.
+        let mut tries = 0;
+        retried(ops, || {
+            tries += 1;
+            match ops.rename(folder, &target) {
+                Err(err)
+                    if err.kind() == io::ErrorKind::NotFound
+                        && tries > 1
+                        && !folder.exists()
+                        && is_real_dir(&target).unwrap_or(false) =>
+                {
+                    Ok(())
+                }
+                other => other,
+            }
+        })
+        .map_err(RemoveError::FolderLeft)?;
         moved.push(target);
         hook(Step::MovedToTrash)?;
     }

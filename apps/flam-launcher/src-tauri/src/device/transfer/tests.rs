@@ -136,6 +136,14 @@ pub(crate) struct FaultyFs {
     pub(crate) sync_dir_fails: bool,
     /// La relecture est retombée sur le cache du système (#609).
     pub(crate) cached_verify: bool,
+    /// Lectures de `.mdf` faites (comptées à partir de 0).
+    mdf_reads: Cell<usize>,
+    /// Lectures de `.mdf` refusées par un verrou passager : (première, nombre).
+    mdf_locked: Option<(usize, usize)>,
+    /// Attentes entre deux essais (comptées, pas faites).
+    sleeps: Cell<usize>,
+    /// Appelé à chaque `sync_dir`, donc juste après la promotion (changement d'appareil simulé).
+    on_sync_dir: Option<Box<dyn Fn()>>,
 }
 
 impl FaultyFs {
@@ -150,6 +158,10 @@ impl FaultyFs {
             locked: None,
             sync_dir_fails: false,
             cached_verify: false,
+            mdf_reads: Cell::new(0),
+            mdf_locked: None,
+            sleeps: Cell::new(0),
+            on_sync_dir: None,
         }
     }
     pub(crate) fn crash_at(n: usize) -> Self {
@@ -289,6 +301,9 @@ impl DeviceFs for FaultyFs {
         self.real().write_index(root, entries)
     }
     fn sync_dir(&self, _path: &Path) -> io::Result<()> {
+        if let Some(hook) = &self.on_sync_dir {
+            hook();
+        }
         if self.sync_dir_fails {
             Err(io::Error::other("synchronisation refusée (test)"))
         } else {
@@ -297,6 +312,23 @@ impl DeviceFs for FaultyFs {
     }
     fn verified_uncached(&self) -> bool {
         !self.cached_verify
+    }
+    fn read_mdf_once(&self, root: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>, TransferError> {
+        let n = self.mdf_reads.get();
+        self.mdf_reads.set(n + 1);
+        if self
+            .mdf_locked
+            .is_some_and(|(first, count)| (first..first + count).contains(&n))
+        {
+            return Err(TransferError::Io(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "verrou passager (test)",
+            )));
+        }
+        read_mdf(root)
+    }
+    fn retry_sleep(&self, _delay: Duration) {
+        self.sleeps.set(self.sleeps.get() + 1);
     }
 }
 
@@ -1940,12 +1972,12 @@ fn send_swapping_mdf_before_promotion(
     )
 }
 
-/// #577 : `.mdf` remplacé (ou disparu) entre la copie et la promotion : rien n'est installé,
-/// l'ancienne version, l'index et le cache sont intacts ; la copie temporaire est laissée à la
-/// reprise, qui la supprime au retour de la Flam.
 /// Changement de `.mdf` simulé : nom et action.
 type MdfSwap = (&'static str, fn(&Path));
 
+/// #577 : `.mdf` remplacé (ou disparu) entre la copie et la promotion : rien n'est installé,
+/// l'ancienne version, l'index et le cache sont intacts ; la copie temporaire est laissée à la
+/// reprise, qui la supprime au retour de la Flam.
 #[test]
 fn autre_flam_branchee_avant_la_promotion_rien_n_est_installe() {
     let swaps: [MdfSwap; 2] = [
@@ -2012,6 +2044,162 @@ fn reprise_des_index_faite_malgre_une_entree_en_echec() {
         "reprise de l'index sautée"
     );
     assert!(locked.join("info").is_file());
+}
+
+/// #577 : un verrou passager sur `.mdf` (antivirus) à l'un des trois contrôles (entrée, avant la
+/// promotion, avant l'index) est réessayé : l'envoi réussit.
+#[test]
+fn verrou_passager_sur_mdf_reessaye() {
+    for first in 0..3 {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = device(tmp.path(), false);
+        let p = prepared(tmp.path(), 1);
+        let fs = FaultyFs {
+            mdf_locked: Some((first, 3)),
+            ..FaultyFs::new()
+        };
+        let report = send(&fs, &root, &p, false)
+            .unwrap_or_else(|e| panic!("lecture {first} verrouillée : {e:?}"));
+        assert!(report.index_updated, "lecture {first}");
+        assert_eq!(listed(&root), vec![id(OTHER), id(NEW)], "lecture {first}");
+        assert_eq!(fs.sleeps.get(), 3, "lecture {first}");
+        assert_eq!(fs.mdf_reads.get(), 6, "lecture {first}");
+    }
+}
+
+/// #577 : `.mdf` toujours illisible après les nouveaux essais : refus selon l'instant.
+/// Entrée : erreur d'entrée/sortie, rien d'écrit. Avant la promotion : rien d'installé, copie
+/// temporaire laissée. Avant l'index : histoire en place hors index, index et cache intacts.
+#[test]
+fn mdf_illisible_apres_les_essais_refuse_selon_l_instant() {
+    for first in 0..3 {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = device(tmp.path(), false);
+        let before = snapshot(&root);
+        let list_before = std::fs::read(root.join("etc/library/list")).unwrap();
+        let p = prepared(tmp.path(), 1);
+        let fs = FaultyFs {
+            mdf_locked: Some((first, 100)),
+            ..FaultyFs::new()
+        };
+        let result = send(&fs, &root, &p, false);
+        match first {
+            0 => {
+                assert!(matches!(result, Err(TransferError::Io(_))), "{result:?}");
+                assert_eq!(snapshot(&root), before);
+            }
+            1 => {
+                assert!(
+                    matches!(result, Err(TransferError::DeviceChangedDuringSend)),
+                    "{result:?}"
+                );
+                assert!(!root.join("str").join(NEW).exists());
+                assert!(incoming_dir(&root, &id(NEW)).exists());
+            }
+            _ => {
+                assert!(
+                    matches!(result, Err(TransferError::DeviceChangedBeforeIndex)),
+                    "{result:?}"
+                );
+                assert_eq!(files_of(&root.join("str").join(NEW)), files_of(&p.dir));
+            }
+        }
+        assert_eq!(
+            std::fs::read(root.join("etc/library/list")).unwrap(),
+            list_before,
+            "lecture {first}"
+        );
+        assert!(root.join(LIBRARY_CACHE).exists(), "lecture {first}");
+    }
+}
+
+/// Faux appareil dont le `.mdf` devient celui d'une autre Flam juste après la promotion.
+fn swapping_after_promotion(root: &Path) -> FaultyFs {
+    let mdf_path = root.join(MDF_FILE);
+    FaultyFs {
+        on_sync_dir: Some(Box::new(move || write(&mdf_path, &mdf("2.4.2")))),
+        ..FaultyFs::new()
+    }
+}
+
+/// #577 : Flam changée entre la promotion et l'écriture de l'index (nouvelle histoire, ou
+/// dossier orphelin remplacé) : l'index n'est pas écrit (la liste lue sur A n'est jamais écrite
+/// sur B). Sur A, l'histoire est complète hors index ; la reprise termine la mise de côté et un
+/// nouvel envoi de la même histoire l'ajoute à l'index, sans perte.
+#[test]
+fn autre_flam_branchee_avant_l_index_rien_n_est_liste() {
+    for orphan in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = device(tmp.path(), false);
+        if orphan {
+            write(&root.join("str").join(NEW).join("info"), b"orphelin");
+        }
+        let list_before = std::fs::read(root.join("etc/library/list")).unwrap();
+        let p = prepared(tmp.path(), 1);
+        let result = send(&swapping_after_promotion(&root), &root, &p, false);
+        assert!(
+            matches!(result, Err(TransferError::DeviceChangedBeforeIndex)),
+            "orphelin {orphan} : {result:?}"
+        );
+        assert_eq!(
+            std::fs::read(root.join("etc/library/list")).unwrap(),
+            list_before
+        );
+        assert!(root.join(LIBRARY_CACHE).exists());
+        assert_eq!(files_of(&root.join("str").join(NEW)), files_of(&p.dir));
+        assert_eq!(previous_dir(&root, &id(NEW)).exists(), orphan);
+
+        // Retour de la Flam A : reprise, puis nouvel envoi de la même histoire.
+        write(&root.join(MDF_FILE), &mdf_v1_real());
+        restart(&root);
+        assert!(!root.join(TRANSFER_DIR).exists());
+        assert_eq!(files_of(&root.join("str").join(NEW)), files_of(&p.dir));
+        let report = send(&FaultyFs::new(), &root, &p, false).unwrap();
+        assert!(report.replaced && report.index_updated, "{report:?}");
+        assert_eq!(listed(&root), vec![id(OTHER), id(NEW)]);
+        assert_eq!(files_of(&root.join("str").join(NEW)), files_of(&p.dir));
+        assert!(!root.join(TRANSFER_DIR).exists());
+    }
+}
+
+/// #577 : mise à jour d'une histoire déjà listée, Flam changée après la promotion : l'envoi est
+/// réussi (rien à écrire dans l'index), mais ni le cache ni la mise de côté ne sont supprimés sur
+/// l'autre Flam ; la reprise de la Flam d'origine s'en charge.
+#[test]
+fn mise_a_jour_reussie_sans_nettoyage_sur_une_autre_flam() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), true);
+    let p = prepared(tmp.path(), 1);
+    let report = send(&swapping_after_promotion(&root), &root, &p, true).unwrap();
+    assert!(report.replaced && !report.index_updated && !report.cache_removed);
+    assert_eq!(files_of(&root.join("str").join(NEW)), files_of(&p.dir));
+    assert!(root.join(LIBRARY_CACHE).exists());
+    assert!(previous_dir(&root, &id(NEW)).exists());
+    write(&root.join(MDF_FILE), &mdf_v1_real());
+    restart(&root);
+    assert!(!root.join(TRANSFER_DIR).exists());
+    assert!(!root.join(LIBRARY_CACHE).exists());
+    assert_eq!(listed(&root), vec![id(OTHER), id(NEW)]);
+}
+
+/// #577 : une copie complète `<uuid>.in` écrite pour la Flam A et retrouvée sur la Flam B est
+/// supprimée par la reprise de B (permis de B), jamais promue ni listée.
+#[test]
+fn reprise_sur_b_d_une_copie_ecrite_pour_a_supprimee_jamais_promue() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    let mdf_b = mdf("2.4.2");
+    write(&root.join(MDF_FILE), &mdf_b);
+    let p = prepared(tmp.path(), 1);
+    for (name, data) in files_of(&p.dir) {
+        write(&incoming_dir(&root, &id(NEW)).join(name), &data);
+    }
+    let permit_b = WritePermit::for_tests(FirmwareFamily::V2, &mdf_b);
+    let report = recover_device_with(&FaultyFs::new(), &permit_b, &root).unwrap();
+    assert_eq!(report.incomplete_removed, 1);
+    assert!(!root.join("str").join(NEW).exists());
+    assert!(!root.join(TRANSFER_DIR).exists());
+    assert_eq!(listed(&root), vec![id(OTHER)]);
 }
 
 /// Un permis obtenu pour une Flam ne permet aucune écriture sur une autre (#317).

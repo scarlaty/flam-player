@@ -3,6 +3,7 @@ import {
   cancelDeviceTransfer,
   ejectDevice,
   canMaintain,
+  DEVICE_CHANGED,
   firmwareWriteBlock,
   forgetCarrierKeys,
   listDeviceStories,
@@ -318,6 +319,17 @@ export function DeviceProvider({
     clearPcCopy(() => true);
   }, [deviceKey, clearPcCopy]);
 
+  /** Les histoires en attente passent à « annulé » (elles pourront être renvoyées). */
+  const cancelWaiting = useCallback(
+    () =>
+      updateQueue((items) =>
+        items.map((item) =>
+          item.state === "waiting" ? { ...item, state: "cancelled" } : item,
+        ),
+      ),
+    [updateQueue],
+  );
+
   const pump = useCallback(async () => {
     if (running.current) return;
     running.current = true;
@@ -427,6 +439,17 @@ export function DeviceProvider({
         if (failure.kind === "cancelled") {
           setItemState(next.uuid, "cancelled");
           setAnnouncement(text.panel.announce.cancelled);
+        } else if (failure.kind === DEVICE_CHANGED) {
+          // Flam débranchée ou remplacée pendant l'envoi (#577) : la suite de la file était
+          // destinée à la Flam choisie, pas à celle branchée maintenant.
+          setItemState(next.uuid, "failed", failure.message);
+          cancelWaiting();
+          setAnnouncement(text.panel.announce.failed(next.title, failure.message));
+          // Une copie temporaire peut rester sur la Flam branchée : reprise tout de suite (elle
+          // supprime une copie inachevée, ne l'installe jamais), puis état relu.
+          const rootAfter = rootRef.current;
+          if (rootAfter) await recoverDeviceTransfers(rootAfter).catch(() => undefined);
+          retry();
         } else if (
           deviceKeyRef.current === keyAtStart &&
           firmwareWriteBlock(deviceRef.current)
@@ -434,11 +457,7 @@ export function DeviceProvider({
           // Refus de la garde du firmware (état connu de la Flam) : les suivantes échoueraient
           // de la même façon.
           setItemState(next.uuid, "failed", failure.message);
-          updateQueue((items) =>
-            items.map((item) =>
-              item.state === "waiting" ? { ...item, state: "cancelled" } : item,
-            ),
-          );
+          cancelWaiting();
           setAnnouncement(text.panel.announce.failed(next.title, failure.message));
         } else {
           setItemState(next.uuid, "failed", failure.message);
@@ -447,6 +466,12 @@ export function DeviceProvider({
           // l'état est relu.
           if (failure.kind === "validation") retry();
         }
+      }
+      // Une autre Flam est apparue pendant cet envoi (#577) : la suite de la file n'est pas
+      // envoyée sur une Flam que l'utilisateur n'a pas choisie. Flam simplement absente : la
+      // file échoue plus haut (« Flam non détectée »).
+      if (deviceKeyRef.current !== null && deviceKeyRef.current !== keyAtStart) {
+        cancelWaiting();
       }
       // Le `bt` saisi ne reste pas dans la file au-delà de l'envoi (fait, échoué ou annulé).
       if (next.carrier?.choice.kind === "entered") {
@@ -478,7 +503,7 @@ export function DeviceProvider({
     ) {
       setAnnouncement(text.panel.announce.finished);
     }
-  }, [setItemState, updateQueue, bumpReload, retry]);
+  }, [setItemState, updateQueue, bumpReload, retry, cancelWaiting]);
 
   const enqueue = useCallback(
     (request: SendRequest & { carrier?: CarrierSend }) => {

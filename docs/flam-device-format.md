@@ -352,7 +352,10 @@ Préalable : garde commune (§ 8.0), lecture de `.mdf` (au plus 64 Kio ; au-del�
 appareil (§ 6.3). Un `.mdf` absent donne « Flam introuvable » sans rien écrire. Ensuite
 (`send_with`) :
 
-1. **Vérifications, rien d'écrit** (hormis la fin d'opérations interrompues) : `.mdf` présent ; UUID
+1. **Vérifications, rien d'écrit** (hormis la fin d'opérations interrompues) : `.mdf` présent et
+   **relu, identique à celui contrôlé par la garde** avant la préparation (#577 : sinon une autre
+   Flam a pu prendre la même lettre de lecteur pendant la préparation ; refus, rien n'est écrit,
+   reprise comprise) ; UUID
    canonique (minuscules) ; reprise des envois interrompus (tableau ci-dessous) puis des index
    (`recover`) ; refus si un résidu `<uuid>.in` ou `<uuid>.old` subsiste après la reprise ; `list`
    doit être **valide** et `list.hidden` valide ou absent (sinon « réparez l'index ») ; refus si
@@ -369,12 +372,29 @@ appareil (§ 6.3). Un `.mdf` absent donne « Flam introuvable » sans rien écri
    système, `FILE_FLAG_NO_BUFFERING`, avec repli sur une lecture ordinaire si l'ouverture échoue) ;
    taille et empreinte comparées. La progression compte la copie puis la relecture (total = deux
    fois la taille).
-4. **Dernier point d'annulation.** Mise à jour : l'ancien `str/<uuid>/` est mis de côté par
-   renommage en `.flam-transfer/<uuid>.old/` (rien n'est supprimé).
+4. **Dernier point d'annulation**, puis `.mdf` **relu** (#577) : différent, absent ou encore
+   illisible, refus ; rien n'est installé (`str/`, index et cache inchangés) et `<uuid>.in/` est
+   laissé tel quel (il peut être sur l'autre Flam), supprimé par la reprise du prochain
+   branchement ou du prochain envoi ; le launcher relance aussitôt la reprise sur la Flam
+   branchée. Mise à jour : l'ancien `str/<uuid>/` est mis de côté par renommage en
+   `.flam-transfer/<uuid>.old/` (rien n'est supprimé).
 5. **Promotion** : renommage de `<uuid>.in/` en `str/<uuid>/` (déplacement sur le même volume,
    aucune donnée copiée). En cas d'échec, l'ancienne version est remise en place.
-6. **Index** : l'UUID est ajouté **à la fin** de `list` par `write_index` (§ 5), s'il n'y figure
-   pas déjà.
+6. **Index** : `.mdf` **relu** d'abord (#577). Différent, absent ou encore illisible : pour une
+   nouvelle histoire, l'index n'est **pas** écrit (la liste lue sur la Flam d'origine ne doit
+   jamais remplacer celle d'une autre) et l'envoi est refusé ; l'histoire reste complète hors
+   index sur la Flam d'origine (orphelin, et `<uuid>.old/` si un orphelin était remplacé), la
+   reprise termine la mise de côté et un nouvel envoi de la même histoire l'ajoute à l'index.
+   Pour une mise à jour déjà listée, l'envoi est fait ; les étapes 7 et 8 sont laissées à la
+   reprise. Sinon, l'UUID est ajouté **à la fin** de `list` par `write_index` (§ 5), s'il n'y
+   figure pas déjà.
+
+   Chaque relecture de `.mdf` (étapes 1, 4 et 6 ; 126 octets, sans coût mesurable) réessaie un
+   verrou passager (antivirus) pendant environ 1 s : seul un `.mdf` différent, absent ou encore
+   illisible fait refuser. Aucun contrôle n'a lieu après l'écriture de l'index : un envoi
+   installé n'est jamais présenté comme un échec. L'identité de la Flam repose sur le contenu de
+   `.mdf`, supposé propre à chaque appareil (numéro de série, clés) : à confirmer sur plusieurs
+   Flam.
 7. **Cache** : suppression de `usr/0/library.cache`, même si l'index n'a pas changé (le contenu,
    donc peut-être le titre, a changé).
 8. **Nettoyage** : suppression de l'ancienne version, puis du dossier `.flam-transfer/` s'il est
@@ -390,11 +410,14 @@ Reprise (`recover`, appelée à chaque envoi et à appeler à la détection), se
 
 | Coupure après…                         | État laissé                                      | Reprise                                                     |
 | -------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------- |
+| (refus) `.mdf` changé, à l'entrée      | rien de modifié, reprise comprise                | aucune                                                      |
 | les vérifications                      | rien de modifié                                  | aucune                                                      |
+| (refus) `.mdf` changé avant promotion  | `<uuid>.in/` complet non promu                   | `<uuid>.in/` supprimé (jamais promu)                        |
 | une copie partielle ou la vérification | `<uuid>.in/` non promu                           | `<uuid>.in/` supprimé (copie à refaire)                     |
 | la mise de côté (mise à jour)          | `<uuid>.old/`, `<uuid>.in/`, pas de `str/<uuid>` | `<uuid>.old/` remis en `str/<uuid>/`, `<uuid>.in/` supprimé |
 | le renommage final                     | `str/<uuid>/` complet, peut-être `<uuid>.old/`   | `<uuid>.old/` supprimé, cache supprimé                      |
 | (installation) avant l'index           | `str/<uuid>/` complet hors index (orphelin)      | aucune ; un nouvel envoi le remplace                        |
+| (refus) `.mdf` changé avant l'index    | idem, peut-être `<uuid>.old/`                    | `<uuid>.old/` supprimé ; un nouvel envoi l'ajoute à l'index |
 | une étape de l'index                   | ancien ou nouvel index                           | `recover` de l'index (§ 5)                                  |
 | l'index, avant le cache                | `library.cache` périmé                           | supprimé si `<uuid>.old/` reste ; sinon à l'envoi suivant   |
 
@@ -411,7 +434,7 @@ visible, sous réserve de T3 et T4 :
 si le firmware réagit à un dossier inconnu à la racine, la copie en cours pourrait être ignorée ou
 supprimée par lui (une copie perdue, sans autre effet).
 
-Entre le renommage final et la suppression de `<uuid>.old`, les dossiers `str/<uuid>`, `str/` et `.flam-transfer/` sont forcés sur le disque (au mieux : un échec est journalisé), car une mise à jour d'une histoire déjà listée n'écrit aucun index. Le dossier racine reçu du front doit être un lecteur détecté (amovible, ou FAT fixe) : un dossier quelconque contenant un `.mdf` est refusé, pour l'envoi comme pour la reprise, le retrait, le réordonnancement et l'oubli des clés carrier d'une Flam. Une entrée de `.flam-transfer/` qui ne peut pas être reprise (dossier verrouillé) n'empêche pas l'envoi d'une autre histoire, mais elle est signalée dans le rapport (`recovery_failures`) ; l'envoi de la même histoire est refusé tant qu'elle reste. « Remplacer » est lié à l'UUID visé : une archive dont `uuid.bin` désigne une autre histoire est refusée sans rien écrire.
+Entre le renommage final et la suppression de `<uuid>.old`, les dossiers `str/<uuid>`, `str/` et `.flam-transfer/` sont forcés sur le disque (au mieux : un échec est journalisé), car une mise à jour d'une histoire déjà listée n'écrit aucun index. Le dossier racine reçu du front doit être un lecteur détecté (amovible, ou FAT fixe) : un dossier quelconque contenant un `.mdf` est refusé, pour l'envoi comme pour la reprise, le retrait, le réordonnancement et l'oubli des clés carrier d'une Flam. Une lettre de lecteur sans séparateur (`E:`) est refusée (#577) : sous Windows elle désigne le dossier courant du lecteur, pas sa racine ; la détection rend toujours `E:\`. Une entrée de `.flam-transfer/` qui ne peut pas être reprise (dossier verrouillé) n'empêche pas l'envoi d'une autre histoire, mais elle est signalée dans le rapport (`recovery_failures`) ; l'envoi de la même histoire est refusé tant qu'elle reste. À la reprise au branchement, elle n'empêche pas non plus la reprise des index (#577) : celle-ci a lieu, puis la première erreur est rendue. Après un refus pour Flam changée (erreur `device_changed`), le launcher arrête la file d'envoi : les histoires en attente passent à « annulée », jamais envoyées sur une Flam que l'utilisateur n'a pas choisie. « Remplacer » est lié à l'UUID visé : une archive dont `uuid.bin` désigne une autre histoire est refusée sans rien écrire.
 
 ### 8.2 Retrait ([retrait], #231, implémenté)
 
@@ -428,9 +451,13 @@ Ordre inverse de l'installation : index d'abord, dossier ensuite (`remove_story`
    par `write_index`.
 4. **Relecture** : aucun dossier n'est touché tant que l'UUID est encore lisible dans un index.
 5. **Corbeille** : `str/<uuid>/` et `str.hidden/<uuid>/` sont renommés en
-   `.flam-trash/<uuid>-<32 hexadécimaux>/` (même volume : aucune donnée copiée).
-6. **Suppression** des dossiers de la corbeille ; un échec (fichier verrouillé) n'annule rien et la
-   corbeille sera vidée à la prochaine opération. Seules les entrées nommées
+   `.flam-trash/<uuid>-<32 hexadécimaux>/` (même volume : aucune donnée copiée). Un verrou
+   passager (antivirus, indexeur) est réessayé pendant environ 1 s (#577) avant de laisser le
+   dossier en orphelin ; une source absente au nouvel essai, cible en place, compte comme un
+   renommage réussi.
+6. **Suppression** des dossiers de la corbeille, avec les mêmes nouveaux essais (comme le vidage
+   de la corbeille au début de chaque retrait) ; un échec persistant (fichier verrouillé) n'annule
+   rien et la corbeille sera vidée à la prochaine opération. Seules les entrées nommées
    `<uuid>-<32 hexadécimaux>` sont supprimées, jamais les autres, et une corbeille qui n'est pas un
    vrai dossier est laissée telle quelle.
 

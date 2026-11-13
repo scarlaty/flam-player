@@ -432,6 +432,13 @@ export const TRANSFER_PROGRESS_EVENT = "device://transfer-progress";
 export const LUNII_NEEDS_V2 = "lunii_needs_v2";
 
 /**
+ * `kind` d'un envoi refusé parce que la Flam a été débranchée ou remplacée pendant l'envoi
+ * (miroir de `AppError::DeviceChanged`, #577) : une autre Flam a pu prendre la même lettre de
+ * lecteur. Le message dit ce qui a été écrit ; la file d'envoi s'arrête.
+ */
+export const DEVICE_CHANGED = "device_changed";
+
+/**
  * `device_send_story` : envoie l'histoire `uuid` de la bibliothèque sur la Flam de racine
  * `root` (`validation` si déjà présente sans `replace`, espace insuffisant, firmware non pris
  * en charge, Flam occupée ou histoire STUdio illisible ; `cancelled` si annulé ;

@@ -796,6 +796,66 @@ it("un refus de la garde pendant la file arrête les envois suivants", async () 
   expect(count("device_send_story")).toBe(1);
 });
 
+/** Flam vide : « Capi », « Les trois ours » et « Déjà là » peuvent être envoyées. */
+async function readyEmpty() {
+  await screen.findByRole("heading", { name: "Histoires sur la Flam (0)" });
+  await waitFor(() =>
+    expect(sendButton("Déjà là")).toHaveAttribute("aria-disabled", "false"),
+  );
+}
+
+/** File de trois histoires lancée ; rend le panneau d'envoi une fois la première partie. */
+async function queueThree() {
+  fireEvent.click(sendButton("Capi"));
+  fireEvent.click(sendButton("Les trois ours"));
+  fireEvent.click(sendButton("Déjà là"));
+  const panel = await screen.findByRole("region", { name: "Envoi sur la Flam" });
+  await waitFor(() => expect(sends.has(A)).toBe(true));
+  return panel;
+}
+
+it("Flam remplacée pendant la file (refus device_changed, #577) : les suivantes sont annulées, la reprise est relancée", async () => {
+  acknowledgeWarning();
+  onDevice = [];
+  render(<Harness />);
+  await readyEmpty();
+  const panel = await queueThree();
+  const recoveries = count("device_recover_transfers");
+  const refusal =
+    "la Flam a été débranchée ou remplacée pendant l'envoi : l'histoire n'a pas été installée ; sa copie temporaire sera supprimée au prochain branchement de la Flam ou au prochain envoi";
+  await act(async () => {
+    sends.get(A)?.reject({ kind: "device_changed", message: refusal });
+  });
+  expect(await within(panel).findByText(refusal)).toBeInTheDocument();
+  await waitFor(() => expect(within(panel).getAllByText("Annulée")).toHaveLength(2));
+  await waitFor(() => expect(count("device_recover_transfers")).toBe(recoveries + 1));
+  expect(count("device_send_story")).toBe(1);
+});
+
+it("autre Flam détectée pendant le premier envoi (#577) : rien n'est envoyé sur elle, les suivantes sont annulées", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  acknowledgeWarning();
+  onDevice = [];
+  render(<Harness />);
+  await readyEmpty();
+  const panel = await queueThree();
+  // Une autre Flam sous une autre lettre pendant l'envoi de la première histoire.
+  const other = detected();
+  other.device!.root = "F:\\";
+  status = other;
+  const polls = count("device_status");
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + 50);
+  });
+  await waitFor(() => expect(count("device_status")).toBeGreaterThan(polls));
+  await resolveSend(A);
+  await waitFor(() => expect(within(panel).getAllByText("Annulée")).toHaveLength(2));
+  expect(count("device_send_story")).toBe(1);
+  expect(
+    calls.filter((c) => c.cmd === "device_send_story" && c.args.root === "F:\\"),
+  ).toHaveLength(0);
+});
+
 it("retire une histoire de la Flam après confirmation", async () => {
   render(<Harness />);
   await ready();

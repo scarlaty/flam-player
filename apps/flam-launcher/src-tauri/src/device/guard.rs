@@ -445,7 +445,10 @@ impl WritePermit {
         self.family
     }
 
-    /// Vrai si `mdf` est le `.mdf` contrôlé par la garde (relu ensuite par l'écriture).
+    /// Vrai si `mdf` est le `.mdf` contrôlé par la garde (relu ensuite par l'écriture). Sert à
+    /// reconnaître la même Flam sous une lettre de lecteur (#577) : cette identité repose sur le
+    /// contenu de `.mdf`, supposé propre à chaque Flam (numéro de série, clés), à confirmer sur
+    /// plusieurs appareils réels.
     pub fn same_mdf(&self, mdf: &[u8]) -> bool {
         <[u8; 32]>::from(Sha256::digest(mdf)) == self.mdf_digest
     }

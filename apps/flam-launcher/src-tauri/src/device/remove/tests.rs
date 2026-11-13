@@ -685,6 +685,58 @@ fn verrou_passager_reessaye_sans_orphelin() {
     device.assert_others_intact(B);
 }
 
+/// Renommage fait par le système mais signalé en échec passager (verrou relâché trop tard) : le
+/// nouvel essai ne trouve plus la source.
+struct MovedButRefused {
+    refused: Cell<bool>,
+}
+
+impl TrashFs for MovedButRefused {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        RealTrashFs.rename(from, to)?;
+        if self.refused.replace(true) {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "verrou passager (test)",
+            ))
+        }
+    }
+    fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+        RealTrashFs.remove_dir_all(path)
+    }
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        RealTrashFs.remove_file(path)
+    }
+    fn sleep(&self, _delay: Duration) {}
+}
+
+/// #577 : source absente au nouvel essai du renommage alors que la cible est en place : le
+/// déplacement a eu lieu, c'est un succès (pas `FolderLeft`).
+#[test]
+fn renommage_fait_malgre_l_erreur_compte_comme_reussi() {
+    let device = Device::new();
+    let ops = MovedButRefused {
+        refused: Cell::new(false),
+    };
+    let report = remove_with(
+        device.root(),
+        &DeviceLock::new(),
+        B,
+        true,
+        &test_ctx(),
+        &ops,
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(report.folders_removed, 1);
+    assert!(!report.cleanup_pending, "{report:?}");
+    assert!(!device.root().join(STORIES_DIR).join(B).exists());
+    assert!(!device.root().join(TRASH_DIR).exists());
+    device.assert_others_intact(B);
+}
+
 /// #577 : la corbeille laissée par un retrait précédent est vidée malgré un verrou passager.
 #[test]
 fn corbeille_videe_malgre_un_verrou_passager() {
