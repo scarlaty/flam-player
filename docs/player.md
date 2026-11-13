@@ -246,14 +246,22 @@ dossier partiel avec `main.lua` et sans témoin : il passe pour un dossier d'aut
 dossier pour forcer la ré-extraction. Pour adopter un dossier extrait comme dossier d'auteur,
 supprimer ses deux témoins (`.extracted` et `.extracting`). Si l'extraction est impossible (`.pk`
 supprimé, illisible, sans `main.lua` ou remplacé par un fichier qui n'est pas un ZIP), rien n'est
-lu ni supprimé dans le dossier : il est joué tel quel (trace « extraction impossible » ou
-« à jour, non extrait »). Un `.pk` ne peut ni écrire ni forger les témoins (noms `.extracted` /
+lu ni supprimé dans le dossier : il est joué tel quel (trace « mise à jour refusée ou extraction
+impossible » ou, pour un `.pk` absent ou illisible, « .pk absent ou illisible » ; « à jour, non
+extrait » est réservé au cas où le `.pk` est lisible et correspond). Un `.pk` ne peut ni écrire ni forger les témoins (noms `.extracted` /
 `.extracting`, et leur alias court `EXTRAC~N`, refusés pour tous les composants, sans tenir compte de
 la casse, des points et espaces finaux). Sont aussi refusés les composants `.` (comme `..`), ceux qui
 finissent par un point ou une espace, les caractères `: < > " | ? *` et de contrôle, et les noms de
 périphériques Windows (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`9`, `LPT1`-`9`, exposants compris, avec ou
 sans extension). Refuser `con.txt` ou `nul.txt` est un choix conservateur : ce sont des fichiers
-ordinaires sous Windows 11, mais des périphériques sous les versions antérieures. Le navigateur affiche au plus 32 histoires ; les suivantes sont
+ordinaires sous Windows 11, mais des périphériques sous les versions antérieures. Limites connues : un `.pk` produit par le `tar.exe` de Windows (« data descriptor » sur chaque entrée)
+n'a jamais été extractible et reste refusé (trace « illisible, incomplet ou sans main.lua ») ;
+un `.pk` verrouillé par un autre programme (ouverture impossible) mais à jour est traité comme
+absent ou illisible (trace « .pk absent ou illisible ») ; les fichiers « à la demande »
+d'un dossier OneDrive (attribut de point d'analyse) ne sont pas supprimés lors d'une purge (fuite
+sans danger) ; un nom court 8.3 haché (`EX577D~1`, quand `EXTRAC~1` à `~4` sont pris par d'autres
+fichiers) ne peut pas écraser `.extracting` (verrou d'écriture), mais l'extraction reste incomplète et
+recommence à chaque lancement. Le navigateur affiche au plus 32 histoires ; les suivantes sont
 comptées (« N histoires non affichées », à l'écran et sur stderr).
 
 ### Contrôles clavier

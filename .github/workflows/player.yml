@@ -104,3 +104,24 @@ jobs:
       - name: test_run.bat strict
         shell: cmd
         run: test_run.bat strict
+
+  # Code POSIX de src/formats/pk_reader.c (realpath, lstat, rmdir, liens symboliques) : jamais compile par
+  # le job Windows ci-dessus (#575). Seul ce module et son test autonome sont compiles ici ; le reste du
+  # player (SDL, LVGL, Lua) n'est pas porte sous Linux. Pas de sous-modules, pas de Python.
+  pk-reader-posix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # gnu11 (et non c11) : realpath, lstat et symlink sont des extensions POSIX. Sanitizers : acces hors
+      # bornes et comportements indefinis dans le lecteur d'archives (entrees forgees par les tests).
+      - name: Compiler pk_reader.c et son test (gcc, ASan et UBSan)
+        run: >
+          gcc -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined
+          -Isrc/formats tests/test_pk_reader.c src/formats/pk_reader.c -o "$RUNNER_TEMP/test_pk_reader"
+
+      - name: Exécuter test_pk_reader
+        run: '"$RUNNER_TEMP/test_pk_reader"'

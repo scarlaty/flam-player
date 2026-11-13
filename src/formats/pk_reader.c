@@ -561,11 +561,21 @@ static int pk_stamp(const char *pk_path, char *out, size_t out_sz)
     return 0;
 }
 
+/* "dir/name" dans buf ; -1 si le resultat serait tronque (un chemin tronque
+   designerait un autre fichier : on abandonne au lieu de s'en servir). Courant sous
+   POSIX (PATH_MAX > 1024), improbable sous Windows (MAX_PATH de 260, sauf chemins
+   prefixes par "\\?\"). */
+static int pk_join(char *buf, size_t sz, const char *dir, const char *name)
+{
+    int n = snprintf(buf, sz, "%s/%s", dir, name);
+    return (n < 0 || (size_t)n >= sz) ? -1 : 0;
+}
+
 static int pk_file_exists(const char *dir, const char *name)
 {
     char path[1024];
     struct stat st;
-    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (pk_join(path, sizeof(path), dir, name) != 0) return 0;
     return stat(path, &st) == 0;
 }
 
@@ -573,11 +583,16 @@ int pk_extract_state(const char *pk_path, const char *out_dir)
 {
     if (!pk_path || !out_dir || !out_dir[0]) return PK_EXTRACT_STALE;
 
+    /* Chemins de tous les fichiers consultes : si l'un deborde, l'etat est inconnu et
+       "absent" serait faux (un .extracting illisible passerait pour un dossier
+       d'auteur) : a (re)extraire, ce que pk_extract_if_stale refusera proprement. */
+    char path[1024], probe[1024];
+    if (pk_join(probe, sizeof(probe), out_dir, "main.lua") != 0 ||
+        pk_join(probe, sizeof(probe), out_dir, PK_BUSY_NAME) != 0 ||
+        pk_join(path, sizeof(path), out_dir, PK_STAMP_NAME) != 0) return PK_EXTRACT_STALE;
+
     if (!pk_file_exists(out_dir, "main.lua")) return PK_EXTRACT_STALE;
     if (pk_file_exists(out_dir, PK_BUSY_NAME)) return PK_EXTRACT_STALE;
-
-    char path[1024];
-    snprintf(path, sizeof(path), "%s/" PK_STAMP_NAME, out_dir);
     FILE *f = fopen(path, "rb");
     if (!f) return PK_EXTRACT_AUTHOR;   /* aucun temoin : dossier d'auteur */
 
@@ -606,7 +621,7 @@ int pk_extract_state(const char *pk_path, const char *out_dir)
 static char *pk_read_text(const char *dir, const char *name)
 {
     char path[1024];
-    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (pk_join(path, sizeof(path), dir, name) != 0) return NULL;
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     long sz = pk_file_size(f);
@@ -702,6 +717,15 @@ static void pk_purge_listed(const char *out_dir, char *text)
 int pk_extract_if_stale(const char *pk_path, const char *out_dir)
 {
     if (!pk_path || !out_dir || !out_dir[0]) return -1;
+
+    /* Chemins des temoins : abandon si le dossier est trop profond pour eux. */
+    char path[1024];
+    char busy[1024];
+    if (pk_join(busy, sizeof(busy), out_dir, PK_BUSY_NAME) != 0 ||
+        pk_join(path, sizeof(path), out_dir, PK_STAMP_NAME) != 0) {
+        fprintf(stderr, "[PK] extraction annulee : chemin trop long : %s\n", out_dir);
+        return -1;
+    }
     if (pk_extract_state(pk_path, out_dir) != PK_EXTRACT_STALE) return 0;
 
     /* Dossier reconnu comme extraction du player (temoin present) : seul cas
@@ -725,11 +749,6 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir)
                 pk_path, out_dir);
         return -1;
     }
-
-    char path[1024];
-    char busy[1024];
-    snprintf(busy, sizeof(busy), "%s/" PK_BUSY_NAME, out_dir);
-    snprintf(path, sizeof(path), "%s/" PK_STAMP_NAME, out_dir);
 
     /* Temoin present : lire la liste de l'ancienne extraction avant de
        toucher aux temoins. Sans temoin (dossier absent, dossier d'auteur

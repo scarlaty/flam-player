@@ -19,7 +19,8 @@ flam-player est lance sur un .plain.pk (pilotes SDL dummy, --stdin-control) :
      fichier ajoute a la main reste, rien n'est supprime a travers un lien ou
      une jonction ;
  10. .pk supprime ou remplace par un fichier non ZIP apres extraction : le
-     dossier extrait reste intact et l'histoire est jouee ;
+     dossier extrait reste intact et l'histoire est jouee (trace ".pk absent ou
+     illisible" pour un .pk supprime) ;
  11. temoins forges (noms . / casse / point ou espace final dans le .pk, liste
      hostile dans .extracted) : rien n'est ecrit ni supprime hors du dossier ;
      purge reprise depuis le .extracting d'une extraction interrompue ;
@@ -28,8 +29,11 @@ flam-player est lance sur un .plain.pk (pilotes SDL dummy, --stdin-control) :
  12. passe a blanc avant purge : .pk tronque apres main.lua, a data descriptor,
      ou dont main.lua est compresse, apres une extraction valide : l'ancienne
      extraction reste intacte (fichiers, .extracted) et l'histoire est jouee ;
-     alias 8.3 du temoin suivi d'une signature inconnue : .extracting non ecrase.
-Code 77 aussi si la jonction / le lien de test ne peut pas etre cree.
+     alias 8.3 du temoin suivi d'une signature inconnue : .extracting non ecrase ;
+ 13. alias 8.3 HACHE du temoin (EX577D~1, quand EXTRAC~1 a ~4 sont pris) : ecriture
+     refusee par le verrou, .extracting non ecrase.
+Code 77 aussi si la jonction / le lien de test ne peut pas etre cree, ou si les noms
+courts sont desactives sur le volume (cas 13 saute : FLAM_NO_SKIP=1 le voit).
 Code de sortie : 0 OK, 1 echec, 77 prerequis absents (flam-player).
 """
 import argparse
@@ -167,6 +171,34 @@ def drop_link(link):
         pass
 
 
+FOREIGN = 4   # fichiers etrangers qui prennent EXTRAC~1 a ~4 (le suivant recoit un alias hache)
+
+
+def hashed_busy_alias(tmp):
+    """Nom court 8.3 que recevra .extracting une fois EXTRAC~1 a ~4 pris par des fichiers
+    etrangers (ex. 'EX577D~1'), ou None (hors Windows, noms courts desactives sur le
+    volume, alias non hache). Calcule dans un dossier jetable avec GetShortPathNameW."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    probe = os.path.join(tmp, "sonde-alias")
+    os.makedirs(probe)
+    try:
+        for i in range(FOREIGN):
+            write(probe + "/extracting_%d" % i, "etranger")
+        busy = probe + "/.extracting"
+        write(busy, "")
+        buf = ctypes.create_unicode_buffer(1024)
+        if not ctypes.windll.kernel32.GetShortPathNameW(busy.replace("/", "\\"), buf, 1024):
+            return None
+        alias = os.path.basename(buf.value.replace("\\", "/"))
+        if "~" not in alias or alias.lower().startswith("extrac~") or alias.lower() == ".extracting":
+            return None
+        return alias
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", required=True, help="dossier contenant flam-player")
@@ -178,6 +210,7 @@ def main():
         return SKIP
     tmp = tempfile.mkdtemp(prefix="flam-pkx-")
     link_skipped = False
+    alias_skipped = False
     try:
         # 1. dossier d'auteur
         root, pk, d = fresh(tmp, "auteur")
@@ -322,7 +355,9 @@ def main():
         err = run_player(exe, pk, tmp, "Extracted")
         check(os.path.isfile(d + "/.extracted"), ".pk supprime : extraction initiale", err)
         os.remove(pk)
-        err = run_player(exe, pk, tmp, "a jour, non extrait")
+        err = run_player(exe, pk, tmp, ".pk absent ou illisible")
+        check(".pk absent ou illisible" in err and "a jour, non extrait" not in err,
+              ".pk supprime : trace '.pk absent ou illisible' (et non 'a jour')", err)
         check("Loading story" in err, ".pk supprime : l'histoire est jouee", err)
         check(read(d + "/main.lua") == LUA % "PK" and read(d + "/data/a.txt") == "A",
               ".pk supprime : dossier extrait intact", err)
@@ -473,10 +508,33 @@ def main():
         check(os.path.isfile(d + "/.extracting")
               and read(d + "/.extracting") == "main.lua\n",
               "alias 8.3 : .extracting = liste reelle, non ecrase", err)
+
+        # 12f. alias 8.3 HACHE du temoin (EXTRAC~1 a ~4 pris par des fichiers etrangers :
+        # .extracting recoit un alias du type EX577D~1, que le filtre de noms ne connait
+        # pas). Le verrou d'ecriture empeche l'ecrasement : l'extraction reste incomplete.
+        alias = hashed_busy_alias(tmp)
+        if alias is None:
+            print("[SKIP] alias 8.3 hache : noms courts desactives ou alias non hache")
+            alias_skipped = True
+        else:
+            root, pk, d = fresh(tmp, "alias-hache")
+            for i in range(FOREIGN):
+                write(d + "/extracting_%d" % i, "etranger")
+            with zipfile.ZipFile(pk, "w", zipfile.ZIP_STORED) as z:
+                z.writestr("main.lua", LUA % "PK")
+                z.writestr(alias, "FORGE")
+                z.writestr("k.txt", "k")
+            err = run_player(exe, pk, tmp, "extraction incomplete")
+            check("ouverture impossible" in err, "alias hache '%s' : ecriture refusee" % alias, err)
+            check(read(d + "/.extracting") == "main.lua\nk.txt\n",
+                  "alias hache : .extracting = liste reelle, non ecrase", err)
+            check(not os.path.exists(d + "/.extracted"), "alias hache : pas de .extracted", err)
+            check(read(d + "/k.txt") == "k", "alias hache : entree saine extraite", err)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    if link_skipped:
-        print("e2e_pk_extract : OK, mais le test de lien n'a pas pu tourner (SKIP)")
+    if link_skipped or alias_skipped:
+        print("e2e_pk_extract : OK, mais un cas a ete saute (SKIP) : %s"
+              % ", ".join(n for n, f in (("lien", link_skipped), ("alias 8.3 hache", alias_skipped)) if f))
         return SKIP
     print("e2e_pk_extract : OK")
     return 0
