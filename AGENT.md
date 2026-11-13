@@ -208,13 +208,18 @@ a vraiment ete ecrit. Re-extraction si `main.lua` manque, si `.extracting` reste
 differe du `.pk`. L'extraction n'est complete que si le `.pk` va jusqu'au repertoire central
 (`0x02014b50`) ou a la fin d'archive (`0x06054b50`) : signature inconnue, archive tronquee ou
 entree a data descriptor (`flags & 0x0008`) = incomplete (trace `[PK]`, `.extracting` conserve).
+Si le dossier porte deja une extraction du player, une passe a blanc du `.pk` precede la purge : archive
+incomplete, a data descriptor ou `main.lua` non stocke / de taille 0 = refusee d'emblee (-1), ancienne
+version jouee.
 Avant de re-extraire un dossier qui porte un temoin, `pk_extract_if_stale` supprime les fichiers
 de l'ancienne extraction (liste du temoin) : jamais dans un dossier d'auteur, jamais a travers un
 lien ou une jonction, jamais hors du dossier ; un temoin sans liste (ancienne version) = pas de
-purge. Avant toute ecriture ou purge, le `.pk` doit s'ouvrir et contenir `main.lua`, sinon
+purge. Avant toute ecriture ou purge, le `.pk` doit s'ouvrir et donner un `main.lua` extractible, sinon
 `pk_extract_if_stale` rend -1 sans rien toucher ; `.pk` absent, le dossier extrait est « a jour ».
-Un `.pk` ne peut pas ecrire les temoins (dernier composant sans points ni espaces finaux, sans
-casse) et les composants `.` sont refuses comme `..`. Adopter un dossier extrait comme dossier
+Un `.pk` ne peut pas ecrire les temoins (tous les composants, sans points ni espaces finaux, sans
+casse, alias `EXTRAC~N` compris). Noms refuses : composants `.`/`..`, point ou espace final, `: < > " | ? *`
+et controles, peripheriques Windows (CON, PRN, AUX, NUL, COM/LPT 1-9 exposants compris ; `con.txt` refuse
+par prudence, c'est un fichier ordinaire sous Windows 11). Adopter un dossier extrait comme dossier
 d'auteur = supprimer `.extracted` et `.extracting`.
 `main.lua` present et aucun temoin = dossier d'auteur : joue tel quel, jamais ecrase (meme regle
 dans `add_story_entry` et sur les trois chemins : navigateur, clic, ligne de commande ;

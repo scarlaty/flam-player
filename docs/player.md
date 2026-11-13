@@ -228,8 +228,12 @@ Les archives `.plain.pk` sont extraites automatiquement au premier lancement, da
 `.extracted` (taille et date du `.pk`, puis la liste des fichiers extraits) quand elle est complète.
 L'extraction n'est complète que si l'archive va jusqu'à son répertoire central : une signature
 inconnue, une archive tronquée ou une entrée à data descriptor la laissent incomplète (trace
-`[PK]` sur stderr, `.extracting` conservé, donc nouvelle tentative au lancement suivant), de même
-qu'un `.extracted` qui n'a pas pu être écrit. Le player ré-extrait si `main.lua` manque, si
+`[PK]` sur stderr, `.extracting` conservé, donc nouvelle tentative au lancement suivant) lorsque le
+dossier n'avait pas encore d'extraction du player. Si le dossier porte déjà une extraction (témoin
+présent), une passe à blanc du `.pk` précède toute purge : une archive incomplète, à data descriptor
+ou dont `main.lua` n'est pas stocké (ou de taille 0) est refusée d'emblée (trace « mise à jour
+refusée »), rien n'est purgé et l'ancienne version est jouée. Un `.extracted` qui n'a pas pu être
+écrit laisse aussi l'extraction à refaire. Le player ré-extrait si `main.lua` manque, si
 `.extracting` reste (extraction interrompue) ou si `.extracted` ne correspond plus au `.pk`.
 Avant de ré-extraire un dossier qui porte un témoin, il supprime les fichiers de l'ancienne
 extraction (liste du témoin) pour qu'un fichier disparu du `.pk` ne survive pas ; les fichiers
@@ -244,8 +248,12 @@ supprimer ses deux témoins (`.extracted` et `.extracting`). Si l'extraction est
 supprimé, illisible, sans `main.lua` ou remplacé par un fichier qui n'est pas un ZIP), rien n'est
 lu ni supprimé dans le dossier : il est joué tel quel (trace « extraction impossible » ou
 « à jour, non extrait »). Un `.pk` ne peut ni écrire ni forger les témoins (noms `.extracted` /
-`.extracting` refusés sans tenir compte de la casse, des points et espaces finaux), et les
-composants `.` des noms d'entrée sont refusés comme `..`. Le navigateur affiche au plus 32 histoires ; les suivantes sont
+`.extracting`, et leur alias court `EXTRAC~N`, refusés pour tous les composants, sans tenir compte de
+la casse, des points et espaces finaux). Sont aussi refusés les composants `.` (comme `..`), ceux qui
+finissent par un point ou une espace, les caractères `: < > " | ? *` et de contrôle, et les noms de
+périphériques Windows (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`9`, `LPT1`-`9`, exposants compris, avec ou
+sans extension). Refuser `con.txt` ou `nul.txt` est un choix conservateur : ce sont des fichiers
+ordinaires sous Windows 11, mais des périphériques sous les versions antérieures. Le navigateur affiche au plus 32 histoires ; les suivantes sont
 comptées (« N histoires non affichées », à l'écran et sur stderr).
 
 ### Contrôles clavier

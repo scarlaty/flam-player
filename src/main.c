@@ -707,7 +707,7 @@ static void extract_pk_if_needed(const char *pk_path, const char *out_dir)
     fprintf(stderr, "Extracting %s ...\n", pk_path);
     int n = pk_extract_if_stale(pk_path, out_dir);
     if (n < 0) {
-        fprintf(stderr, "%s : extraction impossible, dossier joue tel quel\n", out_dir);
+        fprintf(stderr, "%s : mise a jour refusee ou extraction impossible (archive incomplete ou invalide), dossier joue tel quel\n", out_dir);
     } else {
         fprintf(stderr, "Extracted %d files to %s\n", n, out_dir);
     }

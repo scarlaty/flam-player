@@ -22,7 +22,13 @@ flam-player est lance sur un .plain.pk (pilotes SDL dummy, --stdin-control) :
      dossier extrait reste intact et l'histoire est jouee ;
  11. temoins forges (noms . / casse / point ou espace final dans le .pk, liste
      hostile dans .extracted) : rien n'est ecrit ni supprime hors du dossier ;
-     purge reprise depuis le .extracting d'une extraction interrompue.
+     purge reprise depuis le .extracting d'une extraction interrompue ;
+     noms de peripheriques Windows (CON, NUL.txt, COM1, sub/aux), composants a
+     point ou espace final, alias 8.3 (EXTRAC~1), composant .extracted/x : refuses ;
+ 12. passe a blanc avant purge : .pk tronque apres main.lua, a data descriptor,
+     ou dont main.lua est compresse, apres une extraction valide : l'ancienne
+     extraction reste intacte (fichiers, .extracted) et l'histoire est jouee ;
+     alias 8.3 du temoin suivi d'une signature inconnue : .extracting non ecrase.
 Code 77 aussi si la jonction / le lien de test ne peut pas etre cree.
 Code de sortie : 0 OK, 1 echec, 77 prerequis absents (flam-player).
 """
@@ -328,7 +334,7 @@ def main():
         with open(pk, "wb") as f:
             f.write(b"ceci n'est pas une archive ZIP" * 7)
         err = run_player(exe, pk, tmp, "extraction impossible")
-        check("illisible ou sans main.lua" in err, ".pk non ZIP : trace", err)
+        check("illisible, incomplet ou sans main.lua" in err, ".pk non ZIP : trace", err)
         check("Loading story" in err, ".pk non ZIP : l'histoire est jouee", err)
         check(read(d + "/main.lua") == LUA % "PK" and read(d + "/data/a.txt") == "A",
               ".pk non ZIP : dossier extrait intact", err)
@@ -340,7 +346,11 @@ def main():
         write(sentinel, "S")
         hostile = ["./.extracting", ".extracted.", ".EXTRACTED ", "sub/.extracting",
                    "sub/.Extracted...", "../sentinelle.txt", "../x", "C:/x", "/abs",
-                   "sub\\..\\..\\x", "./ok.txt", "a/./b.txt"]
+                   "sub\\..\\..\\x", "./ok.txt", "a/./b.txt",
+                   "CON", "nul.txt", "COM1", "lpt9.log", "sub/aux", "Prn .txt",
+                   "dot./c.txt", "d.txt ", "e.txt.", ".extracted/x", "EXTRAC~1",
+                   "extrac~12.x", "EXTRAC~2", "a?b.txt", "x<y.txt", 'q"r.txt', "p|q.txt",
+                   "s*t.txt", "u>v.txt", "COM¹", "lpt².txt", "Com³"]
         with zipfile.ZipFile(pk, "w", zipfile.ZIP_STORED) as z:
             z.writestr("main.lua", LUA % "PK")
             z.writestr("keep.txt", "k")
@@ -357,6 +367,10 @@ def main():
         check(stamp_lines[1:] == ["main.lua", "keep.txt", ""],
               "temoins forges : liste = fichiers reellement extraits", err)
         check(not os.path.exists(d + "/sub"), "temoins forges : aucun dossier sub", err)
+        for bad in ("CON", "nul.txt", "COM1", "lpt9.log", "dot.", "d.txt", "e.txt",
+                    "extrac~12.x", "Prn .txt", "a?b.txt", "x<y.txt", "s*t.txt"):   # EXTRAC~N : alias reel des temoins
+            check(not os.path.exists(d + "/" + bad),
+                  "temoins forges : '%s' non extrait" % bad, err)
 
         # 11b. temoin hostile deja present : la purge ne sort pas du dossier
         root, pk, d = fresh(tmp, "temoin-hostile")
@@ -386,6 +400,79 @@ def main():
         check(read(d + "/mine.txt") == "a moi", "interrompu : fichier hors liste conserve", err)
         check(os.path.isfile(d + "/.extracted") and not os.path.exists(d + "/.extracting"),
               "interrompu : temoins apres reprise", err)
+
+        # 12a. .pk tronque apres main.lua, remplace apres une extraction valide
+        root, pk, d = fresh(tmp, "blanc-tronque", {"old.txt": "v1", "data.bin": "x" * 5000})
+        err = run_player(exe, pk, tmp, "Extracted")
+        check(read(d + "/old.txt") == "v1" and os.path.isfile(d + "/.extracted"),
+              "passe a blanc : extraction initiale", err)
+        stamp_before = read(d + "/.extracted")
+        make_pk(pk, "V2", {"data.bin": "y" * 5000})
+        data, second = second_entry_offset(pk)
+        with open(pk, "wb") as f:
+            f.write(data[:second + 30 + len("data.bin") + 100])   # coupe dans data.bin
+        err = run_player(exe, pk, tmp, "extraction impossible")
+        check("illisible, incomplet ou sans main.lua" in err,
+              "passe a blanc : .pk tronque refuse", err)
+        check("Loading story" in err, "passe a blanc : l'histoire est jouee", err)
+        check(read(d + "/main.lua") == LUA % "PK" and read(d + "/old.txt") == "v1"
+              and read(d + "/data.bin") == "x" * 5000,
+              "passe a blanc : ancienne extraction intacte (tronque)", err)
+        check(read(d + "/.extracted") == stamp_before
+              and not os.path.exists(d + "/.extracting"),
+              "passe a blanc : temoins intacts (tronque)", err)
+
+        # 12b. entree a data descriptor apres main.lua
+        make_pk(pk, "V2", {"data.bin": "y" * 100})
+        data, second = second_entry_offset(pk)
+        patch_pk(pk, second + 6, b"\x08\x00")
+        err = run_player(exe, pk, tmp, "extraction impossible")
+        check("illisible, incomplet ou sans main.lua" in err,
+              "passe a blanc : data descriptor refuse", err)
+        check(read(d + "/main.lua") == LUA % "PK" and read(d + "/old.txt") == "v1"
+              and read(d + "/.extracted") == stamp_before,
+              "passe a blanc : ancienne extraction intacte (descriptor)", err)
+
+        # 12c. main.lua stocke de taille 0 (passait pk_has_entry) puis compresse
+        with zipfile.ZipFile(pk, "w", zipfile.ZIP_STORED) as z:
+            z.writestr("main.lua", "")
+            z.writestr("data.bin", "y" * 100)
+        err = run_player(exe, pk, tmp, "extraction impossible")
+        check("illisible, incomplet ou sans main.lua" in err,
+              "passe a blanc : main.lua de taille 0 refuse", err)
+        check(read(d + "/main.lua") == LUA % "PK" and read(d + "/old.txt") == "v1"
+              and read(d + "/.extracted") == stamp_before,
+              "passe a blanc : ancienne extraction intacte (taille 0)", err)
+        with zipfile.ZipFile(pk, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("main.lua", (LUA % "V2") * 50)
+        err = run_player(exe, pk, tmp, "extraction impossible")
+        check("illisible, incomplet ou sans main.lua" in err,
+              "passe a blanc : main.lua compresse refuse", err)
+        check(read(d + "/main.lua") == LUA % "PK" and read(d + "/.extracted") == stamp_before,
+              "passe a blanc : ancienne extraction intacte (compresse)", err)
+
+        # 12e. v2 avec un nom que Windows ne peut pas ecrire : refuse avant la purge de v1
+        make_pk(pk, "V2", {"a?b.txt": "x", "k.txt": "k"})
+        err = run_player(exe, pk, tmp, "Extracted")
+        check(read(d + "/main.lua") == (LUA % "V2") and not os.path.exists(d + "/old.txt"),
+              "nom interdit : v2 extraite (nom refuse, extraction complete)", err)
+        check(os.path.isfile(d + "/.extracted") and not os.path.exists(d + "/.extracting"),
+              "nom interdit : temoins complets, pas de re-extraction a chaque lancement", err)
+        check(read(d + "/k.txt") == "k" and not os.path.exists(d + "/a?b.txt"),
+              "nom interdit : entree saine extraite, entree interdite non extraite", err)
+
+        # 12d. alias 8.3 du temoin puis signature inconnue : .extracting non ecrase
+        root, pk, d = fresh(tmp, "alias-court", {"EXTRAC~1": "FORGE", "EXTRAC~2": "FORGE",
+                                                 "k.txt": "k"})
+        with open(pk, "rb") as f:
+            data = f.read()
+        last = data.rfind(b"PK\x03\x04")
+        patch_pk(pk, last, b"JUNK")
+        err = run_player(exe, pk, tmp, "signature inconnue")
+        check(not os.path.exists(d + "/.extracted"), "alias 8.3 : pas de .extracted", err)
+        check(os.path.isfile(d + "/.extracting")
+              and read(d + "/.extracting") == "main.lua\n",
+              "alias 8.3 : .extracting = liste reelle, non ecrase", err)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if link_skipped:
