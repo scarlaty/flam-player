@@ -1288,7 +1288,10 @@ leurs éléments sont des dossiers nommés comme ceux de l'application (identifi
 identifiant de tâche, empreinte de 16 chiffres hexadécimaux), et pour `podcasts/` si chaque
 dossier de source ne contient que ce que l'application y écrit (`feed.xml`, `meta.json`, leurs
 temporaires `.feed.xml.*.tmp` et `.meta.json.*.tmp`, `mp3/`, `thumbs/` ; les fichiers
-`desktop.ini`, `Thumbs.db` et `.DS_Store` de l'explorateur y sont ignorés, sans valoir preuve). Un sous-dossier non prouvé n'est pas
+`desktop.ini`, `Thumbs.db` et `.DS_Store` de l'explorateur y sont ignorés, sans valoir preuve).
+Ces trois fichiers de l'explorateur (fichiers ordinaires seulement, ni dossier ni lien) sont aussi
+ignorés à la racine de `library/`, `podcasts/`, `podcast-work/` et `play/`, sans valoir preuve :
+un sous-dossier qui ne contient qu'eux est jugé comme un sous-dossier vide. Un sous-dossier non prouvé n'est pas
 marqué : utilisé comme avant, jamais compté ni vidé. La racine du cache peut être une jonction ou
 un lien ; un sous-dossier en lien n'est jamais marqué. La migration est faite hors du fil de la
 fenêtre : celle-ci s'affiche aussitôt, et toute commande (verrou de configuration) ainsi que la

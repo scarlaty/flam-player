@@ -254,6 +254,9 @@ fn mark_existing(root: &Path, fault: Fault) -> io::Result<usize> {
 /// - `play` : chaque enfant est un dossier réel nommé par l'empreinte de `player::Workspace`
 ///   (16 chiffres hexadécimaux minuscules).
 ///
+/// Dans ces quatre sous-dossiers, `desktop.ini`, `Thumbs.db` (casse indifférente) et `.DS_Store`
+/// à la racine sont ignorés s'ils sont des fichiers ordinaires ([`is_os_junk`]) ; ils ne prouvent
+/// rien (un sous-dossier qui ne contient qu'eux est jugé comme un sous-dossier vide).
 /// Les autres sous-dossiers n'exigent pas de preuve.
 fn proven_by_content(name: &str, dir: &Path) -> bool {
     let child_shape: fn(&str) -> bool = match name {
@@ -281,9 +284,18 @@ fn proven_by_content(name: &str, dir: &Path) -> bool {
     };
     entries.into_iter().all(|entry| {
         entry.is_ok_and(|entry| {
-            entry
-                .file_type()
-                .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
+            let Ok(kind) = entry.file_type() else {
+                return false;
+            };
+            // Fichiers déposés par l'explorateur (Windows, macOS) : ignorés, sans valoir preuve.
+            if kind.is_file()
+                && !kind.is_symlink()
+                && entry.file_name().to_str().is_some_and(is_os_junk)
+            {
+                return true;
+            }
+            kind.is_dir()
+                && !kind.is_symlink()
                 && entry.file_name().to_str().is_some_and(child_shape)
                 && (name != crate::podcast::source::CACHE_SUBDIR
                     || podcast_source_children_known(&entry.path()))
@@ -350,7 +362,8 @@ fn is_os_junk(name: &str) -> bool {
 /// index mis de côté `library.json.<horodatage>[-n].bak`, temporaire d'écriture atomique de
 /// l'index `.library.json.<pid>-<n>.tmp`, histoires `*.plain.pk` et `*.lunii.pk` (fichiers). Un
 /// seul autre nom, un lien ou un type inattendu : refus. Une bibliothèque ouverte sans rien
-/// installer (`.lock` seul) est ainsi reconnue (#591).
+/// installer (`.lock` seul) est ainsi reconnue (#591). Les fichiers de l'explorateur
+/// ([`is_os_junk`], fichiers ordinaires seulement) sont ignorés, sans valoir preuve.
 fn library_children_known(dir: &Path) -> bool {
     let index = crate::library::INDEX_FILE;
     let tmp_prefix = format!(".{index}.");
@@ -372,6 +385,10 @@ fn library_children_known(dir: &Path) -> bool {
         }
         if kind.is_dir() {
             return name == crate::library::STAGING_DIR || name == crate::library_thumb::THUMBS_DIR;
+        }
+        // Fichiers déposés par l'explorateur (Windows, macOS) : ignorés, sans valoir preuve.
+        if kind.is_file() && is_os_junk(&name) {
+            return true;
         }
         kind.is_file()
             && (name == ".lock"
@@ -1484,6 +1501,109 @@ mod tests {
                 "{name} en jonction"
             );
         }
+    }
+
+    /// Fichiers de l'explorateur à la racine d'un sous-dossier soumis à une preuve d'usage
+    /// (#591) : ignorés à côté d'un contenu valide, jugés comme un dossier vide quand ils sont
+    /// seuls ; refusés en dossier ou en jonction ; un autre nom reste refusé.
+    fn root_os_junk_is_ignored(subdir: &str, valid: &dyn Fn(&Path)) {
+        let marked = |setup: &dyn Fn(&Path)| {
+            let config = tempfile::tempdir().unwrap();
+            let cache = tempfile::tempdir().unwrap();
+            let dir = cache.path().join(subdir);
+            fs::create_dir_all(&dir).unwrap();
+            setup(&dir);
+            let roots = [cache.path().to_path_buf()];
+            migrate_markers(&config.path().join(MIGRATION_WITNESS), &roots).unwrap();
+            is_owned(&dir)
+        };
+        assert!(marked(valid), "{subdir} : contenu valide");
+        let empty = marked(&|_| {});
+        for junk in [
+            "desktop.ini",
+            "DESKTOP.INI",
+            "Thumbs.db",
+            "thumbs.db",
+            ".DS_Store",
+        ] {
+            assert!(
+                marked(&|d| {
+                    valid(d);
+                    write(&d.join(junk), 3);
+                }),
+                "{subdir}/{junk} à côté d'un contenu valide"
+            );
+            assert_eq!(
+                marked(&|d| write(&d.join(junk), 3)),
+                empty,
+                "{subdir}/{junk} seul : jugé comme vide"
+            );
+            assert!(
+                !marked(&|d| {
+                    valid(d);
+                    fs::create_dir_all(d.join(junk)).unwrap();
+                }),
+                "{subdir}/{junk} dossier"
+            );
+        }
+        assert!(
+            !marked(&|d| {
+                valid(d);
+                write(&d.join("notes.txt"), 3);
+            }),
+            "{subdir}/notes.txt"
+        );
+        assert!(
+            !marked(&|d| {
+                valid(d);
+                write(&d.join(".ds_store"), 3);
+            }),
+            "{subdir}/.ds_store : casse exacte"
+        );
+        #[cfg(windows)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            for junk in ["desktop.ini", "Thumbs.db", ".DS_Store"] {
+                assert!(
+                    !marked(&|d| {
+                        valid(d);
+                        // Séparateurs Windows : `mklink` lirait `/x` comme une option.
+                        let status = std::process::Command::new("cmd")
+                            .args(["/C", "mklink", "/J"])
+                            .arg(d.join(junk))
+                            .arg(outside.path())
+                            .output()
+                            .unwrap();
+                        assert!(status.status.success(), "mklink /J a échoué");
+                    }),
+                    "{subdir}/{junk} en jonction"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fichiers_de_l_explorateur_a_la_racine_de_library() {
+        root_os_junk_is_ignored("library", &|d| write(&d.join(".lock"), 0));
+    }
+
+    #[test]
+    fn fichiers_de_l_explorateur_a_la_racine_de_podcasts() {
+        root_os_junk_is_ignored("podcasts", &|d| write(&d.join("src/feed.xml"), 3));
+    }
+
+    #[test]
+    fn fichiers_de_l_explorateur_a_la_racine_de_podcast_work() {
+        root_os_junk_is_ignored("podcast-work", &|d| {
+            write(&d.join("4f1c2a9e-0b7d-4c3e-9a51-2d6e8f0a1b3c/pack.zip"), 3)
+        });
+    }
+
+    #[test]
+    fn fichiers_de_l_explorateur_a_la_racine_de_play() {
+        root_os_junk_is_ignored("play", &|d| {
+            write(&d.join("0123456789abcdef/story/x.bin"), 3)
+        });
     }
 
     #[cfg(windows)]
