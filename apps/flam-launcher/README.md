@@ -1350,7 +1350,10 @@ prouvent leur usage par l'application (#591) : `library/` seulement s'il contien
 `.staging/`, `thumbs/`, `library.json`, `library.json.*.bak`, `.library.json.*.tmp`,
 `*.plain.pk`, `*.lunii.pk`) ; `flam-transfer/` (travail de préparation d'un envoi vers la Flam)
 seulement si chaque élément est `str/` (dont chaque enfant est un dossier nommé par un UUID
-d'histoire en minuscules avec tirets, vide ou contenant le fichier `key`) ou un chantier
+d'histoire en minuscules avec tirets, vide, contenant le fichier `key`, ou reste d'une suppression
+interrompue dont tous les éléments de premier niveau ont un nom écrit par la préparation : fichiers
+`key`, `info`, `main.lsf`, `version`, `ni`, `nm`, `li`, `ri`, `si`, dossiers `img`, `sounds`, `script`,
+`rf`, `sf`, casse et type exacts) ou un chantier
 `.partiel-<uuid>-<32 chiffres hexadécimaux>` (éventuellement `.partiel-ancien-…`), le contenu d'un
 chantier n'étant pas examiné ; un fichier, un lien ou tout autre nom suffit à refuser ;
 `podcasts/`, `podcast-work/` et `play/` seulement si tous
@@ -1438,8 +1441,15 @@ avant son ajout (témoin `cache-markers.done` présent), une migration tardive u
 effectif et dans le dossier par défaut, avec la même preuve ; un refus est inscrit dans la liste en attente du témoin
 principal et réévalué à chaque démarrage (un dossier personnel homonyme n'est jamais marqué ni vidé ; l'envoi l'utilise
 comme avant, sans le nettoyer). Les restes d'un envoi interrompu par un arrêt brutal (chantiers `.partiel-*` et
-préparations terminées de `str/`) sont supprimés au début du prochain envoi, seulement si `flam-transfer/` est marqué ;
-« Vider le cache » les supprime aussi. « Vider le cache » ne casse jamais un envoi : `device_send_story` tient le
+préparations terminées de `str/`) sont supprimés au début du prochain envoi, seulement s'ils datent d'au moins
+douze heures (`LEFTOVER_MIN_AGE` : un envoi de 432 Mio a pris 24 min, le plafond de 4 Gio en donnerait environ
+4 h ; deux sessions Windows partageant le même dossier de cache ne se suppriment pas leur préparation en cours ;
+limite : une copie de plus de douze heures n'est pas protégée) et seulement si `flam-transfer/` est marqué ;
+« Vider le cache » les supprime aussi. Un nouveau dossier de cache choisi dont `library.json` n'est pas reconnu mais dont `flam-transfer/` est non vide et
+prouvé voit ce sous-dossier marqué (sinon il serait refusé comme homonyme). Limite : après un retour à une version
+antérieure qui réécrit la liste en attente du témoin principal, une entrée `flam-transfer` en attente en disparaît
+alors que le témoin tardif reste : ce dossier non prouvé ne sera plus réévalué (fuite de place, jamais de perte ;
+créer un fichier vide `.flam-launcher` dedans pour le reconnaître). « Vider le cache » ne casse jamais un envoi : `device_send_story` tient le
 portillon du cache en lecture pendant tout l'envoi, le vidage (écriture) attend sa fin. `play/` ne contient que des copies de travail jetables ; les sauvegardes du player sont dans `<config>/saves/`, hors cache (voir « Lancement du player »). **Tout module qui crée un nouveau
 sous-dossier de cache doit l'ajouter à cette liste** (il sera alors créé marqué). L'interface demande une confirmation
 (boîte `alertdialog`, focus sur « Annuler ») qui rappelle les dossiers concernés et la taille

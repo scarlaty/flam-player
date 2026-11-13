@@ -153,10 +153,14 @@ pub struct CatalogService {
     /// restent parallèles entre sources), le vidage du cache en écriture. Partagé avec le
     /// pipeline d'installation (`install`), qui le tient en lecture pendant chaque tâche.
     cache_gate: Arc<tokio::sync::RwLock<()>>,
-    /// Compteur incrémenté à chaque prise du portillon en écriture (vidage du cache,
-    /// [`CatalogService::pause_refreshes`]). Un travail qui relâche le portillon pendant une
-    /// attente réseau lit le compteur sous le portillon, et le compare en le reprenant : s'il a
-    /// changé, un vidage est passé entre-temps et rien n'est écrit (un vidage ne recrée rien).
+    /// Compteur des vidages du cache ([`CatalogService::pause_refreshes`]) : incrémenté une fois
+    /// portillon en écriture pris (avant toute suppression, valeur impaire = vidage en cours),
+    /// une seconde fois quand le garde est lâché (valeur paire = au repos). Un travail qui relâche
+    /// le portillon pendant une attente réseau lit le compteur, puis le compare en reprenant le
+    /// portillon en lecture : s'il a changé, ou s'il était impair à la lecture, un vidage est
+    /// passé ou était en cours et rien n'est écrit (un vidage ne recrée rien). La lecture peut se
+    /// faire sans portillon (`thumbnail`) : une valeur lue avant, pendant ou après un vidage ne
+    /// peut jamais être retrouvée égale une fois ce vidage terminé.
     clear_epoch: AtomicU64,
     /// Génération de chaque source, incrémentée par `purge_source` : un travail qui a lu la
     /// génération avant d'attendre un verrou la compare avant d'écrire.
@@ -218,13 +222,18 @@ impl CatalogService {
     /// d'en démarrer tant que le garde renvoyé est conservé. Un travail resté en attente du
     /// réseau pendant le vidage n'écrit plus rien ensuite (`clear_epoch`). Sert au vidage du
     /// cache.
-    pub async fn pause_refreshes(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
+    pub async fn pause_refreshes(&self) -> PauseGuard<'_> {
         let guard = self.cache_gate.write().await;
         self.clear_epoch.fetch_add(1, Ordering::SeqCst);
-        guard
+        PauseGuard {
+            _gate: guard,
+            epoch: &self.clear_epoch,
+        }
     }
 
-    /// Valeur du compteur de vidages (voir le champ `clear_epoch`) ; à lire portillon tenu.
+    /// Valeur du compteur de vidages (voir le champ `clear_epoch`). Lue portillon tenu (le
+    /// rafraîchissement, toujours paire) ou sans portillon (`thumbnail`, pour ne pas attendre
+    /// un vidage en file derrière un envoi).
     fn clear_epoch(&self) -> u64 {
         self.clear_epoch.load(Ordering::SeqCst)
     }
@@ -555,12 +564,11 @@ impl CatalogService {
             ));
         }
 
-        // Compteur de vidages lu portillon tenu : la lecture du cache et l'écriture finale ne
-        // sont séparées que par le réseau (portillon relâché), voir `store_thumb`.
-        let epoch = {
-            let _gate = self.cache_gate.read().await;
-            self.clear_epoch()
-        };
+        // Compteur de vidages lu **sans** le portillon : une demande dont la vignette est déjà
+        // fraîche sur le disque ne doit pas attendre un vidage en file (le portillon est parfois
+        // tenu en lecture plusieurs minutes par un envoi, et un écrivain en attente bloque les
+        // nouveaux lecteurs). Voir le champ `clear_epoch` et `store_thumb`.
+        let epoch = self.clear_epoch();
         let path = thumb_path(&dir, thumb_url);
         let meta_path = thumb_meta_path(&dir, thumb_url);
         let ttl = self.thumb_ttl.as_secs();
@@ -716,6 +724,20 @@ impl CatalogService {
             Ok(Err(err)) => tracing::warn!("écriture de la vignette impossible : {err}"),
             Err(err) => tracing::warn!("écriture de la vignette impossible : {err}"),
         }
+    }
+}
+
+/// Garde rendu par [`CatalogService::pause_refreshes`] : tient le portillon du cache en écriture
+/// et referme le vidage dans le compteur (`clear_epoch`) quand il est lâché, avant de libérer le
+/// portillon.
+pub struct PauseGuard<'a> {
+    _gate: tokio::sync::RwLockWriteGuard<'a, ()>,
+    epoch: &'a AtomicU64,
+}
+
+impl Drop for PauseGuard<'_> {
+    fn drop(&mut self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -3036,7 +3058,7 @@ mod tests {
 
     /// Prend le portillon en écriture **sans attendre** (une seule interrogation) : `None` si
     /// quelqu'un le tient en lecture.
-    async fn pause_now(service: &CatalogService) -> Option<tokio::sync::RwLockWriteGuard<'_, ()>> {
+    async fn pause_now(service: &CatalogService) -> Option<PauseGuard<'_>> {
         use std::future::Future;
         let mut pause = std::pin::pin!(service.pause_refreshes());
         std::future::poll_fn(|cx| {
@@ -3141,8 +3163,20 @@ mod tests {
         assert!(thumb_path(&cache.path().join("catalogs/src"), &thumb).is_file());
     }
 
+    /// Interroge une fois `future` : `Ready` avec sa valeur, ou `Pending` (le futur est alors
+    /// enregistré dans la file de ce qu'il attend, sans rien d'autre).
+    async fn poll_once<F: std::future::Future>(
+        future: &mut std::pin::Pin<&mut F>,
+    ) -> std::task::Poll<F::Output> {
+        std::future::poll_fn(|cx| std::task::Poll::Ready(future.as_mut().poll(cx))).await
+    }
+
     /// Purge de la source et vidage demandés pendant l'attente réseau d'un rafraîchissement :
-    /// aucun interblocage (verrou de la source, puis portillon, dans le même ordre partout).
+    /// aucun interblocage (verrou de la source, puis portillon, dans le même ordre partout). Sans
+    /// cet ordre, la purge tiendrait le portillon en attendant le verrou du rafraîchissement, le
+    /// vidage se mettrait en file derrière elle, et le rafraîchissement, qui reprend le portillon
+    /// pour écrire, attendrait le vidage : les trois s'attendent. Le délai ne sert qu'à nommer
+    /// l'échec.
     #[tokio::test]
     async fn purge_et_vidage_pendant_un_rafraichissement_ne_se_bloquent_pas() {
         let mut server = held_server(
@@ -3158,21 +3192,74 @@ mod tests {
             tokio::spawn(async move { service.refresh(&root, "src", &url, 1).await })
         };
         server.requested.recv().await.unwrap();
-        // Purge en attente du verrou de la source (tenu par le rafraîchissement), puis vidage.
-        let purging = {
-            let (service, root) = (service.clone(), cache.path().to_path_buf());
-            tokio::spawn(async move { service.purge_source(&root, "src").await })
-        };
-        let clearing = {
-            let service = service.clone();
-            tokio::spawn(async move {
-                drop(service.pause_refreshes().await);
-            })
-        };
+        // Purge puis vidage interrogés une fois, dans cet ordre : chacun prend sa place dans les
+        // files d'attente avant que la réponse réseau n'arrive.
+        let root = cache.path().to_path_buf();
+        let mut purging = std::pin::pin!(service.purge_source(&root, "src"));
+        let mut clearing = std::pin::pin!(async { drop(service.pause_refreshes().await) });
+        // Un futur déjà terminé à cette interrogation ne doit plus être attendu.
+        let purge_done = poll_once(&mut purging).await.is_ready();
+        let clear_done = poll_once(&mut clearing).await.is_ready();
         server.release.notify_one();
-        // Aucun interblocage : les trois travaux se terminent (ordre indifférent).
-        refreshing.await.unwrap().ok();
-        purging.await.unwrap().unwrap();
-        clearing.await.unwrap();
+        let (refreshed, (), ()) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(
+                refreshing,
+                async {
+                    if !purge_done {
+                        purging.await.unwrap();
+                    }
+                },
+                async {
+                    if !clear_done {
+                        clearing.await;
+                    }
+                }
+            )
+        })
+        .await
+        .expect("interblocage entre rafraîchissement, purge et vidage");
+        refreshed.unwrap().ok();
+    }
+
+    /// Une vignette déjà fraîche sur le disque est servie tout de suite, même quand un vidage
+    /// attend derrière un lecteur du portillon (envoi de plusieurs minutes) : un écrivain en
+    /// attente bloque les nouveaux lecteurs, la lecture du compteur de vidages n'en prend donc
+    /// pas. Le délai ne sert qu'à nommer l'échec.
+    #[tokio::test]
+    async fn une_vignette_fraiche_est_servie_malgre_un_vidage_en_file() {
+        let server = held_server(
+            vec![
+                ("/catalog.json", one_story_catalog(), "application/json"),
+                ("/t/u.png", PNG.to_vec(), "image/png"),
+            ],
+            "/aucune-route-retenue",
+        )
+        .await;
+        let cache = tempfile::tempdir().unwrap();
+        crate::cache::ensure_subdir(cache.path(), "catalogs").unwrap();
+        let url = format!("{}/catalog.json", server.base);
+        let service = Arc::new(svc_with(long_client()));
+        let view = service.refresh(cache.path(), "src", &url, 1).await.unwrap();
+        let thumb = view.entries[0].thumb_url.clone().unwrap();
+        let first = service
+            .thumbnail(cache.path(), "src", &url, &thumb)
+            .await
+            .unwrap();
+
+        // Un envoi tient le portillon en lecture ; un vidage se met en file derrière lui.
+        let sending = service.cache_gate().read_owned().await;
+        let mut clearing = std::pin::pin!(service.pause_refreshes());
+        assert!(poll_once(&mut clearing).await.is_pending());
+
+        let served = tokio::time::timeout(
+            Duration::from_secs(30),
+            service.thumbnail(cache.path(), "src", &url, &thumb),
+        )
+        .await
+        .expect("la vignette fraîche attend le vidage en file")
+        .unwrap();
+        assert_eq!(served, first);
+        drop(sending);
+        drop(clearing.await);
     }
 }

@@ -737,6 +737,17 @@ fn is_story_uuid(name: &str) -> bool {
         })
 }
 
+/// Fichiers de premier niveau d'une préparation (`str/<uuid>/`), relevés dans le code : `prepare`
+/// (`info`, `main.lsf`, `version`, la clé `key`) et `prepare_lunii` (`ni`, `nm`, `li`, `ri`,
+/// `si`, `info`, `key`).
+const PREPARED_FILES: &[&str] = &[
+    "key", "info", "main.lsf", "version", "ni", "nm", "li", "ri", "si",
+];
+
+/// Dossiers de premier niveau d'une préparation : `img`, `sounds`, `script` (histoire Flam) et
+/// `rf`, `sf` (pack Lunii). Le contenu n'est pas examiné.
+const PREPARED_DIRS: &[&str] = &["img", "sounds", "script", "rf", "sf"];
+
 /// Nom d'un dossier de chantier de `prepare::build_in_staging` :
 /// `.partiel-<uuid>-<aléa>` ou `.partiel-ancien-<uuid>-<aléa>` (préparation écartée), l'aléa étant
 /// 32 chiffres hexadécimaux minuscules.
@@ -760,8 +771,11 @@ fn is_staging_name(name: &str) -> bool {
 /// `flam-transfer/` ([`crate::device::transfer::WORK_SUBDIR`]) : chaque élément est un dossier
 /// réel (ou un fichier de l'explorateur, ignoré sans valoir preuve) parmi :
 /// - `str/` ([`crate::device::prepare::STORIES_DIR`]), dont chaque enfant est un dossier réel
-///   nommé par un UUID d'histoire ([`is_story_uuid`]) qui est vide ou contient le fichier `key`
-///   (une préparation n'est publiée en `str/<uuid>/` qu'une fois complète, `key` comprise) ;
+///   nommé par un UUID d'histoire ([`is_story_uuid`]) qui est vide, contient le fichier `key`
+///   (écrit par `prepare` dans la préparation, publiée en `str/<uuid>/` une fois construite),
+///   ou est le reste d'une suppression interrompue : tous ses éléments de premier niveau portent
+///   un nom de [`PREPARED_FILES`] (fichier) ou de [`PREPARED_DIRS`] (dossier réel), `key` et
+///   `info` ayant pu disparaître avant `rf/` et `sf/` ;
 /// - un chantier de préparation ([`is_staging_name`]), dont le contenu n'est pas examiné (il est
 ///   partiel par nature).
 ///
@@ -786,10 +800,19 @@ fn transfer_children_known(dir: &Path) -> bool {
             }
             names.push((name, entry.file_type()));
         }
+        // Reste d'une suppression interrompue : liste fermée, noms exacts, type exact ; un seul
+        // nom inconnu (ou un lien) refuse tout.
+        let known = |name: &str, kind: &io::Result<fs::FileType>| {
+            kind.as_ref().is_ok_and(|k| {
+                (k.is_file() && PREPARED_FILES.contains(&name))
+                    || (k.is_dir() && PREPARED_DIRS.contains(&name))
+            })
+        };
         names.is_empty()
             || names
                 .iter()
                 .any(|(name, kind)| name == KEY_FILE && kind.as_ref().is_ok_and(|k| k.is_file()))
+            || names.iter().all(|(name, kind)| known(name, kind))
     };
     let stories = |path: &Path| {
         entries_known(path, &|_| false, &|name, child| {
@@ -1020,6 +1043,18 @@ fn migrate_late(config_dir: &Path, env: &Environment, fault: Fault) -> usize {
             }
         }
     }
+    // Dossier configuré mais non retenu (il peut redevenir le cache effectif) : inscrit sans être
+    // évalué, le rattrapage le garde tant qu'il n'est ni effectif ni quitté.
+    for root in &current.keep {
+        for name in LATE_SUBDIRS {
+            if let Some(text) = root.to_str() {
+                refused.push(Pending {
+                    root: text.to_string(),
+                    name: name.to_string(),
+                });
+            }
+        }
+    }
     if !refused.is_empty() {
         let witness = config_dir.join(MIGRATION_WITNESS);
         let mut pending = read_pending(&witness);
@@ -1061,7 +1096,7 @@ pub fn remove_stale_tmp_configured(state: &ConfigState, env: &Environment) {
 /// adopté et `true` est renvoyé : `library/` reçoit le marqueur (s'il ne l'a pas déjà), **puis**
 /// les autres sous-dossiers de [`APP_CACHE_SUBDIRS`] présents dont le contenu prouve l'usage par
 /// l'application reçoivent le leur ([`mark_existing`] avec la preuve [`proven_at_adoption`] :
-/// `podcasts`, `podcast-work`, `play` et `thumbs` seulement), sans quoi ils ne seraient plus
+/// `podcasts`, `podcast-work`, `play`, `flam-transfer` et `thumbs` seulement), sans quoi ils ne seraient plus
 /// jamais marqués (#591) : la migration ne repasse plus et [`ensure_subdir`] ne marque pas un
 /// dossier existant. `archives`, `catalogs`, `compat-local` et `official` ne sont jamais marqués
 /// ici (fuite de place, jamais de perte). Un homonyme refusé
@@ -1093,6 +1128,31 @@ fn adopt_legacy_cache_with(root: &Path, fault: Fault) -> io::Result<bool> {
     // Bibliothèque reconnue et marquée : les autres sous-dossiers, sur preuve par le contenu.
     mark_existing(root, Marking::Adoption, fault)?;
     Ok(true)
+}
+
+/// Pour un dossier de cache `root` choisi par l'utilisateur, hors adoption d'un ancien cache
+/// ([`adopt_legacy_cache`]) : marque les sous-dossiers de [`LATE_SUBDIRS`] (`flam-transfer`) non
+/// marqués, **non vides** et dont le contenu prouve l'usage par l'application (preuve de
+/// l'adoption, [`proven_at_adoption`]). Sans cela, un ancien cache quitté puis repris (dont
+/// `library.json` dépasse la taille lisible, donc sans adoption) serait refusé pour ce seul
+/// sous-dossier, alors que ses restes sont ceux de l'application. Un dossier vide n'est pas
+/// marqué ici : il peut être un dossier de l'utilisateur, le refus d'un homonyme reste la règle.
+/// Une erreur d'écriture est journalisée, le sous-dossier reste non marqué (et donc refusé).
+pub fn adopt_late_subdirs(root: &Path) {
+    for name in LATE_SUBDIRS.iter().copied() {
+        let dir = root.join(name);
+        let has_content = fs::read_dir(&dir).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|entry| !entry.file_name().to_str().is_some_and(is_os_junk))
+        });
+        if !is_real_dir(&dir) || is_owned(&dir) || !has_content {
+            continue;
+        }
+        if let Err(err) = mark_one(root, name, Marking::Adoption, &no_fault) {
+            tracing::warn!("cache : marqueur de « {name} » non écrit à l'adoption : {err}");
+        }
+    }
 }
 
 /// Âge minimal d'un dossier temporaire de création avant sa suppression : en deçà, une création
@@ -3440,17 +3500,97 @@ mod tests {
         assert!(!is_staging_name(&format!("{STAGING}0")));
     }
 
-    #[cfg(windows)]
+    /// Lien de dossier sans privilège : jonction (`mklink /J`) sous Windows, lien symbolique
+    /// ailleurs.
+    fn link_dir(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link.to_string_lossy().replace('/', "\\"))
+                .arg(target.to_string_lossy().replace('/', "\\"))
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "mklink /J : {out:?}");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
     #[test]
     fn un_lien_dans_flam_transfer_ne_prouve_rien() {
-        let dir = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
-        let work = dir.path().join("flam-transfer");
-        fs::create_dir_all(work.join("str")).unwrap();
-        // La création d'un lien peut être refusée sans privilège : test sans effet.
-        if std::os::windows::fs::symlink_dir(outside.path(), work.join("str").join(STORY)).is_ok() {
-            assert!(!proven_by_content("flam-transfer", &work));
+        write(&outside.path().join("a.txt"), 1);
+        // Lien à la place de `str/`, d'une préparation, d'un chantier, d'un dossier de
+        // préparation (`img`) : chaque cas est refusé, sans suivre le lien.
+        type Place = fn(&Path) -> PathBuf;
+        let places: [(&str, Place); 4] = [
+            ("str", |w| w.join("str")),
+            ("préparation", |w| w.join(format!("str/{STORY}"))),
+            ("chantier", |w| w.join(STAGING)),
+            ("img", |w| w.join(format!("str/{STORY}/img"))),
+        ];
+        for (what, place) in places {
+            let dir = tempfile::tempdir().unwrap();
+            let work = dir.path().join("flam-transfer");
+            fs::create_dir_all(work.join("str")).unwrap();
+            if what == "img" {
+                // Reste partiel (sans `key`) dont `img` est un lien : l'élément n'est pas un
+                // dossier réel.
+                fs::create_dir_all(work.join(format!("str/{STORY}"))).unwrap();
+            } else if what == "str" {
+                fs::remove_dir(work.join("str")).unwrap();
+            }
+            link_dir(&place(&work), outside.path());
+            assert!(!proven_by_content("flam-transfer", &work), "{what}");
         }
+        assert!(outside.path().join("a.txt").is_file());
+    }
+
+    #[test]
+    fn un_reste_de_suppression_interrompue_est_prouve_a_noms_exacts() {
+        let leftover = |names: &[(&str, bool)]| {
+            transfer_proven(|w| {
+                for (name, is_dir) in names {
+                    let path = w.join(format!("str/{STORY}")).join(name);
+                    if *is_dir {
+                        fs::create_dir_all(path.join("x")).unwrap();
+                    } else {
+                        write(&path, 1);
+                    }
+                }
+                fs::create_dir_all(w.join(format!("str/{STORY}"))).unwrap();
+            })
+        };
+        // `key` et `info` ont disparu avant `rf/` et `sf/` : reste d'un pack Lunii ou Flam.
+        assert!(leftover(&[
+            ("ri", false),
+            ("si", false),
+            ("rf", true),
+            ("sf", true)
+        ]));
+        assert!(leftover(&[
+            ("main.lsf", false),
+            ("version", false),
+            ("img", true)
+        ]));
+        assert!(leftover(&[("script", true), ("sounds", true)]));
+        // Un seul nom inconnu, un mauvais type, une autre casse : refus.
+        assert!(!leftover(&[
+            ("ri", false),
+            ("photo.jpg", false),
+            ("rf", true)
+        ]));
+        assert!(!leftover(&[("ri", true)]));
+        assert!(!leftover(&[("rf", false)]));
+        assert!(!leftover(&[("RI", false)]));
+        assert!(!leftover(&[("img", true), ("Mes documents", true)]));
+        // Fichier étranger au milieu d'un reste connu.
+        assert!(!leftover(&[
+            ("si", false),
+            ("notes.txt", false),
+            ("sf", true)
+        ]));
     }
 
     #[test]
@@ -3568,6 +3708,53 @@ mod tests {
             Migration::CaughtUp { marked: 1 }
         );
         assert!(is_owned(&cache.path().join("flam-transfer")));
+        assert!(read_pending(&witness).is_empty());
+    }
+
+    /// Dossier configuré mais non retenu (valeur refusée, repli sur le défaut) : son
+    /// `flam-transfer` est inscrit en attente sans être évalué ; quand ce dossier redevient le
+    /// cache effectif, le rattrapage le marque s'il est prouvé.
+    #[test]
+    fn la_migration_tardive_garde_le_dossier_configure_non_retenu() {
+        let base = tempfile::tempdir().unwrap();
+        let default = base.path().join("defaut");
+        let configured = base.path().join("configure");
+        fs::create_dir_all(&default).unwrap();
+        unmarked_transfer(&configured);
+        let config = base.path().join("config");
+        fs::create_dir_all(&config).unwrap();
+        set_cache_dir(&config, Some(&configured));
+        let witness = config.join(MIGRATION_WITNESS);
+        fs::write(&witness, b"").unwrap();
+
+        // `configure` est protégé : refusé, repli sur `defaut`.
+        let refusing = env_with(&default, vec![configured.clone()]);
+        assert_eq!(
+            migrate_configured(&config, &refusing).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert!(!is_owned(&configured.join("flam-transfer")), "pas évalué");
+        assert!(config.join(LATE_WITNESS).is_file());
+        assert_eq!(
+            read_pending(&witness),
+            [Pending {
+                root: configured.to_str().unwrap().to_string(),
+                name: "flam-transfer".into()
+            }]
+        );
+        // Encore non retenu au démarrage suivant : toujours en attente.
+        assert_eq!(
+            migrate_configured(&config, &refusing).unwrap(),
+            Migration::AlreadyDone
+        );
+        assert_eq!(read_pending(&witness).len(), 1);
+        // Il redevient le cache effectif : prouvé, marqué.
+        let accepting = env_with(&default, vec![]);
+        assert_eq!(
+            migrate_configured(&config, &accepting).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+        assert!(is_owned(&configured.join("flam-transfer")));
         assert!(read_pending(&witness).is_empty());
     }
 

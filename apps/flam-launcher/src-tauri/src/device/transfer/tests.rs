@@ -2736,6 +2736,13 @@ fn les_restes_d_un_arret_brutal_sont_nettoyes_au_prochain_envoi_si_le_dossier_es
             .join("11111111-2222-3333-4444-555555555555");
         write(&staging.join("info"), b"x");
         write(&prepared.join("key"), b"k");
+        // Restes d'un arrêt brutal, anciens ; un autre, récent, peut être celui d'une autre
+        // session qui prépare dans le même dossier de cache : jamais touché.
+        let aged = crate::device::prepare::LEFTOVER_MIN_AGE + std::time::Duration::from_secs(60);
+        let young = work.join(".partiel-en-cours");
+        write(&young.join("info"), b"x");
+        crate::device::prepare::backdate(&staging, aged);
+        crate::device::prepare::backdate(&prepared, aged);
 
         send_from_library_with(
             &FaultyFs::new(),
@@ -2752,6 +2759,7 @@ fn les_restes_d_un_arret_brutal_sont_nettoyes_au_prochain_envoi_si_le_dossier_es
 
         assert_eq!(staging.exists(), !owned, "chantier, marqué = {owned}");
         assert_eq!(prepared.exists(), !owned, "préparation, marqué = {owned}");
+        assert!(young.is_dir(), "reste récent gardé");
         assert!(!work.join("str").join(NEW).exists(), "envoi nettoyé");
         assert_eq!(crate::cache::is_owned(&work), owned);
     }
