@@ -308,6 +308,12 @@ export interface TransferReport {
    * impossible, l'envoi reste réussi) ; `null`/absent : rien n'est proposé.
    */
   library_copy?: LibraryCopy | null;
+  /**
+   * La Flam a été débranchée, remplacée ou momentanément illisible juste après cette mise à jour
+   * réussie (#577) : la file d'envoi s'arrête, comme pour {@link DEVICE_CHANGED} ; ni relecture
+   * carrier ni suite « Mes histoires » (`library_copy` absent).
+   */
+  device_changed?: boolean;
 }
 
 /** Copie de l'histoire dans « Mes histoires » après l'envoi (miroir de `LibraryCopy`). */

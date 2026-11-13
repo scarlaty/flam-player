@@ -319,12 +319,17 @@ export function DeviceProvider({
     clearPcCopy(() => true);
   }, [deviceKey, clearPcCopy]);
 
-  /** Les histoires en attente passent à « annulé » (elles pourront être renvoyées). */
+  /**
+   * Les histoires en attente passent à « annulé » (elles pourront être renvoyées) ; `only` :
+   * seulement celles-ci (en attente au résultat de l'envoi, pas un ajout fait ensuite).
+   */
   const cancelWaiting = useCallback(
-    () =>
+    (only?: ReadonlySet<string>) =>
       updateQueue((items) =>
         items.map((item) =>
-          item.state === "waiting" ? { ...item, state: "cancelled" } : item,
+          item.state === "waiting" && (!only || only.has(item.uuid))
+            ? { ...item, state: "cancelled" }
+            : item,
         ),
       ),
     [updateQueue],
@@ -366,6 +371,15 @@ export function DeviceProvider({
       setAnnouncement((previous) =>
         hasOutcome && previous ? `${previous}. ${started}` : started,
       );
+      // Histoires en attente au résultat de l'envoi : seules elles peuvent être annulées par ce
+      // résultat (un ajout fait pendant la reprise qui suit n'est pas touché).
+      const snapshotWaiting = () =>
+        new Set(
+          queueRef.current.filter((item) => item.state === "waiting").map((i) => i.uuid),
+        );
+      let waitingAtResult: ReadonlySet<string>;
+      // Flam débranchée ou remplacée pendant ou juste après l'envoi (#577).
+      let changed = false;
       try {
         const sent = await sendStoryToDevice(
           rootNow,
@@ -373,6 +387,8 @@ export function DeviceProvider({
           next.carrier,
           next.replace,
         );
+        waitingAtResult = snapshotWaiting();
+        changed = sent.device_changed === true;
         if (sent.carrier_readback === false) {
           carrierSession.current = null;
           setItemState(next.uuid, "failed", text.errors.readback);
@@ -381,10 +397,15 @@ export function DeviceProvider({
           // Conservation demandée mais échouée : les envois suivants redemandent les clés.
           if (next.carrier?.remember && sent.carrier_stored !== true)
             carrierSession.current = null;
-          // Une autre entrée de reprise a échoué : l'envoi a réussi, mais c'est signalé.
-          const warning = sent.recovery_failures?.length
-            ? text.panel.recoveryFailures(sent.recovery_failures)
-            : undefined;
+          // Une autre entrée de reprise a échoué, ou la Flam a changé juste après : l'envoi a
+          // réussi, mais c'est signalé.
+          const warnings = [
+            ...(changed ? [text.panel.deviceChangedAfterSend] : []),
+            ...(sent.recovery_failures?.length
+              ? [text.panel.recoveryFailures(sent.recovery_failures)]
+              : []),
+          ];
+          const warning = warnings.length ? warnings.join(" ") : undefined;
           // Copie de « Mes histoires » (#609) : décidée par le backend, envoi réussi seulement.
           const copy = sent.library_copy ?? null;
           updateQueue((items) =>
@@ -426,6 +447,7 @@ export function DeviceProvider({
           );
         }
       } catch (caught) {
+        waitingAtResult = snapshotWaiting();
         const caughtError = toAppError(caught);
         const failure = { ...caughtError, message: sendErrorMessage(caughtError) };
         // Clés refusées ou introuvables : elles seront redemandées au prochain envoi. Une
@@ -440,16 +462,9 @@ export function DeviceProvider({
           setItemState(next.uuid, "cancelled");
           setAnnouncement(text.panel.announce.cancelled);
         } else if (failure.kind === DEVICE_CHANGED) {
-          // Flam débranchée ou remplacée pendant l'envoi (#577) : la suite de la file était
-          // destinée à la Flam choisie, pas à celle branchée maintenant.
           setItemState(next.uuid, "failed", failure.message);
-          cancelWaiting();
           setAnnouncement(text.panel.announce.failed(next.title, failure.message));
-          // Une copie temporaire peut rester sur la Flam branchée : reprise tout de suite (elle
-          // supprime une copie inachevée, ne l'installe jamais), puis état relu.
-          const rootAfter = rootRef.current;
-          if (rootAfter) await recoverDeviceTransfers(rootAfter).catch(() => undefined);
-          retry();
+          changed = true;
         } else if (
           deviceKeyRef.current === keyAtStart &&
           firmwareWriteBlock(deviceRef.current)
@@ -457,7 +472,7 @@ export function DeviceProvider({
           // Refus de la garde du firmware (état connu de la Flam) : les suivantes échoueraient
           // de la même façon.
           setItemState(next.uuid, "failed", failure.message);
-          cancelWaiting();
+          cancelWaiting(waitingAtResult);
           setAnnouncement(text.panel.announce.failed(next.title, failure.message));
         } else {
           setItemState(next.uuid, "failed", failure.message);
@@ -467,11 +482,24 @@ export function DeviceProvider({
           if (failure.kind === "validation") retry();
         }
       }
-      // Une autre Flam est apparue pendant cet envoi (#577) : la suite de la file n'est pas
-      // envoyée sur une Flam que l'utilisateur n'a pas choisie. Flam simplement absente : la
-      // file échoue plus haut (« Flam non détectée »).
-      if (deviceKeyRef.current !== null && deviceKeyRef.current !== keyAtStart) {
-        cancelWaiting();
+      // Flam débranchée ou remplacée pendant ou juste après l'envoi (refus ou rapport
+      // `device_changed`, #577 : la clé d'appareil ne voit pas deux Flam de même libellé sous la
+      // même lettre), ou autre Flam détectée : la suite de la file n'est pas envoyée sur une Flam
+      // que l'utilisateur n'a pas choisie. Flam simplement absente : la file échoue plus haut
+      // (« Flam non détectée »).
+      if (
+        changed ||
+        (deviceKeyRef.current !== null && deviceKeyRef.current !== keyAtStart)
+      ) {
+        cancelWaiting(waitingAtResult);
+      }
+      if (changed) {
+        // Copie temporaire, cache ou ancienne version peuvent rester sur la Flam branchée :
+        // reprise tout de suite (elle supprime une copie inachevée, ne l'installe jamais), puis
+        // état relu.
+        const rootAfter = rootRef.current;
+        if (rootAfter) await recoverDeviceTransfers(rootAfter).catch(() => undefined);
+        retry();
       }
       // Le `bt` saisi ne reste pas dans la file au-delà de l'envoi (fait, échoué ou annulé).
       if (next.carrier?.choice.kind === "entered") {

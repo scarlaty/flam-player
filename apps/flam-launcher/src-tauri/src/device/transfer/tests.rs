@@ -453,6 +453,7 @@ fn chemin_nominal_de_bout_en_bout() {
             library_copy: None,
             dir_synced: cfg!(windows),
             verified_uncached: true,
+            device_changed: false,
             installed_files: p
                 .files
                 .iter()
@@ -2162,15 +2163,26 @@ fn autre_flam_branchee_avant_l_index_rien_n_est_liste() {
     }
 }
 
-/// #577 : mise à jour d'une histoire déjà listée, Flam changée après la promotion : l'envoi est
-/// réussi (rien à écrire dans l'index), mais ni le cache ni la mise de côté ne sont supprimés sur
-/// l'autre Flam ; la reprise de la Flam d'origine s'en charge.
+/// #577 : mise à jour d'une histoire déjà listée, Flam changée après la promotion, renommages
+/// forcés sur le support : l'envoi est réussi (rien à écrire dans l'index) mais signalé
+/// (`device_changed`) ; ni le cache ni la mise de côté ne sont supprimés sur l'autre Flam ; la
+/// reprise de la Flam d'origine s'en charge. Hors Windows, renommages jamais réputés forcés :
+/// refus (voir le test suivant).
 #[test]
 fn mise_a_jour_reussie_sans_nettoyage_sur_une_autre_flam() {
     let tmp = tempfile::tempdir().unwrap();
     let root = device(tmp.path(), true);
     let p = prepared(tmp.path(), 1);
-    let report = send(&swapping_after_promotion(&root), &root, &p, true).unwrap();
+    let result = send(&swapping_after_promotion(&root), &root, &p, true);
+    if !cfg!(windows) {
+        assert!(
+            matches!(result, Err(TransferError::DeviceChangedAfterUpdate)),
+            "{result:?}"
+        );
+        return;
+    }
+    let report = result.unwrap();
+    assert!(report.device_changed, "{report:?}");
     assert!(report.replaced && !report.index_updated && !report.cache_removed);
     assert_eq!(files_of(&root.join("str").join(NEW)), files_of(&p.dir));
     assert!(root.join(LIBRARY_CACHE).exists());
@@ -2180,6 +2192,71 @@ fn mise_a_jour_reussie_sans_nettoyage_sur_une_autre_flam() {
     assert!(!root.join(TRANSFER_DIR).exists());
     assert!(!root.join(LIBRARY_CACHE).exists());
     assert_eq!(listed(&root), vec![id(OTHER), id(NEW)]);
+}
+
+/// #577 : mise à jour listée, Flam changée après la promotion et renommages NON confirmés sur le
+/// support (`sync_dir` en échec) : la mise à jour a pu ne pas atteindre la Flam d'origine ; refus
+/// `DeviceChangedAfterUpdate`, jamais « envoyée ». Sur A, la reprise termine l'état laissé.
+#[test]
+fn mise_a_jour_non_confirmee_sur_une_autre_flam_refusee() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), true);
+    let p = prepared(tmp.path(), 1);
+    let mut fs = swapping_after_promotion(&root);
+    fs.sync_dir_fails = true;
+    let result = send(&fs, &root, &p, true);
+    assert!(
+        matches!(result, Err(TransferError::DeviceChangedAfterUpdate)),
+        "{result:?}"
+    );
+    let message = AppError::from(result.unwrap_err());
+    assert_eq!(message.kind(), "device_changed");
+    assert!(message.to_string().contains("peut-être faite"), "{message}");
+    // Ici le renommage a bien eu lieu : nouvelle version en place, `.old` et cache laissés.
+    assert_eq!(files_of(&root.join("str").join(NEW)), files_of(&p.dir));
+    assert!(previous_dir(&root, &id(NEW)).exists());
+    assert!(root.join(LIBRARY_CACHE).exists());
+    write(&root.join(MDF_FILE), &mdf_v1_real());
+    restart(&root);
+    assert!(!root.join(TRANSFER_DIR).exists());
+    assert!(!root.join(LIBRARY_CACHE).exists());
+    assert_eq!(listed(&root), vec![id(OTHER), id(NEW)]);
+}
+
+/// #577 : Flam changée après une mise à jour (`device_changed`) : la relecture carrier n'est pas
+/// faite (elle lirait l'autre Flam) ; la conservation du couple reste rapportée.
+#[test]
+fn pas_de_relecture_carrier_sur_une_autre_flam() {
+    let resolved = carrier::Resolved {
+        keys: carrier::CarrierKeys::from_parts(&[1u8; 32], &[2u8; 32]).unwrap(),
+        stored: true,
+    };
+    for changed in [false, true] {
+        let mut report = TransferReport {
+            id: NEW.into(),
+            bytes: 1,
+            files: 1,
+            replaced: true,
+            index_updated: false,
+            cache_removed: false,
+            carrier_readback: None,
+            carrier_stored: None,
+            recovery_failures: Vec::new(),
+            library_copy: None,
+            dir_synced: true,
+            verified_uncached: true,
+            device_changed: changed,
+            installed_files: Vec::new(),
+        };
+        let called = Cell::new(false);
+        carrier_outcome(&mut report, Some(&resolved), |_, _| {
+            called.set(true);
+            true
+        });
+        assert_eq!(called.get(), !changed, "changée {changed}");
+        assert_eq!(report.carrier_readback, (!changed).then_some(true));
+        assert_eq!(report.carrier_stored, Some(true));
+    }
 }
 
 /// #577 : une copie complète `<uuid>.in` écrite pour la Flam A et retrouvée sur la Flam B est

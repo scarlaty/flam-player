@@ -383,6 +383,51 @@ fn echec_du_retrait_rapporte_sans_faire_echouer_l_envoi() {
     assert!(!env.installed(A));
 }
 
+/// #577 : envoi réussi mais Flam changée juste après (`device_changed`) : aucune suite
+/// « Mes histoires » (ni retrait automatique, ni « Retirer du PC », ni identité enregistrée), car
+/// la vérification se ferait peut-être sur une autre Flam.
+#[test]
+fn flam_changee_apres_l_envoi_aucune_suite_mes_histoires() {
+    let env = Env::new();
+    env.install(A, 10, &[1u8; 3000]);
+    let removed = std::cell::Cell::new(false);
+    let report = send_then_settle(
+        &env.registry,
+        &env.cache,
+        &env.root,
+        A,
+        true,
+        &|| false,
+        |_| {
+            Ok(TransferReport {
+                id: NEW.into(),
+                bytes: 1,
+                files: 1,
+                replaced: true,
+                index_updated: false,
+                cache_removed: false,
+                carrier_readback: None,
+                carrier_stored: None,
+                recovery_failures: Vec::new(),
+                library_copy: None,
+                dir_synced: true,
+                verified_uncached: true,
+                device_changed: true,
+                installed_files: vec![("info".into(), 1)],
+            })
+        },
+        |_| {
+            removed.set(true);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(report.library_copy, None);
+    assert!(!removed.get());
+    assert!(env.installed(A));
+    assert!(!env.registry.knows(A));
+}
+
 #[test]
 fn relecture_carrier_illisible_ou_empreinte_absente_rien_n_est_propose() {
     let env = Env::new();
@@ -402,6 +447,7 @@ fn relecture_carrier_illisible_ou_empreinte_absente_rien_n_est_propose() {
         library_copy: None,
         dir_synced: true,
         verified_uncached: true,
+        device_changed: false,
         installed_files: vec![("info".into(), 1)],
     };
     let removed = std::cell::Cell::new(false);
@@ -699,6 +745,7 @@ fn un_renvoi_illisible_de_la_meme_histoire_oublie_l_ancien_envoi() {
         library_copy: None,
         dir_synced: true,
         verified_uncached: true,
+        device_changed: false,
         installed_files: vec![("info".into(), 1)],
     };
     let copy = settle(

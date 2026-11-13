@@ -385,14 +385,20 @@ appareil (§ 6.3). Un `.mdf` absent donne « Flam introuvable » sans rien écri
    jamais remplacer celle d'une autre) et l'envoi est refusé ; l'histoire reste complète hors
    index sur la Flam d'origine (orphelin, et `<uuid>.old/` si un orphelin était remplacé), la
    reprise termine la mise de côté et un nouvel envoi de la même histoire l'ajoute à l'index.
-   Pour une mise à jour déjà listée, l'envoi est fait ; les étapes 7 et 8 sont laissées à la
-   reprise. Sinon, l'UUID est ajouté **à la fin** de `list` par `write_index` (§ 5), s'il n'y
+   Pour une mise à jour déjà listée, l'envoi n'est réussi que si les renommages ont été forcés
+   sur le support (`dir_synced`) : il est alors signalé (`device_changed` dans le rapport : la
+   file d'envoi s'arrête et la reprise est relancée, ni relecture carrier ni suite « Mes
+   histoires »), et les étapes 7 et 8 sont laissées à la reprise de la Flam d'origine ; sans
+   renommage forcé, la mise à jour a pu ne pas atteindre cette Flam (FAT sans journal) : refus
+   « mise à jour peut-être faite ; rebranchez la Flam d'origine pour vérifier ». Sinon, l'UUID est ajouté **à la fin** de `list` par `write_index` (§ 5), s'il n'y
    figure pas déjà.
 
    Chaque relecture de `.mdf` (étapes 1, 4 et 6 ; 126 octets, sans coût mesurable) réessaie un
    verrou passager (antivirus) pendant environ 1 s : seul un `.mdf` différent, absent ou encore
-   illisible fait refuser. Aucun contrôle n'a lieu après l'écriture de l'index : un envoi
-   installé n'est jamais présenté comme un échec. L'identité de la Flam repose sur le contenu de
+   illisible fait refuser. Une histoire installée et listée n'est jamais présentée comme un
+   échec ; une histoire installée hors index l'est toujours (refus avant l'index). Fenêtre
+   résiduelle : un changement d'appareil entre la dernière relecture de `.mdf` et l'écriture de
+   l'index (quelques millisecondes) n'est pas vu. L'identité de la Flam repose sur le contenu de
    `.mdf`, supposé propre à chaque appareil (numéro de série, clés) : à confirmer sur plusieurs
    Flam.
 7. **Cache** : suppression de `usr/0/library.cache`, même si l'index n'a pas changé (le contenu,
@@ -417,7 +423,8 @@ Reprise (`recover`, appelée à chaque envoi et à appeler à la détection), se
 | la mise de côté (mise à jour)          | `<uuid>.old/`, `<uuid>.in/`, pas de `str/<uuid>` | `<uuid>.old/` remis en `str/<uuid>/`, `<uuid>.in/` supprimé |
 | le renommage final                     | `str/<uuid>/` complet, peut-être `<uuid>.old/`   | `<uuid>.old/` supprimé, cache supprimé                      |
 | (installation) avant l'index           | `str/<uuid>/` complet hors index (orphelin)      | aucune ; un nouvel envoi le remplace                        |
-| (refus) `.mdf` changé avant l'index    | idem, peut-être `<uuid>.old/`                    | `<uuid>.old/` supprimé ; un nouvel envoi l'ajoute à l'index |
+| (refus) `.mdf` changé avant l'index    | idem, peut-être `<uuid>.old/`                    | `<uuid>.old/` supprimé, cache supprimé ; un nouvel envoi l'ajoute à l'index |
+| `.mdf` changé avant l'index (mise à jour listée) | nouvelle version listée, `<uuid>.old/`, cache périmé | `<uuid>.old/` supprimé, cache supprimé (renommage non écrit : ancienne version remise) |
 | une étape de l'index                   | ancien ou nouvel index                           | `recover` de l'index (§ 5)                                  |
 | l'index, avant le cache                | `library.cache` périmé                           | supprimé si `<uuid>.old/` reste ; sinon à l'envoi suivant   |
 

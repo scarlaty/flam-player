@@ -96,6 +96,8 @@ let removeGate: Promise<void> | null;
 let listGate: Promise<void> | null;
 let ejectGate: Promise<void> | null;
 let recoverFailure: { kind: string; message: string } | null;
+/** Reprise suspendue jusqu'à sa résolution (`null` : immédiate). */
+let recoverGate: Promise<void> | null;
 let carrierConsent: { text_version: number; accepted_at: string } | null;
 let storedKeys: boolean;
 /** Échec de `device_carrier_state` (lecture de l'état du mode carrier). */
@@ -132,6 +134,7 @@ beforeEach(() => {
   listGate = null;
   ejectGate = null;
   recoverFailure = null;
+  recoverGate = null;
   carrierConsent = null;
   storedKeys = false;
   carrierStateFailure = null;
@@ -146,14 +149,18 @@ beforeEach(() => {
       switch (cmd) {
         case "device_status":
           return status;
-        case "device_recover_transfers":
-          if (recoverFailure) throw recoverFailure;
-          return {
-            incomplete_removed: 0,
-            previous_restored: 0,
-            updates_finished: 0,
-            left_alone: 0,
+        case "device_recover_transfers": {
+          const recovered = () => {
+            if (recoverFailure) throw recoverFailure;
+            return {
+              incomplete_removed: 0,
+              previous_restored: 0,
+              updates_finished: 0,
+              left_alone: 0,
+            };
           };
+          return recoverGate ? recoverGate.then(recovered) : recovered();
+        }
         case "device_list_stories":
           return listGate ? listGate.then(() => report(onDevice)) : report(onDevice);
         case "device_send_story":
@@ -854,6 +861,64 @@ it("autre Flam détectée pendant le premier envoi (#577) : rien n'est envoyé s
   expect(
     calls.filter((c) => c.cmd === "device_send_story" && c.args.root === "F:\\"),
   ).toHaveLength(0);
+});
+
+it("mise à jour réussie mais Flam changée juste après, même lettre et même libellé (#577) : ligne envoyée avec un avertissement, suivantes annulées, reprise relancée", async () => {
+  acknowledgeWarning();
+  onDevice = [];
+  render(<Harness />);
+  await readyEmpty();
+  const panel = await queueThree();
+  const recoveries = count("device_recover_transfers");
+  // La clé d'appareil (lettre + libellé) ne change pas : seul le rapport le dit.
+  await resolveSend(A, { id: A, device_changed: true, recovery_failures: [] });
+  await waitFor(() => expect(within(panel).getAllByText("Annulée")).toHaveLength(2));
+  expect(within(panel).getByText("Envoyée")).toBeInTheDocument();
+  expect(
+    within(panel).getByText(t.deviceTransfer.panel.deviceChangedAfterSend),
+  ).toBeInTheDocument();
+  await waitFor(() => expect(count("device_recover_transfers")).toBe(recoveries + 1));
+  expect(count("device_send_story")).toBe(1);
+});
+
+it("une histoire ajoutée pendant la reprise qui suit un refus device_changed n'est pas annulée (#577)", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  acknowledgeWarning();
+  onDevice = [];
+  render(<Harness />);
+  await readyEmpty();
+  fireEvent.click(sendButton("Capi"));
+  fireEvent.click(sendButton("Les trois ours"));
+  const panel = await screen.findByRole("region", { name: "Envoi sur la Flam" });
+  await waitFor(() => expect(sends.has(A)).toBe(true));
+  let release!: () => void;
+  recoverGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const recoveries = count("device_recover_transfers");
+  await act(async () => {
+    sends.get(A)?.reject({ kind: "device_changed", message: "Flam changée" });
+  });
+  await waitFor(() => expect(within(panel).getByText("Annulée")).toBeInTheDocument());
+  await waitFor(() => expect(count("device_recover_transfers")).toBe(recoveries + 1));
+  // Pendant la reprise, l'autre Flam est détectée et l'utilisateur y envoie une histoire.
+  const other = detected();
+  other.device!.root = "F:\\";
+  status = other;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS + 50);
+  });
+  await readyEmpty();
+  fireEvent.click(sendButton("Déjà là"));
+  await act(async () => {
+    release();
+  });
+  await waitFor(() => expect(sends.has(C)).toBe(true));
+  expect(
+    calls.find((c) => c.cmd === "device_send_story" && c.args.uuid === C)?.args.root,
+  ).toBe("F:\\");
+  // La file terminée a été remplacée par la nouvelle : « Déjà là » est en cours, pas annulée.
+  expect(within(panel).queryByText("Annulée")).not.toBeInTheDocument();
 });
 
 it("retire une histoire de la Flam après confirmation", async () => {
