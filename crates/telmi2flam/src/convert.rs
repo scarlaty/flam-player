@@ -53,6 +53,11 @@ pub fn convert(
 ) -> Result<Report, ConvError> {
     reporter.start(req.input.as_os_str());
     let mut archive = Archive::open(req.input)?;
+    // `-o` donné : la cible est connue, refus avant de construire le paquet (travail inutile).
+    // Le nom par défaut dépend du paquet : contrôlé plus bas.
+    if let Some(out) = req.output {
+        refuse_input_as_output(req.input, &Target::for_path(out.to_owned(), req.emit_plain))?;
+    }
     // MP3 recopiés tels quels relus dans l'archive à l'écriture (#355).
     let package = build_package_streamed(&mut archive, &req.options, cancelled, reporter)?;
     let target = Target::new(req.output, req.emit_plain, &package);

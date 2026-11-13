@@ -125,3 +125,24 @@ fn lien_vers_l_entree() {
     assert_eq!(std::fs::read(dir.join("in.zip")).unwrap(), data);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `-o` donné : le refus précède la construction du paquet. Une archive ZIP valide mais qui
+/// n'est pas une histoire (ici vide) donnerait `not_telmi` (code 3) si le paquet était
+/// construit d'abord ; le refus (code 6) prouve qu'il ne l'est pas.
+#[test]
+fn refus_avant_la_construction_du_paquet() {
+    let dir = scratch("avant");
+    // Archive ZIP vide : seulement l'enregistrement de fin.
+    let mut empty = b"PK\x05\x06".to_vec();
+    empty.extend_from_slice(&[0u8; 18]);
+    std::fs::write(dir.join("in.zip"), &empty).unwrap();
+    let (code, _) = run(&dir, &["in.zip", "-o", "other.plain.pk"]);
+    assert_eq!(
+        code, 3,
+        "contrôle : archive vide non refusée comme histoire"
+    );
+    let (code, err) = run(&dir, &["in.zip", "-o", "in.zip"]);
+    assert_eq!(code, 6, "{err}");
+    assert_eq!(std::fs::read(dir.join("in.zip")).unwrap(), empty);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -167,7 +167,8 @@ Invariants (repris de Python, à tester côté Rust) :
    sans `\`, sans `:`, sans composant vide (garde zip-slip). Dans le `.part`, un composant de dossier
    existant du `.plain` doit être un vrai dossier (ni lien symbolique ni jonction, `symlink_metadata`) ;
    à la publication sur un `.plain` existant, chaque dossier de destination fusionné doit l'être aussi
-   (refus avant le premier renommage). Aucun chemin canonique n'est calculé pour cela : les composants
+   (refus avant le premier renommage, `--plain` compris : le `.plain.pk` n'est alors pas publié). Un `.plain`
+   racine qui est lui-même un lien ou une jonction est refusé de la même façon (Python le suivait). Aucun chemin canonique n'est calculé pour cela : les composants
    de `-o` au-dessus du `.plain` sont ceux de l'utilisateur et ne sont pas contrôlés. Les entrées de l'archive d'entrée ne sont **jamais extraites** sur
    disque, seulement lues en mémoire.
 3. **L'archive d'entrée n'est jamais modifiée.** Une sortie (`-o`, dossier `.plain`, nom par défaut)
@@ -216,6 +217,7 @@ Invariants (repris de Python, à tester côté Rust) :
 | `--info` : fin de ligne | sortie | rien | Le Rust écrit `\n` partout ; Python, en mode texte, écrit `\r\n` sous Windows. Écart assumé : `parity.py` et les tests comparent après `strip()`, et les consommateurs lisent ligne à ligne. Un tube fermé (EPIPE) n'est pas une erreur : l'échec d'écriture est ignoré (pas de panique). |
 | ffmpeg (MP3 hors 44 100 Hz, #354) : absent, en échec, trop long (120 s), sortie vide ou illisible, annulation | `ffmpeg.rs` | dossier temporaire `t2f_ff_*` supprimé, ffmpeg tué | Avertissement `audio_samplerate` avec la raison de Python et MP3 recopié ; annulation : `cancelled` (130). **Écarts assumés** : texte des erreurs du système ; échec de suppression du dossier temporaire ignoré (Python perd la sortie et avertit, constat de #274) ; dernière ligne d'erreur de plus de 64 Kio ; bit `x` sous Unix au lieu de `os.access` ; lignes `  i …` et compte des fichiers rééchantillonnés ni affichés ni émis (#131). |
 | Asset manquant | graphe | rien | `missing_asset`, code 5 ; avec `--allow-missing` : `empty.lif` / `silent.mp3` et avertissement |
+| Nom d'asset dont la base est un périphérique Windows (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, casse ignorée) | sortie | rien | **Écart assumé** : le Rust modifie le nom de sortie pour qu'il ne désigne jamais le périphérique (`assets.rs`, `is_windows_device`) ; Python garde le nom tel quel, ce qui sous Windows écrit vers le périphérique. Aucun cas de parité : le nom de sortie diffère. |
 | Image illisible (aussi pour Pillow), ou au-delà de `2 × MAX_IMAGE_PIXELS` | image | rien | avertissement `image_unreadable`, `empty.lif` (pas d'échec). **Messages** : le Rust reformule le détail de l'exception de Python (texte de Pillow, adresse mémoire de `BytesIO`), de même pour `notes.json` (`JSON invalide (…)`), et omet le nom Unicode des caractères remplacés (`U+65E5 -> '?'`) ; `package_parity.rs` compare tous les autres messages d'avertissement à l'identique (#351) |
 | MP3 sans trame valide | mp3map | rien | avertissement `mp3map_failed`, MP3 copié sans `.mp3map` |
 | Disque plein, droits refusés, chemin trop long | écriture du `.part` | `.part` supprimé | `output_error`, code 6, pas de sortie |
