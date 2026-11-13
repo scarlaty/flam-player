@@ -602,9 +602,9 @@ fn entree_du_nettoyage_html_bornee() {
 /// Le chemin réel de la description (`parse` puis `description_text`) coupe l'entrée du
 /// nettoyage HTML à [`MAX_HTML_INPUT_BYTES`] : un marqueur placé juste après n'apparaît pas. Le
 /// préfixe est un commentaire HTML (aucun texte rendu) : sans la coupure, il serait sauté et le
-/// marqueur, seul texte, apparaîtrait ; avec elle, le commentaire n'est pas fermé et rien ne
-/// reste. (Un préfixe de texte ne prouverait rien : la borne de longueur de la description
-/// couperait le marqueur de toute façon.)
+/// marqueur, seul texte, apparaîtrait ; avec elle, l'entrée s'arrête juste après le commentaire
+/// et rien ne reste. (Un préfixe de texte ne prouverait rien : la borne de longueur de la
+/// description couperait le marqueur de toute façon.)
 #[test]
 fn description_coupee_avant_le_nettoyage_html() {
     const MARKER: &str = "MarqueurAuDelaDeLaBorne";

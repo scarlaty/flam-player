@@ -394,8 +394,9 @@ fn first_download_of_session() -> bool {
 
 /// Fichier de téléchargement (hors du cache) supprimé, avec son `<dest>.part`, quand le garde est
 /// lâché : succès, échec, image refusée, tâche de lecture interrompue ou demande abandonnée en
-/// cours de route (#582). Seul un arrêt brutal du processus laisse un reste, balayé par
-/// [`sweep_stale_downloads`] à la session suivante.
+/// cours de route (#582). Seuls un arrêt brutal du processus ou une opération disque déjà lancée
+/// au moment de l'abandon laissent un reste, balayé par [`sweep_stale_downloads`] à une session
+/// suivante.
 struct TempDownload(PathBuf);
 
 impl Drop for TempDownload {
